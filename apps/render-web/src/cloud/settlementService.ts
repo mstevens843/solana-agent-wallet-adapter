@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   Connection,
   Keypair,
+  PublicKey,
   VersionedTransaction,
 } from '@solana/web3.js';
 import {
@@ -22,7 +23,10 @@ import { solanaRpcUrl } from './connectorFactsReader.js';
 import type { EvidenceStore } from './evidenceService.js';
 import {
   decryptSessionDelegateKey,
+  publicSession,
+  sessionHasServerDelegateKey,
   streamingStoreFor,
+  StreamingServiceError,
   type StoredStreamingSession,
   type StreamingStore,
   type StreamingVoucherRecord,
@@ -33,6 +37,7 @@ const DEFAULT_SETTLEMENT_THRESHOLD_BPS = 9_000;
 const DEFAULT_CANDIDATE_LIMIT = 25;
 const DEFAULT_LOCK_TTL_MS = 55_000;
 const TEST_RECENT_BLOCKHASH_ENV = 'STREAMING_TEST_RECENT_BLOCKHASH';
+const TEST_SETTLEMENT_TXID_ENV = 'STREAMING_TEST_SETTLEMENT_TXID';
 
 export interface MaterializeStreamingSettlementsInput {
   store?: unknown;
@@ -51,6 +56,16 @@ export interface MaterializeStreamingSettlementsResult {
   settled: number;
   failed: number;
   skipped: number;
+}
+
+export interface SettleStreamingSessionInput extends MaterializeStreamingSettlementsInput {
+  walletAddress: string;
+  sessionId: string;
+}
+
+export interface SettleStreamingSessionResult extends MaterializeStreamingSettlementsResult {
+  session?: StoredStreamingSession;
+  receipts: EvidenceReceiptRecord[];
 }
 
 export interface LatestSettlementBlockhash {
@@ -75,6 +90,19 @@ export interface StreamingSettlementSubmitter {
   (input: StreamingSettlementSubmitInput): Promise<{ txid: string; confirmedAt?: string }>;
 }
 
+interface SettlementExecutionContext {
+  store: StreamingStore;
+  evidenceStore: EvidenceStore;
+  clock: Clock;
+  latestBlockhash: LatestSettlementBlockhashProvider;
+  submitSignedTransaction: StreamingSettlementSubmitter;
+  feePayer?: Keypair;
+}
+
+interface SessionSettlementOutcome extends MaterializeStreamingSettlementsResult {
+  receipts: EvidenceReceiptRecord[];
+}
+
 export async function materializeStreamingSettlements(
   input: MaterializeStreamingSettlementsInput = {},
 ): Promise<MaterializeStreamingSettlementsResult> {
@@ -95,6 +123,14 @@ export async function materializeStreamingSettlements(
   }
 
   const candidates = await store.listSettlementCandidates(nowIso, thresholdBps, limit);
+  const context: SettlementExecutionContext = {
+    store,
+    evidenceStore,
+    clock,
+    latestBlockhash,
+    submitSignedTransaction,
+    ...(feePayer ? { feePayer } : {}),
+  };
   for (const candidate of candidates) {
     const lockExpiresAt = new Date(clock.now().getTime() + lockTtlMs).toISOString();
     const claimed = await store.claimSettlementCandidate(candidate.session.sessionId, clock.now().toISOString(), lockExpiresAt);
@@ -103,81 +139,163 @@ export async function materializeStreamingSettlements(
       continue;
     }
 
-    let anySettled = false;
-    try {
-      const unsettled = await store.listUnsettledVouchers(claimed.sessionId);
-      if (unsettled.length === 0) {
-        result.skipped += 1;
-        continue;
-      }
-      const delegate = decryptSessionDelegateKey(claimed);
-      const payer = feePayer ?? delegate;
-      const blockhash = await latestBlockhash(claimed.cluster);
-      const unsignedTxs = buildSettlementTx({
-        delegatePubkey: claimed.delegatePubkey,
-        ownerPubkey: claimed.walletAddress,
-        tokenMint: claimed.tokenMint,
-        feePayerPubkey: payer.publicKey.toBase58(),
-        vouchers: unsettled.map((record) => record.voucher),
-        cluster: claimed.cluster,
-        recentBlockhash: blockhash.blockhash,
-        tokenDecimals: claimed.tokenDecimals,
-      });
-
-      for (const unsignedTx of unsignedTxs) {
-        const txVouchers = vouchersForUnsignedTx(unsettled, unsignedTx);
-        const signedTransactionBase64 = signSettlementTx(unsignedTx, delegate, payer);
-        const submitted = await submitSignedTransaction({
-          cluster: claimed.cluster,
-          signedTransactionBase64,
-          unsignedTx,
-          session: claimed,
-          vouchers: txVouchers,
-          blockhash,
-        });
-        const settledAt = submitted.confirmedAt ?? clock.now().toISOString();
-        await store.markVouchersSettled(
-          claimed.sessionId,
-          txVouchers.map((record) => record.voucherHash),
-          submitted.txid,
-          settledAt,
-        );
-        const receipt = buildStreamingSettlementEvidence({
-          session: claimed,
-          vouchers: txVouchers,
-          txid: submitted.txid,
-          settledAt,
-          totalAmount: unsignedTx.totalAmount ?? sumVoucherAmounts(txVouchers, claimed.tokenDecimals),
-        });
-        await evidenceStore.saveEvidence(claimed.walletAddress, receipt);
-        await evidenceStore.appendEvidenceAuditEvent(claimed.walletAddress, {
-          id: `audit_${randomUUID()}`,
-          walletAddress: claimed.walletAddress,
-          type: 'streaming.settlement.created',
-          recordType: 'evidence',
-          recordId: receipt.id,
-          createdAt: settledAt,
-          metadata: {
-            sessionId: claimed.sessionId,
-            txid: submitted.txid,
-            receiptId: receipt.id,
-            voucherCount: txVouchers.length,
-          },
-        });
-        anySettled = true;
-      }
-      await store.markSessionSettledIfTerminal(claimed.sessionId, clock.now().toISOString());
-      if (anySettled) result.settled += 1;
-    } catch (err) {
-      if (anySettled) result.settled += 1;
-      result.failed += 1;
-      console.warn(
-        `[streaming-settlement] session=${claimed.sessionId} failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    addSettlementOutcome(result, await settleClaimedStreamingSession(context, claimed));
   }
 
   return result;
+}
+
+export async function settleStreamingSession(
+  input: SettleStreamingSessionInput,
+): Promise<SettleStreamingSessionResult> {
+  const clock = input.clock ?? { now: () => new Date() };
+  const lockTtlMs = input.lockTtlMs ?? DEFAULT_LOCK_TTL_MS;
+  const store = input.streamingStore ?? streamingStoreFor(input.store);
+  const evidenceStore = input.evidenceStore ?? evidenceStoreFrom(input.store);
+  const latestBlockhash = input.latestBlockhash ?? latestBlockhashForCluster;
+  const submitSignedTransaction = input.submitSignedTransaction ?? defaultSubmitSignedTransaction;
+  const feePayer = input.feePayer ?? settlementFeePayerFromEnv();
+
+  if (!evidenceStore) {
+    return { settled: 0, failed: 0, skipped: 1, receipts: [] };
+  }
+
+  const session = await store.getSession(input.walletAddress, input.sessionId);
+  if (!session) {
+    throw new StreamingServiceError(404, 'session_not_found', `No streaming session found for id ${input.sessionId}.`);
+  }
+  const presented = publicSession(session, clock.now());
+  if (presented.status === 'pending' || presented.status === 'settled') {
+    return { settled: 0, failed: 0, skipped: 1, session: presented, receipts: [] };
+  }
+  if (!sessionHasServerDelegateKey(session)) {
+    return { settled: 0, failed: 0, skipped: 1, session: presented, receipts: [] };
+  }
+
+  const nowIso = clock.now().toISOString();
+  const lockExpiresAt = new Date(clock.now().getTime() + lockTtlMs).toISOString();
+  const claimed = await store.claimSettlementCandidate(input.sessionId, nowIso, lockExpiresAt);
+  if (!claimed) {
+    return { settled: 0, failed: 0, skipped: 1, session: presented, receipts: [] };
+  }
+
+  const outcome = await settleClaimedStreamingSession({
+    store,
+    evidenceStore,
+    clock,
+    latestBlockhash,
+    submitSignedTransaction,
+    ...(feePayer ? { feePayer } : {}),
+  }, claimed);
+  const refreshed = await store.getSession(input.walletAddress, input.sessionId);
+  return {
+    settled: outcome.settled,
+    failed: outcome.failed,
+    skipped: outcome.skipped,
+    session: publicSession(refreshed ?? claimed, clock.now()),
+    receipts: outcome.receipts,
+  };
+}
+
+async function settleClaimedStreamingSession(
+  context: SettlementExecutionContext,
+  claimed: StoredStreamingSession,
+): Promise<SessionSettlementOutcome> {
+  const receipts: EvidenceReceiptRecord[] = [];
+  let anySettled = false;
+  try {
+    const unsettled = await context.store.listUnsettledVouchers(claimed.sessionId);
+    if (unsettled.length === 0) {
+      return { settled: 0, failed: 0, skipped: 1, receipts };
+    }
+    if (!sessionHasServerDelegateKey(claimed)) {
+      return { settled: 0, failed: 0, skipped: 1, receipts };
+    }
+    const delegate = decryptSessionDelegateKey(claimed);
+    const payer = context.feePayer ?? delegate;
+    const blockhash = await context.latestBlockhash(claimed.cluster);
+    const unsignedTxs = buildSettlementTx({
+      delegatePubkey: claimed.delegatePubkey,
+      ownerPubkey: claimed.walletAddress,
+      tokenMint: claimed.tokenMint,
+      feePayerPubkey: payer.publicKey.toBase58(),
+      vouchers: unsettled.map((record) => record.voucher),
+      cluster: claimed.cluster,
+      recentBlockhash: blockhash.blockhash,
+      tokenDecimals: claimed.tokenDecimals,
+    });
+
+    for (const unsignedTx of unsignedTxs) {
+      const txVouchers = vouchersForUnsignedTx(unsettled, unsignedTx);
+      if (txVouchers.length === 0) continue;
+      const signedTransactionBase64 = signSettlementTx(unsignedTx, delegate, payer);
+      const submitted = await context.submitSignedTransaction({
+        cluster: claimed.cluster,
+        signedTransactionBase64,
+        unsignedTx,
+        session: claimed,
+        vouchers: txVouchers,
+        blockhash,
+      });
+      const settledAt = submitted.confirmedAt ?? context.clock.now().toISOString();
+      await context.store.markVouchersSettled(
+        claimed.sessionId,
+        txVouchers.map((record) => record.voucherHash),
+        submitted.txid,
+        settledAt,
+      );
+      const receipt = buildStreamingSettlementEvidence({
+        session: claimed,
+        vouchers: txVouchers,
+        txid: submitted.txid,
+        settledAt,
+        totalAmount: unsignedTx.totalAmount ?? sumVoucherAmounts(txVouchers, claimed.tokenDecimals),
+      });
+      await context.evidenceStore.saveEvidence(claimed.walletAddress, receipt);
+      await context.evidenceStore.appendEvidenceAuditEvent(claimed.walletAddress, {
+        id: `audit_${randomUUID()}`,
+        walletAddress: claimed.walletAddress,
+        type: 'streaming.settlement.created',
+        recordType: 'evidence',
+        recordId: receipt.id,
+        createdAt: settledAt,
+        metadata: {
+          sessionId: claimed.sessionId,
+          txid: submitted.txid,
+          receiptId: receipt.id,
+          voucherCount: txVouchers.length,
+        },
+      });
+      receipts.push(receipt);
+      anySettled = true;
+    }
+    await context.store.markSessionSettledIfTerminal(claimed.sessionId, context.clock.now().toISOString());
+    return {
+      settled: anySettled ? 1 : 0,
+      failed: 0,
+      skipped: anySettled ? 0 : 1,
+      receipts,
+    };
+  } catch (err) {
+    console.warn(
+      `[streaming-settlement] session=${claimed.sessionId} failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return {
+      settled: anySettled ? 1 : 0,
+      failed: 1,
+      skipped: 0,
+      receipts,
+    };
+  }
+}
+
+function addSettlementOutcome(
+  result: MaterializeStreamingSettlementsResult,
+  outcome: MaterializeStreamingSettlementsResult,
+): void {
+  result.settled += outcome.settled;
+  result.failed += outcome.failed;
+  result.skipped += outcome.skipped;
 }
 
 function vouchersForUnsignedTx(
@@ -287,7 +405,14 @@ function latestBlockhashForCluster(cluster: StreamingCluster): Promise<LatestSet
 }
 
 async function defaultSubmitSignedTransaction(input: StreamingSettlementSubmitInput): Promise<{ txid: string; confirmedAt?: string }> {
+  const testTxid = process.env.NODE_ENV === 'test'
+    ? process.env[TEST_SETTLEMENT_TXID_ENV]?.trim()
+    : undefined;
+  if (testTxid) {
+    return { txid: testTxid, confirmedAt: new Date().toISOString() };
+  }
   const connection = new Connection(solanaRpcUrl(input.cluster), 'confirmed');
+  await verifySettlementDestinationAccounts(connection, input.unsignedTx.destinationAtas ?? []);
   const bytes = Buffer.from(input.signedTransactionBase64, 'base64');
   const txid = await connection.sendRawTransaction(bytes, {
     preflightCommitment: 'confirmed',
@@ -298,6 +423,22 @@ async function defaultSubmitSignedTransaction(input: StreamingSettlementSubmitIn
     throw new Error(`Settlement transaction failed: ${JSON.stringify(confirmation.value.err)}`);
   }
   return { txid, confirmedAt: new Date().toISOString() };
+}
+
+async function verifySettlementDestinationAccounts(
+  connection: Connection,
+  destinationAtas: readonly string[],
+): Promise<void> {
+  if (destinationAtas.length === 0) return;
+  const uniqueAtas = [...new Set(destinationAtas)];
+  const accounts = await connection.getMultipleAccountsInfo(
+    uniqueAtas.map((address) => new PublicKey(address)),
+    'confirmed',
+  );
+  const missing = uniqueAtas.filter((address, index) => !accounts[index]);
+  if (missing.length > 0) {
+    throw new Error(`Settlement destination token account missing: ${missing.join(', ')}`);
+  }
 }
 
 function settlementFeePayerFromEnv(): Keypair | undefined {
@@ -324,4 +465,3 @@ function isEvidenceStore(value: unknown): value is EvidenceStore {
     && typeof (value as EvidenceStore).appendEvidenceAuditEvent === 'function'
     && typeof (value as EvidenceStore).listEvidence === 'function';
 }
-

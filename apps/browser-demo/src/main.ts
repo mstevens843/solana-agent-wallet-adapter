@@ -321,9 +321,11 @@ import {
 import {
   addStreamingApprovalRequestedListener,
   dispatchStreamingApprovalCompleted,
+  streamingApprovalSignedBody,
   type StreamingApprovalOperation,
   type StreamingApprovalRequestedDetail,
 } from './streamingApprovalEvents.js';
+import { openSessionDetail } from './sessionState.js';
 import {
   ANDROID_DEVICE_AGENT_ENABLED,
   BROWSER_DEVICE_AGENT_ENABLED,
@@ -3335,13 +3337,17 @@ function materializeLocalStreamingApproval(detail: StreamingApprovalRequestedDet
   if (!state.address) {
     throw new Error('Connect a wallet before adding the streaming session approval to Needs Approval.');
   }
+  const walletAddress = detail.walletAddress?.trim() || state.address;
+  if (walletAddress !== state.address) {
+    throw new Error(`Connect ${short(walletAddress)} before adding this streaming session approval to Needs Approval.`);
+  }
   const cluster = streamingApprovalCluster(detail);
   const now = new Date().toISOString();
   const action: PreparedAction = {
     id: newId('browser-streaming'),
     kind: 'custom_transaction',
     status: 'ready',
-    walletAddress: state.address,
+    walletAddress,
     cluster,
     summary: detail.summary || streamingApprovalSummary(detail.operation, detail.sessionId),
     params: {
@@ -3362,6 +3368,7 @@ function materializeLocalStreamingApproval(detail: StreamingApprovalRequestedDet
       connectorName: 'Streaming Sessions',
       operation: detail.operation,
       sessionId: detail.sessionId,
+      walletAddress,
       callbackPath: detail.callbackPath,
       streamingCallbackStatus: 'pending',
       ...(detail.tx.tokenMint ? { tokenMint: detail.tx.tokenMint } : {}),
@@ -16607,6 +16614,7 @@ function bind(): void {
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-tab]')) {
     button.addEventListener('click', () => {
       const tab = button.dataset.tab as ActiveTab;
+      const spendOpen = button.dataset.spendOpen;
       trackNavClick(`${currentRoute() ?? '/app'}#${tab}`, 'workspace');
       state.activeTab = tab;
       if (state.activeTab === 'labs') {
@@ -16616,6 +16624,13 @@ function bind(): void {
       render();
       if (tab === 'inbox') {
         void reconcilePendingTransactions({ trigger: 'tab-entry' });
+      }
+      if (tab === 'sessions' && spendOpen) {
+        void openSessionDetail(spendOpen).catch((err) => {
+          state.error = redactSecrets(err instanceof Error ? err.message : String(err));
+          pushToast('error', 'Could not open session', state.error);
+          render();
+        });
       }
     });
   }
@@ -27880,13 +27895,7 @@ async function finalizeStreamingApprovalCallback(
   try {
     await cloudRequest(info.callbackPath, {
       method: 'POST',
-      body: JSON.stringify({
-        txid: execution.txid,
-        signature: execution.txid,
-        approvalId: action.id,
-        status,
-        txStatus: execution.txStatus,
-      }),
+      body: JSON.stringify(streamingApprovalCallbackBody(info, action, execution, status)),
     });
     updateBrowserPreparedAction(action.id, {
       metadata: {
@@ -27928,6 +27937,21 @@ async function finalizeStreamingApprovalCallback(
       error: message,
     });
   }
+}
+
+function streamingApprovalCallbackBody(
+  info: StreamingApprovalCallbackInfo,
+  action: PreparedAction,
+  execution: BrowserTransactionExecution,
+  status: 'submitted' | 'confirmed',
+): Record<string, string> {
+  return streamingApprovalSignedBody({
+    operation: info.operation,
+    txid: execution.txid,
+    approvalId: action.id,
+    status,
+    txStatus: execution.txStatus,
+  });
 }
 
 function streamingApprovalCallbackInfo(action: PreparedAction): StreamingApprovalCallbackInfo | null {

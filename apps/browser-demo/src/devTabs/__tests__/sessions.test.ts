@@ -17,10 +17,15 @@ const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 import { findDevTab, listDevTabs } from '../../devTabRegistry.js';
 import {
   __resetSessionsStateForTests,
+  getSessionsState,
+  loadSessions,
   requestRevokeSelectedSession,
   stopSessionDetailPolling,
 } from '../../sessionState.js';
-import { STREAMING_APPROVAL_REQUESTED_EVENT } from '../../streamingApprovalEvents.js';
+import {
+  STREAMING_APPROVAL_REQUESTED_EVENT,
+  streamingApprovalSignedBody,
+} from '../../streamingApprovalEvents.js';
 import { setConnectedAddress, setConnectedCluster } from '../../walletState.js';
 import { __sessionsForTests } from '../sessions.js';
 
@@ -125,6 +130,28 @@ describe('sessions dev tab', () => {
     expect(html).toContain('/api/streaming/sessions/sess_active_001/receipt');
   });
 
+  it('loads all session status buckets from render-web', async () => {
+    const expired = makeSession({
+      id: 'sess_expired_001',
+      status: 'expired',
+      expiresAt: '2026-05-16T11:00:00.000Z',
+    });
+    __resetSessionsStateForTests({ status: 'idle' });
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === '/api/streaming/sessions?status=all') {
+        return jsonResponse(200, { sessions: [expired] });
+      }
+      if (url === '/api/streaming/sessions/sess_expired_001') {
+        return jsonResponse(200, { session: expired, vouchers: [] });
+      }
+      throw new Error(`unexpected url: ${url}`);
+    });
+
+    await loadSessions(true);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/streaming/sessions?status=all');
+    expect(getSessionsState().sessions.map((session) => session.status)).toEqual(['expired']);
+  });
+
   it('dispatches a streaming approval request after revoke prepares a tx', async () => {
     const target = new EventTarget();
     (globalThis as { window?: EventTarget }).window = target;
@@ -176,6 +203,49 @@ describe('sessions dev tab', () => {
     expect(html).toContain('Expired');
   });
 
+  it('allows expired sessions to queue revoke before settlement', () => {
+    const expired = makeSession({
+      id: 'sess_expired_001',
+      status: 'expired',
+      expiresAt: '2026-05-16T11:00:00.000Z',
+    });
+    __resetSessionsStateForTests({
+      status: 'loaded',
+      sessions: [expired],
+      selectedSessionId: 'sess_expired_001',
+      details: {
+        sess_expired_001: { session: expired, vouchers: [] },
+      },
+    });
+
+    const html = __sessionsForTests.detailHtml();
+    expect(html).toContain('data-sessions-revoke="sess_expired_001"');
+    expect(html).not.toContain('data-sessions-revoke="sess_expired_001" disabled');
+  });
+
+  it('opens a specific session detail for Spend deep links', async () => {
+    const settled = makeSession({
+      id: 'sess_settled_001',
+      status: 'settled',
+      spentAmount: '25',
+      expiresAt: '2026-05-16T11:00:00.000Z',
+    });
+    __resetSessionsStateForTests({ status: 'idle' });
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === '/api/streaming/sessions?status=all') {
+        return jsonResponse(200, { sessions: [settled] });
+      }
+      if (url === '/api/streaming/sessions/sess_settled_001') {
+        return jsonResponse(200, { session: settled, vouchers: [] });
+      }
+      throw new Error(`unexpected url: ${url}`);
+    });
+
+    await __sessionsForTests.openSessionDetail('sess_settled_001');
+    expect(getSessionsState().selectedSessionId).toBe('sess_settled_001');
+    expect(getSessionsState().filter).toBe('settled');
+  });
+
   it('validates create-modal inputs before submit', () => {
     const invalid = __sessionsForTests.validateCreateDraft({
       tokenMint: 'not-a-mint',
@@ -203,5 +273,46 @@ describe('sessions dev tab', () => {
       cluster: 'mainnet-beta',
     });
     expect(valid.body?.expiresAt).toBe('2026-05-16T12:30:00.000Z');
+
+    const alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+    const tooManyRecipients = Array.from(
+      { length: 65 },
+      (_, index) => `${'1'.repeat(30)}${alphabet[Math.floor(index / alphabet.length)]}${alphabet[index % alphabet.length]}`,
+    ).join(',');
+    const tooLarge = __sessionsForTests.validateCreateDraft({
+      tokenMint: USDC,
+      capAmount: '1',
+      durationMinutes: '10',
+      recipientAllowlist: tooManyRecipients,
+    });
+    expect(tooLarge.valid).toBe(false);
+    expect(tooLarge.errors.recipientAllowlist).toMatch(/64 or fewer/);
+  });
+
+  it('maps signed approval callbacks to render-web route fields', () => {
+    expect(streamingApprovalSignedBody({
+      operation: 'grant',
+      txid: 'tx_grant',
+      approvalId: 'approval_1',
+      status: 'submitted',
+      txStatus: 'pending',
+    })).toMatchObject({
+      approveTxid: 'tx_grant',
+      txid: 'tx_grant',
+      signature: 'tx_grant',
+      approvalId: 'approval_1',
+      status: 'submitted',
+      txStatus: 'pending',
+    });
+    expect(streamingApprovalSignedBody({
+      operation: 'revoke',
+      txid: 'tx_revoke',
+      approvalId: 'approval_2',
+      status: 'confirmed',
+      txStatus: 'confirmed',
+    })).toMatchObject({
+      revokeTxid: 'tx_revoke',
+      txid: 'tx_revoke',
+    });
   });
 });

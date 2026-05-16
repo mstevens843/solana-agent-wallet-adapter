@@ -13,6 +13,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.math.BigDecimal
 import java.math.RoundingMode
+import java.security.SecureRandom
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
@@ -28,6 +29,60 @@ import javax.crypto.spec.GCMParameterSpec
 class StreamingSessionController(context: Context) {
     private val appContext = context.applicationContext
     private val prefs: SharedPreferences = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    @Synchronized
+    fun prepareSessionSigner(metadata: JSONObject = JSONObject()): JSONObject {
+        val signerId = newSignerId()
+        val seed = ByteArray(ED25519_SEED_BYTES)
+        val publicKey: ByteArray
+        val secret: ByteArray
+        SecureRandom().nextBytes(seed)
+        try {
+            val privateKey = Ed25519PrivateKeyParameters(seed, 0)
+            publicKey = privateKey.generatePublicKey().encoded
+            secret = seed + publicKey
+        } catch (err: Exception) {
+            Arrays.fill(seed, 0)
+            throw err
+        }
+        try {
+            val alias = aliasFor("signer:$signerId")
+            deleteKeyAlias(alias)
+            val encrypted = encryptSecret(alias, signerId, secret)
+            val now = System.currentTimeMillis()
+            val publicKeyBase58 = Base58.encode(publicKey)
+            val record = JSONObject()
+                .put("schema", LOCAL_SIGNER_SCHEMA)
+                .put("signerId", signerId)
+                .put("status", "prepared")
+                .put("keyAlias", alias)
+                .put("keyAad", signerId)
+                .put("iv", encrypted.ivBase64)
+                .put("ciphertext", encrypted.ciphertextBase64)
+                .put("ephemeralSignerPubkey", publicKeyBase58)
+                .put("signerRuntime", SIGNER_RUNTIME_ANDROID)
+                .put("createdAtMs", now)
+                .put("updatedAtMs", now)
+            copyOptionalString(metadata, record, "tokenSymbol")
+            copyOptionalInt(metadata, record, "tokenDecimals")
+            prefs.edit().putString(signerPrefKey(signerId), record.toString()).apply()
+            AgentMwaLog.info(
+                "StreamingSessionController",
+                "prepareSessionSigner",
+                "DONE",
+                "native streaming signer prepared",
+                mapOf("signerId" to signerId, "ephemeralSignerPubkey" to publicKeyBase58),
+            )
+            return JSONObject()
+                .put("signerId", signerId)
+                .put("ephemeralSignerPubkey", publicKeyBase58)
+                .put("signerRuntime", SIGNER_RUNTIME_ANDROID)
+                .put("activeSessions", activeSessionCountLocked())
+        } finally {
+            Arrays.fill(seed, 0)
+            Arrays.fill(secret, 0)
+        }
+    }
 
     @Synchronized
     fun createSession(
@@ -71,6 +126,7 @@ class StreamingSessionController(context: Context) {
                 .put("sessionId", cleanSessionId)
                 .put("status", "active")
                 .put("keyAlias", alias)
+                .put("keyAad", cleanSessionId)
                 .put("iv", encrypted.ivBase64)
                 .put("ciphertext", encrypted.ciphertextBase64)
                 .put("ephemeralSignerPubkey", publicKeyBase58)
@@ -104,11 +160,93 @@ class StreamingSessionController(context: Context) {
             return JSONObject()
                 .put("sessionId", cleanSessionId)
                 .put("ephemeralSignerPubkey", publicKeyBase58)
+                .put("signerRuntime", SIGNER_RUNTIME_ANDROID)
                 .put("activeSessions", activeSessionCountLocked())
         } finally {
             Arrays.fill(secret, 0)
             Arrays.fill(seed, 0)
         }
+    }
+
+    @Synchronized
+    fun bindPreparedSession(
+        sessionId: String,
+        signerId: String,
+        metadata: JSONObject = JSONObject(),
+    ): JSONObject {
+        val cleanSessionId = requireSessionId(sessionId)
+        val cleanSignerId = requireSignerId(signerId)
+        val existing = loadRecord(cleanSessionId)
+        if (existing != null) {
+            if (existing.optString("signerId") != cleanSignerId) {
+                throw StreamingSessionException("signer_mismatch", "Local session is already bound to a different signer.")
+            }
+            mergeSessionMetadata(existing, metadata)
+            prefs.edit().putString(prefKey(cleanSessionId), existing.toString()).apply()
+            return bindResult(existing)
+        }
+
+        val prepared = loadSignerRecord(cleanSignerId)
+            ?: throw StreamingSessionException("signer_not_found", "No prepared streaming signer exists for $cleanSignerId.")
+        if (prepared.optString("status") != "prepared") {
+            throw StreamingSessionException("signer_not_prepared", "Prepared signer $cleanSignerId is not bindable.")
+        }
+        val expectedPublicKey = metadata.optString("ephemeralSignerPubkey")
+            .ifBlank { metadata.optString("ephemeralPublicKeyBase58") }
+        if (expectedPublicKey.isNotBlank() && expectedPublicKey != prepared.optString("ephemeralSignerPubkey")) {
+            throw StreamingSessionException("public_key_mismatch", "Prepared signer does not match ephemeralSignerPubkey.")
+        }
+
+        val now = System.currentTimeMillis()
+        val record = JSONObject(prepared.toString())
+            .put("schema", LOCAL_SESSION_SCHEMA)
+            .put("sessionId", cleanSessionId)
+            .put("signerId", cleanSignerId)
+            .put("status", "pending")
+            .put("updatedAtMs", now)
+            .put("signedVoucherCount", 0)
+            .put("signedVouchers", JSONObject())
+        mergeSessionMetadata(record, metadata)
+        prefs.edit()
+            .putString(prefKey(cleanSessionId), record.toString())
+            .remove(signerPrefKey(cleanSignerId))
+            .apply()
+        AgentMwaLog.info(
+            "StreamingSessionController",
+            "bindPreparedSession",
+            "DONE",
+            "native streaming signer bound to session",
+            mapOf("sessionId" to cleanSessionId, "signerId" to cleanSignerId),
+        )
+        return bindResult(record)
+    }
+
+    @Synchronized
+    fun activateSession(sessionId: String, metadata: JSONObject = JSONObject()): JSONObject {
+        val cleanSessionId = requireSessionId(sessionId)
+        val record = loadRecord(cleanSessionId)
+            ?: throw StreamingSessionException("session_not_found", "No local streaming session key exists for $cleanSessionId.")
+        val status = record.optString("status", "pending")
+        if (status != "pending" && status != "active") {
+            throw StreamingSessionException("session_not_activatable", "Session $cleanSessionId is $status.")
+        }
+        mergeSessionMetadata(record, metadata)
+        record
+            .put("status", "active")
+            .put("updatedAtMs", System.currentTimeMillis())
+        prefs.edit().putString(prefKey(cleanSessionId), record.toString()).apply()
+        AgentMwaLog.info(
+            "StreamingSessionController",
+            "activateSession",
+            "DONE",
+            "local streaming session activated",
+            mapOf("sessionId" to cleanSessionId),
+        )
+        return JSONObject()
+            .put("sessionId", cleanSessionId)
+            .put("status", "active")
+            .put("ephemeralSignerPubkey", record.optString("ephemeralSignerPubkey"))
+            .put("activeSessions", activeSessionCountLocked())
     }
 
     @Synchronized
@@ -126,13 +264,33 @@ class StreamingSessionController(context: Context) {
         val recipient = requireJsonString(voucher, "recipient")
         requireRecipientAllowed(record, recipient)
         val tokenDecimals = tokenDecimalsFor(record.opt("tokenDecimals"))
-        validateAmount(requireJsonString(voucher, "amount"), tokenDecimals)
+        val amount = requireJsonString(voucher, "amount")
+        validateAmount(amount, tokenDecimals)
         val digest = voucherDigest(voucher)
+        val voucherHash = hex(digest)
+        val nonce = requireJsonString(voucher, "nonce")
+        existingSignedVoucher(record, nonce)?.let { existing ->
+            if (existing.optString("voucherHash") != voucherHash) {
+                throw StreamingSessionException("nonce_conflict", "Voucher nonce was already signed for a different payload.")
+            }
+            val latencyMs = (System.nanoTime() - startedAt) / 1_000_000.0
+            return JSONObject()
+                .put("sessionId", cleanSessionId)
+                .put("signature", existing.getString("signature"))
+                .put("signatureEncoding", "base58")
+                .put("voucherHash", voucherHash)
+                .put("cached", true)
+                .put("latencyMs", latencyMs)
+                .put("activeSessions", activeSessionCountLocked())
+        }
+        requireWithinRemaining(record, amount)
         val secret = decryptSecret(record, cleanSessionId)
         var seed = ByteArray(0)
         try {
             seed = secret.copyOfRange(0, ED25519_SEED_BYTES)
             val signature = signDigest(seed, digest)
+            val signatureBase58 = Base58.encode(signature)
+            rememberSignedVoucher(record, voucher, voucherHash, signatureBase58)
             updateOptimisticSpend(record, voucher)
             val latencyMs = (System.nanoTime() - startedAt) / 1_000_000.0
             AgentMwaLog.info(
@@ -148,8 +306,10 @@ class StreamingSessionController(context: Context) {
             )
             return JSONObject()
                 .put("sessionId", cleanSessionId)
-                .put("signature", Base58.encode(signature))
+                .put("signature", signatureBase58)
                 .put("signatureEncoding", "base58")
+                .put("voucherHash", voucherHash)
+                .put("cached", false)
                 .put("latencyMs", latencyMs)
                 .put("activeSessions", activeSessionCountLocked())
         } finally {
@@ -159,11 +319,64 @@ class StreamingSessionController(context: Context) {
     }
 
     @Synchronized
-    fun revokeLocalSession(sessionId: String): JSONObject {
+    fun signSettlementTx(sessionId: String, settlement: JSONObject): JSONObject {
+        val startedAt = System.nanoTime()
         val cleanSessionId = requireSessionId(sessionId)
         val record = loadRecord(cleanSessionId)
+            ?: throw StreamingSessionException("session_not_found", "No local streaming session key exists for $cleanSessionId.")
+        requireSettlementSignable(record)
+        requireKnownVoucherHashes(record, settlement.optJSONArray("voucherHashes"))
+        val txBase64 = settlement.optString("txBase64")
+            .ifBlank { settlement.optString("transactionBase64") }
+        if (txBase64.isBlank()) {
+            throw StreamingSessionException("invalid_payload", "signSettlementTx requires txBase64.")
+        }
+        requireOnlyLocalRequiredSigner(record, settlement.optJSONArray("requiredSigners"))
+        val txBytes = decodeBase64(txBase64, "txBase64")
+        val unsigned = txBytes.copyOf()
+        val messageInfo = parseSingleSignerTransaction(txBytes, Base58.decode(record.getString("ephemeralSignerPubkey")))
+        val secret = decryptSecret(record, cleanSessionId)
+        var seed = ByteArray(0)
+        try {
+            seed = secret.copyOfRange(0, ED25519_SEED_BYTES)
+            val signature = signDigest(seed, messageInfo.message)
+            System.arraycopy(signature, 0, txBytes, messageInfo.signatureOffset, signature.size)
+            val latencyMs = (System.nanoTime() - startedAt) / 1_000_000.0
+            AgentMwaLog.info(
+                "StreamingSessionController",
+                "signSettlementTx",
+                "DONE",
+                "streaming settlement transaction signed locally",
+                mapOf("sessionId" to cleanSessionId, "latencyMs" to String.format(Locale.US, "%.3f", latencyMs)),
+            )
+            return JSONObject()
+                .put("sessionId", cleanSessionId)
+                .put("signedTransactionBase64", Base64.encodeToString(txBytes, Base64.NO_WRAP))
+                .put("signature", Base58.encode(signature))
+                .put("signatureEncoding", "base58")
+                .put("latencyMs", latencyMs)
+                .put("changed", !constantTimeEquals(unsigned, txBytes))
+        } finally {
+            Arrays.fill(secret, 0)
+            Arrays.fill(seed, 0)
+        }
+    }
+
+    @Synchronized
+    fun revokeLocalSession(sessionId: String): JSONObject {
+        val cleanSessionId = sessionId.trim()
+        val record = if (SESSION_ID_PATTERN.matches(cleanSessionId)) {
+            loadRecord(cleanSessionId)
+        } else if (SIGNER_ID_PATTERN.matches(cleanSessionId)) {
+            loadSignerRecord(cleanSessionId)
+        } else {
+            throw StreamingSessionException("invalid_session", "Invalid streaming session id.")
+        }
         record?.optString("keyAlias")?.takeIf { it.isNotBlank() }?.let { deleteKeyAlias(it) }
-        prefs.edit().remove(prefKey(cleanSessionId)).apply()
+        val edit = prefs.edit()
+        if (SESSION_ID_PATTERN.matches(cleanSessionId)) edit.remove(prefKey(cleanSessionId))
+        if (SIGNER_ID_PATTERN.matches(cleanSessionId)) edit.remove(signerPrefKey(cleanSessionId))
+        edit.apply()
         AgentMwaLog.info(
             "StreamingSessionController",
             "revokeLocalSession",
@@ -183,9 +396,18 @@ class StreamingSessionController(context: Context) {
         return JSONObject()
             .put("available", true)
             .put("runtime", "android-native")
+            .put("signerRuntime", SIGNER_RUNTIME_ANDROID)
             .put("activeSessions", notification.activeCount)
             .put("remainingDisplay", notification.remainingDisplay)
             .put("message", notification.text)
+            .put("capabilities", JSONArray(listOf(
+                "prepareSessionSigner",
+                "createSession",
+                "activateSession",
+                "signVoucher",
+                "signSettlementTx",
+                "revokeLocalSession",
+            )))
     }
 
     @Synchronized
@@ -281,6 +503,44 @@ class StreamingSessionController(context: Context) {
         }
     }
 
+    private fun loadSignerRecord(signerId: String): JSONObject? {
+        val raw = prefs.getString(signerPrefKey(signerId), null) ?: return null
+        return try {
+            JSONObject(raw)
+        } catch (err: Exception) {
+            throw StreamingSessionException("corrupt_session", "Prepared streaming signer metadata is corrupt.", err)
+        }
+    }
+
+    private fun bindResult(record: JSONObject): JSONObject =
+        JSONObject()
+            .put("sessionId", record.getString("sessionId"))
+            .put("signerId", record.optString("signerId"))
+            .put("status", record.optString("status"))
+            .put("ephemeralSignerPubkey", record.optString("ephemeralSignerPubkey"))
+            .put("signerRuntime", SIGNER_RUNTIME_ANDROID)
+            .put("activeSessions", activeSessionCountLocked())
+
+    private fun mergeSessionMetadata(record: JSONObject, metadata: JSONObject) {
+        copyOptionalString(metadata, record, "expiresAt")
+        copyOptionalString(metadata, record, "capAmount")
+        copyOptionalString(metadata, record, "spentAmount")
+        copyOptionalString(metadata, record, "remainingAmount")
+        copyOptionalString(metadata, record, "tokenSymbol")
+        copyOptionalInt(metadata, record, "tokenDecimals")
+        metadata.optJSONArray("recipientAllowlist")?.let { record.put("recipientAllowlist", JSONArray(it.toString())) }
+        val expectedPublicKey = metadata.optString("ephemeralSignerPubkey")
+            .ifBlank { metadata.optString("ephemeralPublicKeyBase58") }
+        if (expectedPublicKey.isNotBlank()) record.put("ephemeralSignerPubkey", expectedPublicKey)
+        if (!record.has("remainingAmount")) {
+            computeRemaining(record.optString("capAmount"), record.optString("spentAmount"))
+                ?.let { record.put("remainingAmount", normalizeDecimal(it)) }
+        }
+        val expiresAt = record.optString("expiresAt")
+        if (expiresAt.isNotBlank()) parseIsoTimestamp(expiresAt, "expiresAt")
+        record.put("signerRuntime", SIGNER_RUNTIME_ANDROID)
+    }
+
     private fun encryptSecret(alias: String, sessionId: String, secret: ByteArray): EncryptedSecret {
         val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, secretKey(alias))
@@ -299,7 +559,7 @@ class StreamingSessionController(context: Context) {
         val ciphertext = decodeBase64(record.optString("ciphertext"), "ciphertext")
         val cipher = Cipher.getInstance(AES_GCM_TRANSFORMATION)
         cipher.init(Cipher.DECRYPT_MODE, secretKey(alias), GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv))
-        cipher.updateAAD(sessionId.toByteArray(Charsets.UTF_8))
+        cipher.updateAAD(record.optString("keyAad").ifBlank { sessionId }.toByteArray(Charsets.UTF_8))
         val secret = cipher.doFinal(ciphertext)
         if (secret.size != ED25519_SECRET_KEY_BYTES) {
             Arrays.fill(secret, 0)
@@ -354,6 +614,117 @@ class StreamingSessionController(context: Context) {
         return signer.generateSignature()
     }
 
+    private fun existingSignedVoucher(record: JSONObject, nonce: String): JSONObject? =
+        record.optJSONObject("signedVouchers")?.optJSONObject(nonce)
+
+    private fun rememberSignedVoucher(record: JSONObject, voucher: JSONObject, voucherHash: String, signatureBase58: String) {
+        val signed = record.optJSONObject("signedVouchers") ?: JSONObject().also { record.put("signedVouchers", it) }
+        val nonce = requireJsonString(voucher, "nonce")
+        signed.put(
+            nonce,
+            JSONObject()
+                .put("voucherHash", voucherHash)
+                .put("signature", signatureBase58)
+                .put("amount", requireJsonString(voucher, "amount"))
+                .put("recipient", requireJsonString(voucher, "recipient"))
+                .put("issuedAt", requireJsonString(voucher, "issuedAt")),
+        )
+    }
+
+    private fun requireWithinRemaining(record: JSONObject, amount: String) {
+        val amountDecimal = decimalOrNull(amount)
+            ?: throw StreamingSessionException("invalid_amount", "Voucher amount must be a decimal string.")
+        val remaining = decimalOrNull(record.optString("remainingAmount"))
+            ?: computeRemaining(record.optString("capAmount"), record.optString("spentAmount"))
+            ?: return
+        if (amountDecimal > remaining) {
+            throw StreamingSessionException("voucher_exceeds_remaining", "Voucher amount exceeds local remaining session balance.")
+        }
+    }
+
+    private fun requireSettlementSignable(record: JSONObject) {
+        val status = record.optString("status", "active")
+        if (status != "active" && status != "revoked" && status != "expired") {
+            throw StreamingSessionException("session_not_settlement_signable", "Session ${record.optString("sessionId")} is $status.")
+        }
+    }
+
+    private fun requireKnownVoucherHashes(record: JSONObject, voucherHashes: JSONArray?) {
+        if (voucherHashes == null || voucherHashes.length() == 0) return
+        val known = mutableSetOf<String>()
+        val signed = record.optJSONObject("signedVouchers") ?: JSONObject()
+        val keys = signed.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            val hash = signed.optJSONObject(key)?.optString("voucherHash").orEmpty()
+            if (hash.isNotBlank()) known.add(hash)
+        }
+        for (index in 0 until voucherHashes.length()) {
+            val hash = voucherHashes.optString(index)
+            if (!known.contains(hash)) {
+                throw StreamingSessionException("unknown_voucher_hash", "Settlement references a voucher that was not signed locally.")
+            }
+        }
+    }
+
+    private fun requireOnlyLocalRequiredSigner(record: JSONObject, requiredSigners: JSONArray?) {
+        if (requiredSigners == null) return
+        val local = record.getString("ephemeralSignerPubkey")
+        for (index in 0 until requiredSigners.length()) {
+            val signer = requiredSigners.optString(index)
+            if (signer != local) {
+                throw StreamingSessionException("unsupported_settlement_signer", "Native settlement signing only supports the local delegate signer.")
+            }
+        }
+    }
+
+    private fun parseSingleSignerTransaction(txBytes: ByteArray, localPublicKey: ByteArray): ParsedTransactionMessage {
+        val sigCountRead = readShortVec(txBytes, 0)
+        val signatureCount = sigCountRead.value
+        if (signatureCount != 1) {
+            throw StreamingSessionException("unsupported_settlement_tx", "Native settlement signing requires a single delegate signature.")
+        }
+        val signatureOffset = sigCountRead.nextOffset
+        val messageOffset = signatureOffset + ED25519_SIGNATURE_BYTES
+        if (messageOffset >= txBytes.size) {
+            throw StreamingSessionException("invalid_transaction", "Settlement transaction is truncated.")
+        }
+        val message = txBytes.copyOfRange(messageOffset, txBytes.size)
+        val headerOffset = if ((message[0].toInt() and 0x80) != 0) 1 else 0
+        if (message.size < headerOffset + 4) {
+            throw StreamingSessionException("invalid_transaction", "Settlement transaction message is truncated.")
+        }
+        val requiredSignatures = message[headerOffset].toInt() and 0xff
+        if (requiredSignatures != 1) {
+            throw StreamingSessionException("unsupported_settlement_tx", "Settlement transaction must require only the delegate signer.")
+        }
+        val accountCountRead = readShortVec(message, headerOffset + 3)
+        val accountKeyOffset = accountCountRead.nextOffset
+        if (accountCountRead.value < 1 || accountKeyOffset + ED25519_PUBLIC_KEY_BYTES > message.size) {
+            throw StreamingSessionException("invalid_transaction", "Settlement transaction has no signer account key.")
+        }
+        val signerKey = message.copyOfRange(accountKeyOffset, accountKeyOffset + ED25519_PUBLIC_KEY_BYTES)
+        if (!constantTimeEquals(signerKey, localPublicKey)) {
+            throw StreamingSessionException("signer_mismatch", "Settlement transaction signer does not match the local session delegate.")
+        }
+        return ParsedTransactionMessage(signatureOffset, message)
+    }
+
+    private fun readShortVec(bytes: ByteArray, offset: Int): ShortVecRead {
+        var value = 0
+        var shift = 0
+        var cursor = offset
+        while (cursor < bytes.size) {
+            val current = bytes[cursor].toInt() and 0xff
+            value = value or ((current and 0x7f) shl shift)
+            cursor += 1
+            if ((current and 0x80) == 0) return ShortVecRead(value, cursor)
+            shift += 7
+            if (shift > 21) break
+        }
+        throw StreamingSessionException("invalid_transaction", "Invalid Solana shortvec encoding.")
+    }
+
     private fun parseVoucher(voucherJson: String): JSONObject =
         try {
             JSONObject(voucherJson)
@@ -384,6 +755,14 @@ class StreamingSessionController(context: Context) {
         val trimmed = value.trim()
         if (!SESSION_ID_PATTERN.matches(trimmed)) {
             throw StreamingSessionException("invalid_session", "Invalid streaming session id.")
+        }
+        return trimmed
+    }
+
+    private fun requireSignerId(value: String): String {
+        val trimmed = value.trim()
+        if (!SIGNER_ID_PATTERN.matches(trimmed)) {
+            throw StreamingSessionException("invalid_signer", "Invalid streaming signer id.")
         }
         return trimmed
     }
@@ -463,8 +842,19 @@ class StreamingSessionController(context: Context) {
 
     private fun prefKey(sessionId: String): String = "$PREF_KEY_PREFIX$sessionId"
 
+    private fun signerPrefKey(signerId: String): String = "$SIGNER_PREF_KEY_PREFIX$signerId"
+
     private fun sha256Hex(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+
+    private fun hex(bytes: ByteArray): String =
+        bytes.joinToString("") { "%02x".format(it.toInt() and 0xff) }
+
+    private fun newSignerId(): String {
+        val bytes = ByteArray(18)
+        SecureRandom().nextBytes(bytes)
+        return "signer_${hex(bytes)}"
+    }
 
     private fun constantTimeEquals(a: ByteArray, b: ByteArray): Boolean {
         if (a.size != b.size) return false
@@ -504,12 +894,17 @@ class StreamingSessionController(context: Context) {
         "$" + value.setScale(2, RoundingMode.DOWN).toPlainString()
 
     private data class EncryptedSecret(val ivBase64: String, val ciphertextBase64: String)
+    private data class ShortVecRead(val value: Int, val nextOffset: Int)
+    private data class ParsedTransactionMessage(val signatureOffset: Int, val message: ByteArray)
 
     companion object {
         const val STREAMING_VOUCHER_SCHEMA = "streaming/voucher/0.1"
+        private const val SIGNER_RUNTIME_ANDROID = "android-native"
         private const val LOCAL_SESSION_SCHEMA = "agentic/android-streaming-session/1"
+        private const val LOCAL_SIGNER_SCHEMA = "agentic/android-streaming-signer/1"
         private const val PREFS_NAME = "AgenticStreamingSessions"
         private const val PREF_KEY_PREFIX = "session."
+        private const val SIGNER_PREF_KEY_PREFIX = "signer."
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"
         private const val KEY_ALIAS_PREFIX = "AgenticStreamingSession."
         private const val AES_GCM_TRANSFORMATION = "AES/GCM/NoPadding"
@@ -517,8 +912,10 @@ class StreamingSessionController(context: Context) {
         private const val ED25519_SEED_BYTES = 32
         private const val ED25519_PUBLIC_KEY_BYTES = 32
         private const val ED25519_SECRET_KEY_BYTES = 64
+        private const val ED25519_SIGNATURE_BYTES = 64
         private const val DEFAULT_TOKEN_DECIMALS = 6
         private val SESSION_ID_PATTERN = Regex("^[A-Za-z0-9_.:-]{1,160}$")
+        private val SIGNER_ID_PATTERN = Regex("^signer_[a-f0-9]{36}$")
         private val DECIMAL_AMOUNT_PATTERN = Regex("^(?:0|[1-9]\\d*)(?:\\.(\\d+))?$")
         private val ISO_FORMATS: ThreadLocal<List<SimpleDateFormat>> = object : ThreadLocal<List<SimpleDateFormat>>() {
             override fun initialValue(): List<SimpleDateFormat> {

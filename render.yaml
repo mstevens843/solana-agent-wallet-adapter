@@ -23,6 +23,10 @@ services:
         fromDatabase:
           name: agentic-postgres
           property: connectionString
+      - key: STREAMING_SESSION_ENCRYPTION_KEY
+        sync: false
+      - key: STREAMING_SETTLEMENT_FEE_PAYER_SECRET_KEY
+        sync: false
       - key: SESSION_SECRET
         generateValue: true
       - key: AGENTIC_PUBLIC_ORIGIN
@@ -104,9 +108,6 @@ services:
           name: agentic-postgres
           property: connectionString
 
-  # Phase 0 scaffolding — Phase 2B fills in materializeStreamingSettlements().
-  # Safe to leave running on production; the stub returns settled=0 with no
-  # side effects until streaming sessions ship.
   - type: cron
     name: agentic-streaming-settlement
     runtime: node
@@ -120,3 +121,7 @@ services:
         fromDatabase:
           name: agentic-postgres
           property: connectionString
+      - key: STREAMING_SESSION_ENCRYPTION_KEY
+        sync: false
+      - key: STREAMING_SETTLEMENT_FEE_PAYER_SECRET_KEY
+        sync: false

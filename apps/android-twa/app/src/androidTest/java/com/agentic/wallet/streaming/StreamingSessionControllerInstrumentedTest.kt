@@ -57,6 +57,43 @@ class StreamingSessionControllerInstrumentedTest {
         }
     }
 
+    @Test
+    fun preparedSignerBindsActivatesCachesDuplicatesAndRejectsOverCap() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val controller = StreamingSessionController(context)
+        val prepared = controller.prepareSessionSigner()
+        val signerId = prepared.getString("signerId")
+        val sessionId = "android-prepared-${System.currentTimeMillis()}"
+        val metadata = JSONObject()
+            .put("ephemeralSignerPubkey", prepared.getString("ephemeralSignerPubkey"))
+            .put("capAmount", "0.02")
+            .put("spentAmount", "0")
+            .put("remainingAmount", "0.02")
+            .put("tokenSymbol", "USDC")
+            .put("expiresAt", "2099-01-01T00:00:00.000Z")
+        try {
+            controller.bindPreparedSession(sessionId, signerId, metadata)
+            assertThrows(StreamingSessionException::class.java) {
+                controller.signVoucher(sessionId, voucher(sessionId, 0).toString())
+            }
+            controller.activateSession(sessionId)
+            val firstVoucher = voucher(sessionId, 1)
+            val first = controller.signVoucher(sessionId, firstVoucher.toString())
+            val cached = controller.signVoucher(sessionId, firstVoucher.toString())
+            assertEquals(first.getString("signature"), cached.getString("signature"))
+            assertTrue(cached.getBoolean("cached"))
+            assertThrows(StreamingSessionException::class.java) {
+                controller.signVoucher(sessionId, voucher(sessionId, 1).put("amount", "0.02").toString())
+            }
+            assertThrows(StreamingSessionException::class.java) {
+                controller.signVoucher(sessionId, voucher(sessionId, 2).put("amount", "0.02").toString())
+            }
+        } finally {
+            controller.revokeLocalSession(sessionId)
+            controller.revokeLocalSession(signerId)
+        }
+    }
+
     private fun deterministicKeypair(): Pair<String, ByteArray> {
         val seed = ByteArray(32) { index -> (index + 1).toByte() }
         val privateKey = Ed25519PrivateKeyParameters(seed, 0)

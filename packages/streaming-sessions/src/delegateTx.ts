@@ -9,10 +9,11 @@ import { PublicKey, TransactionMessage, VersionedTransaction, type TransactionIn
 import bs58 from 'bs58';
 
 import { StreamingInvalidInputError } from './errors.js';
-import { DEFAULT_TOKEN_DECIMALS, type StreamingCluster, type Voucher, type VoucherHash } from './types.js';
+import { type StreamingCluster, type Voucher, type VoucherHash } from './types.js';
 import { computeVoucherHash, parseTokenAmountToBaseUnits, tokenDecimalsFor } from './voucher.js';
 
-const MAX_SETTLEMENT_VOUCHERS_PER_TX = 10;
+export const MAX_SETTLEMENT_VOUCHERS_PER_TX = 10;
+export const SOLANA_PACKET_DATA_SIZE = 1232;
 const BLOCKHASH_BYTES = 32;
 
 export interface BuildApproveDelegateTxInput {
@@ -23,7 +24,7 @@ export interface BuildApproveDelegateTxInput {
   amount?: string;
   tokenDecimals?: number;
   cluster: StreamingCluster;
-  recentBlockhash?: string;
+  recentBlockhash: string;
   feePayerPubkey?: string;
   tokenProgramId?: string;
   allowOwnerOffCurve?: boolean;
@@ -33,7 +34,7 @@ export interface BuildRevokeDelegateTxInput {
   ownerPubkey: string;
   tokenMint: string;
   cluster: StreamingCluster;
-  recentBlockhash?: string;
+  recentBlockhash: string;
   feePayerPubkey?: string;
   tokenProgramId?: string;
   allowOwnerOffCurve?: boolean;
@@ -47,7 +48,7 @@ export interface BuildSettlementTxInput {
   feePayerPubkey: string;
   vouchers: readonly Voucher[];
   cluster: StreamingCluster;
-  recentBlockhash?: string;
+  recentBlockhash: string;
   tokenDecimals?: number;
   tokenProgramId?: string;
   allowOwnerOffCurve?: boolean;
@@ -68,8 +69,22 @@ export interface UnsignedDelegateTx {
   voucherHashes?: readonly VoucherHash[];
   totalAmount?: string;
   instructionCount: number;
+  serializedLength: number;
   batchIndex?: number;
   batchCount?: number;
+}
+
+interface BuiltUnsignedTx {
+  txBase64: string;
+  serializedLength: number;
+}
+
+interface PreparedSettlementTransfer {
+  instruction: TransactionInstruction;
+  voucher: Voucher;
+  voucherHash: VoucherHash;
+  amountBaseUnits: bigint;
+  destinationAta: string;
 }
 
 export function buildApproveDelegateTx(input: BuildApproveDelegateTxInput): UnsignedDelegateTx {
@@ -91,14 +106,14 @@ export function buildApproveDelegateTx(input: BuildApproveDelegateTxInput): Unsi
     tokenProgramId,
   );
   const feePayer = publicKeyFromString(input.feePayerPubkey ?? input.ownerPubkey, 'feePayerPubkey');
-  const txBase64 = buildUnsignedVersionedTxBase64({
+  const unsignedTx = buildUnsignedVersionedTx({
     feePayer,
     recentBlockhash: input.recentBlockhash,
     instructions: [instruction],
   });
 
   return {
-    txBase64,
+    txBase64: unsignedTx.txBase64,
     cluster: input.cluster,
     description: `Approve ${capAmount} tokens for streaming session delegate ${delegate.toBase58()}.`,
     kind: 'approve_delegate',
@@ -108,6 +123,7 @@ export function buildApproveDelegateTx(input: BuildApproveDelegateTxInput): Unsi
     sourceAta: sourceAta.toBase58(),
     totalAmount: capAmount,
     instructionCount: 1,
+    serializedLength: unsignedTx.serializedLength,
   };
 }
 
@@ -118,14 +134,14 @@ export function buildRevokeDelegateTx(input: BuildRevokeDelegateTxInput): Unsign
   const sourceAta = getAssociatedTokenAddressSync(mint, owner, input.allowOwnerOffCurve ?? false, tokenProgramId);
   const instruction = createRevokeInstruction(sourceAta, owner, [], tokenProgramId);
   const feePayer = publicKeyFromString(input.feePayerPubkey ?? input.ownerPubkey, 'feePayerPubkey');
-  const txBase64 = buildUnsignedVersionedTxBase64({
+  const unsignedTx = buildUnsignedVersionedTx({
     feePayer,
     recentBlockhash: input.recentBlockhash,
     instructions: [instruction],
   });
 
   return {
-    txBase64,
+    txBase64: unsignedTx.txBase64,
     cluster: input.cluster,
     description: `Revoke streaming session delegate for ${sourceAta.toBase58()}.`,
     kind: 'revoke_delegate',
@@ -133,6 +149,7 @@ export function buildRevokeDelegateTx(input: BuildRevokeDelegateTxInput): Unsign
     tokenMint: mint.toBase58(),
     sourceAta: sourceAta.toBase58(),
     instructionCount: 1,
+    serializedLength: unsignedTx.serializedLength,
   };
 }
 
@@ -149,33 +166,22 @@ export function buildSettlementTx(input: BuildSettlementTxInput): UnsignedDelega
     ? publicKeyFromString(input.sourceAta, 'sourceAta')
     : getAssociatedTokenAddressSync(mint, owner, input.allowOwnerOffCurve ?? false, tokenProgramId);
   const decimals = tokenDecimalsFor(input.tokenDecimals);
-  const batches = chunk(input.vouchers, MAX_SETTLEMENT_VOUCHERS_PER_TX);
-
-  return batches.map((batch, batchIndex) => {
-    let totalBaseUnits = 0n;
-    const destinationAtas: string[] = [];
-    const voucherHashes: VoucherHash[] = [];
-    const instructions = batch.map((voucher, voucherIndex) => {
-      if (voucher.sessionId !== input.vouchers[0]?.sessionId) {
-        throw new StreamingInvalidInputError('all settlement vouchers must use the same sessionId.');
-      }
-      const amountBaseUnits = parseTokenAmountToBaseUnits(voucher.amount, decimals, {
-        field: `vouchers[${batchIndex * MAX_SETTLEMENT_VOUCHERS_PER_TX + voucherIndex}].amount`,
-      });
-      totalBaseUnits += amountBaseUnits;
-      const recipient = publicKeyFromString(
-        voucher.recipient,
-        `vouchers[${batchIndex * MAX_SETTLEMENT_VOUCHERS_PER_TX + voucherIndex}].recipient`,
-      );
-      const destinationAta = getAssociatedTokenAddressSync(
-        mint,
-        recipient,
-        input.allowOwnerOffCurve ?? false,
-        tokenProgramId,
-      );
-      destinationAtas.push(destinationAta.toBase58());
-      voucherHashes.push(computeVoucherHash(voucher));
-      return createTransferCheckedInstruction(
+  const firstSessionId = input.vouchers[0]?.sessionId;
+  const preparedTransfers = input.vouchers.map((voucher, voucherIndex): PreparedSettlementTransfer => {
+    if (voucher.sessionId !== firstSessionId) {
+      throw new StreamingInvalidInputError('all settlement vouchers must use the same sessionId.');
+    }
+    const amountBaseUnits = parseTokenAmountToBaseUnits(voucher.amount, decimals, {
+      field: `vouchers[${voucherIndex}].amount`,
+    });
+    const recipient = publicKeyFromString(voucher.recipient, `vouchers[${voucherIndex}].recipient`);
+    const destinationAta = getAssociatedTokenAddressSync(
+      mint,
+      recipient,
+      input.allowOwnerOffCurve ?? false,
+      tokenProgramId,
+    );
+    const instruction = createTransferCheckedInstruction(
         sourceAta,
         mint,
         destinationAta,
@@ -184,46 +190,65 @@ export function buildSettlementTx(input: BuildSettlementTxInput): UnsignedDelega
         decimals,
         [],
         tokenProgramId,
-      );
-    });
+    );
+    return {
+      instruction,
+      voucher,
+      voucherHash: computeVoucherHash(voucher, { tokenDecimals: decimals }),
+      amountBaseUnits,
+      destinationAta: destinationAta.toBase58(),
+    };
+  });
+  const batches = packSettlementTransfers({
+    transfers: preparedTransfers,
+    feePayer,
+    recentBlockhash: input.recentBlockhash,
+  });
 
-    const txBase64 = buildUnsignedVersionedTxBase64({
+  return batches.map((batch, batchIndex) => {
+    const totalBaseUnits = batch.transfers.reduce((sum, transfer) => sum + transfer.amountBaseUnits, 0n);
+    const unsignedTx = buildUnsignedVersionedTx({
       feePayer,
       recentBlockhash: input.recentBlockhash,
-      instructions,
+      instructions: batch.transfers.map((transfer) => transfer.instruction),
     });
 
     return {
-      txBase64,
+      txBase64: unsignedTx.txBase64,
       cluster: input.cluster,
-      description: `Settle ${batch.length} streaming voucher${batch.length === 1 ? '' : 's'}.`,
+      description: `Settle ${batch.transfers.length} streaming voucher${batch.transfers.length === 1 ? '' : 's'}.`,
       kind: 'settlement',
       requiredSigners: uniquePubkeys([feePayer, delegate]),
       tokenMint: mint.toBase58(),
       tokenDecimals: decimals,
       sourceAta: sourceAta.toBase58(),
-      destinationAtas,
-      voucherHashes,
+      destinationAtas: batch.transfers.map((transfer) => transfer.destinationAta),
+      voucherHashes: batch.transfers.map((transfer) => transfer.voucherHash),
       totalAmount: formatBaseUnitsForTx(totalBaseUnits, decimals),
-      instructionCount: instructions.length,
+      instructionCount: batch.transfers.length,
+      serializedLength: unsignedTx.serializedLength,
       batchIndex,
       batchCount: batches.length,
     };
   });
 }
 
-function buildUnsignedVersionedTxBase64(input: {
+function buildUnsignedVersionedTx(input: {
   feePayer: PublicKey;
-  recentBlockhash?: string;
+  recentBlockhash: string;
   instructions: TransactionInstruction[];
-}): string {
+}): BuiltUnsignedTx {
   const recentBlockhash = requireRecentBlockhash(input.recentBlockhash);
   const message = new TransactionMessage({
     payerKey: input.feePayer,
     recentBlockhash,
     instructions: input.instructions,
   }).compileToV0Message();
-  return bytesToBase64(new VersionedTransaction(message).serialize());
+  const serialized = new VersionedTransaction(message).serialize();
+  return {
+    txBase64: bytesToBase64(serialized),
+    serializedLength: serialized.length,
+  };
 }
 
 function resolveApproveAmount(input: BuildApproveDelegateTxInput): string {
@@ -236,7 +261,7 @@ function resolveApproveAmount(input: BuildApproveDelegateTxInput): string {
   return input.capAmount ?? input.amount ?? '';
 }
 
-function requireRecentBlockhash(value: string | undefined): string {
+function requireRecentBlockhash(value: string): string {
   if (typeof value !== 'string' || value.trim().length === 0) {
     throw new StreamingInvalidInputError('recentBlockhash is required to build an unsigned transaction.');
   }
@@ -263,12 +288,50 @@ function publicKeyFromString(value: string, field: string): PublicKey {
   }
 }
 
-function chunk<T>(values: readonly T[], size: number): T[][] {
-  const chunks: T[][] = [];
-  for (let index = 0; index < values.length; index += size) {
-    chunks.push(values.slice(index, index + size));
+function packSettlementTransfers(input: {
+  transfers: readonly PreparedSettlementTransfer[];
+  feePayer: PublicKey;
+  recentBlockhash: string;
+}): Array<{ transfers: PreparedSettlementTransfer[] }> {
+  const batches: Array<{ transfers: PreparedSettlementTransfer[] }> = [];
+  let current: PreparedSettlementTransfer[] = [];
+
+  for (const transfer of input.transfers) {
+    const candidate = [...current, transfer];
+    const candidateTooLargeByCount = candidate.length > MAX_SETTLEMENT_VOUCHERS_PER_TX;
+    const candidateTooLargeBySize = !candidateTooLargeByCount
+      && serializedLengthForTransfers(candidate, input.feePayer, input.recentBlockhash) > SOLANA_PACKET_DATA_SIZE;
+
+    if (candidateTooLargeByCount || candidateTooLargeBySize) {
+      if (current.length === 0) {
+        throw new StreamingInvalidInputError('single settlement voucher transaction exceeds Solana packet size.');
+      }
+      batches.push({ transfers: current });
+      current = [transfer];
+      if (serializedLengthForTransfers(current, input.feePayer, input.recentBlockhash) > SOLANA_PACKET_DATA_SIZE) {
+        throw new StreamingInvalidInputError('single settlement voucher transaction exceeds Solana packet size.');
+      }
+    } else {
+      current = candidate;
+    }
   }
-  return chunks;
+
+  if (current.length > 0) {
+    batches.push({ transfers: current });
+  }
+  return batches;
+}
+
+function serializedLengthForTransfers(
+  transfers: readonly PreparedSettlementTransfer[],
+  feePayer: PublicKey,
+  recentBlockhash: string,
+): number {
+  return buildUnsignedVersionedTx({
+    feePayer,
+    recentBlockhash,
+    instructions: transfers.map((transfer) => transfer.instruction),
+  }).serializedLength;
 }
 
 function uniquePubkeys(pubkeys: readonly PublicKey[]): string[] {

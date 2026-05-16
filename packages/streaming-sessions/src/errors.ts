@@ -9,8 +9,7 @@ export type StreamingErrorCode =
   | 'voucher_invalid_signature'
   | 'voucher_replay'
   | 'voucher_exceeds_remaining'
-  | 'voucher_recipient_not_allowed'
-  | 'not_implemented';
+  | 'voucher_recipient_not_allowed';
 
 export class StreamingInvalidInputError extends Error {
   readonly code: StreamingErrorCode = 'invalid_input';
@@ -97,13 +96,5 @@ export class VoucherRecipientNotAllowedError extends Error {
   constructor(message = 'Voucher recipient is not in the session allowlist.') {
     super(message);
     this.name = 'VoucherRecipientNotAllowedError';
-  }
-}
-
-export class StreamingNotImplementedError extends Error {
-  readonly code: StreamingErrorCode = 'not_implemented';
-  constructor(symbol: string) {
-    super(`${symbol} is not implemented yet (Phase 2A).`);
-    this.name = 'StreamingNotImplementedError';
   }
 }

@@ -6,9 +6,7 @@ import {
 } from '../index.js';
 import {
   MppParseError,
-  MppVerifyError,
   parseMppChallenge,
-  verifyMppChallenge,
   type MppChallenge,
 } from '@solana-agent-wallet-adapter/mpp-adapter';
 
@@ -45,16 +43,8 @@ export function validateCreateMppRequest(body: unknown, path = '$'): MppCreate {
   let challenge: MppChallenge;
   try {
     challenge = parseMppChallenge(body.challenge);
-    verifyMppChallenge(challenge);
   } catch (err) {
     if (err instanceof MppParseError) {
-      throw new WorkflowValidationError(
-        `invalid_mpp_challenge:${err.code}`,
-        err.message,
-        err.path ?? `${path}.challenge`,
-      );
-    }
-    if (err instanceof MppVerifyError) {
       throw new WorkflowValidationError(
         `invalid_mpp_challenge:${err.code}`,
         err.message,

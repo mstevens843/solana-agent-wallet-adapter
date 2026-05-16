@@ -1061,8 +1061,13 @@ class MainActivity : ComponentActivity() {
                 "ask",
             )
             private val ALLOWED_STREAMING_METHODS = setOf(
+                "status",
+                "capabilities",
+                "prepareSessionSigner",
                 "createSession",
+                "activateSession",
                 "signVoucher",
+                "signSettlementTx",
                 "revokeLocalSession",
             )
             private const val MAX_PAYLOAD_CHARS = 2_000_000

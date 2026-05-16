@@ -13,6 +13,7 @@ import {
   getSessionsState,
   handleStreamingApprovalStatus,
   loadSessions,
+  openSessionDetail,
   requestRevokeSelectedSession,
   selectSession,
   selectedDetail,
@@ -29,7 +30,7 @@ import {
   type SessionsStatusFilter,
 } from '../sessionState.js';
 import { addStreamingApprovalCompletedListener } from '../streamingApprovalEvents.js';
-import { getConnectedAddress } from '../walletState.js';
+import { getConnectedAddress, getConnectedCluster } from '../walletState.js';
 
 const FILTERS: readonly SessionsStatusFilter[] = ['active', 'expired', 'settled', 'revoked'];
 const ROOT_SELECTOR = '[data-sessions-root]';
@@ -291,7 +292,7 @@ export function detailHtml(): string {
   }
   const detail = selectedDetail(snapshot);
   const vouchers = detail?.vouchers ?? [];
-  const revokeDisabled = snapshot.busy === 'revoke' || !(session.status === 'active' || session.status === 'pending');
+  const revokeDisabled = snapshot.busy === 'revoke' || session.status === 'revoked' || session.status === 'settled';
   return `
     <section class="sessions-detail dev-tab-panel" aria-label="Streaming session detail">
       <div class="sessions-detail-head">
@@ -366,6 +367,7 @@ function createModalHtml(): string {
   if (!snapshot.createModalOpen) return '';
   const draft = snapshot.createDraft;
   const formError = createFieldError('form');
+  const cluster = getConnectedCluster() || 'mainnet-beta';
   return `
     <div class="sessions-modal-backdrop" data-sessions-create-modal>
       <form class="sessions-modal" onsubmit="return false;">
@@ -392,6 +394,10 @@ function createModalHtml(): string {
           <input type="number" min="1" max="60" step="1" value="${escapeHtml(draft.durationMinutes)}" data-sessions-create-field="durationMinutes" />
           ${createFieldError('durationMinutes') ? `<em>${escapeHtml(createFieldError('durationMinutes'))}</em>` : ''}
         </label>
+        <div class="sessions-modal-context">
+          <span>Cluster</span>
+          <strong>${escapeHtml(cluster)}</strong>
+        </div>
         <label>
           <span>Recipient allowlist</span>
           <textarea data-sessions-create-field="recipientAllowlist" rows="3" placeholder="Optional, comma or line separated">${escapeHtml(draft.recipientAllowlist)}</textarea>
@@ -592,6 +598,7 @@ export const __sessionsForTests = {
   filteredCount,
   progressPercent,
   renderSessionsPanel,
+  openSessionDetail,
   sessionRowHtml,
   validateCreateDraft,
 };

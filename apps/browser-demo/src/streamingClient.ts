@@ -38,11 +38,15 @@ export interface CreateSessionRequestBody {
   recipientAllowlist?: readonly string[];
   cluster?: WorkflowCluster;
   tokenDecimals?: number;
+  ephemeralSignerPubkey?: string;
+  signerRuntime?: 'server' | 'android-native';
+  metadata?: Record<string, unknown>;
 }
 
 export interface CreateSessionResponse {
   session: StreamingSessionRecord;
   approveTx: UnsignedStreamingTx;
+  ephemeralSignerPubkey?: string;
 }
 
 export interface StreamingSessionDetail {
@@ -55,6 +59,7 @@ export interface StreamingSessionDetail {
 
 export interface SubmitVoucherBody {
   voucher: {
+    schema?: string;
     sessionId: string;
     nonce: string;
     amount: string;
@@ -68,6 +73,13 @@ export interface SubmitVoucherResponse {
   accepted: boolean;
   remaining: string;
   voucher?: StreamingVoucherRecord;
+}
+
+export interface RelayVoucherBody {
+  amount: string;
+  recipient: string;
+  nonce?: string;
+  issuedAt?: string;
 }
 
 export interface RevokeSessionResponse {
@@ -91,6 +103,7 @@ export interface SignedStreamingTxResponse {
 }
 
 type JsonRecord = Record<string, unknown>;
+export type StreamingSessionListFilter = StreamingSessionStatus | 'all';
 
 export async function createStreamingSession(body: CreateSessionRequestBody): Promise<CreateSessionResponse> {
   const payload = await streamingRequest('/api/streaming/sessions', {
@@ -100,11 +113,18 @@ export async function createStreamingSession(body: CreateSessionRequestBody): Pr
   const record = asRecord(payload, 'create session response');
   const session = parseSession(record.session ?? record, 'session');
   const tx = parseUnsignedTx(record.approveTx ?? record.approveTransaction ?? record.tx ?? record.transaction, 'approveTx', session);
-  return { session, approveTx: tx };
+  return {
+    session,
+    approveTx: tx,
+    ...(stringField(record.ephemeralSignerPubkey) ? { ephemeralSignerPubkey: stringField(record.ephemeralSignerPubkey) } : {}),
+  };
 }
 
-export async function listStreamingSessions(): Promise<StreamingSessionRecord[]> {
-  const payload = await streamingRequest('/api/streaming/sessions', { method: 'GET' });
+export async function listStreamingSessions(
+  status: StreamingSessionListFilter = 'active',
+): Promise<StreamingSessionRecord[]> {
+  const query = status === 'active' ? '' : `?${new URLSearchParams({ status }).toString()}`;
+  const payload = await streamingRequest(`/api/streaming/sessions${query}`, { method: 'GET' });
   if (Array.isArray(payload)) {
     return payload.map((item, index) => parseSession(item, `sessions[${index}]`));
   }
@@ -130,6 +150,22 @@ export async function submitStreamingVoucher(
     body: JSON.stringify(body),
   });
   const record = asRecord(payload, 'voucher response');
+  return {
+    accepted: record.accepted === true,
+    remaining: typeof record.remaining === 'string' ? record.remaining : '',
+    ...(record.voucher ? { voucher: parseVoucher(record.voucher, 'voucher') } : {}),
+  };
+}
+
+export async function submitStreamingVoucherRelay(
+  sessionId: string,
+  body: RelayVoucherBody,
+): Promise<SubmitVoucherResponse> {
+  const payload = await streamingRequest(`/api/streaming/sessions/${encodeURIComponent(sessionId)}/voucher-relay`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+  const record = asRecord(payload, 'voucher relay response');
   return {
     accepted: record.accepted === true,
     remaining: typeof record.remaining === 'string' ? record.remaining : '',

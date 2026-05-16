@@ -10,9 +10,16 @@ import {
   listStreamingSessions,
   revokeStreamingSession,
   StreamingApiError,
+  submitStreamingVoucher,
   type CreateSessionRequestBody,
+  type SubmitVoucherResponse,
   type StreamingSessionDetail,
 } from './streamingClient.js';
+import {
+  callStreamingBridge,
+  hasNativeStreamingBridge,
+  type BridgeEnvelope,
+} from './androidBridgeShim.js';
 import {
   dispatchStreamingApprovalRequested,
   type StreamingApprovalOperation,
@@ -53,6 +60,7 @@ export interface SessionsState {
 export const DEFAULT_USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 export const SESSIONS_DETAIL_POLL_MS = 5_000;
 export const VOUCHERS_PER_PAGE = 8;
+export const MAX_RECIPIENT_ALLOWLIST = 64;
 
 const SOLANA_ADDRESS_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const DECIMAL_AMOUNT_REGEX = /^(?:(?:0|[1-9]\d*)(?:\.\d{1,6})?)$/;
@@ -162,6 +170,8 @@ export function validateCreateDraft(
   const allowlist = parseAllowlistDraft(draft.recipientAllowlist);
   if (allowlist.invalid.length > 0) {
     errors.recipientAllowlist = `Invalid recipient address: ${allowlist.invalid[0]}`;
+  } else if (allowlist.valid.length > MAX_RECIPIENT_ALLOWLIST) {
+    errors.recipientAllowlist = `Use ${MAX_RECIPIENT_ALLOWLIST} or fewer recipient addresses.`;
   }
 
   if (Object.keys(errors).length > 0) return { valid: false, errors };
@@ -186,7 +196,7 @@ export async function loadSessions(force = false): Promise<void> {
   state.errorMessage = '';
   notify();
   try {
-    const sessions = await listStreamingSessions();
+    const sessions = await listStreamingSessions('all');
     state.sessions = sortSessions(sessions);
     state.lastFetchedAt = Date.now();
     state.status = 'loaded';
@@ -210,6 +220,27 @@ export async function selectSession(sessionId: string): Promise<void> {
   state.voucherPage = 0;
   notify();
   await refreshSelectedSession();
+}
+
+export async function openSessionDetail(sessionId: string): Promise<void> {
+  if (!sessionId) return;
+  state.selectedSessionId = sessionId;
+  state.voucherPage = 0;
+  state.errorMessage = '';
+  notify();
+  if (!state.sessions.some((session) => session.id === sessionId)) {
+    await loadSessions(true);
+    state.selectedSessionId = sessionId;
+    state.voucherPage = 0;
+    notify();
+  }
+  await refreshSelectedSession();
+  const session = state.details[sessionId]?.session ??
+    state.sessions.find((candidate) => candidate.id === sessionId);
+  if (session) {
+    state.filter = filterForSessionStatus(session.status);
+    notify();
+  }
 }
 
 export async function refreshSelectedSession(): Promise<void> {
@@ -240,7 +271,28 @@ export async function submitCreateSession(): Promise<boolean> {
   state.notice = null;
   notify();
   try {
-    const result = await createStreamingSession(validation.body);
+    const nativeSigner = await prepareNativeStreamingSigner(validation.body);
+    let result: Awaited<ReturnType<typeof createStreamingSession>>;
+    try {
+      result = await createStreamingSession({
+        ...validation.body,
+        ...(nativeSigner ? {
+          ephemeralSignerPubkey: nativeSigner.ephemeralSignerPubkey,
+          signerRuntime: 'android-native',
+          metadata: {
+            signerRuntime: 'android-native',
+          },
+        } : {}),
+      });
+    } catch (err) {
+      if (nativeSigner) {
+        void revokeNativeStreamingSession(nativeSigner.signerId);
+      }
+      throw err;
+    }
+    if (nativeSigner) {
+      await bindNativeStreamingSession(result.session, nativeSigner.signerId, validation.body);
+    }
     state.sessions = mergeSessionRecords([result.session], state.sessions);
     state.details = {
       ...state.details,
@@ -300,6 +352,54 @@ export async function requestRevokeSelectedSession(): Promise<boolean> {
   }
 }
 
+export async function submitStreamingVoucherSpend(input: {
+  sessionId: string;
+  amount: string;
+  recipient: string;
+  nonce?: string;
+  issuedAt?: string;
+}): Promise<SubmitVoucherResponse> {
+  const detail = state.details[input.sessionId] ?? await getStreamingSession(input.sessionId);
+  const issuedAt = input.issuedAt ?? new Date().toISOString();
+  const voucher = {
+    schema: 'streaming/voucher/0.1',
+    sessionId: input.sessionId,
+    nonce: input.nonce ?? `voucher_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`,
+    amount: input.amount,
+    recipient: input.recipient,
+    issuedAt,
+  };
+  const envelope = await callStreamingBridge('signVoucher', {
+    sessionId: input.sessionId,
+    voucher,
+  });
+  if (!hasNativeStreamingBridge()) {
+    const relayed = envelope.result as SubmitVoucherResponse | undefined;
+    if (relayed && typeof relayed === 'object') return relayed;
+  }
+  const result = bridgeResult(envelope, 'signVoucher');
+  const signature = stringField(result.signature);
+  if (!signature) {
+    throw new StreamingApiError('invalid_response', 'Native streaming signer did not return a voucher signature.');
+  }
+  const submitted = await submitStreamingVoucher(input.sessionId, {
+    voucher: {
+      ...voucher,
+      signature,
+    },
+  });
+  state.details = {
+    ...state.details,
+    [input.sessionId]: {
+      ...detail,
+      session: detail.session,
+      vouchers: submitted.voucher ? [...detail.vouchers, submitted.voucher] : detail.vouchers,
+    },
+  };
+  await refreshSelectedSession();
+  return submitted;
+}
+
 export function handleStreamingApprovalStatus(input: {
   sessionId: string;
   operation: StreamingApprovalOperation;
@@ -325,6 +425,11 @@ export function handleStreamingApprovalStatus(input: {
         ? 'Grant transaction submitted. Refreshing session.'
         : 'Revoke transaction submitted. Refreshing session.',
     };
+    if (input.operation === 'grant' && isNativeSignerSession(input.sessionId)) {
+      void activateNativeStreamingSession(input.sessionId);
+    } else if (input.operation === 'revoke' && isNativeSignerSession(input.sessionId)) {
+      void revokeNativeStreamingSession(input.sessionId);
+    }
     state.selectedSessionId = input.sessionId;
     void refreshSelectedSession();
   }
@@ -371,6 +476,88 @@ export function __resetSessionsStateForTests(next: Partial<SessionsState> = {}):
   notify();
 }
 
+async function prepareNativeStreamingSigner(
+  body: CreateSessionRequestBody,
+): Promise<{ signerId: string; ephemeralSignerPubkey: string } | null> {
+  if (!hasNativeStreamingBridge()) return null;
+  const envelope = await callStreamingBridge('prepareSessionSigner', {
+    tokenMint: body.tokenMint,
+    capAmount: body.capAmount,
+    expiresAt: body.expiresAt,
+    tokenDecimals: body.tokenDecimals,
+  });
+  const result = bridgeResult(envelope, 'prepareSessionSigner');
+  const signerId = stringField(result.signerId);
+  const ephemeralSignerPubkey = stringField(result.ephemeralSignerPubkey);
+  if (!signerId || !ephemeralSignerPubkey) {
+    throw new StreamingApiError('invalid_response', 'Native streaming signer did not return signerId and ephemeralSignerPubkey.');
+  }
+  return { signerId, ephemeralSignerPubkey };
+}
+
+async function bindNativeStreamingSession(
+  session: StreamingSessionRecord,
+  signerId: string,
+  body: CreateSessionRequestBody,
+): Promise<void> {
+  if (!hasNativeStreamingBridge()) return;
+  bridgeResult(await callStreamingBridge('createSession', {
+    sessionId: session.id,
+    signerId,
+    ephemeralSignerPubkey: session.ephemeralSignerPubkey,
+    expiresAt: session.expiresAt,
+    capAmount: session.capAmount,
+    spentAmount: session.spentAmount,
+    remainingAmount: remainingAmount(session),
+    tokenDecimals: body.tokenDecimals,
+    tokenSymbol: 'USDC',
+    ...(session.recipientAllowlist ? { recipientAllowlist: session.recipientAllowlist } : {}),
+  }), 'createSession');
+}
+
+async function activateNativeStreamingSession(sessionId: string): Promise<void> {
+  if (!hasNativeStreamingBridge()) return;
+  try {
+    bridgeResult(await callStreamingBridge('activateSession', { sessionId }), 'activateSession');
+  } catch (err) {
+    state.notice = { tone: 'error', message: friendlyStreamingError(err) };
+    notify();
+  }
+}
+
+async function revokeNativeStreamingSession(sessionIdOrSignerId: string): Promise<void> {
+  if (!hasNativeStreamingBridge()) return;
+  try {
+    bridgeResult(await callStreamingBridge('revokeLocalSession', { sessionId: sessionIdOrSignerId }), 'revokeLocalSession');
+  } catch {
+    // Local cleanup should not mask the server-side session/revoke result.
+  }
+}
+
+function bridgeResult(envelope: BridgeEnvelope, method: string): Record<string, unknown> {
+  if (!envelope.ok) {
+    const message = envelope.error?.message ?? envelope.message ?? `Native streaming ${method} failed.`;
+    throw new StreamingApiError('network_error', message);
+  }
+  const result = envelope.result;
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    throw new StreamingApiError('invalid_response', `Native streaming ${method} returned no result.`);
+  }
+  return result as Record<string, unknown>;
+}
+
+function remainingAmount(session: StreamingSessionRecord): string {
+  const cap = Number(session.capAmount);
+  const spent = Number(session.spentAmount);
+  if (!Number.isFinite(cap) || !Number.isFinite(spent)) return session.capAmount;
+  return Math.max(0, cap - spent).toFixed(6).replace(/\.?0+$/, '');
+}
+
+function isNativeSignerSession(sessionId: string): boolean {
+  const session = state.details[sessionId]?.session ?? state.sessions.find((candidate) => candidate.id === sessionId);
+  return session?.metadata?.signerRuntime === 'android-native';
+}
+
 function queueStreamingApproval(
   operation: StreamingApprovalOperation,
   session: StreamingSessionRecord,
@@ -408,6 +595,10 @@ function statusRank(status: StreamingSessionRecord['status']): number {
   if (status === 'expired') return 1;
   if (status === 'revoked') return 2;
   return 3;
+}
+
+function filterForSessionStatus(status: StreamingSessionRecord['status']): SessionsStatusFilter {
+  return status === 'pending' ? 'active' : status;
 }
 
 function mergeSessionRecords(
@@ -475,6 +666,10 @@ function friendlyStreamingError(err: unknown): string {
 
 function shortId(id: string): string {
   return id.length > 12 ? `${id.slice(0, 6)}...${id.slice(-4)}` : id;
+}
+
+function stringField(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
 }
 
 function notify(): void {

@@ -51,6 +51,12 @@ describe('mpp-adapter', () => {
     expect(parseMppChallenge(JSON.stringify(challenge())).merchant?.name).toBe('Acme');
   });
 
+  it('enforces the 32 KiB default challenge size cap', () => {
+    expect(() =>
+      parseMppChallenge(JSON.stringify(challenge({ nonce: 'n'.repeat(33 * 1024) }))),
+    ).toThrowError(MppParseError);
+  });
+
   it('rejects forbidden secrets before structural validation', () => {
     expect(() => parseMppChallenge({ ...challenge(), privateKey: 'nope' })).toThrowError(MppParseError);
     try {
@@ -69,6 +75,9 @@ describe('mpp-adapter', () => {
   it('verify rejects unsupported rails and mint allowlist misses', () => {
     expect(() =>
       verifyMppChallenge(challenge({ paymentMethods: [] }), { clockNow: NOW }),
+    ).toThrowError(MppVerifyError);
+    expect(() =>
+      verifyMppChallenge(challenge(), { clockNow: NOW, allowedRails: ['solana-sol'] }),
     ).toThrowError(MppVerifyError);
     try {
       verifyMppChallenge(challenge(), { clockNow: NOW, allowedMints: ['DifferentMint11111111111111111111111111111'] });

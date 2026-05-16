@@ -58,6 +58,10 @@ export interface ValidateVoucherResult {
   remainingAmount: string;
 }
 
+export interface VoucherValidationOptions {
+  tokenDecimals?: number;
+}
+
 interface CanonicalVoucherPayload {
   schema: typeof STREAMING_VOUCHER_SCHEMA;
   sessionId: string;
@@ -93,9 +97,9 @@ export function signVoucher(keypair: EphemeralKeypair, input: SignVoucherInput):
     recipient: requireNonEmptyString(input.recipient, 'recipient'),
     issuedAt,
   };
-  parseTokenAmountToBaseUnits(voucher.amount, input.tokenDecimals, { field: 'amount' });
+  validateVoucherPayload(voucher, { tokenDecimals: input.tokenDecimals });
 
-  const digest = voucherDigest(voucher);
+  const digest = voucherDigest(voucher, { tokenDecimals: input.tokenDecimals });
   const signature = nacl.sign.detached(digest, secretKey);
   return {
     ...voucher,
@@ -103,18 +107,22 @@ export function signVoucher(keypair: EphemeralKeypair, input: SignVoucherInput):
   };
 }
 
-export function verifyVoucher(voucher: Voucher, ephemeralPublicKey: string): boolean {
+export function verifyVoucher(
+  voucher: Voucher,
+  ephemeralPublicKey: string,
+  opts: VoucherValidationOptions = {},
+): boolean {
   try {
     const publicKey = decodeFixedBase58(ephemeralPublicKey, ED25519_PUBLIC_KEY_BYTES, 'ephemeralPublicKey');
     const signature = decodeFixedBase58(voucher.signature, ED25519_SIGNATURE_BYTES, 'signature');
-    return nacl.sign.detached.verify(voucherDigest(voucher), signature, publicKey);
+    return nacl.sign.detached.verify(voucherDigest(voucher, opts), signature, publicKey);
   } catch {
     return false;
   }
 }
 
-export function computeVoucherHash(voucher: Voucher): VoucherHash {
-  return bytesToHex(voucherDigest(voucher));
+export function computeVoucherHash(voucher: Voucher, opts: VoucherValidationOptions = {}): VoucherHash {
+  return bytesToHex(voucherDigest(voucher, opts));
 }
 
 export function validateVoucher(input: ValidateVoucherInput): ValidateVoucherResult {
@@ -147,14 +155,15 @@ export function validateVoucher(input: ValidateVoucherInput): ValidateVoucherRes
   if (input.usedNonces?.has(voucher.nonce)) {
     throw new VoucherReplayError(`Voucher nonce ${voucher.nonce} has already been used.`);
   }
+  for (const [index, recipient] of (grant.recipientAllowlist ?? []).entries()) {
+    requireSolanaPublicKeyString(recipient, `grant.recipientAllowlist[${index}]`);
+  }
   if (grant.recipientAllowlist && !grant.recipientAllowlist.includes(voucher.recipient)) {
     throw new VoucherRecipientNotAllowedError(`Voucher recipient ${voucher.recipient} is not allowed.`);
   }
-  if (!verifyVoucher(voucher, grant.ephemeralSignerPubkey)) {
-    throw new VoucherInvalidSignatureError();
-  }
 
   const decimals = tokenDecimalsFor(grant.tokenDecimals);
+  requireSolanaPublicKeyString(grant.ephemeralSignerPubkey, 'grant.ephemeralSignerPubkey');
   const amountBaseUnits = parseTokenAmountToBaseUnits(voucher.amount, decimals, { field: 'voucher.amount' });
   const capBaseUnits = parseTokenAmountToBaseUnits(grant.capAmount, decimals, { field: 'grant.capAmount' });
   const spentBaseUnits = parseTokenAmountToBaseUnits(grant.spentAmount, decimals, {
@@ -165,9 +174,12 @@ export function validateVoucher(input: ValidateVoucherInput): ValidateVoucherRes
   if (nextSpent > capBaseUnits) {
     throw new VoucherExceedsRemainingError();
   }
+  if (!verifyVoucher(voucher, grant.ephemeralSignerPubkey, { tokenDecimals: decimals })) {
+    throw new VoucherInvalidSignatureError();
+  }
 
   return {
-    voucherHash: computeVoucherHash(voucher),
+    voucherHash: computeVoucherHash(voucher, { tokenDecimals: decimals }),
     amountBaseUnits,
     capBaseUnits,
     spentBaseUnits,
@@ -247,22 +259,29 @@ export function tokenDecimalsFor(decimals: number | undefined): number {
   return value;
 }
 
-function voucherDigest(voucher: Omit<Voucher, 'signature'>): Uint8Array {
-  return sha256(utf8ToBytes(canonicalize(canonicalVoucherPayload(voucher))));
+function voucherDigest(voucher: Omit<Voucher, 'signature'>, opts: VoucherValidationOptions = {}): Uint8Array {
+  return sha256(utf8ToBytes(canonicalize(validateVoucherPayload(voucher, opts))));
 }
 
-function canonicalVoucherPayload(voucher: Omit<Voucher, 'signature'>): CanonicalVoucherPayload {
+function validateVoucherPayload(
+  voucher: Omit<Voucher, 'signature'>,
+  opts: VoucherValidationOptions = {},
+): CanonicalVoucherPayload {
   if (voucher.schema !== STREAMING_VOUCHER_SCHEMA) {
     throw new StreamingInvalidSchemaError(`Voucher schema must be ${STREAMING_VOUCHER_SCHEMA}.`);
   }
   const issuedAt = requireNonEmptyString(voucher.issuedAt, 'issuedAt');
   requireIsoTimestamp(issuedAt, 'issuedAt');
+  const recipient = requireNonEmptyString(voucher.recipient, 'recipient');
+  requireSolanaPublicKeyString(recipient, 'recipient');
+  const amount = requireNonEmptyString(voucher.amount, 'amount');
+  parseTokenAmountToBaseUnits(amount, opts.tokenDecimals, { field: 'amount' });
   return {
     schema: STREAMING_VOUCHER_SCHEMA,
     sessionId: requireNonEmptyString(voucher.sessionId, 'sessionId'),
     nonce: requireNonEmptyString(voucher.nonce, 'nonce'),
-    amount: requireNonEmptyString(voucher.amount, 'amount'),
-    recipient: requireNonEmptyString(voucher.recipient, 'recipient'),
+    amount,
+    recipient,
     issuedAt,
   };
 }
@@ -292,6 +311,10 @@ function decodeFixedBase58(value: string, length: number, field: string): Uint8A
     throw new StreamingInvalidPublicKeyError(`${field} must decode to ${length} bytes; got ${decoded.length}.`);
   }
   return decoded;
+}
+
+function requireSolanaPublicKeyString(value: string, field: string): void {
+  decodeFixedBase58(value, ED25519_PUBLIC_KEY_BYTES, field);
 }
 
 function requireBytes(value: unknown, length: number, field: string): Uint8Array {

@@ -485,6 +485,31 @@
   resize: vertical;
 }
 
+.sessions-modal-context {
+  align-items: center;
+  background: rgba(224, 230, 226, 0.05);
+  border: 1px solid rgba(224, 230, 226, 0.12);
+  border-radius: calc(var(--radius) - 2px);
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 9px 10px;
+}
+
+.sessions-modal-context span {
+  color: var(--dim);
+  font-size: 0.7rem;
+  font-weight: 860;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.sessions-modal-context strong {
+  color: var(--text);
+  font-size: 0.88rem;
+  font-weight: 780;
+}
+
 .sessions-modal label em,
 .sessions-form-error {
   border-radius: calc(var(--radius) - 3px);

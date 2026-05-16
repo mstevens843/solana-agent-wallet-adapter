@@ -4,16 +4,20 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   MppParseError,
   MppReceiptError,
+  MPP_PAYMENT_RECEIPT_SCHEMA,
   MppVerifyError,
   buildMppPaymentReceipt,
   challengeToApprovalParams,
+  parseMppPaymentReceipt,
   parseMppChallenge,
   selectSupportedPaymentMethod,
   verifyMppChallenge,
+  verifyMppPaymentReceiptHash,
   type JsonObject,
   type MppChallenge,
   type MppCluster,
   type MppPaymentMethod,
+  type MppPaymentRail,
   type MppReceipt,
 } from '@solana-agent-wallet-adapter/mpp-adapter';
 import {
@@ -30,6 +34,10 @@ import {
   type DevApiHandler,
   type DevApiHandlerContext,
 } from './devApiRegistry.js';
+import {
+  EvidenceService,
+  EvidenceServiceError,
+} from './evidenceService.js';
 
 const PREFIX = '/api/mpp/';
 const CHALLENGE_PATH = '/api/mpp/challenge';
@@ -46,6 +54,12 @@ interface MppConfig {
   maxChallengeAmount?: string;
   endpoint?: string;
   allowedMints?: string[];
+}
+
+interface MppSignedEvidenceInput {
+  signingMessage: string;
+  signature: string;
+  signatureEncoding?: 'base58';
 }
 
 interface MppPreferenceRecord {
@@ -129,12 +143,13 @@ async function handlePostChallenge(
   const config = await readMppConfig(context);
   const requested = DevLayer1.mpp.validateCreateMppRequest(body);
   const expectedCluster = requested.cluster as MppCluster | undefined;
-  const allowedMints = allowedMintsForConfig(config);
+  const paymentPolicy = paymentPolicyForConfig(config);
   const verified = verifyMppChallenge(requested.challenge, {
     clockNow: context.clock.now(),
     ...(expectedCluster ? { expectedCluster } : {}),
     ...(config.maxChallengeAmount ? { maxAmount: config.maxChallengeAmount } : {}),
-    ...(allowedMints.length ? { allowedMints } : {}),
+    allowedRails: paymentPolicy.allowedRails,
+    ...(paymentPolicy.allowedMints.length ? { allowedMints: paymentPolicy.allowedMints } : {}),
   });
   const approvalParams = challengeToApprovalParams(requested.challenge, session.walletAddress, {
     paymentMethod: verified.paymentMethod,
@@ -202,12 +217,21 @@ async function handlePostSettle(
   if (existingId) {
     const existing = await context.evidenceStore.getEvidence(session.walletAddress, existingId);
     if (existing?.artifactHash) {
+      const receipt = parseStoredMppReceipt(existing.payload);
+      const signedEvidence = await maybeCreateOrLoadSignedMppEvidence({
+        context,
+        session,
+        approval,
+        receipt,
+        signedEvidence: settle.signedEvidence,
+      });
       writeJsonNoStore(req, res, 200, {
         receiptId: existing.id,
         receiptHash: existing.artifactHash,
         receipt: existing.payload,
         approvalId: approval.id,
         idempotent: true,
+        signedEvidence,
       });
       return;
     }
@@ -268,6 +292,20 @@ async function handlePostSettle(
     },
   });
 
+  const signedEvidence = await maybeCreateOrLoadSignedMppEvidence({
+    context,
+    session,
+    approval: {
+      ...approval,
+      metadata: {
+        ...(approval.metadata ?? {}),
+        mppEvidenceReceiptId: evidenceRecord.id,
+      },
+    },
+    receipt,
+    signedEvidence: settle.signedEvidence,
+  });
+
   await context.workflowStore.saveApproval(session.walletAddress, {
     ...approval,
     metadata: {
@@ -275,6 +313,9 @@ async function handlePostSettle(
       mppPaymentReceipt: receipt as unknown as JsonObject,
       mppPaymentReceiptIssuedAt: issuedAt,
       mppEvidenceReceiptId: evidenceRecord.id,
+      ...(signedEvidence.status === 'created' || signedEvidence.status === 'exists'
+        ? { mppSignedEvidenceReceiptId: signedEvidence.receiptId }
+        : {}),
     },
     updatedAt: issuedAt,
   });
@@ -284,6 +325,7 @@ async function handlePostSettle(
     receiptHash: receipt.artifactHash,
     receipt,
     approvalId: approval.id,
+    signedEvidence,
   });
 }
 
@@ -330,31 +372,80 @@ function normalizeMppConfig(payload: unknown, defaults: MppConfig): MppConfig {
   };
 }
 
-function allowedMintsForConfig(config: MppConfig): string[] {
+function paymentPolicyForConfig(config: MppConfig): { allowedRails: MppPaymentRail[]; allowedMints: string[] } {
+  const rails = new Set<MppPaymentRail>();
   const mints = new Set<string>(config.allowedMints ?? []);
   for (const rail of config.acceptedRails) {
     const normalized = rail.trim().toLowerCase();
-    if (normalized === 'usdc') mints.add(USDC_MINT);
-    if (rail.length >= 32 && rail.length <= 64) mints.add(rail);
+    if (normalized === 'sol' || normalized === 'solana-sol') {
+      rails.add('solana-sol');
+      continue;
+    }
+    if (normalized === 'usdc') {
+      rails.add('solana-spl');
+      mints.add(USDC_MINT);
+      continue;
+    }
+    if (normalized === 'spl' || normalized === 'solana-spl') {
+      rails.add('solana-spl');
+      continue;
+    }
+    const trimmed = rail.trim();
+    if (trimmed.length >= 32 && trimmed.length <= 64) {
+      rails.add('solana-spl');
+      mints.add(trimmed);
+    }
   }
-  return [...mints];
+  if (mints.size > 0) {
+    rails.add('solana-spl');
+  }
+  return { allowedRails: [...rails], allowedMints: [...mints] };
 }
 
-function parseSettleBody(body: unknown): { approvalId: string; txid: string; settledAt?: string } {
+function parseSettleBody(body: unknown): { approvalId: string; txid: string; settledAt?: string; signedEvidence?: MppSignedEvidenceInput } {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     throw new WorkflowValidationError('invalid_object', '$ must be a JSON object.', '$');
   }
   const record = body as Record<string, unknown>;
   const approvalId = shortString(record.approvalId, '$.approvalId', 160);
   const txid = shortString(record.txid, '$.txid', 256);
+  const signedEvidence = parseSignedEvidence(record.signedEvidence);
   const settledAtRaw = record.settledAt;
   if (settledAtRaw === undefined || settledAtRaw === null || settledAtRaw === '') {
-    return { approvalId, txid };
+    return {
+      approvalId,
+      txid,
+      ...(signedEvidence ? { signedEvidence } : {}),
+    };
   }
   if (typeof settledAtRaw !== 'string' || Number.isNaN(Date.parse(settledAtRaw))) {
     throw new WorkflowValidationError('invalid_timestamp', 'settledAt must be an ISO-8601 timestamp.', '$.settledAt');
   }
-  return { approvalId, txid, settledAt: settledAtRaw };
+  return {
+    approvalId,
+    txid,
+    settledAt: settledAtRaw,
+    ...(signedEvidence ? { signedEvidence } : {}),
+  };
+}
+
+function parseSignedEvidence(value: unknown): MppSignedEvidenceInput | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new WorkflowValidationError('invalid_signed_evidence', 'signedEvidence must be a JSON object.', '$.signedEvidence');
+  }
+  const record = value as Record<string, unknown>;
+  const signingMessage = shortString(record.signingMessage, '$.signedEvidence.signingMessage', 2_048);
+  const signature = shortString(record.signature, '$.signedEvidence.signature', 1_024);
+  const encodingRaw = record.signatureEncoding;
+  if (encodingRaw !== undefined && encodingRaw !== null && encodingRaw !== '' && encodingRaw !== 'base58') {
+    throw new WorkflowValidationError('invalid_signature_encoding', 'signedEvidence.signatureEncoding must be "base58".', '$.signedEvidence.signatureEncoding');
+  }
+  return {
+    signingMessage,
+    signature,
+    ...(encodingRaw === 'base58' ? { signatureEncoding: 'base58' } : {}),
+  };
 }
 
 function shortString(value: unknown, path: string, max: number): string {
@@ -413,6 +504,100 @@ function buildMppEvidenceRecord(input: {
       resourceUrl: challenge.resourceUrl,
     },
   };
+}
+
+async function maybeCreateOrLoadSignedMppEvidence(input: {
+  context: DevApiHandlerContext;
+  session: WorkflowSession;
+  approval: ApprovalRequestRecord;
+  receipt: MppReceipt;
+  signedEvidence?: MppSignedEvidenceInput;
+}): Promise<JsonObject> {
+  const { context, session, approval, receipt, signedEvidence } = input;
+  const existingSignedId = stringFromMetadata(approval.metadata, 'mppSignedEvidenceReceiptId');
+  if (existingSignedId) {
+    const existing = await context.evidenceStore.getEvidence(session.walletAddress, existingSignedId);
+    if (existing) {
+      return {
+        status: 'exists',
+        receiptId: existing.id,
+        receiptHash: existing.artifactHash,
+        signingMessage: existing.signingMessage,
+        preSignatureHash: existing.preSignatureHash,
+      };
+    }
+  }
+
+  const signingMessage = signedMppEvidenceMessage(approval.id, receipt);
+  const available = {
+    status: 'available',
+    signingMessage,
+    preSignatureHash: receipt.artifactHash,
+  };
+  if (!signedEvidence) return available;
+  if (signedEvidence.signingMessage !== signingMessage) {
+    throw new WorkflowValidationError(
+      'invalid_signed_evidence_message',
+      'signedEvidence.signingMessage does not match the MPP receipt.',
+      '$.signedEvidence.signingMessage',
+    );
+  }
+
+  const merchant = receipt.merchant?.name ?? receipt.merchant?.id ?? receipt.recipient;
+  const service = new EvidenceService(context.evidenceStore, { clock: () => context.clock.now() });
+  const record = await service.createReceipt(session, {
+    title: `Signed MPP Payment: ${merchant}`,
+    kind: MPP_EVIDENCE_KIND,
+    status: 'approved',
+    payload: receipt as unknown as JsonObject,
+    preSignatureHash: receipt.artifactHash,
+    artifactHash: receipt.artifactHash,
+    signingMessage,
+    signature: signedEvidence.signature,
+    cluster: (approval.cluster ?? receipt.cluster) as WorkflowCluster,
+    receiptType: MPP_PAYMENT_RECEIPT_SCHEMA,
+    summary: `Wallet-signed receipt for ${receipt.amount} ${receipt.currency} paid to ${merchant} via MPP.`,
+    metadata: {
+      approvalId: approval.id,
+      txid: receipt.txid ?? '',
+      receiptId: receipt.receiptId,
+      receiptHash: receipt.artifactHash,
+      challengeHash: receipt.challengeHash,
+      nonce: receipt.nonce,
+      resourceUrl: receipt.resourceUrl,
+      signatureEncoding: signedEvidence.signatureEncoding ?? 'base58',
+      evidenceMode: 'wallet_signed',
+    },
+  });
+
+  await context.workflowStore.saveApproval(session.walletAddress, {
+    ...approval,
+    metadata: {
+      ...(approval.metadata ?? {}),
+      mppSignedEvidenceReceiptId: record.id,
+    },
+    updatedAt: context.clock.now().toISOString(),
+  });
+
+  return {
+    status: 'created',
+    receiptId: record.id,
+    receiptHash: record.artifactHash,
+    signingMessage: record.signingMessage,
+    preSignatureHash: record.preSignatureHash,
+  };
+}
+
+function signedMppEvidenceMessage(approvalId: string, receipt: MppReceipt): string {
+  return `mpp-payment-receipt:${approvalId}:${receipt.artifactHash}`;
+}
+
+function parseStoredMppReceipt(payload: unknown): MppReceipt {
+  const receipt = parseMppPaymentReceipt(payload);
+  if (!verifyMppPaymentReceiptHash(receipt)) {
+    throw new MppReceiptError('receipt_hash_mismatch', 'Stored MPP receipt hash does not verify.', '$.artifactHash');
+  }
+  return receipt;
 }
 
 function extractMppChallengeFromApproval(approval: ApprovalRequestRecord): MppChallenge | null {
@@ -507,6 +692,10 @@ function writeMppError(req: IncomingMessage, res: ServerResponse, err: unknown):
   }
   if (err instanceof MppParseError || err instanceof MppVerifyError || err instanceof MppReceiptError) {
     writeJsonNoStore(req, res, 400, { error: `mpp_error:${err.code}`, message: err.message, path: err.path });
+    return;
+  }
+  if (err instanceof EvidenceServiceError) {
+    writeJsonNoStore(req, res, err.status, { error: err.code, message: err.message });
     return;
   }
   const message = err instanceof Error ? err.message : 'Unexpected MPP API error.';

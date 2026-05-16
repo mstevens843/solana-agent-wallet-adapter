@@ -6,7 +6,7 @@ import {
   PublicKey,
 } from '@solana/web3.js';
 import pg from 'pg';
-import type { QueryConfig, QueryResult, QueryResultRow } from 'pg';
+import type { PoolConfig, QueryConfig, QueryResult, QueryResultRow } from 'pg';
 
 import {
   STREAMING_VOUCHER_SCHEMA,
@@ -15,6 +15,7 @@ import {
   formatBaseUnitsToDecimal,
   generateEphemeralKeypair,
   parseTokenAmountToBaseUnits,
+  signVoucher,
   validateVoucher,
   type EphemeralKeypair,
   type SessionGrant,
@@ -35,6 +36,9 @@ const DEFAULT_TOKEN_DECIMALS = 6;
 const MAX_RECIPIENT_ALLOWLIST = 64;
 const SESSION_LOCK_METADATA_KEY = 'streamingSettlementLock';
 const DELEGATE_KEY_METADATA_KEY = 'streamingDelegateKey';
+const SIGNER_RUNTIME_METADATA_KEY = 'signerRuntime';
+const SERVER_SIGNER_RUNTIME = 'server';
+const ANDROID_NATIVE_SIGNER_RUNTIME = 'android-native';
 const TEST_RECENT_BLOCKHASH_ENV = 'STREAMING_TEST_RECENT_BLOCKHASH';
 
 export interface StoredStreamingSession extends SessionGrant {
@@ -53,8 +57,12 @@ export interface CreateStreamingSessionInput {
   recipientAllowlist?: readonly string[];
   cluster?: StreamingCluster;
   tokenDecimals?: number;
+  ephemeralSignerPubkey?: string;
+  signerRuntime?: StreamingSignerRuntime;
   metadata?: Record<string, unknown>;
 }
+
+export type StreamingSignerRuntime = typeof SERVER_SIGNER_RUNTIME | typeof ANDROID_NATIVE_SIGNER_RUNTIME;
 
 export interface CreateStreamingSessionResult {
   session: StoredStreamingSession;
@@ -69,6 +77,15 @@ export interface AcceptStreamingVoucherResult {
   remaining: string;
   spentAmount: string;
   voucherHash: string;
+}
+
+export interface SignAndAcceptStreamingVoucherInput {
+  walletAddress: string;
+  sessionId: string;
+  amount: string;
+  recipient: string;
+  nonce?: string;
+  issuedAt?: string;
 }
 
 export interface StreamingSessionDetail {
@@ -181,19 +198,26 @@ export class StreamingService {
     const capAmount = requireAmount(input.capAmount, tokenDecimals, 'capAmount');
     const expiresAt = requireFutureIso(input.expiresAt, this.clock.now(), 'expiresAt');
     const recipientAllowlist = normalizeRecipientAllowlist(input.recipientAllowlist);
-    const keypair = this.keypairFactory();
-    const delegatePubkey = requirePublicKey(keypair.publicKey, 'delegatePubkey');
-    const delegateSecret = Keypair.fromSecretKey(keypair.secretKey);
-    if (delegateSecret.publicKey.toBase58() !== delegatePubkey) {
-      throw new StreamingServiceError(500, 'delegate_key_mismatch', 'Generated delegate keypair is internally inconsistent.');
+    const signerRuntime = normalizeSignerRuntime(input.signerRuntime, input.ephemeralSignerPubkey);
+    const keypair = signerRuntime === SERVER_SIGNER_RUNTIME ? this.keypairFactory() : undefined;
+    const delegatePubkey = signerRuntime === ANDROID_NATIVE_SIGNER_RUNTIME
+      ? requirePublicKey(input.ephemeralSignerPubkey, 'ephemeralSignerPubkey')
+      : requirePublicKey(keypair?.publicKey, 'delegatePubkey');
+    if (keypair) {
+      const delegateSecret = Keypair.fromSecretKey(keypair.secretKey);
+      if (delegateSecret.publicKey.toBase58() !== delegatePubkey) {
+        throw new StreamingServiceError(500, 'delegate_key_mismatch', 'Generated delegate keypair is internally inconsistent.');
+      }
     }
 
     const now = this.now();
     const id = `stream_${this.idFactory()}`;
-    const encryptedDelegateKey = encryptDelegateKey({
-      publicKey: delegatePubkey,
-      secretKeyBase64: Buffer.from(keypair.secretKey).toString('base64'),
-    });
+    const encryptedDelegateKey = keypair
+      ? encryptDelegateKey({
+        publicKey: delegatePubkey,
+        secretKeyBase64: Buffer.from(keypair.secretKey).toString('base64'),
+      })
+      : undefined;
     const session: StoredStreamingSession = {
       sessionId: id,
       walletAddress,
@@ -212,7 +236,8 @@ export class StreamingService {
       metadata: sanitizeSessionMetadata({
         ...(input.metadata ?? {}),
         tokenDecimals,
-        [DELEGATE_KEY_METADATA_KEY]: encryptedDelegateKey,
+        [SIGNER_RUNTIME_METADATA_KEY]: signerRuntime,
+        ...(encryptedDelegateKey ? { [DELEGATE_KEY_METADATA_KEY]: encryptedDelegateKey } : {}),
       }),
     };
     const stored = await this.store.createSession(session);
@@ -270,6 +295,43 @@ export class StreamingService {
       ...result,
       session: publicSession(result.session, this.clock.now()),
     };
+  }
+
+  async signAndAcceptVoucher(input: SignAndAcceptStreamingVoucherInput): Promise<AcceptStreamingVoucherResult> {
+    const session = await this.requireSession(input.walletAddress, input.sessionId);
+    if (!sessionHasServerDelegateKey(session)) {
+      throw new StreamingServiceError(
+        409,
+        'native_signer_required',
+        'This streaming session is owned by an Android native signer; submit a voucher signed by the device.',
+      );
+    }
+    const tokenDecimals = session.tokenDecimals ?? DEFAULT_TOKEN_DECIMALS;
+    const delegate = decryptSessionDelegateKey(session);
+    const issuedAt = input.issuedAt === undefined
+      ? this.now()
+      : requireIsoTimestamp(input.issuedAt, 'issuedAt');
+    const voucher = signVoucher(
+      {
+        publicKey: delegate.publicKey.toBase58(),
+        secretKey: delegate.secretKey,
+      },
+      {
+        sessionId: session.sessionId,
+        nonce: input.nonce === undefined
+          ? `nonce_${this.idFactory()}`
+          : requireShortString(input.nonce, 'nonce', 256),
+        amount: requireAmount(input.amount, tokenDecimals, 'amount'),
+        recipient: requirePublicKey(input.recipient, 'recipient'),
+        issuedAt,
+        tokenDecimals,
+      },
+    );
+    return this.acceptVoucher({
+      walletAddress: input.walletAddress,
+      sessionId: input.sessionId,
+      voucher,
+    });
   }
 
   async revokeSession(input: {
@@ -477,6 +539,7 @@ export class MemoryStreamingStore implements StreamingStore {
     const candidates: SettlementCandidate[] = [];
     for (const session of this.sessions.values()) {
       if (session.status === 'pending' || session.status === 'settled') continue;
+      if (!sessionHasServerDelegateKey(session)) continue;
       if (settlementLockActive(session, now)) continue;
       const unsettled = [...this.vouchers.values()].filter((v) => v.sessionId === session.sessionId && !v.settledAt);
       if (unsettled.length === 0) continue;
@@ -559,7 +622,11 @@ export class PostgresStreamingStore implements StreamingStore {
     if (!connectionString) {
       throw new Error('DATABASE_URL is required for PostgresStreamingStore.');
     }
-    this.client = new Pool({ connectionString });
+    this.client = new Pool({
+      connectionString,
+      max: envInteger('DATABASE_POOL_SIZE', 5),
+      ...postgresSslConfig(connectionString),
+    } satisfies PoolConfig);
     this.ownsClient = true;
   }
 
@@ -786,6 +853,7 @@ export class PostgresStreamingStore implements StreamingStore {
         JOIN streaming_vouchers v ON v.session_id = s.id AND v.settled_at IS NULL
         WHERE s.status <> 'pending'
           AND s.status <> 'settled'
+          AND COALESCE(s.metadata->>'${SIGNER_RUNTIME_METADATA_KEY}', '${SERVER_SIGNER_RUNTIME}') = '${SERVER_SIGNER_RUNTIME}'
           AND (
             s.expires_at <= $1
             OR s.status = 'revoked'
@@ -952,6 +1020,13 @@ export function publicSession(session: StoredStreamingSession, now: Date): Store
 }
 
 export function decryptSessionDelegateKey(session: StoredStreamingSession): Keypair {
+  if (!sessionHasServerDelegateKey(session)) {
+    throw new StreamingServiceError(
+      409,
+      'native_signer_required',
+      'Session delegate key is held by the Android native signer.',
+    );
+  }
   const encrypted = session.metadata?.[DELEGATE_KEY_METADATA_KEY];
   if (!encrypted || typeof encrypted !== 'object' || Array.isArray(encrypted)) {
     throw new StreamingServiceError(409, 'delegate_key_missing', 'Session is missing encrypted delegate key material.');
@@ -961,6 +1036,15 @@ export function decryptSessionDelegateKey(session: StoredStreamingSession): Keyp
     throw new StreamingServiceError(409, 'delegate_key_mismatch', 'Encrypted delegate key does not match session delegate pubkey.');
   }
   return Keypair.fromSecretKey(Buffer.from(decrypted.secretKeyBase64, 'base64'));
+}
+
+export function signerRuntimeFor(session: StoredStreamingSession): StreamingSignerRuntime {
+  const value = session.metadata?.[SIGNER_RUNTIME_METADATA_KEY];
+  return value === ANDROID_NATIVE_SIGNER_RUNTIME ? ANDROID_NATIVE_SIGNER_RUNTIME : SERVER_SIGNER_RUNTIME;
+}
+
+export function sessionHasServerDelegateKey(session: StoredStreamingSession): boolean {
+  return signerRuntimeFor(session) === SERVER_SIGNER_RUNTIME;
 }
 
 export function normalizeVoucher(input: unknown): Voucher {
@@ -1016,6 +1100,16 @@ function assertStreamingCluster(value: unknown): asserts value is StreamingClust
   }
 }
 
+function normalizeSignerRuntime(value: unknown, ephemeralSignerPubkey: unknown): StreamingSignerRuntime {
+  if (value === undefined || value === null || value === '') {
+    return ephemeralSignerPubkey === undefined || ephemeralSignerPubkey === null || ephemeralSignerPubkey === ''
+      ? SERVER_SIGNER_RUNTIME
+      : ANDROID_NATIVE_SIGNER_RUNTIME;
+  }
+  if (value === SERVER_SIGNER_RUNTIME || value === ANDROID_NATIVE_SIGNER_RUNTIME) return value;
+  throw new StreamingServiceError(400, 'invalid_signer_runtime', 'signerRuntime must be server or android-native.');
+}
+
 function requirePublicKey(value: unknown, field: string): string {
   const text = requireString(value, field).trim();
   try {
@@ -1039,6 +1133,15 @@ function requireFutureIso(value: unknown, now: Date, field: string): string {
   }
   if (date.getTime() <= now.getTime()) {
     throw new StreamingServiceError(400, 'expires_at_past', `${field} must be in the future.`);
+  }
+  return date.toISOString();
+}
+
+function requireIsoTimestamp(value: unknown, field: string): string {
+  const text = requireString(value, field).trim();
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) {
+    throw new StreamingServiceError(400, 'invalid_timestamp', `${field} must be an ISO-8601 timestamp.`);
   }
   return date.toISOString();
 }
@@ -1203,6 +1306,19 @@ function streamingEncryptionKey(): Buffer {
     'streaming_encryption_key_missing',
     'STREAMING_SESSION_ENCRYPTION_KEY is required for streaming session key storage.',
   );
+}
+
+function envInteger(name: string, fallback: number): number {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+function postgresSslConfig(connectionString: string): Partial<PoolConfig> {
+  const sslMode = new URL(connectionString).searchParams.get('sslmode') ?? process.env.PGSSLMODE ?? '';
+  if (sslMode === 'require' || sslMode === 'no-verify') {
+    return { ssl: { rejectUnauthorized: false } };
+  }
+  return {};
 }
 
 interface StreamingSessionRow extends QueryResultRow {

@@ -15,9 +15,15 @@ This package ships:
 - `voucher.ts` — ed25519 ephemeral keypair generation, canonical voucher
   hashing, signing, verification, amount conversion, and session validation.
 - `delegateTx.ts` — unsigned SPL Token delegate `Approve`, `Revoke`, and
-  batched `TransferChecked` settlement transaction builders.
+  MTU-aware batched `TransferChecked` settlement transaction builders.
 - Error classes with stable `code` fields for route layers and clients.
 
 Amounts are decimal token strings (for example, `"0.05"`). Transaction builders
 convert to raw SPL Token u64 amounts at the boundary; USDC-style 6 decimals are
 the default unless callers pass `tokenDecimals`.
+
+Transaction builders are pure and do not call RPC. Callers must provide a fresh
+`recentBlockhash`, sign with every pubkey listed in `requiredSigners`, and submit
+the serialized transaction themselves. Vouchers sign and hash the canonical JSON
+payload `{ schema, sessionId, nonce, amount, recipient, issuedAt }`; the
+`signature` field is not part of the voucher hash.

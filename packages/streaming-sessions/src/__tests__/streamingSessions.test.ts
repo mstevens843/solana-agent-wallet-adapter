@@ -8,11 +8,18 @@ import {
   getAssociatedTokenAddressSync,
 } from '@solana/spl-token';
 import { Keypair, PublicKey, VersionedTransaction } from '@solana/web3.js';
+import bs58 from 'bs58';
+import nacl from 'tweetnacl';
 import { describe, expect, it } from 'vitest';
 
 import {
+  MAX_SETTLEMENT_VOUCHERS_PER_TX,
+  SOLANA_PACKET_DATA_SIZE,
   SessionExpiredError,
   STREAMING_VOUCHER_SCHEMA,
+  StreamingInvalidAmountError,
+  StreamingInvalidInputError,
+  StreamingInvalidPublicKeyError,
   VoucherExceedsRemainingError,
   VoucherReplayError,
   VoucherRecipientNotAllowedError,
@@ -47,6 +54,38 @@ describe('streaming-sessions voucher primitives', () => {
     expect(verifyVoucher(voucher, Keypair.generate().publicKey.toBase58())).toBe(false);
   });
 
+  it('locks the canonical signing vector used by native runtimes', () => {
+    const seed = Uint8Array.from(Array.from({ length: 32 }, (_, index) => index));
+    const naclKeypair = nacl.sign.keyPair.fromSeed(seed);
+    const keypair = {
+      publicKey: bs58.encode(naclKeypair.publicKey),
+      secretKey: naclKeypair.secretKey,
+    };
+    const voucher = signVoucher(keypair, {
+      sessionId: 'sess_golden',
+      nonce: 'nonce_0001',
+      amount: '0.05',
+      recipient: '11111111111111111111111111111111',
+      issuedAt: '2026-05-16T12:00:00.000Z',
+    });
+
+    expect(keypair.publicKey).toBe('FAe4sisG95oZ42w7buUn5qEE4TAnfTTFPiguZUHmhiF');
+    expect(voucher.signature).toBe(
+      '3wTjHRieyzCGc3uka7q48zstK5SQ2meLCG8VHW1wypcdkmNe6JAhuJ9d2hSBx6LrBDSpUauG3xHo5di6PMZMKpQe',
+    );
+    expect(computeVoucherHash(voucher)).toBe('ecc7938f514c7d39526eba3295033425287cc2a83cba3749654bafcbc0a8f3ac');
+    expect(canonicalize({
+      schema: voucher.schema,
+      sessionId: voucher.sessionId,
+      nonce: voucher.nonce,
+      amount: voucher.amount,
+      recipient: voucher.recipient,
+      issuedAt: voucher.issuedAt,
+    })).toBe(
+      '{"amount":"0.05","issuedAt":"2026-05-16T12:00:00.000Z","nonce":"nonce_0001","recipient":"11111111111111111111111111111111","schema":"streaming/voucher/0.1","sessionId":"sess_golden"}',
+    );
+  });
+
   it('computes deterministic voucher hashes from canonical JSON', () => {
     const keypair = generateEphemeralKeypair();
     const voucher = signVoucher(keypair, {
@@ -68,6 +107,35 @@ describe('streaming-sessions voucher primitives', () => {
 
     expect(computeVoucherHash(reordered)).toBe(computeVoucherHash(voucher));
     expect(canonicalize({ b: 1, a: { d: true, c: null } })).toBe('{"a":{"c":null,"d":true},"b":1}');
+  });
+
+  it('rejects invalid recipients and malformed decimal amounts', () => {
+    const keypair = generateEphemeralKeypair();
+    expect(() =>
+      signVoucher(keypair, {
+        sessionId: 'sess_bad',
+        nonce: 'n',
+        amount: '0.01',
+        recipient: 'not-a-pubkey',
+        issuedAt: '2026-05-16T12:00:00.000Z',
+      }),
+    ).toThrow(StreamingInvalidPublicKeyError);
+    expect(() => parseTokenAmountToBaseUnits('0')).toThrow(StreamingInvalidAmountError);
+    expect(() => parseTokenAmountToBaseUnits('-1')).toThrow(StreamingInvalidAmountError);
+    expect(() => parseTokenAmountToBaseUnits('0.0000001')).toThrow(StreamingInvalidAmountError);
+    expect(() => parseTokenAmountToBaseUnits('18446744073709551616', 0)).toThrow(StreamingInvalidAmountError);
+
+    const nineDecimalVoucher = signVoucher(keypair, {
+      sessionId: 'sess_nine',
+      nonce: 'n9',
+      amount: '0.000000001',
+      recipient: Keypair.generate().publicKey.toBase58(),
+      issuedAt: '2026-05-16T12:00:00.000Z',
+      tokenDecimals: 9,
+    });
+    expect(verifyVoucher(nineDecimalVoucher, keypair.publicKey)).toBe(false);
+    expect(verifyVoucher(nineDecimalVoucher, keypair.publicKey, { tokenDecimals: 9 })).toBe(true);
+    expect(verifyVoucher({ ...nineDecimalVoucher, recipient: 'bad' }, keypair.publicKey, { tokenDecimals: 9 })).toBe(false);
   });
 
   it('detects replayed vouchers, expiry boundary, allowlist, and cap overflow', () => {
@@ -152,6 +220,7 @@ describe('streaming-sessions delegate transaction builders', () => {
 
     expect(tx.kind).toBe('approve_delegate');
     expect(tx.sourceAta).toBe(sourceAta.toBase58());
+    expect(tx.serializedLength).toBeGreaterThan(0);
     expect(firstInstructionData(tx.txBase64)).toEqual(Buffer.from(expected.data));
     expect(firstInstructionProgramId(tx.txBase64)).toBe(TOKEN_PROGRAM_ID.toBase58());
   });
@@ -171,6 +240,7 @@ describe('streaming-sessions delegate transaction builders', () => {
 
     expect(tx.kind).toBe('revoke_delegate');
     expect(tx.sourceAta).toBe(sourceAta.toBase58());
+    expect(tx.serializedLength).toBeGreaterThan(0);
     expect(firstInstructionData(tx.txBase64)).toEqual(Buffer.from(expected.data));
     expect(firstInstructionProgramId(tx.txBase64)).toBe(TOKEN_PROGRAM_ID.toBase58());
   });
@@ -204,8 +274,9 @@ describe('streaming-sessions delegate transaction builders', () => {
     });
 
     expect(txs).toHaveLength(2);
-    expect(txs[0]?.instructionCount).toBe(10);
+    expect(txs[0]?.instructionCount).toBe(MAX_SETTLEMENT_VOUCHERS_PER_TX);
     expect(txs[0]?.totalAmount).toBe('0.5');
+    expect(txs[0]?.serializedLength).toBeLessThanOrEqual(SOLANA_PACKET_DATA_SIZE);
     expect(txs[1]?.instructionCount).toBe(1);
     expect(txs[1]?.totalAmount).toBe('0.05');
 
@@ -221,6 +292,45 @@ describe('streaming-sessions delegate transaction builders', () => {
     );
     expect(firstInstructionData(txs[0]?.txBase64 ?? '')).toEqual(Buffer.from(expected.data));
     expect(firstInstructionProgramId(txs[0]?.txBase64 ?? '')).toBe(TOKEN_PROGRAM_ID.toBase58());
+
+    const signed = VersionedTransaction.deserialize(Buffer.from(txs[0]?.txBase64 ?? '', 'base64'));
+    signed.sign([feePayer, delegate]);
+    expect(Buffer.from(signed.serialize()).length).toBe(txs[0]?.serializedLength);
+  });
+
+  it('rejects invalid blockhashes and settlement recipient pubkeys', () => {
+    const owner = Keypair.generate();
+    const mint = Keypair.generate().publicKey;
+    const delegate = Keypair.generate();
+    const feePayer = Keypair.generate();
+    const voucher = signedVoucher({
+      sessionId: 'sess_invalid',
+      nonce: 'n',
+      amount: '0.01',
+      recipient: Keypair.generate().publicKey.toBase58(),
+    });
+
+    expect(() =>
+      buildApproveDelegateTx({
+        ownerPubkey: owner.publicKey.toBase58(),
+        tokenMint: mint.toBase58(),
+        delegatePubkey: delegate.publicKey.toBase58(),
+        capAmount: '1',
+        cluster: 'devnet',
+        recentBlockhash: '',
+      }),
+    ).toThrow(StreamingInvalidInputError);
+    expect(() =>
+      buildSettlementTx({
+        delegatePubkey: delegate.publicKey.toBase58(),
+        ownerPubkey: owner.publicKey.toBase58(),
+        tokenMint: mint.toBase58(),
+        feePayerPubkey: feePayer.publicKey.toBase58(),
+        vouchers: [{ ...voucher, recipient: 'bad-recipient' }],
+        cluster: 'devnet',
+        recentBlockhash: Keypair.generate().publicKey.toBase58(),
+      }),
+    ).toThrow(StreamingInvalidInputError);
   });
 });
 

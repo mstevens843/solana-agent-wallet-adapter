@@ -1,8 +1,8 @@
 import { MppApiError } from './mppClient.js';
 import {
   StreamingApiError,
-  submitStreamingVoucher,
-  type SubmitVoucherBody,
+  submitStreamingVoucherRelay,
+  type RelayVoucherBody,
 } from './streamingClient.js';
 
 interface AgenticAndroidNative {
@@ -15,7 +15,7 @@ interface StreamingCallbackBridge {
   reject(requestId: string, payload: unknown): void;
 }
 
-interface BridgeEnvelope {
+export interface BridgeEnvelope {
   ok: boolean;
   status: string | Record<string, unknown>;
   phase?: string;
@@ -66,6 +66,10 @@ function parseEnvelope(raw: unknown): BridgeEnvelope {
 export function hasNativeAndroidBridge(): boolean {
   const native = getNative();
   return Boolean(native?.mppRequest || native?.streamingRequest);
+}
+
+export function hasNativeStreamingBridge(): boolean {
+  return Boolean(getNative()?.streamingRequest);
 }
 
 export async function callMppBridge(method: string, payload: unknown): Promise<BridgeEnvelope> {
@@ -128,8 +132,8 @@ async function callStreamingFallback(
       `Native AgenticAndroid.streamingRequest is unavailable for ${method}.`,
     );
   }
-  const body = streamingSubmitBody(payload);
-  const result = await submitStreamingVoucher(body.sessionId, body.submitBody);
+  const body = streamingRelayBody(payload);
+  const result = await submitStreamingVoucherRelay(body.sessionId, body.relayBody);
   return {
     ok: true,
     status: 'server_relayed',
@@ -140,7 +144,7 @@ async function callStreamingFallback(
   };
 }
 
-function streamingSubmitBody(payload: unknown): { sessionId: string; submitBody: SubmitVoucherBody } {
+function streamingRelayBody(payload: unknown): { sessionId: string; relayBody: RelayVoucherBody } {
   if (!isRecord(payload)) {
     throw new StreamingApiError('not_implemented', 'Streaming fallback payload must be an object.');
   }
@@ -148,17 +152,18 @@ function streamingSubmitBody(payload: unknown): { sessionId: string; submitBody:
   if (!sessionId) {
     throw new StreamingApiError('not_implemented', 'Streaming fallback requires sessionId.');
   }
-  if (isRecord(payload.body)) {
-    return { sessionId, submitBody: payload.body as unknown as SubmitVoucherBody };
-  }
-  if (isRecord(payload.voucher)) {
-    return { sessionId, submitBody: { voucher: payload.voucher as SubmitVoucherBody['voucher'] } };
-  }
+  if (isRecord(payload.body)) return { sessionId, relayBody: relayBodyFromRecord(payload.body) };
+  if (isRecord(payload.voucher)) return { sessionId, relayBody: relayBodyFromRecord(payload.voucher) };
   const voucherJson = stringField(payload.voucherJson);
   if (voucherJson) {
     try {
-      return { sessionId, submitBody: { voucher: JSON.parse(voucherJson) as SubmitVoucherBody['voucher'] } };
+      const voucher = JSON.parse(voucherJson) as unknown;
+      if (!isRecord(voucher)) {
+        throw new StreamingApiError('not_implemented', 'voucherJson must decode to an object.');
+      }
+      return { sessionId, relayBody: relayBodyFromRecord(voucher) };
     } catch (err) {
+      if (err instanceof StreamingApiError) throw err;
       throw new StreamingApiError(
         'not_implemented',
         err instanceof Error ? err.message : 'voucherJson could not be parsed.',
@@ -166,6 +171,20 @@ function streamingSubmitBody(payload: unknown): { sessionId: string; submitBody:
     }
   }
   throw new StreamingApiError('not_implemented', 'Streaming fallback requires body, voucher, or voucherJson.');
+}
+
+function relayBodyFromRecord(record: Record<string, unknown>): RelayVoucherBody {
+  const amount = stringField(record.amount);
+  const recipient = stringField(record.recipient);
+  if (!amount || !recipient) {
+    throw new StreamingApiError('not_implemented', 'Streaming fallback requires amount and recipient.');
+  }
+  return {
+    amount,
+    recipient,
+    ...(stringField(record.nonce) ? { nonce: stringField(record.nonce) } : {}),
+    ...(stringField(record.issuedAt) ? { issuedAt: stringField(record.issuedAt) } : {}),
+  };
 }
 
 function installStreamingCallbackBridge(): void {

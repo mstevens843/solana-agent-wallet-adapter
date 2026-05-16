@@ -25,6 +25,11 @@ export interface MppSettleRequestBody {
   approvalId: string;
   txid: string;
   settledAt?: string;
+  signedEvidence?: {
+    signingMessage: string;
+    signature: string;
+    signatureEncoding?: 'base58';
+  };
 }
 
 export interface MppSettleResponse {
@@ -33,6 +38,13 @@ export interface MppSettleResponse {
   approvalId?: string;
   receipt?: unknown;
   idempotent?: boolean;
+  signedEvidence?: {
+    status: 'available' | 'created' | 'exists';
+    signingMessage?: string;
+    preSignatureHash?: string;
+    receiptId?: string;
+    receiptHash?: string;
+  };
 }
 
 export interface MppConfigResponse {

@@ -27,6 +27,25 @@ export interface StreamingApprovalCompletedDetail {
   error?: string;
 }
 
+export function streamingApprovalSignedBody(input: {
+  operation: StreamingApprovalOperation;
+  txid: string;
+  approvalId: string;
+  status: 'submitted' | 'confirmed';
+  txStatus: string;
+}): Record<string, string> {
+  return {
+    ...(input.operation === 'grant'
+      ? { approveTxid: input.txid }
+      : { revokeTxid: input.txid }),
+    txid: input.txid,
+    signature: input.txid,
+    approvalId: input.approvalId,
+    status: input.status,
+    txStatus: input.txStatus,
+  };
+}
+
 export function isStreamingApprovalRequestedDetail(value: unknown): value is StreamingApprovalRequestedDetail {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const record = value as Partial<StreamingApprovalRequestedDetail>;

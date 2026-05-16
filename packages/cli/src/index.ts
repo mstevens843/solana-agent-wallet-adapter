@@ -516,7 +516,7 @@ async function dispatchSession(parsed: ParsedArgs): Promise<unknown> {
     if (!amount || !recipient) {
       throw new Error('Usage: solana-agent-wallet session spend <session-id> <amount> <recipient>');
     }
-    return streamingRenderWebRequest(parsed.options, `/api/streaming/sessions/${encodeURIComponent(sessionId)}/voucher`, {
+    return streamingRenderWebRequest(parsed.options, `/api/streaming/sessions/${encodeURIComponent(sessionId)}/voucher-relay`, {
       method: 'POST',
       body: JSON.stringify({ amount, recipient }),
     });

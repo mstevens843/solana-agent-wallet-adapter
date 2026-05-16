@@ -30,7 +30,7 @@ class AgentRuntimeService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (!BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT) {
+        if (!BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT && !BuildConfig.AGENTIC_ANDROID_STREAMING_SIGNER) {
             stopSelf()
             return START_NOT_STICKY
         }
@@ -118,8 +118,8 @@ object StreamingVoucherWorker {
     @Volatile private var lastServiceRefreshAtMs = 0L
 
     suspend fun submit(context: Context, method: String, payload: JSONObject): JSONObject {
-        if (!BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT) {
-            throw StreamingSessionException("streaming_unavailable", "Android Device Agent is disabled for this build.")
+        if (!BuildConfig.AGENTIC_ANDROID_STREAMING_SIGNER) {
+            throw StreamingSessionException("streaming_unavailable", "Android native streaming signer is disabled for this build.")
         }
         val appContext = context.applicationContext
         ensureStarted(appContext)
@@ -168,8 +168,17 @@ object StreamingVoucherWorker {
     private fun handle(context: Context, method: String, payload: JSONObject): JSONObject {
         val controller = controllerFor(context)
         return when (method) {
+            "status", "capabilities" -> controller.statusJson()
+            "prepareSessionSigner" -> controller.prepareSessionSigner(payload)
             "createSession" -> {
                 val sessionId = requireString(payload, "sessionId")
+                val signerId = payload.optString("signerId")
+                if (signerId.isNotBlank()) {
+                    val metadata = JSONObject(payload.toString()).apply {
+                        remove("signerId")
+                    }
+                    return controller.bindPreparedSession(sessionId, signerId, metadata)
+                }
                 val privateKey = payload.optString("ephemeralPrivkeyBase64")
                     .ifBlank { payload.optString("ephemeralPrivateKeyBase64") }
                     .ifBlank { payload.optString("privateKeyBase64") }
@@ -183,6 +192,10 @@ object StreamingVoucherWorker {
                 }
                 controller.createSession(sessionId, privateKey, metadata)
             }
+            "activateSession" -> {
+                val sessionId = requireString(payload, "sessionId")
+                controller.activateSession(sessionId, payload)
+            }
             "signVoucher" -> {
                 val sessionId = requireString(payload, "sessionId")
                 val voucherJson = payload.optString("voucherJson")
@@ -193,6 +206,10 @@ object StreamingVoucherWorker {
                     throw StreamingSessionException("invalid_payload", "signVoucher requires voucherJson or voucher.")
                 }
                 controller.signVoucher(sessionId, voucherJson)
+            }
+            "signSettlementTx" -> {
+                val sessionId = requireString(payload, "sessionId")
+                controller.signSettlementTx(sessionId, payload)
             }
             "revokeLocalSession" -> controller.revokeLocalSession(requireString(payload, "sessionId"))
             else -> throw StreamingSessionException("unsupported_method", "Unsupported streaming bridge method: $method")

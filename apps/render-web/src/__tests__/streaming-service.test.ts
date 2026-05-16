@@ -9,8 +9,9 @@ import {
 } from '@solana-agent-wallet-adapter/streaming-sessions';
 
 import { MemoryEvidenceStore } from '../cloud/evidenceService.js';
-import { materializeStreamingSettlements } from '../cloud/settlementService.js';
+import { materializeStreamingSettlements, settleStreamingSession } from '../cloud/settlementService.js';
 import {
+  decryptSessionDelegateKey,
   MemoryStreamingStore,
   StreamingService,
   type StreamingStore,
@@ -92,6 +93,86 @@ describe('streaming sessions service', () => {
     );
   });
 
+  it('creates Android-native signer sessions without server delegate key material', async () => {
+    const recipient = Keypair.generate().publicKey.toBase58();
+    const ctx = createContext({ now: '2026-05-16T12:00:00.000Z' });
+    const nativeKeypair = generateEphemeralKeypair();
+    const created = await ctx.service.createSession({
+      walletAddress: WALLET,
+      tokenMint: TOKEN_MINT,
+      capAmount: '1',
+      expiresAt: '2026-05-16T13:00:00.000Z',
+      cluster: 'devnet',
+      ephemeralSignerPubkey: nativeKeypair.publicKey,
+      signerRuntime: 'android-native',
+    });
+    await ctx.service.recordGrantSigned({
+      walletAddress: WALLET,
+      sessionId: created.session.sessionId,
+      approveTxid: `APPROVE_${created.session.sessionId}`,
+    });
+
+    expect(created.session.delegatePubkey).toBe(nativeKeypair.publicKey);
+    expect(created.session.ephemeralSignerPubkey).toBe(nativeKeypair.publicKey);
+    expect(created.session.metadata?.signerRuntime).toBe('android-native');
+    expect(() => decryptSessionDelegateKey(created.session)).toThrow(/Android native signer/);
+
+    const accepted = await ctx.service.acceptVoucher({
+      walletAddress: WALLET,
+      sessionId: created.session.sessionId,
+      voucher: voucher(nativeKeypair, created.session.sessionId, 'nonce_native', '0.05', recipient),
+    });
+    expect(accepted.accepted).toBe(true);
+
+    await expectCode(
+      ctx.service.signAndAcceptVoucher({
+        walletAddress: WALLET,
+        sessionId: created.session.sessionId,
+        amount: '0.05',
+        recipient,
+      }),
+      'native_signer_required',
+    );
+  });
+
+  it('server-relayed voucher signing accepts valid spends and preserves replay checks', async () => {
+    const recipient = Keypair.generate().publicKey.toBase58();
+    const ctx = createContext({ now: '2026-05-16T12:00:00.000Z' });
+    const session = await createActiveSession(ctx, {
+      capAmount: '1',
+      expiresAt: '2026-05-16T13:00:00.000Z',
+    });
+
+    const accepted = await ctx.service.signAndAcceptVoucher({
+      walletAddress: WALLET,
+      sessionId: session.sessionId,
+      amount: '0.10',
+      recipient,
+      nonce: 'nonce_server_signed',
+    });
+
+    expect(accepted.accepted).toBe(true);
+    expect(accepted.remaining).toBe('0.9');
+    expect(accepted.voucher.signature).toBeTruthy();
+    expect(accepted.voucher.voucher).toMatchObject({
+      sessionId: session.sessionId,
+      nonce: 'nonce_server_signed',
+      amount: '0.10',
+      recipient,
+    });
+
+    await expectCode(
+      ctx.service.signAndAcceptVoucher({
+        walletAddress: WALLET,
+        sessionId: session.sessionId,
+        amount: '0.01',
+        recipient,
+        nonce: 'nonce_server_signed',
+      }),
+      'voucher_replay',
+    );
+  });
+
   it('revoke marks the session revoked and blocks later vouchers', async () => {
     const recipient = Keypair.generate().publicKey.toBase58();
     const ctx = createContext({ now: '2026-05-16T12:00:00.000Z' });
@@ -157,6 +238,37 @@ describe('streaming sessions service', () => {
     expect(receipts).toHaveLength(1);
     expect(receipts[0]?.kind).toBe('streaming_settlement');
     expect(receipts[0]?.metadata?.sessionId).toBe(session.sessionId);
+  });
+
+  it('force-settles an active session before the cron threshold is reached', async () => {
+    const recipient = Keypair.generate().publicKey.toBase58();
+    const ctx = createContext({ now: '2026-05-16T12:00:00.000Z' });
+    const evidenceStore = new MemoryEvidenceStore();
+    const session = await createActiveSession(ctx, {
+      capAmount: '1',
+      expiresAt: '2026-05-16T13:00:00.000Z',
+    });
+    await ctx.service.acceptVoucher({
+      walletAddress: WALLET,
+      sessionId: session.sessionId,
+      voucher: voucher(ctx.keypair, session.sessionId, 'nonce_force_settle', '0.05', recipient),
+    });
+
+    const result = await settleStreamingSession({
+      walletAddress: WALLET,
+      sessionId: session.sessionId,
+      streamingStore: ctx.store,
+      evidenceStore,
+      clock: ctx.clock,
+      latestBlockhash: async () => ({ blockhash: RECENT_BLOCKHASH }),
+      submitSignedTransaction: async () => ({ txid: 'STREAM_TX_FORCE', confirmedAt: '2026-05-16T12:01:00.000Z' }),
+    });
+
+    expect(result).toMatchObject({ settled: 1, failed: 0, skipped: 0 });
+    expect(result.session?.status).toBe('active');
+    expect(result.receipts).toHaveLength(1);
+    const vouchers = await ctx.store.listVouchers(session.sessionId);
+    expect(vouchers[0]?.settlementTxid).toBe('STREAM_TX_FORCE');
   });
 
   it('settles vouchers accepted before expiry even after new vouchers are blocked by expiry', async () => {
@@ -276,4 +388,3 @@ function voucher(
 async function expectCode(promise: Promise<unknown>, code: string): Promise<void> {
   await expect(promise).rejects.toMatchObject({ code });
 }
-

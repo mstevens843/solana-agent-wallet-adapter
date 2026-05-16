@@ -266,7 +266,7 @@ test('session commands proxy to render-web streaming API and print stable JSON',
       "sessionId": "sess_cli",
       "spentAmount": "0",
       "status": "active",
-      "tokenMint": "TokenMint1111111111111111111111111111111111"
+      "tokenMint": "So11111111111111111111111111111111111111112"
     }
   ],
   "walletAddress": "Wallet1111111111111111111111111111111111"
@@ -277,11 +277,11 @@ test('session commands proxy to render-web streaming API and print stable JSON',
       renderWeb.url,
       'session',
       'create',
-      'TokenMint1111111111111111111111111111111111',
+      'So11111111111111111111111111111111111111112',
       '10',
       '3600',
       '--allowlist',
-      'Recipient111111111111111111111111111111111,Recipient222222222222222222222222222222222',
+      '11111111111111111111111111111111,So11111111111111111111111111111111111111112',
       '--json',
     ]);
     assert.equal(created.status, 0, created.stderr);
@@ -298,14 +298,36 @@ test('session commands proxy to render-web streaming API and print stable JSON',
       'spend',
       'sess_cli',
       '0.05',
-      'Recipient111111111111111111111111111111111',
+      '11111111111111111111111111111111',
       '--json',
     ]);
     assert.equal(spent.status, 0, spent.stderr);
     assert.deepEqual(JSON.parse(spent.stdout), {
       accepted: true,
       remaining: '9.95',
-      voucher: { sessionId: 'sess_cli', amount: '0.05' },
+      signedVoucher: {
+        amount: '0.05',
+        issuedAt: '2030-01-01T00:00:00.000Z',
+        nonce: 'nonce_cli',
+        recipient: '11111111111111111111111111111111',
+        schema: 'streaming/voucher/0.1',
+        sessionId: 'sess_cli',
+        signature: 'signature_cli',
+      },
+      spentAmount: '0.05',
+      voucher: {
+        amount: '0.05',
+        createdAt: '2030-01-01T00:00:00.000Z',
+        id: 'voucher_cli',
+        issuedAt: '2030-01-01T00:00:00.000Z',
+        nonce: 'nonce_cli',
+        recipient: '11111111111111111111111111111111',
+        sessionId: 'sess_cli',
+        signature: 'signature_cli',
+        voucherHash: 'voucher_hash_cli',
+      },
+      voucherHash: 'voucher_hash_cli',
+      voucherId: 'voucher_cli',
     });
 
     const revoked = await runCliAsync(['--render-web-url', renderWeb.url, 'session', 'revoke', 'sess_cli', '--json']);
@@ -331,12 +353,12 @@ test('session commands proxy to render-web streaming API and print stable JSON',
         expiresAt: '<iso>',
       },
       {
-        tokenMint: 'TokenMint1111111111111111111111111111111111',
+        tokenMint: 'So11111111111111111111111111111111111111112',
         capAmount: '10',
         expiresAt: '<iso>',
         recipientAllowlist: [
-          'Recipient111111111111111111111111111111111',
-          'Recipient222222222222222222222222222222222',
+          '11111111111111111111111111111111',
+          'So11111111111111111111111111111111111111112',
         ],
       },
     );
@@ -347,11 +369,46 @@ test('session commands proxy to render-web streaming API and print stable JSON',
     }
     assert.ok(!Number.isNaN(Date.parse(expiresAt)));
 
-    const spendRequest = renderWeb.requests.find((request) => request.path === '/api/streaming/sessions/sess_cli/voucher');
+    const spendRequest = renderWeb.requests.find((request) => request.path === '/api/streaming/sessions/sess_cli/voucher-relay');
     assert.ok(spendRequest);
     assert.deepEqual(spendRequest.body, {
       amount: '0.05',
-      recipient: 'Recipient111111111111111111111111111111111',
+      recipient: '11111111111111111111111111111111',
+    });
+  } finally {
+    await renderWeb.close();
+  }
+});
+
+test('mpp commands proxy config and challenge payloads to render-web', async () => {
+  const renderWeb = await startMockRenderWeb();
+  const challengeFile = join(await mkdtemp(join(tmpdir(), 'agentic-cli-mpp-')), 'challenge.json');
+  await writeFile(challengeFile, JSON.stringify({ protocolVersion: 'mpp/0.1', nonce: 'nonce_cli' }));
+  try {
+    const config = await runCliAsync(['--render-web-url', renderWeb.url, 'mpp', 'config', '--json'], {
+      AGENTIC_RENDER_WEB_COOKIE: 'agentic_session=test-cookie',
+    });
+    assert.equal(config.status, 0, config.stderr);
+    assert.deepEqual(JSON.parse(config.stdout), {
+      acceptedRails: ['sol', 'usdc'],
+      maxChallengeAmount: '10',
+    });
+
+    const challenge = await runCliAsync(['--render-web-url', renderWeb.url, 'mpp', 'challenge', challengeFile, '--json']);
+    assert.equal(challenge.status, 0, challenge.stderr);
+    assert.deepEqual(JSON.parse(challenge.stdout), {
+      approvalId: 'approval_mpp_cli',
+      requestId: 'approval_mpp_cli',
+      expiresAt: '2026-05-16T13:00:00.000Z',
+    });
+
+    const configRequest = renderWeb.requests.find((request) => request.path === '/api/mpp/config');
+    assert.ok(configRequest);
+    assert.equal(configRequest.headers.cookie, 'agentic_session=test-cookie');
+    const challengeRequest = renderWeb.requests.find((request) => request.path === '/api/mpp/challenge');
+    assert.ok(challengeRequest);
+    assert.deepEqual(challengeRequest.body, {
+      challenge: { protocolVersion: 'mpp/0.1', nonce: 'nonce_cli' },
     });
   } finally {
     await renderWeb.close();
@@ -368,12 +425,16 @@ function runCli(args: string[]): { status: number | null; stdout: string; stderr
   });
 }
 
-async function runCliAsync(args: string[]): Promise<{ status: number | null; stdout: string; stderr: string }> {
+async function runCliAsync(
+  args: string[],
+  env: Record<string, string> = {},
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
   const child = spawn(process.execPath, [cliPath, ...args], {
     env: {
       ...process.env,
       AGENT_WALLET_SKIP_OPEN: '1',
       NO_COLOR: '1',
+      ...env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -508,10 +569,10 @@ async function startMockWalletHost(): Promise<{ url: string; close: () => Promis
 
 async function startMockRenderWeb(): Promise<{
   url: string;
-  requests: Array<{ method: string; path: string; query: Record<string, string>; body: unknown }>;
+  requests: Array<{ method: string; path: string; query: Record<string, string>; headers: IncomingMessage['headers']; body: unknown }>;
   close: () => Promise<void>;
 }> {
-  const requests: Array<{ method: string; path: string; query: Record<string, string>; body: unknown }> = [];
+  const requests: Array<{ method: string; path: string; query: Record<string, string>; headers: IncomingMessage['headers']; body: unknown }> = [];
   const server = createHttpServer((req, res) => {
     void (async () => {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1');
@@ -520,6 +581,7 @@ async function startMockRenderWeb(): Promise<{
         method: req.method ?? 'GET',
         path: url.pathname,
         query: Object.fromEntries(url.searchParams.entries()),
+        headers: req.headers,
         body,
       });
 
@@ -529,7 +591,7 @@ async function startMockRenderWeb(): Promise<{
           sessions: [
             {
               sessionId: 'sess_cli',
-              tokenMint: 'TokenMint1111111111111111111111111111111111',
+              tokenMint: 'So11111111111111111111111111111111111111112',
               capAmount: '10',
               spentAmount: '0',
               status: 'active',
@@ -546,11 +608,33 @@ async function startMockRenderWeb(): Promise<{
         }, 201);
         return;
       }
-      if (req.method === 'POST' && url.pathname === '/api/streaming/sessions/sess_cli/voucher') {
+      if (req.method === 'POST' && url.pathname === '/api/streaming/sessions/sess_cli/voucher-relay') {
         writeJsonResponse(res, {
           accepted: true,
           remaining: '9.95',
-          voucher: { sessionId: 'sess_cli', amount: '0.05' },
+          spentAmount: '0.05',
+          voucherId: 'voucher_cli',
+          voucherHash: 'voucher_hash_cli',
+          voucher: {
+            id: 'voucher_cli',
+            sessionId: 'sess_cli',
+            nonce: 'nonce_cli',
+            amount: '0.05',
+            recipient: '11111111111111111111111111111111',
+            voucherHash: 'voucher_hash_cli',
+            signature: 'signature_cli',
+            issuedAt: '2030-01-01T00:00:00.000Z',
+            createdAt: '2030-01-01T00:00:00.000Z',
+          },
+          signedVoucher: {
+            schema: 'streaming/voucher/0.1',
+            sessionId: 'sess_cli',
+            nonce: 'nonce_cli',
+            amount: '0.05',
+            recipient: '11111111111111111111111111111111',
+            issuedAt: '2030-01-01T00:00:00.000Z',
+            signature: 'signature_cli',
+          },
         });
         return;
       }
@@ -574,6 +658,18 @@ async function startMockRenderWeb(): Promise<{
       }
       if (req.method === 'POST' && url.pathname === '/api/streaming/sessions/sess_cli/settle') {
         writeJsonResponse(res, { sessionId: 'sess_cli', settled: 1, failed: 0 });
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/api/mpp/config') {
+        writeJsonResponse(res, { acceptedRails: ['sol', 'usdc'], maxChallengeAmount: '10' });
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/api/mpp/challenge') {
+        writeJsonResponse(res, {
+          approvalId: 'approval_mpp_cli',
+          requestId: 'approval_mpp_cli',
+          expiresAt: '2026-05-16T13:00:00.000Z',
+        }, 201);
         return;
       }
       writeJsonResponse(res, { error: 'not found' }, 404);

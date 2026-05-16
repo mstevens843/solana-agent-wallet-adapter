@@ -14,7 +14,7 @@ export interface ParseMppChallengeOptions {
   maxBytes?: number;
 }
 
-const DEFAULT_MAX_BYTES = 64 * 1024;
+const DEFAULT_MAX_BYTES = 32 * 1024;
 const AMOUNT_PATTERN = /^\d+(\.\d{1,18})?$/;
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:?\d{2})$/;
 const BASE58_PATTERN = /^[1-9A-HJ-NP-Za-km-z]+$/;

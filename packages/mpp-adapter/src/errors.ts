@@ -12,8 +12,7 @@ export type MppErrorCode =
   | 'mint_not_allowed'
   | 'amount_exceeds_cap'
   | 'invalid_signature'
-  | 'receipt_hash_mismatch'
-  | 'not_implemented';
+  | 'receipt_hash_mismatch';
 
 export class MppParseError extends Error {
   readonly path?: string;

@@ -11,8 +11,10 @@ import {
   MppParseError,
   MppVerifyError,
   challengeToApprovalParams,
+  compareDecimalStrings,
   parseMppChallenge,
   verifyMppChallenge,
+  type MppPaymentMethod,
 } from '@solana-agent-wallet-adapter/mpp-adapter';
 import {
   computeVoucherHash,
@@ -5723,6 +5725,7 @@ function registerJupiterRecurringTools(
             expectedCluster: options.config.cluster,
             allowedMints: options.config.tokens.map((token) => token.mint),
           });
+          enforceMppChallengeAmountCap(challenge.amount, verified.paymentMethod, challenge.currency, options.config);
           const walletAddress = await options.backend.getAddress();
           const approvalParams = challengeToApprovalParams(challenge, walletAddress, {
             paymentMethod: verified.paymentMethod,
@@ -5786,7 +5789,7 @@ function registerJupiterRecurringTools(
     'solana_streaming_session_list',
     {
       description:
-        'List streaming-payment sessions for the connected wallet (or for a specific wallet, if supplied).',
+        'List streaming-payment sessions for the connected wallet. Optional walletAddress is a guard and must match the authenticated render-web wallet session.',
       inputSchema: {
         walletAddress: z.string().min(32).optional(),
       },
@@ -5823,7 +5826,7 @@ function registerJupiterRecurringTools(
     'solana_streaming_voucher_sign',
     {
       description:
-        'Sign and submit a streaming-payment voucher under an active session through render-web server-relayed signing.',
+        'Sign and submit a streaming-payment voucher under a server-custody streaming session through render-web relayed signing. Android-native sessions must sign on device and submit the signed voucher.',
       inputSchema: {
         sessionId: z.string().min(4),
         amount: z.string().min(1),
@@ -5833,7 +5836,7 @@ function registerJupiterRecurringTools(
     async (input) => traceTool(
       'solana_streaming_voucher_sign',
       { cluster, input },
-      async () => jsonReply(await streamingRenderWebRequest(`/api/streaming/sessions/${encodeURIComponent(input.sessionId)}/voucher`, {
+      async () => jsonReply(await streamingRenderWebRequest(`/api/streaming/sessions/${encodeURIComponent(input.sessionId)}/voucher-relay`, {
         method: 'POST',
         body: JSON.stringify({
           amount: input.amount,
@@ -6408,6 +6411,36 @@ function usefulPrompts(config: AgentWalletConfig) {
       })),
     },
   };
+}
+
+function enforceMppChallengeAmountCap(
+  amount: string,
+  paymentMethod: MppPaymentMethod,
+  currency: string,
+  config: AgentWalletConfig,
+): void {
+  if (paymentMethod.kind === 'solana-sol') {
+    if (config.mainnet.maxSolTransfer && compareDecimalStrings(amount, config.mainnet.maxSolTransfer) > 0) {
+      throw new ProtocolError(
+        'invalid_request',
+        `MPP SOL amount ${amount} exceeds configured maxSolTransfer ${config.mainnet.maxSolTransfer}.`,
+      );
+    }
+    return;
+  }
+  const token = config.tokens.find((candidate) =>
+    candidate.mint === paymentMethod.mint ||
+    candidate.symbol.toLowerCase() === currency.trim().toLowerCase(),
+  );
+  if (!token) {
+    throw new ProtocolError('invalid_request', `MPP SPL mint ${paymentMethod.mint ?? '(missing)'} is not configured.`);
+  }
+  if (token.maxTransfer && compareDecimalStrings(amount, token.maxTransfer) > 0) {
+    throw new ProtocolError(
+      'invalid_request',
+      `MPP ${token.symbol} amount ${amount} exceeds configured maxTransfer ${token.maxTransfer}.`,
+    );
+  }
 }
 
 function jsonReply(payload: unknown) {

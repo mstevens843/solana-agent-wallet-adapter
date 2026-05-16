@@ -175,6 +175,7 @@ describe('mcp server tools', () => {
     expect(result.tools.map((tool) => tool.name)).toContain('solana_wallet_status');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_portfolio_summary');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_transfer_sol');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_mpp_challenge_handler');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_blink_action');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_kamino_deposit');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_marginfi_health_preview');
@@ -201,6 +202,48 @@ describe('mcp server tools', () => {
     expect(result.tools.map((tool) => tool.name)).toContain('solana_jupiter_perps_pool_snapshot');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_jupiter_perps_custody_snapshot');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_jupiter_perps_position_snapshot');
+  });
+
+  it('creates MPP prepared actions and enforces configured transfer caps', async () => {
+    await closeServer?.();
+    closeServer = undefined;
+
+    const linked = InMemoryTransport.createLinkedPair();
+    const server = createServer({
+      backend: createMockBackend(),
+      actionConfig: {
+        ...DEFAULT_CONFIG,
+        cluster: 'devnet',
+        rpcUrl: 'https://api.devnet.solana.com',
+      },
+      preparedActions: new JsonPreparedActionStore(await tempStorePath()),
+    });
+    client = new Client({ name: 'mcp-server-test', version: '0.0.0' });
+    await Promise.all([server.connect(linked[1]), client.connect(linked[0])]);
+    closeServer = async () => {
+      await Promise.all([client.close(), server.close()]);
+    };
+
+    const prepared = await callTool('solana_mpp_challenge_handler', {
+      challenge: mppChallenge({ amount: '2.50' }),
+    });
+    const payload = JSON.parse(textOf(prepared));
+    expect(payload.summary).toContain('via MPP');
+    expect(payload.challengeHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(payload.preparedAction).toMatchObject({
+      kind: 'transfer_spl',
+      params: {
+        metadata: {
+          connectorId: 'mpp',
+        },
+      },
+    });
+
+    const capped = await callTool('solana_mpp_challenge_handler', {
+      challenge: mppChallenge({ amount: '26' }),
+    });
+    expect(capped.isError).toBe(true);
+    expect(textOf(capped)).toContain('exceeds configured maxTransfer');
   });
 
   it('describes connector write tools as wallet approval bounded', async () => {
@@ -281,14 +324,32 @@ describe('mcp server tools', () => {
           ephemeralSignerPubkey: 'signer-pubkey',
         }, 201);
       }
-      if (url.pathname === '/api/streaming/sessions/sess_create/voucher') {
+      if (url.pathname === '/api/streaming/sessions/sess_create/voucher-relay') {
         return jsonResponse({
           accepted: true,
           remaining: '9.95',
+          spentAmount: '0.05',
+          voucherId: 'voucher_create_1',
+          voucherHash: 'voucher_hash_create_1',
           voucher: {
+            id: 'voucher_create_1',
             sessionId: 'sess_create',
+            nonce: 'nonce_create_1',
             amount: '0.05',
-            recipient: 'Recipient111111111111111111111111111111111',
+            recipient: '11111111111111111111111111111111',
+            voucherHash: 'voucher_hash_create_1',
+            signature: 'signature_create_1',
+            issuedAt: '2030-01-01T00:00:00.000Z',
+            createdAt: '2030-01-01T00:00:00.000Z',
+          },
+          signedVoucher: {
+            schema: 'streaming/voucher/0.1',
+            sessionId: 'sess_create',
+            nonce: 'nonce_create_1',
+            amount: '0.05',
+            recipient: '11111111111111111111111111111111',
+            issuedAt: '2030-01-01T00:00:00.000Z',
+            signature: 'signature_create_1',
           },
         });
       }
@@ -307,38 +368,47 @@ describe('mcp server tools', () => {
     };
 
     const created = JSON.parse(textOf(await callTool('solana_streaming_session_create', {
-      tokenMint: 'TokenMint1111111111111111111111111111111111',
+      tokenMint: 'So11111111111111111111111111111111111111112',
       capAmount: '10',
       expiresAt: '2030-01-01T00:00:00.000Z',
-      recipientAllowlist: ['Recipient111111111111111111111111111111111'],
+      recipientAllowlist: ['11111111111111111111111111111111'],
     })));
     const spent = JSON.parse(textOf(await callTool('solana_streaming_voucher_sign', {
       sessionId: 'sess_create',
       amount: '0.05',
-      recipient: 'Recipient111111111111111111111111111111111',
+      recipient: '11111111111111111111111111111111',
     })));
 
     expect(created).toMatchObject({ sessionId: 'sess_create', approveTx: 'approve-tx-base64' });
-    expect(spent).toMatchObject({ accepted: true, remaining: '9.95' });
+    expect(spent).toMatchObject({
+      accepted: true,
+      remaining: '9.95',
+      signedVoucher: {
+        sessionId: 'sess_create',
+        nonce: 'nonce_create_1',
+        amount: '0.05',
+        recipient: '11111111111111111111111111111111',
+      },
+    });
     expect(requests).toEqual([
       {
         method: 'POST',
         path: '/api/streaming/sessions',
         cookie: 'session=test-cookie',
         body: {
-          tokenMint: 'TokenMint1111111111111111111111111111111111',
+          tokenMint: 'So11111111111111111111111111111111111111112',
           capAmount: '10',
           expiresAt: '2030-01-01T00:00:00.000Z',
-          recipientAllowlist: ['Recipient111111111111111111111111111111111'],
+          recipientAllowlist: ['11111111111111111111111111111111'],
         },
       },
       {
         method: 'POST',
-        path: '/api/streaming/sessions/sess_create/voucher',
+        path: '/api/streaming/sessions/sess_create/voucher-relay',
         cookie: 'session=test-cookie',
         body: {
           amount: '0.05',
-          recipient: 'Recipient111111111111111111111111111111111',
+          recipient: '11111111111111111111111111111111',
         },
       },
     ]);
@@ -353,7 +423,7 @@ describe('mcp server tools', () => {
       sessionId: 'sess_verify',
       nonce: 'nonce-1',
       amount: '0.05',
-      recipient: 'Recipient111111111111111111111111111111111',
+      recipient: '11111111111111111111111111111111',
       issuedAt: '2030-01-01T00:00:00.000Z',
     });
     vi.stubEnv('AGENTIC_RENDER_WEB_URL', 'http://render.test');
@@ -620,6 +690,27 @@ describe('mcp server tools', () => {
     expect(textOf(executed)).toContain('is not due yet');
   });
 });
+
+function mppChallenge(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    protocolVersion: 'mpp/0.1',
+    nonce: 'mpp_mcp_nonce',
+    amount: '2.50',
+    currency: 'USDC',
+    resourceUrl: 'https://merchant.example/resource/123',
+    expiresAt: '2030-01-01T00:00:00.000Z',
+    paymentMethods: [
+      {
+        kind: 'solana-spl',
+        mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        recipient: 'BvgrFr5Bcaa9NudH3DCxgMnHV1FT1nzD5JtMHsmpKnFB',
+        network: 'devnet',
+      },
+    ],
+    merchant: { id: 'merchant_1', name: 'Acme' },
+    ...overrides,
+  };
+}
 
 async function callTool(name: string, args: Record<string, unknown>) {
   return client.callTool({ name, arguments: args });

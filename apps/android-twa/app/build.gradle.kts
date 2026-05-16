@@ -95,6 +95,15 @@ val deviceAgentEnabled = booleanFlag(
     "AGENTIC_ANDROID_DEVICE_AGENT",
     false,
 )
+val streamingSignerInput = providers.gradleProperty("agenticStreamingSigner").orNull
+    ?: providers.gradleProperty("AGENTIC_ANDROID_STREAMING_SIGNER").orNull
+    ?: System.getenv("AGENTIC_ANDROID_STREAMING_SIGNER")
+    ?: System.getenv("agenticStreamingSigner")
+val streamingSignerEnabled = booleanFlag(
+    streamingSignerInput,
+    "AGENTIC_ANDROID_STREAMING_SIGNER",
+    true,
+)
 val deviceAgentWalletAllowlist = propertyOrEnv("AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST")
     ?: "4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd,7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w"
 val cloudApiBaseUrl = propertyOrEnv("AGENTIC_ANDROID_CLOUD_API_BASE_URL")
@@ -165,7 +174,7 @@ android {
         manifestPlaceholders["agenticHost"] = launchHost
         manifestPlaceholders["agenticWebFallbackEnabled"] = enableWebFallback.toString()
         manifestPlaceholders["usesCleartextTraffic"] = (usesCleartext || allowLanBridge).toString()
-        manifestPlaceholders["agenticDeviceAgentEnabled"] = deviceAgentEnabled.toString()
+        manifestPlaceholders["agenticDeviceAgentEnabled"] = (deviceAgentEnabled || streamingSignerEnabled).toString()
 
         buildConfigField("String", "AGENTIC_LAUNCH_URL", "\"${launchUrl.replace("\"", "\\\"")}\"")
         buildConfigField("String", "AGENTIC_LAUNCH_SCHEME", "\"${launchScheme.replace("\"", "\\\"")}\"")
@@ -175,6 +184,7 @@ android {
         buildConfigField("boolean", "AGENTIC_ANDROID_ENABLE_WEB_FALLBACK", enableWebFallback.toString())
         buildConfigField("boolean", "AGENTIC_ANDROID_ALLOW_LAN_BRIDGE", allowLanBridge.toString())
         buildConfigField("boolean", "AGENTIC_ANDROID_DEVICE_AGENT", deviceAgentEnabled.toString())
+        buildConfigField("boolean", "AGENTIC_ANDROID_STREAMING_SIGNER", streamingSignerEnabled.toString())
         buildConfigField("String", "AGENTIC_ANDROID_CLOUD_API_BASE_URL", "\"${cloudApiBaseUrl.replace("\"", "\\\"")}\"")
         resValue("string", "launch_url", launchUrl)
         resValue("string", "asset_statements", escapedResValue(assetStatements))
@@ -252,6 +262,7 @@ val buildBundledWebAssets = tasks.register<Exec>("buildBundledWebAssets") {
     environment("VITE_AGENTIC_ANDROID_SHOW_EXAMPLE_TAB", showExampleTab.toString())
     environment("VITE_AGENTIC_ANDROID_ALLOW_LAN_BRIDGE", allowLanBridge.toString())
     environment("VITE_AGENTIC_ANDROID_DEVICE_AGENT", deviceAgentEnabled.toString())
+    environment("VITE_AGENTIC_ANDROID_STREAMING_SIGNER", streamingSignerEnabled.toString())
     environment("VITE_AGENTIC_DEVICE_AGENT", deviceAgentEnabled.toString())
     environment("VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST", deviceAgentWalletAllowlist)
     environment("VITE_AGENTIC_CLOUD_API_BASE_URL", cloudApiBaseUrl)
@@ -271,6 +282,7 @@ val typecheckBundledWebAssets = tasks.register<Exec>("typecheckBundledWebAssets"
     environment("VITE_AGENTIC_ANDROID_SHOW_EXAMPLE_TAB", showExampleTab.toString())
     environment("VITE_AGENTIC_ANDROID_ALLOW_LAN_BRIDGE", allowLanBridge.toString())
     environment("VITE_AGENTIC_ANDROID_DEVICE_AGENT", deviceAgentEnabled.toString())
+    environment("VITE_AGENTIC_ANDROID_STREAMING_SIGNER", streamingSignerEnabled.toString())
     environment("VITE_AGENTIC_DEVICE_AGENT", deviceAgentEnabled.toString())
     environment("VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST", deviceAgentWalletAllowlist)
     environment("VITE_AGENTIC_CLOUD_API_BASE_URL", cloudApiBaseUrl)

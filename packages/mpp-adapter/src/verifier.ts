@@ -15,6 +15,7 @@ export interface VerifyMppChallengeOptions {
   clockNow?: Date;
   expectedCluster?: MppCluster;
   maxAmount?: string;
+  allowedRails?: readonly MppPaymentMethod['kind'][];
   allowedMints?: readonly string[];
 }
 
@@ -81,13 +82,19 @@ export function canonicalChallengeHash(challenge: MppChallenge): string {
 
 export function selectSupportedPaymentMethod(
   challenge: MppChallenge,
-  opts: Pick<VerifyMppChallengeOptions, 'expectedCluster' | 'allowedMints'> = {},
+  opts: Pick<VerifyMppChallengeOptions, 'expectedCluster' | 'allowedRails' | 'allowedMints'> = {},
 ): MppPaymentMethod {
+  const allowedRails = normalizeAllowedRails(opts.allowedRails);
   const allowedMints = normalizeAllowedMints(opts.allowedMints);
+  let sawRailDenied = false;
   let sawClusterMismatch = false;
   let sawMintDenied = false;
   for (const method of challenge.paymentMethods) {
     if (method.kind !== 'solana-sol' && method.kind !== 'solana-spl') continue;
+    if (allowedRails && !allowedRails.has(method.kind)) {
+      sawRailDenied = true;
+      continue;
+    }
     if (opts.expectedCluster && method.network !== opts.expectedCluster) {
       sawClusterMismatch = true;
       continue;
@@ -101,6 +108,9 @@ export function selectSupportedPaymentMethod(
     }
     return method;
   }
+  if (sawRailDenied) {
+    throw new MppVerifyError('unsupported_rail', 'challenge does not include an accepted Solana payment rail.', '$.paymentMethods');
+  }
   if (sawMintDenied) {
     throw new MppVerifyError('mint_not_allowed', 'challenge does not include an allowed SPL mint.', '$.paymentMethods');
   }
@@ -108,6 +118,11 @@ export function selectSupportedPaymentMethod(
     throw new MppVerifyError('unsupported_rail', 'challenge does not include a Solana payment method for the expected cluster.', '$.paymentMethods');
   }
   throw new MppVerifyError('unsupported_rail', 'challenge does not include a supported Solana payment method.', '$.paymentMethods');
+}
+
+function normalizeAllowedRails(allowedRails: readonly MppPaymentMethod['kind'][] | undefined): Set<MppPaymentMethod['kind']> | undefined {
+  if (!allowedRails) return undefined;
+  return new Set(allowedRails.filter((rail) => rail === 'solana-sol' || rail === 'solana-spl'));
 }
 
 function normalizeAllowedMints(allowedMints: readonly string[] | undefined): Set<string> | undefined {

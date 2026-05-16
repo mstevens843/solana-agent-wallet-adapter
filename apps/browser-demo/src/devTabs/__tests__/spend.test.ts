@@ -109,4 +109,10 @@ describe('Spend dev tab', () => {
     expect(html).toContain('0.1 SOL Interval Days');
     expect(html).toContain('3.25 of 10 USDC streamed');
   });
+
+  it('links streaming rows to the Sessions detail view', () => {
+    const html = __spendForTests.spendRowHtml(envelopes()[2]!);
+    expect(html).toContain('data-tab="sessions"');
+    expect(html).toContain('data-spend-open="stream_live"');
+  });
 });
