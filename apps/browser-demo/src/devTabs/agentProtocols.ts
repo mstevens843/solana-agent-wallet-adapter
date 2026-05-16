@@ -1,7 +1,5 @@
 import './agentProtocols.css';
-import { isDevWallet } from '../devGate.js';
 import { registerDevTab } from '../devTabRegistry.js';
-import { getConnectedAddress } from '../walletState.js';
 import { renderAgentCardPanel } from './agentCard.js';
 import { renderExternalAgentsPanel } from './externalAgents.js';
 import { renderPayOutPanel } from './payOut.js';
@@ -133,7 +131,7 @@ registerDevTab({
   id: 'agent-protocols',
   label: 'Agent Payments',
   mobileLabel: 'Agents',
-  guard: () => isDevWallet(getConnectedAddress()),
+  guard: () => true,
   render: renderAgentProtocolsPanel,
 });
 

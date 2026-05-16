@@ -1,7 +1,5 @@
 import './skills.css';
-import { isDevWallet } from '../devGate.js';
 import { registerDevTab } from '../devTabRegistry.js';
-import { getConnectedAddress } from '../walletState.js';
 import {
   findSkillsSubTab,
   getActiveSkillsSubTab,
@@ -130,6 +128,6 @@ function renderSkillsPanel(): string {
 registerDevTab({
   id: 'skills',
   label: 'Skills',
-  guard: () => isDevWallet(getConnectedAddress()),
+  guard: () => true,
   render: renderSkillsPanel,
 });

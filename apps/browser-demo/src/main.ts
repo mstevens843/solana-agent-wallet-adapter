@@ -304,11 +304,11 @@ import {
 } from './workspaceBackup.js';
 import './styles.css';
 
-// Dev-only Layer 1 integration hooks. These imports register dev tabs
-// (Spend, Agent Payments, Skills, Sessions) and approval-card badges
-// (AP2 verified, ACP outbound) as side effects at module load. Visibility is
-// gated client-side by `isDevWallet(...)` inside each tab's guard() and
-// server-side by `isAllowedDevWallet(...)` for /api/* routes.
+// Layer 1 integration hooks. These imports register app tabs (Spend, Agent
+// Payments, Skills, Sessions) and approval-card badges (AP2 verified, ACP
+// outbound) as side effects at module load. Spend remains guarded by wallet
+// eligibility; the More menu surfaces are always visible, with API/action
+// availability enforced inside the panels and server routes.
 import { findDevTab, listDevTabs } from './devTabRegistry.js';
 import { renderApprovalBadges } from './approvalBadges.js';
 import {
@@ -379,7 +379,7 @@ type ActiveTab =
   | 'schedule'
   | 'labs'
   | 'preferences'
-  // Dev-only Layer 1 tab ids registered at runtime via DEV_TAB_REGISTRY.
+  // Layer 1 tab ids registered at runtime via DEV_TAB_REGISTRY.
   // The (string & {}) intersection preserves literal-union autocomplete
   // while permitting arbitrary registry-supplied ids without an
   // exhaustiveness break.
@@ -9636,9 +9636,9 @@ function activePanel(): string {
     case 'preferences':
       return preferencesPanel();
     default: {
-      // Dev-only Layer 1 tab fallthrough. If the activeTab id matches a
-      // registered dev tab AND its guard passes, render its panel. Otherwise
-      // fall back to the command center so a stale id never strands the UI.
+      // Layer 1 tab fallthrough. If the activeTab id matches a registered tab
+      // AND its guard passes, render its panel. Otherwise fall back to the
+      // command center so a stale id never strands the UI.
       const devTab = findDevTab(state.activeTab);
       if (devTab && devTab.guard()) return devTab.render();
       return commandCenterPanel();
@@ -11346,11 +11346,10 @@ function expandableCopyHtml(
   if (normalized.length <= previewLength) {
     return `<p class="${escapeHtml(['expandable-copy-static', opts.paragraphClassName].filter(Boolean).join(' '))}">${escapeHtml(value.trim())}</p>`;
   }
-  const preview = compactSentence(normalized, previewLength);
   return `
     <details class="${escapeHtml(className)}">
       <summary>
-        <span class="expandable-copy-preview">${escapeHtml(preview)}</span>
+        <span class="expandable-copy-preview">${escapeHtml(normalized)}</span>
         <span class="expandable-copy-toggle">
           <span class="expandable-copy-show">+ ${escapeHtml(opts.showLabel ?? 'Show full text')}</span>
           <span class="expandable-copy-hide">- ${escapeHtml(opts.hideLabel ?? 'Hide text')}</span>
@@ -22966,7 +22965,215 @@ function normalizeFactSetToEvidenceFacts(
       ...(fact.detail ? { detail: fact.detail } : {}),
     }));
   }
+  // The enrichers collapse per-mint Birdeye security/price and CoinGecko market data
+  // into facts.tokenMint.detail.tokens[…]. The router declares birdeye.token_security,
+  // birdeye.price_multi, and coingecko.token_evidence as separate required routes, so
+  // the gate needs separate AgentEvidenceFacts under those routeIds — otherwise it
+  // marks them missingRequired even when the data is present in the tokenMint bundle.
+  emitTokenDerivedEvidenceFacts(factSet, requirementByRoute, evidenceFacts);
   return evidenceFacts;
+}
+
+function emitTokenDerivedEvidenceFacts(
+  factSet: AgentReviewFactSet,
+  requirementByRoute: Map<string, AgentEvidenceRequirement>,
+  evidenceFacts: AgentEvidenceFact[],
+): void {
+  const tokenMintFact = factSet.tokenMint;
+  const tokenMintDetail = asRecord(tokenMintFact?.detail);
+  const tokensValue = tokenMintDetail?.tokens;
+  if (!Array.isArray(tokensValue)) return;
+  const tokens = tokensValue.filter(
+    (entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === 'object' && !Array.isArray(entry)),
+  );
+  if (!tokens.length) return;
+
+  const checkedAt = tokenMintFact?.checkedAt ?? new Date().toISOString();
+  const factState = tokenMintFact?.state;
+  const tone: AgentEvidenceFact['tone'] =
+    factState === 'fail' ? 'fail'
+      : factState === 'warn' || factState === 'missing' ? 'warn'
+        : 'good';
+  const severity: AgentEvidenceFact['severity'] =
+    factState === 'fail' ? 'block'
+      : factState === 'warn' || factState === 'missing' ? 'warn'
+        : 'info';
+
+  emitTokenSecurityEvidence(tokens, requirementByRoute, evidenceFacts, checkedAt, tone, severity);
+  emitTokenBirdeyePriceEvidence(tokens, requirementByRoute, evidenceFacts, checkedAt, tone, severity);
+  emitTokenCoinGeckoEvidence(tokens, requirementByRoute, evidenceFacts, checkedAt, tone, severity);
+}
+
+function tokenIdentityLabel(token: Record<string, unknown>): string {
+  const role = String(token.role ?? 'token').toUpperCase();
+  const mint = stringField(token.mint);
+  const label = stringField(token.symbol)
+    ?? stringField(token.label)
+    ?? (mint ? shortHexMint(mint) : 'token');
+  return `${role} ${label}`;
+}
+
+function formatAuthorityState(value: unknown): string {
+  if (value === null) return 'disabled';
+  if (typeof value === 'string' && value.trim()) {
+    const short = value.length > 8 ? `${value.slice(0, 8)}…` : value;
+    return `set (${short})`;
+  }
+  return 'unknown';
+}
+
+function formatTokenAgeDays(ageSeconds: unknown): string {
+  if (typeof ageSeconds !== 'number' || !Number.isFinite(ageSeconds) || ageSeconds < 0) {
+    return 'age unknown';
+  }
+  if (ageSeconds < 86400) {
+    const hours = Math.max(1, Math.floor(ageSeconds / 3600));
+    return `age ${hours}h`;
+  }
+  const days = Math.floor(ageSeconds / 86400);
+  return `age ${days}d`;
+}
+
+function emitTokenSecurityEvidence(
+  tokens: Record<string, unknown>[],
+  requirementByRoute: Map<string, AgentEvidenceRequirement>,
+  evidenceFacts: AgentEvidenceFact[],
+  checkedAt: string,
+  tone: AgentEvidenceFact['tone'],
+  severity: AgentEvidenceFact['severity'],
+): void {
+  const routeId = 'birdeye.token_security';
+  const tokensWithSecurity = tokens.filter((token) => asRecord(token.security) !== undefined);
+  if (!tokensWithSecurity.length) return;
+  const req = requirementByRoute.get(routeId);
+  const value = tokensWithSecurity.map((token) => {
+    const security = asRecord(token.security) ?? {};
+    return [
+      tokenIdentityLabel(token),
+      `mint ${formatAuthorityState(security.mintAuthority)}`,
+      `freeze ${formatAuthorityState(security.freezeAuthority)}`,
+      formatTokenAgeDays(security.ageSeconds),
+    ].join(', ');
+  }).join('; ');
+  evidenceFacts.push(normalizeAgentEvidenceFact({
+    id: 'fact.birdeye.token_security',
+    routeId,
+    ...(req ? { requirementId: req.id } : {}),
+    label: 'Token security',
+    value,
+    tone,
+    severity,
+    source: 'birdeye',
+    checkedAt,
+    ttlMs: req?.ttlMs ?? Number.POSITIVE_INFINITY,
+    detail: {
+      tokens: tokensWithSecurity.map((token) => ({
+        mint: stringField(token.mint),
+        symbol: stringField(token.symbol),
+        security: asRecord(token.security),
+      })),
+    },
+  }));
+}
+
+function emitTokenBirdeyePriceEvidence(
+  tokens: Record<string, unknown>[],
+  requirementByRoute: Map<string, AgentEvidenceRequirement>,
+  evidenceFacts: AgentEvidenceFact[],
+  checkedAt: string,
+  tone: AgentEvidenceFact['tone'],
+  severity: AgentEvidenceFact['severity'],
+): void {
+  const routeId = 'birdeye.price_multi';
+  const tokensWithBirdeyePrice = tokens.filter((token) => {
+    const market = asRecord(token.market);
+    if (!market) return false;
+    return market.source === 'birdeye' && numberField(market.priceUsd) !== undefined;
+  });
+  if (!tokensWithBirdeyePrice.length) return;
+  const req = requirementByRoute.get(routeId);
+  const value = tokensWithBirdeyePrice.map((token) => {
+    const market = asRecord(token.market) ?? {};
+    const priceUsd = numberField(market.priceUsd)!;
+    const liquidity = numberField(market.liquidityUsd);
+    const pieces = [
+      tokenIdentityLabel(token),
+      `price ${formatUsdEstimate(priceUsd)}`,
+      liquidity !== undefined ? `liquidity ${formatUsdCompact(liquidity)}` : '',
+    ].filter(Boolean);
+    return pieces.join(' ');
+  }).join('; ');
+  evidenceFacts.push(normalizeAgentEvidenceFact({
+    id: 'fact.birdeye.price_multi',
+    routeId,
+    ...(req ? { requirementId: req.id } : {}),
+    label: 'Token price (BirdEye)',
+    value,
+    tone,
+    severity,
+    source: 'birdeye',
+    checkedAt,
+    ttlMs: req?.ttlMs ?? Number.POSITIVE_INFINITY,
+    detail: {
+      tokens: tokensWithBirdeyePrice.map((token) => ({
+        mint: stringField(token.mint),
+        symbol: stringField(token.symbol),
+        market: asRecord(token.market),
+      })),
+    },
+  }));
+}
+
+function emitTokenCoinGeckoEvidence(
+  tokens: Record<string, unknown>[],
+  requirementByRoute: Map<string, AgentEvidenceRequirement>,
+  evidenceFacts: AgentEvidenceFact[],
+  checkedAt: string,
+  tone: AgentEvidenceFact['tone'],
+  severity: AgentEvidenceFact['severity'],
+): void {
+  const routeId = 'coingecko.token_evidence';
+  const tokensWithCoinGecko = tokens.filter((token) => {
+    const market = asRecord(token.market);
+    if (!market) return false;
+    if (market.source === 'coingecko') return true;
+    return asRecord(market.coingecko) !== undefined;
+  });
+  if (!tokensWithCoinGecko.length) return;
+  const req = requirementByRoute.get(routeId);
+  const value = tokensWithCoinGecko.map((token) => {
+    const market = asRecord(token.market) ?? {};
+    const coingecko = asRecord(market.coingecko) ?? market;
+    const priceUsd = numberField(coingecko.priceUsd) ?? numberField(market.priceUsd);
+    const marketCap = numberField(coingecko.marketCapUsd) ?? numberField(market.marketCapUsd);
+    const volume24h = numberField(coingecko.volume24hUsd) ?? numberField(market.volume24hUsd);
+    const pieces = [
+      tokenIdentityLabel(token),
+      priceUsd !== undefined ? `price ${formatUsdEstimate(priceUsd)}` : '',
+      marketCap !== undefined ? `mcap ${formatUsdCompact(marketCap)}` : '',
+      volume24h !== undefined ? `vol24h ${formatUsdCompact(volume24h)}` : '',
+    ].filter(Boolean);
+    return pieces.join(' ');
+  }).join('; ');
+  evidenceFacts.push(normalizeAgentEvidenceFact({
+    id: 'fact.coingecko.token_evidence',
+    routeId,
+    ...(req ? { requirementId: req.id } : {}),
+    label: 'Token market evidence (CoinGecko)',
+    value,
+    tone,
+    severity,
+    source: 'coingecko',
+    checkedAt,
+    ttlMs: req?.ttlMs ?? Number.POSITIVE_INFINITY,
+    detail: {
+      tokens: tokensWithCoinGecko.map((token) => ({
+        mint: stringField(token.mint),
+        symbol: stringField(token.symbol),
+        market: asRecord(token.market),
+      })),
+    },
+  }));
 }
 
 interface AgentReviewEvidenceBundle {
@@ -34846,8 +35053,8 @@ interface MoreMenuItem {
 }
 
 function moreMenuItems(): MoreMenuItem[] {
-  // "Save Proof" is always present (replaces its old top-level slot). Dev-gated
-  // tabs opt in only when their registered guard returns true (i.e. dev wallet connected).
+  // "Save Proof" is always present (replaces its old top-level slot). Registered
+  // More surfaces are included when their surface guard allows rendering.
   const items: MoreMenuItem[] = [{ id: 'labs', label: 'Save Proof' }];
   for (const tab of listDevTabs()) {
     if (tab.id === 'spend') continue;

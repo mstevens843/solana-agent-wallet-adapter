@@ -5,6 +5,9 @@ import type {
   StreamingVoucherRecord,
   WorkflowCluster,
 } from '@solana-agent-wallet-adapter/workflow';
+import { getConnectedAddress } from './walletState.js';
+
+const DEV_WALLET_HEADER = 'x-agentic-wallet-address';
 
 export type StreamingApiErrorCode =
   | 'network_error'
@@ -220,14 +223,17 @@ export async function getStreamingReceipt(sessionId: string): Promise<unknown> {
 async function streamingRequest(path: string, init: RequestInit): Promise<unknown> {
   let response: Response;
   try {
+    const headers = new Headers(init.headers);
+    headers.set('Accept', 'application/json');
+    if (init.method && init.method !== 'GET' && !headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json');
+    }
+    const walletAddress = getConnectedAddress();
+    if (walletAddress) headers.set(DEV_WALLET_HEADER, walletAddress);
     response = await fetch(path, {
       credentials: 'include',
       ...init,
-      headers: {
-        Accept: 'application/json',
-        ...(init.method && init.method !== 'GET' ? { 'Content-Type': 'application/json' } : {}),
-        ...(init.headers ?? {}),
-      },
+      headers,
     });
   } catch (err) {
     throw new StreamingApiError('network_error', err instanceof Error ? err.message : 'Network error');

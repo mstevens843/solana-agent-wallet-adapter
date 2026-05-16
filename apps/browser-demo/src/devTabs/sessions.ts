@@ -4,7 +4,6 @@ import type {
   StreamingSessionRecord,
   StreamingVoucherRecord,
 } from '@solana-agent-wallet-adapter/workflow';
-import { isDevWallet } from '../devGate.js';
 import { registerDevTab } from '../devTabRegistry.js';
 import {
   DEFAULT_USDC_MINT,
@@ -30,7 +29,7 @@ import {
   type SessionsStatusFilter,
 } from '../sessionState.js';
 import { addStreamingApprovalCompletedListener } from '../streamingApprovalEvents.js';
-import { getConnectedAddress, getConnectedCluster } from '../walletState.js';
+import { getConnectedCluster } from '../walletState.js';
 
 const FILTERS: readonly SessionsStatusFilter[] = ['active', 'expired', 'settled', 'revoked'];
 const ROOT_SELECTOR = '[data-sessions-root]';
@@ -595,7 +594,7 @@ registerDevTab({
   id: 'sessions',
   label: 'Sessions',
   mobileLabel: 'Sessions',
-  guard: () => isDevWallet(getConnectedAddress()),
+  guard: () => true,
   render: renderSessionsPanel,
 });
 

@@ -42,11 +42,14 @@ const SKILLS_DETAIL_RE = /^\/api\/skills\/([a-z0-9][a-z0-9-]{0,63})$/;
 const SKILLS_INSTALL_ACTION_RE = /^\/api\/skills\/installs\/([A-Za-z0-9_-]+)\/(pause|resume|uninstall)$/;
 const AGGREGATOR_SKILL_RE = /^\/api\/aggregator\/skills\/([a-z0-9-]+)\/?$/;
 const AGGREGATOR_WALLET_RE = /^\/api\/aggregator\/wallets\/([1-9A-HJ-NP-Za-km-z]{32,44})\/?$/;
+const STREAMING_PREFIX = '/api/streaming/';
 const AGENT_CARD_PREVIEW_PATH = '/api/agents/card';
 const AGENT_CARD_PUBLIC_PATH = '/.well-known/agent.json';
 const DEV_WALLET_HEADER = 'x-agentic-wallet-address';
 const LOCAL_WALLET_FALLBACK = 'local-browser-wallet';
 const LOCAL_AGENT_CARD_WALLET_FALLBACK = '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd';
+// Memory-only local dev fallback; production render-web still requires an operator key.
+const LOCAL_STREAMING_DEV_KEY = 'YWdlbnRpYy1sb2NhbC1zdHJlYW1pbmctZGV2LTMyISE=';
 const DEFAULT_AGENT_CARD_TOKENS = ['USDC', 'USDT', 'SOL'];
 const MAX_JSON_BYTES = 64 * 1024;
 const BASE58_PUBKEY_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -54,6 +57,31 @@ const BASE58_PUBKEY_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const devApprovals = new Map<string, ApprovalRequestRecord>();
 const localSkillCatalog = new Map<string, LocalSkillManifestRecord>();
 const localSkillInstalls = new Map<string, SkillInstallRecord>();
+let localStreamingApiPromise: Promise<LocalStreamingApi> | null = null;
+
+interface LocalStreamingApiHandler {
+  prefix: string;
+  methods: readonly string[];
+  handle: (
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: URL,
+    context: LocalStreamingApiContext,
+  ) => Promise<boolean>;
+}
+
+interface LocalStreamingApiContext {
+  walletAddress: string | undefined;
+  workflowService: Record<string, never>;
+  workflowStore: object;
+  evidenceStore: object;
+  clock: { now(): Date };
+}
+
+interface LocalStreamingApi {
+  handler: LocalStreamingApiHandler;
+  context: Omit<LocalStreamingApiContext, 'walletAddress'>;
+}
 
 interface LocalSkillManifestRecord {
   id: string;
@@ -96,6 +124,11 @@ export function acpDevApiPlugin(): Plugin {
       server.middlewares.use(async (req, res, next) => {
         const url = new URL(req.url ?? '/', 'http://127.0.0.1');
         try {
+          if (url.pathname.startsWith(STREAMING_PREFIX)) {
+            const handled = await handleLocalStreamingApi(req, res, url);
+            if (!handled) next();
+            return;
+          }
           if (handleLocalAgentCardApi(req, res, url)) {
             return;
           }
@@ -130,6 +163,47 @@ export function acpDevApiPlugin(): Plugin {
           writeLocalDevError(res, err);
         }
       });
+    },
+  };
+}
+
+async function handleLocalStreamingApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
+  const api = await localStreamingApi();
+  const method = req.method ?? 'GET';
+  if (!api.handler.methods.includes(method)) {
+    writeJson(res, 405, { error: 'method_not_allowed', message: 'Use GET, HEAD, or POST for streaming routes.' });
+    return true;
+  }
+  return api.handler.handle(req, res, url, {
+    ...api.context,
+    walletAddress: walletAddressFromStreamingRequest(req, url),
+  });
+}
+
+async function localStreamingApi(): Promise<LocalStreamingApi> {
+  localStreamingApiPromise ??= createLocalStreamingApi();
+  return localStreamingApiPromise;
+}
+
+async function createLocalStreamingApi(): Promise<LocalStreamingApi> {
+  process.env.STREAMING_SESSION_ENCRYPTION_KEY ??= LOCAL_STREAMING_DEV_KEY;
+
+  await import('../render-web/src/cloud/streamingRoutes.js');
+  const [{ listDevApiHandlers }, { MemoryWorkflowStore }, { MemoryEvidenceStore }] = await Promise.all([
+    import('../render-web/src/cloud/devApiRegistry.js'),
+    import('../render-web/src/cloud/memoryStore.js'),
+    import('../render-web/src/cloud/evidenceService.js'),
+  ]);
+  const handler = listDevApiHandlers().find((candidate) => candidate.prefix === STREAMING_PREFIX);
+  if (!handler) throw new Error('Local streaming dev API handler was not registered.');
+
+  return {
+    handler: handler as LocalStreamingApiHandler,
+    context: {
+      workflowService: {},
+      workflowStore: new MemoryWorkflowStore(),
+      evidenceStore: new MemoryEvidenceStore(),
+      clock: { now: () => new Date() },
     },
   };
 }
@@ -692,6 +766,14 @@ function walletAddressFromRequest(req: IncomingMessage): string {
   const raw = req.headers[DEV_WALLET_HEADER];
   const value = Array.isArray(raw) ? raw[0] : raw;
   return typeof value === 'string' && value.trim() ? value.trim() : LOCAL_WALLET_FALLBACK;
+}
+
+function walletAddressFromStreamingRequest(req: IncomingMessage, url: URL): string {
+  const header = walletAddressFromRequest(req);
+  if (BASE58_PUBKEY_RE.test(header)) return header;
+  const query = url.searchParams.get('walletAddress')?.trim() ?? '';
+  if (BASE58_PUBKEY_RE.test(query)) return query;
+  return LOCAL_AGENT_CARD_WALLET_FALLBACK;
 }
 
 function walletAddressFromBody(body: unknown): string {
