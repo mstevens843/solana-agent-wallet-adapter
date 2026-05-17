@@ -428,10 +428,11 @@ describe('planner AI setup helpers', () => {
     });
 
     expect(review.decision).toBe('approve');
-    // Corrected reason should mention the figure and the relation ("under $20"); the new
-    // reconciler also includes the source snippet for richer context.
+    // Corrected reason should mention the figure and the relation in the new natural
+    // prose ("X is $Y, under the user's $Z threshold"). The source snippet now lives
+    // in a separate `Source` finding rather than inline `(from "...")`.
     expect(review.reason).toContain('$16.79');
-    expect(review.reason).toContain('under $20');
+    expect(review.reason).toMatch(/under .*\$20/);
     expect(review.evidence.findings).toEqual(expect.arrayContaining([
       expect.objectContaining({ label: 'Threshold check', tone: 'good' }),
     ]));

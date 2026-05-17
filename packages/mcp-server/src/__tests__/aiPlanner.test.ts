@@ -119,6 +119,9 @@ describe('BridgeAiPlanner', () => {
     expect(reviewCall, 'expected an OpenAI Responses /responses call with agentic_ai_review schema').toBeDefined();
     expect(reviewCall?.url).toBe('https://api.openai.com/v1/responses');
     expect(reviewCall?.body.text).toMatchObject({
+      // Review pass bumps verbosity to 'medium' (plan stays 'low') so the
+      // "why it passed/denied" prose can match Claude/Gemini-style breadth.
+      verbosity: 'medium',
       format: {
         type: 'json_schema',
         name: 'agentic_ai_review',
@@ -1110,10 +1113,10 @@ describe('BridgeAiPlanner', () => {
 
     expect(calls).toHaveLength(2);
     expect(review.decision).toBe('approve');
-    // The reconciler now includes the source sentence in the corrected reason; assert on
-    // the load-bearing tokens (the figure and the relation) rather than the boilerplate.
+    // The reconciler emits natural prose ("X is $Y, under the user's $Z threshold");
+    // assert on the load-bearing figure + relation, allowing words between them.
     expect(review.reason).toContain('$16.79');
-    expect(review.reason).toContain('under $20');
+    expect(review.reason).toMatch(/under .*\$20/);
     expect(review.evidence.findings).toEqual(expect.arrayContaining([
       expect.objectContaining({
         label: 'Threshold check',

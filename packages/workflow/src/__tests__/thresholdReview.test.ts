@@ -125,7 +125,7 @@ describe('reconcileThresholdReviewDecision — end-to-end Gemini fix', () => {
     expect(out.summary).toMatch(/Threshold rule needs a numeric value/);
   });
 
-  it('includes the source sentence in the corrected reason (richer than the boilerplate)', () => {
+  it('surfaces the source sentence as a separate `Source` finding, not inline in the reason', () => {
     const result = baseResult({
       decision: 'deny',
       reason: 'Helium plan is $15/month.',
@@ -134,7 +134,14 @@ describe('reconcileThresholdReviewDecision — end-to-end Gemini fix', () => {
     });
     const out = reconcileThresholdReviewDecision(result, { instruction: INSTRUCTION });
     expect(out.decision).toBe('approve');
-    expect(out.reason).toContain('from "');
+    // Reason is now natural and DOES NOT carry the `(from "...")` inline citation.
+    expect(out.reason).not.toContain('from "');
+    expect(out.reason).not.toContain('(from');
+    // Source is preserved on a dedicated finding so the audit trail stays traceable.
+    const findings = (out.evidence as Record<string, unknown>).findings as Array<Record<string, unknown>>;
+    const sourceFinding = findings.find((f) => f.label === 'Source');
+    expect(sourceFinding).toBeDefined();
+    expect(String(sourceFinding!.value)).toMatch(/\$15/);
   });
 
   it('extracts the current value from a facts object returned by the Device Agent', () => {

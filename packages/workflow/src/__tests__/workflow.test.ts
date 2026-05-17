@@ -259,7 +259,67 @@ describe('AI product guardrails', () => {
     expect(codes).not.toContain('ai_claims_approved');
   });
 
-  it('still blocks actual past-tense completion claims (auto-submitted at signature, already-approved, signed automatically last block)', () => {
+  // Phase 4 redux — regression test against the actual gpt-5 phrasings the user hit on
+  // the Render deployment after Phase 3 shipped. Phase 3's negative-lookahead was too
+  // narrow (only covered upon/after/to wallet/...); gpt-5 phrases like "auto-submitted
+  // via Jupiter" / "pre-submitted as a draft" / bare "auto-broadcast" all leaked through
+  // and tripped the guardrail on a benign Helium plan-check prompt. The fix dropped
+  // the prefix-based alternatives entirely; only "already X" + aux-verb past tense
+  // ("has been X" / "was Y") triggers the claim guardrails now.
+  it('does NOT trip on the gpt-5 workflow phrasings that hit the Render deployment', () => {
+    const fixtures = [
+      // PLAN-field phrasings observed (or plausibly generated) by gpt-5
+      'Auto-submitted via Jupiter aggregator.',
+      'Auto-broadcast through the network on approval.',
+      'Pre-submitted as a draft.',
+      'Auto-sent to Jupiter for routing.',
+      'Auto-executed by the aggregator after the user signs.',
+      'Pre-approved by the connector.',
+      'Approved automatically by the policy bundle.',
+      'Signed automatically by the wallet adapter on approval.',
+      'Will be auto-submitted at swap time.',
+      'Plan auto-executed via Jupiter when wallet confirms.',
+      // Benign negations that mention the trigger words
+      'Nothing has been approved yet.',
+      'No transaction has been submitted to the network.',
+      'Wallet approval is required; nothing has been signed.',
+    ];
+
+    for (const phrasing of fixtures) {
+      const report = evaluatePlanGuardrails({
+        plan: {
+          source: 'ai',
+          category: 'trading',
+          actionType: 'swap',
+          templateId: 'swap-tokens',
+          templateTitle: 'Swap tokens',
+          intent: phrasing,
+          route: 'SOL → USDC.',
+          risk: 'Medium.',
+          approval: 'Wallet approval required.',
+          parameters: { inputToken: 'SOL', outputToken: 'USDC', amount: '0.01', slippageBps: '50' },
+          fields: [{ label: 'Amount', value: '0.01 SOL' }],
+          safeguards: [],
+          cluster: 'mainnet-beta',
+        },
+      });
+      const codes = report.violations.map((v) => v.code);
+      expect(
+        codes,
+        `phrasing "${phrasing}" must NOT trigger claim guardrails`,
+      ).not.toEqual(expect.arrayContaining(['ai_claims_submitted']));
+      expect(codes).not.toEqual(expect.arrayContaining(['ai_claims_signed']));
+      expect(codes).not.toEqual(expect.arrayContaining(['ai_claims_approved']));
+    }
+  });
+
+  it('still blocks explicit `already X` past-tense completion claims', () => {
+    // After two false-positive rounds on benign workflow phrasings, the guardrail was
+    // pared down to the maximally-conservative `already X` marker (plus the canonical
+    // "approval has already happened/occurred/..." construction). These three strings
+    // are unambiguous completion claims and must continue to block. "Auto-submitted at
+    // signature..." / "has been submitted to Jupiter" intentionally NO LONGER trip —
+    // the system relies on wallet-signing UI + on-chain status for those rare cases.
     const report = evaluatePlanGuardrails({
       plan: {
         source: 'ai',
@@ -267,10 +327,10 @@ describe('AI product guardrails', () => {
         actionType: 'swap',
         templateId: 'swap-tokens',
         templateTitle: 'Swap tokens',
-        intent: 'Auto-submitted at signature 5abc123XYZ on slot 12345.',
-        route: 'Pre-approved by Jupiter and signed automatically last block.',
-        risk: 'Approved automatically at slot 12346.',
-        approval: 'Already submitted to mempool.',
+        intent: 'Already submitted to network at signature 5abc123XYZ.',
+        route: 'Already signed at slot 12346.',
+        risk: 'Approval has already happened.',
+        approval: 'Already approved.',
         parameters: {
           inputToken: 'SOL',
           outputToken: 'USDC',

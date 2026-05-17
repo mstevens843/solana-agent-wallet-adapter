@@ -50,7 +50,14 @@ const REVIEW_MAX_TOKENS = 1024;
 const RESEARCH_MAX_TOKENS = 1800;
 const ASK_MAX_TOKENS = 800;
 const OPENAI_REASONING_EFFORT = 'low' as const;
-const OPENAI_TEXT_VERBOSITY = 'low' as const;
+// Plan stays terse (cheap, snappy). Review bumps to 'medium' so the reconciler-promoted
+// "why it passed/denied" prose has room to match Claude-style breadth (listing
+// alternatives, naming the resolved fact) instead of one-liners. Cost delta per review
+// call is negligible; UX delta on the audit log is meaningful. ask/research paths
+// don't use text.format at all, so they don't need a verbosity setting.
+type OpenAiVerbosity = 'low' | 'medium' | 'high';
+const OPENAI_PLAN_VERBOSITY: OpenAiVerbosity = 'low';
+const OPENAI_REVIEW_VERBOSITY: OpenAiVerbosity = 'medium';
 
 // Schemas mirror packages/mcp-server/src/aiPlanner.ts:147-209. Kept inline here so the
 // device agent is self-contained — the server can't import from apps/browser-demo, and
@@ -124,12 +131,14 @@ interface ResponseSchema {
   name: string;
   strict: boolean;
   schema: Record<string, unknown>;
+  verbosity: OpenAiVerbosity;
 }
 
 const PLAN_SCHEMA: ResponseSchema = {
   name: 'agentic_device_plan',
   strict: true,
   schema: PLAN_JSON_SCHEMA as unknown as Record<string, unknown>,
+  verbosity: OPENAI_PLAN_VERBOSITY,
 };
 
 // evidence is intentionally open-shaped (device agent surfaces findings, sources,
@@ -138,6 +147,7 @@ const REVIEW_SCHEMA: ResponseSchema = {
   name: 'agentic_device_review',
   strict: false,
   schema: REVIEW_JSON_SCHEMA as unknown as Record<string, unknown>,
+  verbosity: OPENAI_REVIEW_VERBOSITY,
 };
 
 export class OpenAiNativeProvider implements DeviceAgentProvider {
@@ -297,7 +307,7 @@ export class OpenAiNativeProvider implements DeviceAgentProvider {
       // the input field, which our JSON-stringified userContent does not contain. The
       // server's hosted-BYOK path (aiPlanner.ts:741-750) uses this same shape.
       body.text = {
-        verbosity: OPENAI_TEXT_VERBOSITY,
+        verbosity: options.responseSchema.verbosity,
         format: {
           type: 'json_schema',
           name: options.responseSchema.name,

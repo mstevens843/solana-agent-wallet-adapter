@@ -479,13 +479,23 @@ export function reconcileThresholdReviewDecision(
     evidenceRecord.thresholdRulePromoted = true;
   }
 
-  // Build a richer reason that names the source sentence the corrected value came from,
-  // so the inbox card explains WHICH fact was used — not just "$X is over $Y". This
-  // matches the Anthropic-quality reasoning users got on the local-bridge path.
-  const sourceSnippet = compactText(candidate.text, 140);
+  // Surface the source sentence the corrected value came from as its own `Source`
+  // finding so the audit trail stays traceable without polluting the reason text
+  // with `(from "...")` parenthetical attribution. The reason itself stays natural —
+  // matches the Anthropic/Gemini style ("X is $Y, under the user's $Z threshold")
+  // instead of the prior templated `${amount} (from "...") is ${relation}...` shape.
+  const sourceSnippet = compactText(candidate.text, 140).trim();
+  if (sourceSnippet.length > 0) {
+    evidence = appendReviewFinding(evidence, {
+      label: 'Source',
+      value: sourceSnippet,
+      tone: 'neutral',
+    }, { dedupeByNormalizedLabel: true });
+  }
+
   const correctedReason = expected === 'needs_input'
-    ? `${amountText} is exactly ${thresholdText}; the user rule used a strict under/over threshold, so the review needs clarification. Source: "${sourceSnippet}"`
-    : `${amountText} (from "${sourceSnippet}") is ${relation} ${thresholdText}, so the user threshold rule ${expected === 'approve' ? 'approves' : 'denies'} this draft. Wallet approval is still required before anything signs.`;
+    ? `${factLabel} is exactly ${thresholdText}; the user's strict under/over rule needs clarification.`
+    : `${factLabel} is ${amountText}, ${relation} the user's ${thresholdText} threshold.`;
 
   return {
     ...result,

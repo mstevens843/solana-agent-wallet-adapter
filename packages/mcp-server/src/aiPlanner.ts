@@ -75,7 +75,12 @@ const DEFAULT_AI_MODEL = 'gpt-5';
 const DEFAULT_ANTHROPIC_BASE_URL = 'https://api.anthropic.com/v1';
 const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-5';
 const OPENAI_REASONING_EFFORT = 'low';
-const OPENAI_TEXT_VERBOSITY = 'low';
+// Plan and ask paths stay terse (cheap, snappy). Review pass bumps to 'medium' so the
+// "why it passed/denied" prose can match Claude-style breadth — listing alternatives
+// and naming the resolved fact rather than emitting a one-liner. The cost delta on a
+// single review call is negligible; the UX delta on the audit log is meaningful.
+const OPENAI_TEXT_VERBOSITY_TERSE = 'low';
+const OPENAI_TEXT_VERBOSITY_REVIEW = 'medium';
 const OPENAI_MAX_OUTPUT_TOKENS = 4096;
 const RESEARCH_MAX_USES = 3;
 const RESEARCH_SOURCE_POLICY = [
@@ -655,7 +660,7 @@ export class BridgeAiPlanner {
         max_output_tokens: OPENAI_MAX_OUTPUT_TOKENS,
         store: false,
         text: {
-          verbosity: OPENAI_TEXT_VERBOSITY,
+          verbosity: OPENAI_TEXT_VERBOSITY_TERSE,
           format: {
             type: 'json_schema',
             name: 'agentic_ai_plan',
@@ -741,7 +746,7 @@ export class BridgeAiPlanner {
         max_output_tokens: OPENAI_MAX_OUTPUT_TOKENS,
         store: false,
         text: {
-          verbosity: OPENAI_TEXT_VERBOSITY,
+          verbosity: OPENAI_TEXT_VERBOSITY_REVIEW,
           format: {
             type: 'json_schema',
             name: 'agentic_ai_review',

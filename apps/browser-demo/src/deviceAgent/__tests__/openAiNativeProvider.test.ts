@@ -156,7 +156,9 @@ describe('OpenAiNativeProvider.reviewPlan two-pass research', () => {
     const reviewBody = JSON.parse(http.calls[1]!.body) as Record<string, unknown>;
     expect('tools' in reviewBody).toBe(false);
     const reviewText = reviewBody.text as Record<string, unknown>;
-    expect(reviewText.verbosity).toBe('low');
+    // Review pass bumps verbosity to 'medium' so the "why it passed/denied" prose
+    // has room to match Claude/Gemini-style breadth instead of one-liners.
+    expect(reviewText.verbosity).toBe('medium');
     const reviewFormat = reviewText.format as Record<string, unknown>;
     expect(reviewFormat.type).toBe('json_schema');
     expect(reviewFormat.name).toBe('agentic_device_review');
@@ -212,7 +214,8 @@ describe('OpenAiNativeProvider.reviewPlan two-pass research', () => {
     const body = JSON.parse(http.calls[0]!.body) as Record<string, unknown>;
     expect('tools' in body).toBe(false);
     const reviewText = body.text as Record<string, unknown>;
-    expect(reviewText.verbosity).toBe('low');
+    // Review pass verbosity is 'medium' (vs 'low' for plan/ask) — see openAiNativeProvider.ts.
+    expect(reviewText.verbosity).toBe('medium');
     const reviewFormat = reviewText.format as Record<string, unknown>;
     expect(reviewFormat.type).toBe('json_schema');
     expect(reviewFormat.name).toBe('agentic_device_review');
