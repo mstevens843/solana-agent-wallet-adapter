@@ -6,20 +6,30 @@
 // Why a separate class from OpenAiCompatibleProvider:
 //   - Responses API uses `instructions` + `input` (not `messages`) and `max_output_tokens`
 //     (not `max_tokens` or `max_completion_tokens`).
+//   - Structured output uses `text.format.type = 'json_schema'` (NOT `json_object`, which
+//     requires the literal word "json" in the input field and 400s on our JSON-stringified
+//     userContent). Mirrors the server's pattern at packages/mcp-server/src/aiPlanner.ts.
 //   - Web search tool wiring is OpenAI-direct only; OpenRouter and Custom passthroughs
 //     do not expose `web_search_preview` and must keep the fail-closed path.
 //   - Routing is by `config.provider === 'openai'` at the dispatcher level
 //     (deviceAgentProviderExecutor.ts), so OpenRouter/Custom stay on
 //     OpenAiCompatibleProvider unchanged.
 //
-// Kotlin parity for this class is a followup ticket — the Android Device Agent still
-// hits chat completions via OpenAiCompatibleProvider.kt. The TS chat-completions wire
-// shape that Kotlin owns is unchanged; this is a new path on top.
+// Citation filter: the research pass uses filterLowAuthorityCitations to drop blog/news
+// subdomain citations for pricing questions. OpenAI's web_search backend tends to surface
+// blog posts (e.g. blog.heliummobile.com) describing discontinued plans; filtering at the
+// citation layer forces the review to either rely on official sources or fall through to
+// needs_input rather than fabricate a stale answer.
+//
+// Kotlin parity for this class is a followup ticket — the Android Device Agent still hits
+// chat completions via OpenAiCompatibleProvider.kt. The TS chat-completions wire shape
+// that Kotlin owns is unchanged; this is a new path on top.
 
 import { buildAskMessages, buildPlanMessages, buildResearchMessages, buildReviewMessages } from '../prompts/messageAssembler.js';
 import type { DeviceAgentMessages } from '../prompts/messageAssembler.js';
 import type { RuntimeConfig } from '../runtime/config.js';
 
+import { filterLowAuthorityCitations, isPricingInstruction } from './citationFilter.js';
 import { PROVIDER_ERROR_CODES, ProviderHttpError } from './errorCodes.js';
 import type { HttpExecutor } from './http.js';
 import {
@@ -40,6 +50,95 @@ const REVIEW_MAX_TOKENS = 1024;
 const RESEARCH_MAX_TOKENS = 1800;
 const ASK_MAX_TOKENS = 800;
 const OPENAI_REASONING_EFFORT = 'low' as const;
+const OPENAI_TEXT_VERBOSITY = 'low' as const;
+
+// Schemas mirror packages/mcp-server/src/aiPlanner.ts:147-209. Kept inline here so the
+// device agent is self-contained — the server can't import from apps/browser-demo, and
+// the device agent shouldn't depend on the mcp-server package at build time. Keep the
+// two definitions in sync when widening.
+const PLAN_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    intent: { type: 'string' },
+    route: { type: 'string' },
+    risk: { type: 'string' },
+    approval: { type: 'string' },
+    safeguards: {
+      type: 'array',
+      items: { type: 'string' },
+    },
+  },
+  required: ['intent', 'route', 'risk', 'approval', 'safeguards'],
+} as const;
+
+const REVIEW_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    decision: { type: 'string', enum: ['approve', 'deny', 'needs_input'] },
+    reason: { type: 'string' },
+    summary: { type: 'string' },
+    evidence: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {},
+    },
+    questions: {
+      type: 'array',
+      maxItems: 3,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          id: { type: 'string' },
+          prompt: { type: 'string' },
+          inputKind: { type: 'string', enum: ['text', 'select', 'number'] },
+          options: { type: 'array', items: { type: 'string' } },
+          required: { type: 'boolean' },
+          hint: { type: 'string' },
+        },
+        required: ['id', 'prompt', 'inputKind'],
+      },
+    },
+    reviewers: {
+      type: 'array',
+      maxItems: 4,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          id: { type: 'string', enum: ['risk', 'quote', 'policy', 'protocol'] },
+          decision: { type: 'string', enum: ['approve', 'deny', 'needs_input'] },
+          reason: { type: 'string' },
+          summary: { type: 'string' },
+        },
+        required: ['id', 'decision', 'reason'],
+      },
+    },
+  },
+  required: ['decision', 'reason', 'summary', 'evidence'],
+} as const;
+
+interface ResponseSchema {
+  name: string;
+  strict: boolean;
+  schema: Record<string, unknown>;
+}
+
+const PLAN_SCHEMA: ResponseSchema = {
+  name: 'agentic_device_plan',
+  strict: true,
+  schema: PLAN_JSON_SCHEMA as unknown as Record<string, unknown>,
+};
+
+// evidence is intentionally open-shaped (device agent surfaces findings, sources,
+// research, policiesApplied), so strict:false. Matches aiPlanner.ts:746-747.
+const REVIEW_SCHEMA: ResponseSchema = {
+  name: 'agentic_device_review',
+  strict: false,
+  schema: REVIEW_JSON_SCHEMA as unknown as Record<string, unknown>,
+};
 
 export class OpenAiNativeProvider implements DeviceAgentProvider {
   private readonly config: RuntimeConfig;
@@ -53,7 +152,7 @@ export class OpenAiNativeProvider implements DeviceAgentProvider {
   async generatePlan(payload: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
     const messages = buildPlanMessages(payload);
     const response = await this.postResponses(messages, {
-      jsonObjectMode: true,
+      responseSchema: PLAN_SCHEMA,
       temperature: PLAN_TEMPERATURE,
       maxOutputTokens: PLAN_MAX_TOKENS,
       research: false,
@@ -75,7 +174,7 @@ export class OpenAiNativeProvider implements DeviceAgentProvider {
       };
       const messages = buildReviewMessages(reviewPayload);
       const response = await this.postResponses(messages, {
-        jsonObjectMode: true,
+        responseSchema: REVIEW_SCHEMA,
         temperature: REVIEW_TEMPERATURE,
         maxOutputTokens: REVIEW_MAX_TOKENS,
         research: false,
@@ -84,7 +183,7 @@ export class OpenAiNativeProvider implements DeviceAgentProvider {
     }
     const messages = buildReviewMessages(payload);
     const response = await this.postResponses(messages, {
-      jsonObjectMode: true,
+      responseSchema: REVIEW_SCHEMA,
       temperature: REVIEW_TEMPERATURE,
       maxOutputTokens: REVIEW_MAX_TOKENS,
       research: false,
@@ -95,9 +194,10 @@ export class OpenAiNativeProvider implements DeviceAgentProvider {
   /**
    * Research pass mirroring AnthropicProvider.runResearchPass. Runs a Responses API call
    * with `web_search_preview` bound, captures the model's research summary + citations,
-   * and returns the original payload with `context.researchEvidence` populated for the
-   * second (structured) pass to consume. Failures are non-fatal — the original payload
-   * is returned unchanged so the review still runs single-pass.
+   * filters blog/news subdomain citations for pricing questions, and returns the original
+   * payload with `context.researchEvidence` populated for the second (structured) pass.
+   * Failures are non-fatal — the original payload is returned unchanged so the review
+   * still runs single-pass.
    */
   private async runResearchPass(
     payload: Record<string, unknown>,
@@ -106,23 +206,37 @@ export class OpenAiNativeProvider implements DeviceAgentProvider {
     try {
       const messages = buildResearchMessages(payload);
       const response = await this.postResponses(messages, {
-        jsonObjectMode: false,
+        // Research pass: no schema (free-text grounded output). Schemas would also
+        // collide with the web_search tool on some Responses API model versions.
         temperature: REVIEW_TEMPERATURE,
         maxOutputTokens: RESEARCH_MAX_TOKENS,
         research: true,
       }, signal);
-      const summary = extractResponsesApiText(response).trim();
-      const citations = extractResponsesApiCitations(response);
-      if (!summary && citations.length === 0) return payload;
+      const rawSummary = extractResponsesApiText(response).trim();
+      const rawCitations = extractResponsesApiCitations(response);
+      const instruction = extractInstructionText(payload);
+      const filteredCitations = filterLowAuthorityCitations(rawCitations, instruction);
+
+      // If filtering dropped every citation AND the question is a pricing question,
+      // suppress the summary too — better to let the structured review fall through to
+      // needs_input than surface a stale answer from a discarded blog post.
+      const dropped = rawCitations.length > 0 && filteredCitations.length === 0;
+      const pricingQuestion = isPricingInstruction(instruction);
+      const summary = (dropped && pricingQuestion)
+        ? 'Current pricing could not be verified against an official source. Ask the user to confirm the plan name and price.'
+        : (rawSummary || 'Research ran but produced no summary text.');
+
+      if (filteredCitations.length === 0 && !rawSummary) return payload;
+
       const researchEvidence = {
         status: 'checked' as const,
         required: true,
         provider: 'OpenAI',
         checkedAt: new Date().toISOString(),
-        summary: summary || 'Research ran but produced no summary text.',
-        sources: citations.map((c) => ({ url: c.url, ...(c.title ? { title: c.title } : {}) })),
+        summary,
+        sources: filteredCitations.map((c) => ({ url: c.url, ...(c.title ? { title: c.title } : {}) })),
         sourcePolicy:
-          'Prefer official sources for prices and product facts. When a vendor publishes a plan page, use it as primary. Cite each fact with a URL.',
+          'Prefer official vendor pricing pages over blogs. Reject blog subdomains (blog.*, news.*) as primary sources for current prices. Cite each fact with the official URL.',
       };
       const prevContext = (payload.context && typeof payload.context === 'object' && !Array.isArray(payload.context))
         ? payload.context as Record<string, unknown>
@@ -137,7 +251,7 @@ export class OpenAiNativeProvider implements DeviceAgentProvider {
     const research = researchNeeded(payload);
     const messages = buildAskMessages(payload);
     const response = await this.postResponses(messages, {
-      jsonObjectMode: false,
+      // ask: no schema (plain-text answer)
       temperature: ASK_TEMPERATURE,
       maxOutputTokens: ASK_MAX_TOKENS,
       research,
@@ -155,7 +269,7 @@ export class OpenAiNativeProvider implements DeviceAgentProvider {
   private async postResponses(
     messages: DeviceAgentMessages,
     options: {
-      jsonObjectMode: boolean;
+      responseSchema?: ResponseSchema;
       temperature: number;
       maxOutputTokens: number;
       research: boolean;
@@ -178,8 +292,19 @@ export class OpenAiNativeProvider implements DeviceAgentProvider {
       max_output_tokens: options.maxOutputTokens,
       store: false,
     };
-    if (options.jsonObjectMode) {
-      body.text = { format: { type: 'json_object' } };
+    if (options.responseSchema) {
+      // json_schema (NOT json_object): json_object requires the literal word "json" in
+      // the input field, which our JSON-stringified userContent does not contain. The
+      // server's hosted-BYOK path (aiPlanner.ts:741-750) uses this same shape.
+      body.text = {
+        verbosity: OPENAI_TEXT_VERBOSITY,
+        format: {
+          type: 'json_schema',
+          name: options.responseSchema.name,
+          strict: options.responseSchema.strict,
+          schema: options.responseSchema.schema,
+        },
+      };
     }
     if (!reasoning) {
       // Reasoning models reject explicit `temperature`; only set it for non-reasoning models.
@@ -227,6 +352,15 @@ function researchNeeded(payload: Record<string, unknown>): boolean {
     research && typeof research === 'object' && !Array.isArray(research)
       && (research as Record<string, unknown>).needed === true,
   );
+}
+
+function extractInstructionText(payload: Record<string, unknown>): string {
+  const direct = typeof payload.instruction === 'string' ? payload.instruction : '';
+  if (direct.length > 0) return direct;
+  const userPrompt = typeof payload.userPrompt === 'string' ? payload.userPrompt : '';
+  if (userPrompt.length > 0) return userPrompt;
+  const question = typeof payload.question === 'string' ? payload.question : '';
+  return question;
 }
 
 function openAiWebSearchTool(): Record<string, unknown> {

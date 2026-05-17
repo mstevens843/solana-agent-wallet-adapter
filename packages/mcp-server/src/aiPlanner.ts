@@ -81,6 +81,8 @@ const RESEARCH_MAX_USES = 3;
 const RESEARCH_SOURCE_POLICY = [
   'Prefer official vendor, product, support, pricing, documentation, regulator, or primary-source pages over blogs and aggregators.',
   'When the request mentions Helium Mobile, official Helium domains include hellohelium.com, support.hellohelium.com, and heliummobile.com.',
+  'Pricing pages are the authoritative source for current prices, fees, and plan rates — for example heliummobile.com/plans or hellohelium.com/plans, not blog.heliummobile.com.',
+  'Never cite a blog subdomain (blog.*, news.*, medium.com, substack.com, community.*) as the primary source for current pricing — if only blog citations are available, state that current pricing could not be verified against an official page.',
   'Third-party sources may support context but should not override an official current pricing or policy source.',
 ].join(' ');
 const SHARED_SAFEGUARDS = [
@@ -1344,14 +1346,22 @@ function aiAskFromPayload(payload: unknown): AiAskResult {
 
 function normalizeResearchEvidence(
   payload: unknown,
-  _request: Required<AiReviewRequest>,
+  request: Required<AiReviewRequest>,
   providerLabel: string,
 ): { evidence: AiReviewResearchEvidence; citations: AiResearchCitation[] } {
-  const citations = extractResearchCitations(payload);
+  const rawCitations = extractResearchCitations(payload);
+  const instruction = typeof request.instruction === 'string' ? request.instruction : '';
+  // Drop blog/news subdomain citations on pricing questions — see citationFilter helper
+  // below. Without this, OpenAI's web_search_preview consistently surfaces
+  // blog.heliummobile.com posts describing discontinued plans, and the model cites the
+  // stale price as if it were current.
+  const citations = filterLowAuthorityCitationsLocal(rawCitations, instruction);
   const text = extractModelText(payload).trim();
-  const summary = text
-    ? compactReviewText(text, 1600)
-    : 'Research ran, but the provider did not return readable source-backed findings.';
+  const droppedAllForPricing =
+    rawCitations.length > 0 && citations.length === 0 && isPricingInstructionLocal(instruction);
+  const summary = droppedAllForPricing
+    ? 'Current pricing could not be verified against an official source. Ask the user to confirm the plan name and price.'
+    : (text ? compactReviewText(text, 1600) : 'Research ran, but the provider did not return readable source-backed findings.');
   const sources = citations.map((citation) => ({
     ...(citation.title ? { title: citation.title } : {}),
     url: citation.url,
@@ -2648,4 +2658,53 @@ function titleCase(value: string): string {
     .replace(/[-_]+/g, ' ')
     .trim()
     .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+// Citation-filter helpers — local duplicate of
+// apps/browser-demo/src/deviceAgent/provider/citationFilter.ts (we can't import across
+// the app/package boundary without restructuring). Keep these in sync when widening
+// the LOW_AUTHORITY_HOST_PATTERNS set.
+const PRICING_KEYWORDS_LOCAL = /\b(price|cost|fee|rate|plan|plans|subscription|monthly|per[\s-]?month)\b|\$\s*\d/i;
+
+const LOW_AUTHORITY_HOST_PATTERNS_LOCAL: ReadonlyArray<RegExp> = [
+  /^blog\./i,
+  /^news\./i,
+  /\.blog$/i,
+  /(^|\.)medium\.com$/i,
+  /(^|\.)substack\.com$/i,
+  /(^|\.)wordpress\.com$/i,
+  /(^|\.)tumblr\.com$/i,
+  /^community\./i,
+  /^forum\./i,
+];
+
+function isPricingInstructionLocal(text: string): boolean {
+  if (typeof text !== 'string' || text.trim().length === 0) return false;
+  return PRICING_KEYWORDS_LOCAL.test(text);
+}
+
+function filterLowAuthorityCitationsLocal<T extends { url: string }>(
+  citations: ReadonlyArray<T>,
+  instructionText: string,
+): T[] {
+  if (!isPricingInstructionLocal(instructionText)) return [...citations];
+  const out: T[] = [];
+  for (const c of citations) {
+    if (!isLowAuthorityHostLocal(c.url)) out.push(c);
+  }
+  return out;
+}
+
+function isLowAuthorityHostLocal(url: string): boolean {
+  if (typeof url !== 'string' || url.length === 0) return false;
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  for (const p of LOW_AUTHORITY_HOST_PATTERNS_LOCAL) {
+    if (p.test(host)) return true;
+  }
+  return false;
 }

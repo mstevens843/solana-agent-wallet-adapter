@@ -8,6 +8,7 @@ import { buildAskMessages, buildPlanMessages, buildResearchMessages, buildReview
 import type { DeviceAgentMessages } from '../prompts/messageAssembler.js';
 import type { RuntimeConfig } from '../runtime/config.js';
 
+import { filterLowAuthorityCitations, isPricingInstruction } from './citationFilter.js';
 import { PROVIDER_ERROR_CODES, ProviderHttpError } from './errorCodes.js';
 import type { HttpExecutor } from './http.js';
 import {
@@ -88,17 +89,29 @@ export class AnthropicProvider implements DeviceAgentProvider {
       // Force research.needed=true on the inner payload so postMessages attaches web_search.
       const innerPayload: Record<string, unknown> = { ...payload, research: { ...(payload.research as Record<string, unknown> | undefined), needed: true } };
       const response = await this.postMessages(messages, REVIEW_MAX_TOKENS, REVIEW_TEMPERATURE, signal, innerPayload);
-      const summary = extractAnthropicText(response).trim();
-      const citations = extractAnthropicCitations(response);
-      if (!summary && citations.length === 0) return payload;
+      const rawSummary = extractAnthropicText(response).trim();
+      const rawCitations = extractAnthropicCitations(response);
+      const instruction = extractInstructionText(payload);
+      const filteredCitations = filterLowAuthorityCitations(rawCitations, instruction);
+
+      // If filtering dropped every citation AND the question is a pricing question,
+      // suppress the summary too — better to let the structured review fall through to
+      // needs_input than surface a stale answer from a discarded blog post.
+      const dropped = rawCitations.length > 0 && filteredCitations.length === 0;
+      const pricingQuestion = isPricingInstruction(instruction);
+      const summary = (dropped && pricingQuestion)
+        ? 'Current pricing could not be verified against an official source. Ask the user to confirm the plan name and price.'
+        : (rawSummary || 'Research ran but produced no summary text.');
+
+      if (filteredCitations.length === 0 && !rawSummary) return payload;
       const researchEvidence = {
         status: 'checked' as const,
         required: true,
         provider: 'Anthropic',
         checkedAt: new Date().toISOString(),
-        summary: summary || 'Research ran but produced no summary text.',
-        sources: citations.map((c) => ({ url: c.url, ...(c.title ? { title: c.title } : {}) })),
-        sourcePolicy: 'Prefer official sources for prices and product facts. When a vendor publishes a plan page, use it as primary. Cite each fact with a URL.',
+        summary,
+        sources: filteredCitations.map((c) => ({ url: c.url, ...(c.title ? { title: c.title } : {}) })),
+        sourcePolicy: 'Prefer official sources for prices and product facts. When a vendor publishes a plan page, use it as primary. Reject blog subdomains (blog.*, news.*) as primary sources for current pricing. Cite each fact with the official URL.',
       };
       const prevContext = (payload.context && typeof payload.context === 'object' && !Array.isArray(payload.context))
         ? payload.context as Record<string, unknown>
@@ -178,6 +191,15 @@ export class AnthropicProvider implements DeviceAgentProvider {
 function researchNeeded(payload: Record<string, unknown>): boolean {
   const research = payload.research;
   return Boolean(research && typeof research === 'object' && !Array.isArray(research) && (research as Record<string, unknown>).needed === true);
+}
+
+function extractInstructionText(payload: Record<string, unknown>): string {
+  const direct = typeof payload.instruction === 'string' ? payload.instruction : '';
+  if (direct.length > 0) return direct;
+  const userPrompt = typeof payload.userPrompt === 'string' ? payload.userPrompt : '';
+  if (userPrompt.length > 0) return userPrompt;
+  const question = typeof payload.question === 'string' ? payload.question : '';
+  return question;
 }
 
 function researchMaxUses(payload: Record<string, unknown>): number {

@@ -174,14 +174,21 @@ describe('GeminiNativeProvider.reviewPlan two-pass research', () => {
       geminiTextResponse('{"decision":"approve","reason":"ok","summary":"go","evidence":{}}'),
     );
     const provider = new GeminiNativeProvider(config(), http);
-    const result = await provider.reviewPlan({ plan: { intent: 'swap' } });
+    // Supply a pre-built research object so the assembler doesn't auto-generate a fresh
+    // `currentDate: new Date().toISOString()` between the provider call and the test's
+    // own buildReviewMessages comparison — that mismatch is just timing noise.
+    const reviewPayload = {
+      plan: { intent: 'swap' },
+      research: { needed: false, mode: 'not_required', currentDate: '2026-05-17T00:00:00.000Z', maxSearches: 3 },
+    };
+    const result = await provider.reviewPlan(reviewPayload);
 
     expect(result.decision).toBe('approve');
     const body = JSON.parse(http.calls[0]!.body) as Record<string, unknown>;
     expect('tools' in body).toBe(false);
     expect((body.generationConfig as Record<string, unknown>).responseMimeType).toBe('application/json');
     const contents = body.contents as Array<{ parts: Array<{ text: string }> }>;
-    expect(contents[0]!.parts[0]!.text).toBe(buildReviewMessages({ plan: { intent: 'swap' } }).userContent);
+    expect(contents[0]!.parts[0]!.text).toBe(buildReviewMessages(reviewPayload).userContent);
   });
 });
 

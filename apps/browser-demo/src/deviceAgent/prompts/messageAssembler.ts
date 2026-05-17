@@ -123,7 +123,10 @@ export function buildResearchMessages(
   const cluster = defaultIfEmpty(trimmedString(payload.cluster), 'unknown');
   const hasTargets = Array.isArray(researchTargets) && researchTargets.length > 0;
   const sourcePolicy =
-    'Prefer official sources for prices and product facts. When a vendor publishes a plan page, use it as primary. Cite each fact with a URL.';
+    'Prefer official vendor pricing pages over blogs and aggregators. When a vendor publishes a plan/pricing page, use it as the primary source. ' +
+    'Pricing pages are the authoritative source for current prices, fees, and plan rates. ' +
+    'Never cite a blog subdomain (blog.*, news.*, medium.com, substack.com, community.*) as the primary source for current pricing — if only blog citations are available, state that current pricing could not be verified against an official page. ' +
+    'Cite each fact with the official URL, not a blog post.';
   const systemPrelude = hasTargets
     ? 'You research current outside facts for a Solana wallet approval review. Do not approve, deny, or ask the wallet to sign. The reviewer has already broken the NOTE into atomic fact requests — see context.researchTargets. Batch your searches: cover every researchTarget in as few queries as possible (ideally one). For each target, return a concise source-backed value (price, plan name, current state) plus a citation URL. Prefer official sources. '
     : 'You research current outside facts for a Solana wallet approval review. Do not approve, deny, or ask the wallet to sign. Search reliable current sources, prefer official sources, and return concise source-backed facts in plain English. Include current prices, thresholds, dates, plan names, ambiguity, and URLs when they are relevant. If multiple current options could change the approval outcome, list each option clearly. ';

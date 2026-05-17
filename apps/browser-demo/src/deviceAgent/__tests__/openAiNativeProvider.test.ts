@@ -3,7 +3,11 @@
 // limit is `max_output_tokens` (not max_tokens / max_completion_tokens), reasoning
 // effort attached for gpt-5 / o-series, web_search_preview tool attached only on the
 // research pass with `tools_choice: 'auto'` and the `web_search_call.action.sources`
-// include flag. The Kotlin port for this class is a followup ticket.
+// include flag. Structured output uses `text.format.type = 'json_schema'` (NOT
+// json_object — that mode requires the literal word "json" in `input` and 400s on our
+// JSON-stringified userContent). Research pass also runs the citation filter that drops
+// blog/news subdomain citations on pricing questions. The Kotlin port for this class
+// is a followup ticket.
 
 import { describe, expect, it } from 'vitest';
 
@@ -50,7 +54,15 @@ describe('OpenAiNativeProvider.generatePlan', () => {
     expect(body.input).toBe(buildPlanMessages({ userPrompt: 'swap 1 SOL for USDC' }).userContent);
     expect(body.max_output_tokens).toBe(1024);
     expect(body.store).toBe(false);
-    expect((body.text as Record<string, unknown>).format).toEqual({ type: 'json_object' });
+    const textConfig = body.text as Record<string, unknown>;
+    expect(textConfig.verbosity).toBe('low');
+    const formatConfig = textConfig.format as Record<string, unknown>;
+    expect(formatConfig.type).toBe('json_schema');
+    expect(formatConfig.name).toBe('agentic_device_plan');
+    expect(formatConfig.strict).toBe(true);
+    expect((formatConfig.schema as Record<string, unknown>).required).toEqual([
+      'intent', 'route', 'risk', 'approval', 'safeguards',
+    ]);
     expect(body.reasoning).toEqual({ effort: 'low' });
     expect('temperature' in body).toBe(false);
     expect('tools' in body).toBe(false);
@@ -143,7 +155,12 @@ describe('OpenAiNativeProvider.reviewPlan two-pass research', () => {
 
     const reviewBody = JSON.parse(http.calls[1]!.body) as Record<string, unknown>;
     expect('tools' in reviewBody).toBe(false);
-    expect((reviewBody.text as Record<string, unknown>).format).toEqual({ type: 'json_object' });
+    const reviewText = reviewBody.text as Record<string, unknown>;
+    expect(reviewText.verbosity).toBe('low');
+    const reviewFormat = reviewText.format as Record<string, unknown>;
+    expect(reviewFormat.type).toBe('json_schema');
+    expect(reviewFormat.name).toBe('agentic_device_review');
+    expect(reviewFormat.strict).toBe(false);
     // The injected researchEvidence should be present in the user input string.
     expect(reviewBody.input as string).toContain('researchEvidence');
     expect(reviewBody.input as string).toContain('heliummobile.com');
@@ -194,9 +211,109 @@ describe('OpenAiNativeProvider.reviewPlan two-pass research', () => {
     expect(result.decision).toBe('approve');
     const body = JSON.parse(http.calls[0]!.body) as Record<string, unknown>;
     expect('tools' in body).toBe(false);
-    expect((body.text as Record<string, unknown>).format).toEqual({ type: 'json_object' });
+    const reviewText = body.text as Record<string, unknown>;
+    expect(reviewText.verbosity).toBe('low');
+    const reviewFormat = reviewText.format as Record<string, unknown>;
+    expect(reviewFormat.type).toBe('json_schema');
+    expect(reviewFormat.name).toBe('agentic_device_review');
+    expect(reviewFormat.strict).toBe(false);
     expect(body.instructions).toBe(DEVICE_AGENT_SYSTEM_PROMPTS.REVIEW);
     expect(body.input).toBe(buildReviewMessages(reviewPayload).userContent);
+  });
+
+  it('filters blog/news citations and keeps official-domain citations for pricing instructions', async () => {
+    const http = new FakeHttpExecutor();
+    // Pass 1: research returns a mix of blog + official URLs.
+    http.queueResponse(
+      200,
+      JSON.stringify({
+        output_text: 'Helium Mobile cheapest plan is Air at $15/month.',
+        output: [
+          {
+            type: 'message',
+            content: [
+              {
+                type: 'output_text',
+                text: 'Helium Mobile cheapest plan is Air at $15/month.',
+                annotations: [
+                  { type: 'url_citation', url: 'https://blog.heliummobile.com/break-free', title: 'Break Free' },
+                  { type: 'url_citation', url: 'https://www.heliummobile.com/plans', title: 'Plans' },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    // Pass 2: structured review.
+    http.queueResponse(
+      200,
+      JSON.stringify({
+        output_text:
+          '{"decision":"approve","reason":"Air plan is $15, under $20.","summary":"Approved","evidence":{}}',
+      }),
+    );
+
+    const provider = new OpenAiNativeProvider(config(), http);
+    await provider.reviewPlan({
+      instruction: 'check helium mobile. lowest monthly plan. if less than $20. approve.',
+      plan: { intent: 'swap' },
+      research: { needed: true, mode: 'auto_current_facts', currentDate: '2026-05-17T00:00:00.000Z', maxSearches: 3 },
+    });
+
+    // The review pass's user input string carries the injected researchEvidence —
+    // the blog URL should be filtered out, only the official domain should remain.
+    const reviewBody = JSON.parse(http.calls[1]!.body) as Record<string, unknown>;
+    const input = reviewBody.input as string;
+    expect(input).toContain('heliummobile.com/plans');
+    expect(input).not.toContain('blog.heliummobile.com');
+  });
+
+  it('suppresses the research summary when only blog citations were returned for a pricing question', async () => {
+    const http = new FakeHttpExecutor();
+    // Pass 1: research returns ONLY a blog URL.
+    http.queueResponse(
+      200,
+      JSON.stringify({
+        output_text: 'Helium Mobile offers the Zero Plan at $0/month.',
+        output: [
+          {
+            type: 'message',
+            content: [
+              {
+                type: 'output_text',
+                text: 'Helium Mobile offers the Zero Plan at $0/month.',
+                annotations: [
+                  { type: 'url_citation', url: 'https://blog.heliummobile.com/zero-plan', title: 'Zero Plan' },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    // Pass 2: structured review.
+    http.queueResponse(
+      200,
+      JSON.stringify({
+        output_text:
+          '{"decision":"needs_input","reason":"Current pricing not verified.","summary":"Needs input","evidence":{}}',
+      }),
+    );
+
+    const provider = new OpenAiNativeProvider(config(), http);
+    await provider.reviewPlan({
+      instruction: 'check helium mobile. lowest monthly plan. if less than $20. approve.',
+      plan: { intent: 'swap' },
+      research: { needed: true, mode: 'auto_current_facts', currentDate: '2026-05-17T00:00:00.000Z', maxSearches: 3 },
+    });
+
+    const reviewBody = JSON.parse(http.calls[1]!.body) as Record<string, unknown>;
+    const input = reviewBody.input as string;
+    // researchEvidence.summary should be the suppression copy, NOT the stale Zero Plan line.
+    expect(input).toContain('Current pricing could not be verified');
+    expect(input).not.toContain('Zero Plan');
+    expect(input).not.toContain('blog.heliummobile.com');
   });
 });
 
