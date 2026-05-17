@@ -225,7 +225,10 @@ export interface StreamingVoucherRecord {
   createdAt: string;
   settledAt?: string;
   settlementTxid?: string;
-  metadata?: JsonObject;
+  // Metadata is an opaque key/value bag. Use Record<string, unknown> so app-side
+  // extensions can pass arbitrary structured payloads (e.g. base64 byte buffers,
+  // protocol-specific receipts) that don't fit the strict JsonValue tree.
+  metadata?: Record<string, unknown>;
 }
 
 export const MPP_SESSION_PAYMENT_FINALITIES = ['voucher_accepted', 'settlement_confirmed'] as const;
@@ -258,6 +261,34 @@ export interface MppSessionPaymentLink {
   settlementTxid?: string;
   settledAt?: string;
   error?: string;
+  policy?: JsonObject;
+}
+
+export interface MppSessionPolicy {
+  allowedMerchantIds?: string[];
+  allowedMerchantOrigins?: string[];
+  allowedMerchantUrls?: string[];
+  allowedResourceOrigins?: string[];
+  allowedResourceUrls?: string[];
+  allowedOrigins?: string[];
+  allowedRecipients?: string[];
+  maxAmount?: string;
+  requireSettlementConfirmed?: boolean;
+}
+
+export interface MppSessionPolicyResult {
+  allowed: boolean;
+  reasonCode?: string;
+  reason?: string;
+  merchantId?: string;
+  merchantOrigin?: string;
+  merchantUrl?: string;
+  resourceOrigin?: string;
+  resourceUrl?: string;
+  recipient?: string;
+  amount?: string;
+  maxAmount?: string;
+  requireSettlementConfirmed?: boolean;
 }
 
 export interface StreamingSettlementRecord {

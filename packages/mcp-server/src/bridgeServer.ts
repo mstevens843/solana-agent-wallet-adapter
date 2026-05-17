@@ -24,6 +24,7 @@ import {
   type RegisteredAgent,
 } from './agentRegistry.js';
 import { BridgeAiPlanner, type AiPlanRequest, type AiReviewRequest, type AiAskRequest } from './aiPlanner.js';
+import { makeTransactionSimulator } from './simulationDigest.js';
 import {
   birdeyeConfigFromEnv,
   requestBirdeyeExitLiquidityMulti,
@@ -94,6 +95,17 @@ export function createBridgeServer(options: CreateBridgeServerOptions): BridgeSe
       })
     : undefined;
   const aiPlanner = new BridgeAiPlanner();
+  // Wire a transaction simulator if we have an action config (i.e. mainnet/devnet RPC).
+  // The planner uses this to populate `context.simulationDigest` when a request includes
+  // `context.transactionBase64`, lighting up the workflow's tx_gate analyzers live.
+  if (actionConfig) {
+    try {
+      const simConnection = new Connection(actionConfig.rpcUrl, 'confirmed');
+      aiPlanner.simulator = makeTransactionSimulator(simConnection);
+    } catch {
+      // Bad RPC URL → no simulator; tx_gate atoms stay unresolved, review still works.
+    }
+  }
   const agentRegistry = options.agentRegistry ?? new AgentRegistry({
     ...(options.agentsPersistPath ? { persistPath: options.agentsPersistPath } : {}),
     fallbackToken: backend.token,

@@ -202,7 +202,12 @@ describe('rowHtml', () => {
           mppSessionEligibility: {
             eligible: true,
             finality: 'voucher_accepted',
-            session: { sessionId: 'stream_1', remaining: '4.5' },
+            session: {
+              sessionId: 'stream_1',
+              remaining: '4.5',
+              expiresAt: '2026-05-16T14:00:00.000Z',
+            },
+            paymentMethod: { recipient: '7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M' },
           },
         },
       } as Partial<NormalizedApproval>),
@@ -210,6 +215,46 @@ describe('rowHtml', () => {
     expect(html).toContain('data-mpp-session-pay="apr_abc"');
     expect(html).toContain('Pay with Session');
     expect(html).toContain('Session ready');
+    expect(html).toContain('Cap 4.5 left');
+    expect(html).toContain('Finality voucher accepted');
+    expect(html).toContain('Recipient 7tQA…Yc8M');
+  });
+
+  it('renders a session selector and cap warning when multiple MPP sessions are eligible', () => {
+    const html = rowHtml(
+      makeApproval({
+        metadata: {
+          connectorId: 'mpp',
+          mppSessionEligibility: {
+            eligible: true,
+            finality: 'settlement_confirmed',
+            session: { sessionId: 'stream_1', remaining: '4.5' },
+            sessions: [
+              {
+                sessionId: 'stream_1',
+                remaining: '4.5',
+                expiresAt: '2026-05-16T14:00:00.000Z',
+                capConsumptionBps: 5600,
+                warnings: [{ code: 'large_cap_consumption', capConsumptionBps: 5600 }],
+              },
+              {
+                sessionId: 'stream_2',
+                remaining: '9.5',
+                expiresAt: '2026-05-16T16:00:00.000Z',
+              },
+            ],
+            paymentMethod: { recipient: '7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M' },
+            policy: { requireSettlementConfirmed: true },
+          },
+        },
+      } as Partial<NormalizedApproval>),
+    );
+    expect(html).toContain('data-mpp-session-select="apr_abc"');
+    expect(html).toContain('value="stream_1"');
+    expect(html).toContain('value="stream_2"');
+    expect(html).toContain('Finality settlement required');
+    expect(html).toContain('Policy strict');
+    expect(html).toContain('Uses 56% of remaining cap');
   });
 
   it('omits the MPP badge for non-MPP rows', () => {

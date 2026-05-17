@@ -834,32 +834,69 @@ async function finalizeMppSessionPayments(
       issuedAt,
       paymentMethod,
     });
-    const evidence = buildMppSessionSettlementEvidence({
+    const existingEvidence = await findExistingMppSessionSettlementEvidence(
+      context.evidenceStore,
+      session.walletAddress,
+      {
+        approvalId,
+        voucherHash: voucher.voucherHash,
+        receiptHash: receipt.artifactHash,
+        txid,
+      },
+    );
+    const evidence = existingEvidence ?? buildMppSessionSettlementEvidence({
       session,
       voucher,
       approvalId,
       receipt,
       issuedAt,
     });
-    await context.evidenceStore.saveEvidence(session.walletAddress, evidence);
-    await context.evidenceStore.appendEvidenceAuditEvent(session.walletAddress, {
-      id: `audit_${randomUUID()}`,
-      walletAddress: session.walletAddress,
-      type: 'mpp.session_payment.settlement_confirmed',
-      recordType: 'evidence',
-      recordId: evidence.id,
-      createdAt: issuedAt,
-      metadata: {
-        approvalId,
-        sessionId: session.sessionId,
-        voucherId: voucher.id,
-        voucherHash: voucher.voucherHash,
-        txid,
-        receiptId: receipt.receiptId,
-        receiptHash: receipt.artifactHash,
-        challengeHash: receipt.challengeHash,
-      },
-    });
+    if (!existingEvidence) {
+      await context.evidenceStore.saveEvidence(session.walletAddress, evidence);
+      await context.evidenceStore.appendEvidenceAuditEvent(session.walletAddress, {
+        id: `audit_${randomUUID()}`,
+        walletAddress: session.walletAddress,
+        type: 'mpp.session_payment.settlement_confirmed',
+        recordType: 'evidence',
+        recordId: evidence.id,
+        createdAt: issuedAt,
+        metadata: {
+          approvalId,
+          sessionId: session.sessionId,
+          voucherId: voucher.id,
+          voucherHash: voucher.voucherHash,
+          txid,
+          settlementTxid: txid,
+          receiptId: receipt.receiptId,
+          receiptHash: receipt.artifactHash,
+          challengeHash: receipt.challengeHash,
+          mppSessionPayment: true,
+          linkType: 'mpp_session_payment',
+        },
+      });
+    } else {
+      await context.evidenceStore.appendEvidenceAuditEvent(session.walletAddress, {
+        id: `audit_${randomUUID()}`,
+        walletAddress: session.walletAddress,
+        type: 'mpp.session_payment.settlement_replay_ignored',
+        recordType: 'evidence',
+        recordId: evidence.id,
+        createdAt: issuedAt,
+        metadata: {
+          approvalId,
+          sessionId: session.sessionId,
+          voucherId: voucher.id,
+          voucherHash: voucher.voucherHash,
+          txid,
+          settlementTxid: txid,
+          receiptId: receipt.receiptId,
+          receiptHash: receipt.artifactHash,
+          duplicateOf: evidence.id,
+          mppSessionPayment: true,
+          linkType: 'mpp_session_payment',
+        },
+      });
+    }
 
     const workflowStore = context.workflowStore;
     if (!workflowStore) continue;
@@ -921,6 +958,35 @@ async function finalizeMppSessionPayments(
   }
 }
 
+async function findExistingMppSessionSettlementEvidence(
+  store: EvidenceStore,
+  walletAddress: string,
+  input: {
+    approvalId: string;
+    voucherHash: string;
+    receiptHash: string;
+    txid: string;
+  },
+): Promise<EvidenceReceiptRecord | undefined> {
+  const records = await store.listEvidence(walletAddress);
+  return records.find((record) => {
+    const metadata = objectRecord(record.metadata);
+    return record.kind === MPP_EVIDENCE_KIND
+      && metadata?.mppSessionPayment === true
+      && metadata?.linkType === 'mpp_session_payment'
+      && stringValue(metadata.approvalId) === input.approvalId
+      && stringValue(metadata.voucherHash) === input.voucherHash
+      && (
+        record.artifactHash === input.receiptHash ||
+        stringValue(metadata.receiptHash) === input.receiptHash
+      )
+      && (
+        stringValue(metadata.settlementTxid) === input.txid ||
+        stringValue(metadata.txid) === input.txid
+      );
+  });
+}
+
 function buildMppSessionSettlementEvidence(input: {
   session: StoredStreamingSession;
   voucher: StreamingVoucherRecord;
@@ -952,12 +1018,18 @@ function buildMppSessionSettlementEvidence(input: {
       voucherId: input.voucher.id,
       voucherHash: input.voucher.voucherHash,
       txid: input.receipt.txid ?? '',
+      settlementTxid: input.receipt.txid ?? '',
       receiptId: input.receipt.receiptId,
       receiptHash: input.receipt.artifactHash,
       challengeHash: input.receipt.challengeHash,
       nonce: input.receipt.nonce,
       resourceUrl: input.receipt.resourceUrl,
       finality: 'settlement_confirmed',
+      mppSessionPayment: true,
+      linkType: 'mpp_session_payment',
+      source: 'streaming_session_settlement',
+      ...(input.receipt.merchant?.id ? { merchantId: input.receipt.merchant.id } : {}),
+      ...(input.receipt.merchant?.url ? { merchantUrl: input.receipt.merchant.url } : {}),
     },
   };
 }

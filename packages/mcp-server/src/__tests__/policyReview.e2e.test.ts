@@ -182,4 +182,82 @@ describe('policy-review end-to-end pipeline', () => {
       'atom.price.sol.gt.80',
     ]));
   });
+
+  it('runs the same pipeline through the OpenAI-compatible code path', async () => {
+    // Re-configure env for openai-compatible apiFormat.
+    process.env.AGENTIC_AI_API_FORMAT = 'openai-compatible';
+    process.env.AGENTIC_AI_BASE_URL = 'https://api.openai.com/v1';
+    process.env.AGENTIC_AI_MODEL = 'gpt-4o';
+    process.env.AGENTIC_AI_PROVIDER = 'openai';
+
+    const calls: string[] = [];
+    const stub = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      calls.push(url);
+      if (url.includes('api.alternative.me/fng')) {
+        return jsonResponse({ body: { data: [{ value: '42', value_classification: 'Fear', timestamp: '1700000000' }] } });
+      }
+      if (url.includes('api.jup.ag/price')) {
+        return jsonResponse({
+          body: { So11111111111111111111111111111111111111112: { usdPrice: 146.32, decimals: 9, blockId: 1 } },
+        });
+      }
+      if (url.includes('coingecko.com')) {
+        return jsonResponse({ body: {} });
+      }
+      // OpenAI-compatible uses /responses (with json_schema) or /chat/completions depending on path.
+      if (url.includes('/responses') || url.includes('/chat/completions')) {
+        // Distinguish research-pass (research vs review) by body length when needed; for this
+        // smoke we always return a reviewer-style payload.
+        const body = init?.body ? String(init.body) : '';
+        const isResponses = url.includes('/responses');
+        const text = JSON.stringify({
+          decision: 'approve',
+          reason: 'All policy gates pass via OpenAI-compatible.',
+          summary: 'Approved per resolved policy bundle.',
+          evidence: {
+            findings: [{ label: 'Helium plan', value: '$15.00 — web', tone: 'good' }],
+          },
+          evidenceFactIds: ['atom.market_regime.fear_and_greed.gt.20', 'atom.price.sol.gt.80'],
+          confidence: 'high',
+        });
+        if (isResponses) {
+          return jsonResponse({
+            body: { output: [{ type: 'message', content: [{ type: 'output_text', text, annotations: [] }] }] },
+          });
+        }
+        // chat completions
+        return jsonResponse({
+          body: { choices: [{ message: { content: text } }] },
+        });
+      }
+      return new Response('not stubbed: ' + url, { status: 404 });
+    });
+    vi.stubGlobal('fetch', stub);
+
+    const planner = new BridgeAiPlanner();
+    const result = await planner.reviewPlan({
+      instruction: NOTE,
+      walletAddress: '4fTqUdd9xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+      cluster: 'mainnet-beta',
+      plan: {
+        source: 'ai', category: 'trading', actionType: 'swap',
+        templateTitle: 'Swap SOL to USDC', intent: 'Swap SOL to USDC',
+        route: 'AI draft only. Wallet approval is required later.',
+        risk: 'Medium.', approval: 'Wallet approval is required before signing or submitting.',
+        parameters: { inputToken: 'SOL', outputToken: 'USDC', amount: '0.01', slippageBps: '50' },
+        fields: [],
+        safeguards: ['Wallet approval is required.'],
+        userNotes: NOTE,
+      },
+    });
+
+    expect(calls.some((url) => url.includes('alternative.me/fng'))).toBe(true);
+    expect(calls.some((url) => url.includes('api.jup.ag/price'))).toBe(true);
+    // OpenAI-compatible review hit either /responses or /chat/completions.
+    expect(calls.some((url) => url.includes('/responses') || url.includes('/chat/completions'))).toBe(true);
+    const findings = (result.evidence as { findings?: Array<{ value?: string }> }).findings ?? [];
+    expect(findings.some((f) => typeof f.value === 'string' && f.value.includes('alternative_me'))).toBe(true);
+    expect(findings.some((f) => typeof f.value === 'string' && f.value.includes('jupiter'))).toBe(true);
+  });
 });

@@ -47,13 +47,35 @@ export interface MppSessionEligibility {
   finality?: 'voucher_accepted' | 'settlement_confirmed';
   reason?: string;
   reasonCode?: string;
-  session?: {
-    sessionId?: string;
-    remaining?: string;
-    expiresAt?: string;
-    [key: string]: unknown;
-  };
+  session?: MppSessionCandidate;
+  sessions?: MppSessionCandidate[];
   paymentMethod?: Record<string, unknown>;
+  warnings?: MppSessionWarning[];
+  policy?: Record<string, unknown>;
+}
+
+export interface MppSessionCandidate {
+  sessionId?: string;
+  remaining?: string;
+  expiresAt?: string;
+  capAmount?: string;
+  spentAmount?: string;
+  cluster?: string;
+  tokenMint?: string;
+  capConsumptionBps?: number;
+  warnings?: MppSessionWarning[];
+  recipientAllowlist?: string[];
+  [key: string]: unknown;
+}
+
+export interface MppSessionWarning {
+  code?: string;
+  message?: string;
+  thresholdBps?: number;
+  capConsumptionBps?: number;
+  amount?: string;
+  remaining?: string;
+  [key: string]: unknown;
 }
 
 interface TabState {
@@ -162,6 +184,56 @@ function mppEligibility(item: NormalizedApproval): MppSessionEligibility | undef
     : undefined;
 }
 
+function mppEligibleSessions(eligibility: MppSessionEligibility | undefined): MppSessionCandidate[] {
+  if (!eligibility) return [];
+  const sessions = Array.isArray(eligibility.sessions) ? eligibility.sessions : [];
+  if (sessions.length > 0) return sessions.filter((session) => session && typeof session === 'object');
+  return eligibility.session ? [eligibility.session] : [];
+}
+
+function selectedMppSession(eligibility: MppSessionEligibility | undefined): MppSessionCandidate | undefined {
+  return mppEligibleSessions(eligibility)[0] ?? eligibility?.session;
+}
+
+function mppWarnings(eligibility: MppSessionEligibility | undefined, session?: MppSessionCandidate): MppSessionWarning[] {
+  const warnings = [
+    ...(Array.isArray(eligibility?.warnings) ? eligibility!.warnings! : []),
+    ...(Array.isArray(session?.warnings) ? session!.warnings! : []),
+  ];
+  const seen = new Set<string>();
+  return warnings.filter((warning) => {
+    const key = `${warning.code ?? ''}:${warning.capConsumptionBps ?? ''}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function formatFinality(value: string | undefined): string {
+  if (value === 'settlement_confirmed') return 'settlement required';
+  if (value === 'voucher_accepted') return 'voucher accepted';
+  return value ? value.replace(/_/g, ' ') : 'voucher accepted';
+}
+
+function formatExpiry(iso: string | undefined): string {
+  if (!iso) return '';
+  const parsed = Date.parse(iso);
+  if (Number.isNaN(parsed)) return iso;
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(parsed));
+}
+
+function mppSessionOptionLabel(session: MppSessionCandidate): string {
+  const id = session.sessionId ? shortAddress(session.sessionId) : 'session';
+  const remaining = session.remaining ? `${session.remaining} left` : 'cap available';
+  const expiry = session.expiresAt ? `exp ${formatExpiry(session.expiresAt)}` : 'no expiry';
+  return `${id} · ${remaining} · ${expiry}`;
+}
+
 function agentLabelForItem(item: NormalizedApproval): string {
   const agent = item.metadata?.ap2VerifiedAgent;
   const ap2Label = agent?.agentLabel?.trim() || agent?.agentId?.trim();
@@ -192,13 +264,63 @@ function mppSessionHint(item: NormalizedApproval): string {
   }
   const eligibility = mppEligibility(item);
   if (eligibility?.eligible) {
-    const remaining = eligibility.session?.remaining ? ` · ${eligibility.session.remaining} left` : '';
-    return `<span class="external-agents-row-session ready">Session ready${escapeHtml(remaining)}</span>`;
+    const session = selectedMppSession(eligibility);
+    const remaining = session?.remaining ? ` · ${session.remaining} left` : '';
+    const finality = ` · ${formatFinality(eligibility.finality)}`;
+    return `<span class="external-agents-row-session ready">Session ready${escapeHtml(remaining + finality)}</span>`;
   }
   if (eligibility?.reasonCode) {
     return `<span class="external-agents-row-session unavailable" title="${escapeHtml(eligibility.reason ?? '')}">No session match</span>`;
   }
   return '';
+}
+
+function mppSessionDetailHtml(item: NormalizedApproval): string {
+  if (!isMppApproval(item)) return '';
+  const eligibility = mppEligibility(item);
+  const session = selectedMppSession(eligibility);
+  const paymentMethod = eligibility?.paymentMethod ?? {};
+  const recipient = typeof paymentMethod.recipient === 'string'
+    ? paymentMethod.recipient
+    : item.recipient ?? '';
+  if (!eligibility?.eligible || !session) {
+    if (!eligibility?.reason) return '';
+    return `<div class="external-agents-row-session-detail unavailable">${escapeHtml(eligibility.reason)}</div>`;
+  }
+  const warnings = mppWarnings(eligibility, session);
+  const warningHtml = warnings.map((warning) => {
+    const bps = typeof warning.capConsumptionBps === 'number' ? Math.round(warning.capConsumptionBps / 100) : undefined;
+    const label = bps !== undefined ? `Uses ${bps}% of remaining cap` : (warning.message ?? 'Session warning');
+    return `<span class="external-agents-session-warning" title="${escapeHtml(warning.message ?? label)}">${escapeHtml(label)}</span>`;
+  }).join('');
+  const policy = eligibility.policy;
+  const policyFinality = policy?.requireSettlementConfirmed === true ? 'strict' : 'standard';
+  return `
+    <div class="external-agents-row-session-detail">
+      <span>Cap ${escapeHtml(session.remaining ?? 'unknown')} left</span>
+      <span>Expires ${escapeHtml(formatExpiry(session.expiresAt) || 'unknown')}</span>
+      <span>Recipient ${escapeHtml(shortAddress(recipient))}</span>
+      <span>Finality ${escapeHtml(formatFinality(eligibility.finality))}</span>
+      <span>Policy ${escapeHtml(policyFinality)}</span>
+      ${warningHtml}
+    </div>
+  `;
+}
+
+function mppSessionSelectorHtml(item: NormalizedApproval): string {
+  const eligibility = mppEligibility(item);
+  const sessions = mppEligibleSessions(eligibility);
+  if (!eligibility?.eligible || sessions.length <= 1) return '';
+  return `
+    <label class="external-agents-session-select">
+      <span>Session</span>
+      <select data-mpp-session-select="${escapeHtml(item.id)}" aria-label="MPP streaming session">
+        ${sessions.map((session) => `
+          <option value="${escapeHtml(session.sessionId ?? '')}">${escapeHtml(mppSessionOptionLabel(session))}</option>
+        `).join('')}
+      </select>
+    </label>
+  `;
 }
 
 // ---------------- Renderers (exported for tests) ----------------
@@ -228,6 +350,7 @@ export function rowHtml(item: NormalizedApproval): string {
   const sessionButton = canPayWithSession
     ? `<button type="button" class="primary" data-mpp-session-pay="${escapeHtml(item.id)}"${paying ? ' disabled' : ''}>${paying ? 'Paying…' : 'Pay with Session'}</button>`
     : '';
+  const sessionSelector = canPayWithSession ? mppSessionSelectorHtml(item) : '';
   return `
     <li class="external-agents-row${terminal ? ' terminal' : ''}" data-inbound-id="${escapeHtml(item.id)}">
       <span class="external-agents-row-avatar" aria-hidden="true">${avatarLabel}</span>
@@ -246,8 +369,10 @@ export function rowHtml(item: NormalizedApproval): string {
           ${clusterHtml}
           ${mppSessionHint(item)}
         </div>
+        ${mppSessionDetailHtml(item)}
       </div>
       <div class="external-agents-row-actions">
+        ${sessionSelector}
         ${sessionButton}
         <button type="button" class="primary" data-tab="inbox" data-external-agents-open="${escapeHtml(item.id)}">${buttonLabel}</button>
       </div>
@@ -589,12 +714,12 @@ function scrollToInboxApproval(approvalId: string): void {
   );
 }
 
-async function payWithMppSession(approvalId: string): Promise<void> {
+async function payWithMppSession(approvalId: string, sessionId?: string): Promise<void> {
   if (!approvalId || mppSessionPaying.has(approvalId)) return;
   mppSessionPaying.add(approvalId);
   patchPanel();
   try {
-    const result = await postMppSessionPay({ approvalId });
+    const result = await postMppSessionPay({ approvalId, ...(sessionId ? { sessionId } : {}) });
     if (isNormalizedApproval(result.approval)) {
       state.inbound = sortInbound(state.inbound.map((item) => item.id === approvalId ? result.approval as NormalizedApproval : item));
     } else {
@@ -640,7 +765,9 @@ function installPanelClickHandler(): void {
     if (sessionPayBtn) {
       event.preventDefault();
       const approvalId = sessionPayBtn.getAttribute('data-mpp-session-pay') ?? '';
-      void payWithMppSession(approvalId);
+      const row = sessionPayBtn.closest<HTMLElement>('[data-inbound-id]');
+      const select = row?.querySelector<HTMLSelectElement>('[data-mpp-session-select]');
+      void payWithMppSession(approvalId, select?.value || undefined);
       return;
     }
     const openBtn = target.closest<HTMLElement>('[data-external-agents-open]');

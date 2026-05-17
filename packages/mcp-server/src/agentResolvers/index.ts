@@ -129,7 +129,32 @@ export function createMcpCapabilityResolver(deps: McpResolverDeps) {
   const config = deps.config;
   const altMe = deps.alternativeMe ?? getAlternativeMeClient();
 
+  // Per-request memoization: if two atoms in the same review hit the same
+  // (provider, endpoint, subject) tuple, share one in-flight call. Cache lives for the
+  // lifetime of this resolver instance, which is one review request. Cleared by GC after.
+  const memo = new Map<string, Promise<CapabilityResolutionAttempt<unknown>>>();
+  const memoKey = (atom: AgentAtom, tier: CapabilityTier): string | undefined => {
+    // Only memoize when the atom has a stable subject — otherwise the cache key collides
+    // across atoms with the same provider but different fact requests.
+    const subject = 'subject' in atom && atom.subject ? String(atom.subject) : undefined;
+    if (!subject) return undefined;
+    const field = 'field' in atom ? String((atom as { field?: unknown }).field ?? '') : '';
+    return `${tier.provider}|${tier.endpoint ?? ''}|${subject}|${field}`;
+  };
+
   return async function resolver(atom: AgentAtom, tier: CapabilityTier): Promise<CapabilityResolutionAttempt<unknown>> {
+    const key = memoKey(atom, tier);
+    if (key) {
+      const cached = memo.get(key);
+      if (cached) return cached;
+      const promise = resolveOnce(atom, tier);
+      memo.set(key, promise);
+      return promise;
+    }
+    return resolveOnce(atom, tier);
+  };
+
+  async function resolveOnce(atom: AgentAtom, tier: CapabilityTier): Promise<CapabilityResolutionAttempt<unknown>> {
     const provider = tier.provider;
     // -------- price atoms -----------------------------------------------------
     if (atom.type === 'price') {

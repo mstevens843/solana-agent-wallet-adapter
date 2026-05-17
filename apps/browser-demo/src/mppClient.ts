@@ -52,6 +52,17 @@ export interface MppConfigResponse {
   maxChallengeAmount?: string;
   endpoint?: string;
   allowedMints?: readonly string[];
+  sessionPolicy?: {
+    allowedMerchantIds?: readonly string[];
+    allowedMerchantOrigins?: readonly string[];
+    allowedMerchantUrls?: readonly string[];
+    allowedResourceOrigins?: readonly string[];
+    allowedResourceUrls?: readonly string[];
+    allowedOrigins?: readonly string[];
+    allowedRecipients?: readonly string[];
+    maxAmount?: string;
+    requireSettlementConfirmed?: boolean;
+  };
 }
 
 export interface MppInboundResponse {

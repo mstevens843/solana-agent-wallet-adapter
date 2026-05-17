@@ -176,6 +176,7 @@ describe('mcp server tools', () => {
     expect(result.tools.map((tool) => tool.name)).toContain('solana_portfolio_summary');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_transfer_sol');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_mpp_challenge_handler');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_mpp_pay_with_session');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_blink_action');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_kamino_deposit');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_marginfi_health_preview');
@@ -244,6 +245,86 @@ describe('mcp server tools', () => {
     });
     expect(capped.isError).toBe(true);
     expect(textOf(capped)).toContain('exceeds configured maxTransfer');
+  });
+
+  it('proxies MPP pay-with-session decisions to render-web', async () => {
+    await closeServer?.();
+    closeServer = undefined;
+
+    vi.stubEnv('AGENTIC_RENDER_WEB_URL', 'http://render.test');
+    vi.stubEnv('AGENTIC_RENDER_WEB_COOKIE', 'session=test-cookie');
+    const requests: Array<{ method: string; path: string; body: unknown; cookie?: string }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: URL | string, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const headers = init?.headers as Record<string, string> | undefined;
+      requests.push({
+        method: init?.method ?? 'GET',
+        path: url.pathname,
+        body: typeof init?.body === 'string' ? JSON.parse(init.body) as unknown : undefined,
+        cookie: headers?.cookie,
+      });
+      if (url.pathname === '/api/mpp/session-pay') {
+        return jsonResponse({
+          approvalId: 'approval_mpp_1',
+          accepted: true,
+          finality: 'voucher_accepted',
+          status: 'voucher_accepted',
+          remaining: '4.50',
+          spentAmount: '0.50',
+          sessionPayment: {
+            approvalId: 'approval_mpp_1',
+            sessionId: 'sess_mpp_1',
+            voucherId: 'voucher_mpp_1',
+            voucherHash: 'voucher_hash_mpp_1',
+          },
+          voucher: {
+            id: 'voucher_mpp_1',
+            voucherHash: 'voucher_hash_mpp_1',
+          },
+          receiptId: 'evidence_mpp_1',
+          receiptHash: 'a'.repeat(64),
+        });
+      }
+      return jsonResponse({ error: 'not_found' }, 404);
+    }));
+
+    const linked = InMemoryTransport.createLinkedPair();
+    const server = createServer({
+      backend: createMockBackend(),
+      actionConfig: DEFAULT_CONFIG,
+    });
+    client = new Client({ name: 'mcp-server-test', version: '0.0.0' });
+    await Promise.all([server.connect(linked[1]), client.connect(linked[0])]);
+    closeServer = async () => {
+      await Promise.all([client.close(), server.close()]);
+    };
+
+    const result = JSON.parse(textOf(await callTool('solana_mpp_pay_with_session', {
+      approvalId: 'approval_mpp_1',
+      sessionId: 'sess_mpp_1',
+    })));
+
+    expect(result).toMatchObject({
+      approvalId: 'approval_mpp_1',
+      accepted: true,
+      finality: 'voucher_accepted',
+      remaining: '4.50',
+      sessionPayment: {
+        sessionId: 'sess_mpp_1',
+        voucherHash: 'voucher_hash_mpp_1',
+      },
+    });
+    expect(requests).toEqual([
+      {
+        method: 'POST',
+        path: '/api/mpp/session-pay',
+        cookie: 'session=test-cookie',
+        body: {
+          approvalId: 'approval_mpp_1',
+          sessionId: 'sess_mpp_1',
+        },
+      },
+    ]);
   });
 
   it('describes connector write tools as wallet approval bounded', async () => {

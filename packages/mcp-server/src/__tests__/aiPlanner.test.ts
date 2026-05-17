@@ -21,6 +21,10 @@ const request = {
 describe('BridgeAiPlanner', () => {
   beforeEach(() => {
     vi.stubEnv('AGENTIC_AI_ALLOW_CUSTOM_BASE_URL', '1');
+    // Opt out of the (now default-on) LLM atom extractor in this suite — these tests
+    // count exact fetch calls and would otherwise see an extra atom-extraction call on
+    // NOTEs the regex doesn't cover. Tests that explicitly want the fallback can override.
+    vi.stubEnv('AGENTIC_AI_ATOM_LLM_FALLBACK', '0');
   });
 
   afterEach(() => {

@@ -5770,6 +5770,29 @@ function registerJupiterRecurringTools(
   );
 
   server.registerTool(
+    'solana_mpp_pay_with_session',
+    {
+      description:
+        'Pay an existing MPP approval using an active streaming-payment session. Reuses render-web session matching and returns the voucher, receipt, remaining cap, and finality status.',
+      inputSchema: {
+        approvalId: z.string().min(1),
+        sessionId: z.string().min(1).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_mpp_pay_with_session',
+      { cluster, input },
+      async () => jsonReply(await streamingRenderWebRequest('/api/mpp/session-pay', {
+        method: 'POST',
+        body: JSON.stringify(removeUndefined({
+          approvalId: input.approvalId,
+          sessionId: input.sessionId,
+        })),
+      })),
+    ),
+  );
+
+  server.registerTool(
     'solana_streaming_session_create',
     {
       description:

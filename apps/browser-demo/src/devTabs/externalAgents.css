@@ -178,6 +178,35 @@
   color: rgba(196, 205, 202, 0.74);
 }
 
+.external-agents-row-session-detail {
+  align-items: center;
+  color: rgba(196, 205, 202, 0.72);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.72rem;
+  font-weight: 680;
+  gap: 6px;
+  line-height: 1.35;
+  margin-top: 7px;
+}
+
+.external-agents-row-session-detail span {
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(224, 230, 226, 0.085);
+  border-radius: 999px;
+  padding: 2px 7px;
+}
+
+.external-agents-row-session-detail.unavailable {
+  color: rgba(244, 192, 132, 0.9);
+}
+
+.external-agents-session-warning {
+  background: rgba(244, 192, 132, 0.13) !important;
+  border-color: rgba(244, 192, 132, 0.33) !important;
+  color: rgba(244, 192, 132, 0.96);
+}
+
 .approval-badge--mpp {
   align-items: center;
   background: rgba(236, 201, 75, 0.14);
@@ -195,6 +224,7 @@
 }
 
 .external-agents-row-actions {
+  align-items: center;
   display: flex;
   gap: 8px;
   justify-content: flex-end;
@@ -202,6 +232,37 @@
 
 .external-agents-row-actions button {
   white-space: nowrap;
+}
+
+.external-agents-session-select {
+  align-items: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 190px;
+}
+
+.external-agents-session-select span {
+  color: rgba(196, 205, 202, 0.72);
+  font-size: 0.66rem;
+  font-weight: 800;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.external-agents-session-select select {
+  appearance: none;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.025)),
+    rgba(0, 0, 0, 0.26);
+  border: 1px solid rgba(224, 230, 226, 0.16);
+  border-radius: 7px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 720;
+  min-height: 36px;
+  padding: 7px 28px 7px 9px;
 }
 
 .external-agents-error {
@@ -285,11 +346,14 @@
   }
 
   .external-agents-row-actions {
+    align-items: stretch;
+    flex-direction: column;
     grid-column: 1 / -1;
     justify-content: stretch;
   }
 
-  .external-agents-row-actions button {
+  .external-agents-row-actions button,
+  .external-agents-session-select {
     width: 100%;
   }
 }

@@ -12,6 +12,8 @@
  * The client is fetch-based and accepts an injected fetchImpl for tests.
  */
 
+import { createFsKvCache } from './kvCaches.js';
+
 const FEAR_GREED_ENDPOINT_DEFAULT = 'https://api.alternative.me/fng/?limit=1';
 const FEAR_GREED_TTL_MS_DEFAULT = 15 * 60 * 1000;
 const FEAR_GREED_KV_KEY = 'alternative_me:fng:limit-1';
@@ -149,13 +151,31 @@ export function parseFearGreedResponse(payload: unknown): FearGreedIndexEntry | 
 
 let defaultClient: AlternativeMeClient | undefined;
 
-/** Return the process-wide AlternativeMeClient, building it on first access. */
+/**
+ * Return the process-wide AlternativeMeClient, building it on first access.
+ *
+ * Env knobs (read once at first access):
+ *   - AGENT_WALLET_KV_CACHE_PATH=...  → wrap with createFsKvCache(path) for cross-process
+ *     caching. Multi-worker deployments use this so each worker doesn't re-fetch Fear &
+ *     Greed independently. Falls back silently to in-memory cache if the path is unset or
+ *     the FS adapter can't initialize.
+ */
 export function getAlternativeMeClient(): AlternativeMeClient {
-  if (!defaultClient) defaultClient = new AlternativeMeClient();
+  if (!defaultClient) defaultClient = new AlternativeMeClient({ kv: defaultKvCacheFromEnv() });
   return defaultClient;
 }
 
 /** Reset the singleton — useful in tests. */
 export function resetAlternativeMeClient(): void {
   defaultClient = undefined;
+}
+
+function defaultKvCacheFromEnv(): KvCache | undefined {
+  const path = (process.env.AGENT_WALLET_KV_CACHE_PATH ?? '').trim();
+  if (!path) return undefined;
+  try {
+    return createFsKvCache(path);
+  } catch {
+    return undefined;
+  }
 }

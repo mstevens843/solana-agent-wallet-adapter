@@ -30,6 +30,7 @@ import { connectorRegistryPromptContext } from './connectorRegistry.js';
 import { BLINK_CLASSIFIER_REVIEW_PROMPT } from './blinkClassification.js';
 import { createMcpCapabilityResolver } from './agentResolvers/index.js';
 import { DEFAULT_CONFIG, type AgentWalletConfig } from './config.js';
+import type { TransactionSimulator } from './simulationDigest.js';
 
 export type AiApiFormat = 'openai-compatible' | 'anthropic';
 export type {
@@ -338,9 +339,19 @@ export class BridgeAiPlanner {
       // Pull simulation digest / tx-gate context from the request context if the caller
       // (prepare → simulate → review chain) supplied them. They light up tx_gate atoms.
       const ctx = (request.context ?? {}) as Record<string, unknown>;
-      const simulation = (ctx.simulationDigest && typeof ctx.simulationDigest === 'object')
+      let simulation = (ctx.simulationDigest && typeof ctx.simulationDigest === 'object')
         ? (ctx.simulationDigest as SimulationDigest)
         : undefined;
+      // If the caller provided a base64 tx but no digest, and we have a simulator wired,
+      // build the digest on demand. This is what makes tx_gate atoms fire end-to-end:
+      // any caller that includes context.transactionBase64 gets analyzers automatically.
+      if (!simulation && this.simulator && typeof ctx.transactionBase64 === 'string') {
+        try {
+          simulation = await this.simulator(ctx.transactionBase64);
+        } catch {
+          // Simulation failure must never block the review — leave simulation undefined.
+        }
+      }
       const txGateContext = simulation
         ? ((ctx.txGateContext && typeof ctx.txGateContext === 'object')
             ? (ctx.txGateContext as TxGateContext)
@@ -356,7 +367,12 @@ export class BridgeAiPlanner {
         txGateContext,
       });
       if (bundle.atoms.length === 0) return request;
-      const enrichedContext = { ...ctx, policyBundle: bundle };
+      // Drop verbose resolution internals (attempts[], detail strings) before embedding
+      // in request.context — the LLM only needs atoms + evaluations + tx-gate outcomes +
+      // hasBlockingFailure to do its job. mergePolicyBundleFindings reads back from the
+      // same shape after the LLM call.
+      const compactBundle = compactPolicyBundleForLlm(bundle);
+      const enrichedContext = { ...ctx, policyBundle: compactBundle };
       return { ...request, context: enrichedContext } as Required<AiReviewRequest>;
     } catch (err) {
       if (process.env.AGENT_WALLET_TRACE === '1') {
@@ -370,16 +386,26 @@ export class BridgeAiPlanner {
   runtimeConfig?: AgentWalletConfig;
 
   /**
+   * Optional transaction simulator. When set AND the request carries
+   * `context.transactionBase64`, the planner pre-simulates the transaction and attaches
+   * the resulting `SimulationDigest` to `context.simulationDigest` so tx_gate atoms fire.
+   * Provided by the bridge layer (which holds the Connection); planner stays stateless.
+   */
+  simulator?: TransactionSimulator;
+
+  /**
    * Build the LLM atom-extraction fallback function used by the orchestrator. Returns
-   * undefined when no AI provider is configured OR the opt-in env flag is not set.
+   * undefined when no AI provider is configured OR the opt-out env flag is set.
    *
-   * Opt-in via `AGENTIC_AI_ATOM_LLM_FALLBACK=1`. This avoids surprise extra LLM calls
-   * for NOTEs the regex extractor already covers (or that the legacy research-pass flow
-   * handles via reviewNeedsWebResearch). When enabled, the fallback fires only when
-   * (a) the regex extractor returns zero atoms AND (b) the text reads like a policy.
+   * Default ON. Opt-out via `AGENTIC_AI_ATOM_LLM_FALLBACK=0`. Set to '0' explicitly to
+   * disable (any other value, including unset, leaves it enabled).
+   *
+   * The fallback fires only when (a) the regex extractor returns zero atoms AND
+   * (b) the text reads like a policy (via `looksLikePolicyWithoutAtoms`). On opt-out,
+   * NOTEs phrased outside the regex vocabulary will produce empty policy bundles.
    */
   private buildLlmAtomExtractor(): import('@solana-agent-wallet-adapter/workflow').AgentAtomLlmExtractor | undefined {
-    if (process.env.AGENTIC_AI_ATOM_LLM_FALLBACK !== '1') return undefined;
+    if (process.env.AGENTIC_AI_ATOM_LLM_FALLBACK === '0') return undefined;
     const config = this.config();
     if (!config) return undefined;
     return async ({ text, knownTokenSymbols }) => {
@@ -1618,7 +1644,8 @@ export function applyServerSideReviewSafety(
   const context = (request.context ?? {}) as Record<string, unknown>;
   const facts = Array.isArray(context.evidenceFacts) ? context.evidenceFacts : undefined;
   const gate = isJsonObjectLike(context.evidenceGate) ? (context.evidenceGate as Record<string, unknown>) : undefined;
-  if (!facts && !gate) return result;
+  const policyBundle = isJsonObjectLike(context.policyBundle) ? (context.policyBundle as Record<string, unknown>) : undefined;
+  if (!facts && !gate && !policyBundle) return result;
 
   let decision = result.decision;
   let reason = result.reason;
@@ -1657,6 +1684,31 @@ export function applyServerSideReviewSafety(
     }
   }
 
+  // PolicyBundle enforcement: if the orchestrator detected a blocking failure (a user-stated
+  // gate that definitively failed against resolved facts), the AI is not allowed to approve
+  // over it. We downgrade to deny and cite the failing atoms in blockingFactIds.
+  if (policyBundle && policyBundle.hasBlockingFailure === true && decision === 'approve') {
+    const evaluations = Array.isArray(policyBundle.evaluations)
+      ? (policyBundle.evaluations as Array<Record<string, unknown>>)
+      : [];
+    const failingAtomIds = evaluations
+      .filter((evaluation) => evaluation.pass === false && typeof evaluation.atomId === 'string')
+      .map((evaluation) => evaluation.atomId as string);
+    decision = 'deny';
+    reason = failingAtomIds.length > 0
+      ? `Server safety: policy bundle failed ${failingAtomIds.length} gate${failingAtomIds.length === 1 ? '' : 's'} (${failingAtomIds.join(', ')}); AI approval downgraded to deny.`
+      : 'Server safety: policy bundle reported a blocking failure; AI approval downgraded to deny.';
+    safetyTriggered = true;
+    // Merge failing atom ids into the contract's blockingFactIds (creating it if needed).
+    if (contract) {
+      const existing = Array.isArray(contract.blockingFactIds)
+        ? (contract.blockingFactIds as unknown[]).filter((id): id is string => typeof id === 'string')
+        : [];
+      const merged = Array.from(new Set([...existing, ...failingAtomIds]));
+      contract.blockingFactIds = merged;
+    }
+  }
+
   if (!safetyTriggered) return result;
   if (contract) {
     contract.decision = decision;
@@ -1682,6 +1734,30 @@ const JUPITER_AGGREGATOR_PROGRAM_IDS: ReadonlySet<string> = new Set([
   'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4',
   'JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB',
 ]);
+
+/**
+ * Strip verbose resolver internals (per-tier attempts, error detail strings) from the
+ * policy bundle before embedding it in `request.context.policyBundle` for the LLM. Keeps
+ * the LLM-facing payload to the fields the model and downstream merge actually use.
+ */
+function compactPolicyBundleForLlm(bundle: PolicyEvaluationBundle): Record<string, unknown> {
+  return {
+    atoms: bundle.atoms.map((atom) => ({
+      id: atom.id,
+      type: atom.type,
+      rawText: atom.rawText,
+    })),
+    evaluations: bundle.evaluations.map((evaluation) => ({
+      atomId: evaluation.atomId,
+      pass: evaluation.pass,
+      ...(evaluation.unresolved ? { unresolved: true } : {}),
+      finding: evaluation.finding,
+    })),
+    ...(Object.keys(bundle.txGateOutcomes).length > 0 ? { txGateOutcomes: bundle.txGateOutcomes } : {}),
+    hasBlockingFailure: bundle.hasBlockingFailure,
+    finishedAt: bundle.finishedAt,
+  };
+}
 
 /**
  * Build a sensible default `TxGateContext` for an action type so callers can pass just a
@@ -1734,11 +1810,26 @@ export function mergePolicyBundleFindings(
     if (label) byLabel.set(label, idx);
   });
 
+  // Noise control: for large policy bundles, drop the unresolved (tone='warn', "unknown")
+  // rows so the inbox card doesn't get drowned in non-answers. Small bundles keep them
+  // for transparency — the user can see we tried but couldn't resolve a specific gate.
+  const NOISY_BUNDLE_THRESHOLD = 3;
+  const isLargeBundle = evaluations.length > NOISY_BUNDLE_THRESHOLD;
+  const isUnresolved = (ev: Record<string, unknown>): boolean => {
+    if (ev.unresolved === true) return true;
+    if (ev.pass === undefined) {
+      const finding = isJsonObjectLike(ev.finding) ? ev.finding as Record<string, unknown> : undefined;
+      if (finding && typeof finding.value === 'string' && /^unknown$/i.test(finding.value.trim())) return true;
+    }
+    return false;
+  };
+
   const atomIdsCited: string[] = [];
   for (const evaluation of evaluations) {
     const atomId = typeof evaluation.atomId === 'string' ? evaluation.atomId : undefined;
     const finding = isJsonObjectLike(evaluation.finding) ? evaluation.finding as Record<string, unknown> : undefined;
     if (!atomId || !finding) continue;
+    if (isLargeBundle && isUnresolved(evaluation)) continue; // drop unresolved rows on noisy bundles
     const label = typeof finding.label === 'string' ? finding.label.trim() : '';
     if (!label) continue;
     const value = typeof finding.value === 'string' ? finding.value : '';

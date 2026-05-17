@@ -126,6 +126,7 @@ describe('MPP API', () => {
       expect((first.metadata as Record<string, unknown>).mppSessionEligibility).toMatchObject({
         eligible: true,
         finality: 'voucher_accepted',
+        sessions: [{ sessionId: grant.session.sessionId }],
       });
 
       const paid = await postJson(port, '/api/mpp/session-pay', { approvalId });
@@ -154,6 +155,177 @@ describe('MPP API', () => {
         finality: 'voucher_accepted',
       });
       expect(await evidenceStore.listEvidence(wallet.walletAddress)).toHaveLength(1);
+    });
+  });
+
+  it('lists multiple eligible streaming sessions and pays with the selected one', async () => {
+    await withMppServer(async ({ port, workflowStore, wallet }) => {
+      const streaming = new StreamingService(streamingStoreFor(workflowStore), {
+        clock: { now: () => NOW },
+        latestBlockhash: async () => '11111111111111111111111111111111',
+      });
+      const first = await streaming.createSession({
+        walletAddress: wallet.walletAddress,
+        tokenMint: USDC_MINT,
+        capAmount: '5',
+        expiresAt: '2026-05-16T14:00:00.000Z',
+        recipientAllowlist: [RECIPIENT],
+        cluster: 'devnet',
+      });
+      const second = await streaming.createSession({
+        walletAddress: wallet.walletAddress,
+        tokenMint: USDC_MINT,
+        capAmount: '9',
+        expiresAt: '2026-05-16T15:00:00.000Z',
+        recipientAllowlist: [RECIPIENT],
+        cluster: 'devnet',
+      });
+      await streaming.recordGrantSigned({
+        walletAddress: wallet.walletAddress,
+        sessionId: first.session.sessionId,
+        approveTxid: 'tx_streaming_grant_first',
+      });
+      await streaming.recordGrantSigned({
+        walletAddress: wallet.walletAddress,
+        sessionId: second.session.sessionId,
+        approveTxid: 'tx_streaming_grant_second',
+      });
+
+      const created = await postJson(port, '/api/mpp/challenge', { challenge: splChallenge() });
+      expect(created.status).toBe(201);
+      const approvalId = String(created.body.approvalId);
+
+      const inbound = await requestJson(port, 'GET', '/api/mpp/inbound');
+      const row = ((inbound.body.inbound as Record<string, unknown>[]) ?? [])[0] as Record<string, unknown>;
+      const eligibility = (row.metadata as Record<string, unknown>).mppSessionEligibility as Record<string, unknown>;
+      expect(eligibility).toMatchObject({
+        eligible: true,
+        sessions: [
+          { sessionId: first.session.sessionId, capConsumptionBps: 5000 },
+          { sessionId: second.session.sessionId },
+        ],
+      });
+
+      const paid = await postJson(port, '/api/mpp/session-pay', {
+        approvalId,
+        sessionId: second.session.sessionId,
+      });
+      expect(paid.status).toBe(200);
+      expect((paid.body.sessionPayment as Record<string, unknown>).sessionId).toBe(second.session.sessionId);
+
+      expect((await streaming.getSession({
+        walletAddress: wallet.walletAddress,
+        sessionId: first.session.sessionId,
+      })).vouchers).toHaveLength(0);
+      expect((await streaming.getSession({
+        walletAddress: wallet.walletAddress,
+        sessionId: second.session.sessionId,
+      })).vouchers).toHaveLength(1);
+    });
+  });
+
+  it('blocks session payments that violate wallet MPP session policy', async () => {
+    await withMppServer(async ({ port, workflowStore, wallet }) => {
+      await workflowStore.savePreference(wallet.walletAddress, {
+        namespace: 'mpp-config' as never,
+        version: 1,
+        updatedAt: NOW.toISOString(),
+        payload: {
+          acceptedRails: ['usdc'],
+          maxChallengeAmount: '10',
+          sessionPolicy: {
+            allowedMerchantIds: ['merchant_allowed'],
+            maxAmount: '2.00',
+          },
+        },
+      });
+      const streaming = new StreamingService(streamingStoreFor(workflowStore), {
+        clock: { now: () => NOW },
+        latestBlockhash: async () => '11111111111111111111111111111111',
+      });
+      const grant = await streaming.createSession({
+        walletAddress: wallet.walletAddress,
+        tokenMint: USDC_MINT,
+        capAmount: '5',
+        expiresAt: '2026-05-16T14:00:00.000Z',
+        recipientAllowlist: [RECIPIENT],
+        cluster: 'devnet',
+      });
+      await streaming.recordGrantSigned({
+        walletAddress: wallet.walletAddress,
+        sessionId: grant.session.sessionId,
+        approveTxid: 'tx_streaming_grant_fixture',
+      });
+
+      const created = await postJson(port, '/api/mpp/challenge', { challenge: splChallenge() });
+      expect(created.status).toBe(201);
+      const approvalId = String(created.body.approvalId);
+
+      const inbound = await requestJson(port, 'GET', '/api/mpp/inbound');
+      const row = ((inbound.body.inbound as Record<string, unknown>[]) ?? [])[0] as Record<string, unknown>;
+      expect((row.metadata as Record<string, unknown>).mppSessionEligibility).toMatchObject({
+        eligible: false,
+        reasonCode: 'policy_merchant_not_allowed',
+        policy: {
+          allowed: false,
+          maxAmount: '2.00',
+        },
+      });
+
+      const paid = await postJson(port, '/api/mpp/session-pay', { approvalId });
+      expect(paid.status).toBe(409);
+      expect(paid.body.error).toBe('policy_merchant_not_allowed');
+    });
+  });
+
+  it('lets session policy require settlement-confirmed MPP finality', async () => {
+    await withMppServer(async ({ port, workflowStore, wallet }) => {
+      await workflowStore.savePreference(wallet.walletAddress, {
+        namespace: 'mpp-config' as never,
+        version: 1,
+        updatedAt: NOW.toISOString(),
+        payload: {
+          acceptedRails: ['usdc'],
+          maxChallengeAmount: '10',
+          sessionPolicy: {
+            allowedOrigins: ['https://merchant.example'],
+            requireSettlementConfirmed: true,
+          },
+        },
+      });
+      const streaming = new StreamingService(streamingStoreFor(workflowStore), {
+        clock: { now: () => NOW },
+        latestBlockhash: async () => '11111111111111111111111111111111',
+      });
+      const grant = await streaming.createSession({
+        walletAddress: wallet.walletAddress,
+        tokenMint: USDC_MINT,
+        capAmount: '5',
+        expiresAt: '2026-05-16T14:00:00.000Z',
+        recipientAllowlist: [RECIPIENT],
+        cluster: 'devnet',
+      });
+      await streaming.recordGrantSigned({
+        walletAddress: wallet.walletAddress,
+        sessionId: grant.session.sessionId,
+        approveTxid: 'tx_streaming_grant_fixture',
+      });
+
+      const created = await postJson(port, '/api/mpp/challenge', { challenge: splChallenge() });
+      expect(created.status).toBe(201);
+      const approvalId = String(created.body.approvalId);
+
+      const paid = await postJson(port, '/api/mpp/session-pay', { approvalId });
+      expect(paid.status).toBe(200);
+      expect(paid.body).toMatchObject({
+        accepted: true,
+        finality: 'settlement_confirmed',
+        status: 'settlement_pending',
+      });
+      expect((paid.body.sessionPayment as Record<string, unknown>).policy).toMatchObject({
+        allowed: true,
+        requireSettlementConfirmed: true,
+      });
     });
   });
 
@@ -215,6 +387,22 @@ describe('MPP API', () => {
       const evidence = await evidenceStore.listEvidence(wallet.walletAddress);
       expect(evidence.some((record) => record.kind === 'streaming_settlement')).toBe(true);
       expect(evidence.some((record) => record.kind === 'mpp_session' && record.metadata?.finality === 'settlement_confirmed')).toBe(true);
+
+      const replay = await settleStreamingSession({
+        store: workflowStore,
+        evidenceStore,
+        clock: { now: () => NOW },
+        walletAddress: wallet.walletAddress,
+        sessionId: grant.session.sessionId,
+        latestBlockhash: async () => ({ blockhash: '11111111111111111111111111111111' }),
+        submitSignedTransaction: async () => ({
+          txid: 'tx_streaming_settlement_fixture',
+          confirmedAt: '2026-05-16T12:01:00.000Z',
+        }),
+      });
+      expect(replay.settled).toBe(0);
+      const afterReplay = await evidenceStore.listEvidence(wallet.walletAddress);
+      expect(afterReplay.filter((record) => record.kind === 'mpp_session')).toHaveLength(1);
     });
   });
 });

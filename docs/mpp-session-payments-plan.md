@@ -38,30 +38,44 @@ eligible MPP challenges.
 7. For strict challenges, force or wait for session settlement and verify the
    MPP request moves from `approval_pending` to `approved`.
 
-## Parallel Follow-Up Work
+## Implemented Follow-Up Phases
 
-Agent 1: MCP Tooling
+Phase 1: MCP Tooling
 
-- Files: `packages/mcp-server/**`
-- Add a tool/action that calls `/api/mpp/session-pay` for an eligible approval.
-- Do not edit render-web route internals.
+- Added `solana_mpp_pay_with_session`, which calls `/api/mpp/session-pay`
+  with `approvalId` and optional `sessionId`.
+- The tool returns the backend session-payment response, including finality,
+  voucher, remaining cap, receipt, and idempotent status.
 
-Agent 2: Product UX Hardening
+Phase 2: Product UX Hardening
 
-- Files: `apps/browser-demo/src/devTabs/externalAgents.*`,
-  `apps/browser-demo/src/devTabs/__tests__/externalAgents.test.ts`
-- Add session selection when multiple sessions are eligible.
-- Add cap-consumption warning copy for large payments.
+- Incoming Requests now shows all eligible sessions and renders a selector
+  when more than one can pay the challenge.
+- Rows show remaining cap, expiry, recipient, finality, and a warning when
+  payment consumes at least 50% of the selected remaining cap.
 
-Agent 3: Operations And Receipts
+Phase 3: Operations And Receipts
 
-- Files: `apps/render-web/src/cloud/settlementService.ts`,
-  `apps/render-web/src/__tests__/mpp-api.test.ts`
-- Add duplicate receipt detection for manually replayed settlement callbacks.
-- Add operator-facing audit filters for MPP session-payment links.
+- Strict settlement finalization now detects duplicate MPP session-payment
+  evidence by approval id, voucher hash, receipt hash, and settlement txid.
+- MPP session-payment settlement evidence and audits carry searchable metadata:
+  `mppSessionPayment`, `linkType`, `settlementTxid`, session id, voucher hash,
+  approval id, challenge hash, and merchant fields where available.
 
-Agent 4: Policy Surface
+Phase 4: Policy Surface
 
-- Files: `packages/workflow/src/**`, `apps/render-web/src/cloud/mppRoutes.ts`
-- Add configurable merchant/recipient allowlist policy for MPP session use.
-- Keep policy outputs as metadata only; do not change voucher signatures.
+- `mpp-config.sessionPolicy` supports merchant ids, merchant/resource URLs,
+  merchant/resource origins, shared origins, recipients, max amount, and
+  `requireSettlementConfirmed`.
+- Policy results are stored as metadata on eligibility, vouchers, and the
+  MPP session-payment link. Voucher signatures are unchanged.
+
+## Verification
+
+- `pnpm --filter @solana-agent-wallet-adapter/render-web exec tsc -p tsconfig.json`
+- `pnpm --filter @solana-agent-wallet-adapter/render-web exec vitest run src/__tests__/mpp-api.test.ts --no-cache --reporter=verbose`
+- `pnpm --filter @solana-agent-wallet-adapter/browser-demo test -- mppClient externalAgents`
+- `pnpm --filter @solana-agent-wallet-adapter/mcp-server exec vitest run src/__tests__/server.test.ts --no-cache --reporter=verbose`
+- `pnpm --filter @solana-agent-wallet-adapter/mcp-server build`
+- `pnpm --filter @solana-agent-wallet-adapter/browser-demo build`
+- `pnpm --filter @solana-agent-wallet-adapter/render-web build`

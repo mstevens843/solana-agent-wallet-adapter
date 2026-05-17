@@ -73,7 +73,7 @@ describe('mppClient', () => {
     await expect(getMppInbound()).resolves.toMatchObject({
       inbound: [{ id: 'approval_1' }],
     });
-    await expect(postMppSessionPay({ approvalId: 'approval_1' })).resolves.toMatchObject({
+    await expect(postMppSessionPay({ approvalId: 'approval_1', sessionId: 'sess_2' })).resolves.toMatchObject({
       accepted: true,
       finality: 'voucher_accepted',
     });
@@ -81,6 +81,8 @@ describe('mppClient', () => {
       credentials: 'include',
       method: 'POST',
     }));
+    const init = fetchMock.mock.calls.at(-1)?.[1] as RequestInit | undefined;
+    expect(JSON.parse(String(init?.body))).toEqual({ approvalId: 'approval_1', sessionId: 'sess_2' });
   });
 
   it('wraps non-JSON success responses as invalid_response', async () => {
