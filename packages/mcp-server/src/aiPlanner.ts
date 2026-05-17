@@ -1687,6 +1687,7 @@ export function applyServerSideReviewSafety(
   // PolicyBundle enforcement: if the orchestrator detected a blocking failure (a user-stated
   // gate that definitively failed against resolved facts), the AI is not allowed to approve
   // over it. We downgrade to deny and cite the failing atoms in blockingFactIds.
+  let policyContract: Record<string, unknown> | undefined;
   if (policyBundle && policyBundle.hasBlockingFailure === true && decision === 'approve') {
     const evaluations = Array.isArray(policyBundle.evaluations)
       ? (policyBundle.evaluations as Array<Record<string, unknown>>)
@@ -1699,23 +1700,27 @@ export function applyServerSideReviewSafety(
       ? `Server safety: policy bundle failed ${failingAtomIds.length} gate${failingAtomIds.length === 1 ? '' : 's'} (${failingAtomIds.join(', ')}); AI approval downgraded to deny.`
       : 'Server safety: policy bundle reported a blocking failure; AI approval downgraded to deny.';
     safetyTriggered = true;
-    // Merge failing atom ids into the contract's blockingFactIds (creating it if needed).
-    if (contract) {
-      const existing = Array.isArray(contract.blockingFactIds)
-        ? (contract.blockingFactIds as unknown[]).filter((id): id is string => typeof id === 'string')
-        : [];
-      const merged = Array.from(new Set([...existing, ...failingAtomIds]));
-      contract.blockingFactIds = merged;
+    // Merge failing atom ids into blockingFactIds — create the contract if the AI didn't
+    // produce one so downstream consumers always have a citation trail.
+    const targetContract = contract ?? { decision, reason, summary, evidenceFactIds: [] };
+    const existing = Array.isArray(targetContract.blockingFactIds)
+      ? (targetContract.blockingFactIds as unknown[]).filter((id): id is string => typeof id === 'string')
+      : [];
+    targetContract.blockingFactIds = Array.from(new Set([...existing, ...failingAtomIds]));
+    if (!contract) {
+      // Stash so the post-loop write-back below picks it up.
+      policyContract = targetContract;
     }
   }
 
   if (!safetyTriggered) return result;
-  if (contract) {
-    contract.decision = decision;
-    contract.reason = reason;
-    contract.summary = summary;
+  const finalContract = contract ?? policyContract;
+  if (finalContract) {
+    finalContract.decision = decision;
+    finalContract.reason = reason;
+    finalContract.summary = summary;
+    evidence.decisionContract = finalContract;
   }
-  evidence.decisionContract = contract;
   evidence.serverSafetyApplied = true;
   return {
     ...result,

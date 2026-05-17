@@ -57,7 +57,9 @@ describe('mppClient', () => {
   });
 
   it('lists inbound MPP requests and posts session-pay decisions', async () => {
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    // Type the mock with the full `fetch` signature so `calls.at(-1)?.[1]` (the init arg)
+    // is properly indexable. Without this, vi.fn infers a 1-arg tuple and TS rejects [1].
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
       if (String(input) === '/api/mpp/inbound') {
         return jsonResponse({ inbound: [{ id: 'approval_1', status: 'ready', summary: 'MPP request' }] });
       }

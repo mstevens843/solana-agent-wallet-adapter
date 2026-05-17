@@ -1,7 +1,12 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { promises as fs } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   AlternativeMeClient,
+  getAlternativeMeClient,
   parseFearGreedResponse,
   resetAlternativeMeClient,
 } from '../index.js';
@@ -160,5 +165,53 @@ describe('AlternativeMeClient', () => {
 
   afterEach(() => {
     resetAlternativeMeClient();
+  });
+});
+
+describe('getAlternativeMeClient — env-based KV cache auto-wire', () => {
+  let tmpPath: string;
+  let originalPath: string | undefined;
+
+  beforeEach(() => {
+    tmpPath = join(tmpdir(), `kv-env-test-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    originalPath = process.env.AGENT_WALLET_KV_CACHE_PATH;
+    resetAlternativeMeClient();
+  });
+
+  afterEach(async () => {
+    if (originalPath === undefined) delete process.env.AGENT_WALLET_KV_CACHE_PATH;
+    else process.env.AGENT_WALLET_KV_CACHE_PATH = originalPath;
+    resetAlternativeMeClient();
+    try { await fs.unlink(tmpPath); } catch { /* file may not exist */ }
+  });
+
+  it('uses no KV when AGENT_WALLET_KV_CACHE_PATH is unset', () => {
+    delete process.env.AGENT_WALLET_KV_CACHE_PATH;
+    const client = getAlternativeMeClient();
+    expect(client).toBeInstanceOf(AlternativeMeClient);
+    // No exception, just an in-memory-only client.
+  });
+
+  it('wires a KV cache when AGENT_WALLET_KV_CACHE_PATH is set', async () => {
+    process.env.AGENT_WALLET_KV_CACHE_PATH = tmpPath;
+    // Pre-populate the KV file so the client (when built) reads the cached entry instead
+    // of fetching. This deterministically proves the env wiring connects the singleton
+    // to the file path without depending on fire-and-forget write timing.
+    const { createFsKvCache } = await import('../kvCaches.js');
+    const seed = createFsKvCache(tmpPath);
+    await seed.set('alternative_me:fng:limit-1', {
+      entry: { value: 77, classification: 'Greed', updatedAt: '2025-01-01T00:00:00Z' },
+      fetchedAtMs: Date.now(),
+    }, 60_000);
+    // Build the singleton — env auto-wire should mean it reads from the same file.
+    resetAlternativeMeClient();
+    const client = getAlternativeMeClient();
+    // Stub fetch to throw — if the env wiring works, we should get the cached value first
+    // and never hit the network.
+    const stubFetch = vi.fn(async () => { throw new Error('should not be called'); });
+    (client as unknown as { fetchImpl: typeof fetch }).fetchImpl = stubFetch as unknown as typeof fetch;
+    const entry = await client.getFearGreedIndex();
+    expect(entry).toMatchObject({ value: 77, classification: 'Greed' });
+    expect(stubFetch).not.toHaveBeenCalled();
   });
 });
