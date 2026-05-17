@@ -36,8 +36,20 @@ describe('DEVICE_AGENT_SYSTEM_PROMPTS', () => {
       expect(text.endsWith('The wallet user must approve separately.')).toBe(true);
     });
 
-    it('matches the Kotlin source length (1394 chars)', () => {
-      expect(text.length).toBe(1394);
+    it('contains the forward-looking phrasing guidance (Phase 3 — guardrail parity)', () => {
+      // Pushes the model to avoid "auto-submitted" / "auto-signed" / "auto-approved" /
+      // "pre-submitted" phrasings that trip workflow guardrails. Required for parity
+      // between gpt-5.1 (which favors past-tense workflow phrasings) and Claude/Gemini
+      // (which already lean forward-looking).
+      expect(text).toContain('Phrase plan fields in forward-looking terms');
+      expect(text).toContain('"auto-submitted"');
+      expect(text).toContain('collide with safety guardrails');
+    });
+
+    it('matches the post-Phase-3 length (1715 chars)', () => {
+      // Length changed from 1394 (Kotlin source) when Phase 3 appended the
+      // forward-looking phrasing guidance. Kotlin parity is a followup ticket.
+      expect(text.length).toBe(1715);
     });
   });
 

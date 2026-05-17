@@ -221,6 +221,75 @@ describe('AI product guardrails', () => {
     expect(report.violations.map((violation) => violation.code)).not.toContain('ai_claims_approved');
   });
 
+  // Phase 3 — guardrail false-positive fix. OpenAI gpt-5.1 favors past-tense workflow
+  // phrasings like "auto-submitted upon wallet approval" or "auto-sent to wallet for
+  // signature" when describing the FUTURE workflow in PLAN fields. The original regex
+  // caught these as claims of completion and threw "AI drafts cannot claim that a
+  // transaction has already been submitted or executed" — a nonsensical error on a
+  // benign Helium-plan prompt. The negative lookahead at CLAIM_FUTURE_TENSE_LOOKAHEAD
+  // allows forward-looking workflow descriptions through while still blocking the
+  // actual false claims.
+  it('allows forward-looking workflow phrasings without tripping the claim guardrails', () => {
+    const report = evaluatePlanGuardrails({
+      plan: {
+        source: 'ai',
+        category: 'trading',
+        actionType: 'swap',
+        templateId: 'swap-tokens',
+        templateTitle: 'Swap tokens',
+        intent: 'Prepare a SOL→USDC swap; the request will be auto-submitted upon wallet approval.',
+        route: 'Jupiter route auto-sent to wallet for signature.',
+        risk: 'Medium risk. The transaction will be auto-signed for review only after the user approves.',
+        approval: 'Pre-submitted draft pending wallet signature.',
+        parameters: {
+          inputToken: 'SOL',
+          outputToken: 'USDC',
+          amount: '0.01',
+          slippageBps: '50',
+        },
+        fields: [{ label: 'Amount', value: '0.01 SOL' }],
+        safeguards: ['Will be approved automatically once the user clicks Send for approval.'],
+        cluster: 'mainnet-beta',
+      },
+    });
+
+    const codes = report.violations.map((violation) => violation.code);
+    expect(codes).not.toContain('ai_claims_submitted');
+    expect(codes).not.toContain('ai_claims_signed');
+    expect(codes).not.toContain('ai_claims_approved');
+  });
+
+  it('still blocks actual past-tense completion claims (auto-submitted at signature, already-approved, signed automatically last block)', () => {
+    const report = evaluatePlanGuardrails({
+      plan: {
+        source: 'ai',
+        category: 'trading',
+        actionType: 'swap',
+        templateId: 'swap-tokens',
+        templateTitle: 'Swap tokens',
+        intent: 'Auto-submitted at signature 5abc123XYZ on slot 12345.',
+        route: 'Pre-approved by Jupiter and signed automatically last block.',
+        risk: 'Approved automatically at slot 12346.',
+        approval: 'Already submitted to mempool.',
+        parameters: {
+          inputToken: 'SOL',
+          outputToken: 'USDC',
+          amount: '0.01',
+          slippageBps: '50',
+        },
+        fields: [{ label: 'Amount', value: '0.01 SOL' }],
+        safeguards: [],
+        cluster: 'mainnet-beta',
+      },
+    });
+
+    const codes = report.violations.map((violation) => violation.code);
+    expect(codes).toContain('ai_claims_submitted');
+    expect(codes).toContain('ai_claims_signed');
+    expect(codes).toContain('ai_claims_approved');
+    expect(report.verdict).toBe('block');
+  });
+
   it('accepts mint addresses as executable swap token constraints', () => {
     const report = evaluatePlanGuardrails({
       plan: {

@@ -2633,6 +2633,14 @@ function collectUnsafeAiClaimViolations(input: {
   }
 }
 
+// Future-tense / recipient markers that signal a benign forward-looking workflow
+// description rather than a false claim of completion. Used as a negative lookahead
+// on the `auto-` / `pre-` / `X automatically` alternatives so phrasings like
+// "auto-submitted upon wallet approval" or "auto-signed for review" pass through.
+// `\balready[\-\s]+X\b` is NOT softened — "already X" is unambiguously a past-tense
+// false claim regardless of what follows.
+const CLAIM_FUTURE_TENSE_LOOKAHEAD = '(?!\\s+(?:upon|after|once|when|before|prior\\s+to|to\\s+wallet|to\\s+user|for\\s+approval|for\\s+review|for\\s+signature|for\\s+signing|draft|pending|awaiting))';
+
 function collectUnsafeAiTextClaims(text: string, path: string, violations: AiGuardrailViolation[]): void {
   const normalized = normalizeGuardrailText(text);
   const claims: Array<{
@@ -2642,17 +2650,32 @@ function collectUnsafeAiTextClaims(text: string, path: string, violations: AiGua
   }> = [
     {
       code: 'ai_claims_approved',
-      pattern: /\balready[-\s]+approved\b|\bapproval(?:\s+has)?\s+already\s+(?:happened|occurred|completed|been\s+granted|been\s+approved)\b|\bpre[-\s]?approved\b|\bauto[-\s]?approved\b|\bapproved automatically\b/,
+      pattern: new RegExp(
+        '\\balready[-\\s]+approved\\b'
+        + '|\\bapproval(?:\\s+has)?\\s+already\\s+(?:happened|occurred|completed|been\\s+granted|been\\s+approved)\\b'
+        + '|\\bpre[-\\s]?approved\\b' + CLAIM_FUTURE_TENSE_LOOKAHEAD
+        + '|\\bauto[-\\s]?approved\\b' + CLAIM_FUTURE_TENSE_LOOKAHEAD
+        + '|\\bapproved automatically\\b' + CLAIM_FUTURE_TENSE_LOOKAHEAD,
+      ),
       message: 'AI drafts cannot claim that wallet approval has already happened.',
     },
     {
       code: 'ai_claims_signed',
-      pattern: /\balready[-\s]+(?:signed|signing)\b|\bpre[-\s]?signed\b|\bauto[-\s]?(?:signed|signing)\b|\bsigned automatically\b/,
+      pattern: new RegExp(
+        '\\balready[-\\s]+(?:signed|signing)\\b'
+        + '|\\bpre[-\\s]?signed\\b' + CLAIM_FUTURE_TENSE_LOOKAHEAD
+        + '|\\bauto[-\\s]?(?:signed|signing)\\b' + CLAIM_FUTURE_TENSE_LOOKAHEAD
+        + '|\\bsigned automatically\\b' + CLAIM_FUTURE_TENSE_LOOKAHEAD,
+      ),
       message: 'AI drafts cannot claim that a wallet signature has already happened.',
     },
     {
       code: 'ai_claims_submitted',
-      pattern: /\b(already|pre|auto)[-\s]?(submitted|executed|broadcast|sent)\b|\bsubmitted automatically\b/,
+      pattern: new RegExp(
+        '\\balready[-\\s]?(?:submitted|executed|broadcast|sent)\\b'
+        + '|\\b(?:pre|auto)[-\\s]?(?:submitted|executed|broadcast|sent)\\b' + CLAIM_FUTURE_TENSE_LOOKAHEAD
+        + '|\\bsubmitted automatically\\b' + CLAIM_FUTURE_TENSE_LOOKAHEAD,
+      ),
       message: 'AI drafts cannot claim that a transaction has already been submitted or executed.',
     },
     {
