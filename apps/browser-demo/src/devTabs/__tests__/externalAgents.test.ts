@@ -299,6 +299,18 @@ describe('rowHtml', () => {
     __externalAgentsForTests.resetState();
   });
 
+  it('renders settlement-pending MPP session payment guidance', () => {
+    const html = rowHtml(
+      makeApproval({
+        metadata: {
+          connectorId: 'mpp',
+          mppSessionPayment: { status: 'settlement_pending' },
+        },
+      } as Partial<NormalizedApproval>),
+    );
+    expect(html).toContain('Voucher accepted. Settlement confirmation will finalize from Sessions.');
+  });
+
   it('omits the MPP badge for non-MPP rows', () => {
     const html = rowHtml(makeApproval());
     expect(html).not.toContain('approval-badge--mpp');

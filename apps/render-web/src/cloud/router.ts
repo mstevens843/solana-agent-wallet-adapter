@@ -33,7 +33,7 @@ import {
   type BirdeyeTokenListSortBy,
   type HeliusTransferFilters,
 } from '@solana-agent-wallet-adapter/mcp-server';
-import { Connection } from '@solana/web3.js';
+import { Connection, PublicKey } from '@solana/web3.js';
 
 import {
   AuthValidationError,
@@ -2830,6 +2830,16 @@ function validateMppConfigPreferencePayload(payload: unknown): void {
   validateOptionalStringArray(record.allowedMints, 'allowedMints', 64);
   validateOptionalString(record.maxChallengeAmount, 'maxChallengeAmount', 64);
   validateOptionalString(record.endpoint, 'endpoint', 512);
+  if (Array.isArray(record.acceptedRails)) {
+    const validRails = record.acceptedRails.filter((entry): entry is string => typeof entry === 'string' && entry.trim() !== '');
+    if (validRails.length === 0) throw new ApiError(400, 'acceptedRails must include at least one supported rail.');
+    for (const [index, rail] of validRails.entries()) {
+      validateMppRailEntry(rail, `acceptedRails[${index}]`);
+    }
+  }
+  validateDecimalString(record.maxChallengeAmount, 'maxChallengeAmount');
+  validatePublicKeyList(record.allowedMints, 'allowedMints');
+  validateUrlString(record.endpoint, 'endpoint');
   if (record.sessionPolicy !== undefined) {
     validateMppSessionPolicyPayload(record.sessionPolicy);
   }
@@ -2848,8 +2858,91 @@ function validateMppSessionPolicyPayload(value: unknown): void {
   validateOptionalStringArray(policy.allowedOrigins, 'sessionPolicy.allowedOrigins', 128);
   validateOptionalStringArray(policy.allowedRecipients, 'sessionPolicy.allowedRecipients', 128);
   validateOptionalString(policy.maxAmount, 'sessionPolicy.maxAmount', 64);
+  validateOriginList(policy.allowedMerchantOrigins, 'sessionPolicy.allowedMerchantOrigins');
+  validateOriginList(policy.allowedResourceOrigins, 'sessionPolicy.allowedResourceOrigins');
+  validateOriginList(policy.allowedOrigins, 'sessionPolicy.allowedOrigins');
+  validateUrlList(policy.allowedMerchantUrls, 'sessionPolicy.allowedMerchantUrls');
+  validateUrlList(policy.allowedResourceUrls, 'sessionPolicy.allowedResourceUrls');
+  validatePublicKeyList(policy.allowedRecipients, 'sessionPolicy.allowedRecipients');
+  validateDecimalString(policy.maxAmount, 'sessionPolicy.maxAmount');
   if (policy.requireSettlementConfirmed !== undefined && typeof policy.requireSettlementConfirmed !== 'boolean') {
     throw new ApiError(400, 'sessionPolicy.requireSettlementConfirmed must be a boolean.');
+  }
+}
+
+function validateMppRailEntry(value: string, field: string): void {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'sol' || normalized === 'solana-sol') return;
+  if (normalized === 'usdc' || normalized === 'spl' || normalized === 'solana-spl') return;
+  validatePublicKey(value, field);
+}
+
+function validateDecimalString(value: unknown, field: string): void {
+  if (value === undefined || value === null || value === '') return;
+  if (typeof value !== 'string') throw new ApiError(400, `${field} must be a decimal string.`);
+  const trimmed = value.trim();
+  if (!/^(?:0|[1-9]\d*)(?:\.\d{1,18})?$/.test(trimmed)) {
+    throw new ApiError(400, `${field} must be a positive decimal string.`);
+  }
+}
+
+function validatePublicKeyList(value: unknown, field: string): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) return;
+  for (const [index, entry] of value.entries()) {
+    validatePublicKey(entry, `${field}[${index}]`);
+  }
+}
+
+function validatePublicKey(value: unknown, field: string): void {
+  if (typeof value !== 'string') throw new ApiError(400, `${field} must be a Solana public key.`);
+  try {
+    new PublicKey(value.trim());
+  } catch {
+    throw new ApiError(400, `${field} must be a valid Solana public key.`);
+  }
+}
+
+function validateOriginList(value: unknown, field: string): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) return;
+  for (const [index, entry] of value.entries()) {
+    validateOriginString(entry, `${field}[${index}]`);
+  }
+}
+
+function validateOriginString(value: unknown, field: string): void {
+  if (typeof value !== 'string') throw new ApiError(400, `${field} must be an origin URL.`);
+  const trimmed = value.trim();
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw new ApiError(400, `${field} must be a valid http(s) origin.`);
+  }
+  if ((url.protocol !== 'https:' && url.protocol !== 'http:') || url.origin !== trimmed.replace(/\/+$/, '')) {
+    throw new ApiError(400, `${field} must be an http(s) origin without a path.`);
+  }
+}
+
+function validateUrlList(value: unknown, field: string): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) return;
+  for (const [index, entry] of value.entries()) {
+    validateUrlString(entry, `${field}[${index}]`);
+  }
+}
+
+function validateUrlString(value: unknown, field: string): void {
+  if (value === undefined || value === null || value === '') return;
+  if (typeof value !== 'string') throw new ApiError(400, `${field} must be a URL.`);
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+      throw new Error('unsupported protocol');
+    }
+  } catch {
+    throw new ApiError(400, `${field} must be a valid http(s) URL.`);
   }
 }
 

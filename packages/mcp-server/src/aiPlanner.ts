@@ -469,7 +469,12 @@ export class BridgeAiPlanner {
         const payload = await response.json().catch(() => undefined);
         return extractModelText(payload).trim() || undefined;
       }
-      // OpenAI-compatible (chat completions)
+      // OpenAI-compatible (chat completions). GPT-5 / o-series reject the legacy
+      // `max_tokens` field AND explicit `temperature` — branch on the model so callers
+      // routed through this helper (atom extraction, etc.) don't 400 when configured
+      // with gpt-5*.
+      const defaultTempOnly = isDefaultTemperatureOnlyModel(config.model);
+      const tokenKey = defaultTempOnly ? 'max_completion_tokens' : 'max_tokens';
       const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'openai-compatible')}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -479,8 +484,8 @@ export class BridgeAiPlanner {
         body: JSON.stringify({
           model: config.model,
           messages,
-          max_tokens: 600,
-          temperature: 0,
+          [tokenKey]: 600,
+          ...(defaultTempOnly ? {} : { temperature: 0 }),
           response_format: { type: 'json_object' },
         }),
       });

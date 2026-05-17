@@ -14,6 +14,11 @@ import type {
   AccountWritabilityCountAtom,
   AgentAtom,
   AgentAtomOperator,
+  ClosesAccountAtom,
+  CooldownSinceLastTxAtom,
+  DailyOutflowSumAtom,
+  DayOfWeekWindowAtom,
+  DelegatesTokenAtom,
   ExternalEventAtom,
   ExternalIdentityAtom,
   ExternalPriceAtom,
@@ -24,11 +29,14 @@ import type {
   NetworkCongestionAtom,
   NetworkMetricAtom,
   PriceAtom,
+  RecentBlockhashAgeAtom,
   RecipientKnownAtom,
   RelativeAmountAtom,
   RentExemptRequiredAtom,
   RequiredSignaturesAtom,
+  SetsAuthorityAtom,
   TimeFactAtom,
+  TimeOfDayAtom,
   TokenAgeAtom,
   TokenAuditAtom,
   TokenBalanceAtom,
@@ -624,6 +632,152 @@ function evaluateRentExempt(atom: RentExemptRequiredAtom, fact: ResolvedFactValu
   };
 }
 
+/* -------------------------------------------------------------------------- */
+/* Tier S: drain-attack defense evaluators                                     */
+/* -------------------------------------------------------------------------- */
+
+function evaluateSetsAuthority(atom: SetsAuthorityAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = 'SetAuthority instructions';
+  if (!fact || fact.boolean === undefined) return unresolvedEvaluation(atom, label);
+  // fact.boolean === true ⇒ the tx DOES set an authority; user expects false (no changes).
+  const pass = fact.boolean === atom.expected;
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${fact.boolean ? 'present' : 'none'}${fact.text ? ` — ${fact.text}` : ''} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+function evaluateDelegatesToken(atom: DelegatesTokenAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = atom.onlyUnlimited ? 'Unlimited token approvals' : 'Token approvals';
+  if (!fact || fact.boolean === undefined) return unresolvedEvaluation(atom, label);
+  const pass = fact.boolean === atom.expected;
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${fact.boolean ? 'present' : 'none'}${fact.text ? ` — ${fact.text}` : ''} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+function evaluateClosesAccount(atom: ClosesAccountAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = 'Account closures';
+  if (!fact || fact.boolean === undefined) return unresolvedEvaluation(atom, label);
+  const pass = fact.boolean === atom.expected;
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${fact.boolean ? 'flagged' : 'none'}${fact.text ? ` — ${fact.text}` : ''} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Tier A: spending governance evaluators                                      */
+/* -------------------------------------------------------------------------- */
+
+function evaluateDailyOutflow(atom: DailyOutflowSumAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const windowH = ((atom.windowSeconds ?? 86_400) / 3_600).toFixed(0);
+  const label = `${windowH}h outflow`;
+  if (!fact || fact.numeric === undefined) return unresolvedEvaluation(atom, label);
+  const pass = compareNumeric(atom.op, fact.numeric, atom.value);
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${formatNumeric(fact.numeric, atom.unit)}${fact.text ? ` — ${fact.text}` : ''} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+function evaluateCooldownSinceLastTx(atom: CooldownSinceLastTxAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = 'Time since last tx';
+  if (!fact || fact.numeric === undefined) return unresolvedEvaluation(atom, label);
+  const pass = compareNumeric(atom.op, fact.numeric, atom.value);
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${formatDuration(fact.numeric)}${fact.text ? ` — ${fact.text}` : ''} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+function evaluateRecentBlockhashAge(atom: RecentBlockhashAgeAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = 'Recent blockhash age';
+  if (!fact || fact.numeric === undefined) return unresolvedEvaluation(atom, label);
+  const pass = compareNumeric(atom.op, fact.numeric, atom.value);
+  const seconds = fact.numeric / 1000;
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${seconds < 1 ? `${fact.numeric.toFixed(0)}ms` : `${seconds.toFixed(1)}s`}${fact.text ? ` — ${fact.text}` : ''} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Tier C: temporal policy evaluators                                          */
+/* -------------------------------------------------------------------------- */
+
+function formatHour(h: number): string {
+  const hour = Math.floor(h);
+  const minutes = Math.round((h - hour) * 60);
+  const period = hour < 12 ? 'am' : 'pm';
+  const display = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour;
+  return minutes === 0 ? `${display}${period}` : `${display}:${String(minutes).padStart(2, '0')}${period}`;
+}
+
+function evaluateTimeOfDay(atom: TimeOfDayAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = `Time of day [${formatHour(atom.start)}–${formatHour(atom.end)}]`;
+  if (!fact || fact.boolean === undefined) return unresolvedEvaluation(atom, label);
+  const pass = fact.boolean === atom.expected;
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${fact.boolean ? 'in window' : 'outside window'}${fact.text ? ` (${fact.text})` : ''} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+const DAY_NAMES_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function evaluateDayOfWeekWindow(atom: DayOfWeekWindowAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const allowed = atom.allowedDays.map((d) => DAY_NAMES_SHORT[d] ?? '?').join(',');
+  const label = `Day of week [${allowed}]`;
+  if (!fact || fact.boolean === undefined) return unresolvedEvaluation(atom, label);
+  const pass = fact.boolean === atom.expected;
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${fact.boolean ? 'allowed' : 'blocked'}${fact.text ? ` (${fact.text})` : ''} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
 /** Dispatcher: pick the right evaluator for the atom's type. */
 export function evaluateAtom(atom: AgentAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
   switch (atom.type) {
@@ -653,6 +807,14 @@ export function evaluateAtom(atom: AgentAtom, fact: ResolvedFactValue | undefine
     case 'instruction_count':          return evaluateInstructionCount(atom, fact);
     case 'account_writability_count':  return evaluateAccountWritability(atom, fact);
     case 'rent_exempt_required':       return evaluateRentExempt(atom, fact);
+    case 'sets_authority':             return evaluateSetsAuthority(atom, fact);
+    case 'delegates_token':            return evaluateDelegatesToken(atom, fact);
+    case 'closes_account':             return evaluateClosesAccount(atom, fact);
+    case 'daily_outflow_sum':          return evaluateDailyOutflow(atom, fact);
+    case 'cooldown_since_last_tx':     return evaluateCooldownSinceLastTx(atom, fact);
+    case 'recent_blockhash_age_ms':    return evaluateRecentBlockhashAge(atom, fact);
+    case 'time_of_day':                return evaluateTimeOfDay(atom, fact);
+    case 'day_of_week_window':         return evaluateDayOfWeekWindow(atom, fact);
     case 'protocol_health':
       return unresolvedEvaluation(atom, `${atom.subject} ${atom.metric}`);
   }

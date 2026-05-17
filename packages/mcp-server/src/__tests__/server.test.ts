@@ -176,6 +176,7 @@ describe('mcp server tools', () => {
     expect(result.tools.map((tool) => tool.name)).toContain('solana_portfolio_summary');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_transfer_sol');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_mpp_challenge_handler');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_mpp_list_inbound_requests');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_mpp_pay_with_session');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_blink_action');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_kamino_deposit');
@@ -245,6 +246,58 @@ describe('mcp server tools', () => {
     });
     expect(capped.isError).toBe(true);
     expect(textOf(capped)).toContain('exceeds configured maxTransfer');
+  });
+
+  it('lists inbound MPP requests through render-web with eligibility filtering', async () => {
+    await closeServer?.();
+    closeServer = undefined;
+
+    vi.stubEnv('AGENTIC_RENDER_WEB_URL', 'http://render.test');
+    vi.stubEnv('AGENTIC_RENDER_WEB_COOKIE', 'session=test-cookie');
+    const requests: Array<{ method: string; path: string; cookie?: string }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: URL | string, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const headers = init?.headers as Record<string, string> | undefined;
+      requests.push({
+        method: init?.method ?? 'GET',
+        path: url.pathname,
+        cookie: headers?.cookie,
+      });
+      if (url.pathname === '/api/mpp/inbound') {
+        return jsonResponse({
+          inbound: [
+            { id: 'eligible', metadata: { mppSessionEligibility: { eligible: true } } },
+            { id: 'blocked', metadata: { mppSessionEligibility: { eligible: false } } },
+          ],
+        });
+      }
+      return jsonResponse({ error: 'not_found' }, 404);
+    }));
+
+    const linked = InMemoryTransport.createLinkedPair();
+    const server = createServer({
+      backend: createMockBackend(),
+      actionConfig: DEFAULT_CONFIG,
+    });
+    client = new Client({ name: 'mcp-server-test', version: '0.0.0' });
+    await Promise.all([server.connect(linked[1]), client.connect(linked[0])]);
+    closeServer = async () => {
+      await Promise.all([client.close(), server.close()]);
+    };
+
+    const result = JSON.parse(textOf(await callTool('solana_mpp_list_inbound_requests', {
+      eligibleOnly: true,
+    })));
+
+    expect(result.inbound).toEqual([{ id: 'eligible', metadata: { mppSessionEligibility: { eligible: true } } }]);
+    expect(result.items).toEqual(result.inbound);
+    expect(requests).toEqual([
+      {
+        method: 'GET',
+        path: '/api/mpp/inbound',
+        cookie: 'session=test-cookie',
+      },
+    ]);
   });
 
   it('proxies MPP pay-with-session decisions to render-web', async () => {

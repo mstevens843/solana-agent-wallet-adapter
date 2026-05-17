@@ -168,6 +168,84 @@ describe('MPP API', () => {
     });
   });
 
+  it('recovers a full receipt when retrying after a voucher-only session payment write', async () => {
+    await withMppServer(async ({ port, workflowStore, evidenceStore, wallet }) => {
+      const streaming = new StreamingService(streamingStoreFor(workflowStore), {
+        clock: { now: () => NOW },
+        latestBlockhash: async () => '11111111111111111111111111111111',
+      });
+      const grant = await streaming.createSession({
+        walletAddress: wallet.walletAddress,
+        tokenMint: USDC_MINT,
+        capAmount: '5',
+        expiresAt: '2026-05-16T14:00:00.000Z',
+        recipientAllowlist: [RECIPIENT],
+        cluster: 'devnet',
+      });
+      await streaming.recordGrantSigned({
+        walletAddress: wallet.walletAddress,
+        sessionId: grant.session.sessionId,
+        approveTxid: 'tx_streaming_grant_fixture',
+      });
+
+      const created = await postJson(port, '/api/mpp/challenge', { challenge: splChallenge() });
+      expect(created.status).toBe(201);
+      const approvalId = String(created.body.approvalId);
+
+      const firstPay = await postJson(port, '/api/mpp/session-pay', { approvalId });
+      expect(firstPay.status).toBe(200);
+      const voucherHash = String(firstPay.body.receiptHash);
+      expect(voucherHash).toMatch(/^[a-f0-9]{64}$/);
+
+      const damaged = await workflowStore.getApproval(wallet.walletAddress, approvalId);
+      expect(damaged).toBeTruthy();
+      const {
+        mppSessionPayment: _mppSessionPayment,
+        mppPaymentReceipt: _mppPaymentReceipt,
+        mppPaymentReceiptIssuedAt: _mppPaymentReceiptIssuedAt,
+        mppEvidenceReceiptId: _mppEvidenceReceiptId,
+        ...metadata
+      } = damaged!.metadata ?? {};
+      await workflowStore.saveApproval(wallet.walletAddress, {
+        ...damaged!,
+        status: 'approval_pending',
+        decidedAt: undefined,
+        metadata,
+      });
+      await evidenceStore.deleteAllEvidence(wallet.walletAddress);
+
+      const recovered = await postJson(port, '/api/mpp/session-pay', { approvalId });
+      expect(recovered.status).toBe(200);
+      expect(recovered.body).toMatchObject({
+        accepted: true,
+        idempotent: true,
+        status: 'voucher_accepted',
+      });
+      expect(recovered.body.receiptHash).toMatch(/^[a-f0-9]{64}$/);
+      expect((await streaming.getSession({
+        walletAddress: wallet.walletAddress,
+        sessionId: grant.session.sessionId,
+      })).vouchers).toHaveLength(1);
+
+      const approval = await workflowStore.getApproval(wallet.walletAddress, approvalId);
+      expect(approval?.status).toBe('approved');
+      expect(approval?.metadata?.mppSessionPayment).toMatchObject({
+        approvalId,
+        sessionId: grant.session.sessionId,
+        status: 'voucher_accepted',
+        receiptId: expect.any(String),
+      });
+      const evidence = await evidenceStore.listEvidence(wallet.walletAddress);
+      expect(evidence).toHaveLength(1);
+      expect(evidence[0]?.metadata).toMatchObject({
+        approvalId,
+        sessionId: grant.session.sessionId,
+        mppSessionPayment: true,
+        linkType: 'mpp_session_payment',
+      });
+    });
+  });
+
   it('rejects session-pay after the original MPP challenge expires', async () => {
     let current = new Date('2026-05-16T12:00:00.000Z');
     await withMppServer(async ({ port, workflowStore, wallet }) => {

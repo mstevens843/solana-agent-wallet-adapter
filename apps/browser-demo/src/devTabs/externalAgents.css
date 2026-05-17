@@ -248,6 +248,12 @@
   color: #c5ebd6;
 }
 
+.external-agents-row-session-message.info {
+  background: rgba(116, 178, 255, 0.09);
+  border: 1px solid rgba(116, 178, 255, 0.24);
+  color: #c8dcf5;
+}
+
 .approval-badge--mpp {
   align-items: center;
   background: rgba(236, 201, 75, 0.14);

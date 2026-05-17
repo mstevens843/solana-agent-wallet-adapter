@@ -456,3 +456,179 @@ describe('extractAtomsWithLlmFallback', () => {
     expect(new Set(result.atoms.map((atom) => atom.id)).size).toBe(result.atoms.length);
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* Tier S/A/C: drain defenses, spending governance, temporal policy            */
+/* -------------------------------------------------------------------------- */
+
+describe('extractAtoms — Tier S drain defenses', () => {
+  it('extracts sets_authority from "no authority changes"', () => {
+    const { atoms } = extractAtoms({ text: 'deny if tx changes any authority' });
+    const sa = byType(atoms, 'sets_authority');
+    expect(sa).toHaveLength(1);
+    expect(sa[0]).toMatchObject({ expected: false });
+  });
+
+  it('extracts sets_authority from "no mint authority changes"', () => {
+    const { atoms } = extractAtoms({ text: 'no mint authority changes' });
+    expect(byType(atoms, 'sets_authority').length).toBeGreaterThan(0);
+  });
+
+  it('extracts delegates_token with onlyUnlimited=true for "no unlimited approvals"', () => {
+    const { atoms } = extractAtoms({ text: 'no unlimited approvals' });
+    const dt = byType(atoms, 'delegates_token');
+    expect(dt).toHaveLength(1);
+    expect(dt[0]).toMatchObject({ expected: false, onlyUnlimited: true });
+  });
+
+  it('extracts delegates_token general form for "no token approvals"', () => {
+    const { atoms } = extractAtoms({ text: 'no token approvals' });
+    const dt = byType(atoms, 'delegates_token');
+    expect(dt.length).toBeGreaterThan(0);
+    expect(dt[0]).toMatchObject({ expected: false });
+    expect(dt[0]!.onlyUnlimited).toBeFalsy();
+  });
+
+  it('extracts closes_account from "no account closures"', () => {
+    const { atoms } = extractAtoms({ text: 'no account closures' });
+    expect(byType(atoms, 'closes_account')).toHaveLength(1);
+    expect(byType(atoms, 'closes_account')[0]).toMatchObject({ expected: false });
+  });
+
+  it('extracts closes_account from "deny if tx closes any account"', () => {
+    const { atoms } = extractAtoms({ text: 'deny if tx closes any account' });
+    expect(byType(atoms, 'closes_account').length).toBeGreaterThan(0);
+  });
+});
+
+describe('extractAtoms — Tier A spending governance', () => {
+  it('extracts daily_outflow_sum from "daily outflow below $500"', () => {
+    const { atoms } = extractAtoms({ text: 'daily outflow below $500' });
+    const dof = byType(atoms, 'daily_outflow_sum');
+    expect(dof).toHaveLength(1);
+    expect(dof[0]).toMatchObject({ op: 'lt', value: 500, unit: 'USD', windowSeconds: 86_400 });
+  });
+
+  it('extracts daily_outflow_sum from "24h outflow under 5 SOL"', () => {
+    const { atoms } = extractAtoms({ text: '24h outflow under 5 SOL' });
+    const dof = byType(atoms, 'daily_outflow_sum');
+    expect(dof).toHaveLength(1);
+    expect(dof[0]).toMatchObject({ op: 'lt', value: 5, unit: 'SOL' });
+  });
+
+  it('extracts daily_outflow_sum from "spent less than 5 SOL today"', () => {
+    const { atoms } = extractAtoms({ text: 'spent less than 5 SOL today' });
+    const dof = byType(atoms, 'daily_outflow_sum');
+    expect(dof.length).toBeGreaterThan(0);
+    expect(dof[0]).toMatchObject({ op: 'lt', value: 5, unit: 'SOL' });
+  });
+
+  it('extracts cooldown_since_last_tx from "last tx > 1 min ago"', () => {
+    const { atoms } = extractAtoms({ text: 'last tx > 1 min ago' });
+    const cd = byType(atoms, 'cooldown_since_last_tx');
+    expect(cd).toHaveLength(1);
+    expect(cd[0]).toMatchObject({ op: 'gt', value: 60 });
+  });
+
+  it('extracts cooldown_since_last_tx from "cooldown 30s"', () => {
+    const { atoms } = extractAtoms({ text: 'cooldown 30s' });
+    const cd = byType(atoms, 'cooldown_since_last_tx');
+    expect(cd).toHaveLength(1);
+    expect(cd[0]).toMatchObject({ op: 'gte', value: 30 });
+  });
+
+  it('extracts cooldown_since_last_tx from "at least 60s between txs"', () => {
+    const { atoms } = extractAtoms({ text: 'at least 60s between txs' });
+    const cd = byType(atoms, 'cooldown_since_last_tx');
+    expect(cd.length).toBeGreaterThan(0);
+    expect(cd[0]).toMatchObject({ op: 'gte', value: 60 });
+  });
+
+  it('extracts recent_blockhash_age_ms from "blockhash < 50s"', () => {
+    const { atoms } = extractAtoms({ text: 'blockhash < 50s' });
+    const bh = byType(atoms, 'recent_blockhash_age_ms');
+    expect(bh).toHaveLength(1);
+    expect(bh[0]).toMatchObject({ op: 'lt', value: 50_000 });
+  });
+
+  it('extracts recent_blockhash_age_ms from "no stale blockhash"', () => {
+    const { atoms } = extractAtoms({ text: 'no stale blockhash' });
+    const bh = byType(atoms, 'recent_blockhash_age_ms');
+    expect(bh.length).toBeGreaterThan(0);
+    expect(bh[0]).toMatchObject({ op: 'lt', value: 60_000 });
+  });
+});
+
+describe('extractAtoms — Tier C temporal policy', () => {
+  it('extracts time_of_day from "between 9am and 5pm"', () => {
+    const { atoms } = extractAtoms({ text: 'only between 9am and 5pm' });
+    const tod = byType(atoms, 'time_of_day');
+    expect(tod).toHaveLength(1);
+    expect(tod[0]).toMatchObject({ start: 9, end: 17, expected: true });
+  });
+
+  it('extracts time_of_day from "trading hours only"', () => {
+    const { atoms } = extractAtoms({ text: 'trading hours only' });
+    const tod = byType(atoms, 'time_of_day');
+    expect(tod.length).toBeGreaterThan(0);
+    expect(tod[0]).toMatchObject({ start: 9, end: 17, expected: true });
+  });
+
+  it('extracts time_of_day from "no trades after 5pm"', () => {
+    const { atoms } = extractAtoms({ text: 'no trades after 5pm' });
+    const tod = byType(atoms, 'time_of_day');
+    expect(tod.length).toBeGreaterThan(0);
+    // "no trades after 5pm" → allowed window is [0, 5pm); the inWindow comparison gives true
+    // when current time falls within the allowed range.
+    expect(tod[0]).toMatchObject({ start: 0, end: 17 });
+  });
+
+  it('extracts day_of_week_window from "no weekends"', () => {
+    const { atoms } = extractAtoms({ text: 'no weekends' });
+    const dow = byType(atoms, 'day_of_week_window');
+    expect(dow).toHaveLength(1);
+    expect(dow[0]).toMatchObject({ allowedDays: [1, 2, 3, 4, 5], expected: true });
+  });
+
+  it('extracts day_of_week_window from "only weekdays"', () => {
+    const { atoms } = extractAtoms({ text: 'only weekdays' });
+    const dow = byType(atoms, 'day_of_week_window');
+    expect(dow.length).toBeGreaterThan(0);
+    expect(dow[0]).toMatchObject({ allowedDays: [1, 2, 3, 4, 5] });
+  });
+
+  it('extracts day_of_week_window from "only Mon-Fri"', () => {
+    const { atoms } = extractAtoms({ text: 'only Mon-Fri' });
+    const dow = byType(atoms, 'day_of_week_window');
+    expect(dow.length).toBeGreaterThan(0);
+    expect(dow[0]?.allowedDays).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it('extracts day_of_week_window from "no Sat/Sun"', () => {
+    const { atoms } = extractAtoms({ text: 'no Sat/Sun' });
+    const dow = byType(atoms, 'day_of_week_window');
+    expect(dow.length).toBeGreaterThan(0);
+    expect(new Set(dow[0]?.allowedDays ?? [])).toEqual(new Set([1, 2, 3, 4, 5]));
+  });
+
+  it('extracts day_of_week_window from "no Saturdays and Sundays"', () => {
+    const { atoms } = extractAtoms({ text: 'no Saturdays and Sundays' });
+    const dow = byType(atoms, 'day_of_week_window');
+    expect(dow.length).toBeGreaterThan(0);
+    expect(new Set(dow[0]?.allowedDays ?? [])).toEqual(new Set([1, 2, 3, 4, 5]));
+  });
+
+  it('extracts day_of_week_window from "only Mon, Wed, Fri"', () => {
+    const { atoms } = extractAtoms({ text: 'only Mon, Wed, Fri' });
+    const dow = byType(atoms, 'day_of_week_window');
+    expect(dow.length).toBeGreaterThan(0);
+    expect(dow[0]?.allowedDays).toEqual([1, 3, 5]);
+  });
+
+  it('extracts day_of_week_window from "only Mon and Wed and Fri"', () => {
+    const { atoms } = extractAtoms({ text: 'only Mon and Wed and Fri' });
+    const dow = byType(atoms, 'day_of_week_window');
+    expect(dow.length).toBeGreaterThan(0);
+    expect(dow[0]?.allowedDays).toEqual([1, 3, 5]);
+  });
+});

@@ -166,6 +166,38 @@ export const CAPABILITY_REGISTRY: Readonly<Record<AgentAtomType, ReadonlyArray<C
     // a simulator is wired). Composite of sim + local computation.
     { provider: 'local_tx', endpoint: 'sim_rent_delta', ttlMs: ONE_SECOND_MS },
   ],
+  // ── Tier S: drain-attack defenses (all local-tx, no RPC) ──────────────────
+  sets_authority: [
+    { provider: 'local_tx', endpoint: 'parse_instructions', ttlMs: ONE_SECOND_MS },
+  ],
+  delegates_token: [
+    { provider: 'local_tx', endpoint: 'parse_instructions', ttlMs: ONE_SECOND_MS },
+  ],
+  closes_account: [
+    // Combines parsed instructions (CloseAccount discriminator) + simulation balances
+    // (so we can ignore closures of empty / wSOL accounts). Resolver handles both.
+    { provider: 'local_tx', endpoint: 'parse_instructions', ttlMs: ONE_SECOND_MS },
+  ],
+  // ── Tier A: spending governance ───────────────────────────────────────────
+  daily_outflow_sum: [
+    // Composite: scans recent signatures + pre/post SOL deltas. Subject to RPC throughput
+    // limits, hence a 60s TTL (re-scans on each request shouldn't be the norm).
+    { provider: 'rpc', endpoint: 'getSignaturesForAddress+getParsedTransaction', ttlMs: 60 * ONE_SECOND_MS },
+  ],
+  cooldown_since_last_tx: [
+    { provider: 'rpc', endpoint: 'getSignaturesForAddress', ttlMs: 10 * ONE_SECOND_MS },
+  ],
+  recent_blockhash_age_ms: [
+    // Probes `isBlockhashValid` on the draft tx's blockhash. Cheap, ~150-slot window.
+    { provider: 'rpc', endpoint: 'isBlockhashValid', ttlMs: 5 * ONE_SECOND_MS },
+  ],
+  // ── Tier C: temporal policy (pure local) ──────────────────────────────────
+  time_of_day: [
+    { provider: 'local', endpoint: 'time', ttlMs: 30 * ONE_SECOND_MS },
+  ],
+  day_of_week_window: [
+    { provider: 'local', endpoint: 'time', ttlMs: 30 * ONE_SECOND_MS },
+  ],
 });
 
 /* -------------------------------------------------------------------------- */

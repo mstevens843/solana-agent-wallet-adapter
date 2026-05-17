@@ -43,6 +43,11 @@ interface MppConfigDraft {
   maxChallengeAmount: string;
   allowedMints: string;
   allowedOrigins: string;
+  allowedMerchantIds: string;
+  allowedMerchantOrigins: string;
+  allowedMerchantUrls: string;
+  allowedResourceOrigins: string;
+  allowedResourceUrls: string;
   allowedRecipients: string;
   requireSettlementConfirmed: boolean;
 }
@@ -134,6 +139,11 @@ function createBlankMppConfigDraft(): MppConfigDraft {
     maxChallengeAmount: '10',
     allowedMints: '',
     allowedOrigins: '',
+    allowedMerchantIds: '',
+    allowedMerchantOrigins: '',
+    allowedMerchantUrls: '',
+    allowedResourceOrigins: '',
+    allowedResourceUrls: '',
     allowedRecipients: '',
     requireSettlementConfirmed: false,
   };
@@ -184,11 +194,12 @@ function mppDraftFromConfig(config: MppConfigResponse | undefined): MppConfigDra
     acceptedRails: (config.acceptedRails?.length ? config.acceptedRails : ['usdc']).join(', '),
     maxChallengeAmount: config.maxChallengeAmount ?? blank.maxChallengeAmount,
     allowedMints: (config.allowedMints ?? []).join('\n'),
-    allowedOrigins: [
-      ...(config.sessionPolicy?.allowedOrigins ?? []),
-      ...(config.sessionPolicy?.allowedMerchantOrigins ?? []),
-      ...(config.sessionPolicy?.allowedResourceOrigins ?? []),
-    ].join('\n'),
+    allowedOrigins: (config.sessionPolicy?.allowedOrigins ?? []).join('\n'),
+    allowedMerchantIds: (config.sessionPolicy?.allowedMerchantIds ?? []).join('\n'),
+    allowedMerchantOrigins: (config.sessionPolicy?.allowedMerchantOrigins ?? []).join('\n'),
+    allowedMerchantUrls: (config.sessionPolicy?.allowedMerchantUrls ?? []).join('\n'),
+    allowedResourceOrigins: (config.sessionPolicy?.allowedResourceOrigins ?? []).join('\n'),
+    allowedResourceUrls: (config.sessionPolicy?.allowedResourceUrls ?? []).join('\n'),
     allowedRecipients: (config.sessionPolicy?.allowedRecipients ?? []).join('\n'),
     requireSettlementConfirmed: config.sessionPolicy?.requireSettlementConfirmed === true,
   };
@@ -198,6 +209,11 @@ function mppConfigPayloadFromDraft(draft: MppConfigDraft): MppConfigPreferencePa
   const acceptedRails = commaList(draft.acceptedRails);
   const allowedMints = lineList(draft.allowedMints);
   const allowedOrigins = lineList(draft.allowedOrigins);
+  const allowedMerchantIds = lineList(draft.allowedMerchantIds);
+  const allowedMerchantOrigins = lineList(draft.allowedMerchantOrigins);
+  const allowedMerchantUrls = lineList(draft.allowedMerchantUrls);
+  const allowedResourceOrigins = lineList(draft.allowedResourceOrigins);
+  const allowedResourceUrls = lineList(draft.allowedResourceUrls);
   const allowedRecipients = lineList(draft.allowedRecipients);
   return {
     acceptedRails: acceptedRails.length ? acceptedRails : ['usdc'],
@@ -205,6 +221,11 @@ function mppConfigPayloadFromDraft(draft: MppConfigDraft): MppConfigPreferencePa
     ...(allowedMints.length ? { allowedMints } : {}),
     sessionPolicy: {
       ...(allowedOrigins.length ? { allowedOrigins } : {}),
+      ...(allowedMerchantIds.length ? { allowedMerchantIds } : {}),
+      ...(allowedMerchantOrigins.length ? { allowedMerchantOrigins } : {}),
+      ...(allowedMerchantUrls.length ? { allowedMerchantUrls } : {}),
+      ...(allowedResourceOrigins.length ? { allowedResourceOrigins } : {}),
+      ...(allowedResourceUrls.length ? { allowedResourceUrls } : {}),
       ...(allowedRecipients.length ? { allowedRecipients } : {}),
       ...(draft.requireSettlementConfirmed ? { requireSettlementConfirmed: true } : {}),
     },
@@ -488,13 +509,58 @@ function renderMppPolicySection(): string {
           />
         </div>
         <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
-          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-origins">Allowed origins</label>
+          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-origins">Shared origins</label>
           <textarea
             id="dev-agent-card-mpp-origins"
             class="dev-agent-card-form-input dev-agent-card-form-textarea"
             data-mpp-policy-field="allowedOrigins"
             rows="3"
           >${escapeHtml(draft.allowedOrigins)}</textarea>
+        </div>
+        <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
+          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-merchant-ids">Allowed merchant ids</label>
+          <textarea
+            id="dev-agent-card-mpp-merchant-ids"
+            class="dev-agent-card-form-input dev-agent-card-form-textarea"
+            data-mpp-policy-field="allowedMerchantIds"
+            rows="2"
+          >${escapeHtml(draft.allowedMerchantIds)}</textarea>
+        </div>
+        <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
+          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-merchant-origins">Merchant origins</label>
+          <textarea
+            id="dev-agent-card-mpp-merchant-origins"
+            class="dev-agent-card-form-input dev-agent-card-form-textarea"
+            data-mpp-policy-field="allowedMerchantOrigins"
+            rows="2"
+          >${escapeHtml(draft.allowedMerchantOrigins)}</textarea>
+        </div>
+        <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
+          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-resource-origins">Resource origins</label>
+          <textarea
+            id="dev-agent-card-mpp-resource-origins"
+            class="dev-agent-card-form-input dev-agent-card-form-textarea"
+            data-mpp-policy-field="allowedResourceOrigins"
+            rows="2"
+          >${escapeHtml(draft.allowedResourceOrigins)}</textarea>
+        </div>
+        <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
+          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-merchant-urls">Merchant URLs</label>
+          <textarea
+            id="dev-agent-card-mpp-merchant-urls"
+            class="dev-agent-card-form-input dev-agent-card-form-textarea"
+            data-mpp-policy-field="allowedMerchantUrls"
+            rows="2"
+          >${escapeHtml(draft.allowedMerchantUrls)}</textarea>
+        </div>
+        <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
+          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-resource-urls">Resource URLs</label>
+          <textarea
+            id="dev-agent-card-mpp-resource-urls"
+            class="dev-agent-card-form-input dev-agent-card-form-textarea"
+            data-mpp-policy-field="allowedResourceUrls"
+            rows="2"
+          >${escapeHtml(draft.allowedResourceUrls)}</textarea>
         </div>
         <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
           <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-recipients">Allowed recipients</label>

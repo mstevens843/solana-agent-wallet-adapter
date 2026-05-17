@@ -85,6 +85,14 @@ describe('policy pipeline — extract → resolve → evaluate (+ tx gates)', ()
         case 'instruction_count':
         case 'account_writability_count':
         case 'rent_exempt_required':
+        case 'sets_authority':
+        case 'delegates_token':
+        case 'closes_account':
+        case 'daily_outflow_sum':
+        case 'cooldown_since_last_tx':
+        case 'recent_blockhash_age_ms':
+        case 'time_of_day':
+        case 'day_of_week_window':
           return { ...base, status: 'missing' };
       }
     };

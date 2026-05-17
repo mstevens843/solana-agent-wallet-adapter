@@ -294,13 +294,38 @@ async function handlePostSessionPay(
     return;
   }
 
+  const streaming = new StreamingService(streamingStoreFor(context.workflowStore), { clock: context.clock });
   const existing = sessionPaymentLinkFromMetadata(approval.metadata);
   if (existing) {
-    writeJsonNoStore(req, res, 200, {
-      approvalId: approval.id,
-      sessionPayment: existing,
-      approval: normalizeApprovalForResponse(approval),
-      idempotent: true,
+    const challenge = safeExtractMppChallengeFromApproval(approval);
+    const paymentMethod = challenge ? safePaymentMethodForApproval(challenge, approval) : undefined;
+    const existingVoucher = challenge && paymentMethod
+      ? await streaming.findVoucherByMppApprovalId({
+          walletAddress: workflowSession.walletAddress,
+          approvalId: approval.id,
+        })
+      : undefined;
+    if (challenge && paymentMethod && existingVoucher) {
+      await writeExistingSessionPaymentResponse({
+        req,
+        res,
+        context,
+        workflowSession,
+        approval,
+        challenge,
+        paymentMethod,
+        lookup: existingVoucher,
+        policy: config.sessionPolicy,
+      });
+      return;
+    }
+    await writeExistingSessionLinkResponse({
+      req,
+      res,
+      context,
+      workflowSession,
+      approval,
+      link: existing,
     });
     return;
   }
@@ -329,7 +354,6 @@ async function handlePostSessionPay(
   }
   const challengeHash = stringFromMetadata(approval.metadata, 'mppChallengeHash') ?? canonicalChallengeHash(challenge);
 
-  const streaming = new StreamingService(streamingStoreFor(context.workflowStore), { clock: context.clock });
   const existingVoucher = await streaming.findVoucherByMppApprovalId({
     walletAddress: workflowSession.walletAddress,
     approvalId: approval.id,
@@ -575,14 +599,38 @@ async function writeExistingSessionPaymentResponse(input: {
     ...(stringFromObject(metadataLink, 'settlementTxid') ? { settlementTxid: stringFromObject(metadataLink, 'settlementTxid') } : {}),
     policy: toJsonObject(defaultSessionPolicyResult(policy, challenge, paymentMethod)),
   };
+
+  const recovered = await recoverMppSessionReceipt({
+    context,
+    workflowSession,
+    approval,
+    challenge,
+    paymentMethod,
+    link,
+    issuedAt: nowIso,
+  });
+  if (recovered?.evidenceRecord) {
+    link.receiptId = recovered.evidenceRecord.id;
+    link.receiptHash = recovered.evidenceRecord.artifactHash;
+  }
   const updated: ApprovalRequestRecord = {
     ...approval,
     status: status === 'voucher_accepted' || status === 'settlement_confirmed' ? 'approved' : 'approval_pending',
     updatedAt: nowIso,
     ...(status === 'voucher_accepted' || status === 'settlement_confirmed' ? { decidedAt: approval.decidedAt ?? nowIso } : {}),
+    ...(status === 'settlement_confirmed' && link.settlementTxid ? {
+      txid: link.settlementTxid,
+      txStatus: approval.txStatus ?? 'confirmed',
+      confirmedAt: approval.confirmedAt ?? link.settledAt ?? nowIso,
+    } : {}),
     metadata: {
       ...(approval.metadata ?? {}),
       [MPP_SESSION_PAYMENT_METADATA_KEY]: toJsonObject(link),
+      ...(recovered?.receipt ? {
+        mppPaymentReceipt: toJsonObject(recovered.receipt),
+        mppPaymentReceiptIssuedAt: recovered.evidenceRecord?.createdAt ?? nowIso,
+        mppEvidenceReceiptId: recovered.evidenceRecord?.id ?? '',
+      } : {}),
     },
   };
   await context.workflowStore.saveApproval(workflowSession.walletAddress, updated);
@@ -596,8 +644,140 @@ async function writeExistingSessionPaymentResponse(input: {
     sessionPayment: link,
     voucher: lookup.voucher,
     signedVoucher: lookup.voucher.voucher,
+    ...(recovered?.receipt ? {
+      receipt: recovered.receipt,
+      receiptId: recovered.evidenceRecord?.id,
+      receiptHash: recovered.receipt.artifactHash,
+    } : {}),
     approval: normalizeApprovalForResponse(updated),
     idempotent: true,
+  });
+}
+
+async function writeExistingSessionLinkResponse(input: {
+  req: IncomingMessage;
+  res: ServerResponse;
+  context: DevApiHandlerContext;
+  workflowSession: WorkflowSession;
+  approval: ApprovalRequestRecord;
+  link: JsonObject;
+}): Promise<void> {
+  const { req, res, context, workflowSession, approval, link } = input;
+  const receiptRecord = await findMppSessionPaymentEvidence(context, workflowSession.walletAddress, approval, link);
+  const receipt = receiptRecord ? parseStoredMppReceipt(receiptRecord.payload) : receiptFromApprovalMetadata(approval);
+  writeJsonNoStore(req, res, 200, {
+    approvalId: approval.id,
+    accepted: true,
+    finality: typeof link.finality === 'string' ? link.finality : undefined,
+    status: typeof link.status === 'string' ? link.status : undefined,
+    sessionPayment: link,
+    ...(receipt ? {
+      receipt,
+      receiptId: receiptRecord?.id ?? stringFromObject(link, 'receiptId'),
+      receiptHash: receipt.artifactHash,
+    } : {}),
+    approval: normalizeApprovalForResponse(approval),
+    idempotent: true,
+  });
+}
+
+async function recoverMppSessionReceipt(input: {
+  context: DevApiHandlerContext;
+  workflowSession: WorkflowSession;
+  approval: ApprovalRequestRecord;
+  challenge: MppChallenge;
+  paymentMethod: MppPaymentMethod;
+  link: MppSessionPaymentLink;
+  issuedAt: string;
+}): Promise<{ receipt: MppReceipt; evidenceRecord: EvidenceReceiptRecord } | undefined> {
+  const { context, workflowSession, approval, challenge, paymentMethod, link, issuedAt } = input;
+  const existing = await findMppSessionPaymentEvidence(context, workflowSession.walletAddress, approval, toJsonObject(link));
+  if (existing) {
+    return { receipt: parseStoredMppReceipt(existing.payload), evidenceRecord: existing };
+  }
+
+  const settledAt = link.status === 'settlement_confirmed'
+    ? link.settledAt ?? issuedAt
+    : issuedAt;
+  const credential = link.status === 'settlement_confirmed' && link.settlementTxid
+    ? {
+        kind: paymentMethod.kind,
+        signature: link.settlementTxid,
+        txid: link.settlementTxid,
+        payerWallet: workflowSession.walletAddress,
+        settledAt,
+      }
+    : link.finality === 'voucher_accepted'
+      ? {
+          kind: paymentMethod.kind,
+          signature: link.voucherHash,
+          payerWallet: workflowSession.walletAddress,
+          settledAt,
+        }
+      : undefined;
+  if (!credential) return undefined;
+
+  const receipt = buildMppPaymentReceipt({
+    challenge,
+    credential,
+    walletAddress: workflowSession.walletAddress,
+    cluster: link.cluster as MppCluster,
+    ...(link.settlementTxid ? { txid: link.settlementTxid } : {}),
+    settledAt,
+    issuedAt,
+    paymentMethod,
+  });
+  const evidenceRecord = buildMppEvidenceRecord({ receipt, approval, challenge, issuedAt, sessionPayment: link });
+  await context.evidenceStore.saveEvidence(workflowSession.walletAddress, evidenceRecord);
+  await context.evidenceStore.appendEvidenceAuditEvent(workflowSession.walletAddress, {
+    id: `audit_${randomUUID()}`,
+    walletAddress: workflowSession.walletAddress,
+    type: 'mpp.session_payment.receipt.recovered',
+    recordType: 'evidence',
+    recordId: evidenceRecord.id,
+    createdAt: issuedAt,
+    metadata: {
+      approvalId: approval.id,
+      sessionId: link.sessionId,
+      voucherId: link.voucherId,
+      voucherHash: link.voucherHash,
+      receiptId: receipt.receiptId,
+      receiptHash: receipt.artifactHash,
+      challengeHash: receipt.challengeHash,
+      finality: link.finality,
+      status: link.status,
+      mppSessionPayment: true,
+      linkType: 'mpp_session_payment',
+    },
+  });
+  return { receipt, evidenceRecord };
+}
+
+async function findMppSessionPaymentEvidence(
+  context: DevApiHandlerContext,
+  walletAddress: string,
+  approval: ApprovalRequestRecord,
+  link: JsonObject,
+): Promise<EvidenceReceiptRecord | undefined> {
+  const directIds = [
+    stringFromMetadata(approval.metadata, 'mppEvidenceReceiptId'),
+    stringFromObject(link, 'receiptId'),
+  ].filter((id): id is string => Boolean(id));
+  for (const id of [...new Set(directIds)]) {
+    const record = await context.evidenceStore.getEvidence(walletAddress, id);
+    if (record?.kind === MPP_EVIDENCE_KIND) return record;
+  }
+
+  const voucherHash = stringFromObject(link, 'voucherHash');
+  const sessionId = stringFromObject(link, 'sessionId');
+  const records = await context.evidenceStore.listEvidence(walletAddress);
+  return records.find((record) => {
+    if (record.kind !== MPP_EVIDENCE_KIND) return false;
+    const metadata = objectFromUnknown(record.metadata);
+    if (stringFromObject(metadata, 'approvalId') !== approval.id) return false;
+    if (voucherHash && stringFromObject(metadata, 'voucherHash') !== voucherHash) return false;
+    if (sessionId && stringFromObject(metadata, 'sessionId') !== sessionId) return false;
+    return metadata?.mppSessionPayment === true || metadata?.linkType === 'mpp_session_payment';
   });
 }
 
@@ -757,7 +937,9 @@ function normalizeMppConfig(payload: unknown, defaults: MppConfig): MppConfig {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return defaults;
   const record = payload as Record<string, unknown>;
   const acceptedRails = Array.isArray(record.acceptedRails)
-    ? record.acceptedRails.filter((entry): entry is string => typeof entry === 'string' && entry.trim() !== '').map((entry) => entry.trim())
+    ? record.acceptedRails
+        .filter((entry): entry is string => typeof entry === 'string' && isSupportedMppRailConfigEntry(entry))
+        .map((entry) => entry.trim())
     : defaults.acceptedRails;
   const maxChallengeAmount = typeof record.maxChallengeAmount === 'string' && record.maxChallengeAmount.trim()
     ? record.maxChallengeAmount.trim()
@@ -768,12 +950,20 @@ function normalizeMppConfig(payload: unknown, defaults: MppConfig): MppConfig {
     : undefined;
   const sessionPolicy = normalizeMppSessionPolicy(record.sessionPolicy);
   return {
-    acceptedRails,
+    acceptedRails: acceptedRails.length ? acceptedRails : defaults.acceptedRails,
     ...(maxChallengeAmount ? { maxChallengeAmount } : {}),
     ...(endpoint !== undefined ? { endpoint } : {}),
     ...(allowedMints && allowedMints.length ? { allowedMints } : {}),
     ...(sessionPolicy ? { sessionPolicy } : {}),
   };
+}
+
+function isSupportedMppRailConfigEntry(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return false;
+  if (normalized === 'sol' || normalized === 'solana-sol') return true;
+  if (normalized === 'usdc' || normalized === 'spl' || normalized === 'solana-spl') return true;
+  return value.trim().length >= 32 && value.trim().length <= 64;
 }
 
 function normalizeMppSessionPolicy(value: unknown): MppSessionPolicy | undefined {
@@ -1086,10 +1276,24 @@ function parseStoredMppReceipt(payload: unknown): MppReceipt {
   return receipt;
 }
 
+function receiptFromApprovalMetadata(approval: ApprovalRequestRecord): MppReceipt | undefined {
+  const payload = approval.metadata?.mppPaymentReceipt;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
+  return parseStoredMppReceipt(payload);
+}
+
 function extractMppChallengeFromApproval(approval: ApprovalRequestRecord): MppChallenge | null {
   const proposal = approval.metadata?.actionProposal;
   if (!proposal || typeof proposal !== 'object') return null;
   return parseMppChallenge(proposal);
+}
+
+function safeExtractMppChallengeFromApproval(approval: ApprovalRequestRecord): MppChallenge | null {
+  try {
+    return extractMppChallengeFromApproval(approval);
+  } catch {
+    return null;
+  }
 }
 
 function paymentMethodForApproval(challenge: MppChallenge, approval: ApprovalRequestRecord): MppPaymentMethod {
@@ -1102,9 +1306,32 @@ function paymentMethodForApproval(challenge: MppChallenge, approval: ApprovalReq
     (!approval.cluster || method.network === approval.cluster),
   );
   if (exact) return exact;
-  return selectSupportedPaymentMethod(challenge, {
+  const selected = selectSupportedPaymentMethod(challenge, {
     ...(approval.cluster ? { expectedCluster: approval.cluster as MppCluster } : {}),
   });
+  if (
+    selected.kind !== expectedKind ||
+    (approval.recipient && selected.recipient !== approval.recipient) ||
+    (approval.cluster && selected.network !== approval.cluster)
+  ) {
+    throw new WorkflowValidationError(
+      'payment_method_mismatch',
+      'Stored approval no longer matches an MPP payment method.',
+      '$.paymentMethods',
+    );
+  }
+  return selected;
+}
+
+function safePaymentMethodForApproval(
+  challenge: MppChallenge,
+  approval: ApprovalRequestRecord,
+): MppPaymentMethod | undefined {
+  try {
+    return paymentMethodForApproval(challenge, approval);
+  } catch {
+    return undefined;
+  }
 }
 
 function paymentMethodFromApprovalMetadata(
@@ -1156,7 +1383,11 @@ function sessionPayConfigFailure(
   config: MppConfig,
   now: Date,
 ): { error: string; message: string } | undefined {
-  if (Date.parse(challenge.expiresAt) <= now.getTime()) {
+  const expiresAtMs = Date.parse(challenge.expiresAt);
+  if (!Number.isFinite(expiresAtMs)) {
+    return { error: 'invalid_challenge_expiry', message: 'MPP challenge has an invalid expiry timestamp.' };
+  }
+  if (expiresAtMs <= now.getTime()) {
     return { error: 'expired_challenge', message: `MPP challenge expired at ${challenge.expiresAt}.` };
   }
   if (approval.cluster && paymentMethod.network !== approval.cluster) {

@@ -17,10 +17,15 @@ import { FakeHttpExecutor } from './fakeHttpExecutor.helper.js';
 
 const API_KEY = 'sk-test-EXAMPLEKEY12345';
 
-function config(apiFormat: string): RuntimeConfig {
+function config(apiFormat: string, provider?: string): RuntimeConfig {
   const isAnthropic = apiFormat === 'anthropic';
+  // Default `provider` is 'openrouter' for the openai-compatible apiFormat so the existing
+  // chat-completions wire-shape assertions remain valid. Tests that want to hit the new
+  // OpenAI Responses-API native path pass `provider: 'openai'` explicitly; Gemini native
+  // tests pass `provider: 'gemini'`.
+  const resolvedProvider = provider ?? (isAnthropic ? 'anthropic' : 'openrouter');
   return {
-    provider: isAnthropic ? 'anthropic' : 'openai',
+    provider: resolvedProvider,
     apiFormat,
     model: isAnthropic ? 'claude-opus-4-5' : 'gpt-4o-mini',
     baseUrl: isAnthropic ? 'https://api.anthropic.com' : 'https://api.openai.com',
@@ -79,6 +84,55 @@ describe('DeviceAgentProviderExecutor — routing', () => {
     })) as Record<string, unknown>;
     expect(result.intent).toBe('transfer');
     expect(http.calls[0]!.url.endsWith('/messages')).toBe(true);
+  });
+
+  it('generatePlan routes through the OpenAI native Responses API when provider === "openai"', async () => {
+    const http = new FakeHttpExecutor();
+    http.queueResponse(
+      200,
+      JSON.stringify({
+        output_text:
+          '{"intent":"transfer","route":"system","risk":"low","approval":"once","safeguards":[]}',
+      }),
+    );
+    const executor = new DeviceAgentProviderExecutor(http);
+    const result = (await executor.generatePlan(config('openai-compatible', 'openai'), {
+      userPrompt: 'send 1 SOL',
+    })) as Record<string, unknown>;
+    expect(result.intent).toBe('transfer');
+    expect(http.calls[0]!.url.endsWith('/responses')).toBe(true);
+  });
+
+  it('generatePlan routes through the Gemini native :generateContent endpoint when provider === "gemini"', async () => {
+    const http = new FakeHttpExecutor();
+    http.queueResponse(
+      200,
+      JSON.stringify({
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  text: '{"intent":"transfer","route":"system","risk":"low","approval":"once","safeguards":[]}',
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+    const executor = new DeviceAgentProviderExecutor(http);
+    const geminiConfig: RuntimeConfig = {
+      ...config('openai-compatible', 'gemini'),
+      model: 'gemini-2.5-pro',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    };
+    const result = (await executor.generatePlan(geminiConfig, {
+      userPrompt: 'send 1 SOL',
+    })) as Record<string, unknown>;
+    expect(result.intent).toBe('transfer');
+    expect(http.calls[0]!.url.includes(':generateContent')).toBe(true);
+    expect(http.calls[0]!.headers['x-goog-api-key']).toBe(API_KEY);
   });
 });
 

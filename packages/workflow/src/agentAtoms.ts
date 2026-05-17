@@ -40,7 +40,15 @@ export type AgentAtomType =
   | 'required_signatures'
   | 'instruction_count'
   | 'account_writability_count'
-  | 'rent_exempt_required';
+  | 'rent_exempt_required'
+  | 'sets_authority'
+  | 'delegates_token'
+  | 'closes_account'
+  | 'daily_outflow_sum'
+  | 'cooldown_since_last_tx'
+  | 'recent_blockhash_age_ms'
+  | 'time_of_day'
+  | 'day_of_week_window';
 
 export type AgentAtomOperator = 'gt' | 'gte' | 'lt' | 'lte' | 'eq';
 
@@ -335,6 +343,124 @@ export interface RentExemptRequiredAtom extends AgentAtomBase {
   unit: 'lamports' | 'SOL' | 'USD';
 }
 
+/* -------------------------------------------------------------------------- */
+/* Tier S: drain-attack defenses (all local-tx)                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * sets_authority — fails when the tx contains an SPL Token SetAuthority instruction.
+ * Catches privilege escalation (mint/freeze/owner reassignment).
+ */
+export interface SetsAuthorityAtom extends AgentAtomBase {
+  type: 'sets_authority';
+  /** What the user expects. `false` (default user intent) = "tx must NOT set any authority". */
+  expected: boolean;
+}
+
+/**
+ * delegates_token — fails when the tx contains an Approve/ApproveChecked instruction
+ * outside the user's `knownDelegates` allowlist, or any unlimited approval (amount=u64::MAX).
+ * Catches SPL-equivalent of unlimited ERC-20 approvals.
+ */
+export interface DelegatesTokenAtom extends AgentAtomBase {
+  type: 'delegates_token';
+  /** `false` (default) = "tx must NOT delegate to any unknown party / must not approve unlimited". */
+  expected: boolean;
+  /** Allowlist of delegate pubkeys treated as safe (e.g. Jupiter Trigger vault). */
+  knownDelegates?: ReadonlyArray<string>;
+  /** When true, only unlimited approvals (amount=u64::MAX) fail; bounded approvals
+   *  to anyone are accepted. Default false (any unknown-delegate approval fails). */
+  onlyUnlimited?: boolean;
+}
+
+/**
+ * closes_account — fails when the tx closes a token account whose mint is NOT in
+ * `allowedMints` (defaults to wSOL) AND whose pre-balance is > 0.
+ * Catches dust-drain via account-closure rent reclamation while permitting the
+ * standard Jupiter wSOL wrap/unwrap pattern.
+ */
+export interface ClosesAccountAtom extends AgentAtomBase {
+  type: 'closes_account';
+  /** `false` (default) = "tx must NOT close any non-allowlisted account with balance". */
+  expected: boolean;
+  /** Mints whose account closures are always permitted. Default = [WSOL_MINT]. */
+  allowedMints?: ReadonlyArray<string>;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Tier A: spending governance (composite, reuses wallet history)             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * daily_outflow_sum — sum of SOL leaving the wallet in the last `windowSeconds`.
+ * Composite resolver: scans recent signatures + summing pre/post SOL deltas.
+ */
+export interface DailyOutflowSumAtom extends AgentAtomBase {
+  type: 'daily_outflow_sum';
+  op: AgentAtomOperator;
+  value: number;
+  unit: 'SOL' | 'lamports' | 'USD';
+  /** Window in seconds. Default 86400 (24h). */
+  windowSeconds?: number;
+}
+
+/**
+ * cooldown_since_last_tx — seconds since the wallet's most recent signed tx.
+ * Use op=gt + value to enforce a cooldown ("at least N seconds between txs").
+ */
+export interface CooldownSinceLastTxAtom extends AgentAtomBase {
+  type: 'cooldown_since_last_tx';
+  op: AgentAtomOperator;
+  /** Threshold in seconds. */
+  value: number;
+}
+
+/**
+ * recent_blockhash_age_ms — estimated age of the draft tx's recent blockhash, in ms.
+ * Catches stale / replay-vulnerable transactions before signing.
+ */
+export interface RecentBlockhashAgeAtom extends AgentAtomBase {
+  type: 'recent_blockhash_age_ms';
+  op: AgentAtomOperator;
+  /** Threshold in milliseconds. Solana blockhashes expire at ~60_000 ms. */
+  value: number;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Tier C: temporal policy (pure local)                                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * time_of_day — current wall-clock hour falls inside (or outside) [start, end).
+ * Pure local computation; no network call.
+ */
+export interface TimeOfDayAtom extends AgentAtomBase {
+  type: 'time_of_day';
+  /** Window start hour, 0-24 (inclusive). Fractional hours supported (e.g. 9.5 = 9:30). */
+  start: number;
+  /** Window end hour, 0-24 (exclusive). When end < start the window wraps midnight. */
+  end: number;
+  /** `true` = "current time MUST be in [start, end)"; `false` = "must NOT be". */
+  expected: boolean;
+  /** IANA tz hint, e.g. 'America/New_York'. Defaults to UTC. */
+  timezone?: string;
+}
+
+/**
+ * day_of_week_window — today's weekday must be in (or out of) `allowedDays`.
+ * Distinct from the looser `time_fact` kind=day_of_week which is informational only;
+ * this atom is deterministic pass/fail.
+ */
+export interface DayOfWeekWindowAtom extends AgentAtomBase {
+  type: 'day_of_week_window';
+  /** Allowed weekday numbers (0=Sun … 6=Sat). */
+  allowedDays: ReadonlyArray<number>;
+  /** `true` = "today must be in allowedDays"; `false` = "must NOT". */
+  expected: boolean;
+  /** IANA tz hint. Defaults to UTC. */
+  timezone?: string;
+}
+
 export type AgentAtom =
   | PriceAtom
   | MarketRegimeAtom
@@ -362,7 +488,15 @@ export type AgentAtom =
   | RequiredSignaturesAtom
   | InstructionCountAtom
   | AccountWritabilityCountAtom
-  | RentExemptRequiredAtom;
+  | RentExemptRequiredAtom
+  | SetsAuthorityAtom
+  | DelegatesTokenAtom
+  | ClosesAccountAtom
+  | DailyOutflowSumAtom
+  | CooldownSinceLastTxAtom
+  | RecentBlockhashAgeAtom
+  | TimeOfDayAtom
+  | DayOfWeekWindowAtom;
 
 export interface ExtractAtomsInput {
   /** Free-form user instruction / NOTE text. */
@@ -1514,6 +1648,490 @@ function extractEpochWarmupAtoms(text: string): ExtractorResult {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Tier S: drain-attack defenses                                              */
+/* -------------------------------------------------------------------------- */
+
+/** sets_authority — "no authority changes", "deny if tx sets [mint|freeze|owner] authority". */
+function extractSetsAuthorityAtoms(text: string): ExtractorResult {
+  const atoms: SetsAuthorityAtom[] = [];
+  const spans: Array<{ start: number; end: number }> = [];
+  const patterns: Array<{ re: RegExp; expected: boolean }> = [
+    { re: /\bno\s+(?:authority\s+changes?|set[- ]?authority|setauthority\s+(?:calls?|instructions?))\b/gi, expected: false },
+    { re: /\bdeny\s+(?:if|when)\s+(?:tx\s+|the\s+tx\s+|transaction\s+)?(?:sets?|changes?)\s+(?:any\s+)?(?:mint|freeze|owner|account)?\s*authority\b/gi, expected: false },
+    { re: /\bno\s+(?:mint|freeze|owner|account)\s+authority\s+(?:changes?|set|reassignments?)\b/gi, expected: false },
+    { re: /\bblock\s+(?:authority|setauthority)\s+(?:instructions?|changes?|calls?)\b/gi, expected: false },
+    { re: /\b(?:reject|block|deny)\s+authority\s+(?:changes?|reassignments?)\b/gi, expected: false },
+    { re: /\bno\s+privilege\s+escalation\b/gi, expected: false },
+  ];
+  for (const { re, expected } of patterns) {
+    re.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(text)) !== null) {
+      atoms.push({
+        id: atomId(['sets_authority', expected]),
+        type: 'sets_authority',
+        rawText: match[0],
+        expected,
+      });
+      spans.push({ start: match.index, end: match.index + match[0].length });
+    }
+  }
+  return { atoms, spans };
+}
+
+/** delegates_token — "no token approvals", "no unlimited approvals", "no token delegation". */
+function extractDelegatesTokenAtoms(text: string): ExtractorResult {
+  const atoms: DelegatesTokenAtom[] = [];
+  const spans: Array<{ start: number; end: number }> = [];
+  // Unlimited-only patterns set `onlyUnlimited: true`; general patterns leave it false.
+  const unlimitedPatterns: RegExp[] = [
+    /\bno\s+unlimited\s+(?:token\s+)?(?:approvals?|delegations?)\b/gi,
+    /\bdeny\s+(?:if|when)\s+(?:any\s+)?unlimited\s+(?:token\s+)?(?:approval|delegation)\b/gi,
+    /\bblock\s+unlimited\s+(?:approvals?|delegations?)\b/gi,
+  ];
+  const generalPatterns: RegExp[] = [
+    /\bno\s+(?:token\s+)?(?:approvals?|delegations?|delegate\s+calls?)\b/gi,
+    /\bdeny\s+(?:if|when)\s+(?:tx\s+|the\s+tx\s+|transaction\s+)?(?:approves?|delegates?|grants?\s+approval)\b/gi,
+    /\bno\s+(?:approve|approvechecked|spl\s+approve)\s+(?:instructions?|calls?)\b/gi,
+    /\b(?:reject|block|deny)\s+(?:token\s+)?(?:approvals?|delegations?)\b/gi,
+  ];
+  for (const re of unlimitedPatterns) {
+    re.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(text)) !== null) {
+      atoms.push({
+        id: atomId(['delegates_token', false, 'unlimited_only']),
+        type: 'delegates_token',
+        rawText: match[0],
+        expected: false,
+        onlyUnlimited: true,
+      });
+      spans.push({ start: match.index, end: match.index + match[0].length });
+    }
+  }
+  for (const re of generalPatterns) {
+    re.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(text)) !== null) {
+      const start = match.index;
+      const end = start + match[0].length;
+      // Skip if an unlimited-only pattern already consumed this span.
+      if (spans.some((s) => spansOverlap(s, { start, end }))) continue;
+      atoms.push({
+        id: atomId(['delegates_token', false, 'any']),
+        type: 'delegates_token',
+        rawText: match[0],
+        expected: false,
+      });
+      spans.push({ start, end });
+    }
+  }
+  return { atoms, spans };
+}
+
+/** closes_account — "no account closures", "deny if tx closes any [token] account". */
+function extractClosesAccountAtoms(text: string): ExtractorResult {
+  const atoms: ClosesAccountAtom[] = [];
+  const spans: Array<{ start: number; end: number }> = [];
+  const patterns: RegExp[] = [
+    /\bno\s+(?:token\s+|account\s+|ata\s+)?account\s+closures?\b/gi,
+    /\bno\s+(?:close[- ]?account|closeaccount)\s+(?:instructions?|calls?)\b/gi,
+    /\bdeny\s+(?:if|when)\s+(?:tx\s+|the\s+tx\s+|transaction\s+)?closes?\s+(?:any\s+)?(?:token\s+|spl\s+|ata\s+)?accounts?\b/gi,
+    /\b(?:reject|block|deny)\s+(?:token\s+|account\s+|ata\s+)?account\s+closures?\b/gi,
+    /\bno\s+dust\s+drain(?:s|ing)?\b/gi,
+  ];
+  for (const re of patterns) {
+    re.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = re.exec(text)) !== null) {
+      atoms.push({
+        id: atomId(['closes_account', false]),
+        type: 'closes_account',
+        rawText: match[0],
+        expected: false,
+      });
+      spans.push({ start: match.index, end: match.index + match[0].length });
+    }
+  }
+  return { atoms, spans };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Tier A: spending governance                                                 */
+/* -------------------------------------------------------------------------- */
+
+/** daily_outflow_sum — "daily outflow < $500", "spent less than 5 SOL today", "24h spending under $200". */
+function extractDailyOutflowAtoms(text: string): ExtractorResult {
+  const atoms: DailyOutflowSumAtom[] = [];
+  const spans: Array<{ start: number; end: number }> = [];
+  // "daily outflow < N sol/usd", "24h outflow < N", "outflow today < N"
+  const re1 = new RegExp(
+    String.raw`\b(?:daily|24h|today'?s|past\s+24\s*h(?:our)?s?)\s+(?:outflow|spending|spent|sent|transfers?)\s+${INTRO}${OP_ALT}\s*\$?\s*(\d+(?:[.,]\d+)?)\s*(sol|lamports?|usd|dollars?)?`,
+    'gi',
+  );
+  let match: RegExpExecArray | null;
+  while ((match = re1.exec(text)) !== null) {
+    const op = operatorFromText(match[1] ?? '');
+    const value = Number((match[2] ?? '').replace(/,/g, ''));
+    if (!op || !Number.isFinite(value)) continue;
+    const unitWord = (match[3] ?? '').toLowerCase();
+    const isUsd = /\$/.test(match[0]) || unitWord === 'usd' || unitWord.startsWith('dollar');
+    const unit: 'SOL' | 'lamports' | 'USD' = unitWord.startsWith('lamport') ? 'lamports' : isUsd ? 'USD' : 'SOL';
+    atoms.push({
+      id: atomId(['daily_outflow_sum', op, value, unit]),
+      type: 'daily_outflow_sum',
+      rawText: match[0],
+      op,
+      value,
+      unit,
+      windowSeconds: 86_400,
+    });
+    spans.push({ start: match.index, end: match.index + match[0].length });
+  }
+  // "spent less than N sol today", "outflow today below $X"
+  const re2 = /\b(?:spent|sent|transferred)\s+(?:less|more|fewer|greater)\s+than\s+\$?\s*(\d+(?:[.,]\d+)?)\s*(sol|lamports?|usd|dollars?)?\s+(?:today|in\s+(?:the\s+)?(?:last|past)\s+24\s*h(?:our)?s?)/gi;
+  while ((match = re2.exec(text)) !== null) {
+    const lower = match[0].toLowerCase();
+    const op: AgentAtomOperator = /less|fewer/.test(lower) ? 'lt' : 'gt';
+    const value = Number((match[1] ?? '').replace(/,/g, ''));
+    if (!Number.isFinite(value)) continue;
+    const unitWord = (match[2] ?? '').toLowerCase();
+    const isUsd = /\$/.test(match[0]) || unitWord === 'usd' || unitWord.startsWith('dollar');
+    const unit: 'SOL' | 'lamports' | 'USD' = unitWord.startsWith('lamport') ? 'lamports' : isUsd ? 'USD' : 'SOL';
+    atoms.push({
+      id: atomId(['daily_outflow_sum', op, value, unit]),
+      type: 'daily_outflow_sum',
+      rawText: match[0],
+      op,
+      value,
+      unit,
+      windowSeconds: 86_400,
+    });
+    spans.push({ start: match.index, end: match.index + match[0].length });
+  }
+  return { atoms, spans };
+}
+
+/** cooldown_since_last_tx — "cooldown 30s", "last tx > 1 min ago", "at least 60s between txs". */
+function extractCooldownSinceLastTxAtoms(text: string): ExtractorResult {
+  const atoms: CooldownSinceLastTxAtom[] = [];
+  const spans: Array<{ start: number; end: number }> = [];
+  // "last tx (op) N <unit> ago"
+  const re1 = new RegExp(
+    String.raw`\blast\s+(?:tx|transaction|signed\s+tx)\s+${INTRO}${OP_ALT}\s+(\d+(?:\.\d+)?)\s*(seconds?|sec|s|minutes?|min|m|hours?|hrs?|h|days?|d)\s+ago\b`,
+    'gi',
+  );
+  let match: RegExpExecArray | null;
+  while ((match = re1.exec(text)) !== null) {
+    const op = operatorFromText(match[1] ?? '');
+    const n = Number(match[2]);
+    if (!op || !Number.isFinite(n)) continue;
+    const seconds = parseAgeSecondsFromUnit(n, match[3] ?? 's');
+    atoms.push({
+      id: atomId(['cooldown_since_last_tx', op, seconds]),
+      type: 'cooldown_since_last_tx',
+      rawText: match[0],
+      op,
+      value: seconds,
+    });
+    spans.push({ start: match.index, end: match.index + match[0].length });
+  }
+  // "cooldown N <unit>" or "at least N <unit> between txs"
+  const re2 = /\b(?:cooldown|wait|throttle)\s+(?:of\s+|at\s+least\s+)?(\d+(?:\.\d+)?)\s*(seconds?|sec|s|minutes?|min|m|hours?|hrs?|h)\b/gi;
+  while ((match = re2.exec(text)) !== null) {
+    const n = Number(match[1]);
+    if (!Number.isFinite(n)) continue;
+    const seconds = parseAgeSecondsFromUnit(n, match[2] ?? 's');
+    atoms.push({
+      id: atomId(['cooldown_since_last_tx', 'gte', seconds]),
+      type: 'cooldown_since_last_tx',
+      rawText: match[0],
+      op: 'gte',
+      value: seconds,
+    });
+    spans.push({ start: match.index, end: match.index + match[0].length });
+  }
+  const re3 = /\bat\s+least\s+(\d+(?:\.\d+)?)\s*(seconds?|sec|s|minutes?|min|m|hours?|hrs?|h)\s+between\s+(?:txs?|transactions?|signed\s+txs?)\b/gi;
+  while ((match = re3.exec(text)) !== null) {
+    const n = Number(match[1]);
+    if (!Number.isFinite(n)) continue;
+    const seconds = parseAgeSecondsFromUnit(n, match[2] ?? 's');
+    atoms.push({
+      id: atomId(['cooldown_since_last_tx', 'gte', seconds]),
+      type: 'cooldown_since_last_tx',
+      rawText: match[0],
+      op: 'gte',
+      value: seconds,
+    });
+    spans.push({ start: match.index, end: match.index + match[0].length });
+  }
+  return { atoms, spans };
+}
+
+/** recent_blockhash_age_ms — "deny if stale blockhash", "blockhash newer than 50s". */
+function extractRecentBlockhashAgeAtoms(text: string): ExtractorResult {
+  const atoms: RecentBlockhashAgeAtom[] = [];
+  const spans: Array<{ start: number; end: number }> = [];
+  // "blockhash (op) N <unit>" or "blockhash age (op) N <unit>"
+  const re1 = new RegExp(
+    String.raw`\bblockhash(?:\s+age)?\s+${INTRO}${OP_ALT}\s+(\d+(?:\.\d+)?)\s*(milliseconds?|ms|seconds?|sec|s|minutes?|min|m)\b`,
+    'gi',
+  );
+  let match: RegExpExecArray | null;
+  while ((match = re1.exec(text)) !== null) {
+    const op = operatorFromText(match[1] ?? '');
+    const n = Number(match[2]);
+    if (!op || !Number.isFinite(n)) continue;
+    const u = (match[3] ?? 's').toLowerCase();
+    const ms = u.startsWith('ms') || u.startsWith('milli') ? n
+      : u.startsWith('m') && !u.startsWith('ms') && !u.startsWith('milli') ? n * 60_000
+      : u.startsWith('s') || u.startsWith('sec') ? n * 1_000
+      : n * 1_000;
+    atoms.push({
+      id: atomId(['recent_blockhash_age_ms', op, ms]),
+      type: 'recent_blockhash_age_ms',
+      rawText: match[0],
+      op,
+      value: ms,
+    });
+    spans.push({ start: match.index, end: match.index + match[0].length });
+  }
+  // Qualitative: "no stale blockhash", "deny if blockhash is stale/expired"
+  const qualitativeRe = /\b(?:no\s+stale\s+blockhash|deny\s+(?:if|when)\s+(?:the\s+)?blockhash\s+is\s+(?:stale|expired|old))\b/gi;
+  while ((match = qualitativeRe.exec(text)) !== null) {
+    atoms.push({
+      id: atomId(['recent_blockhash_age_ms', 'lt', 60_000]),
+      type: 'recent_blockhash_age_ms',
+      rawText: match[0],
+      op: 'lt',
+      value: 60_000,
+    });
+    spans.push({ start: match.index, end: match.index + match[0].length });
+  }
+  return { atoms, spans };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Tier C: temporal policy                                                     */
+/* -------------------------------------------------------------------------- */
+
+/** Parse "9am", "9:30am", "17", "5pm" into hour-of-day fraction (0-24). Returns NaN on failure. */
+function parseHour(token: string): number {
+  const t = token.trim().toLowerCase();
+  // "9am" / "9pm" / "9:30am" / "9:30pm"
+  const ampm = t.match(/^(\d{1,2})(?::(\d{2}))?\s*([ap]m?)$/);
+  if (ampm) {
+    let hour = Number(ampm[1]);
+    const minutes = ampm[2] ? Number(ampm[2]) : 0;
+    const isPm = ampm[3]!.startsWith('p');
+    if (hour === 12) hour = 0;
+    if (isPm) hour += 12;
+    return hour + minutes / 60;
+  }
+  // "9:30" or "17:00"
+  const colon = t.match(/^(\d{1,2}):(\d{2})$/);
+  if (colon) {
+    const hour = Number(colon[1]);
+    const minutes = Number(colon[2]);
+    if (hour >= 0 && hour <= 24 && minutes >= 0 && minutes < 60) return hour + minutes / 60;
+    return NaN;
+  }
+  // bare hour: "9", "17"
+  const bare = t.match(/^(\d{1,2})$/);
+  if (bare) {
+    const hour = Number(bare[1]);
+    if (hour >= 0 && hour <= 24) return hour;
+  }
+  return NaN;
+}
+
+/** time_of_day — "only between 9am and 5pm", "no trades after 5pm", "outside business hours". */
+function extractTimeOfDayAtoms(text: string): ExtractorResult {
+  const atoms: TimeOfDayAtom[] = [];
+  const spans: Array<{ start: number; end: number }> = [];
+  // "between X and Y" / "from X to Y" / "X-Y"
+  const rangeRe = /\b(?:only\s+|approve\s+only\s+|trade\s+only\s+|allow\s+only\s+)?(?:between|from)\s+(\d{1,2}(?::\d{2})?\s*[ap]m?|\d{1,2}(?::\d{2}))\s+(?:and|to|-)\s+(\d{1,2}(?::\d{2})?\s*[ap]m?|\d{1,2}(?::\d{2}))\b/gi;
+  let match: RegExpExecArray | null;
+  while ((match = rangeRe.exec(text)) !== null) {
+    const start = parseHour(match[1] ?? '');
+    const end = parseHour(match[2] ?? '');
+    if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+    const surrounding = text.substring(Math.max(0, match.index - 30), match.index).toLowerCase();
+    const expected = !/\b(?:no|never|outside|except|deny|reject|block)\b/.test(surrounding);
+    atoms.push({
+      id: atomId(['time_of_day', start, end, expected]),
+      type: 'time_of_day',
+      rawText: match[0],
+      start,
+      end,
+      expected,
+    });
+    spans.push({ start: match.index, end: match.index + match[0].length });
+  }
+  // "after Xpm" / "before Xam" — single-bound forms; assume the OTHER bound is midnight.
+  const afterRe = /\b(?:no\s+trades?\s+|deny\s+(?:if|when)\s+|reject\s+|block\s+)?after\s+(\d{1,2}(?::\d{2})?\s*[ap]m?|\d{1,2}(?::\d{2}))\b/gi;
+  while ((match = afterRe.exec(text)) !== null) {
+    const start = parseHour(match[1] ?? '');
+    if (!Number.isFinite(start)) continue;
+    // Skip if overlapping with a range we already extracted.
+    if (spans.some((s) => spansOverlap(s, { start: match!.index, end: match!.index + match![0].length }))) continue;
+    const surrounding = text.substring(Math.max(0, match.index - 30), match.index).toLowerCase();
+    const negated = /\b(?:no|never|deny|reject|block)\b/.test(surrounding);
+    // "no trades after 5pm" → window is [0, 5pm), expected=true (must be inside that window).
+    atoms.push({
+      id: atomId(['time_of_day', 0, start, !negated]),
+      type: 'time_of_day',
+      rawText: match[0],
+      start: 0,
+      end: start,
+      expected: !negated,
+    });
+    spans.push({ start: match.index, end: match.index + match[0].length });
+  }
+  const beforeRe = /\b(?:no\s+trades?\s+|deny\s+(?:if|when)\s+|reject\s+|block\s+)?before\s+(\d{1,2}(?::\d{2})?\s*[ap]m?|\d{1,2}(?::\d{2}))\b/gi;
+  while ((match = beforeRe.exec(text)) !== null) {
+    const end = parseHour(match[1] ?? '');
+    if (!Number.isFinite(end)) continue;
+    if (spans.some((s) => spansOverlap(s, { start: match!.index, end: match!.index + match![0].length }))) continue;
+    const surrounding = text.substring(Math.max(0, match.index - 30), match.index).toLowerCase();
+    const negated = /\b(?:no|never|deny|reject|block)\b/.test(surrounding);
+    atoms.push({
+      id: atomId(['time_of_day', end, 24, !negated]),
+      type: 'time_of_day',
+      rawText: match[0],
+      start: end,
+      end: 24,
+      expected: !negated,
+    });
+    spans.push({ start: match.index, end: match.index + match[0].length });
+  }
+  // "trading hours only" → [9, 17), expected=true.
+  const tradingHoursRe = /\b(?:trading\s+hours|business\s+hours)\s+only\b|\bonly\s+(?:during\s+)?(?:trading|business)\s+hours\b/gi;
+  while ((match = tradingHoursRe.exec(text)) !== null) {
+    atoms.push({
+      id: atomId(['time_of_day', 9, 17, true]),
+      type: 'time_of_day',
+      rawText: match[0],
+      start: 9,
+      end: 17,
+      expected: true,
+    });
+    spans.push({ start: match.index, end: match.index + match[0].length });
+  }
+  return { atoms, spans };
+}
+
+const DAY_NAME_TO_INDEX: Readonly<Record<string, number>> = Object.freeze({
+  sunday: 0, sun: 0,
+  monday: 1, mon: 1,
+  tuesday: 2, tue: 2, tues: 2,
+  wednesday: 3, wed: 3,
+  thursday: 4, thu: 4, thur: 4, thurs: 4,
+  friday: 5, fri: 5,
+  saturday: 6, sat: 6,
+});
+
+/** day_of_week_window — "no weekends", "only Mon-Fri", "only weekdays", "no Sat/Sun". */
+function extractDayOfWeekWindowAtoms(text: string): ExtractorResult {
+  const atoms: DayOfWeekWindowAtom[] = [];
+  const spans: Array<{ start: number; end: number }> = [];
+  // "no weekends" / "no weekend trading" → allowedDays = Mon-Fri, expected=true.
+  const noWeekendsRe = /\bno\s+weekend(?:s|\s+(?:trades?|trading|swaps?))?\b|\bnever\s+on\s+weekends\b/gi;
+  let match: RegExpExecArray | null;
+  while ((match = noWeekendsRe.exec(text)) !== null) {
+    atoms.push({
+      id: atomId(['day_of_week_window', 'weekdays', true]),
+      type: 'day_of_week_window',
+      rawText: match[0],
+      allowedDays: [1, 2, 3, 4, 5],
+      expected: true,
+    });
+    spans.push({ start: match.index, end: match.index + match[0].length });
+  }
+  // "only weekdays" / "weekdays only"
+  const weekdaysOnlyRe = /\bonly\s+weekdays\b|\bweekdays\s+only\b|\bonly\s+on\s+weekdays\b/gi;
+  while ((match = weekdaysOnlyRe.exec(text)) !== null) {
+    if (spans.some((s) => spansOverlap(s, { start: match!.index, end: match!.index + match![0].length }))) continue;
+    atoms.push({
+      id: atomId(['day_of_week_window', 'weekdays', true]),
+      type: 'day_of_week_window',
+      rawText: match[0],
+      allowedDays: [1, 2, 3, 4, 5],
+      expected: true,
+    });
+    spans.push({ start: match.index, end: match.index + match[0].length });
+  }
+  // "only Mon-Fri" / "Mon-Fri only" / "only Mon, Wed, Fri"
+  const dayRangeRe = /\bonly\s+(?:on\s+)?(mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\s*-\s*(mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/gi;
+  while ((match = dayRangeRe.exec(text)) !== null) {
+    const a = DAY_NAME_TO_INDEX[(match[1] ?? '').toLowerCase()];
+    const b = DAY_NAME_TO_INDEX[(match[2] ?? '').toLowerCase()];
+    if (a === undefined || b === undefined) continue;
+    const days: number[] = [];
+    let d = a;
+    while (true) {
+      days.push(d);
+      if (d === b) break;
+      d = (d + 1) % 7;
+      if (days.length > 7) break;
+    }
+    atoms.push({
+      id: atomId(['day_of_week_window', days.join('_'), true]),
+      type: 'day_of_week_window',
+      rawText: match[0],
+      allowedDays: days,
+      expected: true,
+    });
+    spans.push({ start: match.index, end: match.index + match[0].length });
+  }
+  // "no Sat/Sun" / "no Saturdays" / "no Sundays" / "no Saturdays and Sundays" / "no Sat, Sun".
+  // Accepts up to 4 day tokens joined by '/', ',', or 'and' / 'or'.
+  const negDayRe = /\bno\s+((?:saturdays?|sundays?|mondays?|tuesdays?|wednesdays?|thursdays?|fridays?|sats?|suns?|mons?|tues?|weds?|thurs?|fris?)(?:\s*(?:\/|,|\s+and\s+|\s+or\s+)\s*(?:saturdays?|sundays?|mondays?|tuesdays?|wednesdays?|thursdays?|fridays?|sats?|suns?|mons?|tues?|weds?|thurs?|fris?)){0,6})\b/gi;
+  while ((match = negDayRe.exec(text)) !== null) {
+    const list = (match[1] ?? '').toLowerCase();
+    const denied = new Set<number>();
+    for (const token of list.split(/\/|,|\sand\s|\sor\s/)) {
+      const w = token.trim().replace(/s$/, '');
+      const idx = DAY_NAME_TO_INDEX[w];
+      if (idx !== undefined) denied.add(idx);
+    }
+    if (denied.size === 0) continue;
+    const allowed = [0, 1, 2, 3, 4, 5, 6].filter((d) => !denied.has(d));
+    atoms.push({
+      id: atomId(['day_of_week_window', allowed.join('_'), true]),
+      type: 'day_of_week_window',
+      rawText: match[0],
+      allowedDays: allowed,
+      expected: true,
+    });
+    spans.push({ start: match.index, end: match.index + match[0].length });
+  }
+  // "only Mon, Wed, Fri" — comma/and-separated day list.
+  const dayListRe = /\bonly\s+(?:on\s+)?((?:mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)(?:\s*(?:,|\s+and\s+)\s*(?:mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)){1,6})\b/gi;
+  while ((match = dayListRe.exec(text)) !== null) {
+    if (spans.some((s) => spansOverlap(s, { start: match!.index, end: match!.index + match![0].length }))) continue;
+    const list = (match[1] ?? '').toLowerCase();
+    const allowed = new Set<number>();
+    for (const token of list.split(/,|\sand\s/)) {
+      const w = token.trim().replace(/s$/, '');
+      const idx = DAY_NAME_TO_INDEX[w];
+      if (idx !== undefined) allowed.add(idx);
+    }
+    if (allowed.size === 0) continue;
+    const sorted = Array.from(allowed).sort((a, b) => a - b);
+    atoms.push({
+      id: atomId(['day_of_week_window', sorted.join('_'), true]),
+      type: 'day_of_week_window',
+      rawText: match[0],
+      allowedDays: sorted,
+      expected: true,
+    });
+    spans.push({ start: match.index, end: match.index + match[0].length });
+  }
+  return { atoms, spans };
+}
+
+/* -------------------------------------------------------------------------- */
 
 function spansOverlap(a: { start: number; end: number }, b: { start: number; end: number }): boolean {
   return a.start < b.end && b.start < a.end;
@@ -1577,6 +2195,16 @@ export function extractAtoms(input: ExtractAtomsInput): ExtractAtomsResult {
     () => extractAccountWritabilityAtoms(text),
     () => extractRentExemptAtoms(text),
     () => extractEpochWarmupAtoms(text),
+    // Tier S/A/C: drain defenses, spending governance, temporal policy.
+    // Order: more-specific (sets_authority, delegates_token) before generic close_account.
+    () => extractSetsAuthorityAtoms(text),
+    () => extractDelegatesTokenAtoms(text),
+    () => extractClosesAccountAtoms(text),
+    () => extractDailyOutflowAtoms(text),
+    () => extractCooldownSinceLastTxAtoms(text),
+    () => extractRecentBlockhashAgeAtoms(text),
+    () => extractTimeOfDayAtoms(text),
+    () => extractDayOfWeekWindowAtoms(text),
     () => extractExternalPriceAtoms(text, consumedSpans),
   ];
 

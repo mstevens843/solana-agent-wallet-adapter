@@ -6327,6 +6327,8 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
             ${preferencesButton()}
           </div>
           <div data-layout="active-panel">${activePanel()}</div>
+          ${SHOW_DEV_CONTROLS ? '' : firstRunActionBand()}
+          ${SHOW_DEV_CONTROLS ? '' : trustLayerPanel()}
         </section>
         ${SHOW_DEV_CONTROLS ? contextPanel() : requestContextDetails()}
       </section>
@@ -9711,8 +9713,6 @@ function commandCenterOverviewPanel(): string {
       : 'No proof yet';
   return `
     <div class="command-overview-stack">
-      ${SHOW_DEV_CONTROLS ? '' : firstRunActionBand()}
-      ${SHOW_DEV_CONTROLS ? '' : trustLayerPanel()}
       <section class="approval-object signature-stage stage-overview stage-anchor ${openApprovals.length ? 'stage-active' : 'stage-draft'}">
         <div class="signature-object-head command-center-head">
           ${sectionTitleLine('Approval workspace', 'AI prepares the review item; the wallet owner checks the details and signs only after review.')}

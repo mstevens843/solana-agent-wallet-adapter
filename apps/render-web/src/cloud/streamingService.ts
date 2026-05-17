@@ -606,6 +606,16 @@ export class MemoryStreamingStore implements StreamingStore {
   ): Promise<AcceptStreamingVoucherResult> {
     const session = await this.getSession(walletAddress, sessionId);
     if (!session) throw notFound(sessionId);
+    const mppApprovalId = mppApprovalIdFromVoucherMetadata(metadata);
+    if (mppApprovalId) {
+      for (const existing of this.vouchers.values()) {
+        if (mppApprovalIdFromVoucherMetadata(existing.metadata) !== mppApprovalId) continue;
+        const existingSession = this.sessions.get(existing.sessionId);
+        if (existingSession?.walletAddress === walletAddress) {
+          throw new StreamingServiceError(409, 'mpp_session_payment_exists', 'MPP approval already has a streaming-session voucher.');
+        }
+      }
+    }
     const usedNonces = new Set(
       [...this.vouchers.values()]
         .filter((record) => record.sessionId === sessionId)

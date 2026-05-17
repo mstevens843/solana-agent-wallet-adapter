@@ -48,6 +48,20 @@ export function isDefaultTemperatureOnlyModel(model: string): boolean {
   );
 }
 
+// GPT-5 / o-series chat completions reject the legacy `max_tokens` field and require
+// `max_completion_tokens`. Older models still expect `max_tokens`. Centralize the
+// branch so OpenAiCompatibleProvider (browser) and aiPlanner.ts (server) stay aligned.
+export function tokenLimitKey(model: string): 'max_completion_tokens' | 'max_tokens' {
+  return isDefaultTemperatureOnlyModel(model) ? 'max_completion_tokens' : 'max_tokens';
+}
+
+// Reasoning-model predicate kept separate from isDefaultTemperatureOnlyModel even when
+// they currently overlap — OpenAI may diverge them later, and the Responses API
+// `reasoning: { effort }` field is conceptually distinct from the temperature drop.
+export function isReasoningModel(model: string): boolean {
+  return isDefaultTemperatureOnlyModel(model);
+}
+
 export function assertApiKeyHeaderSafe(value: string): void {
   if (value.length === 0) {
     throw new ProviderHttpError(

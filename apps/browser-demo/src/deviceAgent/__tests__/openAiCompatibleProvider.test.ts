@@ -75,7 +75,7 @@ describe('OpenAiCompatibleProvider.generatePlan', () => {
     expect(messages[1]!.content).toBe(expected);
   });
 
-  it('omits temperature for gpt-5 family', async () => {
+  it('omits temperature and uses max_completion_tokens for gpt-5 family', async () => {
     const http = new FakeHttpExecutor();
     http.queueResponse(200, JSON.stringify({ choices: [{ message: { content: '{"intent":"x"}' } }] }));
     const provider = new OpenAiCompatibleProvider(config('gpt-5-turbo'), http);
@@ -83,9 +83,12 @@ describe('OpenAiCompatibleProvider.generatePlan', () => {
 
     const body = JSON.parse(http.calls[0]!.body) as Record<string, unknown>;
     expect('temperature' in body).toBe(false);
+    // GPT-5 / o-series chat completions reject `max_tokens` and require `max_completion_tokens`.
+    expect(body.max_completion_tokens).toBe(1024);
+    expect('max_tokens' in body).toBe(false);
   });
 
-  it('omits temperature for o-series', async () => {
+  it('omits temperature and uses max_completion_tokens for o-series', async () => {
     const http = new FakeHttpExecutor();
     http.queueResponse(200, JSON.stringify({ choices: [{ message: { content: '{"intent":"x"}' } }] }));
     const provider = new OpenAiCompatibleProvider(config('o3-mini'), http);
@@ -93,6 +96,8 @@ describe('OpenAiCompatibleProvider.generatePlan', () => {
 
     const body = JSON.parse(http.calls[0]!.body) as Record<string, unknown>;
     expect('temperature' in body).toBe(false);
+    expect(body.max_completion_tokens).toBe(1024);
+    expect('max_tokens' in body).toBe(false);
   });
 
   it('surfaces an upstream 401 as ProviderHttpError(provider_auth) with the key still present in the raw message', async () => {

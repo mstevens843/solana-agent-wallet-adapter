@@ -1081,6 +1081,22 @@ describe('render web hosted BYOK API', () => {
         payload: { sessionPolicy: { requireSettlementConfirmed: 'yes' } },
       }, { cookie: ctx.cookie });
       expect(invalid.status).toBe(400);
+
+      const invalidOrigin = await putJson(port, '/api/preferences/mpp-config', {
+        payload: {
+          acceptedRails: ['usdc'],
+          sessionPolicy: { allowedOrigins: ['https://merchant.example/path'] },
+        },
+      }, { cookie: ctx.cookie });
+      expect(invalidOrigin.status).toBe(400);
+
+      const invalidRecipient = await putJson(port, '/api/preferences/mpp-config', {
+        payload: {
+          acceptedRails: ['usdc'],
+          sessionPolicy: { allowedRecipients: ['not-a-public-key'] },
+        },
+      }, { cookie: ctx.cookie });
+      expect(invalidRecipient.status).toBe(400);
     });
   });
 });

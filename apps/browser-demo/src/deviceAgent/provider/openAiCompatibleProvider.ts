@@ -15,6 +15,7 @@ import {
   isDefaultTemperatureOnlyModel,
   mapHttpStatusToErrorCode,
   normalizeBaseUrl,
+  tokenLimitKey,
 } from './providerHttp.js';
 import { extractOpenAiText, parseModelJson } from './responseParser.js';
 import type { DeviceAgentProvider } from './types.js';
@@ -100,7 +101,7 @@ export class OpenAiCompatibleProvider implements DeviceAgentProvider {
         { role: 'system', content: messages.system },
         { role: 'user', content: messages.userContent },
       ],
-      max_tokens: maxTokens,
+      [tokenLimitKey(this.config.model)]: maxTokens,
     };
     if (jsonObjectMode) {
       body.response_format = { type: 'json_object' };

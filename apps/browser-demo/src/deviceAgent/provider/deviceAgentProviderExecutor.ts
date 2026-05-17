@@ -14,8 +14,10 @@ import type { ProviderExecutor } from '../runtime/queue.js';
 
 import { AnthropicProvider } from './anthropicProvider.js';
 import { PROVIDER_ERROR_CODES, ProviderHttpError } from './errorCodes.js';
+import { GeminiNativeProvider } from './geminiNativeProvider.js';
 import { FetchHttpExecutor, type HttpExecutor } from './http.js';
 import { OpenAiCompatibleProvider } from './openAiCompatibleProvider.js';
+import { OpenAiNativeProvider } from './openAiNativeProvider.js';
 import { redactSecret } from './secretRedactor.js';
 import type { DeviceAgentProvider } from './types.js';
 
@@ -73,8 +75,16 @@ export class DeviceAgentProviderExecutor implements ProviderExecutor {
 
   private providerFor(config: RuntimeConfig): DeviceAgentProvider {
     const format = canonicalApiFormat(config.apiFormat);
+    const provider = (config.provider ?? '').trim().toLowerCase();
     switch (format) {
       case 'openai-compatible':
+        // Native providers route by `config.provider`: OpenAI gets the Responses API +
+        // web_search_preview, Gemini gets :generateContent + google_search grounding.
+        // OpenRouter and Custom OpenAI-compatible stay on the chat-completions
+        // OpenAiCompatibleProvider, where the existing fail-closed research path
+        // (currentResearchUnavailableReview) preserves the same UX.
+        if (provider === 'openai') return new OpenAiNativeProvider(config, this.http);
+        if (provider === 'gemini') return new GeminiNativeProvider(config, this.http);
         return new OpenAiCompatibleProvider(config, this.http);
       case 'anthropic':
         return new AnthropicProvider(config, this.http);

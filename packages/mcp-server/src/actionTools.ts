@@ -5770,6 +5770,25 @@ function registerJupiterRecurringTools(
   );
 
   server.registerTool(
+    'solana_mpp_list_inbound_requests',
+    {
+      description:
+        'List inbound MPP payment approvals from render-web, including streaming-session eligibility. Read-only; does not pay, sign, or settle.',
+      inputSchema: {
+        eligibleOnly: z.boolean().optional().describe('When true, return only MPP requests that are currently eligible for Pay with Session.'),
+      },
+    },
+    async (input) => traceTool(
+      'solana_mpp_list_inbound_requests',
+      { cluster, input },
+      async () => {
+        const payload = await streamingRenderWebRequest('/api/mpp/inbound');
+        return jsonReply(input.eligibleOnly ? filterMppInboundPayload(payload) : payload);
+      },
+    ),
+  );
+
+  server.registerTool(
     'solana_mpp_pay_with_session',
     {
       description:
@@ -5963,6 +5982,25 @@ async function streamingRenderWebRequest<T = unknown>(
     throw new ProtocolError(errorCodeForHttpStatus(response.status), message);
   }
   return body as T;
+}
+
+function filterMppInboundPayload(payload: unknown): unknown {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+  const record = payload as Record<string, unknown>;
+  const source = Array.isArray(record.inbound)
+    ? record.inbound
+    : Array.isArray(record.items)
+      ? record.items
+      : [];
+  const inbound = source.filter((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+    const metadata = (item as Record<string, unknown>).metadata;
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return false;
+    const eligibility = (metadata as Record<string, unknown>).mppSessionEligibility;
+    return Boolean(eligibility && typeof eligibility === 'object' && !Array.isArray(eligibility) &&
+      (eligibility as Record<string, unknown>).eligible === true);
+  });
+  return { ...record, inbound, items: inbound };
 }
 
 function streamingSessionsPath(input: { walletAddress?: string }): string {

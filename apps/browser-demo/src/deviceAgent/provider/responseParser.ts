@@ -70,6 +70,136 @@ export function extractAnthropicCitations(payload: unknown): Array<{ url: string
   return out;
 }
 
+/**
+ * Extract text from an OpenAI Responses API payload (POST /v1/responses).
+ *
+ * Shape: `{ output_text?: string, output: [{ type: 'message', content: [{ type: 'output_text', text: string }] }, ...] }`.
+ * Prefers the convenience `output_text` field when present, otherwise walks `output[].content[].text`.
+ */
+export function extractResponsesApiText(payload: unknown): string {
+  if (!isRecord(payload)) return '';
+  const direct = payload.output_text;
+  if (typeof direct === 'string' && direct.length > 0) return direct;
+  const output = payload.output;
+  if (!Array.isArray(output)) return '';
+  const parts: string[] = [];
+  for (const entry of output) {
+    if (!isRecord(entry)) continue;
+    const content = entry.content;
+    if (!Array.isArray(content)) continue;
+    for (const piece of content) {
+      if (!isRecord(piece)) continue;
+      const text = piece.text;
+      if (typeof text === 'string' && text.length > 0) {
+        parts.push(text);
+      }
+    }
+  }
+  return parts.join('\n');
+}
+
+/**
+ * Extract URL citations from an OpenAI Responses API payload. Citations live in two places:
+ *   - `output[i].content[j].annotations[k]` with `type: 'url_citation'` and `{ url, title? }`
+ *   - `web_search_call.action.sources[k]` with `{ url, title? }` when `include: ['web_search_call.action.sources']` is set
+ * Walks the payload tree to depth 10 (matches server-side extractor), dedupes by url, caps at 8.
+ */
+export function extractResponsesApiCitations(
+  payload: unknown,
+): Array<{ url: string; title?: string }> {
+  const seen = new Set<string>();
+  const out: Array<{ url: string; title?: string }> = [];
+
+  function walk(value: unknown, depth: number): void {
+    if (out.length >= 8 || depth > 10 || value === null || value === undefined) return;
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item, depth + 1);
+      return;
+    }
+    if (!isRecord(value)) return;
+    const type = typeof value.type === 'string' ? value.type : '';
+    const looksLikeCitation =
+      type.toLowerCase().includes('citation') ||
+      type.toLowerCase().includes('web_search') ||
+      typeof value.url === 'string';
+    if (looksLikeCitation && typeof value.url === 'string') {
+      const url = value.url.trim();
+      if (url.length > 0 && !seen.has(url)) {
+        seen.add(url);
+        const title = typeof value.title === 'string' ? value.title : undefined;
+        out.push({ url, ...(title ? { title } : {}) });
+      }
+    }
+    for (const key of Object.keys(value)) {
+      walk(value[key], depth + 1);
+      if (out.length >= 8) return;
+    }
+  }
+
+  walk(payload, 0);
+  return out;
+}
+
+/**
+ * Extract text from a Gemini native API payload (POST :generateContent).
+ *
+ * Shape: `{ candidates: [{ content: { parts: [{ text: string }, ...] }, finishReason?: string }] }`.
+ * Joins all text parts of the first candidate with newlines. Tolerates
+ * `finishReason: 'MAX_TOKENS'` by returning whatever was produced.
+ */
+export function extractGeminiText(payload: unknown): string {
+  if (!isRecord(payload)) return '';
+  const candidates = payload.candidates;
+  if (!Array.isArray(candidates) || candidates.length === 0) return '';
+  const first = candidates[0];
+  if (!isRecord(first)) return '';
+  const content = first.content;
+  if (!isRecord(content)) return '';
+  const parts = content.parts;
+  if (!Array.isArray(parts)) return '';
+  const out: string[] = [];
+  for (const part of parts) {
+    if (!isRecord(part)) continue;
+    const text = part.text;
+    if (typeof text === 'string' && text.length > 0) out.push(text);
+  }
+  return out.join('\n');
+}
+
+/**
+ * Extract URL citations from a Gemini native API payload.
+ *
+ * Shape: `candidates[0].groundingMetadata.groundingChunks[].web.{ uri, title }`.
+ * Dedupes by uri, caps at 8.
+ */
+export function extractGeminiCitations(
+  payload: unknown,
+): Array<{ url: string; title?: string }> {
+  if (!isRecord(payload)) return [];
+  const candidates = payload.candidates;
+  if (!Array.isArray(candidates) || candidates.length === 0) return [];
+  const first = candidates[0];
+  if (!isRecord(first)) return [];
+  const grounding = first.groundingMetadata;
+  if (!isRecord(grounding)) return [];
+  const chunks = grounding.groundingChunks;
+  if (!Array.isArray(chunks)) return [];
+  const seen = new Set<string>();
+  const out: Array<{ url: string; title?: string }> = [];
+  for (const chunk of chunks) {
+    if (out.length >= 8) break;
+    if (!isRecord(chunk)) continue;
+    const web = chunk.web;
+    if (!isRecord(web)) continue;
+    const uri = typeof web.uri === 'string' ? web.uri.trim() : '';
+    if (uri.length === 0 || seen.has(uri)) continue;
+    seen.add(uri);
+    const title = typeof web.title === 'string' ? web.title : undefined;
+    out.push({ url: uri, ...(title ? { title } : {}) });
+  }
+  return out;
+}
+
 export function parseModelJson(text: string): Record<string, unknown> {
   const trimmed = text.trim();
   if (trimmed.length === 0) {

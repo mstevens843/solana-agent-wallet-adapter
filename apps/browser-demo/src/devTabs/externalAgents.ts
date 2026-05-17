@@ -4,6 +4,7 @@ import { currentAddress, refreshConnection } from '../connectionState.js';
 import { dispatchAp2InboundDemoCreated } from '../ap2InboundDemoEvents.js';
 import { getConnectedAddress, getConnectedCluster } from '../walletState.js';
 import { MppApiError, getMppInbound, postMppChallenge, postMppSessionPay } from '../mppClient.js';
+import { listStreamingSessions } from '../streamingClient.js';
 import { renderUseCaseDisclosure } from './useCases.js';
 import './externalAgents.css';
 
@@ -128,6 +129,22 @@ function randomBrowserMppNonce(): string {
     return `browser_mpp_${hex}`;
   }
   return `browser_mpp_${Date.now().toString(16)}_${Math.random().toString(16).slice(2, 10)}`;
+}
+
+async function demoMppPaymentTarget(walletAddress: string, fallbackCluster: string): Promise<{
+  cluster: string;
+  recipient: string;
+}> {
+  const sessions = await listStreamingSessions('active').catch(() => []);
+  const matching = sessions.find((session) =>
+    session.status === 'active' &&
+    session.tokenMint === USDC_MINT &&
+    session.walletAddress === walletAddress &&
+    session.metadata?.signerRuntime !== 'android-native',
+  );
+  if (!matching) return { cluster: fallbackCluster, recipient: walletAddress };
+  const recipient = matching.recipientAllowlist?.find((entry) => entry && typeof entry === 'string') ?? walletAddress;
+  return { cluster: matching.cluster, recipient };
 }
 
 // ---------------- Pure helpers (exported for tests) ----------------
@@ -357,6 +374,15 @@ function mppSessionRowMessageHtml(item: NormalizedApproval): string {
   if (success) {
     return `<p class="external-agents-row-session-message success">${escapeHtml(success)}</p>`;
   }
+  const payment = item.metadata?.mppSessionPayment;
+  if (payment && typeof payment === 'object' && !Array.isArray(payment)) {
+    const status = typeof (payment as Record<string, unknown>).status === 'string'
+      ? (payment as Record<string, unknown>).status
+      : '';
+    if (status === 'settlement_pending') {
+      return '<p class="external-agents-row-session-message info">Voucher accepted. Settlement confirmation will finalize from Sessions.</p>';
+    }
+  }
   return '';
 }
 
@@ -572,7 +598,7 @@ export async function createAndDispatchMppDemoChallenge(): Promise<void> {
     patchPanel();
     return;
   }
-  const cluster = getConnectedCluster() ?? 'devnet';
+  const target = await demoMppPaymentTarget(walletAddress, getConnectedCluster() ?? 'devnet');
   const now = new Date();
   const expiresAt = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
   const challenge = {
@@ -583,14 +609,14 @@ export async function createAndDispatchMppDemoChallenge(): Promise<void> {
     resourceUrl: 'https://merchant.example/demo/mpp',
     expiresAt,
     paymentMethods: [
-      { kind: 'solana-spl', mint: USDC_MINT, recipient: walletAddress, network: cluster },
+      { kind: 'solana-spl', mint: USDC_MINT, recipient: target.recipient, network: target.cluster },
     ],
     merchant: { id: 'merchant_demo_mpp', name: 'MPP Demo Merchant', url: 'https://merchant.example' },
   };
   try {
     const result = await postMppChallenge({
       challenge,
-      cluster,
+      cluster: target.cluster,
       agentLabel: 'MPP Demo Merchant',
     });
     state.status = 'loaded';

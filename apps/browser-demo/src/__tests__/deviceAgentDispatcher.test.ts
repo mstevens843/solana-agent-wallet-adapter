@@ -26,15 +26,11 @@ import type {
   SecretStoreMode,
 } from '../deviceAgent/storage/secretStore.js';
 
+// Responses-API shape: `provider: 'openai'` now routes through OpenAiNativeProvider,
+// which POSTs /responses and reads from `output_text` (or output[].content[].text).
 const OPENAI_PLAN_BODY = JSON.stringify({
-  choices: [
-    {
-      message: {
-        content:
-          '{"intent":"transfer","route":"system","risk":"low","approval":"once","safeguards":[]}',
-      },
-    },
-  ],
+  output_text:
+    '{"intent":"transfer","route":"system","risk":"low","approval":"once","safeguards":[]}',
 });
 
 interface MemorySecretStore extends SecretStore {
@@ -220,7 +216,7 @@ describe('browser-native Device Agent dispatcher', () => {
     expect(planResp.status.message).toBe('Browser Device Agent runtime is running.');
     expect(planResp.result?.intent).toBe('transfer');
     expect(http.calls).toHaveLength(1);
-    expect(http.calls[0]!.url.endsWith('/chat/completions')).toBe(true);
+    expect(http.calls[0]!.url.endsWith('/responses')).toBe(true);
 
     const stopResp = await browserDeviceAgentRequest('stop');
     expect(stopResp.status.state).toBe('stopped');

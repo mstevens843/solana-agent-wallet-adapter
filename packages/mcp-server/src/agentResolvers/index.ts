@@ -18,6 +18,11 @@ import type {
   AgentAtom,
   CapabilityResolutionAttempt,
   CapabilityTier,
+  ClosesAccountAtom,
+  CooldownSinceLastTxAtom,
+  DailyOutflowSumAtom,
+  DayOfWeekWindowAtom,
+  DelegatesTokenAtom,
   ExternalPriceAtom,
   InstructionCountAtom,
   MarketRegimeAtom,
@@ -25,12 +30,15 @@ import type {
   NetworkCongestionAtom,
   NetworkMetricAtom,
   PriceAtom,
+  RecentBlockhashAgeAtom,
   RecipientKnownAtom,
   RelativeAmountAtom,
   RentExemptRequiredAtom,
   RequiredSignaturesAtom,
+  SetsAuthorityAtom,
   SimulationDigest,
   TimeFactAtom,
+  TimeOfDayAtom,
   TokenAgeAtom,
   TokenAuditAtom,
   TokenBalanceAtom,
@@ -360,6 +368,38 @@ export function createMcpCapabilityResolver(deps: McpResolverDeps) {
     }
     if (atom.type === 'rent_exempt_required' && provider === 'local_tx') {
       return resolveRentExempt(atom, requestContext?.simulationDigest);
+    }
+    // -------- Tier S: drain-attack defenses (local_tx, parse instructions) ----
+    if (atom.type === 'sets_authority' && provider === 'local_tx') {
+      return resolveSetsAuthority(atom, requestContext?.transactionBase64);
+    }
+    if (atom.type === 'delegates_token' && provider === 'local_tx') {
+      return resolveDelegatesToken(atom, requestContext?.transactionBase64);
+    }
+    if (atom.type === 'closes_account' && provider === 'local_tx') {
+      return resolveClosesAccount(atom, requestContext?.transactionBase64, requestContext?.simulationDigest);
+    }
+    // -------- Tier A: spending governance (composite + RPC) -------------------
+    if (atom.type === 'daily_outflow_sum' && provider === 'rpc') {
+      if (!connection) return missing('rpc', 'No Solana Connection wired.', tier.endpoint);
+      if (!requestContext?.walletAddress) return missing('rpc', 'No walletAddress in request context.', tier.endpoint);
+      return resolveDailyOutflow(atom, requestContext.walletAddress, connection);
+    }
+    if (atom.type === 'cooldown_since_last_tx' && provider === 'rpc') {
+      if (!connection) return missing('rpc', 'No Solana Connection wired.', tier.endpoint);
+      if (!requestContext?.walletAddress) return missing('rpc', 'No walletAddress in request context.', tier.endpoint);
+      return resolveCooldownSinceLastTx(requestContext.walletAddress, connection);
+    }
+    if (atom.type === 'recent_blockhash_age_ms' && provider === 'rpc') {
+      if (!connection) return missing('rpc', 'No Solana Connection wired.', tier.endpoint);
+      return resolveRecentBlockhashAge(requestContext?.transactionBase64, connection);
+    }
+    // -------- Tier C: temporal policy (pure local) ----------------------------
+    if (atom.type === 'time_of_day' && provider === 'local') {
+      return resolveTimeOfDay(atom);
+    }
+    if (atom.type === 'day_of_week_window' && provider === 'local') {
+      return resolveDayOfWeekWindow(atom);
     }
     return missing(String(provider), 'no resolver for this (atom.type, provider) pair');
   };
@@ -1086,4 +1126,390 @@ function formatRelative(seconds: number): string {
   if (seconds < 86_400) return `${(seconds / 3600).toFixed(1)}h`;
   if (seconds < 30 * 86_400) return `${(seconds / 86_400).toFixed(1)}d`;
   return `${(seconds / (30 * 86_400)).toFixed(1)}mo`;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Tier S: drain-attack defense resolvers (local-tx parse_instructions)        */
+/* -------------------------------------------------------------------------- */
+
+const SPL_TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+const SPL_TOKEN_2022_PROGRAM_ID = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
+const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+const SYSTEM_PROGRAM_ID = '11111111111111111111111111111111';
+// SPL Token instruction discriminators (data[0]).
+const SPL_IX_APPROVE = 4;
+const SPL_IX_SET_AUTHORITY = 6;
+const SPL_IX_CLOSE_ACCOUNT = 9;
+const SPL_IX_APPROVE_CHECKED = 13;
+
+interface ParsedInstruction {
+  programId: string;
+  accountKeys: string[]; // resolved keys for this instruction in account-meta order
+  data: Uint8Array;
+  /** True when one or more account-key indexes resolved outside the static key set —
+   *  i.e. the instruction references accounts loaded via an address lookup table that
+   *  the offline parser cannot resolve. Fail-closed: callers should treat such
+   *  instructions as potentially suspicious (the delegate / target may be hidden). */
+  hasUnresolvedAccounts: boolean;
+}
+
+/**
+ * Decode a base64 tx (versioned or legacy) and return its program instructions.
+ * Returns undefined when the input cannot be parsed.
+ *
+ * Note on ALT (Address Lookup Tables): a versioned tx can reference accounts whose
+ * pubkeys live in a lookup table that is NOT included in the serialized message.
+ * Resolving them requires an `getAddressLookupTable` RPC call, which we deliberately
+ * avoid here (the parser is sync + offline). Each instruction that references such
+ * accounts gets `hasUnresolvedAccounts: true` so security-sensitive resolvers can
+ * fail-closed rather than silently pass.
+ */
+function parseInstructions(transactionBase64: string | undefined): ParsedInstruction[] | undefined {
+  if (!transactionBase64) return undefined;
+  let bytes: Buffer;
+  try { bytes = Buffer.from(transactionBase64, 'base64'); } catch { return undefined; }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- runtime require to stay in sync with the rest of this file
+    const web3 = require('@solana/web3.js') as typeof import('@solana/web3.js');
+    try {
+      const versioned = web3.VersionedTransaction.deserialize(bytes);
+      const staticKeys = versioned.message.staticAccountKeys.map((k) => k.toBase58());
+      return versioned.message.compiledInstructions.map((ix) => {
+        const indexes = Array.from(ix.accountKeyIndexes);
+        const accountKeys: string[] = [];
+        let hasUnresolvedAccounts = false;
+        for (const idx of indexes) {
+          const key = staticKeys[idx];
+          if (key === undefined) {
+            hasUnresolvedAccounts = true;
+            accountKeys.push(''); // placeholder — callers should consult hasUnresolvedAccounts
+          } else {
+            accountKeys.push(key);
+          }
+        }
+        return {
+          programId: staticKeys[ix.programIdIndex] ?? '',
+          accountKeys,
+          data: ix.data instanceof Uint8Array ? ix.data : new Uint8Array(ix.data ?? []),
+          hasUnresolvedAccounts,
+        };
+      });
+    } catch {
+      const legacy = web3.Transaction.from(bytes);
+      return legacy.instructions.map((ix) => ({
+        programId: ix.programId.toBase58(),
+        accountKeys: ix.keys.map((meta) => meta.pubkey.toBase58()),
+        data: ix.data instanceof Uint8Array ? ix.data : new Uint8Array(ix.data ?? []),
+        hasUnresolvedAccounts: false, // legacy txs have no ALT
+      }));
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+function isSplTokenProgram(programId: string): boolean {
+  return programId === SPL_TOKEN_PROGRAM_ID || programId === SPL_TOKEN_2022_PROGRAM_ID;
+}
+
+function resolveSetsAuthority(
+  atom: SetsAuthorityAtom,
+  transactionBase64: string | undefined,
+): CapabilityResolutionAttempt<{ boolean: boolean; text?: string }> {
+  if (!transactionBase64) return missing('local_tx', 'No transactionBase64 in request context.', 'parse_instructions');
+  const ixs = parseInstructions(transactionBase64);
+  if (!ixs) return missing('local_tx', 'Could not parse transaction.', 'parse_instructions');
+  const hits = ixs.filter((ix) => isSplTokenProgram(ix.programId) && ix.data.length >= 1 && ix.data[0] === SPL_IX_SET_AUTHORITY);
+  if (hits.length === 0) {
+    return ok('local_tx', { boolean: false, text: 'no SetAuthority instructions' }, 'parse_instructions');
+  }
+  const targets = hits.map((ix) => (ix.accountKeys[0] || '?').slice(0, 8) + '…').join(', ');
+  void atom; // expected used at evaluator level
+  return ok('local_tx', { boolean: true, text: `${hits.length} SetAuthority on ${targets}` }, 'parse_instructions');
+}
+
+/**
+ * Read a little-endian u64 from `data` starting at `offset`. Returns Number.MAX_SAFE_INTEGER
+ * when the value exceeds Number's safe integer range — adequate because we only ever compare
+ * against u64::MAX, not perform arithmetic on the result.
+ */
+function readU64LE(data: Uint8Array, offset: number): number {
+  if (offset + 8 > data.length) return NaN;
+  let value = 0n;
+  for (let i = 0; i < 8; i += 1) {
+    value |= BigInt(data[offset + i] ?? 0) << BigInt(i * 8);
+  }
+  // u64::MAX = 0xFFFFFFFFFFFFFFFF — outside Number range; clamp to Number.MAX_SAFE_INTEGER
+  // and let callers compare via the `isUnlimited` helper.
+  return value > BigInt(Number.MAX_SAFE_INTEGER) ? Number.MAX_SAFE_INTEGER : Number(value);
+}
+
+function isUnlimitedApproval(data: Uint8Array): boolean {
+  // Approve / ApproveChecked encode the amount at bytes 1..9 (little-endian u64).
+  if (data.length < 9) return false;
+  for (let i = 1; i < 9; i += 1) {
+    if (data[i] !== 0xff) return false;
+  }
+  return true;
+}
+
+function resolveDelegatesToken(
+  atom: DelegatesTokenAtom,
+  transactionBase64: string | undefined,
+): CapabilityResolutionAttempt<{ boolean: boolean; text?: string }> {
+  if (!transactionBase64) return missing('local_tx', 'No transactionBase64 in request context.', 'parse_instructions');
+  const ixs = parseInstructions(transactionBase64);
+  if (!ixs) return missing('local_tx', 'Could not parse transaction.', 'parse_instructions');
+  const known = new Set((atom.knownDelegates ?? []).map((d) => d.trim()).filter(Boolean));
+  const flagged: Array<{ delegate: string; unlimited: boolean; amount: number }> = [];
+  let unresolvedHits = 0;
+  for (const ix of ixs) {
+    if (!isSplTokenProgram(ix.programId)) continue;
+    if (ix.data.length < 1) continue;
+    const disc = ix.data[0];
+    const isApprove = disc === SPL_IX_APPROVE;
+    const isApproveChecked = disc === SPL_IX_APPROVE_CHECKED;
+    if (!isApprove && !isApproveChecked) continue;
+    // Approve: keys = [source, delegate, owner].  ApproveChecked: keys = [source, mint, delegate, owner].
+    const delegate = isApproveChecked ? ix.accountKeys[2] : ix.accountKeys[1];
+    const amount = readU64LE(ix.data, 1);
+    const unlimited = isUnlimitedApproval(ix.data);
+    // Fail-closed: an Approve instruction with an unresolvable (ALT-bound) delegate is
+    // treated as suspicious — we cannot prove it's in `knownDelegates`.
+    if (ix.hasUnresolvedAccounts || !delegate) {
+      if (atom.onlyUnlimited && !unlimited) continue;
+      unresolvedHits += 1;
+      flagged.push({ delegate: delegate || '<alt-hidden>', unlimited, amount });
+      continue;
+    }
+    if (atom.onlyUnlimited && !unlimited) continue;
+    if (!unlimited && known.has(delegate)) continue;
+    flagged.push({ delegate, unlimited, amount });
+  }
+  if (flagged.length === 0) {
+    return ok('local_tx', { boolean: false, text: atom.onlyUnlimited ? 'no unlimited approvals' : 'no flagged approvals' }, 'parse_instructions');
+  }
+  const labels = flagged
+    .map((f) => `${f.unlimited ? 'unlimited' : Number.isFinite(f.amount) ? `${f.amount}` : '?'} → ${f.delegate.slice(0, 8)}…`)
+    .join(', ');
+  const altNote = unresolvedHits > 0 ? ` (${unresolvedHits} via ALT — delegate hidden)` : '';
+  return ok('local_tx', { boolean: true, text: `${flagged.length} delegation${flagged.length > 1 ? 's' : ''}: ${labels}${altNote}` }, 'parse_instructions');
+}
+
+function resolveClosesAccount(
+  atom: ClosesAccountAtom,
+  transactionBase64: string | undefined,
+  simulationDigest: SimulationDigest | undefined,
+): CapabilityResolutionAttempt<{ boolean: boolean; text?: string }> {
+  if (!transactionBase64) return missing('local_tx', 'No transactionBase64 in request context.', 'parse_instructions');
+  const ixs = parseInstructions(transactionBase64);
+  if (!ixs) return missing('local_tx', 'Could not parse transaction.', 'parse_instructions');
+  // Default allowlist: wSOL (Jupiter wraps/unwraps SOL by closing the temp wSOL ATA).
+  const allowedMints = new Set((atom.allowedMints && atom.allowedMints.length > 0)
+    ? atom.allowedMints
+    : [WSOL_MINT]);
+  // Without simulation/account data we can't always determine the mint of the closed
+  // account. Heuristic: walk the tx instructions for a preceding ATA-create / Token.Initialize
+  // for the same account, and read its mint argument. If found and in the allowlist, ignore
+  // this closure. Otherwise flag it.
+  const initMintByAccount = new Map<string, string>();
+  for (const ix of ixs) {
+    if (!isSplTokenProgram(ix.programId)) continue;
+    // InitializeAccount (1), InitializeAccount2 (16), InitializeAccount3 (18) all carry the
+    // mint in the account-key list (keys[1] = mint for InitializeAccount, keys[1]/keys[2]).
+    const disc = ix.data[0];
+    if (disc === 1 || disc === 16 || disc === 18) {
+      const account = ix.accountKeys[0];
+      const mint = ix.accountKeys[1];
+      if (account && mint) initMintByAccount.set(account, mint);
+    }
+  }
+  void simulationDigest;
+  const flagged: Array<{ account: string; mint?: string }> = [];
+  let unresolvedHits = 0;
+  for (const ix of ixs) {
+    if (!isSplTokenProgram(ix.programId)) continue;
+    if (ix.data.length < 1 || ix.data[0] !== SPL_IX_CLOSE_ACCOUNT) continue;
+    // Fail-closed for ALT-hidden closures — we can't verify the mint or destination.
+    if (ix.hasUnresolvedAccounts) {
+      unresolvedHits += 1;
+      flagged.push({ account: '<alt-hidden>' });
+      continue;
+    }
+    const account = ix.accountKeys[0];
+    const destination = ix.accountKeys[1];
+    const owner = ix.accountKeys[2];
+    if (!account) continue;
+    // CloseAccount keys = [account, destination, owner]. When destination === owner, it's
+    // the typical wSOL unwrap-to-self pattern (Jupiter closes the temp ATA, returning the
+    // lamports + native rent to the same owner that signed). Safe regardless of mint.
+    if (destination && owner && destination === owner) continue;
+    const mint = initMintByAccount.get(account);
+    if (mint && allowedMints.has(mint)) continue; // Jupiter wSOL-style unwrap — safe.
+    flagged.push({ account, ...(mint ? { mint } : {}) });
+  }
+  if (flagged.length === 0) {
+    return ok('local_tx', { boolean: false, text: 'no flagged account closures' }, 'parse_instructions');
+  }
+  const labels = flagged
+    .map((f) => `${f.account.slice(0, 8)}…${f.mint ? ` (mint ${f.mint.slice(0, 8)}…)` : ''}`)
+    .join(', ');
+  const altNote = unresolvedHits > 0 ? ` (${unresolvedHits} via ALT — mint hidden)` : '';
+  return ok('local_tx', { boolean: true, text: `${flagged.length} CloseAccount: ${labels}${altNote}` }, 'parse_instructions');
+}
+
+/* -------------------------------------------------------------------------- */
+/* Tier A: spending governance resolvers (composite + RPC)                     */
+/* -------------------------------------------------------------------------- */
+
+async function resolveDailyOutflow(
+  atom: DailyOutflowSumAtom,
+  walletAddress: string,
+  connection: Connection,
+): Promise<CapabilityResolutionAttempt<{ numeric: number; text?: string }>> {
+  try {
+    if (atom.unit === 'USD') {
+      return missing('rpc', 'daily_outflow_sum with unit=USD needs a SOL→USD price; use SOL/lamports today.', 'getParsedTransaction');
+    }
+    const pubkey = new PublicKey(walletAddress);
+    const windowSecs = atom.windowSeconds ?? 86_400;
+    const cutoff = Math.floor(Date.now() / 1000) - windowSecs;
+    // Cap signatures we walk so a chatty wallet doesn't pin the resolver.
+    const sigs = await connection.getSignaturesForAddress(pubkey, { limit: 200 }, 'confirmed');
+    const inWindow = sigs.filter((s) => typeof s.blockTime === 'number' && s.blockTime >= cutoff);
+    if (inWindow.length === 0) {
+      return ok('rpc', { numeric: 0, text: `no signed txs in last ${(windowSecs / 3600).toFixed(0)}h` }, 'getParsedTransaction');
+    }
+    // Walk each tx, compute (postBalance - preBalance) for the wallet, accumulate negative deltas.
+    // Fail-closed: if a chatty wallet exceeds DAILY_OUTFLOW_TX_CAP, return missing so the
+    // evaluator marks the gate unresolved instead of silently passing on an under-counted sum.
+    const DAILY_OUTFLOW_TX_CAP = 100;
+    if (inWindow.length > DAILY_OUTFLOW_TX_CAP) {
+      return missing(
+        'rpc',
+        `Wallet has ${inWindow.length} signed txs in last ${(windowSecs / 3600).toFixed(0)}h — exceeds ${DAILY_OUTFLOW_TX_CAP}-tx fetch cap. Outflow sum cannot be verified without unbounded RPC load.`,
+        'getParsedTransaction',
+      );
+    }
+    let outflowLamports = 0;
+    let counted = 0;
+    for (const sigInfo of inWindow) {
+      const tx = await connection.getParsedTransaction(sigInfo.signature, {
+        commitment: 'confirmed',
+        maxSupportedTransactionVersion: 0,
+      }).catch(() => null);
+      if (!tx || !tx.meta) continue;
+      const keys = tx.transaction.message.accountKeys.map((k) => (typeof k === 'string' ? k : k.pubkey.toBase58()));
+      const idx = keys.findIndex((k) => k === walletAddress);
+      if (idx < 0) continue;
+      const pre = tx.meta.preBalances[idx];
+      const post = tx.meta.postBalances[idx];
+      if (typeof pre !== 'number' || typeof post !== 'number') continue;
+      const delta = post - pre; // negative when SOL left the wallet
+      if (delta < 0) outflowLamports += -delta;
+      counted += 1;
+    }
+    const value = atom.unit === 'lamports' ? outflowLamports : outflowLamports / LAMPORTS_PER_SOL;
+    return ok('rpc', {
+      numeric: value,
+      text: `summed across ${counted} tx in last ${(windowSecs / 3600).toFixed(0)}h`,
+    }, 'getParsedTransaction');
+  } catch (err) {
+    return error('rpc', err, 'getParsedTransaction');
+  }
+}
+
+async function resolveCooldownSinceLastTx(
+  walletAddress: string,
+  connection: Connection,
+): Promise<CapabilityResolutionAttempt<{ numeric: number; text?: string }>> {
+  try {
+    const pubkey = new PublicKey(walletAddress);
+    const sigs = await connection.getSignaturesForAddress(pubkey, { limit: 1 }, 'confirmed');
+    const last = sigs[0];
+    if (!last || typeof last.blockTime !== 'number') {
+      return missing('rpc', 'No prior signatures for wallet (or last signature has no blockTime).', 'getSignaturesForAddress');
+    }
+    const seconds = Math.max(0, Math.floor(Date.now() / 1000) - last.blockTime);
+    return ok('rpc', {
+      numeric: seconds,
+      text: `last tx ${last.signature.slice(0, 8)}… ${formatRelative(seconds)} ago`,
+    }, 'getSignaturesForAddress');
+  } catch (err) {
+    return error('rpc', err, 'getSignaturesForAddress');
+  }
+}
+
+function readBlockhashFromTransactionBase64(transactionBase64: string): string | undefined {
+  let bytes: Buffer;
+  try { bytes = Buffer.from(transactionBase64, 'base64'); } catch { return undefined; }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const web3 = require('@solana/web3.js') as typeof import('@solana/web3.js');
+    try {
+      const versioned = web3.VersionedTransaction.deserialize(bytes);
+      return versioned.message.recentBlockhash;
+    } catch {
+      const legacy = web3.Transaction.from(bytes);
+      return legacy.recentBlockhash ?? undefined;
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+async function resolveRecentBlockhashAge(
+  transactionBase64: string | undefined,
+  connection: Connection,
+): Promise<CapabilityResolutionAttempt<{ numeric: number; text?: string }>> {
+  try {
+    if (!transactionBase64) return missing('rpc', 'No transactionBase64 in request context.', 'isBlockhashValid');
+    const blockhash = readBlockhashFromTransactionBase64(transactionBase64);
+    if (!blockhash) return missing('rpc', 'Could not extract recentBlockhash from transaction.', 'isBlockhashValid');
+    // Solana keeps ~150 recent blockhashes valid (~60s). `isBlockhashValid` gives a
+    // binary signal; we report the midpoint of the valid window when ok, and a value
+    // safely above the expiry threshold when not.
+    const valid = await connection.isBlockhashValid(blockhash, { commitment: 'confirmed' });
+    if (valid) {
+      return ok('rpc', { numeric: 30_000, text: `blockhash ${blockhash.slice(0, 8)}… still valid (≤60s)` }, 'isBlockhashValid');
+    }
+    return ok('rpc', { numeric: 90_000, text: `blockhash ${blockhash.slice(0, 8)}… expired (>60s)` }, 'isBlockhashValid');
+  } catch (err) {
+    return error('rpc', err, 'isBlockhashValid');
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Tier C: temporal policy resolvers (pure local)                              */
+/* -------------------------------------------------------------------------- */
+
+function hoursIntoDay(date: Date): number {
+  return date.getUTCHours() + date.getUTCMinutes() / 60 + date.getUTCSeconds() / 3600;
+}
+
+function resolveTimeOfDay(atom: TimeOfDayAtom): CapabilityResolutionAttempt<{ boolean: boolean; text?: string }> {
+  const now = dateInTimezone(atom.timezone);
+  const h = hoursIntoDay(now);
+  // Handle midnight-wrap windows: when end < start, the window is [start, 24) ∪ [0, end).
+  const inWindow = atom.end >= atom.start
+    ? h >= atom.start && h < atom.end
+    : h >= atom.start || h < atom.end;
+  const tzLabel = atom.timezone ? ` ${atom.timezone}` : ' UTC';
+  const display = `${Math.floor(h)}:${String(Math.floor((h - Math.floor(h)) * 60)).padStart(2, '0')}${tzLabel}`;
+  return ok('local', {
+    boolean: inWindow,
+    text: `now ${display}; window [${atom.start.toFixed(2)}, ${atom.end.toFixed(2)})`,
+  }, 'time');
+}
+
+function resolveDayOfWeekWindow(atom: DayOfWeekWindowAtom): CapabilityResolutionAttempt<{ boolean: boolean; text?: string }> {
+  const now = dateInTimezone(atom.timezone);
+  const weekday = now.getUTCDay();
+  const allowed = new Set(atom.allowedDays);
+  const inWindow = allowed.has(weekday);
+  const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  return ok('local', {
+    boolean: inWindow,
+    text: `today is ${dayNames[weekday]}; allowed=[${atom.allowedDays.map((d) => dayNames[d]?.slice(0, 3)).join(',')}]`,
+  }, 'time');
 }

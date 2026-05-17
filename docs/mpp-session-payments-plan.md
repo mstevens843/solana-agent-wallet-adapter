@@ -83,9 +83,30 @@ Phase 5: Production Hardening
 - Voucher issuance is idempotent by MPP approval id, including a Postgres
   uniqueness guard for concurrent duplicate attempts.
 - `mpp-config` is now exposed through the generic cloud preferences API and
-  the Payment Profile tab has a compact MPP policy editor.
+  the Payment Profile tab has an MPP policy editor with separate merchant,
+  resource, shared-origin, recipient, mint, and settlement-finality controls.
 - Immediate `voucher_accepted` receipts now carry the same searchable
   MPP/session/voucher metadata as settlement-confirmed receipts.
+- Session-pay retries recover full receipt/evidence metadata when a prior
+  attempt accepted the voucher but failed before saving the approval link.
+- The MPP demo challenge prefers an active server-owned USDC streaming session
+  recipient when one exists, which makes the local `Create MPP challenge` test
+  path line up with the current session allowlist.
+- MCP exposes both `solana_mpp_list_inbound_requests` and
+  `solana_mpp_pay_with_session` for read-before-pay agent flows.
+
+## Troubleshooting
+
+- If `Pay with Session` is missing, check that the active session is
+  server-owned, SPL-token based, on the same cluster, unexpired, and has enough
+  remaining cap for the challenge amount.
+- If a challenge says `recipient_not_allowed`, create the session with the MPP
+  recipient in the recipient allowlist or leave the allowlist empty.
+- If a challenge says `origin_not_allowed`, the shared-origin policy requires
+  every present merchant/resource origin to be listed. Use the merchant-origin
+  and resource-origin fields when those should be constrained separately.
+- If strict settlement is enabled, the row stays pending until the streaming
+  settlement job confirms on chain and writes the settlement receipt.
 
 ## Verification
 

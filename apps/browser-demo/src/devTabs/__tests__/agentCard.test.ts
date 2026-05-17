@@ -132,6 +132,9 @@ describe('panelHtml — loaded body sections', () => {
     expect(html).toContain('MPP session rail');
     expect(html).toContain('data-mpp-policy-field="acceptedRails"');
     expect(html).toContain('data-mpp-policy-field="allowedOrigins"');
+    expect(html).toContain('data-mpp-policy-field="allowedMerchantIds"');
+    expect(html).toContain('data-mpp-policy-field="allowedMerchantOrigins"');
+    expect(html).toContain('data-mpp-policy-field="allowedResourceOrigins"');
     expect(html).toContain('data-mpp-policy-toggle="requireSettlementConfirmed"');
     expect(html).toContain('data-profile-action="save-mpp-policy"');
   });

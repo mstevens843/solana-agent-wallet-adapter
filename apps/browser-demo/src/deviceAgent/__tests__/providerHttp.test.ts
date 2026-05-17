@@ -10,8 +10,10 @@ import {
   assertApiKeyHeaderSafe,
   composeErrorMessage,
   isDefaultTemperatureOnlyModel,
+  isReasoningModel,
   mapHttpStatusToErrorCode,
   normalizeBaseUrl,
+  tokenLimitKey,
 } from '../provider/providerHttp.js';
 
 describe('mapHttpStatusToErrorCode', () => {
@@ -76,6 +78,29 @@ describe('normalizeBaseUrl — anthropic', () => {
 
   it('falls back to the Anthropic preset for blank input', () => {
     expect(normalizeBaseUrl('', 'anthropic')).toBe('https://api.anthropic.com/v1');
+  });
+});
+
+describe('tokenLimitKey', () => {
+  it('returns max_completion_tokens for gpt-5 / o-series and max_tokens for ordinary models', () => {
+    expect(tokenLimitKey('gpt-5')).toBe('max_completion_tokens');
+    expect(tokenLimitKey('gpt-5-turbo')).toBe('max_completion_tokens');
+    expect(tokenLimitKey('o1-preview')).toBe('max_completion_tokens');
+    expect(tokenLimitKey('o3-mini')).toBe('max_completion_tokens');
+    expect(tokenLimitKey('openai/gpt-5')).toBe('max_completion_tokens');
+    expect(tokenLimitKey('gpt-4o')).toBe('max_tokens');
+    expect(tokenLimitKey('claude-opus-4-5')).toBe('max_tokens');
+    expect(tokenLimitKey('gemini-1.5-pro')).toBe('max_tokens');
+    expect(tokenLimitKey('')).toBe('max_tokens');
+  });
+});
+
+describe('isReasoningModel', () => {
+  it('returns true for the same gpt-5 / o-series predicate as isDefaultTemperatureOnlyModel today', () => {
+    expect(isReasoningModel('gpt-5')).toBe(true);
+    expect(isReasoningModel('o3-mini')).toBe(true);
+    expect(isReasoningModel('gpt-4o')).toBe(false);
+    expect(isReasoningModel('claude-opus-4-5')).toBe(false);
   });
 });
 
