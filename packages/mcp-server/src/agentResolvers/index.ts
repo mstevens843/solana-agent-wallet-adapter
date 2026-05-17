@@ -63,6 +63,16 @@ import {
 } from '../coingecko.js';
 import { getMintCreationTxForMint } from '../helius.js';
 
+type BlockhashValidityResult = boolean | { value: boolean };
+
+type BlockhashValidityConnection = Connection & {
+  isBlockhashValid?: (
+    blockhash: string,
+    rawConfig?: { commitment?: 'processed' | 'confirmed' | 'finalized' },
+  ) => Promise<BlockhashValidityResult>;
+  _rpcRequest?: (method: string, args: unknown[]) => Promise<unknown>;
+};
+
 /* -------------------------------------------------------------------------- */
 /* Subject → mint mapping                                                      */
 /* -------------------------------------------------------------------------- */
@@ -1458,6 +1468,37 @@ function readBlockhashFromTransactionBase64(transactionBase64: string): string |
   }
 }
 
+function readBlockhashValidity(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (!value || typeof value !== 'object') return undefined;
+  const record = value as Record<string, unknown>;
+  if (typeof record.value === 'boolean') return record.value;
+  const result = record.result;
+  if (typeof result === 'boolean') return result;
+  if (result && typeof result === 'object') {
+    const resultValue = (result as Record<string, unknown>).value;
+    if (typeof resultValue === 'boolean') return resultValue;
+  }
+  return undefined;
+}
+
+async function isRecentBlockhashValid(connection: Connection, blockhash: string): Promise<boolean> {
+  const compatibleConnection = connection as BlockhashValidityConnection;
+  if (typeof compatibleConnection.isBlockhashValid === 'function') {
+    const result = await compatibleConnection.isBlockhashValid(blockhash, { commitment: 'confirmed' });
+    const valid = readBlockhashValidity(result);
+    if (typeof valid === 'boolean') return valid;
+  }
+
+  if (typeof compatibleConnection._rpcRequest === 'function') {
+    const result = await compatibleConnection._rpcRequest('isBlockhashValid', [blockhash, { commitment: 'confirmed' }]);
+    const valid = readBlockhashValidity(result);
+    if (typeof valid === 'boolean') return valid;
+  }
+
+  throw new Error('Connection does not support isBlockhashValid');
+}
+
 async function resolveRecentBlockhashAge(
   transactionBase64: string | undefined,
   connection: Connection,
@@ -1469,7 +1510,7 @@ async function resolveRecentBlockhashAge(
     // Solana keeps ~150 recent blockhashes valid (~60s). `isBlockhashValid` gives a
     // binary signal; we report the midpoint of the valid window when ok, and a value
     // safely above the expiry threshold when not.
-    const valid = await connection.isBlockhashValid(blockhash, { commitment: 'confirmed' });
+    const valid = await isRecentBlockhashValid(connection, blockhash);
     if (valid) {
       return ok('rpc', { numeric: 30_000, text: `blockhash ${blockhash.slice(0, 8)}… still valid (≤60s)` }, 'isBlockhashValid');
     }

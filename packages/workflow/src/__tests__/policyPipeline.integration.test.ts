@@ -95,6 +95,7 @@ describe('policy pipeline — extract → resolve → evaluate (+ tx gates)', ()
         case 'day_of_week_window':
           return { ...base, status: 'missing' };
       }
+      return { ...base, status: 'missing' };
     };
 
     const resolutions = await resolveAtoms(atoms, resolver);

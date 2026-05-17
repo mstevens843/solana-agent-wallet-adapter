@@ -102,6 +102,7 @@ describe('runPolicyPipeline', () => {
         case 'rent_exempt_required':
           return { status: 'missing' as const, source: tier.provider, checkedAt: new Date().toISOString() };
       }
+      return { status: 'missing' as const, source: tier.provider, checkedAt: new Date().toISOString() };
     };
     const bundle = await runPolicyPipeline({
       text: NOTE,
