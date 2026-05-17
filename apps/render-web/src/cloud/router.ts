@@ -131,7 +131,17 @@ import {
   setWormholeClientFactory,
 } from '@solana-agent-wallet-adapter/mcp-server';
 
-const MAX_JSON_BYTES = 64 * 1024;
+// Cap raised from 64 KB → 1 MB to accommodate AI workflow payloads (review +
+// ask routes), which legitimately bundle plan + policyBundle.evaluations +
+// context.evidenceFacts + context.researchEvidence + sources. The Helium-style
+// prompt with web-search grounding routinely lands at 80-200 KB; 64 KB was
+// causing intermittent 413 "Request body is too large" on production. 1 MB
+// stays well below Render's default nginx body cap.
+const MAX_JSON_BYTES = 1024 * 1024;
+// Preference payloads (user settings, agent-policy lists, connector keys) stay
+// modest — 64 KB is generous for any single preference key and protects against
+// a misconfigured client trying to stash an entire database in preferences.
+const MAX_PREFERENCE_JSON_BYTES = 64 * 1024;
 const AUTH_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
 const AUTH_RATE_LIMIT_MAX_ATTEMPTS = 60;
 const WRITE_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
@@ -2800,7 +2810,7 @@ function isCloudPreferenceNamespace(value: string): value is CloudPreferenceName
 
 function validatePreferencePayload(namespace: CloudPreferenceNamespace, payload: unknown): void {
   const bytes = Buffer.byteLength(JSON.stringify(payload ?? null), 'utf8');
-  if (bytes > MAX_JSON_BYTES) {
+  if (bytes > MAX_PREFERENCE_JSON_BYTES) {
     throw new ApiError(400, 'Preference payload is too large.');
   }
   if (namespace === 'agent-policies') {

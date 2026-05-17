@@ -23204,8 +23204,15 @@ interface AgentReviewEvidenceBundle {
 
 function evidenceContextForReview(record: GeneratedPlanRecord, plan: AgentPlan, routePlan: AgentFactRoutePlan): AgentEvidenceContext {
   const walletContext = walletContextForAgent(record);
-  const connector = selectedConnectorForDraftParameters(plan.parameters) ??
-    findProtocolConnectorByInput(plan.parameters.protocol || plan.parameters.dapp || plan.route);
+  // Honor user-selected connector ONLY (form-supplied parameters.protocol / .connectorId /
+  // .dapp / .provider / .route). Phase 5+ fix — the prior fallback to
+  // findProtocolConnectorByInput(plan.route) fuzzy-matched the AI's free-text route prose
+  // ("Jupiter aggregator route", "via Jupiter") and attached Jupiter as the gate's
+  // selected connector even when the user picked nothing. If the user had Jupiter
+  // disabled in their connector list, the gate then fired "Selected connector jupiter
+  // is disabled" — blocking the entire review. Mirrors the fix already applied to
+  // generatedPlanConnectorChip (main.ts:11075-11079).
+  const connector = selectedConnectorForDraftParameters(plan.parameters);
   const connectorEnabled = Boolean(connector && isDappEnabled(connector.id, state.connectedDapps, state.cluster));
   const connectorReadReady = Boolean(
     connector &&
