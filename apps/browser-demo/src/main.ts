@@ -162,6 +162,8 @@ import {
   normalizeAiReview,
   planWithStructuredSwapText,
   redactSecrets,
+  researchControlForAsk,
+  researchControlForReview,
   templateById,
   templateFieldLabel,
   type AgentPlan,
@@ -15300,6 +15302,7 @@ function deviceAgentReviewPayload(request: AgentPlanReviewRequest): Record<strin
     ...(request.walletAddress ? { walletAddress: request.walletAddress } : {}),
     ...(request.cluster ? { cluster: request.cluster } : {}),
     ...(request.context ? { context: request.context } : {}),
+    research: researchControlForReview(request),
     ...(request.mode ? { mode: request.mode } : {}),
   };
 }
@@ -15311,6 +15314,7 @@ function deviceAgentAskPayload(request: AgentPlanAskRequest): Record<string, unk
     ...(request.walletAddress ? { walletAddress: request.walletAddress } : {}),
     ...(request.cluster ? { cluster: request.cluster } : {}),
     ...(request.context ? { context: request.context } : {}),
+    research: researchControlForAsk(request),
   };
 }
 

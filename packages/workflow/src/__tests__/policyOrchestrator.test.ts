@@ -80,6 +80,26 @@ describe('runPolicyPipeline', () => {
         case 'tx_gate':
           return { status: 'missing' as const, source: 'rpc', checkedAt: new Date().toISOString() };
         case 'protocol_health':
+        case 'external_state':
+        case 'external_event':
+        case 'external_identity':
+        case 'tradfi_price':
+        case 'time_fact':
+        case 'network_metric':
+        case 'wallet_balance':
+        case 'token_balance':
+        case 'relative_amount':
+        case 'tx_fee':
+        case 'network_congestion':
+        case 'token_supply':
+        case 'mint_decimals':
+        case 'wallet_age_onchain':
+        case 'recipient_known':
+        case 'token_held_duration':
+        case 'required_signatures':
+        case 'instruction_count':
+        case 'account_writability_count':
+        case 'rent_exempt_required':
           return { status: 'missing' as const, source: tier.provider, checkedAt: new Date().toISOString() };
       }
     };

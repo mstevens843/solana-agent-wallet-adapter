@@ -14,6 +14,8 @@ import {
   generateSessionAiPlan,
   normalizeAiReview,
   planWithStructuredSwapText,
+  researchControlForAsk,
+  researchControlForReview,
   redactSecrets,
   templateById,
   type AiDiagnosticEntry,
@@ -264,6 +266,67 @@ describe('planner AI setup helpers', () => {
     expect(plan.intent).not.toContain('USDC');
   });
 
+  it('marks Device Agent review research as needed for threshold checks against current outside facts', () => {
+    const plan = buildTemplatePlan(templateById('swap'), {
+      inputToken: 'SOL',
+      outputToken: 'USDC',
+      amount: '0.01',
+      slippageBps: '50',
+    }, 'ai');
+
+    const research = researchControlForReview({
+      plan,
+      instruction: 'check helium mobile. lowest monthly plan. if less than $20. approve.',
+    });
+
+    expect(research).toMatchObject({
+      needed: true,
+      mode: 'auto_current_facts',
+      maxSearches: 3,
+    });
+    expect(research.currentDate).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(research.sourcePolicy).toContain('official');
+  });
+
+  it('keeps Device Agent research disabled when review text has no current-fact ask', () => {
+    const plan = buildTemplatePlan(templateById('swap'), {
+      inputToken: 'SOL',
+      outputToken: 'USDC',
+      amount: '0.01',
+      slippageBps: '50',
+    }, 'ai');
+
+    const research = researchControlForReview({
+      plan,
+      instruction: 'approve if route and slippage match the draft.',
+    });
+
+    expect(research).toMatchObject({
+      needed: false,
+      mode: 'not_required',
+      maxSearches: 3,
+    });
+    expect(research).not.toHaveProperty('sourcePolicy');
+  });
+
+  it('marks Device Agent ask research as needed for current price questions', () => {
+    const plan = buildTemplatePlan(templateById('swap'), {
+      inputToken: 'SOL',
+      outputToken: 'USDC',
+      amount: '0.01',
+      slippageBps: '50',
+    }, 'ai');
+
+    expect(researchControlForAsk({ plan, question: 'What is the current Helium Mobile monthly plan cost?' })).toMatchObject({
+      needed: true,
+      mode: 'auto_current_facts',
+    });
+    expect(researchControlForAsk({ plan, question: 'Explain the approval step.' })).toMatchObject({
+      needed: false,
+      mode: 'not_required',
+    });
+  });
+
   it('uses selected token labels for prose while preserving execution mints', () => {
     const mint = '7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr';
     const plan = buildTemplatePlan(templateById('swap'), {
@@ -365,7 +428,10 @@ describe('planner AI setup helpers', () => {
     });
 
     expect(review.decision).toBe('approve');
-    expect(review.reason).toContain('$16.79 is under $20');
+    // Corrected reason should mention the figure and the relation ("under $20"); the new
+    // reconciler also includes the source snippet for richer context.
+    expect(review.reason).toContain('$16.79');
+    expect(review.reason).toContain('under $20');
     expect(review.evidence.findings).toEqual(expect.arrayContaining([
       expect.objectContaining({ label: 'Threshold check', tone: 'good' }),
     ]));

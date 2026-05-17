@@ -39,6 +39,37 @@ export function extractAnthropicText(payload: unknown): string {
   return parts.join('\n');
 }
 
+/**
+ * Extract URL citations from an Anthropic response. Citations live inside content[i].citations
+ * (web_search tool annotations) as `{ url, title, cited_text? }`. Dedupes by url.
+ */
+export function extractAnthropicCitations(payload: unknown): Array<{ url: string; title?: string; citedText?: string }> {
+  if (!isRecord(payload)) return [];
+  const content = payload.content;
+  if (!Array.isArray(content)) return [];
+  const seen = new Set<string>();
+  const out: Array<{ url: string; title?: string; citedText?: string }> = [];
+  for (const entry of content) {
+    if (!isRecord(entry)) continue;
+    const citations = entry.citations;
+    if (!Array.isArray(citations)) continue;
+    for (const c of citations) {
+      if (!isRecord(c)) continue;
+      const url = typeof c.url === 'string' ? c.url.trim() : '';
+      if (!url || seen.has(url)) continue;
+      seen.add(url);
+      const title = typeof c.title === 'string' ? c.title : undefined;
+      const citedText = typeof c.cited_text === 'string'
+        ? c.cited_text
+        : typeof (c as Record<string, unknown>).citedText === 'string'
+          ? (c as Record<string, unknown>).citedText as string
+          : undefined;
+      out.push({ url, ...(title ? { title } : {}), ...(citedText ? { citedText } : {}) });
+    }
+  }
+  return out;
+}
+
 export function parseModelJson(text: string): Record<string, unknown> {
   const trimmed = text.trim();
   if (trimmed.length === 0) {

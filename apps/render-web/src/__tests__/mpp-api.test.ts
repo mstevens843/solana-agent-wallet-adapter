@@ -154,7 +154,116 @@ describe('MPP API', () => {
         approvalId,
         finality: 'voucher_accepted',
       });
-      expect(await evidenceStore.listEvidence(wallet.walletAddress)).toHaveLength(1);
+      const evidence = await evidenceStore.listEvidence(wallet.walletAddress);
+      expect(evidence).toHaveLength(1);
+      expect(evidence[0]?.metadata).toMatchObject({
+        approvalId,
+        sessionId: grant.session.sessionId,
+        voucherHash: sessionDetail.vouchers[0]?.voucherHash,
+        mppSessionPayment: true,
+        linkType: 'mpp_session_payment',
+        finality: 'voucher_accepted',
+        status: 'voucher_accepted',
+      });
+    });
+  });
+
+  it('rejects session-pay after the original MPP challenge expires', async () => {
+    let current = new Date('2026-05-16T12:00:00.000Z');
+    await withMppServer(async ({ port, workflowStore, wallet }) => {
+      const streaming = new StreamingService(streamingStoreFor(workflowStore), {
+        clock: { now: () => current },
+        latestBlockhash: async () => '11111111111111111111111111111111',
+      });
+      const grant = await streaming.createSession({
+        walletAddress: wallet.walletAddress,
+        tokenMint: USDC_MINT,
+        capAmount: '5',
+        expiresAt: '2026-05-16T15:00:00.000Z',
+        recipientAllowlist: [RECIPIENT],
+        cluster: 'devnet',
+      });
+      await streaming.recordGrantSigned({
+        walletAddress: wallet.walletAddress,
+        sessionId: grant.session.sessionId,
+        approveTxid: 'tx_streaming_grant_fixture',
+      });
+
+      const created = await postJson(port, '/api/mpp/challenge', { challenge: splChallenge() });
+      expect(created.status).toBe(201);
+      const approvalId = String(created.body.approvalId);
+      current = new Date('2026-05-16T13:00:01.000Z');
+
+      const inbound = await requestJson(port, 'GET', '/api/mpp/inbound');
+      const row = ((inbound.body.inbound as Record<string, unknown>[]) ?? [])[0] as Record<string, unknown>;
+      expect((row.metadata as Record<string, unknown>).mppSessionEligibility).toMatchObject({
+        eligible: false,
+        reasonCode: 'expired_challenge',
+      });
+
+      const paid = await postJson(port, '/api/mpp/session-pay', { approvalId });
+      expect(paid.status).toBe(409);
+      expect(paid.body.error).toBe('expired_challenge');
+    }, { clock: { now: () => current } });
+  });
+
+  it('does not create a session payment for terminal approvals without an existing link', async () => {
+    await withMppServer(async ({ port, workflowStore, wallet }) => {
+      const created = await postJson(port, '/api/mpp/challenge', { challenge: splChallenge() });
+      expect(created.status).toBe(201);
+      const approvalId = String(created.body.approvalId);
+      const approval = await workflowStore.getApproval(wallet.walletAddress, approvalId);
+      expect(approval).toBeTruthy();
+      await workflowStore.saveApproval(wallet.walletAddress, {
+        ...approval!,
+        status: 'approved',
+        updatedAt: NOW.toISOString(),
+        decidedAt: NOW.toISOString(),
+      });
+
+      const paid = await postJson(port, '/api/mpp/session-pay', { approvalId });
+      expect(paid.status).toBe(409);
+      expect(paid.body.error).toBe('approval_terminal');
+    });
+  });
+
+  it('marks Android-native streaming sessions ineligible for web session-pay', async () => {
+    await withMppServer(async ({ port, workflowStore, wallet }) => {
+      const streaming = new StreamingService(streamingStoreFor(workflowStore), {
+        clock: { now: () => NOW },
+        latestBlockhash: async () => '11111111111111111111111111111111',
+      });
+      const grant = await streaming.createSession({
+        walletAddress: wallet.walletAddress,
+        tokenMint: USDC_MINT,
+        capAmount: '5',
+        expiresAt: '2026-05-16T14:00:00.000Z',
+        recipientAllowlist: [RECIPIENT],
+        cluster: 'devnet',
+        signerRuntime: 'android-native',
+        ephemeralSignerPubkey: RECIPIENT,
+      });
+      await streaming.recordGrantSigned({
+        walletAddress: wallet.walletAddress,
+        sessionId: grant.session.sessionId,
+        approveTxid: 'tx_streaming_grant_native',
+      });
+
+      const created = await postJson(port, '/api/mpp/challenge', { challenge: splChallenge() });
+      expect(created.status).toBe(201);
+      const approvalId = String(created.body.approvalId);
+
+      const inbound = await requestJson(port, 'GET', '/api/mpp/inbound');
+      const row = ((inbound.body.inbound as Record<string, unknown>[]) ?? [])[0] as Record<string, unknown>;
+      expect((row.metadata as Record<string, unknown>).mppSessionEligibility).toMatchObject({
+        eligible: false,
+        reasonCode: 'native_signer_required',
+        sessions: [{ sessionId: grant.session.sessionId, serverSignable: false, signerRuntime: 'android-native' }],
+      });
+
+      const paid = await postJson(port, '/api/mpp/session-pay', { approvalId, sessionId: grant.session.sessionId });
+      expect(paid.status).toBe(409);
+      expect(paid.body.error).toBe('native_signer_required');
     });
   });
 
@@ -412,12 +521,14 @@ async function withMppServer(callback: (ctx: {
   workflowStore: MemoryWorkflowStore;
   evidenceStore: MemoryEvidenceStore;
   wallet: TestWallet;
-}) => Promise<void>): Promise<void> {
+}) => Promise<void>, options: {
+  clock?: Clock;
+} = {}): Promise<void> {
   const wallet = createTestWallet();
   const workflowStore = new MemoryWorkflowStore();
   const evidenceStore = new MemoryEvidenceStore();
   const workflowService = new WorkflowService(workflowStore);
-  const clock: Clock = { now: () => NOW };
+  const clock: Clock = options.clock ?? { now: () => NOW };
   const handler = listDevApiHandlers().find((candidate) => candidate.prefix === '/api/mpp/');
   if (!handler) throw new Error('MPP handler was not registered.');
   const server = createServer((req, res) => {

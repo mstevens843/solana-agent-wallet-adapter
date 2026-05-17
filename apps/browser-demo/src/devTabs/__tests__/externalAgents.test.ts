@@ -257,6 +257,48 @@ describe('rowHtml', () => {
     expect(html).toContain('Uses 56% of remaining cap');
   });
 
+  it('uses the selected MPP session when rendering row details', () => {
+    __externalAgentsForTests.setSelectedMppSession('apr_abc', 'stream_2');
+    const html = rowHtml(
+      makeApproval({
+        metadata: {
+          connectorId: 'mpp',
+          mppSessionEligibility: {
+            eligible: true,
+            finality: 'voucher_accepted',
+            sessions: [
+              { sessionId: 'stream_1', remaining: '4.5', expiresAt: '2026-05-16T14:00:00.000Z' },
+              { sessionId: 'stream_2', remaining: '9.5', expiresAt: '2026-05-16T16:00:00.000Z' },
+            ],
+            paymentMethod: { recipient: '7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M' },
+          },
+        },
+      } as Partial<NormalizedApproval>),
+    );
+    expect(html).toContain('value="stream_2" selected');
+    expect(html).toContain('Cap 9.5 left');
+    __externalAgentsForTests.resetState();
+  });
+
+  it('renders row-level MPP session payment errors', () => {
+    __externalAgentsForTests.setMppSessionPaymentError('apr_abc', 'Challenge expired.');
+    const html = rowHtml(
+      makeApproval({
+        metadata: {
+          connectorId: 'mpp',
+          mppSessionEligibility: {
+            eligible: true,
+            finality: 'voucher_accepted',
+            session: { sessionId: 'stream_1', remaining: '4.5' },
+          },
+        },
+      } as Partial<NormalizedApproval>),
+    );
+    expect(html).toContain('external-agents-row-session-message error');
+    expect(html).toContain('Challenge expired.');
+    __externalAgentsForTests.resetState();
+  });
+
   it('omits the MPP badge for non-MPP rows', () => {
     const html = rowHtml(makeApproval());
     expect(html).not.toContain('approval-badge--mpp');
@@ -290,6 +332,7 @@ describe('bodyHtml', () => {
     expect(html).toContain('No inbound agent payment requests yet');
     expect(html).toContain('AP2 mandates and MPP challenges');
     expect(html).toContain('data-external-agents-demo');
+    expect(html).toContain('data-external-agents-mpp-demo');
   });
 
   it('renders the list when loaded with rows', () => {

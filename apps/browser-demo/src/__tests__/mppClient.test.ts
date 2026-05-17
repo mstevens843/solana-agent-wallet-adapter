@@ -6,6 +6,7 @@ import {
   getMppInbound,
   postMppSessionPay,
   postMppSettle,
+  putMppConfig,
 } from '../mppClient.js';
 
 afterEach(() => {
@@ -85,6 +86,36 @@ describe('mppClient', () => {
     }));
     const init = fetchMock.mock.calls.at(-1)?.[1] as RequestInit | undefined;
     expect(JSON.parse(String(init?.body))).toEqual({ approvalId: 'approval_1', sessionId: 'sess_2' });
+  });
+
+  it('saves MPP config through the cloud preferences route', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => jsonResponse({
+      namespace: 'mpp-config',
+      payload: { acceptedRails: ['usdc'], maxChallengeAmount: '5' },
+      version: 1,
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(putMppConfig({
+      acceptedRails: ['usdc'],
+      maxChallengeAmount: '5',
+      sessionPolicy: { requireSettlementConfirmed: true },
+    })).resolves.toMatchObject({
+      namespace: 'mpp-config',
+      version: 1,
+    });
+    expect(fetchMock).toHaveBeenCalledWith('/api/preferences/mpp-config', expect.objectContaining({
+      credentials: 'include',
+      method: 'PUT',
+    }));
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit | undefined;
+    expect(JSON.parse(String(init?.body))).toEqual({
+      payload: {
+        acceptedRails: ['usdc'],
+        maxChallengeAmount: '5',
+        sessionPolicy: { requireSettlementConfirmed: true },
+      },
+    });
   });
 
   it('wraps non-JSON success responses as invalid_response', async () => {

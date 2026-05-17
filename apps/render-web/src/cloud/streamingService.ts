@@ -103,6 +103,11 @@ export interface AcceptStreamingVoucherResult {
   voucherHash: string;
 }
 
+export interface StreamingVoucherLookupResult {
+  session: StoredStreamingSession;
+  voucher: StreamingVoucherRecord;
+}
+
 export interface SignAndAcceptStreamingVoucherInput {
   walletAddress: string;
   sessionId: string;
@@ -154,6 +159,10 @@ export interface StreamingStore {
     voucherId: string,
     metadata?: Record<string, unknown>,
   ): Promise<AcceptStreamingVoucherResult>;
+  findVoucherByMppApprovalId(
+    walletAddress: string,
+    approvalId: string,
+  ): Promise<StreamingVoucherLookupResult | undefined>;
   listVouchers(sessionId: string): Promise<StreamingVoucherRecord[]>;
   listSettlementCandidates(
     nowIso: string,
@@ -422,6 +431,22 @@ export class StreamingService {
     });
   }
 
+  async findVoucherByMppApprovalId(input: {
+    walletAddress: string;
+    approvalId: string;
+  }): Promise<StreamingVoucherLookupResult | undefined> {
+    const result = await this.store.findVoucherByMppApprovalId(
+      requirePublicKey(input.walletAddress, 'walletAddress'),
+      requireShortString(input.approvalId, 'approvalId', 160),
+    );
+    return result
+      ? {
+          session: publicSession(result.session, this.clock.now()),
+          voucher: result.voucher,
+        }
+      : undefined;
+  }
+
   async revokeSession(input: {
     walletAddress: string;
     sessionId: string;
@@ -610,6 +635,19 @@ export class MemoryStreamingStore implements StreamingStore {
       spentAmount,
       voucherHash: validation.voucherHash,
     };
+  }
+
+  async findVoucherByMppApprovalId(
+    walletAddress: string,
+    approvalId: string,
+  ): Promise<StreamingVoucherLookupResult | undefined> {
+    for (const voucher of this.vouchers.values()) {
+      if (mppApprovalIdFromVoucherMetadata(voucher.metadata) !== approvalId) continue;
+      const session = this.sessions.get(voucher.sessionId);
+      if (!session || session.walletAddress !== walletAddress) continue;
+      return { session: clone(session), voucher: clone(voucher) };
+    }
+    return undefined;
   }
 
   async listVouchers(sessionId: string): Promise<StreamingVoucherRecord[]> {
@@ -972,10 +1010,36 @@ export class PostgresStreamingStore implements StreamingStore {
       if (isPgUniqueViolation(err, 'streaming_vouchers_session_nonce_uidx')) {
         throw new StreamingServiceError(409, 'voucher_replay', 'Voucher nonce has already been used.');
       }
+      if (isPgUniqueViolation(err, 'streaming_vouchers_mpp_approval_uidx')) {
+        throw new StreamingServiceError(409, 'mpp_session_payment_exists', 'MPP approval already has a streaming-session voucher.');
+      }
       throw err;
     } finally {
       client.release?.();
     }
+  }
+
+  async findVoucherByMppApprovalId(
+    walletAddress: string,
+    approvalId: string,
+  ): Promise<StreamingVoucherLookupResult | undefined> {
+    const result = await this.query<StreamingVoucherRow>({
+      name: 'streaming.voucher.findByMppApprovalId',
+      text: `
+        SELECT v.*
+        FROM streaming_vouchers v
+        JOIN streaming_sessions s ON s.id = v.session_id
+        WHERE s.wallet_address = $1
+          AND v.metadata #>> '{mppSessionPayment,approvalId}' = $2
+        ORDER BY v.created_at ASC, v.id ASC
+        LIMIT 1
+      `,
+      values: [walletAddress, approvalId],
+    });
+    const row = result.rows[0];
+    if (!row) return undefined;
+    const session = await this.getSession(walletAddress, row.session_id);
+    return session ? { session, voucher: voucherFromRow(row) } : undefined;
   }
 
   async listVouchers(sessionId: string): Promise<StreamingVoucherRecord[]> {
@@ -1407,6 +1471,13 @@ function normalizeRecipientAllowlist(value: readonly string[] | undefined): stri
 
 function sanitizeSessionMetadata(value: Record<string, unknown>): Record<string, unknown> {
   return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+}
+
+function mppApprovalIdFromVoucherMetadata(metadata: Record<string, unknown> | undefined): string | undefined {
+  const link = metadata?.mppSessionPayment;
+  if (!link || typeof link !== 'object' || Array.isArray(link)) return undefined;
+  const approvalId = (link as Record<string, unknown>).approvalId;
+  return typeof approvalId === 'string' && approvalId.trim() ? approvalId.trim() : undefined;
 }
 
 function voucherRecordFromVoucher(

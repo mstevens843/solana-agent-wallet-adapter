@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { buildPlanMessages } from '../prompts/messageAssembler.js';
+import { buildPlanMessages, buildReviewMessages } from '../prompts/messageAssembler.js';
 import { DEVICE_AGENT_SYSTEM_PROMPTS } from '../prompts/systemPrompts.js';
 import type { RuntimeConfig } from '../runtime/config.js';
 
@@ -135,6 +135,59 @@ describe('AnthropicProvider.reviewPlan', () => {
     const body = JSON.parse(http.calls[0]!.body) as Record<string, unknown>;
     expect(body.max_tokens).toBe(1024);
     expect(body.system).toBe(DEVICE_AGENT_SYSTEM_PROMPTS.REVIEW);
+  });
+
+  it('runs the two-pass flow when review research is needed: research call with web_search, then structured review without it', async () => {
+    const http = new FakeHttpExecutor();
+    // First response: research pass (web_search tool emits a research summary + citations).
+    http.queueResponse(
+      200,
+      JSON.stringify({
+        content: [
+          {
+            type: 'text',
+            text: 'Helium Mobile Air Plan costs $15/month per the official Helium Mobile site.',
+            citations: [{ url: 'https://heliummobile.com/plans', title: 'Helium Mobile - Plans' }],
+          },
+        ],
+      }),
+    );
+    // Second response: structured review consuming the research evidence.
+    http.queueResponse(
+      200,
+      JSON.stringify({
+        content: [
+          {
+            type: 'text',
+            text: '{"decision":"approve","reason":"$15/month is under $20.","summary":"ok","evidence":{"findings":[{"label":"Monthly rate","value":"$15/month","tone":"good"}]}}',
+          },
+        ],
+      }),
+    );
+    const provider = new AnthropicProvider(config(), http);
+    const payload = {
+      plan: {},
+      research: { needed: true, mode: 'auto_current_facts', currentDate: '2026-05-16T03:00:00.000Z', maxSearches: 2 },
+    };
+    const result = await provider.reviewPlan(payload);
+
+    expect(result.decision).toBe('approve');
+    expect(http.calls).toHaveLength(2);
+
+    // First call: research pass — web_search tool bound.
+    const researchBody = JSON.parse(http.calls[0]!.body) as Record<string, unknown>;
+    const researchTools = researchBody.tools as Array<Record<string, unknown>>;
+    expect(researchTools[0]).toMatchObject({ type: 'web_search_20250305', name: 'web_search', max_uses: 2 });
+
+    // Second call: structured review — NO web_search bound (research already done).
+    const reviewBody = JSON.parse(http.calls[1]!.body) as Record<string, unknown>;
+    expect(reviewBody.tools).toBeUndefined();
+    const reviewMessages = reviewBody.messages as Array<{ role: string; content: string }>;
+    const reviewUserContent = JSON.parse(reviewMessages[0]!.content) as Record<string, unknown>;
+    // Research evidence has been embedded into context for the review pass.
+    expect((reviewUserContent.context as Record<string, unknown>).researchEvidence).toBeDefined();
+    expect((reviewUserContent.research as Record<string, unknown>).needed).toBe(false);
+    expect((reviewUserContent.research as Record<string, unknown>).mode).toBe('provided_current_facts');
   });
 });
 

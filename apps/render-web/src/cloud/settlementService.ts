@@ -971,19 +971,18 @@ async function findExistingMppSessionSettlementEvidence(
   const records = await store.listEvidence(walletAddress);
   return records.find((record) => {
     const metadata = objectRecord(record.metadata);
-    return record.kind === MPP_EVIDENCE_KIND
-      && metadata?.mppSessionPayment === true
-      && metadata?.linkType === 'mpp_session_payment'
-      && stringValue(metadata.approvalId) === input.approvalId
-      && stringValue(metadata.voucherHash) === input.voucherHash
-      && (
-        record.artifactHash === input.receiptHash ||
-        stringValue(metadata.receiptHash) === input.receiptHash
-      )
-      && (
-        stringValue(metadata.settlementTxid) === input.txid ||
-        stringValue(metadata.txid) === input.txid
-      );
+    if (record.kind !== MPP_EVIDENCE_KIND) return false;
+    if (stringValue(metadata?.approvalId) !== input.approvalId) return false;
+    if (stringValue(metadata?.voucherHash) !== input.voucherHash) return false;
+    const receiptMatches = record.artifactHash === input.receiptHash ||
+      stringValue(metadata?.receiptHash) === input.receiptHash;
+    const txMatches = stringValue(metadata?.settlementTxid) === input.txid ||
+      stringValue(metadata?.txid) === input.txid;
+    if (!receiptMatches || !txMatches) return false;
+    return metadata?.mppSessionPayment === true ||
+      metadata?.linkType === 'mpp_session_payment' ||
+      stringValue(metadata?.source) === 'streaming_session_settlement' ||
+      stringValue(metadata?.finality) === 'settlement_confirmed';
   });
 }
 

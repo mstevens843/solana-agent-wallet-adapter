@@ -11,15 +11,34 @@
  * pass stub clients to exercise each branch deterministically.
  */
 
+import { Connection, PublicKey } from '@solana/web3.js';
+
 import type {
+  AccountWritabilityCountAtom,
   AgentAtom,
   CapabilityResolutionAttempt,
   CapabilityTier,
   ExternalPriceAtom,
+  InstructionCountAtom,
   MarketRegimeAtom,
+  MintDecimalsAtom,
+  NetworkCongestionAtom,
+  NetworkMetricAtom,
   PriceAtom,
+  RecipientKnownAtom,
+  RelativeAmountAtom,
+  RentExemptRequiredAtom,
+  RequiredSignaturesAtom,
+  SimulationDigest,
+  TimeFactAtom,
   TokenAgeAtom,
   TokenAuditAtom,
+  TokenBalanceAtom,
+  TokenHeldDurationAtom,
+  TokenSupplyAtom,
+  TxFeeAtom,
+  WalletAgeOnchainAtom,
+  WalletBalanceAtom,
 } from '@solana-agent-wallet-adapter/workflow';
 
 import type { AgentWalletConfig } from '../config.js';
@@ -119,6 +138,27 @@ export interface McpResolverDeps {
   alternativeMe?: AlternativeMeClient;
   /** Optional fetch override for the BirdEye / CoinGecko / Helius fallbacks. */
   fetchImpl?: typeof fetch;
+  /**
+   * Solana RPC connection — used by the `network_metric`, `wallet_balance`,
+   * `token_balance`, `token_supply`, `mint_decimals`, `wallet_age_onchain`,
+   * `recipient_known`, `token_held_duration`, `tx_fee`, and `network_congestion`
+   * resolvers. Wire from the bridge server's existing `Connection` (config.rpcUrl
+   * honors Helius / QuickNode / public). When undefined, those atoms fall through
+   * to the web tier (or stay unresolved if the chain has no web tier).
+   */
+  connection?: Connection;
+  /**
+   * Per-request context populated by the planner before invoking the resolver.
+   * Lets resolvers reach the user's wallet address, the draft's parameters
+   * (for relative_amount math), and the pre-computed simulation digest (for
+   * tx_fee, rent_exempt_required, and the tx-inspect atoms).
+   */
+  requestContext?: {
+    walletAddress?: string;
+    draftParameters?: Record<string, string>;
+    simulationDigest?: SimulationDigest;
+    transactionBase64?: string;
+  };
 }
 
 interface JupiterPriceValue { numeric: number }
@@ -128,6 +168,20 @@ interface MarketRegimeValue { numeric: number; text?: string }
 export function createMcpCapabilityResolver(deps: McpResolverDeps) {
   const config = deps.config;
   const altMe = deps.alternativeMe ?? getAlternativeMeClient();
+  const connection = deps.connection;
+  const requestContext = deps.requestContext;
+  // Per-request memo so two atoms that share a (provider, endpoint, key) re-use one RPC.
+  // Caches wallet balance, the parsed token-account list, and the prioritization-fee call.
+  // Distinct from the (provider,endpoint,subject) memo a few lines down — this one is
+  // keyed by the actual RPC call shape (e.g. `balance:<wallet>`, `prioritization-fees`).
+  const rpcMemo = new Map<string, Promise<unknown>>();
+  const memoize = <T>(key: string, fn: () => Promise<T>): Promise<T> => {
+    const cached = rpcMemo.get(key);
+    if (cached) return cached as Promise<T>;
+    const p = fn();
+    rpcMemo.set(key, p as Promise<unknown>);
+    return p;
+  };
 
   // Per-request memoization: if two atoms in the same review hit the same
   // (provider, endpoint, subject) tuple, share one in-flight call. Cache lives for the
@@ -194,6 +248,118 @@ export function createMcpCapabilityResolver(deps: McpResolverDeps) {
     if (atom.type === 'protocol_health') {
       if (provider === 'protocol_connector') return missing('protocol_connector', 'Per-protocol health resolver wires via connector adapters; not implemented in the default shim.', 'read_facts');
       if (provider === 'web') return missing('web', 'deferred_to_research_pass');
+    }
+    // -------- external_state atoms (web-only today; news/status APIs later) ---
+    if (atom.type === 'external_state') {
+      if (provider === 'web') return missing('web', 'deferred_to_research_pass');
+    }
+    // -------- external_event atoms (web-only) --------------------------------
+    if (atom.type === 'external_event') {
+      if (provider === 'web') return missing('web', 'deferred_to_research_pass');
+    }
+    // -------- external_identity atoms (chainalysis → web) --------------------
+    if (atom.type === 'external_identity') {
+      // TODO(external_identity): To enable structured sanctions/KYC screening, wire one of:
+      //   1. **Chainalysis Sanctions Oracle API** — sign up at chainalysis.com, get an API
+      //      key, add CHAINALYSIS_API_KEY env, and implement a screening call here. Free
+      //      tier covers OFAC sanctions screening for individual addresses.
+      //   2. **On-chain OFAC list** — Chainalysis publishes the sanctioned-address list as
+      //      an on-chain account. You can query it via the existing `connection` (no key)
+      //      with `connection.getProgramAccounts(SANCTIONS_PROGRAM_ID, …)`. Slower update
+      //      cadence but free and self-contained.
+      // Today this branch falls through to web (the LLM searches sanctions databases),
+      // which works for SEC-action lookups and major sanctioned entities but isn't a
+      // structured deterministic source.
+      if (provider === 'chainalysis') return missing('chainalysis', 'Chainalysis screening not enabled. Add CHAINALYSIS_API_KEY env (Sanctions Oracle) or wire on-chain OFAC list lookup. Falling through to web.', 'screening');
+      if (provider === 'web') return missing('web', 'deferred_to_research_pass');
+    }
+    // -------- tradfi_price atoms (web-only; AlphaVantage tier later) ---------
+    if (atom.type === 'tradfi_price') {
+      // TODO(tradfi_price): To enable structured TradFi quotes (SPY, GLD, FX), wire one of:
+      //   1. **AlphaVantage** — free API key at alphavantage.co (~5 calls/min, 500/day).
+      //      Add ALPHAVANTAGE_API_KEY env and implement /query?function=GLOBAL_QUOTE here.
+      //   2. **Twelve Data** — also has a free tier with similar shape.
+      //   3. **Yahoo Finance unofficial** — no key, but rate-limited and brittle (endpoint
+      //      changes shape periodically). Only recommended for prototyping.
+      // Today this branch falls through to web (the LLM searches the live quote), which
+      // works reliably for major tickers (SPY, gold, FX) but adds latency + LLM cost.
+      if (provider === 'web') return missing('web', 'deferred_to_research_pass');
+    }
+    // -------- time_fact atoms (LOCAL computation — no network call) ----------
+    if (atom.type === 'time_fact') {
+      if (provider === 'local') return resolveTimeFact(atom);
+    }
+    // -------- network_metric atoms (real Solana RPC via shared Connection) ---
+    if (atom.type === 'network_metric') {
+      if (provider === 'rpc') {
+        if (!connection) {
+          return missing('rpc', 'No Solana Connection wired into createMcpCapabilityResolver. Pass `connection` in deps (bridgeServer.ts builds one from config.rpcUrl — Helius / QuickNode / public RPC all work).', tier.endpoint);
+        }
+        return resolveNetworkMetric(atom, tier, connection);
+      }
+      if (provider === 'web') return missing('web', 'deferred_to_research_pass');
+    }
+    // -------- Tier 1: wallet_balance / token_balance / relative_amount ------
+    if (atom.type === 'wallet_balance' && provider === 'rpc') {
+      if (!connection) return missing('rpc', 'No Solana Connection wired.', tier.endpoint);
+      if (!requestContext?.walletAddress) return missing('rpc', 'No walletAddress in request context.', tier.endpoint);
+      return resolveWalletBalance(atom, requestContext.walletAddress, connection, memoize);
+    }
+    if (atom.type === 'token_balance' && provider === 'rpc') {
+      if (!connection) return missing('rpc', 'No Solana Connection wired.', tier.endpoint);
+      if (!requestContext?.walletAddress) return missing('rpc', 'No walletAddress in request context.', tier.endpoint);
+      return resolveTokenBalance(atom, requestContext.walletAddress, connection, memoize);
+    }
+    if (atom.type === 'relative_amount' && provider === 'composite') {
+      if (!connection || !requestContext?.walletAddress) return missing('composite', 'relative_amount needs walletAddress + Connection.', tier.endpoint);
+      return resolveRelativeAmount(atom, requestContext.walletAddress, requestContext.draftParameters ?? {}, connection, memoize);
+    }
+    if (atom.type === 'tx_fee' && provider === 'rpc') {
+      if (!connection) return missing('rpc', 'No Solana Connection wired.', tier.endpoint);
+      return resolveTxFee(atom, requestContext?.simulationDigest, connection, memoize);
+    }
+    if (atom.type === 'network_congestion' && provider === 'rpc') {
+      if (!connection) return missing('rpc', 'No Solana Connection wired.', tier.endpoint);
+      return resolveNetworkCongestion(atom, connection, memoize);
+    }
+    // -------- Tier 2: token_supply / mint_decimals / wallet_age / recipient_known / token_held_duration
+    if (atom.type === 'token_supply' && provider === 'rpc') {
+      if (!connection) return missing('rpc', 'No Solana Connection wired.', tier.endpoint);
+      return resolveTokenSupply(atom, connection);
+    }
+    if (atom.type === 'mint_decimals' && provider === 'rpc') {
+      if (!connection) return missing('rpc', 'No Solana Connection wired.', tier.endpoint);
+      return resolveMintDecimals(atom, connection);
+    }
+    if (atom.type === 'wallet_age_onchain' && provider === 'rpc') {
+      if (!connection) return missing('rpc', 'No Solana Connection wired.', tier.endpoint);
+      if (!requestContext?.walletAddress) return missing('rpc', 'No walletAddress in request context.', tier.endpoint);
+      return resolveWalletAge(requestContext.walletAddress, connection);
+    }
+    if (atom.type === 'recipient_known' && provider === 'rpc') {
+      if (!connection) return missing('rpc', 'No Solana Connection wired.', tier.endpoint);
+      if (!requestContext?.walletAddress) return missing('rpc', 'No walletAddress in request context.', tier.endpoint);
+      const recipient = atom.subject ?? (requestContext.draftParameters ?? {}).recipient;
+      if (!recipient) return missing('rpc', 'No recipient address in atom subject or draft.recipient.', tier.endpoint);
+      return resolveRecipientKnown(recipient, requestContext.walletAddress, connection);
+    }
+    if (atom.type === 'token_held_duration' && provider === 'rpc') {
+      if (!connection) return missing('rpc', 'No Solana Connection wired.', tier.endpoint);
+      if (!requestContext?.walletAddress) return missing('rpc', 'No walletAddress in request context.', tier.endpoint);
+      return resolveTokenHeldDuration(atom, requestContext.walletAddress, connection);
+    }
+    // -------- Tier 3: tx-inspect atoms (local-only, parse transaction message)
+    if (atom.type === 'required_signatures' && provider === 'local_tx') {
+      return resolveRequiredSignatures(requestContext?.transactionBase64);
+    }
+    if (atom.type === 'instruction_count' && provider === 'local_tx') {
+      return resolveInstructionCount(requestContext?.transactionBase64);
+    }
+    if (atom.type === 'account_writability_count' && provider === 'local_tx') {
+      return resolveAccountWritability(requestContext?.transactionBase64);
+    }
+    if (atom.type === 'rent_exempt_required' && provider === 'local_tx') {
+      return resolveRentExempt(atom, requestContext?.simulationDigest);
     }
     return missing(String(provider), 'no resolver for this (atom.type, provider) pair');
   };
@@ -367,4 +533,557 @@ function mintFromSubject(subject: string | undefined): string | undefined {
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Local time-fact resolver                                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * US federal-holiday lookup. Fixed-date holidays (Independence Day, Veterans Day, etc.)
+ * are checked by month/day; moving holidays (MLK Day, Thanksgiving, Memorial Day) are
+ * computed from weekday-of-month rules. Falls back to false for any date outside the set.
+ */
+const US_FIXED_HOLIDAYS: ReadonlyArray<{ month: number; day: number; name: string }> = [
+  { month: 1, day: 1, name: "New Year's Day" },
+  { month: 6, day: 19, name: 'Juneteenth' },
+  { month: 7, day: 4, name: 'Independence Day' },
+  { month: 11, day: 11, name: 'Veterans Day' },
+  { month: 12, day: 25, name: 'Christmas Day' },
+];
+
+function isUsFederalHoliday(date: Date): { holiday: boolean; name?: string } {
+  const month = date.getUTCMonth() + 1;
+  const day = date.getUTCDate();
+  const weekday = date.getUTCDay(); // 0=Sun … 6=Sat
+  for (const h of US_FIXED_HOLIDAYS) {
+    if (h.month === month && h.day === day) return { holiday: true, name: h.name };
+  }
+  const weekOfMonth = Math.ceil(day / 7);
+  if (month === 1 && weekday === 1 && weekOfMonth === 3) return { holiday: true, name: 'Martin Luther King Jr. Day' };
+  if (month === 2 && weekday === 1 && weekOfMonth === 3) return { holiday: true, name: "Presidents' Day" };
+  // Memorial Day = LAST Monday of May
+  if (month === 5 && weekday === 1) {
+    const lastDayOfMay = new Date(Date.UTC(date.getUTCFullYear(), 5, 0)).getUTCDate();
+    if (day > lastDayOfMay - 7) return { holiday: true, name: 'Memorial Day' };
+  }
+  if (month === 9 && weekday === 1 && weekOfMonth === 1) return { holiday: true, name: 'Labor Day' };
+  if (month === 10 && weekday === 1 && weekOfMonth === 2) return { holiday: true, name: 'Columbus Day' };
+  if (month === 11 && weekday === 4 && weekOfMonth === 4) return { holiday: true, name: 'Thanksgiving Day' };
+  return { holiday: false };
+}
+
+function dateInTimezone(timezone: string | undefined, now: Date = new Date()): Date {
+  if (!timezone) return now;
+  // Compute the wall-clock date in the requested timezone by formatting and reparsing.
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    });
+    const parts = Object.fromEntries(formatter.formatToParts(now).map((p) => [p.type, p.value]));
+    const iso = `${parts.year}-${parts.month}-${parts.day}T${parts.hour === '24' ? '00' : parts.hour}:${parts.minute}:${parts.second}Z`;
+    const parsed = new Date(iso);
+    return Number.isNaN(parsed.getTime()) ? now : parsed;
+  } catch {
+    return now;
+  }
+}
+
+/**
+ * Resolve a time_fact atom locally — pure date math, no network. Always returns ok
+ * because we always know the current time. Honors `atom.timezone` when supplied.
+ */
+function resolveTimeFact(atom: TimeFactAtom): CapabilityResolutionAttempt<{ boolean: boolean; text?: string }> {
+  const now = dateInTimezone(atom.timezone);
+  const weekday = now.getUTCDay();
+  switch (atom.kind) {
+    case 'is_business_day': {
+      const isWeekend = weekday === 0 || weekday === 6;
+      const { holiday, name } = isUsFederalHoliday(now);
+      const value = !isWeekend && !holiday;
+      const detail = isWeekend ? 'weekend' : holiday ? (name ?? 'holiday') : 'business day';
+      return ok('local', { boolean: value, text: detail }, 'time');
+    }
+    case 'is_us_holiday': {
+      const { holiday, name } = isUsFederalHoliday(now);
+      return ok('local', { boolean: holiday, text: name }, 'time');
+    }
+    case 'is_market_open': {
+      // NYSE: 9:30am – 4:00pm Eastern, Mon–Fri, non-holiday.
+      const eastern = dateInTimezone('America/New_York');
+      const isWeekend = eastern.getUTCDay() === 0 || eastern.getUTCDay() === 6;
+      const { holiday } = isUsFederalHoliday(eastern);
+      const hour = eastern.getUTCHours();
+      const minute = eastern.getUTCMinutes();
+      const minutesIntoDay = hour * 60 + minute;
+      const open = !isWeekend && !holiday && minutesIntoDay >= 9 * 60 + 30 && minutesIntoDay < 16 * 60;
+      return ok('local', { boolean: open, text: `NYSE ${open ? 'open' : 'closed'} (${eastern.toISOString().slice(11, 16)} ET)` }, 'time');
+    }
+    case 'day_of_week': {
+      const names = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      // For day_of_week, the user provided a specific day in the NOTE; we can't
+      // verify "today is Monday" without knowing which day was asked. Return text
+      // so the evaluator can show "today is Tuesday" and the LLM applies the rule.
+      return ok('local', { boolean: true, text: `today is ${names[weekday]}` }, 'time');
+    }
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Solana RPC network_metric resolver — uses the shared Connection            */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Resolve a network_metric atom against live Solana RPC. The Connection is the same one
+ * the bridge server uses (config.rpcUrl — Helius if HELIUS_API_KEY is set and rpcUrl
+ * points at a Helius endpoint, QuickNode, Triton, or the public RPC).
+ *
+ * Per-metric calls:
+ *   tps                  → getRecentPerformanceSamples(1) → numTransactions / samplePeriodSecs
+ *   slot_height          → getSlot('confirmed')
+ *   validator_jailed     → getVoteAccounts() — checks the delinquent array
+ *   epoch_progress_pct   → getEpochInfo('confirmed') → (slotIndex / slotsInEpoch) * 100
+ *
+ * All errors surface as `error` attempts so the chain can fall through to the web tier
+ * if the RPC is rate-limited or down.
+ */
+async function resolveNetworkMetric(
+  atom: NetworkMetricAtom,
+  tier: CapabilityTier,
+  connection: Connection,
+): Promise<CapabilityResolutionAttempt<{ numeric?: number; boolean?: boolean; text?: string }>> {
+  const endpoint = tier.endpoint;
+  try {
+    switch (atom.metric) {
+      case 'tps': {
+        const samples = await connection.getRecentPerformanceSamples(1);
+        const sample = samples[0];
+        if (!sample || sample.samplePeriodSecs <= 0) {
+          return missing('rpc', 'No recent performance samples returned by RPC.', endpoint);
+        }
+        const tps = sample.numTransactions / sample.samplePeriodSecs;
+        return ok('rpc', { numeric: tps, text: `${sample.numTransactions} txs / ${sample.samplePeriodSecs}s sample` }, endpoint);
+      }
+      case 'slot_height': {
+        const slot = await connection.getSlot('confirmed');
+        return ok('rpc', { numeric: slot }, endpoint);
+      }
+      case 'validator_jailed': {
+        const accounts = await connection.getVoteAccounts();
+        const subject = atom.subject?.trim();
+        // If the user named a specific validator (vote pubkey or node pubkey), check it.
+        // Otherwise return a count of currently-delinquent validators as a network-wide signal.
+        if (subject) {
+          const isDelinquent = accounts.delinquent.some(
+            (v) => v.votePubkey === subject || v.nodePubkey === subject,
+          );
+          return ok('rpc', { boolean: isDelinquent, text: isDelinquent ? 'delinquent' : 'active' }, endpoint);
+        }
+        // No subject — return the network-wide delinquency count for advisory display.
+        return ok('rpc', {
+          boolean: accounts.delinquent.length > 0,
+          numeric: accounts.delinquent.length,
+          text: `${accounts.delinquent.length} delinquent / ${accounts.current.length} current`,
+        }, endpoint);
+      }
+      case 'epoch_progress_pct': {
+        const epoch = await connection.getEpochInfo('confirmed');
+        const pct = epoch.slotsInEpoch > 0 ? (epoch.slotIndex / epoch.slotsInEpoch) * 100 : 0;
+        return ok('rpc', { numeric: pct, text: `epoch ${epoch.epoch} (${epoch.slotIndex}/${epoch.slotsInEpoch} slots)` }, endpoint);
+      }
+    }
+  } catch (err) {
+    return error('rpc', err, endpoint);
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Tier 1: wallet_balance / token_balance / relative_amount resolvers          */
+/* -------------------------------------------------------------------------- */
+
+type Memoizer = <T>(key: string, fn: () => Promise<T>) => Promise<T>;
+
+const LAMPORTS_PER_SOL = 1_000_000_000;
+
+async function resolveWalletBalance(
+  atom: WalletBalanceAtom,
+  walletAddress: string,
+  connection: Connection,
+  memoize: Memoizer,
+): Promise<CapabilityResolutionAttempt<{ numeric: number }>> {
+  try {
+    const pubkey = new PublicKey(walletAddress);
+    const lamports = await memoize(`balance:${walletAddress}`, () => connection.getBalance(pubkey, 'confirmed'));
+    if (atom.unit === 'USD') {
+      // USD comparison needs a SOL→USD price we don't have here; deferring keeps the
+      // evaluator from comparing a lamport-scale number against a dollar threshold.
+      return missing('rpc', 'wallet_balance in USD needs a SOL→USD price; resolve in SOL today or pair with a SOL price atom.', 'getBalance');
+    }
+    const value = atom.unit === 'lamports' ? lamports : lamports / LAMPORTS_PER_SOL;
+    return ok('rpc', { numeric: value }, 'getBalance');
+  } catch (err) {
+    return error('rpc', err, 'getBalance');
+  }
+}
+
+async function resolveTokenBalance(
+  atom: TokenBalanceAtom,
+  walletAddress: string,
+  connection: Connection,
+  memoize: Memoizer,
+): Promise<CapabilityResolutionAttempt<{ numeric: number; text?: string }>> {
+  try {
+    const mint = mintFromSubject(atom.subject);
+    if (!mint) return missing('rpc', `No mint known for token "${atom.subject}".`, 'getParsedTokenAccountsByOwner');
+    const pubkey = new PublicKey(walletAddress);
+    const mintKey = new PublicKey(mint);
+    const accounts = await memoize(`token-accounts:${walletAddress}`,
+      () => connection.getParsedTokenAccountsByOwner(pubkey, { mint: mintKey }, 'confirmed'),
+    );
+    let totalUiAmount = 0;
+    let decimals = 0;
+    for (const entry of accounts.value) {
+      const info = (entry.account.data as { parsed?: { info?: { tokenAmount?: { uiAmount?: number; decimals?: number } } } })?.parsed?.info?.tokenAmount;
+      if (info && typeof info.uiAmount === 'number') totalUiAmount += info.uiAmount;
+      if (info && typeof info.decimals === 'number') decimals = info.decimals;
+    }
+    // For unit==='USD' we'd need a price lookup; today we return token-native units when
+    // unit==='tokens', or 0 when unit==='USD' without a price source (evaluator marks
+    // unresolved if no fact provided). Best-effort: only the 'tokens' path is reliable here.
+    if (atom.unit === 'USD') {
+      // USD requires a price — defer with a structured-missing so the caller knows why.
+      return missing('rpc', 'token_balance with unit=USD needs a follow-up price atom (use a separate price gate or token_balance with unit=tokens).', 'getParsedTokenAccountsByOwner');
+    }
+    return ok('rpc', { numeric: totalUiAmount, text: `${accounts.value.length} account(s), ${decimals}d` }, 'getParsedTokenAccountsByOwner');
+  } catch (err) {
+    return error('rpc', err, 'getParsedTokenAccountsByOwner');
+  }
+}
+
+async function resolveRelativeAmount(
+  atom: RelativeAmountAtom,
+  walletAddress: string,
+  draftParameters: Record<string, string>,
+  connection: Connection,
+  memoize: Memoizer,
+): Promise<CapabilityResolutionAttempt<{ numeric: number; text?: string }>> {
+  try {
+    // Pull the draft amount (token-native) and convert to the same unit as the basis.
+    const amountStr = (draftParameters.amount ?? draftParameters.inputAmount ?? '').trim();
+    const amount = Number(amountStr);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return missing('composite', 'No positive amount in draft parameters.', 'relative_amount');
+    }
+    if (atom.basis === 'sol_balance') {
+      const pubkey = new PublicKey(walletAddress);
+      const lamports = await memoize(`balance:${walletAddress}`, () => connection.getBalance(pubkey, 'confirmed'));
+      const sol = lamports / LAMPORTS_PER_SOL;
+      if (sol <= 0) return missing('composite', 'Wallet has no SOL balance.', 'relative_amount');
+      const fraction = amount / sol;
+      return ok('composite', { numeric: fraction, text: `${amount} / ${sol.toFixed(4)} SOL` }, 'relative_amount');
+    }
+    // 'wallet' needs a USD-aggregated portfolio snapshot; 'token_balance' needs a
+    // per-token spot balance fetch. Both are deferrable today — only 'sol_balance' is wired.
+    const reason = atom.basis === 'wallet'
+      ? 'basis=wallet needs a USD-aggregated wallet snapshot; only basis=sol_balance is wired today.'
+      : `basis="${atom.basis}" needs a per-token balance fetch; only basis=sol_balance is wired today.`;
+    return missing('composite', reason, 'relative_amount');
+  } catch (err) {
+    return error('composite', err, 'relative_amount');
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Tier 1: tx_fee / network_congestion resolvers                               */
+/* -------------------------------------------------------------------------- */
+
+async function getMedianPriorityFee(connection: Connection, memoize: Memoizer): Promise<number> {
+  const fees = await memoize('prioritization-fees', () => connection.getRecentPrioritizationFees());
+  if (!fees || fees.length === 0) return 0;
+  const sorted = fees.map((f) => f.prioritizationFee).slice().sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2 : sorted[mid] ?? 0;
+}
+
+async function resolveTxFee(
+  atom: TxFeeAtom,
+  simulationDigest: SimulationDigest | undefined,
+  connection: Connection,
+  memoize: Memoizer,
+): Promise<CapabilityResolutionAttempt<{ numeric: number; text?: string }>> {
+  try {
+    // Base fee is 5000 lamports per signature; we approximate signers=1 unless a sim digest
+    // tells us otherwise. The prioritization fee is microlamports × CU consumed / 1e6.
+    const microPerCu = await getMedianPriorityFee(connection, memoize);
+    const cuConsumed = (simulationDigest as unknown as { unitsConsumed?: number })?.unitsConsumed ?? 200_000;
+    const baseLamports = 5000; // 1 signer × 5k lamports
+    const priorityLamports = Math.floor((microPerCu * cuConsumed) / 1_000_000);
+    const totalLamports = baseLamports + priorityLamports;
+    let valueInUnit: number;
+    if (atom.unit === 'lamports') valueInUnit = totalLamports;
+    else if (atom.unit === 'SOL') valueInUnit = totalLamports / LAMPORTS_PER_SOL;
+    else {
+      // USD — requires SOL price. Defer cleanly so the LLM can ask the user or follow up.
+      return missing('rpc', 'tx_fee in USD needs a SOL→USD price; resolve as SOL today.', 'getRecentPrioritizationFees');
+    }
+    return ok('rpc', {
+      numeric: valueInUnit,
+      text: `${baseLamports} base + ${priorityLamports} priority (≈${microPerCu.toFixed(0)}μL/CU × ${cuConsumed} CU)`,
+    }, 'getRecentPrioritizationFees');
+  } catch (err) {
+    return error('rpc', err, 'getRecentPrioritizationFees');
+  }
+}
+
+async function resolveNetworkCongestion(
+  _atom: NetworkCongestionAtom,
+  connection: Connection,
+  memoize: Memoizer,
+): Promise<CapabilityResolutionAttempt<{ numeric: number; text?: string }>> {
+  try {
+    const median = await getMedianPriorityFee(connection, memoize);
+    return ok('rpc', { numeric: median, text: `${median.toFixed(0)} μL/CU median` }, 'getRecentPrioritizationFees');
+  } catch (err) {
+    return error('rpc', err, 'getRecentPrioritizationFees');
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Tier 2: token_supply / mint_decimals / wallet_age / recipient_known / held  */
+/* -------------------------------------------------------------------------- */
+
+async function resolveTokenSupply(
+  atom: TokenSupplyAtom,
+  connection: Connection,
+): Promise<CapabilityResolutionAttempt<{ numeric: number; text?: string }>> {
+  try {
+    const mint = mintFromSubject(atom.subject);
+    if (!mint) return missing('rpc', `No mint known for "${atom.subject}".`, 'getTokenSupply');
+    const supply = await connection.getTokenSupply(new PublicKey(mint));
+    const ui = supply.value.uiAmount ?? Number(supply.value.amount) / Math.pow(10, supply.value.decimals);
+    return ok('rpc', { numeric: ui, text: `${supply.value.decimals} decimals` }, 'getTokenSupply');
+  } catch (err) {
+    return error('rpc', err, 'getTokenSupply');
+  }
+}
+
+async function resolveMintDecimals(
+  atom: MintDecimalsAtom,
+  connection: Connection,
+): Promise<CapabilityResolutionAttempt<{ numeric: number }>> {
+  try {
+    const mint = mintFromSubject(atom.subject);
+    if (!mint) return missing('rpc', `No mint known for "${atom.subject}".`, 'getParsedAccountInfo');
+    const info = await connection.getParsedAccountInfo(new PublicKey(mint));
+    const decimals = ((info.value?.data as { parsed?: { info?: { decimals?: number } } } | undefined)?.parsed?.info?.decimals);
+    if (typeof decimals !== 'number') return missing('rpc', 'Mint account did not return parsed decimals.', 'getParsedAccountInfo');
+    return ok('rpc', { numeric: decimals }, 'getParsedAccountInfo');
+  } catch (err) {
+    return error('rpc', err, 'getParsedAccountInfo');
+  }
+}
+
+const WALLET_HISTORY_PAGE_SIZE = 1000;
+const WALLET_HISTORY_MAX_PAGES = 3; // cap so we don't paginate forever on whale wallets
+
+async function resolveWalletAge(
+  walletAddress: string,
+  connection: Connection,
+): Promise<CapabilityResolutionAttempt<{ numeric: number; text?: string }>> {
+  try {
+    const pubkey = new PublicKey(walletAddress);
+    let before: string | undefined;
+    let earliestBlockTime: number | undefined;
+    for (let page = 0; page < WALLET_HISTORY_MAX_PAGES; page += 1) {
+      const sigs = await connection.getSignaturesForAddress(
+        pubkey,
+        { limit: WALLET_HISTORY_PAGE_SIZE, ...(before ? { before } : {}) },
+        'confirmed',
+      );
+      if (sigs.length === 0) break;
+      const last = sigs[sigs.length - 1]!;
+      if (typeof last.blockTime === 'number') earliestBlockTime = last.blockTime;
+      if (sigs.length < WALLET_HISTORY_PAGE_SIZE) break; // hit the end of history
+      before = last.signature;
+    }
+    if (earliestBlockTime === undefined) {
+      return missing('rpc', 'No signature history returned for wallet.', 'getSignaturesForAddress');
+    }
+    const ageSeconds = Math.max(0, Math.floor(Date.now() / 1000) - earliestBlockTime);
+    return ok('rpc', { numeric: ageSeconds, text: `first tx ~${formatRelative(ageSeconds)} ago` }, 'getSignaturesForAddress');
+  } catch (err) {
+    return error('rpc', err, 'getSignaturesForAddress');
+  }
+}
+
+async function resolveRecipientKnown(
+  recipient: string,
+  walletAddress: string,
+  connection: Connection,
+): Promise<CapabilityResolutionAttempt<{ boolean: boolean; text?: string }>> {
+  try {
+    const pubkey = new PublicKey(walletAddress);
+    // Pull a recent window of signatures; for each, fetch the parsed transaction and check
+    // whether the wallet sent any value to the recipient. This is paginated/capped.
+    const sigs = await connection.getSignaturesForAddress(pubkey, { limit: 200 }, 'confirmed');
+    if (sigs.length === 0) {
+      return ok('rpc', { boolean: false, text: 'no recent signatures' }, 'getSignaturesForAddress');
+    }
+    // Heuristic: scan up to 50 most recent transactions for an instruction touching the recipient.
+    const recipientLower = recipient.toLowerCase();
+    const sample = sigs.slice(0, 50).map((s) => s.signature);
+    for (const sig of sample) {
+      const tx = await connection.getParsedTransaction(sig, { commitment: 'confirmed', maxSupportedTransactionVersion: 0 }).catch(() => null);
+      if (!tx) continue;
+      const accountKeys = tx.transaction.message.accountKeys.map((k) => (typeof k === 'string' ? k : k.pubkey.toBase58()));
+      if (accountKeys.some((k) => k.toLowerCase() === recipientLower)) {
+        return ok('rpc', { boolean: true, text: `seen in ${sig.slice(0, 8)}…` }, 'getSignaturesForAddress');
+      }
+    }
+    return ok('rpc', { boolean: false, text: `no prior tx with ${recipient.slice(0, 8)}… in last ${sample.length} signatures` }, 'getSignaturesForAddress');
+  } catch (err) {
+    return error('rpc', err, 'getSignaturesForAddress');
+  }
+}
+
+async function resolveTokenHeldDuration(
+  atom: TokenHeldDurationAtom,
+  walletAddress: string,
+  connection: Connection,
+): Promise<CapabilityResolutionAttempt<{ numeric: number; text?: string }>> {
+  try {
+    const mint = mintFromSubject(atom.subject);
+    if (!mint) return missing('rpc', `No mint known for "${atom.subject}".`, 'getSignaturesForAddress');
+    // Find the user's token account for this mint and look up its earliest signature.
+    const accounts = await connection.getParsedTokenAccountsByOwner(
+      new PublicKey(walletAddress),
+      { mint: new PublicKey(mint) },
+      'confirmed',
+    );
+    if (accounts.value.length === 0) return ok('rpc', { numeric: 0, text: 'no token account' }, 'getSignaturesForAddress');
+    let earliestBlockTime: number | undefined;
+    for (const account of accounts.value) {
+      let before: string | undefined;
+      for (let page = 0; page < WALLET_HISTORY_MAX_PAGES; page += 1) {
+        const sigs = await connection.getSignaturesForAddress(
+          account.pubkey,
+          { limit: WALLET_HISTORY_PAGE_SIZE, ...(before ? { before } : {}) },
+          'confirmed',
+        );
+        if (sigs.length === 0) break;
+        const last = sigs[sigs.length - 1]!;
+        if (typeof last.blockTime === 'number') {
+          if (earliestBlockTime === undefined || last.blockTime < earliestBlockTime) earliestBlockTime = last.blockTime;
+        }
+        if (sigs.length < WALLET_HISTORY_PAGE_SIZE) break;
+        before = last.signature;
+      }
+    }
+    if (earliestBlockTime === undefined) {
+      return missing('rpc', 'No token-account signatures found.', 'getSignaturesForAddress');
+    }
+    const seconds = Math.max(0, Math.floor(Date.now() / 1000) - earliestBlockTime);
+    return ok('rpc', { numeric: seconds, text: `first held ~${formatRelative(seconds)} ago` }, 'getSignaturesForAddress');
+  } catch (err) {
+    return error('rpc', err, 'getSignaturesForAddress');
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Tier 3: tx-inspect resolvers (local, no RPC)                                */
+/* -------------------------------------------------------------------------- */
+
+function decodeTransactionBase64(transactionBase64: string): {
+  requiredSignatures: number;
+  instructionCount: number;
+  writableCount: number;
+} | undefined {
+  if (!transactionBase64) return undefined;
+  let bytes: Buffer;
+  try { bytes = Buffer.from(transactionBase64, 'base64'); } catch { return undefined; }
+  // Try versioned first, then legacy.
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- web3.js types pulled at runtime
+    const web3 = require('@solana/web3.js') as typeof import('@solana/web3.js');
+    try {
+      const versioned = web3.VersionedTransaction.deserialize(bytes);
+      const header = versioned.message.header;
+      const requiredSignatures = header.numRequiredSignatures;
+      const instructionCount = versioned.message.compiledInstructions.length;
+      // Writable = (numRequiredSignatures - numReadonlySignedAccounts) +
+      //            (totalKeys - numRequiredSignatures - numReadonlyUnsignedAccounts)
+      const totalKeys = versioned.message.staticAccountKeys.length;
+      const writableCount = (header.numRequiredSignatures - header.numReadonlySignedAccounts)
+        + (totalKeys - header.numRequiredSignatures - header.numReadonlyUnsignedAccounts);
+      return { requiredSignatures, instructionCount, writableCount };
+    } catch {
+      const legacy = web3.Transaction.from(bytes);
+      const requiredSignatures = legacy.signatures.length;
+      const instructionCount = legacy.instructions.length;
+      // Legacy: count accounts marked isWritable across all instructions.
+      const writableSet = new Set<string>();
+      for (const ix of legacy.instructions) {
+        for (const meta of ix.keys) {
+          if (meta.isWritable) writableSet.add(meta.pubkey.toBase58());
+        }
+      }
+      return { requiredSignatures, instructionCount, writableCount: writableSet.size };
+    }
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveRequiredSignatures(transactionBase64: string | undefined): CapabilityResolutionAttempt<{ numeric: number }> {
+  if (!transactionBase64) return missing('local_tx', 'No transactionBase64 in request context.', 'parse_message');
+  const parsed = decodeTransactionBase64(transactionBase64);
+  if (!parsed) return missing('local_tx', 'Could not parse transaction.', 'parse_message');
+  return ok('local_tx', { numeric: parsed.requiredSignatures }, 'parse_message');
+}
+
+function resolveInstructionCount(transactionBase64: string | undefined): CapabilityResolutionAttempt<{ numeric: number }> {
+  if (!transactionBase64) return missing('local_tx', 'No transactionBase64 in request context.', 'parse_message');
+  const parsed = decodeTransactionBase64(transactionBase64);
+  if (!parsed) return missing('local_tx', 'Could not parse transaction.', 'parse_message');
+  return ok('local_tx', { numeric: parsed.instructionCount }, 'parse_message');
+}
+
+function resolveAccountWritability(transactionBase64: string | undefined): CapabilityResolutionAttempt<{ numeric: number }> {
+  if (!transactionBase64) return missing('local_tx', 'No transactionBase64 in request context.', 'parse_message');
+  const parsed = decodeTransactionBase64(transactionBase64);
+  if (!parsed) return missing('local_tx', 'Could not parse transaction.', 'parse_message');
+  return ok('local_tx', { numeric: parsed.writableCount }, 'parse_message');
+}
+
+function resolveRentExempt(
+  atom: RentExemptRequiredAtom,
+  simulationDigest: SimulationDigest | undefined,
+): CapabilityResolutionAttempt<{ numeric: number; text?: string }> {
+  // Walk simulation logs for "CreateAccount" / "InitializeAccount" + rent-exempt computations.
+  // For an MVP, count the number of CreateAccount invocations and report a per-account
+  // rent estimate (2_039_280 lamports for a typical SPL token account).
+  if (!simulationDigest) return missing('local_tx', 'No simulationDigest in request context.', 'sim_rent_delta');
+  const createAccountLogs = simulationDigest.logs.filter((line: string) => /Instruction:\s*(CreateAccount|InitializeAccount)/i.test(line));
+  const TOKEN_ACCOUNT_RENT_LAMPORTS = 2_039_280;
+  const rentLamports = createAccountLogs.length * TOKEN_ACCOUNT_RENT_LAMPORTS;
+  let valueInUnit: number;
+  if (atom.unit === 'lamports') valueInUnit = rentLamports;
+  else if (atom.unit === 'SOL') valueInUnit = rentLamports / LAMPORTS_PER_SOL;
+  else {
+    return missing('local_tx', 'rent_exempt_required with unit=USD needs a SOL→USD price; use SOL today.', 'sim_rent_delta');
+  }
+  return ok('local_tx', {
+    numeric: valueInUnit,
+    text: `${createAccountLogs.length} CreateAccount × ${TOKEN_ACCOUNT_RENT_LAMPORTS} lamports each`,
+  }, 'sim_rent_delta');
+}
+
+function formatRelative(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 86_400) return `${(seconds / 3600).toFixed(1)}h`;
+  if (seconds < 30 * 86_400) return `${(seconds / 86_400).toFixed(1)}d`;
+  return `${(seconds / (30 * 86_400)).toFixed(1)}mo`;
 }

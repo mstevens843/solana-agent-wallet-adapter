@@ -23,6 +23,9 @@ internal class OpenAiCompatibleProvider(
     }
 
     override suspend fun reviewPlan(payload: JSONObject): JSONObject {
+        if (researchNeeded(payload)) {
+            return currentResearchUnavailableReview()
+        }
         val messages = DeviceAgentMessageAssembler.buildReviewMessages(payload)
         val response = postChatCompletion(
             messages,
@@ -34,6 +37,12 @@ internal class OpenAiCompatibleProvider(
     }
 
     override suspend fun ask(payload: JSONObject): JSONObject {
+        if (researchNeeded(payload)) {
+            return JSONObject().put(
+                "output_text",
+                CURRENT_RESEARCH_UNAVAILABLE_REASON,
+            )
+        }
         val messages = DeviceAgentMessageAssembler.buildAskMessages(payload)
         val response = postChatCompletion(
             messages,
@@ -102,7 +111,51 @@ internal class OpenAiCompatibleProvider(
         return body
     }
 
+    private fun researchNeeded(payload: JSONObject): Boolean =
+        payload.optJSONObject("research")?.optBoolean("needed", false) == true
+
+    private fun currentResearchUnavailableReview(): JSONObject = JSONObject()
+        .put("decision", "needs_input")
+        .put("reason", CURRENT_RESEARCH_UNAVAILABLE_REASON)
+        .put("summary", "Current outside facts are required before the Device Agent can decide.")
+        .put(
+            "evidence",
+            JSONObject()
+                .put(
+                    "research",
+                    JSONObject()
+                        .put("status", "unavailable")
+                        .put("provider", "openai-compatible")
+                        .put("required", true),
+                )
+                .put(
+                    "findings",
+                    JSONArray().put(
+                        JSONObject()
+                            .put("label", "Research needed")
+                            .put("value", CURRENT_RESEARCH_UNAVAILABLE_REASON)
+                            .put("tone", "warn"),
+                    ),
+                ),
+        )
+        .put(
+            "questions",
+            JSONArray().put(
+                JSONObject()
+                    .put("id", "device_agent_current_fact")
+                    .put("prompt", "What source-backed current value should be checked?")
+                    .put("inputKind", "text")
+                    .put("required", true),
+            ),
+        )
+        .put("evidenceFactIds", JSONArray())
+        .put("blockingFactIds", JSONArray())
+        .put("missingFactIds", JSONArray())
+        .put("confidence", "low")
+
     companion object {
+        private const val CURRENT_RESEARCH_UNAVAILABLE_REASON: String =
+            "Device Agent OpenAI-compatible mode cannot fetch current outside facts yet. Use Anthropic Device Agent or Local Bridge, or provide a source-backed current value."
         private const val PLAN_TEMPERATURE: Double = 0.2
         private const val REVIEW_TEMPERATURE: Double = 0.2
         private const val ASK_TEMPERATURE: Double = 0.3

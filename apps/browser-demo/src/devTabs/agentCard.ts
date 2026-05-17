@@ -12,6 +12,7 @@ import {
 
 import { cloudWalletAvailable, cloudWalletRequest, cloudWalletSignMessage } from '../cloudWalletBridge.js';
 import { currentAddress } from '../connectionState.js';
+import { getMppConfig, putMppConfig, type MppConfigPreferencePayload, type MppConfigResponse } from '../mppClient.js';
 import { renderUseCaseDisclosure } from './useCases.js';
 
 const PROFILE_PATH = '/api/preferences/agent-payment-profile';
@@ -21,6 +22,7 @@ const BODY_ELEMENT_ID = 'dev-agent-card-body';
 
 type FetchStatus = 'idle' | 'loading' | 'loaded' | 'unavailable' | 'error';
 type FormBusy = false | 'publish' | 'takedown';
+type MppConfigBusy = false | 'save';
 
 interface FetchedProfile {
   payload: AgentPaymentProfilePayload | null;
@@ -34,6 +36,15 @@ interface DraftState {
   acceptedTokens: Set<AllowedProfileToken>;
   protocols: Set<AllowedProfileProtocol>;
   contactEmail: string;
+}
+
+interface MppConfigDraft {
+  acceptedRails: string;
+  maxChallengeAmount: string;
+  allowedMints: string;
+  allowedOrigins: string;
+  allowedRecipients: string;
+  requireSettlementConfirmed: boolean;
 }
 
 interface FormBanner {
@@ -50,6 +61,10 @@ interface TabState {
   formBusy: FormBusy;
   formBanner?: FormBanner;
   fieldErrors: ProfilePayloadValidationError[];
+  mppConfig?: MppConfigResponse;
+  mppConfigDraft: MppConfigDraft;
+  mppConfigBusy: MppConfigBusy;
+  mppConfigBanner?: FormBanner;
 }
 
 interface ProfileIntentResponse {
@@ -72,6 +87,8 @@ const tabState: TabState = {
   draft: createBlankDraft(),
   formBusy: false,
   fieldErrors: [],
+  mppConfigDraft: createBlankMppConfigDraft(),
+  mppConfigBusy: false,
 };
 let kickoffScheduled = false;
 
@@ -111,6 +128,17 @@ function createBlankDraft(): DraftState {
   };
 }
 
+function createBlankMppConfigDraft(): MppConfigDraft {
+  return {
+    acceptedRails: 'usdc',
+    maxChallengeAmount: '10',
+    allowedMints: '',
+    allowedOrigins: '',
+    allowedRecipients: '',
+    requireSettlementConfirmed: false,
+  };
+}
+
 function defaultDisplayNameFor(address: string | null): string {
   if (!address) return 'My Agentic Wallet';
   return `Wallet ${shortAddress(address)}`;
@@ -147,6 +175,52 @@ function payloadFromDraft(draft: DraftState): AgentPaymentProfilePayload {
   const email = draft.contactEmail.trim();
   if (email.length > 0) payload.contactEmail = email;
   return payload;
+}
+
+function mppDraftFromConfig(config: MppConfigResponse | undefined): MppConfigDraft {
+  const blank = createBlankMppConfigDraft();
+  if (!config) return blank;
+  return {
+    acceptedRails: (config.acceptedRails?.length ? config.acceptedRails : ['usdc']).join(', '),
+    maxChallengeAmount: config.maxChallengeAmount ?? blank.maxChallengeAmount,
+    allowedMints: (config.allowedMints ?? []).join('\n'),
+    allowedOrigins: [
+      ...(config.sessionPolicy?.allowedOrigins ?? []),
+      ...(config.sessionPolicy?.allowedMerchantOrigins ?? []),
+      ...(config.sessionPolicy?.allowedResourceOrigins ?? []),
+    ].join('\n'),
+    allowedRecipients: (config.sessionPolicy?.allowedRecipients ?? []).join('\n'),
+    requireSettlementConfirmed: config.sessionPolicy?.requireSettlementConfirmed === true,
+  };
+}
+
+function mppConfigPayloadFromDraft(draft: MppConfigDraft): MppConfigPreferencePayload {
+  const acceptedRails = commaList(draft.acceptedRails);
+  const allowedMints = lineList(draft.allowedMints);
+  const allowedOrigins = lineList(draft.allowedOrigins);
+  const allowedRecipients = lineList(draft.allowedRecipients);
+  return {
+    acceptedRails: acceptedRails.length ? acceptedRails : ['usdc'],
+    ...(draft.maxChallengeAmount.trim() ? { maxChallengeAmount: draft.maxChallengeAmount.trim() } : {}),
+    ...(allowedMints.length ? { allowedMints } : {}),
+    sessionPolicy: {
+      ...(allowedOrigins.length ? { allowedOrigins } : {}),
+      ...(allowedRecipients.length ? { allowedRecipients } : {}),
+      ...(draft.requireSettlementConfirmed ? { requireSettlementConfirmed: true } : {}),
+    },
+  };
+}
+
+function commaList(value: string): string[] {
+  return value.split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function lineList(value: string): string[] {
+  return value.split(/\r?\n|,/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 }
 
 function perWalletUrl(address: string | null): string | null {
@@ -371,6 +445,97 @@ function renderFormSection(): string {
   `;
 }
 
+function renderMppConfigBanner(): string {
+  if (!tabState.mppConfigBanner) return '';
+  const cls = tabState.mppConfigBanner.tone === 'success'
+    ? 'dev-agent-card-form-banner dev-agent-card-form-banner--ok'
+    : 'dev-agent-card-form-banner dev-agent-card-form-banner--err';
+  return `<p class="${cls}">${escapeHtml(tabState.mppConfigBanner.message)}</p>`;
+}
+
+function renderMppPolicySection(): string {
+  const draft = tabState.mppConfigDraft;
+  const busy = tabState.mppConfigBusy === 'save';
+  return `
+    <section class="dev-agent-card-section dev-agent-card-mpp-policy" aria-label="MPP session payment policy">
+      <div class="dev-agent-card-section-head">
+        <span>MPP session rail</span>
+        <h3>Bounded spend for incoming MPP challenges</h3>
+      </div>
+      ${renderMppConfigBanner()}
+      <div class="dev-agent-card-form-grid dev-agent-card-mpp-grid">
+        <div class="dev-agent-card-form-field">
+          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-rails">Accepted rails</label>
+          <input
+            type="text"
+            id="dev-agent-card-mpp-rails"
+            class="dev-agent-card-form-input"
+            data-mpp-policy-field="acceptedRails"
+            value="${escapeHtml(draft.acceptedRails)}"
+            autocomplete="off"
+          />
+        </div>
+        <div class="dev-agent-card-form-field">
+          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-max">Max challenge amount</label>
+          <input
+            type="text"
+            id="dev-agent-card-mpp-max"
+            class="dev-agent-card-form-input"
+            data-mpp-policy-field="maxChallengeAmount"
+            value="${escapeHtml(draft.maxChallengeAmount)}"
+            inputmode="decimal"
+            autocomplete="off"
+          />
+        </div>
+        <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
+          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-origins">Allowed origins</label>
+          <textarea
+            id="dev-agent-card-mpp-origins"
+            class="dev-agent-card-form-input dev-agent-card-form-textarea"
+            data-mpp-policy-field="allowedOrigins"
+            rows="3"
+          >${escapeHtml(draft.allowedOrigins)}</textarea>
+        </div>
+        <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
+          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-recipients">Allowed recipients</label>
+          <textarea
+            id="dev-agent-card-mpp-recipients"
+            class="dev-agent-card-form-input dev-agent-card-form-textarea"
+            data-mpp-policy-field="allowedRecipients"
+            rows="3"
+          >${escapeHtml(draft.allowedRecipients)}</textarea>
+        </div>
+        <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
+          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-mints">Allowed SPL mints</label>
+          <textarea
+            id="dev-agent-card-mpp-mints"
+            class="dev-agent-card-form-input dev-agent-card-form-textarea"
+            data-mpp-policy-field="allowedMints"
+            rows="2"
+          >${escapeHtml(draft.allowedMints)}</textarea>
+        </div>
+        <label class="dev-agent-card-discoverable-row dev-agent-card-form-toggle">
+          <input
+            type="checkbox"
+            class="dev-agent-card-switch-input"
+            data-mpp-policy-toggle="requireSettlementConfirmed"
+            ${draft.requireSettlementConfirmed ? 'checked' : ''}
+          />
+          <span class="dev-agent-card-discoverable-copy">
+            <strong>Require settlement confirmation</strong>
+            <em>MPP receipts stay pending until streaming voucher settlement confirms on chain.</em>
+          </span>
+          <span class="dev-agent-card-switch-control" aria-hidden="true"><span></span></span>
+        </label>
+      </div>
+      <div class="dev-agent-card-form-actions">
+        <button type="button" class="button primary" data-profile-action="save-mpp-policy" ${busy ? 'disabled' : ''}>${busy ? 'Saving…' : 'Save MPP policy'}</button>
+        <span class="dev-agent-card-form-hint">Incoming Requests uses this policy before showing Pay with Session.</span>
+      </div>
+    </section>
+  `;
+}
+
 function renderProfileLinkSection(address: string | null): string {
   const url = perWalletUrl(address);
   const status = profileSummaryStatus();
@@ -517,6 +682,7 @@ function bodyHtml(): string {
   const address = currentAddress();
   return `
     ${renderFormSection()}
+    ${renderMppPolicySection()}
     ${renderProfileLinkSection(address)}
     ${renderDemoLink()}
     ${renderExplainer()}
@@ -586,6 +752,7 @@ export async function fetchAgentProfile(): Promise<void> {
       updatedAt?: string | null;
       version?: number;
     }>(PROFILE_PATH);
+    const mppConfig = await getMppConfig().catch(() => undefined);
     const validated = validateProfilePayload(response.payload);
     const fetched: FetchedProfile = {
       payload: validated.ok ? validated.payload : null,
@@ -597,6 +764,11 @@ export async function fetchAgentProfile(): Promise<void> {
       ? draftFromPayload(fetched.payload, currentAddress())
       : draftFromBlank(currentAddress());
     tabState.fieldErrors = [];
+    if (mppConfig) {
+      tabState.mppConfig = mppConfig;
+      tabState.mppConfigDraft = mppDraftFromConfig(mppConfig);
+      tabState.mppConfigBanner = undefined;
+    }
     tabState.status = 'loaded';
     tabState.fetchedAt = Date.now();
   } catch (error) {
@@ -751,6 +923,24 @@ async function takedownProfile(): Promise<void> {
   updateBody();
 }
 
+async function saveMppPolicy(): Promise<void> {
+  if (tabState.mppConfigBusy) return;
+  tabState.mppConfigBusy = 'save';
+  tabState.mppConfigBanner = undefined;
+  updateBody();
+  const payload = mppConfigPayloadFromDraft(tabState.mppConfigDraft);
+  try {
+    const saved = await putMppConfig(payload);
+    tabState.mppConfig = saved.payload ?? payload;
+    tabState.mppConfigDraft = mppDraftFromConfig(tabState.mppConfig);
+    tabState.mppConfigBanner = { tone: 'success', message: 'MPP policy saved.' };
+  } catch (error) {
+    tabState.mppConfigBanner = { tone: 'error', message: humanizeError(error) };
+  }
+  tabState.mppConfigBusy = false;
+  updateBody();
+}
+
 function humanizeError(error: unknown): string {
   if (!error) return 'Profile update failed.';
   if (error instanceof Error) return error.message;
@@ -786,6 +976,10 @@ if (typeof document !== 'undefined') {
         case 'takedown':
           event.preventDefault();
           void takedownProfile();
+          return;
+        case 'save-mpp-policy':
+          event.preventDefault();
+          void saveMppPolicy();
           return;
         case 'try-demo':
           event.preventDefault();
@@ -824,19 +1018,34 @@ if (typeof document !== 'undefined') {
       setDraft('discoverable', target.checked);
       tabState.fieldErrors = tabState.fieldErrors.filter((entry) => entry.field !== 'discoverable');
       updateBody();
+    } else if (target instanceof HTMLInputElement && target.dataset.mppPolicyToggle === 'requireSettlementConfirmed') {
+      tabState.mppConfigDraft = {
+        ...tabState.mppConfigDraft,
+        requireSettlementConfirmed: target.checked,
+      };
+      tabState.mppConfigBanner = undefined;
+      updateBody();
     }
   });
 
   document.addEventListener('input', (event) => {
     const target = event.target;
-    if (!(target instanceof HTMLInputElement)) return;
-    const field = target.dataset.profileField;
+    if (!(target instanceof HTMLInputElement) && !(target instanceof HTMLTextAreaElement)) return;
+    const field = target instanceof HTMLInputElement ? target.dataset.profileField : undefined;
     if (field === 'displayName') {
       setDraft('displayName', target.value);
       tabState.fieldErrors = tabState.fieldErrors.filter((entry) => entry.field !== 'displayName');
     } else if (field === 'contactEmail') {
       setDraft('contactEmail', target.value);
       tabState.fieldErrors = tabState.fieldErrors.filter((entry) => entry.field !== 'contactEmail');
+    }
+    const mppField = target.dataset.mppPolicyField as keyof MppConfigDraft | undefined;
+    if (mppField && mppField !== 'requireSettlementConfirmed') {
+      tabState.mppConfigDraft = {
+        ...tabState.mppConfigDraft,
+        [mppField]: target.value,
+      };
+      tabState.mppConfigBanner = undefined;
     }
   });
 }
@@ -861,6 +1070,10 @@ export function __resetTabStateForTests(next?: Partial<TabState>): void {
   tabState.formBusy = next?.formBusy ?? false;
   tabState.formBanner = next?.formBanner;
   tabState.fieldErrors = next?.fieldErrors ?? [];
+  tabState.mppConfig = next?.mppConfig;
+  tabState.mppConfigDraft = next?.mppConfigDraft ?? createBlankMppConfigDraft();
+  tabState.mppConfigBusy = next?.mppConfigBusy ?? false;
+  tabState.mppConfigBanner = next?.mppConfigBanner;
   kickoffScheduled = false;
 }
 
@@ -874,5 +1087,9 @@ export function __getTabStateForTests(): Readonly<TabState> {
     formBusy: tabState.formBusy,
     formBanner: tabState.formBanner,
     fieldErrors: tabState.fieldErrors,
+    mppConfig: tabState.mppConfig,
+    mppConfigDraft: tabState.mppConfigDraft,
+    mppConfigBusy: tabState.mppConfigBusy,
+    mppConfigBanner: tabState.mppConfigBanner,
   };
 }

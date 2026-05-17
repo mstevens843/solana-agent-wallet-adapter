@@ -1,6 +1,6 @@
 // TypeScript port of DeviceAgentMessageAssembler.kt. Mirrors Kotlin behavior:
 // alias resolution (prompt → userPrompt, connectorContext → protocolConnectors),
-// connector rule derivation, hardcoded research object, and exact field
+// connector rule derivation, research-object handling, and exact field
 // insertion order so JSON.stringify produces wire-compatible payloads.
 //
 // Intentional divergences from apps/browser-demo/src/planner.ts (the original
@@ -10,11 +10,10 @@
 // docs/plans/browser-device-agent-runtime-plan.md line 83 ("When in doubt,
 // Kotlin wins").
 //
-//   1. research.needed/mode are hardcoded `false` / `'not_required'`.
-//      planner.ts:1676-1714 toggles these dynamically via
-//      reviewNeedsWebResearch(request). The Device Agent runtime does not
-//      perform web research — it runs a single chat completion only — so the
-//      simpler shape is correct.
+//   1. research defaults to `false` / `'not_required'` when absent, but a
+//      browser caller may pass a precomputed research object. The runtime keeps
+//      that object so providers with native search can decide whether to attach
+//      tools.
 //
 //   2. `plan` defaults to `{}` when absent in the payload.
 //      planner.ts:1674 passes `request.plan` raw; if it's undefined,
@@ -96,12 +95,55 @@ export function buildReviewMessages(
     cluster,
     plan: payload.plan ?? {},
     context: payload.context ?? {},
-    research: researchObject(now),
+    research: researchObject(payload, now),
     requiredBoundary: boundary,
   };
 
   return {
     system: DEVICE_AGENT_SYSTEM_PROMPTS.REVIEW,
+    userContent: JSON.stringify(userContent),
+  };
+}
+
+/**
+ * Build the message pair for the research pass — Device Agent parity with the local-bridge
+ * two-pass flow. When the review needs current outside facts, the LLM gets a research-only
+ * turn (with web search bound) before the structured review turn. This keeps the model from
+ * juggling "search the web" + "return JSON" at the same time, which was the difference
+ * between local-bridge ($15 → approve) and Device Agent single-pass ($20 → needs_input).
+ */
+export function buildResearchMessages(
+  payload: Record<string, unknown>,
+  researchTargets?: ReadonlyArray<Record<string, unknown>>,
+  now?: NowFn,
+): DeviceAgentMessages {
+  const instructionRaw = trimmedString(payload.instruction);
+  const instruction = instructionRaw === '' ? DEVICE_AGENT_BOUNDARIES.REVIEW_DEFAULT_INSTRUCTION : instructionRaw;
+  const walletAddress = defaultIfEmpty(trimmedString(payload.walletAddress), 'not_connected');
+  const cluster = defaultIfEmpty(trimmedString(payload.cluster), 'unknown');
+  const hasTargets = Array.isArray(researchTargets) && researchTargets.length > 0;
+  const sourcePolicy =
+    'Prefer official sources for prices and product facts. When a vendor publishes a plan page, use it as primary. Cite each fact with a URL.';
+  const systemPrelude = hasTargets
+    ? 'You research current outside facts for a Solana wallet approval review. Do not approve, deny, or ask the wallet to sign. The reviewer has already broken the NOTE into atomic fact requests — see context.researchTargets. Batch your searches: cover every researchTarget in as few queries as possible (ideally one). For each target, return a concise source-backed value (price, plan name, current state) plus a citation URL. Prefer official sources. '
+    : 'You research current outside facts for a Solana wallet approval review. Do not approve, deny, or ask the wallet to sign. Search reliable current sources, prefer official sources, and return concise source-backed facts in plain English. Include current prices, thresholds, dates, plan names, ambiguity, and URLs when they are relevant. If multiple current options could change the approval outcome, list each option clearly. ';
+  const userContent: Record<string, unknown> = {
+    instruction,
+    walletAddress,
+    cluster,
+    plan: payload.plan ?? {},
+    context: { ...(payload.context as Record<string, unknown> | undefined), ...(hasTargets ? { researchTargets } : {}) },
+    research: {
+      needed: true,
+      mode: hasTargets ? 'resolve_specific_atoms' : 'collect_current_facts_only',
+      currentDate: (now ?? (() => new Date()))().toISOString(),
+      maxSearches: RESEARCH_MAX_USES,
+      sourcePolicy,
+    },
+    requiredBoundary: 'This research pass cannot approve, deny, sign, or submit. It only gathers facts for a later structured review.',
+  };
+  return {
+    system: systemPrelude + sourcePolicy,
     userContent: JSON.stringify(userContent),
   };
 }
@@ -120,7 +162,7 @@ export function buildAskMessages(
     walletAddress,
     cluster,
     context: payload.context ?? {},
-    research: researchObject(now),
+    research: researchObject(payload, now),
     requiredBoundary: boundary,
   };
 
@@ -136,7 +178,8 @@ function pickProtocolConnectors(payload: Record<string, unknown>): unknown[] {
   return [];
 }
 
-function researchObject(now: NowFn | undefined): Record<string, unknown> {
+function researchObject(payload: Record<string, unknown>, now: NowFn | undefined): Record<string, unknown> {
+  if (isRecord(payload.research)) return payload.research;
   const date = typeof now === 'function' ? now() : new Date();
   return {
     needed: false,
@@ -144,6 +187,10 @@ function researchObject(now: NowFn | undefined): Record<string, unknown> {
     currentDate: date.toISOString(),
     maxSearches: RESEARCH_MAX_USES,
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
 function deriveConnectorRule(protocolConnectors: unknown[]): string {

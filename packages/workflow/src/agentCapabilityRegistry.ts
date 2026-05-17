@@ -17,7 +17,7 @@ import type {
 } from './agentAtoms.js';
 import type { AgentFactProvider } from './agentFactRouter.js';
 
-export type CapabilityProvider = AgentFactProvider | 'web';
+export type CapabilityProvider = AgentFactProvider | 'web' | 'local' | 'chainalysis' | 'local_tx' | 'composite';
 
 export interface CapabilityTier {
   provider: CapabilityProvider;
@@ -85,6 +85,86 @@ export const CAPABILITY_REGISTRY: Readonly<Record<AgentAtomType, ReadonlyArray<C
   protocol_health: [
     { provider: 'protocol_connector', endpoint: 'read_facts', ttlMs: ONE_MINUTE_MS },
     { provider: 'web', ttlMs: 10 * ONE_MINUTE_MS },
+  ],
+  // ── New external/local/network atom types ────────────────────────────────────
+  external_state: [
+    // No structured status-API connector wired yet; web is the only tier today.
+    // News/status providers (statusgator, defillama incidents) can slot in ahead of web.
+    { provider: 'web', ttlMs: 2 * ONE_MINUTE_MS },
+  ],
+  external_event: [
+    { provider: 'web', ttlMs: 5 * ONE_MINUTE_MS },
+  ],
+  external_identity: [
+    // chainalysis tier will go first when wired (sanctions screening API).
+    { provider: 'chainalysis', endpoint: 'screening', ttlMs: 60 * ONE_MINUTE_MS },
+    { provider: 'web', ttlMs: 10 * ONE_MINUTE_MS },
+  ],
+  tradfi_price: [
+    // AlphaVantage / Yahoo Finance tiers go ahead of web when wired.
+    { provider: 'web', ttlMs: ONE_MINUTE_MS },
+  ],
+  time_fact: [
+    // Pure local computation — no network involved. ttlMs is irrelevant but kept for shape.
+    { provider: 'local', endpoint: 'time', ttlMs: 30 * ONE_SECOND_MS },
+  ],
+  network_metric: [
+    { provider: 'rpc', endpoint: 'getRecentPerformanceSamples', ttlMs: 15 * ONE_SECOND_MS, when: (atom) => atom.type === 'network_metric' && atom.metric === 'tps' },
+    { provider: 'rpc', endpoint: 'getSlot', ttlMs: 5 * ONE_SECOND_MS, when: (atom) => atom.type === 'network_metric' && atom.metric === 'slot_height' },
+    { provider: 'rpc', endpoint: 'getVoteAccounts', ttlMs: 30 * ONE_SECOND_MS, when: (atom) => atom.type === 'network_metric' && atom.metric === 'validator_jailed' },
+    { provider: 'rpc', endpoint: 'getEpochInfo', ttlMs: 15 * ONE_SECOND_MS, when: (atom) => atom.type === 'network_metric' && atom.metric === 'epoch_progress_pct' },
+    { provider: 'web', ttlMs: 30 * ONE_SECOND_MS },
+  ],
+  // ── Tier 1: balance / fee atoms (live Solana RPC, no key) ──────────────────
+  wallet_balance: [
+    { provider: 'rpc', endpoint: 'getBalance', ttlMs: 10 * ONE_SECOND_MS },
+  ],
+  token_balance: [
+    { provider: 'rpc', endpoint: 'getParsedTokenAccountsByOwner', ttlMs: 10 * ONE_SECOND_MS },
+  ],
+  relative_amount: [
+    // Pure-math composite atom — the resolver derives the value from previously-resolved
+    // wallet_balance/token_balance + the draft's amount. No network call.
+    { provider: 'composite', endpoint: 'relative_amount', ttlMs: 5 * ONE_SECOND_MS },
+  ],
+  tx_fee: [
+    // Combines simulationDigest.unitsConsumed (already in context) × prioritization fee
+    // (live RPC). Defers when no simulation is available.
+    { provider: 'rpc', endpoint: 'getRecentPrioritizationFees', ttlMs: 15 * ONE_SECOND_MS },
+  ],
+  network_congestion: [
+    { provider: 'rpc', endpoint: 'getRecentPrioritizationFees', ttlMs: 15 * ONE_SECOND_MS },
+  ],
+  // ── Tier 2: token / wallet sanity atoms (live RPC, no key) ─────────────────
+  token_supply: [
+    { provider: 'rpc', endpoint: 'getTokenSupply', ttlMs: ONE_MINUTE_MS },
+  ],
+  mint_decimals: [
+    { provider: 'rpc', endpoint: 'getParsedAccountInfo', ttlMs: 24 * 60 * ONE_MINUTE_MS }, // decimals are immutable
+  ],
+  wallet_age_onchain: [
+    { provider: 'rpc', endpoint: 'getSignaturesForAddress', ttlMs: 5 * ONE_MINUTE_MS },
+  ],
+  recipient_known: [
+    { provider: 'rpc', endpoint: 'getSignaturesForAddress', ttlMs: 60 * ONE_SECOND_MS },
+  ],
+  token_held_duration: [
+    { provider: 'rpc', endpoint: 'getSignaturesForAddress', ttlMs: 5 * ONE_MINUTE_MS },
+  ],
+  // ── Tier 3: tx-inspect atoms (local-only, no RPC) ──────────────────────────
+  required_signatures: [
+    { provider: 'local_tx', endpoint: 'parse_message', ttlMs: ONE_SECOND_MS },
+  ],
+  instruction_count: [
+    { provider: 'local_tx', endpoint: 'parse_message', ttlMs: ONE_SECOND_MS },
+  ],
+  account_writability_count: [
+    { provider: 'local_tx', endpoint: 'parse_message', ttlMs: ONE_SECOND_MS },
+  ],
+  rent_exempt_required: [
+    // Reads from the simulation digest's account-change deltas (already pre-computed when
+    // a simulator is wired). Composite of sim + local computation.
+    { provider: 'local_tx', endpoint: 'sim_rent_delta', ttlMs: ONE_SECOND_MS },
   ],
 });
 

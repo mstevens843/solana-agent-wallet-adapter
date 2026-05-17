@@ -47,7 +47,7 @@ internal object DeviceAgentMessageAssembler {
             put("cluster", cluster)
             put("plan", payload.opt("plan") ?: JSONObject())
             put("context", payload.opt("context") ?: JSONObject())
-            put("research", researchObject(clock))
+            put("research", researchObject(payload, clock))
             put("requiredBoundary", boundary)
         }
         return Messages(DeviceAgentSystemPrompts.REVIEW, userContent.toString())
@@ -63,17 +63,21 @@ internal object DeviceAgentMessageAssembler {
             put("walletAddress", walletAddress)
             put("cluster", cluster)
             put("context", payload.opt("context") ?: JSONObject())
-            put("research", researchObject(clock))
+            put("research", researchObject(payload, clock))
             put("requiredBoundary", boundary)
         }
         return Messages(DeviceAgentSystemPrompts.ASK, userContent.toString())
     }
 
-    private fun researchObject(clock: Clock): JSONObject = JSONObject()
-        .put("needed", false)
-        .put("mode", "not_required")
-        .put("currentDate", Instant.now(clock).toString())
-        .put("maxSearches", RESEARCH_MAX_USES)
+    private fun researchObject(payload: JSONObject, clock: Clock): JSONObject {
+        val provided = payload.optJSONObject("research")
+        if (provided != null) return provided
+        return JSONObject()
+            .put("needed", false)
+            .put("mode", "not_required")
+            .put("currentDate", Instant.now(clock).toString())
+            .put("maxSearches", RESEARCH_MAX_USES)
+    }
 
     private fun deriveConnectorRule(protocolConnectors: JSONArray): String {
         val selected = findSelectedConnector(protocolConnectors) ?: return CONNECTOR_RULE_DEFAULT

@@ -127,6 +127,15 @@ describe('panelHtml — loaded body sections', () => {
     expect(panelHtml()).toContain('Try a sample agent payment');
   });
 
+  it('renders the MPP session-payment policy editor', () => {
+    const html = panelHtml();
+    expect(html).toContain('MPP session rail');
+    expect(html).toContain('data-mpp-policy-field="acceptedRails"');
+    expect(html).toContain('data-mpp-policy-field="allowedOrigins"');
+    expect(html).toContain('data-mpp-policy-toggle="requireSettlementConfirmed"');
+    expect(html).toContain('data-profile-action="save-mpp-policy"');
+  });
+
   it('renders the bottom collapsible "What\'s a payment profile?" explainer reusing the request-context primitive', () => {
     const html = panelHtml();
     expect(html).toContain('public-request-context');

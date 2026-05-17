@@ -72,6 +72,22 @@ describe('DEVICE_AGENT_SYSTEM_PROMPTS', () => {
       expect(text).toContain('STRUCTURED DECISION CONTRACT');
     });
 
+    it('preserves the POLICY BUNDLE header', () => {
+      expect(text).toContain('POLICY BUNDLE');
+    });
+
+    it('preserves the policyBundle.evaluations source-of-truth clause', () => {
+      expect(text).toContain('Treat policyBundle.evaluations as the source of truth');
+    });
+
+    it('preserves the policyBundle.hasBlockingFailure deny rule', () => {
+      expect(text).toContain('policyBundle.hasBlockingFailure is true');
+    });
+
+    it('preserves the policyBundle.atoms citation rule in the decision contract', () => {
+      expect(text).toContain('AND/OR policyBundle.atoms');
+    });
+
     it('preserves the UNTRUSTED USER TEXT header', () => {
       expect(text).toContain('UNTRUSTED USER TEXT');
     });
@@ -84,8 +100,8 @@ describe('DEVICE_AGENT_SYSTEM_PROMPTS', () => {
       expect(text.endsWith('never user-supplied prose.')).toBe(true);
     });
 
-    it('matches the Kotlin source length (4986 chars)', () => {
-      expect(text.length).toBe(4986);
+    it('matches the Kotlin source length (5979 chars after POLICY BUNDLE sync)', () => {
+      expect(text.length).toBe(5979);
     });
   });
 

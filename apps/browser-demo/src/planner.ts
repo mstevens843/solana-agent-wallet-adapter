@@ -131,6 +131,14 @@ interface AgentReviewResearchEvidence {
   sourcePolicy: string;
 }
 
+export interface AiResearchControl {
+  needed: boolean;
+  mode: 'auto_current_facts' | 'not_required';
+  currentDate: string;
+  maxSearches: number;
+  sourcePolicy?: string;
+}
+
 export const DEFAULT_AI_BASE_URL = 'https://api.openai.com/v1';
 export const DEFAULT_AI_MODEL = 'gpt-5';
 export const DEFAULT_AI_PROVIDER_ID: AiProviderId = 'openai';
@@ -1162,7 +1170,7 @@ function isAiDiagnosticEntry(value: unknown): value is AiDiagnosticEntry {
   return typeof record.code === 'string' && typeof record.message === 'string';
 }
 
-function askNeedsWebResearch(request: AgentPlanAskRequest): boolean {
+export function askNeedsWebResearch(request: AgentPlanAskRequest): boolean {
   return textNeedsWebResearch([
     request.question,
     request.plan.intent,
@@ -1172,7 +1180,7 @@ function askNeedsWebResearch(request: AgentPlanAskRequest): boolean {
   ].join('\n'));
 }
 
-function reviewNeedsWebResearch(request: AgentPlanReviewRequest): boolean {
+export function reviewNeedsWebResearch(request: AgentPlanReviewRequest): boolean {
   return textNeedsWebResearch([
     request.instruction ?? '',
     request.plan.intent,
@@ -1180,6 +1188,24 @@ function reviewNeedsWebResearch(request: AgentPlanReviewRequest): boolean {
     request.plan.approval,
     request.plan.userNotes ?? '',
   ].join('\n'));
+}
+
+export function researchControlForReview(request: AgentPlanReviewRequest): AiResearchControl {
+  return researchControl(reviewNeedsWebResearch(request));
+}
+
+export function researchControlForAsk(request: AgentPlanAskRequest): AiResearchControl {
+  return researchControl(askNeedsWebResearch(request));
+}
+
+function researchControl(needed: boolean): AiResearchControl {
+  return {
+    needed,
+    mode: needed ? 'auto_current_facts' : 'not_required',
+    currentDate: new Date().toISOString(),
+    maxSearches: RESEARCH_MAX_USES,
+    ...(needed ? { sourcePolicy: RESEARCH_SOURCE_POLICY } : {}),
+  };
 }
 
 function textNeedsWebResearch(text: string): boolean {

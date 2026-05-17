@@ -29,6 +29,11 @@ const PRICE_CONTEXT_KEYWORDS = /\b(cost|costs|price|priced|plan|plans|monthly|we
 
 const PRICE_LIKE_LABEL = /plan\s*rate|subscription|fact|answer|current\s*price|monthly\s*cost|monthly|^rate$|^price$|^cost$|price$|rate$|cost$|fee$/i;
 
+// Token symbols and crypto-asset words that strongly signal a candidate sentence is about
+// a swap/quote/asset rather than the user's off-chain question. Used to de-prefer candidates
+// when the user's instruction's subject is something else (e.g. "helium phone plan").
+const CRYPTO_ASSET_TOKENS = /\b(SOL|WSOL|BTC|BITCOIN|ETH|ETHEREUM|USDC|USDT|JUP|BONK|WIF|PYUSD|MSOL|JITOSOL|swap\s+(?:quote|rate|price)|token\s+price|sol\s+price|sol\/usd)\b/i;
+
 const FACT_LABEL_HINTS: Array<{ test: RegExp; label: string }> = [
   { test: /\bplan\s+rate\b/i, label: 'Plan rate' },
   { test: /\bmonthly\s+plan\b|\bmonthly\s+rate\b|\bmonthly\s+cost\b|\bmonthly\s+price\b|\bmonthly\s+fee\b/i, label: 'Monthly rate' },
@@ -49,6 +54,55 @@ export function factLabelFromInstruction(instruction: string | undefined): strin
     if (hint.test.test(text)) return hint.label;
   }
   return 'Plan rate';
+}
+
+/**
+ * Extract subject keywords from the user's instruction — the noun-phrase tokens that
+ * describe WHAT the user is asking about. Used by `selectThresholdPriceCandidate` to
+ * prefer candidate sentences mentioning the same subject (e.g. "helium" / "phone")
+ * over candidates about an unrelated token's price.
+ *
+ * Drops generic threshold/policy words (approve/deny/$X/under/over) so what's left is
+ * the subject of the question. Returns lowercased tokens of length >= 3.
+ */
+export function extractInstructionSubjectHints(instruction: string | undefined): string[] {
+  if (!instruction) return [];
+  const normalized = instruction.toLowerCase();
+  // Strip URLs and $-amounts up front; they're never subjects.
+  const stripped = normalized
+    .replace(/https?:\/\/\S+/g, ' ')
+    .replace(/\$\s*\d+(?:\.\d+)?/g, ' ');
+  // Words we explicitly DON'T treat as subject (verbs, policy nouns, threshold connectives).
+  const stopWords = new Set([
+    'approve', 'deny', 'reject', 'allow', 'block', 'pass', 'fail', 'cancel',
+    'check', 'verify', 'confirm', 'find', 'look', 'search', 'lookup',
+    'if', 'when', 'is', 'are', 'be', 'was', 'were', 'the', 'a', 'an', 'this', 'that', 'these', 'those',
+    'and', 'or', 'but', 'not', 'no', 'yes',
+    'under', 'over', 'below', 'above', 'less', 'more', 'than', 'greater', 'fewer',
+    'value', 'amount', 'price', 'cost', 'rate', 'fee', 'charge', 'plan', 'subscription',
+    'monthly', 'weekly', 'yearly', 'annually', 'daily', 'hourly', 'per', 'month', 'week', 'year', 'day', 'hour',
+    'current', 'currently', 'today', 'now', 'latest', 'recent',
+    'lowest', 'highest', 'cheapest', 'expensive', 'best', 'worst',
+    'dollar', 'dollars', 'usd', 'cents',
+    'review', 'rule', 'threshold', 'limit', 'budget', 'cap', 'policy',
+    'agent', 'wallet', 'approval', 'sign', 'draft',
+  ]);
+  const tokens = stripped.split(/[^a-z0-9]+/).filter((token) => token.length >= 3 && !stopWords.has(token));
+  // Dedupe preserving first occurrence.
+  return Array.from(new Set(tokens));
+}
+
+function candidateMentionsAnySubject(candidate: { label: string; text: string }, subjects: ReadonlyArray<string>): boolean {
+  if (!subjects.length) return false;
+  const haystack = `${candidate.label} ${candidate.text}`.toLowerCase();
+  return subjects.some((subject) => haystack.includes(subject));
+}
+
+function candidateLooksLikeCryptoAsset(candidate: { label: string; text: string }): boolean {
+  // Combine label + value text — most candidates carry the asset name on the label
+  // (e.g. label="SOL price", value="$86.18") so checking value alone misses them.
+  const haystack = `${candidate.label} ${candidate.text}`;
+  return CRYPTO_ASSET_TOKENS.test(haystack);
 }
 
 export function extractInstructionThreshold(text: string): number | undefined {
@@ -102,13 +156,16 @@ export interface EvidenceTextField {
 
 export function evidenceTextFields(evidence: Record<string, unknown>): EvidenceTextField[] {
   const fields: EvidenceTextField[] = [];
-  const findings = Array.isArray(evidence.findings) ? evidence.findings : [];
-  for (const entry of findings) {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
-    const record = entry as Record<string, unknown>;
-    const label = typeof record.label === 'string' ? record.label : 'finding';
-    const value = typeof record.value === 'string' ? record.value : '';
-    if (value.trim()) fields.push({ label, text: value, source: 'finding' });
+  for (const key of ['findings', 'checks', 'evidenceRows', 'evidence_rows']) {
+    const rows = Array.isArray(evidence[key]) ? evidence[key] : [];
+    for (const entry of rows) {
+      appendEvidenceRowText(fields, entry, key === 'findings' ? 'finding' : 'evidence');
+    }
+  }
+  appendEvidenceFactsText(fields, evidence.facts);
+  for (const [key, raw] of Object.entries(evidence)) {
+    if (isStructuredEvidenceKey(key)) continue;
+    appendEvidenceValueText(fields, key, raw);
   }
   if (evidence.research && typeof evidence.research === 'object' && !Array.isArray(evidence.research)) {
     const summary = (evidence.research as Record<string, unknown>).summary;
@@ -117,6 +174,94 @@ export function evidenceTextFields(evidence: Record<string, unknown>): EvidenceT
     }
   }
   return fields;
+}
+
+function appendEvidenceRowText(
+  fields: EvidenceTextField[],
+  entry: unknown,
+  source: ThresholdPriceCandidate['source'],
+): void {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return;
+  const record = entry as Record<string, unknown>;
+  const label = typeof record.label === 'string' ? record.label : 'finding';
+  const value = stringValue(record.value) || stringValue(record.message) || stringValue(record.text);
+  if (value.trim()) fields.push({ label, text: value, source });
+}
+
+function appendEvidenceFactsText(fields: EvidenceTextField[], facts: unknown): void {
+  if (Array.isArray(facts)) {
+    for (const entry of facts) {
+      appendEvidenceRowText(fields, entry, 'evidence');
+    }
+    return;
+  }
+  if (!facts || typeof facts !== 'object') return;
+  for (const [key, raw] of Object.entries(facts as Record<string, unknown>)) {
+    appendEvidenceValueText(fields, key, raw);
+  }
+}
+
+function appendEvidenceValueText(fields: EvidenceTextField[], key: string, raw: unknown): void {
+  if (raw === undefined || raw === null) return;
+  if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') {
+    const value = stringValue(raw);
+    if (value.trim()) fields.push({ label: humanizeEvidenceLabel(key), text: value, source: 'evidence' });
+    return;
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
+  const record = raw as Record<string, unknown>;
+  const label = stringValue(record.label) || humanizeEvidenceLabel(key);
+  const value = stringValue(record.value) || stringValue(record.message) || stringValue(record.text) || stringValue(record.summary);
+  if (value.trim()) fields.push({ label, text: value, source: 'evidence' });
+}
+
+function stringValue(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  return '';
+}
+
+const STRUCTURED_EVIDENCE_KEYS = new Set([
+  'checks',
+  'findings',
+  'evidencerows',
+  'evidence_rows',
+  'facts',
+  'questions',
+  'reviewers',
+  'sources',
+  'citations',
+  'research',
+  'decisioncontract',
+  'decision_contract',
+  'evidencefactids',
+  'evidence_fact_ids',
+  'blockingfactids',
+  'blocking_fact_ids',
+  'missingfactids',
+  'missing_fact_ids',
+  'confidence',
+  'confidencescore',
+  'confidence_score',
+  'counterfactuals',
+  'evidencegate',
+  'evidence_gate',
+  'auditreceipt',
+  'audit_receipt',
+]);
+
+function isStructuredEvidenceKey(key: string): boolean {
+  return STRUCTURED_EVIDENCE_KEYS.has(key.toLowerCase().replace(/[\s_-]+/g, ''));
+}
+
+function humanizeEvidenceLabel(key: string): string {
+  const spaced = key
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return spaced ? spaced.replace(/\b\w/g, (char) => char.toUpperCase()) : 'Evidence';
 }
 
 function normalizeLabel(label: string): string {
@@ -158,7 +303,8 @@ export function extractThresholdPriceCandidates(
   for (const field of fields) {
     for (const sentence of field.text.split(/(?<=[.!?])\s+|\n+/)) {
       if (!/\$/.test(sentence)) continue;
-      const hasContextWord = PRICE_CONTEXT_KEYWORDS.test(sentence);
+      const labelHasContextWord = PRICE_CONTEXT_KEYWORDS.test(field.label) || PRICE_LIKE_LABEL.test(field.label);
+      const hasContextWord = PRICE_CONTEXT_KEYWORDS.test(sentence) || labelHasContextWord;
       const isThresholdHeavy = /\b(threshold|limit|rule|budget|cap)\b/i.test(sentence) && !hasContextWord;
       if (isThresholdHeavy) continue;
       if (!hasContextWord && field.source !== 'finding') continue;
@@ -167,7 +313,7 @@ export function extractThresholdPriceCandidates(
         if (!Number.isFinite(amount)) continue;
         if (amount === threshold) {
           const prefix = sentence.slice(0, Math.max(0, match.index ?? 0));
-          if (!PRICE_CONTEXT_KEYWORDS.test(prefix) && field.source !== 'finding') continue;
+          if (!PRICE_CONTEXT_KEYWORDS.test(prefix) && !labelHasContextWord && field.source !== 'finding') continue;
         }
         const key = `${amount}:${field.source}:${sentence.trim().toLowerCase()}`;
         if (seen.has(key)) continue;
@@ -182,10 +328,55 @@ export function extractThresholdPriceCandidates(
 export function selectThresholdPriceCandidate(
   result: Pick<AgentPlanReviewResult, 'reason' | 'summary' | 'evidence'>,
   rule: ThresholdRule,
+  options: { instruction?: string } = {},
 ): ThresholdPriceCandidate | undefined {
   const candidates = extractThresholdPriceCandidates(result, rule.threshold);
   if (!candidates.length) return undefined;
 
+  const subjects = extractInstructionSubjectHints(options.instruction);
+
+  // Subject-aware first pass: if the user's instruction names a subject ("helium",
+  // "phone", etc.), prefer candidates whose text mentions ANY of those subject tokens.
+  // Drop candidates that look like crypto-asset prose ("SOL price", "swap quote", etc.)
+  // when subjects exist and don't overlap with crypto vocabulary. This prevents the
+  // Gemini-bug failure mode where the model dumps both the Helium plan price AND the
+  // SOL price into prose and the wrong $X gets picked.
+  const subjectMatchedCandidates = subjects.length > 0
+    ? candidates.filter((c) => candidateMentionsAnySubject(c, subjects) && c.amount !== rule.threshold)
+    : [];
+  if (subjectMatchedCandidates.length > 0) {
+    const finding = subjectMatchedCandidates.find((c) => c.source === 'finding');
+    if (finding) return finding;
+    if (subjectMatchedCandidates.length === 1) return subjectMatchedCandidates[0];
+    // Multiple subject-matched candidates: prefer the one adjacent to the user's adjective.
+    const adj = rule.approveWhen === 'below' ? /\b(under|below|less\s+than|cheaper\s+than|<)\b/i : /\b(over|above|more\s+than|greater\s+than|>)\b/i;
+    const adjacent = subjectMatchedCandidates.find((c) => adj.test(c.text));
+    if (adjacent) return adjacent;
+    return subjectMatchedCandidates[0];
+  }
+
+  // When subjects exist but no candidate matches them, and there are crypto-asset
+  // candidates lurking, refuse to pick — we'd guess wrong. Better to escalate to
+  // needs_input than to compare the SOL price against a phone-plan threshold.
+  const subjectsAreCryptoFree = subjects.length > 0 && !subjects.some((s) => CRYPTO_ASSET_TOKENS.test(s));
+  if (subjectsAreCryptoFree) {
+    const cryptoFiltered = candidates.filter((c) => !candidateLooksLikeCryptoAsset(c));
+    if (cryptoFiltered.length === 0) {
+      // Every candidate is about a crypto asset but the user asked about something else
+      // → can't apply. Reconciler will downgrade to needs_input.
+      return undefined;
+    }
+    // Fall through to the legacy heuristics against the crypto-filtered set.
+    return selectFromHeuristics(cryptoFiltered, rule);
+  }
+
+  return selectFromHeuristics(candidates, rule);
+}
+
+function selectFromHeuristics(
+  candidates: ThresholdPriceCandidate[],
+  rule: ThresholdRule,
+): ThresholdPriceCandidate | undefined {
   const findingCandidates = candidates.filter((c) => c.source === 'finding' && c.amount !== rule.threshold);
   const labeledFinding = findingCandidates.find((c) => PRICE_LIKE_LABEL.test(c.label));
   if (labeledFinding) return labeledFinding;
@@ -217,7 +408,7 @@ export function reconcileThresholdReviewDecision(
 ): AgentPlanReviewResult {
   const rule = extractThresholdRule(request.instruction);
   if (!rule) return result;
-  const candidate = selectThresholdPriceCandidate(result, rule);
+  const candidate = selectThresholdPriceCandidate(result, rule, { instruction: request.instruction });
 
   if (!candidate) {
     if (result.decision === 'needs_input') return result;
@@ -276,14 +467,18 @@ export function reconcileThresholdReviewDecision(
     tone: factTone,
   }, { dedupeByNormalizedLabel: true });
 
+  // Build a richer reason that names the source sentence the corrected value came from,
+  // so the inbox card explains WHICH fact was used — not just "$X is over $Y". This
+  // matches the Anthropic-quality reasoning users got on the local-bridge path.
+  const sourceSnippet = compactText(candidate.text, 140);
   const correctedReason = expected === 'needs_input'
-    ? `${amountText} is exactly ${thresholdText}; the user rule used a strict under/over threshold, so the review needs clarification.`
-    : `${amountText} is ${relation} ${thresholdText}, so the user threshold rule ${expected === 'approve' ? 'approves' : 'denies'} this draft. Wallet approval is still required before anything signs.`;
+    ? `${amountText} is exactly ${thresholdText}; the user rule used a strict under/over threshold, so the review needs clarification. Source: "${sourceSnippet}"`
+    : `${amountText} (from "${sourceSnippet}") is ${relation} ${thresholdText}, so the user threshold rule ${expected === 'approve' ? 'approves' : 'denies'} this draft. Wallet approval is still required before anything signs.`;
 
   return {
     ...result,
     decision: expected,
-    reason: compactText(correctedReason, 280),
+    reason: compactText(correctedReason, 320),
     summary: compactText(`Threshold rule checked: ${amountText} is ${relation} ${thresholdText}.`, 160),
     evidence,
   };

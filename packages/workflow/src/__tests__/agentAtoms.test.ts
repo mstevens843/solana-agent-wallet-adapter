@@ -144,6 +144,253 @@ describe('extractAtoms', () => {
   });
 });
 
+describe('extractAtoms — external_state', () => {
+  it('extracts a network_outage atom with expected=false when phrased as "no outage"', () => {
+    const { atoms } = extractAtoms({ text: 'Approve only if there is no Solana network outage right now.' });
+    const state = byType(atoms, 'external_state');
+    expect(state.length).toBeGreaterThanOrEqual(1);
+    expect(state[0]).toMatchObject({ kind: 'network_outage', expected: false });
+  });
+
+  it('extracts an exploit atom from "deny if exploit"', () => {
+    const { atoms } = extractAtoms({ text: 'Deny if there was a Jupiter exploit in the last 30 days.' });
+    const state = byType(atoms, 'external_state');
+    expect(state.some((s) => s.kind === 'exploit')).toBe(true);
+  });
+
+  it('extracts paused_withdrawals', () => {
+    const { atoms } = extractAtoms({ text: 'Deny if any major Solana DEX has paused withdrawals today.' });
+    expect(byType(atoms, 'external_state').some((s) => s.kind === 'paused_withdrawals')).toBe(true);
+  });
+});
+
+describe('extractAtoms — external_event', () => {
+  it('extracts a scheduled_upgrade atom with a window when "next 24h" is specified', () => {
+    const { atoms } = extractAtoms({ text: 'Approve only if Solana is not scheduled for a mainnet upgrade in the next 24h.' });
+    const events = byType(atoms, 'external_event');
+    expect(events.length).toBeGreaterThanOrEqual(1);
+    expect(events[0]).toMatchObject({ kind: 'scheduled_upgrade', window: 'within', windowSeconds: 24 * 3_600, expected: false });
+  });
+
+  it('extracts a governance_vote atom', () => {
+    const { atoms } = extractAtoms({ text: 'Reject if the team\'s most recent governance vote was rejected.' });
+    expect(byType(atoms, 'external_event').some((e) => e.kind === 'governance_vote')).toBe(true);
+  });
+});
+
+describe('extractAtoms — external_identity', () => {
+  it('extracts sanctions_list (defaults expected=false — user wants NOT on the list)', () => {
+    const { atoms } = extractAtoms({ text: 'Deny if the recipient is on the OFAC sanctions list.' });
+    const ids = byType(atoms, 'external_identity');
+    expect(ids[0]).toMatchObject({ kind: 'sanctions_list', expected: false });
+  });
+
+  it('extracts sec_action', () => {
+    const { atoms } = extractAtoms({ text: 'Deny if there is an active SEC enforcement action against the token issuer.' });
+    expect(byType(atoms, 'external_identity').some((i) => i.kind === 'sec_action')).toBe(true);
+  });
+
+  it('extracts kyc_status with expected=true (defaults to wanting KYC complete)', () => {
+    const { atoms } = extractAtoms({ text: 'Approve only if KYC status is complete.' });
+    const ids = byType(atoms, 'external_identity');
+    expect(ids[0]).toMatchObject({ kind: 'kyc_status', expected: true });
+  });
+});
+
+describe('extractAtoms — tradfi_price', () => {
+  it('extracts SPY above $500', () => {
+    const { atoms } = extractAtoms({ text: 'Approve only if SPY is above 500.' });
+    const tradfi = byType(atoms, 'tradfi_price');
+    expect(tradfi[0]).toMatchObject({ subject: 'SPY', op: 'gt', value: 500 });
+  });
+
+  it('extracts gold and FX pairs', () => {
+    const { atoms } = extractAtoms({ text: 'Approve if GLD > 180. EUR/USD must be above 1.10.' });
+    const tradfi = byType(atoms, 'tradfi_price');
+    expect(tradfi.some((t) => t.subject === 'GLD' && t.value === 180)).toBe(true);
+    expect(tradfi.some((t) => t.subject === 'EUR/USD' && Math.abs(t.value - 1.10) < 1e-9)).toBe(true);
+  });
+
+  it('does NOT route tradfi tickers through the crypto price extractor', () => {
+    const { atoms } = extractAtoms({ text: 'SPY > 500' });
+    expect(byType(atoms, 'price')).toHaveLength(0);
+    expect(byType(atoms, 'tradfi_price')).toHaveLength(1);
+  });
+});
+
+describe('extractAtoms — time_fact', () => {
+  it('extracts business day, holiday, and market_open', () => {
+    const { atoms } = extractAtoms({
+      text: 'Approve only if today is a business day, not a holiday, and during market hours.',
+    });
+    const t = byType(atoms, 'time_fact');
+    expect(t.some((f) => f.kind === 'is_business_day')).toBe(true);
+    expect(t.some((f) => f.kind === 'is_us_holiday')).toBe(true);
+    expect(t.some((f) => f.kind === 'is_market_open')).toBe(true);
+  });
+});
+
+describe('extractAtoms — network_metric', () => {
+  it('extracts TPS threshold', () => {
+    const { atoms } = extractAtoms({ text: 'Approve only if Solana TPS is above 1000.' });
+    const m = byType(atoms, 'network_metric');
+    expect(m[0]).toMatchObject({ metric: 'tps', op: 'gt', value: 1000 });
+  });
+
+  it('extracts validator jailed (no operator/value, just a flag)', () => {
+    const { atoms } = extractAtoms({ text: 'Approve only if the validator is not jailed.' });
+    const m = byType(atoms, 'network_metric');
+    expect(m.some((x) => x.metric === 'validator_jailed')).toBe(true);
+  });
+
+  it('extracts slot_height threshold', () => {
+    const { atoms } = extractAtoms({ text: 'Deny if slot height is below 300000000.' });
+    const m = byType(atoms, 'network_metric');
+    expect(m[0]).toMatchObject({ metric: 'slot_height', op: 'lt', value: 300_000_000 });
+  });
+});
+
+describe('extractAtoms — Tier 1: wallet_balance / token_balance / relative_amount / tx_fee / network_congestion', () => {
+  it('extracts wallet_balance from "SOL balance above 1"', () => {
+    const { atoms } = extractAtoms({ text: 'Approve only if SOL balance above 1.' });
+    const wb = byType(atoms, 'wallet_balance');
+    expect(wb[0]).toMatchObject({ subject: 'SOL', op: 'gt', value: 1, unit: 'SOL' });
+  });
+
+  it('extracts wallet_balance from "leave at least 0.5 SOL"', () => {
+    const { atoms } = extractAtoms({ text: 'Leave at least 0.5 SOL for fees.' });
+    const wb = byType(atoms, 'wallet_balance');
+    expect(wb[0]).toMatchObject({ op: 'gte', value: 0.5, unit: 'SOL' });
+  });
+
+  it('extracts token_balance from "USDC balance above 100"', () => {
+    const { atoms } = extractAtoms({ text: 'Approve only if USDC balance is above 100 tokens.' });
+    const tb = byType(atoms, 'token_balance');
+    expect(tb[0]).toMatchObject({ subject: 'USDC', op: 'gt', value: 100, unit: 'tokens' });
+  });
+
+  it('extracts relative_amount from "more than 10% of my wallet"', () => {
+    const { atoms } = extractAtoms({ text: 'Deny if this swap is more than 10% of my wallet.' });
+    const ra = byType(atoms, 'relative_amount');
+    expect(ra[0]).toMatchObject({ op: 'gt', basis: 'wallet' });
+    expect(ra[0]!.fraction).toBeCloseTo(0.10, 5);
+  });
+
+  it('extracts relative_amount with sol_balance basis from "more than 25% of my SOL"', () => {
+    const { atoms } = extractAtoms({ text: 'Deny if amount is over 25% of my SOL balance.' });
+    const ra = byType(atoms, 'relative_amount');
+    expect(ra[0]).toMatchObject({ op: 'gt', basis: 'sol_balance' });
+    expect(ra[0]!.fraction).toBeCloseTo(0.25, 5);
+  });
+
+  it('extracts tx_fee from "fee above $1"', () => {
+    const { atoms } = extractAtoms({ text: 'Deny if transaction fee above $1.' });
+    const tf = byType(atoms, 'tx_fee');
+    expect(tf[0]).toMatchObject({ op: 'gt', value: 1, unit: 'USD' });
+  });
+
+  it('extracts network_congestion from "priority fee above 100k"', () => {
+    const { atoms } = extractAtoms({ text: 'Deny if median priority fee is above 100k.' });
+    const nc = byType(atoms, 'network_congestion');
+    expect(nc[0]).toMatchObject({ op: 'gt', value: 100_000, unit: 'microlamports' });
+  });
+
+  it('extracts network_congestion from qualitative "network is congested"', () => {
+    const { atoms } = extractAtoms({ text: 'Deny if the network is congested.' });
+    const nc = byType(atoms, 'network_congestion');
+    expect(nc[0]).toMatchObject({ op: 'gt', value: 250_000 });
+  });
+});
+
+describe('extractAtoms — Tier 2: token_supply / mint_decimals / wallet_age / recipient_known / token_held_duration', () => {
+  it('extracts token_supply with SI suffix', () => {
+    const { atoms } = extractAtoms({ text: 'Approve only if token supply is above 1M.' });
+    const ts = byType(atoms, 'token_supply');
+    expect(ts[0]).toMatchObject({ op: 'gt', value: 1_000_000 });
+  });
+
+  it('extracts mint_decimals', () => {
+    const { atoms } = extractAtoms({ text: 'Deny if decimals = 0.' });
+    const md = byType(atoms, 'mint_decimals');
+    expect(md[0]).toMatchObject({ op: 'eq', value: 0 });
+  });
+
+  it('extracts wallet_age_onchain from "wallet age above 7 days"', () => {
+    const { atoms } = extractAtoms({ text: 'Approve only if wallet age above 7 days.' });
+    const wa = byType(atoms, 'wallet_age_onchain');
+    expect(wa[0]).toMatchObject({ op: 'gt', value: 7 * 86_400 });
+  });
+
+  it('extracts wallet_age_onchain from "wallet was created less than 30 days ago"', () => {
+    const { atoms } = extractAtoms({ text: 'Deny if my wallet was created less than 30 days ago.' });
+    const wa = byType(atoms, 'wallet_age_onchain');
+    expect(wa[0]).toMatchObject({ op: 'lt', value: 30 * 86_400 });
+  });
+
+  it('extracts recipient_known with expected=false for "new address"', () => {
+    const { atoms } = extractAtoms({ text: 'Deny if recipient is a new address.' });
+    const rk = byType(atoms, 'recipient_known');
+    expect(rk[0]).toMatchObject({ expected: false });
+  });
+
+  it('extracts recipient_known with expected=true for "sent to before"', () => {
+    const { atoms } = extractAtoms({ text: 'Approve only if I have sent to this recipient before.' });
+    const rk = byType(atoms, 'recipient_known');
+    expect(rk[0]).toMatchObject({ expected: true });
+  });
+
+  it('extracts token_held_duration', () => {
+    const { atoms } = extractAtoms({ text: 'Approve only if I have held JUP for more than 7 days.' });
+    const thd = byType(atoms, 'token_held_duration');
+    expect(thd[0]).toMatchObject({ subject: 'JUP', op: 'gt', value: 7 * 86_400 });
+  });
+});
+
+describe('extractAtoms — Tier 3: required_signatures / instruction_count / writability / rent / epoch_warmup', () => {
+  it('extracts required_signatures from "signatures > 1"', () => {
+    const { atoms } = extractAtoms({ text: 'Deny if required signatures > 1.' });
+    const rs = byType(atoms, 'required_signatures');
+    expect(rs[0]).toMatchObject({ op: 'gt', value: 1 });
+  });
+
+  it('extracts required_signatures from "more than one signer"', () => {
+    const { atoms } = extractAtoms({ text: 'Deny if more than one signer.' });
+    const rs = byType(atoms, 'required_signatures');
+    expect(rs[0]).toMatchObject({ op: 'gt', value: 1 });
+  });
+
+  it('extracts instruction_count', () => {
+    const { atoms } = extractAtoms({ text: 'Deny if tx has more than 8 instructions.' });
+    const ic = byType(atoms, 'instruction_count');
+    expect(ic[0]).toMatchObject({ op: 'gt', value: 8 });
+  });
+
+  it('extracts account_writability_count', () => {
+    const { atoms } = extractAtoms({ text: 'Deny if more than 5 writable accounts.' });
+    const aw = byType(atoms, 'account_writability_count');
+    expect(aw[0]).toMatchObject({ op: 'gt', value: 5 });
+  });
+
+  it('extracts rent_exempt_required', () => {
+    const { atoms } = extractAtoms({ text: 'Deny if rent above 0.01 SOL.' });
+    const re = byType(atoms, 'rent_exempt_required');
+    expect(re[0]).toMatchObject({ op: 'gt', value: 0.01, unit: 'SOL' });
+  });
+
+  it('maps "first 5% of epoch" → network_metric epoch_progress_pct lt 5', () => {
+    const { atoms } = extractAtoms({ text: 'Deny if we are in the first 5% of a new epoch.' });
+    const nm = byType(atoms, 'network_metric');
+    const epoch = nm.find((a) => a.metric === 'epoch_progress_pct');
+    expect(epoch).toMatchObject({ op: 'lt', value: 5 });
+  });
+
+  it('maps bare "epoch warmup" → epoch_progress_pct lt 5 (default 5%)', () => {
+    const { atoms } = extractAtoms({ text: 'Deny during epoch warmup.' });
+    const nm = byType(atoms, 'network_metric');
+    expect(nm.some((a) => a.metric === 'epoch_progress_pct' && a.op === 'lt')).toBe(true);
+  });
+});
+
 describe('looksLikePolicyWithoutAtoms', () => {
   it('returns false when atoms were extracted', () => {
     expect(looksLikePolicyWithoutAtoms('SOL above $80', [{ id: 'x', type: 'price', rawText: '', subject: 'SOL', op: 'gt', value: 80, unit: 'USD' }])).toBe(false);

@@ -98,12 +98,17 @@ export function createBridgeServer(options: CreateBridgeServerOptions): BridgeSe
   // Wire a transaction simulator if we have an action config (i.e. mainnet/devnet RPC).
   // The planner uses this to populate `context.simulationDigest` when a request includes
   // `context.transactionBase64`, lighting up the workflow's tx_gate analyzers live.
+  // Also threads the same Connection into the capability-resolver shims so the
+  // `network_metric` atom type (TPS / slot height / validator jailed / epoch progress)
+  // resolves live against the configured Solana RPC (Helius, QuickNode, public, etc.).
   if (actionConfig) {
     try {
       const simConnection = new Connection(actionConfig.rpcUrl, 'confirmed');
       aiPlanner.simulator = makeTransactionSimulator(simConnection);
+      aiPlanner.connection = simConnection;
     } catch {
-      // Bad RPC URL → no simulator; tx_gate atoms stay unresolved, review still works.
+      // Bad RPC URL → no simulator, no network_metric resolver; both atom kinds stay
+      // unresolved and the review still works.
     }
   }
   const agentRegistry = options.agentRegistry ?? new AgentRegistry({

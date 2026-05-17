@@ -155,6 +155,19 @@ describe('OpenAiCompatibleProvider.reviewPlan', () => {
     const messages = body.messages as Array<{ role: string; content: string }>;
     expect(messages[0]!.content).toBe(DEVICE_AGENT_SYSTEM_PROMPTS.REVIEW);
   });
+
+  it('fails closed without calling provider when current research is required', async () => {
+    const http = new FakeHttpExecutor();
+    const provider = new OpenAiCompatibleProvider(config(), http);
+    const result = await provider.reviewPlan({
+      plan: { intent: 'swap' },
+      research: { needed: true, mode: 'auto_current_facts', currentDate: '2026-05-16T03:00:00.000Z', maxSearches: 3 },
+    });
+
+    expect(result.decision).toBe('needs_input');
+    expect((result.evidence as Record<string, unknown>).research).toMatchObject({ status: 'unavailable', required: true });
+    expect(http.calls).toHaveLength(0);
+  });
 });
 
 describe('OpenAiCompatibleProvider.ask', () => {
@@ -185,6 +198,18 @@ describe('OpenAiCompatibleProvider.ask', () => {
     const result = await provider.ask({ question: 'what happens?' });
 
     expect(result.output_text).toBe('answer here from responses api');
+  });
+
+  it('fails closed without calling provider when current research ask is required', async () => {
+    const http = new FakeHttpExecutor();
+    const provider = new OpenAiCompatibleProvider(config(), http);
+    const result = await provider.ask({
+      question: 'what is the current price?',
+      research: { needed: true, mode: 'auto_current_facts', currentDate: '2026-05-16T03:00:00.000Z', maxSearches: 3 },
+    });
+
+    expect(result.output_text).toContain('cannot fetch current outside facts');
+    expect(http.calls).toHaveLength(0);
   });
 });
 

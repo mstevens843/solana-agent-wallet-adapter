@@ -321,23 +321,9 @@ export class BridgeAiPlanner {
         request.plan.intent ?? '',
       ].filter(Boolean).join('\n');
       if (!text.trim()) return request;
-      const resolver = createMcpCapabilityResolver({
-        // Use the runtime config when available; the default config is fine for read-only
-        // resolvers (they only need Jupiter price / CoinGecko endpoints which honor env keys).
-        config: this.runtimeConfig ?? DEFAULT_CONFIG,
-      });
-      const resolveOptions = process.env.AGENT_WALLET_TRACE === '1'
-        ? {
-            trace: (event: unknown) => {
-              try { console.debug('[agent-policy-trace]', JSON.stringify(event)); } catch { /* no-op */ }
-            },
-          } as Parameters<typeof runPolicyPipeline>[0]['resolveOptions']
-        : undefined;
-      // LLM-side atom-extraction fallback for NOTEs phrased outside the regex vocabulary.
-      // Only invoked when regex returns zero atoms AND the text reads like a policy.
-      const llmAtomExtractor = this.buildLlmAtomExtractor();
       // Pull simulation digest / tx-gate context from the request context if the caller
-      // (prepare → simulate → review chain) supplied them. They light up tx_gate atoms.
+      // (prepare → simulate → review chain) supplied them. They light up tx_gate atoms
+      // AND are passed through to balance/fee/tx-inspect resolvers via requestContext.
       const ctx = (request.context ?? {}) as Record<string, unknown>;
       let simulation = (ctx.simulationDigest && typeof ctx.simulationDigest === 'object')
         ? (ctx.simulationDigest as SimulationDigest)
@@ -357,6 +343,33 @@ export class BridgeAiPlanner {
             ? (ctx.txGateContext as TxGateContext)
             : defaultTxGateContextForAction(request.plan.actionType))
         : undefined;
+      const resolver = createMcpCapabilityResolver({
+        // Use the runtime config when available; the default config is fine for read-only
+        // resolvers (they only need Jupiter price / CoinGecko endpoints which honor env keys).
+        config: this.runtimeConfig ?? DEFAULT_CONFIG,
+        // Pass the bridge's Solana Connection through so `network_metric` + balance/fee/
+        // sanity atoms can resolve live; falls through to web when unset.
+        ...(this.connection ? { connection: this.connection } : {}),
+        // Per-request context lets resolvers reach the user's wallet, draft parameters,
+        // and the pre-computed simulation digest (for tx_fee, rent_exempt_required, and
+        // the tx-inspect atoms).
+        requestContext: {
+          ...(request.walletAddress ? { walletAddress: request.walletAddress } : {}),
+          ...(request.plan?.parameters ? { draftParameters: request.plan.parameters } : {}),
+          ...(simulation ? { simulationDigest: simulation } : {}),
+          ...(typeof ctx.transactionBase64 === 'string' ? { transactionBase64: ctx.transactionBase64 } : {}),
+        },
+      });
+      const resolveOptions = process.env.AGENT_WALLET_TRACE === '1'
+        ? {
+            trace: (event: unknown) => {
+              try { console.debug('[agent-policy-trace]', JSON.stringify(event)); } catch { /* no-op */ }
+            },
+          } as Parameters<typeof runPolicyPipeline>[0]['resolveOptions']
+        : undefined;
+      // LLM-side atom-extraction fallback for NOTEs phrased outside the regex vocabulary.
+      // Only invoked when regex returns zero atoms AND the text reads like a policy.
+      const llmAtomExtractor = this.buildLlmAtomExtractor();
       const bundle: PolicyEvaluationBundle = await runPolicyPipeline({
         text,
         knownTokenSymbols: knownSymbols,
@@ -392,6 +405,15 @@ export class BridgeAiPlanner {
    * Provided by the bridge layer (which holds the Connection); planner stays stateless.
    */
   simulator?: TransactionSimulator;
+
+  /**
+   * Optional Solana RPC connection threaded to the capability-resolver shims so the
+   * `network_metric` atom type (TPS, slot height, validator jailed, epoch progress)
+   * can resolve live against Helius / QuickNode / Triton / public RPC. The bridge
+   * server sets this from `config.rpcUrl` at startup; without it, network_metric
+   * atoms fall through to the web tier.
+   */
+  connection?: import('@solana/web3.js').Connection;
 
   /**
    * Build the LLM atom-extraction fallback function used by the orchestrator. Returns

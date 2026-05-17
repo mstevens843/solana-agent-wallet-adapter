@@ -65,6 +65,15 @@ export interface MppConfigResponse {
   };
 }
 
+export type MppConfigPreferencePayload = MppConfigResponse;
+
+export interface MppConfigPreferenceResponse {
+  namespace?: string;
+  payload?: MppConfigPreferencePayload;
+  updatedAt?: string | null;
+  version?: number;
+}
+
 export interface MppInboundResponse {
   inbound?: unknown[];
   items?: unknown[];
@@ -108,6 +117,13 @@ export async function postMppSettle(body: MppSettleRequestBody): Promise<MppSett
 
 export async function getMppConfig(): Promise<MppConfigResponse> {
   return requestJson<MppConfigResponse>('/api/mpp/config', { method: 'GET' });
+}
+
+export async function putMppConfig(body: MppConfigPreferencePayload): Promise<MppConfigPreferenceResponse> {
+  return requestJson<MppConfigPreferenceResponse>('/api/preferences/mpp-config', {
+    method: 'PUT',
+    body: JSON.stringify({ payload: body }),
+  });
 }
 
 export async function getMppInbound(): Promise<MppInboundResponse> {

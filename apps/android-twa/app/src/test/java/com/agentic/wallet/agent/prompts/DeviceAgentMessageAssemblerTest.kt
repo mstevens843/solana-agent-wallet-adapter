@@ -96,7 +96,7 @@ class DeviceAgentMessageAssemblerTest {
     }
 
     @Test
-    fun reviewHasHardcodedResearchObject() {
+    fun reviewDefaultsToNotRequiredResearchObject() {
         val messages = DeviceAgentMessageAssembler.buildReviewMessages(
             JSONObject()
                 .put("plan", JSONObject().put("intent", "swap"))
@@ -115,6 +115,24 @@ class DeviceAgentMessageAssemblerTest {
     }
 
     @Test
+    fun reviewPreservesCallerProvidedResearchObject() {
+        val research = JSONObject()
+            .put("needed", true)
+            .put("mode", "auto_current_facts")
+            .put("currentDate", "2026-05-16T03:00:00Z")
+            .put("maxSearches", 2)
+            .put("sourcePolicy", "prefer official sources")
+        val messages = DeviceAgentMessageAssembler.buildReviewMessages(
+            JSONObject()
+                .put("plan", JSONObject().put("intent", "swap"))
+                .put("research", research),
+            fixedClock,
+        )
+        val userJson = JSONObject(messages.userContent)
+        assertEquals(research.toString(), userJson.optJSONObject("research")?.toString())
+    }
+
+    @Test
     fun reviewDefaultsInstructionAndWalletAndCluster() {
         val messages = DeviceAgentMessageAssembler.buildReviewMessages(JSONObject(), fixedClock)
         val userJson = JSONObject(messages.userContent)
@@ -125,7 +143,7 @@ class DeviceAgentMessageAssemblerTest {
     }
 
     @Test
-    fun askHasHardcodedResearchObjectAndUsesAskBoundary() {
+    fun askDefaultsToNotRequiredResearchObjectAndUsesAskBoundary() {
         val messages = DeviceAgentMessageAssembler.buildAskMessages(
             JSONObject()
                 .put("question", "is this safe?")
@@ -139,6 +157,23 @@ class DeviceAgentMessageAssemblerTest {
         val research = userJson.optJSONObject("research")!!
         assertEquals(false, research.optBoolean("needed", true))
         assertEquals("not_required", research.optString("mode"))
+    }
+
+    @Test
+    fun askPreservesCallerProvidedResearchObject() {
+        val research = JSONObject()
+            .put("needed", true)
+            .put("mode", "auto_current_facts")
+            .put("currentDate", "2026-05-16T03:00:00Z")
+            .put("maxSearches", 1)
+        val messages = DeviceAgentMessageAssembler.buildAskMessages(
+            JSONObject()
+                .put("question", "what is the current price?")
+                .put("research", research),
+            fixedClock,
+        )
+        val userJson = JSONObject(messages.userContent)
+        assertEquals(research.toString(), userJson.optJSONObject("research")?.toString())
     }
 
     @Test

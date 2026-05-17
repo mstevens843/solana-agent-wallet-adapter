@@ -1050,6 +1050,39 @@ describe('render web hosted BYOK API', () => {
       ]);
     });
   });
+
+  it('persists MPP session-payment config through the generic preferences API', async () => {
+    await withServer(async (port, ctx) => {
+      const saved = await putJson(port, '/api/preferences/mpp-config', {
+        payload: {
+          acceptedRails: ['usdc'],
+          maxChallengeAmount: '5',
+          allowedMints: ['EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'],
+          sessionPolicy: {
+            allowedOrigins: ['https://merchant.example'],
+            allowedRecipients: ['BvgrFr5Bcaa9NudH3DCxgMnHV1FT1nzD5JtMHsmpKnFB'],
+            requireSettlementConfirmed: true,
+          },
+        },
+      }, { cookie: ctx.cookie });
+      expect(saved.status).toBe(200);
+      expect(saved.body).toMatchObject({
+        namespace: 'mpp-config',
+        version: 1,
+        payload: {
+          acceptedRails: ['usdc'],
+          sessionPolicy: {
+            requireSettlementConfirmed: true,
+          },
+        },
+      });
+
+      const invalid = await putJson(port, '/api/preferences/mpp-config', {
+        payload: { sessionPolicy: { requireSettlementConfirmed: 'yes' } },
+      }, { cookie: ctx.cookie });
+      expect(invalid.status).toBe(400);
+    });
+  });
 });
 
 async function withServer(

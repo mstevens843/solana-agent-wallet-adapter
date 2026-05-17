@@ -66,6 +66,29 @@ class OpenAiCompatibleProviderTest {
     }
 
     @Test
+    fun reviewPlanFailsClosedWhenCurrentResearchIsRequired() = runBlocking {
+        val http = FakeHttpExecutor()
+        val provider = OpenAiCompatibleProvider(config(), http)
+        val payload = JSONObject()
+            .put("plan", JSONObject().put("intent", "swap"))
+            .put(
+                "research",
+                JSONObject()
+                    .put("needed", true)
+                    .put("mode", "auto_current_facts")
+                    .put("currentDate", "2026-05-16T03:00:00Z")
+                    .put("maxSearches", 3),
+            )
+
+        val result = provider.reviewPlan(payload)
+
+        assertEquals("needs_input", result.optString("decision"))
+        assertEquals("unavailable", result.optJSONObject("evidence")?.optJSONObject("research")?.optString("status"))
+        assertEquals("device_agent_current_fact", result.optJSONArray("questions")?.optJSONObject(0)?.optString("id"))
+        assertEquals(0, http.calls.size)
+    }
+
+    @Test
     fun askDoesNotSendJsonObjectModeAndUsesAskTemperature() = runBlocking {
         val http = FakeHttpExecutor().apply {
             queueResponse(
@@ -81,6 +104,27 @@ class OpenAiCompatibleProviderTest {
         val body = JSONObject(http.calls.single().body)
         assertFalse(body.has("response_format"))
         assertEquals(0.3, body.optDouble("temperature"), 0.0001)
+    }
+
+    @Test
+    fun askFailsClosedWhenCurrentResearchIsRequired() = runBlocking {
+        val http = FakeHttpExecutor()
+        val provider = OpenAiCompatibleProvider(config(), http)
+        val payload = JSONObject()
+            .put("question", "What is the current value?")
+            .put(
+                "research",
+                JSONObject()
+                    .put("needed", true)
+                    .put("mode", "auto_current_facts")
+                    .put("currentDate", "2026-05-16T03:00:00Z")
+                    .put("maxSearches", 3),
+            )
+
+        val result = provider.ask(payload)
+
+        assertTrue(result.optString("output_text").contains("cannot fetch current outside facts"))
+        assertEquals(0, http.calls.size)
     }
 
     @Test

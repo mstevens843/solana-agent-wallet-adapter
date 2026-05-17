@@ -4,6 +4,7 @@ import com.agentic.wallet.agent.prompts.DeviceAgentMessageAssembler
 import com.agentic.wallet.agent.prompts.DeviceAgentSystemPrompts
 import com.agentic.wallet.agent.runtime.RuntimeConfig
 import kotlinx.coroutines.runBlocking
+import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -68,6 +69,36 @@ class AnthropicProviderTest {
         assertEquals("approve", result.optString("decision"))
         val body = JSONObject(http.calls.single().body)
         assertEquals(1024, body.optInt("max_tokens"))
+    }
+
+    @Test
+    fun reviewPlanAttachesWebSearchToolsWhenResearchNeeded() = runBlocking {
+        val http = FakeHttpExecutor().apply {
+            queueResponse(
+                200,
+                """{"content":[{"type":"text","text":"{\"decision\":\"approve\",\"reason\":\"${'$'}15/month is under ${'$'}20.\",\"summary\":\"ok\",\"evidence\":{\"findings\":[{\"label\":\"Monthly rate\",\"value\":\"${'$'}15/month\",\"tone\":\"good\"}]}}"}]}""",
+            )
+        }
+        val provider = AnthropicProvider(config(), http)
+        val payload = JSONObject()
+            .put("plan", JSONObject())
+            .put(
+                "research",
+                JSONObject()
+                    .put("needed", true)
+                    .put("mode", "auto_current_facts")
+                    .put("currentDate", "2026-05-16T03:00:00Z")
+                    .put("maxSearches", 2),
+            )
+
+        val result = provider.reviewPlan(payload)
+
+        assertEquals("approve", result.optString("decision"))
+        val body = JSONObject(http.calls.single().body)
+        val tools = body.optJSONArray("tools") ?: JSONArray()
+        assertEquals("web_search_20250305", tools.getJSONObject(0).optString("type"))
+        assertEquals("web_search", tools.getJSONObject(0).optString("name"))
+        assertEquals(2, tools.getJSONObject(0).optInt("max_uses"))
     }
 
     @Test

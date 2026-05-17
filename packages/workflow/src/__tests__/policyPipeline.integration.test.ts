@@ -65,6 +65,26 @@ describe('policy pipeline — extract → resolve → evaluate (+ tx gates)', ()
         case 'tx_gate':
           return { ...base, status: 'ok', value: true }; // simulated as pass-through; analyzer below is the real check
         case 'protocol_health':
+        case 'external_state':
+        case 'external_event':
+        case 'external_identity':
+        case 'tradfi_price':
+        case 'time_fact':
+        case 'network_metric':
+        case 'wallet_balance':
+        case 'token_balance':
+        case 'relative_amount':
+        case 'tx_fee':
+        case 'network_congestion':
+        case 'token_supply':
+        case 'mint_decimals':
+        case 'wallet_age_onchain':
+        case 'recipient_known':
+        case 'token_held_duration':
+        case 'required_signatures':
+        case 'instruction_count':
+        case 'account_writability_count':
+        case 'rent_exempt_required':
           return { ...base, status: 'missing' };
       }
     };

@@ -649,6 +649,10 @@
   min-width: 0;
 }
 
+.dev-agent-card-form-field--wide {
+  grid-column: 1 / -1;
+}
+
 .dev-agent-card-form-label {
   color: rgba(213, 232, 222, 0.86);
   font-size: 0.78rem;
@@ -683,6 +687,19 @@
 .dev-agent-card-form-input:focus {
   border-color: rgba(140, 164, 255, 0.5);
   outline: none;
+}
+
+.dev-agent-card-form-textarea {
+  min-height: 74px;
+  resize: vertical;
+}
+
+.dev-agent-card-mpp-policy {
+  border-color: rgba(236, 201, 75, 0.18);
+}
+
+.dev-agent-card-mpp-grid {
+  gap: 12px;
 }
 
 .dev-agent-card-form-error {

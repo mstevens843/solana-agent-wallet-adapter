@@ -51,8 +51,10 @@ import {
   StreamingService,
   StreamingServiceError,
   remainingFor,
+  sessionHasServerDelegateKey,
   streamingStoreFor,
   type StoredStreamingSession,
+  type StreamingVoucherLookupResult,
 } from './streamingService.js';
 
 const PREFIX = '/api/mpp/';
@@ -303,6 +305,14 @@ async function handlePostSessionPay(
     return;
   }
 
+  if (isTerminalApprovalStatus(approval.status)) {
+    writeJsonNoStore(req, res, 409, {
+      error: 'approval_terminal',
+      message: 'Approval is already terminal and cannot be paid with a streaming session.',
+    });
+    return;
+  }
+
   const challenge = extractMppChallengeFromApproval(approval);
   if (!challenge) {
     writeJsonNoStore(req, res, 409, {
@@ -312,9 +322,32 @@ async function handlePostSessionPay(
     return;
   }
   const paymentMethod = paymentMethodForApproval(challenge, approval);
+  const configFailure = sessionPayConfigFailure(challenge, paymentMethod, approval, config, context.clock.now());
+  if (configFailure) {
+    writeJsonNoStore(req, res, 409, configFailure);
+    return;
+  }
   const challengeHash = stringFromMetadata(approval.metadata, 'mppChallengeHash') ?? canonicalChallengeHash(challenge);
 
   const streaming = new StreamingService(streamingStoreFor(context.workflowStore), { clock: context.clock });
+  const existingVoucher = await streaming.findVoucherByMppApprovalId({
+    walletAddress: workflowSession.walletAddress,
+    approvalId: approval.id,
+  });
+  if (existingVoucher) {
+    await writeExistingSessionPaymentResponse({
+      req,
+      res,
+      context,
+      workflowSession,
+      approval,
+      challenge,
+      paymentMethod,
+      lookup: existingVoucher,
+      policy: config.sessionPolicy,
+    });
+    return;
+  }
   const match = await findSessionPaymentMatch({
     streaming,
     walletAddress: workflowSession.walletAddress,
@@ -351,15 +384,40 @@ async function handlePostSessionPay(
       policy: policyResult,
     },
   };
-  const result = await streaming.signAndAcceptVoucher({
-    walletAddress: workflowSession.walletAddress,
-    sessionId: match.selectedSession.sessionId,
-    amount: challenge.amount,
-    recipient: paymentMethod.recipient,
-    nonce: `mpp_${challengeHash.slice(0, 24)}`,
-    issuedAt: nowIso,
-    metadata: voucherMetadata,
-  });
+  let result: Awaited<ReturnType<StreamingService['signAndAcceptVoucher']>>;
+  try {
+    result = await streaming.signAndAcceptVoucher({
+      walletAddress: workflowSession.walletAddress,
+      sessionId: match.selectedSession.sessionId,
+      amount: challenge.amount,
+      recipient: paymentMethod.recipient,
+      nonce: `mpp_${challengeHash.slice(0, 24)}`,
+      issuedAt: nowIso,
+      metadata: voucherMetadata,
+    });
+  } catch (err) {
+    if (err instanceof StreamingServiceError && (err.code === 'voucher_replay' || err.code === 'mpp_session_payment_exists')) {
+      const duplicate = await streaming.findVoucherByMppApprovalId({
+        walletAddress: workflowSession.walletAddress,
+        approvalId: approval.id,
+      });
+      if (duplicate) {
+        await writeExistingSessionPaymentResponse({
+          req,
+          res,
+          context,
+          workflowSession,
+          approval,
+          challenge,
+          paymentMethod,
+          lookup: duplicate,
+          policy: config.sessionPolicy,
+        });
+        return;
+      }
+    }
+    throw err;
+  }
   const link: MppSessionPaymentLink = {
     approvalId: approval.id,
     challengeHash,
@@ -394,7 +452,7 @@ async function handlePostSessionPay(
       issuedAt: nowIso,
       paymentMethod,
     });
-    evidenceRecord = buildMppEvidenceRecord({ receipt, approval, challenge, issuedAt: nowIso });
+    evidenceRecord = buildMppEvidenceRecord({ receipt, approval, challenge, issuedAt: nowIso, sessionPayment: link });
     await context.evidenceStore.saveEvidence(workflowSession.walletAddress, evidenceRecord);
     await context.evidenceStore.appendEvidenceAuditEvent(workflowSession.walletAddress, {
       id: `audit_${randomUUID()}`,
@@ -411,6 +469,10 @@ async function handlePostSessionPay(
         receiptId: receipt.receiptId,
         receiptHash: receipt.artifactHash,
         challengeHash,
+        finality,
+        status: link.status,
+        mppSessionPayment: true,
+        linkType: 'mpp_session_payment',
       },
     });
     link.receiptId = evidenceRecord.id;
@@ -450,6 +512,8 @@ async function handlePostSessionPay(
       challengeHash,
       finality,
       status: link.status,
+      mppSessionPayment: true,
+      linkType: 'mpp_session_payment',
     },
   });
 
@@ -465,6 +529,75 @@ async function handlePostSessionPay(
     signedVoucher: result.voucher.voucher,
     ...(receipt ? { receipt, receiptId: evidenceRecord?.id, receiptHash: receipt.artifactHash } : {}),
     approval: normalizeApprovalForResponse(updated),
+  });
+}
+
+async function writeExistingSessionPaymentResponse(input: {
+  req: IncomingMessage;
+  res: ServerResponse;
+  context: DevApiHandlerContext;
+  workflowSession: WorkflowSession;
+  approval: ApprovalRequestRecord;
+  challenge: MppChallenge;
+  paymentMethod: MppPaymentMethod;
+  lookup: StreamingVoucherLookupResult;
+  policy?: MppSessionPolicy;
+}): Promise<void> {
+  const { req, res, context, workflowSession, approval, challenge, paymentMethod, lookup, policy } = input;
+  const voucherMetadata = objectFromUnknown(lookup.voucher.metadata);
+  const metadataLink = objectFromUnknown(voucherMetadata?.[MPP_SESSION_PAYMENT_METADATA_KEY]);
+  const challengeHash = stringFromMetadata(approval.metadata, 'mppChallengeHash') ?? canonicalChallengeHash(challenge);
+  const finality = metadataLink?.finality === 'settlement_confirmed'
+    ? 'settlement_confirmed'
+    : sessionFinalityForChallenge(challenge, policy);
+  const status = metadataLink?.status === 'settlement_confirmed'
+    ? 'settlement_confirmed'
+    : finality === 'voucher_accepted'
+      ? 'voucher_accepted'
+      : 'settlement_pending';
+  const nowIso = context.clock.now().toISOString();
+  const link: MppSessionPaymentLink = {
+    approvalId: approval.id,
+    challengeHash,
+    sessionId: lookup.session.sessionId,
+    voucherId: lookup.voucher.id,
+    voucherHash: lookup.voucher.voucherHash,
+    amount: lookup.voucher.amount,
+    recipient: lookup.voucher.recipient,
+    tokenMint: lookup.session.tokenMint,
+    cluster: lookup.session.cluster as WorkflowCluster,
+    finality,
+    status,
+    createdAt: stringFromObject(metadataLink, 'createdAt') ?? lookup.voucher.createdAt,
+    updatedAt: nowIso,
+    ...(stringFromObject(metadataLink, 'receiptId') ? { receiptId: stringFromObject(metadataLink, 'receiptId') } : {}),
+    ...(stringFromObject(metadataLink, 'receiptHash') ? { receiptHash: stringFromObject(metadataLink, 'receiptHash') } : {}),
+    ...(stringFromObject(metadataLink, 'settlementTxid') ? { settlementTxid: stringFromObject(metadataLink, 'settlementTxid') } : {}),
+    policy: toJsonObject(defaultSessionPolicyResult(policy, challenge, paymentMethod)),
+  };
+  const updated: ApprovalRequestRecord = {
+    ...approval,
+    status: status === 'voucher_accepted' || status === 'settlement_confirmed' ? 'approved' : 'approval_pending',
+    updatedAt: nowIso,
+    ...(status === 'voucher_accepted' || status === 'settlement_confirmed' ? { decidedAt: approval.decidedAt ?? nowIso } : {}),
+    metadata: {
+      ...(approval.metadata ?? {}),
+      [MPP_SESSION_PAYMENT_METADATA_KEY]: toJsonObject(link),
+    },
+  };
+  await context.workflowStore.saveApproval(workflowSession.walletAddress, updated);
+  writeJsonNoStore(req, res, 200, {
+    approvalId: approval.id,
+    accepted: true,
+    finality,
+    status,
+    remaining: remainingFor(lookup.session),
+    spentAmount: lookup.session.spentAmount,
+    sessionPayment: link,
+    voucher: lookup.voucher,
+    signedVoucher: lookup.voucher.voucher,
+    approval: normalizeApprovalForResponse(updated),
+    idempotent: true,
   });
 }
 
@@ -814,8 +947,9 @@ function buildMppEvidenceRecord(input: {
   approval: ApprovalRequestRecord;
   challenge: MppChallenge;
   issuedAt: string;
+  sessionPayment?: MppSessionPaymentLink;
 }): EvidenceReceiptRecord {
-  const { receipt, approval, challenge, issuedAt } = input;
+  const { receipt, approval, challenge, issuedAt, sessionPayment } = input;
   const merchant = challenge.merchant?.name ?? challenge.merchant?.id ?? receipt.recipient;
   return {
     id: `evidence_mpp_${randomUUID()}`,
@@ -842,6 +976,18 @@ function buildMppEvidenceRecord(input: {
       challengeHash: receipt.challengeHash,
       nonce: challenge.nonce,
       resourceUrl: challenge.resourceUrl,
+      ...(sessionPayment ? {
+        mppSessionPayment: true,
+        linkType: 'mpp_session_payment',
+        finality: sessionPayment.finality,
+        status: sessionPayment.status,
+        sessionId: sessionPayment.sessionId,
+        voucherId: sessionPayment.voucherId,
+        voucherHash: sessionPayment.voucherHash,
+        settlementTxid: sessionPayment.settlementTxid ?? '',
+        ...(challenge.merchant?.id ? { merchantId: challenge.merchant.id } : {}),
+        ...(challenge.merchant?.url ? { merchantUrl: challenge.merchant.url } : {}),
+      } : {}),
     },
   };
 }
@@ -947,6 +1093,8 @@ function extractMppChallengeFromApproval(approval: ApprovalRequestRecord): MppCh
 }
 
 function paymentMethodForApproval(challenge: MppChallenge, approval: ApprovalRequestRecord): MppPaymentMethod {
+  const stored = paymentMethodFromApprovalMetadata(approval.metadata?.mppPaymentMethod, challenge, approval);
+  if (stored) return stored;
   const expectedKind = approval.kind === 'transfer_sol' ? 'solana-sol' : 'solana-spl';
   const exact = challenge.paymentMethods.find((method) =>
     method.kind === expectedKind &&
@@ -959,8 +1107,79 @@ function paymentMethodForApproval(challenge: MppChallenge, approval: ApprovalReq
   });
 }
 
+function paymentMethodFromApprovalMetadata(
+  value: unknown,
+  challenge: MppChallenge,
+  approval: ApprovalRequestRecord,
+): MppPaymentMethod | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const kind = record.kind;
+  const recipient = record.recipient;
+  const network = record.network;
+  const mint = record.mint;
+  if ((kind !== 'solana-spl' && kind !== 'solana-sol') || typeof recipient !== 'string' || typeof network !== 'string') {
+    return undefined;
+  }
+  const expectedKind = approval.kind === 'transfer_sol' ? 'solana-sol' : 'solana-spl';
+  const candidate = challenge.paymentMethods.find((method) =>
+    method.kind === kind &&
+    method.recipient === recipient &&
+    method.network === network &&
+    (method.mint ?? '') === (typeof mint === 'string' ? mint : ''),
+  );
+  if (!candidate) return undefined;
+  if (candidate.kind !== expectedKind) return undefined;
+  if (approval.recipient && candidate.recipient !== approval.recipient) return undefined;
+  if (approval.cluster && candidate.network !== approval.cluster) return undefined;
+  return candidate;
+}
+
 function isMppApproval(approval: ApprovalRequestRecord): boolean {
   return approval.metadata?.connectorId === 'mpp' || approval.metadata?.actionSource === MPP_ACTION_SOURCE;
+}
+
+function isTerminalApprovalStatus(status: string): boolean {
+  return status === 'approved' ||
+    status === 'denied' ||
+    status === 'rejected' ||
+    status === 'cancelled' ||
+    status === 'expired' ||
+    status === 'failed' ||
+    status === 'blocked';
+}
+
+function sessionPayConfigFailure(
+  challenge: MppChallenge,
+  paymentMethod: MppPaymentMethod,
+  approval: ApprovalRequestRecord,
+  config: MppConfig,
+  now: Date,
+): { error: string; message: string } | undefined {
+  if (Date.parse(challenge.expiresAt) <= now.getTime()) {
+    return { error: 'expired_challenge', message: `MPP challenge expired at ${challenge.expiresAt}.` };
+  }
+  if (approval.cluster && paymentMethod.network !== approval.cluster) {
+    return { error: 'cluster_mismatch', message: 'MPP payment method network no longer matches the approval cluster.' };
+  }
+  if (config.maxChallengeAmount && compareDecimalStrings(challenge.amount, config.maxChallengeAmount) > 0) {
+    return {
+      error: 'amount_exceeds_cap',
+      message: `MPP challenge amount ${challenge.amount} exceeds configured cap ${config.maxChallengeAmount}.`,
+    };
+  }
+  const policy = paymentPolicyForConfig(config);
+  if (policy.allowedRails.length > 0 && !policy.allowedRails.includes(paymentMethod.kind)) {
+    return { error: 'unsupported_rail', message: 'MPP payment rail is not allowed by current wallet config.' };
+  }
+  if (
+    paymentMethod.kind === 'solana-spl' &&
+    policy.allowedMints.length > 0 &&
+    (!paymentMethod.mint || !policy.allowedMints.includes(paymentMethod.mint))
+  ) {
+    return { error: 'unsupported_mint', message: 'MPP SPL mint is not allowed by current wallet config.' };
+  }
+  return undefined;
 }
 
 async function safeSessionEligibility(
@@ -976,6 +1195,16 @@ async function safeSessionEligibility(
     const paymentMethod = paymentMethodForApproval(challenge, approval);
     const streaming = new StreamingService(streamingStoreFor(context.workflowStore), { clock: context.clock });
     const config = await readMppConfig(context);
+    const configFailure = sessionPayConfigFailure(challenge, paymentMethod, approval, config, context.clock.now());
+    if (configFailure) {
+      return ineligible(
+        configFailure.error,
+        configFailure.message,
+        sessionFinalityForChallenge(challenge, config.sessionPolicy),
+        paymentMethod,
+        defaultSessionPolicyResult(config.sessionPolicy, challenge, paymentMethod),
+      );
+    }
     return findSessionPaymentMatch({
       streaming,
       walletAddress,
@@ -1030,9 +1259,35 @@ async function findSessionPaymentMatch(input: {
   if (input.sessionId && !sessions.some((session) => session.sessionId === input.sessionId)) {
     return ineligible('session_not_found', 'The selected streaming session is not active for this wallet.', finality, method, policy);
   }
+  const selectedById = input.sessionId
+    ? sessions.find((session) => session.sessionId === input.sessionId)
+    : undefined;
+  if (selectedById && !sessionHasServerDelegateKey(selectedById)) {
+    return sessionIneligible(
+      selectedById,
+      finality,
+      method,
+      policy,
+      'native_signer_required',
+      'This streaming session is owned by an Android native signer and cannot be paid from the web server route.',
+    );
+  }
+  const serverSessions = sessions.filter(sessionHasServerDelegateKey);
+  if (!input.sessionId && sessions.length > 0 && serverSessions.length === 0) {
+    return {
+      ...ineligible(
+        'native_signer_required',
+        'Active streaming sessions exist, but their delegate key is held by the Android native signer. Create a server-owned session to pay this MPP challenge from the web route.',
+        finality,
+        method,
+        policy,
+      ),
+      sessions: sessions.map((session) => sessionEligibilitySnapshot(session, remainingFor(session))),
+    };
+  }
   const candidates = input.sessionId
     ? sessions.filter((session) => session.sessionId === input.sessionId)
-    : sessions;
+    : serverSessions;
   if (candidates.length === 0) {
     return ineligible(
       'no_active_session',
@@ -1053,6 +1308,7 @@ async function findSessionPaymentMatch(input: {
     reasons.push(evaluated);
   }
   if (eligible.length > 0) {
+    eligible.sort((left, right) => compareEligibleSessionChoice(left.session, right.session, method));
     const selected = eligible[0]!;
     const sessions = eligible
       .map((candidate) => candidate.evaluation.session)
@@ -1074,6 +1330,9 @@ function evaluateSessionForPayment(
   finality: MppSessionPaymentFinality,
   policy: MppSessionPolicyResult,
 ): MppSessionEligibility {
+  if (!sessionHasServerDelegateKey(session)) {
+    return sessionIneligible(session, finality, paymentMethod, policy, 'native_signer_required', 'Session delegate key is not available to the web server.');
+  }
   if (session.cluster !== paymentMethod.network) {
     return sessionIneligible(session, finality, paymentMethod, policy, 'cluster_mismatch', 'Session cluster does not match the MPP challenge network.');
   }
@@ -1153,10 +1412,59 @@ function sessionEligibilitySnapshot(
     spentAmount: session.spentAmount,
     remaining,
     expiresAt: session.expiresAt,
+    serverSignable: sessionHasServerDelegateKey(session),
+    signerRuntime: sessionHasServerDelegateKey(session) ? 'server' : 'android-native',
     ...(extras.capConsumptionBps !== undefined ? { capConsumptionBps: extras.capConsumptionBps } : {}),
     ...(extras.warnings?.length ? { warnings: extras.warnings } : {}),
     ...(session.recipientAllowlist?.length ? { recipientAllowlist: [...session.recipientAllowlist] } : {}),
   };
+}
+
+function compareEligibleSessionChoice(
+  left: StoredStreamingSession,
+  right: StoredStreamingSession,
+  paymentMethod: MppPaymentMethod,
+): number {
+  const leftRecipientRank = recipientAllowlistRank(left, paymentMethod.recipient);
+  const rightRecipientRank = recipientAllowlistRank(right, paymentMethod.recipient);
+  if (leftRecipientRank !== rightRecipientRank) return leftRecipientRank - rightRecipientRank;
+
+  const leftExpiry = Date.parse(left.expiresAt);
+  const rightExpiry = Date.parse(right.expiresAt);
+  if (Number.isFinite(leftExpiry) && Number.isFinite(rightExpiry) && leftExpiry !== rightExpiry) {
+    return leftExpiry - rightExpiry;
+  }
+  if (Number.isFinite(leftExpiry) !== Number.isFinite(rightExpiry)) {
+    return Number.isFinite(leftExpiry) ? -1 : 1;
+  }
+
+  const leftRemaining = comparableRemainingBaseUnits(left);
+  const rightRemaining = comparableRemainingBaseUnits(right);
+  if (leftRemaining !== undefined && rightRemaining !== undefined && leftRemaining !== rightRemaining) {
+    return leftRemaining < rightRemaining ? -1 : 1;
+  }
+  if ((leftRemaining !== undefined) !== (rightRemaining !== undefined)) {
+    return leftRemaining !== undefined ? -1 : 1;
+  }
+
+  return (right.createdAt ?? '').localeCompare(left.createdAt ?? '');
+}
+
+function recipientAllowlistRank(session: StoredStreamingSession, recipient: string): number {
+  const allowlist = session.recipientAllowlist ?? [];
+  if (allowlist.includes(recipient)) return 0;
+  return allowlist.length === 0 ? 1 : 2;
+}
+
+function comparableRemainingBaseUnits(session: StoredStreamingSession): bigint | undefined {
+  try {
+    return parseTokenAmountToBaseUnits(remainingFor(session), session.tokenDecimals ?? DEFAULT_TOKEN_DECIMALS, {
+      allowZero: true,
+      field: 'remaining',
+    });
+  } catch {
+    return undefined;
+  }
 }
 
 function capConsumptionBasisPoints(requested: bigint, available: bigint): number {
@@ -1213,7 +1521,7 @@ function evaluateMppSessionPolicy(
   }
   if (policy.allowedOrigins?.length) {
     const origins = [merchantOrigin, resourceOrigin].filter((origin): origin is string => Boolean(origin));
-    if (!origins.some((origin) => policy.allowedOrigins!.includes(origin))) {
+    if (origins.length === 0 || origins.some((origin) => !policy.allowedOrigins!.includes(origin))) {
       return policyBlocked(base, 'origin_not_allowed', 'MPP origin is not allowed by this wallet session policy.');
     }
   }
@@ -1303,6 +1611,18 @@ function stringFromMetadata(metadata: JsonObject | undefined, key: string): stri
   if (!metadata) return undefined;
   const value = metadata[key];
   return typeof value === 'string' ? value : undefined;
+}
+
+function objectFromUnknown(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function stringFromObject(value: Record<string, unknown> | undefined, key: string): string | undefined {
+  if (!value) return undefined;
+  const raw = value[key];
+  return typeof raw === 'string' && raw.trim() ? raw : undefined;
 }
 
 function sessionFromContext(context: DevApiHandlerContext): WorkflowSession {

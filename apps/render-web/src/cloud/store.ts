@@ -108,6 +108,7 @@ export const CLOUD_PREFERENCE_NAMESPACES = [
   'custom-tokens',
   'ai-settings',
   'agent-payment-profile',
+  'mpp-config',
 ] as const;
 
 export type CloudPreferenceNamespace = (typeof CLOUD_PREFERENCE_NAMESPACES)[number];

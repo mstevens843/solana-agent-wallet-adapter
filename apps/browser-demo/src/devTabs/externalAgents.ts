@@ -3,7 +3,7 @@ import { isDevWallet } from '../devGate.js';
 import { currentAddress, refreshConnection } from '../connectionState.js';
 import { dispatchAp2InboundDemoCreated } from '../ap2InboundDemoEvents.js';
 import { getConnectedAddress, getConnectedCluster } from '../walletState.js';
-import { MppApiError, getMppInbound, postMppSessionPay } from '../mppClient.js';
+import { MppApiError, getMppInbound, postMppChallenge, postMppSessionPay } from '../mppClient.js';
 import { renderUseCaseDisclosure } from './useCases.js';
 import './externalAgents.css';
 
@@ -102,7 +102,11 @@ const state: TabState = {
 
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const DEMO_AMOUNT = '2.00';
+const MPP_DEMO_AMOUNT = '0.50';
 const mppSessionPaying = new Set<string>();
+const mppSelectedSessionByApproval = new Map<string, string>();
+const mppSessionPaymentErrors = new Map<string, string>();
+const mppSessionPaymentSuccess = new Map<string, string>();
 
 function randomBrowserAp2Id(): string {
   const cryptoApi = globalThis.crypto;
@@ -113,6 +117,17 @@ function randomBrowserAp2Id(): string {
     return `browser-ap2_${hex}`;
   }
   return `browser-ap2_${Date.now().toString(16)}_${Math.random().toString(16).slice(2, 10)}`;
+}
+
+function randomBrowserMppNonce(): string {
+  const cryptoApi = globalThis.crypto;
+  if (cryptoApi?.getRandomValues) {
+    const bytes = new Uint8Array(8);
+    cryptoApi.getRandomValues(bytes);
+    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+    return `browser_mpp_${hex}`;
+  }
+  return `browser_mpp_${Date.now().toString(16)}_${Math.random().toString(16).slice(2, 10)}`;
 }
 
 // ---------------- Pure helpers (exported for tests) ----------------
@@ -191,8 +206,17 @@ function mppEligibleSessions(eligibility: MppSessionEligibility | undefined): Mp
   return eligibility.session ? [eligibility.session] : [];
 }
 
-function selectedMppSession(eligibility: MppSessionEligibility | undefined): MppSessionCandidate | undefined {
-  return mppEligibleSessions(eligibility)[0] ?? eligibility?.session;
+function selectedMppSession(
+  eligibility: MppSessionEligibility | undefined,
+  approvalId?: string,
+): MppSessionCandidate | undefined {
+  const sessions = mppEligibleSessions(eligibility);
+  const selectedId = approvalId ? mppSelectedSessionByApproval.get(approvalId) : undefined;
+  if (selectedId) {
+    const selected = sessions.find((session) => session.sessionId === selectedId);
+    if (selected) return selected;
+  }
+  return sessions[0] ?? eligibility?.session;
 }
 
 function mppWarnings(eligibility: MppSessionEligibility | undefined, session?: MppSessionCandidate): MppSessionWarning[] {
@@ -264,7 +288,7 @@ function mppSessionHint(item: NormalizedApproval): string {
   }
   const eligibility = mppEligibility(item);
   if (eligibility?.eligible) {
-    const session = selectedMppSession(eligibility);
+    const session = selectedMppSession(eligibility, item.id);
     const remaining = session?.remaining ? ` · ${session.remaining} left` : '';
     const finality = ` · ${formatFinality(eligibility.finality)}`;
     return `<span class="external-agents-row-session ready">Session ready${escapeHtml(remaining + finality)}</span>`;
@@ -278,7 +302,7 @@ function mppSessionHint(item: NormalizedApproval): string {
 function mppSessionDetailHtml(item: NormalizedApproval): string {
   if (!isMppApproval(item)) return '';
   const eligibility = mppEligibility(item);
-  const session = selectedMppSession(eligibility);
+  const session = selectedMppSession(eligibility, item.id);
   const paymentMethod = eligibility?.paymentMethod ?? {};
   const recipient = typeof paymentMethod.recipient === 'string'
     ? paymentMethod.recipient
@@ -311,16 +335,29 @@ function mppSessionSelectorHtml(item: NormalizedApproval): string {
   const eligibility = mppEligibility(item);
   const sessions = mppEligibleSessions(eligibility);
   if (!eligibility?.eligible || sessions.length <= 1) return '';
+  const selected = selectedMppSession(eligibility, item.id);
   return `
     <label class="external-agents-session-select">
       <span>Session</span>
       <select data-mpp-session-select="${escapeHtml(item.id)}" aria-label="MPP streaming session">
         ${sessions.map((session) => `
-          <option value="${escapeHtml(session.sessionId ?? '')}">${escapeHtml(mppSessionOptionLabel(session))}</option>
+          <option value="${escapeHtml(session.sessionId ?? '')}"${selected?.sessionId === session.sessionId ? ' selected' : ''}>${escapeHtml(mppSessionOptionLabel(session))}</option>
         `).join('')}
       </select>
     </label>
   `;
+}
+
+function mppSessionRowMessageHtml(item: NormalizedApproval): string {
+  const error = mppSessionPaymentErrors.get(item.id);
+  if (error) {
+    return `<p class="external-agents-row-session-message error">${escapeHtml(error)}</p>`;
+  }
+  const success = mppSessionPaymentSuccess.get(item.id);
+  if (success) {
+    return `<p class="external-agents-row-session-message success">${escapeHtml(success)}</p>`;
+  }
+  return '';
 }
 
 // ---------------- Renderers (exported for tests) ----------------
@@ -370,6 +407,7 @@ export function rowHtml(item: NormalizedApproval): string {
           ${mppSessionHint(item)}
         </div>
         ${mppSessionDetailHtml(item)}
+        ${mppSessionRowMessageHtml(item)}
       </div>
       <div class="external-agents-row-actions">
         ${sessionSelector}
@@ -397,11 +435,17 @@ export function bodyHtml(snapshot: TabState = state): string {
         return `
           <div class="external-agents-empty dev-tab-empty-state">
             <p>No inbound agent payment requests yet. AP2 mandates and MPP challenges appear here before payment.</p>
-            <button type="button" class="primary" data-external-agents-demo>Create demo request</button>
+            <div class="external-agents-empty-actions">
+              <button type="button" class="primary" data-external-agents-demo>Create AP2 request</button>
+              <button type="button" class="utility" data-external-agents-mpp-demo>Create MPP challenge</button>
+            </div>
           </div>
         `;
       }
-      return `<ol class="external-agents-list">${sortInbound(snapshot.inbound).map(rowHtml).join('')}</ol>`;
+      return `
+        ${snapshot.errorMessage ? `<div class="external-agents-inline-error">${escapeHtml(snapshot.errorMessage)}</div>` : ''}
+        <ol class="external-agents-list">${sortInbound(snapshot.inbound).map(rowHtml).join('')}</ol>
+      `;
   }
 }
 
@@ -518,6 +562,54 @@ function createAndDispatchDemoRequest(): void {
     },
   });
   patchPanel();
+}
+
+export async function createAndDispatchMppDemoChallenge(): Promise<void> {
+  const walletAddress = getConnectedAddress() ?? currentAddress();
+  if (!walletAddress) {
+    state.status = 'error';
+    state.errorMessage = 'Connect a wallet before creating an MPP demo challenge.';
+    patchPanel();
+    return;
+  }
+  const cluster = getConnectedCluster() ?? 'devnet';
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
+  const challenge = {
+    protocolVersion: 'mpp/0.1',
+    nonce: randomBrowserMppNonce(),
+    amount: MPP_DEMO_AMOUNT,
+    currency: 'USDC',
+    resourceUrl: 'https://merchant.example/demo/mpp',
+    expiresAt,
+    paymentMethods: [
+      { kind: 'solana-spl', mint: USDC_MINT, recipient: walletAddress, network: cluster },
+    ],
+    merchant: { id: 'merchant_demo_mpp', name: 'MPP Demo Merchant', url: 'https://merchant.example' },
+  };
+  try {
+    const result = await postMppChallenge({
+      challenge,
+      cluster,
+      agentLabel: 'MPP Demo Merchant',
+    });
+    state.status = 'loaded';
+    state.errorMessage = '';
+    state.lastFetchedFor = walletAddress;
+    if (isNormalizedApproval(result.approval)) {
+      state.inbound = sortInbound([
+        result.approval as NormalizedApproval,
+        ...state.inbound.filter((item) => item.id !== result.approvalId),
+      ]);
+      patchPanel();
+      return;
+    }
+    await fetchInbound(true);
+  } catch (err) {
+    state.status = state.inbound.length ? 'loaded' : 'error';
+    state.errorMessage = err instanceof Error ? err.message : 'Could not create MPP demo challenge.';
+    patchPanel();
+  }
 }
 
 // ---------------- DOM patcher ----------------
@@ -660,7 +752,8 @@ export function renderExternalAgentsPanel(): string {
           <p>AP2 mandates and MPP challenges sent by external agents land here before payment.</p>
         </div>
         <div class="dev-tab-header-actions">
-          <button type="button" class="primary" data-external-agents-demo>Create demo request</button>
+          <button type="button" class="primary" data-external-agents-demo>Create AP2 request</button>
+          <button type="button" class="utility" data-external-agents-mpp-demo>Create MPP challenge</button>
           <button type="button" class="utility" data-external-agents-refresh${refreshing ? ' disabled' : ''}>${refreshing ? 'Refreshing…' : 'Refresh'}</button>
         </div>
       </header>
@@ -717,6 +810,8 @@ function scrollToInboxApproval(approvalId: string): void {
 async function payWithMppSession(approvalId: string, sessionId?: string): Promise<void> {
   if (!approvalId || mppSessionPaying.has(approvalId)) return;
   mppSessionPaying.add(approvalId);
+  mppSessionPaymentErrors.delete(approvalId);
+  mppSessionPaymentSuccess.delete(approvalId);
   patchPanel();
   try {
     const result = await postMppSessionPay({ approvalId, ...(sessionId ? { sessionId } : {}) });
@@ -727,9 +822,18 @@ async function payWithMppSession(approvalId: string, sessionId?: string): Promis
     }
     state.status = 'loaded';
     state.errorMessage = '';
+    mppSessionPaymentSuccess.set(approvalId, result.status
+      ? `Session payment ${result.status.replace(/_/g, ' ')}.`
+      : 'Session payment accepted.');
   } catch (err) {
     state.status = state.inbound.length ? 'loaded' : 'error';
-    state.errorMessage = err instanceof Error ? err.message : 'Could not pay MPP request with session.';
+    const message = err instanceof Error ? err.message : 'Could not pay MPP request with session.';
+    if (state.inbound.length) {
+      state.errorMessage = '';
+      mppSessionPaymentErrors.set(approvalId, message);
+    } else {
+      state.errorMessage = message;
+    }
   } finally {
     mppSessionPaying.delete(approvalId);
     patchPanel();
@@ -761,6 +865,12 @@ function installPanelClickHandler(): void {
       createAndDispatchDemoRequest();
       return;
     }
+    const mppDemoBtn = target.closest<HTMLButtonElement>('[data-external-agents-mpp-demo]');
+    if (mppDemoBtn) {
+      event.preventDefault();
+      void createAndDispatchMppDemoChallenge();
+      return;
+    }
     const sessionPayBtn = target.closest<HTMLButtonElement>('[data-mpp-session-pay]');
     if (sessionPayBtn) {
       event.preventDefault();
@@ -784,6 +894,16 @@ function installPanelClickHandler(): void {
       state.status = 'idle';
     }
   });
+  document.addEventListener('change', (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLSelectElement)) return;
+    const approvalId = target.getAttribute('data-mpp-session-select');
+    if (!approvalId) return;
+    mppSelectedSessionByApproval.set(approvalId, target.value);
+    mppSessionPaymentErrors.delete(approvalId);
+    mppSessionPaymentSuccess.delete(approvalId);
+    patchPanel();
+  });
 }
 
 installPanelClickHandler();
@@ -797,6 +917,10 @@ export const __externalAgentsForTests = {
     state.inbound = next?.inbound ?? [];
     state.errorMessage = next?.errorMessage ?? '';
     state.lastFetchedFor = next?.lastFetchedFor ?? null;
+    mppSessionPaying.clear();
+    mppSelectedSessionByApproval.clear();
+    mppSessionPaymentErrors.clear();
+    mppSessionPaymentSuccess.clear();
   },
   statusPillClass,
   bodyHtml,
@@ -805,4 +929,11 @@ export const __externalAgentsForTests = {
   fetchInbound,
   createDemoInboundRequest,
   createAndDispatchDemoRequest,
+  createAndDispatchMppDemoChallenge,
+  setSelectedMppSession(approvalId: string, sessionId: string): void {
+    mppSelectedSessionByApproval.set(approvalId, sessionId);
+  },
+  setMppSessionPaymentError(approvalId: string, message: string): void {
+    mppSessionPaymentErrors.set(approvalId, message);
+  },
 };

@@ -2812,8 +2812,62 @@ function validatePreferencePayload(namespace: CloudPreferenceNamespace, payload:
     }
     return;
   }
+  if (namespace === 'mpp-config') {
+    validateMppConfigPreferencePayload(payload);
+    return;
+  }
   if (!payload || typeof payload !== 'object') {
     throw new ApiError(400, 'Preference payload must be a JSON object or array.');
+  }
+}
+
+function validateMppConfigPreferencePayload(payload: unknown): void {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new ApiError(400, 'MPP config preference must be a JSON object.');
+  }
+  const record = payload as Record<string, unknown>;
+  validateOptionalStringArray(record.acceptedRails, 'acceptedRails', 16);
+  validateOptionalStringArray(record.allowedMints, 'allowedMints', 64);
+  validateOptionalString(record.maxChallengeAmount, 'maxChallengeAmount', 64);
+  validateOptionalString(record.endpoint, 'endpoint', 512);
+  if (record.sessionPolicy !== undefined) {
+    validateMppSessionPolicyPayload(record.sessionPolicy);
+  }
+}
+
+function validateMppSessionPolicyPayload(value: unknown): void {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ApiError(400, 'MPP sessionPolicy must be a JSON object.');
+  }
+  const policy = value as Record<string, unknown>;
+  validateOptionalStringArray(policy.allowedMerchantIds, 'sessionPolicy.allowedMerchantIds', 128);
+  validateOptionalStringArray(policy.allowedMerchantOrigins, 'sessionPolicy.allowedMerchantOrigins', 128);
+  validateOptionalStringArray(policy.allowedMerchantUrls, 'sessionPolicy.allowedMerchantUrls', 128);
+  validateOptionalStringArray(policy.allowedResourceOrigins, 'sessionPolicy.allowedResourceOrigins', 128);
+  validateOptionalStringArray(policy.allowedResourceUrls, 'sessionPolicy.allowedResourceUrls', 128);
+  validateOptionalStringArray(policy.allowedOrigins, 'sessionPolicy.allowedOrigins', 128);
+  validateOptionalStringArray(policy.allowedRecipients, 'sessionPolicy.allowedRecipients', 128);
+  validateOptionalString(policy.maxAmount, 'sessionPolicy.maxAmount', 64);
+  if (policy.requireSettlementConfirmed !== undefined && typeof policy.requireSettlementConfirmed !== 'boolean') {
+    throw new ApiError(400, 'sessionPolicy.requireSettlementConfirmed must be a boolean.');
+  }
+}
+
+function validateOptionalStringArray(value: unknown, field: string, maxItems: number): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) throw new ApiError(400, `${field} must be an array.`);
+  if (value.length > maxItems) throw new ApiError(400, `${field} has too many entries.`);
+  for (const entry of value) {
+    if (typeof entry !== 'string' || !entry.trim() || entry.length > 512) {
+      throw new ApiError(400, `${field} entries must be non-empty strings under 512 characters.`);
+    }
+  }
+}
+
+function validateOptionalString(value: unknown, field: string, maxLength: number): void {
+  if (value === undefined || value === null || value === '') return;
+  if (typeof value !== 'string' || value.length > maxLength) {
+    throw new ApiError(400, `${field} must be a string under ${maxLength} characters.`);
   }
 }
 

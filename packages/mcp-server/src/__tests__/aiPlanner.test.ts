@@ -1110,7 +1110,10 @@ describe('BridgeAiPlanner', () => {
 
     expect(calls).toHaveLength(2);
     expect(review.decision).toBe('approve');
-    expect(review.reason).toContain('$16.79 is under $20');
+    // The reconciler now includes the source sentence in the corrected reason; assert on
+    // the load-bearing tokens (the figure and the relation) rather than the boilerplate.
+    expect(review.reason).toContain('$16.79');
+    expect(review.reason).toContain('under $20');
     expect(review.evidence.findings).toEqual(expect.arrayContaining([
       expect.objectContaining({
         label: 'Threshold check',

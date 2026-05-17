@@ -55,12 +55,20 @@ export class OpenAiCompatibleProvider implements DeviceAgentProvider {
   }
 
   async reviewPlan(payload: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    if (researchNeeded(payload)) {
+      return currentResearchUnavailableReview();
+    }
     const messages = buildReviewMessages(payload);
     const response = await this.postChatCompletion(messages, true, REVIEW_TEMPERATURE, REVIEW_MAX_TOKENS, signal);
     return parseModelJson(extractOpenAiText(response));
   }
 
   async ask(payload: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    if (researchNeeded(payload)) {
+      return {
+        output_text: 'Device Agent OpenAI-compatible mode cannot fetch current outside facts yet. Use Anthropic Device Agent or Local Bridge, or provide a source-backed current value.',
+      };
+    }
     const messages = buildAskMessages(payload);
     const response = await this.postChatCompletion(messages, false, ASK_TEMPERATURE, ASK_MAX_TOKENS, signal);
     const text = extractOpenAiText(response);
@@ -131,4 +139,40 @@ export class OpenAiCompatibleProvider implements DeviceAgentProvider {
     }
     return parsed as Record<string, unknown>;
   }
+}
+
+function researchNeeded(payload: Record<string, unknown>): boolean {
+  const research = payload.research;
+  return Boolean(research && typeof research === 'object' && !Array.isArray(research) && (research as Record<string, unknown>).needed === true);
+}
+
+function currentResearchUnavailableReview(): Record<string, unknown> {
+  const reason = 'Device Agent OpenAI-compatible mode cannot fetch current outside facts yet. Use Anthropic Device Agent or Local Bridge, or provide a source-backed current value.';
+  return {
+    decision: 'needs_input',
+    reason,
+    summary: 'Current outside facts are required before the Device Agent can decide.',
+    evidence: {
+      research: { status: 'unavailable', provider: 'openai-compatible', required: true },
+      findings: [
+        {
+          label: 'Research needed',
+          value: reason,
+          tone: 'warn',
+        },
+      ],
+    },
+    questions: [
+      {
+        id: 'device_agent_current_fact',
+        prompt: 'What source-backed current value should be checked?',
+        inputKind: 'text',
+        required: true,
+      },
+    ],
+    evidenceFactIds: [],
+    blockingFactIds: [],
+    missingFactIds: [],
+    confidence: 'low',
+  };
 }

@@ -30,7 +30,8 @@ eligible MPP challenges.
 1. Create a streaming session in `More -> Sessions`.
 2. Sign/activate the session grant.
 3. Create or receive an MPP challenge for the same wallet, cluster, SPL mint,
-   recipient, and amount within the remaining cap.
+   recipient, and amount within the remaining cap. For local testing, use
+   `More -> Agent Payments -> Incoming Requests -> Create MPP challenge`.
 4. Open `More -> Agent Payments -> Incoming Requests`.
 5. Click `Pay with Session`.
 6. Confirm the Sessions tab shows one accepted voucher and reduced remaining
@@ -70,11 +71,29 @@ Phase 4: Policy Surface
 - Policy results are stored as metadata on eligibility, vouchers, and the
   MPP session-payment link. Voucher signatures are unchanged.
 
+Phase 5: Production Hardening
+
+- Session-pay re-checks challenge expiry, current wallet MPP config, terminal
+  approval state, and supported rails/mints at execution time.
+- Android-native streaming sessions are shown as ineligible for the web
+  session-pay route because their delegate key is not held by the server.
+- Multiple eligible sessions are selected deterministically: recipient
+  allowlist match, soonest expiry, smallest sufficient remaining cap, then
+  newest creation time.
+- Voucher issuance is idempotent by MPP approval id, including a Postgres
+  uniqueness guard for concurrent duplicate attempts.
+- `mpp-config` is now exposed through the generic cloud preferences API and
+  the Payment Profile tab has a compact MPP policy editor.
+- Immediate `voucher_accepted` receipts now carry the same searchable
+  MPP/session/voucher metadata as settlement-confirmed receipts.
+
 ## Verification
 
 - `pnpm --filter @solana-agent-wallet-adapter/render-web exec tsc -p tsconfig.json`
+- `pnpm --filter @solana-agent-wallet-adapter/browser-demo exec tsc -p tsconfig.json`
 - `pnpm --filter @solana-agent-wallet-adapter/render-web exec vitest run src/__tests__/mpp-api.test.ts --no-cache --reporter=verbose`
-- `pnpm --filter @solana-agent-wallet-adapter/browser-demo test -- mppClient externalAgents`
+- `pnpm --filter @solana-agent-wallet-adapter/render-web exec vitest run src/__tests__/server.test.ts --no-cache --reporter=verbose`
+- `pnpm --filter @solana-agent-wallet-adapter/browser-demo exec vitest run src/__tests__/mppClient.test.ts src/devTabs/__tests__/externalAgents.test.ts src/devTabs/__tests__/agentCard.test.ts --no-cache --reporter=verbose`
 - `pnpm --filter @solana-agent-wallet-adapter/mcp-server exec vitest run src/__tests__/server.test.ts --no-cache --reporter=verbose`
 - `pnpm --filter @solana-agent-wallet-adapter/mcp-server build`
 - `pnpm --filter @solana-agent-wallet-adapter/browser-demo build`

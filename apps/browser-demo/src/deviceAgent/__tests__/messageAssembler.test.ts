@@ -182,7 +182,7 @@ describe('buildPlanMessages', () => {
 });
 
 describe('buildReviewMessages', () => {
-  it('uses the REVIEW system prompt and produces the hardcoded research object', () => {
+  it('uses the REVIEW system prompt and defaults to a not-required research object', () => {
     const messages = buildReviewMessages(
       { plan: { intent: 'swap' }, walletAddress: 'ABC123' },
       FIXED_NOW,
@@ -196,6 +196,22 @@ describe('buildReviewMessages', () => {
     expect(research.maxSearches).toBe(3);
     expect(parsed.requiredBoundary).toBe(DEVICE_AGENT_BOUNDARIES.REVIEW);
     expect(parsed.walletAddress).toBe('ABC123');
+  });
+
+  it('preserves caller-provided REVIEW research metadata', () => {
+    const research = {
+      needed: true,
+      mode: 'auto_current_facts',
+      currentDate: '2026-05-16T03:00:00.000Z',
+      maxSearches: 2,
+      sourcePolicy: 'prefer official sources',
+    };
+    const messages = buildReviewMessages({
+      plan: { intent: 'swap' },
+      research,
+    }, FIXED_NOW);
+    const parsed = JSON.parse(messages.userContent) as Record<string, unknown>;
+    expect(parsed.research).toEqual(research);
   });
 
   it('defaults instruction, walletAddress, cluster, and plan when payload is empty', () => {
@@ -253,6 +269,7 @@ describe('buildReviewMessages', () => {
       'requiredBoundary',
     ]);
   });
+
 });
 
 describe('buildAskMessages', () => {
@@ -270,6 +287,21 @@ describe('buildAskMessages', () => {
     expect(research.mode).toBe('not_required');
     expect(research.currentDate).toBe(FIXED_CURRENT_DATE);
     expect(research.maxSearches).toBe(3);
+  });
+
+  it('preserves caller-provided ASK research metadata', () => {
+    const research = {
+      needed: true,
+      mode: 'auto_current_facts',
+      currentDate: '2026-05-16T03:00:00.000Z',
+      maxSearches: 1,
+    };
+    const messages = buildAskMessages({
+      question: 'what is the current price?',
+      research,
+    }, FIXED_NOW);
+    const parsed = JSON.parse(messages.userContent) as Record<string, unknown>;
+    expect(parsed.research).toEqual(research);
   });
 
   it('defaults question, plan, walletAddress, and cluster when payload is empty', () => {

@@ -11,14 +11,34 @@
  */
 
 import type {
+  AccountWritabilityCountAtom,
   AgentAtom,
   AgentAtomOperator,
+  ExternalEventAtom,
+  ExternalIdentityAtom,
   ExternalPriceAtom,
+  ExternalStateAtom,
+  InstructionCountAtom,
   MarketRegimeAtom,
+  MintDecimalsAtom,
+  NetworkCongestionAtom,
+  NetworkMetricAtom,
   PriceAtom,
+  RecipientKnownAtom,
+  RelativeAmountAtom,
+  RentExemptRequiredAtom,
+  RequiredSignaturesAtom,
+  TimeFactAtom,
   TokenAgeAtom,
   TokenAuditAtom,
+  TokenBalanceAtom,
+  TokenHeldDurationAtom,
+  TokenSupplyAtom,
+  TradfiPriceAtom,
+  TxFeeAtom,
   TxGateAtom,
+  WalletAgeOnchainAtom,
+  WalletBalanceAtom,
 } from './agentAtoms.js';
 import type { AgentEvidenceFactTone } from './agentEvidence.js';
 
@@ -222,15 +242,417 @@ function evaluateExternalPrice(atom: ExternalPriceAtom, fact: ResolvedFactValue 
   };
 }
 
+function externalStateLabel(atom: ExternalStateAtom): string {
+  const kindLabels: Record<ExternalStateAtom['kind'], string> = {
+    network_outage: 'network outage',
+    exploit: 'exploit',
+    hack: 'hack',
+    incident: 'incident',
+    paused_withdrawals: 'paused withdrawals',
+    service_outage: 'service outage',
+  };
+  return `${atom.subject} ${kindLabels[atom.kind]}`;
+}
+
+function evaluateExternalState(atom: ExternalStateAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = externalStateLabel(atom);
+  if (!fact || fact.boolean === undefined) return unresolvedEvaluation(atom, label);
+  const pass = fact.boolean === atom.expected;
+  const verb = fact.boolean ? 'present' : 'none';
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${verb}${fact.text ? ` — ${fact.text}` : ''} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+function externalEventLabel(atom: ExternalEventAtom): string {
+  const kindLabels: Record<ExternalEventAtom['kind'], string> = {
+    scheduled_upgrade: 'scheduled upgrade',
+    governance_vote: 'governance vote',
+    mainnet_fork: 'mainnet fork',
+    release: 'release',
+    announcement: 'announcement',
+  };
+  const windowSuffix = atom.window === 'within' && atom.windowSeconds
+    ? ` (within ${formatDuration(atom.windowSeconds)})`
+    : atom.window === 'past' && atom.windowSeconds
+      ? ` (last ${formatDuration(atom.windowSeconds)})`
+      : '';
+  return `${atom.subject} ${kindLabels[atom.kind]}${windowSuffix}`;
+}
+
+function evaluateExternalEvent(atom: ExternalEventAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = externalEventLabel(atom);
+  if (!fact || fact.boolean === undefined) return unresolvedEvaluation(atom, label);
+  const pass = fact.boolean === atom.expected;
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${fact.boolean ? 'yes' : 'no'}${fact.text ? ` — ${fact.text}` : ''} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+function externalIdentityLabel(atom: ExternalIdentityAtom): string {
+  const kindLabels: Record<ExternalIdentityAtom['kind'], string> = {
+    sanctions_list: 'on sanctions list',
+    sec_action: 'SEC enforcement',
+    kyc_status: 'KYC status',
+  };
+  return `${atom.subject} ${kindLabels[atom.kind]}`;
+}
+
+function evaluateExternalIdentity(atom: ExternalIdentityAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = externalIdentityLabel(atom);
+  if (!fact || fact.boolean === undefined) return unresolvedEvaluation(atom, label);
+  const pass = fact.boolean === atom.expected;
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${fact.boolean ? 'yes' : 'no'}${fact.text ? ` — ${fact.text}` : ''} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+function evaluateTradfiPrice(atom: TradfiPriceAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = `${atom.subject} price`;
+  if (!fact || fact.numeric === undefined) return unresolvedEvaluation(atom, label);
+  const pass = compareNumeric(atom.op, fact.numeric, atom.value);
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${formatUsdCompact(fact.numeric)} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+function timeFactLabel(atom: TimeFactAtom): string {
+  switch (atom.kind) {
+    case 'is_business_day':  return 'Business day';
+    case 'is_us_holiday':    return 'US holiday';
+    case 'is_market_open':   return 'Market open';
+    case 'day_of_week':      return 'Day of week';
+  }
+}
+
+function evaluateTimeFact(atom: TimeFactAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = timeFactLabel(atom);
+  if (!fact || fact.boolean === undefined) return unresolvedEvaluation(atom, label);
+  const pass = fact.boolean === atom.expected;
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${fact.boolean ? 'yes' : 'no'}${fact.text ? ` (${fact.text})` : ''} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+function networkMetricLabel(atom: NetworkMetricAtom): string {
+  switch (atom.metric) {
+    case 'tps':                  return 'Solana TPS';
+    case 'slot_height':          return 'Solana slot height';
+    case 'validator_jailed':     return atom.subject ? `Validator ${atom.subject.slice(0, 8)}… jailed` : 'Validator jailed';
+    case 'epoch_progress_pct':   return 'Epoch progress';
+  }
+}
+
+function evaluateNetworkMetric(atom: NetworkMetricAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = networkMetricLabel(atom);
+  if (!fact) return unresolvedEvaluation(atom, label);
+  // Boolean metrics (validator_jailed) compare against the user's implicit "is this true?"
+  if (atom.metric === 'validator_jailed') {
+    if (fact.boolean === undefined) return unresolvedEvaluation(atom, label);
+    // The atom carries no explicit `expected`; default user intent is "must NOT be jailed",
+    // so pass = !fact.boolean.
+    const pass = fact.boolean === false;
+    return {
+      atomId: atom.id,
+      pass,
+      finding: { label, value: `${fact.boolean ? 'jailed' : 'active'} — ${fact.source}`, tone: toneFromPass(pass) },
+    };
+  }
+  // Numeric metrics need both an operator and a value on the atom.
+  if (fact.numeric === undefined || atom.op === undefined || atom.value === undefined) {
+    return unresolvedEvaluation(atom, label);
+  }
+  const pass = compareNumeric(atom.op, fact.numeric, atom.value);
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${atom.metric === 'epoch_progress_pct' ? `${fact.numeric.toFixed(1)}%` : fact.numeric.toLocaleString()} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Tier 1: balance / fee evaluators                                            */
+/* -------------------------------------------------------------------------- */
+
+function formatNumeric(value: number, unit: string): string {
+  if (unit === 'USD') return formatUsdCompact(value);
+  if (unit === 'SOL') return `${value.toFixed(value < 1 ? 4 : 2)} SOL`;
+  if (unit === 'lamports') return `${value.toLocaleString()} lamports`;
+  if (unit === 'microlamports') return `${value.toLocaleString()} μLamports`;
+  if (unit === 'tokens') return `${value.toLocaleString()} tokens`;
+  return `${value}`;
+}
+
+function evaluateWalletBalance(atom: WalletBalanceAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = 'SOL balance';
+  if (!fact || fact.numeric === undefined) return unresolvedEvaluation(atom, label);
+  const pass = compareNumeric(atom.op, fact.numeric, atom.value);
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${formatNumeric(fact.numeric, atom.unit)} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+function evaluateTokenBalance(atom: TokenBalanceAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = `${atom.subject} balance`;
+  if (!fact || fact.numeric === undefined) return unresolvedEvaluation(atom, label);
+  const pass = compareNumeric(atom.op, fact.numeric, atom.value);
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${formatNumeric(fact.numeric, atom.unit)} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+function evaluateRelativeAmount(atom: RelativeAmountAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = `Trade ${(atom.fraction * 100).toFixed(0)}% of ${atom.basis === 'sol_balance' ? 'SOL' : atom.basis}`;
+  if (!fact || fact.numeric === undefined) return unresolvedEvaluation(atom, label);
+  // fact.numeric is the ACTUAL fraction (computed by resolver as draft / basis).
+  const pass = compareNumeric(atom.op, fact.numeric, atom.fraction);
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `actual ${(fact.numeric * 100).toFixed(2)}% — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+function evaluateTxFee(atom: TxFeeAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = 'Transaction fee';
+  if (!fact || fact.numeric === undefined) return unresolvedEvaluation(atom, label);
+  const pass = compareNumeric(atom.op, fact.numeric, atom.value);
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${formatNumeric(fact.numeric, atom.unit)} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+function evaluateNetworkCongestion(atom: NetworkCongestionAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = 'Network congestion';
+  if (!fact || fact.numeric === undefined) return unresolvedEvaluation(atom, label);
+  const pass = compareNumeric(atom.op, fact.numeric, atom.value);
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${formatNumeric(fact.numeric, 'microlamports')} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Tier 2: token / wallet sanity evaluators                                    */
+/* -------------------------------------------------------------------------- */
+
+function evaluateTokenSupply(atom: TokenSupplyAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = `${atom.subject ?? 'Token'} supply`;
+  if (!fact || fact.numeric === undefined) return unresolvedEvaluation(atom, label);
+  const pass = compareNumeric(atom.op, fact.numeric, atom.value);
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${fact.numeric.toLocaleString()} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+function evaluateMintDecimals(atom: MintDecimalsAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = `${atom.subject ?? 'Mint'} decimals`;
+  if (!fact || fact.numeric === undefined) return unresolvedEvaluation(atom, label);
+  const pass = compareNumeric(atom.op, fact.numeric, atom.value);
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${fact.numeric} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+function evaluateWalletAge(atom: WalletAgeOnchainAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = 'Wallet age (on-chain)';
+  if (!fact || fact.numeric === undefined) return unresolvedEvaluation(atom, label);
+  const pass = compareNumeric(atom.op, fact.numeric, atom.value);
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${formatDuration(fact.numeric)} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+function evaluateRecipientKnown(atom: RecipientKnownAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = atom.subject ? `Recipient ${atom.subject.slice(0, 8)}… history` : 'Recipient history';
+  if (!fact || fact.boolean === undefined) return unresolvedEvaluation(atom, label);
+  const pass = fact.boolean === atom.expected;
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${fact.boolean ? 'known' : 'new (no prior sends)'} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+function evaluateTokenHeldDuration(atom: TokenHeldDurationAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = `${atom.subject ?? 'Token'} held duration`;
+  if (!fact || fact.numeric === undefined) return unresolvedEvaluation(atom, label);
+  const pass = compareNumeric(atom.op, fact.numeric, atom.value);
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${formatDuration(fact.numeric)} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* Tier 3: tx-inspect evaluators                                               */
+/* -------------------------------------------------------------------------- */
+
+function evaluateRequiredSignatures(atom: RequiredSignaturesAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = 'Required signatures';
+  if (!fact || fact.numeric === undefined) return unresolvedEvaluation(atom, label);
+  const pass = compareNumeric(atom.op, fact.numeric, atom.value);
+  return {
+    atomId: atom.id,
+    pass,
+    finding: { label, value: `${fact.numeric} — ${fact.source}`, tone: toneFromPass(pass) },
+  };
+}
+
+function evaluateInstructionCount(atom: InstructionCountAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = 'Instruction count';
+  if (!fact || fact.numeric === undefined) return unresolvedEvaluation(atom, label);
+  const pass = compareNumeric(atom.op, fact.numeric, atom.value);
+  return {
+    atomId: atom.id,
+    pass,
+    finding: { label, value: `${fact.numeric} — ${fact.source}`, tone: toneFromPass(pass) },
+  };
+}
+
+function evaluateAccountWritability(atom: AccountWritabilityCountAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = 'Writable accounts';
+  if (!fact || fact.numeric === undefined) return unresolvedEvaluation(atom, label);
+  const pass = compareNumeric(atom.op, fact.numeric, atom.value);
+  return {
+    atomId: atom.id,
+    pass,
+    finding: { label, value: `${fact.numeric} — ${fact.source}`, tone: toneFromPass(pass) },
+  };
+}
+
+function evaluateRentExempt(atom: RentExemptRequiredAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = 'Rent required';
+  if (!fact || fact.numeric === undefined) return unresolvedEvaluation(atom, label);
+  const pass = compareNumeric(atom.op, fact.numeric, atom.value);
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${formatNumeric(fact.numeric, atom.unit)} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
 /** Dispatcher: pick the right evaluator for the atom's type. */
 export function evaluateAtom(atom: AgentAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
   switch (atom.type) {
-    case 'price':          return evaluatePrice(atom, fact);
-    case 'market_regime':  return evaluateMarketRegime(atom, fact);
-    case 'token_audit':    return evaluateTokenAudit(atom, fact);
-    case 'token_age':      return evaluateTokenAge(atom, fact);
-    case 'tx_gate':        return evaluateTxGate(atom, fact);
-    case 'external_price': return evaluateExternalPrice(atom, fact);
+    case 'price':                      return evaluatePrice(atom, fact);
+    case 'market_regime':              return evaluateMarketRegime(atom, fact);
+    case 'token_audit':                return evaluateTokenAudit(atom, fact);
+    case 'token_age':                  return evaluateTokenAge(atom, fact);
+    case 'tx_gate':                    return evaluateTxGate(atom, fact);
+    case 'external_price':             return evaluateExternalPrice(atom, fact);
+    case 'external_state':             return evaluateExternalState(atom, fact);
+    case 'external_event':             return evaluateExternalEvent(atom, fact);
+    case 'external_identity':          return evaluateExternalIdentity(atom, fact);
+    case 'tradfi_price':               return evaluateTradfiPrice(atom, fact);
+    case 'time_fact':                  return evaluateTimeFact(atom, fact);
+    case 'network_metric':             return evaluateNetworkMetric(atom, fact);
+    case 'wallet_balance':             return evaluateWalletBalance(atom, fact);
+    case 'token_balance':              return evaluateTokenBalance(atom, fact);
+    case 'relative_amount':            return evaluateRelativeAmount(atom, fact);
+    case 'tx_fee':                     return evaluateTxFee(atom, fact);
+    case 'network_congestion':         return evaluateNetworkCongestion(atom, fact);
+    case 'token_supply':               return evaluateTokenSupply(atom, fact);
+    case 'mint_decimals':              return evaluateMintDecimals(atom, fact);
+    case 'wallet_age_onchain':         return evaluateWalletAge(atom, fact);
+    case 'recipient_known':            return evaluateRecipientKnown(atom, fact);
+    case 'token_held_duration':        return evaluateTokenHeldDuration(atom, fact);
+    case 'required_signatures':        return evaluateRequiredSignatures(atom, fact);
+    case 'instruction_count':          return evaluateInstructionCount(atom, fact);
+    case 'account_writability_count':  return evaluateAccountWritability(atom, fact);
+    case 'rent_exempt_required':       return evaluateRentExempt(atom, fact);
     case 'protocol_health':
       return unresolvedEvaluation(atom, `${atom.subject} ${atom.metric}`);
   }
