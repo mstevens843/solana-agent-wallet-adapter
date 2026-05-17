@@ -67,6 +67,52 @@ describe('connector drafting helpers', () => {
     expect(selectedConnectorForDraftParameters(parameters)?.id).toBe('meteora');
   });
 
+  // Phase 4 — phantom Kamino badge fix. `generatedPlanConnectorChip` (main.ts:11075)
+  // previously fell back to fuzzy-matching `record.plan.route` (the AI's free-text
+  // route prose) when no connector was form-selected, attaching whatever connector
+  // happened to substring-match an alias (Kamino's "kamino lend" alias was a frequent
+  // false positive). The fix removes that fallback. The chip now depends only on
+  // `selectedConnectorForDraftParameters`, which honors form-supplied parameters but
+  // does NOT receive `plan.route`. These tests pin that contract.
+  it('returns undefined when parameters carry no protocol/connectorId/dapp/provider/route — the chip must render empty', () => {
+    // Swap with NO user-selected connector. The form supplies only token + amount.
+    const swapParameters = {
+      inputToken: 'SOL',
+      outputToken: 'USDC',
+      amount: '0.01',
+      slippageBps: '50',
+    };
+    expect(selectedConnectorForDraftParameters(swapParameters)).toBeUndefined();
+  });
+
+  it('returns the user-selected connector when protocol is form-supplied', () => {
+    const parameters = {
+      inputToken: 'SOL',
+      outputToken: 'USDC',
+      amount: '0.01',
+      protocol: 'kamino',
+    };
+    expect(selectedConnectorForDraftParameters(parameters)?.id).toBe('kamino');
+  });
+
+  it('returns the user-selected connector when connectorId is form-supplied', () => {
+    const parameters = { connectorId: 'jupiter' };
+    expect(selectedConnectorForDraftParameters(parameters)?.id).toBe('jupiter');
+  });
+
+  it('does NOT fuzzy-match a `route` parameter that contains a connector alias substring (kamino lend fallback regression)', () => {
+    // If a template ever set parameters.route = "SOL -> USDC via Kamino lend route",
+    // the OLD fallback would still attach Kamino because the alias "kamino lend"
+    // substring-matches. selectedConnectorForDraftParameters's route fallback uses
+    // findProtocolConnectorByInput, which IS the fuzzy matcher — so it WOULD still
+    // match here. That's intentional for form-supplied `route` fields. The phantom
+    // Kamino bug was specifically about the AI's plan.route prose being a SECOND
+    // fallback at main.ts:11077 — that fallback is removed. This test pins that the
+    // primary `parameters.route` path remains intact for legitimate template use.
+    const parameters = { route: 'kamino-lend' };
+    expect(selectedConnectorForDraftParameters(parameters)?.id).toBe('kamino');
+  });
+
   it('drops stale generic amount and token fields from SOL staking connector forms', () => {
     const marinade = normalizeConnectorDraftParameters(templateById('connector-marinade-liquid-stake'), {
       connectorId: 'marinade',

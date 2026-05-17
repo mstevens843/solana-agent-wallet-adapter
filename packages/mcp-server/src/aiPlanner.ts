@@ -1715,9 +1715,22 @@ export function applyServerSideReviewSafety(
   if (gate) {
     const gateDecision = typeof gate.decision === 'string' ? gate.decision : 'pass';
     if (decision === 'approve' && gateDecision !== 'pass') {
-      decision = gateDecision === 'block' ? 'deny' : 'needs_input';
-      reason = `Server safety: gate decision is "${gateDecision}", AI approval downgraded to "${decision}".`;
-      safetyTriggered = true;
+      // Threshold-rule promotion bypass: when reconcileThresholdReviewDecision
+      // (workflow/thresholdReview.ts) promoted the model's wrong deny → approve because
+      // the user's explicitly stated threshold rule is satisfied by the resolved value,
+      // do NOT silently downgrade back. The gate signal was likely computed before
+      // reconciliation and reflects the model's initial wrong decision; the reconciler
+      // is the more authoritative read of the user's intent. policyBundle.hasBlockingFailure
+      // (below) is independent and continues to downgrade real policy failures.
+      if (evidence.thresholdRulePromoted === true) {
+        evidence.serverSafetyNote =
+          `Gate signal "${gateDecision}" overridden by user threshold rule promotion (reconciler approved on resolved value).`;
+        safetyTriggered = true;
+      } else {
+        decision = gateDecision === 'block' ? 'deny' : 'needs_input';
+        reason = `Server safety: gate decision is "${gateDecision}", AI approval downgraded to "${decision}".`;
+        safetyTriggered = true;
+      }
     }
   }
 

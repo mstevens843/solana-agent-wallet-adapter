@@ -467,6 +467,18 @@ export function reconcileThresholdReviewDecision(
     tone: factTone,
   }, { dedupeByNormalizedLabel: true });
 
+  // When the reconciler promotes a model deny/needs_input → approve because the user's
+  // stated threshold rule is satisfied by the resolved value, mark the result so the
+  // server-side safety gate (aiPlanner.applyServerSideReviewSafety) does not silently
+  // downgrade it back to deny. The bypass is narrow on purpose: only set when the user
+  // explicitly stated a threshold AND the resolved numeric value matches the rule's
+  // approve condition. PolicyBundle.hasBlockingFailure remains a separate, harder fail
+  // signal that the safety gate continues to honor regardless of this flag.
+  if (expected === 'approve' && result.decision !== 'approve') {
+    const evidenceRecord = evidence as Record<string, unknown>;
+    evidenceRecord.thresholdRulePromoted = true;
+  }
+
   // Build a richer reason that names the source sentence the corrected value came from,
   // so the inbox card explains WHICH fact was used — not just "$X is over $Y". This
   // matches the Anthropic-quality reasoning users got on the local-bridge path.

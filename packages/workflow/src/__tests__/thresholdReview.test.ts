@@ -175,4 +175,60 @@ describe('reconcileThresholdReviewDecision — end-to-end Gemini fix', () => {
     expect(out.decision).toBe('approve');
     expect(out.reason).toContain('$15');
   });
+
+  // Phase 4 — gate-stomp bypass flag. When the reconciler promotes deny → approve
+  // because the user's threshold rule is satisfied by the resolved value, the result
+  // must carry `evidence.thresholdRulePromoted = true` so that the server-side safety
+  // gate (aiPlanner.applyServerSideReviewSafety) does not silently downgrade it.
+  it('sets evidence.thresholdRulePromoted=true when promoting deny → approve via user rule', () => {
+    const result = baseResult({
+      decision: 'deny',
+      reason: 'Model wrongly denied.',
+      summary: '',
+      evidence: { findings: [{ label: 'Helium plan', value: '$15/month', tone: 'good' }] },
+    });
+    const out = reconcileThresholdReviewDecision(result, { instruction: INSTRUCTION });
+    expect(out.decision).toBe('approve');
+    expect((out.evidence as Record<string, unknown>).thresholdRulePromoted).toBe(true);
+  });
+
+  it('sets evidence.thresholdRulePromoted=true when promoting needs_input → approve via user rule', () => {
+    const result = baseResult({
+      decision: 'needs_input',
+      reason: 'Awaiting value.',
+      summary: '',
+      evidence: { findings: [{ label: 'Helium plan', value: '$15/month', tone: 'good' }] },
+    });
+    const out = reconcileThresholdReviewDecision(result, { instruction: INSTRUCTION });
+    expect(out.decision).toBe('approve');
+    expect((out.evidence as Record<string, unknown>).thresholdRulePromoted).toBe(true);
+  });
+
+  it('does NOT set evidence.thresholdRulePromoted when no promotion happens (decision already matches)', () => {
+    const result = baseResult({
+      decision: 'approve',
+      reason: 'Already correct.',
+      summary: '',
+      evidence: { findings: [{ label: 'Helium plan', value: '$15/month', tone: 'good' }] },
+    });
+    const out = reconcileThresholdReviewDecision(result, { instruction: INSTRUCTION });
+    expect(out.decision).toBe('approve');
+    // No promotion needed — flag must not be set, otherwise the safety bypass would
+    // incorrectly fire on cases where the AI got the answer right without help.
+    expect((out.evidence as Record<string, unknown>).thresholdRulePromoted).toBeUndefined();
+  });
+
+  it('does NOT set evidence.thresholdRulePromoted when reconciler promotes deny → deny (value over threshold)', () => {
+    const result = baseResult({
+      decision: 'approve',
+      reason: 'Model wrongly approved.',
+      summary: '',
+      evidence: { findings: [{ label: 'Helium plan', value: '$25/month', tone: 'fail' }] },
+    });
+    const out = reconcileThresholdReviewDecision(result, { instruction: INSTRUCTION });
+    expect(out.decision).toBe('deny');
+    // Reconciler corrected approve → deny here. Flag is only for deny/needs_input →
+    // approve direction; downgrades to deny must NOT carry the bypass flag.
+    expect((out.evidence as Record<string, unknown>).thresholdRulePromoted).toBeUndefined();
+  });
 });

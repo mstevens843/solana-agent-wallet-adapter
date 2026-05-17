@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { BridgeAiPlanner } from '../aiPlanner.js';
+import { applyServerSideReviewSafety, BridgeAiPlanner } from '../aiPlanner.js';
 
 const request = {
   prompt: 'review a SOL transfer',
@@ -1594,3 +1594,94 @@ function expectAdditionalPropertiesClosed(node: unknown, path: string): void {
     }
   }
 }
+
+// Phase 4 — gate-stomp bypass. applyServerSideReviewSafety used to silently downgrade
+// reconciler-promoted approves when context.evidenceGate.decision === 'block'. Now it
+// honors evidence.thresholdRulePromoted (set by reconcileThresholdReviewDecision) and
+// leaves the promotion intact. Real policy failures (policyBundle.hasBlockingFailure)
+// still downgrade — the bypass is narrowly scoped to threshold-rule promotions.
+describe('applyServerSideReviewSafety — Phase 4 threshold-rule promotion bypass', () => {
+  function reviewRequest(context: Record<string, unknown>) {
+    return {
+      plan: {
+        intent: 'swap',
+        route: 'jupiter',
+        risk: 'medium',
+        approval: 'wallet approval required',
+        safeguards: [],
+        source: 'ai',
+        category: 'trading',
+        actionType: 'swap',
+        templateTitle: 'Swap tokens',
+        userNotes: '',
+        parameters: {},
+        fields: [],
+      },
+      instruction: 'check helium mobile. lowest monthly plan. if less than $20. approve.',
+      walletAddress: 'not_connected',
+      cluster: 'mainnet-beta',
+      context,
+      mode: 'single',
+    } as Parameters<typeof applyServerSideReviewSafety>[1];
+  }
+
+  function approveResult(evidence: Record<string, unknown> = {}) {
+    return {
+      decision: 'approve' as const,
+      reason: 'Threshold satisfied.',
+      summary: 'Threshold rule checked: $15 is under $20.',
+      evidence,
+      checkedAt: '2026-05-17T20:00:00.000Z',
+      source: 'ai' as const,
+    };
+  }
+
+  it('does NOT downgrade approve → deny when evidence.thresholdRulePromoted is true and gate decision is block', () => {
+    const result = approveResult({ thresholdRulePromoted: true });
+    const request = reviewRequest({ evidenceGate: { decision: 'block' } });
+    const out = applyServerSideReviewSafety(result, request);
+    expect(out.decision).toBe('approve');
+    expect((out.evidence as Record<string, unknown>).serverSafetyNote).toMatch(/overridden by user threshold rule/);
+  });
+
+  it('still downgrades approve → deny when the flag is NOT set and gate decision is block', () => {
+    const result = approveResult({});
+    const request = reviewRequest({ evidenceGate: { decision: 'block' } });
+    const out = applyServerSideReviewSafety(result, request);
+    expect(out.decision).toBe('deny');
+    expect(out.reason).toMatch(/Server safety: gate decision is "block"/);
+  });
+
+  it('still downgrades approve → needs_input when the flag is NOT set and gate decision is needs_input', () => {
+    const result = approveResult({});
+    const request = reviewRequest({ evidenceGate: { decision: 'needs_input' } });
+    const out = applyServerSideReviewSafety(result, request);
+    expect(out.decision).toBe('needs_input');
+  });
+
+  it('still downgrades approve → deny on policyBundle.hasBlockingFailure even when threshold flag is true (independent fail signal)', () => {
+    // The threshold-rule bypass must NOT open a hole in the policyBundle check.
+    // A real policy failure (e.g., a user-stated gate that failed against resolved
+    // facts) is independent of the model's threshold reconciliation and should
+    // continue to block approvals.
+    const result = approveResult({ thresholdRulePromoted: true });
+    const request = reviewRequest({
+      evidenceGate: { decision: 'pass' },
+      policyBundle: {
+        hasBlockingFailure: true,
+        evaluations: [{ atomId: 'fact.price', pass: false }],
+      },
+    });
+    const out = applyServerSideReviewSafety(result, request);
+    expect(out.decision).toBe('deny');
+    expect(out.reason).toMatch(/policy bundle failed/);
+  });
+
+  it('passes through approve unchanged when gate is pass and threshold flag is absent', () => {
+    const result = approveResult({});
+    const request = reviewRequest({ evidenceGate: { decision: 'pass' } });
+    const out = applyServerSideReviewSafety(result, request);
+    expect(out.decision).toBe('approve');
+    expect((out.evidence as Record<string, unknown>).serverSafetyNote).toBeUndefined();
+  });
+});

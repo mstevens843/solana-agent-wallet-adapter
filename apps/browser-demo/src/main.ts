@@ -11073,8 +11073,13 @@ function connectorChip(connectorId: string | undefined, connectorName: string | 
 }
 
 function generatedPlanConnectorChip(record: GeneratedPlanRecord): string {
-  const connector = selectedConnectorForDraftParameters(record.plan.parameters) ??
-    findProtocolConnectorByInput(record.plan.parameters.protocol || record.plan.parameters.dapp || record.plan.route);
+  // Honor user-selected connector only (via form-supplied parameters.protocol /
+  // .connectorId / .dapp / .provider / .route). Do NOT fuzzy-match record.plan.route
+  // — that's the AI's free-text route prose, and any incidental protocol mention
+  // (or substring overlap with an alias like "kamino lend") attaches the wrong
+  // badge. When the user did not select a connector at draft time, the card shows
+  // no connector badge — matching the create-form's empty connector dropdown state.
+  const connector = selectedConnectorForDraftParameters(record.plan.parameters);
   return connector ? connectorChip(connector.id, connector.name) : '';
 }
 
