@@ -30,6 +30,7 @@ import {
 } from '../sessionState.js';
 import { addStreamingApprovalCompletedListener } from '../streamingApprovalEvents.js';
 import { getConnectedCluster } from '../walletState.js';
+import { renderUseCaseDisclosure } from './useCases.js';
 
 const FILTERS: readonly SessionsStatusFilter[] = ['active', 'expired', 'settled', 'revoked'];
 const ROOT_SELECTOR = '[data-sessions-root]';
@@ -444,6 +445,25 @@ export function renderSessionsPanel(): string {
           <button type="button" class="utility" data-sessions-refresh ${snapshot.status === 'loading' ? 'disabled' : ''}>Refresh</button>
         </div>
       </header>
+
+      ${renderUseCaseDisclosure({
+        id: 'streaming-payment-sessions',
+        summary: 'When an agent needs small repeated spend inside a limit you can revoke.',
+        useCases: [
+          {
+            title: 'Pay as work happens',
+            body: 'A support, research, or compute agent can spend small voucher amounts over time without asking you to approve every tiny step.',
+          },
+          {
+            title: 'Set a hard cap up front',
+            body: 'You grant a bounded USDC delegate session with a maximum spend, expiry, and optional recipient allowlist.',
+          },
+          {
+            title: 'Stop the session any time',
+            body: 'If the task is done or something looks wrong, revoke the delegate from your wallet and future vouchers cannot settle.',
+          },
+        ],
+      })}
 
       ${snapshot.notice ? `<p class="sessions-notice sessions-notice--${escapeHtml(snapshot.notice.tone)}">${escapeHtml(snapshot.notice.message)}</p>` : ''}
 

@@ -6,8 +6,12 @@ import { dirname, join } from 'node:path';
 import {
   buildAgenticAgentCard,
   defaultAgenticCapabilities,
+  hashProfilePayload,
   validateAgentCard,
+  validateProfilePayload,
   type AgentCard,
+  type AgentPaymentProfilePayload,
+  type AgenticProtocol,
 } from '@solana-agent-wallet-adapter/a2a-agent-card';
 import {
   buildAcpOutboundReceipt,
@@ -45,8 +49,15 @@ const SKILLS_INSTALL_ACTION_RE = /^\/api\/skills\/installs\/([A-Za-z0-9_-]+)\/(p
 const AGGREGATOR_SKILL_RE = /^\/api\/aggregator\/skills\/([a-z0-9-]+)\/?$/;
 const AGGREGATOR_WALLET_RE = /^\/api\/aggregator\/wallets\/([1-9A-HJ-NP-Za-km-z]{32,44})\/?$/;
 const STREAMING_PREFIX = '/api/streaming/';
+const MPP_PREFIX = '/api/mpp/';
 const AGENT_CARD_PREVIEW_PATH = '/api/agents/card';
 const AGENT_CARD_PUBLIC_PATH = '/.well-known/agent.json';
+const AGENT_PROFILE_NAMESPACE = 'agent-payment-profile';
+const AGENT_PROFILE_PREFERENCE_PATH = `/api/preferences/${AGENT_PROFILE_NAMESPACE}`;
+const AGENT_PROFILE_INTENT_PATH = '/api/agents/profile-intent';
+const AGENT_PROFILE_WRITE_PATH = '/api/agents/profile';
+const AGENT_PROFILE_NONCE_TTL_MS = 5 * 60 * 1000;
+const PER_WALLET_AGENT_CARD_RE = /^\/agents\/([^/]+)\/card\.json$/;
 const DEV_WALLET_HEADER = 'x-agentic-wallet-address';
 const LOCAL_WALLET_FALLBACK = 'local-browser-wallet';
 const LOCAL_AGENT_CARD_WALLET_FALLBACK = '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd';
@@ -57,6 +68,8 @@ const MAX_JSON_BYTES = 64 * 1024;
 const BASE58_PUBKEY_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
 const devApprovals = new Map<string, ApprovalRequestRecord>();
+const localAgentProfiles = new Map<string, LocalAgentProfileRecord>();
+const localAgentProfileIntents = new Map<string, LocalAgentProfileIntent>();
 const localSkillCatalog = new Map<string, LocalSkillManifestRecord>();
 const localSkillInstalls = new Map<string, SkillInstallRecord>();
 let localStreamingApiPromise: Promise<LocalStreamingApi> | null = null;
@@ -74,14 +87,14 @@ interface LocalStreamingApiHandler {
 
 interface LocalStreamingApiContext {
   walletAddress: string | undefined;
-  workflowService: Record<string, never>;
+  workflowService: object;
   workflowStore: object;
   evidenceStore: object;
   clock: { now(): Date };
 }
 
 interface LocalStreamingApi {
-  handler: LocalStreamingApiHandler;
+  handlers: readonly LocalStreamingApiHandler[];
   context: Omit<LocalStreamingApiContext, 'walletAddress'>;
 }
 
@@ -91,6 +104,10 @@ interface LocalStreamingRegistryModule {
 
 interface LocalStreamingMemoryStoreModule {
   MemoryWorkflowStore: new () => object;
+}
+
+interface LocalStreamingWorkflowServiceModule {
+  WorkflowService: new (store: object) => object;
 }
 
 interface LocalStreamingEvidenceStoreModule {
@@ -113,6 +130,24 @@ interface LocalSkillInstallRow {
   lastExecutionAt?: string;
   nextRunAt?: string;
   recurringScheduleStatus?: string;
+}
+
+interface LocalAgentProfileRecord {
+  namespace: typeof AGENT_PROFILE_NAMESPACE;
+  payload: AgentPaymentProfilePayload | null;
+  updatedAt: string | null;
+  version: number;
+}
+
+interface LocalAgentProfileIntent {
+  nonce: string;
+  message: string;
+  domain: string;
+  issuedAt: string;
+  expiresAt: string;
+  walletAddress: string;
+  action: 'publish' | 'takedown';
+  payloadHashHex?: string;
 }
 
 class BodyTooLargeError extends Error {
@@ -138,9 +173,12 @@ export function acpDevApiPlugin(): Plugin {
       server.middlewares.use(async (req, res, next) => {
         const url = new URL(req.url ?? '/', 'http://127.0.0.1');
         try {
-          if (url.pathname.startsWith(STREAMING_PREFIX)) {
+          if (url.pathname.startsWith(STREAMING_PREFIX) || url.pathname.startsWith(MPP_PREFIX)) {
             const handled = await handleLocalStreamingApi(req, res, url, server);
             if (!handled) next();
+            return;
+          }
+          if (await handleLocalAgentProfileApi(req, res, url)) {
             return;
           }
           if (handleLocalAgentCardApi(req, res, url)) {
@@ -188,12 +226,14 @@ async function handleLocalStreamingApi(
   server: ViteDevServer,
 ): Promise<boolean> {
   const api = await localStreamingApi(server);
+  const handler = api.handlers.find((candidate) => url.pathname.startsWith(candidate.prefix));
+  if (!handler) return false;
   const method = req.method ?? 'GET';
-  if (!api.handler.methods.includes(method)) {
-    writeJson(res, 405, { error: 'method_not_allowed', message: 'Use GET, HEAD, or POST for streaming routes.' });
+  if (!handler.methods.includes(method)) {
+    writeJson(res, 405, { error: 'method_not_allowed', message: 'Use GET, HEAD, or POST for local agent payment routes.' });
     return true;
   }
-  return api.handler.handle(req, res, url, {
+  return handler.handle(req, res, url, {
     ...api.context,
     walletAddress: walletAddressFromStreamingRequest(req, url),
   });
@@ -207,20 +247,26 @@ async function localStreamingApi(server: ViteDevServer): Promise<LocalStreamingA
 async function createLocalStreamingApi(server: ViteDevServer): Promise<LocalStreamingApi> {
   process.env.STREAMING_SESSION_ENCRYPTION_KEY ??= LOCAL_STREAMING_DEV_KEY;
 
-  await server.ssrLoadModule(renderWebCloudModulePath('streamingRoutes.ts'));
-  const [{ listDevApiHandlers }, { MemoryWorkflowStore }, { MemoryEvidenceStore }] = await Promise.all([
+  await Promise.all([
+    server.ssrLoadModule(renderWebCloudModulePath('streamingRoutes.ts')),
+    server.ssrLoadModule(renderWebCloudModulePath('mppRoutes.ts')),
+  ]);
+  const [{ listDevApiHandlers }, { MemoryWorkflowStore }, { WorkflowService }, { MemoryEvidenceStore }] = await Promise.all([
     server.ssrLoadModule(renderWebCloudModulePath('devApiRegistry.ts')) as Promise<LocalStreamingRegistryModule>,
     server.ssrLoadModule(renderWebCloudModulePath('memoryStore.ts')) as Promise<LocalStreamingMemoryStoreModule>,
+    server.ssrLoadModule(renderWebCloudModulePath('workflowService.ts')) as Promise<LocalStreamingWorkflowServiceModule>,
     server.ssrLoadModule(renderWebCloudModulePath('evidenceService.ts')) as Promise<LocalStreamingEvidenceStoreModule>,
   ]);
-  const handler = listDevApiHandlers().find((candidate) => candidate.prefix === STREAMING_PREFIX);
-  if (!handler) throw new Error('Local streaming dev API handler was not registered.');
+  const handlers = listDevApiHandlers().filter((candidate) => candidate.prefix === STREAMING_PREFIX || candidate.prefix === MPP_PREFIX);
+  if (!handlers.some((handler) => handler.prefix === STREAMING_PREFIX)) throw new Error('Local streaming dev API handler was not registered.');
+  if (!handlers.some((handler) => handler.prefix === MPP_PREFIX)) throw new Error('Local MPP dev API handler was not registered.');
+  const workflowStore = new MemoryWorkflowStore();
 
   return {
-    handler: handler as LocalStreamingApiHandler,
+    handlers: handlers as readonly LocalStreamingApiHandler[],
     context: {
-      workflowService: {},
-      workflowStore: new MemoryWorkflowStore(),
+      workflowService: new WorkflowService(workflowStore),
+      workflowStore,
       evidenceStore: new MemoryEvidenceStore(),
       clock: { now: () => new Date() },
     },
@@ -244,10 +290,13 @@ function workspaceRoot(): string {
 function handleLocalAgentCardApi(req: IncomingMessage, res: ServerResponse, url: URL): boolean {
   const isPreview = url.pathname === AGENT_CARD_PREVIEW_PATH;
   const isPublic = url.pathname === AGENT_CARD_PUBLIC_PATH;
-  if (!isPreview && !isPublic) return false;
+  const perWalletMatch = PER_WALLET_AGENT_CARD_RE.exec(url.pathname);
+  const perWalletAddress = perWalletMatch?.[1] ? decodeURIComponent(perWalletMatch[1]) : '';
+  const isPerWallet = Boolean(perWalletAddress);
+  if (!isPreview && !isPublic && !isPerWallet) return false;
 
   const method = req.method ?? 'GET';
-  if (isPublic && method === 'OPTIONS') {
+  if ((isPublic || isPerWallet) && method === 'OPTIONS') {
     res.statusCode = 204;
     setAgentCardCorsHeaders(res);
     res.setHeader('access-control-max-age', '600');
@@ -262,7 +311,24 @@ function handleLocalAgentCardApi(req: IncomingMessage, res: ServerResponse, url:
     return true;
   }
 
-  const card = buildLocalAgentCard(req, url);
+  let card: AgentCard;
+  if (isPerWallet) {
+    if (!BASE58_PUBKEY_RE.test(perWalletAddress)) {
+      writeJson(res, 404, { error: 'profile_not_found' });
+      return true;
+    }
+    const profile = localAgentProfiles.get(perWalletAddress)?.payload;
+    if (!profile?.discoverable) {
+      writeJson(res, 404, { error: 'profile_not_found' });
+      return true;
+    }
+    card = buildLocalAgentCard(req, url, {
+      walletAddress: perWalletAddress,
+      profile,
+    });
+  } else {
+    card = buildLocalAgentCard(req, url);
+  }
   const validation = validateAgentCard(card);
   if (!validation.valid) {
     writeJson(res, 500, {
@@ -274,8 +340,8 @@ function handleLocalAgentCardApi(req: IncomingMessage, res: ServerResponse, url:
 
   res.statusCode = 200;
   res.setHeader('content-type', 'application/json; charset=utf-8');
-  res.setHeader('cache-control', isPublic ? 'public, max-age=60' : 'no-store');
-  if (isPublic) setAgentCardCorsHeaders(res);
+  res.setHeader('cache-control', isPublic || isPerWallet ? 'public, max-age=60' : 'no-store');
+  if (isPublic || isPerWallet) setAgentCardCorsHeaders(res);
   if (method === 'HEAD') {
     res.end();
     return true;
@@ -284,12 +350,20 @@ function handleLocalAgentCardApi(req: IncomingMessage, res: ServerResponse, url:
   return true;
 }
 
-function buildLocalAgentCard(req: IncomingMessage, url: URL): AgentCard {
+function buildLocalAgentCard(
+  req: IncomingMessage,
+  url: URL,
+  input: { walletAddress?: string; profile?: AgentPaymentProfilePayload } = {},
+): AgentCard {
+  const profile = input.profile;
   return buildAgenticAgentCard({
-    walletAddress: resolveLocalAgentCardWallet(req),
+    walletAddress: input.walletAddress ?? resolveLocalAgentCardWallet(req),
     baseUrl: resolveRequestOrigin(req, url),
-    supportedTokens: DEFAULT_AGENT_CARD_TOKENS,
+    supportedTokens: profile?.acceptedTokens ?? DEFAULT_AGENT_CARD_TOKENS,
     capabilities: defaultAgenticCapabilities,
+    ...(profile ? { name: profile.displayName } : {}),
+    ...(profile ? { supportedProtocols: profile.protocols as AgenticProtocol[] } : {}),
+    ...(profile?.contactEmail ? { contactEmail: profile.contactEmail } : {}),
     version: process.env.AGENTIC_BUILD_ID ?? '0.0.1-dev',
   });
 }
@@ -312,6 +386,306 @@ function resolveRequestOrigin(req: IncomingMessage, url: URL): string {
     : 'http';
   const host = req.headers.host ?? url.host ?? '127.0.0.1:5174';
   return `${proto}://${host}`;
+}
+
+async function handleLocalAgentProfileApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
+  if (url.pathname === AGENT_PROFILE_PREFERENCE_PATH) {
+    if (req.method !== 'GET') {
+      writeJson(res, 405, {
+        error: 'method_not_allowed',
+        message: 'Use GET for the local agent payment profile preference.',
+      });
+      return true;
+    }
+    const walletAddress = walletAddressFromRequest(req);
+    const record = localAgentProfiles.get(walletAddress);
+    writeJson(res, 200, record ?? emptyLocalAgentProfileRecord());
+    return true;
+  }
+
+  if (url.pathname === AGENT_PROFILE_INTENT_PATH) {
+    if (req.method !== 'POST') {
+      writeJson(res, 405, {
+        error: 'method_not_allowed',
+        message: 'Use POST for the local agent payment profile intent.',
+      });
+      return true;
+    }
+    await handleLocalAgentProfileIntent(req, res, url);
+    return true;
+  }
+
+  if (url.pathname === AGENT_PROFILE_WRITE_PATH) {
+    if (req.method === 'PUT') {
+      await handleLocalAgentProfilePublish(req, res, url);
+      return true;
+    }
+    if (req.method === 'DELETE') {
+      await handleLocalAgentProfileTakedown(req, res, url);
+      return true;
+    }
+    writeJson(res, 405, {
+      error: 'method_not_allowed',
+      message: 'Use PUT or DELETE for the local agent payment profile.',
+    });
+    return true;
+  }
+
+  return false;
+}
+
+async function handleLocalAgentProfileIntent(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+): Promise<void> {
+  const walletAddress = connectedWalletAddressFromRequest(req);
+  if (!walletAddress) {
+    writeJson(res, 403, {
+      error: 'dev_wallet_missing',
+      message: 'Connect a wallet before updating the local payment profile.',
+    });
+    return;
+  }
+
+  const body = await readJsonBody(req);
+  const record = body && typeof body === 'object' && !Array.isArray(body)
+    ? body as Record<string, unknown>
+    : {};
+  const action = record.action === 'takedown' ? 'takedown' : 'publish';
+  const payloadHashHex = action === 'publish'
+    ? await validateAndHashLocalAgentProfilePayload(record.payload, res)
+    : undefined;
+  if (action === 'publish' && !payloadHashHex) return;
+
+  const now = new Date();
+  const issuedAt = now.toISOString();
+  const expiresAt = new Date(now.getTime() + AGENT_PROFILE_NONCE_TTL_MS).toISOString();
+  const domain = requestDomain(req, url);
+  const nonce = randomUUID().replace(/-/g, '');
+  const fields = { domain, walletAddress, nonce, issuedAt, expiresAt };
+  const intent: LocalAgentProfileIntent = {
+    ...fields,
+    action,
+    message: action === 'publish'
+      ? buildLocalAgentProfilePublishMessage(fields, payloadHashHex ?? '')
+      : buildLocalAgentProfileTakedownMessage(fields),
+    ...(payloadHashHex ? { payloadHashHex } : {}),
+  };
+  localAgentProfileIntents.set(intent.nonce, intent);
+  pruneExpiredLocalAgentProfileIntents(now);
+  writeJson(res, 200, { ...intent, localOnly: true });
+}
+
+async function handleLocalAgentProfilePublish(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+): Promise<void> {
+  const body = await readJsonBody(req);
+  const record = body && typeof body === 'object' && !Array.isArray(body)
+    ? body as Record<string, unknown>
+    : {};
+  const walletAddress = walletAddressFromProfileWrite(record, req);
+  if (!walletAddress) {
+    writeJson(res, 403, {
+      error: 'dev_wallet_missing',
+      message: 'Connect a wallet before publishing the local payment profile.',
+    });
+    return;
+  }
+
+  const payload = validatedLocalAgentProfilePayload(record.payload, res);
+  if (!payload) return;
+  const payloadHashHex = await hashProfilePayload(payload);
+  if (!assertLocalAgentProfileIntent(record, res, {
+    action: 'publish',
+    walletAddress,
+    payloadHashHex,
+    domain: requestDomain(req, url),
+  })) return;
+
+  const existing = localAgentProfiles.get(walletAddress);
+  const saved: LocalAgentProfileRecord = {
+    namespace: AGENT_PROFILE_NAMESPACE,
+    payload,
+    updatedAt: new Date().toISOString(),
+    version: (existing?.version ?? 0) + 1,
+  };
+  localAgentProfiles.set(walletAddress, saved);
+  writeJson(res, 200, { ok: true, profile: saved, localOnly: true });
+}
+
+async function handleLocalAgentProfileTakedown(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+): Promise<void> {
+  const body = await readJsonBody(req);
+  const record = body && typeof body === 'object' && !Array.isArray(body)
+    ? body as Record<string, unknown>
+    : {};
+  const walletAddress = walletAddressFromProfileWrite(record, req);
+  if (!walletAddress) {
+    writeJson(res, 403, {
+      error: 'dev_wallet_missing',
+      message: 'Connect a wallet before taking down the local payment profile.',
+    });
+    return;
+  }
+  if (!assertLocalAgentProfileIntent(record, res, {
+    action: 'takedown',
+    walletAddress,
+    domain: requestDomain(req, url),
+  })) return;
+
+  const existing = localAgentProfiles.get(walletAddress);
+  if (!existing?.payload) {
+    writeJson(res, 200, { ok: true, profile: null, localOnly: true });
+    return;
+  }
+  const saved: LocalAgentProfileRecord = {
+    namespace: AGENT_PROFILE_NAMESPACE,
+    payload: {
+      ...existing.payload,
+      discoverable: false,
+    },
+    updatedAt: new Date().toISOString(),
+    version: existing.version + 1,
+  };
+  localAgentProfiles.set(walletAddress, saved);
+  writeJson(res, 200, { ok: true, profile: saved, localOnly: true });
+}
+
+function emptyLocalAgentProfileRecord(): LocalAgentProfileRecord {
+  return {
+    namespace: AGENT_PROFILE_NAMESPACE,
+    payload: null,
+    updatedAt: null,
+    version: 0,
+  };
+}
+
+function connectedWalletAddressFromRequest(req: IncomingMessage): string {
+  const walletAddress = walletAddressFromRequest(req);
+  return BASE58_PUBKEY_RE.test(walletAddress) ? walletAddress : '';
+}
+
+function walletAddressFromProfileWrite(record: Record<string, unknown>, req: IncomingMessage): string {
+  const bodyWallet = typeof record.walletAddress === 'string' ? record.walletAddress.trim() : '';
+  if (BASE58_PUBKEY_RE.test(bodyWallet)) return bodyWallet;
+  return connectedWalletAddressFromRequest(req);
+}
+
+async function validateAndHashLocalAgentProfilePayload(
+  value: unknown,
+  res: ServerResponse,
+): Promise<string | undefined> {
+  const payload = validatedLocalAgentProfilePayload(value, res);
+  if (!payload) return undefined;
+  return hashProfilePayload(payload);
+}
+
+function validatedLocalAgentProfilePayload(
+  value: unknown,
+  res: ServerResponse,
+): AgentPaymentProfilePayload | undefined {
+  const validated = validateProfilePayload(value);
+  if (!validated.ok) {
+    writeJson(res, 400, {
+      error: 'invalid_profile_payload',
+      message: validated.errors.map((entry) => entry.message).join(' '),
+      errors: validated.errors,
+    });
+    return undefined;
+  }
+  return validated.payload;
+}
+
+function assertLocalAgentProfileIntent(
+  record: Record<string, unknown>,
+  res: ServerResponse,
+  expected: {
+    action: 'publish' | 'takedown';
+    walletAddress: string;
+    domain: string;
+    payloadHashHex?: string;
+  },
+): boolean {
+  const nonce = typeof record.nonce === 'string' ? record.nonce.trim() : '';
+  const intent = nonce ? localAgentProfileIntents.get(nonce) : undefined;
+  if (!intent || Date.parse(intent.expiresAt) <= Date.now()) {
+    writeJson(res, 401, { error: 'invalid_profile_nonce', message: 'Invalid or expired local profile nonce.' });
+    return false;
+  }
+  const signature = typeof record.signature === 'string' ? record.signature.trim() : '';
+  if (!signature) {
+    writeJson(res, 400, { error: 'missing_signature', message: 'Wallet signature is required.' });
+    return false;
+  }
+  const message = typeof record.message === 'string' ? record.message : '';
+  if (
+    intent.action !== expected.action ||
+    intent.walletAddress !== expected.walletAddress ||
+    intent.domain !== expected.domain ||
+    intent.message !== message ||
+    (expected.payloadHashHex !== undefined && intent.payloadHashHex !== expected.payloadHashHex)
+  ) {
+    writeJson(res, 401, {
+      error: 'profile_intent_mismatch',
+      message: 'Signed message does not match the local profile intent.',
+    });
+    return false;
+  }
+  localAgentProfileIntents.delete(intent.nonce);
+  return true;
+}
+
+function pruneExpiredLocalAgentProfileIntents(now = new Date()): void {
+  const cutoff = now.getTime();
+  for (const [nonce, intent] of localAgentProfileIntents.entries()) {
+    if (Date.parse(intent.expiresAt) <= cutoff) {
+      localAgentProfileIntents.delete(nonce);
+    }
+  }
+}
+
+function requestDomain(req: IncomingMessage, url: URL): string {
+  return req.headers.host ?? url.host ?? '127.0.0.1:5174';
+}
+
+function buildLocalAgentProfilePublishMessage(
+  fields: Omit<LocalAgentProfileIntent, 'action' | 'message' | 'payloadHashHex'>,
+  payloadHashHex: string,
+): string {
+  return [
+    'Agentic Cloud wants you to publish your agent payment profile.',
+    '',
+    `Domain: ${fields.domain}`,
+    `Wallet: ${fields.walletAddress}`,
+    `Nonce: ${fields.nonce}`,
+    `Issued At: ${fields.issuedAt}`,
+    `Expires At: ${fields.expiresAt}`,
+    `Payload SHA-256: ${payloadHashHex}`,
+    '',
+    'This signature publishes a discovery profile only. It does not grant spending authority, delegated signing, or permission to move funds.',
+  ].join('\n');
+}
+
+function buildLocalAgentProfileTakedownMessage(
+  fields: Omit<LocalAgentProfileIntent, 'action' | 'message' | 'payloadHashHex'>,
+): string {
+  return [
+    'Agentic Cloud wants you to take down your agent payment profile.',
+    '',
+    `Domain: ${fields.domain}`,
+    `Wallet: ${fields.walletAddress}`,
+    `Nonce: ${fields.nonce}`,
+    `Issued At: ${fields.issuedAt}`,
+    `Expires At: ${fields.expiresAt}`,
+    '',
+    'This signature removes your wallet from discovery. It does not grant spending authority, delegated signing, or permission to move funds.',
+  ].join('\n');
 }
 
 function setAgentCardCorsHeaders(res: ServerResponse): void {

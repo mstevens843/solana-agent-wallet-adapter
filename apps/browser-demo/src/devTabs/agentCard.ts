@@ -12,6 +12,7 @@ import {
 
 import { cloudWalletAvailable, cloudWalletRequest, cloudWalletSignMessage } from '../cloudWalletBridge.js';
 import { currentAddress } from '../connectionState.js';
+import { renderUseCaseDisclosure } from './useCases.js';
 
 const PROFILE_PATH = '/api/preferences/agent-payment-profile';
 const PROFILE_INTENT_PATH = '/api/agents/profile-intent';
@@ -201,12 +202,18 @@ function fieldErrorFor(field: ProfilePayloadValidationError['field']): string | 
 function renderToggleRow(): string {
   const checked = tabState.draft.discoverable ? 'checked' : '';
   return `
-    <label class="ai-toggle dev-agent-card-form-toggle">
-      <input type="checkbox" data-profile-toggle="discoverable" ${checked} />
-      <span>
+    <label class="dev-agent-card-discoverable-row dev-agent-card-form-toggle">
+      <input
+        type="checkbox"
+        class="dev-agent-card-switch-input"
+        data-profile-toggle="discoverable"
+        ${checked}
+      />
+      <span class="dev-agent-card-discoverable-copy">
         <strong>Discoverable</strong>
-        <em>Let compatible apps fetch this wallet's profile.</em>
+        <em>Let compatible apps fetch this wallet's payment profile URL.</em>
       </span>
+      <span class="dev-agent-card-switch-control" aria-hidden="true"><span></span></span>
     </label>
   `;
 }
@@ -227,7 +234,7 @@ function renderTokenChips(): string {
     `;
   }).join('');
   return `
-    <div class="dev-agent-card-form-field">
+    <div class="dev-agent-card-form-field dev-agent-card-form-field--tokens">
       <label class="dev-agent-card-form-label" for="dev-agent-card-tokens">Accepted tokens</label>
       <p class="dev-agent-card-form-help">Pick what you'll take when an agent or merchant pays you.</p>
       <div class="dev-agent-card-chip-row" id="dev-agent-card-tokens">${chips}</div>
@@ -257,7 +264,7 @@ function renderProtocolChips(): string {
     `;
   }).join('');
   return `
-    <div class="dev-agent-card-form-field">
+    <div class="dev-agent-card-form-field dev-agent-card-form-field--protocols">
       <label class="dev-agent-card-form-label" for="dev-agent-card-protocols">Protocols</label>
       <p class="dev-agent-card-form-help">Which agent standards you speak. Most users keep all three on.</p>
       <div class="dev-agent-card-chip-row" id="dev-agent-card-protocols">${chips}</div>
@@ -269,7 +276,7 @@ function renderProtocolChips(): string {
 function renderDisplayNameField(): string {
   const error = fieldErrorFor('displayName');
   return `
-    <div class="dev-agent-card-form-field">
+    <div class="dev-agent-card-form-field dev-agent-card-form-field--display-name">
       <label class="dev-agent-card-form-label" for="dev-agent-card-display-name">Display name</label>
       <input
         type="text"
@@ -289,7 +296,7 @@ function renderDisplayNameField(): string {
 function renderContactEmailField(): string {
   const error = fieldErrorFor('contactEmail');
   return `
-    <div class="dev-agent-card-form-field">
+    <div class="dev-agent-card-form-field dev-agent-card-form-field--contact">
       <label class="dev-agent-card-form-label" for="dev-agent-card-contact-email">Contact email <em>(optional)</em></label>
       <input
         type="email"
@@ -352,11 +359,13 @@ function renderFormSection(): string {
       </div>
       ${onboarding}
       ${renderFormBanner()}
-      ${renderToggleRow()}
-      ${renderDisplayNameField()}
-      ${renderTokenChips()}
-      ${renderProtocolChips()}
-      ${renderContactEmailField()}
+      <div class="dev-agent-card-form-grid">
+        ${renderToggleRow()}
+        ${renderDisplayNameField()}
+        ${renderContactEmailField()}
+        ${renderTokenChips()}
+        ${renderProtocolChips()}
+      </div>
       ${renderFormActions()}
     </section>
   `;
@@ -534,6 +543,24 @@ export function panelHtml(): string {
         </div>
         ${routeCardHtml()}
       </header>
+      ${renderUseCaseDisclosure({
+        id: 'agent-payments-profile',
+        summary: 'When another app or agent needs to know where payment requests should go.',
+        useCases: [
+          {
+            title: 'Receive an invoice from an agent',
+            body: 'A booking or research agent can find this wallet profile and send the payment request to the right address instead of asking you to paste it.',
+          },
+          {
+            title: 'Let checkout apps route carts here',
+            body: 'A compatible merchant app can use your profile to create a readable checkout request that lands in your wallet for review.',
+          },
+          {
+            title: 'Stay in control before anything signs',
+            body: 'Publishing the profile only makes the wallet discoverable. Every payment request still waits for your wallet approval.',
+          },
+        ],
+      })}
       <div class="dev-agent-card-body" id="${BODY_ELEMENT_ID}">
         ${bodyHtml()}
       </div>

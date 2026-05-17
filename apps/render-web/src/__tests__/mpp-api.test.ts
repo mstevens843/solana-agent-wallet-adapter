@@ -9,6 +9,8 @@ import '../cloud/mppRoutes.js';
 import { listDevApiHandlers } from '../cloud/devApiRegistry.js';
 import { MemoryEvidenceStore } from '../cloud/evidenceService.js';
 import { MemoryWorkflowStore } from '../cloud/memoryStore.js';
+import { settleStreamingSession } from '../cloud/settlementService.js';
+import { StreamingService, streamingStoreFor } from '../cloud/streamingService.js';
 import type { Clock } from '../cloud/store.js';
 import { WorkflowService } from '../cloud/workflowService.js';
 
@@ -94,6 +96,127 @@ describe('MPP API', () => {
       expect(updated?.metadata?.mppSignedEvidenceReceiptId).toEqual(expect.any(String));
     });
   });
+
+  it('pays eligible MPP challenges with an active streaming session voucher', async () => {
+    await withMppServer(async ({ port, workflowStore, evidenceStore, wallet }) => {
+      const streaming = new StreamingService(streamingStoreFor(workflowStore), {
+        clock: { now: () => NOW },
+        latestBlockhash: async () => '11111111111111111111111111111111',
+      });
+      const grant = await streaming.createSession({
+        walletAddress: wallet.walletAddress,
+        tokenMint: USDC_MINT,
+        capAmount: '5',
+        expiresAt: '2026-05-16T14:00:00.000Z',
+        recipientAllowlist: [RECIPIENT],
+        cluster: 'devnet',
+      });
+      await streaming.recordGrantSigned({
+        walletAddress: wallet.walletAddress,
+        sessionId: grant.session.sessionId,
+        approveTxid: 'tx_streaming_grant_fixture',
+      });
+
+      const created = await postJson(port, '/api/mpp/challenge', { challenge: splChallenge() });
+      expect(created.status).toBe(201);
+      const approvalId = String(created.body.approvalId);
+
+      const inbound = await requestJson(port, 'GET', '/api/mpp/inbound');
+      const first = ((inbound.body.inbound as Record<string, unknown>[]) ?? [])[0] as Record<string, unknown>;
+      expect((first.metadata as Record<string, unknown>).mppSessionEligibility).toMatchObject({
+        eligible: true,
+        finality: 'voucher_accepted',
+      });
+
+      const paid = await postJson(port, '/api/mpp/session-pay', { approvalId });
+      expect(paid.status).toBe(200);
+      expect(paid.body).toMatchObject({
+        accepted: true,
+        finality: 'voucher_accepted',
+        status: 'voucher_accepted',
+      });
+      expect(paid.body.receiptHash).toMatch(/^[a-f0-9]{64}$/);
+
+      const approval = await workflowStore.getApproval(wallet.walletAddress, approvalId);
+      expect(approval?.status).toBe('approved');
+      expect(approval?.metadata?.mppSessionPayment).toMatchObject({
+        approvalId,
+        sessionId: grant.session.sessionId,
+        status: 'voucher_accepted',
+      });
+      const sessionDetail = await streaming.getSession({
+        walletAddress: wallet.walletAddress,
+        sessionId: grant.session.sessionId,
+      });
+      expect(sessionDetail.vouchers).toHaveLength(1);
+      expect(sessionDetail.vouchers[0]?.metadata?.mppSessionPayment).toMatchObject({
+        approvalId,
+        finality: 'voucher_accepted',
+      });
+      expect(await evidenceStore.listEvidence(wallet.walletAddress)).toHaveLength(1);
+    });
+  });
+
+  it('keeps strict MPP session payments pending until streaming settlement confirms', async () => {
+    await withMppServer(async ({ port, workflowStore, evidenceStore, wallet }) => {
+      const streaming = new StreamingService(streamingStoreFor(workflowStore), {
+        clock: { now: () => NOW },
+        latestBlockhash: async () => '11111111111111111111111111111111',
+      });
+      const grant = await streaming.createSession({
+        walletAddress: wallet.walletAddress,
+        tokenMint: USDC_MINT,
+        capAmount: '5',
+        expiresAt: '2026-05-16T14:00:00.000Z',
+        recipientAllowlist: [RECIPIENT],
+        cluster: 'devnet',
+      });
+      await streaming.recordGrantSigned({
+        walletAddress: wallet.walletAddress,
+        sessionId: grant.session.sessionId,
+        approveTxid: 'tx_streaming_grant_fixture',
+      });
+
+      const created = await postJson(port, '/api/mpp/challenge', {
+        challenge: splChallenge({ metadata: { requiredFinality: 'settlement_confirmed' } }),
+      });
+      expect(created.status).toBe(201);
+      const approvalId = String(created.body.approvalId);
+
+      const paid = await postJson(port, '/api/mpp/session-pay', { approvalId });
+      expect(paid.status).toBe(200);
+      expect(paid.body).toMatchObject({
+        accepted: true,
+        finality: 'settlement_confirmed',
+        status: 'settlement_pending',
+      });
+      expect((await workflowStore.getApproval(wallet.walletAddress, approvalId))?.status).toBe('approval_pending');
+
+      const settled = await settleStreamingSession({
+        store: workflowStore,
+        evidenceStore,
+        clock: { now: () => NOW },
+        walletAddress: wallet.walletAddress,
+        sessionId: grant.session.sessionId,
+        latestBlockhash: async () => ({ blockhash: '11111111111111111111111111111111' }),
+        submitSignedTransaction: async () => ({
+          txid: 'tx_streaming_settlement_fixture',
+          confirmedAt: '2026-05-16T12:01:00.000Z',
+        }),
+      });
+      expect(settled.settled).toBe(1);
+
+      const approval = await workflowStore.getApproval(wallet.walletAddress, approvalId);
+      expect(approval?.status).toBe('approved');
+      expect(approval?.metadata?.mppSessionPayment).toMatchObject({
+        status: 'settlement_confirmed',
+        settlementTxid: 'tx_streaming_settlement_fixture',
+      });
+      const evidence = await evidenceStore.listEvidence(wallet.walletAddress);
+      expect(evidence.some((record) => record.kind === 'streaming_settlement')).toBe(true);
+      expect(evidence.some((record) => record.kind === 'mpp_session' && record.metadata?.finality === 'settlement_confirmed')).toBe(true);
+    });
+  });
 });
 
 async function withMppServer(callback: (ctx: {
@@ -135,7 +258,7 @@ async function withMppServer(callback: (ctx: {
   }
 }
 
-function splChallenge(): Record<string, unknown> {
+function splChallenge(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     protocolVersion: 'mpp/0.1',
     nonce: 'mpp_nonce_spl',
@@ -147,6 +270,7 @@ function splChallenge(): Record<string, unknown> {
       { kind: 'solana-spl', mint: USDC_MINT, recipient: RECIPIENT, network: 'devnet' },
     ],
     merchant: { id: 'merchant_1', name: 'Acme' },
+    ...overrides,
   };
 }
 

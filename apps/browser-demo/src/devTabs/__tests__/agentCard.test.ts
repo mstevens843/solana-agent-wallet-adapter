@@ -80,6 +80,8 @@ describe('panelHtml — header always renders', () => {
     expect(html).toContain('Payment Profile');
     expect(html).toContain('Approval required');
     expect(html).toContain('Profile status');
+    expect(html).toContain('data-dev-tab-use-cases="agent-payments-profile"');
+    expect(html).toContain('Receive an invoice from an agent');
   });
 
   it('renders the empty-state body when status is idle', () => {

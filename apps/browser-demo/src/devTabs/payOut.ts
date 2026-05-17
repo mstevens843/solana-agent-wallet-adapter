@@ -3,6 +3,7 @@ import { SOL_MINT_KEY, type PriceUsdSnapshot } from '@solana-agent-wallet-adapte
 import { dispatchPayOutApprovalCreated } from '../payOutApprovalEvents.js';
 import { getUsdPriceForMint } from '../priceCache.js';
 import { getConnectedAddress } from '../walletState.js';
+import { renderUseCaseDisclosure } from './useCases.js';
 
 export interface AcpLineItemDisplay {
   name: string;
@@ -671,6 +672,24 @@ export function renderPayOutPanel(): string {
           </div>
         </div>
       </header>
+      ${renderUseCaseDisclosure({
+        id: 'agent-payments-pay-merchant',
+        summary: 'When an agent prepares a merchant checkout, but you want the final say.',
+        useCases: [
+          {
+            title: 'AI fills a checkout cart',
+            body: 'A shopping or travel agent prepares the merchant, items, amount, token, and recipient so you can inspect the full cart before paying.',
+          },
+          {
+            title: 'Turn a cart into wallet approval',
+            body: 'After the review looks right, the cart becomes a Needs Approval card. This screen queues the payment; it does not transfer funds by itself.',
+          },
+          {
+            title: 'Catch wrong merchants or amounts',
+            body: 'Use it when you want a human-readable checkpoint before signing a merchant payment requested by software.',
+          },
+        ],
+      })}
       ${noticeBlock}
       ${errorBlock}
       ${body}

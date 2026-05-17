@@ -30,6 +30,9 @@ import {
   isStablecoinMint,
   isVerifiedProgramId,
   normalizeAgentEvidenceFact,
+  parseAgeThresholdSeconds as workflowParseAgeThresholdSeconds,
+  parseDominanceThreshold as workflowParseDominanceThreshold,
+  parseFearGreedThreshold as workflowParseFearGreedThreshold,
   sanitizeUserTextOrEmpty,
   stablecoinSnapshot,
   tokenAmountToUsd,
@@ -22053,11 +22056,23 @@ function cleanEvidenceAfterConversion(
   const cleanedFacts = factsRecord
     ? Object.fromEntries(Object.entries(factsRecord).filter(([key]) => key !== 'research'))
     : undefined;
+  // Build a set of labels already covered by server-side findings (which include the
+  // orchestrator's policyBundle rows merged in by aiPlanner). Browser-demo's inline
+  // question-aware findings only add rows for labels the server hasn't already covered,
+  // so the inbox card never shows two rows for the same gate.
+  const serverLabelsCovered = new Set<string>();
+  for (const finding of filteredFindings) {
+    if (!finding || typeof finding !== 'object') continue;
+    const label = String((finding as Record<string, unknown>).label ?? '').trim().toLowerCase();
+    if (label) serverLabelsCovered.add(label);
+  }
   const newFindings = [
-    ...questionFindings,
-    ...unknowns.map((entry) => ({ label: entry.label, value: entry.value, tone: 'warn' as const })),
+    ...questionFindings.filter((entry) => !serverLabelsCovered.has(entry.label.trim().toLowerCase())),
+    ...unknowns
+      .filter((entry) => !serverLabelsCovered.has(entry.label.trim().toLowerCase()))
+      .map((entry) => ({ label: entry.label, value: entry.value, tone: 'warn' as const })),
   ];
-  const autoResolvedFinding = newFindings.length
+  const autoResolvedFinding = newFindings.length || filteredFindings.length
     ? undefined
     : {
         label: 'Auto-resolved',
@@ -22319,12 +22334,10 @@ function questionAwareFindingsFromFacts(
   return findings;
 }
 
+// Delegates to the shared workflow helper so threshold parsing stays byte-identical
+// across browser-demo, mcp-server, and any future surface.
 function parseDominanceThreshold(instruction: string): number | undefined {
-  if (!instruction) return undefined;
-  const match = instruction.match(/(?:btc|bitcoin)\s*dominance[^.\n]*?(?:above|over|greater than|>=?|>)\s*(\d{1,3}(?:\.\d+)?)/i);
-  if (!match || !match[1]) return undefined;
-  const value = Number(match[1]);
-  return Number.isFinite(value) ? value : undefined;
+  return workflowParseDominanceThreshold(instruction);
 }
 
 interface TokenSecurityRow extends QuestionAwareFinding {}
@@ -22396,13 +22409,7 @@ function tokenSecurityRows(facts: AgentReviewFactSet, instruction: string): Toke
 }
 
 function parseAgeThresholdSeconds(value: string, unit: string): number {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n < 0) return 0;
-  const unitLower = unit.toLowerCase();
-  if (unitLower.startsWith('h')) return n * 3600;
-  if (unitLower.startsWith('d')) return n * 86_400;
-  if (unitLower.startsWith('w')) return n * 7 * 86_400;
-  return n;
+  return workflowParseAgeThresholdSeconds(value, unit);
 }
 
 function formatTokenAge(seconds: number): string {
@@ -22414,11 +22421,7 @@ function formatTokenAge(seconds: number): string {
 }
 
 function parseFearGreedThreshold(instruction: string): number | undefined {
-  if (!instruction) return undefined;
-  const match = instruction.match(/fear\s*(?:&|and)\s*greed[^.\n]*?(?:above|over|greater than|>=?|>)\s*(\d{1,3})/i);
-  if (!match || !match[1]) return undefined;
-  const value = Number(match[1]);
-  return Number.isFinite(value) ? value : undefined;
+  return workflowParseFearGreedThreshold(instruction);
 }
 
 interface TokenPriceFact {
@@ -26087,6 +26090,10 @@ async function cloudFetch(path: string, init: RequestInit = {}): Promise<Respons
     headers.set('content-type', 'application/json');
   }
   const remote = cloudApiUsesRemoteOrigin();
+  const viteEnv = (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env;
+  if (!remote && viteEnv?.DEV && state.address && !headers.has('x-agentic-wallet-address')) {
+    headers.set('x-agentic-wallet-address', state.address);
+  }
   if (IS_ANDROID_APP) {
     headers.set('x-agentic-client', ANDROID_CLOUD_CLIENT_HEADER);
     const token = androidNativeCloudSessionToken();

@@ -54,6 +54,33 @@ export interface MppConfigResponse {
   allowedMints?: readonly string[];
 }
 
+export interface MppInboundResponse {
+  inbound?: unknown[];
+  items?: unknown[];
+}
+
+export interface MppSessionPayRequestBody {
+  approvalId: string;
+  sessionId?: string;
+}
+
+export interface MppSessionPayResponse {
+  approvalId: string;
+  accepted?: boolean;
+  finality?: 'voucher_accepted' | 'settlement_confirmed';
+  status?: string;
+  remaining?: string;
+  spentAmount?: string;
+  sessionPayment?: unknown;
+  voucher?: unknown;
+  signedVoucher?: unknown;
+  receipt?: unknown;
+  receiptId?: string;
+  receiptHash?: string;
+  approval?: unknown;
+  idempotent?: boolean;
+}
+
 export async function postMppChallenge(body: MppChallengeRequestBody): Promise<MppChallengeResponse> {
   return requestJson<MppChallengeResponse>('/api/mpp/challenge', {
     method: 'POST',
@@ -70,6 +97,17 @@ export async function postMppSettle(body: MppSettleRequestBody): Promise<MppSett
 
 export async function getMppConfig(): Promise<MppConfigResponse> {
   return requestJson<MppConfigResponse>('/api/mpp/config', { method: 'GET' });
+}
+
+export async function getMppInbound(): Promise<MppInboundResponse> {
+  return requestJson<MppInboundResponse>('/api/mpp/inbound', { method: 'GET' });
+}
+
+export async function postMppSessionPay(body: MppSessionPayRequestBody): Promise<MppSessionPayResponse> {
+  return requestJson<MppSessionPayResponse>('/api/mpp/session-pay', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
 }
 
 async function requestJson<T>(path: string, init: RequestInit): Promise<T> {

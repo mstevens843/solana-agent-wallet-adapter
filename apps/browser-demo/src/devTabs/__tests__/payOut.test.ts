@@ -269,6 +269,8 @@ describe('renderPayOutPanel', () => {
   it('compose phase renders normal inputs as the primary user path', () => {
     const html = renderPayOutPanel();
     expect(html).toContain('Create a merchant payment');
+    expect(html).toContain('data-dev-tab-use-cases="agent-payments-pay-merchant"');
+    expect(html).toContain('AI fills a checkout cart');
     expect(html).toContain('Payment details');
     expect(html).toContain('Merchant name');
     expect(html).toContain('Recipient wallet');

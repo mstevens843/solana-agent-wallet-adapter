@@ -28,6 +28,7 @@ import {
   escapeHtml,
   fetchInbound,
   formatRelative,
+  renderExternalAgentsPanel,
   rowHtml,
   shortAddress,
   sortInbound,
@@ -193,6 +194,24 @@ describe('rowHtml', () => {
     expect(html).toContain('>MPP</span>');
   });
 
+  it('renders Pay with Session for eligible MPP rows', () => {
+    const html = rowHtml(
+      makeApproval({
+        metadata: {
+          connectorId: 'mpp',
+          mppSessionEligibility: {
+            eligible: true,
+            finality: 'voucher_accepted',
+            session: { sessionId: 'stream_1', remaining: '4.5' },
+          },
+        },
+      } as Partial<NormalizedApproval>),
+    );
+    expect(html).toContain('data-mpp-session-pay="apr_abc"');
+    expect(html).toContain('Pay with Session');
+    expect(html).toContain('Session ready');
+  });
+
   it('omits the MPP badge for non-MPP rows', () => {
     const html = rowHtml(makeApproval());
     expect(html).not.toContain('approval-badge--mpp');
@@ -223,8 +242,8 @@ describe('bodyHtml', () => {
 
   it('renders the empty state when loaded with zero rows', () => {
     const html = bodyHtml({ status: 'loaded', inbound: [], errorMessage: '', lastFetchedFor: DEV_WALLET });
-    expect(html).toContain('No inbound AP2 mandates yet');
-    expect(html).toContain('<strong>Needs Approval</strong>');
+    expect(html).toContain('No inbound agent payment requests yet');
+    expect(html).toContain('AP2 mandates and MPP challenges');
     expect(html).toContain('data-external-agents-demo');
   });
 
@@ -246,8 +265,20 @@ describe('bodyHtml', () => {
       errorMessage: 'HTTP 500',
       lastFetchedFor: DEV_WALLET,
     });
-    expect(html).toContain('Could not load inbound AP2 mandates: HTTP 500');
+    expect(html).toContain('Could not load inbound agent payment requests: HTTP 500');
     expect(html).toContain('data-external-agents-retry');
+  });
+});
+
+describe('renderExternalAgentsPanel', () => {
+  it('renders compact real-life use cases above the queue summary', () => {
+    __externalAgentsForTests.resetState({ status: 'loaded', inbound: [], errorMessage: '', lastFetchedFor: DEV_WALLET });
+    const html = renderExternalAgentsPanel();
+    expect(html).toContain('data-dev-tab-use-cases="agent-payments-incoming-requests"');
+    expect(html).toContain('An external agent sends a bill');
+    expect(html.indexOf('data-dev-tab-use-cases="agent-payments-incoming-requests"')).toBeLessThan(
+      html.indexOf('external-agents-overview'),
+    );
   });
 });
 

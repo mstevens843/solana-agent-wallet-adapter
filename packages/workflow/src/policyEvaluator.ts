@@ -1,0 +1,281 @@
+/**
+ * Pure helpers for evaluating an extracted atom against a resolved fact.
+ *
+ * The browser-demo previously hand-rolled the threshold checks and finding
+ * formatting inline (see `apps/browser-demo/src/main.ts:22260-22420`). Now that
+ * the atom layer carries the user's gate as structured data, the evaluator is
+ * a one-shot pure function: `evaluateAtom(atom, resolvedFact)`.
+ *
+ * Same module works in browser-demo, mcp-server, and any future surface so
+ * the policy-gate findings are byte-identical across them.
+ */
+
+import type {
+  AgentAtom,
+  AgentAtomOperator,
+  ExternalPriceAtom,
+  MarketRegimeAtom,
+  PriceAtom,
+  TokenAgeAtom,
+  TokenAuditAtom,
+  TxGateAtom,
+} from './agentAtoms.js';
+import type { AgentEvidenceFactTone } from './agentEvidence.js';
+
+/* -------------------------------------------------------------------------- */
+/* Operator semantics                                                         */
+/* -------------------------------------------------------------------------- */
+
+/** Apply an operator to a numeric fact and threshold. */
+export function compareNumeric(op: AgentAtomOperator, fact: number, threshold: number): boolean {
+  switch (op) {
+    case 'gt':  return fact > threshold;
+    case 'gte': return fact >= threshold;
+    case 'lt':  return fact < threshold;
+    case 'lte': return fact <= threshold;
+    case 'eq':  return fact === threshold;
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Resolved fact shape (one per atom)                                         */
+/* -------------------------------------------------------------------------- */
+
+export interface ResolvedFactValue {
+  /** Numeric value when applicable (price in USD, dominance pct, age in seconds, index value, etc.). */
+  numeric?: number;
+  /** Boolean value when applicable (mint authority disabled, freeze authority disabled, etc.). */
+  boolean?: boolean;
+  /** Free-form text when the fact is a label (classification name, error reason). */
+  text?: string;
+  /** Provider that resolved this fact (e.g. 'alternative_me', 'jupiter', 'web'). */
+  source: string;
+  /** Optional ISO timestamp of when the fact was retrieved. */
+  checkedAt?: string;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Per-atom evaluation                                                        */
+/* -------------------------------------------------------------------------- */
+
+export interface AtomEvaluation {
+  atomId: string;
+  /** True when the user's rule is satisfied. False when violated. Undefined when undetermined. */
+  pass?: boolean;
+  /** Formatted finding for UI display: {label, value, tone}. */
+  finding: {
+    label: string;
+    value: string;
+    tone: AgentEvidenceFactTone;
+  };
+  /** True when the underlying fact was missing/error; the gate is treated as pass=undefined. */
+  unresolved?: boolean;
+}
+
+/** Format a numeric value in USD with sensible compaction. */
+export function formatUsdCompact(value: number): string {
+  if (!Number.isFinite(value)) return '—';
+  if (value >= 1e12) return `$${(value / 1e12).toFixed(2)}T`;
+  if (value >= 1e9) return `$${(value / 1e9).toFixed(2)}B`;
+  if (value >= 1e6) return `$${(value / 1e6).toFixed(2)}M`;
+  if (value >= 1e3) return `$${(value / 1e3).toFixed(2)}K`;
+  if (value >= 1) return `$${value.toFixed(2)}`;
+  return `$${value.toFixed(4)}`;
+}
+
+/** Format a seconds duration as a short label (e.g. "24h", "7d", "12.3 months"). */
+export function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '—';
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3_600) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 86_400) return `${(seconds / 3_600).toFixed(1)}h`;
+  if (seconds < 30 * 86_400) return `${(seconds / 86_400).toFixed(1)}d`;
+  return `${(seconds / (30 * 86_400)).toFixed(1)} months`;
+}
+
+function toneFromPass(pass: boolean | undefined): AgentEvidenceFactTone {
+  if (pass === true) return 'good';
+  if (pass === false) return 'fail';
+  return 'warn';
+}
+
+function unresolvedEvaluation(atom: AgentAtom, label: string): AtomEvaluation {
+  return {
+    atomId: atom.id,
+    pass: undefined,
+    unresolved: true,
+    finding: { label, value: 'unknown', tone: 'warn' },
+  };
+}
+
+/* -------- per-atom evaluators --------------------------------------------- */
+
+function evaluatePrice(atom: PriceAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = `${atom.subject} price`;
+  if (!fact || fact.numeric === undefined) return unresolvedEvaluation(atom, label);
+  const pass = compareNumeric(atom.op, fact.numeric, atom.value);
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${formatUsdCompact(fact.numeric)} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+function evaluateMarketRegime(atom: MarketRegimeAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = marketRegimeLabel(atom);
+  if (!fact || fact.numeric === undefined) return unresolvedEvaluation(atom, label);
+  const pass = compareNumeric(atom.op, fact.numeric, atom.value);
+  const display = atom.subject === 'total_market_cap'
+    ? formatUsdCompact(fact.numeric)
+    : atom.subject === 'fear_and_greed'
+      ? `${fact.numeric}${fact.text ? ` (${fact.text})` : ''}`
+      : `${fact.numeric.toFixed(2)}%`;
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${display} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+function marketRegimeLabel(atom: MarketRegimeAtom): string {
+  switch (atom.subject) {
+    case 'fear_and_greed':    return 'BTC Fear & Greed';
+    case 'btc_dominance':     return 'BTC dominance';
+    case 'eth_dominance':     return 'ETH dominance';
+    case 'total_market_cap':  return 'Total crypto market cap';
+  }
+}
+
+function evaluateTokenAudit(atom: TokenAuditAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = tokenAuditLabel(atom);
+  if (!fact || fact.boolean === undefined) return unresolvedEvaluation(atom, label);
+  const pass = fact.boolean === atom.expected;
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${fact.boolean ? 'yes' : 'no'} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+function tokenAuditLabel(atom: TokenAuditAtom): string {
+  switch (atom.field) {
+    case 'mint_authority_disabled':   return `${atom.subject ?? 'Token'} mint authority`;
+    case 'freeze_authority_disabled': return `${atom.subject ?? 'Token'} freeze authority`;
+    case 'is_verified':                return `${atom.subject ?? 'Token'} verified`;
+  }
+}
+
+function evaluateTokenAge(atom: TokenAgeAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = `${atom.subject ?? 'Token'} age`;
+  if (!fact || fact.numeric === undefined) return unresolvedEvaluation(atom, label);
+  const pass = compareNumeric(atom.op, fact.numeric, atom.value);
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${formatDuration(fact.numeric)} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+function evaluateTxGate(atom: TxGateAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = `Tx gate: ${atom.rule.replace(/_/g, ' ')}`;
+  if (!fact || fact.boolean === undefined) return unresolvedEvaluation(atom, label);
+  const pass = fact.boolean === true;
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${pass ? 'pass' : 'fail'}${fact.text ? ` — ${fact.text}` : ''}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+function evaluateExternalPrice(atom: ExternalPriceAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  const label = atom.subject;
+  if (!fact || fact.numeric === undefined) return unresolvedEvaluation(atom, label);
+  const pass = compareNumeric(atom.op, fact.numeric, atom.value);
+  return {
+    atomId: atom.id,
+    pass,
+    finding: {
+      label,
+      value: `${formatUsdCompact(fact.numeric)} — ${fact.source}`,
+      tone: toneFromPass(pass),
+    },
+  };
+}
+
+/** Dispatcher: pick the right evaluator for the atom's type. */
+export function evaluateAtom(atom: AgentAtom, fact: ResolvedFactValue | undefined): AtomEvaluation {
+  switch (atom.type) {
+    case 'price':          return evaluatePrice(atom, fact);
+    case 'market_regime':  return evaluateMarketRegime(atom, fact);
+    case 'token_audit':    return evaluateTokenAudit(atom, fact);
+    case 'token_age':      return evaluateTokenAge(atom, fact);
+    case 'tx_gate':        return evaluateTxGate(atom, fact);
+    case 'external_price': return evaluateExternalPrice(atom, fact);
+    case 'protocol_health':
+      return unresolvedEvaluation(atom, `${atom.subject} ${atom.metric}`);
+  }
+}
+
+/** Evaluate a batch of atoms against a map of resolved facts keyed by atom id. */
+export function evaluateAtoms(
+  atoms: ReadonlyArray<AgentAtom>,
+  facts: Readonly<Record<string, ResolvedFactValue | undefined>>,
+): AtomEvaluation[] {
+  return atoms.map((atom) => evaluateAtom(atom, facts[atom.id]));
+}
+
+/* -------------------------------------------------------------------------- */
+/* Backwards-compat threshold parsers (used by browser-demo's inline path)    */
+/* -------------------------------------------------------------------------- */
+
+/** Parse a "fear & greed above N" threshold from free text. Returns the threshold value or undefined. */
+export function parseFearGreedThreshold(text: string): number | undefined {
+  if (!text) return undefined;
+  const match = text.match(/fear\s*(?:&|and)\s*greed[^.\n]*?(?:above|over|greater than|>=?|>)\s*(\d{1,3})/i);
+  if (!match || !match[1]) return undefined;
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+/** Parse a "BTC dominance above N" threshold from free text. */
+export function parseDominanceThreshold(text: string): number | undefined {
+  if (!text) return undefined;
+  const match = text.match(/(?:btc|bitcoin)\s*dominance[^.\n]*?(?:above|over|greater than|>=?|>)\s*(\d{1,3}(?:\.\d+)?)/i);
+  if (!match || !match[1]) return undefined;
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+/** Parse an "age above N <unit>" threshold and return the seconds equivalent. */
+export function parseAgeThresholdSeconds(value: string, unit: string): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  const u = unit.toLowerCase();
+  if (u.startsWith('mo')) return n * 30 * 86_400;
+  if (u.startsWith('w'))  return n * 7 * 86_400;
+  if (u.startsWith('d'))  return n * 86_400;
+  if (u.startsWith('h'))  return n * 3_600;
+  if (u.startsWith('m'))  return n * 60;
+  if (u.startsWith('s'))  return n;
+  return n;
+}

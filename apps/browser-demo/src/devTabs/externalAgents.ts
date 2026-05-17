@@ -3,6 +3,8 @@ import { isDevWallet } from '../devGate.js';
 import { currentAddress, refreshConnection } from '../connectionState.js';
 import { dispatchAp2InboundDemoCreated } from '../ap2InboundDemoEvents.js';
 import { getConnectedAddress, getConnectedCluster } from '../walletState.js';
+import { MppApiError, getMppInbound, postMppSessionPay } from '../mppClient.js';
+import { renderUseCaseDisclosure } from './useCases.js';
 import './externalAgents.css';
 
 // Mirrors the server's normalizeApprovalForResponse() at
@@ -33,10 +35,26 @@ export interface NormalizedApprovalMetadata {
   ap2ProtocolVersion?: string;
   connectorId?: string;
   connectorName?: string;
+  mppSessionEligibility?: MppSessionEligibility;
+  mppSessionPayment?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
 export type CacheState = 'idle' | 'loading' | 'loaded' | 'error';
+
+export interface MppSessionEligibility {
+  eligible?: boolean;
+  finality?: 'voucher_accepted' | 'settlement_confirmed';
+  reason?: string;
+  reasonCode?: string;
+  session?: {
+    sessionId?: string;
+    remaining?: string;
+    expiresAt?: string;
+    [key: string]: unknown;
+  };
+  paymentMethod?: Record<string, unknown>;
+}
 
 interface TabState {
   status: CacheState;
@@ -62,6 +80,7 @@ const state: TabState = {
 
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const DEMO_AMOUNT = '2.00';
+const mppSessionPaying = new Set<string>();
 
 function randomBrowserAp2Id(): string {
   const cryptoApi = globalThis.crypto;
@@ -132,11 +151,60 @@ function statusPillClass(status: string): string {
   return 'neutral';
 }
 
+function isMppApproval(item: NormalizedApproval): boolean {
+  return item.metadata?.connectorId === 'mpp' || item.metadata?.actionSource === 'mpp_challenge';
+}
+
+function mppEligibility(item: NormalizedApproval): MppSessionEligibility | undefined {
+  const value = item.metadata?.mppSessionEligibility;
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as MppSessionEligibility
+    : undefined;
+}
+
+function agentLabelForItem(item: NormalizedApproval): string {
+  const agent = item.metadata?.ap2VerifiedAgent;
+  const ap2Label = agent?.agentLabel?.trim() || agent?.agentId?.trim();
+  if (ap2Label) return ap2Label;
+  const challenge = item.metadata?.mppChallenge;
+  if (challenge && typeof challenge === 'object' && !Array.isArray(challenge)) {
+    const merchant = (challenge as Record<string, unknown>).merchant;
+    if (merchant && typeof merchant === 'object' && !Array.isArray(merchant)) {
+      const merchantRecord = merchant as Record<string, unknown>;
+      const merchantName = typeof merchantRecord.name === 'string' ? merchantRecord.name.trim() : '';
+      const merchantId = typeof merchantRecord.id === 'string' ? merchantRecord.id.trim() : '';
+      if (merchantName || merchantId) return merchantName || merchantId;
+    }
+  }
+  return item.metadata?.connectorName && typeof item.metadata.connectorName === 'string'
+    ? item.metadata.connectorName
+    : 'unknown agent';
+}
+
+function mppSessionHint(item: NormalizedApproval): string {
+  if (!isMppApproval(item)) return '';
+  const payment = item.metadata?.mppSessionPayment;
+  if (payment && typeof payment === 'object' && !Array.isArray(payment)) {
+    const status = typeof (payment as Record<string, unknown>).status === 'string'
+      ? (payment as Record<string, unknown>).status as string
+      : 'paid';
+    return `<span class="external-agents-row-session paid">Session ${escapeHtml(status.replace(/_/g, ' '))}</span>`;
+  }
+  const eligibility = mppEligibility(item);
+  if (eligibility?.eligible) {
+    const remaining = eligibility.session?.remaining ? ` · ${eligibility.session.remaining} left` : '';
+    return `<span class="external-agents-row-session ready">Session ready${escapeHtml(remaining)}</span>`;
+  }
+  if (eligibility?.reasonCode) {
+    return `<span class="external-agents-row-session unavailable" title="${escapeHtml(eligibility.reason ?? '')}">No session match</span>`;
+  }
+  return '';
+}
+
 // ---------------- Renderers (exported for tests) ----------------
 
 export function rowHtml(item: NormalizedApproval): string {
-  const agent = item.metadata?.ap2VerifiedAgent;
-  const rawAgentLabel = agent?.agentLabel?.trim() || agent?.agentId?.trim() || 'unknown agent';
+  const rawAgentLabel = agentLabelForItem(item);
   const agentLabel = escapeHtml(rawAgentLabel);
   const avatarLabel = escapeHtml((rawAgentLabel.slice(0, 1) || 'A').toUpperCase());
   const amountText =
@@ -152,7 +220,14 @@ export function rowHtml(item: NormalizedApproval): string {
     ? `<span class="external-agents-row-cluster">${escapeHtml(item.cluster)}</span>`
     : '';
   const terminal = TERMINAL_STATUSES.has(item.status);
+  const mpp = isMppApproval(item);
+  const eligibility = mppEligibility(item);
+  const paying = mppSessionPaying.has(item.id);
+  const canPayWithSession = mpp && !terminal && eligibility?.eligible === true;
   const buttonLabel = terminal ? 'Open in Inbox' : 'Review and pay';
+  const sessionButton = canPayWithSession
+    ? `<button type="button" class="primary" data-mpp-session-pay="${escapeHtml(item.id)}"${paying ? ' disabled' : ''}>${paying ? 'Paying…' : 'Pay with Session'}</button>`
+    : '';
   return `
     <li class="external-agents-row${terminal ? ' terminal' : ''}" data-inbound-id="${escapeHtml(item.id)}">
       <span class="external-agents-row-avatar" aria-hidden="true">${avatarLabel}</span>
@@ -169,9 +244,11 @@ export function rowHtml(item: NormalizedApproval): string {
           ${recipientHtml}
           <span class="external-agents-row-kind">${escapeHtml(item.kind.replace(/_/g, ' '))}</span>
           ${clusterHtml}
+          ${mppSessionHint(item)}
         </div>
       </div>
       <div class="external-agents-row-actions">
+        ${sessionButton}
         <button type="button" class="primary" data-tab="inbox" data-external-agents-open="${escapeHtml(item.id)}">${buttonLabel}</button>
       </div>
     </li>
@@ -186,7 +263,7 @@ export function bodyHtml(snapshot: TabState = state): string {
     case 'error':
       return `
         <div class="external-agents-error">
-          <p>Could not load inbound AP2 mandates: ${escapeHtml(snapshot.errorMessage || 'unknown error')}</p>
+          <p>Could not load inbound agent payment requests: ${escapeHtml(snapshot.errorMessage || 'unknown error')}</p>
           <button type="button" class="utility" data-external-agents-retry>Retry</button>
         </div>
       `;
@@ -194,7 +271,7 @@ export function bodyHtml(snapshot: TabState = state): string {
       if (snapshot.inbound.length === 0) {
         return `
           <div class="external-agents-empty dev-tab-empty-state">
-            <p>No inbound AP2 mandates yet. When an external agent sends one, it will appear here as an approval card in <strong>Needs Approval</strong>.</p>
+            <p>No inbound agent payment requests yet. AP2 mandates and MPP challenges appear here before payment.</p>
             <button type="button" class="primary" data-external-agents-demo>Create demo request</button>
           </div>
         `;
@@ -336,6 +413,61 @@ function patchPanel(): void {
 
 // ---------------- Async fetch ----------------
 
+interface InboundFetchResult {
+  items: NormalizedApproval[];
+  errorMessage?: string;
+}
+
+async function fetchAp2InboundSource(): Promise<InboundFetchResult> {
+  const res = await fetch('/api/ap2/inbound', {
+    credentials: 'include',
+    headers: { Accept: 'application/json' },
+  });
+  if (res.status === 404) return { items: [] };
+  if (res.status === 403) return { items: [], errorMessage: 'AP2 inbound is disabled for this wallet on this deploy.' };
+  if (res.status === 401) return { items: [], errorMessage: 'Sign into Agentic Cloud to view AP2 mandates.' };
+  if (!res.ok) return { items: [], errorMessage: `HTTP ${res.status}` };
+  const payload = (await res.json().catch(() => null)) as
+    | { inbound?: NormalizedApproval[]; items?: NormalizedApproval[] }
+    | null;
+  return { items: approvalsFromPayload(payload) };
+}
+
+async function fetchMppInboundSource(): Promise<InboundFetchResult> {
+  try {
+    const payload = await getMppInbound();
+    return { items: approvalsFromPayload(payload) };
+  } catch (err) {
+    if (err instanceof MppApiError && (err.status === 404 || err.status === 403 || err.status === 401)) {
+      return { items: [] };
+    }
+    if (err instanceof MppApiError && err.status !== undefined && err.status >= 500) {
+      return { items: [], errorMessage: err.message };
+    }
+    return { items: [] };
+  }
+}
+
+function approvalsFromPayload(payload: unknown): NormalizedApproval[] {
+  if (!payload || typeof payload !== 'object') return [];
+  const record = payload as { inbound?: unknown; items?: unknown };
+  const source = Array.isArray(record.inbound)
+    ? record.inbound
+    : Array.isArray(record.items)
+      ? record.items
+      : [];
+  return source.filter(isNormalizedApproval) as NormalizedApproval[];
+}
+
+function isNormalizedApproval(value: unknown): value is NormalizedApproval {
+  return Boolean(value)
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && typeof (value as Record<string, unknown>).id === 'string'
+    && typeof (value as Record<string, unknown>).status === 'string'
+    && typeof (value as Record<string, unknown>).summary === 'string';
+}
+
 export async function fetchInbound(force = false): Promise<void> {
   // Synchronous re-entrancy guard: mutate state before any await so the
   // second call in the same tick sees `loading` and returns early.
@@ -358,37 +490,10 @@ export async function fetchInbound(force = false): Promise<void> {
   state.lastFetchedFor = addr;
   patchPanel();
   try {
-    const res = await fetch('/api/ap2/inbound', {
-      credentials: 'include',
-      headers: { Accept: 'application/json' },
-    });
-    if (res.status === 404) {
-      state.inbound = mergeInboundWithLocalDemos([]);
-      state.status = 'loaded';
-    } else if (res.status === 403) {
-      state.inbound = mergeInboundWithLocalDemos([]);
-      state.errorMessage = 'AP2 inbound is disabled for this wallet on this deploy.';
-      state.status = state.inbound.length ? 'loaded' : 'error';
-    } else if (res.status === 401) {
-      state.inbound = mergeInboundWithLocalDemos([]);
-      state.errorMessage = 'Sign into Agentic Cloud to view AP2 mandates.';
-      state.status = state.inbound.length ? 'loaded' : 'error';
-    } else if (!res.ok) {
-      state.inbound = mergeInboundWithLocalDemos([]);
-      state.errorMessage = `HTTP ${res.status}`;
-      state.status = state.inbound.length ? 'loaded' : 'error';
-    } else {
-      const payload = (await res.json().catch(() => null)) as
-        | { inbound?: NormalizedApproval[]; items?: NormalizedApproval[] }
-        | null;
-      const inbound = Array.isArray(payload?.inbound)
-        ? payload.inbound
-        : Array.isArray(payload?.items)
-          ? payload.items
-          : [];
-      state.inbound = mergeInboundWithLocalDemos(inbound as NormalizedApproval[]);
-      state.status = 'loaded';
-    }
+    const [ap2, mpp] = await Promise.all([fetchAp2InboundSource(), fetchMppInboundSource()]);
+    state.inbound = mergeInboundWithLocalDemos([...ap2.items, ...mpp.items]);
+    state.errorMessage = [ap2.errorMessage, mpp.errorMessage].filter(Boolean).join(' ');
+    state.status = state.inbound.length || !state.errorMessage ? 'loaded' : 'error';
   } catch (err) {
     state.inbound = mergeInboundWithLocalDemos([]);
     state.errorMessage = err instanceof Error ? err.message : 'Network error';
@@ -422,24 +527,42 @@ export function renderExternalAgentsPanel(): string {
     <section class="external-agents-panel dev-tab-shell" data-layout="external-agents-panel">
       <header class="external-agents-header dev-tab-header">
         <div class="dev-tab-header-main">
-          <p class="dev-tab-kicker">AP2 inbound</p>
+          <p class="dev-tab-kicker">Agent payment requests</p>
           <div class="dev-tab-title-row">
             <h2>External Agents</h2>
             <span class="external-agents-live-pill">${refreshing ? 'Syncing' : 'Live queue'}</span>
           </div>
-          <p>Mandates sent by verified external agents land here before they become wallet approval cards.</p>
+          <p>AP2 mandates and MPP challenges sent by external agents land here before payment.</p>
         </div>
         <div class="dev-tab-header-actions">
           <button type="button" class="primary" data-external-agents-demo>Create demo request</button>
           <button type="button" class="utility" data-external-agents-refresh${refreshing ? ' disabled' : ''}>${refreshing ? 'Refreshing…' : 'Refresh'}</button>
         </div>
       </header>
+      ${renderUseCaseDisclosure({
+        id: 'agent-payments-incoming-requests',
+        summary: 'When another verified agent asks this wallet to approve a payment.',
+        useCases: [
+          {
+            title: 'An external agent sends a bill',
+            body: 'A hotel, delivery, marketplace, or assistant agent sends an AP2 mandate or MPP payment challenge to your wallet instead of asking for a manual transfer.',
+          },
+          {
+            title: 'Use a bounded session when eligible',
+            body: 'MPP requests can spend from an active streaming session, issuing a voucher immediately while keeping the wallet cap, expiry, and recipient checks intact.',
+          },
+          {
+            title: 'Keep automated requests auditable',
+            body: 'Each mandate keeps its source, amount, recipient, and status visible before you decide whether it belongs in Needs Approval.',
+          },
+        ],
+      })}
       <div class="external-agents-overview" aria-label="External agent queue summary">
         <div class="dev-tab-stat"><span>Active</span><strong>${activeCount}</strong></div>
         <div class="dev-tab-stat"><span>Completed</span><strong>${terminalCount}</strong></div>
-        <div class="dev-tab-stat"><span>Source</span><strong>AP2</strong></div>
+        <div class="dev-tab-stat"><span>Source</span><strong>AP2 + MPP</strong></div>
       </div>
-      <section id="external-agents-body" class="external-agents-body" aria-label="Inbound AP2 mandates" aria-busy="${refreshing}">
+      <section id="external-agents-body" class="external-agents-body" aria-label="Inbound agent payment requests" aria-busy="${refreshing}">
         ${bodyHtml()}
       </section>
     </section>
@@ -466,6 +589,28 @@ function scrollToInboxApproval(approvalId: string): void {
   );
 }
 
+async function payWithMppSession(approvalId: string): Promise<void> {
+  if (!approvalId || mppSessionPaying.has(approvalId)) return;
+  mppSessionPaying.add(approvalId);
+  patchPanel();
+  try {
+    const result = await postMppSessionPay({ approvalId });
+    if (isNormalizedApproval(result.approval)) {
+      state.inbound = sortInbound(state.inbound.map((item) => item.id === approvalId ? result.approval as NormalizedApproval : item));
+    } else {
+      await fetchInbound(true);
+    }
+    state.status = 'loaded';
+    state.errorMessage = '';
+  } catch (err) {
+    state.status = state.inbound.length ? 'loaded' : 'error';
+    state.errorMessage = err instanceof Error ? err.message : 'Could not pay MPP request with session.';
+  } finally {
+    mppSessionPaying.delete(approvalId);
+    patchPanel();
+  }
+}
+
 function installPanelClickHandler(): void {
   if (typeof document === 'undefined') return;
   document.addEventListener('click', (event) => {
@@ -489,6 +634,13 @@ function installPanelClickHandler(): void {
     if (demoBtn) {
       event.preventDefault();
       createAndDispatchDemoRequest();
+      return;
+    }
+    const sessionPayBtn = target.closest<HTMLButtonElement>('[data-mpp-session-pay]');
+    if (sessionPayBtn) {
+      event.preventDefault();
+      const approvalId = sessionPayBtn.getAttribute('data-mpp-session-pay') ?? '';
+      void payWithMppSession(approvalId);
       return;
     }
     const openBtn = target.closest<HTMLElement>('[data-external-agents-open]');

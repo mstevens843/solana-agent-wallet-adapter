@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   MppApiError,
   getMppConfig,
+  getMppInbound,
+  postMppSessionPay,
   postMppSettle,
 } from '../mppClient.js';
 
@@ -52,6 +54,33 @@ describe('mppClient', () => {
       approvalId: 'approval_1',
       signedEvidence: { signatureEncoding: 'base58' },
     });
+  });
+
+  it('lists inbound MPP requests and posts session-pay decisions', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/mpp/inbound') {
+        return jsonResponse({ inbound: [{ id: 'approval_1', status: 'ready', summary: 'MPP request' }] });
+      }
+      return jsonResponse({
+        approvalId: 'approval_1',
+        accepted: true,
+        finality: 'voucher_accepted',
+        status: 'voucher_accepted',
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getMppInbound()).resolves.toMatchObject({
+      inbound: [{ id: 'approval_1' }],
+    });
+    await expect(postMppSessionPay({ approvalId: 'approval_1' })).resolves.toMatchObject({
+      accepted: true,
+      finality: 'voucher_accepted',
+    });
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/mpp/session-pay', expect.objectContaining({
+      credentials: 'include',
+      method: 'POST',
+    }));
   });
 
   it('wraps non-JSON success responses as invalid_response', async () => {

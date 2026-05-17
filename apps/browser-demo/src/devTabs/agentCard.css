@@ -7,6 +7,7 @@
 .dev-agent-card-head {
   align-items: stretch;
   gap: 14px;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 320px);
 }
 
 .dev-agent-card-head .dev-tab-header-main {
@@ -50,9 +51,9 @@
   display: grid;
   gap: 10px;
   min-height: 0;
-  min-width: 260px;
+  min-width: 0;
   padding: 13px;
-  width: min(29vw, 330px);
+  width: 100%;
 }
 
 .dev-agent-card-json-window::after {
@@ -495,7 +496,15 @@
 
 .dev-agent-card-form-section {
   display: grid;
-  gap: 16px;
+  gap: 14px;
+  padding: 16px;
+}
+
+.dev-agent-card-form-grid {
+  align-items: start;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .dev-agent-card-form-onboard {
@@ -527,13 +536,117 @@
   color: #f3c5c5;
 }
 
+.dev-agent-card-form-toggle,
+.dev-agent-card-form-field--tokens,
+.dev-agent-card-form-field--protocols {
+  min-width: 0;
+}
+
 .dev-agent-card-form-toggle {
+  grid-column: 1 / -1;
   margin: 0;
+}
+
+.dev-agent-card-discoverable-row {
+  align-items: center;
+  background:
+    linear-gradient(135deg, rgba(63, 189, 131, 0.095), rgba(255, 255, 255, 0.018)),
+    rgba(3, 10, 8, 0.5);
+  border: 1px solid rgba(139, 205, 170, 0.18);
+  border-radius: 8px;
+  cursor: pointer;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-width: 0;
+  padding: 12px;
+  position: relative;
+}
+
+.dev-agent-card-discoverable-row:hover {
+  border-color: rgba(139, 205, 170, 0.36);
+}
+
+.dev-agent-card-discoverable-row .dev-agent-card-switch-input {
+  appearance: none;
+  border: 0;
+  block-size: 1px;
+  box-shadow: none;
+  inline-size: 1px;
+  margin: 0;
+  min-height: 0;
+  opacity: 0;
+  outline: 0;
+  padding: 0;
+  position: absolute;
+  width: 1px;
+}
+
+.dev-agent-card-discoverable-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.dev-agent-card-discoverable-copy strong {
+  color: var(--text);
+  font-size: 0.92rem;
+  font-weight: 860;
+  line-height: 1.16;
+}
+
+.dev-agent-card-discoverable-copy em {
+  color: rgba(196, 205, 202, 0.76);
+  font-size: 0.78rem;
+  font-style: normal;
+  font-weight: 640;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.dev-agent-card-switch-control {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(224, 230, 226, 0.18);
+  border-radius: 999px;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.24);
+  display: block;
+  height: 28px;
+  position: relative;
+  transition: background 140ms ease, border-color 140ms ease;
+  width: 50px;
+}
+
+.dev-agent-card-switch-control > span {
+  background: rgba(238, 244, 240, 0.92);
+  border-radius: 999px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.32);
+  height: 22px;
+  left: 3px;
+  position: absolute;
+  top: 2px;
+  transition: transform 140ms ease, background 140ms ease;
+  width: 22px;
+}
+
+.dev-agent-card-switch-input:checked + .dev-agent-card-discoverable-copy + .dev-agent-card-switch-control {
+  background: rgba(63, 189, 131, 0.34);
+  border-color: rgba(125, 231, 176, 0.58);
+}
+
+.dev-agent-card-switch-input:checked + .dev-agent-card-discoverable-copy + .dev-agent-card-switch-control > span {
+  background: #d9ffea;
+  transform: translateX(21px);
+}
+
+.dev-agent-card-switch-input:focus-visible + .dev-agent-card-discoverable-copy + .dev-agent-card-switch-control {
+  outline: 2px solid rgba(139, 205, 170, 0.72);
+  outline-offset: 2px;
 }
 
 .dev-agent-card-form-field {
   display: grid;
   gap: 6px;
+  min-width: 0;
 }
 
 .dev-agent-card-form-label {
@@ -612,11 +725,14 @@
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+  min-width: 0;
 }
 
 .dev-agent-card-form-hint {
   color: var(--muted);
   font-size: 0.74rem;
+  line-height: 1.32;
+  min-width: 180px;
 }
 
 .dev-agent-card-link-section {
@@ -709,6 +825,21 @@
   margin: 8px 0 0;
 }
 
+@media (max-width: 900px) {
+  .dev-agent-card-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dev-agent-card-form-actions {
+    align-items: stretch;
+  }
+
+  .dev-agent-card-form-actions .button,
+  .dev-agent-card-form-hint {
+    width: 100%;
+  }
+}
+
 @media (max-width: 720px) {
   .dev-agent-card-explainer-grid {
     grid-template-columns: 1fr;
@@ -717,6 +848,15 @@
   .dev-agent-card-demo-link {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .dev-agent-card-demo-link .button {
+    width: 100%;
+  }
+
+  .dev-agent-card-discoverable-row {
+    align-items: start;
+    gap: 10px;
   }
 }
 

@@ -148,6 +148,46 @@ describe('agent review fact router', () => {
     ]));
   });
 
+  // Regression: a single user NOTE that mixes API-resolvable policy gates with an off-chain
+  // web-search check must emit BOTH the connector routes (so the reviewer can resolve each
+  // gate from the cheapest authoritative provider) AND the global market routes for the
+  // Fear & Greed atom. The helium-plan atom is then handled by reviewNeedsWebResearch on
+  // the aiPlanner side, not by the router itself.
+  it('routes the mixed pre-signing policy NOTE through every required provider', () => {
+    const plan = planAgentReviewFactRoutes({
+      actionType: 'swap',
+      intent: 'Swap SOL to USDC',
+      userNotes: [
+        'Run my pre-signing policy for this swap. Use my custom rules before this reaches my wallet:',
+        'Market gates: BTC Fear & Greed must be above 20 SOL must be above $80',
+        'Token gates: mint authority disabled freeze authority disabled token age above 24h',
+        'Transaction gates: only executes the requested swap no extra transfers no unknown recipients no unrelated instructions',
+        'Return APPROVE or DENY with the exact rule that decided it.',
+        'And only approve if helium phone plan is less than $20 dollars.',
+      ].join('\n'),
+      parameters: { amount: '0.01', slippageBps: '50' },
+      hasWallet: true,
+      hasTokenMints: true,
+    });
+
+    const ids = plan.routes.map((route) => route.id);
+    expect(ids).toEqual(expect.arrayContaining([
+      'wallet.connected_public_key',
+      'birdeye.token_security',
+      'birdeye.price_multi',
+      'coingecko.token_evidence',
+      'jupiter.swap_order_preview',
+      'jupiter.swap_route',
+      'coingecko.global',
+      'alternative_me.fear_greed',
+    ]));
+
+    const tokenSecurity = plan.routes.find((route) => route.id === 'birdeye.token_security');
+    expect(tokenSecurity?.status).toBe('required');
+    const fearGreed = plan.routes.find((route) => route.id === 'alternative_me.fear_greed');
+    expect(fearGreed?.status).toBe('required');
+  });
+
   it('tags rpc.simulate_transaction (required) when an outcome question is asked AND a prepared tx exists', () => {
     const plan = planAgentReviewFactRoutes({
       actionType: 'blink_action',

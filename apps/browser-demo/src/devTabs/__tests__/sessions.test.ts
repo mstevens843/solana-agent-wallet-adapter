@@ -116,6 +116,8 @@ describe('sessions dev tab', () => {
 
   it('renders an active session row with spend and cap', () => {
     const html = __sessionsForTests.renderSessionsPanel();
+    expect(html).toContain('data-dev-tab-use-cases="streaming-payment-sessions"');
+    expect(html).toContain('Pay as work happens');
     expect(html).toContain('sess_active_001');
     expect(html).toContain('7.5 / 25 USDC');
     expect(html).toContain('sessions-pill--active');

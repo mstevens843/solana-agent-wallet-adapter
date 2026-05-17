@@ -285,6 +285,60 @@ describe('AI product guardrails', () => {
     });
   });
 
+  it('does not flag negated authority facts (mintAuthorityDisabled, freezeAuthorityDisabled) buried in reviewer evidence', () => {
+    const report = evaluatePlanGuardrails({
+      plan: {
+        source: 'ai',
+        actionType: 'manual_review',
+        intent: 'Swap SOL to USDC',
+        route: 'AI draft only. Wallet approval is required later.',
+        risk: 'Medium.',
+        approval: 'Wallet approval is required before signing or submitting.',
+        reviewContext: {
+          facts: [
+            {
+              connectorRead: {
+                detail: {
+                  facts: [
+                    {
+                      detail: {
+                        audit: {
+                          mintAuthorityDisabled: true,
+                          freezeAuthorityDisabled: true,
+                        },
+                      },
+                    },
+                  ],
+                },
+              },
+            },
+          ],
+        },
+      },
+    });
+
+    expect(report.violations.map((violation) => violation.code)).not.toContain('forbidden_authority');
+  });
+
+  it('still flags a real approvalAuthority grant even when nested inside evidence-like metadata', () => {
+    const report = evaluatePlanGuardrails({
+      plan: {
+        source: 'ai',
+        actionType: 'manual_review',
+        intent: 'Grant access',
+        route: 'Create signer.',
+        risk: 'High.',
+        approval: 'User reviews.',
+        reviewContext: {
+          metadata: { approvalAuthority: true },
+        },
+      },
+    });
+
+    expect(report.verdict).toBe('block');
+    expect(report.violations.map((violation) => violation.code)).toContain('forbidden_authority');
+  });
+
   it('classifies queueable actions and finalization requirements', () => {
     expect(isQueueableWorkflowAction('swap')).toBe(true);
     expect(isQueueableWorkflowAction('read_only')).toBe(false);

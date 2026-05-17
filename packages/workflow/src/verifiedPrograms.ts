@@ -25,6 +25,8 @@ export const VERIFIED_PROGRAM_IDS: ReadonlySet<string> = Object.freeze(new Set<s
   'Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo',               // SPL Memo v1
   'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr',               // SPL Memo v2
   // ── Jupiter family (from packages/mcp-server/src/adapters/jupiter/constants.ts) ─
+  'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4',               // Jupiter Aggregator v6 (main swap)
+  'JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB',               // Jupiter Aggregator v4 (legacy swap)
   'jup3YeL8QhtSx1e253b2FDvsMNC87fDrgQZivbrndc9',               // Jupiter Lend Earn
   'jupeiUmn818Jg1ekPURTpr4mFo29p46vygyykFJ3wZC',               // Jupiter Lend Liquidity
   'jupnw4B6Eqs7ft6rxpzYLJZYSnrpRgPcr589n5Kv4oc',               // Jupiter Lend Oracle

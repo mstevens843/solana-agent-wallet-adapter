@@ -136,7 +136,8 @@
 
 .external-agents-row-recipient,
 .external-agents-row-kind,
-.external-agents-row-cluster {
+.external-agents-row-cluster,
+.external-agents-row-session {
   color: rgba(196, 205, 202, 0.72);
   font-size: 0.76rem;
   font-weight: 680;
@@ -152,6 +153,29 @@
   border-radius: 999px;
   color: rgba(207, 233, 219, 0.86);
   padding: 2px 8px;
+}
+
+.external-agents-row-session {
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.external-agents-row-session.ready {
+  background: rgba(63, 189, 131, 0.14);
+  border: 1px solid rgba(63, 189, 131, 0.32);
+  color: #bdeed2;
+}
+
+.external-agents-row-session.paid {
+  background: rgba(122, 217, 182, 0.12);
+  border: 1px solid rgba(122, 217, 182, 0.28);
+  color: rgba(207, 233, 219, 0.9);
+}
+
+.external-agents-row-session.unavailable {
+  background: rgba(224, 230, 226, 0.07);
+  border: 1px solid rgba(224, 230, 226, 0.12);
+  color: rgba(196, 205, 202, 0.74);
 }
 
 .approval-badge--mpp {

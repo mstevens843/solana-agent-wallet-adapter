@@ -24,7 +24,10 @@ import {
   type UnsignedDelegateTx,
   type Voucher,
 } from '@solana-agent-wallet-adapter/streaming-sessions';
-import type { StreamingVoucherRecord as WorkflowStreamingVoucherRecord } from '@solana-agent-wallet-adapter/workflow';
+import type {
+  JsonObject as WorkflowJsonObject,
+  StreamingVoucherRecord as WorkflowStreamingVoucherRecord,
+} from '@solana-agent-wallet-adapter/workflow';
 
 import { solanaRpcUrl } from './connectorFactsReader.js';
 import type { PgClient, PgConnection } from './postgresStore.js';
@@ -107,6 +110,7 @@ export interface SignAndAcceptStreamingVoucherInput {
   recipient: string;
   nonce?: string;
   issuedAt?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface StreamingSessionDetail {
@@ -148,6 +152,7 @@ export interface StreamingStore {
     voucher: Voucher,
     nowIso: string,
     voucherId: string,
+    metadata?: Record<string, unknown>,
   ): Promise<AcceptStreamingVoucherResult>;
   listVouchers(sessionId: string): Promise<StreamingVoucherRecord[]>;
   listSettlementCandidates(
@@ -363,6 +368,7 @@ export class StreamingService {
     walletAddress: string;
     sessionId: string;
     voucher: Voucher;
+    metadata?: Record<string, unknown>;
   }): Promise<AcceptStreamingVoucherResult> {
     const result = await this.store.acceptVoucher(
       input.walletAddress,
@@ -370,6 +376,7 @@ export class StreamingService {
       normalizeVoucher(input.voucher),
       this.now(),
       `voucher_${this.idFactory()}`,
+      input.metadata ? sanitizeSessionMetadata(input.metadata) : undefined,
     );
     return {
       ...result,
@@ -411,6 +418,7 @@ export class StreamingService {
       walletAddress: input.walletAddress,
       sessionId: input.sessionId,
       voucher,
+      ...(input.metadata ? { metadata: input.metadata } : {}),
     });
   }
 
@@ -569,6 +577,7 @@ export class MemoryStreamingStore implements StreamingStore {
     voucher: Voucher,
     nowIso: string,
     voucherId: string,
+    metadata?: Record<string, unknown>,
   ): Promise<AcceptStreamingVoucherResult> {
     const session = await this.getSession(walletAddress, sessionId);
     if (!session) throw notFound(sessionId);
@@ -590,7 +599,7 @@ export class MemoryStreamingStore implements StreamingStore {
       spentAmount,
       updatedAt: nowIso,
     } satisfies StoredStreamingSession;
-    const record = voucherRecordFromVoucher(voucherId, voucher, validation.voucherHash, nowIso);
+    const record = voucherRecordFromVoucher(voucherId, voucher, validation.voucherHash, nowIso, metadata);
     this.sessions.set(sessionId, clone(updated));
     this.vouchers.set(record.id, clone(record));
     return {
@@ -891,6 +900,7 @@ export class PostgresStreamingStore implements StreamingStore {
     voucher: Voucher,
     nowIso: string,
     voucherId: string,
+    metadata?: Record<string, unknown>,
   ): Promise<AcceptStreamingVoucherResult> {
     const client = await this.checkoutClient();
     await client.query({ text: 'BEGIN' });
@@ -916,14 +926,14 @@ export class PostgresStreamingStore implements StreamingStore {
       });
       const decimals = session.tokenDecimals ?? DEFAULT_TOKEN_DECIMALS;
       const spentAmount = formatBaseUnitsToDecimal(validation.spentBaseUnits + validation.amountBaseUnits, decimals);
-      const voucherRecord = voucherRecordFromVoucher(voucherId, voucher, validation.voucherHash, nowIso);
+      const voucherRecord = voucherRecordFromVoucher(voucherId, voucher, validation.voucherHash, nowIso, metadata);
       await client.query({
         name: 'streaming.voucher.insert',
         text: `
           INSERT INTO streaming_vouchers (
             id, session_id, nonce, amount, recipient, voucher_hash, signature, issued_at, created_at,
-            settled_at, settlement_txid
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, NULL)
+            settled_at, settlement_txid, metadata
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, NULL, $10::jsonb)
         `,
         values: [
           voucherRecord.id,
@@ -935,6 +945,7 @@ export class PostgresStreamingStore implements StreamingStore {
           voucherRecord.signature,
           voucherRecord.issuedAt,
           voucherRecord.createdAt,
+          jsonParam(voucherRecord.metadata ?? {}),
         ],
       });
       const updatedResult = await client.query<StreamingSessionRow>({
@@ -1403,6 +1414,7 @@ function voucherRecordFromVoucher(
   voucher: Voucher,
   voucherHash: string,
   createdAt: string,
+  metadata?: Record<string, unknown>,
 ): StreamingVoucherRecord {
   return {
     id,
@@ -1414,6 +1426,7 @@ function voucherRecordFromVoucher(
     signature: voucher.signature,
     issuedAt: new Date(voucher.issuedAt).toISOString(),
     createdAt,
+    ...(metadata ? { metadata: sanitizeSessionMetadata(metadata) as WorkflowJsonObject } : {}),
     voucher: clone(voucher),
   };
 }
@@ -1612,6 +1625,7 @@ interface StreamingVoucherRow extends QueryResultRow {
   created_at: Date | string;
   settled_at: Date | string | null;
   settlement_txid: string | null;
+  metadata: unknown;
 }
 
 function sessionFromRow(row: StreamingSessionRow | undefined): StoredStreamingSession {
@@ -1636,7 +1650,7 @@ function sessionFromRow(row: StreamingSessionRow | undefined): StoredStreamingSe
     ...(row.revoke_txid ? { revokeTxid: row.revoke_txid } : {}),
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
-    ...(metadataFromDb(row.metadata) ? { metadata: metadataFromDb(row.metadata) } : {}),
+    ...(metadataFromDb(row.metadata) ? { metadata: metadataFromDb(row.metadata) as WorkflowJsonObject } : {}),
   };
 }
 
@@ -1662,6 +1676,7 @@ function voucherFromRow(row: StreamingVoucherRow): StreamingVoucherRecord {
     createdAt: iso(row.created_at),
     ...(row.settled_at ? { settledAt: iso(row.settled_at) } : {}),
     ...(row.settlement_txid ? { settlementTxid: row.settlement_txid } : {}),
+    ...(metadataFromDb(row.metadata) ? { metadata: metadataFromDb(row.metadata) as WorkflowJsonObject } : {}),
     voucher,
   };
 }

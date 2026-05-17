@@ -16,7 +16,18 @@ import {
   type UnsignedDelegateTx,
   type Voucher,
 } from '@solana-agent-wallet-adapter/streaming-sessions';
+import {
+  MPP_PAYMENT_RECEIPT_SCHEMA,
+  buildMppPaymentReceipt,
+  parseMppChallenge,
+  toJsonObject,
+  type MppChallenge,
+  type MppCluster,
+  type MppPaymentMethod,
+  type MppReceipt,
+} from '@solana-agent-wallet-adapter/mpp-adapter';
 import type {
+  ApprovalRequestRecord,
   EvidenceReceiptRecord,
   JsonObject,
 } from '@solana-agent-wallet-adapter/workflow';
@@ -82,6 +93,8 @@ const DEFAULT_CANDIDATE_LIMIT = envInteger('STREAMING_CANDIDATE_LIMIT', 25);
 const DEFAULT_LOCK_TTL_MS = envInteger('STREAMING_LOCK_TTL_MS', 55_000);
 const TEST_RECENT_BLOCKHASH_ENV = 'STREAMING_TEST_RECENT_BLOCKHASH';
 const TEST_SETTLEMENT_TXID_ENV = 'STREAMING_TEST_SETTLEMENT_TXID';
+const MPP_SESSION_PAYMENT_METADATA_KEY = 'mppSessionPayment';
+const MPP_EVIDENCE_KIND = 'mpp_session';
 
 export interface MaterializeStreamingSettlementsInput {
   store?: unknown;
@@ -169,6 +182,7 @@ export interface StreamingDelegateBalanceLookup {
 interface SettlementExecutionContext {
   store: StreamingStore;
   evidenceStore: EvidenceStore;
+  workflowStore?: MppSessionPaymentApprovalStore;
   clock: Clock;
   latestBlockhash: LatestSettlementBlockhashProvider;
   submitSignedTransaction: StreamingSettlementSubmitter;
@@ -176,6 +190,24 @@ interface SettlementExecutionContext {
   lookupDelegateBalance: StreamingDelegateBalanceLookup;
   lockTtlMs: number;
   feePayer?: Keypair;
+}
+
+interface MppSessionPaymentApprovalStore {
+  getApproval(walletAddress: string, id: string): Promise<ApprovalRequestRecord | undefined>;
+  saveApproval(walletAddress: string, record: ApprovalRequestRecord): Promise<void>;
+  appendAuditEvent?(
+    walletAddress: string,
+    record: {
+      id: string;
+      walletAddress: string;
+      type: string;
+      actor?: string;
+      recordType?: string;
+      recordId?: string;
+      createdAt: string;
+      metadata?: JsonObject;
+    },
+  ): Promise<void>;
 }
 
 interface SessionSettlementOutcome extends MaterializeStreamingSettlementsResult {
@@ -192,6 +224,7 @@ export async function materializeStreamingSettlements(
   const lockTtlMs = input.lockTtlMs ?? DEFAULT_LOCK_TTL_MS;
   const store = input.streamingStore ?? streamingStoreFor(input.store);
   const evidenceStore = input.evidenceStore ?? evidenceStoreFrom(input.store);
+  const workflowStore = mppApprovalStoreFrom(input.store);
   const latestBlockhash = input.latestBlockhash ?? latestBlockhashForCluster;
   const submitSignedTransaction = input.submitSignedTransaction ?? defaultSubmitSignedTransaction;
   const lookupSignatureStatus = input.lookupSignatureStatus ?? defaultLookupSignatureStatus;
@@ -209,6 +242,7 @@ export async function materializeStreamingSettlements(
   const context: SettlementExecutionContext = {
     store,
     evidenceStore,
+    ...(workflowStore ? { workflowStore } : {}),
     clock,
     latestBlockhash,
     submitSignedTransaction,
@@ -238,6 +272,7 @@ export async function settleStreamingSession(
   const lockTtlMs = input.lockTtlMs ?? DEFAULT_LOCK_TTL_MS;
   const store = input.streamingStore ?? streamingStoreFor(input.store);
   const evidenceStore = input.evidenceStore ?? evidenceStoreFrom(input.store);
+  const workflowStore = mppApprovalStoreFrom(input.store);
   const latestBlockhash = input.latestBlockhash ?? latestBlockhashForCluster;
   const submitSignedTransaction = input.submitSignedTransaction ?? defaultSubmitSignedTransaction;
   const lookupSignatureStatus = input.lookupSignatureStatus ?? defaultLookupSignatureStatus;
@@ -272,6 +307,7 @@ export async function settleStreamingSession(
   const outcome = await settleClaimedStreamingSession({
     store,
     evidenceStore,
+    ...(workflowStore ? { workflowStore } : {}),
     clock,
     latestBlockhash,
     submitSignedTransaction,
@@ -402,7 +438,7 @@ async function settleClaimedStreamingSession(
         blockhash,
       });
       const settledAt = submitted.confirmedAt ?? context.clock.now().toISOString();
-      await context.store.markVouchersSettled(
+      const settledVouchers = await context.store.markVouchersSettled(
         currentSession.sessionId,
         txVouchers.map((record) => record.voucherHash),
         submitted.txid,
@@ -416,6 +452,13 @@ async function settleClaimedStreamingSession(
         totalAmount: unsignedTx.totalAmount ?? sumVoucherAmounts(txVouchers, currentSession.tokenDecimals),
       });
       await context.evidenceStore.saveEvidence(currentSession.walletAddress, receipt);
+      await finalizeMppSessionPayments(
+        context,
+        currentSession,
+        settledVouchers.length ? settledVouchers : txVouchers,
+        submitted.txid,
+        settledAt,
+      );
       await context.evidenceStore.appendEvidenceAuditEvent(currentSession.walletAddress, {
         id: `audit_${randomUUID()}`,
         walletAddress: currentSession.walletAddress,
@@ -574,6 +617,7 @@ async function reconcileLastSettlementAttempt(
       totalAmount: sumVoucherAmounts(settled, claimed.tokenDecimals),
     });
     await context.evidenceStore.saveEvidence(claimed.walletAddress, receipt);
+    await finalizeMppSessionPayments(context, cleared ?? claimed, settled, prior.txid, settledAt);
     await context.evidenceStore.appendEvidenceAuditEvent(claimed.walletAddress, {
       id: `audit_${randomUUID()}`,
       walletAddress: claimed.walletAddress,
@@ -743,6 +787,177 @@ function buildStreamingSettlementEvidence(input: {
       tokenMint: input.session.tokenMint,
       voucherCount: input.vouchers.length,
       voucherHashes: input.vouchers.map((record) => record.voucherHash),
+    },
+  };
+}
+
+async function finalizeMppSessionPayments(
+  context: SettlementExecutionContext,
+  session: StoredStreamingSession,
+  vouchers: readonly StreamingVoucherRecord[],
+  txid: string,
+  settledAt: string,
+): Promise<void> {
+  for (const voucher of vouchers) {
+    const metadata = objectRecord(voucher.metadata);
+    const sessionPayment = objectRecord(metadata?.[MPP_SESSION_PAYMENT_METADATA_KEY]);
+    if (sessionPayment?.finality !== 'settlement_confirmed') continue;
+    const approvalId = stringValue(sessionPayment.approvalId);
+    if (!approvalId) continue;
+
+    let challenge: MppChallenge;
+    try {
+      challenge = parseMppChallenge(metadata?.mppChallenge);
+    } catch (err) {
+      console.warn(
+        `[streaming-settlement] session=${session.sessionId} voucher=${voucher.id} MPP settlement finality skipped: ${redactSecrets(err instanceof Error ? err.message : String(err))}`,
+      );
+      continue;
+    }
+    const paymentMethod = paymentMethodFromMetadata(metadata?.mppPaymentMethod, challenge);
+    if (!paymentMethod) continue;
+
+    const issuedAt = context.clock.now().toISOString();
+    const receipt = buildMppPaymentReceipt({
+      challenge,
+      credential: {
+        kind: paymentMethod.kind,
+        signature: txid,
+        txid,
+        payerWallet: session.walletAddress,
+        settledAt,
+      },
+      walletAddress: session.walletAddress,
+      cluster: session.cluster as MppCluster,
+      txid,
+      settledAt,
+      issuedAt,
+      paymentMethod,
+    });
+    const evidence = buildMppSessionSettlementEvidence({
+      session,
+      voucher,
+      approvalId,
+      receipt,
+      issuedAt,
+    });
+    await context.evidenceStore.saveEvidence(session.walletAddress, evidence);
+    await context.evidenceStore.appendEvidenceAuditEvent(session.walletAddress, {
+      id: `audit_${randomUUID()}`,
+      walletAddress: session.walletAddress,
+      type: 'mpp.session_payment.settlement_confirmed',
+      recordType: 'evidence',
+      recordId: evidence.id,
+      createdAt: issuedAt,
+      metadata: {
+        approvalId,
+        sessionId: session.sessionId,
+        voucherId: voucher.id,
+        voucherHash: voucher.voucherHash,
+        txid,
+        receiptId: receipt.receiptId,
+        receiptHash: receipt.artifactHash,
+        challengeHash: receipt.challengeHash,
+      },
+    });
+
+    const workflowStore = context.workflowStore;
+    if (!workflowStore) continue;
+    const approval = await workflowStore.getApproval(session.walletAddress, approvalId);
+    if (!approval) continue;
+    const updatedLink: JsonObject = {
+      ...jsonObjectValue(approval.metadata?.[MPP_SESSION_PAYMENT_METADATA_KEY]),
+      approvalId,
+      challengeHash: receipt.challengeHash,
+      sessionId: session.sessionId,
+      voucherId: voucher.id,
+      voucherHash: voucher.voucherHash,
+      amount: voucher.amount,
+      recipient: voucher.recipient,
+      tokenMint: session.tokenMint,
+      cluster: session.cluster,
+      finality: 'settlement_confirmed',
+      status: 'settlement_confirmed',
+      createdAt: stringValue(sessionPayment.createdAt) ?? voucher.createdAt,
+      updatedAt: issuedAt,
+      settledAt,
+      settlementTxid: txid,
+      receiptId: evidence.id,
+      receiptHash: receipt.artifactHash,
+    };
+    await workflowStore.saveApproval(session.walletAddress, {
+      ...approval,
+      status: 'approved',
+      txid,
+      txStatus: 'confirmed',
+      updatedAt: issuedAt,
+      decidedAt: approval.decidedAt ?? settledAt,
+      confirmedAt: settledAt,
+      metadata: {
+        ...(approval.metadata ?? {}),
+        [MPP_SESSION_PAYMENT_METADATA_KEY]: updatedLink,
+        mppPaymentReceipt: toJsonObject(receipt),
+        mppPaymentReceiptIssuedAt: issuedAt,
+        mppEvidenceReceiptId: evidence.id,
+      },
+    });
+    await workflowStore.appendAuditEvent?.(session.walletAddress, {
+      id: `audit_${randomUUID()}`,
+      walletAddress: session.walletAddress,
+      type: 'mpp.session_payment.approval_confirmed',
+      actor: 'server',
+      recordType: 'approval',
+      recordId: approvalId,
+      createdAt: issuedAt,
+      metadata: {
+        approvalId,
+        sessionId: session.sessionId,
+        voucherId: voucher.id,
+        txid,
+        receiptId: evidence.id,
+        receiptHash: receipt.artifactHash,
+      },
+    });
+  }
+}
+
+function buildMppSessionSettlementEvidence(input: {
+  session: StoredStreamingSession;
+  voucher: StreamingVoucherRecord;
+  approvalId: string;
+  receipt: MppReceipt;
+  issuedAt: string;
+}): EvidenceReceiptRecord {
+  const merchant = input.receipt.merchant?.name ?? input.receipt.merchant?.id ?? input.receipt.recipient;
+  return {
+    id: `evidence_mpp_${randomUUID()}`,
+    walletAddress: input.session.walletAddress,
+    cluster: input.session.cluster,
+    title: `MPP Session Payment: ${merchant}`,
+    kind: MPP_EVIDENCE_KIND,
+    status: 'approved',
+    payload: toJsonObject(input.receipt),
+    preSignatureHash: input.receipt.artifactHash,
+    signingMessage: `mpp-session-payment:${input.approvalId}:${input.voucher.voucherHash}@${input.receipt.txid ?? input.receipt.credentialHash}`,
+    signature: input.receipt.txid ?? input.receipt.credentialHash,
+    verified: true,
+    artifactHash: input.receipt.artifactHash,
+    createdAt: input.issuedAt,
+    updatedAt: input.issuedAt,
+    receiptType: MPP_PAYMENT_RECEIPT_SCHEMA,
+    summary: `Settled ${input.receipt.amount} ${input.receipt.currency} to ${merchant} via an MPP streaming-session voucher.`,
+    metadata: {
+      approvalId: input.approvalId,
+      sessionId: input.session.sessionId,
+      voucherId: input.voucher.id,
+      voucherHash: input.voucher.voucherHash,
+      txid: input.receipt.txid ?? '',
+      receiptId: input.receipt.receiptId,
+      receiptHash: input.receipt.artifactHash,
+      challengeHash: input.receipt.challengeHash,
+      nonce: input.receipt.nonce,
+      resourceUrl: input.receipt.resourceUrl,
+      finality: 'settlement_confirmed',
     },
   };
 }
@@ -935,9 +1150,53 @@ function evidenceStoreFrom(value: unknown): EvidenceStore | undefined {
   return isEvidenceStore(value) ? value : undefined;
 }
 
+function mppApprovalStoreFrom(value: unknown): MppSessionPaymentApprovalStore | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const record = value as Partial<MppSessionPaymentApprovalStore>;
+  if (typeof record.getApproval !== 'function' || typeof record.saveApproval !== 'function') {
+    return undefined;
+  }
+  return value as MppSessionPaymentApprovalStore;
+}
+
 function isEvidenceStore(value: unknown): value is EvidenceStore {
   return Boolean(value)
     && typeof (value as EvidenceStore).saveEvidence === 'function'
     && typeof (value as EvidenceStore).appendEvidenceAuditEvent === 'function'
     && typeof (value as EvidenceStore).listEvidence === 'function';
+}
+
+function paymentMethodFromMetadata(value: unknown, challenge: MppChallenge): MppPaymentMethod | undefined {
+  const record = objectRecord(value);
+  const kind = record ? stringValue(record.kind) : undefined;
+  const recipient = record ? stringValue(record.recipient) : undefined;
+  const network = record ? stringValue(record.network) : undefined;
+  const mint = record ? stringValue(record.mint) : undefined;
+  const exact = challenge.paymentMethods.find((candidate) =>
+    candidate.kind === kind &&
+    candidate.recipient === recipient &&
+    candidate.network === network &&
+    (candidate.mint ?? '') === (mint ?? ''),
+  );
+  if (exact) return exact;
+  if (kind === 'solana-spl' || kind === 'solana-sol') {
+    return challenge.paymentMethods.find((candidate) => candidate.kind === kind);
+  }
+  return challenge.paymentMethods[0];
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function jsonObjectValue(value: unknown): JsonObject {
+  const record = objectRecord(value);
+  if (!record) return {};
+  return JSON.parse(JSON.stringify(record)) as JsonObject;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }

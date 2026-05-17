@@ -34,6 +34,11 @@ export * from './agentFactRouter.js';
 export * from './agentEvidence.js';
 export * from './agentEvidenceRequirements.js';
 export * from './agentEvidenceGate.js';
+export * from './agentAtoms.js';
+export * from './agentCapabilityRegistry.js';
+export * from './policyEvaluator.js';
+export * from './policyOrchestrator.js';
+export * from './txGates.js';
 export * from './verifiedPrograms.js';
 export * from './promptInjectionDefense.js';
 export * from './confidence.js';
@@ -220,6 +225,39 @@ export interface StreamingVoucherRecord {
   createdAt: string;
   settledAt?: string;
   settlementTxid?: string;
+  metadata?: JsonObject;
+}
+
+export const MPP_SESSION_PAYMENT_FINALITIES = ['voucher_accepted', 'settlement_confirmed'] as const;
+export type MppSessionPaymentFinality = (typeof MPP_SESSION_PAYMENT_FINALITIES)[number];
+
+export const MPP_SESSION_PAYMENT_STATUSES = [
+  'voucher_accepted',
+  'settlement_pending',
+  'settlement_confirmed',
+  'failed',
+] as const;
+export type MppSessionPaymentStatus = (typeof MPP_SESSION_PAYMENT_STATUSES)[number];
+
+export interface MppSessionPaymentLink {
+  approvalId: string;
+  challengeHash: string;
+  sessionId: string;
+  voucherId: string;
+  voucherHash: string;
+  amount: string;
+  recipient: string;
+  tokenMint: string;
+  cluster: WorkflowCluster;
+  finality: MppSessionPaymentFinality;
+  status: MppSessionPaymentStatus;
+  createdAt: string;
+  updatedAt: string;
+  receiptId?: string;
+  receiptHash?: string;
+  settlementTxid?: string;
+  settledAt?: string;
+  error?: string;
 }
 
 export interface StreamingSettlementRecord {
@@ -2446,10 +2484,12 @@ export function assertNoForbiddenWorkflowSecrets(value: unknown, path = '$'): vo
     if (FORBIDDEN_EXACT_KEYS.has(normalized) || normalized.includes('privatekey') || normalized.includes('secretkey')) {
       throw new WorkflowValidationError('forbidden_secret', `${path}.${key} is not accepted by Agentic Cloud workflow APIs.`);
     }
-    if (
-      (normalized.includes('approvalauthority') || normalized.includes('signingauthority') || normalized.includes('authority')) &&
-      indicatesUnlimitedAuthority(entry)
-    ) {
+    const mentionsAuthority =
+      normalized.includes('approvalauthority') ||
+      normalized.includes('signingauthority') ||
+      normalized.includes('authority');
+    const isNegatedAuthorityFact = /(disabled|revoked|removed|burned|nullified|none)$/.test(normalized);
+    if (mentionsAuthority && !isNegatedAuthorityFact && indicatesUnlimitedAuthority(entry)) {
       throw new WorkflowValidationError('forbidden_authority', `${path}.${key} cannot grant unlimited approval authority.`);
     }
     assertNoForbiddenWorkflowSecrets(entry, `${path}.${key}`);
@@ -2487,10 +2527,12 @@ function collectForbiddenGuardrailViolations(input: {
         path,
       });
     }
-    if (
-      (normalized.includes('approvalauthority') || normalized.includes('signingauthority') || normalized.includes('authority')) &&
-      indicatesUnlimitedAuthority(entry)
-    ) {
+    const mentionsAuthority =
+      normalized.includes('approvalauthority') ||
+      normalized.includes('signingauthority') ||
+      normalized.includes('authority');
+    const isNegatedAuthorityFact = /(disabled|revoked|removed|burned|nullified|none)$/.test(normalized);
+    if (mentionsAuthority && !isNegatedAuthorityFact && indicatesUnlimitedAuthority(entry)) {
       input.violations.push({
         code: 'forbidden_authority',
         severity: 'block',

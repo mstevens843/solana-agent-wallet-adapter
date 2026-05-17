@@ -1929,7 +1929,6 @@ function assertAiReviewRequestAllowed(request: AgentPlanReviewRequest): void {
     plan: {
       ...request.plan,
       reviewInstruction: request.instruction,
-      reviewContext: request.context,
     },
     source: request.plan.source,
     category: request.plan.category,

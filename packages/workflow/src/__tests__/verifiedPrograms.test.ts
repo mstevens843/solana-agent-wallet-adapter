@@ -15,6 +15,11 @@ describe('VERIFIED_PROGRAM_IDS', () => {
     expect(isVerifiedProgramId('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL')).toBe(true);
   });
 
+  it('includes Jupiter Aggregator (v4 + v6) so swap tx-gate analyzers do not fail-closed on real Jupiter swaps', () => {
+    expect(isVerifiedProgramId('JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4')).toBe(true);
+    expect(isVerifiedProgramId('JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB')).toBe(true);
+  });
+
   it('includes connector adapter program IDs', () => {
     // From adapters/kamino/constants.ts
     expect(isVerifiedProgramId('KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD')).toBe(true);
