@@ -19,13 +19,14 @@ Use this process to make every public installer shown on `agentic-signer.com` re
 
 ## Release Guardrails
 
-- Public production web, Render, Android APK, and Android AAB builds keep Device Agent disabled by default.
-- Do not set `VITE_AGENTIC_DEVICE_AGENT=1`, `AGENTIC_DEVICE_AGENT=1`, or build Android with
-  `-PagenticDeviceAgent=true` for a public release unless the release owner explicitly approves it.
-- If an approved Device Agent build is shipped, document the approval in the release notes and confirm Render remains
-  status/control only. Device Agent cannot approve, sign, submit, or move funds.
-- For any approved Android Device Agent build, run the Device Agent smoke and verify native `generatePlan`,
-  `reviewPlan`, and `ask` pass through the Android runtime queue.
+- Public production web and Render builds keep Device Agent disabled by default. Android APK and Android AAB builds
+  enable the Android-native Device Agent by default.
+- Do not set `VITE_AGENTIC_DEVICE_AGENT=1` or `AGENTIC_DEVICE_AGENT=1` for a public web/Render release unless the
+  release owner explicitly approves it.
+- If an approved web/Render Device Agent build is shipped, document the approval in the release notes and confirm Render
+  remains status/control only. Device Agent cannot approve, sign, submit, or move funds.
+- For Android builds, run the Device Agent smoke and verify native `generatePlan`, `reviewPlan`, and `ask` pass through
+  the Android runtime queue. Use `-PagenticDeviceAgent=false` only for an explicit opt-out rollback build.
 - Do not set `VITE_AGENTIC_BROWSER_DEVICE_AGENT=1` or `AGENTIC_BROWSER_DEVICE_AGENT=1` for a public release unless the
   release owner explicitly approves a browser-native Device Agent build.
 - If an approved browser-native Device Agent build is shipped, document the approval in the release notes, run the
@@ -60,10 +61,9 @@ without the leading `v`.
    ```
 
    Confirm the public release environment leaves `VITE_AGENTIC_DEVICE_AGENT`, `AGENTIC_DEVICE_AGENT`,
-   `VITE_AGENTIC_BROWSER_DEVICE_AGENT`, `AGENTIC_BROWSER_DEVICE_AGENT`, and `agenticDeviceAgent=true` unset unless the
-   release notes include explicit Device Agent approval. For an approved enabled build, also run the matching Device
-   Agent smoke (`docs/smoke/android-device-agent.md` for Android, `docs/smoke/browser-device-agent.md` for browser)
-   and confirm the source-completion scenario passes.
+   `VITE_AGENTIC_BROWSER_DEVICE_AGENT`, and `AGENTIC_BROWSER_DEVICE_AGENT` unset unless the release notes include
+   explicit Device Agent approval for web/Render/browser-native surfaces. For Android, run
+   `docs/smoke/android-device-agent.md` against the standard build and confirm the source-completion scenario passes.
 
 2. Push the release commit, then tag it:
 

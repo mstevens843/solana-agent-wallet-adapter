@@ -9700,65 +9700,6 @@ button.danger:hover:not(:disabled) {
   padding: 8px 10px;
 }
 
-.finalization-checklist {
-  display: grid;
-  gap: 6px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin-top: 10px;
-}
-
-.finalization-checklist div {
-  background: rgba(255, 255, 255, 0.018);
-  border: 1px solid rgba(224, 230, 226, 0.075);
-  border-radius: 8px;
-  display: grid;
-  gap: 4px;
-  min-height: 72px;
-  min-width: 0;
-  padding: 8px;
-}
-
-.finalization-checklist div.complete {
-  background: rgba(63, 189, 131, 0.07);
-  border-color: rgba(139, 205, 170, 0.22);
-}
-
-.finalization-checklist span {
-  align-items: center;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(224, 230, 226, 0.1);
-  border-radius: 999px;
-  color: var(--dim);
-  display: inline-flex;
-  font-size: 0.58rem;
-  font-weight: 900;
-  height: 20px;
-  justify-content: center;
-  line-height: 1;
-  text-transform: uppercase;
-  width: 28px;
-}
-
-.finalization-checklist div.complete span {
-  background: rgba(63, 189, 131, 0.15);
-  border-color: rgba(139, 205, 170, 0.32);
-  color: #d9ffea;
-}
-
-.finalization-checklist strong {
-  color: var(--text);
-  font-size: 0.74rem;
-  line-height: 1.15;
-}
-
-.finalization-checklist p {
-  color: var(--dim);
-  font-size: 0.7rem;
-  line-height: 1.2;
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
 .pre-sign-review {
   background: rgba(255, 255, 255, 0.022);
   border: 1px solid rgba(224, 230, 226, 0.09);
@@ -13225,6 +13166,33 @@ button.danger:hover:not(:disabled) {
 
 .local-bridge-connection-card.offline {
   border-color: rgba(224, 230, 226, 0.12);
+}
+
+.local-bridge-connection-card.checking {
+  background: rgba(255, 255, 255, 0.025);
+  border-color: rgba(224, 230, 226, 0.16);
+  position: relative;
+  overflow: hidden;
+}
+
+.local-bridge-connection-card.checking::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(224, 230, 226, 0.04) 50%,
+    transparent 100%
+  );
+  transform: translateX(-100%);
+  animation: local-bridge-connection-card-shimmer 1.6s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes local-bridge-connection-card-shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
 }
 
 .local-bridge-connection-card .device-agent-last-error {
@@ -25201,4 +25169,67 @@ button.danger:hover:not(:disabled) {
     font-size: 0.71rem;
     padding: 0 5px;
   }
+}
+
+/* Mobile /app UX cleanup — signer row, tabs dropdown, command subtab row. */
+
+.signer-summary-mobile-only { display: none; }
+.workspace-tabs-mobile { display: none; }
+.cc-label-mobile,
+.cc-detail-mobile { display: none; }
+
+@media (max-width: 899px) {
+  .signer-row {
+    align-items: stretch;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  }
+  .signer-row .rail-heading.custody-heading { margin-bottom: 0; }
+  .signer-row .connection-summary {
+    align-items: center;
+    margin-top: 0;
+  }
+  .signer-row .connection-summary strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .signer-title-desktop-only,
+  .signer-summary-desktop-only,
+  .signer-detail-desktop-only { display: none; }
+  .signer-summary-mobile-only { display: block; }
+
+  .workspace-tabs-desktop,
+  .preferences-open-button { display: none; }
+  .workspace-tabs-mobile {
+    display: block;
+    width: 100%;
+  }
+  .workspace-tabs-mobile .select-picker-trigger {
+    min-height: 44px;
+    width: 100%;
+  }
+
+  .route-app .command-subtab-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 4px;
+    padding: 4px;
+  }
+  .route-app .command-subtab-row button {
+    min-height: 52px;
+    padding: 6px 4px;
+  }
+  .route-app .command-subtab-row strong {
+    font-size: 0.78rem;
+    line-height: 1.1;
+  }
+  .route-app .command-subtab-row span {
+    font-size: 0.62rem;
+    line-height: 1.15;
+  }
+  .command-subtab-row .cc-label-full,
+  .command-subtab-row .cc-detail-full { display: none; }
+  .command-subtab-row .cc-label-mobile { display: inline; }
+  .command-subtab-row .cc-detail-mobile { display: inline; }
 }

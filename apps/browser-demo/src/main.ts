@@ -359,6 +359,7 @@ import {
   canUseDeviceAgentBrowserNative as canUseDeviceAgentBrowserNativeForSurface,
   browserNativeProviderTierForProvider,
   chooseDeviceAgentRequestRoute,
+  defaultAiModeForSurface,
   defaultDeviceAgentRuntimeForSurface,
   deviceAgentModeVisibleForSurface,
 } from './deviceAgentWiring.js';
@@ -851,6 +852,8 @@ const STORAGE_KEY = 'solana-agent-wallet-demo-v2';
 const BRIDGE_TOKEN_SESSION_KEY = 'agentic-local-bridge-token';
 const AI_API_KEYS_SESSION_STORAGE_KEY = 'solana-agent-wallet-ai-api-keys-v1';
 const DEVICE_AGENT_SECRET_STORE_MODE_KEY = 'agentic-device-agent-secret-store-mode';
+const DEVICE_AGENT_STATUS_STORAGE_KEY = 'solana-agent-wallet-device-agent-status-v1';
+const DEVICE_AGENT_STATUS_CACHE_MAX_AGE_MS = 24 * 60 * 60_000;
 const GENERATED_PLANS_STORAGE_KEY = 'solana-agent-wallet-generated-plans-v1';
 const BROWSER_WORKFLOW_STORAGE_KEY = 'solana-agent-wallet-browser-workflow-v1';
 const LOCAL_COMPLETED_STORAGE_KEY = 'solana-agent-wallet-local-completed-v1';
@@ -2095,6 +2098,11 @@ interface DemoState {
   cloudWorkspaceDeleteModalOpen: boolean;
   completedDeleteModalId: string;
   generatedPlanDeleteModalId: string;
+  inboxDeleteModalId: string;
+  deleteAllInboxModalOpen: boolean;
+  deleteAllCheckModalOpen: boolean;
+  deleteAllRepeatsModalOpen: boolean;
+  deleteAllDoneModalOpen: boolean;
   preferencesView: PreferencesView;
   wallets: DiscoveredWallet[];
   selectedWalletName: string;
@@ -2138,6 +2146,7 @@ interface DemoState {
   aiSettingsPanelOpen: boolean | null;
   aiStatus: BridgeAiStatus | null;
   deviceAgentStatus: DeviceAgentStatus | null;
+  deviceAgentStatusLoading: boolean;
   aiDiagnostics: AiDiagnosticEntry[];
   aiPlannerConfirmation: AiPlannerConfirmationState;
   toasts: Toast[];
@@ -2930,6 +2939,11 @@ const state: DemoState = {
   cloudWorkspaceDeleteModalOpen: false,
   completedDeleteModalId: '',
   generatedPlanDeleteModalId: '',
+  inboxDeleteModalId: '',
+  deleteAllInboxModalOpen: false,
+  deleteAllCheckModalOpen: false,
+  deleteAllRepeatsModalOpen: false,
+  deleteAllDoneModalOpen: false,
   preferencesView: persisted.preferencesView ?? 'workspace',
   wallets: [],
   selectedWalletName: persisted.browserWalletSession?.cluster === initialCluster ? persisted.browserWalletSession.walletName : '',
@@ -2976,6 +2990,7 @@ const state: DemoState = {
   aiSettingsPanelOpen: null,
   aiStatus: null,
   deviceAgentStatus: null,
+  deviceAgentStatusLoading: false,
   aiDiagnostics: [],
   aiPlannerConfirmation: {
     status: 'untested',
@@ -3136,6 +3151,88 @@ function currentDeviceAgentWalletAddress(): string | undefined {
   return state.address || state.cloudSession.walletAddress || undefined;
 }
 
+interface PersistedDeviceAgentStatus {
+  v: 1;
+  walletAddress: string;
+  mode: AiSettings['mode'];
+  savedAt: number;
+  status: DeviceAgentStatus;
+}
+
+function saveDeviceAgentStatusCache(status: DeviceAgentStatus | null): void {
+  if (!status) return;
+  // An explicitly-unconfigured status is also "known truth" — clear the cache
+  // so a later refresh doesn't resurrect an older configured snapshot.
+  if (!status.configured) {
+    clearDeviceAgentStatusCache();
+    return;
+  }
+  const walletAddress = currentDeviceAgentWalletAddress();
+  if (!walletAddress) return;
+  try {
+    const payload: PersistedDeviceAgentStatus = {
+      v: 1,
+      walletAddress,
+      mode: state.aiSettings.mode,
+      savedAt: Date.now(),
+      status,
+    };
+    window.localStorage.setItem(DEVICE_AGENT_STATUS_STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    // Best-effort cache; persistence failures shouldn't break UX.
+  }
+}
+
+function loadDeviceAgentStatusCache(): DeviceAgentStatus | null {
+  if (state.aiSettings.mode !== 'device-agent') return null;
+  const walletAddress = currentDeviceAgentWalletAddress();
+  if (!walletAddress) return null;
+  let raw: string | null;
+  try {
+    raw = window.localStorage.getItem(DEVICE_AGENT_STATUS_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    clearDeviceAgentStatusCache();
+    return null;
+  }
+  if (
+    !parsed
+    || typeof parsed !== 'object'
+    || (parsed as { v?: unknown }).v !== 1
+  ) {
+    clearDeviceAgentStatusCache();
+    return null;
+  }
+  const entry = parsed as Partial<PersistedDeviceAgentStatus>;
+  if (
+    entry.walletAddress !== walletAddress
+    || entry.mode !== 'device-agent'
+    || typeof entry.savedAt !== 'number'
+    || Date.now() - entry.savedAt > DEVICE_AGENT_STATUS_CACHE_MAX_AGE_MS
+  ) {
+    return null;
+  }
+  try {
+    return parseDeviceAgentStatus(entry.status);
+  } catch {
+    return null;
+  }
+}
+
+function clearDeviceAgentStatusCache(): void {
+  try {
+    window.localStorage.removeItem(DEVICE_AGENT_STATUS_STORAGE_KEY);
+  } catch {
+    // Best-effort.
+  }
+}
+
 function currentBrowserNativeRuntimeEligible(): boolean {
   return browserNativeRuntimeEligibleForSurface({
     deviceAgentEnabled: DEVICE_AGENT_ENABLED,
@@ -3175,6 +3272,7 @@ function attachBrowserDeviceAgentStatusListener(mod: BrowserDeviceAgentModule): 
     } catch {
       state.deviceAgentStatus = nextStatus;
     }
+    saveDeviceAgentStatusCache(state.deviceAgentStatus);
     render();
   });
 }
@@ -3198,6 +3296,12 @@ async function startApp(): Promise<void> {
     normalizeInitialRoute();
     hydrateGeneratedPlansForStartup();
     installSpendBridgeHandlers();
+    if (state.aiSettings.mode === 'device-agent') {
+      const cached = loadDeviceAgentStatusCache();
+      if (cached) {
+        state.deviceAgentStatus = cached;
+      }
+    }
     render();
     if (SHOW_DEV_CONTROLS) {
       startSystemHealthPolling();
@@ -3615,6 +3719,31 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
     closeGeneratedPlanDeleteModal();
     return;
   }
+  if (event.key === 'Escape' && state.inboxDeleteModalId) {
+    event.preventDefault();
+    closeInboxDeleteModal();
+    return;
+  }
+  if (event.key === 'Escape' && state.deleteAllInboxModalOpen) {
+    event.preventDefault();
+    closeDeleteAllInboxModal();
+    return;
+  }
+  if (event.key === 'Escape' && state.deleteAllCheckModalOpen) {
+    event.preventDefault();
+    closeDeleteAllCheckModal();
+    return;
+  }
+  if (event.key === 'Escape' && state.deleteAllRepeatsModalOpen) {
+    event.preventDefault();
+    closeDeleteAllRepeatsModal();
+    return;
+  }
+  if (event.key === 'Escape' && state.deleteAllDoneModalOpen) {
+    event.preventDefault();
+    closeDeleteAllDoneModal();
+    return;
+  }
   if (event.key === 'Escape' && state.generatedPlanAuditId) {
     event.preventDefault();
     closeGeneratedPlanAuditModal();
@@ -3727,7 +3856,11 @@ async function bootstrap(): Promise<void> {
     }
   }
   if (state.aiSettings.mode === 'device-agent') {
-    await refreshDeviceAgentStatus(false);
+    state.deviceAgentStatusLoading = true;
+    void refreshDeviceAgentStatus(false).finally(() => {
+      state.deviceAgentStatusLoading = false;
+      render();
+    });
   }
   render();
   void reconcilePendingTransactions({ trigger: 'bootstrap' });
@@ -3952,6 +4085,11 @@ function pageShell(content: string, activeRoute: AppRoute | null): string {
       ${cloudWorkspaceDeleteModal()}
       ${completedDeleteModal()}
       ${generatedPlanDeleteModal()}
+      ${inboxDeleteModal()}
+      ${deleteAllInboxModal()}
+      ${deleteAllCheckModal()}
+      ${deleteAllRepeatsModal()}
+      ${deleteAllDoneModal()}
       ${activeRoute === '/app' || activeRoute === '/demo' ? workspaceBackupRestoreModal() : ''}
       ${homepageFooter()}
     </section>
@@ -6456,7 +6594,7 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
             <div>
               <h2>${surfaceTitle()}</h2>
             </div>
-            <nav class="nav-cluster tabs workspace-tabs" aria-label="Workspace navigation" data-layout="app-tabs">
+            <nav class="nav-cluster tabs workspace-tabs workspace-tabs-desktop" aria-label="Workspace navigation" data-layout="app-tabs">
               ${/*
                 Wallet tab intentionally hidden across web, Android, and iOS app shells.
                 tabButton('wallet', 'Wallet')
@@ -6470,10 +6608,9 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
               ${moreMenuButton()}
             </nav>
             ${preferencesButton()}
+            ${workspaceTabSelectMobile()}
           </div>
           <div data-layout="active-panel">${activePanel()}</div>
-          ${SHOW_DEV_CONTROLS ? '' : firstRunActionBand()}
-          ${SHOW_DEV_CONTROLS ? '' : trustLayerPanel()}
         </section>
         ${SHOW_DEV_CONTROLS ? contextPanel() : requestContextDetails()}
       </section>
@@ -6962,21 +7099,36 @@ function walletRail(): string {
     state.wallets.length > 0;
   const showPublicIosPicker = !SHOW_DEV_CONTROLS && !state.address && state.iosNativeEnvironment.isIosNative;
   const wallet = walletIdentity();
+  const connected = Boolean(state.address);
+  const headingTitleMarkup = connected
+    ? `<h2>${escapeHtml(wallet.title)}</h2>`
+    : `<h2 class="signer-title-desktop-only">${escapeHtml(wallet.title)}</h2>`;
+  const summaryStrongMarkup = connected
+    ? `<strong>${escapeHtml(wallet.summary)}</strong>`
+    : `
+          <strong class="signer-summary-desktop-only">${escapeHtml(wallet.summary)}</strong>
+          <strong class="signer-summary-mobile-only">No signer connected</strong>
+        `;
+  const summaryDetailMarkup = connected
+    ? `<p>${escapeHtml(wallet.detail)}</p>`
+    : `<p class="signer-detail-desktop-only">${escapeHtml(wallet.detail)}</p>`;
   return `
     <aside class="panel custody-panel custody-module" data-layout="app-rail">
-      <div class="rail-heading custody-heading">
-        ${walletRailIcon(wallet)}
-        <div>
-          <p class="eyebrow mini">Signer</p>
-          <h2>${escapeHtml(wallet.title)}</h2>
+      <div class="signer-row">
+        <div class="rail-heading custody-heading">
+          ${walletRailIcon(wallet)}
+          <div>
+            <p class="eyebrow mini">Signer</p>
+            ${headingTitleMarkup}
+          </div>
         </div>
-      </div>
 
-      <div class="connection-summary custody-card">
-        <span class="status-dot ${state.address ? 'online' : ''}"></span>
-        <div>
-          <strong>${escapeHtml(wallet.summary)}</strong>
-          <p>${escapeHtml(wallet.detail)}</p>
+        <div class="connection-summary custody-card">
+          <span class="status-dot ${connected ? 'online' : ''}"></span>
+          <div>
+            ${summaryStrongMarkup}
+            ${summaryDetailMarkup}
+          </div>
         </div>
       </div>
 
@@ -9818,7 +9970,7 @@ function commandCenterPanel(): string {
       <div class="command-subtab-row" role="tablist" aria-label="Home sections">
         ${commandCenterSubtab('center', 'Center', 'Command overview')}
         ${commandCenterSubtab('ai', 'Connect AI', 'Agent setup')}
-        ${commandCenterSubtab('storage', 'Connect Cloud Storage', 'Device and cloud workspace')}
+        ${commandCenterSubtab('storage', 'Connect Cloud Storage', 'Device and cloud workspace', 'Connect Cloud', 'Cloud workspace')}
       </div>
       ${state.commandCenterView === 'ai'
         ? commandCenterAiPanel()
@@ -9829,8 +9981,22 @@ function commandCenterPanel(): string {
   `;
 }
 
-function commandCenterSubtab(view: CommandCenterView, label: string, detail: string): string {
+function commandCenterSubtab(
+  view: CommandCenterView,
+  label: string,
+  detail: string,
+  mobileLabel?: string,
+  mobileDetail?: string,
+): string {
   const active = state.commandCenterView === view;
+  const labelMarkup = mobileLabel
+    ? `<strong class="cc-label-full">${escapeHtml(label)}</strong>` +
+      `<strong class="cc-label-mobile">${escapeHtml(mobileLabel)}</strong>`
+    : `<strong>${escapeHtml(label)}</strong>`;
+  const detailMarkup = mobileDetail
+    ? `<span class="cc-detail-full">${escapeHtml(detail)}</span>` +
+      `<span class="cc-detail-mobile">${escapeHtml(mobileDetail)}</span>`
+    : `<span>${escapeHtml(detail)}</span>`;
   return `
     <button
       type="button"
@@ -9839,8 +10005,8 @@ function commandCenterSubtab(view: CommandCenterView, label: string, detail: str
       role="tab"
       aria-selected="${active ? 'true' : 'false'}"
     >
-      <strong>${escapeHtml(label)}</strong>
-      <span>${escapeHtml(detail)}</span>
+      ${labelMarkup}
+      ${detailMarkup}
     </button>
   `;
 }
@@ -9866,6 +10032,9 @@ function commandCenterOverviewPanel(): string {
             <button type="button" class="utility" data-tab="labs">Sign Proof</button>
           </div>
         </div>
+
+        ${SHOW_DEV_CONTROLS ? '' : firstRunActionBand()}
+        ${SHOW_DEV_CONTROLS ? '' : trustLayerPanel()}
 
         <div class="command-loop" aria-label="Agentic approval loop">
           ${commandLoopStep('Draft', 'AI or templates prepare a bounded review item.', Boolean(state.agentPlan) || state.generatedPlans.length > 0)}
@@ -10136,32 +10305,7 @@ function commandCenterAiPanel(): string {
         </div>
 
         <div class="command-route-grid" aria-label="AI route capabilities">
-          ${commandAiRouteCard(
-            'hosted',
-            'Hosted BYOK',
-            'Connect a preset provider key through Agentic for AI agent requests.',
-            'Cloud AI connection',
-          )}
-          ${commandAiRouteCard(
-            'bridge',
-            'Local Bridge AI',
-            'Connect the local runtime so AI agent requests can use this machine.',
-            'Local AI connection',
-          )}
-          ${commandAiRouteCard(
-            'session',
-            IS_ANDROID_APP ? 'Android Session' : 'Browser Session',
-            `Connect a temporary key in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'} without saving it to Agentic.`,
-            'Session AI connection',
-          )}
-          ${deviceAgentModeVisible() ? commandAiRouteCard(
-            'device-agent',
-            'Device Agent AI',
-            IS_ANDROID_APP
-              ? 'Connect the on-device runtime so agent requests stay inside this app boundary.'
-              : 'Connect the gated Device Agent setup for this wallet.',
-            'Device AI connection',
-          ) : ''}
+          ${commandAiRouteCards()}
         </div>
 
         ${state.aiSettings.mode === 'bridge' ? commandBridgePrereqPanel() : ''}
@@ -10177,6 +10321,39 @@ function commandCenterAiPanel(): string {
       </section>
     </div>
   `;
+}
+
+function commandAiRouteCards(): string {
+  const hosted = commandAiRouteCard(
+    'hosted',
+    'Hosted BYOK',
+    'Connect a preset provider key through Agentic for AI agent requests.',
+    'Cloud AI connection',
+  );
+  const localBridge = commandAiRouteCard(
+    'bridge',
+    'Local Bridge AI',
+    'Connect the local runtime so AI agent requests can use this machine.',
+    'Local AI connection',
+  );
+  const session = commandAiRouteCard(
+    'session',
+    IS_ANDROID_APP ? 'Android Session' : 'Browser Session',
+    `Connect a temporary key in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'} without saving it to Agentic.`,
+    'Session AI connection',
+  );
+  const deviceAgent = deviceAgentModeVisible() ? commandAiRouteCard(
+    'device-agent',
+    'Device Agent AI',
+    IS_ANDROID_APP
+      ? 'Connect the on-device runtime so agent requests stay inside this app boundary.'
+      : 'Connect the gated Device Agent setup for this wallet.',
+    'Device AI connection',
+  ) : '';
+
+  return IS_ANDROID_APP
+    ? `${deviceAgent}${session}${hosted}${localBridge}`
+    : `${hosted}${localBridge}${session}${deviceAgent}`;
 }
 
 function commandBridgePrereqPanel(): string {
@@ -10831,6 +11008,7 @@ function oneTimePlanTabs(): string {
         ${oneTimePlanViewButton('review', 'Check')}
       </div>
       ${reviewing ? agentReviewFilterControl('generated') : ''}
+      ${reviewing ? `<button id="deleteAllCheck" class="utility danger" ${state.busy || filterGeneratedPlansByAgentReview(visibleGeneratedPlans(true)).length === 0 ? 'disabled' : ''}>Delete All</button>` : ''}
       ${creating ? connectorCreatePickerControl(selectedTemplate()) : ''}
       ${creating && !selectedConnector ? templateOutcomeControls('header') : ''}
     </div>
@@ -12747,6 +12925,165 @@ function generatedPlanDeleteModal(): string {
         <div class="generated-plan-modal-actions generated-plan-delete-actions">
           <button type="button" class="utility" data-generated-plan-delete-cancel ${state.busy ? 'disabled' : ''}>Cancel</button>
           <button type="button" class="utility danger" data-generated-plan-delete-confirm="${escapeHtml(record.id)}" ${state.busy ? 'disabled' : ''}>Delete plan</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function inboxDeleteModal(): string {
+  if (!state.inboxDeleteModalId) return '';
+  const action = state.preparedActions.find((candidate) => candidate.id === state.inboxDeleteModalId);
+  if (!action) return '';
+  const title = preparedActionCardTitle(action);
+  return `
+    <div class="generated-plan-modal-backdrop inbox-delete-modal-backdrop" role="presentation">
+      <section class="generated-plan-modal inbox-delete-modal" role="dialog" aria-modal="true" aria-labelledby="inbox-delete-title">
+        <div class="generated-plan-modal-head">
+          <div>
+            <span class="workbench-kicker">Needs Approval deletion</span>
+            <h2 id="inbox-delete-title">Delete this approval request?</h2>
+            <p>${escapeHtml(title)}</p>
+          </div>
+          <button class="utility" data-inbox-delete-cancel aria-label="Close Needs Approval deletion confirmation">Close</button>
+        </div>
+        <div class="completed-delete-warning">
+          <strong>This request will be removed entirely.</strong>
+          <p>Cloud and local copies are deleted. No receipt is saved in Done because the request was neither approved nor denied.</p>
+        </div>
+        <div class="generated-plan-modal-actions completed-delete-actions">
+          <button type="button" class="utility" data-inbox-delete-cancel ${state.busy ? 'disabled' : ''}>Cancel</button>
+          <button type="button" class="utility danger" data-inbox-delete-confirm="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''}>Delete request</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function deleteAllInboxModal(): string {
+  if (!state.deleteAllInboxModalOpen) return '';
+  const count = filteredPreparedActions().length;
+  const filterNote = state.inboxFilter === 'all'
+    ? ''
+    : ` matching the ${escapeHtml(state.inboxFilter)} filter`;
+  return `
+    <div class="generated-plan-modal-backdrop delete-all-modal-backdrop" role="presentation">
+      <section class="generated-plan-modal delete-all-modal" role="dialog" aria-modal="true" aria-labelledby="delete-all-inbox-title">
+        <div class="generated-plan-modal-head">
+          <div>
+            <span class="workbench-kicker">Clear Needs Approval</span>
+            <h2 id="delete-all-inbox-title">Delete ${count} visible request${count === 1 ? '' : 's'}?</h2>
+            <p>${count === 0 ? 'No visible requests to delete.' : `Every visible approval request${filterNote} will be removed.`}</p>
+          </div>
+          <button class="utility" data-delete-all-inbox-cancel aria-label="Close Needs Approval bulk deletion">Close</button>
+        </div>
+        <div class="completed-delete-warning">
+          <strong>This cannot be undone.</strong>
+          <p>Cloud and local copies are deleted. No receipts are left in Done because the requests were neither approved nor denied. Items already in Done are not affected.</p>
+        </div>
+        <div class="generated-plan-modal-actions completed-delete-actions">
+          <button type="button" class="utility" data-delete-all-inbox-cancel ${state.busy ? 'disabled' : ''}>Cancel</button>
+          <button type="button" class="utility danger" data-delete-all-inbox-confirm ${state.busy || count === 0 ? 'disabled' : ''}>Delete all ${count}</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function deleteAllCheckModal(): string {
+  if (!state.deleteAllCheckModalOpen) return '';
+  const visible = filterGeneratedPlansByAgentReview(visibleGeneratedPlans(true));
+  const count = visible.length;
+  const filterNote = state.generatedPlanAgentReviewFilter === 'all'
+    ? ''
+    : ` matching the ${escapeHtml(agentReviewFilterLabel(state.generatedPlanAgentReviewFilter))} filter`;
+  return `
+    <div class="generated-plan-modal-backdrop delete-all-modal-backdrop" role="presentation">
+      <section class="generated-plan-modal delete-all-modal" role="dialog" aria-modal="true" aria-labelledby="delete-all-check-title">
+        <div class="generated-plan-modal-head">
+          <div>
+            <span class="workbench-kicker">Clear Check</span>
+            <h2 id="delete-all-check-title">Delete ${count} visible draft${count === 1 ? '' : 's'}?</h2>
+            <p>${count === 0 ? 'No visible Check drafts to delete.' : `Every visible Check draft${filterNote} will be removed.`}</p>
+          </div>
+          <button class="utility" data-delete-all-check-cancel aria-label="Close Check bulk deletion">Close</button>
+        </div>
+        <div class="generated-plan-delete-warning">
+          <strong>This cannot be undone.</strong>
+          <p>Cloud and local copies of these drafts are deleted. Items that already produced a receipt or approval stay in Done.</p>
+        </div>
+        <div class="generated-plan-modal-actions generated-plan-delete-actions">
+          <button type="button" class="utility" data-delete-all-check-cancel ${state.busy ? 'disabled' : ''}>Cancel</button>
+          <button type="button" class="utility danger" data-delete-all-check-confirm ${state.busy || count === 0 ? 'disabled' : ''}>Delete all ${count}</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function deleteAllRepeatsModal(): string {
+  if (!state.deleteAllRepeatsModalOpen) return '';
+  const visible = filterRecurringPaymentsByAgentReview(activeWorkflowRecurringPayments());
+  const count = visible.length;
+  const filterNote = state.recurringAgentReviewFilter === 'all'
+    ? ''
+    : ` matching the ${escapeHtml(agentReviewFilterLabel(state.recurringAgentReviewFilter))} filter`;
+  return `
+    <div class="generated-plan-modal-backdrop delete-all-modal-backdrop" role="presentation">
+      <section class="generated-plan-modal delete-all-modal" role="dialog" aria-modal="true" aria-labelledby="delete-all-repeats-title">
+        <div class="generated-plan-modal-head">
+          <div>
+            <span class="workbench-kicker">Clear Active Repeats</span>
+            <h2 id="delete-all-repeats-title">Delete ${count} visible repeat${count === 1 ? '' : 's'}?</h2>
+            <p>${count === 0 ? 'No visible repeat payments to delete.' : `Every visible repeat payment${filterNote} will be removed.`}</p>
+          </div>
+          <button class="utility" data-delete-all-repeats-cancel aria-label="Close Active Repeats bulk deletion">Close</button>
+        </div>
+        <div class="completed-delete-warning">
+          <strong>Future runs are cancelled.</strong>
+          <p>Cloud and local schedules are deleted. Past payments already in Done are not affected. On-chain transactions are not reversed.</p>
+        </div>
+        <div class="generated-plan-modal-actions completed-delete-actions">
+          <button type="button" class="utility" data-delete-all-repeats-cancel ${state.busy ? 'disabled' : ''}>Cancel</button>
+          <button type="button" class="utility danger" data-delete-all-repeats-confirm ${state.busy || count === 0 ? 'disabled' : ''}>Delete all ${count}</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function deleteAllDoneModal(): string {
+  if (!state.deleteAllDoneModalOpen) return '';
+  const visible = filteredCompletedPlans(completedPlanRecords());
+  const count = visible.length;
+  const filterLabels: Record<CompletedPlanFilter, string> = {
+    'all': 'All',
+    'one-time': 'One-time',
+    'recurring': 'Repeats',
+    'proofs': 'Proofs',
+    'receipts': 'Receipts',
+  };
+  const filterNote = state.completedPlanFilter === 'all'
+    ? ''
+    : ` matching the ${escapeHtml(filterLabels[state.completedPlanFilter])} filter`;
+  return `
+    <div class="generated-plan-modal-backdrop delete-all-modal-backdrop" role="presentation">
+      <section class="generated-plan-modal delete-all-modal" role="dialog" aria-modal="true" aria-labelledby="delete-all-done-title">
+        <div class="generated-plan-modal-head">
+          <div>
+            <span class="workbench-kicker">Clear Done</span>
+            <h2 id="delete-all-done-title">Delete ${count} visible Done record${count === 1 ? '' : 's'}?</h2>
+            <p>${count === 0 ? 'No visible Done records to delete.' : `Every visible Done record${filterNote} will be removed.`}</p>
+          </div>
+          <button class="utility" data-delete-all-done-cancel aria-label="Close Done bulk deletion">Close</button>
+        </div>
+        <div class="completed-delete-warning">
+          <strong>This cannot be undone.</strong>
+          <p>Cloud and local Done cards are removed for the visible items. On-chain history is not deleted.</p>
+        </div>
+        <div class="generated-plan-modal-actions completed-delete-actions">
+          <button type="button" class="utility" data-delete-all-done-cancel ${state.busy ? 'disabled' : ''}>Cancel</button>
+          <button type="button" class="utility danger" data-delete-all-done-confirm ${state.busy || count === 0 ? 'disabled' : ''}>Delete all ${count}</button>
         </div>
       </section>
     </div>
@@ -14704,12 +15041,12 @@ function aiModeOptions(): string {
 function aiModeSelectOptions(): SelectPickerOption[] {
   const options: Array<{ id: AiSettings['mode']; label: string }> = IS_ANDROID_APP
     ? [
-        { id: 'session', label: 'Android session - drafts only' },
         ...(deviceAgentModeVisible()
           ? [{ id: 'device-agent' as const, label: 'Device Agent - drafts via device' }]
           : []),
-        { id: 'bridge', label: 'Local bridge AI - optional' },
+        { id: 'session', label: 'Android session - drafts only' },
         { id: 'hosted', label: 'Hosted BYOK - cloud relay' },
+        { id: 'bridge', label: 'Local bridge AI - optional' },
       ]
     : [
         { id: 'hosted', label: 'Hosted BYOK - drafts only' },
@@ -14923,20 +15260,27 @@ function aiModeLimitations(): string {
 function deviceAgentConnectionCard(status: DeviceAgentStatus | null): string {
   const available = Boolean(status?.available);
   const configured = Boolean(status?.configured);
-  const tone = available ? configured ? 'connected' : 'partial' : 'offline';
-  const title = available
-    ? configured
-      ? 'Device Agent config ready'
-      : 'Device Agent runtime visible'
-    : 'Device Agent unavailable';
-  const detail = status?.message
-    ?? (available
-      ? status?.runtime === 'android-native'
-        ? 'The gated Android runtime is available for native draft, review, and ask requests.'
-        : status?.runtime === 'browser-native'
-          ? 'The gated browser-native runtime is available for on-tab draft, review, and ask requests.'
-          : 'The gated runtime path is available for setup. This surface remains status/control only.'
-      : 'Enable the Device Agent env or sign in with an allowlisted wallet to use this path.');
+  const checking = !status && state.deviceAgentStatusLoading;
+  const tone = checking
+    ? 'checking'
+    : available ? configured ? 'connected' : 'partial' : 'offline';
+  const title = checking
+    ? 'Checking Device Agent…'
+    : available
+      ? configured
+        ? 'Device Agent config ready'
+        : 'Device Agent runtime visible'
+      : 'Device Agent unavailable';
+  const detail = checking
+    ? 'Re-validating your saved Device Agent configuration.'
+    : status?.message
+      ?? (available
+        ? status?.runtime === 'android-native'
+          ? 'The gated Android runtime is available for native draft, review, and ask requests.'
+          : status?.runtime === 'browser-native'
+            ? 'The gated browser-native runtime is available for on-tab draft, review, and ask requests.'
+            : 'The gated runtime path is available for setup. This surface remains status/control only.'
+        : 'Enable the Device Agent env or sign in with an allowlisted wallet to use this path.');
   const provider = status?.provider ?? aiProviderPresetById(state.aiSettings.provider).label;
   const model = status?.model ?? state.aiSettings.model ?? aiProviderPresetById(state.aiSettings.provider).model;
   const lastError = status?.lastError ?? null;
@@ -14945,7 +15289,7 @@ function deviceAgentConnectionCard(status: DeviceAgentStatus | null): string {
         lastError.subcode ? `${lastError.code}:${lastError.subcode}` : lastError.code,
       )}</strong> ${escapeHtml(lastError.message)}</p>`
     : '';
-  const runtimeState = status?.state ?? 'unavailable';
+  const runtimeState = status?.state ?? (checking ? 'checking' : 'unavailable');
   const showNotificationNote = (status?.runtime === 'android-native' || status?.runtime === 'browser-native')
     && (runtimeState === 'stopped' || runtimeState === 'unavailable');
   const notificationNote = showNotificationNote
@@ -14963,7 +15307,7 @@ function deviceAgentConnectionCard(status: DeviceAgentStatus | null): string {
       ${lastErrorBlock}
       ${notificationNote}
       <div class="local-bridge-facts">
-        <span>Runtime <strong>${escapeHtml(status?.runtime ?? 'not enabled')}</strong></span>
+        <span>Runtime <strong>${escapeHtml(status?.runtime ?? (checking ? 'checking…' : 'not enabled'))}</strong></span>
         <span>Wallet <strong>${escapeHtml(state.address ? short(state.address) : state.cloudSession.walletAddress ? short(state.cloudSession.walletAddress) : 'Not connected')}</strong></span>
         <span>AI <strong>${escapeHtml(`${provider} - ${model || 'model configured'}`)}</strong></span>
       </div>
@@ -15789,6 +16133,15 @@ function listPagination(pageKey: AppListPageKey, pagination: PaginatedList<unkno
   `;
 }
 
+function inboxRefreshButton(id: string): string {
+  const refreshing = state.steps.inbox === 'active';
+  const disabled = refreshing || state.busy;
+  const label = refreshing
+    ? '<span class="button-spinner" aria-hidden="true"></span>Refreshing…'
+    : 'Refresh';
+  return `<button id="${id}" class="utility" ${disabled ? 'disabled' : ''} ${refreshing ? 'aria-busy="true"' : ''}>${label}</button>`;
+}
+
 function approvalInboxPanel(): string {
   if (!state.address) {
     return guidedStartPanel('Needs Approval', 'Connect a wallet before approving or denying queued requests.');
@@ -15811,7 +16164,8 @@ function approvalInboxPanel(): string {
               { value: 'recurring', label: 'Repeats', meta: 'Approval filter' },
             ],
           })}
-          <button id="refreshInbox" class="utility" ${state.busy ? 'disabled' : ''}>Refresh</button>
+          ${inboxRefreshButton('refreshInbox')}
+          <button id="deleteAllInbox" class="utility danger" ${state.busy || actions.length === 0 ? 'disabled' : ''}>Delete All</button>
         </div>
       </div>
 
@@ -15834,7 +16188,8 @@ function completedPlansPanel(): string {
         ${sectionTitleLine('Done', 'Approved, denied, cancelled, signed, and ended work stays here until you delete it.')}
         <div class="generated-plans-toolbar signature-toolbar">
           <span class="signature-state">${escapeHtml(`${plans.length} completed`)}</span>
-          <button id="refreshCompletedPlans" class="utility" ${state.busy ? 'disabled' : ''}>Refresh</button>
+          ${inboxRefreshButton('refreshCompletedPlans')}
+          <button id="deleteAllDone" class="utility danger" ${state.busy || visiblePlans.length === 0 ? 'disabled' : ''}>Delete All</button>
         </div>
       </div>
 
@@ -16428,6 +16783,7 @@ function recurringViewTabs(activeCount: number): string {
         ${recurringViewButton('active', activeCount ? `Active Repeats (${activeCount})` : 'Active Repeats')}
       </div>
       ${active ? agentReviewFilterControl('recurring') : ''}
+      ${active ? `<button id="deleteAllRepeats" class="utility danger" ${state.busy || filterRecurringPaymentsByAgentReview(activeWorkflowRecurringPayments()).length === 0 ? 'disabled' : ''}>Delete All</button>` : ''}
       ${creating ? recurringConnectorPicker() : ''}
       ${creating ? (connector ? recurringConnectorActionPicker(state.recurringDraft, connector) : recurringPresetMethodControls()) : ''}
     </div>
@@ -17166,6 +17522,24 @@ function bind(): void {
   bindArtifactPicker();
   bindSelectPickers();
 
+  const workspaceTabSelect = document.getElementById('workspaceTabMobile') as HTMLSelectElement | null;
+  if (workspaceTabSelect) {
+    workspaceTabSelect.addEventListener('change', () => {
+      const next = workspaceTabSelect.value as ActiveTab;
+      if (!next || next === state.activeTab) return;
+      trackNavClick(`${currentRoute() ?? '/app'}#${next}`, 'workspace');
+      state.activeTab = next;
+      if (state.activeTab === 'labs') {
+        state.artifactView = 'create';
+      }
+      state.error = '';
+      render();
+      if (next === 'inbox') {
+        void reconcilePendingTransactions({ trigger: 'tab-entry' });
+      }
+    });
+  }
+
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-tab]')) {
     button.addEventListener('click', () => {
       const tab = button.dataset.tab as ActiveTab;
@@ -17440,6 +17814,58 @@ function bind(): void {
       closeGeneratedPlanDeleteModal();
     }
   });
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-inbox-delete]')) {
+    button.addEventListener('click', () => {
+      const id = button.dataset.inboxDelete;
+      if (!id) return;
+      openInboxDeleteModal(id);
+    });
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-inbox-delete-cancel]')) {
+    button.addEventListener('click', closeInboxDeleteModal);
+  }
+  document.querySelector<HTMLButtonElement>('[data-inbox-delete-confirm]')?.addEventListener('click', (event) => {
+    const id = (event.currentTarget as HTMLButtonElement).dataset.inboxDeleteConfirm;
+    if (!id) return;
+    closeInboxDeleteModal();
+    void runPreparedActionOp(id, 'delete');
+  });
+  document.querySelector<HTMLElement>('.inbox-delete-modal-backdrop')?.addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) {
+      closeInboxDeleteModal();
+    }
+  });
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-delete-all-inbox-cancel]')) {
+    button.addEventListener('click', closeDeleteAllInboxModal);
+  }
+  document.querySelector<HTMLButtonElement>('[data-delete-all-inbox-confirm]')?.addEventListener('click', () => {
+    void runDeleteAllInbox();
+  });
+  document.querySelector<HTMLElement>('.delete-all-modal-backdrop')?.addEventListener('click', (event) => {
+    if (event.target !== event.currentTarget) return;
+    if (state.deleteAllInboxModalOpen) closeDeleteAllInboxModal();
+    else if (state.deleteAllCheckModalOpen) closeDeleteAllCheckModal();
+    else if (state.deleteAllRepeatsModalOpen) closeDeleteAllRepeatsModal();
+    else if (state.deleteAllDoneModalOpen) closeDeleteAllDoneModal();
+  });
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-delete-all-check-cancel]')) {
+    button.addEventListener('click', closeDeleteAllCheckModal);
+  }
+  document.querySelector<HTMLButtonElement>('[data-delete-all-check-confirm]')?.addEventListener('click', () => {
+    void runDeleteAllCheck();
+  });
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-delete-all-repeats-cancel]')) {
+    button.addEventListener('click', closeDeleteAllRepeatsModal);
+  }
+  document.querySelector<HTMLButtonElement>('[data-delete-all-repeats-confirm]')?.addEventListener('click', () => {
+    void runDeleteAllRepeats();
+  });
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-delete-all-done-cancel]')) {
+    button.addEventListener('click', closeDeleteAllDoneModal);
+  }
+  document.querySelector<HTMLButtonElement>('[data-delete-all-done-confirm]')?.addEventListener('click', () => {
+    void runDeleteAllDone();
+  });
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-generated-plan-modal-close]')) {
     button.addEventListener('click', closeGeneratedPlanAuditModal);
   }
@@ -17531,6 +17957,10 @@ function bind(): void {
   }
   document.querySelector<HTMLButtonElement>('#disconnectBridge')?.addEventListener('click', runDisconnectBridge);
   document.querySelector<HTMLButtonElement>('#refreshInbox')?.addEventListener('click', runRefreshInbox);
+  document.querySelector<HTMLButtonElement>('#deleteAllInbox')?.addEventListener('click', openDeleteAllInboxModal);
+  document.querySelector<HTMLButtonElement>('#deleteAllCheck')?.addEventListener('click', openDeleteAllCheckModal);
+  document.querySelector<HTMLButtonElement>('#deleteAllRepeats')?.addEventListener('click', openDeleteAllRepeatsModal);
+  document.querySelector<HTMLButtonElement>('#deleteAllDone')?.addEventListener('click', openDeleteAllDoneModal);
   document.querySelector<HTMLButtonElement>('#createRecurring')?.addEventListener('click', runCreateRecurring);
   document.querySelector<HTMLButtonElement>('#createLabArtifact')?.addEventListener('click', runCreateLabArtifact);
   document.querySelector<HTMLButtonElement>('#refreshLabArtifacts')?.addEventListener('click', runRefreshLabArtifacts);
@@ -18201,7 +18631,22 @@ function bind(): void {
       const actionId = button.dataset.actionId;
       const op = button.dataset.actionOp;
       if (!actionId || !op) return;
-      void runPreparedActionOp(actionId, op);
+      void runPreparedActionOp(actionId, op).catch((err) => {
+        // Safety net: if anything past run()'s finally throws (e.g. a wallet
+        // adapter that rejects in an unusual way), make sure the busy flag is
+        // cleared and the card re-renders so Archive/Delete stay clickable
+        // without forcing a page refresh.
+        state.busy = false;
+        try {
+          const message = err instanceof Error ? err.message : String(err);
+          pushToast('error', 'Action failed', redactSecrets(message));
+        } catch (toastErr) {
+          console.error('pushToast() failed in action-op safety net', toastErr);
+        }
+        try { render(); } catch (renderErr) {
+          console.error('render() failed in action-op safety net', renderErr);
+        }
+      });
     });
   }
 
@@ -20810,6 +21255,332 @@ async function runDeleteCompletedPlan(completedId: string): Promise<void> {
       await refreshInboxData();
     }
     pushToast('success', 'Done item deleted', record.title);
+  });
+}
+
+function openInboxDeleteModal(actionId: string): void {
+  const action = state.preparedActions.find((candidate) => candidate.id === actionId);
+  if (!action) return;
+  state.inboxDeleteModalId = actionId;
+  state.error = '';
+  render();
+}
+
+function closeInboxDeleteModal(): void {
+  if (!state.inboxDeleteModalId) return;
+  state.inboxDeleteModalId = '';
+  render();
+}
+
+function openDeleteAllInboxModal(): void {
+  if (filteredPreparedActions().length === 0) return;
+  state.deleteAllInboxModalOpen = true;
+  state.error = '';
+  render();
+}
+
+function closeDeleteAllInboxModal(): void {
+  if (!state.deleteAllInboxModalOpen) return;
+  state.deleteAllInboxModalOpen = false;
+  render();
+}
+
+function openDeleteAllCheckModal(): void {
+  if (filterGeneratedPlansByAgentReview(visibleGeneratedPlans(true)).length === 0) return;
+  state.deleteAllCheckModalOpen = true;
+  state.error = '';
+  render();
+}
+
+function closeDeleteAllCheckModal(): void {
+  if (!state.deleteAllCheckModalOpen) return;
+  state.deleteAllCheckModalOpen = false;
+  render();
+}
+
+function openDeleteAllRepeatsModal(): void {
+  if (filterRecurringPaymentsByAgentReview(activeWorkflowRecurringPayments()).length === 0) return;
+  state.deleteAllRepeatsModalOpen = true;
+  state.error = '';
+  render();
+}
+
+function closeDeleteAllRepeatsModal(): void {
+  if (!state.deleteAllRepeatsModalOpen) return;
+  state.deleteAllRepeatsModalOpen = false;
+  render();
+}
+
+function openDeleteAllDoneModal(): void {
+  if (filteredCompletedPlans(completedPlanRecords()).length === 0) return;
+  state.deleteAllDoneModalOpen = true;
+  state.error = '';
+  render();
+}
+
+function closeDeleteAllDoneModal(): void {
+  if (!state.deleteAllDoneModalOpen) return;
+  state.deleteAllDoneModalOpen = false;
+  render();
+}
+
+async function deletePreparedActionWithoutReceipt(action: PreparedAction): Promise<void> {
+  const source = action.workflowSource;
+  if (source === 'cloud') {
+    await cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ note: 'Deleted from Needs Approval inbox.' }),
+    });
+    await refreshCloudWorkspaceData();
+    const receipt = state.cloudCompletedPlans.find((record) => record.actionId === action.id);
+    if (receipt) {
+      await cloudRequest(`/api/completed/${encodeURIComponent(receipt.id)}`, { method: 'DELETE' });
+      state.cloudCompletedPlans = state.cloudCompletedPlans.filter((candidate) => candidate.id !== receipt.id);
+    }
+    return;
+  }
+  if (isBrowserWorkflowId(action.id)) {
+    state.preparedActions = state.preparedActions.filter((candidate) => candidate.id !== action.id);
+    state.materializedActions = state.preparedActions;
+    state.receipts = state.receipts.filter((receipt) => receipt.actionId !== action.id);
+    saveBrowserWorkflowState();
+    return;
+  }
+  if (!state.bridgeActive) {
+    throw new Error('Connect the local bridge before deleting bridge-backed requests.');
+  }
+  await bridgeRequest('/bridge/prepared-actions/delete', {
+    method: 'POST',
+    body: JSON.stringify({ actionId: action.id }),
+  });
+}
+
+async function runDeleteAllInbox(): Promise<void> {
+  state.deleteAllInboxModalOpen = false;
+  const items = filteredPreparedActions().slice();
+  if (items.length === 0) {
+    render();
+    return;
+  }
+  await run('inbox', async () => {
+    let ok = 0;
+    let failed = 0;
+    let touchedBridge = false;
+    for (const action of items) {
+      try {
+        if (action.workflowSource === 'local-bridge') {
+          touchedBridge = true;
+        }
+        await deletePreparedActionWithoutReceipt(action);
+        ok += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    if (touchedBridge) {
+      await refreshInboxData().catch(() => undefined);
+    }
+    pushToast(
+      failed ? 'pending' : 'success',
+      failed ? 'Needs Approval partially cleared' : 'Needs Approval cleared',
+      `${ok} deleted${failed ? `, ${failed} failed` : ''}.`,
+    );
+  });
+}
+
+async function runDeleteAllCheck(): Promise<void> {
+  state.deleteAllCheckModalOpen = false;
+  const items = filterGeneratedPlansByAgentReview(visibleGeneratedPlans(true)).slice();
+  if (items.length === 0) {
+    render();
+    return;
+  }
+  await run('inbox', async () => {
+    let ok = 0;
+    let failed = 0;
+    const removedIds = new Set<string>();
+    for (const record of items) {
+      try {
+        if (record.workflowSource === 'cloud') {
+          await cloudRequest(`/api/plans/${encodeURIComponent(record.id)}`, { method: 'DELETE' });
+        }
+        removedIds.add(record.id);
+        ok += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    if (removedIds.size > 0) {
+      state.generatedPlans = state.generatedPlans.filter((candidate) => !removedIds.has(candidate.id));
+      if (removedIds.has(state.generatedPlanAuditId)) {
+        state.generatedPlanAuditId = '';
+      }
+      if (removedIds.has(state.selectedGeneratedPlanId)) {
+        selectFallbackGeneratedPlan();
+      }
+      saveGeneratedPlans();
+    }
+    pushToast(
+      failed ? 'pending' : 'success',
+      failed ? 'Check partially cleared' : 'Check cleared',
+      `${ok} draft${ok === 1 ? '' : 's'} deleted${failed ? `, ${failed} failed` : ''}.`,
+    );
+  });
+}
+
+async function runDeleteAllRepeats(): Promise<void> {
+  state.deleteAllRepeatsModalOpen = false;
+  const items = filterRecurringPaymentsByAgentReview(activeWorkflowRecurringPayments()).slice();
+  if (items.length === 0) {
+    render();
+    return;
+  }
+  await run('inbox', async () => {
+    let ok = 0;
+    let failed = 0;
+    let touchedCloud = false;
+    let touchedBridge = false;
+    for (const payment of items) {
+      try {
+        const source = recurringPaymentWorkflowSource(payment);
+        if (source === 'browser') {
+          state.recurringPayments = state.recurringPayments.filter((candidate) => candidate.id !== payment.id);
+          state.preparedActions = state.preparedActions.filter((candidate) => (
+            candidate.recurringId !== payment.id || isTerminalPreparedAction(candidate)
+          ));
+          state.materializedActions = state.preparedActions;
+          saveBrowserWorkflowState();
+        } else if (source === 'cloud') {
+          await cloudDeleteRecurring(payment.id);
+          touchedCloud = true;
+        } else {
+          if (!state.bridgeActive) {
+            throw new Error('Connect the local bridge before deleting bridge-backed repeats.');
+          }
+          await bridgeRequest('/bridge/recurring-payments/delete', {
+            method: 'POST',
+            body: JSON.stringify({ recurringId: payment.id }),
+          });
+          touchedBridge = true;
+        }
+        ok += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    if (touchedCloud) {
+      await refreshCloudWorkspaceData().catch(() => undefined);
+    }
+    if (touchedBridge) {
+      await refreshInboxData().catch(() => undefined);
+    }
+    pushToast(
+      failed ? 'pending' : 'success',
+      failed ? 'Repeats partially cleared' : 'Active Repeats cleared',
+      `${ok} repeat${ok === 1 ? '' : 's'} deleted${failed ? `, ${failed} failed` : ''}.`,
+    );
+  });
+}
+
+async function runDeleteAllDone(): Promise<void> {
+  state.deleteAllDoneModalOpen = false;
+  const items = filteredCompletedPlans(completedPlanRecords()).slice();
+  if (items.length === 0) {
+    render();
+    return;
+  }
+  await run('inbox', async () => {
+    let ok = 0;
+    let failed = 0;
+    let touchedCloud = false;
+    let touchedBridge = false;
+    const removedLocalIds = new Set<string>();
+    const removedCloudIds = new Set<string>();
+    const removedGeneratedPlanIds = new Set<string>();
+    for (const record of items) {
+      try {
+        if (
+          record.workflowSource === 'cloud' &&
+          record.kind === 'recurring' &&
+          record.recurringId &&
+          record.id.startsWith('recurring:')
+        ) {
+          await cloudDeleteRecurring(record.recurringId);
+          touchedCloud = true;
+        } else if (record.workflowSource === 'cloud') {
+          await cloudRequest(`/api/completed/${encodeURIComponent(record.id)}`, { method: 'DELETE' });
+          touchedCloud = true;
+          removedCloudIds.add(record.id);
+        } else {
+          if (record.actionId) {
+            if (isBrowserWorkflowId(record.actionId)) {
+              state.preparedActions = state.preparedActions.filter((candidate) => candidate.id !== record.actionId);
+              state.materializedActions = state.preparedActions;
+              state.receipts = state.receipts.filter((receipt) => receipt.actionId !== record.actionId);
+            } else {
+              if (!state.bridgeActive) {
+                throw new Error('Connect the local bridge before deleting bridge-backed Done work.');
+              }
+              await bridgeRequest('/bridge/prepared-actions/delete', {
+                method: 'POST',
+                body: JSON.stringify({ actionId: record.actionId }),
+              });
+              touchedBridge = true;
+            }
+          }
+          if (completedPlanIsEndedSchedule(record) && record.recurringId) {
+            if (record.workflowSource === 'browser' || isBrowserWorkflowId(record.recurringId)) {
+              state.recurringPayments = state.recurringPayments.filter((candidate) => candidate.id !== record.recurringId);
+            } else {
+              if (!state.bridgeActive) {
+                throw new Error('Connect the local bridge before deleting repeat payment history.');
+              }
+              await bridgeRequest('/bridge/recurring-payments/delete', {
+                method: 'POST',
+                body: JSON.stringify({ recurringId: record.recurringId }),
+              });
+              touchedBridge = true;
+            }
+          }
+          if (record.generatedPlanId) {
+            removedGeneratedPlanIds.add(record.generatedPlanId);
+          }
+          removedLocalIds.add(record.id);
+        }
+        ok += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    if (removedLocalIds.size > 0) {
+      state.localCompletedPlans = state.localCompletedPlans.filter((candidate) => !removedLocalIds.has(candidate.id));
+      saveLocalCompletedPlans();
+      saveBrowserWorkflowState();
+    }
+    if (removedCloudIds.size > 0) {
+      state.cloudCompletedPlans = state.cloudCompletedPlans.filter((candidate) => !removedCloudIds.has(candidate.id));
+    }
+    if (removedGeneratedPlanIds.size > 0) {
+      state.generatedPlans = state.generatedPlans.filter((candidate) => !removedGeneratedPlanIds.has(candidate.id));
+      if (removedGeneratedPlanIds.has(state.generatedPlanAuditId)) {
+        state.generatedPlanAuditId = '';
+      }
+      if (removedGeneratedPlanIds.has(state.selectedGeneratedPlanId)) {
+        selectFallbackGeneratedPlan();
+      }
+      saveGeneratedPlans();
+    }
+    if (touchedCloud) {
+      await refreshCloudWorkspaceData().catch(() => undefined);
+    }
+    if (touchedBridge) {
+      await refreshInboxData().catch(() => undefined);
+    }
+    pushToast(
+      failed ? 'pending' : 'success',
+      failed ? 'Done partially cleared' : 'Done cleared',
+      `${ok} item${ok === 1 ? '' : 's'} deleted${failed ? `, ${failed} failed` : ''}.`,
+    );
   });
 }
 
@@ -25421,6 +26192,7 @@ async function runSaveDirectAiKey(): Promise<void> {
     saveCurrentSessionAiApiKey();
     if (state.aiSettings.mode === 'device-agent') {
       await configureDeviceAgentRuntime();
+      saveDeviceAgentStatusCache(state.deviceAgentStatus);
     }
     resetAiPlannerConfirmation('AI draft key saved. Confirm planner before generating if you want a route or config check.');
     appendAiDiagnostic(aiRouteDiagnostic(aiDraftRoutePath('generate-plan')));
@@ -25491,6 +26263,7 @@ async function runConfirmAiPlanner(): Promise<void> {
           await configureDeviceAgentRuntime();
         }
         const status = await startDeviceAgentRuntime();
+        saveDeviceAgentStatusCache(state.deviceAgentStatus);
         if (!status.available || !status.configured) {
           throw new Error(status.message || 'Device Agent runtime is not configured.');
         }
@@ -25552,6 +26325,7 @@ async function runClearAiKey(): Promise<void> {
     }
     if (state.aiSettings.mode === 'device-agent') {
       await clearDeviceAgentRuntimeConfig();
+      saveDeviceAgentStatusCache(state.deviceAgentStatus);
     }
     pushToast('success', 'AI key cleared', aiClearMessage());
   });
@@ -25583,6 +26357,7 @@ async function runRefreshDeviceAgentStatus(): Promise<void> {
 async function runStopDeviceAgentRuntime(): Promise<void> {
   await run('ai', async () => {
     const status = await stopDeviceAgentRuntime();
+    saveDeviceAgentStatusCache(state.deviceAgentStatus);
     pushToast(
       'success',
       'Device Agent stopped',
@@ -25695,6 +26470,9 @@ function setAiPlannerMode(mode: AiSettings['mode']): void {
   if (state.aiSettings.mode === mode) {
     return;
   }
+  if (state.aiSettings.mode === 'device-agent' && mode !== 'device-agent') {
+    clearDeviceAgentStatusCache();
+  }
   saveCurrentSessionAiApiKey();
   state.aiSettings.mode = mode;
   ensureAiProviderAllowedForMode();
@@ -25774,6 +26552,7 @@ async function signOutCloudSession(): Promise<boolean> {
     return false;
   }
   resetCloudWorkspaceState();
+  clearDeviceAgentStatusCache();
   if (activeWorkflowMode() === 'browser-workflow') {
     refreshBrowserWorkflowData();
   }
@@ -27891,7 +28670,6 @@ async function runCloudPreparedActionOp(action: PreparedAction, op: string): Pro
       return;
     }
     case 'archive':
-    case 'delete':
       await cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/cancel`, {
         method: 'POST',
         body: JSON.stringify({ note: 'Cancelled in Agentic Cloud workspace.' }),
@@ -27899,6 +28677,10 @@ async function runCloudPreparedActionOp(action: PreparedAction, op: string): Pro
       await refreshCloudWorkspaceData();
       showCompletedHistoryForAction(action.id);
       pushToast('success', 'Request cancelled', 'Cloud cancellation receipt saved in Done.');
+      return;
+    case 'delete':
+      await deletePreparedActionWithoutReceipt(action);
+      pushToast('success', 'Request deleted', 'Removed from cloud workspace.');
       return;
     default:
       throw new Error(`Unknown action operation: ${op}`);
@@ -31580,7 +32362,20 @@ async function run(
     }
   } finally {
     state.busy = false;
-    render();
+    try {
+      render();
+    } catch (renderErr) {
+      // If render throws on the recovery path (e.g. partial state during an
+      // error), don't let it strand the UI with disabled buttons. state.busy
+      // is already false, so schedule a retry on the next tick so subsequent
+      // user input doesn't see a stuck "busy" DOM.
+      console.error('render() failed in run() finally', renderErr);
+      window.setTimeout(() => {
+        try { render(); } catch (retryErr) {
+          console.error('render() retry failed', retryErr);
+        }
+      }, 0);
+    }
   }
 }
 
@@ -33143,6 +33938,7 @@ async function refreshDeviceAgentStatus(strict: boolean): Promise<DeviceAgentSta
   try {
     const status = await loadDeviceAgentStatus();
     state.deviceAgentStatus = status;
+    saveDeviceAgentStatusCache(status);
     return status;
   } catch (err) {
     const status = unavailableDeviceAgentStatus(err instanceof Error ? err.message : String(err));
@@ -35342,6 +36138,38 @@ function spendTabVisible(): boolean {
   return Boolean(spendTab?.guard());
 }
 
+function workspaceTabSelectMobile(): string {
+  const entries: Array<{ id: ActiveTab; label: string }> = [
+    { id: 'overview', label: 'Home' },
+    { id: 'agent', label: 'New Request' },
+    ...(spendTabVisible() ? [{ id: 'spend' as ActiveTab, label: 'Spend' }] : []),
+    { id: 'schedule', label: 'Repeat Payments' },
+    { id: 'inbox', label: 'Needs Approval' },
+    { id: 'completed', label: 'Done' },
+    ...moreMenuItems().map((item) => ({ id: item.id as ActiveTab, label: item.label })),
+    { id: 'preferences', label: 'Preferences' },
+  ];
+  const options: SelectPickerOption[] = entries.map((entry) => {
+    const locked = lockedTabReason(entry.id);
+    return {
+      value: String(entry.id),
+      label: entry.label,
+      disabled: Boolean(locked),
+      ...(locked ? { title: locked } : {}),
+    };
+  });
+  return `
+    <nav class="workspace-tabs-mobile" aria-label="Workspace navigation" data-layout="app-tabs-mobile">
+      ${selectPicker({
+        id: 'workspaceTabMobile',
+        value: String(state.activeTab),
+        options,
+        className: 'workspace-tab-mobile-picker',
+      })}
+    </nav>
+  `;
+}
+
 const REQUIRED_MORE_SURFACES: Record<string, { label: string; render: () => string }> = {
   'agent-protocols': { label: 'Agent Payments', render: renderAgentProtocolsPanel },
   skills: { label: 'Skills', render: renderSkillsPanel },
@@ -35896,7 +36724,6 @@ function preparedActionCard(action: PreparedAction): string {
         ${inboxApprovalNote(action)}
         ${preparedActionAgentReviewStrip(action)}
         ${agentOverrideStrip(action.agentOverride)}
-        ${finalizationChecklist(action)}
         <div class="inbox-approval-drawers">
           ${inlineReceiptActions(action)}
           ${recordActivityDetails('approval', action.id)}
@@ -35916,7 +36743,7 @@ function preparedActionCard(action: PreparedAction): string {
           ${action.status === 'failed' || action.txError ? `<button class="utility inbox-footer-action" data-debug-export data-action-id="${escapeHtml(action.id)}">Copy debug log</button>` : ''}
           <button class="utility inbox-footer-action" data-action-op="archive" data-action-id="${action.id}" ${state.busy ? 'disabled' : ''} title="Remove from Needs Approval without signing a denial proof.">Archive</button>
           <button class="utility danger inbox-footer-action" data-action-op="reject" data-action-id="${action.id}" ${state.busy || isTerminalPreparedAction(action) ? 'disabled' : ''}>${escapeHtml(decisionLabels.reject)}</button>
-          <button class="utility danger recurring-delete-mini" data-action-op="delete" data-action-id="${action.id}" ${state.busy ? 'disabled' : ''}>Delete</button>
+          <button class="utility danger recurring-delete-mini" data-inbox-delete="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''}>Delete</button>
         </div>
       </div>
     </article>
@@ -37632,46 +38459,6 @@ function cloudExecutionBlockReason(action: PreparedAction): string | null {
     return null;
   }
   return 'This Cloud request type is not executable from this browser yet. Reject this request and recreate it as a browser wallet action.';
-}
-
-function finalizationChecklist(action: PreparedAction): string {
-  if (isAcpOutboundAction(action)) return '';
-  const requiresWalletFinalization = requiresCloudTransactionFinalization(action);
-  if (!requiresWalletFinalization && !action.finalization) return '';
-  const status = action.finalization?.status ?? action.finalizationStatus ?? 'not_started';
-  const rows: Array<{ label: string; complete: boolean; detail: string }> = [
-    {
-      label: 'Constraints locked',
-      complete: true,
-      detail: action.transactionHash ? short(action.transactionHash) : 'Approval parameters are bound to this request.',
-    },
-    {
-      label: 'Quote refreshed',
-      complete: Boolean(action.finalization?.quote || status === 'simulation_passed' || status === 'submitted' || status === 'confirmed'),
-      detail: action.quoteHash ? short(action.quoteHash) : 'Refreshed at final review.',
-    },
-    {
-      label: 'Simulation passed',
-      complete: action.finalization?.simulation?.status === 'ok' || status === 'simulation_passed' || status === 'submitted' || status === 'confirmed',
-      detail: action.simulationHash ? short(action.simulationHash) : 'Required before wallet opens.',
-    },
-    {
-      label: 'Receipt saved',
-      complete: Boolean(action.txid || status === 'confirmed'),
-      detail: action.txid ? short(action.txid) : 'Saved after wallet approval.',
-    },
-  ];
-  return `
-    <div class="finalization-checklist" aria-label="Transaction finalization checklist">
-      ${rows.map((row) => `
-        <div class="${row.complete ? 'complete' : ''}">
-          <span>${row.complete ? 'ok' : ''}</span>
-          <strong>${escapeHtml(row.label)}</strong>
-          <p>${escapeHtml(row.detail)}</p>
-        </div>
-      `).join('')}
-    </div>
-  `;
 }
 
 function actionPreview(action: PreparedAction): string {
@@ -41156,8 +41943,11 @@ async function reconnectBridgeOnStartup(): Promise<void> {
 }
 
 function defaultAiMode(): AiSettings['mode'] {
-  if (IS_ANDROID_APP) return 'session';
-  return isLocalBrowserOrigin() ? 'bridge' : 'hosted';
+  return defaultAiModeForSurface({
+    isAndroidApp: IS_ANDROID_APP,
+    androidDeviceAgentRuntimeEnabled: ANDROID_DEVICE_AGENT_ENABLED,
+    isLocalBrowserOrigin: isLocalBrowserOrigin(),
+  }) as AiSettings['mode'];
 }
 
 function persistedAiSettings(persistedState: PersistedState): Omit<AiSettings, 'apiKey'> {

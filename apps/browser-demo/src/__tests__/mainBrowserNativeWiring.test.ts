@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   browserNativeProviderTierForProvider,
   chooseDeviceAgentRequestRoute,
+  defaultAiModeForSurface,
   defaultDeviceAgentRuntimeForSurface,
   deviceAgentModeVisibleForSurface,
 } from '../deviceAgentWiring.js';
@@ -107,6 +108,32 @@ describe('Phase 6 browser-native Device Agent wiring helpers', () => {
     })).toBe(true);
   });
 
+  it('shows Device Agent mode inside Android when the native runtime is enabled without requiring wallet allowlist membership', () => {
+    expect(deviceAgentModeVisibleForSurface({
+      deviceAgentEnabled: true,
+      androidDeviceAgentEnabled: true,
+      browserDeviceAgentEnabled: false,
+      showDevControls: false,
+      isAndroidApp: true,
+      androidDeviceAgentRuntimeEnabled: true,
+      walletIsDeviceAgentAllowlisted: false,
+      browserNativeEligible: false,
+    })).toBe(true);
+  });
+
+  it('keeps Device Agent hidden inside Android when the native runtime is explicitly disabled', () => {
+    expect(deviceAgentModeVisibleForSurface({
+      deviceAgentEnabled: false,
+      androidDeviceAgentEnabled: false,
+      browserDeviceAgentEnabled: false,
+      showDevControls: false,
+      isAndroidApp: true,
+      androidDeviceAgentRuntimeEnabled: false,
+      walletIsDeviceAgentAllowlisted: true,
+      browserNativeEligible: false,
+    })).toBe(false);
+  });
+
   it('shows Device Agent mode when dev controls expose the browser-native runtime', () => {
     expect(deviceAgentModeVisibleForSurface({
       deviceAgentEnabled: true,
@@ -118,6 +145,35 @@ describe('Phase 6 browser-native Device Agent wiring helpers', () => {
       walletIsDeviceAgentAllowlisted: false,
       browserNativeEligible: true,
     })).toBe(true);
+  });
+
+  it('defaults Android app AI mode to Device Agent when the native runtime is enabled', () => {
+    expect(defaultAiModeForSurface({
+      isAndroidApp: true,
+      androidDeviceAgentRuntimeEnabled: true,
+      isLocalBrowserOrigin: false,
+    })).toBe('device-agent');
+  });
+
+  it('defaults Android app AI mode to Android Session when the native runtime is explicitly disabled', () => {
+    expect(defaultAiModeForSurface({
+      isAndroidApp: true,
+      androidDeviceAgentRuntimeEnabled: false,
+      isLocalBrowserOrigin: false,
+    })).toBe('session');
+  });
+
+  it('keeps non-Android default AI mode behavior unchanged', () => {
+    expect(defaultAiModeForSurface({
+      isAndroidApp: false,
+      androidDeviceAgentRuntimeEnabled: true,
+      isLocalBrowserOrigin: true,
+    })).toBe('bridge');
+    expect(defaultAiModeForSurface({
+      isAndroidApp: false,
+      androidDeviceAgentRuntimeEnabled: true,
+      isLocalBrowserOrigin: false,
+    })).toBe('hosted');
   });
 
   it('labels browser-native providers by direct-browser support tier', () => {

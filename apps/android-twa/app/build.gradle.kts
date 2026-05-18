@@ -93,7 +93,7 @@ val deviceAgentInput = providers.gradleProperty("agenticDeviceAgent").orNull
 val deviceAgentEnabled = booleanFlag(
     deviceAgentInput,
     "AGENTIC_ANDROID_DEVICE_AGENT",
-    false,
+    true,
 )
 val streamingSignerInput = providers.gradleProperty("agenticStreamingSigner").orNull
     ?: providers.gradleProperty("AGENTIC_ANDROID_STREAMING_SIGNER").orNull

@@ -127,30 +127,30 @@ APK testing against a laptop bridge, set it explicitly. The app still accepts on
 `.local` bridge hosts for cleartext HTTP bridge traffic.
 
 Android users can use the app planner without an AI key through templates. If they want AI planning without a
-desktop bridge, the bundled app defaults to Android session BYOK with browser-compatible providers such as OpenRouter
-or custom gateways. Hosted BYOK is available after signing in to Agentic Cloud with the connected wallet; the API key
-is relayed only for that request and is not synced. Desktop local bridge AI remains an advanced opt-in path. See
-`docs/ai-byok.md`.
+desktop bridge, the bundled app defaults to Device Agent BYOK so provider calls run through the Android-native runtime.
+Android session BYOK, Hosted BYOK, and Desktop local bridge AI remain available as alternate paths. Hosted BYOK is
+available after signing in to Agentic Cloud with the connected wallet; the API key is relayed only for that request and
+is not synced. See `docs/ai-byok.md`.
 
-Device Agent is available only in builds created with the explicit dev gate:
+Device Agent is enabled by default for Android app builds:
 
 ```sh
-pnpm android:build -- -PagenticDeviceAgent=true
-pnpm android:install -- -PagenticDeviceAgent=true
+pnpm android:build
+pnpm android:install
 ```
 
-That flag sets `AGENTIC_ANDROID_DEVICE_AGENT`, exposes the fourth AI path inside the bundled web app, enables the
-foreground runtime service, and stores runtime config in encrypted Android Keystore-backed storage. It does
+The default sets `AGENTIC_ANDROID_DEVICE_AGENT`, exposes the Device Agent AI path inside the bundled web app, enables
+the foreground runtime service, and stores runtime config in encrypted Android Keystore-backed storage. It does
 not route through the desktop/LAN bridge or store Device Agent provider keys on Render. Device Agent is a draft path
 only: it cannot approve, sign, submit, or move funds, and the wallet user still approves every transaction through the
 normal flow.
 
-Before treating an enabled APK as Device Agent release-ready, run the Device Agent smoke and verify the native Android
+Before treating an APK as Device Agent release-ready, run the Device Agent smoke and verify the native Android
 bridge routes `generatePlan`, `reviewPlan`, and `ask` through the runtime queue. Any source-check failure or native
 generation failure blocks Device Agent release readiness.
 
-Public release APK/AAB builds must leave `agenticDeviceAgent=true` unset unless a release owner explicitly approves an
-enabled Device Agent build. When the flag is unset, the bundled web app keeps the Device Agent AI path hidden.
+To build an opt-out APK for regression testing or emergency rollback, pass `-PagenticDeviceAgent=false`. In that build,
+the bundled web app keeps the Device Agent AI path hidden and native Device Agent calls report unavailable.
 
 MWA authorization records and Android cloud bearer sessions are stored in app-private encrypted storage backed by
 Android Keystore. Upgraded installs migrate the older plaintext MWA cache on first read, delete the plaintext file after

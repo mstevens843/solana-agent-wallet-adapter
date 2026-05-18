@@ -15,7 +15,7 @@ and no two paths share storage, surface, or fallback semantics.
 - **Hosted BYOK:** default for the deployed web app and available in the bundled Android app after Agentic Cloud
   sign-in. The user enters a provider key in the client, the Agentic web server relays one AI request to the selected
   provider, and the key is not stored or logged.
-- **Session BYOK:** fallback for Android and browser-only users who do not want Cloud relay. The key is held in browser
+- **Session BYOK:** fallback for Android and browser-only users who do not want Cloud relay or Device Agent. The key is held in browser
   memory for the current session and is forgotten on refresh or close. Raw OpenAI keys should not use this path because
   OpenAI does not allow exposing API keys in browser/mobile clients.
 - **Device Agent BYOK — Browser-native:** gated browser-native development path. The key stays on the user's device,
@@ -23,7 +23,7 @@ and no two paths share storage, surface, or fallback semantics.
   when the user picks Session-only mode. Render never sees the key. Browser-grade storage is not Keystore-grade and is
   disclosed as such. Available providers are OpenRouter and Gemini (designed for browser CORS), OpenAI and Anthropic
   (vendor-flagged direct-from-browser), and custom OpenAI-compatible gateways.
-- **Device Agent BYOK — Android-native:** gated Android-native development path for Seeker/on-device runtime work. The
+- **Device Agent BYOK — Android-native:** default Android-native path for Seeker/on-device runtime work. The
   bundled Android shell runs provider calls inside the app and stores runtime config in Android Keystore-backed
   encrypted storage. When both Device Agent bridges are present in the same WebView, Android-native always wins.
 
@@ -32,8 +32,8 @@ run a Device Agent worker and never stores Device Agent provider keys.
 
 ## Device Agent Env
 
-Device Agent is hidden unless an explicit dev gate is enabled. The Android-native and browser-native runtimes have
-independent gates and do not enable each other.
+Device Agent remains gated on browser and Render surfaces. Android-native Device Agent is enabled by default in Android
+app builds and can be explicitly disabled with `-PagenticDeviceAgent=false`.
 
 ### Browser-native Device Agent
 
@@ -50,22 +50,24 @@ Render reports browser-native availability on `/api/device-agent/status` only wh
 ### Android-native Device Agent
 
 ```sh
-pnpm android:build -- -PagenticDeviceAgent=true
-pnpm android:install -- -PagenticDeviceAgent=true
+pnpm android:build
+pnpm android:install
 ```
 
 ### Public builds
 
-Leave all Device Agent gates unset for public production builds unless a release owner explicitly approves shipping a
-Device Agent runtime. Device Agent is a draft path only: it cannot approve, sign, submit, or move funds, and the wallet
-user still reviews every transaction through the normal approval flow.
+Leave browser and Render Device Agent gates unset for public production builds unless a release owner explicitly
+approves those surfaces. Android app builds include the Android-native Device Agent by default; use
+`-PagenticDeviceAgent=false` for opt-out regression or rollback builds. Device Agent is a draft path only: it cannot
+approve, sign, submit, or move funds, and the wallet user still reviews every transaction through the normal approval
+flow.
 
 ## Device Agent Runtime Matrix
 
 | Surface | Status | Provider calls | Key/config boundary |
 |---|---|---|---|
-| Android default build | Hidden | None | No Device Agent config accepted |
-| Android `agenticDeviceAgent=true` build | Native status/config/start/stop enabled | `generatePlan`, `reviewPlan`, and `ask` route through the Android runtime queue | Android Keystore-backed encrypted app storage |
+| Android default build | Native status/config/start/stop enabled | `generatePlan`, `reviewPlan`, and `ask` route through the Android runtime queue | Android Keystore-backed encrypted app storage |
+| Android `agenticDeviceAgent=false` build | Hidden | None | No Device Agent config accepted |
 | Browser default build | Hidden | None | No Device Agent config accepted |
 | Browser `VITE_AGENTIC_BROWSER_DEVICE_AGENT=1` build | Browser-native status/config/start/stop enabled for allowlisted wallets | `generatePlan`, `reviewPlan`, and `ask` route through the in-tab `fetch` + WebCrypto pipeline | Encrypted IndexedDB by default; Session-only tab memory when the user selects it |
 | Render with both Device Agent gates | Allowlisted status/control only | None | Non-secret status/config only; never store provider keys |

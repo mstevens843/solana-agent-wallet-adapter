@@ -16,7 +16,7 @@ const REQUIRED_WALLETS = [
 
 const REQUIRED_SCENARIO_IDS = [
   'android-enabled-seeker-draft',
-  'android-disabled-hidden',
+  'android-opt-out-hidden',
   'render-allowlist-wallet-a',
   'render-allowlist-wallet-b',
   'render-denylist-wallet',
@@ -37,10 +37,10 @@ const SURFACES = new Set([
 
 const REQUIRED_DOC_PHRASES = [
   '# Android Device Agent Smoke',
-  'pnpm android:build -- -PagenticDeviceAgent=true',
-  'pnpm android:install -- -PagenticDeviceAgent=true',
   'pnpm android:build',
   'pnpm android:install',
+  'pnpm android:build -- -PagenticDeviceAgent=false',
+  'pnpm android:install -- -PagenticDeviceAgent=false',
   'AGENTIC_DEVICE_AGENT=1',
   'VITE_AGENTIC_DEVICE_AGENT=1',
   'Device Agent AI',
@@ -362,8 +362,8 @@ async function evaluateScenario(scenario, file) {
   assertions += assertHasBoundaryPhrase(errors, text);
 
   if (scenario.surface === 'android-enabled') {
-    assertions += assertIncludes(errors, commandText, 'pnpm android:build -- -PagenticDeviceAgent=true', 'enabled Android build command');
-    assertions += assertIncludes(errors, commandText, 'pnpm android:install -- -PagenticDeviceAgent=true', 'enabled Android install command');
+    assertions += assertIncludes(errors, commandText, 'pnpm android:build', 'standard Android build command');
+    assertions += assertIncludes(errors, commandText, 'pnpm android:install', 'standard Android install command');
     for (const label of ['Device Agent AI', 'Device Agent key', 'Use key for drafts', 'Confirm planner', 'Draft with AI', 'Needs Approval', 'Approve']) {
       assertions += assertIncludes(errors, labelText, label, `enabled Android UI label ${label}`);
     }
@@ -373,7 +373,8 @@ async function evaluateScenario(scenario, file) {
   }
 
   if (scenario.surface === 'android-disabled') {
-    assertions += assertIncludes(errors, commandText, 'pnpm android:build', 'disabled Android build command');
+    assertions += assertIncludes(errors, commandText, 'pnpm android:build -- -PagenticDeviceAgent=false', 'opt-out Android build command');
+    assertions += assertIncludes(errors, commandText, 'pnpm android:install -- -PagenticDeviceAgent=false', 'opt-out Android install command');
     assertions += assertIncludes(errors, failureText, 'Device Agent is not enabled for this build or wallet.', 'disabled failure state');
     assertions += assertIncludes(errors, failureText, 'Device Agent AI is hidden.', 'disabled hidden UI state');
   }

@@ -6,23 +6,23 @@ and the public boundary in [ai-byok.md](../ai-byok.md).
 
 ## Summary
 
-- Implementation status: **READY for gated release as of 2026-05-15.**
+- Implementation status: **READY for Android app use as of 2026-05-18.**
 - Use case ("Turn the Seeker Android app into its own AI runtime") is achievable end-to-end on
-  an enabled build: pick Device Agent → enter provider/model/key → key stored encrypted in
+  the standard Android build: pick Device Agent → enter provider/model/key → key stored encrypted in
   Android Keystore → app drafts/reviews/asks through the on-device runtime → output routes through
   the standard Needs Approval queue → wallet still approves through MWA.
 - Device Agent has no autonomous wallet authority. It cannot approve, sign, submit, or move funds.
 - Render remains status/control-only. Render never stores provider keys and never runs provider
   calls for Device Agent.
-- Public production builds keep Device Agent **off** by default. Flipping any of the gates requires
-  explicit release-owner approval per [release.md](release.md).
+- Android app builds enable Device Agent by default. Browser and Render Device Agent surfaces remain gated.
+  Android opt-out builds can pass `-PagenticDeviceAgent=false`.
 
 ## Env / build matrix
 
 | Surface | Default | Enabled flag(s) | Effect |
 |---|---|---|---|
 | Browser (Vite) | hidden | `VITE_AGENTIC_DEVICE_AGENT=1`, `VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=...` | Reveals Device Agent in the AI mode dropdown and Connect AI card |
-| Android (Gradle) | hidden | `-PagenticDeviceAgent=true` (or `agenticDeviceAgent=true` in `gradle.properties`) | Sets `BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT=true`, enables `AgentRuntimeService`, passes `VITE_AGENTIC_DEVICE_AGENT=1` into the bundled WebView |
+| Android (Gradle) | visible/enabled | Opt out with `-PagenticDeviceAgent=false` | Sets `BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT=true`, enables `AgentRuntimeService`, passes `VITE_AGENTIC_DEVICE_AGENT=1` into the bundled WebView |
 | Render (runtime) | hidden | `AGENTIC_DEVICE_AGENT=1`, `AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=...` | Status/control endpoints respond for allowlisted wallets; no provider calls |
 
 Allowlisted wallets (defaults — overridable):
@@ -69,7 +69,7 @@ fixed and locked in by test coverage so they cannot silently regress.
    "deny". Added the manifest declaration. The runtime grant prompt is intentionally
    deferred — when the user denies notifications the service still runs as a foreground
    service; only the visible notification is suppressed, which is acceptable OEM behavior.
-   Verified via `aapt2 dump permissions` on the enabled APK.
+   Verified via `aapt2 dump permissions` on the standard Android APK.
 
 3. **OpenAI provider omitted `max_tokens`.**
    `apps/android-twa/app/src/main/java/com/agentic/wallet/agent/provider/OpenAiCompatibleProvider.kt` —
@@ -99,7 +99,7 @@ fixed and locked in by test coverage so they cannot silently regress.
 | `pnpm exec tsc -p tsconfig.json --noEmit` (render-web) | clean |
 | `pnpm exec vitest run src/__tests__/{devGate,server}.test.ts` (render-web) | PASS 50/50 |
 | `node scripts/android-device-agent-smoke.mjs` | PASS 8/8 |
-| `pnpm android:build -- -PagenticDeviceAgent=true` | success |
+| `pnpm android:build` | success |
 | `aapt2 dump permissions ...app-debug.apk` | `android.permission.POST_NOTIFICATIONS` present alongside `INTERNET`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_DATA_SYNC` |
 
 ### Findings confirmed as false-positives during the sweep (no change required)
@@ -148,8 +148,8 @@ Run on 2026-05-15 from `master @ a22b79a` plus the polish pass above.
 | `pnpm -F @solana-agent-wallet-adapter/render-web typecheck` | PASS | Strict tsc clean |
 | `pnpm exec vitest run src/__tests__/devGate.test.ts src/__tests__/server.test.ts` (render-web) | PASS 50/50 | Device Agent gate + endpoint tests pass; both allowlisted wallets verified |
 | `node scripts/android-device-agent-smoke.mjs` | PASS 8/8 | All deterministic source-completion checks; report at `build/android-device-agent-smoke/report.json` |
-| `pnpm android:build` | PASS | Disabled APK at `apps/android-twa/app/build/outputs/apk/debug/app-debug.apk`; `AgentRuntimeService enabled=false` verified via `aapt2 dump xmltree` |
-| `pnpm android:build -- -PagenticDeviceAgent=true` | PASS | Enabled APK; `AgentRuntimeService enabled=true` verified via `aapt2 dump xmltree` |
+| `pnpm android:build` | PASS | Standard APK; `AgentRuntimeService enabled=true` verified via `aapt2 dump xmltree` |
+| `pnpm android:build -- -PagenticDeviceAgent=false` | PASS | Opt-out APK; `BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT=false` and Device Agent UI hidden |
 
 ### Pre-existing test failures (NOT caused by Device Agent work)
 
@@ -166,11 +166,11 @@ start-server did not surface the device — likely USB Debugging not authorized 
 cable). The build steps above ran clean, but the live install/walkthrough is **pending a
 working ADB connection**. Once the device authorizes, run the checklist below.
 
-### Disabled build install (hidden path)
+### Opt-Out Build Install (Hidden Path)
 
 ```sh
-pnpm android:build
-pnpm android:install
+pnpm android:build -- -PagenticDeviceAgent=false
+pnpm android:install -- -PagenticDeviceAgent=false
 ```
 
 Expected:
@@ -179,16 +179,16 @@ Expected:
 - AI mode dropdown shows **only** Hosted BYOK / Android session / Local bridge — no Device Agent.
 - No "Agentic Device Agent" persistent notification appears.
 
-### Enabled build install (full path)
+### Standard Build Install (Full Path)
 
 ```sh
-pnpm android:build -- -PagenticDeviceAgent=true
-pnpm android:install -- -PagenticDeviceAgent=true
+pnpm android:build
+pnpm android:install
 ```
 
 Expected:
 
-1. AI mode dropdown shows **Device Agent — drafts via device** as a 4th path.
+1. AI mode dropdown shows **Device Agent — drafts via device** before Android session.
 2. Picking Device Agent reveals the same provider / model / API key form used by Hosted BYOK.
 3. Device Agent connection card shows the inline notification disclosure while the runtime is
    stopped: *"Confirming the planner starts the on-device runtime and shows a persistent Android
@@ -252,11 +252,10 @@ endpoints exist. `RenderDeviceAgentSession` has no `apiKey` field.
 
 ## Public release guardrail
 
-- Default web, Render, and Android APK builds keep Device Agent disabled. Verified above:
-  disabled APK has `AgentRuntimeService enabled=false`.
-- Do **not** set `VITE_AGENTIC_DEVICE_AGENT=1`, `AGENTIC_DEVICE_AGENT=1`, or build Android with
-  `-PagenticDeviceAgent=true` for a public production release unless the release owner has
-  explicitly approved it. Document the approval in the release notes.
+- Default web and Render builds keep Device Agent disabled; Android APK builds keep Device Agent enabled.
+- Do **not** set `VITE_AGENTIC_DEVICE_AGENT=1` or `AGENTIC_DEVICE_AGENT=1` for a public production web/Render
+  release unless the release owner has explicitly approved it. Android rollback builds can pass
+  `-PagenticDeviceAgent=false`.
 - If an approved Device Agent build ships:
   - Run the manual checklist above against a Seeker and confirm all expected outcomes.
   - Re-run `node scripts/android-device-agent-smoke.mjs` — must remain 8/8.

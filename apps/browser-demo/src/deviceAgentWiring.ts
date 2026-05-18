@@ -9,6 +9,7 @@ export interface DeviceAgentRuntimeSurface {
 }
 
 export type DeviceAgentRequestRoute = 'android-native' | 'browser-native' | 'none';
+export type AiModeSurfaceDefault = 'hosted' | 'session' | 'bridge' | 'device-agent';
 
 export function canUseDeviceAgentBrowserNative(surface: Pick<
   DeviceAgentRuntimeSurface,
@@ -57,6 +58,17 @@ export function deviceAgentModeVisibleForSurface(surface: DeviceAgentVisibilityS
   if (surface.isAndroidApp && surface.androidDeviceAgentRuntimeEnabled) return true;
   if (surface.browserNativeEligible) return true;
   return legacyDeviceAgentEnabled && surface.walletIsDeviceAgentAllowlisted;
+}
+
+export function defaultAiModeForSurface(surface: {
+  isAndroidApp: boolean;
+  androidDeviceAgentRuntimeEnabled: boolean;
+  isLocalBrowserOrigin: boolean;
+}): AiModeSurfaceDefault {
+  if (surface.isAndroidApp) {
+    return surface.androidDeviceAgentRuntimeEnabled ? 'device-agent' : 'session';
+  }
+  return surface.isLocalBrowserOrigin ? 'bridge' : 'hosted';
 }
 
 export interface BrowserNativeProviderTier {

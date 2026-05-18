@@ -4,12 +4,12 @@
   "scenarios": [
     {
       "id": "android-enabled-seeker-draft",
-      "title": "Enabled Android build can expose Device Agent and must not bypass wallet approval",
+      "title": "Standard Android build exposes Device Agent and must not bypass wallet approval",
       "surface": "android-enabled",
       "commands": [
-        "pnpm android:build -- -PagenticDeviceAgent=true",
+        "pnpm android:build",
         "adb devices",
-        "pnpm android:install -- -PagenticDeviceAgent=true"
+        "pnpm android:install"
       ],
       "requiredUiLabels": [
         "Connect AI",
@@ -30,7 +30,7 @@
       ],
       "steps": [
         {
-          "action": "Build and install the enabled APK on Seeker or an Android test device.",
+          "action": "Build and install the standard APK on Seeker or an Android test device.",
           "expect": "The app launches with deviceAgentEnabled=true and exposes Device Agent AI."
         },
         {
@@ -152,12 +152,12 @@
       ]
     },
     {
-      "id": "android-disabled-hidden",
-      "title": "Default Android build hides Device Agent",
+      "id": "android-opt-out-hidden",
+      "title": "Explicit opt-out Android build hides Device Agent",
       "surface": "android-disabled",
       "commands": [
-        "pnpm android:build",
-        "pnpm android:install"
+        "pnpm android:build -- -PagenticDeviceAgent=false",
+        "pnpm android:install -- -PagenticDeviceAgent=false"
       ],
       "requiredUiLabels": [
         "Connect AI",
@@ -167,7 +167,7 @@
       ],
       "steps": [
         {
-          "action": "Install the default APK without -PagenticDeviceAgent=true.",
+          "action": "Install an APK built with -PagenticDeviceAgent=false.",
           "expect": "Connect AI renders normal AI routes without Device Agent AI."
         },
         {
@@ -185,12 +185,12 @@
         "Device Agent - drafts via device is hidden."
       ],
       "forbiddenOutcomes": [
-        "Default Android build showed Device Agent AI",
-        "Default Android build started the Agentic Device Agent foreground service",
-        "Default Android build accepted a Device Agent key"
+        "Opt-out Android build showed Device Agent AI",
+        "Opt-out Android build started the Agentic Device Agent foreground service",
+        "Opt-out Android build accepted a Device Agent key"
       ],
       "acceptance": [
-        "Default Android builds hide Device Agent.",
+        "Opt-out Android builds hide Device Agent.",
         "Hosted BYOK, Android Session, and Local Bridge remain available.",
         "Device Agent drafts only. It cannot approve, sign, submit, or move funds."
       ]

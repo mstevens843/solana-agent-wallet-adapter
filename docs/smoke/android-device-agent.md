@@ -1,6 +1,6 @@
 # Android Device Agent Smoke
 
-This smoke verifies the gated Android-native Device Agent drafting path for Seeker and Android test devices after the
+This smoke verifies the Android-native Device Agent drafting path for Seeker and Android test devices after the
 runtime, bridge, provider, browser client, and integration phases have landed. Device Agent drafts only. It cannot
 approve, sign, submit, or move funds. Every generated transfer must still move through Needs Approval and the installed
 wallet approval flow.
@@ -17,14 +17,15 @@ wallet approval flow.
 Never paste a wallet seed phrase, private key, recovery phrase, unrestricted credential, or production-only key into an
 AI prompt, Device Agent field, bridge process, Render env, or support log.
 
-## Enabled Android Or Seeker Build
+## Standard Android Or Seeker Build
 
-Build and install the enabled APK:
+Build and install the standard APK. Device Agent is enabled by default for Android app builds; use
+`-PagenticDeviceAgent=false` only for the opt-out regression below.
 
 ```sh
-pnpm android:build -- -PagenticDeviceAgent=true
+pnpm android:build
 adb devices
-pnpm android:install -- -PagenticDeviceAgent=true
+pnpm android:install
 ```
 
 Expected install state:
@@ -88,17 +89,17 @@ Why is wallet approval still required?
     - The wallet, not Device Agent, signs the transaction.
     - Done/proof history records the completed approval.
 
-Fail the enabled Android smoke if any Device Agent generation path returns `agent_not_implemented`,
+Fail the standard Android smoke if any Device Agent generation path returns `agent_not_implemented`,
 `Device Agent generation arrives in a later phase.`, or `Device Agent provider execution for generatePlan is not wired in
 this build.` Those are incomplete integration states, not acceptable second-iteration outcomes.
 
-## Disabled Android Build
+## Opt-Out Android Build
 
-Build and install the default disabled APK:
+Build and install an APK with Device Agent explicitly disabled:
 
 ```sh
-pnpm android:build
-pnpm android:install
+pnpm android:build -- -PagenticDeviceAgent=false
+pnpm android:install -- -PagenticDeviceAgent=false
 ```
 
 Expected state:
@@ -211,9 +212,9 @@ Expected:
 
 ## Pass Criteria
 
-- Default Android builds hide Device Agent.
-- Enabled Android builds can expose and configure `Device Agent AI`.
-- Enabled Android builds can draft/review/ask through the Android-native runtime.
+- Standard Android builds expose and configure `Device Agent AI`.
+- Standard Android builds can draft/review/ask through the Android-native runtime.
+- Opt-out Android builds hide Device Agent.
 - Source-completion tripwires fail if native generation regresses to stubbed or scaffold-only behavior.
 - Render shows Device Agent only to allowlisted wallets and reports status/control only.
 - Local Bridge remains a separate LAN/local runtime path.

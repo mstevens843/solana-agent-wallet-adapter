@@ -169,13 +169,13 @@ Expected state:
 When both flags are on and the page is loaded inside the Android TWA (or any WebView that injects the
 `AgenticAndroid.deviceAgentRequest` bridge), Android-native must win.
 
-Build and install the enabled Android APK with the browser flag also set:
+Build and install the standard Android APK with the browser flag also set:
 
 ```sh
 VITE_AGENTIC_DEVICE_AGENT=1 \
 VITE_AGENTIC_BROWSER_DEVICE_AGENT=1 \
-pnpm android:build -- -PagenticDeviceAgent=true
-pnpm android:install -- -PagenticDeviceAgent=true
+pnpm android:build
+pnpm android:install
 ```
 
 Expected state inside the TWA:
