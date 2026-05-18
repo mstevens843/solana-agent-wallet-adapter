@@ -8975,9 +8975,10 @@ button.danger:hover:not(:disabled) {
 }
 
 .recurring-control-row .recurring-connector-control {
-  flex: 0 1 320px;
+  flex: 0 1 260px;
   max-width: 100%;
-  width: 320px;
+  min-width: 196px;
+  width: 260px;
 }
 
 .recurring-control-row .recurring-connector-control .select-picker-shell {
@@ -16861,7 +16862,7 @@ button.danger:hover:not(:disabled) {
 }
 
 .route-app .recurring-control-row.has-connector {
-  grid-template-columns: auto minmax(196px, 400px) minmax(0, 1fr);
+  grid-template-columns: auto minmax(196px, 260px) minmax(0, 1fr);
 }
 
 .route-app .recurring-method-control,
@@ -16869,7 +16870,7 @@ button.danger:hover:not(:disabled) {
   justify-self: end;
   margin-left: auto;
   max-width: 100%;
-  width: min(100%, 390px);
+  width: max-content;
 }
 
 .route-app .recurring-method-control,
@@ -16877,7 +16878,7 @@ button.danger:hover:not(:disabled) {
   align-items: center;
   display: grid;
   gap: 10px;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto max-content;
   min-width: 0;
 }
 
@@ -16885,8 +16886,8 @@ button.danger:hover:not(:disabled) {
 .route-app .recurring-method-control .select-picker-trigger,
 .route-app .recurring-connector-action-control .select-picker-shell,
 .route-app .recurring-connector-action-control .select-picker-trigger {
-  min-width: 0;
-  width: 100%;
+  min-width: 132px;
+  width: auto;
 }
 
 .route-app .recurring-method-control .template-picker-current,
@@ -23013,6 +23014,12 @@ button.danger:hover:not(:disabled) {
   min-width: 0;
 }
 
+.preferences-mobile-picker {
+  display: none;
+  min-width: 0;
+  position: relative;
+}
+
 .preferences-subtabs button {
   align-items: start;
   background:
@@ -23067,6 +23074,122 @@ button.danger:hover:not(:disabled) {
 }
 
 .preferences-subtabs button.active em {
+  color: rgba(218, 245, 229, 0.82);
+}
+
+.preferences-mobile-picker-trigger {
+  align-items: center;
+  background:
+    linear-gradient(180deg, rgba(31, 36, 34, 0.88), rgba(18, 22, 21, 0.96)),
+    rgba(17, 21, 20, 0.96);
+  border: 1px solid rgba(125, 231, 176, 0.2);
+  border-radius: 8px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+  min-height: 58px;
+  padding: 10px 12px;
+}
+
+.preferences-mobile-picker.open .preferences-mobile-picker-trigger,
+.preferences-mobile-picker-trigger:hover:not(:disabled) {
+  background:
+    linear-gradient(180deg, rgba(21, 60, 43, 0.36), rgba(17, 28, 24, 0.94)),
+    rgba(17, 21, 20, 0.96);
+  border-color: rgba(125, 231, 176, 0.32);
+  box-shadow:
+    0 0 0 1px rgba(63, 189, 131, 0.08),
+    0 12px 26px rgba(0, 0, 0, 0.24);
+}
+
+.preferences-mobile-picker-current {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.preferences-mobile-picker-current strong {
+  color: #f4fff8;
+  font-size: 0.98rem;
+  font-weight: 900;
+  line-height: 1.16;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.preferences-mobile-picker-current em {
+  color: rgba(196, 205, 202, 0.76);
+  font-size: 0.78rem;
+  font-style: normal;
+  font-weight: 780;
+  line-height: 1.2;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.preferences-mobile-picker-menu {
+  background:
+    linear-gradient(180deg, rgba(17, 22, 20, 0.98), rgba(8, 12, 11, 0.99)),
+    rgba(10, 14, 13, 0.98);
+  border: 1px solid rgba(125, 231, 176, 0.2);
+  border-radius: 8px;
+  padding: 6px;
+  z-index: 160;
+}
+
+.preferences-mobile-picker-option {
+  background:
+    linear-gradient(180deg, rgba(31, 36, 34, 0.68), rgba(18, 22, 21, 0.9)),
+    rgba(17, 21, 20, 0.9);
+  border: 1px solid rgba(224, 230, 226, 0.08);
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  min-height: 58px;
+  padding: 10px 11px;
+}
+
+.preferences-mobile-picker-option strong {
+  color: var(--text);
+  font-size: 0.94rem;
+  font-weight: 900;
+  line-height: 1.18;
+}
+
+.preferences-mobile-picker-option em {
+  color: rgba(196, 205, 202, 0.74);
+  font-size: 0.76rem;
+  font-style: normal;
+  font-weight: 780;
+  line-height: 1.22;
+  max-width: none;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.preferences-mobile-picker-option:hover,
+.preferences-mobile-picker-option:focus-visible,
+.preferences-mobile-picker-option.active {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.026)),
+    rgba(17, 21, 20, 0.94);
+  border-color: rgba(224, 230, 226, 0.16);
+  box-shadow: none;
+  transform: none;
+}
+
+.preferences-mobile-picker-option.selected {
+  background:
+    linear-gradient(180deg, rgba(21, 60, 43, 0.42), rgba(17, 28, 24, 0.94)),
+    rgba(17, 21, 20, 0.94);
+  border-color: rgba(125, 231, 176, 0.34);
+}
+
+.preferences-mobile-picker-option.selected strong {
+  color: #dcffe9;
+}
+
+.preferences-mobile-picker-option.selected em {
   color: rgba(218, 245, 229, 0.82);
 }
 
@@ -23643,6 +23766,207 @@ button.danger:hover:not(:disabled) {
     justify-self: start;
     text-align: left;
   }
+}
+
+@media (max-width: 899px) {
+  .route-app .preferences-page {
+    gap: 10px;
+    width: 100%;
+  }
+
+  .route-app .preferences-page-head,
+  .route-app .preferences-storage-policy,
+  .route-app .preferences-subtabs {
+    display: none;
+  }
+
+  .route-app .preferences-mobile-picker {
+    display: block;
+    width: 100%;
+  }
+
+  .route-app .preferences-page .preferences-group {
+    border-radius: 10px;
+    gap: 10px;
+    overflow: visible;
+    padding: 10px;
+  }
+
+  .route-app .preferences-page .preferences-group-head {
+    display: none;
+  }
+
+  .route-app .preferences-page .preferences-view,
+  .route-app .preferences-page .preferences-group-stack,
+  .route-app .preferences-page .preferences-card-grid {
+    gap: 10px;
+  }
+
+  .route-app .preferences-page .workspace-backup-panel,
+  .route-app .preferences-page .notification-prefs-panel,
+  .route-app .preferences-page .ai-review-preferences-card,
+  .route-app .preferences-page .rail-details,
+  .route-app .preferences-page .safety-rails-section,
+  .route-app .preferences-page .failure-policy-row {
+    border-radius: 8px;
+    overflow: visible;
+  }
+
+  .route-app .preferences-page .workspace-backup-panel,
+  .route-app .preferences-page .notification-prefs-panel,
+  .route-app .preferences-page .ai-review-preferences-card {
+    padding: 10px;
+  }
+
+  .route-app .preferences-page .workspace-backup-header,
+  .route-app .preferences-page .notification-prefs-head,
+  .route-app .preferences-page .ai-review-preferences-head {
+    gap: 6px;
+  }
+
+  .route-app .preferences-page .workspace-backup-header p,
+  .route-app .preferences-page .notification-prefs-head p,
+  .route-app .preferences-page .ai-review-preferences-head p,
+  .route-app .preferences-page .connected-dapps-intro,
+  .route-app .preferences-page .agent-policies-intro,
+  .route-app .preferences-page .custom-tokens-intro,
+  .route-app .preferences-page .failure-policies-intro {
+    font-size: 0.84rem;
+    line-height: 1.36;
+    overflow-wrap: anywhere;
+  }
+
+  .route-app .preferences-page .rail-details > summary {
+    gap: 8px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    min-height: 54px;
+    padding: 10px;
+  }
+
+  .route-app .preferences-page .rail-details > summary > span em {
+    font-size: 0.76rem;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .route-app .preferences-page .rail-details > summary strong {
+    justify-self: end;
+    max-width: 92px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .route-app .preferences-page .rail-details > section {
+    padding: 10px;
+  }
+
+  .route-app .preferences-page .ai-review-preferences-head,
+  .route-app .preferences-page .ai-advanced-toggles,
+  .route-app .preferences-page .workspace-backup-stats,
+  .route-app .preferences-page .planner-prompts-form,
+  .route-app .preferences-page .agent-save-form,
+  .route-app .preferences-page .recipient-save-form,
+  .route-app .preferences-page .custom-token-save-form,
+  .route-app .preferences-page .agent-policy-save-form,
+  .route-app .preferences-page .planner-prompts-actions,
+  .route-app .preferences-page .agent-save-actions,
+  .route-app .preferences-page .recipient-save-actions,
+  .route-app .preferences-page .custom-token-save-actions,
+  .route-app .preferences-page .agent-policy-save-actions,
+  .route-app .preferences-page .safety-rails-card,
+  .route-app .preferences-page .safety-rails-input-row,
+  .route-app .preferences-page .safety-rails-cap-row,
+  .route-app .preferences-page .failure-policy-list,
+  .route-app .preferences-page .failure-policy-row,
+  .route-app .preferences-page .recipient-rule-toggles {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .preferences-page .notification-prefs-permission,
+  .route-app .preferences-page .notification-prefs-list li,
+  .route-app .preferences-page .safety-rails-section-head,
+  .route-app .preferences-page .agent-policy-row-head,
+  .route-app .preferences-page .connected-dapp-row-head,
+  .route-app .preferences-page .recipient-row,
+  .route-app .preferences-page .custom-token-row,
+  .route-app .preferences-page .agent-row {
+    align-items: stretch;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .preferences-page .workspace-backup-actions,
+  .route-app .preferences-page .failure-policies-actions,
+  .route-app .preferences-page .agent-policy-row-actions,
+  .route-app .preferences-page .recipient-row-actions,
+  .route-app .preferences-page .custom-token-row-actions {
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(0, 1fr);
+    justify-content: stretch;
+    width: 100%;
+  }
+
+  .route-app .preferences-page button,
+  .route-app .preferences-page .workspace-backup-import .utility-button {
+    min-height: 44px;
+    width: 100%;
+  }
+
+  .route-app .preferences-page .workspace-backup-import {
+    display: block;
+    width: 100%;
+  }
+
+  .route-app .preferences-page .workspace-backup-import .utility-button {
+    align-items: center;
+    display: inline-flex;
+    justify-content: center;
+  }
+
+  .route-app .preferences-page input,
+  .route-app .preferences-page select,
+  .route-app .preferences-page textarea,
+  .route-app .preferences-page .select-picker-trigger,
+  .route-app .preferences-page .template-picker-trigger {
+    font-size: 16px;
+    max-width: 100%;
+  }
+
+  .route-app .preferences-page textarea {
+    min-height: 92px;
+  }
+
+  .route-app .preferences-page .planner-prefs > summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .preferences-page .planner-prefs > summary em,
+  .route-app .preferences-page .ai-review-preferences-head em {
+    justify-self: start;
+    max-width: none;
+    text-align: left;
+  }
+
+  .route-app .preferences-page .failure-policy-mode-controls {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.route-app.android-shell .preferences-page-head,
+.route-app.android-shell .preferences-storage-policy,
+.route-app.android-shell .preferences-subtabs {
+  display: none;
+}
+
+.route-app.android-shell .preferences-mobile-picker {
+  display: block;
+  width: 100%;
+}
+
+.route-app.android-shell .preferences-page .preferences-group-head {
+  display: none;
 }
 
 /* System health drawer */
@@ -25202,13 +25526,49 @@ button.danger:hover:not(:disabled) {
 
   .workspace-tabs-desktop,
   .preferences-open-button { display: none; }
+  .route-app .surface-topbar[data-layout="app-tabs-row"] .workspace-tabs-desktop[data-layout="app-tabs"] {
+    display: none;
+  }
   .workspace-tabs-mobile {
     display: block;
     width: 100%;
   }
   .workspace-tabs-mobile .select-picker-trigger {
+    align-items: center;
+    background: rgba(125, 231, 176, 0.1);
+    border: 1px solid rgba(125, 231, 176, 0.22);
+    border-radius: 9px;
+    color: #f2fff7;
+    gap: 8px;
+    grid-template-columns: minmax(0, auto) auto;
+    justify-content: center;
     min-height: 44px;
+    padding: 8px 14px;
+    text-align: center;
     width: 100%;
+  }
+  .workspace-tabs-mobile .select-picker-trigger:hover:not(:disabled),
+  .workspace-tabs-mobile .template-picker.open .select-picker-trigger {
+    background: rgba(125, 231, 176, 0.14);
+    border-color: rgba(125, 231, 176, 0.32);
+  }
+  .workspace-tabs-mobile .template-picker-current {
+    align-items: center;
+    display: flex;
+    justify-content: center;
+    min-width: 0;
+  }
+  .workspace-tabs-mobile .template-picker-current strong {
+    color: #f2fff7;
+    font-size: 0.92rem;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+  }
+  .workspace-tabs-mobile .template-picker-caret {
+    color: rgba(242, 255, 247, 0.78);
+  }
+  .workspace-tabs-mobile .template-picker.open .template-picker-caret {
+    color: var(--accent-2);
   }
 
   .route-app .command-subtab-row {
@@ -25232,4 +25592,575 @@ button.danger:hover:not(:disabled) {
   .command-subtab-row .cc-detail-full { display: none; }
   .command-subtab-row .cc-label-mobile { display: inline; }
   .command-subtab-row .cc-detail-mobile { display: inline; }
+}
+
+/* Android /app shell: hide the wallet rail (Signer + AI path + Cloud connect)
+   on every tab except Home, and dock the workspace tab dropdown to the bottom
+   like an Instagram-style nav bar. The dropdown opens upward. */
+.android-bottom-tab-dock { display: none; }
+
+.route-app.android-shell .workspace[data-active-tab]:not([data-active-tab="overview"]) .custody-panel[data-layout="app-rail"] {
+  display: none;
+}
+
+.route-app.android-shell .workspace[data-active-tab]:not([data-active-tab="overview"]) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.route-app.android-shell .surface-topbar[data-layout="app-tabs-row"] .workspace-tabs-mobile {
+  display: none;
+}
+
+.route-app.android-shell {
+  --android-dock-h: 64px;
+}
+
+.route-app.android-shell .android-bottom-tab-dock {
+  background:
+    linear-gradient(180deg, rgba(12, 16, 15, 0.85), rgba(8, 11, 10, 0.98)),
+    rgba(10, 14, 13, 0.94);
+  backdrop-filter: blur(20px);
+  border-top: 1px solid rgba(224, 230, 226, 0.085);
+  bottom: 0;
+  box-shadow: 0 -16px 36px rgba(0, 0, 0, 0.42);
+  display: block;
+  left: 0;
+  padding:
+    10px
+    calc(16px + env(safe-area-inset-right, 0px))
+    calc(12px + env(safe-area-inset-bottom, 0px))
+    calc(16px + env(safe-area-inset-left, 0px));
+  position: fixed;
+  right: 0;
+  z-index: 240;
+}
+
+.route-app.android-shell .android-bottom-tab-dock .workspace-tabs-mobile {
+  display: block;
+  margin: 0;
+  width: 100%;
+}
+
+.route-app.android-shell .android-bottom-tab-dock .select-picker-trigger {
+  align-items: center;
+  background: rgba(125, 231, 176, 0.12);
+  border: 1px solid rgba(125, 231, 176, 0.28);
+  border-radius: 12px;
+  box-shadow:
+    0 0 0 1px rgba(63, 189, 131, 0.06),
+    0 12px 24px rgba(0, 0, 0, 0.32);
+  color: #f2fff7;
+  gap: 10px;
+  grid-template-columns: minmax(0, auto) auto;
+  justify-content: center;
+  min-height: 48px;
+  padding: 10px 16px;
+  text-align: center;
+  width: 100%;
+}
+
+.route-app.android-shell .android-bottom-tab-dock .template-picker.open .select-picker-trigger {
+  background: rgba(125, 231, 176, 0.18);
+  border-color: rgba(125, 231, 176, 0.4);
+}
+
+.route-app.android-shell .android-bottom-tab-dock .template-picker-current {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+}
+
+.route-app.android-shell .android-bottom-tab-dock .template-picker-current strong {
+  color: #f2fff7;
+  font-size: 0.96rem;
+  font-weight: 700;
+  letter-spacing: 0.015em;
+}
+
+.route-app.android-shell .android-bottom-tab-dock .template-picker-caret {
+  color: rgba(242, 255, 247, 0.85);
+}
+
+.route-app.android-shell .android-bottom-tab-dock .template-picker.open .template-picker-caret {
+  color: var(--accent-2);
+}
+
+.route-app.android-shell .android-bottom-tab-dock .template-picker-menu.drop-up {
+  background: rgba(12, 16, 15, 0.98);
+  border: 1px solid rgba(125, 231, 176, 0.22);
+  border-radius: 14px;
+  bottom: calc(100% + 10px);
+  box-shadow:
+    0 -24px 58px rgba(0, 0, 0, 0.48),
+    inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  left: 0;
+  right: 0;
+  top: auto;
+  width: 100%;
+}
+
+.route-app.android-shell .android-bottom-tab-dock .template-picker-menu .template-picker-option {
+  min-height: 48px;
+  padding: 12px 16px;
+}
+
+/* Reserve bottom space so fixed dock doesn't cover the panel content. */
+.shell.route-app.android-shell {
+  padding-bottom: calc(var(--android-dock-h) + 28px + env(safe-area-inset-bottom, 0px));
+}
+
+/* Android-only segmented tab card: visually connected tab strip on top of a
+   single card body so the four workspace/setup cards collapse into one
+   space-saving stack. Desktop continues to render the 4-up grid. */
+.android-tab-card {
+  background:
+    linear-gradient(180deg, rgba(18, 31, 27, 0.74), rgba(13, 18, 17, 0.96)),
+    rgba(17, 21, 20, 0.94);
+  border: 1px solid rgba(224, 230, 226, 0.11);
+  border-radius: var(--app-card-radius);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.android-tab-strip {
+  background: rgba(8, 13, 12, 0.6);
+  border-bottom: 1px solid rgba(224, 230, 226, 0.1);
+  display: grid;
+  gap: 0;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  min-width: 0;
+  padding: 0;
+}
+
+.android-tab-strip .android-tab {
+  align-items: center;
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-right: 1px solid rgba(224, 230, 226, 0.06);
+  color: rgba(196, 205, 202, 0.66);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  font: inherit;
+  font-size: 0.66rem;
+  font-weight: 800;
+  gap: 4px;
+  justify-content: center;
+  letter-spacing: 0.02em;
+  min-height: 52px;
+  min-width: 0;
+  padding: 8px 6px;
+  position: relative;
+  text-transform: uppercase;
+  transition: color 0.16s ease, background 0.16s ease;
+}
+
+.android-tab-strip .android-tab:last-child {
+  border-right: 0;
+}
+
+.android-tab-strip .android-tab:hover {
+  color: rgba(224, 230, 226, 0.94);
+}
+
+.android-tab-strip .android-tab.active {
+  background: rgba(125, 231, 176, 0.08);
+  color: var(--text);
+}
+
+.android-tab-strip .android-tab.active::after {
+  background: rgba(125, 231, 176, 0.78);
+  border-radius: 2px 2px 0 0;
+  bottom: 0;
+  content: "";
+  height: 2px;
+  left: 10%;
+  position: absolute;
+  right: 10%;
+}
+
+.android-tab-strip .android-tab-icon {
+  align-items: center;
+  display: inline-flex;
+  height: 18px;
+  justify-content: center;
+  width: 18px;
+}
+
+.android-tab-strip .android-tab-icon svg {
+  height: 16px;
+  width: 16px;
+}
+
+.android-tab-strip .android-tab-label {
+  font-size: 0.62rem;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.android-tab-body {
+  display: block;
+  min-width: 0;
+  padding: 10px;
+}
+
+/* When a card lives inside the tab body, drop its outer card chrome so the
+   surrounding .android-tab-card supplies the border/background. */
+.android-tab-body > .command-center-card,
+.android-tab-body > .command-preference-card {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  min-height: 0;
+  padding: 0;
+}
+
+.android-tab-body > .command-preference-card::before {
+  display: none;
+}
+
+.mobile-card-footer-actions {
+  display: none;
+}
+
+.mobile-card-action-menu {
+  min-width: 0;
+  position: relative;
+}
+
+.mobile-card-action-menu > summary {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.038);
+  border: 1px solid rgba(224, 230, 226, 0.14);
+  border-radius: var(--app-card-radius, 8px);
+  color: rgba(242, 245, 243, 0.92);
+  cursor: pointer;
+  display: flex;
+  font-size: 0.86rem;
+  font-weight: 900;
+  justify-content: center;
+  list-style: none;
+  min-height: var(--app-control-h, 42px);
+  padding: 0 12px;
+  width: 100%;
+}
+
+.mobile-card-action-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.mobile-card-action-menu > summary::after {
+  color: rgba(139, 205, 170, 0.9);
+  content: "+";
+  font-size: 1rem;
+  font-weight: 900;
+  line-height: 1;
+  margin-left: 8px;
+}
+
+.mobile-card-action-menu[open] > summary::after {
+  content: "-";
+}
+
+.mobile-card-action-menu-body {
+  background: rgba(8, 11, 10, 0.98);
+  border: 1px solid rgba(224, 230, 226, 0.14);
+  border-radius: var(--app-card-radius, 8px);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.36);
+  display: grid;
+  gap: 7px;
+  left: 0;
+  min-width: min(280px, calc(100vw - 40px));
+  padding: 8px;
+  position: absolute;
+  top: calc(100% + 8px);
+  z-index: 80;
+}
+
+.mobile-card-action-menu-body button {
+  justify-content: center;
+  min-height: 40px;
+  width: 100%;
+}
+
+@media (max-width: 899px) {
+  .route-app .review-plan-list .review-plan-card,
+  .route-app .approval-ticket.inbox-approval-card,
+  .route-app .recurring-item.recurring-card,
+  .route-app .completed-plan-card,
+  .route-app .signed-artifact-row.receipt-proof-card {
+    border-radius: 10px;
+    gap: 10px;
+    overflow: visible;
+    padding: 12px;
+  }
+
+  .route-app .review-plan-card-head,
+  .route-app .inbox-approval-head,
+  .route-app .recurring-card-head,
+  .route-app .completed-history-head,
+  .route-app .receipt-proof-card-head {
+    align-items: stretch;
+    display: grid;
+    gap: 10px;
+    grid-template-areas:
+      "title"
+      "decision";
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .review-plan-card-head {
+    grid-template-areas:
+      "title"
+      "value"
+      "actions";
+  }
+
+  .route-app .recurring-card-head {
+    grid-template-areas:
+      "title"
+      "value"
+      "actions";
+  }
+
+  .route-app .review-plan-title-block,
+  .route-app .inbox-approval-title-block,
+  .route-app .recurring-card-title-block,
+  .route-app .completed-history-title-block,
+  .route-app .receipt-proof-title-block {
+    grid-area: title;
+    gap: 6px;
+    width: 100%;
+  }
+
+  .route-app .review-plan-meta,
+  .route-app .inbox-approval-meta,
+  .route-app .recurring-card-meta,
+  .route-app .completed-history-meta,
+  .route-app .receipt-proof-meta {
+    gap: 5px;
+    max-width: 100%;
+  }
+
+  .route-app .review-plan-meta > *,
+  .route-app .inbox-approval-meta > *,
+  .route-app .recurring-card-meta > *,
+  .route-app .completed-history-meta > *,
+  .route-app .receipt-proof-meta > * {
+    max-width: 100%;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .route-app .review-plan-title-block h3,
+  .route-app .approval-ticket .inbox-approval-title-block h3,
+  .route-app .recurring-card-title-block h3,
+  .route-app .completed-history-title-block h3,
+  .route-app .receipt-proof-title-block h3,
+  .route-app .inbox-approval-meta-title,
+  .route-app .completed-history-meta-title {
+    font-size: 1rem;
+    line-height: 1.22;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    white-space: normal;
+    word-break: normal;
+  }
+
+  .route-app .review-plan-value,
+  .route-app .recurring-card-value {
+    grid-area: value;
+  }
+
+  .route-app .inbox-approval-decision,
+  .route-app .completed-history-decision {
+    grid-area: decision;
+  }
+
+  .route-app .review-plan-value,
+  .route-app .inbox-approval-value,
+  .route-app .recurring-card-value,
+  .route-app .completed-history-value,
+  .route-app .receipt-proof-value {
+    justify-self: stretch;
+    margin: 0;
+    max-width: 100%;
+    text-align: left;
+    width: 100%;
+  }
+
+  .route-app .market-amount-line,
+  .route-app .review-plan-value .market-amount-line,
+  .route-app .inbox-approval-value .market-amount-line,
+  .route-app .completed-history-value .market-amount-line {
+    justify-content: flex-start;
+    max-width: 100%;
+  }
+
+  .route-app .review-plan-value strong,
+  .route-app .inbox-approval-value strong,
+  .route-app .recurring-card-value strong,
+  .route-app .completed-history-value strong,
+  .route-app .receipt-proof-value strong {
+    font-size: clamp(1.28rem, 7vw, 1.78rem);
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .route-app .review-plan-actions,
+  .route-app .inbox-approval-actions,
+  .route-app .recurring-card-actions,
+  .route-app .completed-header-actions,
+  .route-app .receipt-proof-card .receipt-proof-actions {
+    display: grid;
+    gap: 7px;
+    grid-template-columns: minmax(0, 1fr);
+    justify-content: stretch;
+    justify-self: stretch;
+    width: 100%;
+  }
+
+  .route-app .review-plan-actions,
+  .route-app .recurring-card-actions {
+    grid-area: actions;
+  }
+
+  .route-app .inbox-approval-decision,
+  .route-app .completed-history-decision {
+    align-items: stretch;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(0, 1fr);
+    justify-content: stretch;
+    justify-self: stretch;
+    width: 100%;
+  }
+
+  .route-app .review-plan-actions button,
+  .route-app .inbox-approval-actions button,
+  .route-app .recurring-card-actions button,
+  .route-app .completed-header-actions button,
+  .route-app .receipt-proof-card .receipt-proof-actions button,
+  .route-app .receipt-proof-card .receipt-proof-actions summary {
+    min-height: 44px;
+    width: 100%;
+    white-space: normal;
+  }
+
+  .route-app .review-plan-summary-grid,
+  .route-app .inbox-approval-summary-grid,
+  .route-app .inbox-approval-summary-grid.rows-3,
+  .route-app .inbox-approval-summary-grid.rows-4,
+  .route-app .inbox-approval-summary-grid.swap-summary.rows-4,
+  .route-app .recurring-card-summary-grid,
+  .route-app .completed-history-summary-grid,
+  .route-app .receipt-proof-summary-grid,
+  .route-app .inbox-acp-cart-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .review-plan-summary-grid div,
+  .route-app .inbox-approval-summary-grid div,
+  .route-app .recurring-card-summary-grid div,
+  .route-app .completed-history-summary-grid div,
+  .route-app .receipt-proof-summary-grid > div,
+  .route-app .inbox-acp-cart-grid div {
+    min-height: 0;
+    padding: 9px 10px;
+  }
+
+  .route-app .review-plan-summary-grid dd,
+  .route-app .inbox-approval-summary-grid dd,
+  .route-app .recurring-card-summary-grid dd,
+  .route-app .completed-history-summary-grid dd,
+  .route-app .receipt-proof-summary-grid dd {
+    font-size: 0.9rem;
+    line-height: 1.28;
+  }
+
+  .route-app .token-route-inline {
+    flex-wrap: wrap;
+    white-space: normal;
+  }
+
+  .route-app .summary-copy-actions {
+    flex-wrap: wrap;
+  }
+
+  .route-app .review-plan-user-note,
+  .route-app .completed-history-note,
+  .route-app .recurring-card-note,
+  .route-app .inbox-approval-note,
+  .route-app .approval-effect {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .inbox-approval-drawers,
+  .route-app .completed-history-drawers,
+  .route-app .recurring-card-footer-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .review-plan-footer-actions > button,
+  .route-app .inbox-approval-footer-row > button,
+  .route-app .completed-history-footer-row > button {
+    display: none;
+  }
+
+  .route-app .review-plan-footer-actions,
+  .route-app .inbox-approval-footer-row,
+  .route-app .completed-history-footer-row {
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(0, 1fr);
+    justify-content: stretch;
+    width: 100%;
+  }
+
+  .route-app .mobile-card-footer-actions {
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    width: 100%;
+  }
+
+  .route-app .mobile-card-footer-actions > button,
+  .route-app .mobile-card-footer-actions > details {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .route-app .mobile-card-footer-actions > button {
+    min-height: var(--app-control-h, 42px);
+  }
+}
+
+@media (max-width: 480px) {
+  .route-app .review-plan-list .review-plan-card,
+  .route-app .approval-ticket.inbox-approval-card,
+  .route-app .recurring-item.recurring-card,
+  .route-app .completed-plan-card,
+  .route-app .signed-artifact-row.receipt-proof-card {
+    padding: 10px;
+  }
+
+  .route-app .review-plan-value strong,
+  .route-app .inbox-approval-value strong,
+  .route-app .recurring-card-value strong,
+  .route-app .completed-history-value strong,
+  .route-app .receipt-proof-value strong {
+    font-size: clamp(1.18rem, 8vw, 1.58rem);
+  }
+
+  .route-app .mobile-card-action-menu-body {
+    min-width: min(260px, calc(100vw - 36px));
+  }
 }

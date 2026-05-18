@@ -399,6 +399,8 @@ type ActiveTab =
 type SpendNavFilter = 'all' | 'needs_approval' | 'active_schedules' | 'live_streams' | 'settled';
 type PreferencesView = 'workspace' | 'ai' | 'access' | 'rules' | 'tokens';
 type CommandCenterView = 'center' | 'ai' | 'storage';
+type AndroidWorkspaceTab = 'wallet' | 'approvals' | 'payments' | 'proof';
+type AndroidSetupTab = 'ai' | 'cloud' | 'connectors' | 'rules';
 type CommandCenterIconId =
   | 'wallet'
   | 'approvals'
@@ -2083,6 +2085,8 @@ interface TemplateFieldPairPreview {
 interface DemoState {
   activeTab: ActiveTab;
   commandCenterView: CommandCenterView;
+  androidWorkspaceTab: AndroidWorkspaceTab;
+  androidSetupTab: AndroidSetupTab;
   oneTimePlanView: OneTimePlanView;
   askAgentAfterDraft: boolean;
   recurringView: RecurringView;
@@ -2914,6 +2918,8 @@ function defaultGuidedDemoState(scenarioId: GuidedDemoScenarioId = 'transfer'): 
 const state: DemoState = {
   activeTab: defaultWorkspaceTab,
   commandCenterView: 'center',
+  androidWorkspaceTab: 'wallet',
+  androidSetupTab: 'ai',
   oneTimePlanView: 'create',
   askAgentAfterDraft: false,
   recurringView: 'create',
@@ -3100,6 +3106,7 @@ let copyResetTimer: number | null = null;
 let templatePickerController: AbortController | null = null;
 let artifactPickerController: AbortController | null = null;
 let selectPickerController: AbortController | null = null;
+let preferencesMobilePickerController: AbortController | null = null;
 let systemHealthTimer: number | null = null;
 let systemHealthRunController: AbortController | null = null;
 const SYSTEM_HEALTH_INTERVAL_MS = 30_000;
@@ -6571,7 +6578,7 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
         <div>
           ${mode === 'demo' ? '<p class="eyebrow mini">Interactive demo</p>' : '<!-- Launch App eyebrow intentionally hidden. -->'}
           <h2 id="${titleId}">${mode === 'demo' ? 'Live approval demo.' : 'Agentic approval workspace.'}</h2>
-          ${mode === 'demo' ? '' : '<p>AI or templates prepare review items. You check the route, recipient, amount, policy, and wallet action before signing.</p>'}
+          ${mode === 'demo' ? '' : (state.androidNativeEnvironment.isAndroidNative ? '<p>AI or templates prepare review items. You approve.</p>' : '<p>AI or templates prepare review items. You check the route, recipient, amount, policy, and wallet action before signing.</p>')}
         </div>
         ${SHOW_DEV_CONTROLS ? systemSpine() : ''}
       </div>
@@ -6587,7 +6594,7 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
         ${systemSpine()}
       </header>` : ''}
 
-      <section class="workspace ${SHOW_DEV_CONTROLS ? 'dev-workspace' : 'public-workspace'}" data-layout="app-shell">
+      <section class="workspace ${SHOW_DEV_CONTROLS ? 'dev-workspace' : 'public-workspace'}" data-layout="app-shell" data-active-tab="${escapeHtml(String(state.activeTab))}">
         ${walletRail()}
         <section class="panel main-panel" data-layout="app-main">
           <div class="surface-topbar" data-layout="app-tabs-row">
@@ -6608,13 +6615,22 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
               ${moreMenuButton()}
             </nav>
             ${preferencesButton()}
-            ${workspaceTabSelectMobile()}
+            ${state.androidNativeEnvironment.bridgeAvailable ? '' : workspaceTabSelectMobile()}
           </div>
           <div data-layout="active-panel">${activePanel()}</div>
         </section>
         ${SHOW_DEV_CONTROLS ? contextPanel() : requestContextDetails()}
       </section>
+      ${state.androidNativeEnvironment.bridgeAvailable ? androidBottomTabDock() : ''}
     </section>
+  `;
+}
+
+function androidBottomTabDock(): string {
+  return `
+    <div class="android-bottom-tab-dock" data-layout="android-bottom-tab-dock" aria-label="Workspace navigation">
+      ${workspaceTabSelectMobile()}
+    </div>
   `;
 }
 
@@ -7221,16 +7237,81 @@ function preferencesPanel(): string {
       </header>
       ${preferencesStoragePolicy()}
       <nav class="preferences-subtabs" role="tablist" aria-label="Preferences sections">
-        ${preferencesViewButton('workspace', 'Workspace', 'Backup & alerts')}
-        ${preferencesViewButton('ai', 'AI Drafting', 'Prompts & review')}
-        ${preferencesViewButton('access', 'Agent Access', 'Agents & connectors')}
-        ${preferencesViewButton('rules', 'Review Rules', 'Recipients & policy')}
-        ${preferencesViewButton('tokens', 'Tokens & Retry', 'Labels & failures')}
+        ${PREFERENCES_VIEW_OPTIONS.map((option) => preferencesViewButton(option.view, option.title, option.desktopLabel)).join('')}
       </nav>
+      ${preferencesMobilePicker()}
       <div class="preferences-view">
         ${preferencesActiveView()}
       </div>
     </div>
+  `;
+}
+
+const PREFERENCES_VIEW_OPTIONS: ReadonlyArray<{
+  view: PreferencesView;
+  title: string;
+  desktopLabel: string;
+  mobileLabel: string;
+}> = [
+  { view: 'workspace', title: 'Workspace', desktopLabel: 'Backup & alerts', mobileLabel: 'Backup & Alerts' },
+  { view: 'ai', title: 'AI Drafting', desktopLabel: 'Prompts & review', mobileLabel: 'Prompts & Review' },
+  { view: 'access', title: 'Agent Access', desktopLabel: 'Agents & connectors', mobileLabel: 'Agents & Connectors' },
+  { view: 'rules', title: 'Review Rules', desktopLabel: 'Recipients & policy', mobileLabel: 'Recipients & Policy' },
+  { view: 'tokens', title: 'Tokens & Retry', desktopLabel: 'Labels & failures', mobileLabel: 'Labels & Failures' },
+];
+
+function preferencesViewOption(view: PreferencesView): (typeof PREFERENCES_VIEW_OPTIONS)[number] {
+  return PREFERENCES_VIEW_OPTIONS.find((option) => option.view === view) ?? PREFERENCES_VIEW_OPTIONS[0]!;
+}
+
+function preferencesMobilePicker(): string {
+  const active = preferencesViewOption(state.preferencesView);
+  return `
+    <div class="preferences-mobile-picker template-picker" data-preferences-mobile-picker>
+      <button
+        id="preferencesMobilePickerButton"
+        class="template-picker-trigger preferences-mobile-picker-trigger"
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded="false"
+        aria-controls="preferencesMobilePickerMenu"
+        aria-label="Choose Preferences section"
+      >
+        <span class="template-picker-current preferences-mobile-picker-current">
+          <strong id="preferencesMobilePickerValue">${escapeHtml(active.mobileLabel)}</strong>
+          <em>${escapeHtml(preferencesViewSummary(active.view))}</em>
+        </span>
+        <span class="template-picker-caret" aria-hidden="true"></span>
+      </button>
+      <div
+        id="preferencesMobilePickerMenu"
+        class="template-picker-menu preferences-mobile-picker-menu"
+        role="listbox"
+        aria-label="Preferences sections"
+        hidden
+      >
+        <div class="template-picker-group preferences-mobile-picker-group">
+          ${PREFERENCES_VIEW_OPTIONS.map(preferencesMobilePickerOption).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function preferencesMobilePickerOption(option: (typeof PREFERENCES_VIEW_OPTIONS)[number]): string {
+  const selected = state.preferencesView === option.view;
+  return `
+    <button
+      class="template-picker-option preferences-mobile-picker-option ${selected ? 'selected active' : ''}"
+      type="button"
+      role="option"
+      aria-selected="${selected ? 'true' : 'false'}"
+      data-preferences-mobile-view="${escapeHtml(option.view)}"
+      tabindex="${selected ? '0' : '-1'}"
+    >
+      <strong>${escapeHtml(option.mobileLabel)}</strong>
+      <em>${escapeHtml(preferencesViewSummary(option.view))}</em>
+    </button>
   `;
 }
 
@@ -10043,16 +10124,75 @@ function commandCenterOverviewPanel(): string {
           ${commandLoopStep('Prove', 'Saved proofs stay attached to Done.', completed.length > 0 || state.labArtifacts.length > 0)}
         </div>
 
-        <div class="command-center-grid">
-          ${commandCenterWalletCard()}
-          ${commandCenterCard('Approvals', `${openApprovals.length} pending`, approvalsCardDetail(openApprovals), openApprovals.length ? 'warn' : 'idle', 'open-inbox', openApprovals.length ? 'Review' : 'Open', 'approvals')}
-          ${commandCenterCard('Repeat Payments', `${recurringActive.length} active`, recurringActive[0] ? scheduleLabel(recurringActive[0]) : 'No active repeat payments', recurringActive.length ? 'good' : 'idle', 'open-recurring', 'Open', 'recurring')}
-          ${commandCenterCard('Save Proof', proofLabel, latestProof ? formatDateTime(latestProof.createdAt) : latestHistory ? formatDateTime(latestHistory.completedAt) : 'Save a proof or complete an approval', latestProof || latestHistory ? 'good' : 'idle', 'open-proofs', latestProof || latestHistory ? 'View' : 'Save', 'proofs')}
-        </div>
+        ${renderWorkspaceCardGroup({
+          wallet: commandCenterWalletCard(),
+          approvals: commandCenterCard('Approvals', `${openApprovals.length} pending`, approvalsCardDetail(openApprovals), openApprovals.length ? 'warn' : 'idle', 'open-inbox', openApprovals.length ? 'Review' : 'Open', 'approvals'),
+          payments: commandCenterCard('Repeat Payments', `${recurringActive.length} active`, recurringActive[0] ? scheduleLabel(recurringActive[0]) : 'No active repeat payments', recurringActive.length ? 'good' : 'idle', 'open-recurring', 'Open', 'recurring'),
+          proof: commandCenterCard('Save Proof', proofLabel, latestProof ? formatDateTime(latestProof.createdAt) : latestHistory ? formatDateTime(latestHistory.completedAt) : 'Save a proof or complete an approval', latestProof || latestHistory ? 'good' : 'idle', 'open-proofs', latestProof || latestHistory ? 'View' : 'Save', 'proofs'),
+        })}
 
         ${commandPreferenceSnapshot()}
       </section>
     </div>
+  `;
+}
+
+interface WorkspaceCardGroup {
+  wallet: string;
+  approvals: string;
+  payments: string;
+  proof: string;
+}
+
+function renderWorkspaceCardGroup(cards: WorkspaceCardGroup): string {
+  if (!IS_ANDROID_APP) {
+    return `
+      <div class="command-center-grid">
+        ${cards.wallet}
+        ${cards.approvals}
+        ${cards.payments}
+        ${cards.proof}
+      </div>
+    `;
+  }
+  const active: AndroidWorkspaceTab = state.androidWorkspaceTab;
+  const tabs: Array<{ id: AndroidWorkspaceTab; label: string; icon: CommandCenterIconId; body: string }> = [
+    { id: 'wallet', label: 'Wallet', icon: 'wallet', body: cards.wallet },
+    { id: 'approvals', label: 'Approvals', icon: 'approvals', body: cards.approvals },
+    { id: 'payments', label: 'Payments', icon: 'recurring', body: cards.payments },
+    { id: 'proof', label: 'Proof', icon: 'proofs', body: cards.proof },
+  ];
+  return `
+    <div class="android-tab-card android-workspace-tabs" data-android-tab-group="workspace">
+      <div class="android-tab-strip" role="tablist" aria-label="Workspace sections">
+        ${tabs.map((tab) => androidTabButton('workspace', tab.id, tab.label, tab.icon, tab.id === active)).join('')}
+      </div>
+      <div class="android-tab-body" role="tabpanel">
+        ${tabs.find((tab) => tab.id === active)?.body ?? cards.wallet}
+      </div>
+    </div>
+  `;
+}
+
+function androidTabButton(
+  group: 'workspace' | 'setup',
+  id: string,
+  label: string,
+  icon: CommandCenterIconId,
+  active: boolean,
+): string {
+  const attr = group === 'workspace' ? 'data-android-workspace-tab' : 'data-android-setup-tab';
+  return `
+    <button
+      type="button"
+      class="android-tab${active ? ' active' : ''}"
+      role="tab"
+      aria-selected="${active ? 'true' : 'false'}"
+      ${attr}="${escapeHtml(id)}"
+    >
+      <span class="android-tab-icon">${commandCenterIcon(icon)}</span>
+      <span class="android-tab-label">${escapeHtml(label)}</span>
+    </button>
   `;
 }
 
@@ -10085,10 +10225,37 @@ function commandPreferenceSnapshot(): string {
         </div>
         <p>Most important workspace settings at a glance.</p>
       </div>
+      ${renderPreferenceSnapshotGroup(cards)}
+    </section>
+  `;
+}
+
+function renderPreferenceSnapshotGroup(cards: CommandPreferenceSnapshotCard[]): string {
+  if (!IS_ANDROID_APP) {
+    return `
       <div class="command-preference-snapshot-grid">
         ${cards.map(commandPreferenceSnapshotCard).join('')}
       </div>
-    </section>
+    `;
+  }
+  const setupTabs: Array<{ id: AndroidSetupTab; label: string; icon: CommandCenterIconId }> = [
+    { id: 'ai', label: 'AI Path', icon: 'ai' },
+    { id: 'cloud', label: 'Cloud', icon: 'cloud' },
+    { id: 'connectors', label: 'Connectors', icon: 'connectors' },
+    { id: 'rules', label: 'Rules', icon: 'guardrails' },
+  ];
+  const active = state.androidSetupTab;
+  const activeIndex = setupTabs.findIndex((tab) => tab.id === active);
+  const card = cards[activeIndex >= 0 ? activeIndex : 0] ?? cards[0];
+  return `
+    <div class="android-tab-card android-setup-tabs" data-android-tab-group="setup">
+      <div class="android-tab-strip" role="tablist" aria-label="Setup sections">
+        ${setupTabs.map((tab) => androidTabButton('setup', tab.id, tab.label, tab.icon, tab.id === active)).join('')}
+      </div>
+      <div class="android-tab-body" role="tabpanel">
+        ${card ? commandPreferenceSnapshotCard(card) : ''}
+      </div>
+    </div>
   `;
 }
 
@@ -12308,6 +12475,53 @@ function generatedPlanCardFooterActions(record: GeneratedPlanRecord): string {
       >
         Delete
       </button>
+      <div class="mobile-card-footer-actions review-plan-mobile-actions" aria-label="Mobile draft actions">
+        <details class="mobile-card-action-menu">
+          <summary>More actions</summary>
+          <div class="mobile-card-action-menu-body">
+            <button
+              class="utility"
+              data-generated-plan-action="reuse"
+              data-generated-plan-id="${escapeHtml(record.id)}"
+              ${state.busy ? 'disabled' : ''}
+            >
+              Use
+            </button>
+            <button
+              class="utility"
+              data-generated-plan-action="view"
+              data-generated-plan-id="${escapeHtml(record.id)}"
+            >
+              Full details
+            </button>
+            <button
+              class="utility review-template-mini"
+              data-template-action="save-as"
+              data-generated-plan-id="${escapeHtml(record.id)}"
+              ${state.busy ? 'disabled' : ''}
+              title="Save this plan as a reusable template"
+            >
+              Save as template
+            </button>
+            <button
+              class="utility"
+              data-generated-plan-action="${archived ? 'restore' : 'archive'}"
+              data-generated-plan-id="${escapeHtml(record.id)}"
+              ${state.busy ? 'disabled' : ''}
+            >
+              ${archived ? 'Restore' : 'Archive'}
+            </button>
+          </div>
+        </details>
+        <button
+          class="utility danger review-delete-mini"
+          data-generated-plan-action="delete"
+          data-generated-plan-id="${escapeHtml(record.id)}"
+          ${state.busy ? 'disabled' : ''}
+        >
+          Delete
+        </button>
+      </div>
     </div>
   `;
 }
@@ -16375,6 +16589,23 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
         >
           Delete
         </button>
+        <div class="mobile-card-footer-actions completed-history-mobile-actions" aria-label="Mobile done actions">
+          <details class="mobile-card-action-menu">
+            <summary>More actions</summary>
+            <div class="mobile-card-action-menu-body">
+              <button class="utility inbox-footer-action" data-copy="${escapeHtml(plan.copyPayload)}" data-copy-name="Done item">${escapeHtml(copyLabel)}</button>
+              ${plan.trustBundlePayload ? `<button class="utility inbox-footer-action" data-copy="${escapeHtml(plan.trustBundlePayload)}" data-copy-name="Trust bundle">Copy trust bundle</button>` : ''}
+            </div>
+          </details>
+          <button
+            class="utility danger recurring-delete-mini"
+            data-completed-delete="${escapeHtml(plan.id)}"
+            ${state.busy || deleteRequiresBridge ? 'disabled' : ''}
+            title="${deleteRequiresBridge ? 'Connect the local bridge before deleting bridge-backed done work.' : 'Delete this item from Done.'}"
+          >
+            Delete
+          </button>
+        </div>
       </div>
     </article>
   `;
@@ -17521,6 +17752,7 @@ function bind(): void {
   bindTemplatePicker();
   bindArtifactPicker();
   bindSelectPickers();
+  bindPreferencesMobilePicker();
 
   const workspaceTabSelect = document.getElementById('workspaceTabMobile') as HTMLSelectElement | null;
   if (workspaceTabSelect) {
@@ -17579,6 +17811,26 @@ function bind(): void {
       state.activeTab = 'overview';
       state.commandCenterView = view;
       state.error = '';
+      render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-workspace-tab]')) {
+    button.addEventListener('click', () => {
+      const tab = button.dataset.androidWorkspaceTab as AndroidWorkspaceTab | undefined;
+      if (tab !== 'wallet' && tab !== 'approvals' && tab !== 'payments' && tab !== 'proof') return;
+      if (state.androidWorkspaceTab === tab) return;
+      state.androidWorkspaceTab = tab;
+      render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-setup-tab]')) {
+    button.addEventListener('click', () => {
+      const tab = button.dataset.androidSetupTab as AndroidSetupTab | undefined;
+      if (tab !== 'ai' && tab !== 'cloud' && tab !== 'connectors' && tab !== 'rules') return;
+      if (state.androidSetupTab === tab) return;
+      state.androidSetupTab = tab;
       render();
     });
   }
@@ -17664,10 +17916,7 @@ function bind(): void {
     button.addEventListener('click', () => {
       const view = button.dataset.preferencesView as PreferencesView | undefined;
       if (!view || !isPreferencesView(view)) return;
-      state.preferencesView = view;
-      state.error = '';
-      savePersistedState();
-      render();
+      setPreferencesView(view);
     });
   }
 
@@ -19288,6 +19537,140 @@ function closeSelectPickerInteractions(): void {
   selectPickerController = null;
 }
 
+function bindPreferencesMobilePicker(): void {
+  const picker = document.querySelector<HTMLElement>('[data-preferences-mobile-picker]');
+  if (!picker) return;
+  const trigger = picker.querySelector<HTMLButtonElement>('#preferencesMobilePickerButton');
+  const menu = picker.querySelector<HTMLElement>('#preferencesMobilePickerMenu');
+  const options = [...picker.querySelectorAll<HTMLButtonElement>('[data-preferences-mobile-view]')];
+  if (!trigger || !menu || options.length === 0) return;
+
+  const openPicker = (focusOption: 'selected' | 'first' | 'last' | false = false): void => {
+    if (trigger.disabled) return;
+    closePreferencesMobilePickerInteractions();
+    picker.classList.add('open');
+    trigger.setAttribute('aria-expanded', 'true');
+    menu.hidden = false;
+    positionTemplatePickerMenu(trigger, menu);
+    window.requestAnimationFrame(() => positionTemplatePickerMenu(trigger, menu));
+
+    const selectedOption = options.find((option) => option.dataset.preferencesMobileView === state.preferencesView) ?? options[0]!;
+    const activeOption = focusOption === 'first'
+      ? options[0]!
+      : focusOption === 'last'
+        ? options[options.length - 1]!
+        : selectedOption;
+    setActiveTemplateOption(options, activeOption, Boolean(focusOption));
+
+    preferencesMobilePickerController = new AbortController();
+    const { signal } = preferencesMobilePickerController;
+    window.addEventListener('pointerdown', (event) => {
+      if (event.target instanceof Node && picker.contains(event.target)) return;
+      closePicker(false);
+    }, { signal });
+    window.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closePicker(true);
+      }
+    }, { signal });
+    window.addEventListener('resize', () => positionTemplatePickerMenu(trigger, menu), { signal });
+    window.visualViewport?.addEventListener('resize', () => positionTemplatePickerMenu(trigger, menu), { signal });
+  };
+
+  const closePicker = (returnFocus: boolean): void => {
+    picker.classList.remove('open');
+    trigger.setAttribute('aria-expanded', 'false');
+    menu.hidden = true;
+    closePreferencesMobilePickerInteractions();
+    if (returnFocus) {
+      trigger.focus({ preventScroll: true });
+    }
+  };
+
+  const chooseOption = (option: HTMLButtonElement): void => {
+    const view = option.dataset.preferencesMobileView as PreferencesView | undefined;
+    if (!view || !isPreferencesView(view)) return;
+    closePicker(false);
+    if (!setPreferencesView(view)) {
+      if (document.contains(trigger)) {
+        trigger.focus({ preventScroll: true });
+      }
+    }
+  };
+
+  trigger.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (menu.hidden) {
+      openPicker(false);
+    } else {
+      closePicker(false);
+    }
+  });
+
+  trigger.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      openPicker('selected');
+      focusAdjacentTemplateOption(options, 1);
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      openPicker('selected');
+      focusAdjacentTemplateOption(options, -1);
+    }
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      openPicker('selected');
+    }
+  });
+
+  menu.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      focusAdjacentTemplateOption(options, 1);
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      focusAdjacentTemplateOption(options, -1);
+    }
+    if (event.key === 'Home') {
+      event.preventDefault();
+      setActiveTemplateOption(options, options[0]!, true);
+    }
+    if (event.key === 'End') {
+      event.preventDefault();
+      setActiveTemplateOption(options, options[options.length - 1]!, true);
+    }
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      const activeOption = document.activeElement instanceof HTMLButtonElement
+        ? document.activeElement
+        : options.find((option) => option.classList.contains('active')) ?? options[0]!;
+      chooseOption(activeOption);
+    }
+  });
+
+  for (const option of options) {
+    option.addEventListener('click', () => chooseOption(option));
+    option.addEventListener('pointermove', () => setActiveTemplateOption(options, option, false));
+  }
+}
+
+function closePreferencesMobilePickerInteractions(): void {
+  preferencesMobilePickerController?.abort();
+  preferencesMobilePickerController = null;
+}
+
+function setPreferencesView(view: PreferencesView): boolean {
+  const changed = state.preferencesView !== view;
+  state.preferencesView = view;
+  state.error = '';
+  savePersistedState();
+  render();
+  return changed;
+}
+
 function updateSelectPickerView(picker: HTMLElement, value: string): void {
   const options = [...picker.querySelectorAll<HTMLButtonElement>('[data-select-picker-option]')];
   const selectedOption = options.find((option) => option.dataset.selectPickerOption === value);
@@ -19502,9 +19885,14 @@ function positionTemplatePickerMenu(trigger: HTMLElement, menu: HTMLElement): vo
   const viewportHeight = viewport?.height ?? window.innerHeight;
   const triggerRect = trigger.getBoundingClientRect();
   const safeBottom = viewportTop + viewportHeight - 10;
+  const safeTop = viewportTop + 10;
   const spaceBelow = Math.max(0, Math.floor(safeBottom - triggerRect.bottom - 8));
-  const maxHeight = Math.min(420, Math.max(160, spaceBelow));
-  menu.classList.remove('drop-up');
+  const spaceAbove = Math.max(0, Math.floor(triggerRect.top - safeTop - 8));
+  const inBottomDock = Boolean(trigger.closest('[data-layout="android-bottom-tab-dock"]'));
+  const shouldDropUp = inBottomDock || (spaceBelow < 200 && spaceAbove > spaceBelow);
+  const usableSpace = shouldDropUp ? spaceAbove : spaceBelow;
+  const maxHeight = Math.min(420, Math.max(160, usableSpace));
+  menu.classList.toggle('drop-up', shouldDropUp);
   menu.style.setProperty('--template-menu-max-height', `${maxHeight}px`);
   menu.style.setProperty('--template-menu-max-width', `${Math.max(220, Math.floor(viewportWidth - 20))}px`);
 }
@@ -31536,11 +31924,16 @@ async function bridgeSwapRequest(
 }
 
 async function hostedSwapRequest(path: '/api/swap/order' | '/api/swap/execute', body: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const response = await fetch(path, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  let response: Response;
+  try {
+    response = await cloudFetch(path, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    if (isAbortError(err)) throw err;
+    throw new Error(swapApiUnavailableMessage());
+  }
   const contentType = response.headers.get('content-type') ?? '';
   if (!contentType.toLowerCase().includes('application/json')) {
     throw new Error(swapApiUnavailableMessage());
@@ -35867,7 +36260,7 @@ function walletIdentity(): WalletIdentity {
       icon: 'MW',
       logoId: 'solanaMobile',
       title: 'Android MWA standby',
-      summary: 'Mobile Wallet Adapter',
+      summary: 'No signer connected',
       detail: state.androidAuthCacheCount > 0 ? `${state.androidAuthCacheCount} cached authorization(s)` : 'Tap Discover to open the wallet picker',
     };
   }
@@ -36744,6 +37137,19 @@ function preparedActionCard(action: PreparedAction): string {
           <button class="utility inbox-footer-action" data-action-op="archive" data-action-id="${action.id}" ${state.busy ? 'disabled' : ''} title="Remove from Needs Approval without signing a denial proof.">Archive</button>
           <button class="utility danger inbox-footer-action" data-action-op="reject" data-action-id="${action.id}" ${state.busy || isTerminalPreparedAction(action) ? 'disabled' : ''}>${escapeHtml(decisionLabels.reject)}</button>
           <button class="utility danger recurring-delete-mini" data-inbox-delete="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''}>Delete</button>
+          <div class="mobile-card-footer-actions inbox-approval-mobile-actions" aria-label="Mobile approval actions">
+            <details class="mobile-card-action-menu">
+              <summary>More actions</summary>
+              <div class="mobile-card-action-menu-body">
+                ${clearablePending ? `<button class="utility inbox-footer-action" data-action-op="clear-pending" data-action-id="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''} title="Checks chain status first, then restores this approval if no confirmed or failed transaction is found.">Clear stale pending</button>` : ''}
+                ${hasPendingExecutionLedgerEntry(action) || action.txid || action.status === 'failed' ? `<button class="utility inbox-footer-action" data-attach-tx-action="open" data-action-id="${escapeHtml(action.id)}">Attach existing transaction</button>` : ''}
+                ${action.status === 'failed' || action.txError ? `<button class="utility inbox-footer-action" data-debug-export data-action-id="${escapeHtml(action.id)}">Copy debug log</button>` : ''}
+                <button class="utility inbox-footer-action" data-action-op="archive" data-action-id="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''} title="Remove from Needs Approval without signing a denial proof.">Archive</button>
+                <button class="utility danger inbox-footer-action" data-action-op="reject" data-action-id="${escapeHtml(action.id)}" ${state.busy || isTerminalPreparedAction(action) ? 'disabled' : ''}>${escapeHtml(decisionLabels.reject)}</button>
+              </div>
+            </details>
+            <button class="utility danger recurring-delete-mini" data-inbox-delete="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''}>Delete</button>
+          </div>
         </div>
       </div>
     </article>
