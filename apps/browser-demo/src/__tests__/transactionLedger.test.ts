@@ -636,3 +636,28 @@ describe('explorerUrlForTxid', () => {
     expect(explorerUrlForTxid('tx-5', '')).toBe('https://solscan.io/tx/tx-5');
   });
 });
+
+describe('toastId round-trip', () => {
+  it('persists a finite numeric toastId through normalize → save → load', () => {
+    const record = upsertPendingTransaction(makePatch({ toastId: 42 }), storage);
+    expect(record.toastId).toBe(42);
+    const reloaded = loadTransactionLedger(storage);
+    expect(reloaded[0]?.toastId).toBe(42);
+  });
+
+  it('drops a non-numeric toastId silently', () => {
+    const record = upsertPendingTransaction(makePatch({ toastId: 'oops' as unknown as number }), storage);
+    expect(record.toastId).toBeUndefined();
+  });
+
+  it('preserves toastId across phase updates via markTransactionPhase', () => {
+    upsertPendingTransaction(makePatch({ toastId: 99, txid: 'sig-xyz' }), storage);
+    const all = loadTransactionLedger(storage);
+    const first = all[0];
+    expect(first?.toastId).toBe(99);
+    if (!first) throw new Error('expected an upserted record');
+    markTransactionPhase(first.id, 'confirmed', { confirmedAt: new Date().toISOString(), txid: 'sig-xyz' }, storage);
+    const reloaded = loadTransactionLedger(storage);
+    expect(reloaded[0]?.toastId).toBe(99);
+  });
+});

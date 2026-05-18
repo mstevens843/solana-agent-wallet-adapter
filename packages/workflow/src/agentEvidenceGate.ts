@@ -117,9 +117,20 @@ export function evaluateAgentEvidenceGate(
 
     if (!matching.length) {
       missingRequired.push(req);
-      if (req.routeId === EXTERNAL_RESEARCH_ROUTE && context.externalResearchAvailable === false) {
-        downgradeToNeedsInput(`External research required but unavailable: ${req.reason}`);
-      } else if (req.blocking || req.routeId === WALLET_IDENTITY_ROUTE) {
+      if (req.routeId === EXTERNAL_RESEARCH_ROUTE) {
+        if (context.externalResearchAvailable === true) {
+          // The configured AI provider will perform two-pass web research via its native
+          // search tool (Anthropic web_search, OpenAI Responses web_search_preview, Gemini
+          // google_search). Treat the requirement as deferred-to-AI, not a gate gap.
+          continue;
+        }
+        if (context.externalResearchAvailable === false) {
+          downgradeToNeedsInput(`External research required but unavailable: ${req.reason}`);
+          continue;
+        }
+        // undefined: fall through to the conservative default (block-if-blocking).
+      }
+      if (req.blocking || req.routeId === WALLET_IDENTITY_ROUTE) {
         downgradeToBlock(`Required evidence missing: ${req.reason}`);
       } else {
         downgradeToNeedsInput(`Required evidence missing: ${req.reason}`);

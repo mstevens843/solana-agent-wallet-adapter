@@ -39,15 +39,22 @@ object WalletRegistry {
         }
     }
 
-    fun forceSignThenRpc(packageName: String): Boolean = packageName.lowercase().contains("backpack")
+    // Jupiter mobile is a WalletConnect/Reown wrapper rather than a native MWA wallet,
+    // and its native sign_and_send_transactions handler chokes on Jupiter quote-API
+    // v0 + ALT swap transactions in practice (the reference apps only exercise simple
+    // memo txs, which is why this isn't documented in their KNOWN_ISSUES files).
+    // Route Jupiter through the same sign-then-RPC path as Backpack so we control the
+    // broadcast via the resolved Helius RPC URL. Jupiter's sign_transactions handler
+    // works fine — only its sign_and_send wrapper is the problem.
+    fun forceSignThenRpc(packageName: String): Boolean {
+        val lower = packageName.lowercase()
+        return lower.contains("backpack") || lower.contains("jupiter") || lower.contains("jup")
+    }
 
     fun messageSigningUnsupported(packageName: String): Boolean {
         val lower = packageName.lowercase()
         return lower.contains("phantom") || lower.contains("solflare")
     }
-
-    fun standaloneSignTransactionUnsupported(packageName: String): Boolean =
-        packageName.lowercase().contains("jupiter") || packageName.lowercase().contains("jup")
 
     fun supportsSiws(packageName: String): Boolean = !packageName.lowercase().contains("solflare")
 }

@@ -149,7 +149,7 @@ const WRITE_RATE_LIMIT_MAX_ATTEMPTS = 180;
 const HOSTED_AI_RATE_LIMIT_MAX_ATTEMPTS = 30;
 const DEFAULT_ANDROID_CLOUD_ORIGIN = 'https://agentic.local';
 const CORS_ALLOWED_HEADERS = 'authorization, content-type, x-agentic-client';
-const CORS_ALLOWED_METHODS = 'GET, POST, PUT, DELETE, OPTIONS';
+const CORS_ALLOWED_METHODS = 'GET, POST, PATCH, PUT, DELETE, OPTIONS';
 
 type RenderDeviceAgentState = 'stopped' | 'running';
 
@@ -1401,6 +1401,8 @@ interface AgentProfileSignedRequest {
   issuedAt: string;
   expiresAt: string;
   signatureEncoding: 'base58' | 'base64';
+  proofEncoding?: 'utf8-message' | 'tx-memo-proof';
+  proofTxBase64?: string;
 }
 
 function parseAgentProfileRequest(input: unknown, fallbackWalletAddress: string): AgentProfileSignedRequest {
@@ -1419,6 +1421,7 @@ function parseAgentProfileRequest(input: unknown, fallbackWalletAddress: string)
     issuedAt: requiredDeleteString(record.issuedAt, 'Missing signed issued time.'),
     expiresAt: requiredDeleteString(record.expiresAt, 'Missing signed expiration time.'),
     signatureEncoding: parseSignatureEncoding(record.signatureEncoding),
+    ...parseProofEncodingFields(record),
   };
 }
 
@@ -2983,6 +2986,8 @@ interface CloudWorkspaceDeleteRequest {
   issuedAt: string;
   expiresAt: string;
   signatureEncoding: 'base58' | 'base64';
+  proofEncoding?: 'utf8-message' | 'tx-memo-proof';
+  proofTxBase64?: string;
 }
 
 function parseCloudWorkspaceDeleteRequest(input: unknown, fallbackWalletAddress: string): CloudWorkspaceDeleteRequest {
@@ -3001,7 +3006,20 @@ function parseCloudWorkspaceDeleteRequest(input: unknown, fallbackWalletAddress:
     issuedAt: requiredDeleteString(record.issuedAt, 'Missing signed issued time.'),
     expiresAt: requiredDeleteString(record.expiresAt, 'Missing signed expiration time.'),
     signatureEncoding: parseSignatureEncoding(record.signatureEncoding),
+    ...parseProofEncodingFields(record),
   };
+}
+
+function parseProofEncodingFields(record: Record<string, unknown>): { proofEncoding?: 'utf8-message' | 'tx-memo-proof'; proofTxBase64?: string } {
+  const encoding = record.proofEncoding;
+  if (encoding === undefined || encoding === null || encoding === '') return {};
+  if (encoding !== 'utf8-message' && encoding !== 'tx-memo-proof') {
+    throw new ApiError(400, 'Unsupported proof encoding.');
+  }
+  const out: { proofEncoding: 'utf8-message' | 'tx-memo-proof'; proofTxBase64?: string } = { proofEncoding: encoding };
+  const tx = stringField(record.proofTxBase64).trim();
+  if (tx) out.proofTxBase64 = tx;
+  return out;
 }
 
 function requiredDeleteString(value: unknown, message: string): string {

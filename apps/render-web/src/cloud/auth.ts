@@ -26,6 +26,8 @@ export interface VerifyWalletRequest extends
   issuedAt?: string;
   expiresAt?: string;
   signatureEncoding?: 'base58' | 'base64';
+  proofEncoding?: 'utf8-message' | 'tx-memo-proof';
+  proofTxBase64?: string;
 }
 
 export interface LoginMessageFields {
@@ -177,11 +179,21 @@ export function buildAgentProfileTakedownMessage(fields: LoginMessageFields): st
   ].join('\n');
 }
 
+const MEMO_PROGRAM_V2_ID = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
+
 export function verifyWalletSignature(input: {
   message: string;
   signature: string;
   walletAddress: string;
   signatureEncoding?: 'base58' | 'base64';
+  /**
+   * Phantom Mobile MWA cannot signMessage; the FE signs a memo-only throwaway
+   * transaction whose memo data == message bytes (see
+   * apps/browser-demo/src/walletProofSigning.ts). For that path, the signature
+   * is over the compiled transaction message, not the UTF-8 message bytes.
+   */
+  proofEncoding?: 'utf8-message' | 'tx-memo-proof';
+  proofTxBase64?: string;
 }): boolean {
   try {
     const publicKeyBytes = decodeBase58(input.walletAddress);
@@ -196,10 +208,132 @@ export function verifyWalletSignature(input: {
       format: 'der',
       type: 'spki',
     });
+    if (input.proofEncoding === 'tx-memo-proof' && input.proofTxBase64) {
+      const verified = verifyTxMemoProof({
+        txBase64: input.proofTxBase64,
+        message: input.message,
+        signatureBytes,
+        publicKeyBytes,
+        key,
+      });
+      return verified;
+    }
     return verifyDetached(null, Buffer.from(input.message, 'utf8'), key, signatureBytes);
   } catch {
     return false;
   }
+}
+
+function verifyTxMemoProof(input: {
+  txBase64: string;
+  message: string;
+  signatureBytes: Buffer;
+  publicKeyBytes: Uint8Array;
+  key: ReturnType<typeof createPublicKey>;
+}): boolean {
+  const txBytes = Buffer.from(input.txBase64, 'base64');
+  const messageBytes = Buffer.from(input.message, 'utf8');
+  const parsed = parseTxMessageAndMemo(txBytes);
+  if (!parsed) return false;
+  if (parsed.memoData.length !== messageBytes.length) return false;
+  if (!parsed.memoData.equals(messageBytes)) return false;
+  const feePayerKey = parsed.staticAccountKeys[0];
+  if (!feePayerKey || !buffersEqual(feePayerKey, Buffer.from(input.publicKeyBytes))) return false;
+  return verifyDetached(null, parsed.messageBytes, input.key, input.signatureBytes);
+}
+
+interface ParsedTxProof {
+  messageBytes: Buffer;
+  memoData: Buffer;
+  staticAccountKeys: Buffer[];
+}
+
+function parseTxMessageAndMemo(txBytes: Buffer): ParsedTxProof | null {
+  // Solana wire format: [num_signatures (compact-u16)] [signatures...64 bytes each] [message...]
+  let cursor = 0;
+  const numSignatures = readCompactU16(txBytes, cursor);
+  if (!numSignatures) return null;
+  cursor = numSignatures.next;
+  cursor += numSignatures.value * 64;
+  if (cursor >= txBytes.length) return null;
+  const messageBytes = txBytes.subarray(cursor);
+  return parseMessageBytes(messageBytes);
+}
+
+function parseMessageBytes(messageBytes: Buffer): ParsedTxProof | null {
+  // Detect versioned message: high bit of first byte = 0x80 sentinel.
+  const firstByte = messageBytes[0];
+  if (firstByte === undefined) return null;
+  const isVersioned = (firstByte & 0x80) !== 0;
+  const headerStart = isVersioned ? 1 : 0;
+  if (messageBytes.length < headerStart + 3) return null;
+  const numRequiredSigs = messageBytes[headerStart];
+  // numReadonlySigned = messageBytes[headerStart + 1]
+  // numReadonlyUnsigned = messageBytes[headerStart + 2]
+  if (numRequiredSigs === undefined) return null;
+  let cursor = headerStart + 3;
+  const accountKeysCount = readCompactU16(messageBytes, cursor);
+  if (!accountKeysCount) return null;
+  cursor = accountKeysCount.next;
+  const staticAccountKeys: Buffer[] = [];
+  for (let i = 0; i < accountKeysCount.value; i += 1) {
+    if (cursor + 32 > messageBytes.length) return null;
+    staticAccountKeys.push(messageBytes.subarray(cursor, cursor + 32));
+    cursor += 32;
+  }
+  // recent blockhash
+  if (cursor + 32 > messageBytes.length) return null;
+  cursor += 32;
+  // instructions
+  const numInstructions = readCompactU16(messageBytes, cursor);
+  if (!numInstructions) return null;
+  cursor = numInstructions.next;
+  let memoData: Buffer | null = null;
+  for (let i = 0; i < numInstructions.value; i += 1) {
+    if (cursor >= messageBytes.length) return null;
+    const programIdIndex = messageBytes[cursor];
+    if (programIdIndex === undefined) return null;
+    cursor += 1;
+    const accountsLen = readCompactU16(messageBytes, cursor);
+    if (!accountsLen) return null;
+    cursor = accountsLen.next + accountsLen.value;
+    const dataLen = readCompactU16(messageBytes, cursor);
+    if (!dataLen) return null;
+    cursor = dataLen.next;
+    if (cursor + dataLen.value > messageBytes.length) return null;
+    const data = messageBytes.subarray(cursor, cursor + dataLen.value);
+    cursor += dataLen.value;
+    const programKey = staticAccountKeys[programIdIndex];
+    if (!programKey) return null;
+    const programIdBase58 = encodeBase58(programKey);
+    if (programIdBase58 === MEMO_PROGRAM_V2_ID) {
+      if (memoData !== null) return null; // reject multiple memos to keep proof unambiguous
+      memoData = Buffer.from(data);
+    }
+  }
+  if (!memoData) return null;
+  return { messageBytes: Buffer.from(messageBytes), memoData, staticAccountKeys };
+}
+
+function readCompactU16(bytes: Buffer, offset: number): { value: number; next: number } | null {
+  let value = 0;
+  let cursor = offset;
+  for (let shift = 0; shift < 21; shift += 7) {
+    const byte = bytes[cursor];
+    if (byte === undefined) return null;
+    cursor += 1;
+    value |= (byte & 0x7f) << shift;
+    if ((byte & 0x80) === 0) return { value, next: cursor };
+  }
+  return null;
+}
+
+function buffersEqual(a: Buffer, b: Buffer): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }
 
 export function normalizeWalletAddress(value: unknown): string {
@@ -228,6 +362,8 @@ export function parseVerifyWalletRequest(input: unknown): VerifyWalletRequest {
     ...optionalStringProp(record, 'issuedAt'),
     ...optionalStringProp(record, 'expiresAt'),
     ...optionalSignatureEncodingProp(record.signatureEncoding),
+    ...optionalProofEncodingProp(record.proofEncoding),
+    ...optionalStringProp(record, 'proofTxBase64'),
   };
 }
 
@@ -287,9 +423,12 @@ function stringField(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-function optionalStringProp(record: Record<string, unknown>, key: 'domain' | 'issuedAt' | 'expiresAt'): Partial<Pick<VerifyWalletRequest, typeof key>> {
+function optionalStringProp<K extends 'domain' | 'issuedAt' | 'expiresAt' | 'proofTxBase64'>(
+  record: Record<string, unknown>,
+  key: K,
+): Partial<Pick<VerifyWalletRequest, K>> {
   const value = stringField(record[key]).trim();
-  return value ? { [key]: value } : {};
+  return value ? ({ [key]: value } as Partial<Pick<VerifyWalletRequest, K>>) : {};
 }
 
 function optionalSignatureEncodingProp(value: unknown): Pick<VerifyWalletRequest, 'signatureEncoding'> {
@@ -300,6 +439,14 @@ function optionalSignatureEncodingProp(value: unknown): Pick<VerifyWalletRequest
     return { signatureEncoding: value };
   }
   throw new AuthValidationError('Unsupported wallet signature encoding.');
+}
+
+function optionalProofEncodingProp(value: unknown): Pick<VerifyWalletRequest, 'proofEncoding'> {
+  if (value === undefined || value === null || value === '') return {};
+  if (value === 'utf8-message' || value === 'tx-memo-proof') {
+    return { proofEncoding: value };
+  }
+  throw new AuthValidationError('Unsupported proof encoding.');
 }
 
 export class AuthValidationError extends Error {

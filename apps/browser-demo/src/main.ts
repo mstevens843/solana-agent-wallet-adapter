@@ -374,13 +374,25 @@ import {
 import { setConnectedAddress, setConnectedCluster } from './walletState.js';
 import './devTabs/index.js';
 import { setCloudWalletBridge } from './cloudWalletBridge.js';
-import { workspaceMoreMenuItems, type WorkspaceMoreMenuItem } from './workspaceMore.js';
+import { mobileWorkspaceMoreMenuItems, workspaceMoreMenuItems, type WorkspaceMoreMenuItem } from './workspaceMore.js';
+import { setProofSigningContext, signWalletProofMessage } from './walletProofSigning.js';
+
+setProofSigningContext({
+  getClient: requireClient,
+  getAppState: () => state,
+  getLatestBlockhash: (cluster) => browserLatestBlockhash(cluster),
+});
 
 setCloudWalletBridge({
   async signMessage(message, summary) {
-    const signingClient = requireClient();
-    const result = await signingClient.signMessage(message, signOptions(summary));
-    return { signature: result.signature, encoding: 'base58' };
+    const result = await signWalletProofMessage(message, summary, state.cluster);
+    return {
+      signature: result.signature,
+      encoding: 'base58',
+      proofEncoding: result.proofEncoding,
+      proofTxBase64: result.proofTxBase64,
+      proofMemoText: result.proofMemoText,
+    };
   },
   cloudRequest(path, init) {
     return cloudRequest(path, init);
@@ -417,6 +429,7 @@ type AndroidRepeatSummaryTab = 'asset' | 'recipient' | 'cadence' | 'end-conditio
 type AndroidAiIntroTab = 'benefits' | 'no-ai';
 type AndroidAiInfoTab = 'no-ai' | 'hosted' | 'bridge' | 'session' | 'device-agent';
 type AndroidCloudInfoTab = 'approval' | 'scheduler' | 'audit' | 'identity';
+type MobileRailSheet = 'workspace-storage' | 'ai-drafting';
 type CommandCenterIconId =
   | 'wallet'
   | 'approvals'
@@ -888,8 +901,10 @@ const TOKEN_RULES_STORAGE_KEY = 'solana-agent-wallet-token-rules-v1';
 const SPEND_CAPS_STORAGE_KEY = 'solana-agent-wallet-spend-caps-v1';
 const SLIPPAGE_CAP_STORAGE_KEY = 'solana-agent-wallet-slippage-cap-v1';
 const GENERATED_PLANS_LIMIT = 100;
-const TX_CONFIRMATION_POLL_TIMEOUT_MS = 30_000;
+const TX_CONFIRMATION_POLL_TIMEOUT_MS = 60_000;
 const TX_CONFIRMATION_POLL_INTERVAL_MS = 1_500;
+const TX_CONFIRMATION_RPC_CALL_TIMEOUT_MS = 5_000;
+const PENDING_RECONCILIATION_INTERVAL_MS = 10_000;
 const TX_RETRY_MAX_ATTEMPTS = 2;
 const TX_RETRY_DELAY_MS = 2_500;
 const TX_SIGNATURE_NOT_FOUND_STALE_MS = 90_000;
@@ -1309,6 +1324,16 @@ interface ProtocolConnectorPrefs {
   dialectClientKey: string;
 }
 
+type CloudSyncStatus = 'synced' | 'pending' | 'error';
+
+interface PendingCloudSync {
+  id: string;
+  kind: 'plan-patch';
+  patch: Partial<Pick<GeneratedPlanRecord, 'status' | 'signature' | 'preparedActionId' | 'error' | 'failureLabel' | 'agentReview' | 'agentOverride' | 'metadata'>>;
+  attemptedAt: string;
+  attempts: number;
+}
+
 interface GeneratedPlanRecord {
   id: string;
   plan: AgentPlan;
@@ -1332,6 +1357,11 @@ interface GeneratedPlanRecord {
   template?: boolean;
   templateLabel?: string;
   importedToCloudAt?: string;
+  // Tracks whether the last cloud PATCH for this record succeeded. 'pending' means the
+  // local wallet action succeeded but the cloud sync was deferred (typically Android TWA
+  // hitting a transport-level failure). undefined ⇒ 'synced'. Cleared on next successful drain.
+  cloudSyncStatus?: CloudSyncStatus;
+  cloudSyncError?: string;
 }
 
 interface ActiveAiDraftOperation {
@@ -2167,12 +2197,14 @@ interface DemoState {
   agentSignature: string;
   agentPreparedActionId: string;
   generatedPlans: GeneratedPlanRecord[];
+  pendingCloudSyncs: PendingCloudSync[];
   selectedGeneratedPlanId: string;
   generatedPlanAuditId: string;
   showArchivedGeneratedPlans: boolean;
   generatedPlanAgentReviewFilter: AgentReviewFilter;
   recurringAgentReviewFilter: AgentReviewFilter;
   workspaceStoragePanelOpen: boolean | null;
+  activeMobileRailSheet: MobileRailSheet | null;
   aiSettings: AiSettings;
   aiSettingsPanelOpen: boolean | null;
   aiStatus: BridgeAiStatus | null;
@@ -3031,12 +3063,14 @@ const state: DemoState = {
   agentSignature: '',
   agentPreparedActionId: '',
   generatedPlans: [],
+  pendingCloudSyncs: [],
   selectedGeneratedPlanId: '',
   generatedPlanAuditId: '',
   showArchivedGeneratedPlans: false,
   generatedPlanAgentReviewFilter: 'all',
   recurringAgentReviewFilter: 'all',
   workspaceStoragePanelOpen: null,
+  activeMobileRailSheet: null,
   aiSettings: {
     ...initialAiSettings,
     apiKey: loadSessionAiApiKey(initialAiSettings),
@@ -3155,6 +3189,7 @@ let templatePickerController: AbortController | null = null;
 let artifactPickerController: AbortController | null = null;
 let selectPickerController: AbortController | null = null;
 let preferencesMobilePickerController: AbortController | null = null;
+let mobileRailSheetController: AbortController | null = null;
 let systemHealthTimer: number | null = null;
 let systemHealthRunController: AbortController | null = null;
 const SYSTEM_HEALTH_INTERVAL_MS = 30_000;
@@ -3942,10 +3977,21 @@ function render(): void {
     }
   }
   const route = currentRoute();
+  if (state.activeMobileRailSheet && (route !== '/app' || !isMobileAppViewport() || state.activeTab !== 'overview')) {
+    state.activeMobileRailSheet = null;
+  }
   applyRouteTitle(route);
   trackPageView(route ?? normalizePathname(window.location.pathname), document.title);
   closeTemplatePickerInteractions();
   closeArtifactPickerInteractions();
+  closeMobileRailSheetInteractions();
+  if (typeof document !== 'undefined' && document.body) {
+    if (route === '/app' && isMobileAppViewport() && state.activeMobileRailSheet) {
+      document.body.dataset.mobileRailSheet = state.activeMobileRailSheet;
+    } else {
+      delete document.body.dataset.mobileRailSheet;
+    }
+  }
   appRoot.innerHTML = pageShell(pageContent(route), route);
   flushPendingSpendNavigation();
   bind();
@@ -6672,6 +6718,7 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
         ${SHOW_DEV_CONTROLS ? contextPanel() : requestContextDetails()}
       </section>
       ${androidBottomTabDock()}
+      ${mobileRailBottomSheet()}
     </section>
   `;
 }
@@ -6682,6 +6729,49 @@ function androidBottomTabDock(): string {
       ${workspaceTabSelectMobile()}
     </div>
   `;
+}
+
+function mobileRailBottomSheet(): string {
+  const sheet = state.activeMobileRailSheet;
+  if (!sheet || !isMobileAppViewport() || state.activeTab !== 'overview') return '';
+  const title = sheet === 'workspace-storage' ? 'Workspace Storage' : 'AI Drafting';
+  const detail = sheet === 'workspace-storage'
+    ? 'Browser-local workflow storage'
+    : 'Draft route and provider setup';
+  const body = sheet === 'workspace-storage'
+    ? cloudWorkspaceRailBody()
+    : aiSettingsCard('rail');
+  return `
+    <div class="mobile-rail-sheet-scrim" data-mobile-rail-sheet-close aria-hidden="true"></div>
+    <aside class="mobile-rail-sheet ${escapeHtml(sheet)}" data-mobile-rail-sheet-root role="dialog" aria-modal="true" aria-labelledby="mobileRailSheetTitle">
+      <header class="mobile-rail-sheet-header">
+        <div>
+          <span>${escapeHtml(detail)}</span>
+          <h2 id="mobileRailSheetTitle">${escapeHtml(title)}</h2>
+        </div>
+        <button type="button" class="mobile-rail-sheet-close" data-mobile-rail-sheet-close aria-label="Close ${escapeHtml(title)}">&times;</button>
+      </header>
+      <div class="mobile-rail-sheet-body">
+        ${body}
+      </div>
+    </aside>
+  `;
+}
+
+function isMobileRailSheet(value: string | undefined): value is MobileRailSheet {
+  return value === 'workspace-storage' || value === 'ai-drafting';
+}
+
+function openMobileRailSheet(sheet: MobileRailSheet): void {
+  state.activeMobileRailSheet = sheet;
+  state.error = '';
+  render();
+}
+
+function closeMobileRailSheet(): void {
+  if (!state.activeMobileRailSheet) return;
+  state.activeMobileRailSheet = null;
+  render();
 }
 
 function trustLayerPanel(): string {
@@ -7836,7 +7926,6 @@ function cloudWorkspaceCard(): string {
   const mismatch = cloudSessionWalletMismatch();
   const reconnectNeeded = signedIn && !matched && !mismatch;
   const unavailable = state.cloudSession.status === 'unavailable';
-  const noWalletCloudAction = firstRunNextAction();
   const status = signedIn
     ? matched
       ? 'Signed in'
@@ -7844,19 +7933,31 @@ function cloudWorkspaceCard(): string {
         ? 'Reconnect wallet'
         : 'Wallet mismatch'
     : 'Signed out';
-  const detail = unavailable
-    ? 'Cloud sign-in is unavailable from this host. Plans, approvals, and proofs stay on this device.'
-    : signedIn
-      ? matched
-        ? 'One-time drafts, approvals, and done work sync through Agentic Cloud.'
-        : `Signed in as ${short(state.cloudSession.walletAddress)}. ${reconnectNeeded ? 'Reconnect that wallet to use cloud workflow.' : 'Connect that wallet to use cloud workflow.'}`
-      : 'Signed-out workflow data is saved on this device.';
   const summaryDetail = signedIn
     ? matched
       ? 'Cloud workspace connected'
       : `Signed in as ${short(state.cloudSession.walletAddress)}`
     : 'Browser-local workflow storage';
   const open = state.workspaceStoragePanelOpen === true ? 'open' : '';
+  const body = cloudWorkspaceRailBody();
+  if (isMobileAppViewport()) {
+    return `
+      <section class="workspace-storage-panel ${escapeHtml(mode)} ${signedIn ? 'signed-in' : ''} mobile-rail-trigger-panel" data-layout="workspace-storage-panel" aria-label="Workspace storage status">
+        <button
+          type="button"
+          class="mobile-rail-sheet-trigger"
+          data-mobile-rail-sheet="workspace-storage"
+          aria-expanded="${state.activeMobileRailSheet === 'workspace-storage' ? 'true' : 'false'}"
+        >
+          <span class="workspace-storage-summary-copy">
+            <span>Workspace storage</span>
+            <em>${escapeHtml(summaryDetail)}</em>
+          </span>
+          <strong>${escapeHtml(status)}</strong>
+        </button>
+      </section>
+    `;
+  }
   return `
     <details class="workspace-storage-panel ${escapeHtml(mode)} ${signedIn ? 'signed-in' : ''}" data-layout="workspace-storage-panel" aria-label="Workspace storage status" ${open}>
       <summary>
@@ -7866,38 +7967,58 @@ function cloudWorkspaceCard(): string {
         </span>
         <strong>${escapeHtml(status)}</strong>
       </summary>
-      <section class="rail-cloud-card ${escapeHtml(mode)} ${signedIn ? 'signed-in' : ''}" aria-label="Workspace storage details">
-        <p>${escapeHtml(detail)}</p>
-        <div class="rail-cloud-facts">
-          <span>Active <strong>${escapeHtml(activeWorkflowLabel())}</strong></span>
-          ${matched ? `<span>Wallet <strong>${escapeHtml(short(state.cloudSession.walletAddress))}</strong></span>` : ''}
-          ${state.cloudLastSync && matched ? `<span>Synced <strong>${escapeHtml(formatDateTime(state.cloudLastSync))}</strong></span>` : ''}
-        </div>
-        <div class="rail-cloud-actions">
-          ${signedIn ? `
-            <button id="cloudLogout" class="utility" ${state.busy ? 'disabled' : ''}>Sign out</button>
-          ` : !state.address ? `
-            <button
-              type="button"
-              class="rail-cloud-button"
-              data-first-run-action="${escapeHtml(noWalletCloudAction.id)}"
-              ${state.busy ? 'disabled' : ''}
-              title="Connect a wallet before signing in to Agentic Cloud."
-            >
-              Connect wallet to sign in
-            </button>
-          ` : unavailable ? `
-            <button id="cloudSignIn" class="rail-cloud-button" disabled title="Cloud APIs are unavailable from this host.">Sign in</button>
-          ` : `
-            <button id="cloudSignIn" class="rail-cloud-button" ${state.busy ? 'disabled' : ''} title="Sign in with a wallet ownership proof.">Sign in</button>
-          `}
-        </div>
-        ${unavailable && state.address && !signedIn ? '<p class="rail-cloud-action-note">Cloud unavailable from this host; saved-on-device storage is active.</p>' : ''}
-        ${localWorkspacePrompt('cloud')}
-        ${mismatch ? '<p class="rail-cloud-warning">Cloud sessions prove wallet ownership only. They do not grant spending authority.</p>' : ''}
-        ${!signedIn && !state.address ? '<p class="rail-cloud-warning">Cloud sign-in uses your wallet as identity only. It does not grant spending authority.</p>' : ''}
-      </section>
+      ${body}
     </details>
+  `;
+}
+
+function cloudWorkspaceRailBody(): string {
+  const mode = activeWorkflowMode();
+  const signedIn = state.cloudSession.status === 'signed-in';
+  const matched = cloudSessionMatchesWallet();
+  const mismatch = cloudSessionWalletMismatch();
+  const reconnectNeeded = signedIn && !matched && !mismatch;
+  const unavailable = state.cloudSession.status === 'unavailable';
+  const noWalletCloudAction = firstRunNextAction();
+  const detail = unavailable
+    ? 'Cloud sign-in is unavailable from this host. Plans, approvals, and proofs stay on this device.'
+    : signedIn
+      ? matched
+        ? 'One-time drafts, approvals, and done work sync through Agentic Cloud.'
+        : `Signed in as ${short(state.cloudSession.walletAddress)}. ${reconnectNeeded ? 'Reconnect that wallet to use cloud workflow.' : 'Connect that wallet to use cloud workflow.'}`
+      : 'Signed-out workflow data is saved on this device.';
+  return `
+    <section class="rail-cloud-card ${escapeHtml(mode)} ${signedIn ? 'signed-in' : ''}" aria-label="Workspace storage details">
+      <p>${escapeHtml(detail)}</p>
+      <div class="rail-cloud-facts">
+        <span>Active <strong>${escapeHtml(activeWorkflowLabel())}</strong></span>
+        ${matched ? `<span>Wallet <strong>${escapeHtml(short(state.cloudSession.walletAddress))}</strong></span>` : ''}
+        ${state.cloudLastSync && matched ? `<span>Synced <strong>${escapeHtml(formatDateTime(state.cloudLastSync))}</strong></span>` : ''}
+      </div>
+      <div class="rail-cloud-actions">
+        ${signedIn ? `
+          <button id="cloudLogout" class="utility" ${state.busy ? 'disabled' : ''}>Sign out</button>
+        ` : !state.address ? `
+          <button
+            type="button"
+            class="rail-cloud-button"
+            data-first-run-action="${escapeHtml(noWalletCloudAction.id)}"
+            ${state.busy ? 'disabled' : ''}
+            title="Connect a wallet before signing in to Agentic Cloud."
+          >
+            Connect wallet to sign in
+          </button>
+        ` : unavailable ? `
+          <button id="cloudSignIn" class="rail-cloud-button" disabled title="Cloud APIs are unavailable from this host.">Sign in</button>
+        ` : `
+          <button id="cloudSignIn" class="rail-cloud-button" ${state.busy ? 'disabled' : ''} title="Sign in with a wallet ownership proof.">Sign in</button>
+        `}
+      </div>
+      ${unavailable && state.address && !signedIn ? '<p class="rail-cloud-action-note">Cloud unavailable from this host; saved-on-device storage is active.</p>' : ''}
+      ${localWorkspacePrompt('cloud')}
+      ${mismatch ? '<p class="rail-cloud-warning">Cloud sessions prove wallet ownership only. They do not grant spending authority.</p>' : ''}
+      ${!signedIn && !state.address ? '<p class="rail-cloud-warning">Cloud sign-in uses your wallet as identity only. It does not grant spending authority.</p>' : ''}
+    </section>
   `;
 }
 
@@ -10557,14 +10678,19 @@ function approvalsCardDetail(openApprovals: PreparedAction[]): string {
 function commandCenterAiPanel(): string {
   const configured = isAiConfiguredForCurrentMode();
   const confirmed = isAiPlannerConfirmedForCurrentSettings();
+  const headerActions = isMobileAppViewport()
+    ? ''
+    : `
+          <div class="command-center-actions">
+            <button type="button" class="primary" data-one-time-view="create">New Request</button>
+          </div>
+        `;
   return `
     <div class="command-detail-stack command-ai-panel">
       <section class="approval-object signature-stage command-page-card">
         <div class="signature-object-head command-center-head">
           ${sectionTitleLine('Connect AI', 'Set up the agent route, provider, model, and connection boundary. Workflow actions still require explicit review.')}
-          <div class="command-center-actions">
-            <button type="button" class="primary" data-one-time-view="create">New Request</button>
-          </div>
+          ${headerActions}
         </div>
 
         <div class="command-route-grid" aria-label="AI route capabilities">
@@ -11782,6 +11908,8 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
   const guardrailBlocked = planGuardrailVerdict(plan) === 'block';
   const reviewSummary = generatedPlanReviewSummary(displayRecord);
   const metaHint = generatedPlanMetaHint(displayRecord, guardrailBlocked);
+  const agentReviewAction = agentReviewButton(record);
+  const reviewActionLayoutClass = agentReviewAction ? 'has-agent-review-action' : 'solo-primary-action';
   return `
     <article class="generated-plan-card review-plan-card ${selected ? 'selected' : ''} ${archived ? 'archived' : ''}" data-layout="review-plan-card">
       <div class="review-plan-card-head">
@@ -11799,8 +11927,8 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
           ${reviewSummary ? `<p>${escapeHtml(reviewSummary)}</p>` : ''}
         </div>
         ${generatedPlanHeroValue(displayRecord)}
-        <div class="review-plan-actions">
-          ${agentReviewButton(record)}
+        <div class="review-plan-actions ${reviewActionLayoutClass}">
+          ${agentReviewAction}
           ${approvalCapable ? `
             <button
               class="review-action-inbox"
@@ -13379,8 +13507,8 @@ function cloudWorkspaceDeleteModal(): string {
     ? short(state.cloudSession.walletAddress)
     : 'this wallet';
   return `
-    <div class="generated-plan-modal-backdrop cloud-delete-modal-backdrop" role="presentation">
-      <section class="generated-plan-modal cloud-delete-modal" role="dialog" aria-modal="true" aria-labelledby="cloud-delete-title">
+    <div class="generated-plan-modal-backdrop cloud-delete-modal-backdrop delete-confirmation-backdrop" role="presentation">
+      <section class="generated-plan-modal cloud-delete-modal delete-confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="cloud-delete-title">
         <div class="generated-plan-modal-head">
           <div>
             <span class="workbench-kicker">Cloud workspace deletion</span>
@@ -13389,7 +13517,7 @@ function cloudWorkspaceDeleteModal(): string {
           </div>
           <button class="utility" data-cloud-delete-cancel aria-label="Close cloud deletion confirmation">Close</button>
         </div>
-        <div class="cloud-delete-warning">
+        <div class="cloud-delete-warning delete-confirmation-content">
           <strong>Requires wallet signature</strong>
           <p>Cloud drafts, approval items, repeat payments, proofs, done work, finalization records, and app audit events for this wallet will be deleted. Saved-on-device data and on-chain history are not deleted.</p>
         </div>
@@ -13417,8 +13545,8 @@ function completedDeleteModal(): string {
     formatDateTime(record.completedAt),
   ].join(' - ');
   return `
-    <div class="generated-plan-modal-backdrop completed-delete-modal-backdrop" role="presentation">
-      <section class="generated-plan-modal completed-delete-modal" role="dialog" aria-modal="true" aria-labelledby="completed-delete-title">
+    <div class="generated-plan-modal-backdrop completed-delete-modal-backdrop delete-confirmation-backdrop" role="presentation">
+      <section class="generated-plan-modal completed-delete-modal delete-confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="completed-delete-title">
         <div class="generated-plan-modal-head">
           <div>
             <span class="workbench-kicker">Done deletion</span>
@@ -13427,7 +13555,7 @@ function completedDeleteModal(): string {
           </div>
           <button class="utility" data-completed-delete-cancel aria-label="Close Done deletion confirmation">Close</button>
         </div>
-        <div class="completed-delete-warning">
+        <div class="completed-delete-warning delete-confirmation-content">
           <strong>${escapeHtml(descriptor)}</strong>
           <p>This removes the saved Done card and linked local metadata from ${escapeHtml(source)}. On-chain history is not deleted.</p>
         </div>
@@ -13446,8 +13574,8 @@ function generatedPlanDeleteModal(): string {
   if (!record) return '';
   const status = record.status === 'archived' ? 'Archived draft' : generatedPlanStatusLabel(record);
   return `
-    <div class="generated-plan-modal-backdrop generated-plan-delete-modal-backdrop" role="presentation">
-      <section class="generated-plan-modal generated-plan-delete-modal" role="dialog" aria-modal="true" aria-labelledby="generated-plan-delete-title">
+    <div class="generated-plan-modal-backdrop generated-plan-delete-modal-backdrop delete-confirmation-backdrop" role="presentation">
+      <section class="generated-plan-modal generated-plan-delete-modal delete-confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="generated-plan-delete-title">
         <div class="generated-plan-modal-head">
           <div>
             <span class="workbench-kicker">Check deletion</span>
@@ -13456,7 +13584,7 @@ function generatedPlanDeleteModal(): string {
           </div>
           <button class="utility" data-generated-plan-delete-cancel aria-label="Close Check deletion confirmation">Close</button>
         </div>
-        <div class="generated-plan-delete-warning">
+        <div class="generated-plan-delete-warning delete-confirmation-content">
           <strong>${escapeHtml(status)}</strong>
           <p>This removes the draft from Check and linked local planning state. If it already produced a receipt or approval, those records stay in Done.</p>
         </div>
@@ -13475,8 +13603,8 @@ function inboxDeleteModal(): string {
   if (!action) return '';
   const title = preparedActionCardTitle(action);
   return `
-    <div class="generated-plan-modal-backdrop inbox-delete-modal-backdrop" role="presentation">
-      <section class="generated-plan-modal inbox-delete-modal" role="dialog" aria-modal="true" aria-labelledby="inbox-delete-title">
+    <div class="generated-plan-modal-backdrop inbox-delete-modal-backdrop delete-confirmation-backdrop" role="presentation">
+      <section class="generated-plan-modal inbox-delete-modal delete-confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="inbox-delete-title">
         <div class="generated-plan-modal-head">
           <div>
             <span class="workbench-kicker">Needs Approval deletion</span>
@@ -13485,7 +13613,7 @@ function inboxDeleteModal(): string {
           </div>
           <button class="utility" data-inbox-delete-cancel aria-label="Close Needs Approval deletion confirmation">Close</button>
         </div>
-        <div class="completed-delete-warning">
+        <div class="completed-delete-warning delete-confirmation-content">
           <strong>This request will be removed entirely.</strong>
           <p>Cloud and local copies are deleted. No receipt is saved in Done because the request was neither approved nor denied.</p>
         </div>
@@ -13505,8 +13633,8 @@ function deleteAllInboxModal(): string {
     ? ''
     : ` matching the ${escapeHtml(state.inboxFilter)} filter`;
   return `
-    <div class="generated-plan-modal-backdrop delete-all-modal-backdrop" role="presentation">
-      <section class="generated-plan-modal delete-all-modal" role="dialog" aria-modal="true" aria-labelledby="delete-all-inbox-title">
+    <div class="generated-plan-modal-backdrop delete-all-modal-backdrop delete-confirmation-backdrop" role="presentation">
+      <section class="generated-plan-modal delete-all-modal delete-confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="delete-all-inbox-title">
         <div class="generated-plan-modal-head">
           <div>
             <span class="workbench-kicker">Clear Needs Approval</span>
@@ -13515,7 +13643,7 @@ function deleteAllInboxModal(): string {
           </div>
           <button class="utility" data-delete-all-inbox-cancel aria-label="Close Needs Approval bulk deletion">Close</button>
         </div>
-        <div class="completed-delete-warning">
+        <div class="completed-delete-warning delete-confirmation-content">
           <strong>This cannot be undone.</strong>
           <p>Cloud and local copies are deleted. No receipts are left in Done because the requests were neither approved nor denied. Items already in Done are not affected.</p>
         </div>
@@ -13536,8 +13664,8 @@ function deleteAllCheckModal(): string {
     ? ''
     : ` matching the ${escapeHtml(agentReviewFilterLabel(state.generatedPlanAgentReviewFilter))} filter`;
   return `
-    <div class="generated-plan-modal-backdrop delete-all-modal-backdrop" role="presentation">
-      <section class="generated-plan-modal delete-all-modal" role="dialog" aria-modal="true" aria-labelledby="delete-all-check-title">
+    <div class="generated-plan-modal-backdrop delete-all-modal-backdrop delete-confirmation-backdrop" role="presentation">
+      <section class="generated-plan-modal delete-all-modal delete-confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="delete-all-check-title">
         <div class="generated-plan-modal-head">
           <div>
             <span class="workbench-kicker">Clear Check</span>
@@ -13546,7 +13674,7 @@ function deleteAllCheckModal(): string {
           </div>
           <button class="utility" data-delete-all-check-cancel aria-label="Close Check bulk deletion">Close</button>
         </div>
-        <div class="generated-plan-delete-warning">
+        <div class="generated-plan-delete-warning delete-confirmation-content">
           <strong>This cannot be undone.</strong>
           <p>Cloud and local copies of these drafts are deleted. Items that already produced a receipt or approval stay in Done.</p>
         </div>
@@ -13567,8 +13695,8 @@ function deleteAllRepeatsModal(): string {
     ? ''
     : ` matching the ${escapeHtml(agentReviewFilterLabel(state.recurringAgentReviewFilter))} filter`;
   return `
-    <div class="generated-plan-modal-backdrop delete-all-modal-backdrop" role="presentation">
-      <section class="generated-plan-modal delete-all-modal" role="dialog" aria-modal="true" aria-labelledby="delete-all-repeats-title">
+    <div class="generated-plan-modal-backdrop delete-all-modal-backdrop delete-confirmation-backdrop" role="presentation">
+      <section class="generated-plan-modal delete-all-modal delete-confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="delete-all-repeats-title">
         <div class="generated-plan-modal-head">
           <div>
             <span class="workbench-kicker">Clear Active Repeats</span>
@@ -13577,7 +13705,7 @@ function deleteAllRepeatsModal(): string {
           </div>
           <button class="utility" data-delete-all-repeats-cancel aria-label="Close Active Repeats bulk deletion">Close</button>
         </div>
-        <div class="completed-delete-warning">
+        <div class="completed-delete-warning delete-confirmation-content">
           <strong>Future runs are cancelled.</strong>
           <p>Cloud and local schedules are deleted. Past payments already in Done are not affected. On-chain transactions are not reversed.</p>
         </div>
@@ -13605,8 +13733,8 @@ function deleteAllDoneModal(): string {
     ? ''
     : ` matching the ${escapeHtml(filterLabels[state.completedPlanFilter])} filter`;
   return `
-    <div class="generated-plan-modal-backdrop delete-all-modal-backdrop" role="presentation">
-      <section class="generated-plan-modal delete-all-modal" role="dialog" aria-modal="true" aria-labelledby="delete-all-done-title">
+    <div class="generated-plan-modal-backdrop delete-all-modal-backdrop delete-confirmation-backdrop" role="presentation">
+      <section class="generated-plan-modal delete-all-modal delete-confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="delete-all-done-title">
         <div class="generated-plan-modal-head">
           <div>
             <span class="workbench-kicker">Clear Done</span>
@@ -13615,7 +13743,7 @@ function deleteAllDoneModal(): string {
           </div>
           <button class="utility" data-delete-all-done-cancel aria-label="Close Done bulk deletion">Close</button>
         </div>
-        <div class="completed-delete-warning">
+        <div class="completed-delete-warning delete-confirmation-content">
           <strong>This cannot be undone.</strong>
           <p>Cloud and local Done cards are removed for the visible items. On-chain history is not deleted.</p>
         </div>
@@ -13986,6 +14114,24 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
     : configured
       ? `${readinessLabel} - ${aiConfirmationLabel()}`
       : 'Optional AI planner; templates work without it.';
+  if (location === 'rail' && isMobileAppViewport()) {
+    return `
+      <section class="ai-settings-panel ${configured ? 'configured' : 'optional'} rail-ai-settings mobile-rail-trigger-panel" data-layout="ai-setup-panel" aria-label="AI drafting status">
+        <button
+          type="button"
+          class="mobile-rail-sheet-trigger"
+          data-mobile-rail-sheet="ai-drafting"
+          aria-expanded="${state.activeMobileRailSheet === 'ai-drafting' ? 'true' : 'false'}"
+        >
+          <span class="ai-summary-copy">
+            <span>AI drafting</span>
+            <em>${escapeHtml(summaryDetail)}</em>
+          </span>
+          <strong>${confirmed ? 'confirmed' : configured ? 'configured' : 'not configured'}</strong>
+        </button>
+      </section>
+    `;
+  }
   return `
     <details class="ai-settings-panel ${configured ? 'configured' : 'optional'} ${location === 'rail' ? 'rail-ai-settings' : ''}" data-layout="ai-setup-panel" ${open}>
       <summary>
@@ -18113,6 +18259,7 @@ function bind(): void {
   bindArtifactPicker();
   bindSelectPickers();
   bindPreferencesMobilePicker();
+  bindMobileRailSheet();
 
   const workspaceTabSelect = document.getElementById('workspaceTabMobile') as HTMLSelectElement | null;
   if (workspaceTabSelect) {
@@ -18124,6 +18271,7 @@ function bind(): void {
       if (state.activeTab === 'labs') {
         state.artifactView = 'create';
       }
+      state.activeMobileRailSheet = null;
       state.error = '';
       render();
       if (next === 'inbox') {
@@ -18141,6 +18289,7 @@ function bind(): void {
       if (state.activeTab === 'labs') {
         state.artifactView = 'create';
       }
+      state.activeMobileRailSheet = null;
       state.error = '';
       render();
       if (tab === 'inbox') {
@@ -20113,6 +20262,35 @@ function closePreferencesMobilePickerInteractions(): void {
   preferencesMobilePickerController = null;
 }
 
+function bindMobileRailSheet(): void {
+  for (const trigger of document.querySelectorAll<HTMLButtonElement>('[data-mobile-rail-sheet]')) {
+    trigger.addEventListener('click', () => {
+      const sheet = trigger.dataset.mobileRailSheet;
+      if (!isMobileRailSheet(sheet)) return;
+      openMobileRailSheet(sheet);
+    });
+  }
+
+  const root = document.querySelector<HTMLElement>('[data-mobile-rail-sheet-root]');
+  if (!root) return;
+  for (const closeControl of document.querySelectorAll<HTMLElement>('[data-mobile-rail-sheet-close]')) {
+    closeControl.addEventListener('click', closeMobileRailSheet);
+  }
+
+  mobileRailSheetController = new AbortController();
+  const { signal } = mobileRailSheetController;
+  window.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    closeMobileRailSheet();
+  }, { signal });
+}
+
+function closeMobileRailSheetInteractions(): void {
+  mobileRailSheetController?.abort();
+  mobileRailSheetController = null;
+}
+
 function setPreferencesView(view: PreferencesView): boolean {
   const changed = state.preferencesView !== view;
   state.preferencesView = view;
@@ -20394,6 +20572,9 @@ async function runFirstRunAction(action: FirstRunActionId): Promise<void> {
       state.activeTab = 'overview';
       state.commandCenterView = 'ai';
       state.aiSettingsPanelOpen = true;
+      if (isMobileAppViewport()) {
+        state.activeMobileRailSheet = 'ai-drafting';
+      }
       state.generatedPlanAuditId = '';
       state.error = '';
       render();
@@ -20895,13 +21076,12 @@ async function runSignGuidedDemoReceipt(): Promise<void> {
     if (state.guidedDemo.stage !== 'receipt' || !state.guidedDemo.receiptJson) {
       throw new Error('Complete the demo decision before signing a demo receipt.');
     }
-    const signingClient = requireClient();
     const signingMessage = [
       'Agentic demo receipt',
       `Receipt: ${state.guidedDemo.receiptId}`,
       state.guidedDemo.receiptJson,
     ].join('\n');
-    const result = await signingClient.signMessage(signingMessage, signOptions('Demo receipt signature'));
+    const result = await signWalletProofMessage(signingMessage, 'Demo receipt signature', state.cluster);
     const scenario = selectedGuidedDemoScenario();
     state.guidedDemo.signedReceipt = result.signature;
     state.guidedDemo.receiptJson = stableJson(
@@ -20919,8 +21099,7 @@ async function runSignGuidedDemoReceipt(): Promise<void> {
 
 async function runSignMessage(): Promise<void> {
   await run('sign', async () => {
-    const signingClient = requireClient();
-    const result = await signingClient.signMessage(DEMO_MESSAGE, signOptions('Home message signature'));
+    const result = await signWalletProofMessage(DEMO_MESSAGE, 'Home message signature', state.cluster);
     state.signature = result.signature;
     pushToast('success', 'Message signed', short(result.signature));
   });
@@ -21344,9 +21523,22 @@ async function runSignAgentPlan(): Promise<void> {
       }
       selectFallbackGeneratedPlan();
     }
-    pushToast('success', 'Plan completed', 'Review proof saved in Done.');
+    const syncPending = state.selectedGeneratedPlanId && cloudSyncPending(state.selectedGeneratedPlanId);
+    if (syncPending) {
+      pushToast('info', 'Signed locally', 'Cloud sync will retry when reachable.');
+    } else {
+      pushToast('success', 'Plan completed', 'Review proof saved in Done.');
+    }
   }, {
-    onError: async (message) => {
+    onError: async (message, err) => {
+      // Defensive: if the local wallet signature already landed and the failure is
+      // purely cloud-reachability, don't mark the record failed — the user did sign.
+      // (Phase 4 in updateGeneratedPlan should already swallow this; this guard
+      // protects against future cloud writes that bypass that path.)
+      if (state.agentSignature && isCloudUnreachableError(err)) {
+        pushToast('info', 'Signed locally', 'Cloud sync will retry when reachable.');
+        return;
+      }
       if (state.selectedGeneratedPlanId) {
         await updateGeneratedPlan(state.selectedGeneratedPlanId, {
           status: 'failed',
@@ -22424,6 +22616,7 @@ async function runDeleteAllDone(): Promise<void> {
 }
 
 async function runSignGeneratedPlan(planId: string): Promise<void> {
+  let signedLocally = false;
   await run('sign', async () => {
     const record = requireGeneratedPlanRecord(planId);
     if (record.status === 'archived') {
@@ -22432,6 +22625,7 @@ async function runSignGeneratedPlan(planId: string): Promise<void> {
     const plan = planWithRuntimeTokenLabels(record.plan);
     const proof = await signGeneratedPlanProof(record, plan);
     const signature = proof.signature;
+    signedLocally = true;
     await updateGeneratedPlan(planId, {
       signature,
       status: 'signed',
@@ -22449,9 +22643,17 @@ async function runSignGeneratedPlan(planId: string): Promise<void> {
     if (state.agentPlan && samePlan(planWithRuntimeTokenLabels(state.agentPlan), plan)) {
       state.agentSignature = signature;
     }
-    pushToast('success', 'Plan completed', 'Review proof saved in Done.');
+    if (cloudSyncPending(planId)) {
+      pushToast('info', 'Signed locally', 'Cloud sync will retry when reachable.');
+    } else {
+      pushToast('success', 'Plan completed', 'Review proof saved in Done.');
+    }
   }, {
-    onError: async (message) => {
+    onError: async (message, err) => {
+      if (signedLocally && isCloudUnreachableError(err)) {
+        pushToast('info', 'Signed locally', 'Cloud sync will retry when reachable.');
+        return;
+      }
       await updateGeneratedPlan(planId, {
         status: 'failed',
         error: message,
@@ -22576,6 +22778,46 @@ async function saveGeneratedPlan(
   return record;
 }
 
+function enqueuePendingCloudSync(entry: Omit<PendingCloudSync, 'attemptedAt' | 'attempts'> & { attempts?: number }): void {
+  const attemptedAt = new Date().toISOString();
+  const next = state.pendingCloudSyncs.filter((existing) => !(existing.kind === entry.kind && existing.id === entry.id));
+  next.push({
+    id: entry.id,
+    kind: entry.kind,
+    patch: entry.patch,
+    attemptedAt,
+    attempts: entry.attempts ?? 1,
+  });
+  state.pendingCloudSyncs = next;
+}
+
+function cloudSyncPending(planId: string): boolean {
+  return state.pendingCloudSyncs.some((entry) => entry.kind === 'plan-patch' && entry.id === planId);
+}
+
+async function drainPendingCloudSyncs(): Promise<void> {
+  if (!state.pendingCloudSyncs.length) return;
+  const queue = [...state.pendingCloudSyncs];
+  state.pendingCloudSyncs = [];
+  for (const entry of queue) {
+    if (entry.kind !== 'plan-patch') continue;
+    try {
+      await updateGeneratedPlan(entry.id, entry.patch);
+    } catch (err) {
+      if (isCloudUnreachableError(err)) {
+        // Re-enqueue and stop draining — cloud is still down.
+        state.pendingCloudSyncs.push({
+          ...entry,
+          attemptedAt: new Date().toISOString(),
+          attempts: entry.attempts + 1,
+        });
+      }
+      // Other errors: drop the entry (real cloud-side rejection). The local record keeps
+      // its `cloudSyncStatus` flag; subsequent user action can repatch.
+    }
+  }
+}
+
 async function updateGeneratedPlan(
   planId: string,
   patch: Partial<Pick<GeneratedPlanRecord, 'status' | 'signature' | 'preparedActionId' | 'error' | 'failureLabel' | 'agentReview' | 'agentOverride' | 'metadata'>>,
@@ -22589,21 +22831,38 @@ async function updateGeneratedPlan(
           ...(patch.agentReview !== undefined ? { agentReview: patch.agentReview } : {}),
         })
       : undefined;
-    const cloudPlan = parseCloudPlanResponse(await cloudRequest(`/api/plans/${encodeURIComponent(planId)}`, {
-      method: 'PATCH',
-      body: JSON.stringify({
-        ...(patch.status !== undefined && { status: patch.status }),
-        ...(patch.signature !== undefined && { signature: patch.signature }),
-        ...(patch.preparedActionId !== undefined && { approvalRequestId: patch.preparedActionId }),
-        ...(metadata !== undefined && { metadata }),
-      }),
-    }));
-    const record = cloudPlanToGeneratedPlan(cloudPlan);
-    if (!record) {
-      throw new Error('Agentic Cloud did not return a valid plan update.');
+    try {
+      const cloudPlan = parseCloudPlanResponse(await cloudRequest(`/api/plans/${encodeURIComponent(planId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          ...(patch.status !== undefined && { status: patch.status }),
+          ...(patch.signature !== undefined && { signature: patch.signature }),
+          ...(patch.preparedActionId !== undefined && { approvalRequestId: patch.preparedActionId }),
+          ...(metadata !== undefined && { metadata }),
+        }),
+      }));
+      const record = cloudPlanToGeneratedPlan(cloudPlan);
+      if (!record) {
+        throw new Error('Agentic Cloud did not return a valid plan update.');
+      }
+      state.generatedPlans = mergeGeneratedPlans(
+        [{ ...record, cloudSyncStatus: 'synced', cloudSyncError: undefined }],
+        state.generatedPlans.filter((candidate) => candidate.id !== planId),
+      );
+      saveGeneratedPlans();
+      return;
+    } catch (err) {
+      if (!isCloudUnreachableError(err)) throw err;
+      // Cloud unreachable. Wallet/local action already succeeded; preserve local truth,
+      // mark sync as pending, and queue a retry. Caller treats this as success.
+      updateGeneratedPlanLocalOnly(planId, {
+        ...patch,
+        cloudSyncStatus: 'pending',
+        cloudSyncError: err.message,
+      });
+      enqueuePendingCloudSync({ id: planId, kind: 'plan-patch', patch });
+      return;
     }
-    state.generatedPlans = mergeGeneratedPlans([record], state.generatedPlans.filter((candidate) => candidate.id !== planId));
-    return;
   }
   const updatedAt = new Date().toISOString();
   state.generatedPlans = state.generatedPlans.map((record) => {
@@ -23302,6 +23561,8 @@ interface SignedPlanProofDetails {
   message: string;
   messageHash: string;
   metadata?: JsonObject;
+  proofEncoding?: 'utf8-message' | 'tx-memo-proof';
+  proofTxBase64?: string;
 }
 
 async function signGeneratedPlanProof(
@@ -23324,6 +23585,8 @@ async function signGeneratedPlanProof(
         messageHash: signed.messageHash,
         signature: signed.signature,
         signatureEncoding: 'base58',
+        ...(signed.proofEncoding ? { proofEncoding: signed.proofEncoding } : {}),
+        ...(signed.proofTxBase64 ? { proofTxBase64: signed.proofTxBase64 } : {}),
       },
     }),
   };
@@ -23339,13 +23602,14 @@ async function signAgentPlanProofDetails(
   summary: string,
   proofContext?: { connectorRead?: JsonObject },
 ): Promise<SignedPlanProofDetails> {
-  const signingClient = requireClient();
   const message = agentPlanApprovalMessage(plan, proofContext);
-  const result = await signingClient.signMessage(message, signOptions(summary));
+  const result = await signWalletProofMessage(message, summary, state.cluster);
   return {
     signature: result.signature,
     message,
     messageHash: await sha256(message),
+    proofEncoding: result.proofEncoding,
+    proofTxBase64: result.proofTxBase64,
   };
 }
 
@@ -23529,8 +23793,7 @@ function numericPlanParam(plan: AgentPlan, keys: string[]): number | undefined {
 }
 
 async function signAgentDenialProof(plan: AgentPlan, review: AgentPlanReviewState, summary: string): Promise<string> {
-  const signingClient = requireClient();
-  const result = await signingClient.signMessage(agentDenialProofMessage(plan, review), signOptions(summary));
+  const result = await signWalletProofMessage(agentDenialProofMessage(plan, review), summary, state.cluster);
   return result.signature;
 }
 
@@ -25044,6 +25307,27 @@ interface AgentReviewEvidenceBundle {
   evidenceContext: AgentEvidenceContext;
 }
 
+// Returns true when the active AI provider has a native web-research tool the device-agent
+// runtime will attach in a two-pass flow:
+//   - Anthropic (any model)              → AnthropicProvider.runResearchPass + web_search
+//   - OpenAI gpt-5 / o-series (Native)   → OpenAiNativeProvider + web_search_preview
+//   - Gemini Native                      → GeminiNativeProvider + google_search
+//   - OpenRouter / Custom OpenAI-compat  → NO (chat completions has no web-search tool)
+// Mirrors packages/mcp-server/src/aiPlanner.ts:supportsNativeWebResearch on the server side.
+// Used by evidenceContextForReview to set `externalResearchAvailable` so the gate doesn't
+// block external_research routes when the AI will resolve them via web search.
+function aiProviderSupportsWebResearch(): boolean {
+  const provider = (state.aiSettings.provider ?? '').trim().toLowerCase();
+  const apiFormat = (state.aiSettings.apiFormat ?? '').trim().toLowerCase();
+  if (apiFormat === 'anthropic') return true;
+  if (apiFormat === 'openai-compatible' || apiFormat === 'openai') {
+    if (provider === 'openai') return true;
+    if (provider === 'gemini') return true;
+    return false;
+  }
+  return false;
+}
+
 function evidenceContextForReview(record: GeneratedPlanRecord, plan: AgentPlan, routePlan: AgentFactRoutePlan): AgentEvidenceContext {
   const walletContext = walletContextForAgent(record);
   // Honor user-selected connector ONLY (form-supplied parameters.protocol / .connectorId /
@@ -25076,6 +25360,7 @@ function evidenceContextForReview(record: GeneratedPlanRecord, plan: AgentPlan, 
     planFingerprint: planFingerprint(plan),
     isWalletScoped: true,
     enabledUserPolicyIds: enabledUserAgentPolicies().map((policy) => policy.id),
+    externalResearchAvailable: aiProviderSupportsWebResearch(),
   };
 }
 
@@ -27469,14 +27754,13 @@ async function runCloudSignIn(): Promise<void> {
     if (!state.address) {
       throw new Error('Connect a wallet before signing in to Agentic Cloud.');
     }
-    const signingClient = requireClient();
     const nonce = parseAuthNonceResponse(await cloudRequest('/api/auth/nonce', {
       method: 'POST',
       body: JSON.stringify({ walletAddress: state.address }),
     }));
     const message = stringPayload(nonce.message, 'Auth message');
     const nonceValue = stringPayload(nonce.nonce, 'Auth nonce');
-    const result = await signingClient.signMessage(message, signOptions('Agentic Cloud sign-in'));
+    const result = await signWalletProofMessage(message, 'Agentic Cloud sign-in', state.cluster);
     const session = parseSessionResponse(await cloudRequest('/api/auth/verify-wallet', {
       method: 'POST',
       body: JSON.stringify({
@@ -27488,6 +27772,8 @@ async function runCloudSignIn(): Promise<void> {
         issuedAt: stringPayload(nonce.issuedAt, 'Auth issued time'),
         expiresAt: stringPayload(nonce.expiresAt, 'Auth expiration time'),
         signatureEncoding: 'base58',
+        proofEncoding: result.proofEncoding,
+        proofTxBase64: result.proofTxBase64,
       }),
     }));
     state.cloudSession = cloudSessionFromResponse(session);
@@ -27755,13 +28041,12 @@ async function runConfirmCloudWorkspaceDelete(): Promise<void> {
     if (!cloudSessionMatchesWallet()) {
       throw new Error('Connect the signed-in wallet before deleting this cloud workspace.');
     }
-    const signingClient = requireClient();
     const intent = parseCloudWorkspaceDeleteIntentResponse(await cloudRequest('/api/cloud-workspace/delete-intent', {
       method: 'POST',
       body: JSON.stringify({}),
     }));
     const message = stringPayload(intent.message, 'Cloud deletion message');
-    const signature = await signingClient.signMessage(message, signOptions('Delete Agentic Cloud workspace'));
+    const signature = await signWalletProofMessage(message, 'Delete Agentic Cloud workspace', state.cluster);
     const result = parseCloudWorkspaceDeleteResponse(await cloudRequest('/api/cloud-workspace/delete', {
       method: 'POST',
       body: JSON.stringify({
@@ -27773,6 +28058,8 @@ async function runConfirmCloudWorkspaceDelete(): Promise<void> {
         issuedAt: intent.issuedAt,
         expiresAt: intent.expiresAt,
         signatureEncoding: 'base58',
+        proofEncoding: signature.proofEncoding,
+        proofTxBase64: signature.proofTxBase64,
       }),
     }));
     resetCloudWorkspaceState();
@@ -27951,6 +28238,9 @@ async function refreshCloudWorkspaceData(): Promise<void> {
   if (Date.now() - state.cloudEvidenceLastSyncAt > CLOUD_EVIDENCE_SYNC_TTL_MS) {
     await syncLabArtifactsWithCloud().catch(() => undefined);
   }
+  // Cloud just answered successfully — flush any PATCHes that were deferred while it
+  // was unreachable. Drain runs best-effort; failures stay in queue for next refresh.
+  await drainPendingCloudSyncs().catch(() => undefined);
 }
 
 const CLOUD_EVIDENCE_SYNC_TTL_MS = 60_000;
@@ -27987,13 +28277,39 @@ function hostedAiRequestOptions(options: { signal?: AbortSignal } = {}) {
   };
 }
 
+// Thrown when fetch() itself fails (DNS / TLS / connection-refused / CORS-preflight).
+// HTTP 4xx/5xx go through the !response.ok branch and stay as plain Error.
+// Wallet runners catch this specifically to keep local sign/connect/tx success from
+// being reported as failure when only the post-success cloud sync hit a transport error.
+class CloudUnreachableError extends Error {
+  readonly cause: unknown;
+  constructor(message: string, cause: unknown) {
+    super(message);
+    this.name = 'CloudUnreachableError';
+    this.cause = cause;
+  }
+}
+
+function isCloudUnreachableError(err: unknown): err is CloudUnreachableError {
+  return err instanceof CloudUnreachableError;
+}
+
 async function cloudRequest<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
   let response: Response;
   try {
     response = await cloudFetch(path, init);
   } catch (err) {
     if (isAbortError(err)) throw err;
-    throw new Error('Agentic Cloud is not reachable from this page.');
+    const url = (() => { try { return cloudRequestUrl(path); } catch { return path; } })();
+    const errType = err instanceof TypeError ? 'TypeError' : (err && (err as Error)?.constructor?.name) || 'Error';
+    const errMsg = err instanceof Error ? err.message : String(err);
+    if (typeof console !== 'undefined' && typeof console.error === 'function') {
+      console.error('[cloud] cloudFetch failed', { url, origin: cloudApiOriginLabel(), errType, errMsg });
+    }
+    throw new CloudUnreachableError(
+      `Agentic Cloud is not reachable from this page. (${errType}: ${errMsg.slice(0, 160)})`,
+      err,
+    );
   }
   const payload = await response.json().catch(() => null) as unknown;
   if (!response.ok) {
@@ -29487,6 +29803,8 @@ async function runCloudPreparedActionOp(action: PreparedAction, op: string): Pro
           proofSignature: decisionProof.signature,
           decisionProofMessage: decisionProof.message,
           signatureEncoding: 'base58',
+          decisionProofEncoding: decisionProof.proofEncoding,
+          decisionProofTxBase64: decisionProof.proofTxBase64,
           note: 'Proof-only approval recorded in Agentic Cloud workspace. No transaction was submitted.',
         }),
       });
@@ -29503,6 +29821,8 @@ async function runCloudPreparedActionOp(action: PreparedAction, op: string): Pro
           proofSignature: decisionProof.signature,
           decisionProofMessage: decisionProof.message,
           signatureEncoding: 'base58',
+          decisionProofEncoding: decisionProof.proofEncoding,
+          decisionProofTxBase64: decisionProof.proofTxBase64,
           note: 'Denied in Agentic Cloud workspace.',
         }),
       });
@@ -29558,7 +29878,7 @@ async function runCloudSolTransferFinalization(action: PreparedAction): Promise<
   });
   const { finalization, transactionBase64 } = cloudPreparedFinalizationFromResponse(prepareResponse);
   const finalizationId = finalization.id;
-  const decisionProof = await (async (): Promise<{ signature: string; message: string }> => {
+  const decisionProof = await (async (): Promise<SignedCloudProof> => {
     try {
       return await signCloudFinalizationProof(action, finalization);
     } catch (err) {
@@ -29649,6 +29969,8 @@ async function runCloudSolTransferFinalization(action: PreparedAction): Promise<
       proofSignature: decisionProof.signature,
       decisionProofMessage: decisionProof.message,
       signatureEncoding: 'base58',
+      decisionProofEncoding: decisionProof.proofEncoding,
+      decisionProofTxBase64: decisionProof.proofTxBase64,
       note: confirmed
         ? 'Wallet approved and transaction finalization receipt was saved.'
         : 'Wallet submitted a transaction and confirmation is still pending.',
@@ -29710,7 +30032,7 @@ async function executeCloudBrowserPreparedAction(action: PreparedAction): Promis
     throw new Error(policyError);
   }
   const priorStatus: PreparedActionStatus = action.status === 'overdue' ? 'overdue' : 'ready';
-  let decisionProof: { signature: string; message: string } | undefined;
+  let decisionProof: SignedCloudProof | undefined;
 
   const existingLedger = findPendingTransactionByAction(action.id);
   if (existingLedger && PENDING_LEDGER_PHASES.has(existingLedger.phase)) {
@@ -29942,7 +30264,7 @@ async function handleClassifiedCloudExecutionFailure(opts: {
   toastId: number;
   priorStatus: PreparedActionStatus;
   err: unknown;
-  decisionProof?: { signature: string; message: string };
+  decisionProof?: SignedCloudProof;
 }): Promise<void> {
   const { action, toastId, priorStatus, err, decisionProof } = opts;
   const ledger = findPendingTransactionByAction(action.id);
@@ -30081,7 +30403,7 @@ async function recordCloudWalletExecution(action: PreparedAction, input: {
   explorerUrl?: string;
   error?: string;
   note?: string;
-  decisionProof?: { signature: string; message: string };
+  decisionProof?: SignedCloudProof;
   metadata?: JsonObject;
 }): Promise<Record<string, unknown>> {
   const payload = {
@@ -30094,6 +30416,8 @@ async function recordCloudWalletExecution(action: PreparedAction, input: {
       proofSignature: input.decisionProof.signature,
       decisionProofMessage: input.decisionProof.message,
       signatureEncoding: 'base58',
+      ...(input.decisionProof.proofEncoding ? { decisionProofEncoding: input.decisionProof.proofEncoding } : {}),
+      ...(input.decisionProof.proofTxBase64 ? { decisionProofTxBase64: input.decisionProof.proofTxBase64 } : {}),
     } : {}),
     metadata: {
       transactionBoundary: 'browser_wallet_adapter_v1',
@@ -30553,11 +30877,17 @@ function restoreBrowserActionAfterClearingPending(action: PreparedAction, ledger
   });
 }
 
+interface SignedCloudProof {
+  signature: string;
+  message: string;
+  proofEncoding?: 'utf8-message' | 'tx-memo-proof';
+  proofTxBase64?: string;
+}
+
 async function signCloudWorkflowDecision(
   action: PreparedAction,
   decision: 'approved' | 'rejected',
-): Promise<{ signature: string; message: string }> {
-  const signingClient = requireClient();
+): Promise<SignedCloudProof> {
   const signingMessage = workflowDecisionProofMessage({
     approval: {
       id: action.id,
@@ -30569,15 +30899,19 @@ async function signCloudWorkflowDecision(
     },
     decision,
   });
-  const result = await signingClient.signMessage(signingMessage, signOptions(`Agentic Cloud ${decision}`));
-  return { signature: result.signature, message: signingMessage };
+  const result = await signWalletProofMessage(signingMessage, `Agentic Cloud ${decision}`, action.cluster);
+  return {
+    signature: result.signature,
+    message: signingMessage,
+    proofEncoding: result.proofEncoding,
+    proofTxBase64: result.proofTxBase64,
+  };
 }
 
 async function signCloudFinalizationProof(
   action: PreparedAction,
   finalization: CloudTransactionFinalizationRecord,
-): Promise<{ signature: string; message: string }> {
-  const signingClient = requireClient();
+): Promise<SignedCloudProof> {
   const signingMessage = workflowFinalizationProofMessage({
     approval: {
       id: action.id,
@@ -30589,8 +30923,13 @@ async function signCloudFinalizationProof(
     },
     finalization,
   });
-  const result = await signingClient.signMessage(signingMessage, { cluster: action.cluster, summary: 'Agentic Cloud transaction finalization' });
-  return { signature: result.signature, message: signingMessage };
+  const result = await signWalletProofMessage(signingMessage, 'Agentic Cloud transaction finalization', action.cluster);
+  return {
+    signature: result.signature,
+    message: signingMessage,
+    proofEncoding: result.proofEncoding,
+    proofTxBase64: result.proofTxBase64,
+  };
 }
 
 function workflowProofParams(action: PreparedAction): JsonObject {
@@ -30601,7 +30940,6 @@ async function signBrowserWorkflowDecision(
   action: PreparedAction,
   decision: 'approved' | 'rejected',
 ): Promise<string> {
-  const signingClient = requireClient();
   const signingMessage = [
     'Agentic browser workflow decision',
     `Decision: ${decision}`,
@@ -30614,7 +30952,7 @@ async function signBrowserWorkflowDecision(
     `Time: ${new Date().toISOString()}`,
     'This signature records a browser workflow decision only. It does not submit a transaction.',
   ].join('\n');
-  const result = await signingClient.signMessage(signingMessage, signOptions(`Browser workflow ${decision}`));
+  const result = await signWalletProofMessage(signingMessage, `Browser workflow ${decision}`, state.cluster);
   return result.signature;
 }
 
@@ -30942,16 +31280,11 @@ async function reconcilePendingTransactions(opts: {
           });
           showCompletedHistoryForAction(action.id);
         }
+        const recordToastId = record.toastId;
         removePendingTransaction(record.id);
         mutated = true;
-        if (isUserInitiated) {
-          pushToast(
-            'success',
-            'Transaction confirmed',
-            `${short(record.txid)} - Solscan link saved in Done.`,
-            { linkHref: explorerUrl(record.txid, cluster), linkLabel: 'Open Solscan' },
-          );
-        }
+        const toastOpts = { linkHref: explorerUrl(record.txid, cluster), linkLabel: 'Open Solscan' };
+        notifyReconciledTransaction(recordToastId, isUserInitiated, 'success', 'Transaction confirmed', `${short(record.txid)} - Solscan link saved in Done.`, toastOpts);
       } else if (status.txStatus === 'failed') {
         const failureDetail = status.error ?? status.confirmationStatus ?? 'failed';
         markTransactionPhase(record.id, 'failed', {
@@ -30978,14 +31311,8 @@ async function reconcilePendingTransactions(opts: {
           });
         }
         mutated = true;
-        if (isUserInitiated) {
-          pushToast(
-            'error',
-            'Transaction failed on-chain',
-            short(record.txid),
-            { linkHref: explorerUrl(record.txid, cluster), linkLabel: 'Open Solscan' },
-          );
-        }
+        const failToastOpts = { linkHref: explorerUrl(record.txid, cluster), linkLabel: 'Open Solscan' };
+        notifyReconciledTransaction(record.toastId, isUserInitiated, 'error', 'Transaction failed on-chain', short(record.txid), failToastOpts);
       } else if (status.found === false && transactionNotFoundIsStale(
         state.preparedActions.find((candidate) => candidate.id === record.actionId) ?? {
           id: record.actionId,
@@ -31026,14 +31353,8 @@ async function reconcilePendingTransactions(opts: {
           });
         }
         mutated = true;
-        if (isUserInitiated) {
-          pushToast(
-            'error',
-            'Transaction not found',
-            failureDetail,
-            { linkHref: explorerUrl(record.txid, cluster), linkLabel: 'Open Solscan' },
-          );
-        }
+        const notFoundOpts = { linkHref: explorerUrl(record.txid, cluster), linkLabel: 'Open Solscan' };
+        notifyReconciledTransaction(record.toastId, isUserInitiated, 'error', 'Transaction not found', failureDetail, notFoundOpts);
       } else if (isUserInitiated) {
         // Still pending — keep the record, but surface status if user initiated.
         pushToast(
@@ -31375,6 +31696,7 @@ async function executeBrowserSwap(
     jupiterRequestId: requestId,
     signedAt: new Date().toISOString(),
     attemptCount: 0,
+    toastId: toastContext.toastId,
   });
   syncPendingTransactionsFromLedger();
   const executed = await executeSignedJupiterSwapWithRetry(action, signed.signature, order, requestId, toastContext);
@@ -31473,6 +31795,7 @@ async function signAndBroadcastBrowserTransactionBase64(
       signedTransactionHash: signedHash,
       signedAt: new Date().toISOString(),
       attemptCount: 0,
+      toastId: toastContext.toastId,
     });
     syncPendingTransactionsFromLedger();
     const txid = await broadcastSignedBrowserTransactionWithRetry(action.cluster, signed.signature, toastContext);
@@ -31504,6 +31827,7 @@ async function signAndBroadcastBrowserTransactionBase64(
       txid,
       submittedAt: new Date().toISOString(),
       attemptCount: 1,
+      toastId: toastContext.toastId,
     });
     syncPendingTransactionsFromLedger();
     updateTransactionToast(toastContext, 'pending', 'Confirming transaction', short(txid), txid);
@@ -31638,7 +31962,11 @@ async function resolveSubmittedTransactionStatusResult(
   const deadline = Date.now() + TX_CONFIRMATION_POLL_TIMEOUT_MS;
   let lastStatus: SubmittedTransactionStatusResult | undefined;
   while (true) {
-    const status = await submittedTransactionStatus(cluster, txid);
+    // Cap each RPC call so a single hung connection cannot freeze the deadline check.
+    const status = await pollWithTimeout(
+      () => submittedTransactionStatus(cluster, txid),
+      TX_CONFIRMATION_RPC_CALL_TIMEOUT_MS,
+    );
     lastStatus = status;
     if (status.txStatus === 'failed') {
       throw new Error(`Transaction ${short(txid)} failed on-chain: ${status.error ?? status.confirmationStatus ?? 'failed'}`);
@@ -31662,6 +31990,34 @@ async function resolveSubmittedTransactionStatusResult(
     }
     await sleep(Math.min(TX_CONFIRMATION_POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())));
   }
+}
+
+async function pollWithTimeout(
+  call: () => Promise<SubmittedTransactionStatusResult>,
+  timeoutMs: number,
+): Promise<SubmittedTransactionStatusResult> {
+  return new Promise<SubmittedTransactionStatusResult>((resolve) => {
+    let resolved = false;
+    const timer = setTimeout(() => {
+      if (resolved) return;
+      resolved = true;
+      resolve({ txStatus: 'status_unreachable', error: `RPC status check exceeded ${timeoutMs}ms` });
+    }, timeoutMs);
+    call().then(
+      (value) => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(timer);
+        resolve({ txStatus: 'status_unreachable', error: redactSecrets(err instanceof Error ? err.message : String(err)) });
+      },
+    );
+  });
 }
 
 async function submittedTransactionStatus(
@@ -31865,6 +32221,49 @@ async function syncBridgePreparedActionTransaction(
 
 function syncPendingTransactionsFromLedger(): void {
   state.pendingTransactions = loadTransactionLedger();
+  ensurePendingReconciliationInterval();
+}
+
+function notifyReconciledTransaction(
+  recordToastId: number | undefined,
+  isUserInitiated: boolean,
+  kind: ToastKind,
+  title: string,
+  message: string,
+  options: ToastOptions,
+): void {
+  if (recordToastId !== undefined && state.toasts.some((toast) => toast.id === recordToastId)) {
+    replaceToast(recordToastId, kind, title, message, options);
+    return;
+  }
+  if (isUserInitiated || recordToastId !== undefined) {
+    pushToast(kind, title, message, options);
+  }
+}
+
+let pendingReconciliationTimer: number | null = null;
+
+function ensurePendingReconciliationInterval(): void {
+  if (typeof window === 'undefined') return;
+  const hasPending = state.pendingTransactions.length > 0;
+  if (hasPending && pendingReconciliationTimer === null) {
+    pendingReconciliationTimer = window.setInterval(() => {
+      if (state.pendingTransactions.length === 0) {
+        clearPendingReconciliationInterval();
+        return;
+      }
+      void reconcilePendingTransactions({ trigger: 'tab-entry' });
+    }, PENDING_RECONCILIATION_INTERVAL_MS);
+  } else if (!hasPending) {
+    clearPendingReconciliationInterval();
+  }
+}
+
+function clearPendingReconciliationInterval(): void {
+  if (pendingReconciliationTimer !== null) {
+    window.clearInterval(pendingReconciliationTimer);
+    pendingReconciliationTimer = null;
+  }
 }
 
 function ledgerWorkflowSource(action: PreparedAction): LedgerWorkflowSource {
@@ -32844,7 +33243,6 @@ async function signAndArchiveEvidenceReceipt(input: {
   metadata?: JsonObject;
   signSummary?: string;
 }): Promise<{ artifact: LabArtifact; archiveResult: ArchiveLabArtifactResult }> {
-  const signingClient = requireClient();
   const createdAt = new Date().toISOString();
   const payload = await labPayload(input.lab.id, input.input, createdAt, input.fieldValues);
   const id = newId(input.lab.id.slice(0, 3).replace(/[^a-z]/g, '') || 'lab');
@@ -32863,14 +33261,16 @@ async function signAndArchiveEvidenceReceipt(input: {
   };
   const preSignatureHash = await sha256(stableJson(unsigned));
   const signingMessage = receiptProofSigningMessage(input, id, preSignatureHash);
-  const result = await signingClient.signMessage(signingMessage, signOptions(input.signSummary ?? input.lab.title));
-  const verified = verifyMessageSignature(signingMessage, result.signature);
+  const result = await signWalletProofMessage(signingMessage, input.signSummary ?? input.lab.title, state.cluster);
+  const verified = verifyProofSignature(signingMessage, result);
   const artifactBase = {
     ...unsigned,
     preSignatureHash,
     signingMessage,
     signature: result.signature,
     verified,
+    ...(result.proofEncoding && result.proofEncoding !== 'utf8-message' ? { proofEncoding: result.proofEncoding } : {}),
+    ...(result.proofTxBase64 ? { proofTxBase64: result.proofTxBase64 } : {}),
   };
   const artifact: LabArtifact = {
     ...artifactBase,
@@ -34669,15 +35069,22 @@ async function handleBridgeSigningRequest(request: SigningRequest): Promise<void
 
   try {
     let result: SigningResult;
+    let proofEnvelope: { proofEncoding?: 'utf8-message' | 'tx-memo-proof'; proofTxBase64?: string } | undefined;
     switch (request.kind) {
-      case 'sign_message':
-        result = await runTransactionToastStep(
+      case 'sign_message': {
+        const opts = requestSignOptions(request);
+        const proof = await runTransactionToastStep(
           toastContext,
           'Signing message',
           request.display?.summary ?? request.id,
-          () => signingClient.signMessage(request.payload.data, requestSignOptions(request)),
+          () => signWalletProofMessage(request.payload.data, opts.summary ?? request.id, opts.cluster),
         );
+        result = { signature: proof.signature };
+        if (proof.proofEncoding === 'tx-memo-proof') {
+          proofEnvelope = { proofEncoding: proof.proofEncoding, proofTxBase64: proof.proofTxBase64 };
+        }
         break;
+      }
       case 'sign_transaction':
         result = await runTransactionToastStep(
           toastContext,
@@ -34713,6 +35120,7 @@ async function handleBridgeSigningRequest(request: SigningRequest): Promise<void
         requestId: request.id,
         signature: result.signature,
         ...(result.txid !== undefined && { txid: result.txid }),
+        ...(proofEnvelope ?? {}),
       }),
     });
     state.bridgeStatus = `Approved ${request.kind}: ${short(result.txid ?? result.signature)}`;
@@ -36986,34 +37394,34 @@ function spendTabVisible(): boolean {
 }
 
 function workspaceTabSelectMobile(): string {
-  const entries: Array<{ id: ActiveTab; label: string }> = [
-    { id: 'overview', label: 'Home' },
-    { id: 'agent', label: 'New Request' },
-    ...(spendTabVisible() ? [{ id: 'spend' as ActiveTab, label: 'Spend' }] : []),
-    { id: 'schedule', label: 'Repeat Payments' },
-    { id: 'inbox', label: 'Needs Approval' },
-    { id: 'completed', label: 'Done' },
-    ...moreMenuItems().map((item) => ({ id: item.id as ActiveTab, label: item.label })),
-    { id: 'preferences', label: 'Preferences' },
-  ];
-  const options: SelectPickerOption[] = entries.map((entry) => {
-    const locked = lockedTabReason(entry.id);
-    return {
-      value: String(entry.id),
-      label: entry.label,
-      disabled: Boolean(locked),
-      ...(locked ? { title: locked } : {}),
-    };
-  });
+  const approvalLabel = state.androidNativeEnvironment.bridgeAvailable || IS_ANDROID_APP
+    ? 'Sign Approval'
+    : 'Needs Approval';
   return `
-    <nav class="workspace-tabs-mobile" aria-label="Workspace navigation" data-layout="app-mobile-tabs">
-      ${selectPicker({
-        id: 'workspaceTabMobile',
-        value: String(state.activeTab),
-        options,
-        className: 'workspace-tab-mobile-picker',
-      })}
+    <nav class="workspace-tabs-mobile workspace-bottom-tabs" aria-label="Workspace navigation" data-layout="app-mobile-tabs">
+      ${mobileDockTabButton('overview', 'Home')}
+      ${mobileDockTabButton('agent', 'New Request')}
+      ${mobileDockTabButton('inbox', approvalLabel)}
+      ${mobileDockTabButton('completed', 'Done')}
+      ${mobileMoreMenuButton()}
     </nav>
+  `;
+}
+
+function mobileDockTabButton(tab: ActiveTab, label: string): string {
+  const lockedReason = lockedTabReason(tab);
+  const locked = Boolean(lockedReason);
+  const active = state.activeTab === tab;
+  return `
+    <button
+      type="button"
+      data-tab="${escapeHtml(String(tab))}"
+      class="workspace-bottom-tab${active ? ' active' : ''}"
+      aria-label="${escapeHtml(label)}"
+      ${locked ? `disabled title="${escapeHtml(lockedReason)}"` : ''}
+    >
+      <span>${escapeHtml(label)}</span>
+    </button>
   `;
 }
 
@@ -37025,6 +37433,10 @@ const REQUIRED_MORE_SURFACES: Record<string, { label: string; render: () => stri
 
 function moreMenuItems(): WorkspaceMoreMenuItem[] {
   return workspaceMoreMenuItems(listDevTabs());
+}
+
+function mobileMoreMenuItems(): WorkspaceMoreMenuItem[] {
+  return mobileWorkspaceMoreMenuItems(listDevTabs());
 }
 
 function requiredMoreSurface(id: string): { label: string; render: () => string } | undefined {
@@ -37051,6 +37463,41 @@ function moreMenuButton(): string {
             role="menuitem"
             data-tab="${escapeHtml(item.id)}"
             class="workspace-more-item template-picker-option ${active ? 'selected active' : ''}"
+          >
+            <span class="select-picker-option-copy">
+              <strong>${escapeHtml(item.label)}</strong>
+            </span>
+          </button>
+        `;
+          })
+          .join('')}
+      </div>
+    </details>
+  `;
+}
+
+function mobileMoreMenuButton(): string {
+  const items = mobileMoreMenuItems();
+  const activeInMenu = items.some((item) => state.activeTab === item.id);
+  return `
+    <details class="workspace-more workspace-bottom-more${activeInMenu ? ' has-active' : ''}">
+      <summary class="workspace-more-trigger workspace-bottom-tab ${activeInMenu ? 'active' : ''}" aria-haspopup="menu">
+        <span class="nav-label">More+</span>
+        <span class="workspace-more-caret" aria-hidden="true">▾</span>
+      </summary>
+      <div class="workspace-more-menu workspace-bottom-more-menu template-picker-menu drop-up" role="menu">
+        ${items
+          .map((item) => {
+            const active = state.activeTab === item.id;
+            const lockedReason = lockedTabReason(item.id as ActiveTab);
+            const locked = Boolean(lockedReason);
+            return `
+          <button
+            type="button"
+            role="menuitem"
+            data-tab="${escapeHtml(item.id)}"
+            class="workspace-more-item template-picker-option ${active ? 'selected active' : ''}"
+            ${locked ? `disabled title="${escapeHtml(lockedReason)}"` : ''}
           >
             <span class="select-picker-option-copy">
               <strong>${escapeHtml(item.label)}</strong>
@@ -39147,12 +39594,12 @@ function approvalEffectCopy(action: PreparedAction): string {
   }
   if (isExecutableBrowserAction(action)) {
     if (action.kind === 'swap') {
-      return 'Your wallet signs the swap transaction. Pending transactions stay here with a Solscan link; Done appears after confirmation.';
+      return 'Your wallet signs the swap transaction. The receipt appears in the Done tab.';
     }
     if (isConnectorApprovalKind(action)) {
-      return 'The prepared connector transaction is fetched from Private Local Mode (or Agentic Cloud); your wallet signs and submits it. Pending transactions stay here with a Solscan link; Done appears after confirmation.';
+      return 'Your wallet signs the connector transaction. The receipt appears in the Done tab.';
     }
-    return 'Your wallet signs and submits the transaction. Pending transactions stay here with a Solscan link; Done appears after confirmation.';
+    return 'Your wallet signs the transaction. The receipt appears in the Done tab.';
   }
   if (isConnectorApprovalKind(action)) {
     return 'Connector execution is not yet wired into this browser. Approving here would only sign a decision proof — no transaction would be submitted. Use Private Local Mode (or sign into Agentic Cloud) to actually run this connector.';
@@ -39195,7 +39642,7 @@ function raydiumAddLiquidityEffectCopy(action: PreparedAction): string {
     ? ` Slippage allows up to ${slippageParts.join(' / ')}.`
     : '';
   const tail = isExecutableBrowserAction(action) || isCloudBrowserExecutableAction(action)
-    ? ' Final amounts confirmed when your wallet signs; pending transactions stay here with a Solscan link.'
+    ? ' Final amounts confirmed when your wallet signs; the receipt appears in the Done tab.'
     : ' Final amounts confirmed when your wallet signs.';
   return `Deposit ${depositText} into ${poolLabel}.${slippageSentence}${tail}`;
 }
@@ -40027,6 +40474,11 @@ function recurringCard(payment: RecurringPayment): string {
   const notifications = state.recurringNotificationStatus[payment.id];
   const source = recurringPaymentWorkflowSource(payment);
   const pauseSource = recurringPauseSource(payment);
+  const safePaymentId = escapeHtml(payment.id);
+  const agentReviewAction = hasDetectedAgentReviewPath()
+    ? `<button class="recurring-agent-action" data-recurring-op="agent-review" data-recurring-id="${safePaymentId}" ${state.busy || !canRunAgentReview() ? 'disabled' : ''}>Ask agent again</button>`
+    : '';
+  const actionLayoutClass = agentReviewAction ? 'has-agent-review-action' : 'solo-primary-action';
   return `
     <article class="recurring-item recurring-card ${pauseSource === 'agent' ? 'agent-paused' : pauseSource === 'user' ? 'user-paused' : ''}">
       <div class="recurring-card-main">
@@ -40044,10 +40496,10 @@ function recurringCard(payment: RecurringPayment): string {
             ${recurringCardSubtitle(payment)}
           </div>
           ${recurringCardHero(payment, nextRuns)}
-          <div class="recurring-actions recurring-card-actions">
-            ${hasDetectedAgentReviewPath() ? `<button data-recurring-op="agent-review" data-recurring-id="${payment.id}" ${state.busy || !canRunAgentReview() ? 'disabled' : ''}>Ask agent again</button>` : ''}
-            <button data-recurring-op="${flipOp}" data-recurring-id="${payment.id}" ${completed || state.busy ? 'disabled' : ''}>${payment.status === 'active' ? 'Pause' : 'Resume'}</button>
-            <button data-recurring-op="history" data-recurring-id="${payment.id}" ${state.busy ? 'disabled' : ''}>${history ? 'Refresh past payments' : 'Load past payments'}</button>
+          <div class="recurring-actions recurring-card-actions ${actionLayoutClass}">
+            ${agentReviewAction}
+            <button class="recurring-primary-action" data-recurring-op="${flipOp}" data-recurring-id="${safePaymentId}" ${completed || state.busy ? 'disabled' : ''}>${payment.status === 'active' ? 'Pause' : 'Resume'}</button>
+            <button class="recurring-history-action" data-recurring-op="history" data-recurring-id="${safePaymentId}" ${state.busy ? 'disabled' : ''}>${history ? 'Refresh past payments' : 'Load past payments'}</button>
           </div>
         </div>
         ${recurringCardSummaryGrid(payment, nextRuns, spend)}
@@ -43339,6 +43791,38 @@ function verifyMessageSignature(message: string, signature: string): boolean {
   }
 }
 
+function verifyProofSignature(
+  message: string,
+  proof: { signature: string; proofEncoding?: 'utf8-message' | 'tx-memo-proof'; proofTxBase64?: string },
+): boolean {
+  if (proof.proofEncoding !== 'tx-memo-proof' || !proof.proofTxBase64) {
+    return verifyMessageSignature(message, proof.signature);
+  }
+  try {
+    const bytes = decodeBase64(proof.proofTxBase64);
+    const pubkey = publicKeyFromConnectedWallet().toBytes();
+    const sigBytes = bs58.decode(proof.signature);
+    try {
+      const tx = Transaction.from(bytes);
+      const memoIx = tx.instructions.find((ix) => ix.programId.toBase58() === 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
+      if (!memoIx || new TextDecoder().decode(memoIx.data) !== message) return false;
+      return nacl.sign.detached.verify(tx.serializeMessage(), sigBytes, pubkey);
+    } catch {
+      // Versioned transaction fallback
+    }
+    const vtx = VersionedTransaction.deserialize(bytes);
+    const memoProgramKey = vtx.message.staticAccountKeys
+      .findIndex((key) => key.toBase58() === 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
+    if (memoProgramKey < 0) return false;
+    const memoIx = vtx.message.compiledInstructions.find((ix) => ix.programIdIndex === memoProgramKey);
+    if (!memoIx) return false;
+    if (new TextDecoder().decode(memoIx.data) !== message) return false;
+    return nacl.sign.detached.verify(vtx.message.serialize(), sigBytes, pubkey);
+  } catch {
+    return false;
+  }
+}
+
 function newId(prefix: string): string {
   const bytes = new Uint8Array(8);
   globalThis.crypto.getRandomValues(bytes);
@@ -44975,8 +45459,14 @@ function isGeneratedPlanRecord(value: unknown): value is GeneratedPlanRecord {
     (record.failureLabel === undefined || typeof record.failureLabel === 'string') &&
     (record.agentReview === undefined || Boolean(parseAgentPlanReviewState(record.agentReview))) &&
     (record.agentOverride === undefined || Boolean(parseAgentReviewOverride(record.agentOverride))) &&
-    (record.metadata === undefined || isJsonObject(record.metadata))
+    (record.metadata === undefined || isJsonObject(record.metadata)) &&
+    (record.cloudSyncStatus === undefined || isCloudSyncStatus(record.cloudSyncStatus)) &&
+    (record.cloudSyncError === undefined || typeof record.cloudSyncError === 'string')
   );
+}
+
+function isCloudSyncStatus(value: unknown): value is CloudSyncStatus {
+  return value === 'synced' || value === 'pending' || value === 'error';
 }
 
 function parseAgentPlanReviewState(value: unknown): AgentPlanReviewState | undefined {

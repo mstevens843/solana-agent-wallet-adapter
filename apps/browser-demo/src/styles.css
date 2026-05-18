@@ -4758,8 +4758,38 @@ code {
     box-shadow 140ms ease;
 }
 
+.workspace-storage-panel > .mobile-rail-sheet-trigger {
+  align-items: center;
+  appearance: none;
+  background:
+    linear-gradient(135deg, rgba(112, 170, 229, 0.14), rgba(255, 255, 255, 0.034)),
+    rgba(17, 28, 39, 0.42);
+  border: 1px solid rgba(112, 170, 229, 0.24);
+  border-radius: 8px;
+  box-shadow:
+    0 0 0 1px rgba(112, 170, 229, 0.055),
+    0 14px 32px rgba(0, 0, 0, 0.18);
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  font: inherit;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  list-style: none;
+  min-height: 44px;
+  padding: 10px;
+  text-align: left;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+  width: 100%;
+}
+
 .workspace-storage-panel > summary:hover,
-.workspace-storage-panel[open] > summary {
+.workspace-storage-panel[open] > summary,
+.workspace-storage-panel > .mobile-rail-sheet-trigger:hover,
+.workspace-storage-panel > .mobile-rail-sheet-trigger[aria-expanded="true"] {
   background:
     linear-gradient(135deg, rgba(112, 170, 229, 0.2), rgba(94, 231, 158, 0.06)),
     rgba(17, 28, 39, 0.52);
@@ -4814,7 +4844,26 @@ code {
   white-space: nowrap;
 }
 
-.workspace-storage-panel > summary::after {
+.workspace-storage-panel > .mobile-rail-sheet-trigger strong {
+  align-items: center;
+  align-self: center;
+  background: rgba(112, 170, 229, 0.12);
+  border: 1px solid rgba(112, 170, 229, 0.22);
+  border-radius: 999px;
+  color: #dbeeff;
+  display: inline-flex;
+  font-size: 0.76rem;
+  justify-content: center;
+  line-height: 1.1;
+  min-height: 30px;
+  min-width: max-content;
+  padding: 5px 10px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.workspace-storage-panel > summary::after,
+.workspace-storage-panel > .mobile-rail-sheet-trigger::after {
   align-self: center;
   color: var(--accent-2);
   content: "+";
@@ -4823,6 +4872,10 @@ code {
 }
 
 .workspace-storage-panel[open] > summary::after {
+  content: "-";
+}
+
+.workspace-storage-panel > .mobile-rail-sheet-trigger[aria-expanded="true"]::after {
   content: "-";
 }
 
@@ -12291,6 +12344,16 @@ button.danger:hover:not(:disabled) {
     top: calc(16px + env(safe-area-inset-top, 0px));
   }
 
+  /* Native shells (Android TWA, iOS Capacitor) under-report safe-area-inset-top,
+     so clamp it to the matching toolbar baseline used elsewhere in the shell. */
+  .shell.android-shell .toast-stack {
+    top: calc(max(48px, env(safe-area-inset-top, 0px)) + 16px);
+  }
+
+  .shell.ios-native-shell .toast-stack {
+    top: calc(max(54px, env(safe-area-inset-top, 0px)) + 16px);
+  }
+
   .homepage-demo-cta {
     align-items: stretch;
     padding: 18px;
@@ -13527,8 +13590,38 @@ button.danger:hover:not(:disabled) {
     box-shadow 140ms ease;
 }
 
+.ai-settings-panel > .mobile-rail-sheet-trigger {
+  align-items: center;
+  appearance: none;
+  background:
+    linear-gradient(135deg, rgba(37, 199, 123, 0.13), rgba(255, 255, 255, 0.035)),
+    rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(94, 231, 158, 0.28);
+  border-radius: 8px;
+  box-shadow:
+    0 0 0 1px rgba(37, 199, 123, 0.06),
+    0 14px 32px rgba(0, 0, 0, 0.18);
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  font: inherit;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  list-style: none;
+  min-height: 44px;
+  padding: 10px 12px;
+  text-align: left;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+  width: 100%;
+}
+
 .ai-settings-panel > summary:hover,
-.ai-settings-panel[open] > summary {
+.ai-settings-panel[open] > summary,
+.ai-settings-panel > .mobile-rail-sheet-trigger:hover,
+.ai-settings-panel > .mobile-rail-sheet-trigger[aria-expanded="true"] {
   background:
     linear-gradient(135deg, rgba(52, 211, 153, 0.18), rgba(133, 220, 255, 0.07)),
     rgba(255, 255, 255, 0.052);
@@ -13578,13 +13671,28 @@ button.danger:hover:not(:disabled) {
   white-space: nowrap;
 }
 
-.ai-settings-panel.configured > summary strong {
+.ai-settings-panel > .mobile-rail-sheet-trigger strong {
+  align-self: center;
+  background: rgba(2, 8, 6, 0.45);
+  border: 1px solid rgba(224, 230, 226, 0.13);
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 0.86rem;
+  line-height: 1.1;
+  padding: 5px 8px;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.ai-settings-panel.configured > summary strong,
+.ai-settings-panel.configured > .mobile-rail-sheet-trigger strong {
   background: rgba(52, 211, 153, 0.14);
   border-color: rgba(94, 231, 158, 0.3);
   color: #d9ffea;
 }
 
-.ai-settings-panel > summary::after {
+.ai-settings-panel > summary::after,
+.ai-settings-panel > .mobile-rail-sheet-trigger::after {
   align-self: center;
   color: var(--accent-2);
   content: "+";
@@ -13593,6 +13701,10 @@ button.danger:hover:not(:disabled) {
 }
 
 .ai-settings-panel[open] > summary::after {
+  content: "-";
+}
+
+.ai-settings-panel > .mobile-rail-sheet-trigger[aria-expanded="true"]::after {
   content: "-";
 }
 
@@ -17529,13 +17641,15 @@ button.danger:hover:not(:disabled) {
   opacity: 0.48;
 }
 
-.route-app .rail-ai-settings[data-layout="ai-setup-panel"] > summary {
+.route-app .rail-ai-settings[data-layout="ai-setup-panel"] > summary,
+.route-app .rail-ai-settings[data-layout="ai-setup-panel"] > .mobile-rail-sheet-trigger {
   gap: 6px;
   min-height: 38px;
   padding: 8px;
 }
 
-.route-app .workspace-storage-panel[data-layout="workspace-storage-panel"] > summary {
+.route-app .workspace-storage-panel[data-layout="workspace-storage-panel"] > summary,
+.route-app .workspace-storage-panel[data-layout="workspace-storage-panel"] > .mobile-rail-sheet-trigger {
   gap: 6px;
   min-height: 38px;
   padding: 8px;
@@ -17563,14 +17677,18 @@ button.danger:hover:not(:disabled) {
 }
 
 .route-app .rail-ai-settings > summary strong,
-.route-app .workspace-storage-panel > summary strong {
+.route-app .rail-ai-settings > .mobile-rail-sheet-trigger strong,
+.route-app .workspace-storage-panel > summary strong,
+.route-app .workspace-storage-panel > .mobile-rail-sheet-trigger strong {
   font-size: 0.64rem;
   min-height: 22px;
   padding: 4px 7px;
 }
 
 .route-app .rail-ai-settings > summary::after,
-.route-app .workspace-storage-panel > summary::after {
+.route-app .rail-ai-settings > .mobile-rail-sheet-trigger::after,
+.route-app .workspace-storage-panel > summary::after,
+.route-app .workspace-storage-panel > .mobile-rail-sheet-trigger::after {
   font-size: 0.82rem;
 }
 
@@ -19736,19 +19854,24 @@ button.danger:hover:not(:disabled) {
 }
 
 .route-app .inbox-approval-drawers .inline-receipt-button-grid {
-  display: grid;
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
   gap: 6px;
-  grid-template-columns: repeat(4, max-content);
   justify-content: start;
+  max-width: 100%;
   padding-top: 4px;
 }
 
 .route-app .inbox-approval-drawers .inline-receipt-button-grid button {
+  flex: 0 1 auto;
   font-size: 0.72rem;
-  line-height: 1;
+  line-height: 1.1;
+  max-width: 100%;
   min-height: 26px;
   padding: 4px 7px;
-  white-space: nowrap;
+  white-space: normal;
+  width: auto;
 }
 
 .route-app .inbox-approval-drawers > details:not([open]) {
@@ -25953,9 +26076,8 @@ button.danger:hover:not(:disabled) {
   text-transform: uppercase;
 }
 
-/* /app mobile shell: dock the workspace tab dropdown to the bottom like an
-   Instagram-style nav bar. The dropdown opens upward. The middle-of-page tab
-   picker is removed; only this bottom dock surfaces tab navigation on mobile.
+/* /app mobile shell: dock the workspace navigation to the bottom. The middle-of-page
+   tab picker is removed; only this bottom dock surfaces tab navigation on mobile.
    Desktop continues to use the inline horizontal tab strip in the topbar. */
 .android-bottom-tab-dock { display: none; }
 
@@ -25975,7 +26097,7 @@ button.danger:hover:not(:disabled) {
   --android-dock-h: 64px;
 }
 
-/* Force-hide every workspace-tabs-mobile picker that is NOT inside the bottom
+/* Force-hide every workspace-tabs-mobile nav that is NOT inside the bottom
    dock so it can never appear inline in the middle of the page. */
 .route-app .workspace-tabs-mobile { display: none !important; }
 .route-app .android-bottom-tab-dock .workspace-tabs-mobile { display: block !important; }
@@ -26006,82 +26128,353 @@ button.danger:hover:not(:disabled) {
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.025),
       0 10px 26px rgba(0, 0, 0, 0.36);
-    display: block !important;
+    display: grid !important;
+    gap: 4px;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     margin: 0;
     padding: 4px;
+    position: relative;
     width: 100%;
   }
 
-  /* Match the compact in-page tab treatment: dark card, muted green fill,
-     low-contrast border, and tighter corners. */
-  .route-app .android-bottom-tab-dock .select-picker-trigger,
-  .route-app .android-bottom-tab-dock .template-picker-trigger {
+  .route-app .android-bottom-tab-dock .workspace-bottom-tab,
+  .route-app .android-bottom-tab-dock .workspace-more-trigger.workspace-bottom-tab {
     align-items: center;
-    background: rgba(28, 50, 41, 0.7) !important;
-    border: 1px solid rgba(224, 230, 226, 0.1) !important;
+    appearance: none;
+    background: rgba(14, 18, 17, 0.96);
+    border: 1px solid rgba(224, 230, 226, 0.1);
     border-radius: 8px;
     box-shadow:
       inset 0 1px 0 rgba(255, 255, 255, 0.025),
-      inset 0 0 0 1px rgba(125, 231, 176, 0.035);
-    color: #f2fff7;
-    gap: 8px;
-    grid-template-columns: minmax(0, auto) auto;
+      inset 0 0 0 1px rgba(125, 231, 176, 0.025);
+    color: rgba(223, 233, 229, 0.86);
+    cursor: pointer;
+    display: flex;
+    font: inherit;
+    font-size: 0.68rem;
+    font-weight: 850;
+    gap: 4px;
     justify-content: center;
-    min-height: 44px;
-    padding: 8px 14px;
+    letter-spacing: 0;
+    line-height: 1.05;
+    min-height: 48px;
+    min-width: 0;
+    padding: 5px 4px;
+    position: relative;
     text-align: center;
+    white-space: normal;
     width: 100%;
   }
 
-  .route-app .android-bottom-tab-dock .template-picker.open .select-picker-trigger,
-  .route-app .android-bottom-tab-dock .template-picker.open .template-picker-trigger {
-    background: rgba(31, 58, 48, 0.78) !important;
-    border-color: rgba(224, 230, 226, 0.16) !important;
+  .route-app .android-bottom-tab-dock .workspace-bottom-tab span {
+    display: block;
+    max-width: 100%;
+    overflow-wrap: anywhere;
   }
 
-  .route-app .android-bottom-tab-dock .template-picker-current {
-    align-items: center;
-    display: flex;
-    justify-content: center;
-    min-width: 0;
+  .route-app .android-bottom-tab-dock .workspace-more-trigger.workspace-bottom-tab::after {
+    display: none;
   }
 
-  .route-app .android-bottom-tab-dock .template-picker-current strong {
+  .route-app .android-bottom-tab-dock .workspace-bottom-tab:hover:not(:disabled),
+  .route-app .android-bottom-tab-dock .workspace-bottom-more[open] > .workspace-bottom-tab {
+    border-color: rgba(224, 230, 226, 0.16);
     color: #f2fff7;
-    font-size: 0.82rem;
-    font-weight: 800;
-    letter-spacing: 0;
   }
 
-  .route-app .android-bottom-tab-dock .template-picker-caret {
-    color: rgba(242, 255, 247, 0.72);
+  .route-app .android-bottom-tab-dock .workspace-bottom-tab.active,
+  .route-app .android-bottom-tab-dock .workspace-more-trigger.workspace-bottom-tab.active {
+    background: rgba(28, 50, 41, 0.72);
+    border-color: rgba(125, 231, 176, 0.24);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.035),
+      inset 0 0 0 1px rgba(125, 231, 176, 0.055);
+    color: #f2fff7;
   }
 
-  .route-app .android-bottom-tab-dock .template-picker.open .template-picker-caret {
-    color: rgba(242, 255, 247, 0.82);
+  .route-app .android-bottom-tab-dock .workspace-bottom-tab:disabled {
+    color: rgba(196, 205, 202, 0.38);
+    cursor: not-allowed;
+    opacity: 0.66;
   }
 
-  .route-app .android-bottom-tab-dock .template-picker-menu.drop-up {
+  .route-app .android-bottom-tab-dock .workspace-bottom-more {
+    min-width: 0;
+    position: static;
+  }
+
+  .route-app .android-bottom-tab-dock .workspace-bottom-more > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .route-app .android-bottom-tab-dock .workspace-bottom-more .workspace-more-caret {
+    color: rgba(242, 255, 247, 0.76);
+    flex: 0 0 auto;
+    font-size: 0.65rem;
+    transform: translateY(-1px);
+  }
+
+  .route-app .android-bottom-tab-dock .workspace-bottom-more[open] .workspace-more-caret {
+    transform: translateY(-1px) rotate(180deg);
+  }
+
+  .route-app .android-bottom-tab-dock .workspace-bottom-more-menu {
     background: rgba(12, 16, 15, 0.98);
     border: 1px solid rgba(125, 231, 176, 0.22);
     border-radius: 14px;
-    bottom: calc(100% + 10px);
+    bottom: calc(100% + 10px) !important;
     box-shadow:
       0 -24px 58px rgba(0, 0, 0, 0.48),
       inset 0 1px 0 rgba(255, 255, 255, 0.045);
-    left: 0;
-    right: 0;
-    top: auto;
+    display: grid;
+    gap: 6px;
+    left: 0 !important;
+    max-height: min(72dvh, 440px);
+    max-width: none;
+    min-width: 0;
+    overflow-y: auto;
+    padding: 8px;
+    position: absolute;
+    right: 0 !important;
+    top: auto !important;
+    width: 100% !important;
+    z-index: 260;
+  }
+
+  .route-app .android-bottom-tab-dock .workspace-bottom-more-menu .workspace-more-item {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.026);
+    border: 1px solid rgba(224, 230, 226, 0.1);
+    border-radius: 8px;
+    color: var(--text);
+    display: flex;
+    font-size: 0.95rem;
+    font-weight: 850;
+    justify-content: flex-start;
+    line-height: 1.16;
+    min-height: 56px;
+    padding: 12px 18px;
+    text-align: left;
     width: 100%;
   }
 
-  .route-app .android-bottom-tab-dock .template-picker-menu .template-picker-option {
-    min-height: 48px;
-    padding: 12px 16px;
+  .route-app .android-bottom-tab-dock .workspace-bottom-more-menu .workspace-more-item:hover:not(:disabled),
+  .route-app .android-bottom-tab-dock .workspace-bottom-more-menu .workspace-more-item:focus-visible {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(224, 230, 226, 0.17);
+    color: var(--text);
+    transform: none;
+  }
+
+  .route-app .android-bottom-tab-dock .workspace-bottom-more-menu .workspace-more-item.selected,
+  .route-app .android-bottom-tab-dock .workspace-bottom-more-menu .workspace-more-item.active {
+    background: rgba(28, 50, 41, 0.72);
+    border-color: rgba(125, 231, 176, 0.3);
+    color: #dcffe9;
+  }
+
+  .route-app .android-bottom-tab-dock .workspace-bottom-more-menu .workspace-more-item:disabled {
+    color: rgba(196, 205, 202, 0.42);
+    cursor: not-allowed;
+    opacity: 0.68;
   }
 
   .shell.route-app {
     padding-bottom: var(--bottom-dock-clearance);
+  }
+}
+
+.mobile-rail-sheet-scrim,
+.mobile-rail-sheet {
+  display: none;
+}
+
+@media (max-width: 899px) {
+  body[data-mobile-rail-sheet] {
+    overflow: hidden;
+  }
+
+  .route-app .mobile-rail-sheet-scrim {
+    animation: mobile-rail-sheet-scrim-in 180ms ease-out both;
+    background: rgba(5, 7, 6, 0.76);
+    backdrop-filter: blur(2px);
+    display: block;
+    inset: 0;
+    position: fixed;
+    z-index: 320;
+  }
+
+  .route-app .mobile-rail-sheet {
+    animation: mobile-rail-sheet-slide-up 240ms cubic-bezier(0.2, 0.86, 0.22, 1) both;
+    background:
+      linear-gradient(180deg, rgba(30, 37, 35, 0.98), rgba(18, 22, 21, 0.99)),
+      #151918;
+    border: 1px solid rgba(224, 230, 226, 0.12);
+    border-bottom: 0;
+    border-radius: 18px 18px 0 0;
+    bottom: 0;
+    box-shadow:
+      0 -24px 80px rgba(0, 0, 0, 0.54),
+      inset 0 1px 0 rgba(255, 255, 255, 0.045);
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    height: min(58dvh, 520px);
+    left: 0;
+    max-height: calc(100dvh - 18px - env(safe-area-inset-top, 0px));
+    min-height: 340px;
+    overflow: hidden;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    position: fixed;
+    right: 0;
+    z-index: 321;
+  }
+
+  .route-app .mobile-rail-sheet::before {
+    background: rgba(224, 230, 226, 0.34);
+    border-radius: 999px;
+    content: "";
+    height: 4px;
+    justify-self: center;
+    position: absolute;
+    top: 8px;
+    width: 42px;
+  }
+
+  .route-app .mobile-rail-sheet-header {
+    align-items: center;
+    border-bottom: 1px solid rgba(224, 230, 226, 0.1);
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+    min-width: 0;
+    padding: 22px 18px 12px;
+  }
+
+  .route-app .mobile-rail-sheet-header div {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  .route-app .mobile-rail-sheet-header span {
+    color: var(--dim);
+    font-size: 0.66rem;
+    font-weight: 900;
+    letter-spacing: 0.08em;
+    line-height: 1.1;
+    text-transform: uppercase;
+  }
+
+  .route-app .mobile-rail-sheet-header h2 {
+    color: var(--text);
+    font-size: 1rem;
+    font-weight: 900;
+    letter-spacing: 0;
+    line-height: 1.2;
+    margin: 0;
+  }
+
+  .route-app .mobile-rail-sheet-close {
+    align-items: center;
+    appearance: none;
+    background: rgba(255, 255, 255, 0.055);
+    border: 1px solid rgba(224, 230, 226, 0.12);
+    border-radius: 999px;
+    color: rgba(242, 255, 247, 0.9);
+    cursor: pointer;
+    display: inline-flex;
+    flex: 0 0 auto;
+    font: inherit;
+    font-size: 1.1rem;
+    font-weight: 760;
+    height: 34px;
+    justify-content: center;
+    line-height: 1;
+    padding: 0;
+    width: 34px;
+  }
+
+  .route-app .mobile-rail-sheet-body {
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 14px 16px 18px;
+    scrollbar-width: thin;
+  }
+
+  .route-app .mobile-rail-sheet-body > .rail-cloud-card,
+  .route-app .mobile-rail-sheet-body > .ai-settings-card {
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .route-app .mobile-rail-sheet-body > .ai-settings-card {
+    display: grid;
+    gap: 8px;
+  }
+
+  .route-app .mobile-rail-sheet-body .ai-actions {
+    display: grid;
+    gap: 7px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .route-app .mobile-rail-sheet-body .ai-actions button,
+  .route-app .mobile-rail-sheet-body .rail-cloud-actions button {
+    min-height: 38px;
+    width: 100%;
+  }
+
+  .route-app .mobile-rail-sheet-body .rail-cloud-actions {
+    display: grid;
+    gap: 8px;
+  }
+
+  .route-app .mobile-rail-sheet-body .local-workspace-prompt {
+    margin: 0;
+  }
+}
+
+@keyframes mobile-rail-sheet-slide-up {
+  from {
+    opacity: 0.98;
+    transform: translate3d(0, 100%, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes mobile-rail-sheet-scrim-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .route-app .mobile-rail-sheet,
+  .route-app .mobile-rail-sheet-scrim {
+    animation-duration: 1ms;
+  }
+}
+
+@media (max-width: 370px) {
+  .route-app .android-bottom-tab-dock {
+    padding-left: calc(14px + env(safe-area-inset-left, 0px));
+    padding-right: calc(14px + env(safe-area-inset-right, 0px));
+  }
+
+  .route-app .android-bottom-tab-dock .workspace-bottom-tab,
+  .route-app .android-bottom-tab-dock .workspace-more-trigger.workspace-bottom-tab {
+    font-size: 0.62rem;
+    min-height: 46px;
+    padding-left: 2px;
+    padding-right: 2px;
   }
 }
 
@@ -26587,113 +26980,189 @@ button.danger:hover:not(:disabled) {
   padding: 14px;
 }
 
-/* Mobile delete/delete-all confirmation modal. Deterministic full-screen sheet
-   on Android/mobile-web: header stays at top, action buttons stay at bottom,
-   middle scrolls. Avoids the cramped, mis-aligned look on small viewports. */
+@keyframes delete-confirmation-scrim-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes delete-confirmation-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Mobile delete/delete-all confirmations open as bottom sheets on /app.
+   Desktop and non-delete generated-plan modals keep their existing layout. */
 @media (max-width: 899px) {
-  .route-app .generated-plan-modal-backdrop {
-    align-items: stretch;
-    justify-content: stretch;
+  .route-app .delete-confirmation-backdrop {
+    align-items: flex-end;
+    animation: delete-confirmation-scrim-in 160ms ease-out both;
+    background: rgba(0, 0, 0, 0.64);
+    justify-content: center;
     padding:
-      calc(env(safe-area-inset-top, 0px))
-      calc(env(safe-area-inset-right, 0px))
-      calc(env(safe-area-inset-bottom, 0px))
-      calc(env(safe-area-inset-left, 0px));
+      calc(18px + env(safe-area-inset-top, 0px))
+      calc(12px + env(safe-area-inset-right, 0px))
+      0
+      calc(12px + env(safe-area-inset-left, 0px));
+    z-index: 320;
   }
 
-  .route-app .generated-plan-modal {
-    border-radius: 0;
-    box-shadow: none;
+  .route-app .delete-confirmation-modal {
+    animation: delete-confirmation-sheet-in 260ms cubic-bezier(0.2, 0.82, 0.2, 1) both;
+    background:
+      linear-gradient(180deg, rgba(25, 31, 29, 0.99), rgba(10, 13, 12, 0.99)),
+      rgba(12, 14, 14, 0.99);
+    border: 1px solid rgba(224, 230, 226, 0.14);
+    border-bottom: 0;
+    border-radius: 22px 22px 0 0;
+    box-shadow:
+      0 -24px 70px rgba(0, 0, 0, 0.56),
+      inset 0 1px 0 rgba(255, 255, 255, 0.045);
     display: grid;
     gap: 0;
     grid-template-rows: auto minmax(0, 1fr) auto;
-    height: 100dvh;
-    max-height: 100dvh;
-    max-width: 100%;
+    max-height: min(58dvh, 520px);
+    max-width: 560px;
+    min-height: min(46dvh, 380px);
     overflow: hidden;
     padding: 0;
+    position: relative;
     width: 100%;
   }
 
-  .route-app .generated-plan-modal > * {
+  .route-app .delete-confirmation-modal::before {
+    background: rgba(224, 230, 226, 0.58);
+    border-radius: 999px;
+    content: "";
+    height: 4px;
+    left: 50%;
+    position: absolute;
+    top: 8px;
+    transform: translateX(-50%);
+    width: 46px;
+  }
+
+  .route-app .delete-confirmation-modal > * {
     padding-left: 18px;
     padding-right: 18px;
   }
 
-  .route-app .generated-plan-modal-head {
+  .route-app .delete-confirmation-modal .generated-plan-modal-head {
     align-items: center;
-    background: rgba(8, 10, 9, 0.94);
+    background: transparent;
     border-bottom: 1px solid rgba(224, 230, 226, 0.08);
     display: grid;
-    flex-direction: row;
     gap: 12px;
     grid-template-columns: minmax(0, 1fr) auto;
     margin: 0;
-    padding-block: 14px;
-    position: sticky;
-    top: 0;
-    z-index: 2;
+    padding-bottom: 13px;
+    padding-top: 22px;
   }
 
-  .route-app .generated-plan-modal-head > div {
+  .route-app .delete-confirmation-modal .generated-plan-modal-head > div {
     align-self: center;
     min-width: 0;
   }
 
-  .route-app .generated-plan-modal-head h2 {
-    font-size: 1.06rem;
+  .route-app .delete-confirmation-modal .generated-plan-modal-head h2 {
+    font-size: 1.08rem;
+    letter-spacing: 0;
     margin: 2px 0 4px;
   }
 
-  .route-app .generated-plan-modal-head p {
+  .route-app .delete-confirmation-modal .generated-plan-modal-head p {
     font-size: 0.84rem;
     line-height: 1.36;
+    overflow-wrap: anywhere;
   }
 
-  .route-app .generated-plan-modal-head .workbench-kicker {
+  .route-app .delete-confirmation-modal .generated-plan-modal-head .workbench-kicker {
     font-size: 0.62rem;
   }
 
-  .route-app .generated-plan-modal-head > button {
+  .route-app .delete-confirmation-modal .generated-plan-modal-head > button {
     align-self: start;
     flex: 0 0 auto;
-    margin-top: 2px;
+    font-size: 0.82rem;
+    margin-top: 0;
     min-height: 36px;
     padding: 0 12px;
     white-space: nowrap;
   }
 
-  .route-app .generated-plan-modal-actions {
-    background: rgba(8, 10, 9, 0.94);
+  .route-app .delete-confirmation-modal .generated-plan-modal-actions {
+    background: rgba(8, 10, 9, 0.78);
     border-top: 1px solid rgba(224, 230, 226, 0.08);
     display: grid;
     gap: 8px;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     margin: 0;
+    padding-left: 18px;
+    padding-right: 18px;
     padding-block:
-      14px
+      12px
       calc(14px + env(safe-area-inset-bottom, 0px));
-    position: sticky;
-    bottom: 0;
-    z-index: 2;
   }
 
-  .route-app .generated-plan-modal-actions button {
+  .route-app .delete-confirmation-modal .generated-plan-modal-actions button {
+    font-size: 0.86rem;
     min-height: 46px;
     width: 100%;
   }
 
-  /* Stretch the warning/body section to fill scrollable middle. */
-  .route-app .cloud-delete-warning,
-  .route-app .completed-delete-warning,
-  .route-app .generated-plan-delete-warning,
-  .route-app .inbox-delete-warning,
-  .route-app .delete-all-warning {
-    margin: 16px 0;
+  .route-app .delete-confirmation-content {
+    align-content: start;
+    border-radius: 12px;
+    margin: 14px 18px;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 12px;
   }
 
-  .route-app .generated-plan-modal > :not(.generated-plan-modal-head):not(.generated-plan-modal-actions) {
-    overflow-y: auto;
+  .route-app .delete-confirmation-content strong {
+    font-size: 0.96rem;
+    line-height: 1.2;
+  }
+
+  .route-app .delete-confirmation-content p {
+    font-size: 0.88rem;
+    line-height: 1.45;
+  }
+}
+
+@media (max-width: 420px) {
+  .route-app .delete-confirmation-backdrop {
+    padding-left: calc(8px + env(safe-area-inset-left, 0px));
+    padding-right: calc(8px + env(safe-area-inset-right, 0px));
+  }
+
+  .route-app .delete-confirmation-modal {
+    border-radius: 20px 20px 0 0;
+    max-height: min(62dvh, 520px);
+    min-height: min(50dvh, 390px);
+  }
+
+  .route-app .delete-confirmation-modal .generated-plan-modal-head,
+  .route-app .delete-confirmation-modal .generated-plan-modal-actions {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .route-app .delete-confirmation-content {
+    margin-left: 14px;
+    margin-right: 14px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .route-app .delete-confirmation-backdrop,
+  .route-app .delete-confirmation-modal {
+    animation: none;
   }
 }
 
@@ -26745,13 +27214,16 @@ button.danger:hover:not(:disabled) {
   border: 1px solid rgba(224, 230, 226, 0.14);
   border-radius: var(--app-card-radius, 8px);
   box-shadow: 0 18px 42px rgba(0, 0, 0, 0.36);
+  bottom: calc(100% + 8px);
   display: grid;
   gap: 7px;
   left: 0;
+  max-height: min(56dvh, 320px);
   min-width: min(280px, calc(100vw - 40px));
+  overflow-y: auto;
   padding: 8px;
   position: absolute;
-  top: calc(100% + 8px);
+  top: auto;
   z-index: 80;
 }
 
@@ -26930,6 +27402,20 @@ button.danger:hover:not(:disabled) {
     white-space: normal;
   }
 
+  .route-app .review-plan-actions.has-agent-review-action,
+  .route-app .recurring-card-actions.has-agent-review-action {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .route-app .review-plan-actions.solo-primary-action,
+  .route-app .recurring-card-actions.solo-primary-action {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .recurring-card-actions.has-agent-review-action .recurring-history-action {
+    grid-column: 1 / -1;
+  }
+
   .route-app .review-plan-summary-grid,
   .route-app .inbox-approval-summary-grid,
   .route-app .inbox-approval-summary-grid.rows-3,
@@ -26980,6 +27466,11 @@ button.danger:hover:not(:disabled) {
 
   /* Scale the Drafted / Queued / Wallet / Signed timeline inside Needs Approval
      cards on mobile so all phases fit without horizontal overflow. */
+  .route-app .approval-ticket.inbox-approval-card .ticket-meta-line,
+  .route-app .approval-ticket.inbox-approval-card .tx-timeline-step[data-tx-timeline-step="wallet"] {
+    display: none;
+  }
+
   .route-app .tx-timeline {
     flex-wrap: nowrap;
     gap: 3px;

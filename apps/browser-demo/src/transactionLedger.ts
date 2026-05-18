@@ -54,6 +54,11 @@ export interface PendingTransactionRecord {
   lastError?: string;
   failureKind?: ExecutionFailureKind;
   explorerUrl?: string;
+  /**
+   * Toast id linked to this transaction so the background reconciler can update
+   * the original "Confirming..." toast in place instead of pushing a new one.
+   */
+  toastId?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -86,6 +91,7 @@ export interface PendingTransactionPatch {
   lastError?: string;
   failureKind?: ExecutionFailureKind;
   explorerUrl?: string;
+  toastId?: number;
 }
 
 export const TRANSACTION_LEDGER_STORAGE_KEY = 'solana-agent-wallet-pending-transactions-v1';
@@ -268,6 +274,7 @@ function normalizeRecord(raw: unknown): PendingTransactionRecord | undefined {
 
   const explorerUrlInput = optionalString(raw.explorerUrl);
   const explorerUrl = explorerUrlInput ?? (txid ? explorerUrlForTxid(txid, cluster) : undefined);
+  const toastId = isFiniteNonNegativeInt(raw.toastId) ? Math.floor(raw.toastId) : undefined;
 
   const record: PendingTransactionRecord = {
     id,
@@ -292,6 +299,7 @@ function normalizeRecord(raw: unknown): PendingTransactionRecord | undefined {
     lastError: optionalString(raw.lastError),
     failureKind,
     explorerUrl,
+    toastId,
     createdAt,
     updatedAt,
   };
@@ -470,6 +478,10 @@ function mergeRecord(
     next.explorerUrl = optionalString(patch.explorerUrl);
   }
 
+  if (patch.toastId !== undefined) {
+    next.toastId = isFiniteNonNegativeInt(patch.toastId) ? Math.floor(patch.toastId) : undefined;
+  }
+
   // Auto-fill explorerUrl when txid present and caller did not provide a URL.
   if (!next.explorerUrl && next.txid) {
     next.explorerUrl = explorerUrlForTxid(next.txid, next.cluster);
@@ -501,6 +513,9 @@ function buildRecord(patch: PendingTransactionPatch, timestamp: string): Pending
   const explorerUrl =
     optionalString(patch.explorerUrl) ?? (txid ? explorerUrlForTxid(txid, patch.cluster) : undefined);
 
+  const toastId =
+    patch.toastId !== undefined && isFiniteNonNegativeInt(patch.toastId) ? Math.floor(patch.toastId) : undefined;
+
   const record: PendingTransactionRecord = {
     id,
     actionId: patch.actionId,
@@ -524,6 +539,7 @@ function buildRecord(patch: PendingTransactionPatch, timestamp: string): Pending
     lastError: optionalString(patch.lastError),
     failureKind,
     explorerUrl,
+    toastId,
     createdAt: timestamp,
     updatedAt: timestamp,
   };

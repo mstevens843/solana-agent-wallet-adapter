@@ -47,6 +47,19 @@ export interface SigningRequest {
 export interface SigningResult {
   signature: string;
   txid?: string;
+  // For wallets that don't implement MWA sign_messages (Phantom + Solflare today),
+  // the Android backend substitutes a memo-only legacy transaction containing the
+  // proof bytes and signs THAT instead. The signed transaction is never broadcast.
+  // When this fallback path runs:
+  //   encoding === 'transaction_memo'
+  //   transactionBase64 contains the full signed transaction so the server can
+  //   ed25519-verify the signature against the transaction message bytes and assert
+  //   the memo data matches the expected proof payload.
+  // For the default sign-message / sign-transaction / sign-and-send paths the
+  // backend omits both fields (or sets encoding to 'utf8') and existing verifiers
+  // continue to work unchanged.
+  encoding?: 'utf8' | 'transaction_memo';
+  transactionBase64?: string;
 }
 
 export interface AdapterCapabilities {

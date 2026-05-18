@@ -205,6 +205,13 @@ class MainActivity : ComponentActivity() {
         return remoteWebHost != null && host == remoteWebHost
     }
 
+    internal fun isCurrentOriginAllowed(): Boolean {
+        if (!::webView.isInitialized) return false
+        val current = webView.url ?: return false
+        val uri = runCatching { Uri.parse(current) }.getOrNull() ?: return false
+        return isAllowedInWebView(uri)
+    }
+
     private fun maybeFallbackToBundled(view: WebView, request: WebResourceRequest, reason: String) {
         if (didFallback) return
         if (!request.isForMainFrame) return
@@ -234,7 +241,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun defaultMwaIdentity(): AgentMwaIdentity {
-        val launch = Uri.parse(BuildConfig.AGENTIC_LAUNCH_URL)
+        // When the WebView loads from a remote origin, the MWA identity URI must match that
+        // origin — otherwise wallets show users the wrong domain in connect/sign dialogs.
+        val source = remoteWebUrl.ifBlank { BuildConfig.AGENTIC_LAUNCH_URL }
+        val launch = Uri.parse(source)
         val scheme = launch.scheme ?: "https"
         val host = launch.host ?: "agenticwalletadapter.com"
         val origin = "$scheme://$host${if (launch.port > 0) ":${launch.port}" else ""}"
@@ -425,26 +435,53 @@ class MainActivity : ComponentActivity() {
     }
 
     private class AndroidBridge(private val activity: MainActivity) {
+        // Top-frame origin guard. addJavascriptInterface exposes this bridge to whatever URL
+        // the WebView is showing; we gate every callable here so a navigation hijack to a
+        // foreign host (or future build that loads an extra URL) can't reach native APIs.
+        // Returns true if the call should proceed. Logs and denies otherwise.
+        // Does NOT defend against in-page cross-origin iframes — addJavascriptInterface has
+        // no per-frame visibility; that requires migrating to addWebMessageListener.
+        private fun checkTrustedOrigin(method: String): Boolean {
+            if (activity.isCurrentOriginAllowed()) return true
+            AgentMwaLog.warn(
+                "AndroidBridge",
+                method,
+                "BRIDGE_ORIGIN_DENIED",
+                "rejecting bridge call from unallowed top-frame origin",
+                mapOf("method" to method),
+            )
+            return false
+        }
+
         @JavascriptInterface
         fun openMwaExample() {
+            if (!checkTrustedOrigin("openMwaExample")) return
             val intent = Intent(activity, MwaExampleActivity::class.java)
             activity.startActivity(intent)
         }
 
         @JavascriptInterface
-        fun isExampleTabEnabled(): Boolean = BuildConfig.AGENTIC_ANDROID_SHOW_EXAMPLE_TAB
+        fun isExampleTabEnabled(): Boolean {
+            if (!checkTrustedOrigin("isExampleTabEnabled")) return false
+            return BuildConfig.AGENTIC_ANDROID_SHOW_EXAMPLE_TAB
+        }
 
         @JavascriptInterface
-        fun isDebugBuild(): Boolean = BuildConfig.DEBUG
+        fun isDebugBuild(): Boolean {
+            if (!checkTrustedOrigin("isDebugBuild")) return false
+            return BuildConfig.DEBUG
+        }
 
         @JavascriptInterface
         fun secureGet(key: String): String {
+            if (!checkTrustedOrigin("secureGet")) return ""
             validateSecureStoreRequest(key)
             return activity.secureStore.get(key).orEmpty()
         }
 
         @JavascriptInterface
         fun secureSet(key: String, value: String): Boolean {
+            if (!checkTrustedOrigin("secureSet")) return false
             validateSecureStoreRequest(key, value)
             activity.secureStore.set(key, value)
             return true
@@ -452,30 +489,37 @@ class MainActivity : ComponentActivity() {
 
         @JavascriptInterface
         fun secureDelete(key: String): Boolean {
+            if (!checkTrustedOrigin("secureDelete")) return false
             validateSecureStoreRequest(key)
             activity.secureStore.remove(key)
             return true
         }
 
         @JavascriptInterface
-        fun deviceAgentStatus(): String =
-            activity.agentRuntimeController.statusJson().toString()
+        fun deviceAgentStatus(): String {
+            if (!checkTrustedOrigin("deviceAgentStatus")) return "{}"
+            return activity.agentRuntimeController.statusJson().toString()
+        }
 
         @JavascriptInterface
         fun deviceAgentConfigure(configJson: String): String {
+            if (!checkTrustedOrigin("deviceAgentConfigure")) return "{}"
             validateDeviceAgentPayload(configJson)
             return activity.agentRuntimeController.configure(configJson).toString()
         }
 
         @JavascriptInterface
         fun deviceAgentStart(configJson: String): String {
+            if (!checkTrustedOrigin("deviceAgentStart")) return "{}"
             validateDeviceAgentPayload(configJson)
             return activity.agentRuntimeController.start(activity, configJson).toString()
         }
 
         @JavascriptInterface
-        fun deviceAgentStop(): String =
-            activity.agentRuntimeController.stop(activity).toString()
+        fun deviceAgentStop(): String {
+            if (!checkTrustedOrigin("deviceAgentStop")) return "{}"
+            return activity.agentRuntimeController.stop(activity).toString()
+        }
 
         /**
          * Async Device Agent bridge entry point. Mirrors the MWA pattern but with a
@@ -495,6 +539,7 @@ class MainActivity : ComponentActivity() {
          */
         @JavascriptInterface
         fun deviceAgentRequest(requestId: String, method: String, payloadJson: String) {
+            if (!checkTrustedOrigin("deviceAgentRequest")) return
             activity.lifecycleScope.launch {
                 AgentMwaLog.info(
                     "MainActivity",
@@ -635,6 +680,9 @@ class MainActivity : ComponentActivity() {
          */
         @JavascriptInterface
         fun mppRequest(requestId: String, method: String, payloadJson: String): String {
+            if (!checkTrustedOrigin("mppRequest")) {
+                return errorEnvelope("mpp", requestId, method, SecurityException("origin denied"))
+            }
             return runCatching {
                 validateScaffoldedBridgeRequest(requestId, method, payloadJson)
                 notImplementedEnvelope("mpp", requestId, method)
@@ -651,6 +699,7 @@ class MainActivity : ComponentActivity() {
          */
         @JavascriptInterface
         fun streamingRequest(requestId: String, method: String, payloadJson: String) {
+            if (!checkTrustedOrigin("streamingRequest")) return
             activity.lifecycleScope.launch {
                 val envelope = try {
                     validateStreamingBridgeRequest(requestId, method, payloadJson)
@@ -789,6 +838,7 @@ class MainActivity : ComponentActivity() {
 
         @JavascriptInterface
         fun mwaRequest(requestId: String, method: String, payloadJson: String) {
+            if (!checkTrustedOrigin("mwaRequest")) return
             activity.lifecycleScope.launch {
                 try {
                     validateNativeRequest(requestId, method, payloadJson)
@@ -1134,12 +1184,29 @@ class MainActivity : ComponentActivity() {
             if (result.txid != null) {
                 json.put("txid", result.txid)
             }
+            // Surface the ownership-proof memo-tx fallback shape to the JS layer so the
+            // cloud auth verify endpoint can pick the right verification path. Existing
+            // sign-message / sign-transaction / sign-and-send results emit "utf8" (or
+            // omit the field entirely after the default-stripping below) and stay backwards
+            // compatible.
+            if (result.encoding != "utf8") {
+                json.put("encoding", result.encoding)
+            }
+            if (!result.transactionBase64.isNullOrBlank()) {
+                json.put("transactionBase64", result.transactionBase64)
+            }
             AgentMwaLog.info(
                 "MainActivity",
                 "signingResultJson",
                 "DONE",
                 "Android MWA signing result JSON prepared",
-                mapOf("signature" to result.signature, "txid" to result.txid.orEmpty(), "result" to if (BuildConfig.DEBUG) json else "[debug-only]"),
+                mapOf(
+                    "signature" to result.signature,
+                    "txid" to result.txid.orEmpty(),
+                    "encoding" to result.encoding,
+                    "hasTransactionBase64" to !result.transactionBase64.isNullOrBlank(),
+                    "result" to if (BuildConfig.DEBUG) json else "[debug-only]",
+                ),
             )
             return json
         }

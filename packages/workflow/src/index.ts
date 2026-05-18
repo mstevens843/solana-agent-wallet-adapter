@@ -857,6 +857,14 @@ export interface ApprovalDecisionInput {
   decisionProofSignature?: string;
   decisionProofMessage?: string;
   signatureEncoding?: 'base58' | 'base64';
+  /**
+   * Phantom Mobile MWA cannot signMessage; FE falls back to a memo-only
+   * throwaway transaction. When set to 'tx-memo-proof', `decisionProofTxBase64`
+   * carries the signed tx bytes so the server can verify the signature against
+   * the compiled tx message (memo data == decisionProofMessage).
+   */
+  decisionProofEncoding?: 'utf8-message' | 'tx-memo-proof';
+  decisionProofTxBase64?: string;
   note?: string;
   txid?: string;
   explorerUrl?: string;
@@ -2298,10 +2306,14 @@ export function validateApprovalDecisionRequest(body: unknown): ApprovalDecision
     ?? optionalString(input.decisionProofSignature, 'decisionProofSignature');
   const decisionProofMessage = optionalString(input.decisionProofMessage, 'decisionProofMessage');
   const signatureEncoding = optionalEnumProp(input, 'signatureEncoding', ['base58', 'base64'] as const, '$').signatureEncoding;
+  const decisionProofEncoding = optionalEnumProp(input, 'decisionProofEncoding', ['utf8-message', 'tx-memo-proof'] as const, '$').decisionProofEncoding;
+  const decisionProofTxBase64 = optionalString(input.decisionProofTxBase64, 'decisionProofTxBase64');
   return {
     ...(proofSignature ? { proofSignature, decisionProofSignature: proofSignature } : {}),
     ...(decisionProofMessage ? { decisionProofMessage } : {}),
     ...(signatureEncoding ? { signatureEncoding } : {}),
+    ...(decisionProofEncoding ? { decisionProofEncoding } : {}),
+    ...(decisionProofTxBase64 ? { decisionProofTxBase64 } : {}),
     ...(optionalString(input.note, 'note') ? { note: optionalString(input.note, 'note') } : {}),
     ...(optionalString(input.txid, 'txid') ? { txid: optionalString(input.txid, 'txid') } : {}),
     ...(optionalString(input.explorerUrl, 'explorerUrl') ? { explorerUrl: optionalString(input.explorerUrl, 'explorerUrl') } : {}),

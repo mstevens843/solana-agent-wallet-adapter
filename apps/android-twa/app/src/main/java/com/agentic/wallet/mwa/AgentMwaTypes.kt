@@ -64,6 +64,20 @@ data class AgentMwaAuthRecord(
 data class AgentMwaSigningResult(
     val signature: String,
     val txid: String? = null,
+    // Encoding of the signed payload. Default "utf8" matches the historical contract
+    // where signature is ed25519 over UTF-8 message bytes (sign-message path) or over
+    // a transaction's message bytes (sign-and-send / sign-transaction paths — the
+    // server reconstructs the payload itself).
+    //
+    // "transaction_memo" indicates the Phantom/Solflare ownership-proof fallback:
+    // because those wallets don't implement sign_messages over MWA, the dApp built
+    // a memo-only legacy transaction containing the proof string as the memo data
+    // and asked the wallet to sign it. The signed transaction is NEVER broadcast.
+    // [transactionBase64] is the full signed transaction so the server can extract
+    // the memo and ed25519-verify the signature against the transaction message
+    // bytes. See `apps/render-web/src/cloud/auth.ts` verifyWalletSignature.
+    val encoding: String = "utf8",
+    val transactionBase64: String? = null,
 )
 
 /**

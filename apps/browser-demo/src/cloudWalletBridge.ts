@@ -8,6 +8,15 @@
 export interface CloudWalletSignResult {
   signature: string;
   encoding: 'base58';
+  /**
+   * Phantom Mobile MWA cannot signMessage, so for that wallet we sign a memo-only
+   * throwaway transaction whose memo data == the proof bytes (see
+   * `walletProofSigning.ts`). Server-side verifiers must accept both encodings.
+   * Absent / 'utf8-message' = the wallet signed the UTF-8 message bytes directly.
+   */
+  proofEncoding?: 'utf8-message' | 'tx-memo-proof';
+  proofTxBase64?: string;
+  proofMemoText?: string;
 }
 
 export interface CloudWalletBridge {

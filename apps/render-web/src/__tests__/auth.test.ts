@@ -150,6 +150,23 @@ describe('render web cloud wallet auth', () => {
     });
   });
 
+  it('advertises PATCH in CORS preflight so Android TWA can update plans', async () => {
+    // Regression: missing PATCH in Access-Control-Allow-Methods caused the WebView
+    // to fail PATCH /api/plans/:id preflight, surfacing as
+    // "Agentic Cloud is not reachable from this page" after a successful MWA sign.
+    await withServer(async (port) => {
+      const response = await requestRaw(port, '/api/plans/test', 'OPTIONS', undefined, {
+        origin: 'https://agentic.local',
+        'access-control-request-method': 'PATCH',
+        'access-control-request-headers': 'authorization, content-type, x-agentic-client',
+      });
+
+      expect(response.status).toBe(204);
+      expect(response.headers['access-control-allow-origin']).toBe('https://agentic.local');
+      expect(String(response.headers['access-control-allow-methods'])).toContain('PATCH');
+    });
+  });
+
   it('keeps legacy minimal verify payloads working for the current browser client', async () => {
     await withServer(async (port) => {
       const wallet = createTestWallet();

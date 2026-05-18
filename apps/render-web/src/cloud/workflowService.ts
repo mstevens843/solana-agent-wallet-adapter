@@ -1078,6 +1078,8 @@ export class WorkflowService {
       message: expectedMessage,
       signature: input.decisionProofSignature,
       signatureEncoding: input.signatureEncoding ?? 'base58',
+      proofEncoding: input.decisionProofEncoding,
+      proofTxBase64: input.decisionProofTxBase64,
     })) {
       throw new WorkflowServiceError(400, 'invalid_decision_proof', 'Decision proof signature could not be verified for this wallet.');
     }

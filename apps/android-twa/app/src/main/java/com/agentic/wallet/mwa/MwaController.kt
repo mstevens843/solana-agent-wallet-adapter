@@ -66,7 +66,13 @@ class MwaController(
             )
             return null
         }
-        activeRecord = latest.copy(cluster = cluster, authenticated = true)
+        val restoredPackage = restoredWalletPackage(latest)
+        activeRecord = latest.copy(
+            cluster = cluster,
+            authenticated = true,
+            walletPackage = restoredPackage,
+            walletType = if (restoredPackage == latest.walletPackage) latest.walletType else WalletRegistry.walletType(restoredPackage, latest.walletUriBase),
+        )
         cache.set(activeRecord!!)
         AgentMwaLog.info(
             "MwaController",
@@ -101,7 +107,13 @@ class MwaController(
             )
             return null
         }
-        activeRecord = record.copy(cluster = cluster, authenticated = true)
+        val restoredPackage = restoredWalletPackage(record)
+        activeRecord = record.copy(
+            cluster = cluster,
+            authenticated = true,
+            walletPackage = restoredPackage,
+            walletType = if (restoredPackage == record.walletPackage) record.walletType else WalletRegistry.walletType(restoredPackage, record.walletUriBase),
+        )
         cache.set(activeRecord!!)
         AgentMwaLog.info(
             "MwaController",
@@ -418,10 +430,10 @@ class MwaController(
         }
     }
 
-    suspend fun signMessage(sender: ActivityResultSender, message: String): AgentMwaSigningResult =
-        signMessages(sender, arrayOf(message.toByteArray(Charsets.UTF_8))).first()
+    suspend fun signMessage(sender: ActivityResultSender, message: String, rpcUrl: String? = null): AgentMwaSigningResult =
+        signMessages(sender, arrayOf(message.toByteArray(Charsets.UTF_8)), rpcUrl).first()
 
-    suspend fun signMessages(sender: ActivityResultSender, messages: Array<ByteArray>): List<AgentMwaSigningResult> =
+    suspend fun signMessages(sender: ActivityResultSender, messages: Array<ByteArray>, rpcUrl: String? = null): List<AgentMwaSigningResult> =
         privileged(sender, "signMessages") {
             if (messages.isEmpty() || messages.any { it.isEmpty() }) {
                 throwOperation(
@@ -433,10 +445,18 @@ class MwaController(
             }
             val record = requireActive("signMessages")
             if (WalletRegistry.messageSigningUnsupported(record.walletPackage)) {
+                // Phantom and Solflare advertise no `solana:signMessages` feature in their
+                // MWA `get_capabilities` reply. The browser-side ownership-proof helper
+                // (`apps/browser-demo/src/walletProofSigning.ts`) detects these wallets
+                // and substitutes a memo-only `sign_transactions` call instead of calling
+                // this path — see grant-godot/KNOWN_ISSUES.md for the wallet-capability
+                // evidence. Any caller reaching this branch bypassed that helper, so we
+                // fail fast with an actionable error rather than silently building a tx
+                // that the unaware caller won't know how to forward to the server verifier.
                 throwOperation(
                     "signMessages",
                     "FAIL_WALLET_UNSUPPORTED",
-                    MwaOperationException("WALLET_SIGN_MESSAGES_UNSUPPORTED", "This wallet does not implement sign_messages over Android MWA. Use transaction signing for transaction approvals."),
+                    MwaOperationException("WALLET_SIGN_MESSAGES_UNSUPPORTED", "This wallet does not implement sign_messages over Android MWA. Use the walletProofSigning helper which falls back to a memo-only sign_transactions call."),
                     authRecordMetadata(record) + messagesMetadata(messages),
                 )
             }
@@ -503,14 +523,6 @@ class MwaController(
                 )
             }
             val record = requireActive("signTransactions")
-            if (WalletRegistry.standaloneSignTransactionUnsupported(record.walletPackage)) {
-                throwOperation(
-                    "signTransactions",
-                    "FAIL_WALLET_UNSUPPORTED",
-                    MwaOperationException("JUPITER_SIGN_TRANSACTION_UNSUPPORTED", "Jupiter does not support standalone sign_transactions. Use Sign And Send."),
-                    authRecordMetadata(record) + transactionsMetadata(transactions),
-                )
-            }
             val adapter = newAdapter(record.cluster, record)
             AgentMwaLog.info(
                 "MwaController",
@@ -564,12 +576,21 @@ class MwaController(
             val forceSignThenRpc = WalletRegistry.forceSignThenRpc(record.walletPackage)
             val routeNative = !forceSignThenRpc
             val route = if (routeNative) "native_mwa" else "sign_then_rpc"
+            val routeReason = when {
+                !forceSignThenRpc -> "native_default"
+                record.walletPackage.lowercase().contains("backpack") -> "backpack_native_unsupported"
+                record.walletPackage.lowercase().let { it.contains("jupiter") || it.contains("jup") } -> "jupiter_forced_sign_then_rpc"
+                else -> "forced_sign_then_rpc"
+            }
+            val firstTxVersion = transactions.firstOrNull()?.firstOrNull()?.let { byte ->
+                if (byte.toInt() and 0x80 != 0) "v${byte.toInt() and 0x7f}" else "legacy"
+            } ?: "empty"
             AgentMwaLog.info(
                 "MwaController",
                 "signAndSendTransactions",
                 "START",
                 "opening wallet sign-and-send approval",
-                authRecordMetadata(record) + mapOf("route" to route, "reason" to if (forceSignThenRpc) "backpack_native_unsupported" else "native_default", "requestedRpcUrl" to rpcUrl.orEmpty()) + transactionsMetadata(transactions),
+                authRecordMetadata(record) + mapOf("route" to route, "reason" to routeReason, "requestedRpcUrl" to rpcUrl.orEmpty(), "firstTxVersion" to firstTxVersion) + transactionsMetadata(transactions),
             )
             val adapter = newAdapter(record.cluster, record)
             if (routeNative) {
@@ -582,7 +603,6 @@ class MwaController(
     fun capabilitiesJson(): JSONObject {
         val record = requireActive("capabilitiesJson")
         val messageSupported = !WalletRegistry.messageSigningUnsupported(record.walletPackage)
-        val standaloneTxSupported = !WalletRegistry.standaloneSignTransactionUnsupported(record.walletPackage)
         val json = JSONObject()
             .put("backend", "android-native-mwa")
             .put("cluster", JSONArray().put(record.cluster.id))
@@ -590,7 +610,7 @@ class MwaController(
                 "supports",
                 JSONObject()
                     .put("signMessage", messageSupported)
-                    .put("signTransaction", standaloneTxSupported)
+                    .put("signTransaction", true)
                     .put("signAndSendTransaction", true)
                     .put("multiSign", true)
                     .put("simulationPreview", false),
@@ -621,7 +641,7 @@ class MwaController(
             "sign_message" -> {
                 val message = decodePayload(request.payloadData, request.payloadEncoding)
                 AgentMwaLog.info("MwaController", "signBridgeRequest", "STEP_DECODED_MESSAGE", "bridge message payload decoded", AgentMwaLog.bytesMetadata("message", message, includeUtf8 = true) + bridgeRequestMetadata(request))
-                signMessages(sender, arrayOf(message)).first()
+                signMessages(sender, arrayOf(message), request.rpcUrl).first()
             }
             "sign_transaction" -> {
                 val transaction = decodePayload(request.payloadData, request.payloadEncoding)
@@ -990,6 +1010,27 @@ class MwaController(
             authRecordMetadata(record) + mapOf("publicKeyBytes" to publicKeyBytes.size),
         )
         return record
+    }
+
+    // Defensive: cached records from older builds (or ones authorized by a wallet that
+    // didn't return walletUriBase at the time) can have a blank walletPackage. All the
+    // wallet-routing checks (messageSigningUnsupported, forceSignThenRpc, supportsSiws)
+    // key off this field, so a blank value silently sends Solflare/Jupiter requests
+    // down the wrong path. Re-derive from walletUriBase whenever the cached package
+    // is empty.
+    private fun restoredWalletPackage(record: AgentMwaAuthRecord): String {
+        if (record.walletPackage.isNotBlank()) return record.walletPackage
+        val inferred = WalletRegistry.inferPackage(record.walletUriBase)
+        if (inferred.isNotBlank()) {
+            AgentMwaLog.info(
+                "MwaController",
+                "restoredWalletPackage",
+                "DONE",
+                "wallet package re-derived from walletUriBase on reconnect",
+                mapOf("pubkey" to record.publicKeyBase58, "walletUriBase" to record.walletUriBase, "inferred" to inferred),
+            )
+        }
+        return inferred
     }
 
     private fun requireActive(method: String = "requireActive"): AgentMwaAuthRecord {

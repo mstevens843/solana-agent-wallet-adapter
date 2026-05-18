@@ -919,6 +919,8 @@ async function publishProfile(): Promise<void> {
         issuedAt: intent.issuedAt,
         expiresAt: intent.expiresAt,
         signatureEncoding: signed.encoding,
+        proofEncoding: signed.proofEncoding,
+        proofTxBase64: signed.proofTxBase64,
         payload: validation.payload,
       }),
     });
@@ -970,6 +972,8 @@ async function takedownProfile(): Promise<void> {
         issuedAt: intent.issuedAt,
         expiresAt: intent.expiresAt,
         signatureEncoding: signed.encoding,
+        proofEncoding: signed.proofEncoding,
+        proofTxBase64: signed.proofTxBase64,
       }),
     });
     if (result?.profile?.payload) {

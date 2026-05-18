@@ -252,4 +252,48 @@ describe('evaluateAgentEvidenceGate — golden scenarios', () => {
     });
     expect(result.decision).toBe('needs_input');
   });
+
+  it('external research required + AVAILABLE passes (AI provider will resolve via web search)', () => {
+    // Pins the Bug B fix: when the active AI runtime has a native web-search tool
+    // (Anthropic / OpenAI Native / Gemini Native), the gate must NOT block on a blocking
+    // external_research requirement — the provider will resolve it via two-pass research.
+    const reqs = [
+      requirement({
+        id: 'req.external_research.helium_plan',
+        routeId: 'external_research.current_web',
+        need: 'external_research',
+        provider: 'external_research',
+        blocking: true,
+        reason: 'The question depends on token price, liquidity, or threshold evidence',
+      }),
+    ];
+    const result = evaluateAgentEvidenceGate(reqs, [], {
+      walletAddress: WALLET,
+      isWalletScoped: true,
+      externalResearchAvailable: true,
+    });
+    expect(result.decision).toBe('pass');
+    expect(result.blockingFacts).toEqual([]);
+    expect(result.staleRequired).toEqual([]);
+  });
+
+  it('external research required + flag undefined retains legacy block-when-blocking behavior', () => {
+    // Conservative fallback: if the caller did not signal availability, a blocking
+    // external_research requirement still blocks (existing behavior, pinned here so
+    // future refactors do not silently change it).
+    const reqs = [
+      requirement({
+        routeId: 'external_research.current_web',
+        need: 'external_research',
+        provider: 'external_research',
+        blocking: true,
+      }),
+    ];
+    const result = evaluateAgentEvidenceGate(reqs, [], {
+      walletAddress: WALLET,
+      isWalletScoped: true,
+      // externalResearchAvailable intentionally omitted.
+    });
+    expect(result.decision).toBe('block');
+  });
 });
