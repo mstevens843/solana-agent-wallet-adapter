@@ -9,6 +9,14 @@
         <package android:name="com.chrome.beta" />
         <package android:name="com.chrome.dev" />
         <package android:name="com.chrome.canary" />
+        <!-- Known MWA wallet packages — Android 11+ requires explicit visibility for PackageManager.getPackageInfo
+             to find non-installed apps. Mirrors WalletDetector / cocos-solana-mwa parity. -->
+        <package android:name="app.phantom" />
+        <package android:name="com.solflare.mobile" />
+        <package android:name="app.backpack.mobile" />
+        <package android:name="ag.jup.jupiter.android" />
+        <package android:name="com.solanamobile.seedvaultimpl" />
+        <package android:name="com.pleasecrypto.flutter" />
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <category android:name="android.intent.category.BROWSABLE" />

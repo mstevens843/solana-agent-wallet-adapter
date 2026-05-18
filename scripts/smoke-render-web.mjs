@@ -199,8 +199,8 @@ async function verifyLayoutSmoke() {
           for (const tab of tabs) {
             await page.evaluate('window.scrollTo(0, 0)');
             await page.waitFor('window.scrollY < 3');
-            await clickAndWait(page, `[data-layout="app-tabs"] [data-tab="${tab}"]`, `layout tab ${tab}`);
-            await page.waitFor(`document.querySelector('[data-layout="app-tabs"] [data-tab="${tab}"]')?.classList.contains('active')`);
+            await clickAppLayoutTab(page, tab, viewport.width);
+            await page.waitFor(`Array.from(document.querySelectorAll('[data-tab="${tab}"]')).some((el) => el.classList.contains('active') || el.getAttribute('aria-current') === 'page')`);
             const maxScroll = await page.evaluate(`Math.max(0, document.documentElement.scrollHeight - window.innerHeight)`);
             const scrollChecks = [
               ['top', 0],
@@ -427,13 +427,14 @@ async function assertSelectorAboveFold(page, selector, label) {
 async function appLayoutReport(page, label) {
   return page.evaluate(`(() => {
     const label = ${JSON.stringify(label)};
+    const isPhone = window.innerWidth <= 640;
     const required = {
       nav: '[data-layout="app-nav"]',
       intro: '[data-layout="app-intro"]',
       shell: '[data-layout="app-shell"]',
       rail: '[data-layout="app-rail"]',
       main: '[data-layout="app-main"]',
-      tabs: '[data-layout="app-tabs"]',
+      tabs: isPhone ? '[data-layout="app-mobile-tabs"]' : '[data-layout="app-tabs"]',
       workflow: '[data-layout="workflow-status"]',
       trust: '[data-layout="trust-strip"]',
       activePanel: '[data-layout="active-panel"]',
@@ -1270,6 +1271,20 @@ async function createBrowserRecurringViaUi(page, recipient) {
 
 async function recurringCardCount(page) {
   return page.evaluate(`document.querySelectorAll('.recurring-item').length`);
+}
+
+async function clickAppLayoutTab(page, tab, viewportWidth) {
+  if (viewportWidth <= 640) {
+    await clickAndWait(page, '[data-layout="app-mobile-tabs"] summary', `open mobile layout tab menu for ${tab}`);
+    await clickAndWait(page, `[data-layout="app-mobile-tabs"] [data-tab="${tab}"]`, `mobile layout tab ${tab}`);
+    return;
+  }
+  if (['labs', 'agent-protocols', 'skills', 'sessions'].includes(tab)) {
+    await clickAndWait(page, '[data-layout="app-tabs"] .workspace-more-trigger', `open layout more menu for ${tab}`);
+    await clickAndWait(page, `[data-layout="app-tabs"] [data-tab="${tab}"]`, `layout more tab ${tab}`);
+    return;
+  }
+  await clickAndWait(page, `[data-layout="app-tabs"] [data-tab="${tab}"]`, `layout tab ${tab}`);
 }
 
 async function clickAndWait(page, selector, label = selector) {

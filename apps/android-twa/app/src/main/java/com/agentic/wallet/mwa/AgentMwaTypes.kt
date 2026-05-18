@@ -66,6 +66,37 @@ data class AgentMwaSigningResult(
     val txid: String? = null,
 )
 
+/**
+ * Full Sign-In-With-Solana (SIWS / MWA 2.0 Auth 2.0) result.
+ *
+ * Returned by [MwaController.connectWithSignIn]. Mirrors what
+ * grant-godot's connectWalletSiws and Unity's LastSignInResult expose
+ * so the JS bridge can surface the same set of fields:
+ *  - [signature]: base58 ed25519 signature
+ *  - [signedMessage]: base64 of the CAIP-122 message that was signed
+ *  - [publicKeyBase58]: the signing wallet's pubkey
+ *  - [accountLabel]: human-readable label (e.g. "cofeelme.skr")
+ *  - [chains]: cluster identifiers the wallet returned in AuthResult.accounts[0].chains
+ *  - [features]: feature identifiers the wallet supports
+ *  - [authToken]: MWA authorization token (parity with PR #3 getAuthToken)
+ *  - [walletPackage]: e.g. "app.phantom"
+ *  - [cluster]: the AgentCluster id the auth landed on
+ *  - [path]: "native" when the wallet returned sign_in_result directly,
+ *            "fallback" when the clientlib used the sign_messages CAIP-122 fallback
+ */
+data class AgentMwaSignInResult(
+    val signature: String,
+    val signedMessage: String,
+    val publicKeyBase58: String,
+    val accountLabel: String,
+    val chains: List<String>,
+    val features: List<String>,
+    val authToken: String,
+    val walletPackage: String,
+    val cluster: String,
+    val path: String,
+)
+
 data class AgentMwaBridgeRequest(
     val id: String,
     val kind: String,

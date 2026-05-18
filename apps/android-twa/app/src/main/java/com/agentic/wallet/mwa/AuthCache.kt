@@ -25,7 +25,19 @@ class AuthCache(context: Context) {
     @Synchronized
     fun get(pubkeyBase58: String): AgentMwaAuthRecord? {
         ensureLoaded()
-        return records[pubkeyBase58]
+        val record = records[pubkeyBase58]
+        // Cocos parity: log age on every read so stale entries are visible in diagnostics.
+        if (record != null) {
+            val ageSeconds = ((System.currentTimeMillis() / 1000L) - record.timestampUnixSeconds).coerceAtLeast(0L)
+            AgentMwaLog.debug(
+                "AuthCache",
+                "get",
+                "HIT",
+                "cached authorization read",
+                mapOf("pubkey" to pubkeyBase58, "ageSeconds" to ageSeconds, "authTokenLen" to record.authToken.length),
+            )
+        }
+        return record
     }
 
     @Synchronized
@@ -48,10 +60,54 @@ class AuthCache(context: Context) {
     @Synchronized
     fun set(record: AgentMwaAuthRecord) {
         ensureLoaded()
-        if (record.publicKeyBase58.isBlank()) return
+        // Cocos parity (Bug G5 prevention): reject blank or malformed pubkeys before they
+        // poison the cache file. Valid Solana base58 pubkeys are 32–44 chars and decode to 32 bytes.
+        if (record.publicKeyBase58.isBlank()) {
+            AgentMwaLog.warn(
+                "AuthCache",
+                "set",
+                "FAIL_BLANK_PUBKEY",
+                "rejected blank pubkey",
+                mapOf("authTokenLen" to record.authToken.length),
+            )
+            return
+        }
+        if (!isValidBase58Pubkey(record.publicKeyBase58)) {
+            AgentMwaLog.warn(
+                "AuthCache",
+                "set",
+                "FAIL_INVALID_PUBKEY",
+                "rejected malformed pubkey",
+                mapOf("pubkey" to record.publicKeyBase58, "pubkeyLen" to record.publicKeyBase58.length, "authTokenLen" to record.authToken.length),
+            )
+            return
+        }
         records[record.publicKeyBase58] = record
         latestPubkey = record.publicKeyBase58
+        // Cocos parity (Bug U3 prevention): log authTokenLen so empty/short tokens are visible.
+        AgentMwaLog.info(
+            "AuthCache",
+            "set",
+            "STORE",
+            "cached authorization written",
+            mapOf(
+                "pubkey" to record.publicKeyBase58,
+                "authTokenLen" to record.authToken.length,
+                "walletPackage" to record.walletPackage,
+                "cluster" to record.cluster.id,
+                "authenticated" to record.authenticated,
+            ),
+        )
         save()
+    }
+
+    private fun isValidBase58Pubkey(pubkey: String): Boolean {
+        if (pubkey.length !in 32..44) return false
+        return try {
+            Base58.decode(pubkey).size == 32
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     @Synchronized

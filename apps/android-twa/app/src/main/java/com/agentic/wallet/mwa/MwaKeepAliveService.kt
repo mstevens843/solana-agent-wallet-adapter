@@ -5,8 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import androidx.core.app.ServiceCompat
 import com.agentic.wallet.R
 
 class MwaKeepAliveService : Service() {
@@ -20,7 +22,14 @@ class MwaKeepAliveService : Service() {
                 }
                 getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
             }
-            startForeground(NOTIFICATION_ID, notification())
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                notification(),
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                else 0,
+            )
             AgentMwaLog.info("KeepAlive", "start", "START", "foreground service running", mapOf("sdk" to Build.VERSION.SDK_INT))
         } catch (err: Exception) {
             AgentMwaLog.warn("KeepAlive", "start", "FAIL", "foreground service failed", mapOf("class" to err.javaClass.simpleName, "message" to err.message))

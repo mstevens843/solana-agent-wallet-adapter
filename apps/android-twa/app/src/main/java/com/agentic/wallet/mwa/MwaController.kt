@@ -5,7 +5,6 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.util.Base64
-import androidx.activity.ComponentActivity
 import com.agentic.wallet.BuildConfig
 import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
 import com.solana.mobilewalletadapter.clientlib.ConnectionIdentity
@@ -143,7 +142,7 @@ class MwaController(
         AgentMwaLog.info("MwaController", "clearStateFullReset", "DONE", "authorization cleared", mapOf("reason" to reason, "pubkey" to pubkey))
     }
 
-    suspend fun deauthorizeRemote(activity: ComponentActivity, reason: String) = withKeepAlive("deauthorizeRemote") {
+    suspend fun deauthorizeRemote(sender: ActivityResultSender, reason: String) = withKeepAlive("deauthorizeRemote") {
         val record = activeRecord ?: cache.latest()
         if (record?.hasUsableAuthorization() != true) {
             clearStateFullReset(reason)
@@ -159,7 +158,7 @@ class MwaController(
         )
         val adapter = newAdapter(record.cluster, record)
         try {
-            when (val result = adapter.disconnect(ActivityResultSender(activity))) {
+            when (val result = adapter.disconnect(sender)) {
                 is TransactionResult.Success -> {
                     AgentMwaLog.info("MwaController", "deauthorizeRemote", "SUCCESS", "wallet deauthorized authorization token", mapOf("pubkey" to record.publicKeyBase58))
                 }
@@ -191,21 +190,31 @@ class MwaController(
     }
 
     suspend fun connect(
-        activity: ComponentActivity,
+        sender: ActivityResultSender,
         cluster: AgentCluster,
         targetWalletPackage: String = "",
         forceFresh: Boolean = true,
     ): AgentMwaAuthRecord = withKeepAlive("connect") {
         cache.clearBlacklist()
+        // Parity with grant-godot PR #449 (clearState fix): expose FRESH vs CACHED in logs so
+        // the rare "silent reuse" case (used auth token instead of opening OS picker) is observable.
+        val cachedReference = if (forceFresh) null else activeRecord
+        val path = if (cachedReference == null) "FRESH" else "CACHED"
         AgentMwaLog.info(
             "MwaController",
             "connect",
             "START",
             "opening wallet authorization",
-            mapOf("cluster" to cluster.id, "targetWalletPackage" to targetWalletPackage, "forceFresh" to forceFresh),
+            mapOf(
+                "cluster" to cluster.id,
+                "targetWalletPackage" to targetWalletPackage,
+                "forceFresh" to forceFresh,
+                "path" to path,
+                "hadActiveRecord" to (activeRecord != null),
+                "cachedAuthToken" to (cachedReference?.authToken?.isNotBlank() == true),
+            ),
         )
-        val sender = ActivityResultSender(activity)
-        val adapter = newAdapter(cluster, if (forceFresh) null else activeRecord)
+        val adapter = newAdapter(cluster, cachedReference)
         when (val result = adapter.connect(sender)) {
             is TransactionResult.Success -> {
                 val record = applyAuthorization(result.authResult, cluster, targetWalletPackage)
@@ -214,7 +223,7 @@ class MwaController(
                     "connect",
                     "SUCCESS",
                     "wallet authorized",
-                    authRecordMetadata(record),
+                    authRecordMetadata(record) + mapOf("path" to path),
                 )
                 record
             }
@@ -224,11 +233,11 @@ class MwaController(
     }
 
     suspend fun connectWithSignIn(
-        activity: ComponentActivity,
+        sender: ActivityResultSender,
         cluster: AgentCluster,
         domain: String,
         statement: String,
-    ): AgentMwaSigningResult = withKeepAlive("connectWithSignIn") {
+    ): AgentMwaSignInResult = withKeepAlive("connectWithSignIn") {
         if (domain.isBlank() || statement.isBlank()) {
             throwOperation(
                 "connectWithSignIn",
@@ -246,7 +255,6 @@ class MwaController(
                 authRecordMetadata(record),
             )
         }
-        val sender = ActivityResultSender(activity)
         val adapter = newAdapter(cluster, null)
         val payload = SignInWithSolana.Payload(domain, statement)
         AgentMwaLog.info(
@@ -259,28 +267,123 @@ class MwaController(
         when (val result = adapter.signIn(sender, payload)) {
             is TransactionResult.Success -> {
                 val applied = applyAuthorization(result.authResult, cluster, record?.walletPackage.orEmpty())
-                val signIn = result.authResult.signInResult ?: result.payload
-                AgentMwaSigningResult(signature = Base58.encode(signIn.signature))
-                    .also {
-                        AgentMwaLog.info(
-                            "MwaController",
-                            "connectWithSignIn",
-                            "SUCCESS",
-                            "wallet signed SIWS payload",
-                            authRecordMetadata(applied) + AgentMwaLog.bytesMetadata("signedMessage", signIn.signedMessage, includeUtf8 = true) + mapOf("signature" to it.signature),
-                        )
-                    }
+                // Parity with grant-godot PR #453 and Unity PR #SIWS:
+                // Prefer the wallet's native sign_in_result. If the wallet doesn't return
+                // one (Jupiter etc.), the Kotlin clientlib falls back to sign_messages
+                // with a CAIP-122 message and constructs SignInResult from the response.
+                val nativeSignIn = result.authResult.signInResult
+                val signIn = nativeSignIn ?: result.payload
+                val path = if (nativeSignIn != null) "native" else "fallback"
+                val account = result.authResult.accounts?.firstOrNull()
+                val signInResult = AgentMwaSignInResult(
+                    signature = Base58.encode(signIn.signature),
+                    signedMessage = Base64.encodeToString(signIn.signedMessage, Base64.NO_WRAP),
+                    publicKeyBase58 = applied.publicKeyBase58,
+                    accountLabel = applied.accountLabel,
+                    chains = account?.chains?.toList().orEmpty(),
+                    features = account?.features?.toList().orEmpty(),
+                    authToken = applied.authToken,
+                    walletPackage = applied.walletPackage,
+                    cluster = applied.cluster.id,
+                    path = path,
+                )
+                AgentMwaLog.info(
+                    "MwaController",
+                    "connectWithSignIn",
+                    "SUCCESS",
+                    "wallet signed SIWS payload",
+                    authRecordMetadata(applied) +
+                        AgentMwaLog.bytesMetadata("signedMessage", signIn.signedMessage, includeUtf8 = true) +
+                        mapOf(
+                            "signature" to signInResult.signature,
+                            "path" to path,
+                            "chains" to signInResult.chains.joinToString(","),
+                            "features" to signInResult.features.joinToString(","),
+                        ),
+                )
+                signInResult
             }
             is TransactionResult.NoWalletFound -> throwNoWallet("connectWithSignIn")
             is TransactionResult.Failure -> throwClassified("connectWithSignIn", "FAIL_WALLET_RESULT", result.e)
         }
     }
 
-    suspend fun getCapabilities(activity: ComponentActivity): String = privileged(activity, "getCapabilities") {
+    /**
+     * Returns the active MWA auth token, or empty string when no session is live.
+     * Parity with grant-godot PR #449 getAuthToken and Unity PR AuthToken getter —
+     * lets the web side surface the token in dev tabs or hand it off across boundaries.
+     */
+    fun getAuthToken(): String = activeRecord?.authToken
+        ?: cache.latest()?.authToken
+        ?: ""
+
+    /**
+     * Restores an MWA auth record (pubkey + token + walletPackage + cluster) into the
+     * encrypted AuthCache so future sign operations reuse it without re-prompting.
+     * Parity with grant-godot PR #449 setAuthToken — lets the JS layer hydrate the
+     * Kotlin cache from cloud workspace backup or hand-off from another surface.
+     *
+     * Pass blank [token] to clear the cached token without nuking the record.
+     */
+    fun setAuthToken(
+        token: String,
+        publicKeyBase58: String,
+        walletPackage: String = "",
+        cluster: AgentCluster = AgentCluster.MainnetBeta,
+    ): AgentMwaAuthRecord? {
+        if (publicKeyBase58.isBlank()) {
+            AgentMwaLog.warn(
+                "MwaController",
+                "setAuthToken",
+                "FAIL_INVALID",
+                "publicKeyBase58 is required",
+                mapOf("tokenLen" to token.length),
+            )
+            return null
+        }
+        val existing = cache.get(publicKeyBase58)
+        val publicKeyBytes = existing?.publicKeyBytes?.takeIf { it.isNotEmpty() }
+            ?: runCatching { Base58.decode(publicKeyBase58) }.getOrElse { ByteArray(0) }
+        if (publicKeyBytes.isEmpty()) {
+            AgentMwaLog.warn(
+                "MwaController",
+                "setAuthToken",
+                "FAIL_INVALID_PUBKEY",
+                "publicKeyBase58 could not be decoded",
+                mapOf("publicKey" to publicKeyBase58),
+            )
+            return null
+        }
+        val record = (existing ?: AgentMwaAuthRecord(publicKeyBase58 = publicKeyBase58)).copy(
+            publicKeyBase58 = publicKeyBase58,
+            publicKeyBytes = publicKeyBytes,
+            authToken = token,
+            walletPackage = walletPackage.ifBlank { existing?.walletPackage.orEmpty() },
+            walletType = WalletRegistry.walletType(
+                walletPackage.ifBlank { existing?.walletPackage.orEmpty() },
+                existing?.walletUriBase.orEmpty(),
+            ),
+            cluster = cluster,
+            timestampUnixSeconds = System.currentTimeMillis() / 1000L,
+            authenticated = token.isNotBlank(),
+        )
+        cache.set(record)
+        activeRecord = if (token.isBlank()) null else record
+        AgentMwaLog.info(
+            "MwaController",
+            "setAuthToken",
+            "DONE",
+            "auth token injected from external cache",
+            authRecordMetadata(record) + mapOf("tokenLen" to token.length, "cleared" to token.isBlank()),
+        )
+        return record
+    }
+
+    suspend fun getCapabilities(sender: ActivityResultSender): String = privileged(sender, "getCapabilities") {
         val record = requireActive("getCapabilities")
         val adapter = newAdapter(record.cluster, record)
         AgentMwaLog.info("MwaController", "getCapabilities", "START", "opening wallet get_capabilities request", authRecordMetadata(record))
-        when (val result = adapter.transact(ActivityResultSender(activity)) { _ -> getCapabilities() }) {
+        when (val result = adapter.transact(sender) { _ -> getCapabilities() }) {
             is TransactionResult.Success -> {
                 val updatedRecord = applyAuthorization(result.authResult, record.cluster, record.walletPackage)
                 val caps = result.payload
@@ -315,11 +418,11 @@ class MwaController(
         }
     }
 
-    suspend fun signMessage(activity: ComponentActivity, message: String): AgentMwaSigningResult =
-        signMessages(activity, arrayOf(message.toByteArray(Charsets.UTF_8))).first()
+    suspend fun signMessage(sender: ActivityResultSender, message: String): AgentMwaSigningResult =
+        signMessages(sender, arrayOf(message.toByteArray(Charsets.UTF_8))).first()
 
-    suspend fun signMessages(activity: ComponentActivity, messages: Array<ByteArray>): List<AgentMwaSigningResult> =
-        privileged(activity, "signMessages") {
+    suspend fun signMessages(sender: ActivityResultSender, messages: Array<ByteArray>): List<AgentMwaSigningResult> =
+        privileged(sender, "signMessages") {
             if (messages.isEmpty() || messages.any { it.isEmpty() }) {
                 throwOperation(
                     "signMessages",
@@ -346,7 +449,7 @@ class MwaController(
                 authRecordMetadata(record) + messagesMetadata(messages),
             )
             val result = withTimeoutOrNull(SIGN_MESSAGES_TIMEOUT_MS) {
-                adapter.transact(ActivityResultSender(activity)) { _ ->
+                adapter.transact(sender) { _ ->
                     val addresses = Array(messages.size) { record.publicKeyBytes }
                     AgentMwaLog.info(
                         "MwaController",
@@ -386,11 +489,11 @@ class MwaController(
             }
         }
 
-    suspend fun signTransaction(activity: ComponentActivity, transaction: ByteArray): AgentMwaSigningResult =
-        signTransactions(activity, arrayOf(transaction)).first()
+    suspend fun signTransaction(sender: ActivityResultSender, transaction: ByteArray): AgentMwaSigningResult =
+        signTransactions(sender, arrayOf(transaction)).first()
 
-    suspend fun signTransactions(activity: ComponentActivity, transactions: Array<ByteArray>): List<AgentMwaSigningResult> =
-        privileged(activity, "signTransactions") {
+    suspend fun signTransactions(sender: ActivityResultSender, transactions: Array<ByteArray>): List<AgentMwaSigningResult> =
+        privileged(sender, "signTransactions") {
             if (transactions.isEmpty() || transactions.any { it.isEmpty() }) {
                 throwOperation(
                     "signTransactions",
@@ -416,7 +519,7 @@ class MwaController(
                 "opening wallet transaction approval",
                 authRecordMetadata(record) + transactionsMetadata(transactions),
             )
-            when (val result = adapter.transact(ActivityResultSender(activity)) { _ -> signTransactions(transactions) }) {
+            when (val result = adapter.transact(sender) { _ -> signTransactions(transactions) }) {
                 is TransactionResult.Success -> {
                     applyAuthorization(result.authResult, record.cluster, record.walletPackage)
                     val signed = result.payload.signedPayloads?.filterNotNull().orEmpty()
@@ -444,11 +547,11 @@ class MwaController(
             }
         }
 
-    suspend fun signAndSendTransaction(activity: ComponentActivity, transaction: ByteArray, rpcUrl: String? = null): AgentMwaSigningResult =
-        signAndSendTransactions(activity, arrayOf(transaction), rpcUrl).first()
+    suspend fun signAndSendTransaction(sender: ActivityResultSender, transaction: ByteArray, rpcUrl: String? = null): AgentMwaSigningResult =
+        signAndSendTransactions(sender, arrayOf(transaction), rpcUrl).first()
 
-    suspend fun signAndSendTransactions(activity: ComponentActivity, transactions: Array<ByteArray>, rpcUrl: String? = null): List<AgentMwaSigningResult> =
-        privileged(activity, "signAndSendTransactions") {
+    suspend fun signAndSendTransactions(sender: ActivityResultSender, transactions: Array<ByteArray>, rpcUrl: String? = null): List<AgentMwaSigningResult> =
+        privileged(sender, "signAndSendTransactions") {
             if (transactions.isEmpty() || transactions.any { it.isEmpty() }) {
                 throwOperation(
                     "signAndSendTransactions",
@@ -470,9 +573,9 @@ class MwaController(
             )
             val adapter = newAdapter(record.cluster, record)
             if (routeNative) {
-                signAndSendNative(activity, adapter, record, transactions, rpcUrl)
+                signAndSendNative(sender, adapter, record, transactions, rpcUrl)
             } else {
-                signThenRpc(activity, adapter, record, transactions, rpcUrl)
+                signThenRpc(sender, adapter, record, transactions, rpcUrl)
             }
         }
 
@@ -497,7 +600,7 @@ class MwaController(
         return json
     }
 
-    suspend fun signBridgeRequest(activity: ComponentActivity, request: AgentMwaBridgeRequest): AgentMwaSigningResult {
+    suspend fun signBridgeRequest(sender: ActivityResultSender, request: AgentMwaBridgeRequest): AgentMwaSigningResult {
         AgentMwaLog.info(
             "MwaController",
             "signBridgeRequest",
@@ -518,17 +621,17 @@ class MwaController(
             "sign_message" -> {
                 val message = decodePayload(request.payloadData, request.payloadEncoding)
                 AgentMwaLog.info("MwaController", "signBridgeRequest", "STEP_DECODED_MESSAGE", "bridge message payload decoded", AgentMwaLog.bytesMetadata("message", message, includeUtf8 = true) + bridgeRequestMetadata(request))
-                signMessages(activity, arrayOf(message)).first()
+                signMessages(sender, arrayOf(message)).first()
             }
             "sign_transaction" -> {
                 val transaction = decodePayload(request.payloadData, request.payloadEncoding)
                 AgentMwaLog.info("MwaController", "signBridgeRequest", "STEP_DECODED_TRANSACTION", "bridge transaction payload decoded", AgentMwaLog.transactionMetadata("transaction", transaction) + bridgeRequestMetadata(request))
-                signTransaction(activity, transaction)
+                signTransaction(sender, transaction)
             }
             "sign_and_send_transaction" -> {
                 val transaction = decodePayload(request.payloadData, request.payloadEncoding)
                 AgentMwaLog.info("MwaController", "signBridgeRequest", "STEP_DECODED_TRANSACTION", "bridge sign-and-send payload decoded", AgentMwaLog.transactionMetadata("transaction", transaction) + bridgeRequestMetadata(request))
-                signAndSendTransaction(activity, transaction, request.rpcUrl)
+                signAndSendTransaction(sender, transaction, request.rpcUrl)
             }
             else -> throwOperation(
                 "signBridgeRequest",
@@ -540,13 +643,37 @@ class MwaController(
     }
 
     private suspend fun signAndSendNative(
-        activity: ComponentActivity,
+        sender: ActivityResultSender,
         adapter: MobileWalletAdapter,
         record: AgentMwaAuthRecord,
         transactions: Array<ByteArray>,
         rpcUrl: String?,
     ): List<AgentMwaSigningResult> {
         val resolvedRpcUrl = resolveRpcUrl(record.cluster, rpcUrl)
+        // Parity with grant-godot KNOWN_ISSUES rent fix (lines 444-484): even native sign_and_send
+        // can fail at the validator with InsufficientFundsForRent — wallets like Seed Vault inject
+        // ComputeBudget priority-fee ix before signing, pushing the required balance higher than
+        // a naive caller would assume. Pre-check here so the wallet sheet never opens when the
+        // account is under-funded.
+        val balance = getConnectedBalanceLamports(record, resolvedRpcUrl)
+        AgentMwaLog.info(
+            "MwaController",
+            "signAndSendNative",
+            "STEP_BALANCE",
+            "balance checked",
+            authRecordMetadata(record) + mapOf("lamports" to balance, "threshold" to MIN_FEE_PAYER_LAMPORTS, "rpc" to resolvedRpcUrl),
+        )
+        if (balance in 0 until MIN_FEE_PAYER_LAMPORTS) {
+            throwOperation(
+                "signAndSendNative",
+                "FAIL_INSUFFICIENT_FUNDS",
+                MwaOperationException(
+                    "INSUFFICIENT_FUNDS_FOR_RENT",
+                    "Connected account has $balance lamports; at least $MIN_FEE_PAYER_LAMPORTS are required before opening the wallet.",
+                ),
+                authRecordMetadata(record) + mapOf("lamports" to balance, "threshold" to MIN_FEE_PAYER_LAMPORTS),
+            )
+        }
         val minContextSlot = fetchLatestContextSlot(record.cluster, resolvedRpcUrl).takeIf { it > 0 }?.toInt()
         val params = TransactionParams(minContextSlot, "confirmed", true, 3, null)
         AgentMwaLog.info(
@@ -563,7 +690,7 @@ class MwaController(
             ) + transactionsMetadata(transactions),
         )
         val result = withTimeoutOrNull(SIGN_AND_SEND_TIMEOUT_MS) {
-            adapter.transact(ActivityResultSender(activity)) { _ ->
+            adapter.transact(sender) { _ ->
                 AgentMwaLog.info(
                     "MwaController",
                     "signAndSendNative",
@@ -610,7 +737,7 @@ class MwaController(
     }
 
     private suspend fun signThenRpc(
-        activity: ComponentActivity,
+        sender: ActivityResultSender,
         adapter: MobileWalletAdapter,
         record: AgentMwaAuthRecord,
         transactions: Array<ByteArray>,
@@ -635,7 +762,7 @@ class MwaController(
             authRecordMetadata(record) + mapOf("rpc" to resolvedRpcUrl) + transactionsMetadata(transactions),
         )
         val result = withTimeoutOrNull(SIGN_AND_SEND_TIMEOUT_MS) {
-            adapter.transact(ActivityResultSender(activity)) { _ ->
+            adapter.transact(sender) { _ ->
                 AgentMwaLog.info("MwaController", "signThenRpc", "STEP_MWA_CALL", "calling wallet sign_transactions", transactionsMetadata(transactions))
                 signTransactions(transactions)
             }
@@ -671,7 +798,7 @@ class MwaController(
     }
 
     private suspend fun <T> privileged(
-        activity: ComponentActivity,
+        sender: ActivityResultSender,
         method: String,
         block: suspend () -> T,
     ): T = withKeepAlive(method) {
@@ -681,7 +808,7 @@ class MwaController(
             if (err.code != "WALLET_AUTH_MISMATCH") throw err
             val previous = requireActive(method)
             AgentMwaLog.warn("MwaController", method, "STEP_AUTH_MISMATCH", "attempting one-shot reauthorization", authRecordMetadata(previous))
-            val reauthorized = connect(activity, previous.cluster, previous.walletPackage, forceFresh = true)
+            val reauthorized = connect(sender, previous.cluster, previous.walletPackage, forceFresh = true)
             if (reauthorized.publicKeyBase58 != previous.publicKeyBase58) {
                 throwOperation(
                     method,
@@ -738,17 +865,27 @@ class MwaController(
     }
 
     private fun newAdapter(cluster: AgentCluster, record: AgentMwaAuthRecord?): MobileWalletAdapter {
+        // MWA spec requires iconRelativeUri to be RELATIVE to identityUri. If a caller
+        // (or older cached config) hands us an absolute URI, strip it back to the path
+        // segment so ConnectionIdentity doesn't throw "iconRelativeUri must be a relative uri".
+        val iconUri = relativeIconUri(identity.iconUri, identity.uri)
         AgentMwaLog.info(
             "MwaController",
             "newAdapter",
             "START",
             "creating mobile wallet adapter",
-            authRecordMetadata(record) + mapOf("cluster" to cluster.id, "identityName" to identity.name, "identityUri" to identity.uri, "identityIconUri" to identity.iconUri),
+            authRecordMetadata(record) + mapOf(
+                "cluster" to cluster.id,
+                "identityName" to identity.name,
+                "identityUri" to identity.uri,
+                "identityIconUri" to identity.iconUri,
+                "iconRelative" to iconUri,
+            ),
         )
         val adapter = MobileWalletAdapter(
             ConnectionIdentity(
                 Uri.parse(identity.uri),
-                Uri.parse(identity.iconUri),
+                Uri.parse(iconUri ?: "favicon.ico"),
                 identity.name,
             ),
         )
@@ -767,6 +904,42 @@ class MwaController(
             authRecordMetadata(record) + mapOf("cluster" to cluster.id, "authRestored" to (record?.authToken?.isNotBlank() == true), "walletUriRestored" to (record?.walletUriBase?.isNotBlank() == true)),
         )
         return adapter
+    }
+
+    /**
+     * Coerces [raw] into a relative URI suitable for MWA `iconRelativeUri`.
+     *
+     * Per the MWA spec, `iconRelativeUri` must be a relative URI resolved against
+     * the identity base. The Kotlin clientlib's `ConnectionIdentity` constructor
+     * enforces this with `require(iconUri == null || !iconUri.isAbsolute) { "if non-null, iconRelativeUri must be a relative uri" }`.
+     *
+     * If [raw] is blank → return null (no icon).
+     * If [raw] is absolute and starts with [identityBase] → return the path after the base.
+     * If [raw] is absolute on a different origin → drop the origin, keep the path.
+     * Otherwise it's already relative → return as-is.
+     */
+    private fun relativeIconUri(raw: String, identityBase: String): String? {
+        if (raw.isBlank()) return null
+        val parsed = runCatching { Uri.parse(raw) }.getOrNull() ?: return null
+        if (!parsed.isAbsolute) return raw.trimStart('/').ifBlank { null }
+        // Absolute URI — strip down to the path-and-after.
+        val baseUri = runCatching { Uri.parse(identityBase) }.getOrNull()
+        val sameOrigin = baseUri != null && parsed.scheme == baseUri.scheme && parsed.host == baseUri.host && parsed.port == baseUri.port
+        val rel = buildString {
+            append(parsed.path.orEmpty().trimStart('/'))
+            parsed.encodedQuery?.takeIf { it.isNotEmpty() }?.let { append('?').append(it) }
+            parsed.encodedFragment?.takeIf { it.isNotEmpty() }?.let { append('#').append(it) }
+        }
+        if (!sameOrigin) {
+            AgentMwaLog.warn(
+                "MwaController",
+                "relativeIconUri",
+                "WARN_CROSS_ORIGIN_ICON",
+                "iconUri origin differs from identity origin; coerced to relative path",
+                mapOf("iconUri" to raw, "identityBase" to identityBase, "relative" to rel),
+            )
+        }
+        return rel.ifBlank { null }
     }
 
     private fun restoreWalletUriBase(adapter: MobileWalletAdapter, walletUriBase: String) {
@@ -1197,16 +1370,32 @@ class MwaController(
     private fun classifyFailure(err: Throwable?): MwaOperationException {
         val message = err?.message.orEmpty()
         val lower = message.lowercase()
+        val cls = err?.javaClass?.simpleName.orEmpty()
+        val causeCls = err?.cause?.javaClass?.simpleName.orEmpty()
+        // Cocos parity (KNOWN_ISSUES #6): Solflare/Flutter wallets throw ExecutionException with
+        // a null cause and blank message when the wallet crashes mid-call (e.g. on sign_messages or
+        // sign_and_deauthorize). Surface a distinct WALLET_CRASHED so the UI can prompt the user
+        // to retry with a different wallet instead of "wallet error".
+        val crashed = cls == "ExecutionException" && err?.cause == null && message.isBlank()
         val code = when {
+            crashed -> "WALLET_CRASHED"
+            cls == "CancellationException" && message.isBlank() -> "WALLET_CRASHED"
             lower.contains("auth_token") || lower.contains("auth token") || lower.contains("not authorized") || lower.contains("reauthorize") -> "WALLET_AUTH_MISMATCH"
             lower.contains("user rejected") || lower.contains("declined") || lower.contains("cancelled") || lower.contains("canceled") -> "USER_REJECTED"
             lower.contains("timeout") || lower.contains("timed out") -> "WALLET_HUNG"
-            lower.contains("jsondecodingexception") || lower.contains("class discriminator") -> "WALLET_NATIVE_SIGN_AND_SEND_UNSUPPORTED"
+            lower.contains("jsondecodingexception") || lower.contains("class discriminator") || causeCls.contains("JsonDecodingException") -> "WALLET_NATIVE_SIGN_AND_SEND_UNSUPPORTED"
+            lower.contains("insufficientfundsforrent") || lower.contains("insufficient funds for rent") -> "INSUFFICIENT_FUNDS_FOR_RENT"
             lower.contains("mincontextslot") -> "PHANTOM_REQUIRES_MIN_CONTEXT_SLOT"
             lower.contains("invalid") || lower.contains("payload") -> "INVALID_PAYLOADS"
             else -> "WALLET_ERROR"
         }
-        return MwaOperationException(code, message.ifBlank { err?.javaClass?.simpleName ?: "Wallet operation failed." }, err)
+        val resolvedMessage = when {
+            crashed -> "Wallet crashed mid-request. Try another wallet (Backpack, Phantom, or Jupiter)."
+            message.isNotBlank() -> message
+            err != null -> "${err.javaClass.simpleName} (no message)"
+            else -> "Wallet operation failed."
+        }
+        return MwaOperationException(code, resolvedMessage, err)
     }
 
     companion object {

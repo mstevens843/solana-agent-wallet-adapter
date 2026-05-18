@@ -26,6 +26,7 @@ import com.agentic.wallet.mwa.AgentMwaLog
 import com.agentic.wallet.mwa.BridgeClient
 import com.agentic.wallet.mwa.MwaController
 import com.agentic.wallet.mwa.MwaOperationException
+import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -36,6 +37,7 @@ import java.util.Locale
 
 class MwaExampleActivity : ComponentActivity() {
     private lateinit var controller: MwaController
+    private lateinit var activityResultSender: ActivityResultSender
     private lateinit var statusView: TextView
     private lateinit var logView: TextView
     private lateinit var clusterSpinner: Spinner
@@ -55,6 +57,8 @@ class MwaExampleActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // CRITICAL: ActivityResultSender must be constructed BEFORE the activity reaches STARTED.
+        activityResultSender = ActivityResultSender(this)
         showingExampleApp = true
         val mode = "example_native"
         AgentMwaLog.info(
@@ -351,7 +355,7 @@ class MwaExampleActivity : ComponentActivity() {
     }
 
     private fun connectWallet() = runAction("connect") {
-        val record = controller.connect(this, selectedCluster())
+        val record = controller.connect(activityResultSender, selectedCluster())
         appendLog("Connected ${short(record.publicKeyBase58)} on ${record.cluster.id}.")
         renderState()
     }
@@ -379,7 +383,7 @@ class MwaExampleActivity : ComponentActivity() {
 
     private fun clearFullReset() = runAction("clearFullReset") {
         disconnectBridgeInternal()
-        controller.deauthorizeRemote(this, "android_ui")
+        controller.deauthorizeRemote(activityResultSender, "android_ui")
         appendLog("Full local wallet reset complete.")
         renderState()
     }
@@ -392,7 +396,7 @@ class MwaExampleActivity : ComponentActivity() {
     }
 
     private fun getCapabilities() = runAction("getCapabilities") {
-        val caps = controller.getCapabilities(this)
+        val caps = controller.getCapabilities(activityResultSender)
         appendLog("Capabilities: $caps")
         renderState()
     }
@@ -400,32 +404,32 @@ class MwaExampleActivity : ComponentActivity() {
     private fun connectWithSignIn() = runAction("connectWithSignIn") {
         hideKeyboard()
         val result = controller.connectWithSignIn(
-            this,
+            activityResultSender,
             selectedCluster(),
             siwsDomainInput.text.toString().trim(),
             siwsStatementInput.text.toString().trim(),
         )
-        appendLog("SIWS signature: ${short(result.signature)}")
+        appendLog("SIWS (${result.path}) sig=${short(result.signature)} pubkey=${short(result.publicKeyBase58)} label=${result.accountLabel.ifBlank { "(none)" }} chains=[${result.chains.joinToString(",")}] features=[${result.features.joinToString(",")}]")
         renderState()
     }
 
     private fun signMessage() = runAction("signMessage") {
         hideKeyboard()
-        val result = controller.signMessage(this, messageInput.text.toString())
+        val result = controller.signMessage(activityResultSender, messageInput.text.toString())
         appendLog("Message signature: ${short(result.signature)}")
     }
 
     private fun signTransaction() = runAction("signTransaction") {
         hideKeyboard()
         val tx = decodeTransactionInput()
-        val result = controller.signTransaction(this, tx)
+        val result = controller.signTransaction(activityResultSender, tx)
         appendLog("Signed transaction bytes, base64 length ${result.signature.length}.")
     }
 
     private fun signAndSendTransaction() = runAction("signAndSend") {
         hideKeyboard()
         val tx = decodeTransactionInput()
-        val result = controller.signAndSendTransaction(this, tx)
+        val result = controller.signAndSendTransaction(activityResultSender, tx)
         appendLog("Transaction sent: ${short(result.txid ?: result.signature)}")
     }
 
@@ -498,7 +502,7 @@ class MwaExampleActivity : ComponentActivity() {
             mapOf("requestId" to request.id, "kind" to request.kind, "cluster" to request.cluster.id),
         )
         try {
-            val result = controller.signBridgeRequest(this, request)
+            val result = controller.signBridgeRequest(activityResultSender, request)
             client.resolve(request.id, result)
             appendLog("Approved ${request.kind}: ${short(result.txid ?: result.signature)}")
             requestSummaryView?.text = "Approved ${request.kind}. Waiting for the next agent request."
@@ -604,7 +608,8 @@ class MwaExampleActivity : ComponentActivity() {
         return AgentMwaIdentity(
             name = "Agentic",
             uri = origin,
-            iconUri = "$origin/favicon.ico",
+            // MWA spec: iconRelativeUri must be relative to identityUri.
+            iconUri = "favicon.ico",
         )
     }
 

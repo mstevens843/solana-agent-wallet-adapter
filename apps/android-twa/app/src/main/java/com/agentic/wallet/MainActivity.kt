@@ -35,6 +35,7 @@ import com.agentic.wallet.mwa.AgentMwaSigningResult
 import com.agentic.wallet.mwa.MwaController
 import com.agentic.wallet.mwa.MwaOperationException
 import com.agentic.wallet.streaming.StreamingSessionException
+import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import org.json.JSONException
@@ -47,10 +48,15 @@ class MainActivity : ComponentActivity() {
     private lateinit var mwaController: MwaController
     private lateinit var secureStore: NativeSecureStore
     private lateinit var agentRuntimeController: AgentRuntimeController
+    private lateinit var activityResultSender: ActivityResultSender
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // CRITICAL: ActivityResultSender must be constructed BEFORE the activity reaches STARTED.
+        // Its constructor calls registerForActivityResult(), which Android refuses past STARTED.
+        // See KNOWN_ISSUES.md "ActivityResultSender lifecycle violation" in grant-godot.
+        activityResultSender = ActivityResultSender(this)
         mwaController = MwaController(applicationContext, defaultMwaIdentity())
         secureStore = NativeSecureStore(applicationContext)
         agentRuntimeController = AgentRuntimeController(applicationContext, secureStore)
@@ -195,7 +201,10 @@ class MainActivity : ComponentActivity() {
         return AgentMwaIdentity(
             name = "Agentic",
             uri = origin,
-            iconUri = "$origin/favicon.ico",
+            // MWA spec: iconRelativeUri is RELATIVE to identityUri. Passing an absolute URI
+            // makes ConnectionIdentity throw "iconRelativeUri must be a relative uri" before
+            // the wallet ever responds — that's the bug Mathew hit on Seed Vault + Backpack.
+            iconUri = "favicon.ico",
         )
     }
 
@@ -839,7 +848,7 @@ class MainActivity : ComponentActivity() {
             return when (method) {
                 "status" -> statusJson()
                 "connect" -> {
-                    val record = activity.mwaController.connect(activity, clusterFromPayload(payload))
+                    val record = activity.mwaController.connect(activity.activityResultSender, clusterFromPayload(payload))
                     statusJson(record)
                 }
                 "reconnectLatest" -> {
@@ -848,7 +857,46 @@ class MainActivity : ComponentActivity() {
                 }
                 "capabilities" -> JSONObject()
                     .put("capabilities", activity.mwaController.capabilitiesJson())
-                "sign" -> signingResultJson(activity.mwaController.signBridgeRequest(activity, bridgeRequestFromPayload(payload)))
+                "sign" -> signingResultJson(activity.mwaController.signBridgeRequest(activity.activityResultSender, bridgeRequestFromPayload(payload)))
+                "signIn" -> {
+                    // MWA 2.0 Auth 2.0 / Sign In With Solana (SIWS). Parity with grant-godot PR #453
+                    // and Unity SIWS PR. One-shot authorize + ownership proof. Domain + statement
+                    // are the only required fields; everything else flows from MWA clientlib defaults.
+                    val domain = payload.optString("domain", "").trim()
+                    val statement = payload.optString("statement", "").trim()
+                    val signInResult = activity.mwaController.connectWithSignIn(
+                        activity.activityResultSender,
+                        clusterFromPayload(payload),
+                        domain,
+                        statement,
+                    )
+                    signInResultJson(signInResult)
+                }
+                "getAuthToken" -> {
+                    // Parity with grant-godot PR #449 and Unity AuthToken getter.
+                    val token = activity.mwaController.getAuthToken()
+                    val record = activity.mwaController.activeAuthorization()
+                        ?: activity.mwaController.cachedAuthorizations().maxByOrNull { it.timestampUnixSeconds }
+                    JSONObject()
+                        .put("authToken", token)
+                        .put("authTokenLen", token.length)
+                        .put("publicKey", record?.publicKeyBase58.orEmpty())
+                        .put("walletPackage", record?.walletPackage.orEmpty())
+                        .put("cluster", record?.cluster?.id.orEmpty())
+                }
+                "setAuthToken" -> {
+                    // Parity with grant-godot PR #449 setAuthToken. Hydrate cache from JS-supplied
+                    // token (e.g. restored from cloud workspace backup).
+                    val token = payload.optString("authToken", "").ifBlank { payload.optString("token", "") }
+                    val publicKey = payload.optString("publicKey", "")
+                        .ifBlank { payload.optString("publicKeyBase58", "") }
+                        .ifBlank { payload.optString("address", "") }
+                    val walletPackage = payload.optString("walletPackage", "")
+                    val clusterId = payload.optString("cluster", "")
+                    val cluster = if (clusterId.isBlank()) AgentCluster.MainnetBeta else AgentCluster.requireSupported(clusterId)
+                    val record = activity.mwaController.setAuthToken(token, publicKey, walletPackage, cluster)
+                    statusJson(record)
+                }
                 "disconnect" -> {
                     activity.mwaController.disconnect()
                     statusJson(null)
@@ -858,15 +906,55 @@ class MainActivity : ComponentActivity() {
                     statusJson(activity.mwaController.activeAuthorization())
                 }
                 "fullReset" -> {
-                    activity.mwaController.deauthorizeRemote(activity, "android_js_bridge")
+                    activity.mwaController.deauthorizeRemote(activity.activityResultSender, "android_js_bridge")
                     statusJson(null)
                 }
                 "clearAllAccounts" -> {
                     activity.mwaController.clearAllCachedAuthorizations()
                     statusJson(null)
                 }
+                "detectWallets" -> {
+                    // Cocos parity: enumerate installed MWA-compatible wallets.
+                    JSONObject().put("wallets", com.agentic.wallet.mwa.WalletDetector.detectInstalledWallets(activity))
+                }
+                "detectDevice" -> {
+                    // Cocos parity: surface Seeker/Saga detection so the web app can adjust UX.
+                    com.agentic.wallet.mwa.WalletDetector.detectDevice()
+                }
                 else -> throw MwaOperationException("UNSUPPORTED_METHOD", "Unsupported Android MWA bridge method: $method")
             }
+        }
+
+        private fun signInResultJson(result: com.agentic.wallet.mwa.AgentMwaSignInResult): JSONObject {
+            val json = JSONObject()
+                .put("signature", result.signature)
+                .put("signedMessage", result.signedMessage)
+                .put("publicKey", result.publicKeyBase58)
+                .put("address", result.publicKeyBase58)
+                .put("accountLabel", result.accountLabel)
+                .put("chains", org.json.JSONArray(result.chains))
+                .put("features", org.json.JSONArray(result.features))
+                .put("authToken", result.authToken)
+                .put("authTokenLen", result.authToken.length)
+                .put("walletPackage", result.walletPackage)
+                .put("cluster", result.cluster)
+                .put("path", result.path)
+            AgentMwaLog.info(
+                "MainActivity",
+                "signInResultJson",
+                "DONE",
+                "Android MWA SIWS result JSON prepared",
+                mapOf(
+                    "signature" to result.signature,
+                    "publicKey" to result.publicKeyBase58,
+                    "accountLabel" to result.accountLabel,
+                    "path" to result.path,
+                    "chainsCount" to result.chains.size,
+                    "featuresCount" to result.features.size,
+                    "authTokenLen" to result.authToken.length,
+                ),
+            )
+            return json
         }
 
         private suspend fun handleDeviceAgentRequest(
@@ -1046,10 +1134,15 @@ class MainActivity : ComponentActivity() {
                 "reconnectLatest",
                 "capabilities",
                 "sign",
+                "signIn",
+                "getAuthToken",
+                "setAuthToken",
                 "disconnect",
                 "clearTransient",
                 "fullReset",
                 "clearAllAccounts",
+                "detectWallets",
+                "detectDevice",
             )
             private val ALLOWED_DEVICE_AGENT_METHODS = setOf(
                 "status",
