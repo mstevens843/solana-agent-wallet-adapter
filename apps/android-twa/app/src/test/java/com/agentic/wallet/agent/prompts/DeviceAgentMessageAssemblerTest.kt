@@ -249,4 +249,71 @@ class DeviceAgentMessageAssemblerTest {
         val userJson = JSONObject(messages.userContent)
         assertEquals(context.toString(), userJson.optJSONObject("context")?.toString())
     }
+
+    @Test
+    fun researchModeIsCollectFactsOnlyWhenTargetsAbsent() {
+        val messages = DeviceAgentMessageAssembler.buildResearchMessages(
+            JSONObject()
+                .put("instruction", "check helium mobile lowest plan if less than \$20 approve")
+                .put("walletAddress", "ABC123"),
+            null,
+            fixedClock,
+        )
+        val userJson = JSONObject(messages.userContent)
+        val research = userJson.optJSONObject("research")!!
+        assertEquals(true, research.optBoolean("needed"))
+        assertEquals("collect_current_facts_only", research.optString("mode"))
+        assertEquals("2026-05-15T12:00:00Z", research.optString("currentDate"))
+        assertEquals(3, research.optInt("maxSearches"))
+        assertTrue(research.optString("sourcePolicy").startsWith("Prefer official vendor pricing pages"))
+        assertTrue(messages.system.contains("research current outside facts"))
+        assertTrue(messages.system.contains("Prefer official vendor pricing pages"))
+        assertEquals("ABC123", userJson.optString("walletAddress"))
+        assertTrue(
+            userJson.optString("requiredBoundary").contains("This research pass cannot approve"),
+        )
+    }
+
+    @Test
+    fun researchModeIsResolveAtomsWhenTargetsPresent() {
+        val targets = JSONArray()
+            .put(JSONObject().put("id", "helium-plan-price").put("description", "lowest monthly plan"))
+        val messages = DeviceAgentMessageAssembler.buildResearchMessages(
+            JSONObject().put("instruction", "approve if cheaper than \$20"),
+            targets,
+            fixedClock,
+        )
+        val userJson = JSONObject(messages.userContent)
+        val research = userJson.optJSONObject("research")!!
+        assertEquals("resolve_specific_atoms", research.optString("mode"))
+        // researchTargets must be inside context, not at the user-content root.
+        val context = userJson.optJSONObject("context")!!
+        assertEquals(targets.toString(), context.optJSONArray("researchTargets")?.toString())
+        assertTrue(messages.system.contains("atomic fact requests"))
+    }
+
+    @Test
+    fun researchMergesExistingContextWithTargets() {
+        val existingContext = JSONObject().put("evidenceFacts", JSONArray().put(JSONObject().put("id", "f1")))
+        val targets = JSONArray().put(JSONObject().put("id", "plan-cost"))
+        val messages = DeviceAgentMessageAssembler.buildResearchMessages(
+            JSONObject()
+                .put("instruction", "do thing")
+                .put("context", existingContext),
+            targets,
+            fixedClock,
+        )
+        val context = JSONObject(messages.userContent).optJSONObject("context")!!
+        assertNotNull(context.optJSONArray("evidenceFacts"))
+        assertEquals(targets.toString(), context.optJSONArray("researchTargets")?.toString())
+    }
+
+    @Test
+    fun researchDefaultsInstructionAndWalletAndCluster() {
+        val messages = DeviceAgentMessageAssembler.buildResearchMessages(JSONObject(), null, fixedClock)
+        val userJson = JSONObject(messages.userContent)
+        assertEquals(DeviceAgentBoundaries.REVIEW_DEFAULT_INSTRUCTION, userJson.optString("instruction"))
+        assertEquals("not_connected", userJson.optString("walletAddress"))
+        assertEquals("unknown", userJson.optString("cluster"))
+    }
 }

@@ -5,16 +5,29 @@ import com.agentic.wallet.agent.prompts.Messages
 import com.agentic.wallet.agent.runtime.RuntimeConfig
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 import java.time.Clock
 import java.time.Instant
 
-// Anthropic Device Agent provider — POST /v1/messages with optional web_search tool.
-// Two-pass research flow: when research.needed=true, runs a free-text research call with
-// web_search bound (no JSON constraint), captures filtered citations + summary, then runs
-// a structured review pass with the research evidence injected into context.
-// Mirrors apps/browser-demo/src/deviceAgent/provider/anthropicProvider.ts (which omits the
-// browser CORS header — Android's HttpURLConnection doesn't need it).
-internal class AnthropicProvider(
+// Native Gemini Device Agent provider — hits Google's :generateContent endpoint instead
+// of the OpenAI-compatible passthrough. Adds two-pass web research with Google Search
+// grounding (`tools: [{ google_search: {} }]`), mirroring AnthropicProvider.runResearchPass
+// so external-fact prompts like "check helium mobile. lowest monthly plan. if < $20.
+// approve." resolve identically across providers.
+//
+// Why a separate class from OpenAiCompatibleProvider:
+//   - Gemini's /v1beta/openai compat endpoint does NOT support `tools: [{ google_search: {} }]`
+//     — the grounding tool is only exposed on the native :generateContent endpoint.
+//   - The native request shape (`systemInstruction`, `contents[].parts[]`,
+//     `generationConfig.{responseMimeType, temperature, maxOutputTokens}`) is incompatible
+//     with chat completions, so it lives in its own class.
+//   - Gemini rejects `generationConfig.responseMimeType: 'application/json'` whenever any
+//     tool is attached, so the research pass MUST drop responseMimeType.
+//   - Routing is by `config.provider == "gemini"` at the dispatcher level.
+//
+// Kotlin port of apps/browser-demo/src/deviceAgent/provider/geminiNativeProvider.ts.
+internal class GeminiNativeProvider(
     private val config: RuntimeConfig,
     private val http: HttpExecutor,
     private val clock: Clock = Clock.systemUTC(),
@@ -22,55 +35,73 @@ internal class AnthropicProvider(
 
     override suspend fun generatePlan(payload: JSONObject): JSONObject {
         val messages = DeviceAgentMessageAssembler.buildPlanMessages(payload)
-        val response = postMessages(messages, PLAN_MAX_TOKENS, PLAN_TEMPERATURE, payload)
-        return ProviderResponseParser.parseModelJson(ProviderResponseParser.extractAnthropicText(response))
+        val response = postGenerateContent(
+            messages,
+            jsonObjectMode = true,
+            temperature = PLAN_TEMPERATURE,
+            maxOutputTokens = PLAN_MAX_TOKENS,
+            research = false,
+        )
+        return ProviderResponseParser.parseModelJson(ProviderResponseParser.extractGeminiText(response))
     }
 
     override suspend fun reviewPlan(payload: JSONObject): JSONObject {
-        // Two-pass flow for parity with the local-bridge planner: when the review needs outside
-        // facts, run a research-only call (web_search bound, no JSON requirement) first, then a
-        // structured-output call with the research summary embedded in context. Avoids the model
-        // juggling "search the web" + "return JSON" at the same time (Helium NOTE single-pass
-        // returned $20 — a matching plan — vs $15 from the two-pass local-bridge).
         if (researchNeeded(payload)) {
-            val enriched = runResearchPass(payload)
-            val reviewPayload = mergeResearchSignal(enriched)
+            val enrichedPayload = runResearchPass(payload)
+            val reviewPayload = mergeResearchSignal(enrichedPayload)
             val messages = DeviceAgentMessageAssembler.buildReviewMessages(reviewPayload)
-            val response = postMessages(messages, REVIEW_MAX_TOKENS, REVIEW_TEMPERATURE, reviewPayload)
-            return ProviderResponseParser.parseModelJson(ProviderResponseParser.extractAnthropicText(response))
+            val response = postGenerateContent(
+                messages,
+                jsonObjectMode = true,
+                temperature = REVIEW_TEMPERATURE,
+                maxOutputTokens = REVIEW_MAX_TOKENS,
+                research = false,
+            )
+            return ProviderResponseParser.parseModelJson(ProviderResponseParser.extractGeminiText(response))
         }
         val messages = DeviceAgentMessageAssembler.buildReviewMessages(payload)
-        val response = postMessages(messages, REVIEW_MAX_TOKENS, REVIEW_TEMPERATURE, payload)
-        return ProviderResponseParser.parseModelJson(ProviderResponseParser.extractAnthropicText(response))
+        val response = postGenerateContent(
+            messages,
+            jsonObjectMode = true,
+            temperature = REVIEW_TEMPERATURE,
+            maxOutputTokens = REVIEW_MAX_TOKENS,
+            research = false,
+        )
+        return ProviderResponseParser.parseModelJson(ProviderResponseParser.extractGeminiText(response))
     }
 
     override suspend fun ask(payload: JSONObject): JSONObject {
+        val research = researchNeeded(payload)
         val messages = DeviceAgentMessageAssembler.buildAskMessages(payload)
-        val response = postMessages(messages, ASK_MAX_TOKENS, ASK_TEMPERATURE, payload)
-        val text = ProviderResponseParser.extractAnthropicText(response)
+        val response = postGenerateContent(
+            messages,
+            jsonObjectMode = false,
+            temperature = ASK_TEMPERATURE,
+            maxOutputTokens = ASK_MAX_TOKENS,
+            research = research,
+        )
+        val text = ProviderResponseParser.extractGeminiText(response)
         if (text.isBlank()) {
-            throw ProviderHttpException(ProviderErrorCodes.INVALID_RESPONSE, "Provider response had no answer text.")
+            throw ProviderHttpException(
+                ProviderErrorCodes.INVALID_RESPONSE,
+                "Provider response had no answer text.",
+            )
         }
         return JSONObject().put("output_text", text)
     }
 
-    /**
-     * Research pass — separate LLM call with web search bound. Captures the model's research
-     * summary + citations and returns the original payload with `context.researchEvidence`
-     * populated, ready for the structured review pass to consume. Failures are non-fatal.
-     */
     private suspend fun runResearchPass(payload: JSONObject): JSONObject {
         return try {
             val messages = DeviceAgentMessageAssembler.buildResearchMessages(payload)
-            // Force research.needed=true on the inner payload so postMessages attaches web_search.
-            val innerPayload = copyJson(payload)
-            val innerResearch = innerPayload.optJSONObject("research") ?: JSONObject()
-            innerResearch.put("needed", true)
-            innerPayload.put("research", innerResearch)
-
-            val response = postMessages(messages, REVIEW_MAX_TOKENS, REVIEW_TEMPERATURE, innerPayload)
-            val rawSummary = ProviderResponseParser.extractAnthropicText(response).trim()
-            val rawCitations = ProviderResponseParser.extractAnthropicCitations(response)
+            val response = postGenerateContent(
+                messages,
+                jsonObjectMode = false,
+                temperature = REVIEW_TEMPERATURE,
+                maxOutputTokens = RESEARCH_MAX_TOKENS,
+                research = true,
+            )
+            val rawSummary = ProviderResponseParser.extractGeminiText(response).trim()
+            val rawCitations = ProviderResponseParser.extractGeminiCitations(response)
             val instruction = extractInstructionText(payload)
             val filteredCitations = CitationFilter.filterLowAuthorityCitations(rawCitations, instruction)
 
@@ -93,7 +124,7 @@ internal class AnthropicProvider(
             val researchEvidence = JSONObject()
                 .put("status", "checked")
                 .put("required", true)
-                .put("provider", "Anthropic")
+                .put("provider", "Gemini")
                 .put("checkedAt", Instant.now(clock).toString())
                 .put("summary", summary)
                 .put("sources", sources)
@@ -110,26 +141,54 @@ internal class AnthropicProvider(
         } catch (cancel: kotlinx.coroutines.CancellationException) {
             throw cancel
         } catch (_: Throwable) {
-            // Research pass failure must not block the review — return the payload unchanged.
             payload
         }
     }
 
-    private suspend fun postMessages(
+    private suspend fun postGenerateContent(
         messages: Messages,
-        maxTokens: Int,
+        jsonObjectMode: Boolean,
         temperature: Double,
-        payload: JSONObject,
+        maxOutputTokens: Int,
+        research: Boolean,
     ): JSONObject {
         val apiKey = (config.apiKey ?: "").trim()
         ProviderHttp.assertApiKeyHeaderSafe(apiKey)
-        val baseUrl = ProviderHttp.normalizeBaseUrl(config.baseUrl, "anthropic")
-        val url = "$baseUrl/messages"
-        val body = buildRequestBody(messages, maxTokens, temperature, payload)
-        val headers = mapOf(
-            "x-api-key" to apiKey,
-            "anthropic-version" to ANTHROPIC_VERSION,
-        )
+
+        val model = config.model.trim()
+        val baseUrl = ProviderHttp.normalizeNativeBaseUrl(config.baseUrl)
+        val encodedModel = URLEncoder.encode(model, StandardCharsets.UTF_8)
+        val url = "$baseUrl/models/$encodedModel:generateContent"
+
+        val generationConfig = JSONObject()
+            .put("temperature", temperature)
+            .put("maxOutputTokens", maxOutputTokens)
+        // Gemini rejects `responseMimeType: 'application/json'` whenever any tool is attached,
+        // so the research pass (which has `tools`) must omit it.
+        if (jsonObjectMode && !research) {
+            generationConfig.put("responseMimeType", "application/json")
+        }
+
+        val body = JSONObject()
+            .put(
+                "systemInstruction",
+                JSONObject().put("parts", JSONArray().put(JSONObject().put("text", messages.system))),
+            )
+            .put(
+                "contents",
+                JSONArray().put(
+                    JSONObject()
+                        .put("role", "user")
+                        .put("parts", JSONArray().put(JSONObject().put("text", messages.userContent))),
+                ),
+            )
+            .put("generationConfig", generationConfig)
+
+        if (research) {
+            body.put("tools", JSONArray().put(JSONObject().put("google_search", JSONObject())))
+        }
+
+        val headers = mapOf("x-goog-api-key" to apiKey)
         val response = http.postJson(url, headers, body.toString())
         val errorCode = ProviderHttp.mapHttpStatusToErrorCode(response.status)
         if (errorCode != null) {
@@ -148,64 +207,17 @@ internal class AnthropicProvider(
         }
     }
 
-    private fun buildRequestBody(
-        messages: Messages,
-        maxTokens: Int,
-        temperature: Double,
-        payload: JSONObject,
-    ): JSONObject {
-        val userMessages = JSONArray().put(
-            JSONObject()
-                .put("role", "user")
-                .put("content", messages.userContent),
-        )
-        val body = JSONObject()
-            .put("model", config.model.trim())
-            .put("max_tokens", maxTokens)
-            .put("system", messages.system)
-            .put("messages", userMessages)
-            .put("temperature", temperature)
-        if (researchNeeded(payload)) {
-            body.put(
-                "tools",
-                JSONArray().put(
-                    JSONObject()
-                        .put("type", "web_search_20250305")
-                        .put("name", "web_search")
-                        .put("max_uses", researchMaxUses(payload))
-                        .put(
-                            "user_location",
-                            JSONObject()
-                                .put("type", "approximate")
-                                .put("country", "US")
-                                .put("timezone", "America/Los_Angeles"),
-                        ),
-                ),
-            )
-        }
-        return body
-    }
-
     companion object {
-        private const val ANTHROPIC_VERSION: String = "2023-06-01"
-        private const val PLAN_MAX_TOKENS: Int = 1024
-        private const val REVIEW_MAX_TOKENS: Int = 1024
-        private const val ASK_MAX_TOKENS: Int = 800
         private const val PLAN_TEMPERATURE: Double = 0.2
         private const val REVIEW_TEMPERATURE: Double = 0.2
         private const val ASK_TEMPERATURE: Double = 0.3
+        private const val PLAN_MAX_TOKENS: Int = 1024
+        private const val REVIEW_MAX_TOKENS: Int = 1024
+        private const val RESEARCH_MAX_TOKENS: Int = 1800
+        private const val ASK_MAX_TOKENS: Int = 800
 
         private fun researchNeeded(payload: JSONObject): Boolean =
             payload.optJSONObject("research")?.optBoolean("needed", false) == true
-
-        private fun researchMaxUses(payload: JSONObject): Int {
-            val raw = payload.optJSONObject("research")?.opt("maxSearches")
-            val numeric = when (raw) {
-                is Number -> raw.toInt()
-                else -> 3
-            }
-            return numeric.coerceIn(1, 5)
-        }
 
         private fun extractInstructionText(payload: JSONObject): String {
             val direct = payload.optString("instruction", "")

@@ -23,6 +23,9 @@ class DeviceAgentSystemPromptsTest {
         assertTrue(text.contains("Return only JSON with string fields intent, route, risk, approval, and safeguards"))
         assertTrue(text.contains("`inputTokenLabel`"))
         assertTrue(text.contains("(for example \"POPCAT\")"))
+        // 913dabb guardrails: forward-looking phrasing required, auto-* phrasings forbidden.
+        assertTrue(text.contains("forward-looking terms"))
+        assertTrue(text.contains("pre-submitted/signed/approved"))
         assertTrue(text.endsWith("The wallet user must approve separately."))
     }
 

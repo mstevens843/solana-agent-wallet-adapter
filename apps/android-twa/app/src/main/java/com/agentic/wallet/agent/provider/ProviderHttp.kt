@@ -10,10 +10,13 @@ internal class ProviderHttpException(
 internal object ProviderHttp {
     private const val OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
     private const val ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com/v1"
+    private const val GEMINI_DEFAULT_NATIVE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
     private val ANTHROPIC_VERSION_SEGMENT = Regex("/v\\d+(/|$)", RegexOption.IGNORE_CASE)
     private val OPENAI_VERSION_SEGMENT = Regex("/v\\d+(beta)?(/|$)", RegexOption.IGNORE_CASE)
     private val OPENAI_SUFFIX = Regex("/openai$", RegexOption.IGNORE_CASE)
+    private val OPENAI_COMPAT_SUFFIX = Regex("/openai/?$", RegexOption.IGNORE_CASE)
+    private val VERSION_SEGMENT = Regex("/v\\d+(beta)?(/|$)", RegexOption.IGNORE_CASE)
 
     fun mapHttpStatusToErrorCode(status: Int): String? = when (status) {
         in 200..299 -> null
@@ -48,6 +51,32 @@ internal object ProviderHttp {
             normalized.contains("/o1") ||
             normalized.contains("/o3") ||
             normalized.contains("/o4")
+    }
+
+    // GPT-5 / o-series chat completions reject `max_tokens` and require `max_completion_tokens`.
+    // Mirrors `tokenLimitKey()` in apps/browser-demo/src/deviceAgent/provider/providerHttp.ts.
+    fun tokenLimitKey(model: String): String =
+        if (isDefaultTemperatureOnlyModel(model)) "max_completion_tokens" else "max_tokens"
+
+    // Kept separate from isDefaultTemperatureOnlyModel even when they overlap — OpenAI may
+    // diverge them; the Responses API `reasoning.effort` field is conceptually distinct
+    // from the temperature drop.
+    fun isReasoningModel(model: String): Boolean = isDefaultTemperatureOnlyModel(model)
+
+    /**
+     * Map an OpenAI-compat Gemini baseUrl to the native :generateContent base.
+     *
+     * Browser-demo stores Gemini's baseUrl as `https://generativelanguage.googleapis.com/v1beta/openai`
+     * (because the rest of the stack speaks OpenAI-compat). The native endpoint lives at
+     * `/v1beta` — without the `/openai` suffix. Strip it. Idempotent: already-native URLs pass through.
+     * Mirrors `normalizeNativeBaseUrl()` in geminiNativeProvider.ts.
+     */
+    fun normalizeNativeBaseUrl(raw: String?): String {
+        val trimmed = raw?.trim()?.trimEnd('/').orEmpty()
+        if (trimmed.isEmpty()) return GEMINI_DEFAULT_NATIVE_BASE_URL
+        val stripped = OPENAI_COMPAT_SUFFIX.replace(trimmed, "")
+        if (VERSION_SEGMENT.containsMatchIn(stripped)) return stripped
+        return "$stripped/v1beta"
     }
 
     /**

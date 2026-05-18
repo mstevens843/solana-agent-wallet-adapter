@@ -50,6 +50,12 @@ class MainActivity : ComponentActivity() {
     private lateinit var agentRuntimeController: AgentRuntimeController
     private lateinit var activityResultSender: ActivityResultSender
 
+    private val remoteWebUrl: String = BuildConfig.AGENTIC_ANDROID_REMOTE_WEB_URL
+    private val remoteWebHost: String? = remoteWebUrl
+        .takeIf { it.isNotBlank() }
+        ?.let { runCatching { Uri.parse(it).host?.lowercase() }.getOrNull() }
+    private var didFallback = false
+
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -75,6 +81,8 @@ class MainActivity : ComponentActivity() {
                 "lanBridgeEnabled" to BuildConfig.AGENTIC_ANDROID_ALLOW_LAN_BRIDGE,
                 "deviceAgentEnabled" to BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT,
                 "cloudApiBaseUrl" to BuildConfig.AGENTIC_ANDROID_CLOUD_API_BASE_URL,
+                "remoteWebUrl" to remoteWebUrl,
+                "remoteWebHost" to (remoteWebHost ?: ""),
             ),
         )
 
@@ -145,6 +153,7 @@ class MainActivity : ComponentActivity() {
                             "mainFrame" to request.isForMainFrame,
                         ),
                     )
+                    maybeFallbackToBundled(view, request, "error_${error.errorCode}")
                 }
 
                 override fun onReceivedHttpError(
@@ -163,6 +172,9 @@ class MainActivity : ComponentActivity() {
                             "mainFrame" to request.isForMainFrame,
                         ),
                     )
+                    if (errorResponse.statusCode in 500..599) {
+                        maybeFallbackToBundled(view, request, "http_${errorResponse.statusCode}")
+                    }
                 }
 
                 override fun shouldOverrideUrlLoading(
@@ -170,7 +182,7 @@ class MainActivity : ComponentActivity() {
                     request: WebResourceRequest,
                 ): Boolean {
                     val uri = request.url ?: return false
-                    if (uri.scheme == "https" && uri.host == LOCAL_APP_HOST) return false
+                    if (isAllowedInWebView(uri)) return false
                     openExternal(uri)
                     return true
                 }
@@ -181,8 +193,36 @@ class MainActivity : ComponentActivity() {
         applySystemBarInsets(webView)
 
         if (savedInstanceState == null) {
-            webView.loadUrl(LOCAL_APP_START_URL)
+            val startUrl = if (remoteWebUrl.isNotBlank()) remoteWebUrl else LOCAL_APP_START_URL
+            webView.loadUrl(startUrl)
         }
+    }
+
+    private fun isAllowedInWebView(uri: Uri): Boolean {
+        if (uri.scheme != "https") return false
+        val host = uri.host?.lowercase() ?: return false
+        if (host == LOCAL_APP_HOST) return true
+        return remoteWebHost != null && host == remoteWebHost
+    }
+
+    private fun maybeFallbackToBundled(view: WebView, request: WebResourceRequest, reason: String) {
+        if (didFallback) return
+        if (!request.isForMainFrame) return
+        if (remoteWebHost == null) return
+        val host = request.url?.host?.lowercase() ?: return
+        if (host != remoteWebHost) return
+        didFallback = true
+        AgentMwaLog.warn(
+            "MainActivity",
+            "maybeFallbackToBundled",
+            "REMOTE_LOAD_FAILED",
+            "remote web shell failed; falling back to bundled assets",
+            mapOf(
+                "reason" to reason,
+                "url" to request.url,
+            ),
+        )
+        view.loadUrl(LOCAL_APP_START_URL)
     }
 
     override fun onBackPressed() {

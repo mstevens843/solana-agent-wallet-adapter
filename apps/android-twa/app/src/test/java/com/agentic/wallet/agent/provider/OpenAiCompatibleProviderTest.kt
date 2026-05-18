@@ -140,6 +140,9 @@ class OpenAiCompatibleProviderTest {
 
         val body = JSONObject(http.calls.single().body)
         assertFalse("temperature should be omitted for gpt-5 models", body.has("temperature"))
+        // GPT-5 / o-series chat completions reject `max_tokens` and require `max_completion_tokens`.
+        assertEquals(1024, body.optInt("max_completion_tokens"))
+        assertFalse("max_tokens must not be sent for gpt-5", body.has("max_tokens"))
     }
 
     @Test
@@ -151,6 +154,20 @@ class OpenAiCompatibleProviderTest {
         provider.generatePlan(JSONObject().put("userPrompt", "hi"))
         val body = JSONObject(http.calls.single().body)
         assertFalse(body.has("temperature"))
+        assertEquals(1024, body.optInt("max_completion_tokens"))
+        assertFalse("max_tokens must not be sent for o-series", body.has("max_tokens"))
+    }
+
+    @Test
+    fun legacyModelStillSendsMaxTokens() = runBlocking {
+        val http = FakeHttpExecutor().apply {
+            queueResponse(200, """{"choices":[{"message":{"content":"{\"intent\":\"x\"}"}}]}""")
+        }
+        val provider = OpenAiCompatibleProvider(config(model = "gpt-4o-mini"), http)
+        provider.generatePlan(JSONObject().put("userPrompt", "hi"))
+        val body = JSONObject(http.calls.single().body)
+        assertEquals(1024, body.optInt("max_tokens"))
+        assertFalse("legacy models must not get max_completion_tokens", body.has("max_completion_tokens"))
     }
 
     @Test

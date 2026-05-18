@@ -101,7 +101,7 @@ internal class OpenAiCompatibleProvider(
         val body = JSONObject()
             .put("model", config.model.trim())
             .put("messages", msgArray)
-            .put("max_tokens", maxTokens)
+            .put(ProviderHttp.tokenLimitKey(config.model), maxTokens)
         if (jsonObjectMode) {
             body.put("response_format", JSONObject().put("type", "json_object"))
         }

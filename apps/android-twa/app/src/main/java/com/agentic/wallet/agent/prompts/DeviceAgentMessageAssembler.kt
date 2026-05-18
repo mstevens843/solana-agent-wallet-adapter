@@ -53,6 +53,65 @@ internal object DeviceAgentMessageAssembler {
         return Messages(DeviceAgentSystemPrompts.REVIEW, userContent.toString())
     }
 
+    /**
+     * Build the message pair for the research pass — Device Agent parity with the local-bridge
+     * two-pass flow. When the review needs current outside facts, the LLM gets a research-only
+     * turn (with web search bound) before the structured review turn. Mirrors
+     * `buildResearchMessages` in apps/browser-demo/src/deviceAgent/prompts/messageAssembler.ts.
+     */
+    fun buildResearchMessages(
+        payload: JSONObject,
+        researchTargets: JSONArray? = null,
+        clock: Clock = Clock.systemUTC(),
+    ): Messages {
+        val instruction = payload.optString("instruction", "").trim().ifEmpty {
+            DeviceAgentBoundaries.REVIEW_DEFAULT_INSTRUCTION
+        }
+        val walletAddress = payload.optString("walletAddress", "").trim().ifEmpty { "not_connected" }
+        val cluster = payload.optString("cluster", "").trim().ifEmpty { "unknown" }
+        val hasTargets = researchTargets != null && researchTargets.length() > 0
+        val sourcePolicy = "Prefer official vendor pricing pages over blogs and aggregators. When a vendor publishes a plan/pricing page, use it as the primary source. Pricing pages are the authoritative source for current prices, fees, and plan rates. Never cite a blog subdomain (blog.*, news.*, medium.com, substack.com, community.*) as the primary source for current pricing — if only blog citations are available, state that current pricing could not be verified against an official page. Cite each fact with the official URL, not a blog post."
+        val systemPrelude = if (hasTargets) {
+            "You research current outside facts for a Solana wallet approval review. Do not approve, deny, or ask the wallet to sign. The reviewer has already broken the NOTE into atomic fact requests — see context.researchTargets. Batch your searches: cover every researchTarget in as few queries as possible (ideally one). For each target, return a concise source-backed value (price, plan name, current state) plus a citation URL. Prefer official sources. "
+        } else {
+            "You research current outside facts for a Solana wallet approval review. Do not approve, deny, or ask the wallet to sign. Search reliable current sources, prefer official sources, and return concise source-backed facts in plain English. Include current prices, thresholds, dates, plan names, ambiguity, and URLs when they are relevant. If multiple current options could change the approval outcome, list each option clearly. "
+        }
+
+        val mergedContext = JSONObject()
+        val baseContext = payload.optJSONObject("context")
+        if (baseContext != null) {
+            val keys = baseContext.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                mergedContext.put(key, baseContext.opt(key))
+            }
+        }
+        if (hasTargets) {
+            mergedContext.put("researchTargets", researchTargets)
+        }
+
+        val researchObj = JSONObject()
+            .put("needed", true)
+            .put("mode", if (hasTargets) "resolve_specific_atoms" else "collect_current_facts_only")
+            .put("currentDate", Instant.now(clock).toString())
+            .put("maxSearches", RESEARCH_MAX_USES)
+            .put("sourcePolicy", sourcePolicy)
+
+        val userContent = JSONObject().apply {
+            put("instruction", instruction)
+            put("walletAddress", walletAddress)
+            put("cluster", cluster)
+            put("plan", payload.opt("plan") ?: JSONObject())
+            put("context", mergedContext)
+            put("research", researchObj)
+            put(
+                "requiredBoundary",
+                "This research pass cannot approve, deny, sign, or submit. It only gathers facts for a later structured review.",
+            )
+        }
+        return Messages(systemPrelude + sourcePolicy, userContent.toString())
+    }
+
     fun buildAskMessages(payload: JSONObject, clock: Clock = Clock.systemUTC()): Messages {
         val walletAddress = payload.optString("walletAddress", "").trim().ifEmpty { "not_connected" }
         val cluster = payload.optString("cluster", "").trim().ifEmpty { "unknown" }

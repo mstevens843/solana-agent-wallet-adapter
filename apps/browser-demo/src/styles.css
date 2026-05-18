@@ -24108,6 +24108,60 @@ button.danger:hover:not(:disabled) {
   display: none;
 }
 
+.route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] {
+  gap: 7px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 10px;
+}
+
+.route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-setting-path,
+.route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-setting-key,
+.route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-setting-custom-model,
+.route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-setting-base-url,
+.route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-helper-row,
+.route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-key-configured-note,
+.route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-security-note,
+.route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-actions {
+  grid-column: 1 / -1;
+}
+
+.route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-setting-provider,
+.route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-setting-model {
+  grid-column: auto;
+}
+
+.route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] .select-picker-trigger,
+.route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] .field.compact input {
+  min-height: 34px;
+}
+
+.route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-actions {
+  display: grid;
+  gap: 7px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-actions button {
+  font-size: 0.82rem;
+  min-height: 36px;
+  padding: 0 8px;
+  width: 100%;
+}
+
+.route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-security-note {
+  font-size: 0.76rem;
+  line-height: 1.25;
+  margin: 0;
+  padding: 8px 10px;
+}
+
+@media (max-width: 380px) {
+  .route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-setting-provider,
+  .route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-setting-model {
+    grid-column: 1 / -1;
+  }
+}
+
 /* System health drawer */
 .system-health-drawer-scrim {
   position: fixed;
@@ -25928,16 +25982,16 @@ button.danger:hover:not(:disabled) {
 
 @media (max-width: 899px) {
   .route-app .android-bottom-tab-dock {
-    background: #000 !important;
-    backdrop-filter: blur(20px);
-    border-top: 1px solid rgba(224, 230, 226, 0.08);
+    background: linear-gradient(180deg, rgba(5, 7, 6, 0), rgba(5, 7, 6, 0.92) 34%, #050706 100%) !important;
+    backdrop-filter: blur(14px);
+    border-top: 0;
     bottom: 0 !important;
-    box-shadow: 0 -16px 36px rgba(0, 0, 0, 0.42);
+    box-shadow: none;
     display: block !important;
     padding:
-      14px
+      10px
       calc(20px + env(safe-area-inset-right, 0px))
-      calc(16px + env(safe-area-inset-bottom, 0px))
+      calc(12px + env(safe-area-inset-bottom, 0px))
       calc(20px + env(safe-area-inset-left, 0px));
     position: fixed !important;
     left: 0 !important;
@@ -25946,36 +26000,43 @@ button.danger:hover:not(:disabled) {
   }
 
   .route-app .android-bottom-tab-dock .workspace-tabs-mobile {
+    background: rgba(5, 9, 7, 0.94);
+    border: 1px solid rgba(224, 230, 226, 0.09);
+    border-radius: 13px;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.025),
+      0 10px 26px rgba(0, 0, 0, 0.36);
     display: block !important;
     margin: 0;
+    padding: 4px;
     width: 100%;
   }
 
-  /* Solid dark forest-green pill on pure black dock (matches the requested
-     "dark green inside, light green border, black space around" look). */
+  /* Match the compact in-page tab treatment: dark card, muted green fill,
+     low-contrast border, and tighter corners. */
   .route-app .android-bottom-tab-dock .select-picker-trigger,
   .route-app .android-bottom-tab-dock .template-picker-trigger {
     align-items: center;
-    background: #143a2a !important;
-    border: 1px solid rgba(125, 231, 176, 0.65) !important;
-    border-radius: 12px;
+    background: rgba(28, 50, 41, 0.7) !important;
+    border: 1px solid rgba(224, 230, 226, 0.1) !important;
+    border-radius: 8px;
     box-shadow:
-      0 0 0 1px rgba(63, 189, 131, 0.18),
-      0 12px 24px rgba(0, 0, 0, 0.42);
+      inset 0 1px 0 rgba(255, 255, 255, 0.025),
+      inset 0 0 0 1px rgba(125, 231, 176, 0.035);
     color: #f2fff7;
-    gap: 10px;
+    gap: 8px;
     grid-template-columns: minmax(0, auto) auto;
     justify-content: center;
-    min-height: 48px;
-    padding: 10px 16px;
+    min-height: 44px;
+    padding: 8px 14px;
     text-align: center;
     width: 100%;
   }
 
   .route-app .android-bottom-tab-dock .template-picker.open .select-picker-trigger,
   .route-app .android-bottom-tab-dock .template-picker.open .template-picker-trigger {
-    background: #1c5040 !important;
-    border-color: rgba(125, 231, 176, 0.8) !important;
+    background: rgba(31, 58, 48, 0.78) !important;
+    border-color: rgba(224, 230, 226, 0.16) !important;
   }
 
   .route-app .android-bottom-tab-dock .template-picker-current {
@@ -25987,17 +26048,17 @@ button.danger:hover:not(:disabled) {
 
   .route-app .android-bottom-tab-dock .template-picker-current strong {
     color: #f2fff7;
-    font-size: 0.96rem;
-    font-weight: 700;
-    letter-spacing: 0.015em;
+    font-size: 0.82rem;
+    font-weight: 800;
+    letter-spacing: 0;
   }
 
   .route-app .android-bottom-tab-dock .template-picker-caret {
-    color: rgba(242, 255, 247, 0.85);
+    color: rgba(242, 255, 247, 0.72);
   }
 
   .route-app .android-bottom-tab-dock .template-picker.open .template-picker-caret {
-    color: var(--accent-2);
+    color: rgba(242, 255, 247, 0.82);
   }
 
   .route-app .android-bottom-tab-dock .template-picker-menu.drop-up {

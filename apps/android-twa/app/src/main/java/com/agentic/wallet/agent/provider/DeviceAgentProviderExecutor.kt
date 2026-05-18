@@ -77,16 +77,24 @@ class DeviceAgentProviderExecutor(
         }
     }
 
-    private fun providerFor(config: RuntimeConfig): DeviceAgentProvider = when (RuntimeConfig.canonicalApiFormat(config.apiFormat)) {
-        "openai-compatible" -> OpenAiCompatibleProvider(config, httpExecutor)
-        "anthropic" -> AnthropicProvider(config, httpExecutor)
-        else -> throw ProviderFailedException(
-            RuntimeError(
-                code = RuntimeErrorCodes.INVALID_CONFIG,
-                subcode = RuntimeConfigSubcodes.UNSUPPORTED_FORMAT,
-                message = "Device Agent does not support apiFormat \"${config.apiFormat}\".",
-            ),
-        )
+    private fun providerFor(config: RuntimeConfig): DeviceAgentProvider {
+        val format = RuntimeConfig.canonicalApiFormat(config.apiFormat)
+        val provider = config.provider.trim().lowercase()
+        return when (format) {
+            "openai-compatible" -> when (provider) {
+                "openai" -> OpenAiNativeProvider(config, httpExecutor)
+                "gemini" -> GeminiNativeProvider(config, httpExecutor)
+                else -> OpenAiCompatibleProvider(config, httpExecutor)
+            }
+            "anthropic" -> AnthropicProvider(config, httpExecutor)
+            else -> throw ProviderFailedException(
+                RuntimeError(
+                    code = RuntimeErrorCodes.INVALID_CONFIG,
+                    subcode = RuntimeConfigSubcodes.UNSUPPORTED_FORMAT,
+                    message = "Device Agent does not support apiFormat \"${config.apiFormat}\".",
+                ),
+            )
+        }
     }
 
     private inline fun <reified T : Throwable> Throwable.hasCause(): Boolean {

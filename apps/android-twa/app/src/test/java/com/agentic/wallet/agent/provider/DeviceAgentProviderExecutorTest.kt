@@ -17,8 +17,14 @@ import java.net.SocketTimeoutException
 class DeviceAgentProviderExecutorTest {
     private val apiKey = "sk-test-EXAMPLEKEY12345"
 
-    private fun config(apiFormat: String): RuntimeConfig = RuntimeConfig(
-        provider = if (apiFormat == "anthropic") "anthropic" else "openai",
+    private fun config(
+        apiFormat: String,
+        // Defaults to a non-special provider so the compat path is exercised. Tests that
+        // need the native paths (provider=openai → OpenAiNative, provider=gemini → GeminiNative)
+        // pass it explicitly.
+        provider: String = if (apiFormat == "anthropic") "anthropic" else "openrouter",
+    ): RuntimeConfig = RuntimeConfig(
+        provider = provider,
         apiFormat = apiFormat,
         model = if (apiFormat == "anthropic") "claude-opus-4-5" else "gpt-4o-mini",
         baseUrl = if (apiFormat == "anthropic") "https://api.anthropic.com" else "https://api.openai.com",
@@ -228,5 +234,83 @@ class DeviceAgentProviderExecutorTest {
         val executor = DeviceAgentProviderExecutor(http)
         val result = executor.ask(config("anthropic"), JSONObject().put("question", "what happens?"))
         assertEquals("This is a concise answer.", result.optString("output_text"))
+    }
+
+    @Test
+    fun providerOpenaiRoutesThroughOpenAiNative() = runBlocking {
+        // provider=openai routes to OpenAiNativeProvider (Responses API), NOT OpenAiCompatibleProvider.
+        val http = FakeHttpExecutor().apply {
+            queueResponse(200, """{"output_text":"{\"intent\":\"swap\",\"route\":\"jupiter\",\"risk\":\"low\",\"approval\":\"once\",\"safeguards\":[]}"}""")
+        }
+        val executor = DeviceAgentProviderExecutor(http)
+        val result = executor.generatePlan(
+            config("openai-compatible", provider = "openai").copy(model = "gpt-5"),
+            JSONObject().put("userPrompt", "swap"),
+        )
+        assertEquals("swap", result.optString("intent"))
+        // Native provider POSTs to /responses, not /chat/completions.
+        assertEquals("https://api.openai.com/v1/responses", http.calls.single().url)
+    }
+
+    @Test
+    fun providerGeminiRoutesThroughGeminiNative() = runBlocking {
+        // provider=gemini routes to GeminiNativeProvider (:generateContent), NOT compat passthrough.
+        val http = FakeHttpExecutor().apply {
+            queueResponse(
+                200,
+                """{"candidates":[{"content":{"parts":[{"text":"{\"intent\":\"swap\"}"}]}}]}""",
+            )
+        }
+        val executor = DeviceAgentProviderExecutor(http)
+        val geminiConfig = RuntimeConfig(
+            provider = "gemini",
+            apiFormat = "openai-compatible",
+            model = "gemini-2.5-pro",
+            baseUrl = "https://generativelanguage.googleapis.com/v1beta/openai",
+            apiKey = "AIzaTEST-EXAMPLE",
+            walletAddress = null,
+        )
+        val result = executor.generatePlan(geminiConfig, JSONObject().put("userPrompt", "swap"))
+        assertEquals("swap", result.optString("intent"))
+        // Native Gemini provider POSTs to :generateContent on the native base URL.
+        assertEquals(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent",
+            http.calls.single().url,
+        )
+    }
+
+    @Test
+    fun providerOpenrouterStaysOnOpenAiCompatible() = runBlocking {
+        val http = FakeHttpExecutor().apply {
+            queueResponse(
+                200,
+                """{"choices":[{"message":{"content":"{\"intent\":\"x\"}"}}]}""",
+            )
+        }
+        val executor = DeviceAgentProviderExecutor(http)
+        val result = executor.generatePlan(
+            config("openai-compatible", provider = "openrouter"),
+            JSONObject().put("userPrompt", "swap"),
+        )
+        assertEquals("x", result.optString("intent"))
+        // Compat provider POSTs to /chat/completions.
+        assertEquals("https://api.openai.com/v1/chat/completions", http.calls.single().url)
+    }
+
+    @Test
+    fun providerCustomStaysOnOpenAiCompatible() = runBlocking {
+        val http = FakeHttpExecutor().apply {
+            queueResponse(
+                200,
+                """{"choices":[{"message":{"content":"{\"intent\":\"x\"}"}}]}""",
+            )
+        }
+        val executor = DeviceAgentProviderExecutor(http)
+        val result = executor.generatePlan(
+            config("openai-compatible", provider = "custom-openai-compatible"),
+            JSONObject().put("userPrompt", "swap"),
+        )
+        assertEquals("x", result.optString("intent"))
+        assertEquals("https://api.openai.com/v1/chat/completions", http.calls.single().url)
     }
 }

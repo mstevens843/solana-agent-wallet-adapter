@@ -59,6 +59,86 @@ class ProviderHttpTest {
     }
 
     @Test
+    fun tokenLimitKeyReturnsMaxCompletionTokensForGpt5AndOSeries() {
+        assertEquals("max_completion_tokens", ProviderHttp.tokenLimitKey("gpt-5"))
+        assertEquals("max_completion_tokens", ProviderHttp.tokenLimitKey("gpt-5-turbo"))
+        assertEquals("max_completion_tokens", ProviderHttp.tokenLimitKey("o1-preview"))
+        assertEquals("max_completion_tokens", ProviderHttp.tokenLimitKey("o3-mini"))
+        assertEquals("max_completion_tokens", ProviderHttp.tokenLimitKey("openai/gpt-5"))
+        assertEquals("max_tokens", ProviderHttp.tokenLimitKey("gpt-4o"))
+        assertEquals("max_tokens", ProviderHttp.tokenLimitKey("claude-opus-4-5"))
+        assertEquals("max_tokens", ProviderHttp.tokenLimitKey("gemini-1.5-pro"))
+        assertEquals("max_tokens", ProviderHttp.tokenLimitKey(""))
+    }
+
+    @Test
+    fun isReasoningModelMatchesDefaultTemperatureOnlyPredicateToday() {
+        assertTrue(ProviderHttp.isReasoningModel("gpt-5"))
+        assertTrue(ProviderHttp.isReasoningModel("o3-mini"))
+        assertFalse(ProviderHttp.isReasoningModel("gpt-4o"))
+        assertFalse(ProviderHttp.isReasoningModel("claude-opus-4-5"))
+    }
+
+    @Test
+    fun normalizeNativeBaseUrlStripsOpenAiCompatSuffix() {
+        assertEquals(
+            "https://generativelanguage.googleapis.com/v1beta",
+            ProviderHttp.normalizeNativeBaseUrl("https://generativelanguage.googleapis.com/v1beta/openai"),
+        )
+        assertEquals(
+            "https://generativelanguage.googleapis.com/v1beta",
+            ProviderHttp.normalizeNativeBaseUrl("https://generativelanguage.googleapis.com/v1beta/openai/"),
+        )
+    }
+
+    @Test
+    fun normalizeNativeBaseUrlStripsTrailingSlashAfterCompatSuffix() {
+        // Pins the trim-then-strip ordering: trailing slashes are removed BEFORE
+        // the /openai suffix is stripped, so the combined "…/v1beta/openai/" input
+        // normalizes to "…/v1beta" (not "…/v1beta/openai").
+        assertEquals(
+            "https://generativelanguage.googleapis.com/v1beta",
+            ProviderHttp.normalizeNativeBaseUrl(
+                "https://generativelanguage.googleapis.com/v1beta/openai/",
+            ),
+        )
+        assertEquals(
+            "https://generativelanguage.googleapis.com/v1beta",
+            ProviderHttp.normalizeNativeBaseUrl(
+                "https://generativelanguage.googleapis.com/v1beta/openai//",
+            ),
+        )
+    }
+
+    @Test
+    fun normalizeNativeBaseUrlIsIdempotentForNativeUrls() {
+        assertEquals(
+            "https://generativelanguage.googleapis.com/v1beta",
+            ProviderHttp.normalizeNativeBaseUrl("https://generativelanguage.googleapis.com/v1beta"),
+        )
+    }
+
+    @Test
+    fun normalizeNativeBaseUrlAppendsV1betaWhenMissing() {
+        assertEquals(
+            "https://example.com/v1beta",
+            ProviderHttp.normalizeNativeBaseUrl("https://example.com"),
+        )
+    }
+
+    @Test
+    fun normalizeNativeBaseUrlFallsBackToPresetWhenBlank() {
+        assertEquals(
+            "https://generativelanguage.googleapis.com/v1beta",
+            ProviderHttp.normalizeNativeBaseUrl(""),
+        )
+        assertEquals(
+            "https://generativelanguage.googleapis.com/v1beta",
+            ProviderHttp.normalizeNativeBaseUrl(null),
+        )
+    }
+
+    @Test
     fun assertApiKeyHeaderSafeAcceptsAscii() {
         ProviderHttp.assertApiKeyHeaderSafe("sk-ABCDEF1234567890")
         ProviderHttp.assertApiKeyHeaderSafe("xoxp-1234567890abcdef")

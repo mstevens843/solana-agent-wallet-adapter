@@ -136,6 +136,14 @@ import {
   shouldAutoSignOutCloudSession,
 } from './cloudSessionPolicy.js';
 import {
+  MOBILE_HOSTED_BYOK_CLOUD_STORAGE_REQUIRED,
+  mobileAiModeDisabledReason,
+  mobileAiPathTabLabel,
+  normalizeAiModeForMobileSurface,
+  shouldUseMobileAiPathPolicy,
+  visibleMobileAiPathModes,
+} from './aiPathPolicy.js';
+import {
   AI_PROVIDER_PRESETS,
   AGENT_PLAN_TEMPLATES,
   AiPlanConnectionError,
@@ -977,6 +985,8 @@ const OPENAI_BROWSER_SESSION_DISABLED_REASON =
   'OpenAI cannot be called directly from Browser Session. Use Hosted BYOK or Local bridge for OpenAI.';
 const HOSTED_CUSTOM_PROVIDER_DISABLED_REASON =
   'Hosted BYOK supports preset providers only. Use Local bridge or Browser Session for custom gateways.';
+const MOBILE_HOSTED_CUSTOM_PROVIDER_DISABLED_REASON =
+  'Hosted BYOK supports preset providers only on Android app and mobile web.';
 const DEFAULT_ANDROID_CLOUD_API_BASE_URL = 'https://agentic-signer.com';
 const ANDROID_CLOUD_CLIENT_HEADER = 'android-bundled';
 const BROWSER_AI_LIMITATIONS = [
@@ -2690,7 +2700,19 @@ clearSensitiveLaunchParams();
 const initialCluster = SHOW_DEV_CONTROLS ? (persisted.cluster ?? 'mainnet-beta') : 'mainnet-beta';
 const initialTemplate = templateById('swap');
 const defaultWorkspaceTab: ActiveTab = 'overview';
-const initialAiSettings = persistedAiSettings(persisted);
+const initialAndroidNativeEnvironment = detectAndroidNativeEnvironment();
+const initialIosNativeEnvironment = detectIosNativeEnvironment();
+const initialMwaEnvironment = detectMwaEnvironment();
+const initialMobileAiPathPolicy = shouldUseMobileAiPathPolicy({
+  isAndroidApp: IS_ANDROID_APP,
+  isAndroid: initialMwaEnvironment.isAndroid,
+  androidNativeBridgeAvailable: initialAndroidNativeEnvironment.bridgeAvailable,
+  isIos: initialMwaEnvironment.isIos,
+  isIosNative: initialIosNativeEnvironment.isIosNative,
+  supportsMwaMobileWeb: initialMwaEnvironment.supportsMwaMobileWeb,
+  supportsIosWalletStandardFallback: initialMwaEnvironment.supportsIosWalletStandardFallback,
+});
+const initialAiSettings = persistedAiSettings(persisted, initialMobileAiPathPolicy);
 const initialBrowserWorkflow = loadBrowserWorkflowState();
 const initialRecipientRules = loadRecipientRules();
 const initialConnectedDapps = loadConnectedDapps();
@@ -2981,10 +3003,10 @@ const state: DemoState = {
   selectedWalletName: persisted.browserWalletSession?.cluster === initialCluster ? persisted.browserWalletSession.walletName : '',
   browserWalletPickerOpen: false,
   browserWalletSession: persisted.browserWalletSession,
-  androidNativeEnvironment: detectAndroidNativeEnvironment(),
+  androidNativeEnvironment: initialAndroidNativeEnvironment,
   androidAuthCacheCount: 0,
   androidNativeStatus: 'Android native MWA idle.',
-  iosNativeEnvironment: detectIosNativeEnvironment(),
+  iosNativeEnvironment: initialIosNativeEnvironment,
   iosWallets: listIosNativeWalletOptions(),
   selectedIosWalletId: persisted.selectedIosWalletId ?? 'phantom',
   iosAuthCacheCount: 0,
@@ -3092,7 +3114,7 @@ const state: DemoState = {
   recurringOccurrenceHistory: {},
   recurringNotificationStatus: {},
   recurringWebhookSecretOnce: null,
-  mwaEnvironment: detectMwaEnvironment(),
+  mwaEnvironment: initialMwaEnvironment,
   mwaRegistration: null,
   activeLab: LABS[0]!.id,
   labInputs: defaultLabInputs(),
@@ -3874,6 +3896,7 @@ async function bootstrap(): Promise<void> {
   }
   await refreshCloudSession(false);
   await signOutCloudSessionForWalletBoundary('startup');
+  normalizeCurrentAiModeForSurface();
   await hydrateLabArtifactArchive();
   if (cloudSessionMatchesWallet()) {
     await refreshCloudWorkspaceData().catch(() => undefined);
@@ -6623,25 +6646,27 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
       <section class="workspace ${SHOW_DEV_CONTROLS ? 'dev-workspace' : 'public-workspace'}" data-layout="app-shell" data-active-tab="${escapeHtml(String(state.activeTab))}">
         ${walletRail()}
         <section class="panel main-panel" data-layout="app-main">
-          <div class="surface-topbar" data-layout="app-tabs-row">
-            <div>
-              <h2>${surfaceTitle()}</h2>
+          ${isMobileAppViewport() ? '' : `
+            <div class="surface-topbar" data-layout="app-tabs-row">
+              <div>
+                <h2>${surfaceTitle()}</h2>
+              </div>
+              <nav class="nav-cluster tabs workspace-tabs workspace-tabs-desktop" aria-label="Workspace navigation" data-layout="app-tabs">
+                ${/*
+                  Wallet tab intentionally hidden across web, Android, and iOS app shells.
+                  tabButton('wallet', 'Wallet')
+                */ ''}
+                ${tabButton('overview', 'Home')}
+                ${tabButton('agent', 'New Request', 'New')}
+                ${spendTabVisible() ? tabButton('spend', 'Spend') : ''}
+                ${tabButton('schedule', 'Repeat Payments', 'Repeats')}
+                ${tabButton('inbox', 'Needs Approval', 'Approve')}
+                ${tabButton('completed', 'Done')}
+                ${moreMenuButton()}
+              </nav>
+              ${preferencesButton()}
             </div>
-            <nav class="nav-cluster tabs workspace-tabs workspace-tabs-desktop" aria-label="Workspace navigation" data-layout="app-tabs">
-              ${/*
-                Wallet tab intentionally hidden across web, Android, and iOS app shells.
-                tabButton('wallet', 'Wallet')
-              */ ''}
-              ${tabButton('overview', 'Home')}
-              ${tabButton('agent', 'New Request', 'New')}
-              ${spendTabVisible() ? tabButton('spend', 'Spend') : ''}
-              ${tabButton('schedule', 'Repeat Payments', 'Repeats')}
-              ${tabButton('inbox', 'Needs Approval', 'Approve')}
-              ${tabButton('completed', 'Done')}
-              ${moreMenuButton()}
-            </nav>
-            ${preferencesButton()}
-          </div>
+          `}
           <div data-layout="active-panel">${activePanel()}</div>
         </section>
         ${SHOW_DEV_CONTROLS ? contextPanel() : requestContextDetails()}
@@ -7177,6 +7202,7 @@ function walletRail(): string {
   const showPublicIosPicker = !SHOW_DEV_CONTROLS && !state.address && state.iosNativeEnvironment.isIosNative;
   const wallet = walletIdentity();
   const connected = Boolean(state.address);
+  const showAdvancedLocalSetup = !SHOW_DEV_CONTROLS && !isMobileAiPathPolicySurface();
   const headingTitleMarkup = connected
     ? `<h2>${escapeHtml(wallet.title)}</h2>`
     : `<h2 class="signer-title-desktop-only">${escapeHtml(wallet.title)}</h2>`;
@@ -7239,12 +7265,12 @@ function walletRail(): string {
         ${cloudWorkspaceCard()}
         ${aiSettingsPanel('rail')}
       </div>
-      ${SHOW_DEV_CONTROLS ? '' : `
+      ${showAdvancedLocalSetup ? `
         <details class="rail-details rail-advanced-details">
           <summary>Advanced local setup</summary>
           ${publicBridgeStatusCard()}
         </details>
-      `}
+      ` : ''}
 
       ${SHOW_DEV_CONTROLS ? `
       <details class="rail-details developer-settings" ${showConnectionDetails ? 'open' : ''}>
@@ -7320,6 +7346,12 @@ function preferencesViewOption(view: PreferencesView): (typeof PREFERENCES_VIEW_
   return PREFERENCES_VIEW_OPTIONS.find((option) => option.view === view) ?? PREFERENCES_VIEW_OPTIONS[0]!;
 }
 
+function preferencesMobileLabel(option: (typeof PREFERENCES_VIEW_OPTIONS)[number]): string {
+  return option.view === 'access' && isMobileAiPathPolicySurface()
+    ? 'Protocol Connectors'
+    : option.mobileLabel;
+}
+
 function preferencesMobilePicker(): string {
   const active = preferencesViewOption(state.preferencesView);
   return `
@@ -7334,7 +7366,7 @@ function preferencesMobilePicker(): string {
         aria-label="Choose Preferences section"
       >
         <span class="template-picker-current preferences-mobile-picker-current">
-          <strong id="preferencesMobilePickerValue">${escapeHtml(active.mobileLabel)}</strong>
+          <strong id="preferencesMobilePickerValue">${escapeHtml(preferencesMobileLabel(active))}</strong>
           <em>${escapeHtml(preferencesViewSummary(active.view))}</em>
         </span>
         <span class="template-picker-caret" aria-hidden="true"></span>
@@ -7365,7 +7397,7 @@ function preferencesMobilePickerOption(option: (typeof PREFERENCES_VIEW_OPTIONS)
       data-preferences-mobile-view="${escapeHtml(option.view)}"
       tabindex="${selected ? '0' : '-1'}"
     >
-      <strong>${escapeHtml(option.mobileLabel)}</strong>
+      <strong>${escapeHtml(preferencesMobileLabel(option))}</strong>
       <em>${escapeHtml(preferencesViewSummary(option.view))}</em>
     </button>
   `;
@@ -7663,6 +7695,7 @@ function preferencesViewSummary(view: PreferencesView): string {
     case 'access': {
       const enabledAgents = state.agents.filter((agent) => agent.enabled).length;
       const enabledConnectors = enabledProtocolConnectors(state.connectedDapps, state.cluster).length;
+      if (isMobileAiPathPolicySurface()) return `${enabledConnectors} connectors on`;
       return `${enabledAgents}/${state.agents.length} agents · ${enabledConnectors} connectors on`;
     }
     case 'rules': {
@@ -7701,13 +7734,20 @@ function preferencesActiveView(): string {
     case 'ai':
       return preferencesGroup('AI Drafting', 'Personalize drafts and optional review behavior without changing signing authority.', aiReviewPreferencesPanel());
     case 'access':
-      return preferencesGroup('Agent Access', 'Manage bridge agents and protocol connectors used to prepare actions.', `
-        <div class="preferences-card-grid access-preferences-grid">
-          ${connectedAgentsPanel()}
-          ${connectedDappsPanel()}
-        </div>
-        <div id="connector-keys-panel" class="connector-keys-mount"></div>
-      `);
+      return isMobileAiPathPolicySurface()
+        ? preferencesGroup('Protocol Connectors', 'Manage protocol connectors used to prepare wallet-approved actions.', `
+          <div class="preferences-card-grid access-preferences-grid">
+            ${connectedDappsPanel()}
+          </div>
+          <div id="connector-keys-panel" class="connector-keys-mount"></div>
+        `)
+        : preferencesGroup('Agent Access', 'Manage bridge agents and protocol connectors used to prepare actions.', `
+          <div class="preferences-card-grid access-preferences-grid">
+            ${connectedAgentsPanel()}
+            ${connectedDappsPanel()}
+          </div>
+          <div id="connector-keys-panel" class="connector-keys-mount"></div>
+        `);
     case 'rules':
       return preferencesGroup('Review Rules', 'Optional checks that help the signer review recipients, routes, and agent advice.', `
         <div class="preferences-card-grid rules-preferences-stack">
@@ -10547,12 +10587,16 @@ function commandCenterAiPanel(): string {
 }
 
 function commandAiRouteCards(): string {
+  const mobileAiPathPolicy = isMobileAiPathPolicySurface();
+  const hostedCloudStorageRequired = mobileAiPathPolicy && !cloudSessionMatchesWallet();
   const definitions: Array<{ id: AndroidAiRouteTab; mode: AiSettings['mode']; title: string; detail: string; meta: string; available: boolean }> = [
     {
       id: 'hosted',
       mode: 'hosted',
       title: 'Hosted BYOK',
-      detail: 'Connect a preset provider key through Agentic for AI agent requests.',
+      detail: hostedCloudStorageRequired
+        ? MOBILE_HOSTED_BYOK_CLOUD_STORAGE_REQUIRED
+        : 'Connect a preset provider key through Agentic for AI agent requests.',
       meta: 'Cloud AI connection',
       available: true,
     },
@@ -10562,7 +10606,7 @@ function commandAiRouteCards(): string {
       title: 'Local Bridge AI',
       detail: 'Connect the local runtime so AI agent requests can use this machine.',
       meta: 'Local AI connection',
-      available: true,
+      available: !mobileAiPathPolicy,
     },
     {
       id: 'session',
@@ -10570,7 +10614,7 @@ function commandAiRouteCards(): string {
       title: IS_ANDROID_APP ? 'Android Session' : 'Browser Session',
       detail: `Connect a temporary key in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'} without saving it to Agentic.`,
       meta: 'Session AI connection',
-      available: true,
+      available: !mobileAiPathPolicy,
     },
     {
       id: 'device-agent',
@@ -10580,10 +10624,17 @@ function commandAiRouteCards(): string {
         ? 'Connect the on-device runtime so agent requests stay inside this app boundary.'
         : 'Connect the gated Device Agent setup for this wallet.',
       meta: 'Device AI connection',
-      available: deviceAgentModeVisible(),
+      available: mobileAiPathPolicy || deviceAgentModeVisible(),
     },
   ];
-  const visible = definitions.filter((entry) => entry.available);
+  const visible = mobileAiPathPolicy
+    ? visibleMobileAiPathModes({
+        mobileAiPathPolicy,
+        deviceAgentVisible: deviceAgentModeVisible(),
+      })
+        .map((id) => definitions.find((entry) => entry.id === id && entry.available))
+        .filter((entry): entry is (typeof definitions)[number] => Boolean(entry))
+    : definitions.filter((entry) => entry.available);
   if (isMobileAppViewport()) {
     const activeId = visible.some((entry) => entry.id === state.androidAiRouteTab)
       ? state.androidAiRouteTab
@@ -10598,7 +10649,12 @@ function commandAiRouteCards(): string {
     return `
       <div class="command-route-tabs android-tab-card" data-android-tab-group="ai-route">
         <div class="android-tab-strip command-route-strip" role="tablist" aria-label="AI route options">
-          ${visible.map((entry) => mobileTabButton('ai-route', entry.id, shortLabels[entry.id] ?? entry.title, entry.id === activeId)).join('')}
+          ${visible.map((entry) => mobileTabButton(
+            'ai-route',
+            entry.id,
+            mobileAiPathPolicy ? mobileAiPathTabLabel(entry.mode) : shortLabels[entry.id] ?? entry.title,
+            entry.id === activeId,
+          )).join('')}
         </div>
         <div class="android-tab-body command-route-body" role="tabpanel">
           ${commandAiRouteCard(activeEntry.mode, activeEntry.title, activeEntry.detail, activeEntry.meta)}
@@ -10707,6 +10763,8 @@ function commandAiIntroTabs(): string {
 }
 
 function commandAiInfoCardsGroup(): string {
+  const mobileAiPathPolicy = isMobileAiPathPolicySurface();
+  const hostedCloudStorageRequired = mobileAiPathPolicy && !cloudSessionMatchesWallet();
   const entries: Array<{ id: AndroidAiInfoTab; tab: string; title: string; badge: string; detail: string; foot: string; available: boolean }> = [
     {
       id: 'no-ai',
@@ -10721,9 +10779,13 @@ function commandAiInfoCardsGroup(): string {
       id: 'hosted',
       tab: 'BYOK',
       title: 'Hosted BYOK',
-      badge: 'Natural-language setup',
-      detail: 'User brings a provider key; Agentic calls AI to translate messy intent into a structured workflow plan.',
-      foot: 'More capable at understanding intent, not more powerful over approval.',
+      badge: hostedCloudStorageRequired ? 'Cloud Storage required' : 'Natural-language setup',
+      detail: hostedCloudStorageRequired
+        ? MOBILE_HOSTED_BYOK_CLOUD_STORAGE_REQUIRED
+        : 'User brings a provider key; Agentic calls AI to translate messy intent into a structured workflow plan.',
+      foot: hostedCloudStorageRequired
+        ? 'Connect Cloud Storage with this wallet before using Hosted BYOK on mobile.'
+        : 'More capable at understanding intent, not more powerful over approval.',
       available: true,
     },
     {
@@ -10733,7 +10795,7 @@ function commandAiInfoCardsGroup(): string {
       badge: 'Session drafting',
       detail: `AI drafts inside ${IS_ANDROID_APP ? 'this app runtime' : 'this browser session'}, then the plan enters the same normalized workflow pipeline.`,
       foot: 'Useful for temporary keys, but subject to provider and session limits.',
-      available: true,
+      available: !mobileAiPathPolicy,
     },
     {
       id: 'bridge',
@@ -10742,7 +10804,7 @@ function commandAiInfoCardsGroup(): string {
       badge: 'Private local mode',
       detail: 'AI and workflow storage can run through the local runtime when the user wants private machine-local control.',
       foot: 'Still ends at explicit wallet approval and local signing.',
-      available: true,
+      available: !mobileAiPathPolicy,
     },
     {
       id: 'device-agent',
@@ -10751,18 +10813,30 @@ function commandAiInfoCardsGroup(): string {
       badge: 'On-device route',
       detail: 'The runtime path uses the same agent setup and workflow pipeline while its native worker is gated for development.',
       foot: 'Useful for Seeker testing without changing approval authority.',
-      available: deviceAgentModeVisible(),
+      available: mobileAiPathPolicy || deviceAgentModeVisible(),
     },
   ];
   const visible = entries.filter((entry) => entry.available);
   if (isMobileAppViewport()) {
-    const routeEntries = visible.filter((entry) => entry.id !== 'no-ai');
+    const routeEntries = mobileAiPathPolicy
+      ? visibleMobileAiPathModes({
+          mobileAiPathPolicy,
+          deviceAgentVisible: deviceAgentModeVisible(),
+        })
+          .map((id) => visible.find((entry) => entry.id === id))
+          .filter((entry): entry is (typeof entries)[number] => Boolean(entry))
+      : visible.filter((entry) => entry.id !== 'no-ai');
     const active = routeEntries.find((entry) => entry.id === state.androidAiInfoTab) ?? routeEntries[0];
     if (!active) return '';
     return `
       <div class="command-ai-info-tabs android-tab-card" data-android-tab-group="ai-info">
         <div class="android-tab-strip command-ai-info-strip" role="tablist" aria-label="AI route benefits">
-          ${routeEntries.map((entry) => mobileTabButton('ai-info', entry.id, entry.tab, entry.id === active.id)).join('')}
+          ${routeEntries.map((entry) => mobileTabButton(
+            'ai-info',
+            entry.id,
+            mobileAiPathPolicy ? mobileAiPathTabLabel(entry.id as AiSettings['mode']) : entry.tab,
+            entry.id === active.id,
+          )).join('')}
         </div>
         <div class="android-tab-body command-ai-info-body" role="tabpanel">
           ${commandAiInfoCard(active.title, active.badge, active.detail, active.foot)}
@@ -15301,6 +15375,8 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const status = state.aiStatus;
   const providerPreset = aiProviderPresetById(state.aiSettings.provider);
   const isRail = location === 'rail';
+  const mobileAiPathPolicy = isMobileAiPathPolicySurface();
+  const mobilePlannerSetup = !isRail && mobileAiPathPolicy;
   const scope = isRail ? 'rail' : 'command';
   const formatLabel = aiFormatLabel(state.aiSettings.apiFormat);
   const customProvider = providerPreset.id === 'custom-openai-compatible';
@@ -15308,7 +15384,9 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const usingCustomModel = !selectedPresetModel;
   const modeHelperText = aiModeHelperText();
   const providerHelperText = aiProviderHelperText();
-  const setupHelperMessages = Array.from(new Set([modeHelperText, providerHelperText].filter(Boolean)));
+  const setupHelperMessages = Array.from(new Set(
+    (mobilePlannerSetup ? [modeHelperText] : [modeHelperText, providerHelperText]).filter(Boolean),
+  ));
   const routeLabel = aiRouteStatusLabel(status);
   const readinessLabel = aiReadinessLabel(status);
   const confirmationLabel = aiConfirmationLabel();
@@ -15362,8 +15440,8 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const showStopDeviceAgentRuntime = state.aiSettings.mode === 'device-agent'
     && (hideKeyEntry || canStopDeviceAgentRuntime());
   return `
-    <aside class="ai-settings-card" data-ai-settings-scope="${escapeHtml(scope)}">
-      ${isRail ? '' : `<div class="ai-settings-intro">
+    <aside class="ai-settings-card" data-ai-settings-scope="${escapeHtml(scope)}" ${mobilePlannerSetup ? 'data-mobile-ai-policy="true"' : ''}>
+      ${isRail || mobilePlannerSetup ? '' : `<div class="ai-settings-intro">
         <span class="workbench-kicker">Connect AI</span>
         <h3>Agent setup</h3>
         <p>${escapeHtml(securityCopy)}</p>
@@ -15390,7 +15468,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
           disabled: state.busy,
           title: providerHelperText,
         })}
-        ${!isRail ? browserNativeProviderTierChip() : ''}
+        ${!isRail && !mobilePlannerSetup ? browserNativeProviderTierChip() : ''}
         ${isRail && providerHelperText ? `<em class="ai-route-helper">${escapeHtml(providerHelperText)}</em>` : ''}
       </label>
       <label class="field compact ai-setting-field ai-setting-model">
@@ -15431,12 +15509,12 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
           ${setupHelperMessages.map((message) => `<em class="ai-route-helper">${escapeHtml(message)}</em>`).join('')}
         </div>
       ` : ''}
-      ${!isRail ? browserDeviceAgentSecretStoreControl(scope) : ''}
+      ${!isRail && !mobilePlannerSetup ? browserDeviceAgentSecretStoreControl(scope) : ''}
       ${hideKeyEntry ? configuredKeyNote : `
         <label class="field compact ai-setting-field ai-setting-key">
           <span>${escapeHtml(keyLabel)}</span>
           <input id="aiApiKey-${escapeHtml(scope)}" data-ai-control="api-key" type="password" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="${state.aiSettings.mode === 'bridge' ? 'Held for this tab until configured' : 'Held for this tab'}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
-          ${!isRail && keyHint ? `<em class="ai-route-helper">${escapeHtml(keyHint)}</em>` : ''}
+          ${!isRail && !mobilePlannerSetup && keyHint ? `<em class="ai-route-helper">${escapeHtml(keyHint)}</em>` : ''}
         </label>
       `}
       <div class="ai-actions">
@@ -15454,7 +15532,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         ${state.aiSettings.mode === 'bridge' || state.aiSettings.mode === 'device-agent' ? `<button id="refreshAiStatus-${escapeHtml(scope)}" data-ai-action="refresh-status" ${state.busy ? 'disabled' : ''}>Refresh</button>` : ''}
         ${showStopDeviceAgentRuntime ? `<button id="stopDeviceAgent-${escapeHtml(scope)}" data-ai-action="stop-device-agent" ${state.busy || !canStopDeviceAgentRuntime() ? 'disabled' : ''} title="Stop the on-device runtime. Your config (provider, model, key) stays available so you can start again.">Stop runtime</button>` : ''}
       </div>
-      ${isRail
+      ${isRail || mobilePlannerSetup
         ? '<p class="ai-security-note compact">Drafts only. Wallet approvals stay separate.</p>'
         : `
           ${aiModeLimitations()}
@@ -15503,23 +15581,37 @@ function aiModeOptions(): string {
 }
 
 function aiModeSelectOptions(): SelectPickerOption[] {
-  const options: Array<{ id: AiSettings['mode']; label: string }> = IS_ANDROID_APP
-    ? [
-        ...(deviceAgentModeVisible()
-          ? [{ id: 'device-agent' as const, label: 'Device Agent - drafts via device' }]
-          : []),
-        { id: 'session', label: 'Android session - drafts only' },
-        { id: 'hosted', label: 'Hosted BYOK - cloud relay' },
-        { id: 'bridge', label: 'Local bridge AI - optional' },
-      ]
-    : [
-        { id: 'hosted', label: 'Hosted BYOK - drafts only' },
-        ...(deviceAgentModeVisible()
-          ? [{ id: 'device-agent' as const, label: 'Device Agent - drafts via device' }]
-          : []),
-        { id: 'bridge', label: 'Local bridge AI - draft via bridge' },
-        { id: 'session', label: 'Browser session - drafts only' },
-      ];
+  const mobileAiPathPolicy = isMobileAiPathPolicySurface();
+  const mobileOptions: Array<{ id: AiSettings['mode']; label: string }> = visibleMobileAiPathModes({
+    mobileAiPathPolicy,
+    deviceAgentVisible: deviceAgentModeVisible(),
+  }).map((mode) => ({
+    id: mode,
+    label: mode === 'device-agent'
+      ? 'Device Agent - drafts via device'
+      : cloudSessionMatchesWallet()
+        ? 'Hosted BYOK - cloud relay'
+        : 'Hosted BYOK - Cloud Storage required',
+  }));
+  const options: Array<{ id: AiSettings['mode']; label: string }> = mobileAiPathPolicy
+    ? mobileOptions
+    : IS_ANDROID_APP
+      ? [
+          ...(deviceAgentModeVisible()
+            ? [{ id: 'device-agent' as const, label: 'Device Agent - drafts via device' }]
+            : []),
+          { id: 'session', label: 'Android session - drafts only' },
+          { id: 'hosted', label: 'Hosted BYOK - cloud relay' },
+          { id: 'bridge', label: 'Local bridge AI - optional' },
+        ]
+      : [
+          { id: 'hosted', label: 'Hosted BYOK - drafts only' },
+          ...(deviceAgentModeVisible()
+            ? [{ id: 'device-agent' as const, label: 'Device Agent - drafts via device' }]
+            : []),
+          { id: 'bridge', label: 'Local bridge AI - draft via bridge' },
+          { id: 'session', label: 'Browser session - drafts only' },
+        ];
   return options.map((option) => {
     const disabledReason = aiModeDisabledReason(option.id);
     return {
@@ -15605,6 +15697,12 @@ function bridgeAiProviderLogoId(status: BridgeAiStatus | null): BrandLogoId | un
 }
 
 function aiModeDisabledReason(mode: AiSettings['mode']): string {
+  const mobileDisabledReason = mobileAiModeDisabledReason({
+    mobileAiPathPolicy: isMobileAiPathPolicySurface(),
+    mode,
+    cloudSessionMatchesWallet: cloudSessionMatchesWallet(),
+  });
+  if (mobileDisabledReason) return mobileDisabledReason;
   if (mode === 'device-agent' && !deviceAgentModeVisible()) {
     return 'Device Agent is enabled only for local dev builds, Android device-agent builds, or allowlisted wallets.';
   }
@@ -15619,12 +15717,16 @@ function aiProviderDisabledReason(providerId: string): string {
     return OPENAI_BROWSER_SESSION_DISABLED_REASON;
   }
   if (state.aiSettings.mode === 'hosted' && providerId === 'custom-openai-compatible') {
-    return HOSTED_CUSTOM_PROVIDER_DISABLED_REASON;
+    return isMobileAiPathPolicySurface()
+      ? MOBILE_HOSTED_CUSTOM_PROVIDER_DISABLED_REASON
+      : HOSTED_CUSTOM_PROVIDER_DISABLED_REASON;
   }
   return '';
 }
 
 function aiModeHelperText(): string {
+  const disabledReason = aiModeDisabledReason(state.aiSettings.mode);
+  if (disabledReason) return disabledReason;
   const hostedBlockReason = hostedByokCloudSessionReason();
   if (hostedBlockReason) return hostedBlockReason;
   return state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai'
@@ -15644,8 +15746,10 @@ function aiProviderHelperText(): string {
       : '';
   }
   if (state.aiSettings.mode === 'hosted') {
-    if (IS_ANDROID_APP) {
-      return 'Hosted BYOK relays through Agentic Cloud from this Android app. Sign in to cloud with the connected wallet first.';
+    if (isMobileAiPathPolicySurface()) {
+      return state.aiSettings.provider === 'custom-openai-compatible'
+        ? MOBILE_HOSTED_CUSTOM_PROVIDER_DISABLED_REASON
+        : '';
     }
     return state.aiSettings.provider === 'custom-openai-compatible'
       ? HOSTED_CUSTOM_PROVIDER_DISABLED_REASON
@@ -16380,8 +16484,11 @@ async function assertDeviceAgentScaffoldAvailable(action: string, signal?: Abort
 }
 
 function deviceAgentWorkerNotImplementedError(action: string): Error {
+  const fallback = isMobileAiPathPolicySurface()
+    ? 'or use Hosted BYOK after connecting Cloud Storage.'
+    : 'or use Hosted BYOK, Browser Session, or Local Bridge here.';
   return new Error(
-    `Device Agent ${action} runs natively on the Android device-agent build. This runtime only exposes the scaffold; install the enabled Android build to draft, or use Hosted BYOK, Browser Session, or Local Bridge here.`,
+    `Device Agent ${action} runs natively on the Android device-agent build. This runtime only exposes the scaffold; install the enabled Android build to draft, ${fallback}`,
   );
 }
 
@@ -27329,10 +27436,13 @@ function cloudBoundaryLogoutDetail(
 }
 
 function hostedByokCloudSessionReason(): string {
-  return hostedByokCloudSessionBlockReason({
+  const reason = hostedByokCloudSessionBlockReason({
     aiMode: state.aiSettings.mode,
     cloudSessionMatchesWallet: cloudSessionMatchesWallet(),
   });
+  return reason && isMobileAiPathPolicySurface()
+    ? MOBILE_HOSTED_BYOK_CLOUD_STORAGE_REQUIRED
+    : reason;
 }
 
 async function afterWalletConnected(): Promise<void> {
@@ -36896,7 +37006,7 @@ function workspaceTabSelectMobile(): string {
     };
   });
   return `
-    <nav class="workspace-tabs-mobile" aria-label="Workspace navigation" data-layout="app-tabs-mobile">
+    <nav class="workspace-tabs-mobile" aria-label="Workspace navigation" data-layout="app-mobile-tabs">
       ${selectPicker({
         id: 'workspaceTabMobile',
         value: String(state.activeTab),
@@ -39874,6 +39984,18 @@ function isMobileAppViewport(): boolean {
   return window.innerWidth < 900;
 }
 
+function isMobileAiPathPolicySurface(): boolean {
+  return shouldUseMobileAiPathPolicy({
+    isAndroidApp: IS_ANDROID_APP,
+    isAndroid: state.mwaEnvironment.isAndroid,
+    androidNativeBridgeAvailable: state.androidNativeEnvironment.bridgeAvailable,
+    isIos: state.mwaEnvironment.isIos,
+    isIosNative: state.iosNativeEnvironment.isIosNative,
+    supportsMwaMobileWeb: state.mwaEnvironment.supportsMwaMobileWeb,
+    supportsIosWalletStandardFallback: state.mwaEnvironment.supportsIosWalletStandardFallback,
+  });
+}
+
 function recurringFlipTab(payment: RecurringPayment, index: number, active: boolean): string {
   const title = recurringPaymentTitle(payment);
   return `
@@ -42796,10 +42918,13 @@ function defaultAiMode(): AiSettings['mode'] {
   }) as AiSettings['mode'];
 }
 
-function persistedAiSettings(persistedState: PersistedState): Omit<AiSettings, 'apiKey'> {
+function persistedAiSettings(
+  persistedState: PersistedState,
+  mobileAiPathPolicy = isMobileAiPathPolicySurface(),
+): Omit<AiSettings, 'apiKey'> {
   const fallback = aiProviderPresetById(DEFAULT_AI_PROVIDER_ID);
   const provider = persistedState.aiProvider ? aiProviderPresetById(persistedState.aiProvider) : fallback;
-  const mode = normalizeAiModeForSurface(persistedState.aiMode ?? defaultAiMode());
+  const mode = normalizeAiModeForSurface(persistedState.aiMode ?? defaultAiMode(), undefined, mobileAiPathPolicy);
   const model = persistedState.aiModel?.trim() || provider.model;
   const reviewPrefs = {
     multiReviewer: persistedState.aiMultiReviewer === true,
@@ -42900,11 +43025,30 @@ function clearAllSessionAiApiKeys(): void {
   }
 }
 
-function normalizeAiModeForSurface(mode: AiSettings['mode'], walletAddress?: string): AiSettings['mode'] {
-  if (mode === 'device-agent' && !deviceAgentModeVisibleForWallet(walletAddress)) {
-    return defaultAiMode();
+function normalizeAiModeForSurface(
+  mode: AiSettings['mode'],
+  walletAddress?: string,
+  mobileAiPathPolicy = isMobileAiPathPolicySurface(),
+): AiSettings['mode'] {
+  return normalizeAiModeForMobileSurface({
+    mode,
+    mobileAiPathPolicy,
+    deviceAgentVisible: deviceAgentModeVisibleForWallet(walletAddress),
+    fallbackMode: defaultAiMode(),
+  }) as AiSettings['mode'];
+}
+
+function normalizeCurrentAiModeForSurface(): void {
+  const normalizedMode = normalizeAiModeForSurface(state.aiSettings.mode, state.address || state.cloudSession.walletAddress);
+  if (normalizedMode === state.aiSettings.mode) return;
+  saveCurrentSessionAiApiKey();
+  state.aiSettings.mode = normalizedMode;
+  ensureAiProviderAllowedForMode();
+  state.aiSettings.apiKey = shouldHideAiKeyEntry() ? '' : loadSessionAiApiKey(state.aiSettings);
+  if (shouldHideAiKeyEntry()) {
+    clearCurrentSessionAiApiKey();
   }
-  return mode;
+  savePersistedState();
 }
 
 function deviceAgentModeVisible(): boolean {

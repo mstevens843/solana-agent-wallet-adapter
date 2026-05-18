@@ -112,6 +112,29 @@ val cloudApiBaseUrl = propertyOrEnv("AGENTIC_ANDROID_CLOUD_API_BASE_URL")
 val cloudApiUri = uri(cloudApiBaseUrl)
 val localLaunchHosts = setOf("localhost", "127.0.0.1", "0.0.0.0", "::1")
 
+// Live-update URL: when non-empty, the WebView loads this remote origin at launch instead of
+// the bundled browser-demo assets. Lets us ship UI changes via Render with no APK re-upload.
+// Release builds default to the canonical Render origin; debug builds default to empty so
+// local dev keeps loading the bundled `agentic.local` assets unchanged.
+val remoteWebUrlInput = propertyOrEnv("AGENTIC_ANDROID_REMOTE_WEB_URL")
+    ?: propertyOrEnv("agenticRemoteWebUrl")
+val remoteWebUrl = (remoteWebUrlInput ?: if (isReleaseBuild) "https://agentic-signer.com" else "").trim()
+if (remoteWebUrl.isNotEmpty()) {
+    val parsed = runCatching { uri(remoteWebUrl) }.getOrNull()
+    val scheme = parsed?.scheme?.lowercase()
+    val host = parsed?.host?.lowercase()
+    if (parsed == null || host.isNullOrBlank()) {
+        throw GradleException(
+            "AGENTIC_ANDROID_REMOTE_WEB_URL must be a valid absolute URL. Current value: $remoteWebUrl",
+        )
+    }
+    if (isReleaseBuild && (scheme != "https" || host in localLaunchHosts)) {
+        throw GradleException(
+            "Release Android builds must use a non-local HTTPS AGENTIC_ANDROID_REMOTE_WEB_URL. Current value: $remoteWebUrl",
+        )
+    }
+}
+
 if (isReleaseBuild && (launchScheme != "https" || launchHost.lowercase() in localLaunchHosts)) {
     throw GradleException(
         "Release Android builds must use a non-local HTTPS AGENTIC_ANDROID_LAUNCH_URL. Current value: $launchUrl",
@@ -186,6 +209,7 @@ android {
         buildConfigField("boolean", "AGENTIC_ANDROID_DEVICE_AGENT", deviceAgentEnabled.toString())
         buildConfigField("boolean", "AGENTIC_ANDROID_STREAMING_SIGNER", streamingSignerEnabled.toString())
         buildConfigField("String", "AGENTIC_ANDROID_CLOUD_API_BASE_URL", "\"${cloudApiBaseUrl.replace("\"", "\\\"")}\"")
+        buildConfigField("String", "AGENTIC_ANDROID_REMOTE_WEB_URL", "\"${remoteWebUrl.replace("\"", "\\\"")}\"")
         resValue("string", "launch_url", launchUrl)
         resValue("string", "asset_statements", escapedResValue(assetStatements))
     }
