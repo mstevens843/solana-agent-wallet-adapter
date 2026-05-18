@@ -46,7 +46,7 @@
   },
   "optionalDependencies": {
     "@0dotxyz/p0-ts-sdk": "2.2.1",
-    "@coral-xyz/anchor": "0.31.1",
+    "@coral-xyz/anchor": "0.32.1",
     "@jito-foundation/stake-deposit-interceptor-sdk": "1.7.1",
     "@jup-ag/lend-read": "0.0.12",
     "@kamino-finance/farms-sdk": "^3.2.24",
