@@ -1033,6 +1033,13 @@
     grid-template-columns: 1fr;
   }
 
+  .pay-out-route-body,
+  .pay-out-field-grid,
+  .pay-out-request-layout {
+    padding-left: var(--page-padding-x);
+    padding-right: var(--page-padding-x);
+  }
+
   .pay-out-preview-total {
     justify-self: stretch;
     text-align: left;

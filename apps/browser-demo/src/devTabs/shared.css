@@ -285,7 +285,7 @@
 
 @media (max-width: 760px) {
   .dev-tab-shell {
-    padding: 16px;
+    padding: var(--page-padding-x);
   }
 
   .dev-tab-header {
@@ -299,5 +299,11 @@
 
   .dev-tab-use-case-grid {
     grid-template-columns: 1fr;
+  }
+
+  .dev-tab-empty-state,
+  .dev-tab-loading-state {
+    min-height: 86px;
+    padding: 16px;
   }
 }

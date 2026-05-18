@@ -26,6 +26,14 @@
   --danger-soft: rgba(239, 111, 120, 0.105);
   --radius: 8px;
   --shadow: 0 18px 58px rgba(0, 0, 0, 0.22);
+  --page-padding-x: clamp(12px, 3.6vw, 22px);
+  --btn-min-h: 44px;
+  --btn-min-h-sm: 36px;
+  --tap-target: 44px;
+  --font-min: 16px;
+  --font-readable: 0.68rem;
+  --addr-mono-size: 0.78rem;
+  --bottom-dock-clearance: calc(92px + env(safe-area-inset-bottom, 0px));
   color: var(--text);
   background: var(--bg);
   font-family:
@@ -49,7 +57,7 @@ body {
     radial-gradient(900px 520px at 48% -14%, rgba(47, 159, 111, 0.1), transparent 68%),
     linear-gradient(180deg, #070908 0%, #030404 76%, #010202 100%);
   margin: 0;
-  min-height: 100vh;
+  min-height: 100dvh;
   min-width: 320px;
   position: relative;
 }
@@ -115,7 +123,7 @@ body::after {
 
 #app {
   isolation: isolate;
-  min-height: 100vh;
+  min-height: 100dvh;
   position: relative;
   z-index: 1;
 }
@@ -167,7 +175,7 @@ button {
   display: inline-flex;
   font-weight: 760;
   justify-content: center;
-  min-height: 38px;
+  min-height: var(--btn-min-h);
   padding: 0 13px;
   transition:
     background 120ms ease,
@@ -196,6 +204,17 @@ input:focus-visible,
 textarea:focus-visible {
   outline: 2px solid rgba(139, 205, 170, 0.72);
   outline-offset: 2px;
+}
+
+.mono-address {
+  display: inline-block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: var(--addr-mono-size);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
 }
 
 button:disabled,
@@ -229,7 +248,7 @@ button.primary:hover:not(:disabled) {
 }
 
 button.utility {
-  min-height: 36px;
+  min-height: var(--btn-min-h-sm);
   padding: 0 12px;
   white-space: nowrap;
 }
@@ -5522,7 +5541,7 @@ code {
   border: 1px solid rgba(224, 230, 240, 0.1);
   border-radius: 999px;
   color: rgba(220, 229, 240, 0.82);
-  font-size: 0.58rem;
+  font-size: var(--font-readable);
   font-weight: 820;
   letter-spacing: 0;
   line-height: 1;
@@ -5537,7 +5556,7 @@ code {
   border: 1px solid rgba(125, 231, 176, 0.2);
   border-radius: 999px;
   color: #d7f8e5;
-  font-size: 0.58rem;
+  font-size: var(--font-readable);
   font-weight: 860;
   letter-spacing: 0;
   line-height: 1;
@@ -5584,7 +5603,7 @@ code {
 
 .connected-dapp-capability-summary-row dt {
   color: var(--dim);
-  font-size: 0.58rem;
+  font-size: var(--font-readable);
   font-weight: 900;
   letter-spacing: 0.08em;
   line-height: 1.12;
@@ -7786,7 +7805,7 @@ code {
   border-radius: 999px;
   display: inline-flex;
   flex: 0 0 auto;
-  font-size: 0.5rem;
+  font-size: var(--font-readable);
   font-weight: 900;
   letter-spacing: 0.08em;
   line-height: 1;
@@ -7899,6 +7918,21 @@ code {
   .agent-evidence-section,
   .agent-evidence-advanced {
     padding: 8px;
+  }
+
+  .wallet-directory-grid,
+  .demo-guide-grid,
+  .guided-demo-step-rail,
+  .protocol-connector-flow-grid,
+  .builders-setup-grid,
+  .builders-package-grid,
+  .download-grid,
+  .mission-strip,
+  .trust-layer-panel,
+  .first-run-progress,
+  .recipient-row-actions,
+  .signature-lifecycle {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -8603,7 +8637,7 @@ code {
 .generated-plan-more button,
 .generated-plan-modal-actions button {
   font-size: 0.84rem;
-  min-height: 36px;
+  min-height: var(--btn-min-h);
   min-width: 0;
   padding: 0 10px;
   width: 100%;
@@ -9794,7 +9828,7 @@ button.danger:hover:not(:disabled) {
 
 .pre-sign-review-row dt {
   color: var(--dim);
-  font-size: 0.6rem;
+  font-size: var(--font-readable);
   font-weight: 880;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -10266,6 +10300,29 @@ button.danger:hover:not(:disabled) {
   padding-left: 18px;
 }
 
+.recurring-preview-recurrences {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  margin-top: 6px;
+}
+
+.recurring-preview-recurrences > span {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 880;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.recurring-preview-recurrences > strong {
+  color: var(--text);
+  font-size: 1.05rem;
+  font-weight: 880;
+  line-height: 1;
+}
+
 .recurring-production-preview p {
   color: var(--muted);
   grid-column: 1 / -1;
@@ -10303,6 +10360,28 @@ button.danger:hover:not(:disabled) {
   color: var(--text);
   cursor: pointer;
   font-weight: 800;
+}
+
+.recurring-upcoming-runs.recurring-upcoming-runs-compact {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.recurring-upcoming-runs.recurring-upcoming-runs-compact > span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 880;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.recurring-upcoming-runs.recurring-upcoming-runs-compact > strong {
+  color: var(--text);
+  font-size: 1.05rem;
+  font-weight: 880;
+  line-height: 1;
 }
 
 .recurring-history-head,
@@ -10388,7 +10467,7 @@ button.danger:hover:not(:disabled) {
 }
 
 .artifact-archive-primary-row .field.compact > span {
-  font-size: 0.58rem;
+  font-size: var(--font-readable);
   margin-bottom: 2px;
 }
 
@@ -11663,7 +11742,8 @@ button.danger:hover:not(:disabled) {
   background: transparent;
   border: 0;
   color: rgba(196, 205, 202, 0.62);
-  min-height: 24px;
+  min-height: var(--tap-target);
+  min-width: var(--tap-target);
   padding: 0 6px;
 }
 
@@ -12136,13 +12216,17 @@ button.danger:hover:not(:disabled) {
 
   .workspace-tabs {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     gap: 10px 14px;
     justify-content: flex-start;
+    overflow-x: auto;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
     width: 100%;
   }
 
   .workspace-tabs button {
+    flex: 0 0 auto;
     justify-content: center;
     min-width: 0;
   }
@@ -12201,10 +12285,10 @@ button.danger:hover:not(:disabled) {
 
   .toast-stack {
     bottom: auto;
-    left: 16px;
-    max-width: calc(100vw - 32px);
-    right: 16px;
-    top: 16px;
+    left: calc(16px + env(safe-area-inset-left, 0px));
+    max-width: calc(100vw - 32px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+    right: calc(16px + env(safe-area-inset-right, 0px));
+    top: calc(16px + env(safe-area-inset-top, 0px));
   }
 
   .homepage-demo-cta {
@@ -14466,6 +14550,13 @@ button.danger:hover:not(:disabled) {
     flex-basis: 150px;
   }
 
+  .preferences-drawer-header p:not(.preferences-eyebrow) {
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    display: -webkit-box;
+    overflow: hidden;
+  }
+
   .public-wallet-actions {
     grid-template-columns: 1fr;
   }
@@ -14474,6 +14565,33 @@ button.danger:hover:not(:disabled) {
     flex-basis: 88px;
     min-width: 88px;
     padding: 0 10px;
+  }
+
+  .wallet-directory-grid,
+  .demo-guide-grid,
+  .guided-demo-step-rail,
+  .protocol-connector-flow-grid,
+  .builders-setup-grid,
+  .builders-package-grid,
+  .download-grid,
+  .mission-strip,
+  .trust-layer-panel,
+  .first-run-progress,
+  .recipient-row-actions,
+  .recipient-save-actions,
+  .signature-lifecycle,
+  .command-deck-options,
+  .tooling-proof-grid,
+  .browser-app-grid,
+  .guided-demo-trust-grid,
+  .guided-demo-fact-grid,
+  .guided-demo-review-route,
+  .docs-grid,
+  .builders-contract-band,
+  .recipient-rule-toggles,
+  .guided-path,
+  .generated-plan-modal-actions {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -15063,13 +15181,14 @@ button.danger:hover:not(:disabled) {
   }
 
   .template-filter-row.completed-filter-row {
-    gap: 4px;
+    gap: 3px;
     grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 
   .template-filter-row.completed-filter-row button {
-    font-size: 0.68rem;
-    padding-inline: 2px;
+    font-size: 0.6rem;
+    letter-spacing: 0;
+    padding-inline: 0;
   }
 
   .draft-ready-panel {
@@ -15098,9 +15217,28 @@ button.danger:hover:not(:disabled) {
 
 /* Native mobile polish for Android/iOS app webviews and coarse-pointer phones. */
 @media (max-width: 900px), (hover: none) and (pointer: coarse) {
+  input,
+  select,
+  textarea {
+    font-size: max(var(--font-min), 1rem);
+  }
+
+  button:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.038);
+    border-color: var(--line-strong);
+    box-shadow: none;
+    transform: none;
+  }
+
+  button:active:not(:disabled) {
+    background: rgba(255, 255, 255, 0.085);
+    border-color: rgba(224, 230, 226, 0.28);
+    transform: translateY(0);
+  }
+
   .shell {
     --mobile-nav-height: 54px;
-    --mobile-side-pad: clamp(10px, 3vw, 14px);
+    --mobile-side-pad: var(--page-padding-x);
     --native-toolbar-offset: max(46px, env(safe-area-inset-top, 0px));
     padding-top: calc(var(--native-toolbar-offset) + var(--mobile-nav-height) + 12px);
   }
@@ -16929,7 +17067,7 @@ button.danger:hover:not(:disabled) {
 }
 
 .route-app .top-connector-control .template-picker-category {
-  font-size: 0.58rem;
+  font-size: var(--font-readable);
 }
 
 .route-app .one-time-plan-tabs button,
@@ -17414,7 +17552,7 @@ button.danger:hover:not(:disabled) {
 .route-app .rail-ai-settings .ai-summary-copy > span,
 .route-app .workspace-storage-summary-copy > span,
 .route-app .rail-ai-settings .field.compact > span {
-  font-size: 0.56rem;
+  font-size: var(--font-readable);
   line-height: 1.1;
 }
 
@@ -17472,7 +17610,7 @@ button.danger:hover:not(:disabled) {
 }
 
 .route-app .rail-ai-settings .template-picker-category {
-  font-size: 0.54rem;
+  font-size: var(--font-readable);
   line-height: 1.1;
 }
 
@@ -17493,7 +17631,7 @@ button.danger:hover:not(:disabled) {
 }
 
 .route-app .rail-ai-settings .template-picker-option span {
-  font-size: 0.54rem;
+  font-size: var(--font-readable);
   line-height: 1.1;
 }
 
@@ -18513,7 +18651,7 @@ button.danger:hover:not(:disabled) {
 
 .command-storage-danger-zone span {
   color: var(--danger);
-  font-size: 0.58rem;
+  font-size: var(--font-readable);
   font-weight: 900;
   letter-spacing: 0.06em;
   line-height: 1.1;
@@ -21974,8 +22112,8 @@ button.danger:hover:not(:disabled) {
 @media (max-width: 480px) {
   .route-app {
     --app-nav-h: 54px;
-    --app-control-h: 40px;
-    --app-control-h-sm: 36px;
+    --app-control-h: var(--btn-min-h);
+    --app-control-h-sm: var(--btn-min-h-sm);
   }
 
   .recurring-card-summary-grid,
@@ -22436,7 +22574,8 @@ button.danger:hover:not(:disabled) {
 
 .preferences-close-button {
   flex: 0 0 auto;
-  min-height: 34px;
+  min-height: var(--tap-target);
+  min-width: var(--tap-target);
 }
 
 .preferences-drawer-body {
@@ -22868,9 +23007,9 @@ button.danger:hover:not(:disabled) {
     gap: 10px;
     padding:
       12px
-      calc(12px + env(safe-area-inset-right, 0px))
+      calc(var(--page-padding-x) + env(safe-area-inset-right, 0px))
       calc(18px + env(safe-area-inset-bottom, 0px))
-      calc(12px + env(safe-area-inset-left, 0px));
+      calc(var(--page-padding-x) + env(safe-area-inset-left, 0px));
   }
 
   .preferences-group,
@@ -24035,8 +24174,10 @@ button.danger:hover:not(:disabled) {
   background: transparent;
   border: 1px solid var(--line);
   color: var(--muted);
-  width: 32px;
-  height: 32px;
+  width: var(--tap-target);
+  height: var(--tap-target);
+  min-width: var(--tap-target);
+  min-height: var(--tap-target);
   border-radius: 50%;
   cursor: pointer;
   font-size: 1.1rem;
@@ -25497,7 +25638,6 @@ button.danger:hover:not(:disabled) {
 
 /* Mobile /app UX cleanup — signer row, tabs dropdown, command subtab row. */
 
-.signer-summary-mobile-only { display: none; }
 .workspace-tabs-mobile { display: none; }
 .cc-label-mobile,
 .cc-detail-mobile { display: none; }
@@ -25520,9 +25660,7 @@ button.danger:hover:not(:disabled) {
     white-space: nowrap;
   }
   .signer-title-desktop-only,
-  .signer-summary-desktop-only,
   .signer-detail-desktop-only { display: none; }
-  .signer-summary-mobile-only { display: block; }
 
   .workspace-tabs-desktop,
   .preferences-open-button { display: none; }
@@ -25594,9 +25732,177 @@ button.danger:hover:not(:disabled) {
   .command-subtab-row .cc-detail-mobile { display: inline; }
 }
 
-/* Android /app shell: hide the wallet rail (Signer + AI path + Cloud connect)
-   on every tab except Home, and dock the workspace tab dropdown to the bottom
-   like an Instagram-style nav bar. The dropdown opens upward. */
+/* Mobile /app tab containers and action buttons: right-align and let them wrap
+   their content cleanly instead of stretching to 100% width. Applies to the
+   Start/Check tabs (New Request), Save Proof/Saved Proofs tabs, Repeat Payment
+   tabs, and the Home tab New Request/Sign Proof actions. */
+@media (max-width: 899px) {
+  .route-app .one-time-plan-tabs,
+  .route-app .recurring-control-row .recurring-view-tabs,
+  .route-app .recurring-view-tabs {
+    justify-self: end;
+    margin-left: auto;
+    max-width: none;
+    min-width: 0;
+    width: fit-content;
+  }
+
+  .route-app .artifact-view-tabs {
+    align-self: flex-end;
+    justify-self: end;
+    margin-left: auto;
+    max-width: none;
+    min-width: 0;
+    width: fit-content;
+  }
+
+  .route-app .command-center-actions {
+    align-self: flex-end;
+    justify-content: flex-end;
+    justify-self: end;
+    margin-left: auto;
+    min-width: 0;
+    width: fit-content;
+  }
+
+  /* Check tab: filter dropdown + Delete All share a 50/50 row, tabs separate. */
+  .route-app .one-time-plan-control-row.review-filter-row {
+    display: grid !important;
+    gap: 8px !important;
+    grid-template-areas:
+      "tabs tabs"
+      "filter delete" !important;
+    grid-template-columns: 1fr 1fr !important;
+  }
+
+  .route-app .one-time-plan-control-row.review-filter-row .one-time-plan-tabs {
+    grid-area: tabs;
+    justify-self: end;
+  }
+
+  .route-app .one-time-plan-control-row.review-filter-row .agent-review-filter-control {
+    grid-area: filter;
+    justify-self: stretch !important;
+    margin: 0 !important;
+    max-width: none !important;
+    min-width: 0;
+    width: 100% !important;
+  }
+
+  .route-app .one-time-plan-control-row.review-filter-row #deleteAllCheck {
+    grid-area: delete;
+    justify-self: stretch;
+    min-height: 40px;
+    width: 100%;
+  }
+
+  /* Check tab: hide 'Create another draft' (user goes through Start tab) and
+     hide the verbose 'X plans saved' and 'X moved forward' status counters. */
+  .route-app .check-toolbar-create-another { display: none !important; }
+  .route-app .status-detail-desktop-only { display: none !important; }
+
+  /* Repeat Payments: hide the top-section Refresh button on mobile; small
+     Refresh button lives inline with the Repeat type row instead. Make the
+     Repeat type label compact and squeeze refresh onto the same row as the
+     scheduled-transfer dropdown. */
+  .route-app .refresh-button-desktop-only { display: none !important; }
+
+  .route-app .recurring-method-control {
+    align-items: center;
+    display: grid !important;
+    gap: 8px !important;
+    grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto !important;
+    justify-content: stretch !important;
+    justify-self: stretch !important;
+    margin: 0 !important;
+    width: 100% !important;
+  }
+
+  .route-app .recurring-method-control .one-time-method-label {
+    border-right: 0;
+    min-width: 0;
+    padding-right: 0;
+  }
+
+  .route-app .recurring-method-control .one-time-method-label strong {
+    font-size: 0.62rem;
+    letter-spacing: 0.06em;
+  }
+
+  .route-app .recurring-method-control .one-time-method-label em {
+    display: none;
+  }
+
+  .route-app .recurring-method-control .select-picker-shell {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .route-app .recurring-inline-refresh {
+    flex: 0 0 auto;
+    font-size: 0.74rem;
+    min-height: 34px;
+    padding: 0 10px;
+    white-space: nowrap;
+  }
+
+  /* Right-align toolbar actions (Refresh, Delete All, filter pickers) inside
+     Done, Needs Approval, and Check section heads on mobile. */
+  .route-app .signature-toolbar {
+    align-items: center;
+    align-self: flex-end;
+    flex-wrap: wrap;
+    gap: 6px;
+    justify-content: flex-end;
+    justify-self: end;
+    margin-left: auto;
+    min-width: 0;
+    width: fit-content;
+  }
+
+  .route-app .signature-toolbar .signature-state {
+    order: -1;
+    width: 100%;
+    text-align: right;
+  }
+
+  /* Filter dropdown label above the picker (Approval filter, etc.).
+     The label sits above the dropdown box on mobile. */
+  .route-app .filter-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .route-app .filter-field-label {
+    color: rgba(196, 205, 202, 0.78);
+    font-size: 0.66rem;
+    font-weight: 880;
+    letter-spacing: 0.06em;
+    line-height: 1;
+    text-transform: uppercase;
+  }
+}
+
+.filter-field {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.filter-field-label {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* /app mobile shell: dock the workspace tab dropdown to the bottom like an
+   Instagram-style nav bar. The dropdown opens upward. The middle-of-page tab
+   picker is removed; only this bottom dock surfaces tab navigation on mobile.
+   Desktop continues to use the inline horizontal tab strip in the topbar. */
 .android-bottom-tab-dock { display: none; }
 
 .route-app.android-shell .workspace[data-active-tab]:not([data-active-tab="overview"]) .custody-panel[data-layout="app-rail"] {
@@ -25607,7 +25913,7 @@ button.danger:hover:not(:disabled) {
   grid-template-columns: minmax(0, 1fr);
 }
 
-.route-app.android-shell .surface-topbar[data-layout="app-tabs-row"] .workspace-tabs-mobile {
+.route-app .surface-topbar[data-layout="app-tabs-row"] .workspace-tabs-mobile {
   display: none;
 }
 
@@ -25615,99 +25921,107 @@ button.danger:hover:not(:disabled) {
   --android-dock-h: 64px;
 }
 
-.route-app.android-shell .android-bottom-tab-dock {
-  background:
-    linear-gradient(180deg, rgba(12, 16, 15, 0.85), rgba(8, 11, 10, 0.98)),
-    rgba(10, 14, 13, 0.94);
-  backdrop-filter: blur(20px);
-  border-top: 1px solid rgba(224, 230, 226, 0.085);
-  bottom: 0;
-  box-shadow: 0 -16px 36px rgba(0, 0, 0, 0.42);
-  display: block;
-  left: 0;
-  padding:
-    10px
-    calc(16px + env(safe-area-inset-right, 0px))
-    calc(12px + env(safe-area-inset-bottom, 0px))
-    calc(16px + env(safe-area-inset-left, 0px));
-  position: fixed;
-  right: 0;
-  z-index: 240;
-}
+/* Force-hide every workspace-tabs-mobile picker that is NOT inside the bottom
+   dock so it can never appear inline in the middle of the page. */
+.route-app .workspace-tabs-mobile { display: none !important; }
+.route-app .android-bottom-tab-dock .workspace-tabs-mobile { display: block !important; }
 
-.route-app.android-shell .android-bottom-tab-dock .workspace-tabs-mobile {
-  display: block;
-  margin: 0;
-  width: 100%;
-}
+@media (max-width: 899px) {
+  .route-app .android-bottom-tab-dock {
+    background: #000 !important;
+    backdrop-filter: blur(20px);
+    border-top: 1px solid rgba(224, 230, 226, 0.08);
+    bottom: 0 !important;
+    box-shadow: 0 -16px 36px rgba(0, 0, 0, 0.42);
+    display: block !important;
+    padding:
+      14px
+      calc(20px + env(safe-area-inset-right, 0px))
+      calc(16px + env(safe-area-inset-bottom, 0px))
+      calc(20px + env(safe-area-inset-left, 0px));
+    position: fixed !important;
+    left: 0 !important;
+    right: 0 !important;
+    z-index: 240;
+  }
 
-.route-app.android-shell .android-bottom-tab-dock .select-picker-trigger {
-  align-items: center;
-  background: rgba(125, 231, 176, 0.12);
-  border: 1px solid rgba(125, 231, 176, 0.28);
-  border-radius: 12px;
-  box-shadow:
-    0 0 0 1px rgba(63, 189, 131, 0.06),
-    0 12px 24px rgba(0, 0, 0, 0.32);
-  color: #f2fff7;
-  gap: 10px;
-  grid-template-columns: minmax(0, auto) auto;
-  justify-content: center;
-  min-height: 48px;
-  padding: 10px 16px;
-  text-align: center;
-  width: 100%;
-}
+  .route-app .android-bottom-tab-dock .workspace-tabs-mobile {
+    display: block !important;
+    margin: 0;
+    width: 100%;
+  }
 
-.route-app.android-shell .android-bottom-tab-dock .template-picker.open .select-picker-trigger {
-  background: rgba(125, 231, 176, 0.18);
-  border-color: rgba(125, 231, 176, 0.4);
-}
+  /* Solid dark forest-green pill on pure black dock (matches the requested
+     "dark green inside, light green border, black space around" look). */
+  .route-app .android-bottom-tab-dock .select-picker-trigger,
+  .route-app .android-bottom-tab-dock .template-picker-trigger {
+    align-items: center;
+    background: #143a2a !important;
+    border: 1px solid rgba(125, 231, 176, 0.65) !important;
+    border-radius: 12px;
+    box-shadow:
+      0 0 0 1px rgba(63, 189, 131, 0.18),
+      0 12px 24px rgba(0, 0, 0, 0.42);
+    color: #f2fff7;
+    gap: 10px;
+    grid-template-columns: minmax(0, auto) auto;
+    justify-content: center;
+    min-height: 48px;
+    padding: 10px 16px;
+    text-align: center;
+    width: 100%;
+  }
 
-.route-app.android-shell .android-bottom-tab-dock .template-picker-current {
-  align-items: center;
-  display: flex;
-  justify-content: center;
-  min-width: 0;
-}
+  .route-app .android-bottom-tab-dock .template-picker.open .select-picker-trigger,
+  .route-app .android-bottom-tab-dock .template-picker.open .template-picker-trigger {
+    background: #1c5040 !important;
+    border-color: rgba(125, 231, 176, 0.8) !important;
+  }
 
-.route-app.android-shell .android-bottom-tab-dock .template-picker-current strong {
-  color: #f2fff7;
-  font-size: 0.96rem;
-  font-weight: 700;
-  letter-spacing: 0.015em;
-}
+  .route-app .android-bottom-tab-dock .template-picker-current {
+    align-items: center;
+    display: flex;
+    justify-content: center;
+    min-width: 0;
+  }
 
-.route-app.android-shell .android-bottom-tab-dock .template-picker-caret {
-  color: rgba(242, 255, 247, 0.85);
-}
+  .route-app .android-bottom-tab-dock .template-picker-current strong {
+    color: #f2fff7;
+    font-size: 0.96rem;
+    font-weight: 700;
+    letter-spacing: 0.015em;
+  }
 
-.route-app.android-shell .android-bottom-tab-dock .template-picker.open .template-picker-caret {
-  color: var(--accent-2);
-}
+  .route-app .android-bottom-tab-dock .template-picker-caret {
+    color: rgba(242, 255, 247, 0.85);
+  }
 
-.route-app.android-shell .android-bottom-tab-dock .template-picker-menu.drop-up {
-  background: rgba(12, 16, 15, 0.98);
-  border: 1px solid rgba(125, 231, 176, 0.22);
-  border-radius: 14px;
-  bottom: calc(100% + 10px);
-  box-shadow:
-    0 -24px 58px rgba(0, 0, 0, 0.48),
-    inset 0 1px 0 rgba(255, 255, 255, 0.045);
-  left: 0;
-  right: 0;
-  top: auto;
-  width: 100%;
-}
+  .route-app .android-bottom-tab-dock .template-picker.open .template-picker-caret {
+    color: var(--accent-2);
+  }
 
-.route-app.android-shell .android-bottom-tab-dock .template-picker-menu .template-picker-option {
-  min-height: 48px;
-  padding: 12px 16px;
-}
+  .route-app .android-bottom-tab-dock .template-picker-menu.drop-up {
+    background: rgba(12, 16, 15, 0.98);
+    border: 1px solid rgba(125, 231, 176, 0.22);
+    border-radius: 14px;
+    bottom: calc(100% + 10px);
+    box-shadow:
+      0 -24px 58px rgba(0, 0, 0, 0.48),
+      inset 0 1px 0 rgba(255, 255, 255, 0.045);
+    left: 0;
+    right: 0;
+    top: auto;
+    width: 100%;
+  }
 
-/* Reserve bottom space so fixed dock doesn't cover the panel content. */
-.shell.route-app.android-shell {
-  padding-bottom: calc(var(--android-dock-h) + 28px + env(safe-area-inset-bottom, 0px));
+  .route-app .android-bottom-tab-dock .template-picker-menu .template-picker-option {
+    min-height: 48px;
+    padding: 12px 16px;
+  }
+
+  .shell.route-app {
+    padding-bottom: var(--bottom-dock-clearance);
+  }
 }
 
 /* Android-only segmented tab card: visually connected tab strip on top of a
@@ -25825,6 +26139,503 @@ button.danger:hover:not(:disabled) {
   display: none;
 }
 
+/* Repeat Payments flip strip: cards become a tab-flippable row instead of a
+   tall vertical stack. Uses the same .android-tab-card chrome as the home tab
+   workspace cards. The strip supports any number of cards via horizontal
+   scroll when the count exceeds what fits in the row. */
+.recurring-list-flip {
+  display: block;
+}
+
+.recurring-list-flip .recurring-card-flip {
+  border-radius: var(--app-card-radius, 12px);
+}
+
+.recurring-list-flip .recurring-flip-strip {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0;
+  grid-template-columns: none;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
+}
+
+.recurring-list-flip .recurring-flip-tab {
+  border-right: 1px solid rgba(224, 230, 226, 0.06);
+  flex: 1 1 80px;
+  min-width: 72px;
+  padding: 7px 8px;
+}
+
+.recurring-list-flip .recurring-flip-tab-index {
+  display: block;
+  font-size: 0.92rem;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+
+.recurring-list-flip .recurring-flip-tab-label {
+  display: block;
+  font-size: 0.58rem;
+  font-weight: 800;
+  line-height: 1.1;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.recurring-list-flip .recurring-flip-body {
+  padding: 12px;
+}
+
+/* The flipped card already lives inside a tab-card wrapper, so drop its own
+   border/background to avoid the nested-card look. */
+.recurring-list-flip .recurring-flip-body > .recurring-card {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+}
+
+/* Mobile-only trust-layer tabbed strip (3 tabs: No key custody / AI checks /
+   Receipts). Uses the same connected-tab chrome as the workspace tab card. */
+.trust-layer-panel.trust-layer-tabbed {
+  background: transparent;
+  border: 0;
+  display: block;
+  gap: 0;
+  grid-template-columns: none;
+  margin-bottom: 12px;
+  overflow: hidden;
+  padding: 0;
+}
+
+.trust-layer-strip {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.trust-layer-strip .android-tab {
+  min-height: 44px;
+  padding: 8px 4px;
+}
+
+.trust-layer-strip .android-tab-label {
+  font-size: 0.6rem;
+  line-height: 1.15;
+  text-transform: uppercase;
+}
+
+.trust-layer-body {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+}
+
+.trust-layer-body > strong {
+  color: var(--text);
+  font-size: 0.92rem;
+  font-weight: 900;
+  letter-spacing: 0.01em;
+  line-height: 1.2;
+}
+
+.trust-layer-body > span {
+  color: var(--muted);
+  font-size: 0.8rem;
+  line-height: 1.34;
+}
+
+/* Mobile-only Draft / Check / Approve / Prove tabbed loop. */
+.command-loop.command-loop-tabbed {
+  border: 1px solid rgba(224, 230, 226, 0.11);
+  border-radius: var(--app-card-radius, 12px);
+  display: block;
+  grid-template-columns: none;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+
+.command-loop-strip {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.command-loop-strip .android-tab {
+  min-height: 44px;
+  padding: 8px 4px;
+}
+
+.command-loop-strip .android-tab.complete .android-tab-label {
+  color: var(--accent-2);
+}
+
+.command-loop-strip .android-tab-label {
+  font-size: 0.62rem;
+  line-height: 1.15;
+  text-transform: uppercase;
+}
+
+.command-loop-body {
+  display: grid;
+  gap: 5px;
+  padding: 14px 14px 16px;
+}
+
+.command-loop-body > span {
+  color: var(--dim);
+  font-size: 0.66rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.command-loop-body > p {
+  color: var(--text);
+  font-size: 0.92rem;
+  line-height: 1.34;
+  margin: 0;
+}
+
+.command-loop-body.complete > span {
+  color: var(--accent-2);
+}
+
+/* Mobile-only intro tabs for the benefits/no-AI explanation above the route
+   cards. */
+.command-ai-intro-tabs {
+  margin: 0;
+}
+
+.command-ai-intro-strip {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.command-ai-intro-strip .android-tab {
+  min-height: 44px;
+  padding: 8px 6px;
+}
+
+.command-ai-intro-strip .android-tab-label {
+  font-size: 0.62rem;
+  line-height: 1.15;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.command-ai-intro-body {
+  padding: 0;
+}
+
+.command-ai-intro-body > .command-ai-principle,
+.command-ai-intro-body > .command-ai-info-card {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 14px;
+}
+
+/* Mobile-only AI path explainer tabs (BYOK / SESSION / BRIDGE /
+   DEVICE AGENT). Keeps the route education from becoming a tall stack. */
+.command-ai-info-tabs {
+  margin: 0;
+}
+
+.command-ai-info-strip {
+  grid-template-columns: repeat(auto-fit, minmax(68px, 1fr));
+}
+
+.command-ai-info-strip .android-tab {
+  min-height: 44px;
+  padding: 8px 3px;
+}
+
+.command-ai-info-strip .android-tab-label {
+  font-size: 0.56rem;
+  line-height: 1.12;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.command-ai-info-body {
+  padding: 0;
+}
+
+.command-ai-info-body > .command-ai-info-card {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 14px;
+}
+
+.command-ai-template-card {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* Mobile-only Connect AI route tabbed picker (Hosted / Bridge / Session /
+   Device Agent). Card body sits inside the .android-tab-card chrome. */
+.command-route-tabs {
+  margin: 0 0 12px;
+}
+
+.command-route-strip {
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+}
+
+.command-route-strip .android-tab {
+  min-height: 44px;
+  padding: 8px 6px;
+}
+
+.command-route-strip .android-tab-label {
+  font-size: 0.6rem;
+  line-height: 1.15;
+  text-transform: uppercase;
+}
+
+.command-route-body {
+  padding: 0;
+}
+
+.command-route-body > .command-route-card {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 14px;
+}
+
+/* Mobile-only Cloud Storage tabbed picker (Local / Cloud / Bridge). */
+.command-storage-tabs {
+  margin: 0 0 12px;
+}
+
+.command-storage-strip {
+  grid-template-columns: repeat(auto-fit, minmax(86px, 1fr));
+}
+
+.command-storage-strip .android-tab {
+  min-height: 44px;
+  padding: 8px 6px;
+}
+
+.command-storage-strip .android-tab-label {
+  font-size: 0.62rem;
+  line-height: 1.15;
+  text-transform: uppercase;
+}
+
+.command-storage-body {
+  padding: 0;
+}
+
+.command-storage-body > .command-storage-card,
+.command-storage-body > .command-storage-cloud-card {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 14px;
+}
+
+/* Mobile-only Repeat Payments contract summary: 4 tabs for the asset /
+   recipient / cadence / end-condition cards. One row of tabs, one body card. */
+.recurring-contract-summary-tabbed {
+  margin: 0 0 12px;
+}
+
+.recurring-summary-strip {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.recurring-summary-strip .android-tab {
+  min-height: 44px;
+  padding: 8px 4px;
+}
+
+.recurring-summary-strip .android-tab-label {
+  font-size: 0.62rem;
+  line-height: 1.15;
+  text-transform: uppercase;
+}
+
+.recurring-summary-body {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px;
+}
+
+.recurring-summary-body > span {
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 880;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.recurring-summary-body > strong {
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 880;
+  line-height: 1.22;
+  overflow-wrap: anywhere;
+}
+
+/* Mobile-only Connect AI / Cloud info cards: 4-5 tabs each, one info card body
+   visible at a time. Matches the Hosted / Bridge / Session / Device tab strip
+   above. */
+.command-ai-info-tabs,
+.command-cloud-info-tabs {
+  margin: 0 0 12px;
+}
+
+.command-ai-info-strip,
+.command-cloud-info-strip {
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
+}
+
+.command-ai-info-strip .android-tab,
+.command-cloud-info-strip .android-tab {
+  min-height: 44px;
+  padding: 8px 6px;
+}
+
+.command-ai-info-strip .android-tab-label,
+.command-cloud-info-strip .android-tab-label {
+  font-size: 0.6rem;
+  line-height: 1.15;
+  text-transform: uppercase;
+}
+
+.command-ai-info-body,
+.command-cloud-info-body {
+  padding: 0;
+}
+
+.command-ai-info-body > .command-ai-info-card,
+.command-cloud-info-body > .command-ai-info-card {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 14px;
+}
+
+/* Mobile delete/delete-all confirmation modal. Deterministic full-screen sheet
+   on Android/mobile-web: header stays at top, action buttons stay at bottom,
+   middle scrolls. Avoids the cramped, mis-aligned look on small viewports. */
+@media (max-width: 899px) {
+  .route-app .generated-plan-modal-backdrop {
+    align-items: stretch;
+    justify-content: stretch;
+    padding:
+      calc(env(safe-area-inset-top, 0px))
+      calc(env(safe-area-inset-right, 0px))
+      calc(env(safe-area-inset-bottom, 0px))
+      calc(env(safe-area-inset-left, 0px));
+  }
+
+  .route-app .generated-plan-modal {
+    border-radius: 0;
+    box-shadow: none;
+    display: grid;
+    gap: 0;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    height: 100dvh;
+    max-height: 100dvh;
+    max-width: 100%;
+    overflow: hidden;
+    padding: 0;
+    width: 100%;
+  }
+
+  .route-app .generated-plan-modal > * {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+
+  .route-app .generated-plan-modal-head {
+    align-items: center;
+    background: rgba(8, 10, 9, 0.94);
+    border-bottom: 1px solid rgba(224, 230, 226, 0.08);
+    display: grid;
+    flex-direction: row;
+    gap: 12px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    margin: 0;
+    padding-block: 14px;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+  }
+
+  .route-app .generated-plan-modal-head > div {
+    align-self: center;
+    min-width: 0;
+  }
+
+  .route-app .generated-plan-modal-head h2 {
+    font-size: 1.06rem;
+    margin: 2px 0 4px;
+  }
+
+  .route-app .generated-plan-modal-head p {
+    font-size: 0.84rem;
+    line-height: 1.36;
+  }
+
+  .route-app .generated-plan-modal-head .workbench-kicker {
+    font-size: 0.62rem;
+  }
+
+  .route-app .generated-plan-modal-head > button {
+    align-self: start;
+    flex: 0 0 auto;
+    margin-top: 2px;
+    min-height: 36px;
+    padding: 0 12px;
+    white-space: nowrap;
+  }
+
+  .route-app .generated-plan-modal-actions {
+    background: rgba(8, 10, 9, 0.94);
+    border-top: 1px solid rgba(224, 230, 226, 0.08);
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    margin: 0;
+    padding-block:
+      14px
+      calc(14px + env(safe-area-inset-bottom, 0px));
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+  }
+
+  .route-app .generated-plan-modal-actions button {
+    min-height: 46px;
+    width: 100%;
+  }
+
+  /* Stretch the warning/body section to fill scrollable middle. */
+  .route-app .cloud-delete-warning,
+  .route-app .completed-delete-warning,
+  .route-app .generated-plan-delete-warning,
+  .route-app .inbox-delete-warning,
+  .route-app .delete-all-warning {
+    margin: 16px 0;
+  }
+
+  .route-app .generated-plan-modal > :not(.generated-plan-modal-head):not(.generated-plan-modal-actions) {
+    overflow-y: auto;
+  }
+}
+
 .mobile-card-footer-actions {
   display: none;
 }
@@ -25915,11 +26726,13 @@ button.danger:hover:not(:disabled) {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .route-app .review-plan-card-head {
+  .route-app .review-plan-card-head,
+  .route-app .review-plan-list .review-plan-card-head {
     grid-template-areas:
       "title"
       "value"
       "actions";
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .route-app .recurring-card-head {
@@ -25927,6 +26740,7 @@ button.danger:hover:not(:disabled) {
       "title"
       "value"
       "actions";
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .route-app .review-plan-title-block,
@@ -26101,6 +26915,30 @@ button.danger:hover:not(:disabled) {
   .route-app .inbox-approval-note,
   .route-app .approval-effect {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Scale the Drafted / Queued / Wallet / Signed timeline inside Needs Approval
+     cards on mobile so all phases fit without horizontal overflow. */
+  .route-app .tx-timeline {
+    flex-wrap: nowrap;
+    gap: 3px;
+    margin: 6px 0 2px;
+  }
+
+  .route-app .tx-timeline-step {
+    font-size: 0.6rem;
+    gap: 3px;
+    padding-right: 4px;
+  }
+
+  .route-app .tx-timeline-step + .tx-timeline-step::before {
+    margin-right: 2px;
+    width: 6px;
+  }
+
+  .route-app .tx-timeline-dot {
+    height: 6px;
+    width: 6px;
   }
 
   .route-app .inbox-approval-drawers,

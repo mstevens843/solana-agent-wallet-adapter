@@ -301,4 +301,12 @@
   .spend-row-side {
     justify-content: space-between;
   }
+
+  .spend-section,
+  .spend-overview,
+  .spend-row,
+  .spend-detail-grid {
+    padding-left: var(--page-padding-x);
+    padding-right: var(--page-padding-x);
+  }
 }

@@ -401,6 +401,14 @@ type PreferencesView = 'workspace' | 'ai' | 'access' | 'rules' | 'tokens';
 type CommandCenterView = 'center' | 'ai' | 'storage';
 type AndroidWorkspaceTab = 'wallet' | 'approvals' | 'payments' | 'proof';
 type AndroidSetupTab = 'ai' | 'cloud' | 'connectors' | 'rules';
+type AndroidTrustTab = 'custody' | 'ai-checks' | 'receipts';
+type AndroidLoopTab = 'draft' | 'check' | 'approve' | 'prove';
+type AndroidAiRouteTab = 'hosted' | 'bridge' | 'session' | 'device-agent';
+type AndroidStorageTab = 'local' | 'cloud' | 'bridge';
+type AndroidRepeatSummaryTab = 'asset' | 'recipient' | 'cadence' | 'end-condition';
+type AndroidAiIntroTab = 'benefits' | 'no-ai';
+type AndroidAiInfoTab = 'no-ai' | 'hosted' | 'bridge' | 'session' | 'device-agent';
+type AndroidCloudInfoTab = 'approval' | 'scheduler' | 'audit' | 'identity';
 type CommandCenterIconId =
   | 'wallet'
   | 'approvals'
@@ -2087,9 +2095,18 @@ interface DemoState {
   commandCenterView: CommandCenterView;
   androidWorkspaceTab: AndroidWorkspaceTab;
   androidSetupTab: AndroidSetupTab;
+  androidTrustTab: AndroidTrustTab;
+  androidLoopTab: AndroidLoopTab;
+  androidAiRouteTab: AndroidAiRouteTab;
+  androidStorageTab: AndroidStorageTab;
+  androidRepeatSummaryTab: AndroidRepeatSummaryTab;
+  androidAiIntroTab: AndroidAiIntroTab;
+  androidAiInfoTab: AndroidAiInfoTab;
+  androidCloudInfoTab: AndroidCloudInfoTab;
   oneTimePlanView: OneTimePlanView;
   askAgentAfterDraft: boolean;
   recurringView: RecurringView;
+  activeRecurringCardId: string;
   artifactView: ArtifactView;
   completedPlanFilter: CompletedPlanFilter;
   selectedRuntimePath: RuntimePathId;
@@ -2920,9 +2937,18 @@ const state: DemoState = {
   commandCenterView: 'center',
   androidWorkspaceTab: 'wallet',
   androidSetupTab: 'ai',
+  androidTrustTab: 'custody',
+  androidLoopTab: 'draft',
+  androidAiRouteTab: 'session',
+  androidStorageTab: 'local',
+  androidRepeatSummaryTab: 'asset',
+  androidAiIntroTab: 'benefits',
+  androidAiInfoTab: 'no-ai',
+  androidCloudInfoTab: 'approval',
   oneTimePlanView: 'create',
   askAgentAfterDraft: false,
   recurringView: 'create',
+  activeRecurringCardId: '',
   artifactView: 'create',
   completedPlanFilter: 'all',
   selectedRuntimePath: 'exec',
@@ -6615,13 +6641,12 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
               ${moreMenuButton()}
             </nav>
             ${preferencesButton()}
-            ${state.androidNativeEnvironment.bridgeAvailable ? '' : workspaceTabSelectMobile()}
           </div>
           <div data-layout="active-panel">${activePanel()}</div>
         </section>
         ${SHOW_DEV_CONTROLS ? contextPanel() : requestContextDetails()}
       </section>
-      ${state.androidNativeEnvironment.bridgeAvailable ? androidBottomTabDock() : ''}
+      ${androidBottomTabDock()}
     </section>
   `;
 }
@@ -6636,6 +6661,28 @@ function androidBottomTabDock(): string {
 
 function trustLayerPanel(): string {
   const mode = activeWorkflowMode();
+  const receiptLabel = mode === 'agentic-cloud' ? 'Cloud receipts' : 'Receipts';
+  const receiptDetail = 'Saved proofs stay available';
+  if (isMobileAppViewport()) {
+    const tabs: Array<{ id: AndroidTrustTab; label: string; detail: string }> = [
+      { id: 'custody', label: 'No key custody', detail: 'Wallet keeps private keys' },
+      { id: 'ai-checks', label: 'AI checks', detail: 'AI approves or denies based on your prompt' },
+      { id: 'receipts', label: 'Receipts', detail: receiptDetail },
+    ];
+    const active = state.androidTrustTab;
+    const activeTab = tabs.find((tab) => tab.id === active) ?? tabs[0]!;
+    return `
+      <section class="trust-layer-panel trust-layer-tabbed android-tab-card" aria-label="Agentic trust boundary" data-layout="trust-strip" data-android-tab-group="trust">
+        <div class="android-tab-strip trust-layer-strip" role="tablist" aria-label="Trust boundary sections">
+          ${tabs.map((tab) => mobileTabButton('trust', tab.id, tab.label, tab.id === active)).join('')}
+        </div>
+        <div class="android-tab-body trust-layer-body" role="tabpanel">
+          <strong>${escapeHtml(activeTab.label)}</strong>
+          <span>${escapeHtml(activeTab.detail)}</span>
+        </div>
+      </section>
+    `;
+  }
   const items: Array<[string, string]> = [
     ['No key custody', 'Wallet keeps private keys'],
     ['No unlimited signer', 'Every action has a boundary'],
@@ -6651,6 +6698,20 @@ function trustLayerPanel(): string {
         </div>
       `).join('')}
     </section>
+  `;
+}
+
+function mobileTabButton(group: string, id: string, label: string, active: boolean, extraClass = ''): string {
+  return `
+    <button
+      type="button"
+      class="android-tab${active ? ' active' : ''}${extraClass ? ` ${escapeHtml(extraClass)}` : ''}"
+      role="tab"
+      aria-selected="${active ? 'true' : 'false'}"
+      data-android-${escapeHtml(group)}-tab="${escapeHtml(id)}"
+    >
+      <span class="android-tab-label">${escapeHtml(label)}</span>
+    </button>
   `;
 }
 
@@ -7119,12 +7180,7 @@ function walletRail(): string {
   const headingTitleMarkup = connected
     ? `<h2>${escapeHtml(wallet.title)}</h2>`
     : `<h2 class="signer-title-desktop-only">${escapeHtml(wallet.title)}</h2>`;
-  const summaryStrongMarkup = connected
-    ? `<strong>${escapeHtml(wallet.summary)}</strong>`
-    : `
-          <strong class="signer-summary-desktop-only">${escapeHtml(wallet.summary)}</strong>
-          <strong class="signer-summary-mobile-only">No signer connected</strong>
-        `;
+  const summaryStrongMarkup = `<strong>${escapeHtml(wallet.summary)}</strong>`;
   const summaryDetailMarkup = connected
     ? `<p>${escapeHtml(wallet.detail)}</p>`
     : `<p class="signer-detail-desktop-only">${escapeHtml(wallet.detail)}</p>`;
@@ -7902,9 +7958,9 @@ function safetyRailsSpendSection(): string {
       <p>Maximum amount per token in rolling windows. Calculated from confirmed transfers in this browser.</p>
       <div class="safety-rails-input-row safety-rails-cap-row">
         <input type="text" placeholder="Token" data-safety-rails-input="add-cap" />
-        <input type="number" min="0" step="0.0001" placeholder="Daily" data-safety-rails-input="cap-day" />
-        <input type="number" min="0" step="0.0001" placeholder="Weekly" data-safety-rails-input="cap-week" />
-        <input type="number" min="0" step="0.0001" placeholder="Monthly" data-safety-rails-input="cap-month" />
+        <input type="number" inputmode="decimal" min="0" step="0.0001" placeholder="Daily" data-safety-rails-input="cap-day" />
+        <input type="number" inputmode="decimal" min="0" step="0.0001" placeholder="Weekly" data-safety-rails-input="cap-week" />
+        <input type="number" inputmode="decimal" min="0" step="0.0001" placeholder="Monthly" data-safety-rails-input="cap-month" />
         <button type="button" class="utility" data-safety-rails-action="add-cap">Add</button>
       </div>
       <ul class="safety-rails-list">
@@ -7931,7 +7987,7 @@ function safetyRailsSlippageSection(): string {
       </div>
       <p>Maximum slippage allowed for swap quotes. Higher quotes surface a warning before approval.</p>
       <div class="safety-rails-input-row">
-        <input type="number" min="0" max="10000" step="1" value="${section.maxBps}" data-safety-rails-action="set-slippage" />
+        <input type="number" inputmode="numeric" min="0" max="10000" step="1" value="${section.maxBps}" data-safety-rails-action="set-slippage" />
         <span class="safety-rails-suffix">basis points (${(section.maxBps / 100).toFixed(2)}%)</span>
       </div>
     </div>
@@ -9594,7 +9650,7 @@ function mobileWalletBox(): string {
         <p>${escapeHtml(state.androidNativeStatus)}</p>
         <div class="capabilities compact-caps">
           <span>Android app</span>
-          <span>MWA picker</span>
+          <span>Wallet picker</span>
           <span>${state.androidAuthCacheCount} cached</span>
         </div>
         <div class="bridge-actions ios-state-actions">
@@ -9711,8 +9767,8 @@ function guidedStartPanel(title: string, detail: string): string {
         <p>${escapeHtml(detail)}</p>
       </div>
       <div class="guided-path" aria-label="Wallet connection path">
-        ${guidedStep('1', androidNative ? 'Discover' : iosNative ? 'iOS paths' : 'Discover', androidNative ? 'Open the Android MWA wallet picker' : iosNative ? `${state.iosWallets.length} wallet path(s) ready` : state.wallets.length ? `${state.wallets.length} provider(s) found` : 'Find installed Wallet Standard providers', nativeWallet || state.wallets.length > 0)}
-        ${guidedStep('2', 'Select', androidNative ? 'Choose from the MWA picker' : iosNative ? selectedIosWallet : selectedProvider || (state.wallets.length ? 'Choose a discovered provider' : 'Choose a wallet provider'), androidNative || (iosNative ? Boolean(selectedIosWallet) : Boolean(selectedProvider)))}
+        ${guidedStep('1', androidNative ? 'Discover' : iosNative ? 'iOS paths' : 'Discover', androidNative ? 'Open the wallet picker' : iosNative ? `${state.iosWallets.length} wallet path(s) ready` : state.wallets.length ? `${state.wallets.length} provider(s) found` : 'Find installed Wallet Standard providers', nativeWallet || state.wallets.length > 0)}
+        ${guidedStep('2', 'Select', androidNative ? 'Choose from the wallet picker' : iosNative ? selectedIosWallet : selectedProvider || (state.wallets.length ? 'Choose a discovered provider' : 'Choose a wallet provider'), androidNative || (iosNative ? Boolean(selectedIosWallet) : Boolean(selectedProvider)))}
         ${guidedStep('3', 'Connect', 'Authorize this app in the wallet', Boolean(state.address))}
       </div>
       <div class="guided-actions">
@@ -10103,26 +10159,26 @@ function commandCenterOverviewPanel(): string {
     : latestHistory
       ? `${latestHistory.status} - ${short(latestHistory.actionId ?? latestHistory.signature ?? latestHistory.id)}`
       : 'No proof yet';
+  const headerActions = isMobileAppViewport()
+    ? ''
+    : `
+          <div class="command-center-actions">
+            <button type="button" class="primary" data-one-time-view="create">New Request</button>
+            <button type="button" class="utility" data-tab="labs">Sign Proof</button>
+          </div>
+        `;
   return `
     <div class="command-overview-stack">
       <section class="approval-object signature-stage stage-overview stage-anchor ${openApprovals.length ? 'stage-active' : 'stage-draft'}">
         <div class="signature-object-head command-center-head">
           ${sectionTitleLine('Approval workspace', 'AI prepares the review item; the wallet owner checks the details and signs only after review.')}
-          <div class="command-center-actions">
-            <button type="button" class="primary" data-one-time-view="create">New Request</button>
-            <button type="button" class="utility" data-tab="labs">Sign Proof</button>
-          </div>
+          ${headerActions}
         </div>
 
         ${SHOW_DEV_CONTROLS ? '' : firstRunActionBand()}
         ${SHOW_DEV_CONTROLS ? '' : trustLayerPanel()}
 
-        <div class="command-loop" aria-label="Agentic approval loop">
-          ${commandLoopStep('Draft', 'AI or templates prepare a bounded review item.', Boolean(state.agentPlan) || state.generatedPlans.length > 0)}
-          ${commandLoopStep('Check', 'Review amount, route, recipient, risk, and rule.', state.generatedPlans.some(isGeneratedPlanActiveInReview))}
-          ${commandLoopStep('Approve', 'Wallet signs only the visible decision.', openApprovals.length > 0)}
-          ${commandLoopStep('Prove', 'Saved proofs stay attached to Done.', completed.length > 0 || state.labArtifacts.length > 0)}
-        </div>
+        ${commandLoopBlock(openApprovals.length > 0, completed.length > 0 || state.labArtifacts.length > 0)}
 
         ${renderWorkspaceCardGroup({
           wallet: commandCenterWalletCard(),
@@ -10145,7 +10201,7 @@ interface WorkspaceCardGroup {
 }
 
 function renderWorkspaceCardGroup(cards: WorkspaceCardGroup): string {
-  if (!IS_ANDROID_APP) {
+  if (!isMobileAppViewport()) {
     return `
       <div class="command-center-grid">
         ${cards.wallet}
@@ -10231,7 +10287,7 @@ function commandPreferenceSnapshot(): string {
 }
 
 function renderPreferenceSnapshotGroup(cards: CommandPreferenceSnapshotCard[]): string {
-  if (!IS_ANDROID_APP) {
+  if (!isMobileAppViewport()) {
     return `
       <div class="command-preference-snapshot-grid">
         ${cards.map(commandPreferenceSnapshotCard).join('')}
@@ -10491,36 +10547,73 @@ function commandCenterAiPanel(): string {
 }
 
 function commandAiRouteCards(): string {
-  const hosted = commandAiRouteCard(
-    'hosted',
-    'Hosted BYOK',
-    'Connect a preset provider key through Agentic for AI agent requests.',
-    'Cloud AI connection',
-  );
-  const localBridge = commandAiRouteCard(
-    'bridge',
-    'Local Bridge AI',
-    'Connect the local runtime so AI agent requests can use this machine.',
-    'Local AI connection',
-  );
-  const session = commandAiRouteCard(
-    'session',
-    IS_ANDROID_APP ? 'Android Session' : 'Browser Session',
-    `Connect a temporary key in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'} without saving it to Agentic.`,
-    'Session AI connection',
-  );
-  const deviceAgent = deviceAgentModeVisible() ? commandAiRouteCard(
-    'device-agent',
-    'Device Agent AI',
-    IS_ANDROID_APP
-      ? 'Connect the on-device runtime so agent requests stay inside this app boundary.'
-      : 'Connect the gated Device Agent setup for this wallet.',
-    'Device AI connection',
-  ) : '';
-
-  return IS_ANDROID_APP
-    ? `${deviceAgent}${session}${hosted}${localBridge}`
-    : `${hosted}${localBridge}${session}${deviceAgent}`;
+  const definitions: Array<{ id: AndroidAiRouteTab; mode: AiSettings['mode']; title: string; detail: string; meta: string; available: boolean }> = [
+    {
+      id: 'hosted',
+      mode: 'hosted',
+      title: 'Hosted BYOK',
+      detail: 'Connect a preset provider key through Agentic for AI agent requests.',
+      meta: 'Cloud AI connection',
+      available: true,
+    },
+    {
+      id: 'bridge',
+      mode: 'bridge',
+      title: 'Local Bridge AI',
+      detail: 'Connect the local runtime so AI agent requests can use this machine.',
+      meta: 'Local AI connection',
+      available: true,
+    },
+    {
+      id: 'session',
+      mode: 'session',
+      title: IS_ANDROID_APP ? 'Android Session' : 'Browser Session',
+      detail: `Connect a temporary key in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'} without saving it to Agentic.`,
+      meta: 'Session AI connection',
+      available: true,
+    },
+    {
+      id: 'device-agent',
+      mode: 'device-agent',
+      title: 'Device Agent AI',
+      detail: IS_ANDROID_APP
+        ? 'Connect the on-device runtime so agent requests stay inside this app boundary.'
+        : 'Connect the gated Device Agent setup for this wallet.',
+      meta: 'Device AI connection',
+      available: deviceAgentModeVisible(),
+    },
+  ];
+  const visible = definitions.filter((entry) => entry.available);
+  if (isMobileAppViewport()) {
+    const activeId = visible.some((entry) => entry.id === state.androidAiRouteTab)
+      ? state.androidAiRouteTab
+      : visible[0]!.id;
+    const activeEntry = visible.find((entry) => entry.id === activeId) ?? visible[0]!;
+    const shortLabels: Record<AndroidAiRouteTab, string> = {
+      hosted: 'Hosted',
+      bridge: 'Bridge',
+      session: 'Session',
+      'device-agent': 'Device',
+    };
+    return `
+      <div class="command-route-tabs android-tab-card" data-android-tab-group="ai-route">
+        <div class="android-tab-strip command-route-strip" role="tablist" aria-label="AI route options">
+          ${visible.map((entry) => mobileTabButton('ai-route', entry.id, shortLabels[entry.id] ?? entry.title, entry.id === activeId)).join('')}
+        </div>
+        <div class="android-tab-body command-route-body" role="tabpanel">
+          ${commandAiRouteCard(activeEntry.mode, activeEntry.title, activeEntry.detail, activeEntry.meta)}
+        </div>
+      </div>
+    `;
+  }
+  const ordered = IS_ANDROID_APP
+    ? ['device-agent', 'session', 'hosted', 'bridge']
+    : ['hosted', 'bridge', 'session', 'device-agent'];
+  return ordered
+    .map((id) => visible.find((entry) => entry.id === id))
+    .filter((entry): entry is (typeof definitions)[number] => Boolean(entry))
+    .map((entry) => commandAiRouteCard(entry.mode, entry.title, entry.detail, entry.meta))
+    .join('');
 }
 
 function commandBridgePrereqPanel(): string {
@@ -10566,44 +10659,121 @@ function commandBridgePrereqPanel(): string {
 function commandAiWorkflowEducation(): string {
   return `
     <section class="command-ai-education" aria-label="AI workflow capabilities">
-      <div class="command-ai-principle">
-        <span>Benefits of connecting AI</span>
-        <strong>Workflow-first. Wallet-approved. AI-optional.</strong>
-        <p>AI changes the drafting and intelligence layer. It does not change who approves, signs, submits, or owns authority.</p>
-      </div>
-      <div class="command-ai-info-grid">
-        ${commandAiInfoCard(
-          'No AI / Templates',
-          'Manual setup',
-          'User fills the fields; the app creates a structured plan, sends work for approval, schedules repeat payments, and saves proofs.',
-          'Best for deterministic actions where the user already knows the exact fields.',
-        )}
-        ${commandAiInfoCard(
-          'Hosted BYOK',
-          'Natural-language setup',
-          'User brings a provider key; Agentic calls AI to translate messy intent into a structured workflow plan.',
-          'More capable at understanding intent, not more powerful over approval.',
-        )}
-        ${commandAiInfoCard(
-          IS_ANDROID_APP ? 'Android Session AI' : 'Browser Session AI',
-          'Session drafting',
-          `AI drafts inside ${IS_ANDROID_APP ? 'this app runtime' : 'this browser session'}, then the plan enters the same normalized workflow pipeline.`,
-          'Useful for temporary keys, but subject to provider and session limits.',
-        )}
-        ${commandAiInfoCard(
-          'Local Bridge',
-          'Private local mode',
-          'AI and workflow storage can run through the local runtime when the user wants private machine-local control.',
-          'Still ends at explicit wallet approval and local signing.',
-        )}
-        ${deviceAgentModeVisible() ? commandAiInfoCard(
-          'Device Agent',
-          'On-device route',
-          'The runtime path uses the same agent setup and workflow pipeline while its native worker is gated for development.',
-          'Useful for Seeker testing without changing approval authority.',
-        ) : ''}
-      </div>
+      ${isMobileAppViewport() ? commandAiIntroTabs() : commandAiPrincipleCard()}
+      ${commandAiInfoCardsGroup()}
     </section>
+  `;
+}
+
+function commandAiPrincipleCard(): string {
+  return `
+    <div class="command-ai-principle">
+      <span>Benefits of connecting AI</span>
+      <strong>Workflow-first. Wallet-approved. AI-optional.</strong>
+      <p>AI changes the drafting and intelligence layer. It does not change who approves, signs, submits, or owns authority.</p>
+    </div>
+  `;
+}
+
+function commandAiIntroTabs(): string {
+  const tabs: Array<{ id: AndroidAiIntroTab; label: string; body: string }> = [
+    {
+      id: 'benefits',
+      label: 'AI BENEFITS',
+      body: commandAiPrincipleCard(),
+    },
+    {
+      id: 'no-ai',
+      label: 'OR NO AI',
+      body: commandAiInfoCard(
+        'No AI / Templates',
+        'Manual setup',
+        'User fills the fields; the app creates a structured plan, sends work for approval, schedules repeat payments, and saves proofs.',
+        'Best for deterministic actions where the user already knows the exact fields.',
+      ),
+    },
+  ];
+  const active = tabs.find((tab) => tab.id === state.androidAiIntroTab) ?? tabs[0]!;
+  return `
+    <div class="command-ai-intro-tabs android-tab-card" data-android-tab-group="ai-intro">
+      <div class="android-tab-strip command-ai-intro-strip" role="tablist" aria-label="AI benefits and no-AI option">
+        ${tabs.map((tab) => mobileTabButton('ai-intro', tab.id, tab.label, tab.id === active.id)).join('')}
+      </div>
+      <div class="android-tab-body command-ai-intro-body" role="tabpanel">
+        ${active.body}
+      </div>
+    </div>
+  `;
+}
+
+function commandAiInfoCardsGroup(): string {
+  const entries: Array<{ id: AndroidAiInfoTab; tab: string; title: string; badge: string; detail: string; foot: string; available: boolean }> = [
+    {
+      id: 'no-ai',
+      tab: 'No AI',
+      title: 'No AI / Templates',
+      badge: 'Manual setup',
+      detail: 'User fills the fields; the app creates a structured plan, sends work for approval, schedules repeat payments, and saves proofs.',
+      foot: 'Best for deterministic actions where the user already knows the exact fields.',
+      available: true,
+    },
+    {
+      id: 'hosted',
+      tab: 'BYOK',
+      title: 'Hosted BYOK',
+      badge: 'Natural-language setup',
+      detail: 'User brings a provider key; Agentic calls AI to translate messy intent into a structured workflow plan.',
+      foot: 'More capable at understanding intent, not more powerful over approval.',
+      available: true,
+    },
+    {
+      id: 'session',
+      tab: 'SESSION',
+      title: IS_ANDROID_APP ? 'Android Session AI' : 'Browser Session AI',
+      badge: 'Session drafting',
+      detail: `AI drafts inside ${IS_ANDROID_APP ? 'this app runtime' : 'this browser session'}, then the plan enters the same normalized workflow pipeline.`,
+      foot: 'Useful for temporary keys, but subject to provider and session limits.',
+      available: true,
+    },
+    {
+      id: 'bridge',
+      tab: 'BRIDGE',
+      title: 'Local Bridge',
+      badge: 'Private local mode',
+      detail: 'AI and workflow storage can run through the local runtime when the user wants private machine-local control.',
+      foot: 'Still ends at explicit wallet approval and local signing.',
+      available: true,
+    },
+    {
+      id: 'device-agent',
+      tab: 'DEVICE AGENT',
+      title: 'Device Agent',
+      badge: 'On-device route',
+      detail: 'The runtime path uses the same agent setup and workflow pipeline while its native worker is gated for development.',
+      foot: 'Useful for Seeker testing without changing approval authority.',
+      available: deviceAgentModeVisible(),
+    },
+  ];
+  const visible = entries.filter((entry) => entry.available);
+  if (isMobileAppViewport()) {
+    const routeEntries = visible.filter((entry) => entry.id !== 'no-ai');
+    const active = routeEntries.find((entry) => entry.id === state.androidAiInfoTab) ?? routeEntries[0];
+    if (!active) return '';
+    return `
+      <div class="command-ai-info-tabs android-tab-card" data-android-tab-group="ai-info">
+        <div class="android-tab-strip command-ai-info-strip" role="tablist" aria-label="AI route benefits">
+          ${routeEntries.map((entry) => mobileTabButton('ai-info', entry.id, entry.tab, entry.id === active.id)).join('')}
+        </div>
+        <div class="android-tab-body command-ai-info-body" role="tabpanel">
+          ${commandAiInfoCard(active.title, active.badge, active.detail, active.foot)}
+        </div>
+      </div>
+    `;
+  }
+  return `
+    <div class="command-ai-info-grid">
+      ${visible.map((entry) => commandAiInfoCard(entry.title, entry.badge, entry.detail, entry.foot)).join('')}
+    </div>
   `;
 }
 
@@ -10661,10 +10831,7 @@ function commandCenterStoragePanel(): string {
           </div>
         </div>
 
-        <div class="command-storage-grid" aria-label="Workspace storage modes">
-          ${commandStorageDeviceCard()}
-          ${commandStorageCloudCard()}
-        </div>
+        ${commandStorageCardsGroup()}
 
         ${localWorkspacePrompt('cloud')}
 
@@ -10757,6 +10924,31 @@ function workspaceBackupRestoreModal(): string {
   `;
 }
 
+function commandStorageCardsGroup(): string {
+  if (isMobileAppViewport()) {
+    const validTabs: AndroidStorageTab[] = ['local', 'cloud'];
+    const active = validTabs.includes(state.androidStorageTab) ? state.androidStorageTab : 'local';
+    const body = active === 'cloud' ? commandStorageCloudCard() : commandStorageDeviceCard();
+    return `
+      <div class="command-storage-tabs android-tab-card" data-android-tab-group="storage">
+        <div class="android-tab-strip command-storage-strip" role="tablist" aria-label="Workspace storage modes">
+          ${mobileTabButton('storage', 'local', 'On device', active === 'local')}
+          ${mobileTabButton('storage', 'cloud', 'Agentic Cloud', active === 'cloud')}
+        </div>
+        <div class="android-tab-body command-storage-body" role="tabpanel">
+          ${body}
+        </div>
+      </div>
+    `;
+  }
+  return `
+    <div class="command-storage-grid" aria-label="Workspace storage modes">
+      ${commandStorageDeviceCard()}
+      ${commandStorageCloudCard()}
+    </div>
+  `;
+}
+
 function commandStorageDeviceCard(): string {
   const active = activeWorkflowMode() === 'browser-workflow';
   const signedIn = state.cloudSession.status === 'signed-in';
@@ -10790,33 +10982,63 @@ function commandCloudStorageEducation(): string {
         <strong>Durable workflow state without wallet custody.</strong>
         <p>Storage controls where unsigned plans, approvals, done work, repeat payments, and proofs live. AI setup stays in Connect AI.</p>
       </div>
-      <div class="command-ai-info-grid">
-        ${commandAiInfoCard(
-          'Cloud Needs Approval',
-          'Cross-session review',
-          'Save drafts and due approval items to wallet-scoped cloud approval storage instead of only this browser.',
-          'The wallet still signs every decision proof or supported transaction.',
-        )}
-        ${commandAiInfoCard(
-          'Repeat Payment Scheduler',
-          'Background workflow',
-          'Cloud repeat payments can create due approval items, track payment history, pause/resume, expiry, and spend caps.',
-          'AI can draft terms, but Cloud stores and schedules the workflow.',
-        )}
-        ${commandAiInfoCard(
-          'Done + Saved Proofs',
-          'Persistent audit trail',
-          'Done work, saved proofs, risk metadata, and audit events survive refreshes and device changes.',
-          'Receipt records are wallet-scoped and do not grant signing authority.',
-        )}
-        ${commandAiInfoCard(
-          'No Key Custody',
-          'Identity only',
-          'Cloud sign-in proves wallet ownership for sync. It must not store seed phrases, private keys, delegated signers, or AI provider keys.',
-          'Cloud makes the workflow durable; it cannot move funds by itself.',
-        )}
-      </div>
+      ${commandCloudInfoCardsGroup()}
     </section>
+  `;
+}
+
+function commandCloudInfoCardsGroup(): string {
+  const entries: Array<{ id: AndroidCloudInfoTab; tab: string; title: string; badge: string; detail: string; foot: string }> = [
+    {
+      id: 'approval',
+      tab: 'Approval',
+      title: 'Cloud Needs Approval',
+      badge: 'Cross-session review',
+      detail: 'Save drafts and due approval items to wallet-scoped cloud approval storage instead of only this browser.',
+      foot: 'The wallet still signs every decision proof or supported transaction.',
+    },
+    {
+      id: 'scheduler',
+      tab: 'Scheduler',
+      title: 'Repeat Payment Scheduler',
+      badge: 'Background workflow',
+      detail: 'Cloud repeat payments can create due approval items, track payment history, pause/resume, expiry, and spend caps.',
+      foot: 'AI can draft terms, but Cloud stores and schedules the workflow.',
+    },
+    {
+      id: 'audit',
+      tab: 'Audit',
+      title: 'Done + Saved Proofs',
+      badge: 'Persistent audit trail',
+      detail: 'Done work, saved proofs, risk metadata, and audit events survive refreshes and device changes.',
+      foot: 'Receipt records are wallet-scoped and do not grant signing authority.',
+    },
+    {
+      id: 'identity',
+      tab: 'Identity',
+      title: 'No Key Custody',
+      badge: 'Identity only',
+      detail: 'Cloud sign-in proves wallet ownership for sync. It must not store seed phrases, private keys, delegated signers, or AI provider keys.',
+      foot: 'Cloud makes the workflow durable; it cannot move funds by itself.',
+    },
+  ];
+  if (isMobileAppViewport()) {
+    const active = entries.find((entry) => entry.id === state.androidCloudInfoTab) ?? entries[0]!;
+    return `
+      <div class="command-cloud-info-tabs android-tab-card" data-android-tab-group="cloud-info">
+        <div class="android-tab-strip command-cloud-info-strip" role="tablist" aria-label="Cloud storage benefits">
+          ${entries.map((entry) => mobileTabButton('cloud-info', entry.id, entry.tab, entry.id === active.id)).join('')}
+        </div>
+        <div class="android-tab-body command-cloud-info-body" role="tabpanel">
+          ${commandAiInfoCard(active.title, active.badge, active.detail, active.foot)}
+        </div>
+      </div>
+    `;
+  }
+  return `
+    <div class="command-ai-info-grid">
+      ${entries.map((entry) => commandAiInfoCard(entry.title, entry.badge, entry.detail, entry.foot)).join('')}
+    </div>
   `;
 }
 
@@ -10985,6 +11207,34 @@ function commandLoopStep(label: string, detail: string, complete: boolean): stri
     <div class="${complete ? 'complete' : ''}">
       <span>${escapeHtml(label)}</span>
       <p>${escapeHtml(detail)}</p>
+    </div>
+  `;
+}
+
+function commandLoopBlock(openApprovalsActive: boolean, doneActive: boolean): string {
+  const steps: Array<{ id: AndroidLoopTab; label: string; detail: string; complete: boolean }> = [
+    { id: 'draft', label: 'Draft', detail: 'AI or templates prepare a bounded review item.', complete: Boolean(state.agentPlan) || state.generatedPlans.length > 0 },
+    { id: 'check', label: 'Check', detail: 'Review amount, route, recipient, risk, and rule.', complete: state.generatedPlans.some(isGeneratedPlanActiveInReview) },
+    { id: 'approve', label: 'Approve', detail: 'Wallet signs only the visible decision.', complete: openApprovalsActive },
+    { id: 'prove', label: 'Prove', detail: 'Saved proofs stay attached to Done.', complete: doneActive },
+  ];
+  if (isMobileAppViewport()) {
+    const active = steps.find((step) => step.id === state.androidLoopTab) ?? steps[0]!;
+    return `
+      <div class="command-loop command-loop-tabbed android-tab-card" aria-label="Agentic approval loop" data-android-tab-group="loop">
+        <div class="android-tab-strip command-loop-strip" role="tablist" aria-label="Approval loop steps">
+          ${steps.map((step) => mobileTabButton('loop', step.id, step.label, step.id === active.id, step.complete ? 'complete' : '')).join('')}
+        </div>
+        <div class="android-tab-body command-loop-body ${active.complete ? 'complete' : ''}" role="tabpanel">
+          <span>${escapeHtml(active.label)}</span>
+          <p>${escapeHtml(active.detail)}</p>
+        </div>
+      </div>
+    `;
+  }
+  return `
+    <div class="command-loop" aria-label="Agentic approval loop">
+      ${steps.map((step) => commandLoopStep(step.label, step.detail, step.complete)).join('')}
     </div>
   `;
 }
@@ -11284,7 +11534,7 @@ function generatedPlansPanel(embedded = false): string {
           <span class="signature-state micro-emphasis">${escapeHtml(`${activeCount} active`)}</span>
           <button
             data-one-time-view="create"
-            class="utility"
+            class="utility check-toolbar-create-another"
             ${state.busy ? 'disabled' : ''}
           >
             Create another draft
@@ -11348,11 +11598,11 @@ function generatedPlanStatusLine(
   const filtered = state.generatedPlanAgentReviewFilter !== 'all';
   return `
     <div class="queue-status generated-plan-status">
-      <span>${escapeHtml(`${totalCount} plan${totalCount === 1 ? '' : 's'} saved`)}</span>
+      <span class="status-detail-desktop-only">${escapeHtml(`${totalCount} plan${totalCount === 1 ? '' : 's'} saved`)}</span>
       ${filtered
         ? `<strong class="accent-note">${shownCount} shown</strong><span>${inCheckCount} in check</span><span>${escapeHtml(agentReviewFilterLabel(state.generatedPlanAgentReviewFilter))}</span>`
         : `<strong class="accent-note">${inCheckCount} in check</strong>`}
-      <span>${movedCount} moved forward</span>
+      <span class="status-detail-desktop-only">${movedCount} moved forward</span>
       <span>${archivedCount} archived</span>
       <span>Newest first</span>
     </div>
@@ -16366,18 +16616,21 @@ function approvalInboxPanel(): string {
       <div class="signature-object-head">
         ${sectionTitleLine('Needs Approval', approvalInboxDescription())}
         <div class="inbox-toolbar signature-toolbar">
-          ${selectPicker({
-            id: 'inboxFilter',
-            value: state.inboxFilter,
-            options: [
-              { value: 'all', label: 'All', meta: 'Approval filter' },
-              { value: 'ready', label: 'Ready now', meta: 'Approval filter' },
-              { value: 'scheduled', label: 'Scheduled', meta: 'Approval filter' },
-              { value: 'attention', label: 'Problems', meta: 'Approval filter' },
-              { value: 'one-time', label: 'One-time', meta: 'Approval filter' },
-              { value: 'recurring', label: 'Repeats', meta: 'Approval filter' },
-            ],
-          })}
+          <label class="inbox-filter-control filter-field" for="inboxFilter">
+            <span class="filter-field-label">Filter</span>
+            ${selectPicker({
+              id: 'inboxFilter',
+              value: state.inboxFilter,
+              options: [
+                { value: 'all', label: 'All' },
+                { value: 'ready', label: 'Ready now' },
+                { value: 'scheduled', label: 'Scheduled' },
+                { value: 'attention', label: 'Problems' },
+                { value: 'one-time', label: 'One-time' },
+                { value: 'recurring', label: 'Repeats' },
+              ],
+            })}
+          </label>
           ${inboxRefreshButton('refreshInbox')}
           <button id="deleteAllInbox" class="utility danger" ${state.busy || actions.length === 0 ? 'disabled' : ''}>Delete All</button>
         </div>
@@ -16992,7 +17245,7 @@ function scheduledApprovalsPanel(): string {
     <section class="approval-object signature-stage stage-schedule stage-anchor ${recurringPayments.length ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head app-inline-head">
         ${sectionTitleLine('Repeat Payments', 'Set up payments that repeat. Each payment still asks for approval before it sends.')}
-        <button id="refreshInbox" class="utility" ${state.busy ? 'disabled' : ''}>Refresh</button>
+        <button id="refreshInbox" class="utility refresh-button-desktop-only" ${state.busy ? 'disabled' : ''}>Refresh</button>
       </div>
 
       ${scheduleStatusLine()}
@@ -17835,6 +18088,95 @@ function bind(): void {
     });
   }
 
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recurring-flip-id]')) {
+    button.addEventListener('click', () => {
+      const id = button.dataset.recurringFlipId;
+      if (!id || state.activeRecurringCardId === id) return;
+      state.activeRecurringCardId = id;
+      render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-trust-tab]')) {
+    button.addEventListener('click', () => {
+      const tab = button.dataset.androidTrustTab as AndroidTrustTab | undefined;
+      if (tab !== 'custody' && tab !== 'ai-checks' && tab !== 'receipts') return;
+      if (state.androidTrustTab === tab) return;
+      state.androidTrustTab = tab;
+      render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-loop-tab]')) {
+    button.addEventListener('click', () => {
+      const tab = button.dataset.androidLoopTab as AndroidLoopTab | undefined;
+      if (tab !== 'draft' && tab !== 'check' && tab !== 'approve' && tab !== 'prove') return;
+      if (state.androidLoopTab === tab) return;
+      state.androidLoopTab = tab;
+      render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-ai-route-tab]')) {
+    button.addEventListener('click', () => {
+      const tab = button.dataset.androidAiRouteTab as AndroidAiRouteTab | undefined;
+      if (tab !== 'hosted' && tab !== 'bridge' && tab !== 'session' && tab !== 'device-agent') return;
+      if (state.androidAiRouteTab === tab) return;
+      state.androidAiRouteTab = tab;
+      render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-ai-intro-tab]')) {
+    button.addEventListener('click', () => {
+      const tab = button.dataset.androidAiIntroTab as AndroidAiIntroTab | undefined;
+      if (tab !== 'benefits' && tab !== 'no-ai') return;
+      if (state.androidAiIntroTab === tab) return;
+      state.androidAiIntroTab = tab;
+      render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-storage-tab]')) {
+    button.addEventListener('click', () => {
+      const tab = button.dataset.androidStorageTab as AndroidStorageTab | undefined;
+      if (tab !== 'local' && tab !== 'cloud' && tab !== 'bridge') return;
+      if (state.androidStorageTab === tab) return;
+      state.androidStorageTab = tab;
+      render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-repeat-summary-tab]')) {
+    button.addEventListener('click', () => {
+      const tab = button.dataset.androidRepeatSummaryTab as AndroidRepeatSummaryTab | undefined;
+      if (tab !== 'asset' && tab !== 'recipient' && tab !== 'cadence' && tab !== 'end-condition') return;
+      if (state.androidRepeatSummaryTab === tab) return;
+      state.androidRepeatSummaryTab = tab;
+      render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-ai-info-tab]')) {
+    button.addEventListener('click', () => {
+      const tab = button.dataset.androidAiInfoTab as AndroidAiInfoTab | undefined;
+      if (tab !== 'no-ai' && tab !== 'hosted' && tab !== 'bridge' && tab !== 'session' && tab !== 'device-agent') return;
+      if (state.androidAiInfoTab === tab) return;
+      state.androidAiInfoTab = tab;
+      render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-cloud-info-tab]')) {
+    button.addEventListener('click', () => {
+      const tab = button.dataset.androidCloudInfoTab as AndroidCloudInfoTab | undefined;
+      if (tab !== 'approval' && tab !== 'scheduler' && tab !== 'audit' && tab !== 'identity') return;
+      if (state.androidCloudInfoTab === tab) return;
+      state.androidCloudInfoTab = tab;
+      render();
+    });
+  }
+
   // Layer 2 Skills Hub sub-tabs. Tracked inside subTabRegistry; main.ts only
   // wires the click → setter → render dance. Sub-tab IDs are open string union
   // so Skills surfaces can self-register without editing this file.
@@ -18205,7 +18547,9 @@ function bind(): void {
     button.addEventListener('click', runConnectBridge);
   }
   document.querySelector<HTMLButtonElement>('#disconnectBridge')?.addEventListener('click', runDisconnectBridge);
-  document.querySelector<HTMLButtonElement>('#refreshInbox')?.addEventListener('click', runRefreshInbox);
+  for (const button of document.querySelectorAll<HTMLButtonElement>('#refreshInbox, [data-refresh-inbox]')) {
+    button.addEventListener('click', runRefreshInbox);
+  }
   document.querySelector<HTMLButtonElement>('#deleteAllInbox')?.addEventListener('click', openDeleteAllInboxModal);
   document.querySelector<HTMLButtonElement>('#deleteAllCheck')?.addEventListener('click', openDeleteAllCheckModal);
   document.querySelector<HTMLButtonElement>('#deleteAllRepeats')?.addEventListener('click', openDeleteAllRepeatsModal);
@@ -38923,14 +39267,7 @@ function recurringComposer(): string {
           <p class="recurring-help">${escapeHtml(recurringHelp)}</p>
         </div>
       </div>
-      <dl class="contract-summary recurring-create-summary">
-        ${definitionRow('Asset', recurringDraftAssetLabel(draft))}
-        ${isSwap
-          ? definitionRow('Swap', recurringDraftSwapRouteLabel(draft))
-          : definitionRow('Recipient', recipient)}
-        ${definitionRow('Cadence', recurringDraftScheduleLabel(draft))}
-        ${definitionRow('End condition', limit)}
-      </dl>
+      ${recurringContractSummaryView(draft, isSwap, recipient, limit)}
       <div class="contract-section recurring-create-section">
         <div>
           <span>${escapeHtml(isSwap ? 'Swap terms' : 'Payment terms')}</span>
@@ -39163,17 +39500,62 @@ function recurringDraftSwapRouteLabel(draft: RecurringDraft): string {
   return `${input} -> ${output}${slippage ? `, ${slippage} max` : ''}`;
 }
 
+function recurringContractSummaryView(
+  draft: RecurringDraft,
+  isSwap: boolean,
+  recipient: string,
+  limit: string,
+): string {
+  const assetValue = recurringDraftAssetLabel(draft);
+  const recipientLabel = isSwap ? 'Swap' : 'Recipient';
+  const recipientValue = isSwap ? recurringDraftSwapRouteLabel(draft) : recipient;
+  const cadenceValue = recurringDraftScheduleLabel(draft);
+  if (isMobileAppViewport()) {
+    const tabs: Array<{ id: AndroidRepeatSummaryTab; label: string; value: string }> = [
+      { id: 'asset', label: 'Asset', value: assetValue },
+      { id: 'recipient', label: isSwap ? 'Swap' : 'Recipient', value: recipientValue },
+      { id: 'cadence', label: 'Cadence', value: cadenceValue },
+      { id: 'end-condition', label: 'End', value: limit },
+    ];
+    const active = tabs.find((tab) => tab.id === state.androidRepeatSummaryTab) ?? tabs[0]!;
+    return `
+      <div class="recurring-contract-summary-tabbed android-tab-card" data-android-tab-group="repeat-summary">
+        <div class="android-tab-strip recurring-summary-strip" role="tablist" aria-label="Repeat contract summary">
+          ${tabs.map((tab) => mobileTabButton('repeat-summary', tab.id, tab.label, tab.id === active.id)).join('')}
+        </div>
+        <div class="android-tab-body recurring-summary-body" role="tabpanel">
+          <span>${escapeHtml(active.label)}</span>
+          <strong>${escapeHtml(active.value)}</strong>
+        </div>
+      </div>
+    `;
+  }
+  return `
+    <dl class="contract-summary recurring-create-summary">
+      ${definitionRow('Asset', assetValue)}
+      ${definitionRow(recipientLabel, recipientValue)}
+      ${definitionRow('Cadence', cadenceValue)}
+      ${definitionRow('End condition', limit)}
+    </dl>
+  `;
+}
+
 function recurringDraftPreviewPanel(draft: RecurringDraft): string {
   const runs = recurringDraftNextRuns(draft);
   const spend = recurringDraftLifetimeSpend(draft);
   const spendToken = recurringDraftSpendToken(draft);
+  const max = Number(draft.maxOccurrences || '');
+  const remainingDisplay = Number.isFinite(max) && max > 0 ? String(max) : '∞';
   return `
     <div class="recurring-next-preview recurring-production-preview">
       <div>
-        <span>Next runs</span>
+        <span>Next run</span>
         <strong id="recurringNextOccurrence">${escapeHtml(runs[0] ? formatDateTime(runs[0]) : recurringNextOccurrenceLabel(draft))}</strong>
       </div>
-      ${runs.length ? `<ol>${runs.map((run) => `<li>${escapeHtml(formatDateTime(run))}</li>`).join('')}</ol>` : ''}
+      <div class="recurring-preview-recurrences">
+        <span>Recurrences</span>
+        <strong>${escapeHtml(remainingDisplay)}</strong>
+      </div>
       ${spend ? `<p>${escapeHtml(lifetimeSpendCopy(spend, spendToken))}</p>` : ''}
     </div>
   `;
@@ -39216,6 +39598,15 @@ function recurringPresetMethodControls(): string {
         <em>What repeats</em>
       </span>
       ${recurringPresetControls()}
+      <button
+        type="button"
+        class="utility recurring-inline-refresh"
+        data-refresh-inbox
+        aria-label="Refresh repeat payments"
+        ${state.busy ? 'disabled' : ''}
+      >
+        Refresh
+      </button>
     </div>
   `;
 }
@@ -39447,11 +39838,56 @@ function recurringList(): string {
     return signaturePlaceholder('No repeats match', 'No saved repeat payments match this AI review filter.');
   }
   const paginatedPayments = paginateList(payments, 'recurring');
+  if (paginatedPayments.items.length > 1 && isMobileAppViewport()) {
+    const validIds = paginatedPayments.items.map((p) => p.id);
+    const activeId = validIds.includes(state.activeRecurringCardId)
+      ? state.activeRecurringCardId
+      : paginatedPayments.items[0]!.id;
+    const activeCard = paginatedPayments.items.find((p) => p.id === activeId) ?? paginatedPayments.items[0]!;
+    return `
+      <div class="recurring-list recurring-list-flip" data-android-tab-group="recurring">
+        <div class="android-tab-card recurring-card-flip">
+          <div class="android-tab-strip recurring-flip-strip" role="tablist" aria-label="Repeat payments">
+            ${paginatedPayments.items.map((p, i) => recurringFlipTab(p, i, p.id === activeId)).join('')}
+          </div>
+          <div class="android-tab-body recurring-flip-body" role="tabpanel">
+            ${recurringCard(activeCard)}
+          </div>
+        </div>
+      </div>
+      ${listPagination('recurring', paginatedPayments, 'Active recurring')}
+    `;
+  }
   return `
     <div class="recurring-list">
       ${paginatedPayments.items.map(recurringCard).join('')}
     </div>
     ${listPagination('recurring', paginatedPayments, 'Active recurring')}
+  `;
+}
+
+function isMobileAppViewport(): boolean {
+  if (IS_ANDROID_APP) return true;
+  if (state.androidNativeEnvironment.bridgeAvailable) return true;
+  if (state.iosNativeEnvironment.isIosNative) return true;
+  if (typeof window === 'undefined') return false;
+  return window.innerWidth < 900;
+}
+
+function recurringFlipTab(payment: RecurringPayment, index: number, active: boolean): string {
+  const title = recurringPaymentTitle(payment);
+  return `
+    <button
+      type="button"
+      class="android-tab recurring-flip-tab${active ? ' active' : ''}"
+      role="tab"
+      aria-selected="${active ? 'true' : 'false'}"
+      title="${escapeHtml(title)}"
+      data-recurring-flip-id="${escapeHtml(payment.id)}"
+    >
+      <span class="recurring-flip-tab-index">${index + 1}</span>
+      <span class="recurring-flip-tab-label">${escapeHtml(title)}</span>
+    </button>
   `;
 }
 
@@ -39662,7 +40098,7 @@ function recurringCardFooter(
   return `
     <div class="recurring-card-footer-row">
       <div class="recurring-card-footer-stack">
-        ${recurringUpcomingRunsDetails(nextRuns)}
+        ${recurringUpcomingRunsDetails(payment, nextRuns)}
         ${recurringHistoryPanel(payment, history)}
         ${recurringNotificationsPanel(payment, notifications, source)}
       </div>
@@ -39673,13 +40109,17 @@ function recurringCardFooter(
   `;
 }
 
-function recurringUpcomingRunsDetails(nextRuns: string[]): string {
-  if (!nextRuns.length) return '';
+function recurringUpcomingRunsDetails(payment: RecurringPayment, nextRuns: string[]): string {
+  const max = payment.maxOccurrences;
+  const created = payment.occurrencesCreated ?? 0;
+  const remaining = typeof max === 'number' && max > 0 ? Math.max(0, max - created) : null;
+  if (remaining === null && !nextRuns.length) return '';
+  const display = remaining === null ? '∞' : String(remaining);
   return `
-    <details class="recurring-upcoming-runs">
-      <summary>Upcoming runs</summary>
-      <ol>${nextRuns.map((run) => `<li>${escapeHtml(formatDateTime(run))}</li>`).join('')}</ol>
-    </details>
+    <div class="recurring-upcoming-runs recurring-upcoming-runs-compact">
+      <span>Next runs</span>
+      <strong>${escapeHtml(display)}</strong>
+    </div>
   `;
 }
 
@@ -45563,7 +46003,7 @@ function failurePolicyRow(policy: FailureRetryPolicy): string {
       </div>
       <label class="failure-policy-max-attempts">
         <span>Max retries</span>
-        <input type="number" min="0" max="10" step="1" value="${policy.maxAttempts}" data-failure-policy-field="maxAttempts" data-failure-policy-kind="${escapeHtml(policy.kind)}" ${state.busy ? 'disabled' : ''} />
+        <input type="number" inputmode="numeric" min="0" max="10" step="1" value="${policy.maxAttempts}" data-failure-policy-field="maxAttempts" data-failure-policy-kind="${escapeHtml(policy.kind)}" ${state.busy ? 'disabled' : ''} />
       </label>
     </article>
   `;
