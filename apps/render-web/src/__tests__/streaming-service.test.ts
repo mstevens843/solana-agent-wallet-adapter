@@ -179,7 +179,7 @@ describe('streaming sessions service', () => {
     );
   });
 
-  it('revoke marks the session revoked and blocks later vouchers', async () => {
+  it('revoke prepares the transaction and confirmed revoke blocks later vouchers', async () => {
     const recipient = Keypair.generate().publicKey.toBase58();
     const ctx = createContext({ now: '2026-05-16T12:00:00.000Z' });
     const session = await createActiveSession(ctx, {
@@ -187,9 +187,29 @@ describe('streaming sessions service', () => {
       expiresAt: '2026-05-16T13:00:00.000Z',
     });
 
-    const revoked = await ctx.service.revokeSession({ walletAddress: WALLET, sessionId: session.sessionId });
-    expect(revoked.session.status).toBe('revoked');
-    expect(revoked.revokeTx.kind).toBe('revoke_delegate');
+    const prepared = await ctx.service.revokeSession({ walletAddress: WALLET, sessionId: session.sessionId });
+    expect(prepared.session.status).toBe('active');
+    expect(prepared.revokeTx.kind).toBe('revoke_delegate');
+
+    const submitted = await ctx.service.recordRevokeSigned({
+      walletAddress: WALLET,
+      sessionId: session.sessionId,
+      revokeTxid: `REVOKE_${session.sessionId}`,
+      status: 'submitted',
+    });
+    expect(submitted.status).toBe('active');
+    expect(submitted.metadata?.revokeTx).toMatchObject({
+      txid: `REVOKE_${session.sessionId}`,
+      status: 'submitted',
+    });
+
+    const revoked = await ctx.service.recordRevokeSigned({
+      walletAddress: WALLET,
+      sessionId: session.sessionId,
+      revokeTxid: `REVOKE_${session.sessionId}`,
+      status: 'confirmed',
+    });
+    expect(revoked.status).toBe('revoked');
 
     await expectCode(
       ctx.service.acceptVoucher({
@@ -414,6 +434,34 @@ describe('user-funded delegate (prefund + sweep)', () => {
     expect(result.settled).toBe(1);
     // First submission is the settlement, second is the sweep.
     expect(submitCalls.map((call) => call.kind)).toEqual(['settlement', 'sweep_delegate']);
+  });
+
+  it('sweeps prefunded delegates for expired sessions with no vouchers', async () => {
+    const ctx = createContext({ now: '2026-05-16T12:00:00.000Z' });
+    const evidenceStore = new MemoryEvidenceStore();
+    const session = await createActiveSession(ctx, {
+      capAmount: '0.05',
+      expiresAt: '2026-05-16T12:30:00.000Z',
+    });
+    ctx.setNow('2026-05-16T12:31:00.000Z');
+
+    const kinds: string[] = [];
+    await materializeStreamingSettlements({
+      streamingStore: ctx.store,
+      evidenceStore,
+      clock: ctx.clock,
+      thresholdBps: 5_000,
+      latestBlockhash: async () => ({ blockhash: RECENT_BLOCKHASH }),
+      lookupDelegateBalance: async () => 5_000_000,
+      submitSignedTransaction: async (input) => {
+        kinds.push(input.unsignedTx.kind);
+        return { txid: 'TX_SWEEP_ONLY', confirmedAt: '2026-05-16T12:31:10.000Z' };
+      },
+    });
+
+    const stored = await ctx.store.getSession(WALLET, session.sessionId);
+    expect(kinds).toEqual(['sweep_delegate']);
+    expect(stored?.status).toBe('settled');
   });
 
   it('skips the sweep when residual balance is below the dust threshold', async () => {

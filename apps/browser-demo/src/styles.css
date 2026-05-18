@@ -8473,6 +8473,20 @@ code {
   flex-shrink: 0;
 }
 
+.wallet-action-copy.compact-copy {
+  border-radius: 7px;
+  height: 22px;
+  justify-content: center;
+  min-height: 22px;
+  padding: 0;
+  width: 22px;
+}
+
+.wallet-action-copy.compact-copy .wallet-action-copy-icon {
+  height: 12px;
+  width: 12px;
+}
+
 .wallet-action-copy:hover:not(:disabled) {
   background: rgba(63, 189, 131, 0.22);
   border-color: rgba(139, 205, 170, 0.44);
@@ -9294,17 +9308,7 @@ button.danger:hover:not(:disabled) {
 }
 
 .inbox-approval-summary-grid .wallet-action-copy.compact-copy {
-  border-radius: 7px;
-  height: 22px;
-  justify-content: center;
-  min-height: 22px;
-  padding: 0;
-  width: 22px;
-}
-
-.inbox-approval-summary-grid .wallet-action-copy.compact-copy .wallet-action-copy-icon {
-  height: 12px;
-  width: 12px;
+  align-self: center;
 }
 
 .inbox-approval-summary-grid .inbox-approval-summary-token.has-detail {
@@ -9347,21 +9351,26 @@ button.danger:hover:not(:disabled) {
 .token-route-inline {
   align-items: center;
   display: inline-flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 5px;
   min-width: 0;
+  max-width: 100%;
+  white-space: nowrap;
 }
 
 .token-route-leg {
   align-items: center;
   display: inline-flex;
+  flex: 0 1 auto;
   gap: 4px;
   min-width: 0;
+  white-space: nowrap;
 }
 
 .token-route-leg > span {
   min-width: 0;
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .token-route-arrow {
@@ -16891,15 +16900,43 @@ button.danger:hover:not(:disabled) {
 .route-app .recurring-connector-action-control {
   justify-self: end;
   margin-left: auto;
+  max-width: 100%;
+  width: min(100%, 390px);
 }
 
+.route-app .recurring-method-control,
 .route-app .recurring-connector-action-control {
   align-items: center;
   display: grid;
   gap: 10px;
-  grid-template-columns: auto minmax(220px, 320px);
+  grid-template-columns: auto minmax(0, 1fr);
   min-width: 0;
-  width: max-content;
+}
+
+.route-app .recurring-method-control .select-picker-shell,
+.route-app .recurring-method-control .select-picker-trigger,
+.route-app .recurring-connector-action-control .select-picker-shell,
+.route-app .recurring-connector-action-control .select-picker-trigger {
+  min-width: 0;
+  width: 100%;
+}
+
+.route-app .recurring-method-control .template-picker-current,
+.route-app .recurring-connector-action-control .template-picker-current {
+  min-width: 0;
+}
+
+.route-app .recurring-method-control .template-picker-category,
+.route-app .recurring-connector-action-control .template-picker-category {
+  display: none;
+}
+
+.route-app .recurring-method-control .template-picker-current strong,
+.route-app .recurring-connector-action-control .template-picker-current strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .route-app .recurring-connector-action-control .select-picker-shell {

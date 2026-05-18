@@ -8,6 +8,8 @@ import {
   createStreamingSession,
   getStreamingSession,
   listStreamingSessions,
+  recordGrantSigned,
+  recordRevokeSigned,
   revokeStreamingSession,
   StreamingApiError,
   submitStreamingVoucher,
@@ -21,13 +23,23 @@ import {
   type BridgeEnvelope,
 } from './androidBridgeShim.js';
 import {
-  dispatchStreamingApprovalRequested,
+  dispatchStreamingApprovalExecuteRequested,
+  streamingApprovalSignedBody,
+  type StreamingApprovalCompletedDetail,
   type StreamingApprovalOperation,
 } from './streamingApprovalEvents.js';
 import { getConnectedCluster } from './walletState.js';
 
 export type SessionsStatusFilter = 'active' | 'expired' | 'settled' | 'revoked';
 export type SessionsLoadStatus = 'idle' | 'loading' | 'loaded' | 'error';
+
+export interface StreamingSessionTxState {
+  txid: string;
+  status: 'submitted' | 'confirmed' | 'failed';
+  txStatus?: string;
+  approvalId?: string;
+  updatedAt?: string;
+}
 
 export interface CreateSessionDraft {
   tokenMint: string;
@@ -308,8 +320,8 @@ export async function submitCreateSession(): Promise<boolean> {
     state.createModalOpen = false;
     state.createDraft = defaultCreateSessionDraft();
     state.createErrors = {};
-    queueStreamingApproval('grant', result.session, result.approveTx);
-    state.notice = { tone: 'pending', message: 'Grant transaction added to Needs Approval.' };
+    executeStreamingApproval('grant', result.session, result.approveTx);
+    state.notice = { tone: 'pending', message: 'Open your wallet to approve the session grant.' };
     notify();
     return true;
   } catch (err) {
@@ -343,8 +355,8 @@ export async function requestRevokeSelectedSession(): Promise<boolean> {
         },
       };
     }
-    queueStreamingApproval('revoke', nextSession, result.revokeTx);
-    state.notice = { tone: 'pending', message: 'Revoke transaction added to Needs Approval.' };
+    executeStreamingApproval('revoke', nextSession, result.revokeTx);
+    state.notice = { tone: 'pending', message: 'Open your wallet to revoke the session delegate.' };
     notify();
     return true;
   } catch (err) {
@@ -405,12 +417,7 @@ export async function submitStreamingVoucherSpend(input: {
   return submitted;
 }
 
-export function handleStreamingApprovalStatus(input: {
-  sessionId: string;
-  operation: StreamingApprovalOperation;
-  status: 'queued' | 'submitted' | 'confirmed' | 'failed';
-  error?: string;
-}): void {
+export function handleStreamingApprovalStatus(input: StreamingApprovalCompletedDetail): void {
   if (input.status === 'failed') {
     state.notice = {
       tone: 'error',
@@ -425,10 +432,14 @@ export function handleStreamingApprovalStatus(input: {
     };
   } else {
     state.notice = {
-      tone: 'success',
+      tone: input.status === 'confirmed' ? 'success' : 'pending',
       message: input.operation === 'grant'
-        ? 'Grant transaction submitted. Refreshing session.'
-        : 'Revoke transaction submitted. Refreshing session.',
+        ? input.status === 'confirmed'
+          ? 'Grant transaction confirmed. Session is active.'
+          : 'Grant transaction submitted. Waiting for confirmation.'
+        : input.status === 'confirmed'
+          ? 'Revoke transaction confirmed.'
+          : 'Revoke transaction submitted. Waiting for confirmation.',
     };
     if (input.operation === 'grant' && isNativeSignerSession(input.sessionId)) {
       void activateNativeStreamingSession(input.sessionId);
@@ -436,9 +447,53 @@ export function handleStreamingApprovalStatus(input: {
       void revokeNativeStreamingSession(input.sessionId);
     }
     state.selectedSessionId = input.sessionId;
-    void refreshSelectedSession();
+    void syncStreamingApprovalStatus(input);
   }
   notify();
+}
+
+export function confirmSelectedSessionTransaction(): boolean {
+  const sessionId = state.selectedSessionId;
+  const session = sessionId ? state.sessions.find((candidate) => candidate.id === sessionId) : undefined;
+  if (!session) return false;
+  const revokeTx = sessionTxState(session, 'revoke');
+  const grantTx = sessionTxState(session, 'grant');
+  const pending = revokeTx?.status === 'submitted'
+    ? { operation: 'revoke' as const, txid: revokeTx.txid, approvalId: revokeTx.approvalId }
+    : grantTx?.status === 'submitted'
+      ? { operation: 'grant' as const, txid: grantTx.txid, approvalId: grantTx.approvalId }
+      : null;
+  if (!pending) return false;
+  executeStreamingApproval(pending.operation, session, {
+    txBase64: '',
+    cluster: session.cluster,
+    tokenMint: session.tokenMint,
+    totalAmount: pending.operation === 'grant' ? session.capAmount : undefined,
+  }, pending.txid, pending.approvalId);
+  state.notice = { tone: 'pending', message: 'Checking session transaction confirmation.' };
+  notify();
+  return true;
+}
+
+export function sessionTxState(
+  session: StreamingSessionRecord,
+  operation: StreamingApprovalOperation,
+): StreamingSessionTxState | null {
+  const metadata = session.metadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
+  const value = metadata[operation === 'grant' ? 'grantTx' : 'revokeTx'];
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const txid = stringField(record.txid);
+  const status = stringField(record.status);
+  if (!txid || (status !== 'submitted' && status !== 'confirmed' && status !== 'failed')) return null;
+  return {
+    txid,
+    status,
+    ...(stringField(record.txStatus) ? { txStatus: stringField(record.txStatus) } : {}),
+    ...(stringField(record.approvalId) ? { approvalId: stringField(record.approvalId) } : {}),
+    ...(stringField(record.updatedAt) ? { updatedAt: stringField(record.updatedAt) } : {}),
+  };
 }
 
 export function startSessionDetailPolling(): () => void {
@@ -563,12 +618,50 @@ function isNativeSignerSession(sessionId: string): boolean {
   return session?.metadata?.signerRuntime === 'android-native';
 }
 
-function queueStreamingApproval(
+async function syncStreamingApprovalStatus(input: StreamingApprovalCompletedDetail): Promise<void> {
+  if (!input.txid || (input.status !== 'submitted' && input.status !== 'confirmed')) {
+    await refreshSelectedSession();
+    return;
+  }
+  try {
+    const body = streamingApprovalSignedBody({
+      operation: input.operation,
+      txid: input.txid,
+      approvalId: input.approvalId,
+      status: input.status,
+      txStatus: input.status === 'confirmed' ? 'confirmed' : 'pending',
+    });
+    const response = input.operation === 'grant'
+      ? await recordGrantSigned(input.sessionId, body)
+      : await recordRevokeSigned(input.sessionId, body);
+    if (response.session) {
+      state.sessions = mergeSessionRecords([response.session], state.sessions);
+      state.details = {
+        ...state.details,
+        [input.sessionId]: {
+          ...(state.details[input.sessionId] ?? { session: response.session, vouchers: [] }),
+          session: response.session,
+        },
+      };
+    }
+    await refreshSelectedSession();
+  } catch (err) {
+    state.notice = {
+      tone: 'error',
+      message: `Session ${input.operation} callback failed: ${friendlyStreamingError(err)}`,
+    };
+    notify();
+  }
+}
+
+function executeStreamingApproval(
   operation: StreamingApprovalOperation,
   session: StreamingSessionRecord,
   tx: { txBase64: string; cluster?: WorkflowCluster; description?: string; tokenMint?: string; totalAmount?: string },
+  txid?: string,
+  approvalId?: string,
 ): void {
-  dispatchStreamingApprovalRequested({
+  dispatchStreamingApprovalExecuteRequested({
     source: 'streaming_session',
     operation,
     sessionId: session.id,
@@ -584,6 +677,8 @@ function queueStreamingApproval(
     summary: operation === 'grant'
       ? `Grant streaming session ${shortId(session.id)} up to ${session.capAmount} USDC`
       : `Revoke streaming session ${shortId(session.id)}`,
+    ...(approvalId ? { approvalId } : {}),
+    ...(txid ? { txid } : {}),
   });
 }
 

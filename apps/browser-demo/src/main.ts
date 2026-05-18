@@ -325,9 +325,11 @@ import {
   type Ap2InboundDemoCreatedDetail,
 } from './ap2InboundDemoEvents.js';
 import {
+  addStreamingApprovalExecuteRequestedListener,
   addStreamingApprovalRequestedListener,
   dispatchStreamingApprovalCompleted,
   streamingApprovalSignedBody,
+  type StreamingApprovalExecuteRequestedDetail,
   type StreamingApprovalOperation,
   type StreamingApprovalRequestedDetail,
 } from './streamingApprovalEvents.js';
@@ -3221,6 +3223,9 @@ function installPayOutApprovalCreatedListener(): void {
   addStreamingApprovalRequestedListener((detail) => {
     handleStreamingApprovalRequested(detail);
   });
+  addStreamingApprovalExecuteRequestedListener((detail) => {
+    void handleStreamingApprovalExecuteRequested(detail);
+  });
 }
 
 function handleAp2InboundDemoCreated(detail: Ap2InboundDemoCreatedDetail): void {
@@ -3362,6 +3367,146 @@ function handleStreamingApprovalRequested(detail: StreamingApprovalRequestedDeta
       error: message,
     });
   }
+}
+
+async function handleStreamingApprovalExecuteRequested(detail: StreamingApprovalExecuteRequestedDetail): Promise<void> {
+  let action: PreparedAction | undefined;
+  let toastId: number | undefined;
+  try {
+    action = materializeInlineStreamingApproval(detail);
+    const summary = detail.summary || streamingApprovalSummary(detail.operation, detail.sessionId);
+    const submittedTxid = detail.txid?.trim();
+    toastId = pushToast('pending', submittedTxid ? 'Checking session transaction' : 'Opening wallet', summary);
+    const toastContext: TransactionToastContext = { toastId, actionId: action.id, cluster: action.cluster };
+    const execution = submittedTxid
+      ? await checkInlineStreamingTransaction(action, submittedTxid, toastContext)
+      : await executeInlineStreamingTransaction(action, detail, summary, toastContext);
+    const status = execution.txStatus === 'confirmed' ? 'confirmed' : 'submitted';
+    if (execution.txStatus === 'confirmed') {
+      const ledger = findPendingTransactionByAction(action.id);
+      if (ledger) {
+        removePendingTransaction(ledger.id);
+        syncPendingTransactionsFromLedger();
+      }
+    }
+    dispatchStreamingApprovalCompleted({
+      source: 'streaming_session',
+      operation: detail.operation,
+      sessionId: detail.sessionId,
+      approvalId: action.id,
+      status,
+      txid: execution.txid,
+    });
+    replaceToast(
+      toastId,
+      status === 'confirmed' ? 'success' : 'pending',
+      status === 'confirmed' ? 'Session transaction confirmed' : 'Session transaction submitted',
+      short(execution.txid),
+      {
+        linkHref: execution.explorerUrl,
+        linkLabel: 'Open Solscan',
+      },
+    );
+    render();
+  } catch (err) {
+    const message = redactSecrets(err instanceof Error ? err.message : String(err));
+    if (toastId !== undefined) {
+      replaceToast(toastId, 'error', 'Streaming transaction failed', message);
+    } else {
+      pushToast('error', 'Streaming transaction failed', message);
+    }
+    dispatchStreamingApprovalCompleted({
+      source: 'streaming_session',
+      operation: detail.operation,
+      sessionId: detail.sessionId,
+      approvalId: action?.id || detail.approvalId || detail.sessionId,
+      status: 'failed',
+      ...(detail.txid ? { txid: detail.txid } : {}),
+      error: message,
+    });
+    render();
+  }
+}
+
+function materializeInlineStreamingApproval(detail: StreamingApprovalExecuteRequestedDetail): PreparedAction {
+  if (!state.address) {
+    throw new Error('Connect a wallet before signing the streaming session transaction.');
+  }
+  const walletAddress = detail.walletAddress?.trim() || state.address;
+  if (walletAddress !== state.address) {
+    throw new Error(`Connect ${short(walletAddress)} before signing this streaming session transaction.`);
+  }
+  const cluster = streamingApprovalCluster(detail);
+  const now = new Date().toISOString();
+  return {
+    id: detail.approvalId?.trim() || newId('browser-streaming-inline'),
+    kind: 'custom_transaction',
+    status: 'ready',
+    walletAddress,
+    cluster,
+    summary: detail.summary || streamingApprovalSummary(detail.operation, detail.sessionId),
+    params: {
+      transactionBase64: detail.tx.txBase64,
+      reason: detail.summary || streamingApprovalSummary(detail.operation, detail.sessionId),
+      streamingSessionId: detail.sessionId,
+      streamingOperation: detail.operation,
+      ...(detail.tx.tokenMint ? { tokenMint: detail.tx.tokenMint, token: detail.tx.tokenMint } : {}),
+      ...(detail.tx.totalAmount ? { amount: detail.tx.totalAmount } : {}),
+      ...(detail.tx.description ? { description: detail.tx.description } : {}),
+      ...(detail.tx.kind ? { delegateTxKind: detail.tx.kind } : {}),
+      ...(detail.tx.sourceAta ? { sourceAta: detail.tx.sourceAta } : {}),
+    },
+    metadata: {
+      source: 'streaming_session',
+      actionSource: 'streaming_session',
+      connectorId: 'streaming',
+      connectorName: 'Streaming Sessions',
+      operation: detail.operation,
+      sessionId: detail.sessionId,
+      walletAddress,
+      callbackPath: detail.callbackPath,
+      streamingCallbackStatus: 'pending',
+      ...(detail.tx.tokenMint ? { tokenMint: detail.tx.tokenMint } : {}),
+      ...(detail.tx.totalAmount ? { capAmount: detail.tx.totalAmount } : {}),
+      ...(detail.tx.description ? { delegateTxDescription: detail.tx.description } : {}),
+    },
+    dueAt: now,
+    createdAt: now,
+    updatedAt: now,
+    note: detail.tx.description || 'Streaming session delegate transaction.',
+    workflowSource: 'browser',
+  };
+}
+
+async function executeInlineStreamingTransaction(
+  action: PreparedAction,
+  detail: StreamingApprovalExecuteRequestedDetail,
+  summary: string,
+  toastContext: TransactionToastContext,
+): Promise<BrowserTransactionExecution> {
+  if (!detail.tx.txBase64) {
+    throw new Error('Streaming transaction bytes are missing.');
+  }
+  const txid = await signAndBroadcastBrowserTransactionBase64(action, detail.tx.txBase64, summary, toastContext);
+  const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid, toastContext);
+  return {
+    txid,
+    txStatus,
+    explorerUrl: explorerUrl(txid, action.cluster),
+  };
+}
+
+async function checkInlineStreamingTransaction(
+  action: PreparedAction,
+  txid: string,
+  toastContext: TransactionToastContext,
+): Promise<BrowserTransactionExecution> {
+  const status = await resolveSubmittedTransactionStatusResult(action.cluster, txid, toastContext);
+  return {
+    txid,
+    txStatus: status.txStatus === 'confirmed' ? 'confirmed' : 'pending',
+    explorerUrl: explorerUrl(txid, action.cluster),
+  };
 }
 
 function materializeLocalStreamingApproval(detail: StreamingApprovalRequestedDetail): PreparedAction {
@@ -11309,6 +11454,7 @@ function generatedPlanReviewSummaryGrid(record: GeneratedPlanRecord): string {
     {
       label: 'Route',
       value: routeSummary?.value ?? planRecipientOrRoute(plan),
+      html: routeSummary?.html,
       title: routeSummary?.title,
       copyActions: routeSummary?.copyActions,
     },
@@ -12037,6 +12183,7 @@ function generatedPlanDecisionItem(label: string, value: string): string {
 type WalletActionSummaryRow = {
   label: string;
   value: string;
+  html?: string;
   title?: string;
   tone?: 'amount' | 'effect' | 'wallet';
   copyName?: string;
@@ -12058,8 +12205,9 @@ function generatedPlanWalletActionSummary(record: GeneratedPlanRecord): string {
       copyActions: record.plan.actionType === 'swap' ? undefined : planAmountTokenCopyActions(record.plan),
     },
     {
-      label: 'Route or recipient',
+      label: routeSummary ? 'Route' : 'Recipient',
       value: routeSummary?.value ?? planRecipientOrRoute(record.plan),
+      html: routeSummary?.html,
       title: routeSummary?.title,
       copyActions: routeSummary?.copyActions,
     },
@@ -12080,8 +12228,8 @@ function walletActionSummaryRow(row: WalletActionSummaryRow): string {
     <div class="${row.tone ? `wallet-action-${row.tone}` : ''}" title="${escapeHtml(title)}">
       <dt>${escapeHtml(row.label)}</dt>
       <dd class="${copyActions.length ? 'has-copy' : ''}">
-        <span class="wallet-action-value">${escapeHtml(row.value)}</span>
-        ${summaryCopyActionsHtml(copyActions, row.label)}
+        ${row.html ?? `<span class="wallet-action-value">${escapeHtml(row.value)}</span>`}
+        ${row.html ? '' : summaryCopyActionsHtml(copyActions, row.label)}
       </dd>
     </div>
   `;
@@ -12271,23 +12419,43 @@ function meteoraPlanPoolTokenLabel(plan: AgentPlan): string {
 
 function connectorPlanAmountToken(plan: AgentPlan): ConnectorActionAmountToken | undefined {
   const params = plan.parameters;
+  const labeledToken = connectorAmountTokenFromTargetLabels((key) => planParameter(plan, [key]));
+  if (labeledToken) return labeledToken;
   const tokenKeys = [
     'sourceTokenLabel',
+    'tokenLabel',
     'tokenSymbol',
     'depositSymbol',
     'inputSymbol',
+    'outputSymbol',
     'token',
     'sourceToken',
     'inputToken',
     'sourceMint',
     'assetMint',
+    'assetMintSymbol',
+    'assetMintLabel',
     'mint',
     'mintAddress',
+    'mintAddressSymbol',
+    'mintAddressLabel',
     'inputMint',
+    'inputMintSymbol',
+    'inputMintLabel',
     'depositMint',
     'lstMint',
+    'lstMintSymbol',
+    'lstMintLabel',
     'inputLstMint',
     'governingTokenMint',
+    'governingTokenMintSymbol',
+    'governingTokenMintLabel',
+    'vaultAddressSymbol',
+    'vaultAddressMint',
+    'reserveAddressSymbol',
+    'reserveAddressMint',
+    'bankAddressSymbol',
+    'bankAddressMint',
   ];
   for (const key of tokenKeys) {
     const value = planParameter(plan, [key]);
@@ -12309,6 +12477,8 @@ function planRecipientOrRoute(plan: AgentPlan): string {
     return tokenRouteDisplaySummary(plan.parameters.inputToken || 'input', plan.parameters.outputToken || 'output').value;
   }
   if (CONNECTOR_APPROVAL_ACTION_TYPES.has(plan.actionType)) {
+    const target = connectorPlanTargetSummary(plan);
+    if (target) return target.value;
     const connectorDisplay = connectorActionDisplayParts(plan.actionType, plan.parameters);
     return connectorDisplay?.selectionLabel || connectorDisplay?.operationLabel || plan.route;
   }
@@ -14364,6 +14534,32 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const bridgeKeyConfiguredDetail = status
     ? `${status.provider ?? status.apiFormat ?? 'AI'} - ${status.model ?? 'model configured'}`
     : 'Local bridge AI key configured';
+  const deviceAgentConfiguredProvider = state.deviceAgentStatus?.provider
+    || state.deviceAgentStatus?.apiFormat
+    || state.aiSettings.provider
+    || 'AI';
+  const deviceAgentConfiguredModel = state.deviceAgentStatus?.model
+    || state.aiSettings.model
+    || 'model configured';
+  const deviceAgentConfiguredDetail = `${deviceAgentConfiguredProvider} - ${deviceAgentConfiguredModel}`;
+  const configuredKeyNote = state.aiSettings.mode === 'device-agent'
+    ? `
+        <div class="ai-key-configured-note" aria-live="polite">
+          <span>Device Agent</span>
+          <strong>Configured for drafts</strong>
+          <em>${escapeHtml(deviceAgentConfiguredDetail)}</em>
+        </div>
+      `
+    : `
+        <div class="ai-key-configured-note" aria-live="polite">
+          <span>Bridge key</span>
+          <strong>Configured in local bridge</strong>
+          <em>${escapeHtml(bridgeKeyConfiguredDetail)}</em>
+        </div>
+      `;
+  const showSaveDirectAiKey = state.aiSettings.mode !== 'bridge' && !hideKeyEntry;
+  const showStopDeviceAgentRuntime = state.aiSettings.mode === 'device-agent'
+    && (hideKeyEntry || canStopDeviceAgentRuntime());
   return `
     <aside class="ai-settings-card" data-ai-settings-scope="${escapeHtml(scope)}">
       ${isRail ? '' : `<div class="ai-settings-intro">
@@ -14435,13 +14631,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         </div>
       ` : ''}
       ${!isRail ? browserDeviceAgentSecretStoreControl(scope) : ''}
-      ${hideKeyEntry ? `
-        <div class="ai-key-configured-note" aria-live="polite">
-          <span>Bridge key</span>
-          <strong>Configured in local bridge</strong>
-          <em>${escapeHtml(bridgeKeyConfiguredDetail)}</em>
-        </div>
-      ` : `
+      ${hideKeyEntry ? configuredKeyNote : `
         <label class="field compact ai-setting-field ai-setting-key">
           <span>${escapeHtml(keyLabel)}</span>
           <input id="aiApiKey-${escapeHtml(scope)}" data-ai-control="api-key" type="password" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="${state.aiSettings.mode === 'bridge' ? 'Held for this tab until configured' : 'Held for this tab'}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
@@ -14453,13 +14643,15 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
           ? hideKeyEntry
             ? ''
             : `<button id="saveBridgeAiKey-${escapeHtml(scope)}" data-ai-action="save-bridge-key" ${!canSaveBridgeAiKey() ? 'disabled' : ''}>Set bridge key</button>`
-          : `<button id="saveDirectAiKey-${escapeHtml(scope)}" data-ai-action="save-direct-key" ${!canSaveDirectAiKey() ? 'disabled' : ''}>Use key for drafts</button>`}
+          : showSaveDirectAiKey
+            ? `<button id="saveDirectAiKey-${escapeHtml(scope)}" data-ai-action="save-direct-key" ${!canSaveDirectAiKey() ? 'disabled' : ''}>Use key for drafts</button>`
+            : ''}
         <button id="confirmAiPlanner-${escapeHtml(scope)}" data-ai-action="confirm-planner" class="utility" ${!canConfirmAiPlanner() ? 'disabled' : ''} title="${escapeHtml(canConfirmAiPlanner() ? 'Confirm planner readiness without creating a plan.' : aiConfirmDisabledReason())}">
           ${confirming ? `${buttonSpinner()}Confirming...` : 'Confirm planner'}
         </button>
         <button id="clearAiKey-${escapeHtml(scope)}" data-ai-action="clear-key" ${!canClearAiKey() ? 'disabled' : ''}>Clear key</button>
         ${state.aiSettings.mode === 'bridge' || state.aiSettings.mode === 'device-agent' ? `<button id="refreshAiStatus-${escapeHtml(scope)}" data-ai-action="refresh-status" ${state.busy ? 'disabled' : ''}>Refresh</button>` : ''}
-        ${state.aiSettings.mode === 'device-agent' && canStopDeviceAgentRuntime() ? `<button id="stopDeviceAgent-${escapeHtml(scope)}" data-ai-action="stop-device-agent" ${state.busy ? 'disabled' : ''} title="Stop the on-device runtime. Your config (provider, model, key) stays available so you can start again.">Stop runtime</button>` : ''}
+        ${showStopDeviceAgentRuntime ? `<button id="stopDeviceAgent-${escapeHtml(scope)}" data-ai-action="stop-device-agent" ${state.busy || !canStopDeviceAgentRuntime() ? 'disabled' : ''} title="Stop the on-device runtime. Your config (provider, model, key) stays available so you can start again.">Stop runtime</button>` : ''}
       </div>
       ${isRail
         ? '<p class="ai-security-note compact">Drafts only. Wallet approvals stay separate.</p>'
@@ -14926,7 +15118,14 @@ function confirmBridgeAiPlannerFromStatus(): void {
 function canConfirmAiPlanner(): boolean {
   if (state.busy) return false;
   if (state.aiSettings.mode === 'bridge') return true;
-  if (state.aiSettings.mode === 'device-agent' && !deviceAgentModeVisible()) return false;
+  if (state.aiSettings.mode === 'device-agent') {
+    if (!deviceAgentModeVisible()) return false;
+    return Boolean(
+      (state.aiSettings.apiKey.trim() || state.deviceAgentStatus?.configured)
+        && state.aiSettings.model.trim()
+        && aiProviderReadyForCurrentMode(),
+    );
+  }
   if (hostedByokCloudSessionReason()) return false;
   return Boolean(
     state.aiSettings.apiKey.trim()
@@ -14941,6 +15140,14 @@ function aiConfirmDisabledReason(): string {
   if (state.aiSettings.mode === 'device-agent' && !deviceAgentModeVisible()) {
     return 'Device Agent is not enabled for this build or wallet.';
   }
+  if (state.aiSettings.mode === 'device-agent') {
+    if (!state.aiSettings.model.trim()) return 'Choose or enter an AI model before confirming.';
+    if (!aiProviderReadyForCurrentMode()) return 'Add a browser-compatible gateway URL for this provider.';
+    if (!state.aiSettings.apiKey.trim() && !state.deviceAgentStatus?.configured) {
+      return 'Add a Device Agent request key before confirming.';
+    }
+    return 'Confirm planner readiness before generating.';
+  }
   const hostedBlockReason = hostedByokCloudSessionReason();
   if (hostedBlockReason) return hostedBlockReason;
   if (state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai') {
@@ -14949,8 +15156,6 @@ function aiConfirmDisabledReason(): string {
   if (!state.aiSettings.apiKey.trim()) {
     return state.aiSettings.mode === 'hosted'
       ? 'Add a Hosted BYOK request key before confirming.'
-      : state.aiSettings.mode === 'device-agent'
-        ? 'Add a Device Agent request key before confirming.'
       : 'Add a browser-compatible session key before confirming.';
   }
   if (!state.aiSettings.model.trim()) return 'Choose or enter an AI model before confirming.';
@@ -15106,7 +15311,8 @@ function isBridgeAiConfigured(status: BridgeAiStatus | null = state.aiStatus): b
 }
 
 function shouldHideAiKeyEntry(status: BridgeAiStatus | null = state.aiStatus): boolean {
-  return state.aiSettings.mode === 'bridge' && isBridgeAiConfigured(status);
+  if (state.aiSettings.mode === 'bridge') return isBridgeAiConfigured(status);
+  return state.aiSettings.mode === 'device-agent' && Boolean(state.deviceAgentStatus?.configured);
 }
 
 function aiProviderReadyForCurrentMode(): boolean {
@@ -15865,7 +16071,7 @@ function completedPlanMetric(plan: CompletedPlanRecord): { primary: string; seco
 
 function completedPlanAmountLabel(plan: CompletedPlanRecord): string {
   if (!plan.amount) return plan.txid ? `Tx ${short(plan.txid)}` : plan.signature ? `Proof ${short(plan.signature)}` : 'Completed';
-  const token = plan.token?.trim();
+  const token = completedPlanTokenValue(plan);
   const formattedAmount = formatCompletedAmountText(plan.amount);
   if (!token) return formattedAmount;
   const route = parseTokenRoute(token);
@@ -15879,6 +16085,30 @@ function completedPlanAmountLabel(plan: CompletedPlanRecord): string {
   const tokenLabel = tokenDisplayLabel(token);
   if (amountEndsWithTokenLabel(formattedAmount, token) || amountEndsWithTokenLabel(formattedAmount, tokenLabel)) return formattedAmount;
   return `${formattedAmount} ${tokenDisplayLabel(token)}`;
+}
+
+function completedPlanTokenValue(plan: CompletedPlanRecord): string {
+  const direct = plan.token?.trim();
+  if (direct) return direct;
+  if (plan.actionId) {
+    const action = state.preparedActions.find((entry) => entry.id === plan.actionId);
+    const token = action ? tokenLabel(action) : '';
+    if (token && token !== 'n/a') return token;
+  }
+  if (plan.generatedPlanId) {
+    const record = state.generatedPlans.find((entry) => entry.id === plan.generatedPlanId);
+    const token = record ? completedPlanTokenFromPlan(record.plan) : '';
+    if (token) return token;
+  }
+  if (plan.recurringId) {
+    const payment = state.recurringPayments.find((entry) => entry.id === plan.recurringId);
+    if (payment) {
+      return recurringPaymentIsSwap(payment)
+        ? `${payment.inputToken || payment.token || 'SOL'} to ${payment.outputToken || 'USDC'}`
+        : payment.token;
+    }
+  }
+  return '';
 }
 
 function amountEndsWithTokenLabel(value: string, token: string): boolean {
@@ -15916,7 +16146,7 @@ function parseTokenRoute(value: string): { from: string; to: string } | null {
 }
 
 function completedPlanTokenCopyActions(plan: CompletedPlanRecord): SummaryCopyAction[] {
-  const token = plan.token?.trim();
+  const token = completedPlanTokenValue(plan);
   if (!token) return [];
   const route = parseTokenRoute(token) ?? parseCompletedSwapAmount(completedPlanAmountLabel(plan));
   if (route) {
@@ -17799,14 +18029,13 @@ function bind(): void {
     render();
   });
 
-  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recurring-preset]')) {
-    button.addEventListener('click', () => {
-      const preset = button.dataset.recurringPreset as RecurringPresetId | undefined;
-      if (!preset) return;
-      applyRecurringPreset(preset);
-      render();
-    });
-  }
+  document.querySelector<HTMLSelectElement>('#recurringPresetPicker')?.addEventListener('change', (event) => {
+    const value = (event.currentTarget as HTMLSelectElement).value;
+    const preset = RECURRING_PRESETS.find((candidate) => candidate.id === value);
+    if (!preset) return;
+    applyRecurringPreset(preset.id);
+    render();
+  });
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recurring-action]')) {
     button.addEventListener('click', () => {
@@ -21113,6 +21342,9 @@ function completedPlanFromGeneratedPlan(
 function completedPlanTokenFromPlan(plan: AgentPlan): string {
   if (plan.actionType === 'swap') {
     return `${plan.parameters.inputToken || 'input'} to ${plan.parameters.outputToken || 'output'}`;
+  }
+  if (CONNECTOR_APPROVAL_ACTION_TYPES.has(plan.actionType)) {
+    return connectorPlanTokenOrTargetSummary(plan)?.value ?? '';
   }
   return planParameter(plan, ['token', 'inputToken', 'outputToken']);
 }
@@ -25255,7 +25487,9 @@ async function runConfirmAiPlanner(): Promise<void> {
       }
 
       if (state.aiSettings.mode === 'device-agent') {
-        await configureDeviceAgentRuntime();
+        if (state.aiSettings.apiKey.trim() || !state.deviceAgentStatus?.configured) {
+          await configureDeviceAgentRuntime();
+        }
         const status = await startDeviceAgentRuntime();
         if (!status.available || !status.configured) {
           throw new Error(status.message || 'Device Agent runtime is not configured.');
@@ -33193,6 +33427,10 @@ function withCascadingOptionDisplayParameters(
     if (option.label && option.label !== value) {
       next[`${fieldDef.id}Label`] = option.label;
     }
+    applyCascadingOptionGenericDisplayParameters(next, fieldDef.id, option);
+    if (fieldDef.id === 'vaultAddress' && cascading.providerId === 'drift.vault') {
+      applyDriftVaultOptionDisplayParameters(next, option);
+    }
     if (fieldDef.id === 'poolAddress' && cascading.providerId === 'meteora.pool') {
       applyMeteoraPoolOptionDisplayParameters(next, option);
     }
@@ -33207,6 +33445,34 @@ function connectorLiquidityPoolField(fieldDef: AgentPlanTemplateField): boolean 
   const providerId = fieldDef.cascading?.providerId ?? '';
   return (fieldDef.id === 'poolId' && providerId.startsWith('raydium.')) ||
     (fieldDef.id === 'whirlpoolAddress' && providerId === 'orca.whirlpool');
+}
+
+function applyCascadingOptionGenericDisplayParameters(
+  target: Record<string, string>,
+  fieldId: string,
+  option: ConnectorOption,
+): void {
+  const meta = option.meta ?? {};
+  applyOptionalDisplayParameter(target, `${fieldId}Symbol`, meta.symbol);
+  applyOptionalDisplayParameter(target, `${fieldId}Mint`, meta.mint);
+}
+
+function applyDriftVaultOptionDisplayParameters(
+  target: Record<string, string>,
+  option: ConnectorOption,
+): void {
+  const meta = option.meta ?? {};
+  if (!target.depositSymbol?.trim()) applyOptionalDisplayParameter(target, 'depositSymbol', meta.symbol);
+  if (!target.depositMint?.trim()) applyOptionalDisplayParameter(target, 'depositMint', meta.mint);
+}
+
+function applyOptionalDisplayParameter(target: Record<string, string>, key: string, value: string | undefined): void {
+  const normalized = value?.trim();
+  if (normalized) {
+    target[key] = normalized;
+  } else {
+    delete target[key];
+  }
 }
 
 function applyLiquidityPoolOptionDisplayParameters(
@@ -35732,36 +35998,24 @@ type TokenRouteDisplaySummary = {
   copyActions?: SummaryCopyAction[];
 };
 
-function inboxApprovalTokenSummary(action: PreparedAction): { value: string; title: string; html?: string; copyActions?: SummaryCopyAction[] } {
+function inboxApprovalTokenSummary(action: PreparedAction): { label?: string; value: string; title: string; html?: string; copyActions?: SummaryCopyAction[] } {
   if (action.kind === 'transfer_sol') {
-    return tokenDisplaySummary('SOL', { copyLabel: 'Copy token' });
+    return { label: 'Token', ...tokenDisplaySummary('SOL', { copyLabel: 'Copy token' }) };
   }
-  const liquidityPair = isConnectorApprovalKind(action) ? connectorActionLiquidityPairLabel(action) : '';
-  if (liquidityPair) {
-    return {
-      value: liquidityPair,
-      title: liquidityPair,
-      copyActions: connectorActionLiquidityTokenCopyActions(action),
-    };
-  }
-  const connectorRoute = connectorActionTokenRoute(action);
-  if (connectorRoute) {
-    return tokenRouteDisplaySummary(connectorRoute.inputToken, connectorRoute.outputToken);
-  }
-  const connectorAmountInfo = isConnectorApprovalKind(action) ? connectorActionAmountInfo(action) : undefined;
-  if (connectorAmountInfo?.token) {
-    return tokenDisplaySummary(connectorAmountInfo.token, { copyLabel: 'Copy token' });
+  const connectorSummary = isConnectorApprovalKind(action) ? connectorActionTokenOrTargetSummary(action) : undefined;
+  if (connectorSummary) {
+    return connectorSummary;
   }
   const token = stringParam(action, 'token');
   if (token) {
-    return tokenDisplaySummary(token, { copyLabel: 'Copy token' });
+    return { label: 'Token', ...tokenDisplaySummary(token, { copyLabel: 'Copy token' }) };
   }
   const inputToken = stringParam(action, 'inputToken');
   const outputToken = stringParam(action, 'outputToken');
   if (inputToken || outputToken) {
-    return tokenRouteDisplaySummary(inputToken || 'input', outputToken || 'output');
+    return { label: 'Route', ...tokenRouteDisplaySummary(inputToken || 'input', outputToken || 'output') };
   }
-  return { value: 'n/a', title: 'n/a' };
+  return { label: 'Token', value: 'n/a', title: 'n/a' };
 }
 
 function tokenDisplaySummary(
@@ -35939,7 +36193,7 @@ function marketAmountSubjectForCompletedPlan(plan: CompletedPlanRecord): MarketA
     return amount !== undefined && mint ? { amount, mint, token: swap.from } : undefined;
   }
   const amount = parsePositiveAmount(plan.amount ?? amountLabel);
-  const token = plan.token?.trim();
+  const token = completedPlanTokenValue(plan);
   if (!token || amount === undefined) return undefined;
   const route = parseTokenRoute(token);
   const priceToken = route?.from ?? token;
@@ -36836,9 +37090,10 @@ function summaryCopyActionsHtml(
   options: { compact?: boolean } = {},
 ): string {
   if (!actions.length) return '';
+  const compact = options.compact ?? actions.length > 1;
   return `
     <span class="summary-copy-actions">
-      ${actions.map((action) => copyActionButtonHtml(action, fallbackName, Boolean(options.compact))).join('')}
+      ${actions.map((action) => copyActionButtonHtml(action, fallbackName, compact)).join('')}
     </span>
   `;
 }
@@ -36868,7 +37123,7 @@ function inboxApprovalSummaryGrid(action: PreparedAction): string {
   const rows: ApprovalSummaryRow[] = [
     { kind: 'wallet', label: 'Wallet', value: short(action.walletAddress), title: action.walletAddress, copyValue: action.walletAddress },
     ...(recipient ? [{ kind: 'recipient' as const, label: 'Recipient', value: recipientDisplayLabel(recipient), title: recipient, copyValue: recipient }] : []),
-    { kind: 'token', label: 'Token', value: tokenSummary.value, html: tokenSummary.html, title: tokenSummary.title, copyActions: tokenSummary.copyActions },
+    { kind: 'token', label: tokenSummary.label ?? (tokenSummary.html ? 'Route' : 'Token'), value: tokenSummary.value, html: tokenSummary.html, title: tokenSummary.title, copyActions: tokenSummary.copyActions },
   ];
   if (action.kind === 'swap') rows.push(swapQuoteSummaryRow(action));
   rows.push({ kind: 'due', label: 'Due', value: formatDateTime(action.dueAt) });
@@ -37742,19 +37997,21 @@ function lifetimeSpendCopy(spend: LifetimeSpend, token: string): string {
 
 function recurringPresetControls(): string {
   return `
-    <nav class="template-filter-row one-time-method-filter recurring-preset-row" role="group" aria-label="Repeat payment presets">
-      ${RECURRING_PRESETS.map((preset) => `
-        <button
-          type="button"
-          data-recurring-preset="${escapeHtml(preset.id)}"
-          class="${state.recurringPreset === preset.id ? 'active' : ''}"
-          ${state.busy ? 'disabled' : ''}
-          title="${escapeHtml(preset.description)}"
-        >
-          ${escapeHtml(preset.title)}
-        </button>
-      `).join('')}
-    </nav>
+    ${selectPicker({
+      id: 'recurringPresetPicker',
+      value: state.recurringPreset,
+      labelId: 'recurringPresetPickerLabel',
+      attrs: { 'data-recurring-preset-picker': true },
+      disabled: state.busy,
+      className: 'recurring-top-picker recurring-preset-picker',
+      title: 'Repeat payment type',
+      options: RECURRING_PRESETS.map((preset) => ({
+        value: preset.id,
+        label: preset.title,
+        meta: preset.badge,
+        detail: preset.description,
+      })),
+    })}
   `;
 }
 
@@ -37762,7 +38019,7 @@ function recurringPresetMethodControls(): string {
   return `
     <div class="one-time-method-control recurring-method-control" role="group" aria-label="Repeat payment type">
       <span class="one-time-method-label">
-        <strong>Repeat type</strong>
+        <strong id="recurringPresetPickerLabel">Repeat type</strong>
         <em>What repeats</em>
       </span>
       ${recurringPresetControls()}
@@ -37776,15 +38033,16 @@ function recurringConnectorActionPicker(draft: RecurringDraft, connector: Protoc
   return `
     <div class="recurring-connector-action-control" aria-label="Repeat connector template">
       <span class="one-time-method-label">
-        <strong>Plan template</strong>
+        <strong id="recurringConnectorActionPickerLabel">Plan template</strong>
         <em class="accent-note">${escapeHtml(connector.name)}</em>
       </span>
       ${selectPicker({
         id: 'recurringConnectorActionPicker',
         value: selectedForm?.id ?? '',
+        labelId: 'recurringConnectorActionPickerLabel',
         attrs: { 'data-recurring-field': 'connectorOperationId' },
         disabled: state.busy || forms.length === 0,
-        className: 'top-connector-picker recurring-connector-action-picker',
+        className: 'recurring-top-picker recurring-connector-action-picker',
         title: selectedForm ? `${connector.name}: ${selectedForm.operationLabel}` : `${connector.name} templates`,
         options: forms.length
           ? forms.map((form) => ({
@@ -38115,12 +38373,14 @@ function recurringCardSummaryGrid(
   const nextRun = nextRuns[0] ? formatDateTime(nextRuns[0]) : 'No preview';
   const isSwap = recurringPaymentIsSwap(payment);
   const spendToken = recurringPaymentSpendToken(payment);
-  const tokenSummary = isSwap
+  const routeSummary = isSwap
     ? tokenRouteDisplaySummary(spendToken, payment.outputToken || 'USDC')
-    : tokenDisplaySummary(payment.token, { copyLabel: 'Copy token', copyName: 'Token mint' });
-  const rows: Array<{ label: string; value: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }> = [
+    : undefined;
+  const tokenSummary = routeSummary
+    ?? tokenDisplaySummary(payment.token, { copyLabel: 'Copy token', copyName: 'Token mint' });
+  const rows: Array<{ label: string; value: string; html?: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }> = [
     ...(isSwap ? [] : [{ label: 'Recipient', value: recipientDisplayLabel(payment.recipient), title: payment.recipient, copyValue: payment.recipient }]),
-    { label: 'Token', value: tokenSummary.value, title: tokenSummary.title, copyActions: tokenSummary.copyActions },
+    { label: routeSummary ? 'Route' : 'Token', value: tokenSummary.value, html: routeSummary?.html, title: tokenSummary.title, copyActions: tokenSummary.copyActions },
     ...(isSwap ? [{ label: 'Slippage', value: recurringPaymentSlippageLabel(payment) }] : []),
     { label: 'Next run', value: nextRun },
     { label: 'Cadence', value: recurringScheduleShortLabel(payment) },
@@ -38144,15 +38404,15 @@ function recurringPaymentSlippageLabel(payment: RecurringPayment): string {
   return formatSwapSlippagePercent(Number(value)) || value;
 }
 
-function recurringCardSummaryItem(row: { label: string; value: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }): string {
+function recurringCardSummaryItem(row: { label: string; value: string; html?: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }): string {
   const title = row.title ?? row.value;
   const copyActions = summaryCopyActions(row);
   return `
     <div class="${row.tone ? `recurring-card-summary-${row.tone}` : ''}" title="${escapeHtml(title)}">
       <dt>${escapeHtml(row.label)}</dt>
       <dd class="${copyActions.length ? 'has-copy' : ''}">
-        <span>${escapeHtml(row.value)}</span>
-        ${summaryCopyActionsHtml(copyActions, row.label)}
+        ${row.html ?? `<span>${escapeHtml(row.value)}</span>`}
+        ${row.html ? '' : summaryCopyActionsHtml(copyActions, row.label)}
       </dd>
     </div>
   `;
@@ -39157,6 +39417,14 @@ type ConnectorActionAmountToken = {
   marketEligible: boolean;
 };
 
+type ConnectorTokenOrTargetSummary = {
+  label: string;
+  value: string;
+  title: string;
+  html?: string;
+  copyActions?: SummaryCopyAction[];
+};
+
 function connectorActionAmountInfo(action: PreparedAction): ConnectorActionAmountInfo | undefined {
   const semantic = connectorSemanticAmountInfo(action);
   if (semantic) return semantic;
@@ -39334,23 +39602,43 @@ function connectorAmountFromKeys(
 }
 
 function connectorActionAmountToken(action: PreparedAction): ConnectorActionAmountToken | undefined {
+  const labeledToken = connectorAmountTokenFromTargetLabels((key) => stringParam(action, key));
+  if (labeledToken) return labeledToken;
   const tokenKeys = [
     'sourceTokenLabel',
+    'tokenLabel',
     'tokenSymbol',
     'depositSymbol',
     'inputSymbol',
+    'outputSymbol',
     'token',
     'sourceToken',
     'inputToken',
     'sourceMint',
     'assetMint',
+    'assetMintSymbol',
+    'assetMintLabel',
     'mint',
     'mintAddress',
+    'mintAddressSymbol',
+    'mintAddressLabel',
     'inputMint',
+    'inputMintSymbol',
+    'inputMintLabel',
     'depositMint',
     'lstMint',
+    'lstMintSymbol',
+    'lstMintLabel',
     'inputLstMint',
     'governingTokenMint',
+    'governingTokenMintSymbol',
+    'governingTokenMintLabel',
+    'vaultAddressSymbol',
+    'vaultAddressMint',
+    'reserveAddressSymbol',
+    'reserveAddressMint',
+    'bankAddressSymbol',
+    'bankAddressMint',
   ];
   for (const key of tokenKeys) {
     const value = stringParam(action, key);
@@ -39367,7 +39655,211 @@ function connectorActionAmountToken(action: PreparedAction): ConnectorActionAmou
 
 function connectorActionAmountTokenLabel(token: string): string {
   const display = resolveTokenDisplay(token || undefined) || tokenDisplayLabel(token);
-  return display.replace(/\s+(reserve|bank|pool|mint|asset)$/i, '').trim();
+  return display.replace(/\s+(reserve|bank|pool|mint|asset|token)$/i, '').trim();
+}
+
+const CONNECTOR_TOKEN_TARGET_LABEL_KEYS = [
+  'vaultAddressLabel',
+  'reserveAddressLabel',
+  'bankAddressLabel',
+  'marketAddressLabel',
+  'mintAddressLabel',
+  'assetMintLabel',
+  'sourceMintLabel',
+  'inputMintLabel',
+  'outputMintLabel',
+  'lstMintLabel',
+  'governingTokenMintLabel',
+  'tokenLabel',
+];
+
+function connectorAmountTokenFromTargetLabels(read: (key: string) => string): ConnectorActionAmountToken | undefined {
+  for (const key of CONNECTOR_TOKEN_TARGET_LABEL_KEYS) {
+    const symbol = knownTokenSymbolFromText(read(key));
+    if (symbol) return { value: symbol, marketEligible: true };
+  }
+  return undefined;
+}
+
+function knownTokenSymbolFromText(value: string): string {
+  const words = value
+    .split(/[^A-Za-z0-9]+/)
+    .map((word) => word.trim())
+    .filter(Boolean);
+  if (!words.length) return '';
+  const customSymbols = new Set(state.customTokens.map((token) => token.symbol.toUpperCase()));
+  for (const word of words) {
+    const normalized = word.toUpperCase();
+    const known = KNOWN_BROWSER_TOKENS[normalized];
+    if (known) return known.symbol;
+    if (customSymbols.has(normalized)) return word;
+  }
+  return '';
+}
+
+function connectorPlanTokenOrTargetSummary(plan: AgentPlan): ConnectorTokenOrTargetSummary | undefined {
+  const liquidityPair = connectorPlanLiquidityPairLabel(plan);
+  if (liquidityPair) {
+    return {
+      label: 'Pair',
+      value: liquidityPair,
+      title: liquidityPair,
+    };
+  }
+  const amountToken = connectorPlanAmountInfo(plan)?.token;
+  if (amountToken) return connectorTokenSummary('Token', amountToken);
+  const token = connectorPlanAmountToken(plan);
+  if (token) return connectorTokenSummary('Token', token.value);
+  return connectorPlanTargetSummary(plan);
+}
+
+function connectorActionTokenOrTargetSummary(action: PreparedAction): ConnectorTokenOrTargetSummary | undefined {
+  const liquidityPair = connectorActionLiquidityPairLabel(action);
+  if (liquidityPair) {
+    return {
+      label: 'Pair',
+      value: liquidityPair,
+      title: liquidityPair,
+      copyActions: connectorActionLiquidityTokenCopyActions(action),
+    };
+  }
+  const route = connectorActionTokenRoute(action);
+  if (route) {
+    const summary = tokenRouteDisplaySummary(route.inputToken, route.outputToken);
+    return { label: 'Route', ...summary };
+  }
+  const amountToken = connectorActionAmountInfo(action)?.token;
+  if (amountToken) return connectorTokenSummary('Token', amountToken);
+  const token = connectorActionAmountToken(action);
+  if (token) return connectorTokenSummary('Token', token.value);
+  return connectorActionTargetSummary(action);
+}
+
+function connectorTokenSummary(label: string, value: string): ConnectorTokenOrTargetSummary {
+  const summary = tokenDisplaySummary(value, {
+    copyLabel: `Copy ${label.toLowerCase()}`,
+    copyName: `${label} mint`,
+  });
+  return {
+    label,
+    value: summary.value,
+    title: summary.title,
+    copyActions: summary.copyActions,
+  };
+}
+
+const CONNECTOR_TARGET_FIELD_LABELS: Array<{ key: string; label: string }> = [
+  { key: 'vaultAddress', label: 'Vault' },
+  { key: 'vaultId', label: 'Vault' },
+  { key: 'reserveAddress', label: 'Reserve' },
+  { key: 'bankAddress', label: 'Bank' },
+  { key: 'marketAddress', label: 'Market' },
+  { key: 'poolAddress', label: 'Pool' },
+  { key: 'poolId', label: 'Pool' },
+  { key: 'whirlpoolAddress', label: 'Pool' },
+  { key: 'positionAddress', label: 'Position' },
+  { key: 'positionMint', label: 'Position' },
+  { key: 'positionId', label: 'Position' },
+  { key: 'priceFeedIds', label: 'Feed' },
+  { key: 'collectionId', label: 'Collection' },
+  { key: 'listingId', label: 'Listing' },
+  { key: 'bidId', label: 'Bid' },
+  { key: 'proposalAddress', label: 'Proposal' },
+  { key: 'realmAddress', label: 'Realm' },
+  { key: 'governingTokenMint', label: 'Governance token' },
+  { key: 'multisigAddress', label: 'Multisig' },
+  { key: 'destinationChain', label: 'Destination' },
+  { key: 'stakeAccount', label: 'Stake account' },
+  { key: 'receiptAccount', label: 'Receipt' },
+  { key: 'ticketAccount', label: 'Ticket' },
+  { key: 'orderId', label: 'Order' },
+  { key: 'withdrawalId', label: 'Withdrawal' },
+  { key: 'mintAddress', label: 'Token' },
+  { key: 'assetMint', label: 'Token' },
+  { key: 'inputMint', label: 'Token' },
+  { key: 'lstMint', label: 'Token' },
+  { key: 'token', label: 'Token' },
+];
+
+function connectorPlanTargetSummary(plan: AgentPlan): ConnectorTokenOrTargetSummary | undefined {
+  const display = connectorActionDisplayParts(plan.actionType, plan.parameters);
+  const target = nonEmptyDisplay(display?.selectionLabel) ||
+    connectorTargetDisplayFromPlanParams(plan) ||
+    nonEmptyDisplay(display?.operationLabel);
+  if (!target) return undefined;
+  const label = connectorTargetLabelFromReader((key) => planParameter(plan, [key]));
+  return {
+    label,
+    value: target,
+    title: target,
+    copyActions: connectorTargetCopyActions(label, (key) => planParameter(plan, [key])),
+  };
+}
+
+function connectorActionTargetSummary(action: PreparedAction): ConnectorTokenOrTargetSummary | undefined {
+  const display = connectorActionDisplayParts(action.kind, action.params);
+  const target = nonEmptyDisplay(display?.selectionLabel) ||
+    connectorTargetDisplayFromActionParams(action) ||
+    nonEmptyDisplay(display?.operationLabel);
+  if (!target) return undefined;
+  const label = connectorTargetLabelFromReader((key) => stringParam(action, key));
+  return {
+    label,
+    value: target,
+    title: target,
+    copyActions: connectorTargetCopyActions(label, (key) => stringParam(action, key)),
+  };
+}
+
+function connectorTargetLabelFromReader(read: (key: string) => string): string {
+  return CONNECTOR_TARGET_FIELD_LABELS.find(({ key }) => Boolean(read(key).trim()))?.label ?? 'Target';
+}
+
+function connectorTargetCopyActions(label: string, read: (key: string) => string): SummaryCopyAction[] {
+  const target = CONNECTOR_TARGET_FIELD_LABELS.find(({ key }) => Boolean(read(key).trim()));
+  const value = target ? read(target.key).trim() : '';
+  if (!value || value.length < 16) return [];
+  return [{
+    label: `Copy ${label.toLowerCase()}`,
+    value,
+    name: `${label} identifier`,
+  }];
+}
+
+function connectorTargetDisplayFromPlanParams(plan: AgentPlan): string {
+  for (const { key } of CONNECTOR_TARGET_FIELD_LABELS) {
+    const label = planParameter(plan, [`${key}Label`]);
+    if (label) return label;
+    const value = planParameter(plan, [key]);
+    if (value) return connectorTargetValueForDisplay(value);
+  }
+  return '';
+}
+
+function connectorTargetDisplayFromActionParams(action: PreparedAction): string {
+  for (const { key } of CONNECTOR_TARGET_FIELD_LABELS) {
+    const label = stringParam(action, `${key}Label`);
+    if (label) return label;
+    const value = stringParam(action, key);
+    if (value) return connectorTargetValueForDisplay(value);
+  }
+  return '';
+}
+
+function connectorTargetValueForDisplay(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  if (looksLikeMintAddress(trimmed)) return short(trimmed);
+  return trimmed;
+}
+
+function nonEmptyDisplay(value: string | undefined): string {
+  const trimmed = value?.trim() ?? '';
+  if (!trimmed) return '';
+  const normalized = trimmed.toLowerCase();
+  return normalized === 'n/a' || normalized === 'na' || normalized === 'none' || normalized === 'null' || normalized === 'undefined'
+    ? ''
+    : trimmed;
 }
 
 function connectorPlanLiquidityTokenSymbol(plan: AgentPlan, side: 'tokenA' | 'tokenB'): string {
@@ -39523,15 +40015,8 @@ function swapOutputTokenLabel(action: PreparedAction): string {
 
 function tokenLabel(action: PreparedAction): string {
   if (action.kind === 'transfer_sol') return 'SOL';
-  if (isMeteoraConnectorAction(action)) return meteoraPoolTokenLabel(action);
-  const liquidityPair = connectorActionLiquidityPairLabel(action);
-  if (liquidityPair) return liquidityPair;
-  const connectorRoute = connectorActionTokenRoute(action);
-  if (connectorRoute) {
-    return `${tokenDisplayLabel(connectorRoute.inputToken)} to ${tokenDisplayLabel(connectorRoute.outputToken)}`;
-  }
-  const connectorAmountInfo = isConnectorApprovalKind(action) ? connectorActionAmountInfo(action) : undefined;
-  if (connectorAmountInfo?.token) return connectorAmountInfo.token;
+  const connectorSummary = isConnectorApprovalKind(action) ? connectorActionTokenOrTargetSummary(action) : undefined;
+  if (connectorSummary) return connectorSummary.value;
   if (typeof action.params.token === 'string') return action.params.token;
   if (typeof action.params.inputToken === 'string' && typeof action.params.outputToken === 'string') {
     return `${action.params.inputToken} to ${action.params.outputToken}`;

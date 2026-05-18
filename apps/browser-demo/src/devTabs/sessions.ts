@@ -13,9 +13,11 @@ import {
   handleStreamingApprovalStatus,
   loadSessions,
   openSessionDetail,
+  confirmSelectedSessionTransaction,
   requestRevokeSelectedSession,
   selectSession,
   selectedDetail,
+  sessionTxState,
   setCreateModalOpen,
   setSessionsFilter,
   setVoucherPage,
@@ -111,6 +113,24 @@ function sessionStatusLabel(status: StreamingSessionRecord['status']): string {
   return status === 'pending' ? 'pending grant' : status;
 }
 
+function sessionStatusBadgeClass(session: StreamingSessionRecord): string {
+  const grantTx = sessionTxState(session, 'grant');
+  const revokeTx = sessionTxState(session, 'revoke');
+  if (revokeTx?.status === 'submitted' || (session.status === 'pending' && grantTx?.status === 'submitted')) {
+    return 'sessions-pill--pending';
+  }
+  return sessionStatusClass(session.status);
+}
+
+function sessionStatusBadgeLabel(session: StreamingSessionRecord): string {
+  const grantTx = sessionTxState(session, 'grant');
+  const revokeTx = sessionTxState(session, 'revoke');
+  if (revokeTx?.status === 'submitted') return 'revoke confirming';
+  if (session.status === 'pending' && grantTx?.status === 'submitted') return 'grant confirming';
+  if (session.status === 'pending') return 'grant signature needed';
+  return sessionStatusLabel(session.status);
+}
+
 function tokenLabel(session: StreamingSessionRecord): string {
   return session.tokenMint === DEFAULT_USDC_MINT ? 'USDC' : shortAddress(session.tokenMint);
 }
@@ -153,7 +173,7 @@ export function sessionRowHtml(session: StreamingSessionRecord, selectedId: stri
         <span class="sessions-row-main">
           <span class="sessions-row-head">
             <strong>${escapeHtml(shortAddress(session.id))}</strong>
-            <span class="sessions-pill ${sessionStatusClass(session.status)}">${escapeHtml(sessionStatusLabel(session.status))}</span>
+            <span class="sessions-pill ${sessionStatusBadgeClass(session)}">${escapeHtml(sessionStatusBadgeLabel(session))}</span>
           </span>
           <span class="sessions-row-meta">
             <span>${escapeHtml(formatAmount(session.spentAmount))} / ${escapeHtml(formatAmount(session.capAmount))} ${escapeHtml(tokenLabel(session))}</span>
@@ -278,6 +298,39 @@ function receiptHtml(session: StreamingSessionRecord): string {
   `;
 }
 
+function transactionUrl(session: StreamingSessionRecord, txid: string): string {
+  const clusterParam = session.cluster === 'mainnet-beta' ? '' : `?cluster=${encodeURIComponent(session.cluster)}`;
+  return `https://solscan.io/tx/${encodeURIComponent(txid)}${clusterParam}`;
+}
+
+function sessionTransactionStateHtml(session: StreamingSessionRecord): string {
+  const revokeTx = sessionTxState(session, 'revoke');
+  const grantTx = sessionTxState(session, 'grant');
+  const pending = revokeTx?.status === 'submitted'
+    ? { operation: 'revoke', tx: revokeTx, message: 'Revocation submitted. The delegate is disabled after this transaction confirms.' }
+    : grantTx?.status === 'submitted'
+      ? { operation: 'grant', tx: grantTx, message: 'Grant submitted. This is a spending allowance, not a token transfer; USDC moves only when vouchers settle.' }
+      : null;
+  if (pending) {
+    return `
+      <div class="sessions-transaction-state">
+        <span>${escapeHtml(pending.message)}</span>
+        <a href="${escapeHtml(transactionUrl(session, pending.tx.txid))}" target="_blank" rel="noreferrer">
+          ${escapeHtml(shortAddress(pending.tx.txid))}
+        </a>
+      </div>
+    `;
+  }
+  if (session.status === 'pending') {
+    return `
+      <div class="sessions-transaction-state sessions-transaction-state--warning">
+        <span>Grant signature is not complete, so this session is not active yet.</span>
+      </div>
+    `;
+  }
+  return '';
+}
+
 export function detailHtml(): string {
   const snapshot = getSessionsState();
   const session = snapshot.selectedSessionId
@@ -292,7 +345,14 @@ export function detailHtml(): string {
   }
   const detail = selectedDetail(snapshot);
   const vouchers = detail?.vouchers ?? [];
-  const revokeDisabled = snapshot.busy === 'revoke' || session.status === 'revoked' || session.status === 'settled';
+  const grantTx = sessionTxState(session, 'grant');
+  const revokeTx = sessionTxState(session, 'revoke');
+  const hasPendingTransaction = grantTx?.status === 'submitted' || revokeTx?.status === 'submitted';
+  const revokeDisabled = snapshot.busy === 'revoke' ||
+    session.status === 'pending' ||
+    session.status === 'revoked' ||
+    session.status === 'settled' ||
+    revokeTx?.status === 'submitted';
   return `
     <section class="sessions-detail dev-tab-panel" aria-label="Streaming session detail">
       <div class="sessions-detail-head">
@@ -300,8 +360,10 @@ export function detailHtml(): string {
           <p class="dev-tab-kicker">Session detail</p>
           <h3>${escapeHtml(shortAddress(session.id))}</h3>
         </div>
-        <span class="sessions-pill ${sessionStatusClass(session.status)}">${escapeHtml(sessionStatusLabel(session.status))}</span>
+        <span class="sessions-pill ${sessionStatusBadgeClass(session)}">${escapeHtml(sessionStatusBadgeLabel(session))}</span>
       </div>
+
+      ${sessionTransactionStateHtml(session)}
 
       <div class="sessions-detail-grid">
         <div class="sessions-metric">
@@ -350,6 +412,11 @@ export function detailHtml(): string {
       </section>
 
       <div class="sessions-detail-actions">
+        ${hasPendingTransaction ? `
+          <button type="button" class="utility" data-sessions-confirm-tx>
+            Check confirmation
+          </button>
+        ` : ''}
         <button type="button" class="utility danger" data-sessions-revoke="${escapeHtml(session.id)}" ${revokeDisabled ? 'disabled' : ''}>
           ${snapshot.busy === 'revoke' ? 'Preparing revoke...' : 'Revoke'}
         </button>
@@ -590,6 +657,12 @@ function installSessionsDomHandlers(): void {
     if (revokeBtn) {
       event.preventDefault();
       void requestRevokeSelectedSession();
+      return;
+    }
+
+    if (target.closest('[data-sessions-confirm-tx]')) {
+      event.preventDefault();
+      confirmSelectedSessionTransaction();
       return;
     }
 

@@ -352,6 +352,31 @@ describe('connector drafting helpers', () => {
     });
   });
 
+  it('keeps Drift vault deposit token metadata for card summaries', () => {
+    const normalized = normalizeConnectorDraftParameters(templateById('drift-vault-deposit'), {
+      connectorId: 'drift',
+      connectorOperationId: 'drift:vault-deposit',
+      vaultAddress: 'DriftVault111111111111111111111111111111111',
+      vaultAddressLabel: 'ALT3 Capital SOL Yield',
+      vaultAddressSymbol: 'SOL',
+      vaultAddressMint: WSOL_MINT,
+      depositSymbol: 'SOL',
+      depositMint: WSOL_MINT,
+      amount: '.03',
+    });
+
+    expect(normalized).toMatchObject({
+      connectorId: 'drift',
+      connectorOperationId: 'drift:vault-deposit',
+      vaultAddressLabel: 'ALT3 Capital SOL Yield',
+      vaultAddressSymbol: 'SOL',
+      vaultAddressMint: WSOL_MINT,
+      depositSymbol: 'SOL',
+      depositMint: WSOL_MINT,
+      amount: '.03',
+    });
+  });
+
   it('persists fixed connector sub-action params without rendering them as fields', () => {
     const form = connectorActionFormByActionType('raydium_add_liquidity');
     expect(form).toBeDefined();

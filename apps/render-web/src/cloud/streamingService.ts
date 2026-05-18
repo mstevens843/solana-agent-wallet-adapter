@@ -139,6 +139,9 @@ export interface StreamingStore {
     sessionId: string,
     approveTxid: string,
     updatedAt: string,
+    status?: StreamingSignedTxCallbackStatus,
+    txStatus?: string,
+    approvalId?: string,
   ): Promise<StoredStreamingSession | undefined>;
   markRevoked(
     walletAddress: string,
@@ -150,6 +153,9 @@ export interface StreamingStore {
     sessionId: string,
     revokeTxid: string,
     updatedAt: string,
+    status?: StreamingSignedTxCallbackStatus,
+    txStatus?: string,
+    approvalId?: string,
   ): Promise<StoredStreamingSession | undefined>;
   acceptVoucher(
     walletAddress: string,
@@ -228,6 +234,7 @@ export interface LastSettlementAttempt {
 export const LAST_SETTLEMENT_ATTEMPT_METADATA_KEY = 'lastSettlementAttempt';
 
 export type StreamingSessionListStatus = SessionGrant['status'] | 'all';
+export type StreamingSignedTxCallbackStatus = 'submitted' | 'confirmed';
 
 export interface LatestBlockhashProvider {
   (cluster: StreamingCluster): Promise<string>;
@@ -355,6 +362,9 @@ export class StreamingService {
     walletAddress: string;
     sessionId: string;
     approveTxid: string;
+    status?: StreamingSignedTxCallbackStatus;
+    txStatus?: string;
+    approvalId?: string;
   }): Promise<StoredStreamingSession> {
     const existing = await this.requireSession(input.walletAddress, input.sessionId);
     if (existing.status === 'revoked' || existing.status === 'settled') {
@@ -368,6 +378,9 @@ export class StreamingService {
       input.sessionId,
       requireShortString(input.approveTxid, 'approveTxid', 256),
       this.now(),
+      normalizeSignedTxCallbackStatus(input.status),
+      input.txStatus ? requireShortString(input.txStatus, 'txStatus', 80) : undefined,
+      input.approvalId ? requireShortString(input.approvalId, 'approvalId', 160) : undefined,
     );
     if (!updated) throw notFound(input.sessionId);
     return publicSession(updated, this.clock.now());
@@ -455,21 +468,22 @@ export class StreamingService {
     if (existing.status === 'settled') {
       throw new StreamingServiceError(409, 'session_settled', 'Session is already settled.');
     }
-    const revoked = await this.store.markRevoked(input.walletAddress, input.sessionId, this.now());
-    if (!revoked) throw notFound(input.sessionId);
     const revokeTx = buildRevokeDelegateTx({
-      ownerPubkey: revoked.walletAddress,
-      tokenMint: revoked.tokenMint,
-      cluster: revoked.cluster,
-      recentBlockhash: await this.latestBlockhash(revoked.cluster),
+      ownerPubkey: existing.walletAddress,
+      tokenMint: existing.tokenMint,
+      cluster: existing.cluster,
+      recentBlockhash: await this.latestBlockhash(existing.cluster),
     });
-    return { session: publicSession(revoked, this.clock.now()), revokeTx };
+    return { session: publicSession(existing, this.clock.now()), revokeTx };
   }
 
   async recordRevokeSigned(input: {
     walletAddress: string;
     sessionId: string;
     revokeTxid: string;
+    status?: StreamingSignedTxCallbackStatus;
+    txStatus?: string;
+    approvalId?: string;
   }): Promise<StoredStreamingSession> {
     await this.requireSession(input.walletAddress, input.sessionId);
     const updated = await this.store.recordRevokeSigned(
@@ -477,6 +491,9 @@ export class StreamingService {
       input.sessionId,
       requireShortString(input.revokeTxid, 'revokeTxid', 256),
       this.now(),
+      normalizeSignedTxCallbackStatus(input.status),
+      input.txStatus ? requireShortString(input.txStatus, 'txStatus', 80) : undefined,
+      input.approvalId ? requireShortString(input.approvalId, 'approvalId', 160) : undefined,
     );
     if (!updated) throw notFound(input.sessionId);
     return publicSession(updated, this.clock.now());
@@ -549,14 +566,19 @@ export class MemoryStreamingStore implements StreamingStore {
     sessionId: string,
     approveTxid: string,
     updatedAt: string,
+    status: StreamingSignedTxCallbackStatus = 'confirmed',
+    txStatus?: string,
+    approvalId?: string,
   ): Promise<StoredStreamingSession | undefined> {
     const session = await this.getSession(walletAddress, sessionId);
     if (!session) return undefined;
+    const callbackStatus = normalizeSignedTxCallbackStatus(status);
     const updated = {
       ...session,
       approveTxid,
-      status: session.status === 'pending' ? 'active' : session.status,
+      status: callbackStatus === 'confirmed' && session.status === 'pending' ? 'active' : session.status,
       updatedAt,
+      metadata: mergeSignedTxMetadata(session, 'grantTx', approveTxid, callbackStatus, txStatus, approvalId, updatedAt),
     } satisfies StoredStreamingSession;
     this.sessions.set(sessionId, clone(updated));
     return clone(updated);
@@ -583,14 +605,19 @@ export class MemoryStreamingStore implements StreamingStore {
     sessionId: string,
     revokeTxid: string,
     updatedAt: string,
+    status: StreamingSignedTxCallbackStatus = 'confirmed',
+    txStatus?: string,
+    approvalId?: string,
   ): Promise<StoredStreamingSession | undefined> {
     const session = await this.getSession(walletAddress, sessionId);
     if (!session) return undefined;
+    const callbackStatus = normalizeSignedTxCallbackStatus(status);
     const updated = {
       ...session,
-      status: 'revoked',
+      status: callbackStatus === 'confirmed' ? 'revoked' : session.status,
       revokeTxid,
       updatedAt,
+      metadata: mergeSignedTxMetadata(session, 'revokeTx', revokeTxid, callbackStatus, txStatus, approvalId, updatedAt),
     } satisfies StoredStreamingSession;
     this.sessions.set(sessionId, clone(updated));
     return clone(updated);
@@ -679,7 +706,7 @@ export class MemoryStreamingStore implements StreamingStore {
       if (!sessionHasServerDelegateKey(session)) continue;
       if (settlementLockActive(session, now)) continue;
       const unsettled = [...this.vouchers.values()].filter((v) => v.sessionId === session.sessionId && !v.settledAt);
-      if (unsettled.length === 0) continue;
+      if (unsettled.length === 0 && sessionDelegatePrefundLamports(session) <= 0) continue;
       if (!sessionSettlementEligible(session, now, thresholdBps)) continue;
       candidates.push({ session: clone(session), unsettledVoucherCount: unsettled.length });
       if (candidates.length >= limit) break;
@@ -889,18 +916,30 @@ export class PostgresStreamingStore implements StreamingStore {
     sessionId: string,
     approveTxid: string,
     updatedAt: string,
+    status: StreamingSignedTxCallbackStatus = 'confirmed',
+    txStatus?: string,
+    approvalId?: string,
   ): Promise<StoredStreamingSession | undefined> {
+    const callbackStatus = normalizeSignedTxCallbackStatus(status);
     const result = await this.query<StreamingSessionRow>({
-      name: 'streaming.session.recordGrantSigned',
+      name: 'streaming.session.recordGrantSigned.v2',
       text: `
         UPDATE streaming_sessions
         SET approve_txid = $3,
-            status = CASE WHEN status = 'pending' THEN 'active' ELSE status END,
-            updated_at = $4
+            status = CASE WHEN $6 = 'confirmed' AND status = 'pending' THEN 'active' ELSE status END,
+            updated_at = $4,
+            metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb
         WHERE id = $1 AND wallet_address = $2
         RETURNING *
       `,
-      values: [sessionId, walletAddress, approveTxid, updatedAt],
+      values: [
+        sessionId,
+        walletAddress,
+        approveTxid,
+        updatedAt,
+        jsonParam(signedTxMetadataPatch('grantTx', approveTxid, callbackStatus, txStatus, approvalId, updatedAt)),
+        callbackStatus,
+      ],
     });
     return result.rows[0] ? sessionFromRow(result.rows[0]) : undefined;
   }
@@ -928,16 +967,30 @@ export class PostgresStreamingStore implements StreamingStore {
     sessionId: string,
     revokeTxid: string,
     updatedAt: string,
+    status: StreamingSignedTxCallbackStatus = 'confirmed',
+    txStatus?: string,
+    approvalId?: string,
   ): Promise<StoredStreamingSession | undefined> {
+    const callbackStatus = normalizeSignedTxCallbackStatus(status);
     const result = await this.query<StreamingSessionRow>({
-      name: 'streaming.session.recordRevokeSigned',
+      name: 'streaming.session.recordRevokeSigned.v2',
       text: `
         UPDATE streaming_sessions
-        SET revoke_txid = $3, status = 'revoked', updated_at = $4
+        SET revoke_txid = $3,
+            status = CASE WHEN $6 = 'confirmed' THEN 'revoked' ELSE status END,
+            updated_at = $4,
+            metadata = COALESCE(metadata, '{}'::jsonb) || $5::jsonb
         WHERE id = $1 AND wallet_address = $2
         RETURNING *
       `,
-      values: [sessionId, walletAddress, revokeTxid, updatedAt],
+      values: [
+        sessionId,
+        walletAddress,
+        revokeTxid,
+        updatedAt,
+        jsonParam(signedTxMetadataPatch('revokeTx', revokeTxid, callbackStatus, txStatus, approvalId, updatedAt)),
+        callbackStatus,
+      ],
     });
     return result.rows[0] ? sessionFromRow(result.rows[0]) : undefined;
   }
@@ -1072,10 +1125,14 @@ export class PostgresStreamingStore implements StreamingStore {
       text: `
         SELECT s.*, COUNT(v.id)::int AS unsettled_voucher_count
         FROM streaming_sessions s
-        JOIN streaming_vouchers v ON v.session_id = s.id AND v.settled_at IS NULL
+        LEFT JOIN streaming_vouchers v ON v.session_id = s.id AND v.settled_at IS NULL
         WHERE s.status <> 'pending'
           AND s.status <> 'settled'
           AND COALESCE(s.metadata->>'${SIGNER_RUNTIME_METADATA_KEY}', '${SERVER_SIGNER_RUNTIME}') = '${SERVER_SIGNER_RUNTIME}'
+          AND (
+            v.id IS NOT NULL
+            OR COALESCE((s.metadata->>'${DELEGATE_PREFUND_LAMPORTS_METADATA_KEY}')::numeric, 0) > 0
+          )
           AND (
             s.expires_at <= $1
             OR s.status = 'revoked'
@@ -1481,6 +1538,46 @@ function normalizeRecipientAllowlist(value: readonly string[] | undefined): stri
 
 function sanitizeSessionMetadata(value: Record<string, unknown>): Record<string, unknown> {
   return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+}
+
+function normalizeSignedTxCallbackStatus(
+  status: StreamingSignedTxCallbackStatus | undefined,
+): StreamingSignedTxCallbackStatus {
+  return status === 'submitted' ? 'submitted' : 'confirmed';
+}
+
+function signedTxMetadataPatch(
+  key: 'grantTx' | 'revokeTx',
+  txid: string,
+  status: StreamingSignedTxCallbackStatus,
+  txStatus: string | undefined,
+  approvalId: string | undefined,
+  updatedAt: string,
+): Record<string, unknown> {
+  return {
+    [key]: sanitizeSessionMetadata({
+      txid,
+      status,
+      txStatus: txStatus || (status === 'confirmed' ? 'confirmed' : 'pending'),
+      updatedAt,
+      ...(approvalId ? { approvalId } : {}),
+    }),
+  };
+}
+
+function mergeSignedTxMetadata(
+  session: StoredStreamingSession,
+  key: 'grantTx' | 'revokeTx',
+  txid: string,
+  status: StreamingSignedTxCallbackStatus,
+  txStatus: string | undefined,
+  approvalId: string | undefined,
+  updatedAt: string,
+): Record<string, unknown> {
+  return sanitizeSessionMetadata({
+    ...(session.metadata ?? {}),
+    ...signedTxMetadataPatch(key, txid, status, txStatus, approvalId, updatedAt),
+  });
 }
 
 function mppApprovalIdFromVoucherMetadata(metadata: Record<string, unknown> | undefined): string | undefined {

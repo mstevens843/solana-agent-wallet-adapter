@@ -23,7 +23,7 @@ import {
   stopSessionDetailPolling,
 } from '../../sessionState.js';
 import {
-  STREAMING_APPROVAL_REQUESTED_EVENT,
+  STREAMING_APPROVAL_EXECUTE_REQUESTED_EVENT,
   streamingApprovalSignedBody,
 } from '../../streamingApprovalEvents.js';
 import { setConnectedAddress, setConnectedCluster } from '../../walletState.js';
@@ -154,7 +154,7 @@ describe('sessions dev tab', () => {
     expect(getSessionsState().sessions.map((session) => session.status)).toEqual(['expired']);
   });
 
-  it('dispatches a streaming approval request after revoke prepares a tx', async () => {
+  it('dispatches inline streaming approval execution after revoke prepares a tx', async () => {
     const target = new EventTarget();
     (globalThis as { window?: EventTarget }).window = target;
     (globalThis as { CustomEvent?: typeof CustomEvent }).CustomEvent = class TestCustomEvent<T> extends Event {
@@ -179,7 +179,7 @@ describe('sessions dev tab', () => {
       throw new Error(`unexpected url: ${url}`);
     });
     const details: unknown[] = [];
-    target.addEventListener(STREAMING_APPROVAL_REQUESTED_EVENT, (event) => {
+    target.addEventListener(STREAMING_APPROVAL_EXECUTE_REQUESTED_EVENT, (event) => {
       details.push((event as CustomEvent<unknown>).detail);
     });
 

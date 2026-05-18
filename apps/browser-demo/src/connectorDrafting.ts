@@ -659,6 +659,7 @@ export function scopeConnectorDraftParameters(
 
 const CONNECTOR_FIELD_META_SUFFIXES = [
   'Label',
+  'Symbol',
   'Mint',
   'Decimals',
   'TokenASymbol',
@@ -686,6 +687,12 @@ function connectorScopedMetadataKeys(connectorId?: ProtocolConnectorId | string)
       'tokenMintX',
       'tokenMintY',
       'binStep',
+    ];
+  }
+  if (connectorId === 'drift') {
+    return [
+      'depositSymbol',
+      'depositMint',
     ];
   }
   return [];

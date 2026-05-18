@@ -238,4 +238,78 @@ describe('reconcileThresholdReviewDecision — end-to-end Gemini fix', () => {
     // approve direction; downgrades to deny must NOT carry the bypass flag.
     expect((out.evidence as Record<string, unknown>).thresholdRulePromoted).toBeUndefined();
   });
+
+  // Phase 7 — multi-rule prompts. The single-threshold reconciler was over-reaching
+  // on mixed-policy prompts (SOL > $80 + Fear & Greed > 20 + Helium plan < $20),
+  // arbitrarily picking the first $ value ($80) and the first matching direction-
+  // keyword ('less than'), then matching SOL's price ($85.06) against that wrong
+  // rule and denying. For multi-threshold instructions the model's own decision +
+  // policyBundle.evaluations are authoritative; the reconciler must defer.
+  describe('multi-rule prompts — reconciler defers to the model', () => {
+    const MIXED_POLICY = 'Run my pre-signing policy for this swap. Market gates: BTC Fear & Greed must be above 20. SOL must be above $80. Return APPROVE or DENY. And only approve if helium phone plan is less than $20.';
+    const TWO_DOLLAR_THRESHOLDS = 'Approve if SOL is above $80 and total cost is under $20.';
+    const SINGLE_RULE_HELIUM = 'check helium mobile. lowest monthly plan. if less than $20. approve.';
+    const SINGLE_RULE_SOL = 'Approve only if SOL is above $80.';
+
+    it('leaves the model decision intact on mixed API+web policy (the SOL/Helium failure case)', () => {
+      // Model correctly approved (SOL $84.98 > $80, Helium $15 < $20). The reconciler
+      // previously mis-extracted ($80 threshold, "less than" direction) and matched
+      // SOL's $85.06 → wrongly denied. With the multi-threshold guard, reconciler
+      // returns the result unchanged so the model's approve stands.
+      const result = baseResult({
+        decision: 'approve',
+        reason: 'All gates satisfied: SOL $84.98 > $80, F&G 28 > 20, Helium $15 < $20.',
+        summary: 'All gates satisfied.',
+        evidence: { findings: [
+          { label: 'SOL price', value: '$84.98', tone: 'good' },
+          { label: 'Fear & Greed', value: '28', tone: 'good' },
+          { label: 'Helium plan', value: '$15/month', tone: 'good' },
+        ] },
+      });
+      const out = reconcileThresholdReviewDecision(result, { instruction: MIXED_POLICY });
+      expect(out.decision).toBe('approve');
+      expect(out.reason).toBe('All gates satisfied: SOL $84.98 > $80, F&G 28 > 20, Helium $15 < $20.');
+      expect((out.evidence as Record<string, unknown>).thresholdRulePromoted).toBeUndefined();
+    });
+
+    it('leaves the model decision intact on two-dollar-threshold prompts (both $ rules)', () => {
+      const result = baseResult({
+        decision: 'deny',
+        reason: 'SOL is above $80 ($85) but total cost is also $25 (over $20).',
+        summary: 'Mixed gates: one fails.',
+        evidence: { findings: [
+          { label: 'SOL price', value: '$85.00', tone: 'good' },
+          { label: 'Total cost', value: '$25.00', tone: 'fail' },
+        ] },
+      });
+      const out = reconcileThresholdReviewDecision(result, { instruction: TWO_DOLLAR_THRESHOLDS });
+      expect(out.decision).toBe('deny');
+      expect(out.reason).toContain('$25');
+    });
+
+    it('STILL reconciles single-rule web-search prompts (regression guard for Helium fix)', () => {
+      // Single-threshold prompts must continue to reconcile — that's the whole point
+      // of the threshold reconciler. Don't accidentally regress the Helium-style fix.
+      const result = baseResult({
+        decision: 'deny',
+        reason: 'Model wrongly denied.',
+        summary: '',
+        evidence: { findings: [{ label: 'Helium plan', value: '$15/month', tone: 'good' }] },
+      });
+      const out = reconcileThresholdReviewDecision(result, { instruction: SINGLE_RULE_HELIUM });
+      expect(out.decision).toBe('approve');
+      expect((out.evidence as Record<string, unknown>).thresholdRulePromoted).toBe(true);
+    });
+
+    it('STILL reconciles single-rule SOL prompts (above-$ threshold)', () => {
+      const result = baseResult({
+        decision: 'deny',
+        reason: 'Model wrongly denied.',
+        summary: '',
+        evidence: { findings: [{ label: 'SOL price', value: '$85.00', tone: 'good' }] },
+      });
+      const out = reconcileThresholdReviewDecision(result, { instruction: SINGLE_RULE_SOL });
+      expect(out.decision).toBe('approve');
+    });
+  });
 });

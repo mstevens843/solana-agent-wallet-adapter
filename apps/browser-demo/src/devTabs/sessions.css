@@ -29,6 +29,12 @@
   color: rgba(122, 217, 182, 0.96);
 }
 
+.sessions-pill--pending {
+  background: rgba(244, 192, 132, 0.14);
+  border: 1px solid rgba(244, 192, 132, 0.34);
+  color: rgba(244, 192, 132, 0.96);
+}
+
 .sessions-pill--expired {
   background: rgba(244, 192, 132, 0.14);
   border: 1px solid rgba(244, 192, 132, 0.34);
@@ -284,6 +290,36 @@
 .sessions-progress {
   display: grid;
   gap: 8px;
+}
+
+.sessions-transaction-state {
+  align-items: center;
+  background: rgba(244, 192, 132, 0.09);
+  border: 1px solid rgba(244, 192, 132, 0.24);
+  border-radius: var(--radius);
+  color: rgba(253, 221, 181, 0.94);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.82rem;
+  font-weight: 720;
+  gap: 8px;
+  justify-content: space-between;
+  line-height: 1.35;
+  padding: 9px 10px;
+}
+
+.sessions-transaction-state a {
+  color: inherit;
+  font-weight: 860;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.sessions-transaction-state--warning {
+  background: rgba(239, 111, 120, 0.1);
+  border-color: rgba(239, 111, 120, 0.24);
+  color: #fecaca;
 }
 
 .sessions-progress-label {

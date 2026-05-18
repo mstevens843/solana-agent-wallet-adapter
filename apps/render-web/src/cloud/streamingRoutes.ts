@@ -12,6 +12,7 @@ import {
   streamingStoreFor,
   type AcceptStreamingVoucherResult,
   type CreateStreamingSessionInput,
+  type StreamingSignedTxCallbackStatus,
   type StreamingSessionListStatus,
 } from './streamingService.js';
 import {
@@ -123,13 +124,20 @@ async function handleSessionItem(
 
   if (subResource === 'grant-signed' && req.method === 'POST') {
     const body = recordBody(await readJsonBody(req));
+    const status = optionalSignedStatus(body.status);
+    const txStatus = optionalString(body.txStatus, 'txStatus');
+    const approvalId = optionalString(body.approvalId, 'approvalId');
     const session = await service.recordGrantSigned({
       walletAddress,
       sessionId,
       approveTxid: requiredSignedTxid(body, 'approveTxid'),
+      ...(status ? { status } : {}),
+      ...(txStatus ? { txStatus } : {}),
+      ...(approvalId ? { approvalId } : {}),
     });
     await appendStreamingAuditEvent(ctx, walletAddress, 'streaming.grant.signed', sessionId, {
       approveTxid: session.approveTxid,
+      status: status ?? 'confirmed',
     });
     writeJsonNoStore(req, res, 200, { session });
     return;
@@ -220,13 +228,20 @@ async function handleSessionItem(
 
   if (subResource === 'revoke-signed' && req.method === 'POST') {
     const body = recordBody(await readJsonBody(req));
+    const status = optionalSignedStatus(body.status);
+    const txStatus = optionalString(body.txStatus, 'txStatus');
+    const approvalId = optionalString(body.approvalId, 'approvalId');
     const session = await service.recordRevokeSigned({
       walletAddress,
       sessionId,
       revokeTxid: requiredSignedTxid(body, 'revokeTxid'),
+      ...(status ? { status } : {}),
+      ...(txStatus ? { txStatus } : {}),
+      ...(approvalId ? { approvalId } : {}),
     });
     await appendStreamingAuditEvent(ctx, walletAddress, 'streaming.revoke.signed', sessionId, {
       revokeTxid: session.revokeTxid,
+      status: status ?? 'confirmed',
     });
     writeJsonNoStore(req, res, 200, { session });
     return;
@@ -315,6 +330,13 @@ function requiredSignedTxid(body: Record<string, unknown>, field: 'approveTxid' 
     ?? optionalString(body.txid, 'txid')
     ?? optionalString(body.signature, 'signature');
   return requiredString(value, field);
+}
+
+function optionalSignedStatus(value: unknown): StreamingSignedTxCallbackStatus | undefined {
+  const status = optionalString(value, 'status');
+  if (!status) return undefined;
+  if (status === 'submitted' || status === 'confirmed') return status;
+  throw new StreamingServiceError(400, 'invalid_field', 'status must be submitted or confirmed.');
 }
 
 function requireWallet(ctx: DevApiHandlerContext): string {

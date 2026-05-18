@@ -113,7 +113,36 @@ export function extractInstructionThreshold(text: string): number | undefined {
   return matches[0];
 }
 
+// Returns true when the instruction contains more than one distinct numeric threshold
+// — e.g. a mixed policy like "SOL must be above $80. only approve if helium plan is
+// less than $20." Multi-threshold instructions cannot be reconciled by the single-rule
+// reconciler (which would arbitrarily pick one threshold and one direction and apply
+// them to whichever candidate happens to match — typically wrong, as in the SOL/$80
+// vs Helium/$20 case where the SOL price gets matched against the Helium $20 rule).
+// The model's own decision (informed by all gates + policyBundle.evaluations) is
+// authoritative for these prompts.
+export function instructionHasMultipleThresholds(instruction: string | undefined): boolean {
+  const normalized = (instruction ?? '').toLowerCase();
+  const dollarValues = [...normalized.matchAll(/\$\s*([0-9]+(?:\.[0-9]+)?)/g)]
+    .map((match) => Number.parseFloat(match[1] ?? ''))
+    .filter(Number.isFinite);
+  const distinct = new Set(dollarValues);
+  if (distinct.size > 1) return true;
+  // Even with a single dollar threshold, a non-dollar numeric threshold counts as a
+  // second rule (e.g. "Fear & Greed above 20" alongside "$X less than $20").
+  // Detect "<keyword> above|below|over|under <number>" patterns where the keyword
+  // is a known non-price metric.
+  const nonDollarMetricMatches = normalized.match(
+    /\b(fear\s*(?:and|&)?\s*greed|dominance|market\s+cap|apr|apy|tvl|age|days?|hours?)\b[\s\S]{0,40}\b(above|below|over|under|less\s+than|more\s+than|greater\s+than|>|<)\b[\s\S]{0,15}\d/g,
+  );
+  if (nonDollarMetricMatches && nonDollarMetricMatches.length > 0 && distinct.size >= 1) return true;
+  return false;
+}
+
 export function extractThresholdRule(instruction: string | undefined): ThresholdRule | undefined {
+  // Multi-rule prompts are out of scope for the single-threshold reconciler. Return
+  // undefined so the model's own decision stands. See instructionHasMultipleThresholds.
+  if (instructionHasMultipleThresholds(instruction)) return undefined;
   const normalized = (instruction ?? '').toLowerCase();
   const threshold = extractInstructionThreshold(normalized);
   if (threshold === undefined) return undefined;
@@ -125,6 +154,13 @@ export function extractThresholdRule(instruction: string | undefined): Threshold
     /\b(under|below|less\s+than|cheaper\s+than|<)\b[\s\S]{0,80}\b(deny|block|reject|fail|don'?t\s+approve|do\s+not\s+approve)\b/.test(normalized);
   const denyAbove = /\b(deny|block|reject|fail|don'?t\s+approve|do\s+not\s+approve)\b[\s\S]{0,80}\b(over|above|more\s+than|greater\s+than|>)\b/.test(normalized) ||
     /\b(over|above|more\s+than|greater\s+than|>)\b[\s\S]{0,80}\b(deny|block|reject|fail|don'?t\s+approve|do\s+not\s+approve)\b/.test(normalized);
+  // If both approve-below and approve-above keywords appear in the same prompt, the
+  // intent is ambiguous (likely two rules with different directions). Defer to the
+  // model rather than guessing — multi-direction prompts should be caught by the
+  // multi-threshold check above, but this is a defensive fallback for edge cases
+  // where two rules share the same $ value.
+  if (approveBelow && approveAbove) return undefined;
+  if (denyBelow && denyAbove) return undefined;
   if (approveBelow || denyAbove) return { threshold, approveWhen: 'below' };
   if (approveAbove || denyBelow) return { threshold, approveWhen: 'above' };
   return undefined;
