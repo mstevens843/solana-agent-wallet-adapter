@@ -23,7 +23,12 @@ import {
 } from './workflowValidation.js';
 import { redactSecrets } from './redaction.js';
 
-const MAX_JSON_BYTES = 64 * 1024;
+// Bumped 64 KB → 1 MB to accommodate AI workflow payloads. Device Agent "Cloud
+// synced" drafts include the full AgentPlan + agentReview (with 12-25 findings,
+// research evidence, citations) and were intermittently hitting 413 on Render.
+// Mirrors the cap in cloud/router.ts. Per-payload type-level validation (Zod
+// schemas in workflowSchemas) still constrains the shape regardless of size.
+const MAX_JSON_BYTES = 1024 * 1024;
 
 export interface WorkflowRouteContext {
   store?: WorkflowStore;

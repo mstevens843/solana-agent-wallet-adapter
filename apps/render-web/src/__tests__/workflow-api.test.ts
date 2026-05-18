@@ -133,7 +133,10 @@ describe('cloud one-time workflow API', () => {
       expect(malformedId.status).toBe(400);
       expect(malformedId.body.error).toBe('invalid_id');
 
-      const oversized = await postJson(port, '/api/plans', { value: 'x'.repeat(70 * 1024) }, walletA);
+      // MAX_JSON_BYTES bumped from 64 KB → 1 MB in workflowRoutes.ts (Phase 6
+      // fix — device-agent cloud-sync drafts with research evidence + 12-25
+      // findings were intermittently hitting 413). Send >1 MB to trip the cap.
+      const oversized = await postJson(port, '/api/plans', { value: 'x'.repeat(1100 * 1024) }, walletA);
       expect(oversized.status).toBe(413);
       expect(oversized.body.error).toBe('body_too_large');
     });
