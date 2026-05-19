@@ -7559,6 +7559,9 @@ function workflowSourceStorageBadge(source?: WorkflowRecordSource): StorageDurab
 }
 
 function generatedPlanStorageBadge(record: GeneratedPlanRecord): StorageDurabilityBadge {
+  if (record.workflowSource === 'cloud' && record.cloudSyncStatus === 'pending') {
+    return storageBadge('cloud-pending', 'Signed locally — cloud sync will retry when reachable.');
+  }
   return workflowSourceStorageBadge(record.workflowSource ?? 'browser');
 }
 
@@ -21585,7 +21588,9 @@ async function runQueueAgentPlan(): Promise<void> {
     if (response.mode === 'local-bridge') {
       await refreshInboxData();
     } else if (response.mode === 'agentic-cloud') {
-      await refreshCloudWorkspaceData();
+      // Queue already succeeded cloud-side. A transient refresh failure must not
+      // roll the success back — swallow CloudUnreachableError (and other refresh errors).
+      await refreshCloudWorkspaceData().catch(() => undefined);
     }
     pushToast(
       'success',
@@ -22697,7 +22702,9 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
     if (response.mode === 'local-bridge') {
       await refreshInboxData();
     } else if (response.mode === 'agentic-cloud') {
-      await refreshCloudWorkspaceData();
+      // Queue already succeeded cloud-side. A transient refresh failure must not
+      // roll the success back — swallow CloudUnreachableError (and other refresh errors).
+      await refreshCloudWorkspaceData().catch(() => undefined);
     }
     pushToast(
       'success',
@@ -23650,19 +23657,30 @@ async function connectorReadReceiptForPlan(
   const question = normalizedPythReadQuestion(plan.parameters.question);
   const request = pythConnectorReadRequest(plan, question);
   const source = connectorReadSourceForPlan(record);
-  const response = source === 'cloud'
-    ? await cloudRequest<Record<string, unknown>>('/api/connector/read-facts', {
-        method: 'POST',
-        body: JSON.stringify({
-          ...request,
-          cluster: record?.cluster ?? state.cluster,
-          walletAddress: state.address,
-        }),
-      })
-    : await bridgeRequest<Record<string, unknown>>('/bridge/action/connector-read-facts', {
-        method: 'POST',
-        body: JSON.stringify(request),
-      });
+  // Degraded proof: neither cloud nor bridge available. Sign without oracle facts
+  // rather than blocking the wallet signature.
+  if (source === undefined) return undefined;
+  let response: Record<string, unknown>;
+  try {
+    response = source === 'cloud'
+      ? await cloudRequest<Record<string, unknown>>('/api/connector/read-facts', {
+          method: 'POST',
+          body: JSON.stringify({
+            ...request,
+            cluster: record?.cluster ?? state.cluster,
+            walletAddress: state.address,
+          }),
+        })
+      : await bridgeRequest<Record<string, unknown>>('/bridge/action/connector-read-facts', {
+          method: 'POST',
+          body: JSON.stringify(request),
+        });
+  } catch (err) {
+    // Transport-level cloud failure → fall back to degraded proof rather than failing
+    // the wallet sign. Real cloud-side errors (4xx/5xx) still surface.
+    if (isCloudUnreachableError(err)) return undefined;
+    throw err;
+  }
   const facts = connectorFactsFromReadResponse(response);
   if (!facts.length) {
     throw new Error('Pyth did not return connector facts for this price feed.');
@@ -23729,7 +23747,7 @@ function pythConnectorReadRequest(plan: AgentPlan, question: PythReadQuestion): 
   }) as Record<string, unknown>;
 }
 
-function connectorReadSourceForPlan(record: GeneratedPlanRecord | undefined): 'cloud' | 'local-bridge' {
+function connectorReadSourceForPlan(record: GeneratedPlanRecord | undefined): 'cloud' | 'local-bridge' | undefined {
   if (record?.workflowSource === 'local-bridge' && state.bridgeActive && state.bridgeToken && isTrustedBridgeUrl(state.bridgeUrl)) {
     return 'local-bridge';
   }
@@ -23740,7 +23758,10 @@ function connectorReadSourceForPlan(record: GeneratedPlanRecord | undefined): 'c
     return 'local-bridge';
   }
   if (cloudSessionMatchesWallet()) return 'cloud';
-  throw new Error('Pyth read proofs need Agentic Cloud sign-in or a connected private local bridge to fetch fresh oracle facts.');
+  // Neither cloud nor bridge is available. Signal degraded proof — caller will sign
+  // without oracle facts rather than block the wallet operation. Wallet ops must remain
+  // independent of cloud reachability.
+  return undefined;
 }
 
 function connectorFactsFromReadResponse(response: unknown): JsonObject[] {
@@ -28282,7 +28303,7 @@ function hostedAiRequestOptions(options: { signal?: AbortSignal } = {}) {
 // Wallet runners catch this specifically to keep local sign/connect/tx success from
 // being reported as failure when only the post-success cloud sync hit a transport error.
 class CloudUnreachableError extends Error {
-  readonly cause: unknown;
+  override readonly cause: unknown;
   constructor(message: string, cause: unknown) {
     super(message);
     this.name = 'CloudUnreachableError';
