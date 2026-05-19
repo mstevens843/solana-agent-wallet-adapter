@@ -51,10 +51,32 @@ object WalletRegistry {
         return lower.contains("backpack") || lower.contains("jupiter") || lower.contains("jup")
     }
 
+    // Wallets whose MWA `sign_messages` either hangs or returns a Close-only approval
+    // sheet with `CancellationException (no message)` and no protocol-level reply.
+    //   • Phantom — advertises only `supports_sign_and_send_transactions`.
+    //   • Solflare — advertises only `solana:signTransactions`.
+    //   • Seed Vault — on Seeker hardware the Seed Management UI renders with only a
+    //     Close button when invoked via sign_messages, even though `sign_transactions`
+    //     surfaces the normal two-tap + biometric approval. Reference apps don't
+    //     exercise sign_messages with Seed Vault, which is why this isn't in
+    //     grant-godot/KNOWN_ISSUES.md.
+    // Callers should use [MwaController.signProofMessage] (memo-tx fallback) or
+    // [MemoProofRouter.useMemoTxFallback] instead of [MwaController.signMessages] for
+    // these wallets.
     fun messageSigningUnsupported(packageName: String): Boolean {
         val lower = packageName.lowercase()
-        return lower.contains("phantom") || lower.contains("solflare")
+        return lower.contains("phantom") ||
+            lower.contains("solflare") ||
+            lower.contains("seedvault")
     }
 
-    fun supportsSiws(packageName: String): Boolean = !packageName.lowercase().contains("solflare")
+    // Wallets whose MWA `sign_in` path falls back to `sign_messages` (per the Kotlin
+    // clientlib's CAIP-122 fallback when the wallet doesn't return a native
+    // signInResult) and therefore inherits the same hung-approval failure mode. Solflare
+    // historically; Seed Vault joins the list on the same Seeker-hardware evidence as
+    // [messageSigningUnsupported] above.
+    fun supportsSiws(packageName: String): Boolean {
+        val lower = packageName.lowercase()
+        return !lower.contains("solflare") && !lower.contains("seedvault")
+    }
 }

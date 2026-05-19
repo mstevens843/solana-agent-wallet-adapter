@@ -11,6 +11,8 @@ import {
   type WalletBackend,
 } from '@solana-agent-wallet-adapter/core';
 
+import { androidWalletDisplayNameFromStatus } from './walletBranding.js';
+
 export interface AndroidNativeEnvironment {
   isAndroidNative: boolean;
   bridgeAvailable: boolean;
@@ -61,6 +63,12 @@ interface AndroidMwaStatus {
   accountLabel?: string;
   cachedCount: number;
   capabilities?: AdapterCapabilities;
+}
+
+interface AndroidNativeSignProofResult {
+  signature: string;
+  encoding?: string;
+  transactionBase64?: string;
 }
 
 const ANDROID_NATIVE_TIMEOUT_MS = 120_000;
@@ -273,6 +281,66 @@ export class AndroidNativeWalletBackend implements WalletBackend {
         recoverable: false,
       },
     });
+  }
+
+  /**
+   * Signs an ownership-proof message via the native bridge.
+   *
+   * Native owns the routing: wallets that support `sign_messages` over MWA get the
+   * UTF-8 ed25519 message-signing path and return `encoding: "utf8"` (omitted from
+   * the JSON when default-stripped). Phantom, Solflare, and Seed Vault (Seeker) get
+   * a memo-only legacy transaction whose memo data is the proof bytes — they return
+   * `encoding: "tx-memo-proof"` together with `transactionBase64` (the full
+   * never-broadcast signed tx) so the server-side verifier can extract the memo and
+   * ed25519-verify the signature over the transaction message bytes.
+   */
+  async signProof(
+    message: string,
+    summary?: string,
+  ): Promise<{
+    signature: string;
+    encoding: 'utf8' | 'tx-memo-proof';
+    transactionBase64?: string;
+  }> {
+    if (!message) {
+      throw new ProtocolError('invalid_request', 'signProof requires a non-empty message.');
+    }
+    await this.getAddress();
+    const requestId = `android-mwa-sign-proof-${Date.now()}-${nextRequestNonce++}`;
+    const nativeRequest: Record<string, unknown> = {
+      id: requestId,
+      kind: 'sign_proof',
+      payload: { data: message, encoding: 'utf8' },
+      cluster: this.cluster,
+      ...this.nativeRpcContext(),
+    };
+    if (summary && summary.trim().length > 0) {
+      nativeRequest.display = { summary };
+    }
+    logAndroidNative('signProof', 'START', {
+      requestId,
+      cluster: this.cluster,
+      messageChars: message.length,
+    });
+    const result = await androidNativeRequest<AndroidNativeSignProofResult>('sign', nativeRequest);
+    const encoding: 'utf8' | 'tx-memo-proof' =
+      result.encoding === 'tx-memo-proof' ? 'tx-memo-proof' : 'utf8';
+    if (encoding === 'tx-memo-proof' && !result.transactionBase64) {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        'Android native MWA returned a tx-memo-proof result without transactionBase64.',
+      );
+    }
+    logAndroidNative('signProof', 'SUCCESS', {
+      requestId,
+      encoding,
+      hasTransactionBase64: Boolean(result.transactionBase64),
+    });
+    return {
+      signature: result.signature,
+      encoding,
+      ...(result.transactionBase64 && { transactionBase64: result.transactionBase64 }),
+    };
   }
 
   async disconnect(): Promise<void> {
@@ -518,13 +586,7 @@ function isNativeMwaError(value: unknown): value is NativeMwaError {
 }
 
 function walletNameFromStatus(status: AndroidMwaStatus | null): string {
-  const packageName = status?.walletPackage?.toLowerCase() ?? '';
-  if (packageName.includes('phantom')) return 'Phantom';
-  if (packageName.includes('solflare')) return 'Solflare';
-  if (packageName.includes('backpack')) return 'Backpack';
-  if (packageName.includes('jupiter')) return 'Jupiter';
-  if (status?.accountLabel) return status.accountLabel;
-  return 'Mobile Wallet Adapter';
+  return androidWalletDisplayNameFromStatus(status);
 }
 
 function logAndroidNative(

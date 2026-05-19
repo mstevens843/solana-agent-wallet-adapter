@@ -69,13 +69,15 @@ data class AgentMwaSigningResult(
     // a transaction's message bytes (sign-and-send / sign-transaction paths — the
     // server reconstructs the payload itself).
     //
-    // "transaction_memo" indicates the Phantom/Solflare ownership-proof fallback:
-    // because those wallets don't implement sign_messages over MWA, the dApp built
-    // a memo-only legacy transaction containing the proof string as the memo data
+    // "tx-memo-proof" indicates the Phantom/Solflare/Seed-Vault ownership-proof
+    // fallback: those wallets either don't implement sign_messages over MWA or do
+    // so in a way that hangs/returns CancellationException, so the dApp built a
+    // memo-only legacy transaction containing the proof string as the memo data
     // and asked the wallet to sign it. The signed transaction is NEVER broadcast.
     // [transactionBase64] is the full signed transaction so the server can extract
     // the memo and ed25519-verify the signature against the transaction message
-    // bytes. See `apps/render-web/src/cloud/auth.ts` verifyWalletSignature.
+    // bytes. See `apps/render-web/src/cloud/auth.ts` verifyWalletSignature; the JS
+    // bridge forwards this token to the verifier as `proofEncoding`.
     val encoding: String = "utf8",
     val transactionBase64: String? = null,
 )

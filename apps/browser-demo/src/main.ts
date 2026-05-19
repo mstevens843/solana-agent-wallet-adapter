@@ -376,11 +376,14 @@ import './devTabs/index.js';
 import { setCloudWalletBridge } from './cloudWalletBridge.js';
 import { mobileWorkspaceMoreMenuItems, workspaceMoreMenuItems, type WorkspaceMoreMenuItem } from './workspaceMore.js';
 import { setProofSigningContext, signWalletProofMessage } from './walletProofSigning.js';
+import { walletLogoIdForProviderName } from './walletBranding.js';
 
 setProofSigningContext({
   getClient: requireClient,
   getAppState: () => state,
   getLatestBlockhash: (cluster) => browserLatestBlockhash(cluster),
+  getAndroidProofBackend: () =>
+    walletBackend instanceof AndroidNativeWalletBackend ? walletBackend : null,
 });
 
 setCloudWalletBridge({
@@ -1137,6 +1140,7 @@ type BrandLogoId =
   | 'realms'
   | 'sanctum'
   | 'save'
+  | 'seedVault'
   | 'solana'
   | 'solanaMobile'
   | 'solflare'
@@ -1169,6 +1173,7 @@ const BRAND_LOGOS: Record<BrandLogoId, string> = {
   realms: new URL('./assets/logos/realms.svg', import.meta.url).href,
   sanctum: new URL('./assets/logos/sanctum.svg', import.meta.url).href,
   save: new URL('./assets/logos/save.svg', import.meta.url).href,
+  seedVault: new URL('./assets/logos/seed-vault.svg', import.meta.url).href,
   solana: new URL('./assets/logos/solana.svg', import.meta.url).href,
   solanaMobile: new URL('./assets/logos/solana-mobile.svg', import.meta.url).href,
   solflare: new URL('./assets/logos/solflare.svg', import.meta.url).href,
@@ -3919,12 +3924,17 @@ async function bootstrap(): Promise<void> {
   }
   await refreshAndroidNativeCacheState();
   if (state.androidNativeEnvironment.isAndroidNative) {
-    await restoreAndroidNativeSession();
+    await restoreAndroidNativeSession().catch((err) => {
+      console.warn('[bootstrap] restoreAndroidNativeSession failed', err);
+      state.androidNativeStatus = 'Could not restore the cached Android MWA authorization. Tap Discover to reconnect.';
+    });
   }
   state.iosNativeEnvironment = detectIosNativeEnvironment();
   await refreshIosNativeCacheState();
   if (state.iosNativeEnvironment.isIosNative) {
-    await restoreIosNativeSession();
+    await restoreIosNativeSession().catch((err) => {
+      console.warn('[bootstrap] restoreIosNativeSession failed', err);
+    });
   }
   if (!state.androidNativeEnvironment.isAndroidNative && !state.iosNativeEnvironment.isIosNative) {
     await restoreBrowserWalletSession();
@@ -7109,12 +7119,7 @@ function providerInitials(name: string): string {
 }
 
 function walletLogoIdForName(name: string): BrandLogoId | undefined {
-  const normalized = name.toLowerCase();
-  if (normalized.includes('backpack')) return 'backpack';
-  if (normalized.includes('phantom')) return 'phantom';
-  if (normalized.includes('solflare')) return 'solflare';
-  if (normalized.includes('jupiter')) return 'jupiter';
-  return undefined;
+  return walletLogoIdForProviderName(name);
 }
 
 function missionStrip(): string {
@@ -32434,56 +32439,64 @@ function shouldRetryTransactionSend(err: unknown, signedTxid?: string, attemptCo
 }
 
 async function browserLatestBlockhash(cluster: Cluster): Promise<BrowserLatestBlockhash> {
-  try {
-    return await sameOriginTransactionRequest<BrowserLatestBlockhash>('/api/solana/latest-blockhash', { cluster });
-  } catch (err) {
-    const bridgeResponse = await bridgeSolanaRequest<BrowserLatestBlockhash>('/bridge/solana/latest-blockhash', { cluster }, cluster);
-    if (bridgeResponse) return bridgeResponse;
-    if (canUseDirectBrowserRpc(cluster)) {
-      return browserActionConnection(cluster).getLatestBlockhash('confirmed');
+  let firstErr: unknown;
+  if (!state.androidNativeEnvironment.isAndroidNative) {
+    try {
+      return await sameOriginTransactionRequest<BrowserLatestBlockhash>('/api/solana/latest-blockhash', { cluster });
+    } catch (err) {
+      firstErr = err;
     }
-    throw transactionApiUnavailableError(err);
   }
+  const bridgeResponse = await bridgeSolanaRequest<BrowserLatestBlockhash>('/bridge/solana/latest-blockhash', { cluster }, cluster);
+  if (bridgeResponse) return bridgeResponse;
+  if (canUseDirectBrowserRpc(cluster)) {
+    return browserActionConnection(cluster).getLatestBlockhash('confirmed');
+  }
+  throw transactionApiUnavailableError(firstErr ?? new Error('Latest-blockhash transports unavailable.'));
 }
 
 async function broadcastSignedBrowserTransaction(cluster: Cluster, signedTransactionBase64: string): Promise<string> {
   const request = { cluster, signedTransactionBase64 };
   let firstAuthError: unknown;
-  try {
-    const response = await sameOriginTransactionRequest<BrowserSendTransactionResponse>('/api/solana/send-transaction', request);
-    return requiredResponseString(response.txid ?? response.signature, 'Transaction signature');
-  } catch (err) {
-    if (isRpcAuthRejected(err)) firstAuthError = err;
-    let bridgeResponse: BrowserSendTransactionResponse | undefined;
+  let firstErr: unknown;
+  if (!state.androidNativeEnvironment.isAndroidNative) {
     try {
-      bridgeResponse = await bridgeSolanaRequest<BrowserSendTransactionResponse>('/bridge/solana/send-transaction', request, cluster);
-    } catch (bridgeErr) {
-      if (isRpcAuthRejected(bridgeErr) && !firstAuthError) firstAuthError = bridgeErr;
+      const response = await sameOriginTransactionRequest<BrowserSendTransactionResponse>('/api/solana/send-transaction', request);
+      return requiredResponseString(response.txid ?? response.signature, 'Transaction signature');
+    } catch (err) {
+      firstErr = err;
+      if (isRpcAuthRejected(err)) firstAuthError = err;
     }
-    if (bridgeResponse) {
-      return requiredResponseString(bridgeResponse.txid ?? bridgeResponse.signature, 'Transaction signature');
-    }
-    if (canUseDirectBrowserRpc(cluster)) {
-      try {
-        return await browserActionConnection(cluster).sendRawTransaction(decodeBase64(signedTransactionBase64), {
-          preflightCommitment: 'confirmed',
-          maxRetries: 5,
-        });
-      } catch (directErr) {
-        if (isRpcAuthRejected(directErr)) {
-          return broadcastViaPublicRpcFallback(cluster, signedTransactionBase64, directErr);
-        }
-        if (firstAuthError) {
-          return broadcastViaPublicRpcFallback(cluster, signedTransactionBase64, firstAuthError);
-        }
-        throw directErr;
-      }
-    }
-    if (firstAuthError) {
-      return broadcastViaPublicRpcFallback(cluster, signedTransactionBase64, firstAuthError);
-    }
-    throw transactionApiUnavailableError(err);
   }
+  let bridgeResponse: BrowserSendTransactionResponse | undefined;
+  try {
+    bridgeResponse = await bridgeSolanaRequest<BrowserSendTransactionResponse>('/bridge/solana/send-transaction', request, cluster);
+  } catch (bridgeErr) {
+    if (isRpcAuthRejected(bridgeErr) && !firstAuthError) firstAuthError = bridgeErr;
+  }
+  if (bridgeResponse) {
+    return requiredResponseString(bridgeResponse.txid ?? bridgeResponse.signature, 'Transaction signature');
+  }
+  if (canUseDirectBrowserRpc(cluster)) {
+    try {
+      return await browserActionConnection(cluster).sendRawTransaction(decodeBase64(signedTransactionBase64), {
+        preflightCommitment: 'confirmed',
+        maxRetries: 5,
+      });
+    } catch (directErr) {
+      if (isRpcAuthRejected(directErr)) {
+        return broadcastViaPublicRpcFallback(cluster, signedTransactionBase64, directErr);
+      }
+      if (firstAuthError) {
+        return broadcastViaPublicRpcFallback(cluster, signedTransactionBase64, firstAuthError);
+      }
+      throw directErr;
+    }
+  }
+  if (firstAuthError) {
+    return broadcastViaPublicRpcFallback(cluster, signedTransactionBase64, firstAuthError);
+  }
+  throw transactionApiUnavailableError(firstErr ?? new Error('Send-transaction transports unavailable.'));
 }
 
 // Fallback sender: when the configured RPC refuses with HTTP 401/403/451,
@@ -32528,24 +32541,31 @@ function describeRpcEndpoint(url: string): string {
 
 async function browserSignatureStatus(cluster: Cluster, txid: string): Promise<BrowserSignatureStatusResponse> {
   const request = { cluster, txid };
-  try {
-    return await sameOriginTransactionRequest<BrowserSignatureStatusResponse>('/api/solana/signature-status', request);
-  } catch (err) {
-    const bridgeResponse = await bridgeSolanaRequest<BrowserSignatureStatusResponse>('/bridge/solana/signature-status', request, cluster);
-    if (bridgeResponse) return bridgeResponse;
-    if (canUseDirectBrowserRpc(cluster)) {
-      const status = (await browserActionConnection(cluster).getSignatureStatuses([txid], {
-        searchTransactionHistory: true,
-      })).value[0];
-      if (!status) return { txStatus: 'pending', found: false };
-      if (status.err) return { txStatus: 'failed', found: true, confirmationStatus: status.confirmationStatus ?? undefined, error: stableJson(status.err) };
-      if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
-        return { txStatus: 'confirmed', found: true, confirmationStatus: status.confirmationStatus };
-      }
-      return { txStatus: 'pending', found: true, confirmationStatus: status.confirmationStatus ?? undefined };
+  let firstErr: unknown;
+  // Android TWA has no /api/* server reachable from the WebView's agentic.local origin;
+  // skipping the same-origin attempt avoids burning ~hundreds of ms per poll iteration
+  // on a guaranteed 404 before reaching the direct-RPC fallback.
+  if (!state.androidNativeEnvironment.isAndroidNative) {
+    try {
+      return await sameOriginTransactionRequest<BrowserSignatureStatusResponse>('/api/solana/signature-status', request);
+    } catch (err) {
+      firstErr = err;
     }
-    throw transactionApiUnavailableError(err);
   }
+  const bridgeResponse = await bridgeSolanaRequest<BrowserSignatureStatusResponse>('/bridge/solana/signature-status', request, cluster);
+  if (bridgeResponse) return bridgeResponse;
+  if (canUseDirectBrowserRpc(cluster)) {
+    const status = (await browserActionConnection(cluster).getSignatureStatuses([txid], {
+      searchTransactionHistory: true,
+    })).value[0];
+    if (!status) return { txStatus: 'pending', found: false };
+    if (status.err) return { txStatus: 'failed', found: true, confirmationStatus: status.confirmationStatus ?? undefined, error: stableJson(status.err) };
+    if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
+      return { txStatus: 'confirmed', found: true, confirmationStatus: status.confirmationStatus };
+    }
+    return { txStatus: 'pending', found: true, confirmationStatus: status.confirmationStatus ?? undefined };
+  }
+  throw transactionApiUnavailableError(firstErr ?? new Error('Signature status transports unavailable.'));
 }
 
 async function bridgeSolanaRequest<T>(

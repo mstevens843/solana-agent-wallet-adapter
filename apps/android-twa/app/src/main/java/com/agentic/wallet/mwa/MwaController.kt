@@ -283,6 +283,10 @@ class MwaController(
                 // Prefer the wallet's native sign_in_result. If the wallet doesn't return
                 // one (Jupiter etc.), the Kotlin clientlib falls back to sign_messages
                 // with a CAIP-122 message and constructs SignInResult from the response.
+                // Wallets that fail `sign_messages` over MWA (Solflare, Seed Vault — see
+                // [WalletRegistry.supportsSiws]) are short-circuited above so they never
+                // reach this fallback; callers must use plain [connect] + [signProofMessage]
+                // (memo-tx) for those wallets.
                 val nativeSignIn = result.authResult.signInResult
                 val signIn = nativeSignIn ?: result.payload
                 val path = if (nativeSignIn != null) "native" else "fallback"
@@ -446,13 +450,18 @@ class MwaController(
             val record = requireActive("signMessages")
             if (WalletRegistry.messageSigningUnsupported(record.walletPackage)) {
                 // Phantom and Solflare advertise no `solana:signMessages` feature in their
-                // MWA `get_capabilities` reply. The browser-side ownership-proof helper
-                // (`apps/browser-demo/src/walletProofSigning.ts`) detects these wallets
-                // and substitutes a memo-only `sign_transactions` call instead of calling
-                // this path — see grant-godot/KNOWN_ISSUES.md for the wallet-capability
-                // evidence. Any caller reaching this branch bypassed that helper, so we
-                // fail fast with an actionable error rather than silently building a tx
-                // that the unaware caller won't know how to forward to the server verifier.
+                // MWA `get_capabilities` reply (see grant-godot/KNOWN_ISSUES.md). Seed
+                // Vault on Seeker hardware advertises sign_messages but the Seed
+                // Management UI surfaces only a Close button when invoked through that
+                // path — failure observed on real-device testing; not captured by the
+                // reference apps because they don't exercise sign_messages with Seed
+                // Vault. The browser-side ownership-proof helper
+                // (`apps/browser-demo/src/walletProofSigning.ts`) and the native bridge's
+                // [signProofMessage] both substitute a memo-only `sign_transactions` call
+                // for all three wallets. Any caller reaching this branch bypassed those
+                // helpers, so we fail fast with an actionable error rather than silently
+                // building a tx that the unaware caller won't know how to forward to the
+                // server verifier.
                 throwOperation(
                     "signMessages",
                     "FAIL_WALLET_UNSUPPORTED",
@@ -559,6 +568,102 @@ class MwaController(
             }
         }
 
+    /**
+     * Ownership-proof signing path. For wallets that implement `sign_messages` over MWA
+     * (Backpack, Jupiter, ...) this delegates straight to [signMessage]. For wallets
+     * whose `sign_messages` either advertises false (Phantom, Solflare) or hangs with a
+     * Close-only approval sheet returning `CancellationException` (Seed Vault on Seeker
+     * hardware), this builds a memo-only legacy transaction whose memo data is the same
+     * UTF-8 proof bytes, signs it via `sign_transactions`, and returns the ed25519
+     * signature together with the full signed transaction (base64). The transaction is
+     * never broadcast; the server-side `verifyTxMemoProof` extracts the memo and
+     * ed25519-verifies the signature over the compiled message bytes.
+     *
+     * Routing decision and byte-layout helpers live in [MemoProofRouter]; see
+     * `apps/android-twa/app/src/main/java/com/agentic/wallet/mwa/MemoProofTx.kt` for the
+     * wire-format invariants (account-key order in particular).
+     */
+    suspend fun signProofMessage(sender: ActivityResultSender, message: String, rpcUrl: String? = null): AgentMwaSigningResult {
+        if (message.isEmpty()) {
+            throwOperation(
+                "signProofMessage",
+                "FAIL_INVALID_PAYLOADS",
+                MwaOperationException("INVALID_PAYLOADS", "signProofMessage requires a non-empty message."),
+                mapOf("messageChars" to message.length),
+            )
+        }
+        val record = requireActive("signProofMessage")
+        if (!MemoProofRouter.useMemoTxFallback(record.walletPackage)) {
+            AgentMwaLog.info(
+                "MwaController",
+                "signProofMessage",
+                "STEP_ROUTE_SIGN_MESSAGE",
+                "wallet supports sign_messages; delegating",
+                authRecordMetadata(record) + mapOf("messageChars" to message.length),
+            )
+            return signMessage(sender, message, rpcUrl)
+        }
+        val resolvedRpcUrl = resolveRpcUrl(record.cluster, rpcUrl)
+        val blockhashBytes = fetchLatestBlockhashBytes(resolvedRpcUrl)
+        val memoBytes = message.toByteArray(Charsets.UTF_8)
+        val unsignedTx = try {
+            MemoProofRouter.buildUnsignedMemoTx(record.publicKeyBytes, blockhashBytes, message)
+        } catch (err: IllegalArgumentException) {
+            throwOperation(
+                "signProofMessage",
+                "FAIL_BUILD_MEMO_TX",
+                MwaOperationException("INVALID_PAYLOADS", "Failed to build memo proof transaction: ${err.message}", err),
+                authRecordMetadata(record) + mapOf("memoLen" to memoBytes.size, "feePayerLen" to record.publicKeyBytes.size, "blockhashLen" to blockhashBytes.size),
+            )
+        }
+        AgentMwaLog.info(
+            "MwaController",
+            "signProofMessage",
+            "STEP_MEMO_TX_BUILT",
+            "memo-tx built; opening wallet sign_transactions",
+            authRecordMetadata(record) + mapOf(
+                "rpc" to resolvedRpcUrl,
+                "blockhashBase58Head" to Base58.encode(blockhashBytes).take(8),
+                "memoBytes" to memoBytes.size,
+                "memoSha256_8" to sha256First8(memoBytes),
+                "txBytes" to unsignedTx.size,
+            ),
+        )
+        val signed = signTransactions(sender, arrayOf(unsignedTx)).first()
+        val signedTxBytes = try {
+            Base64.decode(signed.signature, Base64.DEFAULT)
+        } catch (err: IllegalArgumentException) {
+            throwOperation(
+                "signProofMessage",
+                "FAIL_DECODE_SIGNED_TX",
+                MwaOperationException("EMPTY_SIGNATURE", "Wallet returned a signed transaction that is not valid base64.", err),
+                authRecordMetadata(record),
+            )
+        }
+        val result = try {
+            MemoProofRouter.resultFromSignedTx(signed.signature, signedTxBytes)
+        } catch (err: IllegalArgumentException) {
+            throwOperation(
+                "signProofMessage",
+                "FAIL_EXTRACT_SIGNATURE",
+                MwaOperationException("EMPTY_SIGNATURE", "Wallet returned a signed transaction with no extractable signature.", err),
+                authRecordMetadata(record) + mapOf("signedTxBytes" to signedTxBytes.size),
+            )
+        }
+        AgentMwaLog.info(
+            "MwaController",
+            "signProofMessage",
+            "SUCCESS",
+            "memo-tx proof signed",
+            authRecordMetadata(record) + mapOf(
+                "signatureBase58" to result.signature,
+                "transactionBytes" to signedTxBytes.size,
+                "transactionSha256_8" to sha256First8(signedTxBytes),
+            ),
+        )
+        return result
+    }
+
     suspend fun signAndSendTransaction(sender: ActivityResultSender, transaction: ByteArray, rpcUrl: String? = null): AgentMwaSigningResult =
         signAndSendTransactions(sender, arrayOf(transaction), rpcUrl).first()
 
@@ -647,6 +752,15 @@ class MwaController(
                 val transaction = decodePayload(request.payloadData, request.payloadEncoding)
                 AgentMwaLog.info("MwaController", "signBridgeRequest", "STEP_DECODED_TRANSACTION", "bridge transaction payload decoded", AgentMwaLog.transactionMetadata("transaction", transaction) + bridgeRequestMetadata(request))
                 signTransaction(sender, transaction)
+            }
+            "sign_proof" -> {
+                // Routes through [signProofMessage] which dispatches per wallet capability:
+                // sign-messages-capable wallets sign the UTF-8 bytes directly; Phantom/Solflare
+                // get a memo-tx fallback. The dApp passes the proof bytes the same way as
+                // sign_message; native owns the routing so JS doesn't need wallet detection.
+                val message = decodePayload(request.payloadData, request.payloadEncoding).toString(Charsets.UTF_8)
+                AgentMwaLog.info("MwaController", "signBridgeRequest", "STEP_DECODED_PROOF", "bridge proof payload decoded", mapOf("messageChars" to message.length) + bridgeRequestMetadata(request))
+                signProofMessage(sender, message, request.rpcUrl)
             }
             "sign_and_send_transaction" -> {
                 val transaction = decodePayload(request.payloadData, request.payloadEncoding)
@@ -1052,6 +1166,33 @@ class MwaController(
     } catch (err: Exception) {
         AgentMwaLog.warn("MwaController", "fetchLatestContextSlot", "FAIL", "context slot fetch failed", mapOf("class" to err.javaClass.simpleName, "message" to err.message))
         -1L
+    }
+
+    /**
+     * Returns a 32-byte recent blockhash for use in the never-broadcast memo proof tx.
+     * Falls back to a zero blockhash on any RPC failure — proof signing must never block
+     * on RPC because the transaction is never sent and the server-side verifier does
+     * not validate blockhash freshness (only memo content + ed25519 signature).
+     */
+    private suspend fun fetchLatestBlockhashBytes(rpcUrl: String): ByteArray = try {
+        val json = postJsonRpc(rpcUrl, "getLatestBlockhash", """[{"commitment":"confirmed"}]""")
+        val blockhashBase58 = json.optJSONObject("result")?.optJSONObject("value")?.optString("blockhash", "").orEmpty()
+        if (blockhashBase58.isBlank()) {
+            AgentMwaLog.warn("MwaController", "fetchLatestBlockhashBytes", "FAIL_EMPTY", "RPC returned no blockhash; using zero placeholder", mapOf("rpc" to rpcUrl, "response" to json))
+            ByteArray(32)
+        } else {
+            val bytes = Base58.decode(blockhashBase58)
+            if (bytes.size == 32) {
+                AgentMwaLog.info("MwaController", "fetchLatestBlockhashBytes", "DONE", "blockhash fetched", mapOf("rpc" to rpcUrl, "blockhashBase58Head" to blockhashBase58.take(8)))
+                bytes
+            } else {
+                AgentMwaLog.warn("MwaController", "fetchLatestBlockhashBytes", "FAIL_DECODE", "blockhash did not decode to 32 bytes; using zero placeholder", mapOf("rpc" to rpcUrl, "decodedLen" to bytes.size, "blockhashBase58" to blockhashBase58))
+                ByteArray(32)
+            }
+        }
+    } catch (err: Exception) {
+        AgentMwaLog.warn("MwaController", "fetchLatestBlockhashBytes", "FAIL", "blockhash fetch failed; using zero placeholder", mapOf("rpc" to rpcUrl, "class" to err.javaClass.simpleName, "message" to err.message))
+        ByteArray(32)
     }
 
     private suspend fun getConnectedBalanceLamports(record: AgentMwaAuthRecord, rpcUrl: String = record.cluster.rpcUrl()): Long = try {

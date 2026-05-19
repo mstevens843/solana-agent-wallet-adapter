@@ -42,6 +42,7 @@ import org.json.JSONException
 import org.json.JSONObject
 import java.io.FileNotFoundException
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicReference
 
 class MainActivity : ComponentActivity() {
     private lateinit var webView: WebView
@@ -55,6 +56,13 @@ class MainActivity : ComponentActivity() {
         .takeIf { it.isNotBlank() }
         ?.let { runCatching { Uri.parse(it).host?.lowercase() }.getOrNull() }
     private var didFallback = false
+
+    // Top-frame URL cache for the origin guard. WebView.getUrl() is UI-thread only and
+    // throws RuntimeException when called from the WebView's @JavascriptInterface JS
+    // thread; that throw used to surface as "Java exception was raised during method
+    // invocation" on every bridge call. We snapshot the URL from the UI thread inside
+    // WebViewClient callbacks and have isCurrentOriginAllowed() read this reference.
+    private val currentWebViewOrigin = AtomicReference<String?>(null)
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -137,6 +145,14 @@ class MainActivity : ComponentActivity() {
                     request: WebResourceRequest,
                 ): WebResourceResponse? = assetLoader.shouldInterceptRequest(request.url)
 
+                override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
+                    currentWebViewOrigin.set(url)
+                }
+
+                override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
+                    currentWebViewOrigin.set(url)
+                }
+
                 override fun onReceivedError(
                     view: WebView,
                     request: WebResourceRequest,
@@ -194,6 +210,10 @@ class MainActivity : ComponentActivity() {
 
         if (savedInstanceState == null) {
             val startUrl = if (remoteWebUrl.isNotBlank()) remoteWebUrl else LOCAL_APP_START_URL
+            // Seed the origin cache before loadUrl returns. onPageStarted will overwrite this
+            // once the page actually loads, but bridge calls during early page bootstrap need
+            // a non-null value to satisfy the origin guard.
+            currentWebViewOrigin.set(startUrl)
             webView.loadUrl(startUrl)
         }
     }
@@ -206,8 +226,7 @@ class MainActivity : ComponentActivity() {
     }
 
     internal fun isCurrentOriginAllowed(): Boolean {
-        if (!::webView.isInitialized) return false
-        val current = webView.url ?: return false
+        val current = currentWebViewOrigin.get() ?: return false
         val uri = runCatching { Uri.parse(current) }.getOrNull() ?: return false
         return isAllowedInWebView(uri)
     }
@@ -453,72 +472,108 @@ class MainActivity : ComponentActivity() {
             return false
         }
 
+        // Defense-in-depth for async bridge methods (mwaRequest, deviceAgentRequest,
+        // streamingRequest): if the synchronous origin-check throws, surface it through the
+        // JS callback bridge instead of letting it escape as a V8 "Java exception" — JS
+        // gets a proper ProtocolError it can render and recover from.
+        private fun safeCheckTrustedOrigin(method: String, requestId: String): Boolean = try {
+            checkTrustedOrigin(method)
+        } catch (err: Throwable) {
+            AgentMwaLog.failure(
+                "AndroidBridge",
+                method,
+                "SYNC_THROW",
+                "origin check threw; routing as rejected request",
+                err,
+                mapOf("method" to method, "requestId" to requestId),
+            )
+            runCatching { activity.rejectMwaRequest(requestId, err) }
+            false
+        }
+
+        // Defense-in-depth for sync return-valued bridge methods. Wraps the body so a sync
+        // throw (lateinit-not-initialized, NPE, etc.) is logged and the JS side gets the
+        // same shape as the origin-denied path instead of an opaque V8 exception.
+        private inline fun <T> safeBridge(method: String, default: T, block: () -> T): T = try {
+            block()
+        } catch (err: Throwable) {
+            AgentMwaLog.failure(
+                "AndroidBridge",
+                method,
+                "SYNC_THROW",
+                "bridge method sync body threw; returning default",
+                err,
+                mapOf("method" to method),
+            )
+            default
+        }
+
         @JavascriptInterface
-        fun openMwaExample() {
-            if (!checkTrustedOrigin("openMwaExample")) return
+        fun openMwaExample() = safeBridge("openMwaExample", Unit) {
+            if (!checkTrustedOrigin("openMwaExample")) return@safeBridge
             val intent = Intent(activity, MwaExampleActivity::class.java)
             activity.startActivity(intent)
         }
 
         @JavascriptInterface
-        fun isExampleTabEnabled(): Boolean {
-            if (!checkTrustedOrigin("isExampleTabEnabled")) return false
-            return BuildConfig.AGENTIC_ANDROID_SHOW_EXAMPLE_TAB
+        fun isExampleTabEnabled(): Boolean = safeBridge("isExampleTabEnabled", false) {
+            if (!checkTrustedOrigin("isExampleTabEnabled")) return@safeBridge false
+            BuildConfig.AGENTIC_ANDROID_SHOW_EXAMPLE_TAB
         }
 
         @JavascriptInterface
-        fun isDebugBuild(): Boolean {
-            if (!checkTrustedOrigin("isDebugBuild")) return false
-            return BuildConfig.DEBUG
+        fun isDebugBuild(): Boolean = safeBridge("isDebugBuild", false) {
+            if (!checkTrustedOrigin("isDebugBuild")) return@safeBridge false
+            BuildConfig.DEBUG
         }
 
         @JavascriptInterface
-        fun secureGet(key: String): String {
-            if (!checkTrustedOrigin("secureGet")) return ""
+        fun secureGet(key: String): String = safeBridge("secureGet", "") {
+            if (!checkTrustedOrigin("secureGet")) return@safeBridge ""
             validateSecureStoreRequest(key)
-            return activity.secureStore.get(key).orEmpty()
+            activity.secureStore.get(key).orEmpty()
         }
 
         @JavascriptInterface
-        fun secureSet(key: String, value: String): Boolean {
-            if (!checkTrustedOrigin("secureSet")) return false
+        fun secureSet(key: String, value: String): Boolean = safeBridge("secureSet", false) {
+            if (!checkTrustedOrigin("secureSet")) return@safeBridge false
             validateSecureStoreRequest(key, value)
             activity.secureStore.set(key, value)
-            return true
+            true
         }
 
         @JavascriptInterface
-        fun secureDelete(key: String): Boolean {
-            if (!checkTrustedOrigin("secureDelete")) return false
+        fun secureDelete(key: String): Boolean = safeBridge("secureDelete", false) {
+            if (!checkTrustedOrigin("secureDelete")) return@safeBridge false
             validateSecureStoreRequest(key)
             activity.secureStore.remove(key)
-            return true
+            true
         }
 
         @JavascriptInterface
-        fun deviceAgentStatus(): String {
-            if (!checkTrustedOrigin("deviceAgentStatus")) return "{}"
-            return activity.agentRuntimeController.statusJson().toString()
+        fun deviceAgentStatus(): String = safeBridge("deviceAgentStatus", "{}") {
+            if (!checkTrustedOrigin("deviceAgentStatus")) return@safeBridge "{}"
+            activity.agentRuntimeController.statusJson().toString()
         }
 
         @JavascriptInterface
-        fun deviceAgentConfigure(configJson: String): String {
-            if (!checkTrustedOrigin("deviceAgentConfigure")) return "{}"
+        fun deviceAgentConfigure(configJson: String): String = safeBridge("deviceAgentConfigure", "{}") {
+            if (!checkTrustedOrigin("deviceAgentConfigure")) return@safeBridge "{}"
             validateDeviceAgentPayload(configJson)
-            return activity.agentRuntimeController.configure(configJson).toString()
+            activity.agentRuntimeController.configure(configJson).toString()
         }
 
         @JavascriptInterface
-        fun deviceAgentStart(configJson: String): String {
-            if (!checkTrustedOrigin("deviceAgentStart")) return "{}"
+        fun deviceAgentStart(configJson: String): String = safeBridge("deviceAgentStart", "{}") {
+            if (!checkTrustedOrigin("deviceAgentStart")) return@safeBridge "{}"
             validateDeviceAgentPayload(configJson)
-            return activity.agentRuntimeController.start(activity, configJson).toString()
+            activity.agentRuntimeController.start(activity, configJson).toString()
         }
 
         @JavascriptInterface
-        fun deviceAgentStop(): String {
-            if (!checkTrustedOrigin("deviceAgentStop")) return "{}"
-            return activity.agentRuntimeController.stop(activity).toString()
+        fun deviceAgentStop(): String = safeBridge("deviceAgentStop", "{}") {
+            if (!checkTrustedOrigin("deviceAgentStop")) return@safeBridge "{}"
+            activity.agentRuntimeController.stop(activity).toString()
         }
 
         /**
@@ -539,7 +594,27 @@ class MainActivity : ComponentActivity() {
          */
         @JavascriptInterface
         fun deviceAgentRequest(requestId: String, method: String, payloadJson: String) {
-            if (!checkTrustedOrigin("deviceAgentRequest")) return
+            val originOk = try {
+                checkTrustedOrigin("deviceAgentRequest")
+            } catch (err: Throwable) {
+                AgentMwaLog.failure(
+                    "AndroidBridge",
+                    "deviceAgentRequest",
+                    "SYNC_THROW",
+                    "origin check threw; routing as rejected request",
+                    err,
+                    mapOf("requestId" to requestId, "method" to method),
+                )
+                runCatching {
+                    activity.dispatchDeviceAgentReject(
+                        requestId,
+                        code = errorCodeFor(err),
+                        message = err.message ?: err.javaClass.simpleName,
+                    )
+                }
+                return
+            }
+            if (!originOk) return
             activity.lifecycleScope.launch {
                 AgentMwaLog.info(
                     "MainActivity",
@@ -679,17 +754,18 @@ class MainActivity : ComponentActivity() {
          * when this method is absent.
          */
         @JavascriptInterface
-        fun mppRequest(requestId: String, method: String, payloadJson: String): String {
-            if (!checkTrustedOrigin("mppRequest")) {
-                return errorEnvelope("mpp", requestId, method, SecurityException("origin denied"))
+        fun mppRequest(requestId: String, method: String, payloadJson: String): String =
+            safeBridge("mppRequest", errorEnvelope("mpp", requestId, method, RuntimeException("bridge sync prelude failed"))) {
+                if (!checkTrustedOrigin("mppRequest")) {
+                    return@safeBridge errorEnvelope("mpp", requestId, method, SecurityException("origin denied"))
+                }
+                runCatching {
+                    validateScaffoldedBridgeRequest(requestId, method, payloadJson)
+                    notImplementedEnvelope("mpp", requestId, method)
+                }.getOrElse { err ->
+                    errorEnvelope("mpp", requestId, method, err)
+                }
             }
-            return runCatching {
-                validateScaffoldedBridgeRequest(requestId, method, payloadJson)
-                notImplementedEnvelope("mpp", requestId, method)
-            }.getOrElse { err ->
-                errorEnvelope("mpp", requestId, method, err)
-            }
-        }
 
         /**
          * Async bridge for streaming-payment sessions. The browser installs
@@ -699,7 +775,34 @@ class MainActivity : ComponentActivity() {
          */
         @JavascriptInterface
         fun streamingRequest(requestId: String, method: String, payloadJson: String) {
-            if (!checkTrustedOrigin("streamingRequest")) return
+            val originOk = try {
+                checkTrustedOrigin("streamingRequest")
+            } catch (err: Throwable) {
+                AgentMwaLog.failure(
+                    "AndroidBridge",
+                    "streamingRequest",
+                    "SYNC_THROW",
+                    "origin check threw; routing as rejected request",
+                    err,
+                    mapOf("requestId" to requestId, "method" to method),
+                )
+                runCatching {
+                    val code = streamingErrorCodeFor(err)
+                    val message = err.message ?: err.javaClass.simpleName
+                    activity.dispatchStreamingResolve(
+                        requestId,
+                        JSONObject()
+                            .put("ok", false)
+                            .put("bridge", "streaming")
+                            .put("requestId", requestId)
+                            .put("method", method)
+                            .put("status", safeStreamingStatusJson())
+                            .put("error", JSONObject().put("code", code).put("message", message)),
+                    )
+                }
+                return
+            }
+            if (!originOk) return
             activity.lifecycleScope.launch {
                 val envelope = try {
                     validateStreamingBridgeRequest(requestId, method, payloadJson)
@@ -838,7 +941,7 @@ class MainActivity : ComponentActivity() {
 
         @JavascriptInterface
         fun mwaRequest(requestId: String, method: String, payloadJson: String) {
-            if (!checkTrustedOrigin("mwaRequest")) return
+            if (!safeCheckTrustedOrigin("mwaRequest", requestId)) return
             activity.lifecycleScope.launch {
                 try {
                     validateNativeRequest(requestId, method, payloadJson)
@@ -1284,13 +1387,36 @@ class MainActivity : ComponentActivity() {
     private class BundledAppPathHandler(private val context: Context) : WebViewAssetLoader.PathHandler {
         override fun handle(path: String): WebResourceResponse? {
             val normalized = path.trimStart('/').ifBlank { "index.html" }
-            val assetPath = if (normalized.contains("..")) "index.html" else normalized
-            val stream = try {
-                context.assets.open(assetPath)
-            } catch (_: FileNotFoundException) {
-                context.assets.open("index.html")
+            val safePath = if (normalized.contains("..")) "index.html" else normalized
+
+            // 1. Real asset — serve as-is.
+            runCatching { context.assets.open(safePath) }
+                .getOrNull()
+                ?.let { stream -> return WebResourceResponse(mimeType(safePath), "UTF-8", stream) }
+
+            // 2. SPA route (no extension, not under /api, /assets, /bridge) — serve index.html
+            //    so client-side routing for paths like /app, /inbox keeps working.
+            val looksLikeSpaRoute = !safePath.contains('.') &&
+                !safePath.startsWith("api/") &&
+                !safePath.startsWith("assets/") &&
+                !safePath.startsWith("bridge/")
+            if (looksLikeSpaRoute) {
+                val stream = context.assets.open("index.html")
+                return WebResourceResponse("text/html", "UTF-8", stream)
             }
-            return WebResourceResponse(mimeType(assetPath), "UTF-8", stream)
+
+            // 3. Genuinely missing — return a real 404. Masquerading /api/* as index.html
+            //    breaks JS callers (signature-status polling, latest-blockhash, etc.) by
+            //    delivering HTML where they expect JSON; the content-type check throws but
+            //    only after wasting a full WebView roundtrip per poll iteration.
+            return WebResourceResponse(
+                "application/json",
+                "UTF-8",
+                404,
+                "Not Found",
+                emptyMap(),
+                java.io.ByteArrayInputStream("{\"error\":\"not_found\"}".toByteArray(Charsets.UTF_8)),
+            )
         }
 
         private fun mimeType(path: String): String =

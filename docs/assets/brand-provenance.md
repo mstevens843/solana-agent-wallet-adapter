@@ -14,6 +14,7 @@ Each production release review must verify the source below or remove the SVG im
 | `solana.svg` | Solana network and Wallet Standard context | Official Solana brand page: `https://solana.com/branding` |
 | `solana-mobile.svg` | Android MWA and Seed Vault context | Provider-site reference required before production release |
 | `solana-mobile-wordmark.svg` | Solana Mobile docs/wordmark context | Provider-site reference required before production release |
+| `seed-vault.svg` | Seed Vault Wallet context | SVG wrapper around official Seed Vault Wallet help-center favicon at `https://intercom.help/seedvaultwallet/assets/favicon`, referenced from `https://wallet-help.solanamobile.com/en/articles/11727979-understanding-and-using-seed-vault-features`. |
 | `phantom.svg` | Phantom wallet context | Provider-site reference required before production release |
 | `solflare.svg` | Solflare wallet context | Provider-site reference required before production release |
 | `backpack.svg` | Backpack wallet context | Provider-site reference required before production release |
