@@ -45,7 +45,21 @@ class MemoProofRouterTest {
     fun useMemoTxFallback_signMessagesCapableWallets() {
         assertFalse(MemoProofRouter.useMemoTxFallback(backpackRecord.walletPackage))
         assertFalse(MemoProofRouter.useMemoTxFallback("ag.jup.jupiter.android"))
-        assertFalse(MemoProofRouter.useMemoTxFallback(""))
+    }
+
+    @Test
+    fun useMemoTxFallback_blankWalletPackageRoutesToMemoTx() {
+        // Phantom and Solflare return walletUriBase=null in their MWA authorize reply
+        // and MainActivity:connect doesn't currently pass targetWalletPackage, so the
+        // cached AgentMwaAuthRecord lands with walletPackage="" for those wallets.
+        // The router must default unknown packages to the memo-tx fallback because
+        // (a) reporting "sign_messages supported" routes Phantom into a 60s hang and
+        // Solflare into a CancellationException after approval (see device logcat),
+        // and (b) every MWA wallet implements sign_transactions, so the memo-tx path
+        // works universally. Phase 2 (wallet picker) tightens this back to per-wallet
+        // routing once walletPackage is reliably populated at connect time.
+        assertTrue(MemoProofRouter.useMemoTxFallback(""))
+        assertTrue(MemoProofRouter.useMemoTxFallback("   "))
     }
 
     @Test
@@ -180,5 +194,41 @@ class MemoProofRouterTest {
 
         assertEquals("tx-memo-proof", result.encoding)
         assertEquals(Base58.encode(walletSignature), result.signature)
+    }
+
+    @Test
+    fun routingDecisionsAgreeBetweenJsAndAndroid() {
+        // JS-side routing reads `capabilities.supports.signMessage` from
+        // [WalletRegistry.reportSignMessageSupported]; Android-side routing inside
+        // signProofMessage reads [MemoProofRouter.useMemoTxFallback]. The two must agree
+        // for every wallet — if JS thinks signMessage is supported but Android still
+        // wants memo-tx (or vice versa), proof signing will land on a wallet branch the
+        // wallet can't handle (the exact failure mode Take 1 produced: JS routed to
+        // client.signMessage → bridge "sign_message" → direct signMessages, which hung
+        // because Android couldn't classify the blank package and so didn't fall back).
+        val canonicalPackages = listOf(
+            "",
+            "   ",
+            "app.phantom",
+            "com.solflare.mobile",
+            "com.solanamobile.seedvaultimpl",
+            "com.solanamobile.wallet",
+            "seedvault",
+            "app.backpack.mobile",
+            "ag.jup.jupiter.android",
+            "com.example.unknown",
+        )
+        for (pkg in canonicalPackages) {
+            val jsThinksSupported = WalletRegistry.reportSignMessageSupported(pkg)
+            val androidUsesMemoTx = MemoProofRouter.useMemoTxFallback(pkg)
+            // If JS thinks the wallet supports signMessage, Android must NOT use memo-tx
+            // (so JS-direct + Android-direct is the agreed flow). If JS thinks it doesn't,
+            // Android must use memo-tx (so JS-via-signProof + Android-memo-tx is agreed).
+            assertEquals(
+                "routing disagreement for package='$pkg': JS supported=$jsThinksSupported, Android memo-tx=$androidUsesMemoTx",
+                jsThinksSupported,
+                !androidUsesMemoTx,
+            )
+        }
     }
 }

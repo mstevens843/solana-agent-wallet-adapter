@@ -93,6 +93,9 @@ class AuthCache(context: Context) {
             mapOf(
                 "pubkey" to record.publicKeyBase58,
                 "authTokenLen" to record.authToken.length,
+                "walletType" to record.walletType,
+                "walletUriBase" to record.walletUriBase,
+                "walletIcon" to record.walletIcon,
                 "walletPackage" to record.walletPackage,
                 "cluster" to record.cluster.id,
                 "authenticated" to record.authenticated,
@@ -209,7 +212,7 @@ class AuthCache(context: Context) {
                 .put("latest", latestPubkey)
             val objectRecords = JSONObject()
             for ((pubkey, record) in records) {
-                objectRecords.put(pubkey, recordToJson(record))
+                objectRecords.put(pubkey, authRecordToJson(record))
             }
             root.put("records", objectRecords)
             val encrypted = encryptor.encrypt("${root.toString(2)}\n")
@@ -223,42 +226,49 @@ class AuthCache(context: Context) {
         }
     }
 
-    private fun recordToJson(record: AgentMwaAuthRecord): JSONObject =
-        JSONObject()
-            .put("publicKeyBase58", record.publicKeyBase58)
-            .put("publicKeyBytesBase58", Base58.encode(record.publicKeyBytes))
-            .put("authToken", record.authToken)
-            .put("walletUriBase", record.walletUriBase)
-            .put("walletPackage", record.walletPackage)
-            .put("walletType", record.walletType)
-            .put("accountLabel", record.accountLabel)
-            .put("cluster", record.cluster.id)
-            .put("timestampUnixSeconds", record.timestampUnixSeconds)
-            .put("authenticated", record.authenticated)
-            .put("capabilitiesCsv", record.capabilitiesCsv)
-
     private fun recordFromJson(json: JSONObject): AgentMwaAuthRecord {
-        val pubkey = json.optString("publicKeyBase58", "")
-        val pubkeyBytes = json.optString("publicKeyBytesBase58", "")
-            .takeIf { it.isNotBlank() }
-            ?.let { Base58.decode(it) }
-            ?: Base58.decode(pubkey)
-        val walletPackage = json.optString("walletPackage", "")
-        val walletUriBase = json.optString("walletUriBase", "")
-        return AgentMwaAuthRecord(
-            publicKeyBase58 = pubkey,
-            publicKeyBytes = pubkeyBytes,
-            authToken = json.optString("authToken", ""),
-            walletUriBase = walletUriBase,
-            walletPackage = walletPackage,
-            walletType = json.optInt("walletType", WalletRegistry.walletType(walletPackage, walletUriBase)),
-            accountLabel = json.optString("accountLabel", ""),
-            cluster = AgentCluster.fromId(json.optString("cluster", "devnet")),
-            timestampUnixSeconds = json.optLong("timestampUnixSeconds", 0L),
-            authenticated = json.optBoolean("authenticated", false),
-            capabilitiesCsv = json.optString("capabilitiesCsv", ""),
-        )
+        return authRecordFromJson(json)
     }
+}
+
+internal fun authRecordToJson(record: AgentMwaAuthRecord): JSONObject =
+    JSONObject()
+        .put("publicKeyBase58", record.publicKeyBase58)
+        .put("publicKeyBytesBase58", Base58.encode(record.publicKeyBytes))
+        .put("authToken", record.authToken)
+        .put("walletUriBase", record.walletUriBase)
+        .put("walletIcon", record.walletIcon)
+        .put("walletPackage", record.walletPackage)
+        .put("walletType", record.walletType)
+        .put("accountLabel", record.accountLabel)
+        .put("cluster", record.cluster.id)
+        .put("timestampUnixSeconds", record.timestampUnixSeconds)
+        .put("authenticated", record.authenticated)
+        .put("capabilitiesCsv", record.capabilitiesCsv)
+
+internal fun authRecordFromJson(json: JSONObject): AgentMwaAuthRecord {
+    val pubkey = json.optString("publicKeyBase58", "")
+    val pubkeyBytes = json.optString("publicKeyBytesBase58", "")
+        .takeIf { it.isNotBlank() }
+        ?.let { Base58.decode(it) }
+        ?: Base58.decode(pubkey)
+    val walletPackage = json.optString("walletPackage", "")
+    val walletUriBase = json.optString("walletUriBase", "")
+    val walletIcon = json.optString("walletIcon", "")
+    return AgentMwaAuthRecord(
+        publicKeyBase58 = pubkey,
+        publicKeyBytes = pubkeyBytes,
+        authToken = json.optString("authToken", ""),
+        walletUriBase = walletUriBase,
+        walletIcon = walletIcon,
+        walletPackage = walletPackage,
+        walletType = json.optInt("walletType", WalletRegistry.walletType(walletPackage, walletUriBase, walletIcon)),
+        accountLabel = json.optString("accountLabel", ""),
+        cluster = AgentCluster.fromId(json.optString("cluster", "devnet")),
+        timestampUnixSeconds = json.optLong("timestampUnixSeconds", 0L),
+        authenticated = json.optBoolean("authenticated", false),
+        capabilitiesCsv = json.optString("capabilitiesCsv", ""),
+    )
 }
 
 private class AuthCacheEncryptor {

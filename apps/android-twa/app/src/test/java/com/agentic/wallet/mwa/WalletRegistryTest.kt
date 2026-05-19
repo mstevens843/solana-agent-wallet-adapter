@@ -68,6 +68,18 @@ class WalletRegistryTest {
     }
 
     @Test
+    fun inferPackage_mapsWalletIconsToCanonicalPackage() {
+        assertEquals(
+            "com.solflare.mobile",
+            WalletRegistry.inferPackage("", walletIcon = "https://solflare.com/favicon.ico"),
+        )
+        assertEquals(
+            "com.solanamobile.seedvaultimpl",
+            WalletRegistry.inferPackage("", walletIcon = "https://intercom.help/seedvaultwallet/assets/favicon"),
+        )
+    }
+
+    @Test
     fun inferPackage_honorsExplicitPackageOverUri() {
         assertEquals(
             "app.custom.wallet",
@@ -98,6 +110,12 @@ class WalletRegistryTest {
     }
 
     @Test
+    fun walletType_iconBased() {
+        assertEquals(WalletRegistry.SOLFLARE, WalletRegistry.walletType("", walletIcon = "https://solflare.com/favicon.ico"))
+        assertEquals(WalletRegistry.SEED_VAULT, WalletRegistry.walletType("", walletIcon = "https://intercom.help/seedvaultwallet/assets/favicon"))
+    }
+
+    @Test
     fun walletType_unknownDefault() {
         assertEquals(WalletRegistry.UNKNOWN, WalletRegistry.walletType("com.example.unknown"))
         assertEquals(WalletRegistry.UNKNOWN, WalletRegistry.walletType(""))
@@ -113,5 +131,45 @@ class WalletRegistryTest {
         // Backpack and Jupiter route through the resolved Helius RPC.
         assertTrue(WalletRegistry.forceSignThenRpc("app.backpack.mobile"))
         assertTrue(WalletRegistry.forceSignThenRpc("ag.jup.jupiter.android"))
+    }
+
+    // The capabilitiesJson policy. False for blank/unknown packages (the Seeker production
+    // case — MWA SDK returns no caller package and Seeker Wallet returns no walletUriBase,
+    // so walletPackage is empty in the auth record) and for the broken-sign-messages
+    // list; true only for wallets we've fingerprinted AND verified as known-good.
+    @Test
+    fun reportSignMessageSupported_blankWalletPackageReturnsFalse() {
+        // The actual Seeker production flow lands here: walletPackage="" because the MWA
+        // SDK doesn't return a caller package and Seeker Wallet returns no walletUriBase.
+        // Reporting `signMessage: true` for this case routed JS into a hung-approval bug
+        // (see device logcat in plan file: signMessages | FAIL_WALLET_RESULT WALLET_CRASHED
+        // CancellationException at MwaController.kt:490). Default to false so the JS gate
+        // flips and the memo-tx fallback fires.
+        assertFalse(WalletRegistry.reportSignMessageSupported(""))
+        assertFalse(WalletRegistry.reportSignMessageSupported("   "))
+    }
+
+    @Test
+    fun reportSignMessageSupported_brokenWalletsReturnFalse() {
+        assertFalse(WalletRegistry.reportSignMessageSupported("app.phantom"))
+        assertFalse(WalletRegistry.reportSignMessageSupported("com.solflare.mobile"))
+        assertFalse(WalletRegistry.reportSignMessageSupported("com.solanamobile.seedvaultimpl"))
+        assertFalse(WalletRegistry.reportSignMessageSupported("seedvault"))
+    }
+
+    @Test
+    fun reportSignMessageSupported_knownGoodWalletsReturnTrue() {
+        // Backpack and Jupiter have working signMessages handlers; they should keep their
+        // direct path (not be routed through memo-tx).
+        assertTrue(WalletRegistry.reportSignMessageSupported("app.backpack.mobile"))
+        assertTrue(WalletRegistry.reportSignMessageSupported("ag.jup.jupiter.android"))
+    }
+
+    @Test
+    fun reportSignMessageSupported_unknownButNonBlankPackageReturnsTrue() {
+        // A non-blank package that isn't on the broken list is given the benefit of the
+        // doubt — we don't have evidence it's broken, and the blank-package guard already
+        // catches the "we don't know what this is" case.
+        assertTrue(WalletRegistry.reportSignMessageSupported("com.example.unknown-but-non-blank"))
     }
 }

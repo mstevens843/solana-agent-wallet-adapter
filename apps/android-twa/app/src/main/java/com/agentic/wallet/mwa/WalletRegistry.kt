@@ -14,27 +14,27 @@ object WalletRegistry {
     private const val JUPITER_PACKAGE = "ag.jup.jupiter.android"
     private const val SEED_VAULT_PACKAGE = "com.solanamobile.seedvaultimpl"
 
-    fun inferPackage(walletUriBase: String, explicitPackage: String = ""): String {
+    fun inferPackage(walletUriBase: String, explicitPackage: String = "", walletIcon: String = ""): String {
         if (explicitPackage.isNotBlank()) return explicitPackage
-        val lower = walletUriBase.lowercase()
+        val lower = "$walletUriBase $walletIcon".lowercase()
         return when {
             lower.contains("phantom.app") -> PHANTOM_PACKAGE
             lower.contains("solflare.com") -> SOLFLARE_PACKAGE
             lower.contains("backpack.app") -> BACKPACK_PACKAGE
             lower.contains("jup.ag") || lower.contains("jupiter") -> JUPITER_PACKAGE
-            lower.startsWith("solanamobilewallet:") -> SEED_VAULT_PACKAGE
+            lower.contains("seedvault") || lower.contains("seed-vault") || lower.contains("seedvaultwallet") || lower.startsWith("solanamobilewallet:") -> SEED_VAULT_PACKAGE
             else -> ""
         }
     }
 
-    fun walletType(packageName: String, walletUriBase: String = ""): Int {
-        val lower = "$packageName $walletUriBase".lowercase()
+    fun walletType(packageName: String, walletUriBase: String = "", walletIcon: String = ""): Int {
+        val lower = "$packageName $walletUriBase $walletIcon".lowercase()
         return when {
             lower.contains("phantom") -> PHANTOM
             lower.contains("solflare") -> SOLFLARE
             lower.contains("backpack") -> BACKPACK
             lower.contains("jupiter") || lower.contains("jup.ag") -> JUPITER
-            lower.contains("seedvault") || lower.contains("solanamobilewallet") -> SEED_VAULT
+            lower.contains("seedvault") || lower.contains("seed-vault") || lower.contains("seedvaultwallet") || lower.contains("solanamobilewallet") -> SEED_VAULT
             else -> UNKNOWN
         }
     }
@@ -79,4 +79,14 @@ object WalletRegistry {
         val lower = packageName.lowercase()
         return !lower.contains("solflare") && !lower.contains("seedvault")
     }
+
+    // Whether to advertise `supports.signMessage = true` to the JS bridge for a record
+    // with the given [walletPackage]. False when the package is blank (we can't verify
+    // the wallet — see MwaController.capabilitiesJson for the full rationale) or when
+    // [messageSigningUnsupported] explicitly flags it. Mirrored by
+    // `MemoProofRouter.useMemoTxFallback` so JS-side routing and Android-side routing
+    // stay in agreement: any wallet for which `reportSignMessageSupported` returns false
+    // takes the memo-tx fallback in `signProofMessage`.
+    fun reportSignMessageSupported(walletPackage: String): Boolean =
+        walletPackage.isNotBlank() && !messageSigningUnsupported(walletPackage)
 }

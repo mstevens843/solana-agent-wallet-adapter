@@ -19,12 +19,24 @@ package com.agentic.wallet.mwa
 internal object MemoProofRouter {
     /**
      * Whether [walletPackage] needs the memo-tx fallback rather than a direct
-     * `sign_messages` MWA call. Thin delegate over [WalletRegistry.messageSigningUnsupported]
-     * — extracted as a named function so call sites read as intent ("this wallet needs
-     * the fallback") and tests can lock routing decisions in.
+     * `sign_messages` MWA call. Returns true for:
+     *  - The known-broken wallets (Phantom, Solflare, Seed Vault) via
+     *    [WalletRegistry.messageSigningUnsupported].
+     *  - Any session where [walletPackage] is blank, because Phantom/Solflare return
+     *    `walletUriBase: null` in their MWA authorize reply and the JS bridge doesn't
+     *    yet supply a `targetWalletPackage`, so `record.walletPackage` is blank for
+     *    every fresh Phantom/Solflare authorization (see device logcat
+     *    `[MwaController] capabilitiesJson | DONE … walletPackage=""` followed by
+     *    `signMessages | FAIL_TIMEOUT WALLET_HUNG` / `FAIL_WALLET_RESULT WALLET_CRASHED
+     *    CancellationException`). Defaulting to the memo-tx fallback in that case is
+     *    safe: every MWA wallet implements `sign_transactions`, and the server-side
+     *    verifier accepts the `tx-memo-proof` envelope for any wallet. Once the JS
+     *    layer ships an explicit wallet picker and forwards `targetWalletPackage`, the
+     *    blank-package case stops triggering and wallets that *can* sign messages
+     *    (e.g. Backpack) regain their native path.
      */
     fun useMemoTxFallback(walletPackage: String): Boolean =
-        WalletRegistry.messageSigningUnsupported(walletPackage)
+        walletPackage.isBlank() || WalletRegistry.messageSigningUnsupported(walletPackage)
 
     /**
      * Builds the unsigned memo-only legacy transaction whose memo data is the UTF-8

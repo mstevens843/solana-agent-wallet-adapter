@@ -71,7 +71,7 @@ class MwaController(
             cluster = cluster,
             authenticated = true,
             walletPackage = restoredPackage,
-            walletType = if (restoredPackage == latest.walletPackage) latest.walletType else WalletRegistry.walletType(restoredPackage, latest.walletUriBase),
+            walletType = WalletRegistry.walletType(restoredPackage, latest.walletUriBase, latest.walletIcon),
         )
         cache.set(activeRecord!!)
         AgentMwaLog.info(
@@ -112,7 +112,7 @@ class MwaController(
             cluster = cluster,
             authenticated = true,
             walletPackage = restoredPackage,
-            walletType = if (restoredPackage == record.walletPackage) record.walletType else WalletRegistry.walletType(restoredPackage, record.walletUriBase),
+            walletType = WalletRegistry.walletType(restoredPackage, record.walletUriBase, record.walletIcon),
         )
         cache.set(activeRecord!!)
         AgentMwaLog.info(
@@ -378,6 +378,7 @@ class MwaController(
             walletType = WalletRegistry.walletType(
                 walletPackage.ifBlank { existing?.walletPackage.orEmpty() },
                 existing?.walletUriBase.orEmpty(),
+                existing?.walletIcon.orEmpty(),
             ),
             cluster = cluster,
             timestampUnixSeconds = System.currentTimeMillis() / 1000L,
@@ -462,6 +463,15 @@ class MwaController(
                 // helpers, so we fail fast with an actionable error rather than silently
                 // building a tx that the unaware caller won't know how to forward to the
                 // server verifier.
+                //
+                // [capabilitiesJson] additionally treats a blank `walletPackage` as
+                // "not supported" (via [WalletRegistry.reportSignMessageSupported]),
+                // which makes JS route proof signing through `kind: "sign_proof"` →
+                // [signProofMessage] instead of `kind: "sign_message"`. So if this
+                // rejection branch fires, the caller is bypassing both the JS proof
+                // helper and the capabilitiesJson gate — they should use `kind:
+                // "sign_proof"` (or `signWalletProofMessage` on the JS side) so the
+                // memo-tx fallback path runs.
                 throwOperation(
                     "signMessages",
                     "FAIL_WALLET_UNSUPPORTED",
@@ -707,7 +717,20 @@ class MwaController(
 
     fun capabilitiesJson(): JSONObject {
         val record = requireActive("capabilitiesJson")
-        val messageSupported = !WalletRegistry.messageSigningUnsupported(record.walletPackage)
+        // Phantom and Solflare return `walletUriBase: null` in their MWA authorize reply,
+        // and the JS bridge's `connect` call doesn't yet supply a targetWalletPackage, so
+        // walletPackage is blank for every fresh Phantom/Solflare session. Reporting
+        // `signMessage: true` for an unverified wallet routes the JS proof helper through
+        // client.signMessage → wallet hangs (Phantom: FAIL_TIMEOUT WALLET_HUNG) or cancels
+        // mid-approval (Solflare: FAIL_WALLET_RESULT WALLET_CRASHED CancellationException).
+        // When the package is unknown we surface `signMessage: false`, which makes the JS
+        // gate (state.capabilities.supports.signMessage === false) flip and the existing
+        // memo-tx fallback (kind: "sign_proof" → signProofMessage) fire. Every MWA wallet
+        // supports sign_transactions, so the memo-tx path works universally; once the JS
+        // layer ships an explicit wallet picker, walletPackage will be populated and the
+        // gate naturally tightens back to per-wallet routing (e.g. Backpack regains the
+        // native sign_messages path).
+        val messageSupported = WalletRegistry.reportSignMessageSupported(record.walletPackage)
         val json = JSONObject()
             .put("backend", "android-native-mwa")
             .put("cluster", JSONArray().put(record.cluster.id))
@@ -1100,14 +1123,16 @@ class MwaController(
         val publicKeyBytes = auth.publicKey ?: auth.accounts?.firstOrNull()?.publicKey ?: ByteArray(0)
         val publicKeyBase58 = Base58.encode(publicKeyBytes)
         val walletUriBase = auth.walletUriBase?.toString().orEmpty()
-        val walletPackage = WalletRegistry.inferPackage(walletUriBase, targetWalletPackage)
+        val walletIcon = auth.walletIcon?.toString().orEmpty()
+        val walletPackage = WalletRegistry.inferPackage(walletUriBase, targetWalletPackage, walletIcon)
         val record = AgentMwaAuthRecord(
             publicKeyBase58 = publicKeyBase58,
             publicKeyBytes = publicKeyBytes,
             authToken = auth.authToken.orEmpty(),
             walletUriBase = walletUriBase,
+            walletIcon = walletIcon,
             walletPackage = walletPackage,
-            walletType = WalletRegistry.walletType(walletPackage, walletUriBase),
+            walletType = WalletRegistry.walletType(walletPackage, walletUriBase, walletIcon),
             accountLabel = auth.accountLabel ?: auth.accounts?.firstOrNull()?.accountLabel ?: "",
             cluster = cluster,
             timestampUnixSeconds = System.currentTimeMillis() / 1000L,
@@ -1134,14 +1159,14 @@ class MwaController(
     // is empty.
     private fun restoredWalletPackage(record: AgentMwaAuthRecord): String {
         if (record.walletPackage.isNotBlank()) return record.walletPackage
-        val inferred = WalletRegistry.inferPackage(record.walletUriBase)
+        val inferred = WalletRegistry.inferPackage(record.walletUriBase, walletIcon = record.walletIcon)
         if (inferred.isNotBlank()) {
             AgentMwaLog.info(
                 "MwaController",
                 "restoredWalletPackage",
                 "DONE",
                 "wallet package re-derived from walletUriBase on reconnect",
-                mapOf("pubkey" to record.publicKeyBase58, "walletUriBase" to record.walletUriBase, "inferred" to inferred),
+                mapOf("pubkey" to record.publicKeyBase58, "walletUriBase" to record.walletUriBase, "walletIcon" to record.walletIcon, "inferred" to inferred),
             )
         }
         return inferred
@@ -1236,6 +1261,66 @@ class MwaController(
         }
         AgentMwaLog.info("MwaController", "sendSignedTransactionViaRpc", "SUCCESS", "RPC returned transaction id", mapOf("cluster" to cluster.id, "txid" to result, "rpcResponse" to json))
         return result
+    }
+
+    // JS-bridge RPC reads that the WebView can't make itself. api.mainnet-beta.solana.com
+    // returns 403 to fetches originating from the agentic.local WebView origin, but accepts
+    // requests from HttpURLConnection — so we route the JS-side poll through Kotlin.
+    suspend fun signatureStatusViaRpc(cluster: AgentCluster, txid: String, rpcUrl: String? = null): JSONObject {
+        val resolvedRpc = resolveRpcUrl(cluster, rpcUrl)
+        val params = """[["$txid"],{"searchTransactionHistory":true}]"""
+        val json = postJsonRpc(resolvedRpc, "getSignatureStatuses", params)
+        val rpcError = json.optJSONObject("error")
+        if (rpcError != null) {
+            throwOperation(
+                "signatureStatusViaRpc",
+                "FAIL_RPC_ERROR",
+                MwaOperationException("RPC_ERROR", rpcError.optString("message", rpcError.toString())),
+                mapOf("cluster" to cluster.id, "txid" to txid, "rpcError" to rpcError),
+            )
+        }
+        val value = json.optJSONObject("result")?.optJSONArray("value")?.optJSONObject(0)
+        val out = JSONObject()
+        if (value == null || value === JSONObject.NULL) {
+            return out.put("txStatus", "pending").put("found", false)
+        }
+        val confirmationStatus = value.optString("confirmationStatus", "").ifBlank { null }
+        val errJson = value.opt("err")
+        if (errJson != null && errJson != JSONObject.NULL) {
+            out.put("txStatus", "failed").put("found", true).put("error", errJson.toString())
+            if (confirmationStatus != null) out.put("confirmationStatus", confirmationStatus)
+            return out
+        }
+        val status = if (confirmationStatus == "confirmed" || confirmationStatus == "finalized") "confirmed" else "pending"
+        out.put("txStatus", status).put("found", true)
+        if (confirmationStatus != null) out.put("confirmationStatus", confirmationStatus)
+        return out
+    }
+
+    suspend fun latestBlockhashViaRpc(cluster: AgentCluster, rpcUrl: String? = null): JSONObject {
+        val resolvedRpc = resolveRpcUrl(cluster, rpcUrl)
+        val json = postJsonRpc(resolvedRpc, "getLatestBlockhash", """[{"commitment":"confirmed"}]""")
+        val rpcError = json.optJSONObject("error")
+        if (rpcError != null) {
+            throwOperation(
+                "latestBlockhashViaRpc",
+                "FAIL_RPC_ERROR",
+                MwaOperationException("RPC_ERROR", rpcError.optString("message", rpcError.toString())),
+                mapOf("cluster" to cluster.id, "rpcError" to rpcError),
+            )
+        }
+        val value = json.optJSONObject("result")?.optJSONObject("value")
+            ?: throw MwaOperationException("RPC_ERROR", "latestBlockhash response missing value")
+        return JSONObject()
+            .put("blockhash", value.getString("blockhash"))
+            .put("lastValidBlockHeight", value.getLong("lastValidBlockHeight"))
+    }
+
+    suspend fun sendRawTransactionViaRpc(cluster: AgentCluster, base64Tx: String, rpcUrl: String? = null): JSONObject {
+        val resolvedRpc = resolveRpcUrl(cluster, rpcUrl)
+        val signedBytes = Base64.decode(base64Tx, Base64.NO_WRAP)
+        val txid = sendSignedTransactionViaRpc(cluster, signedBytes, resolvedRpc)
+        return JSONObject().put("txid", txid).put("signature", txid)
     }
 
     private fun resolveRpcUrl(cluster: AgentCluster, requestedRpcUrl: String?): String {
@@ -1414,6 +1499,7 @@ class MwaController(
                 "pubkeyBytes" to record.publicKeyBytes.size,
                 "authLen" to record.authToken.length,
                 "walletUriBase" to record.walletUriBase,
+                "walletIcon" to record.walletIcon,
                 "walletPackage" to record.walletPackage,
                 "walletType" to record.walletType,
                 "accountLabel" to record.accountLabel,

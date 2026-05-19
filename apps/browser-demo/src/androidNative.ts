@@ -59,6 +59,9 @@ interface AndroidMwaStatus {
   connected: boolean;
   address?: string;
   cluster?: Cluster;
+  walletType?: number;
+  walletUriBase?: string;
+  walletIcon?: string;
   walletPackage?: string;
   accountLabel?: string;
   cachedCount: number;
@@ -286,13 +289,15 @@ export class AndroidNativeWalletBackend implements WalletBackend {
   /**
    * Signs an ownership-proof message via the native bridge.
    *
-   * Native owns the routing: wallets that support `sign_messages` over MWA get the
+   * Native owns the routing: wallets verified-good for MWA `sign_messages` get the
    * UTF-8 ed25519 message-signing path and return `encoding: "utf8"` (omitted from
-   * the JSON when default-stripped). Phantom, Solflare, and Seed Vault (Seeker) get
-   * a memo-only legacy transaction whose memo data is the proof bytes — they return
-   * `encoding: "tx-memo-proof"` together with `transactionBase64` (the full
-   * never-broadcast signed tx) so the server-side verifier can extract the memo and
-   * ed25519-verify the signature over the transaction message bytes.
+   * the JSON when default-stripped). Phantom, Solflare, Seed Vault (Seeker —
+   * including the production "Wallet" app), and any wallet whose package the bridge
+   * couldn't fingerprint (blank `walletPackage`) get a memo-only legacy transaction
+   * whose memo data is the proof bytes — they return `encoding: "tx-memo-proof"`
+   * together with `transactionBase64` (the full never-broadcast signed tx) so the
+   * server-side verifier can extract the memo and ed25519-verify the signature over
+   * the transaction message bytes.
    */
   async signProof(
     message: string,
@@ -430,7 +435,7 @@ function normalizeRpcUrl(rpcUrl: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
-function androidNativeRequest<T>(method: string, payload?: unknown): Promise<T> {
+export function androidNativeRequest<T>(method: string, payload?: unknown): Promise<T> {
   installAndroidNativeCallbackBridge();
   const bridge = androidNativeBridge();
   if (!bridge?.mwaRequest) {

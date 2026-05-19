@@ -50,6 +50,7 @@ data class AgentMwaAuthRecord(
     val publicKeyBytes: ByteArray = ByteArray(0),
     val authToken: String = "",
     val walletUriBase: String = "",
+    val walletIcon: String = "",
     val walletPackage: String = "",
     val walletType: Int = 0,
     val accountLabel: String = "",

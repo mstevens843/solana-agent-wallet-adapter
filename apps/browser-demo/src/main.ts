@@ -103,6 +103,7 @@ import {
   AndroidNativeWalletBackend,
   androidNativeCacheSummary,
   androidNativeCloudSessionToken,
+  androidNativeRequest,
   clearAndroidNativeCloudSessionToken,
   detectAndroidNativeEnvironment,
   restoreLatestAndroidNativeWallet,
@@ -32439,8 +32440,14 @@ function shouldRetryTransactionSend(err: unknown, signedTxid?: string, attemptCo
 }
 
 async function browserLatestBlockhash(cluster: Cluster): Promise<BrowserLatestBlockhash> {
+  if (state.androidNativeEnvironment.isAndroidNative) {
+    return androidNativeRequest<BrowserLatestBlockhash>('latestBlockhash', {
+      cluster,
+      rpcUrl: activeRpcUrl(),
+    });
+  }
   let firstErr: unknown;
-  if (!state.androidNativeEnvironment.isAndroidNative) {
+  {
     try {
       return await sameOriginTransactionRequest<BrowserLatestBlockhash>('/api/solana/latest-blockhash', { cluster });
     } catch (err) {
@@ -32457,9 +32464,17 @@ async function browserLatestBlockhash(cluster: Cluster): Promise<BrowserLatestBl
 
 async function broadcastSignedBrowserTransaction(cluster: Cluster, signedTransactionBase64: string): Promise<string> {
   const request = { cluster, signedTransactionBase64 };
+  if (state.androidNativeEnvironment.isAndroidNative) {
+    const result = await androidNativeRequest<{ txid?: string; signature?: string }>('sendRawTransaction', {
+      cluster,
+      signedTransactionBase64,
+      rpcUrl: activeRpcUrl(),
+    });
+    return requiredResponseString(result.txid ?? result.signature, 'Transaction signature');
+  }
   let firstAuthError: unknown;
   let firstErr: unknown;
-  if (!state.androidNativeEnvironment.isAndroidNative) {
+  {
     try {
       const response = await sameOriginTransactionRequest<BrowserSendTransactionResponse>('/api/solana/send-transaction', request);
       return requiredResponseString(response.txid ?? response.signature, 'Transaction signature');
@@ -32541,11 +32556,18 @@ function describeRpcEndpoint(url: string): string {
 
 async function browserSignatureStatus(cluster: Cluster, txid: string): Promise<BrowserSignatureStatusResponse> {
   const request = { cluster, txid };
+  // Android TWA: api.mainnet-beta.solana.com returns 403 to the WebView origin, and there
+  // is no /api/* server reachable from agentic.local. Route through the native bridge —
+  // Kotlin's HttpURLConnection isn't subject to either restriction.
+  if (state.androidNativeEnvironment.isAndroidNative) {
+    return androidNativeRequest<BrowserSignatureStatusResponse>('signatureStatus', {
+      cluster,
+      txid,
+      rpcUrl: activeRpcUrl(),
+    });
+  }
   let firstErr: unknown;
-  // Android TWA has no /api/* server reachable from the WebView's agentic.local origin;
-  // skipping the same-origin attempt avoids burning ~hundreds of ms per poll iteration
-  // on a guaranteed 404 before reaching the direct-RPC fallback.
-  if (!state.androidNativeEnvironment.isAndroidNative) {
+  {
     try {
       return await sameOriginTransactionRequest<BrowserSignatureStatusResponse>('/api/solana/signature-status', request);
     } catch (err) {

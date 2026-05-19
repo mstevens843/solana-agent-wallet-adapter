@@ -1114,6 +1114,27 @@ class MainActivity : ComponentActivity() {
                     // Cocos parity: surface Seeker/Saga detection so the web app can adjust UX.
                     com.agentic.wallet.mwa.WalletDetector.detectDevice()
                 }
+                "signatureStatus" -> {
+                    // JS-bridge RPC read: api.mainnet-beta.solana.com returns 403 to the
+                    // WebView origin, so the JS confirmation poller routes through here.
+                    val txid = payload.optString("txid", "")
+                        .ifBlank { throw MwaOperationException("INVALID_REQUEST", "signatureStatus requires txid") }
+                    val cluster = clusterFromPayload(payload)
+                    val rpcUrl = payload.optString("rpcUrl", "").ifBlank { null }
+                    activity.mwaController.signatureStatusViaRpc(cluster, txid, rpcUrl)
+                }
+                "latestBlockhash" -> {
+                    val cluster = clusterFromPayload(payload)
+                    val rpcUrl = payload.optString("rpcUrl", "").ifBlank { null }
+                    activity.mwaController.latestBlockhashViaRpc(cluster, rpcUrl)
+                }
+                "sendRawTransaction" -> {
+                    val base64 = payload.optString("signedTransactionBase64", "")
+                        .ifBlank { throw MwaOperationException("INVALID_REQUEST", "sendRawTransaction requires signedTransactionBase64") }
+                    val cluster = clusterFromPayload(payload)
+                    val rpcUrl = payload.optString("rpcUrl", "").ifBlank { null }
+                    activity.mwaController.sendRawTransactionViaRpc(cluster, base64, rpcUrl)
+                }
                 else -> throw MwaOperationException("UNSUPPORTED_METHOD", "Unsupported Android MWA bridge method: $method")
             }
         }
@@ -1228,6 +1249,9 @@ class MainActivity : ComponentActivity() {
                 json
                     .put("address", record.publicKeyBase58)
                     .put("cluster", record.cluster.id)
+                    .put("walletType", record.walletType)
+                    .put("walletUriBase", record.walletUriBase)
+                    .put("walletIcon", record.walletIcon)
                     .put("walletPackage", record.walletPackage)
                     .put("accountLabel", record.accountLabel)
                     .put("capabilities", activity.mwaController.capabilitiesJson())
@@ -1353,6 +1377,9 @@ class MainActivity : ComponentActivity() {
                 "clearAllAccounts",
                 "detectWallets",
                 "detectDevice",
+                "signatureStatus",
+                "latestBlockhash",
+                "sendRawTransaction",
             )
             private val ALLOWED_DEVICE_AGENT_METHODS = setOf(
                 "status",

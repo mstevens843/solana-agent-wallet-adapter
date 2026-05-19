@@ -1,25 +1,34 @@
 /**
  * Centralized "sign a proof" path.
  *
- * Most wallets sign the UTF-8 proof bytes directly via `signMessage`. Three
+ * Most wallets sign the UTF-8 proof bytes directly via `signMessage`. Several
  * Android-native MWA wallets fail this path and need a memo-tx fallback instead:
  *   • Phantom — `get_capabilities` advertises only `supports_sign_and_send_transactions`.
  *   • Solflare — `get_capabilities` advertises only `solana:signTransactions`.
- *   • Seed Vault (Seeker) — advertises sign_messages but the Seed Management UI
- *     renders with only a Close button when invoked via that path. `sign_transactions`
- *     surfaces the normal two-tap + biometric approval and works.
+ *   • Seed Vault (Seeker) — the production "Wallet" app (`com.solanamobile.wallet`)
+ *     advertises sign_messages but its Seed Management UI renders with only a Close
+ *     button when invoked via sign_messages, returning CancellationException with no
+ *     protocol reply. `sign_transactions` surfaces the normal two-tap + biometric
+ *     approval and works.
+ *   • Unknown wallets — when the MWA SDK returns no caller package and the wallet
+ *     supplies no `walletUriBase` (e.g. the production Seeker case), Android can't
+ *     fingerprint the responding wallet. `WalletRegistry.reportSignMessageSupported`
+ *     defaults blank packages to `false` so this helper routes through the memo-tx
+ *     fallback rather than gambling on direct `signMessage`.
  *
- * Calling `signMessage` on any of the three hangs ~90s or shows an approve sheet that
+ * Calling `signMessage` on any of these hangs ~90s or shows an approve sheet that
  * returns "CancellationException (no message)" with no protocol-level reply. The
  * Android native bridge owns the workaround: when the connected wallet's MWA
- * capabilities report `supports.signMessage === false`, the bridge signs a
+ * capabilities report `supports.signMessage === false`, this helper routes proof
+ * signing through the Android native `sign_proof` bridge kind, which signs a
  * memo-only legacy transaction whose memo data is the same proof bytes the message
  * path would have signed. The transaction is NEVER broadcast — the wallet signature
  * serves as ownership proof and a fresh blockhash expires harmlessly.
  *
  * This module is the single entry point; per-host routing is in the native bridge
  * (see `apps/android-twa/app/src/main/java/com/agentic/wallet/mwa/MwaController.kt`
- * `signProofMessage` and the `WalletRegistry.messageSigningUnsupported` switch).
+ * `signProofMessage`, the `WalletRegistry.reportSignMessageSupported` policy, and
+ * `MemoProofRouter.useMemoTxFallback` — those three must agree).
  * Backend verifier: `apps/render-web/src/cloud/auth.ts` `verifyTxMemoProof`.
  */
 
