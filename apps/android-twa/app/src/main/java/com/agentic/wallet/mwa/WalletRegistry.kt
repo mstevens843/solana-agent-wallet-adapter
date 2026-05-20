@@ -46,15 +46,18 @@ object WalletRegistry {
         }
     }
 
-    fun isKnownSeedVaultIcon(walletIcon: String): Boolean =
-        walletIcon.contains(SEED_VAULT_ICON_HEAD) && walletIcon.contains(SEED_VAULT_ICON_TAIL_SENTINEL)
+    fun isKnownSeedVaultIcon(walletIcon: String): Boolean {
+        val normalized = normalizeWalletIconSignature(walletIcon)
+        return normalized.contains(SEED_VAULT_ICON_HEAD) && normalized.contains(SEED_VAULT_ICON_TAIL_SENTINEL)
+    }
 
     fun walletIconLogMetadata(walletIcon: String): Map<String, Any?> {
         val trimmed = walletIcon.trim()
+        val normalized = normalizeWalletIconSignature(walletIcon)
         val kind = when {
             trimmed.isBlank() -> "blank"
-            trimmed.startsWith("data:image/") -> "data-image"
-            trimmed.startsWith("http://") || trimmed.startsWith("https://") -> "url"
+            normalized.startsWith("data:image/") -> "data-image"
+            normalized.startsWith("http://") || normalized.startsWith("https://") -> "url"
             else -> "inline"
         }
         return mapOf(
@@ -118,4 +121,10 @@ object WalletRegistry {
 
     private fun sha256First8(bytes: ByteArray): String =
         MessageDigest.getInstance("SHA-256").digest(bytes).take(8).joinToString("") { "%02x".format(it.toInt() and 0xff) }
+
+    private fun normalizeWalletIconSignature(walletIcon: String): String =
+        walletIcon.trim()
+            .replace("\\/", "/")
+            .replace("\\n", "")
+            .filterNot { it.isWhitespace() }
 }

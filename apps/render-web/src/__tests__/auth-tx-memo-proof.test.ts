@@ -1,4 +1,4 @@
-import { generateKeyPairSync, sign as signDetached, type KeyObject } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign as signDetached, type KeyObject } from 'node:crypto';
 
 import { PublicKey, Transaction, TransactionInstruction } from '@solana/web3.js';
 import { describe, expect, it } from 'vitest';
@@ -6,6 +6,16 @@ import { describe, expect, it } from 'vitest';
 import { encodeBase58, verifyWalletSignature } from '../cloud/auth.js';
 
 const MEMO_PROGRAM_V2_ID = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
+// Mirror of `apps/android-twa/.../MemoProofRouter.PROOF_MEMO_PREFIX`. Kept in sync
+// by hand because the server has no Kotlin import path; the cross-test
+// `routingDecisionsAgreeBetweenJsAndAndroid` (Android side) plus this constant
+// (server side) are the contract anchors.
+const PROOF_MEMO_ENVELOPE_PREFIX = 'Agentic plan review proof v1\nSHA-256: ';
+
+function buildEnvelopeMemoText(message: string): string {
+  const hex = createHash('sha256').update(Buffer.from(message, 'utf8')).digest('hex');
+  return PROOF_MEMO_ENVELOPE_PREFIX + hex;
+}
 
 interface TestWallet {
   walletAddress: string;
@@ -122,6 +132,84 @@ describe('verifyWalletSignature tx-memo-proof', () => {
 
     const ok = verifyWalletSignature({
       walletAddress: realWallet.walletAddress,
+      message,
+      signature,
+      proofEncoding: 'tx-memo-proof',
+      proofTxBase64: signedTxToBase64(signedTx),
+    });
+
+    expect(ok).toBe(false);
+  });
+
+  // Hashed-envelope contract: memo = "Agentic plan review proof v1\nSHA-256: " + hex.
+  // The android-twa builder emits this for any message length so the memo-tx fits
+  // under Solana's 1232-byte packet limit even for multi-KB plan-review messages.
+  it('verifies a hashed-envelope memo-tx proof for a short message', () => {
+    const wallet = createTestWallet();
+    const message = 'short proof';
+    const signedTx = buildMemoTx(wallet, buildEnvelopeMemoText(message));
+    const signature = extractFirstSignature(signedTx);
+
+    const ok = verifyWalletSignature({
+      walletAddress: wallet.walletAddress,
+      message,
+      signature,
+      proofEncoding: 'tx-memo-proof',
+      proofTxBase64: signedTxToBase64(signedTx),
+    });
+
+    expect(ok).toBe(true);
+  });
+
+  it('verifies a hashed-envelope memo-tx proof for an oversize message that would not fit literally', () => {
+    const wallet = createTestWallet();
+    // 4000-char message would have produced a ~4170-byte tx under the literal-bytes
+    // contract — well past Solana's 1232-byte packet limit. Hashed envelope keeps
+    // the tx small regardless.
+    const message = 'a'.repeat(4000);
+    const signedTx = buildMemoTx(wallet, buildEnvelopeMemoText(message));
+    expect(signedTx.length).toBeLessThanOrEqual(1232);
+    const signature = extractFirstSignature(signedTx);
+
+    const ok = verifyWalletSignature({
+      walletAddress: wallet.walletAddress,
+      message,
+      signature,
+      proofEncoding: 'tx-memo-proof',
+      proofTxBase64: signedTxToBase64(signedTx),
+    });
+
+    expect(ok).toBe(true);
+  });
+
+  it('rejects a hashed-envelope memo-tx proof when the envelope hex does not match sha256(message)', () => {
+    const wallet = createTestWallet();
+    const realMessage = 'real proof bound to wallet';
+    // Build the envelope from a DIFFERENT message — attacker swaps in the wrong digest.
+    const signedTx = buildMemoTx(wallet, buildEnvelopeMemoText('decoy message attacker substituted'));
+    const signature = extractFirstSignature(signedTx);
+
+    const ok = verifyWalletSignature({
+      walletAddress: wallet.walletAddress,
+      message: realMessage,
+      signature,
+      proofEncoding: 'tx-memo-proof',
+      proofTxBase64: signedTxToBase64(signedTx),
+    });
+
+    expect(ok).toBe(false);
+  });
+
+  it('rejects a hashed-envelope memo-tx proof with a malformed hex suffix', () => {
+    const wallet = createTestWallet();
+    const message = 'short proof';
+    // Envelope with truncated digest (32 chars instead of 64) — must not pass.
+    const malformedMemoText = PROOF_MEMO_ENVELOPE_PREFIX + 'a'.repeat(32);
+    const signedTx = buildMemoTx(wallet, malformedMemoText);
+    const signature = extractFirstSignature(signedTx);
+
+    const ok = verifyWalletSignature({
+      walletAddress: wallet.walletAddress,
       message,
       signature,
       proofEncoding: 'tx-memo-proof',

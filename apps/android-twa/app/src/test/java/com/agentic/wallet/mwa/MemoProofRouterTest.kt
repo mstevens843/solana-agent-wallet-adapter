@@ -6,6 +6,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
+import java.security.MessageDigest
 
 /**
  * Integration-style coverage of the memo-tx ownership-proof pipeline that
@@ -63,7 +64,23 @@ class MemoProofRouterTest {
     }
 
     @Test
-    fun buildUnsignedMemoTx_embedsUtf8MessageBytesAsMemoData() {
+    fun buildProofMemo_hasFixedShapeRegardlessOfMessageLength() {
+        // Short and long messages produce envelopes of the same fixed length.
+        val short = MemoProofRouter.buildProofMemo("hi")
+        val long = MemoProofRouter.buildProofMemo("a".repeat(5000))
+        assertEquals(short.length, long.length)
+        // Envelope is the prefix + 64-char SHA-256 hex.
+        assertEquals(MemoProofRouter.PROOF_MEMO_PREFIX.length + 64, short.length)
+        assertTrue(short.startsWith(MemoProofRouter.PROOF_MEMO_PREFIX))
+        // Tail is exactly the SHA-256 hex of the message bytes.
+        val expectedHex = MessageDigest.getInstance("SHA-256")
+            .digest("hi".toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+        assertEquals(MemoProofRouter.PROOF_MEMO_PREFIX + expectedHex, short)
+    }
+
+    @Test
+    fun buildUnsignedMemoTx_embedsHashedEnvelopeAsMemoData() {
         val blockhash = ByteArray(32) { 0x22.toByte() }
         val message = "agent decision proof for Seed Vault"
 
@@ -77,8 +94,8 @@ class MemoProofRouterTest {
         // 1 (sig count) + 64 (placeholder sig) + 3 (header) + 1 (acct keys count) +
         // 32 (feePayer) + 32 (memoProgram) + 32 (blockhash) + 1 (ix count) +
         // 1 (programIdIdx) + 1 (accountsLen) + 1 (accounts[0]) + 1 (dataLen) + memo.
-        val memoBytes = message.toByteArray(Charsets.UTF_8)
-        val expectedSize = 1 + 64 + 3 + 1 + 32 + 32 + 32 + 1 + 1 + 1 + 1 + 1 + memoBytes.size
+        val expectedMemo = MemoProofRouter.buildProofMemo(message).toByteArray(Charsets.UTF_8)
+        val expectedSize = 1 + 64 + 3 + 1 + 32 + 32 + 32 + 1 + 1 + 1 + 1 + 1 + expectedMemo.size
         assertEquals(expectedSize, unsignedTx.size)
 
         // Fee payer should be at offset 1 + 64 + 3 + 1 = 69.
@@ -87,10 +104,10 @@ class MemoProofRouterTest {
             unsignedTx.copyOfRange(69, 69 + 32),
         )
 
-        // The memo data is the last [memoBytes.size] bytes of the transaction.
+        // The memo data is the last [expectedMemo.size] bytes of the transaction.
         assertArrayEquals(
-            memoBytes,
-            unsignedTx.copyOfRange(unsignedTx.size - memoBytes.size, unsignedTx.size),
+            expectedMemo,
+            unsignedTx.copyOfRange(unsignedTx.size - expectedMemo.size, unsignedTx.size),
         )
     }
 
@@ -194,6 +211,31 @@ class MemoProofRouterTest {
 
         assertEquals("tx-memo-proof", result.encoding)
         assertEquals(Base58.encode(walletSignature), result.signature)
+    }
+
+    @Test
+    fun buildUnsignedMemoTx_keepsTxUnderSolanaPacketLimitForOversizeMessages() {
+        // Regression guard for the Take 3 bug: a 1502-byte plan-review message produced
+        // a 1673-byte memo-tx and Seed Vault rejected it with "Invalid transaction". The
+        // hashed envelope makes the memo a fixed ~110 bytes (PROOF_MEMO_PREFIX + 64 hex
+        // chars), keeping the total tx well under Solana's 1232-byte PACKET_DATA_SIZE
+        // even for arbitrarily long messages.
+        val blockhash = ByteArray(32) { 0x55.toByte() }
+        val oversizeMessage = buildString {
+            // 4000 chars — would have produced a ~4170-byte tx under the old literal contract.
+            repeat(4000) { append('a' + (it % 26)) }
+        }
+
+        val unsignedTx = MemoProofRouter.buildUnsignedMemoTx(
+            seedVaultRecord.publicKeyBytes,
+            blockhash,
+            oversizeMessage,
+        )
+
+        assertTrue(
+            "memo-tx must fit in Solana's 1232-byte PACKET_DATA_SIZE; got ${unsignedTx.size}",
+            unsignedTx.size <= 1232,
+        )
     }
 
     @Test

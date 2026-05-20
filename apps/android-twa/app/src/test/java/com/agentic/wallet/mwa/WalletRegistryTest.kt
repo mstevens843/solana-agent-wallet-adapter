@@ -9,6 +9,9 @@ class WalletRegistryTest {
     private val seedVaultIcon =
         "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAANgAAADY..." +
             "QChlppOaiUo1Z22pIwKl0xN6leqUK+T8P/q4PWPnCdaVAAAAAElFTkSuQmCC"
+    private val escapedSeedVaultIcon =
+        "data:image\\/png;base64,iVBORw0KGgoAAAANSUhEUgAAANgAAADY\\n..." +
+            "QChlppOaiUo1Z22pIwKl0xN6leqUK+T8P\\/q4PWPnCdaVAAAAAElFTkSuQmCC"
 
     @Test
     fun messageSigningUnsupported_phantomFamily() {
@@ -84,6 +87,10 @@ class WalletRegistryTest {
             "com.solanamobile.seedvaultimpl",
             WalletRegistry.inferPackage("", walletIcon = seedVaultIcon),
         )
+        assertEquals(
+            "com.solanamobile.seedvaultimpl",
+            WalletRegistry.inferPackage("", walletIcon = escapedSeedVaultIcon),
+        )
     }
 
     @Test
@@ -121,6 +128,7 @@ class WalletRegistryTest {
         assertEquals(WalletRegistry.SOLFLARE, WalletRegistry.walletType("", walletIcon = "https://solflare.com/favicon.ico"))
         assertEquals(WalletRegistry.SEED_VAULT, WalletRegistry.walletType("", walletIcon = "https://intercom.help/seedvaultwallet/assets/favicon"))
         assertEquals(WalletRegistry.SEED_VAULT, WalletRegistry.walletType("", walletIcon = seedVaultIcon))
+        assertEquals(WalletRegistry.SEED_VAULT, WalletRegistry.walletType("", walletIcon = escapedSeedVaultIcon))
     }
 
     @Test
@@ -130,6 +138,10 @@ class WalletRegistryTest {
         assertEquals(seedVaultIcon.length, metadata["walletIconChars"])
         assertTrue(metadata["walletIconKnownSeedVault"] == true)
         assertFalse(metadata.values.contains(seedVaultIcon))
+
+        val escapedMetadata = WalletRegistry.walletIconLogMetadata(escapedSeedVaultIcon)
+        assertEquals("data-image", escapedMetadata["walletIconKind"])
+        assertTrue(escapedMetadata["walletIconKnownSeedVault"] == true)
     }
 
     @Test

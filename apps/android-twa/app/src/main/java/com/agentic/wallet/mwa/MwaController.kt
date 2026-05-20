@@ -615,7 +615,15 @@ class MwaController(
         }
         val resolvedRpcUrl = resolveRpcUrl(record.cluster, rpcUrl)
         val blockhashBytes = fetchLatestBlockhashBytes(resolvedRpcUrl)
-        val memoBytes = message.toByteArray(Charsets.UTF_8)
+        val messageBytes = message.toByteArray(Charsets.UTF_8)
+        // The memo bytes are the SHA-256 envelope of [message], not [message] itself —
+        // a full plan-review proof string is ~1249 bytes and would push the unsigned
+        // transaction to ~1420 bytes, over Solana's 1232-byte PACKET_DATA_SIZE limit.
+        // The fixed-size envelope keeps the tx around ~272 bytes regardless of message
+        // length; the server verifier re-hashes the claimed proofMemoText to confirm
+        // the binding. See MemoProofRouter.buildProofMemo and apps/render-web/src/
+        // cloud/auth.ts:verifyTxMemoProof.
+        val memoBytes = MemoProofRouter.buildProofMemo(message).toByteArray(Charsets.UTF_8)
         val unsignedTx = try {
             MemoProofRouter.buildUnsignedMemoTx(record.publicKeyBytes, blockhashBytes, message)
         } catch (err: IllegalArgumentException) {
@@ -623,7 +631,7 @@ class MwaController(
                 "signProofMessage",
                 "FAIL_BUILD_MEMO_TX",
                 MwaOperationException("INVALID_PAYLOADS", "Failed to build memo proof transaction: ${err.message}", err),
-                authRecordMetadata(record) + mapOf("memoLen" to memoBytes.size, "feePayerLen" to record.publicKeyBytes.size, "blockhashLen" to blockhashBytes.size),
+                authRecordMetadata(record) + mapOf("messageLen" to messageBytes.size, "memoLen" to memoBytes.size, "feePayerLen" to record.publicKeyBytes.size, "blockhashLen" to blockhashBytes.size),
             )
         }
         AgentMwaLog.info(
@@ -634,6 +642,8 @@ class MwaController(
             authRecordMetadata(record) + mapOf(
                 "rpc" to resolvedRpcUrl,
                 "blockhashBase58Head" to Base58.encode(blockhashBytes).take(8),
+                "messageBytes" to messageBytes.size,
+                "messageSha256_8" to sha256First8(messageBytes),
                 "memoBytes" to memoBytes.size,
                 "memoSha256_8" to sha256First8(memoBytes),
                 "txBytes" to unsignedTx.size,

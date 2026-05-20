@@ -1,5 +1,7 @@
 package com.agentic.wallet.mwa
 
+import java.security.MessageDigest
+
 /**
  * Pure-JVM helpers for the ownership-proof memo-tx fallback path. Extracted from
  * [MwaController.signProofMessage] so unit tests can exercise the build/sign/extract
@@ -13,10 +15,25 @@ package com.agentic.wallet.mwa
  *
  * This object provides the parts that don't need any of that:
  *   • The routing decision (which wallets go through memo-tx vs direct sign_messages).
+ *   • The proof memo envelope (a fixed-size hashed wrapper of the message, so the
+ *     transaction stays under Solana's 1232-byte `PACKET_DATA_SIZE` limit regardless
+ *     of how long the proof message text is).
  *   • The unsigned memo-tx byte layout.
  *   • The ed25519 signature extraction and result assembly.
  */
 internal object MemoProofRouter {
+    /**
+     * Prefix of the memo envelope. The full memo is `PROOF_MEMO_PREFIX + sha256hex(message)`,
+     * which is always exactly [PROOF_MEMO_PREFIX].length + 64 bytes regardless of how long
+     * the underlying proof message is. The server-side verifier
+     * (`apps/render-web/src/cloud/auth.ts` `verifyTxMemoProof`) recognizes this prefix and
+     * recomputes SHA-256 of the claimed `proofMemoText` to confirm the signed memo binds
+     * to the message bytes the dApp sent alongside `proofTxBase64`.
+     *
+     * The version marker (`v1`) lets future revisions evolve the envelope shape without
+     * breaking existing signed proofs.
+     */
+    const val PROOF_MEMO_PREFIX = "Agentic plan review proof v1\nSHA-256: "
     /**
      * Whether [walletPackage] needs the memo-tx fallback rather than a direct
      * `sign_messages` MWA call. Returns true for:
@@ -39,10 +56,31 @@ internal object MemoProofRouter {
         walletPackage.isBlank() || WalletRegistry.messageSigningUnsupported(walletPackage)
 
     /**
-     * Builds the unsigned memo-only legacy transaction whose memo data is the UTF-8
-     * encoding of [message]. Pure: no I/O, no Android APIs. [publicKeyBytes] must be the
-     * 32-byte fee payer (= proof signer) public key; [blockhashBytes] must be the 32-byte
-     * latest blockhash supplied by the caller.
+     * Builds the fixed-size memo envelope for [message]. Always
+     * [PROOF_MEMO_PREFIX].length + 64 UTF-8 bytes (under 110 total) regardless of
+     * how long [message] is, which is what keeps the final memo-tx safely under
+     * Solana's 1232-byte `PACKET_DATA_SIZE` limit even for multi-KB plan-review
+     * proofs (a 1249-byte message produced a 1420-byte tx and got `"Invalid
+     * transaction. The transaction from the site is not properly formed and can't be
+     * signed."` from Solflare and Seed Vault — see plan file for the device logcat).
+     *
+     * Pure: no I/O, no Android APIs. Suitable for unit tests.
+     */
+    fun buildProofMemo(message: String): String {
+        val messageBytes = message.toByteArray(Charsets.UTF_8)
+        val digest = MessageDigest.getInstance("SHA-256").digest(messageBytes)
+        val hex = buildString(digest.size * 2) {
+            for (byte in digest) append("%02x".format(byte))
+        }
+        return PROOF_MEMO_PREFIX + hex
+    }
+
+    /**
+     * Builds the unsigned memo-only legacy transaction whose memo data is the
+     * hashed envelope of [message] (see [buildProofMemo]). Pure: no I/O, no Android
+     * APIs. [publicKeyBytes] must be the 32-byte fee payer (= proof signer) public
+     * key; [blockhashBytes] must be the 32-byte latest blockhash supplied by the
+     * caller.
      *
      * Throws [IllegalArgumentException] (from [MemoProofTx.buildUnsignedMemoProofTransaction])
      * when inputs have the wrong shape.
@@ -52,7 +90,7 @@ internal object MemoProofRouter {
         blockhashBytes: ByteArray,
         message: String,
     ): ByteArray {
-        val memoBytes = message.toByteArray(Charsets.UTF_8)
+        val memoBytes = buildProofMemo(message).toByteArray(Charsets.UTF_8)
         return MemoProofTx.buildUnsignedMemoProofTransaction(publicKeyBytes, blockhashBytes, memoBytes)
     }
 

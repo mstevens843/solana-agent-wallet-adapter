@@ -10,6 +10,10 @@ const SEED_VAULT_ICON =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAANgAAADY...' +
   'QChlppOaiUo1Z22pIwKl0xN6leqUK+T8P/q4PWPnCdaVAAAAAElFTkSuQmCC';
 
+const ESCAPED_SEED_VAULT_ICON =
+  'data:image\\/png;base64,iVBORw0KGgoAAAANSUhEUgAAANgAAADY\\n...' +
+  'QChlppOaiUo1Z22pIwKl0xN6leqUK+T8P\\/q4PWPnCdaVAAAAAElFTkSuQmCC';
+
 describe('wallet branding helpers', () => {
   it('maps Solflare Android package names to the Solflare display name and logo', () => {
     expect(
@@ -38,7 +42,7 @@ describe('wallet branding helpers', () => {
     ).toBe('Solflare');
     expect(
       androidWalletDisplayNameFromStatus({
-        walletIcon: 'https://solflare.com/favicon.ico',
+        walletIcon: 'https:\\/\\/solflare.com\\/favicon.ico',
         accountLabel: 'CT89vd7XfM',
       }),
     ).toBe('Solflare');
@@ -88,6 +92,22 @@ describe('wallet branding helpers', () => {
         accountLabel: 'cofeelme.skr',
       }),
     ).toBe('seedVault');
+    expect(
+      walletLogoIdFromAndroidStatus({
+        walletType: 0,
+        walletPackage: '',
+        walletUriBase: '',
+        walletIcon: ESCAPED_SEED_VAULT_ICON,
+        accountLabel: 'cofeelme.skr',
+      }),
+    ).toBe('seedVault');
+    expect(
+      walletLogoIdFromAndroidStatus({
+        walletIcon:
+          'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAANgAAADYnot-a-known-wallet-tail',
+        accountLabel: 'cofeelme.skr',
+      }),
+    ).toBeUndefined();
   });
 
   it('falls back to account labels for unknown Android wallet packages', () => {

@@ -56,7 +56,7 @@ class AuthCacheSerializationTest {
 
         val restored = authRecordFromJson(json)
 
-        assertEquals("", restored.walletPackage)
+        assertEquals("com.solanamobile.seedvaultimpl", restored.walletPackage)
         assertEquals("https://intercom.help/seedvaultwallet/assets/favicon", restored.walletIcon)
         assertEquals(WalletRegistry.SEED_VAULT, restored.walletType)
     }

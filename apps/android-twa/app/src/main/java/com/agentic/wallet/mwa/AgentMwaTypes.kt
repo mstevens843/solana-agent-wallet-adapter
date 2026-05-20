@@ -73,12 +73,18 @@ data class AgentMwaSigningResult(
     // "tx-memo-proof" indicates the Phantom/Solflare/Seed-Vault ownership-proof
     // fallback: those wallets either don't implement sign_messages over MWA or do
     // so in a way that hangs/returns CancellationException, so the dApp built a
-    // memo-only legacy transaction containing the proof string as the memo data
-    // and asked the wallet to sign it. The signed transaction is NEVER broadcast.
-    // [transactionBase64] is the full signed transaction so the server can extract
-    // the memo and ed25519-verify the signature against the transaction message
-    // bytes. See `apps/render-web/src/cloud/auth.ts` verifyWalletSignature; the JS
-    // bridge forwards this token to the verifier as `proofEncoding`.
+    // memo-only legacy transaction whose memo data is a fixed-size hashed envelope
+    // of the proof message (see [MemoProofRouter.buildProofMemo]) and asked the
+    // wallet to sign it. The envelope is the prefix `"Agentic plan review proof v1
+    // SHA-256: "` followed by the lowercase hex of `sha256(utf8(message))`, which
+    // keeps the total tx under Solana's 1232-byte PACKET_DATA_SIZE limit even for
+    // multi-KB plan-review messages (a literal-bytes memo previously produced a
+    // 1673-byte tx that Seed Vault rejected as "Invalid transaction"). The signed
+    // transaction is NEVER broadcast. [transactionBase64] is the full signed tx so
+    // the server can extract the memo, recompute the digest of `proofMemoText`,
+    // and ed25519-verify the signature against the transaction message bytes. See
+    // `apps/render-web/src/cloud/auth.ts` verifyWalletSignature; the JS bridge
+    // forwards this token to the verifier as `proofEncoding`.
     val encoding: String = "utf8",
     val transactionBase64: String? = null,
 )

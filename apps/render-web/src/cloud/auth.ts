@@ -1,4 +1,4 @@
-import { createPublicKey, randomBytes, verify as verifyDetached } from 'node:crypto';
+import { createHash, createPublicKey, randomBytes, verify as verifyDetached } from 'node:crypto';
 
 import type {
   AuthNonceResponse as SharedAuthNonceResponse,
@@ -224,6 +224,14 @@ export function verifyWalletSignature(input: {
   }
 }
 
+// Envelope shape produced by `apps/android-twa/.../MemoProofRouter.buildProofMemo`.
+// New (current) memo-tx contract: memo = PROOF_MEMO_ENVELOPE_PREFIX + sha256-hex(utf8(message)).
+// Keeps the memo a fixed ~110 bytes so the total tx fits under Solana's 1232-byte
+// PACKET_DATA_SIZE limit even for multi-KB plan-review messages. Legacy clients
+// embedded the literal message bytes — those are still accepted as a fallback so
+// proofs already in transit verify cleanly while we roll out the new envelope.
+const PROOF_MEMO_ENVELOPE_PREFIX = 'Agentic plan review proof v1\nSHA-256: ';
+
 function verifyTxMemoProof(input: {
   txBase64: string;
   message: string;
@@ -235,8 +243,24 @@ function verifyTxMemoProof(input: {
   const messageBytes = Buffer.from(input.message, 'utf8');
   const parsed = parseTxMessageAndMemo(txBytes);
   if (!parsed) return false;
-  if (parsed.memoData.length !== messageBytes.length) return false;
-  if (!parsed.memoData.equals(messageBytes)) return false;
+
+  // Hashed envelope (current) vs literal-bytes (legacy): dispatch on the prefix.
+  const memoText = parsed.memoData.toString('utf8');
+  if (memoText.startsWith(PROOF_MEMO_ENVELOPE_PREFIX)) {
+    const claimedHex = memoText.slice(PROOF_MEMO_ENVELOPE_PREFIX.length);
+    // SHA-256 produces 64 lowercase hex chars. Reject anything else to make this
+    // contract unforgiving — the Android builder always emits lowercase, so a
+    // mismatched-case envelope is a corruption signal worth surfacing as a failure.
+    if (claimedHex.length !== 64) return false;
+    const expectedHex = createHash('sha256').update(messageBytes).digest('hex');
+    if (claimedHex !== expectedHex) return false;
+  } else {
+    // Legacy literal-bytes memo: memo == message bytes verbatim. Kept for backwards
+    // compat with proofs in flight from clients on the pre-envelope contract.
+    if (parsed.memoData.length !== messageBytes.length) return false;
+    if (!parsed.memoData.equals(messageBytes)) return false;
+  }
+
   const feePayerKey = parsed.staticAccountKeys[0];
   if (!feePayerKey || !buffersEqual(feePayerKey, Buffer.from(input.publicKeyBytes))) return false;
   return verifyDetached(null, parsed.messageBytes, input.key, input.signatureBytes);

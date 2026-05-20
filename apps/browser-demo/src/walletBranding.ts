@@ -110,13 +110,18 @@ function walletBrandForText(value: string): WalletBrand | undefined {
 }
 
 function walletBrandForKnownIcon(walletIcon: string): WalletBrand | undefined {
-  if (!walletIcon) return undefined;
-  if (walletIcon.includes(SEED_VAULT_ICON_HEAD) && walletIcon.includes(SEED_VAULT_ICON_TAIL_SENTINEL)) {
+  const normalized = normalizeWalletIconSignature(walletIcon);
+  if (!normalized) return undefined;
+  if (normalized.includes(SEED_VAULT_ICON_HEAD) && normalized.includes(SEED_VAULT_ICON_TAIL_SENTINEL)) {
     return WALLET_BRANDS.find((brand) => brand.logoId === 'seedVault');
   }
   return undefined;
 }
 
 function normalizeWalletBrandText(value: string): string {
-  return value.trim().toLowerCase().replace(/[_./:-]+/g, ' ');
+  return value.trim().replace(/\\\//g, '/').toLowerCase().replace(/[_./:-]+/g, ' ');
+}
+
+function normalizeWalletIconSignature(value: string): string {
+  return value.trim().replace(/\\\//g, '/').replace(/\\n/g, '').replace(/\s+/g, '');
 }

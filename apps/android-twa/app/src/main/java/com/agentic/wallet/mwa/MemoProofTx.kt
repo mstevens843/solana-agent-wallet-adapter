@@ -3,11 +3,23 @@ package com.agentic.wallet.mwa
 import java.io.ByteArrayOutputStream
 
 /**
- * Hand-rolled Solana legacy memo-only transaction serializer for the Phantom/Solflare
- * ownership-proof fallback. These wallets advertise no `solana:signMessages` feature
- * in their MWA `get_capabilities` reply, so the proof path substitutes a memo-only
- * `sign_transactions` call where the memo data is the same UTF-8 proof bytes the
- * `sign_messages` path would have signed. The signed transaction is NEVER broadcast.
+ * Hand-rolled Solana legacy memo-only transaction serializer for the
+ * Phantom/Solflare/Seed-Vault ownership-proof fallback. These wallets either don't
+ * implement `sign_messages` over MWA (Phantom, Solflare) or do so in a way that
+ * hangs/cancels (Seed Vault on Seeker), so the proof path substitutes a memo-only
+ * `sign_transactions` call. The signed transaction is NEVER broadcast.
+ *
+ * The caller (typically [MemoProofRouter.buildUnsignedMemoTx]) is expected to pass
+ * a fixed-size hashed envelope as [memoBytes] — see
+ * [MemoProofRouter.buildProofMemo] for the canonical envelope shape and
+ * [MemoProofRouter.PROOF_MEMO_PREFIX] for the version marker. The envelope keeps
+ * the total tx well under Solana's 1232-byte PACKET_DATA_SIZE limit even for
+ * arbitrarily long plan-review messages — a previous design that embedded the
+ * literal message bytes produced a 1673-byte tx for a 1502-byte message and was
+ * rejected by Seed Vault with "Invalid transaction. The transaction from the site
+ * is not properly formed and can't be signed." Phantom and Solflare don't validate
+ * tx size today but the memo-tx is never broadcast so they got away with it; the
+ * envelope-based contract works uniformly across all three.
  *
  * Account-key order is load-bearing: `staticAccountKeys[0]` MUST be the fee-payer
  * (signer + writable) and `staticAccountKeys[1]` MUST be the memo program (readonly
