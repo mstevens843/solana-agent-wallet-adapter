@@ -69,6 +69,7 @@ describe('render web hosted BYOK API', () => {
             'POST /api/solana/latest-blockhash',
             'POST /api/solana/send-transaction',
             'POST /api/solana/signature-status',
+            'POST /api/solana/parsed-account-info',
             'POST /api/swap/order',
             'POST /api/swap/execute',
           ]),
@@ -915,6 +916,29 @@ describe('render web hosted BYOK API', () => {
       expect(latest.body.error).toBe('cluster is required.');
       expect(send.status).toBe(400);
       expect(send.body.error).toBe('signedTransaction is required.');
+    });
+  });
+
+  it('validates /api/solana/parsed-account-info input', async () => {
+    await withServer(async (port) => {
+      const bogusCluster = await postJson(port, '/api/solana/parsed-account-info', {
+        cluster: 'bogus',
+        address: 'So11111111111111111111111111111111111111112',
+      });
+      const missingAddress = await postJson(port, '/api/solana/parsed-account-info', {
+        cluster: 'mainnet-beta',
+      });
+      const badAddress = await postJson(port, '/api/solana/parsed-account-info', {
+        cluster: 'mainnet-beta',
+        address: 'POPCAT',
+      });
+
+      expect(bogusCluster.status).toBe(400);
+      expect(bogusCluster.body.error).toBe('cluster is required.');
+      expect(missingAddress.status).toBe(400);
+      expect(missingAddress.body.error).toBe('address is required.');
+      expect(badAddress.status).toBe(400);
+      expect(String(badAddress.body.error)).toContain('not a valid Solana public key');
     });
   });
 

@@ -49,6 +49,11 @@ import java.io.FileNotFoundException
 import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicReference
 
+// Inherits from FragmentActivity (not ComponentActivity) because androidx.biometric
+// BiometricPrompt requires a FragmentActivity host. FragmentActivity extends
+// ComponentActivity, so lifecycleScope / ActivityResultSender / lifecycle.currentState
+// still work as before. Do not downgrade to ComponentActivity without first removing
+// or refactoring BiometricBridge.
 class MainActivity : FragmentActivity() {
     private lateinit var webView: WebView
     private lateinit var mwaController: MwaController
@@ -292,6 +297,10 @@ class MainActivity : FragmentActivity() {
         // Debounced inside the loader, so onResume → onResume churn doesn't spam the
         // network. Forces a fetch when the app is foregrounded after >60s in background.
         RemoteConfigLoader.refresh(lifecycleScope)
+        // Watchdog: if onResume fires while an MWA call is suspended and the activity stays
+        // RESUMED past the grace window, the user dismissed the OS chooser without picking a
+        // wallet — cancel the suspended call so the JS busy flag releases.
+        mwaController.notifyActivityResumed(this)
     }
 
     private fun defaultMwaIdentity(): AgentMwaIdentity {
@@ -811,6 +820,10 @@ class MainActivity : FragmentActivity() {
          *   { title, subtitle?, description?, negativeButton?, allowDeviceCredential? }
          * Result envelope:
          *   { ok, kind, code?, message?, authType? }
+         *
+         * SECURITY: see [com.agentic.wallet.system.BiometricBridge] header — the result
+         * envelope is JS-controllable. Use only as a UX gate, never as authorization
+         * for releasing secrets or approving transactions.
          */
         @JavascriptInterface
         fun biometricPrompt(requestId: String, payloadJson: String) {

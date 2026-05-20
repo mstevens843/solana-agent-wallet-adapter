@@ -5,6 +5,8 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.util.Base64
+import androidx.activity.ComponentActivity
+import androidx.lifecycle.Lifecycle
 import com.agentic.wallet.BuildConfig
 import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
 import com.solana.mobilewalletadapter.clientlib.ConnectionIdentity
@@ -13,8 +15,15 @@ import com.solana.mobilewalletadapter.clientlib.TransactionParams
 import com.solana.mobilewalletadapter.clientlib.TransactionResult
 import com.solana.mobilewalletadapter.clientlib.protocol.MobileWalletAdapterClient.AuthorizationResult
 import com.solana.mobilewalletadapter.common.signin.SignInWithSolana
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
@@ -25,6 +34,7 @@ import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicReference
 
 class MwaController(
     private val context: Context,
@@ -32,6 +42,18 @@ class MwaController(
     private val cache: AuthCache = AuthCache(context),
 ) {
     private var activeRecord: AgentMwaAuthRecord? = null
+
+    // Tracks the currently-suspended MWA call so the activity-resume watchdog can cancel it
+    // when the user dismisses the OS wallet chooser by tapping outside. MWA operations are
+    // serialized via the keep-alive service, so a single slot is sufficient.
+    private data class InFlightOp(
+        val method: String,
+        val cancelSignal: CompletableDeferred<Unit>,
+        val startedAt: Long,
+    )
+
+    private val inFlightOp = AtomicReference<InFlightOp?>(null)
+    private val watchdogScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     fun activeAuthorization(): AgentMwaAuthRecord? = activeRecord
 
@@ -990,8 +1012,28 @@ class MwaController(
 
     private suspend fun <T> withKeepAlive(method: String, block: suspend () -> T): T {
         startKeepAlive(method)
+        val cancelSignal = CompletableDeferred<Unit>()
+        val op = InFlightOp(method, cancelSignal, System.currentTimeMillis())
+        inFlightOp.set(op)
         return try {
-            block()
+            coroutineScope {
+                val blockJob = async { block() }
+                try {
+                    select<T> {
+                        blockJob.onAwait { it }
+                        cancelSignal.onAwait {
+                            blockJob.cancel()
+                            throw MwaOperationException(
+                                "USER_REJECTED",
+                                "Wallet picker dismissed without selection",
+                            )
+                        }
+                    }
+                } catch (err: Throwable) {
+                    if (!blockJob.isCompleted) blockJob.cancel()
+                    throw err
+                }
+            }
         } catch (err: Throwable) {
             AgentMwaLog.failure(
                 "MwaController",
@@ -1003,7 +1045,43 @@ class MwaController(
             )
             throw err
         } finally {
+            inFlightOp.compareAndSet(op, null)
             stopKeepAlive(method)
+        }
+    }
+
+    /**
+     * Called by [MainActivity.onResume] to break out of a suspended MWA call when the user
+     * dismisses the OS wallet chooser by tapping outside it.
+     *
+     * The OS chooser is an Activity overlay launched via `IntentSender` by the MWA clientlib.
+     * When dismissed-without-selection it finishes with `RESULT_CANCELED`, but the clientlib
+     * does not propagate that as a [TransactionResult.Failure] — the suspended coroutine in
+     * `adapter.connect()` / `adapter.transact()` simply never resumes, so the JS bridge
+     * callback never fires and the UI's `state.busy` flag stays `true` forever.
+     *
+     * Discrimination: when the user actually picks a wallet, the wallet app takes foreground
+     * and MainActivity moves out of `RESUMED` within sub-second timing. So we wait 700ms after
+     * onResume and only fire the cancel signal if MainActivity is still continuously RESUMED —
+     * meaning the user dismissed without picking anything. This avoids false-cancelling slow
+     * legitimate wallet flows.
+     */
+    fun notifyActivityResumed(activity: ComponentActivity) {
+        val op = inFlightOp.get() ?: return
+        watchdogScope.launch {
+            delay(700)
+            if (!activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) return@launch
+            val still = inFlightOp.get()
+            if (still != null && still === op) {
+                AgentMwaLog.warn(
+                    "MwaController",
+                    still.method,
+                    "FAIL_PICKER_DISMISSED",
+                    "activity resumed without MWA result and no wallet foregrounded; cancelling as USER_REJECTED",
+                    mapOf("elapsedMs" to (System.currentTimeMillis() - still.startedAt)),
+                )
+                still.cancelSignal.complete(Unit)
+            }
         }
     }
 

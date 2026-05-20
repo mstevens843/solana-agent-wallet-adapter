@@ -23,9 +23,12 @@ describe('GET /api/android-config', () => {
       expect(response.status).toBe(200);
       expect(String(response.headers['content-type'])).toContain('application/json');
       const cacheControl = String(response.headers['cache-control'] ?? '');
-      expect(cacheControl).toContain('public');
+      // `private` (not `public`): confines cache to per-client. Defense against
+      // CDN-shared poisoning. SWR=60 matches the Android refresh debounce.
+      expect(cacheControl).toContain('private');
+      expect(cacheControl).not.toContain('public');
       expect(cacheControl).toContain('max-age=300');
-      expect(cacheControl).toContain('stale-while-revalidate=3600');
+      expect(cacheControl).toContain('stale-while-revalidate=60');
 
       const parsed = JSON.parse(response.body) as typeof ANDROID_REMOTE_CONFIG;
       expect(parsed.version).toBe(ANDROID_REMOTE_CONFIG.version);
@@ -81,6 +84,38 @@ describe('GET /api/android-config', () => {
       expect(phantom).toBeDefined();
       expect(phantom?.supportsSignMessages).toBe(false);
     });
+  });
+
+  it('canonical payload matches the Android bundled defaults table', () => {
+    // PARITY ANCHOR (server side). The same table is asserted in
+    // android-twa/.../config/RemoteConfigSchemaTest::defaults_walletRegistry_matchesServerCanonicalPayload.
+    // Update both in lockstep when you add a wallet or flip a flag — otherwise an
+    // APK whose remote config was wiped from disk will route differently than one
+    // that just fetched.
+    const expected = [
+      { id: 20, name: 'phantom', packageNames: ['app.phantom'], supportsSignMessages: false, supportsSiws: true, forceSignThenRpc: false },
+      { id: 25, name: 'solflare', packageNames: ['com.solflare.mobile'], supportsSignMessages: false, supportsSiws: false, forceSignThenRpc: false },
+      { id: 36, name: 'backpack', packageNames: ['app.backpack.mobile'], supportsSignMessages: true, supportsSiws: true, forceSignThenRpc: true },
+      { id: 40, name: 'jupiter', packageNames: ['ag.jup.jupiter.android'], supportsSignMessages: true, supportsSiws: true, forceSignThenRpc: true },
+      { id: 50, name: 'seedvault', packageNames: ['com.solanamobile.seedvaultimpl'], supportsSignMessages: false, supportsSiws: false, forceSignThenRpc: false },
+    ];
+    expect(ANDROID_REMOTE_CONFIG.walletRegistry.length).toBe(expected.length);
+    expected.forEach((exp, idx) => {
+      const actual = ANDROID_REMOTE_CONFIG.walletRegistry[idx]!;
+      expect(actual.id, `id for ${exp.name}`).toBe(exp.id);
+      expect(actual.name, 'name').toBe(exp.name);
+      expect(actual.packageNames, `packageNames for ${exp.name}`).toEqual(exp.packageNames);
+      expect(actual.supportsSignMessages, `supportsSignMessages for ${exp.name}`).toBe(exp.supportsSignMessages);
+      expect(actual.supportsSiws, `supportsSiws for ${exp.name}`).toBe(exp.supportsSiws);
+      expect(actual.forceSignThenRpc, `forceSignThenRpc for ${exp.name}`).toBe(exp.forceSignThenRpc);
+    });
+    const solflare = ANDROID_REMOTE_CONFIG.walletRegistry.find((w) => w.name === 'solflare');
+    expect(solflare?.iconSha256First8).toBe('245123d8a7fd8aa5');
+    expect(ANDROID_REMOTE_CONFIG.memoProofRouter.proofMemoPrefix).toBe(
+      'Agentic plan review proof v1\nSHA-256: ',
+    );
+    expect(ANDROID_REMOTE_CONFIG.memoProofRouter.envelopeVersion).toBe('v1');
+    expect(ANDROID_REMOTE_CONFIG.memoProofRouter.fallbackOnBlankPackage).toBe(true);
   });
 });
 

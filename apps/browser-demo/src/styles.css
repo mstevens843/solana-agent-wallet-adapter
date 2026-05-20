@@ -26463,6 +26463,121 @@ button.danger:hover:not(:disabled) {
   }
 }
 
+.expand-note-link {
+  display: none;
+}
+
+@media (max-width: 899px) {
+  body[data-expand-note-sheet] {
+    overflow: hidden;
+  }
+
+  .planner-prompt textarea,
+  .recurring-note-field textarea {
+    min-height: 144px;
+  }
+
+  .receipt-field textarea {
+    min-height: 152px;
+  }
+
+  .planner-prompt > .field-label-row,
+  .recurring-note-field > .field-label-row,
+  .receipt-field > .field-label-row {
+    align-items: center;
+    display: flex;
+    gap: 12px;
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .planner-prompt > .field-label-row > .field-label-text,
+  .recurring-note-field > .field-label-row > .field-label-text,
+  .receipt-field > .field-label-row > .field-label-text {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .expand-note-link {
+    appearance: none;
+    background: transparent;
+    border: 0;
+    color: var(--accent-2);
+    cursor: pointer;
+    display: inline-flex;
+    flex: 0 0 auto;
+    font: inherit;
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    line-height: 1.1;
+    padding: 4px 0 4px 8px;
+    text-transform: none;
+  }
+
+  .expand-note-link:hover,
+  .expand-note-link:focus-visible {
+    color: var(--accent);
+    outline: none;
+    text-decoration: underline;
+  }
+
+  .expand-note-link:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  .route-app .mobile-rail-sheet.expand-note-sheet .mobile-rail-sheet-body {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 16px 16px calc(18px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .route-app .expand-note-sheet-textarea {
+    background: rgba(255, 255, 255, 0.028);
+    border: 1px solid rgba(224, 230, 226, 0.14);
+    border-radius: 12px;
+    color: var(--text);
+    flex: 1 1 auto;
+    font: inherit;
+    font-size: 0.95rem;
+    line-height: 1.45;
+    min-height: 0;
+    padding: 12px 14px;
+    resize: none;
+    width: 100%;
+  }
+
+  .route-app .expand-note-sheet-textarea:focus-visible {
+    border-color: rgba(63, 189, 131, 0.6);
+    outline: none;
+  }
+
+  .route-app .expand-note-sheet-confirm {
+    appearance: none;
+    background: var(--accent);
+    border: 0;
+    border-radius: 12px;
+    color: #061410;
+    cursor: pointer;
+    flex: 0 0 auto;
+    font: inherit;
+    font-size: 0.95rem;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    min-height: 48px;
+    padding: 12px 16px;
+    width: 100%;
+  }
+
+  .route-app .expand-note-sheet-confirm:hover,
+  .route-app .expand-note-sheet-confirm:focus-visible {
+    background: #4cc78f;
+    outline: none;
+  }
+}
+
 @media (max-width: 370px) {
   .route-app .android-bottom-tab-dock {
     padding-left: calc(14px + env(safe-area-inset-left, 0px));
@@ -26591,6 +26706,56 @@ button.danger:hover:not(:disabled) {
 
 .android-tab-body > .command-preference-card::before {
   display: none;
+}
+
+/* Mobile-only Pending / Unresolved / Sections tab card for the Workspace
+   backup panel in Preferences. Reuses the .android-tab-card chrome from the
+   home tab; desktop continues to render .workspace-backup-stats as a row. */
+.workspace-backup-tabs {
+  margin: 0;
+}
+
+.workspace-backup-tabs-strip {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.workspace-backup-tabs-strip .android-tab {
+  min-height: 48px;
+  padding: 8px 4px;
+}
+
+.workspace-backup-tabs-strip .android-tab-label {
+  font-size: 0.62rem;
+  line-height: 1.15;
+  text-transform: uppercase;
+}
+
+.workspace-backup-tabs-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 14px 16px;
+}
+
+.workspace-backup-tabs-body > em {
+  color: var(--dim);
+  font-size: 0.66rem;
+  font-style: normal;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.workspace-backup-tabs-body > strong {
+  color: var(--text);
+  font-size: 1.6rem;
+  font-weight: 900;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+}
+
+.workspace-backup-tabs-body.warn > strong {
+  color: var(--warn, #f5a623);
 }
 
 /* Repeat Payments flip strip: cards become a tab-flippable row instead of a

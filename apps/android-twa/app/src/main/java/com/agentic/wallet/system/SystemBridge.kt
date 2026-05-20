@@ -18,6 +18,7 @@ import android.os.Vibrator
 import android.os.VibratorManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import com.agentic.wallet.R
 import com.agentic.wallet.mwa.AgentMwaLog
 import org.json.JSONObject
 import java.util.Locale
@@ -35,18 +36,45 @@ import java.util.concurrent.atomic.AtomicInteger
 class SystemBridge(private val activity: Activity) {
 
     /**
-     * Open a URL or intent via [Intent.ACTION_VIEW]. Returns true on success, false
-     * if no app can handle the URL (e.g., http if no browser installed, exotic
-     * scheme). Supports https/http (browsers), tel/mailto/sms (system apps), and
-     * any other URI an app on-device declares it can handle.
+     * Open a URL via [Intent.ACTION_VIEW]. Returns true on success, false on rejected
+     * scheme or dispatch failure.
      *
-     * SECURITY: callers must validate the URL on the JS side before passing it
-     * here. The native bridge does not enforce origin or sanitize the URL.
+     * SECURITY: scheme allowlist applied defensively even though the bridge is
+     * origin-guarded (`checkTrustedOrigin`). If the trusted-origin JS is ever
+     * compromised (XSS, supply chain), an attacker could otherwise dispatch
+     * `intent://`, custom schemes, `data:`, or `javascript:` to reach phishing
+     * handlers on the device, exfiltrate via `mailto:?body=<secrets>`, or invoke
+     * sensitive system actions. Only schemes the user-facing flow actually needs
+     * are accepted: https/http for browsers, mailto for support email, tel for
+     * "call support" links, sms for SMS-based 2FA. If a future feature legitimately
+     * needs another scheme, add it here AND ship a new APK.
      */
     fun openExternal(url: String): Boolean {
         if (url.isBlank()) return false
+        val parsed = runCatching { Uri.parse(url) }.getOrNull()
+        if (parsed == null) {
+            AgentMwaLog.warn(
+                "SystemBridge",
+                "openExternal",
+                "FAIL_UNPARSEABLE",
+                "URL did not parse",
+                mapOf("url" to url),
+            )
+            return false
+        }
+        val scheme = parsed.scheme?.lowercase().orEmpty()
+        if (scheme !in ALLOWED_EXTERNAL_SCHEMES) {
+            AgentMwaLog.warn(
+                "SystemBridge",
+                "openExternal",
+                "FAIL_SCHEME_REJECTED",
+                "URL scheme not in allowlist",
+                mapOf("scheme" to scheme, "url" to url),
+            )
+            return false
+        }
         return try {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+            val intent = Intent(Intent.ACTION_VIEW, parsed).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             activity.startActivity(intent)
@@ -201,7 +229,11 @@ class SystemBridge(private val activity: Activity) {
             ensureNotificationChannel(channelId)
             val id = nextNotificationId()
             val notification = NotificationCompat.Builder(activity, channelId)
-                .setSmallIcon(activity.applicationInfo.icon)
+                // White-silhouette vector icon. Android 5+ converts small icons to
+                // single-channel using only the alpha channel — full-color
+                // launcher icons (`applicationInfo.icon`) would render as gray
+                // squares. Keep this pointing at `ic_agentic_notification`.
+                .setSmallIcon(R.drawable.ic_agentic_notification)
                 .setContentTitle(title)
                 .setContentText(body)
                 .setAutoCancel(true)
@@ -241,5 +273,11 @@ class SystemBridge(private val activity: Activity) {
     companion object {
         const val DEFAULT_CHANNEL_ID = "agentic.default"
         private val NOTIFICATION_ID_COUNTER = AtomicInteger(1000)
+
+        // Scheme allowlist for `openExternal`. Trim is conservative: every
+        // additional scheme is a potential phishing vector if JS is compromised.
+        // Add a scheme here ONLY when a user-facing feature legitimately needs
+        // it, and remember that adding one means a new APK release.
+        private val ALLOWED_EXTERNAL_SCHEMES = setOf("https", "http", "mailto", "tel", "sms")
     }
 }

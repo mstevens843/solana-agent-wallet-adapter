@@ -1,5 +1,6 @@
 package com.agentic.wallet.config
 
+import androidx.annotation.VisibleForTesting
 import com.agentic.wallet.NativeSecureStore
 import com.agentic.wallet.mwa.AgentMwaLog
 import kotlinx.coroutines.CoroutineScope
@@ -144,7 +145,27 @@ object RemoteConfigLoader {
             "fetching remote config",
             mapOf("url" to url.toString()),
         )
-        val conn = (url.openConnection() as HttpURLConnection)
+        // Cast and try-block together so a non-HTTP URL (or misconfigured base
+        // URL that resolves to a file:/jar: connection) doesn't leak the
+        // connection — the previous shape had the cast outside try, so a
+        // ClassCastException would skip the finally and leave the socket open.
+        val conn: HttpURLConnection = try {
+            url.openConnection() as HttpURLConnection
+        } catch (err: Exception) {
+            AgentMwaLog.failure(
+                "RemoteConfigLoader",
+                "fetch",
+                "FAIL_OPEN_CONNECTION",
+                "remote config URL did not yield an HTTP connection",
+                err,
+                mapOf("url" to url.toString()),
+            )
+            return@withContext RefreshResult(
+                ok = false,
+                snapshot = snapshot.get(),
+                errorMessage = err.javaClass.simpleName,
+            )
+        }
         try {
             conn.apply {
                 requestMethod = "GET"
@@ -224,6 +245,32 @@ object RemoteConfigLoader {
             .put("fetchedAtMs", snap.fetchedAtMs)
             .put("walletCount", snap.config.walletRegistry.size)
             .put("envelopeVersion", snap.config.memoProofRouter.envelopeVersion)
+    }
+
+    /**
+     * Test hook: seed the snapshot directly without going through HTTP or disk cache.
+     * Production code MUST NOT call this — the @VisibleForTesting annotation makes
+     * lint flag any non-test caller. Pure JVM unit tests use this to verify that
+     * `WalletRegistry` / `MemoProofRouter` honor server-driven overrides without needing
+     * an Android runtime to stand up the secure store + connectivity stack.
+     */
+    @VisibleForTesting
+    @Synchronized
+    fun setForTesting(snapshotForTest: LoaderSnapshot) {
+        snapshot.set(snapshotForTest)
+    }
+
+    /**
+     * Test hook: restore the bundled-defaults snapshot. Call from `@After` to keep tests
+     * independent — the loader is a singleton, so leaking state across tests breaks the
+     * `routingDecisionsAgreeBetweenJsAndAndroid` invariants that other tests depend on.
+     * Production code MUST NOT call this.
+     */
+    @VisibleForTesting
+    @Synchronized
+    fun resetForTesting() {
+        snapshot.set(LoaderSnapshot.bundled())
+        lastRefreshAttemptMs.set(0L)
     }
 }
 

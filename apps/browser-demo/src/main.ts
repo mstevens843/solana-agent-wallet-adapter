@@ -428,6 +428,7 @@ type PreferencesView = 'workspace' | 'ai' | 'access' | 'rules' | 'tokens';
 type CommandCenterView = 'center' | 'ai' | 'storage';
 type AndroidWorkspaceTab = 'wallet' | 'approvals' | 'payments' | 'proof';
 type AndroidSetupTab = 'ai' | 'cloud' | 'connectors' | 'rules';
+type AndroidWorkspaceBackupTab = 'pending' | 'unresolved' | 'sections';
 type AndroidTrustTab = 'custody' | 'ai-checks' | 'receipts';
 type AndroidLoopTab = 'draft' | 'check' | 'approve' | 'prove';
 type AndroidAiRouteTab = 'hosted' | 'bridge' | 'session' | 'device-agent';
@@ -437,6 +438,10 @@ type AndroidAiIntroTab = 'benefits' | 'no-ai';
 type AndroidAiInfoTab = 'no-ai' | 'hosted' | 'bridge' | 'session' | 'device-agent';
 type AndroidCloudInfoTab = 'approval' | 'scheduler' | 'audit' | 'identity';
 type MobileRailSheet = 'workspace-storage' | 'ai-drafting';
+type ExpandNoteFieldRef =
+  | { kind: 'agent-prompt' }
+  | { kind: 'recurring-note' }
+  | { kind: 'lab-field'; labId: string; fieldId: string };
 type CommandCenterIconId =
   | 'wallet'
   | 'approvals'
@@ -2204,6 +2209,7 @@ interface DemoState {
   commandCenterView: CommandCenterView;
   androidWorkspaceTab: AndroidWorkspaceTab;
   androidSetupTab: AndroidSetupTab;
+  androidWorkspaceBackupTab: AndroidWorkspaceBackupTab;
   androidTrustTab: AndroidTrustTab;
   androidLoopTab: AndroidLoopTab;
   androidAiRouteTab: AndroidAiRouteTab;
@@ -2275,6 +2281,7 @@ interface DemoState {
   recurringAgentReviewFilter: AgentReviewFilter;
   workspaceStoragePanelOpen: boolean | null;
   activeMobileRailSheet: MobileRailSheet | null;
+  activeExpandNoteField: ExpandNoteFieldRef | null;
   aiSettings: AiSettings;
   aiSettingsPanelOpen: boolean | null;
   aiStatus: BridgeAiStatus | null;
@@ -3061,6 +3068,7 @@ const state: DemoState = {
   commandCenterView: 'center',
   androidWorkspaceTab: 'wallet',
   androidSetupTab: 'ai',
+  androidWorkspaceBackupTab: 'pending',
   androidTrustTab: 'custody',
   androidLoopTab: 'draft',
   androidAiRouteTab: 'session',
@@ -3142,6 +3150,7 @@ const state: DemoState = {
   recurringAgentReviewFilter: 'all',
   workspaceStoragePanelOpen: null,
   activeMobileRailSheet: null,
+  activeExpandNoteField: null,
   aiSettings: {
     ...initialAiSettings,
     apiKey: loadSessionAiApiKey(initialAiSettings),
@@ -3261,6 +3270,7 @@ let artifactPickerController: AbortController | null = null;
 let selectPickerController: AbortController | null = null;
 let preferencesMobilePickerController: AbortController | null = null;
 let mobileRailSheetController: AbortController | null = null;
+let expandNoteSheetController: AbortController | null = null;
 let systemHealthTimer: number | null = null;
 let systemHealthRunController: AbortController | null = null;
 const SYSTEM_HEALTH_INTERVAL_MS = 30_000;
@@ -4056,16 +4066,25 @@ function render(): void {
   if (state.activeMobileRailSheet && (route !== '/app' || !isMobileAppViewport() || state.activeTab !== 'overview')) {
     state.activeMobileRailSheet = null;
   }
+  if (state.activeExpandNoteField && !isMobileAppViewport()) {
+    state.activeExpandNoteField = null;
+  }
   applyRouteTitle(route);
   trackPageView(route ?? normalizePathname(window.location.pathname), document.title);
   closeTemplatePickerInteractions();
   closeArtifactPickerInteractions();
   closeMobileRailSheetInteractions();
+  closeExpandNoteSheetInteractions();
   if (typeof document !== 'undefined' && document.body) {
     if (route === '/app' && isMobileAppViewport() && state.activeMobileRailSheet) {
       document.body.dataset.mobileRailSheet = state.activeMobileRailSheet;
     } else {
       delete document.body.dataset.mobileRailSheet;
+    }
+    if (isMobileAppViewport() && state.activeExpandNoteField) {
+      document.body.dataset.expandNoteSheet = state.activeExpandNoteField.kind;
+    } else {
+      delete document.body.dataset.expandNoteSheet;
     }
   }
   appRoot.innerHTML = pageShell(pageContent(route), route);
@@ -6795,6 +6814,7 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
       </section>
       ${androidBottomTabDock()}
       ${mobileRailBottomSheet()}
+      ${expandNoteBottomSheet()}
     </section>
   `;
 }
@@ -6848,6 +6868,149 @@ function closeMobileRailSheet(): void {
   if (!state.activeMobileRailSheet) return;
   state.activeMobileRailSheet = null;
   render();
+}
+
+function expandNoteRefAttr(ref: ExpandNoteFieldRef): string {
+  if (ref.kind === 'lab-field') {
+    return `lab-field:${ref.labId}:${ref.fieldId}`;
+  }
+  return ref.kind;
+}
+
+function expandNoteRefFromAttr(value: string | null | undefined): ExpandNoteFieldRef | null {
+  if (!value) return null;
+  if (value === 'agent-prompt') return { kind: 'agent-prompt' };
+  if (value === 'recurring-note') return { kind: 'recurring-note' };
+  if (value.startsWith('lab-field:')) {
+    const rest = value.slice('lab-field:'.length);
+    const sep = rest.indexOf(':');
+    if (sep <= 0 || sep === rest.length - 1) return null;
+    return { kind: 'lab-field', labId: rest.slice(0, sep), fieldId: rest.slice(sep + 1) };
+  }
+  return null;
+}
+
+function getExpandNoteValue(ref: ExpandNoteFieldRef): string {
+  if (ref.kind === 'agent-prompt') return state.agentPrompt;
+  if (ref.kind === 'recurring-note') return state.recurringDraft.note;
+  return state.labFieldValues[ref.labId]?.[ref.fieldId] ?? '';
+}
+
+function setExpandNoteValue(ref: ExpandNoteFieldRef, value: string): void {
+  if (ref.kind === 'agent-prompt') {
+    state.agentPrompt = value;
+    delete state.templateFieldErrors.__notes;
+    state.agentPlan = null;
+    state.agentSignature = '';
+    state.agentPreparedActionId = '';
+    return;
+  }
+  if (ref.kind === 'recurring-note') {
+    state.recurringDraft = { ...state.recurringDraft, note: value };
+    delete state.recurringErrors.recurringNote;
+    return;
+  }
+  state.labFieldValues[ref.labId] = {
+    ...(state.labFieldValues[ref.labId] ?? {}),
+    [ref.fieldId]: value,
+  };
+  delete state.labFieldErrors[receiptFieldErrorKey(ref.labId, ref.fieldId)];
+  state.error = '';
+}
+
+function expandNoteSheetLabels(ref: ExpandNoteFieldRef): { subtitle: string; title: string; placeholder: string } {
+  if (ref.kind === 'agent-prompt') {
+    return {
+      subtitle: 'New request',
+      title: 'Notes for review record',
+      placeholder: 'Add any policy, gates, or notes for the reviewer.',
+    };
+  }
+  if (ref.kind === 'recurring-note') {
+    return {
+      subtitle: 'Repeat payment',
+      title: 'Notes for approval',
+      placeholder: 'Example: rent, payroll, DCA, subscription, or invoice #42',
+    };
+  }
+  const lab = LABS.find((candidate) => candidate.id === ref.labId);
+  const field = lab?.fields?.find((candidate) => candidate.id === ref.fieldId);
+  return {
+    subtitle: lab?.title.replace(/^\d+\.\s*/, '') ?? 'Proof note',
+    title: field?.label ?? 'Note',
+    placeholder: field?.placeholder ?? '',
+  };
+}
+
+function expandNoteBottomSheet(): string {
+  const ref = state.activeExpandNoteField;
+  if (!ref || !isMobileAppViewport()) return '';
+  const { subtitle, title, placeholder } = expandNoteSheetLabels(ref);
+  const value = getExpandNoteValue(ref);
+  return `
+    <div class="mobile-rail-sheet-scrim expand-note-sheet-scrim" data-expand-note-close aria-hidden="true"></div>
+    <aside class="mobile-rail-sheet expand-note-sheet" data-expand-note-root role="dialog" aria-modal="true" aria-labelledby="expandNoteSheetTitle">
+      <header class="mobile-rail-sheet-header">
+        <div>
+          <span>${escapeHtml(subtitle)}</span>
+          <h2 id="expandNoteSheetTitle">${escapeHtml(title)}</h2>
+        </div>
+        <button type="button" class="mobile-rail-sheet-close" data-expand-note-close aria-label="Close ${escapeHtml(title)}">&times;</button>
+      </header>
+      <div class="mobile-rail-sheet-body expand-note-sheet-body">
+        <textarea
+          class="expand-note-sheet-textarea"
+          data-expand-note-input
+          placeholder="${escapeHtml(placeholder)}"
+        >${escapeHtml(value)}</textarea>
+        <button type="button" class="expand-note-sheet-confirm" data-expand-note-confirm>Confirm</button>
+      </div>
+    </aside>
+  `;
+}
+
+function openExpandNoteSheet(ref: ExpandNoteFieldRef): void {
+  if (!isMobileAppViewport()) return;
+  state.activeExpandNoteField = ref;
+  state.error = '';
+  if (typeof window !== 'undefined' && !(window.history.state as { expandNoteSheet?: boolean } | null)?.expandNoteSheet) {
+    try {
+      window.history.pushState({ expandNoteSheet: true }, '', window.location.href);
+    } catch {
+      /* history.pushState may throw in cross-origin or sandboxed frames */
+    }
+  }
+  render();
+  if (typeof window !== 'undefined') {
+    requestAnimationFrame(() => {
+      const textarea = document.querySelector<HTMLTextAreaElement>('[data-expand-note-input]');
+      if (!textarea) return;
+      textarea.focus();
+      const valueLength = textarea.value.length;
+      try { textarea.setSelectionRange(valueLength, valueLength); } catch {
+        /* selectionRange unsupported on some virtual keyboards */
+      }
+    });
+  }
+}
+
+function closeExpandNoteSheet(options: { fromPopState?: boolean } = {}): void {
+  if (!state.activeExpandNoteField) return;
+  state.activeExpandNoteField = null;
+  if (!options.fromPopState && typeof window !== 'undefined' && (window.history.state as { expandNoteSheet?: boolean } | null)?.expandNoteSheet) {
+    try {
+      window.history.back();
+      return;
+    } catch {
+      /* history.back may throw in sandboxed frames */
+    }
+  }
+  render();
+}
+
+function mobileExpandNoteLink(ref: ExpandNoteFieldRef): string {
+  if (!isMobileAppViewport()) return '';
+  return `<button type="button" class="expand-note-link" data-expand-note="${escapeHtml(expandNoteRefAttr(ref))}" ${state.busy ? 'disabled' : ''}>Expand note</button>`;
 }
 
 function trustLayerPanel(): string {
@@ -10471,13 +10634,16 @@ function renderWorkspaceCardGroup(cards: WorkspaceCardGroup): string {
 }
 
 function androidTabButton(
-  group: 'workspace' | 'setup',
+  group: 'workspace' | 'setup' | 'workspace-backup',
   id: string,
   label: string,
   icon: CommandCenterIconId,
   active: boolean,
 ): string {
-  const attr = group === 'workspace' ? 'data-android-workspace-tab' : 'data-android-setup-tab';
+  const attr =
+    group === 'workspace' ? 'data-android-workspace-tab' :
+    group === 'setup' ? 'data-android-setup-tab' :
+    'data-android-workspace-backup-tab';
   return `
     <button
       type="button"
@@ -11135,6 +11301,7 @@ function workspaceBackupPanel(): string {
   const statusLine = state.workspaceBackupStatus
     ? `<p class="workspace-backup-status">${escapeHtml(state.workspaceBackupStatus)}</p>`
     : '';
+  const statsMarkup = workspaceBackupStatsMarkup(pendingCount, unresolved, sectionCount);
   return `
     <section class="workspace-backup-panel" aria-label="Workspace backup">
       <div class="workspace-backup-header">
@@ -11143,11 +11310,7 @@ function workspaceBackupPanel(): string {
           <p>Export your drafts, repeat payments, proofs, and pending tx ledger to a JSON file. Restore it on another browser or after a reset.</p>
         </div>
       </div>
-      <div class="workspace-backup-stats">
-        <span><em>Pending tx records</em><strong>${pendingCount}</strong></span>
-        <span class="${unresolved > 0 ? 'warn' : ''}"><em>Unresolved on-chain</em><strong>${unresolved}</strong></span>
-        <span><em>Sections</em><strong>${sectionCount}</strong></span>
-      </div>
+      ${statsMarkup}
       ${localWorkspacePrompt('backup')}
       <div class="workspace-backup-actions">
         <button type="button" class="primary" data-workspace-backup-action="export">Export workspace</button>
@@ -11163,6 +11326,47 @@ function workspaceBackupPanel(): string {
       </ul>
       ${statusLine}
     </section>
+  `;
+}
+
+function workspaceBackupStatsMarkup(
+  pendingCount: number,
+  unresolved: number,
+  sectionCount: number,
+): string {
+  if (!isMobileAppViewport()) {
+    return `
+      <div class="workspace-backup-stats">
+        <span><em>Pending tx records</em><strong>${pendingCount}</strong></span>
+        <span class="${unresolved > 0 ? 'warn' : ''}"><em>Unresolved on-chain</em><strong>${unresolved}</strong></span>
+        <span><em>Sections</em><strong>${sectionCount}</strong></span>
+      </div>
+    `;
+  }
+  const backupTabs: Array<{
+    id: AndroidWorkspaceBackupTab;
+    label: string;
+    icon: CommandCenterIconId;
+    value: number;
+    bodyLabel: string;
+    warn: boolean;
+  }> = [
+    { id: 'pending', label: 'Pending', icon: 'recurring', value: pendingCount, bodyLabel: 'Pending tx records', warn: false },
+    { id: 'unresolved', label: 'Unresolved', icon: 'approvals', value: unresolved, bodyLabel: 'Unresolved on-chain', warn: unresolved > 0 },
+    { id: 'sections', label: 'Sections', icon: 'guardrails', value: sectionCount, bodyLabel: 'Sections', warn: false },
+  ];
+  const active = state.androidWorkspaceBackupTab;
+  const activeTab = backupTabs.find((tab) => tab.id === active) ?? backupTabs[0]!;
+  return `
+    <div class="android-tab-card workspace-backup-tabs" data-android-tab-group="workspace-backup">
+      <div class="android-tab-strip workspace-backup-tabs-strip" role="tablist" aria-label="Workspace backup stats">
+        ${backupTabs.map((tab) => androidTabButton('workspace-backup', tab.id, tab.label, tab.icon, tab.id === active)).join('')}
+      </div>
+      <div class="android-tab-body workspace-backup-tabs-body${activeTab.warn ? ' warn' : ''}" role="tabpanel">
+        <em>${activeTab.bodyLabel}</em>
+        <strong>${activeTab.value}</strong>
+      </div>
+    </div>
   `;
 }
 
@@ -14037,7 +14241,10 @@ function agentPlannerWorkbench(): string {
             ${effectiveTemplateFields(template).map(templateFieldInput).join('')}
           </div>
           <label class="intent-document planner-prompt">
-            <span>${notesLabel}${notesRequired ? ' *' : ''}</span>
+            <span class="field-label-row">
+              <span class="field-label-text">${notesLabel}${notesRequired ? ' *' : ''}</span>
+              ${mobileExpandNoteLink({ kind: 'agent-prompt' })}
+            </span>
             <textarea id="agentPrompt" placeholder="${escapeHtml(notesPlaceholder)}" ${state.busy ? 'disabled' : ''}>${escapeHtml(state.agentPrompt)}</textarea>
             ${fieldError('__notes')}
           </label>
@@ -17811,10 +18018,18 @@ function receiptFieldInput(lab: LabDefinition, field: LabFieldDefinition): strin
       </label>
     `;
   }
-  if (field.type === 'textarea') {
+  const expandLink = mobileExpandNoteLink({ kind: 'lab-field', labId: lab.id, fieldId: field.id });
+  const labelRow = `
+        <span class="field-label-row">
+          <span class="field-label-text">${escapeHtml(label)}</span>
+          ${expandLink}
+        </span>
+  `;
+  const renderAsTextarea = field.type === 'textarea' || isMobileAppViewport();
+  if (renderAsTextarea) {
     return `
       <label class="field compact receipt-field ${error ? 'field-error' : ''}">
-        <span>${escapeHtml(label)}</span>
+        ${labelRow}
         <textarea ${attrs} placeholder="${escapeHtml(field.placeholder ?? '')}">${escapeHtml(value)}</textarea>
         ${error ? `<em class="field-error-text">${escapeHtml(error)}</em>` : ''}
       </label>
@@ -17822,7 +18037,7 @@ function receiptFieldInput(lab: LabDefinition, field: LabFieldDefinition): strin
   }
   return `
     <label class="field compact receipt-field ${error ? 'field-error' : ''}">
-      <span>${escapeHtml(label)}</span>
+      ${labelRow}
       <input ${attrs} value="${escapeHtml(value)}" placeholder="${escapeHtml(field.placeholder ?? '')}" />
       ${error ? `<em class="field-error-text">${escapeHtml(error)}</em>` : ''}
     </label>
@@ -18339,6 +18554,7 @@ function bind(): void {
   bindSelectPickers();
   bindPreferencesMobilePicker();
   bindMobileRailSheet();
+  bindExpandNoteSheet();
 
   const workspaceTabSelect = document.getElementById('workspaceTabMobile') as HTMLSelectElement | null;
   if (workspaceTabSelect) {
@@ -18351,6 +18567,7 @@ function bind(): void {
         state.artifactView = 'create';
       }
       state.activeMobileRailSheet = null;
+      state.activeExpandNoteField = null;
       state.error = '';
       render();
       if (next === 'inbox') {
@@ -18369,6 +18586,7 @@ function bind(): void {
         state.artifactView = 'create';
       }
       state.activeMobileRailSheet = null;
+      state.activeExpandNoteField = null;
       state.error = '';
       render();
       if (tab === 'inbox') {
@@ -18419,6 +18637,16 @@ function bind(): void {
       if (tab !== 'ai' && tab !== 'cloud' && tab !== 'connectors' && tab !== 'rules') return;
       if (state.androidSetupTab === tab) return;
       state.androidSetupTab = tab;
+      render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-workspace-backup-tab]')) {
+    button.addEventListener('click', () => {
+      const tab = button.dataset.androidWorkspaceBackupTab as AndroidWorkspaceBackupTab | undefined;
+      if (tab !== 'pending' && tab !== 'unresolved' && tab !== 'sections') return;
+      if (state.androidWorkspaceBackupTab === tab) return;
+      state.androidWorkspaceBackupTab = tab;
       render();
     });
   }
@@ -20373,6 +20601,79 @@ function bindMobileRailSheet(): void {
 function closeMobileRailSheetInteractions(): void {
   mobileRailSheetController?.abort();
   mobileRailSheetController = null;
+}
+
+function bindExpandNoteSheet(): void {
+  for (const trigger of document.querySelectorAll<HTMLButtonElement>('[data-expand-note]')) {
+    trigger.addEventListener('click', () => {
+      const ref = expandNoteRefFromAttr(trigger.getAttribute('data-expand-note'));
+      if (!ref) return;
+      openExpandNoteSheet(ref);
+    });
+  }
+
+  const sheetRoot = document.querySelector<HTMLElement>('[data-expand-note-root]');
+  if (!sheetRoot) return;
+
+  for (const closeControl of document.querySelectorAll<HTMLElement>('[data-expand-note-close]')) {
+    closeControl.addEventListener('click', () => closeExpandNoteSheet());
+  }
+
+  const textarea = document.querySelector<HTMLTextAreaElement>('[data-expand-note-input]');
+  if (textarea) {
+    textarea.addEventListener('input', () => {
+      const ref = state.activeExpandNoteField;
+      if (!ref) return;
+      setExpandNoteValue(ref, textarea.value);
+      syncExpandNoteSourceField(ref, textarea.value);
+    });
+  }
+
+  const confirmBtn = document.querySelector<HTMLButtonElement>('[data-expand-note-confirm]');
+  confirmBtn?.addEventListener('click', () => {
+    closeExpandNoteSheet();
+  });
+
+  expandNoteSheetController = new AbortController();
+  const { signal } = expandNoteSheetController;
+  window.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    closeExpandNoteSheet();
+  }, { signal });
+  window.addEventListener('popstate', () => {
+    if (state.activeExpandNoteField) {
+      closeExpandNoteSheet({ fromPopState: true });
+    }
+  }, { signal });
+}
+
+function closeExpandNoteSheetInteractions(): void {
+  expandNoteSheetController?.abort();
+  expandNoteSheetController = null;
+}
+
+function syncExpandNoteSourceField(ref: ExpandNoteFieldRef, value: string): void {
+  if (typeof document === 'undefined') return;
+  if (ref.kind === 'agent-prompt') {
+    const source = document.querySelector<HTMLTextAreaElement>('#agentPrompt');
+    if (source && source.value !== value) source.value = value;
+    return;
+  }
+  if (ref.kind === 'recurring-note') {
+    const source = document.querySelector<HTMLTextAreaElement>('#recurringNote');
+    if (source && source.value !== value) source.value = value;
+    return;
+  }
+  const escape = (input: string): string => {
+    if (typeof window !== 'undefined' && typeof window.CSS?.escape === 'function') {
+      return window.CSS.escape(input);
+    }
+    return input.replace(/(["\\])/g, '\\$1');
+  };
+  const selector = `[data-lab-field="${escape(ref.fieldId)}"][data-lab-id="${escape(ref.labId)}"]`;
+  const source = document.querySelector<HTMLTextAreaElement | HTMLInputElement>(selector);
+  if (source && source.value !== value) source.value = value;
 }
 
 function setPreferencesView(view: PreferencesView): boolean {
@@ -31692,7 +31993,7 @@ async function executeBrowserSplTransfer(
   const owner = publicKeyFromConnectedWallet();
   const recipientOwner = publicKeyParam(requiredActionParam(action, 'recipient'), 'recipient');
   const connection = browserActionConnection(action.cluster);
-  const tokenMetadata = await resolveBrowserTokenMetadata(connection, token);
+  const tokenMetadata = await resolveBrowserTokenMetadata(connection, action.cluster, token);
   const rawAmount = parseDecimalAmountToRaw(amount, tokenMetadata.decimals, `${tokenMetadata.symbol} amount`);
   const sourceAta = associatedTokenAddress(tokenMetadata.mint, owner, tokenMetadata.tokenProgramId);
   const destinationAta = associatedTokenAddress(tokenMetadata.mint, recipientOwner, tokenMetadata.tokenProgramId);
@@ -31747,8 +32048,8 @@ async function executeBrowserSwap(
   }
   const taker = state.address;
   const connection = browserActionConnection(action.cluster);
-  const inputToken = await resolveBrowserTokenMetadata(connection, requiredActionParam(action, 'inputToken'));
-  const outputToken = await resolveBrowserTokenMetadata(connection, requiredActionParam(action, 'outputToken'));
+  const inputToken = await resolveBrowserTokenMetadata(connection, action.cluster, requiredActionParam(action, 'inputToken'));
+  const outputToken = await resolveBrowserTokenMetadata(connection, action.cluster, requiredActionParam(action, 'outputToken'));
   const amountRaw = parseDecimalAmountToRaw(requiredActionParam(action, 'amount'), inputToken.decimals, `${inputToken.symbol} swap amount`);
   const slippageBps = browserSlippageBps(action);
   recordBrowserActionActivity(action.id, 'browser.swap.order_requested', {
@@ -32771,7 +33072,11 @@ function isNativeSolToken(token: string): boolean {
   return normalized.toUpperCase() === 'SOL' || normalized === WSOL_MINT;
 }
 
-async function resolveBrowserTokenMetadata(connection: Connection, token: string): Promise<BrowserTokenMetadata> {
+async function resolveBrowserTokenMetadata(
+  connection: Connection,
+  cluster: Cluster,
+  token: string,
+): Promise<BrowserTokenMetadata> {
   const known = KNOWN_BROWSER_TOKENS[token.trim().toUpperCase()];
   const mintText = known?.mint ?? token.trim();
   const symbol = known?.symbol ?? tokenDisplayLabel(mintText);
@@ -32785,14 +33090,36 @@ async function resolveBrowserTokenMetadata(connection: Connection, token: string
     };
   }
   const mint = publicKeyParam(mintText, 'token mint');
-  const account = await connection.getParsedAccountInfo(mint, 'confirmed').catch(() => null);
-  const owner = account?.value?.owner;
-  const tokenProgramId = owner?.equals(TOKEN_2022_PROGRAM_ID) ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
-  const parsedData = account?.value?.data;
-  const parsed = parsedData && typeof parsedData === 'object' && 'parsed' in parsedData
-    ? parsedData.parsed as { info?: { decimals?: unknown } }
-    : undefined;
-  const decimals = known?.decimals ?? (typeof parsed?.info?.decimals === 'number' ? parsed.info.decimals : undefined);
+
+  // Android WebView can't read public Solana RPC directly (api.mainnet-beta.solana.com 403s
+  // the WebView origin). Route mint reads through Render which holds the Helius key.
+  // Mirrors browserLatestBlockhash / broadcastSignedBrowserTransaction / browserSignatureStatus.
+  let ownerKey: PublicKey | undefined;
+  let parsedDecimals: number | undefined;
+  if (state.androidNativeEnvironment.isAndroidNative) {
+    const info = await cloudRequest<{ exists: boolean; owner: string | null; decimals: number | null }>(
+      '/api/solana/parsed-account-info',
+      {
+        method: 'POST',
+        body: JSON.stringify({ cluster, address: mintText }),
+      },
+    ).catch(() => null);
+    if (info?.exists && info.owner) {
+      try { ownerKey = new PublicKey(info.owner); } catch { /* ignore malformed owner */ }
+    }
+    if (info && typeof info.decimals === 'number') parsedDecimals = info.decimals;
+  } else {
+    const account = await connection.getParsedAccountInfo(mint, 'confirmed').catch(() => null);
+    ownerKey = account?.value?.owner ?? undefined;
+    const parsedData = account?.value?.data;
+    const parsed = parsedData && typeof parsedData === 'object' && 'parsed' in parsedData
+      ? parsedData.parsed as { info?: { decimals?: unknown } }
+      : undefined;
+    if (typeof parsed?.info?.decimals === 'number') parsedDecimals = parsed.info.decimals;
+  }
+
+  const tokenProgramId = ownerKey?.equals(TOKEN_2022_PROGRAM_ID) ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+  const decimals = known?.decimals ?? parsedDecimals;
   if (typeof decimals !== 'number' || !Number.isInteger(decimals) || decimals < 0) {
     throw new Error(`Could not read decimals for token ${tokenDisplayLabel(mintText)}.`);
   }
@@ -34499,7 +34826,7 @@ async function runPreflightSplTransfer(action: PreparedAction): Promise<Prefligh
   const connection = browserActionConnection(action.cluster);
   const owner = new PublicKey(action.walletAddress);
   const recipient = publicKeyParam(requiredActionParam(action, 'recipient'), 'recipient');
-  const metadata = await resolveBrowserTokenMetadata(connection, token);
+  const metadata = await resolveBrowserTokenMetadata(connection, action.cluster, token);
   const amount = requiredActionParam(action, 'amount');
   const rawAmount = parseDecimalAmountToRaw(amount, metadata.decimals, `${metadata.symbol} amount`);
   const sourceAta = associatedTokenAddress(metadata.mint, owner, metadata.tokenProgramId);
@@ -34862,8 +35189,8 @@ async function fetchSwapQuoteForAction(action: PreparedAction): Promise<{
   const inputTokenParam = requiredActionParam(action, 'inputToken');
   const outputTokenParam = requiredActionParam(action, 'outputToken');
   const amount = requiredActionParam(action, 'amount');
-  const inputToken = await resolveBrowserTokenMetadata(connection, inputTokenParam);
-  const outputToken = await resolveBrowserTokenMetadata(connection, outputTokenParam);
+  const inputToken = await resolveBrowserTokenMetadata(connection, action.cluster, inputTokenParam);
+  const outputToken = await resolveBrowserTokenMetadata(connection, action.cluster, outputTokenParam);
   const amountRaw = parseDecimalAmountToRaw(amount, inputToken.decimals, `${inputToken.symbol} swap amount`);
   const slippageBps = browserSlippageBps(action);
 
@@ -40046,7 +40373,10 @@ function recurringComposer(): string {
           <p>Purpose shown when this needs approval.</p>
         </div>
         <label class="field compact approval-memo recurring-note-field">
-          <span>What is this for?</span>
+          <span class="field-label-row">
+            <span class="field-label-text">What is this for?</span>
+            ${mobileExpandNoteLink({ kind: 'recurring-note' })}
+          </span>
           <textarea
             id="recurringNote"
             data-recurring-field="note"

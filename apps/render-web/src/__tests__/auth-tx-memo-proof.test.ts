@@ -228,6 +228,21 @@ describe('verifyWalletSignature tx-memo-proof', () => {
       expect(ACCEPTED_ENVELOPE_PREFIXES).toContain('Agentic plan review proof v1\nSHA-256: ');
     });
 
+    it('NEVER drops the v1 envelope prefix — IMMUTABILITY GUARD', () => {
+      // CRITICAL FOREVER INVARIANT: the v1 prefix MUST stay in this array as long
+      // as any APK ever shipped with v1 exists in the wild. APKs in the Solana
+      // dApp Store cannot be force-updated; users can be running v1-emitting
+      // APKs years from now. If a future dev "cleans up" by removing v1 to
+      // simplify the array, every old APK's proof signing breaks silently and
+      // every existing user is locked out of sign-in.
+      //
+      // If you are reading this because a code review flagged the v1 prefix as
+      // dead code: it is NOT dead. Do not remove it. Add new prefixes by
+      // appending — never replace.
+      expect(ACCEPTED_ENVELOPE_PREFIXES).toContain('Agentic plan review proof v1\nSHA-256: ');
+      expect(ACCEPTED_ENVELOPE_PREFIXES.length).toBeGreaterThanOrEqual(1);
+    });
+
     it('verifies a proof under every prefix currently in the array', () => {
       const wallet = createTestWallet();
       const message = 'multi-version compat probe';

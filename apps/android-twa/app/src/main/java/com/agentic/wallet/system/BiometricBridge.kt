@@ -16,6 +16,34 @@ import org.json.JSONObject
  *
  * Payload schema:
  *   { title, subtitle?, description?, negativeButton?, allowDeviceCredential? }
+ *
+ * ## SECURITY: This is a UX gate, NOT a security boundary.
+ *
+ * The result envelope is delivered to JS via `window.__agenticAndroidBiometricBridge.resolve()`.
+ * That global is JS-accessible — any code in the same realm (including an XSS payload,
+ * a compromised dependency, or a malicious web bundle) can call `resolve()` synchronously
+ * with a forged `{ok: true, kind: "AUTH_SUCCEEDED"}` envelope. There is no cryptographic
+ * binding between the native hardware auth event and the result the caller observes.
+ *
+ * Acceptable uses:
+ *   - Adding a confirmation step before high-friction actions (transaction review UI,
+ *     toggling a sensitive preference).
+ *   - Building a "soft" sign-in / unlock pattern for the SPA where the threat model
+ *     assumes the JS side is trusted.
+ *
+ * Unacceptable uses without further work:
+ *   - Gating release of secret material (wallet keys, API tokens, encrypted store reads).
+ *   - Authorizing transaction signing where the threat model includes a compromised JS
+ *     environment.
+ *
+ * To make biometric a true security boundary, redesign as challenge-response:
+ *   1. Native side generates a random nonce and stores it server-side or in
+ *      hardware-attested storage.
+ *   2. After successful BiometricPrompt auth, native signs `(action_id, nonce, result)`
+ *      with a key whose private half is inaccessible to JS (e.g., StrongBox / hardware
+ *      keystore + setUserAuthenticationRequired(true)).
+ *   3. JS receives the signature; the action consumer verifies it before proceeding.
+ * That work is deferred until a flow needs it — keep this bridge UX-only for now.
  */
 class BiometricBridge(private val activity: FragmentActivity) {
 

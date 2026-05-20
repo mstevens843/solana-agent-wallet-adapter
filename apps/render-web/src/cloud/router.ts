@@ -205,6 +205,7 @@ const REGISTERED_API_ROUTES = [
   'POST /api/solana/latest-blockhash',
   'POST /api/solana/send-transaction',
   'POST /api/solana/signature-status',
+  'POST /api/solana/parsed-account-info',
   'POST /api/swap/order',
   'POST /api/swap/execute',
   'POST /api/connector/prepare-transaction',
@@ -718,10 +719,26 @@ async function routeApiRequest(
 
   if (url.pathname === '/api/android-config') {
     requireMethod(req, 'GET');
+    const startedAt = Date.now();
+    const cfg = getAndroidRemoteConfig();
+    const body = JSON.stringify(cfg);
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json; charset=utf-8');
-    res.setHeader('cache-control', 'public, max-age=300, stale-while-revalidate=3600');
-    res.end(JSON.stringify(getAndroidRemoteConfig()));
+    // `private`: confine cache to the per-client local cache (Android's HTTP cache,
+    // a single browser session). Prevents CDN-shared poisoning where one bad
+    // response could cripple every fetcher in a region. `max-age=300` gives
+    // ~5min freshness window. `stale-while-revalidate=60` matches the Android
+    // RemoteConfigLoader's REFRESH_DEBOUNCE_MS so a bad config can persist at
+    // most ~60s past its TTL.
+    res.setHeader('cache-control', 'private, max-age=300, stale-while-revalidate=60');
+    res.end(body);
+    // Single-line structured log for ops grep. Keep tags stable (the grep cost
+    // of "android_config_fetch" should outweigh log-shape evolution).
+    const client = firstHeaderValue(req.headers['x-agentic-client']) ?? '';
+    const ua = firstHeaderValue(req.headers['user-agent']) ?? '';
+    console.log(
+      `android_config_fetch status=200 ms=${Date.now() - startedAt} version=${cfg.version} wallets=${cfg.walletRegistry.length} client=${JSON.stringify(client)} ua=${JSON.stringify(ua.slice(0, 120))}`,
+    );
     return;
   }
 
@@ -894,6 +911,12 @@ async function routeApiRequest(
   if (url.pathname === '/api/solana/signature-status') {
     requireMethod(req, 'POST');
     await handleSolanaSignatureStatus(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/solana/parsed-account-info') {
+    requireMethod(req, 'POST');
+    await handleSolanaParsedAccountInfo(req, res);
     return;
   }
 
@@ -1776,6 +1799,33 @@ async function handleSolanaSignatureStatus(req: IncomingMessage, res: ServerResp
     return;
   }
   writeJson(res, 200, { txStatus: 'pending', found: true, confirmationStatus: status.confirmationStatus });
+}
+
+async function handleSolanaParsedAccountInfo(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'Solana parsed account info body');
+  const cluster = requiredCluster(body.cluster);
+  const address = requiredBodyString(body.address, 'address');
+  let mint: PublicKey;
+  try {
+    mint = new PublicKey(address);
+  } catch {
+    throw new ApiError(400, 'address is not a valid Solana public key.');
+  }
+  const account = await solanaConnection(cluster).getParsedAccountInfo(mint, 'confirmed');
+  if (!account.value) {
+    writeJson(res, 200, { exists: false, owner: null, decimals: null });
+    return;
+  }
+  const owner = account.value.owner.toBase58();
+  const parsedData = account.value.data;
+  const parsed = parsedData && typeof parsedData === 'object' && 'parsed' in parsedData
+    ? (parsedData as { parsed?: { info?: { decimals?: unknown } } }).parsed
+    : undefined;
+  const rawDecimals = parsed?.info?.decimals;
+  const decimals = typeof rawDecimals === 'number' && Number.isInteger(rawDecimals) && rawDecimals >= 0
+    ? rawDecimals
+    : null;
+  writeJson(res, 200, { exists: true, owner, decimals });
 }
 
 async function handleJupiterSwapExecute(req: IncomingMessage, res: ServerResponse): Promise<void> {
