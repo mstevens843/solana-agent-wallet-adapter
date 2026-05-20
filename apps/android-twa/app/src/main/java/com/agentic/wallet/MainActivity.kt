@@ -15,8 +15,8 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import androidx.activity.ComponentActivity
 import androidx.core.view.ViewCompat
+import androidx.fragment.app.FragmentActivity
 import androidx.core.view.WindowInsetsCompat
 import androidx.webkit.WebViewAssetLoader
 import androidx.lifecycle.lifecycleScope
@@ -26,7 +26,10 @@ import com.agentic.wallet.agent.provider.DeviceAgentProviderExecutor
 import com.agentic.wallet.agent.runtime.RuntimeMethod
 import com.agentic.wallet.agent.runtime.RuntimeRequest
 import com.agentic.wallet.agent.runtime.RuntimeResult
+import com.agentic.wallet.config.RemoteConfigLoader
 import com.agentic.wallet.mwa.AgentCluster
+import com.agentic.wallet.system.BiometricBridge
+import com.agentic.wallet.system.SystemBridge
 import com.agentic.wallet.mwa.AgentMwaAuthRecord
 import com.agentic.wallet.mwa.AgentMwaBridgeRequest
 import com.agentic.wallet.mwa.AgentMwaIdentity
@@ -46,12 +49,14 @@ import java.io.FileNotFoundException
 import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicReference
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     private lateinit var webView: WebView
     private lateinit var mwaController: MwaController
     private lateinit var secureStore: NativeSecureStore
     private lateinit var agentRuntimeController: AgentRuntimeController
     private lateinit var activityResultSender: ActivityResultSender
+    private lateinit var systemBridge: SystemBridge
+    private lateinit var biometricBridge: BiometricBridge
 
     private val remoteWebUrl: String = BuildConfig.AGENTIC_ANDROID_REMOTE_WEB_URL
     private val remoteWebHost: String? = remoteWebUrl
@@ -75,9 +80,30 @@ class MainActivity : ComponentActivity() {
         activityResultSender = ActivityResultSender(this)
         mwaController = MwaController(applicationContext, defaultMwaIdentity())
         secureStore = NativeSecureStore(applicationContext)
+        RemoteConfigLoader.initialize(BuildConfig.AGENTIC_ANDROID_CLOUD_API_BASE_URL, secureStore)
+        RemoteConfigLoader.refresh(lifecycleScope)
+        systemBridge = SystemBridge(this)
+        biometricBridge = BiometricBridge(this)
         agentRuntimeController = AgentRuntimeController(applicationContext, secureStore)
         if (BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT) {
             agentRuntimeController.setProviderExecutor(DeviceAgentProviderExecutor())
+        }
+        // Device Agent is session-scoped to the connected wallet AND the live app
+        // process. On a cold launcher entry (no saved instance state, no deep-link
+        // intent), wipe any persisted native config so the previous session's API
+        // key does not survive a hard app exit. Config-change recreations and
+        // deep-link launches preserve the active session.
+        if (BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT
+            && savedInstanceState == null
+            && intent?.action == Intent.ACTION_MAIN
+        ) {
+            agentRuntimeController.configure("{\"clear\":true}")
+            AgentMwaLog.info(
+                "MainActivity",
+                "onCreate",
+                "DEVICE_AGENT_COLD_CLEAR",
+                "cold launch cleared persisted device agent config",
+            )
         }
         AgentMwaLog.info(
             "MainActivity",
@@ -261,6 +287,13 @@ class MainActivity : ComponentActivity() {
         super.onBackPressed()
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Debounced inside the loader, so onResume → onResume churn doesn't spam the
+        // network. Forces a fetch when the app is foregrounded after >60s in background.
+        RemoteConfigLoader.refresh(lifecycleScope)
+    }
+
     private fun defaultMwaIdentity(): AgentMwaIdentity {
         // When the WebView loads from a remote origin, the MWA identity URI must match that
         // origin — otherwise wallets show users the wrong domain in connect/sign dialogs.
@@ -344,6 +377,56 @@ class MainActivity : ComponentActivity() {
                 "Device Agent reject callback evaluated",
                 mapOf("requestId" to requestId, "evalResult" to result.orEmpty()),
             )
+        }
+    }
+
+    internal fun dispatchBiometricResult(requestId: String, envelope: JSONObject) {
+        if (isDestroyed) {
+            AgentMwaLog.warn(
+                "MainActivity",
+                "dispatchBiometricResult",
+                "ACTIVITY_DESTROYED",
+                "skipped biometric resolve on destroyed activity",
+                mapOf("requestId" to requestId),
+            )
+            return
+        }
+        val js =
+            "(function(){var b=window.__agenticAndroidBiometricBridge;if(b&&b.resolve){b.resolve(${JSONObject.quote(requestId)},$envelope);}})();"
+        AgentMwaLog.info(
+            "MainActivity",
+            "dispatchBiometricResult",
+            "START",
+            "evaluating biometric resolve callback",
+            mapOf(
+                "requestId" to requestId,
+                "ok" to envelope.optBoolean("ok", false),
+                "kind" to envelope.optString("kind", ""),
+            ),
+        )
+        webView.evaluateJavascript(js) { result ->
+            AgentMwaLog.info(
+                "MainActivity",
+                "dispatchBiometricResult",
+                "DONE",
+                "biometric resolve callback evaluated",
+                mapOf("requestId" to requestId, "evalResult" to result.orEmpty()),
+            )
+        }
+    }
+
+    /**
+     * Coarse lifecycle name for the JS bridge: "created"|"started"|"resumed"|
+     * "paused"|"stopped"|"destroyed". Derived from
+     * [lifecycle.currentState][androidx.lifecycle.Lifecycle.State].
+     */
+    internal fun currentLifecycleState(): String {
+        return when (lifecycle.currentState) {
+            androidx.lifecycle.Lifecycle.State.RESUMED -> "resumed"
+            androidx.lifecycle.Lifecycle.State.STARTED -> "started"
+            androidx.lifecycle.Lifecycle.State.CREATED -> "created"
+            androidx.lifecycle.Lifecycle.State.INITIALIZED -> "initialized"
+            androidx.lifecycle.Lifecycle.State.DESTROYED -> "destroyed"
         }
     }
 
@@ -604,6 +687,157 @@ class MainActivity : ComponentActivity() {
         fun deviceAgentStatus(): String = safeBridge("deviceAgentStatus", "{}") {
             if (!checkTrustedOrigin("deviceAgentStatus")) return@safeBridge "{}"
             activity.agentRuntimeController.statusJson().toString()
+        }
+
+        /**
+         * Returns the full remote-config JSON the APK is currently using. JS callers
+         * can read feature flags, wallet routing, or memo-proof envelope shape from
+         * this without going through the network themselves (the APK already polled).
+         */
+        @JavascriptInterface
+        fun remoteConfigGet(): String = safeBridge("remoteConfigGet", "{}") {
+            if (!checkTrustedOrigin("remoteConfigGet")) return@safeBridge "{}"
+            val snap = RemoteConfigLoader.current()
+            JSONObject()
+                .put("version", snap.config.version)
+                .put("source", snap.source.id)
+                .put("fetchedAtMs", snap.fetchedAtMs)
+                .put("walletRegistry", JSONArray(snap.config.walletRegistry.map { entry ->
+                    JSONObject()
+                        .put("id", entry.id)
+                        .put("name", entry.name)
+                        .put("packageNames", JSONArray(entry.packageNames))
+                        .put("uriPatterns", JSONArray(entry.uriPatterns))
+                        .put("iconSha256First8", entry.iconSha256First8 ?: JSONObject.NULL)
+                        .put("supportsSignMessages", entry.supportsSignMessages)
+                        .put("supportsSiws", entry.supportsSiws)
+                        .put("forceSignThenRpc", entry.forceSignThenRpc)
+                }))
+                .put("memoProofRouter", JSONObject()
+                    .put("envelopeVersion", snap.config.memoProofRouter.envelopeVersion)
+                    .put("proofMemoPrefix", snap.config.memoProofRouter.proofMemoPrefix)
+                    .put("fallbackOnBlankPackage", snap.config.memoProofRouter.fallbackOnBlankPackage))
+                .put("featureFlags", JSONObject(snap.config.featureFlags as Map<*, *>))
+                .toString()
+        }
+
+        /**
+         * Kick off a background refresh against `/api/android-config`. Returns the
+         * current snapshot status immediately; JS callers should poll [remoteConfigStatus]
+         * if they need to detect when the refresh actually lands.
+         */
+        @JavascriptInterface
+        fun remoteConfigRefresh(): String = safeBridge("remoteConfigRefresh", "{}") {
+            if (!checkTrustedOrigin("remoteConfigRefresh")) return@safeBridge "{}"
+            RemoteConfigLoader.refresh(activity.lifecycleScope, force = true)
+            RemoteConfigLoader.statusJson().toString()
+        }
+
+        /**
+         * Lightweight snapshot status: version, source (server|cache|bundled),
+         * fetchedAtMs, wallet count, envelope version. Cheap enough for JS to poll
+         * after triggering a refresh.
+         */
+        @JavascriptInterface
+        fun remoteConfigStatus(): String = safeBridge("remoteConfigStatus", "{}") {
+            if (!checkTrustedOrigin("remoteConfigStatus")) return@safeBridge "{}"
+            RemoteConfigLoader.statusJson().toString()
+        }
+
+        // ── Phase 2 system primitives ──────────────────────────────────────────
+        // Added before APK submission so future web-bundle features don't require
+        // a new APK + dApp Store review. See plan file
+        // /Users/devlegacy/.claude/plans/getting-ready-to-ship-velvet-pine.md.
+
+        /**
+         * Open a URL via Intent.ACTION_VIEW (browser, mailto, tel, etc.). Returns
+         * true on success, false if no app can handle the URL or dispatch threw.
+         */
+        @JavascriptInterface
+        fun openExternal(url: String): Boolean = safeBridge("openExternal", false) {
+            if (!checkTrustedOrigin("openExternal")) return@safeBridge false
+            activity.systemBridge.openExternal(url)
+        }
+
+        /**
+         * JSON: device/manufacturer/model/sdk/locale/timezone/battery/network.
+         * No user-identifying data.
+         */
+        @JavascriptInterface
+        fun systemInfo(): String = safeBridge("systemInfo", "{}") {
+            if (!checkTrustedOrigin("systemInfo")) return@safeBridge "{}"
+            activity.systemBridge.systemInfo().toString()
+        }
+
+        /** Copy text to the system clipboard. Returns true on success. */
+        @JavascriptInterface
+        fun clipboardWrite(text: String): Boolean = safeBridge("clipboardWrite", false) {
+            if (!checkTrustedOrigin("clipboardWrite")) return@safeBridge false
+            activity.systemBridge.clipboardWrite(text)
+        }
+
+        /** Haptic feedback: "light"|"medium"|"heavy". Returns true on success. */
+        @JavascriptInterface
+        fun haptic(pattern: String): Boolean = safeBridge("haptic", false) {
+            if (!checkTrustedOrigin("haptic")) return@safeBridge false
+            activity.systemBridge.haptic(pattern)
+        }
+
+        /**
+         * Post a system notification. Payload JSON: { title, body, tag?, channelId? }.
+         * Returns JSON envelope: { ok, id?, tag?, error? }.
+         */
+        @JavascriptInterface
+        fun showNotification(payloadJson: String): String = safeBridge("showNotification", "{}") {
+            if (!checkTrustedOrigin("showNotification")) return@safeBridge "{}"
+            activity.systemBridge.showNotification(payloadJson).toString()
+        }
+
+        /**
+         * Synchronous biometric capability check. Returns JSON: { status, kind }
+         * where kind is one of AVAILABLE|NO_HARDWARE|HARDWARE_UNAVAILABLE|NO_ENROLLED|...
+         */
+        @JavascriptInterface
+        fun biometricStatus(): String = safeBridge("biometricStatus", "{}") {
+            if (!checkTrustedOrigin("biometricStatus")) return@safeBridge "{}"
+            activity.biometricBridge.canAuthenticate().toString()
+        }
+
+        /**
+         * Async biometric prompt. JS calls
+         * `bridge.biometricPrompt(requestId, payloadJson)`, then awaits the result
+         * via `window.__agenticAndroidBiometricBridge.resolve(requestId, envelope)`.
+         * Payload schema:
+         *   { title, subtitle?, description?, negativeButton?, allowDeviceCredential? }
+         * Result envelope:
+         *   { ok, kind, code?, message?, authType? }
+         */
+        @JavascriptInterface
+        fun biometricPrompt(requestId: String, payloadJson: String) {
+            if (!checkTrustedOrigin("biometricPrompt")) return
+            if (!REQUEST_ID_PATTERN.matches(requestId)) {
+                AgentMwaLog.warn(
+                    "AndroidBridge",
+                    "biometricPrompt",
+                    "FAIL_INVALID_REQUEST_ID",
+                    "biometric request rejected due to invalid id",
+                    mapOf("requestId" to requestId),
+                )
+                return
+            }
+            activity.biometricBridge.prompt(payloadJson) { envelope ->
+                activity.dispatchBiometricResult(requestId, envelope)
+            }
+        }
+
+        /** App lifecycle subscription: returns the current state synchronously. */
+        @JavascriptInterface
+        fun appLifecycleState(): String = safeBridge("appLifecycleState", "{}") {
+            if (!checkTrustedOrigin("appLifecycleState")) return@safeBridge "{}"
+            JSONObject()
+                .put("state", activity.currentLifecycleState())
+                .put("hasFocus", activity.hasWindowFocus())
+                .toString()
         }
 
         @JavascriptInterface

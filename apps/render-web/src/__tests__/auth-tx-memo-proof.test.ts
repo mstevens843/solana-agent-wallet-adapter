@@ -3,7 +3,7 @@ import { createHash, generateKeyPairSync, sign as signDetached, type KeyObject }
 import { PublicKey, Transaction, TransactionInstruction } from '@solana/web3.js';
 import { describe, expect, it } from 'vitest';
 
-import { encodeBase58, verifyWalletSignature } from '../cloud/auth.js';
+import { ACCEPTED_ENVELOPE_PREFIXES, encodeBase58, verifyWalletSignature } from '../cloud/auth.js';
 
 const MEMO_PROGRAM_V2_ID = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
 // Mirror of `apps/android-twa/.../MemoProofRouter.PROOF_MEMO_PREFIX`. Kept in sync
@@ -217,5 +217,55 @@ describe('verifyWalletSignature tx-memo-proof', () => {
     });
 
     expect(ok).toBe(false);
+  });
+
+  // ACCEPTED_ENVELOPE_PREFIXES is the forward-compat contract: server must accept any
+  // prefix the APK might send, even from old installs we can't force-update through the
+  // Solana dApp Store. These tests pin the array contents so a careless edit can't
+  // silently break shipped clients.
+  describe('ACCEPTED_ENVELOPE_PREFIXES contract', () => {
+    it('includes the v1 envelope (which every shipped APK emits today)', () => {
+      expect(ACCEPTED_ENVELOPE_PREFIXES).toContain('Agentic plan review proof v1\nSHA-256: ');
+    });
+
+    it('verifies a proof under every prefix currently in the array', () => {
+      const wallet = createTestWallet();
+      const message = 'multi-version compat probe';
+      for (const prefix of ACCEPTED_ENVELOPE_PREFIXES) {
+        const hex = createHash('sha256').update(Buffer.from(message, 'utf8')).digest('hex');
+        const memoText = prefix + hex;
+        const signedTx = buildMemoTx(wallet, memoText);
+        const signature = extractFirstSignature(signedTx);
+        const ok = verifyWalletSignature({
+          walletAddress: wallet.walletAddress,
+          message,
+          signature,
+          proofEncoding: 'tx-memo-proof',
+          proofTxBase64: signedTxToBase64(signedTx),
+        });
+        expect(ok, `prefix=${JSON.stringify(prefix)}`).toBe(true);
+      }
+    });
+
+    it('rejects a hashed-envelope memo-tx proof whose prefix is not in the accepted array', () => {
+      const wallet = createTestWallet();
+      const message = 'short proof';
+      const hex = createHash('sha256').update(Buffer.from(message, 'utf8')).digest('hex');
+      // A plausible-looking but unregistered prefix — must NOT verify until added to
+      // ACCEPTED_ENVELOPE_PREFIXES on a server redeploy.
+      const memoText = 'Agentic plan review proof v999\nSHA-256: ' + hex;
+      const signedTx = buildMemoTx(wallet, memoText);
+      const signature = extractFirstSignature(signedTx);
+
+      const ok = verifyWalletSignature({
+        walletAddress: wallet.walletAddress,
+        message,
+        signature,
+        proofEncoding: 'tx-memo-proof',
+        proofTxBase64: signedTxToBase64(signedTx),
+      });
+
+      expect(ok).toBe(false);
+    });
   });
 });

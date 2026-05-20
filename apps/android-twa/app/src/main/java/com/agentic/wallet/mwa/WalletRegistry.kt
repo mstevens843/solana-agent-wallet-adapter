@@ -1,5 +1,6 @@
 package com.agentic.wallet.mwa
 
+import com.agentic.wallet.config.RemoteConfigLoader
 import java.security.MessageDigest
 
 object WalletRegistry {
@@ -90,7 +91,14 @@ object WalletRegistry {
     // Route Jupiter through the same sign-then-RPC path as Backpack so we control the
     // broadcast via the resolved Helius RPC URL. Jupiter's sign_transactions handler
     // works fine — only its sign_and_send wrapper is the problem.
+    //
+    // Now driven by the server `/api/android-config` payload (with hardcoded
+    // fallback when the lookup misses) so we can flip the flag for a new wallet via
+    // Render redeploy instead of a dApp Store APK resubmission.
     fun forceSignThenRpc(packageName: String): Boolean {
+        if (packageName.isBlank()) return false
+        val configEntry = RemoteConfigLoader.config().walletEntryByPackage(packageName)
+        if (configEntry != null) return configEntry.forceSignThenRpc
         val lower = packageName.lowercase()
         return lower.contains("backpack") || lower.contains("jupiter") || lower.contains("jup")
     }
@@ -107,7 +115,13 @@ object WalletRegistry {
     // Callers should use [MwaController.signProofMessage] (memo-tx fallback) or
     // [MemoProofRouter.useMemoTxFallback] instead of [MwaController.signMessages] for
     // these wallets.
+    //
+    // Server-driven: a wallet that ships a fixed sign_messages handler can be flipped
+    // here via `/api/android-config` without an APK update.
     fun messageSigningUnsupported(packageName: String): Boolean {
+        if (packageName.isBlank()) return false
+        val configEntry = RemoteConfigLoader.config().walletEntryByPackage(packageName)
+        if (configEntry != null) return !configEntry.supportsSignMessages
         val lower = packageName.lowercase()
         return lower.contains("phantom") ||
             lower.contains("solflare") ||
@@ -118,8 +132,11 @@ object WalletRegistry {
     // clientlib's CAIP-122 fallback when the wallet doesn't return a native
     // signInResult) and therefore inherits the same hung-approval failure mode. Solflare
     // historically; Seed Vault joins the list on the same Seeker-hardware evidence as
-    // [messageSigningUnsupported] above.
+    // [messageSigningUnsupported] above. Server-driven via `/api/android-config`.
     fun supportsSiws(packageName: String): Boolean {
+        if (packageName.isBlank()) return true
+        val configEntry = RemoteConfigLoader.config().walletEntryByPackage(packageName)
+        if (configEntry != null) return configEntry.supportsSiws
         val lower = packageName.lowercase()
         return !lower.contains("solflare") && !lower.contains("seedvault")
     }

@@ -1,7 +1,7 @@
 export type AiPathMode = 'hosted' | 'session' | 'bridge' | 'device-agent';
 
-export const MOBILE_HOSTED_BYOK_CLOUD_STORAGE_REQUIRED =
-  'Please connect Cloud Storage to use this Path';
+export const MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED =
+  'Sign in to Agentic Cloud to use Hosted BYOK';
 
 export interface MobileAiPathSurface {
   isAndroidApp: boolean;
@@ -46,6 +46,10 @@ export function visibleMobileAiPathModes(input: {
   return ['device-agent', 'hosted'];
 }
 
+// Hosted BYOK on mobile requires an Agentic Cloud session because the API key is
+// relayed through the backend (agentic-signer.com) rather than called direct from
+// device. The cloud session is wallet-bound, so wallet disconnect closes the gate
+// automatically — no separate key cleanup is needed for this path.
 export function mobileAiModeDisabledReason(input: {
   mobileAiPathPolicy: boolean;
   mode: AiPathMode;
@@ -53,7 +57,7 @@ export function mobileAiModeDisabledReason(input: {
 }): string {
   if (!input.mobileAiPathPolicy) return '';
   if (input.mode === 'hosted' && !input.cloudSessionMatchesWallet) {
-    return MOBILE_HOSTED_BYOK_CLOUD_STORAGE_REQUIRED;
+    return MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED;
   }
   if (input.mode === 'bridge' || input.mode === 'session') {
     return 'This AI path is not available in the Android app or mobile web.';

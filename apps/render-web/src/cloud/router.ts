@@ -35,6 +35,7 @@ import {
 } from '@solana-agent-wallet-adapter/mcp-server';
 import { Connection, PublicKey } from '@solana/web3.js';
 
+import { getAndroidRemoteConfig } from './androidConfig.js';
 import {
   AuthValidationError,
   buildAgentProfilePublishMessage,
@@ -167,6 +168,7 @@ const renderDeviceAgentSessions = new Map<string, RenderDeviceAgentSession>();
 
 const REGISTERED_API_ROUTES = [
   'GET /api/ai/status',
+  'GET /api/android-config',
   'POST /api/ai/generate-plan',
   'POST /api/ai/review-plan',
   'POST /api/ai/ask-about-plan',
@@ -711,6 +713,15 @@ async function routeApiRequest(
         routes: REGISTERED_API_ROUTES,
       },
     });
+    return;
+  }
+
+  if (url.pathname === '/api/android-config') {
+    requireMethod(req, 'GET');
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json; charset=utf-8');
+    res.setHeader('cache-control', 'public, max-age=300, stale-while-revalidate=3600');
+    res.end(JSON.stringify(getAndroidRemoteConfig()));
     return;
   }
 

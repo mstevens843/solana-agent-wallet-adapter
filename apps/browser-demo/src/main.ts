@@ -136,7 +136,7 @@ import {
   shouldAutoSignOutCloudSession,
 } from './cloudSessionPolicy.js';
 import {
-  MOBILE_HOSTED_BYOK_CLOUD_STORAGE_REQUIRED,
+  MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED,
   mobileAiModeDisabledReason,
   mobileAiPathTabLabel,
   normalizeAiModeForMobileSurface,
@@ -857,6 +857,20 @@ interface AgenticAndroidBridge {
   deviceAgentConfigure?: (configJson: string) => string;
   deviceAgentRequest?: (requestId: string, method: string, payloadJson: string) => void;
   mwaRequest?: (requestId: string, method: string, payloadJson: string) => void;
+  // Remote config (Phase 1f). Backed by /api/android-config; APK caches + falls back.
+  remoteConfigGet?: () => string;
+  remoteConfigRefresh?: () => string;
+  remoteConfigStatus?: () => string;
+  // Phase 2 system primitives — frozen at APK submission, so the surface is built
+  // up generously before ship. See plan file velvet-pine.md.
+  openExternal?: (url: string) => boolean;
+  systemInfo?: () => string;
+  clipboardWrite?: (text: string) => boolean;
+  haptic?: (pattern: string) => boolean;
+  showNotification?: (payloadJson: string) => string;
+  biometricStatus?: () => string;
+  biometricPrompt?: (requestId: string, payloadJson: string) => void;
+  appLifecycleState?: () => string;
 }
 
 // DeviceAgentStatus / DeviceAgentRuntimeState / DeviceAgentRuntimeKind are imported
@@ -10786,7 +10800,7 @@ function commandAiRouteCards(): string {
       mode: 'hosted',
       title: 'Hosted BYOK',
       detail: hostedCloudStorageRequired
-        ? MOBILE_HOSTED_BYOK_CLOUD_STORAGE_REQUIRED
+        ? MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED
         : 'Connect a preset provider key through Agentic for AI agent requests.',
       meta: 'Cloud AI connection',
       available: true,
@@ -10972,7 +10986,7 @@ function commandAiInfoCardsGroup(): string {
       title: 'Hosted BYOK',
       badge: hostedCloudStorageRequired ? 'Cloud Storage required' : 'Natural-language setup',
       detail: hostedCloudStorageRequired
-        ? MOBILE_HOSTED_BYOK_CLOUD_STORAGE_REQUIRED
+        ? MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED
         : 'User brings a provider key; Agentic calls AI to translate messy intent into a structured workflow plan.',
       foot: hostedCloudStorageRequired
         ? 'Connect Cloud Storage with this wallet before using Hosted BYOK on mobile.'
@@ -15724,7 +15738,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
       ${hideKeyEntry ? configuredKeyNote : `
         <label class="field compact ai-setting-field ai-setting-key">
           <span>${escapeHtml(keyLabel)}</span>
-          <input id="aiApiKey-${escapeHtml(scope)}" data-ai-control="api-key" type="password" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="${state.aiSettings.mode === 'bridge' ? 'Held for this tab until configured' : 'Held for this tab'}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+          <input id="aiApiKey-${escapeHtml(scope)}" data-ai-control="api-key" type="password" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="${state.aiSettings.mode === 'bridge' ? 'Held for this tab until configured' : IS_ANDROID_APP ? 'Held until you disconnect or close the app' : 'Held for this tab'}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
           ${!isRail && !mobilePlannerSetup && keyHint ? `<em class="ai-route-helper">${escapeHtml(keyHint)}</em>` : ''}
         </label>
       `}
@@ -18919,6 +18933,7 @@ function bind(): void {
       state.browserWalletPickerOpen = false;
     }
     resetWalletConnection();
+    void clearDeviceAgentForWalletBoundary();
     void signOutCloudSessionForWalletBoundary('wallet-changed', { toast: true }).then((signedOut) => {
       if (signedOut) render();
     });
@@ -18934,6 +18949,7 @@ function bind(): void {
     state.browserWalletPickerOpen = false;
     clearBrowserWalletSession();
     resetWalletConnection();
+    void clearDeviceAgentForWalletBoundary();
     void signOutCloudSessionForWalletBoundary('wallet-changed', { toast: true }).then((signedOut) => {
       if (signedOut) render();
     });
@@ -18949,6 +18965,7 @@ function bind(): void {
     state.selectedIosWalletId = walletId;
     state.selectedWalletName = iosWalletLabel(walletId);
     resetWalletConnection();
+    void clearDeviceAgentForWalletBoundary();
     state.selectedWalletLogoId = walletProviderLogoIdForName(state.selectedWalletName);
     void signOutCloudSessionForWalletBoundary('wallet-changed', { toast: true }).then((signedOut) => {
       if (signedOut) render();
@@ -20794,6 +20811,7 @@ async function runDisconnect(): Promise<void> {
     }
     await disconnectWalletBackend().catch(() => undefined);
     resetWalletConnection();
+    await clearDeviceAgentForWalletBoundary();
     const cloudSignedOut = await signOutCloudSessionForWalletBoundary('wallet-disconnected');
     if (browserWallet) {
       state.selectedWalletName = '';
@@ -20855,6 +20873,7 @@ async function runClearAndroidFullReset(): Promise<void> {
     }
     await androidBackendOrNew().clearStateFullReset();
     resetWalletConnection();
+    await clearDeviceAgentForWalletBoundary();
     await refreshAndroidNativeCacheState();
     state.androidNativeStatus = 'Android MWA authorization reset. Discover again to authorize.';
     pushToast('success', 'Android wallet reset', 'Authorization cleared.');
@@ -20869,6 +20888,7 @@ async function runClearAndroidAllAccounts(): Promise<void> {
     }
     await androidBackendOrNew().clearAllCachedAuthorizations();
     resetWalletConnection();
+    await clearDeviceAgentForWalletBoundary();
     await refreshAndroidNativeCacheState();
     state.androidNativeStatus = 'All Android MWA cached authorizations cleared.';
     pushToast('success', 'Android cache cleared', 'All cached accounts removed.');
@@ -20923,6 +20943,7 @@ async function runClearIosFullReset(): Promise<void> {
     }
     await iosBackendOrNew().clearStateFullReset('browser_demo');
     resetWalletConnection();
+    await clearDeviceAgentForWalletBoundary();
     await refreshIosNativeCacheState();
     state.iosNativeStatus = 'iOS wallet state reset. Connect again to authorize.';
     pushToast('success', 'iOS wallet reset', 'Latest authorization cleared.');
@@ -20937,6 +20958,7 @@ async function runClearIosAllAccounts(): Promise<void> {
     }
     await iosBackendOrNew().clearAllCachedAuthorizations();
     resetWalletConnection();
+    await clearDeviceAgentForWalletBoundary();
     await refreshIosNativeCacheState();
     state.iosNativeStatus = 'All cached iOS wallet authorizations cleared.';
     pushToast('success', 'iOS auth cache cleared', 'All cached accounts were removed.');
@@ -27813,7 +27835,7 @@ function hostedByokCloudSessionReason(): string {
     cloudSessionMatchesWallet: cloudSessionMatchesWallet(),
   });
   return reason && isMobileAiPathPolicySurface()
-    ? MOBILE_HOSTED_BYOK_CLOUD_STORAGE_REQUIRED
+    ? MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED
     : reason;
 }
 
@@ -35428,6 +35450,25 @@ async function stopDeviceAgentRuntime(): Promise<DeviceAgentStatus> {
   });
   state.deviceAgentStatus = status;
   return status;
+}
+
+// Wipe Device Agent material when the wallet boundary changes (disconnect,
+// wallet/cluster change, full reset). The Device Agent path is session-scoped
+// to the connected wallet: clear the visible sessionStorage entry, the in-memory
+// apiKey, and the native encrypted config (which also stops the foreground
+// service on Android). Best-effort: must not block the wallet-boundary action.
+async function clearDeviceAgentForWalletBoundary(): Promise<void> {
+  try {
+    state.aiSettings.apiKey = '';
+    clearCurrentSessionAiApiKey();
+  } catch {
+    // sessionStorage write failures are non-fatal at wallet boundaries.
+  }
+  try {
+    await clearDeviceAgentRuntimeConfig();
+  } catch (err) {
+    console.warn('[device-agent] clear on wallet boundary failed.', err);
+  }
 }
 
 async function clearDeviceAgentRuntimeConfig(): Promise<DeviceAgentStatus> {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  MOBILE_HOSTED_BYOK_CLOUD_STORAGE_REQUIRED,
+  MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED,
   mobileAiModeDisabledReason,
   mobileAiPathTabLabel,
   normalizeAiModeForMobileSurface,
@@ -94,12 +94,12 @@ describe('mobile AI path policy', () => {
     })).toEqual(['device-agent', 'hosted']);
   });
 
-  it('disables Hosted BYOK on mobile until Cloud Storage is connected', () => {
+  it('disables Hosted BYOK on mobile until Agentic Cloud sign-in', () => {
     expect(mobileAiModeDisabledReason({
       mobileAiPathPolicy: true,
       mode: 'hosted',
       cloudSessionMatchesWallet: false,
-    })).toBe(MOBILE_HOSTED_BYOK_CLOUD_STORAGE_REQUIRED);
+    })).toBe(MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED);
 
     expect(mobileAiModeDisabledReason({
       mobileAiPathPolicy: true,

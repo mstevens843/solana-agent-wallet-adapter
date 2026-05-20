@@ -224,13 +224,23 @@ export function verifyWalletSignature(input: {
   }
 }
 
-// Envelope shape produced by `apps/android-twa/.../MemoProofRouter.buildProofMemo`.
-// New (current) memo-tx contract: memo = PROOF_MEMO_ENVELOPE_PREFIX + sha256-hex(utf8(message)).
-// Keeps the memo a fixed ~110 bytes so the total tx fits under Solana's 1232-byte
-// PACKET_DATA_SIZE limit even for multi-KB plan-review messages. Legacy clients
-// embedded the literal message bytes — those are still accepted as a fallback so
-// proofs already in transit verify cleanly while we roll out the new envelope.
-const PROOF_MEMO_ENVELOPE_PREFIX = 'Agentic plan review proof v1\nSHA-256: ';
+// Envelope shapes produced by `apps/android-twa/.../MemoProofRouter.buildProofMemo`.
+// Current memo-tx contract: memo = <prefix> + sha256-hex(utf8(message)).
+// Fixed-size memo keeps the tx under Solana's 1232-byte PACKET_DATA_SIZE limit even
+// for multi-KB plan-review messages. Legacy clients embedded the literal message
+// bytes — those are still accepted as a fallback so proofs already in transit verify
+// cleanly while we roll out the envelope.
+//
+// CRITICAL INVARIANT: this array must accept the union of every envelope prefix any
+// shipped APK has ever emitted. The Solana dApp Store distributes APKs that we can't
+// force-update, so old `v1` clients will keep arriving forever. When the envelope
+// evolves to `v2`, add the new prefix here — never replace.
+//
+// Order matters: prefixes are checked top-to-bottom, so put the most-common (newest)
+// first to short-circuit the common path.
+export const ACCEPTED_ENVELOPE_PREFIXES = [
+  'Agentic plan review proof v1\nSHA-256: ',
+] as const;
 
 function verifyTxMemoProof(input: {
   txBase64: string;
@@ -246,8 +256,9 @@ function verifyTxMemoProof(input: {
 
   // Hashed envelope (current) vs literal-bytes (legacy): dispatch on the prefix.
   const memoText = parsed.memoData.toString('utf8');
-  if (memoText.startsWith(PROOF_MEMO_ENVELOPE_PREFIX)) {
-    const claimedHex = memoText.slice(PROOF_MEMO_ENVELOPE_PREFIX.length);
+  const matchedPrefix = ACCEPTED_ENVELOPE_PREFIXES.find((prefix) => memoText.startsWith(prefix));
+  if (matchedPrefix) {
+    const claimedHex = memoText.slice(matchedPrefix.length);
     // SHA-256 produces 64 lowercase hex chars. Reject anything else to make this
     // contract unforgiving — the Android builder always emits lowercase, so a
     // mismatched-case envelope is a corruption signal worth surfacing as a failure.

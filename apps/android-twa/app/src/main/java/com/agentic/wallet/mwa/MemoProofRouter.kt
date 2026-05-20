@@ -1,5 +1,6 @@
 package com.agentic.wallet.mwa
 
+import com.agentic.wallet.config.RemoteConfigLoader
 import java.security.MessageDigest
 
 /**
@@ -31,15 +32,21 @@ internal object MemoProofRouter {
      * to the message bytes the dApp sent alongside `proofTxBase64`.
      *
      * The version marker (`v1`) lets future revisions evolve the envelope shape without
-     * breaking existing signed proofs.
+     * breaking existing signed proofs. Driven by `/api/android-config` so the prefix can
+     * advance to `v2` via Render redeploy; the bundled fallback in
+     * [com.agentic.wallet.config.RemoteConfigDefaults] keeps the APK working when the
+     * server is unreachable. Server's [ACCEPTED_ENVELOPE_PREFIXES] must always include
+     * every prefix a shipped APK might emit.
      */
-    const val PROOF_MEMO_PREFIX = "Agentic plan review proof v1\nSHA-256: "
+    val PROOF_MEMO_PREFIX: String
+        get() = RemoteConfigLoader.config().memoProofRouter.proofMemoPrefix
     /**
      * Whether [walletPackage] needs the memo-tx fallback rather than a direct
      * `sign_messages` MWA call. Returns true for:
      *  - The known-broken wallets (Phantom, Solflare, Seed Vault) via
      *    [WalletRegistry.messageSigningUnsupported].
-     *  - Any session where [walletPackage] is blank, because Phantom/Solflare return
+     *  - Any session where [walletPackage] is blank AND the remote config's
+     *    `fallbackOnBlankPackage` flag is true (default), because Phantom/Solflare return
      *    `walletUriBase: null` in their MWA authorize reply and the JS bridge doesn't
      *    yet supply a `targetWalletPackage`, so `record.walletPackage` is blank for
      *    every fresh Phantom/Solflare authorization (see device logcat
@@ -50,10 +57,14 @@ internal object MemoProofRouter {
      *    verifier accepts the `tx-memo-proof` envelope for any wallet. Once the JS
      *    layer ships an explicit wallet picker and forwards `targetWalletPackage`, the
      *    blank-package case stops triggering and wallets that *can* sign messages
-     *    (e.g. Backpack) regain their native path.
+     *    (e.g. Backpack) regain their native path — at which point we can flip
+     *    `fallbackOnBlankPackage` to false via remote config.
      */
-    fun useMemoTxFallback(walletPackage: String): Boolean =
-        walletPackage.isBlank() || WalletRegistry.messageSigningUnsupported(walletPackage)
+    fun useMemoTxFallback(walletPackage: String): Boolean {
+        val routerConfig = RemoteConfigLoader.config().memoProofRouter
+        if (walletPackage.isBlank()) return routerConfig.fallbackOnBlankPackage
+        return WalletRegistry.messageSigningUnsupported(walletPackage)
+    }
 
     /**
      * Builds the fixed-size memo envelope for [message]. Always
