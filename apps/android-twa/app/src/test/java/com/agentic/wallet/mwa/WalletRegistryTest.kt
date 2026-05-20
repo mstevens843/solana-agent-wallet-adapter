@@ -145,6 +145,31 @@ class WalletRegistryTest {
     }
 
     @Test
+    fun isKnownSolflareIcon_returnsFalseForBlank() {
+        assertFalse(WalletRegistry.isKnownSolflareIcon(""))
+        assertFalse(WalletRegistry.isKnownSolflareIcon("   "))
+    }
+
+    @Test
+    fun isKnownSolflareIcon_returnsFalseForNonMatchingIcons() {
+        // Seed Vault icon hashes to a different SHA-256.
+        assertFalse(WalletRegistry.isKnownSolflareIcon(seedVaultIcon))
+        // URL-form Solflare icon (used in older tests) hashes differently from the
+        // data-image base64 PNG the Android app actually returns over MWA.
+        assertFalse(WalletRegistry.isKnownSolflareIcon("https://solflare.com/favicon.ico"))
+        assertFalse(WalletRegistry.isKnownSolflareIcon("data:image/png;base64,iVBORw0KGgo-not-solflare"))
+    }
+
+    @Test
+    fun walletIconLogMetadata_reportsKnownSolflareFlag() {
+        val metadata = WalletRegistry.walletIconLogMetadata("not the solflare icon")
+        assertEquals(false, metadata["walletIconKnownSolflare"])
+        // Blank icon also surfaces the flag (false) so downstream diagnostics never NPE.
+        val blank = WalletRegistry.walletIconLogMetadata("")
+        assertEquals(false, blank["walletIconKnownSolflare"])
+    }
+
+    @Test
     fun walletType_unknownDefault() {
         assertEquals(WalletRegistry.UNKNOWN, WalletRegistry.walletType("com.example.unknown"))
         assertEquals(WalletRegistry.UNKNOWN, WalletRegistry.walletType(""))

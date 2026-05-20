@@ -18,6 +18,13 @@ object WalletRegistry {
     private const val SEED_VAULT_ICON_HEAD = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAANgAAADY"
     private const val SEED_VAULT_ICON_TAIL_SENTINEL =
         "QChlppOaiUo1Z22pIwKl0xN6leqUK+T8P/q4PWPnCdaVAAAAAElFTkSuQmCC"
+    // Solflare's MWA authorize reply on Seeker returns blank walletUriBase/walletPackage
+    // and a 41 KB data:image/...;base64 PNG with no "solflare" text anywhere in it, so
+    // every text matcher in inferPackage/walletType misses. The icon is a fixed asset, so
+    // its SHA-256 first-8 fingerprint is stable across reconnects (verified on-device).
+    // If Solflare ships a new icon, walletIconLogMetadata.walletIconKnownSolflare will
+    // start logging false alongside the new hash — swap the constant or widen to a Set.
+    private const val SOLFLARE_ICON_SHA256_8 = "245123d8a7fd8aa5"
 
     fun inferPackage(walletUriBase: String, explicitPackage: String = "", walletIcon: String = ""): String {
         if (explicitPackage.isNotBlank()) return explicitPackage
@@ -28,6 +35,7 @@ object WalletRegistry {
             lower.contains("backpack.app") -> BACKPACK_PACKAGE
             lower.contains("jup.ag") || lower.contains("jupiter") -> JUPITER_PACKAGE
             lower.contains("seedvault") || lower.contains("seed-vault") || lower.contains("seedvaultwallet") || lower.startsWith("solanamobilewallet:") -> SEED_VAULT_PACKAGE
+            isKnownSolflareIcon(walletIcon) -> SOLFLARE_PACKAGE
             isKnownSeedVaultIcon(walletIcon) -> SEED_VAULT_PACKAGE
             else -> ""
         }
@@ -41,6 +49,7 @@ object WalletRegistry {
             lower.contains("backpack") -> BACKPACK
             lower.contains("jupiter") || lower.contains("jup.ag") -> JUPITER
             lower.contains("seedvault") || lower.contains("seed-vault") || lower.contains("seedvaultwallet") || lower.contains("solanamobilewallet") -> SEED_VAULT
+            isKnownSolflareIcon(walletIcon) -> SOLFLARE
             isKnownSeedVaultIcon(walletIcon) -> SEED_VAULT
             else -> UNKNOWN
         }
@@ -49,6 +58,11 @@ object WalletRegistry {
     fun isKnownSeedVaultIcon(walletIcon: String): Boolean {
         val normalized = normalizeWalletIconSignature(walletIcon)
         return normalized.contains(SEED_VAULT_ICON_HEAD) && normalized.contains(SEED_VAULT_ICON_TAIL_SENTINEL)
+    }
+
+    fun isKnownSolflareIcon(walletIcon: String): Boolean {
+        if (walletIcon.isBlank()) return false
+        return sha256First8(walletIcon.toByteArray(Charsets.UTF_8)) == SOLFLARE_ICON_SHA256_8
     }
 
     fun walletIconLogMetadata(walletIcon: String): Map<String, Any?> {
@@ -65,6 +79,7 @@ object WalletRegistry {
             "walletIconChars" to walletIcon.length,
             "walletIconSha256_8" to sha256First8(walletIcon.toByteArray(Charsets.UTF_8)),
             "walletIconKnownSeedVault" to isKnownSeedVaultIcon(walletIcon),
+            "walletIconKnownSolflare" to isKnownSolflareIcon(walletIcon),
         )
     }
 
