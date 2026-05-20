@@ -73,23 +73,6 @@ interface AndroidMwaStatus {
   capabilities?: AdapterCapabilities;
 }
 
-export interface AndroidNativeWalletHint {
-  name: string;
-  walletPackage: string;
-  walletType?: number;
-  logoId?: WalletProviderLogoId;
-}
-
-export interface AndroidNativeDetectedWallet extends AndroidNativeWalletHint {
-  storeUrl?: string;
-  installed: boolean;
-  versionName?: string;
-}
-
-interface AndroidNativeDetectWalletsResult {
-  wallets?: AndroidNativeDetectedWallet[];
-}
-
 interface AndroidNativeSignProofResult {
   signature: string;
   encoding?: string;
@@ -112,15 +95,6 @@ export function detectAndroidNativeEnvironment(): AndroidNativeEnvironment {
 export async function androidNativeCacheSummary(): Promise<{ count: number }> {
   const status = await androidNativeRequest<AndroidMwaStatus>('status');
   return { count: status.cachedCount };
-}
-
-export async function detectAndroidNativeWallets(): Promise<AndroidNativeDetectedWallet[]> {
-  const result = await androidNativeRequest<AndroidNativeDetectWalletsResult>('detectWallets');
-  return Array.isArray(result.wallets)
-    ? result.wallets
-        .map(normalizeDetectedWallet)
-        .filter((wallet): wallet is AndroidNativeDetectedWallet => Boolean(wallet))
-    : [];
 }
 
 export function androidNativeCloudSessionToken(): string {
@@ -219,11 +193,9 @@ export class AndroidNativeWalletBackend implements WalletBackend {
     return this.connect();
   }
 
-  async connect(hint?: AndroidNativeWalletHint): Promise<string> {
+  async connect(): Promise<string> {
     const status = await androidNativeRequest<AndroidMwaStatus>('connect', {
       cluster: this.cluster,
-      ...(hint?.walletPackage && { walletPackage: hint.walletPackage }),
-      ...(typeof hint?.walletType === 'number' && { walletType: hint.walletType }),
       ...this.nativeRpcContext(),
     });
     this.applyStatus(status);
@@ -630,28 +602,6 @@ function isNativeMwaError(value: unknown): value is NativeMwaError {
 
 function walletNameFromStatus(status: AndroidMwaStatus | null): string {
   return androidWalletDisplayNameFromStatus(status);
-}
-
-function normalizeDetectedWallet(value: unknown): AndroidNativeDetectedWallet | null {
-  if (!value || typeof value !== 'object') return null;
-  const candidate = value as Record<string, unknown>;
-  const name = typeof candidate.name === 'string' ? candidate.name.trim() : '';
-  const walletPackage = typeof candidate.packageName === 'string'
-    ? candidate.packageName.trim()
-    : typeof candidate.walletPackage === 'string'
-      ? candidate.walletPackage.trim()
-      : '';
-  if (!name || !walletPackage) return null;
-  const walletType = typeof candidate.walletType === 'number' ? candidate.walletType : undefined;
-  return {
-    name,
-    walletPackage,
-    ...(walletType !== undefined && { walletType }),
-    logoId: walletLogoIdFromAndroidStatus({ walletType, walletPackage, accountLabel: name }),
-    storeUrl: typeof candidate.storeUrl === 'string' ? candidate.storeUrl : undefined,
-    installed: candidate.installed === true,
-    versionName: typeof candidate.versionName === 'string' ? candidate.versionName : undefined,
-  };
 }
 
 function logAndroidNative(

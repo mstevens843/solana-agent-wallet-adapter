@@ -1091,8 +1091,7 @@ class MainActivity : ComponentActivity() {
             return when (method) {
                 "status" -> statusJson()
                 "connect" -> {
-                    val targetWalletPackage = payload.optString("walletPackage", "").trim()
-                    val record = activity.mwaController.connect(activity.activityResultSender, clusterFromPayload(payload), targetWalletPackage)
+                    val record = activity.mwaController.connect(activity.activityResultSender, clusterFromPayload(payload))
                     statusJson(record)
                 }
                 "reconnectLatest" -> {
