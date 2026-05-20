@@ -95,11 +95,10 @@ class AuthCache(context: Context) {
                 "authTokenLen" to record.authToken.length,
                 "walletType" to record.walletType,
                 "walletUriBase" to record.walletUriBase,
-                "walletIcon" to record.walletIcon,
                 "walletPackage" to record.walletPackage,
                 "cluster" to record.cluster.id,
                 "authenticated" to record.authenticated,
-            ),
+            ) + WalletRegistry.walletIconLogMetadata(record.walletIcon),
         )
         save()
     }

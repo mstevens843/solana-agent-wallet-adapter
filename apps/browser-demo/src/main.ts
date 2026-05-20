@@ -103,13 +103,15 @@ import {
   AndroidNativeWalletBackend,
   androidNativeCacheSummary,
   androidNativeCloudSessionToken,
-  androidNativeRequest,
   clearAndroidNativeCloudSessionToken,
   detectAndroidNativeEnvironment,
+  detectAndroidNativeWallets,
   restoreLatestAndroidNativeWallet,
   setAndroidNativeCloudSessionToken,
+  type AndroidNativeDetectedWallet,
   type AndroidNativeEnvironment,
   type AndroidNativeRestoreResult,
+  type AndroidNativeWalletHint,
 } from './androidNative.js';
 import {
   initializeAnalytics,
@@ -377,7 +379,11 @@ import './devTabs/index.js';
 import { setCloudWalletBridge } from './cloudWalletBridge.js';
 import { mobileWorkspaceMoreMenuItems, workspaceMoreMenuItems, type WorkspaceMoreMenuItem } from './workspaceMore.js';
 import { setProofSigningContext, signWalletProofMessage } from './walletProofSigning.js';
-import { walletLogoIdForProviderName } from './walletBranding.js';
+import {
+  isWalletProviderLogoId,
+  walletLogoIdForProviderName,
+  type WalletProviderLogoId,
+} from './walletBranding.js';
 
 setProofSigningContext({
   getClient: requireClient,
@@ -1020,6 +1026,51 @@ const SHOW_DEV_CONTROLS = resolveDevControls();
 const IS_ANDROID_APP = resolveAndroidAppSurface();
 const SHOW_ANDROID_EXAMPLE_TAB = resolveAndroidExampleTab();
 const ANDROID_ALLOW_LAN_BRIDGE = resolveAndroidAllowLanBridge();
+const LOCAL_WEBVIEW_ORIGIN = 'https://agentic.local';
+
+// Android WebView in debug-bundled mode loads from agentic.local, but the cloud backend
+// (DB, Helius, Birdeye, CoinGecko, Jupiter, session) lives on agentic-signer.com. Direct
+// fetch('/api/...') callers (token search, /api/session, connector-secrets, spend, ap2,
+// etc.) bypass cloudFetch's rewrite and would 404 on agentic.local. Wrap window.fetch so
+// every /api/* call — relative or absolute against agentic.local — routes to Render with
+// the same Authorization Bearer + x-agentic-client headers cloudFetch injects.
+//
+// Gate on origin: in release builds the WebView loads from agentic-signer.com directly,
+// /api/* is already same-origin, and cookies work natively — skip install to preserve
+// cookie auth. Render's CORS allowlist (DEFAULT_ANDROID_CLOUD_ORIGIN + CORS_ALLOWED_HEADERS
+// in cloud/router.ts) already permits the bundled-mode origin + headers we send.
+if (IS_ANDROID_APP && typeof window !== 'undefined' && typeof window.fetch === 'function') {
+  const cloudBase = androidCloudApiBaseUrl().replace(/\/+$/, '');
+  let cloudOrigin = '';
+  try { cloudOrigin = new URL(cloudBase).origin; } catch { /* fall through */ }
+  if (cloudBase && cloudOrigin && window.location.origin !== cloudOrigin) {
+    const originalFetch = window.fetch.bind(window);
+    const localApiPrefix = `${LOCAL_WEBVIEW_ORIGIN}/api/`;
+    window.fetch = function patchedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+      // Only rewrite when called with a string URL (the codebase's convention). Request /
+      // URL objects pass through untouched so we don't lose method/body/headers metadata.
+      if (typeof input === 'string') {
+        let rewritten: string | null = null;
+        if (input.startsWith('/api/')) {
+          rewritten = `${cloudBase}${input}`;
+        } else if (input.startsWith(localApiPrefix)) {
+          rewritten = `${cloudBase}${input.slice(LOCAL_WEBVIEW_ORIGIN.length)}`;
+        }
+        if (rewritten !== null) {
+          const headers = new Headers(init?.headers);
+          if (!headers.has('x-agentic-client')) headers.set('x-agentic-client', ANDROID_CLOUD_CLIENT_HEADER);
+          if (!headers.has('authorization')) {
+            const token = androidNativeCloudSessionToken();
+            if (token) headers.set('authorization', `Bearer ${token}`);
+          }
+          // credentials:'omit' — Render rejects cookies cross-origin; auth flows via Bearer.
+          return originalFetch(rewritten, { ...(init ?? {}), credentials: 'omit', headers });
+        }
+      }
+      return originalFetch(input as RequestInfo, init);
+    } as typeof fetch;
+  }
+}
 const HASH_ROUTE_MAP = new Map<string, AppRoute>([
   ['#top', '/'],
   ['#docs', '/docs'],
@@ -1211,6 +1262,25 @@ const IOS_NATIVE_WALLETS: ReadonlyArray<IosNativeWalletOption> = [
     detail: 'WalletConnect path',
     transport: 'walletconnect',
     appStoreUrl: 'https://apps.apple.com/app/jupiter-mobile/id6474343098',
+  },
+];
+
+const ANDROID_NATIVE_WALLET_FALLBACKS: ReadonlyArray<AndroidNativeDetectedWallet> = [
+  {
+    name: 'Seed Vault',
+    walletPackage: 'com.solanamobile.seedvaultimpl',
+    walletType: 50,
+    logoId: 'seedVault',
+    storeUrl: 'https://solanamobile.com/seeker',
+    installed: true,
+  },
+  {
+    name: 'Solflare',
+    walletPackage: 'com.solflare.mobile',
+    walletType: 25,
+    logoId: 'solflare',
+    storeUrl: 'https://play.google.com/store/apps/details?id=com.solflare.mobile',
+    installed: true,
   },
 ];
 
@@ -1990,6 +2060,7 @@ interface FirstRunAction {
 
 interface PersistedState {
   selectedWalletName?: string;
+  selectedWalletLogoId?: WalletProviderLogoId;
   browserWalletSession?: BrowserWalletSession;
   selectedIosWalletId?: IosNativeWalletId;
   workflowModePreference?: WorkflowModePreference;
@@ -2173,9 +2244,11 @@ interface DemoState {
   preferencesView: PreferencesView;
   wallets: DiscoveredWallet[];
   selectedWalletName: string;
+  selectedWalletLogoId?: WalletProviderLogoId;
   browserWalletPickerOpen: boolean;
   browserWalletSession?: BrowserWalletSession;
   androidNativeEnvironment: AndroidNativeEnvironment;
+  androidNativeWallets: AndroidNativeDetectedWallet[];
   androidAuthCacheCount: number;
   androidNativeStatus: string;
   iosNativeEnvironment: IosNativeEnvironment;
@@ -3039,9 +3112,11 @@ const state: DemoState = {
   preferencesView: persisted.preferencesView ?? 'workspace',
   wallets: [],
   selectedWalletName: persisted.browserWalletSession?.cluster === initialCluster ? persisted.browserWalletSession.walletName : '',
+  selectedWalletLogoId: persisted.selectedWalletLogoId,
   browserWalletPickerOpen: false,
   browserWalletSession: persisted.browserWalletSession,
   androidNativeEnvironment: initialAndroidNativeEnvironment,
+  androidNativeWallets: [],
   androidAuthCacheCount: 0,
   androidNativeStatus: 'Android native MWA idle.',
   iosNativeEnvironment: initialIosNativeEnvironment,
@@ -5574,7 +5649,7 @@ function heroWalletStrip(): string {
     { name: 'Solflare', logoId: 'solflare' },
     { name: 'Backpack', logoId: 'backpack' },
     { name: 'Jupiter Mobile', logoId: 'jupiter' },
-    { name: 'Seed Vault', logoId: 'solanaMobile' },
+    { name: 'Seed Vault', logoId: 'seedVault' },
   ];
   return `
     <div class="wallet-chip-strip" aria-label="Supported wallet examples">
@@ -5669,7 +5744,7 @@ function walletDirectorySection(): string {
           'Seed Vault',
           'Android hardware-backed custody through Mobile Wallet Adapter surfaces.',
           ['seed vault', 'seedvault'],
-          'solanaMobile',
+          'seedVault',
         )}
         ${walletDirectoryCard(
           'Wallet Standard / MWA',
@@ -7121,6 +7196,11 @@ function providerInitials(name: string): string {
 
 function walletLogoIdForName(name: string): BrandLogoId | undefined {
   return walletLogoIdForProviderName(name);
+}
+
+function walletProviderLogoIdForName(name: string): WalletProviderLogoId | undefined {
+  const logoId = walletLogoIdForProviderName(name);
+  return isWalletProviderLogoId(logoId) ? logoId : undefined;
 }
 
 function missionStrip(): string {
@@ -9738,6 +9818,13 @@ function publicWalletActions(): string {
       </div>
     `;
   }
+  if (androidNative) {
+    return `
+      <div class="wallet-actions public-wallet-actions native-wallet-actions android-wallet-actions">
+        ${androidNativeWalletChoiceButtons('public')}
+      </div>
+    `;
+  }
   if (nativeWallet) {
     return `
       <div class="wallet-actions public-wallet-actions native-wallet-actions">
@@ -9766,6 +9853,81 @@ function walletButtonIcon(): string {
       <path d="M19 7h-1V6.5A2.5 2.5 0 0 0 15.5 4H5.75A3.75 3.75 0 0 0 2 7.75v8.5A3.75 3.75 0 0 0 5.75 20H19a3 3 0 0 0 3-3v-7a3 3 0 0 0-3-3Zm-3-1a.5.5 0 0 1 .5.5V7H5.75a1.25 1.25 0 0 1 0-2.5h9.75ZM20 17a1 1 0 0 1-1 1H5.75A1.75 1.75 0 0 1 4 16.25V8.76c.52.16 1.08.24 1.75.24H19a1 1 0 0 1 1 1v7Zm-4.5-4.5a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5Z"></path>
     </svg>
   `;
+}
+
+function androidNativeWalletChoiceButtons(surface: 'public' | 'panel' | 'guided'): string {
+  const choices = androidNativeWalletChoices();
+  const choiceButtons = choices
+    .map((wallet, index) => androidNativeWalletButton(wallet, surface, index === 0))
+    .join('');
+  return `
+    <div class="android-wallet-choice-grid" data-android-wallet-surface="${escapeHtml(surface)}">
+      ${choiceButtons}
+      <button
+        type="button"
+        data-start-action="connect"
+        class="${surface === 'public' && choiceButtons.length === 0 ? 'primary ' : ''}wallet-connect-cta android-wallet-choice other-wallet"
+        ${state.busy ? 'disabled' : ''}
+      >
+        ${walletButtonIcon()}
+        <span>Other wallet</span>
+      </button>
+    </div>
+  `;
+}
+
+function androidNativeWalletButton(
+  wallet: AndroidNativeDetectedWallet,
+  surface: 'public' | 'panel' | 'guided',
+  primary: boolean,
+): string {
+  const logoId = wallet.logoId ?? walletLogoIdForName(wallet.name);
+  const className = [
+    'wallet-connect-cta',
+    'android-wallet-choice',
+    primary || surface === 'public' ? 'primary' : '',
+    wallet.installed ? 'installed' : 'not-detected',
+  ].filter(Boolean).join(' ');
+  return `
+    <button
+      type="button"
+      data-android-wallet-package="${escapeHtml(wallet.walletPackage)}"
+      data-android-wallet-name="${escapeHtml(wallet.name)}"
+      data-android-wallet-type="${wallet.walletType ?? ''}"
+      data-android-wallet-logo-id="${escapeHtml(logoId ?? '')}"
+      class="${escapeHtml(className)}"
+      ${state.busy ? 'disabled' : ''}
+    >
+      ${logoId ? brandLogo(logoId, 'android-wallet-choice-logo') : walletButtonIcon()}
+      <span>${escapeHtml(wallet.name)}</span>
+    </button>
+  `;
+}
+
+function androidNativeWalletChoices(): AndroidNativeDetectedWallet[] {
+  const byPackage = new Map<string, AndroidNativeDetectedWallet>();
+  for (const wallet of [...ANDROID_NATIVE_WALLET_FALLBACKS, ...state.androidNativeWallets]) {
+    const key = wallet.walletPackage.toLowerCase();
+    const existing = byPackage.get(key);
+    byPackage.set(key, {
+      ...wallet,
+      logoId: wallet.logoId ?? existing?.logoId ?? walletProviderLogoIdForName(wallet.name),
+      installed: wallet.installed || existing?.installed === true,
+      versionName: wallet.versionName ?? existing?.versionName,
+    });
+  }
+  const priority = ['com.solanamobile.seedvaultimpl', 'com.solflare.mobile'];
+  return [...byPackage.values()]
+    .filter((wallet) => wallet.logoId === 'seedVault' || wallet.logoId === 'solflare' || wallet.installed)
+    .sort((a, b) => {
+      const aPriority = priority.indexOf(a.walletPackage);
+      const bPriority = priority.indexOf(b.walletPackage);
+      const aRank = aPriority === -1 ? priority.length : aPriority;
+      const bRank = bPriority === -1 ? priority.length : bPriority;
+      if (aRank !== bRank) return aRank - bRank;
+      if (a.installed !== b.installed) return a.installed ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
 }
 
 function developerConnectionSettings(): string {
@@ -9823,6 +9985,7 @@ function mobileWalletBox(): string {
           <span>Wallet picker</span>
           <span>${state.androidAuthCacheCount} cached</span>
         </div>
+        ${androidNativeWalletChoiceButtons('panel')}
         <div class="bridge-actions ios-state-actions">
           <button id="androidReconnectCached" ${state.busy ? 'disabled' : ''}>Reconnect cached</button>
           <button id="androidClearTransient" ${state.busy ? 'disabled' : ''}>Clear transient</button>
@@ -9942,7 +10105,7 @@ function guidedStartPanel(title: string, detail: string): string {
         ${guidedStep('3', 'Connect', 'Authorize this app in the wallet', Boolean(state.address))}
       </div>
       <div class="guided-actions">
-        ${nativeWallet ? `
+        ${androidNative ? androidNativeWalletChoiceButtons('guided') : nativeWallet ? `
         <button data-start-action="connect" class="primary wallet-connect-cta" ${state.busy ? 'disabled' : ''}>
           ${walletButtonIcon()}
           <span>Connect wallet</span>
@@ -18824,6 +18987,23 @@ function bind(): void {
   document.querySelector<HTMLButtonElement>('#refreshLabArtifacts')?.addEventListener('click', runRefreshLabArtifacts);
   document.querySelector<HTMLButtonElement>('#openAndroidMwaTest')?.addEventListener('click', openAndroidMwaTest);
 
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-wallet-package]')) {
+    button.addEventListener('click', () => {
+      const walletPackage = button.dataset.androidWalletPackage?.trim() ?? '';
+      const walletName = button.dataset.androidWalletName?.trim() ?? '';
+      const walletTypeText = button.dataset.androidWalletType?.trim() ?? '';
+      const walletType = walletTypeText ? Number(walletTypeText) : undefined;
+      const logoId = button.dataset.androidWalletLogoId;
+      if (!walletPackage || !walletName) return;
+      void runConnectAndroidNativeWalletChoice({
+        name: walletName,
+        walletPackage,
+        ...(typeof walletType === 'number' && Number.isFinite(walletType) && { walletType }),
+        ...(isWalletProviderLogoId(logoId) && { logoId }),
+      });
+    });
+  }
+
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-start-action]')) {
     button.addEventListener('click', () => {
       if (button.dataset.startAction === 'discover') {
@@ -18874,6 +19054,7 @@ function bind(): void {
   document.querySelector<HTMLSelectElement>('#walletSelect')?.addEventListener('change', (event) => {
     notifyLocalWorkspaceBackupReminder('Back up before switching wallet selection.');
     state.selectedWalletName = (event.currentTarget as HTMLSelectElement).value;
+    state.selectedWalletLogoId = undefined;
     state.browserWalletPickerOpen = false;
     clearBrowserWalletSession();
     resetWalletConnection();
@@ -18892,6 +19073,7 @@ function bind(): void {
     state.selectedIosWalletId = walletId;
     state.selectedWalletName = iosWalletLabel(walletId);
     resetWalletConnection();
+    state.selectedWalletLogoId = walletProviderLogoIdForName(state.selectedWalletName);
     void signOutCloudSessionForWalletBoundary('wallet-changed', { toast: true }).then((signedOut) => {
       if (signedOut) render();
     });
@@ -20630,10 +20812,11 @@ async function runDiscover(): Promise<void> {
   await run('discover', async () => {
     if (state.androidNativeEnvironment.isAndroidNative) {
       trackWalletConnectClick('android_native', 'discover_button');
-      await connectAndroidNativeWallet(true);
-      await afterWalletConnected();
-      trackWalletConnectSuccess('android_native', state.cluster, 'discover_button');
-      pushToast('success', 'Android MWA connected', short(state.address));
+      await refreshAndroidNativeCacheState();
+      const walletCount = androidNativeWalletChoices().length;
+      state.androidNativeStatus = `${walletCount} Android wallet path(s) ready. Cached authorizations: ${state.androidAuthCacheCount}.`;
+      savePersistedState();
+      pushToast('success', 'Android wallets ready', `${walletCount} wallet path(s) available.`);
       return;
     }
     if (state.iosNativeEnvironment.isIosNative) {
@@ -20690,6 +20873,7 @@ async function runConnect(): Promise<void> {
       state.address = await client.getAddress();
       state.capabilities = await client.capabilities();
       state.selectedWalletName = iosWalletLabel(state.selectedIosWalletId);
+      state.selectedWalletLogoId = walletProviderLogoIdForName(state.selectedWalletName);
       state.iosNativeStatus = `iOS ${state.selectedWalletName} connected on ${state.cluster}.`;
       state.transactionStatus = `iOS wallet connected on ${state.cluster}.`;
       await refreshIosNativeCacheState();
@@ -20714,6 +20898,7 @@ async function runConnect(): Promise<void> {
     state.capabilities = await client.capabilities();
     state.transactionStatus = `Wallet connected on ${state.cluster}.`;
     state.selectedWalletName = selected.name;
+    state.selectedWalletLogoId = walletProviderLogoIdForName(selected.name);
     state.browserWalletSession = createBrowserWalletSession(selected.name, state.cluster);
     if (state.bridgeActive) {
       await connectBridgeHost();
@@ -20722,6 +20907,21 @@ async function runConnect(): Promise<void> {
     savePersistedState();
     trackWalletConnectSuccess(connectSurface, state.cluster, 'connect_button');
     pushToast('success', 'Wallet connected', short(state.address));
+  });
+}
+
+async function runConnectAndroidNativeWalletChoice(hint: AndroidNativeWalletHint): Promise<void> {
+  trackWalletConnectClick('android_native', `connect_${hint.walletPackage}`);
+  await run('connect', async () => {
+    await connectAndroidNativeWallet(true, hint);
+    state.transactionStatus = `Android ${state.selectedWalletName} connected on ${state.cluster}.`;
+    if (state.bridgeActive) {
+      await connectBridgeHost();
+    }
+    await afterWalletConnected();
+    savePersistedState();
+    trackWalletConnectSuccess('android_native', state.cluster, `connect_${hint.walletPackage}`);
+    pushToast('success', `${state.selectedWalletName} connected`, short(state.address));
   });
 }
 
@@ -32441,9 +32641,12 @@ function shouldRetryTransactionSend(err: unknown, signedTxid?: string, attemptCo
 
 async function browserLatestBlockhash(cluster: Cluster): Promise<BrowserLatestBlockhash> {
   if (state.androidNativeEnvironment.isAndroidNative) {
-    return androidNativeRequest<BrowserLatestBlockhash>('latestBlockhash', {
-      cluster,
-      rpcUrl: activeRpcUrl(),
+    // Route to Render cloud, which uses HELIUS_RPC_URL / SOLANA_RPC_URL from its env.
+    // The Android WebView origin (agentic.local) can't fetch public mainnet directly —
+    // api.mainnet-beta.solana.com returns 403, and the Helius key is server-side only.
+    return cloudRequest<BrowserLatestBlockhash>('/api/solana/latest-blockhash', {
+      method: 'POST',
+      body: JSON.stringify({ cluster }),
     });
   }
   let firstErr: unknown;
@@ -32465,12 +32668,11 @@ async function browserLatestBlockhash(cluster: Cluster): Promise<BrowserLatestBl
 async function broadcastSignedBrowserTransaction(cluster: Cluster, signedTransactionBase64: string): Promise<string> {
   const request = { cluster, signedTransactionBase64 };
   if (state.androidNativeEnvironment.isAndroidNative) {
-    const result = await androidNativeRequest<{ txid?: string; signature?: string }>('sendRawTransaction', {
-      cluster,
-      signedTransactionBase64,
-      rpcUrl: activeRpcUrl(),
+    const response = await cloudRequest<BrowserSendTransactionResponse>('/api/solana/send-transaction', {
+      method: 'POST',
+      body: JSON.stringify(request),
     });
-    return requiredResponseString(result.txid ?? result.signature, 'Transaction signature');
+    return requiredResponseString(response.txid ?? response.signature, 'Transaction signature');
   }
   let firstAuthError: unknown;
   let firstErr: unknown;
@@ -32556,14 +32758,13 @@ function describeRpcEndpoint(url: string): string {
 
 async function browserSignatureStatus(cluster: Cluster, txid: string): Promise<BrowserSignatureStatusResponse> {
   const request = { cluster, txid };
-  // Android TWA: api.mainnet-beta.solana.com returns 403 to the WebView origin, and there
-  // is no /api/* server reachable from agentic.local. Route through the native bridge —
-  // Kotlin's HttpURLConnection isn't subject to either restriction.
   if (state.androidNativeEnvironment.isAndroidNative) {
-    return androidNativeRequest<BrowserSignatureStatusResponse>('signatureStatus', {
-      cluster,
-      txid,
-      rpcUrl: activeRpcUrl(),
+    // Route to Render cloud, which uses HELIUS_RPC_URL / SOLANA_RPC_URL from its env.
+    // The Android WebView origin (agentic.local) can't fetch public mainnet directly —
+    // api.mainnet-beta.solana.com returns 403, and the Helius key is server-side only.
+    return cloudRequest<BrowserSignatureStatusResponse>('/api/solana/signature-status', {
+      method: 'POST',
+      body: JSON.stringify(request),
     });
   }
   let firstErr: unknown;
@@ -36928,6 +37129,7 @@ async function restoreBrowserWalletSession(): Promise<void> {
     state.address = address;
     state.capabilities = await client.capabilities();
     state.transactionStatus = `Wallet restored on ${state.cluster}.`;
+    state.selectedWalletLogoId = walletProviderLogoIdForName(selected.name);
     state.steps.connect = 'done';
     state.browserWalletSession = createBrowserWalletSession(
       selected.name,
@@ -36944,6 +37146,7 @@ async function restoreBrowserWalletSession(): Promise<void> {
     state.transactionStatus = '';
     state.steps.connect = 'idle';
     state.selectedWalletName = '';
+    state.selectedWalletLogoId = undefined;
     state.browserWalletPickerOpen = state.wallets.length > 0;
     clearBrowserWalletSession();
     savePersistedState();
@@ -36959,7 +37162,7 @@ function selectedWallet(): DiscoveredWallet {
   return wallet;
 }
 
-async function connectAndroidNativeWallet(_forcePicker: boolean): Promise<void> {
+async function connectAndroidNativeWallet(forcePicker: boolean, hint?: AndroidNativeWalletHint): Promise<void> {
   assertAndroidNativeRuntime();
   const backend = new AndroidNativeWalletBackend({
     cluster: androidNativeCluster(),
@@ -36967,10 +37170,11 @@ async function connectAndroidNativeWallet(_forcePicker: boolean): Promise<void> 
   });
   walletBackend = backend;
   client = new SolanaSigningClient({ backend });
-  const cachedAddress = _forcePicker ? null : await backend.reconnectLatest();
-  state.address = cachedAddress ?? await backend.connect();
+  const cachedAddress = forcePicker || hint ? null : await backend.reconnectLatest();
+  state.address = cachedAddress ?? await backend.connect(hint);
   state.capabilities = await client.capabilities();
   state.selectedWalletName = backend.walletName();
+  state.selectedWalletLogoId = backend.walletLogoId() ?? hint?.logoId ?? walletProviderLogoIdForName(state.selectedWalletName);
   state.wallets = [];
   state.androidAuthCacheCount = backend.cacheCount();
   state.androidNativeStatus = `Android ${state.selectedWalletName} connected on ${state.cluster}.`;
@@ -36984,6 +37188,7 @@ async function applyAndroidNativeRestore(restored: AndroidNativeRestoreResult): 
   client = new SolanaSigningClient({ backend: walletBackend });
   state.address = restored.address;
   state.selectedWalletName = restored.walletName;
+  state.selectedWalletLogoId = restored.walletLogoId ?? walletProviderLogoIdForName(restored.walletName);
   state.wallets = [];
   state.capabilities = await client.capabilities();
   state.androidAuthCacheCount = restored.cacheCount;
@@ -37013,8 +37218,12 @@ async function refreshAndroidNativeCacheState(): Promise<void> {
   if (!state.androidNativeEnvironment.isAndroidNative) {
     return;
   }
-  const summary = await androidNativeCacheSummary().catch(() => ({ count: 0 }));
+  const [summary, wallets] = await Promise.all([
+    androidNativeCacheSummary().catch(() => ({ count: 0 })),
+    detectAndroidNativeWallets().catch(() => []),
+  ]);
   state.androidAuthCacheCount = summary.count;
+  state.androidNativeWallets = wallets;
 }
 
 function androidBackendOrNew(): AndroidNativeWalletBackend {
@@ -37056,6 +37265,7 @@ async function restoreIosNativeSession(): Promise<void> {
   state.address = restored.address;
   state.selectedIosWalletId = restored.walletId;
   state.selectedWalletName = restored.walletName;
+  state.selectedWalletLogoId = walletProviderLogoIdForName(restored.walletName);
   state.capabilities = await client.capabilities();
   state.iosAuthCacheCount = restored.cacheCount;
   state.iosNativeStatus = `Restored cached ${restored.walletName} authorization on ${state.cluster}.`;
@@ -37127,6 +37337,7 @@ function resetWalletConnection(): void {
   walletBackend = null;
   state.activeTab = defaultWorkspaceTab;
   state.address = '';
+  state.selectedWalletLogoId = undefined;
   state.signature = '';
   state.txSignature = '';
   state.txid = '';
@@ -37173,7 +37384,7 @@ function walletIdentity(): WalletIdentity {
     const name = liveSelectedName || state.selectedWalletName || 'Connected wallet';
     return {
       icon: providerInitials(name),
-      logoId: walletLogoIdForName(name),
+      logoId: state.selectedWalletLogoId ?? walletLogoIdForName(name),
       discoveredWallet: discoveredWalletByName(name),
       title: name,
       summary: short(state.address),
@@ -44048,6 +44259,7 @@ function loadPersistedState(): PersistedState {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     return {
       ...(typeof parsed.selectedWalletName === 'string' && { selectedWalletName: parsed.selectedWalletName }),
+      ...(isWalletProviderLogoId(parsed.selectedWalletLogoId) && { selectedWalletLogoId: parsed.selectedWalletLogoId }),
       ...(isPersistedBrowserWalletSession(parsed.browserWalletSession) && { browserWalletSession: parsed.browserWalletSession }),
       ...(typeof parsed.selectedIosWalletId === 'string' &&
         isPersistedIosWalletId(parsed.selectedIosWalletId) && { selectedIosWalletId: parsed.selectedIosWalletId }),
@@ -44079,6 +44291,7 @@ function savePersistedState(): void {
       STORAGE_KEY,
       JSON.stringify({
         selectedWalletName: state.selectedWalletName,
+        selectedWalletLogoId: state.selectedWalletLogoId,
         browserWalletSession: state.browserWalletSession,
         selectedIosWalletId: state.selectedIosWalletId,
         workflowModePreference: state.workflowModePreference,

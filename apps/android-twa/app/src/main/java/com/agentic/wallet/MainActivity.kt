@@ -34,10 +34,12 @@ import com.agentic.wallet.mwa.AgentMwaLog
 import com.agentic.wallet.mwa.AgentMwaSigningResult
 import com.agentic.wallet.mwa.MwaController
 import com.agentic.wallet.mwa.MwaOperationException
+import com.agentic.wallet.mwa.WalletRegistry
 import com.agentic.wallet.streaming.StreamingSessionException
 import com.solana.mobilewalletadapter.clientlib.ActivityResultSender
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 import java.io.FileNotFoundException
@@ -387,7 +389,11 @@ class MainActivity : ComponentActivity() {
             "resolveMwaRequest",
             "START",
             "dispatching Android MWA resolve callback",
-            mapOf("requestId" to requestId, "payload" to if (BuildConfig.DEBUG) payload else "[debug-only]", "payloadBytes" to payload.toString().toByteArray(Charsets.UTF_8).size),
+            mapOf(
+                "requestId" to requestId,
+                "payload" to if (BuildConfig.DEBUG) mwaJsonLogSummary(payload) else "[debug-only]",
+                "payloadBytes" to payload.toString().toByteArray(Charsets.UTF_8).size,
+            ),
         )
         dispatchMwaCallback("resolve", requestId, payload)
     }
@@ -404,7 +410,7 @@ class MainActivity : ComponentActivity() {
             "START",
             "dispatching Android MWA reject callback",
             err,
-            mapOf("requestId" to requestId, "code" to code, "payload" to if (BuildConfig.DEBUG) payload else "[debug-only]"),
+            mapOf("requestId" to requestId, "code" to code, "payload" to if (BuildConfig.DEBUG) mwaJsonLogSummary(payload) else "[debug-only]"),
         )
         dispatchMwaCallback("reject", requestId, payload)
     }
@@ -417,7 +423,14 @@ class MainActivity : ComponentActivity() {
             "dispatchMwaCallback",
             "START",
             "evaluating WebView callback JavaScript",
-            mapOf("callback" to callback, "requestId" to requestId, "payload" to if (BuildConfig.DEBUG) payload else "[debug-only]", "js" to if (BuildConfig.DEBUG) js else "[debug-only]"),
+            mapOf(
+                "callback" to callback,
+                "requestId" to requestId,
+                "payload" to if (BuildConfig.DEBUG) mwaJsonLogSummary(payload) else "[debug-only]",
+                "payloadBytes" to payload.toString().toByteArray(Charsets.UTF_8).size,
+                "jsChars" to js.length,
+                "jsSha256_8" to sha256First8(js.toByteArray(Charsets.UTF_8)),
+            ),
         )
         webView.evaluateJavascript(js) { result ->
             AgentMwaLog.info(
@@ -429,6 +442,43 @@ class MainActivity : ComponentActivity() {
             )
         }
     }
+
+    private fun mwaJsonLogSummary(value: JSONObject): JSONObject =
+        redactMwaLogValue(JSONObject(value.toString())) as JSONObject
+
+    private fun redactMwaLogValue(value: Any?): Any? =
+        when (value) {
+            is JSONObject -> {
+                val keys = value.keys().asSequence().toList()
+                for (key in keys) {
+                    if (key == "walletIcon") {
+                        value.put(key, walletIconLogJson(value.optString(key, "")))
+                    } else {
+                        value.put(key, redactMwaLogValue(value.opt(key)))
+                    }
+                }
+                value
+            }
+            is JSONArray -> {
+                for (index in 0 until value.length()) {
+                    value.put(index, redactMwaLogValue(value.opt(index)))
+                }
+                value
+            }
+            else -> value
+        }
+
+    private fun walletIconLogJson(walletIcon: String): JSONObject {
+        val json = JSONObject().put("redacted", true)
+        for ((key, metadataValue) in WalletRegistry.walletIconLogMetadata(walletIcon)) {
+            json.put(key, metadataValue)
+        }
+        return json
+    }
+
+    private fun payloadJsonLogSummary(payloadJson: String): Any =
+        runCatching { mwaJsonLogSummary(JSONObject(payloadJson)) }
+            .getOrElse { "[unparseable-json]" }
 
     private fun openExternal(uri: Uri) {
         try {
@@ -958,7 +1008,7 @@ class MainActivity : ComponentActivity() {
                         "mwaRequest",
                         "STEP_PARSED_PAYLOAD",
                         "android js bridge request payload parsed",
-                        mapOf("method" to method, "requestId" to requestId, "payload" to if (BuildConfig.DEBUG) payload else "[debug-only]"),
+                        mapOf("method" to method, "requestId" to requestId, "payload" to if (BuildConfig.DEBUG) activity.mwaJsonLogSummary(payload) else "[debug-only]"),
                     )
                     val result = handleMwaRequest(method, payload)
                     AgentMwaLog.info(
@@ -966,7 +1016,7 @@ class MainActivity : ComponentActivity() {
                         "mwaRequest",
                         "SUCCESS",
                         "android js bridge request resolved",
-                        mapOf("method" to method, "requestId" to requestId, "result" to if (BuildConfig.DEBUG) result else "[debug-only]"),
+                        mapOf("method" to method, "requestId" to requestId, "result" to if (BuildConfig.DEBUG) activity.mwaJsonLogSummary(result) else "[debug-only]"),
                     )
                     activity.resolveMwaRequest(requestId, result)
                 } catch (err: Throwable) {
@@ -1036,12 +1086,13 @@ class MainActivity : ComponentActivity() {
                 "handleMwaRequest",
                 "START",
                 "handling Android MWA bridge method",
-                mapOf("method" to method, "payload" to if (BuildConfig.DEBUG) payload else "[debug-only]"),
+                mapOf("method" to method, "payload" to if (BuildConfig.DEBUG) activity.mwaJsonLogSummary(payload) else "[debug-only]"),
             )
             return when (method) {
                 "status" -> statusJson()
                 "connect" -> {
-                    val record = activity.mwaController.connect(activity.activityResultSender, clusterFromPayload(payload))
+                    val targetWalletPackage = payload.optString("walletPackage", "").trim()
+                    val record = activity.mwaController.connect(activity.activityResultSender, clusterFromPayload(payload), targetWalletPackage)
                     statusJson(record)
                 }
                 "reconnectLatest" -> {
@@ -1261,7 +1312,11 @@ class MainActivity : ComponentActivity() {
                 "statusJson",
                 "DONE",
                 "Android MWA status JSON prepared",
-                mapOf("connected" to (record != null), "cachedCount" to activity.mwaController.cachedAuthorizations().size, "result" to if (BuildConfig.DEBUG) json else "[debug-only]"),
+                mapOf(
+                    "connected" to (record != null),
+                    "cachedCount" to activity.mwaController.cachedAuthorizations().size,
+                    "result" to if (BuildConfig.DEBUG) activity.mwaJsonLogSummary(json) else "[debug-only]",
+                ),
             )
             return json
         }
@@ -1276,7 +1331,10 @@ class MainActivity : ComponentActivity() {
                     "FAIL_PARSE",
                     "failed to parse Android MWA bridge payload JSON",
                     err,
-                    mapOf("payloadChars" to payloadJson.length, "payloadJson" to if (BuildConfig.DEBUG) payloadJson else "[debug-only]"),
+                    mapOf(
+                        "payloadChars" to payloadJson.length,
+                        "payloadSha256_8" to sha256First8(payloadJson.toByteArray(Charsets.UTF_8)),
+                    ),
                 )
                 throw err
             }
@@ -1344,7 +1402,7 @@ class MainActivity : ComponentActivity() {
                 "requestId" to requestId,
                 "payloadChars" to payloadJson.length,
                 "payloadSha256_8" to sha256First8(payloadJson.toByteArray(Charsets.UTF_8)),
-                "payloadJson" to if (BuildConfig.DEBUG) payloadJson else "[debug-only]",
+                "payload" to if (BuildConfig.DEBUG) activity.payloadJsonLogSummary(payloadJson) else "[debug-only]",
             )
 
         private fun bridgeRequestLogMetadata(request: AgentMwaBridgeRequest): Map<String, Any?> =

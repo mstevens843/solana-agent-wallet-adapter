@@ -6136,6 +6136,30 @@ code {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.android-wallet-actions {
+  gap: 10px;
+}
+
+.android-wallet-choice-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.android-wallet-choice {
+  min-height: 42px;
+}
+
+.android-wallet-choice-logo {
+  flex: 0 0 auto;
+  height: 18px;
+  width: 18px;
+}
+
+.android-wallet-choice.not-detected:not(.primary) {
+  color: var(--muted);
+}
+
 .wallet-connect-cta {
   align-items: center;
   display: inline-flex;

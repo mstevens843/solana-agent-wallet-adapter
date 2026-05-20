@@ -1165,8 +1165,12 @@ class MwaController(
                 "MwaController",
                 "restoredWalletPackage",
                 "DONE",
-                "wallet package re-derived from walletUriBase on reconnect",
-                mapOf("pubkey" to record.publicKeyBase58, "walletUriBase" to record.walletUriBase, "walletIcon" to record.walletIcon, "inferred" to inferred),
+                "wallet package re-derived from cached wallet metadata on reconnect",
+                mapOf(
+                    "pubkey" to record.publicKeyBase58,
+                    "walletUriBase" to record.walletUriBase,
+                    "inferred" to inferred,
+                ) + WalletRegistry.walletIconLogMetadata(record.walletIcon),
             )
         }
         return inferred
@@ -1499,7 +1503,6 @@ class MwaController(
                 "pubkeyBytes" to record.publicKeyBytes.size,
                 "authLen" to record.authToken.length,
                 "walletUriBase" to record.walletUriBase,
-                "walletIcon" to record.walletIcon,
                 "walletPackage" to record.walletPackage,
                 "walletType" to record.walletType,
                 "accountLabel" to record.accountLabel,
@@ -1507,7 +1510,7 @@ class MwaController(
                 "authenticated" to record.authenticated,
                 "capabilitiesCsv" to record.capabilitiesCsv,
                 "timestampUnixSeconds" to record.timestampUnixSeconds,
-            )
+            ) + WalletRegistry.walletIconLogMetadata(record.walletIcon)
         }
 
     private fun messagesMetadata(messages: Array<ByteArray>): Map<String, Any?> {

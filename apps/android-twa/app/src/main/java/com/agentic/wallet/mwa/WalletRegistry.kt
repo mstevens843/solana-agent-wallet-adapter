@@ -1,5 +1,7 @@
 package com.agentic.wallet.mwa
 
+import java.security.MessageDigest
+
 object WalletRegistry {
     const val UNKNOWN = 0
     const val PHANTOM = 20
@@ -13,6 +15,9 @@ object WalletRegistry {
     private const val BACKPACK_PACKAGE = "app.backpack.mobile"
     private const val JUPITER_PACKAGE = "ag.jup.jupiter.android"
     private const val SEED_VAULT_PACKAGE = "com.solanamobile.seedvaultimpl"
+    private const val SEED_VAULT_ICON_HEAD = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAANgAAADY"
+    private const val SEED_VAULT_ICON_TAIL_SENTINEL =
+        "QChlppOaiUo1Z22pIwKl0xN6leqUK+T8P/q4PWPnCdaVAAAAAElFTkSuQmCC"
 
     fun inferPackage(walletUriBase: String, explicitPackage: String = "", walletIcon: String = ""): String {
         if (explicitPackage.isNotBlank()) return explicitPackage
@@ -23,6 +28,7 @@ object WalletRegistry {
             lower.contains("backpack.app") -> BACKPACK_PACKAGE
             lower.contains("jup.ag") || lower.contains("jupiter") -> JUPITER_PACKAGE
             lower.contains("seedvault") || lower.contains("seed-vault") || lower.contains("seedvaultwallet") || lower.startsWith("solanamobilewallet:") -> SEED_VAULT_PACKAGE
+            isKnownSeedVaultIcon(walletIcon) -> SEED_VAULT_PACKAGE
             else -> ""
         }
     }
@@ -35,8 +41,28 @@ object WalletRegistry {
             lower.contains("backpack") -> BACKPACK
             lower.contains("jupiter") || lower.contains("jup.ag") -> JUPITER
             lower.contains("seedvault") || lower.contains("seed-vault") || lower.contains("seedvaultwallet") || lower.contains("solanamobilewallet") -> SEED_VAULT
+            isKnownSeedVaultIcon(walletIcon) -> SEED_VAULT
             else -> UNKNOWN
         }
+    }
+
+    fun isKnownSeedVaultIcon(walletIcon: String): Boolean =
+        walletIcon.contains(SEED_VAULT_ICON_HEAD) && walletIcon.contains(SEED_VAULT_ICON_TAIL_SENTINEL)
+
+    fun walletIconLogMetadata(walletIcon: String): Map<String, Any?> {
+        val trimmed = walletIcon.trim()
+        val kind = when {
+            trimmed.isBlank() -> "blank"
+            trimmed.startsWith("data:image/") -> "data-image"
+            trimmed.startsWith("http://") || trimmed.startsWith("https://") -> "url"
+            else -> "inline"
+        }
+        return mapOf(
+            "walletIconKind" to kind,
+            "walletIconChars" to walletIcon.length,
+            "walletIconSha256_8" to sha256First8(walletIcon.toByteArray(Charsets.UTF_8)),
+            "walletIconKnownSeedVault" to isKnownSeedVaultIcon(walletIcon),
+        )
     }
 
     // Jupiter mobile is a WalletConnect/Reown wrapper rather than a native MWA wallet,
@@ -89,4 +115,7 @@ object WalletRegistry {
     // takes the memo-tx fallback in `signProofMessage`.
     fun reportSignMessageSupported(walletPackage: String): Boolean =
         walletPackage.isNotBlank() && !messageSigningUnsupported(walletPackage)
+
+    private fun sha256First8(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256").digest(bytes).take(8).joinToString("") { "%02x".format(it.toInt() and 0xff) }
 }

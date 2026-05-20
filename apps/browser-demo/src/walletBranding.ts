@@ -53,26 +53,52 @@ const WALLET_BRANDS: readonly WalletBrand[] = [
   },
 ];
 
+const WALLET_PROVIDER_LOGO_IDS = new Set<WalletProviderLogoId>([
+  'backpack',
+  'phantom',
+  'solflare',
+  'jupiter',
+  'seedVault',
+]);
+
+const SEED_VAULT_ICON_HEAD = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAANgAAADY';
+const SEED_VAULT_ICON_TAIL_SENTINEL =
+  'QChlppOaiUo1Z22pIwKl0xN6leqUK+T8P/q4PWPnCdaVAAAAAElFTkSuQmCC';
+
 export function walletLogoIdForProviderName(name: string): WalletProviderLogoId | undefined {
   return walletBrandForText(name)?.logoId;
 }
 
 export function androidWalletDisplayNameFromStatus(status: AndroidWalletBrandStatus | null): string {
-  const brand =
-    walletBrandForType(status?.walletType) ??
-    walletBrandForText(status?.walletPackage ?? '') ??
-    walletBrandForText(status?.walletUriBase ?? '') ??
-    walletBrandForText(status?.walletIcon ?? '') ??
-    walletBrandForText(status?.accountLabel ?? '');
+  const brand = walletBrandForAndroidStatus(status);
   if (brand) return brand.displayName;
   const accountLabel = status?.accountLabel?.trim();
   if (accountLabel) return accountLabel;
   return 'Mobile Wallet Adapter';
 }
 
+export function walletLogoIdFromAndroidStatus(status: AndroidWalletBrandStatus | null): WalletProviderLogoId | undefined {
+  return walletBrandForAndroidStatus(status)?.logoId;
+}
+
+export function isWalletProviderLogoId(value: unknown): value is WalletProviderLogoId {
+  return typeof value === 'string' && WALLET_PROVIDER_LOGO_IDS.has(value as WalletProviderLogoId);
+}
+
 function walletBrandForType(walletType: number | undefined): WalletBrand | undefined {
   if (typeof walletType !== 'number') return undefined;
   return WALLET_BRANDS.find((brand) => brand.walletTypes?.includes(walletType));
+}
+
+function walletBrandForAndroidStatus(status: AndroidWalletBrandStatus | null): WalletBrand | undefined {
+  return (
+    walletBrandForType(status?.walletType) ??
+    walletBrandForText(status?.walletPackage ?? '') ??
+    walletBrandForText(status?.walletUriBase ?? '') ??
+    walletBrandForKnownIcon(status?.walletIcon ?? '') ??
+    walletBrandForText(status?.walletIcon ?? '') ??
+    walletBrandForText(status?.accountLabel ?? '')
+  );
 }
 
 function walletBrandForText(value: string): WalletBrand | undefined {
@@ -81,6 +107,14 @@ function walletBrandForText(value: string): WalletBrand | undefined {
   return WALLET_BRANDS.find((brand) =>
     brand.matchers.some((matcher) => normalized.includes(normalizeWalletBrandText(matcher))),
   );
+}
+
+function walletBrandForKnownIcon(walletIcon: string): WalletBrand | undefined {
+  if (!walletIcon) return undefined;
+  if (walletIcon.includes(SEED_VAULT_ICON_HEAD) && walletIcon.includes(SEED_VAULT_ICON_TAIL_SENTINEL)) {
+    return WALLET_BRANDS.find((brand) => brand.logoId === 'seedVault');
+  }
+  return undefined;
 }
 
 function normalizeWalletBrandText(value: string): string {

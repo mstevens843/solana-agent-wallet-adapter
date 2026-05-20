@@ -2,8 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import {
   androidWalletDisplayNameFromStatus,
+  walletLogoIdFromAndroidStatus,
   walletLogoIdForProviderName,
 } from '../walletBranding.js';
+
+const SEED_VAULT_ICON =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAANgAAADY...' +
+  'QChlppOaiUo1Z22pIwKl0xN6leqUK+T8P/q4PWPnCdaVAAAAAElFTkSuQmCC';
 
 describe('wallet branding helpers', () => {
   it('maps Solflare Android package names to the Solflare display name and logo', () => {
@@ -71,6 +76,18 @@ describe('wallet branding helpers', () => {
         accountLabel: 'cofeelme.skr',
       }),
     ).toBe('Seed Vault');
+    expect(
+      androidWalletDisplayNameFromStatus({
+        walletIcon: SEED_VAULT_ICON,
+        accountLabel: 'cofeelme.skr',
+      }),
+    ).toBe('Seed Vault');
+    expect(
+      walletLogoIdFromAndroidStatus({
+        walletIcon: SEED_VAULT_ICON,
+        accountLabel: 'cofeelme.skr',
+      }),
+    ).toBe('seedVault');
   });
 
   it('falls back to account labels for unknown Android wallet packages', () => {
