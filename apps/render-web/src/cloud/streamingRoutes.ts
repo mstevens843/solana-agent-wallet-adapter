@@ -20,12 +20,46 @@ import {
   type DevApiHandler,
   type DevApiHandlerContext,
 } from './devApiRegistry.js';
+import { isSkrSessionDefaultActive, readSkrDecimals, readSkrMint } from './skrConfig.js';
 
 const PREFIX = '/api/streaming/';
 const SESSIONS_COLLECTION = '/api/streaming/sessions';
 const SESSION_ITEM_RE =
   /^\/api\/streaming\/sessions\/([A-Za-z0-9_-]+)(?:\/(voucher|voucher-relay|revoke|revoke-signed|grant-signed|receipt|settle))?\/?$/;
 const MAX_JSON_BYTES = 64 * 1024;
+
+interface SessionTokenDefaults {
+  readonly tokenMint: string;
+  readonly tokenDecimals?: number;
+}
+
+/**
+ * On the Android-bundled client, default the streaming-session token to $SKR
+ * when the request omits `tokenMint`. Gated on three conditions:
+ *
+ *   1. `X-Agentic-Client: android-bundled` request header — web clients are
+ *      unaffected.
+ *   2. `SKR_TOKEN_MINT` env var is configured — deployments without $SKR
+ *      support fall through to the existing required-field error.
+ *   3. `SKR_SESSION_DEFAULT=true` env var — operator can flip the default off
+ *      without removing $SKR support from the rest of the app.
+ *
+ * Returns undefined when any condition is unmet; in that case the caller falls
+ * back to the historical behavior (tokenMint is required from the client).
+ */
+function resolveAndroidSessionTokenDefault(
+  req: IncomingMessage,
+  env: NodeJS.ProcessEnv = process.env,
+): SessionTokenDefaults | undefined {
+  const clientHeader = req.headers['x-agentic-client'];
+  const client = (Array.isArray(clientHeader) ? clientHeader[0] : clientHeader)?.trim().toLowerCase();
+  if (client !== 'android-bundled') return undefined;
+  const mint = readSkrMint(env);
+  if (!mint) return undefined;
+  if (!isSkrSessionDefaultActive(env)) return undefined;
+  const decimals = readSkrDecimals(env);
+  return decimals !== undefined ? { tokenMint: mint, tokenDecimals: decimals } : { tokenMint: mint };
+}
 
 class BodyTooLargeError extends Error {
   constructor() {
@@ -79,7 +113,8 @@ async function handleCollection(
 ): Promise<void> {
   const walletAddress = requireWallet(ctx);
   if (req.method === 'POST') {
-    const input = parseCreateBody(await readJsonBody(req), walletAddress);
+    const defaults = resolveAndroidSessionTokenDefault(req);
+    const input = parseCreateBody(await readJsonBody(req), walletAddress, defaults);
     const result = await service.createSession(input);
     await appendStreamingAuditEvent(ctx, walletAddress, 'streaming.session.created', result.session.sessionId, {
       tokenMint: result.session.tokenMint,
@@ -283,17 +318,27 @@ async function handleSessionItem(
   methodNotAllowed(req, res);
 }
 
-function parseCreateBody(body: unknown, walletAddress: string): CreateStreamingSessionInput {
+function parseCreateBody(
+  body: unknown,
+  walletAddress: string,
+  defaults?: SessionTokenDefaults,
+): CreateStreamingSessionInput {
   const record = recordBody(body);
   const cluster = optionalString(record.cluster, 'cluster');
-  const tokenDecimals = optionalNumber(record.tokenDecimals, 'tokenDecimals');
+  const explicitTokenDecimals = optionalNumber(record.tokenDecimals, 'tokenDecimals');
   const recipientAllowlist = optionalStringArray(record.recipientAllowlist, 'recipientAllowlist');
   const ephemeralSignerPubkey = optionalString(record.ephemeralSignerPubkey, 'ephemeralSignerPubkey');
   const signerRuntime = optionalString(record.signerRuntime, 'signerRuntime');
   const metadata = optionalRecord(record.metadata, 'metadata');
+  const explicitTokenMint = optionalString(record.tokenMint, 'tokenMint');
+  const tokenMint = explicitTokenMint ?? defaults?.tokenMint;
+  if (!tokenMint) {
+    throw new StreamingServiceError(400, 'missing_field', 'tokenMint is required.');
+  }
+  const tokenDecimals = explicitTokenDecimals ?? (explicitTokenMint ? undefined : defaults?.tokenDecimals);
   return {
     walletAddress,
-    tokenMint: requiredString(record.tokenMint, 'tokenMint'),
+    tokenMint,
     capAmount: requiredString(record.capAmount, 'capAmount'),
     expiresAt: requiredString(record.expiresAt, 'expiresAt'),
     ...(cluster ? { cluster: cluster as CreateStreamingSessionInput['cluster'] } : {}),

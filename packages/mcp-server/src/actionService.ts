@@ -21,9 +21,16 @@ import {
   actionForKind,
   assertSupportedCluster,
   requireAdapter,
+  type ConnectorSecretsMap,
   type DAppAdapter,
   type DAppAdapterContext,
 } from './adapters/index.js';
+import {
+  extractVulcanErrorMessage,
+  extractVulcanTxid,
+  recordVulcanCall,
+  type VulcanMetricsRegistry,
+} from './upstreamMcp/index.js';
 import type {
   KaminoDepositInput,
   KaminoWithdrawInput,
@@ -134,6 +141,13 @@ import type {
   TensorListPrepareInput,
   TensorSweepPrepareInput,
 } from './adapters/tensor/index.js';
+import type {
+  PhoenixCancelOrderInput,
+  PhoenixCloseInput,
+  PhoenixModifyCollateralInput,
+  PhoenixOpenInput,
+  PhoenixPlaceTriggerInput,
+} from './adapters/phoenix/index.js';
 import type {
   RealmsCastVoteInput,
   RealmsDepositGovernanceTokensInput,
@@ -365,12 +379,63 @@ const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ
 const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
 const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
 
+/**
+ * Loads per-wallet BYO connector secrets (Magic Eden, Tensor, Sanctum, Lulo, Phoenix). Cloud passes in
+ * `connectorSecretsService.loadAll(wallet)`; local bridge typically leaves it undefined and falls back to env vars
+ * (the adapter-level Unavailable stubs make this transparent).
+ */
+export type ConnectorSecretsLoader = (walletAddress: string) => Promise<ConnectorSecretsMap | undefined>;
+
 export interface AgentWalletActionServiceOptions {
   backend: WalletBackend;
   config: AgentWalletConfig;
   preparedActions?: PreparedActionStore;
   connection?: Connection;
   client?: SolanaSigningClient;
+  /**
+   * Optional loader that returns per-wallet connector secrets to inject into the adapter context. When provided,
+   * BYO-key connector reads (e.g. `phoenixWalletPositions`, `tensorCollectionSnapshot`) receive the user's
+   * encrypted API keys via `ctx.connectorSecrets`. Without it, adapters fall back to env-var configuration.
+   */
+  connectorSecretsLoader?: ConnectorSecretsLoader;
+  /**
+   * Optional Vulcan upstream MCP client. When supplied, prepared actions of kind `phoenix_vulcan_call` are
+   * executed by forwarding to Vulcan with `acknowledged: true` after the user approves in the Spend tab.
+   * The client lifecycle (start / stop) is owned by the bridge, not the service.
+   */
+  vulcanUpstreamClient?: VulcanUpstreamClientLike;
+  /**
+   * Optional Vulcan wallet registry — if supplied, takes precedence over `vulcanUpstreamClient`. The service uses
+   * the registry to look up the right client per action (multi-wallet support). The single-client option remains
+   * for tests and single-wallet deploys.
+   */
+  vulcanWalletRegistry?: VulcanWalletRegistryLike;
+  /**
+   * Optional metrics registry — records per-tool latency + error counters for the `solana_vulcan_status` snapshot.
+   * Owned by the host process; not started/stopped here.
+   */
+  vulcanMetricsRegistry?: VulcanMetricsRegistry;
+}
+
+/**
+ * Structural interface for the multi-wallet registry. We keep it minimal so tests can inject a fake without pulling
+ * in the full implementation (subprocess lifecycle, etc.).
+ */
+export interface VulcanWalletRegistryLike {
+  getOrStart(walletName?: string): Promise<VulcanUpstreamClientLike>;
+  getDefaultWalletName(): string | undefined;
+}
+
+/**
+ * Minimal interface the action service needs from the Vulcan upstream client. Kept as a structural type so tests
+ * can inject a stub without depending on the real subprocess-spawning class.
+ */
+export interface VulcanUpstreamClientLike {
+  callTool(name: string, args: Record<string, unknown>): Promise<{
+    content: unknown;
+    isError?: boolean;
+    structuredContent?: unknown;
+  }>;
 }
 
 export interface SwapInput {
@@ -464,6 +529,16 @@ export class AgentWalletActionService {
   private readonly preparedActions?: PreparedActionStore;
   private readonly connection: Connection;
   private readonly client: SolanaSigningClient;
+  private readonly connectorSecretsLoader?: ConnectorSecretsLoader;
+  private readonly vulcanUpstreamClient?: VulcanUpstreamClientLike;
+  private readonly vulcanWalletRegistry?: VulcanWalletRegistryLike;
+  private readonly vulcanMetricsRegistry?: VulcanMetricsRegistry;
+  /**
+   * In-flight prepared-action IDs. Used to short-circuit double-submit attempts (e.g. user double-clicks Approve
+   * before the first sign+broadcast resolves). Entry is added at the top of `executePreparedAction` and removed
+   * in the surrounding `finally`. Survives a single process lifetime — DB-level dedup is a separate epic.
+   */
+  private readonly inflightExecutions = new Set<string>();
 
   constructor(options: AgentWalletActionServiceOptions) {
     this.backend = options.backend;
@@ -471,6 +546,10 @@ export class AgentWalletActionService {
     this.preparedActions = options.preparedActions;
     this.connection = options.connection ?? new Connection(options.config.rpcUrl, 'confirmed');
     this.client = options.client ?? new SolanaSigningClient({ backend: options.backend });
+    if (options.connectorSecretsLoader) this.connectorSecretsLoader = options.connectorSecretsLoader;
+    if (options.vulcanUpstreamClient) this.vulcanUpstreamClient = options.vulcanUpstreamClient;
+    if (options.vulcanWalletRegistry) this.vulcanWalletRegistry = options.vulcanWalletRegistry;
+    if (options.vulcanMetricsRegistry) this.vulcanMetricsRegistry = options.vulcanMetricsRegistry;
   }
 
   async walletStatus(): Promise<Record<string, unknown>> {
@@ -650,7 +729,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('kamino');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'deposit');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -660,7 +739,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('kamino');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'withdraw');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -693,7 +772,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('meteora');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, operation);
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -703,7 +782,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('orca');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'increase_liquidity');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -713,7 +792,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('orca');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'decrease_liquidity');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -723,7 +802,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('orca');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'collect_fees');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -733,7 +812,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('orca');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'collect_rewards');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -745,7 +824,7 @@ export class AgentWalletActionService {
   async quoteRaydiumAddLiquidity(input: RaydiumAddLiquidityPrepareInput): Promise<Record<string, unknown>> {
     const adapter = requireAdapter('raydium');
     assertSupportedCluster(adapter, this.config.cluster);
-    return quoteRaydiumAddLiquidity(input, this.adapterContext(adapter));
+    return quoteRaydiumAddLiquidity(input, await this.adapterContext(adapter));
   }
 
   async prepareRaydiumRemoveLiquidity(input: RaydiumRemoveLiquidityPrepareInput): Promise<Record<string, unknown>> {
@@ -776,7 +855,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('raydium');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, operation);
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -805,7 +884,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('marginfi');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, operation);
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -838,7 +917,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('project0');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, operation);
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -848,7 +927,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.earn_tokens;
     if (!read) throw new AdapterError('jupiter', 'unsupported_method', 'Jupiter Lend Earn tokens read is not registered.');
-    const result = (await read.read(input, this.adapterContext(adapter))) as {
+    const result = (await read.read(input, await this.adapterContext(adapter))) as {
       cluster: AgentWalletConfig['cluster'];
       tokens: Parameters<typeof factsFromJupiterLendEarnTokens>[0]['tokens'];
     };
@@ -863,7 +942,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.earn_token_detail;
     if (!read) throw new AdapterError('jupiter', 'unsupported_method', 'Jupiter Lend Earn token detail read is not registered.');
-    const result = (await read.read(input, this.adapterContext(adapter))) as {
+    const result = (await read.read(input, await this.adapterContext(adapter))) as {
       cluster: AgentWalletConfig['cluster'];
       token: Parameters<typeof factsFromJupiterLendEarnTokens>[0]['tokens'][number];
     };
@@ -878,7 +957,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.earn_positions;
     if (!read) throw new AdapterError('jupiter', 'unsupported_method', 'Jupiter Lend Earn positions read is not registered.');
-    const result = (await read.read(input, this.adapterContext(adapter))) as {
+    const result = (await read.read(input, await this.adapterContext(adapter))) as {
       walletAddress: string;
       cluster: AgentWalletConfig['cluster'];
       positions: Parameters<typeof factsFromJupiterLendEarnPositions>[0]['positions'];
@@ -899,7 +978,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.earn_earnings;
     if (!read) throw new AdapterError('jupiter', 'unsupported_method', 'Jupiter Lend Earn earnings read is not registered.');
-    const result = (await read.read(input, this.adapterContext(adapter))) as {
+    const result = (await read.read(input, await this.adapterContext(adapter))) as {
       walletAddress: string;
       cluster: AgentWalletConfig['cluster'];
       earnings: Parameters<typeof factsFromJupiterLendEarnEarnings>[0]['earnings'];
@@ -920,7 +999,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.borrow_vaults;
     if (!read) throw new AdapterError('jupiter', 'unsupported_method', 'Jupiter Lend Borrow vaults read is not registered.');
-    const result = (await read.read(input, this.adapterContext(adapter))) as {
+    const result = (await read.read(input, await this.adapterContext(adapter))) as {
       cluster: AgentWalletConfig['cluster'];
       vaults: Parameters<typeof factsFromJupiterLendBorrowVaults>[0]['vaults'];
     };
@@ -935,7 +1014,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.borrow_vault_detail;
     if (!read) throw new AdapterError('jupiter', 'unsupported_method', 'Jupiter Lend Borrow vault detail read is not registered.');
-    const result = (await read.read(input, this.adapterContext(adapter))) as {
+    const result = (await read.read(input, await this.adapterContext(adapter))) as {
       cluster: AgentWalletConfig['cluster'];
       vault: Parameters<typeof factsFromJupiterLendBorrowVaults>[0]['vaults'][number];
     };
@@ -954,7 +1033,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.borrow_positions;
     if (!read) throw new AdapterError('jupiter', 'unsupported_method', 'Jupiter Lend Borrow positions read is not registered.');
-    const result = (await read.read(input, this.adapterContext(adapter))) as {
+    const result = (await read.read(input, await this.adapterContext(adapter))) as {
       walletAddress: string;
       cluster: AgentWalletConfig['cluster'];
       positions: Parameters<typeof factsFromJupiterLendBorrowPositions>[0]['positions'];
@@ -978,7 +1057,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.borrow_health_preview;
     if (!read) throw new AdapterError('jupiter', 'unsupported_method', 'Jupiter Lend Borrow health preview read is not registered.');
-    const result = (await read.read(input, this.adapterContext(adapter))) as {
+    const result = (await read.read(input, await this.adapterContext(adapter))) as {
       walletAddress: string;
       cluster: AgentWalletConfig['cluster'];
       preview: Parameters<typeof factsFromJupiterLendBorrowHealth>[0];
@@ -1042,7 +1121,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('jupiter');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, operation);
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1131,7 +1210,7 @@ export class AgentWalletActionService {
     if (!read) {
       throw new ProtocolError('unsupported_method', `Jupiter adapter is missing read ${readId}.`);
     }
-    const result = await read.read(input, this.adapterContext(adapter));
+    const result = await read.read(input, await this.adapterContext(adapter));
     return { result, facts: factsFromJupiterTriggerRead(readId, result) };
   }
 
@@ -1140,7 +1219,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('jupiter');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, actionId);
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1193,7 +1272,7 @@ export class AgentWalletActionService {
     if (!read) {
       throw new ProtocolError('unsupported_method', `Jupiter adapter is missing read ${readId}.`);
     }
-    const result = await read.read(input, this.adapterContext(adapter));
+    const result = await read.read(input, await this.adapterContext(adapter));
     return { result, facts: factsFromJupiterRecurringRead(readId, result) };
   }
 
@@ -1202,55 +1281,31 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('jupiter');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, actionId);
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
 
-  async prepareDriftVaultDeposit(input: DriftVaultDepositInput): Promise<Record<string, unknown>> {
-    requireActionAllowed(this.config);
-    const adapter = requireAdapter('drift');
-    assertSupportedCluster(adapter, this.config.cluster);
-    const action = requireAdapterAction(adapter, 'vault_deposit');
-    const result = await action.prepare(input, this.adapterContext(adapter));
-    const stored = await this.store().addAction(result.addInput);
-    return { preparedAction: stored, preview: result.preview };
+  async prepareDriftVaultDeposit(_input: DriftVaultDepositInput): Promise<Record<string, unknown>> {
+    throw driftDeprecatedError('deposit');
   }
 
   async prepareDriftVaultRequestWithdraw(
-    input: DriftVaultRequestWithdrawInput,
+    _input: DriftVaultRequestWithdrawInput,
   ): Promise<Record<string, unknown>> {
-    requireActionAllowed(this.config);
-    const adapter = requireAdapter('drift');
-    assertSupportedCluster(adapter, this.config.cluster);
-    const action = requireAdapterAction(adapter, 'vault_request_withdraw');
-    const result = await action.prepare(input, this.adapterContext(adapter));
-    const stored = await this.store().addAction(result.addInput);
-    return { preparedAction: stored, preview: result.preview };
+    throw driftDeprecatedError('request_withdraw');
   }
 
   async prepareDriftVaultCancelWithdraw(
-    input: DriftVaultCancelWithdrawInput,
+    _input: DriftVaultCancelWithdrawInput,
   ): Promise<Record<string, unknown>> {
-    requireActionAllowed(this.config);
-    const adapter = requireAdapter('drift');
-    assertSupportedCluster(adapter, this.config.cluster);
-    const action = requireAdapterAction(adapter, 'vault_cancel_withdraw');
-    const result = await action.prepare(input, this.adapterContext(adapter));
-    const stored = await this.store().addAction(result.addInput);
-    return { preparedAction: stored, preview: result.preview };
+    throw driftDeprecatedError('cancel_withdraw');
   }
 
   async prepareDriftVaultCompleteWithdraw(
-    input: DriftVaultCompleteWithdrawInput,
+    _input: DriftVaultCompleteWithdrawInput,
   ): Promise<Record<string, unknown>> {
-    requireActionAllowed(this.config);
-    const adapter = requireAdapter('drift');
-    assertSupportedCluster(adapter, this.config.cluster);
-    const action = requireAdapterAction(adapter, 'vault_complete_withdraw');
-    const result = await action.prepare(input, this.adapterContext(adapter));
-    const stored = await this.store().addAction(result.addInput);
-    return { preparedAction: stored, preview: result.preview };
+    throw driftDeprecatedError('complete_withdraw');
   }
 
   async prepareSquadsCreateTransferProposal(
@@ -1260,7 +1315,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('squads');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'create_transfer_proposal');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1270,7 +1325,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('squads');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'approve_proposal');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1280,7 +1335,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('squads');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'reject_proposal');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1290,7 +1345,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('squads');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'cancel_proposal');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1302,7 +1357,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('squads');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'execute_proposal');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1312,7 +1367,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('realms');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'cast_vote');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1324,7 +1379,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('realms');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'relinquish_vote');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1336,7 +1391,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('realms');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'deposit_governance_tokens');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1348,7 +1403,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('realms');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'withdraw_governance_tokens');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1358,7 +1413,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('lulo');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'deposit');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1368,7 +1423,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('lulo');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'withdraw');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1378,7 +1433,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('lulo');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'complete_withdraw');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1388,7 +1443,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('save');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'deposit');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1398,7 +1453,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('save');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'withdraw');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1408,7 +1463,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('save');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'borrow');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1418,7 +1473,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('save');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'repay');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1472,7 +1527,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('jito');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, operation);
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1489,7 +1544,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('marinade');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, operation);
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1499,7 +1554,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.rates;
     if (!read) throw new AdapterError('lulo', 'unsupported_method', 'Lulo rates read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromLuloRates>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromLuloRates>[0];
     return {
       snapshot,
       facts: factsFromLuloRates(snapshot),
@@ -1511,7 +1566,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.pool_meta;
     if (!read) throw new AdapterError('lulo', 'unsupported_method', 'Lulo pool metadata read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromLuloPoolMeta>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromLuloPoolMeta>[0];
     return {
       snapshot,
       facts: factsFromLuloPoolMeta(snapshot),
@@ -1523,7 +1578,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.wallet_balances;
     if (!read) throw new AdapterError('lulo', 'unsupported_method', 'Lulo balances read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromLuloBalances>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromLuloBalances>[0];
     return {
       snapshot,
       facts: factsFromLuloBalances(snapshot),
@@ -1535,7 +1590,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.api_health;
     if (!read) throw new AdapterError('magiceden', 'unsupported_method', 'Magic Eden api_health read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromMagicedenApiHealth>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromMagicedenApiHealth>[0];
     return { snapshot, facts: factsFromMagicedenApiHealth(snapshot) };
   }
 
@@ -1547,7 +1602,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.top_collections;
     if (!read) throw new AdapterError('magiceden', 'unsupported_method', 'Magic Eden top_collections read is not registered.');
-    const collections = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromMagicedenTopCollections>[0];
+    const collections = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromMagicedenTopCollections>[0];
     return { collections, facts: factsFromMagicedenTopCollections(collections) };
   }
 
@@ -1562,7 +1617,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.collection_snapshot;
     if (!read) throw new AdapterError('magiceden', 'unsupported_method', 'Magic Eden collection_snapshot read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromMagicedenCollectionSnapshot>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromMagicedenCollectionSnapshot>[0];
     return { snapshot, facts: factsFromMagicedenCollectionSnapshot(snapshot) };
   }
 
@@ -1575,7 +1630,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.collection_listings;
     if (!read) throw new AdapterError('magiceden', 'unsupported_method', 'Magic Eden collection_listings read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromMagicedenCollectionListings>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromMagicedenCollectionListings>[0];
     return { snapshot, facts: factsFromMagicedenCollectionListings(snapshot) };
   }
 
@@ -1588,7 +1643,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.collection_bids;
     if (!read) throw new AdapterError('magiceden', 'unsupported_method', 'Magic Eden collection_bids read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromMagicedenCollectionBids>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromMagicedenCollectionBids>[0];
     return { snapshot, facts: factsFromMagicedenCollectionBids(snapshot) };
   }
 
@@ -1601,7 +1656,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.recent_activity;
     if (!read) throw new AdapterError('magiceden', 'unsupported_method', 'Magic Eden recent_activity read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromMagicedenRecentActivity>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromMagicedenRecentActivity>[0];
     return { snapshot, facts: factsFromMagicedenRecentActivity(snapshot) };
   }
 
@@ -1615,7 +1670,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.wallet_nfts;
     if (!read) throw new AdapterError('magiceden', 'unsupported_method', 'Magic Eden wallet_nfts read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromMagicedenWalletNfts>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromMagicedenWalletNfts>[0];
     return { snapshot, facts: factsFromMagicedenWalletNfts(snapshot) };
   }
 
@@ -1628,7 +1683,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.nft_detail;
     if (!read) throw new AdapterError('magiceden', 'unsupported_method', 'Magic Eden nft_detail read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromMagicedenNftDetail>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromMagicedenNftDetail>[0];
     return { snapshot, facts: factsFromMagicedenNftDetail(snapshot) };
   }
 
@@ -1637,7 +1692,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('magiceden');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'buy');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1647,7 +1702,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('magiceden');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'list');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1659,7 +1714,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('magiceden');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'cancel_listing');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1669,7 +1724,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('magiceden');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'bid');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1681,7 +1736,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('magiceden');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'cancel_bid');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1697,7 +1752,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.collection_snapshot;
     if (!read) throw new AdapterError('tensor', 'unsupported_method', 'Tensor collection_snapshot read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromTensorCollectionSnapshot>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromTensorCollectionSnapshot>[0];
     return { snapshot, facts: factsFromTensorCollectionSnapshot(snapshot) };
   }
 
@@ -1706,7 +1761,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.supported_collections;
     if (!read) throw new AdapterError('tensor', 'unsupported_method', 'Tensor supported_collections read is not registered.');
-    const collections = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromTensorSupportedCollections>[0];
+    const collections = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromTensorSupportedCollections>[0];
     return { collections, facts: factsFromTensorSupportedCollections(collections) };
   }
 
@@ -1715,7 +1770,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.collection_listings;
     if (!read) throw new AdapterError('tensor', 'unsupported_method', 'Tensor collection_listings read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromTensorCollectionListings>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromTensorCollectionListings>[0];
     return { snapshot, facts: factsFromTensorCollectionListings(snapshot) };
   }
 
@@ -1724,7 +1779,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.collection_bids;
     if (!read) throw new AdapterError('tensor', 'unsupported_method', 'Tensor collection_bids read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromTensorCollectionBids>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromTensorCollectionBids>[0];
     return { snapshot, facts: factsFromTensorCollectionBids(snapshot) };
   }
 
@@ -1733,7 +1788,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.recent_sales;
     if (!read) throw new AdapterError('tensor', 'unsupported_method', 'Tensor recent_sales read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromTensorRecentSales>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromTensorRecentSales>[0];
     return { snapshot, facts: factsFromTensorRecentSales(snapshot) };
   }
 
@@ -1746,7 +1801,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.wallet_nfts;
     if (!read) throw new AdapterError('tensor', 'unsupported_method', 'Tensor wallet_nfts read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromTensorWalletNfts>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromTensorWalletNfts>[0];
     return { snapshot, facts: factsFromTensorWalletNfts(snapshot) };
   }
 
@@ -1755,7 +1810,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.nft_detail;
     if (!read) throw new AdapterError('tensor', 'unsupported_method', 'Tensor nft_detail read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromTensorNftDetail>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromTensorNftDetail>[0];
     return { snapshot, facts: factsFromTensorNftDetail(snapshot) };
   }
 
@@ -1764,7 +1819,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.wallet_marketplace_exposure;
     if (!read) throw new AdapterError('tensor', 'unsupported_method', 'Tensor wallet_marketplace_exposure read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromTensorWalletMarketplaceExposure>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromTensorWalletMarketplaceExposure>[0];
     return { snapshot, facts: factsFromTensorWalletMarketplaceExposure(snapshot) };
   }
 
@@ -1773,7 +1828,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('tensor');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'buy');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1783,7 +1838,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('tensor');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'list');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1793,7 +1848,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('tensor');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'cancel_listing');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1803,7 +1858,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('tensor');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'bid');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1813,7 +1868,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('tensor');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'cancel_bid');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1823,7 +1878,59 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('tensor');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'sweep');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  // ---- Phoenix Perpetuals write actions (native Rise SDK) -----------------------------------------------------------
+
+  async preparePhoenixOpen(input: PhoenixOpenInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('phoenix');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'open');
+    const result = await action.prepare(input, await this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async preparePhoenixClose(input: PhoenixCloseInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('phoenix');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'close');
+    const result = await action.prepare(input, await this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async preparePhoenixModifyCollateral(input: PhoenixModifyCollateralInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('phoenix');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'modify_collateral');
+    const result = await action.prepare(input, await this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async preparePhoenixPlaceTrigger(input: PhoenixPlaceTriggerInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('phoenix');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'place_trigger');
+    const result = await action.prepare(input, await this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async preparePhoenixCancelOrder(input: PhoenixCancelOrderInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('phoenix');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'cancel_order');
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -1951,7 +2058,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.price_feed;
     if (!read) throw new AdapterError('pyth', 'unsupported_method', 'Pyth price feed read is not registered.');
-    const result = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromPythPriceFeed>[0];
+    const result = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromPythPriceFeed>[0];
     return { snapshot: result.snapshot, facts: factsFromPythPriceFeed(result) };
   }
 
@@ -1960,7 +2067,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.price_feeds_batch;
     if (!read) throw new AdapterError('pyth', 'unsupported_method', 'Pyth batch read is not registered.');
-    const result = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromPythBatch>[0];
+    const result = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromPythBatch>[0];
     return { batch: result, facts: factsFromPythBatch(result) };
   }
 
@@ -1969,7 +2076,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.feed_search;
     if (!read) throw new AdapterError('pyth', 'unsupported_method', 'Pyth feed search is not registered.');
-    const result = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromPythFeedSearch>[0];
+    const result = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromPythFeedSearch>[0];
     return { search: result, facts: factsFromPythFeedSearch(result) };
   }
 
@@ -1978,7 +2085,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.onchain_price_account;
     if (!read) throw new AdapterError('pyth', 'unsupported_method', 'Pyth on-chain account read is not registered.');
-    const result = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromPythOnchainAccount>[0];
+    const result = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromPythOnchainAccount>[0];
     return { snapshot: result, facts: factsFromPythOnchainAccount(result) };
   }
 
@@ -1987,7 +2094,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.oracle_evidence;
     if (!read) throw new AdapterError('pyth', 'unsupported_method', 'Pyth oracle evidence read is not registered.');
-    const result = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromPythEvidence>[0];
+    const result = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromPythEvidence>[0];
     return { evidence: result, facts: factsFromPythEvidence(result) };
   }
 
@@ -1996,7 +2103,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('pyth');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'post_price_update');
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -2006,7 +2113,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.supported_routes;
     if (!read) throw new AdapterError('wormhole', 'unsupported_method', 'Wormhole supported_routes read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromWormholeSupportedRoutes>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromWormholeSupportedRoutes>[0];
     return { snapshot, facts: factsFromWormholeSupportedRoutes(snapshot) };
   }
 
@@ -2015,7 +2122,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.token_snapshot;
     if (!read) throw new AdapterError('wormhole', 'unsupported_method', 'Wormhole token_snapshot read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromWormholeTokenSnapshot>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromWormholeTokenSnapshot>[0];
     return { snapshot, facts: factsFromWormholeTokenSnapshot(snapshot) };
   }
 
@@ -2024,7 +2131,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.quote;
     if (!read) throw new AdapterError('wormhole', 'unsupported_method', 'Wormhole quote read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromWormholeQuote>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromWormholeQuote>[0];
     return { snapshot, facts: factsFromWormholeQuote(snapshot) };
   }
 
@@ -2033,7 +2140,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.transfer_status;
     if (!read) throw new AdapterError('wormhole', 'unsupported_method', 'Wormhole transfer_status read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromWormholeTransferStatus>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromWormholeTransferStatus>[0];
     return { snapshot, facts: factsFromWormholeTransferStatus(snapshot) };
   }
 
@@ -2042,7 +2149,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.wallet_bridge_exposure;
     if (!read) throw new AdapterError('wormhole', 'unsupported_method', 'Wormhole wallet_bridge_exposure read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromWormholeWalletBridgeExposure>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromWormholeWalletBridgeExposure>[0];
     return { snapshot, facts: factsFromWormholeWalletBridgeExposure(snapshot) };
   }
 
@@ -2066,7 +2173,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('wormhole');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, operation);
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -2076,7 +2183,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.lst_list;
     if (!read) throw new AdapterError('sanctum', 'unsupported_method', 'Sanctum LST list read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromSanctumLstList>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromSanctumLstList>[0];
     return { snapshot, facts: factsFromSanctumLstList(snapshot) };
   }
 
@@ -2090,7 +2197,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.lst_snapshot;
     if (!read) throw new AdapterError('sanctum', 'unsupported_method', 'Sanctum LST snapshot read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromSanctumLstSnapshot>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromSanctumLstSnapshot>[0];
     return { snapshot, facts: factsFromSanctumLstSnapshot(snapshot) };
   }
 
@@ -2099,7 +2206,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.infinity_pool_snapshot;
     if (!read) throw new AdapterError('sanctum', 'unsupported_method', 'Sanctum Infinity pool snapshot read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromSanctumInfinityPoolSnapshot>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromSanctumInfinityPoolSnapshot>[0];
     return { snapshot, facts: factsFromSanctumInfinityPoolSnapshot(snapshot) };
   }
 
@@ -2111,7 +2218,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.wallet_positions;
     if (!read) throw new AdapterError('sanctum', 'unsupported_method', 'Sanctum wallet positions read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromSanctumWalletPositions>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromSanctumWalletPositions>[0];
     return { snapshot, facts: factsFromSanctumWalletPositions(snapshot) };
   }
 
@@ -2133,7 +2240,7 @@ export class AgentWalletActionService {
       outputMint: outputToken.mint,
       amountRaw: amountRaw.toString(),
       ...(input.slippageBps !== undefined && { slippageBps: input.slippageBps }),
-    }, this.adapterContext(adapter))) as Parameters<typeof factsFromSanctumQuote>[0];
+    }, await this.adapterContext(adapter))) as Parameters<typeof factsFromSanctumQuote>[0];
     return { quote, facts: factsFromSanctumQuote(quote) };
   }
 
@@ -2173,7 +2280,7 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('sanctum');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, operation);
-    const result = await action.prepare(input, this.adapterContext(adapter));
+    const result = await action.prepare(input, await this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
   }
@@ -2334,6 +2441,9 @@ export class AgentWalletActionService {
       }
       if (connector.id === 'squads') {
         return await this.squadsConnectorFacts(input);
+      }
+      if (connector.id === 'phoenix') {
+        return await this.phoenixConnectorFacts(input);
       }
       throw missingConnectorCapability(connector, input.capability, 'read');
     } catch (err) {
@@ -3550,6 +3660,60 @@ export class AgentWalletActionService {
     throw missingConnectorCapability(connector, capability, 'read');
   }
 
+  private async phoenixConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
+    const connector = requireRuntimeConnector('phoenix');
+    const symbol = (input.token?.trim() || input.inputToken?.trim())?.toUpperCase();
+    const capability = input.capability
+      ?? (input.walletAddress?.trim() || !symbol ? 'positions' : 'markets');
+
+    if (capability === 'markets' || (capability === 'perps' && !input.walletAddress?.trim())) {
+      if (symbol) {
+        const snapshot = await this.phoenixMarketSnapshot({ symbol });
+        return {
+          connector: connectorCapabilityView(connector, this.config),
+          capability,
+          source: 'market_snapshot',
+          snapshot,
+        };
+      }
+      const catalog = await this.phoenixMarketCatalog();
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        source: 'market_catalog',
+        catalog,
+      };
+    }
+
+    if (capability === 'positions' || capability === 'perps') {
+      if (symbol) {
+        const snapshot = await this.phoenixPositionSnapshot({
+          ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+          symbol,
+          ...(input.subAccountId !== undefined && { traderPdaIndex: input.subAccountId }),
+        });
+        return {
+          connector: connectorCapabilityView(connector, this.config),
+          capability,
+          source: 'position_snapshot',
+          snapshot,
+        };
+      }
+      const snapshot = await this.phoenixWalletPositions({
+        ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+        ...(input.subAccountId !== undefined && { traderPdaIndex: input.subAccountId }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        source: 'wallet_positions',
+        snapshot,
+      };
+    }
+
+    throw missingConnectorCapability(connector, capability, 'read');
+  }
+
   private async luloConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
     const connector = requireRuntimeConnector('lulo');
     const capability = input.capability ?? (input.walletAddress ? 'positions' : 'markets');
@@ -3805,7 +3969,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.reserve_snapshot;
     if (!read) throw new AdapterError('kamino', 'unsupported_method', 'Kamino reserve snapshot read is not registered.');
-    const snapshot = await read.read(input, this.adapterContext(adapter));
+    const snapshot = await read.read(input, await this.adapterContext(adapter));
     return {
       snapshot,
       facts: factsFromKaminoReserveSnapshot(snapshot as Parameters<typeof factsFromKaminoReserveSnapshot>[0]),
@@ -3817,7 +3981,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.positions;
     if (!read) throw new AdapterError('kamino', 'unsupported_method', 'Kamino positions read is not registered.');
-    const result = (await read.read(input, this.adapterContext(adapter))) as {
+    const result = (await read.read(input, await this.adapterContext(adapter))) as {
       walletAddress: string;
       positions: Parameters<typeof factsFromKaminoPositions>[0]['positions'];
       totals?: Parameters<typeof factsFromKaminoPositions>[0]['totals'];
@@ -3837,7 +4001,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.earnings_proof;
     if (!read) throw new AdapterError('kamino', 'unsupported_method', 'Kamino earnings proof read is not registered.');
-    const result = (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+    const result = (await read.read(input, await this.adapterContext(adapter))) as Record<string, unknown>;
     return {
       ...result,
       facts: factsFromKaminoEarningsProof(result as unknown as Parameters<typeof factsFromKaminoEarningsProof>[0]),
@@ -3849,7 +4013,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.pool_snapshot;
     if (!read) throw new AdapterError('meteora', 'unsupported_method', 'Meteora DLMM pool snapshot read is not registered.');
-    const snapshot = await read.read(input, this.adapterContext(adapter));
+    const snapshot = await read.read(input, await this.adapterContext(adapter));
     return {
       snapshot,
       facts: factsFromMeteoraPoolSnapshot(snapshot as Parameters<typeof factsFromMeteoraPoolSnapshot>[0]),
@@ -3861,7 +4025,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.wallet_positions;
     if (!read) throw new AdapterError('meteora', 'unsupported_method', 'Meteora wallet positions read is not registered.');
-    const result = (await read.read(input, this.adapterContext(adapter))) as {
+    const result = (await read.read(input, await this.adapterContext(adapter))) as {
       walletAddress: string;
       poolAddress?: string;
       positions: Parameters<typeof factsFromMeteoraPositions>[0]['positions'];
@@ -3883,7 +4047,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.position_detail;
     if (!read) throw new AdapterError('meteora', 'unsupported_method', 'Meteora position detail read is not registered.');
-    const position = await read.read(input, this.adapterContext(adapter));
+    const position = await read.read(input, await this.adapterContext(adapter));
     return {
       position,
       facts: factsFromMeteoraPositionDetail(position as Parameters<typeof factsFromMeteoraPositionDetail>[0]),
@@ -3895,7 +4059,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.whirlpool_snapshot;
     if (!read) throw new AdapterError('orca', 'unsupported_method', 'Orca Whirlpool snapshot read is not registered.');
-    const snapshot = await read.read(input, this.adapterContext(adapter));
+    const snapshot = await read.read(input, await this.adapterContext(adapter));
     return {
       snapshot,
       facts: factsFromOrcaWhirlpoolSnapshot(snapshot as Parameters<typeof factsFromOrcaWhirlpoolSnapshot>[0]),
@@ -3907,7 +4071,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.wallet_positions;
     if (!read) throw new AdapterError('orca', 'unsupported_method', 'Orca wallet positions read is not registered.');
-    const result = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromOrcaPositions>[0];
+    const result = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromOrcaPositions>[0];
     return {
       ...result,
       facts: factsFromOrcaPositions(result),
@@ -3919,7 +4083,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.position_detail;
     if (!read) throw new AdapterError('orca', 'unsupported_method', 'Orca position detail read is not registered.');
-    const position = await read.read(input, this.adapterContext(adapter));
+    const position = await read.read(input, await this.adapterContext(adapter));
     return {
       position,
       facts: factsFromOrcaPositionDetail(position as Parameters<typeof factsFromOrcaPositionDetail>[0]),
@@ -3931,7 +4095,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.pool_snapshot;
     if (!read) throw new AdapterError('raydium', 'unsupported_method', 'Raydium pool snapshot read is not registered.');
-    const snapshot = await read.read(input, this.adapterContext(adapter));
+    const snapshot = await read.read(input, await this.adapterContext(adapter));
     return {
       snapshot,
       facts: factsFromRaydiumPoolSnapshot(snapshot as Parameters<typeof factsFromRaydiumPoolSnapshot>[0]),
@@ -3948,7 +4112,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.wallet_positions;
     if (!read) throw new AdapterError('raydium', 'unsupported_method', 'Raydium wallet positions read is not registered.');
-    const result = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromRaydiumPositions>[0];
+    const result = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromRaydiumPositions>[0];
     return {
       ...result,
       facts: factsFromRaydiumPositions(result),
@@ -3964,7 +4128,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.position_detail;
     if (!read) throw new AdapterError('raydium', 'unsupported_method', 'Raydium position detail read is not registered.');
-    const position = await read.read(input, this.adapterContext(adapter));
+    const position = await read.read(input, await this.adapterContext(adapter));
     return {
       position,
       facts: factsFromRaydiumPositionDetail(position as Parameters<typeof factsFromRaydiumPositionDetail>[0]),
@@ -3980,7 +4144,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.bank_snapshot;
     if (!read) throw new AdapterError('marginfi', 'unsupported_method', 'MarginFi bank snapshot read is not registered.');
-    const snapshot = await read.read(input, this.adapterContext(adapter));
+    const snapshot = await read.read(input, await this.adapterContext(adapter));
     return {
       snapshot,
       facts: factsFromMarginfiBankSnapshot(snapshot as Parameters<typeof factsFromMarginfiBankSnapshot>[0]),
@@ -3992,7 +4156,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.wallet_accounts;
     if (!read) throw new AdapterError('marginfi', 'unsupported_method', 'MarginFi wallet account read is not registered.');
-    const result = (await read.read(input, this.adapterContext(adapter))) as {
+    const result = (await read.read(input, await this.adapterContext(adapter))) as {
       walletAddress: string;
       accounts: Parameters<typeof factsFromMarginfiAccountSummaries>[0]['accounts'];
     } & Record<string, unknown>;
@@ -4013,7 +4177,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.account_detail;
     if (!read) throw new AdapterError('marginfi', 'unsupported_method', 'MarginFi account detail read is not registered.');
-    const account = await read.read(input, this.adapterContext(adapter));
+    const account = await read.read(input, await this.adapterContext(adapter));
     return {
       account,
       facts: factsFromMarginfiAccountDetail(account as Parameters<typeof factsFromMarginfiAccountDetail>[0]),
@@ -4035,7 +4199,7 @@ export class AgentWalletActionService {
         ...input,
         minHealthRatio: marginfiMinHealthRatio(this.config),
       },
-      this.adapterContext(adapter),
+      await this.adapterContext(adapter),
     );
     return {
       preview,
@@ -4052,7 +4216,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.banks;
     if (!read) throw new AdapterError('project0', 'unsupported_method', 'Project 0 bank read is not registered.');
-    const banks = await read.read(input, this.adapterContext(adapter));
+    const banks = await read.read(input, await this.adapterContext(adapter));
     return {
       banks,
       facts: factsFromProject0Banks(banks as Parameters<typeof factsFromProject0Banks>[0]),
@@ -4064,7 +4228,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.strategies;
     if (!read) throw new AdapterError('project0', 'unsupported_method', 'Project 0 strategy read is not registered.');
-    const strategies = await read.read({}, this.adapterContext(adapter));
+    const strategies = await read.read({}, await this.adapterContext(adapter));
     return {
       strategies,
       facts: factsFromProject0Strategies(strategies as Parameters<typeof factsFromProject0Strategies>[0]),
@@ -4076,7 +4240,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.wallet;
     if (!read) throw new AdapterError('project0', 'unsupported_method', 'Project 0 wallet read is not registered.');
-    const wallet = await read.read(input, this.adapterContext(adapter));
+    const wallet = await read.read(input, await this.adapterContext(adapter));
     return {
       wallet,
       facts: factsFromProject0Wallet(wallet as Parameters<typeof factsFromProject0Wallet>[0]),
@@ -4091,7 +4255,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.account_detail;
     if (!read) throw new AdapterError('project0', 'unsupported_method', 'Project 0 account detail read is not registered.');
-    const account = await read.read(input, this.adapterContext(adapter));
+    const account = await read.read(input, await this.adapterContext(adapter));
     return {
       account,
       facts: factsFromProject0AccountDetail(account as Parameters<typeof factsFromProject0AccountDetail>[0]),
@@ -4114,7 +4278,7 @@ export class AgentWalletActionService {
         ...input,
         minHealthRatio: input.minHealthRatio ?? project0MinHealthRatio(this.config),
       },
-      this.adapterContext(adapter),
+      await this.adapterContext(adapter),
     );
     return {
       preview,
@@ -4129,7 +4293,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.user_snapshot;
     if (!read) throw new AdapterError('drift', 'unsupported_method', 'Drift user snapshot read is not registered.');
-    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+    return (await read.read(input, await this.adapterContext(adapter))) as Record<string, unknown>;
   }
 
   async driftVaultSnapshot(input: { vaultAddress: string }): Promise<Record<string, unknown>> {
@@ -4137,7 +4301,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.vault_snapshot;
     if (!read) throw new AdapterError('drift', 'unsupported_method', 'Drift vault snapshot read is not registered.');
-    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+    return (await read.read(input, await this.adapterContext(adapter))) as Record<string, unknown>;
   }
 
   async driftWalletVaultPositions(
@@ -4147,7 +4311,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.wallet_vault_positions;
     if (!read) throw new AdapterError('drift', 'unsupported_method', 'Drift wallet vault positions read is not registered.');
-    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+    return (await read.read(input, await this.adapterContext(adapter))) as Record<string, unknown>;
   }
 
   async driftWithdrawStatus(
@@ -4157,7 +4321,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.withdraw_status;
     if (!read) throw new AdapterError('drift', 'unsupported_method', 'Drift withdraw status read is not registered.');
-    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+    return (await read.read(input, await this.adapterContext(adapter))) as Record<string, unknown>;
   }
 
   async squadsWalletAuthority(
@@ -4167,7 +4331,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.wallet_authority;
     if (!read) throw new AdapterError('squads', 'unsupported_method', 'Squads wallet authority read is not registered.');
-    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+    return (await read.read(input, await this.adapterContext(adapter))) as Record<string, unknown>;
   }
 
   async squadsMultisigSnapshot(
@@ -4182,7 +4346,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.multisig_snapshot;
     if (!read) throw new AdapterError('squads', 'unsupported_method', 'Squads multisig snapshot read is not registered.');
-    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+    return (await read.read(input, await this.adapterContext(adapter))) as Record<string, unknown>;
   }
 
   async squadsVaultSnapshot(
@@ -4197,7 +4361,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.vault_snapshot;
     if (!read) throw new AdapterError('squads', 'unsupported_method', 'Squads vault snapshot read is not registered.');
-    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+    return (await read.read(input, await this.adapterContext(adapter))) as Record<string, unknown>;
   }
 
   async squadsProposalSnapshot(
@@ -4212,7 +4376,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.proposal_snapshot;
     if (!read) throw new AdapterError('squads', 'unsupported_method', 'Squads proposal snapshot read is not registered.');
-    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+    return (await read.read(input, await this.adapterContext(adapter))) as Record<string, unknown>;
   }
 
   async squadsProposalList(
@@ -4226,7 +4390,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.proposal_list;
     if (!read) throw new AdapterError('squads', 'unsupported_method', 'Squads proposal list read is not registered.');
-    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+    return (await read.read(input, await this.adapterContext(adapter))) as Record<string, unknown>;
   }
 
   async realmsWalletGovernance(
@@ -4236,7 +4400,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.wallet_governance;
     if (!read) throw new AdapterError('realms', 'unsupported_method', 'Realms wallet governance read is not registered.');
-    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+    return (await read.read(input, await this.adapterContext(adapter))) as Record<string, unknown>;
   }
 
   async realmsRealmSnapshot(
@@ -4246,7 +4410,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.realm_snapshot;
     if (!read) throw new AdapterError('realms', 'unsupported_method', 'Realms realm snapshot read is not registered.');
-    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+    return (await read.read(input, await this.adapterContext(adapter))) as Record<string, unknown>;
   }
 
   async realmsGovernanceSnapshot(
@@ -4256,7 +4420,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.governance_snapshot;
     if (!read) throw new AdapterError('realms', 'unsupported_method', 'Realms governance snapshot read is not registered.');
-    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+    return (await read.read(input, await this.adapterContext(adapter))) as Record<string, unknown>;
   }
 
   async realmsProposalList(
@@ -4271,7 +4435,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.proposal_list;
     if (!read) throw new AdapterError('realms', 'unsupported_method', 'Realms proposal list read is not registered.');
-    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+    return (await read.read(input, await this.adapterContext(adapter))) as Record<string, unknown>;
   }
 
   async realmsProposalSnapshot(
@@ -4281,7 +4445,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.proposal_snapshot;
     if (!read) throw new AdapterError('realms', 'unsupported_method', 'Realms proposal snapshot read is not registered.');
-    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+    return (await read.read(input, await this.adapterContext(adapter))) as Record<string, unknown>;
   }
 
   async realmsVoteRecord(
@@ -4291,7 +4455,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.vote_record;
     if (!read) throw new AdapterError('realms', 'unsupported_method', 'Realms vote record read is not registered.');
-    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+    return (await read.read(input, await this.adapterContext(adapter))) as Record<string, unknown>;
   }
 
   async saveReserveSnapshot(input: { token?: string; reserveMint?: string; marketAddress?: string }): Promise<Record<string, unknown>> {
@@ -4299,7 +4463,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.reserve_snapshot;
     if (!read) throw new AdapterError('save', 'unsupported_method', 'Save reserve snapshot read is not registered.');
-    const snapshot = await read.read(input, this.adapterContext(adapter));
+    const snapshot = await read.read(input, await this.adapterContext(adapter));
     return {
       snapshot,
       facts: factsFromSaveReserveSnapshot(snapshot as Parameters<typeof factsFromSaveReserveSnapshot>[0]),
@@ -4311,7 +4475,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.list_reserves;
     if (!read) throw new AdapterError('save', 'unsupported_method', 'Save list reserves read is not registered.');
-    const reserves = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromSaveReserveSnapshot>[0][];
+    const reserves = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromSaveReserveSnapshot>[0][];
     return {
       reserves,
       facts: reserves.flatMap((reserve) => factsFromSaveReserveSnapshot(reserve)),
@@ -4323,7 +4487,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.market_snapshot;
     if (!read) throw new AdapterError('save', 'unsupported_method', 'Save market snapshot read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromSaveMarketSnapshot>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromSaveMarketSnapshot>[0];
     return {
       snapshot,
       facts: factsFromSaveMarketSnapshot(snapshot),
@@ -4335,7 +4499,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.wallet_obligation;
     if (!read) throw new AdapterError('save', 'unsupported_method', 'Save wallet obligation read is not registered.');
-    const result = (await read.read(input, this.adapterContext(adapter))) as {
+    const result = (await read.read(input, await this.adapterContext(adapter))) as {
       walletAddress: string;
       cluster: Cluster;
       obligation: Parameters<typeof factsFromSaveObligation>[0]['obligation'];
@@ -4354,7 +4518,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.health_preview;
     if (!read) throw new AdapterError('save', 'unsupported_method', 'Save health preview read is not registered.');
-    const result = (await read.read(input, this.adapterContext(adapter))) as SaveHealthPreviewResult;
+    const result = (await read.read(input, await this.adapterContext(adapter))) as SaveHealthPreviewResult;
     return {
       preview: result,
       facts: factsFromSaveHealthPreview(result.preview, {
@@ -4369,7 +4533,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.stake_pool_snapshot;
     if (!read) throw new AdapterError('jito', 'unsupported_method', 'Jito stake pool snapshot read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromJitoStakePoolSnapshot>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromJitoStakePoolSnapshot>[0];
     return {
       snapshot,
       facts: factsFromJitoStakePoolSnapshot(snapshot),
@@ -4386,7 +4550,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.wallet_positions;
     if (!read) throw new AdapterError('jito', 'unsupported_method', 'Jito wallet positions read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromJitoWalletPositions>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromJitoWalletPositions>[0];
     return {
       ...snapshot,
       facts: factsFromJitoWalletPositions(snapshot),
@@ -4402,7 +4566,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.wallet_stake_accounts;
     if (!read) throw new AdapterError('jito', 'unsupported_method', 'Jito wallet stake accounts read is not registered.');
-    const result = (await read.read(input, this.adapterContext(adapter))) as {
+    const result = (await read.read(input, await this.adapterContext(adapter))) as {
       walletAddress: string;
       stakeAccounts: Parameters<typeof factsFromJitoStakeAccounts>[0]['stakeAccounts'];
     };
@@ -4421,7 +4585,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.deposit_receipts;
     if (!read) throw new AdapterError('jito', 'unsupported_method', 'Jito deposit receipts read is not registered.');
-    const result = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromJitoDepositReceipts>[0];
+    const result = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromJitoDepositReceipts>[0];
     return {
       ...result,
       facts: factsFromJitoDepositReceipts(result),
@@ -4433,7 +4597,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.quote;
     if (!read) throw new AdapterError('jito', 'unsupported_method', 'Jito quote read is not registered.');
-    const quote = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromJitoQuote>[0];
+    const quote = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromJitoQuote>[0];
     return {
       quote,
       facts: factsFromJitoQuote(quote),
@@ -4445,7 +4609,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.state_snapshot;
     if (!read) throw new AdapterError('marinade', 'unsupported_method', 'Marinade state snapshot read is not registered.');
-    const snapshot = (await read.read({}, this.adapterContext(adapter))) as Parameters<typeof factsFromMarinadeStateSnapshot>[0];
+    const snapshot = (await read.read({}, await this.adapterContext(adapter))) as Parameters<typeof factsFromMarinadeStateSnapshot>[0];
     return {
       snapshot,
       facts: factsFromMarinadeStateSnapshot(snapshot),
@@ -4457,7 +4621,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.wallet_positions;
     if (!read) throw new AdapterError('marinade', 'unsupported_method', 'Marinade wallet positions read is not registered.');
-    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromMarinadeWalletPositions>[0];
+    const snapshot = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromMarinadeWalletPositions>[0];
     return {
       snapshot,
       facts: factsFromMarinadeWalletPositions(snapshot),
@@ -4469,7 +4633,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.wallet_stake_accounts;
     if (!read) throw new AdapterError('marinade', 'unsupported_method', 'Marinade wallet stake accounts read is not registered.');
-    const stakeAccounts = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromMarinadeStakeAccounts>[0]['stakeAccounts'];
+    const stakeAccounts = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromMarinadeStakeAccounts>[0]['stakeAccounts'];
     const walletAddress = input.walletAddress ?? await this.backend.getAddress();
     const result = { walletAddress, stakeAccounts };
     return {
@@ -4483,7 +4647,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.unstake_tickets;
     if (!read) throw new AdapterError('marinade', 'unsupported_method', 'Marinade unstake tickets read is not registered.');
-    const tickets = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromMarinadeUnstakeTickets>[0]['tickets'];
+    const tickets = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromMarinadeUnstakeTickets>[0]['tickets'];
     const walletAddress = input.walletAddress ?? await this.backend.getAddress();
     const result = { walletAddress, tickets };
     return {
@@ -4497,7 +4661,7 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.quote;
     if (!read) throw new AdapterError('marinade', 'unsupported_method', 'Marinade quote read is not registered.');
-    const quote = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromMarinadeQuote>[0];
+    const quote = (await read.read(input, await this.adapterContext(adapter))) as Parameters<typeof factsFromMarinadeQuote>[0];
     return {
       quote,
       facts: factsFromMarinadeQuote(quote),
@@ -4599,7 +4763,7 @@ export class AgentWalletActionService {
         `Prepared action ${action.id} is already ${action.status}.`,
       );
     }
-    return prepareTransactionForApproval(action, this.adapterContext());
+    return prepareTransactionForApproval(action, await this.adapterContext());
   }
 
   async prepareConnectorTransactionStateless(input: {
@@ -4623,37 +4787,50 @@ export class AgentWalletActionService {
       createdAt: now,
       updatedAt: now,
     };
-    return prepareTransactionForApproval(action, this.adapterContext());
+    return prepareTransactionForApproval(action, await this.adapterContext());
   }
 
   async executePreparedAction(actionId: string): Promise<Record<string, unknown>> {
     requireActionAllowed(this.config);
-    const store = this.store();
-    const action = await this.requireOwnedPreparedAction(store, actionId);
-    assertPreparedActionExecutable(action);
-    await store.updateAction(actionId, { status: 'approval_pending' });
+    // Idempotency lock: refuse re-entry while a prior sign+broadcast for this action is still in-flight. Prevents
+    // double-submit on rapid Approve clicks (especially dangerous on Phoenix where every order is leveraged).
+    if (this.inflightExecutions.has(actionId)) {
+      throw new ProtocolError(
+        'invalid_request',
+        `Prepared action ${actionId} is already being executed. Wait for the in-flight signing to resolve.`,
+      );
+    }
+    this.inflightExecutions.add(actionId);
     try {
-      const result = await this.executePreparedActionRecord(action);
-      const txids = result.txids?.filter((txid) => txid.trim()) ?? [];
-      const txid = typeof result.txid === 'string' && result.txid.trim()
-        ? result.txid
-        : txids[0];
-      const updated = await store.updateAction(actionId, {
-        status: 'approved',
-        ...(txid !== undefined ? { txid } : {}),
-        ...(txids.length > 0 ? { txids } : {}),
-        ...(txid !== undefined || txids.length > 0 ? { txStatus: 'pending' as const } : {}),
-        confirmedAt: undefined,
-        txError: undefined,
-        error: undefined,
-      });
-      return { preparedAction: updated, result };
-    } catch (err) {
-      await store.updateAction(actionId, {
-        status: preparedFailureStatus(err),
-        error: err instanceof Error ? err.message : String(err),
-      });
-      throw err;
+      const store = this.store();
+      const action = await this.requireOwnedPreparedAction(store, actionId);
+      assertPreparedActionExecutable(action);
+      await store.updateAction(actionId, { status: 'approval_pending' });
+      try {
+        const result = await this.executePreparedActionRecord(action);
+        const txids = result.txids?.filter((txid) => txid.trim()) ?? [];
+        const txid = typeof result.txid === 'string' && result.txid.trim()
+          ? result.txid
+          : txids[0];
+        const updated = await store.updateAction(actionId, {
+          status: 'approved',
+          ...(txid !== undefined ? { txid } : {}),
+          ...(txids.length > 0 ? { txids } : {}),
+          ...(txid !== undefined || txids.length > 0 ? { txStatus: 'pending' as const } : {}),
+          confirmedAt: undefined,
+          txError: undefined,
+          error: undefined,
+        });
+        return { preparedAction: updated, result };
+      } catch (err) {
+        await store.updateAction(actionId, {
+          status: preparedFailureStatus(err),
+          error: err instanceof Error ? err.message : String(err),
+        });
+        throw err;
+      }
+    } finally {
+      this.inflightExecutions.delete(actionId);
     }
   }
 
@@ -5088,6 +5265,8 @@ export class AgentWalletActionService {
         return this.executePreparedSolTransfer(action);
       case 'transfer_spl':
         return this.executePreparedSplTransfer(action);
+      case 'skill_fee_split':
+        return this.executePreparedSkillFeeSplit(action);
       case 'swap':
         return this.executePreparedSwap(action);
       case 'kamino_deposit':
@@ -5188,12 +5367,87 @@ export class AgentWalletActionService {
         return this.executePreparedAdapterAction(action);
       case 'blink_action':
         return this.executePreparedBlinkAction(action);
+      case 'phoenix_vulcan_call':
+        return this.executePreparedVulcanCall(action);
       default:
         throw new ProtocolError(
           'unsupported_method',
           `Unsupported prepared action kind ${action.kind}.`,
         );
     }
+  }
+
+  private async executePreparedVulcanCall(
+    action: PreparedAction,
+  ): Promise<Record<string, unknown> & { txid?: string; txids?: string[] }> {
+    if (!this.vulcanUpstreamClient && !this.vulcanWalletRegistry) {
+      throw new ProtocolError(
+        'unsupported_method',
+        'Vulcan upstream client is not configured. Set config.connectors.phoenix.vulcan.enabled and supply VULCAN_WALLET_NAME/VULCAN_WALLET_PASSWORD before approving Vulcan actions.',
+      );
+    }
+    // T2.4 idempotency: the outer assertPreparedActionExecutable handles general re-approval blocking, but a Vulcan
+    // action with an already-recorded txid means we've already forwarded to Vulcan — never re-fire even on rapid
+    // double-clicks (the on-chain side has no idempotency key).
+    if (typeof action.txid === 'string' && action.txid.trim()) {
+      throw new ProtocolError(
+        'invalid_request',
+        `Prepared Vulcan action ${action.id} was already executed (txid ${action.txid}). Refusing to re-fire.`,
+      );
+    }
+    const params = action.params as { vulcanToolName?: unknown; vulcanArgs?: unknown; vulcanWalletName?: unknown };
+    const toolName = typeof params.vulcanToolName === 'string' ? params.vulcanToolName.trim() : '';
+    if (!toolName) {
+      throw new ProtocolError(
+        'invalid_request',
+        `Prepared Vulcan action ${action.id} is missing vulcanToolName.`,
+      );
+    }
+    const walletName = typeof params.vulcanWalletName === 'string' ? params.vulcanWalletName.trim() : undefined;
+    // D4: route through the registry when one is supplied (multi-wallet); otherwise fall back to the single client.
+    const client = this.vulcanWalletRegistry
+      ? await this.vulcanWalletRegistry.getOrStart(walletName)
+      : this.vulcanUpstreamClient!;
+    // T2.1: resolve the effective wallet name for metrics keying. In registry mode this is the queued name or the
+    // registry's default; in single-client mode it's undefined (single-wallet deploys don't need the breakdown).
+    const effectiveWallet =
+      walletName ?? this.vulcanWalletRegistry?.getDefaultWalletName() ?? undefined;
+    const baseArgs =
+      params.vulcanArgs && typeof params.vulcanArgs === 'object' && !Array.isArray(params.vulcanArgs)
+        ? { ...(params.vulcanArgs as Record<string, unknown>) }
+        : {};
+    // Vulcan requires `acknowledged: true` for dangerous tools when --allow-dangerous is active. Inject here so the
+    // queued args remain user-friendly (no acknowledged flag visible at prepare time) and the explicit acknowledgement
+    // happens only at execute time, gated by the Spend-tab approval.
+    baseArgs.acknowledged = true;
+    const result = this.vulcanMetricsRegistry
+      ? await recordVulcanCall(
+          this.vulcanMetricsRegistry,
+          toolName,
+          () => client.callTool(toolName, baseArgs),
+          effectiveWallet,
+        )
+      : await client.callTool(toolName, baseArgs);
+    if (result.isError) {
+      // T2.3: extract the first text payload (or structured error.message) instead of dumping the raw envelope.
+      throw new ProtocolError(
+        'unsupported_method',
+        `Vulcan tool ${toolName} failed: ${extractVulcanErrorMessage(result)}`,
+      );
+    }
+    // T1.1: pull a Solana signature out of the response so the outer executePreparedAction can light the Spend-tab
+    // Solscan link + flip txStatus to 'pending'. Missing-txid is fine for paper-mode tools (no on-chain effect).
+    const txid = extractVulcanTxid(result);
+    return {
+      adapter: 'phoenix',
+      action: 'vulcan_call',
+      vulcanTool: toolName,
+      ...(walletName !== undefined && { vulcanWallet: walletName }),
+      signedAt: new Date().toISOString(),
+      ...(txid !== undefined && { txid }),
+      ...(result.structuredContent !== undefined && { result: result.structuredContent as Record<string, unknown> }),
+      ...(result.content !== undefined && { content: result.content as unknown }),
+    };
   }
 
   private async executePreparedAdapterAction(action: PreparedAction): Promise<Record<string, unknown> & { txid?: string; txids?: string[] }> {
@@ -5205,7 +5459,7 @@ export class AgentWalletActionService {
       );
     }
     assertSupportedCluster(match.adapter, this.config.cluster);
-    const result = await match.action.execute(action, this.adapterContext(match.adapter));
+    const result = await match.action.execute(action, await this.adapterContext(match.adapter));
     return {
       adapter: match.adapter.id,
       action: match.action.id,
@@ -5218,8 +5472,11 @@ export class AgentWalletActionService {
     };
   }
 
-  private adapterContext(adapter?: DAppAdapter): DAppAdapterContext {
+  private async adapterContext(adapter?: DAppAdapter): Promise<DAppAdapterContext> {
     void adapter;
+    const connectorSecrets = this.connectorSecretsLoader
+      ? await this.loadConnectorSecretsForCurrentWallet()
+      : undefined;
     const signTransaction = async (transactionBase64: string, summary: string): Promise<string> => {
       await this.simulateBeforeSign(transactionBase64, summary);
       const signed = await this.client.signTransaction(transactionBase64, {
@@ -5263,7 +5520,19 @@ export class AgentWalletActionService {
       signAndBroadcastMany,
       signMessage,
       store: this.store(),
+      ...(connectorSecrets ? { connectorSecrets } : {}),
     };
+  }
+
+  private async loadConnectorSecretsForCurrentWallet(): Promise<ConnectorSecretsMap | undefined> {
+    if (!this.connectorSecretsLoader) return undefined;
+    try {
+      const wallet = await this.backend.getAddress();
+      return await this.connectorSecretsLoader(wallet);
+    } catch {
+      // Fail-soft: secrets loading errors must not break read paths. Adapters fall back to env-var/Unavailable.
+      return undefined;
+    }
   }
 
   private store(): PreparedActionStore {
@@ -5324,6 +5593,74 @@ export class AgentWalletActionService {
     const recipient = requireStringParam(action, 'recipient');
     const amount = requireStringParam(action, 'amount');
     return this.transferSpl({ token, recipient, amount }) as Promise<Record<string, unknown> & { txid: string }>;
+  }
+
+  private async executePreparedSkillFeeSplit(action: PreparedAction): Promise<Record<string, unknown> & { txid: string }> {
+    requireActionAllowed(this.config);
+    const token = requireStringParam(action, 'token');
+    const authorRecipientStr = requireStringParam(action, 'authorRecipient');
+    const treasuryRecipientStr = requireStringParam(action, 'treasuryRecipient');
+    const authorAmount = requireStringParam(action, 'authorAmount');
+    const treasuryAmount = requireStringParam(action, 'treasuryAmount');
+
+    const tokenConfig = await resolveToken(this.config, this.connection, token);
+    const authorRaw = parseDecimalAmount(authorAmount, tokenConfig.decimals, `${tokenConfig.symbol} author amount`);
+    const treasuryRaw = parseDecimalAmount(treasuryAmount, tokenConfig.decimals, `${tokenConfig.symbol} platform amount`);
+    if (treasuryRaw <= 0n) {
+      throw new ProtocolError(
+        'invalid_request',
+        'skill_fee_split requires a positive platform amount; install handler must fall back to transfer_spl when the cut rounds to zero.',
+      );
+    }
+    const totalRaw = authorRaw + treasuryRaw;
+
+    const owner = new PublicKey(await this.backend.getAddress());
+    const authorRecipient = new PublicKey(authorRecipientStr);
+    const treasuryRecipient = new PublicKey(treasuryRecipientStr);
+    const mint = new PublicKey(tokenConfig.mint);
+    const sourceAta = await getAssociatedTokenAddress(mint, owner, tokenConfig.tokenProgramId);
+    const sourceBalance = await this.connection.getTokenAccountBalance(sourceAta).catch(() => null);
+    if (!sourceBalance || BigInt(sourceBalance.value.amount) < totalRaw) {
+      throw new ProtocolError(
+        'unauthorized',
+        `Insufficient ${tokenConfig.symbol} balance for ${authorAmount} + ${treasuryAmount}.`,
+      );
+    }
+
+    const authorAta = await getAssociatedTokenAddress(mint, authorRecipient, tokenConfig.tokenProgramId);
+    const treasuryAta = await getAssociatedTokenAddress(mint, treasuryRecipient, tokenConfig.tokenProgramId);
+    const [authorAccount, treasuryAccount] = await Promise.all([
+      this.connection.getAccountInfo(authorAta, 'confirmed'),
+      this.connection.getAccountInfo(treasuryAta, 'confirmed'),
+    ]);
+    const tx = new Transaction();
+    if (!authorAccount) {
+      tx.add(createAssociatedTokenAccountInstruction(owner, authorAta, authorRecipient, mint, tokenConfig.tokenProgramId));
+    }
+    if (!treasuryAccount) {
+      tx.add(createAssociatedTokenAccountInstruction(owner, treasuryAta, treasuryRecipient, mint, tokenConfig.tokenProgramId));
+    }
+    tx.add(createTransferCheckedInstruction(
+      sourceAta, mint, authorAta, owner, authorRaw, tokenConfig.decimals, tokenConfig.tokenProgramId,
+    ));
+    tx.add(createTransferCheckedInstruction(
+      sourceAta, mint, treasuryAta, owner, treasuryRaw, tokenConfig.decimals, tokenConfig.tokenProgramId,
+    ));
+    await prepareTransaction(this.connection, tx, owner);
+    const summary = `Pay author ${authorAmount} ${tokenConfig.symbol} + Agentic ${treasuryAmount} ${tokenConfig.symbol}`;
+    const txid = await this.signAndBroadcastTransaction(tx, summary);
+    return {
+      cluster: this.config.cluster,
+      from: owner.toBase58(),
+      authorRecipient: authorRecipient.toBase58(),
+      treasuryRecipient: treasuryRecipient.toBase58(),
+      token: tokenConfig.symbol,
+      mint: tokenConfig.mint,
+      authorAmount,
+      treasuryAmount,
+      txid,
+      explorerUrl: explorerUrl(txid, this.config.cluster),
+    };
   }
 
   private async executePreparedSwap(action: PreparedAction): Promise<Record<string, unknown> & { txid: string }> {
@@ -5516,6 +5853,82 @@ export class AgentWalletActionService {
       );
     }
   }
+
+  async phoenixMarketSnapshot(input: { symbol?: string }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('phoenix');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.market_snapshot;
+    if (!read) throw new AdapterError('phoenix', 'unsupported_method', 'Phoenix market snapshot read is not registered.');
+    return (await read.read(input, await this.adapterContext(adapter))) as Record<string, unknown>;
+  }
+
+  async phoenixMarketCatalog(): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('phoenix');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.market_catalog;
+    if (!read) throw new AdapterError('phoenix', 'unsupported_method', 'Phoenix market catalog read is not registered.');
+    return (await read.read({}, await this.adapterContext(adapter))) as Record<string, unknown>;
+  }
+
+  async phoenixPositionSnapshot(
+    input: { walletAddress?: string; symbol?: string; traderPdaIndex?: number },
+  ): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('phoenix');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.position_snapshot;
+    if (!read) throw new AdapterError('phoenix', 'unsupported_method', 'Phoenix position snapshot read is not registered.');
+    return (await read.read(input, await this.adapterContext(adapter))) as Record<string, unknown>;
+  }
+
+  async phoenixWalletPositions(
+    input: { walletAddress?: string; traderPdaIndex?: number },
+  ): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('phoenix');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.wallet_positions;
+    if (!read) throw new AdapterError('phoenix', 'unsupported_method', 'Phoenix wallet positions read is not registered.');
+    return (await read.read(input, await this.adapterContext(adapter))) as Record<string, unknown>;
+  }
+
+  async phoenixFundingHistory(
+    input: { symbol?: string; limit?: number },
+  ): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('phoenix');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.funding_history;
+    if (!read) throw new AdapterError('phoenix', 'unsupported_method', 'Phoenix funding history read is not registered.');
+    return (await read.read(input, await this.adapterContext(adapter))) as Record<string, unknown>;
+  }
+
+  async phoenixHealthPreview(
+    input: {
+      walletAddress?: string;
+      symbol: string;
+      side: 'long' | 'short';
+      baseSize: number | string;
+      leverage: number;
+      action?: 'open' | 'close' | 'modify_collateral';
+      traderPdaIndex?: number;
+    },
+  ): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('phoenix');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.health_preview;
+    if (!read) throw new AdapterError('phoenix', 'unsupported_method', 'Phoenix health preview read is not registered.');
+    return (await read.read(input, await this.adapterContext(adapter))) as Record<string, unknown>;
+  }
+}
+
+/**
+ * Drift was exploited for ~$285M on 2026-04-01 (DPRK-linked durable-nonce social-engineering + fake-collateral oracle
+ * abuse). Vault deposit/withdraw prepares are blocked at the service layer; reads remain so existing depositors can
+ * monitor and unwind. Use Phoenix Perpetuals for new perp positions.
+ */
+function driftDeprecatedError(operation: string): ProtocolError {
+  return new ProtocolError(
+    'unsupported_method',
+    `Drift vault ${operation} is blocked: Drift Protocol was exploited on 2026-04-01 (~$285M drained). Reads remain available to manage existing positions; use Phoenix Perpetuals for new perp positions.`,
+  );
 }
 
 function requireRuntimeConnector(idOrAlias: string): ConnectorRegistryEntry {

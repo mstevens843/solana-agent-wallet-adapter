@@ -26,6 +26,18 @@ import {
 } from './devApiRegistry.js';
 import { RecurringService, RecurringServiceError, type RecurringStore } from './recurringService.js';
 import { recurringStoreAdapterForCloudStore } from './recurringRoutes.js';
+import { WorkflowService } from './workflowService.js';
+import {
+  computeDecimalSplit,
+  isPlatformFeeApplicable,
+  loadTreasuryConfig,
+  type SkillFeeSplitContext,
+} from './treasuryConfig.js';
+import {
+  isSkrSkillBountyActive,
+  readSkrDecimals,
+  readSkrMint,
+} from './skrConfig.js';
 import {
   isAggregatorStore,
   isSkillsStore,
@@ -64,12 +76,56 @@ interface SkillInstallListRow {
 
 const PREFIX = '/api/skills';
 const MAX_JSON_BYTES = 64 * 1024;
-const MONETIZATION_TOKEN = 'USDC';
+const DEFAULT_MONETIZATION_TOKEN = 'USDC';
+const USDC_DECIMALS = 6;
+
+type MonetizationToken = 'USDC' | 'SKR';
+
+function resolveMonetizationToken(monetization: { token?: string } | undefined): MonetizationToken {
+  return (monetization?.token === 'SKR' ? 'SKR' : DEFAULT_MONETIZATION_TOKEN);
+}
+
+function resolveMonetizationDecimals(
+  token: MonetizationToken,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  if (token === 'SKR') return readSkrDecimals(env) ?? 6;
+  return USDC_DECIMALS;
+}
+
+/**
+ * True when the platform fee should be waived for this install: author keeps
+ * 100% on Android installs of $SKR-priced skills while the bootstrap window is
+ * open. Gated on four conditions so any single signal can disable it without
+ * code edits:
+ *
+ *   1. Caller is the Android-bundled client (`X-Agentic-Client` header).
+ *   2. Skill is priced in $SKR (manifest monetization token).
+ *   3. Deployment has $SKR support configured (`SKR_TOKEN_MINT`).
+ *   4. Bounty window is open (`SKR_SKILL_BOUNTY_ACTIVE=true`).
+ *
+ * The same flags surface in `/api/android-config` so the Android UI can show
+ * the bounty disclosure to authors and installers.
+ */
+function shouldApplyAndroidSkrBounty(
+  req: IncomingMessage,
+  monetizationToken: MonetizationToken,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (monetizationToken !== 'SKR') return false;
+  const clientHeader = req.headers['x-agentic-client'];
+  const client = (Array.isArray(clientHeader) ? clientHeader[0] : clientHeader)?.trim().toLowerCase();
+  if (client !== 'android-bundled') return false;
+  if (!readSkrMint(env)) return false;
+  if (!isSkrSkillBountyActive(env)) return false;
+  return true;
+}
 const DEFAULT_CLUSTER: WorkflowCluster = 'mainnet-beta';
 
 const CATALOG_PATH = '/api/skills';
 const MANIFESTS_PATH = '/api/skills/manifests';
 const INSTALLS_PATH = '/api/skills/installs';
+const PLATFORM_EARNINGS_PATH = '/api/skills/platform-earnings';
 const AUTHOR_EARNINGS_RE = /^\/api\/skills\/authors\/([1-9A-HJ-NP-Za-km-z]{32,44})\/earnings$/;
 const SKILL_DETAIL_RE = /^\/api\/skills\/([a-z0-9][a-z0-9-]{0,63})$/;
 const INSTALL_PAUSE_RE = /^\/api\/skills\/installs\/([A-Za-z0-9_-]+)\/pause$/;
@@ -86,7 +142,7 @@ const INSTALL_PARAM_RECIPIENT_KEYS = new Set([
   'destinationRecipient',
 ]);
 
-const RESERVED_PATHS = new Set<string>([CATALOG_PATH, MANIFESTS_PATH, INSTALLS_PATH]);
+const RESERVED_PATHS = new Set<string>([CATALOG_PATH, MANIFESTS_PATH, INSTALLS_PATH, PLATFORM_EARNINGS_PATH]);
 
 class BodyTooLargeError extends Error {
   constructor() {
@@ -145,6 +201,10 @@ export async function handleSkillsRequest(
     }
     if (path === INSTALLS_PATH) {
       await handleListInstalls(req, res, context);
+      return true;
+    }
+    if (path === PLATFORM_EARNINGS_PATH) {
+      await handlePlatformEarnings(res, context);
       return true;
     }
     const earningsMatch = AUTHOR_EARNINGS_RE.exec(path);
@@ -217,8 +277,11 @@ async function handleListCatalog(
     const authorWallet = url.searchParams.get('author')?.trim();
     const records = (await store.listSkillManifests())
       .filter((record) => !authorWallet || record.authorWallet === authorWallet);
+    const treasury = loadTreasuryConfig();
     writeJsonNoStore(res, 200, {
       skills: records.map((r) => r.manifest as SkillManifest),
+      treasuryActive: Boolean(treasury.wallet),
+      platformFeeBps: treasury.wallet ? treasury.feeBps : 0,
     });
   } catch (err) {
     writeSkillsError(res, err);
@@ -364,6 +427,10 @@ async function handleInstall(
     const installId = `skill_install_${randomUUID()}`;
     const installedAt = context.clock.now().toISOString();
     let monetizationScheduleId: string | undefined;
+    let oneTimeApprovalId: string | undefined;
+    let performanceFeeDeferred = false;
+    let monetizationSplitSnapshot: JsonObject | undefined;
+    let monetizationBounty: { program: string; token: MonetizationToken } | undefined;
     if (manifest.monetization) {
       if (!request.acceptMonetization) {
         throw new WorkflowValidationError(
@@ -372,44 +439,166 @@ async function handleInstall(
           '$.acceptMonetization',
         );
       }
-      if (manifest.monetization.kind !== 'monthly') {
+      const monetization = manifest.monetization;
+      const treasury = loadTreasuryConfig();
+      const splitContext = isPlatformFeeApplicable(treasury, monetization.payoutWallet);
+      const monetizationToken = resolveMonetizationToken(monetization);
+      // Fail-closed when a manifest is priced in $SKR but the deployment has no
+      // SKR_TOKEN_MINT configured. Without this guard, the install would
+      // succeed and create a recurring schedule that silently fails at
+      // execution time (rejected by isSupportedCloudTransferToken). Surface
+      // it now so the installer sees a clear, actionable error.
+      if (monetizationToken === 'SKR' && !readSkrMint()) {
         throw new WorkflowValidationError(
-          'unsupported_monetization',
-          `Skill monetization kind ${manifest.monetization.kind} is not supported in this v1 install flow.`,
-          '$.monetization.kind',
+          'skr_not_configured',
+          'This skill is priced in $SKR but the server is not configured for SKR settlement on this deployment.',
+          '$.monetization.token',
         );
       }
-      if (!manifest.monetization.amount) {
-        throw new WorkflowValidationError(
-          'invalid_monetization',
-          'Monthly skill monetization requires an amount.',
-          '$.monetization.amount',
-        );
+      const monetizationDecimals = resolveMonetizationDecimals(monetizationToken);
+      const bountyApplies = shouldApplyAndroidSkrBounty(req, monetizationToken);
+      // When the bounty waives the platform fee we skip the split entirely so
+      // the author receives 100% of the user's payment; recorded on the install
+      // metadata so settlement & audits can reconcile against the bounty window.
+      const effectiveSplitContext = bountyApplies ? null : splitContext;
+      if (bountyApplies) {
+        monetizationBounty = { program: 'android_skr_v1', token: monetizationToken };
       }
-      const recurring = makeRecurringService(context);
-      const cadenceRequest = validateCreateRecurringRequest({
-        cluster: DEFAULT_CLUSTER,
-        token: MONETIZATION_TOKEN,
-        amount: manifest.monetization.amount,
-        cadence: 'monthly',
-        dayOfMonth: new Date(installedAt).getUTCDate(),
-        localTime: utcLocalTime(installedAt),
-        recipient: manifest.monetization.payoutWallet,
-        memo: `Author fee: ${manifest.name} v${manifest.version}`,
-        note: `Skill install ${installId}`,
-        metadata: {
+
+      if (monetization.kind === 'monthly') {
+        if (!monetization.amount) {
+          throw new WorkflowValidationError(
+            'invalid_monetization',
+            'Monthly skill monetization requires an amount.',
+            '$.monetization.amount',
+          );
+        }
+        const split = effectiveSplitContext
+          ? computeDecimalSplit(monetization.amount, effectiveSplitContext.feeBps, monetizationDecimals)
+          : null;
+        const authorAmount = split?.authorAmount ?? monetization.amount;
+        const platformMetadata = split && effectiveSplitContext && split.treasuryAmount !== '0'
+          ? {
+              platformWallet: effectiveSplitContext.treasuryWallet,
+              platformAmount: split.treasuryAmount,
+              totalAmount: monetization.amount,
+              platformFeeBps: effectiveSplitContext.feeBps,
+            }
+          : null;
+        if (platformMetadata) monetizationSplitSnapshot = { ...platformMetadata };
+        const recurring = makeRecurringService(context);
+        const cadenceRequest = validateCreateRecurringRequest({
+          cluster: DEFAULT_CLUSTER,
+          token: monetizationToken,
+          amount: authorAmount,
+          cadence: 'monthly',
+          dayOfMonth: new Date(installedAt).getUTCDate(),
+          localTime: utcLocalTime(installedAt),
+          recipient: monetization.payoutWallet,
+          memo: `Author fee: ${manifest.name} v${manifest.version}`,
+          note: `Skill install ${installId}`,
+          metadata: {
+            source: 'skill_install_monetization',
+            skillInstallId: installId,
+            skillId: manifest.id,
+            monetizationKind: monetization.kind,
+            monetizationToken,
+            ...(bountyApplies ? { bountyApplied: true, bountyProgram: 'android_skr_v1' } : {}),
+            ...(platformMetadata ?? {}),
+          },
+          ...(manifest.caps.expiresAt ? { expiresAt: manifest.caps.expiresAt } : {}),
+        } satisfies CreateRecurringRequest);
+        const schedule = await recurring.createSchedule(
+          { walletAddress: context.walletAddress },
+          cadenceRequest,
+        );
+        monetizationScheduleId = schedule.id;
+      } else if (monetization.kind === 'one-time') {
+        if (!monetization.amount) {
+          throw new WorkflowValidationError(
+            'invalid_monetization',
+            'One-time skill monetization requires an amount.',
+            '$.monetization.amount',
+          );
+        }
+        const split = effectiveSplitContext
+          ? computeDecimalSplit(monetization.amount, effectiveSplitContext.feeBps, monetizationDecimals)
+          : null;
+        const useSplit = Boolean(split && effectiveSplitContext && split.treasuryAmount !== '0');
+        const authorAmount = useSplit ? (split as { authorAmount: string }).authorAmount : monetization.amount;
+        const platformMetadata = useSplit && split && effectiveSplitContext
+          ? {
+              platformWallet: effectiveSplitContext.treasuryWallet,
+              platformAmount: split.treasuryAmount,
+              totalAmount: monetization.amount,
+              platformFeeBps: effectiveSplitContext.feeBps,
+            }
+          : null;
+        if (platformMetadata) monetizationSplitSnapshot = { ...platformMetadata };
+        const workflowService = new WorkflowService(context.workflowStore);
+        const session = { walletAddress: context.walletAddress };
+        const memo = `One-time author fee: ${manifest.name} v${manifest.version}`;
+        const approvalMetadata: JsonObject = {
           source: 'skill_install_monetization',
           skillInstallId: installId,
           skillId: manifest.id,
-          monetizationKind: manifest.monetization.kind,
-        },
-        ...(manifest.caps.expiresAt ? { expiresAt: manifest.caps.expiresAt } : {}),
-      } satisfies CreateRecurringRequest);
-      const schedule = await recurring.createSchedule(
-        { walletAddress: context.walletAddress },
-        cadenceRequest,
-      );
-      monetizationScheduleId = schedule.id;
+          monetizationKind: monetization.kind,
+          monetizationToken,
+          ...(bountyApplies ? { bountyApplied: true, bountyProgram: 'android_skr_v1' } : {}),
+          ...(platformMetadata ?? {}),
+        };
+        const approval = useSplit && split && effectiveSplitContext
+          ? await workflowService.createApproval(session, {
+              kind: 'skill_fee_split',
+              cluster: DEFAULT_CLUSTER,
+              summary: `Pay ${manifest.name} v${manifest.version}: author + Agentic`,
+              dueAt: installedAt,
+              amount: monetization.amount,
+              token: monetizationToken,
+              recipient: monetization.payoutWallet,
+              params: {
+                token: monetizationToken,
+                authorRecipient: monetization.payoutWallet,
+                authorAmount,
+                treasuryRecipient: effectiveSplitContext.treasuryWallet,
+                treasuryAmount: split.treasuryAmount,
+                memo,
+              },
+              metadata: approvalMetadata,
+              note: `Skill install ${installId}`,
+            })
+          : await workflowService.createApproval(session, {
+              kind: 'transfer_spl',
+              cluster: DEFAULT_CLUSTER,
+              summary: `One-time author fee: ${manifest.name} v${manifest.version}`,
+              dueAt: installedAt,
+              amount: monetization.amount,
+              token: monetizationToken,
+              recipient: monetization.payoutWallet,
+              params: {
+                token: monetizationToken,
+                recipient: monetization.payoutWallet,
+                amount: monetization.amount,
+                memo,
+              },
+              metadata: approvalMetadata,
+              note: `Skill install ${installId}`,
+            });
+        oneTimeApprovalId = approval.id;
+      } else if (monetization.kind === 'performance-fee') {
+        if (typeof monetization.feePercent !== 'number') {
+          throw new WorkflowValidationError(
+            'invalid_monetization',
+            'Performance-fee skill monetization requires a feePercent.',
+            '$.monetization.feePercent',
+          );
+        }
+        // Schema accepted; settlement infrastructure (profit measurement,
+        // periodic claim) is not yet implemented. The install record carries
+        // performanceFeeDeferred=true so the UI can surface a banner and
+        // future settlement work can pick these up.
+        performanceFeeDeferred = true;
+      }
     }
 
     const installMetadata: JsonObject = {
@@ -418,6 +607,10 @@ async function handleInstall(
       manifestVersion: manifest.version,
       capsSnapshot: tightenedCaps as unknown as JsonObject,
       ...(installParams ? { installParams } : {}),
+      ...(oneTimeApprovalId ? { oneTimeApprovalId } : {}),
+      ...(performanceFeeDeferred ? { performanceFeeDeferred: true } : {}),
+      ...(monetizationSplitSnapshot ? { monetizationSplit: monetizationSplitSnapshot } : {}),
+      ...(monetizationBounty ? { monetizationBounty } : {}),
     };
     const installRecord: SkillInstallRecord = {
       id: installId,
@@ -447,9 +640,14 @@ async function handleInstall(
       manifestVersion: request.manifestVersion,
       manifestHash,
       monetizationKind: manifest.monetization?.kind ?? 'none',
+      ...(manifest.monetization ? { monetizationToken: resolveMonetizationToken(manifest.monetization) } : {}),
       acceptMonetization: request.acceptMonetization,
       installParamKeys: installParams ? Object.keys(installParams).sort() : [],
       ...(monetizationScheduleId ? { monetizationScheduleId } : {}),
+      ...(oneTimeApprovalId ? { oneTimeApprovalId } : {}),
+      ...(performanceFeeDeferred ? { performanceFeeDeferred: true } : {}),
+      ...(monetizationSplitSnapshot ? { platformFeeActive: true } : {}),
+      ...(monetizationBounty ? { bountyApplied: true, bountyProgram: monetizationBounty.program } : {}),
     }, 'skill_install', installRecord.id);
     writeJsonNoStore(res, 201, { install: installRecord });
   } catch (err) {
@@ -584,10 +782,15 @@ function getAuthorEarningsSkillId(
   schedule: RecurringScheduleRecord,
   authorWallet: string,
 ): string | null {
+  // TODO(skr-earnings): The earnings response aggregates a single USDC
+  // run-rate today, so $SKR-priced subscriptions are intentionally skipped
+  // here rather than mis-summed across currencies. A follow-up should split
+  // the response into per-token buckets (USDC monthly total + SKR monthly
+  // total) and update this filter to accept both. See plan section P3.7.
   if (
     schedule.status !== 'active' ||
     schedule.cadence !== 'monthly' ||
-    schedule.token !== MONETIZATION_TOKEN ||
+    schedule.token !== DEFAULT_MONETIZATION_TOKEN ||
     schedule.recipient !== authorWallet ||
     !isDecimalAmount(schedule.amount)
   ) {
@@ -628,6 +831,125 @@ function unscaleDecimalAmount(value: bigint, decimals: number): string {
   return fracPart ? `${intPart}.${fracPart}` : intPart;
 }
 
+/**
+ * GET /api/skills/platform-earnings — treasury-only.
+ *
+ * Aggregates `metadata.platformAmount` across recurring schedules tagged
+ * with `source = 'skill_install_monetization'` AND `platformWallet =
+ * configured treasury wallet`. This is *only* the platform's 15% portion;
+ * for the author's 85% take-home, see `handleAuthorEarnings`. The two
+ * endpoints intentionally read different fields because the recurring
+ * schedule stores the author portion in `schedule.amount` and the platform
+ * portion in `metadata.platformAmount` — see the comment on
+ * `recurringApprovalSink.ts` for the full semantic.
+ */
+async function handlePlatformEarnings(
+  res: ServerResponse,
+  context: DevApiHandlerContext,
+): Promise<void> {
+  if (!context.walletAddress) {
+    writeJsonNoStore(res, 403, {
+      error: 'dev_layer1_disabled',
+      message: 'This route is only available to allowlisted dev wallets.',
+    });
+    return;
+  }
+  const treasury = loadTreasuryConfig();
+  if (!treasury.wallet) {
+    writeJsonNoStore(res, 503, {
+      error: 'treasury_not_configured',
+      message: 'TREASURY_WALLET is not configured on this deployment; platform earnings are disabled.',
+    });
+    return;
+  }
+  if (context.walletAddress !== treasury.wallet) {
+    writeJsonNoStore(res, 403, {
+      error: 'treasury_mismatch',
+      message: 'Platform earnings can only be read by the configured treasury wallet.',
+    });
+    return;
+  }
+
+  try {
+    const recurringStore = resolveRecurringStore(context);
+    if (!recurringStore.listKnownWallets) {
+      throw new SkillInternalError('Recurring store cannot enumerate wallets for platform earnings.');
+    }
+
+    const bySkill = new Map<string, { monthlyUsdc: string; activeSubscriptions: number }>();
+    for (const wallet of await recurringStore.listKnownWallets()) {
+      const schedules = await recurringStore.listSchedules(wallet);
+      for (const schedule of schedules) {
+        const skillId = getPlatformEarningsSkillId(schedule, treasury.wallet);
+        if (!skillId) continue;
+        const platformAmount = stringValue(schedule.metadata?.platformAmount);
+        if (!platformAmount || !isNonNegativeDecimalString(platformAmount)) continue;
+        const current = bySkill.get(skillId) ?? { monthlyUsdc: '0', activeSubscriptions: 0 };
+        bySkill.set(skillId, {
+          monthlyUsdc: addDecimalStrings(current.monthlyUsdc, platformAmount),
+          activeSubscriptions: current.activeSubscriptions + 1,
+        });
+      }
+    }
+
+    const skills = [...bySkill.entries()]
+      .map(([skillId, row]) => ({ skillId, ...row }))
+      .sort((a, b) => a.skillId.localeCompare(b.skillId));
+    const totalMonthlyUsdc = skills.reduce(
+      (total, row) => addDecimalStrings(total, row.monthlyUsdc),
+      '0',
+    );
+
+    writeJsonNoStore(res, 200, {
+      treasuryWallet: treasury.wallet,
+      platformFeeBps: treasury.feeBps,
+      currency: DEFAULT_MONETIZATION_TOKEN,
+      totalMonthlyUsdc,
+      skills,
+    });
+  } catch (err) {
+    writeSkillsError(res, err);
+  }
+}
+
+function getPlatformEarningsSkillId(
+  schedule: RecurringScheduleRecord,
+  treasuryWallet: string,
+): string | null {
+  // TODO(skr-earnings): $SKR-priced installs in the bounty window route 100%
+  // to the author (treasury wallet receives nothing), so this aggregator
+  // would have nothing to count even if it accepted SKR — keep USDC-only
+  // until per-token reporting is added. See plan section P3.7.
+  if (
+    schedule.status !== 'active' ||
+    schedule.cadence !== 'monthly' ||
+    schedule.token !== DEFAULT_MONETIZATION_TOKEN
+  ) {
+    return null;
+  }
+  const metadata = schedule.metadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
+  if (metadata.source !== 'skill_install_monetization') return null;
+  if (stringValue(metadata.platformWallet) !== treasuryWallet) return null;
+  const skillId = metadata.skillId;
+  return typeof skillId === 'string' && skillId.trim() ? skillId.trim() : null;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+/**
+ * GET /api/skills/authors/:wallet/earnings — author-only.
+ *
+ * Aggregates `schedule.amount` across recurring schedules where
+ * `recipient = author wallet` and `source = 'skill_install_monetization'`.
+ * When TREASURY_WALLET is configured, `schedule.amount` is the *author
+ * portion only* (e.g. $8.50 of a $10/mo subscription); platform's $1.50
+ * cut lives in `metadata.platformAmount` and is reported by
+ * `handlePlatformEarnings`. The asymmetry is intentional — each endpoint
+ * reports take-home for its respective recipient.
+ */
 async function handleAuthorEarnings(
   res: ServerResponse,
   context: DevApiHandlerContext,
@@ -678,7 +1000,7 @@ async function handleAuthorEarnings(
 
     writeJsonNoStore(res, 200, {
       authorWallet,
-      currency: MONETIZATION_TOKEN,
+      currency: DEFAULT_MONETIZATION_TOKEN,
       totalMonthlyUsdc,
       skills,
     });
@@ -1019,10 +1341,13 @@ function authorEarningsSkillId(
   schedule: RecurringScheduleRecord,
   authorWallet: string,
 ): string | null {
+  // TODO(skr-earnings): Duplicate of getAuthorEarningsSkillId above — same
+  // USDC-only filter; the $SKR-priced subscriptions are skipped pending a
+  // per-token earnings response shape. See plan section P3.7.
   if (
     schedule.status !== 'active' ||
     schedule.cadence !== 'monthly' ||
-    schedule.token !== MONETIZATION_TOKEN ||
+    schedule.token !== DEFAULT_MONETIZATION_TOKEN ||
     schedule.recipient !== authorWallet ||
     !isNonNegativeDecimalString(schedule.amount)
   ) {

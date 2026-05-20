@@ -14,6 +14,7 @@ import { registerActionTools } from './actionTools.js';
 import type { AgentWalletConfig } from './config.js';
 import type { PreparedActionStore } from './preparedActions.js';
 import { newTraceId, trace } from './trace.js';
+import type { VulcanUpstreamClient } from './upstreamMcp/index.js';
 
 export interface CreateServerOptions {
   backend: WalletBackend;
@@ -21,6 +22,11 @@ export interface CreateServerOptions {
   serverVersion?: string;
   actionConfig?: AgentWalletConfig;
   preparedActions?: PreparedActionStore;
+  /**
+   * Optional Vulcan upstream MCP client. When provided AND policy enabled, the server exposes `solana_vulcan_*`
+   * tools that proxy a local `vulcan mcp` subprocess. See packages/mcp-server/src/upstreamMcp.
+   */
+  vulcanUpstreamClient?: VulcanUpstreamClient;
 }
 
 const ClusterSchema = z.enum(['mainnet-beta', 'testnet', 'devnet', 'localnet']);
@@ -41,6 +47,7 @@ export function createServer(options: CreateServerOptions): McpServer {
       backend,
       config: options.actionConfig,
       ...(options.preparedActions !== undefined && { preparedActions: options.preparedActions }),
+      ...(options.vulcanUpstreamClient !== undefined && { vulcanUpstreamClient: options.vulcanUpstreamClient }),
     });
   }
 

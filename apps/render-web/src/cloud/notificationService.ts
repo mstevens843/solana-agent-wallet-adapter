@@ -4,6 +4,7 @@ import type { JsonObject, RecurringOccurrenceRecord, RecurringScheduleRecord } f
 
 import type { RecurringStore } from './recurringService.js';
 import { redactSecrets } from './redaction.js';
+import { effectiveScheduleTotalAmount } from './treasuryConfig.js';
 import { assertWebhookDestinationAllowed } from './webhookSecurity.js';
 
 export type RecurringNotificationDeliveryStatus = 'pending' | 'delivered' | 'failed' | 'abandoned';
@@ -246,15 +247,19 @@ function occurrenceReadyPayload(
   schedule: RecurringScheduleRecord,
   occurrence: RecurringOccurrenceRecord,
 ): JsonObject {
+  // For skill-monetization schedules, `schedule.amount` holds the author portion
+  // and `metadata.totalAmount` holds what the user is actually charged. Webhook
+  // subscribers (billing, alerts, automation) need the user-charged total.
+  const amount = effectiveScheduleTotalAmount(schedule);
   return {
     type: 'recurring.occurrence.ready',
     scheduleId: schedule.id,
     occurrenceId: occurrence.id,
     dueAt: occurrence.dueAt,
-    summary: `${schedule.amount} ${schedule.token} recurring approval`,
+    summary: `${amount} ${schedule.token} recurring approval`,
     walletAddress: schedule.walletAddress,
     cluster: schedule.cluster,
-    amount: schedule.amount,
+    amount,
     token: schedule.token,
     recipient: schedule.recipient,
   };

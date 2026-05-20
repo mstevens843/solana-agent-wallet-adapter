@@ -776,6 +776,48 @@ describe('cloud recurring scheduler API', () => {
     });
   });
 
+  it('evaluates policy caps against metadata.totalAmount for skill-monetization splits', async () => {
+    // A user with a $9/mo USDC cap should NOT be able to install a $10/mo
+    // skill, even if the platform takes 15% (schedule.amount = 8.5 < 9).
+    // The cap must look at what the user actually pays.
+    const store = new MemoryWorkflowStore();
+    const session = await createWalletSession({
+      store,
+      walletAddress: walletA,
+      clock: { now: () => new Date('2026-05-08T20:00:00.000Z') },
+    });
+
+    await withRenderRecurringServer(store, async (port) => {
+      const response = await requestJsonWithHeaders(port, 'POST', '/api/recurring', {
+        cluster: 'devnet',
+        token: 'USDC',
+        recipient: walletB,
+        amount: '8.5',
+        cadence: 'monthly',
+        dayOfMonth: 8,
+        localTime: '09:30',
+        note: 'Skill monetization split',
+        metadata: {
+          source: 'skill_install_monetization',
+          skillInstallId: 'install_x',
+          skillId: 'friday-dca',
+          monetizationKind: 'monthly',
+          platformWallet: walletA,
+          platformAmount: '1.5',
+          totalAmount: '10',
+          platformFeeBps: 1500,
+        },
+      }, {
+        cookie: `${SESSION_COOKIE_NAME}=${encodeURIComponent(session.token)}`,
+      });
+      expect(response.status).toBe(409);
+      expect(response.body.error).toBe('recurring_exceeds_policy');
+      expect(response.body.message).toContain('per month');
+    }, {
+      recurringPolicy: { maxPerMonthAmount: { USDC: '9' } },
+    });
+  });
+
   it('advances nextDueAt strictly past the just-materialized occurrence', async () => {
     await withRecurringServer(async ({ port, setNow }) => {
       setNow(new Date('2026-05-01T12:00:00Z'));
@@ -1200,6 +1242,87 @@ describe('cloud recurring scheduler API', () => {
       expect(unsupportedUpdate.body.error).toBe('unsupported_cloud_recurring_token');
     });
   });
+
+  // ─── $SKR recurring schedules — Android-only ecosystem token ────────────
+  //
+  // $SKR is the env-gated Solana Mobile Seeker ecosystem token. The recurring
+  // service must (a) reject SKR with the same `unsupported_cloud_recurring_token`
+  // error as any other unknown symbol when the deployment is not configured for
+  // $SKR settlement, and (b) accept it cleanly once `SKR_TOKEN_MINT` is set —
+  // by symbol *or* by the literal mint string, since both forms show up in
+  // recurring-service callers downstream.
+  describe('$SKR token gating', () => {
+    const VALID_SKR_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+    it('rejects token: "SKR" with unsupported_cloud_recurring_token when SKR_TOKEN_MINT is unset', async () => {
+      await withSkrEnv({}, async () => {
+        await withRecurringServer(async ({ port }) => {
+          const res = await postJson(
+            port,
+            '/api/recurring',
+            { ...validCreateBody(), token: 'SKR' },
+            walletA,
+          );
+          expect(res.status).toBe(409);
+          expect(res.body.error).toBe('unsupported_cloud_recurring_token');
+          // Surface the dynamic error message including SKR in the supported
+          // list when env IS set — and excluding it when not.
+          expect(String(res.body.message ?? '')).not.toContain('SKR');
+        });
+      });
+    });
+
+    it('accepts token: "SKR" symbol when SKR_TOKEN_MINT is configured', async () => {
+      await withSkrEnv({ SKR_TOKEN_MINT: VALID_SKR_MINT }, async () => {
+        await withRecurringServer(async ({ port }) => {
+          const res = await postJson(
+            port,
+            '/api/recurring',
+            { ...validCreateBody(), token: 'SKR' },
+            walletA,
+          );
+          expect(res.status).toBe(201);
+          expect((res.body.schedule as RecurringScheduleRecord).token).toBe('SKR');
+        });
+      });
+    });
+
+    it('accepts the configured SKR mint as the token literal (round-trip from prepared-action params)', async () => {
+      // The recurring schedule may be created either by symbol ("SKR") or by
+      // the literal mint string when the upstream caller passed the mint
+      // directly. Both flow into `isSupportedCloudTransferToken`.
+      await withSkrEnv({ SKR_TOKEN_MINT: VALID_SKR_MINT }, async () => {
+        await withRecurringServer(async ({ port }) => {
+          const res = await postJson(
+            port,
+            '/api/recurring',
+            { ...validCreateBody(), token: VALID_SKR_MINT },
+            walletA,
+          );
+          expect(res.status).toBe(201);
+          expect((res.body.schedule as RecurringScheduleRecord).token).toBe(VALID_SKR_MINT);
+        });
+      });
+    });
+
+    it('mentions SKR in the unsupported-token error message when env is set but a different unknown token is used', async () => {
+      await withSkrEnv({ SKR_TOKEN_MINT: VALID_SKR_MINT }, async () => {
+        await withRecurringServer(async ({ port }) => {
+          const res = await postJson(
+            port,
+            '/api/recurring',
+            { ...validCreateBody(), token: 'BONK' },
+            walletA,
+          );
+          expect(res.status).toBe(409);
+          expect(res.body.error).toBe('unsupported_cloud_recurring_token');
+          // The dynamic supported-tokens list now includes SKR — operator gets
+          // an honest message instead of the pre-feature "SOL and USDC only".
+          expect(String(res.body.message ?? '')).toContain('SKR');
+        });
+      });
+    });
+  });
 });
 
 function validCreateBody(): Record<string, unknown> {
@@ -1354,6 +1477,44 @@ async function withMockServerFinalization(callback: () => Promise<void>): Promis
   }
 }
 
+const SKR_ENV_KEYS = [
+  'SKR_TOKEN_MINT',
+  'SKR_TOKEN_DECIMALS',
+  'SKR_SKILL_BOUNTY_ACTIVE',
+  'SKR_SESSION_DEFAULT',
+] as const;
+
+type SkrEnvOverrides = Partial<Record<(typeof SKR_ENV_KEYS)[number], string | undefined>>;
+
+/**
+ * Run a callback with the given SKR_* env vars set, restoring the previous
+ * values afterward. Mirrors `withMockServerFinalization` so SKR tests don't
+ * leak state into other suites running in the same vitest worker.
+ */
+async function withSkrEnv(overrides: SkrEnvOverrides, callback: () => Promise<void>): Promise<void> {
+  const previous = new Map<(typeof SKR_ENV_KEYS)[number], string | undefined>();
+  for (const key of SKR_ENV_KEYS) {
+    previous.set(key, process.env[key]);
+    const value = overrides[key];
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+  try {
+    await callback();
+  } finally {
+    for (const [key, value] of previous.entries()) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
 async function withRecurringServer(callback: (ctx: ServerCtx) => Promise<void>): Promise<void> {
   const store = new TestRecurringStore();
   let now = new Date('2026-05-01T12:00:00Z');
@@ -1398,7 +1559,14 @@ async function withRecurringServer(callback: (ctx: ServerCtx) => Promise<void>):
 async function withRenderRecurringServer(
   store: MemoryWorkflowStore,
   callback: (port: number) => Promise<void>,
-  options: { recurringPolicy?: { maxPerWeekAmount?: Record<string, string> }; clock?: Clock } = {},
+  options: {
+    recurringPolicy?: {
+      maxPerWeekAmount?: Record<string, string>;
+      maxPerMonthAmount?: Record<string, string>;
+      maxLifetimeAmount?: Record<string, string>;
+    };
+    clock?: Clock;
+  } = {},
 ): Promise<void> {
   const server = createRenderWebServer({
     staticDir: await staticDir(),

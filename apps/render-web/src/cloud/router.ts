@@ -148,6 +148,13 @@ const AUTH_RATE_LIMIT_MAX_ATTEMPTS = 60;
 const WRITE_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
 const WRITE_RATE_LIMIT_MAX_ATTEMPTS = 180;
 const HOSTED_AI_RATE_LIMIT_MAX_ATTEMPTS = 30;
+// Hard ceiling for upstream LLM round-trip latency. Anthropic/OpenAI streaming
+// completions routinely run 20-30s on long prompts; 45s gives headroom while
+// preventing hung-request pileup on Render's HTTP connection pool during an
+// upstream incident. The rate limiter alone wouldn't help here — hung sockets
+// still hold their slot. Raised by [handleHostedAi*] handlers via
+// [runWithHostedAiTimeout]. Emits 504 on timeout.
+const HOSTED_AI_TIMEOUT_MS = 45_000;
 const DEFAULT_ANDROID_CLOUD_ORIGIN = 'https://agentic.local';
 const CORS_ALLOWED_HEADERS = 'authorization, content-type, x-agentic-client';
 const CORS_ALLOWED_METHODS = 'GET, POST, PATCH, PUT, DELETE, OPTIONS';
@@ -300,17 +307,25 @@ export interface AuthRateLimiter {
   allow(input: AuthRateLimitInput): boolean | Promise<boolean>;
 }
 
-class MemoryAuthRateLimiter implements AuthRateLimiter {
-  private readonly buckets = new Map<string, { windowStart: number; count: number }>();
+export class MemoryAuthRateLimiter implements AuthRateLimiter {
+  private readonly buckets = new Map<string, { windowStart: number; count: number; windowMs: number }>();
+  // Sweep cadence: ~1/minute under load (cheap walk + delete). Tied to the
+  // longest rate-limit window (5 min) so an idle key gets removed within ~2
+  // windows of inactivity. Without this, the map grows monotonically per
+  // unique route:clientIp pair — a memory leak under botnet / X-F-F-spoof
+  // pressure (cardinality = unique-IP × unique-route).
+  private lastSweepMs = 0;
+  private static readonly SWEEP_INTERVAL_MS = 60_000;
 
   allow(input: AuthRateLimitInput): boolean {
     const bucketKey = `${input.route}:${input.key}`;
     const now = input.now.getTime();
-    const bucket = this.buckets.get(bucketKey);
     const windowMs = rateLimitWindowMs(input.route);
     const maxAttempts = rateLimitMaxAttempts(input.route);
+    this.maybeSweep(now);
+    const bucket = this.buckets.get(bucketKey);
     if (!bucket || now - bucket.windowStart >= windowMs) {
-      this.buckets.set(bucketKey, { windowStart: now, count: 1 });
+      this.buckets.set(bucketKey, { windowStart: now, count: 1, windowMs });
       return true;
     }
     if (bucket.count >= maxAttempts) {
@@ -318,6 +333,20 @@ class MemoryAuthRateLimiter implements AuthRateLimiter {
     }
     bucket.count += 1;
     return true;
+  }
+
+  private maybeSweep(now: number): void {
+    if (now - this.lastSweepMs < MemoryAuthRateLimiter.SWEEP_INTERVAL_MS) return;
+    this.lastSweepMs = now;
+    for (const [key, bucket] of this.buckets) {
+      // Delete buckets whose window has expired with no new traffic. Using
+      // 2× as the cutoff means we keep an entry for one full window past
+      // last touch so legitimate slow callers don't lose their count if a
+      // sweep happens to land between their requests.
+      if (now - bucket.windowStart >= 2 * bucket.windowMs) {
+        this.buckets.delete(key);
+      }
+    }
   }
 }
 
@@ -394,7 +423,8 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
   const statelessConnectorPreparer =
     options.statelessConnectorPreparer ??
     createStatelessConnectorPreparer(secretsLoader ? { secretsLoader } : {});
-  const statelessConnectorReader = options.statelessConnectorReader ?? createStatelessConnectorFactsReader();
+  const statelessConnectorReader =
+    options.statelessConnectorReader ?? createStatelessConnectorFactsReader(secretsLoader ? { secretsLoader } : {});
   const evidenceStore = isEvidenceStore(store) ? store : evidenceStoreAdapterForCloudStore(store);
   const workflowApiHandler = createWorkflowApiHandler({
     service: workflowService,
@@ -420,7 +450,18 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
     policyEnforcer: createRecurringPolicyEnforcer(recurringPolicy),
     notificationSink: notificationService
       ? ({ walletAddress, schedule, occurrence }) =>
-          notificationService.enqueueOccurrenceReady(walletAddress, schedule.id, occurrence.id).then(() => undefined)
+          notificationService
+            .enqueueOccurrenceReady(walletAddress, schedule.id, occurrence.id)
+            .then(() => undefined)
+            // Intentionally fire-and-forget (notification is best-effort, never
+            // blocks the scheduler), but a silent unhandled rejection would hide
+            // webhook outages from ops. Log with stable grep tag so a delivery
+            // backlog is visible without standing up a separate metric.
+            .catch((err: unknown) => {
+              console.warn(
+                `recurring_notify_enqueue_failed walletAddress=${walletAddress} scheduleId=${schedule.id} occurrenceId=${occurrence.id} err=${err instanceof Error ? err.message : String(err)}`,
+              );
+            })
       : undefined,
   });
   const recurringApiHandler = createRecurringApiHandler({
@@ -647,7 +688,7 @@ async function enforceAuthRateLimit(
   }
 }
 
-function authRateLimitedRoute(pathname: string): AuthRateLimitInput['route'] | undefined {
+export function authRateLimitedRoute(pathname: string): AuthRateLimitInput['route'] | undefined {
   if (pathname === '/api/auth/nonce' || pathname === '/api/auth/verify-wallet') return pathname;
   if (pathname === '/api/ai/generate-plan') return pathname;
   if (pathname === '/api/ai/review-plan') return pathname;
@@ -662,6 +703,16 @@ function authRateLimitedRoute(pathname: string): AuthRateLimitInput['route'] | u
   if (pathname.startsWith('/api/helius')) return '/api/helius:*';
   if (pathname.startsWith('/api/coingecko')) return '/api/coingecko:*';
   if (pathname.startsWith('/api/cloud-workspace')) return '/api/cloud-workspace:*';
+  // Dev-API surfaces. Without these clauses the route categorizer returns
+  // undefined and enforceAuthRateLimit short-circuits — a dev wallet (or a
+  // compromised one) could spam these write endpoints without bound. The
+  // WRITE_RATE_LIMIT bucket (180 attempts / 5 min) is the right shape for
+  // skill installs, signal subscriptions, spend annotations, and streaming
+  // session lifecycle ops.
+  if (pathname.startsWith('/api/skills')) return '/api/skills:*';
+  if (pathname.startsWith('/api/signals')) return '/api/signals:*';
+  if (pathname.startsWith('/api/spend')) return '/api/spend:*';
+  if (pathname.startsWith('/api/streaming')) return '/api/streaming:*';
   if (pathname === '/api/auth/logout') return pathname;
   return undefined;
 }
@@ -717,7 +768,7 @@ async function routeApiRequest(
     return;
   }
 
-  if (url.pathname === '/api/android-config') {
+  if (url.pathname.replace(/\/$/, '') === '/api/android-config') {
     requireMethod(req, 'GET');
     const startedAt = Date.now();
     const cfg = getAndroidRemoteConfig();
@@ -1568,8 +1619,12 @@ async function handleHostedAiRequest(
       baseUrl: settings.provider.baseUrl,
       model: settings.model,
     });
-    writeJson(res, 200, await planner.generatePlan(request));
+    writeJson(res, 200, await runWithHostedAiTimeout(planner.generatePlan(request)));
   } catch (err) {
+    if (err instanceof ApiError) {
+      writeJson(res, err.status, { error: err.message });
+      return;
+    }
     const code = typeof err === 'object' && err !== null && 'code' in err ? String((err as { code?: unknown }).code) : '';
     const status = code === 'invalid_request' ? 400 : 502;
     const message = err instanceof Error ? redactSecrets(err.message, settings.apiKey) : 'AI provider request failed.';
@@ -1600,8 +1655,12 @@ async function handleHostedAiReviewRequest(
       baseUrl: settings.provider.baseUrl,
       model: settings.model,
     });
-    writeJson(res, 200, await planner.reviewPlan(request));
+    writeJson(res, 200, await runWithHostedAiTimeout(planner.reviewPlan(request)));
   } catch (err) {
+    if (err instanceof ApiError) {
+      writeJson(res, err.status, { error: err.message });
+      return;
+    }
     const code = typeof err === 'object' && err !== null && 'code' in err ? String((err as { code?: unknown }).code) : '';
     const status = code === 'invalid_request' ? 400 : 502;
     const message = err instanceof Error ? redactSecrets(err.message, settings.apiKey) : 'AI provider request failed.';
@@ -2398,8 +2457,12 @@ async function handleHostedAiAskRequest(
       baseUrl: settings.provider.baseUrl,
       model: settings.model,
     });
-    writeJson(res, 200, await planner.askAboutPlan(request));
+    writeJson(res, 200, await runWithHostedAiTimeout(planner.askAboutPlan(request)));
   } catch (err) {
+    if (err instanceof ApiError) {
+      writeJson(res, err.status, { error: err.message });
+      return;
+    }
     const code = typeof err === 'object' && err !== null && 'code' in err ? String((err as { code?: unknown }).code) : '';
     const status = code === 'invalid_request' ? 400 : 502;
     const message = err instanceof Error ? redactSecrets(err.message, settings.apiKey) : 'AI provider ask request failed.';
@@ -3153,10 +3216,19 @@ function requestDomain(req: IncomingMessage, url: URL): string {
   return String(req.headers.host || url.host).toLowerCase();
 }
 
-function rateLimitKey(req: IncomingMessage): string {
+export function rateLimitKey(req: IncomingMessage): string {
+  // X-Forwarded-For is a comma-separated chain that each hop APPENDS to.
+  // Render's edge runs as the outermost trusted proxy, so it appends the
+  // observed TCP-peer IP after whatever the client sent. Taking the LAST
+  // entry gives the edge-asserted client IP that a malicious client can't
+  // spoof (anything BEFORE it is attacker-controllable). If the header is
+  // missing (direct connection in local dev), fall back to the socket peer.
   const forwardedFor = firstHeaderValue(req.headers['x-forwarded-for']);
-  const clientIp = forwardedFor?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
-  return clientIp;
+  if (forwardedFor) {
+    const hops = forwardedFor.split(',').map((s) => s.trim()).filter(Boolean);
+    if (hops.length > 0) return hops[hops.length - 1]!;
+  }
+  return req.socket.remoteAddress || 'unknown';
 }
 
 function shouldSetSecureCookie(req: IncomingMessage): boolean {
@@ -3209,6 +3281,35 @@ class ApiError extends Error {
   constructor(readonly status: number, message: string) {
     super(message);
     this.name = 'ApiError';
+  }
+}
+
+// Race `promise` against a timer. Resolves with the promise's value if it
+// settles first; throws `ApiError(504, ...)` if the timer fires first.
+// Note: this DOES NOT cancel the underlying work (the LLM HTTP request keeps
+// running in the planner until it completes or its own TCP timeout fires).
+// What it gives us is bounded client-facing latency + a freed Render HTTP
+// socket — sufficient defense against upstream-LLM pileup. A true cancel
+// would need AbortSignal plumbed through BridgeAiPlanner; out-of-scope here.
+//
+// `timeoutMs` defaults to HOSTED_AI_TIMEOUT_MS (45s) for production callers.
+// Tests can override with a tighter value (e.g. 25ms) to exercise the timeout
+// path without sleeping.
+export async function runWithHostedAiTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number = HOSTED_AI_TIMEOUT_MS,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      timer = setTimeout(
+        () => reject(new ApiError(504, 'AI provider timed out.')),
+        timeoutMs,
+      );
+      promise.then(resolve, reject);
+    });
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

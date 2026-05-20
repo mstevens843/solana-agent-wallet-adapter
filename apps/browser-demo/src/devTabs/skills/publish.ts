@@ -14,6 +14,10 @@ export interface SkillMonetization {
   amount?: string;
   feePercent?: number;
   payoutWallet: string;
+  // Currency the skill is priced in. Defaults to USDC when omitted; SKR is
+  // accepted on Seeker-enabled deployments. Mirrors
+  // `packages/workflow/src/dev/skills.ts:SkillMonetization.token`.
+  token?: 'USDC' | 'SKR';
 }
 
 export interface SkillManifest {
@@ -96,7 +100,7 @@ export const CLI_INSTALL_SNIPPET = [
 
 const DEFAULT_SKILL_PAGE_ORIGIN = 'https://agentic-signer.com';
 const MONTHLY_EARNED_TOOLTIP =
-  'Active monthly USDC author-fee run-rate from recurring schedules';
+  'Active monthly author-fee run-rate from recurring schedules';
 
 const panelState: PublishPanelState = {
   phase: 'idle',
@@ -259,10 +263,21 @@ function isZeroDecimalString(value: string): boolean {
   return /^0+(\.0+)?$/.test(value);
 }
 
-export function formatMonthlyUsdc(value: string | undefined): string {
+/**
+ * Format an author's monthly earnings amount with the skill's monetization
+ * token. Defaults to USDC for skills published before the $SKR (Solana Mobile
+ * Seeker) ecosystem token was introduced; pass `token: 'SKR'` for Seeker-priced
+ * skills so the dashboard displays the correct currency.
+ *
+ * Exported as `formatMonthlyUsdc` alias for backward compatibility with the
+ * skills-publish.test fixtures that predate the token argument.
+ */
+export function formatMonthlyAmount(value: string | undefined, token: string = 'USDC'): string {
   if (!value || isZeroDecimalString(value)) return '—';
-  return `${value} USDC/mo`;
+  return `${value} ${token}/mo`;
 }
+
+export const formatMonthlyUsdc = formatMonthlyAmount;
 
 export function filterRecordsForAuthor(
   records: readonly SkillManifestRecord[],
@@ -311,7 +326,8 @@ function renderRow(record: PublishedSkillRecord): string {
   const category = escapeHtml(record.manifest.category);
   const skillUrl = escapeHtml(buildSkillPageUrl(record.id));
   const installs = formatInstalls(record.stats?.installs);
-  const monthlyUsdc = formatMonthlyUsdc(record.monthlyUsdc);
+  const monetizationToken = record.manifest.monetization?.token ?? 'USDC';
+  const monthlyAmount = formatMonthlyAmount(record.monthlyUsdc, monetizationToken);
   return `
     <div class="skills-publish-row" data-skills-publish-skill-id="${id}">
       <div class="skills-publish-row-name">
@@ -326,8 +342,8 @@ function renderRow(record: PublishedSkillRecord): string {
         <span class="skills-publish-cell-value">${escapeHtml(installs)}</span>
       </div>
       <div class="skills-publish-row-earned" title="${escapeHtml(MONTHLY_EARNED_TOOLTIP)}">
-        <span class="skills-publish-cell-label">Monthly USDC</span>
-        <span class="skills-publish-cell-value">${escapeHtml(monthlyUsdc)}</span>
+        <span class="skills-publish-cell-label">Monthly earnings</span>
+        <span class="skills-publish-cell-value">${escapeHtml(monthlyAmount)}</span>
       </div>
       <div class="skills-publish-row-actions">
         <a

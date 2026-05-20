@@ -13,7 +13,7 @@ final class AgenticDeepLinkService {
         }
         let keyPair = try NaclBox.keyPair()
         let requestID = UUID().uuidString.lowercased()
-        let redirect = callbackURL(phase: .connect, requestID: requestID)
+        let redirect = try callbackURL(phase: .connect, requestID: requestID)
         var components = URLComponents(url: baseURL.appendingPathComponent("connect"), resolvingAgainstBaseURL: false)
         components?.queryItems = [
             URLQueryItem(name: "app_url", value: appURL),
@@ -141,7 +141,7 @@ final class AgenticDeepLinkService {
             throw AgenticWalletError.incompleteAuthorization
         }
         let requestID = UUID().uuidString.lowercased()
-        let redirect = callbackURL(phase: .sign, requestID: requestID)
+        let redirect = try callbackURL(phase: .sign, requestID: requestID)
         let nonce = try randomBytes(count: 24)
         let payloadData = try JSONEncoder().encode(payload)
         let encrypted = try NaclSecretBox.secretBox(message: payloadData, nonce: nonce, key: sharedSecret)
@@ -174,7 +174,7 @@ final class AgenticDeepLinkService {
         return (request, url)
     }
 
-    private func callbackURL(phase: AgenticPendingPhase, requestID: String) -> URL {
+    private func callbackURL(phase: AgenticPendingPhase, requestID: String) throws -> URL {
         var components = URLComponents()
         components.scheme = callbackScheme
         components.host = "callback"
@@ -183,7 +183,18 @@ final class AgenticDeepLinkService {
             URLQueryItem(name: "requestId", value: requestID),
             URLQueryItem(name: "phase", value: phase.rawValue),
         ]
-        return components.url!
+        // `URLComponents.url` returns optional. Today the inputs are static
+        // (callbackScheme + literal host/path) + a generated requestID, so
+        // building the URL should always succeed — but force-unwrap on a
+        // public API surface would produce an opaque crash if any input ever
+        // changes shape (a future phase enum value containing a slash, etc.).
+        // Surface a typed error instead so callers can decide how to recover.
+        guard let url = components.url else {
+            throw AgenticWalletError.invalidCallback(
+                "Unable to construct iOS callback URL for phase \(phase.rawValue)."
+            )
+        }
+        return url
     }
 
     private func throwIfWalletError(_ url: URL) throws {

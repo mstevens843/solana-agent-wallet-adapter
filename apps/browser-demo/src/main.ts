@@ -594,7 +594,8 @@ type PreparedActionKind =
   | 'pyth_post_price_update'
   | 'wormhole_transfer'
   | 'wormhole_redeem'
-  | 'wormhole_recover_or_resume';
+  | 'wormhole_recover_or_resume'
+  | 'skill_fee_split';
 type GuidedDemoScenarioId = 'transfer' | 'swap' | 'policy-swap' | 'dca' | 'payouts';
 type GuidedDemoStage = 'request' | 'prepared' | 'queued' | 'receipt';
 type GuidedDemoDecision = 'pending' | 'approved' | 'denied';
@@ -1001,6 +1002,7 @@ const EXECUTABLE_BROWSER_ACTION_KINDS = new Set<PreparedActionKind>([
   'transfer_spl',
   'swap',
   'custom_transaction',
+  'skill_fee_split',
 ]);
 const BASE_PREPARED_ACTION_KINDS = new Set<string>([
   'transfer_sol',
@@ -1010,6 +1012,7 @@ const BASE_PREPARED_ACTION_KINDS = new Set<string>([
   'read_only',
   'custom_transaction',
   'custom',
+  'skill_fee_split',
 ]);
 for (const kind of CONNECTOR_APPROVAL_ACTION_TYPES) {
   BASE_PREPARED_ACTION_KINDS.add(kind);
@@ -1036,7 +1039,7 @@ const BROWSER_AI_LIMITATIONS = [
   'Browser AI cannot run background jobs after the tab closes.',
 ];
 const CUSTOM_AI_MODEL_VALUE = '__custom__';
-const ROUTE_PATHS = ['/', '/docs', '/builders', '/app', '/cli', '/desktop', '/android', '/demo', '/mwa-test', '/privacy', '/terms'] as const;
+const ROUTE_PATHS = ['/', '/docs', '/builders', '/app', '/cli', '/desktop', '/android', '/demo', '/mwa-test', '/privacy', '/terms', '/delete-account'] as const;
 const ROUTE_PATH_SET = new Set<string>(ROUTE_PATHS);
 const SHOW_DEV_CONTROLS = resolveDevControls();
 const IS_ANDROID_APP = resolveAndroidAppSurface();
@@ -1121,6 +1124,7 @@ const ROUTE_TITLES: Record<string, string> = {
   '/mwa-test': 'MWA · Agentic',
   '/privacy': 'Privacy Policy · Agentic',
   '/terms': 'Terms of Service · Agentic',
+  '/delete-account': 'Delete Account · Agentic',
 };
 const RUNTIME_PATHS: RuntimePath[] = [
   {
@@ -4317,6 +4321,8 @@ function pageContent(route: AppRoute | null): string {
       return privacyPage();
     case '/terms':
       return termsPage();
+    case '/delete-account':
+      return deleteAccountPage();
     default:
       return notFoundPage();
   }
@@ -4750,7 +4756,7 @@ function privacyPage(): string {
         <p>SolPulse LLC operates globally. Your information may be processed in countries outside of your jurisdiction of residence, which may have different data protection laws. Where required by law, we use appropriate safeguards, such as standard contractual clauses, to protect cross-border data transfers. By using the Platform, you consent to this processing and transfer of your information.</p>
 
         <h3>8. Your Rights</h3>
-        <p>Depending on your jurisdiction, you may have the right to request access to your personal information, request deletion of your personal data, or opt out of email communications. Signed-in Agentic Cloud users can also delete wallet-scoped Cloud Workspace Data from the Connect Cloud Storage tab after signing a wallet ownership confirmation. To exercise broader rights, email us at support@solpulse.trade. We will remove your personal data within 30 days of a verified request, except where retention is required by law (e.g., compliance logs).</p>
+        <p>Depending on your jurisdiction, you may have the right to request access to your personal information, request deletion of your personal data, or opt out of email communications. Signed-in Agentic Cloud users can also delete wallet-scoped Cloud Workspace Data from the Connect Cloud Storage tab after signing a wallet ownership confirmation. See the <a href="/delete-account">Delete Account</a> page for step-by-step instructions and the exact scope of what is deleted versus retained. To exercise broader rights, email us at support@solpulse.trade. We will remove your personal data within 30 days of a verified request, except where retention is required by law (e.g., compliance logs).</p>
 
         <h3>9. Updates to This Policy</h3>
         <p>We may update this Privacy Policy from time to time. The most current version will always be available at https://agenticwalletadapter.com/privacy. Your continued use of Agentic after changes are posted signifies your acceptance of those changes.</p>
@@ -4814,6 +4820,65 @@ function privacyPage(): string {
 
         <h3>21. Google Play Data Safety & Financial Features</h3>
         <p>If Agentic is distributed through Google Play, the Google Play Data Safety form and any Financial features declaration must be kept consistent with this Privacy Policy and the actual Android app behavior. Because Agentic involves cryptocurrency wallet actions, SolPulse may disclose financial-feature information to Google Play and may update app availability, disclosures, or functionality to satisfy store policy or applicable law.</p>
+      </article>
+    </section>
+  `;
+}
+
+function deleteAccountPage(): string {
+  return `
+    <section class="docs-section legal-page" aria-labelledby="delete-account-title">
+      <div class="section-heading">
+        <p class="eyebrow mini">Legal</p>
+        <h2 id="delete-account-title">Delete your Agentic account and data</h2>
+        <p class="legal-meta">Last updated: 2026-05-20</p>
+      </div>
+      <article class="legal-prose">
+        <p>This page explains how to delete your Agentic account and the data SolPulse holds about you. Agentic is operated by SolPulse LLC. If you have any difficulty completing the steps below, email <a href="mailto:support@solpulse.trade">support@solpulse.trade</a> and we will process your request manually.</p>
+
+        <h3>What counts as your "account"</h3>
+        <p>Agentic does not use usernames, passwords, OAuth providers, email accounts, or phone numbers. Your Solana wallet public key is the account identifier. Cloud sync is optional: signed-out users have no server-side state to delete.</p>
+        <p>If you have never connected a wallet to Agentic Cloud (the "Connect Cloud Storage" tab in Preferences), there is nothing for you to delete here. On-device data such as drafts, approvals, and receipts saved on the "Saved on device" path can be cleared by clearing your browser site data or uninstalling the Android app.</p>
+
+        <h3>How to delete your cloud data</h3>
+        <ol>
+          <li>Open <a href="/app">agentic-signer.com/app</a>.</li>
+          <li>Connect the wallet whose data you want to delete.</li>
+          <li>Open <strong>Preferences → Connect Cloud Storage</strong>.</li>
+          <li>Scroll to <strong>Danger Zone</strong> at the bottom of the panel.</li>
+          <li>Tap <strong>Delete cloud data</strong>.</li>
+          <li>Sign the deletion-confirmation message in your wallet when prompted.</li>
+          <li>All cloud data scoped to that wallet is removed immediately. The cascade delete runs atomically and cannot be undone.</li>
+        </ol>
+        <p>On the Android app, the same flow is available inside the bundled web app under <strong>Preferences → Connect Cloud Storage → Danger Zone</strong>.</p>
+
+        <h3>What gets deleted</h3>
+        <ul>
+          <li>Cloud drafts and plans</li>
+          <li>Pending and completed approval requests</li>
+          <li>Recurring payment schedules and their occurrence history</li>
+          <li>Evidence receipts and audit events</li>
+          <li>Encrypted connector API keys (Magic Eden, Tensor, Sanctum, and any other BYO keys you stored)</li>
+          <li>Wallet preferences and saved settings</li>
+          <li>Active Agentic Cloud session and signed-in state</li>
+        </ul>
+
+        <h3>What is kept and why</h3>
+        <ul>
+          <li><strong>On-chain Solana transaction history.</strong> Transactions you broadcast live on the public Solana blockchain. They are permanent and outside SolPulse's control. Nobody can delete them, including us.</li>
+          <li><strong>Google Analytics events.</strong> Anonymous client_id and aggregated usage events stored by Google. To delete these directly, visit <a href="https://tools.google.com/dlpage/gaoptout" target="_blank" rel="noreferrer">tools.google.com/dlpage/gaoptout</a>. You can also email <a href="mailto:support@solpulse.trade">support@solpulse.trade</a> and we will submit a User Deletion API request to Google on your behalf.</li>
+          <li><strong>Compliance and security logs.</strong> A limited window of server logs (truncated user-agent, request path, version, IP) may be retained for fraud prevention and abuse mitigation. These logs are not associated with your wallet identity after deletion and are retained for no longer than 90 days.</li>
+          <li><strong>Support correspondence.</strong> If you have emailed support, those threads are kept under our standard support retention (active ticket plus up to 24 months). You can request deletion of support correspondence in the same email.</li>
+        </ul>
+
+        <h3>Alternative — email request</h3>
+        <p>If you cannot access the in-app deletion flow (lost wallet access, device unavailable, etc.), email <a href="mailto:support@solpulse.trade">support@solpulse.trade</a> with the wallet address you want to delete. We verify wallet ownership through a signed message exchange before processing the request. Verified requests are completed within 30 days.</p>
+
+        <h3>Retention</h3>
+        <p>Retention period for cloud data after a successful in-app deletion or a verified email request: <strong>immediate</strong>. The cascade delete runs atomically against all wallet-scoped tables (drafts, approvals, recurring schedules, receipts, audit events, connector secrets, wallet preferences). Items in the "kept" list above are retained only for the stated purposes and durations.</p>
+
+        <h3>Contact</h3>
+        <p>SolPulse LLC, 1621 Central Ave, Cheyenne, WY 82001 · <a href="mailto:support@solpulse.trade">support@solpulse.trade</a></p>
       </article>
     </section>
   `;
@@ -6681,6 +6746,7 @@ function homepageFooter(): string {
         <a href="${RELEASE_PAGE_URL}" target="_blank" rel="noreferrer">Releases</a>
         <a href="/terms">Terms</a>
         <a href="/privacy">Privacy</a>
+        <a href="/delete-account">Delete Account</a>
       </nav>
     </footer>
   `;
@@ -7919,7 +7985,8 @@ function cloudImportableApprovalKind(kind: PreparedActionKind): boolean {
     kind === 'manual_review' ||
     kind === 'read_only' ||
     kind === 'custom_transaction' ||
-    kind === 'custom';
+    kind === 'custom' ||
+    kind === 'skill_fee_split';
 }
 
 function cloudImportableRecurringPayment(payment: RecurringPayment): boolean {
@@ -31809,6 +31876,8 @@ function browserExecutionStartMessage(action: PreparedAction): string {
       return `Approve the wallet transaction to swap ${swapAmountLabel(action)} to ${swapOutputTokenLabel(action)}.`;
     case 'custom_transaction':
       return 'Approve the wallet transaction to broadcast the provided transaction bytes.';
+    case 'skill_fee_split':
+      return 'Approve the wallet transaction to pay the skill author and the Agentic platform in one signature.';
     default:
       return 'Approve the wallet transaction.';
   }
@@ -31841,6 +31910,8 @@ async function executeBrowserPreparedActionRecord(
       return executeBrowserSwap(action, toastContext);
     case 'custom_transaction':
       return executeBrowserCustomTransaction(action, toastContext);
+    case 'skill_fee_split':
+      return executeBrowserSkillFeeSplit(action, toastContext);
     case 'manual_review': {
       // Older ACP outbound approvals were stamped as `manual_review`.
       // Preserve that route while current approvals use `transfer_spl`.
@@ -32034,6 +32105,86 @@ async function executeBrowserSplTransfer(
       token: tokenMetadata.symbol,
       mint: tokenMetadata.mintText,
       recipient: recipientOwner.toBase58(),
+    },
+  };
+}
+
+async function executeBrowserSkillFeeSplit(
+  action: PreparedAction,
+  toastContext: TransactionToastContext,
+): Promise<BrowserTransactionExecution> {
+  const token = requiredActionParam(action, 'token');
+  if (isNativeSolToken(token)) {
+    throw new Error('skill_fee_split is SPL-only; SOL splits are not supported.');
+  }
+  const authorRecipient = publicKeyParam(requiredActionParam(action, 'authorRecipient'), 'authorRecipient');
+  const treasuryRecipient = publicKeyParam(requiredActionParam(action, 'treasuryRecipient'), 'treasuryRecipient');
+  const authorAmount = requiredActionParam(action, 'authorAmount');
+  const treasuryAmount = requiredActionParam(action, 'treasuryAmount');
+
+  const owner = publicKeyFromConnectedWallet();
+  const connection = browserActionConnection(action.cluster);
+  const tokenMetadata = await resolveBrowserTokenMetadata(connection, action.cluster, token);
+  const authorRawAmount = parseDecimalAmountToRaw(authorAmount, tokenMetadata.decimals, `${tokenMetadata.symbol} author amount`);
+  const treasuryRawAmount = parseDecimalAmountToRaw(treasuryAmount, tokenMetadata.decimals, `${tokenMetadata.symbol} platform amount`);
+  if (treasuryRawAmount <= 0n) {
+    throw new Error('skill_fee_split requires a positive platform amount; fall back to transfer_spl when the cut rounds to zero.');
+  }
+  const totalRaw = authorRawAmount + treasuryRawAmount;
+  const sourceAta = associatedTokenAddress(tokenMetadata.mint, owner, tokenMetadata.tokenProgramId);
+  const authorAta = associatedTokenAddress(tokenMetadata.mint, authorRecipient, tokenMetadata.tokenProgramId);
+  const treasuryAta = associatedTokenAddress(tokenMetadata.mint, treasuryRecipient, tokenMetadata.tokenProgramId);
+  const sourceBalance = await connection.getTokenAccountBalance(sourceAta, 'confirmed').catch(() => null);
+  if (!sourceBalance || BigInt(sourceBalance.value.amount) < totalRaw) {
+    throw new Error(`Insufficient ${tokenMetadata.symbol} balance for ${authorAmount} + ${treasuryAmount}.`);
+  }
+
+  const transaction = new Transaction();
+  const [authorAccount, treasuryAccount] = await Promise.all([
+    connection.getAccountInfo(authorAta, 'confirmed'),
+    connection.getAccountInfo(treasuryAta, 'confirmed'),
+  ]);
+  if (!authorAccount) {
+    transaction.add(createAssociatedTokenAccountInstruction(owner, authorAta, authorRecipient, tokenMetadata));
+  }
+  if (!treasuryAccount) {
+    transaction.add(createAssociatedTokenAccountInstruction(owner, treasuryAta, treasuryRecipient, tokenMetadata));
+  }
+  transaction.add(createTransferCheckedInstruction(
+    sourceAta,
+    tokenMetadata.mint,
+    authorAta,
+    owner,
+    authorRawAmount,
+    tokenMetadata.decimals,
+    tokenMetadata.tokenProgramId,
+  ));
+  transaction.add(createTransferCheckedInstruction(
+    sourceAta,
+    tokenMetadata.mint,
+    treasuryAta,
+    owner,
+    treasuryRawAmount,
+    tokenMetadata.decimals,
+    tokenMetadata.tokenProgramId,
+  ));
+  addOptionalMemo(transaction, owner, stringParam(action, 'memo'));
+
+  const summary = `Pay author ${authorAmount} ${tokenMetadata.symbol} + Agentic ${treasuryAmount} ${tokenMetadata.symbol}`;
+  const txid = await signAndBroadcastBrowserTransaction(action, transaction, summary, toastContext);
+  markBrowserTransactionSubmitted(action, txid);
+  const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid, toastContext);
+  return {
+    txid,
+    txStatus,
+    explorerUrl: explorerUrl(txid, action.cluster),
+    result: {
+      token: tokenMetadata.symbol,
+      mint: tokenMetadata.mintText,
+      authorRecipient: authorRecipient.toBase58(),
+      authorAmount,
+      treasuryRecipient: treasuryRecipient.toBase58(),
+      treasuryAmount,
     },
   };
 }
@@ -38571,6 +38722,7 @@ function preparedActionCardTitle(action: PreparedAction): string {
   if (action.recurringId) return 'Repeat payment approval';
   if (action.kind === 'transfer_sol' || action.kind === 'transfer_spl') return 'Transfer approval';
   if (action.kind === 'swap') return 'Swap approval';
+  if (action.kind === 'skill_fee_split') return 'Skill payment';
   const connectorDisplay = connectorActionDisplayParts(action.kind, action.params);
   if (connectorDisplay) return connectorDisplay.title;
   return action.summary;
@@ -42104,8 +42256,37 @@ function amountLabel(action: PreparedAction): string {
   if (typeof action.params.amountSol === 'string') return `${action.params.amountSol} SOL`;
   if (action.kind === 'swap') return swapAmountLabel(action);
   if (action.kind === 'transfer_sol' && typeof action.params.amount === 'string') return `${action.params.amount} SOL`;
+  if (action.kind === 'skill_fee_split') {
+    const author = stringParam(action, 'authorAmount');
+    const platform = stringParam(action, 'treasuryAmount');
+    const token = stringParam(action, 'token') ?? '';
+    if (author && platform) {
+      const total = sumDecimalStringsSafe(author, platform);
+      const suffix = token ? ` ${token}` : '';
+      return `${total}${suffix} (author ${author} + Agentic ${platform})`;
+    }
+  }
   if (typeof action.params.amount === 'string') return action.params.amount;
   return 'n/a';
+}
+
+function sumDecimalStringsSafe(a: string, b: string): string {
+  if (!/^\d+(\.\d+)?$/.test(a) || !/^\d+(\.\d+)?$/.test(b)) return a;
+  const decimals = Math.max(decimalPlacesOf(a), decimalPlacesOf(b));
+  const scale = (value: string): bigint => {
+    const [intPart, fracPart = ''] = value.split('.');
+    return BigInt((intPart ?? '0') + fracPart.padEnd(decimals, '0').slice(0, decimals));
+  };
+  const sum = scale(a) + scale(b);
+  if (decimals === 0) return sum.toString();
+  const raw = sum.toString().padStart(decimals + 1, '0');
+  const intPart = raw.slice(0, -decimals);
+  const fracPart = raw.slice(-decimals).replace(/0+$/, '');
+  return fracPart ? `${intPart}.${fracPart}` : intPart;
+}
+
+function decimalPlacesOf(value: string): number {
+  return value.includes('.') ? (value.split('.')[1] ?? '').length : 0;
 }
 
 type ConnectorActionAmountInfo = {

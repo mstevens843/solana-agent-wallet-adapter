@@ -170,13 +170,26 @@ function envelopeSummary(envelope: SpendEnvelope): string {
       const token = schedule.outputToken ?? schedule.token;
       const cadence = titleCase(schedule.cadence);
       const recipient = schedule.recipient ? ` to ${shortAddress(schedule.recipient)}` : '';
-      return `${schedule.amount} ${token} ${cadence}${recipient}`;
+      const displayAmount = scheduleDisplayAmount(schedule);
+      return `${displayAmount} ${token} ${cadence}${recipient}`;
     }
     case 'streaming': {
       const token = streamingTokenLabel(envelope);
       return `${envelope.session.spentAmount} of ${envelope.session.capAmount} ${token} streamed`;
     }
   }
+}
+
+/**
+ * For skill-monetization schedules with a platform split, `schedule.amount`
+ * stores the author portion only; the user actually pays `metadata.totalAmount`.
+ * Always render the user-facing total in user-visible UI.
+ */
+function scheduleDisplayAmount(schedule: { amount: string; metadata?: unknown }): string {
+  const metadata = schedule.metadata as Record<string, unknown> | undefined | null;
+  const total = metadata?.totalAmount;
+  if (typeof total === 'string' && /^\d+(\.\d+)?$/.test(total)) return total;
+  return schedule.amount;
 }
 
 function envelopePrimaryAction(envelope: SpendEnvelope): string {

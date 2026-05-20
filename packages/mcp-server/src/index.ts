@@ -173,6 +173,7 @@ export type {
 export { buildWormholeSdkClient } from './adapters/wormhole/sdkClient.js';
 export type {
   AgentWalletActionServiceOptions,
+  ConnectorSecretsLoader,
   PrepareBlinkActionInput,
   PrepareSwapInput,
   PrepareTransferSolInput,

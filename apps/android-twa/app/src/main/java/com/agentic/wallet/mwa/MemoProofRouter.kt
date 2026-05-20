@@ -61,7 +61,15 @@ internal object MemoProofRouter {
      *    `fallbackOnBlankPackage` to false via remote config.
      */
     fun useMemoTxFallback(walletPackage: String): Boolean {
-        val routerConfig = RemoteConfigLoader.config().memoProofRouter
+        val config = RemoteConfigLoader.config()
+        // Operator kill-switch: when ops flips `forceMemoTxFallback` to true via
+        // `/api/android-config`, route EVERY wallet through memo-tx regardless of
+        // `messageSigningUnsupported()` / `fallbackOnBlankPackage` heuristics.
+        // Use during a sign_messages incident — the memo-tx path is the
+        // server-verifier's most-tested branch and the safest fallback. Default
+        // is false, so this is a no-op unless ops explicitly toggles it.
+        if (config.featureFlags["forceMemoTxFallback"] == true) return true
+        val routerConfig = config.memoProofRouter
         if (walletPackage.isBlank()) return routerConfig.fallbackOnBlankPackage
         return WalletRegistry.messageSigningUnsupported(walletPackage)
     }

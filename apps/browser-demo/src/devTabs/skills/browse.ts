@@ -35,6 +35,8 @@ export interface BrowseState {
   installParamErrors: Record<string, string>;
   installErrors: Record<string, string>;
   monetizationAccepted: Record<string, boolean>;
+  treasuryActive: boolean;
+  platformFeeBps: number;
 }
 
 const state: BrowseState = {
@@ -47,6 +49,8 @@ const state: BrowseState = {
   installParamErrors: {},
   installErrors: {},
   monetizationAccepted: {},
+  treasuryActive: false,
+  platformFeeBps: 0,
 };
 
 let catalogLoadSeq = 0;
@@ -61,6 +65,8 @@ export function __resetStateForTests(next: Partial<BrowseState> = {}): void {
   state.installParamErrors = next.installParamErrors ?? {};
   state.installErrors = next.installErrors ?? {};
   state.monetizationAccepted = next.monetizationAccepted ?? {};
+  state.treasuryActive = next.treasuryActive ?? false;
+  state.platformFeeBps = next.platformFeeBps ?? 0;
   catalogLoadSeq = 0;
 }
 
@@ -105,14 +111,70 @@ export function categoryLabel(category: SkillCategory | string): string {
   return String(category);
 }
 
-export function formatMonetization(m: SkillMonetization | undefined): string {
+export interface MonetizationDisplayContext {
+  treasuryActive: boolean;
+  platformFeeBps: number;
+}
+
+export function formatMonetization(
+  m: SkillMonetization | undefined,
+  context: MonetizationDisplayContext = { treasuryActive: false, platformFeeBps: 0 },
+): string {
   if (!m) return '';
-  if (m.kind === 'one-time' && m.amount) return `$${m.amount} once · paid to author`;
-  if (m.kind === 'monthly' && m.amount) return `$${m.amount}/mo · paid to author`;
   if (m.kind === 'performance-fee' && typeof m.feePercent === 'number') {
-    return `${m.feePercent}% of profit · paid to author`;
+    return context.treasuryActive
+      ? `${m.feePercent}% of profit · paid to author · platform fee deferred`
+      : `${m.feePercent}% of profit · paid to author`;
+  }
+  if ((m.kind === 'one-time' || m.kind === 'monthly') && m.amount) {
+    const cadence = m.kind === 'one-time' ? ` once` : `/mo`;
+    // Show the token alongside the amount so $SKR-priced skills don't read as
+    // implicit-USDC. Default to USDC for manifests that predate the token
+    // field.
+    const token = m.token ?? 'USDC';
+    const base = `$${m.amount} ${token}${cadence}`;
+    if (!context.treasuryActive || context.platformFeeBps <= 0) {
+      return `${base} · paid to author`;
+    }
+    const split = splitDecimalForDisplay(m.amount, context.platformFeeBps);
+    if (!split) return `${base} · paid to author`;
+    return `${base} · Author $${split.author} · Agentic $${split.platform}`;
   }
   return 'Paid to author';
+}
+
+interface DisplaySplit {
+  author: string;
+  platform: string;
+}
+
+function splitDecimalForDisplay(amount: string, feeBps: number): DisplaySplit | null {
+  if (!/^\d+(\.\d+)?$/.test(amount)) return null;
+  if (feeBps <= 0 || feeBps >= 10_000) return null;
+  // Display-only split, used to render Author/Agentic shares on the browse
+  // card. Uses 6 decimals (USDC, default $SKR) as the canonical scale — the
+  // server is authoritative on the actual split using the manifest token's
+  // real decimals. A drift at the 7th decimal place is invisible in UI.
+  const decimals = 6;
+  const [intPart, fracPart = ''] = amount.split('.');
+  const padded = fracPart.padEnd(decimals, '0').slice(0, decimals);
+  const raw = BigInt((intPart ?? '0') + padded);
+  if (raw === 0n) return null;
+  const platformRaw = (raw * BigInt(feeBps)) / 10_000n;
+  if (platformRaw === 0n) return null;
+  const authorRaw = raw - platformRaw;
+  return {
+    author: rawToDisplay(authorRaw, decimals),
+    platform: rawToDisplay(platformRaw, decimals),
+  };
+}
+
+function rawToDisplay(value: bigint, decimals: number): string {
+  if (decimals === 0) return value.toString();
+  const raw = value.toString().padStart(decimals + 1, '0');
+  const intPart = raw.slice(0, -decimals);
+  const fracPart = raw.slice(-decimals).replace(/0+$/, '');
+  return fracPart ? `${intPart}.${fracPart}` : intPart;
 }
 
 const INSTALL_PARAM_RE = /\{\{install\.([A-Za-z][A-Za-z0-9_]*)\}\}/g;
@@ -280,7 +342,10 @@ function renderMonetizationAcceptance(row: CardRow, busy: boolean): string {
   if (!row.manifest.monetization) return '';
   if (row.installStatus === 'active' || row.installStatus === 'paused') return '';
   const checked = state.monetizationAccepted[row.manifest.id] ? 'checked' : '';
-  const terms = formatMonetization(row.manifest.monetization) || 'Paid author terms';
+  const terms = formatMonetization(row.manifest.monetization, {
+    treasuryActive: state.treasuryActive,
+    platformFeeBps: state.platformFeeBps,
+  }) || 'Paid author terms';
   return `
     <label class="skills-browse-paid-terms">
       <input
@@ -329,7 +394,10 @@ function renderInstallError(row: CardRow): string {
 
 export function renderCard(row: CardRow, busyInstallId: string | null): string {
   const busy = busyInstallId === row.manifest.id;
-  const monetizationLine = formatMonetization(row.manifest.monetization);
+  const monetizationLine = formatMonetization(row.manifest.monetization, {
+    treasuryActive: state.treasuryActive,
+    platformFeeBps: state.platformFeeBps,
+  });
   return `
     <article class="skills-browse-card" data-skill-id="${escapeHtml(row.manifest.id)}">
       <div class="skills-browse-card-head">
@@ -475,6 +543,15 @@ export async function loadCatalog(): Promise<void> {
   const installMap = new Map<string, SkillInstallStatus>();
   for (const i of installs) {
     installMap.set(i.skillId, i.status);
+  }
+
+  if (isObject(catalogRes.value)) {
+    state.treasuryActive = Boolean((catalogRes.value as { treasuryActive?: unknown }).treasuryActive);
+    const feeBps = (catalogRes.value as { platformFeeBps?: unknown }).platformFeeBps;
+    state.platformFeeBps = typeof feeBps === 'number' && Number.isFinite(feeBps) ? feeBps : 0;
+  } else {
+    state.treasuryActive = false;
+    state.platformFeeBps = 0;
   }
 
   state.rows = manifests.map((m) => ({

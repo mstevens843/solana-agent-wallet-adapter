@@ -10,6 +10,7 @@ export const publicAppRoutes = [
   '/mwa-test',
   '/privacy',
   '/terms',
+  '/delete-account',
 ];
 
 export const publicAppRouteDirs = publicAppRoutes

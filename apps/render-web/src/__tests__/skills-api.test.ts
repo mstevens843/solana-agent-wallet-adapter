@@ -41,6 +41,12 @@ const FIXED_NOW = new Date('2026-05-14T12:00:00.000Z');
 const ENV_KEYS = [
   'AGENTIC_DEV_AP2_ACP',
   'AGENTIC_DEV_WALLET_ALLOWLIST',
+  'TREASURY_WALLET',
+  'PLATFORM_FEE_BPS',
+  'SKR_TOKEN_MINT',
+  'SKR_TOKEN_DECIMALS',
+  'SKR_SKILL_BOUNTY_ACTIVE',
+  'SKR_SESSION_DEFAULT',
 ] as const;
 
 type EnvSnapshot = Partial<Record<(typeof ENV_KEYS)[number], string | undefined>>;
@@ -243,11 +249,12 @@ async function rawRequest(
   port: number,
   method: string,
   path: string,
-  options: { wallet?: string; body?: unknown; rawBody?: string } = {},
+  options: { wallet?: string; body?: unknown; rawBody?: string; headers?: Record<string, string> } = {},
 ): Promise<TestResponse> {
   return new Promise((resolve, reject) => {
     const headers: Record<string, string> = {
       'content-type': 'application/json',
+      ...(options.headers ?? {}),
     };
     if (options.wallet) headers['x-test-wallet'] = options.wallet;
     const req = httpRequest(
@@ -296,8 +303,12 @@ function postJson(
   path: string,
   body: unknown,
   wallet?: string,
+  extraHeaders?: Record<string, string>,
 ): Promise<TestResponse> {
-  return rawRequest(port, 'POST', path, wallet ? { wallet, body } : { body });
+  const options: { wallet?: string; body?: unknown; headers?: Record<string, string> } = { body };
+  if (wallet) options.wallet = wallet;
+  if (extraHeaders) options.headers = extraHeaders;
+  return rawRequest(port, 'POST', path, options);
 }
 
 function makeManifest(overrides: Partial<SkillManifest> = {}): SkillManifest {
@@ -424,8 +435,19 @@ describe('skillsRoutes API', () => {
       await withSkillsServer(DEFAULT_ENV, async ({ port }) => {
         const res = await getJson(port, '/api/skills', DEV_WALLET);
         expect(res.status).toBe(200);
-        expect(res.body).toEqual({ skills: [] });
+        expect(res.body).toEqual({ skills: [], treasuryActive: false, platformFeeBps: 0 });
       });
+    });
+
+    it('surfaces treasury config in the catalog response when TREASURY_WALLET is set', async () => {
+      await withSkillsServer(
+        { ...DEFAULT_ENV, TREASURY_WALLET: DEV_WALLET, PLATFORM_FEE_BPS: '1500' },
+        async ({ port }) => {
+          const res = await getJson(port, '/api/skills', DEV_WALLET);
+          expect(res.status).toBe(200);
+          expect(res.body).toMatchObject({ treasuryActive: true, platformFeeBps: 1500 });
+        },
+      );
     });
 
     it('lazy-seeds LAUNCH_SKILLS on first GET', async () => {
@@ -631,6 +653,133 @@ describe('skillsRoutes API', () => {
           skills: [],
         });
       });
+    });
+  });
+
+  describe('GET /api/skills/platform-earnings', () => {
+    it('returns 503 when TREASURY_WALLET is unconfigured', async () => {
+      await withSkillsServer(DEFAULT_ENV, async ({ port }) => {
+        const res = await getJson(port, '/api/skills/platform-earnings', DEV_WALLET);
+        expect(res.status).toBe(503);
+        expect(res.body).toMatchObject({ error: 'treasury_not_configured' });
+      });
+    });
+
+    it('returns 403 treasury_mismatch when caller is not the treasury wallet', async () => {
+      await withSkillsServer(
+        { ...DEFAULT_ENV, TREASURY_WALLET: AUTHOR_WALLET, PLATFORM_FEE_BPS: '1500' },
+        async ({ port }) => {
+          const res = await getJson(port, '/api/skills/platform-earnings', DEV_WALLET);
+          expect(res.status).toBe(403);
+          expect(res.body).toMatchObject({ error: 'treasury_mismatch' });
+        },
+      );
+    });
+
+    it('aggregates platformAmount across schedules tagged for the configured treasury', async () => {
+      await withSkillsServer(
+        { ...DEFAULT_ENV, TREASURY_WALLET: DEV_WALLET, PLATFORM_FEE_BPS: '1500' },
+        async ({ port, workflowStore, recurringStoreFor }) => {
+          const recurring = recurringStoreFor(workflowStore);
+          await recurring.saveSchedule(DEV_WALLET, makeRecurringSchedule({
+            id: 'rec_a',
+            walletAddress: DEV_WALLET,
+            amount: '8.5',
+            metadata: {
+              source: 'skill_install_monetization',
+              skillInstallId: 'install_a',
+              skillId: 'friday-dca',
+              monetizationKind: 'monthly',
+              platformWallet: DEV_WALLET,
+              platformAmount: '1.5',
+              totalAmount: '10',
+              platformFeeBps: 1500,
+            },
+          }));
+          await recurring.saveSchedule(OTHER_WALLET, makeRecurringSchedule({
+            id: 'rec_b',
+            walletAddress: OTHER_WALLET,
+            amount: '4.25',
+            metadata: {
+              source: 'skill_install_monetization',
+              skillInstallId: 'install_b',
+              skillId: 'friday-dca',
+              monetizationKind: 'monthly',
+              platformWallet: DEV_WALLET,
+              platformAmount: '0.75',
+              totalAmount: '5',
+              platformFeeBps: 1500,
+            },
+          }));
+          await recurring.saveSchedule(OTHER_WALLET, makeRecurringSchedule({
+            id: 'rec_c',
+            walletAddress: OTHER_WALLET,
+            amount: '8.5',
+            metadata: {
+              source: 'skill_install_monetization',
+              skillInstallId: 'install_c',
+              skillId: 'yield-auto-rotate',
+              monetizationKind: 'monthly',
+              platformWallet: DEV_WALLET,
+              platformAmount: '1.5',
+              totalAmount: '10',
+              platformFeeBps: 1500,
+            },
+          }));
+
+          const res = await getJson(port, '/api/skills/platform-earnings', DEV_WALLET);
+          expect(res.status).toBe(200);
+          expect(res.body).toMatchObject({
+            treasuryWallet: DEV_WALLET,
+            platformFeeBps: 1500,
+            currency: 'USDC',
+            totalMonthlyUsdc: '3.75',
+            skills: [
+              { skillId: 'friday-dca', monthlyUsdc: '2.25', activeSubscriptions: 2 },
+              { skillId: 'yield-auto-rotate', monthlyUsdc: '1.5', activeSubscriptions: 1 },
+            ],
+          });
+        },
+      );
+    });
+
+    it('skips schedules without platformAmount or with a different treasury', async () => {
+      await withSkillsServer(
+        { ...DEFAULT_ENV, TREASURY_WALLET: DEV_WALLET, PLATFORM_FEE_BPS: '1500' },
+        async ({ port, workflowStore, recurringStoreFor }) => {
+          const recurring = recurringStoreFor(workflowStore);
+          // No platformAmount → skip.
+          await recurring.saveSchedule(DEV_WALLET, makeRecurringSchedule({
+            id: 'no_platform',
+            amount: '10',
+            metadata: {
+              source: 'skill_install_monetization',
+              skillInstallId: 'install_x',
+              skillId: 'friday-dca',
+              monetizationKind: 'monthly',
+            },
+          }));
+          // Different treasury → skip.
+          await recurring.saveSchedule(DEV_WALLET, makeRecurringSchedule({
+            id: 'other_treasury',
+            amount: '8.5',
+            metadata: {
+              source: 'skill_install_monetization',
+              skillInstallId: 'install_y',
+              skillId: 'friday-dca',
+              monetizationKind: 'monthly',
+              platformWallet: OTHER_WALLET,
+              platformAmount: '1.5',
+              totalAmount: '10',
+              platformFeeBps: 1500,
+            },
+          }));
+
+          const res = await getJson(port, '/api/skills/platform-earnings', DEV_WALLET);
+          expect(res.status).toBe(200);
+          expect(res.body).toMatchObject({ totalMonthlyUsdc: '0', skills: [] });
+        },
+      );
     });
   });
 
@@ -1141,7 +1290,7 @@ describe('skillsRoutes API', () => {
       });
     });
 
-    it('rejects unsupported one-time monetization in the v1 install flow', async () => {
+    it('creates a one-time transfer_spl approval when treasury is unconfigured', async () => {
       const manifest = makeManifest({
         id: 'one-time-skill',
         monetization: {
@@ -1163,11 +1312,177 @@ describe('skillsRoutes API', () => {
           },
           DEV_WALLET,
         );
-        expect(res.status).toBe(400);
-        expect(res.body).toMatchObject({ error: 'unsupported_monetization' });
+        expect(res.status).toBe(201);
+        const install = (res.body as { install: SkillInstallRecord }).install;
+        expect(install.monetizationScheduleId).toBeUndefined();
+        const oneTimeApprovalId = (install.metadata as { oneTimeApprovalId?: string }).oneTimeApprovalId;
+        expect(typeof oneTimeApprovalId).toBe('string');
         const recurring = recurringStoreFor(workflowStore);
         expect(await recurring.listSchedules(DEV_WALLET)).toHaveLength(0);
-        expect(await workflowStore.listSkillInstallsForWallet(DEV_WALLET)).toHaveLength(0);
+        const approvals = await workflowStore.listApprovals(DEV_WALLET);
+        expect(approvals).toHaveLength(1);
+        expect(approvals[0]?.kind).toBe('transfer_spl');
+        expect(approvals[0]?.recipient).toBe(AUTHOR_WALLET);
+        expect(approvals[0]?.amount).toBe('10');
+      });
+    });
+
+    it('creates a one-time skill_fee_split approval when TREASURY_WALLET is set', async () => {
+      const manifest = makeManifest({
+        id: 'one-time-split',
+        monetization: {
+          kind: 'one-time',
+          amount: '10',
+          payoutWallet: AUTHOR_WALLET,
+        },
+      });
+      await withSkillsServer(
+        { ...DEFAULT_ENV, TREASURY_WALLET: DEV_WALLET, PLATFORM_FEE_BPS: '1500' },
+        async ({ port, workflowStore, recurringStoreFor }) => {
+          await seedManifest(workflowStore, manifest);
+          const res = await postJson(
+            port,
+            '/api/skills/installs',
+            {
+              skillId: 'one-time-split',
+              manifestVersion: '1.0.0',
+              caps: defaultCaps(),
+              acceptMonetization: true,
+            },
+            DEV_WALLET,
+          );
+          expect(res.status).toBe(201);
+          const install = (res.body as { install: SkillInstallRecord }).install;
+          expect(install.metadata).toMatchObject({
+            monetizationSplit: {
+              platformWallet: DEV_WALLET,
+              platformAmount: '1.5',
+              totalAmount: '10',
+              platformFeeBps: 1500,
+            },
+          });
+          const recurring = recurringStoreFor(workflowStore);
+          expect(await recurring.listSchedules(DEV_WALLET)).toHaveLength(0);
+          const approvals = await workflowStore.listApprovals(DEV_WALLET);
+          expect(approvals).toHaveLength(1);
+          const approval = approvals[0]!;
+          expect(approval.kind).toBe('skill_fee_split');
+          expect(approval.params).toMatchObject({
+            token: 'USDC',
+            authorRecipient: AUTHOR_WALLET,
+            authorAmount: '8.5',
+            treasuryRecipient: DEV_WALLET,
+            treasuryAmount: '1.5',
+          });
+        },
+      );
+    });
+
+    it('creates a monthly schedule with skill_fee_split metadata when TREASURY_WALLET is set', async () => {
+      const manifest = makeManifest({
+        id: 'monthly-split',
+        monetization: {
+          kind: 'monthly',
+          amount: '10',
+          payoutWallet: AUTHOR_WALLET,
+        },
+      });
+      await withSkillsServer(
+        { ...DEFAULT_ENV, TREASURY_WALLET: DEV_WALLET, PLATFORM_FEE_BPS: '1500' },
+        async ({ port, workflowStore, recurringStoreFor }) => {
+          await seedManifest(workflowStore, manifest);
+          const res = await postJson(
+            port,
+            '/api/skills/installs',
+            {
+              skillId: 'monthly-split',
+              manifestVersion: '1.0.0',
+              caps: defaultCaps(),
+              acceptMonetization: true,
+            },
+            DEV_WALLET,
+          );
+          expect(res.status).toBe(201);
+          const recurring = recurringStoreFor(workflowStore);
+          const schedules = await recurring.listSchedules(DEV_WALLET);
+          expect(schedules).toHaveLength(1);
+          const schedule = schedules[0]!;
+          expect(schedule.recipient).toBe(AUTHOR_WALLET);
+          expect(schedule.amount).toBe('8.5');
+          expect(schedule.metadata).toMatchObject({
+            source: 'skill_install_monetization',
+            platformWallet: DEV_WALLET,
+            platformAmount: '1.5',
+            totalAmount: '10',
+            platformFeeBps: 1500,
+          });
+        },
+      );
+    });
+
+    it('falls back to a single-recipient monthly schedule when TREASURY_WALLET is unset', async () => {
+      const manifest = makeManifest({
+        id: 'monthly-no-split',
+        monetization: {
+          kind: 'monthly',
+          amount: '10',
+          payoutWallet: AUTHOR_WALLET,
+        },
+      });
+      await withSkillsServer(DEFAULT_ENV, async ({ port, workflowStore, recurringStoreFor }) => {
+        await seedManifest(workflowStore, manifest);
+        const res = await postJson(
+          port,
+          '/api/skills/installs',
+          {
+            skillId: 'monthly-no-split',
+            manifestVersion: '1.0.0',
+            caps: defaultCaps(),
+            acceptMonetization: true,
+          },
+          DEV_WALLET,
+        );
+        expect(res.status).toBe(201);
+        const recurring = recurringStoreFor(workflowStore);
+        const schedules = await recurring.listSchedules(DEV_WALLET);
+        expect(schedules).toHaveLength(1);
+        const schedule = schedules[0]!;
+        expect(schedule.recipient).toBe(AUTHOR_WALLET);
+        expect(schedule.amount).toBe('10');
+        expect(schedule.metadata).toMatchObject({ source: 'skill_install_monetization' });
+        expect((schedule.metadata as { platformWallet?: unknown }).platformWallet).toBeUndefined();
+      });
+    });
+
+    it('accepts performance-fee installs with deferred-settlement metadata', async () => {
+      const manifest = makeManifest({
+        id: 'perf-fee-skill',
+        monetization: {
+          kind: 'performance-fee',
+          feePercent: 10,
+          payoutWallet: AUTHOR_WALLET,
+        },
+      });
+      await withSkillsServer(DEFAULT_ENV, async ({ port, workflowStore, recurringStoreFor }) => {
+        await seedManifest(workflowStore, manifest);
+        const res = await postJson(
+          port,
+          '/api/skills/installs',
+          {
+            skillId: 'perf-fee-skill',
+            manifestVersion: '1.0.0',
+            caps: defaultCaps(),
+            acceptMonetization: true,
+          },
+          DEV_WALLET,
+        );
+        expect(res.status).toBe(201);
+        const install = (res.body as { install: SkillInstallRecord }).install;
+        expect(install.metadata).toMatchObject({ performanceFeeDeferred: true });
+        expect(install.monetizationScheduleId).toBeUndefined();
+        const recurring = recurringStoreFor(workflowStore);
+        expect(await recurring.listSchedules(DEV_WALLET)).toHaveLength(0);
+        expect(await workflowStore.listApprovals(DEV_WALLET)).toHaveLength(0);
       });
     });
 
@@ -1194,6 +1509,186 @@ describe('skillsRoutes API', () => {
         const recurring = recurringStoreFor(workflowStore);
         expect(await recurring.listSchedules(DEV_WALLET)).toHaveLength(0);
         expect(await workflowStore.listSkillInstallsForWallet(DEV_WALLET)).toHaveLength(0);
+      });
+    });
+
+    // ─── $SKR monetization (Android-only bounty + fail-closed guard) ──────
+    //
+    // Coverage for the install-time SKR gating added in the Solana Mobile
+    // Seeker rollout. The guard at skillsRoutes.handleInstall is fail-closed:
+    // a $SKR-priced manifest must be rejected up-front on deployments that
+    // didn't set `SKR_TOKEN_MINT`, otherwise the install would succeed and
+    // the resulting recurring schedule would later be rejected by
+    // `isSupportedCloudTransferToken` at execution time — a silent failure
+    // for the installer.
+    describe('$SKR monetization', () => {
+      // Real Solana base58 pubkey (USDC mint) — passes the cloud's base58
+      // validators without smuggling a real $SKR mint dependency. The mint
+      // identity doesn't matter for these unit tests; we just need a value
+      // that survives `readSkrMint`.
+      const VALID_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+      it('rejects $SKR-priced install with skr_not_configured when SKR_TOKEN_MINT is unset', async () => {
+        const manifest = makeManifest({
+          id: 'skr-priced-uncfg',
+          monetization: {
+            kind: 'monthly',
+            payoutWallet: AUTHOR_WALLET,
+            amount: '5',
+            token: 'SKR',
+          },
+        });
+        await withSkillsServer(DEFAULT_ENV, async ({ port, workflowStore, recurringStoreFor }) => {
+          await seedManifest(workflowStore, manifest);
+          const res = await postJson(
+            port,
+            '/api/skills/installs',
+            {
+              skillId: 'skr-priced-uncfg',
+              manifestVersion: '1.0.0',
+              caps: defaultCaps(),
+              acceptMonetization: true,
+            },
+            DEV_WALLET,
+          );
+          expect(res.status).toBe(400);
+          expect(res.body).toMatchObject({
+            error: 'skr_not_configured',
+            path: '$.monetization.token',
+          });
+          // Critical assertion: no install/schedule was persisted. The whole
+          // install transaction unwinds so the user isn't charged for a
+          // schedule that can't execute.
+          const recurring = recurringStoreFor(workflowStore);
+          expect(await recurring.listSchedules(DEV_WALLET)).toHaveLength(0);
+          expect(await workflowStore.listSkillInstallsForWallet(DEV_WALLET)).toHaveLength(0);
+        });
+      });
+
+      it('accepts $SKR-priced install when SKR_TOKEN_MINT is configured and records monetizationToken=SKR', async () => {
+        const manifest = makeManifest({
+          id: 'skr-priced-cfg',
+          monetization: {
+            kind: 'monthly',
+            payoutWallet: AUTHOR_WALLET,
+            amount: '5',
+            token: 'SKR',
+          },
+        });
+        const env: EnvSnapshot = { ...DEFAULT_ENV, SKR_TOKEN_MINT: VALID_MINT };
+        await withSkillsServer(env, async ({ port, workflowStore, recurringStoreFor }) => {
+          await seedManifest(workflowStore, manifest);
+          const res = await postJson(
+            port,
+            '/api/skills/installs',
+            {
+              skillId: 'skr-priced-cfg',
+              manifestVersion: '1.0.0',
+              caps: defaultCaps(),
+              acceptMonetization: true,
+            },
+            DEV_WALLET,
+          );
+          expect(res.status).toBe(201);
+          const recurring = recurringStoreFor(workflowStore);
+          const schedules = await recurring.listSchedules(DEV_WALLET);
+          expect(schedules).toHaveLength(1);
+          expect(schedules[0]).toMatchObject({ token: 'SKR' });
+          expect(schedules[0]?.metadata).toMatchObject({ monetizationToken: 'SKR' });
+        });
+      });
+
+      it('records bountyApplied + waives platform fee when Android client installs $SKR-priced skill with bounty active', async () => {
+        // Treasury must be configured for the bounty waiver to be observable;
+        // otherwise there's no platform fee to waive in the first place.
+        const env: EnvSnapshot = {
+          ...DEFAULT_ENV,
+          SKR_TOKEN_MINT: VALID_MINT,
+          SKR_SKILL_BOUNTY_ACTIVE: 'true',
+          TREASURY_WALLET: '11111111111111111111111111111111',
+          PLATFORM_FEE_BPS: '1500',
+        };
+        const manifest = makeManifest({
+          id: 'skr-bounty',
+          monetization: {
+            kind: 'monthly',
+            payoutWallet: AUTHOR_WALLET,
+            amount: '5',
+            token: 'SKR',
+          },
+        });
+        await withSkillsServer(env, async ({ port, workflowStore, recurringStoreFor }) => {
+          await seedManifest(workflowStore, manifest);
+          const res = await postJson(
+            port,
+            '/api/skills/installs',
+            {
+              skillId: 'skr-bounty',
+              manifestVersion: '1.0.0',
+              caps: defaultCaps(),
+              acceptMonetization: true,
+            },
+            DEV_WALLET,
+            { 'x-agentic-client': 'android-bundled' },
+          );
+          expect(res.status).toBe(201);
+          const install = (res.body as { install: SkillInstallRecord }).install;
+          expect(install.metadata).toMatchObject({
+            monetizationBounty: { program: 'android_skr_v1', token: 'SKR' },
+          });
+          // The bounty waives the platform fee — the recurring schedule
+          // should carry the full author amount, with no platformAmount
+          // metadata recorded.
+          const recurring = recurringStoreFor(workflowStore);
+          const schedules = await recurring.listSchedules(DEV_WALLET);
+          expect(schedules).toHaveLength(1);
+          expect(schedules[0]?.amount).toBe('5');
+          expect(schedules[0]?.metadata).toMatchObject({
+            bountyApplied: true,
+            bountyProgram: 'android_skr_v1',
+          });
+          expect(schedules[0]?.metadata).not.toHaveProperty('platformAmount');
+        });
+      });
+
+      it('does NOT apply the bounty when the same install comes from a web client', async () => {
+        const env: EnvSnapshot = {
+          ...DEFAULT_ENV,
+          SKR_TOKEN_MINT: VALID_MINT,
+          SKR_SKILL_BOUNTY_ACTIVE: 'true',
+          TREASURY_WALLET: '11111111111111111111111111111111',
+          PLATFORM_FEE_BPS: '1500',
+        };
+        const manifest = makeManifest({
+          id: 'skr-web-no-bounty',
+          monetization: {
+            kind: 'monthly',
+            payoutWallet: AUTHOR_WALLET,
+            amount: '5',
+            token: 'SKR',
+          },
+        });
+        await withSkillsServer(env, async ({ port, workflowStore, recurringStoreFor }) => {
+          await seedManifest(workflowStore, manifest);
+          const res = await postJson(
+            port,
+            '/api/skills/installs',
+            {
+              skillId: 'skr-web-no-bounty',
+              manifestVersion: '1.0.0',
+              caps: defaultCaps(),
+              acceptMonetization: true,
+            },
+            DEV_WALLET,
+            // No `x-agentic-client` header — this is the web path.
+          );
+          expect(res.status).toBe(201);
+          const install = (res.body as { install: SkillInstallRecord }).install;
+          expect(install.metadata).not.toHaveProperty('monetizationBounty');
+          const recurring = recurringStoreFor(workflowStore);
+          const schedules = await recurring.listSchedules(DEV_WALLET);
+          expect(schedules[0]?.metadata).toMatchObject({ platformAmount: expect.any(String) });
+        });
       });
     });
   });

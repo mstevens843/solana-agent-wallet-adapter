@@ -16,6 +16,7 @@ import { realmsAdapter } from './realms/index.js';
 import { saveAdapter } from './save/index.js';
 import { sanctumAdapter } from './sanctum/index.js';
 import { squadsAdapter } from './squads/index.js';
+import { phoenixAdapter } from './phoenix/index.js';
 import { tensorAdapter } from './tensor/index.js';
 import { wormholeAdapter } from './wormhole/index.js';
 import type { AdapterAction, DAppAdapter, DAppAdapterId } from './types.js';
@@ -40,6 +41,7 @@ const ADAPTERS: Partial<Record<DAppAdapterId, DAppAdapter>> = {
   realms: realmsAdapter,
   squads: squadsAdapter,
   wormhole: wormholeAdapter,
+  phoenix: phoenixAdapter,
 };
 
 export function listAdapters(): DAppAdapter[] {

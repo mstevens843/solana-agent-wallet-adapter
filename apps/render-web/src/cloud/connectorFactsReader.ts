@@ -3,6 +3,7 @@ import {
   AgentWalletActionService,
   DEFAULT_CONFIG,
   type ConnectorFactReadInput,
+  type ConnectorSecretsLoader,
   type DAppAdapterContext,
 } from '@solana-agent-wallet-adapter/mcp-server';
 import type { WorkflowCluster } from '@solana-agent-wallet-adapter/workflow';
@@ -16,9 +17,20 @@ export type StatelessConnectorFactsReader = (
   input: ConnectorReadFactsRequest,
 ) => Promise<Record<string, unknown>>;
 
+export interface CreateStatelessConnectorFactsReaderOptions {
+  /**
+   * Optional per-wallet BYO secret loader. When set, cloud reads pass `ctx.connectorSecrets` into the adapter so
+   * BYO-key connectors (Magic Eden, Tensor, Sanctum, Lulo, Phoenix) can authenticate with the user's saved
+   * credentials instead of falling back to env vars.
+   */
+  secretsLoader?: ConnectorSecretsLoader;
+}
+
 type WalletBackend = DAppAdapterContext['backend'];
 
-export function createStatelessConnectorFactsReader(): StatelessConnectorFactsReader {
+export function createStatelessConnectorFactsReader(
+  options: CreateStatelessConnectorFactsReaderOptions = {},
+): StatelessConnectorFactsReader {
   return async ({ cluster, walletAddress, ...input }) => {
     const rpcUrl = solanaRpcUrl(cluster);
     const service = new AgentWalletActionService({
@@ -29,6 +41,7 @@ export function createStatelessConnectorFactsReader(): StatelessConnectorFactsRe
         rpcUrl,
       },
       connection: new Connection(rpcUrl, 'confirmed'),
+      ...(options.secretsLoader ? { connectorSecretsLoader: options.secretsLoader } : {}),
     });
     return service.connectorReadFacts({
       ...input,

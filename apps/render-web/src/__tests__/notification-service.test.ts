@@ -60,6 +60,37 @@ describe('RecurringNotificationService', () => {
 
     expect(store.deliveries).toHaveLength(1);
   });
+
+  it('uses metadata.totalAmount in the webhook payload for skill-monetization splits', async () => {
+    // schedule.amount is the post-split author portion ($8.5). The user is
+    // actually being charged $10 (metadata.totalAmount). Webhook consumers
+    // need the total, not the author portion.
+    const store = new TestNotificationStore();
+    const schedule: RecurringScheduleRecord = {
+      ...recurringSchedule(),
+      token: 'USDC',
+      amount: '8.5',
+      metadata: {
+        source: 'skill_install_monetization',
+        skillInstallId: 'install_split',
+        skillId: 'friday-dca',
+        monetizationKind: 'monthly',
+        platformWallet: 'wallet_treasury',
+        platformAmount: '1.5',
+        totalAmount: '10',
+        platformFeeBps: 1500,
+      },
+    };
+    const occurrence = recurringOccurrence(schedule.id);
+    await store.saveSchedule(schedule.walletAddress, schedule);
+    await store.saveOccurrence(schedule.walletAddress, occurrence);
+    const service = new RecurringNotificationService(store, { idFactory: () => 'test' });
+    await service.enqueueOccurrenceReady(schedule.walletAddress, schedule.id, occurrence.id);
+    expect(store.deliveries).toHaveLength(1);
+    const payload = store.deliveries[0]?.payload as { amount: string; summary: string };
+    expect(payload.amount).toBe('10');
+    expect(payload.summary).toBe('10 USDC recurring approval');
+  });
 });
 
 class TestNotificationStore extends MemoryRecurringStore {

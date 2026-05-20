@@ -1,5 +1,12 @@
 import type { Connection } from '@solana/web3.js';
 
+import {
+  extractRows,
+  isRecord,
+  normalizeBaseUrl,
+  parseJson,
+  responseErrorDetail,
+} from '../_shared/jsonHelpers.js';
 import { parsePositiveSolDecimal } from '../solDecimal.js';
 import { AdapterError } from '../types.js';
 import {
@@ -24,6 +31,8 @@ import type {
   TensorWalletExposure,
   TensorWalletNftsResult,
 } from './client.js';
+
+const TENSOR_ROW_KEYS = ['escrowAccounts', 'escrows', 'accounts', 'results', 'data'] as const;
 
 type TensorFetch = (
   input: string | URL,
@@ -120,7 +129,7 @@ class TensorApiClient implements TensorClient {
 
   async fetchWalletExposure(_connection: Connection, walletAddress: string): Promise<TensorWalletExposure> {
     const json = await this.getJson('/user/escrow_accounts', { owner: walletAddress });
-    const rows = extractRows(json);
+    const rows = extractRows(json, TENSOR_ROW_KEYS);
     const marginBalanceLamports = rows.reduce((sum, row) => sum + escrowLamportsFromRow(row), 0n);
     return {
       walletAddress,
@@ -223,42 +232,6 @@ class TensorApiClient implements TensorClient {
       `Tensor REST client does not implement ${method} yet.`,
     );
   }
-}
-
-function normalizeBaseUrl(value: string): string {
-  return value.replace(/\/+$/, '');
-}
-
-function parseJson(text: string): unknown {
-  if (!text.trim()) return {};
-  try {
-    return JSON.parse(text) as unknown;
-  } catch {
-    return { message: text };
-  }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function responseErrorDetail(value: unknown): string | undefined {
-  if (!isRecord(value)) return undefined;
-  for (const key of ['message', 'error', 'detail']) {
-    const item = value[key];
-    if (typeof item === 'string' && item.trim()) return item.trim();
-  }
-  return undefined;
-}
-
-function extractRows(value: unknown): Record<string, unknown>[] {
-  if (Array.isArray(value)) return value.filter(isRecord);
-  if (!isRecord(value)) return [];
-  for (const key of ['escrowAccounts', 'escrows', 'accounts', 'results', 'data']) {
-    const rows = value[key];
-    if (Array.isArray(rows)) return rows.filter(isRecord);
-  }
-  return [value];
 }
 
 function escrowLamportsFromRow(row: Record<string, unknown>): bigint {

@@ -1,4 +1,4 @@
-import { createHash, createPublicKey, randomBytes, verify as verifyDetached } from 'node:crypto';
+import { createHash, createPublicKey, randomBytes, timingSafeEqual, verify as verifyDetached } from 'node:crypto';
 
 import type {
   AuthNonceResponse as SharedAuthNonceResponse,
@@ -364,11 +364,13 @@ function readCompactU16(bytes: Buffer, offset: number): { value: number; next: n
 }
 
 function buffersEqual(a: Buffer, b: Buffer): boolean {
+  // Length pre-check keeps the false-on-mismatch contract (timingSafeEqual
+  // throws on length-mismatch). Comparison itself is constant-time, so a
+  // timing-side-channel attacker can't learn the position of the first
+  // differing byte during fee-payer pubkey verification in
+  // verifyTxMemoProof. Defense-in-depth even though public keys aren't secret.
   if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i += 1) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
+  return timingSafeEqual(a, b);
 }
 
 export function normalizeWalletAddress(value: unknown): string {

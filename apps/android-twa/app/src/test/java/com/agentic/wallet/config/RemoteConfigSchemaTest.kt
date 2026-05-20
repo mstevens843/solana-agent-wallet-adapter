@@ -37,7 +37,7 @@ class RemoteConfigSchemaTest {
                 "proofMemoPrefix": "Agentic plan review proof v1\nSHA-256: ",
                 "fallbackOnBlankPackage": true
               },
-              "featureFlags": {}
+              "featureFlags": {"forceMemoTxFallback": false}
             }
         """.trimIndent()
 
@@ -49,6 +49,8 @@ class RemoteConfigSchemaTest {
         assertEquals("Agentic plan review proof v1\nSHA-256: ", parsed.memoProofRouter.proofMemoPrefix)
         assertEquals("v1", parsed.memoProofRouter.envelopeVersion)
         assertTrue(parsed.memoProofRouter.fallbackOnBlankPackage)
+        // PARITY: kill-switch flag round-trips with the documented default.
+        assertEquals(false, parsed.featureFlags["forceMemoTxFallback"])
 
         val phantom = parsed.walletEntryByPackage("app.phantom")
         assertNotNull(phantom)
@@ -141,6 +143,43 @@ class RemoteConfigSchemaTest {
         // Feature flags coerced: only Boolean values pass through; "not-a-boolean" is dropped.
         assertEquals(true, parsed.featureFlags["betaTradePlanner"])
         assertEquals(false, parsed.featureFlags.containsKey("broken"))
+    }
+
+    @Test
+    fun parse_skrFeatureFlags_areReadableViaFeatureFlagMap() {
+        // Forward-compat contract test for the Solana Mobile Seeker ($SKR)
+        // ecosystem-token feature flags. The server emits these only when
+        // `SKR_TOKEN_MINT` is set on Render; they are NOT bundled into
+        // `RemoteConfigDefaults.FEATURE_FLAGS` (which mirrors only the
+        // operator kill-switches that ship with the APK). This test pins the
+        // round-trip parsing of the three SKR flags so a future refactor to
+        // `parseFeatureFlags` can't silently drop them.
+        val payload = """
+            {
+              "version": 1,
+              "walletRegistry": [
+                {"id":50,"name":"seedvault","packageNames":["com.solanamobile.seedvaultimpl"],"uriPatterns":[],"supportsSignMessages":false,"supportsSiws":false,"forceSignThenRpc":false}
+              ],
+              "memoProofRouter": {"envelopeVersion":"v1","proofMemoPrefix":"Agentic plan review proof v1\nSHA-256: ","fallbackOnBlankPackage":true},
+              "featureFlags": {
+                "forceMemoTxFallback": false,
+                "skrEnabled": true,
+                "skrSkillBountyActive": true,
+                "skrSessionDefault": false
+              }
+            }
+        """.trimIndent()
+
+        val parsed = RemoteConfigSchema.parse(payload)
+        assertNotNull(parsed)
+        requireNotNull(parsed)
+        // Static slice still present.
+        assertEquals(false, parsed.featureFlags["forceMemoTxFallback"])
+        // Env-conditional SKR flags propagate verbatim — independently
+        // togglable, never coalesced with `skrEnabled`.
+        assertEquals(true, parsed.featureFlags["skrEnabled"])
+        assertEquals(true, parsed.featureFlags["skrSkillBountyActive"])
+        assertEquals(false, parsed.featureFlags["skrSessionDefault"])
     }
 
     @Test
@@ -249,6 +288,15 @@ class RemoteConfigSchemaTest {
         // Solflare icon fingerprint anchor — used by inferPackage when walletPackage
         // is blank and the icon is the canonical Solflare PNG.
         assertEquals("245123d8a7fd8aa5", bundled.first { it.name == "solflare" }.iconSha256First8)
+        // Operator kill-switch defaults — must match server FEATURE_FLAGS in
+        // apps/render-web/src/cloud/androidConfig.ts. Bundled defaults are the
+        // safety net while config refresh is pending or offline.
+        assertEquals(false, RemoteConfigDefaults.FEATURE_FLAGS["forceMemoTxFallback"])
+        assertEquals(
+            "bundled defaults feature-flag set must mirror server payload exactly",
+            RemoteConfigDefaults.FEATURE_FLAGS,
+            RemoteConfigDefaults.DEFAULT_CONFIG.featureFlags,
+        )
     }
 
     private data class ExpectedWallet(

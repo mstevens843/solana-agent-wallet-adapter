@@ -220,7 +220,7 @@ describe('renderPublishPanel — phase bodies', () => {
     expect(html).toContain('yield-auto-rotate');
     expect(html).toContain(buildSkillPageUrl('friday-dca'));
     expect(html).toContain(buildSkillPageUrl('yield-auto-rotate'));
-    expect(html).toContain('Monthly USDC');
+    expect(html).toContain('Monthly earnings');
     expect(html).toContain('12 installs');
     expect(html).toContain('1 install');
     expect(html).toContain('5 USDC/mo');

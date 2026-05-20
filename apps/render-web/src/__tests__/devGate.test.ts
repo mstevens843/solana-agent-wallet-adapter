@@ -52,7 +52,12 @@ async function loadFreshGate(): Promise<DevGateModule> {
   return (await import('../cloud/devGate.js')) as DevGateModule;
 }
 
-describe('devGate', () => {
+// Sequential: the tests below all mutate `process.env.AGENTIC_*` and reload
+// the devGate module via `vi.resetModules()` between cases. If vitest were
+// ever configured to run tests within this describe concurrently (e.g. via a
+// future `describe.concurrent` or a config flag), the env mutations would
+// race across tests. Explicit `.sequential` pins the safe ordering.
+describe.sequential('devGate', () => {
   let original: EnvSnapshot;
 
   beforeEach(() => {

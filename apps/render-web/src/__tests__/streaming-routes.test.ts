@@ -149,6 +149,142 @@ describe('streaming session routes', () => {
       code: 'unsupported_native_sol',
     });
   });
+
+  // ─── $SKR Android-only session token default ────────────────────────────
+  //
+  // When the client identifies as `android-bundled` AND `SKR_TOKEN_MINT` is
+  // set AND `SKR_SESSION_DEFAULT=true`, a streaming-session create request
+  // that omits `tokenMint` should default to the configured SKR mint. Any
+  // single gating signal missing should preserve the historical behavior
+  // (tokenMint stays required, missing → 400). This is the only place where
+  // a streaming session can be created without an explicit mint, so the
+  // gating logic carries weight.
+  describe('$SKR Android session default', () => {
+    const SKR_MINT_FIXTURE = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+    // The Android default body intentionally omits `tokenMint` to exercise
+    // the server-side default. Everything else mirrors a real session.
+    const ANDROID_DEFAULT_BODY = {
+      capAmount: '1',
+      expiresAt: '2026-05-16T13:00:00.000Z',
+      cluster: 'devnet' as const,
+    };
+
+    it('defaults tokenMint to $SKR when android-bundled + SKR_TOKEN_MINT set + SKR_SESSION_DEFAULT=true', async () => {
+      const ctx = createRouteContext();
+      vi.stubEnv('SKR_TOKEN_MINT', SKR_MINT_FIXTURE);
+      vi.stubEnv('SKR_SESSION_DEFAULT', 'true');
+      await withStreamingServer(ctx, async (port) => {
+        const res = await requestJson(
+          port,
+          '/api/streaming/sessions',
+          'POST',
+          ANDROID_DEFAULT_BODY,
+          { 'x-agentic-client': 'android-bundled' },
+        );
+        expect(res.status).toBe(201);
+        const session = asRecord(res.body.session, 'session');
+        expect(session.tokenMint).toBe(SKR_MINT_FIXTURE);
+      });
+    });
+
+    it('honors SKR_TOKEN_DECIMALS when defaulting the session mint', async () => {
+      const ctx = createRouteContext();
+      vi.stubEnv('SKR_TOKEN_MINT', SKR_MINT_FIXTURE);
+      vi.stubEnv('SKR_TOKEN_DECIMALS', '9');
+      vi.stubEnv('SKR_SESSION_DEFAULT', 'true');
+      await withStreamingServer(ctx, async (port) => {
+        const res = await requestJson(
+          port,
+          '/api/streaming/sessions',
+          'POST',
+          ANDROID_DEFAULT_BODY,
+          { 'x-agentic-client': 'android-bundled' },
+        );
+        expect(res.status).toBe(201);
+        const session = asRecord(res.body.session, 'session');
+        expect(session.tokenMint).toBe(SKR_MINT_FIXTURE);
+        expect(session.tokenDecimals).toBe(9);
+      });
+    });
+
+    it('does NOT default tokenMint for web clients (no x-agentic-client header)', async () => {
+      const ctx = createRouteContext();
+      vi.stubEnv('SKR_TOKEN_MINT', SKR_MINT_FIXTURE);
+      vi.stubEnv('SKR_SESSION_DEFAULT', 'true');
+      await withStreamingServer(ctx, async (port) => {
+        const res = await requestJson(
+          port,
+          '/api/streaming/sessions',
+          'POST',
+          ANDROID_DEFAULT_BODY,
+          // No x-agentic-client header — historical web client.
+        );
+        expect(res.status).toBe(400);
+        expect(res.body.error).toBe('missing_field');
+        expect(String(res.body.message ?? '')).toContain('tokenMint');
+      });
+    });
+
+    it('does NOT default tokenMint when SKR_TOKEN_MINT is unset', async () => {
+      const ctx = createRouteContext();
+      vi.stubEnv('SKR_SESSION_DEFAULT', 'true');
+      // SKR_TOKEN_MINT intentionally not stubbed — should disable the default.
+      await withStreamingServer(ctx, async (port) => {
+        const res = await requestJson(
+          port,
+          '/api/streaming/sessions',
+          'POST',
+          ANDROID_DEFAULT_BODY,
+          { 'x-agentic-client': 'android-bundled' },
+        );
+        expect(res.status).toBe(400);
+        expect(res.body.error).toBe('missing_field');
+      });
+    });
+
+    it('does NOT default tokenMint when SKR_SESSION_DEFAULT is not "true"', async () => {
+      const ctx = createRouteContext();
+      vi.stubEnv('SKR_TOKEN_MINT', SKR_MINT_FIXTURE);
+      // Common operator typos that mean "yes" but are not the literal "true"
+      // string — these MUST NOT enable the default (defense in depth against
+      // accidental rollout).
+      vi.stubEnv('SKR_SESSION_DEFAULT', '1');
+      await withStreamingServer(ctx, async (port) => {
+        const res = await requestJson(
+          port,
+          '/api/streaming/sessions',
+          'POST',
+          ANDROID_DEFAULT_BODY,
+          { 'x-agentic-client': 'android-bundled' },
+        );
+        expect(res.status).toBe(400);
+        expect(res.body.error).toBe('missing_field');
+      });
+    });
+
+    it('respects an explicit tokenMint from the Android client (default is only a fallback)', async () => {
+      // The default kicks in ONLY when tokenMint is omitted. If the Android
+      // client sends a different mint explicitly, the request uses that mint
+      // — preserving the user's stated intent over a deployment default.
+      const explicitMint = Keypair.generate().publicKey.toBase58();
+      const ctx = createRouteContext();
+      vi.stubEnv('SKR_TOKEN_MINT', SKR_MINT_FIXTURE);
+      vi.stubEnv('SKR_SESSION_DEFAULT', 'true');
+      await withStreamingServer(ctx, async (port) => {
+        const res = await requestJson(
+          port,
+          '/api/streaming/sessions',
+          'POST',
+          { ...ANDROID_DEFAULT_BODY, tokenMint: explicitMint },
+          { 'x-agentic-client': 'android-bundled' },
+        );
+        expect(res.status).toBe(201);
+        const session = asRecord(res.body.session, 'session');
+        expect(session.tokenMint).toBe(explicitMint);
+      });
+    });
+  });
 });
 
 interface RouteTestContext {
@@ -242,20 +378,22 @@ function requestJson(
   path: string,
   method = 'GET',
   body?: unknown,
+  extraHeaders?: Record<string, string>,
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   return new Promise((resolve, reject) => {
     const raw = body === undefined ? undefined : JSON.stringify(body);
+    const baseHeaders: Record<string, string | number> = raw
+      ? {
+          'content-type': 'application/json',
+          'content-length': Buffer.byteLength(raw),
+        }
+      : {};
     const req = httpRequest({
       hostname: '127.0.0.1',
       port,
       path,
       method,
-      headers: raw
-        ? {
-            'content-type': 'application/json',
-            'content-length': Buffer.byteLength(raw),
-          }
-        : undefined,
+      headers: { ...baseHeaders, ...(extraHeaders ?? {}) },
     }, (res) => {
       const chunks: Buffer[] = [];
       res.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));

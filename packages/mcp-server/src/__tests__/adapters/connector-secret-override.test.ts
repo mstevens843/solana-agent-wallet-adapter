@@ -6,6 +6,8 @@ import {
   resolveSanctumClient,
   buildSanctumClientFromOverride,
 } from '../../adapters/sanctum/client.js';
+import { resolvePhoenixClient, resetPhoenixClientFactory } from '../../adapters/phoenix/client.js';
+import { buildPhoenixApiClient } from '../../adapters/phoenix/apiClient.js';
 import { resolveTensorClient, resetTensorClientFactory } from '../../adapters/tensor/client.js';
 import type { DAppAdapterContext } from '../../adapters/types.js';
 
@@ -14,7 +16,9 @@ afterEach(() => {
   delete process.env.MAGICEDEN_CONNECTOR_ENABLED;
   delete process.env.TENSOR_API_KEY;
   delete process.env.SANCTUM_API_KEY;
+  delete process.env.PHOENIX_ACCESS_CODE;
   resetTensorClientFactory();
+  resetPhoenixClientFactory();
 });
 
 function fakeCtx(connectorSecrets?: DAppAdapterContext['connectorSecrets']): DAppAdapterContext {
@@ -87,5 +91,64 @@ describe('resolveSanctumClient with ctx override', () => {
     const client = resolveSanctumClient(ctx);
     // No env key set → returns the Unavailable stub.
     expect(client.constructor.name).toBe('SanctumApiUnavailable');
+  });
+});
+
+describe('resolvePhoenixClient with ctx override', () => {
+  it('uses ctx.connectorSecrets.phoenix.apiKey as the activation code (Rise-backed by default, with Rise extensions)', async () => {
+    const { hasRiseExtensions } = await import('../../adapters/phoenix/riseClient.js');
+    const ctx = fakeCtx({ phoenix: { apiKey: 'phoenix_invite_xyz' } });
+    const client = resolvePhoenixClient(ctx);
+    // Rise-backed clients are plain objects (no class) but expose the buildOpenIxs extension.
+    expect(hasRiseExtensions(client)).toBe(true);
+  });
+
+  it('falls back to the legacy PhoenixApiClient when PHOENIX_USE_LEGACY_HTTP=true', () => {
+    process.env.PHOENIX_USE_LEGACY_HTTP = 'true';
+    try {
+      const ctx = fakeCtx({ phoenix: { apiKey: 'phoenix_invite_xyz' } });
+      const client = resolvePhoenixClient(ctx);
+      expect(client.constructor.name).toBe('PhoenixApiClient');
+    } finally {
+      delete process.env.PHOENIX_USE_LEGACY_HTTP;
+    }
+  });
+
+  it('falls back to the Unavailable stub when no override and no env code', () => {
+    const ctx = fakeCtx();
+    const client = resolvePhoenixClient(ctx);
+    expect(client.constructor.name).toBe('PhoenixClientUnavailable');
+  });
+
+  it('per-request override does not mutate the global factory cache', async () => {
+    const { hasRiseExtensions } = await import('../../adapters/phoenix/riseClient.js');
+    const overrideCtx = fakeCtx({ phoenix: { apiKey: 'first_code' } });
+    const overridden = resolvePhoenixClient(overrideCtx);
+    expect(hasRiseExtensions(overridden)).toBe(true);
+
+    const fallback = resolvePhoenixClient(fakeCtx());
+    expect(fallback.constructor.name).toBe('PhoenixClientUnavailable');
+  });
+
+  it('sends the access code as both Bearer and x-phoenix-access-code', async () => {
+    const captured: Record<string, string>[] = [];
+    const client = buildPhoenixApiClient({
+      accessCode: 'phoenix_invite_capture',
+      baseUrl: 'https://example.test',
+      fetchImpl: async (_input, init) => {
+        captured.push(init?.headers ?? {});
+        return {
+          ok: true,
+          status: 200,
+          async text() {
+            return JSON.stringify({ symbol: 'SOL-PERP', markPriceUsd: '100' });
+          },
+        };
+      },
+    });
+    await client.fetchMarketSnapshot({ symbol: 'SOL-PERP' });
+    expect(captured).toHaveLength(1);
+    expect(captured[0]!['authorization']).toBe('Bearer phoenix_invite_capture');
+    expect(captured[0]!['x-phoenix-access-code']).toBe('phoenix_invite_capture');
   });
 });

@@ -340,6 +340,92 @@ function rowRunBoundaryLine(row: InstallRow): string {
   }
 }
 
+interface MonetizationSplitSnapshot {
+  platformWallet: string;
+  platformAmount: string;
+  totalAmount: string;
+  platformFeeBps: number;
+}
+
+function readMonetizationSplit(metadata: unknown): MonetizationSplitSnapshot | undefined {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return undefined;
+  const snapshot = (metadata as Record<string, unknown>).monetizationSplit;
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return undefined;
+  const s = snapshot as Record<string, unknown>;
+  const platformWallet = s.platformWallet;
+  const platformAmount = s.platformAmount;
+  const totalAmount = s.totalAmount;
+  const platformFeeBps = s.platformFeeBps;
+  if (typeof platformWallet !== 'string' || !platformWallet) return undefined;
+  if (typeof platformAmount !== 'string' || !platformAmount) return undefined;
+  if (typeof totalAmount !== 'string' || !totalAmount) return undefined;
+  if (typeof platformFeeBps !== 'number' || !Number.isFinite(platformFeeBps)) return undefined;
+  return { platformWallet, platformAmount, totalAmount, platformFeeBps };
+}
+
+function rowMonetizationLine(row: InstallRow): string {
+  const split = readMonetizationSplit(row.install.metadata);
+  const monetization = row.manifest?.monetization;
+  // Token symbol comes from the manifest's monetization.token (default USDC
+  // when omitted, set to 'SKR' on Seeker-priced skills). The split snapshot
+  // uses the same token by construction — the install handler records
+  // `monetizationToken` on the recurring schedule metadata.
+  const token = monetization?.token ?? 'USDC';
+  if (split && monetization) {
+    const cadence = monetization.kind === 'monthly' ? '/mo' : monetization.kind === 'one-time' ? ' once' : '';
+    return `Pays $${split.totalAmount} ${token}${cadence} · author $${authorAmountFromSplit(split, monetization)} · Agentic $${split.platformAmount}`;
+  }
+  if (monetization?.kind === 'monthly' && monetization.amount) {
+    return `Pays $${monetization.amount} ${token}/mo · paid to author`;
+  }
+  if (monetization?.kind === 'one-time' && monetization.amount) {
+    return `Pays $${monetization.amount} ${token} once · paid to author`;
+  }
+  return '';
+}
+
+function authorAmountFromSplit(split: MonetizationSplitSnapshot, monetization: { amount?: string }): string {
+  // Author portion is total minus platform amount. Recompute from strings to
+  // avoid bigint imports here; both are USDC (6 decimals) decimal strings.
+  if (!monetization.amount || !/^\d+(\.\d+)?$/.test(split.totalAmount) || !/^\d+(\.\d+)?$/.test(split.platformAmount)) {
+    return split.totalAmount;
+  }
+  const decimals = 6;
+  const scale = (value: string): bigint => {
+    const [intPart, fracPart = ''] = value.split('.');
+    return BigInt((intPart ?? '0') + fracPart.padEnd(decimals, '0').slice(0, decimals));
+  };
+  const raw = scale(split.totalAmount) - scale(split.platformAmount);
+  if (raw < 0n) return split.totalAmount;
+  const out = raw.toString().padStart(decimals + 1, '0');
+  const intPart = out.slice(0, -decimals);
+  const fracPart = out.slice(-decimals).replace(/0+$/, '');
+  return fracPart ? `${intPart}.${fracPart}` : intPart;
+}
+
+function rowDeferredBanner(row: InstallRow): string {
+  const metadata = row.install.metadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return '';
+  if ((metadata as Record<string, unknown>).performanceFeeDeferred !== true) return '';
+  return `
+    <p class="skills-installed-row-banner">
+      Performance-fee settlement is manual for now. Author payouts will be added in a follow-up.
+    </p>
+  `;
+}
+
+function rowOneTimePendingBanner(row: InstallRow): string {
+  const metadata = row.install.metadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return '';
+  const approvalId = (metadata as Record<string, unknown>).oneTimeApprovalId;
+  if (typeof approvalId !== 'string' || !approvalId) return '';
+  return `
+    <p class="skills-installed-row-banner">
+      Pending initial approval — review the one-time payment in your Needs Approval inbox.
+    </p>
+  `;
+}
+
 export interface RowRenderOptions {
   busyInstallId: string | null;
   pendingUninstallId: string | null;
@@ -387,7 +473,10 @@ export function renderRow(row: InstallRow, opts: RowRenderOptions): string {
         <span class="skills-installed-row-schedule">${escapeHtml(rowScheduleLine(row, opts.nowMs))}</span>
         <span>${escapeHtml(rowRunBoundaryLine(row))}</span>
         ${row.lastExecutionAt ? `<span>Last run ${escapeHtml(humanizeRelative(row.lastExecutionAt, opts.nowMs))}</span>` : ''}
+        ${(() => { const line = rowMonetizationLine(row); return line ? `<span class="skills-installed-row-monetization">${escapeHtml(line)}</span>` : ''; })()}
       </div>
+      ${rowDeferredBanner(row)}
+      ${rowOneTimePendingBanner(row)}
       <div class="skills-installed-row-runs">
         <span class="skills-installed-row-runs-label">Recent</span>
         ${escapeHtml(formatRecentCount(row.recentExecutionCount))}

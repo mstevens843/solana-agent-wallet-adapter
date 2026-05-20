@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    Apple Privacy Manifest (required for App Store submission since May 1, 2024).
+    Declares Agentic's tracking posture + which "Required Reason APIs" the app
+    uses and why. Each Required Reason API needs an entry from Apple's approved
+    code list, or submission gets rejected.
+
+    Sources reviewed when filling this in:
+      - apps/ios-native/Sources/AgenticNativeIOS/AgenticAuthCache.swift
+        uses UserDefaults as a fallback bucket when Keychain rejects writes
+        (category CA92.1: app's own bucket for own purposes).
+      - All network calls go to api.agentic-signer.com (no tracking domains).
+      - Agentic does NOT track users across apps/websites — wallet sessions
+        are user-initiated and scoped to the dApp.
+
+    When adding APIs (e.g., file-timestamp readers, system-boot-time,
+    disk-space) in the future, add a matching NSPrivacyAccessedAPIType dict
+    here. Apple's policy: keep this manifest accurate or risk rejection.
+-->
+<plist version="1.0">
+<dict>
+    <key>NSPrivacyTracking</key>
+    <false/>
+
+    <key>NSPrivacyTrackingDomains</key>
+    <array/>
+
+    <key>NSPrivacyCollectedDataTypes</key>
+    <array/>
+
+    <key>NSPrivacyAccessedAPITypes</key>
+    <array>
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <!--
+                    CA92.1: Access to UserDefaults that the app reads/writes
+                    for its own purposes. Used by AgenticAuthCache.swift as a
+                    Keychain fallback bucket for the device-local auth record
+                    when the secure enclave isn't available.
+                -->
+                <string>CA92.1</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

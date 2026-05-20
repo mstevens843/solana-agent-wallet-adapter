@@ -1,3 +1,4 @@
+import { isRecord, normalizeBaseUrl } from '../_shared/jsonHelpers.js';
 import type { DAppAdapterContext } from '../types.js';
 import {
   MAGICEDEN_API_BASE_URL_ENV,
@@ -380,10 +381,6 @@ function buildDefaultMagicedenClient(): MagicedenClient {
   return new MagicedenApiClient({ apiKey, baseUrl });
 }
 
-function normalizeBaseUrl(value: string): string {
-  return value.replace(/\/+$/, '');
-}
-
 export interface MagicedenApiClientOptions {
   apiKey: string;
   baseUrl: string;
@@ -649,7 +646,7 @@ export class MagicedenApiClient implements MagicedenClient {
           .then((response) => asArray(response.body).map(normalizeBidRow).find((r) => r !== null) ?? undefined)
           .catch(() => undefined);
     const [probe, listing, topBid] = await Promise.all([tokenPromise, listingPromise, topBidPromise]);
-    const body = isObject(probe.body) ? probe.body : {};
+    const body = isRecord(probe.body) ? probe.body : {};
     return {
       mintAddress: input.mintAddress,
       ...(stringField(body, 'name') ? { tokenName: stringField(body, 'name') } : {}),
@@ -741,12 +738,12 @@ export class MagicedenApiClient implements MagicedenClient {
     body: unknown,
     label: string,
   ): MagicedenGenerateTransactionResult {
-    const obj = isObject(body) ? body : {};
+    const obj = isRecord(body) ? body : {};
     const tx =
       stringField(obj, 'txSigned', 'tx', 'transaction', 'transactionBase64') ||
       (() => {
         const dataField = obj.txSigned ?? obj.tx ?? obj.transaction;
-        if (isObject(dataField) && Array.isArray(dataField.data)) {
+        if (isRecord(dataField) && Array.isArray(dataField.data)) {
           try {
             return Buffer.from(dataField.data as number[]).toString('base64');
           } catch {
@@ -923,7 +920,7 @@ function boundedLimit(limit?: number): number {
 }
 
 function normalizeCollectionRow(row: unknown, index: number): MagicedenCollectionRow | null {
-  if (!isObject(row)) return null;
+  if (!isRecord(row)) return null;
   const collectionSymbol = stringField(row, 'symbol', 'collectionSymbol', 'slug', 'collection');
   const collectionId = stringField(row, 'collectionId', 'id', 'address');
   if (!collectionSymbol && !collectionId) return null;
@@ -965,7 +962,7 @@ function collectionFloor(row: Record<string, unknown>): {
 }
 
 function normalizeListingRow(row: unknown): MagicedenListingRow | null {
-  if (!isObject(row)) return null;
+  if (!isRecord(row)) return null;
   const mintAddress = stringField(row, 'tokenMint', 'mintAddress', 'mint');
   if (!mintAddress) return null;
   const priceLamports = listingPriceLamports(row);
@@ -983,7 +980,7 @@ function normalizeListingRow(row: unknown): MagicedenListingRow | null {
 }
 
 function normalizeBidRow(row: unknown): MagicedenBidRow | null {
-  if (!isObject(row)) return null;
+  if (!isRecord(row)) return null;
   const lamports = bidPriceLamports(row);
   if (!lamports) return null;
   return {
@@ -997,7 +994,7 @@ function normalizeBidRow(row: unknown): MagicedenBidRow | null {
 }
 
 function normalizeActivityRow(row: unknown): MagicedenActivityRow | null {
-  if (!isObject(row)) return null;
+  if (!isRecord(row)) return null;
   const type = parseActivityType(row.type);
   const lamports = numberAsString(row.price);
   return {
@@ -1012,7 +1009,7 @@ function normalizeActivityRow(row: unknown): MagicedenActivityRow | null {
 }
 
 function normalizeWalletNftRow(row: unknown): MagicedenWalletNftRow | null {
-  if (!isObject(row)) return null;
+  if (!isRecord(row)) return null;
   const mintAddress = stringField(row, 'mintAddress', 'tokenMint', 'mint');
   if (!mintAddress) return null;
   const listingLamports = listingPriceLamports(row);
@@ -1119,13 +1116,9 @@ function arrayOfStrings(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0);
 }
 
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
 function asArray(value: unknown): unknown[] {
   if (Array.isArray(value)) return value;
-  if (isObject(value)) {
+  if (isRecord(value)) {
     if (Array.isArray(value.data)) return value.data;
     if (Array.isArray(value.results)) return value.results;
     if (Array.isArray(value.rows)) return value.rows;

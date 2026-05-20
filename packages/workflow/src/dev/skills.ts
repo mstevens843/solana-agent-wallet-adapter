@@ -25,11 +25,20 @@ export interface SkillCaps {
 
 export type SkillMonetizationKind = 'one-time' | 'monthly' | 'performance-fee';
 
+/**
+ * Currency the author chooses to be paid in. Defaults to USDC (the historical
+ * monetization currency) when omitted. SKR is supported only on deployments
+ * that have configured Solana Mobile Seeker support; the cloud install handler
+ * resolves decimals from the SKR_TOKEN_DECIMALS env var when this is 'SKR'.
+ */
+export type SkillMonetizationToken = 'USDC' | 'SKR';
+
 export interface SkillMonetization {
   kind: SkillMonetizationKind;
   amount?: string;
   feePercent?: number;
   payoutWallet: string;
+  token?: SkillMonetizationToken;
 }
 
 export interface SkillDependency {
@@ -103,6 +112,7 @@ export interface InstallSkillRequest {
 const SKILL_CATEGORIES = ['dca', 'yield', 'stops', 'bridge', 'donation', 'custom'] as const;
 const SCHEDULE_KINDS = ['cron', 'interval', 'price-trigger'] as const;
 const MONETIZATION_KINDS = ['one-time', 'monthly', 'performance-fee'] as const;
+const MONETIZATION_TOKENS = ['USDC', 'SKR'] as const;
 const FORBIDDEN_SECRET_KEYS = new Set(['delegatedSigner', 'privateKey', 'seedPhrase']);
 
 export function validateSkillManifest(input: unknown, path = '$'): SkillManifest {
@@ -220,6 +230,13 @@ function validateMonetization(input: unknown, path: string): SkillMonetization {
       throw invalid('invalid_monetization', 'feePercent must be a number between 0 and 100.', `${path}.feePercent`);
     }
     monetization.feePercent = record.feePercent;
+  }
+  if (record.token !== undefined) {
+    monetization.token = requireEnum(
+      requireString(record.token, `${path}.token`),
+      MONETIZATION_TOKENS,
+      `${path}.token`,
+    );
   }
   return monetization;
 }

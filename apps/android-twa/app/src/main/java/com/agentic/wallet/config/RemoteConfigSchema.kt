@@ -54,6 +54,16 @@ object RemoteConfigSchema {
 
     private fun parseObject(json: JSONObject): RemoteConfig {
         val version = json.optInt("version", RemoteConfigDefaults.VERSION)
+        // Reject downgraded payloads. If the server (or a stale on-disk cache from
+        // a previous APK with a lower schema floor) sends a version below this
+        // binary's bundled floor, fall back to bundled defaults instead of
+        // accepting the older shape. Throws so the outer parse() catches and
+        // returns null, prompting the loader to use RemoteConfigDefaults.
+        if (version < RemoteConfigDefaults.VERSION) {
+            throw IllegalArgumentException(
+                "remote config version $version is below bundled floor ${RemoteConfigDefaults.VERSION}",
+            )
+        }
         val walletRegistry = parseWalletRegistry(json.optJSONArray("walletRegistry"))
         val memoProofRouter = parseMemoProofRouter(json.optJSONObject("memoProofRouter"))
         val featureFlags = parseFeatureFlags(json.optJSONObject("featureFlags"))
@@ -186,10 +196,21 @@ object RemoteConfigDefaults {
         ),
     )
 
+    // PARITY ANCHOR: must mirror FEATURE_FLAGS in
+    // apps/render-web/src/cloud/androidConfig.ts. Operators flip these via
+    // `/api/android-config`; bundled defaults are the safety net.
+    val FEATURE_FLAGS: Map<String, Boolean> = mapOf(
+        // Incident kill-switch: force EVERY wallet through the memo-tx proof
+        // path (the most-tested branch of MWA routing) when a wallet vendor
+        // ships a bad sign_messages handler. Default off; ops flips it on
+        // server-side and changes propagate on next config refresh.
+        "forceMemoTxFallback" to false,
+    )
+
     val DEFAULT_CONFIG = RemoteConfig(
         version = VERSION,
         walletRegistry = WALLET_REGISTRY,
         memoProofRouter = MEMO_PROOF_ROUTER,
-        featureFlags = emptyMap(),
+        featureFlags = FEATURE_FLAGS,
     )
 }

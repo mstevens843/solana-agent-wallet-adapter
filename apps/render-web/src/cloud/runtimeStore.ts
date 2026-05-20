@@ -1,5 +1,6 @@
 import { PostgresWorkflowStore } from './postgresStore.js';
 import type { WorkflowStore } from './store.js';
+import { loadTreasuryConfig, TreasuryConfigError } from './treasuryConfig.js';
 
 export interface RuntimeWorkflowStore extends WorkflowStore {
   migrate(): Promise<void>;
@@ -57,6 +58,22 @@ export function assertProductionConfig(env: NodeJS.ProcessEnv = process.env): vo
   } catch (err) {
     const detail = err instanceof Error ? err.message : 'invalid URL';
     throw new Error(`AGENTIC_PUBLIC_ORIGIN is invalid: ${detail}`);
+  }
+
+  try {
+    const treasury = loadTreasuryConfig(env);
+    if (!treasury.wallet) {
+      // eslint-disable-next-line no-console
+      console.log('[treasury] TREASURY_WALLET not configured — skill platform fee disabled.');
+    } else {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[treasury] platform fee active: wallet=${treasury.wallet.slice(0, 4)}...${treasury.wallet.slice(-4)} feeBps=${treasury.feeBps}`,
+      );
+    }
+  } catch (err) {
+    if (err instanceof TreasuryConfigError) throw err;
+    throw err;
   }
 }
 

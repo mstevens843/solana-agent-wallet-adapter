@@ -81,4 +81,50 @@ describe('DevLayer1 skills validators', () => {
       monetization: { kind: 'performance-fee', payoutWallet: VALID_MANIFEST.authorWallet, feePercent: 101 },
     })).toThrow(/feePercent/);
   });
+
+  it('accepts USDC and SKR as monetization tokens; rejects others', () => {
+    const usdc = skills.validateSkillManifest({
+      ...VALID_MANIFEST,
+      monetization: {
+        kind: 'monthly',
+        payoutWallet: VALID_MANIFEST.authorWallet,
+        amount: '5',
+        token: 'USDC',
+      },
+    });
+    expect(usdc.monetization?.token).toBe('USDC');
+
+    const skr = skills.validateSkillManifest({
+      ...VALID_MANIFEST,
+      monetization: {
+        kind: 'monthly',
+        payoutWallet: VALID_MANIFEST.authorWallet,
+        amount: '5',
+        token: 'SKR',
+      },
+    });
+    expect(skr.monetization?.token).toBe('SKR');
+
+    // Omitting `token` is backward-compatible (defaults to USDC at install time).
+    const omitted = skills.validateSkillManifest({
+      ...VALID_MANIFEST,
+      monetization: {
+        kind: 'monthly',
+        payoutWallet: VALID_MANIFEST.authorWallet,
+        amount: '5',
+      },
+    });
+    expect(omitted.monetization?.token).toBeUndefined();
+
+    expect(() => skills.validateSkillManifest({
+      ...VALID_MANIFEST,
+      monetization: {
+        kind: 'monthly',
+        payoutWallet: VALID_MANIFEST.authorWallet,
+        amount: '5',
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        token: 'BONK' as any,
+      },
+    })).toThrow(/must be one of/);
+  });
 });

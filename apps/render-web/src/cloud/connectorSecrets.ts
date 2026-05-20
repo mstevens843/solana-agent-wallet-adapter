@@ -7,7 +7,7 @@ import type {
 } from './store.js';
 import { systemClock } from './store.js';
 
-export const BYO_KEY_CONNECTOR_IDS = ['magiceden', 'tensor', 'sanctum', 'lulo'] as const;
+export const BYO_KEY_CONNECTOR_IDS = ['magiceden', 'tensor', 'sanctum', 'lulo', 'phoenix'] as const;
 export type ByoKeyConnectorId = (typeof BYO_KEY_CONNECTOR_IDS)[number];
 
 export interface ConnectorSecret {

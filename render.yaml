@@ -51,6 +51,43 @@ services:
         sync: false
       - key: COINGECKO_API_KEY
         sync: false
+      # Skills marketplace platform fee. TREASURY_WALLET is the Solana pubkey
+      # that receives the platform cut of monthly/one-time skill author
+      # payments. PLATFORM_FEE_BPS is basis points out of 10000 (1500 = 15%).
+      # If TREASURY_WALLET is unset, no cut is taken and skill payments flow
+      # 100% to author (current behavior, used for local/staging).
+      - key: TREASURY_WALLET
+        sync: false
+      - key: PLATFORM_FEE_BPS
+        sync: false
+      # Solana Mobile Seeker ($SKR) ecosystem-token integration. All four
+      # vars are optional — when unset, the deployment behaves as if $SKR
+      # never existed (web UI, monetization options, streaming sessions all
+      # stay USDC-only). Setting SKR_TOKEN_MINT alone unlocks the feature
+      # surface; the bounty + session-default flags toggle individual
+      # surfaces without touching the others. See
+      # `apps/render-web/src/cloud/skrConfig.ts` for the full contract.
+      #
+      # SKR_TOKEN_MINT: base58 pubkey of the $SKR mint on mainnet. Required
+      # to enable any $SKR feature. A malformed value is treated as unset
+      # (logged warning), so a typo can't silently misroute installs.
+      - key: SKR_TOKEN_MINT
+        sync: false
+      # SKR_TOKEN_DECIMALS: integer 0–18, defaults to 6. Used by the cloud
+      # to split/format $SKR amounts in receipts and recurring schedules.
+      - key: SKR_TOKEN_DECIMALS
+        sync: false
+      # SKR_SKILL_BOUNTY_ACTIVE: literal "true" enables the Android-only
+      # author bounty (skills priced in $SKR keep 100% of platform fees).
+      # Flip to anything else to end the bootstrap window without changing
+      # code; existing schedules retain their original split.
+      - key: SKR_SKILL_BOUNTY_ACTIVE
+        sync: false
+      # SKR_SESSION_DEFAULT: literal "true" makes Android-bundled clients
+      # default streaming-session tokenMint to $SKR when omitted. Web
+      # clients are never affected; explicit tokenMint always wins.
+      - key: SKR_SESSION_DEFAULT
+        sync: false
       # User-funded streaming-session delegates: per-session lamports the web
       # service transfers from the user's wallet to the ephemeral delegate at
       # session-open. Default in code is 5_000_000 (0.005 SOL). Override only

@@ -1,3 +1,17 @@
+// Recurring schedule → approval sink.
+//
+// IMPORTANT — schedule.amount semantics for skill-monetization schedules:
+// When TREASURY_WALLET is configured and a skill manifest declares monthly
+// monetization, the install handler stores the *author portion* in
+// `schedule.amount` and the user-charged *total* in `metadata.totalAmount`,
+// alongside `metadata.platformWallet`, `metadata.platformAmount`, and
+// `metadata.platformFeeBps`. This sink detects that shape via
+// `skillPlatformSplit()` and emits a `skill_fee_split` approval (one
+// transaction with two SPL transfers: author + treasury) instead of a
+// vanilla `transfer_spl`. The approval's user-facing `amount` field is the
+// `totalAmount` from metadata so receipts and notifications stay honest.
+// Treat `schedule.amount` as the author portion only — use
+// `effectiveScheduleTotalAmount(schedule)` for anything user-visible.
 import type {
   ApprovalSink,
   JsonObject,
@@ -26,39 +40,62 @@ export function createRecurringApprovalStatusReader(
 export function createRecurringApprovalSink(workflowService: WorkflowService): ApprovalSink {
   return async ({ walletAddress, schedule, occurrence }) => {
     const isSwap = schedule.actionKind === 'swap' || Boolean(schedule.outputToken);
+    const platformSplit = !isSwap ? skillPlatformSplit(schedule) : undefined;
     const inputToken = schedule.inputToken || schedule.token;
     const outputToken = schedule.outputToken || 'USDC';
     const isSol = schedule.token.toUpperCase() === 'SOL';
     const summary = isSwap
       ? `${schedule.amount} ${inputToken} recurring swap to ${outputToken}`
-      : `${schedule.amount} ${schedule.token} recurring approval`;
+      : platformSplit
+        ? `${platformSplit.totalAmount} ${schedule.token} skill payment: author + Agentic`
+        : `${schedule.amount} ${schedule.token} recurring approval`;
+    const kind = isSwap
+      ? 'swap'
+      : platformSplit
+        ? 'skill_fee_split'
+        : isSol
+          ? 'transfer_sol'
+          : 'transfer_spl';
+    const params = isSwap
+      ? {
+          recurringScheduleId: schedule.id,
+          recurringOccurrenceId: occurrence.id,
+          occurrenceKey: occurrence.occurrenceKey,
+          inputToken,
+          outputToken,
+          amount: schedule.amount,
+          slippageBps: String(schedule.slippageBps ?? 50),
+          ...(schedule.memo ? { memo: schedule.memo } : {}),
+        }
+      : platformSplit
+        ? {
+            recurringScheduleId: schedule.id,
+            recurringOccurrenceId: occurrence.id,
+            occurrenceKey: occurrence.occurrenceKey,
+            token: schedule.token,
+            authorRecipient: schedule.recipient,
+            authorAmount: schedule.amount,
+            treasuryRecipient: platformSplit.platformWallet,
+            treasuryAmount: platformSplit.platformAmount,
+            ...(schedule.memo ? { memo: schedule.memo } : {}),
+          }
+        : {
+            recurringScheduleId: schedule.id,
+            recurringOccurrenceId: occurrence.id,
+            occurrenceKey: occurrence.occurrenceKey,
+            recipient: schedule.recipient,
+            ...(isSol ? { amountSol: schedule.amount } : { token: schedule.token, amount: schedule.amount }),
+            ...(schedule.memo ? { memo: schedule.memo } : {}),
+          };
     const approval = await workflowService.createApproval(
       { walletAddress },
       {
-        kind: isSwap ? 'swap' : isSol ? 'transfer_sol' : 'transfer_spl',
+        kind,
         summary,
-        params: isSwap
-          ? {
-              recurringScheduleId: schedule.id,
-              recurringOccurrenceId: occurrence.id,
-              occurrenceKey: occurrence.occurrenceKey,
-              inputToken,
-              outputToken,
-              amount: schedule.amount,
-              slippageBps: String(schedule.slippageBps ?? 50),
-              ...(schedule.memo ? { memo: schedule.memo } : {}),
-            }
-          : {
-              recurringScheduleId: schedule.id,
-              recurringOccurrenceId: occurrence.id,
-              occurrenceKey: occurrence.occurrenceKey,
-              recipient: schedule.recipient,
-              ...(isSol ? { amountSol: schedule.amount } : { token: schedule.token, amount: schedule.amount }),
-              ...(schedule.memo ? { memo: schedule.memo } : {}),
-            },
+        params,
         cluster: schedule.cluster,
         dueAt: occurrence.dueAt,
-        amount: schedule.amount,
+        amount: platformSplit ? platformSplit.totalAmount : schedule.amount,
         token: inputToken,
         ...(isSwap ? {} : { recipient: schedule.recipient }),
         recurringScheduleId: schedule.id,
@@ -70,6 +107,30 @@ export function createRecurringApprovalSink(workflowService: WorkflowService): A
     );
     return { approvalId: approval.id };
   };
+}
+
+interface ScheduleSkillPlatformSplit {
+  platformWallet: string;
+  platformAmount: string;
+  totalAmount: string;
+  platformFeeBps: number;
+}
+
+function skillPlatformSplit(schedule: RecurringScheduleRecord): ScheduleSkillPlatformSplit | undefined {
+  const metadata = schedule.metadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return undefined;
+  if (metadata.source !== 'skill_install_monetization') return undefined;
+  const platformWallet = stringValue(metadata.platformWallet);
+  const platformAmount = stringValue(metadata.platformAmount);
+  const totalAmount = stringValue(metadata.totalAmount);
+  const feeBpsRaw = metadata.platformFeeBps;
+  const platformFeeBps = typeof feeBpsRaw === 'number' && Number.isFinite(feeBpsRaw) && feeBpsRaw > 0
+    ? feeBpsRaw
+    : undefined;
+  if (!platformWallet || !platformAmount || !totalAmount || platformFeeBps === undefined) {
+    return undefined;
+  }
+  return { platformWallet, platformAmount, totalAmount, platformFeeBps };
 }
 
 export function createRecurringOccurrenceHistoryHydrator(

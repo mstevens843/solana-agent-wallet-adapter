@@ -1,8 +1,15 @@
 /**
  * Remote configuration served to the Android APK at startup. The APK ships hardcoded
- * defaults that mirror this payload byte-for-byte (see
- * `apps/android-twa/.../config/RemoteConfigDefaults.kt`) so the app continues to work
- * if the server is unreachable on first launch.
+ * defaults (`apps/android-twa/.../config/RemoteConfigDefaults.kt`) that mirror the
+ * *static* slice of this payload — wallet table, memo-proof router, and
+ * `STATIC_FEATURE_FLAGS` — byte-for-byte at APK build time. That guarantees the app
+ * keeps working when the server is unreachable on first launch.
+ *
+ * The server's response may be a *superset* of the bundled defaults when
+ * env-conditional flags are active (e.g. `skrEnabled` / `skrSkillBountyActive` /
+ * `skrSessionDefault` when `SKR_TOKEN_MINT` is set on Render). The APK tolerates the
+ * extra fields via field-by-field parsing — unknown flags pass through the parser
+ * and are readable via `getFeatureFlag(name, fallback)` without code changes.
  *
  * Changes here ship via Render redeploy and reach installed APKs on the next config
  * refresh (foreground app, every hour, or via explicit `bridge.remoteConfigRefresh()`).
@@ -17,7 +24,12 @@
  *     don't yet know about — they fall back to `inferPackage()` heuristics in
  *     `WalletRegistry.kt`, but the routing flags from this config win when a
  *     match is found.
+ *   - `STATIC_FEATURE_FLAGS` MUST mirror `RemoteConfigDefaults.FEATURE_FLAGS`
+ *     byte-for-byte. Env-conditional flags (added by `buildFeatureFlags(env)`)
+ *     are NOT mirrored — they only exist when their gating env vars are set.
  */
+
+import { isSkrSessionDefaultActive, isSkrSkillBountyActive, readSkrMint } from './skrConfig.js';
 
 export const ANDROID_CONFIG_VERSION = 1;
 
@@ -105,13 +117,65 @@ const MEMO_PROOF_ROUTER: AndroidMemoProofRouterConfig = {
   fallbackOnBlankPackage: true,
 };
 
+/**
+ * Operator-rotatable kill-switches. Names must stay stable forever (shipped APKs
+ * read them by string key). Add new flags by appending; never rename.
+ *
+ *   forceMemoTxFallback: when true, the Android side routes EVERY wallet
+ *     through the memo-tx ownership-proof path regardless of
+ *     `messageSigningUnsupported()` / `fallbackOnBlankPackage` heuristics.
+ *     Use during a sign_messages incident (e.g. a wallet vendor ships a bad
+ *     update that hangs MWA `sign_messages`). The memo-tx path is the
+ *     server-verifier's most-tested branch, so falling through it is the
+ *     safest possible MWA behavior. Default false — flip via Render env to
+ *     mitigate incidents in seconds without an APK rebuild.
+ *
+ *   skrEnabled: surfaces Solana Mobile Seeker ($SKR) ecosystem token in the
+ *     Android skill editor and the rest of the $SKR-aware UI. Auto-true when
+ *     the Render server has `SKR_TOKEN_MINT` set; otherwise omitted entirely
+ *     so non-Seeker deployments are unaffected.
+ *
+ *   skrSkillBountyActive: when true (and `skrEnabled`), waives the platform
+ *     fee on Android installs of $SKR-priced skills (author keeps 100%).
+ *     Operator flips off to end the bootstrap window. See SKR_SKILL_BOUNTY_ACTIVE.
+ *
+ *   skrSessionDefault: when true (and `skrEnabled`), the cloud session-create
+ *     endpoint defaults streaming-session `tokenMint` to $SKR for Android
+ *     clients that omit it. Web clients are unaffected.
+ */
+const STATIC_FEATURE_FLAGS: Readonly<Record<string, boolean>> = {
+  forceMemoTxFallback: false,
+};
+
+function buildFeatureFlags(env: NodeJS.ProcessEnv): Readonly<Record<string, boolean>> {
+  // A malformed `SKR_TOKEN_MINT` (operator typo) must NOT cause the Android
+  // client to start advertising $SKR features — `readSkrMint` returns '' for
+  // anything that isn't a base58 pubkey, keeping enablement consistent across
+  // every $SKR-aware surface (install, recurring, streaming-session create).
+  const skrConfigured = readSkrMint(env).length > 0;
+  if (!skrConfigured) return STATIC_FEATURE_FLAGS;
+  return Object.freeze({
+    ...STATIC_FEATURE_FLAGS,
+    skrEnabled: true,
+    skrSkillBountyActive: isSkrSkillBountyActive(env),
+    skrSessionDefault: isSkrSessionDefaultActive(env),
+  });
+}
+
 export const ANDROID_REMOTE_CONFIG: AndroidRemoteConfig = {
   version: ANDROID_CONFIG_VERSION,
   walletRegistry: WALLET_REGISTRY,
   memoProofRouter: MEMO_PROOF_ROUTER,
-  featureFlags: {},
+  featureFlags: STATIC_FEATURE_FLAGS,
 };
 
-export function getAndroidRemoteConfig(): AndroidRemoteConfig {
-  return ANDROID_REMOTE_CONFIG;
+export function getAndroidRemoteConfig(env: NodeJS.ProcessEnv = process.env): AndroidRemoteConfig {
+  const featureFlags = buildFeatureFlags(env);
+  if (featureFlags === STATIC_FEATURE_FLAGS) return ANDROID_REMOTE_CONFIG;
+  return {
+    version: ANDROID_CONFIG_VERSION,
+    walletRegistry: WALLET_REGISTRY,
+    memoProofRouter: MEMO_PROOF_ROUTER,
+    featureFlags,
+  };
 }

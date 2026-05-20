@@ -23,6 +23,7 @@ import { describeRealmsUnavailableReason } from './adapters/realms/client.js';
 import { describeSolendUnavailableReason } from './adapters/save/client.js';
 import { describeSanctumUnavailableReason } from './adapters/sanctum/client.js';
 import { describeSquadsUnavailableReason } from './adapters/squads/client.js';
+import { describePhoenixUnavailableReason } from './adapters/phoenix/client.js';
 import { describeTensorUnavailableReason } from './adapters/tensor/client.js';
 import { describeWormholeUnavailableReason } from './adapters/wormhole/client.js';
 
@@ -45,7 +46,8 @@ export type ConnectorId =
   | 'pyth'
   | 'realms'
   | 'squads'
-  | 'wormhole';
+  | 'wormhole'
+  | 'phoenix';
 
 export type ConnectorCapability =
   | 'positions'
@@ -479,7 +481,7 @@ export const CONNECTOR_REGISTRY: ConnectorRegistryEntry[] = [
     aliases: ['drift', 'drift vaults', 'strategy vaults'],
     supportedClusters: ['mainnet-beta'],
     readCapabilities: ['positions', 'markets'],
-    writeCapabilities: ['earn', 'withdraw'],
+    writeCapabilities: [],
     readTools: [
       'solana_connector_read_facts',
       'solana_drift_user_snapshot',
@@ -499,12 +501,12 @@ export const CONNECTOR_REGISTRY: ConnectorRegistryEntry[] = [
     executionMode: 'first_class_prepare',
     approvalBoundary: CONNECTOR_APPROVAL_BOUNDARY,
     limitations: [
+      'DEPRECATED: Drift Protocol was exploited for ~$285M on 2026-04-01 (DPRK-linked durable-nonce social-engineering + fake-collateral oracle abuse). New write actions are blocked at the policy layer; reads remain so existing-position holders can monitor and unwind. Use Phoenix Perpetuals for new perp positions.',
       'Mainnet-beta only.',
-      'V1 covers Drift strategy vault deposit and withdraw lifecycle only. Perp trading, spot margin, leverage, Swift orders, and delegated accounts are not exposed.',
-      'Reads and prepared actions require the Drift vault client to be wired by the host process.',
+      'V1 covered Drift strategy vault deposit and withdraw lifecycle only. Perp trading, spot margin, leverage, Swift orders, and delegated accounts were never exposed.',
+      'Reads require the Drift vault client to be wired by the host process.',
       'Complete-withdraw is blocked until the vault redeem period elapses.',
       'Request-withdraw and complete-withdraw are never batched into one prepared action.',
-      'Prepared actions remain approval inbox items until the wallet signs.',
     ],
     examples: [
       'show my Drift vault positions',
@@ -927,6 +929,56 @@ export const CONNECTOR_REGISTRY: ConnectorRegistryEntry[] = [
     ],
   },
   {
+    id: 'phoenix',
+    name: 'Phoenix Perpetuals',
+    aliases: ['phoenix', 'phoenix perp', 'phoenix perps', 'phoenix perpetuals', 'phoenix trade', 'ellipsis perps'],
+    supportedClusters: ['mainnet-beta'],
+    readCapabilities: ['perps', 'positions', 'markets'],
+    writeCapabilities: ['perps'],
+    readTools: [
+      'solana_connector_read_facts',
+      'solana_phoenix_market_snapshot',
+      'solana_phoenix_market_catalog',
+      'solana_phoenix_position_snapshot',
+      'solana_phoenix_wallet_positions',
+      'solana_phoenix_funding_history',
+      'solana_phoenix_health_preview',
+    ],
+    actionTools: [
+      'solana_prepare_phoenix_open',
+      'solana_prepare_phoenix_close',
+      'solana_prepare_phoenix_modify_collateral',
+      'solana_prepare_phoenix_place_trigger',
+      'solana_prepare_phoenix_cancel_order',
+      'solana_execute_prepared_action',
+    ],
+    requiresClientKey: true,
+    requiredConfig: [
+      'Phoenix invite/activation code (paste in Preferences → Agents & Connectors) or PHOENIX_ACCESS_CODE env',
+      'config.connectors.phoenix.perps.enabled=true once a paper-mode soak passes',
+    ],
+    executionMode: 'first_class_prepare',
+    approvalBoundary: CONNECTOR_APPROVAL_BOUNDARY,
+    limitations: [
+      'Mainnet-beta only. Phoenix Perpetuals (Ellipsis Labs) is in private beta; there is no devnet — use paper mode for rehearsal.',
+      'V1 ships reads, market catalog, funding history, and policy-gated health preview. Native prepare actions are scaffolded and policy-gated but throw unsupported_method until the Rise SDK (github.com/Ellipsis-Labs/rise-public) lands on npm.',
+      'Trade execution is available today via the Vulcan upstream bridge (github.com/Ellipsis-Labs/vulcan-cli). When config.connectors.phoenix.vulcan.enabled is true and the vulcan binary is on PATH, the MCP server exposes solana_vulcan_* tools; dangerous calls are wrapped in the prepared-action inbox and signed only after explicit user approval in the Spend tab.',
+      'Leverage is capped at policy maxLeverage (default 5x); minimum liquidation buffer enforced at policy minLiquidationBufferPct (default 15%).',
+      'Stop-loss triggers use Phoenix tick-based prices, not USD — adapter converts via PHOENIX_TICKS_PER_USD.',
+      'Hosted phoenix.trade UI is region-restricted; on-chain program is open. Self-hosted Agentic client is unaffected.',
+      'Trader activation (POST /v1/invite/activate) is one-time per access code; expired codes require re-issuance.',
+    ],
+    examples: [
+      'show my Phoenix positions',
+      'show the SOL-PERP funding rate on Phoenix',
+      'preview opening 0.5 SOL long at 3x on Phoenix',
+      'prepare opening 0.3 SOL Phoenix perp long at 3x in paper mode',
+      'prepare opening 0.3 SOL Phoenix perp long at 3x with a -8% stop loss, do not sign',
+      'prepare closing my SOL-PERP position on Phoenix',
+      'cancel my Phoenix limit order',
+    ],
+  },
+  {
     id: 'wormhole',
     name: 'Wormhole',
     aliases: ['wormhole', 'portal bridge', 'token bridge', 'wormhole token bridge', 'wtt', 'cctp bridge'],
@@ -1171,6 +1223,10 @@ function runtimeConfigBlockReason(
   if (connector.id === 'tensor') {
     const reason = describeTensorUnavailableReason();
     return reason ? `Tensor client is not configured: ${reason}` : undefined;
+  }
+  if (connector.id === 'phoenix') {
+    const reason = describePhoenixUnavailableReason();
+    return reason ? `Phoenix Perpetuals client is not configured: ${reason}` : undefined;
   }
   if (connector.id === 'pyth') {
     if (target === 'actions') {

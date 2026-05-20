@@ -63,6 +63,38 @@ export interface AndroidRemoteConfigStatus {
   envelopeVersion: string;
 }
 
+function isAndroidWalletConfigEntry(value: unknown): value is AndroidWalletConfigEntry {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.id === 'number' &&
+    typeof v.name === 'string' &&
+    Array.isArray(v.packageNames) &&
+    v.packageNames.every((p) => typeof p === 'string') &&
+    Array.isArray(v.uriPatterns) &&
+    v.uriPatterns.every((p) => typeof p === 'string') &&
+    (v.iconSha256First8 === null || typeof v.iconSha256First8 === 'string') &&
+    typeof v.supportsSignMessages === 'boolean' &&
+    typeof v.supportsSiws === 'boolean' &&
+    typeof v.forceSignThenRpc === 'boolean'
+  );
+}
+
+function isAndroidMemoProofConfig(value: unknown): value is AndroidMemoProofConfig {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.envelopeVersion === 'string' &&
+    typeof v.proofMemoPrefix === 'string' &&
+    typeof v.fallbackOnBlankPackage === 'boolean'
+  );
+}
+
+function isFeatureFlagsRecord(value: unknown): value is Record<string, boolean> {
+  if (!value || typeof value !== 'object') return false;
+  return Object.values(value as Record<string, unknown>).every((v) => typeof v === 'boolean');
+}
+
 function isAndroidRemoteConfigSnapshot(value: unknown): value is AndroidRemoteConfigSnapshot {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
@@ -71,8 +103,9 @@ function isAndroidRemoteConfigSnapshot(value: unknown): value is AndroidRemoteCo
     (v.source === 'server' || v.source === 'cache' || v.source === 'bundled') &&
     typeof v.fetchedAtMs === 'number' &&
     Array.isArray(v.walletRegistry) &&
-    typeof v.memoProofRouter === 'object' &&
-    v.memoProofRouter !== null
+    v.walletRegistry.every(isAndroidWalletConfigEntry) &&
+    isAndroidMemoProofConfig(v.memoProofRouter) &&
+    isFeatureFlagsRecord(v.featureFlags)
   );
 }
 

@@ -1,5 +1,7 @@
 import { readFile } from 'node:fs/promises';
 
+import { PublicKey } from '@solana/web3.js';
+
 import { ProtocolError, type Cluster } from '@solana-agent-wallet-adapter/core';
 
 export interface TokenLimitConfig {
@@ -59,6 +61,60 @@ export interface ConnectorPolicyConfig {
   marginfi?: MarginfiPolicyConfig;
   project0?: Project0PolicyConfig;
   jupiter?: JupiterConnectorPolicyConfig;
+  phoenix?: PhoenixConnectorPolicyConfig;
+}
+
+export interface PhoenixConnectorPolicyConfig {
+  perps?: PhoenixPerpsPolicyConfig;
+  vulcan?: PhoenixVulcanPolicyConfig;
+}
+
+/**
+ * Phoenix Perpetuals execution-bridge via Vulcan (Ellipsis Labs CLI for traders and AI agents).
+ *
+ * The Phoenix Perpetuals adapter ships read tools + policy-gated action stubs; live tx-building is blocked until
+ * the Rise SDK lands on npm. This bridge lets the agent execute real Phoenix trades by proxying to a local
+ * `vulcan mcp` subprocess. Dangerous calls are intercepted into Agentic's prepared-action inbox so the user
+ * approves each one before Vulcan signs.
+ *
+ * Default disabled — operator must opt in and supply a wallet name (and password for live trading).
+ */
+export interface PhoenixVulcanPolicyConfig {
+  enabled?: boolean;
+  /** Vulcan binary path; defaults to "vulcan" (PATH lookup). */
+  binaryPath?: string;
+  /** Stored Vulcan wallet identifier; forwarded as VULCAN_WALLET_NAME. (Single-wallet mode.) */
+  walletName?: string;
+  /**
+   * Env var to read the Vulcan wallet password from at process start. Default `VULCAN_WALLET_PASSWORD`.
+   * Resolved once at bridge start; never stored on disk by Agentic.
+   */
+  walletPasswordEnvVar?: string;
+  /** Spawn vulcan with `--allow-dangerous` so signing tools become available. */
+  allowDangerous?: boolean;
+  /** Per-tool-call timeout. Default 60s. */
+  maxToolCallTimeoutMs?: number;
+  /** D1: enable transport-crash auto-restart with exponential backoff. Default false (fail-loud). */
+  autoRestart?: boolean;
+  /** D1: backoff schedule between restart attempts. Default [1000, 2000, 5000, 10000, 30000]. */
+  restartBackoffMs?: readonly number[];
+  /** D2: reject start() when upstream `serverInfo.name` doesn't equal this. Defensive identity check. */
+  requiredServerName?: string;
+  /** D2: pin the upstream vulcan binary version. Exact match against `serverInfo.version`. */
+  requiredServerVersion?: string;
+  /**
+   * D4 multi-wallet mode: when this map is non-empty, the bridge builds a `VulcanWalletRegistry` instead of a
+   * single client. Each key is a wallet name; each value is the env var that holds that wallet's password.
+   * Example: `{ alice: 'ALICE_VULCAN_PASSWORD', bob: 'BOB_VULCAN_PASSWORD' }`.
+   */
+  walletPasswordsByEnvVar?: Record<string, string>;
+  /**
+   * D4: allowlist of wallet names that the registry accepts. When set, an agent passing an unknown wallet name
+   * via `vulcanWalletName` is rejected. Prevents cross-tenant wallet spawning.
+   */
+  allowedWallets?: string[];
+  /** D4: default wallet name to use when a call doesn't specify one. Falls back to `walletName` if unset. */
+  defaultWalletName?: string;
 }
 
 export interface MarginfiPolicyConfig {
@@ -220,6 +276,106 @@ export function getJupiterPerpsPolicy(
   };
 }
 
+export interface PhoenixPerpsPolicyConfig {
+  /** Default false: Phoenix is in private beta and Rise SDK is not yet on npm. */
+  enabled?: boolean;
+  /** Default false: reads + previews always allowed; writes blocked only when this is true. */
+  readOnly?: boolean;
+  /** Default true: writes return policy_paper_mode_only until 24h paper soak passes and operator flips this off. */
+  paperModeOnly?: boolean;
+  /** Default 5x. Phoenix UI currently advertises 15x on SOL-PERP; we ship conservative. */
+  maxLeverage?: number;
+  /** Default 15%. Health preview rejects opens that project below this buffer. */
+  minLiquidationBufferPct?: number;
+  /** Default `['SOL-PERP']`. Empty array means *deny all*; expand as new markets are validated. */
+  allowedSymbols?: string[];
+  /** Default $250. Notional = baseSize × leverage × markPriceUsd; capped per prepared action. */
+  maxNotionalUsd?: number;
+}
+
+export const DEFAULT_PHOENIX_PERPS_POLICY: Required<PhoenixPerpsPolicyConfig> = {
+  enabled: false,
+  readOnly: false,
+  paperModeOnly: true,
+  maxLeverage: 5,
+  minLiquidationBufferPct: 15,
+  allowedSymbols: ['SOL-PERP'],
+  maxNotionalUsd: 250,
+};
+
+export function getPhoenixPerpsPolicy(
+  config: AgentWalletConfig,
+): Required<PhoenixPerpsPolicyConfig> {
+  const policy = config.connectors?.phoenix?.perps;
+  return {
+    enabled: policy?.enabled ?? DEFAULT_PHOENIX_PERPS_POLICY.enabled,
+    readOnly: policy?.readOnly ?? DEFAULT_PHOENIX_PERPS_POLICY.readOnly,
+    paperModeOnly: policy?.paperModeOnly ?? DEFAULT_PHOENIX_PERPS_POLICY.paperModeOnly,
+    maxLeverage: policy?.maxLeverage ?? DEFAULT_PHOENIX_PERPS_POLICY.maxLeverage,
+    minLiquidationBufferPct:
+      policy?.minLiquidationBufferPct ?? DEFAULT_PHOENIX_PERPS_POLICY.minLiquidationBufferPct,
+    allowedSymbols: policy?.allowedSymbols ?? DEFAULT_PHOENIX_PERPS_POLICY.allowedSymbols,
+    maxNotionalUsd: policy?.maxNotionalUsd ?? DEFAULT_PHOENIX_PERPS_POLICY.maxNotionalUsd,
+  };
+}
+
+export const DEFAULT_PHOENIX_VULCAN_POLICY: Required<
+  Pick<PhoenixVulcanPolicyConfig, 'enabled' | 'binaryPath' | 'walletPasswordEnvVar' | 'allowDangerous' | 'maxToolCallTimeoutMs'>
+> = {
+  enabled: false,
+  binaryPath: 'vulcan',
+  walletPasswordEnvVar: 'VULCAN_WALLET_PASSWORD',
+  allowDangerous: false,
+  maxToolCallTimeoutMs: 60_000,
+};
+
+export interface ResolvedPhoenixVulcanPolicy {
+  enabled: boolean;
+  binaryPath: string;
+  walletName?: string;
+  walletPasswordEnvVar: string;
+  allowDangerous: boolean;
+  maxToolCallTimeoutMs: number;
+  autoRestart: boolean;
+  restartBackoffMs?: readonly number[];
+  requiredServerName?: string;
+  requiredServerVersion?: string;
+  walletPasswordsByEnvVar?: Record<string, string>;
+  allowedWallets?: string[];
+  defaultWalletName?: string;
+}
+
+export function getPhoenixVulcanPolicy(config: AgentWalletConfig): ResolvedPhoenixVulcanPolicy {
+  const policy = config.connectors?.phoenix?.vulcan;
+  const envEnabled = process.env.PHOENIX_VULCAN_ENABLED?.toLowerCase().trim() === 'true';
+  const envDangerous = process.env.PHOENIX_VULCAN_ALLOW_DANGEROUS?.toLowerCase().trim() === 'true';
+  const envAutoRestart = process.env.PHOENIX_VULCAN_AUTO_RESTART?.toLowerCase().trim() === 'true';
+  const envRequiredVersion = process.env.PHOENIX_VULCAN_REQUIRED_VERSION?.trim();
+  const resolved: ResolvedPhoenixVulcanPolicy = {
+    enabled: policy?.enabled ?? envEnabled,
+    binaryPath:
+      policy?.binaryPath ?? process.env.PHOENIX_VULCAN_BINARY?.trim() ?? DEFAULT_PHOENIX_VULCAN_POLICY.binaryPath,
+    walletPasswordEnvVar: policy?.walletPasswordEnvVar ?? DEFAULT_PHOENIX_VULCAN_POLICY.walletPasswordEnvVar,
+    allowDangerous: policy?.allowDangerous ?? envDangerous,
+    maxToolCallTimeoutMs: policy?.maxToolCallTimeoutMs ?? DEFAULT_PHOENIX_VULCAN_POLICY.maxToolCallTimeoutMs,
+    autoRestart: policy?.autoRestart ?? envAutoRestart,
+  };
+  const walletName = policy?.walletName ?? process.env.VULCAN_WALLET_NAME?.trim();
+  if (walletName) resolved.walletName = walletName;
+  if (policy?.restartBackoffMs) resolved.restartBackoffMs = policy.restartBackoffMs;
+  if (policy?.requiredServerName) resolved.requiredServerName = policy.requiredServerName;
+  const requiredVersion = policy?.requiredServerVersion ?? envRequiredVersion;
+  if (requiredVersion) resolved.requiredServerVersion = requiredVersion;
+  if (policy?.walletPasswordsByEnvVar && Object.keys(policy.walletPasswordsByEnvVar).length > 0) {
+    resolved.walletPasswordsByEnvVar = policy.walletPasswordsByEnvVar;
+  }
+  if (policy?.allowedWallets && policy.allowedWallets.length > 0) {
+    resolved.allowedWallets = policy.allowedWallets;
+  }
+  if (policy?.defaultWalletName) resolved.defaultWalletName = policy.defaultWalletName;
+  return resolved;
+}
+
 export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 export const JUP_MINT = 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN';
@@ -227,6 +383,42 @@ export const BONK_MINT = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
 export const WIF_MINT = 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm';
 export const PYUSD_MINT = '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo';
 export const MSOL_MINT = 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So';
+
+/**
+ * Solana Mobile Seeker ecosystem token. The mainnet mint is not hardcoded
+ * because $SKR was not stable at the time this code shipped; deployments set
+ * `SKR_TOKEN_MINT` (and optionally `SKR_TOKEN_DECIMALS`/`SKR_TOKEN_MAX_TRANSFER`)
+ * to enable it. When unset OR set to a malformed value, $SKR is omitted from
+ * the registry entirely so non-Seeker deployments are unaffected and operator
+ * typos surface as a loud startup log rather than a silent downstream failure.
+ */
+export const SKR_MINT: string = (() => {
+  const raw = (process.env.SKR_TOKEN_MINT ?? '').trim();
+  if (!raw) return '';
+  try {
+    return new PublicKey(raw).toBase58();
+  } catch {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[config] SKR_TOKEN_MINT="${raw}" is not a valid base58 Solana pubkey; $SKR features will remain disabled.`,
+    );
+    return '';
+  }
+})();
+const SKR_DECIMALS: number = (() => {
+  const raw = (process.env.SKR_TOKEN_DECIMALS ?? '').trim();
+  if (!raw) return 6;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 && n <= 18 ? n : 6;
+})();
+const SKR_MAX_TRANSFER: string = (() => {
+  const raw = (process.env.SKR_TOKEN_MAX_TRANSFER ?? '').trim();
+  return /^\d+(\.\d+)?$/.test(raw) ? raw : '1000';
+})();
+
+const SKR_REGISTRY_ENTRY: TokenLimitConfig | null = SKR_MINT
+  ? { symbol: 'SKR', mint: SKR_MINT, decimals: SKR_DECIMALS, maxTransfer: SKR_MAX_TRANSFER }
+  : null;
 
 export const DEFAULT_JUPITER_SWAP_BASE_URL = 'https://api.jup.ag/swap/v2';
 export const DEFAULT_JUPITER_LEND_BASE_URL = 'https://api.jup.ag/lend/v1';
@@ -280,6 +472,7 @@ export const DEFAULT_TOKEN_REGISTRY: TokenLimitConfig[] = [
     decimals: 9,
     maxTransfer: '25',
   },
+  ...(SKR_REGISTRY_ENTRY ? [SKR_REGISTRY_ENTRY] : []),
 ];
 
 export const DEFAULT_CONFIG: AgentWalletConfig = {

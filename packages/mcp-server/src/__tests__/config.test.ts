@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { normalizeConfig } from '../config.js';
 
@@ -12,6 +12,9 @@ const ENV_KEYS = [
   'JUPITER_PRICE_BASE_URL',
   'JUP_ULTRA_BASE',
   'JUPITER_BASE_URL',
+  'SKR_TOKEN_MINT',
+  'SKR_TOKEN_DECIMALS',
+  'SKR_TOKEN_MAX_TRANSFER',
 ] as const;
 
 const previousEnv = new Map<string, string | undefined>();
@@ -105,3 +108,95 @@ describe('config env aliases', () => {
 function setEnv(key: typeof ENV_KEYS[number], value: string): void {
   process.env[key] = value;
 }
+
+// ─── $SKR (Solana Mobile Seeker) registry — env-gated, validated at module load ─
+//
+// `SKR_MINT` and the conditional `DEFAULT_TOKEN_REGISTRY` SKR entry are
+// computed once when `config.ts` is first imported (top-of-file `process.env`
+// reads). To exercise multiple env permutations in the same test file we
+// `vi.resetModules()` between cases and re-import the module under each env
+// shape. That sidesteps stale module-scope state without forking the test
+// runner.
+describe('SKR_MINT registry (env-gated)', () => {
+  // Real Solana base58 pubkey (USDC mainnet mint). Stand-in for any real
+  // $SKR mint — we're validating base58 round-trip, not token identity.
+  const VALID_BASE58 = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+  async function reloadConfig(): Promise<typeof import('../config.js')> {
+    vi.resetModules();
+    return await import('../config.js');
+  }
+
+  it('omits SKR from DEFAULT_TOKEN_REGISTRY when SKR_TOKEN_MINT is unset', async () => {
+    delete process.env.SKR_TOKEN_MINT;
+    const config = await reloadConfig();
+    expect(config.SKR_MINT).toBe('');
+    expect(config.DEFAULT_TOKEN_REGISTRY.some((t) => t.symbol === 'SKR')).toBe(false);
+  });
+
+  it('includes SKR when SKR_TOKEN_MINT is a valid base58 pubkey', async () => {
+    process.env.SKR_TOKEN_MINT = VALID_BASE58;
+    const config = await reloadConfig();
+    expect(config.SKR_MINT).toBe(VALID_BASE58);
+    const skrEntry = config.DEFAULT_TOKEN_REGISTRY.find((t) => t.symbol === 'SKR');
+    expect(skrEntry).toBeDefined();
+    expect(skrEntry?.mint).toBe(VALID_BASE58);
+    // Defaults: 6 decimals (matching USDC scale) and a conservative max
+    // transfer cap until operator overrides via SKR_TOKEN_DECIMALS /
+    // SKR_TOKEN_MAX_TRANSFER.
+    expect(skrEntry?.decimals).toBe(6);
+    expect(skrEntry?.maxTransfer).toBe('1000');
+  });
+
+  it('honors SKR_TOKEN_DECIMALS and SKR_TOKEN_MAX_TRANSFER overrides', async () => {
+    process.env.SKR_TOKEN_MINT = VALID_BASE58;
+    process.env.SKR_TOKEN_DECIMALS = '9';
+    process.env.SKR_TOKEN_MAX_TRANSFER = '500';
+    const config = await reloadConfig();
+    const skrEntry = config.DEFAULT_TOKEN_REGISTRY.find((t) => t.symbol === 'SKR');
+    expect(skrEntry?.decimals).toBe(9);
+    expect(skrEntry?.maxTransfer).toBe('500');
+  });
+
+  it('falls back to defaults for malformed SKR_TOKEN_DECIMALS', async () => {
+    process.env.SKR_TOKEN_MINT = VALID_BASE58;
+    process.env.SKR_TOKEN_DECIMALS = 'abc';
+    process.env.SKR_TOKEN_MAX_TRANSFER = 'not-a-number';
+    const config = await reloadConfig();
+    const skrEntry = config.DEFAULT_TOKEN_REGISTRY.find((t) => t.symbol === 'SKR');
+    expect(skrEntry?.decimals).toBe(6);
+    expect(skrEntry?.maxTransfer).toBe('1000');
+  });
+
+  it('omits SKR with a warning when SKR_TOKEN_MINT is not valid base58', async () => {
+    process.env.SKR_TOKEN_MINT = 'definitely-not-base58!!!';
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const config = await reloadConfig();
+      expect(config.SKR_MINT).toBe('');
+      expect(config.DEFAULT_TOKEN_REGISTRY.some((t) => t.symbol === 'SKR')).toBe(false);
+      // Operators should see exactly one warn so the misconfiguration is
+      // diagnosable from logs — the silent path (return empty without
+      // logging) would mask the typo.
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(String(warnSpy.mock.calls[0]?.[0] ?? '')).toContain('SKR_TOKEN_MINT');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('does not affect the rest of DEFAULT_TOKEN_REGISTRY when SKR is enabled', async () => {
+    delete process.env.SKR_TOKEN_MINT;
+    const baseline = await reloadConfig();
+    const baselineSymbols = baseline.DEFAULT_TOKEN_REGISTRY.map((t) => t.symbol);
+
+    process.env.SKR_TOKEN_MINT = VALID_BASE58;
+    const enabled = await reloadConfig();
+    const enabledSymbols = enabled.DEFAULT_TOKEN_REGISTRY.map((t) => t.symbol);
+
+    // The SKR-enabled registry is exactly the baseline + 'SKR'; no other
+    // entries are reordered or dropped (which would break callers iterating
+    // by index, though there shouldn't be any).
+    expect(enabledSymbols).toEqual([...baselineSymbols, 'SKR']);
+  });
+});

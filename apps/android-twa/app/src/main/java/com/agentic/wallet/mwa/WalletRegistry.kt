@@ -61,9 +61,23 @@ object WalletRegistry {
         return normalized.contains(SEED_VAULT_ICON_HEAD) && normalized.contains(SEED_VAULT_ICON_TAIL_SENTINEL)
     }
 
+    /**
+     * Server-driven fingerprint. The canonical Solflare icon hash lives in
+     * `walletRegistry[].iconSha256First8` in `/api/android-config` so a Solflare
+     * icon refresh can ship via Render redeploy. Falls back to the bundled
+     * constant if the config payload has no Solflare entry (offline first
+     * launch, server outage, etc.) so the fingerprint check never goes silent.
+     */
+    fun solflareIconFingerprint(): String {
+        val configEntry = RemoteConfigLoader.config().walletEntryByPackage(SOLFLARE_PACKAGE)
+        val fromConfig = configEntry?.iconSha256First8
+        if (!fromConfig.isNullOrBlank()) return fromConfig
+        return SOLFLARE_ICON_SHA256_8
+    }
+
     fun isKnownSolflareIcon(walletIcon: String): Boolean {
         if (walletIcon.isBlank()) return false
-        return sha256First8(walletIcon.toByteArray(Charsets.UTF_8)) == SOLFLARE_ICON_SHA256_8
+        return sha256First8(walletIcon.toByteArray(Charsets.UTF_8)) == solflareIconFingerprint()
     }
 
     fun walletIconLogMetadata(walletIcon: String): Map<String, Any?> {

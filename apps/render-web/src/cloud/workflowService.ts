@@ -134,6 +134,7 @@ const BLINK_BROWSER_LOCAL_FINALIZATION_REASON =
 const BROWSER_WALLET_EXECUTION_KINDS = new Set<string>([
   'swap',
   'transfer_spl',
+  'skill_fee_split',
   'blink_action',
   ...CONNECTOR_APPROVAL_ACTION_TYPES,
 ]);
@@ -803,7 +804,9 @@ export class WorkflowService {
         completedId: completed.id,
         status: approved.status,
         finalizationId: updatedFinalization.id,
+        kind: approved.kind,
         ...(input.txid ? { txid: input.txid } : {}),
+        ...skillFeeSplitAuditMetadata(approved),
       });
       return { approval: approved, finalization: updatedFinalization, completed };
     }
@@ -882,6 +885,8 @@ export class WorkflowService {
     await this.audit(session, `approval.${decision}`, 'approval', approval.id, {
       completedId: completed.id,
       status: decision,
+      kind: approval.kind,
+      ...skillFeeSplitAuditMetadata(approval),
     });
     return { approval, completed };
   }
@@ -959,7 +964,9 @@ export class WorkflowService {
           status: approval.status,
           txStatus,
           txid: input.txid,
+          kind: approval.kind,
           ...(input.error ? { error: input.error } : {}),
+          ...skillFeeSplitAuditMetadata(approval),
         },
       );
       return { approval };
@@ -974,6 +981,8 @@ export class WorkflowService {
       status: approval.status,
       txStatus,
       txid: input.txid,
+      kind: approval.kind,
+      ...skillFeeSplitAuditMetadata(approval),
     });
     return { approval, completed };
   }
@@ -1366,6 +1375,23 @@ function guardrailAuditMetadata(report: AiGuardrailReport): JsonObject {
     violationCodes: report.violations.map((violation) => violation.code),
     summary: report.summary,
   };
+}
+
+/**
+ * For skill_fee_split approvals, surface the author + treasury per-recipient
+ * details into the audit event metadata so forensic queries (e.g. "how much
+ * did the platform earn from this user last week") have an authoritative
+ * source. For other approval kinds, returns an empty object.
+ */
+function skillFeeSplitAuditMetadata(approval: ApprovalRequestRecord): JsonObject {
+  if (approval.kind !== 'skill_fee_split') return {};
+  const params = approval.params ?? {};
+  const out: JsonObject = {};
+  for (const key of ['token', 'authorRecipient', 'authorAmount', 'treasuryRecipient', 'treasuryAmount'] as const) {
+    const value = params[key];
+    if (typeof value === 'string' && value.length > 0) out[key] = value;
+  }
+  return out;
 }
 
 function notFound(message: string): WorkflowServiceError {
@@ -2215,7 +2241,7 @@ function executionModeForFinalizationRequirement(requirement: FinalizationRequir
 function finalizationSupportForKind(kind: string): { required: boolean; supported: boolean; reason?: string } {
   const required = workflowRequiresTransactionFinalization(kind);
   if (!required) return { required: false, supported: true };
-  if (kind === 'transfer_sol' || kind === 'transfer_spl') {
+  if (kind === 'transfer_sol' || kind === 'transfer_spl' || kind === 'skill_fee_split') {
     return { required: true, supported: true };
   }
   if (kind === 'blink_action') {

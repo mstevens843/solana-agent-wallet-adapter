@@ -27,6 +27,7 @@ import {
   type RecurringPaymentInput,
 } from './actionService.js';
 import type { AgentWalletConfig } from './config.js';
+import { getPhoenixVulcanPolicy } from './config.js';
 import {
   JsonPreparedActionStore,
   defaultPreparedActionStorePath,
@@ -34,6 +35,14 @@ import {
 } from './preparedActions.js';
 import { AdapterError } from './adapters/types.js';
 import { newTraceId, trace } from './trace.js';
+import {
+  VULCAN_EMPTY_TOOLS_HINT,
+  VulcanMetricsRegistry,
+  VulcanStatusHolder,
+  VulcanUpstreamClient,
+  VulcanWalletRegistry,
+  registerVulcanTools,
+} from './upstreamMcp/index.js';
 
 // Phase 5.17 — operator-overridable defaults. Set AGENTIC_RENDER_WEB_URL to
 // point at a non-local render-web instance (e.g. https://agentic-signer.com).
@@ -53,9 +62,52 @@ export interface RegisterActionToolsOptions {
   backend: WalletBackend;
   config: AgentWalletConfig;
   preparedActions?: PreparedActionStore;
+  /**
+   * Optional Vulcan upstream client. When supplied AND `getPhoenixVulcanPolicy(config).enabled`, the MCP server
+   * spawns Vulcan via this client and re-exports its tools as `solana_vulcan_*`. Lifecycle: client is started here
+   * if not already running; the caller owns `.stop()` on process exit.
+   *
+   * Mutually exclusive with `vulcanWalletRegistry` — when both are supplied, the registry wins (multi-wallet
+   * mode) and the single client is ignored with a console.warn.
+   */
+  vulcanUpstreamClient?: VulcanUpstreamClient;
+  /**
+   * D4 multi-wallet registry. Takes precedence over `vulcanUpstreamClient` when both are present. The registry is
+   * used both for tool registration (uses the default wallet's client to list upstream tools) and execute-time
+   * routing (per `vulcanWalletName` in prepared-action params).
+   */
+  vulcanWalletRegistry?: VulcanWalletRegistry;
 }
 
 type JsonRecord = Record<string, unknown>;
+
+/**
+ * Emit the operator-visible "connected" log line + traces. Both single-client and registry-mode paths call this so
+ * the format stays consistent. T2.2: include vulcan@VERSION when available so operators can confirm the binary
+ * matches expectations.
+ */
+function emitConnectedLog(
+  client: VulcanUpstreamClient,
+  summary: { readonly: string[]; dangerous: string[]; skipped: { name: string; reason: string }[] },
+): void {
+  trace('vulcan.upstream.tools_ready', {
+    readonly: summary.readonly.length,
+    dangerous: summary.dangerous.length,
+    skipped: summary.skipped.length,
+  });
+  if (process.env.VULCAN_LOG_LEVEL === 'silent') return;
+  const info = client.getServerInfo();
+  const versionLabel = info ? ` (${info.name}@${info.version})` : '';
+  const skippedSuffix = summary.skipped.length > 0 ? ` (${summary.skipped.length} skipped)` : '';
+  // eslint-disable-next-line no-console
+  console.info(
+    `[vulcan-upstream] connected${versionLabel}; ${summary.readonly.length} readonly tools, ${summary.dangerous.length} dangerous tools${skippedSuffix}`,
+  );
+  if (summary.readonly.length === 0 && summary.dangerous.length === 0) {
+    // eslint-disable-next-line no-console
+    console.warn(`[vulcan-upstream] ${VULCAN_EMPTY_TOOLS_HINT}`);
+  }
+}
 
 export function registerActionTools(
   server: McpServer,
@@ -63,11 +115,118 @@ export function registerActionTools(
 ): void {
   const preparedActions =
     options.preparedActions ?? new JsonPreparedActionStore(defaultPreparedActionStorePath());
+  const vulcanWalletRegistry = options.vulcanWalletRegistry;
+  // T3.4: when both are passed, registry wins; warn so the caller can clean up.
+  let vulcanUpstreamClient = options.vulcanUpstreamClient;
+  if (vulcanWalletRegistry && vulcanUpstreamClient) {
+    if (process.env.VULCAN_LOG_LEVEL !== 'silent') {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[vulcan-upstream] Both vulcanWalletRegistry and vulcanUpstreamClient supplied; the registry wins. ' +
+          'Remove vulcanUpstreamClient to silence this warning.',
+      );
+    }
+    vulcanUpstreamClient = undefined;
+  }
+  const vulcanMetrics = new VulcanMetricsRegistry();
   const service = new AgentWalletActionService({
     backend: options.backend,
     config: options.config,
     preparedActions,
+    ...(vulcanUpstreamClient ? { vulcanUpstreamClient } : {}),
+    ...(vulcanWalletRegistry ? { vulcanWalletRegistry } : {}),
+    vulcanMetricsRegistry: vulcanMetrics,
   });
+
+  const vulcanStatus = new VulcanStatusHolder();
+  vulcanStatus.setMetricsRegistry(vulcanMetrics);
+
+  // Resolve the client used for upstream tool listing. In registry mode we use the default wallet's client; in
+  // single-client mode we use the only client. Either way, dangerous-tool execution later routes through the
+  // action service which knows about both paths.
+  const policyEnabled = getPhoenixVulcanPolicy(options.config).enabled;
+  if (vulcanWalletRegistry && policyEnabled) {
+    vulcanStatus.setClient(undefined);
+    vulcanStatus.setWalletListProvider(() => vulcanWalletRegistry.listActiveWallets());
+    void (async () => {
+      try {
+        const client = await vulcanWalletRegistry.getOrStart();
+        vulcanStatus.setClient(client);
+        const summary = await registerVulcanTools({
+          server,
+          client,
+          config: options.config,
+          getWalletAddress: () => options.backend.getAddress(),
+          getStore: () => preparedActions,
+          trace: (event, payload) => trace(event, payload),
+          metrics: vulcanMetrics,
+        });
+        vulcanStatus.setRegistrationSummary(summary);
+        if (summary.readonly.length === 0 && summary.dangerous.length === 0) {
+          vulcanStatus.addHint(VULCAN_EMPTY_TOOLS_HINT);
+        }
+        emitConnectedLog(client, summary);
+      } catch (err) {
+        const error = err instanceof Error ? err : new Error(String(err));
+        vulcanStatus.setRegistrationError(error);
+        trace('vulcan.upstream.register_failed', { message: error.message });
+        if (process.env.VULCAN_LOG_LEVEL !== 'silent') {
+          // eslint-disable-next-line no-console
+          console.warn(`[vulcan-upstream] registration failed: ${error.message}`);
+        }
+      }
+    })();
+  } else if (vulcanUpstreamClient && policyEnabled) {
+    vulcanStatus.setClient(vulcanUpstreamClient);
+    // Async: start the upstream subprocess + list its tools + register them. Fire-and-forget with logging — the
+    // tool surface populates on a small delay after MCP startup, which is acceptable since the agent typically
+    // calls discovery tools before action tools.
+    void (async () => {
+      try {
+        if (!vulcanUpstreamClient.isRunning()) await vulcanUpstreamClient.start();
+        const summary = await registerVulcanTools({
+          server,
+          client: vulcanUpstreamClient,
+          config: options.config,
+          getWalletAddress: () => options.backend.getAddress(),
+          getStore: () => preparedActions,
+          trace: (event, payload) => trace(event, payload),
+          metrics: vulcanMetrics,
+        });
+        vulcanStatus.setRegistrationSummary(summary);
+        if (summary.readonly.length === 0 && summary.dangerous.length === 0) {
+          vulcanStatus.addHint(VULCAN_EMPTY_TOOLS_HINT);
+        }
+        emitConnectedLog(vulcanUpstreamClient, summary);
+      } catch (err) {
+        const error = err instanceof Error ? err : new Error(String(err));
+        vulcanStatus.setRegistrationError(error);
+        trace('vulcan.upstream.register_failed', { message: error.message });
+        if (process.env.VULCAN_LOG_LEVEL !== 'silent') {
+          // eslint-disable-next-line no-console
+          console.warn(`[vulcan-upstream] registration failed: ${error.message}`);
+        }
+      }
+    })();
+  }
+
+  // T2.2: solana_vulcan_status — always registered so an agent can probe configuration even when Vulcan is
+  // disabled. Returns { enabled: false, ... } when policy is off; useful for "why doesn't Phoenix execution work?".
+  server.registerTool(
+    'solana_vulcan_status',
+    {
+      description:
+        'Return the current state of the Vulcan upstream bridge (Ellipsis Labs CLI for Phoenix Perpetuals). ' +
+        'Reports running state, captured serverInfo (name + version), registered tool names (read-only / dangerous / ' +
+        'skipped), per-tool metrics (call counts, latency buckets, error counts), active wallet names ' +
+        '(multi-wallet mode), startup errors, and operator hints. ' +
+        'Read-only; safe to call any time. When the bridge is disabled, returns { enabled: false, hints: [] }.',
+      inputSchema: {},
+    },
+    async () => traceTool('solana_vulcan_status', { enabled: vulcanStatus.snapshot().enabled }, async () =>
+      jsonReply(vulcanStatus.snapshot()),
+    ),
+  );
 
   server.registerTool(
     'solana_useful_prompts',
@@ -3366,6 +3525,138 @@ export function registerActionTools(
   );
 
   server.registerTool(
+    'solana_phoenix_market_snapshot',
+    {
+      description:
+        'Read a Phoenix Perpetuals market snapshot: oracle, mark price, funding rate, max leverage, taker/maker fees. Read-only. Mainnet-beta only.',
+      inputSchema: {
+        symbol: z.string().min(2).optional().describe('Phoenix market symbol, for example SOL-PERP. Defaults to SOL-PERP.'),
+      },
+    },
+    async ({ symbol }) => traceTool(
+      'solana_phoenix_market_snapshot',
+      { cluster: options.config.cluster, symbol },
+      async () => jsonReply(
+        await service.phoenixMarketSnapshot({
+          ...(symbol !== undefined && { symbol }),
+        }),
+      ),
+    ),
+  );
+
+  server.registerTool(
+    'solana_phoenix_market_catalog',
+    {
+      description: 'List every Phoenix Perpetuals market the host can see, with mark prices and funding rates. Read-only. Mainnet-beta only.',
+      inputSchema: {},
+    },
+    async () => traceTool(
+      'solana_phoenix_market_catalog',
+      { cluster: options.config.cluster },
+      async () => jsonReply(await service.phoenixMarketCatalog()),
+    ),
+  );
+
+  server.registerTool(
+    'solana_phoenix_position_snapshot',
+    {
+      description:
+        'Read a single Phoenix Perpetuals position for a wallet and symbol: side, size, entry, mark, leverage, projected liquidation, accrued funding. Read-only. Mainnet-beta only.',
+      inputSchema: {
+        walletAddress: z.string().min(32).optional().describe('Defaults to the connected wallet.'),
+        symbol: z.string().min(2).describe('Phoenix market symbol, for example SOL-PERP.'),
+        traderPdaIndex: z.number().int().min(0).optional().describe('Phoenix trader PDA index; defaults to 0.'),
+      },
+    },
+    async ({ walletAddress, symbol, traderPdaIndex }) => traceTool(
+      'solana_phoenix_position_snapshot',
+      { cluster: options.config.cluster, walletAddress, symbol, traderPdaIndex },
+      async () => jsonReply(
+        await service.phoenixPositionSnapshot({
+          ...(walletAddress !== undefined && { walletAddress }),
+          symbol,
+          ...(traderPdaIndex !== undefined && { traderPdaIndex }),
+        }),
+      ),
+    ),
+  );
+
+  server.registerTool(
+    'solana_phoenix_wallet_positions',
+    {
+      description:
+        'List all Phoenix Perpetuals positions, open orders, and triggers for a wallet trader account. Read-only. Mainnet-beta only.',
+      inputSchema: {
+        walletAddress: z.string().min(32).optional().describe('Defaults to the connected wallet.'),
+        traderPdaIndex: z.number().int().min(0).optional().describe('Phoenix trader PDA index; defaults to 0.'),
+      },
+    },
+    async ({ walletAddress, traderPdaIndex }) => traceTool(
+      'solana_phoenix_wallet_positions',
+      { cluster: options.config.cluster, walletAddress, traderPdaIndex },
+      async () => jsonReply(
+        await service.phoenixWalletPositions({
+          ...(walletAddress !== undefined && { walletAddress }),
+          ...(traderPdaIndex !== undefined && { traderPdaIndex }),
+        }),
+      ),
+    ),
+  );
+
+  server.registerTool(
+    'solana_phoenix_funding_history',
+    {
+      description: 'Read recent funding rate history for a Phoenix Perpetuals market. Read-only. Mainnet-beta only.',
+      inputSchema: {
+        symbol: z.string().min(2).describe('Phoenix market symbol, for example SOL-PERP.'),
+        limit: z.number().int().positive().max(500).optional().describe('Max entries; defaults to API default.'),
+      },
+    },
+    async ({ symbol, limit }) => traceTool(
+      'solana_phoenix_funding_history',
+      { cluster: options.config.cluster, symbol, limit },
+      async () => jsonReply(
+        await service.phoenixFundingHistory({
+          symbol,
+          ...(limit !== undefined && { limit }),
+        }),
+      ),
+    ),
+  );
+
+  server.registerTool(
+    'solana_phoenix_health_preview',
+    {
+      description:
+        'Project the post-action liquidation price, margin ratio, and free collateral for a hypothetical Phoenix Perpetuals open/close/modify_collateral. Policy thresholds (maxLeverage, allowedSymbols) are enforced before any SDK call. Read-only preview.',
+      inputSchema: {
+        walletAddress: z.string().min(32).optional().describe('Defaults to the connected wallet.'),
+        symbol: z.string().min(2).describe('Phoenix market symbol, for example SOL-PERP.'),
+        side: z.enum(['long', 'short']),
+        baseSize: z.union([z.string().min(1), z.number().positive()]).describe('Base asset quantity for the hypothetical action.'),
+        leverage: z.number().positive().describe('Requested leverage multiple.'),
+        action: z.enum(['open', 'close', 'modify_collateral']).optional(),
+        traderPdaIndex: z.number().int().min(0).optional(),
+      },
+    },
+    async ({ walletAddress, symbol, side, baseSize, leverage, action, traderPdaIndex }) => traceTool(
+      'solana_phoenix_health_preview',
+      { cluster: options.config.cluster, walletAddress, symbol, side, leverage },
+      async () => jsonReply(
+        await service.phoenixHealthPreview({
+          ...(walletAddress !== undefined && { walletAddress }),
+          symbol,
+          side,
+          baseSize,
+          leverage,
+          ...(action !== undefined && { action }),
+          ...(traderPdaIndex !== undefined && { traderPdaIndex }),
+        }),
+      ),
+    ),
+  );
+
+  server.registerTool(
     'solana_prepare_tensor_buy',
     {
       description:
@@ -3550,6 +3841,184 @@ export function registerActionTools(
           maxPricePerItemSol,
           ...(requiredMintAddresses !== undefined && { requiredMintAddresses }),
           ...(excludeMintAddresses !== undefined && { excludeMintAddresses }),
+          ...(dueAt !== undefined && { dueAt }),
+          ...(note !== undefined && { note }),
+        }),
+      ),
+    ),
+  );
+
+  // ---- Phoenix Perpetuals write actions (native Rise SDK) -----------------------------------------------------------
+
+  server.registerTool(
+    'solana_prepare_phoenix_open',
+    {
+      description:
+        'Create a manual-approval inbox item that opens a Phoenix Perpetuals position (market order). Policy-gated by config.connectors.phoenix.perps (max leverage, paper-mode-only, allowed symbols, max notional). Rebuilds the transaction with a fresh blockhash at execution. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Mainnet-beta only.',
+      inputSchema: {
+        symbol: z.string().min(1).describe('Phoenix market symbol (e.g. "SOL-PERP"). Normalized to uppercase.'),
+        side: z.enum(['long', 'short']),
+        baseSize: z.string().min(1).describe('Base units of the position (e.g. "0.5" for 0.5 SOL).'),
+        leverage: z.number().int().positive().describe('Leverage multiplier (e.g. 3 for 3x). Capped by policy.maxLeverage.'),
+        priceLimitUsd: z.string().min(1).optional().describe('Optional USD price ceiling/floor for slippage protection. If omitted, the order is a pure market order with no slippage cap.'),
+        traderPdaIndex: z.number().int().nonnegative().optional().describe('Phoenix trader PDA index for multi-subaccount users. Defaults to 0.'),
+        walletAddress: z.string().min(32).optional().describe('Override the connected wallet address. Most callers omit this.'),
+        mode: z.enum(['live', 'paper']).optional().describe('Execution mode. Must be "paper" when policy.paperModeOnly is true.'),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async ({ symbol, side, baseSize, leverage, priceLimitUsd, traderPdaIndex, walletAddress, mode, dueAt, note }) => traceTool(
+      'solana_prepare_phoenix_open',
+      { cluster: options.config.cluster, symbol, side, baseSize, leverage, dueAt },
+      async () => jsonReply(
+        await service.preparePhoenixOpen({
+          symbol,
+          side,
+          baseSize,
+          leverage,
+          ...(priceLimitUsd !== undefined && { priceLimitUsd }),
+          ...(traderPdaIndex !== undefined && { traderPdaIndex }),
+          ...(walletAddress !== undefined && { walletAddress }),
+          ...(mode !== undefined && { mode }),
+          ...(dueAt !== undefined && { dueAt }),
+          ...(note !== undefined && { note }),
+        }),
+      ),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_phoenix_close',
+    {
+      description:
+        'Create a manual-approval inbox item that closes (or partially closes) a Phoenix Perpetuals position. Re-fetches the current position at both prepare and execute to handle partial fills or liquidations. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Mainnet-beta only.',
+      inputSchema: {
+        symbol: z.string().min(1),
+        baseSize: z.string().min(1).optional().describe('Optional partial close size. If omitted, closes the full position.'),
+        reduceOnly: z.boolean().optional(),
+        traderPdaIndex: z.number().int().nonnegative().optional(),
+        walletAddress: z.string().min(32).optional(),
+        mode: z.enum(['live', 'paper']).optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async ({ symbol, baseSize, reduceOnly, traderPdaIndex, walletAddress, mode, dueAt, note }) => traceTool(
+      'solana_prepare_phoenix_close',
+      { cluster: options.config.cluster, symbol, baseSize, dueAt },
+      async () => jsonReply(
+        await service.preparePhoenixClose({
+          symbol,
+          ...(baseSize !== undefined && { baseSize }),
+          ...(reduceOnly !== undefined && { reduceOnly }),
+          ...(traderPdaIndex !== undefined && { traderPdaIndex }),
+          ...(walletAddress !== undefined && { walletAddress }),
+          ...(mode !== undefined && { mode }),
+          ...(dueAt !== undefined && { dueAt }),
+          ...(note !== undefined && { note }),
+        }),
+      ),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_phoenix_modify_collateral',
+    {
+      description:
+        'Create a manual-approval inbox item that deposits or withdraws USDC collateral from a Phoenix Perpetuals trader account. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Mainnet-beta only.',
+      inputSchema: {
+        direction: z.enum(['deposit', 'withdraw']),
+        amountUsd: z.string().min(1).describe('USDC amount as a decimal string (e.g. "100" for 100 USDC). Up to 6 decimal places of precision.'),
+        traderPdaIndex: z.number().int().nonnegative().optional(),
+        walletAddress: z.string().min(32).optional(),
+        mode: z.enum(['live', 'paper']).optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async ({ direction, amountUsd, traderPdaIndex, walletAddress, mode, dueAt, note }) => traceTool(
+      'solana_prepare_phoenix_modify_collateral',
+      { cluster: options.config.cluster, direction, amountUsd, dueAt },
+      async () => jsonReply(
+        await service.preparePhoenixModifyCollateral({
+          direction,
+          amountUsd,
+          ...(traderPdaIndex !== undefined && { traderPdaIndex }),
+          ...(walletAddress !== undefined && { walletAddress }),
+          ...(mode !== undefined && { mode }),
+          ...(dueAt !== undefined && { dueAt }),
+          ...(note !== undefined && { note }),
+        }),
+      ),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_phoenix_place_trigger',
+    {
+      description:
+        'Create a manual-approval inbox item that places a stop-loss trigger on a Phoenix Perpetuals position. triggerDirection "less_than" fires when price falls below triggerPriceUsd; "greater_than" fires when price rises above. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Mainnet-beta only.',
+      inputSchema: {
+        symbol: z.string().min(1),
+        side: z.enum(['long', 'short']).describe('The trade side that fires when triggered (opposite of the position being protected).'),
+        baseSize: z.string().min(1),
+        triggerPriceUsd: z.string().min(1),
+        triggerDirection: z.enum(['less_than', 'greater_than']),
+        traderPdaIndex: z.number().int().nonnegative().optional(),
+        walletAddress: z.string().min(32).optional(),
+        mode: z.enum(['live', 'paper']).optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async ({ symbol, side, baseSize, triggerPriceUsd, triggerDirection, traderPdaIndex, walletAddress, mode, dueAt, note }) => traceTool(
+      'solana_prepare_phoenix_place_trigger',
+      { cluster: options.config.cluster, symbol, side, triggerPriceUsd, triggerDirection, dueAt },
+      async () => jsonReply(
+        await service.preparePhoenixPlaceTrigger({
+          symbol,
+          side,
+          baseSize,
+          triggerPriceUsd,
+          triggerDirection,
+          ...(traderPdaIndex !== undefined && { traderPdaIndex }),
+          ...(walletAddress !== undefined && { walletAddress }),
+          ...(mode !== undefined && { mode }),
+          ...(dueAt !== undefined && { dueAt }),
+          ...(note !== undefined && { note }),
+        }),
+      ),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_phoenix_cancel_order',
+    {
+      description:
+        'Create a manual-approval inbox item that cancels an open Phoenix Perpetuals limit order, addressed by orderId + symbol + priceTicks. Use solana_phoenix_position_snapshot to discover open orders. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Mainnet-beta only.',
+      inputSchema: {
+        orderId: z.string().min(1).describe('Phoenix order sequence number from wallet_positions → openOrders[].orderId.'),
+        symbol: z.string().min(1),
+        priceTicks: z.string().min(1).describe('Order price in Phoenix ticks. Get via wallet_positions or via usdToTickPrice(usd).'),
+        traderPdaIndex: z.number().int().nonnegative().optional(),
+        walletAddress: z.string().min(32).optional(),
+        mode: z.enum(['live', 'paper']).optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async ({ orderId, symbol, priceTicks, traderPdaIndex, walletAddress, mode, dueAt, note }) => traceTool(
+      'solana_prepare_phoenix_cancel_order',
+      { cluster: options.config.cluster, orderId, symbol, dueAt },
+      async () => jsonReply(
+        await service.preparePhoenixCancelOrder({
+          orderId,
+          symbol,
+          priceTicks,
+          ...(traderPdaIndex !== undefined && { traderPdaIndex }),
+          ...(walletAddress !== undefined && { walletAddress }),
+          ...(mode !== undefined && { mode }),
           ...(dueAt !== undefined && { dueAt }),
           ...(note !== undefined && { note }),
         }),

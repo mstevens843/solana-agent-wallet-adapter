@@ -6,7 +6,7 @@
 // them into the prepare-transaction path at request time. This module is the
 // user-facing UX for managing those keys.
 
-export const BYO_KEY_CONNECTOR_IDS = ['magiceden', 'tensor', 'sanctum', 'lulo'] as const;
+export const BYO_KEY_CONNECTOR_IDS = ['magiceden', 'tensor', 'sanctum', 'lulo', 'phoenix'] as const;
 export type ByoKeyConnectorId = (typeof BYO_KEY_CONNECTOR_IDS)[number];
 
 export interface ByoKeyConnectorMeta {
@@ -45,6 +45,13 @@ export const BYO_KEY_CONNECTOR_META: Record<ByoKeyConnectorId, ByoKeyConnectorMe
     description: 'Protected, Boost, and Regular lending: rates, balances, deposits, and withdrawals.',
     portalUrl: 'https://app.lulo.fi/',
     defaultBaseUrl: 'https://api.lulo.fi',
+  },
+  phoenix: {
+    id: 'phoenix',
+    label: 'Phoenix Perpetuals',
+    description: 'Perp futures on Solana (Ellipsis Labs). Paste the invite/activation code from your Phoenix waitlist email; it activates your wallet as a trader on first use.',
+    portalUrl: 'https://www.phoenix.trade',
+    defaultBaseUrl: 'https://perp-api.phoenix.trade',
   },
 };
 
@@ -149,6 +156,7 @@ const INITIAL_SECRETS: ConnectorSecretsSummary = {
   tensor: { hasKey: false },
   sanctum: { hasKey: false },
   lulo: { hasKey: false },
+  phoenix: { hasKey: false },
 };
 
 // Module-level state — survives across mount/unmount cycles caused by the
@@ -322,7 +330,7 @@ function renderAll(): void {
 
 function renderPanel(state: PanelState): string {
   const intro = state.available
-    ? 'Magic Eden, Tensor, Sanctum, and Lulo require your own API keys. Keys are encrypted per wallet and only injected when the cloud prepares a transaction for you.'
+    ? 'Magic Eden, Tensor, Sanctum, Lulo, and Phoenix Perpetuals require your own keys (Phoenix uses a one-time invite/activation code). Credentials are encrypted per wallet and only injected when the cloud prepares a transaction for you.'
     : 'Connector key storage is not configured on this server. Set CONNECTOR_SECRET_KEY (or SESSION_SECRET) on the host to enable per-user keys.';
   const cards = BYO_KEY_CONNECTOR_IDS.map((id) => renderCard(id, state)).join('');
   const error = state.error

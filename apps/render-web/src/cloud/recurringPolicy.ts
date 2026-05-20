@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { lifetimeSpendEstimate, type RecurringScheduleRecord } from '@solana-agent-wallet-adapter/workflow';
 
 import type { RecurringPolicyEnforcer } from './recurringService.js';
+import { effectiveScheduleTotalAmount } from './treasuryConfig.js';
 
 export interface RecurringPolicyConfig {
   maxLifetimeAmount?: Record<string, string>;
@@ -68,7 +69,10 @@ function recurringPolicyViolation(
   const perMonth = policy.maxPerMonthAmount?.[token];
   if (!lifetime && !perWeek && !perMonth) return null;
 
-  const estimate = lifetimeSpendEstimate(schedule, schedule.amount, new Date());
+  // For skill-monetization schedules with a platform split, the user actually
+  // pays `metadata.totalAmount`, not `schedule.amount` (which holds only the
+  // author portion). Evaluate caps against what the user actually spends.
+  const estimate = lifetimeSpendEstimate(schedule, effectiveScheduleTotalAmount(schedule), new Date());
   if (lifetime && estimate.bounded && estimate.totalAmount && compareDecimal(estimate.totalAmount, lifetime) > 0) {
     return {
       code: 'recurring_exceeds_policy',

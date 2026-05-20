@@ -599,6 +599,19 @@ export interface RecurringScheduleRecord {
   inputToken?: string;
   outputToken?: string;
   recipient: string;
+  /**
+   * Decimal-string amount sent to `recipient` per occurrence.
+   *
+   * IMPORTANT: For skill-monetization schedules (where
+   * `metadata.source === 'skill_install_monetization'` AND
+   * `metadata.platformAmount` is present) this stores only the *author
+   * portion* of a split payment; the user-charged *total* is in
+   * `metadata.totalAmount` and the platform's cut is in
+   * `metadata.platformAmount`. User-visible UI, notifications, and policy
+   * cap checks must use `effectiveScheduleTotalAmount(schedule)` from
+   * `apps/render-web/src/cloud/treasuryConfig.ts` rather than reading
+   * `amount` directly.
+   */
   amount: string;
   cadence: RecurringCadence;
   createdAt: string;
@@ -1169,7 +1182,8 @@ export function isQueueableWorkflowAction(actionType: string): boolean {
     actionType === 'transfer_spl' ||
     actionType === 'swap' ||
     actionType === 'recurring_payment' ||
-    actionType === 'blink_action';
+    actionType === 'blink_action' ||
+    actionType === 'skill_fee_split';
 }
 
 export function finalizationRequirementForAction(actionType: string): FinalizationRequirement {
@@ -1178,7 +1192,8 @@ export function finalizationRequirementForAction(actionType: string): Finalizati
     actionType === 'transfer_spl' ||
     actionType === 'swap' ||
     actionType === 'custom_transaction' ||
-    actionType === 'blink_action'
+    actionType === 'blink_action' ||
+    actionType === 'skill_fee_split'
   ) {
     return 'transaction_preview';
   }

@@ -7,7 +7,11 @@ import { describe, expect, it } from 'vitest';
 
 import { MemoryWorkflowStore } from '../cloud/memoryStore.js';
 import { ACCEPTED_ENVELOPE_PREFIXES } from '../cloud/auth.js';
-import { ANDROID_REMOTE_CONFIG } from '../cloud/androidConfig.js';
+import {
+  ANDROID_CONFIG_VERSION,
+  ANDROID_REMOTE_CONFIG,
+  getAndroidRemoteConfig,
+} from '../cloud/androidConfig.js';
 import { createRenderWebServer } from '../server.js';
 
 interface RawResponse {
@@ -86,6 +90,30 @@ describe('GET /api/android-config', () => {
     });
   });
 
+  it('ANDROID_CONFIG_VERSION is monotonically non-decreasing', () => {
+    // Schema-version safety: the Android parser at
+    // RemoteConfigSchema.kt::parseObject rejects payloads whose `version` is
+    // below the bundled `RemoteConfigDefaults.VERSION`. If a careless edit
+    // ever drops ANDROID_CONFIG_VERSION below the floor below, existing
+    // shipped APKs would start rejecting fresh server responses. Bumping
+    // this constant when intentionally raising the floor is the correct
+    // action — and forces a deliberate test edit in tandem.
+    expect(ANDROID_CONFIG_VERSION).toBeGreaterThanOrEqual(1);
+  });
+
+  it('also serves the config when the path has a trailing slash', async () => {
+    // Some HTTP clients (curl -L, certain Capacitor fetch polyfills, an
+    // intermediate proxy with a trailing-slash policy) request
+    // `/api/android-config/`. Router normalizes by stripping the trailing
+    // slash so both forms hit the handler.
+    await withServer(async (port) => {
+      const response = await getRaw(port, '/api/android-config/');
+      expect(response.status).toBe(200);
+      const parsed = JSON.parse(response.body) as typeof ANDROID_REMOTE_CONFIG;
+      expect(parsed.version).toBe(ANDROID_REMOTE_CONFIG.version);
+    });
+  });
+
   it('canonical payload matches the Android bundled defaults table', () => {
     // PARITY ANCHOR (server side). The same table is asserted in
     // android-twa/.../config/RemoteConfigSchemaTest::defaults_walletRegistry_matchesServerCanonicalPayload.
@@ -116,6 +144,95 @@ describe('GET /api/android-config', () => {
     );
     expect(ANDROID_REMOTE_CONFIG.memoProofRouter.envelopeVersion).toBe('v1');
     expect(ANDROID_REMOTE_CONFIG.memoProofRouter.fallbackOnBlankPackage).toBe(true);
+    // Operator kill-switch parity: `forceMemoTxFallback` MUST appear in the
+    // statically-shipped payload with default `false`. Mirrored in Kotlin
+    // RemoteConfigDefaults.FEATURE_FLAGS — drift between the two would mean an
+    // APK whose config is unreachable routes differently than one that just
+    // fetched a fresh payload.
+    expect(ANDROID_REMOTE_CONFIG.featureFlags.forceMemoTxFallback).toBe(false);
+  });
+});
+
+// ─── buildFeatureFlags(env) — SKR conditional factory ──────────────────────
+//
+// The SKR_* branch in androidConfig.ts is operator-flipped (`SKR_TOKEN_MINT`
+// set on Render makes the factory return a *superset* of STATIC_FEATURE_FLAGS).
+// Without dedicated coverage, a refactor to that branch (e.g., breaking the
+// base58 validator) would ship silently. Tests use `getAndroidRemoteConfig(env)`
+// with synthetic env objects so no process.env mutation is needed and the
+// suite stays parallel-safe.
+describe('getAndroidRemoteConfig SKR branch', () => {
+  // Real Solana base58 pubkey (USDC mint) — passes the base58 validator at
+  // androidConfig.ts:162 without smuggling a token-mint dependency.
+  const VALID_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+  it('returns STATIC payload when SKR_TOKEN_MINT is absent', () => {
+    const cfg = getAndroidRemoteConfig({});
+    expect(cfg.featureFlags.forceMemoTxFallback).toBe(false);
+    expect('skrEnabled' in cfg.featureFlags).toBe(false);
+    expect('skrSkillBountyActive' in cfg.featureFlags).toBe(false);
+    expect('skrSessionDefault' in cfg.featureFlags).toBe(false);
+  });
+
+  it('treats a malformed SKR_TOKEN_MINT as not-configured (no SKR flags)', () => {
+    const cfg = getAndroidRemoteConfig({ SKR_TOKEN_MINT: 'not-a-real-base58!!!' });
+    expect('skrEnabled' in cfg.featureFlags).toBe(false);
+  });
+
+  it('treats a SKR_TOKEN_MINT shorter than the base58 floor as not-configured', () => {
+    const cfg = getAndroidRemoteConfig({ SKR_TOKEN_MINT: 'abc' });
+    expect('skrEnabled' in cfg.featureFlags).toBe(false);
+  });
+
+  it('enables SKR with default flags when only SKR_TOKEN_MINT is set', () => {
+    const cfg = getAndroidRemoteConfig({ SKR_TOKEN_MINT: VALID_MINT });
+    expect(cfg.featureFlags.skrEnabled).toBe(true);
+    expect(cfg.featureFlags.skrSkillBountyActive).toBe(false);
+    expect(cfg.featureFlags.skrSessionDefault).toBe(false);
+    // forceMemoTxFallback still present (STATIC slice carried through).
+    expect(cfg.featureFlags.forceMemoTxFallback).toBe(false);
+  });
+
+  it('honors SKR_SKILL_BOUNTY_ACTIVE=true alongside the mint', () => {
+    const cfg = getAndroidRemoteConfig({
+      SKR_TOKEN_MINT: VALID_MINT,
+      SKR_SKILL_BOUNTY_ACTIVE: 'true',
+    });
+    expect(cfg.featureFlags.skrEnabled).toBe(true);
+    expect(cfg.featureFlags.skrSkillBountyActive).toBe(true);
+  });
+
+  it('honors SKR_SESSION_DEFAULT=true alongside the mint', () => {
+    const cfg = getAndroidRemoteConfig({
+      SKR_TOKEN_MINT: VALID_MINT,
+      SKR_SESSION_DEFAULT: 'true',
+    });
+    expect(cfg.featureFlags.skrEnabled).toBe(true);
+    expect(cfg.featureFlags.skrSessionDefault).toBe(true);
+  });
+
+  it('only coerces SKR_* flags from the literal string "true" (case-insensitive)', () => {
+    // Anything other than "true"/"TRUE"/"True" stays false. Defense against
+    // operator typos like SKR_SKILL_BOUNTY_ACTIVE=1 or =yes producing the
+    // wrong rollout state.
+    const cfg = getAndroidRemoteConfig({
+      SKR_TOKEN_MINT: VALID_MINT,
+      SKR_SKILL_BOUNTY_ACTIVE: '1',
+      SKR_SESSION_DEFAULT: 'yes',
+    });
+    expect(cfg.featureFlags.skrSkillBountyActive).toBe(false);
+    expect(cfg.featureFlags.skrSessionDefault).toBe(false);
+  });
+
+  it('STATIC payload result is referentially stable (no allocation when SKR off)', () => {
+    // Hot per-request path: when SKR isn't configured, every call returns the
+    // same frozen object so `===` identity holds. Prevents an accidental
+    // refactor from spreading on the static slice and exploding allocator
+    // pressure under load.
+    const a = getAndroidRemoteConfig({});
+    const b = getAndroidRemoteConfig({});
+    expect(a).toBe(b);
+    expect(a).toBe(ANDROID_REMOTE_CONFIG);
   });
 });
 

@@ -20,6 +20,8 @@ import {
   scrubNotificationDeliveryForResponse,
   type RecurringNotificationDeliveryRecord,
 } from './notificationService.js';
+import { effectiveScheduleTotalAmount } from './treasuryConfig.js';
+import { readSkrMint } from './skrConfig.js';
 
 export function scrubScheduleForResponse(record: RecurringScheduleRecord): RecurringScheduleRecord {
   if (!record.notifications?.webhookSecret) return record;
@@ -57,9 +59,12 @@ export function buildScheduleView(
   now: Date = new Date(),
 ): ScheduleView {
   const safe = scrubScheduleForResponse(record);
+  // For skill-monetization schedules with a platform split, `schedule.amount`
+  // stores only the author portion; the user is charged `metadata.totalAmount`
+  // per occurrence. Lifetime spend should reflect what the user actually pays.
   return {
     schedule: safe,
-    lifetimeSpend: workflowCadence.lifetimeSpendEstimate(safe, safe.amount, now),
+    lifetimeSpend: workflowCadence.lifetimeSpendEstimate(safe, effectiveScheduleTotalAmount(safe), now),
     nextRuns: workflowCadence.previewUpcoming(safe, now, NEXT_RUNS_PREVIEW_COUNT).map((o) =>
       o.dueAt.toISOString(),
     ),
@@ -1136,18 +1141,32 @@ function assertCreateRecurringScheduleStatus(status: CreateRecurringRequest['sta
 function assertCloudRecurringScheduleSupported(input: Pick<RecurringScheduleRecord | CreateRecurringRequest | UpdateRecurringRequest, 'actionKind' | 'token' | 'outputToken'>): void {
   if (input.actionKind === 'swap' || input.outputToken) return;
   if (isSupportedCloudTransferToken(input.token)) return;
+  const supported = ['SOL', 'USDC'];
+  if (readSkrMint().length > 0) supported.push('SKR');
+  const supportedList = supported.length === 2
+    ? `${supported[0]} and ${supported[1]}`
+    : `${supported.slice(0, -1).join(', ')}, and ${supported[supported.length - 1]}`;
   throw new RecurringServiceError(
     409,
     'unsupported_cloud_recurring_token',
-    'Agentic Cloud recurring execution currently supports SOL and USDC transfer schedules only.',
+    `Agentic Cloud recurring execution currently supports ${supportedList} transfer schedules only.`,
   );
 }
 
 function isSupportedCloudTransferToken(token: string | undefined): boolean {
   const normalized = token?.trim().toUpperCase();
-  return normalized === 'SOL' ||
+  if (
+    normalized === 'SOL' ||
     normalized === 'USDC' ||
-    normalized === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'.toUpperCase();
+    normalized === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'.toUpperCase()
+  ) {
+    return true;
+  }
+  const skrMint = readSkrMint();
+  if (skrMint && (normalized === 'SKR' || normalized === skrMint.toUpperCase())) {
+    return true;
+  }
+  return false;
 }
 
 function mapApprovalStatusToOccurrence(

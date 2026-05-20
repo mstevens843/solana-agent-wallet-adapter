@@ -107,7 +107,14 @@ export type PreparedActionKind =
   | 'jupiter_recurring_create_time_order'
   | 'jupiter_recurring_cancel_order'
   | 'jupiter_recurring_deposit_price_order'
-  | 'jupiter_recurring_withdraw_price_order';
+  | 'jupiter_recurring_withdraw_price_order'
+  | 'phoenix_open'
+  | 'phoenix_close'
+  | 'phoenix_modify_collateral'
+  | 'phoenix_place_trigger'
+  | 'phoenix_cancel_order'
+  | 'phoenix_vulcan_call'
+  | 'skill_fee_split';
 export type PreparedActionTxStatus = 'pending' | 'confirmed' | 'failed';
 export type RecurringCadence = WorkflowRecurringCadence;
 

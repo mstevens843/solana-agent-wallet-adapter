@@ -55,12 +55,13 @@ import {
   requestCoinGeckoSolanaTokenEvidence,
 } from './coingecko.js';
 import { heliusConfigFromEnv } from './helius.js';
-import { defaultRpcUrl, type AgentWalletConfig } from './config.js';
+import { defaultRpcUrl, getPhoenixVulcanPolicy, type AgentWalletConfig } from './config.js';
 import { parseDecimalAmount } from './amounts.js';
 import { LocalBridgeBackend } from './localBridgeBackend.js';
 import type { LabArtifact, LabArtifactStore } from './labArtifacts.js';
 import type { PreparedAction, PreparedActionStore, PreparedActionTxStatus } from './preparedActions.js';
 import { trace } from './trace.js';
+import { VulcanUpstreamClient, VulcanWalletRegistry } from './upstreamMcp/index.js';
 
 export interface BridgeServerHandle {
   url: string;
@@ -87,11 +88,15 @@ export function createBridgeServer(options: CreateBridgeServerOptions): BridgeSe
   const actionConfig = options.actionConfig;
   const preparedActions = options.preparedActions;
   const labArtifacts = options.labArtifacts;
+  const { client: vulcanUpstreamClient, registry: vulcanWalletRegistry } =
+    actionConfig ? buildVulcanWalletStuff(actionConfig) : { client: undefined, registry: undefined };
   const actionService = actionConfig
     ? new AgentWalletActionService({
         backend,
         config: actionConfig,
         ...(preparedActions !== undefined && { preparedActions }),
+        ...(vulcanUpstreamClient ? { vulcanUpstreamClient } : {}),
+        ...(vulcanWalletRegistry ? { vulcanWalletRegistry } : {}),
       })
     : undefined;
   const aiPlanner = new BridgeAiPlanner();
@@ -124,6 +129,17 @@ export function createBridgeServer(options: CreateBridgeServerOptions): BridgeSe
     url,
     async start() {
       await agentRegistry.load().catch(() => undefined);
+      if (vulcanUpstreamClient) {
+        try {
+          await vulcanUpstreamClient.start();
+          trace('vulcan.upstream.connected', {});
+        } catch (err) {
+          trace('vulcan.upstream.start_failed', {
+            message: err instanceof Error ? err.message : String(err),
+          });
+          // Soft-fail: bridge still serves; Vulcan-routed actions return unsupported_method.
+        }
+      }
       await new Promise<void>((resolve, reject) => {
         server = createServer((req, res) => {
           void handleRequest(req, res, backend, actionConfig, preparedActions, labArtifacts, actionService, aiPlanner, agentRegistry);
@@ -133,13 +149,101 @@ export function createBridgeServer(options: CreateBridgeServerOptions): BridgeSe
       });
     },
     async stop() {
-      if (!server) return;
-      await new Promise<void>((resolve, reject) => {
-        server!.close((err) => (err ? reject(err) : resolve()));
-      });
-      server = null;
+      if (server) {
+        await new Promise<void>((resolve, reject) => {
+          server!.close((err) => (err ? reject(err) : resolve()));
+        });
+        server = null;
+      }
+      // D4: tear down all wallet subprocesses when running in multi-wallet mode. Single-client mode falls through
+      // to the existing path.
+      if (vulcanWalletRegistry) {
+        try {
+          await vulcanWalletRegistry.stopAll();
+        } catch {
+          // Ignore: subprocess teardown is best-effort.
+        }
+      }
+      if (vulcanUpstreamClient?.isRunning()) {
+        try {
+          await vulcanUpstreamClient.stop();
+        } catch {
+          // Ignore: subprocess teardown is best-effort.
+        }
+      }
     },
   };
+}
+
+/**
+ * Builds the upstream Vulcan plumbing from policy config. Returns either a single-client setup (the legacy path) or
+ * a multi-wallet registry. Returns `{}` when Vulcan is disabled.
+ *
+ * D4 multi-wallet mode is triggered when `walletPasswordsByEnvVar` is non-empty. Otherwise the existing single-client
+ * path is used, preserving backward compatibility for deployments that haven't migrated.
+ */
+function buildVulcanWalletStuff(config: AgentWalletConfig): {
+  client?: VulcanUpstreamClient;
+  registry?: VulcanWalletRegistry;
+} {
+  const policy = getPhoenixVulcanPolicy(config);
+  if (!policy.enabled) return {};
+
+  const baseOptions: ConstructorParameters<typeof VulcanUpstreamClient>[0] = {
+    binaryPath: policy.binaryPath,
+    allowDangerous: policy.allowDangerous,
+    toolCallTimeoutMs: policy.maxToolCallTimeoutMs,
+    autoRestart: policy.autoRestart,
+  };
+  if (policy.restartBackoffMs) baseOptions.restartBackoffMs = policy.restartBackoffMs;
+  if (policy.requiredServerName) baseOptions.requiredServerName = policy.requiredServerName;
+  if (policy.requiredServerVersion) baseOptions.requiredServerVersion = policy.requiredServerVersion;
+
+  // Multi-wallet mode: build a registry that lazily spawns one subprocess per wallet on demand.
+  if (policy.walletPasswordsByEnvVar && Object.keys(policy.walletPasswordsByEnvVar).length > 0) {
+    const walletPasswordsByName: Record<string, string> = {};
+    const missing: string[] = [];
+    for (const [walletName, envVar] of Object.entries(policy.walletPasswordsByEnvVar)) {
+      const password = process.env[envVar]?.trim();
+      if (password) walletPasswordsByName[walletName] = password;
+      else if (policy.allowDangerous) missing.push(`${walletName} (expects ${envVar})`);
+    }
+    if (missing.length > 0) {
+      const reason = `multi-wallet mode missing passwords for: ${missing.join(', ')}; affected wallets will be unable to sign.`;
+      trace('vulcan.upstream.config_skipped', { reason });
+      if (process.env.VULCAN_LOG_LEVEL !== 'silent') {
+        // eslint-disable-next-line no-console
+        console.warn(`[vulcan-upstream] ${reason}`);
+      }
+    }
+    const registryOptions: ConstructorParameters<typeof VulcanWalletRegistry>[0] = {
+      baseOptions,
+      walletPasswordsByName,
+    };
+    const defaultName = policy.defaultWalletName ?? policy.walletName;
+    if (defaultName) registryOptions.defaultWalletName = defaultName;
+    if (policy.allowedWallets) registryOptions.allowedWallets = policy.allowedWallets;
+    return { registry: new VulcanWalletRegistry(registryOptions) };
+  }
+
+  // Single-wallet legacy path.
+  const password = policy.allowDangerous ? process.env[policy.walletPasswordEnvVar]?.trim() : undefined;
+  if (policy.allowDangerous && !password) {
+    const reason = `allowDangerous requires ${policy.walletPasswordEnvVar} to be set; disabling signing tools.`;
+    trace('vulcan.upstream.config_skipped', { reason });
+    if (process.env.VULCAN_LOG_LEVEL !== 'silent') {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[vulcan-upstream] PHOENIX_VULCAN_ALLOW_DANGEROUS=true but ${policy.walletPasswordEnvVar} is not set. ` +
+          'Signing tools will be unavailable; the bridge will not start Vulcan.',
+      );
+    }
+    return {};
+  }
+  const clientOptions: ConstructorParameters<typeof VulcanUpstreamClient>[0] = { ...baseOptions };
+  if (policy.walletName) clientOptions.walletName = policy.walletName;
+  if (password) clientOptions.walletPassword = password;
+  return { client: new VulcanUpstreamClient(clientOptions) };
 }
 
 function assertLoopbackBind(host: string): void {

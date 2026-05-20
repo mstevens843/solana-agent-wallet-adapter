@@ -29,9 +29,10 @@ export type DAppAdapterId =
   | 'realms'
   | 'squads'
   | 'wormhole'
-  | 'jupiter';
+  | 'jupiter'
+  | 'phoenix';
 
-export type ByoKeyConnectorId = 'magiceden' | 'tensor' | 'sanctum' | 'lulo';
+export type ByoKeyConnectorId = 'magiceden' | 'tensor' | 'sanctum' | 'lulo' | 'phoenix';
 
 export interface ConnectorSecretMaterial {
   apiKey: string;
