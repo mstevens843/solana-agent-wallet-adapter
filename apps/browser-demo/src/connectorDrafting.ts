@@ -1741,13 +1741,10 @@ function phoenixSymbolField(required: boolean): AgentPlanTemplateField {
   });
 }
 
-const PHOENIX_TRADER_PDA_HELPER =
-  'Phoenix subaccount index. Most users leave this blank (defaults to 0).';
-
 function phoenixTraderPdaField(): AgentPlanTemplateField {
   return formField('traderPdaIndex', 'Trader PDA index (advanced)', false, {
     placeholder: '0',
-    helperText: PHOENIX_TRADER_PDA_HELPER,
+    helperText: 'Phoenix subaccount index. Most users leave this blank (defaults to 0).',
   });
 }
 
