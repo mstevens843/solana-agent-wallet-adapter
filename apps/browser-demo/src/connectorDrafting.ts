@@ -125,6 +125,7 @@ const CONNECTOR_ACTION_FORMS: ConnectorActionForm[] = [
   ...project0Forms(),
   ...saveForms(),
   ...driftForms(),
+  ...phoenixForms(),
   luloUnifiedForm(),
   raydiumLiquidityUnifiedForm(),
   ...marinadeForms(),
@@ -1730,6 +1731,108 @@ function driftForms(): ConnectorActionForm[] {
       driftVaultField(true),
       formField('memo', 'Reason'),
     ], false, 'drift_vault_complete_withdraw'),
+  ];
+}
+
+function phoenixSymbolField(required: boolean): AgentPlanTemplateField {
+  return cascadingField('symbol', 'Phoenix market', 'phoenix.symbol', {
+    required,
+    emptyHint: "Couldn't load Phoenix markets. Confirm your Phoenix invite/activation code is configured in Connector API keys.",
+  });
+}
+
+const PHOENIX_TRADER_PDA_HELPER =
+  'Phoenix subaccount index. Most users leave this blank (defaults to 0).';
+
+function phoenixTraderPdaField(): AgentPlanTemplateField {
+  return formField('traderPdaIndex', 'Trader PDA index (advanced)', false, {
+    placeholder: '0',
+    helperText: PHOENIX_TRADER_PDA_HELPER,
+  });
+}
+
+function phoenixForms(): ConnectorActionForm[] {
+  return [
+    connectorActionForm('phoenix', 'open', 'Open position', 'phoenix-open',
+      'Open a leveraged Phoenix Perpetuals position (market). Optional price limit caps slippage. Policy-gated by max leverage + allowed symbols.',
+      'first-class-adapter', 'queueable',
+      [
+        phoenixSymbolField(true),
+        formSelectField('side', 'Side', ['long', 'short'], 'long', true),
+        formField('baseSize', 'Base size', true, { placeholder: '0.5' }),
+        formField('leverage', 'Leverage', true, {
+          placeholder: '3',
+          helperText: 'Capped by policy (max ~10x).',
+        }),
+        formField('priceLimitUsd', 'Price limit USD (optional)', false, {
+          placeholder: 'e.g. 145',
+          helperText: 'Slippage cap. Leave blank for a pure market order.',
+        }),
+        phoenixTraderPdaField(),
+        formField('memo', 'Reason'),
+      ],
+      false,
+      'phoenix_open'),
+    connectorActionForm('phoenix', 'close', 'Close position', 'phoenix-close',
+      'Close a Phoenix position (fully or partially). Re-fetches live position size at execute time so partial fills / liquidations are honored.',
+      'first-class-adapter', 'queueable',
+      [
+        phoenixSymbolField(true),
+        formField('baseSize', 'Base size to close (optional)', false, {
+          placeholder: 'Leave blank to close full position',
+        }),
+        phoenixTraderPdaField(),
+        formField('memo', 'Reason'),
+      ],
+      false,
+      'phoenix_close'),
+    connectorActionForm('phoenix', 'modify-collateral', 'Modify collateral', 'phoenix-modify-collateral',
+      'Deposit or withdraw USDC collateral from your Phoenix trader account.',
+      'first-class-adapter', 'queueable',
+      [
+        formSelectField('direction', 'Direction', ['deposit', 'withdraw'], 'deposit', true),
+        formField('amountUsd', 'Amount (USDC)', true, {
+          placeholder: '100',
+          helperText: 'USDC amount, up to 6 decimal places.',
+        }),
+        phoenixTraderPdaField(),
+        formField('memo', 'Reason'),
+      ],
+      false,
+      'phoenix_modify_collateral'),
+    connectorActionForm('phoenix', 'place-trigger', 'Place stop-loss trigger', 'phoenix-place-trigger',
+      "Place a stop-loss trigger on an open Phoenix position. 'less_than' fires when price drops below the trigger; 'greater_than' fires when price rises above.",
+      'first-class-adapter', 'queueable',
+      [
+        phoenixSymbolField(true),
+        formSelectField('side', 'Trigger trade side', ['long', 'short'], 'short', true),
+        formField('baseSize', 'Base size', true, { placeholder: '0.5' }),
+        formField('triggerPriceUsd', 'Trigger price USD', true, {
+          placeholder: 'e.g. 120',
+          helperText: 'Fires when price crosses this level.',
+        }),
+        formSelectField('triggerDirection', 'Direction', ['less_than', 'greater_than'], 'less_than', true),
+        phoenixTraderPdaField(),
+        formField('memo', 'Reason'),
+      ],
+      false,
+      'phoenix_place_trigger'),
+    connectorActionForm('phoenix', 'cancel-order', 'Cancel open order', 'phoenix-cancel-order',
+      'Cancel a Phoenix limit order by orderId + priceTicks. Find both values via Position Snapshot → openOrders.',
+      'first-class-adapter', 'queueable',
+      [
+        phoenixSymbolField(true),
+        formField('orderId', 'Order ID', true, {
+          helperText: 'From Position Snapshot → openOrders[].orderId.',
+        }),
+        formField('priceTicks', 'Price ticks', true, {
+          helperText: 'From Position Snapshot → openOrders[].priceTicks (Phoenix tick units, not USD).',
+        }),
+        phoenixTraderPdaField(),
+        formField('memo', 'Reason'),
+      ],
+      false,
+      'phoenix_cancel_order'),
   ];
 }
 

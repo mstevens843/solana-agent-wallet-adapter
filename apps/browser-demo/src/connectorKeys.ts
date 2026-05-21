@@ -15,6 +15,13 @@ export interface ByoKeyConnectorMeta {
   description: string;
   portalUrl: string;
   defaultBaseUrl: string;
+  // Phoenix uses an invite/activation code, not a per-request API key. These overrides
+  // let each connector customize the BYO card labels; defaults match the historic
+  // "API key" copy when omitted.
+  addButtonLabel?: string;
+  formFieldLabel?: string;
+  formPlaceholderTemplate?: (label: string) => string;
+  portalLinkLabel?: string;
 }
 
 export const BYO_KEY_CONNECTOR_META: Record<ByoKeyConnectorId, ByoKeyConnectorMeta> = {
@@ -52,6 +59,10 @@ export const BYO_KEY_CONNECTOR_META: Record<ByoKeyConnectorId, ByoKeyConnectorMe
     description: 'Perp futures on Solana (Ellipsis Labs). Paste the invite/activation code from your Phoenix waitlist email; it activates your wallet as a trader on first use.',
     portalUrl: 'https://www.phoenix.trade',
     defaultBaseUrl: 'https://perp-api.phoenix.trade',
+    addButtonLabel: 'Add access code',
+    formFieldLabel: 'Access code',
+    formPlaceholderTemplate: (label) => `Paste your ${label} invite/activation code`,
+    portalLinkLabel: 'Request an access code →',
   },
 };
 
@@ -73,14 +84,24 @@ export interface SaveConnectorSecretInput {
   baseUrl?: string;
 }
 
+const EMPTY_SECRETS_SUMMARY: ConnectorSecretsSummary = Object.fromEntries(
+  BYO_KEY_CONNECTOR_IDS.map((id) => [id, { hasKey: false } as ConnectorSecretSummary]),
+) as ConnectorSecretsSummary;
+
 export async function listConnectorSecrets(): Promise<ListConnectorSecretsResponse> {
   const response = await fetch('/api/connector-secrets', {
     method: 'GET',
     credentials: 'same-origin',
     headers: { accept: 'application/json' },
   });
+  // 404 means the cloud router isn't reachable from this origin — common when running
+  // browser-demo via plain `vite dev` without a `/api/*` proxy. Surface it as
+  // "feature unavailable" instead of a scary error so the section degrades gracefully.
+  if (response.status === 404) {
+    return { available: false, secrets: EMPTY_SECRETS_SUMMARY };
+  }
   if (!response.ok) {
-    throw await responseError(response, 'Failed to load connector keys.');
+    throw await responseError(response, 'Failed to load saved connector credentials.');
   }
   return (await response.json()) as ListConnectorSecretsResponse;
 }
@@ -99,7 +120,7 @@ export async function saveConnectorSecret(
     }),
   });
   if (!response.ok) {
-    throw await responseError(response, `Failed to save ${connector} key.`);
+    throw await responseError(response, `Failed to save ${connectorDisplayCredential(connector)}.`);
   }
   return (await response.json()) as ConnectorSecretSummary & { connector: ByoKeyConnectorId };
 }
@@ -113,9 +134,17 @@ export async function deleteConnectorSecret(
     headers: { accept: 'application/json' },
   });
   if (!response.ok) {
-    throw await responseError(response, `Failed to remove ${connector} key.`);
+    throw await responseError(response, `Failed to remove ${connectorDisplayCredential(connector)}.`);
   }
   return (await response.json()) as { removed: boolean };
+}
+
+// Returns e.g. "Phoenix Perpetuals access code" or "Magic Eden API key" — the human-readable
+// connector + credential noun used in save/remove error toasts.
+function connectorDisplayCredential(connector: ByoKeyConnectorId): string {
+  const meta = BYO_KEY_CONNECTOR_META[connector];
+  const noun = (meta.formFieldLabel ?? 'API key').toLowerCase();
+  return `${meta.label} ${noun}`;
 }
 
 async function responseError(response: Response, fallback: string): Promise<Error> {
@@ -151,13 +180,7 @@ interface PanelState {
   busy?: ByoKeyConnectorId;
 }
 
-const INITIAL_SECRETS: ConnectorSecretsSummary = {
-  magiceden: { hasKey: false },
-  tensor: { hasKey: false },
-  sanctum: { hasKey: false },
-  lulo: { hasKey: false },
-  phoenix: { hasKey: false },
-};
+const INITIAL_SECRETS: ConnectorSecretsSummary = EMPTY_SECRETS_SUMMARY;
 
 // Module-level state — survives across mount/unmount cycles caused by the
 // outer app re-rendering. The connector-secrets feature is read-only until
@@ -246,7 +269,8 @@ function onDocumentSubmit(event: Event): void {
   const apiKey = String(data.get('apiKey') ?? '').trim();
   const baseUrlRaw = String(data.get('baseUrl') ?? '').trim();
   if (!apiKey) {
-    panelState.error = 'API key is required.';
+    const fieldLabel = BYO_KEY_CONNECTOR_META[connectorAttr].formFieldLabel ?? 'API key';
+    panelState.error = `${fieldLabel} is required.`;
     renderAll();
     return;
   }
@@ -370,36 +394,43 @@ function renderCard(id: ByoKeyConnectorId, state: PanelState): string {
       </header>
       ${editing ? renderForm(id, summary) : renderActions(id, summary, busy)}
       <footer>
-        <a href="${escapeAttr(meta.portalUrl)}" target="_blank" rel="noreferrer noopener">Get an API key →</a>
+        <a href="${escapeAttr(meta.portalUrl)}" target="_blank" rel="noreferrer noopener">${escapeHtml(meta.portalLinkLabel ?? 'Get an API key →')}</a>
       </footer>
     </article>
   `;
 }
 
 function renderActions(id: ByoKeyConnectorId, summary: ConnectorSecretSummary, busy: boolean): string {
+  const meta = BYO_KEY_CONNECTOR_META[id];
   const disabled = busy ? 'disabled' : '';
+  const addLabel = meta.addButtonLabel ?? 'Add API key';
   if (summary.hasKey) {
+    const updateLabel = addLabel.replace(/^Add\b/i, 'Update');
     return `
       <div class="connector-key-actions">
-        <button type="button" class="utility" data-connector="${escapeAttr(id)}" data-connector-key-action="edit" ${disabled}>Update key</button>
+        <button type="button" class="utility" data-connector="${escapeAttr(id)}" data-connector-key-action="edit" ${disabled}>${escapeHtml(updateLabel)}</button>
         <button type="button" class="utility utility-danger" data-connector="${escapeAttr(id)}" data-connector-key-action="remove" ${disabled}>Remove</button>
       </div>
     `;
   }
   return `
     <div class="connector-key-actions">
-      <button type="button" class="primary" data-connector="${escapeAttr(id)}" data-connector-key-action="edit" ${disabled}>Add API key</button>
+      <button type="button" class="primary" data-connector="${escapeAttr(id)}" data-connector-key-action="edit" ${disabled}>${escapeHtml(addLabel)}</button>
     </div>
   `;
 }
 
 function renderForm(id: ByoKeyConnectorId, summary: ConnectorSecretSummary): string {
   const meta = BYO_KEY_CONNECTOR_META[id];
+  const fieldLabel = meta.formFieldLabel ?? 'API key';
+  const placeholder = meta.formPlaceholderTemplate
+    ? meta.formPlaceholderTemplate(meta.label)
+    : `Paste your ${meta.label} key`;
   return `
     <form class="connector-key-form" data-connector="${escapeAttr(id)}" data-connector-key-form>
       <label>
-        <span>API key</span>
-        <input type="password" name="apiKey" autocomplete="off" required minlength="1" maxlength="1024" placeholder="Paste your ${escapeAttr(meta.label)} key" />
+        <span>${escapeHtml(fieldLabel)}</span>
+        <input type="password" name="apiKey" autocomplete="off" required minlength="1" maxlength="1024" placeholder="${escapeAttr(placeholder)}" />
       </label>
       <label>
         <span>Base URL <em>(optional)</em></span>

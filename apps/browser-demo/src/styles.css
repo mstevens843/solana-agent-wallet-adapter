@@ -15676,6 +15676,15 @@ button.danger:hover:not(:disabled) {
     font-size: 0.62rem;
   }
 
+  .route-app .preferences-page .connected-dapps-catalog {
+    --template-menu-max-height: 272px;
+  }
+
+  .route-app .preferences-page .connected-dapps-catalog button.primary {
+    font-size: 0.86rem;
+    padding: 0 9px;
+  }
+
   .route-app .template-description,
   .route-demo .template-description {
     font-size: 0.78rem;

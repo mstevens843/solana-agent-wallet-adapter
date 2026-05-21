@@ -1206,6 +1206,7 @@ type BrandLogoId =
   | 'meteora'
   | 'orca'
   | 'phantom'
+  | 'phoenix'
   | 'project0'
   | 'pyth'
   | 'raydium'
@@ -1239,6 +1240,7 @@ const BRAND_LOGOS: Record<BrandLogoId, string> = {
   meteora: new URL('./assets/logos/meteora.svg', import.meta.url).href,
   orca: new URL('./assets/logos/orca.svg', import.meta.url).href,
   phantom: new URL('./assets/logos/phantom.svg', import.meta.url).href,
+  phoenix: new URL('./assets/logos/phoenix.svg', import.meta.url).href,
   project0: new URL('./assets/logos/project0.svg', import.meta.url).href,
   pyth: new URL('./assets/logos/pyth.svg', import.meta.url).href,
   raydium: new URL('./assets/logos/raydium.svg', import.meta.url).href,
@@ -5518,6 +5520,10 @@ const PROTOCOL_CONNECTOR_DOC_COPY: Record<ConnectedDappId, ProtocolConnectorDocs
     focus: 'Whirlpools',
     summary: 'Read Whirlpool pools and positions, then prepare liquidity, fee, and reward actions for wallet approval.',
   },
+  phoenix: {
+    focus: 'Perpetual futures',
+    summary: 'Read Phoenix markets, positions, funding, and health preview; prepare open / close / collateral / trigger / cancel actions for wallet approval.',
+  },
   pyth: {
     focus: 'Oracle evidence',
     summary: 'Read price feeds, batch prices, feed search, on-chain accounts, and prepare optional price-update posts.',
@@ -8733,6 +8739,7 @@ function protocolConnectorLogoId(id: ConnectedDappId): BrandLogoId {
     mayan: 'mayan',
     meteora: 'meteora',
     orca: 'orca',
+    phoenix: 'phoenix',
     pyth: 'pyth',
     raydium: 'raydium',
     realms: 'realms',
@@ -20782,6 +20789,25 @@ function updateSelectPickerView(picker: HTMLElement, value: string): void {
       metaNode.append(suffixNode);
     }
     metaNode.hidden = meta.length === 0 && metaSuffix.length === 0;
+  }
+  const trigger = picker.querySelector<HTMLElement>('.select-picker-trigger, .template-picker-trigger');
+  if (trigger) {
+    const existingLogo = Array.from(trigger.children).find(
+      (child) => child.classList.contains('select-picker-logo'),
+    ) as HTMLElement | undefined;
+    const optionLogo = Array.from(selectedOption.children).find(
+      (child) => child.classList.contains('select-picker-logo'),
+    ) as HTMLElement | undefined;
+    if (optionLogo) {
+      const cloned = optionLogo.cloneNode(true) as HTMLElement;
+      if (existingLogo) {
+        existingLogo.replaceWith(cloned);
+      } else {
+        trigger.prepend(cloned);
+      }
+    } else if (existingLogo) {
+      existingLogo.remove();
+    }
   }
 }
 

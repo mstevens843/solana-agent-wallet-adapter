@@ -19,6 +19,10 @@ export interface ConnectorOptionMeta {
   feeBps?: string;
   poolType?: string;
   programId?: string;
+  side?: string;
+  baseSize?: string;
+  maxLeverage?: string;
+  markPriceUsd?: string;
 }
 
 export interface ConnectorOption {
@@ -856,6 +860,76 @@ const driftVaultProvider: ConnectorOptionProvider = {
     if (vaults.length === 0) vaults.push(...await driftVaultPublicCatalogOptions(seen));
     if (vaults.length === 0) vaults.push(...driftVaultFallbackOptions(seen));
     return [...positions, ...sortDriftVaultOptions(vaults)];
+  },
+};
+
+// Hardcoded fallback if the bridge / Phoenix API is unreachable. Matches the default
+// `policy.allowedSymbols` in `getPhoenixPerpsPolicy` so the UI never surfaces a symbol the
+// backend would reject. When Phoenix lists more markets, refresh this list AND
+// `config.connectors.phoenix.perps.allowedSymbols`.
+const PHOENIX_FALLBACK_SYMBOLS: ReadonlyArray<{ symbol: string; detail: string }> = [
+  { symbol: 'SOL-PERP', detail: 'Solana perpetual · default allowlist' },
+];
+
+const phoenixSymbolProvider: ConnectorOptionProvider = {
+  id: 'phoenix.symbol',
+  connectorId: 'phoenix',
+  ttlMs: 60_000,
+  async fetch({ walletAddress, bridge }) {
+    // Pull the live market catalog. PENDING/open positions only need the symbol — markets capability
+    // hits `solana_phoenix_market_catalog`.
+    const marketsResp = await safeBridgeFacts(bridge, { connectorId: 'phoenix', capability: 'markets' });
+    const positionsResp = walletAddress
+      ? await safeBridgeFacts(bridge, { connectorId: 'phoenix', capability: 'positions', walletAddress })
+      : null;
+    const seen = new Set<string>();
+    const positions: ConnectorOption[] = [];
+    for (const entry of genericListing(positionsResp, ['positions'])) {
+      const symbol = asString(entry.symbol);
+      if (!symbol || seen.has(symbol)) continue;
+      seen.add(symbol);
+      const side = asString(entry.side);
+      const baseSize = asString(entry.baseSize);
+      positions.push({
+        value: symbol,
+        label: symbol,
+        detail: side && baseSize ? `Open ${side} ${baseSize}` : 'Open position',
+        group: 'positions',
+        meta: { side, baseSize },
+      });
+    }
+    const markets: ConnectorOption[] = [];
+    for (const entry of genericListing(marketsResp, ['markets', 'symbols'])) {
+      const symbol = asString(entry.symbol);
+      if (!symbol || seen.has(symbol)) continue;
+      seen.add(symbol);
+      const maxLeverage = asString(entry.maxLeverage);
+      const markPrice = asString(entry.markPriceUsd);
+      const details = [
+        markPrice ? `Mark $${markPrice}` : '',
+        maxLeverage ? `Max ${maxLeverage}x` : '',
+      ].filter(Boolean);
+      markets.push({
+        value: symbol,
+        label: symbol,
+        detail: details.length ? details.join(' · ') : 'Phoenix perp market',
+        group: 'all',
+        meta: { maxLeverage, markPriceUsd: markPrice },
+      });
+    }
+    if (markets.length === 0) {
+      for (const fallback of PHOENIX_FALLBACK_SYMBOLS) {
+        if (seen.has(fallback.symbol)) continue;
+        seen.add(fallback.symbol);
+        markets.push({
+          value: fallback.symbol,
+          label: fallback.symbol,
+          detail: fallback.detail,
+          group: 'all',
+        });
+      }
+    }
+    return [...positions, ...markets];
   },
 };
 
@@ -2256,6 +2330,7 @@ export function registerBuiltInConnectorOptionProviders(): void {
   registerConnectorOptionProvider(project0BankProvider);
   registerConnectorOptionProvider(saveReserveProvider);
   registerConnectorOptionProvider(driftVaultProvider);
+  registerConnectorOptionProvider(phoenixSymbolProvider);
   registerConnectorOptionProvider(luloMintProvider);
   registerConnectorOptionProvider(raydiumPoolProvider);
   registerConnectorOptionProvider(raydiumCpmmPoolProvider);

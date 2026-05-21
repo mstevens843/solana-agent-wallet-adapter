@@ -15,6 +15,7 @@ export type ProtocolConnectorId =
   | 'marginfi'
   | 'project0'
   | 'drift'
+  | 'phoenix'
   | 'lulo'
   | 'save'
   | 'jito'
@@ -403,6 +404,47 @@ export const PROTOCOL_CONNECTORS: ProtocolConnector[] = [
     readSource: 'first-class-adapter',
     actionSource: 'first-class-adapter',
     requiresClientKey: false,
+  },
+  {
+    id: 'phoenix',
+    name: 'Phoenix Perpetuals',
+    aliases: ['phoenix', 'phoenix perp', 'phoenix perps', 'phoenix perpetuals', 'phoenix trade', 'ellipsis perps'],
+    website: 'https://www.phoenix.trade',
+    description:
+      'Perp futures on Solana (Ellipsis Labs). Read markets, positions, funding, and health preview; prepare-only open / close / modify-collateral / trigger / cancel-order actions with plain-English presign review. Requires a Phoenix invite/activation code in Connector API keys.',
+    supportedClusters: ['mainnet-beta'],
+    capabilities: ['first_class_adapter', 'read_positions', 'read_markets'],
+    supportedActions: [
+      'Open',
+      'Close',
+      'Modify collateral',
+      'Place trigger',
+      'Cancel order',
+      'Market snapshot',
+      'Position snapshot',
+      'Health preview',
+      'Funding history',
+    ],
+    actionKinds: [
+      'phoenix_open',
+      'phoenix_close',
+      'phoenix_modify_collateral',
+      'phoenix_place_trigger',
+      'phoenix_cancel_order',
+    ],
+    readTools: [
+      'solana_phoenix_market_snapshot',
+      'solana_phoenix_market_catalog',
+      'solana_phoenix_position_snapshot',
+      'solana_phoenix_wallet_positions',
+      'solana_phoenix_funding_history',
+      'solana_phoenix_health_preview',
+    ],
+    enabledByDefault: false,
+    initials: 'PX',
+    readSource: 'first-class-adapter',
+    actionSource: 'first-class-adapter',
+    requiresClientKey: true,
   },
   {
     id: 'squads',
