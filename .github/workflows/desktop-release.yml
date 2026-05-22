@@ -73,6 +73,7 @@ jobs:
             bundle: dmg
             cliAsset: solana-agent-wallet-macos-arm64.tar.gz
             desktopAsset: agentic-desktop-macos-arm64.dmg
+            artifactGlob: apps/desktop-shell/src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
             sidecarSuffix: ''
           - name: macos-x64
             runner: macos-15-intel
@@ -80,6 +81,7 @@ jobs:
             bundle: dmg
             cliAsset: solana-agent-wallet-macos-x64.tar.gz
             desktopAsset: agentic-desktop-macos-x64.dmg
+            artifactGlob: apps/desktop-shell/src-tauri/target/x86_64-apple-darwin/release/bundle/dmg/*.dmg
             sidecarSuffix: ''
           - name: windows-x64
             runner: windows-latest
@@ -87,6 +89,7 @@ jobs:
             bundle: msi
             cliAsset: solana-agent-wallet-windows-x64.zip
             desktopAsset: agentic-desktop-windows-x64.msi
+            artifactGlob: apps/desktop-shell/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
             sidecarSuffix: '.exe'
           - name: linux-x64
             runner: ubuntu-22.04
@@ -94,6 +97,7 @@ jobs:
             bundle: appimage
             cliAsset: solana-agent-wallet-linux-x64.tar.gz
             desktopAsset: agentic-desktop-linux-x64.AppImage
+            artifactGlob: apps/desktop-shell/src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/*.AppImage
             sidecarSuffix: ''
 
     steps:
@@ -162,7 +166,10 @@ jobs:
             libssl-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
-            patchelf
+            dbus-x11 \
+            libfuse2 \
+            patchelf \
+            xvfb
 
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version '^2' --locked
@@ -248,18 +255,285 @@ jobs:
       - name: Test desktop runtime
         run: cargo test --manifest-path apps/desktop-shell/src-tauri/Cargo.toml
 
-      - name: Build Tauri installer
-        uses: tauri-apps/tauri-action@v0.6.2
+      - name: Validate macOS signing secrets
+        if: startsWith(matrix.name, 'macos-')
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD || secrets.MATCH_KEYCHAIN_PASSWORD }}
+          APP_STORE_CONNECT_API_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 }}
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in \
+            APPLE_CERTIFICATE \
+            APPLE_CERTIFICATE_PASSWORD \
+            KEYCHAIN_PASSWORD \
+            APP_STORE_CONNECT_API_KEY_BASE64 \
+            APP_STORE_CONNECT_API_KEY_ID \
+            APP_STORE_CONNECT_ISSUER_ID
+          do
+            if [ -z "${!name:-}" ]; then
+              missing+=("$name")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf 'Missing macOS signing/notarization secret(s): %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
+      - name: Configure macOS signing and notarization
+        if: startsWith(matrix.name, 'macos-')
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD || secrets.MATCH_KEYCHAIN_PASSWORD }}
+          APP_STORE_CONNECT_API_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_API_KEY_BASE64 }}
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          cert_path="$RUNNER_TEMP/agentic-developer-id.p12"
+          keychain_path="$RUNNER_TEMP/agentic-build.keychain-db"
+          api_key_dir="$RUNNER_TEMP/appstoreconnect"
+          api_key_path="$api_key_dir/AuthKey_${APP_STORE_CONNECT_API_KEY_ID}.p8"
+
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$cert_path"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
+          security default-keychain -s "$keychain_path"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security import "$cert_path" \
+            -k "$keychain_path" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$keychain_path"
+          security find-identity -v -p codesigning "$keychain_path"
+
+          signing_identity="$(
+            security find-identity -v -p codesigning "$keychain_path" \
+              | sed -n 's/.*"\(Developer ID Application:.*\)".*/\1/p' \
+              | head -n 1
+          )"
+          if [ -z "$signing_identity" ]; then
+            echo "No Developer ID Application signing identity found in imported certificate." >&2
+            exit 1
+          fi
+
+          mkdir -p "$api_key_dir"
+          printf '%s' "$APP_STORE_CONNECT_API_KEY_BASE64" | base64 --decode > "$api_key_path"
+
+          {
+            echo "APPLE_SIGNING_IDENTITY=$signing_identity"
+            echo "APPLE_API_KEY=$APP_STORE_CONNECT_API_KEY_ID"
+            echo "APPLE_API_ISSUER=$APP_STORE_CONNECT_ISSUER_ID"
+            echo "APPLE_API_KEY_PATH=$api_key_path"
+          } >> "$GITHUB_ENV"
+
+      - name: Build Tauri installer
+        shell: bash
+        run: cargo tauri build --target ${{ matrix.rustTarget }} --bundles ${{ matrix.bundle }} --config src-tauri/tauri.release.conf.json
+        working-directory: apps/desktop-shell
+
+      - name: Stage desktop artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/desktop
+          artifact_glob="${{ matrix.artifactGlob }}"
+          shopt -s nullglob
+          matches=( $artifact_glob )
+          shopt -u nullglob
+          if [ "${#matches[@]}" -ne 1 ]; then
+            echo "Expected exactly one desktop artifact for glob: $artifact_glob" >&2
+            find apps/desktop-shell/src-tauri/target -path '*/release/bundle/*' -type f >&2 || true
+            exit 1
+          fi
+          cp "${matches[0]}" "dist/desktop/${{ matrix.desktopAsset }}"
+          ls -lh "dist/desktop/${{ matrix.desktopAsset }}"
+
+      - name: Validate macOS desktop artifact
+        if: startsWith(matrix.name, 'macos-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmg="dist/desktop/${{ matrix.desktopAsset }}"
+          mount_dir="$(mktemp -d "$RUNNER_TEMP/agentic-dmg.XXXXXX")"
+
+          spctl -a -vv -t open --context context:primary-signature "$dmg"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mount_dir" "$dmg"
+          cleanup() {
+            hdiutil detach "$mount_dir" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          app="$mount_dir/Agentic.app"
+          desktop_bin="$app/Contents/MacOS/solana-agent-wallet-desktop"
+          sidecar_bin="$app/Contents/MacOS/agentic-cli-sidecar"
+          test -d "$app"
+          test -x "$desktop_bin"
+          test -x "$sidecar_bin"
+
+          codesign --verify --deep --strict --verbose=4 "$app"
+          app_signature="$(codesign -dv --verbose=4 "$app" 2>&1)"
+          printf '%s\n' "$app_signature"
+          printf '%s\n' "$app_signature" | grep -q '^Authority=Developer ID Application:'
+          app_team_id="$(printf '%s\n' "$app_signature" | sed -n 's/^TeamIdentifier=//p')"
+          if [ -z "$app_team_id" ] || [ "$app_team_id" = "not set" ]; then
+            echo "Agentic.app is not signed with a Developer ID team identifier." >&2
+            exit 1
+          fi
+
+          codesign --verify --strict --verbose=4 "$sidecar_bin"
+          sidecar_signature="$(codesign -dv --verbose=4 "$sidecar_bin" 2>&1)"
+          printf '%s\n' "$sidecar_signature"
+          printf '%s\n' "$sidecar_signature" | grep -q '^Authority=Developer ID Application:'
+          sidecar_team_id="$(printf '%s\n' "$sidecar_signature" | sed -n 's/^TeamIdentifier=//p')"
+          if [ -z "$sidecar_team_id" ] || [ "$sidecar_team_id" = "not set" ]; then
+            echo "CLI sidecar is not signed with a Developer ID team identifier." >&2
+            exit 1
+          fi
+
+          spctl -a -vvv -t exec "$app"
+          xcrun stapler validate "$app" || xcrun stapler validate "$dmg"
+          "$sidecar_bin" --help
+
+          cleanup
+          trap - EXIT
+
+      - name: Validate Windows desktop artifact
+        if: matrix.name == 'windows-x64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $msi = Resolve-Path 'dist/desktop/${{ matrix.desktopAsset }}'
+          $signature = Get-AuthenticodeSignature -FilePath $msi
+          if ($signature.Status -ne 'Valid') {
+            Write-Warning "MSI Authenticode signature status is $($signature.Status). The installer can still be smoke-tested, but Windows publisher trust is not configured."
+          }
+
+          $extractDir = Join-Path $env:RUNNER_TEMP 'agentic-msi'
+          $log = Join-Path $env:RUNNER_TEMP 'agentic-msi-extract.log'
+          New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
+          $process = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @('/a', $msi, '/qn', "TARGETDIR=$extractDir", "/L*v", $log)
+          if ($process.ExitCode -ne 0) {
+            Get-Content $log
+            throw "MSI administrative extraction failed with exit code $($process.ExitCode)."
+          }
+
+          $desktopExe = Get-ChildItem $extractDir -Recurse -Filter 'solana-agent-wallet-desktop.exe' | Select-Object -First 1
+          $sidecarExe = Get-ChildItem $extractDir -Recurse -Filter 'agentic-cli-sidecar.exe' | Select-Object -First 1
+          if (-not $desktopExe) {
+            Get-ChildItem $extractDir -Recurse | Select-Object -ExpandProperty FullName
+            throw 'Desktop executable is missing from the MSI.'
+          }
+          if (-not $sidecarExe) {
+            Get-ChildItem $extractDir -Recurse | Select-Object -ExpandProperty FullName
+            throw 'CLI sidecar executable is missing from the MSI.'
+          }
+          & $sidecarExe.FullName --help
+
+      - name: Validate Linux desktop artifact
+        if: matrix.name == 'linux-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          appimage="dist/desktop/${{ matrix.desktopAsset }}"
+          chmod +x "$appimage"
+          "$appimage" --appimage-version
+
+          extract_dir="$RUNNER_TEMP/agentic-appimage"
+          rm -rf "$extract_dir"
+          mkdir -p "$extract_dir"
+          appimage_abs="$GITHUB_WORKSPACE/$appimage"
+          (
+            cd "$extract_dir"
+            "$appimage_abs" --appimage-extract >/tmp/agentic-appimage-extract.log
+          )
+
+          root="$extract_dir/squashfs-root"
+          test -x "$root/AppRun"
+          desktop_bin="$(find "$root" -type f -name 'solana-agent-wallet-desktop' -print -quit)"
+          sidecar_bin="$(find "$root" -type f -name 'agentic-cli-sidecar' -print -quit)"
+          if [ -z "$desktop_bin" ]; then
+            find "$root" -maxdepth 5 -type f | sort >&2
+            echo "Desktop executable is missing from the AppImage." >&2
+            exit 1
+          fi
+          if [ -z "$sidecar_bin" ]; then
+            find "$root" -maxdepth 5 -type f | sort >&2
+            echo "CLI sidecar executable is missing from the AppImage." >&2
+            exit 1
+          fi
+          chmod +x "$desktop_bin" "$sidecar_bin"
+          "$sidecar_bin" --help
+
+          set +e
+          timeout 15s xvfb-run -a "$root/AppRun" >/tmp/agentic-appimage-launch.log 2>&1
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; then
+            cat /tmp/agentic-appimage-launch.log >&2
+            exit "$status"
+          fi
+
+      - name: Upload desktop artifact
+        uses: actions/upload-artifact@v4
         with:
-          projectPath: apps/desktop-shell
-          tagName: ${{ env.RELEASE_TAG }}
-          releaseName: Agentic ${{ env.RELEASE_TAG }}
-          releaseBody: Download the Agentic desktop installer for your platform.
-          releaseDraft: false
-          prerelease: false
-          includeUpdaterJson: false
-          tauriScript: cargo tauri
-          args: --target ${{ matrix.rustTarget }} --bundles ${{ matrix.bundle }} --config src-tauri/tauri.release.conf.json
-          assetNamePattern: ${{ matrix.desktopAsset }}
+          name: ${{ matrix.desktopAsset }}
+          path: dist/desktop/${{ matrix.desktopAsset }}
+          if-no-files-found: error
+
+  publish:
+    name: publish desktop release assets
+    needs:
+      - validate
+      - build
+    if: needs.validate.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download validated desktop artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: agentic-desktop-*
+          path: dist/desktop
+          merge-multiple: true
+
+      - name: Verify desktop artifacts before publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            agentic-desktop-macos-arm64.dmg
+            agentic-desktop-macos-x64.dmg
+            agentic-desktop-windows-x64.msi
+            agentic-desktop-linux-x64.AppImage
+          )
+          for asset in "${required[@]}"; do
+            path="dist/desktop/$asset"
+            if [ ! -s "$path" ]; then
+              echo "Missing validated desktop artifact: $asset" >&2
+              exit 1
+            fi
+            ls -lh "$path"
+          done
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: Agentic ${{ env.RELEASE_TAG }}
+          body: Download the Agentic desktop installer for your platform.
+          files: dist/desktop/agentic-desktop-*
+          fail_on_unmatched_files: true
+          overwrite_files: true
