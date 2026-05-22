@@ -94,6 +94,7 @@ import {
 } from '@solana-agent-wallet-adapter/mwa-mobile-web';
 import {
   listAvailableWallets,
+  subscribeToWalletRegistration,
   WalletStandardWebBackend,
   type DiscoveredWallet,
 } from '@solana-agent-wallet-adapter/wallet-standard-web';
@@ -2845,6 +2846,21 @@ function notificationSettingsFromPersisted(
 const persisted = loadPersistedState();
 const launchParams = readLaunchParams();
 clearSensitiveLaunchParams();
+type CliView = { intent: 'connect' | 'approve'; actionId?: string };
+let cliView: CliView | null = launchParams.cliMode && launchParams.cliIntent
+  ? { intent: launchParams.cliIntent, ...(launchParams.cliActionId ? { actionId: launchParams.cliActionId } : {}) }
+  : null;
+if (cliView && typeof document !== 'undefined') {
+  document.documentElement.setAttribute('data-cli-mode', 'true');
+  document.documentElement.setAttribute('data-cli-intent', cliView.intent);
+}
+function exitCliView(): void {
+  cliView = null;
+  if (typeof document !== 'undefined') {
+    document.documentElement.removeAttribute('data-cli-mode');
+    document.documentElement.removeAttribute('data-cli-intent');
+  }
+}
 const initialCluster = SHOW_DEV_CONTROLS ? (persisted.cluster ?? 'mainnet-beta') : 'mainnet-beta';
 const initialTemplate = templateById('swap');
 const defaultWorkspaceTab: ActiveTab = 'overview';
@@ -4102,6 +4118,16 @@ async function bootstrap(): Promise<void> {
   }
   if (!state.androidNativeEnvironment.isAndroidNative && !state.iosNativeEnvironment.isIosNative) {
     await restoreBrowserWalletSession();
+    subscribeToWalletRegistration(() => {
+      const next = visibleBrowserWallets(listAvailableWallets());
+      if (next.length === state.wallets.length) return;
+      state.wallets = next;
+      state.selectedWalletName = reconcileBrowserWalletSelection(state.wallets, state.selectedWalletName);
+      if (!cliView && !state.address && state.wallets.length > 0 && !state.selectedWalletName) {
+        state.browserWalletPickerOpen = true;
+      }
+      render();
+    });
   }
   await refreshCloudSession(false);
   await signOutCloudSessionForWalletBoundary('startup');
@@ -4129,6 +4155,18 @@ async function bootstrap(): Promise<void> {
   }
   render();
   void reconcilePendingTransactions({ trigger: 'bootstrap' });
+  if (
+    cliView?.intent === 'connect' &&
+    !state.address &&
+    !state.androidNativeEnvironment.isAndroidNative &&
+    !state.iosNativeEnvironment.isIosNative &&
+    !state.tauriNativeEnvironment.isTauriNative
+  ) {
+    void runDiscover().finally(() => {
+      state.browserWalletPickerOpen = false;
+      render();
+    });
+  }
 }
 
 function render(): void {
@@ -4393,7 +4431,7 @@ function pageContent(route: AppRoute | null): string {
     case '/builders':
       return buildersPage();
     case '/app':
-      return appPage();
+      return cliView ? cliAppPage() : appPage();
     case '/cli':
       return cliPage();
     case '/desktop':
@@ -4785,6 +4823,170 @@ function builderContractItem(label: string, detail: string): string {
 
 function appPage(): string {
   return appWorkspace('app');
+}
+
+function cliAppPage(): string {
+  if (!cliView) return appPage();
+  if (cliView.intent === 'connect') return cliConnectView();
+  if (cliView.intent === 'approve') return cliApproveView();
+  return cliErrorView('Unknown CLI intent', 'Return to the terminal and try again.');
+}
+
+function cliFocusedShell(args: { title: string; subtitle?: string; body: string; footer?: string }): string {
+  return `
+    <section class="cli-focused-shell" data-layout="cli-focused">
+      <div class="cli-focused-card signature-object">
+        <header class="cli-focused-head signature-object-head">
+          <h1>${escapeHtml(args.title)}</h1>
+          ${args.subtitle ? `<p>${escapeHtml(args.subtitle)}</p>` : ''}
+        </header>
+        <div class="cli-focused-body">
+          ${args.body}
+        </div>
+        ${args.footer ? `<footer class="cli-focused-foot">${args.footer}</footer>` : ''}
+      </div>
+    </section>
+  `;
+}
+
+function cliReturnFooter(): string {
+  return `
+    <p class="cli-focused-note">Return to the terminal — the CLI is watching for this change.</p>
+    <button type="button" class="utility cli-focused-open-full" data-cli-action="open-full">Open full app</button>
+  `;
+}
+
+function cliConnectView(): string {
+  if (state.address) {
+    return cliFocusedShell({
+      title: 'Wallet paired',
+      subtitle: short(state.address),
+      body: `
+        <div class="cli-focused-success signature-state complete" role="status" aria-live="polite">
+          <span class="cli-focused-tick" aria-hidden="true">✓</span>
+          <p>Wallet connected to the local bridge. The CLI has picked it up.</p>
+        </div>
+        <div class="cli-focused-actions">
+          <button type="button" id="disconnect" class="danger" ${state.busy ? 'disabled' : ''}>Disconnect wallet</button>
+        </div>
+      `,
+      footer: cliReturnFooter(),
+    });
+  }
+  const showBrowserPicker =
+    !state.androidNativeEnvironment.isAndroidNative &&
+    !state.iosNativeEnvironment.isIosNative &&
+    !state.tauriNativeEnvironment.isTauriNative &&
+    state.wallets.length > 0;
+  const showIosPicker = state.iosNativeEnvironment.isIosNative;
+  const pickerMarkup = showBrowserPicker
+    ? `
+      <div class="cli-focused-picker">
+        <label class="field">
+          <span>Selected wallet</span>
+          ${selectPicker({
+            id: 'walletSelect',
+            value: state.selectedWalletName,
+            options: walletSelectOptions(),
+            disabled: state.wallets.length === 0 || state.busy,
+            open: state.browserWalletPickerOpen,
+          })}
+        </label>
+      </div>
+    `
+    : showIosPicker
+      ? `
+        <div class="cli-focused-picker">
+          <label class="field">
+            <span>Selected wallet</span>
+            ${selectPicker({
+              id: 'iosWalletSelect',
+              value: state.selectedIosWalletId,
+              options: iosWalletSelectOptions(),
+              disabled: state.busy,
+            })}
+          </label>
+        </div>
+      `
+      : '';
+  return cliFocusedShell({
+    title: 'Connect your wallet',
+    subtitle: 'Pair a Wallet Standard wallet (Phantom, Backpack, Solflare, …) with the local bridge.',
+    body: guidedStartPanel(
+      'Wallet pairing',
+      'Discover, select, and authorize a wallet. The CLI will detect it.',
+      pickerMarkup,
+    ),
+    footer: `<p class="cli-focused-note">Return to the terminal once the wallet is connected.</p>`,
+  });
+}
+
+function cliApproveView(): string {
+  const actionId = cliView?.actionId;
+  if (!actionId) {
+    return cliErrorView('No action specified', 'Re-run /approve <id> from the terminal.');
+  }
+  const action = state.preparedActions.find((entry) => entry.id === actionId);
+  if (!action) {
+    return cliErrorView(
+      'Action not found',
+      `No prepared action with id "${actionId}". Return to the terminal and re-run /approve.`,
+    );
+  }
+  if (!state.address) {
+    return cliFocusedShell({
+      title: 'Connect a wallet first',
+      subtitle: 'A wallet must be paired before signing this approval.',
+      body: guidedStartPanel('Wallet pairing', 'Authorize a wallet, then this view will switch to the approval.'),
+      footer: `<p class="cli-focused-note">Once connected, the approval card will appear here.</p>`,
+    });
+  }
+  if (action.status === 'approved') {
+    const txHash = action.txid ?? action.transactionHash ?? null;
+    return cliFocusedShell({
+      title: 'Signed',
+      subtitle: action.summary,
+      body: `
+        <div class="cli-focused-success signature-state complete" role="status" aria-live="polite">
+          <span class="cli-focused-tick" aria-hidden="true">✓</span>
+          <p>Approval signed.${txHash ? ` Tx <code>${escapeHtml(short(txHash))}</code>` : ''}</p>
+        </div>
+      `,
+      footer: cliReturnFooter(),
+    });
+  }
+  if (action.status === 'rejected' || action.status === 'cancelled') {
+    return cliFocusedShell({
+      title: action.status === 'rejected' ? 'Rejected' : 'Cancelled',
+      subtitle: action.summary,
+      body: `
+        <div class="cli-focused-success signature-state" role="status" aria-live="polite">
+          <span class="cli-focused-tick" aria-hidden="true">✕</span>
+          <p>Approval rejected. The CLI inbox has been updated.</p>
+        </div>
+      `,
+      footer: cliReturnFooter(),
+    });
+  }
+  return cliFocusedShell({
+    title: 'Review and sign',
+    subtitle: 'The terminal queued this approval. Verify the details and sign.',
+    body: preparedActionCard(action),
+    footer: `<p class="cli-focused-note">The CLI will report back once you sign or reject.</p>`,
+  });
+}
+
+function cliErrorView(title: string, detail: string): string {
+  return cliFocusedShell({
+    title,
+    body: `
+      <div class="cli-focused-success signature-state" role="alert">
+        <span class="cli-focused-tick" aria-hidden="true">!</span>
+        <p>${escapeHtml(detail)}</p>
+      </div>
+    `,
+    footer: cliReturnFooter(),
+  });
 }
 
 function cliPage(): string {
@@ -9996,7 +10198,7 @@ function compactEndpoint(value: string): string {
   }
 }
 
-function guidedStartPanel(title: string, detail: string): string {
+function guidedStartPanel(title: string, detail: string, extras?: string): string {
   const selectedProvider = discoveredSelectedWalletName();
   const androidNative = state.androidNativeEnvironment.isAndroidNative;
   const iosNative = state.iosNativeEnvironment.isIosNative;
@@ -10024,6 +10226,7 @@ function guidedStartPanel(title: string, detail: string): string {
         <button data-start-action="connect" class="${state.wallets.length ? 'primary' : ''}" ${(state.wallets.length === 0 || !selectedProvider) || state.busy ? 'disabled' : ''} title="${!selectedProvider ? 'Discover and select a wallet provider first.' : ''}">Connect wallet</button>`}
       </div>
       <p class="guided-note">Needs Approval, repeat payments, saved proofs, and transaction tools unlock after a wallet is connected.</p>
+      ${extras ?? ''}
     </section>
   `;
 }
@@ -18728,6 +18931,12 @@ function bind(): void {
   document.querySelector<HTMLButtonElement>('#discover')?.addEventListener('click', runDiscover);
   document.querySelector<HTMLButtonElement>('#connect')?.addEventListener('click', runConnect);
   document.querySelector<HTMLButtonElement>('#disconnect')?.addEventListener('click', runDisconnect);
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-cli-action="open-full"]')) {
+    button.addEventListener('click', () => {
+      exitCliView();
+      render();
+    });
+  }
   document.querySelector<HTMLButtonElement>('#tauriOpenCloudAppBtn')?.addEventListener('click', () => {
     void tauriNativeOpenExternalUrl('https://agentic-signer.com/app');
   });
@@ -20366,12 +20575,20 @@ function bindSelectPickers(): void {
       }
     };
 
+    const syncWalletPickerState = (next: boolean): void => {
+      if (select.id === 'walletSelect') {
+        state.browserWalletPickerOpen = next;
+      }
+    };
+
     trigger.addEventListener('click', (event) => {
       event.stopPropagation();
       if (menu.hidden) {
         openPicker(false);
+        syncWalletPickerState(true);
       } else {
         closePicker(false);
+        syncWalletPickerState(false);
       }
     });
 
@@ -20379,11 +20596,13 @@ function bindSelectPickers(): void {
       if (event.key === 'ArrowDown') {
         event.preventDefault();
         openPicker('selected');
+        syncWalletPickerState(true);
         focusAdjacentTemplateOption(enabledOptions, 1);
       }
       if (event.key === 'ArrowUp') {
         event.preventDefault();
         openPicker('selected');
+        syncWalletPickerState(true);
         focusAdjacentTemplateOption(enabledOptions, -1);
       }
       if (event.key === 'Enter' || event.key === ' ') {
@@ -45607,16 +45826,30 @@ function isSolanaPublicKeyText(value: string): boolean {
   }
 }
 
-function readLaunchParams(): { bridgeUrl?: string; bridgeToken?: string } {
+function readLaunchParams(): {
+  bridgeUrl?: string;
+  bridgeToken?: string;
+  cliMode?: boolean;
+  cliIntent?: 'connect' | 'approve';
+  cliActionId?: string;
+} {
   const params = new URLSearchParams(window.location.search);
   const bridgeUrl = params.get('bridgeUrl')?.trim();
   const bridgeToken = params.get('token')?.trim();
   if (bridgeToken) {
     saveSessionBridgeToken(bridgeToken);
   }
+  const cliMode = params.get('mode')?.trim() === 'cli';
+  const rawIntent = params.get('intent')?.trim();
+  const cliIntent: 'connect' | 'approve' | undefined =
+    rawIntent === 'connect' || rawIntent === 'approve' ? rawIntent : undefined;
+  const cliActionId = params.get('actionId')?.trim() || undefined;
   return {
     ...(bridgeUrl && isTrustedBridgeUrl(bridgeUrl) ? { bridgeUrl } : {}),
     ...(bridgeToken ? { bridgeToken } : {}),
+    ...(cliMode ? { cliMode } : {}),
+    ...(cliIntent ? { cliIntent } : {}),
+    ...(cliActionId ? { cliActionId } : {}),
   };
 }
 
@@ -45639,8 +45872,11 @@ function saveSessionBridgeToken(value: string): void {
 
 function clearSensitiveLaunchParams(): void {
   const url = new URL(window.location.href);
-  if (!url.searchParams.has('token')) return;
+  const had = url.searchParams.has('token') || url.searchParams.has('intent') || url.searchParams.has('actionId');
+  if (!had) return;
   url.searchParams.delete('token');
+  url.searchParams.delete('intent');
+  url.searchParams.delete('actionId');
   window.history.replaceState(window.history.state, document.title, `${url.pathname}${url.search}${url.hash}`);
 }
 

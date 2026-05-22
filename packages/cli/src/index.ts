@@ -954,7 +954,7 @@ async function dispatchInbox(parsed: ParsedArgs): Promise<unknown> {
     const action = await inspectPreparedAction(parsed.options, actionId);
     assertActionApprovable(action);
     await connectOneShot(parsed.options);
-    await openWalletHost(parsed.options).catch(() => undefined);
+    await openWalletHost(parsed.options, { intent: 'approve', actionId: action.id }).catch(() => undefined);
     const result = await bridgeRequest(parsed.options, '/bridge/prepared-actions/execute', {
       method: 'POST',
       body: JSON.stringify({ actionId: action.id }),
@@ -1198,8 +1198,10 @@ async function runTerminalApp(parsed: ParsedArgs): Promise<void> {
     await renderDashboard(state);
     printCommandMenu();
 
+    console.log(colorize(state.options, 'Type a command to get started (try /connect).', 'muted'));
+
     while (true) {
-      const line = (await rl.question(colorize(state.options, 'sawa> ', 'green'))).trim();
+      const line = (await rl.question(colorize(state.options, 'agentic> ', 'green'))).trim();
       if (!line) {
         continue;
       }
@@ -1255,8 +1257,9 @@ async function connectOneShot(options: GlobalOptions): Promise<JsonRecord> {
 
 async function connectInteractive(
   state: TerminalAppState,
-  options: { waitForWallet: boolean; detached?: boolean },
+  options: { waitForWallet: boolean; detached?: boolean; cli?: CliIntent },
 ): Promise<void> {
+  const cli: CliIntent = options.cli ?? { intent: 'connect' };
   if (options.detached) {
     await ensureBridgeDetached(state.options);
     await ensureBrowserHostDetached(state.options);
@@ -1264,7 +1267,7 @@ async function connectInteractive(
     await ensureBridge(state);
     await ensureBrowserHost(state);
   }
-  await openWalletHost(state.options);
+  await openWalletHost(state.options, cli);
   const status = await tryBridgeRequest<WalletStatus>(state.options, '/bridge/action/status');
   if (status.ok && status.value.connected && status.value.address) {
     if (!state.options.json) {
@@ -1274,7 +1277,7 @@ async function connectInteractive(
   }
   if (!state.options.json) {
     printSection('Connect Wallet');
-    console.log(`Opened: ${walletHostLaunchUrl(state.options)}`);
+    console.log(`Opened: ${walletHostLaunchUrl(state.options, cli)}`);
     console.log('In the browser window:');
     console.log('1. Unlock Phantom, Backpack, Solflare, or another Wallet Standard wallet.');
     console.log('2. Connect the wallet.');
@@ -1288,6 +1291,36 @@ async function connectInteractive(
   if (!state.options.json) {
     printOk(state.options, `Wallet connected: ${connected.address ?? 'connected'}`);
   }
+}
+
+async function disconnectInteractive(state: TerminalAppState): Promise<void> {
+  await ensureBridge(state);
+  await ensureBrowserHost(state);
+  const status = await tryBridgeRequest<WalletStatus>(state.options, '/bridge/action/status');
+  if (status.ok && !status.value.connected) {
+    if (!state.options.json) {
+      printOk(state.options, 'Wallet already disconnected.');
+    }
+    return;
+  }
+  await openWalletHost(state.options, { intent: 'connect' });
+  if (!state.options.json) {
+    printSection('Disconnect Wallet');
+    console.log(`Opened: ${walletHostLaunchUrl(state.options, { intent: 'connect' })}`);
+    console.log('In the browser window, click "Disconnect wallet". The terminal will detect the change.');
+  }
+  const start = Date.now();
+  while (Date.now() - start < 120_000) {
+    const probe = await tryBridgeRequest<WalletStatus>(state.options, '/bridge/action/status');
+    if (probe.ok && !probe.value.connected) {
+      if (!state.options.json) {
+        printOk(state.options, 'Wallet disconnected.');
+      }
+      return;
+    }
+    await sleep(750);
+  }
+  throw new Error('Wallet still connected after 120s. Click "Disconnect wallet" in the browser and try /disconnect again.');
 }
 
 async function handleTerminalCommand(
@@ -1331,6 +1364,9 @@ async function handleTerminalCommand(
         return false;
       case 'connect':
         await connectInteractive(state, { waitForWallet: true });
+        return false;
+      case 'disconnect':
+        await disconnectInteractive(state);
         return false;
       case 'bridge':
         await ensureBridge(state);
@@ -1511,6 +1547,7 @@ async function approvePreparedAction(state: TerminalAppState, idOrIndex: string 
   const action = await resolveAction(state, idOrIndex);
   assertActionApprovable(action);
   await connectInteractive(state, { waitForWallet: true });
+  await openWalletHost(state.options, { intent: 'approve', actionId: action.id }).catch(() => undefined);
   printMuted(state.options, 'Approval request sent. Use the browser wallet popup to complete signing.');
   const result = await bridgeRequest(state.options, '/bridge/prepared-actions/execute', {
     method: 'POST',
@@ -3074,14 +3111,22 @@ async function fetchWithTimeout(input: URL | string, init: RequestInit, timeoutM
   }
 }
 
-async function openWalletHost(options: GlobalOptions): Promise<void> {
-  await openUrl(walletHostLaunchUrl(options));
+async function openWalletHost(options: GlobalOptions, cli?: CliIntent): Promise<void> {
+  await openUrl(walletHostLaunchUrl(options, cli));
 }
 
-function walletHostLaunchUrl(options: GlobalOptions): string {
+type CliIntent = { intent: 'connect' | 'approve'; actionId?: string };
+
+function walletHostLaunchUrl(options: GlobalOptions, cli?: CliIntent): string {
   const url = new URL(options.walletHostUrl);
+  url.pathname = '/app';
   url.searchParams.set('bridgeUrl', options.bridgeUrl);
   url.searchParams.set('token', options.token);
+  if (cli) {
+    url.searchParams.set('mode', 'cli');
+    url.searchParams.set('intent', cli.intent);
+    if (cli.actionId) url.searchParams.set('actionId', cli.actionId);
+  }
   return url.toString();
 }
 
@@ -3687,6 +3732,7 @@ function printCommandMenu(): void {
   printSection('Commands');
   console.log('/setup             Configure local RPC and Jupiter credentials');
   console.log('/connect           Open browser wallet host and wait for wallet bridge connection');
+  console.log('/disconnect        Disconnect the active wallet from the bridge');
   console.log('/wallet            Wallet, network, RPC, custody state');
   console.log('/inbox [filter]    Prepared approvals. Filters: all, ready, scheduled, approved, failed, recurring');
   console.log('/inbox compact     Compact inbox table');

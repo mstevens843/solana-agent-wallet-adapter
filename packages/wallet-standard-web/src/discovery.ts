@@ -35,6 +35,11 @@ export function listAvailableWallets(): ReadonlyArray<DiscoveredWallet> {
   return described.filter((entry): entry is DiscoveredWallet => entry !== null);
 }
 
+export function subscribeToWalletRegistration(handler: () => void): () => void {
+  const { on } = getWallets();
+  return on('register', handler);
+}
+
 export function requireWallet(name: string): DiscoveredWallet {
   const match = listAvailableWallets().find(
     (entry) => entry.name.toLowerCase() === name.toLowerCase(),
