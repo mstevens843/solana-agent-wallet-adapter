@@ -365,6 +365,13 @@ jobs:
 
           mkdir -p "$api_key_dir"
           printf '%s' "$APP_STORE_CONNECT_API_KEY_BASE64" | base64 --decode > "$api_key_path"
+          if [ ! -s "$api_key_path" ]; then
+            echo "Decoded App Store Connect API key is empty." >&2
+            exit 1
+          fi
+          api_key_size="$(wc -c < "$api_key_path" | tr -d ' ')"
+          echo "Selected signing identity: $signing_identity"
+          echo "Prepared App Store Connect API key file (${api_key_size} bytes)."
 
           {
             echo "APPLE_SIGNING_IDENTITY=$signing_identity"
@@ -394,6 +401,89 @@ jobs:
           fi
           cp "${matches[0]}" "dist/desktop/${{ matrix.desktopAsset }}"
           ls -lh "dist/desktop/${{ matrix.desktopAsset }}"
+
+      - name: Notarize macOS desktop artifact
+        if: startsWith(matrix.name, 'macos-')
+        shell: bash
+        run: |
+          set -euo pipefail
+          dmg="dist/desktop/${{ matrix.desktopAsset }}"
+          submission_output="$RUNNER_TEMP/notarytool-${{ matrix.name }}.json"
+          submission_log="$RUNNER_TEMP/notarytool-${{ matrix.name }}-log.json"
+
+          missing=()
+          for name in APPLE_API_KEY_PATH APPLE_API_KEY APPLE_API_ISSUER; do
+            if [ -z "${!name:-}" ]; then
+              missing+=("$name")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf 'Missing notarization environment variable(s): %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+          if [ ! -s "$APPLE_API_KEY_PATH" ]; then
+            echo "App Store Connect API key file is missing or empty: $APPLE_API_KEY_PATH" >&2
+            exit 1
+          fi
+
+          fetch_notary_log() {
+            local submission_id="$1"
+            if [ -z "$submission_id" ]; then
+              echo "No notary submission id was found; cannot fetch Apple notary log." >&2
+              return 0
+            fi
+            echo "Fetching Apple notary log for submission $submission_id..." >&2
+            xcrun notarytool log "$submission_id" \
+              --key "$APPLE_API_KEY_PATH" \
+              --key-id "$APPLE_API_KEY" \
+              --issuer "$APPLE_API_ISSUER" \
+              --output-format json > "$submission_log" 2>&1 || true
+            cat "$submission_log" >&2
+          }
+
+          echo "Submitting $dmg for Apple notarization..."
+          set +e
+          xcrun notarytool submit "$dmg" \
+            --key "$APPLE_API_KEY_PATH" \
+            --key-id "$APPLE_API_KEY" \
+            --issuer "$APPLE_API_ISSUER" \
+            --wait \
+            --output-format json > "$submission_output" 2>&1
+          submit_status=$?
+          set -e
+          cat "$submission_output"
+
+          submission_id="$(
+            sed -n 's/.*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$submission_output" | head -n 1
+          )"
+          notary_status="$(
+            sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$submission_output" | head -n 1
+          )"
+
+          if [ "$submit_status" -ne 0 ]; then
+            fetch_notary_log "$submission_id"
+            exit "$submit_status"
+          fi
+          if [ "$notary_status" != "Accepted" ]; then
+            echo "Apple notarization did not return Accepted. Status: ${notary_status:-unknown}" >&2
+            fetch_notary_log "$submission_id"
+            exit 1
+          fi
+
+          stapled=0
+          for attempt in {1..12}; do
+            if xcrun stapler staple "$dmg"; then
+              stapled=1
+              break
+            fi
+            echo "Stapling ticket was not available yet; retry ${attempt}/12."
+            sleep 10
+          done
+          if [ "$stapled" != "1" ]; then
+            echo "Failed to staple notarization ticket to $dmg." >&2
+            exit 1
+          fi
+          xcrun stapler validate "$dmg"
 
       - name: Validate macOS desktop artifact
         if: startsWith(matrix.name, 'macos-')
