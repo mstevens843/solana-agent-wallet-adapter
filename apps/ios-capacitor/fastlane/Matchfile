@@ -1,0 +1,7 @@
+# match storage: a private git repo holding encrypted certs + provisioning profiles.
+# The MATCH_GIT_URL secret in GitHub Actions points at it; MATCH_PASSWORD decrypts.
+git_url(ENV['MATCH_GIT_URL'] || '')
+storage_mode('git')
+type('appstore')
+app_identifier([ENV['AGENTIC_IOS_BUNDLE_ID'] || 'com.agentic.wallet'])
+readonly(ENV['CI'] == 'true')

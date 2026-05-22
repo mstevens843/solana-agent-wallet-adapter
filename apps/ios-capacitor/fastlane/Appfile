@@ -1,0 +1,6 @@
+# App Store Connect bundle identifier + team. Overridden by the GitHub Actions
+# workflow via env vars; only fall back to these values for local manual runs.
+app_identifier(ENV['AGENTIC_IOS_BUNDLE_ID'] || 'com.agentic.wallet')
+apple_id(ENV['APPLE_ID']) # only used for legacy two-factor flows; CI uses API key
+team_id(ENV['APPLE_TEAM_ID']) # 10-character team identifier from App Store Connect
+itc_team_id(ENV['APPLE_TEAM_ID'])

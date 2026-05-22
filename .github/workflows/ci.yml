@@ -50,6 +50,12 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Test desktop runtime
+        run: cargo test --manifest-path apps/desktop-shell/src-tauri/Cargo.toml --lib
+
       - name: Test
         run: pnpm -r test
 

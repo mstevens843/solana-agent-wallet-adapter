@@ -3,11 +3,15 @@ name: desktop release
 on:
   push:
     tags:
+      # v0.3+ standardises on `desktop-v*` to disambiguate from CLI releases.
+      # Legacy `v*` continues to fire so historical tags still work; the validate
+      # job below gracefully exits when a v* tag actually belongs to the CLI.
+      - 'desktop-v*'
       - 'v*'
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to publish, for example v0.2.1.'
+        description: 'Release tag to publish, for example desktop-v0.3.0 or v0.2.1.'
         required: true
         type: string
 
@@ -18,8 +22,46 @@ env:
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
 
 jobs:
+  validate:
+    name: validate tag against desktop package
+    runs-on: ubuntu-latest
+    outputs:
+      proceed: ${{ steps.check.outputs.proceed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+      - id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RELEASE_TAG" in
+            desktop-v*|v*) ;;
+            *)
+              echo "Desktop release tag must start with desktop-v or v. Current value: $RELEASE_TAG" >&2
+              exit 1
+              ;;
+          esac
+          tag_version="${RELEASE_TAG#desktop-v}"
+          tag_version="${tag_version#v}"
+          desktop_version="$(node -p "require('./apps/desktop-shell/package.json').version")"
+          if [ "$desktop_version" = "$tag_version" ]; then
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cli_version="$(node -p "require('./packages/cli/package.json').version")"
+          if [ "$cli_version" = "$tag_version" ]; then
+            echo "Tag ${RELEASE_TAG} matches CLI ${cli_version}; desktop release skipped (desktop at ${desktop_version})."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Desktop package version $desktop_version must match release tag $RELEASE_TAG." >&2
+          exit 1
+
   build:
     name: ${{ matrix.name }}
+    needs: validate
+    if: needs.validate.outputs.proceed == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -76,14 +118,16 @@ jobs:
         run: |
           set -euo pipefail
           case "$RELEASE_TAG" in
-            v*) ;;
+            desktop-v*|v*) ;;
             *)
-              echo "Desktop release tag must start with v. Current value: $RELEASE_TAG" >&2
+              echo "Desktop release tag must start with desktop-v or v. Current value: $RELEASE_TAG" >&2
               exit 1
               ;;
           esac
+          # Strip either prefix to get the bare semver.
+          tag_version="${RELEASE_TAG#desktop-v}"
+          tag_version="${tag_version#v}"
           package_version="$(node -p "require('./apps/desktop-shell/package.json').version")"
-          tag_version="${RELEASE_TAG#v}"
           if [ "$package_version" != "$tag_version" ]; then
             echo "Desktop package version $package_version must match release tag $RELEASE_TAG." >&2
             exit 1
@@ -139,18 +183,30 @@ jobs:
           rm -rf "$work_dir"
           mkdir -p "$extract_dir" "$sidecar_dir"
 
-          tag_url="https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/${{ matrix.cliAsset }}"
+          # Sidecar source order:
+          #   1. The current release tag (legacy: same v* tag built both CLI and desktop).
+          #   2. The latest CLI release (new desktop-v*/cli-v* split — the desktop tag
+          #      no longer guarantees a same-name CLI asset exists).
+          #   3. Falls through to error after all retries.
+          cli_tag_url="https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/${{ matrix.cliAsset }}"
+          cli_latest_url="https://github.com/${{ github.repository }}/releases/latest/download/${{ matrix.cliAsset }}"
           downloaded=0
           for attempt in {1..120}; do
-            if curl -fL "$tag_url" -o "$archive"; then
+            if curl -fL "$cli_tag_url" -o "$archive" 2>/dev/null; then
+              echo "Fetched CLI sidecar from ${RELEASE_TAG} release."
               downloaded=1
               break
             fi
-            echo "CLI sidecar asset ${{ matrix.cliAsset }} is not available for ${RELEASE_TAG} yet; retry ${attempt}/120."
+            if curl -fL "$cli_latest_url" -o "$archive" 2>/dev/null; then
+              echo "Fetched CLI sidecar from latest CLI release (no asset on ${RELEASE_TAG})."
+              downloaded=1
+              break
+            fi
+            echo "CLI sidecar asset ${{ matrix.cliAsset }} is not available for ${RELEASE_TAG} or latest yet; retry ${attempt}/120."
             sleep 15
           done
           if [ "$downloaded" != "1" ]; then
-            echo "CLI sidecar asset ${{ matrix.cliAsset }} was not found for ${RELEASE_TAG}." >&2
+            echo "CLI sidecar asset ${{ matrix.cliAsset }} was not found for ${RELEASE_TAG} or in latest release." >&2
             exit 1
           fi
 

@@ -28,6 +28,52 @@ import {
   type AiPlanRequest,
 } from '@solana-agent-wallet-adapter/workflow';
 
+// v1.0 command modules — added alongside the legacy dispatchers in this file.
+import { dispatchDeviceAgent } from './commands/deviceAgent.js';
+import { dispatchPrepareConnector, dispatchConnectorGroup } from './commands/connector.js';
+import { dispatchMarket, dispatchTokens } from './commands/market.js';
+import { dispatchRead } from './commands/read.js';
+import { dispatchPlan as dispatchAiPlan } from './commands/plan.js';
+import { dispatchSwap as dispatchSwapCommand } from './commands/swap.js';
+import { dispatchHeliusHistory } from './commands/helius.js';
+import {
+  dispatchScheduleCreate,
+  dispatchScheduleOccurrences,
+  dispatchScheduleNotifications,
+  dispatchScheduleRotateNotifications,
+} from './commands/schedule.js';
+import { dispatchAuth } from './commands/auth.js';
+import { dispatchProfile } from './commands/profile.js';
+import { dispatchPrefs } from './commands/prefs.js';
+import { dispatchSpendLimits } from './commands/spendLimits.js';
+import { dispatchVoucher } from './commands/voucher.js';
+import { dispatchMppExtra } from './commands/mppInbound.js';
+import { dispatchBridgeRouter } from './commands/bridgeRouter.js';
+import { dispatchCloudWorkspace } from './commands/cloudWorkspace.js';
+import { dispatchSkills } from './commands/skills.js';
+import { dispatchSignals } from './commands/signals.js';
+import { dispatchAp2, dispatchAcp } from './commands/mandates.js';
+import { dispatchAudit } from './commands/audit.js';
+import { dispatchBirdeye } from './commands/birdeye.js';
+import { dispatchCoingecko } from './commands/coingecko.js';
+import { dispatchHeliusGroup } from './commands/heliusCloud.js';
+import { dispatchSolana } from './commands/solana.js';
+import { dispatchApprovals } from './commands/approvals.js';
+import { dispatchCompleted } from './commands/completed.js';
+import { dispatchPlans } from './commands/plansList.js';
+import { dispatchEvidence } from './commands/evidence.js';
+import { dispatchLabArtifacts } from './commands/labArtifacts.js';
+import { dispatchBridgeAgents } from './commands/bridgeAgents.js';
+import {
+  PREPARE_ALIASES,
+  isPrepareAlias,
+  resolveAliasKind,
+} from './commands/prepareAliases.js';
+import { loadSession, sessionStatusSummary } from './auth/sessionStore.js';
+import { renderWebRequest as renderWebRequestClient } from './http/index.js';
+
+const CLI_VERSION = '1.0.0';
+
 type Cluster = 'mainnet-beta' | 'testnet' | 'devnet' | 'localnet';
 type PreparedActionKind =
   | 'transfer_sol'
@@ -59,7 +105,9 @@ const REQUEST_TIMEOUT_MS = 120_000;
 const POLL_INTERVAL_MS = 750;
 const RUNTIME_DIR_NAME = 'solana-agent-wallet';
 const WALLET_HOST_HEALTH_PATH = '/__agentic/health';
-const NO_OUTPUT = Symbol('no-output');
+// Re-export the shared NO_OUTPUT so commands in src/commands/ can return it
+// and printResult recognizes the same symbol.
+import { NO_OUTPUT } from './shared/types.js';
 const DEFAULT_JUPITER_ULTRA_BASE = 'https://api.jup.ag/swap/v2';
 const DEFAULT_JUPITER_API_URL = 'https://quote-api.jup.ag';
 const DEFAULT_BIRDEYE_REST_BASE = 'https://public-api.birdeye.so';
@@ -416,6 +464,11 @@ async function main(): Promise<void> {
     return;
   }
 
+  if (command === 'version' || command === '--version' || command === '-v') {
+    console.log(parsed.options.json ? stableJson({ version: CLI_VERSION }) : CLI_VERSION);
+    return;
+  }
+
   if (command === 'app') {
     await runTerminalApp(parsed);
     return;
@@ -431,7 +484,7 @@ async function dispatch(parsed: ParsedArgs): Promise<unknown> {
     case 'setup':
       return runSetupCommand(parsed);
     case 'doctor':
-      return runDoctor(parsed.options);
+      return runDoctorWithFlags(parsed);
     case 'status':
     case 'wallet':
       return bridgeRequest<WalletStatus>(parsed.options, '/bridge/action/status');
@@ -465,18 +518,101 @@ async function dispatch(parsed: ParsedArgs): Promise<unknown> {
       return dispatchSession(parsed);
     case 'mpp':
       return dispatchMpp(parsed);
+
+    // v1.0 — bridge surfaces
+    case 'device-agent':
+      return dispatchDeviceAgent(parsed);
+    case 'connector':
+    case 'connectors':
+      return dispatchConnectorGroup(parsed);
+    case 'read':
+      return dispatchRead(parsed);
+    case 'market':
+      return dispatchMarket(parsed);
+    case 'tokens':
+      return dispatchTokens(parsed);
+    case 'helius-history':
+      return dispatchHeliusHistory(parsed);
+    case 'plan':
+    case 'ai':
+      return dispatchAiPlan(parsed);
+    case 'swap':
+      return dispatchSwapCommand(parsed);
+
+    // v1.0 — render-web identity & preferences
+    case 'auth':
+      return dispatchAuth(parsed);
+    case 'profile':
+      return dispatchProfile(parsed);
+    case 'prefs':
+    case 'preferences':
+      return dispatchPrefs(parsed);
+    case 'spend-limits':
+      return dispatchSpendLimits(parsed);
+
+    // v1.0 — payment surfaces beyond core session/mpp
+    case 'bridge-router':
+      return dispatchBridgeRouter(parsed);
+    case 'cloud-workspace':
+      return dispatchCloudWorkspace(parsed);
+
+    // v1.0 — skills, signals, mandates, audit
+    case 'skills':
+      return dispatchSkills(parsed);
+    case 'signals':
+      return dispatchSignals(parsed);
+    case 'ap2':
+      return dispatchAp2(parsed);
+    case 'acp':
+      return dispatchAcp(parsed);
+    case 'audit':
+      return dispatchAudit(parsed);
+
+    // v1.0 final sweep — full endpoint coverage
+    case 'birdeye':
+      return dispatchBirdeye(parsed);
+    case 'coingecko':
+      return dispatchCoingecko(parsed);
+    case 'helius':
+      return dispatchHeliusGroup(parsed);
+    case 'solana':
+      return dispatchSolana(parsed);
+    case 'approvals':
+      return dispatchApprovals(parsed);
+    case 'completed':
+      return dispatchCompleted(parsed);
+    case 'plans':
+      return dispatchPlans(parsed);
+    case 'evidence':
+      return dispatchEvidence(parsed);
+    case 'bridge-agents':
+      return dispatchBridgeAgents(parsed);
+
     default:
+      // Friendly prepare aliases: route `prepare marinade-stake ...` etc. before failing.
+      if (command === 'prepare-alias' && parsed.positionals[1] && isPrepareAlias(parsed.positionals[1])) {
+        return dispatchPrepareConnector({
+          ...parsed,
+          positionals: ['prepare', 'connector', parsed.positionals[1], ...parsed.positionals.slice(2)],
+        });
+      }
       throw new Error(`Unknown command: ${command ?? ''}. Run solana-agent-wallet help.`);
   }
 }
 
 async function dispatchSession(parsed: ParsedArgs): Promise<unknown> {
   const subcommand = parsed.positionals[1] ?? 'help';
+
+  // v1.0 — `session voucher sign|verify` routes to the new voucher module.
+  if (subcommand === 'voucher') {
+    return dispatchVoucher(parsed);
+  }
+
   const knownSubs = new Set(['list', 'create', 'spend', 'revoke', 'history', 'settle']);
   if (subcommand === 'help' || !knownSubs.has(subcommand)) {
     return {
       command: 'session',
-      subcommands: ['list', 'create', 'spend', 'revoke', 'history', 'settle'],
+      subcommands: ['list', 'create', 'spend', 'revoke', 'history', 'settle', 'voucher'],
       renderWebUrl: parsed.options.renderWebUrl,
     };
   }
@@ -551,11 +687,17 @@ async function dispatchSession(parsed: ParsedArgs): Promise<unknown> {
 
 async function dispatchMpp(parsed: ParsedArgs): Promise<unknown> {
   const subcommand = parsed.positionals[1] ?? 'help';
+
+  // v1.0 — inbound + pay-with-session live in the mppInbound module.
+  if (subcommand === 'inbound' || subcommand === 'pay') {
+    return dispatchMppExtra(parsed);
+  }
+
   const knownSubs = new Set(['challenge', 'config']);
   if (subcommand === 'help' || !knownSubs.has(subcommand)) {
     return {
       command: 'mpp',
-      subcommands: ['challenge', 'config'],
+      subcommands: ['challenge', 'config', 'inbound', 'pay'],
       renderWebUrl: parsed.options.renderWebUrl,
     };
   }
@@ -813,10 +955,20 @@ async function dispatchInbox(parsed: ParsedArgs): Promise<unknown> {
     assertActionApprovable(action);
     await connectOneShot(parsed.options);
     await openWalletHost(parsed.options).catch(() => undefined);
-    return bridgeRequest(parsed.options, '/bridge/prepared-actions/execute', {
+    const result = await bridgeRequest(parsed.options, '/bridge/prepared-actions/execute', {
       method: 'POST',
       body: JSON.stringify({ actionId: action.id }),
     });
+    if (parsed.positionals.includes('--wait')) {
+      const waitTimeoutRaw = optionValue(parsed.positionals, '--wait-timeout-ms');
+      const timeoutMs = waitTimeoutRaw ? Number(waitTimeoutRaw) : 60_000;
+      if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+        throw new Error('--wait-timeout-ms must be a positive number.');
+      }
+      const finalStatus = await waitForPreparedActionTxStatus(parsed.options, action.id, timeoutMs);
+      return { execute: result, txStatus: finalStatus };
+    }
+    return result;
   }
   if (op === 'reject') {
     const action = await inspectPreparedAction(parsed.options, actionId);
@@ -845,6 +997,9 @@ async function dispatchInbox(parsed: ParsedArgs): Promise<unknown> {
 
 async function dispatchResearch(parsed: ParsedArgs): Promise<unknown> {
   const op = parsed.positionals[1] ?? 'list';
+  if (op === 'artifacts') {
+    return dispatchLabArtifacts(parsed);
+  }
   if (op === 'list') {
     return { labs: RESEARCH_LABS };
   }
@@ -877,6 +1032,19 @@ async function dispatchSchedule(parsed: ParsedArgs): Promise<unknown> {
   if (op === 'list') {
     return bridgeRequest(parsed.options, '/bridge/recurring-payments');
   }
+  // v1.0 — schedule create + cloud-side metadata.
+  if (op === 'create') {
+    return dispatchScheduleCreate(parsed);
+  }
+  if (op === 'occurrences') {
+    return dispatchScheduleOccurrences(parsed);
+  }
+  if (op === 'notifications') {
+    return dispatchScheduleNotifications(parsed);
+  }
+  if (op === 'rotate-notifications') {
+    return dispatchScheduleRotateNotifications(parsed);
+  }
   const recurringId = parsed.positionals[2];
   if (!recurringId) {
     throw new Error(`schedule ${op} requires a recurring id.`);
@@ -892,6 +1060,21 @@ async function dispatchSchedule(parsed: ParsedArgs): Promise<unknown> {
 
 async function dispatchPrepare(parsed: ParsedArgs): Promise<unknown> {
   const kind = parsed.positionals[1];
+
+  // v1.0 — generic `prepare connector <kind> --param k=v` unlocks all connector
+  // write actions via the bridge's generic dispatcher. Also accepts the top-20
+  // friendly aliases directly as `prepare <alias>`.
+  if (kind === 'connector') {
+    return dispatchPrepareConnector(parsed);
+  }
+  if (kind && isPrepareAlias(kind)) {
+    return dispatchPrepareConnector({
+      ...parsed,
+      // Rewrite to the connector dispatcher signature: positionals[2] is the kind.
+      positionals: ['prepare', 'connector', resolveAliasKind(kind), ...parsed.positionals.slice(2)],
+    });
+  }
+
   const prepareValueFlags = new Set([
     '--note',
     '--due-at',
@@ -985,7 +1168,11 @@ async function dispatchPrepare(parsed: ParsedArgs): Promise<unknown> {
     });
   }
 
-  throw new Error('Usage: solana-agent-wallet prepare <transfer-sol|transfer-spl|swap|blink> ...');
+  const aliasHint = PREPARE_ALIASES.slice(0, 6).map((entry) => entry.alias).join(', ');
+  throw new Error(
+    'Usage: solana-agent-wallet prepare <transfer-sol|transfer-spl|swap|blink|connector|<alias>> ...\n' +
+    `Friendly aliases include: ${aliasHint}, ... (run "connector list" for the full registry).`,
+  );
 }
 
 async function runTerminalApp(parsed: ParsedArgs): Promise<void> {
@@ -1187,6 +1374,53 @@ async function handleTerminalCommand(
       case 'refresh':
         await renderDashboard(state);
         return false;
+
+      // v1.0 — interactive REPL access to the new command groups. These all
+      // delegate to the same dispatchers as one-shot mode so behavior stays
+      // consistent. Results print as JSON via printResult.
+      // Note: `plan` stays mapped to the natural-language runPlanCommand above
+      // for backward compatibility; `ai` is the new explicit AI-workflow group
+      // (status / generate / review / ask).
+      case 'auth':
+      case 'profile':
+      case 'prefs':
+      case 'preferences':
+      case 'spend-limits':
+      case 'device-agent':
+      case 'connector':
+      case 'connectors':
+      case 'read':
+      case 'market':
+      case 'tokens':
+      case 'helius-history':
+      case 'swap':
+      case 'ai':
+      case 'skills':
+      case 'signals':
+      case 'ap2':
+      case 'acp':
+      case 'audit':
+      case 'bridge-router':
+      case 'cloud-workspace':
+      case 'mpp':
+      case 'session':
+      case 'prepare':
+      // v1.0 final sweep — new groups also reachable from REPL.
+      case 'birdeye':
+      case 'coingecko':
+      case 'helius':
+      case 'solana':
+      case 'approvals':
+      case 'completed':
+      case 'plans':
+      case 'evidence':
+      case 'bridge-agents': {
+        const parsed: ParsedArgs = { options: state.options, positionals: [name, ...args] };
+        const result = await dispatch(parsed);
+        printResult(result, state.options);
+        return false;
+      }
+
       default:
         printWarn(state.options, `Unknown command: /${name}. Run /help.`);
         return false;
@@ -1754,6 +1988,38 @@ async function refreshPreparedActions(options: GlobalOptions): Promise<{ materia
 async function inspectPreparedAction(options: GlobalOptions, idOrPrefix: string): Promise<PreparedAction> {
   const response = await refreshPreparedActions(options);
   return resolveActionFromList(response.actions, idOrPrefix);
+}
+
+/**
+ * Poll `/bridge/prepared-actions/tx-status` until the action's txStatus is
+ * `confirmed` or `failed`, or until timeout. Used by `inbox approve --wait`
+ * to block until on-chain confirmation lands.
+ */
+async function waitForPreparedActionTxStatus(
+  options: GlobalOptions,
+  actionId: string,
+  timeoutMs: number,
+): Promise<PreparedActionTxStatus | 'timeout'> {
+  const start = Date.now();
+  const pollIntervalMs = 1500;
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const status = await bridgeRequest<{ actions?: PreparedAction[] }>(
+        options,
+        '/bridge/prepared-actions/tx-status',
+        { method: 'POST', body: JSON.stringify({ actionId }) },
+      );
+      const action = status.actions?.find((a) => a.id === actionId);
+      const tx = action?.txStatus;
+      if (tx === 'confirmed' || tx === 'failed') {
+        return tx;
+      }
+    } catch {
+      // transient — keep polling
+    }
+    await sleep(pollIntervalMs);
+  }
+  return 'timeout';
 }
 
 async function resolveAction(state: TerminalAppState, idOrIndex: string | undefined): Promise<PreparedAction> {
@@ -2493,16 +2759,94 @@ function walletHostHealthUrl(walletHostUrl: string): string {
   return url.toString();
 }
 
+/**
+ * `doctor` with v1.0 flags: `--strict` exits 6 on any reachable:false probe,
+ * `--section <name>` returns only the named section. Both are useful in CI
+ * scripts (`doctor --section renderWeb --json --strict` exits non-zero if the
+ * cloud is offline).
+ *
+ * One-shot non-JSON mode prints the human-readable banner via printDoctor;
+ * --json mode prints the raw record (no banner). REPL flow has its own
+ * `case 'doctor':` that calls printDoctor directly.
+ */
+async function runDoctorWithFlags(parsed: ParsedArgs): Promise<unknown> {
+  const section = optionValue(parsed.positionals, '--section');
+  const strict = parsed.positionals.includes('--strict');
+  const full = await runDoctor(parsed.options);
+
+  const result: JsonRecord = section
+    ? (() => {
+        if (!Object.prototype.hasOwnProperty.call(full, section)) {
+          throw new Error(`Unknown doctor section: ${section}. Available: ${Object.keys(full).filter((k) => isRecord((full as JsonRecord)[k])).join(', ')}`);
+        }
+        const value = (full as JsonRecord)[section];
+        return { [section]: value };
+      })()
+    : full;
+
+  const failures = strict ? collectDoctorFailures(result) : [];
+
+  if (parsed.options.json) {
+    if (strict && failures.length > 0) {
+      console.log(stableJson({ ...result, strict: { failed: true, failures } }));
+      process.exit(6);
+    }
+    // Default JSON path — fall through to printResult.
+    return result;
+  }
+
+  // Human-readable: print the doctor banner (skip when --section narrows down).
+  if (section) {
+    console.log(stableJson(result));
+  } else {
+    printDoctor(parsed.options, full);
+  }
+  if (strict && failures.length > 0) {
+    printError(parsed.options, `\nStrict: ${failures.length} probe(s) unreachable: ${failures.join(', ')}`);
+    process.exit(6);
+  }
+  return NO_OUTPUT;
+}
+
+function collectDoctorFailures(doctor: JsonRecord): string[] {
+  const fails: string[] = [];
+  for (const [key, value] of Object.entries(doctor)) {
+    if (isRecord(value) && value.reachable === false) {
+      fails.push(key);
+    }
+  }
+  return fails;
+}
+
 async function runDoctor(options: GlobalOptions): Promise<JsonRecord> {
   await ensureRuntimeFiles(options);
-  const bridgeHealth = await tryBridgeRequest<BridgeHealth>(options, '/bridge/health');
-  const actionHealth = await tryBridgeRequest<BridgeHealth>(options, '/bridge/action/health');
-  const walletHost = await isWalletHostReachable(options);
-  const setup = await runtimeSetupStatus(options);
+  // v1.0 — parallelize all probes; each section sets reachable:false on error.
+  const [
+    bridgeHealth,
+    actionHealth,
+    walletHost,
+    setup,
+    connectorRegistry,
+    aiStatus,
+    deviceAgentStatus,
+    renderSession,
+    cliSession,
+  ] = await Promise.all([
+    tryBridgeRequest<BridgeHealth>(options, '/bridge/health'),
+    tryBridgeRequest<BridgeHealth>(options, '/bridge/action/health'),
+    isWalletHostReachable(options),
+    runtimeSetupStatus(options),
+    tryBridgeRequest<JsonRecord>(options, '/bridge/action/connector-capabilities'),
+    tryBridgeRequest<JsonRecord>(options, '/bridge/ai/status'),
+    probeDeviceAgent(options),
+    probeRenderSession(options),
+    loadSession(options),
+  ]);
   return {
     bridgeUrl: options.bridgeUrl,
     walletHostUrl: options.walletHostUrl,
     walletHostLaunchUrl: walletHostLaunchUrl(options),
+    renderWebUrl: options.renderWebUrl,
     tokenConfigured: Boolean(options.token),
     repoRoot: options.repoRoot,
     runtimeDir: options.runtimeDir,
@@ -2529,7 +2873,44 @@ async function runDoctor(options: GlobalOptions): Promise<JsonRecord> {
       reachable: walletHost,
     },
     setup,
+    connectorRegistry: connectorRegistry.ok
+      ? {
+          reachable: true,
+          connectorCount: Array.isArray((connectorRegistry.value as { connectors?: unknown[] }).connectors)
+            ? (connectorRegistry.value as { connectors: unknown[] }).connectors.length
+            : null,
+        }
+      : { reachable: false, error: errorMessage(connectorRegistry.error) },
+    ai: aiStatus.ok ? { reachable: true, status: aiStatus.value } : { reachable: false },
+    deviceAgent: deviceAgentStatus,
+    renderWeb: {
+      ...renderSession,
+      cliSession: sessionStatusSummary(cliSession),
+    },
   };
+}
+
+async function probeDeviceAgent(options: GlobalOptions): Promise<{ reachable: boolean; status?: unknown; error?: string }> {
+  try {
+    const value = await renderWebRequestClient(options, '/api/device-agent/status', undefined, {
+      label: 'Device Agent',
+      useBearer: false,
+    });
+    return { reachable: true, status: value };
+  } catch (err) {
+    return { reachable: false, error: errorMessage(err) };
+  }
+}
+
+async function probeRenderSession(options: GlobalOptions): Promise<{ reachable: boolean; authenticated?: boolean; walletAddress?: string | null; error?: string }> {
+  try {
+    const value = await renderWebRequestClient<{ walletAddress?: string; authenticated?: boolean }>(options, '/api/session', undefined, {
+      label: 'Render-web session',
+    });
+    return { reachable: true, authenticated: !!value.authenticated, walletAddress: value.walletAddress ?? null };
+  } catch (err) {
+    return { reachable: false, error: errorMessage(err) };
+  }
 }
 
 async function bridgeRequest<T = unknown>(
@@ -3254,6 +3635,22 @@ function printDoctor(options: GlobalOptions, doctor: JsonRecord): void {
   console.log(`Setup BirdEye: ${setup.birdeyeApiKeyConfigured ? `configured (${String(setup.birdeyeApiKeyRedacted ?? '')})` : 'missing'}`);
   console.log(`Setup swaps: ${setup.swapsReady ? 'ready' : 'not ready'}`);
   console.log(`Setup market data: ${setup.marketDataReady ? 'ready' : 'not ready'}`);
+  // v1.0 — new sections.
+  const connectorRegistry = isRecord(doctor.connectorRegistry) ? doctor.connectorRegistry : {};
+  const ai = isRecord(doctor.ai) ? doctor.ai : {};
+  const aiStatus = isRecord(ai.status) ? ai.status : {};
+  const deviceAgent = isRecord(doctor.deviceAgent) ? doctor.deviceAgent : {};
+  const renderWeb = isRecord(doctor.renderWeb) ? doctor.renderWeb : {};
+  const cliSession = isRecord(renderWeb.cliSession) ? renderWeb.cliSession : {};
+  console.log(`Connector registry: ${connectorRegistry.reachable ? `${String(connectorRegistry.connectorCount ?? '?')} connectors` : 'offline'}`);
+  const aiBlurb = aiStatus.available
+    ? `reachable (${String(aiStatus.provider ?? aiStatus.apiFormat ?? 'configured')}${aiStatus.model ? ` / ${String(aiStatus.model)}` : ''})`
+    : ai.reachable ? 'reachable (not configured — run "device-agent set-key")' : 'offline';
+  console.log(`Bridge AI: ${aiBlurb}`);
+  console.log(`Device Agent: ${deviceAgent.reachable ? 'reachable (cloud)' : 'offline (cloud)'}`);
+  console.log(`Render-web: ${renderWeb.reachable ? `reachable${renderWeb.authenticated ? ' (signed in)' : ''}` : 'offline'}`);
+  const cliWallet = typeof cliSession.walletAddress === 'string' ? short(cliSession.walletAddress, 12) : '';
+  console.log(`CLI session: ${cliSession.authenticated ? `signed in${cliWallet ? ` (${cliWallet})` : ''}${cliSession.staleSoon ? ' — token expires soon' : ''}` : 'signed out — run "solana-agent-wallet auth login"'}`);
   if (options.json) {
     console.log(stableJson(doctor));
   }
@@ -3307,6 +3704,35 @@ function printCommandMenu(): void {
   console.log('/doctor            Local bridge and host diagnostics');
   console.log('/open              Open browser wallet host');
   console.log('/logs              Local terminal app logs');
+  console.log('');
+  console.log('v1.0 hosted / connector commands (all support --json):');
+  console.log('/auth login | logout | status     Sign in to Agentic cloud (SIWS)');
+  console.log('/profile show | publish | delete  Agent profile (A2A) management');
+  console.log('/prefs show | get | set           Cloud preferences + BYO connector keys');
+  console.log('/spend-limits list                Spend envelope state (read-only)');
+  console.log('/device-agent status | set-key    On-device LLM control');
+  console.log('/ai plan generate|review|ask      Bridge AI planning');
+  console.log('/connector list | info | read     20-protocol connector registry');
+  console.log('/read <connector> <capability>    Generic connector read facts');
+  console.log('/prepare <kind|alias> ...         Generic connector prepare (marinade-stake etc.)');
+  console.log('/swap quote|order|execute         Jupiter swap (use --cloud for render-web)');
+  console.log('/market <mint>                    Combined token snapshot');
+  console.log('/tokens search <query>            Token list / safety lookup');
+  console.log('/helius-history <wallet>          Recent transfer history');
+  console.log('/birdeye <subcmd>                 Birdeye market data (15 endpoints)');
+  console.log('/coingecko <subcmd>               CoinGecko market data');
+  console.log('/solana <subcmd>                  Solana RPC proxies (blockhash, send-tx, …)');
+  console.log('/approvals <subcmd>               Advanced approval + finalization ops');
+  console.log('/completed list                   Completed approvals history');
+  console.log('/plans list                       Saved plans');
+  console.log('/evidence list                    Evidence facts collected by agents');
+  console.log('/skills list | install | run …    Skills hub');
+  console.log('/signals list | subscribe …       Copy-trading signals');
+  console.log('/ap2 inspect | acp preview        AP2/ACP mandate inspectors');
+  console.log('/audit tail [--follow]            Audit trail (use --follow to stream)');
+  console.log('/bridge-router quote <usd> <to>   Fiat → cheapest Solana settlement route');
+  console.log('/bridge-agents list | issue       Local bridge agent token management');
+  console.log('/cloud-workspace delete           Delete entire cloud workspace (signed)');
   console.log('/quit              Exit\n');
 }
 
@@ -3316,28 +3742,72 @@ function printHelp(): void {
 Usage:
   solana-agent-wallet setup
   solana-agent-wallet app
-  solana-agent-wallet doctor
+  solana-agent-wallet doctor [--strict] [--section <name>]
   solana-agent-wallet status
   solana-agent-wallet balances
   solana-agent-wallet portfolio
   solana-agent-wallet connect
   solana-agent-wallet inbox list
   solana-agent-wallet inbox inspect <action-id>
-  solana-agent-wallet inbox approve <action-id>
+  solana-agent-wallet inbox approve <action-id> [--wait] [--wait-timeout-ms N]
   solana-agent-wallet inbox reject <action-id>
   solana-agent-wallet prepare transfer-sol <recipient> <amount-sol>
   solana-agent-wallet prepare transfer-spl <token> <recipient> <amount>
   solana-agent-wallet prepare swap <amount> [input-token] [output-token]
   solana-agent-wallet prepare blink --url <url> [--connector <id>] [--operation <label>]
-  solana-agent-wallet schedule list
+  solana-agent-wallet prepare connector <kind> [--param key=value ...] [--wallet <addr>] [--cluster <name>]
+  solana-agent-wallet prepare <alias> ...           # e.g. marinade-stake, jito-stake, kamino-deposit (run "connector list" for full registry)
+  solana-agent-wallet connector list | info <id> | read <id> <capability>
+  solana-agent-wallet read <connectorId> [capability] [--wallet <addr>] [--param k=v]
+  solana-agent-wallet market <mint> [--with-metadata] [--with-ohlcv]
+  solana-agent-wallet tokens search <query>
+  solana-agent-wallet helius-history <wallet> [--limit 25] [--type transfer]
+  solana-agent-wallet schedule list | create | pause <id> | resume <id> | delete <id>
+  solana-agent-wallet schedule create <token> <recipient> <amount> <cadence> [options]
   solana-agent-wallet session list [--wallet <addr>]
   solana-agent-wallet session create <token-mint> <cap-amount> <expires-in-seconds> [--allowlist <addr,addr>]
   solana-agent-wallet session spend <session-id> <amount> <recipient>
+  solana-agent-wallet session voucher sign <session-id> --amount <amt> --recipient <addr>
+  solana-agent-wallet session voucher verify <voucher.json>
   solana-agent-wallet session revoke <session-id>
   solana-agent-wallet session history <session-id>
   solana-agent-wallet session settle <session-id>
   solana-agent-wallet mpp challenge <file.json>
   solana-agent-wallet mpp config
+  solana-agent-wallet mpp inbound list
+  solana-agent-wallet mpp pay <approval-id> [--session-id <id>]
+  solana-agent-wallet device-agent status | configure | start | stop | clear | set-key --from-env VAR
+  solana-agent-wallet device-agent generate-plan "intent" | review-plan <id> | ask <id> "q"
+  solana-agent-wallet ai status | plan generate "intent" | plan review <action-id> | plan ask <action-id> "question"
+  solana-agent-wallet swap quote <amount> [--input-token SOL --output-token USDC]
+  solana-agent-wallet swap order <amount> [...]
+  solana-agent-wallet swap execute <amount> [...]
+  solana-agent-wallet auth login --wallet <addr> | logout | status | nonce | session
+  solana-agent-wallet profile show | publish <agent-card.json> | delete
+  solana-agent-wallet prefs show | get <namespace> | set <namespace> --file <payload.json>
+  solana-agent-wallet prefs agent-policies show | set --file <policies.json>
+  solana-agent-wallet prefs connector-keys list | set <connector> --from-env <VAR> | remove <connector> | test <connector>
+  solana-agent-wallet spend-limits list           # read-only; configure via wallet host UI
+  solana-agent-wallet bridge-router quote <amount-usd> <recipient> [--target-mint <mint>] [--cluster <c>] [--max-slippage-bps N] [--holdings <holdings.json>]
+  solana-agent-wallet skills init | test | publish     # proxy to agentic-skill
+  solana-agent-wallet skills list | detail <id> | installs | install <id> --manifest-version <v> --caps <caps.json> [--accept-monetization]
+  solana-agent-wallet skills pause/resume/uninstall <install-id> | earnings [author]
+  solana-agent-wallet signals list | feed <id> | subscriptions | subscribe <feed-id> [--caps caps.json] | pause/resume/revoke <subscription-id>
+  solana-agent-wallet ap2 list | inspect <mandate-id> | receipt <mandate-id>
+  solana-agent-wallet acp preview <cart.json> | approve <cart.json>
+  solana-agent-wallet audit tail [--limit N] [--record-type T] [--record-id ID] [--follow] [--poll-interval-ms N]
+  solana-agent-wallet cloud-workspace delete [--confirm]
+  solana-agent-wallet birdeye <subcommand> ...           # price-multi, search, ohlcv, … (15 endpoints)
+  solana-agent-wallet coingecko endpoints | global | read | token-evidence
+  solana-agent-wallet helius cloud-transfers <wallet> [--limit N] [--direction in|out|any]
+  solana-agent-wallet solana blockhash | send-tx <base64> | tx-status <sig> | account-info <addr>
+  solana-agent-wallet approvals list | prepare-tx <id> | execute <id> | finalize <op> <id> [<fid>] | cleanup-recurring
+  solana-agent-wallet completed list [--limit N] [--since ISO]
+  solana-agent-wallet plans list [--limit N]
+  solana-agent-wallet evidence list [--connector <id>] [--limit N]
+  solana-agent-wallet research artifacts list | save <file.json> | delete <id>
+  solana-agent-wallet bridge-agents list | register --name <n> | issue <id> [--ttl-seconds N] | delete <id>
+  solana-agent-wallet schedule occurrences <id> | notifications <id> | rotate-notifications <id>
   solana-agent-wallet receipts
   solana-agent-wallet research list
   solana-agent-wallet research sign <number|id> [artifact input]

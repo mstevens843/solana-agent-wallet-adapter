@@ -111,6 +111,24 @@ import {
   type AndroidNativeRestoreResult,
 } from './androidNative.js';
 import {
+  CLOUD_SESSION_REHYDRATED_EVENT,
+  TAURI_DEEP_LINK_EVENT,
+  clearTauriNativeCloudSessionToken,
+  detectTauriNativeEnvironment,
+  setTauriNativeCloudSessionToken,
+  tauriListenEvent,
+  tauriNativeBridgeStatus,
+  tauriNativeCloudSessionToken,
+  tauriNativeOpenExternalUrl,
+  tauriNativeStartBridge,
+  type TauriBridgeStatus,
+  type TauriNativeEnvironment,
+} from './tauriNative.js';
+import {
+  mountTauriLocalRuntimePanel,
+  TAURI_BRIDGE_STATUS_EVENT,
+} from './tauriLocalRuntime.js';
+import {
   initializeAnalytics,
   trackCliCommandCopy,
   trackDownloadClick,
@@ -1040,10 +1058,11 @@ const BROWSER_AI_LIMITATIONS = [
   'Browser AI cannot run background jobs after the tab closes.',
 ];
 const CUSTOM_AI_MODEL_VALUE = '__custom__';
-const ROUTE_PATHS = ['/', '/docs', '/builders', '/app', '/cli', '/desktop', '/android', '/demo', '/mwa-test', '/privacy', '/terms', '/delete-account'] as const;
+const ROUTE_PATHS = ['/', '/docs', '/builders', '/app', '/cli', '/desktop', '/android', '/demo', '/mwa-test', '/privacy', '/terms', '/delete-account', '/agentic-login'] as const;
 const ROUTE_PATH_SET = new Set<string>(ROUTE_PATHS);
 const SHOW_DEV_CONTROLS = resolveDevControls();
 const IS_ANDROID_APP = resolveAndroidAppSurface();
+const IS_TAURI_APP = resolveTauriAppSurface();
 const SHOW_ANDROID_EXAMPLE_TAB = resolveAndroidExampleTab();
 const ANDROID_ALLOW_LAN_BRIDGE = resolveAndroidAllowLanBridge();
 const LOCAL_WEBVIEW_ORIGIN = 'https://agentic.local';
@@ -1059,7 +1078,7 @@ const LOCAL_WEBVIEW_ORIGIN = 'https://agentic.local';
 // /api/* is already same-origin, and cookies work natively — skip install to preserve
 // cookie auth. Render's CORS allowlist (DEFAULT_ANDROID_CLOUD_ORIGIN + CORS_ALLOWED_HEADERS
 // in cloud/router.ts) already permits the bundled-mode origin + headers we send.
-if (IS_ANDROID_APP && typeof window !== 'undefined' && typeof window.fetch === 'function') {
+if ((IS_ANDROID_APP || IS_TAURI_APP) && typeof window !== 'undefined' && typeof window.fetch === 'function') {
   const cloudBase = androidCloudApiBaseUrl().replace(/\/+$/, '');
   let cloudOrigin = '';
   try { cloudOrigin = new URL(cloudBase).origin; } catch { /* fall through */ }
@@ -1078,9 +1097,13 @@ if (IS_ANDROID_APP && typeof window !== 'undefined' && typeof window.fetch === '
         }
         if (rewritten !== null) {
           const headers = new Headers(init?.headers);
-          if (!headers.has('x-agentic-client')) headers.set('x-agentic-client', ANDROID_CLOUD_CLIENT_HEADER);
+          if (!headers.has('x-agentic-client')) {
+            headers.set('x-agentic-client', IS_TAURI_APP ? 'desktop-bundled' : ANDROID_CLOUD_CLIENT_HEADER);
+          }
           if (!headers.has('authorization')) {
-            const token = androidNativeCloudSessionToken();
+            const token = IS_TAURI_APP
+              ? tauriNativeCloudSessionToken()
+              : androidNativeCloudSessionToken();
             if (token) headers.set('authorization', `Bearer ${token}`);
           }
           // credentials:'omit' — Render rejects cookies cross-origin; auth flows via Bearer.
@@ -2255,6 +2278,8 @@ interface DemoState {
   androidNativeEnvironment: AndroidNativeEnvironment;
   androidAuthCacheCount: number;
   androidNativeStatus: string;
+  tauriNativeEnvironment: TauriNativeEnvironment;
+  tauriBridgeStatus: TauriBridgeStatus | null;
   iosNativeEnvironment: IosNativeEnvironment;
   iosWallets: ReadonlyArray<IosNativeWalletOption>;
   selectedIosWalletId: IosNativeWalletId;
@@ -2818,6 +2843,7 @@ const initialTemplate = templateById('swap');
 const defaultWorkspaceTab: ActiveTab = 'overview';
 const initialAndroidNativeEnvironment = detectAndroidNativeEnvironment();
 const initialIosNativeEnvironment = detectIosNativeEnvironment();
+const initialTauriNativeEnvironment = detectTauriNativeEnvironment();
 const initialMwaEnvironment = detectMwaEnvironment();
 const initialMobileAiPathPolicy = shouldUseMobileAiPathPolicy({
   isAndroidApp: IS_ANDROID_APP,
@@ -3124,6 +3150,8 @@ const state: DemoState = {
   androidNativeEnvironment: initialAndroidNativeEnvironment,
   androidAuthCacheCount: 0,
   androidNativeStatus: 'Android native MWA idle.',
+  tauriNativeEnvironment: initialTauriNativeEnvironment,
+  tauriBridgeStatus: null,
   iosNativeEnvironment: initialIosNativeEnvironment,
   iosWallets: listIosNativeWalletOptions(),
   selectedIosWalletId: persisted.selectedIosWalletId ?? 'phantom',
@@ -4012,6 +4040,52 @@ async function bootstrap(): Promise<void> {
       state.androidNativeStatus = 'Could not restore the cached Android MWA authorization. Tap Discover to reconnect.';
     });
   }
+  state.tauriNativeEnvironment = detectTauriNativeEnvironment();
+  if (state.tauriNativeEnvironment.isTauriNative) {
+    // Listen for bridge-status updates from the Local-runtime panel polling +
+    // user actions, so device-agent routing stays current. Registered BEFORE
+    // the first fetch so we never miss an emission.
+    window.addEventListener(TAURI_BRIDGE_STATUS_EVENT, (event) => {
+      const detail = (event as CustomEvent<TauriBridgeStatus | null>).detail;
+      state.tauriBridgeStatus = detail ?? null;
+    });
+    // Prime the cloud-session-token cache. The Phase-3 file-backed secure store
+    // hydrates asynchronously on first read; if hydration finds a newer token
+    // than what localStorage held, tauriNative dispatches the rehydrated event
+    // below so we re-validate the cloud session.
+    void tauriNativeCloudSessionToken();
+    window.addEventListener(CLOUD_SESSION_REHYDRATED_EVENT, () => {
+      void refreshCloudSession(true).catch((err) => {
+        console.warn('[bootstrap] refreshCloudSession after rehydrate failed', err);
+      });
+    });
+    // Snapshot the current bridge status synchronously so device-agent routing
+    // has a value to consult immediately.
+    state.tauriBridgeStatus = await tauriNativeBridgeStatus();
+    // Best-effort: spawn the local bridge sidecar in the background so the user
+    // can immediately use "Local Bridge" AI mode and local connector reads
+    // without having to manually start it. Idempotent on the Rust side —
+    // start_bridge is a no-op when the bridge is already reachable. Fired
+    // non-blocking; subsequent polling in the Local-runtime panel keeps
+    // `state.tauriBridgeStatus` fresh via TAURI_BRIDGE_STATUS_EVENT.
+    void tauriNativeStartBridge().then((status) => {
+      if (status) state.tauriBridgeStatus = status;
+    }).catch((err) => {
+      console.warn('[bootstrap] tauriNativeStartBridge failed', err);
+    });
+    // Relay the Tauri-side `agentic://deep-link` event to a window CustomEvent
+    // so future deep-link consumers (e.g. the planned wallet-return relay) can
+    // subscribe via DOM-native APIs without depending on @tauri-apps/api.
+    void tauriListenEvent<string[]>('agentic://deep-link', (urls) => {
+      try {
+        window.dispatchEvent(new CustomEvent(TAURI_DEEP_LINK_EVENT, { detail: urls }));
+      } catch (err) {
+        console.warn('[bootstrap] deep-link relay dispatch failed', err);
+      }
+    }).catch((err) => {
+      console.warn('[bootstrap] tauriListenEvent(agentic://deep-link) failed', err);
+    });
+  }
   state.iosNativeEnvironment = detectIosNativeEnvironment();
   await refreshIosNativeCacheState();
   if (state.iosNativeEnvironment.isIosNative) {
@@ -4098,6 +4172,9 @@ function render(): void {
   flushPendingSpendNavigation();
   bind();
   mountConnectorKeysPanel({ container: 'connector-keys-panel' });
+  if (state.tauriNativeEnvironment.isTauriNative) {
+    mountTauriLocalRuntimePanel('tauri-local-runtime-panel');
+  }
   updateTabTitleBadge();
   scheduleInboxSwapQuoteHydration();
   scheduleVisibleTokenMarketHydration();
@@ -4326,9 +4403,62 @@ function pageContent(route: AppRoute | null): string {
       return termsPage();
     case '/delete-account':
       return deleteAccountPage();
+    case '/agentic-login':
+      return agenticLoginPage();
     default:
       return notFoundPage();
   }
+}
+
+// CLI signed-request callback handler. The Solana Agent Wallet CLI's
+// `auth login`, `profile publish/delete`, and `cloud-workspace delete` all
+// open this page with ?nonce=...&message=...&callback=...&state=...&summary=...
+// The user signs the message with their connected wallet; the wallet host POSTs
+// {signature, walletAddress, state, proofEncoding, proofTxBase64?, signatureEncoding}
+// back to the loopback callback. The CLI then attaches the signed envelope to
+// the matching server endpoint (verify-wallet / agents/profile / cloud-workspace/delete).
+function agenticLoginPage(): string {
+  const url = new URL(window.location.href);
+  const nonce = url.searchParams.get('nonce') ?? '';
+  const message = url.searchParams.get('message') ?? '';
+  const callback = url.searchParams.get('callback') ?? '';
+  const desiredWallet = url.searchParams.get('walletAddress') ?? '';
+  const summary = url.searchParams.get('summary') ?? 'Agentic CLI signed request';
+  const connected = state.address ?? '';
+  const walletReady = Boolean(connected) && (!desiredWallet || desiredWallet === connected);
+
+  // Use the SPA-wide escapeHtml helper (defined further down in this file).
+  const messageHtml = escapeHtml(message || 'No message provided.');
+  const calloutHtml = (() => {
+    if (!nonce || !message || !callback) {
+      return `<p class="agentic-login__error">Missing required parameters. Re-run the original CLI command.</p>`;
+    }
+    if (!connected) {
+      return `<p class="agentic-login__error">Connect your wallet from the main app first, then return to this tab.</p>`;
+    }
+    if (desiredWallet && desiredWallet !== connected) {
+      return `<p class="agentic-login__error">CLI requested ${escapeHtml(desiredWallet.slice(0, 8))}… but the connected wallet is ${escapeHtml(connected.slice(0, 8))}…. Switch wallets and reload.</p>`;
+    }
+    return '';
+  })();
+
+  return `
+    <section class="agentic-login">
+      <h1>${escapeHtml(summary)}</h1>
+      <p>Your Solana Agent Wallet CLI is requesting a wallet signature. Review the message below and sign with your connected wallet — Agentic never sees your private key.</p>
+      <dl class="agentic-login__details">
+        <dt>Nonce</dt><dd><code>${escapeHtml(nonce || '—')}</code></dd>
+        <dt>Connected wallet</dt><dd><code>${escapeHtml(connected || 'not connected')}</code></dd>
+        <dt>Callback</dt><dd><code>${escapeHtml(callback || '—')}</code></dd>
+      </dl>
+      <pre class="agentic-login__message" aria-label="Message to sign">${messageHtml}</pre>
+      ${calloutHtml}
+      <button id="agenticLoginSign" class="agentic-login__sign" ${walletReady ? '' : 'disabled'}>
+        ${walletReady ? 'Sign and return to CLI' : 'Connect wallet to continue'}
+      </button>
+      <p id="agenticLoginStatus" class="agentic-login__status" role="status"></p>
+    </section>
+  `;
 }
 
 function applyRouteTitle(route: AppRoute | null): void {
@@ -6450,7 +6580,7 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
         <div>
           ${mode === 'demo' ? '<p class="eyebrow mini">Interactive demo</p>' : '<!-- Launch App eyebrow intentionally hidden. -->'}
           <h2 id="${titleId}">${mode === 'demo' ? 'Live approval demo.' : 'Agentic approval workspace.'}</h2>
-          ${mode === 'demo' ? '' : (state.androidNativeEnvironment.isAndroidNative ? '<p>AI or templates prepare review items. You approve.</p>' : '<p>AI or templates prepare review items. You check the route, recipient, amount, policy, and wallet action before signing.</p>')}
+          ${mode === 'demo' ? '' : (state.androidNativeEnvironment.isAndroidNative || state.tauriNativeEnvironment.isTauriNative ? '<p>AI or templates prepare review items. You approve.</p>' : '<p>AI or templates prepare review items. You check the route, recipient, amount, policy, and wallet action before signing.</p>')}
         </div>
         ${SHOW_DEV_CONTROLS ? systemSpine() : ''}
       </div>
@@ -6896,7 +7026,7 @@ function firstRunComplete(steps = firstRunSteps()): boolean {
 function firstRunNextAction(): FirstRunAction {
   const signals = firstRunSignals();
   if (!signals.hasWallet) {
-    const nativeWallet = state.androidNativeEnvironment.isAndroidNative || state.iosNativeEnvironment.isIosNative;
+    const nativeWallet = state.androidNativeEnvironment.isAndroidNative || state.iosNativeEnvironment.isIosNative || state.tauriNativeEnvironment.isTauriNative;
     const selectedProvider = discoveredSelectedWalletName();
     if (nativeWallet || (state.wallets.length > 0 && selectedProvider)) {
       return {
@@ -7209,6 +7339,7 @@ function walletRail(): string {
     !state.address &&
     !state.androidNativeEnvironment.isAndroidNative &&
     !state.iosNativeEnvironment.isIosNative &&
+    !state.tauriNativeEnvironment.isTauriNative &&
     state.wallets.length > 0;
   const showPublicIosPicker = !SHOW_DEV_CONTROLS && !state.address && state.iosNativeEnvironment.isIosNative;
   const wallet = walletIdentity();
@@ -7755,6 +7886,7 @@ function preferencesActiveView(): string {
             ${connectedDappsPanel()}
           </div>
           <div id="connector-keys-panel" class="connector-keys-mount"></div>
+          ${state.tauriNativeEnvironment.isTauriNative ? '<div id="tauri-local-runtime-panel" class="connector-keys-mount"></div>' : ''}
         `)
         : preferencesGroup('Agent Access', 'Manage bridge agents and protocol connectors used to prepare actions.', `
           <div class="preferences-card-grid access-preferences-grid">
@@ -7762,6 +7894,7 @@ function preferencesActiveView(): string {
             ${connectedDappsPanel()}
           </div>
           <div id="connector-keys-panel" class="connector-keys-mount"></div>
+          ${state.tauriNativeEnvironment.isTauriNative ? '<div id="tauri-local-runtime-panel" class="connector-keys-mount"></div>' : ''}
         `);
     case 'rules':
       return preferencesGroup('Review Rules', 'Optional checks that help the signer review recipients, routes, and agent advice.', `
@@ -9647,7 +9780,8 @@ function publicWalletActions(): string {
   const selectedProvider = discoveredSelectedWalletName();
   const androidNative = state.androidNativeEnvironment.isAndroidNative;
   const iosNative = state.iosNativeEnvironment.isIosNative;
-  const nativeWallet = androidNative || iosNative;
+  const tauriNative = state.tauriNativeEnvironment.isTauriNative;
+  const nativeWallet = androidNative || iosNative || tauriNative;
   if (state.address) {
     return `
       <div class="wallet-actions public-wallet-actions connected">
@@ -9722,10 +9856,24 @@ function developerConnectionSettings(): string {
         options: walletSelectOptions(),
         disabled: state.wallets.length === 0 || state.busy,
       })}
-    </label>`}
+    </label>
+    ${state.tauriNativeEnvironment.isTauriNative && state.wallets.length === 0 ? tauriEmptyWalletsHint() : ''}`}
 
     ${state.capabilities ? capabilityBlock(state.capabilities) : ''}
     ${androidNative || state.iosNativeEnvironment.isIosNative ? mobileWalletBox() : ''}
+  `;
+}
+
+function tauriEmptyWalletsHint(): string {
+  // Browser-extension wallets (Phantom/Solflare extensions) don't inject into a
+  // Tauri webview the way they do in a normal browser tab. Tell the user how
+  // to recover: either install a Wallet Standard desktop wallet, or open the
+  // cloud app in the system browser where their extension wallet works.
+  return `
+    <div class="tauri-empty-wallets-hint" role="status" aria-live="polite">
+      <p>No Wallet Standard wallet detected in the Agentic desktop window. Install <strong>Backpack Desktop</strong> or <strong>Glow Desktop</strong> (Wallet-Standard injectors), or open the cloud app in your default browser to sign in with an extension wallet there.</p>
+      <button type="button" id="tauriOpenCloudAppBtn">Open agentic-signer.com in browser</button>
+    </div>
   `;
 }
 
@@ -9845,7 +9993,8 @@ function guidedStartPanel(title: string, detail: string): string {
   const selectedProvider = discoveredSelectedWalletName();
   const androidNative = state.androidNativeEnvironment.isAndroidNative;
   const iosNative = state.iosNativeEnvironment.isIosNative;
-  const nativeWallet = androidNative || iosNative;
+  const tauriNative = state.tauriNativeEnvironment.isTauriNative;
+  const nativeWallet = androidNative || iosNative || tauriNative;
   const selectedIosWallet = iosWalletLabel(state.selectedIosWalletId);
   return `
     <section class="guided-start signature-stage stage-dormant">
@@ -10566,7 +10715,7 @@ function aiPathPreferenceLabel(mode: AiSettings['mode']): string {
     case 'device-agent':
       return 'Device Agent';
     case 'session':
-      return IS_ANDROID_APP ? 'Android Session' : 'Browser Session';
+      return IS_TAURI_APP ? 'Desktop Session' : IS_ANDROID_APP ? 'Android Session' : 'Browser Session';
   }
 }
 
@@ -10666,19 +10815,25 @@ function commandAiRouteCards(): string {
     {
       id: 'session',
       mode: 'session',
-      title: IS_ANDROID_APP ? 'Android Session' : 'Browser Session',
-      detail: `Connect a temporary key in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'} without saving it to Agentic.`,
+      title: IS_TAURI_APP ? 'Desktop Session' : IS_ANDROID_APP ? 'Android Session' : 'Browser Session',
+      detail: `Connect a temporary key in ${IS_TAURI_APP || IS_ANDROID_APP ? 'this app runtime' : 'this tab'} without saving it to Agentic.`,
       meta: 'Session AI connection',
       available: !mobileAiPathPolicy,
     },
     {
       id: 'device-agent',
       mode: 'device-agent',
-      title: 'Device Agent AI',
-      detail: IS_ANDROID_APP
-        ? 'Connect the on-device runtime so agent requests stay inside this app boundary.'
-        : 'Connect the gated Device Agent setup for this wallet.',
-      meta: 'Device AI connection',
+      title: IS_TAURI_APP && state.tauriBridgeStatus?.bridgeReachable
+        ? 'Desktop Device Agent AI'
+        : 'Device Agent AI',
+      detail: IS_TAURI_APP && state.tauriBridgeStatus?.bridgeReachable
+        ? 'Routed through the local desktop bridge — agent requests stay on this machine and never round-trip to the cloud.'
+        : IS_ANDROID_APP
+          ? 'Connect the on-device runtime so agent requests stay inside this app boundary.'
+          : 'Connect the gated Device Agent setup for this wallet.',
+      meta: IS_TAURI_APP && state.tauriBridgeStatus?.bridgeReachable
+        ? 'Desktop AI connection'
+        : 'Device AI connection',
       available: mobileAiPathPolicy || deviceAgentModeVisible(),
     },
   ];
@@ -10846,9 +11001,9 @@ function commandAiInfoCardsGroup(): string {
     {
       id: 'session',
       tab: 'SESSION',
-      title: IS_ANDROID_APP ? 'Android Session AI' : 'Browser Session AI',
+      title: IS_TAURI_APP ? 'Desktop Session AI' : IS_ANDROID_APP ? 'Android Session AI' : 'Browser Session AI',
       badge: 'Session drafting',
-      detail: `AI drafts inside ${IS_ANDROID_APP ? 'this app runtime' : 'this browser session'}, then the plan enters the same normalized workflow pipeline.`,
+      detail: `AI drafts inside ${IS_TAURI_APP || IS_ANDROID_APP ? 'this app runtime' : 'this browser session'}, then the plan enters the same normalized workflow pipeline.`,
       foot: 'Useful for temporary keys, but subject to provider and session limits.',
       available: !mobileAiPathPolicy,
     },
@@ -10864,10 +11019,18 @@ function commandAiInfoCardsGroup(): string {
     {
       id: 'device-agent',
       tab: 'DEVICE AGENT',
-      title: 'Device Agent',
-      badge: 'On-device route',
-      detail: 'The runtime path uses the same agent setup and workflow pipeline while its native worker is gated for development.',
-      foot: 'Useful for Seeker testing without changing approval authority.',
+      title: IS_TAURI_APP && state.tauriBridgeStatus?.bridgeReachable
+        ? 'Desktop Device Agent'
+        : 'Device Agent',
+      badge: IS_TAURI_APP && state.tauriBridgeStatus?.bridgeReachable
+        ? 'Local desktop route'
+        : 'On-device route',
+      detail: IS_TAURI_APP && state.tauriBridgeStatus?.bridgeReachable
+        ? 'Agent requests run through the bundled desktop bridge on this machine — same workflow pipeline as cloud, no round-trip.'
+        : 'The runtime path uses the same agent setup and workflow pipeline while its native worker is gated for development.',
+      foot: IS_TAURI_APP && state.tauriBridgeStatus?.bridgeReachable
+        ? 'Bridge auto-starts when the app launches. Manage it under Preferences → Access → Local runtime.'
+        : 'Useful for Seeker testing without changing approval authority.',
       available: mobileAiPathPolicy || deviceAgentModeVisible(),
     },
   ];
@@ -11319,7 +11482,7 @@ function commandCenterWalletCard(): string {
   if (state.address) {
     return commandCenterCard('Wallet', 'Connected', short(state.address), 'good', 'open-create-plan', 'Open', 'wallet');
   }
-  const nativeWallet = state.androidNativeEnvironment.isAndroidNative || state.iosNativeEnvironment.isIosNative;
+  const nativeWallet = state.androidNativeEnvironment.isAndroidNative || state.iosNativeEnvironment.isIosNative || state.tauriNativeEnvironment.isTauriNative;
   if (nativeWallet) {
     return `
       <article class="command-center-card command-wallet-card warn">
@@ -11416,7 +11579,11 @@ function commandCenterCard(
   icon?: CommandCenterIconId,
 ): string {
   const disabled = action === 'connect-wallet'
-    ? !state.address && state.wallets.length === 0 && !state.androidNativeEnvironment.isAndroidNative && !state.iosNativeEnvironment.isIosNative
+    ? !state.address
+      && state.wallets.length === 0
+      && !state.androidNativeEnvironment.isAndroidNative
+      && !state.iosNativeEnvironment.isIosNative
+      && !state.tauriNativeEnvironment.isTauriNative
     : false;
   const targetTab = action === 'open-recurring'
     ? 'schedule'
@@ -15509,22 +15676,27 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const confirmationDetail = aiConfirmationDetail();
   const confirming = state.activeOperation === 'confirm-ai-planner';
   const hideKeyEntry = shouldHideAiKeyEntry(status);
+  const sessionKeyLabel = IS_TAURI_APP
+    ? 'Desktop session key'
+    : IS_ANDROID_APP
+      ? 'Android session key'
+      : 'Browser session key';
+  const sessionScope = IS_TAURI_APP || IS_ANDROID_APP ? 'this app runtime' : 'this tab';
+  const sessionDescriptor = IS_TAURI_APP ? 'Desktop session' : IS_ANDROID_APP ? 'Android session' : 'Browser session';
   const keyLabel = state.aiSettings.mode === 'bridge'
     ? 'Bridge session key'
     : state.aiSettings.mode === 'device-agent'
       ? 'Device Agent key'
     : state.aiSettings.mode === 'hosted'
       ? 'Hosted BYOK key'
-      : IS_ANDROID_APP
-        ? 'Android session key'
-        : 'Browser session key';
+      : sessionKeyLabel;
   const securityCopy = state.aiSettings.mode === 'hosted'
     ? 'Hosted BYOK relays this key only for AI draft requests. It cannot queue approvals, create repeat payments, approve, submit, or sign.'
     : state.aiSettings.mode === 'device-agent'
       ? 'Device Agent stores the draft-route config in the selected runtime boundary. Queueing, repeat payments, approvals, submissions, and signatures remain separate workflow actions.'
     : state.aiSettings.mode === 'bridge'
       ? 'Local bridge AI drafts from your machine only. Needs Approval, repeat payments, proofs, and wallet signatures remain separate workflow actions.'
-        : `${IS_ANDROID_APP ? 'Android session' : 'Browser session'} keys stay in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'} and draft plans only. Queueing, repeat payments, approvals, submissions, and signatures use the active workflow, not the AI key.`;
+        : `${sessionDescriptor} keys stay in ${sessionScope} and draft plans only. Queueing, repeat payments, approvals, submissions, and signatures use the active workflow, not the AI key.`;
   const keyHint = aiProviderKeyHint(providerPreset.id);
   const bridgeKeyConfiguredDetail = status
     ? `${status.provider ?? status.apiFormat ?? 'AI'} - ${status.model ?? 'model configured'}`
@@ -15629,7 +15801,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
       ${hideKeyEntry ? configuredKeyNote : `
         <label class="field compact ai-setting-field ai-setting-key">
           <span>${escapeHtml(keyLabel)}</span>
-          <input id="aiApiKey-${escapeHtml(scope)}" data-ai-control="api-key" type="password" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="${state.aiSettings.mode === 'bridge' ? 'Held for this tab until configured' : IS_ANDROID_APP ? 'Held until you disconnect or close the app' : 'Held for this tab'}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+          <input id="aiApiKey-${escapeHtml(scope)}" data-ai-control="api-key" type="password" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="${state.aiSettings.mode === 'bridge' ? 'Held for this tab until configured' : (IS_TAURI_APP || IS_ANDROID_APP) ? 'Held until you disconnect or close the app' : 'Held for this tab'}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
           ${!isRail && !mobilePlannerSetup && keyHint ? `<em class="ai-route-helper">${escapeHtml(keyHint)}</em>` : ''}
         </label>
       `}
@@ -16474,6 +16646,8 @@ function currentDeviceAgentRuntimeSurface() {
   return {
     isAndroidApp: IS_ANDROID_APP,
     androidBridgeAvailable: isDeviceAgentBridgeAvailable(),
+    isTauriApp: state.tauriNativeEnvironment.isTauriNative,
+    tauriBridgeAvailable: Boolean(state.tauriBridgeStatus?.bridgeReachable),
     browserDeviceAgentEnabled: BROWSER_DEVICE_AGENT_ENABLED,
     browserNativeEligible: currentBrowserNativeRuntimeEligible(),
     cloudSessionMatchesWallet: cloudSessionMatchesWallet(),
@@ -16490,7 +16664,7 @@ async function invokeDeviceAgentNative<R>(
     const route = chooseDeviceAgentRequestRoute(currentDeviceAgentRuntimeSurface());
     const { status, result } = route === 'android-native'
       ? await deviceAgentRequestOrThrow<R>(method, payload, requestOptions)
-      : route === 'browser-native'
+      : route === 'tauri-native' || route === 'browser-native'
         ? await invokeBrowserDeviceAgent<R>(method, payload as Record<string, unknown>, requestOptions)
         : await deviceAgentRequestOrThrow<R>(method, payload, requestOptions);
     state.deviceAgentStatus = parseDeviceAgentStatus(status);
@@ -18547,6 +18721,9 @@ function bind(): void {
   document.querySelector<HTMLButtonElement>('#discover')?.addEventListener('click', runDiscover);
   document.querySelector<HTMLButtonElement>('#connect')?.addEventListener('click', runConnect);
   document.querySelector<HTMLButtonElement>('#disconnect')?.addEventListener('click', runDisconnect);
+  document.querySelector<HTMLButtonElement>('#tauriOpenCloudAppBtn')?.addEventListener('click', () => {
+    void tauriNativeOpenExternalUrl('https://agentic-signer.com/app');
+  });
   document.querySelector<HTMLButtonElement>('#androidReconnectCached')?.addEventListener('click', runReconnectAndroidCached);
   document.querySelector<HTMLButtonElement>('#androidClearTransient')?.addEventListener('click', runClearAndroidTransient);
   document.querySelector<HTMLButtonElement>('#androidFullReset')?.addEventListener('click', runClearAndroidFullReset);
@@ -19683,6 +19860,118 @@ function bind(): void {
       void copyDiagnosticBundle(actionId || undefined);
     });
   }
+
+  // /agentic-login — wire the CLI-SIWS sign button. Runs only when the page is
+  // visible; the queryselector returns null otherwise.
+  // bind() is invoked after every render(); to avoid attaching duplicate click
+  // listeners (which would POST the signature twice on a single click), clone
+  // the button before attaching — cloneNode strips listeners from the original.
+  const agenticLoginButtonRaw = document.querySelector<HTMLButtonElement>('#agenticLoginSign');
+  if (agenticLoginButtonRaw) {
+    const fresh = agenticLoginButtonRaw.cloneNode(true) as HTMLButtonElement;
+    agenticLoginButtonRaw.parentNode?.replaceChild(fresh, agenticLoginButtonRaw);
+    fresh.addEventListener('click', () => {
+      void completeAgenticLogin();
+    });
+  }
+
+  // When the user opens /agentic-login BEFORE connecting a wallet, the button
+  // is disabled. As soon as state.address flips empty→set (user connects in
+  // another tab or via the main app), trigger a re-render so the button enables.
+  // We attach the watcher once globally — wireAgenticLoginAutoRefresh is a no-op
+  // on subsequent calls.
+  wireAgenticLoginAutoRefresh();
+}
+
+let agenticLoginAutoRefreshAttached = false;
+function wireAgenticLoginAutoRefresh(): void {
+  if (agenticLoginAutoRefreshAttached) return;
+  agenticLoginAutoRefreshAttached = true;
+  let lastSeen = state.address ?? '';
+  // Poll once per render cycle (already happens via bind() → tick) BUT also
+  // poll while the page is open without user activity. requestAnimationFrame
+  // gives us cheap, frame-aligned wake-ups that pause when the tab is hidden.
+  const tick = () => {
+    if (window.location.pathname === '/agentic-login') {
+      const current = state.address ?? '';
+      if (current !== lastSeen) {
+        lastSeen = current;
+        render();
+      }
+    } else {
+      lastSeen = state.address ?? '';
+    }
+    window.requestAnimationFrame(tick);
+  };
+  window.requestAnimationFrame(tick);
+}
+
+async function completeAgenticLogin(): Promise<void> {
+  const url = new URL(window.location.href);
+  const nonce = url.searchParams.get('nonce') ?? '';
+  const message = url.searchParams.get('message') ?? '';
+  const callback = url.searchParams.get('callback') ?? '';
+  const stateParam = url.searchParams.get('state') ?? '';
+  const statusEl = document.getElementById('agenticLoginStatus');
+  const setStatus = (text: string, ok = true) => {
+    if (statusEl) {
+      statusEl.textContent = text;
+      statusEl.style.color = ok ? 'inherit' : '#c33';
+    }
+  };
+  if (!nonce || !message || !callback) {
+    setStatus('Missing nonce/message/callback. Re-run `solana-agent-wallet auth login`.', false);
+    return;
+  }
+  if (!state.address) {
+    setStatus('Connect a wallet first via the main app, then return here.', false);
+    return;
+  }
+  setStatus('Requesting wallet signature…');
+  try {
+    // signWalletProofMessage handles the wallet quirks (signMessage vs memo-tx
+    // fallback for Phantom/Solflare/Seed Vault on Android, base64 encoding, etc.)
+    // so we reuse it instead of calling signMessage directly.
+    const result = await signWalletProofMessage(message, 'Agentic CLI login', state.cluster);
+    setStatus('Sending result back to CLI…');
+    const callbackUrl = new URL(callback);
+    const response = await fetch(callbackUrl.toString(), {
+      method: 'POST',
+      mode: 'cors',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        signature: result.signature,
+        walletAddress: state.address,
+        state: stateParam,
+        // Canonical server field names (parseVerifyWalletRequest +
+        // parseAgentProfileRequest both read proofEncoding/proofTxBase64).
+        // signWalletProofMessage returns base58 for utf8-message signatures;
+        // memo-tx fallback also returns base58 today (see MwaController.kt).
+        proofEncoding: result.proofEncoding,
+        signatureEncoding: result.signatureEncoding,
+        ...(result.proofTxBase64 ? { proofTxBase64: result.proofTxBase64 } : {}),
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`Callback returned HTTP ${response.status}.`);
+    }
+    setStatus('Signed in. You can close this tab and return to the terminal.');
+  } catch (err) {
+    setStatus(`Login failed: ${err instanceof Error ? err.message : String(err)}`, false);
+    try {
+      await fetch(callback, {
+        method: 'POST',
+        mode: 'cors',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          state: stateParam,
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      });
+    } catch {
+      // ignore secondary failure
+    }
+  }
 }
 
 function restoreGuidedDemoScenarioAnchor(scenarioId: string, previousTop: number): void {
@@ -19748,6 +20037,7 @@ function trackedCliCommandKind(value: string): string | null {
 function walletConnectSurface(): string {
   if (state.androidNativeEnvironment.isAndroidNative) return 'android_native';
   if (state.iosNativeEnvironment.isIosNative) return 'ios_native';
+  if (state.tauriNativeEnvironment.isTauriNative) return 'tauri_native';
   return 'wallet_standard';
 }
 
@@ -27439,6 +27729,8 @@ async function runSaveDirectAiKey(): Promise<void> {
         ? 'Hosted BYOK key entered'
         : state.aiSettings.mode === 'device-agent'
           ? 'Device Agent key entered'
+        : IS_TAURI_APP
+          ? 'Desktop session key entered'
         : IS_ANDROID_APP
           ? 'Android session key entered'
           : 'Browser session key entered',
@@ -27677,9 +27969,11 @@ function aiClearMessage(): string {
     return 'Device Agent key and staged runtime config removed from this app.';
   }
   if (state.aiSettings.mode === 'session') {
-    return IS_ANDROID_APP
-      ? 'Android session key removed from this app.'
-      : 'Browser session key removed from this app.';
+    return IS_TAURI_APP
+      ? 'Desktop session key removed from this app.'
+      : IS_ANDROID_APP
+        ? 'Android session key removed from this app.'
+        : 'Browser session key removed from this app.';
   }
   return 'Session key removed from this app and local bridge memory.';
 }
@@ -28368,9 +28662,11 @@ async function cloudFetch(path: string, init: RequestInit = {}): Promise<Respons
   if (!remote && viteEnv?.DEV && state.address && !headers.has('x-agentic-wallet-address')) {
     headers.set('x-agentic-wallet-address', state.address);
   }
-  if (IS_ANDROID_APP) {
-    headers.set('x-agentic-client', ANDROID_CLOUD_CLIENT_HEADER);
-    const token = androidNativeCloudSessionToken();
+  if (IS_ANDROID_APP || IS_TAURI_APP) {
+    headers.set('x-agentic-client', IS_TAURI_APP ? 'desktop-bundled' : ANDROID_CLOUD_CLIENT_HEADER);
+    const token = IS_TAURI_APP
+      ? tauriNativeCloudSessionToken()
+      : androidNativeCloudSessionToken();
     if (token) {
       headers.set('authorization', `Bearer ${token}`);
     }
@@ -28428,7 +28724,8 @@ async function cloudRequest<T = unknown>(path: string, init: RequestInit = {}): 
   if (!response.ok) {
     if (response.status === 401) {
       state.cloudSession = emptyCloudSession('signed-out');
-      clearAndroidNativeCloudSessionToken();
+      if (IS_TAURI_APP) void clearTauriNativeCloudSessionToken();
+      else clearAndroidNativeCloudSessionToken();
     }
     throw new Error(cloudErrorMessage(payload, response.status));
   }
@@ -28440,14 +28737,17 @@ async function cloudRequest<T = unknown>(path: string, init: RequestInit = {}): 
 }
 
 function applyAndroidCloudSessionResponse(path: string, payload: unknown): void {
-  if (!IS_ANDROID_APP || !payload || typeof payload !== 'object') return;
+  if (!IS_ANDROID_APP && !IS_TAURI_APP) return;
+  if (!payload || typeof payload !== 'object') return;
   const record = payload as Record<string, unknown>;
   if (typeof record.sessionToken === 'string' && record.sessionToken.trim()) {
-    setAndroidNativeCloudSessionToken(record.sessionToken.trim());
+    if (IS_TAURI_APP) void setTauriNativeCloudSessionToken(record.sessionToken.trim());
+    else setAndroidNativeCloudSessionToken(record.sessionToken.trim());
     return;
   }
   if (path.startsWith('/api/auth/logout') || record.signedIn === false || record.signedOut === true) {
-    clearAndroidNativeCloudSessionToken();
+    if (IS_TAURI_APP) void clearTauriNativeCloudSessionToken();
+    else clearAndroidNativeCloudSessionToken();
   }
 }
 
@@ -28474,7 +28774,7 @@ function cloudApiOriginLabel(): string {
 }
 
 function androidCloudApiBaseUrl(): string {
-  if (!IS_ANDROID_APP) return '';
+  if (!IS_ANDROID_APP && !IS_TAURI_APP) return '';
   const viteEnv = (import.meta as ImportMeta & {
     env?: {
       VITE_AGENTIC_CLOUD_API_BASE_URL?: string;
@@ -43912,6 +44212,24 @@ function resolveAndroidAppSurface(): boolean {
   }).env;
   const explicit = String(viteEnv?.VITE_AGENTIC_ANDROID_APP ?? '').trim().toLowerCase();
   return ['1', 'true', 'yes', 'on'].includes(explicit);
+}
+
+function resolveTauriAppSurface(): boolean {
+  const viteEnv = (import.meta as ImportMeta & {
+    env?: {
+      VITE_AGENTIC_TAURI_APP?: string;
+    };
+  }).env;
+  const explicit = String(viteEnv?.VITE_AGENTIC_TAURI_APP ?? '').trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(explicit)) return true;
+  // Runtime fallback so the same browser-demo bundle, when loaded by a Tauri
+  // webview without the build-time flag set, still routes API calls to the
+  // configured cloud base.
+  if (typeof window !== 'undefined') {
+    const candidate = window as typeof window & { __TAURI_INTERNALS__?: unknown };
+    if (candidate.__TAURI_INTERNALS__) return true;
+  }
+  return false;
 }
 
 function resolveAndroidAllowLanBridge(): boolean {

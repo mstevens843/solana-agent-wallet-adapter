@@ -1,0 +1,12 @@
+{
+  "name": "@solana-agent-wallet-adapter/shared-test-fixtures",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Cross-platform JSON fixtures shared by Android (JVM), iOS (XCTest), and JS (vitest) tests. Drift on any platform must break CI.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": [
+    "fixtures",
+    "README.md"
+  ]
+}

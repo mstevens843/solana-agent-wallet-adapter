@@ -147,8 +147,166 @@ interface AgenticWalletConnectPlugin {
   wcClearState(): Promise<{ cleared?: boolean }>;
 }
 
+interface AgenticBiometricCanAuthenticateResult {
+  status: number;
+  kind: string;
+  biometryType?: string;
+  message?: string;
+}
+
+interface AgenticBiometricPromptResult {
+  ok: boolean;
+  kind?: string;
+  authType?: string;
+  code?: number;
+  message?: string;
+}
+
+interface AgenticBiometricPlugin {
+  canAuthenticate(options?: { allowDeviceCredential?: boolean }): Promise<AgenticBiometricCanAuthenticateResult>;
+  prompt(options: {
+    title?: string;
+    subtitle?: string;
+    description?: string;
+    reason?: string;
+    fallbackTitle?: string;
+    negativeButton?: string;
+    allowDeviceCredential?: boolean;
+  }): Promise<AgenticBiometricPromptResult>;
+}
+
+interface AgenticSystemInfo {
+  manufacturer: string;
+  model: string;
+  device: string;
+  systemVersion: string;
+  sdkInt: number;
+  release: string;
+  locale: string;
+  timezone: string;
+  batteryPercent: number;
+  networkType: string;
+  packageName: string;
+}
+
+interface AgenticSystemPlugin {
+  openExternal(options: { url: string }): Promise<{ ok: boolean }>;
+  systemInfo(): Promise<AgenticSystemInfo>;
+  clipboardWrite(options: { text: string; label?: string }): Promise<{ ok: boolean }>;
+  haptic(options: { pattern: 'light' | 'medium' | 'heavy' | 'success' | 'warning' | 'error' }): Promise<{ ok: boolean }>;
+  showNotification(options: { title: string; body?: string; tag?: string; channelId?: string }): Promise<{
+    ok: boolean;
+    kind?: string;
+    id?: string;
+    tag?: string;
+    message?: string;
+  }>;
+  appLifecycleState(): Promise<{ state: 'active' | 'inactive' | 'background' | 'unknown' }>;
+}
+
+interface AgenticRemoteConfigStatus {
+  version: number;
+  source: 'server' | 'cache' | 'bundled';
+  fetchedAtMs: number;
+  walletCount: number;
+  envelopeVersion: string;
+}
+
+interface AgenticRemoteConfigPlugin {
+  get(): Promise<unknown>;
+  refresh(options?: { force?: boolean }): Promise<AgenticRemoteConfigStatus>;
+  status(): Promise<AgenticRemoteConfigStatus>;
+}
+
+interface AgenticDeviceAgentStatus {
+  available: boolean;
+  enabled: boolean;
+  configured: boolean;
+  state: string;
+  runtime: string;
+  provider?: string;
+  apiFormat?: string;
+  baseUrl?: string;
+  model?: string;
+  message?: string;
+  checkedAt?: number;
+  updatedAt?: number;
+  lastError?: string;
+}
+
+interface AgenticDeviceAgentPlugin {
+  status(): Promise<AgenticDeviceAgentStatus>;
+  configure(options: {
+    clear?: boolean;
+    provider?: string;
+    apiFormat?: string;
+    baseUrl?: string;
+    model?: string;
+    apiKey?: string;
+  }): Promise<AgenticDeviceAgentStatus>;
+  start(options: Record<string, unknown>): Promise<AgenticDeviceAgentStatus>;
+  stop(): Promise<AgenticDeviceAgentStatus>;
+  generatePlan(payload: Record<string, unknown>): Promise<unknown>;
+  reviewPlan(payload: Record<string, unknown>): Promise<unknown>;
+  ask(payload: Record<string, unknown>): Promise<unknown>;
+}
+
+interface AgenticStreamingSessionPlugin {
+  prepareSessionSigner(options?: { metadata?: Record<string, unknown> }): Promise<{
+    signerId: string;
+    ephemeralSignerPubkey: string;
+    signerRuntime: string;
+    activeSessions: number;
+  }>;
+  createSession(options: {
+    sessionId: string;
+    ephemeralPrivkeyBase64: string;
+    metadata?: Record<string, unknown>;
+  }): Promise<unknown>;
+  bindPreparedSession(options: { sessionId: string; signerId: string; metadata?: Record<string, unknown> }): Promise<unknown>;
+  activateSession(options: { sessionId: string; metadata?: Record<string, unknown> }): Promise<unknown>;
+  signVoucher(options: { sessionId: string; voucherJson: string }): Promise<{
+    sessionId: string;
+    signature: string;
+    signatureEncoding: string;
+    voucherHash: string;
+    cached: boolean;
+    latencyMs: number;
+    activeSessions: number;
+  }>;
+  signSettlementTx(options: { sessionId: string; settlement: Record<string, unknown> }): Promise<unknown>;
+  revokeLocalSession(options: { sessionId: string }): Promise<{ sessionId: string; revoked: boolean; activeSessions: number }>;
+  statusJson(): Promise<{
+    available: boolean;
+    runtime: string;
+    signerRuntime: string;
+    activeSessions: number;
+    remainingDisplay: string;
+    message?: string;
+    capabilities: string[];
+  }>;
+  notificationState(): Promise<{ activeCount: number; remainingDisplay: string; text: string }>;
+}
+
 const AgenticSecureState = registerPlugin<AgenticSecureStatePlugin>('AgenticSecureState');
 const AgenticWalletConnect = registerPlugin<AgenticWalletConnectPlugin>('AgenticWalletConnect');
+// New plugins (Phase 0.5 wiring; native bodies filled in Phases 1–4):
+const AgenticBiometric = registerPlugin<AgenticBiometricPlugin>('AgenticBiometric');
+const AgenticSystem = registerPlugin<AgenticSystemPlugin>('AgenticSystem');
+const AgenticRemoteConfig = registerPlugin<AgenticRemoteConfigPlugin>('AgenticRemoteConfig');
+const AgenticDeviceAgent = registerPlugin<AgenticDeviceAgentPlugin>('AgenticDeviceAgent');
+const AgenticStreamingSession = registerPlugin<AgenticStreamingSessionPlugin>('AgenticStreamingSession');
+// Re-export under named globals so cross-platform call sites can address them
+// the same way they address the Android equivalents. Phases 1–4 fill these in.
+if (typeof globalThis !== 'undefined') {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const g = globalThis as Record<string, unknown>;
+  g.__agenticIosBiometricBridge = AgenticBiometric;
+  g.__agenticIosSystemBridge = AgenticSystem;
+  g.__agenticIosRemoteConfigBridge = AgenticRemoteConfig;
+  g.__agenticIosDeviceAgentBridge = AgenticDeviceAgent;
+  g.__agenticIosStreamingBridge = AgenticStreamingSession;
+}
 
 const AUTH_CACHE_KEY = 'agentic-ios-auth-cache-v1';
 const PENDING_STATE_KEY = 'agentic-ios-pending-state-v1';

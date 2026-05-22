@@ -6,18 +6,41 @@ use std::{
     net::{TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::Manager;
 use url::Url;
 
-type SharedRuntime = Arc<Mutex<RuntimeState>>;
+/// Shared handles passed to every Tauri command. `state` is the mutable
+/// runtime data behind a single mutex; `restart_in_progress` is a separate
+/// atomic flag that serializes `restart_bridge` re-entries and signals
+/// transient "restarting" state to consumers without taking the main lock.
+#[derive(Clone)]
+struct SharedRuntime {
+    state: Arc<Mutex<RuntimeState>>,
+    restart_in_progress: Arc<AtomicBool>,
+}
+
+impl SharedRuntime {
+    fn new(state: RuntimeState) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(state)),
+            restart_in_progress: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, RuntimeState>, std::sync::PoisonError<std::sync::MutexGuard<'_, RuntimeState>>> {
+        self.state.lock()
+    }
+}
 
 const DEFAULT_BRIDGE_URL: &str = "http://127.0.0.1:8787";
 const LEGACY_BRIDGE_TOKEN: &str = "local-agent-wallet";
-const DEFAULT_WALLET_HOST_URL: &str = "http://127.0.0.1:5174";
 const SIDECAR_BASENAME: &str = "agentic-cli-sidecar";
 const MAX_LOG_LINES: usize = 600;
 const DEFAULT_JUPITER_ULTRA_BASE: &str = "https://api.jup.ag/swap/v2";
@@ -48,12 +71,13 @@ const SETUP_ENV_KEYS: [&str; 14] = [
 #[serde(rename_all = "camelCase")]
 struct DesktopConfig {
     repo_root: String,
+    /// Secret. The webview uses this to authenticate against the local bridge HTTP API.
+    /// Do not log this field; treat as a credential and only include it in IPC payloads.
     bridge_url: String,
     bridge_token: String,
     env_path: String,
     action_config_path: String,
     prepared_actions_path: String,
-    wallet_host_url: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -106,13 +130,14 @@ struct BridgeStatus {
     pid: Option<u32>,
     started_at: Option<String>,
     bridge_reachable: bool,
-    wallet_host_running: bool,
-    wallet_host_pid: Option<u32>,
-    wallet_host_started_at: Option<String>,
-    wallet_host_reachable: bool,
+    /// True between the stop and (re)start phases of `restart_bridge`. Lets the
+    /// webview show a "Restarting…" indicator and skip duplicate restart taps
+    /// instead of treating the transient stopped state as a crash.
+    restarting: bool,
     bridge_url: String,
+    /// Secret — see DesktopConfig::bridge_token. The webview needs this to call
+    /// the local bridge; do not log or expose to untrusted code.
     bridge_token: String,
-    wallet_host_url: String,
     repo_root: String,
     env_path: String,
     action_config_path: String,
@@ -143,7 +168,6 @@ struct ManagedProcess {
 struct RuntimeState {
     config: DesktopConfig,
     bridge: Option<ManagedProcess>,
-    wallet_host: Option<ManagedProcess>,
     logs: VecDeque<String>,
     last_error: Option<String>,
 }
@@ -152,7 +176,6 @@ struct RuntimeContext {
     sidecar_path: Option<PathBuf>,
     sidecar_candidates: Vec<PathBuf>,
     repo_bridge_script: Option<PathBuf>,
-    repo_wallet_host_dir: Option<PathBuf>,
     desktop_config_path: PathBuf,
     runtime_data_path: PathBuf,
 }
@@ -176,16 +199,42 @@ enum LaunchCommand {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let runtime = Arc::new(Mutex::new(RuntimeState {
+    let runtime = SharedRuntime::new(RuntimeState {
         config: load_config().unwrap_or_else(|_| default_config()),
         bridge: None,
-        wallet_host: None,
         logs: VecDeque::new(),
         last_error: None,
-    }));
+    });
 
     let cleanup_runtime = runtime.clone();
     let app = tauri::Builder::default()
+        // single-instance must initialize first so a duplicate launch is intercepted
+        // before any other plugin runs setup side effects.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // macOS: the AppHandle needs to be brought to the foreground in addition
+            // to focusing the window — `set_focus` alone won't activate the app process.
+            #[cfg(target_os = "macos")]
+            {
+                let _ = app.show();
+            }
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_notification::init())
+        .setup(|app| {
+            use tauri::Emitter;
+            use tauri_plugin_deep_link::DeepLinkExt;
+            let app_handle = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                let urls: Vec<String> = event.urls().iter().map(|u| u.to_string()).collect();
+                let _ = app_handle.emit("agentic://deep-link", urls);
+            });
+            Ok(())
+        })
         .manage(runtime)
         .invoke_handler(tauri::generate_handler![
             read_config,
@@ -197,7 +246,12 @@ pub fn run() {
             stop_bridge,
             restart_bridge,
             read_logs,
-            open_wallet_host,
+            secure_get,
+            secure_set,
+            secure_delete,
+            read_env_keys,
+            write_env_keys,
+            open_external_url,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Agentic desktop shell");
@@ -266,9 +320,10 @@ fn bridge_status(
     app: tauri::AppHandle,
     state: tauri::State<'_, SharedRuntime>,
 ) -> Result<BridgeStatus, String> {
+    let restarting = state.restart_in_progress.load(Ordering::Acquire);
     let mut runtime = state.lock().map_err(lock_error)?;
     refresh_child_state(&mut runtime);
-    Ok(status_from_runtime(&app, &runtime))
+    Ok(status_from_runtime(&app, &runtime, restarting))
 }
 
 #[tauri::command]
@@ -277,15 +332,14 @@ fn start_bridge(
     state: tauri::State<'_, SharedRuntime>,
 ) -> Result<BridgeStatus, String> {
     let shared = state.inner().clone();
-    if ensure_bridge_reachable(&app, &shared).is_ok()
-        && start_wallet_host_process(&app, &shared).is_ok()
-    {
+    if ensure_bridge_reachable(&app, &shared).is_ok() {
         clear_runtime_error_if_ready(&shared)?;
     }
 
+    let restarting = shared.restart_in_progress.load(Ordering::Acquire);
     let mut runtime = shared.lock().map_err(lock_error)?;
     refresh_child_state(&mut runtime);
-    Ok(status_from_runtime(&app, &runtime))
+    Ok(status_from_runtime(&app, &runtime, restarting))
 }
 
 #[tauri::command]
@@ -293,11 +347,11 @@ fn stop_bridge(
     app: tauri::AppHandle,
     state: tauri::State<'_, SharedRuntime>,
 ) -> Result<BridgeStatus, String> {
+    let restarting = state.restart_in_progress.load(Ordering::Acquire);
     let mut runtime = state.lock().map_err(lock_error)?;
-    stop_wallet_host_child(&mut runtime);
     stop_bridge_child(&mut runtime);
     trim_logs(&mut runtime.logs);
-    Ok(status_from_runtime(&app, &runtime))
+    Ok(status_from_runtime(&app, &runtime, restarting))
 }
 
 #[tauri::command]
@@ -305,9 +359,35 @@ fn restart_bridge(
     app: tauri::AppHandle,
     state: tauri::State<'_, SharedRuntime>,
 ) -> Result<BridgeStatus, String> {
+    // Serialize concurrent restart_bridge invocations with an atomic flag.
+    // The first caller atomically sets the flag; subsequent callers see it
+    // already set and short-circuit to return the current status rather than
+    // racing with a spawn-in-flight. The flag is also exposed in BridgeStatus
+    // so the webview can render "Restarting…" UX and skip duplicate clicks.
+    if state
+        .restart_in_progress
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
     {
         let mut runtime = state.lock().map_err(lock_error)?;
-        stop_wallet_host_child(&mut runtime);
+        refresh_child_state(&mut runtime);
+        return Ok(status_from_runtime(&app, &runtime, true));
+    }
+
+    // Stop and start within the flag window. Use a scope guard so the flag
+    // clears even on early returns / panics in the spawn path. Clone the
+    // Arc<AtomicBool> so the guard's lifetime is independent of `state`,
+    // which gets moved into the inner start_bridge call below.
+    struct RestartGuard(Arc<AtomicBool>);
+    impl Drop for RestartGuard {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::Release);
+        }
+    }
+    let _guard = RestartGuard(state.restart_in_progress.clone());
+
+    {
+        let mut runtime = state.lock().map_err(lock_error)?;
         stop_bridge_child(&mut runtime);
         trim_logs(&mut runtime.logs);
     }
@@ -321,20 +401,119 @@ fn read_logs(state: tauri::State<'_, SharedRuntime>) -> Result<Vec<String>, Stri
 }
 
 #[tauri::command]
-fn open_wallet_host(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, SharedRuntime>,
-) -> Result<(), String> {
-    let shared = state.inner().clone();
-    ensure_bridge_reachable(&app, &shared)?;
-    let launch_url = {
-        let runtime = shared.lock().map_err(lock_error)?;
-        wallet_host_launch_url(&runtime.config)
-    };
+fn secure_get(key: String) -> Result<Option<String>, String> {
+    if key.trim().is_empty() {
+        return Err("secure_get requires a non-empty key.".into());
+    }
+    let store = load_secure_store();
+    Ok(store.get(&key).cloned())
+}
 
-    start_wallet_host_process(&app, &shared)?;
-    clear_runtime_error_if_ready(&shared)?;
-    open_url(&launch_url)
+#[tauri::command]
+fn secure_set(key: String, value: String) -> Result<(), String> {
+    if key.trim().is_empty() {
+        return Err("secure_set requires a non-empty key.".into());
+    }
+    let mut store = load_secure_store();
+    if value.is_empty() {
+        store.remove(&key);
+    } else {
+        store.insert(key, value);
+    }
+    save_secure_store(&store)
+}
+
+#[tauri::command]
+fn secure_delete(key: String) -> Result<(), String> {
+    if key.trim().is_empty() {
+        return Err("secure_delete requires a non-empty key.".into());
+    }
+    let mut store = load_secure_store();
+    store.remove(&key);
+    save_secure_store(&store)
+}
+
+#[tauri::command]
+fn read_env_keys(
+    state: tauri::State<'_, SharedRuntime>,
+    keys: Vec<String>,
+) -> Result<HashMap<String, Option<String>>, String> {
+    let path = {
+        let runtime = state.lock().map_err(lock_error)?;
+        runtime.config.env_path.clone()
+    };
+    let raw = match fs::read_to_string(Path::new(&path)) {
+        Ok(value) => value,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(format!("Failed to read {}: {err}", path)),
+    };
+    let values = parse_env_values(&raw);
+    let mut result = HashMap::new();
+    for key in keys {
+        let trimmed = key.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        result.insert(trimmed.to_string(), values.get(trimmed).cloned());
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+fn write_env_keys(
+    state: tauri::State<'_, SharedRuntime>,
+    updates: HashMap<String, String>,
+) -> Result<(), String> {
+    let path = {
+        let runtime = state.lock().map_err(lock_error)?;
+        runtime.config.env_path.clone()
+    };
+    let raw = match fs::read_to_string(Path::new(&path)) {
+        Ok(value) => value,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(format!("Failed to read {}: {err}", path)),
+    };
+    let next = apply_env_updates_general(&raw, &updates)?;
+    if let Some(parent) = Path::new(&path).parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("Failed to create {}: {err}", parent.display()))?;
+    }
+    fs::write(&path, next).map_err(|err| format!("Failed to write {}: {err}", path))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    let trimmed = validate_open_url(&url)?.to_string();
+    let status = if cfg!(target_os = "macos") {
+        Command::new("open").arg(&trimmed).status()
+    } else if cfg!(target_os = "windows") {
+        Command::new("cmd").args(["/C", "start", "", &trimmed]).status()
+    } else {
+        Command::new("xdg-open").arg(&trimmed).status()
+    }
+    .map_err(|err| format!("Failed to open URL externally: {err}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("Open external URL exited with status {status}"))
+    }
+}
+
+/// Validate and normalize an external URL. Returns the trimmed input on
+/// success. Refuses dangerous schemes (file://, javascript:, data:, etc.) and
+/// empty URLs. Pure function — safe to unit-test without spawning processes.
+fn validate_open_url(url: &str) -> Result<&str, String> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Err("open_external_url requires a non-empty URL.".into());
+    }
+    let parsed = Url::parse(trimmed)
+        .map_err(|err| format!("open_external_url: invalid URL ({err})"))?;
+    match parsed.scheme() {
+        "http" | "https" | "agentic" | "phantom" | "solflare" => Ok(trimmed),
+        other => Err(format!("open_external_url: refusing to open {other}:// URL.")),
+    }
 }
 
 fn ensure_bridge_reachable(app: &tauri::AppHandle, shared: &SharedRuntime) -> Result<(), String> {
@@ -384,55 +563,6 @@ fn ensure_bridge_reachable(app: &tauri::AppHandle, shared: &SharedRuntime) -> Re
     }
 }
 
-fn start_wallet_host_process(app: &tauri::AppHandle, shared: &SharedRuntime) -> Result<(), String> {
-    let wallet_host_url = {
-        let mut runtime = shared.lock().map_err(lock_error)?;
-        refresh_child_state(&mut runtime);
-        if runtime.wallet_host.is_some()
-            || wallet_host_endpoint_reachable(&runtime.config.wallet_host_url)
-        {
-            return Ok(());
-        }
-
-        match wallet_host_launch_command(app, &runtime.config) {
-            Ok(command) => {
-                match spawn_managed_process(shared, &mut runtime, "wallet-host", command) {
-                    Ok(process) => {
-                        runtime.logs.push_back(format!(
-                            "[desktop] wallet host started pid={}",
-                            process.pid
-                        ));
-                        runtime.wallet_host = Some(process);
-                        runtime.last_error = None;
-                        trim_logs(&mut runtime.logs);
-                        runtime.config.wallet_host_url.clone()
-                    }
-                    Err(err) => {
-                        runtime.last_error = Some(err.clone());
-                        runtime.logs.push_back(format!("[desktop] {err}"));
-                        trim_logs(&mut runtime.logs);
-                        return Err(err);
-                    }
-                }
-            }
-            Err(err) => {
-                runtime.last_error = Some(err.clone());
-                runtime.logs.push_back(format!("[desktop] {err}"));
-                trim_logs(&mut runtime.logs);
-                return Err(err);
-            }
-        }
-    };
-
-    if wait_for_wallet_host_endpoint(&wallet_host_url, Duration::from_secs(6)) {
-        Ok(())
-    } else {
-        let err = format!("Wallet host did not become reachable at {wallet_host_url}.");
-        record_runtime_error(shared, err.clone())?;
-        Err(err)
-    }
-}
-
 fn record_runtime_error(shared: &SharedRuntime, err: String) -> Result<(), String> {
     let mut runtime = shared.lock().map_err(lock_error)?;
     runtime.last_error = Some(err.clone());
@@ -442,24 +572,24 @@ fn record_runtime_error(shared: &SharedRuntime, err: String) -> Result<(), Strin
 }
 
 fn clear_runtime_error_if_ready(shared: &SharedRuntime) -> Result<(), String> {
-    let (bridge_url, wallet_host_url) = {
+    let bridge_url = {
         let runtime = shared.lock().map_err(lock_error)?;
-        (
-            runtime.config.bridge_url.clone(),
-            runtime.config.wallet_host_url.clone(),
-        )
+        runtime.config.bridge_url.clone()
     };
-    if bridge_endpoint_reachable(&bridge_url) && wallet_host_endpoint_reachable(&wallet_host_url) {
+    if bridge_endpoint_reachable(&bridge_url) {
         let mut runtime = shared.lock().map_err(lock_error)?;
         runtime.last_error = None;
     }
     Ok(())
 }
 
-fn status_from_runtime(app: &tauri::AppHandle, runtime: &RuntimeState) -> BridgeStatus {
+fn status_from_runtime(
+    app: &tauri::AppHandle,
+    runtime: &RuntimeState,
+    restarting: bool,
+) -> BridgeStatus {
     let context = runtime_context(app, &runtime.config);
     let bridge_reachable = bridge_endpoint_reachable(&runtime.config.bridge_url);
-    let wallet_host_reachable = wallet_host_endpoint_reachable(&runtime.config.wallet_host_url);
     BridgeStatus {
         running: runtime.bridge.is_some(),
         pid: runtime.bridge.as_ref().map(|process| process.pid),
@@ -468,16 +598,9 @@ fn status_from_runtime(app: &tauri::AppHandle, runtime: &RuntimeState) -> Bridge
             .as_ref()
             .map(|process| process.started_at.clone()),
         bridge_reachable,
-        wallet_host_running: runtime.wallet_host.is_some(),
-        wallet_host_pid: runtime.wallet_host.as_ref().map(|process| process.pid),
-        wallet_host_started_at: runtime
-            .wallet_host
-            .as_ref()
-            .map(|process| process.started_at.clone()),
-        wallet_host_reachable,
+        restarting,
         bridge_url: runtime.config.bridge_url.clone(),
         bridge_token: runtime.config.bridge_token.clone(),
-        wallet_host_url: runtime.config.wallet_host_url.clone(),
         repo_root: runtime.config.repo_root.clone(),
         env_path: runtime.config.env_path.clone(),
         action_config_path: runtime.config.action_config_path.clone(),
@@ -491,9 +614,7 @@ fn status_from_runtime(app: &tauri::AppHandle, runtime: &RuntimeState) -> Bridge
             &runtime.config,
             &context,
             runtime.bridge.is_some(),
-            runtime.wallet_host.is_some(),
             bridge_reachable,
-            wallet_host_reachable,
             runtime.last_error.as_deref(),
         ),
         last_error: runtime.last_error.clone(),
@@ -502,18 +623,11 @@ fn status_from_runtime(app: &tauri::AppHandle, runtime: &RuntimeState) -> Bridge
 
 fn refresh_child_state(runtime: &mut RuntimeState) {
     refresh_bridge_child(runtime);
-    refresh_wallet_host_child(runtime);
     trim_logs(&mut runtime.logs);
 }
 
 fn refresh_bridge_child(runtime: &mut RuntimeState) {
     if let Some(event) = refresh_process_slot(&mut runtime.bridge, "bridge") {
-        record_process_event(runtime, event);
-    }
-}
-
-fn refresh_wallet_host_child(runtime: &mut RuntimeState) {
-    if let Some(event) = refresh_process_slot(&mut runtime.wallet_host, "wallet host") {
         record_process_event(runtime, event);
     }
 }
@@ -598,15 +712,8 @@ fn stop_bridge_child(runtime: &mut RuntimeState) {
     }
 }
 
-fn stop_wallet_host_child(runtime: &mut RuntimeState) {
-    if let Some(event) = stop_process_slot(&mut runtime.wallet_host, "wallet host") {
-        record_process_event(runtime, event);
-    }
-}
-
 fn cleanup_managed_processes(shared: &SharedRuntime) {
     if let Ok(mut runtime) = shared.lock() {
-        stop_wallet_host_child(&mut runtime);
         stop_bridge_child(&mut runtime);
         trim_logs(&mut runtime.logs);
     }
@@ -677,45 +784,6 @@ fn bridge_launch_command(
     Err(missing_sidecar_message(&context))
 }
 
-fn wallet_host_launch_command(
-    app: &tauri::AppHandle,
-    config: &DesktopConfig,
-) -> Result<LaunchCommand, String> {
-    let context = runtime_context(app, config);
-    if let Some(sidecar) = context.sidecar_path {
-        let args = sidecar_command_args(["wallet-host", "serve"], config);
-        return Ok(LaunchCommand::Sidecar {
-            executable: sidecar,
-            args,
-        });
-    }
-
-    if let Some(wallet_host_dir) = context.repo_wallet_host_dir {
-        let (host, port) = host_port_or_default(&config.wallet_host_url, 5174);
-        return Ok(LaunchCommand::RepoDev {
-            executable: "pnpm".into(),
-            args: vec![
-                "-F".into(),
-                "@solana-agent-wallet-adapter/browser-demo".into(),
-                "exec".into(),
-                "vite".into(),
-                "--host".into(),
-                host,
-                "--port".into(),
-                port.to_string(),
-                "--strictPort".into(),
-            ],
-            cwd: wallet_host_dir
-                .ancestors()
-                .nth(2)
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from(&config.repo_root)),
-        });
-    }
-
-    Err(missing_sidecar_message(&context))
-}
-
 fn sidecar_command_args<const N: usize>(command: [&str; N], config: &DesktopConfig) -> Vec<String> {
     let mut args = command
         .iter()
@@ -731,8 +799,6 @@ fn sidecar_global_args(config: &DesktopConfig) -> Vec<String> {
         config.bridge_url.clone(),
         "--token".into(),
         config.bridge_token.clone(),
-        "--wallet-host-url".into(),
-        config.wallet_host_url.clone(),
         "--runtime-dir".into(),
         display_path(&runtime_data_dir()),
         "--env".into(),
@@ -748,9 +814,7 @@ fn diagnostics_for(
     config: &DesktopConfig,
     context: &RuntimeContext,
     bridge_running: bool,
-    wallet_host_running: bool,
     bridge_reachable: bool,
-    wallet_host_reachable: bool,
     last_error: Option<&str>,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
@@ -788,7 +852,7 @@ fn diagnostics_for(
             label: "CLI sidecar".into(),
             message: display_path(sidecar),
         });
-    } else if context.repo_bridge_script.is_some() || context.repo_wallet_host_dir.is_some() {
+    } else if context.repo_bridge_script.is_some() {
         diagnostics.push(Diagnostic {
             level: "warning".into(),
             label: "CLI sidecar".into(),
@@ -821,15 +885,6 @@ fn diagnostics_for(
         bridge_reachable,
         "managed by Agentic",
         "Start runtime to serve the local bridge.",
-    );
-    push_endpoint_diagnostic(
-        &mut diagnostics,
-        "Wallet host",
-        &config.wallet_host_url,
-        wallet_host_running,
-        wallet_host_reachable,
-        "managed by Agentic",
-        "Open the browser wallet host before connecting an extension wallet.",
     );
 
     if context.sidecar_path.is_none() {
@@ -907,18 +962,10 @@ fn runtime_context(app: &tauri::AppHandle, config: &DesktopConfig) -> RuntimeCon
     } else {
         None
     };
-    let repo_wallet_host_dir = if !repo_root.as_os_str().is_empty() {
-        let path = repo_root.join("apps/browser-demo");
-        path.join("package.json").is_file().then_some(path)
-    } else {
-        None
-    };
-
     RuntimeContext {
         sidecar_path,
         sidecar_candidates,
         repo_bridge_script,
-        repo_wallet_host_dir,
         desktop_config_path: desktop_config_path(),
         runtime_data_path: runtime_data_dir(),
     }
@@ -957,7 +1004,7 @@ fn sidecar_candidates(app: &tauri::AppHandle) -> Vec<PathBuf> {
 fn runtime_mode(context: &RuntimeContext) -> &'static str {
     if context.sidecar_path.is_some() {
         "installed-sidecar"
-    } else if context.repo_bridge_script.is_some() || context.repo_wallet_host_dir.is_some() {
+    } else if context.repo_bridge_script.is_some() {
         "repo-dev-fallback"
     } else {
         "missing-sidecar"
@@ -1043,9 +1090,6 @@ fn normalize_config(mut config: DesktopConfig) -> DesktopConfig {
     }
     if config.bridge_token.trim().is_empty() || config.bridge_token == LEGACY_BRIDGE_TOKEN {
         config.bridge_token = generated_bridge_token();
-    }
-    if config.wallet_host_url.trim().is_empty() {
-        config.wallet_host_url = DEFAULT_WALLET_HOST_URL.into();
     }
     if config.env_path.trim().is_empty() {
         config.env_path = defaults.env_path;
@@ -1311,6 +1355,39 @@ fn parse_env_values(raw: &str) -> HashMap<String, String> {
     values
 }
 
+fn apply_env_updates_general(raw: &str, updates: &HashMap<String, String>) -> Result<String, String> {
+    let normalized = raw.replace("\r\n", "\n");
+    let mut lines = if normalized.is_empty() {
+        vec!["# Solana Agent Wallet local runtime setup".to_string()]
+    } else {
+        normalized.split('\n').map(str::to_string).collect::<Vec<_>>()
+    };
+    let mut seen = HashSet::new();
+    for line in &mut lines {
+        let Some(key) = env_key_from_line(line) else {
+            continue;
+        };
+        let Some(value) = updates.get(&key) else {
+            continue;
+        };
+        *line = format!("{key}={}", format_env_value(value)?);
+        seen.insert(key);
+    }
+    let missing = updates
+        .keys()
+        .filter(|key| !seen.contains(*key))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() && lines.last().map(|line| !line.is_empty()).unwrap_or(false) {
+        lines.push(String::new());
+    }
+    for key in missing {
+        let value = updates.get(&key).map(String::as_str).unwrap_or("");
+        lines.push(format!("{key}={}", format_env_value(value)?));
+    }
+    Ok(format!("{}\n", lines.join("\n").trim_end_matches('\n')))
+}
+
 fn apply_env_updates(raw: &str, updates: &HashMap<String, String>) -> Result<String, String> {
     let normalized = raw.replace("\r\n", "\n");
     let mut lines = if normalized.is_empty() {
@@ -1481,7 +1558,6 @@ fn default_config() -> DesktopConfig {
             .display()
             .to_string(),
         prepared_actions_path: data_dir.join("prepared-actions.json").display().to_string(),
-        wallet_host_url: DEFAULT_WALLET_HOST_URL.into(),
     }
 }
 
@@ -1500,6 +1576,49 @@ fn default_repo_root() -> PathBuf {
 
 fn desktop_config_path() -> PathBuf {
     desktop_config_dir().join("desktop-config.json")
+}
+
+fn secure_store_path() -> PathBuf {
+    desktop_config_dir().join("desktop-secure.json")
+}
+
+fn load_secure_store() -> HashMap<String, String> {
+    load_secure_store_at(&secure_store_path())
+}
+
+fn save_secure_store(store: &HashMap<String, String>) -> Result<(), String> {
+    save_secure_store_at(store, &secure_store_path())
+}
+
+fn load_secure_store_at(path: &Path) -> HashMap<String, String> {
+    if !path.is_file() {
+        return HashMap::new();
+    }
+    match fs::read_to_string(path) {
+        Ok(raw) => serde_json::from_str::<HashMap<String, String>>(&raw).unwrap_or_default(),
+        Err(_) => HashMap::new(),
+    }
+}
+
+fn save_secure_store_at(store: &HashMap<String, String>, path: &Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("Failed to create {}: {err}", parent.display()))?;
+    }
+    let raw = serde_json::to_string(store)
+        .map_err(|err| format!("Failed to encode secure store: {err}"))?;
+    fs::write(path, raw)
+        .map_err(|err| format!("Failed to write {}: {err}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path)
+            .map_err(|err| format!("Failed to stat {}: {err}", path.display()))?
+            .permissions();
+        perms.set_mode(0o600);
+        let _ = fs::set_permissions(path, perms);
+    }
+    Ok(())
 }
 
 fn desktop_config_dir() -> PathBuf {
@@ -1527,27 +1646,8 @@ fn runtime_data_dir() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".solana-agent-wallet")
 }
 
-fn wallet_host_launch_url(config: &DesktopConfig) -> String {
-    let separator = if config.wallet_host_url.contains('?') {
-        '&'
-    } else {
-        '?'
-    };
-    format!(
-        "{}{}bridgeUrl={}&token={}",
-        config.wallet_host_url,
-        separator,
-        url_encode(&config.bridge_url),
-        url_encode(&config.bridge_token),
-    )
-}
-
 fn bridge_endpoint_reachable(url: &str) -> bool {
     endpoint_reachable(url, 8787, Duration::from_millis(150))
-}
-
-fn wallet_host_endpoint_reachable(url: &str) -> bool {
-    endpoint_reachable(url, 5174, Duration::from_millis(150))
 }
 
 fn endpoint_reachable(url: &str, default_port: u16, timeout: Duration) -> bool {
@@ -1565,10 +1665,6 @@ fn endpoint_reachable(url: &str, default_port: u16, timeout: Duration) -> bool {
 
 fn wait_for_bridge_endpoint(url: &str, timeout: Duration) -> bool {
     wait_for_endpoint(url, 8787, timeout)
-}
-
-fn wait_for_wallet_host_endpoint(url: &str, timeout: Duration) -> bool {
-    wait_for_endpoint(url, 5174, timeout)
 }
 
 fn wait_for_endpoint(url: &str, default_port: u16, timeout: Duration) -> bool {
@@ -1597,35 +1693,6 @@ fn host_port(url: &str, default_port: u16) -> Option<(String, u16)> {
 
 fn host_port_or_default(url: &str, default_port: u16) -> (String, u16) {
     host_port(url, default_port).unwrap_or_else(|| ("127.0.0.1".into(), default_port))
-}
-
-fn open_url(url: &str) -> Result<(), String> {
-    let status = if cfg!(target_os = "macos") {
-        Command::new("open").arg(url).status()
-    } else if cfg!(target_os = "windows") {
-        Command::new("cmd").args(["/C", "start", "", url]).status()
-    } else {
-        Command::new("xdg-open").arg(url).status()
-    }
-    .map_err(|err| format!("Failed to open wallet host in the external browser: {err}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("Open wallet host exited with status {status}"))
-    }
-}
-
-fn url_encode(value: &str) -> String {
-    let mut encoded = String::new();
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(byte as char)
-            }
-            _ => encoded.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    encoded
 }
 
 fn now_isoish() -> String {
@@ -1701,7 +1768,6 @@ mod tests {
             env_path: "/runtime/.env".into(),
             action_config_path: "/runtime/agent-wallet.config.json".into(),
             prepared_actions_path: "/runtime/prepared-actions.json".into(),
-            wallet_host_url: "http://127.0.0.1:5174".into(),
         }
     }
 
@@ -1760,17 +1826,6 @@ mod tests {
     }
 
     #[test]
-    fn wallet_host_launch_url_preserves_external_approval_query() {
-        let mut config = fixture_config();
-        config.wallet_host_url = "http://127.0.0.1:5174/?screen=connect".into();
-
-        let url = wallet_host_launch_url(&config);
-        assert!(url.starts_with("http://127.0.0.1:5174/?screen=connect&"));
-        assert!(url.contains("bridgeUrl=http%3A%2F%2F127.0.0.1%3A8787"));
-        assert!(url.contains("token=test-token"));
-    }
-
-    #[test]
     fn env_updates_preserve_unrelated_values_and_write_aliases() {
         let raw = "CUSTOM_VALUE=kept\nJUPITER_API_KEY=old\n";
         let mut updates = HashMap::new();
@@ -1812,5 +1867,92 @@ mod tests {
 
         assert!(!rpc.contains("rpc-secret-value"));
         assert!(!key.contains("secret-value"));
+    }
+
+    #[test]
+    fn validate_open_url_accepts_allowed_schemes() {
+        assert!(validate_open_url("https://agentic-signer.com/app").is_ok());
+        assert!(validate_open_url("http://localhost:1234").is_ok());
+        assert!(validate_open_url("agentic://callback?session=abc").is_ok());
+        assert!(validate_open_url("phantom://browse?url=https%3A%2F%2Fexample.com").is_ok());
+        assert!(validate_open_url("solflare://example").is_ok());
+        // Trimming preserves the URL.
+        assert_eq!(validate_open_url("  https://example.com/  ").unwrap(), "https://example.com/");
+    }
+
+    #[test]
+    fn validate_open_url_refuses_dangerous_schemes() {
+        assert!(validate_open_url("file:///etc/passwd").is_err());
+        assert!(validate_open_url("javascript:alert(1)").is_err());
+        assert!(validate_open_url("data:text/html,<script>alert(1)</script>").is_err());
+        assert!(validate_open_url("ftp://example.com").is_err());
+        assert!(validate_open_url("ssh://user@host").is_err());
+        assert!(validate_open_url("").is_err());
+        assert!(validate_open_url("   ").is_err());
+        assert!(validate_open_url("not a url").is_err());
+    }
+
+    #[test]
+    fn secure_store_round_trip() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("secure.json");
+        let mut store = load_secure_store_at(&path);
+        assert!(store.is_empty());
+        store.insert("alpha".into(), "AAA".into());
+        store.insert("beta".into(), "BBB".into());
+        save_secure_store_at(&store, &path).expect("save");
+        let reloaded = load_secure_store_at(&path);
+        assert_eq!(reloaded.get("alpha"), Some(&"AAA".into()));
+        assert_eq!(reloaded.get("beta"), Some(&"BBB".into()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secure_store_writes_restricted_permissions_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("secure.json");
+        let mut store = HashMap::new();
+        store.insert("k".into(), "v".into());
+        save_secure_store_at(&store, &path).expect("save");
+        let mode = fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "secure store must be readable only by owner");
+    }
+
+    #[test]
+    fn apply_env_updates_general_appends_arbitrary_keys() {
+        let raw = "CUSTOM=kept\n";
+        let mut updates = HashMap::new();
+        updates.insert("HELIUS_API_KEY".into(), "helius-secret".into());
+        updates.insert("COINGECKO_API_KEY".into(), "cg-secret".into());
+        updates.insert("MAGICEDEN_API_KEY".into(), "me-secret".into());
+        let next = apply_env_updates_general(raw, &updates).expect("update");
+        assert!(next.contains("CUSTOM=kept"));
+        assert!(next.contains("HELIUS_API_KEY=helius-secret"));
+        assert!(next.contains("COINGECKO_API_KEY=cg-secret"));
+        assert!(next.contains("MAGICEDEN_API_KEY=me-secret"));
+    }
+
+    #[test]
+    fn apply_env_updates_general_preserves_unrelated_lines_and_comments() {
+        let raw = "# header comment\nKEEP_ME=preserved\n\nANOTHER=also-kept\n";
+        let mut updates = HashMap::new();
+        updates.insert("NEW_KEY".into(), "new-value".into());
+        let next = apply_env_updates_general(raw, &updates).expect("update");
+        assert!(next.contains("# header comment"));
+        assert!(next.contains("KEEP_ME=preserved"));
+        assert!(next.contains("ANOTHER=also-kept"));
+        assert!(next.contains("NEW_KEY=new-value"));
+    }
+
+    #[test]
+    fn apply_env_updates_general_overwrites_existing_keys() {
+        let raw = "HELIUS_API_KEY=old\nKEEP=preserved\n";
+        let mut updates = HashMap::new();
+        updates.insert("HELIUS_API_KEY".into(), "new".into());
+        let next = apply_env_updates_general(raw, &updates).expect("update");
+        assert!(next.contains("HELIUS_API_KEY=new"));
+        assert!(!next.contains("HELIUS_API_KEY=old"));
+        assert!(next.contains("KEEP=preserved"));
     }
 }

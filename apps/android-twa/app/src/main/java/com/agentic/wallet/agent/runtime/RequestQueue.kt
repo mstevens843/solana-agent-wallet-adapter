@@ -143,11 +143,19 @@ class RequestQueue(
         )
         val executor = executorProvider()
         return try {
-            val data = when (request.method) {
+            val rawData = when (request.method) {
                 RuntimeMethod.GENERATE_PLAN -> executor.generatePlan(config, request.payload)
                 RuntimeMethod.REVIEW_PLAN -> executor.reviewPlan(config, request.payload)
                 RuntimeMethod.ASK -> executor.ask(config, request.payload)
             }
+            // Mirror cloud-side aiPlanner.applyServerSideReviewSafety: enforce
+            // policyBundle.hasBlockingFailure on BYOK paths where the LLM call
+            // bypasses the cloud's safety net. Same logic lives in
+            // packages/ios-capacitor-bridge/.../AgenticPolicyBundleEnforcer.swift
+            // and apps/browser-demo/src/policyEnrichClient.ts (enforceBlockingFailure).
+            val data = if (request.method == RuntimeMethod.REVIEW_PLAN) {
+                PolicyBundleEnforcer.enforce(rawData, request.payload)
+            } else rawData
             AgentMwaLog.info(
                 "AgentRuntimeQueue",
                 "run",

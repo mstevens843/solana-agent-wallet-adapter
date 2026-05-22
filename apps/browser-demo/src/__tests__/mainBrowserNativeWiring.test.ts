@@ -13,6 +13,8 @@ describe('Phase 6 browser-native Device Agent wiring helpers', () => {
     expect(chooseDeviceAgentRequestRoute({
       isAndroidApp: true,
       androidBridgeAvailable: true,
+      isTauriApp: false,
+      tauriBridgeAvailable: false,
       browserDeviceAgentEnabled: true,
       browserNativeEligible: true,
       cloudSessionMatchesWallet: true,
@@ -23,6 +25,8 @@ describe('Phase 6 browser-native Device Agent wiring helpers', () => {
     expect(chooseDeviceAgentRequestRoute({
       isAndroidApp: false,
       androidBridgeAvailable: false,
+      isTauriApp: false,
+      tauriBridgeAvailable: false,
       browserDeviceAgentEnabled: true,
       browserNativeEligible: true,
       cloudSessionMatchesWallet: true,
@@ -33,15 +37,55 @@ describe('Phase 6 browser-native Device Agent wiring helpers', () => {
     expect(chooseDeviceAgentRequestRoute({
       isAndroidApp: false,
       androidBridgeAvailable: false,
+      isTauriApp: false,
+      tauriBridgeAvailable: false,
       browserDeviceAgentEnabled: true,
       browserNativeEligible: false,
       cloudSessionMatchesWallet: true,
     })).toBe('none');
   });
 
+  it('selects tauri-native when running inside a Tauri shell with a reachable local bridge', () => {
+    expect(chooseDeviceAgentRequestRoute({
+      isAndroidApp: false,
+      androidBridgeAvailable: false,
+      isTauriApp: true,
+      tauriBridgeAvailable: true,
+      browserDeviceAgentEnabled: false,
+      browserNativeEligible: false,
+      cloudSessionMatchesWallet: false,
+    })).toBe('tauri-native');
+  });
+
+  it('falls back to browser-native when Tauri bridge is unreachable but browser-native is eligible', () => {
+    expect(chooseDeviceAgentRequestRoute({
+      isAndroidApp: false,
+      androidBridgeAvailable: false,
+      isTauriApp: true,
+      tauriBridgeAvailable: false,
+      browserDeviceAgentEnabled: true,
+      browserNativeEligible: true,
+      cloudSessionMatchesWallet: false,
+    })).toBe('browser-native');
+  });
+
+  it('returns none when Tauri bridge is unreachable and no browser-native fallback is eligible', () => {
+    expect(chooseDeviceAgentRequestRoute({
+      isAndroidApp: false,
+      androidBridgeAvailable: false,
+      isTauriApp: true,
+      tauriBridgeAvailable: false,
+      browserDeviceAgentEnabled: false,
+      browserNativeEligible: false,
+      cloudSessionMatchesWallet: false,
+    })).toBe('none');
+  });
+
   it('chooses default runtime by surface precedence', () => {
     expect(defaultDeviceAgentRuntimeForSurface({
       isAndroidApp: true,
+      isTauriApp: false,
+      tauriBridgeAvailable: false,
       browserDeviceAgentEnabled: true,
       browserNativeEligible: true,
       cloudSessionMatchesWallet: true,
@@ -49,6 +93,8 @@ describe('Phase 6 browser-native Device Agent wiring helpers', () => {
 
     expect(defaultDeviceAgentRuntimeForSurface({
       isAndroidApp: false,
+      isTauriApp: false,
+      tauriBridgeAvailable: false,
       browserDeviceAgentEnabled: true,
       browserNativeEligible: true,
       cloudSessionMatchesWallet: true,
@@ -56,6 +102,17 @@ describe('Phase 6 browser-native Device Agent wiring helpers', () => {
 
     expect(defaultDeviceAgentRuntimeForSurface({
       isAndroidApp: false,
+      isTauriApp: true,
+      tauriBridgeAvailable: true,
+      browserDeviceAgentEnabled: false,
+      browserNativeEligible: false,
+      cloudSessionMatchesWallet: true,
+    })).toBe('tauri-native');
+
+    expect(defaultDeviceAgentRuntimeForSurface({
+      isAndroidApp: false,
+      isTauriApp: false,
+      tauriBridgeAvailable: false,
       browserDeviceAgentEnabled: false,
       browserNativeEligible: false,
       cloudSessionMatchesWallet: true,
@@ -63,6 +120,8 @@ describe('Phase 6 browser-native Device Agent wiring helpers', () => {
 
     expect(defaultDeviceAgentRuntimeForSurface({
       isAndroidApp: false,
+      isTauriApp: false,
+      tauriBridgeAvailable: false,
       browserDeviceAgentEnabled: false,
       browserNativeEligible: false,
       cloudSessionMatchesWallet: false,

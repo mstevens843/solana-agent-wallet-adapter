@@ -1,0 +1,209 @@
+import Capacitor
+import Foundation
+import UIKit
+import UserNotifications
+
+@objc(AgenticSystemPlugin)
+public class AgenticSystemPlugin: CAPPlugin, CAPBridgedPlugin {
+    public let identifier = "AgenticSystemPlugin"
+    public let jsName = "AgenticSystem"
+    public let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "openExternal", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "systemInfo", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "clipboardWrite", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "haptic", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "showNotification", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "appLifecycleState", returnType: CAPPluginReturnPromise),
+    ]
+
+    private static let allowedSchemes: Set<String> = ["https", "http", "mailto", "tel", "sms"]
+    private static let maxUrlLength = 2_048
+    private static let maxClipboardBytes = 1_000_000
+
+    // Cached haptic generators (Apple docs: create once, prepare(), reuse).
+    private lazy var lightImpact: UIImpactFeedbackGenerator = {
+        let gen = UIImpactFeedbackGenerator(style: .light); gen.prepare(); return gen
+    }()
+    private lazy var mediumImpact: UIImpactFeedbackGenerator = {
+        let gen = UIImpactFeedbackGenerator(style: .medium); gen.prepare(); return gen
+    }()
+    private lazy var heavyImpact: UIImpactFeedbackGenerator = {
+        let gen = UIImpactFeedbackGenerator(style: .heavy); gen.prepare(); return gen
+    }()
+    private lazy var notificationFeedback: UINotificationFeedbackGenerator = {
+        let gen = UINotificationFeedbackGenerator(); gen.prepare(); return gen
+    }()
+
+    // Mirrors apps/android-twa/.../system/SystemBridge.kt.
+
+    @objc func openExternal(_ call: CAPPluginCall) {
+        guard AgenticBridgeOrigin.validate(call, on: bridge) else { return }
+        guard let raw = call.getString("url"), !raw.isEmpty else {
+            AgenticIOSLog.fail("AgenticSystem", "openExternal", "REJECT", "missing url")
+            call.reject("Missing url.", "INVALID_URL")
+            return
+        }
+        guard raw.count <= Self.maxUrlLength else {
+            AgenticIOSLog.fail("AgenticSystem", "openExternal", "REJECT", "url too long", ["len": String(raw.count)])
+            call.reject("URL too long.", "URL_TOO_LONG")
+            return
+        }
+        guard let url = URL(string: raw),
+              let scheme = url.scheme?.lowercased(),
+              Self.allowedSchemes.contains(scheme) else {
+            AgenticIOSLog.fail("AgenticSystem", "openExternal", "REJECT", "scheme not allowed", ["scheme": String(URL(string: raw)?.scheme ?? "(nil)")])
+            call.reject("Unsupported URL.", "INVALID_URL")
+            return
+        }
+        AgenticIOSLog.info("AgenticSystem", "openExternal", "START", "dispatching", ["scheme": scheme])
+        DispatchQueue.main.async {
+            UIApplication.shared.open(url, options: [:]) { ok in
+                if ok {
+                    AgenticIOSLog.info("AgenticSystem", "openExternal", "DONE", "opened")
+                } else {
+                    AgenticIOSLog.fail("AgenticSystem", "openExternal", "FAIL", "system declined")
+                }
+                call.resolve(["ok": ok])
+            }
+        }
+    }
+
+    @objc func systemInfo(_ call: CAPPluginCall) {
+        guard AgenticBridgeOrigin.validate(call, on: bridge) else { return }
+        // Touch the monitor singleton to ensure NWPathMonitor is running.
+        _ = AgenticNetworkMonitor.shared
+        DispatchQueue.main.async {
+            let device = UIDevice.current
+            device.isBatteryMonitoringEnabled = true
+            let battery = device.batteryLevel
+            let bundleId = Bundle.main.bundleIdentifier ?? ""
+            let sysVersion = device.systemVersion
+            let sdkInt = Int(sysVersion.split(separator: ".").first.map(String.init) ?? "0") ?? 0
+            let info: [String: Any] = [
+                "manufacturer": "Apple",
+                "model": device.model,
+                "device": device.name,
+                "systemVersion": sysVersion,
+                "sdkInt": sdkInt,
+                "release": sysVersion,
+                "locale": Locale.current.identifier,
+                "timezone": TimeZone.current.identifier,
+                "batteryPercent": battery >= 0 ? Int(battery * 100) : -1,
+                "networkType": AgenticNetworkMonitor.shared.current,
+                "packageName": bundleId,
+            ]
+            AgenticIOSLog.info("AgenticSystem", "systemInfo", "DONE", "snapshot", [
+                "packageName": bundleId,
+                "sdkInt": String(sdkInt),
+                "network": AgenticNetworkMonitor.shared.current,
+            ])
+            call.resolve(info)
+        }
+    }
+
+    @objc func clipboardWrite(_ call: CAPPluginCall) {
+        guard AgenticBridgeOrigin.validate(call, on: bridge) else { return }
+        guard let text = call.getString("text") else {
+            call.reject("Missing text.", "INVALID_TEXT")
+            return
+        }
+        guard text.utf8.count <= Self.maxClipboardBytes else {
+            AgenticIOSLog.fail("AgenticSystem", "clipboardWrite", "REJECT", "payload too large", ["bytes": String(text.utf8.count)])
+            call.reject("Clipboard payload too large.", "PAYLOAD_TOO_LARGE")
+            return
+        }
+        DispatchQueue.main.async {
+            UIPasteboard.general.string = text
+            AgenticIOSLog.info("AgenticSystem", "clipboardWrite", "DONE", "written", ["bytes": String(text.utf8.count)])
+            call.resolve(["ok": true])
+        }
+    }
+
+    @objc func haptic(_ call: CAPPluginCall) {
+        guard AgenticBridgeOrigin.validate(call, on: bridge) else { return }
+        let pattern = call.getString("pattern", "light").lowercased()
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            switch pattern {
+            case "heavy":
+                self.heavyImpact.impactOccurred()
+                self.heavyImpact.prepare()
+            case "medium":
+                self.mediumImpact.impactOccurred()
+                self.mediumImpact.prepare()
+            case "success":
+                self.notificationFeedback.notificationOccurred(.success)
+                self.notificationFeedback.prepare()
+            case "warning":
+                self.notificationFeedback.notificationOccurred(.warning)
+                self.notificationFeedback.prepare()
+            case "error":
+                self.notificationFeedback.notificationOccurred(.error)
+                self.notificationFeedback.prepare()
+            default:
+                self.lightImpact.impactOccurred()
+                self.lightImpact.prepare()
+            }
+            AgenticIOSLog.info("AgenticSystem", "haptic", "DONE", "triggered", ["pattern": pattern])
+            call.resolve(["ok": true])
+        }
+    }
+
+    @objc func showNotification(_ call: CAPPluginCall) {
+        guard AgenticBridgeOrigin.validate(call, on: bridge) else { return }
+        guard let title = call.getString("title"), !title.isEmpty else {
+            call.reject("Missing title.", "INVALID_TITLE")
+            return
+        }
+        let body = call.getString("body", "")
+        let tag = call.getString("tag") ?? UUID().uuidString
+
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { settings in
+            let proceed: (UNAuthorizationStatus) -> Void = { status in
+                guard status == .authorized || status == .provisional || status == .ephemeral else {
+                    AgenticIOSLog.fail("AgenticSystem", "showNotification", "REJECT", "not authorized", ["status": String(status.rawValue)])
+                    call.resolve(["ok": false, "kind": "NOT_AUTHORIZED"])
+                    return
+                }
+                let content = UNMutableNotificationContent()
+                content.title = title
+                content.body = body
+                content.sound = .default
+                let request = UNNotificationRequest(identifier: tag, content: content, trigger: nil)
+                center.add(request) { error in
+                    DispatchQueue.main.async {
+                        if let error {
+                            AgenticIOSLog.fail("AgenticSystem", "showNotification", "FAIL", "add failed", ["error": error.localizedDescription])
+                            call.resolve(["ok": false, "kind": "ERROR", "message": error.localizedDescription])
+                        } else {
+                            AgenticIOSLog.info("AgenticSystem", "showNotification", "DONE", "posted", ["id": tag])
+                            call.resolve(["ok": true, "id": tag, "tag": tag])
+                        }
+                    }
+                }
+            }
+            if settings.authorizationStatus == .notDetermined {
+                center.requestAuthorization(options: [.alert, .badge, .sound]) { granted, _ in
+                    proceed(granted ? .authorized : .denied)
+                }
+            } else {
+                proceed(settings.authorizationStatus)
+            }
+        }
+    }
+
+    @objc func appLifecycleState(_ call: CAPPluginCall) {
+        guard AgenticBridgeOrigin.validate(call, on: bridge) else { return }
+        DispatchQueue.main.async {
+            let state: String
+            switch UIApplication.shared.applicationState {
+            case .active: state = "active"
+            case .inactive: state = "inactive"
+            case .background: state = "background"
+            @unknown default: state = "unknown"
+            }
+            call.resolve(["state": state])
+        }
+    }
+}

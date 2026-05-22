@@ -1,0 +1,4 @@
+# Fixtures live in packages/shared-test-fixtures and are symlinked here by the
+# `prepare-fixtures` test setup script (Phase 7 of the iOS parity plan). When
+# running locally without the symlink, the test cases fall back to inline
+# constants and skip the cross-platform parity assertions.

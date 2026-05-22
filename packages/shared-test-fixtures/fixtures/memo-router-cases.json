@@ -1,0 +1,60 @@
+{
+  "envelope": {
+    "prefix": "Agentic plan review proof v1\nSHA-256: ",
+    "cases": [
+      {
+        "message": "hello world",
+        "sha256Hex": "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9",
+        "envelope": "Agentic plan review proof v1\nSHA-256: b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+      },
+      {
+        "message": "",
+        "sha256Hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "envelope": "Agentic plan review proof v1\nSHA-256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "message": "agentic-sample-2026",
+        "sha256Hex": "0985e7954e7b33242ce8225088b6710465abc140967ea4741c1f3d6258b916e7",
+        "envelope": "Agentic plan review proof v1\nSHA-256: 0985e7954e7b33242ce8225088b6710465abc140967ea4741c1f3d6258b916e7"
+      }
+    ]
+  },
+  "android_routing": [
+    {
+      "walletPackage": "app.phantom",
+      "forceMemoTxFallback": false,
+      "fallbackOnBlankPackage": true,
+      "expectedFallback": true
+    },
+    {
+      "walletPackage": "com.solflare.mobile",
+      "forceMemoTxFallback": false,
+      "fallbackOnBlankPackage": true,
+      "expectedFallback": true
+    },
+    {
+      "walletPackage": "app.backpack.mobile",
+      "forceMemoTxFallback": false,
+      "fallbackOnBlankPackage": true,
+      "expectedFallback": false
+    },
+    {
+      "walletPackage": "",
+      "forceMemoTxFallback": false,
+      "fallbackOnBlankPackage": true,
+      "expectedFallback": true
+    },
+    {
+      "walletPackage": "",
+      "forceMemoTxFallback": false,
+      "fallbackOnBlankPackage": false,
+      "expectedFallback": false
+    },
+    {
+      "walletPackage": "app.backpack.mobile",
+      "forceMemoTxFallback": true,
+      "fallbackOnBlankPackage": true,
+      "expectedFallback": true
+    }
+  ]
+}

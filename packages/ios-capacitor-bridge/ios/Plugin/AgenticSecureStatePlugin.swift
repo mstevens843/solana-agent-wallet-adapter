@@ -16,6 +16,7 @@ public class AgenticSecureStatePlugin: CAPPlugin, CAPBridgedPlugin {
     private let store = AgenticKeychainStore(service: "com.agentic.wallet.securestate")
 
     @objc func get(_ call: CAPPluginCall) {
+        guard AgenticBridgeOrigin.validate(call, on: bridge) else { return }
         guard let key = call.getString("key"), !key.isEmpty else {
             call.reject("Missing key.", "INVALID_KEY")
             return
@@ -31,6 +32,7 @@ public class AgenticSecureStatePlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func set(_ call: CAPPluginCall) {
+        guard AgenticBridgeOrigin.validate(call, on: bridge) else { return }
         guard let key = call.getString("key"), !key.isEmpty else {
             call.reject("Missing key.", "INVALID_KEY")
             return
@@ -50,6 +52,7 @@ public class AgenticSecureStatePlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func remove(_ call: CAPPluginCall) {
+        guard AgenticBridgeOrigin.validate(call, on: bridge) else { return }
         guard let key = call.getString("key"), !key.isEmpty else {
             call.reject("Missing key.", "INVALID_KEY")
             return
@@ -65,6 +68,7 @@ public class AgenticSecureStatePlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func clearNamespace(_ call: CAPPluginCall) {
+        guard AgenticBridgeOrigin.validate(call, on: bridge) else { return }
         guard let prefix = call.getString("prefix"), !prefix.isEmpty else {
             call.reject("Missing prefix.", "INVALID_PREFIX")
             return

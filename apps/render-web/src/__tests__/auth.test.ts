@@ -136,6 +136,32 @@ describe('render web cloud wallet auth', () => {
     });
   });
 
+  it('returns a CLI bearer session without an Origin header', async () => {
+    // The Solana Agent Wallet CLI runs as a local process — fetch() in Node
+    // omits Origin, so shouldReturnBearerSession must accept `cli-bundled`
+    // standalone. (See packages/cli/src/http/index.ts where this header is set.)
+    await withServer(async (port) => {
+      const headers = { 'x-agentic-client': 'cli-bundled' };
+      const wallet = createTestWallet();
+      const nonce = await postJson(port, '/api/auth/nonce', {
+        walletAddress: wallet.walletAddress,
+      }, headers);
+      const verify = await postJson(port, '/api/auth/verify-wallet', signedVerifyBody(wallet, nonce.body), headers);
+
+      expect(verify.status).toBe(200);
+      expect(verify.body.sessionToken).toEqual(expect.any(String));
+
+      const session = await getJson(port, '/api/session', {
+        authorization: `Bearer ${String(verify.body.sessionToken)}`,
+      });
+      expect(session.status).toBe(200);
+      expect(session.body).toMatchObject({
+        signedIn: true,
+        user: { walletAddress: wallet.walletAddress },
+      });
+    });
+  });
+
   it('handles Android cloud CORS preflight without cookies', async () => {
     await withServer(async (port) => {
       const response = await requestRaw(port, '/api/session', 'OPTIONS', undefined, {

@@ -3,18 +3,28 @@ import type { DeviceAgentRuntimeKind } from './deviceAgentClient.js';
 export interface DeviceAgentRuntimeSurface {
   isAndroidApp: boolean;
   androidBridgeAvailable: boolean;
+  isTauriApp: boolean;
+  tauriBridgeAvailable: boolean;
   browserDeviceAgentEnabled: boolean;
   browserNativeEligible: boolean;
   cloudSessionMatchesWallet: boolean;
 }
 
-export type DeviceAgentRequestRoute = 'android-native' | 'browser-native' | 'none';
+export type DeviceAgentRequestRoute =
+  | 'android-native'
+  | 'tauri-native'
+  | 'browser-native'
+  | 'none';
 export type AiModeSurfaceDefault = 'hosted' | 'session' | 'bridge' | 'device-agent';
 
 export function canUseDeviceAgentBrowserNative(surface: Pick<
   DeviceAgentRuntimeSurface,
-  'isAndroidApp' | 'browserDeviceAgentEnabled' | 'browserNativeEligible'
+  'isAndroidApp' | 'isTauriApp' | 'browserDeviceAgentEnabled' | 'browserNativeEligible'
 >): boolean {
+  // Tauri webviews are still browser environments — if the user configured a
+  // BYOK provider and tauri-native isn't picked (bridge unreachable), the
+  // browser-native direct-fetch path is a valid fallback. Only Android is
+  // excluded because there it must go through the MWA bridge.
   return Boolean(
     surface.browserDeviceAgentEnabled &&
       !surface.isAndroidApp &&
@@ -22,17 +32,26 @@ export function canUseDeviceAgentBrowserNative(surface: Pick<
   );
 }
 
+export function canUseDeviceAgentTauriNative(surface: Pick<
+  DeviceAgentRuntimeSurface,
+  'isTauriApp' | 'tauriBridgeAvailable'
+>): boolean {
+  return Boolean(surface.isTauriApp && surface.tauriBridgeAvailable);
+}
+
 export function chooseDeviceAgentRequestRoute(surface: DeviceAgentRuntimeSurface): DeviceAgentRequestRoute {
   if (surface.isAndroidApp && surface.androidBridgeAvailable) return 'android-native';
+  if (canUseDeviceAgentTauriNative(surface)) return 'tauri-native';
   if (canUseDeviceAgentBrowserNative(surface)) return 'browser-native';
   return 'none';
 }
 
 export function defaultDeviceAgentRuntimeForSurface(surface: Pick<
   DeviceAgentRuntimeSurface,
-  'isAndroidApp' | 'browserDeviceAgentEnabled' | 'browserNativeEligible' | 'cloudSessionMatchesWallet'
+  'isAndroidApp' | 'isTauriApp' | 'tauriBridgeAvailable' | 'browserDeviceAgentEnabled' | 'browserNativeEligible' | 'cloudSessionMatchesWallet'
 >): DeviceAgentRuntimeKind {
   if (surface.isAndroidApp) return 'android-native';
+  if (canUseDeviceAgentTauriNative(surface)) return 'tauri-native';
   if (canUseDeviceAgentBrowserNative(surface)) return 'browser-native';
   if (surface.cloudSessionMatchesWallet) return 'render-gated';
   return 'browser-dev';

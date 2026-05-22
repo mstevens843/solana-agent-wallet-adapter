@@ -332,3 +332,20 @@ export type {
   OrcaWalletPositionsResult,
   OrcaWhirlpoolSnapshot,
 } from './adapters/orca/client.js';
+
+// Agent atom resolver factory — exposed so cloud routes (e.g. /api/policy/enrich)
+// can run the same provider chain (jupiter/coingecko/birdeye/helius/alternative_me/web)
+// the BridgeAiPlanner uses internally, without going through an LLM call. Powers
+// the BYOK device-agent path on Android + iOS so users with their own API keys
+// still get pre-resolved policy bundles in their LLM context.
+export { createMcpCapabilityResolver, type McpResolverDeps } from './agentResolvers/index.js';
+export {
+  runPolicyPipeline,
+  type PolicyEvaluationBundle,
+  type RunPolicyPipelineInput,
+} from '@solana-agent-wallet-adapter/workflow';
+export {
+  type SimulationDigest,
+  type TxGateContext,
+  type TxGateOutcome,
+} from '@solana-agent-wallet-adapter/workflow';

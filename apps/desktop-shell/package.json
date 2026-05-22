@@ -1,22 +1,19 @@
 {
   "name": "@solana-agent-wallet-adapter/desktop-shell",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "description": "Agentic desktop runtime for Solana Agent Wallet Adapter.",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.json && vite build",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "dev": "vite --host 127.0.0.1 --port 5175",
+    "build": "pnpm --filter @solana-agent-wallet-adapter/browser-demo build",
+    "dev": "pnpm --filter @solana-agent-wallet-adapter/browser-demo dev",
+    "typecheck": "pnpm --filter @solana-agent-wallet-adapter/browser-demo typecheck",
     "tauri:dev": "cargo tauri dev",
     "tauri:build": "cargo tauri build"
   },
   "dependencies": {
+    "@solana-agent-wallet-adapter/browser-demo": "workspace:*",
     "@solana-agent-wallet-adapter/core": "workspace:*"
-  },
-  "devDependencies": {
-    "typescript": "^5.6.0",
-    "vite": "^5.4.0"
   }
 }

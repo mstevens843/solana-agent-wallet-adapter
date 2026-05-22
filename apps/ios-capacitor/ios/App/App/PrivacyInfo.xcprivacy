@@ -45,6 +45,44 @@
                 <string>CA92.1</string>
             </array>
         </dict>
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <!--
+                    C617.1: Access timestamps of files within the app's own
+                    bundle/container. Used by AgenticRemoteConfigStore.swift
+                    for cache invalidation and by structured logging
+                    timestamps.
+                -->
+                <string>C617.1</string>
+            </array>
+        </dict>
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <!--
+                    35F9.1: Measure time within app/process (debounce timers,
+                    refresh windows, request latency).
+                -->
+                <string>35F9.1</string>
+            </array>
+        </dict>
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryDiskSpace</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <!--
+                    E174.1: Write to / read from the app's own container while
+                    caching remote config + streaming session state.
+                -->
+                <string>E174.1</string>
+            </array>
+        </dict>
     </array>
 </dict>
 </plist>

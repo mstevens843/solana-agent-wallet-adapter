@@ -8,6 +8,11 @@ const capacitorIosApp =
   process.env.CAPACITATOR_IOS_APP ??
   'true';
 const androidApp = process.env.VITE_AGENTIC_ANDROID_APP ?? process.env.AGENTIC_ANDROID_APP ?? 'false';
+const tauriApp = (() => {
+  const explicit = process.env.VITE_AGENTIC_TAURI_APP ?? process.env.AGENTIC_TAURI_APP;
+  if (typeof explicit === 'string' && explicit.length > 0) return explicit;
+  return process.env.TAURI_ENV_PLATFORM ? 'true' : 'false';
+})();
 const androidShowExampleTab =
   process.env.VITE_AGENTIC_ANDROID_SHOW_EXAMPLE_TAB ??
   process.env.AGENTIC_ANDROID_SHOW_EXAMPLE_TAB ??
@@ -44,6 +49,7 @@ export default defineConfig({
     'import.meta.env.VITE_CAPACITOR_IOS_APP': JSON.stringify(capacitorIosApp),
     'import.meta.env.VITE_CAPACITATOR_IOS_APP': JSON.stringify(capacitorIosApp),
     'import.meta.env.VITE_AGENTIC_ANDROID_APP': JSON.stringify(androidApp),
+    'import.meta.env.VITE_AGENTIC_TAURI_APP': JSON.stringify(tauriApp),
     'import.meta.env.VITE_AGENTIC_ANDROID_SHOW_EXAMPLE_TAB': JSON.stringify(androidShowExampleTab),
     'import.meta.env.VITE_AGENTIC_ANDROID_ALLOW_LAN_BRIDGE': JSON.stringify(androidAllowLanBridge),
     'import.meta.env.VITE_AGENTIC_ANDROID_DEVICE_AGENT': JSON.stringify(androidDeviceAgent),

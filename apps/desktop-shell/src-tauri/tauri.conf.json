@@ -1,22 +1,23 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Agentic",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "identifier": "com.agentic.desktop",
   "build": {
-    "beforeDevCommand": "pnpm dev",
-    "devUrl": "http://127.0.0.1:5175",
-    "beforeBuildCommand": "pnpm build",
-    "frontendDist": "../dist"
+    "beforeDevCommand": "pnpm --filter @solana-agent-wallet-adapter/browser-demo dev",
+    "devUrl": "http://127.0.0.1:5174",
+    "beforeBuildCommand": "pnpm --filter @solana-agent-wallet-adapter/browser-demo build",
+    "frontendDist": "../../browser-demo/dist"
   },
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "Agentic",
-        "width": 1120,
-        "height": 760,
-        "minWidth": 900,
-        "minHeight": 640
+        "width": 1280,
+        "height": 800,
+        "minWidth": 1024,
+        "minHeight": 720
       }
     ]
   },
@@ -29,5 +30,12 @@
     ],
     "category": "Finance",
     "shortDescription": "Agentic desktop runtime for Solana Agent Wallet Adapter."
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": ["agentic"]
+      }
+    }
   }
 }

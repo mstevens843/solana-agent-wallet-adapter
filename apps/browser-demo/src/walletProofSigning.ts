@@ -35,10 +35,19 @@
 import type { Cluster, SolanaSigningClient } from '@solana-agent-wallet-adapter/core';
 
 export type WalletProofEncoding = 'utf8-message' | 'tx-memo-proof';
+export type WalletSignatureEncoding = 'base58' | 'base64';
 
 export interface WalletProofSignature {
   signature: string;
   proofEncoding: WalletProofEncoding;
+  /**
+   * Signature encoding. Most Wallet Standard wallets (Phantom, Backpack,
+   * Solflare web) return base58 for signMessage and the Android memo-tx
+   * fallback also returns base58. We expose this field so future wallets that
+   * return base64 can be carried through the proof envelope without silent
+   * server rejection. Defaults to base58 when not explicitly known.
+   */
+  signatureEncoding: WalletSignatureEncoding;
   proofTxBase64?: string;
   proofMemoText?: string;
 }
@@ -103,13 +112,22 @@ export async function signWalletProofMessage(
       return {
         signature: result.signature,
         proofEncoding: 'tx-memo-proof',
+        signatureEncoding: 'base58',
         proofTxBase64: result.transactionBase64,
         proofMemoText: message,
       };
     }
-    return { signature: result.signature, proofEncoding: 'utf8-message' };
+    return {
+      signature: result.signature,
+      proofEncoding: 'utf8-message',
+      signatureEncoding: 'base58',
+    };
   }
   const client = context.getClient();
   const result = await client.signMessage(message, { cluster, summary });
-  return { signature: result.signature, proofEncoding: 'utf8-message' };
+  return {
+    signature: result.signature,
+    proofEncoding: 'utf8-message',
+    signatureEncoding: 'base58',
+  };
 }

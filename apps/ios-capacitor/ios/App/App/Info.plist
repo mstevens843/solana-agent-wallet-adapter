@@ -60,5 +60,28 @@
 			</array>
 		</dict>
 	</array>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Use Face ID to confirm wallet actions and protect sensitive operations.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+		<string>processing</string>
+	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.agentic.wallet.deviceagent.process</string>
+	</array>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>phantom</string>
+		<string>solflare</string>
+		<string>backpack</string>
+		<string>wc</string>
+		<string>https</string>
+	</array>
+	<key>AGENTIC_CLOUD_API_BASE_URL</key>
+	<string>https://agentic-signer.com</string>
+	<key>AGENTIC_ALLOWED_ORIGINS</key>
+	<string>https://agentic-signer.com,https://agentic-seeker.com,capacitor://localhost</string>
 </dict>
 </plist>

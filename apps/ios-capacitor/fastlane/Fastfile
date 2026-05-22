@@ -1,0 +1,131 @@
+# Fastlane lanes for Agentic iOS releases.
+# - beta: build, sign, upload to TestFlight (no submission to review).
+# - release: same as beta + submit to App Store review.
+# - screenshots: regenerate marketing screenshots into ../app-store-assets/screenshots/.
+# - match_setup: one-time interactive certificate provisioning (NOT for CI).
+#
+# CI env vars (set in .github/workflows/ios-release.yml):
+#   APP_STORE_CONNECT_API_KEY_ID, APP_STORE_CONNECT_ISSUER_ID,
+#   ~/.appstoreconnect/private_keys/api_key.p8 (decoded by workflow),
+#   MATCH_GIT_URL, MATCH_PASSWORD, MATCH_KEYCHAIN_PASSWORD,
+#   AGENTIC_IOS_VERSION_CODE, AGENTIC_IOS_VERSION_NAME, APPLE_TEAM_ID.
+
+default_platform(:ios)
+
+WORKSPACE = 'ios/App/App.xcworkspace'
+PROJECT = 'ios/App/App.xcodeproj'
+SCHEME = 'App'
+IPA_PATH = 'build/Agentic.ipa'
+
+platform :ios do
+  before_all do
+    setup_ci if ENV['CI']
+  end
+
+  desc 'Build + sign + upload to TestFlight'
+  lane :beta do
+    ensure_api_key
+    sync_certificates
+    bump_versions
+    build
+    upload_testflight
+  end
+
+  desc 'Build + sign + upload to App Store + submit for review'
+  lane :release do
+    ensure_api_key
+    sync_certificates
+    bump_versions
+    build
+    upload_app_store
+  end
+
+  desc 'Regenerate marketing screenshots into ../app-store-assets/screenshots/'
+  lane :screenshots do
+    capture_ios_screenshots(
+      workspace: WORKSPACE,
+      scheme: 'AppUITests',
+      output_directory: '../app-store-assets/screenshots',
+      languages: ['en-US'],
+      devices: [
+        'iPhone 15 Pro Max',
+        'iPhone 11 Pro Max',
+        'iPad Pro (12.9-inch) (6th generation)'
+      ],
+      clear_previous_screenshots: true
+    )
+  end
+
+  desc 'Interactive one-time match storage bootstrap (run locally, not in CI)'
+  lane :match_setup do
+    sync_code_signing(type: 'appstore', readonly: false)
+  end
+
+  # --- Helpers ---
+
+  def ensure_api_key
+    UI.user_error!('APP_STORE_CONNECT_API_KEY_ID missing') unless ENV['APP_STORE_CONNECT_API_KEY_ID']
+    UI.user_error!('APP_STORE_CONNECT_ISSUER_ID missing') unless ENV['APP_STORE_CONNECT_ISSUER_ID']
+    api_key_path = File.expand_path('~/.appstoreconnect/private_keys/api_key.p8')
+    UI.user_error!("API key not found at #{api_key_path}") unless File.exist?(api_key_path)
+    app_store_connect_api_key(
+      key_id: ENV['APP_STORE_CONNECT_API_KEY_ID'],
+      issuer_id: ENV['APP_STORE_CONNECT_ISSUER_ID'],
+      key_filepath: api_key_path,
+      in_house: false
+    )
+  end
+
+  def sync_certificates
+    sync_code_signing(
+      type: 'appstore',
+      readonly: true,
+      app_identifier: [ENV['AGENTIC_IOS_BUNDLE_ID'] || 'com.agentic.wallet']
+    )
+  end
+
+  def bump_versions
+    if ENV['AGENTIC_IOS_VERSION_CODE']
+      increment_build_number(xcodeproj: PROJECT, build_number: ENV['AGENTIC_IOS_VERSION_CODE'])
+    end
+    if ENV['AGENTIC_IOS_VERSION_NAME']
+      # Trim leading 'v' and trailing '-ios' from tag like 'v1.2.3-ios'.
+      semver = ENV['AGENTIC_IOS_VERSION_NAME'].sub(/^v/, '').sub(/-ios$/, '')
+      increment_version_number(xcodeproj: PROJECT, version_number: semver)
+    end
+  end
+
+  def build
+    build_app(
+      project: PROJECT,
+      scheme: SCHEME,
+      output_directory: 'build',
+      output_name: 'Agentic.ipa',
+      configuration: 'Release',
+      export_method: 'app-store',
+      include_bitcode: false,
+      include_symbols: true,
+      clean: true
+    )
+  end
+
+  def upload_testflight
+    upload_to_testflight(
+      ipa: IPA_PATH,
+      skip_waiting_for_build_processing: true,
+      changelog: ENV['FASTLANE_CHANGELOG'] || 'See git log.'
+    )
+  end
+
+  def upload_app_store
+    upload_to_app_store(
+      ipa: IPA_PATH,
+      skip_metadata: false,
+      skip_screenshots: false,
+      submit_for_review: true,
+      automatic_release: false,
+      precheck_include_in_app_purchases: false,
+      force: true
+    )
+  end
+end

@@ -36,6 +36,8 @@ import {
 import { Connection, PublicKey } from '@solana/web3.js';
 
 import { getAndroidRemoteConfig } from './androidConfig.js';
+import { getIosRemoteConfig } from './iosConfig.js';
+import { handlePolicyEnrich } from './policyEnrich.js';
 import {
   AuthValidationError,
   buildAgentProfilePublishMessage,
@@ -176,6 +178,8 @@ const renderDeviceAgentSessions = new Map<string, RenderDeviceAgentSession>();
 const REGISTERED_API_ROUTES = [
   'GET /api/ai/status',
   'GET /api/android-config',
+  'GET /api/mobile-config',
+  'POST /api/policy/enrich',
   'POST /api/ai/generate-plan',
   'POST /api/ai/review-plan',
   'POST /api/ai/ask-about-plan',
@@ -789,6 +793,57 @@ async function routeApiRequest(
     const ua = firstHeaderValue(req.headers['user-agent']) ?? '';
     console.log(
       `android_config_fetch status=200 ms=${Date.now() - startedAt} version=${cfg.version} wallets=${cfg.walletRegistry.length} client=${JSON.stringify(client)} ua=${JSON.stringify(ua.slice(0, 120))}`,
+    );
+    return;
+  }
+
+  if (url.pathname.replace(/\/$/, '') === '/api/mobile-config') {
+    requireMethod(req, 'GET');
+    const startedAt = Date.now();
+    // Default to ios for safety: the new endpoint is added FOR iOS; Android keeps
+    // hitting /api/android-config. `?platform=android` is supported for future
+    // Android client migration.
+    const platform = (url.searchParams.get('platform') ?? 'ios').toLowerCase();
+    const cfg = platform === 'android' ? getAndroidRemoteConfig() : getIosRemoteConfig();
+    const body = JSON.stringify(cfg);
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json; charset=utf-8');
+    res.setHeader('cache-control', 'private, max-age=300, stale-while-revalidate=60');
+    res.end(body);
+    const client = firstHeaderValue(req.headers['x-agentic-client']) ?? '';
+    const ua = firstHeaderValue(req.headers['user-agent']) ?? '';
+    console.log(
+      `mobile_config_fetch status=200 platform=${platform} ms=${Date.now() - startedAt} version=${cfg.version} wallets=${cfg.walletRegistry.length} client=${JSON.stringify(client)} ua=${JSON.stringify(ua.slice(0, 120))}`,
+    );
+    return;
+  }
+
+  if (url.pathname === '/api/policy/enrich') {
+    requireMethod(req, 'POST');
+    const startedAt = Date.now();
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      res.statusCode = 400;
+      res.setHeader('content-type', 'application/json; charset=utf-8');
+      res.end(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : 'Invalid JSON body' }));
+      return;
+    }
+    const result = await handlePolicyEnrich(body);
+    res.statusCode = result.ok ? 200 : 500;
+    res.setHeader('content-type', 'application/json; charset=utf-8');
+    // Don't cache — policy resolution is stateful (live prices change per second).
+    res.setHeader('cache-control', 'no-store');
+    res.end(JSON.stringify(result));
+    const client = firstHeaderValue(req.headers['x-agentic-client']) ?? '';
+    const atomCount = result.ok
+      ? (Array.isArray((result.policyBundle as Record<string, unknown>).atoms)
+          ? ((result.policyBundle as Record<string, unknown>).atoms as unknown[]).length
+          : 0)
+      : 0;
+    console.log(
+      `policy_enrich_fetch status=${res.statusCode} ms=${Date.now() - startedAt} atoms=${atomCount} client=${JSON.stringify(client)}`,
     );
     return;
   }
@@ -3240,6 +3295,12 @@ function shouldSetSecureCookie(req: IncomingMessage): boolean {
 function shouldReturnBearerSession(req: IncomingMessage): boolean {
   const origin = firstHeaderValue(req.headers.origin);
   const client = firstHeaderValue(req.headers['x-agentic-client'])?.toLowerCase();
+  // android-bundled — Android TWA + loopback-cors. Requires CORS-allowed Origin.
+  // cli-bundled — Solana Agent Wallet CLI loopback callback. No Origin header is
+  //   sent because the request originates from a CLI process; accept the client
+  //   identifier alone because the CLI is local-only and the bearer is delivered
+  //   straight back to the loopback receiver the caller spun up.
+  if (client === 'cli-bundled') return true;
   return client === 'android-bundled' && Boolean(origin && isAllowedCloudCorsOrigin(origin));
 }
 
