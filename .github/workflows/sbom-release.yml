@@ -52,7 +52,7 @@ jobs:
           upload-release-assets: false
 
       - name: Attach SBOM to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           files: sbom.spdx.json
