@@ -1,5 +1,20 @@
 import { defineConfig } from 'vite';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { acpDevApiPlugin } from './vite.acpDevApi.js';
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
+
+function packageVersion(packageJsonPath: string): string {
+  const packageJson = JSON.parse(readFileSync(resolve(repoRoot, packageJsonPath), 'utf8')) as {
+    version?: unknown;
+  };
+  if (typeof packageJson.version !== 'string' || packageJson.version.length === 0) {
+    throw new Error(`${packageJsonPath} is missing a package version`);
+  }
+  return packageJson.version;
+}
 
 const capacitorIosApp =
   process.env.VITE_CAPACITOR_IOS_APP ??
@@ -42,6 +57,14 @@ const cloudApiBaseUrl =
   '';
 const appSurface = process.env.VITE_AGENTIC_APP_SURFACE ?? process.env.AGENTIC_APP_SURFACE ?? '';
 const gaMeasurementId = process.env.VITE_AGENTIC_GA_MEASUREMENT_ID ?? process.env.AGENTIC_GA_MEASUREMENT_ID ?? '';
+const cliReleaseTag =
+  process.env.VITE_AGENTIC_CLI_RELEASE_TAG ??
+  process.env.AGENTIC_CLI_RELEASE_TAG ??
+  `cli-v${packageVersion('packages/cli/package.json')}`;
+const appReleaseTag =
+  process.env.VITE_AGENTIC_APP_RELEASE_TAG ??
+  process.env.AGENTIC_APP_RELEASE_TAG ??
+  `v${packageVersion('apps/desktop-shell/package.json')}`;
 
 export default defineConfig({
   plugins: [acpDevApiPlugin()],
@@ -59,6 +82,8 @@ export default defineConfig({
     'import.meta.env.VITE_AGENTIC_CLOUD_API_BASE_URL': JSON.stringify(cloudApiBaseUrl),
     'import.meta.env.VITE_AGENTIC_APP_SURFACE': JSON.stringify(appSurface),
     'import.meta.env.VITE_AGENTIC_GA_MEASUREMENT_ID': JSON.stringify(gaMeasurementId),
+    __AGENTIC_CLI_RELEASE_TAG__: JSON.stringify(cliReleaseTag),
+    __AGENTIC_APP_RELEASE_TAG__: JSON.stringify(appReleaseTag),
   },
   build: {
     rollupOptions: {

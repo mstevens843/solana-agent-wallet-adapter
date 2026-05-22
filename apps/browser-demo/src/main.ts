@@ -401,6 +401,9 @@ import {
   type WalletProviderLogoId,
 } from './walletBranding.js';
 
+declare const __AGENTIC_CLI_RELEASE_TAG__: string;
+declare const __AGENTIC_APP_RELEASE_TAG__: string;
+
 setProofSigningContext({
   getClient: requireClient,
   getAppState: () => state,
@@ -1036,10 +1039,14 @@ const BASE_PREPARED_ACTION_KINDS = new Set<string>([
 for (const kind of CONNECTOR_APPROVAL_ACTION_TYPES) {
   BASE_PREPARED_ACTION_KINDS.add(kind);
 }
-const RELEASE_BASE_URL =
-  'https://github.com/mstevens843/solana-agent-wallet-adapter/releases/latest/download';
-const RELEASE_PAGE_URL =
-  'https://github.com/mstevens843/solana-agent-wallet-adapter/releases/latest';
+const GITHUB_RELEASES_URL =
+  'https://github.com/mstevens843/solana-agent-wallet-adapter/releases';
+const CLI_RELEASE_TAG = __AGENTIC_CLI_RELEASE_TAG__ || 'cli-v1.0.0';
+const APP_RELEASE_TAG = __AGENTIC_APP_RELEASE_TAG__ || 'v0.3.0';
+const CLI_RELEASE_BASE_URL = `${GITHUB_RELEASES_URL}/download/${CLI_RELEASE_TAG}`;
+const CLI_RELEASE_PAGE_URL = `${GITHUB_RELEASES_URL}/tag/${CLI_RELEASE_TAG}`;
+const APP_RELEASE_BASE_URL = `${GITHUB_RELEASES_URL}/download/${APP_RELEASE_TAG}`;
+const APP_RELEASE_PAGE_URL = `${GITHUB_RELEASES_URL}/tag/${APP_RELEASE_TAG}`;
 const NPM_GLOBAL_INSTALL_COMMAND = 'npm install -g @solana-agent-wallet-adapter/cli';
 const NPM_EXEC_COMMAND = 'npm exec @solana-agent-wallet-adapter/cli -- app';
 const INSTALLED_APP_COMMAND = 'solana-agent-wallet app';
@@ -5632,7 +5639,7 @@ function cliHeroSection(): string {
           >
             Copy npm exec
           </button>
-          <a class="button-link" href="${RELEASE_PAGE_URL}" target="_blank" rel="noreferrer">View releases</a>
+          <a class="button-link" href="${CLI_RELEASE_PAGE_URL}" target="_blank" rel="noreferrer">View releases</a>
         </div>
       </div>
       <div class="tooling-terminal terminal-preview-window">
@@ -5675,7 +5682,7 @@ function desktopHeroSection(): string {
           watch pending work, inspect receipts, and diagnose wallet-host state without living in Terminal.
         </p>
         <div class="tooling-hero-actions">
-          <a class="button-link nav-pill-link launch-app-link" href="${RELEASE_PAGE_URL}" target="_blank" rel="noreferrer">
+          <a class="button-link nav-pill-link launch-app-link" href="${APP_RELEASE_PAGE_URL}" target="_blank" rel="noreferrer">
             Download latest
           </a>
           <a class="button-link" href="/cli">Use CLI instead</a>
@@ -5755,10 +5762,10 @@ function cliInstallSection(): string {
       <div class="download-section">
         <div class="download-section-head">
           <h3>Standalone CLI binaries</h3>
-          <a href="${RELEASE_PAGE_URL}" target="_blank" rel="noreferrer">View all releases</a>
+          <a href="${CLI_RELEASE_PAGE_URL}" target="_blank" rel="noreferrer">View all releases</a>
         </div>
         <div class="download-grid">
-          ${CLI_RELEASE_ASSETS.map(([label, asset]) => downloadCard(label, asset, 'CLI binary')).join('')}
+          ${CLI_RELEASE_ASSETS.map(([label, asset]) => downloadCard(label, asset, 'CLI binary', CLI_RELEASE_BASE_URL)).join('')}
         </div>
       </div>
     </section>
@@ -5778,7 +5785,7 @@ function desktopDownloadSection(): string {
         </p>
       </div>
       <div class="download-grid desktop-download-grid">
-        ${DESKTOP_RELEASE_ASSETS.map(([label, asset]) => downloadCard(label, asset, 'Desktop installer')).join('')}
+        ${DESKTOP_RELEASE_ASSETS.map(([label, asset]) => downloadCard(label, asset, 'Desktop installer', APP_RELEASE_BASE_URL)).join('')}
       </div>
       <p class="download-note">
         Release artifacts are attached to GitHub Releases. If a platform build is not available yet, use the CLI install path above.
@@ -5801,10 +5808,10 @@ function androidDownloadSection(): string {
       <div class="download-section">
         <div class="download-section-head">
           <h3>Android release artifacts</h3>
-          <a href="${RELEASE_PAGE_URL}" target="_blank" rel="noreferrer">View all releases</a>
+          <a href="${APP_RELEASE_PAGE_URL}" target="_blank" rel="noreferrer">View all releases</a>
         </div>
         <div class="download-grid android-download-grid">
-          ${ANDROID_RELEASE_ASSETS.map(([label, asset]) => downloadCard(label, asset, label.includes('Bundle') ? 'Play release' : 'Android install')).join('')}
+          ${ANDROID_RELEASE_ASSETS.map(([label, asset]) => downloadCard(label, asset, label.includes('Bundle') ? 'Play release' : 'Android install', APP_RELEASE_BASE_URL)).join('')}
         </div>
       </div>
       <p class="download-note">
@@ -6489,7 +6496,7 @@ function homepageFooter(): string {
       </div>
       <nav aria-label="Footer navigation">
         <a href="/docs">Docs</a>
-        <a href="${RELEASE_PAGE_URL}" target="_blank" rel="noreferrer">Releases</a>
+        <a href="${GITHUB_RELEASES_URL}" target="_blank" rel="noreferrer">Releases</a>
         <a href="/terms">Terms</a>
         <a href="/privacy">Privacy</a>
         <a href="/delete-account">Delete Account</a>
@@ -6525,8 +6532,8 @@ function localDevelopmentSection(): string {
   `;
 }
 
-function downloadCard(label: string, asset: string, kind: string): string {
-  const url = `${RELEASE_BASE_URL}/${asset}`;
+function downloadCard(label: string, asset: string, kind: string, releaseBaseUrl: string): string {
+  const url = `${releaseBaseUrl}/${asset}`;
   return `
     <a
       class="download-card"
