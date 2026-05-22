@@ -79,3 +79,46 @@ export function normalizeAiModeForMobileSurface(input: {
   }
   return input.mode;
 }
+
+export const DESKTOP_BROWSER_SESSION_DISABLED_REASON =
+  'Browser Session AI is not available in the desktop app. Use Local Bridge or Hosted BYOK.';
+
+export interface DesktopAiPathSurface {
+  isTauriApp: boolean;
+}
+
+export function shouldUseDesktopAiPathPolicy(surface: DesktopAiPathSurface): boolean {
+  return Boolean(surface.isTauriApp);
+}
+
+// Desktop runs the local bridge sidecar by default and uses Tauri's system
+// webview, which enforces the same CORS rules as Chrome — so Browser Session
+// AI is broken (OpenAI blocked, no web search) and strictly redundant with
+// Local Bridge. Cut it from the desktop picker.
+export function visibleDesktopAiPathModes(input: {
+  desktopAiPathPolicy: boolean;
+  deviceAgentVisible: boolean;
+}): AiPathMode[] {
+  if (!input.desktopAiPathPolicy) return ['hosted', 'bridge', 'session', 'device-agent'];
+  return ['bridge', 'device-agent', 'hosted'];
+}
+
+export function desktopAiModeDisabledReason(input: {
+  desktopAiPathPolicy: boolean;
+  mode: AiPathMode;
+}): string {
+  if (!input.desktopAiPathPolicy) return '';
+  if (input.mode === 'session') return DESKTOP_BROWSER_SESSION_DISABLED_REASON;
+  return '';
+}
+
+export function normalizeAiModeForDesktopSurface(input: {
+  mode: AiPathMode;
+  desktopAiPathPolicy: boolean;
+  fallbackMode: AiPathMode;
+}): AiPathMode {
+  if (input.desktopAiPathPolicy && input.mode === 'session') {
+    return input.fallbackMode;
+  }
+  return input.mode;
+}

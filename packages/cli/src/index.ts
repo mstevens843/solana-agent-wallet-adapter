@@ -72,6 +72,41 @@ import {
 import { loadSession, sessionStatusSummary } from './auth/sessionStore.js';
 import { renderWebRequest as renderWebRequestClient } from './http/index.js';
 
+// v1.1 — flow-first command surface. Mirrors the web app's tabs (Draft, Needs
+// Approval, Active Repeats, Done). Browser only opens for the four wallet
+// signing intents (connect, disconnect, approve, sign). All form filling stays
+// in the terminal.
+import {
+  runNewMenu,
+  runNewSend,
+  runNewSpl,
+  runNewSwap,
+  runNewConnector,
+  runSwapQuote,
+} from './flows/new.js';
+import {
+  runRepeatMenu,
+  runRepeatScheduled,
+  runRepeatRecurring,
+  runRepeatConnector,
+} from './flows/repeat.js';
+import { runConnectorsMenu } from './flows/connectors.js';
+import { runAgent, runAsk } from './flows/agent.js';
+import { isMainnetCluster } from './flows/safetyGate.js';
+import { friendlyBridgeError } from './flows/_shared.js';
+import { runSignIn, runSignOut, showSignInStatus } from './flows/signIn.js';
+import { pickInbox, pickDoneFilter } from './flows/menus.js';
+import { runDoneList, type DoneFilter } from './flows/done.js';
+import { pickPendingAction } from './flows/pickAction.js';
+import { runScheduleManage } from './flows/scheduleManage.js';
+import { runSessionsMenu } from './flows/sessions.js';
+import { runAgentPaymentsMenu } from './flows/agentPayments.js';
+import { runSkillsMenu } from './flows/skills.js';
+import { runPreferencesMenu } from './flows/preferences.js';
+import { ensureTtyOrExit, withCancelGuard, select as tuiSelect, header as tuiHeader, badge as tuiBadge, kv as tuiKv, divider as tuiDivider, password as tuiPassword, input as tuiInput, confirm as tuiConfirm, spinner as tuiSpinner } from './tui/index.js';
+import { PROOF_SPECS, listProofSpecs, resolveProofSpec, type ProofSpec } from './forms/proofSpecs.js';
+import { promptProofForm } from './forms/proofForm.js';
+
 const CLI_VERSION = '1.0.0';
 
 type Cluster = 'mainnet-beta' | 'testnet' | 'devnet' | 'localnet';
@@ -114,6 +149,7 @@ const DEFAULT_BIRDEYE_REST_BASE = 'https://public-api.birdeye.so';
 const SETUP_ENV_KEYS = [
   'SOLANA_RPC_URL',
   'HELIUS_RPC_URL',
+  'HELIUS_API_KEY',
   'JUPITER_API_KEY',
   'JUP_API_KEY',
   'JUPITER_SWAP_BASE_URL',
@@ -153,6 +189,7 @@ interface SetupCommandOptions {
   jupiterApiUrl?: string;
   birdeyeApiKey?: string;
   birdeyeRestBase?: string;
+  heliusApiKey?: string;
   yes: boolean;
 }
 
@@ -336,6 +373,10 @@ interface ResearchArtifact {
   payloadHash: string;
   signature?: string;
   requestId?: string;
+  // Set when the artifact was authored via the /proof flow. Lets /proof-list
+  // group by tier without re-parsing kinds.
+  category?: 'common' | 'advanced';
+  fields?: Record<string, string>;
 }
 
 interface ResearchLab {
@@ -523,8 +564,16 @@ async function dispatch(parsed: ParsedArgs): Promise<unknown> {
     case 'device-agent':
       return dispatchDeviceAgent(parsed);
     case 'connector':
-    case 'connectors':
       return dispatchConnectorGroup(parsed);
+    case 'connectors':
+      if (parsed.positionals.length === 1) {
+        await runConnectorsMenu(parsed.options);
+        return NO_OUTPUT;
+      }
+      return dispatchConnectorGroup({
+        ...parsed,
+        positionals: ['connector', ...parsed.positionals.slice(1)],
+      });
     case 'read':
       return dispatchRead(parsed);
     case 'market':
@@ -545,7 +594,6 @@ async function dispatch(parsed: ParsedArgs): Promise<unknown> {
     case 'profile':
       return dispatchProfile(parsed);
     case 'prefs':
-    case 'preferences':
       return dispatchPrefs(parsed);
     case 'spend-limits':
       return dispatchSpendLimits(parsed);
@@ -587,6 +635,131 @@ async function dispatch(parsed: ParsedArgs): Promise<unknown> {
       return dispatchEvidence(parsed);
     case 'bridge-agents':
       return dispatchBridgeAgents(parsed);
+
+    // v1.1 — flow-first one-shot commands. Each requires an interactive TTY
+    // (inquirer prompts), spawns the bridge + wallet host if needed, then
+    // drops into the form. The cancel guard prints "Cancelled." cleanly if
+    // the user hits Ctrl+C mid-prompt.
+    case 'new':
+      ensureTtyOrExit('new');
+      await connectOneShot(parsed.options);
+      await withCancelGuard(() => runNewMenu(parsed.options));
+      return NO_OUTPUT;
+    case 'new-send':
+      ensureTtyOrExit('new-send');
+      await connectOneShot(parsed.options);
+      await withCancelGuard(() => runNewSend(parsed.options));
+      return NO_OUTPUT;
+    case 'new-spl':
+      ensureTtyOrExit('new-spl');
+      await connectOneShot(parsed.options);
+      await withCancelGuard(() => runNewSpl(parsed.options));
+      return NO_OUTPUT;
+    case 'new-swap':
+      ensureTtyOrExit('new-swap');
+      await connectOneShot(parsed.options);
+      await withCancelGuard(() => runNewSwap(parsed.options));
+      return NO_OUTPUT;
+    case 'swap-quote':
+      ensureTtyOrExit('swap-quote');
+      await connectOneShot(parsed.options);
+      await withCancelGuard(() => runSwapQuote(parsed.options));
+      return NO_OUTPUT;
+    case 'new-connector':
+      ensureTtyOrExit('new-connector');
+      await connectOneShot(parsed.options);
+      await withCancelGuard(() => runNewConnector(parsed.options));
+      return NO_OUTPUT;
+    case 'repeat':
+      ensureTtyOrExit('repeat');
+      await connectOneShot(parsed.options);
+      await withCancelGuard(() => runRepeatMenu(parsed.options));
+      return NO_OUTPUT;
+    case 'repeat-scheduled':
+      ensureTtyOrExit('repeat-scheduled');
+      await connectOneShot(parsed.options);
+      await withCancelGuard(() => runRepeatScheduled(parsed.options));
+      return NO_OUTPUT;
+    case 'repeat-recurring':
+      ensureTtyOrExit('repeat-recurring');
+      await connectOneShot(parsed.options);
+      await withCancelGuard(() => runRepeatRecurring(parsed.options));
+      return NO_OUTPUT;
+    case 'repeat-connector':
+      ensureTtyOrExit('repeat-connector');
+      await connectOneShot(parsed.options);
+      await withCancelGuard(() => runRepeatConnector(parsed.options));
+      return NO_OUTPUT;
+    case 'agent': {
+      ensureTtyOrExit('agent');
+      const agentState = createOneShotState(parsed.options);
+      await withCancelGuard(() => runAgent(parsed.options, (plan, note) => signPlanAsProof(agentState, plan, note)));
+      return NO_OUTPUT;
+    }
+    case 'ask':
+      ensureTtyOrExit('ask');
+      await withCancelGuard(() => runAsk(parsed.options, parsed.positionals.slice(1).join(' ').trim() || undefined));
+      return NO_OUTPUT;
+    case 'sign-in':
+      ensureTtyOrExit('sign-in');
+      await withCancelGuard(() => runSignIn(parsed.options));
+      return NO_OUTPUT;
+    case 'sign-out':
+      await runSignOut(parsed.options);
+      return NO_OUTPUT;
+    case 'sign-in-status':
+      await showSignInStatus(parsed.options);
+      return NO_OUTPUT;
+    case 'sessions':
+      if (parsed.positionals.length === 1) {
+        ensureTtyOrExit('sessions');
+        await withCancelGuard(() => runSessionsMenu(parsed.options));
+        return NO_OUTPUT;
+      }
+      // /sessions <sub> → legacy session command tree
+      return dispatchSession({
+        ...parsed,
+        positionals: ['session', ...parsed.positionals.slice(1)],
+      });
+
+    // v1.2 — Round 3 flow-first commands (interactive only — TTY guarded)
+    case 'proof':
+    case 'proof-new':
+    case 'proof-list':
+    case 'proof-show':
+    case 'proof-delete': {
+      ensureTtyOrExit(command);
+      await connectOneShot(parsed.options);
+      const oneShotState = createOneShotState(parsed.options);
+      const sub = command === 'proof' ? parsed.positionals.slice(1)
+        : command === 'proof-new' ? ['new', ...parsed.positionals.slice(1)]
+        : command === 'proof-list' ? ['list']
+        : command === 'proof-show' ? ['show', ...parsed.positionals.slice(1)]
+        : ['delete', ...parsed.positionals.slice(1)];
+      await withCancelGuard(() => runProofCommand(oneShotState, sub));
+      return NO_OUTPUT;
+    }
+    case 'agent-payments':
+      ensureTtyOrExit('agent-payments');
+      await withCancelGuard(() => runAgentPaymentsMenu(parsed.options));
+      return NO_OUTPUT;
+    case 'api-keys':
+    case 'keys':
+      ensureTtyOrExit('api-keys');
+      await withCancelGuard(() => runApiKeysMenu(createOneShotState(parsed.options)));
+      return NO_OUTPUT;
+    case 'preferences':
+    case 'prefs-menu':
+      ensureTtyOrExit('preferences');
+      await withCancelGuard(() => runPreferencesMenu(parsed.options));
+      return NO_OUTPUT;
+    case 'done':
+      ensureTtyOrExit('done');
+      {
+        const filter = (parsed.positionals[1] as DoneFilter | undefined) ?? await pickDoneFilter();
+        await runDoneList(parsed.options, filter);
+      }
+      return NO_OUTPUT;
 
     default:
       // Friendly prepare aliases: route `prepare marinade-stake ...` etc. before failing.
@@ -804,6 +977,7 @@ async function setupUpdates(
   const currentRpcUrl = firstValue(env.values, 'SOLANA_RPC_URL', 'HELIUS_RPC_URL') ?? '';
   const currentJupiterApiKey = firstValue(env.values, 'JUPITER_API_KEY', 'JUP_API_KEY') ?? '';
   const currentBirdeyeApiKey = env.values.BIRDEYE_API_KEY ?? '';
+  const currentHeliusApiKey = env.values.HELIUS_API_KEY ?? '';
   let rpcUrl = setupOptions.rpcUrl ?? currentRpcUrl;
   let jupiterApiKey = setupOptions.jupiterApiKey ?? currentJupiterApiKey;
   let jupiterUltraBase = setupOptions.jupiterUltraBase
@@ -817,13 +991,15 @@ async function setupUpdates(
   let birdeyeRestBase = setupOptions.birdeyeRestBase
     ?? env.values.BIRDEYE_REST_BASE
     ?? DEFAULT_BIRDEYE_REST_BASE;
+  let heliusApiKey = setupOptions.heliusApiKey ?? currentHeliusApiKey;
 
   const hasExplicitValues = setupOptions.rpcUrl !== undefined
     || setupOptions.jupiterApiKey !== undefined
     || setupOptions.jupiterUltraBase !== undefined
     || setupOptions.jupiterApiUrl !== undefined
     || setupOptions.birdeyeApiKey !== undefined
-    || setupOptions.birdeyeRestBase !== undefined;
+    || setupOptions.birdeyeRestBase !== undefined
+    || setupOptions.heliusApiKey !== undefined;
   const shouldPrompt = rl !== null || (!setupOptions.yes && process.stdin.isTTY && !hasExplicitValues);
   if (shouldPrompt) {
     const setupRl = rl ?? readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -831,6 +1007,7 @@ async function setupUpdates(
       printSection('Local Runtime Setup');
       console.log(`Writing setup to ${options.envPath}`);
       rpcUrl = await promptExistingSecret(setupRl, 'Solana RPC URL', currentRpcUrl);
+      heliusApiKey = await promptExistingSecret(setupRl, 'Helius API key (unlocks mint creation + tx history atoms; blank to skip)', currentHeliusApiKey);
       jupiterApiKey = await promptExistingSecret(setupRl, 'Jupiter API key', currentJupiterApiKey);
       jupiterUltraBase = await prompt(setupRl, 'Jupiter Swap API v2 base URL', jupiterUltraBase);
       jupiterApiUrl = await prompt(setupRl, 'Legacy Jupiter API URL', jupiterApiUrl);
@@ -848,6 +1025,9 @@ async function setupUpdates(
     const normalizedRpcUrl = normalizeSetupUrl(rpcUrl, 'Solana RPC URL');
     updates.SOLANA_RPC_URL = normalizedRpcUrl;
     updates.HELIUS_RPC_URL = normalizedRpcUrl;
+  }
+  if (heliusApiKey.trim()) {
+    updates.HELIUS_API_KEY = heliusApiKey.trim();
   }
   if (jupiterApiKey.trim()) {
     updates.JUPITER_API_KEY = jupiterApiKey.trim();
@@ -905,6 +1085,12 @@ function parseSetupCommandOptions(args: string[]): SetupCommandOptions {
     if (flag === '--birdeye-rest-base' || flag === '--birdeye-api-url') {
       const value = optionArgument(args, index, flag, inlineValue);
       options.birdeyeRestBase = value.value;
+      index = value.index;
+      continue;
+    }
+    if (flag === '--helius-api-key') {
+      const value = optionArgument(args, index, flag, inlineValue);
+      options.heliusApiKey = value.value;
       index = value.index;
       continue;
     }
@@ -1196,6 +1382,7 @@ async function runTerminalApp(parsed: ParsedArgs): Promise<void> {
     renderBanner(state);
     await bootstrapTerminalApp(state);
     await renderDashboard(state);
+    await maybePrintOnboardingHint(state);
     printCommandMenu();
 
     console.log(colorize(state.options, 'Type a command to get started (try /connect).', 'muted'));
@@ -1216,6 +1403,29 @@ async function runTerminalApp(parsed: ParsedArgs): Promise<void> {
   }
 }
 
+// First-boot onboarding hint: shows once per launch when the user has no keys
+// configured AND no wallet connected. Skipped silently for returning users.
+async function maybePrintOnboardingHint(state: TerminalAppState): Promise<void> {
+  const env = await readEnvValues(state.options.envPath).catch(() => ({ found: false, raw: '', values: {} as Record<string, string> }));
+  const hasKey = (k: string): boolean => {
+    const fromFile = env.values[k];
+    if (typeof fromFile === 'string' && fromFile.trim().length > 0) return true;
+    return Boolean(process.env[k] && process.env[k]!.length > 0);
+  };
+  const anyKey = hasKey('SOLANA_RPC_URL') || hasKey('HELIUS_RPC_URL') || hasKey('JUPITER_API_KEY') || hasKey('BIRDEYE_API_KEY') || hasKey('HELIUS_API_KEY');
+  const status = await tryBridgeRequest<WalletStatus>(state.options, '/bridge/action/status');
+  const walletConnected = status.ok && status.value.connected;
+  if (anyKey || walletConnected) return;
+
+  console.log();
+  console.log(colorize(state.options, 'New here? Quick setup:', 'green'));
+  console.log('  1. /api-keys     — add your RPC + Jupiter / Birdeye / Helius keys (web fallback works without)');
+  console.log('  2. /sign-in      — SIWS into your cloud workspace (optional, enables cross-device sync)');
+  console.log('  3. /connect      — link a Solana wallet via the browser (Phantom, Backpack, Solflare…)');
+  console.log('  4. /new or /agent — your first action');
+  console.log();
+}
+
 async function bootstrapTerminalApp(state: TerminalAppState): Promise<void> {
   printMuted(state.options, 'Checking local bridge and wallet host...');
   await ensureBridge(state).catch((err) => {
@@ -1226,9 +1436,9 @@ async function bootstrapTerminalApp(state: TerminalAppState): Promise<void> {
     pushLog(state, `wallet host bootstrap failed: ${errorMessage(err)}`);
     printWarn(state.options, `Wallet host was not started automatically: ${errorMessage(err)}`);
   });
-  await openWalletHost(state.options).catch((err) => {
-    pushLog(state, `open wallet host failed: ${errorMessage(err)}`);
-  });
+  // v1.1 — the browser tab no longer opens on boot. It opens only for the four
+  // wallet-signing intents (connect, disconnect, approve, sign). Run /connect
+  // when you want to attach a wallet.
 }
 
 function createOneShotState(options: GlobalOptions): TerminalAppState {
@@ -1267,14 +1477,14 @@ async function connectInteractive(
     await ensureBridge(state);
     await ensureBrowserHost(state);
   }
-  await openWalletHost(state.options, cli);
   const status = await tryBridgeRequest<WalletStatus>(state.options, '/bridge/action/status');
-  if (status.ok && status.value.connected && status.value.address) {
+  if (status.ok && status.value.connected && status.value.address && cli.intent === 'connect') {
     if (!state.options.json) {
       printOk(state.options, `Wallet connected: ${status.value.address}`);
     }
     return;
   }
+  await openWalletHost(state.options, cli);
   if (!state.options.json) {
     printSection('Connect Wallet');
     console.log(`Opened: ${walletHostLaunchUrl(state.options, cli)}`);
@@ -1303,10 +1513,10 @@ async function disconnectInteractive(state: TerminalAppState): Promise<void> {
     }
     return;
   }
-  await openWalletHost(state.options, { intent: 'connect' });
+  await openWalletHost(state.options, { intent: 'disconnect' });
   if (!state.options.json) {
     printSection('Disconnect Wallet');
-    console.log(`Opened: ${walletHostLaunchUrl(state.options, { intent: 'connect' })}`);
+    console.log(`Opened: ${walletHostLaunchUrl(state.options, { intent: 'disconnect' })}`);
     console.log('In the browser window, click "Disconnect wallet". The terminal will detect the change.');
   }
   const start = Date.now();
@@ -1337,6 +1547,11 @@ async function handleTerminalCommand(
       case 'help':
       case '?':
         printCommandMenu();
+        return false;
+      case 'version':
+      case '-v':
+      case '--version':
+        await printVersionInfo(state);
         return false;
       case 'quit':
       case 'exit':
@@ -1373,21 +1588,118 @@ async function handleTerminalCommand(
         printOk(state.options, `Bridge reachable at ${state.options.bridgeUrl}.`);
         return false;
       case 'inbox':
-        await printInbox(state, args[0] === 'compact' ? args[1] ?? 'all' : args[0] ?? 'all', args[0] === 'compact');
+        if (args.length === 0) {
+          const which = await pickInbox();
+          if (which === 'new') {
+            await printInbox(state, 'ready', false);
+          } else {
+            await withCancelGuard(() => runScheduleManage(state.options));
+          }
+        } else {
+          await printInbox(state, args[0] === 'compact' ? args[1] ?? 'all' : args[0] ?? 'all', args[0] === 'compact');
+        }
         return false;
-      case 'inspect':
-        await inspectPreparedActionInteractive(state, args[0]);
+      case 'inbox-new':
+        await printInbox(state, 'ready', false);
         return false;
+      case 'inbox-repeat':
+        await withCancelGuard(() => runScheduleManage(state.options));
+        return false;
+      case 'repeat-manage':
+        await withCancelGuard(() => runScheduleManage(state.options));
+        return false;
+      case 'agent-payments':
+        await withCancelGuard(() => runAgentPaymentsMenu(state.options));
+        return false;
+      case 'api-keys':
+      case 'keys':
+        await withCancelGuard(() => runApiKeysMenu(state));
+        return false;
+      case 'preferences':
+      case 'prefs-menu':
+        await withCancelGuard(() => runPreferencesMenu(state.options));
+        return false;
+      case 'skills':
+        if (args.length === 0) {
+          await withCancelGuard(() => runSkillsMenu(state.options));
+          return false;
+        }
+        // /skills <sub> falls through to the legacy dispatch tree for scripting.
+        return await (async () => {
+          const parsedArgs: ParsedArgs = { options: state.options, positionals: ['skills', ...args] };
+          const result = await dispatch(parsedArgs);
+          printResult(result, state.options);
+          return false;
+        })();
+      case 'proof':
+        await withCancelGuard(() => runProofCommand(state, args));
+        return false;
+      case 'proof-new':
+        await withCancelGuard(() => runProofCommand(state, ['new', ...args]));
+        return false;
+      case 'proof-list':
+        await runProofCommand(state, ['list']);
+        return false;
+      case 'proof-show':
+        await runProofCommand(state, ['show', ...args]);
+        return false;
+      case 'proof-delete':
+        await runProofCommand(state, ['delete', ...args]);
+        return false;
+      case 'sessions':
+        if (args.length === 0) {
+          await withCancelGuard(() => runSessionsMenu(state.options));
+          return false;
+        }
+        // /sessions <subcommand> falls through to the legacy session command tree
+        // for scripting (list / create / spend / revoke / history / settle).
+        return await (async () => {
+          const parsedArgs: ParsedArgs = { options: state.options, positionals: ['session', ...args] };
+          const result = await dispatch(parsedArgs);
+          printResult(result, state.options);
+          return false;
+        })();
+      case 'done': {
+        const filter: DoneFilter = args.length === 0
+          ? await pickDoneFilter()
+          : (args[0] as DoneFilter);
+        await runDoneList(state.options, filter);
+        return false;
+      }
+      case 'done-completed':
+        await runDoneList(state.options, 'one-time');
+        return false;
+      case 'done-repeats':
+        await runDoneList(state.options, 'repeats');
+        return false;
+      case 'done-proofs':
+        await runDoneList(state.options, 'proofs');
+        return false;
+      case 'done-receipts':
+        await runDoneList(state.options, 'receipts');
+        return false;
+      case 'inspect': {
+        const id = args[0] ?? await pickPendingAction(state.options, 'inspect');
+        if (id) await inspectPreparedActionInteractive(state, id);
+        return false;
+      }
       case 'approve':
-      case 'sign':
-        await approvePreparedAction(state, args[0]);
+      case 'sign': {
+        const id = args[0] ?? await pickPendingAction(state.options, 'approve');
+        if (id) await approvePreparedAction(state, id);
         return false;
-      case 'reject':
-        await rejectPreparedAction(state, args[0], args.slice(1).join(' ') || undefined);
+      }
+      case 'reject': {
+        const id = args[0] ?? await pickPendingAction(state.options, 'reject');
+        const reason = args.slice(1).join(' ') || undefined;
+        if (id) await rejectPreparedAction(state, id, reason);
         return false;
-      case 'archive':
-        await archivePreparedAction(state, args[0]);
+      }
+      case 'archive': {
+        const id = args[0] ?? await pickPendingAction(state.options, 'archive');
+        if (id) await archivePreparedAction(state, id);
         return false;
+      }
       case 'schedule':
         await runScheduleCommand(state, rl, args);
         return false;
@@ -1411,6 +1723,78 @@ async function handleTerminalCommand(
         await renderDashboard(state);
         return false;
 
+      // v1.1 — flow-first command surface. Mirrors the web app's templates and
+      // tabs. Browser only opens for wallet signing intents (connect, approve,
+      // sign); all form input stays in the terminal. Each flow body runs
+      // through `withCancelGuard` so Ctrl+C prints "Cancelled." cleanly.
+      case 'new':
+        await requireWalletConnected(state);
+        await withCancelGuard(() => runNewMenu(state.options));
+        return false;
+      case 'new-send':
+        await requireWalletConnected(state);
+        await withCancelGuard(() => runNewSend(state.options));
+        return false;
+      case 'new-spl':
+        await requireWalletConnected(state);
+        await withCancelGuard(() => runNewSpl(state.options));
+        return false;
+      case 'new-swap':
+        await requireWalletConnected(state);
+        await withCancelGuard(() => runNewSwap(state.options));
+        return false;
+      case 'swap-quote':
+        await requireWalletConnected(state);
+        await withCancelGuard(() => runSwapQuote(state.options));
+        return false;
+      case 'new-connector':
+        await requireWalletConnected(state);
+        await withCancelGuard(() => runNewConnector(state.options));
+        return false;
+      case 'repeat':
+        await requireWalletConnected(state);
+        await withCancelGuard(() => runRepeatMenu(state.options));
+        return false;
+      case 'repeat-scheduled':
+        await requireWalletConnected(state);
+        await withCancelGuard(() => runRepeatScheduled(state.options));
+        return false;
+      case 'repeat-recurring':
+        await requireWalletConnected(state);
+        await withCancelGuard(() => runRepeatRecurring(state.options));
+        return false;
+      case 'repeat-connector':
+        await requireWalletConnected(state);
+        await withCancelGuard(() => runRepeatConnector(state.options));
+        return false;
+      case 'connectors': {
+        if (args.length === 0) {
+          await withCancelGuard(() => runConnectorsMenu(state.options));
+          return false;
+        }
+        // /connectors <subcommand> falls through to the legacy connector group
+        // dispatcher (list | info | read | prepare) so scripts keep working.
+        const parsedArgs: ParsedArgs = { options: state.options, positionals: ['connector', ...args] };
+        const result = await dispatch(parsedArgs);
+        printResult(result, state.options);
+        return false;
+      }
+      case 'agent':
+        await withCancelGuard(() => runAgent(state.options, (plan, note) => signPlanAsProof(state, plan, note)));
+        return false;
+      case 'ask':
+        await withCancelGuard(() => runAsk(state.options, args.join(' ').trim() || undefined));
+        return false;
+      case 'sign-in':
+        await withCancelGuard(() => runSignIn(state.options));
+        return false;
+      case 'sign-out':
+        await runSignOut(state.options);
+        return false;
+      case 'sign-in-status':
+        await showSignInStatus(state.options);
+        return false;
+
       // v1.0 — interactive REPL access to the new command groups. These all
       // delegate to the same dispatchers as one-shot mode so behavior stays
       // consistent. Results print as JSON via printResult.
@@ -1420,18 +1804,15 @@ async function handleTerminalCommand(
       case 'auth':
       case 'profile':
       case 'prefs':
-      case 'preferences':
       case 'spend-limits':
       case 'device-agent':
       case 'connector':
-      case 'connectors':
       case 'read':
       case 'market':
       case 'tokens':
       case 'helius-history':
       case 'swap':
       case 'ai':
-      case 'skills':
       case 'signals':
       case 'ap2':
       case 'acp':
@@ -1462,10 +1843,17 @@ async function handleTerminalCommand(
         return false;
     }
   } catch (err) {
-    printError(state.options, errorMessage(err));
+    const friendly = friendlyBridgeError(err, state.options);
+    if (friendly) {
+      printError(state.options, friendly);
+    } else {
+      printError(state.options, errorMessage(err));
+    }
     return false;
   }
 }
+
+// `friendlyBridgeError` is shared with flow modules — see flows/_shared.ts.
 
 async function printWallet(state: TerminalAppState): Promise<void> {
   const [statusResult, healthResult] = await Promise.all([
@@ -1500,11 +1888,12 @@ async function printBalances(state: TerminalAppState): Promise<void> {
   const balances = await bridgeRequest<JsonRecord>(state.options, '/bridge/action/balances');
   printSection('Balances');
   console.log(`Address: ${String(balances.address ?? '')}`);
-  console.log(`SOL: ${String(balances.sol ?? '0')}`);
   const tokens = Array.isArray(balances.tokens) ? balances.tokens : [];
-  if (tokens.length > 0) {
-    renderUnknownTable(tokens, ['symbol', 'amount', 'mint']);
-  }
+  const rows = [
+    { symbol: 'SOL', amount: String(balances.sol ?? '0'), mint: 'native' },
+    ...tokens,
+  ];
+  renderUnknownTable(rows, ['symbol', 'amount', 'mint']);
 }
 
 async function printPortfolio(state: TerminalAppState): Promise<void> {
@@ -1531,16 +1920,37 @@ async function printPortfolio(state: TerminalAppState): Promise<void> {
 }
 
 async function printInbox(state: TerminalAppState, filter = 'all', compact = false): Promise<void> {
-  const response = await refreshPreparedActions(state.options);
-  const visible = filterPreparedActions(response.actions, filter);
+  const [actionsResponse, recurringResponse] = await Promise.all([
+    refreshPreparedActions(state.options),
+    tryBridgeRequest<{ recurringPayments?: RecurringPayment[] }>(state.options, '/bridge/recurring-payments'),
+  ]);
+  const visible = filterPreparedActions(actionsResponse.actions, filter);
   state.lastActions = visible;
+  const counts = computeInboxCounts(actionsResponse.actions, recurringResponse.ok ? recurringResponse.value.recurringPayments ?? [] : []);
   printSection('Approval Inbox');
-  console.log(`${visible.length} shown, ${response.actions.length} total. Filter: ${filter}`);
+  console.log(
+    `${colorize(state.options, 'Needs approval', 'cyan')}: ${counts.needsApproval}`
+    + `  ·  ${colorize(state.options, 'Active repeats', 'cyan')}: ${counts.activeRepeats}`
+    + `  ·  ${colorize(state.options, 'Failed', 'cyan')}: ${counts.failed}`
+    + `  ·  ${colorize(state.options, 'Completed', 'cyan')}: ${counts.completed}`,
+  );
+  console.log(`Filter: ${filter}  ·  ${visible.length} shown / ${actionsResponse.actions.length} total`);
   if (compact) {
     renderPreparedActionsCompact(visible);
   } else {
     renderPreparedActionsDetailed(visible);
   }
+}
+
+function computeInboxCounts(
+  actions: PreparedAction[],
+  recurring: RecurringPayment[],
+): { needsApproval: number; activeRepeats: number; failed: number; completed: number } {
+  const needsApproval = actions.filter((a) => a.status === 'ready' || a.status === 'overdue' || a.status === 'blocked').length;
+  const failed = actions.filter((a) => a.status === 'failed' || a.txStatus === 'failed').length;
+  const completed = actions.filter((a) => a.status === 'approved' && (a.txStatus === 'confirmed' || a.txStatus === 'pending')).length;
+  const activeRepeats = recurring.filter((r) => r.status === 'active').length;
+  return { needsApproval, activeRepeats, failed, completed };
 }
 
 async function approvePreparedAction(state: TerminalAppState, idOrIndex: string | undefined): Promise<void> {
@@ -1554,8 +1964,51 @@ async function approvePreparedAction(state: TerminalAppState, idOrIndex: string 
     body: JSON.stringify({ actionId: action.id }),
   });
   printOk(state.options, `Approved prepared action ${action.id}.`);
-  console.log(stableJson(result));
-  await printInbox(state, 'all').catch(() => undefined);
+  renderApproveResult(state.options, result, action);
+  // Auto-poll once after a short delay to upgrade pending -> confirmed/failed.
+  const tx = await waitForPreparedActionTxStatus(state.options, action.id, 10_000).catch(() => 'timeout' as const);
+  if (tx === 'confirmed') {
+    printOk(state.options, 'On-chain: confirmed.');
+  } else if (tx === 'failed') {
+    printError(state.options, 'On-chain: failed.');
+  } else if (tx === 'timeout') {
+    printMuted(state.options, 'Still pending — re-run /inbox to refresh status.');
+  }
+}
+
+function renderApproveResult(options: GlobalOptions, raw: unknown, action: PreparedAction): void {
+  const result = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const innerAction = (result.preparedAction && typeof result.preparedAction === 'object'
+    ? result.preparedAction
+    : {}) as Record<string, unknown>;
+  const innerResult = (result.result && typeof result.result === 'object'
+    ? result.result
+    : {}) as Record<string, unknown>;
+  const txid = (innerAction.txid ?? innerResult.txid ?? action.txid) as string | undefined;
+  const explorer = (innerResult.explorerUrl ?? (txid ? explorerTxUrl(txid, action.cluster) : '')) as string;
+  const amount = (innerResult.amountSol ?? innerResult.amount ?? amountLabel(action)) as string | undefined;
+  const recipient = (innerResult.recipient ?? action.params['recipient'] ?? recipientLabel(action)) as string | undefined;
+
+  const rows: Array<[string, string]> = [];
+  if (action.id) rows.push(['Action', action.id]);
+  if (amount) rows.push(['Amount', `${amount} ${tokenLabel(action) ?? ''}`.trim()]);
+  if (recipient) rows.push(['Recipient', String(recipient)]);
+  rows.push(['Wallet', action.walletAddress]);
+  rows.push(['Network', action.cluster]);
+  if (txid) {
+    rows.push(['Txid', txid]);
+    rows.push(['Explorer', explorer]);
+  }
+  const status = innerAction.status ?? action.status;
+  const txStatus = innerAction.txStatus ?? action.txStatus;
+  rows.push(['Status', `${status}${txStatus ? ` (${txStatus})` : ''}`]);
+
+  console.log();
+  console.log(colorize(options, 'Approved', 'green'));
+  for (const [label, value] of rows) {
+    console.log(`  ${colorize(options, label.padEnd(9), 'muted')}  ${value}`);
+  }
+  console.log();
 }
 
 async function rejectPreparedAction(
@@ -1898,6 +2351,513 @@ async function runResearchCommand(
   }
 }
 
+// `/api-keys` — friendly view + editor for the local env keys the bridge uses
+// when resolving policy atoms. Mirrors the web's setup screens. Keys go to
+// ~/.solana-agent-wallet/.env and live alongside whatever /setup wrote. Missing
+// keys silently degrade to web-search fallback in the agent review pipeline.
+type ApiKeyId = 'rpc' | 'helius' | 'jupiter' | 'birdeye';
+
+interface ApiKeyRow {
+  id: ApiKeyId;
+  label: string;
+  envKey: string;
+  provides: string;
+  testFn: (options: GlobalOptions) => Promise<TestResult>;
+  secret: boolean;
+}
+
+async function runApiKeysMenu(state: TerminalAppState): Promise<void> {
+  while (true) {
+    const env = await readEnvValues(state.options.envPath);
+    const rows: ApiKeyRow[] = [
+      { id: 'rpc',     label: 'Solana RPC URL',  envKey: 'SOLANA_RPC_URL', provides: 'on-chain reads + tx send (also aliased as HELIUS_RPC_URL)', secret: false, testFn: testRpc },
+      { id: 'helius',  label: 'Helius API key',  envKey: 'HELIUS_API_KEY', provides: 'token age (mint creation) + parsed tx history',                  secret: true,  testFn: testHelius },
+      { id: 'jupiter', label: 'Jupiter API key', envKey: 'JUPITER_API_KEY', provides: 'live token prices + swap routes + token audit',                  secret: true,  testFn: testJupiter },
+      { id: 'birdeye', label: 'BirdEye API key', envKey: 'BIRDEYE_API_KEY', provides: 'token security (mint/freeze authority) + market depth',           secret: true,  testFn: testBirdeye },
+    ];
+
+    console.log();
+    console.log(`${colorize(state.options, 'API keys', 'green')}  ·  ${colorize(state.options, state.options.envPath, 'muted')}`);
+    console.log(colorize(state.options, 'Missing keys are fine — the agent falls back to web search for that tier.', 'muted'));
+    console.log();
+
+    const choices: Array<{ name: string; value: string }> = rows.map((row, i) => {
+      const value = env.values[row.envKey] ?? '';
+      const status = value ? colorize(state.options, '● set', 'green') : colorize(state.options, '○ missing', 'yellow');
+      const preview = value ? maskedPreview(value, row.secret) : '—';
+      return { name: `${String(i + 1).padStart(2, ' ')}.  ${status}  ${row.label.padEnd(18)} ${preview}`, value: row.id };
+    });
+    choices.push({ name: '← Back to main menu', value: '__back__' });
+
+    const pickedId = await tuiSelect<string>({
+      message: 'Pick an API key to manage',
+      pageSize: choices.length,
+      choices,
+    });
+    if (pickedId === '__back__') return;
+    const row = rows.find((r) => r.id === pickedId);
+    if (!row) continue;
+    await manageApiKey(state, env.values[row.envKey] ?? '', row);
+  }
+}
+
+async function manageApiKey(
+  state: TerminalAppState,
+  current: string,
+  row: ApiKeyRow,
+): Promise<void> {
+  console.log();
+  console.log(tuiHeader(row.label));
+  console.log(tuiKv([
+    ['Env var',  row.envKey],
+    ['Current',  current ? maskedPreview(current, row.secret) : tuiBadge('not set', 'muted')],
+    ['Provides', row.provides],
+  ]));
+  console.log(tuiDivider());
+
+  const action = await tuiSelect<'set' | 'replace' | 'remove' | 'test' | 'back'>({
+    message: 'What next?',
+    choices: current
+      ? [
+          { name: 'Replace value',   value: 'replace' },
+          { name: 'Remove (unset)',  value: 'remove' },
+          { name: 'Test reachability', value: 'test' },
+          { name: '← Back',          value: 'back' },
+        ]
+      : [
+          { name: 'Set value',       value: 'set' },
+          { name: 'Test reachability', value: 'test' },
+          { name: '← Back',          value: 'back' },
+        ],
+  });
+  if (action === 'back') return;
+  if (action === 'remove') {
+    const yes = await tuiConfirm({ message: `Unset ${row.envKey}?`, default: false });
+    if (!yes) return;
+    await writeEnvUpdates(state.options.envPath, { [row.envKey]: '' });
+    console.log(tuiBadge(`${row.envKey} unset.`, 'ok'));
+    return;
+  }
+  if (action === 'test') {
+    const spin = tuiSpinner(`Testing ${row.label}…`);
+    try {
+      const result = await row.testFn(state.options);
+      if (result.ok) {
+        spin.succeed(result.detail);
+      } else {
+        spin.fail(`${result.detail}  [${result.kind}]`);
+        // Surface a recovery tip based on the failure category.
+        if (result.kind === 'unauthorized') console.log(tuiBadge('Tip: set or replace the key from the menu, then test again.', 'muted'));
+        if (result.kind === 'bridge-offline') console.log(tuiBadge('Tip: run /doctor or /bridge start to bring the bridge back online.', 'muted'));
+      }
+    } catch (err) {
+      spin.fail(`Test failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return;
+  }
+  // set or replace
+  const rawNext = row.secret
+    ? await tuiPassword({ message: `${row.label} value:` })
+    : await tuiInput({ message: `${row.label} value:`, default: current });
+  if (!rawNext.trim()) {
+    console.log(tuiBadge('Empty input — no change.', 'muted'));
+    return;
+  }
+  let next = rawNext.trim();
+  // URL keys go through normalizeSetupUrl so users can't save malformed URLs
+  // (also normalizes http→https, removes trailing slash, etc. — same as /setup).
+  if (row.envKey === 'SOLANA_RPC_URL') {
+    try {
+      next = normalizeSetupUrl(next, row.label);
+    } catch (err) {
+      console.log(tuiBadge(`Invalid URL: ${err instanceof Error ? err.message : String(err)}`, 'err'));
+      return;
+    }
+  }
+  const updates: Record<string, string> = { [row.envKey]: next };
+  // Special: setting SOLANA_RPC_URL also writes HELIUS_RPC_URL (matches /setup).
+  if (row.envKey === 'SOLANA_RPC_URL') updates.HELIUS_RPC_URL = next;
+  // Special: setting JUPITER_API_KEY also writes JUP_API_KEY (legacy alias).
+  if (row.envKey === 'JUPITER_API_KEY') updates.JUP_API_KEY = next;
+  await writeEnvUpdates(state.options.envPath, updates);
+  console.log(tuiBadge(`${row.envKey} saved.  Now: ${maskedPreview(next, row.secret)}`, 'ok'));
+}
+
+type TestKind = 'ok' | 'missing' | 'unauthorized' | 'network' | 'bridge-offline';
+
+interface TestResult {
+  ok: boolean;
+  kind: TestKind;
+  detail: string;
+}
+
+function categorizeError(err: unknown): { kind: TestKind; detail: string } {
+  const message = err instanceof Error ? err.message : String(err);
+  const lower = message.toLowerCase();
+  if (lower.includes('401') || lower.includes('unauthorized') || lower.includes('forbidden') || lower.includes('api key')) {
+    return { kind: 'unauthorized', detail: `${message} (key missing or rejected)` };
+  }
+  if (lower.includes('econnrefused') || lower.includes('socket') || lower.includes('connect') || lower.includes('bridge unreachable')) {
+    return { kind: 'bridge-offline', detail: `${message} (is the bridge running?)` };
+  }
+  if (lower.includes('timeout') || lower.includes('etimedout')) {
+    return { kind: 'network', detail: `${message} (network timeout)` };
+  }
+  return { kind: 'network', detail: message };
+}
+
+async function testRpc(options: GlobalOptions): Promise<TestResult> {
+  try {
+    const health = await bridgeRequest<BridgeHealth>(options, '/bridge/action/health');
+    const cluster = health.cluster ?? 'unknown';
+    const ok = Boolean(health.bridgeConnected ?? true);
+    return { ok, kind: ok ? 'ok' : 'network', detail: `Reachable — cluster ${cluster}` };
+  } catch (err) {
+    const { kind, detail } = categorizeError(err);
+    return { ok: false, kind, detail };
+  }
+}
+
+async function testHelius(options: GlobalOptions): Promise<TestResult> {
+  // Use the connected wallet if available so the Helius probe gets a real
+  // address. Falls back to the system program (which Helius will respond to
+  // with an empty list — still a valid auth + reachability check).
+  let wallet = '11111111111111111111111111111111';
+  const status = await tryBridgeRequest<{ connected?: boolean; address?: string }>(options, '/bridge/action/status');
+  if (status.ok && status.value.connected && typeof status.value.address === 'string') {
+    wallet = status.value.address;
+  }
+  try {
+    await bridgeRequest(options, '/bridge/action/helius-history', {
+      method: 'POST',
+      body: JSON.stringify({ wallet, limit: 1 }),
+    });
+    return { ok: true, kind: 'ok', detail: `Helius reachable (probed ${wallet.slice(0, 8)}…).` };
+  } catch (err) {
+    const { kind, detail } = categorizeError(err);
+    return { ok: false, kind, detail };
+  }
+}
+
+async function testJupiter(options: GlobalOptions): Promise<TestResult> {
+  try {
+    const result = await bridgeRequest<{ data?: unknown }>(options, '/bridge/action/swap-quote', {
+      method: 'POST',
+      body: JSON.stringify({ amount: '0.01', inputToken: 'SOL', outputToken: 'USDC' }),
+    });
+    return { ok: Boolean(result), kind: 'ok', detail: 'Jupiter quote endpoint OK.' };
+  } catch (err) {
+    const { kind, detail } = categorizeError(err);
+    return { ok: false, kind, detail };
+  }
+}
+
+async function testBirdeye(options: GlobalOptions): Promise<TestResult> {
+  try {
+    // The bridge exposes /bridge/birdeye/search; calling it with a common
+    // symbol ("SOL") is a cheap reachability + auth probe.
+    await bridgeRequest(options, '/bridge/birdeye/search', {
+      method: 'POST',
+      body: JSON.stringify({ query: 'SOL', limit: 1 }),
+    });
+    return { ok: true, kind: 'ok', detail: 'BirdEye search reachable.' };
+  } catch (err) {
+    const { kind, detail } = categorizeError(err);
+    return { ok: false, kind, detail };
+  }
+}
+
+function maskedPreview(value: string, secret: boolean): string {
+  if (!secret) return value.length > 50 ? `${value.slice(0, 47)}…` : value;
+  if (value.length <= 8) return '••••';
+  return `••••${value.slice(-4)}`;
+}
+
+// `/proof` — friendly Save Proof flow mirroring the web's "More → Save Proof"
+// page. Supports Common (5 multi-field receipts) and Advanced (15 evidence
+// labs). Signs with the existing wallet-host signing handshake and persists
+// to both the local artifact store and the bridge archive (matching the web).
+async function runProofCommand(
+  state: TerminalAppState,
+  args: string[],
+): Promise<void> {
+  const sub = (args[0] ?? '').toLowerCase();
+  if (sub === 'list') {
+    await listProofs(state);
+    return;
+  }
+  if (sub === 'show') {
+    const id = args[1];
+    if (!id) throw new Error('Usage: /proof show <artifact-id>');
+    await showProof(state, id);
+    return;
+  }
+  if (sub === 'delete') {
+    const id = args[1];
+    if (!id) throw new Error('Usage: /proof delete <artifact-id>');
+    await deleteProof(state, id);
+    return;
+  }
+  // bare /proof, /proof new, or /proof <kind|id> → new flow
+  await newProofFlow(state, args);
+}
+
+async function newProofFlow(state: TerminalAppState, args: string[]): Promise<void> {
+  await requireWalletConnected(state);
+
+  let spec: ProofSpec | undefined;
+  if (args[0] && args[0] !== 'new') {
+    spec = resolveProofSpec(args[0]);
+  }
+  if (!spec) {
+    const category = await tuiSelect<'common' | 'advanced'>({
+      message: 'Which proof tier?',
+      choices: [
+        { name: 'Common Proofs (5) — guided forms',         value: 'common',   description: 'Intent · Policy · Risk · Rejection · Tool Trace' },
+        { name: 'Advanced Proofs (15) — single-text labs',   value: 'advanced', description: 'Flight Recorder · Intent Auctions · Risk Co-Signers · …' },
+      ],
+    });
+    const candidates = listProofSpecs(category);
+    const pickedId = await tuiSelect<string>({
+      message: 'Which proof type?',
+      pageSize: Math.min(20, candidates.length + 1),
+      choices: candidates.map((s) => ({
+        name: s.title,
+        value: s.id,
+        description: s.summary.slice(0, 80),
+      })),
+    });
+    spec = listProofSpecs().find((s) => s.id === pickedId);
+  }
+  if (!spec) {
+    printError(state.options, 'Could not resolve proof spec.');
+    return;
+  }
+
+  const draft = await promptProofForm(spec);
+  const artifact = await buildResearchArtifact(state.options, { id: spec.id, title: spec.title, kind: spec.kind, defaultInput: spec.defaultInput ?? '', description: spec.description }, draft.input);
+  artifact.category = spec.category;
+  if (Object.keys(draft.fields).length > 0) artifact.fields = draft.fields;
+
+  // Preview before signing.
+  console.log();
+  console.log(tuiHeader('Preview'));
+  console.log(tuiKv([
+    ['Title',   spec.title],
+    ['Tier',    spec.category === 'common' ? tuiBadge('Common', 'ok') : tuiBadge('Advanced', 'warn')],
+    ['Kind',    spec.kind],
+    ['Wallet',  artifact.walletAddress ?? '—'],
+    ['Network', artifact.cluster],
+    ['Hash',    artifact.payloadHash.slice(0, 16) + '…'],
+  ]));
+  console.log(tuiDivider());
+  printMuted(state.options, 'Your wallet signs this evidence record only. No transaction is submitted.');
+
+  const approval = await signTextWithWallet(state, researchSigningMessage(artifact), `${artifact.title} proof`, 'low');
+  artifact.signature = approval.result?.signature;
+  artifact.requestId = approval.requestId;
+
+  // Local store (matches /research save behaviour).
+  await saveResearchArtifact(state.options, artifact);
+  // Bridge archive (matches web "/bridge/lab-artifacts" POST).
+  await tryBridgeSaveArtifact(state.options, artifact);
+
+  console.log();
+  console.log(tuiBadge('Proof saved', 'ok') + `  ${spec.title}`);
+  console.log(tuiKv([
+    ['ID',        artifact.id],
+    ['Signature', artifact.signature ? `${artifact.signature.slice(0, 22)}…` : '—'],
+  ]));
+}
+
+async function listProofs(state: TerminalAppState): Promise<void> {
+  const artifacts = await fetchAllArtifacts(state.options);
+  printSection('Proofs');
+  if (artifacts.length === 0) {
+    console.log('No saved proofs yet. Run /proof to create one.');
+    return;
+  }
+  const common = artifacts.filter((a) => artifactCategory(a) === 'common');
+  const advanced = artifacts.filter((a) => artifactCategory(a) === 'advanced');
+  console.log(`${tuiBadge('Common', 'ok')}: ${common.length}  ·  ${tuiBadge('Advanced', 'warn')}: ${advanced.length}  ·  Total: ${artifacts.length}`);
+  console.log('');
+  artifacts.forEach((a, i) => {
+    const cat = artifactCategory(a);
+    const chip = cat === 'common' ? tuiBadge('Common', 'ok') : tuiBadge('Advanced', 'warn');
+    console.log(`[${i + 1}] ${chip}  ${a.title}  ${a.kind}`);
+    console.log(`    ${a.id}`);
+    console.log(`    ${timeLabel(a.createdAt)}  ·  hash ${a.payloadHash.slice(0, 12)}…  ·  ${a.signature ? 'signed' : 'unsigned'}`);
+    if (i < artifacts.length - 1) console.log('');
+  });
+  console.log('\nTip: /proof show <id>  ·  /proof delete <id>  ·  /proof new');
+}
+
+async function showProof(state: TerminalAppState, id: string): Promise<void> {
+  const artifacts = await fetchAllArtifacts(state.options);
+  const found = resolveArtifact(artifacts, id);
+  if (!found) {
+    throw new Error(`Proof not found: ${id}`);
+  }
+  console.log();
+  console.log(tuiHeader(found.title));
+  console.log(tuiKv([
+    ['ID',         found.id],
+    ['Kind',       found.kind],
+    ['Tier',       artifactCategory(found) === 'common' ? tuiBadge('Common', 'ok') : tuiBadge('Advanced', 'warn')],
+    ['Wallet',     found.walletAddress ?? '—'],
+    ['Network',    found.cluster],
+    ['Created',    found.createdAt],
+    ['Hash',       found.payloadHash],
+    ['Signature',  found.signature ?? '—'],
+  ]));
+  if (found.fields && Object.keys(found.fields).length > 0) {
+    console.log('');
+    console.log(tuiHeader('Fields'));
+    console.log(tuiKv(Object.entries(found.fields)));
+  } else if (found.input) {
+    console.log('');
+    console.log(tuiHeader('Input'));
+    console.log(`  ${found.input.split('\n').join('\n  ')}`);
+  }
+  console.log(tuiDivider());
+}
+
+async function deleteProof(state: TerminalAppState, id: string): Promise<void> {
+  const artifacts = await fetchAllArtifacts(state.options);
+  const found = resolveArtifact(artifacts, id);
+  if (!found) {
+    throw new Error(`Proof not found: ${id}`);
+  }
+  await bridgeRequest(state.options, '/bridge/lab-artifacts/delete', {
+    method: 'POST',
+    body: JSON.stringify({ artifactId: found.id }),
+  }).catch(() => undefined);
+  // Also remove from local research-artifacts.json mirror.
+  await removeLocalArtifact(state.options, found.id).catch(() => undefined);
+  printOk(state.options, `Deleted proof ${found.id}.`);
+}
+
+async function fetchAllArtifacts(options: GlobalOptions): Promise<ResearchArtifact[]> {
+  try {
+    const response = await bridgeRequest<{ artifacts?: ResearchArtifact[] }>(options, '/bridge/lab-artifacts');
+    return Array.isArray(response.artifacts) ? response.artifacts : [];
+  } catch {
+    // Fallback: local mirror only.
+    const dir = dirname(options.preparedActionsPath);
+    const path = join(dir, 'research-artifacts.json');
+    const local = await readJsonFile<{ artifacts?: ResearchArtifact[] }>(path).catch(() => ({ artifacts: [] }));
+    return local.artifacts ?? [];
+  }
+}
+
+function resolveArtifact(artifacts: ResearchArtifact[], idOrIndex: string): ResearchArtifact | undefined {
+  const n = Number(idOrIndex);
+  if (Number.isInteger(n) && n >= 1 && n <= artifacts.length) return artifacts[n - 1];
+  return artifacts.find((a) => a.id === idOrIndex || a.id.startsWith(idOrIndex));
+}
+
+function artifactCategory(a: ResearchArtifact): 'common' | 'advanced' {
+  if (a.category === 'common' || a.category === 'advanced') return a.category;
+  // Heuristic: receipt-style kinds match the 5 common types from the spec.
+  const COMMON_KINDS = new Set(['intent_receipt', 'policy_receipt', 'risk_review_receipt', 'rejection_receipt', 'tool_trace_receipt']);
+  return COMMON_KINDS.has(a.kind) ? 'common' : 'advanced';
+}
+
+async function tryBridgeSaveArtifact(options: GlobalOptions, artifact: ResearchArtifact): Promise<void> {
+  try {
+    await bridgeRequest(options, '/bridge/lab-artifacts', {
+      method: 'POST',
+      body: JSON.stringify({ artifact }),
+    });
+  } catch {
+    // The local research-artifacts.json copy stays as a fallback when the
+    // bridge archive isn't reachable — non-fatal.
+  }
+}
+
+async function removeLocalArtifact(options: GlobalOptions, artifactId: string): Promise<void> {
+  const dir = dirname(options.preparedActionsPath);
+  const path = join(dir, 'research-artifacts.json');
+  const existing = await readJsonFile<{ artifacts?: ResearchArtifact[] }>(path).catch(() => ({ artifacts: [] }));
+  const next = (existing.artifacts ?? []).filter((a) => a.id !== artifactId);
+  await writeFile(path, `${stableJson({ artifacts: next })}\n`, 'utf8');
+}
+
+// Signs the current AI plan (intent + NOTE) as an off-chain evidence record.
+// Lives in index.ts because it needs the wallet-host handshake (signTextWithWallet)
+// which is state-coupled. Mirrors the web's "Sign this plan as proof" affordance:
+// no transaction is queued; the artifact lands in /bridge/lab-artifacts and shows
+// up under /proof-list and /done --filter proofs.
+async function signPlanAsProof(
+  state: TerminalAppState,
+  plan: unknown,
+  policyNote: string,
+): Promise<{ id: string; payloadHash: string } | null> {
+  // Refuse empty / null plans — nothing useful to sign.
+  if (!plan || typeof plan !== 'object' || Object.keys(plan as Record<string, unknown>).length === 0) {
+    printWarn(state.options, 'Plan is empty — nothing to sign as proof.');
+    return null;
+  }
+  await requireWalletConnected(state);
+  const status = await tryBridgeRequest<WalletStatus>(state.options, '/bridge/action/status');
+  const cluster = (status.ok && status.value.cluster ? status.value.cluster : 'mainnet-beta') as Cluster;
+  const walletAddress = status.ok ? status.value.address ?? null : null;
+
+  const baseArtifact = {
+    version: 'terminal-research-v1' as const,
+    id: `proof_${randomBytes(8).toString('hex')}`,
+    title: 'Agent plan proof',
+    kind: 'agent_plan_proof' as const,
+    concept: 'Off-chain wallet-signed evidence record of an AI-generated plan + policy NOTE.',
+    input: stableJson({ plan, policyNote: policyNote || null }),
+    walletAddress,
+    cluster,
+    createdAt: new Date().toISOString(),
+  };
+  const payloadHash = sha256(stableJson(baseArtifact));
+  const artifact: ResearchArtifact = {
+    ...baseArtifact,
+    payloadHash,
+    category: 'advanced',
+  };
+
+  const approval = await signTextWithWallet(
+    state,
+    researchSigningMessage(artifact),
+    'Agent plan proof',
+    'low',
+  );
+  if (approval.result?.signature) artifact.signature = approval.result.signature;
+  if (approval.requestId) artifact.requestId = approval.requestId;
+
+  // Persist locally + on the bridge archive (matches /proof behaviour).
+  await saveResearchArtifact(state.options, artifact);
+  await tryBridgeSaveArtifact(state.options, artifact);
+
+  return { id: artifact.id, payloadHash: artifact.payloadHash };
+}
+
+// `/version` — at-a-glance summary of where the CLI is pointed and what's
+// configured. Useful when filing support issues or before running an
+// important command. Pulls live status from the bridge.
+async function printVersionInfo(state: TerminalAppState): Promise<void> {
+  const [health, status, env] = await Promise.all([
+    tryBridgeRequest<BridgeHealth>(state.options, '/bridge/health'),
+    tryBridgeRequest<WalletStatus>(state.options, '/bridge/action/status'),
+    readEnvValues(state.options.envPath).catch(() => ({ found: false, raw: '', values: {} as Record<string, string> })),
+  ]);
+  printSection('Version & runtime');
+  const keyOk = (k: string): boolean => Boolean((env.values[k] ?? process.env[k] ?? '').trim().length);
+  console.log(`CLI:        ${CLI_VERSION}`);
+  console.log(`Bridge:     ${state.options.bridgeUrl}${health.ok ? colorize(state.options, '  online', 'green') : colorize(state.options, '  offline', 'red')}`);
+  console.log(`Wallet host: ${state.options.walletHostUrl}`);
+  console.log(`Render-web: ${state.options.renderWebUrl}`);
+  console.log(`Wallet:     ${status.ok && status.value.connected ? status.value.address : colorize(state.options, 'not connected', 'yellow')}`);
+  console.log(`Network:    ${health.ok ? health.value.cluster ?? 'unknown' : '—'}`);
+  console.log(`Keys:       RPC ${keyOk('SOLANA_RPC_URL') || keyOk('HELIUS_RPC_URL') ? '✓' : '✗'} · Jup ${keyOk('JUPITER_API_KEY') || keyOk('JUP_API_KEY') ? '✓' : '✗'} · Birdeye ${keyOk('BIRDEYE_API_KEY') ? '✓' : '✗'} · Helius ${keyOk('HELIUS_API_KEY') ? '✓' : '✗'}`);
+  console.log(`Env file:   ${state.options.envPath}${env.found ? '' : colorize(state.options, '  (not found)', 'muted')}`);
+}
+
 async function runQuoteCommand(state: TerminalAppState, rl: readline.Interface): Promise<void> {
   await requireWalletConnected(state);
   printSection('Swap Quote');
@@ -1920,16 +2880,27 @@ async function printReceipts(state: TerminalAppState): Promise<void> {
     console.log('No receipts yet.');
     return;
   }
-  renderTable(
-    state.lastReceipts.map((receipt) => [
-      short(receipt.actionId, 8),
-      receipt.status,
-      receipt.txStatus ?? '',
-      receipt.amount ? `${receipt.amount} ${receipt.token ?? ''}` : '',
-      short(receipt.txid ?? receipt.error ?? receipt.summary, 22),
-    ]),
-    ['Action', 'Status', 'Tx', 'Amount', 'Evidence'],
-  );
+  // Detailed view: one block per receipt, with explorer link + summary.
+  state.lastReceipts.forEach((receipt, index) => {
+    const head = `[${index + 1}] ${short(receipt.actionId, 12)}  ${colorize(state.options, receipt.status, receipt.status === 'approved' ? 'green' : 'red')}`;
+    console.log(head);
+    if (receipt.summary) console.log(`  ${receipt.summary}`);
+    const amount = receipt.amount ? `${receipt.amount} ${receipt.token ?? ''}` : '';
+    if (amount) console.log(`  Amount:   ${amount}`);
+    if (receipt.recipient) console.log(`  Recipient: ${receipt.recipient}`);
+    if (receipt.txid) {
+      console.log(`  Txid:     ${receipt.txid}`);
+      console.log(`  Explorer: ${explorerTxUrl(receipt.txid, receipt.cluster)}`);
+    }
+    if (receipt.txStatus) {
+      const tone = receipt.txStatus === 'confirmed' ? 'green' : receipt.txStatus === 'failed' ? 'red' : 'yellow';
+      console.log(`  On-chain: ${colorize(state.options, receipt.txStatus, tone)}`);
+    }
+    if (receipt.error) console.log(`  Error:    ${colorize(state.options, receipt.error, 'red')}`);
+    if (receipt.completedAt) console.log(`  Completed: ${timeLabel(receipt.completedAt)}`);
+    if (index < state.lastReceipts.length - 1) console.log('');
+  });
+  console.log(`\nTip: copy a Txid into any Solana explorer for full details. /receipts shows the raw JSON.`);
 }
 
 function printLogs(state: TerminalAppState): void {
@@ -1964,7 +2935,7 @@ async function signTextWithWallet(
     expiresAt: Date.now() + REQUEST_TIMEOUT_MS,
   };
   await ensureBrowserHost(state);
-  await openWalletHost(state.options);
+  await openWalletHost(state.options, { intent: 'sign', requestId: request.id });
   const initial = await bridgeRequest<ApprovalResource>(state.options, '/bridge/submit', {
     method: 'POST',
     body: JSON.stringify({ request }),
@@ -1993,19 +2964,60 @@ async function pollApproval(options: GlobalOptions, initial: ApprovalResource): 
 }
 
 async function renderDashboard(state: TerminalAppState): Promise<void> {
-  const [health, inbox] = await Promise.all([
+  const [health, inbox, recurring, session, artifacts, env] = await Promise.all([
     tryBridgeRequest<BridgeHealth>(state.options, '/bridge/health'),
     tryBridgeRequest<{ actions?: PreparedAction[] }>(state.options, '/bridge/prepared-actions'),
+    tryBridgeRequest<{ recurringPayments?: RecurringPayment[] }>(state.options, '/bridge/recurring-payments'),
+    loadSession(state.options).catch(() => null),
+    tryBridgeRequest<{ artifacts?: ResearchArtifact[] }>(state.options, '/bridge/lab-artifacts'),
+    readEnvValues(state.options.envPath).catch(() => ({ found: false, raw: '', values: {} as Record<string, string> })),
   ]);
   const actions = inbox.ok ? inbox.value.actions ?? [] : [];
+  const schedules = recurring.ok ? recurring.value.recurringPayments ?? [] : [];
   state.lastActions = actions;
+  state.lastRecurring = schedules;
+  const queueNew = actions.filter((a) => a.status === 'ready' || a.status === 'overdue' || a.status === 'blocked').length;
+  const queueRepeat = schedules.filter((s) => s.status === 'active').length;
+  const proofCount = artifacts.ok ? (artifacts.value.artifacts ?? []).length : 0;
+  const authSummary = sessionStatusSummary(session);
+
+  const cluster = health.ok ? health.value.cluster ?? 'unknown' : 'unreachable';
+  const networkLabel = isMainnetCluster(cluster)
+    ? `${cluster}  ${colorize(state.options, '[MAINNET — real money]', 'red')}`
+    : cluster;
 
   printSection('Dashboard');
-  console.log(`Wallet: ${health.ok && health.value.walletAddress ? short(health.value.walletAddress, 10) : 'not connected'}`);
-  console.log(`Network: ${health.ok ? health.value.cluster ?? 'unknown' : 'unreachable'}`);
-  console.log(`Bridge: ${health.ok ? 'online' : 'offline'} (${state.options.bridgeUrl})`);
-  console.log(`Queue: ${actions.filter((action) => action.status === 'ready' || action.status === 'overdue').length} awaiting review`);
-  console.log(`Wallet host: ${walletHostLaunchUrl(state.options)}`);
+  console.log(`Wallet:     ${health.ok && health.value.walletAddress ? short(health.value.walletAddress, 10) : 'not connected'}`);
+  console.log(`Network:    ${networkLabel}`);
+  console.log(`Bridge:     ${health.ok ? 'online' : 'offline'} (${state.options.bridgeUrl})`);
+  console.log(`Signed in:  ${authSummary.authenticated ? `yes — ${authSummary.walletAddress ? short(authSummary.walletAddress, 10) : 'no wallet'}` : 'no  (try /sign-in)'}`);
+  console.log(`Inbox-new:  ${queueNew} prepared approval${queueNew === 1 ? '' : 's'} awaiting review`);
+  console.log(`Inbox-repeat: ${queueRepeat} active schedule${queueRepeat === 1 ? '' : 's'}`);
+  console.log(`Proofs:     ${proofCount} saved`);
+  console.log(`Keys:       ${apiKeySummary(state.options, env.values)}`);
+}
+
+function apiKeySummary(options: GlobalOptions, envValues: Record<string, string>): string {
+  // Reads the on-disk .env file (passed in from renderDashboard) so changes
+  // made via /api-keys reflect immediately, no restart required. Falls back
+  // to process.env for shell-injected overrides.
+  const has = (k: string): boolean => {
+    const fromFile = envValues[k];
+    if (typeof fromFile === 'string' && fromFile.trim().length > 0) return true;
+    return Boolean(process.env[k] && process.env[k]!.length > 0);
+  };
+  const chip = (name: string, on: boolean): string => `${name} ${on ? '✓' : '✗'}`;
+  const tier = [
+    chip('RPC',     has('SOLANA_RPC_URL') || has('HELIUS_RPC_URL')),
+    chip('Jup',     has('JUPITER_API_KEY') || has('JUP_API_KEY')),
+    chip('Birdeye', has('BIRDEYE_API_KEY')),
+    chip('Helius',  has('HELIUS_API_KEY')),
+  ].join(' · ');
+  const allSet = (has('SOLANA_RPC_URL') || has('HELIUS_RPC_URL'))
+    && has('JUPITER_API_KEY')
+    && has('BIRDEYE_API_KEY')
+    && has('HELIUS_API_KEY');
+  return allSet ? tier : `${tier}  ${colorize(options, '(web fallback for missing tiers)', 'muted')}`;
 }
 
 async function refreshPreparedActions(options: GlobalOptions): Promise<{ materialized: PreparedAction[]; actions: PreparedAction[] }> {
@@ -2520,16 +3532,24 @@ function applyEnvUpdates(raw: string, updates: Record<string, string>): string {
   const normalized = raw.replace(/\r\n/g, '\n');
   const lines = normalized ? normalized.split('\n') : ['# Solana Agent Wallet local runtime setup'];
   const seen = new Set<string>();
-  const rewritten = lines.map((line) => {
+  // Empty string in `updates` means "remove this key entirely" — drop the line.
+  const dropKeys = new Set(Object.keys(updates).filter((k) => updates[k] === ''));
+  const rewritten: string[] = [];
+  for (const line of lines) {
     const key = envKeyFromLine(line);
+    if (key && dropKeys.has(key)) {
+      seen.add(key);
+      continue; // drop the line
+    }
     const value = key ? updates[key] : undefined;
     if (!key || value === undefined) {
-      return line;
+      rewritten.push(line);
+      continue;
     }
     seen.add(key);
-    return `${key}=${formatEnvValue(value)}`;
-  });
-  const missing = SETUP_ENV_KEYS.filter((key) => updates[key] !== undefined && !seen.has(key));
+    rewritten.push(`${key}=${formatEnvValue(value)}`);
+  }
+  const missing = SETUP_ENV_KEYS.filter((key) => updates[key] !== undefined && updates[key] !== '' && !seen.has(key));
   if (missing.length > 0 && rewritten.length > 0 && rewritten[rewritten.length - 1] !== '') {
     rewritten.push('');
   }
@@ -2868,6 +3888,7 @@ async function runDoctor(options: GlobalOptions): Promise<JsonRecord> {
     deviceAgentStatus,
     renderSession,
     cliSession,
+    apiKeys,
   ] = await Promise.all([
     tryBridgeRequest<BridgeHealth>(options, '/bridge/health'),
     tryBridgeRequest<BridgeHealth>(options, '/bridge/action/health'),
@@ -2878,6 +3899,7 @@ async function runDoctor(options: GlobalOptions): Promise<JsonRecord> {
     probeDeviceAgent(options),
     probeRenderSession(options),
     loadSession(options),
+    probeApiKeys(options),
   ]);
   return {
     bridgeUrl: options.bridgeUrl,
@@ -2924,7 +3946,65 @@ async function runDoctor(options: GlobalOptions): Promise<JsonRecord> {
       ...renderSession,
       cliSession: sessionStatusSummary(cliSession),
     },
+    apiKeys,
   };
+}
+
+// Probes each API-key tier the agent decision pipeline depends on. Returns a
+// per-tier { configured, reachable, detail } record so /doctor can render a
+// colored row for each.
+async function probeApiKeys(options: GlobalOptions): Promise<JsonRecord> {
+  const env = await readEnvValues(options.envPath).catch(() => ({ found: false, raw: '', values: {} as Record<string, string> }));
+  const configured = (key: string): boolean => {
+    const fromFile = env.values[key];
+    if (typeof fromFile === 'string' && fromFile.trim().length > 0) return true;
+    return Boolean(process.env[key] && process.env[key]!.length > 0);
+  };
+  const wrap = async (
+    label: string,
+    hasKey: boolean,
+    probe?: () => Promise<{ ok: boolean; detail: string }>,
+  ): Promise<JsonRecord> => {
+    if (!hasKey) return { label, configured: false, reachable: false, detail: 'key not set' };
+    if (!probe) return { label, configured: true, reachable: true, detail: 'key set (no probe wired)' };
+    try {
+      const r = await probe();
+      return { label, configured: true, reachable: r.ok, detail: r.detail };
+    } catch (err) {
+      return { label, configured: true, reachable: false, detail: errorMessage(err) };
+    }
+  };
+  const [rpc, jupiter, birdeye, helius] = await Promise.all([
+    wrap('Solana RPC',  configured('SOLANA_RPC_URL') || configured('HELIUS_RPC_URL')),
+    wrap('Jupiter',     configured('JUPITER_API_KEY') || configured('JUP_API_KEY'),
+      async () => {
+        await bridgeRequest(options, '/bridge/action/swap-quote', {
+          method: 'POST',
+          body: JSON.stringify({ amount: '0.01', inputToken: 'SOL', outputToken: 'USDC' }),
+        });
+        return { ok: true, detail: 'quote endpoint OK' };
+      },
+    ),
+    wrap('BirdEye',     configured('BIRDEYE_API_KEY'),
+      async () => {
+        await bridgeRequest(options, '/bridge/birdeye/search', {
+          method: 'POST',
+          body: JSON.stringify({ query: 'SOL', limit: 1 }),
+        });
+        return { ok: true, detail: 'search reachable' };
+      },
+    ),
+    wrap('Helius',      configured('HELIUS_API_KEY'),
+      async () => {
+        await bridgeRequest(options, '/bridge/action/helius-history', {
+          method: 'POST',
+          body: JSON.stringify({ wallet: '11111111111111111111111111111111', limit: 1 }),
+        });
+        return { ok: true, detail: 'enhanced endpoint reachable' };
+      },
+    ),
+  ]);
+  return { rpc, jupiter, birdeye, helius };
 }
 
 async function probeDeviceAgent(options: GlobalOptions): Promise<{ reachable: boolean; status?: unknown; error?: string }> {
@@ -3115,7 +4195,9 @@ async function openWalletHost(options: GlobalOptions, cli?: CliIntent): Promise<
   await openUrl(walletHostLaunchUrl(options, cli));
 }
 
-type CliIntent = { intent: 'connect' | 'approve'; actionId?: string };
+type CliIntent =
+  | { intent: 'connect' | 'disconnect' | 'approve'; actionId?: string; requestId?: never }
+  | { intent: 'sign'; requestId: string; actionId?: never };
 
 function walletHostLaunchUrl(options: GlobalOptions, cli?: CliIntent): string {
   const url = new URL(options.walletHostUrl);
@@ -3126,6 +4208,7 @@ function walletHostLaunchUrl(options: GlobalOptions, cli?: CliIntent): string {
     url.searchParams.set('mode', 'cli');
     url.searchParams.set('intent', cli.intent);
     if (cli.actionId) url.searchParams.set('actionId', cli.actionId);
+    if (cli.requestId) url.searchParams.set('requestId', cli.requestId);
   }
   return url.toString();
 }
@@ -3408,7 +4491,22 @@ function renderPreparedActionsDetailed(actions: PreparedAction[]): void {
       console.log('');
     }
   });
-  console.log('\nUse /approve <row>, /reject <row>, /archive <row>, or /inspect <row>. Use /inbox compact for a table.');
+  console.log('\nTip: /approve <#> · /inspect <#> · /reject <#> · /archive <#>  ·  /inbox compact for the table view.');
+}
+
+function kindBadgeText(kind: string): { label: string; tone: 'green' | 'yellow' | 'red' | 'muted' | 'cyan' | 'blue' } {
+  if (kind === 'transfer_sol' || kind === 'transfer_spl') return { label: 'Transfer', tone: 'cyan' };
+  if (kind === 'swap') return { label: 'Swap', tone: 'blue' };
+  if (kind === 'blink_action') return { label: 'Blink', tone: 'muted' };
+  if (/recurring/i.test(kind)) return { label: 'Recurring', tone: 'yellow' };
+  if (/(_open|_close|_modify_collateral|_place_trigger|phoenix_)/.test(kind)) return { label: 'Perp', tone: 'yellow' };
+  if (/(magiceden_|tensor_)/.test(kind)) return { label: 'NFT', tone: 'yellow' };
+  if (/(_stake|_unstake|_claim)/.test(kind)) return { label: 'Stake', tone: 'green' };
+  if (/(_deposit|_withdraw|_borrow|_repay|_liquidity)/.test(kind)) return { label: 'DeFi', tone: 'green' };
+  if (/(wormhole_)/.test(kind)) return { label: 'Bridge', tone: 'blue' };
+  if (/(squads_|realms_)/.test(kind)) return { label: 'Gov', tone: 'cyan' };
+  if (/(pyth_)/.test(kind)) return { label: 'Oracle', tone: 'muted' };
+  return { label: 'Connector', tone: 'muted' };
 }
 
 function printPreparedActionDetail(action: PreparedAction, row: number): void {
@@ -3416,12 +4514,10 @@ function printPreparedActionDetail(action: PreparedAction, row: number): void {
   const amount = amountLabel(action);
   const token = tokenLabel(action);
   const recipient = recipientLabel(action);
+  const badge = kindBadgeText(action.kind);
   console.log(row > 0 ? `[${row}] ${action.id}` : action.id);
-  if (blink) {
-    console.log('  Blink action');
-  }
+  console.log(`  [${badge.label}]  ${blink ? 'Blink action  ·  ' : ''}${action.kind}`);
   console.log(`  Status: ${action.status}${action.txStatus ? ` (${action.txStatus})` : ''}`);
-  console.log(`  Kind: ${action.kind}`);
   console.log(`  Summary: ${action.summary}`);
   console.log(`  Due: ${timeLabel(action.dueAt)} (${action.dueAt})`);
   console.log(`  Wallet: ${action.walletAddress}`);
@@ -3439,6 +4535,7 @@ function printPreparedActionDetail(action: PreparedAction, row: number): void {
   }
   if (action.txid) {
     console.log(`  Txid: ${action.txid}`);
+    console.log(`  Explorer: ${explorerTxUrl(action.txid, action.cluster)}`);
   }
   if (action.error) {
     console.log(`  Error: ${action.error}`);
@@ -3572,6 +4669,11 @@ function amountLabel(action: PreparedAction): string {
   return stringParam(action, 'amount');
 }
 
+function explorerTxUrl(txid: string, cluster?: string): string {
+  const clusterParam = !cluster || cluster === 'mainnet-beta' ? '' : `?cluster=${cluster}`;
+  return `https://solscan.io/tx/${txid}${clusterParam}`;
+}
+
 function tokenLabel(action: PreparedAction): string {
   if (isBlinkAction(action)) {
     return firstStringParam(action, 'expectedToken', 'token');
@@ -3696,6 +4798,21 @@ function printDoctor(options: GlobalOptions, doctor: JsonRecord): void {
   console.log(`Render-web: ${renderWeb.reachable ? `reachable${renderWeb.authenticated ? ' (signed in)' : ''}` : 'offline'}`);
   const cliWallet = typeof cliSession.walletAddress === 'string' ? short(cliSession.walletAddress, 12) : '';
   console.log(`CLI session: ${cliSession.authenticated ? `signed in${cliWallet ? ` (${cliWallet})` : ''}${cliSession.staleSoon ? ' — token expires soon' : ''}` : 'signed out — run "solana-agent-wallet auth login"'}`);
+  // v1.1 — API keys & AI tier health (drives policy atom resolution).
+  const apiKeys = isRecord(doctor.apiKeys) ? doctor.apiKeys : {};
+  console.log('');
+  printSection('API keys & AI');
+  for (const tier of ['rpc', 'jupiter', 'birdeye', 'helius'] as const) {
+    const row = isRecord(apiKeys[tier]) ? apiKeys[tier] as JsonRecord : {};
+    const label = String(row.label ?? tier);
+    const detail = String(row.detail ?? '');
+    const tone: 'green' | 'yellow' | 'red' =
+      row.reachable === true && row.configured === true ? 'green'
+        : row.configured === false ? 'yellow'
+        : 'red';
+    const chip = tone === 'green' ? '✓' : tone === 'yellow' ? '○' : '✗';
+    console.log(`${colorize(options, chip, tone)}  ${label.padEnd(11)}  ${detail}`);
+  }
   if (options.json) {
     console.log(stableJson(doctor));
   }
@@ -3729,27 +4846,62 @@ function renderBanner(state: TerminalAppState): void {
 }
 
 function printCommandMenu(): void {
-  printSection('Commands');
+  printSection('Quick start');
+  console.log('/sign-in           Sign in to your cloud workspace (SIWS)');
+  console.log('/connect           Connect your wallet (opens browser, then stays in CLI)');
+  console.log('/new               New action: send · spl · swap · connector');
+  console.log('/repeat            New schedule: scheduled · recurring · connector');
+  console.log('/agent             Natural-language → bridge AI plan with policy NOTE atom resolution');
+  console.log('/ask <question>    Follow-up Q&A about the last /agent plan');
+  console.log('/api-keys          RPC · Jupiter · Birdeye · Helius (set / replace / remove / test)');
+  console.log('/inbox             Needs approval · active repeats');
+  console.log('/done              All · One-time · Repeats · Proofs · Receipts');
+  console.log('/connectors        Manage 19 protocol connectors + BYO API keys');
+  console.log('                   /new-connector now uses live catalog pickers (vaults, pools, banks…)');
+  console.log('                   Read-only actions sign as evidence (no approval queue).');
+  console.log('/proof             Save Proof — Common (5) + Advanced (15) wallet-signed records');
+  console.log('/agent-payments    Profile · Pay merchant · Incoming MPP requests');
+  console.log('/skills            Skills hub — Browse · Installed · My Profile · Publish');
+  console.log('/preferences       5-card preferences — Workspace · AI · Agents · Rules · Tokens');
+  console.log('');
+  printSection('Direct flows');
+  console.log('/new-send          Send SOL');
+  console.log('/new-spl           Send an SPL token');
+  console.log('/new-swap          Swap (Jupiter)');
+  console.log('/new-connector     Run a connector action (~80 actions across 19 protocols)');
+  console.log('/swap-quote        Quote-only swap preview (no queueing)');
+  console.log('/repeat-scheduled  Recurring SOL/SPL transfer');
+  console.log('/repeat-recurring  Jupiter recurring (time / DCA order)');
+  console.log('/repeat-connector  Recurring connector action');
+  console.log('/repeat-manage     Pause / resume / delete active schedules');
+  console.log('/inbox-new         One-time prepared approvals only');
+  console.log('/inbox-repeat      Active recurring schedules (with row actions)');
+  console.log('/sessions          Streaming payment sessions (revoke / settle)');
+  console.log('/proof-new         Pick a proof type and sign a new evidence record');
+  console.log('/proof-list        List saved proofs (Common + Advanced)');
+  console.log('/done <filter>     all · one-time · repeats · proofs · receipts');
+  console.log('/inspect <id|#>    Full details for one prepared action');
+  console.log('/approve <id|#>    Approve via browser wallet popup');
+  console.log('/reject <id|#>     Reject a prepared action');
+  console.log('/sign-out          Sign out of the cloud workspace');
+  console.log('');
+  printSection('Setup & diagnostics');
   console.log('/setup             Configure local RPC and Jupiter credentials');
-  console.log('/connect           Open browser wallet host and wait for wallet bridge connection');
   console.log('/disconnect        Disconnect the active wallet from the bridge');
   console.log('/wallet            Wallet, network, RPC, custody state');
-  console.log('/inbox [filter]    Prepared approvals. Filters: all, ready, scheduled, approved, failed, recurring');
-  console.log('/inbox compact     Compact inbox table');
-  console.log('/inspect <id|#>    Full details for one prepared action');
-  console.log('/approve <id|#>    Open wallet host and approve a prepared action');
-  console.log('/reject <id|#>     Reject a prepared action');
-  console.log('/schedule          Create recurring payment approval');
-  console.log('/schedule list     List recurring approvals');
-  console.log('/plan [request]    Build/sign/queue an agent plan from natural language');
-  console.log('/research list     Show all 15 research labs');
-  console.log('/research <id|#>   Create a signed research artifact');
-  console.log('/receipts          Show approval receipts');
   console.log('/balances          SOL and configured token balances');
-  console.log('/quote             Swap quote helper');
   console.log('/doctor            Local bridge and host diagnostics');
   console.log('/open              Open browser wallet host');
   console.log('/logs              Local terminal app logs');
+  console.log('/refresh           Re-render dashboard');
+  console.log('');
+  printSection('Legacy & advanced (still available)');
+  console.log('/schedule list|create|pause|resume|delete    Recurring approvals (raw)');
+  console.log('/inbox <filter>                              Prepared approvals (any status)');
+  console.log('/plan <request>                              Build/sign/queue an agent plan');
+  console.log('/research list | <id|#>                      Signed research artifacts');
+  console.log('/receipts          Show approval receipts');
+  console.log('/quote             Swap quote helper');
   console.log('');
   console.log('v1.0 hosted / connector commands (all support --json):');
   console.log('/auth login | logout | status     Sign in to Agentic cloud (SIWS)');
@@ -3785,9 +4937,35 @@ function printCommandMenu(): void {
 function printHelp(): void {
   console.log(`Solana Agent Wallet CLI
 
-Usage:
+Flow-first commands (recommended — run "app" for the interactive REPL):
+  solana-agent-wallet app                                # interactive REPL with all flows
+  solana-agent-wallet sign-in                            # SIWS into cloud workspace
+  solana-agent-wallet sign-in-status                     # show current sign-in state
+  solana-agent-wallet sign-out
+  solana-agent-wallet new                                # menu: send · spl · swap · connector
+  solana-agent-wallet new-send                           # SOL transfer form
+  solana-agent-wallet new-spl                            # SPL transfer form
+  solana-agent-wallet new-swap                           # Jupiter swap form
+  solana-agent-wallet new-connector                      # 19 protocols + live entity pickers (vaults/pools/banks) + read-only evidence
+  solana-agent-wallet swap-quote                         # quote-only swap preview (no queue)
+  solana-agent-wallet repeat                             # menu: scheduled · recurring · connector
+  solana-agent-wallet repeat-scheduled                   # recurring SOL/SPL transfer
+  solana-agent-wallet repeat-recurring                   # Jupiter recurring (DCA / time order)
+  solana-agent-wallet repeat-connector                   # recurring connector action (Jupiter today)
+  solana-agent-wallet repeat-manage                      # pause / resume / delete active schedules
+  solana-agent-wallet connectors                         # manage 19 connectors + BYO API keys + enable/disable
+  solana-agent-wallet sessions                           # streaming payment sessions (revoke / settle)
+  solana-agent-wallet proof [new|list|show <id>|delete <id>]   # Save Proof — Common (5) + Advanced (15)
+  solana-agent-wallet agent-payments                     # Profile · Pay merchant · Incoming requests
+  solana-agent-wallet skills                             # Browse · Installed · My Profile · Publish
+  solana-agent-wallet preferences                        # 5-card preferences (Workspace · AI · Agents · Rules · Tokens)
+  solana-agent-wallet done [all|one-time|repeats|proofs|receipts]   # unified done filter
+  solana-agent-wallet agent                              # natural-language → bridge AI plan; supports policy NOTE atom resolution
+  solana-agent-wallet ask "<question>"                  # follow-up Q&A about the last /agent plan
+  solana-agent-wallet api-keys                           # manage RPC · Jupiter · Birdeye · Helius env keys
+
+Setup / diagnostics:
   solana-agent-wallet setup
-  solana-agent-wallet app
   solana-agent-wallet doctor [--strict] [--section <name>]
   solana-agent-wallet status
   solana-agent-wallet balances
@@ -3920,7 +5098,7 @@ function printMuted(options: GlobalOptions, message: string): void {
   console.log(colorize(options, message, 'muted'));
 }
 
-function colorize(options: GlobalOptions, value: string, color: 'green' | 'yellow' | 'red' | 'muted'): string {
+function colorize(options: GlobalOptions, value: string, color: 'green' | 'yellow' | 'red' | 'muted' | 'cyan' | 'blue'): string {
   if (!options.color) {
     return value;
   }
@@ -3929,6 +5107,8 @@ function colorize(options: GlobalOptions, value: string, color: 'green' | 'yello
     yellow: ['\u001b[33m', '\u001b[0m'],
     red: ['\u001b[31m', '\u001b[0m'],
     muted: ['\u001b[2m', '\u001b[0m'],
+    cyan: ['[36m', '[0m'],
+    blue: ['[34m', '[0m'],
   } as const;
   const [start, end] = codes[color];
   return `${start}${value}${end}`;

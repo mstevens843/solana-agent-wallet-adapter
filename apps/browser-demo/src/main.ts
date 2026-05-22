@@ -93,6 +93,76 @@ import {
   type RegisterAgentMobileWalletAdapterResult,
 } from '@solana-agent-wallet-adapter/mwa-mobile-web';
 import {
+  AGENTIC_WALLET_NAME,
+  createTauriWalletIpc,
+  detectTauriInvoke,
+  registerAgenticWallet,
+  type WalletIpc,
+  type WalletStatus,
+} from '@solana-agent-wallet-adapter/embedded-wallet';
+import {
+  embeddedWalletOverlayHtml,
+  initialEmbeddedWalletOverlayState,
+  reduceEmbeddedWalletOverlay,
+  validateCreate,
+  validateImport,
+  validateResetConfirm,
+  validateUnlock,
+  type EmbeddedWalletOverlayAction,
+  type EmbeddedWalletOverlayDraft,
+  type EmbeddedWalletOverlayMode,
+  type EmbeddedWalletOverlayState,
+} from './embeddedWalletOverlay.js';
+import {
+  DESKTOP_BRAND_PANELS,
+  desktopBrandPanelsHtml,
+  initialDesktopBrandPanelsState,
+  reduceDesktopBrandPanels,
+  type DesktopBrandPanelsAction,
+  type DesktopBrandPanelsState,
+} from './embeddedWalletBrandPanels.js';
+import {
+  WALLET_CONNECT_BRANDS,
+  initialWalletConnectQrOverlayState,
+  isWalletConnectSupportedBrand,
+  reduceWalletConnectQrOverlay,
+  walletConnectQrOverlayHtml,
+  type WalletConnectQrOverlayAction,
+  type WalletConnectQrOverlayState,
+} from './walletConnectQrOverlay.js';
+import {
+  createWalletConnectSolanaClient,
+  registerWalletConnectSolanaWallet,
+  solanaWalletConnectChainId,
+  unregisterAllWalletConnectWallets,
+  unregisterWalletConnectSolanaWallet,
+  type SignClientLike,
+  type SolanaClusterId,
+  type WalletConnectSession,
+  type WalletConnectSolanaClient,
+} from '@solana-agent-wallet-adapter/walletconnect-solana';
+import {
+  LEDGER_WALLET_NAME,
+  createTauriLedgerIpc,
+  decodeLedgerPublicKey,
+  detectLedgerTauriInvoke,
+  registerLedgerWallet,
+  type LedgerDevice,
+  type LedgerIpc,
+} from '@solana-agent-wallet-adapter/ledger-wallet';
+import {
+  DEFAULT_LEDGER_DERIVATION_PATH,
+  initialLedgerOverlayState,
+  ledgerOverlayHtml,
+  reduceLedgerOverlay,
+  type LedgerOverlayAction,
+  type LedgerOverlayState,
+} from './ledgerOverlay.js';
+import {
+  startWalletStatusPoll,
+  type WalletStatusPollHandle,
+} from './embeddedWalletStatus.js';
+import {
   listAvailableWallets,
   subscribeToWalletRegistration,
   WalletStandardWebBackend,
@@ -157,8 +227,10 @@ import {
 } from './cloudSessionPolicy.js';
 import {
   MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED,
+  desktopAiModeDisabledReason,
   mobileAiModeDisabledReason,
   mobileAiPathTabLabel,
+  normalizeAiModeForDesktopSurface,
   normalizeAiModeForMobileSurface,
   shouldUseMobileAiPathPolicy,
   visibleMobileAiPathModes,
@@ -1139,14 +1211,21 @@ type NavItem = {
   pill?: boolean;
   mobileHidden?: boolean;
   mobileLabel?: string;
+  /**
+   * Hide this nav item when the SPA is running inside the Tauri desktop
+   * shell. We bundle the same dist for the web and the desktop window, but
+   * a few entries — "CLI" (a sibling distribution) and "Desktop App" (a
+   * download-this-app page) — don't make sense inside the native app.
+   */
+  hideInTauri?: boolean;
 };
 
 const NAV_ITEMS: ReadonlyArray<NavItem> = [
   { route: '/', label: 'Home' },
   { route: '/docs', label: 'Docs' },
   { route: '/builders', label: 'Builders', mobileHidden: true },
-  { route: '/cli', label: 'CLI', mobileHidden: true },
-  { route: '/desktop', label: 'Desktop App', mobileHidden: true },
+  { route: '/cli', label: 'CLI', mobileHidden: true, hideInTauri: true },
+  { route: '/desktop', label: 'Desktop App', mobileHidden: true, hideInTauri: true },
   { route: '/demo', label: 'Launch Demo', mobileLabel: 'Demo' },
   ...(SHOW_ANDROID_EXAMPLE_TAB ? [{ route: '/mwa-test' as AppRoute, label: 'MWA', mobileHidden: true }] : []),
   { route: '/app', label: 'Launch App', pill: true, mobileLabel: 'App' },
@@ -1222,6 +1301,7 @@ const AGENTIC_MARK_LOGO = new URL('../../../assets/agentic/saturn-source-cutout.
 
 type BrandLogoId =
   | 'agentRouter'
+  | 'agentic'
   | 'backpack'
   | 'claude'
   | 'codex'
@@ -1230,6 +1310,7 @@ type BrandLogoId =
   | 'jito'
   | 'jupiter'
   | 'kamino'
+  | 'ledger'
   | 'lulo'
   | 'magiceden'
   | 'marginfi'
@@ -1256,6 +1337,7 @@ type BrandLogoId =
 
 const BRAND_LOGOS: Record<BrandLogoId, string> = {
   agentRouter: new URL('./assets/logos/agent-router.svg', import.meta.url).href,
+  agentic: new URL('./assets/logos/agentic.svg', import.meta.url).href,
   backpack: new URL('./assets/logos/backpack.svg', import.meta.url).href,
   claude: new URL('./assets/logos/claude.svg', import.meta.url).href,
   codex: new URL('./assets/logos/codex.svg', import.meta.url).href,
@@ -1264,6 +1346,7 @@ const BRAND_LOGOS: Record<BrandLogoId, string> = {
   jito: new URL('./assets/logos/jito.svg', import.meta.url).href,
   jupiter: new URL('./assets/logos/jupiter.svg', import.meta.url).href,
   kamino: new URL('./assets/logos/kamino.svg', import.meta.url).href,
+  ledger: new URL('./assets/logos/ledger.svg', import.meta.url).href,
   lulo: new URL('./assets/logos/lulo.svg', import.meta.url).href,
   magiceden: new URL('./assets/logos/magiceden.svg', import.meta.url).href,
   marginfi: new URL('./assets/logos/marginfi.svg', import.meta.url).href,
@@ -2283,6 +2366,8 @@ interface DemoState {
   selectedWalletLogoId?: WalletProviderLogoId;
   browserWalletPickerOpen: boolean;
   browserWalletSession?: BrowserWalletSession;
+  pendingCliSignRequest: SigningRequest | null;
+  lastCliSignResult: { requestId: string; status: 'approved' | 'rejected' | 'failed'; signature?: string; error?: string } | null;
   androidNativeEnvironment: AndroidNativeEnvironment;
   androidAuthCacheCount: number;
   androidNativeStatus: string;
@@ -2846,9 +2931,13 @@ function notificationSettingsFromPersisted(
 const persisted = loadPersistedState();
 const launchParams = readLaunchParams();
 clearSensitiveLaunchParams();
-type CliView = { intent: 'connect' | 'approve'; actionId?: string };
+type CliView = { intent: 'connect' | 'disconnect' | 'approve' | 'sign'; actionId?: string; requestId?: string };
 let cliView: CliView | null = launchParams.cliMode && launchParams.cliIntent
-  ? { intent: launchParams.cliIntent, ...(launchParams.cliActionId ? { actionId: launchParams.cliActionId } : {}) }
+  ? {
+      intent: launchParams.cliIntent,
+      ...(launchParams.cliActionId ? { actionId: launchParams.cliActionId } : {}),
+      ...(launchParams.cliRequestId ? { requestId: launchParams.cliRequestId } : {}),
+    }
   : null;
 if (cliView && typeof document !== 'undefined') {
   document.documentElement.setAttribute('data-cli-mode', 'true');
@@ -3170,6 +3259,8 @@ const state: DemoState = {
   selectedWalletLogoId: persisted.selectedWalletLogoId,
   browserWalletPickerOpen: false,
   browserWalletSession: persisted.browserWalletSession,
+  pendingCliSignRequest: null,
+  lastCliSignResult: null,
   androidNativeEnvironment: initialAndroidNativeEnvironment,
   androidAuthCacheCount: 0,
   androidNativeStatus: 'Android native MWA idle.',
@@ -3978,6 +4069,31 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
     closeGeneratedPlanAuditModal();
     return;
   }
+  // Wallet overlays (Slice R.5). We close the overlay unconditionally on
+  // Escape — any in-flight IPC continues and will dispatch back into a
+  // closed overlay, which the reducers handle as a no-op (or, in the
+  // create-success path, re-opens to show the recovery phrase, which is
+  // the desired UX). For the Ledger overlay we also stop the device-scan
+  // poll, mirroring `closeSiblingOverlays`.
+  if (event.key === 'Escape' && embeddedWallet.overlay.mode !== 'closed') {
+    if (!embeddedWallet.overlay.busy) {
+      event.preventDefault();
+      dispatchEmbeddedWalletOverlay({ type: 'close' });
+    }
+    return;
+  }
+  if (event.key === 'Escape' && walletConnect.overlay.mode !== 'closed') {
+    event.preventDefault();
+    dispatchWalletConnectOverlay({ type: 'close' });
+    return;
+  }
+  if (event.key === 'Escape' && ledger.overlay.mode !== 'closed') {
+    event.preventDefault();
+    stopLedgerPoll();
+    ledger.pairingToken += 1;
+    dispatchLedgerOverlay({ type: 'close' });
+    return;
+  }
 }
 
 function hydrateGeneratedPlansForStartup(): void {
@@ -4065,6 +4181,43 @@ async function bootstrap(): Promise<void> {
   }
   state.tauriNativeEnvironment = detectTauriNativeEnvironment();
   if (state.tauriNativeEnvironment.isTauriNative) {
+    // Expose the embedded Agentic Wallet to the Wallet Standard registry so
+    // the existing picker discovers it alongside Phantom/Backpack/Solflare.
+    // No-op outside Tauri; safe to call unconditionally but cheap to gate.
+    registerAgenticWallet();
+    // Hydrate the per-brand picker preference (Slice D) from localStorage so
+    // the "Show external browser fallback" toggle persists across launches.
+    hydrateDesktopBrandPanelsPrefs();
+    // Restore any previously-paired WalletConnect sessions (Slice E). Lazy
+    // — skips if no project ID is configured.
+    void restoreWalletConnectSessions();
+    // Wire the Tauri IPC for the create/import/unlock overlay (Slice C) and
+    // start polling so the UI notices when the Rust-side auto-lock timer
+    // fires (idle timeout). Polling errors are swallowed; the UI tolerates
+    // null status without breaking.
+    const invoke = detectTauriInvoke();
+    if (invoke) {
+      embeddedWallet.ipc = createTauriWalletIpc(invoke);
+      embeddedWallet.pollHandle = startWalletStatusPoll(embeddedWallet.ipc, {
+        // Skip the IPC call entirely when Agentic isn't the active wallet.
+        // The interval keeps ticking, so we pick up status as soon as the
+        // user selects Agentic again.
+        shouldPoll: () => state.selectedWalletName === AGENTIC_WALLET_NAME,
+        onStatus: (status) => {
+          // shouldPoll already ensured Agentic is selected; cache directly.
+          embeddedWallet.status = status;
+        },
+        onAutoLocked: () => {
+          state.address = '';
+          pushToast(
+            'pending',
+            'Agentic Wallet locked',
+            'Idle timeout reached. Connect again to unlock.',
+          );
+          render();
+        },
+      });
+    }
     // Listen for bridge-status updates from the Local-runtime panel polling +
     // user actions, so device-agent routing stays current. Registered BEFORE
     // the first fetch so we never miss an emission.
@@ -4169,6 +4322,868 @@ async function bootstrap(): Promise<void> {
   }
 }
 
+// ─── Embedded Agentic Wallet UI (Slice C) ────────────────────────────────
+// Module-level slice rather than a field on `state` to keep this isolated
+// from the 200+ field `DemoState`. The overlay state itself is reduced via
+// `reduceEmbeddedWalletOverlay`; `ipc` and `pollHandle` are initialized in
+// the Tauri branch of bootstrap.
+
+interface EmbeddedWalletRuntime {
+  ipc: WalletIpc | null;
+  status: WalletStatus | null;
+  overlay: EmbeddedWalletOverlayState;
+  pollHandle: WalletStatusPollHandle | null;
+}
+
+const embeddedWallet: EmbeddedWalletRuntime = {
+  ipc: null,
+  status: null,
+  overlay: initialEmbeddedWalletOverlayState(),
+  pollHandle: null,
+};
+
+function dispatchEmbeddedWalletOverlay(action: EmbeddedWalletOverlayAction): void {
+  embeddedWallet.overlay = reduceEmbeddedWalletOverlay(embeddedWallet.overlay, action);
+  render();
+}
+
+type DesktopOverlayKind = 'embedded-wallet' | 'walletconnect-qr' | 'ledger';
+
+/**
+ * Close any sibling overlays before opening a new one. Slices C / E / G
+ * each render a full-screen modal — letting two stack would land a confused
+ * user with overlapping passwords / QR codes / Ledger prompts.
+ */
+function closeSiblingOverlays(except: DesktopOverlayKind): void {
+  if (except !== 'embedded-wallet' && embeddedWallet.overlay.mode !== 'closed') {
+    dispatchEmbeddedWalletOverlay({ type: 'close' });
+  }
+  if (except !== 'walletconnect-qr' && walletConnect.overlay.mode !== 'closed') {
+    dispatchWalletConnectOverlay({ type: 'close' });
+  }
+  if (except !== 'ledger' && ledger.overlay.mode !== 'closed') {
+    stopLedgerPoll();
+    ledger.pairingToken += 1;
+    dispatchLedgerOverlay({ type: 'close' });
+  }
+}
+
+function openEmbeddedWalletOverlay(
+  mode: Exclude<EmbeddedWalletOverlayMode, 'closed' | 'show-phrase'>,
+): void {
+  // Idempotent: rapid double-click on the same trigger must not reset the
+  // user's in-progress form input. Re-entry while already open is a no-op.
+  if (embeddedWallet.overlay.mode !== 'closed') return;
+  closeSiblingOverlays('embedded-wallet');
+  dispatchEmbeddedWalletOverlay({ type: 'open', mode });
+}
+
+async function submitEmbeddedWalletForm(): Promise<void> {
+  if (!embeddedWallet.ipc) {
+    dispatchEmbeddedWalletOverlay({
+      type: 'submitError',
+      error: 'Wallet is unavailable on this surface.',
+    });
+    return;
+  }
+  const { mode, draft } = embeddedWallet.overlay;
+  if (mode === 'create') {
+    const check = validateCreate(draft);
+    if (!check.ok) {
+      dispatchEmbeddedWalletOverlay({ type: 'submitError', error: check.error });
+      return;
+    }
+    dispatchEmbeddedWalletOverlay({ type: 'submitStart' });
+    try {
+      const result = await embeddedWallet.ipc.create(draft.password);
+      dispatchEmbeddedWalletOverlay({
+        type: 'submitSuccessCreated',
+        mnemonic: result.mnemonic,
+      });
+    } catch (err) {
+      dispatchEmbeddedWalletOverlay({
+        type: 'submitError',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return;
+  }
+  if (mode === 'import') {
+    const check = validateImport(draft);
+    if (!check.ok) {
+      dispatchEmbeddedWalletOverlay({ type: 'submitError', error: check.error });
+      return;
+    }
+    dispatchEmbeddedWalletOverlay({ type: 'submitStart' });
+    try {
+      await embeddedWallet.ipc.import(draft.password, draft.mnemonic);
+      dispatchEmbeddedWalletOverlay({ type: 'submitSuccessClose' });
+      await reconnectAgenticAfterUnlock();
+    } catch (err) {
+      dispatchEmbeddedWalletOverlay({
+        type: 'submitError',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return;
+  }
+  if (mode === 'unlock') {
+    const check = validateUnlock({ password: draft.password });
+    if (!check.ok) {
+      dispatchEmbeddedWalletOverlay({ type: 'submitError', error: check.error });
+      return;
+    }
+    dispatchEmbeddedWalletOverlay({ type: 'submitStart' });
+    try {
+      await embeddedWallet.ipc.unlock(draft.password);
+      dispatchEmbeddedWalletOverlay({ type: 'submitSuccessClose' });
+      await reconnectAgenticAfterUnlock();
+    } catch (err) {
+      dispatchEmbeddedWalletOverlay({
+        type: 'submitError',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return;
+  }
+  if (mode === 'reset-confirm') {
+    const check = validateResetConfirm({ password: draft.password });
+    if (!check.ok) {
+      dispatchEmbeddedWalletOverlay({ type: 'submitError', error: check.error });
+      return;
+    }
+    dispatchEmbeddedWalletOverlay({ type: 'submitStart' });
+    try {
+      await embeddedWallet.ipc.deleteWallet(draft.password);
+      embeddedWallet.status = null;
+      dispatchEmbeddedWalletOverlay({ type: 'open', mode: 'create' });
+      pushToast('info', 'Wallet reset', 'Set up a new Agentic Wallet to continue.');
+    } catch (err) {
+      dispatchEmbeddedWalletOverlay({
+        type: 'submitError',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+}
+
+function stopEmbeddedWalletPoll(): void {
+  if (embeddedWallet.pollHandle) {
+    embeddedWallet.pollHandle.stop();
+    embeddedWallet.pollHandle = null;
+  }
+}
+
+async function reconnectAgenticAfterUnlock(): Promise<void> {
+  // After successful create/import/unlock, kick off the regular connect flow.
+  // It will now find `wallet_status.unlocked === true` and fall through to
+  // the normal Wallet Standard path.
+  state.selectedWalletName = AGENTIC_WALLET_NAME;
+  await runConnect();
+}
+
+function handleEmbeddedWalletAction(action: string | undefined): void {
+  if (!action) return;
+  switch (action) {
+    case 'close':
+      dispatchEmbeddedWalletOverlay({ type: 'close' });
+      return;
+    case 'toggle-phrase-revealed':
+      dispatchEmbeddedWalletOverlay({ type: 'togglePhraseRevealed' });
+      return;
+    case 'copy-phrase':
+      void copyEmbeddedWalletPhrase();
+      return;
+    case 'phrase-continue':
+      if (!embeddedWallet.overlay.phraseSavedAcknowledged) return;
+      dispatchEmbeddedWalletOverlay({ type: 'submitSuccessClose' });
+      void reconnectAgenticAfterUnlock();
+      return;
+    case 'open-reset':
+      dispatchEmbeddedWalletOverlay({ type: 'open', mode: 'reset-confirm' });
+      return;
+    default:
+      // Tab toggles + checkbox toggles are handled by their dedicated
+      // dataset attributes in `bind()`.
+      return;
+  }
+}
+
+async function copyEmbeddedWalletPhrase(): Promise<void> {
+  const phrase = embeddedWallet.overlay.createdMnemonic;
+  if (!phrase) return;
+  try {
+    await navigator.clipboard.writeText(phrase);
+    pushToast('success', 'Phrase copied', 'Paste it into your password manager and clear the clipboard after.');
+  } catch (err) {
+    pushToast(
+      'error',
+      'Could not copy phrase',
+      err instanceof Error ? err.message : 'Clipboard access denied.',
+    );
+  }
+}
+
+function setEmbeddedWalletField(
+  name: string,
+  value: string,
+): void {
+  if (name !== 'password' && name !== 'confirm' && name !== 'mnemonic') return;
+  // Mutate without re-rendering on every keystroke; the next render picks it
+  // up. (We still rerender on errors via dispatchEmbeddedWalletOverlay.)
+  embeddedWallet.overlay = reduceEmbeddedWalletOverlay(embeddedWallet.overlay, {
+    type: 'setField',
+    name: name as keyof EmbeddedWalletOverlayDraft,
+    value,
+  });
+}
+
+function setEmbeddedWalletTab(mode: string): void {
+  if (mode !== 'create' && mode !== 'import') return;
+  dispatchEmbeddedWalletOverlay({ type: 'setTab', mode });
+}
+
+function setEmbeddedWalletAcknowledge(checked: boolean): void {
+  dispatchEmbeddedWalletOverlay({ type: 'acknowledgePhraseSaved', checked });
+}
+
+// ─── Per-brand picker panels (Slice D) ──────────────────────────────────
+// Tauri-only "Other wallets" section beneath the existing picker. Each
+// brand row offers: Scan QR (disabled until Slice E), Import recovery phrase
+// (drives Slice C's overlay), and an opt-in external-browser fallback. The
+// external-browser preference is persisted to localStorage.
+
+const DESKTOP_EXTERNAL_BROWSER_PREF_KEY = 'desktop-external-browser-wallet';
+
+const embeddedWalletBrandPanels: DesktopBrandPanelsState = initialDesktopBrandPanelsState();
+
+function hydrateDesktopBrandPanelsPrefs(): void {
+  try {
+    embeddedWalletBrandPanels.externalBrowserEnabled =
+      window.localStorage.getItem(DESKTOP_EXTERNAL_BROWSER_PREF_KEY) === 'true';
+  } catch {
+    // localStorage may be unavailable in some test runners; keep the default.
+  }
+}
+
+function persistDesktopBrandPanelsPrefs(): void {
+  try {
+    window.localStorage.setItem(
+      DESKTOP_EXTERNAL_BROWSER_PREF_KEY,
+      embeddedWalletBrandPanels.externalBrowserEnabled ? 'true' : 'false',
+    );
+  } catch {
+    // Best-effort persistence.
+  }
+}
+
+function dispatchDesktopBrandPanels(action: DesktopBrandPanelsAction): void {
+  const next = reduceDesktopBrandPanels(embeddedWalletBrandPanels, action);
+  embeddedWalletBrandPanels.expanded = next.expanded;
+  embeddedWalletBrandPanels.externalBrowserEnabled = next.externalBrowserEnabled;
+  if (action.type === 'setExternalBrowserEnabled') {
+    persistDesktopBrandPanelsPrefs();
+  }
+  render();
+}
+
+function collapseDesktopBrandPanels(): void {
+  if (embeddedWalletBrandPanels.expanded === null) return;
+  embeddedWalletBrandPanels.expanded = null;
+}
+
+function desktopBrandPanelsBlock(): string {
+  if (!state.tauriNativeEnvironment.isTauriNative) return '';
+  const ledgerLogoUrl = (BRAND_LOGOS as Record<string, string | undefined>).ledger ?? null;
+  return desktopBrandPanelsHtml({
+    state: embeddedWalletBrandPanels,
+    logoUrl: (logoId) => {
+      const url = (BRAND_LOGOS as Record<string, string | undefined>)[logoId];
+      return url ?? null;
+    },
+    scanQrEnabledFor: (brandId) =>
+      Boolean(WALLETCONNECT_PROJECT_ID) && isWalletConnectSupportedBrand(brandId),
+    hardware: { ledger: { logoUrl: ledgerLogoUrl } },
+  });
+}
+
+function handleDesktopBrandAction(
+  action: string | undefined,
+  brandId: string | undefined,
+): void {
+  if (!action) return;
+  switch (action) {
+    case 'toggle':
+      if (!brandId) return;
+      dispatchDesktopBrandPanels({ type: 'togglePanel', brandId });
+      return;
+    case 'import':
+      // Slice C overlay does the actual work; brand id is contextual today
+      // (panel just narrows the user's intent). Future polish: pass brand
+      // hint to overlay header.
+      openEmbeddedWalletOverlay('import');
+      return;
+    case 'external-browser': {
+      const target = inferredWalletHostUrl();
+      void tauriNativeOpenExternalUrl(target).catch((err) => {
+        pushToast(
+          'error',
+          'Could not open browser',
+          err instanceof Error ? err.message : String(err),
+        );
+      });
+      return;
+    }
+    case 'scan-qr':
+      if (!brandId) return;
+      void handleScanQrForBrand(brandId);
+      return;
+    case 'connect-ledger':
+      openLedgerOverlay();
+      return;
+    default:
+      return;
+  }
+}
+
+function bindDesktopBrandPanels(): void {
+  if (!state.tauriNativeEnvironment.isTauriNative) return;
+  // `render()` replaces innerHTML on every cycle, so each call here sees a
+  // fresh DOM with no pre-existing listeners — no dedup needed.
+  for (const el of document.querySelectorAll<HTMLElement>('[data-desktop-brand-action]')) {
+    el.addEventListener('click', (event) => {
+      event.preventDefault();
+      handleDesktopBrandAction(
+        el.dataset.desktopBrandAction,
+        el.dataset.desktopBrandId,
+      );
+    });
+  }
+  for (const el of document.querySelectorAll<HTMLInputElement>('[data-desktop-brand-pref]')) {
+    el.addEventListener('change', () => {
+      if (el.dataset.desktopBrandPref !== 'external-browser') return;
+      dispatchDesktopBrandPanels({
+        type: 'setExternalBrowserEnabled',
+        enabled: el.checked,
+      });
+    });
+  }
+}
+
+// ─── WalletConnect-Solana QR pairing (Slice E) ──────────────────────────
+// Wires the "Scan QR with [brand] mobile" buttons from Slice D's brand
+// panels. Lazy-inits a SignClient when the user first clicks scan-qr,
+// renders the WC pairing URI as a QR code, and registers a Wallet Standard
+// wallet once the session is approved. Sessions persist via WC's own
+// localStorage; re-registered on next launch.
+
+const WALLETCONNECT_PROJECT_ID =
+  (import.meta as ImportMeta & { env?: { VITE_AGENTIC_WC_PROJECT_ID?: string } }).env
+    ?.VITE_AGENTIC_WC_PROJECT_ID ?? '';
+
+const WALLET_CONNECT_BRAND_LOGOS: Record<string, string> = {
+  phantom: 'phantom',
+  solflare: 'solflare',
+  backpack: 'backpack',
+  jupiter: 'jupiter',
+  magicEden: 'magiceden',
+};
+
+interface WalletConnectRuntime {
+  client: WalletConnectSolanaClient | null;
+  initPromise: Promise<WalletConnectSolanaClient> | null;
+  overlay: WalletConnectQrOverlayState;
+  /** Track the topic of the in-flight pairing so we can abort it on cancel. */
+  pendingTopic: string | null;
+}
+
+const walletConnect: WalletConnectRuntime = {
+  client: null,
+  initPromise: null,
+  overlay: initialWalletConnectQrOverlayState(),
+  pendingTopic: null,
+};
+
+function dispatchWalletConnectOverlay(action: WalletConnectQrOverlayAction): void {
+  walletConnect.overlay = reduceWalletConnectQrOverlay(walletConnect.overlay, action);
+  render();
+}
+
+function walletConnectAppMetadata(): {
+  name: string;
+  description: string;
+  url: string;
+  icons: string[];
+} {
+  return {
+    name: 'Agentic Desktop',
+    description: 'Solana Agent Wallet Adapter — desktop runtime',
+    url:
+      typeof window !== 'undefined' && window.location
+        ? window.location.origin
+        : 'https://agentic-signer.com',
+    icons: [],
+  };
+}
+
+async function initWalletConnectSignClient(): Promise<SignClientLike> {
+  // Dynamic import keeps the WC bundle (and its protobuf/relay deps) out of
+  // the initial page load. Only paid when the user first clicks scan-qr.
+  const mod = await import('@walletconnect/sign-client');
+  const SignClient = (mod as unknown as { default?: { init: (opts: unknown) => Promise<unknown> } })
+    .default ?? (mod as unknown as { init: (opts: unknown) => Promise<unknown> });
+  const instance = await SignClient.init({
+    projectId: WALLETCONNECT_PROJECT_ID,
+    metadata: walletConnectAppMetadata(),
+  });
+  return instance as SignClientLike;
+}
+
+async function ensureWalletConnectClient(): Promise<WalletConnectSolanaClient> {
+  if (walletConnect.client) return walletConnect.client;
+  if (walletConnect.initPromise) return walletConnect.initPromise;
+  if (!WALLETCONNECT_PROJECT_ID) {
+    throw new Error('VITE_AGENTIC_WC_PROJECT_ID is not configured.');
+  }
+  walletConnect.initPromise = (async () => {
+    const signClient = await initWalletConnectSignClient();
+    const client = createWalletConnectSolanaClient({
+      projectId: WALLETCONNECT_PROJECT_ID,
+      metadata: walletConnectAppMetadata(),
+      signClient,
+    });
+    // Attach listeners BEFORE caching the client so the cache invariant
+    // holds: any caller reading `walletConnect.client` knows the listeners
+    // are wired. Without this ordering, a concurrent re-entry between the
+    // assignment and the .on() calls would see a clientless of listeners.
+    // `session_delete` / `session_expire` mean the WC SignClient has
+    // ALREADY torn down its local mapping for `topic`. Calling
+    // `client.disconnect(topic)` here would throw "session not found"
+    // since the entry is gone. We only unregister our Wallet Standard
+    // entry. User-initiated teardown happens via the wallet's
+    // `standard:disconnect` feature, which DOES call client.disconnect.
+    client.on('session_delete', (topic) => {
+      unregisterWalletConnectSolanaWallet(topic);
+      if (state.selectedWalletName.includes('(mobile)')) {
+        state.address = '';
+        render();
+      }
+    });
+    client.on('session_expire', (topic) => {
+      unregisterWalletConnectSolanaWallet(topic);
+    });
+    walletConnect.client = client;
+    return client;
+  })();
+  try {
+    return await walletConnect.initPromise;
+  } finally {
+    walletConnect.initPromise = null;
+  }
+}
+
+function walletConnectChainsForCurrentCluster(): string[] {
+  const cluster = state.cluster as SolanaClusterId;
+  // Treat any non-Solana cluster string as devnet for WC purposes — desktop
+  // app's cluster is always one of mainnet-beta/devnet/testnet/localnet.
+  try {
+    return [solanaWalletConnectChainId(cluster)];
+  } catch {
+    return [solanaWalletConnectChainId('devnet')];
+  }
+}
+
+function registerBrandSession(brandId: string, session: WalletConnectSession): string {
+  const brand = WALLET_CONNECT_BRANDS[brandId];
+  if (!brand) throw new Error(`Unsupported WalletConnect brand: ${brandId}`);
+  const logoId = WALLET_CONNECT_BRAND_LOGOS[brandId] ?? brandId;
+  const iconUrl = (BRAND_LOGOS as Record<string, string | undefined>)[logoId];
+  if (!iconUrl) throw new Error(`Missing brand logo for ${brandId}`);
+  const walletName = `${brand.name} (mobile)`;
+  // The package's `register` is keyed by `brand.id|address` so a re-pair
+  // with a new topic but the same address replaces (not duplicates) the
+  // previous registration. No parallel map in main.ts needed.
+  registerWalletConnectSolanaWallet({
+    brand: { id: brandId, name: walletName },
+    session,
+    client: walletConnect.client!,
+    icon: iconUrl as `data:image/svg+xml;base64,${string}`,
+  });
+  return walletName;
+}
+
+async function handleScanQrForBrand(brandId: string): Promise<void> {
+  if (!isWalletConnectSupportedBrand(brandId)) {
+    pushToast(
+      'pending',
+      'Coming soon',
+      `${brandId} via WalletConnect ships in a later release.`,
+    );
+    return;
+  }
+  if (!WALLETCONNECT_PROJECT_ID) {
+    pushToast(
+      'error',
+      'WalletConnect not configured',
+      'Set VITE_AGENTIC_WC_PROJECT_ID before launching to enable mobile pairing.',
+    );
+    return;
+  }
+  // Idempotent: don't abandon an in-flight pairing if the user double-taps
+  // Scan QR or clicks two brand rows in quick succession.
+  if (walletConnect.overlay.mode !== 'closed') return;
+  closeSiblingOverlays('walletconnect-qr');
+  dispatchWalletConnectOverlay({ type: 'openConnecting', brandId });
+  try {
+    const client = await ensureWalletConnectClient();
+    const chains = walletConnectChainsForCurrentCluster();
+    const { uri, approval } = await client.connect({ chains });
+    let qrDataUrl = '';
+    try {
+      const QRCodeMod = await import('qrcode');
+      const generator = (QRCodeMod as { default?: typeof import('qrcode') }).default ?? QRCodeMod;
+      qrDataUrl = await generator.toDataURL(uri, {
+        errorCorrectionLevel: 'M',
+        margin: 2,
+        width: 320,
+      });
+    } catch (err) {
+      console.warn('[walletconnect] qrcode generation failed', err);
+    }
+    dispatchWalletConnectOverlay({ type: 'setUri', uri, qrDataUrl });
+
+    const session = await approval();
+    dispatchWalletConnectOverlay({ type: 'completing' });
+    const walletName = registerBrandSession(brandId, session);
+    dispatchWalletConnectOverlay({ type: 'close' });
+    state.selectedWalletName = walletName;
+    await runConnect();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    dispatchWalletConnectOverlay({ type: 'setError', error: message });
+  }
+}
+
+async function copyWalletConnectUri(): Promise<void> {
+  const uri = walletConnect.overlay.uri;
+  if (!uri) return;
+  try {
+    await navigator.clipboard.writeText(uri);
+    pushToast('success', 'URI copied', 'Paste into a WC-compatible wallet.');
+  } catch (err) {
+    pushToast(
+      'error',
+      'Could not copy',
+      err instanceof Error ? err.message : 'Clipboard access denied.',
+    );
+  }
+}
+
+function handleWalletConnectOverlayAction(action: string | undefined): void {
+  switch (action) {
+    case 'cancel':
+      dispatchWalletConnectOverlay({ type: 'close' });
+      return;
+    case 'copy-uri':
+      void copyWalletConnectUri();
+      return;
+    case 'open-deeplink':
+      // Anchor's default href handles the OS deep-link; nothing to do.
+      return;
+    default:
+      return;
+  }
+}
+
+function bindWalletConnectOverlay(): void {
+  if (walletConnect.overlay.mode === 'closed') return;
+  for (const el of document.querySelectorAll<HTMLElement>('[data-walletconnect-action]')) {
+    const action = el.dataset.walletconnectAction;
+    if (action === 'open-deeplink') continue; // anchor click goes through naturally
+    el.addEventListener('click', (event) => {
+      event.preventDefault();
+      handleWalletConnectOverlayAction(action);
+    });
+  }
+}
+
+function walletConnectOverlayBlock(): string {
+  return walletConnectQrOverlayHtml({
+    state: walletConnect.overlay,
+    logoUrl: (logoId) => (BRAND_LOGOS as Record<string, string | undefined>)[logoId] ?? null,
+  });
+}
+
+async function restoreWalletConnectSessions(): Promise<void> {
+  if (!WALLETCONNECT_PROJECT_ID) return;
+  try {
+    const client = await ensureWalletConnectClient();
+    for (const session of client.listSessions()) {
+      // Determine the brand from any namespace metadata we have; since WC
+      // doesn't surface brand identity, default to phantom for now — the
+      // user can disconnect+re-pair if they need a different label.
+      const brandId = inferWalletConnectBrandForSession(session);
+      if (!brandId) continue;
+      try {
+        registerBrandSession(brandId, session);
+      } catch (err) {
+        console.warn('[walletconnect] failed to restore session', err);
+      }
+    }
+  } catch (err) {
+    console.warn('[walletconnect] restore failed', err);
+  }
+}
+
+function inferWalletConnectBrandForSession(_session: WalletConnectSession): string | null {
+  // WC doesn't carry the brand in the session; in Slice E we don't track it
+  // outside the live pairing. Restored sessions are labelled "WalletConnect"
+  // generically — they still sign correctly.
+  return 'phantom';
+}
+
+void unregisterAllWalletConnectWallets; // referenced by tests / future tear-down
+void unregisterWalletConnectSolanaWallet;
+
+// ─── Ledger USB-HID hardware wallet (Slice G) ───────────────────────────
+// Drives the "Connect Ledger" overlay (`ledgerOverlay.ts`) and routes the
+// IPC commands defined in `apps/desktop-shell/src-tauri/src/ledger/`. The
+// transport is owned by the Rust side; this slice handles the TS lifecycle
+// (polling for a device, deriving an address, registering a Wallet
+// Standard wallet, kicking off `runConnect()`).
+
+const LEDGER_SEARCH_POLL_INTERVAL_MS = 1200;
+
+interface LedgerRuntime {
+  ipc: LedgerIpc | null;
+  overlay: LedgerOverlayState;
+  pollHandle: number | null;
+  /** Per-pairing token; bumped on every overlay open so stale async work no-ops. */
+  pairingToken: number;
+}
+
+const ledger: LedgerRuntime = {
+  ipc: null,
+  overlay: initialLedgerOverlayState(),
+  pollHandle: null,
+  pairingToken: 0,
+};
+
+function dispatchLedgerOverlay(action: LedgerOverlayAction): void {
+  ledger.overlay = reduceLedgerOverlay(ledger.overlay, action);
+  render();
+}
+
+function ensureLedgerIpc(): LedgerIpc | null {
+  if (ledger.ipc) return ledger.ipc;
+  const invoke = detectLedgerTauriInvoke();
+  if (!invoke) return null;
+  ledger.ipc = createTauriLedgerIpc(invoke);
+  return ledger.ipc;
+}
+
+function stopLedgerPoll(): void {
+  if (ledger.pollHandle !== null) {
+    window.clearInterval(ledger.pollHandle);
+    ledger.pollHandle = null;
+  }
+}
+
+function startLedgerSearchPoll(ipc: LedgerIpc, token: number): void {
+  stopLedgerPoll();
+  const tick = async () => {
+    if (ledger.pairingToken !== token) return; // pairing aborted/refreshed
+    try {
+      const devices = await ipc.listDevices();
+      if (ledger.pairingToken !== token) return;
+      if (devices.length === 0) return; // keep polling
+      stopLedgerPoll();
+      await proceedToAppCheck(ipc, devices[0]!, token);
+    } catch (err) {
+      if (ledger.pairingToken !== token) return;
+      stopLedgerPoll();
+      dispatchLedgerOverlay({
+        type: 'setError',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+  // Kick off an immediate first attempt so the user doesn't wait for the
+  // interval if the device is already plugged in.
+  void tick();
+  ledger.pollHandle = window.setInterval(() => {
+    void tick();
+  }, LEDGER_SEARCH_POLL_INTERVAL_MS);
+}
+
+async function proceedToAppCheck(
+  ipc: LedgerIpc,
+  device: LedgerDevice,
+  token: number,
+): Promise<void> {
+  dispatchLedgerOverlay({
+    type: 'deviceFound',
+    device: {
+      productName: device.productName,
+      vendorId: device.vendorId,
+      productId: device.productId,
+    },
+  });
+  try {
+    await ipc.connect();
+    if (ledger.pairingToken !== token) return;
+    const addressResult = await ipc.getAddress(DEFAULT_LEDGER_DERIVATION_PATH, false);
+    if (ledger.pairingToken !== token) return;
+    dispatchLedgerOverlay({ type: 'addressReady', address: addressResult.address });
+  } catch (err) {
+    if (ledger.pairingToken !== token) return;
+    dispatchLedgerOverlay({
+      type: 'setError',
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+function openLedgerOverlay(): void {
+  if (!state.tauriNativeEnvironment.isTauriNative) {
+    pushToast(
+      'pending',
+      'Desktop only',
+      'Ledger HID pairing is available in the desktop app.',
+    );
+    return;
+  }
+  // Idempotent: double-tap on "Connect Ledger" must not reset the search
+  // poll or invalidate the pairing token while a pair is already in flight.
+  if (ledger.overlay.mode !== 'closed') return;
+  const ipc = ensureLedgerIpc();
+  if (!ipc) {
+    pushToast(
+      'error',
+      'Ledger not available',
+      'Could not reach the Tauri runtime to talk to the Ledger device.',
+    );
+    return;
+  }
+  closeSiblingOverlays('ledger');
+  ledger.pairingToken += 1;
+  const token = ledger.pairingToken;
+  dispatchLedgerOverlay({ type: 'open' });
+  startLedgerSearchPoll(ipc, token);
+}
+
+async function confirmLedgerAddress(): Promise<void> {
+  const ipc = ledger.ipc;
+  if (!ipc) return;
+  const overlay = ledger.overlay;
+  if (overlay.mode !== 'confirm-address' || !overlay.address) return;
+  const token = ledger.pairingToken;
+  try {
+    // Re-fetch the address to capture the raw public key bytes. (`addressReady`
+    // only stored the base58 string; we need bytes for the Wallet Standard
+    // `WalletAccount.publicKey` field.)
+    const fresh = await ipc.getAddress(overlay.derivationPath, false);
+    if (ledger.pairingToken !== token) return;
+    if (fresh.address !== overlay.address) {
+      dispatchLedgerOverlay({
+        type: 'setError',
+        error: 'The Ledger derived a different address on re-check — please retry.',
+      });
+      return;
+    }
+    const publicKey = decodeLedgerPublicKey(fresh.address, fresh.publicKeyB64);
+    registerLedgerWallet({
+      ipc,
+      address: fresh.address,
+      publicKey,
+      derivationPath: overlay.derivationPath,
+    });
+    dispatchLedgerOverlay({ type: 'close' });
+    state.selectedWalletName = LEDGER_WALLET_NAME;
+    await runConnect();
+  } catch (err) {
+    if (ledger.pairingToken !== token) return;
+    dispatchLedgerOverlay({
+      type: 'setError',
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+function handleLedgerOverlayAction(action: string | undefined): void {
+  switch (action) {
+    case 'cancel':
+      stopLedgerPoll();
+      ledger.pairingToken += 1; // invalidate any in-flight handlers
+      dispatchLedgerOverlay({ type: 'close' });
+      return;
+    case 'retry':
+      openLedgerOverlay();
+      return;
+    case 'confirm-address':
+      void confirmLedgerAddress();
+      return;
+    default:
+      return;
+  }
+}
+
+function bindLedgerOverlay(): void {
+  if (ledger.overlay.mode === 'closed') return;
+  for (const el of document.querySelectorAll<HTMLElement>('[data-ledger-action]')) {
+    el.addEventListener('click', (event) => {
+      event.preventDefault();
+      handleLedgerOverlayAction(el.dataset.ledgerAction);
+    });
+  }
+}
+
+function ledgerOverlayBlock(): string {
+  return ledgerOverlayHtml(ledger.overlay);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+
+function bindEmbeddedWalletOverlay(): void {
+  if (embeddedWallet.overlay.mode === 'closed') return;
+  for (const el of document.querySelectorAll<HTMLElement>('[data-embedded-wallet-action]')) {
+    const action = el.dataset.embeddedWalletAction;
+    if (action === 'acknowledge-phrase') {
+      el.addEventListener('change', () => {
+        setEmbeddedWalletAcknowledge((el as HTMLInputElement).checked);
+      });
+      continue;
+    }
+    el.addEventListener('click', (event) => {
+      event.preventDefault();
+      handleEmbeddedWalletAction(action);
+    });
+  }
+  for (const el of document.querySelectorAll<HTMLElement>('[data-embedded-wallet-tab]')) {
+    el.addEventListener('click', (event) => {
+      event.preventDefault();
+      setEmbeddedWalletTab(el.dataset.embeddedWalletTab ?? '');
+    });
+  }
+  for (const el of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
+    '[data-embedded-wallet-field]',
+  )) {
+    el.addEventListener('input', () => {
+      setEmbeddedWalletField(el.dataset.embeddedWalletField ?? '', el.value);
+    });
+  }
+  for (const form of document.querySelectorAll<HTMLFormElement>(
+    'form[data-embedded-wallet-form]',
+  )) {
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      void submitEmbeddedWalletForm();
+    });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+
 function render(): void {
   if (!appRoot) return;
   // Publish the connected wallet address to the shared dev-tab sinks BEFORE
@@ -4213,9 +5228,17 @@ function render(): void {
       delete document.body.dataset.expandNoteSheet;
     }
   }
-  appRoot.innerHTML = pageShell(pageContent(route), route);
+  appRoot.innerHTML =
+    pageShell(pageContent(route), route)
+    + embeddedWalletOverlayHtml(embeddedWallet.overlay)
+    + walletConnectOverlayBlock()
+    + ledgerOverlayBlock();
   flushPendingSpendNavigation();
   bind();
+  bindEmbeddedWalletOverlay();
+  bindDesktopBrandPanels();
+  bindWalletConnectOverlay();
+  bindLedgerOverlay();
   mountConnectorKeysPanel({ container: 'connector-keys-panel' });
   if (state.tauriNativeEnvironment.isTauriNative) {
     mountTauriLocalRuntimePanel('tauri-local-runtime-panel');
@@ -4827,18 +5850,22 @@ function appPage(): string {
 
 function cliAppPage(): string {
   if (!cliView) return appPage();
-  if (cliView.intent === 'connect') return cliConnectView();
+  if (cliView.intent === 'connect' || cliView.intent === 'disconnect') return cliConnectView();
   if (cliView.intent === 'approve') return cliApproveView();
+  if (cliView.intent === 'sign') return cliSignView();
   return cliErrorView('Unknown CLI intent', 'Return to the terminal and try again.');
 }
 
-function cliFocusedShell(args: { title: string; subtitle?: string; body: string; footer?: string }): string {
+function cliFocusedShell(args: { title: string; subtitle?: string; subtitleIcon?: string; body: string; footer?: string }): string {
+  const subtitleMarkup = args.subtitle
+    ? `<p class="cli-focused-subtitle">${args.subtitleIcon ?? ''}<span>${escapeHtml(args.subtitle)}</span></p>`
+    : '';
   return `
     <section class="cli-focused-shell" data-layout="cli-focused">
       <div class="cli-focused-card signature-object">
         <header class="cli-focused-head signature-object-head">
           <h1>${escapeHtml(args.title)}</h1>
-          ${args.subtitle ? `<p>${escapeHtml(args.subtitle)}</p>` : ''}
+          ${subtitleMarkup}
         </header>
         <div class="cli-focused-body">
           ${args.body}
@@ -4852,19 +5879,36 @@ function cliFocusedShell(args: { title: string; subtitle?: string; body: string;
 function cliReturnFooter(): string {
   return `
     <p class="cli-focused-note">Return to the terminal — the CLI is watching for this change.</p>
-    <button type="button" class="utility cli-focused-open-full" data-cli-action="open-full">Open full app</button>
   `;
 }
 
 function cliConnectView(): string {
-  if (state.address) {
+  const isDisconnect = cliView?.intent === 'disconnect';
+  if (isDisconnect && !state.address) {
     return cliFocusedShell({
-      title: 'Wallet paired',
-      subtitle: short(state.address),
+      title: 'Wallet disconnected',
       body: `
         <div class="cli-focused-success signature-state complete" role="status" aria-live="polite">
           <span class="cli-focused-tick" aria-hidden="true">✓</span>
-          <p>Wallet connected to the local bridge. The CLI has picked it up.</p>
+          <p>The wallet is no longer paired with the local bridge.</p>
+        </div>
+      `,
+      footer: cliReturnFooter(),
+    });
+  }
+  if (state.address) {
+    const logoId = state.selectedWalletLogoId ?? walletProviderLogoIdForName(state.selectedWalletName);
+    const subtitleIcon = logoId ? brandLogo(logoId, 'cli-focused-wallet-logo') : undefined;
+    return cliFocusedShell({
+      title: isDisconnect ? 'Confirm disconnect' : 'Wallet paired',
+      subtitle: short(state.address),
+      ...(subtitleIcon ? { subtitleIcon } : {}),
+      body: `
+        <div class="cli-focused-success signature-state complete" role="status" aria-live="polite">
+          <span class="cli-focused-tick" aria-hidden="true">✓</span>
+          <p>${isDisconnect
+            ? 'Click below to disconnect this wallet from the local bridge.'
+            : 'Wallet connected to the local bridge. The CLI has picked it up.'}</p>
         </div>
         <div class="cli-focused-actions">
           <button type="button" id="disconnect" class="danger" ${state.busy ? 'disabled' : ''}>Disconnect wallet</button>
@@ -4909,14 +5953,40 @@ function cliConnectView(): string {
         </div>
       `
       : '';
+  const connectingLabel = state.selectedWalletName || 'wallet';
+  const busyBanner = state.busy && state.steps?.connect === 'active'
+    ? `
+      <div class="cli-focused-busy" role="status" aria-live="polite">
+        <span class="cli-focused-busy-dot" aria-hidden="true"></span>
+        <p>Connecting to <strong>${escapeHtml(connectingLabel)}</strong>… check the extension popup.</p>
+      </div>
+    `
+    : '';
+  const errorBanner = state.error
+    ? `
+      <div class="cli-focused-error" role="alert">
+        <p><strong>Couldn't connect.</strong> ${escapeHtml(state.error)}</p>
+      </div>
+    `
+    : '';
+  const persistenceHint = `
+    <p class="cli-focused-note cli-focused-persistence">
+      Already authorized? Your wallet may approve silently — wait a moment and the card above flips to "Wallet paired ✓".
+    </p>
+  `;
   return cliFocusedShell({
     title: 'Connect your wallet',
     subtitle: 'Pair a Wallet Standard wallet (Phantom, Backpack, Solflare, …) with the local bridge.',
-    body: guidedStartPanel(
-      'Wallet pairing',
-      'Discover, select, and authorize a wallet. The CLI will detect it.',
-      pickerMarkup,
-    ),
+    body: `
+      ${errorBanner}
+      ${busyBanner}
+      ${guidedStartPanel(
+        'Wallet pairing',
+        'Discover, select, and authorize a wallet. The CLI will detect it.',
+        pickerMarkup,
+      )}
+      ${persistenceHint}
+    `,
     footer: `<p class="cli-focused-note">Return to the terminal once the wallet is connected.</p>`,
   });
 }
@@ -4941,16 +6011,62 @@ function cliApproveView(): string {
       footer: `<p class="cli-focused-note">Once connected, the approval card will appear here.</p>`,
     });
   }
-  if (action.status === 'approved') {
-    const txHash = action.txid ?? action.transactionHash ?? null;
+  const walletLabel = state.selectedWalletName || 'wallet';
+  const txid = action.txid ?? action.transactionHash ?? null;
+  const explorerLink = txid
+    ? `<a class="cli-focused-explorer-link" href="${escapeHtml(explorerUrl(txid, action.cluster))}" target="_blank" rel="noopener">View on Solscan ${escapeHtml(short(txid))} ↗</a>`
+    : '';
+
+  if (action.status === 'approval_pending') {
     return cliFocusedShell({
-      title: 'Signed',
+      title: 'Awaiting wallet signature',
+      subtitle: action.summary,
+      body: `
+        <div class="cli-focused-busy" role="status" aria-live="polite">
+          <span class="cli-focused-busy-dot" aria-hidden="true"></span>
+          <p>Connecting to <strong>${escapeHtml(walletLabel)}</strong>… approve in the extension popup.</p>
+        </div>
+      `,
+      footer: `<p class="cli-focused-note">The terminal is watching for the result.</p>`,
+    });
+  }
+  if (action.status === 'approved' && action.txStatus === 'pending') {
+    return cliFocusedShell({
+      title: 'Submitted — confirming on chain',
+      subtitle: action.summary,
+      body: `
+        <div class="cli-focused-busy" role="status" aria-live="polite">
+          <span class="cli-focused-busy-dot" aria-hidden="true"></span>
+          <p>Transaction broadcast. Waiting for confirmation…</p>
+        </div>
+        ${explorerLink ? `<div class="cli-focused-explorer-row">${explorerLink}</div>` : ''}
+      `,
+      footer: `<p class="cli-focused-note">You can return to the terminal — confirmation usually lands within ~30 seconds.</p>`,
+    });
+  }
+  if (action.status === 'approved' && action.txStatus === 'failed') {
+    return cliFocusedShell({
+      title: 'Transaction failed',
+      subtitle: action.summary,
+      body: `
+        <div class="cli-focused-error" role="alert">
+          <p><strong>The transaction was signed but failed to confirm.</strong>${action.txError ? ` ${escapeHtml(action.txError)}` : ''}</p>
+        </div>
+        ${explorerLink ? `<div class="cli-focused-explorer-row">${explorerLink}</div>` : ''}
+      `,
+      footer: cliReturnFooter(),
+    });
+  }
+  if (action.status === 'approved') {
+    return cliFocusedShell({
+      title: 'Confirmed',
       subtitle: action.summary,
       body: `
         <div class="cli-focused-success signature-state complete" role="status" aria-live="polite">
           <span class="cli-focused-tick" aria-hidden="true">✓</span>
-          <p>Approval signed.${txHash ? ` Tx <code>${escapeHtml(short(txHash))}</code>` : ''}</p>
+          <p>Transaction confirmed on chain.</p>
         </div>
+        ${explorerLink ? `<div class="cli-focused-explorer-row">${explorerLink}</div>` : ''}
       `,
       footer: cliReturnFooter(),
     });
@@ -4962,7 +6078,7 @@ function cliApproveView(): string {
       body: `
         <div class="cli-focused-success signature-state" role="status" aria-live="polite">
           <span class="cli-focused-tick" aria-hidden="true">✕</span>
-          <p>Approval rejected. The CLI inbox has been updated.</p>
+          <p>${action.status === 'rejected' ? 'Approval rejected.' : 'Approval cancelled.'} The CLI inbox has been updated.</p>
         </div>
       `,
       footer: cliReturnFooter(),
@@ -4973,6 +6089,84 @@ function cliApproveView(): string {
     subtitle: 'The terminal queued this approval. Verify the details and sign.',
     body: preparedActionCard(action),
     footer: `<p class="cli-focused-note">The CLI will report back once you sign or reject.</p>`,
+  });
+}
+
+function cliSignView(): string {
+  const expectedRequestId = cliView?.requestId;
+  const logoId = state.selectedWalletLogoId ?? walletProviderLogoIdForName(state.selectedWalletName);
+  const subtitleIcon = logoId ? brandLogo(logoId, 'cli-focused-wallet-logo') : undefined;
+  const addressSubtitle = state.address ? short(state.address) : undefined;
+  const baseSubtitle = addressSubtitle
+    ? { subtitle: addressSubtitle, ...(subtitleIcon ? { subtitleIcon } : {}) }
+    : {};
+
+  const result = state.lastCliSignResult;
+  if (result && (!expectedRequestId || result.requestId === expectedRequestId)) {
+    if (result.status === 'approved') {
+      return cliFocusedShell({
+        title: 'Signed',
+        ...baseSubtitle,
+        body: `
+          <div class="cli-focused-success signature-state complete" role="status" aria-live="polite">
+            <span class="cli-focused-tick" aria-hidden="true">✓</span>
+            <p>Message signed.${result.signature ? ` Signature <code>${escapeHtml(short(result.signature))}</code>` : ''}</p>
+          </div>
+        `,
+        footer: cliReturnFooter(),
+      });
+    }
+    return cliFocusedShell({
+      title: result.status === 'rejected' ? 'Rejected' : 'Sign failed',
+      ...baseSubtitle,
+      body: `
+        <div class="cli-focused-error" role="alert">
+          <p><strong>${result.status === 'rejected' ? 'Wallet rejected the request.' : 'Signing failed.'}</strong>${result.error ? ` ${escapeHtml(result.error)}` : ''}</p>
+        </div>
+      `,
+      footer: cliReturnFooter(),
+    });
+  }
+
+  const request = state.pendingCliSignRequest;
+  if (!request || (expectedRequestId && request.id !== expectedRequestId)) {
+    return cliFocusedShell({
+      title: 'Waiting for signing request…',
+      ...baseSubtitle,
+      body: `
+        <div class="cli-focused-busy" role="status" aria-live="polite">
+          <span class="cli-focused-busy-dot" aria-hidden="true"></span>
+          <p>Keep this page open. The CLI is preparing the request.</p>
+        </div>
+      `,
+      footer: `<p class="cli-focused-note">If nothing happens, return to the terminal and re-run the command.</p>`,
+    });
+  }
+
+  const summary = request.display?.summary ?? 'Sign with wallet';
+  const risk = request.display?.riskLevel;
+  const riskMarkup = risk
+    ? `<span class="signature-state ${risk === 'high' ? '' : 'complete'}" style="text-transform:uppercase;font-size:0.72rem;letter-spacing:0.08em;padding:4px 10px;border-radius:999px;align-self:flex-start;">Risk: ${escapeHtml(risk)}</span>`
+    : '';
+  const messageText = request.kind === 'sign_message'
+    ? (typeof request.payload?.data === 'string' ? request.payload.data : '')
+    : '';
+  const messageMarkup = messageText
+    ? `<pre class="cli-focused-message">${escapeHtml(messageText)}</pre>`
+    : '';
+  const walletLabel = state.selectedWalletName || 'wallet';
+  return cliFocusedShell({
+    title: summary,
+    ...baseSubtitle,
+    body: `
+      ${riskMarkup}
+      ${messageMarkup}
+      <div class="cli-focused-busy" role="status" aria-live="polite">
+        <span class="cli-focused-busy-dot" aria-hidden="true"></span>
+        <p>Connecting to <strong>${escapeHtml(walletLabel)}</strong>… check the extension popup.</p>
+      </div>
+    `,
+    footer: `<p class="cli-focused-note">Approve or reject in the wallet — the CLI is watching.</p>`,
   });
 }
 
@@ -5025,6 +6219,10 @@ function notFoundPage(): string {
 }
 
 function homepageNav(activeRoute: AppRoute | null): string {
+  const isTauri = state.tauriNativeEnvironment.isTauriNative;
+  const visibleNavItems = isTauri
+    ? NAV_ITEMS.filter((item) => !item.hideInTauri)
+    : NAV_ITEMS;
   return `
     <header class="homepage-nav" aria-label="Agentic navigation" data-site-nav ${activeRoute === '/app' ? 'data-layout="app-nav"' : ''}>
       <a class="homepage-brand" href="/" aria-label="Agentic home" ${activeRoute === '/' ? 'aria-current="page"' : ''}>
@@ -5032,7 +6230,7 @@ function homepageNav(activeRoute: AppRoute | null): string {
         <span>Agentic</span>
       </a>
       <nav class="homepage-links" aria-label="Primary navigation" data-site-links>
-        ${NAV_ITEMS.map((item) => navLink(item, activeRoute)).join('')}
+        ${visibleNavItems.map((item) => navLink(item, activeRoute)).join('')}
       </nav>
     </header>
   `;
@@ -7594,6 +8792,7 @@ function walletRail(): string {
             open: state.browserWalletPickerOpen,
           })}
         </label>
+        ${desktopBrandPanelsBlock()}
       </details>` : ''}
 
       ${publicWalletActions()}
@@ -10066,7 +11265,8 @@ function developerConnectionSettings(): string {
         disabled: state.wallets.length === 0 || state.busy,
       })}
     </label>
-    ${state.tauriNativeEnvironment.isTauriNative && state.wallets.length === 0 ? tauriEmptyWalletsHint() : ''}`}
+    ${state.tauriNativeEnvironment.isTauriNative && state.wallets.length === 0 ? tauriEmptyWalletsHint() : ''}
+    ${desktopBrandPanelsBlock()}`}
 
     ${state.capabilities ? capabilityBlock(state.capabilities) : ''}
     ${androidNative || state.iosNativeEnvironment.isIosNative ? mobileWalletBox() : ''}
@@ -10925,7 +12125,7 @@ function aiPathPreferenceLabel(mode: AiSettings['mode']): string {
     case 'device-agent':
       return 'Device Agent';
     case 'session':
-      return IS_TAURI_APP ? 'Desktop Session' : IS_ANDROID_APP ? 'Android Session' : 'Browser Session';
+      return IS_ANDROID_APP ? 'Android Session' : 'Browser Session';
   }
 }
 
@@ -11025,10 +12225,10 @@ function commandAiRouteCards(): string {
     {
       id: 'session',
       mode: 'session',
-      title: IS_TAURI_APP ? 'Desktop Session' : IS_ANDROID_APP ? 'Android Session' : 'Browser Session',
-      detail: `Connect a temporary key in ${IS_TAURI_APP || IS_ANDROID_APP ? 'this app runtime' : 'this tab'} without saving it to Agentic.`,
+      title: IS_ANDROID_APP ? 'Android Session' : 'Browser Session',
+      detail: `Connect a temporary key in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'} without saving it to Agentic.`,
       meta: 'Session AI connection',
-      available: !mobileAiPathPolicy,
+      available: !mobileAiPathPolicy && !IS_TAURI_APP,
     },
     {
       id: 'device-agent',
@@ -11084,7 +12284,9 @@ function commandAiRouteCards(): string {
   }
   const ordered = IS_ANDROID_APP
     ? ['device-agent', 'session', 'hosted', 'bridge']
-    : ['hosted', 'bridge', 'session', 'device-agent'];
+    : IS_TAURI_APP
+      ? ['bridge', 'device-agent', 'hosted']
+      : ['hosted', 'bridge', 'session', 'device-agent'];
   return ordered
     .map((id) => visible.find((entry) => entry.id === id))
     .filter((entry): entry is (typeof definitions)[number] => Boolean(entry))
@@ -11211,11 +12413,11 @@ function commandAiInfoCardsGroup(): string {
     {
       id: 'session',
       tab: 'SESSION',
-      title: IS_TAURI_APP ? 'Desktop Session AI' : IS_ANDROID_APP ? 'Android Session AI' : 'Browser Session AI',
+      title: IS_ANDROID_APP ? 'Android Session AI' : 'Browser Session AI',
       badge: 'Session drafting',
-      detail: `AI drafts inside ${IS_TAURI_APP || IS_ANDROID_APP ? 'this app runtime' : 'this browser session'}, then the plan enters the same normalized workflow pipeline.`,
+      detail: `AI drafts inside ${IS_ANDROID_APP ? 'this app runtime' : 'this browser session'}, then the plan enters the same normalized workflow pipeline.`,
       foot: 'Useful for temporary keys, but subject to provider and session limits.',
-      available: !mobileAiPathPolicy,
+      available: !mobileAiPathPolicy && !IS_TAURI_APP,
     },
     {
       id: 'bridge',
@@ -16102,14 +17304,22 @@ function aiModeSelectOptions(): SelectPickerOption[] {
           { id: 'hosted', label: 'Hosted BYOK - cloud relay' },
           { id: 'bridge', label: 'Local bridge AI - optional' },
         ]
-      : [
-          { id: 'hosted', label: 'Hosted BYOK - drafts only' },
-          ...(deviceAgentModeVisible()
-            ? [{ id: 'device-agent' as const, label: 'Device Agent - drafts via device' }]
-            : []),
-          { id: 'bridge', label: 'Local bridge AI - draft via bridge' },
-          { id: 'session', label: 'Browser session - drafts only' },
-        ];
+      : IS_TAURI_APP
+        ? [
+            { id: 'bridge', label: 'Local bridge AI - default' },
+            ...(deviceAgentModeVisible()
+              ? [{ id: 'device-agent' as const, label: 'Device Agent - drafts via device' }]
+              : []),
+            { id: 'hosted', label: 'Hosted BYOK - cloud relay' },
+          ]
+        : [
+            { id: 'hosted', label: 'Hosted BYOK - drafts only' },
+            ...(deviceAgentModeVisible()
+              ? [{ id: 'device-agent' as const, label: 'Device Agent - drafts via device' }]
+              : []),
+            { id: 'bridge', label: 'Local bridge AI - draft via bridge' },
+            { id: 'session', label: 'Browser session - drafts only' },
+          ];
   return options.map((option) => {
     const disabledReason = aiModeDisabledReason(option.id);
     return {
@@ -16201,6 +17411,11 @@ function aiModeDisabledReason(mode: AiSettings['mode']): string {
     cloudSessionMatchesWallet: cloudSessionMatchesWallet(),
   });
   if (mobileDisabledReason) return mobileDisabledReason;
+  const desktopDisabledReason = desktopAiModeDisabledReason({
+    desktopAiPathPolicy: IS_TAURI_APP,
+    mode,
+  });
+  if (desktopDisabledReason) return desktopDisabledReason;
   if (mode === 'device-agent' && !deviceAgentModeVisible()) {
     return 'Device Agent is enabled only for local dev builds, Android device-agent builds, or allowlisted wallets.';
   }
@@ -21298,14 +22513,63 @@ async function runConnect(): Promise<void> {
       pushToast('success', 'iOS wallet connected', short(state.address));
       return;
     }
+    // Ledger early-return — covers the case where `state.selectedWalletName`
+    // is "Ledger" (e.g. persisted across launches via `browserWalletSession`)
+    // but no Wallet Standard adapter has been registered yet because the
+    // device was unplugged between sessions. Without this, `selectedWallet()`
+    // throws a generic "Click Discover…" message; we want to re-open the
+    // hardware-pairing overlay so the user just plugs the device in.
+    if (
+      state.tauriNativeEnvironment.isTauriNative &&
+      state.selectedWalletName === LEDGER_WALLET_NAME
+    ) {
+      const hasRegisteredLedger = state.wallets.some((w) => w.name === LEDGER_WALLET_NAME);
+      if (!hasRegisteredLedger) {
+        openLedgerOverlay();
+        return;
+      }
+    }
     const selected = selectedWallet();
     state.browserWalletPickerOpen = false;
+    if (
+      state.tauriNativeEnvironment.isTauriNative &&
+      selected.name === AGENTIC_WALLET_NAME &&
+      embeddedWallet.ipc
+    ) {
+      // Agentic Wallet has special create/unlock UX that Wallet Standard's
+      // `connect()` would otherwise surface as raw error text. Route to the
+      // overlay instead, then let the user re-connect once the wallet is
+      // ready.
+      let status: WalletStatus | null = null;
+      try {
+        status = await embeddedWallet.ipc.status();
+      } catch (err) {
+        console.warn('[runConnect] wallet_status failed', err);
+      }
+      embeddedWallet.status = status;
+      if (status && !status.exists) {
+        openEmbeddedWalletOverlay('create');
+        return;
+      }
+      if (status && !status.unlocked) {
+        openEmbeddedWalletOverlay('unlock');
+        return;
+      }
+      // status.unlocked === true → fall through to the standard connect flow.
+    }
     walletBackend = new WalletStandardWebBackend({
       wallet: selected,
       cluster: state.cluster,
       rpcUrl: activeRpcUrl(),
     });
     client = new SolanaSigningClient({ backend: walletBackend });
+    if (cliView) {
+      // CLI mode: drop our adapter's cached browser-wallet session immediately
+      // after constructing it. The actual signing session is owned by the
+      // wallet-host page the CLI opens in the user's browser; keeping our
+      // copy would conflict with that flow.
+      await walletBackend.disconnect?.().catch(() => undefined);
+    }
     state.address = await client.getAddress();
     state.capabilities = await client.capabilities();
     state.transactionStatus = `Wallet connected on ${state.cluster}.`;
@@ -21314,6 +22578,10 @@ async function runConnect(): Promise<void> {
     state.browserWalletSession = createBrowserWalletSession(selected.name, state.cluster);
     if (state.bridgeActive) {
       await connectBridgeHost();
+    } else if (launchParams.bridgeUrl || launchParams.bridgeToken) {
+      await activateBridgeConnection({ refreshConfig: false, strictSync: false }).catch((err) => {
+        console.warn('[runConnect] activateBridgeConnection failed', err);
+      });
     }
     await afterWalletConnected();
     savePersistedState();
@@ -28364,6 +29632,16 @@ function hostedByokCloudSessionReason(): string {
 }
 
 async function afterWalletConnected(): Promise<void> {
+  // Tidy per-slice transient state so nothing lingers behind the now-connected
+  // wallet UI: collapse expanded brand rows (Slice D), drop any open
+  // WalletConnect QR overlay (Slice E), and stop the Ledger search poll
+  // (Slice G) — those flows finished or became irrelevant the moment we
+  // landed an address.
+  collapseDesktopBrandPanels();
+  if (walletConnect.overlay.mode !== 'closed') {
+    dispatchWalletConnectOverlay({ type: 'close' });
+  }
+  stopLedgerPoll();
   await refreshCloudSession(false);
   hydrateLocalWorkspaceForWallet();
   if (await signOutCloudSessionForWalletBoundary('wallet-mismatch', { toast: true })) {
@@ -35845,6 +37123,8 @@ async function handleBridgeSigningRequest(request: SigningRequest): Promise<void
   const toastId = pushToast('pending', bridgeSigningToastTitle(request.kind), request.display?.summary ?? request.id);
   const toastContext: TransactionToastContext = { toastId, cluster: request.cluster };
   state.bridgeStatus = `Opening wallet for ${request.kind}: ${request.display?.summary ?? request.id}`;
+  state.pendingCliSignRequest = request;
+  state.lastCliSignResult = null;
   await bridgeTrace('browser.approval.start', {
     requestId: request.id,
     kind: request.kind,
@@ -35910,6 +37190,11 @@ async function handleBridgeSigningRequest(request: SigningRequest): Promise<void
       }),
     });
     state.bridgeStatus = `Approved ${request.kind}: ${short(result.txid ?? result.signature)}`;
+    state.lastCliSignResult = {
+      requestId: request.id,
+      status: 'approved',
+      signature: result.signature,
+    };
     await bridgeTrace('browser.approval.success', {
       requestId: request.id,
       kind: request.kind,
@@ -35932,6 +37217,11 @@ async function handleBridgeSigningRequest(request: SigningRequest): Promise<void
       body: JSON.stringify({ requestId: request.id, error }),
     }).catch(() => undefined);
     state.bridgeStatus = `Rejected ${request.kind}: ${error.message}`;
+    state.lastCliSignResult = {
+      requestId: request.id,
+      status: error.code === 'user_rejected' ? 'rejected' : 'failed',
+      error: error.message,
+    };
     await bridgeTrace('browser.approval.error', {
       requestId: request.id,
       kind: request.kind,
@@ -35940,6 +37230,7 @@ async function handleBridgeSigningRequest(request: SigningRequest): Promise<void
     });
     replaceToast(toastId, 'error', 'Bridge request failed', error.message);
   } finally {
+    state.pendingCliSignRequest = null;
     await refreshInboxData().catch(() => undefined);
     render();
   }
@@ -37646,6 +38937,11 @@ async function restoreBrowserWalletSession(): Promise<void> {
   state.wallets = visibleBrowserWallets(listAvailableWallets());
   state.selectedWalletName = reconcileBrowserWalletSelection(state.wallets, state.selectedWalletName);
   state.browserWalletPickerOpen = false;
+  if (cliView?.intent === 'connect') {
+    clearBrowserWalletSession();
+    savePersistedState();
+    return;
+  }
   const restoreName = browserWalletRestoreName(state.wallets, state.browserWalletSession, state.cluster);
   if (!restoreName) {
     if (state.browserWalletSession) {
@@ -44326,11 +45622,17 @@ function normalizeAiModeForSurface(
   walletAddress?: string,
   mobileAiPathPolicy = isMobileAiPathPolicySurface(),
 ): AiSettings['mode'] {
-  return normalizeAiModeForMobileSurface({
+  const fallbackMode = defaultAiMode();
+  const afterMobile = normalizeAiModeForMobileSurface({
     mode,
     mobileAiPathPolicy,
     deviceAgentVisible: deviceAgentModeVisibleForWallet(walletAddress),
-    fallbackMode: defaultAiMode(),
+    fallbackMode,
+  }) as AiSettings['mode'];
+  return normalizeAiModeForDesktopSurface({
+    mode: afterMobile,
+    desktopAiPathPolicy: IS_TAURI_APP,
+    fallbackMode,
   }) as AiSettings['mode'];
 }
 
@@ -45830,8 +47132,9 @@ function readLaunchParams(): {
   bridgeUrl?: string;
   bridgeToken?: string;
   cliMode?: boolean;
-  cliIntent?: 'connect' | 'approve';
+  cliIntent?: 'connect' | 'disconnect' | 'approve' | 'sign';
   cliActionId?: string;
+  cliRequestId?: string;
 } {
   const params = new URLSearchParams(window.location.search);
   const bridgeUrl = params.get('bridgeUrl')?.trim();
@@ -45841,15 +47144,19 @@ function readLaunchParams(): {
   }
   const cliMode = params.get('mode')?.trim() === 'cli';
   const rawIntent = params.get('intent')?.trim();
-  const cliIntent: 'connect' | 'approve' | undefined =
-    rawIntent === 'connect' || rawIntent === 'approve' ? rawIntent : undefined;
+  const cliIntent: 'connect' | 'disconnect' | 'approve' | 'sign' | undefined =
+    rawIntent === 'connect' || rawIntent === 'disconnect' || rawIntent === 'approve' || rawIntent === 'sign'
+      ? rawIntent
+      : undefined;
   const cliActionId = params.get('actionId')?.trim() || undefined;
+  const cliRequestId = params.get('requestId')?.trim() || undefined;
   return {
     ...(bridgeUrl && isTrustedBridgeUrl(bridgeUrl) ? { bridgeUrl } : {}),
     ...(bridgeToken ? { bridgeToken } : {}),
     ...(cliMode ? { cliMode } : {}),
     ...(cliIntent ? { cliIntent } : {}),
     ...(cliActionId ? { cliActionId } : {}),
+    ...(cliRequestId ? { cliRequestId } : {}),
   };
 }
 
@@ -45872,11 +47179,16 @@ function saveSessionBridgeToken(value: string): void {
 
 function clearSensitiveLaunchParams(): void {
   const url = new URL(window.location.href);
-  const had = url.searchParams.has('token') || url.searchParams.has('intent') || url.searchParams.has('actionId');
+  const had =
+    url.searchParams.has('token') ||
+    url.searchParams.has('intent') ||
+    url.searchParams.has('actionId') ||
+    url.searchParams.has('requestId');
   if (!had) return;
   url.searchParams.delete('token');
   url.searchParams.delete('intent');
   url.searchParams.delete('actionId');
+  url.searchParams.delete('requestId');
   window.history.replaceState(window.history.state, document.title, `${url.pathname}${url.search}${url.hash}`);
 }
 

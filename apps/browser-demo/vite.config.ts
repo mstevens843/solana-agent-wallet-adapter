@@ -65,6 +65,10 @@ const appReleaseTag =
   process.env.VITE_AGENTIC_APP_RELEASE_TAG ??
   process.env.AGENTIC_APP_RELEASE_TAG ??
   `v${packageVersion('apps/desktop-shell/package.json')}`;
+const walletConnectProjectId =
+  process.env.VITE_AGENTIC_WC_PROJECT_ID ??
+  process.env.AGENTIC_WC_PROJECT_ID ??
+  '';
 
 export default defineConfig({
   plugins: [acpDevApiPlugin()],
@@ -82,6 +86,7 @@ export default defineConfig({
     'import.meta.env.VITE_AGENTIC_CLOUD_API_BASE_URL': JSON.stringify(cloudApiBaseUrl),
     'import.meta.env.VITE_AGENTIC_APP_SURFACE': JSON.stringify(appSurface),
     'import.meta.env.VITE_AGENTIC_GA_MEASUREMENT_ID': JSON.stringify(gaMeasurementId),
+    'import.meta.env.VITE_AGENTIC_WC_PROJECT_ID': JSON.stringify(walletConnectProjectId),
     __AGENTIC_CLI_RELEASE_TAG__: JSON.stringify(cliReleaseTag),
     __AGENTIC_APP_RELEASE_TAG__: JSON.stringify(appReleaseTag),
   },

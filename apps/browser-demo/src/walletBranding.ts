@@ -1,4 +1,10 @@
-export type WalletProviderLogoId = 'backpack' | 'phantom' | 'solflare' | 'jupiter' | 'seedVault';
+export type WalletProviderLogoId =
+  | 'backpack'
+  | 'phantom'
+  | 'solflare'
+  | 'jupiter'
+  | 'seedVault'
+  | 'agentic';
 
 export interface AndroidWalletBrandStatus {
   walletType?: number;
@@ -16,6 +22,11 @@ interface WalletBrand {
 }
 
 const WALLET_BRANDS: readonly WalletBrand[] = [
+  {
+    displayName: 'Agentic Wallet',
+    logoId: 'agentic',
+    matchers: ['agentic wallet', 'agentic'],
+  },
   {
     displayName: 'Backpack',
     logoId: 'backpack',
@@ -54,6 +65,7 @@ const WALLET_BRANDS: readonly WalletBrand[] = [
 ];
 
 const WALLET_PROVIDER_LOGO_IDS = new Set<WalletProviderLogoId>([
+  'agentic',
   'backpack',
   'phantom',
   'solflare',

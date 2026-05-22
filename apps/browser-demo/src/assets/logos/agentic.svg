@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <defs>
+    <radialGradient id="agenticPlanetGradient" cx="32" cy="28" r="22" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#7be39e"/>
+      <stop offset="65%" stop-color="#1f8a4a"/>
+      <stop offset="100%" stop-color="#0b3a20"/>
+    </radialGradient>
+  </defs>
+  <circle cx="32" cy="32" r="14" fill="url(#agenticPlanetGradient)"/>
+  <ellipse cx="32" cy="32" rx="26" ry="6" stroke="#9ff0ba" stroke-width="2.4" fill="none" transform="rotate(-18 32 32)"/>
+  <ellipse cx="32" cy="32" rx="22" ry="5" stroke="#bff7d0" stroke-width="1.2" fill="none" opacity="0.6" transform="rotate(-18 32 32)"/>
+</svg>

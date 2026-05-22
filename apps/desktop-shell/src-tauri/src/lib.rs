@@ -16,6 +16,9 @@ use std::{
 use tauri::Manager;
 use url::Url;
 
+pub mod ledger;
+pub mod wallet;
+
 /// Shared handles passed to every Tauri command. `state` is the mutable
 /// runtime data behind a single mutex; `restart_in_progress` is a separate
 /// atomic flag that serializes `restart_bridge` re-entries and signals
@@ -207,6 +210,17 @@ pub fn run() {
     });
 
     let cleanup_runtime = runtime.clone();
+    let wallet_state = wallet::build_production_state(desktop_wallet_path());
+    let wallet_handle = wallet::WalletStateHandle::new(wallet_state);
+    // Independent watcher thread: ticks every 10 s so the embedded wallet
+    // auto-locks on its configured timeout even if the UI stops polling
+    // `wallet_status`. We keep the join handle around so it isn't dropped
+    // (which would not actually kill the thread, but JoinHandle is `Send`
+    // and cheap to hold). Stop the watcher on app exit via the cloned
+    // `watcher_stop_handle` below.
+    let _wallet_auto_lock_watcher = wallet_handle.spawn_auto_lock_watcher();
+    let wallet_watcher_stop = wallet_handle.watcher_stop_handle();
+    let ledger_handle = ledger::LedgerStateHandle::new();
     let app = tauri::Builder::default()
         // single-instance must initialize first so a duplicate launch is intercepted
         // before any other plugin runs setup side effects.
@@ -236,6 +250,8 @@ pub fn run() {
             Ok(())
         })
         .manage(runtime)
+        .manage(wallet_handle)
+        .manage(ledger_handle)
         .invoke_handler(tauri::generate_handler![
             read_config,
             save_config,
@@ -252,6 +268,23 @@ pub fn run() {
             read_env_keys,
             write_env_keys,
             open_external_url,
+            wallet::wallet_status,
+            wallet::wallet_create,
+            wallet::wallet_import,
+            wallet::wallet_unlock,
+            wallet::wallet_lock,
+            wallet::wallet_change_password,
+            wallet::wallet_sign_message,
+            wallet::wallet_sign_transaction,
+            wallet::wallet_set_auto_lock,
+            wallet::wallet_export_for_backup,
+            wallet::wallet_delete,
+            ledger::ledger_list_devices,
+            ledger::ledger_connect,
+            ledger::ledger_get_address,
+            ledger::ledger_sign_transaction,
+            ledger::ledger_sign_message,
+            ledger::ledger_disconnect,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Agentic desktop shell");
@@ -262,6 +295,10 @@ pub fn run() {
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
         ) {
             cleanup_managed_processes(&cleanup_runtime);
+            // Ask the wallet auto-lock watcher thread to exit on its next
+            // wake. The OS would reap the thread on process exit anyway,
+            // but explicit teardown keeps the shutdown sequence honest.
+            wallet_watcher_stop.store(true, std::sync::atomic::Ordering::Relaxed);
         }
     });
 }
@@ -511,7 +548,8 @@ fn validate_open_url(url: &str) -> Result<&str, String> {
     let parsed = Url::parse(trimmed)
         .map_err(|err| format!("open_external_url: invalid URL ({err})"))?;
     match parsed.scheme() {
-        "http" | "https" | "agentic" | "phantom" | "solflare" => Ok(trimmed),
+        "http" | "https" | "agentic" | "phantom" | "solflare" | "backpack" | "jupiter"
+        | "magiceden" => Ok(trimmed),
         other => Err(format!("open_external_url: refusing to open {other}:// URL.")),
     }
 }
@@ -1582,6 +1620,10 @@ fn secure_store_path() -> PathBuf {
     desktop_config_dir().join("desktop-secure.json")
 }
 
+fn desktop_wallet_path() -> PathBuf {
+    desktop_config_dir().join("desktop-wallet.json")
+}
+
 fn load_secure_store() -> HashMap<String, String> {
     load_secure_store_at(&secure_store_path())
 }
@@ -1876,6 +1918,11 @@ mod tests {
         assert!(validate_open_url("agentic://callback?session=abc").is_ok());
         assert!(validate_open_url("phantom://browse?url=https%3A%2F%2Fexample.com").is_ok());
         assert!(validate_open_url("solflare://example").is_ok());
+        // Slice F.1: per-brand WalletConnect deep-link buttons launch the
+        // respective mobile apps via their custom URL schemes.
+        assert!(validate_open_url("backpack://wc?uri=wc%3Atopic").is_ok());
+        assert!(validate_open_url("jupiter://wc?uri=wc%3Atopic").is_ok());
+        assert!(validate_open_url("magiceden://wc?uri=wc%3Atopic").is_ok());
         // Trimming preserves the URL.
         assert_eq!(validate_open_url("  https://example.com/  ").unwrap(), "https://example.com/");
     }

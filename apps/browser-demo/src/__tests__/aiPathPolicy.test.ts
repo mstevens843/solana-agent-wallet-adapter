@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  DESKTOP_BROWSER_SESSION_DISABLED_REASON,
   MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED,
+  desktopAiModeDisabledReason,
   mobileAiModeDisabledReason,
   mobileAiPathTabLabel,
+  normalizeAiModeForDesktopSurface,
   normalizeAiModeForMobileSurface,
+  shouldUseDesktopAiPathPolicy,
   shouldUseMobileAiPathPolicy,
+  visibleDesktopAiPathModes,
   visibleMobileAiPathModes,
 } from '../aiPathPolicy.js';
 
@@ -122,5 +127,63 @@ describe('mobile AI path policy', () => {
       deviceAgentVisible: false,
       fallbackMode: 'session',
     })).toBe('hosted');
+  });
+});
+
+describe('desktop AI path policy', () => {
+  it('applies to the Tauri desktop app', () => {
+    expect(shouldUseDesktopAiPathPolicy({ isTauriApp: true })).toBe(true);
+    expect(shouldUseDesktopAiPathPolicy({ isTauriApp: false })).toBe(false);
+  });
+
+  it('keeps the full path set outside the desktop policy', () => {
+    expect(visibleDesktopAiPathModes({
+      desktopAiPathPolicy: false,
+      deviceAgentVisible: true,
+    })).toEqual(['hosted', 'bridge', 'session', 'device-agent']);
+  });
+
+  it('hides Browser Session on the desktop and puts Local Bridge first', () => {
+    expect(visibleDesktopAiPathModes({
+      desktopAiPathPolicy: true,
+      deviceAgentVisible: true,
+    })).toEqual(['bridge', 'device-agent', 'hosted']);
+  });
+
+  it('disables Browser Session AI on the desktop with a clear reason', () => {
+    expect(desktopAiModeDisabledReason({
+      desktopAiPathPolicy: true,
+      mode: 'session',
+    })).toBe(DESKTOP_BROWSER_SESSION_DISABLED_REASON);
+
+    expect(desktopAiModeDisabledReason({
+      desktopAiPathPolicy: true,
+      mode: 'bridge',
+    })).toBe('');
+
+    expect(desktopAiModeDisabledReason({
+      desktopAiPathPolicy: false,
+      mode: 'session',
+    })).toBe('');
+  });
+
+  it('migrates a persisted session mode to the desktop fallback (Local Bridge)', () => {
+    expect(normalizeAiModeForDesktopSurface({
+      mode: 'session',
+      desktopAiPathPolicy: true,
+      fallbackMode: 'bridge',
+    })).toBe('bridge');
+
+    expect(normalizeAiModeForDesktopSurface({
+      mode: 'hosted',
+      desktopAiPathPolicy: true,
+      fallbackMode: 'bridge',
+    })).toBe('hosted');
+
+    expect(normalizeAiModeForDesktopSurface({
+      mode: 'session',
+      desktopAiPathPolicy: false,
+      fallbackMode: 'bridge',
+    })).toBe('session');
   });
 });
