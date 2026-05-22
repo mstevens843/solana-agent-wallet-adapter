@@ -18,19 +18,49 @@ on:
 permissions:
   contents: write
 
-env:
-  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-
 jobs:
+  prepare:
+    name: prepare release tag
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.normalize.outputs.release_tag }}
+      checkout_ref: ${{ steps.normalize.outputs.checkout_ref }}
+    steps:
+      - id: normalize
+        shell: bash
+        env:
+          RAW_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag="${RAW_TAG#refs/tags/}"
+          tag="$(printf '%s' "$tag" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+          tag="${tag#tag:}"
+          tag="${tag#tag=}"
+          tag="$(printf '%s' "$tag" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+
+          case "$tag" in
+            desktop-v*|v*) ;;
+            *)
+              echo "Desktop release tag must start with desktop-v or v. Current value: $tag" >&2
+              exit 1
+              ;;
+          esac
+
+          echo "release_tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "checkout_ref=refs/tags/$tag" >> "$GITHUB_OUTPUT"
+
   validate:
     name: validate tag against desktop package
+    needs: prepare
     runs-on: ubuntu-latest
     outputs:
       proceed: ${{ steps.check.outputs.proceed }}
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: ${{ needs.prepare.outputs.checkout_ref }}
       - id: check
         shell: bash
         run: |
@@ -60,9 +90,13 @@ jobs:
 
   build:
     name: ${{ matrix.name }}
-    needs: validate
+    needs:
+      - prepare
+      - validate
     if: needs.validate.outputs.proceed == 'true'
     runs-on: ${{ matrix.runner }}
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
     strategy:
       fail-fast: false
       matrix:
@@ -104,7 +138,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: ${{ needs.prepare.outputs.checkout_ref }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -496,10 +530,13 @@ jobs:
   publish:
     name: publish desktop release assets
     needs:
+      - prepare
       - validate
       - build
     if: needs.validate.outputs.proceed == 'true'
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ needs.prepare.outputs.release_tag }}
 
     steps:
       - name: Download validated desktop artifacts
