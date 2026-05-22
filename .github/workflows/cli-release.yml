@@ -194,7 +194,6 @@ jobs:
     needs:
       - validate
       - build
-      - npm
     if: needs.validate.outputs.proceed == 'true'
     runs-on: ubuntu-latest
 

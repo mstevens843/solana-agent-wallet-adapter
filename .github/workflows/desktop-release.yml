@@ -184,29 +184,30 @@ jobs:
           mkdir -p "$extract_dir" "$sidecar_dir"
 
           # Sidecar source order:
-          #   1. The current release tag (legacy: same v* tag built both CLI and desktop).
-          #   2. The latest CLI release (new desktop-v*/cli-v* split — the desktop tag
-          #      no longer guarantees a same-name CLI asset exists).
+          #   1. The explicit CLI release tag for the CLI package version.
+          #   2. The current release tag, for legacy v* tags that published CLI and desktop together.
           #   3. Falls through to error after all retries.
+          cli_version="$(node -p "require('./packages/cli/package.json').version")"
+          cli_release_tag="cli-v${cli_version}"
+          cli_release_url="https://github.com/${{ github.repository }}/releases/download/${cli_release_tag}/${{ matrix.cliAsset }}"
           cli_tag_url="https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/${{ matrix.cliAsset }}"
-          cli_latest_url="https://github.com/${{ github.repository }}/releases/latest/download/${{ matrix.cliAsset }}"
           downloaded=0
           for attempt in {1..120}; do
+            if curl -fL "$cli_release_url" -o "$archive" 2>/dev/null; then
+              echo "Fetched CLI sidecar from ${cli_release_tag} release."
+              downloaded=1
+              break
+            fi
             if curl -fL "$cli_tag_url" -o "$archive" 2>/dev/null; then
               echo "Fetched CLI sidecar from ${RELEASE_TAG} release."
               downloaded=1
               break
             fi
-            if curl -fL "$cli_latest_url" -o "$archive" 2>/dev/null; then
-              echo "Fetched CLI sidecar from latest CLI release (no asset on ${RELEASE_TAG})."
-              downloaded=1
-              break
-            fi
-            echo "CLI sidecar asset ${{ matrix.cliAsset }} is not available for ${RELEASE_TAG} or latest yet; retry ${attempt}/120."
+            echo "CLI sidecar asset ${{ matrix.cliAsset }} is not available for ${cli_release_tag} or ${RELEASE_TAG} yet; retry ${attempt}/120."
             sleep 15
           done
           if [ "$downloaded" != "1" ]; then
-            echo "CLI sidecar asset ${{ matrix.cliAsset }} was not found for ${RELEASE_TAG} or in latest release." >&2
+            echo "CLI sidecar asset ${{ matrix.cliAsset }} was not found for ${cli_release_tag} or ${RELEASE_TAG}. Run the CLI release first." >&2
             exit 1
           fi
 

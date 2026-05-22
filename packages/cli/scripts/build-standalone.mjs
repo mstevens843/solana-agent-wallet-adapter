@@ -39,7 +39,7 @@ const outDir = join(distDir, 'standalone', targetName);
 const output = join(outDir, target.executable);
 const pkgEnv = {
   ...process.env,
-  PKG_CACHE_PATH: process.env.PKG_CACHE_PATH ?? join(tmpdir(), 'solana-agent-wallet-pkg-cache'),
+  PKG_CACHE_PATH: process.env.PKG_CACHE_PATH ?? join(tmpdir(), 'solana-agent-wallet-pkg-cache', targetName),
 };
 
 if (!existsSync(join(distDir, 'index.js')) || !existsSync(join(distDir, 'wallet-host', 'index.html'))) {
@@ -52,6 +52,7 @@ const require = createRequire(import.meta.url);
 const pkgPackageJson = require.resolve('@yao-pkg/pkg/package.json');
 const pkgBin = join(dirname(pkgPackageJson), 'lib-es5', 'bin.js');
 await run(process.execPath, [
+  '--max-old-space-size=6144',
   pkgBin,
   cliRoot,
   '--target',
@@ -60,6 +61,9 @@ await run(process.execPath, [
   output,
   '--compress',
   'GZip',
+  '--sea',
+  '--no-bytecode',
+  '--fallback-to-source',
 ], pkgEnv);
 
 if (process.platform !== 'win32') {
