@@ -143,12 +143,13 @@ function inferBaseUrl(): string {
  * path must do it client-side because the LLM call bypasses the cloud.
  *
  * If the bundle had blocking failures AND the LLM returned `decision: approve`,
- * force-deny and surface the failing atoms via `blockingFactIds`.
+ * force-deny and surface the failing atoms via `blockingFactIds`. The optional
+ * field is reflected in the return type so callers can read it without a cast.
  */
 export function enforceBlockingFailure<R extends Record<string, unknown>>(
   llmResult: R,
   bundle: PolicyBundle | null | undefined,
-): R {
+): R & { blockingFactIds?: string[] } {
   if (!bundle || !bundle.hasBlockingFailure) return llmResult;
   const decision = llmResult.decision;
   if (decision !== 'approve') return llmResult;
@@ -162,5 +163,5 @@ export function enforceBlockingFailure<R extends Record<string, unknown>>(
     decision: 'deny',
     reason,
     blockingFactIds: failing.map((ev) => ev.atomId),
-  } as R;
+  };
 }
