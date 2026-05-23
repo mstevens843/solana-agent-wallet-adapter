@@ -198,6 +198,7 @@ jobs:
             file \
             libxdo-dev \
             libssl-dev \
+            libudev-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
             dbus-x11 \
