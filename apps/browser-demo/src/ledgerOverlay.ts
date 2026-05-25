@@ -144,25 +144,24 @@ function errorBody(state: LedgerOverlayState): string {
   `;
 }
 
+function bodyForMode(state: LedgerOverlayState): string {
+  switch (state.mode) {
+    case 'closed':
+      return '';
+    case 'searching':
+      return searchingBody();
+    case 'app-check':
+      return appCheckBody(state);
+    case 'confirm-address':
+      return confirmAddressBody(state);
+    case 'error':
+      return errorBody(state);
+  }
+}
+
 export function ledgerOverlayHtml(state: LedgerOverlayState): string {
   if (state.mode === 'closed') return '';
-  let title = 'Connect Ledger';
-  let body = '';
-  switch (state.mode) {
-    case 'searching':
-      body = searchingBody();
-      break;
-    case 'app-check':
-      body = appCheckBody(state);
-      break;
-    case 'confirm-address':
-      body = confirmAddressBody(state);
-      break;
-    case 'error':
-      title = 'Couldn\'t connect Ledger';
-      body = errorBody(state);
-      break;
-  }
+  const title = state.mode === 'error' ? "Couldn't connect Ledger" : 'Connect Ledger';
   return `
     <div class="ledger-overlay-scrim" data-ledger-action="cancel" aria-hidden="true"></div>
     <aside class="ledger-overlay" role="dialog" aria-modal="true" aria-labelledby="ledger-overlay-title">
@@ -171,8 +170,17 @@ export function ledgerOverlayHtml(state: LedgerOverlayState): string {
         <button type="button" class="ledger-overlay-close" data-ledger-action="cancel" aria-label="Close">&times;</button>
       </header>
       <div class="ledger-overlay-body">
-        ${body}
+        ${bodyForMode(state)}
       </div>
     </aside>
   `;
+}
+
+/**
+ * Returns the same step-specific markup as `ledgerOverlayHtml` but without
+ * the modal scrim and dialog wrapper, for inline rendering in the desktop
+ * discover-flow panel. Same `data-ledger-action` handlers still apply.
+ */
+export function ledgerOverlayBodyHtml(state: LedgerOverlayState): string {
+  return bodyForMode(state);
 }

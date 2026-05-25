@@ -9104,6 +9104,195 @@ code {
   text-transform: uppercase;
 }
 
+/* Desktop discover flow (inline rail) */
+.public-wallet-actions.native-wallet-actions.in-flow {
+  display: none;
+}
+.desktop-connect-flow {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(125, 231, 176, 0.28);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 12px;
+}
+.desktop-connect-flow-head {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+.desktop-connect-flow-head h2 {
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0;
+}
+.desktop-connect-flow-back {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(224, 230, 226, 0.14);
+  border-radius: var(--radius);
+  color: var(--text);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: 0.95rem;
+  height: 28px;
+  justify-content: center;
+  padding: 0;
+  width: 28px;
+}
+.desktop-connect-flow-back:hover {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(125, 231, 176, 0.3);
+}
+.desktop-connect-flow-lede {
+  color: var(--muted);
+  font-size: 0.9rem;
+  margin: 0;
+}
+.desktop-connect-flow-methods {
+  display: grid;
+  gap: 8px;
+}
+.desktop-method-tile {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(224, 230, 226, 0.12);
+  border-radius: var(--radius);
+  color: var(--text);
+  cursor: pointer;
+  display: grid;
+  font: inherit;
+  gap: 4px;
+  padding: 12px;
+  text-align: left;
+}
+.desktop-method-tile:hover:not([disabled]) {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(125, 231, 176, 0.32);
+}
+.desktop-method-tile[disabled] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.desktop-method-tile-title {
+  color: var(--text);
+  font-size: 0.96rem;
+  font-weight: 600;
+}
+.desktop-method-tile-sub {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+.desktop-connect-flow-brand-list {
+  display: grid;
+  gap: 6px;
+}
+.desktop-brand-pick-row {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(224, 230, 226, 0.12);
+  border-radius: var(--radius);
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  gap: 10px;
+  padding: 10px 12px;
+  text-align: left;
+  width: 100%;
+}
+.desktop-brand-pick-row:hover {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(125, 231, 176, 0.3);
+}
+.desktop-brand-pick-logo {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  height: 24px;
+  object-fit: contain;
+  padding: 3px;
+  width: 24px;
+}
+.desktop-brand-pick-logo.placeholder {
+  border: 1px dashed rgba(224, 230, 226, 0.18);
+  display: inline-block;
+}
+.desktop-brand-pick-name {
+  color: var(--text);
+  flex: 1;
+  font-size: 0.95rem;
+  font-weight: 500;
+}
+.desktop-brand-pick-caret {
+  color: var(--muted);
+}
+.desktop-connect-flow-awaiting {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+  padding: 6px 2px;
+}
+.desktop-connect-flow-awaiting h3 {
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0;
+}
+.desktop-connect-flow-awaiting p {
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.4;
+  margin: 0;
+}
+.desktop-connect-flow-awaiting-hint {
+  color: rgba(224, 230, 226, 0.55);
+  font-size: 0.8rem;
+}
+.desktop-connect-flow-awaiting-logo {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  height: 36px;
+  object-fit: contain;
+  padding: 4px;
+  width: 36px;
+}
+.desktop-connect-flow-awaiting-logo.placeholder {
+  border: 1px dashed rgba(224, 230, 226, 0.18);
+  display: inline-block;
+}
+.desktop-connect-flow-awaiting-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+.desktop-connect-flow-body {
+  display: grid;
+  gap: 8px;
+}
+/* When the QR / Ledger bodies render inline (no modal scrim/dialog), reset
+   the modal-specific positioning so they flow naturally in the rail. */
+.desktop-connect-flow-body .walletconnect-qr-overlay-qr {
+  margin: 0 auto;
+  max-width: 240px;
+}
+.desktop-connect-flow-body .walletconnect-qr-overlay-actions,
+.desktop-connect-flow-body .ledger-overlay-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.desktop-connect-flow-body .walletconnect-qr-overlay-footnote,
+.desktop-connect-flow-body .ledger-overlay-lede {
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.4;
+  margin: 0;
+}
+
 /* WalletConnect QR pairing overlay (Slice E) */
 .walletconnect-qr-overlay-scrim {
   background: rgba(0, 0, 0, 0.78);

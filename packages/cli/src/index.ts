@@ -1486,10 +1486,14 @@ async function connectInteractive(
     }
     return;
   }
-  await openWalletHost(state.options, cli);
+  const launchUrl = walletHostLaunchUrl(state.options, cli);
+  const openError = await tryOpenUrl(launchUrl);
   if (!state.options.json) {
     printSection('Connect Wallet');
-    console.log(`Opened: ${walletHostLaunchUrl(state.options, cli)}`);
+    console.log(`${openError ? 'Open manually' : 'Opened'}: ${launchUrl}`);
+    if (openError) {
+      console.log(`Browser open failed: ${openError}`);
+    }
     console.log('In the browser window:');
     console.log('1. Unlock Phantom, Backpack, Solflare, or another Wallet Standard wallet.');
     console.log('2. Connect the wallet.');
@@ -1515,10 +1519,14 @@ async function disconnectInteractive(state: TerminalAppState): Promise<void> {
     }
     return;
   }
-  await openWalletHost(state.options, { intent: 'disconnect' });
+  const launchUrl = walletHostLaunchUrl(state.options, { intent: 'disconnect' });
+  const openError = await tryOpenUrl(launchUrl);
   if (!state.options.json) {
     printSection('Disconnect Wallet');
-    console.log(`Opened: ${walletHostLaunchUrl(state.options, { intent: 'disconnect' })}`);
+    console.log(`${openError ? 'Open manually' : 'Opened'}: ${launchUrl}`);
+    if (openError) {
+      console.log(`Browser open failed: ${openError}`);
+    }
     console.log('In the browser window, click "Disconnect wallet". The terminal will detect the change.');
   }
   const start = Date.now();
@@ -4203,7 +4211,7 @@ type CliIntent =
 
 function walletHostLaunchUrl(options: GlobalOptions, cli?: CliIntent): string {
   const url = new URL(options.walletHostUrl);
-  url.pathname = '/app';
+  url.pathname = walletHostLaunchPath(cli);
   url.searchParams.set('bridgeUrl', options.bridgeUrl);
   url.searchParams.set('token', options.token);
   if (cli) {
@@ -4215,6 +4223,29 @@ function walletHostLaunchUrl(options: GlobalOptions, cli?: CliIntent): string {
   return url.toString();
 }
 
+function walletHostLaunchPath(cli?: CliIntent): string {
+  if (!cli) return '/app';
+  switch (cli.intent) {
+    case 'connect':
+      return '/connect';
+    case 'disconnect':
+      return '/disconnect';
+    case 'approve':
+      return '/approve';
+    case 'sign':
+      return '/sign';
+  }
+}
+
+async function tryOpenUrl(url: string): Promise<string | null> {
+  try {
+    await openUrl(url);
+    return null;
+  } catch (err) {
+    return errorMessage(err);
+  }
+}
+
 async function openUrl(url: string): Promise<void> {
   if (process.env.AGENT_WALLET_SKIP_OPEN === '1') {
     return;
@@ -4222,11 +4253,39 @@ async function openUrl(url: string): Promise<void> {
   const platform = process.platform;
   const command = platform === 'darwin' ? 'open' : platform === 'win32' ? 'cmd' : 'xdg-open';
   const args = platform === 'win32' ? ['/C', 'start', '', url] : [url];
-  const child = spawn(command, args, {
-    stdio: 'ignore',
-    detached: true,
+  await new Promise<void>((resolveOpen, rejectOpen) => {
+    let settled = false;
+    let child: ReturnType<typeof spawn>;
+    const settle = (err?: Error): void => {
+      if (settled) return;
+      settled = true;
+      if (err) {
+        rejectOpen(err);
+      } else {
+        resolveOpen();
+      }
+    };
+    try {
+      child = spawn(command, args, {
+        stdio: 'ignore',
+        detached: true,
+      });
+    } catch (err) {
+      settle(err instanceof Error ? err : new Error(String(err)));
+      return;
+    }
+    child.once('error', (err) => settle(err));
+    child.once('exit', (code, signal) => {
+      if (code && code !== 0) {
+        settle(new Error(`${command} exited with code ${code}${signal ? ` (${signal})` : ''}`));
+      }
+    });
+    child.once('spawn', () => {
+      const timer = setTimeout(() => settle(), 250);
+      timer.unref?.();
+    });
+    child.unref();
   });
-  child.unref();
 }
 
 async function saveResearchArtifact(options: GlobalOptions, artifact: ResearchArtifact): Promise<void> {

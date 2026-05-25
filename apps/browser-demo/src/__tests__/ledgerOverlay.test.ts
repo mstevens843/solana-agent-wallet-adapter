@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_LEDGER_DERIVATION_PATH,
   initialLedgerOverlayState,
+  ledgerOverlayBodyHtml,
   ledgerOverlayHtml,
   reduceLedgerOverlay,
   type LedgerOverlayState,
@@ -166,5 +167,51 @@ describe('ledgerOverlayHtml', () => {
     });
     expect(html).not.toContain('<script>alert(1)</script>');
     expect(html).toContain('&lt;script&gt;');
+  });
+});
+
+describe('ledgerOverlayBodyHtml (inline render)', () => {
+  it('returns empty string when mode is closed', () => {
+    expect(ledgerOverlayBodyHtml(initialLedgerOverlayState())).toBe('');
+  });
+
+  it('omits the scrim, dialog wrapper, and close button', () => {
+    const html = ledgerOverlayBodyHtml({
+      ...initialLedgerOverlayState(),
+      mode: 'searching',
+    });
+    expect(html).not.toContain('ledger-overlay-scrim');
+    expect(html).not.toContain('role="dialog"');
+    expect(html).not.toContain('ledger-overlay-head');
+    expect(html).not.toContain('ledger-overlay-close');
+    expect(html).toContain('Looking for a Ledger device');
+  });
+
+  it('renders the confirm-address body with derivation path + connect cta', () => {
+    const html = ledgerOverlayBodyHtml({
+      ...initialLedgerOverlayState(),
+      mode: 'confirm-address',
+      address: ADDR,
+      device: { productName: 'Nano X', vendorId: 0x2c97, productId: 0x4011 },
+    });
+    expect(html).toContain('Connect this Ledger account?');
+    // The HTML factory escapes apostrophes in the derivation path; assert on a
+    // stable substring rather than the raw constant.
+    expect(html).toContain('m/44');
+    expect(html).toContain('501');
+    expect(html).toContain('data-ledger-action="confirm-address"');
+    expect(html).not.toContain('role="dialog"');
+  });
+
+  it('renders the error body with retry/cancel affordances', () => {
+    const html = ledgerOverlayBodyHtml({
+      ...initialLedgerOverlayState(),
+      mode: 'error',
+      error: 'user rejected on device',
+    });
+    expect(html).toContain('user rejected on device');
+    expect(html).toContain('data-ledger-action="retry"');
+    expect(html).toContain('data-ledger-action="cancel"');
+    expect(html).not.toContain('role="dialog"');
   });
 });

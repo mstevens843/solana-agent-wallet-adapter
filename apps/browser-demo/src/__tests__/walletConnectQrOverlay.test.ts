@@ -5,6 +5,7 @@ import {
   initialWalletConnectQrOverlayState,
   isWalletConnectSupportedBrand,
   reduceWalletConnectQrOverlay,
+  walletConnectQrBodyHtml,
   walletConnectQrOverlayHtml,
   type WalletConnectQrOverlayState,
 } from '../walletConnectQrOverlay.js';
@@ -324,5 +325,58 @@ describe('walletConnectQrOverlayHtml', () => {
       expect(html).toContain(`href="${brand.deepLinkPrefix}wc%3Atopic`);
       expect(html).toContain('data-walletconnect-action="open-deeplink"');
     }
+  });
+});
+
+describe('walletConnectQrBodyHtml (inline render)', () => {
+  it('returns empty string when mode is closed', () => {
+    expect(walletConnectQrBodyHtml({ state: initialWalletConnectQrOverlayState() })).toBe('');
+  });
+
+  it('omits the scrim and <aside role="dialog"> wrapper', () => {
+    const html = walletConnectQrBodyHtml({
+      state: {
+        mode: 'awaiting-scan',
+        brandId: 'phantom',
+        uri: 'wc:topic@2?relay-protocol=irn&symKey=abc',
+        qrDataUrl: 'data:image/png;base64,XXX',
+        error: '',
+      },
+    });
+    expect(html).not.toContain('walletconnect-qr-overlay-scrim');
+    expect(html).not.toContain('role="dialog"');
+    expect(html).not.toContain('walletconnect-qr-overlay-head');
+    expect(html).not.toContain('walletconnect-qr-overlay-close');
+  });
+
+  it('still includes the QR image, copy URI, and cancel affordances for inline binding', () => {
+    const html = walletConnectQrBodyHtml({
+      state: {
+        mode: 'awaiting-scan',
+        brandId: 'phantom',
+        uri: 'wc:topic@2?relay-protocol=irn&symKey=abc',
+        qrDataUrl: 'data:image/png;base64,XXX',
+        error: '',
+      },
+    });
+    expect(html).toContain('walletconnect-qr-overlay-qr');
+    expect(html).toContain('data-walletconnect-action="copy-uri"');
+    expect(html).toContain('data-walletconnect-action="cancel"');
+    expect(html).toContain('Scan with Phantom mobile');
+  });
+
+  it('renders the error body without the modal chrome', () => {
+    const html = walletConnectQrBodyHtml({
+      state: {
+        mode: 'error',
+        brandId: 'phantom',
+        uri: null,
+        qrDataUrl: null,
+        error: 'relay unreachable',
+      },
+    });
+    expect(html).toContain('relay unreachable');
+    expect(html).toContain('data-walletconnect-action="cancel"');
+    expect(html).not.toContain('role="dialog"');
   });
 });

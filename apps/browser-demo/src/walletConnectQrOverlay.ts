@@ -238,3 +238,20 @@ export function walletConnectQrOverlayHtml(
     </aside>
   `;
 }
+
+/**
+ * Returns the same QR / scan-status markup as `walletConnectQrOverlayHtml`
+ * but without the modal scrim and `<aside role="dialog">` wrapper. The
+ * desktop rail renders this inline inside its discover-flow panel; the same
+ * `data-walletconnect-action` handlers still apply.
+ */
+export function walletConnectQrBodyHtml(
+  input: WalletConnectQrOverlayRenderInput,
+): string {
+  const { state } = input;
+  if (state.mode === 'closed') return '';
+  const brand =
+    (state.brandId && (input.brand ?? ((id) => WALLET_CONNECT_BRANDS[id]))(state.brandId)) ||
+    brandPlaceholder();
+  return bodyForMode(state, brand, input.logoUrl);
+}

@@ -126,10 +126,18 @@ import {
   initialWalletConnectQrOverlayState,
   isWalletConnectSupportedBrand,
   reduceWalletConnectQrOverlay,
+  walletConnectQrBodyHtml,
   walletConnectQrOverlayHtml,
   type WalletConnectQrOverlayAction,
   type WalletConnectQrOverlayState,
 } from './walletConnectQrOverlay.js';
+import {
+  initialDesktopConnectFlowState,
+  reduceDesktopConnectFlow,
+  type DesktopConnectFlowAction,
+  type DesktopConnectFlowState,
+  type DesktopConnectMethod,
+} from './desktopConnectFlow.js';
 import {
   createWalletConnectSolanaClient,
   registerWalletConnectSolanaWallet,
@@ -153,6 +161,7 @@ import {
 import {
   DEFAULT_LEDGER_DERIVATION_PATH,
   initialLedgerOverlayState,
+  ledgerOverlayBodyHtml,
   ledgerOverlayHtml,
   reduceLedgerOverlay,
   type LedgerOverlayAction,
@@ -1149,7 +1158,7 @@ const BROWSER_AI_LIMITATIONS = [
   'Browser AI cannot run background jobs after the tab closes.',
 ];
 const CUSTOM_AI_MODEL_VALUE = '__custom__';
-const ROUTE_PATHS = ['/', '/docs', '/builders', '/app', '/cli', '/desktop', '/android', '/demo', '/mwa-test', '/privacy', '/terms', '/delete-account', '/agentic-login'] as const;
+const ROUTE_PATHS = ['/', '/docs', '/builders', '/app', '/connect', '/disconnect', '/approve', '/sign', '/cli', '/desktop', '/android', '/demo', '/mwa-test', '/privacy', '/terms', '/delete-account', '/agentic-login'] as const;
 const ROUTE_PATH_SET = new Set<string>(ROUTE_PATHS);
 const SHOW_DEV_CONTROLS = resolveDevControls();
 const IS_ANDROID_APP = resolveAndroidAppSurface();
@@ -2953,7 +2962,8 @@ function notificationSettingsFromPersisted(
 const persisted = loadPersistedState();
 const launchParams = readLaunchParams();
 clearSensitiveLaunchParams();
-type CliView = { intent: 'connect' | 'disconnect' | 'approve' | 'sign'; actionId?: string; requestId?: string };
+type CliIntentName = 'connect' | 'disconnect' | 'approve' | 'sign';
+type CliView = { intent: CliIntentName; actionId?: string; requestId?: string };
 let cliView: CliView | null = launchParams.cliMode && launchParams.cliIntent
   ? {
       intent: launchParams.cliIntent,
@@ -4342,6 +4352,62 @@ async function bootstrap(): Promise<void> {
       render();
     });
   }
+  // Wallet-host auto-connect for `?wallet=<brandId>` (the Tauri desktop's
+  // "Browser extension" path passes this when opening the wallet host in
+  // the user's system browser). Skip in CLI mode and on every native shell.
+  if (
+    launchParams.walletBrand &&
+    !cliView &&
+    !state.address &&
+    !state.androidNativeEnvironment.isAndroidNative &&
+    !state.iosNativeEnvironment.isIosNative &&
+    !state.tauriNativeEnvironment.isTauriNative
+  ) {
+    void runWalletHostBrandAutoConnect(launchParams.walletBrand);
+  }
+}
+
+async function runWalletHostBrandAutoConnect(brandId: string): Promise<void> {
+  const names = DESKTOP_BRAND_WALLET_NAMES[brandId];
+  const brandLabel =
+    DESKTOP_BRAND_PANELS.find((b) => b.id === brandId)?.name ?? brandId;
+  try {
+    await runDiscover();
+  } catch (err) {
+    pushToast(
+      'error',
+      'Discovery failed',
+      err instanceof Error ? err.message : String(err),
+    );
+    clearWalletBrandLaunchParam();
+    return;
+  }
+  const candidate = names
+    ? state.wallets.find((w) => names.some((n) => w.name.toLowerCase() === n.toLowerCase()))
+    : undefined;
+  if (!candidate) {
+    state.error = `${brandLabel} not detected in this browser. Install the extension and reload, or pick another wallet.`;
+    clearWalletBrandLaunchParam();
+    render();
+    return;
+  }
+  state.selectedWalletName = candidate.name;
+  state.browserWalletPickerOpen = false;
+  clearWalletBrandLaunchParam();
+  try {
+    await runConnect();
+    pushToast(
+      'success',
+      'Return to your desktop app',
+      `${brandLabel} is connected — switch back to the Agentic desktop window.`,
+    );
+  } catch (err) {
+    pushToast(
+      'error',
+      'Connect failed',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 }
 
 // ─── Embedded Agentic Wallet UI (Slice C) ────────────────────────────────
@@ -4930,6 +4996,10 @@ function bindWalletConnectOverlay(): void {
 }
 
 function walletConnectOverlayBlock(): string {
+  // The Tauri desktop renders the same state machine inline inside the
+  // discover-flow rail, so suppress the modal mount on native to avoid a
+  // double-render.
+  if (state.tauriNativeEnvironment.isTauriNative) return '';
   return walletConnectQrOverlayHtml({
     state: walletConnect.overlay,
     logoUrl: (logoId) => (BRAND_LOGOS as Record<string, string | undefined>)[logoId] ?? null,
@@ -5161,7 +5231,308 @@ function bindLedgerOverlay(): void {
 }
 
 function ledgerOverlayBlock(): string {
+  // The Tauri desktop renders the same state machine inline inside the
+  // discover-flow rail, so suppress the modal mount on native to avoid a
+  // double-render.
+  if (state.tauriNativeEnvironment.isTauriNative) return '';
   return ledgerOverlayHtml(ledger.overlay);
+}
+
+// ─── Desktop discover flow (inline rail) ─────────────────────────────────
+// Drives the multi-step "Discover → Method → (Browser ext / QR / Ledger)"
+// flow inside the left wallet rail on the Tauri desktop. The actual pairing
+// machinery (WalletConnect, Ledger HID, open-in-browser) is reused as-is —
+// this section only owns the inline UI and routing.
+
+interface DesktopConnectRuntime {
+  flow: DesktopConnectFlowState;
+  /** setInterval handle while polling the bridge for awaiting-browser. */
+  pollHandle: number | null;
+}
+
+const desktopConnect: DesktopConnectRuntime = {
+  flow: initialDesktopConnectFlowState(),
+  pollHandle: null,
+};
+
+/** brandId → DESKTOP_BRAND_PANELS labels are camelCase; wallet-standard
+ *  wallet names are the brand's display name. Used by the wallet-host page's
+ *  ?wallet= auto-connect to match a discovered wallet against a desktop pick. */
+const DESKTOP_BRAND_WALLET_NAMES: Record<string, readonly string[]> = {
+  backpack: ['Backpack'],
+  phantom: ['Phantom'],
+  jupiter: ['Jupiter', 'Jupiter Mobile'],
+  solflare: ['Solflare'],
+  magicEden: ['Magic Eden', 'MagicEden'],
+};
+
+function stopDesktopConnectPoll(): void {
+  if (desktopConnect.pollHandle !== null) {
+    window.clearInterval(desktopConnect.pollHandle);
+    desktopConnect.pollHandle = null;
+  }
+}
+
+function dispatchDesktopConnectFlow(action: DesktopConnectFlowAction): void {
+  desktopConnect.flow = reduceDesktopConnectFlow(desktopConnect.flow, action);
+  if (desktopConnect.flow.step !== 'awaiting-browser') {
+    stopDesktopConnectPoll();
+  }
+  render();
+}
+
+function escapeHtmlForFlow(value: string): string {
+  return value.replace(/[&<>"']/g, (ch) => {
+    switch (ch) {
+      case '&':
+        return '&amp;';
+      case '<':
+        return '&lt;';
+      case '>':
+        return '&gt;';
+      case '"':
+        return '&quot;';
+      default:
+        return '&#39;';
+    }
+  });
+}
+
+function brandLogoMarkup(brandId: string, sizeClass = 'desktop-connect-flow-logo'): string {
+  // The brand panels map their `logoId` to BRAND_LOGOS keys; DESKTOP_BRAND_PANELS
+  // already pre-resolves that. We re-use it here for the method/brand rows.
+  const descriptor = DESKTOP_BRAND_PANELS.find((b) => b.id === brandId);
+  const logoId = descriptor?.logoId ?? brandId;
+  const url = (BRAND_LOGOS as Record<string, string | undefined>)[logoId];
+  if (!url) {
+    return `<span class="${sizeClass} placeholder" aria-hidden="true"></span>`;
+  }
+  return `<img class="${sizeClass}" src="${escapeHtmlForFlow(url)}" alt="" />`;
+}
+
+function desktopMethodPickerBody(): string {
+  const ledgerAvailable = Boolean(detectLedgerTauriInvoke());
+  return `
+    <p class="desktop-connect-flow-lede">Choose how you'd like to connect your wallet.</p>
+    <div class="desktop-connect-flow-methods">
+      <button type="button" class="desktop-method-tile" data-desktop-flow-action="method:extension">
+        <span class="desktop-method-tile-title">Browser extension</span>
+        <span class="desktop-method-tile-sub">Open the wallet in your default browser (Phantom, Solflare, Backpack, Jupiter, Magic Eden).</span>
+      </button>
+      <button type="button" class="desktop-method-tile" data-desktop-flow-action="method:qr">
+        <span class="desktop-method-tile-title">Scan QR with phone</span>
+        <span class="desktop-method-tile-sub">Pair your mobile wallet over WalletConnect. Your phone signs; this desktop relays.</span>
+      </button>
+      <button type="button" class="desktop-method-tile" data-desktop-flow-action="method:ledger" ${ledgerAvailable ? '' : 'disabled title="Ledger USB bridge unavailable."'}>
+        <span class="desktop-method-tile-title">Ledger hardware wallet</span>
+        <span class="desktop-method-tile-sub">USB-HID. Plug in and unlock your device, then open the Solana app.</span>
+      </button>
+    </div>
+  `;
+}
+
+function desktopBrandPickerBody(actionName: 'pick-extension-brand' | 'pick-qr-brand'): string {
+  const rows = DESKTOP_BRAND_PANELS.map((brand) => `
+    <button type="button" class="desktop-brand-pick-row" data-desktop-flow-action="${actionName}" data-desktop-brand-id="${escapeHtmlForFlow(brand.id)}">
+      ${brandLogoMarkup(brand.id, 'desktop-brand-pick-logo')}
+      <span class="desktop-brand-pick-name">${escapeHtmlForFlow(brand.name)}</span>
+      <span class="desktop-brand-pick-caret" aria-hidden="true">›</span>
+    </button>
+  `).join('');
+  const lede = actionName === 'pick-extension-brand'
+    ? `<p class="desktop-connect-flow-lede">Pick the wallet extension you have installed in your default browser.</p>`
+    : `<p class="desktop-connect-flow-lede">Pick the mobile wallet you'll scan from.</p>`;
+  return `
+    ${lede}
+    <div class="desktop-connect-flow-brand-list">${rows}</div>
+  `;
+}
+
+function desktopAwaitingBrowserBody(): string {
+  const brandId = desktopConnect.flow.selectedBrandId ?? '';
+  const brand = DESKTOP_BRAND_PANELS.find((b) => b.id === brandId);
+  const name = brand?.name ?? 'the wallet';
+  return `
+    <div class="desktop-connect-flow-awaiting">
+      ${brandLogoMarkup(brandId, 'desktop-connect-flow-awaiting-logo')}
+      <h3>We opened your browser</h3>
+      <p>Connect <strong>${escapeHtmlForFlow(name)}</strong> in the browser tab that just opened. The browser page will tell you when to return here.</p>
+      <div class="desktop-connect-flow-awaiting-actions">
+        <button type="button" class="primary" data-desktop-flow-action="awaiting-done">I've connected my wallet</button>
+        <button type="button" class="utility" data-desktop-flow-action="awaiting-retry">Reopen browser</button>
+      </div>
+      <p class="desktop-connect-flow-awaiting-hint">If nothing happened, make sure ${escapeHtmlForFlow(name)} is installed in your default browser. You can also pick a different connection method.</p>
+    </div>
+  `;
+}
+
+function desktopConnectFlowBlock(): string {
+  if (!state.tauriNativeEnvironment.isTauriNative) return '';
+  if (desktopConnect.flow.step === 'idle') return '';
+  let title = 'Discover wallet';
+  let body = '';
+  switch (desktopConnect.flow.step) {
+    case 'method':
+      title = 'Discover wallet';
+      body = desktopMethodPickerBody();
+      break;
+    case 'extension-brands':
+      title = 'Browser extension';
+      body = desktopBrandPickerBody('pick-extension-brand');
+      break;
+    case 'qr':
+      title = 'Scan QR with phone';
+      if (desktopConnect.flow.selectedBrandId === null) {
+        body = desktopBrandPickerBody('pick-qr-brand');
+      } else {
+        body = `<div class="desktop-connect-flow-body walletconnect-qr-inline">${walletConnectQrBodyHtml({
+          state: walletConnect.overlay,
+          logoUrl: (logoId) => (BRAND_LOGOS as Record<string, string | undefined>)[logoId] ?? null,
+        })}</div>`;
+      }
+      break;
+    case 'ledger':
+      title = ledger.overlay.mode === 'error' ? "Couldn't connect Ledger" : 'Connect Ledger';
+      body = `<div class="desktop-connect-flow-body ledger-overlay-inline">${ledgerOverlayBodyHtml(ledger.overlay)}</div>`;
+      break;
+    case 'awaiting-browser':
+      title = 'Waiting for browser';
+      body = desktopAwaitingBrowserBody();
+      break;
+    default:
+      return '';
+  }
+  return `
+    <section class="desktop-connect-flow" aria-label="${escapeHtmlForFlow(title)}">
+      <header class="desktop-connect-flow-head">
+        <button type="button" class="desktop-connect-flow-back" data-desktop-flow-action="back" aria-label="Back">←</button>
+        <h2>${escapeHtmlForFlow(title)}</h2>
+      </header>
+      <div class="desktop-connect-flow-content">
+        ${body}
+      </div>
+    </section>
+  `;
+}
+
+// ─── Desktop discover flow — handlers ────────────────────────────────────
+
+async function runDesktopDiscover(): Promise<void> {
+  if (!state.tauriNativeEnvironment.isTauriNative) return;
+  if (desktopConnect.flow.step !== 'idle') return;
+  // Defensive: surface any Wallet-Standard wallet that did inject (e.g.
+  // Backpack Desktop, Glow Desktop) so the user can still pick those via the
+  // standard picker if they show up.
+  try {
+    state.wallets = visibleBrowserWallets(listAvailableWallets());
+  } catch {
+    // Discovery failure is non-fatal for the desktop flow.
+  }
+  dispatchDesktopConnectFlow({ type: 'startMethod' });
+}
+
+function handleDesktopMethodSelect(method: DesktopConnectMethod): void {
+  if (method === 'ledger') {
+    // Switch UI first so the inline body renders, then drive the existing
+    // Ledger state machine. `openLedgerOverlay` is idempotent and reusable.
+    dispatchDesktopConnectFlow({ type: 'pickMethod', method: 'ledger' });
+    openLedgerOverlay();
+    return;
+  }
+  dispatchDesktopConnectFlow({ type: 'pickMethod', method });
+}
+
+function handleDesktopExtensionBrandSelect(brandId: string): void {
+  const target = inferredWalletHostUrl({ wallet: brandId });
+  void tauriNativeOpenExternalUrl(target).catch((err) => {
+    pushToast(
+      'error',
+      'Could not open browser',
+      err instanceof Error ? err.message : String(err),
+    );
+  });
+  dispatchDesktopConnectFlow({
+    type: 'beginAwaitingBrowser',
+    brandId,
+    startedAt: Date.now(),
+  });
+}
+
+function handleDesktopQrBrandSelect(brandId: string): void {
+  dispatchDesktopConnectFlow({ type: 'pickBrand', brandId });
+  void handleScanQrForBrand(brandId);
+}
+
+function handleDesktopBack(): void {
+  const step = desktopConnect.flow.step;
+  if (step === 'qr' && walletConnect.overlay.mode !== 'closed') {
+    // Tear down the in-flight WC pairing so we don't leak a topic that the
+    // mobile wallet might still approve after the user has moved on.
+    dispatchWalletConnectOverlay({ type: 'close' });
+  }
+  if (step === 'ledger') {
+    stopLedgerPoll();
+    ledger.pairingToken += 1;
+    dispatchLedgerOverlay({ type: 'close' });
+  }
+  if (step === 'awaiting-browser') {
+    stopDesktopConnectPoll();
+  }
+  dispatchDesktopConnectFlow({ type: 'back' });
+}
+
+function handleDesktopAwaitingDone(): void {
+  pushToast(
+    'success',
+    'Connection confirmed',
+    'Use the desktop normally — the wallet host is active in your browser.',
+  );
+  dispatchDesktopConnectFlow({ type: 'reset' });
+}
+
+function handleDesktopAwaitingRetry(): void {
+  const brandId = desktopConnect.flow.selectedBrandId;
+  if (!brandId) return;
+  handleDesktopExtensionBrandSelect(brandId);
+}
+
+function bindDesktopConnectFlow(): void {
+  if (!state.tauriNativeEnvironment.isTauriNative) return;
+  for (const el of document.querySelectorAll<HTMLElement>('[data-desktop-flow-action]')) {
+    el.addEventListener('click', (event) => {
+      event.preventDefault();
+      const raw = el.dataset.desktopFlowAction ?? '';
+      if (raw === 'back') {
+        handleDesktopBack();
+        return;
+      }
+      if (raw.startsWith('method:')) {
+        const m = raw.slice('method:'.length) as DesktopConnectMethod;
+        if (m === 'extension' || m === 'qr' || m === 'ledger') {
+          handleDesktopMethodSelect(m);
+        }
+        return;
+      }
+      if (raw === 'pick-extension-brand') {
+        const brandId = el.dataset.desktopBrandId;
+        if (brandId) handleDesktopExtensionBrandSelect(brandId);
+        return;
+      }
+      if (raw === 'pick-qr-brand') {
+        const brandId = el.dataset.desktopBrandId;
+        if (brandId) handleDesktopQrBrandSelect(brandId);
+        return;
+      }
+      if (raw === 'awaiting-done') {
+        handleDesktopAwaitingDone();
+        return;
+      }
+      if (raw === 'awaiting-retry') {
+        handleDesktopAwaitingRetry();
+        return;
+      }
+    });
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -5259,6 +5630,7 @@ function render(): void {
   bind();
   bindEmbeddedWalletOverlay();
   bindDesktopBrandPanels();
+  bindDesktopConnectFlow();
   bindWalletConnectOverlay();
   bindLedgerOverlay();
   mountConnectorKeysPanel({ container: 'connector-keys-panel' });
@@ -5487,6 +5859,11 @@ function pageContent(route: AppRoute | null): string {
       return buildersPage();
     case '/app':
       return cliView ? cliAppPage() : appPage();
+    case '/connect':
+    case '/disconnect':
+    case '/approve':
+    case '/sign':
+      return cliAppPage();
     case '/cli':
       return cliPage();
     case '/desktop':
@@ -8901,6 +9278,8 @@ function walletRail(): string {
 
       ${publicWalletActions()}
 
+      ${state.tauriNativeEnvironment.isTauriNative ? desktopConnectFlowBlock() : ''}
+
       ${showPublicIosPicker ? `
       <details class="rail-details wallet-picker-details" open>
         <summary>Choose iOS wallet</summary>
@@ -11293,7 +11672,6 @@ function publicWalletActions(): string {
   const androidNative = state.androidNativeEnvironment.isAndroidNative;
   const iosNative = state.iosNativeEnvironment.isIosNative;
   const tauriNative = state.tauriNativeEnvironment.isTauriNative;
-  const nativeWallet = androidNative || iosNative || tauriNative;
   if (state.address) {
     return `
       <div class="wallet-actions public-wallet-actions connected">
@@ -11301,7 +11679,29 @@ function publicWalletActions(): string {
       </div>
     `;
   }
-  if (nativeWallet) {
+  if (tauriNative) {
+    // Desktop: drive the inline Discover → method flow rather than the
+    // browser's Discover-then-pick-from-dropdown wiring (extensions don't
+    // inject into the Tauri webview).
+    if (desktopConnect.flow.step === 'idle') {
+      return `
+        <div class="wallet-actions public-wallet-actions native-wallet-actions">
+          <button data-start-action="discover-desktop" class="primary" ${state.busy ? 'disabled' : ''}>
+            ${walletButtonIcon()}
+            <span>Discover</span>
+          </button>
+          <button data-start-action="connect" disabled title="Click Discover and choose a connection method first.">
+            Connect wallet
+          </button>
+        </div>
+      `;
+    }
+    // step !== 'idle' — the inline flow renders its own Back button in its
+    // header, so we don't need a duplicate action row here. Returning an
+    // empty container keeps the wallet-rail spacing stable.
+    return `<div class="wallet-actions public-wallet-actions native-wallet-actions in-flow"></div>`;
+  }
+  if (androidNative || iosNative) {
     return `
       <div class="wallet-actions public-wallet-actions native-wallet-actions">
         <button data-start-action="connect" class="primary wallet-connect-cta" ${state.busy ? 'disabled' : ''}>
@@ -11369,7 +11769,6 @@ function developerConnectionSettings(): string {
         disabled: state.wallets.length === 0 || state.busy,
       })}
     </label>
-    ${state.tauriNativeEnvironment.isTauriNative && state.wallets.length === 0 ? tauriEmptyWalletsHint() : ''}
     ${desktopBrandPanelsBlock()}`}
 
     ${state.capabilities ? capabilityBlock(state.capabilities) : ''}
@@ -20523,6 +20922,9 @@ function bind(): void {
       if (button.dataset.startAction === 'discover') {
         void runDiscover();
       }
+      if (button.dataset.startAction === 'discover-desktop') {
+        void runDesktopDiscover();
+      }
       if (button.dataset.startAction === 'connect') {
         void runConnect();
       }
@@ -22691,6 +23093,11 @@ async function runConnect(): Promise<void> {
     savePersistedState();
     trackWalletConnectSuccess(connectSurface, state.cluster, 'connect_button');
     pushToast('success', 'Wallet connected', short(state.address));
+    // Collapse the desktop Discover flow if the user reached this point via
+    // the inline rail (Browser ext / QR / Ledger). No-op for browser users.
+    if (state.tauriNativeEnvironment.isTauriNative && desktopConnect.flow.step !== 'idle') {
+      dispatchDesktopConnectFlow({ type: 'reset' });
+    }
   });
 }
 
@@ -39001,16 +39408,23 @@ async function bridgeOfflineDiagnosticMessage(): Promise<string> {
   return `Local approval bridge is not running at ${bridgeEndpoint}. Run ${NPM_EXEC_COMMAND}, keep that terminal open, then click Check local bridge.`;
 }
 
-function inferredWalletHostUrl(): string {
+function inferredWalletHostUrl(options?: { wallet?: string }): string {
+  const walletHint = options?.wallet?.trim();
   try {
     const bridge = new URL(bridgeBaseUrl());
     bridge.port = '5174';
     bridge.pathname = '/';
     bridge.search = '';
     bridge.hash = '';
+    if (walletHint) {
+      bridge.searchParams.set('wallet', walletHint);
+    }
     return bridge.toString();
   } catch {
-    return 'http://127.0.0.1:5174/';
+    const fallback = walletHint
+      ? `http://127.0.0.1:5174/?wallet=${encodeURIComponent(walletHint)}`
+      : 'http://127.0.0.1:5174/';
+    return fallback;
   }
 }
 
@@ -39306,6 +39720,10 @@ function resetWalletConnection(): void {
   state.steps.sign = 'idle';
   state.steps.transaction = 'idle';
   state.steps.bridge = 'idle';
+  // Collapse the desktop Discover flow back to idle so the rail returns to
+  // the standby state with a fresh Discover button.
+  desktopConnect.flow = initialDesktopConnectFlowState();
+  stopDesktopConnectPoll();
 }
 
 function discoveredSelectedWalletName(): string {
@@ -47251,9 +47669,10 @@ function readLaunchParams(): {
   bridgeUrl?: string;
   bridgeToken?: string;
   cliMode?: boolean;
-  cliIntent?: 'connect' | 'disconnect' | 'approve' | 'sign';
+  cliIntent?: CliIntentName;
   cliActionId?: string;
   cliRequestId?: string;
+  walletBrand?: string;
 } {
   const params = new URLSearchParams(window.location.search);
   const bridgeUrl = params.get('bridgeUrl')?.trim();
@@ -47261,14 +47680,18 @@ function readLaunchParams(): {
   if (bridgeToken) {
     saveSessionBridgeToken(bridgeToken);
   }
-  const cliMode = params.get('mode')?.trim() === 'cli';
-  const rawIntent = params.get('intent')?.trim();
-  const cliIntent: 'connect' | 'disconnect' | 'approve' | 'sign' | undefined =
+  const routeIntent = cliIntentFromPathname(window.location.pathname);
+  const cliMode = params.get('mode')?.trim() === 'cli' || Boolean(routeIntent);
+  const rawIntent = params.get('intent')?.trim() || routeIntent;
+  const cliIntent: CliIntentName | undefined =
     rawIntent === 'connect' || rawIntent === 'disconnect' || rawIntent === 'approve' || rawIntent === 'sign'
       ? rawIntent
       : undefined;
   const cliActionId = params.get('actionId')?.trim() || undefined;
   const cliRequestId = params.get('requestId')?.trim() || undefined;
+  // The desktop rail passes ?wallet=<brandId> when the user picks a brand from
+  // the Discover → Browser extension method. Ignored if CLI mode is active.
+  const walletBrand = !cliMode ? params.get('wallet')?.trim() || undefined : undefined;
   return {
     ...(bridgeUrl && isTrustedBridgeUrl(bridgeUrl) ? { bridgeUrl } : {}),
     ...(bridgeToken ? { bridgeToken } : {}),
@@ -47276,7 +47699,23 @@ function readLaunchParams(): {
     ...(cliIntent ? { cliIntent } : {}),
     ...(cliActionId ? { cliActionId } : {}),
     ...(cliRequestId ? { cliRequestId } : {}),
+    ...(walletBrand ? { walletBrand } : {}),
   };
+}
+
+function cliIntentFromPathname(pathname: string): CliIntentName | undefined {
+  switch (normalizePathname(pathname)) {
+    case '/connect':
+      return 'connect';
+    case '/disconnect':
+      return 'disconnect';
+    case '/approve':
+      return 'approve';
+    case '/sign':
+      return 'sign';
+    default:
+      return undefined;
+  }
 }
 
 function sessionBridgeToken(): string | undefined {
@@ -47308,6 +47747,13 @@ function clearSensitiveLaunchParams(): void {
   url.searchParams.delete('intent');
   url.searchParams.delete('actionId');
   url.searchParams.delete('requestId');
+  window.history.replaceState(window.history.state, document.title, `${url.pathname}${url.search}${url.hash}`);
+}
+
+function clearWalletBrandLaunchParam(): void {
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has('wallet')) return;
+  url.searchParams.delete('wallet');
   window.history.replaceState(window.history.state, document.title, `${url.pathname}${url.search}${url.hash}`);
 }
 
