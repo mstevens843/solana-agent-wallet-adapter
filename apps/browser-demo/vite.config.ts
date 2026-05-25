@@ -61,10 +61,20 @@ const cliReleaseTag =
   process.env.VITE_AGENTIC_CLI_RELEASE_TAG ??
   process.env.AGENTIC_CLI_RELEASE_TAG ??
   `cli-v${packageVersion('packages/cli/package.json')}`;
-const appReleaseTag =
-  process.env.VITE_AGENTIC_APP_RELEASE_TAG ??
-  process.env.AGENTIC_APP_RELEASE_TAG ??
-  `v${packageVersion('apps/desktop-shell/package.json')}`;
+const legacyAppReleaseTag = process.env.VITE_AGENTIC_APP_RELEASE_TAG ?? process.env.AGENTIC_APP_RELEASE_TAG;
+const desktopReleaseTag =
+  process.env.VITE_AGENTIC_DESKTOP_RELEASE_TAG ??
+  process.env.AGENTIC_DESKTOP_RELEASE_TAG ??
+  (legacyAppReleaseTag?.startsWith('desktop-v')
+    ? legacyAppReleaseTag
+    : `desktop-v${packageVersion('apps/desktop-shell/package.json')}`);
+const androidReleaseTag =
+  process.env.VITE_AGENTIC_ANDROID_RELEASE_TAG ??
+  process.env.AGENTIC_ANDROID_RELEASE_TAG ??
+  (legacyAppReleaseTag?.startsWith('v') && !legacyAppReleaseTag.startsWith('desktop-v')
+    ? legacyAppReleaseTag
+    : `v${packageVersion('apps/desktop-shell/package.json')}`);
+const appReleaseTag = legacyAppReleaseTag ?? androidReleaseTag;
 const walletConnectProjectId =
   process.env.VITE_AGENTIC_WC_PROJECT_ID ??
   process.env.AGENTIC_WC_PROJECT_ID ??
@@ -89,6 +99,8 @@ export default defineConfig({
     'import.meta.env.VITE_AGENTIC_WC_PROJECT_ID': JSON.stringify(walletConnectProjectId),
     __AGENTIC_CLI_RELEASE_TAG__: JSON.stringify(cliReleaseTag),
     __AGENTIC_APP_RELEASE_TAG__: JSON.stringify(appReleaseTag),
+    __AGENTIC_DESKTOP_RELEASE_TAG__: JSON.stringify(desktopReleaseTag),
+    __AGENTIC_ANDROID_RELEASE_TAG__: JSON.stringify(androidReleaseTag),
   },
   build: {
     rollupOptions: {

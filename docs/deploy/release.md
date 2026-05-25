@@ -96,10 +96,13 @@ The release must contain:
 - `agentic-android.apk`
 - `agentic-android.aab`
 
-The website links those assets through:
+The website resolves the newest complete product-specific releases at runtime through `/api/releases/downloads`.
+Direct fallback links use product tag prefixes:
 
 ```text
-https://github.com/mstevens843/solana-agent-wallet-adapter/releases/latest/download/<asset>
+https://github.com/mstevens843/solana-agent-wallet-adapter/releases/download/cli-v<version>/<cli-asset>
+https://github.com/mstevens843/solana-agent-wallet-adapter/releases/download/desktop-v<version>/<desktop-asset>
+https://github.com/mstevens843/solana-agent-wallet-adapter/releases/download/v<version>/<android-asset>
 ```
 
 ## Post-Release Verification
@@ -107,10 +110,11 @@ https://github.com/mstevens843/solana-agent-wallet-adapter/releases/latest/downl
 After Actions finishes, run:
 
 ```sh
-pnpm verify:release-links:live -- --tag v0.2.1
-npm view @solana-agent-wallet-adapter/cli@0.2.1 version
-npm exec @solana-agent-wallet-adapter/cli@0.2.1 -- --help
+pnpm verify:release-links:live -- --tag cli-v1.1.2
+pnpm verify:release-links:live -- --tag desktop-v0.4.1
+npm view @solana-agent-wallet-adapter/cli@1.1.2 version
+npm exec @solana-agent-wallet-adapter/cli@1.1.2 -- --help
 ```
 
-The live verifier fails if npm is unpublished, the tagged GitHub release is missing an advertised asset, or any
-`/releases/latest/download/...` URL still returns a non-2xx response.
+The live verifier fails if npm is unpublished for a CLI tag, the tagged GitHub release is missing an advertised asset,
+or any product-specific release asset URL returns a non-2xx response.

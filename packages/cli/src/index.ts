@@ -107,7 +107,9 @@ import { ensureTtyOrExit, withCancelGuard, select as tuiSelect, header as tuiHea
 import { PROOF_SPECS, listProofSpecs, resolveProofSpec, type ProofSpec } from './forms/proofSpecs.js';
 import { promptProofForm } from './forms/proofForm.js';
 
-const CLI_VERSION = '1.0.0';
+declare const __AGENTIC_CLI_VERSION__: string;
+
+const CLI_VERSION = __AGENTIC_CLI_VERSION__;
 
 type Cluster = 'mainnet-beta' | 'testnet' | 'devnet' | 'localnet';
 type PreparedActionKind =

@@ -15,18 +15,28 @@ const files = [
 ];
 const assetLinksFile = join(root, 'apps/browser-demo/public/.well-known/assetlinks.json');
 
-const requiredAssets = [
+const cliAssets = [
   'solana-agent-wallet-macos-arm64.tar.gz',
   'solana-agent-wallet-macos-x64.tar.gz',
   'solana-agent-wallet-linux-x64.tar.gz',
   'solana-agent-wallet-windows-x64.zip',
+];
+const desktopAssets = [
   'agentic-desktop-macos-arm64.dmg',
   'agentic-desktop-macos-x64.dmg',
   'agentic-desktop-windows-x64.msi',
   'agentic-desktop-linux-x64.AppImage',
+];
+const androidAssets = [
   'agentic-android.apk',
   'agentic-android.aab',
 ];
+const releaseProducts = [
+  { id: 'cli', tagPrefix: 'cli-v', assets: cliAssets },
+  { id: 'desktop', tagPrefix: 'desktop-v', assets: desktopAssets },
+  { id: 'android', tagPrefix: 'v', assets: androidAssets },
+];
+const requiredAssets = releaseProducts.flatMap((product) => product.assets);
 
 const requiredCommands = [
   'npm install -g @solana-agent-wallet-adapter/cli',
@@ -60,8 +70,21 @@ for (const command of requiredCommands) {
   }
 }
 
-if (!homepage.includes(`https://github.com/${defaultRepo}/releases/latest/download`)) {
-  failures.push('latest-release download base URL missing from apps/browser-demo/src/main.ts');
+if (!homepage.includes('/api/releases/downloads')) {
+  failures.push('dynamic release downloads endpoint missing from apps/browser-demo/src/main.ts');
+}
+
+for (const product of ['cli', 'desktop']) {
+  if (!homepage.includes(`${product.toUpperCase()}_RELEASE_BASE_URL, '${product}'`)) {
+    failures.push(`${product} download cards must opt into dynamic release hydration`);
+  }
+  if (!homepage.includes(`data-release-page-product="${product}"`)) {
+    failures.push(`${product} release page link must opt into dynamic release hydration`);
+  }
+}
+
+if (homepage.includes('APP_RELEASE_BASE_URL') || homepage.includes('APP_RELEASE_PAGE_URL')) {
+  failures.push('legacy APP_RELEASE_* desktop/android link base must not be used in apps/browser-demo/src/main.ts');
 }
 
 for (const route of routePaths) {
@@ -121,7 +144,7 @@ if (live) {
     reportFailures('[release-links] Live release verification failed:', liveFailures);
     process.exit(1);
   }
-  console.log('[release-links] Live npm package and GitHub release assets are reachable.');
+  console.log('[release-links] Live release assets and package metadata are reachable.');
 } else {
   console.log('[release-links] Release assets and public CLI commands are documented and linked.');
 }
@@ -131,8 +154,10 @@ async function verifyLiveRelease() {
   for (let attempt = 1; attempt <= retries; attempt += 1) {
     const attemptFailures = [];
     await verifyNpmPackage(attemptFailures);
-    await verifyGithubRelease(attemptFailures);
-    await verifyDownloadUrls(attemptFailures);
+    const resolvedReleases = await verifyGithubReleaseProducts(attemptFailures);
+    if (resolvedReleases) {
+      await verifyDownloadUrls(attemptFailures, resolvedReleases);
+    }
 
     if (attemptFailures.length === 0) {
       return [];
@@ -159,45 +184,115 @@ async function verifyNpmPackage(attemptFailures) {
   }
 
   const metadata = await response.json();
-  const expectedVersion = npmVersionFromTag(releaseTag);
+  const expectedVersion = cliVersionFromTag(releaseTag);
   if (expectedVersion && !metadata.versions?.[expectedVersion]) {
     attemptFailures.push(`${npmPackageName}@${expectedVersion} is missing from npm registry`);
   }
 }
 
-async function verifyGithubRelease(attemptFailures) {
-  const endpoint = releaseTag
-    ? `https://api.github.com/repos/${repo}/releases/tags/${releaseTag}`
-    : `https://api.github.com/repos/${repo}/releases/latest`;
+async function verifyGithubReleaseProducts(attemptFailures) {
+  if (releaseTag) {
+    const product = productForTag(releaseTag);
+    if (!product) {
+      attemptFailures.push(`Unsupported release tag for link verification: ${releaseTag}`);
+      return null;
+    }
+    const endpoint = `https://api.github.com/repos/${repo}/releases/tags/${releaseTag}`;
+    const response = await fetchForVerification(endpoint, attemptFailures);
+    if (!response) return null;
+    if (!response.ok) {
+      attemptFailures.push(`${endpoint} returned HTTP ${response.status}`);
+      return null;
+    }
+    const release = await response.json();
+    if (release.tag_name !== releaseTag) {
+      attemptFailures.push(`GitHub release tag mismatch: expected ${releaseTag}, got ${release.tag_name}`);
+      return null;
+    }
+    const missing = missingReleaseAssets(release, product);
+    for (const asset of missing) {
+      attemptFailures.push(`${asset} missing from GitHub release ${releaseTag}`);
+    }
+    return missing.length === 0 ? { [product.id]: { product, release } } : null;
+  }
+
+  const endpoint = `https://api.github.com/repos/${repo}/releases?per_page=100`;
   const response = await fetchForVerification(endpoint, attemptFailures);
-  if (!response) return;
+  if (!response) return null;
   if (!response.ok) {
     attemptFailures.push(`${endpoint} returned HTTP ${response.status}`);
-    return;
+    return null;
   }
 
-  const release = await response.json();
-  if (releaseTag && release.tag_name !== releaseTag) {
-    attemptFailures.push(`GitHub release tag mismatch: expected ${releaseTag}, got ${release.tag_name}`);
+  const releases = await response.json();
+  if (!Array.isArray(releases)) {
+    attemptFailures.push(`${endpoint} did not return a release array`);
+    return null;
   }
 
-  const assetNames = new Set(Array.isArray(release.assets) ? release.assets.map((asset) => asset.name) : []);
-  for (const asset of requiredAssets) {
-    if (!assetNames.has(asset)) {
-      attemptFailures.push(`${asset} missing from GitHub release ${release.tag_name ?? 'latest'}`);
+  const resolved = {};
+  for (const product of releaseProducts) {
+    const release = pickLatestProductRelease(releases, product);
+    if (!release) {
+      attemptFailures.push(`No complete ${product.id} release found for tag prefix ${product.tagPrefix}`);
+      continue;
     }
+    resolved[product.id] = { product, release };
   }
+  return Object.keys(resolved).length > 0 ? resolved : null;
 }
 
-async function verifyDownloadUrls(attemptFailures) {
-  await Promise.all(requiredAssets.map(async (asset) => {
-    const url = `https://github.com/${repo}/releases/latest/download/${asset}`;
+async function verifyDownloadUrls(attemptFailures, resolvedReleases) {
+  const checks = [];
+  for (const { product, release } of Object.values(resolvedReleases)) {
+    for (const asset of product.assets) {
+      const url = releaseAssetUrl(release, asset) ??
+        `https://github.com/${repo}/releases/download/${release.tag_name}/${asset}`;
+      checks.push({ asset, url });
+    }
+  }
+
+  await Promise.all(checks.map(async ({ url }) => {
     const response = await fetchForVerification(url, attemptFailures, { method: 'HEAD' });
     if (!response) return;
     if (!response.ok) {
       attemptFailures.push(`${url} returned HTTP ${response.status}`);
     }
   }));
+}
+
+function productForTag(tag) {
+  return releaseProducts.find((product) => tag.startsWith(product.tagPrefix)) ?? null;
+}
+
+function pickLatestProductRelease(releases, product) {
+  const candidates = releases
+    .filter((release) => !release.draft && !release.prerelease)
+    .map((release) => {
+      const version = semverFromTag(String(release.tag_name ?? ''), product.tagPrefix);
+      if (!version) return null;
+      return missingReleaseAssets(release, product).length === 0 ? { release, version } : null;
+    })
+    .filter(Boolean);
+  candidates.sort((left, right) => {
+    const versionOrder = compareSemver(right.version, left.version);
+    if (versionOrder !== 0) return versionOrder;
+    return dateMs(right.release.published_at ?? right.release.created_at ?? '') -
+      dateMs(left.release.published_at ?? left.release.created_at ?? '');
+  });
+  return candidates[0]?.release ?? null;
+}
+
+function missingReleaseAssets(release, product) {
+  const assetNames = new Set(Array.isArray(release.assets) ? release.assets.map((asset) => asset.name) : []);
+  return product.assets.filter((asset) => !assetNames.has(asset));
+}
+
+function releaseAssetUrl(release, assetName) {
+  const asset = Array.isArray(release.assets)
+    ? release.assets.find((candidate) => candidate.name === assetName)
+    : null;
+  return typeof asset?.browser_download_url === 'string' ? asset.browser_download_url : null;
 }
 
 async function fetchForVerification(url, attemptFailures, init = {}) {
@@ -224,10 +319,30 @@ async function fetchWithHeaders(url, init = {}) {
   return fetch(url, { ...init, headers, redirect: 'follow' });
 }
 
-function npmVersionFromTag(tag) {
+function cliVersionFromTag(tag) {
   if (!tag) return null;
-  const match = /^v(.+)$/.exec(tag);
+  const match = /^cli-v(.+)$/.exec(tag);
   return match ? match[1] : null;
+}
+
+function semverFromTag(tag, prefix) {
+  if (!tag.startsWith(prefix)) return null;
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(tag.slice(prefix.length));
+  if (!match) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+  };
+}
+
+function compareSemver(left, right) {
+  return left.major - right.major || left.minor - right.minor || left.patch - right.patch;
+}
+
+function dateMs(value) {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function parseArgs(argv) {

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcessByStdio } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createServer, type AddressInfo } from 'node:net';
@@ -417,14 +418,15 @@ test('mpp commands proxy config and challenge payloads to render-web', async () 
 
 // ─── v1.0 tests ───────────────────────────────────────────────────────────────
 
-test('version prints the v1 string', () => {
+test('version prints the package version', () => {
+  const expectedVersion = JSON.parse(readFileSync(resolve(distDir, '..', 'package.json'), 'utf8')).version as string;
   const plain = runCli(['version']);
   assert.equal(plain.status, 0, plain.stderr);
-  assert.equal(plain.stdout.trim(), '1.0.0');
+  assert.equal(plain.stdout.trim(), expectedVersion);
 
   const json = runCli(['version', '--json']);
   assert.equal(json.status, 0, json.stderr);
-  assert.deepEqual(JSON.parse(json.stdout) as Record<string, string>, { version: '1.0.0' });
+  assert.deepEqual(JSON.parse(json.stdout) as Record<string, string>, { version: expectedVersion });
 });
 
 test('auth status with no session reports unauthenticated', async () => {

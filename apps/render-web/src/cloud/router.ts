@@ -79,6 +79,7 @@ import {
 import { createRecurringApiHandler, recurringStoreAdapterForCloudStore } from './recurringRoutes.js';
 import { RecurringService, type RecurringStore } from './recurringService.js';
 import { redactSecrets } from './redaction.js';
+import { resolveReleaseDownloads } from './releaseDownloads.js';
 import { createAgentBackgroundWatch } from './agentBackgroundWatch.js';
 import {
   createStatelessConnectorFactsReader,
@@ -177,6 +178,7 @@ const renderDeviceAgentSessions = new Map<string, RenderDeviceAgentSession>();
 
 const REGISTERED_API_ROUTES = [
   'GET /api/ai/status',
+  'GET /api/releases/downloads',
   'GET /api/android-config',
   'GET /api/mobile-config',
   'POST /api/policy/enrich',
@@ -769,6 +771,12 @@ async function routeApiRequest(
         routes: REGISTERED_API_ROUTES,
       },
     });
+    return;
+  }
+
+  if (url.pathname === '/api/releases/downloads') {
+    requireMethod(req, 'GET');
+    writeJson(res, 200, await resolveReleaseDownloads());
     return;
   }
 

@@ -476,6 +476,8 @@ import {
 
 declare const __AGENTIC_CLI_RELEASE_TAG__: string;
 declare const __AGENTIC_APP_RELEASE_TAG__: string;
+declare const __AGENTIC_DESKTOP_RELEASE_TAG__: string;
+declare const __AGENTIC_ANDROID_RELEASE_TAG__: string;
 
 setProofSigningContext({
   getClient: requireClient,
@@ -1115,11 +1117,20 @@ for (const kind of CONNECTOR_APPROVAL_ACTION_TYPES) {
 const GITHUB_RELEASES_URL =
   'https://github.com/mstevens843/solana-agent-wallet-adapter/releases';
 const CLI_RELEASE_TAG = __AGENTIC_CLI_RELEASE_TAG__ || 'cli-v1.0.0';
-const APP_RELEASE_TAG = __AGENTIC_APP_RELEASE_TAG__ || 'v0.3.0';
+const DESKTOP_RELEASE_TAG =
+  __AGENTIC_DESKTOP_RELEASE_TAG__ ||
+  (__AGENTIC_APP_RELEASE_TAG__?.startsWith('desktop-v') ? __AGENTIC_APP_RELEASE_TAG__ : 'desktop-v0.3.0');
+const ANDROID_RELEASE_TAG =
+  __AGENTIC_ANDROID_RELEASE_TAG__ ||
+  (__AGENTIC_APP_RELEASE_TAG__?.startsWith('v') && !__AGENTIC_APP_RELEASE_TAG__.startsWith('desktop-v')
+    ? __AGENTIC_APP_RELEASE_TAG__
+    : 'v0.3.0');
 const CLI_RELEASE_BASE_URL = `${GITHUB_RELEASES_URL}/download/${CLI_RELEASE_TAG}`;
 const CLI_RELEASE_PAGE_URL = `${GITHUB_RELEASES_URL}/tag/${CLI_RELEASE_TAG}`;
-const APP_RELEASE_BASE_URL = `${GITHUB_RELEASES_URL}/download/${APP_RELEASE_TAG}`;
-const APP_RELEASE_PAGE_URL = `${GITHUB_RELEASES_URL}/tag/${APP_RELEASE_TAG}`;
+const DESKTOP_RELEASE_BASE_URL = `${GITHUB_RELEASES_URL}/download/${DESKTOP_RELEASE_TAG}`;
+const DESKTOP_RELEASE_PAGE_URL = `${GITHUB_RELEASES_URL}/tag/${DESKTOP_RELEASE_TAG}`;
+const ANDROID_RELEASE_BASE_URL = `${GITHUB_RELEASES_URL}/download/${ANDROID_RELEASE_TAG}`;
+const ANDROID_RELEASE_PAGE_URL = `${GITHUB_RELEASES_URL}/tag/${ANDROID_RELEASE_TAG}`;
 const NPM_GLOBAL_INSTALL_COMMAND = 'npm install -g @solana-agent-wallet-adapter/cli';
 const NPM_EXEC_COMMAND = 'npm exec @solana-agent-wallet-adapter/cli -- app';
 const INSTALLED_APP_COMMAND = 'solana-agent-wallet app';
@@ -1297,6 +1308,17 @@ const ANDROID_RELEASE_ASSETS = [
   ['Android APK', 'agentic-android.apk'],
   ['Android App Bundle', 'agentic-android.aab'],
 ] as const;
+type DynamicReleaseProductId = 'cli' | 'desktop';
+interface DynamicReleaseProduct {
+  tagName?: string;
+  htmlUrl?: string;
+  assets?: Record<string, string>;
+}
+interface DynamicReleaseDownloads {
+  products?: Partial<Record<DynamicReleaseProductId, DynamicReleaseProduct | null>>;
+}
+let releaseDownloadsPayload: DynamicReleaseDownloads | null = null;
+let releaseDownloadsPromise: Promise<DynamicReleaseDownloads> | null = null;
 const AGENTIC_MARK_LOGO = new URL('../../../assets/agentic/saturn-source-cutout.png', import.meta.url).href;
 
 type BrandLogoId =
@@ -5246,6 +5268,7 @@ function render(): void {
   updateTabTitleBadge();
   scheduleInboxSwapQuoteHydration();
   scheduleVisibleTokenMarketHydration();
+  scheduleReleaseDownloadHydration();
 }
 
 interface PendingSpendNavigation {
@@ -7048,7 +7071,7 @@ function cliHeroSection(): string {
           >
             Copy npm exec
           </button>
-          <a class="button-link" href="${CLI_RELEASE_PAGE_URL}" target="_blank" rel="noreferrer">View releases</a>
+          <a class="button-link" href="${CLI_RELEASE_PAGE_URL}" target="_blank" rel="noreferrer" data-release-page-product="cli">View releases</a>
         </div>
       </div>
       <div class="tooling-terminal terminal-preview-window">
@@ -7091,7 +7114,7 @@ function desktopHeroSection(): string {
           watch pending work, inspect receipts, and diagnose wallet-host state without living in Terminal.
         </p>
         <div class="tooling-hero-actions">
-          <a class="button-link nav-pill-link launch-app-link" href="${APP_RELEASE_PAGE_URL}" target="_blank" rel="noreferrer">
+          <a class="button-link nav-pill-link launch-app-link" href="${DESKTOP_RELEASE_PAGE_URL}" target="_blank" rel="noreferrer" data-release-page-product="desktop">
             Download latest
           </a>
           <a class="button-link" href="/cli">Use CLI instead</a>
@@ -7171,10 +7194,10 @@ function cliInstallSection(): string {
       <div class="download-section">
         <div class="download-section-head">
           <h3>Standalone CLI binaries</h3>
-          <a href="${CLI_RELEASE_PAGE_URL}" target="_blank" rel="noreferrer">View all releases</a>
+          <a href="${CLI_RELEASE_PAGE_URL}" target="_blank" rel="noreferrer" data-release-page-product="cli">View all releases</a>
         </div>
         <div class="download-grid">
-          ${CLI_RELEASE_ASSETS.map(([label, asset]) => downloadCard(label, asset, 'CLI binary', CLI_RELEASE_BASE_URL)).join('')}
+          ${CLI_RELEASE_ASSETS.map(([label, asset]) => downloadCard(label, asset, 'CLI binary', CLI_RELEASE_BASE_URL, 'cli')).join('')}
         </div>
       </div>
     </section>
@@ -7194,7 +7217,7 @@ function desktopDownloadSection(): string {
         </p>
       </div>
       <div class="download-grid desktop-download-grid">
-        ${DESKTOP_RELEASE_ASSETS.map(([label, asset]) => downloadCard(label, asset, 'Desktop installer', APP_RELEASE_BASE_URL)).join('')}
+        ${DESKTOP_RELEASE_ASSETS.map(([label, asset]) => downloadCard(label, asset, 'Desktop installer', DESKTOP_RELEASE_BASE_URL, 'desktop')).join('')}
       </div>
       <p class="download-note">
         Release artifacts are attached to GitHub Releases. If a platform build is not available yet, use the CLI install path above.
@@ -7217,10 +7240,10 @@ function androidDownloadSection(): string {
       <div class="download-section">
         <div class="download-section-head">
           <h3>Android release artifacts</h3>
-          <a href="${APP_RELEASE_PAGE_URL}" target="_blank" rel="noreferrer">View all releases</a>
+          <a href="${ANDROID_RELEASE_PAGE_URL}" target="_blank" rel="noreferrer">View all releases</a>
         </div>
         <div class="download-grid android-download-grid">
-          ${ANDROID_RELEASE_ASSETS.map(([label, asset]) => downloadCard(label, asset, label.includes('Bundle') ? 'Play release' : 'Android install', APP_RELEASE_BASE_URL)).join('')}
+          ${ANDROID_RELEASE_ASSETS.map(([label, asset]) => downloadCard(label, asset, label.includes('Bundle') ? 'Play release' : 'Android install', ANDROID_RELEASE_BASE_URL)).join('')}
         </div>
       </div>
       <p class="download-note">
@@ -7941,7 +7964,77 @@ function localDevelopmentSection(): string {
   `;
 }
 
-function downloadCard(label: string, asset: string, kind: string, releaseBaseUrl: string): string {
+function scheduleReleaseDownloadHydration(): void {
+  if (typeof document === 'undefined') return;
+  const hasDynamicDownloads = Boolean(
+    document.querySelector('[data-download-product="cli"], [data-download-product="desktop"], [data-release-page-product="cli"], [data-release-page-product="desktop"]'),
+  );
+  if (!hasDynamicDownloads) return;
+  void hydrateReleaseDownloadLinks();
+}
+
+async function hydrateReleaseDownloadLinks(): Promise<void> {
+  try {
+    const payload = await loadReleaseDownloads();
+    applyReleaseDownloadLinks(payload);
+  } catch (err) {
+    console.warn('Release download links could not be refreshed.', err);
+  }
+}
+
+async function loadReleaseDownloads(): Promise<DynamicReleaseDownloads> {
+  if (releaseDownloadsPayload) return releaseDownloadsPayload;
+  if (!releaseDownloadsPromise) {
+    releaseDownloadsPromise = fetch('/api/releases/downloads', {
+      headers: { accept: 'application/json' },
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`/api/releases/downloads returned HTTP ${response.status}.`);
+        }
+        const payload = await response.json() as DynamicReleaseDownloads;
+        releaseDownloadsPayload = payload;
+        return payload;
+      })
+      .catch((err) => {
+        releaseDownloadsPromise = null;
+        throw err;
+      });
+  }
+  return releaseDownloadsPromise;
+}
+
+function applyReleaseDownloadLinks(payload: DynamicReleaseDownloads): void {
+  for (const link of document.querySelectorAll<HTMLAnchorElement>('[data-release-page-product]')) {
+    const product = dynamicReleaseProduct(link.dataset.releasePageProduct);
+    const htmlUrl = product ? payload.products?.[product]?.htmlUrl : undefined;
+    if (htmlUrl) link.href = htmlUrl;
+  }
+
+  for (const card of document.querySelectorAll<HTMLAnchorElement>('[data-download-product][data-download-asset]')) {
+    const product = dynamicReleaseProduct(card.dataset.downloadProduct);
+    const asset = card.dataset.downloadAsset ?? '';
+    const release = product ? payload.products?.[product] : null;
+    const url = asset ? release?.assets?.[asset] : undefined;
+    if (!url) continue;
+    card.href = url;
+    if (release?.tagName) {
+      card.dataset.releaseTag = release.tagName;
+    }
+  }
+}
+
+function dynamicReleaseProduct(value: string | undefined): DynamicReleaseProductId | null {
+  return value === 'cli' || value === 'desktop' ? value : null;
+}
+
+function downloadCard(
+  label: string,
+  asset: string,
+  kind: string,
+  releaseBaseUrl: string,
+  product?: DynamicReleaseProductId,
+): string {
   const url = `${releaseBaseUrl}/${asset}`;
   return `
     <a
@@ -7952,6 +8045,8 @@ function downloadCard(label: string, asset: string, kind: string, releaseBaseUrl
       data-download-kind="${escapeHtml(kind)}"
       data-download-platform="${escapeHtml(label)}"
       data-download-asset="${escapeHtml(asset)}"
+      data-download-fallback-href="${escapeHtml(url)}"
+      ${product ? `data-download-product="${escapeHtml(product)}"` : ''}
     >
       <span>${escapeHtml(kind)}</span>
       <strong>${escapeHtml(label)}</strong>

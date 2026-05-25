@@ -157,10 +157,13 @@ their machine. Normal signed-in web users use Agentic Cloud on `https://agentic-
 
 ## Release Links Used by the Website
 
-The website links GitHub Release assets directly from:
+The website resolves the newest complete CLI and desktop releases at runtime through `/api/releases/downloads`.
+Direct fallback links use product tag prefixes:
 
 ```text
-https://github.com/mstevens843/solana-agent-wallet-adapter/releases/latest/download/<asset-name>
+https://github.com/mstevens843/solana-agent-wallet-adapter/releases/download/cli-v<version>/<cli-asset>
+https://github.com/mstevens843/solana-agent-wallet-adapter/releases/download/desktop-v<version>/<desktop-asset>
+https://github.com/mstevens843/solana-agent-wallet-adapter/releases/download/v<version>/<android-asset>
 ```
 
 Expected CLI assets:
@@ -189,10 +192,11 @@ downloads, run the static verifier:
 pnpm verify:release-links
 ```
 
-After publishing a public release, run the live verifier against the tag:
+After publishing a public release, run the live verifier against the product tag:
 
 ```sh
-pnpm verify:release-links:live -- --tag v0.2.1
+pnpm verify:release-links:live -- --tag cli-v1.1.2
+pnpm verify:release-links:live -- --tag desktop-v0.4.1
 ```
 
 ## Android Trust File

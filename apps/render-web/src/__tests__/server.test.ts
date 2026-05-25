@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SESSION_COOKIE_NAME } from '../cloud/cookies.js';
 import { MemoryWorkflowStore } from '../cloud/memoryStore.js';
+import { clearReleaseDownloadsCache } from '../cloud/releaseDownloads.js';
 import { createWalletSession } from '../cloud/session.js';
 import { createRenderWebServer } from '../server.js';
 
@@ -49,6 +50,7 @@ const aiRequest = {
 
 describe('render web hosted BYOK API', () => {
   afterEach(() => {
+    clearReleaseDownloadsCache();
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
   });
@@ -79,6 +81,80 @@ describe('render web hosted BYOK API', () => {
           expect.objectContaining({ id: 'anthropic', apiFormat: 'anthropic' }),
         ]),
       });
+    });
+  });
+
+  it('resolves newest complete product-specific CLI and desktop download releases', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse([
+      releaseFixture('desktop-v0.4.2', ['agentic-desktop-macos-arm64.dmg']),
+      releaseFixture('desktop-v0.4.1', [
+        'agentic-desktop-macos-arm64.dmg',
+        'agentic-desktop-macos-x64.dmg',
+        'agentic-desktop-windows-x64.msi',
+        'agentic-desktop-linux-x64.AppImage',
+      ]),
+      releaseFixture('cli-v1.1.2', [
+        'solana-agent-wallet-macos-arm64.tar.gz',
+        'solana-agent-wallet-macos-x64.tar.gz',
+        'solana-agent-wallet-linux-x64.tar.gz',
+        'solana-agent-wallet-windows-x64.zip',
+      ]),
+    ])));
+
+    await withServer(async (port) => {
+      const response = await getJson(port, '/api/releases/downloads');
+      expect(response.status).toBe(200);
+      expect(response.body.cache).toMatchObject({ status: 'fresh', maxAgeMs: 300000 });
+
+      const products = response.body.products as Record<string, { tagName: string; htmlUrl: string; assets: Record<string, string> }>;
+      const desktop = products.desktop!;
+      const cli = products.cli!;
+      expect(desktop.tagName).toBe('desktop-v0.4.1');
+      expect(desktop.htmlUrl).toBe('https://github.com/mstevens843/solana-agent-wallet-adapter/releases/tag/desktop-v0.4.1');
+      expect(desktop.assets['agentic-desktop-macos-x64.dmg']).toBe(
+        'https://github.com/mstevens843/solana-agent-wallet-adapter/releases/download/desktop-v0.4.1/agentic-desktop-macos-x64.dmg',
+      );
+      expect(cli.tagName).toBe('cli-v1.1.2');
+      expect(cli.assets['solana-agent-wallet-windows-x64.zip']).toBe(
+        'https://github.com/mstevens843/solana-agent-wallet-adapter/releases/download/cli-v1.1.2/solana-agent-wallet-windows-x64.zip',
+      );
+    });
+  });
+
+  it('serves stale cached release downloads if GitHub is temporarily unavailable', async () => {
+    vi.stubEnv('AGENTIC_RELEASE_DOWNLOAD_CACHE_MS', '0');
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse([
+        releaseFixture('desktop-v0.4.1', [
+          'agentic-desktop-macos-arm64.dmg',
+          'agentic-desktop-macos-x64.dmg',
+          'agentic-desktop-windows-x64.msi',
+          'agentic-desktop-linux-x64.AppImage',
+        ]),
+        releaseFixture('cli-v1.1.2', [
+          'solana-agent-wallet-macos-arm64.tar.gz',
+          'solana-agent-wallet-macos-x64.tar.gz',
+          'solana-agent-wallet-linux-x64.tar.gz',
+          'solana-agent-wallet-windows-x64.zip',
+        ]),
+      ]))
+      .mockRejectedValueOnce(new Error('github unavailable'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await withServer(async (port) => {
+      expect((await getJson(port, '/api/releases/downloads')).body.cache).toMatchObject({ status: 'fresh' });
+      const stale = await getJson(port, '/api/releases/downloads');
+      expect(stale.status).toBe(200);
+      expect(stale.body.cache).toMatchObject({ status: 'stale' });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('rejects POST /api/releases/downloads with 405 method_not_allowed', async () => {
+    await withServer(async (port) => {
+      const response = await postJson(port, '/api/releases/downloads', {});
+      expect(response.status).toBe(405);
+      expect(response.body).toMatchObject({ error: 'method_not_allowed' });
     });
   });
 
@@ -1309,6 +1385,21 @@ function jsonResponse(body: unknown, status = 200): Response {
     status,
     headers: { 'content-type': 'application/json' },
   });
+}
+
+function releaseFixture(tagName: string, assets: string[]): Record<string, unknown> {
+  return {
+    tag_name: tagName,
+    html_url: `https://github.com/mstevens843/solana-agent-wallet-adapter/releases/tag/${tagName}`,
+    draft: false,
+    prerelease: false,
+    created_at: tagName.endsWith('0.4.2') ? '2026-05-26T00:00:00.000Z' : '2026-05-25T00:00:00.000Z',
+    published_at: tagName.endsWith('0.4.2') ? '2026-05-26T00:00:00.000Z' : '2026-05-25T00:00:00.000Z',
+    assets: assets.map((asset) => ({
+      name: asset,
+      browser_download_url: `https://github.com/mstevens843/solana-agent-wallet-adapter/releases/download/${tagName}/${asset}`,
+    })),
+  };
 }
 
 function planJson(intent: string): string {

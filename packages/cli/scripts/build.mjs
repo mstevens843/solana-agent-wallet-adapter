@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { cp, chmod, rm } from 'node:fs/promises';
+import { cp, chmod, readFile, rm } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -12,6 +12,8 @@ const repoRoot = join(cliRoot, '..', '..');
 const browserDist = join(repoRoot, 'apps', 'browser-demo', 'dist');
 const distDir = join(cliRoot, 'dist');
 const walletHostDist = join(distDir, 'wallet-host');
+const cliPackageJson = JSON.parse(await readFile(join(cliRoot, 'package.json'), 'utf8'));
+const cliVersion = String(cliPackageJson.version);
 const optionalNativeModuleFilter =
   /^(?:@triton-one\/yellowstone-grpc|helius-laserstream|@triton-one\/yellowstone-grpc-napi-.+|yellowstone-grpc-napi-.+|helius-laserstream-.+)$/;
 
@@ -56,6 +58,9 @@ await build({
   format: 'esm',
   target: 'node20',
   sourcemap: true,
+  define: {
+    __AGENTIC_CLI_VERSION__: JSON.stringify(cliVersion),
+  },
   plugins: [optionalNativeStubPlugin],
   banner: {
     js: [
