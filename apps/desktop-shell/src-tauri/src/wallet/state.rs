@@ -309,8 +309,10 @@ impl WalletState {
     #[cfg(test)]
     pub fn test_set_idle(&mut self, seconds: u64) {
         if let Some(session) = &mut self.unlocked {
-            session.last_activity =
-                Instant::now() - Duration::from_secs(seconds);
+            let now = Instant::now();
+            session.last_activity = now
+                .checked_sub(Duration::from_secs(seconds))
+                .unwrap_or(now);
         }
     }
 }
@@ -435,7 +437,7 @@ mod tests {
         let (_dir, mut state) = make_state();
         state.set_auto_lock(0).unwrap();
         state.create("p").unwrap();
-        state.test_set_idle(60 * 60); // 1 hour idle
+        state.test_set_idle(MIN_AUTO_LOCK_SECS as u64);
         let status = state.status().unwrap();
         assert!(status.unlocked, "auto_lock=0 disables timeout");
     }
