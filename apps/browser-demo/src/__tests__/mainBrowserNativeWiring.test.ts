@@ -235,6 +235,56 @@ describe('Phase 6 browser-native Device Agent wiring helpers', () => {
     })).toBe('hosted');
   });
 
+  it('defaults Tauri desktop AI mode to hosted when an Agentic Cloud session is present', () => {
+    expect(defaultAiModeForSurface({
+      isAndroidApp: false,
+      androidDeviceAgentRuntimeEnabled: false,
+      isLocalBrowserOrigin: true,
+      isTauriApp: true,
+      hasCloudSession: true,
+    })).toBe('hosted');
+    expect(defaultAiModeForSurface({
+      isAndroidApp: false,
+      androidDeviceAgentRuntimeEnabled: false,
+      isLocalBrowserOrigin: false,
+      isTauriApp: true,
+      hasCloudSession: true,
+    })).toBe('hosted');
+  });
+
+  it('defaults Tauri desktop AI mode to device-agent when no Agentic Cloud session exists', () => {
+    expect(defaultAiModeForSurface({
+      isAndroidApp: false,
+      androidDeviceAgentRuntimeEnabled: false,
+      isLocalBrowserOrigin: true,
+      isTauriApp: true,
+      hasCloudSession: false,
+    })).toBe('device-agent');
+    expect(defaultAiModeForSurface({
+      isAndroidApp: false,
+      androidDeviceAgentRuntimeEnabled: false,
+      isLocalBrowserOrigin: false,
+      isTauriApp: true,
+    })).toBe('device-agent');
+  });
+
+  it('keeps Android AI mode ahead of Tauri when both surface flags are set', () => {
+    expect(defaultAiModeForSurface({
+      isAndroidApp: true,
+      androidDeviceAgentRuntimeEnabled: true,
+      isLocalBrowserOrigin: false,
+      isTauriApp: true,
+      hasCloudSession: true,
+    })).toBe('device-agent');
+    expect(defaultAiModeForSurface({
+      isAndroidApp: true,
+      androidDeviceAgentRuntimeEnabled: false,
+      isLocalBrowserOrigin: false,
+      isTauriApp: true,
+      hasCloudSession: true,
+    })).toBe('session');
+  });
+
   it('labels browser-native providers by direct-browser support tier', () => {
     expect(browserNativeProviderTierForProvider('openrouter')).toMatchObject({
       className: 'ai-provider-tier-recommended',

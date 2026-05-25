@@ -64,6 +64,7 @@ export interface AiRequestOptions {
   signal?: AbortSignal;
   hostedFetch?: HostedAiFetch;
   hostedOrigin?: string;
+  hostedUnauthorizedHint?: string;
 }
 
 export type HostedAiFetch = (path: string, init?: RequestInit) => Promise<Response>;
@@ -800,7 +801,7 @@ export async function generateHostedAiPlan(
     { method: 'POST', path: '/api/ai/generate-plan' },
   );
   if (!response.ok) {
-    const message = hostedProviderFailureMessage(payload, response.status, settings.apiKey);
+    const message = hostedProviderFailureMessage(payload, response.status, settings.apiKey, options.hostedUnauthorizedHint);
     throw aiPlanConnectionError(message, diagnostics, {
       code: 'AI_PROVIDER_ERROR',
       message,
@@ -878,7 +879,7 @@ export async function generateHostedAiReview(
     { method: 'POST', path: '/api/ai/review-plan' },
   );
   if (!response.ok) {
-    const message = hostedProviderFailureMessage(payload, response.status, settings.apiKey);
+    const message = hostedProviderFailureMessage(payload, response.status, settings.apiKey, options.hostedUnauthorizedHint);
     throw aiPlanConnectionError(message, diagnostics, {
       code: 'AI_PROVIDER_ERROR',
       message,
@@ -981,7 +982,7 @@ export async function generateHostedAiAsk(
     { method: 'POST', path: '/api/ai/ask-about-plan' },
   );
   if (!response.ok) {
-    const message = hostedProviderFailureMessage(payload, response.status, settings.apiKey);
+    const message = hostedProviderFailureMessage(payload, response.status, settings.apiKey, options.hostedUnauthorizedHint);
     throw aiPlanConnectionError(message, diagnostics, {
       code: 'AI_PROVIDER_ERROR',
       message,
@@ -2458,7 +2459,20 @@ function withProviderStatusExplanation(message: string, status: number): string 
   return `${normalized}${/[.!?]\s*$/.test(normalized) ? ' ' : '. '}${explanation}`;
 }
 
-function hostedProviderFailureMessage(payload: unknown, status: number, exactSecret = ''): string {
+function hostedProviderFailureMessage(
+  payload: unknown,
+  status: number,
+  exactSecret = '',
+  unauthorizedHint = '',
+): string {
+  if (status === 401 && unauthorizedHint) {
+    const baseMessage = extractProviderError(payload) || `Hosted AI returned HTTP ${status}.`;
+    const normalized = baseMessage.trim();
+    const combined = normalized
+      ? `${normalized}${/[.!?]\s*$/.test(normalized) ? ' ' : '. '}${unauthorizedHint}`
+      : unauthorizedHint;
+    return redactSecrets(combined, exactSecret);
+  }
   const message = extractProviderError(payload) || `Hosted AI returned HTTP ${status}.`;
   return redactSecrets(withProviderStatusExplanation(message, status), exactSecret);
 }

@@ -83,9 +83,14 @@ export function defaultAiModeForSurface(surface: {
   isAndroidApp: boolean;
   androidDeviceAgentRuntimeEnabled: boolean;
   isLocalBrowserOrigin: boolean;
+  isTauriApp?: boolean;
+  hasCloudSession?: boolean;
 }): AiModeSurfaceDefault {
   if (surface.isAndroidApp) {
     return surface.androidDeviceAgentRuntimeEnabled ? 'device-agent' : 'session';
+  }
+  if (surface.isTauriApp) {
+    return surface.hasCloudSession ? 'hosted' : 'device-agent';
   }
   return surface.isLocalBrowserOrigin ? 'bridge' : 'hosted';
 }

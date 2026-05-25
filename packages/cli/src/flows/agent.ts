@@ -94,29 +94,36 @@ export async function runAgent(options: GlobalOptions, signPlanFn?: SignPlanFn):
   }
 
   const blocked = verdictBlocksQueue(verdict);
+  const needsInput = verdict?.decision === 'needs_input';
+  // Policy NOTE was provided but the review loop returned no verdict (bridge
+  // error, empty response, or 5-attempt exhaustion — see runReviewLoop). We
+  // can't claim approval, so treat it like the user's needs-input path and
+  // make the override available with an honest label.
+  const reviewIndeterminate = Boolean(policyNote.trim()) && verdict === null;
+  const requiresOverride = blocked || needsInput || reviewIndeterminate;
+
   if (blocked) {
     console.log();
-    console.log(badge('Plan was denied by policy review — queue is disabled.', 'err'));
-    console.log(badge('You can still sign the plan as off-chain proof if you want a record.', 'muted'));
+    console.log(badge('Plan was denied by policy review.', 'err'));
+    console.log(badge('You can still send it to the approval inbox if you want to proceed — an override entry will be saved in the note.', 'muted'));
+  } else if (needsInput) {
+    console.log();
+    console.log(badge('Agent review did not reach a conclusive verdict.', 'warn'));
+    console.log(badge('You can still send it to the approval inbox if you want to proceed — an override entry will be saved in the note.', 'muted'));
+  } else if (reviewIndeterminate) {
+    console.log();
+    console.log(badge("Policy review didn't finish — verdict unknown.", 'warn'));
+    console.log(badge('You can still send it to the approval inbox if you want to proceed — an override entry will be saved in the note.', 'muted'));
   }
 
-  type AgentAction = 'proof' | 'queue' | 'both' | 'done';
-  const choices: Array<{ name: string; value: AgentAction; description?: string }> = [];
-  choices.push({
-    name: 'Sign as off-chain proof (no transaction sent)',
-    value: 'proof',
-    description: 'Saves a wallet-signed evidence record to /proof-list. Useful for audit / accountability.',
-  });
-  if (!blocked) {
-    choices.push({ name: 'Queue as a prepared approval (sends to /inbox)', value: 'queue', description: 'Prepared action awaits your wallet signature in the inbox.' });
-    choices.push({ name: 'Both — sign the off-chain proof first, then queue the prepared approval', value: 'both' });
-  }
-  choices.push({ name: 'Done — keep the plan locally',                    value: 'done', description: 'Use /ask <question> to drill in, or /agent to refine.' });
-
+  const choices = buildAgentActionChoices({ blocked, needsInput, reviewIndeterminate });
   const action = await select<AgentAction>({
     message: 'What next?',
     choices,
-    default: blocked ? 'proof' : 'queue',
+    // After a DENY / needs_input / failed review, default to the non-destructive
+    // proof option so an accidental Enter doesn't commit the override. The
+    // override path is still one keystroke away.
+    default: requiresOverride ? 'proof' : 'queue',
   });
 
   if (action === 'done') {
@@ -142,9 +149,113 @@ export async function runAgent(options: GlobalOptions, signPlanFn?: SignPlanFn):
   }
 
   if (action === 'queue' || action === 'both') {
-    const result = await queuePlan(options, plan);
+    let overrideContext: string[] | undefined;
+    if (requiresOverride) {
+      const rawReason = await input({
+        message: 'Why are you sending anyway? (Optional, saved in the action note)',
+        default: '',
+      });
+      const userReason = rawReason.trim() || undefined;
+      const agentStatus: AgentOverrideStatus = blocked
+        ? 'denied'
+        : needsInput
+          ? 'needs_input'
+          : 'indeterminate';
+      overrideContext = [
+        buildReviewLine(agentStatus, verdict?.reason),
+        buildOverrideNote(agentStatus, userReason),
+      ];
+    }
+    const result = await queuePlan(options, plan, overrideContext);
     if (result) printQueuedAction(plan.summary ?? 'Agent plan', result);
   }
+}
+
+type AgentAction = 'proof' | 'queue' | 'both' | 'done';
+
+export interface AgentActionChoiceContext {
+  blocked: boolean;
+  needsInput: boolean;
+  reviewIndeterminate?: boolean;
+}
+
+// Exported for unit testing — builds the action picker for runAgent so the
+// override path stays available even when the agent denies, asks for input,
+// or fails to produce a verdict at all. The user can always queue (with an
+// override note recorded); the picker just rephrases the labels so they
+// understand they're overriding the verdict.
+export function buildAgentActionChoices(
+  ctx: AgentActionChoiceContext,
+): Array<{ name: string; value: AgentAction; description?: string }> {
+  const { blocked, needsInput, reviewIndeterminate = false } = ctx;
+  const requiresOverride = blocked || needsInput || reviewIndeterminate;
+  const overrideKind = blocked
+    ? 'denial'
+    : needsInput
+      ? 'questions'
+      : 'unfinished review';
+
+  return [
+    {
+      name: 'Sign as off-chain proof (no transaction sent)',
+      value: 'proof',
+      description: 'Saves a wallet-signed evidence record to /proof-list. Useful for audit / accountability.',
+    },
+    {
+      name: requiresOverride
+        ? `Queue anyway — send to /inbox (overrides agent ${overrideKind})`
+        : 'Queue as a prepared approval (sends to /inbox)',
+      value: 'queue',
+      description: requiresOverride
+        ? 'Bypasses the agent verdict; records an override entry in the action note.'
+        : 'Prepared action awaits your wallet signature in the inbox.',
+    },
+    {
+      name: requiresOverride
+        ? 'Both — sign the off-chain proof first, then queue anyway (override)'
+        : 'Both — sign the off-chain proof first, then queue the prepared approval',
+      value: 'both',
+    },
+    {
+      name: 'Done — keep the plan locally',
+      value: 'done',
+      description: 'Use /ask <question> to drill in, or /agent to refine.',
+    },
+  ];
+}
+
+// Mirrors apps/browser-demo/src/main.ts:overrideShortLabel + the "Override:"
+// prefix it gets in queuePlanThroughBridge (main.ts:37954-37957) so override
+// notes look the same regardless of which surface queued them.
+export type AgentOverrideStatus = 'denied' | 'needs_input' | 'indeterminate';
+
+export function buildOverrideNote(
+  agentStatus: AgentOverrideStatus,
+  userReason: string | undefined,
+): string {
+  const verdict = agentStatus === 'denied'
+    ? 'agent denied'
+    : agentStatus === 'needs_input'
+      ? 'agent needed input'
+      : 'agent review unfinished';
+  const reason = userReason?.trim();
+  return reason ? `Override: ${verdict}; user: ${reason}` : `Override: ${verdict}`;
+}
+
+// Mirrors browser-demo's `Agent ${status}: ${reason}` line that gets joined into
+// the note alongside the Override entry (main.ts:37951-37957). Returns
+// undefined when no review context exists, so composeNote can drop it.
+export function buildReviewLine(
+  agentStatus: AgentOverrideStatus,
+  verdictReason: string | undefined,
+): string {
+  const status = agentStatus === 'denied'
+    ? 'denied'
+    : agentStatus === 'needs_input'
+      ? 'needs input'
+      : 'review unfinished';
+  const reason = verdictReason?.trim();
+  return reason ? `Agent ${status}: ${reason}` : `Agent ${status}`;
 }
 
 // `/ask` — follow-up Q&A about the most recent /agent plan.
@@ -318,17 +429,23 @@ function renderPlan(plan: AgentPlan | null): void {
   console.log(divider());
 }
 
-async function queuePlan(options: GlobalOptions, plan: AgentPlan): Promise<unknown> {
+async function queuePlan(
+  options: GlobalOptions,
+  plan: AgentPlan,
+  overrideContext?: string | string[],
+): Promise<unknown> {
   const merged: AgentPlan = plan.plan ? { ...plan, ...plan.plan } : plan;
   const templateId = merged.templateId ?? '';
   const params = merged.parameters ?? {};
+  const baseNote = (params.note ?? merged.summary) as string | undefined;
+  const noteWithOverride = composeNote(baseNote, overrideContext);
 
   // Map the AI's templateId → bridge prepare endpoint.
   if (templateId === 'transfer-sol' || templateId === 'transfer_sol') {
     const body = removeUndefined({
       recipient: params.recipient as string | undefined,
       amountSol: (params.amountSol ?? params.amount) as string | undefined,
-      note: (params.note ?? merged.summary) as string | undefined,
+      note: noteWithOverride,
     });
     if (!body.recipient || !body.amountSol) {
       console.log(badge('Plan is missing recipient or amount. Use /new-send and copy the values from above.', 'warn'));
@@ -345,7 +462,7 @@ async function queuePlan(options: GlobalOptions, plan: AgentPlan): Promise<unkno
       token: params.token as string | undefined,
       recipient: params.recipient as string | undefined,
       amount: (params.amount ?? params.amountSpl) as string | undefined,
-      note: (params.note ?? merged.summary) as string | undefined,
+      note: noteWithOverride,
     });
     return bridgeRequest(options, '/bridge/action/prepare-transfer-spl', {
       method: 'POST',
@@ -359,7 +476,7 @@ async function queuePlan(options: GlobalOptions, plan: AgentPlan): Promise<unkno
       inputToken: params.inputToken as string | undefined,
       outputToken: params.outputToken as string | undefined,
       slippageBps: params.slippageBps as number | undefined,
-      note: (params.note ?? merged.summary) as string | undefined,
+      note: noteWithOverride,
     });
     return bridgeRequest(options, '/bridge/action/prepare-swap', {
       method: 'POST',
@@ -369,7 +486,12 @@ async function queuePlan(options: GlobalOptions, plan: AgentPlan): Promise<unkno
 
   if (templateId.startsWith('protocol-') || templateId.includes('connector') || templateId.includes('_')) {
     // Connector / blink action. Fall back to the generic connector endpoint.
+    // `summary` is its own field on this endpoint; the user's free-text `note`
+    // (params.note when present) plus any override-context lines flow through
+    // composeNote so an override receipt is preserved like the other paths.
     const kind = (merged.route ?? templateId).replace(/^protocol-/, '');
+    const connectorBaseNote = params.note as string | undefined;
+    const connectorNote = composeNote(connectorBaseNote, overrideContext);
     const { address, cluster } = await fetchWalletAddress(options);
     return bridgeRequest(options, '/bridge/connector/prepare-transaction', {
       method: 'POST',
@@ -379,12 +501,50 @@ async function queuePlan(options: GlobalOptions, plan: AgentPlan): Promise<unkno
         walletAddress: address,
         cluster,
         summary: merged.summary,
+        note: connectorNote,
       })),
     });
   }
 
   console.log(badge(`Don't know how to queue templateId "${templateId}" yet. Use /new-connector to drive it manually.`, 'warn'));
   return null;
+}
+
+// Joins a base note with one or more "override-context" pieces (review line,
+// override entry) into a single ≤500-char string. The bridge's `note` field
+// is hard-capped at 500 chars (see browser-demo main.ts:37957), so when the
+// combined string overflows we preserve the override block in full and trim
+// the base head with an ellipsis. Losing the user's typed note is acceptable;
+// losing the audit/override breadcrumb is not.
+export function composeNote(
+  baseNote: string | undefined,
+  override: string | Array<string | undefined> | undefined,
+): string | undefined {
+  const NOTE_LIMIT = 500;
+  const SEPARATOR = ' | ';
+
+  const base = baseNote?.trim() ?? '';
+  const overridePieces = (Array.isArray(override) ? override : [override])
+    .map((piece) => piece?.trim() ?? '')
+    .filter(Boolean);
+  const overridePart = overridePieces.join(SEPARATOR);
+
+  if (!base && !overridePart) return undefined;
+  if (!base) return overridePart.slice(0, NOTE_LIMIT);
+  if (!overridePart) return base.slice(0, NOTE_LIMIT);
+
+  const combined = `${base}${SEPARATOR}${overridePart}`;
+  if (combined.length <= NOTE_LIMIT) return combined;
+
+  // Combined overflows: keep override verbatim, ellipsize the base.
+  if (overridePart.length + SEPARATOR.length >= NOTE_LIMIT) {
+    return overridePart.slice(0, NOTE_LIMIT);
+  }
+  const headBudget = NOTE_LIMIT - overridePart.length - SEPARATOR.length;
+  const headTrim = base.length > headBudget
+    ? `${base.slice(0, Math.max(headBudget - 1, 0))}…`
+    : base;
+  return `${headTrim}${SEPARATOR}${overridePart}`;
 }
 
 async function resolveAiMode(options: GlobalOptions): Promise<string> {

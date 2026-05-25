@@ -26199,6 +26199,31 @@ button.danger:hover:not(:disabled) {
   font-size: 0.875rem;
   margin: 0.25rem 0;
 }
+.tauri-local-runtime-advanced {
+  margin-top: 0.75rem;
+  border-top: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+  padding-top: 0.75rem;
+}
+.tauri-local-runtime-advanced > summary {
+  cursor: pointer;
+  font-weight: 500;
+  padding: 0.5rem 0;
+  color: var(--text-muted, rgba(242, 245, 243, 0.7));
+  list-style: none;
+}
+.tauri-local-runtime-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+.tauri-local-runtime-advanced > summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 1em;
+  margin-right: 0.25em;
+  transition: transform 120ms ease;
+}
+.tauri-local-runtime-advanced[open] > summary::before {
+  transform: rotate(90deg);
+}
 .tauri-empty-wallets-hint {
   margin-top: 0.5rem;
   padding: 0.75rem;

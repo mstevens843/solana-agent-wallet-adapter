@@ -118,7 +118,11 @@ val localLaunchHosts = setOf("localhost", "127.0.0.1", "0.0.0.0", "::1")
 // local dev keeps loading the bundled `agentic.local` assets unchanged.
 val remoteWebUrlInput = propertyOrEnv("AGENTIC_ANDROID_REMOTE_WEB_URL")
     ?: propertyOrEnv("agenticRemoteWebUrl")
-val remoteWebUrl = (remoteWebUrlInput ?: if (isReleaseBuild) "https://agentic-signer.com" else "").trim()
+// Land the Android TWA on the interactive guided walkthrough so Solana dApp Store reviewers
+// see a Solana approval flow on first paint instead of the marketing root (which previously
+// triggered a "Limited In-App Functionality" rejection). Web visitors to agentic-signer.com
+// are unaffected — they still hit the marketing root.
+val remoteWebUrl = (remoteWebUrlInput ?: if (isReleaseBuild) "https://agentic-signer.com/demo" else "").trim()
 if (remoteWebUrl.isNotEmpty()) {
     val parsed = runCatching { uri(remoteWebUrl) }.getOrNull()
     val scheme = parsed?.scheme?.lowercase()

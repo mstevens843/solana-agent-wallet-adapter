@@ -5391,6 +5391,15 @@ function normalizeInitialRoute(): void {
     return;
   }
 
+  // Inside the Android TWA, the marketing root has no on-device value (it's hero copy +
+  // CLI install commands). If the WebView lands on `/` — e.g. via the bundled fallback
+  // when the remote shell fails — bounce to the guided demo so the user immediately
+  // sees an interactive Solana approval flow instead of a developer landing page.
+  if (normalizedPath === '/' && state.androidNativeEnvironment.isAndroidNative) {
+    window.history.replaceState({}, '', '/demo');
+    return;
+  }
+
   if (isAppRoute(normalizedPath) && window.location.pathname !== normalizedPath) {
     window.history.replaceState({}, '', normalizedPath);
   }
@@ -30187,7 +30196,15 @@ function hostedAiRequestOptions(options: { signal?: AbortSignal } = {}) {
     ...options,
     hostedFetch: cloudFetch,
     hostedOrigin: cloudApiOriginLabel(),
+    hostedUnauthorizedHint: desktopHostedUnauthorizedHint(),
   };
+}
+
+function desktopHostedUnauthorizedHint(): string {
+  if (!IS_TAURI_APP) return '';
+  const token = tauriNativeCloudSessionToken();
+  if (token && token.trim().length > 0) return '';
+  return 'Sign in to Agentic Cloud from Preferences → Workspace to use Hosted mode, or switch to Local Bridge / Device Agent in the AI mode picker.';
 }
 
 // Thrown when fetch() itself fails (DNS / TLS / connection-refused / CORS-preflight).
@@ -45503,10 +45520,17 @@ async function reconnectBridgeOnStartup(): Promise<void> {
 }
 
 function defaultAiMode(): AiSettings['mode'] {
+  const sessionToken = IS_TAURI_APP
+    ? tauriNativeCloudSessionToken()
+    : IS_ANDROID_APP
+      ? androidNativeCloudSessionToken()
+      : '';
   return defaultAiModeForSurface({
     isAndroidApp: IS_ANDROID_APP,
     androidDeviceAgentRuntimeEnabled: ANDROID_DEVICE_AGENT_ENABLED,
     isLocalBrowserOrigin: isLocalBrowserOrigin(),
+    isTauriApp: IS_TAURI_APP,
+    hasCloudSession: Boolean(sessionToken && sessionToken.trim().length > 0),
   }) as AiSettings['mode'];
 }
 

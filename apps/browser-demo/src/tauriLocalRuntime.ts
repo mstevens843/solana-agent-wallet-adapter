@@ -80,6 +80,20 @@ let mountedContainer: HTMLElement | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let visibilityHandlerInstalled = false;
 
+export function __resetTauriLocalRuntimePanelStateForTests(): void {
+  state.loaded = false;
+  state.loading = false;
+  state.saving = false;
+  state.draft = {};
+  state.saved = {};
+  state.notice = null;
+  state.needsRestart = false;
+  state.bridge = null;
+  state.bridgeBusy = null;
+  mountedContainer = null;
+  stopPolling();
+}
+
 export function isTauriLocalRuntimeAvailable(): boolean {
   return detectTauriNativeEnvironment().isTauriNative;
 }
@@ -254,6 +268,8 @@ function render(): void {
     return;
   }
   const dirty = FIELDS.some((field) => (state.draft[field.key] ?? '').trim() !== (state.saved[field.key] ?? '').trim());
+  const hasAnyConfigured = FIELDS.some((field) => (state.saved[field.key] ?? '').trim() !== '');
+  const advancedOpenAttr = hasAnyConfigured ? ' open' : '';
   const noticeHtml = state.notice
     ? `<p class="tauri-local-runtime-notice tone-${state.notice.tone}" role="status" aria-live="polite">${escapeHtml(state.notice.message)}</p>`
     : '';
@@ -287,16 +303,19 @@ function render(): void {
     <section class="connector-keys-panel tauri-local-runtime-panel" aria-labelledby="tauri-local-runtime-title">
       <header>
         <h3 id="tauri-local-runtime-title">Local runtime keys (Desktop)</h3>
-        <p>Keys saved here are written to the local bridge's .env file. They never leave your machine. Use cloud preferences for keys you want to sync across devices.</p>
+        <p>All fields below are optional. Agentic Desktop picks the right agent automatically — Hosted (when signed in to Agentic Cloud) or on-device — and both run policy gates against the operator's market-data APIs. Fill in your own keys only if you want to run the agent on the local bridge (offline / private mode). Keys saved here are written to the local bridge's .env file and never leave your machine.</p>
       </header>
       ${state.loading ? '<p class="connector-keys-status">Loading…</p>' : ''}
       ${noticeHtml}
       ${restartPromptHtml}
-      <div class="connector-keys-grid">${rowsHtml}</div>
-      <div class="tauri-local-runtime-actions">
-        <button type="button" data-tauri-runtime-action="save" ${state.saving || !dirty ? 'disabled' : ''}>${state.saving ? 'Saving…' : 'Save'}</button>
-        <button type="button" data-tauri-runtime-action="reload" ${state.loading || state.saving ? 'disabled' : ''}>Reload from disk</button>
-      </div>
+      <details class="tauri-local-runtime-advanced"${advancedOpenAttr}>
+        <summary>Advanced: run agent locally (your own API keys)</summary>
+        <div class="connector-keys-grid">${rowsHtml}</div>
+        <div class="tauri-local-runtime-actions">
+          <button type="button" data-tauri-runtime-action="save" ${state.saving || !dirty ? 'disabled' : ''}>${state.saving ? 'Saving…' : 'Save'}</button>
+          <button type="button" data-tauri-runtime-action="reload" ${state.loading || state.saving ? 'disabled' : ''}>Reload from disk</button>
+        </div>
+      </details>
     </section>
   `;
   attachEventHandlers();

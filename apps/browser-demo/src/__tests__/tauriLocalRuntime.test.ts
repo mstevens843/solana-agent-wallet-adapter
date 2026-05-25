@@ -59,6 +59,7 @@ beforeAll(() => {
 
 import {
   TAURI_BRIDGE_STATUS_EVENT,
+  __resetTauriLocalRuntimePanelStateForTests,
   mountTauriLocalRuntimePanel,
 } from '../tauriLocalRuntime.js';
 import { __resetTauriNativeTokenCacheForTests } from '../tauriNative.js';
@@ -97,6 +98,7 @@ function fakeBridgeStatus(overrides: Partial<Record<string, unknown>> = {}) {
 
 beforeEach(() => {
   __resetTauriNativeTokenCacheForTests();
+  __resetTauriLocalRuntimePanelStateForTests();
   installTauri(vi.fn());
 });
 
@@ -162,5 +164,62 @@ describe('mountTauriLocalRuntimePanel', () => {
       mountTauriLocalRuntimePanel('panel-idempotent');
       mountTauriLocalRuntimePanel('panel-idempotent');
     }).not.toThrow();
+  });
+
+  it('renders header copy stating the fields are optional', async () => {
+    const invoke = vi.fn().mockImplementation(async (cmd: string) => {
+      if (cmd === 'bridge_status') return fakeBridgeStatus();
+      if (cmd === 'read_env_keys') return {};
+      return undefined;
+    });
+    installTauri(invoke);
+    const container = (document as any).getElementById('panel-header-copy');
+    mountTauriLocalRuntimePanel('panel-header-copy');
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(container.innerHTML).toContain('All fields below are optional');
+  });
+
+  it('renders the local runtime keys grid inside the advanced details wrapper', async () => {
+    const invoke = vi.fn().mockImplementation(async (cmd: string) => {
+      if (cmd === 'bridge_status') return fakeBridgeStatus();
+      if (cmd === 'read_env_keys') return {};
+      return undefined;
+    });
+    installTauri(invoke);
+    const container = (document as any).getElementById('panel-advanced-wrapper');
+    mountTauriLocalRuntimePanel('panel-advanced-wrapper');
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(container.innerHTML).toContain('<details class="tauri-local-runtime-advanced"');
+    expect(container.innerHTML).toContain('Advanced: run agent locally');
+  });
+
+  it('keeps the advanced details collapsed when no values are saved', async () => {
+    const invoke = vi.fn().mockImplementation(async (cmd: string) => {
+      if (cmd === 'bridge_status') return fakeBridgeStatus();
+      if (cmd === 'read_env_keys') return {};
+      return undefined;
+    });
+    installTauri(invoke);
+    const container = (document as any).getElementById('panel-collapsed');
+    mountTauriLocalRuntimePanel('panel-collapsed');
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(container.innerHTML).not.toMatch(/<details class="tauri-local-runtime-advanced"\s+open\b/);
+  });
+
+  it('opens the advanced details when at least one local runtime key is saved', async () => {
+    const invoke = vi.fn().mockImplementation(async (cmd: string) => {
+      if (cmd === 'bridge_status') return fakeBridgeStatus();
+      if (cmd === 'read_env_keys') return { HELIUS_API_KEY: 'helius-test' };
+      return undefined;
+    });
+    installTauri(invoke);
+    const container = (document as any).getElementById('panel-open');
+    mountTauriLocalRuntimePanel('panel-open');
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(container.innerHTML).toMatch(/<details class="tauri-local-runtime-advanced"\s+open\b/);
   });
 });
