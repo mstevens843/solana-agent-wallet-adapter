@@ -2510,6 +2510,7 @@ interface DemoState {
   notifiedRecords: Record<string, string>;
   balances: BalanceView | null;
   preparedActions: PreparedAction[];
+  preparedActionsInitialized: boolean;
   materializedActions: PreparedAction[];
   recurringPayments: RecurringPayment[];
   receipts: ActionReceipt[];
@@ -3419,6 +3420,7 @@ const state: DemoState = {
   notifiedRecords: {},
   balances: null,
   preparedActions: initialBrowserWorkflow.preparedActions,
+  preparedActionsInitialized: false,
   materializedActions: initialBrowserWorkflow.preparedActions,
   recurringPayments: initialBrowserWorkflow.recurringPayments,
   receipts: initialBrowserWorkflow.receipts,
@@ -4744,6 +4746,14 @@ interface PairingDeeplinkMetadata {
 
 const QR_CONNECT_SESSION_STORAGE_PREFIX = 'agentic-qr-connect-session:';
 const QR_CONNECT_PENDING_STORAGE_PREFIX = 'agentic-qr-connect-pending:';
+// Pointer-by-pairing fallback so we can still match the wallet's signed
+// response when the wallet drops our `requestId` query param during the
+// redirect_link round-trip. Observed on Solflare's Android signTransaction
+// callback (other params survive, requestId — the last one in our URL —
+// gets dropped); fallback covers the same risk on any future wallet that
+// rebuilds the redirect URL instead of appending to it.
+const QR_CONNECT_ACTIVE_SIGN_STORAGE_PREFIX = 'agentic-qr-connect-active-sign:';
+const QR_CONNECT_ACTIVE_SIGN_TTL_MS = 10 * 60 * 1000;
 
 const qrConnect: QrConnectRuntime = {
   mode: 'processing',
@@ -4798,6 +4808,12 @@ async function handleQrConnectRoute(href: string): Promise<void> {
       return;
     }
     if (parsed.phase === 'sign') {
+      if (!parsed.requestId) {
+        console.warn(
+          '[qr-connect] redirect missing requestId — falling back to active-sign pointer',
+          { queryKeys: parsed.queryKeys, pairing: parsed.pairing, wallet: parsed.wallet },
+        );
+      }
       await handleQrConnectSignCallback(href, parsed.wallet, parsed.pairing, parsed.requestId);
       return;
     }
@@ -4826,10 +4842,15 @@ async function handleQrConnectWalletError(
   requestId: string,
   error: ProtocolErrorPayload,
 ): Promise<void> {
-  if (requestId) {
-    await postPairingResult(pairing, requestId, rejectedApprovalFromWalletError(requestId, error));
-    clearQrConnectPendingRequest(pairing, requestId);
+  // Same redirect-strip fallback as the success path — wallets that drop
+  // requestId on success drop it on rejection too. Pick the active pointer
+  // so the desktop still sees a rejection event for the right request.
+  const effectiveRequestId = requestId || loadQrConnectActiveSign(pairing) || '';
+  if (effectiveRequestId) {
+    await postPairingResult(pairing, effectiveRequestId, rejectedApprovalFromWalletError(effectiveRequestId, error));
+    clearQrConnectPendingRequest(pairing, effectiveRequestId);
   }
+  clearQrConnectActiveSign(pairing);
   const session = loadQrConnectSession(pairing);
   scrubQrConnectUrl(session?.wallet ?? qrConnect.wallet, pairing);
   if (session) {
@@ -4875,7 +4896,12 @@ async function handleQrConnectSignCallback(
   pairing: string,
   requestId: string,
 ): Promise<void> {
-  if (!requestId) {
+  // Some wallets (notably Solflare on Android) drop our `requestId` query
+  // param from the redirect_link round-trip. Fall back to the pointer we
+  // wrote when we opened the wallet — it's keyed by pairing alone and
+  // survives the redirect even when query params don't.
+  const effectiveRequestId = requestId || loadQrConnectActiveSign(pairing) || '';
+  if (!effectiveRequestId) {
     throw new ProtocolError('invalid_request', 'Wallet signing callback is missing requestId.');
   }
   const session = loadQrConnectSession(pairing);
@@ -4883,7 +4909,7 @@ async function handleQrConnectSignCallback(
     throw new ProtocolError('unauthorized', 'This phone relay session expired. Scan the desktop QR again.');
   }
   setQrConnectProcessing(wallet, pairing, 'Processing wallet approval.', 'Sending the signed result back to the desktop app.');
-  const request = loadQrConnectPendingRequest(pairing, requestId);
+  const request = loadQrConnectPendingRequest(pairing, effectiveRequestId);
   if (!request) {
     throw new ProtocolError('invalid_request', 'No matching desktop signing request was found on this phone.');
   }
@@ -4894,8 +4920,9 @@ async function handleQrConnectSignCallback(
     payload,
     sendRawTransaction: async (transaction) => sendQrConnectRawTransaction(session.cluster, transaction),
   });
-  await postPairingResult(pairing, requestId, { ...approval, requestId });
-  clearQrConnectPendingRequest(pairing, requestId);
+  await postPairingResult(pairing, effectiveRequestId, { ...approval, requestId: effectiveRequestId });
+  clearQrConnectPendingRequest(pairing, effectiveRequestId);
+  clearQrConnectActiveSign(pairing);
   scrubQrConnectUrl(wallet, pairing);
   startQrConnectRelay(session, 'relay-active');
 }
@@ -4999,6 +5026,7 @@ async function openQrConnectWalletForRequest(
 ): Promise<void> {
   try {
     saveQrConnectPendingRequest(session.pairing, requestId, request);
+    saveQrConnectActiveSign(session.pairing, requestId);
     const redirect = new URL('/qr-connect', window.location.origin);
     redirect.searchParams.set('wallet', session.wallet);
     redirect.searchParams.set('pairing', session.pairing);
@@ -5025,6 +5053,7 @@ async function openQrConnectWalletForRequest(
       deeplinkApprovalResourceFromError(requestId, err),
     );
     clearQrConnectPendingRequest(session.pairing, requestId);
+    clearQrConnectActiveSign(session.pairing);
     startQrConnectRelay(session, 'relay-active');
   }
 }
@@ -5120,6 +5149,40 @@ function qrConnectSessionStorageKey(pairing: string): string {
 
 function qrConnectPendingStorageKey(pairing: string, requestId: string): string {
   return `${QR_CONNECT_PENDING_STORAGE_PREFIX}${pairing}:${requestId}`;
+}
+
+function qrConnectActiveSignStorageKey(pairing: string): string {
+  return `${QR_CONNECT_ACTIVE_SIGN_STORAGE_PREFIX}${pairing}`;
+}
+
+function saveQrConnectActiveSign(pairing: string, requestId: string): void {
+  window.sessionStorage.setItem(
+    qrConnectActiveSignStorageKey(pairing),
+    JSON.stringify({ requestId, ts: Date.now() }),
+  );
+}
+
+function loadQrConnectActiveSign(pairing: string): string | null {
+  const raw = window.sessionStorage.getItem(qrConnectActiveSignStorageKey(pairing));
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as { requestId?: unknown; ts?: unknown };
+    if (typeof parsed.requestId !== 'string') return null;
+    const requestId = parsed.requestId.trim();
+    if (!requestId) return null;
+    const ts = typeof parsed.ts === 'number' ? parsed.ts : 0;
+    if (Date.now() - ts > QR_CONNECT_ACTIVE_SIGN_TTL_MS) {
+      window.sessionStorage.removeItem(qrConnectActiveSignStorageKey(pairing));
+      return null;
+    }
+    return requestId;
+  } catch {
+    return null;
+  }
+}
+
+function clearQrConnectActiveSign(pairing: string): void {
+  window.sessionStorage.removeItem(qrConnectActiveSignStorageKey(pairing));
 }
 
 function scrubQrConnectUrl(wallet: EncryptedDeeplinkWalletId | null, pairing: string): void {
@@ -8018,6 +8081,19 @@ function cliApproveView(): string {
   }
   const action = state.preparedActions.find((entry) => entry.id === actionId);
   if (!action) {
+    if (!state.preparedActionsInitialized) {
+      const surfaceLabel = cliView?.surface === 'desktop' ? 'desktop app' : 'CLI';
+      return cliFocusedShell({
+        title: 'Loading approval…',
+        body: `
+          <div class="cli-focused-busy" role="status" aria-live="polite">
+            <span class="cli-focused-busy-dot" aria-hidden="true"></span>
+            <p>Fetching the prepared action from the bridge…</p>
+          </div>
+        `,
+        footer: `<p class="cli-focused-note">Keep this page open — the ${surfaceLabel} is sending the request.</p>`,
+      });
+    }
     return cliErrorView(
       'Action not found',
       `No prepared action with id "${actionId}". Return to the terminal and re-run /approve.`,
@@ -8033,9 +8109,28 @@ function cliApproveView(): string {
   }
   const walletLabel = state.selectedWalletName || 'wallet';
   const txid = action.txid ?? action.transactionHash ?? null;
+  const explorerHref = txid ? explorerUrl(txid, action.cluster) : '';
   const explorerLink = txid
-    ? `<a class="cli-focused-explorer-link" href="${escapeHtml(explorerUrl(txid, action.cluster))}" target="_blank" rel="noopener">View on Solscan ${escapeHtml(short(txid))} ↗</a>`
+    ? `<a class="cli-focused-explorer-link" href="${escapeHtml(explorerHref)}" target="_blank" rel="noopener">View on Solscan ${escapeHtml(short(txid))} ↗</a>`
     : '';
+
+  const receiptRowsMarkup = (): string => {
+    const rows: Array<{ label: string; value: string; href?: string }> = [];
+    rows.push({ label: 'Action', value: action.id });
+    if (txid) rows.push({ label: 'Txid', value: short(txid) });
+    if (txid && explorerHref) rows.push({ label: 'Solscan', value: explorerHref, href: explorerHref });
+    const statusLabel = action.txStatus ? `${action.status} (${action.txStatus})` : action.status;
+    rows.push({ label: 'Status', value: statusLabel });
+    const inner = rows
+      .map((row) => {
+        const valueMarkup = row.href
+          ? `<a class="cli-receipt-link" href="${escapeHtml(row.href)}" target="_blank" rel="noopener">${escapeHtml(row.value)} ↗</a>`
+          : escapeHtml(row.value);
+        return `<div class="cli-receipt-row"><span class="cli-receipt-key">${escapeHtml(row.label)}</span><span class="cli-receipt-val">${valueMarkup}</span></div>`;
+      })
+      .join('');
+    return `<div class="cli-receipt">${inner}</div>`;
+  };
 
   if (action.status === 'approval_pending') {
     return cliFocusedShell({
@@ -8052,16 +8147,16 @@ function cliApproveView(): string {
   }
   if (action.status === 'approved' && action.txStatus === 'pending') {
     return cliFocusedShell({
-      title: 'Submitted — confirming on chain',
+      title: 'Approval submitted',
       subtitle: action.summary,
       body: `
         <div class="cli-focused-busy" role="status" aria-live="polite">
           <span class="cli-focused-busy-dot" aria-hidden="true"></span>
-          <p>Transaction broadcast. Waiting for confirmation…</p>
+          <p>Transaction broadcast. Confirming on chain…</p>
         </div>
-        ${explorerLink ? `<div class="cli-focused-explorer-row">${explorerLink}</div>` : ''}
+        ${receiptRowsMarkup()}
       `,
-      footer: `<p class="cli-focused-note">You can return to the terminal — confirmation usually lands within ~30 seconds.</p>`,
+      footer: cliReturnFooter(),
     });
   }
   if (action.status === 'approved' && action.txStatus === 'failed') {
@@ -8072,6 +8167,7 @@ function cliApproveView(): string {
         <div class="cli-focused-error" role="alert">
           <p><strong>The transaction was signed but failed to confirm.</strong>${action.txError ? ` ${escapeHtml(action.txError)}` : ''}</p>
         </div>
+        ${receiptRowsMarkup()}
         ${explorerLink ? `<div class="cli-focused-explorer-row">${explorerLink}</div>` : ''}
       `,
       footer: cliReturnFooter(),
@@ -8079,14 +8175,14 @@ function cliApproveView(): string {
   }
   if (action.status === 'approved') {
     return cliFocusedShell({
-      title: 'Confirmed',
+      title: 'Approval submitted',
       subtitle: action.summary,
       body: `
         <div class="cli-focused-success signature-state complete" role="status" aria-live="polite">
           <span class="cli-focused-tick" aria-hidden="true">✓</span>
-          <p>Transaction confirmed on chain.</p>
+          <p>On-chain: confirmed. The item is in /done.</p>
         </div>
-        ${explorerLink ? `<div class="cli-focused-explorer-row">${explorerLink}</div>` : ''}
+        ${receiptRowsMarkup()}
       `,
       footer: cliReturnFooter(),
     });
@@ -24815,7 +24911,7 @@ async function runConnect(): Promise<void> {
         pushToast(
           'error',
           'Bridge rejected the connection',
-          'The desktop\'s bridge token did not accept this wallet. Restart the local runtime and try again.',
+          `${message}. Restart the local runtime and try again.`,
         );
         return;
       }
@@ -38251,6 +38347,7 @@ async function refreshInboxData(): Promise<void> {
     browserWorkflow.recurringPayments,
   );
   state.receipts = mergeActionReceipts(receiptsResponse.receipts ?? [], browserWorkflow.receipts);
+  state.preparedActionsInitialized = true;
 }
 
 async function refreshHealth(): Promise<void> {
@@ -39354,10 +39451,12 @@ async function pollBridge(): Promise<void> {
       return;
     }
     const now = Date.now();
+    const onCliApproveView = cliView?.intent === 'approve';
+    const passiveThrottleMs = onCliApproveView ? 1500 : 5000;
     if (
       activeWorkflowMode() === 'local-bridge' &&
-      (state.activeTab === 'inbox' || state.activeTab === 'schedule') &&
-      now - lastPassiveInboxRefresh > 5000
+      (state.activeTab === 'inbox' || state.activeTab === 'schedule' || onCliApproveView) &&
+      now - lastPassiveInboxRefresh > passiveThrottleMs
     ) {
       lastPassiveInboxRefresh = now;
       await refreshInboxData().catch(() => undefined);

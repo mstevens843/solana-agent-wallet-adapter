@@ -258,20 +258,55 @@ export async function editor(opts: {
   return inquirerEditor(built);
 }
 
-// Multi-line free text. Falls back to plain input + 'press Enter twice to end'
-// when @inquirer/prompts editor isn't usable (no $EDITOR set, no TTY).
+// Free-text prompt that handles single- or multi-line input without requiring
+// $EDITOR. Prints the message on its own line and reads from a `> ` prefix on
+// the next line. Single Enter submits. To continue on a new line, end the
+// current line with `\` (shell-style continuation). Empty Enter returns ''.
 export async function multilineInput(opts: {
   message: string;
   default?: string;
 }): Promise<string> {
-  if (process.stdin.isTTY && process.env.EDITOR) {
-    return editor(opts);
+  void opts.default;
+  process.stdout.write(`${ANSI.green}?${ANSI.reset} ${ANSI.bold}${opts.message}${ANSI.reset}:\n`);
+
+  if (!process.stdin.isTTY) {
+    const chunks: string[] = [];
+    process.stdin.setEncoding('utf8');
+    for await (const chunk of process.stdin) chunks.push(chunk as string);
+    return chunks.join('').replace(/\n$/, '');
   }
-  const built: Parameters<typeof inquirerInput>[0] = {
-    message: `${opts.message} (single line; set $EDITOR for multi-line)`,
-  };
-  if (opts.default !== undefined) built.default = opts.default;
-  return inquirerInput(built);
+
+  return new Promise<string>((resolve, reject) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+    const lines: string[] = [];
+    let settled = false;
+    const settle = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      rl.close();
+      fn();
+    };
+
+    rl.on('SIGINT', () => settle(() => {
+      const err = new Error('Prompt aborted.');
+      err.name = 'AbortPromptError';
+      reject(err);
+    }));
+
+    const askLine = (): void => {
+      rl.question(`${ANSI.gray}> ${ANSI.reset}`, (answer) => {
+        if (settled) return;
+        if (answer.endsWith('\\')) {
+          lines.push(answer.slice(0, -1));
+          askLine();
+        } else {
+          lines.push(answer);
+          settle(() => resolve(lines.join('\n')));
+        }
+      });
+    };
+    askLine();
+  });
 }
 
 // `@inquirer/prompts` throws an `ExitPromptError` when the user hits Ctrl+C.

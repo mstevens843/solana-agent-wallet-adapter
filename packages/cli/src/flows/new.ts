@@ -1,19 +1,21 @@
+import type { AgentPlan } from '@solana-agent-wallet-adapter/workflow';
+
 import type { GlobalOptions } from '../shared/types.js';
 import { bridgeRequest } from '../http/index.js';
 import { select, badge, confirm, spinner, header, kv, divider } from '../tui/index.js';
 import { promptSendTokensForm, type SendTokensFormOptions } from '../forms/sendTokens.js';
 import { promptSwapForm } from '../forms/swap.js';
+import { formatSlippagePercent } from '../forms/validators.js';
 import { promptConnectorForm } from '../forms/connectorForm.js';
 import { listConnectors, listActions, humanizeActionKind, type ConnectorAction, type ActionTier } from '../forms/connectorMeta.js';
-import { maybeEnhanceWithAi, maybeApplyAdvice } from '../forms/aiEnhance.js';
-import { verdictBlocksQueue } from '../forms/policyBundleRender.js';
+import { maybeReviewWithAgent, composeNoteWithReview, type AgentReviewOutcome } from '../forms/agentReview.js';
 import { fetchWalletAddress, removeUndefined, listInstalledConnectorKeys } from './_shared.js';
 import { runConnectorsMenu } from './connectors.js';
 import { connectorSecretsForRequest, enabledConnectorIds, loadConnectorState } from './connectorState.js';
 import { runRepeatMenu } from './repeat.js';
 import { confirmHighStakes, estimateFromDraft } from './safetyGate.js';
 import { tryHostedSwapOrder } from '../swap/hosted.js';
-import { prepareAndPromptApproval } from './newApproval.js';
+import { prepareAndPromptApproval, type PrepareAndPromptApprovalOptions } from './newApproval.js';
 
 export type NewRequestMode = 'one-time' | 'repeat';
 export type NewSubcommand = 'tokens' | 'swap' | 'connector';
@@ -48,34 +50,31 @@ export async function runOneTimeMenu(options: GlobalOptions): Promise<void> {
 // Unified "Send Tokens" flow. The user picks the token (SOL or any SPL) in the
 // form; we route to the native SOL endpoint when token is SOL, else to SPL.
 export async function runNewTokens(options: GlobalOptions, formOptions: SendTokensFormOptions = {}): Promise<void> {
-  let draft = await promptSendTokensForm(options, {}, formOptions);
+  const draft = await promptSendTokensForm(options, {}, formOptions);
   if (!(await confirmSelfTransfer(options, draft.recipient, draft.token))) return;
   const description = `Send ${draft.amount} ${draft.token} to ${draft.recipient}${draft.note ? ` — ${draft.note}` : ''}`;
-  const enhanced = await maybeEnhanceWithAi(options, description);
-  if (verdictBlocksQueue(enhanced?.verdict)) {
-    console.log(badge('AI denied this plan — not queueing.', 'err'));
-    return;
-  }
-  const advice = enhanced?.advice ?? null;
-  draft = await maybeApplyAdvice(draft, advice, (p) => ({
-    token: pickString(p, ['token', 'symbol']),
-    recipient: pickString(p, ['recipient']),
-    amount: pickString(p, ['amount', 'amountSol']),
-    note: pickString(p, ['note', 'memo']),
-  }) as Partial<typeof draft>);
-  const ok = await confirmHighStakes(options, description, estimateFromDraft(draft), advice);
+  const ok = await confirmHighStakes(options, description, estimateFromDraft(draft), null);
   if (!ok) {
     console.log(badge('Aborted.', 'muted'));
     return;
   }
+
   const isNativeSol = draft.token.trim().toUpperCase() === 'SOL';
+  const plan = buildTransferAgentPlan(draft, isNativeSol);
+  const review = await maybeReviewWithAgent(options, plan);
+  if (review.choice === 'delete') {
+    console.log(badge('Discarded.', 'muted'));
+    return;
+  }
+
+  const note = noteForReview(draft.note, review);
   await prepareAndPromptApproval(options, 'Send Tokens', () => isNativeSol
     ? bridgeRequest(options, '/bridge/action/prepare-transfer-sol', {
         method: 'POST',
         body: JSON.stringify(removeUndefined({
           recipient: draft.recipient,
           amountSol: draft.amount,
-          note: draft.note,
+          note,
         })),
       })
     : bridgeRequest(options, '/bridge/action/prepare-transfer-spl', {
@@ -84,9 +83,9 @@ export async function runNewTokens(options: GlobalOptions, formOptions: SendToke
           token: draft.token,
           recipient: draft.recipient,
           amount: draft.amount,
-          note: draft.note,
+          note,
         })),
-      }));
+      }), reviewToApprovalOpts(review));
 }
 
 // Backward-compat aliases for /new-send (SOL default) and /new-spl (USDC default).
@@ -99,53 +98,148 @@ export async function runNewSpl(options: GlobalOptions): Promise<void> {
 }
 
 export async function runNewSwap(options: GlobalOptions): Promise<void> {
-  let draft = await promptSwapForm(options);
+  const draft = await promptSwapForm(options);
   if (draft.inputToken.trim().toUpperCase() === draft.outputToken.trim().toUpperCase()) {
     console.log(badge(`Input and output token are both ${draft.inputToken} — swap would be a no-op. Aborting.`, 'err'));
     return;
   }
   const quote = await previewSwapQuote(options, draft);
   if (quote === 'aborted') return;
-  const description = `Swap ${draft.amount} ${draft.inputToken} → ${draft.outputToken}${draft.slippageBps !== undefined ? ` (slippage ${draft.slippageBps}bps)` : ''}`;
-  const enhanced = await maybeEnhanceWithAi(options, description);
-  if (verdictBlocksQueue(enhanced?.verdict)) {
-    console.log(badge('AI denied this plan — not queueing.', 'err'));
-    return;
-  }
-  const advice = enhanced?.advice ?? null;
-  draft = await maybeApplyAdvice(draft, advice, (p) => ({
-    amount: pickString(p, ['amount', 'inputAmount']),
-    inputToken: pickString(p, ['inputToken', 'fromToken']),
-    outputToken: pickString(p, ['outputToken', 'toToken']),
-    slippageBps: pickNumber(p, ['slippageBps']),
-    note: pickString(p, ['note', 'memo']),
-  }) as Partial<typeof draft>);
-  const ok = await confirmHighStakes(options, description, estimateFromDraft(draft), advice);
+  const description = `Swap ${draft.amount} ${draft.inputToken} → ${draft.outputToken}${draft.slippageBps !== undefined ? ` (slippage ${formatSlippagePercent(draft.slippageBps)})` : ''}`;
+  const ok = await confirmHighStakes(options, description, estimateFromDraft(draft), null);
   if (!ok) {
     console.log(badge('Aborted.', 'muted'));
     return;
   }
+
+  const plan = buildSwapAgentPlan(draft);
+  const review = await maybeReviewWithAgent(options, plan);
+  if (review.choice === 'delete') {
+    console.log(badge('Discarded.', 'muted'));
+    return;
+  }
+
+  const note = noteForReview(draft.note, review);
   await prepareAndPromptApproval(options, 'Swap', () => bridgeRequest(options, '/bridge/action/prepare-swap', {
     method: 'POST',
-    body: JSON.stringify(removeUndefined({ ...draft })),
-  }));
+    body: JSON.stringify(removeUndefined({ ...draft, note })),
+  }), reviewToApprovalOpts(review));
 }
 
-function pickString(p: Record<string, unknown>, keys: string[]): string | undefined {
-  for (const k of keys) {
-    const v = p[k];
-    if (typeof v === 'string' && v.trim().length > 0) return v;
-  }
-  return undefined;
+// Build an AgentPlan from each /new draft. The `source: 'template'` field is
+// critical: the post-LLM bypass-claim guardrail in workflow only fires when
+// source === 'ai', so using 'template' (the user drafted this manually) lets
+// the agent review the draft without tripping the false-positive that broke
+// the old maybeEnhanceWithAi flow. See plan file for context.
+function buildSwapAgentPlan(draft: { amount: string; inputToken: string; outputToken: string; slippageBps?: number; note?: string }): AgentPlan {
+  const slippage = draft.slippageBps ?? 50;
+  return {
+    source: 'template',
+    category: 'trading',
+    actionType: 'swap',
+    templateTitle: 'Swap tokens',
+    intent: `Swap ${draft.amount} ${draft.inputToken} to ${draft.outputToken}`,
+    route: `${draft.inputToken} → ${draft.outputToken}, max slippage ${formatSlippagePercent(slippage)}`,
+    risk: 'Medium',
+    approval: 'Wallet approval required before signing',
+    parameters: {
+      inputToken: draft.inputToken,
+      outputToken: draft.outputToken,
+      amount: draft.amount,
+      slippageBps: String(slippage),
+    },
+    fields: [
+      { label: 'Input token', value: draft.inputToken },
+      { label: 'Output token', value: draft.outputToken },
+      { label: 'Amount', value: draft.amount },
+      { label: 'Slippage', value: formatSlippagePercent(slippage) },
+    ],
+    safeguards: ['Wallet approval required before signing.'],
+    userNotes: draft.note ?? '',
+  };
 }
 
-function pickNumber(p: Record<string, unknown>, keys: string[]): number | undefined {
-  for (const k of keys) {
-    const v = p[k];
-    if (typeof v === 'number' && Number.isFinite(v)) return v;
-    if (typeof v === 'string' && /^-?\d+$/.test(v.trim())) return Number(v);
+function buildTransferAgentPlan(
+  draft: { amount: string; token: string; recipient: string; note?: string },
+  isNativeSol: boolean,
+): AgentPlan {
+  const actionType = isNativeSol ? 'transfer_sol' : 'transfer_spl';
+  return {
+    source: 'template',
+    category: 'payments',
+    actionType,
+    templateTitle: isNativeSol ? 'Send SOL' : `Send ${draft.token}`,
+    intent: `Send ${draft.amount} ${draft.token} to ${draft.recipient}`,
+    route: `${draft.token} → ${draft.recipient}`,
+    risk: 'Medium',
+    approval: 'Wallet approval required before signing',
+    parameters: {
+      token: draft.token,
+      recipient: draft.recipient,
+      amount: draft.amount,
+    },
+    fields: [
+      { label: 'Token', value: draft.token },
+      { label: 'Recipient', value: draft.recipient },
+      { label: 'Amount', value: draft.amount },
+    ],
+    safeguards: ['Wallet approval required before signing.'],
+    userNotes: draft.note ?? '',
+  };
+}
+
+function buildConnectorAgentPlan(
+  connectorId: string,
+  actionKind: string,
+  draft: { summary: string; params: Record<string, unknown>; reason?: string; note?: string },
+): AgentPlan {
+  const parameters: Record<string, string> = {};
+  const fields: AgentPlan['fields'] = [];
+  for (const [key, raw] of Object.entries(draft.params)) {
+    if (raw === undefined || raw === null) continue;
+    const value = typeof raw === 'string' ? raw : typeof raw === 'number' || typeof raw === 'boolean' ? String(raw) : JSON.stringify(raw);
+    parameters[key] = value;
+    fields.push({ label: humanizeLabel(key), value });
   }
-  return undefined;
+  return {
+    source: 'template',
+    category: 'connector',
+    actionType: actionKind,
+    templateTitle: draft.summary || `${connectorId}: ${actionKind}`,
+    intent: draft.summary || `${connectorId}: ${actionKind}`,
+    route: `${connectorId} → ${actionKind}`,
+    risk: 'Medium',
+    approval: 'Wallet approval required before signing',
+    parameters,
+    fields,
+    safeguards: ['Wallet approval required before signing.'],
+    userNotes: [draft.reason, draft.note].filter((p): p is string => Boolean(p?.trim())).join('\n'),
+  };
+}
+
+function humanizeLabel(key: string): string {
+  const spaced = key.replace(/[_-]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2');
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
+// Compose the prepared-action note. When the agent reviewed and the user
+// chose Send-anyway despite a deny/needs_input, append the override line so
+// the audit trail mirrors the /agent flow.
+function noteForReview(baseNote: string | undefined, review: AgentReviewOutcome): string | undefined {
+  if (!review.reviewed) return baseNote?.trim() || undefined;
+  const decision = review.decision ?? '';
+  const isOverride = review.choice === 'send' && (decision === 'deny' || decision === 'needs_input');
+  const overrideLine = isOverride
+    ? `Override: ${decision === 'deny' ? 'agent denied' : 'agent needed input'}`
+    : undefined;
+  return composeNoteWithReview(baseNote, review.reviewSummary, overrideLine);
+}
+
+function reviewToApprovalOpts(review: AgentReviewOutcome): PrepareAndPromptApprovalOptions {
+  if (!review.reviewed) return {};
+  if (review.choice === 'save') return { skipApprovalPrompt: true };
+  if (review.choice === 'send') return { autoApprove: true };
+  return {};
 }
 
 // Standalone preview-only flow: form -> quote -> done. Used by /swap-quote.
@@ -346,20 +440,22 @@ function tierBadge(tier: ActionTier): string {
 async function runConnectorWrite(options: GlobalOptions, connectorId: string, action: ConnectorAction): Promise<void> {
   const draft = await promptConnectorForm(connectorId, action.actionKind, options);
   const description = `${draft.summary} — params: ${JSON.stringify(draft.params)}`;
-  const enhanced = await maybeEnhanceWithAi(options, description);
-  if (verdictBlocksQueue(enhanced?.verdict)) {
-    console.log(badge('AI denied this plan — not queueing.', 'err'));
-    return;
-  }
-  const advice = enhanced?.advice ?? null;
-  const ok = await confirmHighStakes(options, description, estimateFromConnectorParams(draft.params), advice);
+  const ok = await confirmHighStakes(options, description, estimateFromConnectorParams(draft.params), null);
   if (!ok) {
     console.log(badge('Aborted.', 'muted'));
     return;
   }
 
+  const plan = buildConnectorAgentPlan(connectorId, action.actionKind, draft);
+  const review = await maybeReviewWithAgent(options, plan);
+  if (review.choice === 'delete') {
+    console.log(badge('Discarded.', 'muted'));
+    return;
+  }
+
   const { address, cluster } = await fetchWalletAddress(options);
   const connectorSecrets = connectorSecretsForRequest(connectorId);
+  const note = noteForReview(draft.note, review);
   const body = removeUndefined({
     kind: draft.actionKind,
     params: draft.params,
@@ -367,13 +463,13 @@ async function runConnectorWrite(options: GlobalOptions, connectorId: string, ac
     cluster,
     summary: draft.summary,
     reason: draft.reason,
-    note: draft.note,
+    note,
     connectorSecrets,
   });
   await prepareAndPromptApproval(options, draft.summary, () => bridgeRequest(options, '/bridge/connector/prepare-action', {
     method: 'POST',
     body: JSON.stringify(body),
-  }));
+  }), reviewToApprovalOpts(review));
 }
 
 async function runConnectorReadOnly(options: GlobalOptions, connectorId: string, action: ConnectorAction): Promise<void> {

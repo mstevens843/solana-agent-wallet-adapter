@@ -558,9 +558,29 @@ fn ensure_bridge_reachable(app: &tauri::AppHandle, shared: &SharedRuntime) -> Re
     let bridge_url = {
         let mut runtime = shared.lock().map_err(lock_error)?;
         refresh_child_state(&mut runtime);
-        let bridge_url = runtime.config.bridge_url.clone();
 
-        if runtime.bridge.is_none() && !bridge_endpoint_reachable(&bridge_url) {
+        if runtime.bridge.is_none() {
+            // Always own our bridge: never trust an external process on the
+            // configured port. A CLI bridge, an orphaned tauri:dev, or anything
+            // else there will be using a different token, and the webview will
+            // hit 401 on every /bridge/* request. Scan for a free port instead
+            // and spawn next to whatever is there.
+            let (host, configured_port) =
+                host_port_or_default(&runtime.config.bridge_url, 8787);
+            let chosen_port = find_available_port(&host, configured_port, 100)
+                .ok_or_else(|| {
+                    format!(
+                        "No free port near {configured_port} for the bridge (scanned 100)."
+                    )
+                })?;
+            if chosen_port != configured_port {
+                runtime.config.bridge_url = format!("http://{host}:{chosen_port}");
+                runtime.logs.push_back(format!(
+                    "[desktop] port {configured_port} busy — bridge will use {chosen_port}"
+                ));
+                trim_logs(&mut runtime.logs);
+            }
+
             match bridge_launch_command(app, &runtime.config) {
                 Ok(command) => {
                     match spawn_managed_process(shared, &mut runtime, "bridge", command) {
@@ -589,7 +609,7 @@ fn ensure_bridge_reachable(app: &tauri::AppHandle, shared: &SharedRuntime) -> Re
             }
         }
 
-        bridge_url
+        runtime.config.bridge_url.clone()
     };
 
     if wait_for_bridge_endpoint(&bridge_url, Duration::from_secs(8)) {
@@ -1737,6 +1757,25 @@ fn host_port_or_default(url: &str, default_port: u16) -> (String, u16) {
     host_port(url, default_port).unwrap_or_else(|| ("127.0.0.1".into(), default_port))
 }
 
+/// Scan upward from `start` for a port that `host` can bind right now. The
+/// desktop must own its bridge process — port-reachability alone doesn't prove
+/// identity (a CLI bridge, an orphaned tauri:dev, etc. could be holding the
+/// configured port with a different token, causing every /bridge/* request to
+/// return 401). Picking a free port lets us spawn our own next to any stale
+/// listener instead of fighting it. Bind-and-drop is a momentary "free now?"
+/// probe — a small TOCTOU window remains before the bridge re-binds, which is
+/// acceptable for local dev.
+fn find_available_port(host: &str, start: u16, max_attempts: u16) -> Option<u16> {
+    let addr_host = if host == "localhost" { "127.0.0.1" } else { host };
+    for offset in 0..max_attempts {
+        let port = start.checked_add(offset)?;
+        if std::net::TcpListener::bind((addr_host, port)).is_ok() {
+            return Some(port);
+        }
+    }
+    None
+}
+
 fn now_isoish() -> String {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1850,6 +1889,31 @@ mod tests {
             host_port_or_default("not a url", 8787),
             ("127.0.0.1".into(), 8787)
         );
+    }
+
+    #[test]
+    fn find_available_port_skips_a_busy_port() {
+        // Hold a port to simulate a stale bridge / CLI on the configured port.
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .expect("OS should grant a free loopback port for the test");
+        let busy_port = listener.local_addr().unwrap().port();
+
+        let chosen = find_available_port("127.0.0.1", busy_port, 50)
+            .expect("a free port should exist within 50 of the busy one");
+        assert_ne!(chosen, busy_port);
+        assert!(chosen > busy_port);
+        assert!(chosen <= busy_port.saturating_add(50));
+
+        drop(listener);
+    }
+
+    #[test]
+    fn find_available_port_normalizes_localhost_to_loopback() {
+        let chosen = find_available_port("localhost", 0, 1)
+            .expect("binding to port 0 should always succeed");
+        // Port 0 makes the OS pick an available ephemeral port; we just care
+        // the alias didn't break the bind call.
+        assert!(chosen == 0 || chosen > 0);
     }
 
     #[test]

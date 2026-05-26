@@ -29191,6 +29191,47 @@ button.danger:hover:not(:disabled) {
   background: rgba(36, 207, 144, 0.15);
 }
 
+.cli-receipt {
+  display: grid;
+  grid-template-columns: minmax(64px, max-content) 1fr;
+  column-gap: 16px;
+  row-gap: 6px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+.cli-receipt-row {
+  display: contents;
+}
+
+.cli-receipt-key {
+  color: rgba(216, 239, 226, 0.55);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.72rem;
+  align-self: center;
+}
+
+.cli-receipt-val {
+  color: rgba(232, 240, 235, 0.92);
+  word-break: break-all;
+}
+
+.cli-receipt-link {
+  color: #9be4c0;
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.cli-receipt-link:hover {
+  text-decoration: underline;
+}
+
 .cli-focused-message {
   max-height: 240px;
   overflow: auto;

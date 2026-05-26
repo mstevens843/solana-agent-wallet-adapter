@@ -14,10 +14,21 @@ interface PreparedActionEnvelope {
   result?: unknown;
 }
 
+export interface PrepareAndPromptApprovalOptions {
+  // Skip the "Send for approval now?" confirm and go straight to the wallet
+  // approval flow. Used by callers (the new agent-review picker) that already
+  // collected the user's intent to send and don't want a second confirm.
+  autoApprove?: boolean;
+  // Save the prepared action to /inbox without ever prompting or executing.
+  // Used by the agent-review "Save to inbox without sending" choice.
+  skipApprovalPrompt?: boolean;
+}
+
 export async function prepareAndPromptApproval(
   options: GlobalOptions,
   title: string,
   prepare: () => Promise<unknown>,
+  opts: PrepareAndPromptApprovalOptions = {},
 ): Promise<void> {
   let result: unknown;
   try {
@@ -25,22 +36,32 @@ export async function prepareAndPromptApproval(
   } catch (err) {
     throw new Error(inboxSaveError(err, options));
   }
-  await promptApprovalAfterSave(options, title, result);
+  await promptApprovalAfterSave(options, title, result, opts);
 }
 
 export async function promptApprovalAfterSave(
   options: GlobalOptions,
   title: string,
   result: unknown,
+  opts: PrepareAndPromptApprovalOptions = {},
 ): Promise<void> {
   const action = preparedActionFromPrepareResult(result);
   renderSavedToInbox(title, action);
   if (!action?.id) return;
 
-  const approveNow = await confirm({
-    message: 'Send for approval now?',
-    default: true,
-  });
+  if (opts.skipApprovalPrompt) {
+    console.log(badge('Saved to inbox. Approve it later when you are ready.', 'muted'));
+    console.log(`Next: ${badge('/inbox', 'info')} or ${badge(`/approve ${action.id}`, 'info')}`);
+    console.log(divider());
+    return;
+  }
+
+  const approveNow = opts.autoApprove
+    ? true
+    : await confirm({
+        message: 'Send for approval now?',
+        default: true,
+      });
   if (!approveNow) {
     console.log(badge('Saved to inbox. Approve it later when you are ready.', 'muted'));
     console.log(`Next: ${badge('/inbox', 'info')} or ${badge(`/approve ${action.id}`, 'info')}`);

@@ -4,7 +4,7 @@
 
 const BASE58_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 const POSITIVE_DECIMAL_RE = /^(\d+(\.\d+)?|\.\d+)$/;
-const SLIPPAGE_RE = /^\d+$/;
+const SLIPPAGE_PCT_RE = /^\d*\.?\d+\s*%?$/;
 
 export function validateBase58(value: string): boolean | string {
   return BASE58_RE.test(value.trim()) || 'Must be a base58 Solana address (32–44 chars).';
@@ -23,12 +23,29 @@ export function validatePositiveInteger(value: string): boolean | string {
   return true;
 }
 
-export function validateSlippageBps(value: string): boolean | string {
-  if (!value.trim()) return true;
-  if (!SLIPPAGE_RE.test(value.trim())) return 'Slippage must be an integer in basis points (e.g. 50 = 0.5%).';
-  const n = Number(value);
-  if (n < 0 || n > 10_000) return 'Slippage must be between 0 and 10000 bps.';
+export function validateSlippagePercent(value: string): boolean | string {
+  const trimmed = value.trim();
+  if (!trimmed) return true;
+  if (!SLIPPAGE_PCT_RE.test(trimmed)) {
+    return 'Enter a percent like 0.5 or 0.5% (blank for 0.5%).';
+  }
+  const n = Number(trimmed.replace(/%\s*$/, '').trim());
+  if (!Number.isFinite(n) || n < 0 || n > 100) {
+    return 'Slippage must be between 0% and 100%.';
+  }
   return true;
+}
+
+export function parseSlippagePercentToBps(value: string): number | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const pct = Number(trimmed.replace(/%\s*$/, '').trim());
+  if (!Number.isFinite(pct)) return undefined;
+  return Math.round(pct * 100);
+}
+
+export function formatSlippagePercent(bps: number): string {
+  return `${bps / 100}%`;
 }
 
 export function validateNonEmpty(value: string): boolean | string {

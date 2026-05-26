@@ -1,6 +1,12 @@
 import type { GlobalOptions } from '../shared/types.js';
 import { input, select, header } from '../tui/index.js';
-import { validatePositiveDecimal, validateSlippageBps, validateNonEmpty } from './validators.js';
+import {
+  validatePositiveDecimal,
+  validateSlippagePercent,
+  parseSlippagePercentToBps,
+  formatSlippagePercent,
+  validateNonEmpty,
+} from './validators.js';
 import { fetchBalanceLines, printBalanceHeader } from './balancePreview.js';
 import { maybePrintSafetyChip } from './tokenSafety.js';
 
@@ -54,17 +60,17 @@ export async function promptSwapForm(
     await maybePrintSafetyChip(options, outputToken);
   }
   const amount = await input({
-    message: `Amount (${inputToken})`,
+    message: `Amount (${inputToken}):`,
     ...(prefill.amount !== undefined ? { default: prefill.amount } : {}),
     validate: validatePositiveDecimal,
   });
   const slippageRaw = await input({
-    message: 'Slippage (bps, blank = 50)',
-    default: prefill.slippageBps !== undefined ? String(prefill.slippageBps) : '',
-    validate: validateSlippageBps,
+    message: 'Slippage (%, blank = 0.5):',
+    default: prefill.slippageBps !== undefined ? formatSlippagePercent(prefill.slippageBps) : '',
+    validate: validateSlippagePercent,
   });
   const noteRaw = await input({
-    message: 'Note (optional)',
+    message: 'Note (optional):',
     default: prefill.note ?? '',
   });
   const draft: SwapDraft = {
@@ -72,8 +78,8 @@ export async function promptSwapForm(
     inputToken,
     outputToken,
   };
-  const slippageTrimmed = slippageRaw.trim();
-  if (slippageTrimmed) draft.slippageBps = Number(slippageTrimmed);
+  const parsedBps = parseSlippagePercentToBps(slippageRaw);
+  if (parsedBps !== undefined) draft.slippageBps = parsedBps;
   if (noteRaw.trim()) draft.note = noteRaw.trim();
   return draft;
 }
