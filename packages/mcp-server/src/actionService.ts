@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 import {
   Connection,
   PublicKey,
@@ -19,6 +21,7 @@ import { lifetimeSpendEstimate } from '@solana-agent-wallet-adapter/workflow';
 import {
   AdapterError,
   actionForKind,
+  adapterForKind,
   assertSupportedCluster,
   requireAdapter,
   type ConnectorSecretsMap,
@@ -530,6 +533,7 @@ export class AgentWalletActionService {
   private readonly connection: Connection;
   private readonly client: SolanaSigningClient;
   private readonly connectorSecretsLoader?: ConnectorSecretsLoader;
+  private readonly connectorSecretsOverrides = new AsyncLocalStorage<ConnectorSecretsMap>();
   private readonly vulcanUpstreamClient?: VulcanUpstreamClientLike;
   private readonly vulcanWalletRegistry?: VulcanWalletRegistryLike;
   private readonly vulcanMetricsRegistry?: VulcanMetricsRegistry;
@@ -2381,7 +2385,13 @@ export class AgentWalletActionService {
     };
   }
 
-  async connectorReadFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
+  async connectorReadFacts(input: ConnectorFactReadInput & { connectorSecrets?: ConnectorSecretsMap }): Promise<Record<string, unknown>> {
+    if (input.connectorSecrets) {
+      return this.connectorSecretsOverrides.run(input.connectorSecrets, () => this.connectorReadFacts({
+        ...input,
+        connectorSecrets: undefined,
+      }));
+    }
     const connector = requireRuntimeConnector(input.connectorId);
     assertConnectorCluster(connector, this.config.cluster);
     try {
@@ -4772,7 +4782,14 @@ export class AgentWalletActionService {
     walletAddress: string;
     cluster: Cluster;
     summary?: string;
+    connectorSecrets?: ConnectorSecretsMap;
   }): Promise<PreparedTransactionPayload> {
+    if (input.connectorSecrets) {
+      return this.connectorSecretsOverrides.run(input.connectorSecrets, () => this.prepareConnectorTransactionStateless({
+        ...input,
+        connectorSecrets: undefined,
+      }));
+    }
     requireActionAllowed(this.config);
     const now = new Date().toISOString();
     const action: PreparedAction = {
@@ -4788,6 +4805,45 @@ export class AgentWalletActionService {
       updatedAt: now,
     };
     return prepareTransactionForApproval(action, await this.adapterContext());
+  }
+
+  async prepareConnectorAction(input: {
+    kind: string;
+    params: Record<string, unknown>;
+    walletAddress: string;
+    cluster: Cluster;
+    summary?: string;
+    connectorSecrets?: ConnectorSecretsMap;
+  }): Promise<Record<string, unknown>> {
+    if (input.connectorSecrets) {
+      return this.connectorSecretsOverrides.run(input.connectorSecrets, () => this.prepareConnectorAction({
+        ...input,
+        connectorSecrets: undefined,
+      }));
+    }
+    requireActionAllowed(this.config);
+    const match = actionForKind(input.kind);
+    const action = adapterForKind(input.kind as PreparedActionKind);
+    if (!match || !action) {
+      throw new AdapterError('registry', 'unknown_kind', `No adapter registered for kind ${input.kind}`);
+    }
+    assertSupportedCluster(match.adapter, this.config.cluster);
+    if (input.cluster !== this.config.cluster) {
+      throw new ProtocolError('invalid_request', `Connector action cluster ${input.cluster} does not match bridge cluster ${this.config.cluster}.`);
+    }
+    const walletAddress = await this.backend.getAddress();
+    if (!walletAddress) {
+      throw new ProtocolError('unauthorized', 'No wallet connected.');
+    }
+    if (input.walletAddress !== walletAddress) {
+      throw new ProtocolError('unauthorized', 'Connector action belongs to a different wallet.');
+    }
+    const result = await action.prepare(input.params, await this.adapterContext(match.adapter));
+    const stored = await this.store().addAction({
+      ...result.addInput,
+      ...(input.summary ? { summary: input.summary } : {}),
+    });
+    return { preparedAction: stored, preview: result.preview };
   }
 
   async executePreparedAction(actionId: string): Promise<Record<string, unknown>> {
@@ -5474,9 +5530,10 @@ export class AgentWalletActionService {
 
   private async adapterContext(adapter?: DAppAdapter): Promise<DAppAdapterContext> {
     void adapter;
-    const connectorSecrets = this.connectorSecretsLoader
+    const connectorSecrets = this.connectorSecretsOverrides.getStore()
+      ?? (this.connectorSecretsLoader
       ? await this.loadConnectorSecretsForCurrentWallet()
-      : undefined;
+      : undefined);
     const signTransaction = async (transactionBase64: string, summary: string): Promise<string> => {
       await this.simulateBeforeSign(transactionBase64, summary);
       const signed = await this.client.signTransaction(transactionBase64, {

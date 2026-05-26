@@ -14,7 +14,7 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import {
   AgentWalletActionService,
 } from './actionService.js';
-import { AdapterError } from './adapters/types.js';
+import { AdapterError, type ConnectorSecretsMap } from './adapters/types.js';
 import {
   AgentRegistry,
   isAgentTier,
@@ -829,6 +829,7 @@ async function handleRequest(
       const body = (await readJson(req)) as {
         connectorId?: string;
         capability?: 'positions' | 'rewards' | 'markets' | 'blinks' | 'swap' | 'earn' | 'borrow' | 'withdraw' | 'repay' | 'add_liquidity' | 'close';
+        connectorSecrets?: unknown;
         walletAddress?: string;
         token?: string;
         sourceMint?: string;
@@ -880,60 +881,66 @@ async function handleRequest(
         includeEma?: boolean;
         includeRawAccount?: boolean;
       };
-      writeJson(res, 200, await requireActionService(actionService).connectorReadFacts({
-        connectorId: requireString(body.connectorId, 'connectorId'),
-        ...(body.capability !== undefined && { capability: body.capability }),
-        ...(body.walletAddress !== undefined && { walletAddress: body.walletAddress }),
-        ...(body.token !== undefined && { token: body.token }),
-        ...(body.sourceMint !== undefined && { sourceMint: body.sourceMint }),
-        ...(body.reserveMint !== undefined && { reserveMint: body.reserveMint }),
-        ...(body.inputToken !== undefined && { inputToken: body.inputToken }),
-        ...(body.outputToken !== undefined && { outputToken: body.outputToken }),
-        ...(body.amount !== undefined && { amount: body.amount }),
-        ...(body.jitoOperation !== undefined && { jitoOperation: body.jitoOperation }),
-        ...(body.solAmount !== undefined && { solAmount: body.solAmount }),
-        ...(body.jitoSolAmount !== undefined && { jitoSolAmount: body.jitoSolAmount }),
-        ...(body.stakeAccount !== undefined && { stakeAccount: body.stakeAccount }),
-        ...(body.receiptAddress !== undefined && { receiptAddress: body.receiptAddress }),
-        ...(body.withdrawMode !== undefined && { withdrawMode: body.withdrawMode }),
-        ...(body.includeValidators !== undefined && { includeValidators: body.includeValidators }),
-        ...(body.includeStakeAccounts !== undefined && { includeStakeAccounts: body.includeStakeAccounts }),
-        ...(body.delegatedOnly !== undefined && { delegatedOnly: body.delegatedOnly }),
-        ...(body.eligibleForJitoDepositOnly !== undefined && { eligibleForJitoDepositOnly: body.eligibleForJitoDepositOnly }),
-        ...(body.claimableOnly !== undefined && { claimableOnly: body.claimableOnly }),
-        ...(body.slippageBps !== undefined && { slippageBps: body.slippageBps }),
-        ...(body.taker !== undefined && { taker: body.taker }),
-        ...(body.whirlpoolAddress !== undefined && { whirlpoolAddress: body.whirlpoolAddress }),
-        ...(body.positionMint !== undefined && { positionMint: body.positionMint }),
-        ...(body.poolAddress !== undefined && { poolAddress: body.poolAddress }),
-        ...(body.positionAddress !== undefined && { positionAddress: body.positionAddress }),
-        ...(body.poolId !== undefined && { poolId: body.poolId }),
-        ...(body.poolType !== undefined && { poolType: body.poolType }),
-        ...(body.bankAddress !== undefined && { bankAddress: body.bankAddress }),
-        ...(body.bankMint !== undefined && { bankMint: body.bankMint }),
-        ...(body.project0Account !== undefined && { project0Account: body.project0Account }),
-        ...(body.limit !== undefined && { limit: body.limit }),
-        ...(body.collectionId !== undefined && { collectionId: body.collectionId }),
-        ...(body.collectionSymbol !== undefined && { collectionSymbol: body.collectionSymbol }),
-        ...(body.mintAddress !== undefined && { mintAddress: body.mintAddress }),
-        ...(body.assetId !== undefined && { assetId: body.assetId }),
-        ...(body.includeListings !== undefined && { includeListings: body.includeListings }),
-        ...(body.includeBids !== undefined && { includeBids: body.includeBids }),
-        ...(body.includeCompressed !== undefined && { includeCompressed: body.includeCompressed }),
-        ...(body.maxListings !== undefined && { maxListings: body.maxListings }),
-        ...(body.maxBids !== undefined && { maxBids: body.maxBids }),
-        ...(body.listedOnly !== undefined && { listedOnly: body.listedOnly }),
-        ...(body.priceFeedId !== undefined && { priceFeedId: body.priceFeedId }),
-        ...(body.priceFeedIds !== undefined && { priceFeedIds: body.priceFeedIds }),
-        ...(body.symbol !== undefined && { symbol: body.symbol }),
-        ...(body.query !== undefined && { query: body.query }),
-        ...(body.assetType !== undefined && { assetType: body.assetType }),
-        ...(body.maxAgeSeconds !== undefined && { maxAgeSeconds: body.maxAgeSeconds }),
-        ...(body.maxConfidenceBps !== undefined && { maxConfidenceBps: body.maxConfidenceBps }),
-        ...(body.consumerProtocol !== undefined && { consumerProtocol: body.consumerProtocol }),
-        ...(body.includeEma !== undefined && { includeEma: body.includeEma }),
-        ...(body.includeRawAccount !== undefined && { includeRawAccount: body.includeRawAccount }),
-      }));
+      const connectorSecrets = parseConnectorSecrets(body.connectorSecrets);
+      try {
+        writeJson(res, 200, await requireActionService(actionService).connectorReadFacts({
+          connectorId: requireString(body.connectorId, 'connectorId'),
+          ...(body.capability !== undefined && { capability: body.capability }),
+          ...(connectorSecrets ? { connectorSecrets } : {}),
+          ...(body.walletAddress !== undefined && { walletAddress: body.walletAddress }),
+          ...(body.token !== undefined && { token: body.token }),
+          ...(body.sourceMint !== undefined && { sourceMint: body.sourceMint }),
+          ...(body.reserveMint !== undefined && { reserveMint: body.reserveMint }),
+          ...(body.inputToken !== undefined && { inputToken: body.inputToken }),
+          ...(body.outputToken !== undefined && { outputToken: body.outputToken }),
+          ...(body.amount !== undefined && { amount: body.amount }),
+          ...(body.jitoOperation !== undefined && { jitoOperation: body.jitoOperation }),
+          ...(body.solAmount !== undefined && { solAmount: body.solAmount }),
+          ...(body.jitoSolAmount !== undefined && { jitoSolAmount: body.jitoSolAmount }),
+          ...(body.stakeAccount !== undefined && { stakeAccount: body.stakeAccount }),
+          ...(body.receiptAddress !== undefined && { receiptAddress: body.receiptAddress }),
+          ...(body.withdrawMode !== undefined && { withdrawMode: body.withdrawMode }),
+          ...(body.includeValidators !== undefined && { includeValidators: body.includeValidators }),
+          ...(body.includeStakeAccounts !== undefined && { includeStakeAccounts: body.includeStakeAccounts }),
+          ...(body.delegatedOnly !== undefined && { delegatedOnly: body.delegatedOnly }),
+          ...(body.eligibleForJitoDepositOnly !== undefined && { eligibleForJitoDepositOnly: body.eligibleForJitoDepositOnly }),
+          ...(body.claimableOnly !== undefined && { claimableOnly: body.claimableOnly }),
+          ...(body.slippageBps !== undefined && { slippageBps: body.slippageBps }),
+          ...(body.taker !== undefined && { taker: body.taker }),
+          ...(body.whirlpoolAddress !== undefined && { whirlpoolAddress: body.whirlpoolAddress }),
+          ...(body.positionMint !== undefined && { positionMint: body.positionMint }),
+          ...(body.poolAddress !== undefined && { poolAddress: body.poolAddress }),
+          ...(body.positionAddress !== undefined && { positionAddress: body.positionAddress }),
+          ...(body.poolId !== undefined && { poolId: body.poolId }),
+          ...(body.poolType !== undefined && { poolType: body.poolType }),
+          ...(body.bankAddress !== undefined && { bankAddress: body.bankAddress }),
+          ...(body.bankMint !== undefined && { bankMint: body.bankMint }),
+          ...(body.project0Account !== undefined && { project0Account: body.project0Account }),
+          ...(body.limit !== undefined && { limit: body.limit }),
+          ...(body.collectionId !== undefined && { collectionId: body.collectionId }),
+          ...(body.collectionSymbol !== undefined && { collectionSymbol: body.collectionSymbol }),
+          ...(body.mintAddress !== undefined && { mintAddress: body.mintAddress }),
+          ...(body.assetId !== undefined && { assetId: body.assetId }),
+          ...(body.includeListings !== undefined && { includeListings: body.includeListings }),
+          ...(body.includeBids !== undefined && { includeBids: body.includeBids }),
+          ...(body.includeCompressed !== undefined && { includeCompressed: body.includeCompressed }),
+          ...(body.maxListings !== undefined && { maxListings: body.maxListings }),
+          ...(body.maxBids !== undefined && { maxBids: body.maxBids }),
+          ...(body.listedOnly !== undefined && { listedOnly: body.listedOnly }),
+          ...(body.priceFeedId !== undefined && { priceFeedId: body.priceFeedId }),
+          ...(body.priceFeedIds !== undefined && { priceFeedIds: body.priceFeedIds }),
+          ...(body.symbol !== undefined && { symbol: body.symbol }),
+          ...(body.query !== undefined && { query: body.query }),
+          ...(body.assetType !== undefined && { assetType: body.assetType }),
+          ...(body.maxAgeSeconds !== undefined && { maxAgeSeconds: body.maxAgeSeconds }),
+          ...(body.maxConfidenceBps !== undefined && { maxConfidenceBps: body.maxConfidenceBps }),
+          ...(body.consumerProtocol !== undefined && { consumerProtocol: body.consumerProtocol }),
+          ...(body.includeEma !== undefined && { includeEma: body.includeEma }),
+          ...(body.includeRawAccount !== undefined && { includeRawAccount: body.includeRawAccount }),
+        }));
+      } catch (err) {
+        writePrepareTransactionError(res, err, connectorSecrets);
+      }
       return;
     }
     if (req.method === 'POST' && url.pathname === '/bridge/action/market-data') {
@@ -1202,13 +1209,14 @@ async function handleRequest(
         return;
       }
     }
-    if (req.method === 'POST' && url.pathname === '/bridge/connector/prepare-transaction') {
+    if (req.method === 'POST' && url.pathname === '/bridge/connector/prepare-action') {
       const body = (await readJson(req)) as {
         kind?: string;
         params?: unknown;
         walletAddress?: string;
         cluster?: string;
         summary?: string;
+        connectorSecrets?: unknown;
       };
       const kind = requireString(body.kind, 'kind');
       const walletAddress = requireString(body.walletAddress, 'walletAddress');
@@ -1217,6 +1225,39 @@ async function handleRequest(
         throw new ProtocolError('invalid_request', 'params must be an object.');
       }
       const service = requireActionService(actionService);
+      const connectorSecrets = parseConnectorSecrets(body.connectorSecrets);
+      try {
+        const payload = await service.prepareConnectorAction({
+          kind,
+          params: body.params as Record<string, unknown>,
+          walletAddress,
+          cluster,
+          ...(typeof body.summary === 'string' ? { summary: body.summary } : {}),
+          ...(connectorSecrets ? { connectorSecrets } : {}),
+        });
+        writeJson(res, 200, payload);
+      } catch (err) {
+        writePrepareTransactionError(res, err, connectorSecrets);
+      }
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/connector/prepare-transaction') {
+      const body = (await readJson(req)) as {
+        kind?: string;
+        params?: unknown;
+        walletAddress?: string;
+        cluster?: string;
+        summary?: string;
+        connectorSecrets?: unknown;
+      };
+      const kind = requireString(body.kind, 'kind');
+      const walletAddress = requireString(body.walletAddress, 'walletAddress');
+      const cluster = requireString(body.cluster, 'cluster') as 'mainnet-beta' | 'devnet' | 'testnet' | 'localnet';
+      if (!body.params || typeof body.params !== 'object' || Array.isArray(body.params)) {
+        throw new ProtocolError('invalid_request', 'params must be an object.');
+      }
+      const service = requireActionService(actionService);
+      const connectorSecrets = parseConnectorSecrets(body.connectorSecrets);
       try {
         const payload = await service.prepareConnectorTransactionStateless({
           kind,
@@ -1224,10 +1265,11 @@ async function handleRequest(
           walletAddress,
           cluster,
           ...(typeof body.summary === 'string' ? { summary: body.summary } : {}),
+          ...(connectorSecrets ? { connectorSecrets } : {}),
         });
         writeJson(res, 200, payload);
       } catch (err) {
-        writePrepareTransactionError(res, err);
+        writePrepareTransactionError(res, err, connectorSecrets);
       }
       return;
     }
@@ -1455,38 +1497,96 @@ function requireActionService(actionService: AgentWalletActionService | undefine
   return actionService;
 }
 
-function writePrepareTransactionError(res: ServerResponse, err: unknown): void {
+const CONNECTOR_SECRET_IDS = new Set(['magiceden', 'tensor', 'sanctum', 'lulo', 'phoenix']);
+
+function parseConnectorSecrets(value: unknown): ConnectorSecretsMap | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ProtocolError('invalid_request', 'connectorSecrets must be an object.');
+  }
+  const out: ConnectorSecretsMap = {};
+  for (const [id, rawSecret] of Object.entries(value as Record<string, unknown>)) {
+    if (!CONNECTOR_SECRET_IDS.has(id)) {
+      throw new ProtocolError('invalid_request', `connectorSecrets contains unsupported connector "${id}".`);
+    }
+    if (!rawSecret || typeof rawSecret !== 'object' || Array.isArray(rawSecret)) {
+      throw new ProtocolError('invalid_request', `connectorSecrets.${id} must be an object.`);
+    }
+    const secret = rawSecret as Record<string, unknown>;
+    const apiKey = typeof secret.apiKey === 'string' ? secret.apiKey.trim() : '';
+    if (!apiKey) {
+      throw new ProtocolError('invalid_request', `connectorSecrets.${id}.apiKey is required.`);
+    }
+    if (apiKey.length > 1024) {
+      throw new ProtocolError('invalid_request', `connectorSecrets.${id}.apiKey is too long.`);
+    }
+    const baseUrl = typeof secret.baseUrl === 'string' && secret.baseUrl.trim()
+      ? secret.baseUrl.trim()
+      : undefined;
+    out[id as keyof ConnectorSecretsMap] = {
+      apiKey,
+      ...(baseUrl ? { baseUrl } : {}),
+    };
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function redactConnectorSecrets(message: string, connectorSecrets: ConnectorSecretsMap | undefined): string {
+  if (!connectorSecrets) return message;
+  let redacted = message;
+  for (const secret of Object.values(connectorSecrets)) {
+    const apiKey = secret?.apiKey;
+    if (!apiKey) continue;
+    redacted = redacted.split(apiKey).join('[REDACTED]');
+  }
+  return redacted;
+}
+
+function protocolPayloadWithMessage(err: ProtocolError, message: string): ProtocolErrorPayload {
+  return {
+    ...err.toPayload(),
+    message,
+  };
+}
+
+function writePrepareTransactionError(
+  res: ServerResponse,
+  err: unknown,
+  connectorSecrets?: ConnectorSecretsMap,
+): void {
   if (err instanceof AdapterError) {
+    const message = redactConnectorSecrets(err.message, connectorSecrets);
     if (err.code === 'unknown_kind' || err.code === 'not_executable') {
       writeJson(res, 422, {
-        error: { code: err.code, message: err.message, recoverable: false },
+        error: { code: err.code, message, recoverable: false },
       });
       return;
     }
     writeJson(res, 502, {
-      error: { code: err.code, message: err.message, recoverable: false },
+      error: { code: err.code, message, recoverable: false },
     });
     return;
   }
   if (err instanceof ProtocolError) {
+    const payload = protocolPayloadWithMessage(err, redactConnectorSecrets(err.message, connectorSecrets));
     if (err.code === 'invalid_request' && /Unknown prepared action/.test(err.message)) {
-      writeJson(res, 404, { error: err.toPayload() });
+      writeJson(res, 404, { error: payload });
       return;
     }
     if (err.code === 'unauthorized') {
-      writeJson(res, 404, { error: err.toPayload() });
+      writeJson(res, 404, { error: payload });
       return;
     }
     if (err.code === 'invalid_request' && /is already /.test(err.message)) {
-      writeJson(res, 409, { error: err.toPayload() });
+      writeJson(res, 409, { error: payload });
       return;
     }
-    writeJson(res, 400, { error: err.toPayload() });
+    writeJson(res, 400, { error: payload });
     return;
   }
   const wrapped = new ProtocolError(
     'wallet_unreachable',
-    err instanceof Error ? err.message : 'Bridge error.',
+    redactConnectorSecrets(err instanceof Error ? err.message : 'Bridge error.', connectorSecrets),
   );
   writeJson(res, 502, { error: wrapped.toPayload() });
 }

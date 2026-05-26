@@ -1,6 +1,7 @@
 import type { GlobalOptions } from '../shared/types.js';
 import { bridgeRequest, renderWebRequest } from '../http/index.js';
 import { header, kv, badge, divider } from '../tui/index.js';
+import { countEnabledConnectors } from './connectorState.js';
 
 interface PreparedActionLike {
   id?: string;
@@ -116,7 +117,7 @@ export async function loadWorkspaceSummary(options: GlobalOptions): Promise<Work
 
   const cloudAvailable = Boolean(cloudApprovals || cloudRepeats || cloudCompleted || cloudConnectors);
   const localAvailable = Boolean(localActions || localRepeats || localReceipts || localArtifacts);
-  const connectors = countConnectorsEnabled(extractPreferencesPayload(cloudConnectors));
+  const connectors = countEnabledConnectors(cloudConnectors);
 
   return {
     oneTime,
@@ -154,22 +155,6 @@ function isPendingAction(action: PreparedActionLike): boolean {
 
 function isActiveRepeat(schedule: RecurringLike): boolean {
   return schedule.status === 'active';
-}
-
-function extractPreferencesPayload(raw: unknown): Record<string, unknown> {
-  if (!raw || typeof raw !== 'object') return {};
-  const payload = (raw as PreferencesResponse).payload;
-  if (payload && typeof payload === 'object') return payload as Record<string, unknown>;
-  return raw as Record<string, unknown>;
-}
-
-function countConnectorsEnabled(payload: Record<string, unknown>): number {
-  let count = 0;
-  for (const value of Object.values(payload)) {
-    if (value === true) count += 1;
-    else if (value && typeof value === 'object' && (value as { enabled?: boolean }).enabled !== false) count += 1;
-  }
-  return count;
 }
 
 async function safeWithTimeout<T>(promise: Promise<T>): Promise<T | null> {

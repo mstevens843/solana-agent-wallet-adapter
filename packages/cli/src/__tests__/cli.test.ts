@@ -594,6 +594,78 @@ test('no positional command starts the interactive app', async () => {
   }
 });
 
+test('interactive help exposes the connectors command', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-help-app-'));
+  const bridgeUrl = `http://127.0.0.1:${await freePort()}`;
+  const walletHostUrl = `http://127.0.0.1:${await freePort()}`;
+  const renderWebUrl = `http://127.0.0.1:${await freePort()}`;
+  const child = startCliInteractive([
+    '--runtime-dir',
+    runtimeDir,
+    '--bridge-url',
+    bridgeUrl,
+    '--wallet-host-url',
+    walletHostUrl,
+    '--render-web-url',
+    renderWebUrl,
+  ]);
+
+  try {
+    await waitForStdout(child, /agentic>/, 30_000);
+    const helpOutput = waitForOutput(child, /\/connectors\s+Manage protocol connectors and BYO API keys/, 30_000);
+    child.stdin.write('/help\n');
+    const { stdout } = await helpOutput;
+    assert.match(stdout, /\/connectors\s+Manage protocol connectors and BYO API keys/);
+    child.stdin.write('/quit\n');
+    const exit = await waitForExit(child);
+    assert.equal(exit.code, 0, `stdout:\n${stdout}\nstderr:\n${await readRemaining(child.stderr)}`);
+  } finally {
+    await stopChild(child);
+  }
+});
+
+test('interactive connectors menu returns stdin ownership before new request menu', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-connectors-new-'));
+  const bridge = await startMockBridge([]);
+  const walletHost = await startMockWalletHost();
+  const child = startCliInteractive([
+    '--runtime-dir',
+    runtimeDir,
+    '--bridge-url',
+    bridge.url,
+    '--wallet-host-url',
+    walletHost.url,
+  ]);
+
+  try {
+    await waitForStdout(child, /agentic>/, 30_000);
+
+    const connectorPrompt = waitForCombinedOutput(child, /Check a connector to connect or disconnect/, 10_000);
+    child.stdin.write('/connectors\n');
+    await connectorPrompt;
+
+    const returned = waitForStdout(child, /agentic>/, 10_000);
+    child.stdin.write('\x1B[A\r');
+    await returned;
+
+    const newPrompt = waitForCombinedOutput(child, /What kind of request\?/, 10_000);
+    child.stdin.write('/new\n');
+    await newPrompt;
+
+    const cancelled = waitForStdout(child, /Cancelled\.[\s\S]*agentic>/, 10_000);
+    child.stdin.write('\x03');
+    await cancelled;
+
+    child.stdin.write('/quit\n');
+    const exit = await waitForExit(child);
+    assert.equal(exit.code, 0, `stderr:\n${await readRemaining(child.stderr)}`);
+  } finally {
+    await bridge.close();
+    await walletHost.close();
+    await stopChild(child);
+  }
+});
+
 test('interactive app prints startup diagnostics in debug mode', async () => {
   const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-debug-app-'));
   const bridgeUrl = `http://127.0.0.1:${await freePort()}`;
@@ -712,6 +784,86 @@ test('interactive sign-in requires a paired wallet first', async () => {
   } finally {
     await bridge.close();
     await walletHost.close();
+    await stopChild(child);
+  }
+});
+
+test('interactive sign-in Ctrl+C aborts wallet signature wait and returns to prompt', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-sign-in-abort-'));
+  const bridge = await startMockBridge([]);
+  const walletHost = await startMockWalletHost();
+  const renderWeb = await startMockAuthRenderWeb();
+  const child = startCliInteractive([
+    '--runtime-dir',
+    runtimeDir,
+    '--bridge-url',
+    bridge.url,
+    '--wallet-host-url',
+    walletHost.url,
+    '--render-web-url',
+    renderWeb.url,
+  ]);
+
+  try {
+    await waitForStdout(child, /agentic>/, 30_000);
+    const waiting = waitForCombinedOutput(child, /Waiting for wallet signature \(Ctrl\+C to abort\)/, 10_000);
+    child.stdin.write('/sign-in\n');
+    await waiting;
+
+    const cancelled = waitForStdout(child, /Cancelled\.[\s\S]*agentic>/, 10_000);
+    child.kill('SIGINT');
+    const stdout = await cancelled;
+    assert.doesNotMatch(stdout, /Sign-in failed/);
+
+    child.stdin.write('/quit\n');
+    const exit = await waitForExit(child);
+    assert.equal(exit.code, 0, `stdout:\n${stdout}\nstderr:\n${await readRemaining(child.stderr)}`);
+  } finally {
+    await bridge.close();
+    await walletHost.close();
+    await renderWeb.close();
+    await stopChild(child);
+  }
+});
+
+test('interactive sign-in timeout returns to prompt before new request menu', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-sign-in-timeout-new-'));
+  const bridge = await startMockBridge([]);
+  const walletHost = await startMockWalletHost();
+  const renderWeb = await startMockAuthRenderWeb();
+  const child = startCliInteractive([
+    '--runtime-dir',
+    runtimeDir,
+    '--bridge-url',
+    bridge.url,
+    '--wallet-host-url',
+    walletHost.url,
+    '--render-web-url',
+    renderWeb.url,
+  ]);
+
+  try {
+    await waitForStdout(child, /agentic>/, 30_000);
+
+    const timedOut = waitForCombinedOutput(child, /Sign-in failed: Login timed out waiting for browser callback\./, 10_000);
+    child.stdin.write('/sign-in --timeout-ms 30\n');
+    await timedOut;
+
+    const newPrompt = waitForCombinedOutput(child, /What kind of request\?/, 10_000);
+    child.stdin.write('/new\n');
+    await newPrompt;
+
+    const cancelled = waitForStdout(child, /Cancelled\.[\s\S]*agentic>/, 10_000);
+    child.stdin.write('\x03');
+    await cancelled;
+
+    child.stdin.write('/quit\n');
+    const exit = await waitForExit(child);
+    assert.equal(exit.code, 0, `stderr:\n${await readRemaining(child.stderr)}`);
+  } finally {
+    await bridge.close();
+    await walletHost.close();
+    await renderWeb.close();
     await stopChild(child);
   }
 });
@@ -1214,6 +1366,38 @@ test('auth login full SIWS roundtrip stores a session token', async () => {
     assert.equal(body.proofEncoding, 'utf8-message');
     assert.equal(verifyReq.headers['x-agentic-client'], 'cli-bundled');
     assert.equal(verifyReq.headers.referer, `${renderWeb.url}/cli`);
+  } finally {
+    await renderWeb.close();
+  }
+});
+
+test('auth login Ctrl+C aborts wallet signature wait promptly', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-login-abort-'));
+  const renderWeb = await startMockAuthRenderWeb();
+  try {
+    const child = spawn(
+      process.execPath,
+      [
+        cliPath,
+        '--runtime-dir', runtimeDir,
+        '--render-web-url', renderWeb.url,
+        '--wallet-host-url', renderWeb.url,
+        'auth', 'login', '--wallet', 'AbortWalletXYZ', '--no-open',
+        '--json',
+      ],
+      {
+        env: { ...process.env, AGENT_WALLET_SKIP_OPEN: '1', NO_COLOR: '1' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    children.add(child as CliChild);
+
+    const seen = waitForCombinedOutput(child as CliChild, /Waiting for wallet signature \(Ctrl\+C to abort\)/, 30_000);
+    await seen;
+
+    child.kill('SIGINT');
+    const exit = await waitForExit(child as CliChild, 5_000);
+    assert.equal(exit.code, 130);
   } finally {
     await renderWeb.close();
   }
@@ -1969,12 +2153,57 @@ async function waitForOutput(
   });
 }
 
+async function waitForCombinedOutput(
+  child: CliChild,
+  pattern: RegExp,
+  timeoutMs: number,
+): Promise<{ stdout: string; stderr: string }> {
+  let stdout = '';
+  let stderr = '';
+  return new Promise<{ stdout: string; stderr: string }>((resolveWait, rejectWait) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      rejectWait(new Error(`Timed out waiting for ${pattern}.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
+    }, timeoutMs);
+    timeout.unref();
+
+    const cleanup = (): void => {
+      clearTimeout(timeout);
+      child.stdout.off('data', onStdout);
+      child.stderr.off('data', onStderr);
+      child.off('exit', onExit);
+    };
+    const test = (): void => {
+      if (pattern.test(`${stdout}\n${stderr}`)) {
+        cleanup();
+        resolveWait({ stdout, stderr });
+      }
+    };
+    const onStdout = (chunk: Buffer): void => {
+      stdout += chunk.toString();
+      test();
+    };
+    const onStderr = (chunk: Buffer): void => {
+      stderr += chunk.toString();
+      test();
+    };
+    const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+      cleanup();
+      rejectWait(new Error(`Process exited before ${pattern}: code=${code ?? 'null'} signal=${signal ?? 'null'}.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
+    };
+
+    child.stdout.on('data', onStdout);
+    child.stderr.on('data', onStderr);
+    child.once('exit', onExit);
+  });
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 async function waitForExit(
-  child: ChildProcessByStdio<Writable, Readable, Readable>,
+  child: CliChild,
   timeoutMs = 5_000,
 ): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
   if (child.exitCode !== null || child.signalCode !== null) {

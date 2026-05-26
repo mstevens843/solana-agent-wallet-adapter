@@ -4,41 +4,58 @@ import type { GlobalOptions } from '../shared/types.js';
 import { renderWebRequest, bridgeRequest } from '../http/index.js';
 import { select, confirm, password, input, header, kv, badge, spinner, divider } from '../tui/index.js';
 import { listConnectors, listActions, humanizeActionKind, type ConnectorSummary } from '../forms/connectorMeta.js';
+import {
+  connectorSecretsForRequest,
+  enabledConnectorIds,
+  listInstalledConnectorKeys,
+  loadConnectorState,
+  removeSessionConnectorSecret,
+  saveConnectorState,
+  saveSessionConnectorSecret,
+  setConnectorEnabled,
+  type ProtocolConnectorState,
+} from './connectorState.js';
 
 type Action = 'view' | 'set-key' | 'remove-key' | 'toggle' | 'test' | 'back';
 
 export async function runConnectorsMenu(options: GlobalOptions): Promise<void> {
   while (true) {
     const connectors = listConnectors();
-    const installedKeys = await safeListInstalledKeys(options);
-    const enabled = await safeFetchEnabledMap(options);
+    const installedKeys = await listInstalledConnectorKeys(options);
+    const connectorState = await loadConnectorState(options);
+    const enabled = enabledConnectorIds(connectorState);
 
     console.log();
     console.log(header('Connectors'));
-    console.log(badge(`${connectors.length} protocols configured · ${installedKeys.size} BYO keys stored`, 'muted'));
+    console.log(badge(`${enabled.size} connected · ${connectors.length} protocols configured · ${installedKeys.size} BYO keys available`, 'muted'));
 
     const choice = await select<string>({
-      message: 'Pick a connector to manage',
-      pageSize: Math.min(22, connectors.length + 1),
+      message: 'Check a connector to connect or disconnect',
+      pageSize: Math.min(22, connectors.length + 2),
       choices: [
         ...connectors.map((c, i) => ({
-          name: rowLabel(i, c, installedKeys.has(c.id), enabled.get(c.id) ?? true),
+          name: rowLabel(i, c, installedKeys.has(c.id), enabled.has(c.id)),
           value: c.id,
         })),
+        { name: 'Manage connector details', value: '__manage__' },
         { name: '← Back to main menu', value: '__back__' },
       ],
     });
     if (choice === '__back__') return;
+    if (choice === '__manage__') {
+      await pickConnectorToManage(options, connectors, installedKeys, enabled, connectorState);
+      continue;
+    }
 
     const connector = connectors.find((c) => c.id === choice);
     if (!connector) continue;
-    await manageConnector(options, connector, installedKeys.has(connector.id), enabled.get(connector.id) ?? true);
+    await toggleConnector(options, connectorState, connector, !enabled.has(connector.id), installedKeys.has(connector.id));
   }
 }
 
 function rowLabel(index: number, c: ConnectorSummary, keyInstalled: boolean, isEnabled: boolean): string {
   const id = String(index + 1).padStart(2, ' ');
-  const onOff = isEnabled ? badge('● on', 'ok') : badge('○ off', 'muted');
+  const onOff = isEnabled ? badge('[x]', 'ok') : badge('[ ]', 'muted');
   const keyChip = c.needsKey
     ? keyInstalled
       ? badge('key set', 'ok')
@@ -47,20 +64,45 @@ function rowLabel(index: number, c: ConnectorSummary, keyInstalled: boolean, isE
   return `${id}.  ${onOff}  ${c.name.padEnd(18)}  ${keyChip}  ${badge(`${c.actionCount} actions`, 'muted')}`;
 }
 
+async function pickConnectorToManage(
+  options: GlobalOptions,
+  connectors: ConnectorSummary[],
+  installedKeys: Set<string>,
+  enabled: Set<string>,
+  connectorState: ProtocolConnectorState,
+): Promise<void> {
+  const choice = await select<string>({
+    message: 'Pick a connector to manage',
+    pageSize: Math.min(22, connectors.length + 1),
+    choices: [
+      ...connectors.map((c, i) => ({
+        name: rowLabel(i, c, installedKeys.has(c.id), enabled.has(c.id)),
+        value: c.id,
+      })),
+      { name: '← Back', value: '__back__' },
+    ],
+  });
+  if (choice === '__back__') return;
+  const connector = connectors.find((c) => c.id === choice);
+  if (!connector) return;
+  await manageConnector(options, connector, installedKeys.has(connector.id), enabled.has(connector.id), connectorState);
+}
+
 async function manageConnector(
   options: GlobalOptions,
   connector: ConnectorSummary,
   keyInstalled: boolean,
   isEnabled: boolean,
+  connectorState: ProtocolConnectorState,
 ): Promise<void> {
   console.log();
   console.log(header(connector.name));
   const rows: Array<[string, string]> = [
     ['Slug', connector.id],
     ['Status', connector.status],
-    ['Enabled in agent', isEnabled ? badge('yes', 'ok') : badge('no', 'muted')],
+    ['Connected', isEnabled ? badge('yes', 'ok') : badge('no', 'muted')],
     ['Actions', String(connector.actionCount)],
-    ['BYO key', connector.needsKey ? (keyInstalled ? badge('configured', 'ok') : badge('missing', 'warn')) : badge('not required', 'muted')],
+    ['Credential', connector.needsKey ? (keyInstalled ? badge('configured', 'ok') : badge('missing', 'warn')) : badge('not required', 'muted')],
     ['Recurring', connector.recurringCapable ? badge('supported', 'ok') : badge('not supported', 'muted')],
   ];
   if (connector.keyLabel) rows.push(['Key', connector.keyLabel]);
@@ -68,11 +110,11 @@ async function manageConnector(
 
   const choices: Array<{ name: string; value: Action; description?: string }> = [
     { name: 'View supported actions', value: 'view' },
-    { name: isEnabled ? 'Disable in agent' : 'Enable in agent', value: 'toggle' },
+    { name: isEnabled ? 'Turn off' : 'Turn on', value: 'toggle' },
   ];
   if (connector.needsKey) {
-    choices.push({ name: keyInstalled ? 'Replace API key' : 'Set API key', value: 'set-key' });
-    if (keyInstalled) choices.push({ name: 'Remove API key', value: 'remove-key' });
+    choices.push({ name: keyInstalled ? `Replace ${connector.keyLabel ?? 'credential'}` : `Set ${connector.keyLabel ?? 'credential'}`, value: 'set-key' });
+    if (keyInstalled) choices.push({ name: `Remove ${connector.keyLabel ?? 'credential'}`, value: 'remove-key' });
     choices.push({ name: 'Test connector', value: 'test' });
   } else {
     choices.push({ name: 'Test connector (read markets)', value: 'test' });
@@ -92,7 +134,7 @@ async function manageConnector(
     return;
   }
   if (action === 'toggle') {
-    await toggleEnabled(options, connector, !isEnabled);
+    await toggleConnector(options, connectorState, connector, !isEnabled, keyInstalled);
     return;
   }
   if (action === 'set-key') {
@@ -100,16 +142,18 @@ async function manageConnector(
     return;
   }
   if (action === 'remove-key') {
-    const yes = await confirm({ message: `Remove ${connector.name} API key?`, default: false });
+    const yes = await confirm({ message: `Remove ${connector.name} ${connector.keyLabel ?? 'credential'}?`, default: false });
     if (!yes) return;
-    const spin = spinner(`Removing ${connector.keyLabel ?? 'key'}…`);
+    removeSessionConnectorSecret(connector.id);
+    const spin = spinner(`Removing ${connector.keyLabel ?? 'credential'}…`);
     try {
       await renderWebRequest(options, `/api/connector-secrets/${encodeURIComponent(connector.id)}`, {
         method: 'DELETE',
       }, { label: 'Render-web connector secrets', requireAuth: true });
-      spin.succeed(`${connector.keyLabel ?? 'Key'} removed.`);
+      spin.succeed(`${connector.keyLabel ?? 'Credential'} removed.`);
     } catch (err) {
-      spin.fail(`Failed: ${err instanceof Error ? err.message : String(err)}`);
+      spin.succeed(`${connector.keyLabel ?? 'Credential'} removed for this CLI session.`);
+      console.log(badge(`Cloud remove skipped: ${err instanceof Error ? err.message : String(err)}`, 'muted'));
     }
     return;
   }
@@ -119,69 +163,32 @@ async function manageConnector(
   }
 }
 
-// Reads /api/preferences/protocol-connectors and returns a map of
-// connectorId → enabled. Missing keys default to enabled (the web app's
-// default behaviour).
-async function safeFetchEnabledMap(options: GlobalOptions): Promise<Map<string, boolean>> {
-  try {
-    const raw = await renderWebRequest<unknown>(options, '/api/preferences/protocol-connectors', undefined, {
-      label: 'Render-web preferences',
-      requireAuth: true,
-    });
-    const map = new Map<string, boolean>();
-    const payload = extractPrefsPayload(raw);
-    for (const [id, value] of Object.entries(payload)) {
-      if (value && typeof value === 'object' && 'enabled' in (value as Record<string, unknown>)) {
-        map.set(id, Boolean((value as { enabled?: boolean }).enabled));
-      } else if (typeof value === 'boolean') {
-        map.set(id, value);
-      }
-    }
-    return map;
-  } catch {
-    return new Map();
+async function toggleConnector(
+  options: GlobalOptions,
+  state: ProtocolConnectorState,
+  connector: ConnectorSummary,
+  nextEnabled: boolean,
+  keyInstalled: boolean,
+): Promise<void> {
+  if (nextEnabled && connector.needsKey && !keyInstalled) {
+    const saved = await setApiKey(options, connector);
+    if (!saved) return;
+  }
+  const next = setConnectorEnabled(state, connector.id, nextEnabled);
+  const spin = spinner(`${nextEnabled ? 'Turning on' : 'Turning off'} ${connector.name}…`);
+  const result = await saveConnectorState(options, next);
+  if (result.cloud) {
+    spin.succeed(`${connector.name} ${nextEnabled ? 'connected' : 'disconnected'}.`);
+  } else {
+    spin.succeed(`${connector.name} ${nextEnabled ? 'connected' : 'disconnected'} for this CLI session.`);
+    console.log(badge('Sign in with /sign-in to sync connector choices to cloud storage.', 'muted'));
   }
 }
 
-function extractPrefsPayload(raw: unknown): Record<string, unknown> {
-  if (raw && typeof raw === 'object') {
-    const payload = (raw as Record<string, unknown>).payload;
-    if (payload && typeof payload === 'object') return payload as Record<string, unknown>;
-    return raw as Record<string, unknown>;
-  }
-  return {};
-}
-
-async function toggleEnabled(options: GlobalOptions, connector: ConnectorSummary, nextEnabled: boolean): Promise<void> {
-  const spin = spinner(`${nextEnabled ? 'Enabling' : 'Disabling'} ${connector.name}…`);
-  try {
-    const raw = await renderWebRequest<unknown>(options, '/api/preferences/protocol-connectors', undefined, {
-      label: 'Render-web preferences',
-      requireAuth: true,
-    }).catch(() => null);
-    const payload = extractPrefsPayload(raw);
-    const existing = payload[connector.id];
-    const merged: Record<string, unknown> = {
-      ...payload,
-      [connector.id]: existing && typeof existing === 'object'
-        ? { ...(existing as Record<string, unknown>), enabled: nextEnabled }
-        : { enabled: nextEnabled },
-    };
-    await renderWebRequest(options, '/api/preferences/protocol-connectors', {
-      method: 'PUT',
-      body: JSON.stringify({ payload: merged }),
-    }, { label: 'Render-web preferences', requireAuth: true });
-    spin.succeed(`${connector.name} ${nextEnabled ? 'enabled' : 'disabled'} in agent.`);
-  } catch (err) {
-    spin.fail(`Toggle failed: ${err instanceof Error ? err.message : String(err)}`);
-    console.log(badge('Tip: run /sign-in first to authenticate with the cloud workspace.', 'muted'));
-  }
-}
-
-async function setApiKey(options: GlobalOptions, connector: ConnectorSummary): Promise<void> {
+async function setApiKey(options: GlobalOptions, connector: ConnectorSummary): Promise<boolean> {
   const label = connector.keyLabel ?? 'API key';
   console.log();
-  console.log(badge(`Pasting a ${label} stores it encrypted in cloud preferences (requires sign-in).`, 'muted'));
+  console.log(badge(`Pasting a ${label} stores it encrypted in cloud preferences when signed in; otherwise it stays in this CLI session.`, 'muted'));
 
   // Prefer reading from an env var to keep secrets out of shell history when
   // the user has one set. Fall back to a masked password prompt.
@@ -192,15 +199,16 @@ async function setApiKey(options: GlobalOptions, connector: ConnectorSummary): P
     ? process.env[connector.envVar]!
     : await password({ message: `${label}:` });
   if (!apiKey.trim()) {
-    console.log(badge('Aborted — empty key.', 'warn'));
-    return;
+    console.log(badge('Aborted — empty credential.', 'warn'));
+    return false;
   }
   const labelInput = await input({
-    message: 'Label for this key (optional)',
+    message: 'Label for this credential (optional)',
     default: '',
   });
   const body: Record<string, string> = { apiKey: apiKey.trim() };
   if (labelInput.trim()) body.label = labelInput.trim();
+  saveSessionConnectorSecret(connector.id, { apiKey: apiKey.trim() });
   const spin = spinner(`Saving ${label}…`);
   try {
     await renderWebRequest(options, `/api/connector-secrets/${encodeURIComponent(connector.id)}`, {
@@ -208,18 +216,25 @@ async function setApiKey(options: GlobalOptions, connector: ConnectorSummary): P
       body: JSON.stringify(body),
     }, { label: 'Render-web connector secrets', requireAuth: true });
     spin.succeed(`${label} saved.`);
+    return true;
   } catch (err) {
-    spin.fail(`Failed: ${err instanceof Error ? err.message : String(err)}`);
-    console.log(badge('Tip: run /sign-in first to authenticate with the cloud workspace.', 'muted'));
+    spin.succeed(`${label} stored for this CLI session.`);
+    console.log(badge(`Cloud save skipped: ${err instanceof Error ? err.message : String(err)}`, 'muted'));
+    return true;
   }
 }
 
 async function testConnector(options: GlobalOptions, connector: ConnectorSummary): Promise<void> {
   const spin = spinner(`Probing ${connector.name}…`);
+  const connectorSecrets = connectorSecretsForRequest(connector.id);
   try {
     const result = await bridgeRequest(options, '/bridge/action/connector-read-facts', {
       method: 'POST',
-      body: JSON.stringify({ connectorId: connector.id, capability: 'markets' }),
+      body: JSON.stringify({
+        connectorId: connector.id,
+        capability: 'markets',
+        ...(connectorSecrets ? { connectorSecrets } : {}),
+      }),
     });
     spin.succeed('Read OK.');
     console.log(divider());
@@ -228,28 +243,4 @@ async function testConnector(options: GlobalOptions, connector: ConnectorSummary
   } catch (err) {
     spin.fail(`Read failed: ${err instanceof Error ? err.message : String(err)}`);
   }
-}
-
-async function safeListInstalledKeys(options: GlobalOptions): Promise<Set<string>> {
-  try {
-    const raw = await renderWebRequest<unknown>(options, '/api/connector-secrets', undefined, {
-      label: 'Render-web connector secrets',
-      requireAuth: true,
-    });
-    const list = extractList(raw);
-    return new Set(list.map((entry) => entry.connectorId).filter((id): id is string => typeof id === 'string'));
-  } catch {
-    // Not signed in or render-web unreachable. Render-web is optional; we
-    // degrade silently and show "needs key" for everything.
-    return new Set();
-  }
-}
-
-function extractList(raw: unknown): Array<{ connectorId?: string }> {
-  if (Array.isArray(raw)) return raw as Array<{ connectorId?: string }>;
-  if (raw && typeof raw === 'object') {
-    const candidate = (raw as Record<string, unknown>).secrets ?? (raw as Record<string, unknown>).items;
-    if (Array.isArray(candidate)) return candidate as Array<{ connectorId?: string }>;
-  }
-  return [];
 }

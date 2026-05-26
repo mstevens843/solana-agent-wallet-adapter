@@ -112,7 +112,7 @@ import { runSessionsMenu } from './flows/sessions.js';
 import { runAgentPaymentsMenu } from './flows/agentPayments.js';
 import { runSkillsMenu } from './flows/skills.js';
 import { runPreferencesMenu } from './flows/preferences.js';
-import { ensureTtyOrExit, withCancelGuard, select as tuiSelect, rowSelect as tuiRowSelect, header as tuiHeader, badge as tuiBadge, kv as tuiKv, divider as tuiDivider, password as tuiPassword, input as tuiInput, confirm as tuiConfirm, spinner as tuiSpinner } from './tui/index.js';
+import { ensureTtyOrExit, withCancelGuard, isExitPromptError, select as tuiSelect, rowSelect as tuiRowSelect, header as tuiHeader, badge as tuiBadge, kv as tuiKv, divider as tuiDivider, password as tuiPassword, input as tuiInput, confirm as tuiConfirm, spinner as tuiSpinner } from './tui/index.js';
 import {
   AI_PROVIDER_PRESETS,
   aiProviderPresetById,
@@ -403,10 +403,17 @@ interface TerminalAppState {
   options: GlobalOptions;
   bridgeProcess: ChildProcess | null;
   browserProcess: ChildProcess | null;
+  activeCommandAbort: AbortController | null;
   logs: string[];
   lastActions: PreparedAction[];
   lastRecurring: RecurringPayment[];
   lastReceipts: ActionReceipt[];
+}
+
+interface TerminalReadlineContext {
+  current: readline.Interface;
+  recreate(): readline.Interface;
+  closeCurrent(): void;
 }
 
 interface TerminalAgentPlan {
@@ -784,7 +791,7 @@ async function dispatch(parsed: ParsedArgs): Promise<unknown> {
       ensureTtyOrExit('sign-in');
       await ensureBridgeDetached(parsed.options).catch(() => undefined);
       await ensureBrowserHostDetached(parsed.options);
-      await withCancelGuard(() => runSignIn(parsed.options));
+      await withCancelGuard(() => runSignIn(parsed.options, signInTimeoutOption(parsed.positionals.slice(1))));
       return NO_OUTPUT;
     case 'sign-out':
       await runSignOut(parsed.options);
@@ -1453,17 +1460,22 @@ async function runTerminalApp(parsed: ParsedArgs): Promise<void> {
     options: parsed.options,
     bridgeProcess: null,
     browserProcess: null,
+    activeCommandAbort: null,
     logs: [],
     lastActions: [],
     lastRecurring: [],
     lastReceipts: [],
   };
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
-  process.once('SIGINT', () => {
+  const onSigint = () => {
+    if (abortActiveCommand(state)) {
+      return;
+    }
     cleanupApp(state);
     process.exit(0);
-  });
+  };
+  const readlineContext = createTerminalReadlineContext(onSigint);
+  process.on('SIGINT', onSigint);
 
   try {
     renderBanner(state);
@@ -1473,19 +1485,143 @@ async function runTerminalApp(parsed: ParsedArgs): Promise<void> {
     console.log(colorize(state.options, 'Type /connect, /sign-in, /agent-setup, or /agent to start.', 'muted'));
 
     while (true) {
-      const line = (await rl.question(colorize(state.options, 'agentic> ', 'green'))).trim();
+      let line: string;
+      try {
+        line = (await readlineContext.current.question(colorize(state.options, 'agentic> ', 'green'))).trim();
+      } catch (err) {
+        if (isReadlineClosedError(err) && !process.stdin.destroyed && !process.stdin.readableEnded) {
+          readlineContext.recreate();
+          continue;
+        }
+        throw err;
+      }
       if (!line) {
         continue;
       }
-      const shouldExit = await handleTerminalCommand(state, rl, line);
+      const shouldExit = await handleTerminalCommand(state, readlineContext, line);
       if (shouldExit) {
         break;
       }
     }
   } finally {
-    rl.close();
+    process.removeListener('SIGINT', onSigint);
+    readlineContext.closeCurrent();
     cleanupApp(state);
   }
+}
+
+function createTerminalReadlineContext(onSigint: () => void): TerminalReadlineContext {
+  let current = createTerminalReadline(onSigint);
+  return {
+    get current(): readline.Interface {
+      return current;
+    },
+    set current(next: readline.Interface) {
+      current = next;
+    },
+    recreate(): readline.Interface {
+      closeTerminalReadline(current, onSigint);
+      current = createTerminalReadline(onSigint);
+      return current;
+    },
+    closeCurrent(): void {
+      closeTerminalReadline(current, onSigint);
+    },
+  };
+}
+
+function createTerminalReadline(onSigint: () => void): readline.Interface {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  rl.on('SIGINT', onSigint);
+  return rl;
+}
+
+function closeTerminalReadline(rl: readline.Interface, onSigint: () => void): void {
+  try {
+    rl.off('SIGINT', onSigint);
+  } catch {
+    // ignore
+  }
+  try {
+    rl.close();
+  } catch {
+    // ignore
+  }
+}
+
+async function withTerminalPromptBoundary<T>(
+  readlineContext: TerminalReadlineContext,
+  body: () => Promise<T>,
+): Promise<T> {
+  readlineContext.closeCurrent();
+  try {
+    return await body();
+  } finally {
+    readlineContext.recreate();
+  }
+}
+
+async function withTerminalPromptCancelBoundary<T>(
+  readlineContext: TerminalReadlineContext,
+  body: () => Promise<T>,
+  fallback: T,
+): Promise<T> {
+  let value = fallback;
+  await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(async () => {
+    value = await body();
+  }));
+  return value;
+}
+
+function isReadlineClosedError(err: unknown): boolean {
+  if (!(err instanceof Error)) {
+    return false;
+  }
+  const text = `${err.name} ${err.message}`;
+  return /readline was closed|interface .*closed|ERR_USE_AFTER_CLOSE/i.test(text);
+}
+
+function abortActiveCommand(state: TerminalAppState): boolean {
+  const controller = state.activeCommandAbort;
+  if (!controller || controller.signal.aborted) {
+    return false;
+  }
+  controller.abort(abortPromptError());
+  return true;
+}
+
+async function withTerminalCommandAbort(
+  state: TerminalAppState,
+  body: (signal: AbortSignal) => Promise<void>,
+): Promise<void> {
+  const previous = state.activeCommandAbort;
+  const controller = new AbortController();
+  state.activeCommandAbort = controller;
+  try {
+    await body(controller.signal);
+  } finally {
+    if (state.activeCommandAbort === controller) {
+      state.activeCommandAbort = previous;
+    }
+  }
+}
+
+function abortPromptError(): Error {
+  const err = new Error('Prompt aborted.');
+  err.name = 'AbortPromptError';
+  return err;
+}
+
+function signInTimeoutOption(args: string[]): { timeoutMs?: number } {
+  const timeoutRaw = optionValue(args, '--timeout-ms');
+  if (timeoutRaw === undefined) {
+    return {};
+  }
+  const timeoutMs = Number(timeoutRaw);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new Error('--timeout-ms must be a positive number.');
+  }
+  return { timeoutMs };
 }
 
 async function bootstrapTerminalApp(state: TerminalAppState): Promise<void> {
@@ -1517,6 +1653,7 @@ function createOneShotState(options: GlobalOptions): TerminalAppState {
     options,
     bridgeProcess: null,
     browserProcess: null,
+    activeCommandAbort: null,
     logs: [],
     lastActions: [],
     lastRecurring: [],
@@ -2016,7 +2153,7 @@ function agentSetupProviderLabel(provider: string, status?: BridgeAiStatus | nul
 
 async function handleTerminalCommand(
   state: TerminalAppState,
-  rl: readline.Interface,
+  readlineContext: TerminalReadlineContext,
   line: string,
 ): Promise<boolean> {
   const [command, ...args] = splitCommandLine(line);
@@ -2047,7 +2184,7 @@ async function handleTerminalCommand(
         printDoctor(state.options, await runDoctor(state.options));
         return false;
       case 'setup':
-        await runSetupInteractive(state, rl);
+        await runSetupInteractive(state, readlineContext.current);
         return false;
       case 'status':
       case 'wallet':
@@ -2080,31 +2217,31 @@ async function handleTerminalCommand(
         printOk(state.options, `Bridge reachable at ${state.options.bridgeUrl}.`);
         return false;
       case 'inbox':
-        await withCancelGuard(() => runInboxHub(state));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runInboxHub(state)));
         return false;
       case 'inbox-new':
-        await withCancelGuard(() => runOneTimeInbox(state));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runOneTimeInbox(state)));
         return false;
       case 'inbox-repeat':
-        await withCancelGuard(() => runRepeatInbox(state));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runRepeatInbox(state)));
         return false;
       case 'repeat-manage':
-        await withCancelGuard(() => runScheduleManage(state.options));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runScheduleManage(state.options)));
         return false;
       case 'agent-payments':
-        await withCancelGuard(() => runAgentPaymentsMenu(state.options));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runAgentPaymentsMenu(state.options)));
         return false;
       case 'api-keys':
       case 'keys':
-        await withCancelGuard(() => runApiKeysMenu(state));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runApiKeysMenu(state)));
         return false;
       case 'preferences':
       case 'prefs-menu':
-        await withCancelGuard(() => runPreferencesMenu(state.options));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runPreferencesMenu(state.options)));
         return false;
       case 'skills':
         if (args.length === 0) {
-          await withCancelGuard(() => runSkillsMenu(state.options));
+          await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runSkillsMenu(state.options)));
           return false;
         }
         // /skills <sub> falls through to the legacy dispatch tree for scripting.
@@ -2115,10 +2252,10 @@ async function handleTerminalCommand(
           return false;
         })();
       case 'proof':
-        await withCancelGuard(() => runProofCommand(state, args));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runProofCommand(state, args)));
         return false;
       case 'proof-new':
-        await withCancelGuard(() => runProofCommand(state, ['new', ...args]));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runProofCommand(state, ['new', ...args])));
         return false;
       case 'proof-list':
         await runProofCommand(state, ['list']);
@@ -2131,7 +2268,7 @@ async function handleTerminalCommand(
         return false;
       case 'sessions':
         if (args.length === 0) {
-          await withCancelGuard(() => runSessionsMenu(state.options));
+          await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runSessionsMenu(state.options)));
           return false;
         }
         // /sessions <subcommand> falls through to the legacy session command tree
@@ -2146,52 +2283,52 @@ async function handleTerminalCommand(
         const filter: DoneFilter = args.length === 0
           ? 'all'
           : (args[0] as DoneFilter);
-        await withCancelGuard(() => runDoneBrowser(state, filter));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runDoneBrowser(state, filter)));
         return false;
       }
       case 'done-completed':
-        await withCancelGuard(() => runDoneBrowser(state, 'one-time'));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runDoneBrowser(state, 'one-time')));
         return false;
       case 'done-repeats':
-        await withCancelGuard(() => runDoneBrowser(state, 'repeats'));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runDoneBrowser(state, 'repeats')));
         return false;
       case 'done-proofs':
-        await withCancelGuard(() => runDoneBrowser(state, 'proofs'));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runDoneBrowser(state, 'proofs')));
         return false;
       case 'done-receipts':
-        await withCancelGuard(() => runDoneBrowser(state, 'receipts'));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runDoneBrowser(state, 'receipts')));
         return false;
       case 'inspect': {
-        const id = args[0] ?? await pickPendingAction(state.options, 'inspect');
+        const id = args[0] ?? await withTerminalPromptCancelBoundary(readlineContext, () => pickPendingAction(state.options, 'inspect'), undefined);
         if (id) await inspectPreparedActionInteractive(state, id);
         return false;
       }
       case 'approve':
       case 'sign': {
-        const id = args[0] ?? await pickPendingAction(state.options, 'approve');
+        const id = args[0] ?? await withTerminalPromptCancelBoundary(readlineContext, () => pickPendingAction(state.options, 'approve'), undefined);
         if (id) await approvePreparedAction(state, id);
         return false;
       }
       case 'reject': {
-        const id = args[0] ?? await pickPendingAction(state.options, 'reject');
+        const id = args[0] ?? await withTerminalPromptCancelBoundary(readlineContext, () => pickPendingAction(state.options, 'reject'), undefined);
         const reason = args.slice(1).join(' ') || undefined;
         if (id) await rejectPreparedAction(state, id, reason);
         return false;
       }
       case 'archive': {
-        const id = args[0] ?? await pickPendingAction(state.options, 'archive');
+        const id = args[0] ?? await withTerminalPromptCancelBoundary(readlineContext, () => pickPendingAction(state.options, 'archive'), undefined);
         if (id) await archivePreparedAction(state, id);
         return false;
       }
       case 'schedule':
-        await runScheduleCommand(state, rl, args);
+        await runScheduleCommand(state, readlineContext.current, args);
         return false;
       case 'plan':
-        await runPlanCommand(state, rl, naturalLanguage);
+        await runPlanCommand(state, readlineContext.current, naturalLanguage);
         return false;
       case 'research':
       case 'labs':
-        await runResearchCommand(state, rl, args);
+        await runResearchCommand(state, readlineContext.current, args);
         return false;
       case 'receipts':
         await printReceipts(state);
@@ -2200,7 +2337,7 @@ async function handleTerminalCommand(
         printLogs(state);
         return false;
       case 'quote':
-        await runQuoteCommand(state, rl);
+        await runQuoteCommand(state, readlineContext.current);
         return false;
       case 'refresh':
         await renderDashboard(state);
@@ -2212,47 +2349,47 @@ async function handleTerminalCommand(
       // through `withCancelGuard` so Ctrl+C prints "Cancelled." cleanly.
       case 'new':
         await requireWalletConnected(state);
-        await withCancelGuard(() => runNewMenu(state.options));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runNewMenu(state.options)));
         return false;
       case 'new-send':
         await requireWalletConnected(state);
-        await withCancelGuard(() => runNewSend(state.options));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runNewSend(state.options)));
         return false;
       case 'new-spl':
         await requireWalletConnected(state);
-        await withCancelGuard(() => runNewSpl(state.options));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runNewSpl(state.options)));
         return false;
       case 'new-swap':
         await requireWalletConnected(state);
-        await withCancelGuard(() => runNewSwap(state.options));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runNewSwap(state.options)));
         return false;
       case 'swap-quote':
         await requireWalletConnected(state);
-        await withCancelGuard(() => runSwapQuote(state.options));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runSwapQuote(state.options)));
         return false;
       case 'new-connector':
         await requireWalletConnected(state);
-        await withCancelGuard(() => runNewConnector(state.options));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runNewConnector(state.options)));
         return false;
       case 'repeat':
         await requireWalletConnected(state);
-        await withCancelGuard(() => runRepeatMenu(state.options));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runRepeatMenu(state.options)));
         return false;
       case 'repeat-scheduled':
         await requireWalletConnected(state);
-        await withCancelGuard(() => runRepeatScheduled(state.options));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runRepeatScheduled(state.options)));
         return false;
       case 'repeat-recurring':
         await requireWalletConnected(state);
-        await withCancelGuard(() => runRepeatRecurring(state.options));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runRepeatRecurring(state.options)));
         return false;
       case 'repeat-connector':
         await requireWalletConnected(state);
-        await withCancelGuard(() => runRepeatConnector(state.options));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runRepeatConnector(state.options)));
         return false;
       case 'connectors': {
         if (args.length === 0) {
-          await withCancelGuard(() => runConnectorsMenu(state.options));
+          await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runConnectorsMenu(state.options)));
           return false;
         }
         // /connectors <subcommand> falls through to the legacy connector group
@@ -2263,14 +2400,14 @@ async function handleTerminalCommand(
         return false;
       }
       case 'agent':
-        await withCancelGuard(() => runAgent(state.options, (plan, note) => signPlanAsProof(state, plan, note)));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runAgent(state.options, (plan, note) => signPlanAsProof(state, plan, note))));
         return false;
       case 'agent-setup':
       case 'connect-agent':
       case 'ai-setup':
-        await withCancelGuard(async () => {
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(async () => {
           await runAgentSetup(state, args);
-        });
+        }));
         return false;
       case 'agent-disconnect':
       case 'ai-disconnect':
@@ -2278,14 +2415,17 @@ async function handleTerminalCommand(
         await clearAgentSetup(state.options);
         return false;
       case 'ask':
-        await withCancelGuard(() => runAsk(state.options, args.join(' ').trim() || undefined));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => runAsk(state.options, args.join(' ').trim() || undefined)));
         return false;
       case 'sign-in':
         await ensureBridge(state).catch((err) => {
           pushLog(state, `bridge sign-in bootstrap failed: ${errorMessage(err)}`);
         });
         await ensureBrowserHost(state);
-        await withCancelGuard(() => runSignIn(state.options));
+        await withTerminalPromptBoundary(readlineContext, () => withCancelGuard(() => withTerminalCommandAbort(state, (signal) => runSignIn(state.options, {
+          signal,
+          ...signInTimeoutOption(args),
+        }))));
         return false;
       case 'sign-out':
         await runSignOut(state.options);
@@ -5811,6 +5951,7 @@ async function readJsonFile<T>(path: string): Promise<T> {
 }
 
 function cleanupApp(state: TerminalAppState): void {
+  abortActiveCommand(state);
   if (state.bridgeProcess && !state.bridgeProcess.killed) {
     state.bridgeProcess.kill('SIGTERM');
   }
@@ -6463,6 +6604,7 @@ function printCommandMenu(topic?: string): void {
     console.log('/sign-in           Connect cloud storage (optional)');
     console.log('/agent-setup       Add a provider key for Hosted BYOK or Local Bridge');
     console.log('/agent-disconnect  Clear the saved agent provider key');
+    console.log('/connectors        Manage protocol connectors and BYO API keys');
     console.log('/doctor            Diagnostics');
     console.log('Advanced: /help advanced includes optional BYOK API key overrides.');
     return;
@@ -6473,6 +6615,7 @@ function printCommandMenu(topic?: string): void {
   console.log('/sign-in           Connect cloud storage (optional)');
   console.log('/agent-setup       Add a provider key for Hosted BYOK or Local Bridge');
   console.log('/agent-disconnect  Clear the saved agent provider key');
+  console.log('/connectors        Manage protocol connectors and BYO API keys');
   console.log('');
   printSection('Work');
   console.log('/agent             Ask AI to prepare a wallet action');
@@ -7310,6 +7453,10 @@ main().catch((err) => {
       return null;
     }
   })();
+  if (isExitPromptError(err)) {
+    console.error('Cancelled.');
+    process.exit(130);
+  }
   if (parsed?.options.color) {
     printError(parsed.options, errorMessage(err));
   } else {

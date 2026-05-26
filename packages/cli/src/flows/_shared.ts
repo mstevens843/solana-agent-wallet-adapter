@@ -1,6 +1,7 @@
 import type { GlobalOptions } from '../shared/types.js';
-import { bridgeRequest, renderWebRequest } from '../http/index.js';
+import { bridgeRequest } from '../http/index.js';
 import { header, kv, badge, divider } from '../tui/index.js';
+import { listInstalledConnectorKeys as listInstalledConnectorKeysFromState } from './connectorState.js';
 
 export interface PreparedActionResult {
   id?: string;
@@ -71,27 +72,8 @@ export function friendlyBridgeError(err: unknown, options: GlobalOptions): strin
   return `Bridge offline at ${options.bridgeUrl}.  Run /bridge start to launch it, or /doctor for diagnostics.`;
 }
 
-// Returns the set of connector IDs that have a BYO key stored in cloud
-// preferences. Degrades silently to an empty set when render-web is unreachable
-// or the user isn't signed in — the caller decides what to do with "missing".
+// Returns connector IDs that have a BYO key in cloud storage or in the current
+// CLI session. The caller decides what to do with "missing".
 export async function listInstalledConnectorKeys(options: GlobalOptions): Promise<Set<string>> {
-  try {
-    const raw = await renderWebRequest<unknown>(options, '/api/connector-secrets', undefined, {
-      label: 'Render-web connector secrets',
-      requireAuth: true,
-    });
-    const items = extractList(raw);
-    return new Set(items.map((entry) => entry.connectorId).filter((id): id is string => typeof id === 'string'));
-  } catch {
-    return new Set();
-  }
-}
-
-function extractList(raw: unknown): Array<{ connectorId?: string }> {
-  if (Array.isArray(raw)) return raw as Array<{ connectorId?: string }>;
-  if (raw && typeof raw === 'object') {
-    const candidate = (raw as Record<string, unknown>).secrets ?? (raw as Record<string, unknown>).items;
-    if (Array.isArray(candidate)) return candidate as Array<{ connectorId?: string }>;
-  }
-  return [];
+  return listInstalledConnectorKeysFromState(options);
 }

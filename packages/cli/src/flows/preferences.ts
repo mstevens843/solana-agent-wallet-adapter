@@ -3,6 +3,7 @@ import { renderWebRequest, bridgeRequest, tryBridgeRequest } from '../http/index
 import { select, confirm, input, header, kv, badge, divider, spinner } from '../tui/index.js';
 import { loadSession, sessionStatusSummary } from '../auth/sessionStore.js';
 import { runConnectorsMenu } from './connectors.js';
+import { countEnabledConnectors } from './connectorState.js';
 
 type Card = 'workspace' | 'ai' | 'access' | 'rules' | 'tokens' | 'back';
 
@@ -63,7 +64,7 @@ async function fetchSummary(options: GlobalOptions): Promise<Summary> {
     fetchNamespace(options, 'failure-policies'),
   ]);
   const auth = sessionStatusSummary(session);
-  const connectorCount = countConnectorsEnabled(connectors);
+  const connectorCount = countEnabledConnectors(connectors);
   const policyCount = countEntries(policies);
   const railCount = countEntries(rails);
   const tokenCount = countEntries(tokens);
@@ -284,15 +285,6 @@ async function fetchNamespace(options: GlobalOptions, namespace: string): Promis
 function countEntries(payload: Record<string, unknown>): number {
   if (Array.isArray(payload)) return (payload as unknown[]).length;
   return Object.keys(payload).length;
-}
-
-function countConnectorsEnabled(payload: Record<string, unknown>): number {
-  let count = 0;
-  for (const v of Object.values(payload)) {
-    if (v === true) count += 1;
-    else if (v && typeof v === 'object' && (v as { enabled?: boolean }).enabled !== false) count += 1;
-  }
-  return count;
 }
 
 function aiModeLabel(settings: Record<string, unknown>): string {

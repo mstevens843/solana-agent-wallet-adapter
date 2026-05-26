@@ -141,7 +141,11 @@ import {
   type DesktopConnectMethod,
   type DesktopQrWallet,
 } from './desktopConnectFlow.js';
-import { resolveCliSignInBridgeHydration } from './cliSignInBridge.js';
+import {
+  cliIntentAllowsBridgeRequestClaim,
+  resolveCliCloudSignInReadiness,
+  resolveCliSignInBridgeHydration,
+} from './cliSignInBridge.js';
 import { computeBridgeConfigUpdate } from './bridgeTokenSync.js';
 import {
   resolveDesktopPairingRelayBaseUrl,
@@ -7732,6 +7736,10 @@ function cliClientLabel(): string {
   return cliView?.surface === 'desktop' ? 'desktop app' : 'CLI';
 }
 
+function cliCloudSignInDirectSignerReady(): boolean {
+  return Boolean(client && walletBackend instanceof WalletStandardWebBackend && state.address);
+}
+
 function cliReturnFooter(): string {
   const target = cliView?.surface === 'desktop' ? 'desktop app' : 'terminal';
   const watcher = cliView?.surface === 'desktop' ? 'desktop app' : 'CLI';
@@ -7856,24 +7864,18 @@ function cliCloudSignInView(): string {
   const callback = url.searchParams.get('callback') ?? '';
   const desiredWallet = url.searchParams.get('walletAddress') ?? '';
   const connected = state.address ?? '';
-  const walletMismatch = Boolean(desiredWallet && connected && desiredWallet !== connected);
-  const walletReady = Boolean(connected) && !walletMismatch;
   const requestReady = Boolean(nonce && message && callback);
-  const ready = walletReady && requestReady;
+  const readiness = resolveCliCloudSignInReadiness({
+    requestReady,
+    connectedWallet: connected,
+    desiredWallet,
+    directSignerReady: cliCloudSignInDirectSignerReady(),
+  });
   const logoId = state.selectedWalletLogoId ?? walletProviderLogoIdForName(state.selectedWalletName);
   const subtitleIcon = logoId ? brandLogo(logoId, 'cli-focused-wallet-logo') : undefined;
-  const warning = (() => {
-    if (!requestReady) {
-      return 'Missing Cloud Storage sign-in details. Return to the terminal and run /sign-in again.';
-    }
-    if (!connected) {
-      return 'Pair your wallet first. Return to the terminal, run /connect, then run /sign-in again.';
-    }
-    if (walletMismatch) {
-      return `This sign-in is for ${short(desiredWallet)}, but ${short(connected)} is connected. Switch wallets and reload this page.`;
-    }
-    return '';
-  })();
+  const warning = readiness.walletMismatch
+    ? `This sign-in is for ${short(desiredWallet)}, but ${short(connected)} is connected. Switch wallets and reload this page.`
+    : readiness.warning;
   return cliFocusedShell({
     title: 'Connect Cloud Storage',
     subtitle: connected ? short(connected) : 'Wallet required',
@@ -7884,14 +7886,14 @@ function cliCloudSignInView(): string {
           <p>${escapeHtml(warning)}</p>
         </div>
       ` : ''}
-      <section class="cli-cloud-signin-card signature-state ${ready ? 'complete' : 'blocked'}">
+      <section class="cli-cloud-signin-card signature-state ${readiness.walletPaired ? 'complete' : 'blocked'}">
         <div>
           <span>Agentic Cloud</span>
-          <strong>${ready ? 'Ready for wallet signature' : 'Wallet required'}</strong>
+          <strong>${escapeHtml(readiness.heading)}</strong>
           <p>Cloud sign-in uses your paired wallet as identity only. It does not grant spending authority.</p>
         </div>
-        <button id="agenticLoginSign" type="button" class="primary" ${ready && !state.busy ? '' : 'disabled'}>
-          Sign in to Cloud Storage
+        <button id="agenticLoginSign" type="button" class="primary" ${readiness.canStart && !state.busy ? '' : 'disabled'}>
+          ${escapeHtml(readiness.buttonLabel)}
         </button>
         <p id="agenticLoginStatus" class="cli-focused-note" role="status"></p>
       </section>
@@ -23373,8 +23375,8 @@ function bind(): void {
     });
   }
 
-  // /agentic-login — wire the CLI-SIWS sign button. Runs only when the page is
-  // visible; the queryselector returns null otherwise.
+  // /agentic-login and /sign-in — wire the wallet-proof sign button. Runs only
+  // when the page is visible; the queryselector returns null otherwise.
   // bind() is invoked after every render(); to avoid attaching duplicate click
   // listeners (which would POST the signature twice on a single click), clone
   // the button before attaching — cloneNode strips listeners from the original.
@@ -23423,12 +23425,104 @@ function agenticLoginRouteActive(): boolean {
   return path === '/agentic-login' || path === '/sign-in';
 }
 
+type AgenticLoginStatusSetter = (text: string, ok?: boolean) => void;
+
+async function ensureAgenticLoginWalletReady(
+  desiredWallet: string,
+  setStatus: AgenticLoginStatusSetter,
+): Promise<string> {
+  if (cliView?.intent !== 'sign-in') {
+    if (!state.address) {
+      throw new Error('Connect a wallet first with /connect, then return here.');
+    }
+    return state.address;
+  }
+
+  const requestedWallet = desiredWallet.trim();
+  if (cliCloudSignInDirectSignerReady()) {
+    if (requestedWallet && !sameWalletAddress(state.address, requestedWallet)) {
+      throw new Error(`Connected wallet ${short(state.address)} does not match sign-in wallet ${short(requestedWallet)}.`);
+    }
+    return state.address;
+  }
+
+  if (!isBrowserWalletSurface()) {
+    if (!state.address) {
+      throw new Error('Connect a wallet first with /connect, then return here.');
+    }
+    return state.address;
+  }
+
+  const preferredWalletName = state.selectedWalletName;
+  const preferredSession = state.browserWalletSession;
+  if (preferredWalletName || preferredSession) {
+    setStatus('Restoring wallet session...');
+    await restoreBrowserWalletSession();
+    if (cliCloudSignInDirectSignerReady()) {
+      if (requestedWallet && !sameWalletAddress(state.address, requestedWallet)) {
+        throw new Error(`Connected wallet ${short(state.address)} does not match sign-in wallet ${short(requestedWallet)}.`);
+      }
+      return state.address;
+    }
+  }
+
+  setStatus('Opening wallet connection...');
+  return connectCliSignInBrowserWallet(requestedWallet, preferredWalletName, preferredSession);
+}
+
+async function connectCliSignInBrowserWallet(
+  desiredWallet: string,
+  preferredWalletName: string,
+  preferredSession: BrowserWalletSession | undefined,
+): Promise<string> {
+  state.wallets = visibleBrowserWallets(listAvailableWallets());
+  const preferred =
+    browserWalletRestoreName(state.wallets, preferredSession, state.cluster) ||
+    reconcileBrowserWalletSelection(state.wallets, preferredWalletName) ||
+    reconcileBrowserWalletSelection(state.wallets, state.selectedWalletName) ||
+    (state.wallets.length === 1 ? state.wallets[0]!.name : '');
+  if (!preferred) {
+    throw new Error('Choose a browser wallet with /connect first, then run /sign-in again.');
+  }
+
+  state.selectedWalletName = preferred;
+  state.browserWalletPickerOpen = false;
+  const selected = selectedWallet();
+  const backend = new WalletStandardWebBackend({
+    wallet: selected,
+    cluster: state.cluster,
+    rpcUrl: activeRpcUrl(),
+  });
+  const address = await backend.connect();
+  if (desiredWallet && !sameWalletAddress(address, desiredWallet)) {
+    throw new Error(`Connected wallet ${short(address)} does not match sign-in wallet ${short(desiredWallet)}.`);
+  }
+
+  walletBackend = backend;
+  client = new SolanaSigningClient({ backend });
+  state.address = address;
+  state.capabilities = await client.capabilities();
+  state.selectedWalletName = selected.name;
+  state.selectedWalletLogoId = walletProviderLogoIdForName(selected.name);
+  state.transactionStatus = `Wallet connected on ${state.cluster}.`;
+  state.steps.connect = 'done';
+  state.browserWalletSession = createBrowserWalletSession(selected.name, state.cluster, preferredSession?.connectedAt);
+  if (state.bridgeToken && isTrustedBridgeUrl(state.bridgeUrl)) {
+    await connectBridgeHost().catch((err) => {
+      console.info('[cli-sign-in] bridge host sync skipped.', err);
+    });
+  }
+  savePersistedState();
+  return address;
+}
+
 async function completeAgenticLogin(): Promise<void> {
   const url = new URL(window.location.href);
   const nonce = url.searchParams.get('nonce') ?? '';
   const message = url.searchParams.get('message') ?? '';
   const callback = url.searchParams.get('callback') ?? '';
   const stateParam = url.searchParams.get('state') ?? '';
+  const desiredWallet = url.searchParams.get('walletAddress') ?? '';
   const statusEl = document.getElementById('agenticLoginStatus');
   const setStatus = (text: string, ok = true) => {
     if (statusEl) {
@@ -23440,12 +23534,9 @@ async function completeAgenticLogin(): Promise<void> {
     setStatus('Missing nonce/message/callback. Re-run the original CLI command.', false);
     return;
   }
-  if (!state.address) {
-    setStatus('Connect a wallet first with /connect, then return here.', false);
-    return;
-  }
-  setStatus('Requesting wallet signature…');
   try {
+    const walletAddress = await ensureAgenticLoginWalletReady(desiredWallet, setStatus);
+    setStatus('Requesting wallet signature...');
     // signWalletProofMessage handles the wallet quirks (signMessage vs memo-tx
     // fallback for Phantom/Solflare/Seed Vault on Android, base64 encoding, etc.)
     // so we reuse it instead of calling signMessage directly.
@@ -23458,7 +23549,7 @@ async function completeAgenticLogin(): Promise<void> {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         signature: result.signature,
-        walletAddress: state.address,
+        walletAddress,
         state: stateParam,
         // Canonical server field names (parseVerifyWalletRequest +
         // parseAgentProfileRequest both read proofEncoding/proofTxBase64).
@@ -23472,7 +23563,7 @@ async function completeAgenticLogin(): Promise<void> {
     if (!response.ok) {
       throw new Error(`Callback returned HTTP ${response.status}.`);
     }
-    setStatus('Signed in. You can close this tab and return to the terminal.');
+    setStatus('Signed in. Return to the terminal.');
   } catch (err) {
     setStatus(`Login failed: ${err instanceof Error ? err.message : String(err)}`, false);
     try {
@@ -24649,13 +24740,6 @@ async function runConnect(): Promise<void> {
       rpcUrl: activeRpcUrl(),
     });
     client = new SolanaSigningClient({ backend: walletBackend });
-    if (cliView) {
-      // CLI mode: drop our adapter's cached browser-wallet session immediately
-      // after constructing it. The actual signing session is owned by the
-      // wallet-host page the CLI opens in the user's browser; keeping our
-      // copy would conflict with that flow.
-      await walletBackend.disconnect?.().catch(() => undefined);
-    }
     state.address = await client.getAddress();
     state.capabilities = await client.capabilities();
     state.transactionStatus = `Wallet connected on ${state.cluster}.`;
@@ -39166,6 +39250,7 @@ async function disconnectBridgeHost(): Promise<void> {
 }
 
 function startBridgePolling(): void {
+  if (!cliIntentAllowsBridgeRequestClaim(cliView?.intent)) return;
   stopBridgePolling();
   bridgePollTimer = window.setInterval(() => {
     void pollBridge();
@@ -39185,7 +39270,13 @@ async function pollBridge(): Promise<void> {
   // action. Cloud approval finalization and local-bridge signing both use the
   // same connected wallet client, so concurrent requests can trip wallet-side
   // validation or surface misleading argument errors.
-  if (!state.bridgeActive || !client || bridgeRequestBusy || state.busy) {
+  if (
+    !cliIntentAllowsBridgeRequestClaim(cliView?.intent) ||
+    !state.bridgeActive ||
+    !client ||
+    bridgeRequestBusy ||
+    state.busy
+  ) {
     return;
   }
   try {
@@ -41125,29 +41216,21 @@ async function hydrateCliSignInBridgeWallet(): Promise<void> {
     desiredWallet: cliView.walletAddress,
     bridgeCapabilities: capabilities,
   });
-  if (decision.kind !== 'adopt') return;
+  if (decision.kind !== 'display-paired') return;
 
-  // Use the wallet host that /connect already registered with the bridge; this
-  // page should not become a second bridge poller for its own sign-in request.
-  walletBackend = new RemoteBridgeBackend({
-    bridgeUrl: state.bridgeUrl,
-    token: state.bridgeToken,
-  });
-  client = new SolanaSigningClient({ backend: walletBackend });
-  state.address = decision.address;
-  state.capabilities = capabilities;
+  // Display the bridge-paired wallet, but do not use the bridge as the signer.
+  // Cloud sign-in must ask the browser wallet extension directly; otherwise
+  // this page can enqueue a bridge signing request and then wait on itself.
+  if (!state.address) state.address = decision.address;
+  if (!state.capabilities) state.capabilities = capabilities;
   state.selectedWalletName = state.selectedWalletName || 'Browser wallet';
   state.selectedWalletLogoId =
     state.selectedWalletLogoId ?? walletProviderLogoIdForName(state.selectedWalletName);
-  state.bridgeActive = true;
-  state.bridgeAutoReconnect = true;
   state.bridgeStatus = decision.mismatch
     ? 'Connected bridge wallet does not match this Cloud Storage sign-in request.'
-    : 'Connected to local bridge for Cloud Storage sign-in.';
-  state.transactionStatus = `Wallet connected via local bridge on ${state.cluster}.`;
+    : 'Wallet paired through the local bridge. Reconnect the browser wallet here to sign in.';
+  state.transactionStatus = `Wallet paired via local bridge on ${state.cluster}.`;
   state.steps.connect = 'done';
-  await afterWalletConnected();
-  savePersistedState();
 }
 
 function selectedWallet(): DiscoveredWallet {
@@ -47662,6 +47745,7 @@ function shouldProbeBridgeOnStartup(): boolean {
 }
 
 function shouldReconnectBridgeOnStartup(): boolean {
+  if (!cliIntentAllowsBridgeRequestClaim(cliView?.intent)) return false;
   return Boolean(
     state.address &&
       state.capabilities &&

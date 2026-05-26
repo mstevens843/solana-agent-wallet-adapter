@@ -4,13 +4,19 @@ import { CONNECTOR_SPECS, type ConnectorSpec, type ConnectorSpecInput, type Conn
 // case). Surfaced in /connectors so the user can paste a key, and in
 // /new-connector so disabled keyed connectors prompt setup first.
 const KEY_REQUIRED: Record<string, { envVar: string; label: string }> = {
-  jupiter:   { envVar: 'JUPITER_API_KEY',     label: 'Jupiter API key' },
   lulo:      { envVar: 'LULO_API_KEY',        label: 'Lulo API key' },
   sanctum:   { envVar: 'SANCTUM_API_KEY',     label: 'Sanctum API key' },
   magiceden: { envVar: 'MAGICEDEN_API_KEY',   label: 'Magic Eden API key' },
   tensor:    { envVar: 'TENSOR_API_KEY',      label: 'Tensor API key' },
   phoenix:   { envVar: 'PHOENIX_ACCESS_CODE', label: 'Phoenix activation code' },
 };
+
+export const BYO_KEY_CONNECTOR_IDS = ['magiceden', 'tensor', 'sanctum', 'lulo', 'phoenix'] as const;
+export type ByoKeyConnectorId = (typeof BYO_KEY_CONNECTOR_IDS)[number];
+
+export function isByoKeyConnectorId(value: string): value is ByoKeyConnectorId {
+  return (BYO_KEY_CONNECTOR_IDS as readonly string[]).includes(value);
+}
 
 // Derived from spec: any connector whose writeCapabilities include an action
 // whose kind matches /recurring/. Today that's Jupiter (recurring create/cancel

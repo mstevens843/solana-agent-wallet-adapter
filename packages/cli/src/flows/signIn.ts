@@ -1,5 +1,5 @@
 import type { GlobalOptions } from '../shared/types.js';
-import { header, kv, badge, spinner } from '../tui/index.js';
+import { header, kv, badge, spinner, isExitPromptError } from '../tui/index.js';
 import { loadSession, sessionStatusSummary, clearSession } from '../auth/sessionStore.js';
 import { runLogin } from '../auth/nonceFlow.js';
 import { bridgeRequest, renderWebRequest } from '../http/index.js';
@@ -14,7 +14,7 @@ interface BridgeWalletStatus {
 // `/sign-in` — friendly wrapper around the existing SIWS flow. Mirrors the web
 // app's "Sign in with cloud workspace" action. Stores a session token that
 // gates /approvals, /completed, /plans, /evidence, /cloud-workspace, etc.
-export async function runSignIn(options: GlobalOptions): Promise<void> {
+export async function runSignIn(options: GlobalOptions, ctlOpts: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<void> {
   console.log(header('Sign in to your cloud workspace'));
   console.log(badge('Cloud Storage sign-in uses your connected wallet as identity only. It does not grant spending authority.', 'muted'));
 
@@ -34,7 +34,11 @@ export async function runSignIn(options: GlobalOptions): Promise<void> {
 
   const spin = spinner('Waiting for browser signature…');
   try {
-    const result = await runLogin(options, { walletAddress });
+    const result = await runLogin(options, {
+      walletAddress,
+      ...(ctlOpts.signal ? { signal: ctlOpts.signal } : {}),
+      ...(ctlOpts.timeoutMs !== undefined ? { timeoutMs: ctlOpts.timeoutMs } : {}),
+    });
     spin.succeed('Signed in.');
     console.log(kv([
       ['Wallet', String((result as { walletAddress?: string }).walletAddress ?? '(unknown)')],
@@ -43,6 +47,10 @@ export async function runSignIn(options: GlobalOptions): Promise<void> {
     const summary = await loadWorkspaceSummaryWithSpinner(options);
     renderWorkspaceSummary(summary);
   } catch (err) {
+    if (isExitPromptError(err)) {
+      spin.stop();
+      throw err;
+    }
     spin.fail(`Sign-in failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }

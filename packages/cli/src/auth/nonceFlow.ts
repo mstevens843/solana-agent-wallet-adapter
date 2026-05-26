@@ -31,6 +31,8 @@ export interface LoginOptions {
   noOpen?: boolean;
   /** Override default 5-minute timeout. */
   timeoutMs?: number;
+  /** Abort an in-flight wallet signature wait, typically from Ctrl+C. */
+  signal?: AbortSignal;
 }
 
 type WalletHostSigningPath = '/agentic-login' | '/sign-in';
@@ -86,14 +88,18 @@ export async function signMessageViaWalletHost(
     expiresAt?: string;
     summary?: string;
   },
-  ctlOpts: { noOpen?: boolean; timeoutMs?: number; path?: WalletHostSigningPath; openLabel?: string } = {},
+  ctlOpts: { noOpen?: boolean; timeoutMs?: number; path?: WalletHostSigningPath; openLabel?: string; signal?: AbortSignal } = {},
 ): Promise<SignedProof> {
+  if (ctlOpts.signal?.aborted) {
+    throw abortErrorFromSignal(ctlOpts.signal);
+  }
   const timeoutMs = ctlOpts.timeoutMs ?? 5 * 60 * 1000;
   const stateToken = randomBytes(16).toString('base64url');
   const { callback, waitForPayload } = await createCallbackReceiver({
     timeoutMs,
     state: stateToken,
     port: 0,
+    signal: ctlOpts.signal,
   });
 
   const loginUrl = buildWalletHostLoginUrl(options, {
@@ -180,6 +186,7 @@ export async function runLogin(options: GlobalOptions, loginOptions: LoginOption
   }, {
     ...(loginOptions.noOpen !== undefined ? { noOpen: loginOptions.noOpen } : {}),
     ...(loginOptions.timeoutMs !== undefined ? { timeoutMs: loginOptions.timeoutMs } : {}),
+    ...(loginOptions.signal ? { signal: loginOptions.signal } : {}),
     path: '/sign-in',
     openLabel: 'Agentic Cloud Sign In',
   });
@@ -239,6 +246,7 @@ async function createCallbackReceiver(opts: {
   port: number;
   state: string;
   timeoutMs: number;
+  signal?: AbortSignal;
 }): Promise<{
   callback: { url: string; close: () => void };
   waitForPayload: Promise<CallbackPayload>;
@@ -246,6 +254,8 @@ async function createCallbackReceiver(opts: {
   return new Promise((resolveOuter, rejectOuter) => {
     let resolveInner!: (payload: CallbackPayload) => void;
     let rejectInner!: (err: Error) => void;
+    let outerSettled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     // Mutable ref so handleCallbackRequest sees the LIVE value of `settled`
     // at the moment it decides whether to respond 410 vs accept the payload.
     // A snapshot boolean would let a second concurrent request race past the
@@ -256,14 +266,21 @@ async function createCallbackReceiver(opts: {
       resolveInner = (payload) => {
         if (settledRef.value) return;
         settledRef.value = true;
+        cleanup();
         res(payload);
       };
       rejectInner = (err) => {
         if (settledRef.value) return;
         settledRef.value = true;
+        cleanup();
         rej(err);
+        if (!outerSettled) {
+          outerSettled = true;
+          rejectOuter(err);
+        }
       };
     });
+    void waitForPayload.catch(() => undefined);
 
     const server = createServer((req, res) => {
       handleCallbackRequest(req, res, opts.state, settledRef).then((maybe) => {
@@ -277,11 +294,19 @@ async function createCallbackReceiver(opts: {
       });
     });
 
-    const timer = setTimeout(() => {
+    const cleanup = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      process.removeListener('SIGINT', onSigint);
+      opts.signal?.removeEventListener('abort', onAbort);
+      try { server.close(); } catch { /* ignore */ }
+    };
+
+    timer = setTimeout(() => {
       rejectInner(new Error('Login timed out waiting for browser callback.'));
     }, opts.timeoutMs);
-
-    waitForPayload.finally(() => clearTimeout(timer));
 
     server.once('error', (err) => {
       // Once the listen callback fires, an error here means an accept-time
@@ -292,28 +317,48 @@ async function createCallbackReceiver(opts: {
       }
     });
 
-    // Clean up the listening socket on SIGINT so the user's Ctrl+C exits
-    // immediately. The process is about to die anyway, but freeing the port
-    // matters if the caller wraps this in a long-running supervisor.
+    // Reject the pending signature wait on Ctrl+C. In the interactive app this
+    // returns control to the REPL; in one-shot commands it exits promptly.
     const onSigint = () => {
-      try { server.close(); } catch { /* ignore */ }
+      rejectInner(abortPromptError());
     };
     process.once('SIGINT', onSigint);
-    waitForPayload.finally(() => process.removeListener('SIGINT', onSigint));
+    const onAbort = () => {
+      rejectInner(abortErrorFromSignal(opts.signal));
+    };
+    if (opts.signal?.aborted) {
+      onAbort();
+      return;
+    }
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
 
     server.listen(opts.port, '127.0.0.1', () => {
+      if (settledRef.value) {
+        return;
+      }
       const address = server.address();
       if (!address || typeof address === 'string') {
-        rejectOuter(new Error('Failed to bind loopback callback receiver.'));
+        rejectInner(new Error('Failed to bind loopback callback receiver.'));
         return;
       }
       const url = `http://127.0.0.1:${address.port}/agentic-login-callback`;
+      outerSettled = true;
       resolveOuter({
-        callback: { url, close: () => server.close() },
+        callback: { url, close: cleanup },
         waitForPayload,
       });
     });
   });
+}
+
+function abortPromptError(): Error {
+  const err = new Error('Prompt aborted.');
+  err.name = 'AbortPromptError';
+  return err;
+}
+
+function abortErrorFromSignal(signal: AbortSignal | undefined): Error {
+  return signal?.reason instanceof Error ? signal.reason : abortPromptError();
 }
 
 async function handleCallbackRequest(

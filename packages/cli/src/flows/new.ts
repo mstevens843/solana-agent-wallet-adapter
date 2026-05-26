@@ -9,6 +9,7 @@ import { maybeEnhanceWithAi, maybeApplyAdvice } from '../forms/aiEnhance.js';
 import { verdictBlocksQueue } from '../forms/policyBundleRender.js';
 import { fetchWalletAddress, removeUndefined, listInstalledConnectorKeys } from './_shared.js';
 import { runConnectorsMenu } from './connectors.js';
+import { connectorSecretsForRequest, enabledConnectorIds, loadConnectorState } from './connectorState.js';
 import { runRepeatMenu } from './repeat.js';
 import { confirmHighStakes, estimateFromDraft } from './safetyGate.js';
 import { tryHostedSwapOrder } from '../swap/hosted.js';
@@ -36,7 +37,7 @@ export async function runOneTimeMenu(options: GlobalOptions): Promise<void> {
     choices: [
       { name: 'Send Tokens',        value: 'tokens',    description: 'Send native SOL or any SPL token' },
       { name: 'Swap',               value: 'swap',      description: 'Token swap via Jupiter' },
-      { name: 'Connector action',   value: 'connector', description: '19 protocols, ~80 actions' },
+      { name: 'Connectors',         value: 'connector', description: 'Use a connected protocol' },
     ],
   });
   if (pick === 'tokens') return runNewTokens(options);
@@ -244,8 +245,10 @@ function pickField(obj: Record<string, unknown>, keys: string[]): string | numbe
 
 export async function runNewConnector(options: GlobalOptions): Promise<void> {
   const installedKeys = await listInstalledConnectorKeys(options);
+  const connectorState = await loadConnectorState(options);
+  const connectedIds = enabledConnectorIds(connectorState);
   while (true) {
-    const pickedId = await pickConnector(options, installedKeys);
+    const pickedId = await pickConnector(options, installedKeys, connectedIds);
     if (!pickedId) return;
 
     const connectors = listConnectors();
@@ -258,7 +261,7 @@ export async function runNewConnector(options: GlobalOptions): Promise<void> {
       });
       if (setup) {
         await runConnectorsMenu(options);
-        console.log(badge('Run /new-connector again once the key is in place.', 'muted'));
+        console.log(badge('Run /new-connector again once the connector is connected.', 'muted'));
         return;
       }
       const proceed = await confirm({
@@ -287,10 +290,12 @@ export async function runNewConnector(options: GlobalOptions): Promise<void> {
   }
 }
 
-async function pickConnector(options: GlobalOptions, installedKeys: Set<string>): Promise<string | undefined> {
-  const connectors = listConnectors();
+async function pickConnector(options: GlobalOptions, installedKeys: Set<string>, connectedIds: Set<string>): Promise<string | undefined> {
+  const connectors = listConnectors().filter((connector) => connectedIds.has(connector.id));
   if (connectors.length === 0) {
-    console.log(badge('No connectors found. Reinstall or rebuild the CLI.', 'err'));
+    console.log(badge('No connectors are connected yet.', 'warn'));
+    const setup = await confirm({ message: 'Open /connectors to connect one now?', default: true });
+    if (setup) await runConnectorsMenu(options);
     return undefined;
   }
   return select<string>({
@@ -354,6 +359,7 @@ async function runConnectorWrite(options: GlobalOptions, connectorId: string, ac
   }
 
   const { address, cluster } = await fetchWalletAddress(options);
+  const connectorSecrets = connectorSecretsForRequest(connectorId);
   const body = removeUndefined({
     kind: draft.actionKind,
     params: draft.params,
@@ -362,8 +368,9 @@ async function runConnectorWrite(options: GlobalOptions, connectorId: string, ac
     summary: draft.summary,
     reason: draft.reason,
     note: draft.note,
+    connectorSecrets,
   });
-  await prepareAndPromptApproval(options, draft.summary, () => bridgeRequest(options, '/bridge/connector/prepare-transaction', {
+  await prepareAndPromptApproval(options, draft.summary, () => bridgeRequest(options, '/bridge/connector/prepare-action', {
     method: 'POST',
     body: JSON.stringify(body),
   }));
@@ -419,7 +426,12 @@ async function safeReadFacts(
     if (!capability) return null;
     return await bridgeRequest(options, '/bridge/action/connector-read-facts', {
       method: 'POST',
-      body: JSON.stringify({ connectorId, capability, ...params }),
+      body: JSON.stringify({
+        connectorId,
+        capability,
+        ...params,
+        ...(connectorSecretsForRequest(connectorId) ? { connectorSecrets: connectorSecretsForRequest(connectorId) } : {}),
+      }),
     });
   } catch {
     return null;

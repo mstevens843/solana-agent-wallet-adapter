@@ -755,6 +755,102 @@ describe('bridge prepared-action prepare-transaction', () => {
   });
 });
 
+describe('bridge connector prepare-action', () => {
+  afterEach(() => {
+    resetKaminoClientFactory();
+    clearReserveSnapshotCache();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it('queues a prepared connector action from raw kind+params+wallet+cluster', async () => {
+    const wallet = 'GgwYwf8XtAQRtu1ZUv9hY1Zk1wkJpz3DCH7jQAjmGGGV';
+    setKaminoClientFactory(() => buildFakeKaminoClient());
+
+    const store = new JsonPreparedActionStore(
+      join(await mkdtemp(join(tmpdir(), 'sawa-bridge-connector-action-')), 'actions.json'),
+    );
+    const handle = await startTestBridge({
+      actionConfig: { ...DEFAULT_CONFIG, rpcUrl: 'http://127.0.0.1:1' },
+      preparedActions: store,
+      connectedAddress: wallet,
+    });
+    try {
+      const response = await fetch(new URL('/bridge/connector/prepare-action', handle.url), {
+        method: 'POST',
+        headers: { 'x-agent-wallet-token': 'test-token', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'kamino_deposit',
+          params: { token: 'SOL', amount: '0.5' },
+          walletAddress: wallet,
+          cluster: 'mainnet-beta',
+          summary: 'Custom Kamino deposit',
+        }),
+      });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        preparedAction?: {
+          id?: string;
+          kind?: string;
+          status?: string;
+          walletAddress?: string;
+          cluster?: string;
+          summary?: string;
+        };
+        preview?: Record<string, unknown>;
+      };
+      expect(body.preparedAction?.id).toMatch(/^pa_/);
+      expect(body.preparedAction).toMatchObject({
+        kind: 'kamino_deposit',
+        status: 'ready',
+        walletAddress: wallet,
+        cluster: 'mainnet-beta',
+        summary: 'Custom Kamino deposit',
+      });
+      expect(body.preview).toMatchObject({ reserveSymbol: 'SOL' });
+
+      const stored = await store.listActions();
+      expect(stored).toHaveLength(1);
+      expect(stored[0]?.id).toBe(body.preparedAction?.id);
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  it('rejects unsupported connectorSecrets shapes without leaking secret values', async () => {
+    const wallet = 'GgwYwf8XtAQRtu1ZUv9hY1Zk1wkJpz3DCH7jQAjmGGGV';
+    const store = new JsonPreparedActionStore(
+      join(await mkdtemp(join(tmpdir(), 'sawa-bridge-connector-action-')), 'actions.json'),
+    );
+    const handle = await startTestBridge({
+      actionConfig: { ...DEFAULT_CONFIG, rpcUrl: 'http://127.0.0.1:1' },
+      preparedActions: store,
+      connectedAddress: wallet,
+    });
+    try {
+      const response = await fetch(new URL('/bridge/connector/prepare-action', handle.url), {
+        method: 'POST',
+        headers: { 'x-agent-wallet-token': 'test-token', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'kamino_deposit',
+          params: { token: 'SOL', amount: '0.5' },
+          walletAddress: wallet,
+          cluster: 'mainnet-beta',
+          connectorSecrets: {
+            unsupported: { apiKey: 'secret-value-should-not-leak' },
+          },
+        }),
+      });
+      expect(response.status).toBe(400);
+      const text = await response.text();
+      expect(text).toContain('unsupported connector');
+      expect(text).not.toContain('secret-value-should-not-leak');
+    } finally {
+      await handle.stop();
+    }
+  });
+});
+
 describe('bridge connector stateless prepare-transaction', () => {
   afterEach(() => {
     resetKaminoClientFactory();

@@ -9,6 +9,8 @@ import { verdictBlocksQueue } from '../forms/policyBundleRender.js';
 import { validatePositiveDecimal, validatePositiveInteger, validateClockTime } from '../forms/validators.js';
 import { fetchWalletAddress, removeUndefined, printQueuedAction } from './_shared.js';
 import { confirmHighStakes, estimateFromDraft } from './safetyGate.js';
+import { connectorSecretsForRequest, enabledConnectorIds, loadConnectorState } from './connectorState.js';
+import { runConnectorsMenu } from './connectors.js';
 
 export type RepeatSubcommand = 'scheduled' | 'recurring' | 'connector';
 
@@ -36,7 +38,7 @@ export async function runRepeatMenu(options: GlobalOptions): Promise<void> {
     choices: [
       { name: 'Scheduled transfer (SOL/SPL on a cadence)', value: 'scheduled',  description: 'Weekly, monthly, or interval-based' },
       { name: 'Recurring swap / DCA (Jupiter)',            value: 'recurring',  description: 'Jupiter time-based recurring order' },
-      { name: 'Recurring connector action',                value: 'connector',  description: 'Limited to connectors that support recurring' },
+      { name: 'Connectors',                                value: 'connector',  description: 'Use a connected protocol with recurring actions' },
     ],
   });
   if (pick === 'scheduled') return runRepeatScheduled(options);
@@ -135,14 +137,16 @@ export async function runRepeatRecurring(options: GlobalOptions): Promise<void> 
   }
 
   const { address, cluster } = await fetchWalletAddress(options);
+  const connectorSecrets = connectorSecretsForRequest('jupiter');
   const body = removeUndefined({
     kind: draft.actionKind,
     params: draft.params,
     walletAddress: address,
     cluster,
     summary: draft.summary,
+    connectorSecrets,
   });
-  const result = await bridgeRequest(options, '/bridge/connector/prepare-transaction', {
+  const result = await bridgeRequest(options, '/bridge/connector/prepare-action', {
     method: 'POST',
     body: JSON.stringify(body),
   });
@@ -150,10 +154,18 @@ export async function runRepeatRecurring(options: GlobalOptions): Promise<void> 
 }
 
 export async function runRepeatConnector(options: GlobalOptions): Promise<void> {
-  const recurringConnectors = listRecurringConnectors();
+  const connectedIds = enabledConnectorIds(await loadConnectorState(options));
+  const recurringConnectors = listRecurringConnectors().filter((connector) => connectedIds.has(connector.id));
   if (recurringConnectors.length === 0) {
-    console.log(badge('No connectors currently support recurring actions.', 'warn'));
-    console.log(badge('Tip: /repeat-recurring for Jupiter DCA, or /repeat-scheduled for SOL/SPL.', 'muted'));
+    console.log(badge('No connected connectors currently support recurring actions.', 'warn'));
+    const setup = await select<'connectors' | 'back'>({
+      message: 'What next?',
+      choices: [
+        { name: 'Open /connectors', value: 'connectors' },
+        { name: '← Back', value: 'back' },
+      ],
+    });
+    if (setup === 'connectors') await runConnectorsMenu(options);
     return;
   }
   const connectorId = await select<string>({
@@ -181,14 +193,16 @@ export async function runRepeatConnector(options: GlobalOptions): Promise<void> 
   }
 
   const { address, cluster } = await fetchWalletAddress(options);
+  const connectorSecrets = connectorSecretsForRequest(connectorId);
   const body = removeUndefined({
     kind: draft.actionKind,
     params: draft.params,
     walletAddress: address,
     cluster,
     summary: draft.summary,
+    connectorSecrets,
   });
-  const result = await bridgeRequest(options, '/bridge/connector/prepare-transaction', {
+  const result = await bridgeRequest(options, '/bridge/connector/prepare-action', {
     method: 'POST',
     body: JSON.stringify(body),
   });
