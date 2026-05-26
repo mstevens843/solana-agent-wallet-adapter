@@ -93,6 +93,15 @@ import {
 } from './flows/repeat.js';
 import { runConnectorsMenu } from './flows/connectors.js';
 import { runAgent, runAsk } from './flows/agent.js';
+import {
+  getHostedAiStatus,
+  agentAiRouteLabel,
+  generateAgentPlan,
+  hostedManagedAvailable,
+  hostedManagedLabel,
+  resolveAgentAiRoute,
+  type HostedAiStatus,
+} from './ai/hosted.js';
 import { isMainnetCluster } from './flows/safetyGate.js';
 import { friendlyBridgeError } from './flows/_shared.js';
 import { runSignIn, runSignOut, showSignInStatus } from './flows/signIn.js';
@@ -138,7 +147,7 @@ type JsonRecord = Record<string, unknown>;
 
 const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:8787';
 const DEFAULT_WALLET_HOST_URL = 'http://127.0.0.1:5174';
-const DEFAULT_RENDER_WEB_URL = 'http://127.0.0.1:3000';
+const DEFAULT_RENDER_WEB_URL = 'https://agentic-signer.com';
 const REQUEST_TIMEOUT_MS = 120_000;
 const BRIDGE_STARTUP_TIMEOUT_MS = 10_000;
 const BRIDGE_TOKEN_FILENAME = 'bridge-token';
@@ -163,7 +172,16 @@ const SETUP_ENV_KEYS = [
   'JUPITER_API_URL',
   'BIRDEYE_API_KEY',
   'BIRDEYE_REST_BASE',
+  'AGENTIC_AI_API_KEY',
+  'AGENTIC_AI_PROVIDER',
+  'AGENTIC_AI_API_FORMAT',
+  'AGENTIC_AI_BASE_URL',
+  'AGENTIC_AI_MODEL',
 ] as const;
+const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1';
+const DEFAULT_OPENAI_MODEL = 'gpt-5';
+const DEFAULT_ANTHROPIC_BASE_URL = 'https://api.anthropic.com/v1';
+const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-5';
 const BLINK_BOUNDARY_COPY = 'Prepared Blink action. Wallet approval required.';
 
 interface ParsedArgs {
@@ -530,8 +548,8 @@ async function main(): Promise<void> {
   const parsed = parseArgs(process.argv.slice(2));
   const command = parsed.positionals[0];
 
-  if (parsed.options.help || command === undefined || command === 'help') {
-    printHelp();
+  if (parsed.options.help || command === 'help') {
+    printHelp(command === 'help' ? parsed.positionals[1] : undefined);
     return;
   }
 
@@ -542,7 +560,7 @@ async function main(): Promise<void> {
 
   resolveRuntimeBridgeToken(parsed.options);
 
-  if (command === 'app') {
+  if (command === undefined || command === 'app') {
     await runTerminalApp(parsed);
     return;
   }
@@ -728,6 +746,10 @@ async function dispatch(parsed: ParsedArgs): Promise<unknown> {
       await withCancelGuard(() => runAgent(parsed.options, (plan, note) => signPlanAsProof(agentState, plan, note)));
       return NO_OUTPUT;
     }
+    case 'agent-setup':
+    case 'connect-agent':
+    case 'ai-setup':
+      return dispatchAgentSetup(parsed);
     case 'ask':
       ensureTtyOrExit('ask');
       await withCancelGuard(() => runAsk(parsed.options, parsed.positionals.slice(1).join(' ').trim() || undefined));
@@ -1415,10 +1437,8 @@ async function runTerminalApp(parsed: ParsedArgs): Promise<void> {
     renderBanner(state);
     await bootstrapTerminalApp(state);
     await renderDashboard(state);
-    await maybePrintOnboardingHint(state);
-    printCommandMenu();
 
-    console.log(colorize(state.options, 'Type a command to get started (try /connect).', 'muted'));
+    console.log(colorize(state.options, 'Type /connect, /sign-in, /agent-setup, or /agent to start.', 'muted'));
 
     while (true) {
       const line = (await rl.question(colorize(state.options, 'agentic> ', 'green'))).trim();
@@ -1436,42 +1456,13 @@ async function runTerminalApp(parsed: ParsedArgs): Promise<void> {
   }
 }
 
-// First-boot onboarding hint: shows once per launch when the user has no keys
-// configured AND no wallet connected. Skipped silently for returning users.
-async function maybePrintOnboardingHint(state: TerminalAppState): Promise<void> {
-  const env = await readEnvValues(state.options.envPath).catch(() => ({ found: false, raw: '', values: {} as Record<string, string> }));
-  const hasKey = (k: string): boolean => {
-    const fromFile = env.values[k];
-    if (typeof fromFile === 'string' && fromFile.trim().length > 0) return true;
-    return Boolean(process.env[k] && process.env[k]!.length > 0);
-  };
-  const anyKey = hasKey('SOLANA_RPC_URL') || hasKey('HELIUS_RPC_URL') || hasKey('JUPITER_API_KEY') || hasKey('BIRDEYE_API_KEY') || hasKey('HELIUS_API_KEY');
-  const status = await tryBridgeRequest<WalletStatus>(state.options, '/bridge/action/status');
-  const walletConnected = status.ok && status.value.connected;
-  if (anyKey || walletConnected) return;
-
-  console.log();
-  console.log(colorize(state.options, 'New here? Quick setup:', 'green'));
-  console.log('  1. /api-keys     — add your RPC + Jupiter / Birdeye / Helius keys (web fallback works without)');
-  console.log('  2. /sign-in      — SIWS into your cloud workspace (optional, enables cross-device sync)');
-  console.log('  3. /connect      — link a Solana wallet via the browser (Phantom, Backpack, Solflare…)');
-  console.log('  4. /new or /agent — your first action');
-  console.log();
-}
-
 async function bootstrapTerminalApp(state: TerminalAppState): Promise<void> {
-  printMuted(state.options, 'Checking local bridge and wallet host...');
+  printMuted(state.options, 'Starting local runtime...');
   await ensureBridge(state).catch((err) => {
     pushLog(state, `bridge bootstrap failed: ${errorMessage(err)}`);
-    printWarn(state.options, `Bridge was not started automatically: ${errorMessage(err)}`);
   });
-  await ensureBrowserHost(state).catch((err) => {
-    pushLog(state, `wallet host bootstrap failed: ${errorMessage(err)}`);
-    printWarn(state.options, `Wallet host was not started automatically: ${errorMessage(err)}`);
-  });
-  // v1.1 — the browser tab no longer opens on boot. It opens only for the four
-  // wallet-signing intents (connect, disconnect, approve, sign). Run /connect
-  // when you want to attach a wallet.
+  // Browser wallet host starts on demand for wallet intents (/connect, /approve,
+  // /disconnect, sign-proof) so normal startup stays focused on setup status.
 }
 
 function createOneShotState(options: GlobalOptions): TerminalAppState {
@@ -1596,6 +1587,249 @@ async function disconnectInteractive(state: TerminalAppState): Promise<void> {
   throw new Error('Wallet still connected after 120s. Click "Disconnect wallet" in the browser and try /disconnect again.');
 }
 
+type AgentSetupProvider = 'hosted' | 'openai' | 'anthropic' | 'custom';
+
+interface AgentSetupConfig {
+  apiKey: string;
+  provider: string;
+  apiFormat: 'openai-compatible' | 'anthropic';
+  baseUrl: string;
+  model: string;
+}
+
+async function dispatchAgentSetup(parsed: ParsedArgs): Promise<unknown> {
+  const args = parsed.positionals.slice(1);
+  const nonInteractive = args.includes('--clear') || optionValue(args, '--from-env') !== undefined;
+  const state = createOneShotState(parsed.options);
+  if (nonInteractive) {
+    return await runAgentSetup(state, args, { detached: true });
+  }
+  ensureTtyOrExit('agent-setup');
+  let result: JsonRecord | null = null;
+  await withCancelGuard(async () => {
+    result = await runAgentSetup(state, args, { detached: true });
+  });
+  return result ?? NO_OUTPUT;
+}
+
+async function runAgentSetup(
+  state: TerminalAppState,
+  args: string[] = [],
+  options: { detached?: boolean } = {},
+): Promise<JsonRecord | null> {
+  if (args.includes('--clear')) {
+    if (options.detached) {
+      await ensureBridgeDetached(state.options);
+    } else {
+      await ensureBridge(state);
+    }
+    return clearAgentSetup(state.options);
+  }
+
+  const fromEnv = optionValue(args, '--from-env');
+  if (fromEnv !== undefined) {
+    if (options.detached) {
+      await ensureBridgeDetached(state.options);
+    } else {
+      await ensureBridge(state);
+    }
+    return configureAgentFromArgs(state.options, args, fromEnv);
+  }
+
+  const [current, hosted, session] = await Promise.all([
+    tryBridgeRequest<BridgeAiStatus>(state.options, '/bridge/ai/status'),
+    getHostedAiStatus(state.options),
+    loadSession(state.options).catch(() => null),
+  ]);
+  const auth = sessionStatusSummary(session);
+  console.log();
+  console.log(tuiHeader('Agent setup'));
+  console.log(tuiKv([
+    ['Hosted', hostedManagedAvailable(hosted) ? hostedManagedLabel(hosted) : 'Unavailable on this deployment'],
+    ['Local', agentSetupStatus(current)],
+    ['Signed in', auth.authenticated ? 'yes' : 'no'],
+    ['Used by', '/agent drafts and reviews'],
+  ]));
+  console.log(tuiDivider());
+
+  const choices: Array<{ name: string; value: AgentSetupProvider | 'clear' | 'back'; description?: string }> = [
+    { name: 'Agentic hosted AI', value: 'hosted', description: 'Uses the Agentic Render deployment; no user API key in the CLI' },
+    { name: 'Use my own OpenAI key', value: 'openai', description: `Advanced local override; default model ${DEFAULT_OPENAI_MODEL}` },
+    { name: 'Use my own Anthropic key', value: 'anthropic', description: `Advanced local override; default model ${DEFAULT_ANTHROPIC_MODEL}` },
+    { name: 'Custom OpenAI-compatible', value: 'custom', description: 'Advanced local override with custom base URL and model' },
+  ];
+  if (current.ok && current.value.configured) {
+    choices.push({ name: 'Clear local agent key', value: 'clear' });
+  }
+  choices.push({ name: 'Back', value: 'back' });
+
+  const choice = await tuiSelect<AgentSetupProvider | 'clear' | 'back'>({
+    message: 'Connect an agent for /agent',
+    choices,
+    default: 'openai',
+  });
+  if (choice === 'back') {
+    return null;
+  }
+  if (choice === 'clear') {
+    if (options.detached) {
+      await ensureBridgeDetached(state.options);
+    } else {
+      await ensureBridge(state);
+    }
+    return clearAgentSetup(state.options);
+  }
+  if (choice === 'hosted') {
+    if (!hostedManagedAvailable(hosted)) {
+      console.log(tuiBadge('Agentic hosted AI is not configured on this deployment. Use a local provider key for now.', 'warn'));
+      return { configured: false, mode: 'hosted-managed', available: false, renderWebUrl: state.options.renderWebUrl };
+    }
+    if (!auth.authenticated) {
+      console.log(tuiBadge('Hosted AI is ready, but sign-in is required before /agent can use it. Run /sign-in.', 'warn'));
+      return { configured: false, mode: 'hosted-managed', available: true, signedIn: false, renderWebUrl: state.options.renderWebUrl };
+    }
+    console.log(tuiBadge(`Agent connected: ${hostedManagedLabel(hosted)}`, 'ok'));
+    return { configured: true, mode: 'hosted-managed', provider: hosted?.managed?.provider, model: hosted?.managed?.model, renderWebUrl: state.options.renderWebUrl };
+  }
+
+  const config = await promptAgentSetupConfig(choice);
+  if (!config) {
+    return null;
+  }
+  if (options.detached) {
+    await ensureBridgeDetached(state.options);
+  } else {
+    await ensureBridge(state);
+  }
+  return applyAgentSetup(state.options, config);
+}
+
+async function configureAgentFromArgs(options: GlobalOptions, args: string[], fromEnv: string): Promise<JsonRecord> {
+  const apiKey = process.env[fromEnv]?.trim();
+  if (!apiKey) {
+    throw new Error(`Env var ${fromEnv} is empty or undefined.`);
+  }
+  const providerArg = optionValue(args, '--provider');
+  const provider = providerPresetFromArg(providerArg ?? 'openai');
+  const defaults = agentProviderDefaults(provider);
+  const config: AgentSetupConfig = {
+    apiKey,
+    provider: providerArg && providerArg !== 'custom' ? providerArg : defaults.provider,
+    apiFormat: normalizeAgentApiFormat(optionValue(args, '--api-format') ?? defaults.apiFormat, defaults.apiFormat),
+    baseUrl: optionValue(args, '--base-url') ?? defaults.baseUrl,
+    model: optionValue(args, '--model') ?? defaults.model,
+  };
+  return applyAgentSetup(options, config);
+}
+
+async function promptAgentSetupConfig(provider: AgentSetupProvider): Promise<AgentSetupConfig | null> {
+  const defaults = agentProviderDefaults(provider);
+  const label = provider === 'anthropic' ? 'Anthropic' : provider === 'custom' ? 'Provider' : 'OpenAI';
+  const apiKey = (await tuiPassword({ message: `${label} API key` })).trim();
+  if (!apiKey) {
+    console.log(tuiBadge('No key entered. Agent setup cancelled.', 'warn'));
+    return null;
+  }
+  const baseUrl = provider === 'custom'
+    ? (await tuiInput({ message: 'Base URL', default: defaults.baseUrl })).trim()
+    : defaults.baseUrl;
+  const model = (await tuiInput({ message: 'Model', default: defaults.model })).trim() || defaults.model;
+  return {
+    apiKey,
+    provider: provider === 'custom'
+      ? (await tuiInput({ message: 'Provider label', default: defaults.provider })).trim() || defaults.provider
+      : defaults.provider,
+    apiFormat: defaults.apiFormat,
+    baseUrl: baseUrl || defaults.baseUrl,
+    model,
+  };
+}
+
+async function applyAgentSetup(options: GlobalOptions, config: AgentSetupConfig): Promise<JsonRecord> {
+  await writeEnvUpdates(options.envPath, {
+    AGENTIC_AI_API_KEY: config.apiKey,
+    AGENTIC_AI_PROVIDER: config.provider,
+    AGENTIC_AI_API_FORMAT: config.apiFormat,
+    AGENTIC_AI_BASE_URL: config.baseUrl,
+    AGENTIC_AI_MODEL: config.model,
+  });
+  process.env.AGENTIC_AI_API_KEY = config.apiKey;
+  process.env.AGENTIC_AI_PROVIDER = config.provider;
+  process.env.AGENTIC_AI_API_FORMAT = config.apiFormat;
+  process.env.AGENTIC_AI_BASE_URL = config.baseUrl;
+  process.env.AGENTIC_AI_MODEL = config.model;
+  const status = await bridgeRequest<BridgeAiStatus>(options, '/bridge/ai/session-key', {
+    method: 'POST',
+    body: JSON.stringify(config),
+  });
+  if (!options.json) {
+    printOk(options, `Agent connected: ${aiProviderLabel(status)} - ${status.model ?? config.model}`);
+  }
+  return {
+    configured: true,
+    provider: status.provider ?? config.provider,
+    apiFormat: status.apiFormat ?? config.apiFormat,
+    model: status.model ?? config.model,
+    envPath: options.envPath,
+  };
+}
+
+async function clearAgentSetup(options: GlobalOptions): Promise<JsonRecord> {
+  await writeEnvUpdates(options.envPath, {
+    AGENTIC_AI_API_KEY: '',
+    AGENTIC_AI_PROVIDER: '',
+    AGENTIC_AI_API_FORMAT: '',
+    AGENTIC_AI_BASE_URL: '',
+    AGENTIC_AI_MODEL: '',
+  });
+  delete process.env.AGENTIC_AI_API_KEY;
+  delete process.env.AGENTIC_AI_PROVIDER;
+  delete process.env.AGENTIC_AI_API_FORMAT;
+  delete process.env.AGENTIC_AI_BASE_URL;
+  delete process.env.AGENTIC_AI_MODEL;
+  const status = await bridgeRequest<BridgeAiStatus>(options, '/bridge/ai/session-key', {
+    method: 'POST',
+    body: JSON.stringify({ clear: true }),
+  });
+  if (!options.json) {
+    printOk(options, 'Agent setup cleared.');
+  }
+  return { configured: Boolean(status.configured), cleared: true, envPath: options.envPath };
+}
+
+function providerPresetFromArg(value: string): AgentSetupProvider {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'anthropic' || normalized === 'claude') return 'anthropic';
+  if (normalized === 'custom' || normalized === 'openai-compatible') return 'custom';
+  return 'openai';
+}
+
+function agentProviderDefaults(provider: AgentSetupProvider): AgentSetupConfig {
+  if (provider === 'anthropic') {
+    return {
+      apiKey: '',
+      provider: 'anthropic',
+      apiFormat: 'anthropic',
+      baseUrl: DEFAULT_ANTHROPIC_BASE_URL,
+      model: DEFAULT_ANTHROPIC_MODEL,
+    };
+  }
+  return {
+    apiKey: '',
+    provider: provider === 'custom' ? 'openai-compatible' : 'openai',
+    apiFormat: 'openai-compatible',
+    baseUrl: DEFAULT_OPENAI_BASE_URL,
+    model: DEFAULT_OPENAI_MODEL,
+  };
+}
+
+function normalizeAgentApiFormat(value: string, fallback: AgentSetupConfig['apiFormat']): AgentSetupConfig['apiFormat'] {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'anthropic') return 'anthropic';
+  if (normalized === 'openai' || normalized === 'openai-compatible') return 'openai-compatible';
+  return fallback;
+}
+
 async function handleTerminalCommand(
   state: TerminalAppState,
   rl: readline.Interface,
@@ -1609,7 +1843,10 @@ async function handleTerminalCommand(
     switch (name) {
       case 'help':
       case '?':
-        printCommandMenu();
+        printCommandMenu(args[0]);
+        return false;
+      case 'commands':
+        printFullCommandMenu();
         return false;
       case 'version':
       case '-v':
@@ -1849,6 +2086,13 @@ async function handleTerminalCommand(
       }
       case 'agent':
         await withCancelGuard(() => runAgent(state.options, (plan, note) => signPlanAsProof(state, plan, note)));
+        return false;
+      case 'agent-setup':
+      case 'connect-agent':
+      case 'ai-setup':
+        await withCancelGuard(async () => {
+          await runAgentSetup(state, args);
+        });
         return false;
       case 'ask':
         await withCancelGuard(() => runAsk(state.options, args.join(' ').trim() || undefined));
@@ -2196,7 +2440,7 @@ async function runPlanCommand(
   });
   const plan: CliAgentPlan = aiPlan ?? buildAgentPlan(intent);
   if (aiPlan) {
-    printMuted(state.options, 'Source: local bridge AI draft. Wallet approval is still required.');
+    printMuted(state.options, 'Source: AI draft. Wallet approval is still required.');
   } else {
     printMuted(state.options, 'Source: deterministic terminal template. Configure bridge AI for richer drafts.');
   }
@@ -2922,7 +3166,8 @@ async function printVersionInfo(state: TerminalAppState): Promise<void> {
   console.log(`Render-web: ${state.options.renderWebUrl}`);
   console.log(`Wallet:     ${status.ok && status.value.connected ? status.value.address : colorize(state.options, 'not connected', 'yellow')}`);
   console.log(`Network:    ${health.ok ? health.value.cluster ?? 'unknown' : '—'}`);
-  console.log(`Keys:       RPC ${keyOk('SOLANA_RPC_URL') || keyOk('HELIUS_RPC_URL') ? '✓' : '✗'} · Jup ${keyOk('JUPITER_API_KEY') || keyOk('JUP_API_KEY') ? '✓' : '✗'} · Birdeye ${keyOk('BIRDEYE_API_KEY') ? '✓' : '✗'} · Helius ${keyOk('HELIUS_API_KEY') ? '✓' : '✗'}`);
+  console.log(`Cloud APIs: Agentic hosted default`);
+  console.log(`BYOK keys:  RPC ${keyOk('SOLANA_RPC_URL') || keyOk('HELIUS_RPC_URL') ? '✓' : '○'} · Jup ${keyOk('JUPITER_API_KEY') || keyOk('JUP_API_KEY') ? '✓' : '○'} · Birdeye ${keyOk('BIRDEYE_API_KEY') ? '✓' : '○'} · Helius ${keyOk('HELIUS_API_KEY') ? '✓' : '○'}`);
   console.log(`Env file:   ${state.options.envPath}${env.found ? '' : colorize(state.options, '  (not found)', 'muted')}`);
 }
 
@@ -3032,13 +3277,13 @@ async function pollApproval(options: GlobalOptions, initial: ApprovalResource): 
 }
 
 async function renderDashboard(state: TerminalAppState): Promise<void> {
-  const [health, inbox, recurring, session, artifacts, env] = await Promise.all([
+  const [health, inbox, recurring, session, ai, hostedAi] = await Promise.all([
     tryBridgeRequest<BridgeHealth>(state.options, '/bridge/health'),
     tryBridgeRequest<{ actions?: PreparedAction[] }>(state.options, '/bridge/prepared-actions'),
     tryBridgeRequest<{ recurringPayments?: RecurringPayment[] }>(state.options, '/bridge/recurring-payments'),
     loadSession(state.options).catch(() => null),
-    tryBridgeRequest<{ artifacts?: ResearchArtifact[] }>(state.options, '/bridge/lab-artifacts'),
-    readEnvValues(state.options.envPath).catch(() => ({ found: false, raw: '', values: {} as Record<string, string> })),
+    tryBridgeRequest<BridgeAiStatus>(state.options, '/bridge/ai/status'),
+    getHostedAiStatus(state.options, 2_500),
   ]);
   const actions = inbox.ok ? inbox.value.actions ?? [] : [];
   const schedules = recurring.ok ? recurring.value.recurringPayments ?? [] : [];
@@ -3046,7 +3291,6 @@ async function renderDashboard(state: TerminalAppState): Promise<void> {
   state.lastRecurring = schedules;
   const queueNew = actions.filter((a) => a.status === 'ready' || a.status === 'overdue' || a.status === 'blocked').length;
   const queueRepeat = schedules.filter((s) => s.status === 'active').length;
-  const proofCount = artifacts.ok ? (artifacts.value.artifacts ?? []).length : 0;
   const authSummary = sessionStatusSummary(session);
 
   const cluster = health.ok ? health.value.cluster ?? 'unknown' : 'unreachable';
@@ -3054,15 +3298,78 @@ async function renderDashboard(state: TerminalAppState): Promise<void> {
     ? `${cluster}  ${colorize(state.options, '[MAINNET — real money]', 'red')}`
     : cluster;
 
-  printSection('Dashboard');
-  console.log(`Wallet:     ${health.ok && health.value.walletAddress ? short(health.value.walletAddress, 10) : 'not connected'}`);
-  console.log(`Network:    ${networkLabel}`);
-  console.log(`Bridge:     ${health.ok ? 'online' : 'offline'} (${state.options.bridgeUrl})`);
-  console.log(`Signed in:  ${authSummary.authenticated ? `yes — ${authSummary.walletAddress ? short(authSummary.walletAddress, 10) : 'no wallet'}` : 'no  (try /sign-in)'}`);
-  console.log(`Inbox-new:  ${queueNew} prepared approval${queueNew === 1 ? '' : 's'} awaiting review`);
-  console.log(`Inbox-repeat: ${queueRepeat} active schedule${queueRepeat === 1 ? '' : 's'}`);
-  console.log(`Proofs:     ${proofCount} saved`);
-  console.log(`Keys:       ${apiKeySummary(state.options, env.values)}`);
+  printSection('Setup');
+  console.log(setupLine(state.options, 1, 'Wallet', walletSetupStatus(health), '/connect'));
+  console.log(setupLine(state.options, 2, 'Cloud Storage', cloudSetupStatus(authSummary), '/sign-in'));
+  console.log(setupLine(state.options, 3, 'Agent', agentSetupStatus(ai, hostedAi, authSummary), '/agent-setup'));
+  console.log(`Network: ${networkLabel}`);
+  console.log(`Cloud APIs: ${cloudApiStatus(state.options, hostedAi)}`);
+
+  printSection('Start');
+  console.log('/agent        Ask AI to prepare a wallet action');
+  console.log('/new          Create a wallet action manually');
+  console.log(`/inbox        Review approvals (${queueNew} pending, ${queueRepeat} repeat${queueRepeat === 1 ? '' : 's'})`);
+  console.log('/done         Receipts, proofs, completed work');
+  console.log('/help         Commands and setup help');
+  console.log('/doctor       Diagnostics');
+  console.log('/quit         Exit');
+}
+
+function setupLine(options: GlobalOptions, number: number, label: string, status: string, command: string): string {
+  const index = colorize(options, `${number}.`, 'muted');
+  return `${index} ${label.padEnd(14)} ${status.padEnd(34)} ${colorize(options, command, 'green')}`;
+}
+
+type RequestProbe<T> = { ok: true; value: T } | { ok: false; error: unknown };
+
+function walletSetupStatus(health: RequestProbe<BridgeHealth>): string {
+  if (health.ok && health.value.walletAddress) {
+    return `Connected ${short(health.value.walletAddress, 10)}`;
+  }
+  return 'Not connected';
+}
+
+function cloudSetupStatus(authSummary: ReturnType<typeof sessionStatusSummary>): string {
+  if (authSummary.authenticated) {
+    return authSummary.walletAddress ? `Signed in ${short(authSummary.walletAddress, 10)}` : 'Signed in';
+  }
+  return 'Signed out (optional)';
+}
+
+function agentSetupStatus(
+  ai: RequestProbe<BridgeAiStatus>,
+  hosted?: HostedAiStatus | null,
+  authSummary?: ReturnType<typeof sessionStatusSummary>,
+): string {
+  if (authSummary?.authenticated && hostedManagedAvailable(hosted ?? null)) {
+    return hostedManagedLabel(hosted ?? null);
+  }
+  if (!ai.ok) {
+    if (hostedManagedAvailable(hosted ?? null)) return 'Hosted ready after sign-in';
+    return 'Not configured';
+  }
+  if (!ai.value.available && !ai.value.configured) {
+    if (hostedManagedAvailable(hosted ?? null)) return 'Hosted ready after sign-in';
+    return 'Not configured';
+  }
+  const provider = aiProviderLabel(ai.value);
+  const model = typeof ai.value.model === 'string' && ai.value.model.trim() ? ai.value.model.trim() : 'default model';
+  return `${provider} - ${model}`;
+}
+
+function cloudApiStatus(options: GlobalOptions, hostedAi: HostedAiStatus | null): string {
+  if (hostedAi) {
+    return `${colorize(options, 'Agentic hosted', 'green')} (${options.renderWebUrl})`;
+  }
+  return `${colorize(options, 'Agentic hosted default', 'yellow')} (${options.renderWebUrl}; not reachable now)`;
+}
+
+function aiProviderLabel(status: BridgeAiStatus): string {
+  const provider = (status.provider ?? '').trim().toLowerCase();
+  const apiFormat = (status.apiFormat ?? '').trim().toLowerCase();
+  if (provider.includes('anthropic') || apiFormat === 'anthropic') return 'Anthropic';
+  if (provider.includes('openai') || apiFormat === 'openai-compatible') return 'OpenAI';
+  return status.provider?.trim() || status.apiFormat?.trim() || 'AI';
 }
 
 function apiKeySummary(options: GlobalOptions, envValues: Record<string, string>): string {
@@ -4187,6 +4494,7 @@ async function runDoctor(options: GlobalOptions): Promise<JsonRecord> {
     aiStatus,
     deviceAgentStatus,
     renderSession,
+    hostedAiStatus,
     cliSession,
     apiKeys,
     bridgeProbe,
@@ -4200,6 +4508,7 @@ async function runDoctor(options: GlobalOptions): Promise<JsonRecord> {
     tryBridgeRequest<JsonRecord>(options, '/bridge/ai/status'),
     probeDeviceAgent(options),
     probeRenderSession(options),
+    getHostedAiStatus(options, 8_000),
     loadSession(options),
     probeApiKeys(options),
     probeBridgeHealth(options),
@@ -4262,6 +4571,12 @@ async function runDoctor(options: GlobalOptions): Promise<JsonRecord> {
     renderWeb: {
       ...renderSession,
       cliSession: sessionStatusSummary(cliSession),
+      hostedAi: hostedAiStatus,
+      hostedApis: {
+        mode: 'agentic-hosted',
+        default: options.renderWebUrl,
+        reachable: Boolean(hostedAiStatus),
+      },
     },
     apiKeys,
   };
@@ -4644,15 +4959,13 @@ async function generateBridgeAiPlanIfConfigured(
   options: GlobalOptions,
   intent: string,
 ): Promise<SharedAgentPlan | null> {
-  const status = await tryBridgeRequest<BridgeAiStatus>(options, '/bridge/ai/status');
-  if (!status.ok || !status.value.available) {
+  const route = await resolveAgentAiRoute(options);
+  if (route.kind === 'none') {
     return null;
   }
+  printMuted(options, `AI route: ${agentAiRouteLabel(route)}`);
   const request = bridgeAiPlanRequest(intent);
-  return bridgeRequest<SharedAgentPlan>(options, '/bridge/ai/generate-plan', {
-    method: 'POST',
-    body: JSON.stringify(request),
-  });
+  return generateAgentPlan<SharedAgentPlan>(options, route, request as unknown as Record<string, unknown>);
 }
 
 function bridgeAiPlanRequest(intent: string): AiPlanRequest {
@@ -5163,19 +5476,25 @@ function printDoctor(options: GlobalOptions, doctor: JsonRecord): void {
   const deviceAgent = isRecord(doctor.deviceAgent) ? doctor.deviceAgent : {};
   const renderWeb = isRecord(doctor.renderWeb) ? doctor.renderWeb : {};
   const cliSession = isRecord(renderWeb.cliSession) ? renderWeb.cliSession : {};
+  const hostedApis = isRecord(renderWeb.hostedApis) ? renderWeb.hostedApis : {};
+  const hostedAi = isRecord(renderWeb.hostedAi) ? renderWeb.hostedAi : {};
+  const hostedManaged = isRecord(hostedAi.managed) ? hostedAi.managed : {};
   console.log(`Connector registry: ${connectorRegistry.reachable ? `${String(connectorRegistry.connectorCount ?? '?')} connectors` : 'offline'}`);
   const aiBlurb = aiStatus.available
     ? `reachable (${String(aiStatus.provider ?? aiStatus.apiFormat ?? 'configured')}${aiStatus.model ? ` / ${String(aiStatus.model)}` : ''})`
-    : ai.reachable ? 'reachable (not configured — run "device-agent set-key")' : 'offline';
-  console.log(`Bridge AI: ${aiBlurb}`);
+    : ai.reachable ? 'reachable (local AI not configured)' : 'offline';
+  console.log(`Hosted APIs: ${hostedApis.reachable ? `reachable (${String(doctor.renderWebUrl ?? '')})` : `offline (${String(doctor.renderWebUrl ?? '')})`}`);
+  console.log(`Hosted AI: ${hostedManaged.available ? `ready (${String(hostedManaged.provider ?? 'provider')}${hostedManaged.model ? ` / ${String(hostedManaged.model)}` : ''})` : 'not configured on hosted deployment'}`);
+  console.log(`Local Bridge AI: ${aiBlurb}`);
   console.log(`Device Agent: ${deviceAgent.reachable ? 'reachable (cloud)' : 'offline (cloud)'}`);
   console.log(`Render-web: ${renderWeb.reachable ? `reachable${renderWeb.authenticated ? ' (signed in)' : ''}` : 'offline'}`);
   const cliWallet = typeof cliSession.walletAddress === 'string' ? short(cliSession.walletAddress, 12) : '';
   console.log(`CLI session: ${cliSession.authenticated ? `signed in${cliWallet ? ` (${cliWallet})` : ''}${cliSession.staleSoon ? ' — token expires soon' : ''}` : 'signed out — run "solana-agent-wallet auth login"'}`);
-  // v1.1 — API keys & AI tier health (drives policy atom resolution).
+  // v1.1 — optional BYOK overrides. Hosted APIs are the default, so missing
+  // local keys are not an error.
   const apiKeys = isRecord(doctor.apiKeys) ? doctor.apiKeys : {};
   console.log('');
-  printSection('API keys & AI');
+  printSection('Optional BYOK overrides');
   for (const tier of ['rpc', 'jupiter', 'birdeye', 'helius'] as const) {
     const row = isRecord(apiKeys[tier]) ? apiKeys[tier] as JsonRecord : {};
     const label = String(row.label ?? tier);
@@ -5219,15 +5538,79 @@ function renderBanner(state: TerminalAppState): void {
   console.log(`Bridge ${state.options.bridgeUrl} | Wallet host ${state.options.walletHostUrl}\n`);
 }
 
-function printCommandMenu(): void {
+function printCommandMenu(topic?: string): void {
+  const normalized = (topic ?? '').trim().toLowerCase();
+  if (normalized === 'all' || normalized === 'commands') {
+    printFullCommandMenu();
+    return;
+  }
+  if (normalized === 'advanced' || normalized === 'legacy') {
+    printAdvancedCommandMenu();
+    return;
+  }
+  if (normalized === 'agent' || normalized === 'ai') {
+    printSection('Agent');
+    console.log('/agent-setup       Use Agentic hosted AI or add a local provider key');
+    console.log('/agent             Ask AI to prepare a wallet action');
+    console.log('/ask <question>    Follow-up Q&A about the last /agent plan');
+    console.log('/preferences       AI mode, model, rules, tokens');
+    console.log('');
+    console.log('Hosted AI uses Agentic cloud APIs after sign-in. Wallet approval still happens locally.');
+    return;
+  }
+  if (normalized === 'actions' || normalized === 'work') {
+    printSection('Actions');
+    console.log('/new               Create an action manually');
+    console.log('/repeat            Create a recurring action');
+    console.log('/inbox             Review approvals');
+    console.log('/approve <id|#>    Approve via browser wallet popup');
+    console.log('/reject <id|#>     Reject a prepared action');
+    console.log('/done              Receipts, proofs, completed work');
+    return;
+  }
+  if (normalized === 'setup') {
+    printSection('Setup');
+    console.log('/connect           Connect wallet');
+    console.log('/sign-in           Connect cloud storage (optional)');
+    console.log('/agent-setup       Use Agentic hosted AI or add a local provider key');
+    console.log('/doctor            Diagnostics');
+    console.log('Advanced: /help advanced includes optional BYOK API key overrides.');
+    return;
+  }
+
+  printSection('Setup');
+  console.log('/connect           Connect wallet');
+  console.log('/sign-in           Connect cloud storage (optional)');
+  console.log('/agent-setup       Use Agentic hosted AI or add a local provider key');
+  console.log('');
+  printSection('Work');
+  console.log('/agent             Ask AI to prepare a wallet action');
+  console.log('/ask <question>    Follow-up Q&A about the last /agent plan');
+  console.log('/new               Create an action manually');
+  console.log('/repeat            Create a recurring action');
+  console.log('/inbox             Review approvals');
+  console.log('/done              Receipts, proofs, completed work');
+  console.log('');
+  printSection('Status');
+  console.log('/wallet            Wallet, network, custody state');
+  console.log('/balances          SOL and token balances');
+  console.log('/doctor            Diagnostics');
+  console.log('/logs              Local terminal app logs');
+  console.log('/refresh           Re-render setup and start');
+  console.log('/quit              Exit');
+  console.log('');
+  console.log('More: /help advanced · /help all · /commands');
+}
+
+function printFullCommandMenu(): void {
   printSection('Quick start');
   console.log('/sign-in           Sign in to your cloud workspace (SIWS)');
   console.log('/connect           Connect your wallet (opens browser, then stays in CLI)');
+  console.log('/agent-setup       Use Agentic hosted AI or add a local provider key');
   console.log('/new               New action: send · spl · swap · connector');
   console.log('/repeat            New schedule: scheduled · recurring · connector');
   console.log('/agent             Natural-language → bridge AI plan with policy NOTE atom resolution');
   console.log('/ask <question>    Follow-up Q&A about the last /agent plan');
-  console.log('/api-keys          RPC · Jupiter · Birdeye · Helius (set / replace / remove / test)');
   console.log('/inbox             Needs approval · active repeats');
   console.log('/done              All · One-time · Repeats · Proofs · Receipts');
   console.log('/connectors        Manage 19 protocol connectors + BYO API keys');
@@ -5260,7 +5643,7 @@ function printCommandMenu(): void {
   console.log('/sign-out          Sign out of the cloud workspace');
   console.log('');
   printSection('Setup & diagnostics');
-  console.log('/setup             Configure local RPC and Jupiter credentials');
+  console.log('/setup             Optional local BYOK setup');
   console.log('/disconnect        Disconnect the active wallet from the bridge');
   console.log('/wallet            Wallet, network, RPC, custody state');
   console.log('/balances          SOL and configured token balances');
@@ -5283,7 +5666,7 @@ function printCommandMenu(): void {
   console.log('/prefs show | get | set           Cloud preferences + BYO connector keys');
   console.log('/spend-limits list                Spend envelope state (read-only)');
   console.log('/device-agent status | set-key    On-device LLM control');
-  console.log('/ai plan generate|review|ask      Bridge AI planning');
+  console.log('/ai plan generate|review|ask      Hosted/local AI planning');
   console.log('/connector list | info | read     20-protocol connector registry');
   console.log('/read <connector> <capability>    Generic connector read facts');
   console.log('/prepare <kind|alias> ...         Generic connector prepare (marinade-stake etc.)');
@@ -5308,14 +5691,78 @@ function printCommandMenu(): void {
   console.log('/quit              Exit\n');
 }
 
-function printHelp(): void {
+function printAdvancedCommandMenu(): void {
+  printSection('Advanced');
+  console.log('/api-keys                                  Optional BYOK RPC · Jupiter · Birdeye · Helius overrides');
+  console.log('/setup                                     Optional local BYOK setup');
+  console.log('/schedule list|create|pause|resume|delete    Recurring approvals (raw)');
+  console.log('/inbox <filter>                              Prepared approvals (any status)');
+  console.log('/plan <request>                              Build/sign/queue an agent plan');
+  console.log('/research list | <id|#>                      Signed research artifacts');
+  console.log('/receipts                                    Approval receipts');
+  console.log('/quote                                       Swap quote helper');
+  console.log('');
+  console.log('Scriptable groups (all support --json where applicable):');
+  console.log('/auth login | logout | status');
+  console.log('/profile show | publish | delete');
+  console.log('/prefs show | get | set');
+  console.log('/device-agent status | set-key');
+  console.log('/ai plan generate|review|ask');
+  console.log('/connector list | info | read');
+  console.log('/prepare <kind|alias> ...');
+  console.log('/swap quote|order|execute');
+  console.log('/market · /tokens · /birdeye · /coingecko · /solana');
+  console.log('/approvals · /completed · /plans · /evidence');
+  console.log('/skills · /signals · /ap2 · /acp · /audit');
+  console.log('/bridge-router · /bridge-agents · /cloud-workspace');
+  console.log('');
+  console.log('Run /help all for the full command inventory.');
+}
+
+function printHelp(topic?: string): void {
+  const normalized = (topic ?? '').trim().toLowerCase();
+  if (normalized === 'advanced' || normalized === 'legacy') {
+    printAdvancedCommandMenu();
+    return;
+  }
+  if (normalized && normalized !== 'all' && normalized !== 'commands') {
+    printCommandMenu(normalized);
+    return;
+  }
+  if (normalized !== 'all' && normalized !== 'commands') {
+    console.log(`Solana Agent Wallet CLI
+
+Start:
+  solana-agent-wallet                      # interactive CLI
+  solana-agent-wallet app                  # same interactive CLI
+
+Setup:
+  solana-agent-wallet connect              # connect wallet
+  solana-agent-wallet sign-in              # connect cloud storage (optional)
+  solana-agent-wallet agent-setup          # hosted AI or local provider key
+
+Work:
+  solana-agent-wallet agent                # ask AI to prepare a wallet action
+  solana-agent-wallet new                  # create an action manually
+  solana-agent-wallet inbox list           # review approvals
+  solana-agent-wallet done                 # receipts, proofs, completed work
+
+More:
+  solana-agent-wallet help advanced
+  solana-agent-wallet help all
+`);
+    return;
+  }
+
   console.log(`Solana Agent Wallet CLI
 
-Flow-first commands (recommended — run "app" for the interactive REPL):
-  solana-agent-wallet app                                # interactive REPL with all flows
+Flow-first commands (recommended — run with no command or "app" for the interactive REPL):
+  solana-agent-wallet                                    # interactive REPL with all flows
+  solana-agent-wallet app                                # same interactive REPL
   solana-agent-wallet sign-in                            # SIWS into cloud workspace
   solana-agent-wallet sign-in-status                     # show current sign-in state
   solana-agent-wallet sign-out
+  solana-agent-wallet agent-setup                        # hosted AI or local provider key
   solana-agent-wallet new                                # menu: send · spl · swap · connector
   solana-agent-wallet new-send                           # SOL transfer form
   solana-agent-wallet new-spl                            # SPL transfer form
@@ -5336,10 +5783,9 @@ Flow-first commands (recommended — run "app" for the interactive REPL):
   solana-agent-wallet done [all|one-time|repeats|proofs|receipts]   # unified done filter
   solana-agent-wallet agent                              # natural-language → bridge AI plan; supports policy NOTE atom resolution
   solana-agent-wallet ask "<question>"                  # follow-up Q&A about the last /agent plan
-  solana-agent-wallet api-keys                           # manage RPC · Jupiter · Birdeye · Helius env keys
 
 Setup / diagnostics:
-  solana-agent-wallet setup
+  solana-agent-wallet setup                         # optional local BYOK overrides
   solana-agent-wallet doctor [--strict] [--section <name>]
   solana-agent-wallet status
   solana-agent-wallet balances
@@ -5415,11 +5861,11 @@ Setup / diagnostics:
   solana-agent-wallet wallet-host serve
 
 Setup options:
-  --rpc-url <url>            SOLANA_RPC_URL and HELIUS_RPC_URL
-  --jupiter-api-key <key>    JUPITER_API_KEY and JUP_API_KEY
+  --rpc-url <url>            Optional BYOK SOLANA_RPC_URL and HELIUS_RPC_URL
+  --jupiter-api-key <key>    Optional BYOK JUPITER_API_KEY and JUP_API_KEY
   --jupiter-swap-base-url <url> Default: ${DEFAULT_JUPITER_ULTRA_BASE}
   --jupiter-api-url <url>    Default: ${DEFAULT_JUPITER_API_URL}
-  --birdeye-api-key <key>    BIRDEYE_API_KEY for token search and prices
+  --birdeye-api-key <key>    Optional BYOK BIRDEYE_API_KEY for token search and prices
   --birdeye-rest-base <url>  Default: ${DEFAULT_BIRDEYE_REST_BASE}
   --yes                     Do not prompt; only write provided values/default URLs
 

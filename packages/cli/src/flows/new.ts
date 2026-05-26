@@ -11,6 +11,7 @@ import { verdictBlocksQueue } from '../forms/policyBundleRender.js';
 import { fetchWalletAddress, removeUndefined, printQueuedAction, listInstalledConnectorKeys } from './_shared.js';
 import { runConnectorsMenu } from './connectors.js';
 import { confirmHighStakes, estimateFromDraft } from './safetyGate.js';
+import { tryHostedSwapOrder } from '../swap/hosted.js';
 
 export type NewSubcommand = 'send' | 'spl' | 'swap' | 'connector';
 
@@ -150,16 +151,19 @@ async function previewSwapQuote(
 ): Promise<'ok' | 'aborted'> {
   const spin = spinner('Fetching Jupiter quote…');
   try {
-    const quote = await bridgeRequest<Record<string, unknown>>(options, '/bridge/action/swap-quote', {
-      method: 'POST',
-      body: JSON.stringify(removeUndefined({
-        amount: draft.amount,
-        inputToken: draft.inputToken,
-        outputToken: draft.outputToken,
-        slippageBps: draft.slippageBps,
-      })),
-    });
-    spin.succeed('Quote received.');
+    const hosted = await tryHostedSwapOrder(options, draft);
+    const quote = hosted.ok
+      ? hosted.value
+      : await bridgeRequest<Record<string, unknown>>(options, '/bridge/action/swap-quote', {
+          method: 'POST',
+          body: JSON.stringify(removeUndefined({
+            amount: draft.amount,
+            inputToken: draft.inputToken,
+            outputToken: draft.outputToken,
+            slippageBps: draft.slippageBps,
+          })),
+        });
+    spin.succeed(hosted.ok ? 'Hosted Jupiter quote received.' : 'Quote received.');
     console.log();
     console.log(header('Swap quote'));
     const rows: Array<[string, string]> = [

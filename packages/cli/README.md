@@ -238,13 +238,13 @@ Repo mode keeps the development fallback for `apps/browser-demo` and repo-local 
 | `AGENTIC_SESSION_TOKEN` / `AGENTIC_BEARER_TOKEN` | Overrides the on-disk session at `~/.solana-agent-wallet/session.json`. Use for CI/headless contexts. |
 | `AGENTIC_SESSION_WALLET` | Wallet address to associate with `AGENTIC_SESSION_TOKEN` when no on-disk session exists. |
 | `AGENTIC_WALLET_ADDRESS` | Default wallet for commands that accept `--wallet` (auth login, prepare connector, etc.). |
-| `AGENTIC_RENDER_WEB_URL` / `AGENTIC_PUBLIC_ORIGIN` / `RENDER_WEB_URL` | Render-web (Agentic cloud) base URL. Default `http://127.0.0.1:3000`. |
+| `AGENTIC_RENDER_WEB_URL` / `AGENTIC_PUBLIC_ORIGIN` / `RENDER_WEB_URL` | Render-web (Agentic cloud) base URL. Default `https://agentic-signer.com`; set to `http://127.0.0.1:3000` for local render-web development. |
 | `AGENT_WALLET_BRIDGE_URL` / `BRIDGE_URL` | Local bridge HTTP base URL. Default `http://127.0.0.1:8787`. |
 | `BRIDGE_TOKEN` | Bridge access token. Default: per-run random token. |
 | `AGENT_WALLET_WALLET_HOST_URL` | Browser wallet host base URL. Default `http://127.0.0.1:5174`. |
 | `AGENT_WALLET_HOME` | Runtime dir override (where `session.json`, `prepared-actions.json`, etc. live). Default `~/.solana-agent-wallet`. |
 | `AGENT_WALLET_SKIP_OPEN` | When `1`, suppresses `open`/`xdg-open` calls (useful in containers + tests). |
-| `AGENTIC_AI_API_KEY` / `AGENTIC_AI_MODEL` / `AGENTIC_AI_BASE_URL` | Bridge AI session key (used by `plan generate` + `device-agent generate-plan`). Sent only to the local bridge, never to render-web. |
+| `AGENTIC_AI_API_KEY` / `AGENTIC_AI_MODEL` / `AGENTIC_AI_BASE_URL` | Optional local/BYOK AI override for bridge development. Normal CLI users use Agentic hosted AI after sign-in. |
 | `AGENTIC_RENDER_WEB_COOKIE` / `AGENTIC_CLOUD_COOKIE` / `AGENTIC_SESSION_COOKIE` | Legacy cookie-based auth for render-web (pre-bearer). Bearer takes precedence. |
 | `AGENTIC_CLI_BUNDLE_BUDGET_MB` | Build-time bundle size budget (default 40). Used by `scripts/bundle-size-report.mjs`. |
 | `NO_COLOR` | Disables ANSI colours (also see `--no-color`). |

@@ -62,6 +62,17 @@ describe('buildPhantomConnectUrl', () => {
     const url = new URL(buildPhantomConnectUrl({ ...baseOpts, cluster }));
     expect(url.searchParams.get('cluster')).toBe(cluster);
   });
+
+  it('appends pairing UUID to redirect_link when supplied', () => {
+    const raw = buildPhantomConnectUrl({
+      ...baseOpts,
+      pairing: '01234567-89ab-cdef-0123-456789abcdef',
+    });
+    // redirect_link is itself a query value; its inner query string carries
+    // pairing=<uuid> alongside the original wallet=phantom.
+    expect(raw).toContain('pairing%3D01234567-89ab-cdef-0123-456789abcdef');
+    expect(raw).toContain('wallet%3Dphantom');
+  });
 });
 
 describe('buildSolflareBrowseUrl', () => {
@@ -70,20 +81,41 @@ describe('buildSolflareBrowseUrl', () => {
     ref: 'https://agentic-signer.com',
   };
 
-  it('targets the official solflare.com browse universal link', () => {
+  it('targets the v1 browse universal link path (matches Solflare\'s registered handler)', () => {
     const url = new URL(buildSolflareBrowseUrl(baseOpts));
     expect(url.origin).toBe('https://solflare.com');
-    expect(url.pathname).toBe('/ul/browse/');
+    // dappUrl is a path segment, NOT a query param. The `/ul/v1/browse/`
+    // prefix is mandatory — iOS/Android only routes this exact pattern to
+    // Solflare's universal-link handler.
+    expect(url.pathname.startsWith('/ul/v1/browse/')).toBe(true);
   });
 
-  it('passes ref and url through as query params', () => {
+  it('encodes the destination URL as a path segment (not a query param)', () => {
+    const raw = buildSolflareBrowseUrl(baseOpts);
+    // The dappUrl should appear URL-encoded directly inside the path —
+    // double-encoded because URL also re-encodes the path segment, hence
+    // `https` → `https`, `:` → `%3A`, `/` → `%2F`, `?` → `%3F`, etc.
+    expect(raw).toContain('/ul/v1/browse/https%3A%2F%2Fagentic-signer.com%2Fapp%3Fwallet%3Dsolflare');
+    // And it must NOT use the legacy `?url=…` query-param form.
+    expect(raw).not.toContain('?url=');
+    expect(raw).not.toContain('&url=');
+  });
+
+  it('keeps ref as the only query parameter', () => {
     const url = new URL(buildSolflareBrowseUrl(baseOpts));
     expect(url.searchParams.get('ref')).toBe(baseOpts.ref);
-    expect(url.searchParams.get('url')).toBe(baseOpts.dappUrl);
+    expect([...url.searchParams.keys()]).toEqual(['ref']);
   });
 
-  it('URL-encodes the inner url query (preserving its own params)', () => {
-    const raw = buildSolflareBrowseUrl(baseOpts);
-    expect(raw).toContain('url=https%3A%2F%2Fagentic-signer.com%2Fapp%3Fwallet%3Dsolflare');
+  it('appends pairing UUID to the dappUrl path segment when supplied', () => {
+    const raw = buildSolflareBrowseUrl({
+      ...baseOpts,
+      pairing: '01234567-89ab-cdef-0123-456789abcdef',
+    });
+    // The path-segment-encoded dappUrl now includes the pairing param.
+    expect(raw).toContain('pairing%3D01234567-89ab-cdef-0123-456789abcdef');
+    // Ref query stays unchanged.
+    const url = new URL(raw);
+    expect(url.searchParams.get('ref')).toBe(baseOpts.ref);
   });
 });

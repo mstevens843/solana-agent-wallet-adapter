@@ -52,9 +52,12 @@ Common optional settings:
   set `1` to expose the browser-native runtime to the bundled web app) drive the
   `runtimes: { android, browserNative }` block of `/api/device-agent/status`. Render itself never runs either runtime;
   these vars are operator labels only.
+- `AGENTIC_HOSTED_AI_API_KEY` or `AGENTIC_MANAGED_AI_API_KEY`: optional Agentic-managed hosted AI provider key.
+  Pair with `AGENTIC_HOSTED_AI_PROVIDER` (`openai` or `anthropic`) and `AGENTIC_HOSTED_AI_MODEL` when overriding the
+  defaults. Signed-in clients can use this without sending their own AI key.
 
-The hosted BYOK endpoint relays user-provided AI keys from the browser for the current request and does not store
-provider keys in Render env vars.
+The hosted BYOK endpoint still relays user-provided AI keys for the current request and does not persist them. Keep
+user-owned keys out of Render env vars; only operator-managed Agentic keys belong there.
 
 ## Persistence
 

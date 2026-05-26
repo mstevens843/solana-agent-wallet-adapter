@@ -62,7 +62,11 @@ async function callCoingecko(
   const init: RequestInit = method === 'POST'
     ? { method, body: JSON.stringify(body ?? {}) }
     : { method };
-  const bridgeResult = await tryBridgeRequest<unknown>(options, bridgePath, init);
-  if (bridgeResult.ok) return bridgeResult.value;
-  return renderWebRequest(options, cloudPath, init, { label: 'CoinGecko (cloud)' });
+  try {
+    return await renderWebRequest(options, cloudPath, init, { label: 'CoinGecko (hosted)' });
+  } catch (err) {
+    const bridgeResult = await tryBridgeRequest<unknown>(options, bridgePath, init);
+    if (bridgeResult.ok) return bridgeResult.value;
+    throw err;
+  }
 }

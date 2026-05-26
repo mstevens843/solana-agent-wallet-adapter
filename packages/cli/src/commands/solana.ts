@@ -4,9 +4,9 @@
  *   cloud:  /api/solana/{latest-blockhash, send-transaction, signature-status,
  *                        parsed-account-info}
  *
- * The cloud surface adds parsed-account-info; that subcommand calls render-web
- * directly. The other three try the bridge first (no auth required) and fall
- * back to render-web (auth required) when the bridge is offline.
+ * The hosted render-web API is the default path so installed CLIs use the same
+ * Agentic-managed RPC as the web and desktop apps. The local bridge remains a
+ * BYOK/offline fallback when hosted calls fail.
  */
 import type { GlobalOptions, ParsedArgs } from '../shared/types.js';
 import { optionValue, removeUndefined } from '../shared/util.js';
@@ -17,23 +17,26 @@ export async function dispatchSolana(parsed: ParsedArgs): Promise<unknown> {
   switch (sub) {
     case 'blockhash':
     case 'latest-blockhash':
-      return callBridgeFirst(parsed.options, '/solana/latest-blockhash', { method: 'POST', body: '{}' });
+      return callHostedFirst(parsed.options, '/solana/latest-blockhash', {
+        method: 'POST',
+        body: JSON.stringify({ cluster: cluster(parsed) }),
+      });
     case 'send-tx':
     case 'send-transaction': {
       const tx = parsed.positionals[2] ?? optionValue(parsed.positionals, '--tx');
       if (!tx) throw new Error('Usage: solana-agent-wallet solana send-tx <base64-signed-transaction>');
-      return callBridgeFirst(parsed.options, '/solana/send-transaction', {
+      return callHostedFirst(parsed.options, '/solana/send-transaction', {
         method: 'POST',
-        body: JSON.stringify({ transaction: tx }),
+        body: JSON.stringify({ signedTransactionBase64: tx, transaction: tx, cluster: cluster(parsed) }),
       });
     }
     case 'tx-status':
     case 'signature-status': {
       const sig = parsed.positionals[2] ?? optionValue(parsed.positionals, '--signature');
       if (!sig) throw new Error('Usage: solana-agent-wallet solana tx-status <signature>');
-      return callBridgeFirst(parsed.options, '/solana/signature-status', {
+      return callHostedFirst(parsed.options, '/solana/signature-status', {
         method: 'POST',
-        body: JSON.stringify({ signature: sig }),
+        body: JSON.stringify({ signature: sig, cluster: cluster(parsed) }),
       });
     }
     case 'account-info':
@@ -42,13 +45,13 @@ export async function dispatchSolana(parsed: ParsedArgs): Promise<unknown> {
       if (!address) throw new Error('Usage: solana-agent-wallet solana account-info <address>');
       const body = removeUndefined({
         address,
+        cluster: cluster(parsed),
         commitment: optionValue(parsed.positionals, '--commitment'),
       });
-      // Cloud-only; no bridge equivalent for parsed-account-info.
       return renderWebRequest(parsed.options, '/api/solana/parsed-account-info', {
         method: 'POST',
         body: JSON.stringify(body),
-      }, { label: 'Solana RPC (cloud)', requireAuth: true });
+      }, { label: 'Solana RPC (hosted)' });
     }
     default:
       return {
@@ -58,15 +61,22 @@ export async function dispatchSolana(parsed: ParsedArgs): Promise<unknown> {
   }
 }
 
-async function callBridgeFirst(
+async function callHostedFirst(
   options: GlobalOptions,
   path: string,
   init: RequestInit,
 ): Promise<unknown> {
-  const bridgeResult = await tryBridgeRequest<unknown>(options, `/bridge${path}`, init);
-  if (bridgeResult.ok) return bridgeResult.value;
-  return renderWebRequest(options, `/api${path}`, init, {
-    label: 'Solana RPC (cloud)',
-    requireAuth: true,
-  });
+  try {
+    return await renderWebRequest(options, `/api${path}`, init, {
+      label: 'Solana RPC (hosted)',
+    });
+  } catch (err) {
+    const bridgeResult = await tryBridgeRequest<unknown>(options, `/bridge${path}`, init);
+    if (bridgeResult.ok) return bridgeResult.value;
+    throw err;
+  }
+}
+
+function cluster(parsed: ParsedArgs): string {
+  return optionValue(parsed.positionals, '--cluster') ?? 'mainnet-beta';
 }

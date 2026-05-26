@@ -6,13 +6,15 @@ import { createServer as createHttpServer, type IncomingMessage, type ServerResp
 import { createServer, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import type { Readable } from 'node:stream';
+import type { Readable, Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { afterEach, test } from 'node:test';
 
 const distDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const cliPath = join(distDir, 'index.js');
-type CliChild = ChildProcessByStdio<null, Readable, Readable>;
+type CliChild =
+  | ChildProcessByStdio<null, Readable, Readable>
+  | ChildProcessByStdio<Writable, Readable, Readable>;
 const children = new Set<CliChild>();
 
 afterEach(async () => {
@@ -479,15 +481,120 @@ test('mpp commands proxy config and challenge payloads to render-web', async () 
 
 // ─── v1.0 tests ───────────────────────────────────────────────────────────────
 
+test('help prints usage without starting the interactive app', () => {
+  const result = runCli(['--help']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /solana-agent-wallet\s+# interactive CLI/);
+  assert.match(result.stdout, /solana-agent-wallet agent-setup\s+# hosted AI or local provider key/);
+  assert.doesNotMatch(result.stdout, /Legacy & advanced/);
+  assert.doesNotMatch(result.stdout, /v1\.0 hosted/);
+  assert.doesNotMatch(result.stdout, /agentic>/);
+});
+
+test('expanded help exposes advanced command inventory on request', () => {
+  const result = runCli(['help', 'all']);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /device-agent status \| configure \| start \| stop \| clear \| set-key/);
+  assert.match(result.stdout, /bridge-agents list \| register/);
+});
+
 test('version prints the package version', () => {
   const expectedVersion = JSON.parse(readFileSync(resolve(distDir, '..', 'package.json'), 'utf8')).version as string;
   const plain = runCli(['version']);
   assert.equal(plain.status, 0, plain.stderr);
   assert.equal(plain.stdout.trim(), expectedVersion);
 
+  const flag = runCli(['--version']);
+  assert.equal(flag.status, 0, flag.stderr);
+  assert.equal(flag.stdout.trim(), expectedVersion);
+
   const json = runCli(['version', '--json']);
   assert.equal(json.status, 0, json.stderr);
   assert.deepEqual(JSON.parse(json.stdout) as Record<string, string>, { version: expectedVersion });
+});
+
+test('no positional command starts the interactive app', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-default-app-'));
+  const bridgeUrl = `http://127.0.0.1:${await freePort()}`;
+  const walletHostUrl = `http://127.0.0.1:${await freePort()}`;
+  const renderWebUrl = `http://127.0.0.1:${await freePort()}`;
+  const child = startCliInteractive([
+    '--runtime-dir',
+    runtimeDir,
+    '--bridge-url',
+    bridgeUrl,
+    '--wallet-host-url',
+    walletHostUrl,
+    '--render-web-url',
+    renderWebUrl,
+  ]);
+
+  try {
+    const stdout = await waitForStdout(child, /agentic>/, 30_000);
+    assert.match(stdout, /Solana Agent Wallet Terminal/);
+    assert.match(stdout, /Setup/);
+    assert.match(stdout, /1\. Wallet\s+Not connected\s+\/connect/);
+    assert.match(stdout, /2\. Cloud Storage\s+Signed out \(optional\)\s+\/sign-in/);
+    assert.match(stdout, /3\. Agent\s+Not configured\s+\/agent-setup/);
+    assert.match(stdout, /Cloud APIs: Agentic hosted default/);
+    assert.match(stdout, /\/agent\s+Ask AI to prepare a wallet action/);
+    assert.doesNotMatch(stdout, /Direct flows/);
+    assert.doesNotMatch(stdout, /Legacy & advanced/);
+    assert.doesNotMatch(stdout, /v1\.0 hosted/);
+    child.stdin.write('/quit\n');
+    const exit = await waitForExit(child);
+    assert.equal(exit.code, 0, `stdout:\n${stdout}\nstderr:\n${await readRemaining(child.stderr)}`);
+  } finally {
+    await stopChild(child);
+  }
+});
+
+test('agent-setup from env writes local AI config and activates bridge session key', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-agent-setup-'));
+  const envPath = join(runtimeDir, '.env');
+  await writeFile(envPath, 'CUSTOM_VALUE=kept\n', 'utf8');
+  const bridge = await startMockBridge([]);
+  try {
+    const result = await runCliAsync([
+      '--runtime-dir',
+      runtimeDir,
+      '--bridge-url',
+      bridge.url,
+      'agent-setup',
+      '--from-env',
+      'TEST_AGENTIC_AI_KEY',
+      '--provider',
+      'openai',
+      '--model',
+      'gpt-5',
+      '--json',
+    ], { TEST_AGENTIC_AI_KEY: 'sk-test-agent-key' });
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout) as Record<string, unknown>;
+    assert.equal(payload.configured, true);
+    assert.equal(payload.provider, 'openai');
+    assert.equal(payload.model, 'gpt-5');
+
+    const raw = await readFile(envPath, 'utf8');
+    assert.match(raw, /CUSTOM_VALUE=kept/);
+    assert.match(raw, /AGENTIC_AI_API_KEY=sk-test-agent-key/);
+    assert.match(raw, /AGENTIC_AI_PROVIDER=openai/);
+    assert.match(raw, /AGENTIC_AI_API_FORMAT=openai-compatible/);
+    assert.match(raw, /AGENTIC_AI_BASE_URL=https:\/\/api\.openai\.com\/v1/);
+    assert.match(raw, /AGENTIC_AI_MODEL=gpt-5/);
+
+    const sessionKey = bridge.requests.find((request) => request.path === '/bridge/ai/session-key');
+    assert.ok(sessionKey);
+    assert.deepEqual(sessionKey.body, {
+      apiKey: 'sk-test-agent-key',
+      provider: 'openai',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-5',
+    });
+  } finally {
+    await bridge.close();
+  }
 });
 
 test('auth status with no session reports unauthenticated', async () => {
@@ -1059,7 +1166,27 @@ test('birdeye search posts to /api/birdeye/search when bridge offline', async ()
     assert.equal(result.status, 0, result.stderr);
     const req = renderWeb.requests.find((r) => r.path === '/api/birdeye/search');
     assert.ok(req, 'birdeye/search not called');
-    assert.deepEqual(req.body, { query: 'SOL' });
+    assert.deepEqual(req.body, { query: 'SOL', keyword: 'SOL' });
+  } finally {
+    await renderWeb.close();
+  }
+});
+
+test('solana blockhash uses hosted RPC before bridge fallback', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-solana-hosted-'));
+  const renderWeb = await startMockSolanaRenderWeb();
+  try {
+    const result = await runCliAsync([
+      '--runtime-dir', runtimeDir,
+      '--render-web-url', renderWeb.url,
+      '--bridge-url', 'http://127.0.0.1:1',
+      'solana', 'blockhash',
+      '--json',
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const req = renderWeb.requests.find((r) => r.path === '/api/solana/latest-blockhash');
+    assert.ok(req);
+    assert.deepEqual(req.body, { cluster: 'mainnet-beta' });
   } finally {
     await renderWeb.close();
   }
@@ -1089,7 +1216,37 @@ test('solana account-info calls /api/solana/parsed-account-info', async () => {
     const req = renderWeb.requests.find((r) => r.path === '/api/solana/parsed-account-info');
     assert.ok(req);
     assert.equal((req.body as Record<string, unknown>).address, 'So11111111111111111111111111111111111111112');
+    assert.equal((req.body as Record<string, unknown>).cluster, 'mainnet-beta');
   } finally {
+    await renderWeb.close();
+  }
+});
+
+test('swap quote uses hosted Jupiter order relay for common tokens', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-swap-hosted-'));
+  const bridge = await startMockBridge([]);
+  const renderWeb = await startMockSolanaRenderWeb();
+  try {
+    const result = await runCliAsync([
+      '--runtime-dir', runtimeDir,
+      '--bridge-url', bridge.url,
+      '--render-web-url', renderWeb.url,
+      'swap', 'quote', '0.01',
+      '--input-token', 'SOL',
+      '--output-token', 'USDC',
+      '--json',
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const req = renderWeb.requests.find((r) => r.path === '/api/swap/order');
+    assert.ok(req);
+    assert.deepEqual(req.body, {
+      inputMint: 'So11111111111111111111111111111111111111112',
+      outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+      amount: '10000000',
+      taker: '4fTqWallet',
+    });
+  } finally {
+    await bridge.close();
     await renderWeb.close();
   }
 });
@@ -1325,6 +1482,7 @@ function runCliWithEnv(
   return spawnSync(process.execPath, [cliPath, ...args], {
     env: {
       ...process.env,
+      AGENTIC_RENDER_WEB_URL: 'http://127.0.0.1:9',
       NO_COLOR: '1',
       ...env,
     },
@@ -1339,6 +1497,7 @@ async function runCliAsync(
   const child = spawn(process.execPath, [cliPath, ...args], {
     env: {
       ...process.env,
+      AGENTIC_RENDER_WEB_URL: 'http://127.0.0.1:9',
       AGENT_WALLET_SKIP_OPEN: '1',
       NO_COLOR: '1',
       ...env,
@@ -1363,12 +1522,97 @@ function startCli(args: string[]): CliChild {
   const child = spawn(process.execPath, [cliPath, ...args], {
     env: {
       ...process.env,
+      AGENTIC_RENDER_WEB_URL: 'http://127.0.0.1:9',
       NO_COLOR: '1',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   children.add(child);
   return child;
+}
+
+function startCliInteractive(args: string[]): ChildProcessByStdio<Writable, Readable, Readable> {
+  const child = spawn(process.execPath, [cliPath, ...args], {
+    env: {
+      ...process.env,
+      AGENTIC_RENDER_WEB_URL: 'http://127.0.0.1:9',
+      AGENT_WALLET_SKIP_OPEN: '1',
+      NO_COLOR: '1',
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  children.add(child);
+  return child;
+}
+
+async function waitForStdout(
+  child: ChildProcessByStdio<Writable, Readable, Readable>,
+  pattern: RegExp,
+  timeoutMs: number,
+): Promise<string> {
+  let stdout = '';
+  let stderr = '';
+  return new Promise<string>((resolveWait, rejectWait) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      rejectWait(new Error(`Timed out waiting for ${pattern}.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
+    }, timeoutMs);
+    timeout.unref();
+
+    const cleanup = (): void => {
+      clearTimeout(timeout);
+      child.stdout.off('data', onStdout);
+      child.stderr.off('data', onStderr);
+      child.off('exit', onExit);
+    };
+    const onStdout = (chunk: Buffer): void => {
+      stdout += chunk.toString();
+      if (pattern.test(stdout)) {
+        cleanup();
+        resolveWait(stdout);
+      }
+    };
+    const onStderr = (chunk: Buffer): void => {
+      stderr += chunk.toString();
+    };
+    const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+      cleanup();
+      rejectWait(new Error(`Process exited before ${pattern}: code=${code ?? 'null'} signal=${signal ?? 'null'}.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
+    };
+
+    child.stdout.on('data', onStdout);
+    child.stderr.on('data', onStderr);
+    child.once('exit', onExit);
+  });
+}
+
+async function waitForExit(
+  child: ChildProcessByStdio<Writable, Readable, Readable>,
+  timeoutMs = 5_000,
+): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return { code: child.exitCode, signal: child.signalCode as NodeJS.Signals | null };
+  }
+  return new Promise((resolveExit, rejectExit) => {
+    const timeout = setTimeout(() => {
+      child.kill('SIGKILL');
+      rejectExit(new Error('Timed out waiting for process exit.'));
+    }, timeoutMs);
+    timeout.unref();
+    child.once('exit', (code, signal) => {
+      clearTimeout(timeout);
+      resolveExit({ code, signal });
+    });
+  });
+}
+
+async function readRemaining(stream: Readable): Promise<string> {
+  let text = '';
+  for (;;) {
+    const chunk = stream.read();
+    if (!chunk) return text;
+    text += chunk.toString();
+  }
 }
 
 function blinkPreparedAction(): Record<string, unknown> {
@@ -1404,6 +1648,7 @@ async function startMockBridge(actions: Record<string, unknown>[]): Promise<{
   close: () => Promise<void>;
 }> {
   const requests: Array<{ method: string; path: string; body: unknown }> = [];
+  let aiStatus: Record<string, unknown> = { available: false, configured: false, source: 'none' };
   const server = createHttpServer((req, res) => {
     void (async () => {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1');
@@ -1431,6 +1676,35 @@ async function startMockBridge(actions: Record<string, unknown>[]): Promise<{
       }
       if (url.pathname === '/bridge/prepared-actions/tx-status') {
         writeJsonResponse(res, { actions });
+        return;
+      }
+      if (url.pathname === '/bridge/recurring-payments') {
+        writeJsonResponse(res, { recurringPayments: [] });
+        return;
+      }
+      if (url.pathname === '/bridge/lab-artifacts') {
+        writeJsonResponse(res, { artifacts: [] });
+        return;
+      }
+      if (url.pathname === '/bridge/ai/status') {
+        writeJsonResponse(res, aiStatus);
+        return;
+      }
+      if (url.pathname === '/bridge/ai/session-key') {
+        if (isRecord(body) && body.clear === true) {
+          aiStatus = { available: false, configured: false, source: 'none' };
+        } else {
+          aiStatus = {
+            available: true,
+            configured: true,
+            source: 'session',
+            provider: isRecord(body) ? body.provider : 'openai',
+            apiFormat: isRecord(body) ? body.apiFormat : 'openai-compatible',
+            baseUrl: isRecord(body) ? body.baseUrl : 'https://api.openai.com/v1',
+            model: isRecord(body) ? body.model : 'gpt-5',
+          };
+        }
+        writeJsonResponse(res, aiStatus);
         return;
       }
       if (url.pathname === '/bridge/action/prepare-blink') {

@@ -13,7 +13,7 @@
  */
 import type { ParsedArgs } from '../shared/types.js';
 import { optionValue, removeUndefined } from '../shared/util.js';
-import { bridgeRequest } from '../http/index.js';
+import { bridgeRequest, renderWebRequest, tryBridgeRequest } from '../http/index.js';
 
 const KNOWN_OPS = new Set([
   'transaction_history',
@@ -56,8 +56,21 @@ export async function dispatchHeliusHistory(parsed: ParsedArgs): Promise<unknown
     source: optionValue(parsed.positionals, '--source'),
     type: optionValue(parsed.positionals, '--type'),
   });
-  return bridgeRequest(parsed.options, '/bridge/action/helius-history', {
+  const init: RequestInit = {
     method: 'POST',
     body: JSON.stringify(body),
-  });
+  };
+  if (operation === 'transfers_by_address') {
+    try {
+      return await renderWebRequest(parsed.options, '/api/helius/transfers-by-address', init, {
+        label: 'Helius hosted',
+        requireAuth: true,
+      });
+    } catch (err) {
+      const bridgeResult = await tryBridgeRequest(parsed.options, '/bridge/action/helius-history', init);
+      if (bridgeResult.ok) return bridgeResult.value;
+      throw err;
+    }
+  }
+  return bridgeRequest(parsed.options, '/bridge/action/helius-history', init);
 }

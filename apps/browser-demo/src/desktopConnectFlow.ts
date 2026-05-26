@@ -19,11 +19,12 @@ export type DesktopConnectStep =
 
 export type DesktopConnectMethod = 'extension' | 'qr' | 'ledger';
 
-/** When the user is on the QR step, `qrVariant` selects which URI the QR
- *  encodes: the wallet-agnostic WalletConnect URI (default, used by
- *  Backpack/Jupiter/Magic Eden mobile) or a wallet-specific universal link
- *  for Phantom or Solflare (which don't speak generic WC QR). */
-export type DesktopQrVariant = 'wc' | 'phantom' | 'solflare';
+/** Which wallet the user picked inside the QR step. `null` means the
+ *  picker is showing (no wallet chosen yet, no QR generated). Backpack
+ *  and Jupiter both render the wallet-agnostic WalletConnect QR — they
+ *  share the same protocol, only the rendered brand banner differs.
+ *  Phantom and Solflare render their respective universal-link QRs. */
+export type DesktopQrWallet = 'backpack' | 'jupiter' | 'phantom' | 'solflare';
 
 export interface DesktopConnectFlowState {
   step: DesktopConnectStep;
@@ -31,16 +32,16 @@ export interface DesktopConnectFlowState {
   selectedBrandId: string | null;
   /** Epoch ms when 'awaiting-browser' was entered; used to time out the poll. */
   awaitingBrowserStartedAt: number | null;
-  /** Active QR variant while step === 'qr'. Reset to 'wc' on every entry
-   *  into the qr step so the user always sees the default WC QR first. */
-  qrVariant: DesktopQrVariant;
+  /** Wallet picked on the QR step. `null` while the wallet picker is showing
+   *  (the default whenever the user enters the QR step). */
+  qrWallet: DesktopQrWallet | null;
 }
 
 export type DesktopConnectFlowAction =
   | { type: 'startMethod' }
   | { type: 'pickMethod'; method: DesktopConnectMethod }
   | { type: 'pickBrand'; brandId: string }
-  | { type: 'pickQrVariant'; variant: DesktopQrVariant }
+  | { type: 'pickQrWallet'; wallet: DesktopQrWallet | null }
   | { type: 'beginAwaitingBrowser'; brandId: string; startedAt: number }
   | { type: 'back' }
   | { type: 'reset' };
@@ -50,7 +51,7 @@ export function initialDesktopConnectFlowState(): DesktopConnectFlowState {
     step: 'idle',
     selectedBrandId: null,
     awaitingBrowserStartedAt: null,
-    qrVariant: 'wc',
+    qrWallet: null,
   };
 }
 
@@ -70,7 +71,7 @@ function emptyAt(step: DesktopConnectStep): DesktopConnectFlowState {
     step,
     selectedBrandId: null,
     awaitingBrowserStartedAt: null,
-    qrVariant: 'wc',
+    qrWallet: null,
   };
 }
 
@@ -85,14 +86,10 @@ function previousStep(state: DesktopConnectFlowState): DesktopConnectFlowState {
     case 'awaiting-browser':
       return emptyAt('method');
     case 'qr':
-      // From QR with a Phantom/Solflare variant active → go back to the
-      // wallet-agnostic WC variant first (sub-step inside the QR screen).
-      if (state.qrVariant !== 'wc') {
-        return { ...state, qrVariant: 'wc', selectedBrandId: null };
-      }
-      // QR + selected brand (legacy state) → drop the brand selection.
-      if (state.selectedBrandId) {
-        return { ...emptyAt('qr') };
+      // From QR with a wallet picked, peel back to the picker (sub-step inside
+      // the QR screen). From the picker itself, pop out to the method picker.
+      if (state.qrWallet !== null) {
+        return { ...state, qrWallet: null, selectedBrandId: null };
       }
       return emptyAt('method');
   }
@@ -114,17 +111,17 @@ export function reduceDesktopConnectFlow(
     case 'pickBrand':
       if (state.step !== 'qr' && state.step !== 'extension-brands') return state;
       return { ...state, selectedBrandId: action.brandId };
-    case 'pickQrVariant':
-      // Variant changes only make sense while on the QR step.
+    case 'pickQrWallet':
+      // QR wallet picks only make sense while on the QR step.
       if (state.step !== 'qr') return state;
-      if (state.qrVariant === action.variant) return state;
-      return { ...state, qrVariant: action.variant, selectedBrandId: null };
+      if (state.qrWallet === action.wallet) return state;
+      return { ...state, qrWallet: action.wallet, selectedBrandId: null };
     case 'beginAwaitingBrowser':
       return {
         step: 'awaiting-browser',
         selectedBrandId: action.brandId,
         awaitingBrowserStartedAt: action.startedAt,
-        qrVariant: 'wc',
+        qrWallet: null,
       };
     case 'back':
       return previousStep(state);

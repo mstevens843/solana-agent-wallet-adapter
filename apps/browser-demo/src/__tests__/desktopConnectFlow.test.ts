@@ -9,12 +9,12 @@ import {
 const initial = (): DesktopConnectFlowState => initialDesktopConnectFlowState();
 
 describe('initialDesktopConnectFlowState', () => {
-  it('starts at idle with no brand, no poll start, and the default WC qr variant', () => {
+  it('starts at idle with no brand, no poll start, and no QR wallet picked', () => {
     expect(initial()).toEqual({
       step: 'idle',
       selectedBrandId: null,
       awaitingBrowserStartedAt: null,
-      qrVariant: 'wc',
+      qrWallet: null,
     });
   });
 });
@@ -132,19 +132,7 @@ describe('reduceDesktopConnectFlow — back', () => {
     expect(back.selectedBrandId).toBeNull();
   });
 
-  it('qr with brand → qr without brand (sub-step back)', () => {
-    const atMethod = reduceDesktopConnectFlow(initial(), { type: 'startMethod' });
-    const atQr = reduceDesktopConnectFlow(atMethod, { type: 'pickMethod', method: 'qr' });
-    const withBrand = reduceDesktopConnectFlow(atQr, {
-      type: 'pickBrand',
-      brandId: 'phantom',
-    });
-    const back = reduceDesktopConnectFlow(withBrand, { type: 'back' });
-    expect(back.step).toBe('qr');
-    expect(back.selectedBrandId).toBeNull();
-  });
-
-  it('qr without brand → method', () => {
+  it('qr with no wallet picked → method', () => {
     const atMethod = reduceDesktopConnectFlow(initial(), { type: 'startMethod' });
     const atQr = reduceDesktopConnectFlow(atMethod, { type: 'pickMethod', method: 'qr' });
     const back = reduceDesktopConnectFlow(atQr, { type: 'back' });
@@ -196,77 +184,100 @@ describe('reduceDesktopConnectFlow — reset', () => {
   });
 });
 
-describe('reduceDesktopConnectFlow — pickQrVariant', () => {
+describe('reduceDesktopConnectFlow — pickQrWallet', () => {
   function atQr(): DesktopConnectFlowState {
     const m = reduceDesktopConnectFlow(initial(), { type: 'startMethod' });
     return reduceDesktopConnectFlow(m, { type: 'pickMethod', method: 'qr' });
   }
 
-  it('switches variant from wc → phantom while on the QR step', () => {
+  it('entering the QR step always starts on the picker (qrWallet === null)', () => {
+    expect(atQr().qrWallet).toBeNull();
+  });
+
+  it('picks Backpack as the QR wallet', () => {
     const next = reduceDesktopConnectFlow(atQr(), {
-      type: 'pickQrVariant',
-      variant: 'phantom',
+      type: 'pickQrWallet',
+      wallet: 'backpack',
     });
     expect(next.step).toBe('qr');
-    expect(next.qrVariant).toBe('phantom');
+    expect(next.qrWallet).toBe('backpack');
   });
 
-  it('switches variant from phantom → solflare', () => {
-    const phantom = reduceDesktopConnectFlow(atQr(), {
-      type: 'pickQrVariant',
-      variant: 'phantom',
+  it('picks Phantom as the QR wallet', () => {
+    const next = reduceDesktopConnectFlow(atQr(), {
+      type: 'pickQrWallet',
+      wallet: 'phantom',
     });
-    const solflare = reduceDesktopConnectFlow(phantom, {
-      type: 'pickQrVariant',
-      variant: 'solflare',
-    });
-    expect(solflare.qrVariant).toBe('solflare');
+    expect(next.qrWallet).toBe('phantom');
   });
 
-  it('switching to the already-active variant is a no-op (returns same object)', () => {
-    const at = atQr();
-    expect(reduceDesktopConnectFlow(at, { type: 'pickQrVariant', variant: 'wc' })).toBe(at);
+  it('switching wallets while in the QR step replaces the selection', () => {
+    const backpack = reduceDesktopConnectFlow(atQr(), {
+      type: 'pickQrWallet',
+      wallet: 'backpack',
+    });
+    const solflare = reduceDesktopConnectFlow(backpack, {
+      type: 'pickQrWallet',
+      wallet: 'solflare',
+    });
+    expect(solflare.qrWallet).toBe('solflare');
+  });
+
+  it('picking the already-active wallet is a no-op (returns same object)', () => {
+    const backpack = reduceDesktopConnectFlow(atQr(), {
+      type: 'pickQrWallet',
+      wallet: 'backpack',
+    });
+    expect(reduceDesktopConnectFlow(backpack, { type: 'pickQrWallet', wallet: 'backpack' })).toBe(
+      backpack,
+    );
   });
 
   it('is ignored outside the QR step', () => {
     const method = reduceDesktopConnectFlow(initial(), { type: 'startMethod' });
-    const noop = reduceDesktopConnectFlow(method, { type: 'pickQrVariant', variant: 'phantom' });
+    const noop = reduceDesktopConnectFlow(method, { type: 'pickQrWallet', wallet: 'phantom' });
     expect(noop).toBe(method);
   });
 });
 
-describe('reduceDesktopConnectFlow — back behaviour with qrVariant', () => {
-  function atPhantomVariant(): DesktopConnectFlowState {
+describe('reduceDesktopConnectFlow — back behaviour on the QR step', () => {
+  function atQrWith(wallet: 'backpack' | 'jupiter' | 'phantom' | 'solflare'): DesktopConnectFlowState {
     const m = reduceDesktopConnectFlow(initial(), { type: 'startMethod' });
     const qr = reduceDesktopConnectFlow(m, { type: 'pickMethod', method: 'qr' });
-    return reduceDesktopConnectFlow(qr, { type: 'pickQrVariant', variant: 'phantom' });
+    return reduceDesktopConnectFlow(qr, { type: 'pickQrWallet', wallet });
   }
 
-  it('back from a phantom/solflare variant returns to wc (sub-step back)', () => {
-    const back = reduceDesktopConnectFlow(atPhantomVariant(), { type: 'back' });
+  it('back from a picked wallet returns to the picker (qrWallet = null)', () => {
+    const back = reduceDesktopConnectFlow(atQrWith('phantom'), { type: 'back' });
     expect(back.step).toBe('qr');
-    expect(back.qrVariant).toBe('wc');
+    expect(back.qrWallet).toBeNull();
   });
 
-  it('back from the default wc variant pops to method', () => {
+  it('back from the picker pops to method', () => {
     const m = reduceDesktopConnectFlow(initial(), { type: 'startMethod' });
     const qr = reduceDesktopConnectFlow(m, { type: 'pickMethod', method: 'qr' });
     const back = reduceDesktopConnectFlow(qr, { type: 'back' });
     expect(back.step).toBe('method');
   });
+
+  it('two backs from a picked wallet reach the method picker', () => {
+    const back1 = reduceDesktopConnectFlow(atQrWith('backpack'), { type: 'back' });
+    const back2 = reduceDesktopConnectFlow(back1, { type: 'back' });
+    expect(back2.step).toBe('method');
+  });
 });
 
-describe('reduceDesktopConnectFlow — pickMethod always resets qrVariant', () => {
-  it('re-entering QR step from method resets a previously-set variant', () => {
+describe('reduceDesktopConnectFlow — pickMethod resets qrWallet', () => {
+  it('re-entering the QR step from method always lands on the picker', () => {
     const m1 = reduceDesktopConnectFlow(initial(), { type: 'startMethod' });
     const qr1 = reduceDesktopConnectFlow(m1, { type: 'pickMethod', method: 'qr' });
     const phantom = reduceDesktopConnectFlow(qr1, {
-      type: 'pickQrVariant',
-      variant: 'phantom',
+      type: 'pickQrWallet',
+      wallet: 'phantom',
     });
-    const back1 = reduceDesktopConnectFlow(phantom, { type: 'back' }); // → wc
+    const back1 = reduceDesktopConnectFlow(phantom, { type: 'back' }); // → picker
     const back2 = reduceDesktopConnectFlow(back1, { type: 'back' }); // → method
     const qr2 = reduceDesktopConnectFlow(back2, { type: 'pickMethod', method: 'qr' });
-    expect(qr2.qrVariant).toBe('wc');
+    expect(qr2.qrWallet).toBeNull();
   });
 });

@@ -5,6 +5,15 @@ import { loadSession, sessionStatusSummary } from '../auth/sessionStore.js';
 import { removeUndefined, printQueuedAction, fetchWalletAddress } from './_shared.js';
 import { renderPolicyBundle, verdictBlocksQueue, type ReviewResponse, type PolicyReviewVerdict } from '../forms/policyBundleRender.js';
 import { friendlyBridgeError } from './_shared.js';
+import {
+  agentAiRouteLabel,
+  agentAiSetupHint,
+  askAgentPlan,
+  generateAgentPlan,
+  resolveAgentAiRoute,
+  reviewAgentPlan,
+  type AgentAiRoute,
+} from '../ai/hosted.js';
 
 // `runAgent` accepts an optional plan-proof signer so it can offer to sign the
 // AI's plan as off-chain evidence (separate from queueing). The signer lives
@@ -34,7 +43,7 @@ export async function runAgent(options: GlobalOptions, signPlanFn?: SignPlanFn):
   const session = await loadSession(options).catch(() => null);
   const auth = sessionStatusSummary(session);
   if (!auth.authenticated) {
-    console.log(badge('You are not signed in. AI plans work without cloud sign-in, but cross-device sync is disabled.', 'muted'));
+    console.log(badge('You are not signed in. Agentic hosted AI and cloud sync require sign-in; local bridge AI can still work if configured.', 'muted'));
     const proceed = await confirm({ message: 'Continue without sign-in?', default: true });
     if (!proceed) {
       console.log(badge('Tip: run /sign-in to authenticate.', 'muted'));
@@ -62,24 +71,26 @@ export async function runAgent(options: GlobalOptions, signPlanFn?: SignPlanFn):
     default: '',
   });
 
-  const aiMode = await resolveAiMode(options);
-  console.log(badge(`AI route: ${aiMode}`, 'muted'));
+  const aiRoute = await resolveAgentAiRoute(options);
+  console.log(badge(`AI route: ${agentAiRouteLabel(aiRoute)}`, 'muted'));
 
   const spin = spinner('Thinking…');
   let plan: AgentPlan | null = null;
   try {
-    plan = (await bridgeRequest<AgentPlan>(options, '/bridge/ai/generate-plan', {
-      method: 'POST',
-      body: JSON.stringify(removeUndefined({
-        prompt,
-        userNotes: policyNote.trim() ? policyNote : prompt,
-        mode: aiMode,
-      })),
-    })) ?? null;
+    plan = (await generateAgentPlan<AgentPlan>(options, aiRoute, removeUndefined({
+      prompt,
+      userNotes: policyNote.trim() ? policyNote : prompt,
+    }))) ?? null;
     spin.succeed('AI returned a plan.');
   } catch (err) {
     const friendly = friendlyBridgeError(err, options);
-    spin.fail(friendly ?? `AI failed: ${err instanceof Error ? err.message : String(err)}`);
+    const message = err instanceof Error ? err.message : String(err);
+    const setupHint = aiRoute.kind === 'none'
+      ? agentAiSetupHint(aiRoute)
+      : /Bridge AI is not configured|AGENTIC_AI_API_KEY|session key/i.test(message)
+      ? 'Agent is not configured. Run /agent-setup to use hosted AI or add a local provider key.'
+      : null;
+    spin.fail(friendly ?? setupHint ?? `AI failed: ${message}`);
     return;
   }
 
@@ -90,7 +101,7 @@ export async function runAgent(options: GlobalOptions, signPlanFn?: SignPlanFn):
 
   let verdict: PolicyReviewVerdict | null = null;
   if (policyNote.trim()) {
-    verdict = await runReviewLoop(options, plan, policyNote);
+    verdict = await runReviewLoop(options, aiRoute, plan, policyNote);
   }
 
   const blocked = verdictBlocksQueue(verdict);
@@ -273,15 +284,14 @@ export async function runAsk(options: GlobalOptions, question?: string): Promise
   }
   const spin = spinner('Thinking…');
   try {
-    const raw = await bridgeRequest<Record<string, unknown>>(options, '/bridge/ai/ask-about-plan', {
-      method: 'POST',
-      body: JSON.stringify({ plan: LAST_PLAN, question: q }),
-    });
+    const route = await resolveAgentAiRoute(options);
+    const raw = await askAgentPlan<Record<string, unknown>>(options, route, { plan: LAST_PLAN, question: q });
     spin.succeed('Answer received.');
     renderAnswer(raw);
   } catch (err) {
     const friendly = friendlyBridgeError(err, options);
-    spin.fail(friendly ?? `Ask failed: ${err instanceof Error ? err.message : String(err)}`);
+    const message = err instanceof Error ? err.message : String(err);
+    spin.fail(friendly ?? `Ask failed: ${message}`);
   }
 }
 
@@ -308,7 +318,7 @@ function renderAnswer(raw: Record<string, unknown>): void {
 // the LLM settles on approve/deny or the user cancels. Returns the final
 // verdict so the caller (runAgent) can gate the queue prompt on a DENY or
 // blocking-failure outcome.
-async function runReviewLoop(options: GlobalOptions, plan: AgentPlan, instruction: string): Promise<PolicyReviewVerdict | null> {
+async function runReviewLoop(options: GlobalOptions, route: AgentAiRoute, plan: AgentPlan, instruction: string): Promise<PolicyReviewVerdict | null> {
   const answers: Record<string, unknown> = {};
   const multi = await isMultiReviewerEnabled(options);
   if (multi) console.log(badge('Multi-reviewer mode is on (preferences → AI Drafting).', 'muted'));
@@ -318,15 +328,12 @@ async function runReviewLoop(options: GlobalOptions, plan: AgentPlan, instructio
     const spin = spinner(attempt === 1 ? 'Resolving policy atoms…' : 'Re-reviewing with your answers…');
     let response: ReviewResponse | null = null;
     try {
-      response = await bridgeRequest<ReviewResponse>(options, '/bridge/ai/review-plan', {
-        method: 'POST',
-        body: JSON.stringify(removeUndefined({
+      response = await reviewAgentPlan<ReviewResponse>(options, route, removeUndefined({
           plan,
           instruction,
           mode: multi ? 'multi' : undefined,
           context: Object.keys(answers).length > 0 ? { answers } : undefined,
-        })),
-      });
+        }));
       spin.succeed('Review complete.');
     } catch (err) {
       const friendly = friendlyBridgeError(err, options);
@@ -547,15 +554,6 @@ export function composeNote(
   return `${headTrim}${SEPARATOR}${overridePart}`;
 }
 
-async function resolveAiMode(options: GlobalOptions): Promise<string> {
-  try {
-    const status = await bridgeRequest<{ mode?: string }>(options, '/bridge/ai/status');
-    return status.mode ?? 'bridge';
-  } catch {
-    return 'bridge';
-  }
-}
-
 // Reads the user's `multiReviewer` preference from /api/preferences/ai-settings
 // and returns true when the toggle is on. Silently false when the user isn't
 // signed in or the namespace is empty — matches the web's default.
@@ -576,4 +574,3 @@ export async function isMultiReviewerEnabled(options: GlobalOptions): Promise<bo
     return false;
   }
 }
-

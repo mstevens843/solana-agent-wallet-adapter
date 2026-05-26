@@ -9288,24 +9288,12 @@ code {
   flex-shrink: 0;
 }
 
-/* Desktop QR variant sub-picker (WC / Phantom / Solflare) */
-.desktop-qr-variant-picker {
-  border-top: 1px solid rgba(224, 230, 226, 0.08);
+/* Desktop QR wallet picker (4 tiles: Backpack / Jupiter / Phantom / Solflare) */
+.desktop-qr-wallet-picker {
   display: grid;
   gap: 8px;
-  margin-top: 12px;
-  padding-top: 12px;
 }
-.desktop-qr-variant-lede {
-  color: var(--muted);
-  font-size: 0.82rem;
-  margin: 0;
-}
-.desktop-qr-variant-list {
-  display: grid;
-  gap: 6px;
-}
-.desktop-qr-variant-button {
+.desktop-qr-wallet-tile {
   align-items: center;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(224, 230, 226, 0.12);
@@ -9314,42 +9302,91 @@ code {
   cursor: pointer;
   display: flex;
   font: inherit;
-  font-size: 0.9rem;
+  font-size: 0.95rem;
   gap: 10px;
-  padding: 9px 12px;
+  padding: 12px 14px;
   text-align: left;
 }
-.desktop-qr-variant-button:hover:not(.active) {
+.desktop-qr-wallet-tile:hover {
   background: rgba(255, 255, 255, 0.07);
-  border-color: rgba(125, 231, 176, 0.3);
+  border-color: rgba(125, 231, 176, 0.32);
 }
-.desktop-qr-variant-button.active {
-  background: rgba(125, 231, 176, 0.08);
-  border-color: rgba(125, 231, 176, 0.4);
-  color: var(--accent);
-  cursor: default;
-}
-.desktop-qr-variant-logo {
+.desktop-qr-wallet-tile-logo {
   background: rgba(255, 255, 255, 0.06);
   border-radius: 6px;
-  height: 22px;
+  height: 26px;
   object-fit: contain;
   padding: 3px;
-  width: 22px;
+  width: 26px;
+  flex-shrink: 0;
 }
-.desktop-qr-variant-logo.placeholder {
+.desktop-qr-wallet-tile-logo.placeholder {
   border: 1px dashed rgba(224, 230, 226, 0.18);
   display: inline-block;
 }
-.desktop-qr-variant-label {
+.desktop-qr-wallet-tile-label {
   flex: 1;
+  font-weight: 500;
 }
-.desktop-qr-variant-arrow {
+.desktop-qr-wallet-tile-arrow {
   color: var(--muted);
-  font-weight: 600;
+  font-size: 1.1rem;
 }
-.desktop-qr-variant-button.active .desktop-qr-variant-arrow {
-  color: var(--accent);
+
+/* Wallet-host page "Opening <Brand>…" splash */
+.wallet-host-opening-panel {
+  align-items: center;
+  display: grid;
+  justify-items: center;
+  min-height: 280px;
+}
+.wallet-host-opening {
+  display: grid;
+  gap: 12px;
+  justify-items: center;
+  max-width: 340px;
+  padding: 24px 16px;
+  text-align: center;
+}
+.wallet-host-opening h2 {
+  color: var(--text);
+  font-size: 1.1rem;
+  margin: 0;
+}
+.wallet-host-opening p {
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.45;
+  margin: 0;
+}
+.wallet-host-opening-logo {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  height: 56px;
+  object-fit: contain;
+  padding: 8px;
+  width: 56px;
+}
+.wallet-host-opening-logo.placeholder {
+  border: 1px dashed rgba(224, 230, 226, 0.18);
+  display: inline-block;
+}
+.wallet-host-opening-spinner {
+  height: 22px;
+  margin-top: 4px;
+  width: 22px;
+}
+.wallet-host-opening-hint {
+  color: rgba(224, 230, 226, 0.55);
+  font-size: 0.82rem;
+}
+.wallet-host-opening-error h2 {
+  color: rgba(224, 184, 100, 0.95);
+}
+.wallet-host-opening-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
 }
 
 /* Phantom / Solflare deeplink QR (inline) */

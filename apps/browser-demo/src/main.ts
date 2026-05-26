@@ -5,6 +5,7 @@ import {
   ProtocolError,
   SolanaSigningClient,
   type AdapterCapabilities,
+  type ApprovalResource,
   type Cluster,
   type ProtocolErrorPayload,
   type SigningRequest,
@@ -137,9 +138,10 @@ import {
   type DesktopConnectFlowAction,
   type DesktopConnectFlowState,
   type DesktopConnectMethod,
-  type DesktopQrVariant,
+  type DesktopQrWallet,
 } from './desktopConnectFlow.js';
 import { RemoteBridgeBackend } from './remoteBridgeBackend.js';
+import { RemoteRelayBackend } from './remoteRelayBackend.js';
 import {
   buildPhantomConnectUrl,
   buildSolflareBrowseUrl,
@@ -2403,6 +2405,11 @@ interface DemoState {
   selectedWalletName: string;
   selectedWalletLogoId?: WalletProviderLogoId;
   browserWalletPickerOpen: boolean;
+  /** When non-null, the wallet-host browser page is currently waiting for a
+   *  named browser-extension wallet to register itself via wallet-standard.
+   *  Drives the centred "Opening <Brand>…" splash, hiding the normal rail
+   *  while we wait. Cleared on success / timeout / disconnect. */
+  walletHostOpening: { brandId: string; brandLabel: string; status: 'waiting' | 'error' } | null;
   browserWalletSession?: BrowserWalletSession;
   pendingCliSignRequest: SigningRequest | null;
   lastCliSignResult: { requestId: string; status: 'approved' | 'rejected' | 'failed'; signature?: string; error?: string } | null;
@@ -3297,6 +3304,7 @@ const state: DemoState = {
   selectedWalletName: persisted.browserWalletSession?.cluster === initialCluster ? persisted.browserWalletSession.walletName : '',
   selectedWalletLogoId: persisted.selectedWalletLogoId,
   browserWalletPickerOpen: false,
+  walletHostOpening: null,
   browserWalletSession: persisted.browserWalletSession,
   pendingCliSignRequest: null,
   lastCliSignResult: null,
@@ -4374,10 +4382,50 @@ async function bootstrap(): Promise<void> {
   }
 }
 
-async function runWalletHostBrandAutoConnect(brandId: string): Promise<void> {
+const WALLET_HOST_AUTOCONNECT_TIMEOUT_MS = 5000;
+
+/** Wait up to `timeoutMs` for a Wallet-Standard wallet matching the brand
+ *  to appear in `state.wallets`. Extensions inject asynchronously after
+ *  page load via `wallet-standard:register-wallet` window events; the
+ *  single-snapshot check we used to do here would race against the
+ *  injection and false-negative for cold-start browsers. We subscribe to
+ *  the registration stream and re-snapshot on each event. */
+async function waitForWalletByBrand(
+  brandId: string,
+  timeoutMs: number,
+): Promise<DiscoveredWallet | null> {
   const names = DESKTOP_BRAND_WALLET_NAMES[brandId];
+  if (!names) return null;
+  const match = (): DiscoveredWallet | undefined =>
+    state.wallets.find((w) => names.some((n) => w.name.toLowerCase() === n.toLowerCase()));
+  const initial = match();
+  if (initial) return initial;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (w: DiscoveredWallet | null) => {
+      if (settled) return;
+      settled = true;
+      unsubscribe();
+      window.clearTimeout(timer);
+      resolve(w);
+    };
+    const unsubscribe = subscribeToWalletRegistration(() => {
+      // Re-snapshot — the subscriber doesn't auto-refresh state.wallets.
+      state.wallets = visibleBrowserWallets(listAvailableWallets());
+      const w = match();
+      if (w) finish(w);
+    });
+    const timer = window.setTimeout(() => finish(null), timeoutMs);
+  });
+}
+
+async function runWalletHostBrandAutoConnect(brandId: string): Promise<void> {
   const brandLabel =
     DESKTOP_BRAND_PANELS.find((b) => b.id === brandId)?.name ?? brandId;
+  // Surface the "Opening <Brand>…" splash immediately so the user sees
+  // something happening instead of a blank/landing page.
+  state.walletHostOpening = { brandId, brandLabel, status: 'waiting' };
+  render();
   try {
     await runDiscover();
   } catch (err) {
@@ -4386,20 +4434,24 @@ async function runWalletHostBrandAutoConnect(brandId: string): Promise<void> {
       'Discovery failed',
       err instanceof Error ? err.message : String(err),
     );
+    state.walletHostOpening = null;
     clearWalletBrandLaunchParam();
+    render();
     return;
   }
-  const candidate = names
-    ? state.wallets.find((w) => names.some((n) => w.name.toLowerCase() === n.toLowerCase()))
-    : undefined;
+  const candidate = await waitForWalletByBrand(brandId, WALLET_HOST_AUTOCONNECT_TIMEOUT_MS);
   if (!candidate) {
-    state.error = `${brandLabel} not detected in this browser. Install the extension and reload, or pick another wallet.`;
-    clearWalletBrandLaunchParam();
+    // Stay on the splash with status='error' + Retry button. Don't clear
+    // the launch param here so a hard reload still re-triggers the
+    // auto-connect — we only clear it on success below.
+    state.walletHostOpening = { brandId, brandLabel, status: 'error' };
+    state.error = `${brandLabel} not detected in this browser. Install the extension and click Retry, or pick another wallet.`;
     render();
     return;
   }
   state.selectedWalletName = candidate.name;
   state.browserWalletPickerOpen = false;
+  const pairingUuid = launchParams.pairing;
   clearWalletBrandLaunchParam();
   try {
     await runConnect();
@@ -4408,12 +4460,286 @@ async function runWalletHostBrandAutoConnect(brandId: string): Promise<void> {
       'Return to your desktop app',
       `${brandLabel} is connected — switch back to the Agentic desktop window.`,
     );
+    if (pairingUuid) {
+      // Cross-device pairing path: register the host on the cloud relay
+      // and start the inbox loop so the desktop can sign through us.
+      void startWalletHostPairingRelay(pairingUuid, brandLabel);
+    }
   } catch (err) {
     pushToast(
       'error',
       'Connect failed',
       err instanceof Error ? err.message : String(err),
     );
+  } finally {
+    state.walletHostOpening = null;
+    render();
+  }
+}
+
+const WALLET_HOST_PAIRING_RELAY_BASE_URL =
+  (import.meta as ImportMeta & { env?: { VITE_AGENTIC_CLOUD_API_BASE_URL?: string } }).env
+    ?.VITE_AGENTIC_CLOUD_API_BASE_URL || '';
+const WALLET_HOST_PAIRING_INBOX_INTERVAL_MS = 2000;
+
+interface WalletHostPairingRuntime {
+  uuid: string;
+  brandLabel: string;
+  pollHandle: number | null;
+  /** Set true after we surface the banner so we don't keep re-rendering. */
+  bannerShown: boolean;
+  /** Set true after a fatal POST error so we stop spamming logs. */
+  fatal: boolean;
+}
+
+let walletHostPairing: WalletHostPairingRuntime | null = null;
+
+/** Same-origin relative URL when running on agentic-signer.com itself,
+ *  absolute URL when running on a different origin (dev / Tauri webview
+ *  testing). The wallet-host typically runs same-origin so the relative
+ *  path avoids the CORS preflight. */
+function pairingRelayUrl(path: string): string {
+  return WALLET_HOST_PAIRING_RELAY_BASE_URL
+    ? `${WALLET_HOST_PAIRING_RELAY_BASE_URL}${path}`
+    : path;
+}
+
+async function startWalletHostPairingRelay(uuid: string, brandLabel: string): Promise<void> {
+  if (!state.address || !state.capabilities) {
+    console.warn('[pairing-relay] address/capabilities missing — skipping host POST');
+    return;
+  }
+  // POST the host details so the desktop's poll picks them up.
+  try {
+    const response = await fetch(pairingRelayUrl(`/api/pair/${encodeURIComponent(uuid)}/host`), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        address: state.address,
+        capabilities: state.capabilities,
+        walletName: state.selectedWalletName || brandLabel,
+      }),
+    });
+    if (!response.ok) {
+      console.warn(`[pairing-relay] POST host returned ${response.status}`);
+      return;
+    }
+  } catch (err) {
+    console.warn('[pairing-relay] POST host failed', err);
+    return;
+  }
+  // Stop any prior pairing loop and replace with this one.
+  stopWalletHostPairingRelay();
+  walletHostPairing = {
+    uuid,
+    brandLabel,
+    pollHandle: window.setInterval(() => {
+      void runWalletHostInboxTick();
+    }, WALLET_HOST_PAIRING_INBOX_INTERVAL_MS),
+    bannerShown: false,
+    fatal: false,
+  };
+  // Surface a persistent banner so the user knows to keep the tab open.
+  pushToast(
+    'pending',
+    'Stay on this tab',
+    `Signing for the desktop is routed through this browser tab. Closing it interrupts pending signatures.`,
+  );
+  // Wire the global unload cleanup so a stale interval doesn't survive.
+  window.addEventListener('beforeunload', stopWalletHostPairingRelay, { once: true });
+}
+
+function stopWalletHostPairingRelay(): void {
+  if (walletHostPairing?.pollHandle !== null && walletHostPairing?.pollHandle !== undefined) {
+    window.clearInterval(walletHostPairing.pollHandle);
+  }
+  walletHostPairing = null;
+}
+
+async function runWalletHostInboxTick(): Promise<void> {
+  const pairing = walletHostPairing;
+  if (!pairing || pairing.fatal) return;
+  let response: Response;
+  try {
+    response = await fetch(pairingRelayUrl(`/api/pair/${encodeURIComponent(pairing.uuid)}/inbox`), {
+      method: 'GET',
+      headers: { accept: 'application/json' },
+    });
+  } catch (err) {
+    console.warn('[pairing-relay] inbox fetch failed', err);
+    return;
+  }
+  if (!response.ok) {
+    if (response.status === 404 || response.status === 410) {
+      // Pairing record gone (TTL expired or revoked) — stop the loop.
+      pairing.fatal = true;
+      stopWalletHostPairingRelay();
+    }
+    return;
+  }
+  const payload = (await response.json().catch(() => null)) as
+    | { requests?: Array<{ requestId: string; request: SigningRequest }> }
+    | null;
+  if (!payload?.requests || payload.requests.length === 0) return;
+  for (const entry of payload.requests) {
+    void resolveWalletHostInboxEntry(pairing.uuid, entry.requestId, entry.request);
+  }
+}
+
+async function resolveWalletHostInboxEntry(
+  pairingUuid: string,
+  requestId: string,
+  request: SigningRequest,
+): Promise<void> {
+  if (!walletBackend || !client) {
+    await postPairingResult(pairingUuid, requestId, rejectedApprovalResource(
+      requestId,
+      'wallet_unreachable',
+      'Wallet not connected on this tab.',
+    ));
+    return;
+  }
+  let approval: ApprovalResource | null = null;
+  try {
+    approval = await walletBackend.submit(request);
+  } catch (err) {
+    await postPairingResult(pairingUuid, requestId, rejectedApprovalResource(
+      requestId,
+      protocolErrorPayload(err).code,
+      protocolErrorPayload(err).message,
+    ));
+    return;
+  }
+  // The submit may resolve immediately (most browser-wallet adapters) or
+  // return a pending approval that needs polling. Walk the poll until we
+  // get a terminal status.
+  const startedAt = Date.now();
+  const POLL_TIMEOUT_MS = 60_000;
+  while (approval && approval.status === 'pending' && Date.now() - startedAt < POLL_TIMEOUT_MS) {
+    await new Promise((resolve) => window.setTimeout(resolve, 500));
+    if (!walletBackend) return;
+    try {
+      approval = await walletBackend.poll(approval.requestId);
+    } catch (err) {
+      await postPairingResult(pairingUuid, requestId, rejectedApprovalResource(
+        requestId,
+        protocolErrorPayload(err).code,
+        protocolErrorPayload(err).message,
+      ));
+      return;
+    }
+  }
+  if (!approval) return;
+  // Override the requestId with the relay's UUID so the desktop can match.
+  await postPairingResult(pairingUuid, requestId, { ...approval, requestId });
+}
+
+function rejectedApprovalResource(
+  requestId: string,
+  code: string,
+  message: string,
+): ApprovalResource {
+  return {
+    requestId: requestId as ApprovalResource['requestId'],
+    status: 'rejected',
+    error: {
+      code: code as ProtocolErrorPayload['code'],
+      message,
+      recoverable: false,
+    },
+  };
+}
+
+async function postPairingResult(
+  pairingUuid: string,
+  requestId: string,
+  payload: ApprovalResource,
+): Promise<void> {
+  try {
+    await fetch(pairingRelayUrl(`/api/pair/${encodeURIComponent(pairingUuid)}/inbox/${encodeURIComponent(requestId)}`), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    console.warn('[pairing-relay] POST inbox result failed', err);
+  }
+}
+
+function protocolErrorPayload(err: unknown): { code: string; message: string } {
+  if (err instanceof ProtocolError) {
+    return { code: err.code, message: err.message };
+  }
+  if (err instanceof Error) {
+    return { code: 'wallet_unreachable', message: err.message };
+  }
+  return { code: 'wallet_unreachable', message: String(err) };
+}
+
+/** Retry handler for the wallet-host opening splash's error state. The
+ *  user might have just installed the extension; re-run the auto-connect
+ *  to pick up the late registration. */
+function handleWalletHostRetry(): void {
+  const opening = state.walletHostOpening;
+  if (!opening || opening.status !== 'error') return;
+  // Refresh the wallet list in case the extension registered between the
+  // 5s timeout and the user clicking Retry.
+  try {
+    state.wallets = visibleBrowserWallets(listAvailableWallets());
+  } catch {
+    // Discovery error already surfaced by previous attempt.
+  }
+  state.error = '';
+  void runWalletHostBrandAutoConnect(opening.brandId);
+}
+
+/** Renders the "Opening <Brand>…" splash inside the wallet rail while
+ *  `state.walletHostOpening` is set. Replaces the normal standby content
+ *  so the user has a clear status. The error path adds a Retry button. */
+function walletHostOpeningSplashHtml(): string {
+  const opening = state.walletHostOpening;
+  if (!opening) return '';
+  const { brandId, brandLabel, status } = opening;
+  const logoId = brandId.toLowerCase();
+  const logoSrc = (BRAND_LOGOS as Record<string, string | undefined>)[logoId] ?? null;
+  const logoMarkup = logoSrc
+    ? `<img class="wallet-host-opening-logo" src="${escapeHtml(logoSrc)}" alt="" />`
+    : `<span class="wallet-host-opening-logo placeholder" aria-hidden="true"></span>`;
+  if (status === 'waiting') {
+    return `
+      <aside class="panel custody-panel wallet-host-opening-panel" data-layout="app-rail">
+        <div class="wallet-host-opening" role="status" aria-live="polite">
+          ${logoMarkup}
+          <h2>Opening ${escapeHtml(brandLabel)}…</h2>
+          <p>Waiting for the ${escapeHtml(brandLabel)} extension to register on this page.</p>
+          <span class="desktop-connect-flow-spinner wallet-host-opening-spinner" aria-hidden="true"></span>
+          <p class="wallet-host-opening-hint">If a popup didn't appear, make sure ${escapeHtml(brandLabel)} is installed in this browser and unlocked.</p>
+        </div>
+      </aside>
+    `;
+  }
+  return `
+    <aside class="panel custody-panel wallet-host-opening-panel" data-layout="app-rail">
+      <div class="wallet-host-opening wallet-host-opening-error" role="alert">
+        ${logoMarkup}
+        <h2>${escapeHtml(brandLabel)} not detected</h2>
+        <p>We waited a few seconds for the ${escapeHtml(brandLabel)} extension to announce itself on this page and didn't see it.</p>
+        <p class="wallet-host-opening-hint">Install ${escapeHtml(brandLabel)} from your browser's extension store, unlock it, then click Retry. Or close this tab and pick a different connection method on the desktop.</p>
+        <div class="wallet-host-opening-actions">
+          <button type="button" class="primary" data-wallet-host-action="retry">Retry</button>
+        </div>
+      </div>
+    </aside>
+  `;
+}
+
+function bindWalletHostOpening(): void {
+  if (!state.walletHostOpening) return;
+  for (const el of document.querySelectorAll<HTMLButtonElement>('[data-wallet-host-action="retry"]')) {
+    el.addEventListener('click', (event) => {
+      event.preventDefault();
+      handleWalletHostRetry();
+    });
   }
 }
 
@@ -4994,7 +5320,7 @@ async function handleScanQrForBrand(brandId: string): Promise<void> {
  *  "Scan QR with phone" flow. The QR encodes a wallet-agnostic WC URI;
  *  whichever mobile wallet scans it identifies itself in `session.peerName`
  *  after approval, which we use as the registered wallet's display name. */
-async function handleScanQrAnyWallet(): Promise<void> {
+async function handleScanQrAnyWallet(displayBrandId?: string): Promise<void> {
   if (!WALLETCONNECT_PROJECT_ID) {
     pushToast(
       'error',
@@ -5005,10 +5331,13 @@ async function handleScanQrAnyWallet(): Promise<void> {
   }
   if (walletConnect.overlay.mode !== 'closed') return;
   closeSiblingOverlays('walletconnect-qr');
-  // `brandId` on the overlay state is reserved for the modal's same-device
-  // deep-link buttons. For the inline desktop flow it stays unset; the
-  // overlay's render input passes `agnostic: true` to suppress brand copy.
-  dispatchWalletConnectOverlay({ type: 'openConnecting', brandId: '' });
+  // `displayBrandId` is used only to brand the rendered QR card header
+  // (e.g. "Scan with Backpack mobile" + Backpack logo). The WC URI itself
+  // is wallet-agnostic — whichever wallet ends up scanning identifies
+  // itself in `session.peerName` post-approval, which we use as the
+  // registered wallet name. If no display brand is passed, the render
+  // falls back to a generic "Solana mobile wallet" prompt.
+  dispatchWalletConnectOverlay({ type: 'openConnecting', brandId: displayBrandId ?? '' });
   try {
     const client = await ensureWalletConnectClient();
     const chains = walletConnectChainsForCurrentCluster();
@@ -5343,6 +5672,23 @@ interface DesktopDeeplinkQr {
   url: string | null;
 }
 
+/** Cloud-pairing state for the Phantom/Solflare QR path. The desktop
+ *  generates the UUID, embeds it in the wallet's universal-link deeplink,
+ *  then polls `/api/pair/<uuid>/host` until the wallet-host on the phone
+ *  registers its address — at which point we adopt via `RemoteRelayBackend`. */
+interface DesktopPairing {
+  uuid: string;
+  /** Picked brand (`'phantom'` | `'solflare'`) — drives the rendered banner
+   *  and the wallet name we display before the relay reports its own. */
+  wallet: 'phantom' | 'solflare';
+  /** setInterval handle for the host-poll loop; cleared on adoption / back / timeout. */
+  pollHandle: number | null;
+  /** Epoch ms when the pairing was started; used to fire the 5-min soft toast. */
+  startedAt: number;
+  /** Flips to true after the 5-min toast fires so we don't spam. */
+  warnedTimeout: boolean;
+}
+
 interface DesktopConnectRuntime {
   flow: DesktopConnectFlowState;
   /** setInterval handle while polling the bridge for awaiting-browser. */
@@ -5350,13 +5696,28 @@ interface DesktopConnectRuntime {
   /** Deeplink QR cache for the Phantom/Solflare variants; rebuilt whenever
    *  the user enters one of those variants. */
   deeplinkQr: DesktopDeeplinkQr;
+  /** Active cross-device pairing record (Phantom/Solflare via cloud relay). */
+  pairing: DesktopPairing | null;
 }
 
 const desktopConnect: DesktopConnectRuntime = {
   flow: initialDesktopConnectFlowState(),
   pollHandle: null,
   deeplinkQr: { variant: null, dataUrl: null, url: null },
+  pairing: null,
 };
+
+/** Base URL for the cloud pairing relay endpoints. Production is the
+ *  deployed render-web instance at `agentic-signer.com`; dev defaults to
+ *  the same host because the relay is only reachable cross-device when
+ *  exposed publicly (the desktop's localhost bridge can't be reached from
+ *  the user's phone anyway). Override via `VITE_AGENTIC_CLOUD_API_BASE_URL`. */
+const PAIRING_RELAY_BASE_URL: string =
+  (import.meta as ImportMeta & { env?: { VITE_AGENTIC_CLOUD_API_BASE_URL?: string } }).env
+    ?.VITE_AGENTIC_CLOUD_API_BASE_URL || 'https://agentic-signer.com';
+
+const PAIRING_POLL_INTERVAL_MS = 1500;
+const PAIRING_TIMEOUT_MS = 5 * 60 * 1000;
 
 /** brandId → DESKTOP_BRAND_PANELS labels are camelCase; wallet-standard
  *  wallet names are the brand's display name. Used by the wallet-host page's
@@ -5451,34 +5812,63 @@ function desktopBrandPickerBody(actionName: 'pick-extension-brand' | 'pick-qr-br
   `;
 }
 
-/** Body for the QR step. Switches on `desktopConnect.flow.qrVariant`:
- *  - `'wc'` (default) → wallet-agnostic WalletConnect QR (Backpack/Jupiter/Magic Eden).
- *  - `'phantom'` / `'solflare'` → wallet-specific universal-link QR, scanned with
- *    the phone's native Camera app. See `walletDeeplinks.ts` for the rationale.
- *  In all cases the sub-picker is rendered at the bottom so the user can switch. */
+/** The four wallet brands offered on the QR step. Order matters — it's
+ *  the order the rows render. Backpack and Jupiter share the underlying
+ *  WalletConnect URI; Phantom and Solflare each get their own universal-link
+ *  QR (see `walletDeeplinks.ts`). Magic Eden is intentionally omitted from
+ *  the picker UI to keep the tile list short — the underlying WC URI still
+ *  works if a user happens to scan with Magic Eden mobile. */
+const DESKTOP_QR_WALLETS: ReadonlyArray<{
+  id: DesktopQrWallet;
+  label: string;
+  logoId: string;
+}> = [
+  { id: 'backpack', label: 'Backpack', logoId: 'backpack' },
+  { id: 'jupiter', label: 'Jupiter', logoId: 'jupiter' },
+  { id: 'phantom', label: 'Phantom', logoId: 'phantom' },
+  { id: 'solflare', label: 'Solflare', logoId: 'solflare' },
+];
+
+/** Body for the QR step. Branches on `desktopConnect.flow.qrWallet`:
+ *  - `null` → 4-tile wallet picker (Backpack/Jupiter/Phantom/Solflare).
+ *  - `'backpack'` / `'jupiter'` → branded WC QR (same URI, brand-specific banner).
+ *  - `'phantom'` / `'solflare'` → wallet-specific universal-link QR. */
 function desktopQrBody(): string {
-  const variant = desktopConnect.flow.qrVariant;
-  if (variant === 'wc') {
+  const wallet = desktopConnect.flow.qrWallet;
+  if (wallet === null) {
+    return desktopQrWalletPicker();
+  }
+  if (wallet === 'backpack' || wallet === 'jupiter') {
     return `
       <div class="desktop-connect-flow-body walletconnect-qr-inline">
         ${walletConnectQrBodyHtml({
           state: walletConnect.overlay,
           logoUrl: (logoId) => (BRAND_LOGOS as Record<string, string | undefined>)[logoId] ?? null,
-          agnostic: true,
+          // Custom brand resolver: synthesize a descriptor for the picked
+          // wallet with an empty deepLinkPrefix so the body shows the
+          // branded header ("Scan with Backpack mobile") without rendering
+          // the same-device deeplink button (we're cross-device here).
+          brand: () => ({
+            id: wallet,
+            name: wallet === 'backpack' ? 'Backpack' : 'Jupiter',
+            deepLinkPrefix: '',
+            logoId: wallet,
+          }),
+          agnostic: false,
         })}
       </div>
-      ${desktopQrVariantPicker('wc')}
     `;
   }
-  const brandName = variant === 'phantom' ? 'Phantom' : 'Solflare';
+  // Phantom or Solflare — deeplink QR.
+  const brandName = wallet === 'phantom' ? 'Phantom' : 'Solflare';
   const cached = desktopConnect.deeplinkQr;
-  const qrMarkup = cached.variant === variant && cached.dataUrl
+  const qrMarkup = cached.variant === wallet && cached.dataUrl
     ? `<img class="walletconnect-qr-overlay-qr" src="${escapeHtmlForFlow(cached.dataUrl)}" alt="QR code that opens ${escapeHtmlForFlow(brandName)} mobile" />`
     : `<div class="walletconnect-qr-overlay-qr placeholder" aria-hidden="true"></div>`;
   return `
     <div class="desktop-connect-flow-body desktop-deeplink-qr-inline">
       <div class="walletconnect-qr-overlay-brand">
-        ${brandLogoMarkup(variant, 'walletconnect-qr-overlay-brand-logo')}
+        ${brandLogoMarkup(wallet, 'walletconnect-qr-overlay-brand-logo')}
         <span>Scan with your phone's Camera app — ${escapeHtmlForFlow(brandName)} will open</span>
       </div>
       ${qrMarkup}
@@ -5490,49 +5880,28 @@ function desktopQrBody(): string {
         Your wallet will open on your phone. Cross-device sync — signing from this desktop without re-confirming on your phone — ships in a follow-up. To use this wallet from this desktop now, press Back and try <strong>Browser extension</strong> instead.
       </div>
     </div>
-    ${desktopQrVariantPicker(variant)}
   `;
 }
 
-function desktopQrVariantPicker(active: DesktopQrVariant): string {
-  const variantButton = (variant: 'phantom' | 'solflare', label: string): string => {
-    const isActive = active === variant;
-    return `
-      <button
-        type="button"
-        class="desktop-qr-variant-button ${isActive ? 'active' : ''}"
-        data-desktop-flow-action="pick-qr-variant"
-        data-desktop-qr-variant="${variant}"
-        ${isActive ? 'aria-pressed="true"' : 'aria-pressed="false"'}
-      >
-        ${brandLogoMarkup(variant, 'desktop-qr-variant-logo')}
-        <span class="desktop-qr-variant-label">${escapeHtmlForFlow(label)}</span>
-        <span class="desktop-qr-variant-arrow" aria-hidden="true">${isActive ? '✓' : '→'}</span>
-      </button>
-    `;
-  };
-  const wcButton = `
+/** Renders the 4-tile wallet picker shown when the user lands on the QR
+ *  step before choosing a wallet. Each tile is a flat clickable row with
+ *  the brand SVG on the left, the brand label, and a chevron on the right. */
+function desktopQrWalletPicker(): string {
+  const rows = DESKTOP_QR_WALLETS.map((entry) => `
     <button
       type="button"
-      class="desktop-qr-variant-button ${active === 'wc' ? 'active' : ''}"
-      data-desktop-flow-action="pick-qr-variant"
-      data-desktop-qr-variant="wc"
-      ${active === 'wc' ? 'aria-pressed="true"' : 'aria-pressed="false"'}
+      class="desktop-qr-wallet-tile"
+      data-desktop-flow-action="pick-qr-wallet"
+      data-desktop-qr-wallet="${escapeHtmlForFlow(entry.id)}"
     >
-      <span class="desktop-qr-variant-logo placeholder" aria-hidden="true"></span>
-      <span class="desktop-qr-variant-label">Backpack / Jupiter / Magic Eden</span>
-      <span class="desktop-qr-variant-arrow" aria-hidden="true">${active === 'wc' ? '✓' : '→'}</span>
+      ${brandLogoMarkup(entry.logoId, 'desktop-qr-wallet-tile-logo')}
+      <span class="desktop-qr-wallet-tile-label">${escapeHtmlForFlow(entry.label)}</span>
+      <span class="desktop-qr-wallet-tile-arrow" aria-hidden="true">›</span>
     </button>
-  `;
+  `).join('');
   return `
-    <section class="desktop-qr-variant-picker" aria-label="Choose your mobile wallet">
-      <p class="desktop-qr-variant-lede">Different wallet? Switch the QR.</p>
-      <div class="desktop-qr-variant-list">
-        ${wcButton}
-        ${variantButton('phantom', 'Phantom')}
-        ${variantButton('solflare', 'Solflare')}
-      </div>
-    </section>
+    <p class="desktop-connect-flow-lede">Pick your mobile wallet. We'll show the right QR for that wallet's protocol.</p>
+    <div class="desktop-qr-wallet-picker" role="list">${rows}</div>
   `;
 }
 
@@ -5624,11 +5993,10 @@ function handleDesktopMethodSelect(method: DesktopConnectMethod): void {
     return;
   }
   if (method === 'qr') {
-    // Switch UI to the QR step and immediately initiate a brand-agnostic
-    // WC pairing — the inline body renders the connecting → awaiting-scan
-    // states from `walletConnect.overlay` as the URI/QR arrives.
+    // Switch UI to the QR step but DO NOT auto-launch any pairing yet — the
+    // step opens on a 4-tile wallet picker (Backpack/Jupiter/Phantom/Solflare).
+    // Pairing fires only after the user picks a wallet in `handleDesktopQrWalletSelect`.
     dispatchDesktopConnectFlow({ type: 'pickMethod', method: 'qr' });
-    void handleScanQrAnyWallet();
     return;
   }
   dispatchDesktopConnectFlow({ type: 'pickMethod', method });
@@ -5657,9 +6025,13 @@ async function renderUrlQrDataUrl(target: string): Promise<string> {
 
 /** Build the deeplink URL for a Phantom/Solflare variant given the current
  *  cluster, return both the raw URL and a fresh QR data URL. The data URL
- *  is rendered into `<img src>` inside `desktopQrBody()`. */
+ *  is rendered into `<img src>` inside `desktopQrBody()`. `pairing` (when
+ *  set) gets threaded into the redirect/destination URL so the wallet-host
+ *  page in the phone's in-app browser can POST its address to the matching
+ *  cloud pairing record. */
 async function buildDesktopVariantQr(
   variant: 'phantom' | 'solflare',
+  pairing?: string,
 ): Promise<{ url: string; dataUrl: string }> {
   const appUrl = 'https://agentic-signer.com';
   // The deployed bundle handles `?wallet=<brandId>` via
@@ -5674,40 +6046,173 @@ async function buildDesktopVariantQr(
       redirectLink: walletHostUrl,
       cluster: state.cluster,
       appUrl,
+      ...(pairing ? { pairing } : {}),
     });
-    // Phase 1 doesn't decrypt the response; secret half is intentionally
-    // discarded. Phase 2 will stash it on `desktopConnect` and use it to
-    // unseal the `data` field in Phantom's redirect payload.
+    // We discard the keypair's secret half — Phantom Connect's response
+    // payload is encrypted to our pubkey, but in the cloud-relay flow we
+    // never need to decrypt it. The wallet-host inside Phantom's in-app
+    // browser connects via wallet-standard (Phantom in-app injects its
+    // provider) and POSTs the address to the relay directly.
   } else {
-    url = buildSolflareBrowseUrl({ dappUrl: walletHostUrl, ref: appUrl });
+    url = buildSolflareBrowseUrl({
+      dappUrl: walletHostUrl,
+      ref: appUrl,
+      ...(pairing ? { pairing } : {}),
+    });
   }
   const dataUrl = await renderUrlQrDataUrl(url);
   return { url, dataUrl };
 }
 
-function handleDesktopQrVariantSelect(variant: DesktopQrVariant): void {
-  if (desktopConnect.flow.qrVariant === variant) return;
-  dispatchDesktopConnectFlow({ type: 'pickQrVariant', variant });
-  if (variant === 'wc') {
-    // Returning to the WC variant: clear the deeplink cache + let the
-    // existing `walletConnect.overlay` machinery drive the inline body.
-    desktopConnect.deeplinkQr = { variant: null, dataUrl: null, url: null };
-    if (walletConnect.overlay.mode === 'closed') {
-      // If a prior Phantom/Solflare interaction tore down the WC session,
-      // re-initiate so the QR repopulates with a fresh URI.
-      void handleScanQrAnyWallet();
-    }
+function handleDesktopQrWalletSelect(wallet: DesktopQrWallet): void {
+  if (desktopConnect.flow.qrWallet === wallet) return;
+  // Tear down any prior WC session before launching a new one — switching
+  // from Backpack → Jupiter (or back via the picker) should start a fresh
+  // URI rather than reuse a stale topic. Also clear any prior pairing.
+  if (walletConnect.overlay.mode !== 'closed') {
+    dispatchWalletConnectOverlay({ type: 'close' });
+  }
+  stopDesktopPairing();
+  desktopConnect.deeplinkQr = { variant: null, dataUrl: null, url: null };
+  dispatchDesktopConnectFlow({ type: 'pickQrWallet', wallet });
+  if (wallet === 'backpack' || wallet === 'jupiter') {
+    // Both use the same wallet-agnostic WC URI; the picked brand only
+    // changes the rendered banner (header + logo) — the wallet that
+    // actually scans + approves identifies itself in session.peerName.
+    void handleScanQrAnyWallet(wallet);
     return;
   }
-  // Mark the cache as pending the new variant so the renderer shows the
-  // placeholder until the async build completes.
-  desktopConnect.deeplinkQr = { variant, dataUrl: null, url: null };
-  void buildDesktopVariantQr(variant).then(({ url, dataUrl }) => {
-    // Race-safety: the user may have already switched away.
-    if (desktopConnect.flow.qrVariant !== variant) return;
-    desktopConnect.deeplinkQr = { variant, url, dataUrl };
+  // Phantom or Solflare — start a cross-device pairing, encode the UUID
+  // into the wallet's universal-link, and begin polling the relay so we
+  // can adopt the wallet when the phone reports its address.
+  const pairingUuid = generatePairingUuid();
+  desktopConnect.pairing = {
+    uuid: pairingUuid,
+    wallet,
+    pollHandle: null,
+    startedAt: Date.now(),
+    warnedTimeout: false,
+  };
+  desktopConnect.deeplinkQr = { variant: wallet, dataUrl: null, url: null };
+  void buildDesktopVariantQr(wallet, pairingUuid).then(({ url, dataUrl }) => {
+    // Race-safety: the user may have switched away while we were generating.
+    if (desktopConnect.flow.qrWallet !== wallet) return;
+    if (desktopConnect.pairing?.uuid !== pairingUuid) return;
+    desktopConnect.deeplinkQr = { variant: wallet, url, dataUrl };
+    startDesktopPairingPoll(pairingUuid, wallet);
     render();
   });
+}
+
+/** Returns a v4 UUID. Uses the crypto API in modern browsers; falls back
+ *  to a manual base16 polyfill on older WebViews (the Tauri WebKit
+ *  baseline ships `crypto.randomUUID` on recent macOS but we don't want
+ *  to crash on older Linux builds). */
+function generatePairingUuid(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40; // version 4
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80; // variant 10
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function stopDesktopPairing(): void {
+  if (desktopConnect.pairing?.pollHandle !== null && desktopConnect.pairing?.pollHandle !== undefined) {
+    window.clearInterval(desktopConnect.pairing.pollHandle);
+  }
+  desktopConnect.pairing = null;
+}
+
+function startDesktopPairingPoll(uuid: string, wallet: 'phantom' | 'solflare'): void {
+  if (!desktopConnect.pairing || desktopConnect.pairing.uuid !== uuid) return;
+  desktopConnect.pairing.pollHandle = window.setInterval(() => {
+    void pollPairingHost(uuid, wallet);
+  }, PAIRING_POLL_INTERVAL_MS);
+}
+
+async function pollPairingHost(uuid: string, wallet: 'phantom' | 'solflare'): Promise<void> {
+  // Confirm we're still polling for this exact pairing — user may have
+  // pressed Back or switched wallets during the in-flight request.
+  if (desktopConnect.pairing?.uuid !== uuid) return;
+  let response: Response;
+  try {
+    response = await fetch(`${PAIRING_RELAY_BASE_URL}/api/pair/${encodeURIComponent(uuid)}/host`, {
+      method: 'GET',
+      headers: { accept: 'application/json' },
+    });
+  } catch {
+    // Network blip — keep polling. Don't toast on every miss.
+    maybeWarnPairingTimeout();
+    return;
+  }
+  maybeWarnPairingTimeout();
+  if (response.status === 404) return;
+  if (!response.ok) {
+    console.warn(`[pairing] relay returned ${response.status}`);
+    return;
+  }
+  const payload = (await response.json().catch(() => null)) as
+    | { address?: string; capabilities?: AdapterCapabilities; walletName?: string }
+    | null;
+  if (!payload?.address || !payload.capabilities || !payload.walletName) return;
+  if (desktopConnect.pairing?.uuid !== uuid) return;
+  await adoptPairedWallet({
+    address: payload.address,
+    capabilities: payload.capabilities,
+    walletName: payload.walletName,
+    pairingUuid: uuid,
+    wallet,
+  });
+}
+
+function maybeWarnPairingTimeout(): void {
+  const p = desktopConnect.pairing;
+  if (!p || p.warnedTimeout) return;
+  if (Date.now() - p.startedAt < PAIRING_TIMEOUT_MS) return;
+  p.warnedTimeout = true;
+  pushToast(
+    'pending',
+    'Still waiting…',
+    'Open your wallet on the phone and finish approving the connection.',
+  );
+}
+
+async function adoptPairedWallet(input: {
+  address: string;
+  capabilities: AdapterCapabilities;
+  walletName: string;
+  pairingUuid: string;
+  wallet: 'phantom' | 'solflare';
+}): Promise<void> {
+  if (desktopConnect.pairing?.uuid !== input.pairingUuid) return;
+  stopDesktopPairing();
+  walletBackend = new RemoteRelayBackend({
+    baseUrl: PAIRING_RELAY_BASE_URL,
+    pairingUuid: input.pairingUuid,
+  });
+  client = new SolanaSigningClient({ backend: walletBackend });
+  state.address = input.address;
+  state.capabilities = input.capabilities;
+  state.selectedWalletName = input.walletName;
+  state.selectedWalletLogoId = walletProviderLogoIdForName(input.wallet) ?? input.wallet;
+  // The cloud-relay path does NOT activate the local Tauri bridge — the
+  // signer lives on the phone, not on this machine.
+  state.bridgeActive = false;
+  state.bridgeStatus = 'Signing through cloud pairing relay.';
+  state.transactionStatus = `Wallet paired via your phone on ${state.cluster}.`;
+  try {
+    await afterWalletConnected();
+  } catch (err) {
+    console.warn('[adoptPairedWallet] afterWalletConnected failed', err);
+  }
+  savePersistedState();
+  trackWalletConnectSuccess('tauri_native', state.cluster, 'qr_pairing_relay');
+  pushToast('success', `Connected via your phone — ${input.walletName}`, short(input.address));
+  dispatchDesktopConnectFlow({ type: 'reset' });
 }
 
 function handleDesktopExtensionBrandSelect(brandId: string): void {
@@ -5820,19 +6325,20 @@ async function adoptBridgeHost(
 
 function handleDesktopBack(): void {
   const step = desktopConnect.flow.step;
-  const qrVariant = desktopConnect.flow.qrVariant;
-  // Only tear down the WC session when actually leaving the WC variant. The
-  // reducer first walks a non-wc variant back to wc (sub-step), so we
-  // mustn't disconnect when the user is just toggling between variants —
-  // they should still see the live WC QR on return.
-  const leavingQrEntirely = step === 'qr' && qrVariant === 'wc';
-  if (leavingQrEntirely && walletConnect.overlay.mode !== 'closed') {
-    dispatchWalletConnectOverlay({ type: 'close' });
-  }
-  if (step === 'qr' && qrVariant !== 'wc') {
-    // Variant sub-step back → just clear the deeplink cache; reducer will
-    // flip qrVariant back to 'wc'.
-    desktopConnect.deeplinkQr = { variant: null, dataUrl: null, url: null };
+  const qrWallet = desktopConnect.flow.qrWallet;
+  if (step === 'qr') {
+    // Back always tears down any active WC session and clears the deeplink
+    // cache. The reducer decides whether we land back on the picker
+    // (qrWallet was set) or pop out to the method picker (already on picker).
+    if (walletConnect.overlay.mode !== 'closed') {
+      dispatchWalletConnectOverlay({ type: 'close' });
+    }
+    if (qrWallet !== null) {
+      desktopConnect.deeplinkQr = { variant: null, dataUrl: null, url: null };
+    }
+    // Cancel any in-flight cross-device pairing — the user is no longer
+    // expecting a phone connection for this UUID.
+    stopDesktopPairing();
   }
   if (step === 'ledger') {
     stopLedgerPoll();
@@ -5873,10 +6379,10 @@ function bindDesktopConnectFlow(): void {
         if (brandId) handleDesktopExtensionBrandSelect(brandId);
         return;
       }
-      if (raw === 'pick-qr-variant') {
-        const v = el.dataset.desktopQrVariant;
-        if (v === 'wc' || v === 'phantom' || v === 'solflare') {
-          handleDesktopQrVariantSelect(v);
+      if (raw === 'pick-qr-wallet') {
+        const w = el.dataset.desktopQrWallet;
+        if (w === 'backpack' || w === 'jupiter' || w === 'phantom' || w === 'solflare') {
+          handleDesktopQrWalletSelect(w);
         }
         return;
       }
@@ -5984,6 +6490,7 @@ function render(): void {
   bindEmbeddedWalletOverlay();
   bindDesktopBrandPanels();
   bindDesktopConnectFlow();
+  bindWalletHostOpening();
   bindWalletConnectOverlay();
   bindLedgerOverlay();
   mountConnectorKeysPanel({ container: 'connector-keys-panel' });
@@ -9574,6 +10081,18 @@ function healthStatusShort(status: HealthStatus): string {
 }
 
 function walletRail(): string {
+  // Wallet-host browser-extension auto-connect splash. Short-circuits the
+  // normal rail content so the user sees clear "Opening <Brand>…" state
+  // instead of the standby UI while we wait for the extension to register.
+  // Only in the browser path (not Tauri-native — desktop rail has its own
+  // discover flow).
+  if (
+    state.walletHostOpening &&
+    !state.tauriNativeEnvironment.isTauriNative &&
+    !state.address
+  ) {
+    return walletHostOpeningSplashHtml();
+  }
   const showConnectionDetails = SHOW_DEV_CONTROLS && !state.address;
   const showPublicWalletPicker =
     !SHOW_DEV_CONTROLS &&
@@ -39771,7 +40290,12 @@ function inferredWalletHostUrl(options?: { wallet?: string }): string {
   const isProd = Boolean(
     (import.meta as ImportMeta & { env?: { PROD?: boolean } }).env?.PROD,
   );
-  const base = isProd ? 'https://agentic-signer.com/app' : 'http://localhost:5174/';
+  // Both branches MUST point at the /app route — that's where `walletRail()`
+  // and the "Opening <Brand>…" splash live. Earlier the dev branch opened
+  // the root path (the marketing landing page), so the splash never rendered
+  // and the user saw a blank-feeling landing page while the wallet-standard
+  // discovery raced in the background. Always /app.
+  const base = isProd ? 'https://agentic-signer.com/app' : 'http://localhost:5174/app';
   try {
     const url = new URL(base);
     if (walletHint) url.searchParams.set('wallet', walletHint);
@@ -40079,6 +40603,9 @@ function resetWalletConnection(): void {
   // Collapse the desktop Discover flow back to idle so the rail returns to
   // the standby state with a fresh Discover button.
   desktopConnect.flow = initialDesktopConnectFlowState();
+  stopDesktopPairing();
+  stopWalletHostPairingRelay();
+  state.walletHostOpening = null;
   stopDesktopConnectPoll();
 }
 
@@ -48043,6 +48570,7 @@ function readLaunchParams(): {
   cliActionId?: string;
   cliRequestId?: string;
   walletBrand?: string;
+  pairing?: string;
 } {
   const params = new URLSearchParams(window.location.search);
   const bridgeUrl = params.get('bridgeUrl')?.trim();
@@ -48062,6 +48590,14 @@ function readLaunchParams(): {
   // The desktop rail passes ?wallet=<brandId> when the user picks a brand from
   // the Discover → Browser extension method. Ignored if CLI mode is active.
   const walletBrand = !cliMode ? params.get('wallet')?.trim() || undefined : undefined;
+  // The desktop's Phantom/Solflare QR path embeds a pairing UUID. When the
+  // wallet-host connects, it POSTs its address to `/api/pair/<pairing>/host`
+  // and runs an inbox loop so the desktop can sign through the relay.
+  const rawPairing = !cliMode ? params.get('pairing')?.trim() : undefined;
+  const pairing =
+    rawPairing && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(rawPairing)
+      ? rawPairing
+      : undefined;
   return {
     ...(bridgeUrl && isTrustedBridgeUrl(bridgeUrl) ? { bridgeUrl } : {}),
     ...(bridgeToken ? { bridgeToken } : {}),
@@ -48070,6 +48606,7 @@ function readLaunchParams(): {
     ...(cliActionId ? { cliActionId } : {}),
     ...(cliRequestId ? { cliRequestId } : {}),
     ...(walletBrand ? { walletBrand } : {}),
+    ...(pairing ? { pairing } : {}),
   };
 }
 

@@ -56,6 +56,11 @@ describe('render web hosted BYOK API', () => {
   });
 
   it('serves hosted BYOK status as JSON instead of the SPA shell', async () => {
+    vi.stubEnv('AGENTIC_HOSTED_AI_API_KEY', '');
+    vi.stubEnv('AGENTIC_MANAGED_AI_API_KEY', '');
+    vi.stubEnv('AGENTIC_AI_API_KEY', '');
+    vi.stubEnv('OPENAI_API_KEY', '');
+    vi.stubEnv('ANTHROPIC_API_KEY', '');
     await withServer(async (port) => {
       const response = await getText(port, '/api/ai/status');
 
@@ -81,6 +86,40 @@ describe('render web hosted BYOK API', () => {
           expect.objectContaining({ id: 'anthropic', apiFormat: 'anthropic' }),
         ]),
       });
+    });
+  });
+
+  it('uses Render-managed hosted AI without requiring a browser-supplied API key', async () => {
+    vi.stubEnv('AGENTIC_HOSTED_AI_API_KEY', 'sk-managed-render-key');
+    vi.stubEnv('AGENTIC_HOSTED_AI_PROVIDER', 'openai');
+    vi.stubEnv('AGENTIC_HOSTED_AI_MODEL', 'gpt-5');
+    const providerCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      providerCalls.push({ url: String(url), init });
+      return jsonResponse({ output_text: planJson('Managed hosted intent') });
+    }));
+
+    await withServer(async (port, ctx) => {
+      const status = await getText(port, '/api/ai/status');
+      expect(JSON.parse(status.body)).toMatchObject({
+        mode: 'hosted-managed',
+        managed: {
+          available: true,
+          provider: 'openai',
+          model: 'gpt-5',
+        },
+      });
+
+      const response = await postJson(port, '/api/ai/generate-plan', {
+        settings: { mode: 'hosted-managed' },
+        request: aiRequest,
+      }, { cookie: ctx.cookie });
+
+      expect(response.status).toBe(200);
+      expect(response.body.intent).toBe('Managed hosted intent');
+      expect(providerCalls).toHaveLength(1);
+      expect((providerCalls[0]?.init?.headers as Record<string, string>).authorization).toBe('Bearer sk-managed-render-key');
+      expect(JSON.stringify(response.body)).not.toContain('sk-managed-render-key');
     });
   });
 

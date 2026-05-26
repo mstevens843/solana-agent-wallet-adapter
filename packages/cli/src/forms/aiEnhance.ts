@@ -1,8 +1,8 @@
 import { confirm, spinner, header, badge, divider, kv, multilineInput } from '../tui/index.js';
 import type { GlobalOptions } from '../shared/types.js';
-import { bridgeRequest } from '../http/index.js';
 import { renderPolicyBundle, type PolicyReviewVerdict } from './policyBundleRender.js';
 import { isMultiReviewerEnabled } from '../flows/agent.js';
+import { generateAgentPlan, resolveAgentAiRoute, reviewAgentPlan } from '../ai/hosted.js';
 
 export interface AiAdvice {
   summary?: string;
@@ -44,14 +44,12 @@ export async function maybeEnhanceWithAi(
   const spin = spinner('Thinking…');
   let advice: AiAdvice = {};
   let plan: Record<string, unknown> | null = null;
+  const route = await resolveAgentAiRoute(options);
   try {
-    plan = (await bridgeRequest<unknown>(options, '/bridge/ai/generate-plan', {
-      method: 'POST',
-      body: JSON.stringify({
+    plan = (await generateAgentPlan<unknown>(options, route, {
         prompt: naturalDescription,
         userNotes: policyNote.trim() || naturalDescription,
-      }),
-    })) as Record<string, unknown> | null;
+      })) as Record<string, unknown> | null;
     spin.succeed('AI responded.');
     advice = parseAdvice(plan);
     renderAdvice(advice);
@@ -67,10 +65,7 @@ export async function maybeEnhanceWithAi(
       const multi = await isMultiReviewerEnabled(options);
       const body: Record<string, unknown> = { plan, instruction: policyNote };
       if (multi) body.mode = 'multi';
-      const review = await bridgeRequest<unknown>(options, '/bridge/ai/review-plan', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      });
+      const review = await reviewAgentPlan<unknown>(options, route, body);
       reviewSpin.succeed('Policy review complete.');
       verdict = renderPolicyBundle(review as Record<string, unknown>);
     } catch (err) {

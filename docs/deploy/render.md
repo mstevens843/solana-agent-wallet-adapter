@@ -125,12 +125,12 @@ keys, or bridge tokens.
 In the GA4 Web Stream settings, disable Enhanced Measurement's browser-history page-change tracking if manual SPA
 page views show duplicates. The app already sets `send_page_view: false` and emits one route-level page view itself.
 
-## Hosted BYOK AI
+## Hosted AI
 
-The deployed app defaults to `Hosted BYOK` for AI planning. Users paste their OpenAI, Claude / Anthropic, Gemini, or
-OpenRouter key in the browser. The same-origin Node server relays that request to the selected provider and does not
-persist or log the key. Android uses the same Hosted BYOK endpoints over the bearer-authenticated Agentic Cloud API.
-Do not add user keys to Render environment variables.
+The deployed app can provide Agentic-managed AI planning from Render env vars. Set `AGENTIC_HOSTED_AI_API_KEY`
+or `AGENTIC_MANAGED_AI_API_KEY`, plus optional `AGENTIC_HOSTED_AI_PROVIDER` and `AGENTIC_HOSTED_AI_MODEL`, to let
+signed-in web, desktop, Android, and CLI users draft plans without entering their own provider key. User BYOK remains
+available as an advanced/request-scoped path; do not add user-owned keys to Render environment variables.
 
 ## Device Agent Gate
 

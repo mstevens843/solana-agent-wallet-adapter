@@ -31,7 +31,7 @@ export async function dispatchHeliusGroup(parsed: ParsedArgs): Promise<unknown> 
     return renderWebRequest(parsed.options, '/api/helius/transfers-by-address', {
       method: 'POST',
       body: JSON.stringify(body),
-    }, { label: 'Helius cloud', requireAuth: true });
+    }, { label: 'Helius hosted', requireAuth: true });
   }
   throw new Error(`Unknown helius subcommand: ${sub}. Try: cloud-transfers <wallet>. (For bridge-routed history use the top-level "helius-history" command.)`);
 }

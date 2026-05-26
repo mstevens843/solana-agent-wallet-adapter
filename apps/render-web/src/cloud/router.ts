@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
+import { createPairingHandler } from './pairingHandler.js';
+
 import {
   BridgeAiPlanner,
   getTransfersByAddress,
@@ -260,6 +262,7 @@ interface HostedAiBody {
     apiKey?: unknown;
     provider?: unknown;
     model?: unknown;
+    mode?: unknown;
   };
   request?: unknown;
 }
@@ -272,6 +275,15 @@ interface HostedAiReviewBody {
 interface HostedAiAskBody {
   settings?: HostedAiBody['settings'];
   request?: unknown;
+}
+
+interface HostedAiResolvedSettings {
+  apiKey: string;
+  provider: string;
+  apiFormat: AiApiFormat;
+  baseUrl: string;
+  model: string;
+  mode: 'hosted-byok' | 'hosted-managed';
 }
 
 export interface CloudApiRouterOptions {
@@ -486,6 +498,11 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
     });
     recurringScheduler.start();
   }
+  // Cross-device pairing relay for the desktop Discover → "Scan QR with
+  // phone" → Phantom/Solflare flow. Owns its own CORS, JSON parsing, and
+  // rate-limiting (pairing UUIDs are the secret, so it sits OUTSIDE the
+  // same-origin gate other /api routes enforce).
+  const pairingHandler = createPairingHandler();
   return {
     store,
     async handle(req, res, url) {
@@ -495,6 +512,12 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
         !url.pathname.startsWith('/agents/')
       ) {
         return false;
+      }
+
+      // Pairing relay short-circuits before the same-origin gate. Skip
+      // for any other route — falls through to the normal pipeline.
+      if (url.pathname.startsWith('/api/pair/')) {
+        return await pairingHandler.handle(req, res, url);
       }
 
       try {
@@ -756,9 +779,18 @@ async function routeApiRequest(
 ): Promise<void> {
   if (url.pathname === '/api/ai/status') {
     requireMethod(req, 'GET');
+    const managed = managedHostedAiSettings();
     writeJson(res, 200, {
       available: true,
-      mode: 'hosted-byok',
+      mode: managed ? 'hosted-managed' : 'hosted-byok',
+      managed: managed ? {
+        available: true,
+        provider: managed.provider,
+        apiFormat: managed.apiFormat,
+        model: managed.model,
+      } : {
+        available: false,
+      },
       providers: Object.values(HOSTED_PROVIDER_PRESETS).map(({ id, label, apiFormat, defaultModel }) => ({
         id,
         label,
@@ -1667,7 +1699,7 @@ async function handleHostedAiRequest(
 ): Promise<void> {
   const session = await sessionFromRequest({ req, store, clock });
   if (!session) {
-    throw new ApiError(401, 'Sign in required for Hosted BYOK drafting.');
+    throw new ApiError(401, 'Sign in required for hosted AI drafting.');
   }
   const body = await readJsonBody(req) as HostedAiBody;
   const settings = hostedSettings(body.settings);
@@ -1677,9 +1709,9 @@ async function handleHostedAiRequest(
   try {
     planner.setSessionKey({
       apiKey: settings.apiKey,
-      provider: settings.provider.id,
-      apiFormat: settings.provider.apiFormat,
-      baseUrl: settings.provider.baseUrl,
+      provider: settings.provider,
+      apiFormat: settings.apiFormat,
+      baseUrl: settings.baseUrl,
       model: settings.model,
     });
     writeJson(res, 200, await runWithHostedAiTimeout(planner.generatePlan(request)));
@@ -1703,7 +1735,7 @@ async function handleHostedAiReviewRequest(
 ): Promise<void> {
   const session = await sessionFromRequest({ req, store, clock });
   if (!session) {
-    throw new ApiError(401, 'Sign in required for Hosted BYOK agent review.');
+    throw new ApiError(401, 'Sign in required for hosted AI agent review.');
   }
   const body = await readJsonBody(req) as HostedAiReviewBody;
   const settings = hostedSettings(body.settings);
@@ -1713,9 +1745,9 @@ async function handleHostedAiReviewRequest(
   try {
     planner.setSessionKey({
       apiKey: settings.apiKey,
-      provider: settings.provider.id,
-      apiFormat: settings.provider.apiFormat,
-      baseUrl: settings.provider.baseUrl,
+      provider: settings.provider,
+      apiFormat: settings.apiFormat,
+      baseUrl: settings.baseUrl,
       model: settings.model,
     });
     writeJson(res, 200, await runWithHostedAiTimeout(planner.reviewPlan(request)));
@@ -2416,13 +2448,17 @@ function finiteNumber(value: unknown): number | undefined {
   return numeric !== undefined && Number.isFinite(numeric) ? numeric : undefined;
 }
 
-function hostedSettings(input: HostedAiBody['settings']): {
-  apiKey: string;
-  provider: HostedProviderPreset;
-  model: string;
-} {
+function hostedSettings(input: HostedAiBody['settings']): HostedAiResolvedSettings {
   if (!input || typeof input !== 'object') {
     throw new ApiError(400, 'Missing hosted AI settings.');
+  }
+  const mode = stringField(input.mode).trim();
+  if (mode === 'hosted-managed' || mode === 'managed') {
+    const managed = managedHostedAiSettings();
+    if (!managed) {
+      throw new ApiError(501, 'Agentic hosted AI is not configured on this deployment.');
+    }
+    return managed;
   }
   const apiKey = stringField(input.apiKey).trim();
   if (!apiKey) {
@@ -2437,7 +2473,57 @@ function hostedSettings(input: HostedAiBody['settings']): {
   if (model.length > 160) {
     throw new ApiError(400, 'AI model name is too long.');
   }
-  return { apiKey, provider, model };
+  return {
+    apiKey,
+    provider: provider.id,
+    apiFormat: provider.apiFormat,
+    baseUrl: provider.baseUrl,
+    model,
+    mode: 'hosted-byok',
+  };
+}
+
+function managedHostedAiSettings(): HostedAiResolvedSettings | null {
+  const anthropicKey = process.env.ANTHROPIC_API_KEY?.trim();
+  const openAiKey = process.env.OPENAI_API_KEY?.trim();
+  const apiKey = process.env.AGENTIC_HOSTED_AI_API_KEY?.trim()
+    || process.env.AGENTIC_MANAGED_AI_API_KEY?.trim()
+    || process.env.AGENTIC_AI_API_KEY?.trim()
+    || anthropicKey
+    || openAiKey
+    || '';
+  if (!apiKey) return null;
+
+  const providerRaw = (process.env.AGENTIC_HOSTED_AI_PROVIDER
+    ?? process.env.AGENTIC_AI_PROVIDER
+    ?? (anthropicKey && apiKey === anthropicKey ? 'anthropic' : 'openai')).trim().toLowerCase();
+  const providerId: HostedProviderId = isHostedProviderId(providerRaw) ? providerRaw : 'openai';
+  const preset = HOSTED_PROVIDER_PRESETS[providerId];
+  const apiFormat = managedAiApiFormat(process.env.AGENTIC_HOSTED_AI_API_FORMAT ?? process.env.AGENTIC_AI_API_FORMAT, preset.apiFormat);
+  const baseUrl = (process.env.AGENTIC_HOSTED_AI_BASE_URL
+    ?? process.env.AGENTIC_AI_BASE_URL
+    ?? preset.baseUrl).trim();
+  const model = (process.env.AGENTIC_HOSTED_AI_MODEL
+    ?? process.env.AGENTIC_AI_MODEL
+    ?? preset.defaultModel).trim();
+  if (model.length > 160) {
+    throw new ApiError(500, 'Managed hosted AI model name is too long.');
+  }
+  return {
+    apiKey,
+    provider: providerId,
+    apiFormat,
+    baseUrl,
+    model,
+    mode: 'hosted-managed',
+  };
+}
+
+function managedAiApiFormat(value: string | undefined, fallback: AiApiFormat): AiApiFormat {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === 'anthropic') return 'anthropic';
+  if (normalized === 'openai' || normalized === 'openai-compatible') return 'openai-compatible';
+  return fallback;
 }
 
 function hostedPlanRequest(input: unknown): AiPlanRequest {
@@ -2505,7 +2591,7 @@ async function handleHostedAiAskRequest(
 ): Promise<void> {
   const session = await sessionFromRequest({ req, store, clock });
   if (!session) {
-    throw new ApiError(401, 'Sign in required for Hosted BYOK agent ask.');
+    throw new ApiError(401, 'Sign in required for hosted AI agent ask.');
   }
   const body = await readJsonBody(req) as HostedAiAskBody;
   const settings = hostedSettings(body.settings);
@@ -2515,9 +2601,9 @@ async function handleHostedAiAskRequest(
   try {
     planner.setSessionKey({
       apiKey: settings.apiKey,
-      provider: settings.provider.id,
-      apiFormat: settings.provider.apiFormat,
-      baseUrl: settings.provider.baseUrl,
+      provider: settings.provider,
+      apiFormat: settings.apiFormat,
+      baseUrl: settings.baseUrl,
       model: settings.model,
     });
     writeJson(res, 200, await runWithHostedAiTimeout(planner.askAboutPlan(request)));

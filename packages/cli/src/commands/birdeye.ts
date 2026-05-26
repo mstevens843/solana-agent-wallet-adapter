@@ -1,9 +1,9 @@
 /**
  * Birdeye market-data CLI surface.
  *
- * The bridge mirrors every render-web Birdeye route at `/bridge/birdeye/*` so
- * agents running locally don't need a render-web roundtrip. When the bridge is
- * reachable we use it; otherwise we fall back to the cloud (`/api/birdeye/*`).
+ * The hosted render-web API is the default path so CLI users get the same
+ * Agentic-managed BirdEye access as the web and desktop apps. The local bridge
+ * remains a fallback for users running BYOK/offline development.
  *
  * Endpoints (15 total, verified against bridgeServer.ts):
  *   price-multi, price-volume, history-price, ohlcv, search, token-meta,
@@ -114,16 +114,52 @@ async function callBirdeye(
   body: Record<string, unknown>,
 ): Promise<unknown> {
   const path = `/birdeye/${sub}`;
-  // Try the local bridge first, then fall back to the cloud — bridge is
-  // typically faster (cached) and works offline of render-web.
-  const bridgeResult = await tryBridgeRequest<unknown>(
-    options,
-    `/bridge${path}`,
-    { method: 'POST', body: JSON.stringify(body) },
-  );
-  if (bridgeResult.ok) return bridgeResult.value;
-  return renderWebRequest(options, `/api${path}`, {
-    method: 'POST',
-    body: JSON.stringify(body),
-  }, { label: 'Birdeye (cloud)', requireAuth: true });
+  try {
+    return await renderWebRequest(options, `/api${path}`, {
+      method: 'POST',
+      body: JSON.stringify(cloudBirdeyeBody(sub, body)),
+    }, { label: 'BirdEye (hosted)', requireAuth: sub === 'wallet-token-list' });
+  } catch (err) {
+    const bridgeResult = await tryBridgeRequest<unknown>(
+      options,
+      `/bridge${path}`,
+      { method: 'POST', body: JSON.stringify(body) },
+    );
+    if (bridgeResult.ok) return bridgeResult.value;
+    throw err;
+  }
+}
+
+function cloudBirdeyeBody(sub: string, body: Record<string, unknown>): Record<string, unknown> {
+  if (sub === 'price-multi' || sub === 'exit-liquidity-multi') {
+    return {
+      ...body,
+      addresses: Array.isArray(body.mints) ? body.mints : body.mints === undefined ? body.addresses : [body.mints],
+    };
+  }
+  if (sub === 'search') {
+    return {
+      ...body,
+      keyword: body.keyword ?? body.query,
+    };
+  }
+  if (
+    sub === 'price-volume'
+    || sub === 'history-price'
+    || sub === 'ohlcv'
+    || sub === 'token-meta'
+    || sub === 'token-security'
+    || sub === 'token-holders'
+    || sub === 'token-creation-info'
+  ) {
+    const needsAddressList = sub === 'token-meta';
+    return {
+      ...body,
+      address: body.address ?? body.mint,
+      addresses: body.addresses ?? (needsAddressList && body.mint !== undefined ? [body.mint] : undefined),
+      timeFrom: body.timeFrom ?? body.from,
+      timeTo: body.timeTo ?? body.to,
+    };
+  }
+  return body;
 }
