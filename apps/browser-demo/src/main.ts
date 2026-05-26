@@ -6224,6 +6224,10 @@ interface DesktopConnectRuntime {
   deeplinkQr: DesktopDeeplinkQr;
   /** Active cross-device pairing record (Phantom/Solflare via cloud relay). */
   pairing: DesktopPairing | null;
+  /** Pairing UUIDs already adopted in this session. Prevents a duplicate
+   *  `afterWalletConnected` + toast if the relay returns the host record on
+   *  two consecutive polls (or the user re-enters the flow with the same UUID). */
+  adoptedPairings: Set<string>;
 }
 
 const desktopConnect: DesktopConnectRuntime = {
@@ -6231,11 +6235,12 @@ const desktopConnect: DesktopConnectRuntime = {
   pollHandle: null,
   deeplinkQr: { variant: null, dataUrl: null, url: null, relayError: null },
   pairing: null,
+  adoptedPairings: new Set<string>(),
 };
 
 const DESKTOP_QR_ENV = ((import.meta as ImportMeta & { env?: DesktopQrConfigEnv }).env ?? {}) as DesktopQrConfigEnv;
-const PAIRING_RELAY_BASE_URL = resolveDesktopPairingRelayBaseUrl(DESKTOP_QR_ENV, window.location.origin);
-const QR_CONNECT_APP_URL = resolveQrConnectAppUrl(DESKTOP_QR_ENV, window.location.origin);
+const PAIRING_RELAY_BASE_URL = resolveDesktopPairingRelayBaseUrl(DESKTOP_QR_ENV);
+const QR_CONNECT_APP_URL = resolveQrConnectAppUrl(DESKTOP_QR_ENV);
 
 const PAIRING_POLL_INTERVAL_MS = 1500;
 const PAIRING_TIMEOUT_MS = 5 * 60 * 1000;
@@ -6746,6 +6751,11 @@ async function adoptPairedWallet(input: {
   pairingUuid: string;
   wallet: EncryptedDeeplinkWalletId;
 }): Promise<void> {
+  // Stamp the latch BEFORE the pairing-state guard so that even if two polls
+  // race past `stopDesktopPairing` (which runs synchronously on the first
+  // call but only after this check) we still adopt at most once per UUID.
+  if (desktopConnect.adoptedPairings.has(input.pairingUuid)) return;
+  desktopConnect.adoptedPairings.add(input.pairingUuid);
   if (desktopConnect.pairing?.uuid !== input.pairingUuid) return;
   stopDesktopPairing();
   walletBackend = new RemoteRelayBackend({

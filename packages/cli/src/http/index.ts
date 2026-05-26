@@ -102,20 +102,10 @@ export async function renderWebRequest<T = unknown>(
   const label = reqOptions.label ?? 'Render-web API';
   let response: Response;
   try {
+    const headers = renderWebRequestHeaders(options, init, bearer, cookie);
     response = await fetchWithTimeout(url, {
       ...init,
-      headers: {
-        Accept: 'application/json',
-        // x-agentic-client identifies us to /api/auth/verify-wallet's
-        // shouldReturnBearerSession check so login responses include a
-        // sessionToken. Sent unconditionally — render-web ignores it for routes
-        // that don't care.
-        'x-agentic-client': 'cli-bundled',
-        ...(init.body !== undefined ? { 'content-type': 'application/json' } : {}),
-        ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
-        ...(cookie ? { cookie } : {}),
-        ...(init.headers ?? {}),
-      },
+      headers,
     }, REQUEST_TIMEOUT_MS);
   } catch (err) {
     throw new Error(`${label} is not reachable at ${options.renderWebUrl}. ${errorMessage(err)}`);
@@ -134,6 +124,28 @@ export async function renderWebRequest<T = unknown>(
     throw new Error(error ?? `${label} returned HTTP ${response.status}.`);
   }
   return body as T;
+}
+
+function renderWebRequestHeaders(
+  options: GlobalOptions,
+  init: RequestInit,
+  bearer: string | null,
+  cookie: string | undefined,
+): Headers {
+  const headers = new Headers(init.headers);
+  if (!headers.has('accept')) headers.set('accept', 'application/json');
+  // x-agentic-client identifies us to /api/auth/verify-wallet's
+  // shouldReturnBearerSession check so login responses include a sessionToken.
+  if (!headers.has('x-agentic-client')) headers.set('x-agentic-client', 'cli-bundled');
+  if (init.body !== undefined && !headers.has('content-type')) headers.set('content-type', 'application/json');
+  if (bearer && !headers.has('authorization')) headers.set('authorization', `Bearer ${bearer}`);
+  if (cookie && !headers.has('cookie')) headers.set('cookie', cookie);
+  // Production Render rejects state-changing requests without Origin/Referer.
+  // Node fetch does not send Origin, so the CLI supplies a same-origin Referer.
+  if (!headers.has('origin') && !headers.has('referer')) {
+    headers.set('referer', renderWebUrl(options, '/cli').toString());
+  }
+  return headers;
 }
 
 // Legacy aliases preserved so existing call sites in index.ts keep working.

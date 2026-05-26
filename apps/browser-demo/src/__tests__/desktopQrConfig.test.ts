@@ -7,29 +7,33 @@ import {
 } from '../desktopQrConfig.js';
 
 describe('desktop QR config', () => {
-  it('defaults local dev relay and QR app URLs to the current origin', () => {
-    const origin = 'http://127.0.0.1:5174';
-
-    expect(resolveDesktopPairingRelayBaseUrl({ PROD: false }, origin)).toBe(origin);
-    expect(resolveQrConnectAppUrl({ PROD: false }, origin)).toBe(origin);
+  it('defaults dev and prod to the production cloud relay (QR pairing is cross-device)', () => {
+    // Phones can't reach `http://127.0.0.1:5174`, and the relay's own HTTPS
+    // gate would reject http URLs anyway — so even in `PROD=false` we must
+    // point at agentic-signer.com.
+    expect(resolveDesktopPairingRelayBaseUrl({ PROD: false })).toBe(AGENTIC_PRODUCTION_ORIGIN);
+    expect(resolveQrConnectAppUrl({ PROD: false })).toBe(AGENTIC_PRODUCTION_ORIGIN);
+    expect(resolveDesktopPairingRelayBaseUrl({ PROD: true })).toBe(AGENTIC_PRODUCTION_ORIGIN);
+    expect(resolveQrConnectAppUrl({ PROD: true })).toBe(AGENTIC_PRODUCTION_ORIGIN);
   });
 
-  it('defaults production relay and QR app URLs to agentic-signer.com', () => {
-    const origin = 'http://127.0.0.1:5174';
-
-    expect(resolveDesktopPairingRelayBaseUrl({ PROD: true }, origin)).toBe(AGENTIC_PRODUCTION_ORIGIN);
-    expect(resolveQrConnectAppUrl({ PROD: true }, origin)).toBe(AGENTIC_PRODUCTION_ORIGIN);
-  });
-
-  it('respects explicit relay and QR app URL overrides', () => {
+  it('respects explicit overrides for self-hosted relays / ngrok tunnels', () => {
     expect(resolveDesktopPairingRelayBaseUrl({
-      PROD: false,
       VITE_AGENTIC_CLOUD_API_BASE_URL: 'https://relay.example.com/',
-    }, 'http://127.0.0.1:5174')).toBe('https://relay.example.com');
+    })).toBe('https://relay.example.com');
 
     expect(resolveQrConnectAppUrl({
-      PROD: false,
       VITE_AGENTIC_QR_CONNECT_APP_URL: 'https://phone.example.com/',
-    }, 'http://127.0.0.1:5174')).toBe('https://phone.example.com');
+    })).toBe('https://phone.example.com');
+  });
+
+  it('falls back to the production origin when the override is empty/whitespace', () => {
+    expect(resolveDesktopPairingRelayBaseUrl({
+      VITE_AGENTIC_CLOUD_API_BASE_URL: '   ',
+    })).toBe(AGENTIC_PRODUCTION_ORIGIN);
+
+    expect(resolveQrConnectAppUrl({
+      VITE_AGENTIC_QR_CONNECT_APP_URL: '',
+    })).toBe(AGENTIC_PRODUCTION_ORIGIN);
   });
 });

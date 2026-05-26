@@ -927,6 +927,11 @@ test('auth login full SIWS roundtrip stores a session token', async () => {
     assert.equal(session.token, 'minted-session-token');
     assert.equal(session.walletAddress, 'TestWalletXYZ');
 
+    const nonceReq = renderWeb.requests.find((r) => r.path === '/api/auth/nonce');
+    assert.ok(nonceReq, 'nonce request missing');
+    assert.equal(nonceReq.headers['x-agentic-client'], 'cli-bundled');
+    assert.equal(nonceReq.headers.referer, `${renderWeb.url}/cli`);
+
     // Verify the server received the full SIWS envelope.
     const verifyReq = renderWeb.requests.find((r) => r.path === '/api/auth/verify-wallet');
     assert.ok(verifyReq, 'verify-wallet request missing');
@@ -938,6 +943,7 @@ test('auth login full SIWS roundtrip stores a session token', async () => {
     assert.equal(body.signatureEncoding, 'base58');
     assert.equal(body.proofEncoding, 'utf8-message');
     assert.equal(verifyReq.headers['x-agentic-client'], 'cli-bundled');
+    assert.equal(verifyReq.headers.referer, `${renderWeb.url}/cli`);
   } finally {
     await renderWeb.close();
   }
