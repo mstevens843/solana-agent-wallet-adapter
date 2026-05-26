@@ -19,18 +19,28 @@ export type DesktopConnectStep =
 
 export type DesktopConnectMethod = 'extension' | 'qr' | 'ledger';
 
+/** When the user is on the QR step, `qrVariant` selects which URI the QR
+ *  encodes: the wallet-agnostic WalletConnect URI (default, used by
+ *  Backpack/Jupiter/Magic Eden mobile) or a wallet-specific universal link
+ *  for Phantom or Solflare (which don't speak generic WC QR). */
+export type DesktopQrVariant = 'wc' | 'phantom' | 'solflare';
+
 export interface DesktopConnectFlowState {
   step: DesktopConnectStep;
   /** Set when the user has picked a brand inside extension/qr/awaiting-browser. */
   selectedBrandId: string | null;
   /** Epoch ms when 'awaiting-browser' was entered; used to time out the poll. */
   awaitingBrowserStartedAt: number | null;
+  /** Active QR variant while step === 'qr'. Reset to 'wc' on every entry
+   *  into the qr step so the user always sees the default WC QR first. */
+  qrVariant: DesktopQrVariant;
 }
 
 export type DesktopConnectFlowAction =
   | { type: 'startMethod' }
   | { type: 'pickMethod'; method: DesktopConnectMethod }
   | { type: 'pickBrand'; brandId: string }
+  | { type: 'pickQrVariant'; variant: DesktopQrVariant }
   | { type: 'beginAwaitingBrowser'; brandId: string; startedAt: number }
   | { type: 'back' }
   | { type: 'reset' };
@@ -40,6 +50,7 @@ export function initialDesktopConnectFlowState(): DesktopConnectFlowState {
     step: 'idle',
     selectedBrandId: null,
     awaitingBrowserStartedAt: null,
+    qrVariant: 'wc',
   };
 }
 
@@ -54,6 +65,15 @@ function methodToStep(method: DesktopConnectMethod): DesktopConnectStep {
   }
 }
 
+function emptyAt(step: DesktopConnectStep): DesktopConnectFlowState {
+  return {
+    step,
+    selectedBrandId: null,
+    awaitingBrowserStartedAt: null,
+    qrVariant: 'wc',
+  };
+}
+
 function previousStep(state: DesktopConnectFlowState): DesktopConnectFlowState {
   switch (state.step) {
     case 'idle':
@@ -63,14 +83,18 @@ function previousStep(state: DesktopConnectFlowState): DesktopConnectFlowState {
     case 'extension-brands':
     case 'ledger':
     case 'awaiting-browser':
-      return { step: 'method', selectedBrandId: null, awaitingBrowserStartedAt: null };
+      return emptyAt('method');
     case 'qr':
-      // From QR, if a brand was already picked, go back to the brand picker
-      // (clear the selection); otherwise go back to method.
-      if (state.selectedBrandId) {
-        return { step: 'qr', selectedBrandId: null, awaitingBrowserStartedAt: null };
+      // From QR with a Phantom/Solflare variant active → go back to the
+      // wallet-agnostic WC variant first (sub-step inside the QR screen).
+      if (state.qrVariant !== 'wc') {
+        return { ...state, qrVariant: 'wc', selectedBrandId: null };
       }
-      return { step: 'method', selectedBrandId: null, awaitingBrowserStartedAt: null };
+      // QR + selected brand (legacy state) → drop the brand selection.
+      if (state.selectedBrandId) {
+        return { ...emptyAt('qr') };
+      }
+      return emptyAt('method');
   }
 }
 

@@ -17,11 +17,15 @@ export interface SolanaChainEntry {
 
 const CHAIN_BY_CLUSTER: Record<SolanaClusterId, string> = {
   'mainnet-beta': 'solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp',
-  devnet: 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1',
+  // The devnet genesis hash is `EtWTRABZaYq6iMfeYKouRu166VU2xqaiTpoclWUEhWS`;
+  // the CAIP-2 prefix is the first 32 base58 chars (`…xqai`, ending in the
+  // letter `i`, NOT the digit `1`). The earlier `xqa1` form was a typo and
+  // caused devnet WC pairings to be rejected by spec-strict wallets.
+  devnet: 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqai',
   testnet: 'solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z',
   // Localnet shares devnet genesis hash; helpful for local validators that
   // emulate devnet's chain ID.
-  localnet: 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1',
+  localnet: 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqai',
 };
 
 export function solanaWalletConnectChainId(cluster: SolanaClusterId): string {

@@ -40030,6 +40030,8 @@ function selectPicker(input: {
     'data-select-picker-native': true,
     'data-select-picker-current-value': input.value,
     disabled: input.disabled,
+    hidden: true,
+    style: 'display:none!important',
     tabindex: '-1',
     'aria-hidden': 'true',
   });
@@ -40112,7 +40114,19 @@ function selectPickerOption(option: SelectPickerOption, selected: boolean): stri
 }
 
 function selectPickerLogo(logoId: BrandLogoId): string {
-  return brandLogo(logoId, 'select-picker-logo');
+  return `
+    <span
+      class="select-picker-logo select-picker-logo-${escapeHtml(logoId)}"
+      aria-hidden="true"
+      style="width:28px;height:28px;min-width:28px;max-width:28px;min-height:28px;max-height:28px;display:inline-flex;align-items:center;justify-content:center;overflow:hidden;"
+    >
+      <img
+        src="${escapeHtml(BRAND_LOGOS[logoId])}"
+        alt=""
+        style="display:block;width:100%;height:100%;max-width:100%;max-height:100%;object-fit:contain;"
+      />
+    </span>
+  `;
 }
 
 function selectPickerBaseId(input: {
