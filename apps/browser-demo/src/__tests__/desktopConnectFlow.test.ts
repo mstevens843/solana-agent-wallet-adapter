@@ -1,12 +1,31 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildDesktopBrowserConnectUrl,
   initialDesktopConnectFlowState,
   reduceDesktopConnectFlow,
   type DesktopConnectFlowState,
 } from '../desktopConnectFlow.js';
 
 const initial = (): DesktopConnectFlowState => initialDesktopConnectFlowState();
+
+describe('buildDesktopBrowserConnectUrl', () => {
+  it('targets the shared /connect page with desktop surface and bridge credentials', () => {
+    const url = new URL(buildDesktopBrowserConnectUrl({
+      walletHostUrl: 'http://127.0.0.1:5174/app?wallet=phantom',
+      bridgeUrl: 'http://127.0.0.1:8787',
+      bridgeToken: 'test-token',
+    }));
+    expect(url.origin).toBe('http://127.0.0.1:5174');
+    expect(url.pathname).toBe('/connect');
+    expect(url.searchParams.get('bridgeUrl')).toBe('http://127.0.0.1:8787');
+    expect(url.searchParams.get('token')).toBe('test-token');
+    expect(url.searchParams.get('mode')).toBe('cli');
+    expect(url.searchParams.get('intent')).toBe('connect');
+    expect(url.searchParams.get('surface')).toBe('desktop');
+    expect(url.searchParams.has('wallet')).toBe(false);
+  });
+});
 
 describe('initialDesktopConnectFlowState', () => {
   it('starts at idle with no brand, no poll start, and no QR wallet picked', () => {
@@ -36,15 +55,6 @@ describe('reduceDesktopConnectFlow — pickMethod', () => {
   const method = (): DesktopConnectFlowState =>
     reduceDesktopConnectFlow(initial(), { type: 'startMethod' });
 
-  it('extension → extension-brands', () => {
-    const next = reduceDesktopConnectFlow(method(), {
-      type: 'pickMethod',
-      method: 'extension',
-    });
-    expect(next.step).toBe('extension-brands');
-    expect(next.selectedBrandId).toBeNull();
-  });
-
   it('qr → qr (no brand yet)', () => {
     const next = reduceDesktopConnectFlow(method(), { type: 'pickMethod', method: 'qr' });
     expect(next.step).toBe('qr');
@@ -59,41 +69,9 @@ describe('reduceDesktopConnectFlow — pickMethod', () => {
   it('is ignored when not in method step', () => {
     const next = reduceDesktopConnectFlow(initial(), {
       type: 'pickMethod',
-      method: 'extension',
+      method: 'qr',
     });
     expect(next.step).toBe('idle');
-  });
-});
-
-describe('reduceDesktopConnectFlow — pickBrand', () => {
-  it('attaches brand inside extension-brands', () => {
-    const step1 = reduceDesktopConnectFlow(initial(), { type: 'startMethod' });
-    const step2 = reduceDesktopConnectFlow(step1, {
-      type: 'pickMethod',
-      method: 'extension',
-    });
-    const step3 = reduceDesktopConnectFlow(step2, {
-      type: 'pickBrand',
-      brandId: 'phantom',
-    });
-    expect(step3.selectedBrandId).toBe('phantom');
-    expect(step3.step).toBe('extension-brands');
-  });
-
-  it('attaches brand inside qr', () => {
-    const step1 = reduceDesktopConnectFlow(initial(), { type: 'startMethod' });
-    const step2 = reduceDesktopConnectFlow(step1, { type: 'pickMethod', method: 'qr' });
-    const step3 = reduceDesktopConnectFlow(step2, { type: 'pickBrand', brandId: 'solflare' });
-    expect(step3.selectedBrandId).toBe('solflare');
-    expect(step3.step).toBe('qr');
-  });
-
-  it('is ignored from idle / method', () => {
-    const ignored = reduceDesktopConnectFlow(initial(), {
-      type: 'pickBrand',
-      brandId: 'phantom',
-    });
-    expect(ignored.selectedBrandId).toBeNull();
   });
 });
 
@@ -108,6 +86,16 @@ describe('reduceDesktopConnectFlow — beginAwaitingBrowser', () => {
     expect(next.selectedBrandId).toBe('phantom');
     expect(next.awaitingBrowserStartedAt).toBe(1000);
   });
+
+  it('allows brandless browser waits for the shared /connect page', () => {
+    const next = reduceDesktopConnectFlow(initial(), {
+      type: 'beginAwaitingBrowser',
+      startedAt: 1000,
+    });
+    expect(next.step).toBe('awaiting-browser');
+    expect(next.selectedBrandId).toBeNull();
+    expect(next.awaitingBrowserStartedAt).toBe(1000);
+  });
 });
 
 describe('reduceDesktopConnectFlow — back', () => {
@@ -115,21 +103,6 @@ describe('reduceDesktopConnectFlow — back', () => {
     const atMethod = reduceDesktopConnectFlow(initial(), { type: 'startMethod' });
     const back = reduceDesktopConnectFlow(atMethod, { type: 'back' });
     expect(back.step).toBe('idle');
-  });
-
-  it('extension-brands → method (clears brand)', () => {
-    const atMethod = reduceDesktopConnectFlow(initial(), { type: 'startMethod' });
-    const atBrands = reduceDesktopConnectFlow(atMethod, {
-      type: 'pickMethod',
-      method: 'extension',
-    });
-    const withBrand = reduceDesktopConnectFlow(atBrands, {
-      type: 'pickBrand',
-      brandId: 'backpack',
-    });
-    const back = reduceDesktopConnectFlow(withBrand, { type: 'back' });
-    expect(back.step).toBe('method');
-    expect(back.selectedBrandId).toBeNull();
   });
 
   it('qr with no wallet picked → method', () => {

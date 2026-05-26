@@ -2,9 +2,9 @@
 //
 // The Tauri webview can't host browser-extension wallets directly, so the
 // desktop rail offers three connection methods after the user clicks Discover:
-// open the user's system browser to the wallet host (with a pre-selected
-// brand), pair a mobile wallet over WalletConnect QR, or pair a Ledger over
-// USB-HID. This module owns the small step machine that drives that UI.
+// open the user's system browser to the dedicated wallet-host connect page,
+// pair a mobile wallet over WalletConnect QR, or pair a Ledger over USB-HID.
+// This module owns the small step machine that drives the inline UI.
 //
 // DOM-free + Tauri-free — `main.ts` renders, binds events, and dispatches.
 // Tests live in `__tests__/desktopConnectFlow.test.ts`.
@@ -12,23 +12,43 @@
 export type DesktopConnectStep =
   | 'idle'
   | 'method'
-  | 'extension-brands'
   | 'qr'
   | 'ledger'
   | 'awaiting-browser';
 
 export type DesktopConnectMethod = 'extension' | 'qr' | 'ledger';
+type DesktopConnectInlineMethod = Exclude<DesktopConnectMethod, 'extension'>;
 
 /** Which wallet the user picked inside the QR step. `null` means the
- *  picker is showing (no wallet chosen yet, no QR generated). Backpack
- *  and Jupiter both render the wallet-agnostic WalletConnect QR — they
- *  share the same protocol, only the rendered brand banner differs.
- *  Phantom and Solflare render their respective universal-link QRs. */
+ *  picker is showing (no wallet chosen yet, no QR generated). Backpack and
+ *  Jupiter render the raw WalletConnect QR; Solflare renders a
+ *  Solflare-native WC deeplink wrapper; Phantom keeps its wallet-specific
+ *  deeplink QR. */
 export type DesktopQrWallet = 'backpack' | 'jupiter' | 'phantom' | 'solflare';
+
+export interface DesktopBrowserConnectUrlInput {
+  walletHostUrl: string;
+  bridgeUrl?: string;
+  bridgeToken?: string;
+}
+
+export function buildDesktopBrowserConnectUrl(input: DesktopBrowserConnectUrlInput): string {
+  const url = new URL(input.walletHostUrl);
+  url.pathname = '/connect';
+  url.searchParams.delete('wallet');
+  const bridgeUrl = input.bridgeUrl?.trim();
+  const bridgeToken = input.bridgeToken?.trim();
+  if (bridgeUrl) url.searchParams.set('bridgeUrl', bridgeUrl);
+  if (bridgeToken) url.searchParams.set('token', bridgeToken);
+  url.searchParams.set('mode', 'cli');
+  url.searchParams.set('intent', 'connect');
+  url.searchParams.set('surface', 'desktop');
+  return url.toString();
+}
 
 export interface DesktopConnectFlowState {
   step: DesktopConnectStep;
-  /** Set when the user has picked a brand inside extension/qr/awaiting-browser. */
+  /** Optional brand context while waiting for the external browser page. */
   selectedBrandId: string | null;
   /** Epoch ms when 'awaiting-browser' was entered; used to time out the poll. */
   awaitingBrowserStartedAt: number | null;
@@ -39,10 +59,9 @@ export interface DesktopConnectFlowState {
 
 export type DesktopConnectFlowAction =
   | { type: 'startMethod' }
-  | { type: 'pickMethod'; method: DesktopConnectMethod }
-  | { type: 'pickBrand'; brandId: string }
+  | { type: 'pickMethod'; method: DesktopConnectInlineMethod }
   | { type: 'pickQrWallet'; wallet: DesktopQrWallet | null }
-  | { type: 'beginAwaitingBrowser'; brandId: string; startedAt: number }
+  | { type: 'beginAwaitingBrowser'; brandId?: string | null; startedAt: number }
   | { type: 'back' }
   | { type: 'reset' };
 
@@ -55,10 +74,8 @@ export function initialDesktopConnectFlowState(): DesktopConnectFlowState {
   };
 }
 
-function methodToStep(method: DesktopConnectMethod): DesktopConnectStep {
+function methodToStep(method: DesktopConnectInlineMethod): DesktopConnectStep {
   switch (method) {
-    case 'extension':
-      return 'extension-brands';
     case 'qr':
       return 'qr';
     case 'ledger':
@@ -81,7 +98,6 @@ function previousStep(state: DesktopConnectFlowState): DesktopConnectFlowState {
       return state;
     case 'method':
       return initialDesktopConnectFlowState();
-    case 'extension-brands':
     case 'ledger':
     case 'awaiting-browser':
       return emptyAt('method');
@@ -108,9 +124,6 @@ export function reduceDesktopConnectFlow(
     case 'pickMethod':
       if (state.step !== 'method') return state;
       return emptyAt(methodToStep(action.method));
-    case 'pickBrand':
-      if (state.step !== 'qr' && state.step !== 'extension-brands') return state;
-      return { ...state, selectedBrandId: action.brandId };
     case 'pickQrWallet':
       // QR wallet picks only make sense while on the QR step.
       if (state.step !== 'qr') return state;
@@ -119,7 +132,7 @@ export function reduceDesktopConnectFlow(
     case 'beginAwaitingBrowser':
       return {
         step: 'awaiting-browser',
-        selectedBrandId: action.brandId,
+        selectedBrandId: action.brandId ?? null,
         awaitingBrowserStartedAt: action.startedAt,
         qrWallet: null,
       };

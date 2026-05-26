@@ -1,5 +1,5 @@
-// Pure helpers that build the wallet-specific universal-link URLs we encode
-// into QR codes for the desktop Discover → "Scan QR with phone" flow.
+// Pure helpers that build wallet-specific universal-link URLs for legacy
+// mobile deeplink flows.
 //
 // Why per-wallet helpers when WalletConnect already does this?
 //
@@ -7,15 +7,14 @@
 //   uses its own encrypted-deeplink protocol ("Phantom Connect"); a generic
 //   `wc:topic@2?…` URI surfaces "This QR code is not valid" in Phantom.
 //   See https://phantom.com/learn/blog/the-complete-guide-to-phantom-deeplinks
-// - **Solflare's primary scanner is hardcoded for Solana Pay** (`solana:`
-//   scheme) and rejects WC URIs as "not a valid Solana Pay QR code." Solflare
-//   does support WalletConnect, but only via separate entry points; the
-//   simplest cross-device path is its `browse` deeplink, which opens dApps
-//   inside Solflare's in-app browser where the wallet-standard wallet is
-//   pre-injected. See https://docs.solflare.com/solflare/technical/deeplinks
+// - **Solflare browse links** are retained for any caller that explicitly
+//   wants to open a dApp inside Solflare's in-app browser. The desktop QR
+//   picker no longer uses this helper for Solflare; it wraps a WalletConnect
+//   pairing URI in `solflare://wc?uri=...` so Solflare opens its native WC
+//   prompt.
 //
-// These helpers are DOM-free and have no side effects — `main.ts` renders
-// the QR from the returned URL. Tests exercise the URL shapes directly.
+// These helpers are DOM-free and have no side effects. Tests exercise the
+// URL shapes directly.
 
 import bs58 from 'bs58';
 import nacl from 'tweetnacl';

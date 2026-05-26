@@ -133,6 +133,7 @@ import {
   type WalletConnectQrOverlayState,
 } from './walletConnectQrOverlay.js';
 import {
+  buildDesktopBrowserConnectUrl,
   initialDesktopConnectFlowState,
   reduceDesktopConnectFlow,
   type DesktopConnectFlowAction,
@@ -144,7 +145,6 @@ import { RemoteBridgeBackend } from './remoteBridgeBackend.js';
 import { RemoteRelayBackend } from './remoteRelayBackend.js';
 import {
   buildPhantomConnectUrl,
-  buildSolflareBrowseUrl,
   generatePhantomConnectKeypair,
 } from './walletDeeplinks.js';
 import {
@@ -2977,17 +2977,22 @@ const persisted = loadPersistedState();
 const launchParams = readLaunchParams();
 clearSensitiveLaunchParams();
 type CliIntentName = 'connect' | 'disconnect' | 'approve' | 'sign';
-type CliView = { intent: CliIntentName; actionId?: string; requestId?: string };
+type CliSurfaceName = 'desktop';
+type CliView = { intent: CliIntentName; actionId?: string; requestId?: string; surface?: CliSurfaceName };
 let cliView: CliView | null = launchParams.cliMode && launchParams.cliIntent
   ? {
       intent: launchParams.cliIntent,
       ...(launchParams.cliActionId ? { actionId: launchParams.cliActionId } : {}),
       ...(launchParams.cliRequestId ? { requestId: launchParams.cliRequestId } : {}),
+      ...(launchParams.cliSurface ? { surface: launchParams.cliSurface } : {}),
     }
   : null;
 if (cliView && typeof document !== 'undefined') {
   document.documentElement.setAttribute('data-cli-mode', 'true');
   document.documentElement.setAttribute('data-cli-intent', cliView.intent);
+  if (cliView.surface) {
+    document.documentElement.setAttribute('data-cli-surface', cliView.surface);
+  }
 }
 function exitCliView(): void {
   cliView = null;
@@ -5045,14 +5050,8 @@ function handleDesktopBrandAction(
       openEmbeddedWalletOverlay('import');
       return;
     case 'external-browser': {
-      const target = inferredWalletHostUrl();
-      void tauriNativeOpenExternalUrl(target).catch((err) => {
-        pushToast(
-          'error',
-          'Could not open browser',
-          err instanceof Error ? err.message : String(err),
-        );
-      });
+      collapseDesktopBrandPanels();
+      openDesktopBrowserConnectPage();
       return;
     }
     case 'scan-qr':
@@ -5316,10 +5315,17 @@ async function handleScanQrForBrand(brandId: string): Promise<void> {
   }
 }
 
+function desktopWalletConnectQrPayload(displayBrandId: string | undefined, uri: string): string {
+  if (displayBrandId === 'solflare') {
+    return `${WALLET_CONNECT_BRANDS.solflare!.deepLinkPrefix}${encodeURIComponent(uri)}`;
+  }
+  return uri;
+}
+
 /** Brand-agnostic WalletConnect pairing used by the desktop Discover →
- *  "Scan QR with phone" flow. The QR encodes a wallet-agnostic WC URI;
- *  whichever mobile wallet scans it identifies itself in `session.peerName`
- *  after approval, which we use as the registered wallet's display name. */
+ *  "Scan QR with phone" flow. Most wallets scan the raw WC URI. Solflare
+ *  gets its native `solflare://wc?uri=...` wrapper so its app opens the WC
+ *  prompt directly while the desktop still waits on the original WC session. */
 async function handleScanQrAnyWallet(displayBrandId?: string): Promise<void> {
   if (!WALLETCONNECT_PROJECT_ID) {
     pushToast(
@@ -5331,22 +5337,21 @@ async function handleScanQrAnyWallet(displayBrandId?: string): Promise<void> {
   }
   if (walletConnect.overlay.mode !== 'closed') return;
   closeSiblingOverlays('walletconnect-qr');
-  // `displayBrandId` is used only to brand the rendered QR card header
-  // (e.g. "Scan with Backpack mobile" + Backpack logo). The WC URI itself
-  // is wallet-agnostic — whichever wallet ends up scanning identifies
-  // itself in `session.peerName` post-approval, which we use as the
-  // registered wallet name. If no display brand is passed, the render
-  // falls back to a generic "Solana mobile wallet" prompt.
+  // `displayBrandId` brands the rendered QR card header (e.g. "Scan with
+  // Backpack mobile" + Backpack logo). For Solflare it also chooses the
+  // Solflare-native deeplink QR payload. The approved wallet still
+  // identifies itself in `session.peerName` post-approval.
   dispatchWalletConnectOverlay({ type: 'openConnecting', brandId: displayBrandId ?? '' });
   try {
     const client = await ensureWalletConnectClient();
     const chains = walletConnectChainsForCurrentCluster();
     const { uri, approval } = await client.connect({ chains });
+    const qrPayload = desktopWalletConnectQrPayload(displayBrandId, uri);
     let qrDataUrl = '';
     try {
       const QRCodeMod = await import('qrcode');
       const generator = (QRCodeMod as { default?: typeof import('qrcode') }).default ?? QRCodeMod;
-      qrDataUrl = await generator.toDataURL(uri, {
+      qrDataUrl = await generator.toDataURL(qrPayload, {
         errorCorrectionLevel: 'M',
         margin: 2,
         width: 320,
@@ -5663,7 +5668,7 @@ function ledgerOverlayBlock(): string {
 interface DesktopDeeplinkQr {
   /** Which variant this data URL was generated for; cleared when variant
    *  changes so we never display a stale QR for the wrong wallet. */
-  variant: 'phantom' | 'solflare' | null;
+  variant: 'phantom' | null;
   /** PNG data URL ready to drop into an `<img src>`; null until the async
    *  qrcode generation completes for the active variant. */
   dataUrl: string | null;
@@ -5672,15 +5677,15 @@ interface DesktopDeeplinkQr {
   url: string | null;
 }
 
-/** Cloud-pairing state for the Phantom/Solflare QR path. The desktop
+/** Cloud-pairing state for the Phantom QR path. The desktop
  *  generates the UUID, embeds it in the wallet's universal-link deeplink,
  *  then polls `/api/pair/<uuid>/host` until the wallet-host on the phone
  *  registers its address — at which point we adopt via `RemoteRelayBackend`. */
 interface DesktopPairing {
   uuid: string;
-  /** Picked brand (`'phantom'` | `'solflare'`) — drives the rendered banner
-   *  and the wallet name we display before the relay reports its own. */
-  wallet: 'phantom' | 'solflare';
+  /** Picked brand — drives the rendered banner and the wallet name we display
+   *  before the relay reports its own. */
+  wallet: 'phantom';
   /** setInterval handle for the host-poll loop; cleared on adoption / back / timeout. */
   pollHandle: number | null;
   /** Epoch ms when the pairing was started; used to fire the 5-min soft toast. */
@@ -5693,10 +5698,9 @@ interface DesktopConnectRuntime {
   flow: DesktopConnectFlowState;
   /** setInterval handle while polling the bridge for awaiting-browser. */
   pollHandle: number | null;
-  /** Deeplink QR cache for the Phantom/Solflare variants; rebuilt whenever
-   *  the user enters one of those variants. */
+  /** Deeplink QR cache for Phantom; rebuilt whenever the user enters that variant. */
   deeplinkQr: DesktopDeeplinkQr;
-  /** Active cross-device pairing record (Phantom/Solflare via cloud relay). */
+  /** Active cross-device pairing record (Phantom via cloud relay). */
   pairing: DesktopPairing | null;
 }
 
@@ -5719,15 +5723,13 @@ const PAIRING_RELAY_BASE_URL: string =
 const PAIRING_POLL_INTERVAL_MS = 1500;
 const PAIRING_TIMEOUT_MS = 5 * 60 * 1000;
 
-/** brandId → DESKTOP_BRAND_PANELS labels are camelCase; wallet-standard
- *  wallet names are the brand's display name. Used by the wallet-host page's
- *  ?wallet= auto-connect to match a discovered wallet against a desktop pick. */
+/** brandId → wallet-standard wallet names. Used by the wallet-host page's
+ *  legacy `?wallet=` auto-connect path for mobile deeplinks. */
 const DESKTOP_BRAND_WALLET_NAMES: Record<string, readonly string[]> = {
   backpack: ['Backpack'],
   phantom: ['Phantom'],
   jupiter: ['Jupiter', 'Jupiter Mobile'],
   solflare: ['Solflare'],
-  magicEden: ['Magic Eden', 'MagicEden'],
 };
 
 function stopDesktopConnectPoll(): void {
@@ -5781,7 +5783,7 @@ function desktopMethodPickerBody(): string {
     <div class="desktop-connect-flow-methods">
       <button type="button" class="desktop-method-tile" data-desktop-flow-action="method:extension">
         <span class="desktop-method-tile-title">Browser extension</span>
-        <span class="desktop-method-tile-sub">Open the wallet in your default browser (Phantom, Solflare, Backpack, Jupiter, Magic Eden).</span>
+        <span class="desktop-method-tile-sub">Open the wallet pairing page in your default browser. Choose Backpack, Phantom, Jupiter, or Solflare there.</span>
       </button>
       <button type="button" class="desktop-method-tile" data-desktop-flow-action="method:qr">
         <span class="desktop-method-tile-title">Scan QR with phone</span>
@@ -5795,29 +5797,10 @@ function desktopMethodPickerBody(): string {
   `;
 }
 
-function desktopBrandPickerBody(actionName: 'pick-extension-brand' | 'pick-qr-brand'): string {
-  const rows = DESKTOP_BRAND_PANELS.map((brand) => `
-    <button type="button" class="desktop-brand-pick-row" data-desktop-flow-action="${actionName}" data-desktop-brand-id="${escapeHtmlForFlow(brand.id)}">
-      ${brandLogoMarkup(brand.id, 'desktop-brand-pick-logo')}
-      <span class="desktop-brand-pick-name">${escapeHtmlForFlow(brand.name)}</span>
-      <span class="desktop-brand-pick-caret" aria-hidden="true">›</span>
-    </button>
-  `).join('');
-  const lede = actionName === 'pick-extension-brand'
-    ? `<p class="desktop-connect-flow-lede">Pick the wallet extension you have installed in your default browser.</p>`
-    : `<p class="desktop-connect-flow-lede">Pick the mobile wallet you'll scan from.</p>`;
-  return `
-    ${lede}
-    <div class="desktop-connect-flow-brand-list">${rows}</div>
-  `;
-}
-
-/** The four wallet brands offered on the QR step. Order matters — it's
- *  the order the rows render. Backpack and Jupiter share the underlying
- *  WalletConnect URI; Phantom and Solflare each get their own universal-link
- *  QR (see `walletDeeplinks.ts`). Magic Eden is intentionally omitted from
- *  the picker UI to keep the tile list short — the underlying WC URI still
- *  works if a user happens to scan with Magic Eden mobile. */
+/** The wallet brands offered on the QR step. Order matters — it's
+ *  the order the rows render. Backpack and Jupiter scan the raw WalletConnect
+ *  URI, Solflare scans a Solflare-native WC deeplink wrapper, and Phantom keeps
+ *  its proprietary deeplink QR. */
 const DESKTOP_QR_WALLETS: ReadonlyArray<{
   id: DesktopQrWallet;
   label: string;
@@ -5831,14 +5814,16 @@ const DESKTOP_QR_WALLETS: ReadonlyArray<{
 
 /** Body for the QR step. Branches on `desktopConnect.flow.qrWallet`:
  *  - `null` → 4-tile wallet picker (Backpack/Jupiter/Phantom/Solflare).
- *  - `'backpack'` / `'jupiter'` → branded WC QR (same URI, brand-specific banner).
- *  - `'phantom'` / `'solflare'` → wallet-specific universal-link QR. */
+ *  - `'backpack'` / `'jupiter'` → branded raw WC QR.
+ *  - `'solflare'` → Solflare-native `solflare://wc?uri=...` QR wrapping a WC session.
+ *  - `'phantom'` → wallet-specific universal-link QR. */
 function desktopQrBody(): string {
   const wallet = desktopConnect.flow.qrWallet;
   if (wallet === null) {
     return desktopQrWalletPicker();
   }
-  if (wallet === 'backpack' || wallet === 'jupiter') {
+  if (wallet === 'backpack' || wallet === 'jupiter' || wallet === 'solflare') {
+    const brandName = wallet === 'backpack' ? 'Backpack' : wallet === 'jupiter' ? 'Jupiter' : 'Solflare';
     return `
       <div class="desktop-connect-flow-body walletconnect-qr-inline">
         ${walletConnectQrBodyHtml({
@@ -5850,7 +5835,7 @@ function desktopQrBody(): string {
           // the same-device deeplink button (we're cross-device here).
           brand: () => ({
             id: wallet,
-            name: wallet === 'backpack' ? 'Backpack' : 'Jupiter',
+            name: brandName,
             deepLinkPrefix: '',
             logoId: wallet,
           }),
@@ -5859,8 +5844,8 @@ function desktopQrBody(): string {
       </div>
     `;
   }
-  // Phantom or Solflare — deeplink QR.
-  const brandName = wallet === 'phantom' ? 'Phantom' : 'Solflare';
+  // Phantom — deeplink QR.
+  const brandName = 'Phantom';
   const cached = desktopConnect.deeplinkQr;
   const qrMarkup = cached.variant === wallet && cached.dataUrl
     ? `<img class="walletconnect-qr-overlay-qr" src="${escapeHtmlForFlow(cached.dataUrl)}" alt="QR code that opens ${escapeHtmlForFlow(brandName)} mobile" />`
@@ -5908,12 +5893,13 @@ function desktopQrWalletPicker(): string {
 function desktopAwaitingBrowserBody(): string {
   const brandId = desktopConnect.flow.selectedBrandId ?? '';
   const brand = DESKTOP_BRAND_PANELS.find((b) => b.id === brandId);
-  const name = brand?.name ?? 'the wallet';
+  const name = brand?.name ?? 'your browser wallet';
+  const logo = brand ? brandLogoMarkup(brand.id, 'desktop-connect-flow-awaiting-logo') : '';
   return `
     <div class="desktop-connect-flow-awaiting">
-      ${brandLogoMarkup(brandId, 'desktop-connect-flow-awaiting-logo')}
+      ${logo}
       <h3>Waiting for ${escapeHtmlForFlow(name)}…</h3>
-      <p>Unlock <strong>${escapeHtmlForFlow(name)}</strong> and click <em>Connect</em> in the browser tab. This panel closes automatically once the wallet is connected.</p>
+      <p>Choose and authorize a wallet in the browser tab. This panel closes automatically once the local bridge reports the connection.</p>
       <div class="desktop-connect-flow-awaiting-status" role="status" aria-live="polite">
         <span class="desktop-connect-flow-spinner" aria-hidden="true"></span>
         <span>Listening for your wallet on the local bridge…</span>
@@ -5921,7 +5907,7 @@ function desktopAwaitingBrowserBody(): string {
       <div class="desktop-connect-flow-awaiting-actions">
         <button type="button" class="utility" data-desktop-flow-action="awaiting-retry">Reopen browser</button>
       </div>
-      <p class="desktop-connect-flow-awaiting-hint">If nothing happens, make sure ${escapeHtmlForFlow(name)} is installed in your default browser. You can also press Back and pick a different connection method.</p>
+      <p class="desktop-connect-flow-awaiting-hint">If nothing happens, make sure the extension is installed in your default browser. You can also press Back and pick a different connection method.</p>
     </div>
   `;
 }
@@ -5935,10 +5921,6 @@ function desktopConnectFlowBlock(): string {
     case 'method':
       title = 'Discover wallet';
       body = desktopMethodPickerBody();
-      break;
-    case 'extension-brands':
-      title = 'Browser extension';
-      body = desktopBrandPickerBody('pick-extension-brand');
       break;
     case 'qr':
       title = 'Scan QR with phone';
@@ -5985,6 +5967,10 @@ async function runDesktopDiscover(): Promise<void> {
 }
 
 function handleDesktopMethodSelect(method: DesktopConnectMethod): void {
+  if (method === 'extension') {
+    openDesktopBrowserConnectPage();
+    return;
+  }
   if (method === 'ledger') {
     // Switch UI first so the inline body renders, then drive the existing
     // Ledger state machine. `openLedgerOverlay` is idempotent and reusable.
@@ -5999,7 +5985,6 @@ function handleDesktopMethodSelect(method: DesktopConnectMethod): void {
     dispatchDesktopConnectFlow({ type: 'pickMethod', method: 'qr' });
     return;
   }
-  dispatchDesktopConnectFlow({ type: 'pickMethod', method });
 }
 
 /** Generate a PNG data URL from an arbitrary URL string using the same
@@ -6023,43 +6008,34 @@ async function renderUrlQrDataUrl(target: string): Promise<string> {
   }
 }
 
-/** Build the deeplink URL for a Phantom/Solflare variant given the current
+/** Build the deeplink URL for Phantom given the current
  *  cluster, return both the raw URL and a fresh QR data URL. The data URL
  *  is rendered into `<img src>` inside `desktopQrBody()`. `pairing` (when
  *  set) gets threaded into the redirect/destination URL so the wallet-host
  *  page in the phone's in-app browser can POST its address to the matching
  *  cloud pairing record. */
 async function buildDesktopVariantQr(
-  variant: 'phantom' | 'solflare',
+  variant: 'phantom',
   pairing?: string,
 ): Promise<{ url: string; dataUrl: string }> {
   const appUrl = 'https://agentic-signer.com';
   // The deployed bundle handles `?wallet=<brandId>` via
-  // `runWalletHostBrandAutoConnect`. Both Phantom and Solflare deeplinks
-  // ultimately land in their in-app browser pointing here.
+  // `runWalletHostBrandAutoConnect`. Phantom deeplinks ultimately land in
+  // the in-app browser pointing here.
   const walletHostUrl = `${appUrl}/app?wallet=${variant}`;
-  let url: string;
-  if (variant === 'phantom') {
-    const keypair = generatePhantomConnectKeypair();
-    url = buildPhantomConnectUrl({
-      dappPublicKey: keypair.publicKey,
-      redirectLink: walletHostUrl,
-      cluster: state.cluster,
-      appUrl,
-      ...(pairing ? { pairing } : {}),
-    });
-    // We discard the keypair's secret half — Phantom Connect's response
-    // payload is encrypted to our pubkey, but in the cloud-relay flow we
-    // never need to decrypt it. The wallet-host inside Phantom's in-app
-    // browser connects via wallet-standard (Phantom in-app injects its
-    // provider) and POSTs the address to the relay directly.
-  } else {
-    url = buildSolflareBrowseUrl({
-      dappUrl: walletHostUrl,
-      ref: appUrl,
-      ...(pairing ? { pairing } : {}),
-    });
-  }
+  const keypair = generatePhantomConnectKeypair();
+  const url = buildPhantomConnectUrl({
+    dappPublicKey: keypair.publicKey,
+    redirectLink: walletHostUrl,
+    cluster: state.cluster,
+    appUrl,
+    ...(pairing ? { pairing } : {}),
+  });
+  // We discard the keypair's secret half — Phantom Connect's response
+  // payload is encrypted to our pubkey, but in the cloud-relay flow we
+  // never need to decrypt it. The wallet-host inside Phantom's in-app
+  // browser connects via wallet-standard (Phantom in-app injects its
+  // provider) and POSTs the address to the relay directly.
   const dataUrl = await renderUrlQrDataUrl(url);
   return { url, dataUrl };
 }
@@ -6075,16 +6051,16 @@ function handleDesktopQrWalletSelect(wallet: DesktopQrWallet): void {
   stopDesktopPairing();
   desktopConnect.deeplinkQr = { variant: null, dataUrl: null, url: null };
   dispatchDesktopConnectFlow({ type: 'pickQrWallet', wallet });
-  if (wallet === 'backpack' || wallet === 'jupiter') {
-    // Both use the same wallet-agnostic WC URI; the picked brand only
-    // changes the rendered banner (header + logo) — the wallet that
-    // actually scans + approves identifies itself in session.peerName.
+  if (wallet === 'backpack' || wallet === 'jupiter' || wallet === 'solflare') {
+    // Backpack/Jupiter scan the raw WC URI. Solflare gets a fresh WC session
+    // too, but the rendered QR payload is wrapped as `solflare://wc?uri=...`
+    // so the Solflare app opens its native WC prompt instead of browsing a URL.
     void handleScanQrAnyWallet(wallet);
     return;
   }
-  // Phantom or Solflare — start a cross-device pairing, encode the UUID
-  // into the wallet's universal-link, and begin polling the relay so we
-  // can adopt the wallet when the phone reports its address.
+  // Phantom — start a cross-device pairing, encode the UUID into the
+  // wallet's universal-link, and begin polling the relay so we can adopt the
+  // wallet when the phone reports its address.
   const pairingUuid = generatePairingUuid();
   desktopConnect.pairing = {
     uuid: pairingUuid,
@@ -6127,14 +6103,14 @@ function stopDesktopPairing(): void {
   desktopConnect.pairing = null;
 }
 
-function startDesktopPairingPoll(uuid: string, wallet: 'phantom' | 'solflare'): void {
+function startDesktopPairingPoll(uuid: string, wallet: 'phantom'): void {
   if (!desktopConnect.pairing || desktopConnect.pairing.uuid !== uuid) return;
   desktopConnect.pairing.pollHandle = window.setInterval(() => {
     void pollPairingHost(uuid, wallet);
   }, PAIRING_POLL_INTERVAL_MS);
 }
 
-async function pollPairingHost(uuid: string, wallet: 'phantom' | 'solflare'): Promise<void> {
+async function pollPairingHost(uuid: string, wallet: 'phantom'): Promise<void> {
   // Confirm we're still polling for this exact pairing — user may have
   // pressed Back or switched wallets during the in-flight request.
   if (desktopConnect.pairing?.uuid !== uuid) return;
@@ -6186,7 +6162,7 @@ async function adoptPairedWallet(input: {
   capabilities: AdapterCapabilities;
   walletName: string;
   pairingUuid: string;
-  wallet: 'phantom' | 'solflare';
+  wallet: 'phantom';
 }): Promise<void> {
   if (desktopConnect.pairing?.uuid !== input.pairingUuid) return;
   stopDesktopPairing();
@@ -6215,8 +6191,16 @@ async function adoptPairedWallet(input: {
   dispatchDesktopConnectFlow({ type: 'reset' });
 }
 
-function handleDesktopExtensionBrandSelect(brandId: string): void {
-  const target = inferredWalletHostUrl({ wallet: brandId });
+function desktopBrowserConnectUrl(): string {
+  return buildDesktopBrowserConnectUrl({
+    walletHostUrl: inferredWalletHostUrl({ route: '/connect' }),
+    bridgeUrl: state.bridgeUrl,
+    bridgeToken: state.bridgeToken,
+  });
+}
+
+function openDesktopBrowserConnectPage(brandId?: string | null): void {
+  const target = desktopBrowserConnectUrl();
   void tauriNativeOpenExternalUrl(target).catch((err) => {
     pushToast(
       'error',
@@ -6226,16 +6210,16 @@ function handleDesktopExtensionBrandSelect(brandId: string): void {
   });
   dispatchDesktopConnectFlow({
     type: 'beginAwaitingBrowser',
-    brandId,
+    brandId: brandId ?? null,
     startedAt: Date.now(),
   });
-  startAwaitingBrowserPoll(brandId);
+  startAwaitingBrowserPoll(brandId ?? null);
 }
 
 const AWAITING_BROWSER_POLL_INTERVAL_MS = 1500;
 const AWAITING_BROWSER_TIMEOUT_MS = 5 * 60 * 1000;
 
-function startAwaitingBrowserPoll(brandId: string): void {
+function startAwaitingBrowserPoll(brandId?: string | null): void {
   // Idempotent: a previous poll (e.g. from a prior Reopen) must be cancelled
   // before we start a new one so we don't double-fire detection.
   stopDesktopConnectPoll();
@@ -6267,11 +6251,12 @@ function startAwaitingBrowserPoll(brandId: string): void {
       );
       // Continue polling — user may eventually complete the flow.
     }
-    void pollBridgeForHost(brandId);
+    void pollBridgeForHost(brandId ?? null);
   }, AWAITING_BROWSER_POLL_INTERVAL_MS);
+  void pollBridgeForHost(brandId ?? null);
 }
 
-async function pollBridgeForHost(brandId: string): Promise<void> {
+async function pollBridgeForHost(brandId?: string | null): Promise<void> {
   let capabilities: AdapterCapabilities;
   try {
     capabilities = await bridgeRequest<AdapterCapabilities>('/bridge/status');
@@ -6284,13 +6269,13 @@ async function pollBridgeForHost(brandId: string): Promise<void> {
   if (!address) return;
   // Detection: a host has registered with the bridge. Stop the poll, adopt.
   stopDesktopConnectPoll();
-  await adoptBridgeHost(address, capabilities, brandId);
+  await adoptBridgeHost(address, capabilities, brandId ?? null);
 }
 
 async function adoptBridgeHost(
   address: string,
   capabilities: AdapterCapabilities,
-  brandId: string,
+  brandId?: string | null,
 ): Promise<void> {
   // Race-safety: if the user clicked Back while the poll was in-flight, drop
   // the adoption — they no longer want it.
@@ -6301,12 +6286,12 @@ async function adoptBridgeHost(
     token: state.bridgeToken,
   });
   client = new SolanaSigningClient({ backend: walletBackend });
-  const brand = DESKTOP_BRAND_PANELS.find((b) => b.id === brandId);
+  const brand = brandId ? DESKTOP_BRAND_PANELS.find((b) => b.id === brandId) : undefined;
   const walletName = brand ? `${brand.name} (browser)` : 'Browser wallet';
   state.address = address;
   state.capabilities = capabilities;
   state.selectedWalletName = walletName;
-  state.selectedWalletLogoId = walletProviderLogoIdForName(brand?.name ?? '');
+  state.selectedWalletLogoId = brand ? walletProviderLogoIdForName(brand.name) : undefined;
   state.bridgeActive = true;
   state.bridgeAutoReconnect = true;
   state.bridgeStatus = 'Connected to local bridge via browser wallet host.';
@@ -6352,9 +6337,7 @@ function handleDesktopBack(): void {
 }
 
 function handleDesktopAwaitingRetry(): void {
-  const brandId = desktopConnect.flow.selectedBrandId;
-  if (!brandId) return;
-  handleDesktopExtensionBrandSelect(brandId);
+  openDesktopBrowserConnectPage(desktopConnect.flow.selectedBrandId);
 }
 
 function bindDesktopConnectFlow(): void {
@@ -6372,11 +6355,6 @@ function bindDesktopConnectFlow(): void {
         if (m === 'extension' || m === 'qr' || m === 'ledger') {
           handleDesktopMethodSelect(m);
         }
-        return;
-      }
-      if (raw === 'pick-extension-brand') {
-        const brandId = el.dataset.desktopBrandId;
-        if (brandId) handleDesktopExtensionBrandSelect(brandId);
         return;
       }
       if (raw === 'pick-qr-wallet') {
@@ -7145,9 +7123,15 @@ function cliFocusedShell(args: { title: string; subtitle?: string; subtitleIcon?
   `;
 }
 
+function cliClientLabel(): string {
+  return cliView?.surface === 'desktop' ? 'desktop app' : 'CLI';
+}
+
 function cliReturnFooter(): string {
+  const target = cliView?.surface === 'desktop' ? 'desktop app' : 'terminal';
+  const watcher = cliView?.surface === 'desktop' ? 'desktop app' : 'CLI';
   return `
-    <p class="cli-focused-note">Return to the terminal — the CLI is watching for this change.</p>
+    <p class="cli-focused-note">Return to the ${target} — the ${watcher} is watching for this change.</p>
   `;
 }
 
@@ -7177,7 +7161,7 @@ function cliConnectView(): string {
           <span class="cli-focused-tick" aria-hidden="true">✓</span>
           <p>${isDisconnect
             ? 'Click below to disconnect this wallet from the local bridge.'
-            : 'Wallet connected to the local bridge. The CLI has picked it up.'}</p>
+            : `Wallet connected to the local bridge. The ${cliClientLabel()} has picked it up.`}</p>
         </div>
         <div class="cli-focused-actions">
           <button type="button" id="disconnect" class="danger" ${state.busy ? 'disabled' : ''}>Disconnect wallet</button>
@@ -7251,12 +7235,12 @@ function cliConnectView(): string {
       ${busyBanner}
       ${guidedStartPanel(
         'Wallet pairing',
-        'Discover, select, and authorize a wallet. The CLI will detect it.',
+        `Discover, select, and authorize a wallet. The ${cliClientLabel()} will detect it.`,
         pickerMarkup,
       )}
       ${persistenceHint}
     `,
-    footer: `<p class="cli-focused-note">Return to the terminal once the wallet is connected.</p>`,
+    footer: `<p class="cli-focused-note">Return to the ${cliView?.surface === 'desktop' ? 'desktop app' : 'terminal'} once the wallet is connected.</p>`,
   });
 }
 
@@ -40280,7 +40264,7 @@ async function bridgeOfflineDiagnosticMessage(): Promise<string> {
   return `Local approval bridge is not running at ${bridgeEndpoint}. Run ${NPM_EXEC_COMMAND}, keep that terminal open, then click Check local bridge.`;
 }
 
-function inferredWalletHostUrl(options?: { wallet?: string }): string {
+function inferredWalletHostUrl(options?: { wallet?: string; route?: '/app' | '/connect' }): string {
   const walletHint = options?.wallet?.trim();
   // Vite sets `import.meta.env.PROD` based on the build mode:
   //   - `pnpm desktop:tauri:dev` runs `vite dev`  → PROD === false → localhost
@@ -40290,17 +40274,17 @@ function inferredWalletHostUrl(options?: { wallet?: string }): string {
   const isProd = Boolean(
     (import.meta as ImportMeta & { env?: { PROD?: boolean } }).env?.PROD,
   );
-  // Both branches MUST point at the /app route — that's where `walletRail()`
-  // and the "Opening <Brand>…" splash live. Earlier the dev branch opened
-  // the root path (the marketing landing page), so the splash never rendered
-  // and the user saw a blank-feeling landing page while the wallet-standard
-  // discovery raced in the background. Always /app.
-  const base = isProd ? 'https://agentic-signer.com/app' : 'http://localhost:5174/app';
+  // The legacy brand-hint flow lands on /app for its "Opening <Brand>…"
+  // splash. Desktop browser-extension connect now reuses the dedicated
+  // /connect wallet pairing route that the CLI opens.
+  const route = options?.route ?? '/app';
+  const origin = isProd ? 'https://agentic-signer.com' : 'http://127.0.0.1:5174';
   try {
-    const url = new URL(base);
+    const url = new URL(route, origin);
     if (walletHint) url.searchParams.set('wallet', walletHint);
     return url.toString();
   } catch {
+    const base = `${origin}${route}`;
     const fallback = walletHint
       ? `${base}${base.includes('?') ? '&' : '?'}wallet=${encodeURIComponent(walletHint)}`
       : base;
@@ -48567,6 +48551,7 @@ function readLaunchParams(): {
   bridgeToken?: string;
   cliMode?: boolean;
   cliIntent?: CliIntentName;
+  cliSurface?: CliSurfaceName;
   cliActionId?: string;
   cliRequestId?: string;
   walletBrand?: string;
@@ -48587,12 +48572,14 @@ function readLaunchParams(): {
       : undefined;
   const cliActionId = params.get('actionId')?.trim() || undefined;
   const cliRequestId = params.get('requestId')?.trim() || undefined;
-  // The desktop rail passes ?wallet=<brandId> when the user picks a brand from
-  // the Discover → Browser extension method. Ignored if CLI mode is active.
+  const rawSurface = params.get('surface')?.trim();
+  const cliSurface: CliSurfaceName | undefined = rawSurface === 'desktop' ? 'desktop' : undefined;
+  // Legacy mobile/deeplink flows can pass ?wallet=<brandId> to auto-select a
+  // browser wallet on /app. Ignored if CLI mode is active.
   const walletBrand = !cliMode ? params.get('wallet')?.trim() || undefined : undefined;
-  // The desktop's Phantom/Solflare QR path embeds a pairing UUID. When the
-  // wallet-host connects, it POSTs its address to `/api/pair/<pairing>/host`
-  // and runs an inbox loop so the desktop can sign through the relay.
+  // The desktop's Phantom QR path embeds a pairing UUID. When the wallet-host
+  // connects, it POSTs its address to `/api/pair/<pairing>/host` and runs an
+  // inbox loop so the desktop can sign through the relay.
   const rawPairing = !cliMode ? params.get('pairing')?.trim() : undefined;
   const pairing =
     rawPairing && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(rawPairing)
@@ -48603,6 +48590,7 @@ function readLaunchParams(): {
     ...(bridgeToken ? { bridgeToken } : {}),
     ...(cliMode ? { cliMode } : {}),
     ...(cliIntent ? { cliIntent } : {}),
+    ...(cliSurface ? { cliSurface } : {}),
     ...(cliActionId ? { cliActionId } : {}),
     ...(cliRequestId ? { cliRequestId } : {}),
     ...(walletBrand ? { walletBrand } : {}),

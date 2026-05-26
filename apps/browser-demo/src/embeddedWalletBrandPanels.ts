@@ -1,7 +1,7 @@
 // Per-brand picker panels for the Tauri desktop app (Slice D).
 //
-// Surfaces the five non-discoverable Solana brands (Backpack / Phantom /
-// Jupiter / Solflare / Magic Eden) as expandable rows beneath the existing
+// Surfaces non-discoverable Solana wallet brands (Backpack / Phantom /
+// Jupiter / Solflare) as expandable rows beneath the existing
 // wallet picker. Each row offers three sub-actions: Scan QR (disabled until
 // Slice E ships WalletConnect), Import recovery phrase (drives Slice C's
 // overlay), and an opt-in external-browser fallback.
@@ -24,7 +24,6 @@ export const DESKTOP_BRAND_PANELS: readonly DesktopBrandDescriptor[] = [
   { id: 'phantom', name: 'Phantom', logoId: 'phantom' },
   { id: 'jupiter', name: 'Jupiter', logoId: 'jupiter' },
   { id: 'solflare', name: 'Solflare', logoId: 'solflare' },
-  { id: 'magicEden', name: 'Magic Eden', logoId: 'magiceden' },
 ];
 
 export interface DesktopBrandPanelsState {

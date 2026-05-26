@@ -63,7 +63,7 @@ describe('reduceDesktopBrandPanels — collapseAll', () => {
   it('collapses any expanded row', () => {
     const open = reduceDesktopBrandPanels(initialDesktopBrandPanelsState(), {
       type: 'togglePanel',
-      brandId: 'magicEden',
+      brandId: 'solflare',
     });
     const closed = reduceDesktopBrandPanels(open, { type: 'collapseAll' });
     expect(closed.expanded).toBeNull();
@@ -112,12 +112,14 @@ describe('desktopBrandPanelsHtml', () => {
     expect(html).toMatch(/<input[^>]*data-desktop-brand-pref="external-browser"[^>]*checked/);
   });
 
-  it('renders all five default brand rows', () => {
+  it('renders all default brand rows without discontinued wallet options', () => {
     const html = desktopBrandPanelsHtml({ state: collapsed });
     for (const brand of DESKTOP_BRAND_PANELS) {
       expect(html).toContain(`data-desktop-brand-id="${brand.id}"`);
       expect(html).toContain(brand.name);
     }
+    expect(html).not.toContain('Magic Eden');
+    expect(html).not.toContain('data-desktop-brand-id="magicEden"');
   });
 
   it('keeps all rows collapsed when no expanded id is set', () => {
@@ -181,9 +183,9 @@ describe('desktopBrandPanelsHtml', () => {
   });
 
   it('marks the expanded row with aria-expanded="true"', () => {
-    const expanded: DesktopBrandPanelsState = { ...collapsed, expanded: 'magicEden' };
+    const expanded: DesktopBrandPanelsState = { ...collapsed, expanded: 'solflare' };
     const html = desktopBrandPanelsHtml({ state: expanded });
-    expect(html).toMatch(/data-desktop-brand-id="magicEden"[^>]*aria-expanded="true"/);
+    expect(html).toMatch(/data-desktop-brand-id="solflare"[^>]*aria-expanded="true"/);
     expect(html).toMatch(/data-desktop-brand-id="backpack"[^>]*aria-expanded="false"/);
   });
 
