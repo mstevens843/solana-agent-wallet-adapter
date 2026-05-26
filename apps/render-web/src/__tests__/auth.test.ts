@@ -193,6 +193,138 @@ describe('render web cloud wallet auth', () => {
     });
   });
 
+  it('accepts the tauri://localhost prod webview origin for desktop preflight', async () => {
+    // Regression: the Tauri 2 desktop shell on macOS / Linux loads from the
+    // `tauri://localhost` custom scheme. Without this entry in the CORS
+    // allowlist, /api/swap/order + /api/swap/execute preflight 403, the
+    // browser blocks the POST, and `hostedSwapRequest` raises
+    // "Swap execution is not reachable from this browser." for every QR
+    // wallet (Phantom QR, Solflare QR, Reown Backpack, Reown Jupiter).
+    await withServer(async (port) => {
+      const response = await requestRaw(port, '/api/swap/execute', 'OPTIONS', undefined, {
+        origin: 'tauri://localhost',
+        'x-agentic-client': 'desktop-bundled',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'authorization, content-type, x-agentic-client',
+      });
+
+      expect(response.status).toBe(204);
+      expect(response.headers['access-control-allow-origin']).toBe('tauri://localhost');
+    });
+  });
+
+  it('accepts the Tauri 2 Windows http://tauri.localhost prod origin', async () => {
+    await withServer(async (port) => {
+      const response = await requestRaw(port, '/api/swap/execute', 'OPTIONS', undefined, {
+        origin: 'http://tauri.localhost',
+        'x-agentic-client': 'desktop-bundled',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'authorization, content-type, x-agentic-client',
+      });
+
+      expect(response.status).toBe(204);
+      expect(response.headers['access-control-allow-origin']).toBe('http://tauri.localhost');
+    });
+  });
+
+  it('accepts the Tauri dev Vite origin outside production', async () => {
+    // `pnpm --filter @solana-agent-wallet-adapter/desktop-shell tauri:dev`
+    // loads http://127.0.0.1:5174 inside the webview (per
+    // apps/desktop-shell/src-tauri/tauri.conf.json `devUrl`). Local dev must
+    // be allowed against a local Render server.
+    await withServer(async (port) => {
+      const response = await requestRaw(port, '/api/swap/order', 'OPTIONS', undefined, {
+        origin: 'http://127.0.0.1:5174',
+        'x-agentic-client': 'desktop-bundled',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'authorization, content-type, x-agentic-client',
+      });
+
+      expect(response.status).toBe(204);
+      expect(response.headers['access-control-allow-origin']).toBe('http://127.0.0.1:5174');
+    });
+  });
+
+  it('rejects the Tauri dev Vite origin in production', async () => {
+    // Defense in depth — the closed-allowlist invariant for prod Render must
+    // not trust an arbitrary local server on port 5174.
+    await withEnv({ RENDER: 'true' }, async () => {
+      await withServer(async (port) => {
+        const response = await requestRaw(port, '/api/swap/execute', 'OPTIONS', undefined, {
+          origin: 'http://127.0.0.1:5174',
+          'x-agentic-client': 'desktop-bundled',
+          'access-control-request-method': 'POST',
+          'access-control-request-headers': 'authorization, content-type, x-agentic-client',
+        });
+
+        expect(response.status).toBe(403);
+        expect(response.body.error).toBe('cors_origin_not_allowed');
+      });
+    });
+  });
+
+  it('accepts Origin: null when the request is desktop-bundled', async () => {
+    // Chromium emits `Origin: null` for some `tauri://` custom-scheme
+    // requests; without this fallback the signed macOS bundle would 403 even
+    // after the scheme itself is allowlisted.
+    await withServer(async (port) => {
+      const response = await requestRaw(port, '/api/swap/execute', 'OPTIONS', undefined, {
+        origin: 'null',
+        'x-agentic-client': 'desktop-bundled',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'authorization, content-type, x-agentic-client',
+      });
+
+      expect(response.status).toBe(204);
+      expect(response.headers['access-control-allow-origin']).toBe('null');
+    });
+  });
+
+  it('rejects Origin: null without the desktop-bundled client header', async () => {
+    await withServer(async (port) => {
+      const response = await requestRaw(port, '/api/swap/execute', 'OPTIONS', undefined, {
+        origin: 'null',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'authorization, content-type',
+      });
+
+      expect(response.status).toBe(403);
+      expect(response.body.error).toBe('cors_origin_not_allowed');
+    });
+  });
+
+  it('returns a desktop bearer session for the bundled Tauri origin', async () => {
+    // Without this the Tauri shell can sign in cookie-style but never receives
+    // a Bearer to authenticate subsequent cross-origin hosted calls (/api/plans,
+    // /api/audit, BYOK connector keys). See router.ts shouldReturnBearerSession.
+    await withServer(async (port) => {
+      const headers = {
+        origin: 'tauri://localhost',
+        'x-agentic-client': 'desktop-bundled',
+      };
+      const wallet = createTestWallet();
+      const nonce = await postJson(port, '/api/auth/nonce', {
+        walletAddress: wallet.walletAddress,
+      }, headers);
+      const verify = await postJson(port, '/api/auth/verify-wallet', signedVerifyBody(wallet, nonce.body), headers);
+
+      expect(verify.status).toBe(200);
+      expect(verify.body.sessionToken).toEqual(expect.any(String));
+      expect(String(verify.headers['access-control-allow-origin'])).toBe('tauri://localhost');
+
+      const session = await getJson(port, '/api/session', {
+        origin: 'tauri://localhost',
+        'x-agentic-client': 'desktop-bundled',
+        authorization: `Bearer ${String(verify.body.sessionToken)}`,
+      });
+      expect(session.status).toBe(200);
+      expect(session.body).toMatchObject({
+        signedIn: true,
+        user: { walletAddress: wallet.walletAddress },
+      });
+    });
+  });
+
   it('keeps legacy minimal verify payloads working for the current browser client', async () => {
     await withServer(async (port) => {
       const wallet = createTestWallet();

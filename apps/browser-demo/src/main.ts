@@ -32442,13 +32442,13 @@ function cloudRequestUrl(path: string): string {
   if (!cloudApiUsesRemoteOrigin()) return path;
   const trimmed = path.trim();
   if (!trimmed.startsWith('/api/')) {
-    throw new Error('Android Agentic Cloud requests must target /api/ paths.');
+    throw new Error('Agentic Cloud requests from the bundled app must target /api/ paths.');
   }
   return new URL(trimmed, `${androidCloudApiBaseUrl().replace(/\/+$/, '')}/`).toString();
 }
 
 function cloudApiUsesRemoteOrigin(): boolean {
-  return IS_ANDROID_APP && Boolean(androidCloudApiBaseUrl());
+  return (IS_ANDROID_APP || IS_TAURI_APP) && Boolean(androidCloudApiBaseUrl());
 }
 
 function cloudApiOriginLabel(): string {

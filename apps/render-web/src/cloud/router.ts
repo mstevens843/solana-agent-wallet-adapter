@@ -161,6 +161,22 @@ const HOSTED_AI_RATE_LIMIT_MAX_ATTEMPTS = 30;
 // [runWithHostedAiTimeout]. Emits 504 on timeout.
 const HOSTED_AI_TIMEOUT_MS = 45_000;
 const DEFAULT_ANDROID_CLOUD_ORIGIN = 'https://agentic.local';
+// Tauri 2 webview origins. macOS / Linux use the `tauri://localhost` custom
+// scheme; Windows (WebView2) uses `http://tauri.localhost`. `https://tauri.localhost`
+// covers the Tauri 2 builds that opt into the secure variant and matches the
+// `connect-src` entry in apps/desktop-shell/src-tauri/tauri.conf.json.
+const DEFAULT_DESKTOP_CLOUD_ORIGINS = [
+  'tauri://localhost',
+  'http://tauri.localhost',
+  'https://tauri.localhost',
+];
+// Vite dev server bound by apps/browser-demo/vite.config.ts (port 5174). Only
+// included outside production so the live Render API does not trust an
+// arbitrary local server on the same port.
+const DEFAULT_DESKTOP_DEV_CLOUD_ORIGINS = [
+  'http://127.0.0.1:5174',
+  'http://localhost:5174',
+];
 const CORS_ALLOWED_HEADERS = 'authorization, content-type, x-agentic-client';
 const CORS_ALLOWED_METHODS = 'GET, POST, PATCH, PUT, DELETE, OPTIONS';
 
@@ -602,8 +618,9 @@ export function createDefaultWorkflowStore(): WorkflowStore {
 function enforceSameOrigin(req: IncomingMessage, url: URL): void {
   if (!isStateChangingMethod(req.method)) return;
   const origin = firstHeaderValue(req.headers.origin);
+  const client = firstHeaderValue(req.headers['x-agentic-client'])?.toLowerCase();
   if (origin) {
-    if (isAllowedCloudCorsOrigin(origin)) return;
+    if (isAllowedRequestOrigin(origin, client)) return;
     assertSameHost(origin, requestDomain(req, url));
     return;
   }
@@ -617,8 +634,13 @@ function enforceSameOrigin(req: IncomingMessage, url: URL): void {
 
 function applyCloudCorsHeaders(req: IncomingMessage, res: ServerResponse): void {
   const origin = firstHeaderValue(req.headers.origin);
-  if (!origin || !isAllowedCloudCorsOrigin(origin)) return;
-  res.setHeader('access-control-allow-origin', normalizeOrigin(origin));
+  const client = firstHeaderValue(req.headers['x-agentic-client'])?.toLowerCase();
+  if (!origin || !isAllowedRequestOrigin(origin, client)) return;
+  // For opaque `null` origins (custom-scheme Tauri webviews) echo `null` back
+  // so Chromium's CORS check passes. Normal allowlisted origins get the
+  // canonical scheme://host form.
+  const ackOrigin = origin === 'null' ? 'null' : normalizeOrigin(origin);
+  res.setHeader('access-control-allow-origin', ackOrigin);
   res.setHeader('access-control-allow-methods', CORS_ALLOWED_METHODS);
   res.setHeader('access-control-allow-headers', CORS_ALLOWED_HEADERS);
   res.setHeader('access-control-max-age', '600');
@@ -627,7 +649,8 @@ function applyCloudCorsHeaders(req: IncomingMessage, res: ServerResponse): void 
 
 function handleCloudCorsPreflight(req: IncomingMessage, res: ServerResponse): void {
   const origin = firstHeaderValue(req.headers.origin);
-  if (!origin || !isAllowedCloudCorsOrigin(origin)) {
+  const client = firstHeaderValue(req.headers['x-agentic-client'])?.toLowerCase();
+  if (!origin || !isAllowedRequestOrigin(origin, client)) {
     writeJson(res, 403, { error: 'cors_origin_not_allowed' });
     return;
   }
@@ -641,9 +664,23 @@ function isAllowedCloudCorsOrigin(origin: string): boolean {
   return configuredCloudCorsOrigins().has(normalized);
 }
 
+// Chromium emits `Origin: null` for cross-origin requests issued from custom
+// schemes (e.g. `tauri://localhost` on macOS / Linux). We accept that opaque
+// origin only when the client identifies itself as a desktop bundle, matching
+// the trust model we already apply to allowlisted-origin desktop-bundled
+// callers. The CLI path stays origin-less by design (no header check needed
+// here — shouldReturnBearerSession handles cli-bundled directly).
+function isAllowedRequestOrigin(origin: string | undefined, client: string | undefined): boolean {
+  if (origin && isAllowedCloudCorsOrigin(origin)) return true;
+  if (origin === 'null' && client === 'desktop-bundled') return true;
+  return false;
+}
+
 function configuredCloudCorsOrigins(): Set<string> {
   const configured = [
     DEFAULT_ANDROID_CLOUD_ORIGIN,
+    ...DEFAULT_DESKTOP_CLOUD_ORIGINS,
+    ...(isProductionRequest() ? [] : DEFAULT_DESKTOP_DEV_CLOUD_ORIGINS),
     ...(process.env.AGENTIC_ANDROID_WEBVIEW_ORIGIN ? [process.env.AGENTIC_ANDROID_WEBVIEW_ORIGIN] : []),
     ...String(process.env.AGENTIC_CLOUD_CORS_ORIGINS ?? '')
       .split(',')
@@ -655,7 +692,18 @@ function configuredCloudCorsOrigins(): Set<string> {
 
 function normalizeOrigin(origin: string): string {
   try {
-    return new URL(origin).origin.toLowerCase();
+    const parsed = new URL(origin);
+    // For non-special schemes (tauri:, app:, etc.) URL.origin serializes to
+    // the literal string "null" per WHATWG. That would collapse every
+    // custom-scheme webview into the same opaque bucket and break the
+    // allowlist (tauri://localhost would compare equal to any other opaque
+    // origin). Preserve the literal scheme://host for these so the
+    // allowlist can distinguish, and so the CORS ACAO echo matches what
+    // the browser actually sent.
+    if (parsed.origin === 'null') {
+      return `${parsed.protocol}//${parsed.host}`.toLowerCase();
+    }
+    return parsed.origin.toLowerCase();
   } catch {
     return '';
   }
@@ -3390,12 +3438,20 @@ function shouldReturnBearerSession(req: IncomingMessage): boolean {
   const origin = firstHeaderValue(req.headers.origin);
   const client = firstHeaderValue(req.headers['x-agentic-client'])?.toLowerCase();
   // android-bundled — Android TWA + loopback-cors. Requires CORS-allowed Origin.
+  // desktop-bundled — Tauri 2 webview. Same trust model as android-bundled:
+  //   the bearer is only handed back when the request originates from a
+  //   webview origin we explicitly recognize (tauri://localhost,
+  //   http://tauri.localhost, https://tauri.localhost, or the dev Vite origin
+  //   when running locally). Chromium emits `Origin: null` for some custom-
+  //   scheme requests; isAllowedRequestOrigin handles that fallback when the
+  //   client identifier matches a desktop bundle.
   // cli-bundled — Solana Agent Wallet CLI loopback callback. No Origin header is
   //   sent because the request originates from a CLI process; accept the client
   //   identifier alone because the CLI is local-only and the bearer is delivered
   //   straight back to the loopback receiver the caller spun up.
   if (client === 'cli-bundled') return true;
-  return client === 'android-bundled' && Boolean(origin && isAllowedCloudCorsOrigin(origin));
+  if (client !== 'android-bundled' && client !== 'desktop-bundled') return false;
+  return isAllowedRequestOrigin(origin, client);
 }
 
 function isProductionRequest(): boolean {
