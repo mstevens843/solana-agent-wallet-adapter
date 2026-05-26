@@ -30,7 +30,7 @@ export async function maybeEnhanceWithAi(
   naturalDescription: string,
 ): Promise<EnhanceResult | null> {
   const yes = await confirm({
-    message: 'Enhance with AI before queueing?',
+    message: 'Enhance with AI before saving to inbox?',
     default: false,
   });
   if (!yes) return null;

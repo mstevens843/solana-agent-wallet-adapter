@@ -11,16 +11,24 @@ import {
 } from '../agentPlans.js';
 
 describe('shared agent plan helpers', () => {
-  it('infers and parameterizes SOL transfers from natural language', () => {
+  it('infers and parameterizes token transfers from natural language', () => {
     const recipient = '9xQeWvG816bUx9EPfU37Fv8qvYfVhbUvv3RCq7JtZVw9';
     const template = templateById(inferTemplateIdForPrompt(`send 0.25 SOL to ${recipient}`));
     const parameters = inferredTemplateParameters(template, `send 0.25 SOL to ${recipient}`);
     const plan = buildTemplatePlan(template, parameters, 'template');
 
-    expect(template.id).toBe('transfer-sol');
-    expect(parameters).toMatchObject({ amount: '0.25', recipient });
-    expect(plan.actionType).toBe('transfer_sol');
+    expect(template.id).toBe('send-tokens');
+    expect(parameters).toMatchObject({ amount: '0.25', recipient, token: 'SOL' });
+    expect(plan.actionType).toBe('transfer_spl');
     expect(canQueueAgentPlan(plan)).toBe(true);
+  });
+
+  it('resolves legacy transfer-sol templateId to the unified Send Tokens template', () => {
+    const sol = templateById('transfer-sol');
+    const spl = templateById('transfer-token');
+
+    expect(sol.id).toBe('send-tokens');
+    expect(spl.id).toBe('send-tokens');
   });
 
   it('keeps swap execution tokens structured while repairing stale prose', () => {

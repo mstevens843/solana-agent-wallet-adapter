@@ -102,6 +102,7 @@ const ALLOWED_AI_HOSTS: ReadonlySet<string> = new Set([
   'api.anthropic.com',
   'api.x.ai',
   'generativelanguage.googleapis.com',
+  'openrouter.ai',
 ]);
 
 const SOLANA_PUBKEY_LIKE = /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/g;
@@ -132,8 +133,8 @@ const WELL_KNOWN_PUBKEYS: ReadonlySet<string> = new Set([
   'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',
 ]);
 
-function assertAiBaseUrlAllowed(baseUrl: string): void {
-  if (process.env.AGENTIC_AI_ALLOW_CUSTOM_BASE_URL === '1') return;
+function assertAiBaseUrlAllowed(baseUrl: string, allowCustomBaseUrl = false): void {
+  if (allowCustomBaseUrl || process.env.AGENTIC_AI_ALLOW_CUSTOM_BASE_URL === '1') return;
   let host: string;
   try {
     host = new URL(baseUrl).hostname.toLowerCase();
@@ -241,6 +242,7 @@ export class BridgeAiPlanner {
     provider?: string;
     apiFormat?: string;
     clear?: boolean;
+    allowCustomBaseUrl?: boolean;
   }): AiStatus {
     if (input.clear) {
       this.#sessionConfig = null;
@@ -256,7 +258,7 @@ export class BridgeAiPlanner {
     const provider = input.provider?.trim() || currentConfig?.provider || 'openai-compatible';
     const apiFormat = normalizeApiFormat(input.apiFormat ?? currentConfig?.apiFormat, provider);
     const baseUrl = normalizeBaseUrl(input.baseUrl || currentConfig?.baseUrl || defaultBaseUrl(apiFormat), apiFormat);
-    assertAiBaseUrlAllowed(baseUrl);
+    assertAiBaseUrlAllowed(baseUrl, input.allowCustomBaseUrl === true);
     this.#sessionConfig = {
       provider,
       apiFormat,

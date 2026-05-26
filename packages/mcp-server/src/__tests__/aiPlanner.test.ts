@@ -196,6 +196,33 @@ describe('BridgeAiPlanner', () => {
     await expect(planner.generatePlan(request)).rejects.toThrow('AI provider returned HTTP 503. That means the provider is temporarily unavailable or overloaded.');
   });
 
+  it('allows OpenRouter by default and custom gateways only with session opt-in', () => {
+    vi.stubEnv('AGENTIC_AI_ALLOW_CUSTOM_BASE_URL', '0');
+    const planner = new BridgeAiPlanner();
+    expect(() => planner.setSessionKey({
+      apiKey: 'sk-test-openrouter',
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openrouter/auto',
+    })).not.toThrow();
+    expect(() => planner.setSessionKey({
+      apiKey: 'sk-test-custom',
+      provider: 'custom-openai-compatible',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://gateway.example/v1',
+      model: 'gateway-model',
+    })).toThrow('AI base URL host "gateway.example" is not in the allowlist');
+    expect(() => planner.setSessionKey({
+      apiKey: 'sk-test-custom',
+      provider: 'custom-openai-compatible',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://gateway.example/v1',
+      model: 'gateway-model',
+      allowCustomBaseUrl: true,
+    })).not.toThrow();
+  });
+
   it('rejects non-ASCII bridge session keys before provider fetch can throw a ByteString error', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);

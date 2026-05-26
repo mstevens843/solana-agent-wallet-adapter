@@ -3,6 +3,7 @@
 // `promptRequired()`, `confirm()` helpers in src/index.ts stay for existing
 // command handlers — only new flows go through here.
 
+import * as readline from 'node:readline';
 import {
   select as inquirerSelect,
   input as inquirerInput,
@@ -119,6 +120,79 @@ export async function select<T>(opts: {
     choices: opts.choices,
     ...(opts.default !== undefined ? { default: opts.default } : {}),
     pageSize: opts.pageSize ?? 12,
+  });
+}
+
+export async function rowSelect<T>(opts: {
+  message: string;
+  choices: Array<SelectChoice<T>>;
+  default?: T;
+}): Promise<T> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY || opts.choices.length <= 1) {
+    return select({
+      message: opts.message,
+      choices: opts.choices,
+      ...(opts.default !== undefined ? { default: opts.default } : {}),
+    });
+  }
+
+  const defaultIndex = opts.default === undefined
+    ? 0
+    : Math.max(0, opts.choices.findIndex((choice) => Object.is(choice.value, opts.default)));
+  let index = defaultIndex < opts.choices.length ? defaultIndex : 0;
+  const stdin = process.stdin;
+  const wasRaw = stdin.isRaw;
+
+  readline.emitKeypressEvents(stdin);
+  stdin.setRawMode(true);
+
+  return new Promise<T>((resolve, reject) => {
+    const render = (): void => {
+      const choice = opts.choices[index]!;
+      const detail = choice.description ? ` - ${choice.description}` : '';
+      process.stdout.write(
+        `\r\x1b[2K? ${opts.message} ${ANSI.gray}<- ->${ANSI.reset} ${ANSI.bold}${choice.name}${ANSI.reset} ${ANSI.gray}(${index + 1}/${opts.choices.length}${detail})${ANSI.reset}`,
+      );
+    };
+    const cleanup = (): void => {
+      stdin.off('keypress', onKeypress);
+      stdin.setRawMode(wasRaw);
+      process.stdout.write('\n');
+    };
+    const abort = (): void => {
+      cleanup();
+      const err = new Error('Prompt aborted.');
+      err.name = 'AbortPromptError';
+      reject(err);
+    };
+    const onKeypress = (_value: string, key: readline.Key): void => {
+      if (key.ctrl && key.name === 'c') {
+        abort();
+        return;
+      }
+      if (key.name === 'escape') {
+        abort();
+        return;
+      }
+      if (key.name === 'return' || key.name === 'enter') {
+        const choice = opts.choices[index]!;
+        cleanup();
+        resolve(choice.value);
+        return;
+      }
+      if (key.name === 'right' || key.name === 'down' || key.name === 'tab') {
+        index = (index + 1) % opts.choices.length;
+        render();
+        return;
+      }
+      if (key.name === 'left' || key.name === 'up') {
+        index = (index + opts.choices.length - 1) % opts.choices.length;
+        render();
+      }
+    };
+
+    stdin.on('keypress', onKeypress);
+    render();
   });
 }
 

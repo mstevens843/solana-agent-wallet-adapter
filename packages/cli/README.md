@@ -20,14 +20,11 @@ npm exec @solana-agent-wallet-adapter/cli -- app
 Optional AI planning is BYOK and local-first:
 
 ```sh
-export AGENTIC_AI_API_KEY=...
-export AGENTIC_AI_MODEL=gpt-5
-export AGENTIC_AI_BASE_URL=https://api.openai.com/v1
-solana-agent-wallet app
+solana-agent-wallet agent-setup
 ```
 
-The key stays in the local bridge process or your shell environment. The hosted app can draft plans through the bridge,
-but wallet approval remains separate.
+The setup flow supports OpenAI, Claude / Anthropic, Gemini, OpenRouter, and custom OpenAI-compatible gateways. It can save
+the key for Local Bridge AI or Hosted BYOK. Use `solana-agent-wallet agent-disconnect` to remove the saved agent key.
 
 ## Standalone Downloads
 
@@ -226,6 +223,7 @@ Repo mode keeps the development fallback for `apps/browser-demo` and repo-local 
 ## Troubleshooting
 
 - Run `solana-agent-wallet doctor --json` to inspect runtime paths, bridge reachability, wallet-host assets, and local health.
+- Run `solana-agent-wallet --debug` when you need startup URLs, port fallback notices, or dependency warnings while developing.
 - If port `8787` or `5174` is busy, stop the old process or pass `--bridge-url` / `--wallet-host-url` with another localhost port.
 - If no browser wallet is connected, keep the wallet host tab open, connect Phantom, Backpack, Solflare, or another Wallet Standard wallet, then click Connect bridge if prompted.
 - If `wallet-host serve` reports missing assets, reinstall the npm package or rebuild locally with `pnpm -F @solana-agent-wallet-adapter/cli build`.
@@ -244,7 +242,8 @@ Repo mode keeps the development fallback for `apps/browser-demo` and repo-local 
 | `AGENT_WALLET_WALLET_HOST_URL` | Browser wallet host base URL. Default `http://127.0.0.1:5174`. |
 | `AGENT_WALLET_HOME` | Runtime dir override (where `session.json`, `prepared-actions.json`, etc. live). Default `~/.solana-agent-wallet`. |
 | `AGENT_WALLET_SKIP_OPEN` | When `1`, suppresses `open`/`xdg-open` calls (useful in containers + tests). |
-| `AGENTIC_AI_API_KEY` / `AGENTIC_AI_MODEL` / `AGENTIC_AI_BASE_URL` | Optional local/BYOK AI override for bridge development. Normal CLI users use Agentic hosted AI after sign-in. |
+| `AGENT_WALLET_DEBUG` | When `1`, shows startup diagnostics and dependency warnings. Same effect as `--debug`. |
+| `AGENTIC_AI_API_KEY` / `AGENTIC_AI_PROVIDER` / `AGENTIC_AI_MODEL` / `AGENTIC_AI_BASE_URL` / `AGENTIC_AI_PATH` | Optional BYOK AI config written by `agent-setup`. `AGENTIC_AI_PATH` is `bridge` or `hosted-byok`. |
 | `AGENTIC_RENDER_WEB_COOKIE` / `AGENTIC_CLOUD_COOKIE` / `AGENTIC_SESSION_COOKIE` | Legacy cookie-based auth for render-web (pre-bearer). Bearer takes precedence. |
 | `AGENTIC_CLI_BUNDLE_BUDGET_MB` | Build-time bundle size budget (default 40). Used by `scripts/bundle-size-report.mjs`. |
 | `NO_COLOR` | Disables ANSI colours (also see `--no-color`). |

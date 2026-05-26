@@ -5,8 +5,12 @@ import type { AiAdvice } from '../forms/aiEnhance.js';
 
 const STABLES = new Set(['USDC', 'USDT', 'PYUSD', 'USDH', 'DAI']);
 
+// USDC has 6 decimals — used by extractUsdFromQuote's base-unit fallback when
+// the backend response is missing the pre-computed USD floats. The swap quote
+// is always requested with outputToken: 'USDC' (see estimateUsdValue below).
+const USDC_DECIMALS = 6;
+
 // Threshold above which mainnet transactions get an extra confirmation step.
-// $50 covers most casual sends without nagging; chunky transactions hit the gate.
 // Override per-process via AGENTIC_MAINNET_THRESHOLD_USD (positive number).
 function getMainnetThreshold(): number {
   const raw = process.env.AGENTIC_MAINNET_THRESHOLD_USD;
@@ -65,7 +69,7 @@ export async function confirmHighStakes(
   console.log(kv([
     ['Summary', summary],
     ['Amount', `${estimate.amount} ${estimate.token}`],
-    ['USD value', `${badge(`~ $${usd.toFixed(2)}`, 'warn')}  (mainnet threshold $${getMainnetThreshold()})`],
+    ['USD value', `${badge(`~ $${usd.toFixed(2)}`, 'warn')}  (>$${getMainnetThreshold()} requires confirm)`],
   ]));
   console.log(divider());
   return confirm({
@@ -89,6 +93,26 @@ export function isMainnetCluster(cluster?: string | null): boolean {
   return lower === 'mainnet' || lower.startsWith('mainnet-') || lower.startsWith('mainnet.');
 }
 
+// Pulls a USD float out of a /bridge/action/swap-quote response. Prefer the
+// backend's pre-computed fields (swapUsdValue / inUsdValue / outUsdValue) which
+// orderSummary() exposes from Jupiter v6; fall back to outAmount scaled by
+// USDC decimals only when those are missing. Treating raw outAmount as USD is
+// the bug this guards against — Jupiter returns base units (e.g. 843621 for
+// 0.843621 USDC), not dollars.
+export function extractUsdFromQuote(quote: Record<string, unknown>): number | null {
+  const usdField = quote['swapUsdValue'] ?? quote['inUsdValue'] ?? quote['outUsdValue'];
+  if (typeof usdField === 'string' || typeof usdField === 'number') {
+    const n = Number(usdField);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  const out = quote['outAmount'] ?? quote['outputAmount'] ?? quote['expectedOutput'];
+  if (typeof out === 'string' || typeof out === 'number') {
+    const n = Number(out) / 10 ** USDC_DECIMALS;
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  }
+  return null;
+}
+
 // Best-effort: returns USD-equivalent, or null if pricing failed.
 // Stables → direct; everything else → a Jupiter quote to USDC via the bridge.
 async function estimateUsdValue(options: GlobalOptions, estimate: QueueEstimate): Promise<number | null> {
@@ -106,12 +130,7 @@ async function estimateUsdValue(options: GlobalOptions, estimate: QueueEstimate)
         outputToken: 'USDC',
       }),
     });
-    const out = quote.outAmount ?? quote.outputAmount ?? quote.expectedOutput;
-    if (typeof out === 'string' || typeof out === 'number') {
-      const n = Number(out);
-      return Number.isFinite(n) ? n : null;
-    }
-    return null;
+    return extractUsdFromQuote(quote);
   } catch {
     return null;
   }
@@ -123,11 +142,11 @@ export function estimateFromDraft(draft: unknown): QueueEstimate | null {
   if (!draft || typeof draft !== 'object') return null;
   const d = draft as Record<string, unknown>;
 
-  // sendSol — { amountSol, recipient, note }
+  // Legacy sendSol draft shape — { amountSol, recipient, note }
   if (typeof d['amountSol'] === 'string') {
     return { amount: d['amountSol'] as string, token: 'SOL' };
   }
-  // sendSpl — { token, amount, recipient }
+  // sendTokens / sendSpl — { token, amount, recipient, note? }
   if (typeof d['token'] === 'string' && typeof d['amount'] === 'string') {
     return { amount: d['amount'] as string, token: d['token'] as string };
   }

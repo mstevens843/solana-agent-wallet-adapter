@@ -37,6 +37,11 @@ export interface WorkspaceSummary {
   localAvailable: boolean;
 }
 
+// Keep the workspace summary snappy in the REPL. Any single upstream that
+// takes longer than this is treated as "unavailable" so /inbox and /sign-in
+// never freeze the prompt waiting on a slow endpoint.
+const SUMMARY_CALL_TIMEOUT_MS = 4_000;
+
 export async function loadWorkspaceSummary(options: GlobalOptions): Promise<WorkspaceSummary> {
   const [
     localActions,
@@ -48,23 +53,23 @@ export async function loadWorkspaceSummary(options: GlobalOptions): Promise<Work
     cloudCompleted,
     cloudConnectors,
   ] = await Promise.all([
-    safe(bridgeRequest<{ actions?: PreparedActionLike[] }>(options, '/bridge/prepared-actions')),
-    safe(bridgeRequest<{ recurringPayments?: RecurringLike[] }>(options, '/bridge/recurring-payments')),
-    safe(bridgeRequest<{ receipts?: CompletedLike[] }>(options, '/bridge/receipts')),
-    safe(bridgeRequest<{ artifacts?: ArtifactLike[] }>(options, '/bridge/lab-artifacts')),
-    safe(renderWebRequest<{ approvals?: PreparedActionLike[] }>(options, '/api/approvals', undefined, {
+    safeWithTimeout(bridgeRequest<{ actions?: PreparedActionLike[] }>(options, '/bridge/prepared-actions')),
+    safeWithTimeout(bridgeRequest<{ recurringPayments?: RecurringLike[] }>(options, '/bridge/recurring-payments')),
+    safeWithTimeout(bridgeRequest<{ receipts?: CompletedLike[] }>(options, '/bridge/receipts')),
+    safeWithTimeout(bridgeRequest<{ artifacts?: ArtifactLike[] }>(options, '/bridge/lab-artifacts')),
+    safeWithTimeout(renderWebRequest<{ approvals?: PreparedActionLike[] }>(options, '/api/approvals', undefined, {
       label: 'Render-web approvals',
       requireAuth: true,
     })),
-    safe(renderWebRequest<{ schedules?: RecurringLike[]; recurringPayments?: RecurringLike[] }>(options, '/api/recurring', undefined, {
+    safeWithTimeout(renderWebRequest<{ schedules?: RecurringLike[]; recurringPayments?: RecurringLike[] }>(options, '/api/recurring', undefined, {
       label: 'Render-web recurring',
       requireAuth: true,
     })),
-    safe(renderWebRequest<{ completed?: CompletedLike[]; items?: CompletedLike[] }>(options, '/api/completed', undefined, {
+    safeWithTimeout(renderWebRequest<{ completed?: CompletedLike[]; items?: CompletedLike[] }>(options, '/api/completed', undefined, {
       label: 'Render-web completed',
       requireAuth: true,
     })),
-    safe(renderWebRequest<PreferencesResponse | Record<string, unknown>>(options, '/api/preferences/protocol-connectors', undefined, {
+    safeWithTimeout(renderWebRequest<PreferencesResponse | Record<string, unknown>>(options, '/api/preferences/protocol-connectors', undefined, {
       label: 'Render-web preferences',
       requireAuth: true,
     })),
@@ -167,10 +172,16 @@ function countConnectorsEnabled(payload: Record<string, unknown>): number {
   return count;
 }
 
-async function safe<T>(promise: Promise<T>): Promise<T | null> {
+async function safeWithTimeout<T>(promise: Promise<T>): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await promise;
-  } catch {
-    return null;
+    return await Promise.race<T | null>([
+      promise.catch(() => null),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), SUMMARY_CALL_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }

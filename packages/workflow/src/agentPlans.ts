@@ -160,16 +160,11 @@ export const SHARED_AGENT_PLAN_SAFEGUARDS = [
 ];
 
 export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
-  template('payments', 'transfer-sol', 'Send SOL', 'Prepare a SOL payment with recipient, amount, memo, and wallet approval.', 'transfer_sol', 'medium', [
+  template('payments', 'send-tokens', 'Send Tokens', 'Prepare a token payment with recipient, amount, memo, and wallet approval. Sends native SOL or any SPL token.', 'transfer_spl', 'medium', [
+    selectField('token', 'Token', ['SOL', 'USDC', 'USDT', 'JUP', 'BONK', 'WIF', 'PYUSD'], 'SOL'),
     field('recipient', 'Recipient address', 'Recipient public key', '', true),
-    field('amount', 'Amount SOL', '0.01', '0.01', true),
-    field('memo', 'Memo / reason', 'Invoice, friend payment, reimbursement', 'User-approved SOL payment'),
-  ]),
-  template('payments', 'transfer-token', 'Send SPL token', 'Prepare a token transfer for USDC, BONK, JUP, or any configured SPL token.', 'transfer_spl', 'medium', [
-    selectField('token', 'Token', ['USDC', 'SOL', 'JUP', 'BONK', 'WIF', 'PYUSD'], 'USDC'),
-    field('recipient', 'Recipient address', 'Recipient public key', '', true),
-    field('amount', 'Token amount', '10', '10', true),
-    field('memo', 'Memo / reason', 'Payment reason', 'User-approved token payment'),
+    field('amount', 'Amount', '0.01', '0.01', true),
+    field('memo', 'Memo / reason', 'Invoice, friend payment, reimbursement', 'User-approved payment'),
   ]),
   template('trading', 'swap', 'Swap tokens', 'Prepare a DeFi swap review with explicit input, output, amount, protocol route, and slippage cap.', 'swap', 'medium', [
     selectField('inputToken', 'Input token', ['SOL', 'USDC', 'JUP', 'BONK', 'WIF', 'PYUSD'], 'SOL'),
@@ -204,8 +199,14 @@ export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
   ]),
 ];
 
+const LEGACY_TEMPLATE_ID_ALIASES: Record<string, string> = {
+  'transfer-sol': 'send-tokens',
+  'transfer-token': 'send-tokens',
+};
+
 export function templateById(id: string): AgentPlanTemplate {
-  return AGENT_PLAN_TEMPLATES.find((templateEntry) => templateEntry.id === id) ?? AGENT_PLAN_TEMPLATES[0]!;
+  const resolved = LEGACY_TEMPLATE_ID_ALIASES[id] ?? id;
+  return AGENT_PLAN_TEMPLATES.find((templateEntry) => templateEntry.id === resolved) ?? AGENT_PLAN_TEMPLATES[0]!;
 }
 
 export function defaultTemplateFieldValues(templateEntry: AgentPlanTemplate): Record<string, string> {
@@ -223,8 +224,7 @@ export function inferTemplateIdForPrompt(prompt: string, fallbackTemplateId = 'c
   if (/\b(?:swap|trade|exchange|convert)\b/.test(text)) return 'swap';
   if (/\b(?:send|pay|transfer)\b/.test(text)) {
     const amountToken = amountTokenFromPrompt(prompt);
-    if (amountToken?.token.toUpperCase() === 'SOL') return 'transfer-sol';
-    return amountToken ? 'transfer-token' : fallbackTemplateId;
+    return amountToken ? 'send-tokens' : fallbackTemplateId;
   }
   return fallbackTemplateId;
 }
@@ -249,11 +249,7 @@ export function inferredTemplateParameters(
       if (swap.outputToken) next.outputToken = swap.outputToken;
       if (swap.amount) next.amount = swap.amount;
       break;
-    case 'transfer-sol':
-      if (recipient) next.recipient = recipient;
-      if (amountToken?.amount) next.amount = amountToken.amount;
-      break;
-    case 'transfer-token':
+    case 'send-tokens':
       if (recipient) next.recipient = recipient;
       if (amountToken?.amount) next.amount = amountToken.amount;
       if (amountToken?.token) next.token = amountToken.token;

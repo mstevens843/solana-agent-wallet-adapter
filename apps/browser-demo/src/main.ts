@@ -141,6 +141,7 @@ import {
   type DesktopConnectMethod,
   type DesktopQrWallet,
 } from './desktopConnectFlow.js';
+import { resolveCliSignInBridgeHydration } from './cliSignInBridge.js';
 import { computeBridgeConfigUpdate } from './bridgeTokenSync.js';
 import {
   resolveDesktopPairingRelayBaseUrl,
@@ -2997,13 +2998,14 @@ const launchParams = readLaunchParams();
 clearSensitiveLaunchParams();
 type CliIntentName = 'connect' | 'disconnect' | 'approve' | 'sign' | 'sign-in' | 'sign-out';
 type CliSurfaceName = 'desktop';
-type CliView = { intent: CliIntentName; actionId?: string; requestId?: string; surface?: CliSurfaceName };
+type CliView = { intent: CliIntentName; actionId?: string; requestId?: string; surface?: CliSurfaceName; walletAddress?: string };
 let cliView: CliView | null = launchParams.cliMode && launchParams.cliIntent
   ? {
       intent: launchParams.cliIntent,
       ...(launchParams.cliActionId ? { actionId: launchParams.cliActionId } : {}),
       ...(launchParams.cliRequestId ? { requestId: launchParams.cliRequestId } : {}),
       ...(launchParams.cliSurface ? { surface: launchParams.cliSurface } : {}),
+      ...(launchParams.cliWalletAddress ? { walletAddress: launchParams.cliWalletAddress } : {}),
     }
   : null;
 if (cliView && typeof document !== 'undefined') {
@@ -3100,7 +3102,7 @@ const GUIDED_DEMO_SCENARIOS: ReadonlyArray<GuidedDemoScenario> = [
       'User approval is required before any send.',
     ],
     facts: [
-      { label: 'Action', value: 'Send SOL' },
+      { label: 'Action', value: 'Send Tokens' },
       { label: 'Amount', value: '0.2 SOL max' },
       { label: 'Custody', value: 'User wallet' },
     ],
@@ -4347,6 +4349,7 @@ async function bootstrap(): Promise<void> {
   }
   if (!state.androidNativeEnvironment.isAndroidNative && !state.iosNativeEnvironment.isIosNative) {
     await restoreBrowserWalletSession();
+    await hydrateCliSignInBridgeWallet();
     subscribeToWalletRegistration(() => {
       const next = visibleBrowserWallets(listAvailableWallets());
       if (next.length === state.wallets.length) return;
@@ -7337,7 +7340,7 @@ function agenticLoginPage(): string {
   const nonce = url.searchParams.get('nonce') ?? '';
   const message = url.searchParams.get('message') ?? '';
   const callback = url.searchParams.get('callback') ?? '';
-  const desiredWallet = url.searchParams.get('walletAddress') ?? '';
+  const desiredWallet = cliView?.walletAddress ?? url.searchParams.get('walletAddress') ?? '';
   const summary = url.searchParams.get('summary') ?? 'Agentic CLI signed request';
   const connected = state.address ?? '';
   const walletReady = Boolean(connected) && (!desiredWallet || desiredWallet === connected);
@@ -40051,6 +40054,9 @@ async function queuePlanThroughBridge(plan: AgentPlan, sourceRecord?: GeneratedP
     ? `Override: ${overrideShortLabel(sourceRecord.agentOverride)}`
     : '';
   const note = [plan.intent, reviewNote, overrideNote].filter(Boolean).join(' | ').slice(0, 500);
+  if (plan.actionType === 'transfer_spl' && (plan.parameters.token || '').trim().toUpperCase() === 'SOL') {
+    plan = { ...plan, actionType: 'transfer_sol' };
+  }
   switch (plan.actionType) {
     case 'transfer_sol': {
       const response = await bridgeRequest<{ preparedAction: PreparedAction }>('/bridge/action/prepare-transfer-sol', {
@@ -41100,6 +41106,48 @@ async function restoreBrowserWalletSession(): Promise<void> {
     savePersistedState();
     console.info('Browser wallet silent restore skipped.', err);
   }
+}
+
+async function hydrateCliSignInBridgeWallet(): Promise<void> {
+  if (cliView?.intent !== 'sign-in') return;
+  if (!state.bridgeToken || !isTrustedBridgeUrl(state.bridgeUrl)) return;
+
+  let capabilities: AdapterCapabilities;
+  try {
+    capabilities = await bridgeRequest<AdapterCapabilities>('/bridge/status');
+  } catch (err) {
+    console.info('[cli-sign-in] bridge wallet hydration skipped.', err);
+    return;
+  }
+
+  const decision = resolveCliSignInBridgeHydration({
+    currentWallet: state.address,
+    desiredWallet: cliView.walletAddress,
+    bridgeCapabilities: capabilities,
+  });
+  if (decision.kind !== 'adopt') return;
+
+  // Use the wallet host that /connect already registered with the bridge; this
+  // page should not become a second bridge poller for its own sign-in request.
+  walletBackend = new RemoteBridgeBackend({
+    bridgeUrl: state.bridgeUrl,
+    token: state.bridgeToken,
+  });
+  client = new SolanaSigningClient({ backend: walletBackend });
+  state.address = decision.address;
+  state.capabilities = capabilities;
+  state.selectedWalletName = state.selectedWalletName || 'Browser wallet';
+  state.selectedWalletLogoId =
+    state.selectedWalletLogoId ?? walletProviderLogoIdForName(state.selectedWalletName);
+  state.bridgeActive = true;
+  state.bridgeAutoReconnect = true;
+  state.bridgeStatus = decision.mismatch
+    ? 'Connected bridge wallet does not match this Cloud Storage sign-in request.'
+    : 'Connected to local bridge for Cloud Storage sign-in.';
+  state.transactionStatus = `Wallet connected via local bridge on ${state.cluster}.`;
+  state.steps.connect = 'done';
+  await afterWalletConnected();
+  savePersistedState();
 }
 
 function selectedWallet(): DiscoveredWallet {
@@ -49275,6 +49323,7 @@ function readLaunchParams(): {
   cliSurface?: CliSurfaceName;
   cliActionId?: string;
   cliRequestId?: string;
+  cliWalletAddress?: string;
   walletBrand?: string;
   pairing?: string;
 } {
@@ -49298,6 +49347,7 @@ function readLaunchParams(): {
       : undefined;
   const cliActionId = params.get('actionId')?.trim() || undefined;
   const cliRequestId = params.get('requestId')?.trim() || undefined;
+  const cliWalletAddress = params.get('walletAddress')?.trim() || undefined;
   const rawSurface = params.get('surface')?.trim();
   const cliSurface: CliSurfaceName | undefined = rawSurface === 'desktop' ? 'desktop' : undefined;
   const qrConnectRoute = normalizePathname(window.location.pathname) === '/qr-connect';
@@ -49320,6 +49370,7 @@ function readLaunchParams(): {
     ...(cliSurface ? { cliSurface } : {}),
     ...(cliActionId ? { cliActionId } : {}),
     ...(cliRequestId ? { cliRequestId } : {}),
+    ...(cliWalletAddress ? { cliWalletAddress } : {}),
     ...(walletBrand ? { walletBrand } : {}),
     ...(pairing ? { pairing } : {}),
   };

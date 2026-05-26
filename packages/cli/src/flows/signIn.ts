@@ -22,7 +22,7 @@ export async function runSignIn(options: GlobalOptions): Promise<void> {
   const summary = sessionStatusSummary(existing);
   if (summary.authenticated) {
     console.log(badge(`Already signed in as ${summary.walletAddress ?? '(no address)'}`, 'ok'));
-    renderWorkspaceSummary(await loadWorkspaceSummary(options));
+    renderWorkspaceSummary(await loadWorkspaceSummaryWithSpinner(options));
     return;
   }
 
@@ -40,10 +40,19 @@ export async function runSignIn(options: GlobalOptions): Promise<void> {
       ['Wallet', String((result as { walletAddress?: string }).walletAddress ?? '(unknown)')],
       ['Workspace', 'synced'],
     ]));
-    const summary = await loadWorkspaceSummary(options);
+    const summary = await loadWorkspaceSummaryWithSpinner(options);
     renderWorkspaceSummary(summary);
   } catch (err) {
     spin.fail(`Sign-in failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+async function loadWorkspaceSummaryWithSpinner(options: GlobalOptions) {
+  const spin = spinner('Loading workspace…');
+  try {
+    return await loadWorkspaceSummary(options);
+  } finally {
+    spin.stop();
   }
 }
 

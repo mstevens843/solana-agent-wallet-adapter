@@ -43,7 +43,7 @@ export async function promptSwapForm(
   options?: GlobalOptions,
   prefill: Partial<SwapDraft> = {},
 ): Promise<SwapDraft> {
-  console.log(header('New swap (Jupiter)'));
+  console.log(header('New token swap'));
   const inputToken = await pickToken('Sell token', prefill.inputToken ?? 'SOL');
   if (options) {
     await maybePrintSafetyChip(options, inputToken);

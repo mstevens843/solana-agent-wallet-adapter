@@ -16,6 +16,26 @@ const cliPackageJson = JSON.parse(await readFile(join(cliRoot, 'package.json'), 
 const cliVersion = String(cliPackageJson.version);
 const optionalNativeModuleFilter =
   /^(?:@triton-one\/yellowstone-grpc|helius-laserstream|@triton-one\/yellowstone-grpc-napi-.+|yellowstone-grpc-napi-.+|helius-laserstream-.+)$/;
+const startupQuietPrelude = [
+  'const __agenticCliDebug = process.argv.includes("--debug") || process.env.AGENT_WALLET_DEBUG === "1";',
+  'if (!__agenticCliDebug) {',
+  '  const __agenticOriginalWarn = console.warn.bind(console);',
+  '  console.warn = (...args) => {',
+  '    const first = String(args[0] ?? "");',
+  '    if (first.startsWith("bigint: Failed to load bindings, pure JS will be used")) return;',
+  '    __agenticOriginalWarn(...args);',
+  '  };',
+  '  const __agenticOriginalEmitWarning = process.emitWarning.bind(process);',
+  '  process.emitWarning = (warning, ...args) => {',
+  '    const optionArg = args[0];',
+  '    const type = optionArg && typeof optionArg === "object" ? optionArg.type : optionArg;',
+  '    const code = optionArg && typeof optionArg === "object" ? optionArg.code : args[1];',
+  '    const warningObject = warning && typeof warning === "object" ? warning : undefined;',
+  '    if (type === "DeprecationWarning" || code === "DEP0040" || warningObject?.name === "DeprecationWarning" || warningObject?.code === "DEP0040") return;',
+  '    return __agenticOriginalEmitWarning(warning, ...args);',
+  '  };',
+  '}',
+].join('\n');
 
 const optionalNativeStubPlugin = {
   name: 'optional-native-stub',
@@ -70,6 +90,7 @@ await build({
       'const require = __agenticCreateRequire(import.meta.url);',
       'const __filename = __agenticFileURLToPath(import.meta.url);',
       'const __dirname = __agenticDirname(__filename);',
+      startupQuietPrelude,
     ].join('\n'),
   },
   external: [

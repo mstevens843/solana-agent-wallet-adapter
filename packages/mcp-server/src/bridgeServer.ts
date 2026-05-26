@@ -785,6 +785,7 @@ async function handleRequest(
         provider?: string;
         apiFormat?: string;
         clear?: boolean;
+        allowCustomBaseUrl?: boolean;
       };
       writeJson(res, 200, aiPlanner.setSessionKey(body));
       return;

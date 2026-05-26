@@ -10,6 +10,9 @@ import type { Readable, Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { afterEach, test } from 'node:test';
 
+import { inboxSaveError, preparedActionFromPrepareResult } from '../flows/newApproval.js';
+import type { GlobalOptions } from '../shared/types.js';
+
 const distDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const cliPath = join(distDir, 'index.js');
 type CliChild =
@@ -101,6 +104,37 @@ test('setup writes local runtime env aliases and redacts JSON status', async () 
   assert.match(raw, /JUPITER_API_URL=https:\/\/quote-api\.jup\.ag/);
   assert.match(raw, /BIRDEYE_API_KEY=birdeye-secret-value/);
   assert.match(raw, /BIRDEYE_REST_BASE=https:\/\/public-api\.birdeye\.so/);
+});
+
+test('new approval helper extracts prepared actions from prepare responses', () => {
+  const action = preparedActionFromPrepareResult({
+    preparedAction: {
+      id: 'pa_123',
+      summary: 'Transfer 0.02 SOL',
+      status: 'ready',
+      walletAddress: '4fTqWallet',
+      cluster: 'mainnet-beta',
+      params: { amountSol: '0.02' },
+    },
+  });
+  assert.deepEqual(action, {
+    id: 'pa_123',
+    summary: 'Transfer 0.02 SOL',
+    status: 'ready',
+    walletAddress: '4fTqWallet',
+    cluster: 'mainnet-beta',
+    params: { amountSol: '0.02' },
+  });
+});
+
+test('new approval helper rewrites offline bridge failures as inbox save failures', () => {
+  const options = {
+    bridgeUrl: 'http://127.0.0.1:8787',
+  } as GlobalOptions;
+  assert.equal(
+    inboxSaveError(new Error('Local wallet bridge is not reachable at http://127.0.0.1:8787. fetch failed'), options),
+    'Could not save to inbox because the local runtime is offline. Run /connect or /doctor.',
+  );
 });
 
 test('wallet-host serve exposes health, static assets, SPA fallback, and rejects traversal', async () => {
@@ -485,7 +519,9 @@ test('help prints usage without starting the interactive app', () => {
   const result = runCli(['--help']);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /solana-agent-wallet\s+# interactive CLI/);
-  assert.match(result.stdout, /solana-agent-wallet agent-setup\s+# hosted AI or local provider key/);
+  assert.match(result.stdout, /solana-agent-wallet agent-setup\s+# Hosted BYOK or Local Bridge provider key/);
+  assert.match(result.stdout, /solana-agent-wallet new\s+# create a one-time or repeat request/);
+  assert.doesNotMatch(result.stdout, /solana-agent-wallet repeat\s+#/);
   assert.doesNotMatch(result.stdout, /Legacy & advanced/);
   assert.doesNotMatch(result.stdout, /v1\.0 hosted/);
   assert.doesNotMatch(result.stdout, /agentic>/);
@@ -494,6 +530,8 @@ test('help prints usage without starting the interactive app', () => {
 test('expanded help exposes advanced command inventory on request', () => {
   const result = runCli(['help', 'all']);
   assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /solana-agent-wallet new\s+# menu: one-time · repeat/);
+  assert.doesNotMatch(result.stdout, /solana-agent-wallet repeat\s+# menu: scheduled/);
   assert.match(result.stdout, /device-agent status \| configure \| start \| stop \| clear \| set-key/);
   assert.match(result.stdout, /bridge-agents list \| register/);
 });
@@ -530,18 +568,53 @@ test('no positional command starts the interactive app', async () => {
   ]);
 
   try {
-    const stdout = await waitForStdout(child, /agentic>/, 30_000);
+    const { stdout, stderr } = await waitForOutput(child, /agentic>/, 30_000);
+    const combined = `${stdout}\n${stderr}`;
     assert.match(stdout, /Solana Agent Wallet Terminal/);
     assert.match(stdout, /Setup/);
     assert.match(stdout, /1\. Wallet\s+Not connected\s+\/connect/);
     assert.match(stdout, /2\. Cloud Storage\s+Signed out \(optional\)\s+\/sign-in/);
     assert.match(stdout, /3\. Agent\s+Not configured\s+\/agent-setup/);
     assert.doesNotMatch(stdout, /^Network:/m);
+    assert.doesNotMatch(stdout, /Bridge http:\/\//);
+    assert.doesNotMatch(stdout, /Wallet host http:\/\//);
+    assert.doesNotMatch(stdout, /Starting local runtime/);
+    assert.doesNotMatch(combined, /bigint: Failed to load bindings/);
+    assert.doesNotMatch(combined, /\[DEP0040\]/);
     assert.match(stdout, /Cloud APIs: Agentic hosted default/);
     assert.match(stdout, /\/agent\s+Ask AI to prepare a wallet action/);
     assert.doesNotMatch(stdout, /Direct flows/);
     assert.doesNotMatch(stdout, /Legacy & advanced/);
     assert.doesNotMatch(stdout, /v1\.0 hosted/);
+    child.stdin.write('/quit\n');
+    const exit = await waitForExit(child);
+    assert.equal(exit.code, 0, `stdout:\n${stdout}\nstderr:\n${await readRemaining(child.stderr)}`);
+  } finally {
+    await stopChild(child);
+  }
+});
+
+test('interactive app prints startup diagnostics in debug mode', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-debug-app-'));
+  const bridgeUrl = `http://127.0.0.1:${await freePort()}`;
+  const walletHostUrl = `http://127.0.0.1:${await freePort()}`;
+  const renderWebUrl = `http://127.0.0.1:${await freePort()}`;
+  const child = startCliInteractive([
+    '--debug',
+    '--runtime-dir',
+    runtimeDir,
+    '--bridge-url',
+    bridgeUrl,
+    '--wallet-host-url',
+    walletHostUrl,
+    '--render-web-url',
+    renderWebUrl,
+  ]);
+
+  try {
+    const { stdout } = await waitForOutput(child, /agentic>/, 30_000);
+    assert.match(stdout, new RegExp(`Bridge ${escapeRegExp(bridgeUrl)} \\| Wallet host ${escapeRegExp(walletHostUrl)}`));
+    assert.match(stdout, /Starting local runtime/);
     child.stdin.write('/quit\n');
     const exit = await waitForExit(child);
     assert.equal(exit.code, 0, `stdout:\n${stdout}\nstderr:\n${await readRemaining(child.stderr)}`);
@@ -565,14 +638,47 @@ test('interactive app starts wallet host on a fallback port when the configured 
   ], { AGENT_WALLET_WALLET_HOST_URL: busyHost.url });
 
   try {
-    const stdout = await waitForStdout(child, /agentic>/, 30_000);
-    const match = stdout.match(/Wallet host port 127\.0\.0\.1:\d+ was busy; using (http:\/\/127\.0\.0\.1:\d+)\./);
-    assert.ok(match, stdout);
+    const startup = await waitForOutput(child, /agentic>/, 30_000);
+    assert.doesNotMatch(startup.stdout, /Wallet host port 127\.0\.0\.1:\d+ was busy/);
+    const logsWait = waitForOutput(child, /Wallet host port 127\.0\.0\.1:\d+ was busy; using http:\/\/127\.0\.0\.1:\d+\./, 10_000);
+    child.stdin.write('/logs\n');
+    const logs = await logsWait;
+    const match = logs.stdout.match(/Wallet host port 127\.0\.0\.1:\d+ was busy; using (http:\/\/127\.0\.0\.1:\d+)\./);
+    assert.ok(match, logs.stdout);
     const fallbackUrl = match[1]!;
     assert.notEqual(fallbackUrl, busyHost.url);
     const health = await waitForJson(`${fallbackUrl}/__agentic/health`);
     assert.equal(health.ok, true);
     assert.equal(health.service, 'agentic-wallet-host');
+    child.stdin.write('/quit\n');
+    const exit = await waitForExit(child);
+    assert.equal(exit.code, 0, `stdout:\n${startup.stdout}\n${logs.stdout}\nstderr:\n${startup.stderr}\n${logs.stderr}\n${await readRemaining(child.stderr)}`);
+  } finally {
+    await busyHost.close();
+    await stopChild(child);
+  }
+});
+
+test('interactive app shows wallet host fallback port in debug mode', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-wallet-host-fallback-debug-'));
+  const bridgeUrl = `http://127.0.0.1:${await freePort()}`;
+  const renderWebUrl = `http://127.0.0.1:${await freePort()}`;
+  const busyHost = await startNonAgenticWalletHost();
+  const child = startCliInteractive([
+    '--debug',
+    '--runtime-dir',
+    runtimeDir,
+    '--bridge-url',
+    bridgeUrl,
+    '--render-web-url',
+    renderWebUrl,
+  ], { AGENT_WALLET_WALLET_HOST_URL: busyHost.url });
+
+  try {
+    const { stdout } = await waitForOutput(child, /agentic>/, 30_000);
+    const match = stdout.match(/Wallet host port 127\.0\.0\.1:\d+ was busy; using (http:\/\/127\.0\.0\.1:\d+)\./);
+    assert.ok(match, stdout);
+    assert.notEqual(match[1], busyHost.url);
     child.stdin.write('/quit\n');
     const exit = await waitForExit(child);
     assert.equal(exit.code, 0, `stdout:\n${stdout}\nstderr:\n${await readRemaining(child.stderr)}`);
@@ -643,6 +749,7 @@ test('agent-setup from env writes local AI config and activates bridge session k
     assert.match(raw, /AGENTIC_AI_API_FORMAT=openai-compatible/);
     assert.match(raw, /AGENTIC_AI_BASE_URL=https:\/\/api\.openai\.com\/v1/);
     assert.match(raw, /AGENTIC_AI_MODEL=gpt-5/);
+    assert.match(raw, /AGENTIC_AI_PATH=bridge/);
 
     const sessionKey = bridge.requests.find((request) => request.path === '/bridge/ai/session-key');
     assert.ok(sessionKey);
@@ -653,6 +760,169 @@ test('agent-setup from env writes local AI config and activates bridge session k
       baseUrl: 'https://api.openai.com/v1',
       model: 'gpt-5',
     });
+  } finally {
+    await bridge.close();
+  }
+});
+
+test('agent-setup from env supports OpenRouter provider presets', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-agent-setup-openrouter-'));
+  const envPath = join(runtimeDir, '.env');
+  const bridge = await startMockBridge([]);
+  try {
+    const result = await runCliAsync([
+      '--runtime-dir',
+      runtimeDir,
+      '--bridge-url',
+      bridge.url,
+      'agent-setup',
+      '--from-env',
+      'TEST_AGENTIC_AI_KEY',
+      '--provider',
+      'openrouter',
+      '--model',
+      'openrouter/auto',
+      '--json',
+    ], { TEST_AGENTIC_AI_KEY: 'sk-or-test-agent-key' });
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout) as Record<string, unknown>;
+    assert.equal(payload.provider, 'openrouter');
+    assert.equal(payload.model, 'openrouter/auto');
+    const raw = await readFile(envPath, 'utf8');
+    assert.match(raw, /AGENTIC_AI_PROVIDER=openrouter/);
+    assert.match(raw, /AGENTIC_AI_BASE_URL=https:\/\/openrouter\.ai\/api\/v1/);
+    const sessionKey = bridge.requests.find((request) => request.path === '/bridge/ai/session-key');
+    assert.ok(sessionKey);
+    assert.deepEqual(sessionKey.body, {
+      apiKey: 'sk-or-test-agent-key',
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openrouter/auto',
+    });
+  } finally {
+    await bridge.close();
+  }
+});
+
+test('agent-setup custom OpenAI-compatible opts the bridge into a custom base URL', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-agent-setup-custom-'));
+  const envPath = join(runtimeDir, '.env');
+  const bridge = await startMockBridge([]);
+  try {
+    const result = await runCliAsync([
+      '--runtime-dir',
+      runtimeDir,
+      '--bridge-url',
+      bridge.url,
+      'agent-setup',
+      '--from-env',
+      'TEST_AGENTIC_AI_KEY',
+      '--provider',
+      'custom-openai-compatible',
+      '--base-url',
+      'https://gateway.example/v1',
+      '--model',
+      'gateway-model',
+      '--json',
+    ], { TEST_AGENTIC_AI_KEY: 'sk-test-agent-key' });
+    assert.equal(result.status, 0, result.stderr);
+    const raw = await readFile(envPath, 'utf8');
+    assert.match(raw, /AGENTIC_AI_PROVIDER=custom-openai-compatible/);
+    assert.match(raw, /AGENTIC_AI_ALLOW_CUSTOM_BASE_URL=1/);
+    const sessionKey = bridge.requests.find((request) => request.path === '/bridge/ai/session-key');
+    assert.ok(sessionKey);
+    assert.deepEqual(sessionKey.body, {
+      apiKey: 'sk-test-agent-key',
+      provider: 'custom-openai-compatible',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://gateway.example/v1',
+      model: 'gateway-model',
+      allowCustomBaseUrl: true,
+    });
+  } finally {
+    await bridge.close();
+  }
+});
+
+test('agent-setup hosted BYOK writes config without sending the key to the bridge', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-agent-setup-hosted-'));
+  const envPath = join(runtimeDir, '.env');
+  const renderWeb = await startMockAiStatusRenderWeb();
+  await writeFile(
+    join(runtimeDir, 'session.json'),
+    JSON.stringify({
+      token: 'test-token',
+      walletAddress: 'TestWallet',
+      renderWebOrigin: renderWeb.url,
+      issuedAt: new Date().toISOString(),
+    }),
+    'utf8',
+  );
+  try {
+    const result = await runCliAsync([
+      '--runtime-dir',
+      runtimeDir,
+      '--render-web-url',
+      renderWeb.url,
+      'agent-setup',
+      '--from-env',
+      'TEST_AGENTIC_AI_KEY',
+      '--provider',
+      'gemini',
+      '--path',
+      'hosted-byok',
+      '--model',
+      'gemini-2.5-pro',
+      '--json',
+    ], { TEST_AGENTIC_AI_KEY: 'test-gemini-key' });
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout) as Record<string, unknown>;
+    assert.equal(payload.path, 'hosted-byok');
+    assert.equal(payload.provider, 'gemini');
+    const raw = await readFile(envPath, 'utf8');
+    assert.match(raw, /AGENTIC_AI_PATH=hosted-byok/);
+    assert.match(raw, /AGENTIC_AI_PROVIDER=gemini/);
+    assert.match(raw, /AGENTIC_AI_BASE_URL=https:\/\/generativelanguage\.googleapis\.com\/v1beta\/openai/);
+    assert.equal(renderWeb.requests.filter((request) => request.path === '/api/ai/status').length, 1);
+  } finally {
+    await renderWeb.close();
+  }
+});
+
+test('agent-disconnect clears local AI config and bridge session key', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-agent-disconnect-'));
+  const envPath = join(runtimeDir, '.env');
+  await writeFile(envPath, [
+    'CUSTOM_VALUE=kept',
+    'AGENTIC_AI_API_KEY=sk-test-agent-key',
+    'AGENTIC_AI_PROVIDER=openai',
+    'AGENTIC_AI_API_FORMAT=openai-compatible',
+    'AGENTIC_AI_BASE_URL=https://api.openai.com/v1',
+    'AGENTIC_AI_MODEL=gpt-5',
+    'AGENTIC_AI_PATH=bridge',
+    'AGENTIC_AI_ALLOW_CUSTOM_BASE_URL=1',
+    '',
+  ].join('\n'), 'utf8');
+  const bridge = await startMockBridge([]);
+  try {
+    const result = await runCliAsync([
+      '--runtime-dir',
+      runtimeDir,
+      '--bridge-url',
+      bridge.url,
+      'agent-disconnect',
+      '--json',
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const raw = await readFile(envPath, 'utf8');
+    assert.match(raw, /CUSTOM_VALUE=kept/);
+    assert.doesNotMatch(raw, /AGENTIC_AI_API_KEY/);
+    assert.doesNotMatch(raw, /AGENTIC_AI_PATH/);
+    assert.doesNotMatch(raw, /AGENTIC_AI_ALLOW_CUSTOM_BASE_URL/);
+    const clearRequest = bridge.requests.find((request) => request.path === '/bridge/ai/session-key');
+    assert.ok(clearRequest);
+    assert.deepEqual(clearRequest.body, { clear: true });
   } finally {
     await bridge.close();
   }
@@ -977,6 +1247,40 @@ async function startMockAuthRenderWeb(): Promise<{
           sessionToken: 'minted-session-token',
           walletAddress: (body as Record<string, unknown>)?.walletAddress,
           expiresAt: '2026-05-22T00:00:00.000Z',
+        });
+        return;
+      }
+      writeJsonResponse(res, { error: 'not found' }, 404);
+    })().catch((err) => {
+      writeJsonResponse(res, { error: err instanceof Error ? err.message : String(err) }, 500);
+    });
+  });
+  const url = await listenHttp(server);
+  return { url, requests, close: () => closeHttp(server) };
+}
+
+async function startMockAiStatusRenderWeb(): Promise<{
+  url: string;
+  requests: Array<{ method: string; path: string; headers: IncomingMessage['headers']; body: unknown }>;
+  close: () => Promise<void>;
+}> {
+  const requests: Array<{ method: string; path: string; headers: IncomingMessage['headers']; body: unknown }> = [];
+  const server = createHttpServer((req, res) => {
+    void (async () => {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+      const body = req.method === 'POST' ? await readRequestJson(req) : undefined;
+      requests.push({ method: req.method ?? 'GET', path: url.pathname, headers: req.headers, body });
+      if (url.pathname === '/api/ai/status') {
+        writeJsonResponse(res, {
+          available: true,
+          mode: 'hosted-byok',
+          managed: { available: false },
+          providers: [
+            { id: 'openai', label: 'OpenAI', apiFormat: 'openai-compatible', defaultModel: 'gpt-5' },
+            { id: 'anthropic', label: 'Claude / Anthropic', apiFormat: 'anthropic', defaultModel: 'claude-sonnet-4-5' },
+            { id: 'gemini', label: 'Gemini', apiFormat: 'openai-compatible', defaultModel: 'gemini-2.5-pro' },
+            { id: 'openrouter', label: 'OpenRouter', apiFormat: 'openai-compatible', defaultModel: 'openrouter/auto' },
+          ],
         });
         return;
       }
@@ -1621,9 +1925,17 @@ async function waitForStdout(
   pattern: RegExp,
   timeoutMs: number,
 ): Promise<string> {
+  return (await waitForOutput(child, pattern, timeoutMs)).stdout;
+}
+
+async function waitForOutput(
+  child: ChildProcessByStdio<Writable, Readable, Readable>,
+  pattern: RegExp,
+  timeoutMs: number,
+): Promise<{ stdout: string; stderr: string }> {
   let stdout = '';
   let stderr = '';
-  return new Promise<string>((resolveWait, rejectWait) => {
+  return new Promise<{ stdout: string; stderr: string }>((resolveWait, rejectWait) => {
     const timeout = setTimeout(() => {
       cleanup();
       rejectWait(new Error(`Timed out waiting for ${pattern}.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
@@ -1640,7 +1952,7 @@ async function waitForStdout(
       stdout += chunk.toString();
       if (pattern.test(stdout)) {
         cleanup();
-        resolveWait(stdout);
+        resolveWait({ stdout, stderr });
       }
     };
     const onStderr = (chunk: Buffer): void => {
@@ -1655,6 +1967,10 @@ async function waitForStdout(
     child.stderr.on('data', onStderr);
     child.once('exit', onExit);
   });
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 async function waitForExit(

@@ -1,7 +1,7 @@
 import type { GlobalOptions } from '../shared/types.js';
 import { bridgeRequest } from '../http/index.js';
 import { select, input, badge, header } from '../tui/index.js';
-import { promptSendSplForm } from '../forms/sendSpl.js';
+import { promptSendTokensForm } from '../forms/sendTokens.js';
 import { promptConnectorForm } from '../forms/connectorForm.js';
 import { listRecurringConnectors, listActions, humanizeActionKind } from '../forms/connectorMeta.js';
 import { maybeEnhanceWithAi } from '../forms/aiEnhance.js';
@@ -46,7 +46,7 @@ export async function runRepeatMenu(options: GlobalOptions): Promise<void> {
 
 export async function runRepeatScheduled(options: GlobalOptions): Promise<void> {
   console.log(header('New scheduled transfer'));
-  const draft = await promptSendSplForm(options);
+  const draft = await promptSendTokensForm(options, {}, { defaultToken: 'USDC' });
   const cadence = await select<typeof CADENCE_CHOICES[number]['value']>({
     message: 'Cadence',
     choices: [...CADENCE_CHOICES],

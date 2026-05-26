@@ -448,25 +448,32 @@ async function queuePlan(
   const noteWithOverride = composeNote(baseNote, overrideContext);
 
   // Map the AI's templateId → bridge prepare endpoint.
-  if (templateId === 'transfer-sol' || templateId === 'transfer_sol') {
-    const body = removeUndefined({
-      recipient: params.recipient as string | undefined,
-      amountSol: (params.amountSol ?? params.amount) as string | undefined,
-      note: noteWithOverride,
-    });
-    if (!body.recipient || !body.amountSol) {
-      console.log(badge('Plan is missing recipient or amount. Use /new-send and copy the values from above.', 'warn'));
-      return null;
+  // 'send-tokens' is the unified template; legacy 'transfer-sol' / 'transfer-token'
+  // template ids are still accepted for older AI responses and persisted drafts.
+  const isSendTokens = templateId === 'send-tokens' || templateId === 'transfer_tokens';
+  const isLegacySol = templateId === 'transfer-sol' || templateId === 'transfer_sol';
+  const isLegacySpl = templateId === 'transfer-token' || templateId === 'transfer_spl';
+  if (isSendTokens || isLegacySol || isLegacySpl) {
+    const tokenRaw = (params.token as string | undefined) ?? (isLegacySol ? 'SOL' : undefined);
+    const token = (tokenRaw || '').trim();
+    const isNativeSol = isLegacySol || token.toUpperCase() === 'SOL';
+    if (isNativeSol) {
+      const body = removeUndefined({
+        recipient: params.recipient as string | undefined,
+        amountSol: (params.amountSol ?? params.amount) as string | undefined,
+        note: noteWithOverride,
+      });
+      if (!body.recipient || !body.amountSol) {
+        console.log(badge('Plan is missing recipient or amount. Use /new-send and copy the values from above.', 'warn'));
+        return null;
+      }
+      return bridgeRequest(options, '/bridge/action/prepare-transfer-sol', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
     }
-    return bridgeRequest(options, '/bridge/action/prepare-transfer-sol', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    });
-  }
-
-  if (templateId === 'transfer-token' || templateId === 'transfer_spl') {
     const body = removeUndefined({
-      token: params.token as string | undefined,
+      token,
       recipient: params.recipient as string | undefined,
       amount: (params.amount ?? params.amountSpl) as string | undefined,
       note: noteWithOverride,

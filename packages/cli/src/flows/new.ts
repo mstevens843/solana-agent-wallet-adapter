@@ -1,66 +1,53 @@
 import type { GlobalOptions } from '../shared/types.js';
 import { bridgeRequest } from '../http/index.js';
 import { select, badge, confirm, spinner, header, kv, divider } from '../tui/index.js';
-import { promptSendSolForm } from '../forms/sendSol.js';
-import { promptSendSplForm } from '../forms/sendSpl.js';
+import { promptSendTokensForm, type SendTokensFormOptions } from '../forms/sendTokens.js';
 import { promptSwapForm } from '../forms/swap.js';
 import { promptConnectorForm } from '../forms/connectorForm.js';
 import { listConnectors, listActions, humanizeActionKind, type ConnectorAction, type ActionTier } from '../forms/connectorMeta.js';
 import { maybeEnhanceWithAi, maybeApplyAdvice } from '../forms/aiEnhance.js';
 import { verdictBlocksQueue } from '../forms/policyBundleRender.js';
-import { fetchWalletAddress, removeUndefined, printQueuedAction, listInstalledConnectorKeys } from './_shared.js';
+import { fetchWalletAddress, removeUndefined, listInstalledConnectorKeys } from './_shared.js';
 import { runConnectorsMenu } from './connectors.js';
+import { runRepeatMenu } from './repeat.js';
 import { confirmHighStakes, estimateFromDraft } from './safetyGate.js';
 import { tryHostedSwapOrder } from '../swap/hosted.js';
+import { prepareAndPromptApproval } from './newApproval.js';
 
-export type NewSubcommand = 'send' | 'spl' | 'swap' | 'connector';
+export type NewRequestMode = 'one-time' | 'repeat';
+export type NewSubcommand = 'tokens' | 'swap' | 'connector';
 
-// `/new` — pick a kind, then route. Mirrors the web app's template picker.
+// `/new` mirrors the web app split between New Request and Repeat Payments.
 export async function runNewMenu(options: GlobalOptions): Promise<void> {
+  const mode = await select<NewRequestMode>({
+    message: 'What kind of request?',
+    choices: [
+      { name: 'One-time', value: 'one-time', description: 'Create a one-time payment, swap, or connector action' },
+      { name: 'Repeat',   value: 'repeat',   description: 'Set up a payment or action that repeats' },
+    ],
+  });
+  if (mode === 'repeat') return runRepeatMenu(options);
+  return runOneTimeMenu(options);
+}
+
+export async function runOneTimeMenu(options: GlobalOptions): Promise<void> {
   const pick = await select<NewSubcommand>({
     message: 'What kind of action?',
     choices: [
-      { name: 'Send SOL',           value: 'send',      description: 'Native SOL transfer to an address' },
-      { name: 'Send SPL token',     value: 'spl',       description: 'USDC, USDT, JUP, BONK, custom mint…' },
-      { name: 'Swap (Jupiter)',     value: 'swap',      description: 'Token swap via Jupiter' },
+      { name: 'Send Tokens',        value: 'tokens',    description: 'Send native SOL or any SPL token' },
+      { name: 'Swap',               value: 'swap',      description: 'Token swap via Jupiter' },
       { name: 'Connector action',   value: 'connector', description: '19 protocols, ~80 actions' },
     ],
   });
-  if (pick === 'send') return runNewSend(options);
-  if (pick === 'spl') return runNewSpl(options);
+  if (pick === 'tokens') return runNewTokens(options);
   if (pick === 'swap') return runNewSwap(options);
   return runNewConnector(options);
 }
 
-export async function runNewSend(options: GlobalOptions): Promise<void> {
-  let draft = await promptSendSolForm(options);
-  if (!(await confirmSelfTransfer(options, draft.recipient, 'SOL'))) return;
-  const description = `Send ${draft.amountSol} SOL to ${draft.recipient}${draft.note ? ` — ${draft.note}` : ''}`;
-  const enhanced = await maybeEnhanceWithAi(options, description);
-  if (verdictBlocksQueue(enhanced?.verdict)) {
-    console.log(badge('AI denied this plan — not queueing.', 'err'));
-    return;
-  }
-  const advice = enhanced?.advice ?? null;
-  draft = await maybeApplyAdvice(draft, advice, (p) => ({
-    recipient: pickString(p, ['recipient']),
-    amountSol: pickString(p, ['amountSol', 'amount']),
-    note: pickString(p, ['note', 'memo']),
-  }) as Partial<typeof draft>);
-  const ok = await confirmHighStakes(options, description, estimateFromDraft(draft), advice);
-  if (!ok) {
-    console.log(badge('Aborted.', 'muted'));
-    return;
-  }
-  const result = await bridgeRequest(options, '/bridge/action/prepare-transfer-sol', {
-    method: 'POST',
-    body: JSON.stringify(removeUndefined({ ...draft })),
-  });
-  printQueuedAction('Send SOL', result);
-}
-
-export async function runNewSpl(options: GlobalOptions): Promise<void> {
-  let draft = await promptSendSplForm(options);
+// Unified "Send Tokens" flow. The user picks the token (SOL or any SPL) in the
+// form; we route to the native SOL endpoint when token is SOL, else to SPL.
+export async function runNewTokens(options: GlobalOptions, formOptions: SendTokensFormOptions = {}): Promise<void> {
+  let draft = await promptSendTokensForm(options, {}, formOptions);
   if (!(await confirmSelfTransfer(options, draft.recipient, draft.token))) return;
   const description = `Send ${draft.amount} ${draft.token} to ${draft.recipient}${draft.note ? ` — ${draft.note}` : ''}`;
   const enhanced = await maybeEnhanceWithAi(options, description);
@@ -72,7 +59,7 @@ export async function runNewSpl(options: GlobalOptions): Promise<void> {
   draft = await maybeApplyAdvice(draft, advice, (p) => ({
     token: pickString(p, ['token', 'symbol']),
     recipient: pickString(p, ['recipient']),
-    amount: pickString(p, ['amount']),
+    amount: pickString(p, ['amount', 'amountSol']),
     note: pickString(p, ['note', 'memo']),
   }) as Partial<typeof draft>);
   const ok = await confirmHighStakes(options, description, estimateFromDraft(draft), advice);
@@ -80,11 +67,34 @@ export async function runNewSpl(options: GlobalOptions): Promise<void> {
     console.log(badge('Aborted.', 'muted'));
     return;
   }
-  const result = await bridgeRequest(options, '/bridge/action/prepare-transfer-spl', {
-    method: 'POST',
-    body: JSON.stringify(removeUndefined({ ...draft })),
-  });
-  printQueuedAction('Send SPL', result);
+  const isNativeSol = draft.token.trim().toUpperCase() === 'SOL';
+  await prepareAndPromptApproval(options, 'Send Tokens', () => isNativeSol
+    ? bridgeRequest(options, '/bridge/action/prepare-transfer-sol', {
+        method: 'POST',
+        body: JSON.stringify(removeUndefined({
+          recipient: draft.recipient,
+          amountSol: draft.amount,
+          note: draft.note,
+        })),
+      })
+    : bridgeRequest(options, '/bridge/action/prepare-transfer-spl', {
+        method: 'POST',
+        body: JSON.stringify(removeUndefined({
+          token: draft.token,
+          recipient: draft.recipient,
+          amount: draft.amount,
+          note: draft.note,
+        })),
+      }));
+}
+
+// Backward-compat aliases for /new-send (SOL default) and /new-spl (USDC default).
+export async function runNewSend(options: GlobalOptions): Promise<void> {
+  return runNewTokens(options, { defaultToken: 'SOL' });
+}
+
+export async function runNewSpl(options: GlobalOptions): Promise<void> {
+  return runNewTokens(options, { defaultToken: 'USDC' });
 }
 
 export async function runNewSwap(options: GlobalOptions): Promise<void> {
@@ -114,11 +124,10 @@ export async function runNewSwap(options: GlobalOptions): Promise<void> {
     console.log(badge('Aborted.', 'muted'));
     return;
   }
-  const result = await bridgeRequest(options, '/bridge/action/prepare-swap', {
+  await prepareAndPromptApproval(options, 'Swap', () => bridgeRequest(options, '/bridge/action/prepare-swap', {
     method: 'POST',
     body: JSON.stringify(removeUndefined({ ...draft })),
-  });
-  printQueuedAction('Swap', result);
+  }));
 }
 
 function pickString(p: Record<string, unknown>, keys: string[]): string | undefined {
@@ -179,20 +188,31 @@ async function previewSwapQuote(
     console.log(kv(rows));
     console.log(divider());
     if (opts.preview) return 'ok';
-    const proceed = await confirm({ message: 'Looks right — queue this swap?', default: true });
+    const proceed = await confirm({ message: 'Looks right - continue?', default: true });
     return proceed ? 'ok' : 'aborted';
   } catch (err) {
     spin.fail(`Quote failed: ${err instanceof Error ? err.message : String(err)}`);
     if (opts.preview) return 'ok';
-    const proceed = await confirm({ message: 'Queue anyway?', default: false });
+    const proceed = await confirm({ message: 'Continue anyway?', default: false });
     return proceed ? 'ok' : 'aborted';
   }
 }
 
 function describeOutAmount(quote: Record<string, unknown>, outputToken: string): string {
+  // Prefer the backend's pre-computed USD floats. The raw outAmount is in the
+  // output token's base units (e.g. 843621 for 0.843621 USDC) — showing it as a
+  // token amount without a decimals lookup would mislead the user, so anchor on
+  // USD instead.
+  const usd = pickField(quote, ['outUsdValue', 'swapUsdValue']);
+  if (usd !== undefined) {
+    const n = Number(usd);
+    if (Number.isFinite(n) && n > 0) {
+      return `~$${n.toFixed(2)} worth of ${outputToken}`;
+    }
+  }
   const raw = pickField(quote, ['outAmount', 'outputAmount', 'expectedOutput', 'amountOut']);
   if (raw === undefined) return `(check ${outputToken})`;
-  return `${raw} ${outputToken}`;
+  return `${raw} (raw ${outputToken} base units)`;
 }
 
 function describeRoute(quote: Record<string, unknown>): string | null {
@@ -343,11 +363,10 @@ async function runConnectorWrite(options: GlobalOptions, connectorId: string, ac
     reason: draft.reason,
     note: draft.note,
   });
-  const result = await bridgeRequest(options, '/bridge/connector/prepare-transaction', {
+  await prepareAndPromptApproval(options, draft.summary, () => bridgeRequest(options, '/bridge/connector/prepare-transaction', {
     method: 'POST',
     body: JSON.stringify(body),
-  });
-  printQueuedAction(draft.summary, result);
+  }));
 }
 
 async function runConnectorReadOnly(options: GlobalOptions, connectorId: string, action: ConnectorAction): Promise<void> {
