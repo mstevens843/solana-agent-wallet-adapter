@@ -536,6 +536,7 @@ test('no positional command starts the interactive app', async () => {
     assert.match(stdout, /1\. Wallet\s+Not connected\s+\/connect/);
     assert.match(stdout, /2\. Cloud Storage\s+Signed out \(optional\)\s+\/sign-in/);
     assert.match(stdout, /3\. Agent\s+Not configured\s+\/agent-setup/);
+    assert.doesNotMatch(stdout, /^Network:/m);
     assert.match(stdout, /Cloud APIs: Agentic hosted default/);
     assert.match(stdout, /\/agent\s+Ask AI to prepare a wallet action/);
     assert.doesNotMatch(stdout, /Direct flows/);
@@ -545,6 +546,38 @@ test('no positional command starts the interactive app', async () => {
     const exit = await waitForExit(child);
     assert.equal(exit.code, 0, `stdout:\n${stdout}\nstderr:\n${await readRemaining(child.stderr)}`);
   } finally {
+    await stopChild(child);
+  }
+});
+
+test('interactive app starts wallet host on a fallback port when the configured port is busy', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-wallet-host-fallback-'));
+  const bridgeUrl = `http://127.0.0.1:${await freePort()}`;
+  const renderWebUrl = `http://127.0.0.1:${await freePort()}`;
+  const busyHost = await startNonAgenticWalletHost();
+  const child = startCliInteractive([
+    '--runtime-dir',
+    runtimeDir,
+    '--bridge-url',
+    bridgeUrl,
+    '--render-web-url',
+    renderWebUrl,
+  ], { AGENT_WALLET_WALLET_HOST_URL: busyHost.url });
+
+  try {
+    const stdout = await waitForStdout(child, /agentic>/, 30_000);
+    const match = stdout.match(/Wallet host port 127\.0\.0\.1:\d+ was busy; using (http:\/\/127\.0\.0\.1:\d+)\./);
+    assert.ok(match, stdout);
+    const fallbackUrl = match[1]!;
+    assert.notEqual(fallbackUrl, busyHost.url);
+    const health = await waitForJson(`${fallbackUrl}/__agentic/health`);
+    assert.equal(health.ok, true);
+    assert.equal(health.service, 'agentic-wallet-host');
+    child.stdin.write('/quit\n');
+    const exit = await waitForExit(child);
+    assert.equal(exit.code, 0, `stdout:\n${stdout}\nstderr:\n${await readRemaining(child.stderr)}`);
+  } finally {
+    await busyHost.close();
     await stopChild(child);
   }
 });
@@ -1531,13 +1564,17 @@ function startCli(args: string[]): CliChild {
   return child;
 }
 
-function startCliInteractive(args: string[]): ChildProcessByStdio<Writable, Readable, Readable> {
+function startCliInteractive(
+  args: string[],
+  env: Record<string, string> = {},
+): ChildProcessByStdio<Writable, Readable, Readable> {
   const child = spawn(process.execPath, [cliPath, ...args], {
     env: {
       ...process.env,
       AGENTIC_RENDER_WEB_URL: 'http://127.0.0.1:9',
       AGENT_WALLET_SKIP_OPEN: '1',
       NO_COLOR: '1',
+      ...env,
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -1748,6 +1785,19 @@ async function startMockWalletHost(): Promise<{ url: string; close: () => Promis
       return;
     }
     writeJsonResponse(res, { ok: true });
+  });
+  const url = await listenHttp(server);
+  return {
+    url,
+    close: () => closeHttp(server),
+  };
+}
+
+async function startNonAgenticWalletHost(): Promise<{ url: string; close: () => Promise<void> }> {
+  const server = createHttpServer((_req, res) => {
+    res.statusCode = 200;
+    res.setHeader('content-type', 'text/html; charset=utf-8');
+    res.end('<!doctype html><title>busy</title>');
   });
   const url = await listenHttp(server);
   return {

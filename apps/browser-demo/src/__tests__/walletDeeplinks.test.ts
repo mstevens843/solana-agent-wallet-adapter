@@ -4,6 +4,7 @@ import bs58 from 'bs58';
 
 import {
   buildPhantomConnectUrl,
+  buildSolflareConnectUrl,
   buildSolflareBrowseUrl,
   generatePhantomConnectKeypair,
 } from '../walletDeeplinks.js';
@@ -117,5 +118,42 @@ describe('buildSolflareBrowseUrl', () => {
     // Ref query stays unchanged.
     const url = new URL(raw);
     expect(url.searchParams.get('ref')).toBe(baseOpts.ref);
+  });
+});
+
+describe('buildSolflareConnectUrl', () => {
+  const baseOpts = {
+    dappPublicKey: '7tNZ5ZHzu4hJWdiHJYbV1aZWmYjzcfWcvDxYLqStrEbb',
+    redirectLink: 'https://agentic-signer.com/qr-connect?wallet=solflare&phase=connect',
+    cluster: 'mainnet-beta' as const,
+    appUrl: 'https://agentic-signer.com',
+  };
+
+  it('targets the official Solflare encrypted connect universal link', () => {
+    const url = new URL(buildSolflareConnectUrl(baseOpts));
+    expect(url.origin).toBe('https://solflare.com');
+    expect(url.pathname).toBe('/ul/v1/connect');
+  });
+
+  it('encodes all required Solflare Connect params', () => {
+    const url = new URL(buildSolflareConnectUrl(baseOpts));
+    expect(url.searchParams.get('app_url')).toBe(baseOpts.appUrl);
+    expect(url.searchParams.get('dapp_encryption_public_key')).toBe(baseOpts.dappPublicKey);
+    expect(url.searchParams.get('cluster')).toBe('mainnet-beta');
+    expect(url.searchParams.get('redirect_link')).toBe(baseOpts.redirectLink);
+  });
+
+  it('appends pairing UUID to redirect_link when supplied', () => {
+    const raw = buildSolflareConnectUrl({
+      ...baseOpts,
+      pairing: '01234567-89ab-cdef-0123-456789abcdef',
+    });
+    expect(raw).toContain('pairing%3D01234567-89ab-cdef-0123-456789abcdef');
+    expect(raw).toContain('wallet%3Dsolflare');
+  });
+
+  it('maps localnet to devnet for the cluster param', () => {
+    const url = new URL(buildSolflareConnectUrl({ ...baseOpts, cluster: 'localnet' }));
+    expect(url.searchParams.get('cluster')).toBe('devnet');
   });
 });

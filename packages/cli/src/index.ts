@@ -198,6 +198,7 @@ interface GlobalOptions {
   bridgeTokenPath: string;
   bridgeSessionPath: string;
   walletHostUrl: string;
+  walletHostUrlSource: 'default' | 'env' | 'flag';
   repoRoot: string | null;
   runtimeDir: string;
   envPath: string;
@@ -225,6 +226,17 @@ type BridgeProbe =
   | { status: 'unreachable'; error: string };
 
 interface BridgeEnsureResult {
+  reused: boolean;
+  child: ChildProcess | null;
+  notices: string[];
+}
+
+type WalletHostProbe =
+  | { status: 'reachable' }
+  | { status: 'non-agentic'; error: string }
+  | { status: 'unreachable'; error: string };
+
+interface WalletHostEnsureResult {
   reused: boolean;
   child: ChildProcess | null;
   notices: string[];
@@ -594,6 +606,7 @@ async function dispatch(parsed: ParsedArgs): Promise<unknown> {
     case 'receipts':
       return bridgeRequest(parsed.options, '/bridge/receipts');
     case 'open':
+      await ensureBrowserHostDetached(parsed.options);
       await openWalletHost(parsed.options);
       return { opened: walletHostLaunchUrl(parsed.options) };
     case 'connect':
@@ -957,6 +970,7 @@ async function dispatchBridge(parsed: ParsedArgs): Promise<unknown> {
     };
   }
   if (subcommand === 'open') {
+    await ensureBrowserHostDetached(parsed.options);
     await openWalletHost(parsed.options);
     return { opened: walletHostLaunchUrl(parsed.options) };
   }
@@ -989,6 +1003,7 @@ async function dispatchWalletHost(parsed: ParsedArgs): Promise<unknown> {
     };
   }
   if (subcommand === 'open') {
+    await ensureBrowserHostDetached(parsed.options);
     await openWalletHost(parsed.options);
     return { opened: walletHostLaunchUrl(parsed.options) };
   }
@@ -1458,11 +1473,20 @@ async function runTerminalApp(parsed: ParsedArgs): Promise<void> {
 
 async function bootstrapTerminalApp(state: TerminalAppState): Promise<void> {
   printMuted(state.options, 'Starting local runtime...');
-  await ensureBridge(state).catch((err) => {
+  const bridgeResult = await ensureBridge(state).catch((err) => {
     pushLog(state, `bridge bootstrap failed: ${errorMessage(err)}`);
+    return null;
   });
-  // Browser wallet host starts on demand for wallet intents (/connect, /approve,
-  // /disconnect, sign-proof) so normal startup stays focused on setup status.
+  for (const notice of bridgeResult?.notices ?? []) {
+    printMuted(state.options, notice);
+  }
+  const walletHostResult = await ensureBrowserHost(state).catch((err) => {
+    pushLog(state, `wallet host bootstrap failed: ${errorMessage(err)}`);
+    return null;
+  });
+  for (const notice of walletHostResult?.notices ?? []) {
+    printMuted(state.options, notice);
+  }
 }
 
 function createOneShotState(options: GlobalOptions): TerminalAppState {
@@ -1495,22 +1519,22 @@ async function connectInteractive(
 ): Promise<void> {
   const cli: CliIntent = options.cli ?? { intent: 'connect' };
   let bridgeError: unknown = null;
-  let bridgeNotices: string[] = [];
+  const runtimeNotices: string[] = [];
   if (options.detached) {
     try {
-      bridgeNotices = (await ensureBridgeDetached(state.options)).notices;
+      runtimeNotices.push(...(await ensureBridgeDetached(state.options)).notices);
     } catch (err) {
       bridgeError = err;
     }
-    await ensureBrowserHostDetached(state.options);
+    runtimeNotices.push(...(await ensureBrowserHostDetached(state.options)).notices);
   } else {
     try {
-      bridgeNotices = (await ensureBridge(state)).notices;
+      runtimeNotices.push(...(await ensureBridge(state)).notices);
     } catch (err) {
       bridgeError = err;
       pushLog(state, `bridge connect failed: ${errorMessage(err)}`);
     }
-    await ensureBrowserHost(state);
+    runtimeNotices.push(...(await ensureBrowserHost(state)).notices);
   }
   if (!bridgeError) {
     const status = await tryBridgeRequest<WalletStatus>(state.options, '/bridge/action/status');
@@ -1525,7 +1549,7 @@ async function connectInteractive(
   const openError = await tryOpenUrl(launchUrl);
   if (!state.options.json) {
     printSection('Connect Wallet');
-    for (const notice of bridgeNotices) {
+    for (const notice of runtimeNotices) {
       console.log(notice);
     }
     console.log(`${openError ? 'Open manually' : 'Opened'}: ${launchUrl}`);
@@ -3302,7 +3326,7 @@ async function renderDashboard(state: TerminalAppState): Promise<void> {
   console.log(setupLine(state.options, 1, 'Wallet', walletSetupStatus(health), '/connect'));
   console.log(setupLine(state.options, 2, 'Cloud Storage', cloudSetupStatus(authSummary), '/sign-in'));
   console.log(setupLine(state.options, 3, 'Agent', agentSetupStatus(ai, hostedAi, authSummary), '/agent-setup'));
-  console.log(`Network: ${networkLabel}`);
+  // console.log(`Network: ${networkLabel}`);
   console.log(`Cloud APIs: ${cloudApiStatus(state.options, hostedAi)}`);
 
   printSection('Start');
@@ -3628,39 +3652,95 @@ async function recoverUnauthorizedBridge(options: GlobalOptions, notices: string
   );
 }
 
-async function ensureBrowserHost(state: TerminalAppState): Promise<void> {
-  if (await isWalletHostReachable(state.options)) {
-    return;
+async function ensureBrowserHost(state: TerminalAppState): Promise<WalletHostEnsureResult> {
+  const result = await ensureBrowserHostForOptions(state.options, false, (child) => {
+    state.browserProcess = child;
+    attachProcessLogs(state, child, 'wallet-host');
+  });
+  for (const notice of result.notices) {
+    pushLog(state, notice);
   }
-  const url = new URL(state.options.walletHostUrl);
-  const host = url.hostname || '127.0.0.1';
-  const port = url.port || '5174';
-  const child = walletHostAssetsAvailable(state.options)
-    ? startWalletHostProcess(state.options)
-    : startRepoWalletHostProcess(state.options, host, port, false);
-  state.browserProcess = child;
-  attachProcessLogs(state, child, 'wallet-host');
-  const started = await waitForWalletHost(state.options, 10_000);
-  if (!started) {
-    throw new Error(`Wallet host did not become reachable at ${state.options.walletHostUrl}.`);
-  }
+  return result;
 }
 
-async function ensureBrowserHostDetached(options: GlobalOptions): Promise<void> {
-  if (await isWalletHostReachable(options)) {
-    return;
+async function ensureBrowserHostDetached(options: GlobalOptions): Promise<WalletHostEnsureResult> {
+  return ensureBrowserHostForOptions(options, true);
+}
+
+async function ensureBrowserHostForOptions(
+  options: GlobalOptions,
+  detached: boolean,
+  onChild?: (child: ChildProcess) => void,
+): Promise<WalletHostEnsureResult> {
+  const notices: string[] = [];
+  await recoverWalletHostPortIfNeeded(options, notices);
+
+  const reusable = await probeWalletHost(options);
+  if (reusable.status === 'reachable') {
+    return { reused: true, child: null, notices };
   }
-  const url = new URL(options.walletHostUrl);
-  const host = url.hostname || '127.0.0.1';
-  const port = url.port || '5174';
-  const child = walletHostAssetsAvailable(options)
-    ? startWalletHostDetached(options)
-    : startRepoWalletHostProcess(options, host, port, true);
-  child.unref();
-  const started = await waitForWalletHost(options, 10_000);
-  if (!started) {
+  if (reusable.status === 'non-agentic') {
+    throw new Error(walletHostBusyMessage(options, reusable.error));
+  }
+
+  let lastChild: ChildProcess | null = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const url = new URL(options.walletHostUrl);
+    const host = url.hostname || '127.0.0.1';
+    const port = url.port || '5174';
+    const child = walletHostAssetsAvailable(options)
+      ? detached ? startWalletHostDetached(options) : startWalletHostProcess(options)
+      : startRepoWalletHostProcess(options, host, port, detached);
+    lastChild = child;
+    onChild?.(child);
+    if (detached) {
+      child.unref();
+    }
+    const started = await waitForWalletHost(options, 10_000);
+    if (started) {
+      return { reused: false, child, notices };
+    }
+    const probe = await probeWalletHost(options);
+    if (
+      attempt < 2 &&
+      canAutoSelectWalletHostPort(options) &&
+      (probe.status === 'non-agentic' || child.exitCode !== null)
+    ) {
+      const previous = options.walletHostUrl;
+      options.walletHostUrl = await findFreeLoopbackWalletHostUrl(previous);
+      notices.push(`Wallet host port ${bridgeHostPortLabel(previous)} was busy; using ${options.walletHostUrl}.`);
+      continue;
+    }
+    if (probe.status === 'non-agentic') {
+      throw new Error(walletHostBusyMessage(options, probe.error));
+    }
     throw new Error(`Wallet host did not become reachable at ${options.walletHostUrl}.`);
   }
+  throw new Error(`Wallet host did not become reachable at ${options.walletHostUrl}. Last child pid: ${lastChild?.pid ?? 'unknown'}.`);
+}
+
+async function recoverWalletHostPortIfNeeded(options: GlobalOptions, notices: string[]): Promise<void> {
+  const probe = await probeWalletHost(options);
+  if (probe.status !== 'non-agentic') {
+    return;
+  }
+  if (!canAutoSelectWalletHostPort(options)) {
+    throw new Error(walletHostBusyMessage(options, probe.error));
+  }
+  const previous = options.walletHostUrl;
+  options.walletHostUrl = await findFreeLoopbackWalletHostUrl(previous);
+  notices.push(`Wallet host port ${bridgeHostPortLabel(previous)} was busy; using ${options.walletHostUrl}.`);
+}
+
+function canAutoSelectWalletHostPort(options: GlobalOptions): boolean {
+  return options.walletHostUrlSource !== 'flag' && isLoopbackHttpUrl(options.walletHostUrl);
+}
+
+function walletHostBusyMessage(options: GlobalOptions, reason: string): string {
+  return (
+    `Port ${bridgeHostPortLabel(options.walletHostUrl)} is not an Agentic wallet host (${reason}). ` +
+    'Stop the process using that port or run with --wallet-host-url using a free loopback port.'
+  );
 }
 
 function startBridgeProcess(options: GlobalOptions): ChildProcess {
@@ -4327,6 +4407,14 @@ function bridgeHostPortLabel(raw: string): string {
 }
 
 async function findFreeLoopbackBridgeUrl(previousUrl: string): Promise<string> {
+  return findFreeLoopbackServiceUrl(previousUrl, 'bridge');
+}
+
+async function findFreeLoopbackWalletHostUrl(previousUrl: string): Promise<string> {
+  return findFreeLoopbackServiceUrl(previousUrl, 'wallet host');
+}
+
+async function findFreeLoopbackServiceUrl(previousUrl: string, label: string): Promise<string> {
   const previous = new URL(previousUrl);
   const host = previous.hostname || '127.0.0.1';
   const server = createNetServer();
@@ -4340,7 +4428,7 @@ async function findFreeLoopbackBridgeUrl(previousUrl: string): Promise<string> {
     server.close((err) => (err ? rejectClose(err) : resolveClose()));
   });
   if (!port) {
-    throw new Error('Could not allocate a fallback bridge port.');
+    throw new Error(`Could not allocate a fallback ${label} port.`);
   }
   previous.port = String(port);
   previous.pathname = '';
@@ -4393,25 +4481,38 @@ async function isUrlReachable(url: string): Promise<boolean> {
 }
 
 async function isWalletHostReachable(options: GlobalOptions): Promise<boolean> {
-  if (walletHostAssetsAvailable(options)) {
-    return isAgenticWalletHostReachable(options.walletHostUrl);
-  }
-  if (options.repoRoot) {
-    return isUrlReachable(options.walletHostUrl);
-  }
-  return false;
+  return (await probeWalletHost(options)).status === 'reachable';
 }
 
 async function isAgenticWalletHostReachable(walletHostUrl: string): Promise<boolean> {
+  return (await probeAgenticWalletHost(walletHostUrl)).status === 'reachable';
+}
+
+async function probeWalletHost(options: GlobalOptions): Promise<WalletHostProbe> {
+  if (walletHostAssetsAvailable(options)) {
+    return probeAgenticWalletHost(options.walletHostUrl);
+  }
+  if (options.repoRoot) {
+    return (await isUrlReachable(options.walletHostUrl))
+      ? { status: 'reachable' }
+      : { status: 'unreachable', error: 'not reachable' };
+  }
+  return { status: 'unreachable', error: `wallet host assets are missing from ${options.walletHostDir}` };
+}
+
+async function probeAgenticWalletHost(walletHostUrl: string): Promise<WalletHostProbe> {
   try {
     const response = await fetchWithTimeout(walletHostHealthUrl(walletHostUrl), { method: 'GET' }, 1_500);
     if (!response.ok) {
-      return false;
+      return { status: response.status < 500 ? 'non-agentic' : 'unreachable', error: `HTTP ${response.status}` };
     }
     const body = parseJsonBody(await response.text());
-    return isRecord(body) && body.ok === true && body.service === 'agentic-wallet-host';
-  } catch {
-    return false;
+    if (isRecord(body) && body.ok === true && body.service === 'agentic-wallet-host') {
+      return { status: 'reachable' };
+    }
+    return { status: 'non-agentic', error: 'health check did not identify an Agentic wallet host' };
+  } catch (err) {
+    return { status: 'unreachable', error: errorMessage(err) };
   }
 }
 
@@ -5940,6 +6041,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     ? resolve(process.env.AGENT_WALLET_HOME)
     : repoRoot ?? defaultUserRuntimeDir();
   const bridgeUrlFromEnv = process.env.AGENT_WALLET_BRIDGE_URL ?? process.env.BRIDGE_URL;
+  const walletHostUrlFromEnv = process.env.AGENT_WALLET_WALLET_HOST_URL;
   const tokenFromEnv = process.env.BRIDGE_TOKEN;
   const options: GlobalOptions = {
     bridgeUrl: stripTrailingSlash(bridgeUrlFromEnv ?? DEFAULT_BRIDGE_URL),
@@ -5954,7 +6056,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     tokenSource: tokenFromEnv ? 'env' : 'unresolved',
     bridgeTokenPath: '',
     bridgeSessionPath: '',
-    walletHostUrl: stripTrailingSlash(process.env.AGENT_WALLET_WALLET_HOST_URL ?? DEFAULT_WALLET_HOST_URL),
+    walletHostUrl: stripTrailingSlash(walletHostUrlFromEnv ?? DEFAULT_WALLET_HOST_URL),
+    walletHostUrlSource: walletHostUrlFromEnv ? 'env' : 'default',
     repoRoot,
     runtimeDir,
     envPath: repoRoot ? join(repoRoot, '.env') : join(runtimeDir, '.env'),
@@ -6018,6 +6121,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     if (flag === '--wallet-host-url') {
       const value = optionArgument(argv, index, flag, inlineValue);
       options.walletHostUrl = stripTrailingSlash(value.value);
+      options.walletHostUrlSource = 'flag';
       index = value.index;
       continue;
     }

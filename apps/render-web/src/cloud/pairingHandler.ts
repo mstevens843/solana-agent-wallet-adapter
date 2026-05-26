@@ -1,12 +1,10 @@
 // Cloud pairing relay for the desktop Discover → "Scan QR with phone" flow
 // when the user picks Phantom or Solflare. Those wallets don't speak
 // WalletConnect v2 the way Backpack/Jupiter do — their universal-link
-// deeplinks land the user in the wallet's in-app browser at
-// `agentic-signer.com/app?wallet=<brand>&pairing=<uuid>`. The wallet
-// connects via wallet-standard inside that in-app browser; the desktop
-// (which can't reach the phone directly) polls this relay to learn the
-// connected address and then routes signing requests through the relay
-// back to the phone.
+// deeplinks land the user on `/qr-connect`, which decrypts the wallet
+// response and registers the phone. The desktop (which can't reach the
+// phone directly) polls this relay to learn the connected address and then
+// routes signing requests through the relay back to the phone.
 //
 // Architecture: in-memory `Map<uuid, PairingRecord>` keyed by a v4 UUID
 // the desktop generates client-side and embeds in the deeplink. Anyone
@@ -15,7 +13,9 @@
 // never logged. TTL: 30 minutes since last activity (sweeper runs every
 // 60s).
 //
-// Six routes:
+// Routes:
+//   POST /api/pair/:uuid/deeplink        desktop stores deeplink crypto metadata
+//   GET  /api/pair/:uuid/deeplink        wallet-host reads deeplink crypto metadata
 //   POST /api/pair/:uuid/host            wallet-host registers address
 //   GET  /api/pair/:uuid/host            desktop polls for the address
 //   POST /api/pair/:uuid/submit          desktop submits signing request
@@ -52,8 +52,18 @@ interface InboxEntry {
   result: unknown | undefined;
 }
 
+interface DeeplinkMetadata {
+  wallet: 'phantom' | 'solflare';
+  cluster: 'mainnet-beta' | 'testnet' | 'devnet' | 'localnet';
+  appUrl: string;
+  dappPublicKey: string;
+  dappSecretKey: string;
+  createdAt: number;
+}
+
 interface PairingRecord {
   uuid: string;
+  deeplink: DeeplinkMetadata | null;
   host:
     | {
         address: string;
@@ -112,6 +122,7 @@ export function createPairingHandler(options: PairingHandlerOptions = {}): Pairi
       record = {
         uuid,
         host: null,
+        deeplink: null,
         inbox: [],
         createdAt: now,
         lastSeenAt: now,
@@ -178,6 +189,10 @@ export function createPairingHandler(options: PairingHandlerOptions = {}): Pairi
       const trailing = segments[2];
 
       try {
+        if (action === 'deeplink' && segments.length === 2) {
+          if (req.method === 'POST') return await postDeeplink(req, res, record, clock.now());
+          if (req.method === 'GET') return getDeeplink(res, record);
+        }
         if (action === 'host' && segments.length === 2) {
           if (req.method === 'POST') return await postHost(req, res, record);
           if (req.method === 'GET') return getHost(res, record);
@@ -232,6 +247,49 @@ async function postHost(
   return true;
 }
 
+async function postDeeplink(
+  req: IncomingMessage,
+  res: ServerResponse,
+  record: PairingRecord,
+  now: number,
+): Promise<boolean> {
+  const body = (await readJsonBody(req)) as Record<string, unknown>;
+  const wallet = typeof body.wallet === 'string' ? body.wallet.trim() : '';
+  const cluster = typeof body.cluster === 'string' ? body.cluster.trim() : '';
+  const appUrl = typeof body.appUrl === 'string' ? body.appUrl.trim() : '';
+  const dappPublicKey = typeof body.dappPublicKey === 'string' ? body.dappPublicKey.trim() : '';
+  const dappSecretKey = typeof body.dappSecretKey === 'string' ? body.dappSecretKey.trim() : '';
+  if (
+    !isDeeplinkWallet(wallet) ||
+    !isDeeplinkCluster(cluster) ||
+    !isHttpsUrl(appUrl) ||
+    !dappPublicKey ||
+    !dappSecretKey
+  ) {
+    writeJson(res, 400, { error: 'invalid_deeplink_payload' });
+    return true;
+  }
+  record.deeplink = {
+    wallet,
+    cluster,
+    appUrl,
+    dappPublicKey,
+    dappSecretKey,
+    createdAt: now,
+  };
+  writeJson(res, 200, { ok: true });
+  return true;
+}
+
+function getDeeplink(res: ServerResponse, record: PairingRecord): boolean {
+  if (!record.deeplink) {
+    writeJson(res, 404, { error: 'deeplink_not_registered' });
+    return true;
+  }
+  writeJson(res, 200, record.deeplink);
+  return true;
+}
+
 function getHost(res: ServerResponse, record: PairingRecord): boolean {
   if (!record.host) {
     writeJson(res, 404, { error: 'pairing_not_registered' });
@@ -239,6 +297,22 @@ function getHost(res: ServerResponse, record: PairingRecord): boolean {
   }
   writeJson(res, 200, record.host);
   return true;
+}
+
+function isDeeplinkWallet(value: string): value is DeeplinkMetadata['wallet'] {
+  return value === 'phantom' || value === 'solflare';
+}
+
+function isDeeplinkCluster(value: string): value is DeeplinkMetadata['cluster'] {
+  return value === 'mainnet-beta' || value === 'testnet' || value === 'devnet' || value === 'localnet';
+}
+
+function isHttpsUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 async function postSubmit(

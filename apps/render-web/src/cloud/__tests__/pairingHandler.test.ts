@@ -172,6 +172,58 @@ describe('pairingHandler — host round-trip', () => {
   });
 });
 
+describe('pairingHandler — deeplink metadata', () => {
+  let handler: PairingHandler;
+  beforeEach(() => {
+    handler = createPairingHandler({ clock: { now: () => 1234 } });
+  });
+  afterEach(() => {
+    handler.shutdown();
+  });
+
+  const DEEPLINK_BODY = {
+    wallet: 'solflare',
+    cluster: 'devnet',
+    appUrl: 'https://agentic-signer.com',
+    dappPublicKey: 'DappPublicKey',
+    dappSecretKey: 'DappSecretKey',
+  };
+
+  it('GET deeplink returns 404 before desktop metadata is registered', async () => {
+    const r = await call(handler, 'GET', `/api/pair/${VALID_UUID}/deeplink`);
+    expect(r.status).toBe(404);
+    expect(r.body.error).toBe('deeplink_not_registered');
+  });
+
+  it('POST deeplink then GET deeplink echoes metadata with createdAt', async () => {
+    const post = await call(handler, 'POST', `/api/pair/${VALID_UUID}/deeplink`, DEEPLINK_BODY);
+    expect(post.status).toBe(200);
+    expect(post.body.ok).toBe(true);
+
+    const get = await call(handler, 'GET', `/api/pair/${VALID_UUID}/deeplink`);
+    expect(get.status).toBe(200);
+    expect(get.body).toMatchObject({
+      ...DEEPLINK_BODY,
+      createdAt: 1234,
+    });
+  });
+
+  it('rejects invalid deeplink metadata payloads', async () => {
+    const r = await call(handler, 'POST', `/api/pair/${VALID_UUID}/deeplink`, {
+      ...DEEPLINK_BODY,
+      wallet: 'backpack',
+    });
+    expect(r.status).toBe(400);
+    expect(r.body.error).toBe('invalid_deeplink_payload');
+  });
+
+  it('does not require host registration before storing deeplink metadata', async () => {
+    await call(handler, 'POST', `/api/pair/${VALID_UUID}/deeplink`, DEEPLINK_BODY);
+    const host = await call(handler, 'GET', `/api/pair/${VALID_UUID}/host`);
+    expect(host.status).toBe(404);
+  });
+});
+
 describe('pairingHandler — signing relay round-trip', () => {
   let handler: PairingHandler;
   let requestIdCounter = 0;

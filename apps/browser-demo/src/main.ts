@@ -145,8 +145,20 @@ import { RemoteBridgeBackend } from './remoteBridgeBackend.js';
 import { RemoteRelayBackend } from './remoteRelayBackend.js';
 import {
   buildPhantomConnectUrl,
+  buildSolflareConnectUrl,
   generatePhantomConnectKeypair,
 } from './walletDeeplinks.js';
+import {
+  approvalResourceFromError as deeplinkApprovalResourceFromError,
+  buildSigningUrlForRequest,
+  decryptConnectResponse,
+  decryptSigningResponse,
+  parseQrConnectUrl,
+  rejectedApprovalFromWalletError,
+  resolveSigningPayload,
+  type EncryptedDeeplinkSessionRecord,
+  type EncryptedDeeplinkWalletId,
+} from './encryptedDeeplink.js';
 import {
   createWalletConnectSolanaClient,
   registerWalletConnectSolanaWallet,
@@ -1167,7 +1179,7 @@ const BROWSER_AI_LIMITATIONS = [
   'Browser AI cannot run background jobs after the tab closes.',
 ];
 const CUSTOM_AI_MODEL_VALUE = '__custom__';
-const ROUTE_PATHS = ['/', '/docs', '/builders', '/app', '/connect', '/disconnect', '/approve', '/sign', '/cli', '/desktop', '/android', '/demo', '/mwa-test', '/privacy', '/terms', '/delete-account', '/agentic-login'] as const;
+const ROUTE_PATHS = ['/', '/docs', '/builders', '/app', '/connect', '/disconnect', '/approve', '/sign', '/qr-connect', '/cli', '/desktop', '/android', '/demo', '/mwa-test', '/privacy', '/terms', '/delete-account', '/agentic-login'] as const;
 const ROUTE_PATH_SET = new Set<string>(ROUTE_PATHS);
 const SHOW_DEV_CONTROLS = resolveDevControls();
 const IS_ANDROID_APP = resolveAndroidAppSurface();
@@ -1261,6 +1273,7 @@ const NAV_ITEMS: ReadonlyArray<NavItem> = [
 ];
 const ROUTE_TITLES: Record<string, string> = {
   '/builders': 'Builders · Agentic',
+  '/qr-connect': 'QR Connect · Agentic',
   '/mwa-test': 'MWA · Agentic',
   '/privacy': 'Privacy Policy · Agentic',
   '/terms': 'Terms of Service · Agentic',
@@ -4681,6 +4694,506 @@ function protocolErrorPayload(err: unknown): { code: string; message: string } {
   return { code: 'wallet_unreachable', message: String(err) };
 }
 
+// ─── Phantom / Solflare QR deeplink relay page ──────────────────────────
+
+type QrConnectMode =
+  | 'processing'
+  | 'connected'
+  | 'relay-active'
+  | 'opening-wallet'
+  | 'error';
+
+interface QrConnectRuntime {
+  mode: QrConnectMode;
+  wallet: EncryptedDeeplinkWalletId | null;
+  pairing: string;
+  requestId: string;
+  message: string;
+  detail: string;
+  walletUrl: string;
+  lastHandledUrl: string;
+  pollHandle: number | null;
+}
+
+interface PairingDeeplinkMetadata {
+  wallet: EncryptedDeeplinkWalletId;
+  cluster: Cluster;
+  appUrl: string;
+  dappPublicKey: string;
+  dappSecretKey: string;
+}
+
+const QR_CONNECT_SESSION_STORAGE_PREFIX = 'agentic-qr-connect-session:';
+const QR_CONNECT_PENDING_STORAGE_PREFIX = 'agentic-qr-connect-pending:';
+
+const qrConnect: QrConnectRuntime = {
+  mode: 'processing',
+  wallet: null,
+  pairing: '',
+  requestId: '',
+  message: 'Preparing wallet connection.',
+  detail: 'Checking the encrypted wallet response.',
+  walletUrl: '',
+  lastHandledUrl: '',
+  pollHandle: null,
+};
+
+function scheduleQrConnectRoute(): void {
+  if (currentRoute() !== '/qr-connect') return;
+  window.queueMicrotask(() => {
+    void startQrConnectRoute();
+  });
+}
+
+async function startQrConnectRoute(): Promise<void> {
+  if (currentRoute() !== '/qr-connect') return;
+  const href = window.location.href;
+  if (qrConnect.lastHandledUrl === href) return;
+  qrConnect.lastHandledUrl = href;
+  await handleQrConnectRoute(href);
+}
+
+async function handleQrConnectRoute(href: string): Promise<void> {
+  const parsed = parseQrConnectUrl(href);
+  qrConnect.wallet = parsed.wallet;
+  qrConnect.pairing = parsed.pairing;
+  qrConnect.requestId = parsed.requestId;
+  qrConnect.walletUrl = '';
+
+  if (!parsed.wallet || !parsed.pairing) {
+    stopQrConnectRelay();
+    setQrConnectError(
+      'This QR connection link is incomplete.',
+      'Go back to the desktop app and scan a fresh Phantom or Solflare QR code.',
+    );
+    return;
+  }
+
+  try {
+    if (parsed.error) {
+      await handleQrConnectWalletError(parsed.pairing, parsed.requestId, parsed.error);
+      return;
+    }
+    if (parsed.phase === 'connect') {
+      await handleQrConnectConnectCallback(href, parsed.wallet, parsed.pairing);
+      return;
+    }
+    if (parsed.phase === 'sign') {
+      await handleQrConnectSignCallback(href, parsed.wallet, parsed.pairing, parsed.requestId);
+      return;
+    }
+
+    const session = loadQrConnectSession(parsed.pairing);
+    if (!session) {
+      stopQrConnectRelay();
+      setQrConnectError(
+        'No active phone relay session was found.',
+        'Scan the QR code again from the desktop app and approve the wallet Connect prompt.',
+      );
+      return;
+    }
+    startQrConnectRelay(session, 'relay-active');
+  } catch (err) {
+    stopQrConnectRelay();
+    setQrConnectError(
+      'Wallet relay failed.',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
+
+async function handleQrConnectWalletError(
+  pairing: string,
+  requestId: string,
+  error: ProtocolErrorPayload,
+): Promise<void> {
+  if (requestId) {
+    await postPairingResult(pairing, requestId, rejectedApprovalFromWalletError(requestId, error));
+    clearQrConnectPendingRequest(pairing, requestId);
+  }
+  const session = loadQrConnectSession(pairing);
+  scrubQrConnectUrl(session?.wallet ?? qrConnect.wallet, pairing);
+  if (session) {
+    startQrConnectRelay(session, 'relay-active');
+    return;
+  }
+  stopQrConnectRelay();
+  setQrConnectError('Wallet request rejected.', error.message);
+}
+
+async function handleQrConnectConnectCallback(
+  href: string,
+  wallet: EncryptedDeeplinkWalletId,
+  pairing: string,
+): Promise<void> {
+  setQrConnectProcessing(wallet, pairing, 'Decrypting wallet approval.', 'Registering this phone with the desktop pairing relay.');
+  const metadata = await fetchPairingDeeplinkMetadata(pairing);
+  if (metadata.wallet !== wallet) {
+    throw new ProtocolError('invalid_request', 'Wallet response does not match the desktop QR wallet.');
+  }
+  const decrypted = decryptConnectResponse(wallet, href, metadata.dappSecretKey);
+  const session: EncryptedDeeplinkSessionRecord = {
+    pairing,
+    wallet,
+    cluster: metadata.cluster,
+    address: decrypted.publicKey,
+    session: decrypted.session,
+    dappPublicKey: metadata.dappPublicKey,
+    dappSecretKey: metadata.dappSecretKey,
+    walletEncryptionPublicKey: decrypted.walletEncryptionPublicKey,
+    sharedSecret: decrypted.sharedSecret,
+    createdAt: Date.now(),
+  };
+  saveQrConnectSession(session);
+  await postQrConnectHost(session);
+  scrubQrConnectUrl(wallet, pairing);
+  startQrConnectRelay(session, 'connected');
+}
+
+async function handleQrConnectSignCallback(
+  href: string,
+  wallet: EncryptedDeeplinkWalletId,
+  pairing: string,
+  requestId: string,
+): Promise<void> {
+  if (!requestId) {
+    throw new ProtocolError('invalid_request', 'Wallet signing callback is missing requestId.');
+  }
+  const session = loadQrConnectSession(pairing);
+  if (!session || session.wallet !== wallet) {
+    throw new ProtocolError('unauthorized', 'This phone relay session expired. Scan the desktop QR again.');
+  }
+  setQrConnectProcessing(wallet, pairing, 'Processing wallet approval.', 'Sending the signed result back to the desktop app.');
+  const request = loadQrConnectPendingRequest(pairing, requestId);
+  if (!request) {
+    throw new ProtocolError('invalid_request', 'No matching desktop signing request was found on this phone.');
+  }
+  const payload = decryptSigningResponse(href, session.sharedSecret);
+  const approval = await resolveSigningPayload({
+    wallet,
+    request,
+    payload,
+    sendRawTransaction: async (transaction) => sendQrConnectRawTransaction(session.cluster, transaction),
+  });
+  await postPairingResult(pairing, requestId, { ...approval, requestId });
+  clearQrConnectPendingRequest(pairing, requestId);
+  scrubQrConnectUrl(wallet, pairing);
+  startQrConnectRelay(session, 'relay-active');
+}
+
+function setQrConnectProcessing(
+  wallet: EncryptedDeeplinkWalletId | null,
+  pairing: string,
+  message: string,
+  detail: string,
+): void {
+  qrConnect.mode = 'processing';
+  qrConnect.wallet = wallet;
+  qrConnect.pairing = pairing;
+  qrConnect.message = message;
+  qrConnect.detail = detail;
+  qrConnect.walletUrl = '';
+  render();
+}
+
+function setQrConnectError(message: string, detail: string): void {
+  qrConnect.mode = 'error';
+  qrConnect.message = message;
+  qrConnect.detail = detail;
+  qrConnect.walletUrl = '';
+  render();
+}
+
+function startQrConnectRelay(
+  session: EncryptedDeeplinkSessionRecord,
+  mode: Extract<QrConnectMode, 'connected' | 'relay-active'>,
+): void {
+  stopQrConnectRelay();
+  qrConnect.mode = mode;
+  qrConnect.wallet = session.wallet;
+  qrConnect.pairing = session.pairing;
+  qrConnect.requestId = '';
+  qrConnect.walletUrl = '';
+  qrConnect.message =
+    mode === 'connected'
+      ? 'Connection successful. Signing into desktop app.'
+      : 'Keep this page open to approve desktop requests.';
+  qrConnect.detail =
+    mode === 'connected'
+      ? 'The desktop app will switch to the connected wallet shortly.'
+      : 'When the desktop asks for a signature, this page will open your wallet for approval.';
+  qrConnect.pollHandle = window.setInterval(() => {
+    void runQrConnectInboxTick(session);
+  }, WALLET_HOST_PAIRING_INBOX_INTERVAL_MS);
+  void runQrConnectInboxTick(session);
+  if (mode === 'connected') {
+    window.setTimeout(() => {
+      if (qrConnect.mode !== 'connected' || qrConnect.pairing !== session.pairing) return;
+      qrConnect.mode = 'relay-active';
+      qrConnect.message = 'Keep this page open to approve desktop requests.';
+      qrConnect.detail = 'When the desktop asks for a signature, this page will open your wallet for approval.';
+      render();
+    }, 1600);
+  }
+  window.addEventListener('beforeunload', stopQrConnectRelay, { once: true });
+  render();
+}
+
+function stopQrConnectRelay(): void {
+  if (qrConnect.pollHandle !== null) {
+    window.clearInterval(qrConnect.pollHandle);
+    qrConnect.pollHandle = null;
+  }
+}
+
+async function runQrConnectInboxTick(session: EncryptedDeeplinkSessionRecord): Promise<void> {
+  if (qrConnect.pairing !== session.pairing) return;
+  let response: Response;
+  try {
+    response = await fetch(pairingRelayUrl(`/api/pair/${encodeURIComponent(session.pairing)}/inbox`), {
+      method: 'GET',
+      headers: { accept: 'application/json' },
+    });
+  } catch (err) {
+    console.warn('[qr-connect] inbox fetch failed', err);
+    return;
+  }
+  if (!response.ok) {
+    if (response.status === 404 || response.status === 410) {
+      stopQrConnectRelay();
+      setQrConnectError('Desktop pairing expired.', 'Return to the desktop app and scan a fresh QR code.');
+    }
+    return;
+  }
+  const payload = (await response.json().catch(() => null)) as
+    | { requests?: Array<{ requestId: string; request: SigningRequest }> }
+    | null;
+  const entry = payload?.requests?.[0];
+  if (!entry) return;
+  await openQrConnectWalletForRequest(session, entry.requestId, entry.request);
+}
+
+async function openQrConnectWalletForRequest(
+  session: EncryptedDeeplinkSessionRecord,
+  requestId: string,
+  request: SigningRequest,
+): Promise<void> {
+  try {
+    saveQrConnectPendingRequest(session.pairing, requestId, request);
+    const redirect = new URL('/qr-connect', window.location.origin);
+    redirect.searchParams.set('wallet', session.wallet);
+    redirect.searchParams.set('pairing', session.pairing);
+    redirect.searchParams.set('phase', 'sign');
+    redirect.searchParams.set('requestId', requestId);
+    const walletUrl = buildSigningUrlForRequest({
+      session,
+      request,
+      redirectLink: redirect.toString(),
+    });
+    qrConnect.mode = 'opening-wallet';
+    qrConnect.wallet = session.wallet;
+    qrConnect.pairing = session.pairing;
+    qrConnect.requestId = requestId;
+    qrConnect.walletUrl = walletUrl;
+    qrConnect.message = `Opening ${qrConnectWalletLabel(session.wallet)} for approval.`;
+    qrConnect.detail = 'Approve or reject the wallet prompt, then you will return here automatically.';
+    render();
+    window.location.assign(walletUrl);
+  } catch (err) {
+    await postPairingResult(
+      session.pairing,
+      requestId,
+      deeplinkApprovalResourceFromError(requestId, err),
+    );
+    clearQrConnectPendingRequest(session.pairing, requestId);
+    startQrConnectRelay(session, 'relay-active');
+  }
+}
+
+async function fetchPairingDeeplinkMetadata(pairing: string): Promise<PairingDeeplinkMetadata> {
+  const response = await fetch(pairingRelayUrl(`/api/pair/${encodeURIComponent(pairing)}/deeplink`), {
+    method: 'GET',
+    headers: { accept: 'application/json' },
+  });
+  const payload = (await response.json().catch(() => null)) as unknown;
+  if (!response.ok) {
+    throw new ProtocolError('wallet_unreachable', `Pairing relay returned ${response.status} while reading deeplink metadata.`);
+  }
+  if (!isPairingDeeplinkMetadata(payload)) {
+    throw new ProtocolError('invalid_request', 'Pairing relay returned malformed deeplink metadata.');
+  }
+  return payload;
+}
+
+async function postQrConnectHost(session: EncryptedDeeplinkSessionRecord): Promise<void> {
+  const response = await fetch(pairingRelayUrl(`/api/pair/${encodeURIComponent(session.pairing)}/host`), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      address: session.address,
+      walletName: `${qrConnectWalletLabel(session.wallet)} mobile`,
+      capabilities: {
+        backend: 'remote-relay-deeplink',
+        cluster: [session.cluster],
+        supports: {
+          signMessage: true,
+          signTransaction: true,
+          signAndSendTransaction: true,
+          multiSign: false,
+          simulationPreview: false,
+        },
+        address: session.address,
+      } satisfies AdapterCapabilities,
+    }),
+  });
+  if (!response.ok) {
+    throw new ProtocolError('wallet_unreachable', `Pairing relay returned ${response.status} while registering the phone.`);
+  }
+}
+
+async function sendQrConnectRawTransaction(cluster: Cluster, transaction: Uint8Array): Promise<string> {
+  const connection = new Connection(defaultRpcUrl(cluster), 'confirmed');
+  const txid = await connection.sendRawTransaction(transaction, {
+    preflightCommitment: 'confirmed',
+    maxRetries: 3,
+  });
+  await connection.confirmTransaction(txid, 'confirmed');
+  return txid;
+}
+
+function saveQrConnectSession(session: EncryptedDeeplinkSessionRecord): void {
+  window.sessionStorage.setItem(qrConnectSessionStorageKey(session.pairing), JSON.stringify(session));
+}
+
+function loadQrConnectSession(pairing: string): EncryptedDeeplinkSessionRecord | null {
+  const raw = window.sessionStorage.getItem(qrConnectSessionStorageKey(pairing));
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return isQrConnectSessionRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveQrConnectPendingRequest(pairing: string, requestId: string, request: SigningRequest): void {
+  window.sessionStorage.setItem(qrConnectPendingStorageKey(pairing, requestId), JSON.stringify(request));
+}
+
+function loadQrConnectPendingRequest(pairing: string, requestId: string): SigningRequest | null {
+  const raw = window.sessionStorage.getItem(qrConnectPendingStorageKey(pairing, requestId));
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return isSigningRequest(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearQrConnectPendingRequest(pairing: string, requestId: string): void {
+  window.sessionStorage.removeItem(qrConnectPendingStorageKey(pairing, requestId));
+}
+
+function qrConnectSessionStorageKey(pairing: string): string {
+  return `${QR_CONNECT_SESSION_STORAGE_PREFIX}${pairing}`;
+}
+
+function qrConnectPendingStorageKey(pairing: string, requestId: string): string {
+  return `${QR_CONNECT_PENDING_STORAGE_PREFIX}${pairing}:${requestId}`;
+}
+
+function scrubQrConnectUrl(wallet: EncryptedDeeplinkWalletId | null, pairing: string): void {
+  if (!wallet || !pairing) return;
+  const url = new URL('/qr-connect', window.location.origin);
+  url.searchParams.set('wallet', wallet);
+  url.searchParams.set('pairing', pairing);
+  window.history.replaceState({}, '', url.toString());
+  qrConnect.lastHandledUrl = window.location.href;
+}
+
+function qrConnectWalletLabel(wallet: EncryptedDeeplinkWalletId | null): string {
+  if (wallet === 'phantom') return 'Phantom';
+  if (wallet === 'solflare') return 'Solflare';
+  return 'wallet';
+}
+
+function isPairingDeeplinkMetadata(value: unknown): value is PairingDeeplinkMetadata {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return (
+    (record.wallet === 'phantom' || record.wallet === 'solflare') &&
+    isQrConnectCluster(record.cluster) &&
+    typeof record.appUrl === 'string' &&
+    typeof record.dappPublicKey === 'string' &&
+    typeof record.dappSecretKey === 'string'
+  );
+}
+
+function isQrConnectSessionRecord(value: unknown): value is EncryptedDeeplinkSessionRecord {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return (
+    (record.wallet === 'phantom' || record.wallet === 'solflare') &&
+    isQrConnectCluster(record.cluster) &&
+    typeof record.pairing === 'string' &&
+    typeof record.address === 'string' &&
+    typeof record.session === 'string' &&
+    typeof record.dappPublicKey === 'string' &&
+    typeof record.dappSecretKey === 'string' &&
+    typeof record.walletEncryptionPublicKey === 'string' &&
+    typeof record.sharedSecret === 'string' &&
+    typeof record.createdAt === 'number'
+  );
+}
+
+function isSigningRequest(value: unknown): value is SigningRequest {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  const payload = record.payload as Record<string, unknown> | undefined;
+  return (
+    typeof record.id === 'string' &&
+    (record.kind === 'sign_message' || record.kind === 'sign_transaction' || record.kind === 'sign_and_send_transaction') &&
+    isQrConnectCluster(record.cluster) &&
+    Boolean(payload) &&
+    typeof payload?.data === 'string' &&
+    (payload?.encoding === 'utf8' || payload?.encoding === 'base64')
+  );
+}
+
+function isQrConnectCluster(value: unknown): value is Cluster {
+  return value === 'mainnet-beta' || value === 'testnet' || value === 'devnet' || value === 'localnet';
+}
+
+function qrConnectPage(): string {
+  const wallet = qrConnect.wallet;
+  const label = qrConnectWalletLabel(wallet);
+  const logoMarkup = wallet
+    ? brandLogoMarkup(wallet, 'qr-connect-logo')
+    : `<span class="qr-connect-logo placeholder" aria-hidden="true"></span>`;
+  const tone = qrConnect.mode === 'error' ? 'error' : qrConnect.mode === 'opening-wallet' ? 'pending' : 'success';
+  const action = qrConnect.walletUrl
+    ? `<a class="button-link qr-connect-open-wallet" href="${escapeHtml(qrConnect.walletUrl)}" data-qr-connect-open-wallet>Open ${escapeHtml(label)}</a>`
+    : '';
+  return `
+    <main class="qr-connect-page">
+      <section class="qr-connect-card ${tone}" aria-live="polite">
+        ${logoMarkup}
+        <p class="eyebrow mini">${escapeHtml(label)} QR relay</p>
+        <h1>${escapeHtml(qrConnect.message)}</h1>
+        <p>${escapeHtml(qrConnect.detail)}</p>
+        ${qrConnect.mode === 'processing' || qrConnect.mode === 'opening-wallet'
+          ? '<span class="desktop-connect-flow-spinner qr-connect-spinner" aria-hidden="true"></span>'
+          : ''}
+        ${action}
+        ${qrConnect.mode === 'relay-active'
+          ? '<p class="qr-connect-warning">Closing or leaving this page stops desktop signing until you scan again.</p>'
+          : ''}
+      </section>
+    </main>
+  `;
+}
+
 /** Retry handler for the wallet-host opening splash's error state. The
  *  user might have just installed the extension; re-run the auto-connect
  *  to pick up the late registration. */
@@ -5316,16 +5829,13 @@ async function handleScanQrForBrand(brandId: string): Promise<void> {
 }
 
 function desktopWalletConnectQrPayload(displayBrandId: string | undefined, uri: string): string {
-  if (displayBrandId === 'solflare') {
-    return `${WALLET_CONNECT_BRANDS.solflare!.deepLinkPrefix}${encodeURIComponent(uri)}`;
-  }
+  void displayBrandId;
   return uri;
 }
 
 /** Brand-agnostic WalletConnect pairing used by the desktop Discover →
- *  "Scan QR with phone" flow. Most wallets scan the raw WC URI. Solflare
- *  gets its native `solflare://wc?uri=...` wrapper so its app opens the WC
- *  prompt directly while the desktop still waits on the original WC session. */
+ *  "Scan QR with phone" flow. WalletConnect wallets scan the raw WC URI.
+ *  Phantom/Solflare are handled by the encrypted deeplink branch instead. */
 async function handleScanQrAnyWallet(displayBrandId?: string): Promise<void> {
   if (!WALLETCONNECT_PROJECT_ID) {
     pushToast(
@@ -5338,9 +5848,8 @@ async function handleScanQrAnyWallet(displayBrandId?: string): Promise<void> {
   if (walletConnect.overlay.mode !== 'closed') return;
   closeSiblingOverlays('walletconnect-qr');
   // `displayBrandId` brands the rendered QR card header (e.g. "Scan with
-  // Backpack mobile" + Backpack logo). For Solflare it also chooses the
-  // Solflare-native deeplink QR payload. The approved wallet still
-  // identifies itself in `session.peerName` post-approval.
+  // Backpack mobile" + Backpack logo). The approved wallet still identifies
+  // itself in `session.peerName` post-approval.
   dispatchWalletConnectOverlay({ type: 'openConnecting', brandId: displayBrandId ?? '' });
   try {
     const client = await ensureWalletConnectClient();
@@ -5668,7 +6177,7 @@ function ledgerOverlayBlock(): string {
 interface DesktopDeeplinkQr {
   /** Which variant this data URL was generated for; cleared when variant
    *  changes so we never display a stale QR for the wrong wallet. */
-  variant: 'phantom' | null;
+  variant: EncryptedDeeplinkWalletId | null;
   /** PNG data URL ready to drop into an `<img src>`; null until the async
    *  qrcode generation completes for the active variant. */
   dataUrl: string | null;
@@ -5677,7 +6186,7 @@ interface DesktopDeeplinkQr {
   url: string | null;
 }
 
-/** Cloud-pairing state for the Phantom QR path. The desktop
+/** Cloud-pairing state for the Phantom/Solflare QR path. The desktop
  *  generates the UUID, embeds it in the wallet's universal-link deeplink,
  *  then polls `/api/pair/<uuid>/host` until the wallet-host on the phone
  *  registers its address — at which point we adopt via `RemoteRelayBackend`. */
@@ -5685,7 +6194,7 @@ interface DesktopPairing {
   uuid: string;
   /** Picked brand — drives the rendered banner and the wallet name we display
    *  before the relay reports its own. */
-  wallet: 'phantom';
+  wallet: EncryptedDeeplinkWalletId;
   /** setInterval handle for the host-poll loop; cleared on adoption / back / timeout. */
   pollHandle: number | null;
   /** Epoch ms when the pairing was started; used to fire the 5-min soft toast. */
@@ -5698,9 +6207,9 @@ interface DesktopConnectRuntime {
   flow: DesktopConnectFlowState;
   /** setInterval handle while polling the bridge for awaiting-browser. */
   pollHandle: number | null;
-  /** Deeplink QR cache for Phantom; rebuilt whenever the user enters that variant. */
+  /** Deeplink QR cache for Phantom/Solflare; rebuilt whenever the user enters that variant. */
   deeplinkQr: DesktopDeeplinkQr;
-  /** Active cross-device pairing record (Phantom via cloud relay). */
+  /** Active cross-device pairing record (Phantom/Solflare via cloud relay). */
   pairing: DesktopPairing | null;
 }
 
@@ -5787,7 +6296,7 @@ function desktopMethodPickerBody(): string {
       </button>
       <button type="button" class="desktop-method-tile" data-desktop-flow-action="method:qr">
         <span class="desktop-method-tile-title">Scan QR with phone</span>
-        <span class="desktop-method-tile-sub">Pair your mobile wallet over WalletConnect. Your phone signs; this desktop relays.</span>
+        <span class="desktop-method-tile-sub">Pair Backpack or Jupiter over WalletConnect, or Phantom/Solflare with encrypted wallet links. Your phone signs; this desktop relays.</span>
       </button>
       <button type="button" class="desktop-method-tile" data-desktop-flow-action="method:ledger" ${ledgerAvailable ? '' : 'disabled title="Ledger USB bridge unavailable."'}>
         <span class="desktop-method-tile-title">Ledger hardware wallet</span>
@@ -5799,8 +6308,7 @@ function desktopMethodPickerBody(): string {
 
 /** The wallet brands offered on the QR step. Order matters — it's
  *  the order the rows render. Backpack and Jupiter scan the raw WalletConnect
- *  URI, Solflare scans a Solflare-native WC deeplink wrapper, and Phantom keeps
- *  its proprietary deeplink QR. */
+ *  URI; Phantom and Solflare scan encrypted wallet connect deeplinks. */
 const DESKTOP_QR_WALLETS: ReadonlyArray<{
   id: DesktopQrWallet;
   label: string;
@@ -5815,15 +6323,14 @@ const DESKTOP_QR_WALLETS: ReadonlyArray<{
 /** Body for the QR step. Branches on `desktopConnect.flow.qrWallet`:
  *  - `null` → 4-tile wallet picker (Backpack/Jupiter/Phantom/Solflare).
  *  - `'backpack'` / `'jupiter'` → branded raw WC QR.
- *  - `'solflare'` → Solflare-native `solflare://wc?uri=...` QR wrapping a WC session.
- *  - `'phantom'` → wallet-specific universal-link QR. */
+ *  - `'phantom'` / `'solflare'` → wallet-specific encrypted deeplink QR. */
 function desktopQrBody(): string {
   const wallet = desktopConnect.flow.qrWallet;
   if (wallet === null) {
     return desktopQrWalletPicker();
   }
-  if (wallet === 'backpack' || wallet === 'jupiter' || wallet === 'solflare') {
-    const brandName = wallet === 'backpack' ? 'Backpack' : wallet === 'jupiter' ? 'Jupiter' : 'Solflare';
+  if (wallet === 'backpack' || wallet === 'jupiter') {
+    const brandName = wallet === 'backpack' ? 'Backpack' : 'Jupiter';
     return `
       <div class="desktop-connect-flow-body walletconnect-qr-inline">
         ${walletConnectQrBodyHtml({
@@ -5844,8 +6351,8 @@ function desktopQrBody(): string {
       </div>
     `;
   }
-  // Phantom — deeplink QR.
-  const brandName = 'Phantom';
+  // Phantom/Solflare — encrypted deeplink QR.
+  const brandName = wallet === 'phantom' ? 'Phantom' : 'Solflare';
   const cached = desktopConnect.deeplinkQr;
   const qrMarkup = cached.variant === wallet && cached.dataUrl
     ? `<img class="walletconnect-qr-overlay-qr" src="${escapeHtmlForFlow(cached.dataUrl)}" alt="QR code that opens ${escapeHtmlForFlow(brandName)} mobile" />`
@@ -5858,11 +6365,10 @@ function desktopQrBody(): string {
       </div>
       ${qrMarkup}
       <p class="desktop-connect-flow-deeplink-hint">
-        Use the phone's <strong>built-in camera</strong>, not the scanner inside ${escapeHtmlForFlow(brandName)}.
-        iOS / Android will prompt to open the link in ${escapeHtmlForFlow(brandName)}.
+        Scan this QR with ${escapeHtmlForFlow(brandName)}. The wallet will show its native Connect prompt.
       </p>
       <div class="desktop-connect-flow-deeplink-note" role="note">
-        Your wallet will open on your phone. Cross-device sync — signing from this desktop without re-confirming on your phone — ships in a follow-up. To use this wallet from this desktop now, press Back and try <strong>Browser extension</strong> instead.
+        After approval, keep the phone page open. Future desktop signing requests will route through that page and reopen ${escapeHtmlForFlow(brandName)} for approval.
       </div>
     </div>
   `;
@@ -6008,36 +6514,65 @@ async function renderUrlQrDataUrl(target: string): Promise<string> {
   }
 }
 
-/** Build the deeplink URL for Phantom given the current
+/** Build the deeplink URL for Phantom/Solflare given the current
  *  cluster, return both the raw URL and a fresh QR data URL. The data URL
  *  is rendered into `<img src>` inside `desktopQrBody()`. `pairing` (when
  *  set) gets threaded into the redirect/destination URL so the wallet-host
  *  page in the phone's in-app browser can POST its address to the matching
  *  cloud pairing record. */
 async function buildDesktopVariantQr(
-  variant: 'phantom',
-  pairing?: string,
+  variant: EncryptedDeeplinkWalletId,
+  pairing: string,
 ): Promise<{ url: string; dataUrl: string }> {
   const appUrl = 'https://agentic-signer.com';
-  // The deployed bundle handles `?wallet=<brandId>` via
-  // `runWalletHostBrandAutoConnect`. Phantom deeplinks ultimately land in
-  // the in-app browser pointing here.
-  const walletHostUrl = `${appUrl}/app?wallet=${variant}`;
+  const redirect = new URL('/qr-connect', appUrl);
+  redirect.searchParams.set('wallet', variant);
+  redirect.searchParams.set('pairing', pairing);
+  redirect.searchParams.set('phase', 'connect');
   const keypair = generatePhantomConnectKeypair();
-  const url = buildPhantomConnectUrl({
-    dappPublicKey: keypair.publicKey,
-    redirectLink: walletHostUrl,
+  await registerDesktopDeeplinkPairing(pairing, {
+    wallet: variant,
     cluster: state.cluster,
     appUrl,
-    ...(pairing ? { pairing } : {}),
+    dappPublicKey: keypair.publicKey,
+    dappSecretKey: keypair.secretKey,
   });
-  // We discard the keypair's secret half — Phantom Connect's response
-  // payload is encrypted to our pubkey, but in the cloud-relay flow we
-  // never need to decrypt it. The wallet-host inside Phantom's in-app
-  // browser connects via wallet-standard (Phantom in-app injects its
-  // provider) and POSTs the address to the relay directly.
+  const url = variant === 'phantom'
+    ? buildPhantomConnectUrl({
+        dappPublicKey: keypair.publicKey,
+        redirectLink: redirect.toString(),
+        cluster: state.cluster,
+        appUrl,
+      })
+    : buildSolflareConnectUrl({
+        dappPublicKey: keypair.publicKey,
+        redirectLink: redirect.toString(),
+        cluster: state.cluster,
+        appUrl,
+      });
   const dataUrl = await renderUrlQrDataUrl(url);
   return { url, dataUrl };
+}
+
+async function registerDesktopDeeplinkPairing(
+  pairingUuid: string,
+  metadata: {
+    wallet: EncryptedDeeplinkWalletId;
+    cluster: Cluster;
+    appUrl: string;
+    dappPublicKey: string;
+    dappSecretKey: string;
+  },
+): Promise<void> {
+  const response = await fetch(`${PAIRING_RELAY_BASE_URL}/api/pair/${encodeURIComponent(pairingUuid)}/deeplink`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(metadata),
+  });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => ({}))) as { error?: string };
+    throw new Error(payload.error || `Pairing relay returned ${response.status}.`);
+  }
 }
 
 function handleDesktopQrWalletSelect(wallet: DesktopQrWallet): void {
@@ -6051,16 +6586,14 @@ function handleDesktopQrWalletSelect(wallet: DesktopQrWallet): void {
   stopDesktopPairing();
   desktopConnect.deeplinkQr = { variant: null, dataUrl: null, url: null };
   dispatchDesktopConnectFlow({ type: 'pickQrWallet', wallet });
-  if (wallet === 'backpack' || wallet === 'jupiter' || wallet === 'solflare') {
-    // Backpack/Jupiter scan the raw WC URI. Solflare gets a fresh WC session
-    // too, but the rendered QR payload is wrapped as `solflare://wc?uri=...`
-    // so the Solflare app opens its native WC prompt instead of browsing a URL.
+  if (wallet === 'backpack' || wallet === 'jupiter') {
+    // Backpack/Jupiter scan the raw WalletConnect URI.
     void handleScanQrAnyWallet(wallet);
     return;
   }
-  // Phantom — start a cross-device pairing, encode the UUID into the
-  // wallet's universal-link, and begin polling the relay so we can adopt the
-  // wallet when the phone reports its address.
+  // Phantom/Solflare — start a cross-device encrypted-deeplink pairing,
+  // encode the UUID into the wallet universal-link, and begin polling the
+  // relay so we can adopt the wallet when the phone reports its address.
   const pairingUuid = generatePairingUuid();
   desktopConnect.pairing = {
     uuid: pairingUuid,
@@ -6076,6 +6609,17 @@ function handleDesktopQrWalletSelect(wallet: DesktopQrWallet): void {
     if (desktopConnect.pairing?.uuid !== pairingUuid) return;
     desktopConnect.deeplinkQr = { variant: wallet, url, dataUrl };
     startDesktopPairingPoll(pairingUuid, wallet);
+    render();
+  }).catch((err) => {
+    if (desktopConnect.flow.qrWallet !== wallet) return;
+    if (desktopConnect.pairing?.uuid !== pairingUuid) return;
+    stopDesktopPairing();
+    desktopConnect.deeplinkQr = { variant: null, url: null, dataUrl: null };
+    pushToast(
+      'error',
+      `Could not prepare ${wallet === 'phantom' ? 'Phantom' : 'Solflare'} QR`,
+      err instanceof Error ? err.message : String(err),
+    );
     render();
   });
 }
@@ -6103,14 +6647,14 @@ function stopDesktopPairing(): void {
   desktopConnect.pairing = null;
 }
 
-function startDesktopPairingPoll(uuid: string, wallet: 'phantom'): void {
+function startDesktopPairingPoll(uuid: string, wallet: EncryptedDeeplinkWalletId): void {
   if (!desktopConnect.pairing || desktopConnect.pairing.uuid !== uuid) return;
   desktopConnect.pairing.pollHandle = window.setInterval(() => {
     void pollPairingHost(uuid, wallet);
   }, PAIRING_POLL_INTERVAL_MS);
 }
 
-async function pollPairingHost(uuid: string, wallet: 'phantom'): Promise<void> {
+async function pollPairingHost(uuid: string, wallet: EncryptedDeeplinkWalletId): Promise<void> {
   // Confirm we're still polling for this exact pairing — user may have
   // pressed Back or switched wallets during the in-flight request.
   if (desktopConnect.pairing?.uuid !== uuid) return;
@@ -6162,7 +6706,7 @@ async function adoptPairedWallet(input: {
   capabilities: AdapterCapabilities;
   walletName: string;
   pairingUuid: string;
-  wallet: 'phantom';
+  wallet: EncryptedDeeplinkWalletId;
 }): Promise<void> {
   if (desktopConnect.pairing?.uuid !== input.pairingUuid) return;
   stopDesktopPairing();
@@ -6434,6 +6978,9 @@ function render(): void {
     }
   }
   const route = currentRoute();
+  if (route !== '/qr-connect' && qrConnect.pollHandle !== null) {
+    stopQrConnectRelay();
+  }
   if (state.activeMobileRailSheet && (route !== '/app' || !isMobileAppViewport() || state.activeTab !== 'overview')) {
     state.activeMobileRailSheet = null;
   }
@@ -6475,6 +7022,7 @@ function render(): void {
   if (state.tauriNativeEnvironment.isTauriNative) {
     mountTauriLocalRuntimePanel('tauri-local-runtime-panel');
   }
+  scheduleQrConnectRoute();
   updateTabTitleBadge();
   scheduleInboxSwapQuoteHydration();
   scheduleVisibleTokenMarketHydration();
@@ -6702,6 +7250,8 @@ function pageContent(route: AppRoute | null): string {
     case '/approve':
     case '/sign':
       return cliAppPage();
+    case '/qr-connect':
+      return qrConnectPage();
     case '/cli':
       return cliPage();
     case '/desktop':
@@ -48574,13 +49124,14 @@ function readLaunchParams(): {
   const cliRequestId = params.get('requestId')?.trim() || undefined;
   const rawSurface = params.get('surface')?.trim();
   const cliSurface: CliSurfaceName | undefined = rawSurface === 'desktop' ? 'desktop' : undefined;
+  const qrConnectRoute = normalizePathname(window.location.pathname) === '/qr-connect';
   // Legacy mobile/deeplink flows can pass ?wallet=<brandId> to auto-select a
   // browser wallet on /app. Ignored if CLI mode is active.
-  const walletBrand = !cliMode ? params.get('wallet')?.trim() || undefined : undefined;
+  const walletBrand = !cliMode && !qrConnectRoute ? params.get('wallet')?.trim() || undefined : undefined;
   // The desktop's Phantom QR path embeds a pairing UUID. When the wallet-host
   // connects, it POSTs its address to `/api/pair/<pairing>/host` and runs an
   // inbox loop so the desktop can sign through the relay.
-  const rawPairing = !cliMode ? params.get('pairing')?.trim() : undefined;
+  const rawPairing = !cliMode && !qrConnectRoute ? params.get('pairing')?.trim() : undefined;
   const pairing =
     rawPairing && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(rawPairing)
       ? rawPairing

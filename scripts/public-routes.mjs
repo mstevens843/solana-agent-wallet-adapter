@@ -3,6 +3,7 @@ export const publicAppRoutes = [
   '/docs',
   '/builders',
   '/app',
+  '/qr-connect',
   '/cli',
   '/desktop',
   '/android',

@@ -7,28 +7,23 @@
 //   uses its own encrypted-deeplink protocol ("Phantom Connect"); a generic
 //   `wc:topic@2?…` URI surfaces "This QR code is not valid" in Phantom.
 //   See https://phantom.com/learn/blog/the-complete-guide-to-phantom-deeplinks
-// - **Solflare browse links** are retained for any caller that explicitly
-//   wants to open a dApp inside Solflare's in-app browser. The desktop QR
-//   picker no longer uses this helper for Solflare; it wraps a WalletConnect
-//   pairing URI in `solflare://wc?uri=...` so Solflare opens its native WC
-//   prompt.
+// - **Solflare encrypted connect links** now mirror Phantom for desktop QR
+//   pairing. Browse links are retained only for callers that explicitly want
+//   to open a dApp inside Solflare's in-app browser.
 //
 // These helpers are DOM-free and have no side effects. Tests exercise the
 // URL shapes directly.
 
-import bs58 from 'bs58';
-import nacl from 'tweetnacl';
-
 import type { SolanaClusterId } from '@solana-agent-wallet-adapter/walletconnect-solana';
+import { generateEncryptedDeeplinkKeypair } from './encryptedDeeplink.js';
 
 export interface PhantomConnectKeypair {
   /** Base58 of the dApp's ephemeral X25519 public key, passed to Phantom as
    *  `dapp_encryption_public_key`. Phantom encrypts the session payload to
    *  this key on approve. */
   publicKey: string;
-  /** Base58 of the matching secret key. Phase 1 discards this (the desktop
-   *  doesn't decrypt the response yet); Phase 2 stores it to decrypt the
-   *  redirect payload returned through the pairing relay. */
+  /** Base58 of the matching secret key. The desktop stores this on the
+   *  pairing relay so `/qr-connect` can decrypt the wallet redirect. */
   secretKey: string;
 }
 
@@ -37,11 +32,7 @@ export interface PhantomConnectKeypair {
  *  box keypair (32-byte public + 32-byte secret) — `tweetnacl`'s `box.keyPair`
  *  returns exactly that. */
 export function generatePhantomConnectKeypair(): PhantomConnectKeypair {
-  const kp = nacl.box.keyPair();
-  return {
-    publicKey: bs58.encode(kp.publicKey),
-    secretKey: bs58.encode(kp.secretKey),
-  };
+  return generateEncryptedDeeplinkKeypair();
 }
 
 /** Appends a `pairing=<uuid>` query parameter to an absolute URL. Preserves
@@ -79,6 +70,33 @@ export function buildPhantomConnectUrl(options: BuildPhantomConnectUrlOptions): 
     ? appendPairingParam(options.redirectLink, options.pairing)
     : options.redirectLink;
   const url = new URL('https://phantom.app/ul/v1/connect');
+  url.searchParams.set('app_url', options.appUrl);
+  url.searchParams.set('dapp_encryption_public_key', options.dappPublicKey);
+  url.searchParams.set('cluster', phantomClusterParam(options.cluster));
+  url.searchParams.set('redirect_link', redirectLink);
+  return url.toString();
+}
+
+export interface BuildSolflareConnectUrlOptions {
+  /** Base58 of the dApp's ephemeral encryption public key. */
+  dappPublicKey: string;
+  /** Absolute URL Solflare redirects back to after approval. */
+  redirectLink: string;
+  /** Solana cluster the dApp wants the wallet to authorize. */
+  cluster: SolanaClusterId;
+  /** Absolute URL Solflare uses to retrieve app metadata during approval. */
+  appUrl: string;
+  /** Optional pairing UUID appended to `redirectLink`. */
+  pairing?: string;
+}
+
+/** Build the `https://solflare.com/ul/v1/connect` universal-link URL for
+ *  Solflare's encrypted deeplink protocol. */
+export function buildSolflareConnectUrl(options: BuildSolflareConnectUrlOptions): string {
+  const redirectLink = options.pairing
+    ? appendPairingParam(options.redirectLink, options.pairing)
+    : options.redirectLink;
+  const url = new URL('https://solflare.com/ul/v1/connect');
   url.searchParams.set('app_url', options.appUrl);
   url.searchParams.set('dapp_encryption_public_key', options.dappPublicKey);
   url.searchParams.set('cluster', phantomClusterParam(options.cluster));

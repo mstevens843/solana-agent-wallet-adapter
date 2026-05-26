@@ -9422,6 +9422,68 @@ code {
   padding: 9px 12px;
 }
 
+.qr-connect-page {
+  align-items: center;
+  display: grid;
+  min-height: min(720px, calc(100dvh - 180px));
+  padding: 48px 20px;
+}
+.qr-connect-card {
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(125, 231, 176, 0.24);
+  border-radius: var(--radius);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.24);
+  display: grid;
+  gap: 12px;
+  justify-items: center;
+  margin: 0 auto;
+  max-width: 460px;
+  padding: 28px 22px;
+  text-align: center;
+}
+.qr-connect-card.error {
+  border-color: rgba(255, 117, 117, 0.34);
+}
+.qr-connect-card.pending {
+  border-color: rgba(224, 184, 100, 0.34);
+}
+.qr-connect-card h1 {
+  color: var(--text);
+  font-size: clamp(1.35rem, 4vw, 2rem);
+  line-height: 1.1;
+  margin: 0;
+}
+.qr-connect-card p {
+  color: var(--muted);
+  font-size: 0.96rem;
+  line-height: 1.45;
+  margin: 0;
+}
+.qr-connect-logo {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 12px;
+  height: 58px;
+  object-fit: contain;
+  padding: 8px;
+  width: 58px;
+}
+.qr-connect-logo.placeholder {
+  border: 1px dashed rgba(224, 230, 226, 0.18);
+  display: inline-block;
+}
+.qr-connect-spinner {
+  height: 22px;
+  margin-top: 4px;
+  width: 22px;
+}
+.qr-connect-open-wallet {
+  margin-top: 4px;
+}
+.qr-connect-warning {
+  color: rgba(224, 184, 100, 0.92) !important;
+  font-size: 0.85rem !important;
+}
+
 .desktop-connect-flow-body {
   display: grid;
   gap: 8px;

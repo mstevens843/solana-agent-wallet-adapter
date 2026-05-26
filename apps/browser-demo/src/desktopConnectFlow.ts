@@ -21,9 +21,8 @@ type DesktopConnectInlineMethod = Exclude<DesktopConnectMethod, 'extension'>;
 
 /** Which wallet the user picked inside the QR step. `null` means the
  *  picker is showing (no wallet chosen yet, no QR generated). Backpack and
- *  Jupiter render the raw WalletConnect QR; Solflare renders a
- *  Solflare-native WC deeplink wrapper; Phantom keeps its wallet-specific
- *  deeplink QR. */
+ *  Jupiter render the raw WalletConnect QR; Phantom and Solflare render
+ *  wallet-specific encrypted deeplink QRs. */
 export type DesktopQrWallet = 'backpack' | 'jupiter' | 'phantom' | 'solflare';
 
 export interface DesktopBrowserConnectUrlInput {
