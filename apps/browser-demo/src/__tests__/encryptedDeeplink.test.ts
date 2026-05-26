@@ -6,6 +6,7 @@ import nacl from 'tweetnacl';
 import { ProtocolError } from '@solana-agent-wallet-adapter/core';
 
 import {
+  buildAndroidWalletIntentUrl,
   buildEncryptedSigningUrl,
   decryptConnectResponse,
   decryptSigningResponse,
@@ -230,5 +231,39 @@ describe('encrypted deeplink request parsing and result conversion', () => {
       },
     });
     expect(approval.result).toEqual({ signature: 'txid-phantom', txid: 'txid-phantom' });
+  });
+});
+
+describe('buildAndroidWalletIntentUrl', () => {
+  // Wallet HTTPS URL with the typical query payload Solflare's encrypted
+  // deeplink protocol emits. The intent URI must preserve every query param
+  // verbatim (only the leading https: scheme moves into the Intent fragment),
+  // and the fallback URL must round-trip via `decodeURIComponent`.
+  const solflareHttps =
+    'https://solflare.com/ul/v1/signTransaction?dapp_encryption_public_key=PUB&nonce=NONCE&redirect_link=https%3A%2F%2Fagentic-signer.com%2Fqr-connect%3Fwallet%3Dsolflare%26pairing%3DABC%26phase%3Dsign%26requestId%3DREQ&payload=ENC';
+
+  function extractFallback(intent: string): string {
+    const match = intent.match(/S\.browser_fallback_url=([^;]+);end$/);
+    if (!match || !match[1]) throw new Error(`intent URL missing fallback: ${intent}`);
+    return decodeURIComponent(match[1]);
+  }
+
+  it('wraps the Solflare HTTPS link with Solflare package and fallback', () => {
+    const intent = buildAndroidWalletIntentUrl('solflare', solflareHttps);
+    expect(intent.startsWith('intent://solflare.com/ul/v1/signTransaction?')).toBe(true);
+    expect(intent).toContain('dapp_encryption_public_key=PUB');
+    expect(intent).toContain('payload=ENC');
+    expect(intent).toContain('#Intent;scheme=https;package=com.solflare.mobile;');
+    expect(intent.endsWith(';end')).toBe(true);
+    expect(extractFallback(intent)).toBe(solflareHttps);
+  });
+
+  it('uses the Phantom package id when wrapping a Phantom HTTPS link', () => {
+    const phantomHttps =
+      'https://phantom.app/ul/v1/signTransaction?dapp_encryption_public_key=PUB&nonce=NONCE&redirect_link=https%3A%2F%2Fagentic-signer.com%2Fqr-connect%3Fwallet%3Dphantom%26pairing%3DXYZ%26phase%3Dsign%26requestId%3DREQ&payload=ENC';
+    const intent = buildAndroidWalletIntentUrl('phantom', phantomHttps);
+    expect(intent.startsWith('intent://phantom.app/ul/v1/signTransaction?')).toBe(true);
+    expect(intent).toContain(';package=app.phantom;');
+    expect(extractFallback(intent)).toBe(phantomHttps);
   });
 });

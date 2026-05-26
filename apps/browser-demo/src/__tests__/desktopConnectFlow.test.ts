@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildDesktopBrowserConnectUrl,
+  desktopBridgeNotReadyMessage,
   initialDesktopConnectFlowState,
+  isDesktopBridgeReady,
   reduceDesktopConnectFlow,
   type DesktopConnectFlowState,
 } from '../desktopConnectFlow.js';
@@ -43,6 +45,38 @@ describe('buildDesktopBrowserConnectUrl', () => {
       bridgeToken: rotatedToken,
     }));
     expect(url.searchParams.get('token')).toBe(rotatedToken);
+  });
+});
+
+describe('desktop bridge readiness', () => {
+  it('requires both a running child process and reachable endpoint', () => {
+    expect(isDesktopBridgeReady({ running: true, bridgeReachable: true })).toBe(true);
+    expect(isDesktopBridgeReady({ running: true, bridgeReachable: false })).toBe(false);
+    expect(isDesktopBridgeReady({ running: false, bridgeReachable: true })).toBe(false);
+    expect(isDesktopBridgeReady(null)).toBe(false);
+  });
+
+  it('prefers the latest IPC fallback error for not-ready messaging', () => {
+    expect(desktopBridgeNotReadyMessage(null, 'IPC unavailable')).toBe('IPC unavailable');
+  });
+
+  it('uses the runtime lastError when present', () => {
+    expect(desktopBridgeNotReadyMessage({
+      running: false,
+      bridgeReachable: false,
+      lastError: 'Bridge did not become reachable at http://127.0.0.1:8787.',
+    })).toBe('Bridge did not become reachable at http://127.0.0.1:8787.');
+  });
+
+  it('falls back to warning diagnostics before the generic message', () => {
+    expect(desktopBridgeNotReadyMessage({
+      running: false,
+      bridgeReachable: false,
+      diagnostics: [
+        { level: 'info', label: 'Runtime', message: 'Informational only.' },
+        { level: 'warn', label: 'Config', message: 'Missing action config.' },
+      ],
+    })).toBe('Missing action config.');
   });
 });
 

@@ -581,6 +581,21 @@ fn ensure_bridge_reachable(app: &tauri::AppHandle, shared: &SharedRuntime) -> Re
                 trim_logs(&mut runtime.logs);
             }
 
+            match ensure_bridge_runtime_files(&runtime.config) {
+                Ok(messages) => {
+                    for message in messages {
+                        runtime.logs.push_back(message);
+                    }
+                    trim_logs(&mut runtime.logs);
+                }
+                Err(err) => {
+                    runtime.last_error = Some(err.clone());
+                    runtime.logs.push_back(format!("[desktop] {err}"));
+                    trim_logs(&mut runtime.logs);
+                    return Err(err);
+                }
+            }
+
             match bridge_launch_command(app, &runtime.config) {
                 Ok(command) => {
                     match spawn_managed_process(shared, &mut runtime, "bridge", command) {
@@ -722,7 +737,6 @@ fn spawn_managed_process(
 ) -> Result<ManagedProcess, String> {
     let mut command = match launch {
         LaunchCommand::Sidecar { executable, args } => {
-            ensure_runtime_dirs(&runtime.config)?;
             let mut command = Command::new(executable);
             command.args(args);
             command.current_dir(runtime_data_dir());
@@ -1082,6 +1096,10 @@ fn missing_sidecar_message(context: &RuntimeContext) -> String {
 fn ensure_runtime_dirs(config: &DesktopConfig) -> Result<(), String> {
     fs::create_dir_all(runtime_data_dir())
         .map_err(|err| format!("Failed to create runtime data directory: {err}"))?;
+    if let Some(parent) = Path::new(&config.env_path).parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("Failed to create {}: {err}", parent.display()))?;
+    }
     if let Some(parent) = Path::new(&config.action_config_path).parent() {
         fs::create_dir_all(parent)
             .map_err(|err| format!("Failed to create {}: {err}", parent.display()))?;
@@ -1159,6 +1177,35 @@ fn normalize_config(mut config: DesktopConfig) -> DesktopConfig {
         config.prepared_actions_path = defaults.prepared_actions_path;
     }
     config
+}
+
+fn ensure_bridge_runtime_files(config: &DesktopConfig) -> Result<Vec<String>, String> {
+    ensure_runtime_dirs(config)?;
+    ensure_json_file_exists(
+        Path::new(&config.action_config_path),
+        "action config",
+        "{}\n",
+    )
+}
+
+fn ensure_json_file_exists(
+    path: &Path,
+    label: &str,
+    contents: &str,
+) -> Result<Vec<String>, String> {
+    if path.is_file() {
+        return Ok(Vec::new());
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("Failed to create {}: {err}", parent.display()))?;
+    }
+    fs::write(path, contents)
+        .map_err(|err| format!("Failed to write {}: {err}", path.display()))?;
+    Ok(vec![format!(
+        "[desktop] created default {label} at {}",
+        path.display()
+    )])
 }
 
 fn runtime_setup_for_config(config: &DesktopConfig) -> Result<RuntimeSetup, String> {
@@ -1852,6 +1899,23 @@ mod tests {
         }
     }
 
+    fn fixture_config_in(dir: &Path) -> DesktopConfig {
+        DesktopConfig {
+            repo_root: "/repo".into(),
+            bridge_url: "http://127.0.0.1:8787".into(),
+            bridge_token: "test-token".into(),
+            env_path: dir.join("env/.env").display().to_string(),
+            action_config_path: dir
+                .join("config/agent-wallet.config.json")
+                .display()
+                .to_string(),
+            prepared_actions_path: dir
+                .join("actions/prepared-actions.json")
+                .display()
+                .to_string(),
+        }
+    }
+
     fn has_arg_pair(args: &[String], key: &str, value: &str) -> bool {
         args.windows(2)
             .any(|pair| pair[0] == key && pair[1] == value)
@@ -1929,6 +1993,63 @@ mod tests {
         assert!(has_arg_pair(&args, "--bridge-url", "http://127.0.0.1:8787"));
         assert!(has_arg_pair(&args, "--token", "test-token"));
         assert!(!args.iter().any(|arg| arg == "--wallet-host-dir"));
+    }
+
+    #[test]
+    fn bridge_runtime_files_create_missing_dirs_and_default_config() {
+        let dir = tempfile::tempdir().expect("tempdir should be created");
+        let config = fixture_config_in(dir.path());
+        let action_config_path = Path::new(&config.action_config_path);
+        let env_parent = Path::new(&config.env_path).parent().unwrap();
+        let prepared_parent = Path::new(&config.prepared_actions_path).parent().unwrap();
+
+        let messages = ensure_bridge_runtime_files(&config)
+            .expect("runtime files should be prepared");
+
+        assert!(env_parent.is_dir());
+        assert!(prepared_parent.is_dir());
+        assert_eq!(
+            fs::read_to_string(action_config_path).expect("action config should exist"),
+            "{}\n"
+        );
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains("created default action config"));
+        assert!(messages[0].contains(&config.action_config_path));
+    }
+
+    #[test]
+    fn bridge_runtime_files_preserve_existing_action_config() {
+        let dir = tempfile::tempdir().expect("tempdir should be created");
+        let config = fixture_config_in(dir.path());
+        let action_config_path = Path::new(&config.action_config_path);
+        fs::create_dir_all(action_config_path.parent().unwrap())
+            .expect("config parent should be created");
+        fs::write(action_config_path, "{\"cluster\":\"devnet\"}\n")
+            .expect("existing config should be written");
+
+        let messages = ensure_bridge_runtime_files(&config)
+            .expect("runtime files should be prepared");
+
+        assert!(messages.is_empty());
+        assert_eq!(
+            fs::read_to_string(action_config_path).expect("action config should remain"),
+            "{\"cluster\":\"devnet\"}\n"
+        );
+    }
+
+    #[test]
+    fn bridge_runtime_files_report_unwritable_action_config() {
+        let dir = tempfile::tempdir().expect("tempdir should be created");
+        let mut config = fixture_config_in(dir.path());
+        let directory_path = dir.path().join("config-directory");
+        fs::create_dir_all(&directory_path).expect("directory path should be created");
+        config.action_config_path = directory_path.display().to_string();
+
+        let err = ensure_bridge_runtime_files(&config)
+            .expect_err("directory action config path should fail");
+
+        assert!(err.contains("Failed to write"));
+        assert!(err.contains(&config.action_config_path));
     }
 
     #[test]

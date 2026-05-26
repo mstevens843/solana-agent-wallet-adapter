@@ -31,6 +31,13 @@ export interface DesktopBrowserConnectUrlInput {
   bridgeToken?: string;
 }
 
+export interface DesktopBridgeReadinessStatus {
+  running: boolean;
+  bridgeReachable: boolean;
+  lastError?: string | null;
+  diagnostics?: ReadonlyArray<{ level: string; label: string; message: string }>;
+}
+
 export function buildDesktopBrowserConnectUrl(input: DesktopBrowserConnectUrlInput): string {
   const url = new URL(input.walletHostUrl);
   url.pathname = '/connect';
@@ -43,6 +50,29 @@ export function buildDesktopBrowserConnectUrl(input: DesktopBrowserConnectUrlInp
   url.searchParams.set('intent', 'connect');
   url.searchParams.set('surface', 'desktop');
   return url.toString();
+}
+
+export function isDesktopBridgeReady(status: DesktopBridgeReadinessStatus | null | undefined): boolean {
+  return Boolean(status?.running && status.bridgeReachable);
+}
+
+export function desktopBridgeNotReadyMessage(
+  status: DesktopBridgeReadinessStatus | null | undefined,
+  fallback?: string | null,
+): string {
+  const fallbackMessage = fallback?.trim();
+  if (fallbackMessage) return fallbackMessage;
+
+  const lastError = status?.lastError?.trim();
+  if (lastError) return lastError;
+
+  const diagnostic = status?.diagnostics?.find((entry) => {
+    const level = entry.level.trim().toLowerCase();
+    return (level === 'error' || level === 'warn') && entry.message.trim();
+  });
+  if (diagnostic) return diagnostic.message.trim();
+
+  return 'Local wallet service did not start. Restart the local runtime and try again.';
 }
 
 export interface DesktopConnectFlowState {

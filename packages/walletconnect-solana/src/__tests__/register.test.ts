@@ -25,7 +25,7 @@ function fakeClient(): WalletConnectSolanaClient & {
     signMessage: async () => new Uint8Array(64),
     signTransaction: async (opts) => {
       calls.push(opts);
-      return Buffer.from(new Uint8Array(4).fill(1)).toString('base64');
+      return { transaction: Buffer.from(new Uint8Array(4).fill(1)).toString('base64') };
     },
     disconnect: async () => undefined,
     listSessions: () => [],
@@ -99,10 +99,12 @@ describe('registerWalletConnectSolanaWallet', () => {
     // the assertion would fail.
     await second.wallet.features['standard:connect'].connect();
     const account = second.wallet.accounts[0]!;
-    await second.wallet.features['solana:signTransaction'].signTransaction({
-      account,
-      transaction: new Uint8Array([1, 2, 3]),
-    });
+    await expect(
+      second.wallet.features['solana:signTransaction'].signTransaction({
+        account,
+        transaction: new Uint8Array([1, 2, 3]),
+      }),
+    ).rejects.toThrow();
     const fc = client as ReturnType<typeof fakeClient>;
     expect(fc.signTransactionCalls).toHaveLength(1);
     expect(fc.signTransactionCalls[0]!.topic).toBe('topic-NEW');
@@ -177,7 +179,7 @@ describe('registerWalletConnectSolanaWallet', () => {
         throw new Error('connect should not run');
       },
       signMessage: async () => new Uint8Array(64),
-      signTransaction: async () => '',
+      signTransaction: async () => ({}),
       disconnect: async () => {
         unregisterCalled = true;
       },

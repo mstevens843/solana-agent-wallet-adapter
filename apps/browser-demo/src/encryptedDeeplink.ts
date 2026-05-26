@@ -73,6 +73,44 @@ const WALLET_HOSTS: Record<EncryptedDeeplinkWalletId, string> = {
   solflare: 'solflare.com',
 };
 
+// Android package ids — used to force-launch the wallet via an `intent://`
+// URL when the relay opens a sign request on Android. Matches the values in
+// apps/render-web/src/cloud/androidConfig.ts (`packageNames`).
+const WALLET_ANDROID_PACKAGES: Record<EncryptedDeeplinkWalletId, string> = {
+  phantom: 'app.phantom',
+  solflare: 'com.solflare.mobile',
+};
+
+/**
+ * Build an Android `intent://` URL that force-launches the wallet app with
+ * the same payload as the HTTPS universal link. App Links verification can
+ * silently fail for individual paths (we observed this with Solflare's
+ * `/ul/v1/signTransaction` on devices where `/ul/v1/connect` worked fine,
+ * sending the user to a Play Store install page instead of the installed
+ * wallet). An Android Intent URI bypasses App Links entirely and asks the OS
+ * to launch the specified package directly; if the package is not installed
+ * Chrome falls back to `browser_fallback_url`, which we set to the original
+ * HTTPS universal link so the user still lands on the wallet's install page
+ * rather than a hard error.
+ *
+ * Format reference:
+ * https://developer.chrome.com/docs/android/intents
+ */
+export function buildAndroidWalletIntentUrl(
+  wallet: EncryptedDeeplinkWalletId,
+  httpsWalletUrl: string,
+): string {
+  const url = new URL(httpsWalletUrl);
+  const pkg = WALLET_ANDROID_PACKAGES[wallet];
+  // Strip the leading `https:` so the rest (`//host/path?query`) becomes the
+  // intent body. The `scheme=https` extra inside the Intent fragment tells
+  // Android which scheme to use when matching the installed package's intent
+  // filter — that filter is registered against the https universal link.
+  const intentBody = `${url.host}${url.pathname}${url.search}`;
+  const fallback = encodeURIComponent(httpsWalletUrl);
+  return `intent://${intentBody}#Intent;scheme=https;package=${pkg};S.browser_fallback_url=${fallback};end`;
+}
+
 const WALLET_ENCRYPTION_KEY_ALIASES: Record<EncryptedDeeplinkWalletId, readonly string[]> = {
   phantom: ['phantom_encryption_public_key', 'wallet_encryption_public_key'],
   solflare: ['solflare_encryption_public_key', 'wallet_encryption_public_key'],

@@ -221,7 +221,7 @@ describe('signMessage', () => {
 });
 
 describe('signTransaction', () => {
-  it('routes solana_signTransaction and returns the base64 signed tx', async () => {
+  it('routes solana_signTransaction and returns normalized transaction bytes', async () => {
     const sign = makeSignClient({
       request: async () => ({ transaction: 'signed-base64' }),
     });
@@ -235,7 +235,7 @@ describe('signTransaction', () => {
       chainId: MAINNET,
       transactionBase64: 'pending-base64',
     });
-    expect(result).toBe('signed-base64');
+    expect(result).toEqual({ transaction: 'signed-base64' });
     const request = sign.calls.find((c) => c.method === 'request')!.args as {
       request: { method: string; params: { transaction: string } };
     };
@@ -257,10 +257,61 @@ describe('signTransaction', () => {
       chainId: MAINNET,
       transactionBase64: 'x',
     });
-    expect(result).toBe('fallback');
+    expect(result).toEqual({ transaction: 'fallback' });
   });
 
-  it('throws when no transaction field is present', async () => {
+  it('accepts a signature-only result for Backpack-style peers', async () => {
+    const sign = makeSignClient({
+      request: async () => ({ signature: 'base58-signature' }),
+    });
+    const client = createWalletConnectSolanaClient({
+      projectId: 't',
+      metadata: METADATA,
+      signClient: sign,
+    });
+    const result = await client.signTransaction({
+      topic: 't',
+      chainId: MAINNET,
+      transactionBase64: 'x',
+    });
+    expect(result).toEqual({ signature: 'base58-signature' });
+  });
+
+  it('preserves both transaction and signature when both are returned', async () => {
+    const sign = makeSignClient({
+      request: async () => ({ transaction: 'signed-base64', signature: 'base58-signature' }),
+    });
+    const client = createWalletConnectSolanaClient({
+      projectId: 't',
+      metadata: METADATA,
+      signClient: sign,
+    });
+    const result = await client.signTransaction({
+      topic: 't',
+      chainId: MAINNET,
+      transactionBase64: 'x',
+    });
+    expect(result).toEqual({ transaction: 'signed-base64', signature: 'base58-signature' });
+  });
+
+  it('preserves a bare string as both a possible transaction and signature', async () => {
+    const sign = makeSignClient({
+      request: async () => 'legacy-response',
+    });
+    const client = createWalletConnectSolanaClient({
+      projectId: 't',
+      metadata: METADATA,
+      signClient: sign,
+    });
+    const result = await client.signTransaction({
+      topic: 't',
+      chainId: MAINNET,
+      transactionBase64: 'x',
+    });
+    expect(result).toEqual({ transaction: 'legacy-response', signature: 'legacy-response' });
+  });
+
+  it('throws when no transaction or signature field is present', async () => {
     const sign = makeSignClient({ request: async () => ({}) });
     const client = createWalletConnectSolanaClient({
       projectId: 't',
@@ -269,7 +320,7 @@ describe('signTransaction', () => {
     });
     await expect(
       client.signTransaction({ topic: 't', chainId: MAINNET, transactionBase64: 'x' }),
-    ).rejects.toThrow(/no transaction/);
+    ).rejects.toThrow(/no transaction or signature/);
   });
 });
 

@@ -11,6 +11,7 @@ export {
 export {
   createWalletConnectSolanaClient,
   type SignClientLike,
+  type WalletConnectSignTransactionResult,
   type WalletConnectSession,
   type WalletConnectSessionStruct,
   type WalletConnectSolanaClient,

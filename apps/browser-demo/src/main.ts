@@ -134,7 +134,9 @@ import {
 } from './walletConnectQrOverlay.js';
 import {
   buildDesktopBrowserConnectUrl,
+  desktopBridgeNotReadyMessage,
   initialDesktopConnectFlowState,
+  isDesktopBridgeReady,
   reduceDesktopConnectFlow,
   type DesktopConnectFlowAction,
   type DesktopConnectFlowState,
@@ -161,6 +163,7 @@ import {
 } from './walletDeeplinks.js';
 import {
   approvalResourceFromError as deeplinkApprovalResourceFromError,
+  buildAndroidWalletIntentUrl,
   buildSigningUrlForRequest,
   decryptConnectResponse,
   decryptSigningResponse,
@@ -170,6 +173,7 @@ import {
   type EncryptedDeeplinkSessionRecord,
   type EncryptedDeeplinkWalletId,
 } from './encryptedDeeplink.js';
+import { approveWithInjectedWallet } from './injectedWalletApproval.js';
 import {
   createWalletConnectSolanaClient,
   registerWalletConnectSolanaWallet,
@@ -4754,6 +4758,8 @@ const QR_CONNECT_PENDING_STORAGE_PREFIX = 'agentic-qr-connect-pending:';
 // rebuilds the redirect URL instead of appending to it.
 const QR_CONNECT_ACTIVE_SIGN_STORAGE_PREFIX = 'agentic-qr-connect-active-sign:';
 const QR_CONNECT_ACTIVE_SIGN_TTL_MS = 10 * 60 * 1000;
+const QR_CONNECT_SESSION_TTL_MS = 35 * 60 * 1000;
+const QR_CONNECT_PENDING_TTL_MS = 10 * 60 * 1000;
 
 const qrConnect: QrConnectRuntime = {
   mode: 'processing',
@@ -5007,6 +5013,7 @@ async function runQrConnectInboxTick(session: EncryptedDeeplinkSessionRecord): P
   if (!response.ok) {
     if (response.status === 404 || response.status === 410) {
       stopQrConnectRelay();
+      clearQrConnectSession(session.pairing);
       setQrConnectError('Desktop pairing expired.', 'Return to the desktop app and scan a fresh QR code.');
     }
     return;
@@ -5027,25 +5034,61 @@ async function openQrConnectWalletForRequest(
   try {
     saveQrConnectPendingRequest(session.pairing, requestId, request);
     saveQrConnectActiveSign(session.pairing, requestId);
+    qrConnect.mode = 'opening-wallet';
+    qrConnect.wallet = session.wallet;
+    qrConnect.pairing = session.pairing;
+    qrConnect.requestId = requestId;
+    qrConnect.walletUrl = '';
+    qrConnect.message = `Opening ${qrConnectWalletLabel(session.wallet)} approval.`;
+    qrConnect.detail = 'If this page is running inside the wallet browser, the approval prompt should appear here.';
+    render();
+
+    const injectedApproval = await approveWithInjectedWallet({
+      wallet: session.wallet,
+      sessionAddress: session.address,
+      request,
+      sendRawTransaction: async (transaction) => sendQrConnectRawTransaction(session.cluster, transaction),
+    });
+    if (injectedApproval) {
+      await postPairingResult(session.pairing, requestId, { ...injectedApproval, requestId });
+      clearQrConnectPendingRequest(session.pairing, requestId);
+      clearQrConnectActiveSign(session.pairing);
+      startQrConnectRelay(session, 'relay-active');
+      return;
+    }
+
     const redirect = new URL('/qr-connect', window.location.origin);
     redirect.searchParams.set('wallet', session.wallet);
     redirect.searchParams.set('pairing', session.pairing);
     redirect.searchParams.set('phase', 'sign');
     redirect.searchParams.set('requestId', requestId);
-    const walletUrl = buildSigningUrlForRequest({
+    const httpsWalletUrl = buildSigningUrlForRequest({
       session,
       request,
       redirectLink: redirect.toString(),
     });
-    qrConnect.mode = 'opening-wallet';
-    qrConnect.wallet = session.wallet;
-    qrConnect.pairing = session.pairing;
-    qrConnect.requestId = requestId;
+    // On Android, the HTTPS universal link is unreliable for `/ul/v1/sign*`
+    // paths even after the user taps — Solflare's App Link verification
+    // routes `/ul/v1/connect` to the app but lets `/ul/v1/signTransaction`
+    // fall through to the browser, which then offers a Play Store install.
+    // Switching to an `intent://` URI on Android tells the OS to launch the
+    // wallet package directly via Intent resolution, bypassing App Links
+    // entirely; if the wallet is not installed Chrome falls back to the
+    // HTTPS link automatically.
+    const walletUrl = state.mwaEnvironment.isAndroid
+      ? buildAndroidWalletIntentUrl(session.wallet, httpsWalletUrl)
+      : httpsWalletUrl;
     qrConnect.walletUrl = walletUrl;
-    qrConnect.message = `Opening ${qrConnectWalletLabel(session.wallet)} for approval.`;
-    qrConnect.detail = 'Approve or reject the wallet prompt, then you will return here automatically.';
+    qrConnect.message = `Tap to approve in ${qrConnectWalletLabel(session.wallet)}.`;
+    // Android Chrome only fires App Links on navigations that carry a user
+    // activation. The relay receives sign requests by background poll, so
+    // any JS-initiated `location.assign` to the wallet URL here is treated
+    // as a non-gesture nav and falls through to a normal web load — the
+    // wallet's universal-link page then renders the Play Store install
+    // prompt. Letting the user tap the rendered button below preserves the
+    // gesture and lets the OS route the deeplink to the wallet app.
+    qrConnect.detail = 'Tap the button below — your wallet will open with the swap to approve, then return you here automatically.';
     render();
-    window.location.assign(walletUrl);
   } catch (err) {
     await postPairingResult(
       session.pairing,
@@ -5110,37 +5153,61 @@ async function sendQrConnectRawTransaction(cluster: Cluster, transaction: Uint8A
 }
 
 function saveQrConnectSession(session: EncryptedDeeplinkSessionRecord): void {
-  window.sessionStorage.setItem(qrConnectSessionStorageKey(session.pairing), JSON.stringify(session));
+  writeQrConnectStorage(qrConnectSessionStorageKey(session.pairing), JSON.stringify(session));
+}
+
+function clearQrConnectSession(pairing: string): void {
+  removeQrConnectStorage(qrConnectSessionStorageKey(pairing));
 }
 
 function loadQrConnectSession(pairing: string): EncryptedDeeplinkSessionRecord | null {
-  const raw = window.sessionStorage.getItem(qrConnectSessionStorageKey(pairing));
+  const key = qrConnectSessionStorageKey(pairing);
+  const raw = readQrConnectStorage(key);
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as unknown;
-    return isQrConnectSessionRecord(parsed) ? parsed : null;
+    if (!isQrConnectSessionRecord(parsed)) return null;
+    if (Date.now() - parsed.createdAt > QR_CONNECT_SESSION_TTL_MS) {
+      removeQrConnectStorage(key);
+      return null;
+    }
+    return parsed;
   } catch {
     return null;
   }
 }
 
 function saveQrConnectPendingRequest(pairing: string, requestId: string, request: SigningRequest): void {
-  window.sessionStorage.setItem(qrConnectPendingStorageKey(pairing, requestId), JSON.stringify(request));
+  writeQrConnectStorage(
+    qrConnectPendingStorageKey(pairing, requestId),
+    JSON.stringify({ request, ts: Date.now() }),
+  );
 }
 
 function loadQrConnectPendingRequest(pairing: string, requestId: string): SigningRequest | null {
-  const raw = window.sessionStorage.getItem(qrConnectPendingStorageKey(pairing, requestId));
+  const key = qrConnectPendingStorageKey(pairing, requestId);
+  const raw = readQrConnectStorage(key);
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as unknown;
-    return isSigningRequest(parsed) ? parsed : null;
+    if (isSigningRequest(parsed)) return parsed;
+    if (parsed && typeof parsed === 'object') {
+      const record = parsed as { request?: unknown; ts?: unknown };
+      const ts = typeof record.ts === 'number' ? record.ts : 0;
+      if (Date.now() - ts > QR_CONNECT_PENDING_TTL_MS) {
+        removeQrConnectStorage(key);
+        return null;
+      }
+      return isSigningRequest(record.request) ? record.request : null;
+    }
+    return null;
   } catch {
     return null;
   }
 }
 
 function clearQrConnectPendingRequest(pairing: string, requestId: string): void {
-  window.sessionStorage.removeItem(qrConnectPendingStorageKey(pairing, requestId));
+  removeQrConnectStorage(qrConnectPendingStorageKey(pairing, requestId));
 }
 
 function qrConnectSessionStorageKey(pairing: string): string {
@@ -5156,14 +5223,15 @@ function qrConnectActiveSignStorageKey(pairing: string): string {
 }
 
 function saveQrConnectActiveSign(pairing: string, requestId: string): void {
-  window.sessionStorage.setItem(
+  writeQrConnectStorage(
     qrConnectActiveSignStorageKey(pairing),
     JSON.stringify({ requestId, ts: Date.now() }),
   );
 }
 
 function loadQrConnectActiveSign(pairing: string): string | null {
-  const raw = window.sessionStorage.getItem(qrConnectActiveSignStorageKey(pairing));
+  const key = qrConnectActiveSignStorageKey(pairing);
+  const raw = readQrConnectStorage(key);
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as { requestId?: unknown; ts?: unknown };
@@ -5172,7 +5240,7 @@ function loadQrConnectActiveSign(pairing: string): string | null {
     if (!requestId) return null;
     const ts = typeof parsed.ts === 'number' ? parsed.ts : 0;
     if (Date.now() - ts > QR_CONNECT_ACTIVE_SIGN_TTL_MS) {
-      window.sessionStorage.removeItem(qrConnectActiveSignStorageKey(pairing));
+      removeQrConnectStorage(key);
       return null;
     }
     return requestId;
@@ -5182,7 +5250,57 @@ function loadQrConnectActiveSign(pairing: string): string | null {
 }
 
 function clearQrConnectActiveSign(pairing: string): void {
-  window.sessionStorage.removeItem(qrConnectActiveSignStorageKey(pairing));
+  removeQrConnectStorage(qrConnectActiveSignStorageKey(pairing));
+}
+
+function readQrConnectStorage(key: string): string | null {
+  // Wallet deeplink callbacks can return in a fresh browser tab/context. Keep
+  // sessionStorage as the primary short-lived store, with localStorage as a
+  // same-origin cross-tab fallback for Phantom/Solflare redirect round-trips.
+  for (const store of qrConnectStorageTargets()) {
+    try {
+      const value = store.getItem(key);
+      if (value) return value;
+    } catch {
+      // Ignore blocked storage and try the next target.
+    }
+  }
+  return null;
+}
+
+function writeQrConnectStorage(key: string, value: string): void {
+  for (const store of qrConnectStorageTargets()) {
+    try {
+      store.setItem(key, value);
+    } catch {
+      // Best-effort only; the paired relay can fall back to the next store.
+    }
+  }
+}
+
+function removeQrConnectStorage(key: string): void {
+  for (const store of qrConnectStorageTargets()) {
+    try {
+      store.removeItem(key);
+    } catch {
+      // Ignore blocked storage.
+    }
+  }
+}
+
+function qrConnectStorageTargets(): Storage[] {
+  const stores: Storage[] = [];
+  try {
+    if (window.sessionStorage) stores.push(window.sessionStorage);
+  } catch {
+    // Ignore blocked storage.
+  }
+  try {
+    if (window.localStorage) stores.push(window.localStorage);
+  } catch {
+    // Ignore blocked storage.
+  }
+  return stores;
 }
 
 function scrubQrConnectUrl(wallet: EncryptedDeeplinkWalletId | null, pairing: string): void {
@@ -6870,17 +6988,23 @@ async function openDesktopBrowserConnectPage(brandId?: string | null): Promise<v
   // external browser POSTs /bridge/connect with the wrong header, the bridge
   // 401s, and the desktop poll spins forever. Awaiting start_bridge here (it's
   // idempotent on the Rust side) guarantees we have the live token + URL.
+  let status: TauriBridgeStatus | null = state.tauriBridgeStatus;
   if (state.tauriNativeEnvironment.isTauriNative) {
-    const status = await tauriNativeStartBridge();
+    status = await tauriNativeStartBridge();
     if (status) {
       state.tauriBridgeStatus = status;
       syncBridgeConfigFromTauriStatus(status);
     }
+    if (!isDesktopBridgeReady(status)) {
+      const detail = desktopBridgeNotReadyMessage(status, tauriNativeLastBridgeError());
+      pushToast('error', 'Wallet service not ready', detail);
+      dispatchDesktopConnectFlow({ type: 'reset' });
+      return;
+    }
   }
   if (!state.bridgeUrl || !state.bridgeToken) {
-    const detail = tauriNativeLastBridgeError()
-      ?? 'Could not start the local bridge. Open the Local-runtime panel to retry.';
-    pushToast('error', 'Bridge not ready', detail);
+    const detail = desktopBridgeNotReadyMessage(status, tauriNativeLastBridgeError());
+    pushToast('error', 'Wallet service not ready', detail);
     dispatchDesktopConnectFlow({ type: 'reset' });
     return;
   }
@@ -41077,6 +41201,9 @@ async function bridgeRequest<T = unknown>(path: string, init?: RequestInit): Pro
 }
 
 function bridgeOfflineMessage(): string {
+  if (launchParams.cliSurface === 'desktop') {
+    return `Local wallet service is not running at ${compactEndpoint(state.bridgeUrl)}. Return to the desktop app, restart the local runtime, and try again.`;
+  }
   return `Local approval bridge is not running at ${compactEndpoint(state.bridgeUrl)}. Run ${NPM_EXEC_COMMAND}, keep that terminal open, then click Check local bridge.`;
 }
 

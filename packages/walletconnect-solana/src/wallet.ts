@@ -22,10 +22,15 @@ import type {
   StandardEventsFeature,
   StandardEventsListeners,
 } from '@wallet-standard/features';
+import { PublicKey, Transaction, VersionedTransaction } from '@solana/web3.js';
 import bs58 from 'bs58';
 
 import { clusterForChainId, walletStandardChainForCluster } from './chains.js';
-import type { WalletConnectSession, WalletConnectSolanaClient } from './client.js';
+import type {
+  WalletConnectSession,
+  WalletConnectSignTransactionResult,
+  WalletConnectSolanaClient,
+} from './client.js';
 
 const ACCOUNT_FEATURES: IdentifierArray = [
   'solana:signMessage',
@@ -159,14 +164,20 @@ export function createWalletConnectSolanaWallet(
       signTransaction: async (...inputs) => {
         const outputs: { signedTransaction: Uint8Array }[] = [];
         for (const input of inputs) {
-          ensureAccount(input.account.address);
+          const acc = ensureAccount(input.account.address);
           const base64Tx = bytesToBase64(input.transaction);
-          const signedBase64 = await client.signTransaction({
+          const result = await client.signTransaction({
             topic: session.topic,
             chainId: session.chainId,
             transactionBase64: base64Tx,
           });
-          outputs.push({ signedTransaction: base64ToBytes(signedBase64) });
+          outputs.push({
+            signedTransaction: signedTransactionBytesFromWalletConnect(
+              input.transaction,
+              acc.address,
+              result,
+            ),
+          });
         }
         return outputs;
       },
@@ -220,4 +231,103 @@ function base64ToBytes(b64: string): Uint8Array {
   }
   const buf = Buffer.from(b64, 'base64');
   return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+}
+
+function signedTransactionBytesFromWalletConnect(
+  unsignedTransaction: Uint8Array,
+  signerAddress: string,
+  result: WalletConnectSignTransactionResult,
+): Uint8Array {
+  if (result.transaction) {
+    const transactionBytes = tryBase64ToBytes(result.transaction);
+    if (transactionBytes && hasReadableTransactionSignature(transactionBytes)) {
+      return transactionBytes;
+    }
+  }
+
+  if (result.signature) {
+    return stitchWalletConnectSignature(unsignedTransaction, signerAddress, result.signature);
+  }
+
+  if (result.transaction) {
+    throw new Error('WalletConnect signTransaction returned transaction bytes without a readable signature.');
+  }
+  throw new Error('WalletConnect signTransaction returned neither signed transaction bytes nor a transaction signature.');
+}
+
+function tryBase64ToBytes(value: string): Uint8Array | null {
+  try {
+    return base64ToBytes(value);
+  } catch {
+    return null;
+  }
+}
+
+function hasReadableTransactionSignature(transactionBytes: Uint8Array): boolean {
+  try {
+    const legacy = Transaction.from(transactionBytes);
+    if (legacy.signatures.some((entry) => entry.signature && !isZeroSignature(entry.signature))) {
+      return true;
+    }
+  } catch {
+    // Try versioned parsing below.
+  }
+  try {
+    const versioned = VersionedTransaction.deserialize(transactionBytes);
+    return versioned.signatures.some((signature) => !isZeroSignature(signature));
+  } catch {
+    return false;
+  }
+}
+
+function stitchWalletConnectSignature(
+  transactionBytes: Uint8Array,
+  signerAddress: string,
+  encodedSignature: string,
+): Uint8Array {
+  const signature = decodeWalletConnectSignature(encodedSignature);
+  try {
+    const transaction = VersionedTransaction.deserialize(transactionBytes);
+    transaction.addSignature(new PublicKey(signerAddress), signature);
+    return transaction.serialize();
+  } catch (err) {
+    throw new Error(
+      `WalletConnect signTransaction signature could not be attached to the transaction: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+}
+
+function decodeWalletConnectSignature(encodedSignature: string): Uint8Array {
+  let base58Err: unknown;
+  try {
+    const decoded = bs58.decode(encodedSignature);
+    if (decoded.length !== 64) {
+      throw new Error(`WalletConnect signTransaction signature length unexpected: ${decoded.length}`);
+    }
+    return decoded;
+  } catch (err) {
+    base58Err = err;
+    if (err instanceof Error && /length unexpected/.test(err.message)) {
+      throw err;
+    }
+  }
+
+  const decodedBase64 = tryBase64ToBytes(encodedSignature);
+  if (decodedBase64) {
+    if (decodedBase64.length !== 64) {
+      throw new Error(`WalletConnect signTransaction signature length unexpected: ${decodedBase64.length}`);
+    }
+    return decodedBase64;
+  }
+  throw new Error(
+    `WalletConnect signTransaction returned a malformed signature: ${
+      base58Err instanceof Error ? base58Err.message : String(base58Err)
+    }`,
+  );
+}
+
+function isZeroSignature(signature: Uint8Array): boolean {
+  return signature.every((byte) => byte === 0);
 }

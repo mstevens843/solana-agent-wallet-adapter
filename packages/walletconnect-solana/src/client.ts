@@ -35,6 +35,13 @@ export interface WalletConnectSession {
   peerIcons?: string[];
 }
 
+export interface WalletConnectSignTransactionResult {
+  /** Base64-encoded signed transaction bytes. Optional in the WC Solana spec. */
+  transaction?: string;
+  /** Base58 wallet signature. Some wallets, including Backpack, return this without transaction bytes. */
+  signature?: string;
+}
+
 // Narrow shape of @walletconnect/sign-client's exported SignClient that we
 // actually rely on. Keeping it in a single interface lets tests stub easily.
 export interface SignClientLike {
@@ -108,14 +115,14 @@ export interface WalletConnectSolanaClient {
 
   /**
    * Sign a serialized Solana transaction. The transaction is passed as
-   * base64; the returned value is the base64 of the signed transaction.
-   * Callers parse it back with `VersionedTransaction.deserialize`.
+   * base64. WalletConnect Solana peers may return signed transaction bytes,
+   * a raw signature, or both.
    */
   signTransaction(opts: {
     topic: string;
     chainId: string;
     transactionBase64: string;
-  }): Promise<string>;
+  }): Promise<WalletConnectSignTransactionResult>;
 
   disconnect(topic: string): Promise<void>;
 
@@ -219,7 +226,7 @@ export function createWalletConnectSolanaClient(
     topic: string;
     chainId: string;
     transactionBase64: string;
-  }): Promise<string> {
+  }): Promise<WalletConnectSignTransactionResult> {
     const result = await client.request<unknown>({
       topic: opts.topic,
       chainId: opts.chainId,
@@ -228,7 +235,7 @@ export function createWalletConnectSolanaClient(
         params: { transaction: opts.transactionBase64 },
       },
     });
-    return extractSignedTransaction(result);
+    return extractSignTransactionResult(result);
   }
 
   async function disconnect(topic: string): Promise<void> {
@@ -306,12 +313,27 @@ function extractSignature(result: unknown): string {
   throw new Error('WalletConnect signMessage returned no signature field.');
 }
 
-function extractSignedTransaction(result: unknown): string {
-  if (typeof result === 'string') return result;
+function extractSignTransactionResult(result: unknown): WalletConnectSignTransactionResult {
+  if (typeof result === 'string') {
+    // Legacy peers returned a bare string without naming whether it was the
+    // signed transaction or the signature. Preserve it as both so the wallet
+    // adapter can try signed bytes first and signature stitching second.
+    return { transaction: result, signature: result };
+  }
   if (result && typeof result === 'object') {
     const record = result as Record<string, unknown>;
-    if (typeof record.transaction === 'string') return record.transaction;
-    if (typeof record.signedTransaction === 'string') return record.signedTransaction;
+    const transaction = typeof record.transaction === 'string'
+      ? record.transaction
+      : typeof record.signedTransaction === 'string'
+        ? record.signedTransaction
+        : undefined;
+    const signature = typeof record.signature === 'string' ? record.signature : undefined;
+    if (transaction || signature) {
+      return {
+        ...(transaction !== undefined && { transaction }),
+        ...(signature !== undefined && { signature }),
+      };
+    }
   }
-  throw new Error('WalletConnect signTransaction returned no transaction field.');
+  throw new Error('WalletConnect signTransaction returned no transaction or signature field.');
 }
