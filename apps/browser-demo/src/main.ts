@@ -231,6 +231,7 @@ import {
   tauriListenEvent,
   tauriNativeBridgeStatus,
   tauriNativeCloudSessionToken,
+  tauriNativeLastBridgeError,
   tauriNativeOpenExternalUrl,
   tauriNativeStartBridge,
   type TauriBridgeStatus,
@@ -5582,7 +5583,7 @@ function handleDesktopBrandAction(
       return;
     case 'external-browser': {
       collapseDesktopBrandPanels();
-      openDesktopBrowserConnectPage();
+      void openDesktopBrowserConnectPage();
       return;
     }
     case 'scan-qr':
@@ -6498,7 +6499,7 @@ async function runDesktopDiscover(): Promise<void> {
 
 function handleDesktopMethodSelect(method: DesktopConnectMethod): void {
   if (method === 'extension') {
-    openDesktopBrowserConnectPage();
+    void openDesktopBrowserConnectPage();
     return;
   }
   if (method === 'ledger') {
@@ -6798,7 +6799,28 @@ function desktopBrowserConnectUrl(): string {
   });
 }
 
-function openDesktopBrowserConnectPage(brandId?: string | null): void {
+async function openDesktopBrowserConnectPage(brandId?: string | null): Promise<void> {
+  // The Rust side rotates the legacy `local-agent-wallet` token to a per-install
+  // random one (lib.rs:1129). The webview mirrors that via
+  // syncBridgeConfigFromTauriStatus, but bootstrap fires that sync async; if the
+  // user clicks before it lands, the URL goes out with a stale/empty token, the
+  // external browser POSTs /bridge/connect with the wrong header, the bridge
+  // 401s, and the desktop poll spins forever. Awaiting start_bridge here (it's
+  // idempotent on the Rust side) guarantees we have the live token + URL.
+  if (state.tauriNativeEnvironment.isTauriNative) {
+    const status = await tauriNativeStartBridge();
+    if (status) {
+      state.tauriBridgeStatus = status;
+      syncBridgeConfigFromTauriStatus(status);
+    }
+  }
+  if (!state.bridgeUrl || !state.bridgeToken) {
+    const detail = tauriNativeLastBridgeError()
+      ?? 'Could not start the local bridge. Open the Local-runtime panel to retry.';
+    pushToast('error', 'Bridge not ready', detail);
+    dispatchDesktopConnectFlow({ type: 'reset' });
+    return;
+  }
   const target = desktopBrowserConnectUrl();
   void tauriNativeOpenExternalUrl(target).catch((err) => {
     pushToast(
@@ -6817,6 +6839,7 @@ function openDesktopBrowserConnectPage(brandId?: string | null): void {
 
 const AWAITING_BROWSER_POLL_INTERVAL_MS = 1500;
 const AWAITING_BROWSER_TIMEOUT_MS = 5 * 60 * 1000;
+const AWAITING_BROWSER_MAX_CONSECUTIVE_401 = 3;
 
 function startAwaitingBrowserPoll(brandId?: string | null): void {
   // Idempotent: a previous poll (e.g. from a prior Reopen) must be cancelled
@@ -6834,6 +6857,26 @@ function startAwaitingBrowserPoll(brandId?: string | null): void {
     return;
   }
   let timedOut = false;
+  let consecutive401 = 0;
+  const onPollError = (err: unknown): 'stop' | 'continue' => {
+    // 401 means the webview's bridgeToken doesn't match the bridge's rotated
+    // token — no amount of waiting will fix that. Surface it instead of
+    // silently spinning so the user can restart the runtime.
+    if (err instanceof BridgeRequestError && err.status === 401) {
+      consecutive401 += 1;
+      if (consecutive401 >= AWAITING_BROWSER_MAX_CONSECUTIVE_401) {
+        pushToast(
+          'error',
+          'Bridge auth mismatch',
+          'The desktop\'s bridge token doesn\'t match the local bridge. Restart the runtime from the Local-runtime panel.',
+        );
+        return 'stop';
+      }
+    } else {
+      consecutive401 = 0;
+    }
+    return 'continue';
+  };
   desktopConnect.pollHandle = window.setInterval(() => {
     // Stop polling if the user navigated away from the awaiting screen.
     if (desktopConnect.flow.step !== 'awaiting-browser') {
@@ -6850,18 +6893,24 @@ function startAwaitingBrowserPoll(brandId?: string | null): void {
       );
       // Continue polling — user may eventually complete the flow.
     }
-    void pollBridgeForHost(brandId ?? null);
+    void pollBridgeForHost(brandId ?? null, onPollError);
   }, AWAITING_BROWSER_POLL_INTERVAL_MS);
-  void pollBridgeForHost(brandId ?? null);
+  void pollBridgeForHost(brandId ?? null, onPollError);
 }
 
-async function pollBridgeForHost(brandId?: string | null): Promise<void> {
+async function pollBridgeForHost(
+  brandId: string | null,
+  onError: (err: unknown) => 'stop' | 'continue',
+): Promise<void> {
   let capabilities: AdapterCapabilities;
   try {
     capabilities = await bridgeRequest<AdapterCapabilities>('/bridge/status');
-  } catch {
-    // Bridge transiently unreachable (sidecar restarting, network blip).
-    // Swallow — the next tick retries. Avoid toast spam.
+  } catch (err) {
+    // Persistent 401s short-circuit polling (onError pushes a toast). Other
+    // errors (sidecar restarting, network blip) keep retrying on the next tick.
+    if (onError(err) === 'stop') {
+      stopDesktopConnectPoll();
+    }
     return;
   }
   const address = capabilities.address?.trim();
@@ -6936,7 +6985,7 @@ function handleDesktopBack(): void {
 }
 
 function handleDesktopAwaitingRetry(): void {
-  openDesktopBrowserConnectPage(desktopConnect.flow.selectedBrandId);
+  void openDesktopBrowserConnectPage(desktopConnect.flow.selectedBrandId);
 }
 
 function bindDesktopConnectFlow(): void {
@@ -24749,9 +24798,27 @@ async function runConnect(): Promise<void> {
     if (state.bridgeActive) {
       await connectBridgeHost();
     } else if (launchParams.bridgeUrl || launchParams.bridgeToken) {
-      await activateBridgeConnection({ refreshConfig: false, strictSync: false }).catch((err) => {
-        console.warn('[runConnect] activateBridgeConnection failed', err);
-      });
+      // Launched from the desktop / CLI: bridge registration is load-bearing,
+      // not best-effort. If the POST 401s (token mismatch) or the bridge is
+      // down, the desktop will never see this connection — show a real error
+      // instead of pretending the pairing succeeded.
+      try {
+        await activateBridgeConnection({ refreshConfig: false, strictSync: false });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        state.address = '';
+        state.capabilities = null;
+        state.browserWalletSession = undefined;
+        state.transactionStatus = `Bridge rejected the connection: ${message}`;
+        walletBackend = null;
+        client = null;
+        pushToast(
+          'error',
+          'Bridge rejected the connection',
+          'The desktop\'s bridge token did not accept this wallet. Restart the local runtime and try again.',
+        );
+        return;
+      }
     }
     await afterWalletConnected();
     savePersistedState();
@@ -40863,12 +40930,22 @@ function requiredPlanParam(plan: AgentPlan, id: string): string {
   return value;
 }
 
+class BridgeRequestError extends Error {
+  /** HTTP status, or 0 when the request never reached the server. */
+  readonly status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'BridgeRequestError';
+    this.status = status;
+  }
+}
+
 async function bridgeRequest<T = unknown>(path: string, init?: RequestInit): Promise<T> {
   if (!state.bridgeToken) {
-    throw new Error('Bridge token is required.');
+    throw new BridgeRequestError('Bridge token is required.', 0);
   }
   if (!isTrustedBridgeUrl(state.bridgeUrl)) {
-    throw new Error('Local bridge URL must use localhost, 127.0.0.1, ::1, or a trusted private LAN host.');
+    throw new BridgeRequestError('Local bridge URL must use localhost, 127.0.0.1, ::1, or a trusted private LAN host.', 0);
   }
   const url = new URL(path, bridgeBaseUrl());
   const headers = new Headers(init?.headers);
@@ -40884,15 +40961,18 @@ async function bridgeRequest<T = unknown>(path: string, init?: RequestInit): Pro
     });
   } catch (err) {
     if (isAbortError(err)) throw err;
-    throw new Error(bridgeOfflineMessage());
+    throw new BridgeRequestError(bridgeOfflineMessage(), 0);
   }
   const payload = (await response.json().catch(() => ({}))) as unknown;
   if (!response.ok) {
     const error = extractBridgeError(payload);
     if (response.status === 401) {
-      throw new Error('Wrong bridge token. Use the token printed by the bridge process.');
+      throw new BridgeRequestError(
+        'Wrong bridge token. Use the token printed by the bridge process.',
+        401,
+      );
     }
-    throw new Error(error);
+    throw new BridgeRequestError(error, response.status);
   }
   return payload as T;
 }
