@@ -137,8 +137,14 @@ import {
   type DesktopConnectFlowAction,
   type DesktopConnectFlowState,
   type DesktopConnectMethod,
+  type DesktopQrVariant,
 } from './desktopConnectFlow.js';
 import { RemoteBridgeBackend } from './remoteBridgeBackend.js';
+import {
+  buildPhantomConnectUrl,
+  buildSolflareBrowseUrl,
+  generatePhantomConnectKeypair,
+} from './walletDeeplinks.js';
 import {
   createWalletConnectSolanaClient,
   registerWalletConnectSolanaWallet,
@@ -5325,15 +5331,31 @@ function ledgerOverlayBlock(): string {
 // machinery (WalletConnect, Ledger HID, open-in-browser) is reused as-is —
 // this section only owns the inline UI and routing.
 
+interface DesktopDeeplinkQr {
+  /** Which variant this data URL was generated for; cleared when variant
+   *  changes so we never display a stale QR for the wrong wallet. */
+  variant: 'phantom' | 'solflare' | null;
+  /** PNG data URL ready to drop into an `<img src>`; null until the async
+   *  qrcode generation completes for the active variant. */
+  dataUrl: string | null;
+  /** The raw URL the QR encodes — surfaced under the QR as a fallback so the
+   *  user can copy/paste if the camera scan fails. */
+  url: string | null;
+}
+
 interface DesktopConnectRuntime {
   flow: DesktopConnectFlowState;
   /** setInterval handle while polling the bridge for awaiting-browser. */
   pollHandle: number | null;
+  /** Deeplink QR cache for the Phantom/Solflare variants; rebuilt whenever
+   *  the user enters one of those variants. */
+  deeplinkQr: DesktopDeeplinkQr;
 }
 
 const desktopConnect: DesktopConnectRuntime = {
   flow: initialDesktopConnectFlowState(),
   pollHandle: null,
+  deeplinkQr: { variant: null, dataUrl: null, url: null },
 };
 
 /** brandId → DESKTOP_BRAND_PANELS labels are camelCase; wallet-standard
@@ -5429,6 +5451,91 @@ function desktopBrandPickerBody(actionName: 'pick-extension-brand' | 'pick-qr-br
   `;
 }
 
+/** Body for the QR step. Switches on `desktopConnect.flow.qrVariant`:
+ *  - `'wc'` (default) → wallet-agnostic WalletConnect QR (Backpack/Jupiter/Magic Eden).
+ *  - `'phantom'` / `'solflare'` → wallet-specific universal-link QR, scanned with
+ *    the phone's native Camera app. See `walletDeeplinks.ts` for the rationale.
+ *  In all cases the sub-picker is rendered at the bottom so the user can switch. */
+function desktopQrBody(): string {
+  const variant = desktopConnect.flow.qrVariant;
+  if (variant === 'wc') {
+    return `
+      <div class="desktop-connect-flow-body walletconnect-qr-inline">
+        ${walletConnectQrBodyHtml({
+          state: walletConnect.overlay,
+          logoUrl: (logoId) => (BRAND_LOGOS as Record<string, string | undefined>)[logoId] ?? null,
+          agnostic: true,
+        })}
+      </div>
+      ${desktopQrVariantPicker('wc')}
+    `;
+  }
+  const brandName = variant === 'phantom' ? 'Phantom' : 'Solflare';
+  const cached = desktopConnect.deeplinkQr;
+  const qrMarkup = cached.variant === variant && cached.dataUrl
+    ? `<img class="walletconnect-qr-overlay-qr" src="${escapeHtmlForFlow(cached.dataUrl)}" alt="QR code that opens ${escapeHtmlForFlow(brandName)} mobile" />`
+    : `<div class="walletconnect-qr-overlay-qr placeholder" aria-hidden="true"></div>`;
+  return `
+    <div class="desktop-connect-flow-body desktop-deeplink-qr-inline">
+      <div class="walletconnect-qr-overlay-brand">
+        ${brandLogoMarkup(variant, 'walletconnect-qr-overlay-brand-logo')}
+        <span>Scan with your phone's Camera app — ${escapeHtmlForFlow(brandName)} will open</span>
+      </div>
+      ${qrMarkup}
+      <p class="desktop-connect-flow-deeplink-hint">
+        Use the phone's <strong>built-in camera</strong>, not the scanner inside ${escapeHtmlForFlow(brandName)}.
+        iOS / Android will prompt to open the link in ${escapeHtmlForFlow(brandName)}.
+      </p>
+      <div class="desktop-connect-flow-deeplink-note" role="note">
+        Your wallet will open on your phone. Cross-device sync — signing from this desktop without re-confirming on your phone — ships in a follow-up. To use this wallet from this desktop now, press Back and try <strong>Browser extension</strong> instead.
+      </div>
+    </div>
+    ${desktopQrVariantPicker(variant)}
+  `;
+}
+
+function desktopQrVariantPicker(active: DesktopQrVariant): string {
+  const variantButton = (variant: 'phantom' | 'solflare', label: string): string => {
+    const isActive = active === variant;
+    return `
+      <button
+        type="button"
+        class="desktop-qr-variant-button ${isActive ? 'active' : ''}"
+        data-desktop-flow-action="pick-qr-variant"
+        data-desktop-qr-variant="${variant}"
+        ${isActive ? 'aria-pressed="true"' : 'aria-pressed="false"'}
+      >
+        ${brandLogoMarkup(variant, 'desktop-qr-variant-logo')}
+        <span class="desktop-qr-variant-label">${escapeHtmlForFlow(label)}</span>
+        <span class="desktop-qr-variant-arrow" aria-hidden="true">${isActive ? '✓' : '→'}</span>
+      </button>
+    `;
+  };
+  const wcButton = `
+    <button
+      type="button"
+      class="desktop-qr-variant-button ${active === 'wc' ? 'active' : ''}"
+      data-desktop-flow-action="pick-qr-variant"
+      data-desktop-qr-variant="wc"
+      ${active === 'wc' ? 'aria-pressed="true"' : 'aria-pressed="false"'}
+    >
+      <span class="desktop-qr-variant-logo placeholder" aria-hidden="true"></span>
+      <span class="desktop-qr-variant-label">Backpack / Jupiter / Magic Eden</span>
+      <span class="desktop-qr-variant-arrow" aria-hidden="true">${active === 'wc' ? '✓' : '→'}</span>
+    </button>
+  `;
+  return `
+    <section class="desktop-qr-variant-picker" aria-label="Choose your mobile wallet">
+      <p class="desktop-qr-variant-lede">Different wallet? Switch the QR.</p>
+      <div class="desktop-qr-variant-list">
+        ${wcButton}
+        ${variantButton('phantom', 'Phantom')}
+        ${variantButton('solflare', 'Solflare')}
+      </div>
+    </section>
+  `;
+}
+
 function desktopAwaitingBrowserBody(): string {
   const brandId = desktopConnect.flow.selectedBrandId ?? '';
   const brand = DESKTOP_BRAND_PANELS.find((b) => b.id === brandId);
@@ -5466,14 +5573,7 @@ function desktopConnectFlowBlock(): string {
       break;
     case 'qr':
       title = 'Scan QR with phone';
-      // The WalletConnect URI is wallet-agnostic — render the inline QR
-      // immediately and let the mobile wallet identify itself in the
-      // session response post-approval. No brand pre-pick.
-      body = `<div class="desktop-connect-flow-body walletconnect-qr-inline">${walletConnectQrBodyHtml({
-        state: walletConnect.overlay,
-        logoUrl: (logoId) => (BRAND_LOGOS as Record<string, string | undefined>)[logoId] ?? null,
-        agnostic: true,
-      })}</div>`;
+      body = desktopQrBody();
       break;
     case 'ledger':
       title = ledger.overlay.mode === 'error' ? "Couldn't connect Ledger" : 'Connect Ledger';
@@ -5532,6 +5632,82 @@ function handleDesktopMethodSelect(method: DesktopConnectMethod): void {
     return;
   }
   dispatchDesktopConnectFlow({ type: 'pickMethod', method });
+}
+
+/** Generate a PNG data URL from an arbitrary URL string using the same
+ *  dynamic `qrcode` import the WC flow already uses. Returns the empty
+ *  string on failure (caller surfaces a placeholder). */
+async function renderUrlQrDataUrl(target: string): Promise<string> {
+  try {
+    const QRCodeMod = await import('qrcode');
+    const generator = (QRCodeMod as { default?: typeof import('qrcode') }).default ?? QRCodeMod;
+    return await generator.toDataURL(target, {
+      // Error-correction L because Phantom Connect URLs are long (~300 chars).
+      // M starts to push the QR towards higher versions that scan poorly on a
+      // phone camera at typical viewing distances.
+      errorCorrectionLevel: 'L',
+      margin: 2,
+      width: 320,
+    });
+  } catch (err) {
+    console.warn('[desktop-qr-variant] qrcode generation failed', err);
+    return '';
+  }
+}
+
+/** Build the deeplink URL for a Phantom/Solflare variant given the current
+ *  cluster, return both the raw URL and a fresh QR data URL. The data URL
+ *  is rendered into `<img src>` inside `desktopQrBody()`. */
+async function buildDesktopVariantQr(
+  variant: 'phantom' | 'solflare',
+): Promise<{ url: string; dataUrl: string }> {
+  const appUrl = 'https://agentic-signer.com';
+  // The deployed bundle handles `?wallet=<brandId>` via
+  // `runWalletHostBrandAutoConnect`. Both Phantom and Solflare deeplinks
+  // ultimately land in their in-app browser pointing here.
+  const walletHostUrl = `${appUrl}/app?wallet=${variant}`;
+  let url: string;
+  if (variant === 'phantom') {
+    const keypair = generatePhantomConnectKeypair();
+    url = buildPhantomConnectUrl({
+      dappPublicKey: keypair.publicKey,
+      redirectLink: walletHostUrl,
+      cluster: state.cluster,
+      appUrl,
+    });
+    // Phase 1 doesn't decrypt the response; secret half is intentionally
+    // discarded. Phase 2 will stash it on `desktopConnect` and use it to
+    // unseal the `data` field in Phantom's redirect payload.
+  } else {
+    url = buildSolflareBrowseUrl({ dappUrl: walletHostUrl, ref: appUrl });
+  }
+  const dataUrl = await renderUrlQrDataUrl(url);
+  return { url, dataUrl };
+}
+
+function handleDesktopQrVariantSelect(variant: DesktopQrVariant): void {
+  if (desktopConnect.flow.qrVariant === variant) return;
+  dispatchDesktopConnectFlow({ type: 'pickQrVariant', variant });
+  if (variant === 'wc') {
+    // Returning to the WC variant: clear the deeplink cache + let the
+    // existing `walletConnect.overlay` machinery drive the inline body.
+    desktopConnect.deeplinkQr = { variant: null, dataUrl: null, url: null };
+    if (walletConnect.overlay.mode === 'closed') {
+      // If a prior Phantom/Solflare interaction tore down the WC session,
+      // re-initiate so the QR repopulates with a fresh URI.
+      void handleScanQrAnyWallet();
+    }
+    return;
+  }
+  // Mark the cache as pending the new variant so the renderer shows the
+  // placeholder until the async build completes.
+  desktopConnect.deeplinkQr = { variant, dataUrl: null, url: null };
+  void buildDesktopVariantQr(variant).then(({ url, dataUrl }) => {
+    // Race-safety: the user may have already switched away.
+    if (desktopConnect.flow.qrVariant !== variant) return;
+    desktopConnect.deeplinkQr = { variant, url, dataUrl };
+    render();
+  });
 }
 
 function handleDesktopExtensionBrandSelect(brandId: string): void {
@@ -5644,10 +5820,19 @@ async function adoptBridgeHost(
 
 function handleDesktopBack(): void {
   const step = desktopConnect.flow.step;
-  if (step === 'qr' && walletConnect.overlay.mode !== 'closed') {
-    // Tear down the in-flight WC pairing so we don't leak a topic that the
-    // mobile wallet might still approve after the user has moved on.
+  const qrVariant = desktopConnect.flow.qrVariant;
+  // Only tear down the WC session when actually leaving the WC variant. The
+  // reducer first walks a non-wc variant back to wc (sub-step), so we
+  // mustn't disconnect when the user is just toggling between variants —
+  // they should still see the live WC QR on return.
+  const leavingQrEntirely = step === 'qr' && qrVariant === 'wc';
+  if (leavingQrEntirely && walletConnect.overlay.mode !== 'closed') {
     dispatchWalletConnectOverlay({ type: 'close' });
+  }
+  if (step === 'qr' && qrVariant !== 'wc') {
+    // Variant sub-step back → just clear the deeplink cache; reducer will
+    // flip qrVariant back to 'wc'.
+    desktopConnect.deeplinkQr = { variant: null, dataUrl: null, url: null };
   }
   if (step === 'ledger') {
     stopLedgerPoll();
@@ -5686,6 +5871,13 @@ function bindDesktopConnectFlow(): void {
       if (raw === 'pick-extension-brand') {
         const brandId = el.dataset.desktopBrandId;
         if (brandId) handleDesktopExtensionBrandSelect(brandId);
+        return;
+      }
+      if (raw === 'pick-qr-variant') {
+        const v = el.dataset.desktopQrVariant;
+        if (v === 'wc' || v === 'phantom' || v === 'solflare') {
+          handleDesktopQrVariantSelect(v);
+        }
         return;
       }
       if (raw === 'awaiting-retry') {

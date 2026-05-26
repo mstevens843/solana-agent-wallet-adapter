@@ -47,9 +47,10 @@ describe('RemoteBridgeBackend', () => {
     expect(caps.backend).toBe('remote-bridge');
     expect(caps.address).toBe('7F.kdEmptyAddress');
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchSpy.mock.calls[0];
+    const call = fetchSpy.mock.calls[0]!;
+    const [url, init] = call;
     expect((url as URL).href).toBe(`${ORIGIN}/bridge/status`);
-    const headers = init?.headers as Headers;
+    const headers = (init as RequestInit | undefined)?.headers as Headers;
     expect(headers.get('x-agent-wallet-token')).toBe(TOKEN);
   });
 
@@ -81,7 +82,7 @@ describe('RemoteBridgeBackend', () => {
       message: 'aGVsbG8=',
     } as never);
     expect(result.requestId).toBe('req-1');
-    const [, init] = fetchSpy.mock.calls[0];
+    const init = fetchSpy.mock.calls[0]![1] as RequestInit | undefined;
     expect(init?.method).toBe('POST');
     expect(JSON.parse(String(init?.body))).toEqual({
       request: { kind: 'sign-message', message: 'aGVsbG8=' },
@@ -95,9 +96,9 @@ describe('RemoteBridgeBackend', () => {
     const backend = new RemoteBridgeBackend({ bridgeUrl: ORIGIN, token: TOKEN });
     const result = await backend.poll('req-2' as never);
     expect(result.status).toBe('pending');
-    const [url] = fetchSpy.mock.calls[0];
-    expect((url as URL).pathname).toBe('/bridge/poll');
-    expect((url as URL).searchParams.get('requestId')).toBe('req-2');
+    const url = fetchSpy.mock.calls[0]![0] as URL;
+    expect(url.pathname).toBe('/bridge/poll');
+    expect(url.searchParams.get('requestId')).toBe('req-2');
   });
 
   it('maps 401 responses to ProtocolError("unauthorized")', async () => {
@@ -133,6 +134,6 @@ describe('RemoteBridgeBackend', () => {
     fetchSpy.mockResolvedValueOnce(jsonResponse({ backend: 'x', cluster: [], supports: {} }));
     const backend = new RemoteBridgeBackend({ bridgeUrl: 'http://1.2.3.4:9999', token: TOKEN });
     await backend.capabilities();
-    expect((fetchSpy.mock.calls[0][0] as URL).href).toBe('http://1.2.3.4:9999/bridge/status');
+    expect((fetchSpy.mock.calls[0]![0] as URL).href).toBe('http://1.2.3.4:9999/bridge/status');
   });
 });

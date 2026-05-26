@@ -107,22 +107,24 @@ export function reduceDesktopConnectFlow(
       // Re-entering Discover from idle resets selection; ignored from any
       // non-idle step so users can't accidentally drop their mid-flight state.
       if (state.step !== 'idle') return state;
-      return { step: 'method', selectedBrandId: null, awaitingBrowserStartedAt: null };
+      return emptyAt('method');
     case 'pickMethod':
       if (state.step !== 'method') return state;
-      return {
-        step: methodToStep(action.method),
-        selectedBrandId: null,
-        awaitingBrowserStartedAt: null,
-      };
+      return emptyAt(methodToStep(action.method));
     case 'pickBrand':
       if (state.step !== 'qr' && state.step !== 'extension-brands') return state;
       return { ...state, selectedBrandId: action.brandId };
+    case 'pickQrVariant':
+      // Variant changes only make sense while on the QR step.
+      if (state.step !== 'qr') return state;
+      if (state.qrVariant === action.variant) return state;
+      return { ...state, qrVariant: action.variant, selectedBrandId: null };
     case 'beginAwaitingBrowser':
       return {
         step: 'awaiting-browser',
         selectedBrandId: action.brandId,
         awaitingBrowserStartedAt: action.startedAt,
+        qrVariant: 'wc',
       };
     case 'back':
       return previousStep(state);

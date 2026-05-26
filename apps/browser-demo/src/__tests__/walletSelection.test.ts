@@ -18,6 +18,8 @@ const mixedDiscoveredWallets = [
   { name: 'Phantom' },
   { name: 'Solflare' },
   { name: 'Leap Wallet' },
+  { name: 'Magic Eden' },
+  { name: 'MagicEden Wallet' },
 ];
 
 describe('browser wallet selection helpers', () => {

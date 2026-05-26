@@ -21,7 +21,13 @@ export interface BrowserWalletPickerOption {
   disabled?: boolean;
 }
 
-const HIDDEN_BROWSER_WALLET_NAMES = new Set(['leap', 'leapwallet', 'metamask']);
+const HIDDEN_BROWSER_WALLET_NAMES = new Set([
+  'leap',
+  'leapwallet',
+  'magiceden',
+  'magicedenwallet',
+  'metamask',
+]);
 
 export function createBrowserWalletSession(
   walletName: string,

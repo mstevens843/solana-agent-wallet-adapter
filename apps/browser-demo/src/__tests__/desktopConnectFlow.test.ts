@@ -9,11 +9,12 @@ import {
 const initial = (): DesktopConnectFlowState => initialDesktopConnectFlowState();
 
 describe('initialDesktopConnectFlowState', () => {
-  it('starts at idle with no brand and no poll start', () => {
+  it('starts at idle with no brand, no poll start, and the default WC qr variant', () => {
     expect(initial()).toEqual({
       step: 'idle',
       selectedBrandId: null,
       awaitingBrowserStartedAt: null,
+      qrVariant: 'wc',
     });
   });
 });
@@ -192,5 +193,80 @@ describe('reduceDesktopConnectFlow — reset', () => {
   it('idle → idle is a no-op (returns same object)', () => {
     const initialState = initial();
     expect(reduceDesktopConnectFlow(initialState, { type: 'reset' })).toBe(initialState);
+  });
+});
+
+describe('reduceDesktopConnectFlow — pickQrVariant', () => {
+  function atQr(): DesktopConnectFlowState {
+    const m = reduceDesktopConnectFlow(initial(), { type: 'startMethod' });
+    return reduceDesktopConnectFlow(m, { type: 'pickMethod', method: 'qr' });
+  }
+
+  it('switches variant from wc → phantom while on the QR step', () => {
+    const next = reduceDesktopConnectFlow(atQr(), {
+      type: 'pickQrVariant',
+      variant: 'phantom',
+    });
+    expect(next.step).toBe('qr');
+    expect(next.qrVariant).toBe('phantom');
+  });
+
+  it('switches variant from phantom → solflare', () => {
+    const phantom = reduceDesktopConnectFlow(atQr(), {
+      type: 'pickQrVariant',
+      variant: 'phantom',
+    });
+    const solflare = reduceDesktopConnectFlow(phantom, {
+      type: 'pickQrVariant',
+      variant: 'solflare',
+    });
+    expect(solflare.qrVariant).toBe('solflare');
+  });
+
+  it('switching to the already-active variant is a no-op (returns same object)', () => {
+    const at = atQr();
+    expect(reduceDesktopConnectFlow(at, { type: 'pickQrVariant', variant: 'wc' })).toBe(at);
+  });
+
+  it('is ignored outside the QR step', () => {
+    const method = reduceDesktopConnectFlow(initial(), { type: 'startMethod' });
+    const noop = reduceDesktopConnectFlow(method, { type: 'pickQrVariant', variant: 'phantom' });
+    expect(noop).toBe(method);
+  });
+});
+
+describe('reduceDesktopConnectFlow — back behaviour with qrVariant', () => {
+  function atPhantomVariant(): DesktopConnectFlowState {
+    const m = reduceDesktopConnectFlow(initial(), { type: 'startMethod' });
+    const qr = reduceDesktopConnectFlow(m, { type: 'pickMethod', method: 'qr' });
+    return reduceDesktopConnectFlow(qr, { type: 'pickQrVariant', variant: 'phantom' });
+  }
+
+  it('back from a phantom/solflare variant returns to wc (sub-step back)', () => {
+    const back = reduceDesktopConnectFlow(atPhantomVariant(), { type: 'back' });
+    expect(back.step).toBe('qr');
+    expect(back.qrVariant).toBe('wc');
+  });
+
+  it('back from the default wc variant pops to method', () => {
+    const m = reduceDesktopConnectFlow(initial(), { type: 'startMethod' });
+    const qr = reduceDesktopConnectFlow(m, { type: 'pickMethod', method: 'qr' });
+    const back = reduceDesktopConnectFlow(qr, { type: 'back' });
+    expect(back.step).toBe('method');
+  });
+});
+
+describe('reduceDesktopConnectFlow — pickMethod always resets qrVariant', () => {
+  it('re-entering QR step from method resets a previously-set variant', () => {
+    const m1 = reduceDesktopConnectFlow(initial(), { type: 'startMethod' });
+    const qr1 = reduceDesktopConnectFlow(m1, { type: 'pickMethod', method: 'qr' });
+    const phantom = reduceDesktopConnectFlow(qr1, {
+      type: 'pickQrVariant',
+      variant: 'phantom',
+    });
+    const back1 = reduceDesktopConnectFlow(phantom, { type: 'back' }); // → wc
+    const back2 = reduceDesktopConnectFlow(back1, { type: 'back' }); // → method
+    const qr2 = reduceDesktopConnectFlow(back2, { type: 'pickMethod', method: 'qr' });
+    expect(qr2.qrVariant).toBe('wc');
   });
 });
