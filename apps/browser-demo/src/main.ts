@@ -141,6 +141,12 @@ import {
   type DesktopConnectMethod,
   type DesktopQrWallet,
 } from './desktopConnectFlow.js';
+import { computeBridgeConfigUpdate } from './bridgeTokenSync.js';
+import {
+  resolveDesktopPairingRelayBaseUrl,
+  resolveQrConnectAppUrl,
+  type DesktopQrConfigEnv,
+} from './desktopQrConfig.js';
 import { RemoteBridgeBackend } from './remoteBridgeBackend.js';
 import { RemoteRelayBackend } from './remoteRelayBackend.js';
 import {
@@ -1179,7 +1185,7 @@ const BROWSER_AI_LIMITATIONS = [
   'Browser AI cannot run background jobs after the tab closes.',
 ];
 const CUSTOM_AI_MODEL_VALUE = '__custom__';
-const ROUTE_PATHS = ['/', '/docs', '/builders', '/app', '/connect', '/disconnect', '/approve', '/sign', '/qr-connect', '/cli', '/desktop', '/android', '/demo', '/mwa-test', '/privacy', '/terms', '/delete-account', '/agentic-login'] as const;
+const ROUTE_PATHS = ['/', '/docs', '/builders', '/app', '/connect', '/disconnect', '/approve', '/sign', '/sign-in', '/sign-out', '/qr-connect', '/cli', '/desktop', '/android', '/demo', '/mwa-test', '/privacy', '/terms', '/delete-account', '/agentic-login'] as const;
 const ROUTE_PATH_SET = new Set<string>(ROUTE_PATHS);
 const SHOW_DEV_CONTROLS = resolveDevControls();
 const IS_ANDROID_APP = resolveAndroidAppSurface();
@@ -2989,7 +2995,7 @@ function notificationSettingsFromPersisted(
 const persisted = loadPersistedState();
 const launchParams = readLaunchParams();
 clearSensitiveLaunchParams();
-type CliIntentName = 'connect' | 'disconnect' | 'approve' | 'sign';
+type CliIntentName = 'connect' | 'disconnect' | 'approve' | 'sign' | 'sign-in' | 'sign-out';
 type CliSurfaceName = 'desktop';
 type CliView = { intent: CliIntentName; actionId?: string; requestId?: string; surface?: CliSurfaceName };
 let cliView: CliView | null = launchParams.cliMode && launchParams.cliIntent
@@ -4289,6 +4295,7 @@ async function bootstrap(): Promise<void> {
     window.addEventListener(TAURI_BRIDGE_STATUS_EVENT, (event) => {
       const detail = (event as CustomEvent<TauriBridgeStatus | null>).detail;
       state.tauriBridgeStatus = detail ?? null;
+      syncBridgeConfigFromTauriStatus(detail ?? null);
     });
     // Prime the cloud-session-token cache. The Phase-3 file-backed secure store
     // hydrates asynchronously on first read; if hydration finds a newer token
@@ -4303,6 +4310,7 @@ async function bootstrap(): Promise<void> {
     // Snapshot the current bridge status synchronously so device-agent routing
     // has a value to consult immediately.
     state.tauriBridgeStatus = await tauriNativeBridgeStatus();
+    syncBridgeConfigFromTauriStatus(state.tauriBridgeStatus);
     // Best-effort: spawn the local bridge sidecar in the background so the user
     // can immediately use "Local Bridge" AI mode and local connector reads
     // without having to manually start it. Idempotent on the Rust side —
@@ -4310,7 +4318,10 @@ async function bootstrap(): Promise<void> {
     // non-blocking; subsequent polling in the Local-runtime panel keeps
     // `state.tauriBridgeStatus` fresh via TAURI_BRIDGE_STATUS_EVENT.
     void tauriNativeStartBridge().then((status) => {
-      if (status) state.tauriBridgeStatus = status;
+      if (status) {
+        state.tauriBridgeStatus = status;
+        syncBridgeConfigFromTauriStatus(status);
+      }
     }).catch((err) => {
       console.warn('[bootstrap] tauriNativeStartBridge failed', err);
     });
@@ -6184,6 +6195,8 @@ interface DesktopDeeplinkQr {
   /** The raw URL the QR encodes — surfaced under the QR as a fallback so the
    *  user can copy/paste if the camera scan fails. */
   url: string | null;
+  /** Non-null when the QR was rendered but the pairing relay metadata POST failed. */
+  relayError: string | null;
 }
 
 /** Cloud-pairing state for the Phantom/Solflare QR path. The desktop
@@ -6216,18 +6229,13 @@ interface DesktopConnectRuntime {
 const desktopConnect: DesktopConnectRuntime = {
   flow: initialDesktopConnectFlowState(),
   pollHandle: null,
-  deeplinkQr: { variant: null, dataUrl: null, url: null },
+  deeplinkQr: { variant: null, dataUrl: null, url: null, relayError: null },
   pairing: null,
 };
 
-/** Base URL for the cloud pairing relay endpoints. Production is the
- *  deployed render-web instance at `agentic-signer.com`; dev defaults to
- *  the same host because the relay is only reachable cross-device when
- *  exposed publicly (the desktop's localhost bridge can't be reached from
- *  the user's phone anyway). Override via `VITE_AGENTIC_CLOUD_API_BASE_URL`. */
-const PAIRING_RELAY_BASE_URL: string =
-  (import.meta as ImportMeta & { env?: { VITE_AGENTIC_CLOUD_API_BASE_URL?: string } }).env
-    ?.VITE_AGENTIC_CLOUD_API_BASE_URL || 'https://agentic-signer.com';
+const DESKTOP_QR_ENV = ((import.meta as ImportMeta & { env?: DesktopQrConfigEnv }).env ?? {}) as DesktopQrConfigEnv;
+const PAIRING_RELAY_BASE_URL = resolveDesktopPairingRelayBaseUrl(DESKTOP_QR_ENV, window.location.origin);
+const QR_CONNECT_APP_URL = resolveQrConnectAppUrl(DESKTOP_QR_ENV, window.location.origin);
 
 const PAIRING_POLL_INTERVAL_MS = 1500;
 const PAIRING_TIMEOUT_MS = 5 * 60 * 1000;
@@ -6357,6 +6365,9 @@ function desktopQrBody(): string {
   const qrMarkup = cached.variant === wallet && cached.dataUrl
     ? `<img class="walletconnect-qr-overlay-qr" src="${escapeHtmlForFlow(cached.dataUrl)}" alt="QR code that opens ${escapeHtmlForFlow(brandName)} mobile" />`
     : `<div class="walletconnect-qr-overlay-qr placeholder" aria-hidden="true"></div>`;
+  const relayError = cached.variant === wallet && cached.relayError
+    ? `<div class="desktop-connect-flow-deeplink-error" role="alert">${escapeHtmlForFlow(cached.relayError)}</div>`
+    : '';
   return `
     <div class="desktop-connect-flow-body desktop-deeplink-qr-inline">
       <div class="walletconnect-qr-overlay-brand">
@@ -6370,6 +6381,7 @@ function desktopQrBody(): string {
       <div class="desktop-connect-flow-deeplink-note" role="note">
         After approval, keep the phone page open. Future desktop signing requests will route through that page and reopen ${escapeHtmlForFlow(brandName)} for approval.
       </div>
+      ${relayError}
     </div>
   `;
 }
@@ -6523,20 +6535,13 @@ async function renderUrlQrDataUrl(target: string): Promise<string> {
 async function buildDesktopVariantQr(
   variant: EncryptedDeeplinkWalletId,
   pairing: string,
-): Promise<{ url: string; dataUrl: string }> {
-  const appUrl = 'https://agentic-signer.com';
+): Promise<{ url: string; dataUrl: string; relayError: string | null }> {
+  const appUrl = QR_CONNECT_APP_URL;
   const redirect = new URL('/qr-connect', appUrl);
   redirect.searchParams.set('wallet', variant);
   redirect.searchParams.set('pairing', pairing);
   redirect.searchParams.set('phase', 'connect');
   const keypair = generatePhantomConnectKeypair();
-  await registerDesktopDeeplinkPairing(pairing, {
-    wallet: variant,
-    cluster: state.cluster,
-    appUrl,
-    dappPublicKey: keypair.publicKey,
-    dappSecretKey: keypair.secretKey,
-  });
   const url = variant === 'phantom'
     ? buildPhantomConnectUrl({
         dappPublicKey: keypair.publicKey,
@@ -6551,7 +6556,22 @@ async function buildDesktopVariantQr(
         appUrl,
       });
   const dataUrl = await renderUrlQrDataUrl(url);
-  return { url, dataUrl };
+  if (!dataUrl) {
+    throw new Error('QR image generation failed.');
+  }
+  let relayError: string | null = null;
+  try {
+    await registerDesktopDeeplinkPairing(pairing, {
+      wallet: variant,
+      cluster: state.cluster,
+      appUrl,
+      dappPublicKey: keypair.publicKey,
+      dappSecretKey: keypair.secretKey,
+    });
+  } catch (err) {
+    relayError = desktopPairingRelaySetupError(err);
+  }
+  return { url, dataUrl, relayError };
 }
 
 async function registerDesktopDeeplinkPairing(
@@ -6570,9 +6590,17 @@ async function registerDesktopDeeplinkPairing(
     body: JSON.stringify(metadata),
   });
   if (!response.ok) {
-    const payload = (await response.json().catch(() => ({}))) as { error?: string };
-    throw new Error(payload.error || `Pairing relay returned ${response.status}.`);
+    const payload = (await response.json().catch(() => ({}))) as { error?: string; message?: string };
+    throw new Error(payload.error || payload.message || `Pairing relay returned ${response.status}.`);
   }
+}
+
+function desktopPairingRelaySetupError(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  if (message === 'method_not_allowed' || message.includes('method_not_allowed')) {
+    return 'Pairing relay does not support deeplink metadata. Restart local dev with the updated relay or deploy the render-web pairing route.';
+  }
+  return message;
 }
 
 function handleDesktopQrWalletSelect(wallet: DesktopQrWallet): void {
@@ -6584,7 +6612,7 @@ function handleDesktopQrWalletSelect(wallet: DesktopQrWallet): void {
     dispatchWalletConnectOverlay({ type: 'close' });
   }
   stopDesktopPairing();
-  desktopConnect.deeplinkQr = { variant: null, dataUrl: null, url: null };
+  desktopConnect.deeplinkQr = { variant: null, dataUrl: null, url: null, relayError: null };
   dispatchDesktopConnectFlow({ type: 'pickQrWallet', wallet });
   if (wallet === 'backpack' || wallet === 'jupiter') {
     // Backpack/Jupiter scan the raw WalletConnect URI.
@@ -6602,19 +6630,29 @@ function handleDesktopQrWalletSelect(wallet: DesktopQrWallet): void {
     startedAt: Date.now(),
     warnedTimeout: false,
   };
-  desktopConnect.deeplinkQr = { variant: wallet, dataUrl: null, url: null };
-  void buildDesktopVariantQr(wallet, pairingUuid).then(({ url, dataUrl }) => {
+  desktopConnect.deeplinkQr = { variant: wallet, dataUrl: null, url: null, relayError: null };
+  void buildDesktopVariantQr(wallet, pairingUuid).then(({ url, dataUrl, relayError }) => {
     // Race-safety: the user may have switched away while we were generating.
     if (desktopConnect.flow.qrWallet !== wallet) return;
     if (desktopConnect.pairing?.uuid !== pairingUuid) return;
-    desktopConnect.deeplinkQr = { variant: wallet, url, dataUrl };
+    desktopConnect.deeplinkQr = { variant: wallet, url, dataUrl, relayError };
+    if (relayError) {
+      stopDesktopPairing();
+      pushToast(
+        'error',
+        `Could not prepare ${wallet === 'phantom' ? 'Phantom' : 'Solflare'} relay`,
+        relayError,
+      );
+      render();
+      return;
+    }
     startDesktopPairingPoll(pairingUuid, wallet);
     render();
   }).catch((err) => {
     if (desktopConnect.flow.qrWallet !== wallet) return;
     if (desktopConnect.pairing?.uuid !== pairingUuid) return;
     stopDesktopPairing();
-    desktopConnect.deeplinkQr = { variant: null, url: null, dataUrl: null };
+    desktopConnect.deeplinkQr = { variant: null, url: null, dataUrl: null, relayError: null };
     pushToast(
       'error',
       `Could not prepare ${wallet === 'phantom' ? 'Phantom' : 'Solflare'} QR`,
@@ -6863,7 +6901,7 @@ function handleDesktopBack(): void {
       dispatchWalletConnectOverlay({ type: 'close' });
     }
     if (qrWallet !== null) {
-      desktopConnect.deeplinkQr = { variant: null, dataUrl: null, url: null };
+      desktopConnect.deeplinkQr = { variant: null, dataUrl: null, url: null, relayError: null };
     }
     // Cancel any in-flight cross-device pairing — the user is no longer
     // expecting a phone connection for this UUID.
@@ -7249,6 +7287,8 @@ function pageContent(route: AppRoute | null): string {
     case '/disconnect':
     case '/approve':
     case '/sign':
+    case '/sign-in':
+    case '/sign-out':
       return cliAppPage();
     case '/qr-connect':
       return qrConnectPage();
@@ -7648,6 +7688,8 @@ function appPage(): string {
 function cliAppPage(): string {
   if (!cliView) return appPage();
   if (cliView.intent === 'connect' || cliView.intent === 'disconnect') return cliConnectView();
+  if (cliView.intent === 'sign-in') return cliCloudSignInView();
+  if (cliView.intent === 'sign-out') return cliCloudSignOutView();
   if (cliView.intent === 'approve') return cliApproveView();
   if (cliView.intent === 'sign') return cliSignView();
   return cliErrorView('Unknown CLI intent', 'Return to the terminal and try again.');
@@ -7792,6 +7834,117 @@ function cliConnectView(): string {
     `,
     footer: `<p class="cli-focused-note">Return to the ${cliView?.surface === 'desktop' ? 'desktop app' : 'terminal'} once the wallet is connected.</p>`,
   });
+}
+
+function cliCloudSignInView(): string {
+  const url = new URL(window.location.href);
+  const nonce = url.searchParams.get('nonce') ?? '';
+  const message = url.searchParams.get('message') ?? '';
+  const callback = url.searchParams.get('callback') ?? '';
+  const desiredWallet = url.searchParams.get('walletAddress') ?? '';
+  const connected = state.address ?? '';
+  const walletMismatch = Boolean(desiredWallet && connected && desiredWallet !== connected);
+  const walletReady = Boolean(connected) && !walletMismatch;
+  const requestReady = Boolean(nonce && message && callback);
+  const ready = walletReady && requestReady;
+  const logoId = state.selectedWalletLogoId ?? walletProviderLogoIdForName(state.selectedWalletName);
+  const subtitleIcon = logoId ? brandLogo(logoId, 'cli-focused-wallet-logo') : undefined;
+  const warning = (() => {
+    if (!requestReady) {
+      return 'Missing Cloud Storage sign-in details. Return to the terminal and run /sign-in again.';
+    }
+    if (!connected) {
+      return 'Pair your wallet first. Return to the terminal, run /connect, then run /sign-in again.';
+    }
+    if (walletMismatch) {
+      return `This sign-in is for ${short(desiredWallet)}, but ${short(connected)} is connected. Switch wallets and reload this page.`;
+    }
+    return '';
+  })();
+  return cliFocusedShell({
+    title: 'Connect Cloud Storage',
+    subtitle: connected ? short(connected) : 'Wallet required',
+    ...(subtitleIcon ? { subtitleIcon } : {}),
+    body: `
+      ${warning ? `
+        <div class="cli-focused-error" role="alert">
+          <p>${escapeHtml(warning)}</p>
+        </div>
+      ` : ''}
+      <section class="cli-cloud-signin-card signature-state ${ready ? 'complete' : 'blocked'}">
+        <div>
+          <span>Agentic Cloud</span>
+          <strong>${ready ? 'Ready for wallet signature' : 'Wallet required'}</strong>
+          <p>Cloud sign-in uses your paired wallet as identity only. It does not grant spending authority.</p>
+        </div>
+        <button id="agenticLoginSign" type="button" class="primary" ${ready && !state.busy ? '' : 'disabled'}>
+          Sign in to Cloud Storage
+        </button>
+        <p id="agenticLoginStatus" class="cli-focused-note" role="status"></p>
+      </section>
+      ${cliCloudStorageEducation()}
+    `,
+    footer: `<p class="cli-focused-note">Return to the terminal after the wallet signature completes.</p>`,
+  });
+}
+
+function cliCloudSignOutView(): string {
+  const logoId = state.selectedWalletLogoId ?? walletProviderLogoIdForName(state.selectedWalletName);
+  const subtitleIcon = logoId && state.address ? brandLogo(logoId, 'cli-focused-wallet-logo') : undefined;
+  return cliFocusedShell({
+    title: 'Cloud Storage signed out',
+    subtitle: state.address ? short(state.address) : 'Saved on device',
+    ...(subtitleIcon ? { subtitleIcon } : {}),
+    body: `
+      <div class="cli-focused-success signature-state complete" role="status" aria-live="polite">
+        <span class="cli-focused-tick" aria-hidden="true">✓</span>
+        <p>Cloud workspace session cleared. Plans, approvals, repeat payments, and proofs now stay saved on this device.</p>
+      </div>
+      <div class="cli-cloud-safety-note">
+        <strong>Wallet pairing is separate</strong>
+        <span>Signing out of Cloud Storage does not disconnect your wallet from the local bridge.</span>
+      </div>
+    `,
+    footer: cliReturnFooter(),
+  });
+}
+
+function cliCloudStorageEducation(): string {
+  return `
+    <div class="cli-cloud-storage-grid" aria-label="Cloud Storage modes">
+      <article class="cli-cloud-storage-card active">
+        <span>Saved on device</span>
+        <strong>Active fallback</strong>
+        <p>Plans, approvals, repeat payments, and proofs stay on this device when Cloud Storage is signed out.</p>
+        <em>Saved on this device · No localhost required</em>
+      </article>
+      <article class="cli-cloud-storage-card">
+        <span>Agentic Cloud</span>
+        <strong>Durable workflow state</strong>
+        <p>Optional sync for drafts, approvals, repeat payments, proofs, and done work across sessions and devices.</p>
+        <em>Wallet identity only · No spending authority</em>
+      </article>
+    </div>
+    <section class="cli-cloud-benefits" aria-label="Cloud Storage benefits">
+      ${cliCloudBenefit('Cloud Needs Approval', 'Save drafts and due approval items to wallet-scoped cloud storage. The wallet still signs every decision proof or supported transaction.')}
+      ${cliCloudBenefit('Repeat Payment Scheduler', 'Cloud repeat payments can create due approval items, track history, pause/resume, expiry, and spend caps.')}
+      ${cliCloudBenefit('Done + Saved Proofs', 'Done work, saved proofs, risk metadata, and audit events survive refreshes and device changes.')}
+      ${cliCloudBenefit('No Key Custody', 'Cloud sign-in proves wallet ownership for sync. It never stores seed phrases, private keys, delegated signers, or AI provider keys.')}
+    </section>
+    <div class="cli-cloud-safety-note">
+      <strong>Wallet safety</strong>
+      <span>Cloud sign-in uses your wallet as identity only. It does not grant spending authority.</span>
+    </div>
+  `;
+}
+
+function cliCloudBenefit(title: string, detail: string): string {
+  return `
+    <article>
+      <strong>${escapeHtml(title)}</strong>
+      <p>${escapeHtml(detail)}</p>
+    </article>
+  `;
 }
 
 function cliApproveView(): string {
@@ -13285,13 +13438,16 @@ function bridgeBox(): string {
       </div>
       <details class="bridge-advanced-settings">
         <summary>Advanced bridge settings</summary>
+        ${state.tauriNativeEnvironment.isTauriNative
+          ? '<p class="bridge-config-source">Configured by Agentic Desktop. Edit <code>desktop-config.json</code> and restart the bridge to change.</p>'
+          : ''}
         <label class="field compact">
           <span>Bridge URL</span>
-          <input id="bridgeUrl" value="${escapeHtml(state.bridgeUrl)}" ${state.busy || state.bridgeActive ? 'disabled' : ''} />
+          <input id="bridgeUrl" value="${escapeHtml(state.bridgeUrl)}" ${state.busy || state.bridgeActive || state.tauriNativeEnvironment.isTauriNative ? 'disabled' : ''} />
         </label>
         <label class="field compact">
           <span>Bridge token</span>
-          <input id="bridgeToken" value="${escapeHtml(state.bridgeToken)}" ${state.busy || state.bridgeActive ? 'disabled' : ''} />
+          <input id="bridgeToken" value="${escapeHtml(state.bridgeToken)}" ${state.busy || state.bridgeActive || state.tauriNativeEnvironment.isTauriNative ? 'disabled' : ''} />
         </label>
       </details>
     </div>
@@ -23235,7 +23391,7 @@ function wireAgenticLoginAutoRefresh(): void {
   // poll while the page is open without user activity. requestAnimationFrame
   // gives us cheap, frame-aligned wake-ups that pause when the tab is hidden.
   const tick = () => {
-    if (window.location.pathname === '/agentic-login') {
+    if (agenticLoginRouteActive()) {
       const current = state.address ?? '';
       if (current !== lastSeen) {
         lastSeen = current;
@@ -23247,6 +23403,11 @@ function wireAgenticLoginAutoRefresh(): void {
     window.requestAnimationFrame(tick);
   };
   window.requestAnimationFrame(tick);
+}
+
+function agenticLoginRouteActive(): boolean {
+  const path = normalizePathname(window.location.pathname);
+  return path === '/agentic-login' || path === '/sign-in';
 }
 
 async function completeAgenticLogin(): Promise<void> {
@@ -23263,11 +23424,11 @@ async function completeAgenticLogin(): Promise<void> {
     }
   };
   if (!nonce || !message || !callback) {
-    setStatus('Missing nonce/message/callback. Re-run `solana-agent-wallet auth login`.', false);
+    setStatus('Missing nonce/message/callback. Re-run the original CLI command.', false);
     return;
   }
   if (!state.address) {
-    setStatus('Connect a wallet first via the main app, then return here.', false);
+    setStatus('Connect a wallet first with /connect, then return here.', false);
     return;
   }
   setStatus('Requesting wallet signature…');
@@ -49117,7 +49278,12 @@ function readLaunchParams(): {
   const cliMode = params.get('mode')?.trim() === 'cli' || Boolean(routeIntent);
   const rawIntent = params.get('intent')?.trim() || routeIntent;
   const cliIntent: CliIntentName | undefined =
-    rawIntent === 'connect' || rawIntent === 'disconnect' || rawIntent === 'approve' || rawIntent === 'sign'
+    rawIntent === 'connect' ||
+    rawIntent === 'disconnect' ||
+    rawIntent === 'approve' ||
+    rawIntent === 'sign' ||
+    rawIntent === 'sign-in' ||
+    rawIntent === 'sign-out'
       ? rawIntent
       : undefined;
   const cliActionId = params.get('actionId')?.trim() || undefined;
@@ -49159,6 +49325,10 @@ function cliIntentFromPathname(pathname: string): CliIntentName | undefined {
       return 'approve';
     case '/sign':
       return 'sign';
+    case '/sign-in':
+      return 'sign-in';
+    case '/sign-out':
+      return 'sign-out';
     default:
       return undefined;
   }
@@ -49167,6 +49337,20 @@ function cliIntentFromPathname(pathname: string): CliIntentName | undefined {
 function sessionBridgeToken(): string | undefined {
   const value = window.sessionStorage.getItem(BRIDGE_TOKEN_SESSION_KEY)?.trim();
   return value || undefined;
+}
+
+// In Tauri mode the Rust side rotates the legacy `local-agent-wallet` token to
+// a per-install random one (see lib.rs:1129-1130, generated_bridge_token).
+// Without this mirror the webview keeps the legacy default and every
+// /bridge/* request returns 401 — desktop hangs on "Waiting for browser…"
+// even after the external browser POSTs /bridge/connect successfully.
+function syncBridgeConfigFromTauriStatus(status: TauriBridgeStatus | null): void {
+  const update = computeBridgeConfigUpdate(status);
+  if (update.bridgeUrl) state.bridgeUrl = update.bridgeUrl;
+  if (update.bridgeToken) {
+    state.bridgeToken = update.bridgeToken;
+    saveSessionBridgeToken(update.bridgeToken);
+  }
 }
 
 function saveSessionBridgeToken(value: string): void {

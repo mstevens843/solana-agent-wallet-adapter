@@ -6,6 +6,15 @@ import { acpDevApiPlugin } from './vite.acpDevApi.js';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
+// `loadEnv` reads `.env`, `.env.local`, `.env.<mode>` and `.env.<mode>.local`
+// from the project root. Used here for dev-time browser constants so
+// `pnpm desktop:tauri:dev` can pick up local overrides without shell exports.
+const envFromDotfiles = loadEnv(
+  process.env.NODE_ENV ?? 'development',
+  resolve(dirname(fileURLToPath(import.meta.url))),
+  'VITE_',
+);
+
 function packageVersion(packageJsonPath: string): string {
   const packageJson = JSON.parse(readFileSync(resolve(repoRoot, packageJsonPath), 'utf8')) as {
     version?: unknown;
@@ -54,6 +63,12 @@ const deviceAgentWalletAllowlist =
 const cloudApiBaseUrl =
   process.env.VITE_AGENTIC_CLOUD_API_BASE_URL ??
   process.env.AGENTIC_CLOUD_API_BASE_URL ??
+  envFromDotfiles.VITE_AGENTIC_CLOUD_API_BASE_URL ??
+  '';
+const qrConnectAppUrl =
+  process.env.VITE_AGENTIC_QR_CONNECT_APP_URL ??
+  process.env.AGENTIC_QR_CONNECT_APP_URL ??
+  envFromDotfiles.VITE_AGENTIC_QR_CONNECT_APP_URL ??
   '';
 const appSurface = process.env.VITE_AGENTIC_APP_SURFACE ?? process.env.AGENTIC_APP_SURFACE ?? '';
 const gaMeasurementId = process.env.VITE_AGENTIC_GA_MEASUREMENT_ID ?? process.env.AGENTIC_GA_MEASUREMENT_ID ?? '';
@@ -75,17 +90,6 @@ const androidReleaseTag =
     ? legacyAppReleaseTag
     : `v${packageVersion('apps/desktop-shell/package.json')}`);
 const appReleaseTag = legacyAppReleaseTag ?? androidReleaseTag;
-// `loadEnv` reads `.env`, `.env.local`, `.env.<mode>` and `.env.<mode>.local`
-// from the project root. Used here for the WalletConnect project ID so
-// developers can drop it into `.env.local` without re-exporting it in their
-// shell before every `pnpm desktop:tauri:dev`. The `defineConfig` callback
-// receives `mode` (e.g. "development" / "production"), which `loadEnv` uses
-// to pick the right `.env.<mode>` file.
-const envFromDotfiles = loadEnv(
-  process.env.NODE_ENV ?? 'development',
-  resolve(dirname(fileURLToPath(import.meta.url))),
-  'VITE_',
-);
 const walletConnectProjectId =
   process.env.VITE_AGENTIC_WC_PROJECT_ID ??
   process.env.AGENTIC_WC_PROJECT_ID ??
@@ -106,6 +110,7 @@ export default defineConfig({
     'import.meta.env.VITE_AGENTIC_BROWSER_DEVICE_AGENT': JSON.stringify(browserDeviceAgent),
     'import.meta.env.VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST': JSON.stringify(deviceAgentWalletAllowlist),
     'import.meta.env.VITE_AGENTIC_CLOUD_API_BASE_URL': JSON.stringify(cloudApiBaseUrl),
+    'import.meta.env.VITE_AGENTIC_QR_CONNECT_APP_URL': JSON.stringify(qrConnectAppUrl),
     'import.meta.env.VITE_AGENTIC_APP_SURFACE': JSON.stringify(appSurface),
     'import.meta.env.VITE_AGENTIC_GA_MEASUREMENT_ID': JSON.stringify(gaMeasurementId),
     'import.meta.env.VITE_AGENTIC_WC_PROJECT_ID': JSON.stringify(walletConnectProjectId),

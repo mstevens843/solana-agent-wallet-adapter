@@ -46,7 +46,7 @@ interface LabArtifactRow {
   category?: string;
 }
 
-interface UnifiedRow {
+export interface DoneRow {
   kind: 'receipt' | 'proof' | 'completed';
   category: 'one-time' | 'repeats' | 'proofs' | 'receipts';
   id: string;
@@ -66,7 +66,7 @@ interface UnifiedRow {
 }
 
 export async function runDoneList(options: GlobalOptions, filter: DoneFilter = 'all'): Promise<void> {
-  const rows = await loadCombined(options);
+  const rows = await loadDoneRows(options);
   const filtered = filter === 'all' ? rows : rows.filter((r) => r.category === filter);
   const counts = countByCategory(rows);
 
@@ -88,7 +88,7 @@ export async function runDoneList(options: GlobalOptions, filter: DoneFilter = '
   }
 
   filtered.forEach((row, i) => {
-    renderRow(i + 1, row);
+    renderDoneRow(i + 1, row);
     if (i < filtered.length - 1) console.log('');
   });
 
@@ -96,7 +96,7 @@ export async function runDoneList(options: GlobalOptions, filter: DoneFilter = '
   console.log(badge('Tip: /done [all | one-time | repeats | proofs | receipts]', 'muted'));
 }
 
-function countByCategory(rows: UnifiedRow[]): Record<Exclude<DoneFilter, 'all'>, number> {
+function countByCategory(rows: DoneRow[]): Record<Exclude<DoneFilter, 'all'>, number> {
   return {
     'one-time': rows.filter((r) => r.category === 'one-time').length,
     'repeats':  rows.filter((r) => r.category === 'repeats').length,
@@ -105,7 +105,7 @@ function countByCategory(rows: UnifiedRow[]): Record<Exclude<DoneFilter, 'all'>,
   };
 }
 
-function renderRow(n: number, row: UnifiedRow): void {
+export function renderDoneRow(n: number, row: DoneRow): void {
   const chip =
     row.category === 'proofs'   ? badge('Proof', 'ok')
     : row.category === 'repeats' ? badge('Repeat', 'warn')
@@ -133,7 +133,7 @@ function renderRow(n: number, row: UnifiedRow): void {
   console.log(`    ${badge(`Completed ${row.completedAt}`, 'muted')}  ·  ${badge(`id ${row.id}`, 'muted')}`);
 }
 
-async function loadCombined(options: GlobalOptions): Promise<UnifiedRow[]> {
+export async function loadDoneRows(options: GlobalOptions): Promise<DoneRow[]> {
   const [receipts, artifacts, cloud] = await Promise.all([
     safe(bridgeRequest<{ receipts?: ReceiptRow[] }>(options, '/bridge/receipts')),
     safe(bridgeRequest<{ artifacts?: LabArtifactRow[] }>(options, '/bridge/lab-artifacts')),
@@ -145,7 +145,7 @@ async function loadCombined(options: GlobalOptions): Promise<UnifiedRow[]> {
     )),
   ]);
 
-  const rows: UnifiedRow[] = [];
+  const rows: DoneRow[] = [];
 
   for (const r of receipts?.receipts ?? []) {
     rows.push({
@@ -203,6 +203,26 @@ async function loadCombined(options: GlobalOptions): Promise<UnifiedRow[]> {
 
   rows.sort((a, b) => (a.completedAt < b.completedAt ? 1 : -1));
   return rows;
+}
+
+export async function deleteDoneRow(options: GlobalOptions, row: DoneRow): Promise<void> {
+  if (row.kind === 'proof') {
+    await bridgeRequest(options, '/bridge/lab-artifacts/delete', {
+      method: 'POST',
+      body: JSON.stringify({ artifactId: row.id }),
+    });
+    return;
+  }
+  if (row.kind === 'completed') {
+    await renderWebRequest(options, `/api/completed/${encodeURIComponent(row.id)}`, {
+      method: 'DELETE',
+    }, { label: 'Render-web completed', requireAuth: true });
+    return;
+  }
+  await bridgeRequest(options, '/bridge/prepared-actions/delete', {
+    method: 'POST',
+    body: JSON.stringify({ actionId: row.id }),
+  });
 }
 
 async function safe<T>(p: Promise<T>): Promise<T | undefined> {

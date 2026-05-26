@@ -582,6 +582,34 @@ test('interactive app starts wallet host on a fallback port when the configured 
   }
 });
 
+test('interactive sign-in requires a paired wallet first', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-sign-in-wallet-required-'));
+  const bridge = await startDisconnectedBridge();
+  const walletHost = await startMockWalletHost();
+  const child = startCliInteractive([
+    '--runtime-dir',
+    runtimeDir,
+    '--bridge-url',
+    bridge.url,
+    '--wallet-host-url',
+    walletHost.url,
+  ]);
+
+  try {
+    await waitForStdout(child, /agentic>/, 30_000);
+    child.stdin.write('/sign-in\n');
+    const signInStdout = await waitForStdout(child, /Connect your wallet first with \/connect/, 10_000);
+    assert.match(signInStdout, /Sign in to your cloud workspace/);
+    child.stdin.write('/quit\n');
+    const exit = await waitForExit(child);
+    assert.equal(exit.code, 0, `stdout:\n${signInStdout}\nstderr:\n${await readRemaining(child.stderr)}`);
+  } finally {
+    await bridge.close();
+    await walletHost.close();
+    await stopChild(child);
+  }
+});
+
 test('agent-setup from env writes local AI config and activates bridge session key', async () => {
   const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-agent-setup-'));
   const envPath = join(runtimeDir, '.env');
@@ -854,7 +882,7 @@ test('auth login full SIWS roundtrip stores a session token', async () => {
     const loginUrl = await new Promise<string>((resolveOuter, rejectOuter) => {
       const start = Date.now();
       const tick = setInterval(() => {
-        const match = (stdout + stderr).match(/(http:\/\/[^\s]+\/agentic-login\?[^\s]+)/);
+        const match = (stdout + stderr).match(/(http:\/\/[^\s]+\/sign-in\?[^\s]+)/);
         if (match?.[1]) {
           clearInterval(tick);
           resolveOuter(match[1]);
@@ -1017,7 +1045,7 @@ test('auth login tx-memo-proof roundtrip stores session + forwards proofTxBase64
     const loginUrl = await new Promise<string>((resolveOuter, rejectOuter) => {
       const start = Date.now();
       const tick = setInterval(() => {
-        const match = (stdout + stderr).match(/(http:\/\/[^\s]+\/agentic-login\?[^\s]+)/);
+        const match = (stdout + stderr).match(/(http:\/\/[^\s]+\/sign-in\?[^\s]+)/);
         if (match?.[1]) { clearInterval(tick); resolveOuter(match[1]); return; }
         if (Date.now() - start > 30_000) {
           clearInterval(tick);
@@ -1772,6 +1800,30 @@ async function startMockBridge(actions: Record<string, unknown>[]): Promise<{
 async function startUnauthorizedBridge(): Promise<{ url: string; close: () => Promise<void> }> {
   const server = createHttpServer((_req, res) => {
     writeJsonResponse(res, { error: 'unauthorized' }, 401);
+  });
+  const url = await listenHttp(server);
+  return { url, close: () => closeHttp(server) };
+}
+
+async function startDisconnectedBridge(): Promise<{ url: string; close: () => Promise<void> }> {
+  const server = createHttpServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+    if (url.pathname === '/bridge/health' || url.pathname === '/bridge/action/health') {
+      writeJsonResponse(res, {
+        walletConnected: false,
+        cluster: 'mainnet-beta',
+      });
+      return;
+    }
+    if (url.pathname === '/bridge/action/status') {
+      writeJsonResponse(res, {
+        connected: false,
+        address: null,
+        cluster: 'mainnet-beta',
+      });
+      return;
+    }
+    writeJsonResponse(res, { error: 'not found' }, 404);
   });
   const url = await listenHttp(server);
   return { url, close: () => closeHttp(server) };

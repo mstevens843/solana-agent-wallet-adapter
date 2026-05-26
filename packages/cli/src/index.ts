@@ -70,13 +70,13 @@ import {
   isPrepareAlias,
   resolveAliasKind,
 } from './commands/prepareAliases.js';
-import { loadSession, sessionStatusSummary } from './auth/sessionStore.js';
+import { clearSession, loadSession, sessionStatusSummary } from './auth/sessionStore.js';
 import { renderWebRequest as renderWebRequestClient } from './http/index.js';
 
 // v1.1 — flow-first command surface. Mirrors the web app's tabs (Draft, Needs
-// Approval, Active Repeats, Done). Browser only opens for the four wallet
-// signing intents (connect, disconnect, approve, sign). All form filling stays
-// in the terminal.
+// Approval, Active Repeats, Done). Browser opens only for wallet/cloud signing
+// intents (connect, disconnect, approve, sign, sign-in/sign-out). Form filling
+// stays in the terminal.
 import {
   runNewMenu,
   runNewSend,
@@ -105,8 +105,9 @@ import {
 import { isMainnetCluster } from './flows/safetyGate.js';
 import { friendlyBridgeError } from './flows/_shared.js';
 import { runSignIn, runSignOut, showSignInStatus } from './flows/signIn.js';
-import { pickInbox, pickDoneFilter } from './flows/menus.js';
-import { runDoneList, type DoneFilter } from './flows/done.js';
+import { pickDoneFilter } from './flows/menus.js';
+import { deleteDoneRow, loadDoneRows, renderDoneRow, runDoneList, type DoneFilter, type DoneRow } from './flows/done.js';
+import { loadWorkspaceSummary } from './flows/workspaceSummary.js';
 import { pickPendingAction } from './flows/pickAction.js';
 import { runScheduleManage } from './flows/scheduleManage.js';
 import { runSessionsMenu } from './flows/sessions.js';
@@ -608,7 +609,7 @@ async function dispatch(parsed: ParsedArgs): Promise<unknown> {
     case 'open':
       await ensureBrowserHostDetached(parsed.options);
       await openWalletHost(parsed.options);
-      return { opened: walletHostLaunchUrl(parsed.options) };
+      return walletHostOpenResult(parsed.options);
     case 'connect':
       return connectOneShot(parsed.options);
     case 'research':
@@ -769,10 +770,14 @@ async function dispatch(parsed: ParsedArgs): Promise<unknown> {
       return NO_OUTPUT;
     case 'sign-in':
       ensureTtyOrExit('sign-in');
+      await ensureBridgeDetached(parsed.options).catch(() => undefined);
+      await ensureBrowserHostDetached(parsed.options);
       await withCancelGuard(() => runSignIn(parsed.options));
       return NO_OUTPUT;
     case 'sign-out':
       await runSignOut(parsed.options);
+      await ensureBrowserHostDetached(parsed.options);
+      await openWalletHost(parsed.options, { intent: 'sign-out' }).catch(() => undefined);
       return NO_OUTPUT;
     case 'sign-in-status':
       await showSignInStatus(parsed.options);
@@ -972,7 +977,7 @@ async function dispatchBridge(parsed: ParsedArgs): Promise<unknown> {
   if (subcommand === 'open') {
     await ensureBrowserHostDetached(parsed.options);
     await openWalletHost(parsed.options);
-    return { opened: walletHostLaunchUrl(parsed.options) };
+    return walletHostOpenResult(parsed.options);
   }
   if (subcommand === 'start') {
     const result = await ensureBridgeDetached(parsed.options);
@@ -1005,7 +1010,7 @@ async function dispatchWalletHost(parsed: ParsedArgs): Promise<unknown> {
   if (subcommand === 'open') {
     await ensureBrowserHostDetached(parsed.options);
     await openWalletHost(parsed.options);
-    return { opened: walletHostLaunchUrl(parsed.options) };
+    return walletHostOpenResult(parsed.options);
   }
   if (subcommand === 'serve') {
     await serveWalletHost(parsed.options);
@@ -1552,7 +1557,7 @@ async function connectInteractive(
     for (const notice of runtimeNotices) {
       console.log(notice);
     }
-    console.log(`${openError ? 'Open manually' : 'Opened'}: ${launchUrl}`);
+    console.log(walletHostOpenLine(openError, launchUrl, cli));
     if (openError) {
       console.log(`Browser open failed: ${openError}`);
     }
@@ -1582,16 +1587,21 @@ async function disconnectInteractive(state: TerminalAppState): Promise<void> {
   await ensureBrowserHost(state);
   const status = await tryBridgeRequest<WalletStatus>(state.options, '/bridge/action/status');
   if (status.ok && !status.value.connected) {
+    const cloudSignedOut = await clearCloudSessionForWalletDisconnect(state.options);
     if (!state.options.json) {
       printOk(state.options, 'Wallet already disconnected.');
+      if (cloudSignedOut) {
+        printMuted(state.options, 'Cloud Storage signed out because the wallet is disconnected.');
+      }
     }
     return;
   }
-  const launchUrl = walletHostLaunchUrl(state.options, { intent: 'disconnect' });
+  const disconnectIntent: CliIntent = { intent: 'disconnect' };
+  const launchUrl = walletHostLaunchUrl(state.options, disconnectIntent);
   const openError = await tryOpenUrl(launchUrl);
   if (!state.options.json) {
     printSection('Disconnect Wallet');
-    console.log(`${openError ? 'Open manually' : 'Opened'}: ${launchUrl}`);
+    console.log(walletHostOpenLine(openError, launchUrl, disconnectIntent));
     if (openError) {
       console.log(`Browser open failed: ${openError}`);
     }
@@ -1601,14 +1611,26 @@ async function disconnectInteractive(state: TerminalAppState): Promise<void> {
   while (Date.now() - start < 120_000) {
     const probe = await tryBridgeRequest<WalletStatus>(state.options, '/bridge/action/status');
     if (probe.ok && !probe.value.connected) {
+      const cloudSignedOut = await clearCloudSessionForWalletDisconnect(state.options);
       if (!state.options.json) {
         printOk(state.options, 'Wallet disconnected.');
+        if (cloudSignedOut) {
+          printMuted(state.options, 'Cloud Storage signed out because the wallet disconnected.');
+        }
       }
       return;
     }
     await sleep(750);
   }
   throw new Error('Wallet still connected after 120s. Click "Disconnect wallet" in the browser and try /disconnect again.');
+}
+
+async function clearCloudSessionForWalletDisconnect(options: GlobalOptions): Promise<boolean> {
+  try {
+    return await clearSession(options);
+  } catch {
+    return false;
+  }
 }
 
 type AgentSetupProvider = 'hosted' | 'openai' | 'anthropic' | 'custom';
@@ -1880,6 +1902,9 @@ async function handleTerminalCommand(
       case 'quit':
       case 'exit':
         return true;
+      case 'back':
+        await renderDashboard(state);
+        return false;
       case 'doctor':
         printDoctor(state.options, await runDoctor(state.options));
         return false;
@@ -1917,22 +1942,13 @@ async function handleTerminalCommand(
         printOk(state.options, `Bridge reachable at ${state.options.bridgeUrl}.`);
         return false;
       case 'inbox':
-        if (args.length === 0) {
-          const which = await pickInbox();
-          if (which === 'new') {
-            await printInbox(state, 'ready', false);
-          } else {
-            await withCancelGuard(() => runScheduleManage(state.options));
-          }
-        } else {
-          await printInbox(state, args[0] === 'compact' ? args[1] ?? 'all' : args[0] ?? 'all', args[0] === 'compact');
-        }
+        await withCancelGuard(() => runInboxHub(state));
         return false;
       case 'inbox-new':
-        await printInbox(state, 'ready', false);
+        await withCancelGuard(() => runOneTimeInbox(state));
         return false;
       case 'inbox-repeat':
-        await withCancelGuard(() => runScheduleManage(state.options));
+        await withCancelGuard(() => runRepeatInbox(state));
         return false;
       case 'repeat-manage':
         await withCancelGuard(() => runScheduleManage(state.options));
@@ -1990,22 +2006,22 @@ async function handleTerminalCommand(
         })();
       case 'done': {
         const filter: DoneFilter = args.length === 0
-          ? await pickDoneFilter()
+          ? 'all'
           : (args[0] as DoneFilter);
-        await runDoneList(state.options, filter);
+        await withCancelGuard(() => runDoneBrowser(state, filter));
         return false;
       }
       case 'done-completed':
-        await runDoneList(state.options, 'one-time');
+        await withCancelGuard(() => runDoneBrowser(state, 'one-time'));
         return false;
       case 'done-repeats':
-        await runDoneList(state.options, 'repeats');
+        await withCancelGuard(() => runDoneBrowser(state, 'repeats'));
         return false;
       case 'done-proofs':
-        await runDoneList(state.options, 'proofs');
+        await withCancelGuard(() => runDoneBrowser(state, 'proofs'));
         return false;
       case 'done-receipts':
-        await runDoneList(state.options, 'receipts');
+        await withCancelGuard(() => runDoneBrowser(state, 'receipts'));
         return false;
       case 'inspect': {
         const id = args[0] ?? await pickPendingAction(state.options, 'inspect');
@@ -2122,10 +2138,16 @@ async function handleTerminalCommand(
         await withCancelGuard(() => runAsk(state.options, args.join(' ').trim() || undefined));
         return false;
       case 'sign-in':
+        await ensureBridge(state).catch((err) => {
+          pushLog(state, `bridge sign-in bootstrap failed: ${errorMessage(err)}`);
+        });
+        await ensureBrowserHost(state);
         await withCancelGuard(() => runSignIn(state.options));
         return false;
       case 'sign-out':
         await runSignOut(state.options);
+        await ensureBrowserHost(state);
+        await openWalletHost(state.options, { intent: 'sign-out' }).catch(() => undefined);
         return false;
       case 'sign-in-status':
         await showSignInStatus(state.options);
@@ -2253,6 +2275,500 @@ async function printPortfolio(state: TerminalAppState): Promise<void> {
     console.log('\nRecent signatures');
     renderUnknownTable(recentSignatures, ['signature', 'slot', 'err']);
   }
+}
+
+type InboxRootChoice =
+  | 'one-time'
+  | 'repeats'
+  | 'done'
+  | 'delete-one-time'
+  | 'delete-repeats'
+  | 'delete-done'
+  | 'back';
+
+type PagedChoice = string;
+
+async function runInboxHub(state: TerminalAppState): Promise<void> {
+  while (true) {
+    const summary = await loadWorkspaceSummary(state.options);
+    console.log();
+    console.log(tuiHeader('Workspace Inbox'));
+    console.log(tuiKv([
+      ['Inbox', `${summary.inbox}`],
+      ['One-time', `${summary.oneTime}`],
+      ['Repeats', `${summary.repeats}`],
+      ['Connectors', `${summary.connectors}`],
+      ['Done', `${summary.done}`],
+    ]));
+    console.log(tuiDivider());
+
+    const choice = await tuiSelect<InboxRootChoice>({
+      message: 'Open',
+      pageSize: 9,
+      choices: [
+        { name: `One-time approvals (${summary.oneTime})`, value: 'one-time' },
+        { name: `Repeat payments (${summary.repeats})`, value: 'repeats' },
+        { name: `Done (${summary.done})`, value: 'done' },
+        { name: 'Delete all one-time approvals', value: 'delete-one-time', disabled: summary.oneTime === 0 ? 'Nothing to delete' : false },
+        { name: 'Delete all repeat items', value: 'delete-repeats', disabled: summary.repeats === 0 ? 'Nothing to delete' : false },
+        { name: 'Delete all done history', value: 'delete-done', disabled: summary.done === 0 ? 'Nothing to delete' : false },
+        { name: '← Back', value: 'back' },
+      ],
+    });
+
+    if (choice === 'back') return;
+    if (choice === 'one-time') await runOneTimeInbox(state);
+    else if (choice === 'repeats') await runRepeatInbox(state);
+    else if (choice === 'done') await runDoneBrowser(state, 'all');
+    else if (choice === 'delete-one-time') await deleteAllOneTimeInbox(state);
+    else if (choice === 'delete-repeats') await deleteAllRepeatInbox(state);
+    else if (choice === 'delete-done') await deleteAllDoneRows(state, 'all');
+  }
+}
+
+async function runOneTimeInbox(state: TerminalAppState): Promise<void> {
+  let page = 0;
+  while (true) {
+    const actions = await loadOneTimeInboxActions(state);
+    if (actions.length === 0) {
+      console.log(tuiBadge('No one-time approvals waiting.', 'muted'));
+      const action = await tuiSelect<'refresh' | 'back'>({
+        message: 'Next',
+        choices: [
+          { name: 'Refresh', value: 'refresh' },
+          { name: '← Back', value: 'back' },
+        ],
+      });
+      if (action === 'back') return;
+      continue;
+    }
+
+    page = clampPage(page, actions.length);
+    const choice = await pickPagedRow({
+      title: 'One-time approvals',
+      page,
+      total: actions.length,
+      rows: actions.map((action) => ({
+        id: action.id,
+        label: preparedActionRowLabel(action),
+        description: action.summary,
+      })),
+      deleteAllLabel: 'Delete all one-time approvals',
+    });
+    if (choice === '__back__') return;
+    if (choice === '__next__') {
+      page += 1;
+      continue;
+    }
+    if (choice === '__prev__') {
+      page -= 1;
+      continue;
+    }
+    if (choice === '__delete_all__') {
+      await deleteAllOneTimeInbox(state);
+      page = 0;
+      continue;
+    }
+
+    const action = actions.find((candidate) => candidate.id === choice);
+    if (action) await runOneTimeActionDetail(state, action);
+  }
+}
+
+async function runRepeatInbox(state: TerminalAppState): Promise<void> {
+  let page = 0;
+  while (true) {
+    const { approvals, schedules } = await loadRepeatInboxItems(state);
+    const rows = [
+      ...approvals.map((action) => ({
+        id: `approval:${action.id}`,
+        label: `${tuiBadge('Due approval', 'warn')}  ${preparedActionRowLabel(action)}`,
+        description: action.summary,
+      })),
+      ...schedules.map((schedule) => ({
+        id: `schedule:${schedule.id}`,
+        label: repeatRowLabel(schedule),
+        description: schedule.note,
+      })),
+    ];
+
+    if (rows.length === 0) {
+      console.log(tuiBadge('No repeat payments or repeat approvals yet.', 'muted'));
+      const action = await tuiSelect<'refresh' | 'back'>({
+        message: 'Next',
+        choices: [
+          { name: 'Refresh', value: 'refresh' },
+          { name: '← Back', value: 'back' },
+        ],
+      });
+      if (action === 'back') return;
+      continue;
+    }
+
+    page = clampPage(page, rows.length);
+    const choice = await pickPagedRow({
+      title: 'Repeat payments',
+      page,
+      total: rows.length,
+      rows,
+      deleteAllLabel: 'Delete all repeat items',
+    });
+    if (choice === '__back__') return;
+    if (choice === '__next__') {
+      page += 1;
+      continue;
+    }
+    if (choice === '__prev__') {
+      page -= 1;
+      continue;
+    }
+    if (choice === '__delete_all__') {
+      await deleteAllRepeatInbox(state);
+      page = 0;
+      continue;
+    }
+
+    if (choice.startsWith('approval:')) {
+      const id = choice.slice('approval:'.length);
+      const action = approvals.find((candidate) => candidate.id === id);
+      if (action) await runOneTimeActionDetail(state, action);
+      continue;
+    }
+    if (choice.startsWith('schedule:')) {
+      const id = choice.slice('schedule:'.length);
+      const schedule = schedules.find((candidate) => candidate.id === id);
+      if (schedule) await runRepeatScheduleDetail(state, schedule);
+    }
+  }
+}
+
+async function runDoneBrowser(state: TerminalAppState, filter: DoneFilter): Promise<void> {
+  let page = 0;
+  while (true) {
+    const rows = await loadDoneRows(state.options);
+    const filtered = filter === 'all' ? rows : rows.filter((row) => row.category === filter);
+    if (filtered.length === 0) {
+      console.log(tuiBadge('Nothing in Done yet.', 'muted'));
+      const action = await tuiSelect<'refresh' | 'back'>({
+        message: 'Next',
+        choices: [
+          { name: 'Refresh', value: 'refresh' },
+          { name: '← Back', value: 'back' },
+        ],
+      });
+      if (action === 'back') return;
+      continue;
+    }
+
+    page = clampPage(page, filtered.length);
+    const choice = await pickPagedRow({
+      title: `Done${filter === 'all' ? '' : ` · ${filter}`}`,
+      page,
+      total: filtered.length,
+      rows: filtered.map((row) => ({
+        id: row.id,
+        label: doneRowLabel(row),
+        description: row.summary,
+      })),
+      deleteAllLabel: `Delete all${filter === 'all' ? '' : ` ${filter}`} done items`,
+    });
+    if (choice === '__back__') return;
+    if (choice === '__next__') {
+      page += 1;
+      continue;
+    }
+    if (choice === '__prev__') {
+      page -= 1;
+      continue;
+    }
+    if (choice === '__delete_all__') {
+      await deleteAllDoneRows(state, filter);
+      page = 0;
+      continue;
+    }
+
+    const row = filtered.find((candidate) => candidate.id === choice);
+    if (row) await runDoneDetail(state, row);
+  }
+}
+
+async function runOneTimeActionDetail(state: TerminalAppState, action: PreparedAction): Promise<void> {
+  while (true) {
+    console.log();
+    console.log(tuiHeader('Approval detail'));
+    printPreparedActionDetail(action, 0);
+    const approvable = action.status === 'ready' || action.status === 'overdue';
+    const choice = await tuiSelect<'approve' | 'delete' | 'back'>({
+      message: 'Action',
+      choices: [
+        { name: 'Approve in browser', value: 'approve', disabled: approvable ? false : `Cannot approve from ${action.status}` },
+        { name: 'Delete from inbox', value: 'delete' },
+        { name: '← Back', value: 'back' },
+      ],
+    });
+    if (choice === 'back') return;
+    if (choice === 'approve') {
+      await approvePreparedAction(state, action.id);
+      return;
+    }
+    if (choice === 'delete') {
+      const yes = await tuiConfirm({ message: `Delete ${short(action.id, 12)} from inbox?`, default: false });
+      if (yes) {
+        await deletePreparedAction(state, action.id);
+        return;
+      }
+    }
+  }
+}
+
+async function runRepeatScheduleDetail(state: TerminalAppState, schedule: RecurringPayment): Promise<void> {
+  while (true) {
+    console.log();
+    console.log(tuiHeader('Repeat payment'));
+    printRecurringPaymentDetail(schedule);
+    const isActive = schedule.status === 'active';
+    const choice = await tuiSelect<'pause' | 'resume' | 'delete' | 'back'>({
+      message: 'Action',
+      choices: [
+        isActive
+          ? { name: 'Pause repeat', value: 'pause' }
+          : { name: 'Resume repeat', value: 'resume' },
+        { name: 'Delete repeat', value: 'delete' },
+        { name: '← Back', value: 'back' },
+      ],
+    });
+    if (choice === 'back') return;
+    if (choice === 'pause' || choice === 'resume') {
+      await mutateRecurringPayment(state, choice, schedule.id);
+      return;
+    }
+    if (choice === 'delete') {
+      const yes = await tuiConfirm({ message: `Delete repeat ${short(schedule.id, 12)}?`, default: false });
+      if (yes) {
+        await mutateRecurringPayment(state, 'delete', schedule.id);
+        return;
+      }
+    }
+  }
+}
+
+async function runDoneDetail(state: TerminalAppState, row: DoneRow): Promise<void> {
+  while (true) {
+    console.log();
+    console.log(tuiHeader('Done detail'));
+    renderDoneRow(1, row);
+    const choice = await tuiSelect<'delete' | 'back'>({
+      message: 'Action',
+      choices: [
+        { name: 'Delete from Done', value: 'delete' },
+        { name: '← Back', value: 'back' },
+      ],
+    });
+    if (choice === 'back') return;
+    const yes = await tuiConfirm({ message: `Delete Done item ${short(row.id, 12)}?`, default: false });
+    if (yes) {
+      await deleteDoneRow(state.options, row);
+      printOk(state.options, `Deleted Done item ${short(row.id, 12)}.`);
+      return;
+    }
+  }
+}
+
+async function loadOneTimeInboxActions(state: TerminalAppState): Promise<PreparedAction[]> {
+  const response = await refreshPreparedActions(state.options);
+  const actions = response.actions
+    .filter((action) => isInboxPendingAction(action) && !action.recurringId)
+    .sort(compareInboxActions);
+  state.lastActions = actions;
+  return actions;
+}
+
+async function loadRepeatInboxItems(state: TerminalAppState): Promise<{ approvals: PreparedAction[]; schedules: RecurringPayment[] }> {
+  const [actionsResponse, schedulesResponse] = await Promise.all([
+    refreshPreparedActions(state.options),
+    bridgeRequest<{ recurringPayments?: RecurringPayment[] }>(state.options, '/bridge/recurring-payments'),
+  ]);
+  const approvals = actionsResponse.actions
+    .filter((action) => isInboxPendingAction(action) && Boolean(action.recurringId))
+    .sort(compareInboxActions);
+  const schedules = (schedulesResponse.recurringPayments ?? [])
+    .slice()
+    .sort((left, right) => (left.nextDueAt ?? left.updatedAt).localeCompare(right.nextDueAt ?? right.updatedAt));
+  state.lastActions = [...approvals, ...actionsResponse.actions.filter((action) => !approvals.some((approval) => approval.id === action.id))];
+  state.lastRecurring = schedules;
+  return { approvals, schedules };
+}
+
+async function deletePreparedAction(state: TerminalAppState, actionId: string): Promise<void> {
+  await bridgeRequest(state.options, '/bridge/prepared-actions/delete', {
+    method: 'POST',
+    body: JSON.stringify({ actionId }),
+  });
+  printOk(state.options, `Deleted approval ${short(actionId, 12)}.`);
+}
+
+async function mutateRecurringPayment(
+  state: TerminalAppState,
+  op: 'pause' | 'resume' | 'delete',
+  recurringId: string,
+): Promise<void> {
+  await bridgeRequest(state.options, `/bridge/recurring-payments/${op}`, {
+    method: 'POST',
+    body: JSON.stringify({ recurringId }),
+  });
+  printOk(state.options, `Repeat ${op}d: ${short(recurringId, 12)}.`);
+}
+
+async function deleteAllOneTimeInbox(state: TerminalAppState): Promise<void> {
+  const actions = await loadOneTimeInboxActions(state);
+  if (actions.length === 0) {
+    console.log(tuiBadge('No one-time approvals to delete.', 'muted'));
+    return;
+  }
+  const yes = await tuiConfirm({ message: `Delete all ${actions.length} one-time approvals?`, default: false });
+  if (!yes) return;
+  const result = await deleteMany(actions, (action) => deletePreparedAction(state, action.id));
+  printBulkDeleteResult(state, 'One-time approvals', result);
+}
+
+async function deleteAllRepeatInbox(state: TerminalAppState): Promise<void> {
+  const { approvals, schedules } = await loadRepeatInboxItems(state);
+  const total = approvals.length + schedules.length;
+  if (total === 0) {
+    console.log(tuiBadge('No repeat items to delete.', 'muted'));
+    return;
+  }
+  const yes = await tuiConfirm({ message: `Delete all ${total} repeat items?`, default: false });
+  if (!yes) return;
+  const approvalResult = await deleteMany(approvals, (action) => deletePreparedAction(state, action.id));
+  const scheduleResult = await deleteMany(schedules, (schedule) => mutateRecurringPayment(state, 'delete', schedule.id));
+  printBulkDeleteResult(state, 'Repeat items', {
+    ok: approvalResult.ok + scheduleResult.ok,
+    failed: approvalResult.failed + scheduleResult.failed,
+  });
+}
+
+async function deleteAllDoneRows(state: TerminalAppState, filter: DoneFilter): Promise<void> {
+  const rows = (await loadDoneRows(state.options)).filter((row) => filter === 'all' || row.category === filter);
+  if (rows.length === 0) {
+    console.log(tuiBadge('No Done items to delete.', 'muted'));
+    return;
+  }
+  const yes = await tuiConfirm({ message: `Delete all ${rows.length} Done items${filter === 'all' ? '' : ` in ${filter}`}?`, default: false });
+  if (!yes) return;
+  const result = await deleteMany(rows, (row) => deleteDoneRow(state.options, row));
+  printBulkDeleteResult(state, 'Done items', result);
+}
+
+async function deleteMany<T>(items: T[], fn: (item: T) => Promise<void>): Promise<{ ok: number; failed: number }> {
+  let ok = 0;
+  let failed = 0;
+  for (const item of items) {
+    try {
+      await fn(item);
+      ok += 1;
+    } catch {
+      failed += 1;
+    }
+  }
+  return { ok, failed };
+}
+
+function printBulkDeleteResult(state: TerminalAppState, label: string, result: { ok: number; failed: number }): void {
+  if (result.failed > 0) {
+    printWarn(state.options, `${label}: ${result.ok} deleted, ${result.failed} failed.`);
+  } else {
+    printOk(state.options, `${label}: ${result.ok} deleted.`);
+  }
+}
+
+async function pickPagedRow(input: {
+  title: string;
+  page: number;
+  total: number;
+  rows: Array<{ id: string; label: string; description?: string }>;
+  deleteAllLabel: string;
+}): Promise<PagedChoice> {
+  const pageSize = 5;
+  const pageCount = Math.max(1, Math.ceil(input.total / pageSize));
+  const page = Math.min(Math.max(input.page, 0), pageCount - 1);
+  const start = page * pageSize;
+  const slice = input.rows.slice(start, start + pageSize);
+
+  console.log();
+  console.log(tuiHeader(input.title));
+  console.log(tuiBadge(`${input.total} item${input.total === 1 ? '' : 's'} · page ${page + 1}/${pageCount}`, 'muted'));
+
+  return tuiSelect<string>({
+    message: 'Select',
+    pageSize: 10,
+    choices: [
+      ...slice.map((row, index) => ({
+        name: `${String(start + index + 1).padStart(2, ' ')}. ${row.label}`,
+        value: row.id,
+        description: row.description?.slice(0, 80),
+      })),
+      { name: 'Next page', value: '__next__', disabled: page >= pageCount - 1 ? 'Last page' : false },
+      { name: 'Previous page', value: '__prev__', disabled: page <= 0 ? 'First page' : false },
+      { name: input.deleteAllLabel, value: '__delete_all__' },
+      { name: '← Back', value: '__back__' },
+    ],
+  });
+}
+
+function preparedActionRowLabel(action: PreparedAction): string {
+  const status = action.status === 'ready' ? tuiBadge('ready', 'ok')
+    : action.status === 'overdue' ? tuiBadge('overdue', 'warn')
+      : action.status === 'blocked' ? tuiBadge('blocked', 'warn')
+        : action.status === 'approval_pending' ? tuiBadge('approval pending', 'warn')
+          : tuiBadge(action.status, 'muted');
+  const amount = amountLabel(action);
+  const token = tokenLabel(action);
+  const money = amount ? ` · ${amount}${token ? ` ${token}` : ''}` : '';
+  return `${status}  ${preparedActionKindLabel(action)}${money}  ${short(action.id, 12)}`;
+}
+
+function repeatRowLabel(schedule: RecurringPayment): string {
+  const status = schedule.status === 'active' ? tuiBadge('active', 'ok') : tuiBadge('paused', 'warn');
+  const next = schedule.nextDueAt ? ` · next ${timeLabel(schedule.nextDueAt)}` : '';
+  return `${tuiBadge('Schedule', 'info')}  ${status}  ${schedule.amount} ${schedule.token}  ${schedule.cadence}${next}  ${short(schedule.id, 12)}`;
+}
+
+function doneRowLabel(row: DoneRow): string {
+  const type = row.category === 'proofs' ? tuiBadge('Proof', 'ok')
+    : row.category === 'repeats' ? tuiBadge('Repeat', 'warn')
+      : row.category === 'receipts' ? tuiBadge('Receipt', 'info')
+        : tuiBadge('One-time', 'info');
+  const tx = row.txid ? ` · tx ${short(row.txid, 10)}` : '';
+  return `${type}  ${row.title}${tx}  ${short(row.id, 12)}`;
+}
+
+function isInboxPendingAction(action: PreparedAction): boolean {
+  return action.status === 'ready' || action.status === 'overdue' || action.status === 'blocked' || action.status === 'approval_pending';
+}
+
+function compareInboxActions(left: PreparedAction, right: PreparedAction): number {
+  return (left.dueAt || left.createdAt).localeCompare(right.dueAt || right.createdAt);
+}
+
+function clampPage(page: number, total: number): number {
+  const max = Math.max(0, Math.ceil(total / 5) - 1);
+  return Math.min(Math.max(page, 0), max);
+}
+
+function printRecurringPaymentDetail(payment: RecurringPayment): void {
+  console.log(tuiKv([
+    ['Id', payment.id],
+    ['Status', payment.status],
+    ['Amount', `${payment.amount} ${payment.token}`],
+    ['Recipient', payment.recipient],
+    ['Cadence', payment.cadence + (payment.localTime ? ` @ ${payment.localTime}` : '')],
+    ['Next due', payment.nextDueAt ? `${timeLabel(payment.nextDueAt)} (${payment.nextDueAt})` : 'not scheduled'],
+    ['Occurrences', payment.maxOccurrences ? `${payment.occurrencesCreated ?? 0} / ${payment.maxOccurrences}` : `${payment.occurrencesCreated ?? 0} (unlimited)`],
+    ['Wallet', payment.walletAddress],
+    ['Network', payment.cluster],
+    ['Note', payment.note ?? '—'],
+  ]));
 }
 
 async function printInbox(state: TerminalAppState, filter = 'all', compact = false): Promise<void> {
@@ -4468,7 +4984,7 @@ async function waitForWalletConnection(options: GlobalOptions, timeoutMs: number
     }
     await sleep(750);
   }
-  throw new Error(`No wallet connected yet. Keep ${walletHostLaunchUrl(options)} open, connect your wallet, then run /wallet or /connect again.`);
+  throw new Error('No wallet connected yet. Keep the Agentic Wallet Connect page open, connect your wallet, then run /wallet or /connect again.');
 }
 
 async function isUrlReachable(url: string): Promise<boolean> {
@@ -4928,8 +5444,15 @@ async function openWalletHost(options: GlobalOptions, cli?: CliIntent): Promise<
   await openUrl(walletHostLaunchUrl(options, cli));
 }
 
+function walletHostOpenResult(options: GlobalOptions, cli?: CliIntent): JsonRecord {
+  return {
+    opened: walletHostPageLabel(cli),
+    localHost: options.walletHostUrl,
+  };
+}
+
 type CliIntent =
-  | { intent: 'connect' | 'disconnect' | 'approve'; actionId?: string; requestId?: never }
+  | { intent: 'connect' | 'disconnect' | 'approve' | 'sign-in' | 'sign-out'; actionId?: string; requestId?: never }
   | { intent: 'sign'; requestId: string; actionId?: never };
 
 function walletHostLaunchUrl(options: GlobalOptions, cli?: CliIntent): string {
@@ -4946,6 +5469,43 @@ function walletHostLaunchUrl(options: GlobalOptions, cli?: CliIntent): string {
   return url.toString();
 }
 
+function walletHostOpenLine(openError: string | null, launchUrl: string, cli?: CliIntent): string {
+  if (openError) {
+    return `Open manually: ${launchUrl}`;
+  }
+  return `Opened: ${walletHostPageLabel(cli)}`;
+}
+
+function walletHostPageLabel(cli?: CliIntent): string {
+  if (!cli) return 'Agentic Wallet App';
+  switch (cli.intent) {
+    case 'connect':
+      return 'Agentic Wallet Connect';
+    case 'disconnect':
+      return 'Agentic Wallet Disconnect';
+    case 'approve':
+      return 'Agentic Approval';
+    case 'sign-in':
+      return 'Agentic Cloud Sign In';
+    case 'sign-out':
+      return 'Agentic Cloud Sign Out';
+    case 'sign':
+      return 'Agentic Proof Signing';
+  }
+}
+
+function redactWalletHostLaunchUrl(raw: string): string {
+  try {
+    const url = new URL(raw);
+    if (url.searchParams.has('token')) {
+      url.searchParams.set('token', 'redacted');
+    }
+    return url.toString();
+  } catch {
+    return raw.replace(/([?&]token=)[^&]+/i, '$1redacted');
+  }
+}
+
 function walletHostLaunchPath(cli?: CliIntent): string {
   if (!cli) return '/app';
   switch (cli.intent) {
@@ -4955,6 +5515,10 @@ function walletHostLaunchPath(cli?: CliIntent): string {
       return '/disconnect';
     case 'approve':
       return '/approve';
+    case 'sign-in':
+      return '/sign-in';
+    case 'sign-out':
+      return '/sign-out';
     case 'sign':
       return '/sign';
   }
@@ -5548,7 +6112,7 @@ function printDoctor(options: GlobalOptions, doctor: JsonRecord): void {
   const files = isRecord(doctor.files) ? doctor.files : {};
   const setup = isRecord(doctor.setup) ? doctor.setup : {};
   console.log(`Bridge URL: ${String(doctor.bridgeUrl ?? '')}`);
-  console.log(`Wallet host: ${String(doctor.walletHostLaunchUrl ?? '')}`);
+  console.log(`Wallet host: ${redactWalletHostLaunchUrl(String(doctor.walletHostLaunchUrl ?? ''))}`);
   console.log(`Runtime dir: ${String(doctor.runtimeDir ?? '')}`);
   console.log(`Repo root: ${String(doctor.repoRoot ?? 'not detected')}`);
   const token = isRecord(doctor.token) ? doctor.token : {};
@@ -6429,7 +6993,7 @@ function formatBridgeError(options: GlobalOptions, message: string): string {
   if (/No browser wallet is connected/i.test(message)) {
     return [
       'No browser wallet is connected to the local bridge.',
-      `Open ${walletHostLaunchUrl(options)}`,
+      'Open Agentic Wallet Connect with solana-agent-wallet connect or /connect.',
       'Connect your wallet in that browser tab, then click Connect bridge if prompted.',
       'You can also run solana-agent-wallet connect or /connect.',
     ].join(' ');

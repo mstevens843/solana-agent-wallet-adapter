@@ -2,32 +2,60 @@ import type { GlobalOptions } from '../shared/types.js';
 import { header, kv, badge, spinner } from '../tui/index.js';
 import { loadSession, sessionStatusSummary, clearSession } from '../auth/sessionStore.js';
 import { runLogin } from '../auth/nonceFlow.js';
-import { renderWebRequest } from '../http/index.js';
+import { bridgeRequest, renderWebRequest } from '../http/index.js';
+import { loadWorkspaceSummary, renderWorkspaceSummary } from './workspaceSummary.js';
+
+interface BridgeWalletStatus {
+  connected?: boolean;
+  address?: string;
+  walletAddress?: string;
+}
 
 // `/sign-in` — friendly wrapper around the existing SIWS flow. Mirrors the web
 // app's "Sign in with cloud workspace" action. Stores a session token that
 // gates /approvals, /completed, /plans, /evidence, /cloud-workspace, etc.
 export async function runSignIn(options: GlobalOptions): Promise<void> {
   console.log(header('Sign in to your cloud workspace'));
-  console.log(badge('Signing With Solana (SIWS) — opens a browser tab to sign a one-time challenge.', 'muted'));
+  console.log(badge('Cloud Storage sign-in uses your connected wallet as identity only. It does not grant spending authority.', 'muted'));
 
   const existing = await loadSession(options).catch(() => null);
   const summary = sessionStatusSummary(existing);
   if (summary.authenticated) {
     console.log(badge(`Already signed in as ${summary.walletAddress ?? '(no address)'}`, 'ok'));
+    renderWorkspaceSummary(await loadWorkspaceSummary(options));
+    return;
+  }
+
+  const walletAddress = await connectedWalletAddress(options);
+  if (!walletAddress) {
+    console.log(badge('Connect your wallet first with /connect, then run /sign-in again.', 'warn'));
     return;
   }
 
   const spin = spinner('Waiting for browser signature…');
   try {
-    const result = await runLogin(options, {});
+    const result = await runLogin(options, { walletAddress });
     spin.succeed('Signed in.');
     console.log(kv([
       ['Wallet', String((result as { walletAddress?: string }).walletAddress ?? '(unknown)')],
       ['Workspace', 'synced'],
     ]));
+    const summary = await loadWorkspaceSummary(options);
+    renderWorkspaceSummary(summary);
   } catch (err) {
     spin.fail(`Sign-in failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+async function connectedWalletAddress(options: GlobalOptions): Promise<string | null> {
+  try {
+    const status = await bridgeRequest<BridgeWalletStatus>(options, '/bridge/action/status');
+    if (status.connected === false) {
+      return null;
+    }
+    return status.address || status.walletAddress || null;
+  } catch {
+    return null;
   }
 }
 

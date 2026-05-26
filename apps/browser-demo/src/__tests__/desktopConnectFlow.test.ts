@@ -25,6 +25,25 @@ describe('buildDesktopBrowserConnectUrl', () => {
     expect(url.searchParams.get('surface')).toBe('desktop');
     expect(url.searchParams.has('wallet')).toBe(false);
   });
+
+  it('omits the token param when bridgeToken is empty (avoids leaking a wrong default)', () => {
+    const url = new URL(buildDesktopBrowserConnectUrl({
+      walletHostUrl: 'http://127.0.0.1:5174',
+      bridgeUrl: 'http://127.0.0.1:8787',
+      bridgeToken: '',
+    }));
+    expect(url.searchParams.has('token')).toBe(false);
+  });
+
+  it('embeds the rotated Rust-generated token verbatim', () => {
+    const rotatedToken = 'b'.repeat(48);
+    const url = new URL(buildDesktopBrowserConnectUrl({
+      walletHostUrl: 'http://127.0.0.1:5174',
+      bridgeUrl: 'http://127.0.0.1:8787',
+      bridgeToken: rotatedToken,
+    }));
+    expect(url.searchParams.get('token')).toBe(rotatedToken);
+  });
 });
 
 describe('initialDesktopConnectFlowState', () => {

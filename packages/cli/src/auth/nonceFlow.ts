@@ -33,6 +33,8 @@ export interface LoginOptions {
   timeoutMs?: number;
 }
 
+type WalletHostSigningPath = '/agentic-login' | '/sign-in';
+
 interface CallbackPayload {
   signature?: string;
   walletAddress?: string;
@@ -84,7 +86,7 @@ export async function signMessageViaWalletHost(
     expiresAt?: string;
     summary?: string;
   },
-  ctlOpts: { noOpen?: boolean; timeoutMs?: number } = {},
+  ctlOpts: { noOpen?: boolean; timeoutMs?: number; path?: WalletHostSigningPath; openLabel?: string } = {},
 ): Promise<SignedProof> {
   const timeoutMs = ctlOpts.timeoutMs ?? 5 * 60 * 1000;
   const stateToken = randomBytes(16).toString('base64url');
@@ -99,15 +101,18 @@ export async function signMessageViaWalletHost(
     message: intent.message,
     walletAddress: intent.walletAddress ?? '',
     summary: intent.summary ?? 'Agentic CLI signed request',
-  }, callback.url, stateToken);
+  }, callback.url, stateToken, ctlOpts.path ?? '/agentic-login');
 
-  if (!ctlOpts.noOpen && process.env.AGENT_WALLET_SKIP_OPEN !== '1') {
+  const canAutoOpen = !ctlOpts.noOpen && process.env.AGENT_WALLET_SKIP_OPEN !== '1';
+  if (canAutoOpen) {
     spawnOpener(loginUrl);
+    console.error(`\nOpened: ${ctlOpts.openLabel ?? 'Agentic Wallet Signature'}\n`);
+  } else {
+    console.error(`\nOpen manually: ${loginUrl}\n`);
   }
 
   // Print the URL + wait notice to STDERR so it works in --json mode (where
   // stdout is reserved for the parseable result).
-  console.error(`\nOpen this URL in the browser if it didn't auto-open:\n  ${loginUrl}\n`);
   console.error('Waiting for wallet signature (Ctrl+C to abort)...');
 
   let payload: CallbackPayload;
@@ -175,6 +180,8 @@ export async function runLogin(options: GlobalOptions, loginOptions: LoginOption
   }, {
     ...(loginOptions.noOpen !== undefined ? { noOpen: loginOptions.noOpen } : {}),
     ...(loginOptions.timeoutMs !== undefined ? { timeoutMs: loginOptions.timeoutMs } : {}),
+    path: '/sign-in',
+    openLabel: 'Agentic Cloud Sign In',
   });
 
   const verify = await renderWebRequest<VerifyWalletResponse>(options, '/api/auth/verify-wallet', {
@@ -205,13 +212,18 @@ function buildWalletHostLoginUrl(
   intent: { nonce: string; message: string; walletAddress: string; summary: string },
   callback: string,
   stateToken: string,
+  path: WalletHostSigningPath,
 ): string {
-  // Route directly to /agentic-login so the wallet host SPA serves the dedicated
-  // login page (apps/browser-demo/src/main.ts:agenticLoginPage).
+  // Route directly to a wallet-host signing page so the SPA serves the dedicated
+  // focused surface (Cloud Storage sign-in or generic signed request).
   const baseUrl = new URL(options.walletHostUrl);
-  baseUrl.pathname = baseUrl.pathname.replace(/\/+$/, '') + '/agentic-login';
+  baseUrl.pathname = baseUrl.pathname.replace(/\/+$/, '') + path;
   baseUrl.searchParams.set('bridgeUrl', options.bridgeUrl);
   baseUrl.searchParams.set('token', options.token);
+  if (path === '/sign-in') {
+    baseUrl.searchParams.set('mode', 'cli');
+    baseUrl.searchParams.set('intent', 'sign-in');
+  }
   baseUrl.searchParams.set('nonce', intent.nonce);
   baseUrl.searchParams.set('message', intent.message);
   baseUrl.searchParams.set('callback', callback);

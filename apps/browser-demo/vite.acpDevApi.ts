@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { dirname, join } from 'node:path';
 
+import { createPairingHandler } from '../render-web/src/cloud/pairingHandler.js';
 import {
   buildAgenticAgentCard,
   defaultAgenticCapabilities,
@@ -170,9 +171,16 @@ export function acpDevApiPlugin(): Plugin {
     name: 'browser-demo-local-dev-api',
     apply: 'serve',
     configureServer(server) {
+      const localPairingHandler = createPairingHandler();
+      server.httpServer?.once('close', () => localPairingHandler.shutdown());
       server.middlewares.use(async (req, res, next) => {
         const url = new URL(req.url ?? '/', 'http://127.0.0.1');
         try {
+          if (url.pathname.startsWith('/api/pair/')) {
+            const handled = await localPairingHandler.handle(req, res, url);
+            if (!handled) next();
+            return;
+          }
           if (url.pathname.startsWith(STREAMING_PREFIX) || url.pathname.startsWith(MPP_PREFIX)) {
             const handled = await handleLocalStreamingApi(req, res, url, server);
             if (!handled) next();
