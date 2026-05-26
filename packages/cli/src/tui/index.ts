@@ -142,11 +142,19 @@ export async function rowSelect<T>(opts: {
   let index = defaultIndex < opts.choices.length ? defaultIndex : 0;
   const stdin = process.stdin;
   const wasRaw = stdin.isRaw;
+  // `@inquirer/prompts` closes its internal readline.Interface on exit, which
+  // leaves stdin paused. Without an explicit resume() below, the keypress
+  // listener attaches but stdin never emits 'data', so arrow keys (and Ctrl+C
+  // in raw mode) silently drop. Capture the pause state so cleanup can restore
+  // it for whichever prompt runs next.
+  const wasPaused = stdin.isPaused();
 
   readline.emitKeypressEvents(stdin);
   stdin.setRawMode(true);
+  stdin.resume();
 
   return new Promise<T>((resolve, reject) => {
+    let cleaned = false;
     const render = (): void => {
       const choice = opts.choices[index]!;
       const detail = choice.description ? ` - ${choice.description}` : '';
@@ -155,8 +163,11 @@ export async function rowSelect<T>(opts: {
       );
     };
     const cleanup = (): void => {
+      if (cleaned) return;
+      cleaned = true;
       stdin.off('keypress', onKeypress);
       stdin.setRawMode(wasRaw);
+      if (wasPaused) stdin.pause();
       process.stdout.write('\n');
     };
     const abort = (): void => {
@@ -166,28 +177,35 @@ export async function rowSelect<T>(opts: {
       reject(err);
     };
     const onKeypress = (_value: string, key: readline.Key): void => {
-      if (key.ctrl && key.name === 'c') {
-        abort();
-        return;
-      }
-      if (key.name === 'escape') {
-        abort();
-        return;
-      }
-      if (key.name === 'return' || key.name === 'enter') {
-        const choice = opts.choices[index]!;
+      try {
+        if (!key) return;
+        if (key.ctrl && key.name === 'c') {
+          abort();
+          return;
+        }
+        if (key.name === 'escape') {
+          abort();
+          return;
+        }
+        if (key.name === 'return' || key.name === 'enter') {
+          const choice = opts.choices[index]!;
+          cleanup();
+          resolve(choice.value);
+          return;
+        }
+        if (key.name === 'right' || key.name === 'down' || key.name === 'tab') {
+          index = (index + 1) % opts.choices.length;
+          render();
+          return;
+        }
+        if (key.name === 'left' || key.name === 'up') {
+          index = (index + opts.choices.length - 1) % opts.choices.length;
+          render();
+          return;
+        }
+      } catch (err) {
         cleanup();
-        resolve(choice.value);
-        return;
-      }
-      if (key.name === 'right' || key.name === 'down' || key.name === 'tab') {
-        index = (index + 1) % opts.choices.length;
-        render();
-        return;
-      }
-      if (key.name === 'left' || key.name === 'up') {
-        index = (index + opts.choices.length - 1) % opts.choices.length;
-        render();
+        reject(err instanceof Error ? err : new Error(String(err)));
       }
     };
 
