@@ -380,3 +380,47 @@ describe('walletConnectQrBodyHtml (inline render)', () => {
     expect(html).not.toContain('role="dialog"');
   });
 });
+
+describe('walletConnectQrBodyHtml — agnostic mode (desktop Discover)', () => {
+  const awaitingState: WalletConnectQrOverlayState = {
+    mode: 'awaiting-scan',
+    brandId: '',
+    uri: 'wc:topic@2?relay-protocol=irn&symKey=abc',
+    qrDataUrl: 'data:image/png;base64,XXX',
+    error: '',
+  };
+
+  it('uses brand-agnostic copy when agnostic flag is set', () => {
+    const html = walletConnectQrBodyHtml({ state: awaitingState, agnostic: true });
+    expect(html).toContain('Scan with your Solana mobile wallet');
+    expect(html).not.toContain('Scan with Phantom mobile');
+  });
+
+  it('omits the brand deep-link button in agnostic mode (cross-device only)', () => {
+    const html = walletConnectQrBodyHtml({ state: awaitingState, agnostic: true });
+    expect(html).not.toContain('data-walletconnect-action="open-deeplink"');
+    expect(html).not.toContain('phantom://');
+  });
+
+  it('still surfaces Copy URI and Cancel actions in agnostic mode', () => {
+    const html = walletConnectQrBodyHtml({ state: awaitingState, agnostic: true });
+    expect(html).toContain('data-walletconnect-action="copy-uri"');
+    expect(html).toContain('data-walletconnect-action="cancel"');
+  });
+
+  it('agnostic connecting body omits the brand name', () => {
+    const html = walletConnectQrBodyHtml({
+      state: { ...awaitingState, mode: 'connecting' },
+      agnostic: true,
+    });
+    expect(html).toContain('Preparing a WalletConnect session');
+    expect(html).not.toContain('Phantom');
+  });
+
+  it('agnostic footnote lists multiple wallet brands', () => {
+    const html = walletConnectQrBodyHtml({ state: awaitingState, agnostic: true });
+    expect(html).toContain('Phantom');
+    expect(html).toContain('Solflare');
+    expect(html).toContain('Backpack');
+  });
+});

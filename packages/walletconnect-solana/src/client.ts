@@ -26,6 +26,13 @@ export interface WalletConnectSession {
   topic: string;
   address: string;
   chainId: string;
+  /** Self-reported name of the wallet that approved the session, e.g.
+   *  "Phantom" or "Solflare". Populated from the raw WC session's
+   *  `peer.metadata.name` when available; absent for older WC peers. */
+  peerName?: string;
+  /** Icon URLs the peer advertised in its metadata. The first entry is the
+   *  recommended display icon. */
+  peerIcons?: string[];
 }
 
 // Narrow shape of @walletconnect/sign-client's exported SignClient that we
@@ -69,6 +76,16 @@ export interface WalletConnectSessionStruct {
     string,
     { accounts: string[]; methods?: string[]; events?: string[] }
   >;
+  /** Peer metadata as advertised by the responder wallet — present on real
+   *  SignClient session structs but omitted by some tests. */
+  peer?: {
+    metadata?: {
+      name?: string;
+      icons?: string[];
+      url?: string;
+      description?: string;
+    };
+  };
 }
 
 export interface WalletConnectSolanaClient {
@@ -260,6 +277,8 @@ function resolveSession(
 ): WalletConnectSession | null {
   const ns = session.namespaces[SOLANA_NAMESPACE];
   if (!ns) return null;
+  const peerName = session.peer?.metadata?.name?.trim() || undefined;
+  const peerIcons = session.peer?.metadata?.icons?.filter((s) => typeof s === 'string' && s.length > 0);
   for (const account of ns.accounts ?? []) {
     const parts = account.split(':');
     if (parts.length < 3) continue;
@@ -267,7 +286,13 @@ function resolveSession(
     if (!chains.includes(chainId)) continue;
     const address = parts.slice(2).join(':');
     if (!address) continue;
-    return { topic: session.topic, chainId, address };
+    return {
+      topic: session.topic,
+      chainId,
+      address,
+      ...(peerName ? { peerName } : {}),
+      ...(peerIcons && peerIcons.length > 0 ? { peerIcons } : {}),
+    };
   }
   return null;
 }

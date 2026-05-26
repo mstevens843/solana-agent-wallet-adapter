@@ -162,6 +162,67 @@ test('bridge start self-spawns a reachable bridge serve process', async () => {
   }
 });
 
+test('runtime bridge token persists across CLI invocations', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-token-'));
+  const first = runCli(['--runtime-dir', runtimeDir, 'wallet-host', 'status', '--json']);
+  assert.equal(first.status, 0, first.stderr);
+  const tokenPath = join(runtimeDir, 'bridge-token');
+  const token = (await readFile(tokenPath, 'utf8')).trim();
+  assert.ok(token.length > 20);
+
+  const second = runCli(['--runtime-dir', runtimeDir, 'wallet-host', 'status', '--json']);
+  assert.equal(second.status, 0, second.stderr);
+  assert.equal((await readFile(tokenPath, 'utf8')).trim(), token);
+
+  const status = JSON.parse(second.stdout) as { walletHostLaunchUrl?: string };
+  assert.equal(new URL(status.walletHostLaunchUrl ?? '').searchParams.get('token'), token);
+});
+
+test('BRIDGE_TOKEN overrides the runtime bridge token file', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-token-env-'));
+  const result = runCliWithEnv(
+    ['--runtime-dir', runtimeDir, 'wallet-host', 'status', '--json'],
+    { BRIDGE_TOKEN: 'manual-test-token' },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const status = JSON.parse(result.stdout) as { walletHostLaunchUrl?: string };
+  assert.equal(new URL(status.walletHostLaunchUrl ?? '').searchParams.get('token'), 'manual-test-token');
+  await assert.rejects(readFile(join(runtimeDir, 'bridge-token'), 'utf8'), /ENOENT/);
+});
+
+test('bridge start falls back when an Agentic bridge on the configured port has an old token', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-stale-bridge-'));
+  const stale = await startUnauthorizedBridge();
+  try {
+    const result = runCliWithEnv(
+      ['--runtime-dir', runtimeDir, 'bridge', 'start', '--json'],
+      { AGENT_WALLET_BRIDGE_URL: stale.url },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const started = JSON.parse(result.stdout) as {
+      started?: boolean;
+      pid?: number;
+      bridgeUrl?: string;
+      notices?: string[];
+    };
+    assert.equal(started.started, true);
+    assert.ok(started.pid);
+    assert.ok(started.bridgeUrl);
+    assert.notEqual(started.bridgeUrl, stale.url);
+    assert.match(started.notices?.join('\n') ?? '', /older token|was busy/);
+
+    const token = (await readFile(join(runtimeDir, 'bridge-token'), 'utf8')).trim();
+    const health = await waitForJson(`${started.bridgeUrl}/bridge/health?token=${encodeURIComponent(token)}`);
+    assert.equal(health.cluster, 'mainnet-beta');
+
+    if (started.pid) {
+      process.kill(started.pid, 'SIGTERM');
+    }
+  } finally {
+    await stale.close();
+  }
+});
+
 test('inbox list renders Blink prepared actions without raw transaction bytes', async () => {
   const bridge = await startMockBridge([blinkPreparedAction()]);
   try {
@@ -1254,10 +1315,18 @@ async function startMockConnectorBridge(): Promise<{
 // ─── helpers (existing) ───────────────────────────────────────────────────────
 
 function runCli(args: string[]): { status: number | null; stdout: string; stderr: string } {
+  return runCliWithEnv(args, {});
+}
+
+function runCliWithEnv(
+  args: string[],
+  env: Record<string, string>,
+): { status: number | null; stdout: string; stderr: string } {
   return spawnSync(process.execPath, [cliPath, ...args], {
     env: {
       ...process.env,
       NO_COLOR: '1',
+      ...env,
     },
     encoding: 'utf8',
   });
@@ -1387,6 +1456,14 @@ async function startMockBridge(actions: Record<string, unknown>[]): Promise<{
     requests,
     close: () => closeHttp(server),
   };
+}
+
+async function startUnauthorizedBridge(): Promise<{ url: string; close: () => Promise<void> }> {
+  const server = createHttpServer((_req, res) => {
+    writeJsonResponse(res, { error: 'unauthorized' }, 401);
+  });
+  const url = await listenHttp(server);
+  return { url, close: () => closeHttp(server) };
 }
 
 async function startMockWalletHost(): Promise<{ url: string; close: () => Promise<void> }> {

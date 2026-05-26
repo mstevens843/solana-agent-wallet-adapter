@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -75,9 +75,21 @@ const androidReleaseTag =
     ? legacyAppReleaseTag
     : `v${packageVersion('apps/desktop-shell/package.json')}`);
 const appReleaseTag = legacyAppReleaseTag ?? androidReleaseTag;
+// `loadEnv` reads `.env`, `.env.local`, `.env.<mode>` and `.env.<mode>.local`
+// from the project root. Used here for the WalletConnect project ID so
+// developers can drop it into `.env.local` without re-exporting it in their
+// shell before every `pnpm desktop:tauri:dev`. The `defineConfig` callback
+// receives `mode` (e.g. "development" / "production"), which `loadEnv` uses
+// to pick the right `.env.<mode>` file.
+const envFromDotfiles = loadEnv(
+  process.env.NODE_ENV ?? 'development',
+  resolve(dirname(fileURLToPath(import.meta.url))),
+  'VITE_',
+);
 const walletConnectProjectId =
   process.env.VITE_AGENTIC_WC_PROJECT_ID ??
   process.env.AGENTIC_WC_PROJECT_ID ??
+  envFromDotfiles.VITE_AGENTIC_WC_PROJECT_ID ??
   '';
 
 export default defineConfig({

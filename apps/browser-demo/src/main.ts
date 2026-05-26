@@ -138,6 +138,7 @@ import {
   type DesktopConnectFlowState,
   type DesktopConnectMethod,
 } from './desktopConnectFlow.js';
+import { RemoteBridgeBackend } from './remoteBridgeBackend.js';
 import {
   createWalletConnectSolanaClient,
   registerWalletConnectSolanaWallet,
@@ -4900,6 +4901,37 @@ function registerBrandSession(brandId: string, session: WalletConnectSession): s
   return walletName;
 }
 
+/** Generic 1x1 transparent PNG as a typed `data:image/png;base64,...` URI —
+ *  used as a last-resort icon when a WalletConnect peer doesn't advertise
+ *  any icons in its metadata. The wallet picker still surfaces the wallet
+ *  name and address; the icon slot just falls back to a neutral square. */
+const WALLETCONNECT_GENERIC_ICON: `data:image/png;base64,${string}` =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+
+/** Register a WC session without pre-binding a brand id. Used by the
+ *  desktop's brand-agnostic QR path — the wallet identifies itself via the
+ *  session's `peerName`/`peerIcons` (carried through `resolveSession`). */
+function registerAnyWalletConnectSession(session: WalletConnectSession): string {
+  const peerName = session.peerName?.trim();
+  const walletName = peerName ? `${peerName} (mobile)` : 'WalletConnect mobile';
+  const peerIcon = session.peerIcons?.find((s) => typeof s === 'string' && s.length > 0);
+  // Wallet Standard's `WalletIcon` type expects a `data:` URI; in practice
+  // both the runtime and the existing brand-specific path tolerate HTTPS
+  // URLs (cast-through). Prefer the peer's advertised icon when present.
+  const icon = peerIcon
+    ? (peerIcon as `data:image/svg+xml;base64,${string}`)
+    : WALLETCONNECT_GENERIC_ICON;
+  registerWalletConnectSolanaWallet({
+    // Keyed deduplication by `walletconnect-any|address` — repairing the
+    // same address (via the same or different mobile wallet) replaces.
+    brand: { id: 'walletconnect-any', name: walletName },
+    session,
+    client: walletConnect.client!,
+    icon,
+  });
+  return walletName;
+}
+
 async function handleScanQrForBrand(brandId: string): Promise<void> {
   if (!isWalletConnectSupportedBrand(brandId)) {
     pushToast(
@@ -4943,6 +4975,55 @@ async function handleScanQrForBrand(brandId: string): Promise<void> {
     const session = await approval();
     dispatchWalletConnectOverlay({ type: 'completing' });
     const walletName = registerBrandSession(brandId, session);
+    dispatchWalletConnectOverlay({ type: 'close' });
+    state.selectedWalletName = walletName;
+    await runConnect();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    dispatchWalletConnectOverlay({ type: 'setError', error: message });
+  }
+}
+
+/** Brand-agnostic WalletConnect pairing used by the desktop Discover →
+ *  "Scan QR with phone" flow. The QR encodes a wallet-agnostic WC URI;
+ *  whichever mobile wallet scans it identifies itself in `session.peerName`
+ *  after approval, which we use as the registered wallet's display name. */
+async function handleScanQrAnyWallet(): Promise<void> {
+  if (!WALLETCONNECT_PROJECT_ID) {
+    pushToast(
+      'error',
+      'WalletConnect not configured',
+      'Set VITE_AGENTIC_WC_PROJECT_ID before launching to enable mobile pairing.',
+    );
+    return;
+  }
+  if (walletConnect.overlay.mode !== 'closed') return;
+  closeSiblingOverlays('walletconnect-qr');
+  // `brandId` on the overlay state is reserved for the modal's same-device
+  // deep-link buttons. For the inline desktop flow it stays unset; the
+  // overlay's render input passes `agnostic: true` to suppress brand copy.
+  dispatchWalletConnectOverlay({ type: 'openConnecting', brandId: '' });
+  try {
+    const client = await ensureWalletConnectClient();
+    const chains = walletConnectChainsForCurrentCluster();
+    const { uri, approval } = await client.connect({ chains });
+    let qrDataUrl = '';
+    try {
+      const QRCodeMod = await import('qrcode');
+      const generator = (QRCodeMod as { default?: typeof import('qrcode') }).default ?? QRCodeMod;
+      qrDataUrl = await generator.toDataURL(uri, {
+        errorCorrectionLevel: 'M',
+        margin: 2,
+        width: 320,
+      });
+    } catch (err) {
+      console.warn('[walletconnect] qrcode generation failed', err);
+    }
+    dispatchWalletConnectOverlay({ type: 'setUri', uri, qrDataUrl });
+
+    const session = await approval();
+    dispatchWalletConnectOverlay({ type: 'completing' });
+    const walletName = registerAnyWalletConnectSession(session);
     dispatchWalletConnectOverlay({ type: 'close' });
     state.selectedWalletName = walletName;
     await runConnect();
@@ -5355,13 +5436,16 @@ function desktopAwaitingBrowserBody(): string {
   return `
     <div class="desktop-connect-flow-awaiting">
       ${brandLogoMarkup(brandId, 'desktop-connect-flow-awaiting-logo')}
-      <h3>We opened your browser</h3>
-      <p>Connect <strong>${escapeHtmlForFlow(name)}</strong> in the browser tab that just opened. The browser page will tell you when to return here.</p>
+      <h3>Waiting for ${escapeHtmlForFlow(name)}…</h3>
+      <p>Unlock <strong>${escapeHtmlForFlow(name)}</strong> and click <em>Connect</em> in the browser tab. This panel closes automatically once the wallet is connected.</p>
+      <div class="desktop-connect-flow-awaiting-status" role="status" aria-live="polite">
+        <span class="desktop-connect-flow-spinner" aria-hidden="true"></span>
+        <span>Listening for your wallet on the local bridge…</span>
+      </div>
       <div class="desktop-connect-flow-awaiting-actions">
-        <button type="button" class="primary" data-desktop-flow-action="awaiting-done">I've connected my wallet</button>
         <button type="button" class="utility" data-desktop-flow-action="awaiting-retry">Reopen browser</button>
       </div>
-      <p class="desktop-connect-flow-awaiting-hint">If nothing happened, make sure ${escapeHtmlForFlow(name)} is installed in your default browser. You can also pick a different connection method.</p>
+      <p class="desktop-connect-flow-awaiting-hint">If nothing happens, make sure ${escapeHtmlForFlow(name)} is installed in your default browser. You can also press Back and pick a different connection method.</p>
     </div>
   `;
 }
@@ -5382,14 +5466,14 @@ function desktopConnectFlowBlock(): string {
       break;
     case 'qr':
       title = 'Scan QR with phone';
-      if (desktopConnect.flow.selectedBrandId === null) {
-        body = desktopBrandPickerBody('pick-qr-brand');
-      } else {
-        body = `<div class="desktop-connect-flow-body walletconnect-qr-inline">${walletConnectQrBodyHtml({
-          state: walletConnect.overlay,
-          logoUrl: (logoId) => (BRAND_LOGOS as Record<string, string | undefined>)[logoId] ?? null,
-        })}</div>`;
-      }
+      // The WalletConnect URI is wallet-agnostic — render the inline QR
+      // immediately and let the mobile wallet identify itself in the
+      // session response post-approval. No brand pre-pick.
+      body = `<div class="desktop-connect-flow-body walletconnect-qr-inline">${walletConnectQrBodyHtml({
+        state: walletConnect.overlay,
+        logoUrl: (logoId) => (BRAND_LOGOS as Record<string, string | undefined>)[logoId] ?? null,
+        agnostic: true,
+      })}</div>`;
       break;
     case 'ledger':
       title = ledger.overlay.mode === 'error' ? "Couldn't connect Ledger" : 'Connect Ledger';
@@ -5439,6 +5523,14 @@ function handleDesktopMethodSelect(method: DesktopConnectMethod): void {
     openLedgerOverlay();
     return;
   }
+  if (method === 'qr') {
+    // Switch UI to the QR step and immediately initiate a brand-agnostic
+    // WC pairing — the inline body renders the connecting → awaiting-scan
+    // states from `walletConnect.overlay` as the URI/QR arrives.
+    dispatchDesktopConnectFlow({ type: 'pickMethod', method: 'qr' });
+    void handleScanQrAnyWallet();
+    return;
+  }
   dispatchDesktopConnectFlow({ type: 'pickMethod', method });
 }
 
@@ -5456,11 +5548,98 @@ function handleDesktopExtensionBrandSelect(brandId: string): void {
     brandId,
     startedAt: Date.now(),
   });
+  startAwaitingBrowserPoll(brandId);
 }
 
-function handleDesktopQrBrandSelect(brandId: string): void {
-  dispatchDesktopConnectFlow({ type: 'pickBrand', brandId });
-  void handleScanQrForBrand(brandId);
+const AWAITING_BROWSER_POLL_INTERVAL_MS = 1500;
+const AWAITING_BROWSER_TIMEOUT_MS = 5 * 60 * 1000;
+
+function startAwaitingBrowserPoll(brandId: string): void {
+  // Idempotent: a previous poll (e.g. from a prior Reopen) must be cancelled
+  // before we start a new one so we don't double-fire detection.
+  stopDesktopConnectPoll();
+  if (!state.bridgeUrl || !state.bridgeToken) {
+    // No bridge config means we can't poll. Surface a soft notice; the user
+    // can still confirm via Back/Reopen. The Local-runtime panel exposes the
+    // bridge sidecar controls.
+    pushToast(
+      'pending',
+      'Bridge offline',
+      'Start the local bridge from the Local-runtime panel to auto-detect the browser connection.',
+    );
+    return;
+  }
+  let timedOut = false;
+  desktopConnect.pollHandle = window.setInterval(() => {
+    // Stop polling if the user navigated away from the awaiting screen.
+    if (desktopConnect.flow.step !== 'awaiting-browser') {
+      stopDesktopConnectPoll();
+      return;
+    }
+    const startedAt = desktopConnect.flow.awaitingBrowserStartedAt ?? Date.now();
+    if (!timedOut && Date.now() - startedAt > AWAITING_BROWSER_TIMEOUT_MS) {
+      timedOut = true;
+      pushToast(
+        'pending',
+        'Still waiting…',
+        'The browser hasn\'t reported a connection yet. Check the wallet popup or click Reopen browser.',
+      );
+      // Continue polling — user may eventually complete the flow.
+    }
+    void pollBridgeForHost(brandId);
+  }, AWAITING_BROWSER_POLL_INTERVAL_MS);
+}
+
+async function pollBridgeForHost(brandId: string): Promise<void> {
+  let capabilities: AdapterCapabilities;
+  try {
+    capabilities = await bridgeRequest<AdapterCapabilities>('/bridge/status');
+  } catch {
+    // Bridge transiently unreachable (sidecar restarting, network blip).
+    // Swallow — the next tick retries. Avoid toast spam.
+    return;
+  }
+  const address = capabilities.address?.trim();
+  if (!address) return;
+  // Detection: a host has registered with the bridge. Stop the poll, adopt.
+  stopDesktopConnectPoll();
+  await adoptBridgeHost(address, capabilities, brandId);
+}
+
+async function adoptBridgeHost(
+  address: string,
+  capabilities: AdapterCapabilities,
+  brandId: string,
+): Promise<void> {
+  // Race-safety: if the user clicked Back while the poll was in-flight, drop
+  // the adoption — they no longer want it.
+  if (desktopConnect.flow.step !== 'awaiting-browser') return;
+  if (!state.bridgeUrl || !state.bridgeToken) return;
+  walletBackend = new RemoteBridgeBackend({
+    bridgeUrl: state.bridgeUrl,
+    token: state.bridgeToken,
+  });
+  client = new SolanaSigningClient({ backend: walletBackend });
+  const brand = DESKTOP_BRAND_PANELS.find((b) => b.id === brandId);
+  const walletName = brand ? `${brand.name} (browser)` : 'Browser wallet';
+  state.address = address;
+  state.capabilities = capabilities;
+  state.selectedWalletName = walletName;
+  state.selectedWalletLogoId = walletProviderLogoIdForName(brand?.name ?? '');
+  state.bridgeActive = true;
+  state.bridgeAutoReconnect = true;
+  state.bridgeStatus = 'Connected to local bridge via browser wallet host.';
+  state.transactionStatus = `Wallet connected via browser on ${state.cluster}.`;
+  startBridgePolling();
+  try {
+    await afterWalletConnected();
+  } catch (err) {
+    console.warn('[adoptBridgeHost] afterWalletConnected failed', err);
+  }
+  savePersistedState();
+  trackWalletConnectSuccess('tauri_native', state.cluster, 'browser_extension_auto');
+  pushToast('success', 'Wallet connected via browser', short(address));
+  dispatchDesktopConnectFlow({ type: 'reset' });
 }
 
 function handleDesktopBack(): void {
@@ -5479,15 +5658,6 @@ function handleDesktopBack(): void {
     stopDesktopConnectPoll();
   }
   dispatchDesktopConnectFlow({ type: 'back' });
-}
-
-function handleDesktopAwaitingDone(): void {
-  pushToast(
-    'success',
-    'Connection confirmed',
-    'Use the desktop normally — the wallet host is active in your browser.',
-  );
-  dispatchDesktopConnectFlow({ type: 'reset' });
 }
 
 function handleDesktopAwaitingRetry(): void {
@@ -5516,15 +5686,6 @@ function bindDesktopConnectFlow(): void {
       if (raw === 'pick-extension-brand') {
         const brandId = el.dataset.desktopBrandId;
         if (brandId) handleDesktopExtensionBrandSelect(brandId);
-        return;
-      }
-      if (raw === 'pick-qr-brand') {
-        const brandId = el.dataset.desktopBrandId;
-        if (brandId) handleDesktopQrBrandSelect(brandId);
-        return;
-      }
-      if (raw === 'awaiting-done') {
-        handleDesktopAwaitingDone();
         return;
       }
       if (raw === 'awaiting-retry') {
@@ -39410,20 +39571,23 @@ async function bridgeOfflineDiagnosticMessage(): Promise<string> {
 
 function inferredWalletHostUrl(options?: { wallet?: string }): string {
   const walletHint = options?.wallet?.trim();
+  // Vite sets `import.meta.env.PROD` based on the build mode:
+  //   - `pnpm desktop:tauri:dev` runs `vite dev`  → PROD === false → localhost
+  //   - `pnpm desktop:tauri:build` runs `vite build` → PROD === true → cloud
+  // The deployed bundle at agentic-signer.com/app handles `?wallet=<brandId>`
+  // via the same `runWalletHostBrandAutoConnect()` path the dev page uses.
+  const isProd = Boolean(
+    (import.meta as ImportMeta & { env?: { PROD?: boolean } }).env?.PROD,
+  );
+  const base = isProd ? 'https://agentic-signer.com/app' : 'http://localhost:5174/';
   try {
-    const bridge = new URL(bridgeBaseUrl());
-    bridge.port = '5174';
-    bridge.pathname = '/';
-    bridge.search = '';
-    bridge.hash = '';
-    if (walletHint) {
-      bridge.searchParams.set('wallet', walletHint);
-    }
-    return bridge.toString();
+    const url = new URL(base);
+    if (walletHint) url.searchParams.set('wallet', walletHint);
+    return url.toString();
   } catch {
     const fallback = walletHint
-      ? `http://127.0.0.1:5174/?wallet=${encodeURIComponent(walletHint)}`
-      : 'http://127.0.0.1:5174/';
+      ? `${base}${base.includes('?') ? '&' : '?'}wallet=${encodeURIComponent(walletHint)}`
+      : base;
     return fallback;
   }
 }

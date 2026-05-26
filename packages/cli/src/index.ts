@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
-import { existsSync } from 'node:fs';
+import { createServer as createNetServer } from 'node:net';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { chmod, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { dirname, extname, join, normalize, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -139,6 +140,9 @@ const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:8787';
 const DEFAULT_WALLET_HOST_URL = 'http://127.0.0.1:5174';
 const DEFAULT_RENDER_WEB_URL = 'http://127.0.0.1:3000';
 const REQUEST_TIMEOUT_MS = 120_000;
+const BRIDGE_STARTUP_TIMEOUT_MS = 10_000;
+const BRIDGE_TOKEN_FILENAME = 'bridge-token';
+const BRIDGE_SESSION_FILENAME = 'bridge-session.json';
 const POLL_INTERVAL_MS = 750;
 const RUNTIME_DIR_NAME = 'solana-agent-wallet';
 const WALLET_HOST_HEALTH_PATH = '/__agentic/health';
@@ -169,8 +173,12 @@ interface ParsedArgs {
 
 interface GlobalOptions {
   bridgeUrl: string;
+  bridgeUrlSource: 'default' | 'env' | 'flag';
   renderWebUrl: string;
   token: string;
+  tokenSource: 'flag' | 'env' | 'file' | 'generated' | 'unresolved';
+  bridgeTokenPath: string;
+  bridgeSessionPath: string;
   walletHostUrl: string;
   repoRoot: string | null;
   runtimeDir: string;
@@ -182,6 +190,26 @@ interface GlobalOptions {
   json: boolean;
   color: boolean;
   help: boolean;
+}
+
+interface BridgeSessionRecord {
+  bridgeUrl: string;
+  pid: number | null;
+  tokenHash: string;
+  cliVersion: string;
+  startedAt: string;
+}
+
+type BridgeProbe =
+  | { status: 'reachable'; health: BridgeHealth }
+  | { status: 'unauthorized'; error: string }
+  | { status: 'http-error'; statusCode: number; error: string }
+  | { status: 'unreachable'; error: string };
+
+interface BridgeEnsureResult {
+  reused: boolean;
+  child: ChildProcess | null;
+  notices: string[];
 }
 
 interface SetupCommandOptions {
@@ -511,6 +539,8 @@ async function main(): Promise<void> {
     console.log(parsed.options.json ? stableJson({ version: CLI_VERSION }) : CLI_VERSION);
     return;
   }
+
+  resolveRuntimeBridgeToken(parsed.options);
 
   if (command === 'app') {
     await runTerminalApp(parsed);
@@ -909,13 +939,14 @@ async function dispatchBridge(parsed: ParsedArgs): Promise<unknown> {
     return { opened: walletHostLaunchUrl(parsed.options) };
   }
   if (subcommand === 'start') {
-    const health = await tryBridgeRequest<BridgeHealth>(parsed.options, '/bridge/health');
-    if (health.ok) {
-      return { alreadyRunning: true, bridgeUrl: parsed.options.bridgeUrl, health: health.value };
-    }
-    const child = startBridgeDetached(parsed.options);
-    await waitForBridge(parsed.options, 8_000);
-    return { started: true, pid: child.pid ?? null, bridgeUrl: parsed.options.bridgeUrl };
+    const result = await ensureBridgeDetached(parsed.options);
+    return {
+      started: !result.reused,
+      alreadyRunning: result.reused,
+      pid: result.child?.pid ?? null,
+      bridgeUrl: parsed.options.bridgeUrl,
+      notices: result.notices,
+    };
   }
   if (subcommand === 'serve') {
     await serveBridge(parsed.options);
@@ -1472,27 +1503,46 @@ async function connectInteractive(
   options: { waitForWallet: boolean; detached?: boolean; cli?: CliIntent },
 ): Promise<void> {
   const cli: CliIntent = options.cli ?? { intent: 'connect' };
+  let bridgeError: unknown = null;
+  let bridgeNotices: string[] = [];
   if (options.detached) {
-    await ensureBridgeDetached(state.options);
+    try {
+      bridgeNotices = (await ensureBridgeDetached(state.options)).notices;
+    } catch (err) {
+      bridgeError = err;
+    }
     await ensureBrowserHostDetached(state.options);
   } else {
-    await ensureBridge(state);
+    try {
+      bridgeNotices = (await ensureBridge(state)).notices;
+    } catch (err) {
+      bridgeError = err;
+      pushLog(state, `bridge connect failed: ${errorMessage(err)}`);
+    }
     await ensureBrowserHost(state);
   }
-  const status = await tryBridgeRequest<WalletStatus>(state.options, '/bridge/action/status');
-  if (status.ok && status.value.connected && status.value.address && cli.intent === 'connect') {
-    if (!state.options.json) {
-      printOk(state.options, `Wallet connected: ${status.value.address}`);
+  if (!bridgeError) {
+    const status = await tryBridgeRequest<WalletStatus>(state.options, '/bridge/action/status');
+    if (status.ok && status.value.connected && status.value.address && cli.intent === 'connect') {
+      if (!state.options.json) {
+        printOk(state.options, `Wallet connected: ${status.value.address}`);
+      }
+      return;
     }
-    return;
   }
   const launchUrl = walletHostLaunchUrl(state.options, cli);
   const openError = await tryOpenUrl(launchUrl);
   if (!state.options.json) {
     printSection('Connect Wallet');
+    for (const notice of bridgeNotices) {
+      console.log(notice);
+    }
     console.log(`${openError ? 'Open manually' : 'Opened'}: ${launchUrl}`);
     if (openError) {
       console.log(`Browser open failed: ${openError}`);
+    }
+    if (bridgeError) {
+      console.log(`Bridge not ready: ${errorMessage(bridgeError)}`);
     }
     console.log('In the browser window:');
     console.log('1. Unlock Phantom, Backpack, Solflare, or another Wallet Standard wallet.');
@@ -1502,6 +1552,9 @@ async function connectInteractive(
   }
   if (!options.waitForWallet) {
     return;
+  }
+  if (bridgeError) {
+    throw new Error(`Connect page opened, but the local bridge is not ready: ${errorMessage(bridgeError)}`);
   }
   const connected = await waitForWalletConnection(state.options, 120_000);
   if (!state.options.json) {
@@ -1594,7 +1647,12 @@ async function handleTerminalCommand(
         await disconnectInteractive(state);
         return false;
       case 'bridge':
-        await ensureBridge(state);
+        {
+          const result = await ensureBridge(state);
+          for (const notice of result.notices) {
+            printWarn(state.options, notice);
+          }
+        }
         printOk(state.options, `Bridge reachable at ${state.options.bridgeUrl}.`);
         return false;
       case 'inbox':
@@ -3169,24 +3227,98 @@ async function resolveActionId(state: TerminalAppState, idOrIndex: string | unde
   return idOrIndex;
 }
 
-async function ensureBridge(state: TerminalAppState): Promise<void> {
-  const health = await tryBridgeRequest<BridgeHealth>(state.options, '/bridge/health');
-  if (health.ok) {
-    return;
+async function ensureBridge(state: TerminalAppState): Promise<BridgeEnsureResult> {
+  const result = await ensureBridgeForOptions(state.options, false, (child) => {
+    state.bridgeProcess = child;
+    attachProcessLogs(state, child, 'bridge');
+  });
+  for (const notice of result.notices) {
+    pushLog(state, notice);
   }
-  const child = startBridgeProcess(state.options);
-  state.bridgeProcess = child;
-  attachProcessLogs(state, child, 'bridge');
-  await waitForBridge(state.options, 10_000);
+  return result;
 }
 
-async function ensureBridgeDetached(options: GlobalOptions): Promise<void> {
-  const health = await tryBridgeRequest<BridgeHealth>(options, '/bridge/health');
-  if (health.ok) {
-    return;
+async function ensureBridgeDetached(options: GlobalOptions): Promise<BridgeEnsureResult> {
+  return ensureBridgeForOptions(options, true);
+}
+
+async function ensureBridgeForOptions(
+  options: GlobalOptions,
+  detached: boolean,
+  onChild?: (child: ChildProcess) => void,
+): Promise<BridgeEnsureResult> {
+  const notices: string[] = [];
+  const initial = await probeBridgeHealth(options);
+  if (initial.status === 'reachable') {
+    await writeBridgeSession(options, null);
+    return { reused: true, child: null, notices };
   }
-  startBridgeDetached(options);
-  await waitForBridge(options, 10_000);
+  if (initial.status === 'unauthorized') {
+    const recovered = await recoverUnauthorizedBridge(options, notices);
+    if (recovered) {
+      const retry = await probeBridgeHealth(options);
+      if (retry.status === 'reachable') {
+        await writeBridgeSession(options, null);
+        return { reused: true, child: null, notices };
+      }
+    }
+  } else if (initial.status === 'http-error') {
+    throw new Error(`Port ${bridgeHostPortLabel(options.bridgeUrl)} is not an Agentic bridge (${initial.error}). Use --bridge-url with a free loopback port or stop the process using that port.`);
+  }
+
+  let lastChild: ChildProcess | null = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const child = detached ? startBridgeDetached(options) : startBridgeProcess(options);
+    lastChild = child;
+    onChild?.(child);
+    try {
+      await waitForBridge(options, BRIDGE_STARTUP_TIMEOUT_MS, child);
+      await writeBridgeSession(options, child.pid ?? null);
+      return { reused: false, child, notices };
+    } catch (err) {
+      if (
+        attempt < 2 &&
+        options.bridgeUrlSource !== 'flag' &&
+        isLoopbackHttpUrl(options.bridgeUrl) &&
+        /EADDRINUSE|address already in use/i.test(errorMessage(err))
+      ) {
+        const previous = options.bridgeUrl;
+        options.bridgeUrl = await findFreeLoopbackBridgeUrl(previous);
+        notices.push(`Bridge port ${bridgeHostPortLabel(previous)} was busy; retrying on ${options.bridgeUrl}.`);
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error(`Bridge did not become reachable at ${options.bridgeUrl}. Last child pid: ${lastChild?.pid ?? 'unknown'}.`);
+}
+
+async function recoverUnauthorizedBridge(options: GlobalOptions, notices: string[]): Promise<boolean> {
+  const session = await readBridgeSession(options);
+  const currentHash = bridgeTokenHash(options.token);
+  if (
+    session &&
+    session.bridgeUrl === options.bridgeUrl &&
+    session.tokenHash !== currentHash &&
+    typeof session.pid === 'number' &&
+    session.pid > 0
+  ) {
+    const stopped = await stopRecordedBridge(session.pid);
+    if (stopped) {
+      notices.push(`Stopped stale Agentic bridge process ${session.pid} on ${options.bridgeUrl}; restarting with the current runtime token.`);
+      return false;
+    }
+  }
+  if (options.bridgeUrlSource !== 'flag' && isLoopbackHttpUrl(options.bridgeUrl)) {
+    const previous = options.bridgeUrl;
+    options.bridgeUrl = await findFreeLoopbackBridgeUrl(previous);
+    notices.push(`Using ${options.bridgeUrl} because ${previous} has an Agentic bridge with an older token.`);
+    return false;
+  }
+  throw new Error(
+    `An Agentic bridge is already running at ${options.bridgeUrl}, but it rejected this CLI token. ` +
+    `Stop the old bridge process or run with its BRIDGE_TOKEN.`,
+  );
 }
 
 async function ensureBrowserHost(state: TerminalAppState): Promise<void> {
@@ -3239,9 +3371,10 @@ function startBridgeDetached(options: GlobalOptions): ChildProcess {
   const child = spawn(invocation.command, invocation.args, {
     cwd: processCwd(options),
     env: bridgeEnv(options),
-    stdio: 'ignore',
+    stdio: ['ignore', 'ignore', 'pipe'],
     detached: true,
   });
+  (child.stderr as (NodeJS.ReadableStream & { unref?: () => void }) | null)?.unref?.();
   child.unref();
   return child;
 }
@@ -3250,7 +3383,7 @@ function startWalletHostProcess(options: GlobalOptions): ChildProcess {
   const invocation = cliInvocation(['wallet-host', 'serve', ...childGlobalArgs(options)]);
   return spawn(invocation.command, invocation.args, {
     cwd: processCwd(options),
-    env: process.env,
+    env: bridgeEnv(options),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 }
@@ -3259,7 +3392,7 @@ function startWalletHostDetached(options: GlobalOptions): ChildProcess {
   const invocation = cliInvocation(['wallet-host', 'serve', ...childGlobalArgs(options)]);
   return spawn(invocation.command, invocation.args, {
     cwd: processCwd(options),
-    env: process.env,
+    env: bridgeEnv(options),
     stdio: 'ignore',
     detached: true,
   });
@@ -3697,8 +3830,6 @@ function childGlobalArgs(options: GlobalOptions): string[] {
   return [
     '--bridge-url',
     options.bridgeUrl,
-    '--token',
-    options.token,
     '--wallet-host-url',
     options.walletHostUrl,
     '--runtime-dir',
@@ -3740,16 +3871,175 @@ function bridgeEnv(options: GlobalOptions): NodeJS.ProcessEnv {
   };
 }
 
-async function waitForBridge(options: GlobalOptions, timeoutMs: number): Promise<void> {
+async function probeBridgeHealth(options: GlobalOptions): Promise<BridgeProbe> {
+  const url = bridgeUrl(options, '/bridge/health');
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(url, { method: 'GET' }, 1_500);
+  } catch (err) {
+    return { status: 'unreachable', error: errorMessage(err) };
+  }
+  const body = parseJsonBody(await response.text());
+  if (response.ok) {
+    return { status: 'reachable', health: body as BridgeHealth };
+  }
+  const error = responseError(body) ?? `HTTP ${response.status}`;
+  if (response.status === 401 && /unauthorized/i.test(error)) {
+    return { status: 'unauthorized', error };
+  }
+  return { status: 'http-error', statusCode: response.status, error };
+}
+
+async function waitForBridge(options: GlobalOptions, timeoutMs: number, child?: ChildProcess): Promise<void> {
   const start = Date.now();
+  const childState: {
+    exit?: { code: number | null; signal: NodeJS.Signals | null };
+    error?: Error;
+  } = {};
+  let stderr = '';
+  if (child) {
+    child.once('error', (err) => {
+      childState.error = err;
+    });
+    child.once('exit', (code, signal) => {
+      childState.exit = { code, signal };
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString('utf8');
+      if (stderr.length > 4000) {
+        stderr = stderr.slice(-4000);
+      }
+    });
+  }
   while (Date.now() - start < timeoutMs) {
-    const health = await tryBridgeRequest<BridgeHealth>(options, '/bridge/health');
-    if (health.ok) {
+    const health = await probeBridgeHealth(options);
+    if (health.status === 'reachable') {
       return;
+    }
+    if (childState.error) {
+      throw new Error(`Bridge process failed before becoming reachable: ${childState.error.message}`);
+    }
+    if (childState.exit) {
+      const detail = stderr.trim().split(/\r?\n/).slice(-2).join(' ').trim();
+      throw new Error(
+        `Bridge process exited before becoming reachable (code=${childState.exit.code ?? 'null'} signal=${childState.exit.signal ?? 'null'}).` +
+        (detail ? ` ${detail}` : ''),
+      );
     }
     await sleep(250);
   }
   throw new Error(`Bridge did not become reachable at ${options.bridgeUrl}.`);
+}
+
+async function readBridgeSession(options: GlobalOptions): Promise<BridgeSessionRecord | null> {
+  try {
+    const parsed = JSON.parse(await readFile(options.bridgeSessionPath, 'utf8')) as unknown;
+    if (!isRecord(parsed)) return null;
+    const bridgeUrlValue = parsed.bridgeUrl;
+    const pidValue = parsed.pid;
+    const tokenHashValue = parsed.tokenHash;
+    const cliVersionValue = parsed.cliVersion;
+    const startedAtValue = parsed.startedAt;
+    if (
+      typeof bridgeUrlValue !== 'string' ||
+      !(typeof pidValue === 'number' || pidValue === null) ||
+      typeof tokenHashValue !== 'string' ||
+      typeof cliVersionValue !== 'string' ||
+      typeof startedAtValue !== 'string'
+    ) {
+      return null;
+    }
+    return {
+      bridgeUrl: bridgeUrlValue,
+      pid: pidValue,
+      tokenHash: tokenHashValue,
+      cliVersion: cliVersionValue,
+      startedAt: startedAtValue,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function writeBridgeSession(options: GlobalOptions, pid: number | null): Promise<void> {
+  await mkdir(dirname(options.bridgeSessionPath), { recursive: true });
+  const existing = await readBridgeSession(options);
+  const session: BridgeSessionRecord = {
+    bridgeUrl: options.bridgeUrl,
+    pid: pid ?? existing?.pid ?? null,
+    tokenHash: bridgeTokenHash(options.token),
+    cliVersion: CLI_VERSION,
+    startedAt: new Date().toISOString(),
+  };
+  await writeFile(options.bridgeSessionPath, `${stableJson(session)}\n`, { encoding: 'utf8', mode: 0o600 });
+  await chmod(options.bridgeSessionPath, 0o600).catch(() => undefined);
+}
+
+async function stopRecordedBridge(pid: number): Promise<boolean> {
+  try {
+    process.kill(pid, 0);
+  } catch {
+    return false;
+  }
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch {
+    return false;
+  }
+  const start = Date.now();
+  while (Date.now() - start < 2_000) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true;
+    }
+    await sleep(100);
+  }
+  return false;
+}
+
+function isLoopbackHttpUrl(raw: string): boolean {
+  try {
+    const url = new URL(raw);
+    return (
+      (url.protocol === 'http:' || url.protocol === 'https:') &&
+      (url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::1')
+    );
+  } catch {
+    return false;
+  }
+}
+
+function bridgeHostPortLabel(raw: string): string {
+  try {
+    const url = new URL(raw);
+    return `${url.hostname}:${url.port || (url.protocol === 'https:' ? '443' : '80')}`;
+  } catch {
+    return raw;
+  }
+}
+
+async function findFreeLoopbackBridgeUrl(previousUrl: string): Promise<string> {
+  const previous = new URL(previousUrl);
+  const host = previous.hostname || '127.0.0.1';
+  const server = createNetServer();
+  await new Promise<void>((resolveListen, rejectListen) => {
+    server.once('error', rejectListen);
+    server.listen(0, host, () => resolveListen());
+  });
+  const address = server.address();
+  const port = typeof address === 'object' && address ? address.port : 0;
+  await new Promise<void>((resolveClose, rejectClose) => {
+    server.close((err) => (err ? rejectClose(err) : resolveClose()));
+  });
+  if (!port) {
+    throw new Error('Could not allocate a fallback bridge port.');
+  }
+  previous.port = String(port);
+  previous.pathname = '';
+  previous.search = '';
+  previous.hash = '';
+  return stripTrailingSlash(previous.toString());
 }
 
 async function waitForUrl(url: string, timeoutMs: number): Promise<boolean> {
@@ -3899,6 +4189,8 @@ async function runDoctor(options: GlobalOptions): Promise<JsonRecord> {
     renderSession,
     cliSession,
     apiKeys,
+    bridgeProbe,
+    bridgeSession,
   ] = await Promise.all([
     tryBridgeRequest<BridgeHealth>(options, '/bridge/health'),
     tryBridgeRequest<BridgeHealth>(options, '/bridge/action/health'),
@@ -3910,6 +4202,8 @@ async function runDoctor(options: GlobalOptions): Promise<JsonRecord> {
     probeRenderSession(options),
     loadSession(options),
     probeApiKeys(options),
+    probeBridgeHealth(options),
+    readBridgeSession(options),
   ]);
   return {
     bridgeUrl: options.bridgeUrl,
@@ -3917,6 +4211,11 @@ async function runDoctor(options: GlobalOptions): Promise<JsonRecord> {
     walletHostLaunchUrl: walletHostLaunchUrl(options),
     renderWebUrl: options.renderWebUrl,
     tokenConfigured: Boolean(options.token),
+    token: {
+      source: options.tokenSource,
+      path: options.tokenSource === 'file' || options.tokenSource === 'generated' ? options.bridgeTokenPath : null,
+      hash: bridgeTokenHash(options.token).slice(0, 12),
+    },
     repoRoot: options.repoRoot,
     runtimeDir: options.runtimeDir,
     configPath: options.configPath,
@@ -3930,10 +4229,18 @@ async function runDoctor(options: GlobalOptions): Promise<JsonRecord> {
       labArtifactsDir: existsSync(dirname(options.labArtifactsPath)),
       walletHostAssets: walletHostAssetsAvailable(options),
     },
-    bridge: bridgeHealth.ok ? { reachable: true, health: bridgeHealth.value } : {
+    bridge: bridgeHealth.ok ? { reachable: true, status: bridgeProbe.status, health: bridgeHealth.value } : {
       reachable: false,
+      status: bridgeProbe.status,
       error: errorMessage(bridgeHealth.error),
     },
+    bridgeSession: bridgeSession ? {
+      bridgeUrl: bridgeSession.bridgeUrl,
+      pid: bridgeSession.pid,
+      tokenHash: bridgeSession.tokenHash.slice(0, 12),
+      cliVersion: bridgeSession.cliVersion,
+      startedAt: bridgeSession.startedAt,
+    } : null,
     actionService: actionHealth.ok ? { reachable: true, health: actionHealth.value } : {
       reachable: false,
       error: errorMessage(actionHealth.error),
@@ -4830,12 +5137,18 @@ function printDoctor(options: GlobalOptions, doctor: JsonRecord): void {
   console.log(`Wallet host: ${String(doctor.walletHostLaunchUrl ?? '')}`);
   console.log(`Runtime dir: ${String(doctor.runtimeDir ?? '')}`);
   console.log(`Repo root: ${String(doctor.repoRoot ?? 'not detected')}`);
+  const token = isRecord(doctor.token) ? doctor.token : {};
+  console.log(`Bridge token: ${String(token.source ?? 'unknown')}${token.path ? ` (${String(token.path)})` : ''}`);
   console.log(`.env: ${files.env ? 'found' : 'missing'}`);
   console.log(`Config: ${files.config ? 'found' : 'missing'}`);
   console.log(`Prepared action dir: ${files.preparedActionsDir ? 'found' : 'missing'}`);
   console.log(`Wallet host assets: ${files.walletHostAssets ? 'found' : 'missing'}`);
   const bridge = isRecord(doctor.bridge) ? doctor.bridge : {};
-  console.log(`Bridge: ${bridge.reachable ? 'reachable' : `offline (${String(bridge.error ?? 'unknown')})`}`);
+  console.log(`Bridge: ${bridge.reachable ? `reachable (${String(bridge.status ?? 'ok')})` : `offline/${String(bridge.status ?? 'unknown')} (${String(bridge.error ?? 'unknown')})`}`);
+  const bridgeSession = isRecord(doctor.bridgeSession) ? doctor.bridgeSession : null;
+  if (bridgeSession) {
+    console.log(`Bridge session: ${String(bridgeSession.bridgeUrl ?? '')}${bridgeSession.pid ? ` pid=${String(bridgeSession.pid)}` : ''}`);
+  }
   const walletHost = isRecord(doctor.walletHost) ? doctor.walletHost : {};
   console.log(`Browser wallet host: ${walletHost.reachable ? 'reachable' : 'offline'}`);
   console.log(`Setup RPC: ${setup.rpcUrlConfigured ? `configured (${String(setup.rpcUrlRedacted ?? '')})` : 'missing'}`);
@@ -5180,15 +5493,21 @@ function parseArgs(argv: string[]): ParsedArgs {
   const runtimeDir = process.env.AGENT_WALLET_HOME
     ? resolve(process.env.AGENT_WALLET_HOME)
     : repoRoot ?? defaultUserRuntimeDir();
+  const bridgeUrlFromEnv = process.env.AGENT_WALLET_BRIDGE_URL ?? process.env.BRIDGE_URL;
+  const tokenFromEnv = process.env.BRIDGE_TOKEN;
   const options: GlobalOptions = {
-    bridgeUrl: stripTrailingSlash(process.env.AGENT_WALLET_BRIDGE_URL ?? process.env.BRIDGE_URL ?? DEFAULT_BRIDGE_URL),
+    bridgeUrl: stripTrailingSlash(bridgeUrlFromEnv ?? DEFAULT_BRIDGE_URL),
+    bridgeUrlSource: bridgeUrlFromEnv ? 'env' : 'default',
     renderWebUrl: stripTrailingSlash(
       process.env.AGENTIC_RENDER_WEB_URL ??
         process.env.AGENTIC_PUBLIC_ORIGIN ??
         process.env.RENDER_WEB_URL ??
         DEFAULT_RENDER_WEB_URL,
     ),
-    token: process.env.BRIDGE_TOKEN ?? randomBridgeToken(),
+    token: tokenFromEnv ?? '',
+    tokenSource: tokenFromEnv ? 'env' : 'unresolved',
+    bridgeTokenPath: '',
+    bridgeSessionPath: '',
     walletHostUrl: stripTrailingSlash(process.env.AGENT_WALLET_WALLET_HOST_URL ?? DEFAULT_WALLET_HOST_URL),
     repoRoot,
     runtimeDir,
@@ -5233,6 +5552,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     if (flag === '--bridge-url') {
       const value = optionArgument(argv, index, flag, inlineValue);
       options.bridgeUrl = stripTrailingSlash(value.value);
+      options.bridgeUrlSource = 'flag';
       index = value.index;
       continue;
     }
@@ -5245,6 +5565,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     if (flag === '--token') {
       const value = optionArgument(argv, index, flag, inlineValue);
       options.token = value.value;
+      options.tokenSource = 'flag';
       index = value.index;
       continue;
     }
@@ -5310,11 +5631,54 @@ function parseArgs(argv: string[]): ParsedArgs {
     positionals.push(arg);
   }
 
+  refreshRuntimeServicePaths(options);
   return { options, positionals };
 }
 
 function randomBridgeToken(): string {
   return randomBytes(24).toString('base64url');
+}
+
+function refreshRuntimeServicePaths(options: GlobalOptions): void {
+  const dir = dirname(options.preparedActionsPath);
+  options.bridgeTokenPath = join(dir, BRIDGE_TOKEN_FILENAME);
+  options.bridgeSessionPath = join(dir, BRIDGE_SESSION_FILENAME);
+}
+
+function resolveRuntimeBridgeToken(options: GlobalOptions): void {
+  refreshRuntimeServicePaths(options);
+  if (options.token) {
+    return;
+  }
+  const existing = readBridgeTokenSync(options.bridgeTokenPath);
+  if (existing) {
+    options.token = existing;
+    options.tokenSource = 'file';
+    return;
+  }
+  const token = randomBridgeToken();
+  mkdirSync(dirname(options.bridgeTokenPath), { recursive: true });
+  writeFileSync(options.bridgeTokenPath, `${token}\n`, { encoding: 'utf8', mode: 0o600 });
+  try {
+    chmodSync(options.bridgeTokenPath, 0o600);
+  } catch {
+    // Best-effort hardening; Windows and some filesystems may ignore chmod.
+  }
+  options.token = token;
+  options.tokenSource = 'generated';
+}
+
+function readBridgeTokenSync(path: string): string | null {
+  try {
+    const token = readFileSync(path, 'utf8').trim();
+    return token || null;
+  } catch {
+    return null;
+  }
+}
+
+function bridgeTokenHash(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
 }
 
 function splitFlag(arg: string): [string, string | undefined] {

@@ -163,6 +163,13 @@ export interface WalletConnectQrOverlayRenderInput {
   brand?: (brandId: string) => WalletConnectBrandDescriptor | undefined;
   /** Resolves a logoId to an image URL (for `<img src>`). */
   logoUrl?: (logoId: string) => string | null;
+  /**
+   * When true, render brand-agnostic copy ("Scan with your Solana mobile
+   * wallet") and omit the brand-specific deep-link button + logo. Used by
+   * the desktop Discover flow where the user hasn't pre-picked a wallet —
+   * the wallet identifies itself in the session response post-approval.
+   */
+  agnostic?: boolean;
 }
 
 function brandPlaceholder(): WalletConnectBrandDescriptor {
@@ -173,12 +180,16 @@ function bodyForMode(
   state: WalletConnectQrOverlayState,
   brand: WalletConnectBrandDescriptor,
   logoUrl?: (logoId: string) => string | null,
+  agnostic?: boolean,
 ): string {
+  const promptName = agnostic ? 'your Solana mobile wallet' : `${brand.name} mobile`;
+  const completingName = agnostic ? 'your wallet' : brand.name;
+  const footnoteName = agnostic ? 'your Solana mobile wallet (Phantom, Solflare, Backpack, Jupiter, Magic Eden, …)' : `${brand.name} mobile app`;
   if (state.mode === 'connecting') {
-    return `<p class="walletconnect-qr-overlay-lede">Preparing a WalletConnect session with ${escapeHtml(brand.name)}…</p>`;
+    return `<p class="walletconnect-qr-overlay-lede">Preparing a WalletConnect session${agnostic ? '' : ` with ${escapeHtml(brand.name)}`}…</p>`;
   }
   if (state.mode === 'completing') {
-    return `<p class="walletconnect-qr-overlay-lede">Linking ${escapeHtml(brand.name)} to this desktop…</p>`;
+    return `<p class="walletconnect-qr-overlay-lede">Linking ${escapeHtml(completingName)} to this desktop…</p>`;
   }
   if (state.mode === 'error') {
     return `
@@ -191,25 +202,27 @@ function bodyForMode(
   // awaiting-scan
   const uri = state.uri ?? '';
   const qr = state.qrDataUrl;
-  const deepLink = brand.deepLinkPrefix
+  // Brand-specific deep-link only matters for same-device launches; the
+  // agnostic desktop flow always cross-device scans, so omit it entirely.
+  const deepLink = !agnostic && brand.deepLinkPrefix
     ? `${brand.deepLinkPrefix}${encodeURIComponent(uri)}`
     : '';
   const qrMarkup = qr
     ? `<img class="walletconnect-qr-overlay-qr" src="${escapeHtml(qr)}" alt="" />`
     : `<div class="walletconnect-qr-overlay-qr placeholder" aria-hidden="true"></div>`;
-  const brandLogoUrl = logoUrl ? logoUrl(brand.logoId) : null;
+  const brandLogoUrl = !agnostic && logoUrl ? logoUrl(brand.logoId) : null;
   const brandLogo = brandLogoUrl
     ? `<img class="walletconnect-qr-overlay-brand-logo" src="${escapeHtml(brandLogoUrl)}" alt="" />`
     : '';
   return `
-    <div class="walletconnect-qr-overlay-brand">${brandLogo}<span>Scan with ${escapeHtml(brand.name)} mobile</span></div>
+    <div class="walletconnect-qr-overlay-brand">${brandLogo}<span>Scan with ${escapeHtml(promptName)}</span></div>
     ${qrMarkup}
     <div class="walletconnect-qr-overlay-actions">
       ${deepLink ? `<a class="utility" href="${escapeHtml(deepLink)}" data-walletconnect-action="open-deeplink">Open ${escapeHtml(brand.name)}</a>` : ''}
       <button type="button" class="utility" data-walletconnect-action="copy-uri">Copy URI</button>
       <button type="button" class="utility" data-walletconnect-action="cancel">Cancel</button>
     </div>
-    <p class="walletconnect-qr-overlay-footnote">Scan the code with your ${escapeHtml(brand.name)} mobile app. The pairing happens over the WalletConnect relay; your keys never leave your phone.</p>
+    <p class="walletconnect-qr-overlay-footnote">Scan the code with ${escapeHtml(footnoteName)}. The pairing happens over the WalletConnect relay; your keys never leave your phone.</p>
   `;
 }
 
@@ -221,8 +234,12 @@ export function walletConnectQrOverlayHtml(
   const brand =
     (state.brandId && (input.brand ?? ((id) => WALLET_CONNECT_BRANDS[id]))(state.brandId)) ||
     brandPlaceholder();
-  const title =
-    state.mode === 'error'
+  const agnostic = Boolean(input.agnostic);
+  const title = agnostic
+    ? state.mode === 'error'
+      ? "Couldn't pair WalletConnect"
+      : 'Connect via WalletConnect'
+    : state.mode === 'error'
       ? `Couldn't pair ${brand.name}`
       : `Connect ${brand.name} via WalletConnect`;
   return `
@@ -233,7 +250,7 @@ export function walletConnectQrOverlayHtml(
         <button type="button" class="walletconnect-qr-overlay-close" data-walletconnect-action="cancel" aria-label="Close">&times;</button>
       </header>
       <div class="walletconnect-qr-overlay-body">
-        ${bodyForMode(state, brand, input.logoUrl)}
+        ${bodyForMode(state, brand, input.logoUrl, agnostic)}
       </div>
     </aside>
   `;
@@ -253,5 +270,5 @@ export function walletConnectQrBodyHtml(
   const brand =
     (state.brandId && (input.brand ?? ((id) => WALLET_CONNECT_BRANDS[id]))(state.brandId)) ||
     brandPlaceholder();
-  return bodyForMode(state, brand, input.logoUrl);
+  return bodyForMode(state, brand, input.logoUrl, Boolean(input.agnostic));
 }
