@@ -2,11 +2,16 @@ name: cli-release
 
 on:
   push:
+    branches:
+      - master
     tags:
       # v1.0+ standardises on `cli-v*` to disambiguate from desktop releases.
       # Legacy `v*` is still recognised so existing v0.2.x tags continue to work.
       - 'cli-v*'
       - 'v*'
+    paths:
+      - packages/cli/package.json
+      - .github/workflows/cli-release.yml
   workflow_dispatch:
     inputs:
       tag:
@@ -26,6 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       proceed: ${{ steps.check.outputs.proceed }}
+      release_tag: ${{ steps.check.outputs.release_tag }}
       version: ${{ steps.check.outputs.version }}
     steps:
       - uses: actions/checkout@v4
@@ -35,18 +41,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          case "$RELEASE_TAG" in
+          release_tag="$RELEASE_TAG"
+          package_version="$(node -p "require('./packages/cli/package.json').version")"
+          if [ "${GITHUB_REF_TYPE:-}" = "branch" ]; then
+            release_tag="cli-v${package_version}"
+            git fetch --force origin "refs/tags/${release_tag}:refs/tags/${release_tag}"
+          fi
+          case "$release_tag" in
             cli-v*|v*) ;;
             *)
-              echo "CLI release tag must start with cli-v or v. Current value: $RELEASE_TAG" >&2
+              echo "CLI release tag must start with cli-v or v. Current value: $release_tag" >&2
               exit 1
               ;;
           esac
-          tag_version="${RELEASE_TAG#cli-v}"
+          tag_version="${release_tag#cli-v}"
           tag_version="${tag_version#v}"
-          package_version="$(node -p "require('./packages/cli/package.json').version")"
           if [ "$package_version" = "$tag_version" ]; then
             echo "proceed=true" >> "$GITHUB_OUTPUT"
+            echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
             echo "version=$tag_version" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -54,12 +66,13 @@ jobs:
           # case skip the CLI release gracefully so desktop-release can handle it.
           desktop_version="$(node -p "require('./apps/desktop-shell/package.json').version")"
           if [ "$desktop_version" = "$tag_version" ]; then
-            echo "Tag ${RELEASE_TAG} matches desktop-shell ${desktop_version}; CLI release skipped (cli at ${package_version})."
+            echo "Tag ${release_tag} matches desktop-shell ${desktop_version}; CLI release skipped (cli at ${package_version})."
             echo "proceed=false" >> "$GITHUB_OUTPUT"
+            echo "release_tag=" >> "$GITHUB_OUTPUT"
             echo "version=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "CLI package version $package_version must match release tag $RELEASE_TAG." >&2
+          echo "CLI package version $package_version must match release tag $release_tag." >&2
           exit 1
 
   npm:
@@ -207,6 +220,6 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.RELEASE_TAG }}
+          tag_name: ${{ needs.validate.outputs.release_tag }}
           files: release-assets/*
           fail_on_unmatched_files: true
