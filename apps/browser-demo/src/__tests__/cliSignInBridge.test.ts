@@ -87,4 +87,11 @@ describe('cliIntentAllowsBridgeRequestClaim', () => {
     expect(cliIntentAllowsBridgeRequestClaim('connect')).toBe(true);
     expect(cliIntentAllowsBridgeRequestClaim('approve')).toBe(true);
   });
+
+  it('prevents desktop connect pages from claiming signing requests', () => {
+    expect(cliIntentAllowsBridgeRequestClaim('connect', 'desktop')).toBe(false);
+    expect(cliIntentAllowsBridgeRequestClaim('disconnect', 'desktop')).toBe(false);
+    expect(cliIntentAllowsBridgeRequestClaim('sign', 'desktop')).toBe(true);
+    expect(cliIntentAllowsBridgeRequestClaim('approve', 'desktop')).toBe(true);
+  });
 });

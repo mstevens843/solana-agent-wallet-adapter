@@ -84,4 +84,67 @@ describe('LocalBridgeBackend', () => {
     });
     expect(backend.nextPendingRequest()).toBeNull();
   });
+
+  it('claims a specific pending request without consuming FIFO requests', async () => {
+    const backend = new LocalBridgeBackend({ cluster: 'devnet', rpcUrl: 'https://api.devnet.solana.com' });
+    backend.connectHost('11111111111111111111111111111111', {
+      backend: 'test-host',
+      cluster: ['devnet'],
+      supports: {
+        signMessage: true,
+        signTransaction: true,
+        signAndSendTransaction: true,
+        multiSign: false,
+        simulationPreview: false,
+      },
+      address: '11111111111111111111111111111111',
+    });
+
+    const first = {
+      id: newSigningRequestId(),
+      kind: 'sign_message' as const,
+      payload: { data: 'first', encoding: 'utf8' as const },
+      cluster: 'devnet' as const,
+    };
+    const second = {
+      id: newSigningRequestId(),
+      kind: 'sign_message' as const,
+      payload: { data: 'second', encoding: 'utf8' as const },
+      cluster: 'devnet' as const,
+    };
+    await backend.submit(first);
+    await backend.submit(second);
+
+    expect(backend.nextPendingRequest(second.id)).toEqual(second);
+    expect(backend.nextPendingRequest()).toEqual(first);
+    expect(backend.nextPendingRequest()).toBeNull();
+  });
+
+  it('allows a specific pending request to be reclaimed after a page reload', async () => {
+    const backend = new LocalBridgeBackend({ cluster: 'devnet', rpcUrl: 'https://api.devnet.solana.com' });
+    backend.connectHost('11111111111111111111111111111111', {
+      backend: 'test-host',
+      cluster: ['devnet'],
+      supports: {
+        signMessage: true,
+        signTransaction: true,
+        signAndSendTransaction: true,
+        multiSign: false,
+        simulationPreview: false,
+      },
+      address: '11111111111111111111111111111111',
+    });
+
+    const request = {
+      id: newSigningRequestId(),
+      kind: 'sign_message' as const,
+      payload: { data: 'hello', encoding: 'utf8' as const },
+      cluster: 'devnet' as const,
+    };
+    await backend.submit(request);
+
+    expect(backend.nextPendingRequest(request.id)).toEqual(request);
+    expect(backend.nextPendingRequest(request.id)).toEqual(request);
+    expect(backend.nextPendingRequest()).toBeNull();
+  });
 });

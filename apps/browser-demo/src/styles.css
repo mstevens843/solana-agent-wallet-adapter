@@ -9759,12 +9759,19 @@ code {
   margin: 0;
 }
 .ledger-overlay-status {
+  align-items: center;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid rgba(224, 230, 226, 0.1);
   border-radius: var(--radius);
   color: var(--text);
+  display: flex;
   font-size: 0.9rem;
+  gap: 10px;
   padding: 12px 14px;
+}
+.ledger-overlay-status .toast-spinner {
+  height: 16px;
+  width: 16px;
 }
 .ledger-overlay-detail-grid {
   background: rgba(255, 255, 255, 0.04);
@@ -9772,8 +9779,8 @@ code {
   border-radius: var(--radius);
   display: grid;
   font-size: 0.88rem;
-  gap: 6px 14px;
-  grid-template-columns: max-content 1fr;
+  gap: 6px;
+  grid-template-columns: 1fr;
   margin: 0;
   padding: 12px 14px;
 }
@@ -9785,11 +9792,23 @@ code {
 }
 .ledger-overlay-detail-grid dd {
   color: var(--text);
-  margin: 0;
+  margin: 0 0 8px;
+  min-width: 0;
 }
-.ledger-overlay-detail-grid code {
+.ledger-overlay-detail-grid dd:last-child {
+  margin-bottom: 0;
+}
+.ledger-overlay-code {
+  background: rgba(0, 0, 0, 0.24);
+  border: 1px solid rgba(224, 230, 226, 0.08);
+  border-radius: 6px;
+  display: block;
   font-family: 'SFMono-Regular', ui-monospace, Menlo, monospace;
   font-size: 0.88rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  padding: 8px 10px;
+  white-space: normal;
 }
 .ledger-overlay-actions {
   display: flex;
@@ -14323,6 +14342,17 @@ button.danger:hover:not(:disabled) {
   font-style: normal;
   line-height: 1.25;
   overflow-wrap: anywhere;
+}
+
+.ai-inactive-config-note {
+  background: rgba(126, 88, 19, 0.18);
+  border-color: rgba(244, 208, 130, 0.28);
+}
+
+.ai-inactive-config-note button {
+  justify-self: start;
+  margin-top: 4px;
+  min-height: 30px;
 }
 
 .ai-actions {
@@ -19818,6 +19848,10 @@ button.danger:hover:not(:disabled) {
     linear-gradient(180deg, rgba(21, 60, 43, 0.48), rgba(17, 28, 24, 0.94)),
     rgba(17, 21, 20, 0.94);
   border-color: rgba(94, 231, 158, 0.32);
+}
+
+.command-route-card.configured-inactive {
+  border-color: rgba(244, 208, 130, 0.28);
 }
 
 .command-route-card > div {

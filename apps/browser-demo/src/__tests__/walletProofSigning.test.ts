@@ -1,10 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { Cluster, SolanaSigningClient } from '@solana-agent-wallet-adapter/core';
+import { LEDGER_WALLET_NAME } from '@solana-agent-wallet-adapter/ledger-wallet';
+import { Keypair, Transaction } from '@solana/web3.js';
+import bs58 from 'bs58';
 
 import {
   setProofSigningContext,
   shouldRouteProofThroughAndroidNative,
+  shouldRouteProofThroughLedgerMemo,
   signWalletProofMessage,
   type AndroidProofBackend,
   type ProofSigningAppState,
@@ -56,6 +60,13 @@ describe('shouldRouteProofThroughAndroidNative', () => {
         }),
       ),
     ).toBe(false);
+  });
+});
+
+describe('shouldRouteProofThroughLedgerMemo', () => {
+  it('routes Ledger proof signing through a memo transaction', () => {
+    expect(shouldRouteProofThroughLedgerMemo(appState({ selectedWalletName: LEDGER_WALLET_NAME }))).toBe(true);
+    expect(shouldRouteProofThroughLedgerMemo(appState({ selectedWalletName: 'Backpack' }))).toBe(false);
   });
 });
 
@@ -135,5 +146,42 @@ describe('signWalletProofMessage', () => {
     expect(result.proofEncoding).toBe('utf8-message');
     expect(result.signature).toBe('native-utf8-signature');
     expect(result.proofTxBase64).toBeUndefined();
+  });
+
+  it('routes Ledger proofs through a signed memo transaction', async () => {
+    const signer = Keypair.generate();
+    const signature = new Uint8Array(64).fill(7);
+    const signMessage = vi.fn();
+    const signTransaction = vi.fn(async (txBase64: string) => {
+      const tx = Transaction.from(Buffer.from(txBase64, 'base64'));
+      tx.addSignature(signer.publicKey, Buffer.from(signature));
+      return {
+        signature: Buffer.from(
+          tx.serialize({ requireAllSignatures: false, verifySignatures: false }),
+        ).toString('base64'),
+      };
+    });
+    setProofSigningContext({
+      getClient: () => fakeClient({ signMessage, signTransaction }),
+      getAppState: () =>
+        appState({
+          selectedWalletName: LEDGER_WALLET_NAME,
+          address: signer.publicKey.toBase58(),
+          capabilities: { supports: { signMessage: true } },
+        }),
+      getLatestBlockhash: async () => ({ blockhash: '11111111111111111111111111111111' }),
+      getAndroidProofBackend: () => null,
+    });
+
+    const result = await signWalletProofMessage('ledger proof', 'summary', 'mainnet-beta' as Cluster);
+
+    expect(signMessage).not.toHaveBeenCalled();
+    expect(signTransaction).toHaveBeenCalledOnce();
+    expect(result.proofEncoding).toBe('tx-memo-proof');
+    expect(result.signature).toBe(bs58.encode(signature));
+    expect(result.proofTxBase64).toBeTruthy();
+    const signed = Transaction.from(Buffer.from(result.proofTxBase64!, 'base64'));
+    const memo = signed.instructions.find((ix) => ix.programId.toBase58() === 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
+    expect(new TextDecoder().decode(memo!.data)).toMatch(/^Agentic plan review proof v1\nSHA-256: [0-9a-f]{64}$/);
   });
 });

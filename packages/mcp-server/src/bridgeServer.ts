@@ -23,7 +23,7 @@ import {
   type AgentTier,
   type RegisteredAgent,
 } from './agentRegistry.js';
-import { BridgeAiPlanner, type AiPlanRequest, type AiReviewRequest, type AiAskRequest } from './aiPlanner.js';
+import { BridgeAiPlanner, type AiPlanRequest, type AiReviewRequest, type AiAskRequest, type AiChatRequest } from './aiPlanner.js';
 import { makeTransactionSimulator } from './simulationDigest.js';
 import {
   birdeyeConfigFromEnv,
@@ -802,6 +802,10 @@ async function handleRequest(
       writeJson(res, 200, await aiPlanner.askAboutPlan(await bridgeAskRequestWithWallet(backend, await readJson(req))));
       return;
     }
+    if (req.method === 'POST' && url.pathname === '/bridge/ai/chat') {
+      writeJson(res, 200, await aiPlanner.chat(await bridgeChatRequestWithOptionalWallet(backend, await readJson(req))));
+      return;
+    }
     if (req.method === 'GET' && url.pathname === '/bridge/action/status') {
       writeJson(res, 200, await requireActionService(actionService).walletStatus());
       return;
@@ -1365,7 +1369,8 @@ async function handleRequest(
       if (!isLocalBridgeBackend(backend)) {
         throw new ProtocolError('unsupported_method', 'Browser bridge request claiming is not available in iOS link mode.');
       }
-      writeJson(res, 200, { request: backend.nextPendingRequest() });
+      const requestId = url.searchParams.get('requestId')?.trim() || undefined;
+      writeJson(res, 200, { request: backend.nextPendingRequest(requestId) });
       return;
     }
     if (req.method === 'POST' && url.pathname === '/bridge/resolve') {
@@ -1451,6 +1456,7 @@ function requiredTier(method: string, pathname: string): AgentTier | null {
     if (pathname === '/bridge/ai/generate-plan') return 'capped';
     if (pathname === '/bridge/ai/review-plan') return 'capped';
     if (pathname === '/bridge/ai/ask-about-plan') return 'capped';
+    if (pathname === '/bridge/ai/chat') return 'capped';
     if (pathname === '/bridge/ai/session-key') return 'full';
     if (pathname === '/bridge/recurring-payments/update') return 'full';
     if (pathname === '/bridge/recurring-payments/pause') return 'full';
@@ -1668,6 +1674,21 @@ async function bridgeAskRequestWithWallet(
   const request = requireJsonObject(input, 'AI ask request') as unknown as AiAskRequest;
   const walletAddress = await scopedBridgeWalletAddress(backend, request.walletAddress);
   return withTrustedAiWalletContext(request, walletAddress);
+}
+
+async function bridgeChatRequestWithOptionalWallet(
+  backend: WalletBackend,
+  input: unknown,
+): Promise<AiChatRequest> {
+  const request = requireJsonObject(input, 'AI chat request') as unknown as AiChatRequest;
+  const requestedWallet = typeof request.walletAddress === 'string' && request.walletAddress.trim().length > 0;
+  try {
+    const walletAddress = await scopedBridgeWalletAddress(backend, request.walletAddress);
+    return withTrustedAiWalletContext(request, walletAddress);
+  } catch (err) {
+    if (requestedWallet) throw err;
+    return request;
+  }
 }
 
 function withTrustedAiWalletContext<T extends { walletAddress?: string; context?: Record<string, unknown>; cluster?: string }>(

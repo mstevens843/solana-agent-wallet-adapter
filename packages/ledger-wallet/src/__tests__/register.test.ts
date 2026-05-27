@@ -5,6 +5,7 @@
 
 import bs58 from 'bs58';
 import { beforeEach, describe, expect, it } from 'vitest';
+import { PublicKey, SystemProgram, Transaction } from '@solana/web3.js';
 
 import type { LedgerIpc } from '../ipc.js';
 import {
@@ -17,6 +18,20 @@ const ADDR = 'EmaginedRust11111111111111111111111111111111';
 
 function publicKeyBytes(): Uint8Array {
   return bs58.decode(ADDR);
+}
+
+function unsignedLegacyTransaction(): Uint8Array {
+  const signer = new PublicKey(ADDR);
+  return new Transaction({
+    feePayer: signer,
+    recentBlockhash: '11111111111111111111111111111111',
+  }).add(
+    SystemProgram.transfer({
+      fromPubkey: signer,
+      toPubkey: new PublicKey('11111111111111111111111111111112'),
+      lamports: 1,
+    }),
+  ).serialize({ requireAllSignatures: false, verifySignatures: false });
 }
 
 function fakeIpc(): LedgerIpc & {
@@ -102,7 +117,7 @@ describe('registerLedgerWallet', () => {
     const account = second.wallet.accounts[0]!;
     await second.wallet.features['solana:signTransaction'].signTransaction({
       account,
-      transaction: new Uint8Array([1, 2, 3, 4]),
+      transaction: unsignedLegacyTransaction(),
     });
     expect(firstIpc.signTransactionCalls).toHaveLength(0);
     expect(secondIpc.signTransactionCalls).toHaveLength(1);

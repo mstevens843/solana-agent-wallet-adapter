@@ -119,6 +119,42 @@ describe('bridge lab artifact routes', () => {
     }
   });
 
+  it('claims a specific browser signing request by requestId', async () => {
+    const handle = await startTestBridge({ connectedAddress: '11111111111111111111111111111111' });
+    try {
+      const first = {
+        id: 'request-first',
+        kind: 'sign_message',
+        payload: { data: 'first', encoding: 'utf8' },
+        cluster: 'devnet',
+      };
+      const second = {
+        id: 'request-second',
+        kind: 'sign_message',
+        payload: { data: 'second', encoding: 'utf8' },
+        cluster: 'devnet',
+      };
+      await bridgeFetch(handle.url, '/bridge/submit', {
+        method: 'POST',
+        body: JSON.stringify({ request: first }),
+      });
+      await bridgeFetch(handle.url, '/bridge/submit', {
+        method: 'POST',
+        body: JSON.stringify({ request: second }),
+      });
+
+      const claimed = await bridgeFetch<{ request: unknown }>(handle.url, '/bridge/next?requestId=request-second');
+      const next = await bridgeFetch<{ request: unknown }>(handle.url, '/bridge/next');
+      const empty = await bridgeFetch<{ request: unknown }>(handle.url, '/bridge/next');
+
+      expect(claimed.request).toEqual(second);
+      expect(next.request).toEqual(first);
+      expect(empty.request).toBeNull();
+    } finally {
+      await handle.stop();
+    }
+  });
+
   it('allows bundled Android app preflight requests', async () => {
     const handle = await startTestBridge();
     try {
@@ -545,6 +581,40 @@ describe('bridge lab artifact routes', () => {
       const providerInput = String(providerBodies[0]?.input ?? '');
       expect(providerInput).toContain('"walletAddress":"11111111111111111111111111111111"');
       expect(providerInput).toContain('"source":"connected_bridge_wallet"');
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  it('serves AI chat without requiring a connected wallet', async () => {
+    const originalFetch = globalThis.fetch;
+    const providerBodies: Record<string, unknown>[] = [];
+    vi.stubEnv('AGENTIC_AI_API_KEY', 'sk-test-openai');
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = input instanceof Request ? new URL(input.url) : new URL(String(input));
+      if (url.hostname === 'api.openai.com') {
+        providerBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+        return jsonResponse({
+          output_text: 'Use /plan when you are ready to prepare a visible wallet request.',
+        });
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch);
+
+    const handle = await startTestBridge();
+    try {
+      const body = await bridgeFetch<{ answer: string }>(handle.url, '/bridge/ai/chat', {
+        method: 'POST',
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: 'What should I check before using a swap route?' }],
+        }),
+      });
+
+      expect(body.answer).toContain('/plan');
+      const providerMessages = providerBodies[0]?.messages as Array<{ content?: string }> | undefined;
+      const providerInput = JSON.parse(String(providerMessages?.[1]?.content ?? '{}')) as Record<string, unknown>;
+      expect(providerInput.walletAddress).toBe('not_connected');
+      expect(JSON.stringify(providerInput.messages)).toContain('What should I check before using a swap route?');
     } finally {
       await handle.stop();
     }

@@ -27,15 +27,23 @@ export interface RemoteRelayBackendOptions {
    *  universal-link redirect. Authenticates the desktop's reads/writes
    *  against the matching pairing record. */
   pairingUuid: string;
+  /** Delay after relay rate-limit responses. Defaults to 3s. */
+  rateLimitRetryMs?: number;
+  /** Number of submit retries after a rate-limit response. Defaults to 2. */
+  submitRetryCount?: number;
 }
 
 export class RemoteRelayBackend implements WalletBackend {
   private readonly baseUrl: string;
   private readonly pairingUuid: string;
+  private readonly rateLimitRetryMs: number;
+  private readonly submitRetryCount: number;
 
   constructor(options: RemoteRelayBackendOptions) {
     this.baseUrl = options.baseUrl.endsWith('/') ? options.baseUrl.slice(0, -1) : options.baseUrl;
     this.pairingUuid = options.pairingUuid;
+    this.rateLimitRetryMs = options.rateLimitRetryMs ?? 3000;
+    this.submitRetryCount = options.submitRetryCount ?? 2;
   }
 
   async capabilities(): Promise<AdapterCapabilities> {
@@ -65,16 +73,35 @@ export class RemoteRelayBackend implements WalletBackend {
   }
 
   async submit(request: SigningRequest): Promise<ApprovalResource> {
-    return this.request<ApprovalResource>(`/submit`, {
-      method: 'POST',
-      body: JSON.stringify({ request }),
-    });
+    let lastRateLimit: RelayRateLimit | null = null;
+    for (let attempt = 0; attempt <= this.submitRetryCount; attempt += 1) {
+      const response = await this.requestRaw(`/submit`, {
+        method: 'POST',
+        body: JSON.stringify({ request }),
+      });
+      if (!response.rateLimited) {
+        return this.parseResponse<ApprovalResource>(response);
+      }
+      lastRateLimit = response.rateLimit;
+      if (attempt < this.submitRetryCount) {
+        await sleep(this.retryDelayMs(response.rateLimit));
+      }
+    }
+    throw new ProtocolError(
+      'wallet_unreachable',
+      `Pairing relay is rate-limited. Retry in ${Math.ceil(this.retryDelayMs(lastRateLimit) / 1000)}s.`,
+    );
   }
 
   async poll(requestId: SigningRequestId): Promise<ApprovalResource> {
-    return this.request<ApprovalResource>(`/submit/${encodeURIComponent(requestId)}`, {
+    const response = await this.requestRaw(`/submit/${encodeURIComponent(requestId)}`, {
       method: 'GET',
     });
+    if (response.rateLimited) {
+      await sleep(this.retryDelayMs(response.rateLimit));
+      return { requestId, status: 'pending' };
+    }
+    return this.parseResponse<ApprovalResource>(response);
   }
 
   /** The relay has no cancellation primitive — abandoned requests expire
@@ -85,6 +112,10 @@ export class RemoteRelayBackend implements WalletBackend {
   }
 
   private async request<T = unknown>(path: string, init: RequestInit): Promise<T> {
+    return this.parseResponse<T>(await this.requestRaw(path, init));
+  }
+
+  private async requestRaw(path: string, init: RequestInit): Promise<RelayResponse> {
     const url = `${this.baseUrl}/api/pair/${encodeURIComponent(this.pairingUuid)}${path}`;
     const headers = new Headers(init.headers);
     if (init.body !== undefined && !headers.has('content-type')) {
@@ -99,19 +130,44 @@ export class RemoteRelayBackend implements WalletBackend {
         `Pairing relay unreachable: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+    const payload = (await response.json().catch(() => ({}))) as unknown;
+    if (response.status === 429 && relayError(payload) === 'rate_limited') {
+      return {
+        response,
+        payload,
+        rateLimited: true,
+        rateLimit: rateLimitFromResponse(response, payload),
+      };
+    }
+    return { response, payload, rateLimited: false };
+  }
+
+  private parseResponse<T = unknown>(relay: RelayResponse): T {
+    const { response, payload } = relay;
     if (response.status === 404) {
       // Host not yet registered → caller (typically a pairing poll) treats
       // this as "keep waiting" rather than a hard failure.
       throw new ProtocolError('unauthorized', 'Pairing record not found.');
     }
-    const payload = (await response.json().catch(() => ({}))) as unknown;
     if (!response.ok) {
       const message = extractError(payload) ?? `Relay returned ${response.status}.`;
       throw new ProtocolError('wallet_unreachable', message);
     }
     return payload as T;
   }
+
+  private retryDelayMs(rateLimit: RelayRateLimit | null): number {
+    return Math.max(0, rateLimit?.retryAfterMs ?? this.rateLimitRetryMs);
+  }
 }
+
+interface RelayRateLimit {
+  retryAfterMs: number;
+}
+
+type RelayResponse =
+  | { response: Response; payload: unknown; rateLimited: false }
+  | { response: Response; payload: unknown; rateLimited: true; rateLimit: RelayRateLimit };
 
 function extractError(payload: unknown): string | null {
   if (payload && typeof payload === 'object') {
@@ -120,4 +176,34 @@ function extractError(payload: unknown): string | null {
     if (typeof obj.message === 'string') return obj.message;
   }
   return null;
+}
+
+function relayError(payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object') return null;
+  const value = (payload as Record<string, unknown>).error;
+  return typeof value === 'string' ? value : null;
+}
+
+function rateLimitFromResponse(response: Response, payload: unknown): RelayRateLimit {
+  const retryAfterMs = retryAfterMsFromPayload(payload) ?? retryAfterMsFromHeader(response.headers);
+  return { retryAfterMs: retryAfterMs ?? 3000 };
+}
+
+function retryAfterMsFromPayload(payload: unknown): number | undefined {
+  if (!payload || typeof payload !== 'object') return undefined;
+  const value = (payload as Record<string, unknown>).retryAfterMs;
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function retryAfterMsFromHeader(headers: Headers): number | undefined {
+  const raw = headers.get('retry-after');
+  if (!raw) return undefined;
+  const seconds = Number(raw);
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.ceil(seconds * 1000) : undefined;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }

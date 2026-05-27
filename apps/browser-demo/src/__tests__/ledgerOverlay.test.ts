@@ -75,6 +75,17 @@ describe('reduceLedgerOverlay', () => {
     expect(next.address).toBe(ADDR);
   });
 
+  it('confirmingAddress moves from confirm-address to the waiting state', () => {
+    const confirm: LedgerOverlayState = {
+      ...initialLedgerOverlayState(),
+      mode: 'confirm-address',
+      address: ADDR,
+    };
+    const next = reduceLedgerOverlay(confirm, { type: 'confirmingAddress' });
+    expect(next.mode).toBe('confirming-address');
+    expect(next.address).toBe(ADDR);
+  });
+
   it('setError surfaces the message and switches to error mode', () => {
     const inAppCheck: LedgerOverlayState = {
       ...initialLedgerOverlayState(),
@@ -124,18 +135,34 @@ describe('ledgerOverlayHtml', () => {
     expect(html).toContain('Found <strong>Nano S Plus</strong>');
   });
 
-  it('renders confirm-address with derivation path + shortened address + Connect button', () => {
+  it('renders confirm-address with stacked derivation path + shortened address + Connect button', () => {
     const html = ledgerOverlayHtml({
       ...initialLedgerOverlayState(),
       mode: 'confirm-address',
       address: ADDR,
     });
+    expect(html).toContain('confirm the address on your device');
+    expect(html).toContain('class="ledger-overlay-code"');
     // Path apostrophes are HTML-escaped on the way out.
     expect(html).toContain(DEFAULT_LEDGER_DERIVATION_PATH.replace(/'/g, '&#39;'));
     // Short form uses the first 6 + last 6.
     expect(html).toContain(`${ADDR.slice(0, 6)}…${ADDR.slice(-6)}`);
     expect(html).toContain('title="EmaginedRust11111111111111111111111111111111"');
     expect(html).toMatch(/data-ledger-action="confirm-address"[^>]*>Connect this Ledger/);
+  });
+
+  it('renders confirming-address with a Ledger approval prompt and disabled actions', () => {
+    const html = ledgerOverlayHtml({
+      ...initialLedgerOverlayState(),
+      mode: 'confirming-address',
+      address: ADDR,
+    });
+    expect(html).toContain('Approve this address on your Ledger');
+    expect(html).toContain('Waiting for Ledger approval');
+    expect(html).toContain('class="toast-spinner"');
+    expect(html).toContain('<button type="button" class="utility" disabled>Cancel</button>');
+    expect(html).toContain('<button type="button" class="primary" disabled>Connect this Ledger</button>');
+    expect(html).not.toContain('data-ledger-action="confirm-address"');
   });
 
   it('renders the error body with retry + cancel', () => {
@@ -194,7 +221,7 @@ describe('ledgerOverlayBodyHtml (inline render)', () => {
       address: ADDR,
       device: { productName: 'Nano X', vendorId: 0x2c97, productId: 0x4011 },
     });
-    expect(html).toContain('Connect this Ledger account?');
+    expect(html).toContain('Review this Ledger account');
     // The HTML factory escapes apostrophes in the derivation path; assert on a
     // stable substring rather than the raw constant.
     expect(html).toContain('m/44');

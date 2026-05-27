@@ -12,6 +12,7 @@ export type LedgerOverlayMode =
   | 'searching'
   | 'app-check'
   | 'confirm-address'
+  | 'confirming-address'
   | 'error';
 
 export interface LedgerOverlayDevice {
@@ -46,6 +47,7 @@ export type LedgerOverlayAction =
   | { type: 'open' }
   | { type: 'deviceFound'; device: LedgerOverlayDevice }
   | { type: 'addressReady'; address: string }
+  | { type: 'confirmingAddress' }
   | { type: 'setError'; error: string }
   | { type: 'close' };
 
@@ -67,6 +69,9 @@ export function reduceLedgerOverlay(
     case 'addressReady':
       if (state.mode === 'closed') return state;
       return { ...state, mode: 'confirm-address', address: action.address, error: '' };
+    case 'confirmingAddress':
+      if (state.mode !== 'confirm-address') return state;
+      return { ...state, mode: 'confirming-address', error: '' };
     case 'setError':
       return { ...state, mode: 'error', error: action.error };
     case 'close':
@@ -120,16 +125,35 @@ function confirmAddressBody(state: LedgerOverlayState): string {
   const address = state.address ?? '';
   const short = address.length > 12 ? `${address.slice(0, 6)}…${address.slice(-6)}` : address;
   return `
-    <p class="ledger-overlay-lede">Connect this Ledger account?</p>
+    <p class="ledger-overlay-lede">Review this Ledger account, then confirm the address on your device.</p>
     <dl class="ledger-overlay-detail-grid">
       <dt>Derivation path</dt>
-      <dd><code>${escapeHtml(state.derivationPath)}</code></dd>
+      <dd><code class="ledger-overlay-code">${escapeHtml(state.derivationPath)}</code></dd>
       <dt>Address</dt>
-      <dd><code title="${escapeHtml(address)}">${escapeHtml(short)}</code></dd>
+      <dd><code class="ledger-overlay-code" title="${escapeHtml(address)}">${escapeHtml(short)}</code></dd>
     </dl>
     <div class="ledger-overlay-actions">
       <button type="button" class="utility" data-ledger-action="cancel">Cancel</button>
       <button type="button" class="primary" data-ledger-action="confirm-address">Connect this Ledger</button>
+    </div>
+  `;
+}
+
+function confirmingAddressBody(state: LedgerOverlayState): string {
+  const address = state.address ?? '';
+  const short = address.length > 12 ? `${address.slice(0, 6)}…${address.slice(-6)}` : address;
+  return `
+    <p class="ledger-overlay-lede">Approve this address on your Ledger.</p>
+    <dl class="ledger-overlay-detail-grid">
+      <dt>Derivation path</dt>
+      <dd><code class="ledger-overlay-code">${escapeHtml(state.derivationPath)}</code></dd>
+      <dt>Address</dt>
+      <dd><code class="ledger-overlay-code" title="${escapeHtml(address)}">${escapeHtml(short)}</code></dd>
+    </dl>
+    <div class="ledger-overlay-status" role="status"><span class="toast-spinner" aria-hidden="true"></span><span>Waiting for Ledger approval…</span></div>
+    <div class="ledger-overlay-actions">
+      <button type="button" class="utility" disabled>Cancel</button>
+      <button type="button" class="primary" disabled>Connect this Ledger</button>
     </div>
   `;
 }
@@ -154,6 +178,8 @@ function bodyForMode(state: LedgerOverlayState): string {
       return appCheckBody(state);
     case 'confirm-address':
       return confirmAddressBody(state);
+    case 'confirming-address':
+      return confirmingAddressBody(state);
     case 'error':
       return errorBody(state);
   }

@@ -1,5 +1,12 @@
 import bs58 from 'bs58';
 import { describe, expect, it } from 'vitest';
+import {
+  PublicKey,
+  SystemProgram,
+  Transaction,
+  TransactionMessage,
+  VersionedTransaction,
+} from '@solana/web3.js';
 
 import type { LedgerIpc } from '../ipc.js';
 import {
@@ -199,13 +206,15 @@ describe('disconnect()', () => {
 });
 
 describe('signTransaction()', () => {
-  it('routes through ipc.signTransaction with the correct derivation path', async () => {
+  it('routes through ipc.signTransaction and attaches the signature to a legacy transaction', async () => {
+    const signer = new PublicKey(ADDR);
+    const signature = new Uint8Array(64).fill(3);
     let captured: { path: string; b64: string } | null = null;
     const wallet = createLedgerWallet({
       ipc: makeIpc({
         signTransaction: async (path, b64) => {
           captured = { path, b64 };
-          return Buffer.from(new Uint8Array([1, 2, 3, 4])).toString('base64');
+          return Buffer.from(signature).toString('base64');
         },
       }),
       address: ADDR,
@@ -214,14 +223,94 @@ describe('signTransaction()', () => {
     });
     await wallet.features['standard:connect'].connect();
     const account = wallet.accounts[0]!;
-    const txBytes = new Uint8Array([10, 20, 30, 40]);
+    const tx = new Transaction({
+      feePayer: signer,
+      recentBlockhash: '11111111111111111111111111111111',
+    }).add(
+      SystemProgram.transfer({
+        fromPubkey: signer,
+        toPubkey: new PublicKey('11111111111111111111111111111112'),
+        lamports: 1,
+      }),
+    );
+    const txBytes = tx.serialize({ requireAllSignatures: false, verifySignatures: false });
     const [output] = await wallet.features['solana:signTransaction'].signTransaction({
       account,
       transaction: txBytes,
     });
     expect(captured?.path).toBe(`m/44'/501'/0'/0'`);
-    expect(captured?.b64).toBe(Buffer.from(txBytes).toString('base64'));
-    expect(output?.signedTransaction).toEqual(new Uint8Array([1, 2, 3, 4]));
+    expect(captured?.b64).toBe(
+      Buffer.from(VersionedTransaction.deserialize(txBytes).message.serialize()).toString('base64'),
+    );
+    const signed = Transaction.from(output!.signedTransaction);
+    const attached = signed.signatures.find((entry) => entry.publicKey.equals(signer));
+    expect(new Uint8Array(attached!.signature!)).toEqual(signature);
+  });
+
+  it('attaches a Ledger signature to a v0 transaction', async () => {
+    const signer = new PublicKey(ADDR);
+    const signature = new Uint8Array(64).fill(4);
+    let capturedB64 = '';
+    const message = new TransactionMessage({
+      payerKey: signer,
+      recentBlockhash: '11111111111111111111111111111111',
+      instructions: [
+        SystemProgram.transfer({
+          fromPubkey: signer,
+          toPubkey: new PublicKey('11111111111111111111111111111112'),
+          lamports: 1,
+        }),
+      ],
+    }).compileToV0Message();
+    const tx = new VersionedTransaction(message);
+    const wallet = createLedgerWallet({
+      ipc: makeIpc({
+        signTransaction: async (_path, b64) => {
+          capturedB64 = b64;
+          return Buffer.from(signature).toString('base64');
+        },
+      }),
+      address: ADDR,
+      publicKey: publicKeyBytes(),
+      derivationPath: `m/44'/501'/0'/0'`,
+    });
+    await wallet.features['standard:connect'].connect();
+    const [output] = await wallet.features['solana:signTransaction'].signTransaction({
+      account: wallet.accounts[0]!,
+      transaction: tx.serialize(),
+    });
+    expect(capturedB64).toBe(Buffer.from(message.serialize()).toString('base64'));
+    const reparsed = VersionedTransaction.deserialize(output!.signedTransaction);
+    expect(reparsed.signatures[0]).toEqual(signature);
+  });
+
+  it('throws when the Ledger returns a non-64-byte transaction signature', async () => {
+    const signer = new PublicKey(ADDR);
+    const tx = new Transaction({
+      feePayer: signer,
+      recentBlockhash: '11111111111111111111111111111111',
+    }).add(
+      SystemProgram.transfer({
+        fromPubkey: signer,
+        toPubkey: new PublicKey('11111111111111111111111111111112'),
+        lamports: 1,
+      }),
+    );
+    const wallet = createLedgerWallet({
+      ipc: makeIpc({
+        signTransaction: async () => Buffer.from(new Uint8Array(32)).toString('base64'),
+      }),
+      address: ADDR,
+      publicKey: publicKeyBytes(),
+      derivationPath: `m/44'/501'/0'/0'`,
+    });
+    await wallet.features['standard:connect'].connect();
+    await expect(
+      wallet.features['solana:signTransaction'].signTransaction({
+        account: wallet.accounts[0]!,
+        transaction: tx.serialize({ requireAllSignatures: false, verifySignatures: false }),
+      }),
+    ).rejects.toThrow(/signature length/);
   });
 
   it('rejects signing for an address that is not on this wallet', async () => {

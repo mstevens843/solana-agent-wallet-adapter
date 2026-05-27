@@ -35,6 +35,8 @@ const DEFAULT_TTL_MS = 30 * 60 * 1000;
 const SWEEP_INTERVAL_MS = 60 * 1000;
 const MAX_INBOX_PER_PAIRING = 32;
 const REQUESTS_PER_MINUTE = 60;
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const DEFAULT_IN_FLIGHT_LEASE_MS = 90_000;
 
 export interface PairingClock {
   now(): number;
@@ -45,11 +47,14 @@ interface RateBucket {
   count: number;
 }
 
+type RateGroup = 'deeplink' | 'host' | 'submit' | 'submit-result' | 'inbox' | 'inbox-result' | 'other';
+
 interface InboxEntry {
   requestId: string;
   request: unknown;
   status: 'pending' | 'in_flight' | 'resolved';
   result: unknown | undefined;
+  inFlightUntil: number | undefined;
 }
 
 interface DeeplinkMetadata {
@@ -74,12 +79,13 @@ interface PairingRecord {
   inbox: InboxEntry[];
   createdAt: number;
   lastSeenAt: number;
-  rate: RateBucket;
+  rate: Partial<Record<RateGroup, RateBucket>>;
 }
 
 export interface PairingHandlerOptions {
   clock?: PairingClock;
   ttlMs?: number;
+  inFlightLeaseMs?: number;
   /** Test hook — when set, replaces `crypto.randomUUID()` for request IDs. */
   generateRequestId?: () => string;
 }
@@ -96,6 +102,7 @@ export interface PairingHandler {
 export function createPairingHandler(options: PairingHandlerOptions = {}): PairingHandler {
   const clock = options.clock ?? { now: () => Date.now() };
   const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
+  const inFlightLeaseMs = options.inFlightLeaseMs ?? DEFAULT_IN_FLIGHT_LEASE_MS;
   const generateRequestId =
     options.generateRequestId ??
     (typeof globalThis.crypto?.randomUUID === 'function'
@@ -126,7 +133,7 @@ export function createPairingHandler(options: PairingHandlerOptions = {}): Pairi
         inbox: [],
         createdAt: now,
         lastSeenAt: now,
-        rate: { windowStart: now, count: 0 },
+        rate: {},
       };
       store.set(uuid, record);
     }
@@ -137,14 +144,20 @@ export function createPairingHandler(options: PairingHandlerOptions = {}): Pairi
     record.lastSeenAt = clock.now();
   }
 
-  function checkRate(record: PairingRecord): boolean {
+  function checkRate(record: PairingRecord, group: RateGroup): { ok: true } | { ok: false; retryAfterMs: number } {
     const now = clock.now();
-    if (now - record.rate.windowStart >= 60_000) {
-      record.rate = { windowStart: now, count: 0 };
+    const bucket = record.rate[group] ?? { windowStart: now, count: 0 };
+    if (now - bucket.windowStart >= RATE_LIMIT_WINDOW_MS) {
+      bucket.windowStart = now;
+      bucket.count = 0;
     }
-    if (record.rate.count >= REQUESTS_PER_MINUTE) return false;
-    record.rate.count += 1;
-    return true;
+    record.rate[group] = bucket;
+    if (bucket.count >= REQUESTS_PER_MINUTE) {
+      const retryAfterMs = Math.max(1000, RATE_LIMIT_WINDOW_MS - (now - bucket.windowStart));
+      return { ok: false, retryAfterMs };
+    }
+    bucket.count += 1;
+    return { ok: true };
   }
 
   return {
@@ -179,14 +192,14 @@ export function createPairingHandler(options: PairingHandlerOptions = {}): Pairi
       }
 
       const record = getOrCreate(uuid);
-      if (!checkRate(record)) {
-        writeJson(res, 429, { error: 'rate_limited' });
+      const action = segments[1];
+      const trailing = segments[2];
+      const rate = checkRate(record, rateGroupForRequest(action, segments.length, req.method ?? '', Boolean(trailing)));
+      if (!rate.ok) {
+        writeRateLimited(res, rate.retryAfterMs);
         return true;
       }
       touch(record);
-
-      const action = segments[1];
-      const trailing = segments[2];
 
       try {
         if (action === 'deeplink' && segments.length === 2) {
@@ -204,7 +217,7 @@ export function createPairingHandler(options: PairingHandlerOptions = {}): Pairi
           return getSubmitResult(res, record, trailing);
         }
         if (action === 'inbox' && segments.length === 2 && req.method === 'GET') {
-          return getInbox(res, record);
+          return getInbox(res, record, clock.now(), inFlightLeaseMs);
         }
         if (action === 'inbox' && segments.length === 3 && req.method === 'POST' && trailing) {
           return await postInboxResult(req, res, record, trailing);
@@ -315,6 +328,21 @@ function isHttpsUrl(value: string): boolean {
   }
 }
 
+function rateGroupForRequest(
+  action: string | undefined,
+  segmentCount: number,
+  method: string,
+  hasTrailing: boolean,
+): RateGroup {
+  if (action === 'deeplink' && segmentCount === 2) return 'deeplink';
+  if (action === 'host' && segmentCount === 2) return 'host';
+  if (action === 'submit' && segmentCount === 2 && method === 'POST') return 'submit';
+  if (action === 'submit' && segmentCount === 3 && method === 'GET' && hasTrailing) return 'submit-result';
+  if (action === 'inbox' && segmentCount === 2 && method === 'GET') return 'inbox';
+  if (action === 'inbox' && segmentCount === 3 && method === 'POST' && hasTrailing) return 'inbox-result';
+  return 'other';
+}
+
 async function postSubmit(
   req: IncomingMessage,
   res: ServerResponse,
@@ -346,18 +374,28 @@ async function postSubmit(
     request: body.request,
     status: 'pending',
     result: undefined,
+    inFlightUntil: undefined,
   });
   writeJson(res, 200, { requestId, status: 'pending' });
   return true;
 }
 
-function getInbox(res: ServerResponse, record: PairingRecord): boolean {
-  // Return all pending requests; mark them in-flight so the wallet-host
-  // doesn't double-sign on a retry. Resolved entries are kept around so
-  // the desktop's submit-result poll can find them, but excluded here.
-  const pending = record.inbox.filter((e) => e.status === 'pending');
+function getInbox(
+  res: ServerResponse,
+  record: PairingRecord,
+  now: number,
+  inFlightLeaseMs: number,
+): boolean {
+  // Return pending requests, plus stale in-flight requests whose phone page
+  // likely closed or reloaded before posting a result. Fresh in-flight
+  // entries stay hidden so the wallet-host doesn't double-sign on retry.
+  const pending = record.inbox.filter((e) =>
+    e.status === 'pending' ||
+    (e.status === 'in_flight' && (e.inFlightUntil ?? 0) <= now)
+  );
   for (const entry of pending) {
     entry.status = 'in_flight';
+    entry.inFlightUntil = now + inFlightLeaseMs;
   }
   writeJson(res, 200, {
     requests: pending.map((entry) => ({ requestId: entry.requestId, request: entry.request })),
@@ -383,6 +421,7 @@ async function postInboxResult(
   }
   entry.status = 'resolved';
   entry.result = body;
+  entry.inFlightUntil = undefined;
   writeJson(res, 200, { ok: true });
   return true;
 }
@@ -437,4 +476,12 @@ function writeJson(res: ServerResponse, status: number, payload: unknown): void 
   res.setHeader('content-type', 'application/json; charset=utf-8');
   res.setHeader('cache-control', 'no-store');
   res.end(JSON.stringify(payload));
+}
+
+function writeRateLimited(res: ServerResponse, retryAfterMs: number): void {
+  res.setHeader('retry-after', String(Math.max(1, Math.ceil(retryAfterMs / 1000))));
+  writeJson(res, 429, {
+    error: 'rate_limited',
+    retryAfterMs,
+  });
 }

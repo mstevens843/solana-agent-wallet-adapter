@@ -33,6 +33,9 @@
  */
 
 import type { Cluster, SolanaSigningClient } from '@solana-agent-wallet-adapter/core';
+import { LEDGER_WALLET_NAME } from '@solana-agent-wallet-adapter/ledger-wallet';
+import { PublicKey, Transaction, TransactionInstruction } from '@solana/web3.js';
+import bs58 from 'bs58';
 
 export type WalletProofEncoding = 'utf8-message' | 'tx-memo-proof';
 export type WalletSignatureEncoding = 'base58' | 'base64';
@@ -67,6 +70,10 @@ export interface AndroidProofBackend {
   }>;
 }
 
+const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
+const PROOF_MEMO_PREFIX = 'Agentic plan review proof v1\nSHA-256: ';
+type InstructionData = ConstructorParameters<typeof TransactionInstruction>[0]['data'];
+
 export interface ProofSigningContext {
   getClient: () => SolanaSigningClient;
   getAppState: () => ProofSigningAppState;
@@ -88,6 +95,10 @@ export function setProofSigningContext(ctx: ProofSigningContext): void {
 export function shouldRouteProofThroughAndroidNative(state: ProofSigningAppState): boolean {
   if (!state.androidNativeEnvironment.isAndroidNative) return false;
   return state.capabilities?.supports?.signMessage === false;
+}
+
+export function shouldRouteProofThroughLedgerMemo(state: ProofSigningAppState): boolean {
+  return state.selectedWalletName === LEDGER_WALLET_NAME;
 }
 
 export async function signWalletProofMessage(
@@ -123,6 +134,9 @@ export async function signWalletProofMessage(
       signatureEncoding: 'base58',
     };
   }
+  if (shouldRouteProofThroughLedgerMemo(state)) {
+    return signLedgerMemoProof(message, summary, cluster, state);
+  }
   const client = context.getClient();
   const result = await client.signMessage(message, { cluster, summary });
   return {
@@ -130,4 +144,78 @@ export async function signWalletProofMessage(
     proofEncoding: 'utf8-message',
     signatureEncoding: 'base58',
   };
+}
+
+async function signLedgerMemoProof(
+  message: string,
+  summary: string,
+  cluster: Cluster,
+  state: ProofSigningAppState,
+): Promise<WalletProofSignature> {
+  if (!context) {
+    throw new Error('Proof signing context is not ready — connect a wallet first.');
+  }
+  const client = context.getClient();
+  const feePayer = new PublicKey(state.address);
+  const { blockhash } = await context.getLatestBlockhash(cluster);
+  const memoText = `${PROOF_MEMO_PREFIX}${await sha256Hex(message)}`;
+  const tx = new Transaction({
+    feePayer,
+    recentBlockhash: blockhash,
+  }).add(
+    new TransactionInstruction({
+      keys: [{ pubkey: feePayer, isSigner: true, isWritable: false }],
+      programId: MEMO_PROGRAM_ID,
+      data: new TextEncoder().encode(memoText) as unknown as InstructionData,
+    }),
+  );
+  const unsignedBase64 = bytesToBase64(
+    tx.serialize({ requireAllSignatures: false, verifySignatures: false }),
+  );
+  const signed = await client.signTransaction(unsignedBase64, { cluster, summary });
+  const signedBytes = base64ToBytes(signed.signature);
+  const signature = signatureFromSignedLegacyTransaction(signedBytes, feePayer);
+  return {
+    signature,
+    proofEncoding: 'tx-memo-proof',
+    signatureEncoding: 'base58',
+    proofTxBase64: signed.signature,
+    proofMemoText: message,
+  };
+}
+
+function signatureFromSignedLegacyTransaction(transactionBytes: Uint8Array, signer: PublicKey): string {
+  const tx = Transaction.from(transactionBytes);
+  const entry = tx.signatures.find((candidate) => candidate.publicKey.equals(signer));
+  if (!entry?.signature) {
+    throw new Error('Ledger memo proof did not include the connected wallet signature.');
+  }
+  return bs58.encode(new Uint8Array(entry.signature));
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i]!);
+  }
+  if (typeof btoa !== 'undefined') return btoa(binary);
+  return Buffer.from(binary, 'binary').toString('base64');
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  if (typeof atob !== 'undefined') {
+    const binary = atob(b64);
+    const out = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      out[i] = binary.charCodeAt(i);
+    }
+    return out;
+  }
+  const buf = Buffer.from(b64, 'base64');
+  return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
 }

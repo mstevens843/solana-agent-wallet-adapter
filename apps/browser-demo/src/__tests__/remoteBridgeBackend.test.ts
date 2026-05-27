@@ -89,6 +89,60 @@ describe('RemoteBridgeBackend', () => {
     });
   });
 
+  it('calls the pending approval hook after a request is queued', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse({ requestId: 'req-1', status: 'pending' }),
+    );
+    const onPendingApproval = vi.fn();
+    const backend = new RemoteBridgeBackend({ bridgeUrl: ORIGIN, token: TOKEN, onPendingApproval });
+    const request = {
+      id: 'req-1',
+      kind: 'sign_message',
+      payload: { data: 'hello', encoding: 'utf8' },
+      cluster: 'devnet',
+    } as never;
+
+    const result = await backend.submit(request);
+
+    expect(result.status).toBe('pending');
+    expect(onPendingApproval).toHaveBeenCalledWith(result, request);
+  });
+
+  it('does not call the pending approval hook for completed submit responses', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse({ requestId: 'req-1', status: 'approved' }),
+    );
+    const onPendingApproval = vi.fn();
+    const backend = new RemoteBridgeBackend({ bridgeUrl: ORIGIN, token: TOKEN, onPendingApproval });
+
+    await backend.submit({
+      kind: 'sign-message',
+      message: 'aGVsbG8=',
+    } as never);
+
+    expect(onPendingApproval).not.toHaveBeenCalled();
+  });
+
+  it('cancels the queued request when the pending approval hook fails', async () => {
+    fetchSpy
+      .mockResolvedValueOnce(jsonResponse({ requestId: 'req-1', status: 'pending' }))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }));
+    const onPendingApproval = vi.fn().mockRejectedValueOnce(new Error('popup blocked'));
+    const backend = new RemoteBridgeBackend({ bridgeUrl: ORIGIN, token: TOKEN, onPendingApproval });
+
+    await expect(backend.submit({
+      id: 'req-1',
+      kind: 'sign_message',
+      payload: { data: 'hello', encoding: 'utf8' },
+      cluster: 'devnet',
+    } as never)).rejects.toThrow('popup blocked');
+
+    const cancelUrl = fetchSpy.mock.calls[1]![0] as URL;
+    const cancelInit = fetchSpy.mock.calls[1]![1] as RequestInit | undefined;
+    expect(cancelUrl.pathname).toBe('/bridge/cancel');
+    expect(JSON.parse(String(cancelInit?.body))).toEqual({ requestId: 'req-1' });
+  });
+
   it('poll GETs /bridge/poll with the requestId query', async () => {
     fetchSpy.mockResolvedValueOnce(
       jsonResponse({ requestId: 'req-2', status: 'pending' }),

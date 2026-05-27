@@ -4153,7 +4153,7 @@ async function renderDashboard(state: TerminalAppState): Promise<void> {
   console.log(`Cloud APIs: ${cloudApiStatus(state.options, hostedAi)}`);
 
   printSection('Start');
-  console.log('/agent        Ask AI to prepare a wallet action');
+  console.log('/agent        Chat with agent, then prepare a wallet request');
   console.log('/new          Create a one-time or repeat request');
   console.log(`/inbox        Review approvals (${queueNew} pending, ${queueRepeat} repeat${queueRepeat === 1 ? '' : 's'})`);
   console.log('/done         Receipts, proofs, completed work');
@@ -6582,7 +6582,7 @@ function printCommandMenu(topic?: string): void {
     printSection('Agent');
     console.log('/agent-setup       Add an OpenAI, Anthropic, Gemini, OpenRouter, or custom provider key');
     console.log('/agent-disconnect  Clear the saved agent provider key');
-    console.log('/agent             Ask AI to prepare a wallet action');
+    console.log('/agent             Chat with agent, then prepare a wallet request');
     console.log('/ask <question>    Follow-up Q&A about the last /agent plan');
     console.log('/preferences       AI mode, model, rules, tokens');
     console.log('');
@@ -6618,7 +6618,7 @@ function printCommandMenu(topic?: string): void {
   console.log('/connectors        Manage protocol connectors and BYO API keys');
   console.log('');
   printSection('Work');
-  console.log('/agent             Ask AI to prepare a wallet action');
+  console.log('/agent             Chat with agent, then prepare a wallet request');
   console.log('/ask <question>    Follow-up Q&A about the last /agent plan');
   console.log('/new               Create a one-time or repeat request');
   console.log('/inbox             Review approvals');
@@ -6642,7 +6642,7 @@ function printFullCommandMenu(): void {
   console.log('/agent-setup       Add a provider key for Hosted BYOK or Local Bridge');
   console.log('/agent-disconnect  Clear the saved agent provider key');
   console.log('/new               New request: one-time · repeat');
-  console.log('/agent             Natural-language → bridge AI plan with policy NOTE atom resolution');
+  console.log('/agent             Chat with agent, then prepare a wallet request');
   console.log('/ask <question>    Follow-up Q&A about the last /agent plan');
   console.log('/inbox             Needs approval · active repeats');
   console.log('/done              All · One-time · Repeats · Proofs · Receipts');
@@ -6776,7 +6776,7 @@ Setup:
   solana-agent-wallet agent-disconnect     # clear saved agent provider key
 
 Work:
-  solana-agent-wallet agent                # ask AI to prepare a wallet action
+  solana-agent-wallet agent                # chat with agent, then prepare a wallet request
   solana-agent-wallet new                  # create a one-time or repeat request
   solana-agent-wallet inbox list           # review approvals
   solana-agent-wallet done                 # receipts, proofs, completed work
@@ -6815,7 +6815,7 @@ Flow-first commands (recommended — run with no command or "app" for the intera
   solana-agent-wallet skills                             # Browse · Installed · My Profile · Publish
   solana-agent-wallet preferences                        # 5-card preferences (Workspace · AI · Agents · Rules · Tokens)
   solana-agent-wallet done [all|one-time|repeats|proofs|receipts]   # unified done filter
-  solana-agent-wallet agent                              # natural-language → bridge AI plan; supports policy NOTE atom resolution
+  solana-agent-wallet agent                              # chat with agent, then prepare a wallet request
   solana-agent-wallet ask "<question>"                  # follow-up Q&A about the last /agent plan
 
 Setup / diagnostics:

@@ -12,9 +12,9 @@
 //   - `ledger_get_address`  — derive the address at a BIP-32 path
 //   - `ledger_sign_transaction` — sign a Solana transaction's message bytes
 //
-// Note: `solana:signMessage` (off-chain message signing for SIWS) is NOT
-// implemented yet — it uses INS 0x07 with a Solana-specific envelope
-// format and warrants its own slice.
+// `ledger_sign_message` uses INS 0x07 with the Solana off-chain message
+// envelope; proof-only browser flows may still prefer memo-transaction proofs
+// for wallet compatibility.
 
 pub mod apdu;
 pub mod framing;
@@ -53,6 +53,7 @@ impl From<transport::LedgerDeviceInfo> for LedgerDevice {
 #[serde(rename_all = "camelCase")]
 pub struct LedgerAppConfig {
     pub flags: u8,
+    pub pub_key_display_mode: Option<u8>,
     pub major: u8,
     pub minor: u8,
     pub patch: u8,
@@ -62,6 +63,7 @@ impl From<apdu::AppConfiguration> for LedgerAppConfig {
     fn from(config: apdu::AppConfiguration) -> Self {
         Self {
             flags: config.flags,
+            pub_key_display_mode: config.pub_key_display_mode,
             major: config.major,
             minor: config.minor,
             patch: config.patch,

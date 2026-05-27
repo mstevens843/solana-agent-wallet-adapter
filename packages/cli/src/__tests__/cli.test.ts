@@ -582,7 +582,7 @@ test('no positional command starts the interactive app', async () => {
     assert.doesNotMatch(combined, /bigint: Failed to load bindings/);
     assert.doesNotMatch(combined, /\[DEP0040\]/);
     assert.match(stdout, /Cloud APIs: Agentic hosted default/);
-    assert.match(stdout, /\/agent\s+Ask AI to prepare a wallet action/);
+    assert.match(stdout, /\/agent\s+Chat with agent, then prepare a wallet request/);
     assert.doesNotMatch(stdout, /Direct flows/);
     assert.doesNotMatch(stdout, /Legacy & advanced/);
     assert.doesNotMatch(stdout, /v1\.0 hosted/);

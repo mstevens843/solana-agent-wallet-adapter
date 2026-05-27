@@ -79,8 +79,10 @@ export function resolveCliCloudSignInReadiness(
   };
 }
 
-export function cliIntentAllowsBridgeRequestClaim(intent?: string): boolean {
-  return intent !== 'sign-in' && intent !== 'sign-out';
+export function cliIntentAllowsBridgeRequestClaim(intent?: string, surface?: string): boolean {
+  if (intent === 'sign-in' || intent === 'sign-out') return false;
+  if (surface === 'desktop' && (intent === 'connect' || intent === 'disconnect')) return false;
+  return true;
 }
 
 function normalizeWallet(value?: string): string {

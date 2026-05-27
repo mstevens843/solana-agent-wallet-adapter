@@ -22,6 +22,12 @@ pub const INS_SIGN_MESSAGE: u8 = 0x06;
 pub const INS_SIGN_OFFCHAIN_MESSAGE: u8 = 0x07;
 pub const SW_SUCCESS: u16 = 0x9000;
 pub const SW_USER_REJECTED: u16 = 0x6985;
+pub const SW_BLIND_SIGNATURE_REQUIRED: u16 = 0x6808;
+const P1_NON_CONFIRM: u8 = 0x00;
+const P1_CONFIRM: u8 = 0x01;
+const P2_EXTEND: u8 = 0x01;
+const P2_MORE: u8 = 0x02;
+const MAX_APDU_PAYLOAD: usize = 255;
 /// Solana's default derivation path (matches Phantom / Solflare / Backpack).
 pub const SOLANA_DEFAULT_PATH: &str = "m/44'/501'/0'/0'";
 
@@ -87,39 +93,20 @@ pub fn build_get_pubkey_apdu(path_payload: &[u8], display_on_device: bool) -> Re
     if path_payload.len() > u8::MAX as usize {
         return Err("path payload too long for short APDU".into());
     }
-    let mut apdu = Vec::with_capacity(5 + path_payload.len());
-    apdu.push(CLA);
-    apdu.push(INS_GET_PUBKEY);
-    apdu.push(if display_on_device { 0x01 } else { 0x00 }); // P1
-    apdu.push(0x00); // P2
-    apdu.push(path_payload.len() as u8); // Lc
-    apdu.extend_from_slice(path_payload);
-    Ok(apdu)
+    build_short_apdu(
+        INS_GET_PUBKEY,
+        if display_on_device { P1_CONFIRM } else { P1_NON_CONFIRM },
+        0x00,
+        path_payload,
+    )
 }
 
-/// Build a Sign-Message APDU (single-chunk variant). Caller passes the
-/// already-encoded derivation path payload + the raw transaction bytes.
-/// Returns `Err` if combined data exceeds the single-APDU short-form limit
-/// (255 bytes of Lc).
-pub fn build_sign_apdu(path_payload: &[u8], transaction: &[u8]) -> Result<Vec<u8>, String> {
-    let lc = path_payload.len() + transaction.len();
-    if lc > u8::MAX as usize {
-        return Err(format!(
-            "Transaction is too large for single-APDU signing ({lc} bytes > {} cap). \
-Try a simpler transaction (fewer instructions / smaller address-lookup-table refs) \
-or wait for multi-chunk SIGN support (Slice H).",
-            u8::MAX,
-        ));
-    }
-    let mut apdu = Vec::with_capacity(5 + lc);
-    apdu.push(CLA);
-    apdu.push(INS_SIGN_MESSAGE);
-    apdu.push(0x00); // P1: first/only chunk
-    apdu.push(0x01); // P2: one signer
-    apdu.push(lc as u8);
-    apdu.extend_from_slice(path_payload);
-    apdu.extend_from_slice(transaction);
-    Ok(apdu)
+/// Build Solana app SIGN APDUs. Ledger's Solana app expects a signer-path
+/// count byte before the encoded BIP-32 path, then the full serialized
+/// transaction. Payloads over 255 bytes are split across multiple APDUs with
+/// P2_MORE / P2_EXTEND in the same shape as `@ledgerhq/hw-app-solana`.
+pub fn build_sign_apdus(path_payload: &[u8], transaction: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+    build_chunked_signing_apdus(INS_SIGN_MESSAGE, path_payload, transaction)
 }
 
 /// Build the Get-App-Configuration APDU (handy for checking the Solana
@@ -164,23 +151,53 @@ pub fn wrap_offchain_message(message: &[u8]) -> Result<Vec<u8>, String> {
 pub fn build_sign_offchain_message_apdu(
     path_payload: &[u8],
     enveloped_message: &[u8],
-) -> Result<Vec<u8>, String> {
-    let lc = path_payload.len() + enveloped_message.len();
-    if lc > u8::MAX as usize {
+) -> Result<Vec<Vec<u8>>, String> {
+    build_chunked_signing_apdus(INS_SIGN_OFFCHAIN_MESSAGE, path_payload, enveloped_message)
+}
+
+fn build_chunked_signing_apdus(
+    instruction: u8,
+    path_payload: &[u8],
+    payload: &[u8],
+) -> Result<Vec<Vec<u8>>, String> {
+    let mut signing_payload = Vec::with_capacity(1 + path_payload.len() + payload.len());
+    signing_payload.push(1); // one signer path
+    signing_payload.extend_from_slice(path_payload);
+    signing_payload.extend_from_slice(payload);
+    build_chunked_apdus(instruction, P1_CONFIRM, &signing_payload)
+}
+
+fn build_chunked_apdus(instruction: u8, p1: u8, payload: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+    if payload.is_empty() {
+        return build_short_apdu(instruction, p1, 0x00, payload).map(|apdu| vec![apdu]);
+    }
+    let mut out = Vec::new();
+    let mut offset = 0usize;
+    let mut p2 = 0u8;
+    while payload.len() - offset > MAX_APDU_PAYLOAD {
+        let chunk = &payload[offset..offset + MAX_APDU_PAYLOAD];
+        out.push(build_short_apdu(instruction, p1, p2 | P2_MORE, chunk)?);
+        offset += MAX_APDU_PAYLOAD;
+        p2 |= P2_EXTEND;
+    }
+    out.push(build_short_apdu(instruction, p1, p2, &payload[offset..])?);
+    Ok(out)
+}
+
+fn build_short_apdu(instruction: u8, p1: u8, p2: u8, payload: &[u8]) -> Result<Vec<u8>, String> {
+    if payload.len() > MAX_APDU_PAYLOAD {
         return Err(format!(
-            "off-chain sign payload {} bytes exceeds single-APDU limit ({}); multi-chunk SIGN not yet implemented (Slice H)",
-            lc,
-            u8::MAX,
+            "APDU payload {} bytes exceeds short-form limit ({MAX_APDU_PAYLOAD})",
+            payload.len(),
         ));
     }
-    let mut apdu = Vec::with_capacity(5 + lc);
+    let mut apdu = Vec::with_capacity(5 + payload.len());
     apdu.push(CLA);
-    apdu.push(INS_SIGN_OFFCHAIN_MESSAGE);
-    apdu.push(0x00); // P1: first/only chunk
-    apdu.push(0x01); // P2: one signer
-    apdu.push(lc as u8);
-    apdu.extend_from_slice(path_payload);
-    apdu.extend_from_slice(enveloped_message);
+    apdu.push(instruction);
+    apdu.push(p1);
+    apdu.push(p2);
+    apdu.push(payload.len() as u8);
+    apdu.extend_from_slice(payload);
     Ok(apdu)
 }
 
@@ -204,6 +221,10 @@ pub fn parse_response(response: &[u8]) -> Result<&[u8], String> {
         SW_USER_REJECTED => "user rejected on device".to_string(),
         0x6700 => "incorrect APDU length".to_string(),
         0x6800 | 0x6802 => "other instruction needed first".to_string(),
+        SW_BLIND_SIGNATURE_REQUIRED => {
+            "blind signing is disabled in the Ledger Solana app settings".to_string()
+        }
+        0x5515 => "Ledger is locked. Unlock the device and keep the Solana app open.".to_string(),
         0x6982 => "security status not satisfied (device locked?)".to_string(),
         0x6A82 | 0x6D00 => {
             "instruction not supported — is the Solana app open on the device?".to_string()
@@ -217,6 +238,7 @@ pub fn parse_response(response: &[u8]) -> Result<&[u8], String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppConfiguration {
     pub flags: u8,
+    pub pub_key_display_mode: Option<u8>,
     pub major: u8,
     pub minor: u8,
     pub patch: u8,
@@ -230,8 +252,18 @@ pub fn parse_app_configuration(response: &[u8]) -> Result<AppConfiguration, Stri
             payload.len()
         ));
     }
+    if payload.len() >= 5 {
+        return Ok(AppConfiguration {
+            flags: payload[0],
+            pub_key_display_mode: Some(payload[1]),
+            major: payload[2],
+            minor: payload[3],
+            patch: payload[4],
+        });
+    }
     Ok(AppConfiguration {
         flags: payload[0],
+        pub_key_display_mode: None,
         major: payload[1],
         minor: payload[2],
         patch: payload[3],
@@ -330,28 +362,33 @@ mod tests {
     }
 
     #[test]
-    fn build_sign_apdu_short_form() {
+    fn build_sign_apdus_short_form() {
         let path = encode_derivation_path(SOLANA_DEFAULT_PATH).unwrap();
         let tx = vec![0xAAu8; 64];
-        let apdu = build_sign_apdu(&path, &tx).unwrap();
+        let apdus = build_sign_apdus(&path, &tx).unwrap();
+        assert_eq!(apdus.len(), 1);
+        let apdu = &apdus[0];
         assert_eq!(apdu[0], CLA);
         assert_eq!(apdu[1], INS_SIGN_MESSAGE);
-        assert_eq!(apdu[2], 0x00);
-        assert_eq!(apdu[3], 0x01);
-        assert_eq!(apdu[4] as usize, path.len() + tx.len());
-        assert_eq!(&apdu[5..5 + path.len()], path.as_slice());
-        assert_eq!(&apdu[5 + path.len()..], tx.as_slice());
+        assert_eq!(apdu[2], P1_CONFIRM);
+        assert_eq!(apdu[3], 0x00);
+        assert_eq!(apdu[4] as usize, 1 + path.len() + tx.len());
+        assert_eq!(apdu[5], 1);
+        assert_eq!(&apdu[6..6 + path.len()], path.as_slice());
+        assert_eq!(&apdu[6 + path.len()..], tx.as_slice());
     }
 
     #[test]
-    fn build_sign_apdu_rejects_overlong_payload() {
+    fn build_sign_apdus_chunks_overlong_payload() {
         let path = encode_derivation_path(SOLANA_DEFAULT_PATH).unwrap();
         let tx = vec![0xAAu8; 250];
-        let err = build_sign_apdu(&path, &tx).unwrap_err();
-        assert!(
-            err.contains("too large for single-APDU"),
-            "unexpected error: {err}",
-        );
+        let apdus = build_sign_apdus(&path, &tx).unwrap();
+        assert_eq!(apdus.len(), 2);
+        assert_eq!(apdus[0][1], INS_SIGN_MESSAGE);
+        assert_eq!(apdus[0][2], P1_CONFIRM);
+        assert_eq!(apdus[0][3], P2_MORE);
+        assert_eq!(apdus[0][4] as usize, MAX_APDU_PAYLOAD);
+        assert_eq!(apdus[1][3], P2_EXTEND);
     }
 
     #[test]
@@ -364,6 +401,12 @@ mod tests {
     fn parse_response_user_rejected() {
         let err = parse_response(&[0x69, 0x85]).unwrap_err();
         assert!(err.contains("user rejected"));
+    }
+
+    #[test]
+    fn parse_response_locked_device() {
+        let err = parse_response(&[0x55, 0x15]).unwrap_err();
+        assert!(err.contains("locked"));
     }
 
     #[test]
@@ -407,6 +450,7 @@ mod tests {
             config,
             AppConfiguration {
                 flags: 0x01,
+                pub_key_display_mode: None,
                 major: 0x01,
                 minor: 0x04,
                 patch: 0x02,
@@ -460,24 +504,45 @@ mod tests {
     }
 
     #[test]
-    fn build_sign_offchain_message_apdu_shape() {
-        let path = encode_derivation_path(SOLANA_DEFAULT_PATH).unwrap();
-        let env = wrap_offchain_message(b"hi").unwrap();
-        let apdu = build_sign_offchain_message_apdu(&path, &env).unwrap();
-        assert_eq!(apdu[0], CLA);
-        assert_eq!(apdu[1], INS_SIGN_OFFCHAIN_MESSAGE);
-        assert_eq!(apdu[2], 0x00);
-        assert_eq!(apdu[3], 0x01);
-        assert_eq!(apdu[4] as usize, path.len() + env.len());
-        assert_eq!(&apdu[5..5 + path.len()], path.as_slice());
-        assert_eq!(&apdu[5 + path.len()..], env.as_slice());
+    fn parse_app_configuration_extracts_five_byte_version() {
+        let response = vec![0x01, 0x02, 0x01, 0x04, 0x02, 0x90, 0x00];
+        let config = parse_app_configuration(&response).unwrap();
+        assert_eq!(
+            config,
+            AppConfiguration {
+                flags: 0x01,
+                pub_key_display_mode: Some(0x02),
+                major: 0x01,
+                minor: 0x04,
+                patch: 0x02,
+            },
+        );
     }
 
     #[test]
-    fn build_sign_offchain_message_apdu_rejects_overlong_payload() {
+    fn build_sign_offchain_message_apdu_shape() {
+        let path = encode_derivation_path(SOLANA_DEFAULT_PATH).unwrap();
+        let env = wrap_offchain_message(b"hi").unwrap();
+        let apdus = build_sign_offchain_message_apdu(&path, &env).unwrap();
+        assert_eq!(apdus.len(), 1);
+        let apdu = &apdus[0];
+        assert_eq!(apdu[0], CLA);
+        assert_eq!(apdu[1], INS_SIGN_OFFCHAIN_MESSAGE);
+        assert_eq!(apdu[2], P1_CONFIRM);
+        assert_eq!(apdu[3], 0x00);
+        assert_eq!(apdu[4] as usize, 1 + path.len() + env.len());
+        assert_eq!(apdu[5], 1);
+        assert_eq!(&apdu[6..6 + path.len()], path.as_slice());
+        assert_eq!(&apdu[6 + path.len()..], env.as_slice());
+    }
+
+    #[test]
+    fn build_sign_offchain_message_apdu_chunks_overlong_payload() {
         let path = encode_derivation_path(SOLANA_DEFAULT_PATH).unwrap();
         let huge_env = vec![0xAAu8; 250];
-        let err = build_sign_offchain_message_apdu(&path, &huge_env).unwrap_err();
-        assert!(err.contains("exceeds single-APDU limit"));
+        let apdus = build_sign_offchain_message_apdu(&path, &huge_env).unwrap();
+        assert_eq!(apdus.len(), 2);
+        assert_eq!(apdus[0][3], P2_MORE);
+        assert_eq!(apdus[1][3], P2_EXTEND);
     }
 }

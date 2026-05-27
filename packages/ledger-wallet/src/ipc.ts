@@ -11,6 +11,7 @@ export interface LedgerDevice {
 
 export interface LedgerAppConfig {
   flags: number;
+  pubKeyDisplayMode?: number | null;
   major: number;
   minor: number;
   patch: number;

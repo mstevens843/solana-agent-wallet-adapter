@@ -134,6 +134,7 @@ import {
 } from './walletConnectQrOverlay.js';
 import {
   buildDesktopBrowserConnectUrl,
+  buildDesktopBrowserIntentUrl,
   desktopBridgeNotReadyMessage,
   initialDesktopConnectFlowState,
   isDesktopBridgeReady,
@@ -281,6 +282,14 @@ import {
   shouldUseMobileAiPathPolicy,
   visibleMobileAiPathModes,
 } from './aiPathPolicy.js';
+import {
+  bridgeAiSetupSnapshot,
+  buildAiSetupInventory,
+  deviceAgentSetupSnapshot,
+  directAiKeyStaged,
+  type AiPathSetupSnapshot,
+  type AiSetupInventory,
+} from './aiSetupState.js';
 import {
   AI_PROVIDER_PRESETS,
   AGENT_PLAN_TEMPLATES,
@@ -513,7 +522,7 @@ import { setConnectedAddress, setConnectedCluster } from './walletState.js';
 import './devTabs/index.js';
 import { setCloudWalletBridge } from './cloudWalletBridge.js';
 import { mobileWorkspaceMoreMenuItems, workspaceMoreMenuItems, type WorkspaceMoreMenuItem } from './workspaceMore.js';
-import { setProofSigningContext, signWalletProofMessage } from './walletProofSigning.js';
+import { setProofSigningContext, signWalletProofMessage as signWalletProofMessageRaw } from './walletProofSigning.js';
 import {
   isWalletProviderLogoId,
   walletLogoIdForProviderName,
@@ -548,6 +557,113 @@ setCloudWalletBridge({
     return cloudRequest(path, init);
   },
 });
+
+const LEDGER_DEVICE_APPROVAL_TOAST_KEY = 'ledger-device-approval';
+
+function isLedgerWalletSelected(): boolean {
+  return state.selectedWalletName === LEDGER_WALLET_NAME;
+}
+
+function ledgerApprovalMessage(): string {
+  return 'Review and approve this request on your Ledger device.';
+}
+
+function beginLedgerDeviceApprovalToast(
+  message = ledgerApprovalMessage(),
+  options: { force?: boolean } = {},
+): number | undefined {
+  if (!options.force && !isLedgerWalletSelected()) return undefined;
+  dismissToastByKey(LEDGER_DEVICE_APPROVAL_TOAST_KEY);
+  const toastId = pushToast('pending', 'Approve on Ledger', message, {
+    key: LEDGER_DEVICE_APPROVAL_TOAST_KEY,
+  });
+  render();
+  return toastId;
+}
+
+function normalizeLedgerSigningError(err: unknown, options: { force?: boolean } = {}): unknown {
+  if (!options.force && !isLedgerWalletSelected()) return err;
+  const message = err instanceof Error ? err.message : String(err);
+  if (/user rejected|rejected on device|wallet rejected/i.test(message)) {
+    return new Error('Ledger rejected the request.');
+  }
+  return err;
+}
+
+async function waitForLedgerPromptPaint(): Promise<void> {
+  await new Promise<void>((resolve) => {
+    if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+      window.requestAnimationFrame(() => resolve());
+      return;
+    }
+    globalThis.setTimeout(resolve, 0);
+  });
+}
+
+function completeLedgerDeviceApprovalToast(
+  toastId: number | undefined,
+  kind: ToastKind,
+  title: string,
+  message: string,
+): void {
+  if (toastId === undefined) return;
+  replaceToast(toastId, kind, title, message, {
+    key: LEDGER_DEVICE_APPROVAL_TOAST_KEY,
+  });
+}
+
+function dismissLedgerDeviceApprovalToast(toastId: number | undefined): void {
+  if (toastId !== undefined) {
+    dismissToast(toastId);
+  }
+}
+
+function ledgerConnectApprovalMessage(): string {
+  return 'Confirm the address on your Ledger device.';
+}
+
+function ledgerErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+async function withLedgerDeviceApproval<T>(
+  message: string,
+  task: () => Promise<T>,
+  options: { force?: boolean } = {},
+): Promise<T> {
+  const toastId = beginLedgerDeviceApprovalToast(message, options);
+  try {
+    if (toastId !== undefined) {
+      await waitForLedgerPromptPaint();
+    }
+    return await task();
+  } catch (err) {
+    throw normalizeLedgerSigningError(err, options);
+  } finally {
+    dismissLedgerDeviceApprovalToast(toastId);
+  }
+}
+
+async function signWalletProofMessage(
+  message: string,
+  summary: string,
+  cluster: Cluster,
+  options: { showLedgerDeviceToast?: boolean } = {},
+) {
+  const toastId = options.showLedgerDeviceToast === false
+    ? undefined
+    : beginLedgerDeviceApprovalToast('Review and approve this proof request on your Ledger device.');
+  try {
+    if (toastId !== undefined) {
+      await waitForLedgerPromptPaint();
+    }
+    return await signWalletProofMessageRaw(message, summary, cluster);
+  } catch (err) {
+    throw normalizeLedgerSigningError(err);
+  } finally {
+    dismissLedgerDeviceApprovalToast(toastId);
+  }
+}
 
 type StepState = 'idle' | 'active' | 'done' | 'error';
 type StepName = 'discover' | 'connect' | 'sign' | 'transaction' | 'bridge' | 'inbox' | 'lab' | 'ai';
@@ -3577,7 +3693,7 @@ function saveDeviceAgentStatusCache(status: DeviceAgentStatus | null): void {
     const payload: PersistedDeviceAgentStatus = {
       v: 1,
       walletAddress,
-      mode: state.aiSettings.mode,
+      mode: 'device-agent',
       savedAt: Date.now(),
       status,
     };
@@ -3588,7 +3704,6 @@ function saveDeviceAgentStatusCache(status: DeviceAgentStatus | null): void {
 }
 
 function loadDeviceAgentStatusCache(): DeviceAgentStatus | null {
-  if (state.aiSettings.mode !== 'device-agent') return null;
   const walletAddress = currentDeviceAgentWalletAddress();
   if (!walletAddress) return null;
   let raw: string | null;
@@ -3700,11 +3815,9 @@ async function startApp(): Promise<void> {
     normalizeInitialRoute();
     hydrateGeneratedPlansForStartup();
     installSpendBridgeHandlers();
-    if (state.aiSettings.mode === 'device-agent') {
-      const cached = loadDeviceAgentStatusCache();
-      if (cached) {
-        state.deviceAgentStatus = cached;
-      }
+    const cachedDeviceAgentStatus = loadDeviceAgentStatusCache();
+    if (cachedDeviceAgentStatus) {
+      state.deviceAgentStatus = cachedDeviceAgentStatus;
     }
     render();
     if (SHOW_DEV_CONTROLS) {
@@ -4375,6 +4488,10 @@ async function bootstrap(): Promise<void> {
   await refreshCloudSession(false);
   await signOutCloudSessionForWalletBoundary('startup');
   normalizeCurrentAiModeForSurface();
+  const walletBoundDeviceAgentStatus = loadDeviceAgentStatusCache();
+  if (walletBoundDeviceAgentStatus) {
+    state.deviceAgentStatus = walletBoundDeviceAgentStatus;
+  }
   await hydrateLabArtifactArchive();
   if (cloudSessionMatchesWallet()) {
     await refreshCloudWorkspaceData().catch(() => undefined);
@@ -4524,6 +4641,7 @@ const WALLET_HOST_PAIRING_RELAY_BASE_URL =
   (import.meta as ImportMeta & { env?: { VITE_AGENTIC_CLOUD_API_BASE_URL?: string } }).env
     ?.VITE_AGENTIC_CLOUD_API_BASE_URL || '';
 const WALLET_HOST_PAIRING_INBOX_INTERVAL_MS = 2000;
+const QR_RELAY_SIGN_POLL_INTERVAL_MS = 3000;
 
 interface WalletHostPairingRuntime {
   uuid: string;
@@ -6300,13 +6418,25 @@ async function confirmLedgerAddress(): Promise<void> {
   const overlay = ledger.overlay;
   if (overlay.mode !== 'confirm-address' || !overlay.address) return;
   const token = ledger.pairingToken;
+  dispatchLedgerOverlay({ type: 'confirmingAddress' });
+  const toastId = beginLedgerDeviceApprovalToast(ledgerConnectApprovalMessage(), { force: true });
   try {
     // Re-fetch the address to capture the raw public key bytes. (`addressReady`
     // only stored the base58 string; we need bytes for the Wallet Standard
     // `WalletAccount.publicKey` field.)
-    const fresh = await ipc.getAddress(overlay.derivationPath, false);
-    if (ledger.pairingToken !== token) return;
+    await waitForLedgerPromptPaint();
+    const fresh = await ipc.getAddress(overlay.derivationPath, true);
+    if (ledger.pairingToken !== token) {
+      dismissLedgerDeviceApprovalToast(toastId);
+      return;
+    }
     if (fresh.address !== overlay.address) {
+      completeLedgerDeviceApprovalToast(
+        toastId,
+        'error',
+        'Ledger connection failed',
+        'The Ledger returned a different address. Please retry.',
+      );
       dispatchLedgerOverlay({
         type: 'setError',
         error: 'The Ledger derived a different address on re-check — please retry.',
@@ -6323,11 +6453,18 @@ async function confirmLedgerAddress(): Promise<void> {
     dispatchLedgerOverlay({ type: 'close' });
     state.selectedWalletName = LEDGER_WALLET_NAME;
     await runConnect();
+    completeLedgerDeviceApprovalToast(toastId, 'success', 'Ledger connected', short(fresh.address));
   } catch (err) {
-    if (ledger.pairingToken !== token) return;
+    if (ledger.pairingToken !== token) {
+      dismissLedgerDeviceApprovalToast(toastId);
+      return;
+    }
+    const normalized = normalizeLedgerSigningError(err, { force: true });
+    const message = ledgerErrorMessage(normalized);
+    completeLedgerDeviceApprovalToast(toastId, 'error', 'Ledger connection failed', message);
     dispatchLedgerOverlay({
       type: 'setError',
-      error: err instanceof Error ? err.message : String(err),
+      error: message,
     });
   }
 }
@@ -6951,7 +7088,10 @@ async function adoptPairedWallet(input: {
     baseUrl: PAIRING_RELAY_BASE_URL,
     pairingUuid: input.pairingUuid,
   });
-  client = new SolanaSigningClient({ backend: walletBackend });
+  client = new SolanaSigningClient({
+    backend: walletBackend,
+    pollIntervalMs: QR_RELAY_SIGN_POLL_INTERVAL_MS,
+  });
   state.address = input.address;
   state.capabilities = input.capabilities;
   state.selectedWalletName = input.walletName;
@@ -6978,6 +7118,35 @@ function desktopBrowserConnectUrl(): string {
     bridgeUrl: state.bridgeUrl,
     bridgeToken: state.bridgeToken,
   });
+}
+
+function desktopBrowserSignUrl(requestId: string): string {
+  return buildDesktopBrowserIntentUrl({
+    walletHostUrl: inferredWalletHostUrl({ route: '/sign' }),
+    bridgeUrl: state.bridgeUrl,
+    bridgeToken: state.bridgeToken,
+    intent: 'sign',
+    requestId,
+  });
+}
+
+async function openDesktopBrowserSignPage(approval: ApprovalResource): Promise<void> {
+  if (!state.tauriNativeEnvironment.isTauriNative) return;
+  if (!state.bridgeUrl || !state.bridgeToken) {
+    throw new ProtocolError('wallet_unreachable', 'Wallet approval page could not be opened because the local wallet service is not ready.');
+  }
+  const requestId = String(approval.requestId ?? '').trim();
+  if (!requestId) {
+    throw new ProtocolError('invalid_request', 'Wallet approval page could not be opened because the signing request is missing an id.');
+  }
+  const target = desktopBrowserSignUrl(requestId);
+  try {
+    await tauriNativeOpenExternalUrl(target);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    pushToast('error', 'Could not open approval page', message);
+    throw err;
+  }
 }
 
 async function openDesktopBrowserConnectPage(brandId?: string | null): Promise<void> {
@@ -7119,6 +7288,7 @@ async function adoptBridgeHost(
   walletBackend = new RemoteBridgeBackend({
     bridgeUrl: state.bridgeUrl,
     token: state.bridgeToken,
+    onPendingApproval: openDesktopBrowserSignPage,
   });
   client = new SolanaSigningClient({ backend: walletBackend });
   const brand = brandId ? DESKTOP_BRAND_PANELS.find((b) => b.id === brandId) : undefined;
@@ -7972,15 +8142,27 @@ function cliClientLabel(): string {
   return cliView?.surface === 'desktop' ? 'desktop app' : 'CLI';
 }
 
+function cliConnectedMessage(): string {
+  return cliView?.surface === 'desktop'
+    ? 'Wallet Connected, Please navigate back to the Desktop App.'
+    : `Wallet connected to the local bridge. The ${cliClientLabel()} has picked it up.`;
+}
+
+function cliConnectSubtitle(): string {
+  return cliView?.surface === 'desktop'
+    ? 'Pair a Wallet Standard wallet (Phantom, Backpack, Solflare, ...) with the Desktop App.'
+    : 'Pair a Wallet Standard wallet (Phantom, Backpack, Solflare, ...) with the local bridge.';
+}
+
 function cliCloudSignInDirectSignerReady(): boolean {
   return Boolean(client && walletBackend instanceof WalletStandardWebBackend && state.address);
 }
 
 function cliReturnFooter(): string {
-  const target = cliView?.surface === 'desktop' ? 'desktop app' : 'terminal';
-  const watcher = cliView?.surface === 'desktop' ? 'desktop app' : 'CLI';
+  const target = cliView?.surface === 'desktop' ? 'Desktop App' : 'terminal';
+  const watcher = cliView?.surface === 'desktop' ? 'Desktop App' : 'CLI';
   return `
-    <p class="cli-focused-note">Return to the ${target} — the ${watcher} is watching for this change.</p>
+    <p class="cli-focused-note">Return to the ${target} - the ${watcher} is watching for this change.</p>
   `;
 }
 
@@ -7992,7 +8174,9 @@ function cliConnectView(): string {
       body: `
         <div class="cli-focused-success signature-state complete" role="status" aria-live="polite">
           <span class="cli-focused-tick" aria-hidden="true">✓</span>
-          <p>The wallet is no longer paired with the local bridge.</p>
+          <p>${cliView?.surface === 'desktop'
+            ? 'The wallet is no longer paired with the Desktop App.'
+            : 'The wallet is no longer paired with the local bridge.'}</p>
         </div>
       `,
       footer: cliReturnFooter(),
@@ -8009,8 +8193,10 @@ function cliConnectView(): string {
         <div class="cli-focused-success signature-state complete" role="status" aria-live="polite">
           <span class="cli-focused-tick" aria-hidden="true">✓</span>
           <p>${isDisconnect
-            ? 'Click below to disconnect this wallet from the local bridge.'
-            : `Wallet connected to the local bridge. The ${cliClientLabel()} has picked it up.`}</p>
+            ? cliView?.surface === 'desktop'
+              ? 'Click below to disconnect this wallet from the Desktop App.'
+              : 'Click below to disconnect this wallet from the local bridge.'
+            : cliConnectedMessage()}</p>
         </div>
         <div class="cli-focused-actions">
           <button type="button" id="disconnect" class="danger" ${state.busy ? 'disabled' : ''}>Disconnect wallet</button>
@@ -8073,12 +8259,12 @@ function cliConnectView(): string {
     : '';
   const persistenceHint = `
     <p class="cli-focused-note cli-focused-persistence">
-      Already authorized? Your wallet may approve silently — wait a moment and the card above flips to "Wallet paired ✓".
+      Already authorized? Your wallet may approve silently - wait a moment and the card above flips to "Wallet paired ✓".
     </p>
   `;
   return cliFocusedShell({
     title: 'Connect your wallet',
-    subtitle: 'Pair a Wallet Standard wallet (Phantom, Backpack, Solflare, …) with the local bridge.',
+    subtitle: cliConnectSubtitle(),
     body: `
       ${errorBanner}
       ${busyBanner}
@@ -8376,10 +8562,10 @@ function cliSignView(): string {
       body: `
         <div class="cli-focused-busy" role="status" aria-live="polite">
           <span class="cli-focused-busy-dot" aria-hidden="true"></span>
-          <p>Keep this page open. The CLI is preparing the request.</p>
+          <p>Keep this page open. The ${cliView?.surface === 'desktop' ? 'Desktop App' : 'CLI'} is preparing the request.</p>
         </div>
       `,
-      footer: `<p class="cli-focused-note">If nothing happens, return to the terminal and re-run the command.</p>`,
+      footer: `<p class="cli-focused-note">If nothing happens, return to the ${cliView?.surface === 'desktop' ? 'Desktop App' : 'terminal'} and try again.</p>`,
     });
   }
 
@@ -8406,7 +8592,7 @@ function cliSignView(): string {
         <p>Connecting to <strong>${escapeHtml(walletLabel)}</strong>… check the extension popup.</p>
       </div>
     `,
-    footer: `<p class="cli-focused-note">Approve or reject in the wallet — the CLI is watching.</p>`,
+    footer: `<p class="cli-focused-note">Approve or reject in the wallet - the ${cliView?.surface === 'desktop' ? 'Desktop App' : 'CLI'} is watching.</p>`,
   });
 }
 
@@ -14314,7 +14500,10 @@ function renderPreferenceSnapshotGroup(cards: CommandPreferenceSnapshotCard[]): 
 }
 
 function commandAiPreferenceSnapshotCard(): CommandPreferenceSnapshotCard {
-  const configured = isAiConfiguredForCurrentMode();
+  const inventory = aiSetupInventory();
+  const configured = inventory.active.configured;
+  const inactive = inventory.inactiveConfigured[0];
+  const anyConfigured = configured || Boolean(inactive);
   const path = aiPathPreferenceLabel(state.aiSettings.mode);
   const providerPreset = aiProviderPresetById(state.aiSettings.provider);
   const provider = state.aiSettings.mode === 'bridge' && state.aiStatus?.provider
@@ -14328,20 +14517,30 @@ function commandAiPreferenceSnapshotCard(): CommandPreferenceSnapshotCard {
       ? state.deviceAgentStatus.model
     : state.aiSettings.model || providerPreset.model;
   const readiness = aiReadinessLabel(state.aiStatus);
+  const displayProvider = configured
+    ? provider
+    : inactive?.provider ?? provider;
+  const displayModel = configured
+    ? model
+    : inactive?.model ?? model;
   return {
     label: 'AI path',
-    value: configured ? `${path} connected` : `${path} selected`,
-    detail: `${provider} - ${model}`,
-    meta: readiness,
-    tone: configured ? 'good' : 'warn',
-    icon: configured ? 'aiConnected' : 'ai',
-    ...(configured
+    value: configured
+      ? `${path} connected`
+      : inactive
+        ? `${aiPathPreferenceLabel(inactive.mode)} configured`
+        : `${path} selected`,
+    detail: `${displayProvider} - ${displayModel || 'model configured'}`,
+    meta: configured ? readiness : inactive ? `${path} selected` : readiness,
+    tone: anyConfigured ? 'good' : 'warn',
+    icon: anyConfigured ? 'aiConnected' : 'ai',
+    ...(anyConfigured
       ? {
-          logoId: connectedAiProviderLogoId(),
-          logoLabel: provider,
+          logoId: configured ? connectedAiProviderLogoId() : aiProviderLogoId(state.aiSettings.provider),
+          logoLabel: displayProvider,
         }
       : {}),
-    actionLabel: configured ? 'Open' : 'Connect',
+    actionLabel: anyConfigured ? 'Open' : 'Connect',
     action: { type: 'command', view: 'ai' },
   };
 }
@@ -14513,7 +14712,9 @@ function approvalsCardDetail(openApprovals: PreparedAction[]): string {
 }
 
 function commandCenterAiPanel(): string {
-  const configured = isAiConfiguredForCurrentMode();
+  const inventory = aiSetupInventory();
+  const configured = inventory.active.configured;
+  const anyConfigured = inventory.anyConfigured;
   const confirmed = isAiPlannerConfirmedForCurrentSettings();
   const headerActions = isMobileAppViewport()
     ? ''
@@ -14539,7 +14740,7 @@ function commandCenterAiPanel(): string {
         ${commandAiWorkflowEducation()}
 
         <div class="command-ai-boundary">
-          <strong>${configured ? confirmed ? 'Planner confirmed' : 'Planner configured' : 'Templates work without AI'}</strong>
+          <strong>${configured ? confirmed ? 'Planner confirmed' : 'Planner configured' : anyConfigured ? 'Inactive path configured' : 'Templates work without AI'}</strong>
           <span>No AI route can approve, submit, sign, move funds, or change workflow authority.</span>
         </div>
 
@@ -14844,10 +15045,11 @@ function commandAiInfoCard(title: string, badge: string, detail: string, foot: s
 function commandAiRouteCard(mode: AiSettings['mode'], title: string, detail: string, meta: string): string {
   const active = state.aiSettings.mode === mode;
   const disabledReason = aiModeDisabledReason(mode);
+  const configured = aiSetupInventory().paths.find((path) => path.mode === mode)?.configured === true;
   return `
-    <article class="command-route-card ${active ? 'active' : ''}">
+    <article class="command-route-card ${active ? 'active' : ''} ${configured && !active ? 'configured-inactive' : ''}">
       <div>
-        <span>${escapeHtml(meta)}</span>
+        <span>${escapeHtml(configured && !active ? `${meta} - configured` : meta)}</span>
         <strong>${escapeHtml(title)}</strong>
         <p>${escapeHtml(detail)}</p>
       </div>
@@ -14858,7 +15060,7 @@ function commandAiRouteCard(mode: AiSettings['mode'], title: string, detail: str
         ${disabledReason || state.busy ? 'disabled' : ''}
         ${disabledReason ? `title="${escapeHtml(disabledReason)}"` : ''}
       >
-        ${active ? 'Selected' : 'Use route'}
+        ${active ? 'Selected' : configured ? 'Switch' : 'Use route'}
       </button>
     </article>
   `;
@@ -18000,7 +18202,10 @@ function templateOutcomeSummary(template: AgentPlanTemplate): string {
 }
 
 function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
-  const configured = isAiConfiguredForCurrentMode();
+  const inventory = aiSetupInventory();
+  const configured = inventory.active.configured;
+  const inactiveConfigured = inventory.inactiveConfigured.length > 0;
+  const panelConfigured = configured || inactiveConfigured;
   const confirmed = isAiPlannerConfirmedForCurrentSettings();
   const shouldOpen = state.aiSettingsPanelOpen === true;
   const open = shouldOpen ? 'open' : '';
@@ -18008,13 +18213,17 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
   const summaryDetail = location === 'rail'
     ? configured
       ? `${readinessLabel} - ${aiConfirmationLabel()}`
+      : inactiveConfigured
+        ? `${aiPathPreferenceLabel(inventory.inactiveConfigured[0]!.mode)} configured inactive`
       : 'Plan drafting optional'
     : configured
       ? `${readinessLabel} - ${aiConfirmationLabel()}`
+      : inactiveConfigured
+        ? `${aiPathPreferenceLabel(inventory.inactiveConfigured[0]!.mode)} configured; ${aiPathPreferenceLabel(state.aiSettings.mode)} selected.`
       : 'Optional AI planner; templates work without it.';
   if (location === 'rail' && isMobileAppViewport()) {
     return `
-      <section class="ai-settings-panel ${configured ? 'configured' : 'optional'} rail-ai-settings mobile-rail-trigger-panel" data-layout="ai-setup-panel" aria-label="AI drafting status">
+      <section class="ai-settings-panel ${panelConfigured ? 'configured' : 'optional'} rail-ai-settings mobile-rail-trigger-panel" data-layout="ai-setup-panel" aria-label="AI drafting status">
         <button
           type="button"
           class="mobile-rail-sheet-trigger"
@@ -18025,19 +18234,19 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
             <span>AI drafting</span>
             <em>${escapeHtml(summaryDetail)}</em>
           </span>
-          <strong>${confirmed ? 'confirmed' : configured ? 'configured' : 'not configured'}</strong>
+          <strong>${confirmed ? 'confirmed' : configured ? 'configured' : inactiveConfigured ? 'configured inactive' : 'not configured'}</strong>
         </button>
       </section>
     `;
   }
   return `
-    <details class="ai-settings-panel ${configured ? 'configured' : 'optional'} ${location === 'rail' ? 'rail-ai-settings' : ''}" data-layout="ai-setup-panel" ${open}>
+    <details class="ai-settings-panel ${panelConfigured ? 'configured' : 'optional'} ${location === 'rail' ? 'rail-ai-settings' : ''}" data-layout="ai-setup-panel" ${open}>
       <summary>
         <span class="ai-summary-copy">
           <span>AI drafting</span>
           <em>${escapeHtml(summaryDetail)}</em>
         </span>
-        <strong>${confirmed ? 'confirmed' : configured ? 'configured' : 'not configured'}</strong>
+        <strong>${confirmed ? 'confirmed' : configured ? 'configured' : inactiveConfigured ? 'configured inactive' : 'not configured'}</strong>
       </summary>
       ${aiSettingsCard(location)}
     </details>
@@ -19415,6 +19624,23 @@ function browserNativeProviderTierChip(): string {
   `;
 }
 
+function inactiveAiConfigNotice(location: 'rail' | 'planner'): string {
+  const inactive = inactiveConfiguredAiPaths()[0];
+  if (!inactive) return '';
+  const label = aiPathPreferenceLabel(inactive.mode);
+  const activeLabel = aiPathPreferenceLabel(state.aiSettings.mode);
+  const detail = inactive.detail
+    ?? `${inactive.provider ?? 'AI'} - ${inactive.model ?? 'model configured'}`;
+  return `
+    <div class="ai-key-configured-note ai-inactive-config-note" aria-live="polite">
+      <span>Inactive AI path</span>
+      <strong>${escapeHtml(label)} configured</strong>
+      <em>${escapeHtml(`${detail}. ${activeLabel} is selected.`)}</em>
+      ${location === 'rail' ? '' : `<button type="button" class="utility" data-ai-mode-choice="${escapeHtml(inactive.mode)}">Use ${escapeHtml(label)}</button>`}
+    </div>
+  `;
+}
+
 function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const status = state.aiStatus;
   const providerPreset = aiProviderPresetById(state.aiSettings.provider);
@@ -19488,6 +19714,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const showSaveDirectAiKey = state.aiSettings.mode !== 'bridge' && !hideKeyEntry;
   const showStopDeviceAgentRuntime = state.aiSettings.mode === 'device-agent'
     && (hideKeyEntry || canStopDeviceAgentRuntime());
+  const inactiveConfigNote = inactiveAiConfigNotice(location);
   return `
     <aside class="ai-settings-card" data-ai-settings-scope="${escapeHtml(scope)}" ${mobilePlannerSetup ? 'data-mobile-ai-policy="true"' : ''}>
       ${isRail || mobilePlannerSetup ? '' : `<div class="ai-settings-intro">
@@ -19495,6 +19722,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         <h3>Agent setup</h3>
         <p>${escapeHtml(securityCopy)}</p>
       </div>`}
+      ${inactiveConfigNote}
       <label class="field compact ai-setting-field ai-setting-path">
         <span>AI path</span>
         ${selectPicker({
@@ -19631,6 +19859,7 @@ function aiModeOptions(): string {
 
 function aiModeSelectOptions(): SelectPickerOption[] {
   const mobileAiPathPolicy = isMobileAiPathPolicySurface();
+  const inventory = aiSetupInventory();
   const mobileOptions: Array<{ id: AiSettings['mode']; label: string }> = visibleMobileAiPathModes({
     mobileAiPathPolicy,
     deviceAgentVisible: deviceAgentModeVisible(),
@@ -19671,11 +19900,18 @@ function aiModeSelectOptions(): SelectPickerOption[] {
           ];
   return options.map((option) => {
     const disabledReason = aiModeDisabledReason(option.id);
+    const pathState = inventory.paths.find((path) => path.mode === option.id);
+    const configured = pathState?.configured === true;
+    const active = option.id === state.aiSettings.mode;
     return {
       value: option.id,
       label: option.label,
       meta: 'Draft path',
-      detail: disabledReason || 'Drafts only; approvals and signatures stay separate.',
+      metaSuffix: configured ? active ? 'active configured' : 'configured' : undefined,
+      detail: disabledReason
+        || (configured
+          ? `${active ? 'Active' : 'Inactive'} configured path; approvals and signatures stay separate.`
+          : 'Drafts only; approvals and signatures stay separate.'),
       disabled: Boolean(disabledReason),
       title: disabledReason,
     };
@@ -20025,7 +20261,10 @@ function currentAiPlannerConfirmationKey(): string {
   const model = mode === 'bridge'
     ? state.aiStatus?.model ?? state.aiSettings.model
     : state.aiSettings.model;
-  return [mode, provider, apiFormat, baseUrl.trim(), model.trim()].join('|');
+  const hostedCloudBoundary = mode === 'hosted'
+    ? cloudSessionMatchesWallet() ? 'cloud-session' : 'cloud-missing'
+    : '';
+  return [mode, provider, apiFormat, baseUrl.trim(), model.trim(), hostedCloudBoundary].join('|');
 }
 
 function isAiPlannerConfirmedForCurrentSettings(): boolean {
@@ -20089,6 +20328,63 @@ function confirmBridgeAiPlannerFromStatus(): void {
   setAiPlannerConfirmation('confirmed', 'Local bridge AI is configured and reachable for drafts only. Workflow capability is unchanged.');
 }
 
+function directAiKeyStagedForMode(mode: AiSettings['mode'] = state.aiSettings.mode): boolean {
+  if (mode === 'bridge') return false;
+  const settings = mode === state.aiSettings.mode
+    ? state.aiSettings
+    : {
+        ...state.aiSettings,
+        mode,
+        apiKey: loadSessionAiApiKey({ ...state.aiSettings, mode }),
+      };
+  return directAiKeyStaged({
+    apiKey: settings.apiKey,
+    model: settings.model,
+    providerReady: aiProviderReadyForMode(mode, settings.provider, settings.baseUrl),
+  });
+}
+
+function aiSetupInventory(): AiSetupInventory {
+  const hostedConfigured = directAiKeyStagedForMode('hosted');
+  const sessionConfigured = directAiKeyStagedForMode('session');
+  const hostedRunnable = hostedConfigured && !hostedByokCloudSessionReasonForMode('hosted');
+  const sessionRunnable = sessionConfigured && state.aiSettings.provider !== 'openai';
+  return buildAiSetupInventory({
+    activeMode: state.aiSettings.mode,
+    hosted: {
+      configured: hostedConfigured,
+      runnable: hostedRunnable,
+      provider: aiProviderPresetById(state.aiSettings.provider).label,
+      apiFormat: state.aiSettings.apiFormat,
+      baseUrl: state.aiSettings.baseUrl,
+      model: state.aiSettings.model,
+      detail: hostedConfigured
+        ? `${aiProviderPresetById(state.aiSettings.provider).label} - ${state.aiSettings.model || 'model configured'}`
+        : undefined,
+    },
+    session: {
+      configured: sessionConfigured,
+      runnable: sessionRunnable,
+      provider: aiProviderPresetById(state.aiSettings.provider).label,
+      apiFormat: state.aiSettings.apiFormat,
+      baseUrl: state.aiSettings.baseUrl,
+      model: state.aiSettings.model,
+      detail: sessionConfigured
+        ? `${aiProviderPresetById(state.aiSettings.provider).label} - ${state.aiSettings.model || 'model configured'}`
+        : undefined,
+    },
+    bridge: bridgeAiSetupSnapshot({ status: state.aiStatus }),
+    deviceAgent: deviceAgentSetupSnapshot({
+      status: state.deviceAgentStatus,
+      visible: deviceAgentModeVisible(),
+    }),
+  });
+}
+
+function inactiveConfiguredAiPaths(): AiPathSetupSnapshot[] {
+  return aiSetupInventory().inactiveConfigured;
+}
+
 function canConfirmAiPlanner(): boolean {
   if (state.busy) return false;
   if (state.aiSettings.mode === 'bridge') return true;
@@ -20097,15 +20393,10 @@ function canConfirmAiPlanner(): boolean {
     return Boolean(
       (state.aiSettings.apiKey.trim() || state.deviceAgentStatus?.configured)
         && state.aiSettings.model.trim()
-        && aiProviderReadyForCurrentMode(),
+      && aiProviderReadyForCurrentMode(),
     );
   }
-  if (hostedByokCloudSessionReason()) return false;
-  return Boolean(
-    state.aiSettings.apiKey.trim()
-      && state.aiSettings.model.trim()
-      && aiProviderReadyForCurrentMode(),
-  );
+  return directAiKeyStagedForMode();
 }
 
 function aiConfirmDisabledReason(): string {
@@ -20122,8 +20413,6 @@ function aiConfirmDisabledReason(): string {
     }
     return 'Confirm planner readiness before generating.';
   }
-  const hostedBlockReason = hostedByokCloudSessionReason();
-  if (hostedBlockReason) return hostedBlockReason;
   if (state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai') {
     return OPENAI_BROWSER_SESSION_DISABLED_REASON;
   }
@@ -20152,7 +20441,6 @@ function canSaveBridgeAiKey(): boolean {
 function canSaveDirectAiKey(): boolean {
   return state.aiSettings.mode !== 'bridge'
     && (state.aiSettings.mode !== 'device-agent' || deviceAgentModeVisible())
-    && !hostedByokCloudSessionReason()
     && Boolean(state.aiSettings.apiKey.trim())
     && Boolean(state.aiSettings.model.trim())
     && aiProviderReadyForCurrentMode()
@@ -20200,6 +20488,9 @@ function hasDetectedAgentReviewPath(): boolean {
     const status = state.deviceAgentStatus;
     return Boolean(status?.available && status.configured);
   }
+  if (state.aiSettings.mode === 'hosted' && hostedByokCloudSessionReason()) {
+    return false;
+  }
   return isAiConfiguredForCurrentMode();
 }
 
@@ -20221,6 +20512,9 @@ function agentReviewUnavailableReason(record?: GeneratedPlanRecord): string {
     return state.deviceAgentStatus?.configured
       ? 'Device Agent review is ready through the gated runtime.'
       : 'No configured Device Agent runtime detected.';
+  }
+  if (state.aiSettings.mode === 'hosted' && hostedByokCloudSessionReason()) {
+    return hostedByokCloudSessionReason();
   }
   return isAiConfiguredForCurrentMode()
     ? 'Agent review is ready.'
@@ -20246,8 +20540,6 @@ function aiGenerateDisabledReason(): string {
     if (status.state !== 'running') return 'Start or confirm the Device Agent runtime before generating.';
     return 'Device Agent runtime is ready for drafts.';
   }
-  const hostedBlockReason = hostedByokCloudSessionReason();
-  if (hostedBlockReason) return hostedBlockReason;
   if (state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai') {
     return OPENAI_BROWSER_SESSION_DISABLED_REASON;
   }
@@ -20264,11 +20556,12 @@ function aiGenerateDisabledReason(): string {
       ? HOSTED_CUSTOM_PROVIDER_DISABLED_REASON
       : 'Add a browser-compatible gateway URL for this provider.';
   }
+  const hostedBlockReason = hostedByokCloudSessionReason();
+  if (hostedBlockReason) return hostedBlockReason;
   return 'Configure the AI Planner first, or use templates without AI.';
 }
 
 function isAiConfiguredForCurrentMode(): boolean {
-  const modelReady = Boolean(state.aiSettings.model.trim());
   if (state.aiSettings.mode === 'bridge') {
     return Boolean(state.aiStatus?.available);
   }
@@ -20276,8 +20569,11 @@ function isAiConfiguredForCurrentMode(): boolean {
     const status = state.deviceAgentStatus;
     return Boolean(deviceAgentModeVisible() && status?.available && status.configured);
   }
-  if (hostedByokCloudSessionReason()) return false;
-  return Boolean(state.aiSettings.apiKey.trim() && modelReady && aiProviderReadyForCurrentMode());
+  return directAiKeyStaged({
+    apiKey: state.aiSettings.apiKey,
+    model: state.aiSettings.model,
+    providerReady: aiProviderReadyForCurrentMode(),
+  });
 }
 
 function isBridgeAiConfigured(status: BridgeAiStatus | null = state.aiStatus): boolean {
@@ -20290,21 +20586,26 @@ function shouldHideAiKeyEntry(status: BridgeAiStatus | null = state.aiStatus): b
 }
 
 function aiProviderReadyForCurrentMode(): boolean {
-  const providerPreset = aiProviderPresetById(state.aiSettings.provider);
-  if (state.aiSettings.mode === 'session' && providerPreset.id === 'openai') {
+  return aiProviderReadyForMode(state.aiSettings.mode, state.aiSettings.provider, state.aiSettings.baseUrl);
+}
+
+function aiProviderReadyForMode(mode: AiSettings['mode'], providerId: AiSettings['provider'], baseUrl: string): boolean {
+  const providerPreset = aiProviderPresetById(providerId);
+  if (mode === 'session' && providerPreset.id === 'openai') {
     return false;
   }
-  if (state.aiSettings.mode === 'hosted') {
+  if (mode === 'hosted') {
     return providerPreset.id !== 'custom-openai-compatible';
   }
-  return providerPreset.id !== 'custom-openai-compatible' || Boolean(state.aiSettings.baseUrl.trim());
+  return providerPreset.id !== 'custom-openai-compatible' || Boolean(baseUrl.trim());
 }
 
 function aiRouteStatusLabel(status: BridgeAiStatus | null): string {
   if (state.aiSettings.mode === 'hosted') {
+    if (!state.aiSettings.apiKey.trim()) return 'hosted draft - key required';
     const hostedBlockReason = hostedByokCloudSessionReason();
-    if (hostedBlockReason) return 'hosted draft - cloud sign-in required';
-    return state.aiSettings.apiKey.trim() ? `hosted draft route - ${state.aiSettings.provider} - ${state.aiSettings.model || 'model configured'}` : 'hosted draft - key required';
+    if (hostedBlockReason) return `hosted draft staged - ${state.aiSettings.provider} - cloud sign-in required`;
+    return `hosted draft route - ${state.aiSettings.provider} - ${state.aiSettings.model || 'model configured'}`;
   }
   if (state.aiSettings.mode === 'session') {
     if (state.aiSettings.provider === 'openai') {
@@ -20340,10 +20641,6 @@ function aiReadinessLabel(status: BridgeAiStatus | null): string {
   if (state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai') {
     return 'Use hosted or bridge for OpenAI';
   }
-  const hostedBlockReason = hostedByokCloudSessionReason();
-  if (hostedBlockReason) {
-    return 'Cloud sign-in required';
-  }
   if (!state.aiSettings.apiKey.trim()) {
     return state.aiSettings.mode === 'hosted' ? 'Hosted key required' : 'Browser key required';
   }
@@ -20352,6 +20649,10 @@ function aiReadinessLabel(status: BridgeAiStatus | null): string {
   }
   if (!aiProviderReadyForCurrentMode()) {
     return state.aiSettings.mode === 'hosted' ? 'Choose hosted provider' : 'Gateway URL required';
+  }
+  const hostedBlockReason = hostedByokCloudSessionReason();
+  if (hostedBlockReason) {
+    return 'Hosted key staged';
   }
   return state.aiSettings.mode === 'hosted' ? 'Hosted key entered' : 'Config ready for this tab';
 }
@@ -25506,9 +25807,12 @@ async function runSignTransaction(): Promise<void> {
   await run('transaction', async () => {
     const signingClient = requireClient();
     state.transactionStatus = 'Opening wallet approval for transaction signature...';
-    const result = await signingClient.signTransaction(
-      state.customTransactionBase64,
-      signOptions('Transaction signature request'),
+    const result = await withLedgerDeviceApproval(
+      ledgerApprovalMessage(),
+      () => signingClient.signTransaction(
+        state.customTransactionBase64,
+        signOptions('Transaction signature request'),
+      ),
     );
     state.txSignature = result.signature;
     state.txid = '';
@@ -31735,11 +32039,20 @@ async function runConfirmAiPlanner(): Promise<void> {
       }
 
       if (state.aiSettings.mode === 'hosted') {
-        const hostedBlockReason = hostedByokCloudSessionReason();
-        if (hostedBlockReason) throw new Error(hostedBlockReason);
         state.aiDiagnostics = await confirmHostedAiPlanner(state.aiSettings, hostedAiRequestOptions());
-        setAiPlannerConfirmation('confirmed', 'Hosted BYOK route is reachable for draft requests only. Provider key validity is checked on the first AI draft. Workflow capability is unchanged.');
-        replaceToast(toastId, 'success', 'Planner confirmed', 'Hosted BYOK can draft plans only.');
+        const hostedBlockReason = hostedByokCloudSessionReason();
+        setAiPlannerConfirmation(
+          'confirmed',
+          hostedBlockReason
+            ? `${hostedBlockReason} Hosted BYOK key is staged; workflow capability is unchanged.`
+            : 'Hosted BYOK route is reachable for draft requests only. Provider key validity is checked on the first AI draft. Workflow capability is unchanged.',
+        );
+        replaceToast(
+          toastId,
+          'success',
+          hostedBlockReason ? 'Hosted key staged' : 'Planner confirmed',
+          hostedBlockReason || 'Hosted BYOK can draft plans only.',
+        );
         return;
       }
 
@@ -31873,6 +32186,7 @@ async function runSetBrowserDeviceAgentSecretStoreMode(mode: SecretStoreMode): P
     state.deviceAgentStatus = parseDeviceAgentStatus(status);
     state.aiSettings.apiKey = '';
     clearCurrentSessionAiApiKey();
+    clearDeviceAgentStatusCache();
     resetAiPlannerConfirmation('Device Agent secret store changed. Re-enter the key, then confirm planner.');
     pushToast(
       'success',
@@ -31956,9 +32270,6 @@ function setAiPlannerMode(mode: AiSettings['mode']): void {
   }
   if (state.aiSettings.mode === mode) {
     return;
-  }
-  if (state.aiSettings.mode === 'device-agent' && mode !== 'device-agent') {
-    clearDeviceAgentStatusCache();
   }
   saveCurrentSessionAiApiKey();
   state.aiSettings.mode = mode;
@@ -32084,8 +32395,12 @@ function cloudBoundaryLogoutDetail(
 }
 
 function hostedByokCloudSessionReason(): string {
+  return hostedByokCloudSessionReasonForMode(state.aiSettings.mode);
+}
+
+function hostedByokCloudSessionReasonForMode(mode: AiSettings['mode']): string {
   const reason = hostedByokCloudSessionBlockReason({
-    aiMode: state.aiSettings.mode,
+    aiMode: mode,
     cloudSessionMatchesWallet: cloudSessionMatchesWallet(),
   });
   return reason && isMobileAiPathPolicySurface()
@@ -34284,7 +34599,7 @@ async function runCloudSolTransferFinalization(action: PreparedAction): Promise<
   const signingClient = requireClient();
   let txid = '';
   try {
-    const signed = await runTransactionToastStep(
+    const signed = await runWalletSigningToastStep(
       toastContext,
       'Signing transaction',
       finalization.walletAction.summary,
@@ -36137,13 +36452,13 @@ async function executeBrowserSwap(
       slippageBps,
     }),
   );
-  const transactionBase64 = requiredResponseString(order.transaction, 'Jupiter order transaction');
+  const transactionBase64 = requiredJupiterOrderTransaction(order);
   const requestId = requiredResponseString(order.requestId, 'Jupiter request id');
   recordBrowserActionActivity(action.id, 'browser.swap.order_ready', {
     requestId,
     status: 'ready_to_sign',
   });
-  const signed = await runTransactionToastStep(
+  const signed = await runWalletSigningToastStep(
     toastContext,
     'Signing swap',
     `Sign Jupiter swap ${short(requestId)} in your wallet.`,
@@ -36243,7 +36558,7 @@ async function signAndBroadcastBrowserTransactionBase64(
 ): Promise<string> {
   const signingClient = requireClient();
   if (state.capabilities?.supports.signTransaction === true) {
-    const signed = await runTransactionToastStep(
+    const signed = await runWalletSigningToastStep(
       toastContext,
       'Signing transaction',
       summary,
@@ -36774,6 +37089,24 @@ async function runTransactionToastStep<T>(
 ): Promise<T> {
   updateTransactionToast(toastContext, 'pending', title, message);
   return task();
+}
+
+async function runWalletSigningToastStep<T>(
+  toastContext: TransactionToastContext,
+  title: string,
+  message: string,
+  task: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await runTransactionToastStep(
+      toastContext,
+      isLedgerWalletSelected() ? 'Approve on Ledger' : title,
+      isLedgerWalletSelected() ? ledgerApprovalMessage() : message,
+      task,
+    );
+  } catch (err) {
+    throw normalizeLedgerSigningError(err);
+  }
 }
 
 function updateTransactionToast(
@@ -37337,6 +37670,31 @@ function requiredResponseString(value: unknown, label: string): string {
   throw new Error(`${label} was missing.`);
 }
 
+function requiredJupiterOrderTransaction(order: Record<string, unknown>): string {
+  if (typeof order.transaction === 'string' && order.transaction.trim()) {
+    return order.transaction;
+  }
+  const detail = jupiterOrderMissingTransactionDetail(order);
+  throw new Error(`Jupiter order failed: ${detail}`);
+}
+
+function jupiterOrderMissingTransactionDetail(order: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const key of ['errorMessage', 'error', 'message', 'status', 'errorCode'] as const) {
+    const value = order[key];
+    if (typeof value === 'string' && value.trim()) {
+      parts.push(value.trim());
+    } else if (typeof value === 'number' && Number.isFinite(value)) {
+      parts.push(`${key} ${value}`);
+    }
+  }
+  if (parts.length > 0) return parts.join(' - ');
+  const requestId = typeof order.requestId === 'string' && order.requestId.trim()
+    ? ` Request ${short(order.requestId)} returned no transaction.`
+    : '';
+  return `No transaction returned for this order.${requestId}`;
+}
+
 function assertJupiterExecutionSucceeded(executed: Record<string, unknown>): void {
   const status = typeof executed.status === 'string' ? executed.status.toLowerCase() : '';
   const error = executed.error ?? executed.errorMessage ?? executed.message;
@@ -37796,7 +38154,7 @@ async function signAndArchiveEvidenceReceipt(input: {
   const preSignatureHash = await sha256(stableJson(unsigned));
   const signingMessage = receiptProofSigningMessage(input, id, preSignatureHash);
   const result = await signWalletProofMessage(signingMessage, input.signSummary ?? input.lab.title, state.cluster);
-  const verified = verifyProofSignature(signingMessage, result);
+  const verified = await verifyProofSignature(signingMessage, result);
   const artifactBase = {
     ...unsigned,
     preSignatureHash,
@@ -39538,7 +39896,7 @@ async function disconnectBridgeHost(): Promise<void> {
 }
 
 function startBridgePolling(): void {
-  if (!cliIntentAllowsBridgeRequestClaim(cliView?.intent)) return;
+  if (!cliIntentAllowsBridgeRequestClaim(cliView?.intent, cliView?.surface)) return;
   stopBridgePolling();
   bridgePollTimer = window.setInterval(() => {
     void pollBridge();
@@ -39559,7 +39917,7 @@ async function pollBridge(): Promise<void> {
   // same connected wallet client, so concurrent requests can trip wallet-side
   // validation or surface misleading argument errors.
   if (
-    !cliIntentAllowsBridgeRequestClaim(cliView?.intent) ||
+    !cliIntentAllowsBridgeRequestClaim(cliView?.intent, cliView?.surface) ||
     !state.bridgeActive ||
     !client ||
     bridgeRequestBusy ||
@@ -39568,7 +39926,7 @@ async function pollBridge(): Promise<void> {
     return;
   }
   try {
-    const response = await bridgeRequest<{ request: SigningRequest | null }>('/bridge/next');
+    const response = await bridgeRequest<{ request: SigningRequest | null }>(bridgeNextRequestPath());
     if (response.request) {
       bridgeRequestBusy = true;
       await handleBridgeSigningRequest(response.request);
@@ -39598,6 +39956,12 @@ async function pollBridge(): Promise<void> {
   }
 }
 
+function bridgeNextRequestPath(): string {
+  const requestId = cliView?.intent === 'sign' ? cliView.requestId?.trim() : undefined;
+  if (!requestId) return '/bridge/next';
+  return `/bridge/next?requestId=${encodeURIComponent(requestId)}`;
+}
+
 async function handleBridgeSigningRequest(request: SigningRequest): Promise<void> {
   const signingClient = requireClient();
   const toastId = pushToast('pending', bridgeSigningToastTitle(request.kind), request.display?.summary ?? request.id);
@@ -39619,11 +39983,13 @@ async function handleBridgeSigningRequest(request: SigningRequest): Promise<void
     switch (request.kind) {
       case 'sign_message': {
         const opts = requestSignOptions(request);
-        const proof = await runTransactionToastStep(
+        const proof = await runWalletSigningToastStep(
           toastContext,
           'Signing message',
           request.display?.summary ?? request.id,
-          () => signWalletProofMessage(request.payload.data, opts.summary ?? request.id, opts.cluster),
+          () => signWalletProofMessage(request.payload.data, opts.summary ?? request.id, opts.cluster, {
+            showLedgerDeviceToast: false,
+          }),
         );
         result = { signature: proof.signature };
         if (proof.proofEncoding === 'tx-memo-proof') {
@@ -39632,7 +39998,7 @@ async function handleBridgeSigningRequest(request: SigningRequest): Promise<void
         break;
       }
       case 'sign_transaction':
-        result = await runTransactionToastStep(
+        result = await runWalletSigningToastStep(
           toastContext,
           'Signing transaction',
           request.display?.summary ?? request.id,
@@ -39641,7 +40007,7 @@ async function handleBridgeSigningRequest(request: SigningRequest): Promise<void
         break;
       case 'sign_and_send_transaction':
         if (state.capabilities?.supports.signTransaction === true) {
-          const signed = await runTransactionToastStep(
+          const signed = await runWalletSigningToastStep(
             toastContext,
             'Signing transaction',
             request.display?.summary ?? request.id,
@@ -39872,6 +40238,7 @@ async function clearDeviceAgentForWalletBoundary(): Promise<void> {
   try {
     state.aiSettings.apiKey = '';
     clearCurrentSessionAiApiKey();
+    clearDeviceAgentStatusCache();
   } catch {
     // sessionStorage write failures are non-fatal at wallet boundaries.
   }
@@ -41388,7 +41755,7 @@ async function bridgeOfflineDiagnosticMessage(): Promise<string> {
   return `Local approval bridge is not running at ${bridgeEndpoint}. Run ${NPM_EXEC_COMMAND}, keep that terminal open, then click Check local bridge.`;
 }
 
-function inferredWalletHostUrl(options?: { wallet?: string; route?: '/app' | '/connect' }): string {
+function inferredWalletHostUrl(options?: { wallet?: string; route?: '/app' | '/connect' | '/approve' | '/sign' }): string {
   const walletHint = options?.wallet?.trim();
   // Vite sets `import.meta.env.PROD` based on the build mode:
   //   - `pnpm desktop:tauri:dev` runs `vite dev`  → PROD === false → localhost
@@ -48051,7 +48418,7 @@ function shouldProbeBridgeOnStartup(): boolean {
 }
 
 function shouldReconnectBridgeOnStartup(): boolean {
-  if (!cliIntentAllowsBridgeRequestClaim(cliView?.intent)) return false;
+  if (!cliIntentAllowsBridgeRequestClaim(cliView?.intent, cliView?.surface)) return false;
   return Boolean(
     state.address &&
       state.capabilities &&
@@ -48532,10 +48899,10 @@ function verifyMessageSignature(message: string, signature: string): boolean {
   }
 }
 
-function verifyProofSignature(
+async function verifyProofSignature(
   message: string,
   proof: { signature: string; proofEncoding?: 'utf8-message' | 'tx-memo-proof'; proofTxBase64?: string },
-): boolean {
+): Promise<boolean> {
   if (proof.proofEncoding !== 'tx-memo-proof' || !proof.proofTxBase64) {
     return verifyMessageSignature(message, proof.signature);
   }
@@ -48546,7 +48913,7 @@ function verifyProofSignature(
     try {
       const tx = Transaction.from(bytes);
       const memoIx = tx.instructions.find((ix) => ix.programId.toBase58() === 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
-      if (!memoIx || new TextDecoder().decode(memoIx.data) !== message) return false;
+      if (!memoIx || !(await memoProofMatchesMessage(memoIx.data, message))) return false;
       return nacl.sign.detached.verify(tx.serializeMessage(), sigBytes, pubkey);
     } catch {
       // Versioned transaction fallback
@@ -48557,11 +48924,21 @@ function verifyProofSignature(
     if (memoProgramKey < 0) return false;
     const memoIx = vtx.message.compiledInstructions.find((ix) => ix.programIdIndex === memoProgramKey);
     if (!memoIx) return false;
-    if (new TextDecoder().decode(memoIx.data) !== message) return false;
+    if (!(await memoProofMatchesMessage(memoIx.data, message))) return false;
     return nacl.sign.detached.verify(vtx.message.serialize(), sigBytes, pubkey);
   } catch {
     return false;
   }
+}
+
+async function memoProofMatchesMessage(data: Uint8Array, message: string): Promise<boolean> {
+  const memoText = new TextDecoder().decode(data);
+  const prefix = 'Agentic plan review proof v1\nSHA-256: ';
+  if (memoText.startsWith(prefix)) {
+    const claimed = memoText.slice(prefix.length);
+    return claimed.length === 64 && claimed === await sha256(message);
+  }
+  return memoText === message;
 }
 
 function newId(prefix: string): string {

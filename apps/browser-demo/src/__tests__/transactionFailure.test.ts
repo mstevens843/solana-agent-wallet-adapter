@@ -31,6 +31,7 @@ describe('classifyTransactionFailure — wallet rejected', () => {
     ['approval denied', 'Approval denied by wallet.'],
     ['wallet declined', 'Wallet declined the request.'],
     ['request rejected', 'Phantom: request rejected.'],
+    ['rejected the request', 'Ledger rejected the request.'],
   ];
 
   for (const [label, message] of cases) {

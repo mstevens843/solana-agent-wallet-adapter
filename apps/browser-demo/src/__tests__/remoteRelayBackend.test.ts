@@ -106,6 +106,15 @@ describe('RemoteRelayBackend', () => {
     expect(result.result).toBeUndefined();
   });
 
+  it('poll() treats relay rate limits as still pending', async () => {
+    fetchSpy.mockResolvedValueOnce(
+      jsonResponse({ error: 'rate_limited', retryAfterMs: 0 }, { status: 429 }),
+    );
+    const backend = new RemoteRelayBackend({ baseUrl: BASE, pairingUuid: UUID, rateLimitRetryMs: 0 });
+    const result = await backend.poll('req-3' as never);
+    expect(result).toEqual({ requestId: 'req-3', status: 'pending' });
+  });
+
   it('cancel() is a no-op (relay has no cancellation primitive)', async () => {
     const backend = new RemoteRelayBackend({ baseUrl: BASE, pairingUuid: UUID });
     await expect(backend.cancel('whatever' as never)).resolves.toBeUndefined();
@@ -120,8 +129,40 @@ describe('RemoteRelayBackend', () => {
     });
   });
 
-  it('throws ProtocolError on non-OK non-404 responses', async () => {
-    fetchSpy.mockResolvedValueOnce(jsonResponse({ error: 'rate_limited' }, { status: 429 }));
+  it('submit() retries relay rate limits before returning the approval', async () => {
+    fetchSpy
+      .mockResolvedValueOnce(jsonResponse({ error: 'rate_limited', retryAfterMs: 0 }, { status: 429 }))
+      .mockResolvedValueOnce(jsonResponse({ requestId: 'req-4', status: 'pending' }));
+    const backend = new RemoteRelayBackend({
+      baseUrl: BASE,
+      pairingUuid: UUID,
+      rateLimitRetryMs: 0,
+      submitRetryCount: 1,
+    });
+    const result = await backend.submit({ kind: 'sign-message' } as never);
+    expect(result.requestId).toBe('req-4');
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('throws ProtocolError when submit rate limits out after retries', async () => {
+    fetchSpy
+      .mockResolvedValueOnce(jsonResponse({ error: 'rate_limited', retryAfterMs: 0 }, { status: 429 }))
+      .mockResolvedValueOnce(jsonResponse({ error: 'rate_limited', retryAfterMs: 0 }, { status: 429 }));
+    const backend = new RemoteRelayBackend({
+      baseUrl: BASE,
+      pairingUuid: UUID,
+      rateLimitRetryMs: 0,
+      submitRetryCount: 1,
+    });
+    await expect(backend.submit({} as never)).rejects.toMatchObject({
+      code: 'wallet_unreachable',
+      message: 'Pairing relay is rate-limited. Retry in 0s.',
+    });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('throws ProtocolError on non-OK non-404 non-rate-limit responses', async () => {
+    fetchSpy.mockResolvedValueOnce(jsonResponse({ error: 'server_broke' }, { status: 500 }));
     const backend = new RemoteRelayBackend({ baseUrl: BASE, pairingUuid: UUID });
     await expect(backend.submit({} as never)).rejects.toBeInstanceOf(ProtocolError);
   });

@@ -86,6 +86,7 @@ const WALLET_REJECTED_PATTERNS = [
   'approval denied',
   'wallet declined',
   'request rejected',
+  'rejected the request',
 ];
 
 const WALLET_UNAVAILABLE_PATTERNS = [

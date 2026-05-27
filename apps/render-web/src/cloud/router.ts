@@ -27,6 +27,7 @@ import {
   requestCoinGeckoSolanaTokenEvidence,
   type AiApiFormat,
   type AiAskRequest,
+  type AiChatRequest,
   type AiPlanRequest,
   type AiReviewRequest,
   type BirdeyeHistoryPriceType,
@@ -203,6 +204,7 @@ const REGISTERED_API_ROUTES = [
   'POST /api/ai/generate-plan',
   'POST /api/ai/review-plan',
   'POST /api/ai/ask-about-plan',
+  'POST /api/ai/chat',
   'GET /api/device-agent/status',
   'POST /api/device-agent/control',
   'POST /api/auth/nonce',
@@ -289,6 +291,11 @@ interface HostedAiReviewBody {
 }
 
 interface HostedAiAskBody {
+  settings?: HostedAiBody['settings'];
+  request?: unknown;
+}
+
+interface HostedAiChatBody {
   settings?: HostedAiBody['settings'];
   request?: unknown;
 }
@@ -757,7 +764,7 @@ async function enforceAuthRateLimit(
     now: clock.now(),
   });
   if (!allowed) {
-    throw new ApiError(429, route === '/api/ai/generate-plan' || route === '/api/ai/review-plan' || route === '/api/ai/ask-about-plan'
+    throw new ApiError(429, route === '/api/ai/generate-plan' || route === '/api/ai/review-plan' || route === '/api/ai/ask-about-plan' || route === '/api/ai/chat'
       ? 'Too many hosted AI drafting attempts. Try again later.'
       : route === '/api/auth/nonce' || route === '/api/auth/verify-wallet'
         ? 'Too many wallet auth attempts. Try again later.'
@@ -770,6 +777,7 @@ export function authRateLimitedRoute(pathname: string): AuthRateLimitInput['rout
   if (pathname === '/api/ai/generate-plan') return pathname;
   if (pathname === '/api/ai/review-plan') return pathname;
   if (pathname === '/api/ai/ask-about-plan') return pathname;
+  if (pathname === '/api/ai/chat') return pathname;
   if (pathname.startsWith('/api/plans')) return '/api/plans:*';
   if (pathname.startsWith('/api/approvals')) return '/api/approvals:*';
   if (pathname.startsWith('/api/connector')) return '/api/approvals:*';
@@ -801,7 +809,7 @@ function rateLimitWindowMs(route: string): number {
 
 function rateLimitMaxAttempts(route: string): number {
   if (route === '/api/auth/nonce' || route === '/api/auth/verify-wallet') return AUTH_RATE_LIMIT_MAX_ATTEMPTS;
-  if (route === '/api/ai/generate-plan' || route === '/api/ai/review-plan' || route === '/api/ai/ask-about-plan') return HOSTED_AI_RATE_LIMIT_MAX_ATTEMPTS;
+  if (route === '/api/ai/generate-plan' || route === '/api/ai/review-plan' || route === '/api/ai/ask-about-plan' || route === '/api/ai/chat') return HOSTED_AI_RATE_LIMIT_MAX_ATTEMPTS;
   return WRITE_RATE_LIMIT_MAX_ATTEMPTS;
 }
 
@@ -951,6 +959,12 @@ async function routeApiRequest(
   if (url.pathname === '/api/ai/ask-about-plan') {
     requireMethod(req, 'POST');
     await handleHostedAiAskRequest(req, res, store, clock);
+    return;
+  }
+
+  if (url.pathname === '/api/ai/chat') {
+    requireMethod(req, 'POST');
+    await handleHostedAiChatRequest(req, res, store, clock);
     return;
   }
 
@@ -2602,12 +2616,27 @@ function hostedAskRequest(input: unknown): AiAskRequest {
   return input as AiAskRequest;
 }
 
+function hostedChatRequest(input: unknown): AiChatRequest {
+  if (!input || typeof input !== 'object') {
+    throw new ApiError(400, 'Missing AI chat request.');
+  }
+  const record = input as { messages?: unknown };
+  if (!Array.isArray(record.messages) || record.messages.length === 0) {
+    throw new ApiError(400, 'Agent chat: a user message is required.');
+  }
+  return input as AiChatRequest;
+}
+
 function hostedReviewRequestForSession(input: unknown, walletAddress: string): AiReviewRequest {
   return withSessionWalletContext(hostedReviewRequest(input), walletAddress);
 }
 
 function hostedAskRequestForSession(input: unknown, walletAddress: string): AiAskRequest {
   return withSessionWalletContext(hostedAskRequest(input), walletAddress);
+}
+
+function hostedChatRequestForSession(input: unknown, walletAddress: string): AiChatRequest {
+  return withSessionWalletContext(hostedChatRequest(input), walletAddress);
 }
 
 function withSessionWalletContext<T extends { walletAddress?: string; context?: Record<string, unknown>; cluster?: string }>(
@@ -2663,6 +2692,42 @@ async function handleHostedAiAskRequest(
     const code = typeof err === 'object' && err !== null && 'code' in err ? String((err as { code?: unknown }).code) : '';
     const status = code === 'invalid_request' ? 400 : 502;
     const message = err instanceof Error ? redactSecrets(err.message, settings.apiKey) : 'AI provider ask request failed.';
+    writeJson(res, status, { error: message });
+  }
+}
+
+async function handleHostedAiChatRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required for hosted AI agent chat.');
+  }
+  const body = await readJsonBody(req) as HostedAiChatBody;
+  const settings = hostedSettings(body.settings);
+  const request = hostedChatRequestForSession(body.request, session.walletAddress);
+  const planner = new BridgeAiPlanner();
+
+  try {
+    planner.setSessionKey({
+      apiKey: settings.apiKey,
+      provider: settings.provider,
+      apiFormat: settings.apiFormat,
+      baseUrl: settings.baseUrl,
+      model: settings.model,
+    });
+    writeJson(res, 200, await runWithHostedAiTimeout(planner.chat(request)));
+  } catch (err) {
+    if (err instanceof ApiError) {
+      writeJson(res, err.status, { error: err.message });
+      return;
+    }
+    const code = typeof err === 'object' && err !== null && 'code' in err ? String((err as { code?: unknown }).code) : '';
+    const status = code === 'invalid_request' ? 400 : 502;
+    const message = err instanceof Error ? redactSecrets(err.message, settings.apiKey) : 'AI provider chat request failed.';
     writeJson(res, status, { error: message });
   }
 }

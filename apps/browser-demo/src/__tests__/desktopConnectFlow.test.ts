@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildDesktopBrowserConnectUrl,
+  buildDesktopBrowserIntentUrl,
   desktopBridgeNotReadyMessage,
   initialDesktopConnectFlowState,
   isDesktopBridgeReady,
@@ -45,6 +46,20 @@ describe('buildDesktopBrowserConnectUrl', () => {
       bridgeToken: rotatedToken,
     }));
     expect(url.searchParams.get('token')).toBe(rotatedToken);
+  });
+
+  it('builds a dedicated desktop /sign URL for one request', () => {
+    const url = new URL(buildDesktopBrowserIntentUrl({
+      walletHostUrl: 'http://127.0.0.1:5174/connect',
+      bridgeUrl: 'http://127.0.0.1:8787',
+      bridgeToken: 'test-token',
+      intent: 'sign',
+      requestId: 'req-123',
+    }));
+    expect(url.pathname).toBe('/sign');
+    expect(url.searchParams.get('intent')).toBe('sign');
+    expect(url.searchParams.get('surface')).toBe('desktop');
+    expect(url.searchParams.get('requestId')).toBe('req-123');
   });
 });
 

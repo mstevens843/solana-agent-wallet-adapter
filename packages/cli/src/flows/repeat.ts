@@ -1,7 +1,7 @@
 import type { GlobalOptions } from '../shared/types.js';
 import { bridgeRequest } from '../http/index.js';
 import { select, input, badge, header } from '../tui/index.js';
-import { promptSendTokensForm } from '../forms/sendTokens.js';
+import { promptSendTokensForm, type SendTokensDraft } from '../forms/sendTokens.js';
 import { promptConnectorForm } from '../forms/connectorForm.js';
 import { listRecurringConnectors, listActions, humanizeActionKind } from '../forms/connectorMeta.js';
 import { maybeEnhanceWithAi } from '../forms/aiEnhance.js';
@@ -46,16 +46,29 @@ export async function runRepeatMenu(options: GlobalOptions): Promise<void> {
   return runRepeatConnector(options);
 }
 
+export interface ScheduledTransferPrefill extends Partial<SendTokensDraft> {
+  cadence?: typeof CADENCE_CHOICES[number]['value'];
+  localTime?: string;
+}
+
 export async function runRepeatScheduled(options: GlobalOptions): Promise<void> {
+  return runRepeatScheduledWithPrefill(options);
+}
+
+export async function runRepeatScheduledWithPrefill(
+  options: GlobalOptions,
+  prefill: ScheduledTransferPrefill = {},
+): Promise<void> {
   console.log(header('New scheduled transfer'));
-  const draft = await promptSendTokensForm(options, {}, { defaultToken: 'USDC' });
+  const draft = await promptSendTokensForm(options, prefill, { defaultToken: prefill.token ?? 'USDC' });
   const cadence = await select<typeof CADENCE_CHOICES[number]['value']>({
     message: 'Cadence',
+    ...(prefill.cadence ? { default: prefill.cadence } : {}),
     choices: [...CADENCE_CHOICES],
   });
   const localTime = await input({
     message: 'Local time (HH:MM, 24h — blank to skip)',
-    default: '09:00',
+    default: prefill.localTime ?? '09:00',
     validate: validateClockTime,
   });
 

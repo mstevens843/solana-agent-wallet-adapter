@@ -11,9 +11,9 @@ use std::sync::Mutex;
 use rand::RngCore;
 
 use super::apdu::{
-    build_get_app_configuration_apdu, build_get_pubkey_apdu, build_sign_apdu,
+    build_get_app_configuration_apdu, build_get_pubkey_apdu, build_sign_apdus,
     build_sign_offchain_message_apdu, encode_derivation_path, parse_app_configuration,
-    parse_pubkey, parse_signature, wrap_offchain_message, AppConfiguration,
+    parse_pubkey, parse_response, parse_signature, wrap_offchain_message, AppConfiguration,
 };
 use super::framing::exchange_apdu;
 use super::transport::{LedgerDeviceInfo, LedgerHidTransport};
@@ -127,8 +127,11 @@ pub fn sign_transaction(
     let (mut transport, _meta) = LedgerHidTransport::open_first()?;
     let channel = random_channel();
     let path_payload = encode_derivation_path(derivation_path)?;
-    let apdu = build_sign_apdu(&path_payload, transaction)?;
-    let response = exchange_apdu(&mut transport, channel, &apdu, READ_TIMEOUT_MS)?;
+    let response = exchange_chunked_apdus(
+        &mut transport,
+        channel,
+        &build_sign_apdus(&path_payload, transaction)?,
+    )?;
     parse_signature(&response)
 }
 
@@ -145,7 +148,25 @@ pub fn sign_offchain_message(
     let channel = random_channel();
     let path_payload = encode_derivation_path(derivation_path)?;
     let enveloped = wrap_offchain_message(message)?;
-    let apdu = build_sign_offchain_message_apdu(&path_payload, &enveloped)?;
-    let response = exchange_apdu(&mut transport, channel, &apdu, READ_TIMEOUT_MS)?;
+    let response = exchange_chunked_apdus(
+        &mut transport,
+        channel,
+        &build_sign_offchain_message_apdu(&path_payload, &enveloped)?,
+    )?;
     parse_signature(&response)
+}
+
+fn exchange_chunked_apdus(
+    transport: &mut LedgerHidTransport,
+    channel: u16,
+    apdus: &[Vec<u8>],
+) -> Result<Vec<u8>, String> {
+    let mut response = Vec::new();
+    for (index, apdu) in apdus.iter().enumerate() {
+        response = exchange_apdu(transport, channel, apdu, READ_TIMEOUT_MS)?;
+        if index + 1 < apdus.len() {
+            parse_response(&response)?;
+        }
+    }
+    Ok(response)
 }

@@ -153,6 +153,27 @@ export interface AgentPlanAskResult {
   source: 'ai';
 }
 
+export type AgentChatRole = 'user' | 'assistant';
+
+export interface AgentChatMessage {
+  role: AgentChatRole;
+  content: string;
+}
+
+export interface AgentChatRequest {
+  messages: AgentChatMessage[];
+  walletAddress?: string;
+  cluster?: string;
+  context?: Record<string, unknown>;
+}
+
+export interface AgentChatResult {
+  answer: string;
+  citations?: Array<{ kind: string; ref: string; title?: string }>;
+  checkedAt: string;
+  source: 'ai';
+}
+
 export const SHARED_AGENT_PLAN_SAFEGUARDS = [
   'Wallet approval is required before any signature or transaction leaves the device.',
   'The agent never receives the wallet private key or seed phrase.',

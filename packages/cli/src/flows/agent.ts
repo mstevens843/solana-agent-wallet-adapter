@@ -1,3 +1,12 @@
+import {
+  defaultTemplateFieldValues,
+  inferTemplateIdForPrompt,
+  inferredTemplateParameters,
+  templateById,
+  type AgentChatMessage,
+  type AiPlanRequest,
+} from '@solana-agent-wallet-adapter/workflow';
+
 import type { GlobalOptions } from '../shared/types.js';
 import { bridgeRequest, renderWebRequest } from '../http/index.js';
 import { input, confirm, select, spinner, header, kv, badge, divider, multilineInput } from '../tui/index.js';
@@ -9,11 +18,14 @@ import {
   agentAiRouteLabel,
   agentAiSetupHint,
   askAgentPlan,
+  chatAgent,
   generateAgentPlan,
   resolveAgentAiRoute,
   reviewAgentPlan,
   type AgentAiRoute,
 } from '../ai/hosted.js';
+import { runNewConnector, runNewMenu, runNewSwapWithPrefill, runNewTokensWithPrefill } from './new.js';
+import { runRepeatMenu, runRepeatScheduledWithPrefill, type ScheduledTransferPrefill } from './repeat.js';
 
 // `runAgent` accepts an optional plan-proof signer so it can offer to sign the
 // AI's plan as off-chain evidence (separate from queueing). The signer lives
@@ -33,11 +45,276 @@ export function getLastPlan(): AgentPlan | null {
   return LAST_PLAN;
 }
 
-// `/agent` — the AI front door. Sign-in → free-text intent → optional policy
-// NOTE → bridge AI thinks → review-plan with atom resolution → 4-choice
-// picker (sign proof · queue · both · done). Bridge default, device-agent
-// honored via prefs.
+// `/agent` — chat-first agent mode. Users can investigate freely, then type
+// /plan, /new, or /prepare to hand the transcript into the normal /new flow.
 export async function runAgent(options: GlobalOptions, signPlanFn?: SignPlanFn): Promise<void> {
+  void signPlanFn;
+  await runAgentChat(options);
+}
+
+interface AgentChatResponse {
+  answer?: string;
+  citations?: Array<{ kind?: string; ref?: string; title?: string }>;
+}
+
+async function runAgentChat(options: GlobalOptions): Promise<void> {
+  console.log(header('Agent Chat'));
+  console.log(badge('Chat freely. Type /plan, /new, or /prepare to turn this into a wallet request. Type /exit to return.', 'muted'));
+
+  const route = await resolveAgentAiRoute(options);
+  if (route.kind === 'none') {
+    console.log(badge(agentAiSetupHint(route), 'warn'));
+    return;
+  }
+  console.log(badge(`AI route: ${agentAiRouteLabel(route)}`, 'muted'));
+
+  const messages: AgentChatMessage[] = [];
+  while (true) {
+    const raw = await multilineInput({ message: 'You' });
+    const text = raw.trim();
+    if (!text) continue;
+
+    const command = parseAgentChatCommand(text);
+    if (command.kind === 'exit') {
+      console.log(badge('Leaving agent chat.', 'muted'));
+      return;
+    }
+    if (command.kind === 'help') {
+      printAgentChatHelp();
+      continue;
+    }
+    if (command.kind === 'prepare') {
+      if (command.extra) messages.push({ role: 'user', content: command.extra });
+      await preparePlanFromAgentChat(options, route, messages);
+      return;
+    }
+
+    messages.push({ role: 'user', content: text });
+    const spin = spinner('Agent thinking...');
+    try {
+      const response = await chatAgent<AgentChatResponse>(options, route, { messages });
+      spin.succeed('Agent answered.');
+      const answer = renderChatAnswer(response);
+      if (answer) messages.push({ role: 'assistant', content: answer });
+    } catch (err) {
+      const friendly = friendlyBridgeError(err, options);
+      spin.fail(friendly ?? `Agent chat failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+}
+
+type AgentChatCommand =
+  | { kind: 'chat' }
+  | { kind: 'help' }
+  | { kind: 'exit' }
+  | { kind: 'prepare'; extra: string };
+
+function parseAgentChatCommand(text: string): AgentChatCommand {
+  const match = text.match(/^\/([a-z-]+)(?:\s+([\s\S]*))?$/i);
+  if (!match) return { kind: 'chat' };
+  const name = match[1]?.toLowerCase() ?? '';
+  const extra = match[2]?.trim() ?? '';
+  if (name === 'exit' || name === 'quit' || name === 'back') return { kind: 'exit' };
+  if (name === 'help' || name === '?') return { kind: 'help' };
+  if (name === 'plan' || name === 'new' || name === 'prepare') return { kind: 'prepare', extra };
+  return { kind: 'chat' };
+}
+
+function printAgentChatHelp(): void {
+  console.log();
+  console.log(header('Agent chat commands'));
+  console.log('/plan      Prepare a wallet request from this chat');
+  console.log('/new       Same as /plan');
+  console.log('/prepare   Same as /plan');
+  console.log('/exit      Return to the main CLI');
+  console.log(divider());
+}
+
+function renderChatAnswer(raw: AgentChatResponse): string {
+  const answer = typeof raw.answer === 'string' ? raw.answer : JSON.stringify(raw, null, 2);
+  console.log();
+  console.log(header('Agent'));
+  console.log(answer);
+  const citations = Array.isArray(raw.citations) ? raw.citations : [];
+  if (citations.length > 0) {
+    console.log();
+    console.log(header('Sources'));
+    for (const citation of citations) {
+      const title = citation.title ?? citation.ref ?? '?';
+      const kind = citation.kind ?? 'url';
+      console.log(`  · ${title}  ${badge(kind, 'muted')}`);
+    }
+  }
+  console.log(divider());
+  return answer;
+}
+
+async function preparePlanFromAgentChat(
+  options: GlobalOptions,
+  route: AgentAiRoute,
+  messages: AgentChatMessage[],
+): Promise<void> {
+  if (messages.length === 0) {
+    const firstRequest = await multilineInput({ message: 'What should the wallet prepare?' });
+    if (!firstRequest.trim()) {
+      console.log(badge('No wallet request provided.', 'muted'));
+      return;
+    }
+    messages.push({ role: 'user', content: firstRequest.trim() });
+  }
+
+  const transcript = agentChatTranscript(messages);
+  const request = agentChatPlanRequest(transcript);
+  const spin = spinner('Preparing draft from chat...');
+  let plan: AgentPlan | null = null;
+  try {
+    plan = (await generateAgentPlan<AgentPlan>(options, route, request as unknown as Record<string, unknown>)) ?? null;
+    spin.succeed('Draft prepared.');
+  } catch (err) {
+    const friendly = friendlyBridgeError(err, options);
+    spin.fail(friendly ?? `Plan preparation failed: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+
+  renderPlan(plan);
+  LAST_PLAN = plan;
+  if (!plan) return;
+  await runNewFromAgentPlan(options, plan, transcript);
+}
+
+function agentChatTranscript(messages: AgentChatMessage[]): string {
+  return messages
+    .map((message) => `${message.role === 'assistant' ? 'Agent' : 'User'}: ${message.content}`)
+    .join('\n')
+    .slice(-8_000);
+}
+
+function agentChatPlanRequest(transcript: string): AiPlanRequest {
+  const prompt = [
+    'Prepare the concrete wallet request implied by this agent chat.',
+    'Use only details the user supplied or explicitly accepted.',
+    'If key fields are missing, leave them for the normal CLI form to ask.',
+    '',
+    transcript,
+  ].join('\n');
+  const template = templateById(inferTemplateIdForPrompt(transcript, 'custom-request'));
+  const parameters = inferredTemplateParameters(
+    template,
+    transcript,
+    defaultTemplateFieldValues(template),
+  );
+  return {
+    prompt,
+    userNotes: `Prepared from /agent chat.\n${transcript}`.slice(0, 4_000),
+    template: {
+      id: template.id,
+      category: template.category,
+      title: template.title,
+      description: template.description,
+      actionType: template.actionType,
+      risk: template.risk,
+    },
+    parameters,
+  };
+}
+
+async function runNewFromAgentPlan(options: GlobalOptions, plan: AgentPlan, transcript: string): Promise<void> {
+  const merged: AgentPlan = plan.plan ? { ...plan, ...plan.plan } : plan;
+  const template = templateById(inferTemplateIdForPrompt(transcript, 'custom-request'));
+  const defaults = defaultTemplateFieldValues(template);
+  const params = merged.parameters ?? {};
+  const note = agentPlanNote(merged, transcript);
+
+  const param = (key: string): string | undefined => {
+    const raw = params[key];
+    const value = raw === undefined || raw === null ? '' : String(raw).trim();
+    if (!value) return undefined;
+    const fallback = defaults[key]?.trim();
+    if (fallback && value === fallback && !transcript.toLowerCase().includes(value.toLowerCase())) {
+      return undefined;
+    }
+    return value;
+  };
+
+  if (merged.actionType === 'transfer_sol' || merged.actionType === 'transfer_spl' || merged.templateId === 'send-tokens') {
+    await runNewTokensWithPrefill(options, removeUndefined({
+      token: param('token') ?? (merged.actionType === 'transfer_sol' ? 'SOL' : undefined),
+      recipient: param('recipient'),
+      amount: param('amount') ?? param('amountSol') ?? param('amountSpl'),
+      note,
+    }));
+    return;
+  }
+
+  if (merged.actionType === 'swap' || merged.templateId === 'swap') {
+    const slippageRaw = param('slippageBps');
+    const slippageBps = slippageRaw !== undefined && Number.isFinite(Number(slippageRaw)) ? Number(slippageRaw) : undefined;
+    await runNewSwapWithPrefill(options, removeUndefined({
+      inputToken: param('inputToken'),
+      outputToken: param('outputToken'),
+      amount: param('amount'),
+      slippageBps,
+      note,
+    }));
+    return;
+  }
+
+  if (merged.actionType === 'recurring_payment' || merged.templateId === 'subscription') {
+    const cadence = normalizeScheduledCadence(param('cadence'));
+    const prefill: ScheduledTransferPrefill = removeUndefined({
+      token: param('token'),
+      recipient: param('recipient'),
+      amount: param('amount'),
+      note,
+      cadence,
+    });
+    await runRepeatScheduledWithPrefill(options, prefill);
+    return;
+  }
+
+  if (template.id === 'dca') {
+    console.log(badge('The agent inferred a DCA or recurring swap. Opening the repeat flow so you can choose the exact recurring engine.', 'muted'));
+    await runRepeatMenu(options);
+    return;
+  }
+
+  if (merged.actionType === 'blink_action') {
+    console.log(badge('The agent inferred a connector/Blink action. Opening the connector flow so you can pick the exact protocol action.', 'muted'));
+    await runNewConnector(options);
+    return;
+  }
+
+  console.log(badge('The chat did not resolve to a concrete transfer, swap, repeat payment, or connector action. Opening /new.', 'warn'));
+  await runNewMenu(options);
+}
+
+function agentPlanNote(plan: AgentPlan, transcript: string): string | undefined {
+  const params = plan.parameters ?? {};
+  const explicit = typeof params.note === 'string' ? params.note : typeof params.memo === 'string' ? params.memo : '';
+  if (explicit.trim()) return explicit.trim().slice(0, 500);
+  const lastUser = transcript
+    .split('\n')
+    .reverse()
+    .find((line) => line.startsWith('User: '))
+    ?.replace(/^User:\s*/, '')
+    .trim();
+  return lastUser ? `Agent chat: ${lastUser}`.slice(0, 500) : undefined;
+}
+
+function normalizeScheduledCadence(value: string | undefined): ScheduledTransferPrefill['cadence'] | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === 'weekly' || normalized === 'monthly' || normalized === 'interval_days' || normalized === 'interval_hours' || normalized === 'interval_minutes') {
+    return normalized;
+  }
+  if (normalized === 'days') return 'interval_days';
+  if (normalized === 'hours') return 'interval_hours';
+  if (normalized === 'minutes') return 'interval_minutes';
+  return undefined;
+}
+
+// Legacy plan-first body retained for tests and future direct-plan entrypoints.
+// The public /agent command now starts in chat mode above.
+async function runAgentPlanFirst(options: GlobalOptions, signPlanFn?: SignPlanFn): Promise<void> {
   console.log(header('Agent — natural language to wallet plan'));
 
   const session = await loadSession(options).catch(() => null);
@@ -391,6 +668,14 @@ interface AgentPlan {
   templateId?: string;
   route?: string;
   riskLevel?: string;
+  risk?: string;
+  source?: string;
+  category?: string;
+  actionType?: string;
+  templateTitle?: string;
+  userNotes?: string;
+  fields?: Array<{ label: string; value: string }>;
+  safeguards?: string[];
   findings?: string[];
   warnings?: string[];
   parameters?: Record<string, unknown>;
@@ -409,14 +694,17 @@ function renderPlan(plan: AgentPlan | null): void {
   const rows: Array<[string, string]> = [];
   if (merged.intent) rows.push(['Intent', merged.intent]);
   if (merged.summary) rows.push(['Summary', merged.summary]);
-  if (merged.templateId) rows.push(['Template', merged.templateId]);
+  if (merged.templateId ?? merged.templateTitle) rows.push(['Template', merged.templateId ?? merged.templateTitle ?? '']);
+  if (merged.actionType) rows.push(['Action', merged.actionType]);
   if (merged.route) rows.push(['Route', merged.route]);
-  if (merged.riskLevel) {
-    const colored = merged.riskLevel === 'high'
-      ? badge(merged.riskLevel, 'err')
-      : merged.riskLevel === 'medium'
-        ? badge(merged.riskLevel, 'warn')
-        : badge(merged.riskLevel, 'ok');
+  const riskText = merged.riskLevel ?? merged.risk;
+  if (riskText) {
+    const normalizedRisk = riskText.toLowerCase();
+    const colored = normalizedRisk.includes('high')
+      ? badge(riskText, 'err')
+      : normalizedRisk.includes('medium')
+        ? badge(riskText, 'warn')
+        : badge(riskText, 'ok');
     rows.push(['Risk', colored]);
   }
   if (merged.parameters && Object.keys(merged.parameters).length > 0) {

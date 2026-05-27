@@ -56,9 +56,6 @@ export function mobileAiModeDisabledReason(input: {
   cloudSessionMatchesWallet: boolean;
 }): string {
   if (!input.mobileAiPathPolicy) return '';
-  if (input.mode === 'hosted' && !input.cloudSessionMatchesWallet) {
-    return MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED;
-  }
   if (input.mode === 'bridge' || input.mode === 'session') {
     return 'This AI path is not available in the Android app or mobile web.';
   }

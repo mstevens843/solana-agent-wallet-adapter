@@ -178,7 +178,22 @@ export class LocalBridgeBackend implements WalletBackend {
     trace('bridge.request.cancelled', { requestId });
   }
 
-  nextPendingRequest(): SigningRequest | null {
+  nextPendingRequest(requestId?: SigningRequestId): SigningRequest | null {
+    if (requestId) {
+      const entry = this.pending.get(requestId);
+      if (!entry) return null;
+      this.expireIfNeeded(entry);
+      if (entry.approval.status !== 'pending') return null;
+      entry.claimed = true;
+      trace('bridge.request.claimed', {
+        requestId: entry.request.id,
+        kind: entry.request.kind,
+        cluster: entry.request.cluster,
+        explicit: true,
+      });
+      return entry.request;
+    }
+
     for (const entry of this.pending.values()) {
       this.expireIfNeeded(entry);
       if (entry.approval.status === 'pending' && !entry.claimed) {

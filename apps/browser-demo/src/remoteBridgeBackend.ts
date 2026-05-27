@@ -23,15 +23,19 @@ export interface RemoteBridgeBackendOptions {
   /** Bridge token printed by the bridge process / surfaced by the Tauri
    *  runtime. Authenticates every request via `x-agent-wallet-token`. */
   token: string;
+  /** Called after the bridge accepts a signing request and marks it pending. */
+  onPendingApproval?: (approval: ApprovalResource, request: SigningRequest) => void | Promise<void>;
 }
 
 export class RemoteBridgeBackend implements WalletBackend {
   private readonly bridgeUrl: string;
   private readonly token: string;
+  private readonly onPendingApproval?: RemoteBridgeBackendOptions['onPendingApproval'];
 
   constructor(options: RemoteBridgeBackendOptions) {
     this.bridgeUrl = options.bridgeUrl.endsWith('/') ? options.bridgeUrl : `${options.bridgeUrl}/`;
     this.token = options.token;
+    this.onPendingApproval = options.onPendingApproval;
   }
 
   async capabilities(): Promise<AdapterCapabilities> {
@@ -50,10 +54,19 @@ export class RemoteBridgeBackend implements WalletBackend {
   }
 
   async submit(request: SigningRequest): Promise<ApprovalResource> {
-    return this.request<ApprovalResource>('/bridge/submit', {
+    const approval = await this.request<ApprovalResource>('/bridge/submit', {
       method: 'POST',
       body: JSON.stringify({ request }),
     });
+    if (approval.status === 'pending') {
+      try {
+        await this.onPendingApproval?.(approval, request);
+      } catch (err) {
+        await this.cancel(approval.requestId).catch(() => undefined);
+        throw err;
+      }
+    }
+    return approval;
   }
 
   async poll(requestId: SigningRequestId): Promise<ApprovalResource> {

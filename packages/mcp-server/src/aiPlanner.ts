@@ -12,6 +12,9 @@ import {
   type AgentPlan as AiPlan,
   type AgentPlanAskRequest as AiAskRequest,
   type AgentPlanAskResult as AiAskResult,
+  type AgentChatMessage as AiChatMessage,
+  type AgentChatRequest as AiChatRequest,
+  type AgentChatResult as AiChatResult,
   type AgentPlanReviewDecision as AiReviewDecision,
   type AgentPlanReviewMode as AiReviewMode,
   type AgentPlanReviewRequest as AiReviewRequest,
@@ -37,6 +40,9 @@ export type {
   AiPlan,
   AiAskRequest,
   AiAskResult,
+  AiChatMessage,
+  AiChatRequest,
+  AiChatResult,
   AiPlanTemplateContext,
   AiReviewDecision,
   AiReviewMode,
@@ -523,6 +529,142 @@ export class BridgeAiPlanner {
       return this.generateAnthropicAsk(config, normalizedRequest);
     }
     return this.generateOpenAiCompatibleAsk(config, normalizedRequest);
+  }
+
+  async chat(request: AiChatRequest): Promise<AiChatResult> {
+    const config = this.config();
+    if (!config) {
+      throw new ProtocolError('unsupported_method', 'Bridge AI is not configured. Set AGENTIC_AI_API_KEY or provide a bridge session key.');
+    }
+    const normalizedRequest = normalizeChatRequest(request);
+    assertAiChatRequestAllowed(normalizedRequest);
+    if (chatNeedsWebResearch(normalizedRequest) && !supportsNativeWebResearch(config)) {
+      return unsupportedResearchChat(normalizedRequest, config);
+    }
+    if (shouldUseOpenAiResponses(config) && chatNeedsWebResearch(normalizedRequest)) {
+      return this.generateOpenAiResponsesChat(config, normalizedRequest);
+    }
+    if (config.apiFormat === 'anthropic') {
+      return this.generateAnthropicChat(config, normalizedRequest);
+    }
+    return this.generateOpenAiCompatibleChat(config, normalizedRequest);
+  }
+
+  private async generateOpenAiResponsesChat(
+    config: AiRuntimeConfig,
+    normalizedRequest: Required<AiChatRequest>,
+  ): Promise<AiChatResult> {
+    const messages = aiChatMessages(normalizedRequest);
+    const systemMessage = messages[0]?.content ?? '';
+    const userMessage = messages[1]?.content ?? JSON.stringify(normalizedRequest);
+    const research = chatNeedsWebResearch(normalizedRequest);
+    const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'openai-compatible')}/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${config.apiKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: config.model,
+        instructions: systemMessage,
+        input: userMessage,
+        max_output_tokens: 1800,
+        store: false,
+        ...(research ? {
+          tools: [openAiWebSearchTool()],
+          tool_choice: 'auto',
+          include: ['web_search_call.action.sources'],
+        } : {}),
+        ...(isReasoningModel(config.model) && {
+          reasoning: { effort: OPENAI_REASONING_EFFORT },
+        }),
+      }),
+    }).catch((err) => {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        `AI provider chat request failed. ${redactText(err instanceof Error ? err.message : String(err))}`,
+      );
+    });
+    const payload = await response.json().catch(() => ({})) as unknown;
+    if (!response.ok) {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        providerFailureMessage(payload, response.status),
+      );
+    }
+    assertCompleteOpenAiResponse(payload);
+    return aiChatFromPayload(payload);
+  }
+
+  private async generateOpenAiCompatibleChat(
+    config: AiRuntimeConfig,
+    normalizedRequest: Required<AiChatRequest>,
+  ): Promise<AiChatResult> {
+    const body = {
+      model: config.model,
+      messages: aiChatMessages(normalizedRequest),
+      ...(!isDefaultTemperatureOnlyModel(config.model) && { temperature: 0.3 }),
+    };
+    const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'openai-compatible')}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${config.apiKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }).catch((err) => {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        `AI provider chat request failed. ${redactText(err instanceof Error ? err.message : String(err))}`,
+      );
+    });
+    const payload = await response.json().catch(() => ({})) as unknown;
+    if (!response.ok) {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        providerFailureMessage(payload, response.status),
+      );
+    }
+    return aiChatFromPayload(payload);
+  }
+
+  private async generateAnthropicChat(
+    config: AiRuntimeConfig,
+    normalizedRequest: Required<AiChatRequest>,
+  ): Promise<AiChatResult> {
+    const messages = aiChatMessages(normalizedRequest);
+    const systemMessage = messages[0]?.content ?? '';
+    const userMessage = messages[1]?.content ?? JSON.stringify(normalizedRequest);
+    const research = chatNeedsWebResearch(normalizedRequest);
+    const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'anthropic')}/messages`, {
+      method: 'POST',
+      headers: {
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+        'x-api-key': config.apiKey,
+      },
+      body: JSON.stringify({
+        model: config.model,
+        max_tokens: 1200,
+        system: systemMessage,
+        messages: [{ role: 'user', content: userMessage }],
+        temperature: 0.3,
+        ...(research ? { tools: [anthropicWebSearchTool()] } : {}),
+      }),
+    }).catch((err) => {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        `AI provider chat request failed. ${redactText(err instanceof Error ? err.message : String(err))}`,
+      );
+    });
+    const payload = await response.json().catch(() => ({})) as unknown;
+    if (!response.ok) {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        providerFailureMessage(payload, response.status),
+      );
+    }
+    return aiChatFromPayload(payload);
   }
 
   private async generateOpenAiResponsesAsk(
@@ -1044,6 +1186,30 @@ function normalizeAskRequest(request: AiAskRequest): Required<AiAskRequest> {
   };
 }
 
+function normalizeChatRequest(request: AiChatRequest): Required<AiChatRequest> {
+  const messages = Array.isArray(request.messages)
+    ? request.messages
+        .map((message): AiChatMessage | null => {
+          if (!message || typeof message !== 'object') return null;
+          const role = message.role === 'assistant' ? 'assistant' : message.role === 'user' ? 'user' : null;
+          const content = typeof message.content === 'string' ? message.content.trim() : '';
+          if (!role || !content) return null;
+          return { role, content: content.slice(0, 2_000) };
+        })
+        .filter((message): message is AiChatMessage => Boolean(message))
+        .slice(-20)
+    : [];
+  if (messages.length === 0 || messages[messages.length - 1]?.role !== 'user') {
+    throw new ProtocolError('invalid_request', 'Agent chat: a user message is required.');
+  }
+  return {
+    messages,
+    walletAddress: request.walletAddress?.trim() || '',
+    cluster: request.cluster?.trim() || '',
+    context: withDefaultConnectorContext(request.context),
+  };
+}
+
 function normalizeConnectorContext(
   context: Array<Record<string, unknown>> | undefined,
 ): Array<Record<string, unknown>> {
@@ -1077,6 +1243,10 @@ function askNeedsWebResearch(request: Required<AiAskRequest>): boolean {
     request.plan.approval,
     request.plan.userNotes ?? '',
   ].join('\n'));
+}
+
+function chatNeedsWebResearch(request: Required<AiChatRequest>): boolean {
+  return textNeedsWebResearch(request.messages.map((message) => message.content).join('\n'));
 }
 
 function reviewNeedsWebResearch(request: Required<AiReviewRequest>): boolean {
@@ -1209,6 +1379,18 @@ function unsupportedResearchAsk(
   };
 }
 
+function unsupportedResearchChat(
+  _request: Required<AiChatRequest>,
+  config: AiRuntimeConfig,
+): AiChatResult {
+  const provider = config.provider || config.apiFormat;
+  return {
+    answer: `This question needs current outside facts, but ${provider} is not connected through a native web-search path. Switch to OpenAI or Anthropic through Hosted BYOK/Local bridge, or provide the current source fact in chat.`,
+    checkedAt: new Date().toISOString(),
+    source: 'ai',
+  };
+}
+
 function aiAskMessages(request: Required<AiAskRequest>): Array<{ role: 'system' | 'user'; content: string }> {
   const needsResearch = askNeedsWebResearch(request);
   return [
@@ -1232,6 +1414,37 @@ function aiAskMessages(request: Required<AiAskRequest>): Array<{ role: 'system' 
           maxSearches: RESEARCH_MAX_USES,
         },
         requiredBoundary: 'This is conversational Q&A about a draft. It cannot sign or submit a transaction.',
+      }),
+    },
+  ];
+}
+
+function aiChatMessages(request: Required<AiChatRequest>): Array<{ role: 'system' | 'user'; content: string }> {
+  const needsResearch = chatNeedsWebResearch(request);
+  return [
+    {
+      role: 'system',
+      content:
+        'You are the Solana Agent Wallet CLI research assistant. Help the wallet user reason about Solana, wallet actions, tokens, protocols, connector capabilities, and risk before any plan exists. Be concise and practical. If the user asks for current or outside facts and web search is available, search reliable sources and cite source URLs. You may help identify fields needed for a later wallet request, but do not queue, sign, approve, submit, or claim anything is safe or already approved. Never request private keys, seed phrases, session keys, wallet auth tokens, or unrestricted approvals. Remind the user to type /plan, /new, or /prepare only when they want to turn the conversation into a visible wallet request.',
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        messages: request.messages,
+        walletAddress: request.walletAddress || 'not_connected',
+        cluster: request.cluster || 'unknown',
+        context: request.context,
+        research: {
+          needed: needsResearch,
+          mode: needsResearch ? 'auto_current_facts' : 'not_required',
+          currentDate: new Date().toISOString(),
+          maxSearches: RESEARCH_MAX_USES,
+        },
+        commandHints: {
+          prepare: ['/plan', '/new', '/prepare'],
+          exit: '/exit',
+        },
+        requiredBoundary: 'This is pre-plan chat. It cannot sign, submit, queue, or approve a transaction.',
       }),
     },
   ];
@@ -1351,6 +1564,24 @@ function aiAskFromPayload(payload: unknown): AiAskResult {
   };
 }
 
+function aiChatFromPayload(payload: unknown): AiChatResult {
+  const text = extractModelText(payload).trim();
+  if (!text) {
+    throw new ProtocolError('wallet_unreachable', 'Agent did not return any chat text. Try again.');
+  }
+  const citations = sortResearchCitations(extractResearchCitations(payload));
+  return {
+    answer: compactReviewText(text, 1_600),
+    ...(citations.length ? { citations: citations.map((citation) => ({
+      kind: 'url',
+      ref: citation.url,
+      ...(citation.title ? { title: citation.title } : {}),
+    })) } : {}),
+    checkedAt: new Date().toISOString(),
+    source: 'ai',
+  };
+}
+
 function normalizeResearchEvidence(
   payload: unknown,
   request: Required<AiReviewRequest>,
@@ -1402,6 +1633,38 @@ function assertAiAskRequestAllowed(request: Required<AiAskRequest>): void {
       plan: {
         ...request.plan,
         userQuestion: request.question,
+      },
+    });
+  } catch (err) {
+    if (err instanceof Error) {
+      throw new ProtocolError('invalid_request', err.message);
+    }
+    throw err;
+  }
+}
+
+function assertAiChatRequestAllowed(request: Required<AiChatRequest>): void {
+  const transcript = request.messages.map((message) => `${message.role}: ${message.content}`).join('\n');
+  try {
+    assertPlanGuardrails({
+      source: 'ai',
+      category: 'conversation',
+      actionType: 'manual_review',
+      templateTitle: 'Agent chat',
+      userNotes: transcript.slice(-4_000),
+      prompt: transcript,
+      plan: {
+        source: 'ai',
+        category: 'conversation',
+        actionType: 'manual_review',
+        templateTitle: 'Agent chat',
+        parameters: {},
+        fields: [],
+        intent: 'Pre-plan wallet research chat',
+        route: 'No wallet action has been prepared.',
+        risk: 'Conversation only.',
+        approval: 'Wallet approval is required before any future signing or transaction.',
+        userNotes: transcript.slice(-4_000),
       },
     });
   } catch (err) {

@@ -31,14 +31,17 @@ const COMMON_TOKENS = [
 ] as const;
 
 async function pickToken(message: string, defaultValue: string): Promise<string> {
+  const trimmedDefault = defaultValue.trim();
+  const commonDefault = COMMON_TOKENS.some((t) => t.value === trimmedDefault);
   const choice = await select<string>({
     message,
-    default: defaultValue,
+    default: commonDefault ? trimmedDefault : '__custom__',
     choices: [...COMMON_TOKENS],
   });
   if (choice === '__custom__') {
     return input({
       message: 'Token symbol or mint',
+      ...(trimmedDefault && !commonDefault ? { default: trimmedDefault } : {}),
       validate: validateNonEmpty,
     }).then((v) => v.trim());
   }

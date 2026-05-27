@@ -840,6 +840,41 @@ describe('BridgeAiPlanner', () => {
     expect(messages?.[1]?.content).toContain('Kamino Finance');
   });
 
+  it('answers free agent chat without requiring a plan', async () => {
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({
+        url: String(url),
+        body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
+      });
+      return jsonResponse({
+        choices: [{
+          message: { content: 'Jupiter swaps should be checked for route, slippage, price impact, and wallet approval boundaries before preparing a request.' },
+        }],
+      });
+    }));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-chat',
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openai/gpt-5',
+    });
+
+    const result = await planner.chat({
+      messages: [{ role: 'user', content: 'What should I check before swapping SOL to USDC?' }],
+    });
+
+    expect(result.source).toBe('ai');
+    expect(result.answer).toContain('Jupiter swaps');
+    expect(calls[0]?.url).toBe('https://openrouter.ai/api/v1/chat/completions');
+    const messages = calls[0]?.body.messages as Array<{ role: string; content: string }>;
+    expect(messages?.[0]?.content).toContain('Solana Agent Wallet CLI research assistant');
+    expect(messages?.[1]?.content).toContain('/plan');
+    expect(messages?.[1]?.content).toContain('What should I check before swapping SOL to USDC?');
+  });
+
   it('rejects askAboutPlan with an empty question', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);

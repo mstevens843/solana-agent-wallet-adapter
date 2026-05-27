@@ -31,6 +31,14 @@ export interface DesktopBrowserConnectUrlInput {
   bridgeToken?: string;
 }
 
+export type DesktopBrowserIntent = 'connect' | 'approve' | 'sign';
+
+export interface DesktopBrowserIntentUrlInput extends DesktopBrowserConnectUrlInput {
+  intent: DesktopBrowserIntent;
+  requestId?: string;
+  actionId?: string;
+}
+
 export interface DesktopBridgeReadinessStatus {
   running: boolean;
   bridgeReachable: boolean;
@@ -39,17 +47,36 @@ export interface DesktopBridgeReadinessStatus {
 }
 
 export function buildDesktopBrowserConnectUrl(input: DesktopBrowserConnectUrlInput): string {
+  return buildDesktopBrowserIntentUrl({ ...input, intent: 'connect' });
+}
+
+export function buildDesktopBrowserIntentUrl(input: DesktopBrowserIntentUrlInput): string {
   const url = new URL(input.walletHostUrl);
-  url.pathname = '/connect';
+  url.pathname = desktopBrowserIntentPath(input.intent);
   url.searchParams.delete('wallet');
   const bridgeUrl = input.bridgeUrl?.trim();
   const bridgeToken = input.bridgeToken?.trim();
+  const requestId = input.requestId?.trim();
+  const actionId = input.actionId?.trim();
   if (bridgeUrl) url.searchParams.set('bridgeUrl', bridgeUrl);
   if (bridgeToken) url.searchParams.set('token', bridgeToken);
+  if (requestId) url.searchParams.set('requestId', requestId);
+  if (actionId) url.searchParams.set('actionId', actionId);
   url.searchParams.set('mode', 'cli');
-  url.searchParams.set('intent', 'connect');
+  url.searchParams.set('intent', input.intent);
   url.searchParams.set('surface', 'desktop');
   return url.toString();
+}
+
+function desktopBrowserIntentPath(intent: DesktopBrowserIntent): string {
+  switch (intent) {
+    case 'approve':
+      return '/approve';
+    case 'sign':
+      return '/sign';
+    case 'connect':
+      return '/connect';
+  }
 }
 
 export function isDesktopBridgeReady(status: DesktopBridgeReadinessStatus | null | undefined): boolean {

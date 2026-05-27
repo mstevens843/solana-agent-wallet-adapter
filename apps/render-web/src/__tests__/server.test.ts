@@ -789,6 +789,39 @@ describe('render web hosted BYOK API', () => {
     });
   });
 
+  it('routes hosted BYOK agent chat requests through the same-origin API', async () => {
+    const providerCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      providerCalls.push({ url: String(url), init });
+      return jsonResponse({
+        output_text: 'Use /plan when you are ready to prepare a visible wallet request.',
+      });
+    }));
+
+    await withServer(async (port, ctx) => {
+      const response = await postJson(port, '/api/ai/chat', {
+        settings: {
+          provider: 'openai',
+          model: 'gpt-5',
+          apiKey: 'sk-test-openai',
+        },
+        request: {
+          messages: [{ role: 'user', content: 'What should I check before swapping SOL to USDC?' }],
+        },
+      }, { cookie: ctx.cookie });
+
+      expect(response.status).toBe(200);
+      expect(response.body.answer).toContain('/plan');
+      expect(providerCalls[0]?.url).toBe('https://api.openai.com/v1/chat/completions');
+      const body = JSON.parse(String(providerCalls[0]?.init?.body ?? '{}')) as Record<string, unknown>;
+      const messages = body.messages as Array<{ content?: string }>;
+      const input = JSON.parse(String(messages[1]?.content ?? '{}')) as Record<string, unknown>;
+      expect(input.walletAddress).toBe('11111111111111111111111111111111');
+      expect(JSON.stringify(input.context)).toContain('"source":"hosted_session"');
+      expect(JSON.stringify(input.messages)).toContain('What should I check before swapping SOL to USDC?');
+    });
+  });
+
   it('rejects hosted AI review wallet addresses that do not match the signed-in session', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);

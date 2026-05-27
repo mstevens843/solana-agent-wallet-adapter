@@ -36,8 +36,9 @@ export async function promptSendTokensForm(
   const fallback = formOptions.defaultToken && COMMON_TOKENS.some((t) => t.value === formOptions.defaultToken)
     ? formOptions.defaultToken
     : 'SOL';
-  const defaultToken = prefill.token && COMMON_TOKENS.some((t) => t.value === prefill.token)
-    ? prefill.token
+  const prefillToken = prefill.token?.trim();
+  const defaultToken = prefillToken
+    ? COMMON_TOKENS.some((t) => t.value === prefillToken) ? prefillToken : '__custom__'
     : fallback;
   let token = await select<string>({
     message: 'Token',
@@ -47,6 +48,7 @@ export async function promptSendTokensForm(
   if (token === '__custom__') {
     token = await input({
       message: 'Token symbol or mint address',
+      ...(prefillToken && !COMMON_TOKENS.some((t) => t.value === prefillToken) ? { default: prefillToken } : {}),
       validate: validateNonEmpty,
     });
   }

@@ -3,8 +3,8 @@ import type { AgentPlan } from '@solana-agent-wallet-adapter/workflow';
 import type { GlobalOptions } from '../shared/types.js';
 import { bridgeRequest } from '../http/index.js';
 import { select, badge, confirm, spinner, header, kv, divider } from '../tui/index.js';
-import { promptSendTokensForm, type SendTokensFormOptions } from '../forms/sendTokens.js';
-import { promptSwapForm } from '../forms/swap.js';
+import { promptSendTokensForm, type SendTokensDraft, type SendTokensFormOptions } from '../forms/sendTokens.js';
+import { promptSwapForm, type SwapDraft } from '../forms/swap.js';
 import { formatSlippagePercent } from '../forms/validators.js';
 import { promptConnectorForm } from '../forms/connectorForm.js';
 import { listConnectors, listActions, humanizeActionKind, type ConnectorAction, type ActionTier } from '../forms/connectorMeta.js';
@@ -50,7 +50,15 @@ export async function runOneTimeMenu(options: GlobalOptions): Promise<void> {
 // Unified "Send Tokens" flow. The user picks the token (SOL or any SPL) in the
 // form; we route to the native SOL endpoint when token is SOL, else to SPL.
 export async function runNewTokens(options: GlobalOptions, formOptions: SendTokensFormOptions = {}): Promise<void> {
-  const draft = await promptSendTokensForm(options, {}, formOptions);
+  return runNewTokensWithPrefill(options, {}, formOptions);
+}
+
+export async function runNewTokensWithPrefill(
+  options: GlobalOptions,
+  prefill: Partial<SendTokensDraft> = {},
+  formOptions: SendTokensFormOptions = {},
+): Promise<void> {
+  const draft = await promptSendTokensForm(options, prefill, formOptions);
   if (!(await confirmSelfTransfer(options, draft.recipient, draft.token))) return;
   const description = `Send ${draft.amount} ${draft.token} to ${draft.recipient}${draft.note ? ` — ${draft.note}` : ''}`;
   const ok = await confirmHighStakes(options, description, estimateFromDraft(draft), null);
@@ -98,7 +106,11 @@ export async function runNewSpl(options: GlobalOptions): Promise<void> {
 }
 
 export async function runNewSwap(options: GlobalOptions): Promise<void> {
-  const draft = await promptSwapForm(options);
+  return runNewSwapWithPrefill(options);
+}
+
+export async function runNewSwapWithPrefill(options: GlobalOptions, prefill: Partial<SwapDraft> = {}): Promise<void> {
+  const draft = await promptSwapForm(options, prefill);
   if (draft.inputToken.trim().toUpperCase() === draft.outputToken.trim().toUpperCase()) {
     console.log(badge(`Input and output token are both ${draft.inputToken} — swap would be a no-op. Aborting.`, 'err'));
     return;

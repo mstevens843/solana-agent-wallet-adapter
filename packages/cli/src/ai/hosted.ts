@@ -218,6 +218,38 @@ export async function askAgentPlan<T = unknown>(
   throw new Error(agentAiSetupHint(route));
 }
 
+export async function chatAgent<T = unknown>(
+  options: GlobalOptions,
+  route: AgentAiRoute,
+  request: Record<string, unknown>,
+): Promise<T> {
+  if (route.kind === 'hosted-managed') {
+    return renderWebRequest<T>(options, '/api/ai/chat', {
+      method: 'POST',
+      body: JSON.stringify({
+        settings: { mode: 'hosted-managed' },
+        request,
+      }),
+    }, { label: 'Agentic hosted AI', requireAuth: true });
+  }
+  if (route.kind === 'hosted-byok') {
+    return renderWebRequest<T>(options, '/api/ai/chat', {
+      method: 'POST',
+      body: JSON.stringify({
+        settings: hostedByokSettings(route.config),
+        request,
+      }),
+    }, { label: 'Hosted BYOK AI', requireAuth: true });
+  }
+  if (route.kind === 'bridge') {
+    return bridgeRequest<T>(options, '/bridge/ai/chat', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  }
+  throw new Error(agentAiSetupHint(route));
+}
+
 export function agentAiSetupHint(route: AgentAiRoute): string {
   if (route.kind !== 'none') return '';
   if (route.config?.path === 'hosted-byok') {

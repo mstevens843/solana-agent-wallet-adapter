@@ -66,7 +66,7 @@ async function call(
   method: string,
   pathname: string,
   body?: unknown,
-): Promise<{ status: number; body: Record<string, unknown> }> {
+): Promise<{ status: number; headers: Record<string, string>; body: Record<string, unknown> }> {
   const req = fakeRequest({ method, pathname, body });
   const { res, captured } = fakeResponse();
   const url = new URL(pathname, 'https://agentic-signer.com');
@@ -76,7 +76,7 @@ async function call(
   if (captured.body) {
     parsed = JSON.parse(captured.body) as Record<string, unknown>;
   }
-  return { status: captured.statusCode, body: parsed };
+  return { status: captured.statusCode, headers: captured.headers, body: parsed };
 }
 
 describe('pairingHandler — routing', () => {
@@ -292,6 +292,30 @@ describe('pairingHandler — signing relay round-trip', () => {
     expect((resolved.body.result as Record<string, unknown>).signature).toBe('abc');
   });
 
+  it('re-delivers in-flight requests after the lease expires', async () => {
+    handler.shutdown();
+    let nowMs = 1000;
+    handler = createPairingHandler({
+      clock: { now: () => nowMs },
+      inFlightLeaseMs: 5000,
+      generateRequestId: () => `req-${++requestIdCounter}`,
+    });
+    await registerHost();
+
+    await call(handler, 'POST', `/api/pair/${VALID_UUID}/submit`, {
+      request: { kind: 'sign-message', message: 'aGVsbG8=' },
+    });
+    const firstInbox = await call(handler, 'GET', `/api/pair/${VALID_UUID}/inbox`);
+    expect((firstInbox.body.requests as Array<{ requestId: string }>)[0]?.requestId).toBe('req-1');
+
+    const stillLeased = await call(handler, 'GET', `/api/pair/${VALID_UUID}/inbox`);
+    expect((stillLeased.body.requests as unknown[]).length).toBe(0);
+
+    nowMs += 5001;
+    const redelivered = await call(handler, 'GET', `/api/pair/${VALID_UUID}/inbox`);
+    expect((redelivered.body.requests as Array<{ requestId: string }>)[0]?.requestId).toBe('req-1');
+  });
+
   it('returns 404 polling a non-existent request id', async () => {
     await registerHost();
     const r = await call(handler, 'GET', `/api/pair/${VALID_UUID}/submit/unknown`);
@@ -341,7 +365,7 @@ describe('pairingHandler — TTL sweeper', () => {
 });
 
 describe('pairingHandler — rate limit', () => {
-  it('returns 429 once the per-pairing limit is exceeded', async () => {
+  it('returns 429 with retry metadata once a route bucket is exceeded', async () => {
     let nowMs = 1000;
     const handler = createPairingHandler({ clock: { now: () => nowMs } });
     try {
@@ -354,6 +378,30 @@ describe('pairingHandler — rate limit', () => {
       }
       // The 61st+ request should be rate-limited.
       expect(lastStatus).toBe(429);
+      const limited = await call(handler, 'GET', `/api/pair/${ANOTHER_UUID}/host`);
+      expect(limited.status).toBe(429);
+      expect(limited.headers['retry-after']).toBe('60');
+      expect(limited.body).toMatchObject({
+        error: 'rate_limited',
+        retryAfterMs: 60000,
+      });
+    } finally {
+      handler.shutdown();
+    }
+  });
+
+  it('uses separate rate buckets for host polling and signing inbox polling', async () => {
+    const handler = createPairingHandler();
+    try {
+      for (let i = 0; i < 65; i += 1) {
+        await call(handler, 'GET', `/api/pair/${ANOTHER_UUID}/host`);
+      }
+      const hostLimited = await call(handler, 'GET', `/api/pair/${ANOTHER_UUID}/host`);
+      expect(hostLimited.status).toBe(429);
+
+      const inbox = await call(handler, 'GET', `/api/pair/${ANOTHER_UUID}/inbox`);
+      expect(inbox.status).toBe(200);
+      expect(inbox.body.requests).toEqual([]);
     } finally {
       handler.shutdown();
     }

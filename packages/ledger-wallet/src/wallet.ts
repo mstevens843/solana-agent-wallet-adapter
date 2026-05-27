@@ -9,6 +9,8 @@
 // and `solana:signMessage`. The off-chain message signing path uses
 // INS=0x07 SIGN_OFFCHAIN_MESSAGE with the SIMD-32 envelope (the Rust
 // `wrap_offchain_message` helper builds the magic-prefixed payload).
+// Transaction signing sends the serialized Solana message bytes to Ledger,
+// then attaches the returned ed25519 signature to the original transaction.
 
 import type {
   IdentifierArray,
@@ -27,6 +29,7 @@ import type {
   StandardEventsFeature,
   StandardEventsListeners,
 } from '@wallet-standard/features';
+import { PublicKey, VersionedTransaction } from '@solana/web3.js';
 import bs58 from 'bs58';
 
 import { LEDGER_WALLET_ICON } from './icon.js';
@@ -150,9 +153,12 @@ export function createLedgerWallet(options: CreateLedgerWalletOptions): Wallet {
       const outputs: { signedTransaction: Uint8Array }[] = [];
       for (const input of inputs) {
         ensureAccount(input.account.address);
-        const base64Tx = bytesToBase64(input.transaction);
-        const signedBase64 = await ipc.signTransaction(derivationPath, base64Tx);
-        outputs.push({ signedTransaction: base64ToBytes(signedBase64) });
+        const { messageBytes } = extractMessageBytes(input.transaction);
+        const signatureB64 = await ipc.signTransaction(derivationPath, bytesToBase64(messageBytes));
+        const signature = base64ToBytes(signatureB64);
+        outputs.push({
+          signedTransaction: attachLedgerSignature(input.transaction, address, signature),
+        });
       }
       return outputs;
     },
@@ -228,4 +234,33 @@ function base64ToBytes(b64: string): Uint8Array {
   }
   const buf = Buffer.from(b64, 'base64');
   return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+}
+
+function extractMessageBytes(transactionBytes: Uint8Array): { messageBytes: Uint8Array } {
+  if (transactionBytes.length === 0) {
+    throw new Error('transaction bytes are empty');
+  }
+  const transaction = VersionedTransaction.deserialize(transactionBytes);
+  return { messageBytes: transaction.message.serialize() };
+}
+
+function attachLedgerSignature(
+  transactionBytes: Uint8Array,
+  signerAddress: string,
+  signature: Uint8Array,
+): Uint8Array {
+  if (signature.length !== 64) {
+    throw new Error(`Ledger signature length unexpected: ${signature.length}`);
+  }
+  try {
+    const transaction = VersionedTransaction.deserialize(transactionBytes);
+    transaction.addSignature(new PublicKey(signerAddress), signature);
+    return transaction.serialize();
+  } catch (err) {
+    throw new Error(
+      `Ledger signature could not be attached to the transaction: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
 }
