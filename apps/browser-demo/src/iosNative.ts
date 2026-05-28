@@ -40,6 +40,8 @@ export interface IosNativeEnvironment {
   callbackScheme: string;
 }
 
+export const IOS_CLOUD_SESSION_REHYDRATED_EVENT = 'agentic-cloud-session-rehydrated';
+
 export interface IosNativeWalletBackendOptions {
   walletId: IosNativeWalletId;
   cluster: Cluster;
@@ -310,12 +312,16 @@ if (typeof globalThis !== 'undefined') {
 
 const AUTH_CACHE_KEY = 'agentic-ios-auth-cache-v1';
 const PENDING_STATE_KEY = 'agentic-ios-pending-state-v1';
+const CLOUD_SESSION_TOKEN_KEY = 'cloudSessionToken';
 const DEFAULT_CALLBACK_SCHEME = 'agenticwallet';
 const DEFAULT_REQUEST_TTL_MS = 120_000;
 const FALSE_ENV_VALUES = new Set(['0', 'false', 'no', 'off', 'native', 'swift']);
 const IOS_URL_SUBSCRIBERS = new Set<(url: string) => void>();
 let urlDispatcherInstalled = false;
 let urlDispatcherPromise: Promise<void> | null = null;
+let cloudSessionTokenHydrated = false;
+let cachedCloudSessionToken = '';
+let cloudSessionTokenWriteCounter = 0;
 
 export function capacitorIosAppEnabled(): boolean {
   const viteEnv = (import.meta as ImportMeta & {
@@ -346,6 +352,61 @@ export function detectIosNativeEnvironment(callbackScheme = DEFAULT_CALLBACK_SCH
     isIosNative: useCapacitorIosApp && isNative && platform === 'ios',
     callbackScheme,
   };
+}
+
+export function iosNativeCloudSessionToken(): string {
+  if (!cloudSessionTokenHydrated) {
+    cloudSessionTokenHydrated = true;
+    void hydrateCloudSessionTokenFromSecureState();
+  }
+  return cachedCloudSessionToken;
+}
+
+export async function setIosNativeCloudSessionToken(token: string): Promise<boolean> {
+  const value = (token ?? '').trim();
+  cachedCloudSessionToken = value;
+  cloudSessionTokenHydrated = true;
+  cloudSessionTokenWriteCounter += 1;
+  try {
+    await writeState(CLOUD_SESSION_TOKEN_KEY, value, 'error');
+    return true;
+  } catch (err) {
+    iosLog('error', 'AgenticSecureState', 'setCloudSessionToken', 'FAIL', 'error', 'cloud session token write failed', {
+      message: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+}
+
+export async function clearIosNativeCloudSessionToken(): Promise<boolean> {
+  cachedCloudSessionToken = '';
+  cloudSessionTokenHydrated = true;
+  cloudSessionTokenWriteCounter += 1;
+  try {
+    await removeState(CLOUD_SESSION_TOKEN_KEY, 'error');
+    return true;
+  } catch (err) {
+    iosLog('error', 'AgenticSecureState', 'clearCloudSessionToken', 'FAIL', 'error', 'cloud session token remove failed', {
+      message: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+}
+
+async function hydrateCloudSessionTokenFromSecureState(): Promise<void> {
+  const writeCounter = cloudSessionTokenWriteCounter;
+  try {
+    const value = (await readState(CLOUD_SESSION_TOKEN_KEY, 'debug') ?? '').trim();
+    if (!value || writeCounter !== cloudSessionTokenWriteCounter || value === cachedCloudSessionToken) return;
+    cachedCloudSessionToken = value;
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(IOS_CLOUD_SESSION_REHYDRATED_EVENT));
+    }
+  } catch (err) {
+    iosLog('debug', 'AgenticSecureState', 'hydrateCloudSessionToken', 'SKIP', 'debug', 'cloud session token unavailable', {
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 export function listIosNativeWalletOptions(): ReadonlyArray<IosNativeWalletOption> {

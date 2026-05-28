@@ -37,7 +37,8 @@ final class AgenticWalletConnectCore {
     private let walletConnectGroupIdentifier = "group.com.agentic.wallet"
     private var sessionPubkey: String?
     private var sessionTopic: String?
-    private var sessionWaiters: [(Result<(String, String), Error>) -> Void] = []
+    private var sessionChainId: String?
+    private var sessionWaiters: [UUID: (Result<(String, String), Error>) -> Void] = [:]
 
     private init() {}
 
@@ -48,12 +49,12 @@ final class AgenticWalletConnectCore {
             guard let projectId = snapshot.config.walletConnectProjectId, !projectId.isEmpty else {
                 throw AgenticAgentError(code: "WC_NO_PROJECT_ID", message: "WalletConnect project id missing — set WALLETCONNECT_PROJECT_ID in cloud env.")
             }
-            let redirect = try AppMetadata.Redirect(native: "agenticwallet://", universal: "https://agenticwalletadapter.com")
+            let redirect = try AppMetadata.Redirect(native: "agenticwallet://", universal: "https://agentic-signer.com")
             let metadata = AppMetadata(
                 name: "Agentic",
                 description: "Agentic Wallet Adapter",
                 url: "https://agentic-signer.com",
-                icons: ["https://agentic-signer.com/icon.png"],
+                icons: ["https://agentic-signer.com/icons/agentic-512.png"],
                 redirect: redirect
             )
             Networking.configure(
@@ -71,7 +72,7 @@ final class AgenticWalletConnectCore {
                     let pubkey = session.namespaces.values.first?.accounts.first?.address ?? ""
                     self.sessionPubkey = pubkey
                     self.sessionTopic = session.topic
-                    let waiters = self.sessionWaiters
+                    let waiters = Array(self.sessionWaiters.values)
                     self.sessionWaiters.removeAll()
                     for waiter in waiters {
                         waiter(.success((pubkey, session.topic)))
@@ -89,9 +90,12 @@ final class AgenticWalletConnectCore {
             completion(.failure(error))
             return
         }
+        let chain = solanaChainId(for: cluster)
+        queue.async {
+            self.sessionChainId = chain
+        }
         Task {
             do {
-                let chain = solanaChainId(for: cluster)
                 let methods: Set<String> = ["solana_signMessage", "solana_signTransaction", "solana_signAndSendTransaction"]
                 let events: Set<String> = ["chainChanged", "accountsChanged"]
                 let blockchain = Blockchain(chain) ?? Blockchain("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp")!
@@ -111,7 +115,8 @@ final class AgenticWalletConnectCore {
                 completion(.success((pubkey, topic)))
                 return
             }
-            self.sessionWaiters.append { result in
+            let waiterId = UUID()
+            self.sessionWaiters[waiterId] = { result in
                 switch result {
                 case .success(let pair): completion(.success((pubkey: pair.0, topic: pair.1)))
                 case .failure(let err): completion(.failure(err))
@@ -119,8 +124,9 @@ final class AgenticWalletConnectCore {
             }
             let timeout: DispatchTimeInterval = .milliseconds(timeoutMs)
             self.queue.asyncAfter(deadline: .now() + timeout) {
-                if self.sessionPubkey != nil { return }
-                completion(.failure(AgenticAgentError(code: "WC_TIMEOUT", message: "WalletConnect session timed out.")))
+                if let waiter = self.sessionWaiters.removeValue(forKey: waiterId) {
+                    waiter(.failure(AgenticAgentError(code: "WC_TIMEOUT", message: "WalletConnect session timed out.")))
+                }
             }
         }
     }
@@ -206,6 +212,7 @@ final class AgenticWalletConnectCore {
                     self.queue.async {
                         self.sessionPubkey = nil
                         self.sessionTopic = nil
+                        self.sessionChainId = nil
                         completion(true)
                     }
                 } catch {
@@ -219,6 +226,7 @@ final class AgenticWalletConnectCore {
         queue.sync {
             sessionPubkey = nil
             sessionTopic = nil
+            sessionChainId = nil
             sessionWaiters.removeAll()
         }
     }
@@ -237,7 +245,8 @@ final class AgenticWalletConnectCore {
     private func sendRequest(topic: String, method: String, params: [String: Any], completion: @escaping (Result<Any, Error>) -> Void) {
         Task {
             do {
-                let blockchain = Blockchain(solanaChainId(for: "mainnet-beta")) ?? Blockchain("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp")!
+                let chain = self.queue.sync { self.sessionChainId } ?? solanaChainId(for: "mainnet-beta")
+                let blockchain = Blockchain(chain) ?? Blockchain("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp")!
                 let request = try Request(topic: topic, method: method, params: Commons.AnyCodable(any: params), chainId: blockchain)
                 try await Sign.instance.request(params: request)
                 // Subscribe to sessionResponsePublisher for the result.

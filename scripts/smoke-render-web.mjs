@@ -45,7 +45,7 @@ async function main() {
     }
     process.exit(0);
   } catch (err) {
-    console.error(`[smoke-render-web] ${err instanceof Error ? err.message : String(err)}`);
+    console.error(`[smoke-render-web] ${formatErrorForLog(err)}`);
     process.exit(1);
   }
 }
@@ -2181,6 +2181,7 @@ async function withLocalServer(callback, { mockHostedAi = false } = {}) {
     throw new Error(`${RENDER_SERVER_ENTRY} does not exist. Run pnpm -F @solana-agent-wallet-adapter/render-web build before smoke.`);
   }
   const serverPort = await freePort();
+  const origin = `http://127.0.0.1:${serverPort}`;
   const preload = mockHostedAi ? createHostedAiPreload() : null;
   const nodeOptions = [
     process.env.NODE_OPTIONS,
@@ -2198,14 +2199,23 @@ async function withLocalServer(callback, { mockHostedAi = false } = {}) {
       OPENAI_API_KEY: '',
       AGENTIC_ENV_FILE: process.env.AGENTIC_SMOKE_ENV_FILE ?? '/dev/null',
       AGENTIC_MOCK_FINALIZATION: process.env.AGENTIC_MOCK_FINALIZATION ?? '1',
+      AGENTIC_PUBLIC_ORIGIN: origin,
+      DATABASE_URL: '',
       HOST: '127.0.0.1',
+      NODE_ENV: 'test',
       PORT: String(serverPort),
+      RENDER: '',
+      SESSION_SECRET: 'agentic-render-smoke-session-secret-000000',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  const origin = `http://127.0.0.1:${serverPort}`;
+  const childOutput = captureChildOutput(server);
   try {
-    await waitForHostedAiStatus(`${origin}/api/ai/status`);
+    await waitForHostedAiStatus(`${origin}/api/ai/status`, {
+      childOutput,
+      childProcess: server,
+      label: 'local Render smoke server',
+    });
     await callback({ origin, serverPort });
   } finally {
     await terminate(server);
@@ -2664,10 +2674,13 @@ async function waitForHttp(url) {
   throw lastError instanceof Error ? lastError : new Error(`Timed out waiting for ${url}`);
 }
 
-async function waitForHostedAiStatus(url) {
+async function waitForHostedAiStatus(url, options = {}) {
   const deadline = Date.now() + 15_000;
   let lastError;
   while (Date.now() < deadline) {
+    if (options.childProcess && options.childProcess.exitCode !== null) {
+      throw new Error(`${options.label ?? 'child process'} exited before ${url} became ready. ${options.childOutput?.() ?? ''}`.trim());
+    }
     try {
       await verifyHostedAiStatus(url);
       return;
@@ -2676,7 +2689,9 @@ async function waitForHostedAiStatus(url) {
     }
     await sleep(200);
   }
-  throw lastError instanceof Error ? lastError : new Error(`Timed out waiting for ${url}`);
+  const detail = lastError instanceof Error ? formatErrorForLog(lastError) : String(lastError ?? `Timed out waiting for ${url}`);
+  const childDetail = options.childOutput?.();
+  throw new Error(`Timed out waiting for ${url}: ${detail}${childDetail ? `\n${childDetail}` : ''}`);
 }
 
 async function connectPage(port) {
@@ -2807,6 +2822,37 @@ function isLocalBridgeConfigRequest(event) {
   } catch {
     return false;
   }
+}
+
+function captureChildOutput(child) {
+  let stdout = '';
+  let stderr = '';
+  const append = (current, chunk) => `${current}${chunk}`.slice(-8_000);
+  child.stdout?.setEncoding('utf8');
+  child.stderr?.setEncoding('utf8');
+  child.stdout?.on('data', (chunk) => {
+    stdout = append(stdout, String(chunk));
+  });
+  child.stderr?.on('data', (chunk) => {
+    stderr = append(stderr, String(chunk));
+  });
+  return () => {
+    const sections = [];
+    if (stdout.trim()) sections.push(`stdout:\n${stdout.trim()}`);
+    if (stderr.trim()) sections.push(`stderr:\n${stderr.trim()}`);
+    return sections.length ? sections.join('\n') : '';
+  };
+}
+
+function formatErrorForLog(err) {
+  if (!(err instanceof Error)) return String(err);
+  const parts = [err.message];
+  let cause = err.cause;
+  while (cause instanceof Error) {
+    parts.push(cause.message);
+    cause = cause.cause;
+  }
+  return parts.filter(Boolean).join('\ncaused by: ');
 }
 
 function requiredObject(value, label) {

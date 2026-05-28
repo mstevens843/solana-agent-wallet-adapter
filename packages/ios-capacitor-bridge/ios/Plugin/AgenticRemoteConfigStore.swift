@@ -306,10 +306,12 @@ enum AgenticRemoteConfigParser {
 
         let wallets: [AgenticWalletEntry]
         if let raw = json["walletRegistry"] as? [[String: Any]] {
-            wallets = raw.compactMap { parseWalletEntry($0) }
+            let parsed = raw.compactMap { parseWalletEntry($0) }
+            wallets = parsed.isEmpty ? AgenticRemoteConfigDefaults.bundled.walletRegistry : parsed
         } else if let nested = (json["walletRegistry"] as? [String: Any])?["ios"] as? [[String: Any]] {
             // Server might send per-platform structure: { walletRegistry: { ios: [...], android: [...] } }
-            wallets = nested.compactMap { parseWalletEntry($0) }
+            let parsed = nested.compactMap { parseWalletEntry($0) }
+            wallets = parsed.isEmpty ? AgenticRemoteConfigDefaults.bundled.walletRegistry : parsed
         } else {
             wallets = AgenticRemoteConfigDefaults.bundled.walletRegistry
         }
@@ -345,9 +347,13 @@ enum AgenticRemoteConfigParser {
     }
 
     private static func parseMemoProofRouter(_ json: [String: Any]) -> AgenticMemoProofRouterConfig {
-        AgenticMemoProofRouterConfig(
+        let rawPrefix = (json["proofMemoPrefix"] as? String) ?? AgenticRemoteConfigDefaults.memoEnvelopePrefix
+        let proofMemoPrefix = rawPrefix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? AgenticRemoteConfigDefaults.memoEnvelopePrefix
+            : rawPrefix
+        return AgenticMemoProofRouterConfig(
             envelopeVersion: (json["envelopeVersion"] as? String) ?? "v1",
-            proofMemoPrefix: (json["proofMemoPrefix"] as? String) ?? AgenticRemoteConfigDefaults.memoEnvelopePrefix,
+            proofMemoPrefix: proofMemoPrefix,
             fallbackOnBlankPackage: (json["fallbackOnBlankPackage"] as? Bool) ?? true
         )
     }

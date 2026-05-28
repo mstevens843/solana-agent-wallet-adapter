@@ -134,6 +134,7 @@ function iosEnv() {
   };
   env.VITE_AGENTIC_DEVICE_AGENT = env.VITE_AGENTIC_DEVICE_AGENT ?? 'true';
   env.VITE_AGENTIC_BROWSER_DEVICE_AGENT = env.VITE_AGENTIC_BROWSER_DEVICE_AGENT ?? 'false';
+  env.VITE_AGENTIC_CLOUD_API_BASE_URL = env.VITE_AGENTIC_CLOUD_API_BASE_URL ?? env.AGENTIC_CLOUD_API_BASE_URL ?? 'https://agentic-signer.com';
   const xcodeDeveloperDir = '/Applications/Xcode.app/Contents/Developer';
   if (!env.DEVELOPER_DIR && existsSync(xcodeDeveloperDir)) {
     env.DEVELOPER_DIR = xcodeDeveloperDir;

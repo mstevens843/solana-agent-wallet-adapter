@@ -60,6 +60,15 @@ struct AgenticAgentRuntimeConfig: Codable, Equatable {
         if apiKey == nil || apiKey?.isEmpty == true {
             return AgenticAgentError(code: "INVALID_CONFIG", subcode: "MISSING_API_KEY", message: "Device Agent config is missing apiKey.")
         }
+        if let apiKey {
+            do {
+                try AgenticProviderHttp.assertApiKeyHeaderSafe(apiKey)
+            } catch let error as AgenticAgentError {
+                return error
+            } catch {
+                return AgenticAgentError(code: AgenticProviderErrorCodes.invalidConfig, message: "Device Agent config has an invalid apiKey.")
+            }
+        }
         return nil
     }
 
@@ -791,8 +800,6 @@ enum AgenticAgentProviderFactory {
 // MARK: - Anthropic provider
 
 final class AgenticAnthropicProvider: AgenticAgentProvider {
-    private let defaultBase = "https://api.anthropic.com/v1"
-
     func execute(request: AgenticAgentRequest, completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void) {
         guard let apiKey = request.config.apiKey, !apiKey.isEmpty else {
             completion(.failure(AgenticAgentError(code: "INVALID_CONFIG", subcode: "MISSING_API_KEY", message: "Anthropic provider requires an API key.")))
@@ -911,8 +918,7 @@ final class AgenticAnthropicProvider: AgenticAgentProvider {
     }
 
     private func normalizedEndpoint(_ raw: String?) -> String {
-        let trimmed = (raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let base = trimmed.isEmpty ? defaultBase : trimmed
+        let base = AgenticProviderHttp.normalizeBaseUrl(raw, apiFormat: "anthropic")
         return base.hasSuffix("/messages") ? base : "\(base)/messages"
     }
 
@@ -942,8 +948,6 @@ final class AgenticAnthropicProvider: AgenticAgentProvider {
 // MARK: - OpenAI-compatible provider
 
 final class AgenticOpenAINativeProvider: AgenticAgentProvider {
-    private let defaultBase = "https://api.openai.com/v1"
-
     func execute(request: AgenticAgentRequest, completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void) {
         guard let apiKey = request.config.apiKey, !apiKey.isEmpty else {
             completion(.failure(AgenticAgentError(code: "INVALID_CONFIG", subcode: "MISSING_API_KEY", message: "OpenAI provider requires an API key.")))
@@ -1054,7 +1058,7 @@ final class AgenticOpenAINativeProvider: AgenticAgentProvider {
                 ],
             ]
         }
-        if !isReasoningModel(request.config.model) {
+        if !AgenticProviderHttp.isReasoningModel(request.config.model) {
             body["temperature"] = request.method == "ask" ? 0.3 : 0.2
         } else {
             body["reasoning"] = ["effort": "low"]
@@ -1095,8 +1099,7 @@ final class AgenticOpenAINativeProvider: AgenticAgentProvider {
     }
 
     private func normalizedEndpoint(_ raw: String?) -> String {
-        let trimmed = (raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let base = trimmed.isEmpty ? defaultBase : trimmed
+        let base = AgenticProviderHttp.normalizeBaseUrl(raw, apiFormat: "openai-compatible")
         if base.hasSuffix("/responses") { return base }
         if base.hasSuffix("/chat/completions") {
             return String(base.dropLast("/chat/completions".count)) + "/responses"
@@ -1132,11 +1135,6 @@ final class AgenticOpenAINativeProvider: AgenticAgentProvider {
         ]
     }
 
-    private func isReasoningModel(_ model: String) -> Bool {
-        let lower = model.lowercased()
-        return lower.hasPrefix("o") || lower.contains("reasoning")
-    }
-
     private func textVerbosity(for method: String) -> String {
         return method == "reviewPlan" ? "medium" : "low"
     }
@@ -1156,8 +1154,6 @@ final class AgenticOpenAINativeProvider: AgenticAgentProvider {
 }
 
 final class AgenticOpenAICompatibleProvider: AgenticAgentProvider {
-    private let defaultBase = "https://api.openai.com/v1"
-
     func execute(request: AgenticAgentRequest, completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void) {
         guard let apiKey = request.config.apiKey, !apiKey.isEmpty else {
             completion(.failure(AgenticAgentError(code: "INVALID_CONFIG", subcode: "MISSING_API_KEY", message: "OpenAI-compatible provider requires an API key.")))
@@ -1187,15 +1183,20 @@ final class AgenticOpenAICompatibleProvider: AgenticAgentProvider {
             return
         }
         let messages = AgenticAgentProviderSupport.messages(for: request)
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": request.config.model,
             "messages": [
                 ["role": "system", "content": messages.system],
                 ["role": "user", "content": messages.userContent],
             ],
-            "max_tokens": request.method == "ask" ? 800 : 1024,
-            "temperature": request.method == "ask" ? 0.3 : 0.2,
-        ].merging(request.method == "ask" ? [:] : ["response_format": ["type": "json_object"]]) { current, _ in current }
+        ]
+        body[AgenticProviderHttp.tokenLimitKey(request.config.model)] = request.method == "ask" ? 800 : 1024
+        if !AgenticProviderHttp.isDefaultTemperatureOnlyModel(request.config.model) {
+            body["temperature"] = request.method == "ask" ? 0.3 : 0.2
+        }
+        if request.method != "ask" {
+            body["response_format"] = ["type": "json_object"]
+        }
         guard let payload = try? JSONSerialization.data(withJSONObject: body, options: []) else {
             completion(.failure(AgenticAgentError(code: "ENCODE_ERROR", message: "Could not encode request body.")))
             return
@@ -1220,8 +1221,7 @@ final class AgenticOpenAICompatibleProvider: AgenticAgentProvider {
     }
 
     private func normalizedEndpoint(_ raw: String?) -> String {
-        let trimmed = (raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let base = trimmed.isEmpty ? defaultBase : trimmed
+        let base = AgenticProviderHttp.normalizeBaseUrl(raw, apiFormat: "openai-compatible")
         return base.hasSuffix("/chat/completions") ? base : "\(base)/chat/completions"
     }
 
@@ -1237,8 +1237,6 @@ final class AgenticOpenAICompatibleProvider: AgenticAgentProvider {
 // MARK: - Gemini native provider
 
 final class AgenticGeminiProvider: AgenticAgentProvider {
-    private let defaultBase = "https://generativelanguage.googleapis.com/v1beta"
-
     func execute(request: AgenticAgentRequest, completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void) {
         guard let apiKey = request.config.apiKey, !apiKey.isEmpty else {
             completion(.failure(AgenticAgentError(code: "INVALID_CONFIG", subcode: "MISSING_API_KEY", message: "Gemini provider requires an API key.")))
@@ -1374,16 +1372,7 @@ final class AgenticGeminiProvider: AgenticAgentProvider {
     }
 
     private func endpointURL(config: AgenticAgentRuntimeConfig) -> URL? {
-        let base = (config.baseUrl?.isEmpty == false ? config.baseUrl! : defaultBase)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let nativeBase: String
-        if let range = base.range(of: "/openai", options: [.caseInsensitive, .backwards]) {
-            nativeBase = String(base[..<range.lowerBound])
-        } else if base.contains("/models/") {
-            nativeBase = base
-        } else {
-            nativeBase = base
-        }
+        let nativeBase = AgenticProviderHttp.normalizeNativeBaseUrl(config.baseUrl)
         if nativeBase.contains("/models/") && nativeBase.hasSuffix(":generateContent") {
             return URL(string: nativeBase)
         }
@@ -1414,21 +1403,29 @@ enum AgenticAgentHttp {
         let session = URLSession(configuration: .ephemeral)
         let task = session.dataTask(with: request) { data, response, error in
             if let error {
+                let nsError = error as NSError
+                let code = nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut
+                    ? AgenticProviderErrorCodes.timeout
+                    : AgenticProviderErrorCodes.network
                 let redacted = AgenticSecretRedactor.redact(error.localizedDescription, secret: secret)
-                completion(.failure(AgenticAgentError(code: "NETWORK_ERROR", message: redacted)))
+                completion(.failure(AgenticAgentError(code: code, message: redacted)))
                 return
             }
-            guard let http = response as? HTTPURLResponse, let data else {
-                completion(.failure(AgenticAgentError(code: "NETWORK_ERROR", message: "No response body")))
+            guard let http = response as? HTTPURLResponse else {
+                completion(.failure(AgenticAgentError(code: AgenticProviderErrorCodes.network, message: "No HTTP response from AI provider.")))
                 return
             }
-            if !(200..<300).contains(http.statusCode) {
-                let bodyString = String(data: data, encoding: .utf8) ?? ""
+            let responseData = data ?? Data()
+            if let errorCode = AgenticProviderHttp.mapHttpStatusToErrorCode(http.statusCode) {
+                let bodyString = String(data: responseData, encoding: .utf8) ?? ""
                 let redacted = AgenticSecretRedactor.redact(bodyString, secret: secret)
-                completion(.failure(AgenticAgentError(code: "PROVIDER_HTTP_\(http.statusCode)", message: "HTTP \(http.statusCode): \(redacted.prefix(500))")))
+                completion(.failure(AgenticAgentError(
+                    code: errorCode,
+                    message: AgenticProviderHttp.composeErrorMessage(status: http.statusCode, body: String(redacted.prefix(1000)))
+                )))
                 return
             }
-            completion(.success(data))
+            completion(.success(responseData))
         }
         task.resume()
     }

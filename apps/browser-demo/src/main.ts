@@ -368,11 +368,15 @@ import {
   type BrowserWalletSession,
 } from './walletSelection.js';
 import {
+  IOS_CLOUD_SESSION_REHYDRATED_EVENT,
   IosNativeWalletBackend,
+  clearIosNativeCloudSessionToken,
   detectIosNativeEnvironment,
   iosNativeCacheSummary,
+  iosNativeCloudSessionToken,
   listIosNativeWalletOptions,
   restoreLatestIosNativeWallet,
+  setIosNativeCloudSessionToken,
   type IosNativeEnvironment,
   type IosNativeWalletId,
   type IosNativeWalletOption,
@@ -1338,9 +1342,11 @@ const ROUTE_PATH_SET = new Set<string>(ROUTE_PATHS);
 const SHOW_DEV_CONTROLS = resolveDevControls();
 const IS_ANDROID_APP = resolveAndroidAppSurface();
 const IS_TAURI_APP = resolveTauriAppSurface();
+const IS_IOS_APP = detectIosNativeEnvironment().isIosNative;
 const SHOW_ANDROID_EXAMPLE_TAB = resolveAndroidExampleTab();
 const ANDROID_ALLOW_LAN_BRIDGE = resolveAndroidAllowLanBridge();
 const LOCAL_WEBVIEW_ORIGIN = 'https://agentic.local';
+const CAPACITOR_WEBVIEW_ORIGIN = 'capacitor://localhost';
 
 // Android WebView in debug-bundled mode loads from agentic.local, but the cloud backend
 // (DB, Helius, Birdeye, CoinGecko, Jupiter, session) lives on agentic-signer.com. Direct
@@ -1353,13 +1359,13 @@ const LOCAL_WEBVIEW_ORIGIN = 'https://agentic.local';
 // /api/* is already same-origin, and cookies work natively — skip install to preserve
 // cookie auth. Render's CORS allowlist (DEFAULT_ANDROID_CLOUD_ORIGIN + CORS_ALLOWED_HEADERS
 // in cloud/router.ts) already permits the bundled-mode origin + headers we send.
-if ((IS_ANDROID_APP || IS_TAURI_APP) && typeof window !== 'undefined' && typeof window.fetch === 'function') {
+if ((IS_ANDROID_APP || IS_TAURI_APP || IS_IOS_APP) && typeof window !== 'undefined' && typeof window.fetch === 'function') {
   const cloudBase = androidCloudApiBaseUrl().replace(/\/+$/, '');
   let cloudOrigin = '';
   try { cloudOrigin = new URL(cloudBase).origin; } catch { /* fall through */ }
   if (cloudBase && cloudOrigin && window.location.origin !== cloudOrigin) {
     const originalFetch = window.fetch.bind(window);
-    const localApiPrefix = `${LOCAL_WEBVIEW_ORIGIN}/api/`;
+    const localApiPrefixes = [`${LOCAL_WEBVIEW_ORIGIN}/api/`, `${CAPACITOR_WEBVIEW_ORIGIN}/api/`];
     window.fetch = function patchedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
       // Only rewrite when called with a string URL (the codebase's convention). Request /
       // URL objects pass through untouched so we don't lose method/body/headers metadata.
@@ -1367,18 +1373,19 @@ if ((IS_ANDROID_APP || IS_TAURI_APP) && typeof window !== 'undefined' && typeof 
         let rewritten: string | null = null;
         if (input.startsWith('/api/')) {
           rewritten = `${cloudBase}${input}`;
-        } else if (input.startsWith(localApiPrefix)) {
-          rewritten = `${cloudBase}${input.slice(LOCAL_WEBVIEW_ORIGIN.length)}`;
+        } else {
+          const matchedPrefix = localApiPrefixes.find((prefix) => input.startsWith(prefix));
+          if (matchedPrefix) {
+            rewritten = `${cloudBase}${input.slice(matchedPrefix.length - '/api/'.length)}`;
+          }
         }
         if (rewritten !== null) {
           const headers = new Headers(init?.headers);
           if (!headers.has('x-agentic-client')) {
-            headers.set('x-agentic-client', IS_TAURI_APP ? 'desktop-bundled' : ANDROID_CLOUD_CLIENT_HEADER);
+            headers.set('x-agentic-client', nativeCloudClientHeader());
           }
           if (!headers.has('authorization')) {
-            const token = IS_TAURI_APP
-              ? tauriNativeCloudSessionToken()
-              : androidNativeCloudSessionToken();
+            const token = nativeCloudSessionToken();
             if (token) headers.set('authorization', `Bearer ${token}`);
           }
           // credentials:'omit' — Render rejects cookies cross-origin; auth flows via Bearer.
@@ -4420,6 +4427,14 @@ async function bootstrap(): Promise<void> {
     });
   }
   state.iosNativeEnvironment = detectIosNativeEnvironment();
+  if (state.iosNativeEnvironment.isIosNative) {
+    void iosNativeCloudSessionToken();
+    window.addEventListener(IOS_CLOUD_SESSION_REHYDRATED_EVENT, () => {
+      void refreshCloudSession(true).catch((err) => {
+        console.warn('[bootstrap] refreshCloudSession after iOS rehydrate failed', err);
+      });
+    });
+  }
   await refreshIosNativeCacheState();
   if (state.iosNativeEnvironment.isIosNative) {
     await restoreIosNativeSession().catch((err) => {
@@ -8451,11 +8466,11 @@ function normalizeInitialRoute(): void {
     return;
   }
 
-  // Inside the Android TWA, the marketing root has no on-device value (it's hero copy +
+  // Inside the native mobile shells, the marketing root has no on-device value (it's hero copy +
   // CLI install commands). If the WebView lands on `/` — e.g. via the bundled fallback
   // when the remote shell fails — bounce to the guided demo so the user immediately
   // sees an interactive Solana approval flow instead of a developer landing page.
-  if (normalizedPath === '/' && state.androidNativeEnvironment.isAndroidNative) {
+  if (normalizedPath === '/' && (state.androidNativeEnvironment.isAndroidNative || state.iosNativeEnvironment.isIosNative)) {
     window.history.replaceState({}, '', '/demo');
     return;
   }
@@ -33380,6 +33395,9 @@ async function clearNativeCloudSessionToken(): Promise<void> {
   if (IS_TAURI_APP) {
     await clearTauriNativeCloudSessionToken().catch(() => false);
   }
+  if (IS_IOS_APP) {
+    await clearIosNativeCloudSessionToken().catch(() => false);
+  }
   if (IS_ANDROID_APP) {
     clearAndroidNativeCloudSessionToken();
   }
@@ -33970,11 +33988,9 @@ async function cloudFetch(path: string, init: RequestInit = {}): Promise<Respons
   if (!remote && viteEnv?.DEV && state.address && !headers.has('x-agentic-wallet-address')) {
     headers.set('x-agentic-wallet-address', state.address);
   }
-  if (IS_ANDROID_APP || IS_TAURI_APP) {
-    headers.set('x-agentic-client', IS_TAURI_APP ? 'desktop-bundled' : ANDROID_CLOUD_CLIENT_HEADER);
-    const token = IS_TAURI_APP
-      ? tauriNativeCloudSessionToken()
-      : androidNativeCloudSessionToken();
+  if (nativeCloudApiSurfaceActive()) {
+    headers.set('x-agentic-client', nativeCloudClientHeader());
+    const token = nativeCloudSessionToken();
     if (token) {
       headers.set('authorization', `Bearer ${token}`);
     }
@@ -34040,8 +34056,7 @@ async function cloudRequest<T = unknown>(path: string, init: RequestInit = {}): 
   if (!response.ok) {
     if (response.status === 401) {
       state.cloudSession = emptyCloudSession('signed-out');
-      if (IS_TAURI_APP) void clearTauriNativeCloudSessionToken();
-      else clearAndroidNativeCloudSessionToken();
+      void clearNativeCloudSessionToken();
     }
     throw new Error(cloudErrorMessage(payload, response.status));
   }
@@ -34053,17 +34068,15 @@ async function cloudRequest<T = unknown>(path: string, init: RequestInit = {}): 
 }
 
 function applyAndroidCloudSessionResponse(path: string, payload: unknown): void {
-  if (!IS_ANDROID_APP && !IS_TAURI_APP) return;
+  if (!nativeCloudApiSurfaceActive()) return;
   if (!payload || typeof payload !== 'object') return;
   const record = payload as Record<string, unknown>;
   if (typeof record.sessionToken === 'string' && record.sessionToken.trim()) {
-    if (IS_TAURI_APP) void setTauriNativeCloudSessionToken(record.sessionToken.trim());
-    else setAndroidNativeCloudSessionToken(record.sessionToken.trim());
+    void setNativeCloudSessionToken(record.sessionToken.trim());
     return;
   }
   if (path.startsWith('/api/auth/logout') || record.signedIn === false || record.signedOut === true) {
-    if (IS_TAURI_APP) void clearTauriNativeCloudSessionToken();
-    else clearAndroidNativeCloudSessionToken();
+    void clearNativeCloudSessionToken();
   }
 }
 
@@ -34077,7 +34090,7 @@ function cloudRequestUrl(path: string): string {
 }
 
 function cloudApiUsesRemoteOrigin(): boolean {
-  return (IS_ANDROID_APP || IS_TAURI_APP) && Boolean(androidCloudApiBaseUrl());
+  return nativeCloudApiSurfaceActive() && Boolean(androidCloudApiBaseUrl());
 }
 
 function cloudApiOriginLabel(): string {
@@ -34090,13 +34103,35 @@ function cloudApiOriginLabel(): string {
 }
 
 function androidCloudApiBaseUrl(): string {
-  if (!IS_ANDROID_APP && !IS_TAURI_APP) return '';
+  if (!nativeCloudApiSurfaceActive()) return '';
   const viteEnv = (import.meta as ImportMeta & {
     env?: {
       VITE_AGENTIC_CLOUD_API_BASE_URL?: string;
     };
   }).env;
   return String(viteEnv?.VITE_AGENTIC_CLOUD_API_BASE_URL ?? '').trim() || DEFAULT_ANDROID_CLOUD_API_BASE_URL;
+}
+
+function nativeCloudApiSurfaceActive(): boolean {
+  return IS_ANDROID_APP || IS_TAURI_APP || IS_IOS_APP;
+}
+
+function nativeCloudClientHeader(): string {
+  if (IS_TAURI_APP) return 'desktop-bundled';
+  if (IS_IOS_APP) return 'ios-bundled';
+  return ANDROID_CLOUD_CLIENT_HEADER;
+}
+
+function nativeCloudSessionToken(): string {
+  if (IS_TAURI_APP) return tauriNativeCloudSessionToken();
+  if (IS_IOS_APP) return iosNativeCloudSessionToken();
+  return androidNativeCloudSessionToken();
+}
+
+async function setNativeCloudSessionToken(token: string): Promise<boolean> {
+  if (IS_TAURI_APP) return setTauriNativeCloudSessionToken(token).catch(() => false);
+  if (IS_IOS_APP) return setIosNativeCloudSessionToken(token);
+  return setAndroidNativeCloudSessionToken(token);
 }
 
 async function loadAuditEventsForRecord(
@@ -49545,7 +49580,9 @@ function defaultAiMode(): AiSettings['mode'] {
     ? tauriNativeCloudSessionToken()
     : IS_ANDROID_APP
       ? androidNativeCloudSessionToken()
-      : '';
+      : iosNative
+        ? iosNativeCloudSessionToken()
+        : '';
   return defaultAiModeForSurface({
     isAndroidApp: IS_ANDROID_APP,
     androidDeviceAgentRuntimeEnabled: ANDROID_DEVICE_AGENT_ENABLED,

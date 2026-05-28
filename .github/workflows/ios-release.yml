@@ -65,6 +65,7 @@ jobs:
         env:
           VITE_AGENTIC_DEVICE_AGENT: 'true'
           VITE_AGENTIC_BROWSER_DEVICE_AGENT: 'false'
+          VITE_AGENTIC_CLOUD_API_BASE_URL: 'https://agentic-signer.com'
         run: pnpm ios:sync
 
       - name: Setup Ruby + Bundler

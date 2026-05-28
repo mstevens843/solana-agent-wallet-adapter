@@ -214,9 +214,15 @@ export function policyBundleResearchTargets(
  * configuring an explicit baseUrl via env / setBaseUrl().
  */
 function inferBaseUrl(): string {
+  const viteEnv = (import.meta as ImportMeta & {
+    env?: { VITE_AGENTIC_CLOUD_API_BASE_URL?: string };
+  }).env;
+  const configured = String(viteEnv?.VITE_AGENTIC_CLOUD_API_BASE_URL ?? '').trim().replace(/\/+$/u, '');
+  if (configured) return configured;
   if (typeof window === 'undefined') return '';
   try {
     const { origin } = window.location;
+    if (!/^https?:\/\//i.test(origin)) return 'https://agentic-signer.com';
     return origin;
   } catch {
     return '';
