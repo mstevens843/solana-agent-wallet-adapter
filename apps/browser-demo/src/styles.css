@@ -7137,6 +7137,10 @@ code {
   margin: 0;
 }
 
+.local-runtime-guide p strong {
+  color: var(--text);
+}
+
 .local-runtime-steps {
   color: var(--muted);
   display: grid;
@@ -7150,6 +7154,12 @@ code {
 .local-runtime-steps li::marker {
   color: var(--accent-2);
   font-weight: 900;
+}
+
+.local-runtime-steps.compact {
+  font-size: 0.76rem;
+  gap: 4px;
+  line-height: 1.28;
 }
 
 .accent-note,
@@ -7194,6 +7204,28 @@ code {
 .local-runtime-desktop-link {
   justify-content: center;
   min-height: 34px;
+}
+
+.compact-runtime-guide {
+  gap: 7px;
+}
+
+.compact-runtime-guide .local-runtime-command-label {
+  font-size: 0.74rem;
+}
+
+.compact-runtime-guide .primary-runtime-command code {
+  font-size: 0.78rem;
+  line-height: 1.22;
+}
+
+.compact-runtime-guide p {
+  font-size: 0.76rem;
+  line-height: 1.3;
+}
+
+.compact-runtime-guide .local-runtime-alt > summary {
+  font-size: 0.76rem;
 }
 
 .ai-runtime-guide {
@@ -19388,7 +19420,7 @@ button.danger:hover:not(:disabled) {
 }
 
 .route-app .rail-ai-settings .local-bridge-ai-setup-card[open] .local-bridge-ai-setup-body {
-  max-height: clamp(190px, 34dvh, 280px);
+  max-height: clamp(210px, 38dvh, 300px);
   overflow-y: auto;
   overscroll-behavior: contain;
   padding-right: 4px;

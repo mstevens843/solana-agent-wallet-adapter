@@ -18479,20 +18479,48 @@ function bridgeSetupDetails(extraClass = '', open = false): string {
   `;
 }
 
-function localRuntimeGuide(extraClass = ''): string {
+function localRuntimeGuide(extraClass = '', options: { compact?: boolean } = {}): string {
+  if (options.compact) {
+    return `
+    <div class="local-runtime-guide ${escapeHtml(extraClass)} compact-runtime-guide">
+      <span class="local-runtime-command-label">Run this in Terminal</span>
+      <div class="bridge-command-row primary-runtime-command">
+        <code>${escapeHtml(NPM_EXEC_COMMAND)}</code>
+        <button type="button" data-copy="${escapeHtml(NPM_EXEC_COMMAND)}" data-copy-name="local runtime command">Copy</button>
+      </div>
+      <p><strong>No separate install step.</strong> This command downloads and starts Agentic's local runtime. Keep the Terminal window open.</p>
+      <ol class="local-runtime-steps compact">
+        <li>Paste the command and press Enter.</li>
+        <li>Connect your wallet in the tab it opens.</li>
+        <li>Return here and click Check.</li>
+      </ol>
+      <details class="local-runtime-alt">
+        <summary>Desktop App or permanent install</summary>
+        <div class="local-runtime-alt-body">
+          <a class="button-link local-runtime-desktop-link" href="/desktop">Use Desktop App instead</a>
+          <span class="local-runtime-alt-label">Install CLI once</span>
+          <div class="bridge-command-row">
+            <code>${escapeHtml(NPM_GLOBAL_INSTALL_COMMAND)}</code>
+            <button type="button" data-copy="${escapeHtml(NPM_GLOBAL_INSTALL_COMMAND)}" data-copy-name="CLI install command">Copy</button>
+          </div>
+        </div>
+      </details>
+    </div>
+  `;
+  }
   return `
     <div class="local-runtime-guide ${escapeHtml(extraClass)}">
       <div class="local-runtime-guide-head">
         <span>Required on this computer</span>
         <strong>${escapeHtml(compactEndpoint(state.bridgeUrl))}</strong>
       </div>
-      <p>This website cannot start the approval bridge directly. Start the local runtime, keep that terminal window open, then return here and click Check local bridge.</p>
+      <p>Use this optional local runtime when you want AI keys and private workflow storage to stay on this computer. The website cannot start it for you.</p>
       <ol class="local-runtime-steps">
-        <li>Copy and run the one-shot command in Terminal.</li>
+        <li>Copy and run the command in Terminal. No separate install step is required.</li>
         <li>Connect your wallet in the browser tab it opens.</li>
         <li>Come back here and check the local bridge.</li>
       </ol>
-      <span class="local-runtime-command-label">Install once or use CLI</span>
+      <span class="local-runtime-command-label">Run local runtime</span>
       <div class="bridge-command-row primary-runtime-command">
         <code>${escapeHtml(NPM_EXEC_COMMAND)}</code>
         <button type="button" data-copy="${escapeHtml(NPM_EXEC_COMMAND)}" data-copy-name="local runtime command">Copy</button>
@@ -21107,17 +21135,17 @@ function localBridgeAiSetupCard(status: BridgeAiStatus | null, location: 'rail' 
   const title = connected
     ? 'Local bridge connected'
     : bridgeReachable
-      ? 'Local bridge reachable'
+      ? 'Local runtime running'
       : state.tauriNativeEnvironment.isTauriNative
         ? 'Start the local bridge'
         : 'Start the local runtime';
   const detail = connected
-    ? 'This browser can reach the local runtime for AI drafts and optional private local workflow storage.'
+    ? 'AI drafts and optional private workflow storage can stay on this computer. Wallet approval is still required.'
     : bridgeReachable
-      ? 'The local runtime is available. Connect or check the same wallet here before using private local workflow storage.'
+      ? 'The local runtime is running. Connect the same wallet here and in the local tab, then check it.'
       : state.tauriNativeEnvironment.isTauriNative
         ? 'Desktop usually starts the local bridge automatically. If it is offline, start it here and then confirm the planner.'
-        : 'Run the local runtime on this computer, connect the same wallet in the tab it opens, then check the bridge here.';
+        : 'Optional private AI path. Run the local runtime only if you want keys and workflow data to stay on this computer.';
   const source = localBridgeAiKeySource(status);
   const endpoint = state.tauriNativeEnvironment.isTauriNative && tauriStatus?.bridgeUrl
     ? tauriStatus.bridgeUrl
@@ -21131,7 +21159,15 @@ function localBridgeAiSetupCard(status: BridgeAiStatus | null, location: 'rail' 
         </button>
       </div>
     `
-    : localRuntimeGuide(`local-bridge-ai-runtime-guide ${location === 'rail' ? 'rail-runtime-guide' : ''}`);
+    : localRuntimeGuide(
+        `local-bridge-ai-runtime-guide ${location === 'rail' ? 'rail-runtime-guide' : ''}`,
+        { compact: location === 'rail' },
+      );
+  const checkBridgeButton = connected ? '' : `
+    <button type="button" class="utility" data-bridge-action="connect" ${!state.address || state.busy ? 'disabled' : ''}>
+      Check local bridge
+    </button>
+  `;
   return `
     <details class="local-bridge-ai-setup-card local-bridge-connection-card ${tone}" open>
       <summary>
@@ -21141,17 +21177,13 @@ function localBridgeAiSetupCard(status: BridgeAiStatus | null, location: 'rail' 
       <div class="local-bridge-ai-setup-body">
         <p>${escapeHtml(detail)}</p>
         ${runtimeSetup}
+        ${checkBridgeButton}
         <div class="local-bridge-facts">
           <span>Endpoint <strong>${escapeHtml(compactEndpoint(endpoint))}</strong></span>
           <span>Wallet <strong>${escapeHtml(state.address ? short(state.address) : 'Not connected')}</strong></span>
           <span>AI provider key <strong>${escapeHtml(source.label)}</strong></span>
         </div>
         <p class="local-bridge-ai-key-note">${escapeHtml(source.detail)}</p>
-        ${connected ? '' : `
-          <button type="button" class="utility" data-bridge-action="connect" ${!state.address || state.busy ? 'disabled' : ''}>
-            Check local bridge
-          </button>
-        `}
       </div>
     </details>
   `;
