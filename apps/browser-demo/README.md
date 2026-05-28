@@ -88,7 +88,7 @@ blueprint. Manual Render settings are:
 
 - Root directory: repository root
 - Runtime: Node
-- Build command: `pnpm install --frozen-lockfile --ignore-scripts && pnpm render:build && pnpm -F @solana-agent-wallet-adapter/render-web build`
+- Build command: `pnpm install --frozen-lockfile --ignore-scripts && pnpm render:build`
 - Start command: `pnpm -F @solana-agent-wallet-adapter/render-web start`
 - Health check path: `/api/ai/status`
 - Environment variable: `SKIP_INSTALL_DEPS=true`

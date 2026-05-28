@@ -12,7 +12,7 @@ Use the root `render.yaml` as a Render Blueprint. It defines one Node web servic
 one cron job:
 
 - Service name: `agentic`
-- Build command: `pnpm install --frozen-lockfile --ignore-scripts && pnpm render:build && pnpm -F @solana-agent-wallet-adapter/render-web build`
+- Build command: `pnpm install --frozen-lockfile --ignore-scripts && pnpm render:build`
 - Predeploy command: `pnpm -F @solana-agent-wallet-adapter/render-web db:migrate`
 - Start command: `pnpm -F @solana-agent-wallet-adapter/render-web start`
 - Health check path: `/api/ai/status`
@@ -38,7 +38,7 @@ If configuring Render manually, use:
 
 - Root directory: repository root
 - Runtime: Node
-- Build command: `pnpm install --frozen-lockfile --ignore-scripts && pnpm render:build && pnpm -F @solana-agent-wallet-adapter/render-web build`
+- Build command: `pnpm install --frozen-lockfile --ignore-scripts && pnpm render:build`
 - Predeploy command: `pnpm -F @solana-agent-wallet-adapter/render-web db:migrate`
 - Start command: `pnpm -F @solana-agent-wallet-adapter/render-web start`
 - Health check path: `/api/ai/status`
@@ -233,7 +233,6 @@ Before deploying, run:
 pnpm install --frozen-lockfile --ignore-scripts
 pnpm build
 pnpm render:build
-pnpm -F @solana-agent-wallet-adapter/render-web build
 pnpm -F @solana-agent-wallet-adapter/render-web typecheck
 pnpm -F @solana-agent-wallet-adapter/render-web test
 pnpm -F @solana-agent-wallet-adapter/browser-demo typecheck

@@ -20,7 +20,7 @@ services:
   - type: web
     name: agentic
     runtime: node
-    buildCommand: pnpm install --frozen-lockfile --ignore-scripts && pnpm render:build && pnpm -F @solana-agent-wallet-adapter/render-web build
+    buildCommand: pnpm install --frozen-lockfile --ignore-scripts && pnpm render:build
     preDeployCommand: pnpm -F @solana-agent-wallet-adapter/render-web db:migrate
     startCommand: pnpm -F @solana-agent-wallet-adapter/render-web start
     healthCheckPath: /api/ai/status
