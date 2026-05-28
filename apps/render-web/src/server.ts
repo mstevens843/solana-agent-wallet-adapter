@@ -165,7 +165,7 @@ function setCommonHeaders(req: IncomingMessage, res: ServerResponse): void {
       "font-src 'self' https://fonts.gstatic.com",
       "style-src 'self' https://fonts.googleapis.com 'unsafe-inline'",
       "script-src 'self'",
-      "connect-src 'self' https: http://127.0.0.1:* http://localhost:* http://[::1]:*",
+      "connect-src 'self' https: wss: http://127.0.0.1:* http://localhost:* http://[::1]:*",
     ].join('; '),
   );
   if (shouldSetStrictTransport(req)) {

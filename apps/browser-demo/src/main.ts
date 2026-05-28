@@ -6074,6 +6074,7 @@ function bindDesktopBrandPanels(): void {
 const WALLETCONNECT_PROJECT_ID =
   (import.meta as ImportMeta & { env?: { VITE_AGENTIC_WC_PROJECT_ID?: string } }).env
     ?.VITE_AGENTIC_WC_PROJECT_ID ?? '';
+const WALLETCONNECT_QR_SETUP_TIMEOUT_MS = 15_000;
 
 const WALLET_CONNECT_BRAND_LOGOS: Record<string, string> = {
   phantom: 'phantom',
@@ -6136,6 +6137,31 @@ function walletConnectTopicFromUri(uri: string): string | null {
   return match?.[1] ?? null;
 }
 
+function walletConnectSetupTimeoutMessage(phase: string): string {
+  return `WalletConnect ${phase} timed out before a QR code was created. Check that the hosted app CSP allows wss: connections and that the Reown project allows this domain.`;
+}
+
+async function withWalletConnectQrSetupTimeout<T>(
+  promise: Promise<T>,
+  phase: string,
+): Promise<T> {
+  let timeoutId: number | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeoutId = window.setTimeout(() => {
+          reject(new Error(walletConnectSetupTimeoutMessage(phase)));
+        }, WALLETCONNECT_QR_SETUP_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== undefined) {
+      window.clearTimeout(timeoutId);
+    }
+  }
+}
+
 async function disconnectStaleWalletConnectSession(
   client: WalletConnectSolanaClient,
   session: WalletConnectSession,
@@ -6177,10 +6203,13 @@ async function initWalletConnectSignClient(): Promise<SignClientLike> {
   const mod = await import('@walletconnect/sign-client');
   const SignClient = (mod as unknown as { default?: { init: (opts: unknown) => Promise<unknown> } })
     .default ?? (mod as unknown as { init: (opts: unknown) => Promise<unknown> });
-  const instance = await SignClient.init({
-    projectId: WALLETCONNECT_PROJECT_ID,
-    metadata: walletConnectAppMetadata(),
-  });
+  const instance = await withWalletConnectQrSetupTimeout(
+    SignClient.init({
+      projectId: WALLETCONNECT_PROJECT_ID,
+      metadata: walletConnectAppMetadata(),
+    }),
+    'relay startup',
+  );
   return instance as SignClientLike;
 }
 
@@ -6402,7 +6431,10 @@ async function handleScanQrForBrand(brandId: string): Promise<void> {
     const client = await ensureWalletConnectClient();
     if (!isActiveWalletConnectPairing(pairingId)) return;
     const chains = walletConnectChainsForCurrentCluster();
-    const { uri, approval } = await client.connect({ chains });
+    const { uri, approval } = await withWalletConnectQrSetupTimeout(
+      client.connect({ chains }),
+      'pairing request',
+    );
     walletConnect.pendingTopic = walletConnectTopicFromUri(uri);
     let qrDataUrl = '';
     try {
@@ -6467,7 +6499,10 @@ async function handleScanQrAnyWallet(displayBrandId?: string): Promise<void> {
     const client = await ensureWalletConnectClient();
     if (!isActiveWalletConnectPairing(pairingId)) return;
     const chains = walletConnectChainsForCurrentCluster();
-    const { uri, approval } = await client.connect({ chains });
+    const { uri, approval } = await withWalletConnectQrSetupTimeout(
+      client.connect({ chains }),
+      'pairing request',
+    );
     walletConnect.pendingTopic = walletConnectTopicFromUri(uri);
     const qrPayload = desktopWalletConnectQrPayload(displayBrandId, uri);
     let qrDataUrl = '';

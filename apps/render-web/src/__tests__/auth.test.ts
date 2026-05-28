@@ -474,6 +474,7 @@ describe('render web cloud wallet auth', () => {
       expect(response.headers['referrer-policy']).toBe('no-referrer');
       expect(String(response.headers['permissions-policy'])).toContain('camera=()');
       expect(String(response.headers['content-security-policy'])).toContain("frame-ancestors 'none'");
+      expect(String(response.headers['content-security-policy'])).toContain('wss:');
     });
   });
 
