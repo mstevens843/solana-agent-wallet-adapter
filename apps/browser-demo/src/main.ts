@@ -20534,9 +20534,6 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
     : state.aiSettings.mode === 'bridge'
       ? 'Local Bridge AI uses your normal provider key from the local runtime. Needs Approval, repeat payments, proofs, and wallet signatures remain separate workflow actions.'
         : `${sessionDescriptor} keys stay in ${sessionScope} and draft plans only. Queueing, repeat payments, approvals, submissions, and signatures use the active workflow, not the AI key.`;
-  const keyHint = state.aiSettings.mode === 'bridge'
-    ? `Paste your ${providerPreset.label} API key. Agentic sends it to the local bridge; it is not a second Agentic key.`
-    : aiProviderKeyHint(providerPreset.id);
   const bridgeKeyConfiguredDetail = status
     ? `${status.provider ?? status.apiFormat ?? 'AI'} - ${status.model ?? 'model configured'}`
     : 'Local bridge AI key configured';
@@ -20646,7 +20643,6 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         <label class="field compact ai-setting-field ai-setting-key">
           <span>${escapeHtml(keyLabel)}</span>
           <input id="aiApiKey-${escapeHtml(scope)}" data-ai-control="api-key" type="password" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="${state.aiSettings.mode === 'bridge' ? 'Sent to local bridge memory' : (IS_TAURI_APP || IS_ANDROID_APP) ? 'Held until you disconnect or close the app' : 'Held for this tab'}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
-          ${!mobilePlannerSetup && keyHint ? `<em class="ai-route-helper">${escapeHtml(keyHint)}</em>` : ''}
         </label>
       `}
       <div class="ai-actions">
@@ -20927,21 +20923,6 @@ function aiProviderHelperText(): string {
       : 'Device Agent is gated for local development or allowlisted cloud wallets.';
   }
   return '';
-}
-
-function aiProviderKeyHint(providerId: string): string {
-  switch (providerId) {
-    case 'openai':
-      return 'OpenAI/Codex keys are provider-specific; no universal agent-key pattern exists.';
-    case 'anthropic':
-      return 'Use a Claude / Anthropic key. Do not rely on a shared pattern across providers.';
-    case 'gemini':
-      return 'Use a Gemini / Google API key. Treat provider keys as opaque secrets.';
-    case 'openrouter':
-      return 'Use an OpenRouter key. Examples often use sk-or-v1, but validate by provider.';
-    default:
-      return 'Provider keys are opaque. Use a key for the selected gateway.';
-  }
 }
 
 function aiModeLimitations(): string {
