@@ -4,7 +4,7 @@ import type { JsonObject, JsonValue } from './index.js';
 export const DEVICE_AGENT_RUNTIME_STATES = ['unavailable', 'stopped', 'starting', 'running', 'error'] as const;
 export type DeviceAgentRuntimeState = (typeof DEVICE_AGENT_RUNTIME_STATES)[number];
 
-export const DEVICE_AGENT_RUNTIME_KINDS = ['android-native', 'render-gated', 'browser-dev', 'browser-native'] as const;
+export const DEVICE_AGENT_RUNTIME_KINDS = ['android-native', 'ios-native', 'render-gated', 'browser-dev', 'browser-native'] as const;
 export type DeviceAgentRuntimeKind = (typeof DEVICE_AGENT_RUNTIME_KINDS)[number];
 
 export const DEVICE_AGENT_ERROR_CODES = {

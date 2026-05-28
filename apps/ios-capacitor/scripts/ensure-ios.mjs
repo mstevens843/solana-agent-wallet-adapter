@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 
 const IOS_DEPLOYMENT_TARGET = '16.0';
+const CODE_SIGN_ENTITLEMENTS = 'App/App.entitlements';
 
 const appDir = resolve(new URL('..', import.meta.url).pathname);
 const iosDir = join(appDir, 'ios');
@@ -120,6 +121,11 @@ function patchEntitlements() {
     '\t<key>com.apple.developer.associated-domains</key>',
     '\t<array>',
     '\t\t<string>applinks:agenticwalletadapter.com</string>',
+    '\t\t<string>applinks:agentic-signer.com</string>',
+    '\t</array>',
+    '\t<key>com.apple.security.application-groups</key>',
+    '\t<array>',
+    '\t\t<string>group.com.agentic.wallet</string>',
     '\t</array>',
     '</dict>',
     '</plist>',
@@ -152,9 +158,13 @@ function patchXcodeDeploymentTarget() {
   let src = readFileSync(pbxproj, 'utf8');
   const before = src;
   src = src.replace(/IPHONEOS_DEPLOYMENT_TARGET = [\d.]+;/g, `IPHONEOS_DEPLOYMENT_TARGET = ${IOS_DEPLOYMENT_TARGET};`);
+  src = src.replace(
+    /ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;\n(?!\s*CODE_SIGN_ENTITLEMENTS = )/g,
+    `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;\n\t\t\t\tCODE_SIGN_ENTITLEMENTS = ${CODE_SIGN_ENTITLEMENTS};\n`,
+  );
   if (src !== before) {
     writeFileSync(pbxproj, src);
-    console.log(`[ios-capacitor] Set IPHONEOS_DEPLOYMENT_TARGET = ${IOS_DEPLOYMENT_TARGET};`);
+    console.log(`[ios-capacitor] Ensured Xcode target settings`);
   }
 }
 

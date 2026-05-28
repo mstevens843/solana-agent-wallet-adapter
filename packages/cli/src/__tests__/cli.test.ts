@@ -620,6 +620,145 @@ test('interactive main prompt Ctrl+C exits the app', async () => {
   }
 });
 
+test('interactive main prompt Ctrl+C can keep a saved agent key', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-main-sigint-keep-agent-'));
+  const envPath = join(runtimeDir, '.env');
+  await writeFile(envPath, [
+    'AGENTIC_AI_API_KEY=sk-test-agent-key',
+    'AGENTIC_AI_PROVIDER=anthropic',
+    'AGENTIC_AI_API_FORMAT=anthropic',
+    'AGENTIC_AI_BASE_URL=https://api.anthropic.com/v1',
+    'AGENTIC_AI_MODEL=claude-opus-4-1-20250805',
+    'AGENTIC_AI_PATH=bridge',
+    '',
+  ].join('\n'), 'utf8');
+  const bridge = await startMockBridge([]);
+  const walletHostUrl = `http://127.0.0.1:${await freePort()}`;
+  const renderWebUrl = `http://127.0.0.1:${await freePort()}`;
+  const child = startCliInteractive([
+    '--runtime-dir',
+    runtimeDir,
+    '--bridge-url',
+    bridge.url,
+    '--wallet-host-url',
+    walletHostUrl,
+    '--render-web-url',
+    renderWebUrl,
+  ]);
+
+  try {
+    await waitForStdout(child, /agentic>/, 30_000);
+    const prompt = waitForOutput(child, /Clear saved agent API key before exit\? \[y\/N\]/, 10_000);
+    child.kill('SIGINT');
+    await prompt;
+    child.stdin.write('n\n');
+    const exit = await waitForExit(child);
+    assert.equal(exit.code, 0);
+    const raw = await readFile(envPath, 'utf8');
+    assert.match(raw, /AGENTIC_AI_API_KEY=sk-test-agent-key/);
+    assert.match(raw, /AGENTIC_AI_PATH=bridge/);
+  } finally {
+    await stopChild(child);
+    await bridge.close();
+  }
+});
+
+test('interactive main prompt Ctrl+C can clear a saved agent key', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-main-sigint-clear-agent-'));
+  const envPath = join(runtimeDir, '.env');
+  await writeFile(envPath, [
+    'CUSTOM_VALUE=kept',
+    'AGENTIC_AI_API_KEY=sk-test-agent-key',
+    'AGENTIC_AI_PROVIDER=anthropic',
+    'AGENTIC_AI_API_FORMAT=anthropic',
+    'AGENTIC_AI_BASE_URL=https://api.anthropic.com/v1',
+    'AGENTIC_AI_MODEL=claude-opus-4-1-20250805',
+    'AGENTIC_AI_PATH=bridge',
+    '',
+  ].join('\n'), 'utf8');
+  const bridge = await startMockBridge([]);
+  const walletHostUrl = `http://127.0.0.1:${await freePort()}`;
+  const renderWebUrl = `http://127.0.0.1:${await freePort()}`;
+  const child = startCliInteractive([
+    '--runtime-dir',
+    runtimeDir,
+    '--bridge-url',
+    bridge.url,
+    '--wallet-host-url',
+    walletHostUrl,
+    '--render-web-url',
+    renderWebUrl,
+  ]);
+
+  try {
+    await waitForStdout(child, /agentic>/, 30_000);
+    const prompt = waitForOutput(child, /Clear saved agent API key before exit\? \[y\/N\]/, 10_000);
+    child.kill('SIGINT');
+    await prompt;
+    child.stdin.write('y\n');
+    const exit = await waitForExit(child);
+    assert.equal(exit.code, 0);
+    const raw = await readFile(envPath, 'utf8');
+    assert.match(raw, /CUSTOM_VALUE=kept/);
+    assert.doesNotMatch(raw, /AGENTIC_AI_API_KEY/);
+    assert.doesNotMatch(raw, /AGENTIC_AI_PATH/);
+    const clearRequest = bridge.requests.find((request) => request.path === '/bridge/ai/session-key');
+    assert.ok(clearRequest);
+    assert.deepEqual(clearRequest.body, { clear: true });
+  } finally {
+    await stopChild(child);
+    await bridge.close();
+  }
+});
+
+test('interactive /quit can clear a saved agent key', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-main-quit-clear-agent-'));
+  const envPath = join(runtimeDir, '.env');
+  await writeFile(envPath, [
+    'CUSTOM_VALUE=kept',
+    'AGENTIC_AI_API_KEY=sk-test-agent-key',
+    'AGENTIC_AI_PROVIDER=anthropic',
+    'AGENTIC_AI_API_FORMAT=anthropic',
+    'AGENTIC_AI_BASE_URL=https://api.anthropic.com/v1',
+    'AGENTIC_AI_MODEL=claude-opus-4-1-20250805',
+    'AGENTIC_AI_PATH=bridge',
+    '',
+  ].join('\n'), 'utf8');
+  const bridge = await startMockBridge([]);
+  const walletHostUrl = `http://127.0.0.1:${await freePort()}`;
+  const renderWebUrl = `http://127.0.0.1:${await freePort()}`;
+  const child = startCliInteractive([
+    '--runtime-dir',
+    runtimeDir,
+    '--bridge-url',
+    bridge.url,
+    '--wallet-host-url',
+    walletHostUrl,
+    '--render-web-url',
+    renderWebUrl,
+  ]);
+
+  try {
+    await waitForStdout(child, /agentic>/, 30_000);
+    const prompt = waitForOutput(child, /Clear saved agent API key before exit\? \[y\/N\]/, 10_000);
+    child.stdin.write('/quit\n');
+    await prompt;
+    child.stdin.write('y\n');
+    const exit = await waitForExit(child);
+    assert.equal(exit.code, 0);
+    const raw = await readFile(envPath, 'utf8');
+    assert.match(raw, /CUSTOM_VALUE=kept/);
+    assert.doesNotMatch(raw, /AGENTIC_AI_API_KEY/);
+    assert.doesNotMatch(raw, /AGENTIC_AI_PATH/);
+    const clearRequest = bridge.requests.find((request) => request.path === '/bridge/ai/session-key');
+    assert.ok(clearRequest);
+    assert.deepEqual(clearRequest.body, { clear: true });
+  } finally {
+    await stopChild(child);
+    await bridge.close();
+  }
+});
+
 test('interactive help exposes the connectors command', async () => {
   const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-help-app-'));
   const bridgeUrl = `http://127.0.0.1:${await freePort()}`;

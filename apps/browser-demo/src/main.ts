@@ -197,6 +197,7 @@ import {
   decodeLedgerPublicKey,
   detectLedgerWebHidSupport,
   detectLedgerTauriInvoke,
+  preloadWebHidLedgerRuntime,
   registerLedgerWallet,
   unregisterAllLedgerWallets,
   type LedgerDevice,
@@ -367,6 +368,16 @@ import {
   type BrowserWalletSession,
 } from './walletSelection.js';
 import {
+  IosNativeWalletBackend,
+  detectIosNativeEnvironment,
+  iosNativeCacheSummary,
+  listIosNativeWalletOptions,
+  restoreLatestIosNativeWallet,
+  type IosNativeEnvironment,
+  type IosNativeWalletId,
+  type IosNativeWalletOption,
+} from './iosNative.js';
+import {
   findPendingTransactionByAction,
   loadTransactionLedger,
   markTransactionPhase,
@@ -523,7 +534,9 @@ import {
   DeviceAgentClientError,
   deviceAgentDiagnosticsFromError,
   deviceAgentRequestOrThrow,
+  iosDeviceAgentRequestOrThrow,
   isDeviceAgentBridgeAvailable,
+  isIosDeviceAgentBridgeAvailable,
   parseDeviceAgentStatus as parseDeviceAgentStatusBase,
   type DeviceAgentRuntimeKind,
   type DeviceAgentRuntimeState,
@@ -907,7 +920,6 @@ type PreparedActionTxStatus = 'pending' | 'confirmed' | 'failed';
 type SubmittedTransactionStatusKind = PreparedActionTxStatus | 'status_unreachable';
 type RecurringCadence = 'weekly' | 'monthly' | 'interval_days' | 'interval_hours' | 'interval_minutes';
 type InstructionData = ConstructorParameters<typeof TransactionInstruction>[0]['data'];
-type IosNativeWalletId = 'phantom' | 'solflare' | 'backpack' | 'jupiter';
 type WorkflowModePreference = 'auto' | 'local-bridge';
 type ActiveWorkflowMode = 'agentic-cloud' | 'browser-workflow' | 'local-bridge';
 type WorkflowRecordSource = 'cloud' | 'browser' | 'local-bridge';
@@ -1113,22 +1125,6 @@ type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
 
 interface JsonObject {
   [key: string]: JsonValue;
-}
-
-interface IosNativeEnvironment {
-  isNative: boolean;
-  platform: string;
-  isIos: boolean;
-  isIosNative: boolean;
-  callbackScheme: string;
-}
-
-interface IosNativeWalletOption {
-  id: IosNativeWalletId;
-  name: string;
-  detail: string;
-  transport: 'encrypted-deeplink' | 'walletconnect';
-  appStoreUrl: string;
 }
 
 interface AgenticAndroidBridge {
@@ -1582,76 +1578,6 @@ const BRAND_LOGOS: Record<BrandLogoId, string> = {
   vercel: new URL('./assets/logos/vercel.svg', import.meta.url).href,
   wormhole: new URL('./assets/logos/wormhole.svg', import.meta.url).href,
 };
-const IOS_NATIVE_WALLETS: ReadonlyArray<IosNativeWalletOption> = [
-  {
-    id: 'phantom',
-    name: 'Phantom',
-    detail: 'Encrypted iOS deeplink',
-    transport: 'encrypted-deeplink',
-    appStoreUrl: 'https://apps.apple.com/app/phantom-crypto-wallet/id1598432977',
-  },
-  {
-    id: 'solflare',
-    name: 'Solflare',
-    detail: 'Encrypted iOS deeplink',
-    transport: 'encrypted-deeplink',
-    appStoreUrl: 'https://apps.apple.com/app/solflare/id1580902717',
-  },
-  {
-    id: 'backpack',
-    name: 'Backpack',
-    detail: 'Encrypted iOS deeplink',
-    transport: 'encrypted-deeplink',
-    appStoreUrl: 'https://apps.apple.com/app/backpack-crypto-wallet/id6445964121',
-  },
-  {
-    id: 'jupiter',
-    name: 'Jupiter',
-    detail: 'WalletConnect path',
-    transport: 'walletconnect',
-    appStoreUrl: 'https://apps.apple.com/app/jupiter-mobile/id6474343098',
-  },
-];
-
-function detectIosNativeEnvironment(): IosNativeEnvironment {
-  return {
-    isNative: false,
-    platform: 'web',
-    isIos: false,
-    isIosNative: false,
-    callbackScheme: 'agenticwallet',
-  };
-}
-
-function listIosNativeWalletOptions(): ReadonlyArray<IosNativeWalletOption> {
-  return IOS_NATIVE_WALLETS;
-}
-
-async function iosNativeCacheSummary(): Promise<{ count: number }> {
-  return { count: 0 };
-}
-
-async function restoreLatestIosNativeWallet(_options?: {
-  cluster: Cluster;
-  appUrl: string;
-  rpcUrl?: string;
-  logLevel?: 'silent' | 'error' | 'info' | 'debug';
-}): Promise<IosNativeRestoreResult | null> {
-  return null;
-}
-
-const IosNativeWalletBackend = class {
-  constructor() {
-    throw new Error('iOS native wallet backend is not available in the web build yet.');
-  }
-} as unknown as new (options: {
-  walletId: IosNativeWalletId;
-  cluster: Cluster;
-  appUrl: string;
-  rpcUrl?: string;
-  logLevel?: 'silent' | 'error' | 'info' | 'debug';
-}) => IosNativeMaintenanceBackend;
-
 interface Toast {
   id: number;
   kind: ToastKind;
@@ -3191,7 +3117,10 @@ const initialMobileAiPathPolicy = shouldUseMobileAiPathPolicy({
   supportsMwaMobileWeb: initialMwaEnvironment.supportsMwaMobileWeb,
   supportsIosWalletStandardFallback: initialMwaEnvironment.supportsIosWalletStandardFallback,
 });
-const initialAiSettings = persistedAiSettings(persisted, initialMobileAiPathPolicy);
+const initialDeviceAgentVisible = deviceAgentModeVisibleForRuntime({
+  isIosNative: initialIosNativeEnvironment.isIosNative,
+});
+const initialAiSettings = persistedAiSettings(persisted, initialMobileAiPathPolicy, initialDeviceAgentVisible);
 const initialBrowserWorkflow = loadBrowserWorkflowState();
 const initialRecipientRules = loadRecipientRules();
 const initialConnectedDapps = loadConnectedDapps();
@@ -3786,6 +3715,7 @@ function currentBrowserNativeRuntimeEligible(): boolean {
     browserDeviceAgentEnabled: BROWSER_DEVICE_AGENT_ENABLED,
     walletAddress: currentDeviceAgentWalletAddress(),
     isAndroidApp: IS_ANDROID_APP,
+    isIosApp: state.iosNativeEnvironment.isIosNative,
     showDevControls: SHOW_DEV_CONTROLS,
   });
 }
@@ -4309,7 +4239,7 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
   }
   if (event.key === 'Escape' && walletConnect.overlay.mode !== 'closed') {
     event.preventDefault();
-    dispatchWalletConnectOverlay({ type: 'close' });
+    cancelWalletConnectPairing();
     return;
   }
   if (event.key === 'Escape' && ledger.overlay.mode !== 'closed') {
@@ -4774,7 +4704,9 @@ async function runWalletHostInboxTick(): Promise<void> {
     | null;
   if (!payload?.requests || payload.requests.length === 0) return;
   for (const entry of payload.requests) {
-    void resolveWalletHostInboxEntry(pairing.uuid, entry.requestId, entry.request);
+    void resolveWalletHostInboxEntry(pairing.uuid, entry.requestId, entry.request).catch((err) => {
+      console.warn('[pairing-relay] wallet-host inbox entry failed', err);
+    });
   }
 }
 
@@ -4848,13 +4780,60 @@ async function postPairingResult(
   payload: ApprovalResource,
 ): Promise<void> {
   try {
-    await fetch(pairingRelayUrl(`/api/pair/${encodeURIComponent(pairingUuid)}/inbox/${encodeURIComponent(requestId)}`), {
+    const response = await fetch(pairingRelayUrl(`/api/pair/${encodeURIComponent(pairingUuid)}/inbox/${encodeURIComponent(requestId)}`), {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload),
     });
+    if (!response.ok) {
+      throw new Error(`Pairing relay returned ${response.status} while delivering the wallet result.`);
+    }
   } catch (err) {
     console.warn('[pairing-relay] POST inbox result failed', err);
+    throw err;
+  }
+}
+
+async function deliverQrConnectResult(
+  session: EncryptedDeeplinkSessionRecord,
+  requestId: string,
+  payload: ApprovalResource,
+): Promise<boolean> {
+  try {
+    await postPairingResult(session.pairing, requestId, payload);
+    clearQrConnectPendingRequest(session.pairing, requestId);
+    clearQrConnectActiveSign(session.pairing);
+    qrConnect.retryPayload = null;
+    return true;
+  } catch (err) {
+    qrConnect.mode = 'error';
+    qrConnect.wallet = session.wallet;
+    qrConnect.pairing = session.pairing;
+    qrConnect.requestId = requestId;
+    qrConnect.walletUrl = '';
+    qrConnect.retryPayload = payload;
+    qrConnect.message = 'Could not deliver wallet approval.';
+    qrConnect.detail = err instanceof Error
+      ? `${err.message} Tap Retry to send the wallet result again.`
+      : 'Tap Retry to send the wallet result again.';
+    render();
+    return false;
+  }
+}
+
+async function retryQrConnectResultDelivery(): Promise<void> {
+  const payload = qrConnect.retryPayload;
+  const pairing = qrConnect.pairing;
+  const requestId = qrConnect.requestId;
+  if (!payload || !pairing || !requestId) return;
+  const session = loadQrConnectSession(pairing);
+  if (!session) {
+    setQrConnectError('Agentic pairing expired.', 'Return to Agentic and scan a fresh QR code.');
+    return;
+  }
+  setQrConnectProcessing(session.wallet, pairing, 'Retrying wallet approval delivery.', 'Sending the signed result back to Agentic.');
+  if (await deliverQrConnectResult(session, requestId, payload)) {
+    startQrConnectRelay(session, 'relay-active');
   }
 }
 
@@ -4887,6 +4866,8 @@ interface QrConnectRuntime {
   walletUrl: string;
   lastHandledUrl: string;
   pollHandle: number | null;
+  consecutiveInboxFailures: number;
+  retryPayload: ApprovalResource | null;
 }
 
 interface PairingDeeplinkMetadata {
@@ -4899,6 +4880,7 @@ interface PairingDeeplinkMetadata {
 
 const QR_CONNECT_SESSION_STORAGE_PREFIX = 'agentic-qr-connect-session:';
 const QR_CONNECT_PENDING_STORAGE_PREFIX = 'agentic-qr-connect-pending:';
+const QR_CONNECT_ACTIVE_SESSION_STORAGE_KEY = 'agentic-qr-connect-active-session';
 // Pointer-by-pairing fallback so we can still match the wallet's signed
 // response when the wallet drops our `requestId` query param during the
 // redirect_link round-trip. Observed on Solflare's Android signTransaction
@@ -4907,7 +4889,7 @@ const QR_CONNECT_PENDING_STORAGE_PREFIX = 'agentic-qr-connect-pending:';
 // rebuilds the redirect URL instead of appending to it.
 const QR_CONNECT_ACTIVE_SIGN_STORAGE_PREFIX = 'agentic-qr-connect-active-sign:';
 const QR_CONNECT_ACTIVE_SIGN_TTL_MS = 10 * 60 * 1000;
-const QR_CONNECT_SESSION_TTL_MS = 35 * 60 * 1000;
+const QR_CONNECT_SESSION_TTL_MS = 30 * 60 * 1000;
 const QR_CONNECT_PENDING_TTL_MS = 10 * 60 * 1000;
 
 const qrConnect: QrConnectRuntime = {
@@ -4920,6 +4902,8 @@ const qrConnect: QrConnectRuntime = {
   walletUrl: '',
   lastHandledUrl: '',
   pollHandle: null,
+  consecutiveInboxFailures: 0,
+  retryPayload: null,
 };
 
 function scheduleQrConnectRoute(): void {
@@ -4943,8 +4927,17 @@ async function handleQrConnectRoute(href: string): Promise<void> {
   qrConnect.pairing = parsed.pairing;
   qrConnect.requestId = parsed.requestId;
   qrConnect.walletUrl = '';
+  qrConnect.retryPayload = null;
 
   if (!parsed.wallet || !parsed.pairing) {
+    const session = loadActiveQrConnectSession();
+    if (session) {
+      qrConnect.wallet = session.wallet;
+      qrConnect.pairing = session.pairing;
+      qrConnect.requestId = '';
+      startQrConnectRelay(session, 'relay-active');
+      return;
+    }
     stopQrConnectRelay();
     setQrConnectError(
       'This QR connection link is incomplete.',
@@ -5001,12 +4994,17 @@ async function handleQrConnectWalletError(
   // requestId on success drop it on rejection too. Pick the active pointer
   // so the desktop still sees a rejection event for the right request.
   const effectiveRequestId = requestId || loadQrConnectActiveSign(pairing) || '';
-  if (effectiveRequestId) {
-    await postPairingResult(pairing, effectiveRequestId, rejectedApprovalFromWalletError(effectiveRequestId, error));
-    clearQrConnectPendingRequest(pairing, effectiveRequestId);
-  }
-  clearQrConnectActiveSign(pairing);
   const session = loadQrConnectSession(pairing);
+  if (effectiveRequestId) {
+    const payload = rejectedApprovalFromWalletError(effectiveRequestId, error);
+    if (session) {
+      if (!await deliverQrConnectResult(session, effectiveRequestId, payload)) return;
+    } else {
+      await postPairingResult(pairing, effectiveRequestId, payload);
+      clearQrConnectPendingRequest(pairing, effectiveRequestId);
+      clearQrConnectActiveSign(pairing);
+    }
+  }
   scrubQrConnectUrl(session?.wallet ?? qrConnect.wallet, pairing);
   if (session) {
     startQrConnectRelay(session, 'relay-active');
@@ -5067,13 +5065,14 @@ async function handleQrConnectSignCallback(
   const request = loadQrConnectPendingRequest(pairing, effectiveRequestId);
   if (!request) {
     const err = new ProtocolError('invalid_request', 'No matching Agentic signing request was found on this phone.');
-    await postPairingResult(pairing, effectiveRequestId, deeplinkApprovalResourceFromError(effectiveRequestId, err));
-    clearQrConnectPendingRequest(pairing, effectiveRequestId);
-    clearQrConnectActiveSign(pairing);
+    if (!await deliverQrConnectResult(session, effectiveRequestId, deeplinkApprovalResourceFromError(effectiveRequestId, err))) {
+      return;
+    }
     scrubQrConnectUrl(wallet, pairing);
     startQrConnectRelay(session, 'relay-active');
     return;
   }
+  let resultPayload: ApprovalResource;
   try {
     const payload = decryptSigningResponse(href, session.sharedSecret);
     const approval = await resolveSigningPayload({
@@ -5082,15 +5081,13 @@ async function handleQrConnectSignCallback(
       payload,
       sendRawTransaction: async (transaction) => sendQrConnectRawTransaction(session.cluster, transaction),
     });
-    await postPairingResult(pairing, effectiveRequestId, { ...approval, requestId: effectiveRequestId });
+    resultPayload = { ...approval, requestId: effectiveRequestId };
   } catch (err) {
-    await postPairingResult(pairing, effectiveRequestId, deeplinkApprovalResourceFromError(effectiveRequestId, err));
-  } finally {
-    clearQrConnectPendingRequest(pairing, effectiveRequestId);
-    clearQrConnectActiveSign(pairing);
-    scrubQrConnectUrl(wallet, pairing);
-    startQrConnectRelay(session, 'relay-active');
+    resultPayload = deeplinkApprovalResourceFromError(effectiveRequestId, err);
   }
+  if (!await deliverQrConnectResult(session, effectiveRequestId, resultPayload)) return;
+  scrubQrConnectUrl(wallet, pairing);
+  startQrConnectRelay(session, 'relay-active');
 }
 
 function setQrConnectProcessing(
@@ -5105,6 +5102,7 @@ function setQrConnectProcessing(
   qrConnect.message = message;
   qrConnect.detail = detail;
   qrConnect.walletUrl = '';
+  qrConnect.retryPayload = null;
   render();
 }
 
@@ -5126,6 +5124,8 @@ function startQrConnectRelay(
   qrConnect.pairing = session.pairing;
   qrConnect.requestId = '';
   qrConnect.walletUrl = '';
+  qrConnect.consecutiveInboxFailures = 0;
+  qrConnect.retryPayload = null;
   qrConnect.message =
     mode === 'connected'
       ? 'Connection successful. Signing into Agentic.'
@@ -5168,8 +5168,14 @@ async function runQrConnectInboxTick(session: EncryptedDeeplinkSessionRecord): P
     });
   } catch (err) {
     console.warn('[qr-connect] inbox fetch failed', err);
+    qrConnect.consecutiveInboxFailures += 1;
+    if (qrConnect.consecutiveInboxFailures >= 2) {
+      qrConnect.detail = 'Reconnecting to the pairing relay. Keep this page open; it will retry automatically.';
+      render();
+    }
     return;
   }
+  qrConnect.consecutiveInboxFailures = 0;
   if (!response.ok) {
     if (response.status === 404 || response.status === 410) {
       stopQrConnectRelay();
@@ -5213,9 +5219,7 @@ async function openQrConnectWalletForRequest(
       sendRawTransaction: async (transaction) => sendQrConnectRawTransaction(session.cluster, transaction),
     });
     if (injectedApproval) {
-      await postPairingResult(session.pairing, requestId, { ...injectedApproval, requestId });
-      clearQrConnectPendingRequest(session.pairing, requestId);
-      clearQrConnectActiveSign(session.pairing);
+      if (!await deliverQrConnectResult(session, requestId, { ...injectedApproval, requestId })) return;
       startQrConnectRelay(session, 'relay-active');
       return;
     }
@@ -5253,13 +5257,11 @@ async function openQrConnectWalletForRequest(
     qrConnect.detail = 'Tap the button below — your wallet will open with the request to approve, then return you here automatically.';
     render();
   } catch (err) {
-    await postPairingResult(
-      session.pairing,
+    if (!await deliverQrConnectResult(
+      session,
       requestId,
       deeplinkApprovalResourceFromError(requestId, err),
-    );
-    clearQrConnectPendingRequest(session.pairing, requestId);
-    clearQrConnectActiveSign(session.pairing);
+    )) return;
     startQrConnectRelay(session, 'relay-active');
   }
 }
@@ -5317,10 +5319,18 @@ async function sendQrConnectRawTransaction(cluster: Cluster, transaction: Uint8A
 
 function saveQrConnectSession(session: EncryptedDeeplinkSessionRecord): void {
   writeQrConnectStorage(qrConnectSessionStorageKey(session.pairing), JSON.stringify(session));
+  writeQrConnectStorage(QR_CONNECT_ACTIVE_SESSION_STORAGE_KEY, JSON.stringify({
+    pairing: session.pairing,
+    ts: Date.now(),
+  }));
 }
 
 function clearQrConnectSession(pairing: string): void {
   removeQrConnectStorage(qrConnectSessionStorageKey(pairing));
+  const active = loadQrConnectActivePairing();
+  if (active === pairing) {
+    removeQrConnectStorage(QR_CONNECT_ACTIVE_SESSION_STORAGE_KEY);
+  }
 }
 
 function loadQrConnectSession(pairing: string): EncryptedDeeplinkSessionRecord | null {
@@ -5335,6 +5345,30 @@ function loadQrConnectSession(pairing: string): EncryptedDeeplinkSessionRecord |
       return null;
     }
     return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function loadActiveQrConnectSession(): EncryptedDeeplinkSessionRecord | null {
+  const pairing = loadQrConnectActivePairing();
+  return pairing ? loadQrConnectSession(pairing) : null;
+}
+
+function loadQrConnectActivePairing(): string | null {
+  const raw = readQrConnectStorage(QR_CONNECT_ACTIVE_SESSION_STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as { pairing?: unknown; ts?: unknown };
+    if (typeof parsed.pairing !== 'string') return null;
+    const pairing = parsed.pairing.trim();
+    if (!pairing) return null;
+    const ts = typeof parsed.ts === 'number' ? parsed.ts : 0;
+    if (Date.now() - ts > QR_CONNECT_SESSION_TTL_MS) {
+      removeQrConnectStorage(QR_CONNECT_ACTIVE_SESSION_STORAGE_KEY);
+      return null;
+    }
+    return pairing;
   } catch {
     return null;
   }
@@ -5469,8 +5503,7 @@ function qrConnectStorageTargets(): Storage[] {
 function scrubQrConnectUrl(wallet: EncryptedDeeplinkWalletId | null, pairing: string): void {
   if (!wallet || !pairing) return;
   const url = new URL('/qr-connect', window.location.origin);
-  url.searchParams.set('wallet', wallet);
-  url.searchParams.set('pairing', pairing);
+  url.searchParams.set('relay', 'active');
   window.history.replaceState({}, '', url.toString());
   qrConnect.lastHandledUrl = window.location.href;
 }
@@ -5479,6 +5512,49 @@ function qrConnectWalletLabel(wallet: EncryptedDeeplinkWalletId | null): string 
   if (wallet === 'phantom') return 'Phantom';
   if (wallet === 'solflare') return 'Solflare';
   return 'wallet';
+}
+
+function resetQrConnectSession(): void {
+  const pairing = qrConnect.pairing || loadQrConnectActivePairing() || '';
+  if (pairing) {
+    clearQrConnectSession(pairing);
+    const activeRequest = loadQrConnectActiveSign(pairing);
+    if (activeRequest) {
+      clearQrConnectPendingRequest(pairing, activeRequest);
+      clearQrConnectActiveSign(pairing);
+    }
+  }
+  removeQrConnectStorage(QR_CONNECT_ACTIVE_SESSION_STORAGE_KEY);
+  stopQrConnectRelay();
+  qrConnect.mode = 'error';
+  qrConnect.wallet = null;
+  qrConnect.pairing = '';
+  qrConnect.requestId = '';
+  qrConnect.message = 'QR relay reset.';
+  qrConnect.detail = 'Return to Agentic and scan a fresh Phantom or Solflare QR code.';
+  qrConnect.walletUrl = '';
+  qrConnect.retryPayload = null;
+  window.history.replaceState({}, '', new URL('/qr-connect', window.location.origin).toString());
+  qrConnect.lastHandledUrl = window.location.href;
+  render();
+}
+
+function bindQrConnectPage(): void {
+  if (currentRoute() !== '/qr-connect') return;
+  for (const el of document.querySelectorAll<HTMLElement>('[data-qr-connect-action]')) {
+    el.addEventListener('click', (event) => {
+      const action = el.dataset.qrConnectAction;
+      if (action === 'retry-delivery') {
+        event.preventDefault();
+        void retryQrConnectResultDelivery();
+        return;
+      }
+      if (action === 'start-over') {
+        event.preventDefault();
+        resetQrConnectSession();
+      }
+    });
+  }
 }
 
 function isPairingDeeplinkMetadata(value: unknown): value is PairingDeeplinkMetadata {
@@ -5538,6 +5614,9 @@ function qrConnectPage(): string {
   const action = qrConnect.walletUrl
     ? `<a class="button-link qr-connect-open-wallet" href="${escapeHtml(qrConnect.walletUrl)}" data-qr-connect-open-wallet>Open ${escapeHtml(label)}</a>`
     : '';
+  const retryAction = qrConnect.retryPayload
+    ? '<button type="button" class="primary" data-qr-connect-action="retry-delivery">Retry delivery</button>'
+    : '';
   return `
     <main class="qr-connect-page">
       <section class="qr-connect-card ${tone}" aria-live="polite">
@@ -5549,8 +5628,12 @@ function qrConnectPage(): string {
           ? '<span class="desktop-connect-flow-spinner qr-connect-spinner" aria-hidden="true"></span>'
           : ''}
         ${action}
+        ${retryAction}
         ${qrConnect.mode === 'relay-active'
           ? '<p class="qr-connect-warning">Closing or leaving this page stops signing until you scan again.</p>'
+          : ''}
+        ${qrConnect.mode === 'relay-active' || qrConnect.mode === 'error'
+          ? '<button type="button" class="utility qr-connect-reset" data-qr-connect-action="start-over">Start over</button>'
           : ''}
       </section>
     </main>
@@ -5661,7 +5744,7 @@ function closeSiblingOverlays(except: DesktopOverlayKind): void {
     dispatchEmbeddedWalletOverlay({ type: 'close' });
   }
   if (except !== 'walletconnect-qr' && walletConnect.overlay.mode !== 'closed') {
-    dispatchWalletConnectOverlay({ type: 'close' });
+    cancelWalletConnectPairing();
   }
   if (except !== 'ledger' && ledger.overlay.mode !== 'closed') {
     stopLedgerPoll();
@@ -5999,8 +6082,9 @@ interface WalletConnectRuntime {
   client: WalletConnectSolanaClient | null;
   initPromise: Promise<WalletConnectSolanaClient> | null;
   overlay: WalletConnectQrOverlayState;
-  /** Track the topic of the in-flight pairing so we can abort it on cancel. */
+  /** Track the topic/id of the in-flight pairing so stale approvals are ignored. */
   pendingTopic: string | null;
+  pendingPairingId: number;
 }
 
 const walletConnect: WalletConnectRuntime = {
@@ -6008,11 +6092,42 @@ const walletConnect: WalletConnectRuntime = {
   initPromise: null,
   overlay: initialWalletConnectQrOverlayState(),
   pendingTopic: null,
+  pendingPairingId: 0,
 };
 
 function dispatchWalletConnectOverlay(action: WalletConnectQrOverlayAction): void {
   walletConnect.overlay = reduceWalletConnectQrOverlay(walletConnect.overlay, action);
   render();
+}
+
+function beginWalletConnectPairing(): number {
+  walletConnect.pendingPairingId += 1;
+  walletConnect.pendingTopic = null;
+  return walletConnect.pendingPairingId;
+}
+
+function isActiveWalletConnectPairing(pairingId: number): boolean {
+  return walletConnect.pendingPairingId === pairingId && walletConnect.overlay.mode !== 'closed';
+}
+
+function cancelWalletConnectPairing(): void {
+  walletConnect.pendingPairingId += 1;
+  walletConnect.pendingTopic = null;
+  dispatchWalletConnectOverlay({ type: 'close' });
+}
+
+function walletConnectTopicFromUri(uri: string): string | null {
+  const match = /^wc:([^@?#]+)/i.exec(uri.trim());
+  return match?.[1] ?? null;
+}
+
+async function disconnectStaleWalletConnectSession(
+  client: WalletConnectSolanaClient,
+  session: WalletConnectSession,
+): Promise<void> {
+  await client.disconnect(session.topic).catch((err) => {
+    console.warn('[walletconnect] stale approved session cleanup failed', err);
+  });
 }
 
 function walletConnectAppMetadata(): {
@@ -6174,6 +6289,21 @@ function registerAnyWalletConnectSession(session: WalletConnectSession): string 
   return walletName;
 }
 
+function registerWalletConnectSessionForDisplay(
+  session: WalletConnectSession,
+  requestedBrandId?: string,
+): string {
+  const inferredBrandId = inferWalletConnectBrandForSession(session);
+  const fallbackBrandId = requestedBrandId && WALLET_CONNECT_BRANDS[requestedBrandId]
+    ? requestedBrandId
+    : null;
+  const brandId = inferredBrandId ?? fallbackBrandId;
+  if (brandId && WALLET_CONNECT_BRANDS[brandId]) {
+    return registerBrandSession(brandId, session);
+  }
+  return registerAnyWalletConnectSession(session);
+}
+
 function loadWalletConnectSessionMeta(): Record<string, PersistedWalletConnectSessionMeta> {
   try {
     const parsed = JSON.parse(
@@ -6251,11 +6381,14 @@ async function handleScanQrForBrand(brandId: string): Promise<void> {
   // Scan QR or clicks two brand rows in quick succession.
   if (walletConnect.overlay.mode !== 'closed') return;
   closeSiblingOverlays('walletconnect-qr');
+  const pairingId = beginWalletConnectPairing();
   dispatchWalletConnectOverlay({ type: 'openConnecting', brandId });
   try {
     const client = await ensureWalletConnectClient();
+    if (!isActiveWalletConnectPairing(pairingId)) return;
     const chains = walletConnectChainsForCurrentCluster();
     const { uri, approval } = await client.connect({ chains });
+    walletConnect.pendingTopic = walletConnectTopicFromUri(uri);
     let qrDataUrl = '';
     try {
       const QRCodeMod = await import('qrcode');
@@ -6268,17 +6401,25 @@ async function handleScanQrForBrand(brandId: string): Promise<void> {
     } catch (err) {
       console.warn('[walletconnect] qrcode generation failed', err);
     }
+    if (!isActiveWalletConnectPairing(pairingId)) return;
     dispatchWalletConnectOverlay({ type: 'setUri', uri, qrDataUrl });
 
     const session = await approval();
+    if (!isActiveWalletConnectPairing(pairingId)) {
+      await disconnectStaleWalletConnectSession(client, session);
+      return;
+    }
     dispatchWalletConnectOverlay({ type: 'completing' });
     const walletName = registerBrandSession(brandId, session);
+    walletConnect.pendingTopic = null;
     dispatchWalletConnectOverlay({ type: 'close' });
     state.wallets = visibleBrowserWallets(listAvailableWallets());
     state.selectedWalletName = walletName;
     await runConnect();
   } catch (err) {
+    if (!isActiveWalletConnectPairing(pairingId)) return;
     const message = err instanceof Error ? err.message : String(err);
+    walletConnect.pendingTopic = null;
     dispatchWalletConnectOverlay({ type: 'setError', error: message });
   }
 }
@@ -6302,14 +6443,17 @@ async function handleScanQrAnyWallet(displayBrandId?: string): Promise<void> {
   }
   if (walletConnect.overlay.mode !== 'closed') return;
   closeSiblingOverlays('walletconnect-qr');
+  const pairingId = beginWalletConnectPairing();
   // `displayBrandId` brands the rendered QR card header (e.g. "Scan with
   // Backpack mobile" + Backpack logo). The approved wallet still identifies
   // itself in `session.peerName` post-approval.
   dispatchWalletConnectOverlay({ type: 'openConnecting', brandId: displayBrandId ?? '' });
   try {
     const client = await ensureWalletConnectClient();
+    if (!isActiveWalletConnectPairing(pairingId)) return;
     const chains = walletConnectChainsForCurrentCluster();
     const { uri, approval } = await client.connect({ chains });
+    walletConnect.pendingTopic = walletConnectTopicFromUri(uri);
     const qrPayload = desktopWalletConnectQrPayload(displayBrandId, uri);
     let qrDataUrl = '';
     try {
@@ -6323,26 +6467,25 @@ async function handleScanQrAnyWallet(displayBrandId?: string): Promise<void> {
     } catch (err) {
       console.warn('[walletconnect] qrcode generation failed', err);
     }
+    if (!isActiveWalletConnectPairing(pairingId)) return;
     dispatchWalletConnectOverlay({ type: 'setUri', uri, qrDataUrl });
 
     const session = await approval();
-    dispatchWalletConnectOverlay({ type: 'completing' });
-    const walletName = registerAnyWalletConnectSession(session);
-    if (displayBrandId && WALLET_CONNECT_BRANDS[displayBrandId]) {
-      saveWalletConnectSessionMeta({
-        topic: session.topic,
-        brandId: displayBrandId,
-        peerName: session.peerName ?? null,
-        address: session.address,
-        createdAt: Date.now(),
-      });
+    if (!isActiveWalletConnectPairing(pairingId)) {
+      await disconnectStaleWalletConnectSession(client, session);
+      return;
     }
+    dispatchWalletConnectOverlay({ type: 'completing' });
+    const walletName = registerWalletConnectSessionForDisplay(session, displayBrandId);
+    walletConnect.pendingTopic = null;
     dispatchWalletConnectOverlay({ type: 'close' });
     state.wallets = visibleBrowserWallets(listAvailableWallets());
     state.selectedWalletName = walletName;
     await runConnect();
   } catch (err) {
+    if (!isActiveWalletConnectPairing(pairingId)) return;
     const message = err instanceof Error ? err.message : String(err);
+    walletConnect.pendingTopic = null;
     dispatchWalletConnectOverlay({ type: 'setError', error: message });
   }
 }
@@ -6365,7 +6508,7 @@ async function copyWalletConnectUri(): Promise<void> {
 function handleWalletConnectOverlayAction(action: string | undefined): void {
   switch (action) {
     case 'cancel':
-      dispatchWalletConnectOverlay({ type: 'close' });
+      cancelWalletConnectPairing();
       return;
     case 'copy-uri':
       void copyWalletConnectUri();
@@ -6412,7 +6555,18 @@ function walletConnectQrSurface(): 'desktop' | 'website' {
 
 function preferWalletConnectSameDeviceLaunch(): boolean {
   if (state.tauriNativeEnvironment.isTauriNative) return false;
-  return state.mwaEnvironment.isAndroid || state.mwaEnvironment.isIos || isMobileAppViewport();
+  return state.mwaEnvironment.isAndroid || state.mwaEnvironment.isIos || isLikelyMobileWalletDevice();
+}
+
+function isLikelyMobileWalletDevice(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  if (/Android|iPhone|iPad|iPod/i.test(ua)) return true;
+  const coarsePointer = typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(pointer: coarse)').matches;
+  const touchPoints = navigator.maxTouchPoints ?? 0;
+  return coarsePointer && touchPoints > 0 && typeof window !== 'undefined' && window.innerWidth < 900;
 }
 
 async function restoreWalletConnectSessions(): Promise<void> {
@@ -6423,15 +6577,10 @@ async function restoreWalletConnectSessions(): Promise<void> {
     for (const session of client.listSessions()) {
       try {
         const persisted = metaByTopic[session.topic];
-        const brandId = persisted?.brandId ?? inferWalletConnectBrandForSession(session);
-        if (brandId && WALLET_CONNECT_BRANDS[brandId]) {
-          registerBrandSession(brandId, session);
-        } else {
-          registerAnyWalletConnectSession({
-            ...session,
-            peerName: session.peerName ?? persisted?.peerName ?? undefined,
-          });
-        }
+        registerWalletConnectSessionForDisplay({
+          ...session,
+          peerName: session.peerName ?? persisted?.peerName ?? undefined,
+        }, persisted?.brandId ?? undefined);
         state.wallets = visibleBrowserWallets(listAvailableWallets());
       } catch (err) {
         console.warn('[walletconnect] failed to restore session', err);
@@ -6461,11 +6610,14 @@ void unregisterWalletConnectSolanaWallet;
 // Standard wallet, kicking off `runConnect()`).
 
 const LEDGER_SEARCH_POLL_INTERVAL_MS = 1200;
-const LEDGER_INITIAL_ACCOUNTS_PER_FAMILY = 40;
+const LEDGER_TAURI_INITIAL_ACCOUNTS_PER_FAMILY = 40;
+const LEDGER_WEB_INITIAL_ACCOUNTS_PER_FAMILY = 10;
 const LEDGER_LOAD_MORE_ACCOUNTS_PER_FAMILY = 10;
 const LEDGER_MAX_ACCOUNTS_PER_FAMILY = 100;
 const LEDGER_ACTIVITY_CONCURRENCY = 6;
 const LEDGER_LAST_ACCOUNT_STORAGE_KEY = 'agentic-ledger-last-account-v1';
+
+type LedgerWebHidRuntimeStatus = 'idle' | 'preparing' | 'ready' | 'error';
 
 interface PersistedLedgerAccountSelection {
   address: string;
@@ -6485,6 +6637,8 @@ interface LedgerRuntime {
   accounts: LedgerAccountCandidate[];
   nextDefaultIndex: number;
   nextLegacyIndex: number;
+  webHidRuntimeStatus: LedgerWebHidRuntimeStatus;
+  webHidRuntimeError: string;
 }
 
 const ledger: LedgerRuntime = {
@@ -6495,10 +6649,62 @@ const ledger: LedgerRuntime = {
   accounts: [],
   nextDefaultIndex: 0,
   nextLegacyIndex: 0,
+  webHidRuntimeStatus: 'idle',
+  webHidRuntimeError: '',
 };
 
 function dispatchLedgerOverlay(action: LedgerOverlayAction): void {
   ledger.overlay = reduceLedgerOverlay(ledger.overlay, action);
+  render();
+}
+
+function prepareLedgerWebHidRuntime(): void {
+  if (state.tauriNativeEnvironment.isTauriNative) return;
+  if (!detectLedgerWebHidSupport().supported) return;
+  if (ledger.webHidRuntimeStatus === 'preparing' || ledger.webHidRuntimeStatus === 'ready') return;
+  ledger.webHidRuntimeStatus = 'preparing';
+  ledger.webHidRuntimeError = '';
+  void preloadWebHidLedgerRuntime().then(() => {
+    ledger.webHidRuntimeStatus = 'ready';
+    ledger.webHidRuntimeError = '';
+    render();
+  }).catch((err) => {
+    ledger.webHidRuntimeStatus = 'error';
+    ledger.webHidRuntimeError = err instanceof Error ? err.message : String(err);
+    render();
+  });
+}
+
+function handleLedgerDeviceDisconnect(): void {
+  unregisterAllLedgerWallets();
+  ledger.accounts = [];
+  ledger.nextDefaultIndex = 0;
+  ledger.nextLegacyIndex = 0;
+  try {
+    state.wallets = visibleBrowserWallets(listAvailableWallets());
+  } catch {
+    state.wallets = [];
+  }
+  if (state.selectedWalletName === LEDGER_WALLET_NAME) {
+    client = null;
+    walletBackend = null;
+    state.address = '';
+    state.capabilities = null;
+    state.selectedWalletName = '';
+    state.selectedWalletLogoId = undefined;
+    state.selectedWalletIcon = undefined;
+    state.transactionStatus = 'Ledger disconnected.';
+    state.steps.connect = 'idle';
+    savePersistedState();
+    pushToast('pending', 'Ledger disconnected', 'Reconnect the device and choose Ledger again.');
+  }
+  if (ledger.overlay.mode !== 'closed') {
+    dispatchLedgerOverlay({
+      type: 'setError',
+      error: 'Ledger disconnected. Reconnect the device and try again.',
+    });
+    return;
+  }
   render();
 }
 
@@ -6512,14 +6718,7 @@ function ensureLedgerIpc(): LedgerIpc | null {
   const webHidSupport = detectLedgerWebHidSupport();
   if (!webHidSupport.supported) return null;
   ledger.ipc = createWebHidLedgerIpc({
-    onDisconnect: () => {
-      if (ledger.overlay.mode !== 'closed') {
-        dispatchLedgerOverlay({
-          type: 'setError',
-          error: 'Ledger disconnected. Reconnect the device and try again.',
-        });
-      }
-    },
+    onDisconnect: handleLedgerDeviceDisconnect,
   });
   return ledger.ipc;
 }
@@ -6528,8 +6727,18 @@ function ledgerUnavailableMessage(): string {
   if (state.tauriNativeEnvironment.isTauriNative) {
     return 'Could not reach the Tauri runtime to talk to the Ledger device.';
   }
-  return detectLedgerWebHidSupport().message
-    ?? 'Ledger USB is not available in this browser. Use Chrome or Edge on desktop, or connect with QR/browser extension.';
+  const support = detectLedgerWebHidSupport();
+  if (!support.supported) {
+    return support.message
+      ?? 'Ledger USB is not available in this browser. Use Chrome or Edge on desktop, or connect with QR/browser extension.';
+  }
+  if (ledger.webHidRuntimeStatus === 'error') {
+    return ledger.webHidRuntimeError || 'Ledger USB support failed to load. Refresh and try again.';
+  }
+  if (ledger.webHidRuntimeStatus !== 'ready') {
+    return 'Ledger USB support is still loading. Try again in a moment.';
+  }
+  return '';
 }
 
 function stopLedgerPoll(): void {
@@ -6582,9 +6791,12 @@ async function proceedToAppCheck(
   try {
     await ipc.connect();
     if (ledger.pairingToken !== token) return;
+    const initialAccountsPerFamily = state.tauriNativeEnvironment.isTauriNative
+      ? LEDGER_TAURI_INITIAL_ACCOUNTS_PER_FAMILY
+      : LEDGER_WEB_INITIAL_ACCOUNTS_PER_FAMILY;
     await scanLedgerAccountBatch(ipc, token, {
-      defaultCount: LEDGER_INITIAL_ACCOUNTS_PER_FAMILY,
-      legacyCount: LEDGER_INITIAL_ACCOUNTS_PER_FAMILY,
+      defaultCount: initialAccountsPerFamily,
+      legacyCount: initialAccountsPerFamily,
       reset: true,
     });
   } catch (err) {
@@ -6815,6 +7027,21 @@ function openLedgerOverlay(): void {
   // Idempotent: double-tap on "Connect Ledger" must not reset the search
   // poll or invalidate the pairing token while a pair is already in flight.
   if (ledger.overlay.mode !== 'closed') return;
+  if (!state.tauriNativeEnvironment.isTauriNative && detectLedgerWebHidSupport().supported) {
+    prepareLedgerWebHidRuntime();
+    if (ledger.webHidRuntimeStatus !== 'ready') {
+      const message = ledgerUnavailableMessage();
+      pushToast('pending', 'Preparing Ledger USB', message);
+      closeSiblingOverlays('ledger');
+      stopLedgerPoll();
+      ledger.pairingToken += 1;
+      dispatchLedgerOverlay({
+        type: 'setError',
+        error: message,
+      });
+      return;
+    }
+  }
   const ipc = ensureLedgerIpc();
   if (!ipc) {
     const message = ledgerUnavailableMessage();
@@ -6934,7 +7161,6 @@ function handleLedgerOverlayAction(action: string | undefined, address?: string)
       ledger.pairingToken += 1; // invalidate any in-flight handlers
       dispatchLedgerOverlay({ type: 'close' });
       if (
-        state.tauriNativeEnvironment.isTauriNative &&
         desktopConnect.flow.step === 'ledger'
       ) {
         dispatchDesktopConnectFlow({ type: 'back' });
@@ -7102,6 +7328,9 @@ function dispatchDesktopConnectFlow(action: DesktopConnectFlowAction): void {
   if (desktopConnect.flow.step !== 'awaiting-browser') {
     stopDesktopConnectPoll();
   }
+  if (desktopConnect.flow.step === 'method') {
+    prepareLedgerWebHidRuntime();
+  }
   render();
 }
 
@@ -7135,9 +7364,10 @@ function brandLogoMarkup(brandId: string, sizeClass = 'desktop-connect-flow-logo
 }
 
 function desktopMethodPickerBody(): string {
+  const ledgerWebHidSupport = detectLedgerWebHidSupport();
   const ledgerAvailable = state.tauriNativeEnvironment.isTauriNative
     ? Boolean(detectLedgerTauriInvoke())
-    : detectLedgerWebHidSupport().supported;
+    : ledgerWebHidSupport.supported && ledger.webHidRuntimeStatus === 'ready';
   const ledgerDisabledReason = ledgerAvailable ? '' : ledgerUnavailableMessage();
   const extensionSubcopy = state.tauriNativeEnvironment.isTauriNative
     ? 'Open the wallet pairing page in your default browser. Choose Backpack, Phantom, Jupiter, or Solflare there.'
@@ -7149,6 +7379,8 @@ function desktopMethodPickerBody(): string {
     ? 'USB-HID. Plug in and unlock your device, then open the Solana app.'
     : ledgerAvailable
       ? 'USB through WebHID. Plug in and unlock your device, then open the Solana app.'
+      : ledgerWebHidSupport.supported && ledger.webHidRuntimeStatus !== 'error'
+        ? 'Preparing Ledger USB support...'
       : ledgerDisabledReason;
   return `
     <p class="desktop-connect-flow-lede">Choose how you'd like to connect your wallet.</p>
@@ -7250,18 +7482,27 @@ function desktopQrBody(): string {
  *  step before choosing a wallet. Each tile is a flat clickable row with
  *  the brand SVG on the left, the brand label, and a chevron on the right. */
 function desktopQrWalletPicker(): string {
-  const rows = DESKTOP_QR_WALLETS.map((entry) => `
+  const rows = DESKTOP_QR_WALLETS.map((entry) => {
+    const walletConnectRequired = entry.id === 'backpack' || entry.id === 'jupiter';
+    const disabled = walletConnectRequired && !WALLETCONNECT_PROJECT_ID;
+    const reason = 'WalletConnect project ID is not configured.';
+    return `
     <button
       type="button"
       class="desktop-qr-wallet-tile"
       data-desktop-flow-action="pick-qr-wallet"
       data-desktop-qr-wallet="${escapeHtmlForFlow(entry.id)}"
+      ${disabled ? `disabled title="${escapeHtmlForFlow(reason)}"` : ''}
     >
       ${brandLogoMarkup(entry.logoId, 'desktop-qr-wallet-tile-logo')}
-      <span class="desktop-qr-wallet-tile-label">${escapeHtmlForFlow(entry.label)}</span>
-      <span class="desktop-qr-wallet-tile-arrow" aria-hidden="true">›</span>
+      <span class="desktop-qr-wallet-tile-copy">
+        <span class="desktop-qr-wallet-tile-label">${escapeHtmlForFlow(entry.label)}</span>
+        ${disabled ? `<span class="desktop-qr-wallet-tile-note">${escapeHtmlForFlow(reason)}</span>` : ''}
+      </span>
+      <span class="desktop-qr-wallet-tile-arrow" aria-hidden="true">${disabled ? '' : '›'}</span>
     </button>
-  `).join('');
+  `;
+  }).join('');
   return `
     <p class="desktop-connect-flow-lede">Pick your mobile wallet. We'll show the right QR for that wallet's protocol.</p>
     <div class="desktop-qr-wallet-picker" role="list">${rows}</div>
@@ -7473,11 +7714,19 @@ function desktopPairingRelaySetupError(err: unknown): string {
 
 function handleDesktopQrWalletSelect(wallet: DesktopQrWallet): void {
   if (desktopConnect.flow.qrWallet === wallet) return;
+  if ((wallet === 'backpack' || wallet === 'jupiter') && !WALLETCONNECT_PROJECT_ID) {
+    pushToast(
+      'error',
+      'WalletConnect not configured',
+      'Set VITE_AGENTIC_WC_PROJECT_ID before launching to enable Backpack or Jupiter mobile pairing.',
+    );
+    return;
+  }
   // Tear down any prior WC session before launching a new one — switching
   // from Backpack → Jupiter (or back via the picker) should start a fresh
   // URI rather than reuse a stale topic. Also clear any prior pairing.
   if (walletConnect.overlay.mode !== 'closed') {
-    dispatchWalletConnectOverlay({ type: 'close' });
+    cancelWalletConnectPairing();
   }
   stopDesktopPairing();
   desktopConnect.deeplinkQr = { variant: null, dataUrl: null, url: null, relayError: null };
@@ -7889,7 +8138,7 @@ function handleDesktopBack(): void {
     // cache. The reducer decides whether we land back on the picker
     // (qrWallet was set) or pop out to the method picker (already on picker).
     if (walletConnect.overlay.mode !== 'closed') {
-      dispatchWalletConnectOverlay({ type: 'close' });
+      cancelWalletConnectPairing();
     }
     if (qrWallet !== null) {
       desktopConnect.deeplinkQr = { variant: null, dataUrl: null, url: null, relayError: null };
@@ -8047,6 +8296,7 @@ function render(): void {
   bindWalletHostOpening();
   bindWalletConnectOverlay();
   bindLedgerOverlay();
+  bindQrConnectPage();
   mountConnectorKeysPanel({ container: 'connector-keys-panel' });
   if (state.tauriNativeEnvironment.isTauriNative) {
     mountTauriLocalRuntimePanel('tauri-local-runtime-panel');
@@ -20651,6 +20901,9 @@ function aiProviderHelperText(): string {
     if (IS_ANDROID_APP) {
       return 'Device Agent uses the gated Android native runtime and encrypted native config storage.';
     }
+    if (state.iosNativeEnvironment.isIosNative) {
+      return 'Device Agent uses the native iOS runtime and Keychain-backed config storage.';
+    }
     return canUseDeviceAgentBrowserNative()
       ? 'Device Agent makes AI calls in this tab. We suggest a low-limit key to avoid burning quota; close the tab to stop it.'
       : 'Device Agent is gated for local development or allowlisted cloud wallets.';
@@ -21361,6 +21614,11 @@ function canUseDeviceAgentNative(): boolean {
   return chooseDeviceAgentRequestRoute(currentDeviceAgentRuntimeSurface()) !== 'none';
 }
 
+function nativeDeviceAgentBridgeAvailable(): boolean {
+  return (IS_ANDROID_APP && isDeviceAgentBridgeAvailable()) ||
+    (state.iosNativeEnvironment.isIosNative && isIosDeviceAgentBridgeAvailable());
+}
+
 function canUseDeviceAgentBrowserNative(): boolean {
   return canUseDeviceAgentBrowserNativeForSurface(currentDeviceAgentRuntimeSurface());
 }
@@ -21369,6 +21627,8 @@ function currentDeviceAgentRuntimeSurface() {
   return {
     isAndroidApp: IS_ANDROID_APP,
     androidBridgeAvailable: isDeviceAgentBridgeAvailable(),
+    isIosApp: state.iosNativeEnvironment.isIosNative,
+    iosBridgeAvailable: isIosDeviceAgentBridgeAvailable(),
     isTauriApp: state.tauriNativeEnvironment.isTauriNative,
     tauriBridgeAvailable: Boolean(state.tauriBridgeStatus?.bridgeReachable),
     browserDeviceAgentEnabled: BROWSER_DEVICE_AGENT_ENABLED,
@@ -21387,6 +21647,8 @@ async function invokeDeviceAgentNative<R>(
     const route = chooseDeviceAgentRequestRoute(currentDeviceAgentRuntimeSurface());
     const { status, result } = route === 'android-native'
       ? await deviceAgentRequestOrThrow<R>(method, payload, requestOptions)
+      : route === 'ios-native'
+        ? await iosDeviceAgentRequestOrThrow<R>(method, payload, requestOptions)
       : route === 'tauri-native' || route === 'browser-native'
         ? await invokeBrowserDeviceAgent<R>(method, payload as Record<string, unknown>, requestOptions)
         : await deviceAgentRequestOrThrow<R>(method, payload, requestOptions);
@@ -21501,7 +21763,7 @@ function deviceAgentWorkerNotImplementedError(action: string): Error {
     ? 'or use Hosted BYOK after Cloud sign-in.'
     : 'or use Hosted BYOK, Browser Session, or Local Bridge here.';
   return new Error(
-    `Device Agent ${action} runs natively on the Android device-agent build. This runtime only exposes the scaffold; install the enabled Android build to draft, ${fallback}`,
+    `Device Agent ${action} runs in the enabled native Android or iOS build. This runtime only exposes the scaffold; install an enabled native build to draft, ${fallback}`,
   );
 }
 
@@ -29341,6 +29603,7 @@ function agentReviewRequest(
   }));
   const factsForContext = factSetForContext(deterministicFacts);
   const walletContext = walletContextForAgent(record);
+  const transactionBase64 = extractPreparedTxBase64(record);
   return {
     plan: sanitizedReviewPlan,
     instruction,
@@ -29355,6 +29618,7 @@ function agentReviewRequest(
       amount: planAmountSummary(reviewPlan),
       risk: reviewPlan.risk,
       approval: reviewPlan.approval,
+      ...(transactionBase64 ? { transactionBase64 } : {}),
       protocolConnectors: protocolConnectorPlannerContext(state.connectedDapps, state.cluster, {
         dialectClientKeyConfigured: Boolean(state.protocolConnectorPrefs.dialectClientKey.trim()),
         includeDisabled: true,
@@ -39657,7 +39921,7 @@ function deviceAgentHealthHint() {
       configured: false,
       state: 'unavailable' as const,
       runtime: defaultDeviceAgentRuntime(),
-      bridgeAvailable: IS_ANDROID_APP && isDeviceAgentBridgeAvailable(),
+      bridgeAvailable: nativeDeviceAgentBridgeAvailable(),
     };
   }
   return {
@@ -39665,7 +39929,7 @@ function deviceAgentHealthHint() {
     configured: status.configured,
     state: status.state,
     runtime: status.runtime,
-    bridgeAvailable: IS_ANDROID_APP && isDeviceAgentBridgeAvailable(),
+    bridgeAvailable: nativeDeviceAgentBridgeAvailable(),
     ...(status.message && { message: status.message }),
   };
 }
@@ -40933,6 +41197,11 @@ async function configureDeviceAgentRuntime(): Promise<DeviceAgentStatus> {
     state.deviceAgentStatus = status;
     return status;
   }
+  if (state.iosNativeEnvironment.isIosNative && isIosDeviceAgentBridgeAvailable()) {
+    const status = await deviceAgentNativeStatusCall('configure', config);
+    state.deviceAgentStatus = status;
+    return status;
+  }
   const android = agenticAndroidBridge();
   if (IS_ANDROID_APP && android?.deviceAgentConfigure) {
     const status = parseDeviceAgentStatus(android.deviceAgentConfigure(JSON.stringify(config)));
@@ -40967,6 +41236,11 @@ async function startDeviceAgentRuntime(): Promise<DeviceAgentStatus> {
     state.deviceAgentStatus = status;
     return status;
   }
+  if (state.iosNativeEnvironment.isIosNative && isIosDeviceAgentBridgeAvailable()) {
+    const status = await deviceAgentNativeStatusCall('start', config);
+    state.deviceAgentStatus = status;
+    return status;
+  }
   const android = agenticAndroidBridge();
   if (IS_ANDROID_APP && android?.deviceAgentStart) {
     const status = parseDeviceAgentStatus(android.deviceAgentStart(JSON.stringify(config)));
@@ -40996,6 +41270,11 @@ async function startDeviceAgentRuntime(): Promise<DeviceAgentStatus> {
 
 async function stopDeviceAgentRuntime(): Promise<DeviceAgentStatus> {
   if (IS_ANDROID_APP && isDeviceAgentBridgeAvailable()) {
+    const status = await deviceAgentNativeStatusCall('stop', {});
+    state.deviceAgentStatus = status;
+    return status;
+  }
+  if (state.iosNativeEnvironment.isIosNative && isIosDeviceAgentBridgeAvailable()) {
     const status = await deviceAgentNativeStatusCall('stop', {});
     state.deviceAgentStatus = status;
     return status;
@@ -41053,6 +41332,11 @@ async function clearDeviceAgentRuntimeConfig(): Promise<DeviceAgentStatus> {
     state.deviceAgentStatus = status;
     return status;
   }
+  if (state.iosNativeEnvironment.isIosNative && isIosDeviceAgentBridgeAvailable()) {
+    const status = await deviceAgentNativeStatusCall('configure', { clear: true });
+    state.deviceAgentStatus = status;
+    return status;
+  }
   const android = agenticAndroidBridge();
   if (IS_ANDROID_APP && android?.deviceAgentConfigure) {
     const status = parseDeviceAgentStatus(android.deviceAgentConfigure(JSON.stringify({ clear: true })));
@@ -41084,6 +41368,9 @@ async function loadDeviceAgentStatus(): Promise<DeviceAgentStatus> {
   if (IS_ANDROID_APP && isDeviceAgentBridgeAvailable()) {
     return deviceAgentNativeStatusCall('status', {});
   }
+  if (state.iosNativeEnvironment.isIosNative && isIosDeviceAgentBridgeAvailable()) {
+    return deviceAgentNativeStatusCall('status', {});
+  }
   const android = agenticAndroidBridge();
   if (IS_ANDROID_APP && android?.deviceAgentStatus) {
     return parseDeviceAgentStatus(android.deviceAgentStatus());
@@ -41106,7 +41393,10 @@ async function deviceAgentNativeStatusCall(
   payload: Record<string, unknown>,
 ): Promise<DeviceAgentStatus> {
   try {
-    const { status } = await deviceAgentRequestOrThrow(method, payload);
+    const route = chooseDeviceAgentRequestRoute(currentDeviceAgentRuntimeSurface());
+    const { status } = route === 'ios-native'
+      ? await iosDeviceAgentRequestOrThrow(method, payload)
+      : await deviceAgentRequestOrThrow(method, payload);
     return parseDeviceAgentStatus(status);
   } catch (err) {
     if (err instanceof DeviceAgentClientError && err.status) {
@@ -45737,20 +46027,6 @@ function recurringComposer(): string {
           >${escapeHtml(draft.note)}</textarea>
         </label>
       </div>
-      <details class="recurring-advanced-details">
-        <summary>Advanced</summary>
-        <div class="contract-section">
-          <div>
-            <span>Caps and reminders</span>
-            <p>Stop time and webhook reminders.</p>
-          </div>
-          <div class="recurring-grid">
-            ${fieldInput('recurringMaxOccurrences', 'Max occurrences', draft.maxOccurrences, 'empty for indefinite')}
-            ${fieldInput('recurringExpiresAt', 'Expires at', draft.expiresAt, '', 'datetime-local')}
-            ${fieldInput('recurringWebhookUrl', 'Webhook URL', draft.webhookUrl, 'https://example.com/agentic-webhook')}
-          </div>
-        </div>
-      </details>
       <div class="recurring-create-primary-row">
         ${aiPathConnected ? `
           <label class="ask-agent-after-draft recurring-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''}">
@@ -45779,6 +46055,20 @@ function recurringComposer(): string {
           ${actionHelper ? `<span class="contract-helper accent-note">${escapeHtml(actionHelper)}</span>` : ''}
         </div>
       </div>
+      <details class="recurring-advanced-details">
+        <summary>Advanced</summary>
+        <div class="contract-section">
+          <div>
+            <span>Caps and reminders</span>
+            <p>Stop time and webhook reminders.</p>
+          </div>
+          <div class="recurring-grid">
+            ${fieldInput('recurringMaxOccurrences', 'Max occurrences', draft.maxOccurrences, 'empty for indefinite')}
+            ${fieldInput('recurringExpiresAt', 'Expires at', draft.expiresAt, '', 'datetime-local')}
+            ${fieldInput('recurringWebhookUrl', 'Webhook URL', draft.webhookUrl, 'https://example.com/agentic-webhook')}
+          </div>
+        </div>
+      </details>
       ${recurringDraftPreviewPanel(draft)}
     </div>
   `;
@@ -49247,6 +49537,7 @@ async function reconnectBridgeOnStartup(): Promise<void> {
 }
 
 function defaultAiMode(): AiSettings['mode'] {
+  const iosNative = detectIosNativeEnvironment().isIosNative;
   const sessionToken = IS_TAURI_APP
     ? tauriNativeCloudSessionToken()
     : IS_ANDROID_APP
@@ -49255,6 +49546,8 @@ function defaultAiMode(): AiSettings['mode'] {
   return defaultAiModeForSurface({
     isAndroidApp: IS_ANDROID_APP,
     androidDeviceAgentRuntimeEnabled: ANDROID_DEVICE_AGENT_ENABLED,
+    isIosApp: iosNative,
+    iosDeviceAgentRuntimeEnabled: DEVICE_AGENT_ENABLED,
     isLocalBrowserOrigin: isLocalBrowserOrigin(),
     isTauriApp: IS_TAURI_APP,
     hasCloudSession: Boolean(sessionToken && sessionToken.trim().length > 0),
@@ -49264,10 +49557,16 @@ function defaultAiMode(): AiSettings['mode'] {
 function persistedAiSettings(
   persistedState: PersistedState,
   mobileAiPathPolicy = isMobileAiPathPolicySurface(),
+  deviceAgentVisibleOverride?: boolean,
 ): Omit<AiSettings, 'apiKey'> {
   const fallback = aiProviderPresetById(DEFAULT_AI_PROVIDER_ID);
   const provider = persistedState.aiProvider ? aiProviderPresetById(persistedState.aiProvider) : fallback;
-  const mode = normalizeAiModeForSurface(persistedState.aiMode ?? defaultAiMode(), undefined, mobileAiPathPolicy);
+  const mode = normalizeAiModeForSurface(
+    persistedState.aiMode ?? defaultAiMode(),
+    undefined,
+    mobileAiPathPolicy,
+    deviceAgentVisibleOverride,
+  );
   const model = persistedState.aiModel?.trim() || provider.model;
   const reviewPrefs = {
     multiReviewer: persistedState.aiMultiReviewer === true,
@@ -49372,12 +49671,14 @@ function normalizeAiModeForSurface(
   mode: AiSettings['mode'],
   walletAddress?: string,
   mobileAiPathPolicy = isMobileAiPathPolicySurface(),
+  deviceAgentVisibleOverride?: boolean,
 ): AiSettings['mode'] {
   const fallbackMode = defaultAiMode();
+  const deviceAgentVisible = deviceAgentVisibleOverride ?? deviceAgentModeVisibleForWallet(walletAddress);
   const afterMobile = normalizeAiModeForMobileSurface({
     mode,
     mobileAiPathPolicy,
-    deviceAgentVisible: deviceAgentModeVisibleForWallet(walletAddress),
+    deviceAgentVisible,
     fallbackMode,
   }) as AiSettings['mode'];
   return normalizeAiModeForDesktopSurface({
@@ -49405,7 +49706,17 @@ function deviceAgentModeVisible(): boolean {
 }
 
 function deviceAgentModeVisibleForWallet(walletAddress?: string): boolean {
-  const walletIsDeviceAgentAllowlisted = isDeviceAgentWallet(walletAddress);
+  return deviceAgentModeVisibleForRuntime({
+    walletAddress,
+    isIosNative: state.iosNativeEnvironment.isIosNative,
+  });
+}
+
+function deviceAgentModeVisibleForRuntime(input: {
+  walletAddress?: string;
+  isIosNative: boolean;
+}): boolean {
+  const walletIsDeviceAgentAllowlisted = isDeviceAgentWallet(input.walletAddress);
   return deviceAgentModeVisibleForSurface({
     deviceAgentEnabled: DEVICE_AGENT_ENABLED,
     androidDeviceAgentEnabled: ANDROID_DEVICE_AGENT_ENABLED,
@@ -49413,12 +49724,15 @@ function deviceAgentModeVisibleForWallet(walletAddress?: string): boolean {
     showDevControls: SHOW_DEV_CONTROLS,
     isAndroidApp: IS_ANDROID_APP,
     androidDeviceAgentRuntimeEnabled: ANDROID_DEVICE_AGENT_ENABLED,
+    isIosApp: input.isIosNative,
+    iosDeviceAgentRuntimeEnabled: DEVICE_AGENT_ENABLED,
     walletIsDeviceAgentAllowlisted,
     browserNativeEligible: browserNativeRuntimeEligibleForSurface({
       deviceAgentEnabled: DEVICE_AGENT_ENABLED,
       browserDeviceAgentEnabled: BROWSER_DEVICE_AGENT_ENABLED,
-      walletAddress,
+      walletAddress: input.walletAddress,
       isAndroidApp: IS_ANDROID_APP,
+      isIosApp: input.isIosNative,
       showDevControls: SHOW_DEV_CONTROLS,
       deviceAgentWalletAllowlisted: walletIsDeviceAgentAllowlisted,
     }),

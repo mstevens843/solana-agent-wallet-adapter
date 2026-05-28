@@ -39,25 +39,23 @@
  */
 
 import {
+  Connection,
+} from '@solana/web3.js';
+import {
+  VERIFIED_PROGRAM_IDS,
+} from '@solana-agent-wallet-adapter/workflow';
+import {
   createMcpCapabilityResolver,
   DEFAULT_CONFIG,
+  makeTransactionSimulator,
   runPolicyPipeline,
   type PolicyEvaluationBundle,
   type SimulationDigest,
   type TxGateContext,
 } from '@solana-agent-wallet-adapter/mcp-server';
 
-const VERIFIED_PROGRAM_IDS: ReadonlySet<string> = new Set([
-  '11111111111111111111111111111111', // System Program
-  'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', // SPL Token
-  'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb', // Token-2022
-  'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL', // Associated Token Account
-  'ComputeBudget111111111111111111111111111111',
-  'JUP6Lkbpx6mUwBmYDPDgyARyZHbphoenzefdNzqovxN3', // Jupiter Aggregator v6
-]);
-
 const JUPITER_AGGREGATOR_PROGRAM_IDS: ReadonlySet<string> = new Set([
-  'JUP6Lkbpx6mUwBmYDPDgyARyZHbphoenzefdNzqovxN3',
+  'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4',
   'JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB',
 ]);
 
@@ -89,6 +87,9 @@ export async function handlePolicyEnrich(
 ): Promise<PolicyEnrichResult | PolicyEnrichFailure> {
   const body = isObject(rawBody) ? (rawBody as PolicyEnrichRequest) : ({} as PolicyEnrichRequest);
   try {
+    if (process.env.AGENT_WALLET_POLICY_ORCHESTRATOR === '0') {
+      return { ok: true, policyBundle: emptyBundle() };
+    }
     const text = [body.instruction ?? '', body.userNotes ?? '', body.intent ?? '']
       .filter(Boolean)
       .join('\n');
@@ -98,10 +99,7 @@ export async function handlePolicyEnrich(
       return {
         ok: true,
         policyBundle: {
-          atoms: [],
-          evaluations: [],
-          hasBlockingFailure: false,
-          finishedAt: new Date().toISOString(),
+          ...emptyBundle(),
         },
       };
     }
@@ -109,9 +107,14 @@ export async function handlePolicyEnrich(
       ? body.knownTokenSymbols.filter((s): s is string => typeof s === 'string' && s.length > 0)
       : [];
 
+    let simulation = body.simulationDigest;
+    if (!simulation && body.transactionBase64) {
+      simulation = await simulateTransactionBase64(body.transactionBase64).catch(() => undefined);
+    }
+
     // Tx gate context: prefer caller-supplied; otherwise build from actionType.
     const txGateContext = body.txGateContext
-      ?? (body.simulationDigest || body.transactionBase64 ? defaultTxGateContext(body.actionType) : undefined);
+      ?? (simulation || body.transactionBase64 ? defaultTxGateContext(body.actionType) : undefined);
 
     // Resolver: no Connection wired here (cloud route doesn't own one); resolvers
     // that need RPC (wallet_balance, network_metric, etc.) will surface as
@@ -121,7 +124,7 @@ export async function handlePolicyEnrich(
       requestContext: {
         ...(body.walletAddress ? { walletAddress: body.walletAddress } : {}),
         ...(body.draftParameters ? { draftParameters: body.draftParameters } : {}),
-        ...(body.simulationDigest ? { simulationDigest: body.simulationDigest } : {}),
+        ...(simulation ? { simulationDigest: simulation } : {}),
         ...(body.transactionBase64 ? { transactionBase64: body.transactionBase64 } : {}),
       },
     });
@@ -130,7 +133,7 @@ export async function handlePolicyEnrich(
       text,
       knownTokenSymbols: knownSymbols,
       resolver,
-      simulation: body.simulationDigest,
+      simulation,
       txGateContext,
     });
 
@@ -141,6 +144,31 @@ export async function handlePolicyEnrich(
       error: err instanceof Error ? err.message : String(err),
     };
   }
+}
+
+let cachedSimulatorRpcUrl: string | undefined;
+let cachedSimulator: ReturnType<typeof makeTransactionSimulator> | undefined;
+
+function emptyBundle(): Record<string, unknown> {
+  return {
+    atoms: [],
+    evaluations: [],
+    hasBlockingFailure: false,
+    finishedAt: new Date().toISOString(),
+  };
+}
+
+function simulatorForDefaultConfig(): ReturnType<typeof makeTransactionSimulator> {
+  if (!cachedSimulator || cachedSimulatorRpcUrl !== DEFAULT_CONFIG.rpcUrl) {
+    cachedSimulatorRpcUrl = DEFAULT_CONFIG.rpcUrl;
+    cachedSimulator = makeTransactionSimulator(new Connection(DEFAULT_CONFIG.rpcUrl, 'confirmed'));
+  }
+  return cachedSimulator;
+}
+
+async function simulateTransactionBase64(transactionBase64: string): Promise<SimulationDigest | undefined> {
+  const simulator = simulatorForDefaultConfig();
+  return simulator(transactionBase64);
 }
 
 function compactBundle(bundle: PolicyEvaluationBundle): Record<string, unknown> {

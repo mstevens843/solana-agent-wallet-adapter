@@ -42,7 +42,7 @@ export interface CreateSessionRequestBody {
   cluster?: WorkflowCluster;
   tokenDecimals?: number;
   ephemeralSignerPubkey?: string;
-  signerRuntime?: 'server' | 'android-native';
+  signerRuntime?: 'server' | 'android-native' | 'ios-native';
   metadata?: Record<string, unknown>;
 }
 

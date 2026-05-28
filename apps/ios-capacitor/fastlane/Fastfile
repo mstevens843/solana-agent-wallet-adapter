@@ -34,6 +34,7 @@ platform :ios do
   desc 'Build + sign + upload to App Store + submit for review'
   lane :release do
     ensure_api_key
+    validate_store_assets
     sync_certificates
     bump_versions
     build
@@ -77,11 +78,29 @@ platform :ios do
   end
 
   def sync_certificates
-    sync_code_signing(
+    options = {
       type: 'appstore',
       readonly: true,
       app_identifier: [ENV['AGENTIC_IOS_BUNDLE_ID'] || 'com.agentic.wallet']
-    )
+    }
+    options[:team_id] = ENV['APPLE_TEAM_ID'] if ENV['APPLE_TEAM_ID']
+    sync_code_signing(**options)
+  end
+
+  def validate_store_assets
+    required = [
+      'app-store-assets/icon-1024.png',
+      'app-store-assets/privacy_url.txt',
+      'app-store-assets/support_url.txt',
+      'app-store-assets/marketing_url.txt',
+      'app-store-assets/listing.md',
+      'app-store-assets/release_notes.txt'
+    ]
+    required.each do |path|
+      UI.user_error!("Missing App Store asset: #{path}") unless File.exist?(path) && File.size?(path)
+    end
+    screenshots = Dir.glob('app-store-assets/screenshots/**/*.png')
+    UI.user_error!('Missing App Store screenshots under app-store-assets/screenshots/.') if screenshots.empty?
   end
 
   def bump_versions

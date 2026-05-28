@@ -21,6 +21,20 @@ describe('Phase 6 browser-native Device Agent wiring helpers', () => {
     })).toBe('android-native');
   });
 
+  it('uses iOS native after Android and ahead of browser-native when the bridge is present', () => {
+    expect(chooseDeviceAgentRequestRoute({
+      isAndroidApp: false,
+      androidBridgeAvailable: false,
+      isIosApp: true,
+      iosBridgeAvailable: true,
+      isTauriApp: false,
+      tauriBridgeAvailable: false,
+      browserDeviceAgentEnabled: true,
+      browserNativeEligible: true,
+      cloudSessionMatchesWallet: true,
+    })).toBe('ios-native');
+  });
+
   it('uses browser-native after Android and before the fallback paths', () => {
     expect(chooseDeviceAgentRequestRoute({
       isAndroidApp: false,
@@ -90,6 +104,17 @@ describe('Phase 6 browser-native Device Agent wiring helpers', () => {
       browserNativeEligible: true,
       cloudSessionMatchesWallet: true,
     })).toBe('android-native');
+
+    expect(defaultDeviceAgentRuntimeForSurface({
+      isAndroidApp: false,
+      isIosApp: true,
+      iosBridgeAvailable: true,
+      isTauriApp: false,
+      tauriBridgeAvailable: false,
+      browserDeviceAgentEnabled: true,
+      browserNativeEligible: true,
+      cloudSessionMatchesWallet: true,
+    })).toBe('ios-native');
 
     expect(defaultDeviceAgentRuntimeForSurface({
       isAndroidApp: false,
@@ -180,6 +205,21 @@ describe('Phase 6 browser-native Device Agent wiring helpers', () => {
     })).toBe(true);
   });
 
+  it('shows Device Agent mode inside iOS when the native runtime is enabled without requiring wallet allowlist membership', () => {
+    expect(deviceAgentModeVisibleForSurface({
+      deviceAgentEnabled: true,
+      androidDeviceAgentEnabled: false,
+      browserDeviceAgentEnabled: false,
+      showDevControls: false,
+      isAndroidApp: false,
+      androidDeviceAgentRuntimeEnabled: false,
+      isIosApp: true,
+      iosDeviceAgentRuntimeEnabled: true,
+      walletIsDeviceAgentAllowlisted: false,
+      browserNativeEligible: false,
+    })).toBe(true);
+  });
+
   it('keeps Device Agent hidden inside Android when the native runtime is explicitly disabled', () => {
     expect(deviceAgentModeVisibleForSurface({
       deviceAgentEnabled: false,
@@ -218,6 +258,26 @@ describe('Phase 6 browser-native Device Agent wiring helpers', () => {
     expect(defaultAiModeForSurface({
       isAndroidApp: true,
       androidDeviceAgentRuntimeEnabled: false,
+      isLocalBrowserOrigin: false,
+    })).toBe('session');
+  });
+
+  it('defaults iOS app AI mode to Device Agent when the native runtime is enabled', () => {
+    expect(defaultAiModeForSurface({
+      isAndroidApp: false,
+      androidDeviceAgentRuntimeEnabled: false,
+      isIosApp: true,
+      iosDeviceAgentRuntimeEnabled: true,
+      isLocalBrowserOrigin: false,
+    })).toBe('device-agent');
+  });
+
+  it('defaults iOS app AI mode to Session when the native runtime is disabled', () => {
+    expect(defaultAiModeForSurface({
+      isAndroidApp: false,
+      androidDeviceAgentRuntimeEnabled: false,
+      isIosApp: true,
+      iosDeviceAgentRuntimeEnabled: false,
       isLocalBrowserOrigin: false,
     })).toBe('session');
   });

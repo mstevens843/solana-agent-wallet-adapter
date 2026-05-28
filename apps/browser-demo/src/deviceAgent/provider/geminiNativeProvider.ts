@@ -32,6 +32,7 @@ import {
   composeErrorMessage,
   mapHttpStatusToErrorCode,
 } from './providerHttp.js';
+import { researchTargetsForPayload } from './researchTargets.js';
 import { extractGeminiCitations, extractGeminiText, parseModelJson } from './responseParser.js';
 import type { DeviceAgentProvider } from './types.js';
 
@@ -110,7 +111,7 @@ export class GeminiNativeProvider implements DeviceAgentProvider {
     signal: AbortSignal | undefined,
   ): Promise<Record<string, unknown>> {
     try {
-      const messages = buildResearchMessages(payload);
+      const messages = buildResearchMessages(payload, researchTargetsForPayload(payload));
       const response = await this.postGenerateContent(messages, {
         jsonObjectMode: false,
         temperature: REVIEW_TEMPERATURE,

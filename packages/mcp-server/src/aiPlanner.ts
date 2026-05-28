@@ -329,6 +329,7 @@ export class BridgeAiPlanner {
    * review; the LLM falls back to its prior behavior over un-enriched context.
    */
   private async enrichRequestWithPolicyBundle(request: Required<AiReviewRequest>): Promise<Required<AiReviewRequest>> {
+    if (process.env.AGENT_WALLET_POLICY_ORCHESTRATOR === '0') return request;
     try {
       const knownSymbols = collectKnownTokenSymbols(request);
       const text = [
@@ -2132,11 +2133,12 @@ export function applyServerSideReviewSafety(
   // over it. We downgrade to deny and cite the failing atoms in blockingFactIds.
   let policyContract: Record<string, unknown> | undefined;
   if (policyBundle && policyBundle.hasBlockingFailure === true && decision === 'approve') {
+    const policyAtomIds = policyBundleAtomIds(policyBundle);
     const evaluations = Array.isArray(policyBundle.evaluations)
       ? (policyBundle.evaluations as Array<Record<string, unknown>>)
       : [];
     const failingAtomIds = evaluations
-      .filter((evaluation) => evaluation.pass === false && typeof evaluation.atomId === 'string')
+      .filter((evaluation) => evaluation.pass === false && typeof evaluation.atomId === 'string' && policyAtomIds.has(evaluation.atomId))
       .map((evaluation) => evaluation.atomId as string);
     decision = 'deny';
     reason = failingAtomIds.length > 0
@@ -2176,6 +2178,11 @@ export function applyServerSideReviewSafety(
 
 function isJsonObjectLike(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function policyBundleAtomIds(bundle: Record<string, unknown>): Set<string> {
+  const atoms = Array.isArray(bundle.atoms) ? (bundle.atoms as Array<Record<string, unknown>>) : [];
+  return new Set(atoms.map((atom) => (typeof atom.id === 'string' ? atom.id : '')).filter(Boolean));
 }
 
 const JUPITER_AGGREGATOR_PROGRAM_IDS: ReadonlySet<string> = new Set([
@@ -2246,6 +2253,7 @@ export function mergePolicyBundleFindings(
   if (!bundle) return result;
   const evaluations = Array.isArray(bundle.evaluations) ? (bundle.evaluations as Array<Record<string, unknown>>) : [];
   if (evaluations.length === 0) return result;
+  const validPolicyAtomIds = policyBundleAtomIds(bundle);
 
   const evidence = isJsonObjectLike(result.evidence) ? { ...(result.evidence as Record<string, unknown>) } : {};
   const existingFindings = Array.isArray(evidence.findings)
@@ -2277,6 +2285,7 @@ export function mergePolicyBundleFindings(
     const atomId = typeof evaluation.atomId === 'string' ? evaluation.atomId : undefined;
     const finding = isJsonObjectLike(evaluation.finding) ? evaluation.finding as Record<string, unknown> : undefined;
     if (!atomId || !finding) continue;
+    if (!validPolicyAtomIds.has(atomId)) continue;
     if (isLargeBundle && isUnresolved(evaluation)) continue; // drop unresolved rows on noisy bundles
     const label = typeof finding.label === 'string' ? finding.label.trim() : '';
     if (!label) continue;

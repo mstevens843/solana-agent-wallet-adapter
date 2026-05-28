@@ -1,9 +1,14 @@
 import { ProtocolError } from '@solana-agent-wallet-adapter/core';
 
+import type { KvCache } from './adapters/alternative_me/index.js';
+import { createFsKvCache } from './adapters/alternative_me/kvCaches.js';
+
 export const DEFAULT_COINGECKO_PUBLIC_BASE = 'https://api.coingecko.com/api/v3';
 export const DEFAULT_COINGECKO_PRO_BASE = 'https://pro-api.coingecko.com/api/v3';
 export const COINGECKO_RESPONSE_BYTE_LIMIT = 512_000;
 export const COINGECKO_ENDPOINT_OVERVIEW_URL = 'https://docs.coingecko.com/reference/endpoint-overview';
+const COINGECKO_GLOBAL_TTL_MS = 5 * 60 * 1000;
+const COINGECKO_GLOBAL_KV_KEY = 'coingecko:global';
 
 export interface CoinGeckoConfig {
   apiKey?: string;
@@ -289,9 +294,22 @@ export interface CoinGeckoGlobalSnapshot {
   updatedAt?: string;
 }
 
+interface CoinGeckoGlobalCacheEntry {
+  snapshot: CoinGeckoGlobalSnapshot;
+  fetchedAtMs: number;
+}
+
+let coinGeckoGlobalCache: CoinGeckoGlobalCacheEntry | undefined;
+let coinGeckoGlobalKvPath: string | undefined;
+let coinGeckoGlobalKv: KvCache | undefined;
+
 export async function requestCoinGeckoGlobal(
   options: { env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch } = {},
 ): Promise<CoinGeckoGlobalSnapshot> {
+  if (!options.fetchImpl) {
+    const cached = await readCoinGeckoGlobalCache(options.env);
+    if (cached) return cached;
+  }
   const payload = await requestCoinGecko('/global', { env: options.env, fetchImpl: options.fetchImpl });
   const data = asJsonRecord(payload.data ?? payload);
   if (!data) return {};
@@ -302,7 +320,7 @@ export async function requestCoinGeckoGlobal(
     ? data.market_cap_change_percentage_24h_usd as number
     : undefined;
   const updatedAtSeconds = typeof data.updated_at === 'number' ? data.updated_at as number : undefined;
-  return {
+  const snapshot: CoinGeckoGlobalSnapshot = {
     ...(totalMarketCap && typeof totalMarketCap.usd === 'number' ? { totalMarketCapUsd: totalMarketCap.usd as number } : {}),
     ...(totalVolume && typeof totalVolume.usd === 'number' ? { totalVolume24hUsd: totalVolume.usd as number } : {}),
     ...(marketCapChange !== undefined ? { marketCapChangePct24hUsd: marketCapChange } : {}),
@@ -312,6 +330,59 @@ export async function requestCoinGeckoGlobal(
       ? { updatedAt: new Date(updatedAtSeconds * 1000).toISOString() }
       : {}),
   };
+  if (!options.fetchImpl) {
+    await writeCoinGeckoGlobalCache(snapshot, options.env);
+  }
+  return snapshot;
+}
+
+async function readCoinGeckoGlobalCache(env: NodeJS.ProcessEnv = process.env): Promise<CoinGeckoGlobalSnapshot | undefined> {
+  const now = Date.now();
+  if (coinGeckoGlobalCache && now - coinGeckoGlobalCache.fetchedAtMs < COINGECKO_GLOBAL_TTL_MS) {
+    return coinGeckoGlobalCache.snapshot;
+  }
+  const kv = coinGeckoGlobalKvCacheFromEnv(env);
+  if (!kv) return undefined;
+  try {
+    const stored = await kv.get<CoinGeckoGlobalCacheEntry>(COINGECKO_GLOBAL_KV_KEY);
+    if (stored && typeof stored.fetchedAtMs === 'number' && now - stored.fetchedAtMs < COINGECKO_GLOBAL_TTL_MS) {
+      coinGeckoGlobalCache = stored;
+      return stored.snapshot;
+    }
+  } catch {
+    // KV failure must not block a live CoinGecko fetch.
+  }
+  return undefined;
+}
+
+async function writeCoinGeckoGlobalCache(
+  snapshot: CoinGeckoGlobalSnapshot,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  const entry: CoinGeckoGlobalCacheEntry = { snapshot, fetchedAtMs: Date.now() };
+  coinGeckoGlobalCache = entry;
+  const kv = coinGeckoGlobalKvCacheFromEnv(env);
+  if (!kv) return;
+  try {
+    await kv.set(COINGECKO_GLOBAL_KV_KEY, entry, COINGECKO_GLOBAL_TTL_MS);
+  } catch {
+    // Best-effort only.
+  }
+}
+
+function coinGeckoGlobalKvCacheFromEnv(env: NodeJS.ProcessEnv): KvCache | undefined {
+  const path = (env.AGENT_WALLET_KV_CACHE_PATH ?? '').trim();
+  if (!path) return undefined;
+  if (coinGeckoGlobalKv && coinGeckoGlobalKvPath === path) return coinGeckoGlobalKv;
+  try {
+    coinGeckoGlobalKv = createFsKvCache(path);
+    coinGeckoGlobalKvPath = path;
+    return coinGeckoGlobalKv;
+  } catch {
+    coinGeckoGlobalKv = undefined;
+    coinGeckoGlobalKvPath = undefined;
+    return undefined;
+  }
 }
 
 function asJsonRecord(payload: unknown): Record<string, unknown> | undefined {

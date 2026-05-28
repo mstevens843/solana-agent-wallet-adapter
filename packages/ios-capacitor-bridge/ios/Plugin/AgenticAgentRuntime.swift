@@ -260,6 +260,7 @@ final class AgenticAgentRuntime {
             systemPrompt: systemPrompt,
             userInstruction: userInstruction,
             context: context,
+            payload: payload,
             config: cfg
         )
 
@@ -296,10 +297,10 @@ final class AgenticAgentRuntime {
             "available": true,
             "enabled": _state != .uninitialized,
             "configured": _config != nil && _config?.validationError() == nil,
-            "state": _state.rawValue,
+            "state": sharedStateName(_state),
             "runtime": "ios-native",
-            "updatedAt": _updatedAtMs,
-            "checkedAt": Int64(Date().timeIntervalSince1970 * 1000),
+            "updatedAt": isoTimestamp(_updatedAtMs),
+            "checkedAt": isoTimestamp(Int64(Date().timeIntervalSince1970 * 1000)),
         ]
         if let cfg = _config {
             status["provider"] = cfg.provider
@@ -308,12 +309,37 @@ final class AgenticAgentRuntime {
             status["model"] = cfg.model
         }
         if let err = _lastError {
-            status["lastError"] = err
+            status["lastError"] = [
+                "code": "runtime_error",
+                "message": err,
+            ]
             status["message"] = err
         } else {
             status["message"] = "Ready"
         }
         return status
+    }
+
+    private func sharedStateName(_ state: AgenticAgentRuntimeState) -> String {
+        switch state {
+        case .uninitialized:
+            return "unavailable"
+        case .configured:
+            return "stopped"
+        case .running:
+            return "running"
+        case .stopped:
+            return "stopped"
+        case .error:
+            return "error"
+        }
+    }
+
+    private func isoTimestamp(_ millis: Int64) -> String {
+        let date = Date(timeIntervalSince1970: TimeInterval(millis) / 1000.0)
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: date)
     }
 
     // MARK: - Keychain persistence
@@ -364,15 +390,349 @@ struct AgenticAgentRequest {
     let systemPrompt: String
     let userInstruction: String
     let context: Any?
+    let payload: [String: Any]
     let config: AgenticAgentRuntimeConfig
+}
+
+struct AgenticDeviceAgentMessages {
+    let system: String
+    let userContent: String
+}
+
+enum AgenticDeviceAgentBoundaries {
+    static let plan = "Return JSON only. Do not sign, submit, approve, or claim execution."
+    static let review = "This AI review can approve, deny, or request more input. It cannot sign or submit a transaction."
+    static let ask = "Answer only the user's question. Do not sign, submit, approve, or claim execution."
+    static let reviewDefaultInstruction = "Review this draft before it is sent for wallet approval. Decide approve, deny, or needs_input."
+}
+
+enum AgenticDeviceAgentMessageAssembler {
+    private static let researchMaxUses = 3
+    private static let connectorRuleDefault = "Only propose first-class or Blink executable actions for enabled connectors with matching capabilities. If a requested protocol/action is disabled, unsupported, or missing an action URL/client key, make the plan proof/read-only and state which connector fact, key, or action URL is missing."
+
+    static func buildPlanMessages(_ payload: [String: Any]) -> AgenticDeviceAgentMessages {
+        let protocolConnectors = array(payload["protocolConnectors"]) ?? array(payload["connectorContext"]) ?? []
+        let providedRule = trimmed(payload["connectorRule"])
+        let connectorRule = providedRule.isEmpty ? deriveConnectorRule(protocolConnectors) : providedRule
+        let boundary = trimmed(payload["requiredBoundary"]).isEmpty ? AgenticDeviceAgentBoundaries.plan : trimmed(payload["requiredBoundary"])
+        var userContent: [String: Any] = [
+            "userPrompt": payload["userPrompt"] ?? payload["prompt"] ?? "",
+            "protocolConnectors": protocolConnectors,
+            "connectorRule": connectorRule,
+            "requiredBoundary": boundary,
+        ]
+        for key in ["userNotes", "template", "parameters"] where payload[key] != nil {
+            userContent[key] = payload[key]
+        }
+        return AgenticDeviceAgentMessages(system: AgenticDeviceAgentSystemPrompts.plan, userContent: stringify(userContent))
+    }
+
+    static func buildReviewMessages(_ payload: [String: Any]) -> AgenticDeviceAgentMessages {
+        let instruction = trimmed(payload["instruction"]).isEmpty ? AgenticDeviceAgentBoundaries.reviewDefaultInstruction : trimmed(payload["instruction"])
+        let walletAddress = trimmed(payload["walletAddress"]).isEmpty ? "not_connected" : trimmed(payload["walletAddress"])
+        let cluster = trimmed(payload["cluster"]).isEmpty ? "unknown" : trimmed(payload["cluster"])
+        let boundary = trimmed(payload["requiredBoundary"]).isEmpty ? AgenticDeviceAgentBoundaries.review : trimmed(payload["requiredBoundary"])
+        let userContent: [String: Any] = [
+            "instruction": instruction,
+            "walletAddress": walletAddress,
+            "cluster": cluster,
+            "plan": payload["plan"] ?? [:],
+            "context": payload["context"] ?? [:],
+            "research": researchObject(payload),
+            "requiredBoundary": boundary,
+        ]
+        return AgenticDeviceAgentMessages(system: AgenticDeviceAgentSystemPrompts.review, userContent: stringify(userContent))
+    }
+
+    static func buildResearchMessages(_ payload: [String: Any], researchTargets: [[String: Any]] = []) -> AgenticDeviceAgentMessages {
+        let instruction = trimmed(payload["instruction"]).isEmpty ? AgenticDeviceAgentBoundaries.reviewDefaultInstruction : trimmed(payload["instruction"])
+        let walletAddress = trimmed(payload["walletAddress"]).isEmpty ? "not_connected" : trimmed(payload["walletAddress"])
+        let cluster = trimmed(payload["cluster"]).isEmpty ? "unknown" : trimmed(payload["cluster"])
+        let hasTargets = !researchTargets.isEmpty
+        let sourcePolicy = "Prefer official vendor pricing pages over blogs and aggregators. When a vendor publishes a plan/pricing page, use it as the primary source. Pricing pages are the authoritative source for current prices, fees, and plan rates. Never cite a blog subdomain (blog.*, news.*, medium.com, substack.com, community.*) as the primary source for current pricing - if only blog citations are available, state that current pricing could not be verified against an official page. Cite each fact with the official URL, not a blog post."
+        let systemPrelude = hasTargets
+            ? "You research current outside facts for a Solana wallet approval review. Do not approve, deny, or ask the wallet to sign. The reviewer has already broken the NOTE into atomic fact requests - see context.researchTargets. Batch your searches: cover every researchTarget in as few queries as possible. For each target, return a concise source-backed value plus a citation URL. Prefer official sources. "
+            : "You research current outside facts for a Solana wallet approval review. Do not approve, deny, or ask the wallet to sign. Search reliable current sources, prefer official sources, and return concise source-backed facts in plain English. Include current prices, thresholds, dates, plan names, ambiguity, and URLs when relevant. "
+        var context = record(payload["context"])
+        if hasTargets { context["researchTargets"] = researchTargets }
+        let userContent: [String: Any] = [
+            "instruction": instruction,
+            "walletAddress": walletAddress,
+            "cluster": cluster,
+            "plan": payload["plan"] ?? [:],
+            "context": context,
+            "research": [
+                "needed": true,
+                "mode": hasTargets ? "resolve_specific_atoms" : "collect_current_facts_only",
+                "currentDate": ISO8601DateFormatter().string(from: Date()),
+                "maxSearches": researchMaxUses,
+                "sourcePolicy": sourcePolicy,
+            ],
+            "requiredBoundary": "This research pass cannot approve, deny, sign, or submit. It only gathers facts for a later structured review.",
+        ]
+        return AgenticDeviceAgentMessages(system: systemPrelude + sourcePolicy, userContent: stringify(userContent))
+    }
+
+    static func buildAskMessages(_ payload: [String: Any]) -> AgenticDeviceAgentMessages {
+        let walletAddress = trimmed(payload["walletAddress"]).isEmpty ? "not_connected" : trimmed(payload["walletAddress"])
+        let cluster = trimmed(payload["cluster"]).isEmpty ? "unknown" : trimmed(payload["cluster"])
+        let boundary = trimmed(payload["requiredBoundary"]).isEmpty ? AgenticDeviceAgentBoundaries.ask : trimmed(payload["requiredBoundary"])
+        let userContent: [String: Any] = [
+            "question": payload["question"] ?? "",
+            "plan": payload["plan"] ?? [:],
+            "walletAddress": walletAddress,
+            "cluster": cluster,
+            "context": payload["context"] ?? [:],
+            "research": researchObject(payload),
+            "requiredBoundary": boundary,
+        ]
+        return AgenticDeviceAgentMessages(system: AgenticDeviceAgentSystemPrompts.ask, userContent: stringify(userContent))
+    }
+
+    private static func researchObject(_ payload: [String: Any]) -> [String: Any] {
+        if let research = payload["research"] as? [String: Any] { return research }
+        return [
+            "needed": false,
+            "mode": "not_required",
+            "currentDate": ISO8601DateFormatter().string(from: Date()),
+            "maxSearches": researchMaxUses,
+        ]
+    }
+
+    private static func deriveConnectorRule(_ protocolConnectors: [Any]) -> String {
+        guard let selected = protocolConnectors.compactMap({ $0 as? [String: Any] }).first(where: {
+            ($0["selected"] as? Bool) == true || ($0["selectedOnly"] as? Bool) == true
+        }) else {
+            return connectorRuleDefault
+        }
+        let name = [trimmed(selected["name"]), trimmed(selected["id"])].first(where: { !$0.isEmpty }) ?? "selected connector"
+        return [
+            "Use the selected protocol connector only: \(name).",
+            "Do not switch protocols.",
+            "If required connector facts are missing, ask for missing facts instead of inventing execution.",
+            "Do not claim the action is signed, submitted, approved, or safe.",
+            "The wallet owner must approve separately.",
+        ].joined(separator: " ")
+    }
+
+    private static func trimmed(_ value: Any?) -> String {
+        return (value as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func record(_ value: Any?) -> [String: Any] {
+        return value as? [String: Any] ?? [:]
+    }
+
+    private static func array(_ value: Any?) -> [Any]? {
+        return value as? [Any]
+    }
+
+    private static func stringify(_ value: [String: Any]) -> String {
+        guard JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value, options: []),
+              let text = String(data: data, encoding: .utf8) else {
+            return "{}"
+        }
+        return text
+    }
 }
 
 protocol AgenticAgentProvider {
     func execute(request: AgenticAgentRequest, completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void)
 }
 
+enum AgenticAgentProviderSupport {
+    static func messages(for request: AgenticAgentRequest, researchTargets: [[String: Any]] = []) -> AgenticDeviceAgentMessages {
+        switch request.method {
+        case "generatePlan":
+            return AgenticDeviceAgentMessageAssembler.buildPlanMessages(request.payload)
+        case "reviewPlan":
+            return AgenticDeviceAgentMessageAssembler.buildReviewMessages(request.payload)
+        case "ask":
+            return AgenticDeviceAgentMessageAssembler.buildAskMessages(request.payload)
+        case "research":
+            return AgenticDeviceAgentMessageAssembler.buildResearchMessages(request.payload, researchTargets: researchTargets)
+        default:
+            return AgenticDeviceAgentMessages(system: request.systemPrompt, userContent: request.userInstruction)
+        }
+    }
+
+    static func parseProviderResult(method: String, provider: String, text: String, raw: [String: Any]) -> Result<[String: Any], AgenticAgentError> {
+        if method == "ask" {
+            if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return .failure(AgenticAgentError(code: "PROVIDER_RESPONSE", subcode: "EMPTY_TEXT", message: "Provider response had no answer text."))
+            }
+            return .success(["output_text": text])
+        }
+        guard let parsed = parseJsonObject(from: text) else {
+            return .failure(AgenticAgentError(code: "PROVIDER_RESPONSE", subcode: "JSON_PARSE", message: "Provider response was not valid JSON."))
+        }
+        var out = parsed
+        out["provider"] = provider
+        return .success(out)
+    }
+
+    static func researchNeeded(_ payload: [String: Any]) -> Bool {
+        guard let research = payload["research"] as? [String: Any] else { return false }
+        return (research["needed"] as? Bool) == true
+    }
+
+    static func researchTargets(_ payload: [String: Any]) -> [[String: Any]] {
+        guard let context = payload["context"] as? [String: Any],
+              let targets = context["researchTargets"] as? [[String: Any]] else { return [] }
+        return targets
+    }
+
+    static func reviewPayloadWithResearch(_ payload: [String: Any], evidence: [String: Any]) -> [String: Any] {
+        var next = payload
+        var context = payload["context"] as? [String: Any] ?? [:]
+        context["researchEvidence"] = evidence
+        next["context"] = context
+        var research = payload["research"] as? [String: Any] ?? [:]
+        research["needed"] = false
+        research["mode"] = "provided_current_facts"
+        research["providedEvidence"] = true
+        next["research"] = research
+        return next
+    }
+
+    static func researchEvidence(provider: String, summary: String, raw: [String: Any]) -> [String: Any] {
+        let sources = sourceList(from: raw)
+        return [
+            "status": "checked",
+            "required": true,
+            "provider": provider,
+            "checkedAt": ISO8601DateFormatter().string(from: Date()),
+            "summary": summary.isEmpty ? "Research ran but produced no summary text." : summary,
+            "sources": sources,
+            "sourcePolicy": "Prefer official sources for prices and product facts. Cite each fact with the official URL.",
+        ]
+    }
+
+    static func currentResearchUnavailableReview(provider: String) -> [String: Any] {
+        let reason = "Device Agent \(provider) mode cannot fetch current outside facts yet. Use OpenAI, Anthropic, Gemini, or provide a source-backed current value."
+        return [
+            "decision": "needs_input",
+            "reason": reason,
+            "summary": "Current outside facts are required before the Device Agent can decide.",
+            "evidence": [
+                "research": ["status": "unavailable", "provider": provider, "required": true],
+                "findings": [["label": "Research needed", "value": reason, "tone": "warn"]],
+            ],
+            "questions": [[
+                "id": "device_agent_current_fact",
+                "prompt": "What source-backed current value should be checked?",
+                "inputKind": "text",
+                "required": true,
+            ]],
+        ]
+    }
+
+    static func currentResearchUnavailableAsk(provider: String) -> [String: Any] {
+        return ["output_text": "I need current outside facts to answer that, but \(provider) mode does not have native web research available. Provide a source-backed value or switch to OpenAI, Anthropic, or Gemini."]
+    }
+
+    private static func sourceList(from raw: Any) -> [[String: Any]] {
+        var out: [[String: Any]] = []
+        collectSources(raw, into: &out)
+        var seen = Set<String>()
+        return out.filter { source in
+            guard let url = source["url"] as? String, !url.isEmpty, !seen.contains(url) else { return false }
+            seen.insert(url)
+            return true
+        }
+    }
+
+    private static func collectSources(_ value: Any, into out: inout [[String: Any]]) {
+        if let dict = value as? [String: Any] {
+            if let url = dict["url"] as? String {
+                var source: [String: Any] = ["url": url]
+                if let title = dict["title"] as? String { source["title"] = title }
+                out.append(source)
+            }
+            for child in dict.values { collectSources(child, into: &out) }
+        } else if let arr = value as? [Any] {
+            for child in arr { collectSources(child, into: &out) }
+        }
+    }
+
+    private static func parseJsonObject(from text: String) -> [String: Any]? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+        var candidates = [trimmed]
+        candidates.append(contentsOf: codeFenceCandidates(trimmed))
+        candidates.append(contentsOf: balancedJsonCandidates(trimmed))
+        var seen = Set<String>()
+        for candidate in candidates where !candidate.isEmpty && !seen.contains(candidate) {
+            seen.insert(candidate)
+            guard let data = candidate.data(using: .utf8),
+                  let parsed = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] else {
+                continue
+            }
+            return parsed
+        }
+        return nil
+    }
+
+    private static func codeFenceCandidates(_ text: String) -> [String] {
+        var out: [String] = []
+        var remainder = text[...]
+        while let start = remainder.range(of: "```") {
+            let afterFence = remainder[start.upperBound...]
+            let contentStart = afterFence.hasPrefix("json") ? afterFence.index(afterFence.startIndex, offsetBy: 4) : afterFence.startIndex
+            guard let end = afterFence[contentStart...].range(of: "```") else { break }
+            out.append(String(afterFence[contentStart..<end.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines))
+            remainder = afterFence[end.upperBound...]
+        }
+        return out
+    }
+
+    private static func balancedJsonCandidates(_ text: String) -> [String] {
+        let chars = Array(text)
+        var out: [String] = []
+        var depth = 0
+        var start = -1
+        var inString = false
+        var escape = false
+        for (idx, ch) in chars.enumerated() {
+            if escape {
+                escape = false
+                continue
+            }
+            if ch == "\\" && inString {
+                escape = true
+                continue
+            }
+            if ch == "\"" {
+                inString.toggle()
+                continue
+            }
+            if inString { continue }
+            if ch == "{" {
+                if depth == 0 { start = idx }
+                depth += 1
+            } else if ch == "}" && depth > 0 {
+                depth -= 1
+                if depth == 0 && start >= 0 {
+                    out.append(String(chars[start...idx]))
+                    start = -1
+                }
+            }
+        }
+        return out
+    }
+}
+
 enum AgenticAgentProviderFactory {
     static func make(for config: AgenticAgentRuntimeConfig) -> AgenticAgentProvider {
+        if config.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "openai" {
+            return AgenticOpenAINativeProvider()
+        }
+        if config.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "gemini" ||
+            (config.baseUrl ?? "").lowercased().contains("generativelanguage.googleapis.com") ||
+            config.model.lowercased().contains("gemini") {
+            return AgenticGeminiProvider()
+        }
         switch config.apiFormat {
         case "anthropic":
             return AgenticAnthropicProvider()
@@ -385,33 +745,96 @@ enum AgenticAgentProviderFactory {
 // MARK: - Anthropic provider
 
 final class AgenticAnthropicProvider: AgenticAgentProvider {
-    private let defaultBase = "https://api.anthropic.com/v1/messages"
+    private let defaultBase = "https://api.anthropic.com/v1"
 
     func execute(request: AgenticAgentRequest, completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void) {
         guard let apiKey = request.config.apiKey, !apiKey.isEmpty else {
             completion(.failure(AgenticAgentError(code: "INVALID_CONFIG", subcode: "MISSING_API_KEY", message: "Anthropic provider requires an API key.")))
             return
         }
-        let endpoint = (request.config.baseUrl?.isEmpty == false) ? request.config.baseUrl! : defaultBase
+
+        if request.method == "reviewPlan", AgenticAgentProviderSupport.researchNeeded(request.payload) {
+            runResearchPass(request: request, apiKey: apiKey) { [weak self] research in
+                guard let self else { return }
+                let reviewPayload: [String: Any]
+                switch research {
+                case .success(let evidence):
+                    reviewPayload = AgenticAgentProviderSupport.reviewPayloadWithResearch(request.payload, evidence: evidence)
+                case .failure:
+                    reviewPayload = request.payload
+                }
+                let reviewRequest = AgenticAgentRequest(
+                    method: request.method,
+                    systemPrompt: request.systemPrompt,
+                    userInstruction: request.userInstruction,
+                    context: reviewPayload["context"],
+                    payload: reviewPayload,
+                    config: request.config
+                )
+                self.executeWithoutResearch(request: reviewRequest, apiKey: apiKey, completion: completion)
+            }
+            return
+        }
+
+        executeWithoutResearch(request: request, apiKey: apiKey, completion: completion)
+    }
+
+    private func executeWithoutResearch(
+        request: AgenticAgentRequest,
+        apiKey: String,
+        completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void
+    ) {
+        let messages = AgenticAgentProviderSupport.messages(for: request)
+        postMessages(messages: messages, request: request, apiKey: apiKey, research: request.method == "ask" && AgenticAgentProviderSupport.researchNeeded(request.payload)) { result in
+            switch result {
+            case .failure(let err):
+                completion(.failure(err))
+            case .success(let json):
+                let text = Self.extractText(json) ?? ""
+                completion(AgenticAgentProviderSupport.parseProviderResult(method: request.method, provider: "anthropic", text: text, raw: json))
+            }
+        }
+    }
+
+    private func runResearchPass(
+        request: AgenticAgentRequest,
+        apiKey: String,
+        completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void
+    ) {
+        let messages = AgenticDeviceAgentMessageAssembler.buildResearchMessages(
+            request.payload,
+            researchTargets: AgenticAgentProviderSupport.researchTargets(request.payload)
+        )
+        postMessages(messages: messages, request: request, apiKey: apiKey, research: true) { result in
+            switch result {
+            case .failure(let err):
+                completion(.failure(err))
+            case .success(let json):
+                let summary = (Self.extractText(json) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                completion(.success(AgenticAgentProviderSupport.researchEvidence(provider: "Anthropic", summary: summary, raw: json)))
+            }
+        }
+    }
+
+    private func postMessages(
+        messages: AgenticDeviceAgentMessages,
+        request: AgenticAgentRequest,
+        apiKey: String,
+        research: Bool,
+        completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void
+    ) {
+        let endpoint = normalizedEndpoint(request.config.baseUrl)
         guard let url = URL(string: endpoint) else {
             completion(.failure(AgenticAgentError(code: "INVALID_URL", message: "Invalid baseUrl: \(endpoint)")))
             return
         }
-        var userBlocks: [[String: Any]] = [
-            ["type": "text", "text": request.userInstruction]
-        ]
-        if let context = request.context {
-            if let data = try? JSONSerialization.data(withJSONObject: context, options: []),
-               let json = String(data: data, encoding: .utf8) {
-                userBlocks.append(["type": "text", "text": "context=\(json)"])
-            }
-        }
         let body: [String: Any] = [
             "model": request.config.model,
-            "max_tokens": 4096,
-            "system": request.systemPrompt,
-            "messages": [["role": "user", "content": userBlocks]],
-        ]
+            "max_tokens": request.method == "ask" ? 800 : 1024,
+            "system": messages.system,
+            "messages": [["role": "user", "content": messages.userContent]],
+            "temperature": request.method == "ask" ? 0.3 : 0.2,
+        ].merging(research ? ["tools": [anthropicWebSearchTool()]] : [:]) { current, _ in current }
         guard let payload = try? JSONSerialization.data(withJSONObject: body, options: []) else {
             completion(.failure(AgenticAgentError(code: "ENCODE_ERROR", message: "Could not encode Anthropic request body.")))
             return
@@ -430,15 +853,28 @@ final class AgenticAnthropicProvider: AgenticAgentProvider {
                     completion(.failure(AgenticAgentError(code: "PROVIDER_RESPONSE", message: "Anthropic response was not JSON.")))
                     return
                 }
-                let text = AgenticAnthropicProvider.extractText(json) ?? ""
-                completion(.success([
-                    "method": request.method,
-                    "provider": "anthropic",
-                    "text": text,
-                    "raw": json,
-                ]))
+                completion(.success(json))
             }
         }
+    }
+
+    private func normalizedEndpoint(_ raw: String?) -> String {
+        let trimmed = (raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let base = trimmed.isEmpty ? defaultBase : trimmed
+        return base.hasSuffix("/messages") ? base : "\(base)/messages"
+    }
+
+    private func anthropicWebSearchTool() -> [String: Any] {
+        return [
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "max_uses": 3,
+            "user_location": [
+                "type": "approximate",
+                "country": "US",
+                "timezone": "America/Los_Angeles",
+            ],
+        ]
     }
 
     private static func extractText(_ json: [String: Any]) -> String? {
@@ -453,34 +889,250 @@ final class AgenticAnthropicProvider: AgenticAgentProvider {
 
 // MARK: - OpenAI-compatible provider
 
+final class AgenticOpenAINativeProvider: AgenticAgentProvider {
+    private let defaultBase = "https://api.openai.com/v1"
+
+    func execute(request: AgenticAgentRequest, completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void) {
+        guard let apiKey = request.config.apiKey, !apiKey.isEmpty else {
+            completion(.failure(AgenticAgentError(code: "INVALID_CONFIG", subcode: "MISSING_API_KEY", message: "OpenAI provider requires an API key.")))
+            return
+        }
+        if request.method == "reviewPlan", AgenticAgentProviderSupport.researchNeeded(request.payload) {
+            runResearchPass(request: request, apiKey: apiKey) { [weak self] research in
+                guard let self else { return }
+                let reviewPayload: [String: Any]
+                switch research {
+                case .success(let evidence):
+                    reviewPayload = AgenticAgentProviderSupport.reviewPayloadWithResearch(request.payload, evidence: evidence)
+                case .failure:
+                    reviewPayload = request.payload
+                }
+                let reviewRequest = AgenticAgentRequest(
+                    method: request.method,
+                    systemPrompt: request.systemPrompt,
+                    userInstruction: request.userInstruction,
+                    context: reviewPayload["context"],
+                    payload: reviewPayload,
+                    config: request.config
+                )
+                self.executeWithoutResearch(request: reviewRequest, apiKey: apiKey, completion: completion)
+            }
+            return
+        }
+        executeWithoutResearch(request: request, apiKey: apiKey, completion: completion)
+    }
+
+    private func executeWithoutResearch(
+        request: AgenticAgentRequest,
+        apiKey: String,
+        completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void
+    ) {
+        let messages = AgenticAgentProviderSupport.messages(for: request)
+        postResponses(
+            messages: messages,
+            request: request,
+            apiKey: apiKey,
+            jsonSchema: request.method == "ask" ? nil : schema(for: request.method),
+            research: request.method == "ask" && AgenticAgentProviderSupport.researchNeeded(request.payload)
+        ) { result in
+            switch result {
+            case .failure(let err):
+                completion(.failure(err))
+            case .success(let json):
+                let text = Self.extractText(json)
+                completion(AgenticAgentProviderSupport.parseProviderResult(method: request.method, provider: "openai", text: text, raw: json))
+            }
+        }
+    }
+
+    private func runResearchPass(
+        request: AgenticAgentRequest,
+        apiKey: String,
+        completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void
+    ) {
+        let messages = AgenticDeviceAgentMessageAssembler.buildResearchMessages(
+            request.payload,
+            researchTargets: AgenticAgentProviderSupport.researchTargets(request.payload)
+        )
+        postResponses(messages: messages, request: request, apiKey: apiKey, jsonSchema: nil, research: true) { result in
+            switch result {
+            case .failure(let err):
+                completion(.failure(err))
+            case .success(let json):
+                let summary = Self.extractText(json).trimmingCharacters(in: .whitespacesAndNewlines)
+                completion(.success(AgenticAgentProviderSupport.researchEvidence(provider: "OpenAI", summary: summary, raw: json)))
+            }
+        }
+    }
+
+    private func postResponses(
+        messages: AgenticDeviceAgentMessages,
+        request: AgenticAgentRequest,
+        apiKey: String,
+        jsonSchema: [String: Any]?,
+        research: Bool,
+        completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void
+    ) {
+        let endpoint = normalizedEndpoint(request.config.baseUrl)
+        guard let url = URL(string: endpoint) else {
+            completion(.failure(AgenticAgentError(code: "INVALID_URL", message: "Invalid baseUrl: \(endpoint)")))
+            return
+        }
+        var body: [String: Any] = [
+            "model": request.config.model,
+            "instructions": messages.system,
+            "input": messages.userContent,
+            "max_output_tokens": request.method == "ask" ? 800 : (research ? 1800 : 1024),
+            "store": false,
+        ]
+        if let jsonSchema {
+            body["text"] = [
+                "format": [
+                    "type": "json_schema",
+                    "name": request.method == "generatePlan" ? "agentic_device_plan" : "agentic_device_review",
+                    "strict": request.method == "generatePlan",
+                    "schema": jsonSchema,
+                ],
+            ]
+        }
+        if !isReasoningModel(request.config.model) {
+            body["temperature"] = request.method == "ask" ? 0.3 : 0.2
+        } else {
+            body["reasoning"] = ["effort": "low"]
+        }
+        if research {
+            body["tools"] = [[
+                "type": "web_search_preview",
+                "user_location": [
+                    "type": "approximate",
+                    "country": "US",
+                    "timezone": "America/Los_Angeles",
+                ],
+            ]]
+            body["tool_choice"] = "auto"
+            body["include"] = ["web_search_call.action.sources"]
+        }
+        guard let payload = try? JSONSerialization.data(withJSONObject: body, options: []) else {
+            completion(.failure(AgenticAgentError(code: "ENCODE_ERROR", message: "Could not encode OpenAI Responses request body.")))
+            return
+        }
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 90)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        req.httpBody = payload
+        AgenticAgentHttp.execute(req, secret: apiKey) { result in
+            switch result {
+            case .failure(let err):
+                completion(.failure(err))
+            case .success(let data):
+                guard let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] else {
+                    completion(.failure(AgenticAgentError(code: "PROVIDER_RESPONSE", message: "OpenAI response was not JSON.")))
+                    return
+                }
+                completion(.success(json))
+            }
+        }
+    }
+
+    private func normalizedEndpoint(_ raw: String?) -> String {
+        let trimmed = (raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let base = trimmed.isEmpty ? defaultBase : trimmed
+        if base.hasSuffix("/responses") { return base }
+        if base.hasSuffix("/chat/completions") {
+            return String(base.dropLast("/chat/completions".count)) + "/responses"
+        }
+        return "\(base)/responses"
+    }
+
+    private func schema(for method: String) -> [String: Any] {
+        if method == "generatePlan" {
+            return [
+                "type": "object",
+                "additionalProperties": false,
+                "properties": [
+                    "intent": ["type": "string"],
+                    "route": ["type": "string"],
+                    "risk": ["type": "string"],
+                    "approval": ["type": "string"],
+                    "safeguards": ["type": "array", "items": ["type": "string"]],
+                ],
+                "required": ["intent", "route", "risk", "approval", "safeguards"],
+            ]
+        }
+        return [
+            "type": "object",
+            "additionalProperties": true,
+            "properties": [
+                "decision": ["type": "string", "enum": ["approve", "deny", "needs_input"]],
+                "reason": ["type": "string"],
+                "summary": ["type": "string"],
+                "evidence": ["type": "object", "additionalProperties": true],
+            ],
+            "required": ["decision", "reason", "summary", "evidence"],
+        ]
+    }
+
+    private func isReasoningModel(_ model: String) -> Bool {
+        let lower = model.lowercased()
+        return lower.hasPrefix("o") || lower.contains("reasoning")
+    }
+
+    private static func extractText(_ json: [String: Any]) -> String {
+        if let text = json["output_text"] as? String { return text }
+        guard let output = json["output"] as? [[String: Any]] else { return "" }
+        var parts: [String] = []
+        for item in output {
+            guard let content = item["content"] as? [[String: Any]] else { continue }
+            for block in content {
+                if let text = block["text"] as? String { parts.append(text) }
+            }
+        }
+        return parts.joined(separator: "\n")
+    }
+}
+
 final class AgenticOpenAICompatibleProvider: AgenticAgentProvider {
-    private let defaultBase = "https://api.openai.com/v1/chat/completions"
+    private let defaultBase = "https://api.openai.com/v1"
 
     func execute(request: AgenticAgentRequest, completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void) {
         guard let apiKey = request.config.apiKey, !apiKey.isEmpty else {
             completion(.failure(AgenticAgentError(code: "INVALID_CONFIG", subcode: "MISSING_API_KEY", message: "OpenAI-compatible provider requires an API key.")))
             return
         }
-        let endpoint = (request.config.baseUrl?.isEmpty == false) ? request.config.baseUrl! : defaultBase
+        if AgenticAgentProviderSupport.researchNeeded(request.payload) {
+            if request.method == "reviewPlan" {
+                completion(.success(AgenticAgentProviderSupport.currentResearchUnavailableReview(provider: request.config.provider)))
+            } else if request.method == "ask" {
+                completion(.success(AgenticAgentProviderSupport.currentResearchUnavailableAsk(provider: request.config.provider)))
+            } else {
+                postChatCompletion(request: request, apiKey: apiKey, completion: completion)
+            }
+            return
+        }
+        postChatCompletion(request: request, apiKey: apiKey, completion: completion)
+    }
+
+    private func postChatCompletion(
+        request: AgenticAgentRequest,
+        apiKey: String,
+        completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void
+    ) {
+        let endpoint = normalizedEndpoint(request.config.baseUrl)
         guard let url = URL(string: endpoint) else {
             completion(.failure(AgenticAgentError(code: "INVALID_URL", message: "Invalid baseUrl: \(endpoint)")))
             return
         }
-        var contextString = ""
-        if let context = request.context,
-           let data = try? JSONSerialization.data(withJSONObject: context, options: []),
-           let json = String(data: data, encoding: .utf8) {
-            contextString = "\n\ncontext=\(json)"
-        }
+        let messages = AgenticAgentProviderSupport.messages(for: request)
         let body: [String: Any] = [
             "model": request.config.model,
             "messages": [
-                ["role": "system", "content": request.systemPrompt],
-                ["role": "user", "content": request.userInstruction + contextString],
+                ["role": "system", "content": messages.system],
+                ["role": "user", "content": messages.userContent],
             ],
-            "max_tokens": 4096,
-            "temperature": 0.3,
-        ]
+            "max_tokens": request.method == "ask" ? 800 : 1024,
+            "temperature": request.method == "ask" ? 0.3 : 0.2,
+        ].merging(request.method == "ask" ? [:] : ["response_format": ["type": "json_object"]]) { current, _ in current }
         guard let payload = try? JSONSerialization.data(withJSONObject: body, options: []) else {
             completion(.failure(AgenticAgentError(code: "ENCODE_ERROR", message: "Could not encode request body.")))
             return
@@ -498,15 +1150,16 @@ final class AgenticOpenAICompatibleProvider: AgenticAgentProvider {
                     completion(.failure(AgenticAgentError(code: "PROVIDER_RESPONSE", message: "OpenAI response was not JSON.")))
                     return
                 }
-                let text = AgenticOpenAICompatibleProvider.extractText(json) ?? ""
-                completion(.success([
-                    "method": request.method,
-                    "provider": request.config.provider,
-                    "text": text,
-                    "raw": json,
-                ]))
+                let text = Self.extractText(json) ?? ""
+                completion(AgenticAgentProviderSupport.parseProviderResult(method: request.method, provider: request.config.provider, text: text, raw: json))
             }
         }
+    }
+
+    private func normalizedEndpoint(_ raw: String?) -> String {
+        let trimmed = (raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let base = trimmed.isEmpty ? defaultBase : trimmed
+        return base.hasSuffix("/chat/completions") ? base : "\(base)/chat/completions"
     }
 
     private static func extractText(_ json: [String: Any]) -> String? {
@@ -515,6 +1168,173 @@ final class AgenticOpenAICompatibleProvider: AgenticAgentProvider {
               let message = first["message"] as? [String: Any],
               let content = message["content"] as? String else { return nil }
         return content
+    }
+}
+
+// MARK: - Gemini native provider
+
+final class AgenticGeminiProvider: AgenticAgentProvider {
+    private let defaultBase = "https://generativelanguage.googleapis.com/v1beta"
+
+    func execute(request: AgenticAgentRequest, completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void) {
+        guard let apiKey = request.config.apiKey, !apiKey.isEmpty else {
+            completion(.failure(AgenticAgentError(code: "INVALID_CONFIG", subcode: "MISSING_API_KEY", message: "Gemini provider requires an API key.")))
+            return
+        }
+        if request.method == "reviewPlan", AgenticAgentProviderSupport.researchNeeded(request.payload) {
+            runResearchPass(request: request, apiKey: apiKey) { [weak self] research in
+                guard let self else { return }
+                let reviewPayload: [String: Any]
+                switch research {
+                case .success(let evidence):
+                    reviewPayload = AgenticAgentProviderSupport.reviewPayloadWithResearch(request.payload, evidence: evidence)
+                case .failure:
+                    reviewPayload = request.payload
+                }
+                let reviewRequest = AgenticAgentRequest(
+                    method: request.method,
+                    systemPrompt: request.systemPrompt,
+                    userInstruction: request.userInstruction,
+                    context: reviewPayload["context"],
+                    payload: reviewPayload,
+                    config: request.config
+                )
+                self.executeWithoutResearch(request: reviewRequest, apiKey: apiKey, completion: completion)
+            }
+            return
+        }
+        executeWithoutResearch(request: request, apiKey: apiKey, completion: completion)
+    }
+
+    private func executeWithoutResearch(
+        request: AgenticAgentRequest,
+        apiKey: String,
+        completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void
+    ) {
+        let messages = AgenticAgentProviderSupport.messages(for: request)
+        postGenerateContent(
+            messages: messages,
+            request: request,
+            apiKey: apiKey,
+            jsonObjectMode: request.method != "ask",
+            research: request.method == "ask" && AgenticAgentProviderSupport.researchNeeded(request.payload)
+        ) { result in
+            switch result {
+            case .failure(let err):
+                completion(.failure(err))
+            case .success(let json):
+                let text = Self.extractText(json) ?? ""
+                completion(AgenticAgentProviderSupport.parseProviderResult(method: request.method, provider: "gemini", text: text, raw: json))
+            }
+        }
+    }
+
+    private func runResearchPass(
+        request: AgenticAgentRequest,
+        apiKey: String,
+        completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void
+    ) {
+        let messages = AgenticDeviceAgentMessageAssembler.buildResearchMessages(
+            request.payload,
+            researchTargets: AgenticAgentProviderSupport.researchTargets(request.payload)
+        )
+        postGenerateContent(messages: messages, request: request, apiKey: apiKey, jsonObjectMode: false, research: true) { result in
+            switch result {
+            case .failure(let err):
+                completion(.failure(err))
+            case .success(let json):
+                let summary = (Self.extractText(json) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                completion(.success(AgenticAgentProviderSupport.researchEvidence(provider: "Gemini", summary: summary, raw: json)))
+            }
+        }
+    }
+
+    private func postGenerateContent(
+        messages: AgenticDeviceAgentMessages,
+        request: AgenticAgentRequest,
+        apiKey: String,
+        jsonObjectMode: Bool,
+        research: Bool,
+        completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void
+    ) {
+        guard let url = endpointURL(config: request.config) else {
+            completion(.failure(AgenticAgentError(code: "INVALID_URL", message: "Invalid Gemini baseUrl.")))
+            return
+        }
+        var generationConfig: [String: Any] = [
+            "temperature": request.method == "ask" ? 0.3 : 0.2,
+            "maxOutputTokens": request.method == "ask" ? 800 : (research ? 1800 : 1024),
+        ]
+        if jsonObjectMode && !research {
+            generationConfig["responseMimeType"] = "application/json"
+        }
+        var body: [String: Any] = [
+            "systemInstruction": [
+                "parts": [["text": messages.system]],
+            ],
+            "contents": [[
+                "role": "user",
+                "parts": [["text": messages.userContent]],
+            ]],
+            "generationConfig": generationConfig,
+        ]
+        if research {
+            body["tools"] = [["google_search": [String: Any]()] as [String: Any]]
+        }
+        guard let payload = try? JSONSerialization.data(withJSONObject: body, options: []) else {
+            completion(.failure(AgenticAgentError(code: "ENCODE_ERROR", message: "Could not encode Gemini request body.")))
+            return
+        }
+        var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 90)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
+        req.httpBody = payload
+        AgenticAgentHttp.execute(req, secret: apiKey) { result in
+            switch result {
+            case .failure(let err):
+                completion(.failure(err))
+            case .success(let data):
+                guard let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] else {
+                    completion(.failure(AgenticAgentError(code: "PROVIDER_RESPONSE", message: "Gemini response was not JSON.")))
+                    return
+                }
+                completion(.success(json))
+            }
+        }
+    }
+
+    private func endpointURL(config: AgenticAgentRuntimeConfig) -> URL? {
+        let base = (config.baseUrl?.isEmpty == false ? config.baseUrl! : defaultBase)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let nativeBase: String
+        if let range = base.range(of: "/openai", options: [.caseInsensitive, .backwards]) {
+            nativeBase = String(base[..<range.lowerBound])
+        } else if base.contains("/models/") {
+            nativeBase = base
+        } else {
+            nativeBase = base
+        }
+        if nativeBase.contains("/models/") && nativeBase.hasSuffix(":generateContent") {
+            return URL(string: nativeBase)
+        }
+        if nativeBase.contains("/models/") {
+            return URL(string: "\(nativeBase):generateContent")
+        }
+        let encodedModel = config.model.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? config.model
+        return URL(string: "\(nativeBase)/models/\(encodedModel):generateContent")
+    }
+
+    private static func extractText(_ json: [String: Any]) -> String? {
+        guard let candidates = json["candidates"] as? [[String: Any]] else { return nil }
+        let parts = candidates.compactMap { candidate -> String? in
+            guard let content = candidate["content"] as? [String: Any],
+                  let parts = content["parts"] as? [[String: Any]] else {
+                return nil
+            }
+            return parts.compactMap { $0["text"] as? String }.joined()
+        }
+        return parts.joined(separator: "\n")
     }
 }
 

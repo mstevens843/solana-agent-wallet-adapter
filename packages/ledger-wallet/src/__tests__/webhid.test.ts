@@ -86,6 +86,35 @@ describe('wrapOffchainMessage', () => {
 });
 
 describe('createWebHidLedgerIpc', () => {
+  it('requests the browser device without a support-check await on the prompt path', async () => {
+    const transport = {
+      device: { vendorId: 0x2c97, productId: 0x0004, productName: 'Ledger Nano X' },
+      close: vi.fn(async () => undefined),
+      on: vi.fn(),
+    };
+    const transportApi = {
+      isSupported: vi.fn(async () => true),
+      list: vi.fn(async () => [transport.device]),
+      request: vi.fn(async () => transport),
+      openConnected: vi.fn(async () => transport),
+    };
+    const ipc = createWebHidLedgerIpc({
+      transport: transportApi,
+      createSolanaApp: () => ({
+        getAppConfiguration: vi.fn(),
+        getAddress: vi.fn(),
+        signTransaction: vi.fn(),
+        signOffchainMessage: vi.fn(),
+      }),
+    });
+
+    await expect(ipc.requestDevice?.()).resolves.toMatchObject({
+      productName: 'Ledger Nano X',
+    });
+    expect(transportApi.request).toHaveBeenCalledTimes(1);
+    expect(transportApi.isSupported).not.toHaveBeenCalled();
+  });
+
   it('prompts for a device, validates the Solana app, and maps addresses/signatures', async () => {
     const publicKey = new Uint8Array(32).fill(7);
     const signature = new Uint8Array(64).fill(9);
@@ -174,6 +203,65 @@ describe('createWebHidLedgerIpc', () => {
       Array.from(wrapOffchainMessage(new TextEncoder().encode('hi'))),
     );
   });
+
+  it('runs the disconnect callback when WebHID reports device removal', async () => {
+    const onDisconnect = vi.fn();
+    let disconnectListener: (() => void) | null = null;
+    const transport = {
+      device: { vendorId: 0x2c97, productId: 0x0004, productName: 'Ledger Nano X' },
+      close: vi.fn(async () => undefined),
+      on: vi.fn((event: 'disconnect', listener: () => void) => {
+        if (event === 'disconnect') disconnectListener = listener;
+      }),
+    };
+    const ipc = createWebHidLedgerIpc({
+      onDisconnect,
+      transport: {
+        isSupported: vi.fn(async () => true),
+        list: vi.fn(async () => [transport.device]),
+        request: vi.fn(async () => transport),
+        openConnected: vi.fn(async () => transport),
+      },
+      createSolanaApp: () => ({
+        getAppConfiguration: vi.fn(),
+        getAddress: vi.fn(),
+        signTransaction: vi.fn(),
+        signOffchainMessage: vi.fn(),
+      }),
+    });
+
+    await ipc.requestDevice?.();
+    disconnectListener?.();
+
+    expect(onDisconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('times out address reads with actionable Ledger copy', async () => {
+    const transport = {
+      device: { vendorId: 0x2c97, productId: 0x0004, productName: 'Ledger Nano X' },
+      close: vi.fn(async () => undefined),
+      on: vi.fn(),
+    };
+    const ipc = createWebHidLedgerIpc({
+      operationTimeoutMs: { getAddress: 1 },
+      transport: {
+        isSupported: vi.fn(async () => true),
+        list: vi.fn(async () => [transport.device]),
+        request: vi.fn(async () => transport),
+        openConnected: vi.fn(async () => transport),
+      },
+      createSolanaApp: () => ({
+        getAppConfiguration: vi.fn(async () => ({ version: '1.0.0' })),
+        getAddress: vi.fn(() => new Promise<never>(() => undefined)),
+        signTransaction: vi.fn(),
+        signOffchainMessage: vi.fn(),
+      }),
+    });
+
+    await ipc.requestDevice?.();
+    await expect(ipc.getAddress(`m/44'/501'/0'/0'`))
+      .rejects.toThrow('Ledger address approval timed out');
+  });
 });
 
 describe('normalizeLedgerWebHidError', () => {
@@ -185,6 +273,11 @@ describe('normalizeLedgerWebHidError', () => {
   it('maps blind signing errors to the Ledger Solana setting', () => {
     expect(normalizeLedgerWebHidError(new Error('Missing a parameter. Try enabling blind signature in the app')).message)
       .toBe('Enable blind signing in the Ledger Solana app settings, then try again.');
+  });
+
+  it('does not treat arbitrary HTTPS text as an insecure-context browser failure', () => {
+    const err = new Error('Ledger metadata loaded from https://example.invalid but failed.');
+    expect(normalizeLedgerWebHidError(err)).toBe(err);
   });
 });
 

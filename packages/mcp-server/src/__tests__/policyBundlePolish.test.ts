@@ -47,6 +47,10 @@ describe('#4 applyServerSideReviewSafety — policyBundle.hasBlockingFailure enf
     const request = baseRequest({
       policyBundle: {
         hasBlockingFailure: true,
+        atoms: [
+          { id: 'atom.price.sol.gt.80' },
+          { id: 'atom.token_audit.mint_authority_disabled.true' },
+        ],
         evaluations: [
           { atomId: 'atom.price.sol.gt.80', pass: false, finding: { label: 'SOL price', value: '$70 — jupiter', tone: 'fail' } },
           { atomId: 'atom.token_audit.mint_authority_disabled.true', pass: true, finding: { label: 'Mint authority', value: 'disabled — jupiter', tone: 'good' } },
@@ -83,6 +87,22 @@ describe('#4 applyServerSideReviewSafety — policyBundle.hasBlockingFailure enf
     const needsInput = applyServerSideReviewSafety(baseResult({ decision: 'needs_input' }), request);
     expect(needsInput.decision).toBe('needs_input');
   });
+
+  it('does not leak malformed failing atom ids into blockingFactIds', () => {
+    const request = baseRequest({
+      policyBundle: {
+        hasBlockingFailure: true,
+        atoms: [{ id: 'atom.price.sol.gt.80' }],
+        evaluations: [
+          { atomId: 'atom.malformed.missing', pass: false, finding: { label: 'Malformed', value: 'fail', tone: 'fail' } },
+        ],
+      },
+    });
+    const out = applyServerSideReviewSafety(baseResult({ decision: 'approve' }), request);
+    const contract = (out.evidence as { decisionContract?: { blockingFactIds?: string[] } }).decisionContract;
+    expect(out.decision).toBe('deny');
+    expect(contract?.blockingFactIds ?? []).toEqual([]);
+  });
 });
 
 describe('#8 mergePolicyBundleFindings — unresolved-row filter on large bundles', () => {
@@ -112,5 +132,20 @@ describe('#8 mergePolicyBundleFindings — unresolved-row filter on large bundle
     expect(labels).toEqual(expect.arrayContaining(['A', 'B', 'C']));
     expect(labels).not.toContain('D');
     expect(labels).not.toContain('E');
+  });
+
+  it('ignores evaluations whose atomId is not present in bundle.atoms', () => {
+    const request = baseRequest({
+      policyBundle: {
+        atoms: [{ id: 'a1' }],
+        evaluations: [
+          { atomId: 'a1', pass: true, finding: { label: 'A', value: 'ok — jupiter', tone: 'good' } },
+          { atomId: 'a2', pass: false, finding: { label: 'Malformed', value: 'fail', tone: 'fail' } },
+        ],
+      },
+    });
+    const out = mergePolicyBundleFindings(baseResult(), request);
+    const findings = (out.evidence as { findings?: Array<{ label: string }> }).findings ?? [];
+    expect(findings.map((f) => f.label)).toEqual(['A']);
   });
 });

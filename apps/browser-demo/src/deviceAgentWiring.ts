@@ -3,6 +3,8 @@ import type { DeviceAgentRuntimeKind } from './deviceAgentClient.js';
 export interface DeviceAgentRuntimeSurface {
   isAndroidApp: boolean;
   androidBridgeAvailable: boolean;
+  isIosApp?: boolean;
+  iosBridgeAvailable?: boolean;
   isTauriApp: boolean;
   tauriBridgeAvailable: boolean;
   browserDeviceAgentEnabled: boolean;
@@ -12,6 +14,7 @@ export interface DeviceAgentRuntimeSurface {
 
 export type DeviceAgentRequestRoute =
   | 'android-native'
+  | 'ios-native'
   | 'tauri-native'
   | 'browser-native'
   | 'none';
@@ -19,7 +22,7 @@ export type AiModeSurfaceDefault = 'hosted' | 'session' | 'bridge' | 'device-age
 
 export function canUseDeviceAgentBrowserNative(surface: Pick<
   DeviceAgentRuntimeSurface,
-  'isAndroidApp' | 'isTauriApp' | 'browserDeviceAgentEnabled' | 'browserNativeEligible'
+  'isAndroidApp' | 'isIosApp' | 'isTauriApp' | 'browserDeviceAgentEnabled' | 'browserNativeEligible'
 >): boolean {
   // Tauri webviews are still browser environments — if the user configured a
   // BYOK provider and tauri-native isn't picked (bridge unreachable), the
@@ -28,6 +31,7 @@ export function canUseDeviceAgentBrowserNative(surface: Pick<
   return Boolean(
     surface.browserDeviceAgentEnabled &&
       !surface.isAndroidApp &&
+      !surface.isIosApp &&
       surface.browserNativeEligible,
   );
 }
@@ -41,6 +45,7 @@ export function canUseDeviceAgentTauriNative(surface: Pick<
 
 export function chooseDeviceAgentRequestRoute(surface: DeviceAgentRuntimeSurface): DeviceAgentRequestRoute {
   if (surface.isAndroidApp && surface.androidBridgeAvailable) return 'android-native';
+  if (surface.isIosApp && surface.iosBridgeAvailable) return 'ios-native';
   if (canUseDeviceAgentTauriNative(surface)) return 'tauri-native';
   if (canUseDeviceAgentBrowserNative(surface)) return 'browser-native';
   return 'none';
@@ -48,9 +53,10 @@ export function chooseDeviceAgentRequestRoute(surface: DeviceAgentRuntimeSurface
 
 export function defaultDeviceAgentRuntimeForSurface(surface: Pick<
   DeviceAgentRuntimeSurface,
-  'isAndroidApp' | 'isTauriApp' | 'tauriBridgeAvailable' | 'browserDeviceAgentEnabled' | 'browserNativeEligible' | 'cloudSessionMatchesWallet'
+  'isAndroidApp' | 'isIosApp' | 'iosBridgeAvailable' | 'isTauriApp' | 'tauriBridgeAvailable' | 'browserDeviceAgentEnabled' | 'browserNativeEligible' | 'cloudSessionMatchesWallet'
 >): DeviceAgentRuntimeKind {
   if (surface.isAndroidApp) return 'android-native';
+  if (surface.isIosApp) return 'ios-native';
   if (canUseDeviceAgentTauriNative(surface)) return 'tauri-native';
   if (canUseDeviceAgentBrowserNative(surface)) return 'browser-native';
   if (surface.cloudSessionMatchesWallet) return 'render-gated';
@@ -64,17 +70,23 @@ export interface DeviceAgentVisibilitySurface {
   showDevControls: boolean;
   isAndroidApp: boolean;
   androidDeviceAgentRuntimeEnabled: boolean;
+  isIosApp?: boolean;
+  iosDeviceAgentRuntimeEnabled?: boolean;
   walletIsDeviceAgentAllowlisted: boolean;
   browserNativeEligible: boolean;
 }
 
 export function deviceAgentModeVisibleForSurface(surface: DeviceAgentVisibilitySurface): boolean {
-  const legacyDeviceAgentEnabled = surface.deviceAgentEnabled || surface.androidDeviceAgentEnabled;
+  const legacyDeviceAgentEnabled =
+    Boolean(surface.deviceAgentEnabled ||
+      surface.androidDeviceAgentEnabled ||
+      surface.iosDeviceAgentRuntimeEnabled);
   if (!legacyDeviceAgentEnabled && !surface.browserNativeEligible) {
     return false;
   }
   if (surface.showDevControls) return true;
   if (surface.isAndroidApp && surface.androidDeviceAgentRuntimeEnabled) return true;
+  if (surface.isIosApp && surface.iosDeviceAgentRuntimeEnabled) return true;
   if (surface.browserNativeEligible) return true;
   return legacyDeviceAgentEnabled && surface.walletIsDeviceAgentAllowlisted;
 }
@@ -82,12 +94,17 @@ export function deviceAgentModeVisibleForSurface(surface: DeviceAgentVisibilityS
 export function defaultAiModeForSurface(surface: {
   isAndroidApp: boolean;
   androidDeviceAgentRuntimeEnabled: boolean;
+  isIosApp?: boolean;
+  iosDeviceAgentRuntimeEnabled?: boolean;
   isLocalBrowserOrigin: boolean;
   isTauriApp?: boolean;
   hasCloudSession?: boolean;
 }): AiModeSurfaceDefault {
   if (surface.isAndroidApp) {
     return surface.androidDeviceAgentRuntimeEnabled ? 'device-agent' : 'session';
+  }
+  if (surface.isIosApp) {
+    return surface.iosDeviceAgentRuntimeEnabled ? 'device-agent' : 'session';
   }
   if (surface.isTauriApp) {
     return surface.hasCloudSession ? 'hosted' : 'device-agent';

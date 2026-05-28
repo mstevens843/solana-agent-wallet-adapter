@@ -1,7 +1,9 @@
 import {
   appendReviewFinding,
   assertPlanGuardrails,
+  extractAtoms,
   formatDollar,
+  isWebOnly,
   reconcileThresholdReviewDecision,
 } from '@solana-agent-wallet-adapter/workflow';
 import type {
@@ -1178,13 +1180,15 @@ export function askNeedsWebResearch(request: AgentPlanAskRequest): boolean {
 }
 
 export function reviewNeedsWebResearch(request: AgentPlanReviewRequest): boolean {
-  return textNeedsWebResearch([
+  const text = [
     request.instruction ?? '',
     request.plan.intent,
     request.plan.route,
     request.plan.approval,
     request.plan.userNotes ?? '',
-  ].join('\n'));
+  ].join('\n');
+  if (extractAtoms({ text }).atoms.some((atom) => isWebOnly(atom))) return true;
+  return textNeedsWebResearch(text);
 }
 
 export function researchControlForReview(request: AgentPlanReviewRequest): AiResearchControl {
@@ -1742,7 +1746,18 @@ export function aiReviewMessages(
         requiredBoundary: 'This AI review can approve, deny, or request more input. It cannot sign or submit a transaction.',
       }),
     },
-  ];
+  ].map((message, index): { role: 'system' | 'user'; content: string } => index === 0
+    ? { role: message.role as 'system' | 'user', content: browserReviewSystemPromptWithPolicyBundle(message.content) }
+    : { role: message.role as 'system' | 'user', content: message.content });
+}
+
+const BROWSER_REVIEW_POLICY_BUNDLE_PROMPT =
+  ' POLICY BUNDLE: If context.policyBundle is present, the system already extracted the user\'s rules into structured atoms and pre-resolved each atom from the provider chain. Treat policyBundle.evaluations as source-of-truth gates. Mirror every evaluation.finding into evidence.findings using the same {label,value,tone}; include each atomId in evidenceFactIds. Surface any policyBundle.txGateOutcomes pass:false as fail-toned findings. If policyBundle.hasBlockingFailure is true, return decision "deny" and cite the failing rule. evidenceFactIds may cite real ids from context.evidenceFacts and/or context.policyBundle.atoms; citing ids not present in either list is a contract violation.';
+
+function browserReviewSystemPromptWithPolicyBundle(content: string): string {
+  return content.includes('POLICY BUNDLE:')
+    ? content
+    : `${content}${BROWSER_REVIEW_POLICY_BUNDLE_PROMPT}`;
 }
 
 export function normalizeAiPlan(payload: unknown, request: AiPlanRequest): AgentPlan {

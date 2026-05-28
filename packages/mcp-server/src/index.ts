@@ -183,6 +183,7 @@ export type {
   UpdateRecurringPaymentInput,
 } from './actionService.js';
 export { BridgeAiPlanner } from './aiPlanner.js';
+export { makeTransactionSimulator } from './simulationDigest.js';
 export {
   BLINK_CLASSIFICATION_PROFILES,
   BLINK_CLASSIFIER_REVIEW_PROMPT,

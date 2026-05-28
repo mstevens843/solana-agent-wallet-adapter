@@ -346,10 +346,13 @@ async function verifyAppInteractionContracts(page, origin, wallet) {
   assert(noWalletCloudCta, 'cloud sign-in CTA did not route through wallet connect when no wallet is connected');
 
   await connectFakeWallet(page);
-  await clickAndWait(page, '[data-first-run-action="open-ai-setup"], [data-layout="ai-setup-panel"] > summary', 'open AI setup from sidebar');
-  await page.waitFor(`document.querySelector('[data-layout="ai-setup-panel"]')?.open === true`);
-  await clickAndWait(page, '[data-layout="ai-setup-panel"] > summary', 'collapse AI setup after open check');
-  await page.waitFor(`document.querySelector('[data-layout="ai-setup-panel"]')?.open === false`);
+  const aiSetupOpen = await page.evaluate(`document.querySelector('details[data-layout="ai-setup-panel"]')?.open === true`);
+  if (!aiSetupOpen) {
+    await clickAndWait(page, 'details[data-layout="ai-setup-panel"] > summary, [data-first-run-action="open-ai-setup"]', 'open AI setup from sidebar');
+  }
+  await page.waitFor(`document.querySelector('details[data-layout="ai-setup-panel"]')?.open === true`);
+  await clickAndWait(page, 'details[data-layout="ai-setup-panel"] > summary', 'collapse AI setup after open check');
+  await page.waitFor(`document.querySelector('details[data-layout="ai-setup-panel"]')?.open === false`);
   await ensureCreatePlanView(page);
   await page.evaluate('window.scrollTo(0, 0)');
   await page.waitFor('window.scrollY < 3');
@@ -456,17 +459,20 @@ async function assertSelectorAboveFold(page, selector, label) {
 async function appLayoutReport(page, label) {
   return page.evaluate(`(() => {
     const label = ${JSON.stringify(label)};
-    const isPhone = window.innerWidth <= 640;
+    const usesMobileTabs = window.innerWidth < 900;
+    const activeTab = document.querySelector('[data-layout="app-shell"]')?.getAttribute('data-active-tab') ?? '';
     const required = {
       nav: '[data-layout="app-nav"]',
       intro: '[data-layout="app-intro"]',
       shell: '[data-layout="app-shell"]',
       rail: '[data-layout="app-rail"]',
       main: '[data-layout="app-main"]',
-      tabs: isPhone ? '[data-layout="app-mobile-tabs"]' : '[data-layout="app-tabs"]',
-      workflow: '[data-layout="workflow-status"]',
-      trust: '[data-layout="trust-strip"]',
+      tabs: usesMobileTabs ? '[data-layout="app-mobile-tabs"]' : '[data-layout="app-tabs"]',
       activePanel: '[data-layout="active-panel"]',
+      ...(activeTab === 'overview' ? {
+        workflow: '[data-layout="workflow-status"]',
+        trust: '[data-layout="trust-strip"]',
+      } : {}),
     };
     const rectFor = (selector) => {
       const element = document.querySelector(selector);
@@ -1081,6 +1087,14 @@ async function ensureCreatePlanView(page) {
 
 async function selectPlanTemplate(page, templateId) {
   const selector = `[data-template-option="${templateId}"]`;
+  if (!await page.evaluate(`Boolean(document.querySelector(${JSON.stringify(selector)}))`)) {
+    for (const filter of ['queueable', 'proof', 'audit', 'all']) {
+      const filterSelector = `[data-template-filter="${filter}"]`;
+      if (!await page.evaluate(`Boolean(document.querySelector(${JSON.stringify(filterSelector)}))`)) continue;
+      await clickAndWait(page, filterSelector, `template filter ${filter}`);
+      if (await page.evaluate(`Boolean(document.querySelector(${JSON.stringify(selector)}))`)) break;
+    }
+  }
   await clickAndWait(page, '#templatePickerButton', 'template picker');
   await page.waitFor(`Boolean(document.querySelector(${JSON.stringify(selector)}))`);
   await clickAndWait(page, selector, `template option ${templateId}`);
@@ -1303,7 +1317,7 @@ async function recurringCardCount(page) {
 }
 
 async function clickAppLayoutTab(page, tab, viewportWidth) {
-  if (viewportWidth <= 640) {
+  if (viewportWidth < 900) {
     await clickAndWait(page, '[data-layout="app-mobile-tabs"] summary', `open mobile layout tab menu for ${tab}`);
     await clickAndWait(page, `[data-layout="app-mobile-tabs"] [data-tab="${tab}"]`, `mobile layout tab ${tab}`);
     return;
@@ -2097,6 +2111,12 @@ async function withLocalServer(callback, { mockHostedAi = false } = {}) {
     env: {
       ...process.env,
       ...(nodeOptions ? { NODE_OPTIONS: nodeOptions } : {}),
+      AGENTIC_AI_API_KEY: '',
+      AGENTIC_HOSTED_AI_API_KEY: '',
+      AGENTIC_MANAGED_AI_API_KEY: '',
+      ANTHROPIC_API_KEY: '',
+      OPENAI_API_KEY: '',
+      AGENTIC_ENV_FILE: process.env.AGENTIC_SMOKE_ENV_FILE ?? '/dev/null',
       AGENTIC_MOCK_FINALIZATION: process.env.AGENTIC_MOCK_FINALIZATION ?? '1',
       HOST: '127.0.0.1',
       PORT: String(serverPort),

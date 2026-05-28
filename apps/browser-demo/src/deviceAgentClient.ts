@@ -9,7 +9,13 @@ import type { AiDiagnosticCode, AiDiagnosticEntry } from './planner.js';
 import { fetchPolicyBundle, spliceBundle, enforceBlockingFailure, type PolicyBundle } from './policyEnrichClient.js';
 
 export type DeviceAgentRuntimeState = 'unavailable' | 'stopped' | 'starting' | 'running' | 'error';
-export type DeviceAgentRuntimeKind = 'android-native' | 'tauri-native' | 'render-gated' | 'browser-dev' | 'browser-native';
+export type DeviceAgentRuntimeKind =
+  | 'android-native'
+  | 'ios-native'
+  | 'tauri-native'
+  | 'render-gated'
+  | 'browser-dev'
+  | 'browser-native';
 export type DeviceAgentApiFormat = 'openai-compatible' | 'anthropic';
 export type DeviceAgentMethod =
   | 'status'
@@ -109,6 +115,16 @@ interface DeviceAgentBridgeApi {
   isDebugBuild?: () => boolean;
 }
 
+interface IosDeviceAgentPlugin {
+  status?: () => Promise<unknown>;
+  configure?: (payload?: Record<string, unknown>) => Promise<unknown>;
+  start?: (payload?: Record<string, unknown>) => Promise<unknown>;
+  stop?: () => Promise<unknown>;
+  generatePlan?: (payload?: Record<string, unknown>) => Promise<unknown>;
+  reviewPlan?: (payload?: Record<string, unknown>) => Promise<unknown>;
+  ask?: (payload?: Record<string, unknown>) => Promise<unknown>;
+}
+
 interface DeviceAgentCallbackBridge {
   resolve(requestId: string, payload: unknown): void;
   reject(requestId: string, payload: unknown): void;
@@ -143,6 +159,19 @@ installCallbackBridge();
  */
 export function isDeviceAgentBridgeAvailable(): boolean {
   return typeof getBridge()?.deviceAgentRequest === 'function';
+}
+
+export function isIosDeviceAgentBridgeAvailable(): boolean {
+  const bridge = getIosBridge();
+  return Boolean(
+    bridge?.status &&
+      bridge.configure &&
+      bridge.start &&
+      bridge.stop &&
+      bridge.generatePlan &&
+      bridge.reviewPlan &&
+      bridge.ask,
+  );
 }
 
 export interface DeviceAgentRequestOptions {
@@ -325,6 +354,78 @@ export async function deviceAgentRequestOrThrow<R = unknown>(
   return { status: envelope.status, result: envelope.result };
 }
 
+export async function iosDeviceAgentRequestOrThrow<R = unknown>(
+  method: DeviceAgentMethod,
+  payload: unknown = {},
+  options: DeviceAgentRequestOptions = {},
+): Promise<{ status: DeviceAgentStatus; result?: R }> {
+  if (options.signal?.aborted) {
+    throw new DeviceAgentClientError('aborted', 'Device Agent request was aborted.');
+  }
+  const bridge = getIosBridge();
+  if (!bridge) {
+    throw new DeviceAgentClientError(
+      'bridge_unavailable',
+      'iOS Device Agent native bridge is not available in this runtime.',
+    );
+  }
+  let effectivePayload = payload;
+  let appliedBundle: PolicyBundle | null = null;
+  if (shouldEnrichPolicyBundle(method, effectivePayload)) {
+    appliedBundle = await fetchPolicyBundle(
+      extractEnrichPayload(method, effectivePayload),
+      { signal: options.signal },
+    );
+    if (appliedBundle) {
+      effectivePayload = spliceBundle(effectivePayload, appliedBundle);
+    }
+  }
+  let payloadJson: string;
+  try {
+    payloadJson = JSON.stringify(effectivePayload ?? {});
+  } catch (err) {
+    throw new DeviceAgentClientError(
+      'invalid_payload',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+  const limit = payloadCharLimit(method);
+  if (payloadJson.length > limit) {
+    throw new DeviceAgentClientError(
+      'payload_too_large',
+      `Device Agent ${method} payload exceeds ${limit} characters (${payloadJson.length}).`,
+    );
+  }
+  const payloadRecord = isRecord(effectivePayload) ? effectivePayload : {};
+  let nativeResult: unknown;
+  try {
+    nativeResult = await invokeIosDeviceAgentBridge(bridge, method, payloadRecord);
+  } catch (err) {
+    throw iosDeviceAgentErrorFromUnknown(err);
+  }
+  if (options.signal?.aborted) {
+    throw new DeviceAgentClientError('aborted', 'Device Agent request was aborted.');
+  }
+  if (method === 'status' || method === 'configure' || method === 'start' || method === 'stop') {
+    return { status: parseDeviceAgentStatus(nativeResult, 'ios-native') };
+  }
+  let result = normalizeIosDeviceAgentResult(nativeResult);
+  if (
+    appliedBundle &&
+    method === 'reviewPlan' &&
+    result &&
+    typeof result === 'object' &&
+    !Array.isArray(result)
+  ) {
+    result = enforceBlockingFailure(result as Record<string, unknown>, appliedBundle);
+  }
+  const statusPayload = await bridge.status?.().catch(() => undefined);
+  return {
+    status: parseDeviceAgentStatus(statusPayload, 'ios-native'),
+    result: result as R,
+  };
+}
+
 /**
  * Parses an arbitrary value into a normalized {@link DeviceAgentResponseEnvelope}.
  * Accepts both already-parsed objects and JSON strings. When `ok: false`,
@@ -395,7 +496,7 @@ export function parseDeviceAgentStatus(
     : parsed.apiFormat === 'openai-compatible' || parsed.apiFormat === 'openai'
       ? 'openai-compatible'
       : undefined;
-  const updatedAt = stringField(parsed.updatedAt) ?? stringField(parsed.lastTransitionAt);
+  const updatedAt = timestampField(parsed.updatedAt) ?? timestampField(parsed.lastTransitionAt);
   return {
     available: parsed.available === true,
     enabled: parsed.enabled === true,
@@ -408,7 +509,7 @@ export function parseDeviceAgentStatus(
     ...(stringField(parsed.model) && { model: stringField(parsed.model)! }),
     ...(stringField(parsed.walletAddress) && { walletAddress: stringField(parsed.walletAddress)! }),
     ...(stringField(parsed.message) && { message: stringField(parsed.message)! }),
-    ...(stringField(parsed.checkedAt) && { checkedAt: stringField(parsed.checkedAt)! }),
+    ...(timestampField(parsed.checkedAt) && { checkedAt: timestampField(parsed.checkedAt)! }),
     ...(updatedAt && { updatedAt }),
     ...parseOptionalLastError(parsed.lastError),
   };
@@ -653,6 +754,76 @@ function getBridge(): DeviceAgentBridgeApi | undefined {
   return (globalThis as typeof globalThis & { AgenticAndroid?: DeviceAgentBridgeApi }).AgenticAndroid;
 }
 
+function getIosBridge(): IosDeviceAgentPlugin | undefined {
+  return (globalThis as typeof globalThis & { __agenticIosDeviceAgentBridge?: IosDeviceAgentPlugin })
+    .__agenticIosDeviceAgentBridge;
+}
+
+async function invokeIosDeviceAgentBridge(
+  bridge: IosDeviceAgentPlugin,
+  method: DeviceAgentMethod,
+  payload: Record<string, unknown>,
+): Promise<unknown> {
+  switch (method) {
+    case 'status':
+      if (!bridge.status) break;
+      return bridge.status();
+    case 'configure':
+      if (!bridge.configure) break;
+      return bridge.configure(payload);
+    case 'start':
+      if (!bridge.start) break;
+      return bridge.start(payload);
+    case 'stop':
+      if (!bridge.stop) break;
+      return bridge.stop();
+    case 'generatePlan':
+      if (!bridge.generatePlan) break;
+      return bridge.generatePlan(payload);
+    case 'reviewPlan':
+      if (!bridge.reviewPlan) break;
+      return bridge.reviewPlan(payload);
+    case 'ask':
+      if (!bridge.ask) break;
+      return bridge.ask(payload);
+  }
+  throw new DeviceAgentClientError(
+    'unsupported_method',
+    `iOS Device Agent bridge does not implement ${method}.`,
+  );
+}
+
+function normalizeIosDeviceAgentResult(payload: unknown): unknown {
+  if (!isRecord(payload)) return payload;
+  if (payload.output_text !== undefined || payload.choices !== undefined || payload.content !== undefined) return payload;
+  const text = stringField(payload.text);
+  if (!text) return payload;
+  return {
+    ...payload,
+    output_text: text,
+  };
+}
+
+function iosDeviceAgentErrorFromUnknown(err: unknown): DeviceAgentClientError {
+  if (err instanceof DeviceAgentClientError) return err;
+  const record = errorRecord(err);
+  const code = stringField(record?.code) ?? 'bridge_error';
+  const message =
+    stringField(record?.message) ??
+    stringField(record?.errorMessage) ??
+    (err instanceof Error ? err.message : 'iOS Device Agent bridge request failed.');
+  const subcode = stringField(record?.subcode);
+  return new DeviceAgentClientError(code, message, undefined, subcode);
+}
+
+function errorRecord(err: unknown): Record<string, unknown> | undefined {
+  if (isRecord(err)) return err;
+  if (err instanceof Error && isRecord((err as Error & { data?: unknown }).data)) {
+    return (err as Error & { data?: Record<string, unknown> }).data;
+  }
+  return undefined;
+}
+
 function generateRequestId(): string {
   const id = `device-agent-${Date.now().toString(36)}-${nonce.toString(36)}`;
   nonce += 1;
@@ -758,6 +929,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isRuntimeKind(value: unknown): value is DeviceAgentRuntimeKind {
   return (
     value === 'android-native'
+    || value === 'ios-native'
     || value === 'tauri-native'
     || value === 'render-gated'
     || value === 'browser-dev'
@@ -779,9 +951,21 @@ function stringField(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+function timestampField(value: unknown): string | undefined {
+  const text = stringField(value);
+  if (text) return text;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  const millis = value > 10_000_000_000 ? value : value * 1000;
+  const iso = new Date(millis).toISOString();
+  return iso === 'Invalid Date' ? undefined : iso;
+}
+
 function parseOptionalLastError(value: unknown): { lastError?: DeviceAgentError | null } {
   if (value === undefined) return {};
   if (value === null) return { lastError: null };
+  if (typeof value === 'string' && value.trim()) {
+    return { lastError: { code: 'runtime_error', message: value.trim() } };
+  }
   if (!isRecord(value)) return {};
   const code = stringField(value.code);
   const message = stringField(value.message);

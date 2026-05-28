@@ -16,7 +16,7 @@ Native plugins shipped (Capacitor 8 auto-discovers them via `packageClassList` i
 | `AgenticBiometric` | LAContext-backed Face ID / Touch ID gating. |
 | `AgenticSystem` | openExternal, systemInfo, clipboardWrite, haptic, showNotification, appLifecycleState. |
 | `AgenticRemoteConfig` | Fetches `/api/mobile-config?platform=ios`, hydrates Keychain cache. |
-| `AgenticDeviceAgent` | Native Swift agent runtime (Anthropic / OpenAI-compatible providers). |
+| `AgenticDeviceAgent` | Native Swift agent runtime (Anthropic / OpenAI-compatible / Gemini providers). |
 | `AgenticStreamingSession` | Ed25519 voucher signing via CryptoKit + Keychain. |
 | `AgenticWalletConnect` | Jupiter WalletConnect v2 via Reown SDK. |
 
@@ -61,6 +61,13 @@ Required GitHub Actions secrets:
 - `MATCH_KEYCHAIN_PASSWORD` — temp keychain password for CI runners.
 - `APPLE_TEAM_ID` — 10-char team identifier.
 
+Apple Developer capabilities must be enabled before regenerating the match
+profile:
+
+- Associated Domains for `applinks:agenticwalletadapter.com` and
+  `applinks:agentic-signer.com`.
+- App Group `group.com.agentic.wallet` for the Reown WalletConnect store.
+
 Fastlane lanes (`fastlane/Fastfile`):
 
 - `bundle exec fastlane beta` — build, sign, upload to TestFlight (no review submission).
@@ -68,21 +75,9 @@ Fastlane lanes (`fastlane/Fastfile`):
 - `bundle exec fastlane screenshots` — regenerate marketing screenshots into `app-store-assets/screenshots/`.
 - `bundle exec fastlane match_setup` — one-time interactive certificate setup (run locally).
 
-## Enabling Reown (WalletConnect for Jupiter)
+## WalletConnect / Reown
 
-The Reown SDK adds ~100MB of binary deps (Yttrium framework). It's gated to avoid forcing all builds to pull it.
-
-To enable:
-
-1. Add to `packages/ios-capacitor-bridge/Package.swift` dependencies:
-   ```swift
-   .package(url: "https://github.com/reown-com/reown-swift.git", from: "1.0.0"),
-   ```
-2. Add `.product(name: "WalletConnect", package: "reown-swift")` to the bridge target's dependencies.
-3. Set `WALLETCONNECT_PROJECT_ID` in the Render environment so it ships via `/api/mobile-config?platform=ios`.
-4. `pnpm ios:sync` to re-resolve and propagate to Xcode.
-
-The integration code in `ios/Plugin/AgenticWalletConnectCore.swift` activates automatically once `canImport(WalletConnectSign)` is true.
+The bridge package pins Reown Swift `1.0.5` so `AgenticWalletConnect` can compile for Jupiter without pulling newer AppKit/Yttrium binary artifacts. Set `WALLETCONNECT_PROJECT_ID` in the Render environment so `/api/mobile-config?platform=ios` hydrates the native project id before pairing.
 
 ## Compliance
 

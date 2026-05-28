@@ -8,7 +8,9 @@ import {
   __resetDeviceAgentClientForTests,
   deviceAgentRequest,
   deviceAgentRequestOrThrow,
+  iosDeviceAgentRequestOrThrow,
   isDeviceAgentBridgeAvailable,
+  isIosDeviceAgentBridgeAvailable,
   parseDeviceAgentResponseEnvelope,
   parseDeviceAgentStatus,
   type DeviceAgentResponseEnvelope,
@@ -25,6 +27,15 @@ type AndroidGlobal = typeof globalThis & {
   AgenticAndroid?: {
     deviceAgentRequest?: (requestId: string, method: string, payloadJson: string) => void;
     isDebugBuild?: () => boolean;
+  };
+  __agenticIosDeviceAgentBridge?: {
+    status?: () => Promise<unknown>;
+    configure?: (payload?: Record<string, unknown>) => Promise<unknown>;
+    start?: (payload?: Record<string, unknown>) => Promise<unknown>;
+    stop?: () => Promise<unknown>;
+    generatePlan?: (payload?: Record<string, unknown>) => Promise<unknown>;
+    reviewPlan?: (payload?: Record<string, unknown>) => Promise<unknown>;
+    ask?: (payload?: Record<string, unknown>) => Promise<unknown>;
   };
   __agenticAndroidDeviceAgentBridge?: {
     resolve: (requestId: string, payload: unknown) => void;
@@ -58,6 +69,10 @@ function installBridgeStub(autoResolve?: (requestId: string, method: string, pay
 
 function clearAndroidBridge(): void {
   delete (globalThis as AndroidGlobal).AgenticAndroid;
+}
+
+function clearIosBridge(): void {
+  delete (globalThis as AndroidGlobal).__agenticIosDeviceAgentBridge;
 }
 
 type ConsoleMethod = 'info' | 'warn' | 'error' | 'log';
@@ -95,11 +110,13 @@ describe('deviceAgentClient', () => {
   beforeEach(() => {
     __resetDeviceAgentClientForTests();
     clearAndroidBridge();
+    clearIosBridge();
   });
 
   afterEach(() => {
     __resetDeviceAgentClientForTests();
     clearAndroidBridge();
+    clearIosBridge();
   });
 
   describe('isDeviceAgentBridgeAvailable', () => {
@@ -115,6 +132,38 @@ describe('deviceAgentClient', () => {
     it('returns true when the native bridge is installed', () => {
       installBridgeStub();
       expect(isDeviceAgentBridgeAvailable()).toBe(true);
+    });
+  });
+
+  describe('iOS Device Agent bridge', () => {
+    it('detects the Capacitor iOS bridge when all methods are installed', () => {
+      expect(isIosDeviceAgentBridgeAvailable()).toBe(false);
+      (globalThis as AndroidGlobal).__agenticIosDeviceAgentBridge = {
+        status: async () => successStatus,
+        configure: async () => successStatus,
+        start: async () => successStatus,
+        stop: async () => successStatus,
+        generatePlan: async () => ({ text: '{"intent":"ok"}' }),
+        reviewPlan: async () => ({ text: '{"decision":"approve","reason":"ok"}' }),
+        ask: async () => ({ text: '{"answer":"ok"}' }),
+      };
+      expect(isIosDeviceAgentBridgeAvailable()).toBe(true);
+    });
+
+    it('wraps iOS native model text as output_text and returns ios-native status', async () => {
+      (globalThis as AndroidGlobal).__agenticIosDeviceAgentBridge = {
+        status: async () => ({ ...successStatus, runtime: 'ios-native', checkedAt: 1_700_000_000_000 }),
+        configure: async () => successStatus,
+        start: async () => successStatus,
+        stop: async () => successStatus,
+        generatePlan: async (payload) => ({ provider: 'gemini', text: JSON.stringify({ intent: payload?.prompt }) }),
+        reviewPlan: async () => ({ text: '{"decision":"approve","reason":"ok"}' }),
+        ask: async () => ({ text: '{"answer":"ok"}' }),
+      };
+      const { status, result } = await iosDeviceAgentRequestOrThrow<{ output_text?: string }>('generatePlan', { prompt: 'swap' });
+      expect(status.runtime).toBe('ios-native');
+      expect(status.checkedAt).toBe('2023-11-14T22:13:20.000Z');
+      expect(result?.output_text).toBe('{"intent":"swap"}');
     });
   });
 

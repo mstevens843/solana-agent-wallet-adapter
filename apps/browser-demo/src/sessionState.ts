@@ -20,6 +20,7 @@ import {
 import {
   callStreamingBridge,
   hasNativeStreamingBridge,
+  nativeStreamingRuntime,
   type BridgeEnvelope,
 } from './androidBridgeShim.js';
 import {
@@ -289,15 +290,16 @@ export async function submitCreateSession(): Promise<boolean> {
   notify();
   try {
     const nativeSigner = await prepareNativeStreamingSigner(validation.body);
+    const signerRuntime = nativeSigner?.signerRuntime;
     let result: Awaited<ReturnType<typeof createStreamingSession>>;
     try {
       result = await createStreamingSession({
         ...validation.body,
-        ...(nativeSigner ? {
+        ...(nativeSigner && signerRuntime ? {
           ephemeralSignerPubkey: nativeSigner.ephemeralSignerPubkey,
-          signerRuntime: 'android-native',
+          signerRuntime,
           metadata: {
-            signerRuntime: 'android-native',
+            signerRuntime,
           },
         } : {}),
       });
@@ -538,8 +540,10 @@ export function __resetSessionsStateForTests(next: Partial<SessionsState> = {}):
 
 async function prepareNativeStreamingSigner(
   body: CreateSessionRequestBody,
-): Promise<{ signerId: string; ephemeralSignerPubkey: string } | null> {
+): Promise<{ signerId: string; ephemeralSignerPubkey: string; signerRuntime: 'android-native' | 'ios-native' } | null> {
   if (!hasNativeStreamingBridge()) return null;
+  const runtime = nativeStreamingRuntime();
+  if (!runtime) return null;
   const envelope = await callStreamingBridge('prepareSessionSigner', {
     tokenMint: body.tokenMint,
     capAmount: body.capAmount,
@@ -552,7 +556,7 @@ async function prepareNativeStreamingSigner(
   if (!signerId || !ephemeralSignerPubkey) {
     throw new StreamingApiError('invalid_response', 'Native streaming signer did not return signerId and ephemeralSignerPubkey.');
   }
-  return { signerId, ephemeralSignerPubkey };
+  return { signerId, ephemeralSignerPubkey, signerRuntime: runtime };
 }
 
 async function bindNativeStreamingSession(
@@ -615,7 +619,7 @@ function remainingAmount(session: StreamingSessionRecord): string {
 
 function isNativeSignerSession(sessionId: string): boolean {
   const session = state.details[sessionId]?.session ?? state.sessions.find((candidate) => candidate.id === sessionId);
-  return session?.metadata?.signerRuntime === 'android-native';
+  return session?.metadata?.signerRuntime === 'android-native' || session?.metadata?.signerRuntime === 'ios-native';
 }
 
 async function syncStreamingApprovalStatus(input: StreamingApprovalCompletedDetail): Promise<void> {

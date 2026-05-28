@@ -39,6 +39,7 @@ export interface PolicyBundleAtom {
   id: string;
   type: string;
   rawText: string;
+  [key: string]: unknown;
 }
 
 export interface PolicyBundleEvaluation {
@@ -61,6 +62,26 @@ export interface PolicyBundle {
   hasBlockingFailure: boolean;
   finishedAt: string;
 }
+
+export interface PolicyResearchTarget {
+  atomId: string;
+  type: string;
+  rawText: string;
+  subject?: unknown;
+  op?: unknown;
+  value?: unknown;
+  unit?: unknown;
+}
+
+const WEB_RESEARCH_ATOM_TYPES = new Set([
+  'external_price',
+  'external_state',
+  'external_event',
+  'external_identity',
+  'tradfi_price',
+  'network_metric',
+  'protocol_health',
+]);
 
 export async function fetchPolicyBundle(
   payload: PolicyEnrichRequestPayload,
@@ -105,20 +126,85 @@ export async function fetchPolicyBundle(
  */
 export function spliceBundle(payload: unknown, bundle: PolicyBundle | null): unknown {
   if (!bundle || bundle.atoms.length === 0) return payload;
+  const researchTargets = policyBundleResearchTargets(bundle);
+  const researchPatch = researchTargets.length > 0
+    ? {
+        research: {
+          needed: true,
+          mode: 'resolve_specific_atoms',
+          currentDate: new Date().toISOString(),
+          maxSearches: 3,
+        },
+      }
+    : {};
   if (!payload || typeof payload !== 'object') {
-    return { context: { policyBundle: bundle } };
+    return {
+      ...researchPatch,
+      context: {
+        policyBundle: bundle,
+        ...(researchTargets.length > 0 ? { researchTargets } : {}),
+      },
+    };
   }
   const obj = payload as Record<string, unknown>;
   const existingContext = obj.context && typeof obj.context === 'object' && !Array.isArray(obj.context)
     ? (obj.context as Record<string, unknown>)
     : {};
+  const existingResearch = obj.research && typeof obj.research === 'object' && !Array.isArray(obj.research)
+    ? (obj.research as Record<string, unknown>)
+    : {};
   return {
     ...obj,
+    ...(researchTargets.length > 0
+      ? {
+          research: {
+            ...existingResearch,
+            needed: true,
+            mode: 'resolve_specific_atoms',
+            currentDate: typeof existingResearch.currentDate === 'string' ? existingResearch.currentDate : new Date().toISOString(),
+            maxSearches: typeof existingResearch.maxSearches === 'number' ? existingResearch.maxSearches : 3,
+          },
+        }
+      : {}),
     context: {
       ...existingContext,
       policyBundle: bundle,
+      ...(researchTargets.length > 0 ? { researchTargets } : {}),
     },
   };
+}
+
+export function policyBundleNeedsResearch(bundle: PolicyBundle | null | undefined): boolean {
+  return policyBundleResearchTargets(bundle).length > 0;
+}
+
+export function policyBundleResearchTargets(
+  bundle: PolicyBundle | null | undefined,
+): PolicyResearchTarget[] {
+  if (!bundle || !Array.isArray(bundle.atoms) || !Array.isArray(bundle.evaluations)) return [];
+  const atomsById = new Map(
+    bundle.atoms
+      .filter((atom) => atom && typeof atom.id === 'string' && atom.id.length > 0)
+      .map((atom) => [atom.id, atom]),
+  );
+  const out: PolicyResearchTarget[] = [];
+  const seen = new Set<string>();
+  for (const evaluation of bundle.evaluations) {
+    if (!evaluation || evaluation.unresolved !== true) continue;
+    const atom = atomsById.get(evaluation.atomId);
+    if (!atom || !WEB_RESEARCH_ATOM_TYPES.has(atom.type) || seen.has(atom.id)) continue;
+    seen.add(atom.id);
+    const target: PolicyResearchTarget = {
+      atomId: atom.id,
+      type: atom.type,
+      rawText: atom.rawText,
+    };
+    for (const key of ['subject', 'op', 'value', 'unit'] as const) {
+      if (atom[key] !== undefined) target[key] = atom[key];
+    }
+    out.push(target);
+  }
+  return out;
 }
 
 /**
@@ -153,7 +239,8 @@ export function enforceBlockingFailure<R extends Record<string, unknown>>(
   if (!bundle || !bundle.hasBlockingFailure) return llmResult;
   const decision = llmResult.decision;
   if (decision !== 'approve') return llmResult;
-  const failing = bundle.evaluations.filter((ev) => ev.pass === false);
+  const atomIds = new Set(bundle.atoms.map((atom) => atom.id).filter(Boolean));
+  const failing = bundle.evaluations.filter((ev) => ev.pass === false && atomIds.has(ev.atomId));
   const first = failing[0];
   const reason = first
     ? `User policy bundle failed: ${first.finding.label}`

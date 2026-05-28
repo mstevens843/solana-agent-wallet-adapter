@@ -19,18 +19,25 @@ enum AgenticPolicyBundleEnforcer {
     static func enforce(reviewResult: [String: Any], payload: [String: Any]) -> [String: Any] {
         guard let bundle = extractBundle(from: payload) else { return reviewResult }
         guard let blocking = bundle["hasBlockingFailure"] as? Bool, blocking == true else { return reviewResult }
-        // The LLM `text` field contains the JSON it produced; parse it to read decision.
-        guard let text = reviewResult["text"] as? String else { return reviewResult }
-        guard let textData = text.data(using: .utf8),
-              let parsed = try? JSONSerialization.jsonObject(with: textData, options: []) as? [String: Any] else {
-            return reviewResult
+        let parsed: [String: Any]
+        let text = reviewResult["text"] as? String
+        if let text,
+           let textData = text.data(using: .utf8),
+           let parsedText = try? JSONSerialization.jsonObject(with: textData, options: []) as? [String: Any] {
+            parsed = parsedText
+        } else {
+            parsed = reviewResult
         }
         let decision = (parsed["decision"] as? String)?.lowercased()
         guard decision == "approve" else { return reviewResult }
 
         // Build a corrected decision payload.
+        let atoms = bundle["atoms"] as? [[String: Any]] ?? []
+        let validAtomIds = Set(atoms.compactMap { $0["id"] as? String })
         let evaluations = bundle["evaluations"] as? [[String: Any]] ?? []
-        let failing = evaluations.filter { ($0["pass"] as? Bool) == false }
+        let failing = evaluations.filter {
+            ($0["pass"] as? Bool) == false && validAtomIds.contains($0["atomId"] as? String ?? "")
+        }
         let blockingFactIds = failing.compactMap { $0["atomId"] as? String }
         let firstLabel = (failing.first?["finding"] as? [String: Any])?["label"] as? String
         let reason = firstLabel.map { "User policy bundle failed: \($0)" }
@@ -41,12 +48,15 @@ enum AgenticPolicyBundleEnforcer {
         corrected["reason"] = reason
         corrected["blockingFactIds"] = blockingFactIds
 
-        // Encode the corrected payload back into the `text` field so downstream
-        // consumers (UI rendering, inbox card) see the corrected decision.
         var out = reviewResult
-        if let correctedData = try? JSONSerialization.data(withJSONObject: corrected, options: [.sortedKeys]),
-           let correctedText = String(data: correctedData, encoding: .utf8) {
-            out["text"] = correctedText
+        if text != nil {
+            // Older provider path returned the model JSON inside `text`; preserve that shape.
+            if let correctedData = try? JSONSerialization.data(withJSONObject: corrected, options: [.sortedKeys]),
+               let correctedText = String(data: correctedData, encoding: .utf8) {
+                out["text"] = correctedText
+            }
+        } else {
+            out = corrected
         }
         // Also surface the override on the envelope for callers that look at the
         // structured result instead of re-parsing `text`.

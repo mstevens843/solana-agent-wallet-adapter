@@ -9336,6 +9336,14 @@ code {
   background: rgba(255, 255, 255, 0.07);
   border-color: rgba(125, 231, 176, 0.32);
 }
+.desktop-qr-wallet-tile:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+.desktop-qr-wallet-tile:disabled:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(224, 230, 226, 0.12);
+}
 .desktop-qr-wallet-tile-logo {
   background: rgba(255, 255, 255, 0.06);
   border-radius: 6px;
@@ -9349,9 +9357,19 @@ code {
   border: 1px dashed rgba(224, 230, 226, 0.18);
   display: inline-block;
 }
-.desktop-qr-wallet-tile-label {
+.desktop-qr-wallet-tile-copy {
+  display: grid;
   flex: 1;
+  gap: 2px;
+  min-width: 0;
+}
+.desktop-qr-wallet-tile-label {
   font-weight: 500;
+}
+.desktop-qr-wallet-tile-note {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.25;
 }
 .desktop-qr-wallet-tile-arrow {
   color: var(--muted);
@@ -23133,6 +23151,7 @@ button.danger:hover:not(:disabled) {
 
 .route-app .recurring-advanced-details {
   margin-bottom: -2px;
+  order: 21;
 }
 
 .route-app .recurring-create-primary-row {

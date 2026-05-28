@@ -17,6 +17,7 @@ import {
   mapHttpStatusToErrorCode,
   normalizeBaseUrl,
 } from './providerHttp.js';
+import { researchTargetsForPayload } from './researchTargets.js';
 import { extractAnthropicCitations, extractAnthropicText, parseModelJson } from './responseParser.js';
 import type { DeviceAgentProvider } from './types.js';
 
@@ -85,7 +86,7 @@ export class AnthropicProvider implements DeviceAgentProvider {
     signal: AbortSignal | undefined,
   ): Promise<Record<string, unknown>> {
     try {
-      const messages = buildResearchMessages(payload);
+      const messages = buildResearchMessages(payload, researchTargetsForPayload(payload));
       // Force research.needed=true on the inner payload so postMessages attaches web_search.
       const innerPayload: Record<string, unknown> = { ...payload, research: { ...(payload.research as Record<string, unknown> | undefined), needed: true } };
       const response = await this.postMessages(messages, REVIEW_MAX_TOKENS, REVIEW_TEMPERATURE, signal, innerPayload);

@@ -47,9 +47,9 @@ jobs:
           esac
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v3
+        uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 10.33.0
           run_install: false
 
       - name: Setup Node
@@ -61,11 +61,11 @@ jobs:
       - name: Install workspace deps
         run: pnpm install --frozen-lockfile
 
-      - name: Build web shell + copy into iOS public dir
-        working-directory: apps/ios-capacitor
-        run: |
-          pnpm copy-web
-          pnpm sync
+      - name: Build web shell + sync iOS project
+        env:
+          VITE_AGENTIC_DEVICE_AGENT: 'true'
+          VITE_AGENTIC_BROWSER_DEVICE_AGENT: 'false'
+        run: pnpm ios:sync
 
       - name: Setup Ruby + Bundler
         uses: ruby/setup-ruby@v1
@@ -89,18 +89,25 @@ jobs:
           MATCH_KEYCHAIN_PASSWORD: ${{ secrets.MATCH_KEYCHAIN_PASSWORD }}
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           AGENTIC_IOS_VERSION_CODE: ${{ github.run_number }}
           AGENTIC_IOS_VERSION_NAME: ${{ env.RELEASE_TAG }}
           FASTLANE_HIDE_CHANGELOG: '1'
           FASTLANE_SKIP_UPDATE_CHECK: '1'
         run: bundle exec fastlane "$LANE"
 
+      - name: Validate exported IPA
+        working-directory: apps/ios-capacitor
+        run: |
+          test -f build/Agentic.ipa
+          test -s build/Agentic.ipa
+
       - name: Upload .ipa artifact
         uses: actions/upload-artifact@v4
         with:
           name: agentic-ios-${{ env.RELEASE_TAG }}
           path: apps/ios-capacitor/build/Agentic.ipa
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 30
 
   bridge-tests:

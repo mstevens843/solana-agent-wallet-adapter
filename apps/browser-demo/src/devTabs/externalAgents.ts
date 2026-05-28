@@ -140,7 +140,8 @@ async function demoMppPaymentTarget(walletAddress: string, fallbackCluster: stri
     session.status === 'active' &&
     session.tokenMint === USDC_MINT &&
     session.walletAddress === walletAddress &&
-    session.metadata?.signerRuntime !== 'android-native',
+    session.metadata?.signerRuntime !== 'android-native' &&
+    session.metadata?.signerRuntime !== 'ios-native',
   );
   if (!matching) return { cluster: fallbackCluster, recipient: walletAddress };
   const recipient = matching.recipientAllowlist?.find((entry) => entry && typeof entry === 'string') ?? walletAddress;

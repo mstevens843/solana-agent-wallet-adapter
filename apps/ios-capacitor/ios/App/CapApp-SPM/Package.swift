@@ -1,9 +1,7 @@
 // swift-tools-version: 5.9
 import PackageDescription
 
-// MOSTLY managed by Capacitor CLI commands.
-// NOTE: platforms .iOS(.v16) is enforced by apps/ios-capacitor/scripts/ensure-ios.mjs
-// after every `cap sync` because the bridge package requires iOS 16+.
+// DO NOT MODIFY THIS FILE - managed by Capacitor CLI commands
 let package = Package(
     name: "CapApp-SPM",
     platforms: [.iOS(.v16)],

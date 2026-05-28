@@ -14,8 +14,10 @@ export {
   detectLedgerWebHidSupport,
   ledgerJsDerivationPath,
   normalizeLedgerWebHidError,
+  preloadWebHidLedgerRuntime,
   wrapOffchainMessage,
   type CreateWebHidLedgerIpcOptions,
+  type LedgerWebHidOperationTimeouts,
   type LedgerWebHidSupport,
   type LedgerWebHidUnsupportedReason,
 } from './webhid.js';

@@ -62,6 +62,7 @@ export interface BrowserNativeRuntimeEligibilityInput {
   browserDeviceAgentEnabled: boolean;
   walletAddress?: string | null;
   isAndroidApp: boolean;
+  isIosApp?: boolean;
   showDevControls: boolean;
   deviceAgentWalletAllowlisted?: boolean;
 }
@@ -72,6 +73,7 @@ export function browserNativeRuntimeEligibleForSurface(
   if (!input.deviceAgentEnabled) return false;
   if (!input.browserDeviceAgentEnabled) return false;
   if (input.isAndroidApp) return false;
+  if (input.isIosApp) return false;
   if (input.showDevControls) return true;
   return input.deviceAgentWalletAllowlisted ?? isDeviceAgentWallet(input.walletAddress);
 }

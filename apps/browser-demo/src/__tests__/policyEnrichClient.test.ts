@@ -6,6 +6,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   enforceBlockingFailure,
+  policyBundleNeedsResearch,
+  policyBundleResearchTargets,
   spliceBundle,
   type PolicyBundle,
 } from '../policyEnrichClient.js';
@@ -58,6 +60,49 @@ describe('spliceBundle', () => {
     expect((ctx.researchEvidence as Record<string, unknown>).foo).toBe(1);
     expect(ctx.policyBundle).toEqual(baseBundle);
   });
+
+  it('adds targeted research metadata for unresolved web-only atoms', () => {
+    const unresolved: PolicyBundle = {
+      ...baseBundle,
+      atoms: [
+        { id: 'atom.external_state.solana.outage', type: 'external_state', rawText: 'no Solana outage' },
+        { id: 'atom.price.sol.gte.80', type: 'price', rawText: 'SOL above $80' },
+      ],
+      evaluations: [
+        {
+          atomId: 'atom.external_state.solana.outage',
+          unresolved: true,
+          finding: { label: 'Solana outage', value: 'unknown', tone: 'warn' },
+        },
+        {
+          atomId: 'atom.price.sol.gte.80',
+          unresolved: true,
+          finding: { label: 'SOL price', value: 'unknown', tone: 'warn' },
+        },
+      ],
+      hasBlockingFailure: false,
+    };
+    const out = spliceBundle(
+      { instruction: 'do x', research: { currentDate: '2026-05-21T00:00:00.000Z', maxSearches: 5 } },
+      unresolved,
+    ) as Record<string, unknown>;
+    const ctx = out.context as Record<string, unknown>;
+    expect(out.research).toMatchObject({
+      needed: true,
+      mode: 'resolve_specific_atoms',
+      currentDate: '2026-05-21T00:00:00.000Z',
+      maxSearches: 5,
+    });
+    expect(ctx.researchTargets).toEqual([
+      {
+        atomId: 'atom.external_state.solana.outage',
+        type: 'external_state',
+        rawText: 'no Solana outage',
+      },
+    ]);
+    expect(policyBundleNeedsResearch(unresolved)).toBe(true);
+    expect(policyBundleResearchTargets(unresolved)).toHaveLength(1);
+  });
 });
 
 describe('enforceBlockingFailure', () => {
@@ -88,5 +133,23 @@ describe('enforceBlockingFailure', () => {
   it('handles null bundle as no-op', () => {
     const llm = { decision: 'approve', reason: 'ok' };
     expect(enforceBlockingFailure(llm, null).decision).toBe('approve');
+  });
+
+  it('ignores malformed failing atom ids that are not in bundle.atoms', () => {
+    const malformed: PolicyBundle = {
+      ...baseBundle,
+      evaluations: [
+        {
+          atomId: 'atom.malformed.missing',
+          pass: false,
+          finding: { label: 'Bad row', value: 'fail', tone: 'fail' },
+        },
+      ],
+      hasBlockingFailure: true,
+    };
+    const llm = { decision: 'approve', reason: 'ok' };
+    const out = enforceBlockingFailure(llm, malformed);
+    expect(out.decision).toBe('deny');
+    expect(out.blockingFactIds).toEqual([]);
   });
 });

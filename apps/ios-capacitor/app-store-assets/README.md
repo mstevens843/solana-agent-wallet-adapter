@@ -1,7 +1,7 @@
 # App Store assets
 
 Mirror of `apps/android-twa/play-assets/` for the iOS App Store submission.
-Generated artifacts (screenshots, ipa) land in `build/` and `screenshots/`;
+Generated artifacts (screenshots, ipa) land in `build/` and `app-store-assets/screenshots/`;
 hand-curated marketing assets live here.
 
 ## Files
@@ -27,7 +27,9 @@ bundle exec fastlane screenshots
 ```
 
 This drives the AppUITests target in headless simulators across the device
-matrix above and dumps PNGs into `screenshots/`.
+matrix above and dumps PNGs into `app-store-assets/screenshots/`. The
+`release` lane refuses App Store submission until at least one PNG exists
+under that directory.
 
 ## Submitting
 

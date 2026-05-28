@@ -1469,14 +1469,25 @@ async function runTerminalApp(parsed: ParsedArgs): Promise<void> {
     lastReceipts: [],
   };
 
+  let exitingFromSigint = false;
+  let exitingFromCommand = false;
+  let readlineContext!: TerminalReadlineContext;
   const onSigint = () => {
     if (abortActiveCommand(state)) {
       return;
     }
-    cleanupApp(state);
-    process.exit(0);
+    if (exitingFromSigint) {
+      cleanupApp(state);
+      process.exit(0);
+    }
+    exitingFromSigint = true;
+    void exitTerminalAppFromSigint(state, readlineContext).catch((err) => {
+      printError(state.options, err instanceof Error ? err.message : String(err));
+      cleanupApp(state);
+      process.exit(1);
+    });
   };
-  const readlineContext = createTerminalReadlineContext(onSigint);
+  readlineContext = createTerminalReadlineContext(onSigint);
   process.on('SIGINT', onSigint);
 
   try {
@@ -1502,14 +1513,56 @@ async function runTerminalApp(parsed: ParsedArgs): Promise<void> {
       }
       const shouldExit = await withTerminalCommandAbort(state, () => handleTerminalCommand(state, readlineContext, line));
       if (shouldExit) {
+        exitingFromCommand = true;
         break;
       }
+    }
+    if (exitingFromCommand) {
+      await maybePromptClearAgentKeyOnExit(state.options, readlineContext);
     }
   } finally {
     process.removeListener('SIGINT', onSigint);
     readlineContext.closeCurrent();
     cleanupApp(state);
   }
+}
+
+async function exitTerminalAppFromSigint(
+  state: TerminalAppState,
+  readlineContext: TerminalReadlineContext,
+): Promise<void> {
+  readlineContext.closeCurrent();
+  await maybePromptClearAgentKeyOnExit(state.options, readlineContext);
+  cleanupApp(state);
+  process.exit(0);
+}
+
+async function maybePromptClearAgentKeyOnExit(
+  options: GlobalOptions,
+  readlineContext: TerminalReadlineContext,
+): Promise<void> {
+  if (!await hasSavedAgentApiKey(options)) {
+    return;
+  }
+  const rl = readlineContext.recreate();
+  try {
+    const clear = await confirm(rl, 'Clear saved agent API key before exit?', false);
+    if (clear) {
+      await clearAgentSetup(options);
+      return;
+    }
+    printMuted(options, 'Agent key kept. Run /agent-disconnect anytime to clear it.');
+  } catch (err) {
+    if (!isReadlineClosedError(err)) {
+      throw err;
+    }
+    printMuted(options, 'Agent key kept. Run /agent-disconnect anytime to clear it.');
+  }
+}
+
+async function hasSavedAgentApiKey(options: GlobalOptions): Promise<boolean> {
+  const env = await readEnvValues(options.envPath).catch(() => ({ found: false, raw: '', values: {} as Record<string, string> }));
+  return Boolean(env.values.AGENTIC_AI_API_KEY?.trim());
 }
 
 function createTerminalReadlineContext(onSigint: () => void): TerminalReadlineContext {

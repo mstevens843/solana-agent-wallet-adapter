@@ -39,6 +39,7 @@ import {
   mapHttpStatusToErrorCode,
   normalizeBaseUrl,
 } from './providerHttp.js';
+import { researchTargetsForPayload } from './researchTargets.js';
 import { extractResponsesApiCitations, extractResponsesApiText, parseModelJson } from './responseParser.js';
 import type { DeviceAgentProvider } from './types.js';
 
@@ -214,7 +215,7 @@ export class OpenAiNativeProvider implements DeviceAgentProvider {
     signal: AbortSignal | undefined,
   ): Promise<Record<string, unknown>> {
     try {
-      const messages = buildResearchMessages(payload);
+      const messages = buildResearchMessages(payload, researchTargetsForPayload(payload));
       const response = await this.postResponses(messages, {
         // Research pass: no schema (free-text grounded output). Schemas would also
         // collide with the web_search tool on some Responses API model versions.

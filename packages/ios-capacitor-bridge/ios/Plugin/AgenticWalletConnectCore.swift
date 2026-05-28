@@ -24,6 +24,7 @@ import Foundation
 import WalletConnectSign
 import WalletConnectPairing
 import WalletConnectNetworking
+import Commons
 import Combine
 
 @available(iOS 16.0, *)
@@ -33,6 +34,7 @@ final class AgenticWalletConnectCore {
     private var cancellables = Set<AnyCancellable>()
     private var configured = false
     private let queue = DispatchQueue(label: "com.agentic.wallet.walletconnect", qos: .userInitiated)
+    private let walletConnectGroupIdentifier = "group.com.agentic.wallet"
     private var sessionPubkey: String?
     private var sessionTopic: String?
     private var sessionWaiters: [(Result<(String, String), Error>) -> Void] = []
@@ -46,14 +48,19 @@ final class AgenticWalletConnectCore {
             guard let projectId = snapshot.config.walletConnectProjectId, !projectId.isEmpty else {
                 throw AgenticAgentError(code: "WC_NO_PROJECT_ID", message: "WalletConnect project id missing — set WALLETCONNECT_PROJECT_ID in cloud env.")
             }
+            let redirect = try AppMetadata.Redirect(native: "agenticwallet://", universal: "https://agenticwalletadapter.com")
             let metadata = AppMetadata(
                 name: "Agentic",
                 description: "Agentic Wallet Adapter",
                 url: "https://agentic-signer.com",
                 icons: ["https://agentic-signer.com/icon.png"],
-                redirect: try? AppMetadata.Redirect(native: "agenticwallet://", universal: "https://agenticwalletadapter.com")
+                redirect: redirect
             )
-            Networking.configure(projectId: projectId, socketFactory: AgenticWebSocketFactory())
+            Networking.configure(
+                groupIdentifier: walletConnectGroupIdentifier,
+                projectId: projectId,
+                socketFactory: AgenticWebSocketFactory()
+            )
             Pair.configure(metadata: metadata)
             // Subscribe to session lifecycle to surface to wcWaitForSession waiters.
             Sign.instance.sessionsPublisher
@@ -87,14 +94,8 @@ final class AgenticWalletConnectCore {
                 let chain = solanaChainId(for: cluster)
                 let methods: Set<String> = ["solana_signMessage", "solana_signTransaction", "solana_signAndSendTransaction"]
                 let events: Set<String> = ["chainChanged", "accountsChanged"]
-                let namespace: ProposalNamespace
-                if #available(iOS 16, *) {
-                    let blockchain = try Blockchain(chain) ?? Blockchain("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp")!
-                    namespace = ProposalNamespace(chains: [blockchain], methods: methods, events: events)
-                } else {
-                    completion(.failure(AgenticAgentError(code: "UNSUPPORTED_OS", message: "WalletConnect requires iOS 16+")))
-                    return
-                }
+                let blockchain = Blockchain(chain) ?? Blockchain("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp")!
+                let namespace = ProposalNamespace(chains: [blockchain], methods: methods, events: events)
                 let uri = try await Sign.instance.connect(requiredNamespaces: ["solana": namespace])
                 completion(.success((uri: uri.absoluteString, topic: uri.topic)))
             } catch {
@@ -236,8 +237,8 @@ final class AgenticWalletConnectCore {
     private func sendRequest(topic: String, method: String, params: [String: Any], completion: @escaping (Result<Any, Error>) -> Void) {
         Task {
             do {
-                let blockchain = try Blockchain(solanaChainId(for: "mainnet-beta")) ?? Blockchain("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp")!
-                let request = try Request(topic: topic, method: method, params: AnyCodable(params), chainId: blockchain)
+                let blockchain = Blockchain(solanaChainId(for: "mainnet-beta")) ?? Blockchain("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp")!
+                let request = try Request(topic: topic, method: method, params: Commons.AnyCodable(any: params), chainId: blockchain)
                 try await Sign.instance.request(params: request)
                 // Subscribe to sessionResponsePublisher for the result.
                 let result = try await waitForResponse(requestId: request.id)
@@ -258,11 +259,7 @@ final class AgenticWalletConnectCore {
                     cancellable?.cancel()
                     switch response.result {
                     case .response(let value):
-                        if let json = try? value.get(Any.self) {
-                            continuation.resume(returning: json)
-                        } else {
-                            continuation.resume(throwing: AgenticAgentError(code: "WC_DECODE", message: "Could not decode WC response."))
-                        }
+                        continuation.resume(returning: value.value)
                     case .error(let err):
                         continuation.resume(throwing: AgenticAgentError(code: "WC_RPC_\(err.code)", message: err.message))
                     }

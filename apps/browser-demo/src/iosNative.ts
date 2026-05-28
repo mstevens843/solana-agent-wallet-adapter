@@ -229,9 +229,9 @@ interface AgenticDeviceAgentStatus {
   baseUrl?: string;
   model?: string;
   message?: string;
-  checkedAt?: number;
-  updatedAt?: number;
-  lastError?: string;
+  checkedAt?: string | number;
+  updatedAt?: string | number;
+  lastError?: { code?: string; message?: string; subcode?: string } | string | null;
 }
 
 interface AgenticDeviceAgentPlugin {
@@ -360,9 +360,10 @@ export function listIosNativeWalletOptions(): ReadonlyArray<IosNativeWalletOptio
 
 export async function iosNativeCacheSummary(): Promise<{ count: number; latest?: IosAuthRecord }> {
   const cache = new IosAuthCache('info');
+  const latest = await cache.latest();
   return {
     count: await cache.count(),
-    latest: await cache.latest(),
+    ...(latest ? { latest } : {}),
   };
 }
 

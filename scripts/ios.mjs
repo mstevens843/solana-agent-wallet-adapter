@@ -132,6 +132,8 @@ function iosEnv() {
     VITE_CAPACITOR_IOS_APP: raw,
     VITE_CAPACITATOR_IOS_APP: raw,
   };
+  env.VITE_AGENTIC_DEVICE_AGENT = env.VITE_AGENTIC_DEVICE_AGENT ?? 'true';
+  env.VITE_AGENTIC_BROWSER_DEVICE_AGENT = env.VITE_AGENTIC_BROWSER_DEVICE_AGENT ?? 'false';
   const xcodeDeveloperDir = '/Applications/Xcode.app/Contents/Developer';
   if (!env.DEVELOPER_DIR && existsSync(xcodeDeveloperDir)) {
     env.DEVELOPER_DIR = xcodeDeveloperDir;

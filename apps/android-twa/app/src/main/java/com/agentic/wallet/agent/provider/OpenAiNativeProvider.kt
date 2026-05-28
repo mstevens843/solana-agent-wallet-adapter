@@ -96,7 +96,7 @@ internal class OpenAiNativeProvider(
      */
     private suspend fun runResearchPass(payload: JSONObject): JSONObject {
         return try {
-            val messages = DeviceAgentMessageAssembler.buildResearchMessages(payload)
+            val messages = DeviceAgentMessageAssembler.buildResearchMessages(payload, researchTargetsForPayload(payload))
             val response = postResponses(
                 messages,
                 responseSchema = null,

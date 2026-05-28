@@ -61,7 +61,7 @@ internal class AnthropicProvider(
      */
     private suspend fun runResearchPass(payload: JSONObject): JSONObject {
         return try {
-            val messages = DeviceAgentMessageAssembler.buildResearchMessages(payload)
+            val messages = DeviceAgentMessageAssembler.buildResearchMessages(payload, researchTargetsForPayload(payload))
             // Force research.needed=true on the inner payload so postMessages attaches web_search.
             val innerPayload = copyJson(payload)
             val innerResearch = innerPayload.optJSONObject("research") ?: JSONObject()

@@ -13,14 +13,19 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", from: "8.0.0"),
         .package(url: "https://github.com/jedisct1/swift-sodium.git", from: "0.9.1"),
+        .package(url: "https://github.com/reown-com/reown-swift.git", exact: "1.0.5"),
     ],
     targets: [
         .target(
             name: "SolanaAgentWalletAdapterIosCapacitorBridge",
             dependencies: [
                 .product(name: "Capacitor", package: "capacitor-swift-pm"),
+                .product(name: "Cordova", package: "capacitor-swift-pm"),
                 .product(name: "Sodium", package: "swift-sodium"),
                 .product(name: "Clibsodium", package: "swift-sodium"),
+                .product(name: "WalletConnect", package: "reown-swift"),
+                .product(name: "WalletConnectPairing", package: "reown-swift"),
+                .product(name: "WalletConnectNetworking", package: "reown-swift"),
             ],
             path: "ios/Plugin"
         ),

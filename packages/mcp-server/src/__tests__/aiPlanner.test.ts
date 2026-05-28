@@ -1776,6 +1776,7 @@ describe('applyServerSideReviewSafety — Phase 4 threshold-rule promotion bypas
       evidenceGate: { decision: 'pass' },
       policyBundle: {
         hasBlockingFailure: true,
+        atoms: [{ id: 'fact.price' }],
         evaluations: [{ atomId: 'fact.price', pass: false }],
       },
     });
