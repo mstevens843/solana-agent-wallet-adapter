@@ -13,12 +13,12 @@
   },
   "dependencies": {
     "@capacitor/app": "^8.1.0",
-    "@capacitor/core": "^8.1.0",
+    "@capacitor/core": "^8.3.4",
     "@solana-agent-wallet-adapter/ios-capacitor-bridge": "workspace:*"
   },
   "devDependencies": {
-    "@capacitor/cli": "^8.1.0",
-    "@capacitor/ios": "^8.1.0",
+    "@capacitor/cli": "^8.3.4",
+    "@capacitor/ios": "^8.3.4",
     "typescript": "^5.6.0"
   }
 }
