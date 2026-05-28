@@ -20552,6 +20552,9 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const showStopDeviceAgentRuntime = state.aiSettings.mode === 'device-agent'
     && (hideKeyEntry || canStopDeviceAgentRuntime());
   const inactiveConfigNote = inactiveAiConfigNotice(location);
+  const bridgeSetupCard = state.aiSettings.mode === 'bridge' && !mobilePlannerSetup
+    ? localBridgeAiSetupCard(status, location)
+    : '';
   return `
     <aside class="ai-settings-card" data-ai-settings-scope="${escapeHtml(scope)}" ${mobilePlannerSetup ? 'data-mobile-ai-policy="true"' : ''}>
       ${isRail || mobilePlannerSetup ? '' : `<div class="ai-settings-intro">
@@ -20624,7 +20627,6 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         </div>
       ` : ''}
       ${!isRail && !mobilePlannerSetup ? browserDeviceAgentSecretStoreControl(scope) : ''}
-      ${state.aiSettings.mode === 'bridge' && !mobilePlannerSetup ? localBridgeAiSetupCard(status, location) : ''}
       ${hideKeyEntry ? configuredKeyNote : `
         <label class="field compact ai-setting-field ai-setting-key">
           <span>${escapeHtml(keyLabel)}</span>
@@ -20648,9 +20650,10 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         ${showStopDeviceAgentRuntime ? `<button id="stopDeviceAgent-${escapeHtml(scope)}" data-ai-action="stop-device-agent" ${state.busy || !canStopDeviceAgentRuntime() ? 'disabled' : ''} title="Stop the on-device runtime. Your config (provider, model, key) stays available so you can start again.">Stop runtime</button>` : ''}
       </div>
       ${isRail || mobilePlannerSetup
-        ? '<p class="ai-security-note compact">Drafts only. Wallet approvals stay separate.</p>'
+        ? `<p class="ai-security-note compact">Drafts only. Wallet approvals stay separate.</p>${bridgeSetupCard}`
         : `
           ${aiModeLimitations()}
+          ${bridgeSetupCard}
           ${state.aiSettings.mode === 'device-agent' ? deviceAgentConnectionCard(state.deviceAgentStatus) : ''}
           <div class="ai-readiness-summary" aria-label="AI planner readiness">
             <div>

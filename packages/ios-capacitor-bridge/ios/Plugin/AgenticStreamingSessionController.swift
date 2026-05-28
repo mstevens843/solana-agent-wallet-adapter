@@ -1,7 +1,7 @@
 // Swift port of apps/android-twa/.../streaming/StreamingSessionController.kt.
-// Ed25519 ephemeral signers backed by CryptoKit (Apple-native, hardware-backed
-// via Secure Enclave when available). Seeds stored in Keychain with
-// kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly.
+// Ed25519 ephemeral signers backed by libsodium for byte-identical signatures
+// with Android and the shared streaming-session verifier. Seeds are stored in
+// Keychain with kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly.
 //
 // Vouchers are canonical-JSON serialized (AgenticCanonicalJSON), SHA-256 hashed,
 // and signed with the session's Ed25519 key. The byte-for-byte hash + signature
@@ -24,11 +24,21 @@ final class AgenticStreamingSessionController {
 
     func prepareSessionSigner(metadata: [String: Any]?) -> [String: Any] {
         return queue.sync {
-            let key = Curve25519.Signing.PrivateKey()
+            var seed = Data(count: AgenticEd25519.seedBytes)
+            let status = seed.withUnsafeMutableBytes { buffer in
+                SecRandomCopyBytes(kSecRandomDefault, AgenticEd25519.seedBytes, buffer.baseAddress!)
+            }
+            guard status == errSecSuccess else {
+                return [
+                    "ok": false,
+                    "error": "Could not generate Ed25519 seed.",
+                    "code": "CRYPTO_ERROR",
+                ]
+            }
             let signerId = "signer_" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
-            let pubBase58 = AgenticBase58.encode(key.publicKey.rawRepresentation)
             do {
-                try persistSigner(signerId: signerId, seed: key.rawRepresentation, metadata: metadata ?? [:])
+                let pubBase58 = AgenticBase58.encode(try AgenticEd25519.publicKey(seed: seed))
+                try persistSigner(signerId: signerId, seed: seed, metadata: metadata ?? [:])
                 AgenticIOSLog.info("AgenticStreaming", "prepareSessionSigner", "DONE", "signer ready", [
                     "signerId": signerId,
                 ])
@@ -53,12 +63,12 @@ final class AgenticStreamingSessionController {
 
     func createSession(sessionId: String, ephemeralPrivkeyBase64: String, metadata: [String: Any]?) -> [String: Any] {
         return queue.sync {
-            guard let seedData = Data(base64Encoded: ephemeralPrivkeyBase64), seedData.count == 32 else {
-                return errorResponse(code: "INVALID_PRIVKEY", message: "Ephemeral private key must be 32 bytes (base64).")
+            guard let keyData = Data(base64Encoded: ephemeralPrivkeyBase64) else {
+                return errorResponse(code: "INVALID_PRIVKEY", message: "Ephemeral private key must be base64.")
             }
             do {
-                let key = try Curve25519.Signing.PrivateKey(rawRepresentation: seedData)
-                let pubBase58 = AgenticBase58.encode(key.publicKey.rawRepresentation)
+                let seedData = try normalizeSecretSeed(keyData: keyData, metadata: metadata ?? [:])
+                let pubBase58 = AgenticBase58.encode(try AgenticEd25519.publicKey(seed: seedData))
                 try persistSession(sessionId: sessionId, seed: seedData, pubkeyBase58: pubBase58, metadata: metadata ?? [:])
                 AgenticIOSLog.info("AgenticStreaming", "createSession", "DONE", "session created", ["sessionId": sessionId])
                 return [
@@ -79,8 +89,8 @@ final class AgenticStreamingSessionController {
                 guard let signer = try readSigner(signerId: signerId) else {
                     return errorResponse(code: "SIGNER_NOT_FOUND", message: "Unknown signerId: \(signerId)")
                 }
-                let pubBase58 = AgenticBase58.encode(signer.publicKey.rawRepresentation)
-                try persistSession(sessionId: sessionId, seed: signer.rawRepresentation, pubkeyBase58: pubBase58, metadata: metadata ?? [:])
+                let pubBase58 = AgenticBase58.encode(try AgenticEd25519.publicKey(seed: signer.seed))
+                try persistSession(sessionId: sessionId, seed: signer.seed, pubkeyBase58: pubBase58, metadata: metadata ?? [:])
                 try deleteSigner(signerId: signerId)
                 AgenticIOSLog.info("AgenticStreaming", "bindPreparedSession", "DONE", "bound", [
                     "sessionId": sessionId,
@@ -135,8 +145,7 @@ final class AgenticStreamingSessionController {
                 }
                 let canonical = try AgenticCanonicalJSON.encode(parsed)
                 let digest = SHA256.hash(data: canonical)
-                let key = try Curve25519.Signing.PrivateKey(rawRepresentation: record.seed)
-                let sigData = try key.signature(for: Data(digest))
+                let sigData = try AgenticEd25519.sign(seed: record.seed, message: Data(digest))
                 let latencyMs = Int(Date().timeIntervalSince(started) * 1000)
                 return [
                     "sessionId": sessionId,
@@ -175,8 +184,7 @@ final class AgenticStreamingSessionController {
                     return errorResponse(code: "INVALID_TX", message: "Truncated transaction.")
                 }
                 let messageData = txBytes.subdata(in: messageOffset..<txBytes.count)
-                let key = try Curve25519.Signing.PrivateKey(rawRepresentation: record.seed)
-                let signature = try key.signature(for: messageData)
+                let signature = try AgenticEd25519.sign(seed: record.seed, message: messageData)
                 // Replace the first signature slot (the session signer is by
                 // convention the first/only signer in a streaming settlement).
                 var signed = txBytes
@@ -273,14 +281,36 @@ final class AgenticStreamingSessionController {
         try keychainWrite(account: signerKeyPrefix + signerId, data: data)
     }
 
-    private func readSigner(signerId: String) throws -> Curve25519.Signing.PrivateKey? {
+    private func readSigner(signerId: String) throws -> SignerRecord? {
         guard let data = try keychainRead(account: signerKeyPrefix + signerId) else { return nil }
-        let record = try JSONDecoder().decode(SignerRecord.self, from: data)
-        return try Curve25519.Signing.PrivateKey(rawRepresentation: record.seed)
+        return try JSONDecoder().decode(SignerRecord.self, from: data)
     }
 
     private func deleteSigner(signerId: String) throws {
         try keychainDelete(account: signerKeyPrefix + signerId)
+    }
+
+    private func normalizeSecretSeed(keyData: Data, metadata: [String: Any]) throws -> Data {
+        let seedData: Data
+        if keyData.count == AgenticEd25519.secretKeyBytes {
+            seedData = keyData.prefix(AgenticEd25519.seedBytes)
+            let embeddedPublicKey = Data(keyData.suffix(AgenticEd25519.publicKeyBytes))
+            let derivedPublicKey = try AgenticEd25519.publicKey(seed: seedData)
+            guard embeddedPublicKey == derivedPublicKey else {
+                throw NSError(domain: "AgenticStreaming", code: 1, userInfo: [NSLocalizedDescriptionKey: "Ephemeral private key public half does not match its seed."])
+            }
+        } else if keyData.count == AgenticEd25519.seedBytes {
+            seedData = keyData
+        } else {
+            throw NSError(domain: "AgenticStreaming", code: 1, userInfo: [NSLocalizedDescriptionKey: "Ephemeral private key must be a 32-byte seed or 64-byte Ed25519 secret key (base64)."])
+        }
+
+        let derivedPublicKeyBase58 = AgenticBase58.encode(try AgenticEd25519.publicKey(seed: seedData))
+        let expected = (metadata["ephemeralSignerPubkey"] as? String) ?? (metadata["ephemeralPublicKeyBase58"] as? String)
+        if let expected = expected?.trimmingCharacters(in: .whitespacesAndNewlines), !expected.isEmpty, expected != derivedPublicKeyBase58 {
+            throw NSError(domain: "AgenticStreaming", code: 1, userInfo: [NSLocalizedDescriptionKey: "Ephemeral private key does not match ephemeralSignerPubkey."])
+        }
+        return seedData
     }
 
     private func persistSession(sessionId: String, seed: Data, pubkeyBase58: String, metadata: [String: Any]) throws {

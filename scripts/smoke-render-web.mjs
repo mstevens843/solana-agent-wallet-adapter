@@ -351,6 +351,7 @@ async function verifyAppInteractionContracts(page, origin, wallet) {
     await clickAndWait(page, 'details[data-layout="ai-setup-panel"] > summary, [data-first-run-action="open-ai-setup"]', 'open AI setup from sidebar');
   }
   await page.waitFor(`document.querySelector('details[data-layout="ai-setup-panel"]')?.open === true`);
+  await assertRailBridgeAiSetupLayout(page);
   await clickAndWait(page, 'details[data-layout="ai-setup-panel"] > summary', 'collapse AI setup after open check');
   await page.waitFor(`document.querySelector('details[data-layout="ai-setup-panel"]')?.open === false`);
   await ensureCreatePlanView(page);
@@ -454,6 +455,85 @@ async function assertSelectorAboveFold(page, selector, label) {
     };
   })()`);
   assert(result.ok, `${label} is not above the fold: ${JSON.stringify(result)}`);
+}
+
+async function assertRailBridgeAiSetupLayout(page) {
+  const setup = await page.evaluate(`(() => {
+    const panel = document.querySelector('details.rail-ai-settings[data-layout="ai-setup-panel"]');
+    const mode = panel?.querySelector('[data-ai-control="mode"]');
+    if (!panel || !mode) return { ok: false, reason: 'missing rail AI mode control' };
+    panel.open = true;
+    const previousMode = mode.value || 'hosted';
+    if (mode.value !== 'bridge') {
+      mode.value = 'bridge';
+      mode.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    return { ok: true, previousMode };
+  })()`);
+  assert(setup.ok, `rail AI setup could not select local bridge: ${JSON.stringify(setup)}`);
+  await page.waitFor(`(() => {
+    const panel = document.querySelector('details.rail-ai-settings[data-layout="ai-setup-panel"]');
+    return Boolean(panel?.open && panel.querySelector('.local-bridge-ai-setup-card') && panel.querySelector('[data-ai-control="provider"]') && panel.querySelector('[data-ai-control="model-select"]'));
+  })()`);
+  const result = await page.evaluate(`(() => {
+    const panel = document.querySelector('details.rail-ai-settings[data-layout="ai-setup-panel"]');
+    if (!panel) return { ok: false, reason: 'missing rail AI setup panel' };
+    const visible = (element) => {
+      if (!element) return false;
+      const style = window.getComputedStyle(element);
+      return element.getClientRects().length > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const fieldFor = (selector) => panel.querySelector(selector)?.closest('.ai-setting-field') ?? panel.querySelector(selector);
+    const provider = fieldFor('[data-ai-control="provider"]');
+    const model = fieldFor('[data-ai-control="model-select"]');
+    const keySurface = panel.querySelector('.ai-key-configured-note:not(.ai-inactive-config-note), .ai-setting-key');
+    const actions = panel.querySelector('.ai-actions');
+    const compactNote = panel.querySelector('.ai-security-note.compact');
+    const bridge = panel.querySelector('.local-bridge-ai-setup-card');
+    const body = bridge?.querySelector('.local-bridge-ai-setup-body');
+    const required = { provider, model, keySurface, actions, compactNote, bridge, body };
+    const missing = Object.entries(required)
+      .filter(([, element]) => !visible(element))
+      .map(([name]) => name);
+    if (missing.length) return { ok: false, reason: 'missing visible elements', missing };
+    const bridgeTop = bridge.getBoundingClientRect().top;
+    const orderedBeforeBridge = [
+      ['provider', provider],
+      ['model', model],
+      ['keySurface', keySurface],
+      ['actions', actions],
+      ['compactNote', compactNote],
+    ].filter(([, element]) => element.getBoundingClientRect().top >= bridgeTop)
+      .map(([name]) => name);
+    const style = window.getComputedStyle(body);
+    const maxHeight = Number.parseFloat(style.maxHeight);
+    const scrollBounded = ['auto', 'scroll'].includes(style.overflowY)
+      && Number.isFinite(maxHeight)
+      && maxHeight > 0
+      && body.clientHeight <= 320;
+    return {
+      bodyClientHeight: body.clientHeight,
+      bodyMaxHeight: style.maxHeight,
+      bodyOverflowY: style.overflowY,
+      bridgeTop,
+      ok: orderedBeforeBridge.length === 0 && scrollBounded,
+      orderedBeforeBridge,
+      panelHeight: panel.getBoundingClientRect().height,
+      reason: orderedBeforeBridge.length ? 'bridge rendered before primary controls' : scrollBounded ? '' : 'bridge body is not internally scroll-bounded',
+    };
+  })()`);
+  assert(result.ok, `rail Local Bridge AI setup layout regressed: ${JSON.stringify(result)}`);
+  if (setup.previousMode && setup.previousMode !== 'bridge') {
+    await page.evaluate(`(() => {
+      const previousMode = ${JSON.stringify(setup.previousMode)};
+      const panel = document.querySelector('details.rail-ai-settings[data-layout="ai-setup-panel"]');
+      const mode = panel?.querySelector('[data-ai-control="mode"]');
+      if (mode) {
+        mode.value = previousMode;
+        mode.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    })()`);
+  }
 }
 
 async function appLayoutReport(page, label) {

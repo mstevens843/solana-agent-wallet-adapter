@@ -1,10 +1,10 @@
 v0.1.0 - Initial release.
 
 What's in this build:
-- Multi-wallet support: Phantom, Solflare, Backpack (encrypted deeplinks).
+- Multi-wallet support: Phantom, Solflare, Backpack encrypted deeplinks.
 - Jupiter via WalletConnect v2.
-- On-device AI agent runtime: Anthropic / OpenAI / Gemini.
+- On-device AI agent runtime: Anthropic, OpenAI, and Gemini.
 - Plan -> Review -> Sign workflow with structured evidence.
 - Streaming session signers backed by iOS Keychain and libsodium Ed25519 parity.
 - Face ID / Touch ID gating on sensitive actions.
-- Server-driven wallet routing (patchable without an App Store update).
+- Server-driven wallet routing, patchable without an App Store update.

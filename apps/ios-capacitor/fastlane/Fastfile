@@ -94,7 +94,16 @@ platform :ios do
       'app-store-assets/support_url.txt',
       'app-store-assets/marketing_url.txt',
       'app-store-assets/listing.md',
-      'app-store-assets/release_notes.txt'
+      'app-store-assets/release_notes.txt',
+      'fastlane/metadata/en-US/name.txt',
+      'fastlane/metadata/en-US/subtitle.txt',
+      'fastlane/metadata/en-US/promotional_text.txt',
+      'fastlane/metadata/en-US/description.txt',
+      'fastlane/metadata/en-US/keywords.txt',
+      'fastlane/metadata/en-US/privacy_url.txt',
+      'fastlane/metadata/en-US/support_url.txt',
+      'fastlane/metadata/en-US/marketing_url.txt',
+      'fastlane/metadata/en-US/release_notes.txt'
     ]
     required.each do |path|
       UI.user_error!("Missing App Store asset: #{path}") unless File.exist?(path) && File.size?(path)
@@ -139,6 +148,8 @@ platform :ios do
   def upload_app_store
     upload_to_app_store(
       ipa: IPA_PATH,
+      metadata_path: 'fastlane/metadata',
+      screenshots_path: 'app-store-assets/screenshots',
       skip_metadata: false,
       skip_screenshots: false,
       submit_for_review: true,

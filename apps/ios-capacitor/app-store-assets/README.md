@@ -6,7 +6,8 @@ hand-curated marketing assets live here.
 
 ## Files
 
-- `listing.md` — App Store description (long + short).
+- `listing.md` — human-readable App Store description source.
+- `../fastlane/metadata/en-US/` — Fastlane `deliver` metadata files uploaded by the release lane.
 - `keywords.txt` — comma-separated keywords (max 100 chars).
 - `promotional_text.txt` — what's-new text (max 170 chars).
 - `release_notes.txt` — version-specific release notes.
@@ -33,5 +34,6 @@ under that directory.
 
 ## Submitting
 
-The Fastlane `release` lane uploads metadata from this directory (via
-`deliver`) plus the .ipa built from the workspace. See `../fastlane/Fastfile`.
+The Fastlane `release` lane uploads metadata from `fastlane/metadata/en-US`,
+screenshots from `app-store-assets/screenshots/`, plus the .ipa built from the
+workspace. See `../fastlane/Fastfile`.

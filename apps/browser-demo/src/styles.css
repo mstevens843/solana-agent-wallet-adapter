@@ -19344,6 +19344,43 @@ button.danger:hover:not(:disabled) {
   white-space: normal;
 }
 
+.route-app .rail-ai-settings .local-bridge-ai-setup-card {
+  margin-top: 2px;
+  padding: 8px;
+}
+
+.route-app .rail-ai-settings .local-bridge-ai-setup-card > summary {
+  min-width: 0;
+  padding-right: 22px;
+}
+
+.route-app .rail-ai-settings .local-bridge-ai-setup-card > summary strong {
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+.route-app .rail-ai-settings .local-bridge-ai-setup-card[open] .local-bridge-ai-setup-body {
+  max-height: clamp(190px, 34dvh, 280px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+  scrollbar-width: thin;
+}
+
+.route-app .rail-ai-settings .local-bridge-ai-setup-card[open] .local-bridge-ai-setup-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.route-app .rail-ai-settings .local-bridge-ai-setup-card[open] .local-bridge-ai-setup-body::-webkit-scrollbar-thumb {
+  background: rgba(224, 230, 226, 0.24);
+  border-radius: 999px;
+}
+
+.route-app .rail-ai-settings .local-bridge-ai-setup-card .local-runtime-guide,
+.route-app .rail-ai-settings .local-bridge-ai-setup-card .local-bridge-facts {
+  min-width: 0;
+}
+
 .route-app .workflow-status-band[data-layout="workflow-status"].compact {
   grid-template-columns: minmax(176px, 0.5fr) minmax(430px, 1fr) minmax(132px, auto);
 }

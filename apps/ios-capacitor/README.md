@@ -17,7 +17,7 @@ Native plugins shipped (Capacitor 8 auto-discovers them via `packageClassList` i
 | `AgenticSystem` | openExternal, systemInfo, clipboardWrite, haptic, showNotification, appLifecycleState. |
 | `AgenticRemoteConfig` | Fetches `/api/mobile-config?platform=ios`, hydrates Keychain cache. |
 | `AgenticDeviceAgent` | Native Swift agent runtime (Anthropic / OpenAI-compatible / Gemini providers). |
-| `AgenticStreamingSession` | Ed25519 voucher signing via CryptoKit + Keychain. |
+| `AgenticStreamingSession` | Ed25519 voucher signing via libsodium + Keychain. |
 | `AgenticWalletConnect` | Jupiter WalletConnect v2 via Reown SDK. |
 
 ## Local dev
@@ -29,7 +29,7 @@ pnpm ios:sync      # pnpm copy-web && cap sync ios (runs ensure-ios.mjs)
 pnpm ios:open      # open in Xcode
 ```
 
-The deployment target is iOS 16. Required for CryptoKit + BGTaskScheduler + os.OSAllocatedUnfairLock.
+The deployment target is iOS 16. Required for BGTaskScheduler, os.OSAllocatedUnfairLock, and the native bridge dependencies.
 
 ## Bridge tests (XCTest)
 
@@ -71,7 +71,7 @@ profile:
 Fastlane lanes (`fastlane/Fastfile`):
 
 - `bundle exec fastlane beta` — build, sign, upload to TestFlight (no review submission).
-- `bundle exec fastlane release` — beta + submit for App Store review.
+- `bundle exec fastlane release` — beta + submit for App Store review using `fastlane/metadata/en-US` and `app-store-assets/screenshots`.
 - `bundle exec fastlane screenshots` — regenerate marketing screenshots into `app-store-assets/screenshots/`.
 - `bundle exec fastlane match_setup` — one-time interactive certificate setup (run locally).
 
@@ -83,7 +83,7 @@ The bridge package pins Reown Swift `1.0.5` so `AgenticWalletConnect` can compil
 
 - Privacy Manifest: `ios/App/App/PrivacyInfo.xcprivacy` covers UserDefaults, FileTimestamp, SystemBootTime, DiskSpace.
 - App Privacy questionnaire: see `app-store-assets/listing.md` — mirror Phantom/Solflare disclosure stance per stored team decision.
-- Encryption export: `ITSAppUsesNonExemptEncryption=false` (all crypto is platform-provided).
+- Encryption export: `ITSAppUsesNonExemptEncryption=false` (standard SSL plus bundled cryptographic libraries, no custom encryption protocol).
 
 ## Switching to ios-native (legacy)
 

@@ -26,8 +26,6 @@ final class CanonicalJSONAndVoucherTests: XCTestCase {
         let vouchers = json["vouchers"] as! [[String: Any]]
 
         let seed = Data(hexString: seedHex)
-        let key = try Curve25519.Signing.PrivateKey(rawRepresentation: seed)
-
         for v in vouchers {
             let name = v["name"] as? String ?? "?"
             let voucher = v["voucher"] as! [String: Any]
@@ -47,7 +45,7 @@ final class CanonicalJSONAndVoucherTests: XCTestCase {
 
             // Ed25519 sign-the-digest parity (matches the iOS streaming controller
             // which signs the SHA-256 digest, not the canonical JSON directly).
-            let sig = try key.signature(for: Data(sha))
+            let sig = try AgenticEd25519.sign(seed: seed, message: Data(sha))
             let sigHex = sig.map { String(format: "%02x", $0) }.joined()
             // Note: the Node fixture also signs the SHA-256 digest, so this
             // parity is end-to-end-identical.

@@ -564,7 +564,7 @@ enum AgenticAgentProviderSupport {
             }
             return .success(["output_text": text])
         }
-        guard let parsed = parseJsonObject(from: text) else {
+        guard let parsed = AgenticProviderResponseParser.parseModelJson(text) else {
             return .failure(AgenticAgentError(code: "PROVIDER_RESPONSE", subcode: "JSON_PARSE", message: "Provider response was not valid JSON."))
         }
         var out = parsed
@@ -596,17 +596,63 @@ enum AgenticAgentProviderSupport {
         return next
     }
 
-    static func researchEvidence(provider: String, summary: String, raw: [String: Any]) -> [String: Any] {
-        let sources = sourceList(from: raw)
-        return [
+    static func researchEvidence(provider: String, summary: String, raw: [String: Any], instructionText: String) -> [String: Any] {
+        let rawCitations = AgenticProviderResponseParser.extractCitations(provider: provider, raw: raw)
+        let sources = AgenticCitationFilter.filterLowAuthorityCitations(rawCitations, instructionText: instructionText)
+        let droppedLowAuthorityCount = max(0, rawCitations.count - sources.count)
+        let pricingQuestion = AgenticCitationFilter.isPricingInstruction(instructionText)
+        let suppressedPricingSummary = pricingQuestion && !rawCitations.isEmpty && sources.isEmpty
+        let evidenceSummary = suppressedPricingSummary
+            ? "Current pricing could not be verified against an official source. Ask the user to confirm the plan name and price."
+            : (summary.isEmpty ? "Research ran but produced no summary text." : summary)
+        var evidence: [String: Any] = [
             "status": "checked",
             "required": true,
             "provider": provider,
             "checkedAt": ISO8601DateFormatter().string(from: Date()),
-            "summary": summary.isEmpty ? "Research ran but produced no summary text." : summary,
-            "sources": sources,
-            "sourcePolicy": "Prefer official sources for prices and product facts. Cite each fact with the official URL.",
+            "summary": evidenceSummary,
+            "sources": sources.map { $0.json },
+            "sourcePolicy": "Prefer official sources for prices and product facts. When a vendor publishes a plan page, use it as primary. Reject blog subdomains (blog.*, news.*) as primary sources for current pricing. Cite each fact with the official URL.",
         ]
+        if droppedLowAuthorityCount > 0 {
+            evidence["droppedLowAuthoritySourceCount"] = droppedLowAuthorityCount
+        }
+        if suppressedPricingSummary {
+            evidence["sourceWarning"] = "pricing_unverified_official_source"
+        }
+        return evidence
+    }
+
+    static func currentResearchFailedReview(provider: String, error: AgenticAgentError) -> [String: Any] {
+        let reason = "Current outside facts are required before the Device Agent can decide, but \(provider) research failed: \(error.message)"
+        return [
+            "decision": "needs_input",
+            "reason": reason,
+            "summary": "Current outside facts are required before the Device Agent can decide.",
+            "evidence": [
+                "research": [
+                    "status": "failed",
+                    "provider": provider,
+                    "required": true,
+                    "error": error.asJson,
+                ],
+                "findings": [["label": "Research failed", "value": reason, "tone": "warn"]],
+            ],
+            "questions": [[
+                "id": "device_agent_current_fact",
+                "prompt": "What source-backed current value should be checked?",
+                "inputKind": "text",
+                "required": true,
+            ]],
+        ]
+    }
+
+    static func instructionText(_ payload: [String: Any]) -> String {
+        let instruction = payload["instruction"] as? String ?? ""
+        if !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return instruction }
+        let userPrompt = payload["userPrompt"] as? String ?? ""
+        if !userPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return userPrompt }
+        return payload["question"] as? String ?? ""
     }
 
     static func currentResearchUnavailableReview(provider: String) -> [String: Any] {
@@ -760,8 +806,9 @@ final class AgenticAnthropicProvider: AgenticAgentProvider {
                 switch research {
                 case .success(let evidence):
                     reviewPayload = AgenticAgentProviderSupport.reviewPayloadWithResearch(request.payload, evidence: evidence)
-                case .failure:
-                    reviewPayload = request.payload
+                case .failure(let err):
+                    completion(.success(AgenticAgentProviderSupport.currentResearchFailedReview(provider: "Anthropic", error: err)))
+                    return
                 }
                 let reviewRequest = AgenticAgentRequest(
                     method: request.method,
@@ -790,7 +837,7 @@ final class AgenticAnthropicProvider: AgenticAgentProvider {
             case .failure(let err):
                 completion(.failure(err))
             case .success(let json):
-                let text = Self.extractText(json) ?? ""
+                let text = AgenticProviderResponseParser.extractAnthropicText(json)
                 completion(AgenticAgentProviderSupport.parseProviderResult(method: request.method, provider: "anthropic", text: text, raw: json))
             }
         }
@@ -810,8 +857,13 @@ final class AgenticAnthropicProvider: AgenticAgentProvider {
             case .failure(let err):
                 completion(.failure(err))
             case .success(let json):
-                let summary = (Self.extractText(json) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                completion(.success(AgenticAgentProviderSupport.researchEvidence(provider: "Anthropic", summary: summary, raw: json)))
+                let summary = AgenticProviderResponseParser.extractAnthropicText(json).trimmingCharacters(in: .whitespacesAndNewlines)
+                completion(.success(AgenticAgentProviderSupport.researchEvidence(
+                    provider: "Anthropic",
+                    summary: summary,
+                    raw: json,
+                    instructionText: AgenticAgentProviderSupport.instructionText(request.payload)
+                )))
             }
         }
     }
@@ -904,8 +956,9 @@ final class AgenticOpenAINativeProvider: AgenticAgentProvider {
                 switch research {
                 case .success(let evidence):
                     reviewPayload = AgenticAgentProviderSupport.reviewPayloadWithResearch(request.payload, evidence: evidence)
-                case .failure:
-                    reviewPayload = request.payload
+                case .failure(let err):
+                    completion(.success(AgenticAgentProviderSupport.currentResearchFailedReview(provider: "OpenAI", error: err)))
+                    return
                 }
                 let reviewRequest = AgenticAgentRequest(
                     method: request.method,
@@ -939,7 +992,7 @@ final class AgenticOpenAINativeProvider: AgenticAgentProvider {
             case .failure(let err):
                 completion(.failure(err))
             case .success(let json):
-                let text = Self.extractText(json)
+                let text = AgenticProviderResponseParser.extractResponsesApiText(json)
                 completion(AgenticAgentProviderSupport.parseProviderResult(method: request.method, provider: "openai", text: text, raw: json))
             }
         }
@@ -959,8 +1012,13 @@ final class AgenticOpenAINativeProvider: AgenticAgentProvider {
             case .failure(let err):
                 completion(.failure(err))
             case .success(let json):
-                let summary = Self.extractText(json).trimmingCharacters(in: .whitespacesAndNewlines)
-                completion(.success(AgenticAgentProviderSupport.researchEvidence(provider: "OpenAI", summary: summary, raw: json)))
+                let summary = AgenticProviderResponseParser.extractResponsesApiText(json).trimmingCharacters(in: .whitespacesAndNewlines)
+                completion(.success(AgenticAgentProviderSupport.researchEvidence(
+                    provider: "OpenAI",
+                    summary: summary,
+                    raw: json,
+                    instructionText: AgenticAgentProviderSupport.instructionText(request.payload)
+                )))
             }
         }
     }
@@ -987,6 +1045,7 @@ final class AgenticOpenAINativeProvider: AgenticAgentProvider {
         ]
         if let jsonSchema {
             body["text"] = [
+                "verbosity": textVerbosity(for: request.method),
                 "format": [
                     "type": "json_schema",
                     "name": request.method == "generatePlan" ? "agentic_device_plan" : "agentic_device_review",
@@ -1076,6 +1135,10 @@ final class AgenticOpenAINativeProvider: AgenticAgentProvider {
     private func isReasoningModel(_ model: String) -> Bool {
         let lower = model.lowercased()
         return lower.hasPrefix("o") || lower.contains("reasoning")
+    }
+
+    private func textVerbosity(for method: String) -> String {
+        return method == "reviewPlan" ? "medium" : "low"
     }
 
     private static func extractText(_ json: [String: Any]) -> String {
@@ -1188,8 +1251,9 @@ final class AgenticGeminiProvider: AgenticAgentProvider {
                 switch research {
                 case .success(let evidence):
                     reviewPayload = AgenticAgentProviderSupport.reviewPayloadWithResearch(request.payload, evidence: evidence)
-                case .failure:
-                    reviewPayload = request.payload
+                case .failure(let err):
+                    completion(.success(AgenticAgentProviderSupport.currentResearchFailedReview(provider: "Gemini", error: err)))
+                    return
                 }
                 let reviewRequest = AgenticAgentRequest(
                     method: request.method,
@@ -1223,7 +1287,7 @@ final class AgenticGeminiProvider: AgenticAgentProvider {
             case .failure(let err):
                 completion(.failure(err))
             case .success(let json):
-                let text = Self.extractText(json) ?? ""
+                let text = AgenticProviderResponseParser.extractGeminiText(json)
                 completion(AgenticAgentProviderSupport.parseProviderResult(method: request.method, provider: "gemini", text: text, raw: json))
             }
         }
@@ -1243,8 +1307,13 @@ final class AgenticGeminiProvider: AgenticAgentProvider {
             case .failure(let err):
                 completion(.failure(err))
             case .success(let json):
-                let summary = (Self.extractText(json) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                completion(.success(AgenticAgentProviderSupport.researchEvidence(provider: "Gemini", summary: summary, raw: json)))
+                let summary = AgenticProviderResponseParser.extractGeminiText(json).trimmingCharacters(in: .whitespacesAndNewlines)
+                completion(.success(AgenticAgentProviderSupport.researchEvidence(
+                    provider: "Gemini",
+                    summary: summary,
+                    raw: json,
+                    instructionText: AgenticAgentProviderSupport.instructionText(request.payload)
+                )))
             }
         }
     }

@@ -1,19 +1,20 @@
 {
   "description": "Deterministic Ed25519 voucher signature for cross-platform parity. Seed is a fixed 32-byte test value; DO NOT use this seed in production. The canonical JSON encoder MUST sort keys lexicographically and omit whitespace.",
-  "seedHex": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+  "seedHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
   "vouchers": [
     {
-      "name": "basic streaming voucher",
+      "name": "canonical streaming voucher",
       "voucher": {
-        "amount": "1000000",
-        "expiresAtMs": 1737590400000,
-        "nonce": 42,
+        "amount": "0.05",
+        "issuedAt": "2026-05-16T12:00:00.000Z",
+        "nonce": "nonce_0001",
         "recipient": "11111111111111111111111111111111",
-        "sessionId": "session_test_001"
+        "schema": "streaming/voucher/0.1",
+        "sessionId": "sess_golden"
       },
-      "canonicalJson": "{\"amount\":\"1000000\",\"expiresAtMs\":1737590400000,\"nonce\":42,\"recipient\":\"11111111111111111111111111111111\",\"sessionId\":\"session_test_001\"}",
-      "sha256Hex": "de38e15511a85c88a359f95b1d3266f4a62c449e2ccd3897c2ff6d996db4bf43",
-      "ed25519SignatureHex": "b25e508d56f556e1926861cfe4d0fd6028291cd78b88c7c28d1652f7e59061c007a1d5efe978812e7ebbe228bf5353ffce782f01494eafb91668476511167c0e"
+      "canonicalJson": "{\"amount\":\"0.05\",\"issuedAt\":\"2026-05-16T12:00:00.000Z\",\"nonce\":\"nonce_0001\",\"recipient\":\"11111111111111111111111111111111\",\"schema\":\"streaming/voucher/0.1\",\"sessionId\":\"sess_golden\"}",
+      "sha256Hex": "ecc7938f514c7d39526eba3295033425287cc2a83cba3749654bafcbc0a8f3ac",
+      "ed25519SignatureHex": "92ffbbfface18d140bb09eefa4cf4c06701b7b30b1cf4992a640558b47cf2b7cafc16ff78e3bebcb64b7ce8aaa66d1982bd5d5bd23314a2f6cefc9e55130e207"
     }
   ]
 }
