@@ -12,12 +12,13 @@
 export type DesktopConnectStep =
   | 'idle'
   | 'method'
+  | 'extension'
   | 'qr'
   | 'ledger'
   | 'awaiting-browser';
 
 export type DesktopConnectMethod = 'extension' | 'qr' | 'ledger';
-type DesktopConnectInlineMethod = Exclude<DesktopConnectMethod, 'extension'>;
+type DesktopConnectInlineMethod = DesktopConnectMethod;
 
 /** Which wallet the user picked inside the QR step. `null` means the
  *  picker is showing (no wallet chosen yet, no QR generated). Backpack and
@@ -158,6 +159,8 @@ export function initialDesktopConnectFlowState(): DesktopConnectFlowState {
 
 function methodToStep(method: DesktopConnectInlineMethod): DesktopConnectStep {
   switch (method) {
+    case 'extension':
+      return 'extension';
     case 'qr':
       return 'qr';
     case 'ledger':
@@ -180,6 +183,7 @@ function previousStep(state: DesktopConnectFlowState): DesktopConnectFlowState {
       return state;
     case 'method':
       return initialDesktopConnectFlowState();
+    case 'extension':
     case 'ledger':
     case 'awaiting-browser':
       return emptyAt('method');

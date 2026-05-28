@@ -9211,6 +9211,34 @@ code {
   font-size: 0.82rem;
   line-height: 1.35;
 }
+.desktop-connect-flow-body.browser-extension-inline {
+  display: grid;
+  gap: 10px;
+}
+.desktop-extension-wallet-field {
+  margin: 0;
+}
+.desktop-extension-actions {
+  display: grid;
+  gap: 8px;
+}
+.desktop-extension-actions button {
+  border-radius: var(--radius);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+  min-height: 44px;
+}
+.desktop-extension-actions button[disabled] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.desktop-extension-status {
+  color: rgba(224, 230, 226, 0.58);
+  font-size: 0.8rem;
+  line-height: 1.35;
+  margin: 0;
+}
 .desktop-connect-flow-brand-list {
   display: grid;
   gap: 6px;

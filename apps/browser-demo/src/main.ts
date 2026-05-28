@@ -7524,6 +7524,57 @@ function desktopQrWalletPicker(): string {
   `;
 }
 
+function desktopBrowserExtensionBody(): string {
+  if (state.tauriNativeEnvironment.isTauriNative) {
+    return `
+      <div class="desktop-connect-flow-body browser-extension-inline">
+        <p class="desktop-connect-flow-lede">Open the wallet pairing page in your default browser, then approve with Backpack, Phantom, Jupiter, or Solflare there.</p>
+        <div class="desktop-extension-actions">
+          <button type="button" class="primary" data-desktop-flow-action="extension-connect" ${state.busy ? 'disabled' : ''}>
+            Open browser
+          </button>
+        </div>
+        <p class="desktop-extension-status">Agentic Desktop will detect the connected browser wallet after approval.</p>
+      </div>
+    `;
+  }
+  const selectedProvider = discoveredSelectedWalletName();
+  const providerCount = state.wallets.length;
+  const connectDisabled = providerCount === 0 || !selectedProvider || state.busy;
+  return `
+    <div class="desktop-connect-flow-body browser-extension-inline">
+      <p class="desktop-connect-flow-lede">Use an installed Backpack, Phantom, Jupiter, or Solflare extension in this browser.</p>
+      <label class="field desktop-extension-wallet-field">
+        <span>Wallet provider</span>
+        ${selectPicker({
+          id: 'walletSelect',
+          value: state.selectedWalletName,
+          options: walletSelectOptions(),
+          disabled: providerCount === 0 || state.busy,
+          open: state.browserWalletPickerOpen,
+        })}
+      </label>
+      <div class="desktop-extension-actions">
+        <button type="button" class="primary" data-desktop-flow-action="extension-discover" ${state.busy ? 'disabled' : ''}>
+          Discover
+        </button>
+        <button
+          type="button"
+          class="${providerCount ? 'primary' : ''}"
+          data-desktop-flow-action="extension-connect"
+          ${connectDisabled ? 'disabled' : ''}
+          title="${!selectedProvider ? 'Discover and select a wallet provider first.' : ''}"
+        >
+          Connect wallet
+        </button>
+      </div>
+      <p class="desktop-extension-status">
+        ${providerCount ? `${providerCount} provider(s) discovered in this browser.` : 'Provider icons appear after discovery.'}
+      </p>
+    </div>
+  `;
+}
+
 function desktopAwaitingBrowserBody(): string {
   const brandId = desktopConnect.flow.selectedBrandId ?? '';
   const brand = DESKTOP_BRAND_PANELS.find((b) => b.id === brandId);
@@ -7555,6 +7606,10 @@ function desktopConnectFlowBlock(): string {
     case 'method':
       title = 'Discover wallet';
       body = desktopMethodPickerBody();
+      break;
+    case 'extension':
+      title = 'Browser extension';
+      body = desktopBrowserExtensionBody();
       break;
     case 'qr':
       title = 'Scan QR with phone';
@@ -7602,15 +7657,12 @@ async function runDesktopDiscover(): Promise<void> {
 
 function handleDesktopMethodSelect(method: DesktopConnectMethod): void {
   if (method === 'extension') {
+    dispatchDesktopConnectFlow({ type: 'pickMethod', method: 'extension' });
     if (state.tauriNativeEnvironment.isTauriNative) {
       void openDesktopBrowserConnectPage();
       return;
     }
-    void runDiscover().then(() => {
-      if (desktopConnect.flow.step !== 'idle') {
-        dispatchDesktopConnectFlow({ type: 'reset' });
-      }
-    });
+    void runDiscover();
     return;
   }
   if (method === 'ledger') {
@@ -8177,6 +8229,20 @@ function handleDesktopAwaitingRetry(): void {
   void openDesktopBrowserConnectPage(desktopConnect.flow.selectedBrandId);
 }
 
+function handleDesktopExtensionDiscover(): void {
+  if (desktopConnect.flow.step !== 'extension' || state.tauriNativeEnvironment.isTauriNative) return;
+  void runDiscover();
+}
+
+function handleDesktopExtensionConnect(): void {
+  if (desktopConnect.flow.step !== 'extension') return;
+  if (state.tauriNativeEnvironment.isTauriNative) {
+    void openDesktopBrowserConnectPage();
+    return;
+  }
+  void runConnect();
+}
+
 function bindDesktopConnectFlow(): void {
   if (!multiPathWalletFlowAvailable()) return;
   for (const el of document.querySelectorAll<HTMLElement>('[data-desktop-flow-action]')) {
@@ -8203,6 +8269,14 @@ function bindDesktopConnectFlow(): void {
       }
       if (raw === 'awaiting-retry') {
         handleDesktopAwaitingRetry();
+        return;
+      }
+      if (raw === 'extension-discover') {
+        handleDesktopExtensionDiscover();
+        return;
+      }
+      if (raw === 'extension-connect') {
+        handleDesktopExtensionConnect();
         return;
       }
     });
@@ -12083,9 +12157,11 @@ function walletRail(): string {
     return walletHostOpeningSplashHtml();
   }
   const showConnectionDetails = SHOW_DEV_CONTROLS && !state.address;
+  const multiPathFlow = multiPathWalletFlowAvailable();
   const showPublicWalletPicker =
     !SHOW_DEV_CONTROLS &&
     !state.address &&
+    !multiPathFlow &&
     !state.androidNativeEnvironment.isAndroidNative &&
     !state.iosNativeEnvironment.isIosNative &&
     !state.tauriNativeEnvironment.isTauriNative &&
@@ -14541,7 +14617,6 @@ function walletAddressCopyButton(address: string): string {
 }
 
 function publicWalletActions(): string {
-  const selectedProvider = discoveredSelectedWalletName();
   const androidNative = state.androidNativeEnvironment.isAndroidNative;
   const iosNative = state.iosNativeEnvironment.isIosNative;
   const tauriNative = state.tauriNativeEnvironment.isTauriNative;
@@ -14566,9 +14641,6 @@ function publicWalletActions(): string {
           ${walletButtonIcon()}
           <span>Discover</span>
         </button>
-        <button data-start-action="connect" disabled title="Click Discover and choose a connection method first.">
-          Connect wallet
-        </button>
       </div>
     `;
   }
@@ -14586,9 +14658,6 @@ function publicWalletActions(): string {
     <div class="wallet-actions public-wallet-actions">
       <button data-start-action="discover" class="primary" ${state.busy ? 'disabled' : ''}>
         Discover
-      </button>
-      <button data-start-action="connect" class="${state.wallets.length ? 'primary' : ''}" ${(state.wallets.length === 0 || !selectedProvider) || state.busy ? 'disabled' : ''} title="${!selectedProvider ? 'Discover and select a wallet provider first.' : ''}">
-        Connect wallet
       </button>
     </div>
   `;
@@ -14779,8 +14848,8 @@ function guidedStartPanel(title: string, detail: string, extras?: string): strin
   const selectedProvider = discoveredSelectedWalletName();
   const androidNative = state.androidNativeEnvironment.isAndroidNative;
   const iosNative = state.iosNativeEnvironment.isIosNative;
-  const tauriNative = state.tauriNativeEnvironment.isTauriNative;
-  const nativeWallet = androidNative || iosNative || tauriNative;
+  const multiPathFlow = multiPathWalletFlowAvailable();
+  const nativeWallet = androidNative || iosNative;
   const selectedIosWallet = iosWalletLabel(state.selectedIosWalletId);
   return `
     <section class="guided-start signature-stage stage-dormant">
@@ -14794,7 +14863,8 @@ function guidedStartPanel(title: string, detail: string, extras?: string): strin
         ${guidedStep('3', 'Connect', 'Authorize this app in the wallet', Boolean(state.address))}
       </div>
       <div class="guided-actions">
-        ${nativeWallet ? `
+        ${multiPathFlow ? `
+        <button data-start-action="discover" class="primary" ${state.busy ? 'disabled' : ''}>Discover wallets</button>` : nativeWallet ? `
         <button data-start-action="connect" class="primary wallet-connect-cta" ${state.busy ? 'disabled' : ''}>
           ${walletButtonIcon()}
           <span>Connect wallet</span>
@@ -26305,9 +26375,9 @@ async function runConnect(): Promise<void> {
     savePersistedState();
     trackWalletConnectSuccess(connectSurface, state.cluster, 'connect_button');
     pushToast('success', 'Wallet connected', short(state.address));
-    // Collapse the desktop Discover flow if the user reached this point via
-    // the inline rail (Browser ext / QR / Ledger). No-op for browser users.
-    if (state.tauriNativeEnvironment.isTauriNative && desktopConnect.flow.step !== 'idle') {
+    // Collapse the inline Discover flow if the user reached this point via
+    // the copied Browser extension / QR / Ledger rail.
+    if (multiPathWalletFlowAvailable() && desktopConnect.flow.step !== 'idle') {
       dispatchDesktopConnectFlow({ type: 'reset' });
     }
   });

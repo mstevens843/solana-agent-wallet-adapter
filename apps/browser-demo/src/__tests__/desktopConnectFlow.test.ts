@@ -202,6 +202,12 @@ describe('reduceDesktopConnectFlow — pickMethod', () => {
   const method = (): DesktopConnectFlowState =>
     reduceDesktopConnectFlow(initial(), { type: 'startMethod' });
 
+  it('extension → extension (browser wallet controls stay inline)', () => {
+    const next = reduceDesktopConnectFlow(method(), { type: 'pickMethod', method: 'extension' });
+    expect(next.step).toBe('extension');
+    expect(next.selectedBrandId).toBeNull();
+  });
+
   it('qr → qr (no brand yet)', () => {
     const next = reduceDesktopConnectFlow(method(), { type: 'pickMethod', method: 'qr' });
     expect(next.step).toBe('qr');
@@ -256,6 +262,16 @@ describe('reduceDesktopConnectFlow — back', () => {
     const atMethod = reduceDesktopConnectFlow(initial(), { type: 'startMethod' });
     const atQr = reduceDesktopConnectFlow(atMethod, { type: 'pickMethod', method: 'qr' });
     const back = reduceDesktopConnectFlow(atQr, { type: 'back' });
+    expect(back.step).toBe('method');
+  });
+
+  it('extension → method', () => {
+    const atMethod = reduceDesktopConnectFlow(initial(), { type: 'startMethod' });
+    const atExtension = reduceDesktopConnectFlow(atMethod, {
+      type: 'pickMethod',
+      method: 'extension',
+    });
+    const back = reduceDesktopConnectFlow(atExtension, { type: 'back' });
     expect(back.step).toBe('method');
   });
 
