@@ -400,6 +400,35 @@ async function verifyAppInteractionContracts(page, origin, wallet) {
       `review card wallet is not recognizable: ${reviewContract.walletValue}`,
     );
   }
+  await ensureCreatePlanView(page);
+  await selectPlanTemplate(page, 'balances');
+  await clickAndWait(page, '#generatePlan', 'create proof-only draft for Done navigation');
+  await page.waitFor(`Array.from(document.querySelectorAll('[data-generated-plan-action="sign-proof"]')).some((el) => !el.disabled)`);
+  const proofPlanId = await page.evaluate(`document.querySelector('[data-generated-plan-action="sign-proof"]')?.dataset.generatedPlanId ?? ''`);
+  assert(proofPlanId, 'proof-only generated plan id is missing');
+  await clickAndWait(
+    page,
+    `[data-generated-plan-action="sign-proof"][data-generated-plan-id="${proofPlanId}"]`,
+    'sign proof-only draft',
+  );
+  await page.waitFor(`document.querySelector('[data-layout="app-shell"]')?.getAttribute('data-active-tab') === 'completed'`);
+  await page.waitFor(`Boolean(document.querySelector('[data-completed-focus="true"]'))`);
+  const proofDoneContract = await page.evaluate(`(() => {
+    const focused = document.querySelector('[data-completed-focus="true"]');
+    const activeFilter = document.querySelector('[data-completed-filter="all"]');
+    const toastText = document.querySelector('.toast-stack')?.textContent || '';
+    const focusedText = focused?.textContent || '';
+    return {
+      allFilterActive: Boolean(activeFilter?.classList.contains('active')),
+      focusedHasProof: /proof signed|Review proof|Proof/i.test(focusedText),
+      focusedText,
+      toastHasSuccess: /Proof signed/i.test(toastText) && /Saved in Done/i.test(toastText),
+      toastText,
+    };
+  })()`);
+  assert(proofDoneContract.allFilterActive, 'proof signing did not switch Done to the All filter');
+  assert(proofDoneContract.focusedHasProof, `focused Done card is not the signed proof: ${proofDoneContract.focusedText}`);
+  assert(proofDoneContract.toastHasSuccess, `proof signing success toast missing: ${proofDoneContract.toastText}`);
   await clickAndWait(page, '[data-layout="app-tabs"] [data-tab="schedule"]', 'recurring tab for fold check');
   await page.evaluate('window.scrollTo(0, 0)');
   await page.waitFor('window.scrollY < 3');

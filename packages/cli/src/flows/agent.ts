@@ -4,6 +4,7 @@ import {
   inferredTemplateParameters,
   templateById,
   type AgentChatMessage,
+  type AgentChatSection,
   type AiPlanRequest,
 } from '@solana-agent-wallet-adapter/workflow';
 
@@ -52,8 +53,10 @@ export async function runAgent(options: GlobalOptions, signPlanFn?: SignPlanFn):
   await runAgentChat(options);
 }
 
-interface AgentChatResponse {
+export interface AgentChatResponse {
   answer?: string;
+  sections?: AgentChatSection[];
+  next?: string;
   citations?: Array<{ kind?: string; ref?: string; title?: string }>;
 }
 
@@ -131,22 +134,137 @@ function printAgentChatHelp(): void {
 }
 
 function renderChatAnswer(raw: AgentChatResponse): string {
-  const answer = typeof raw.answer === 'string' ? raw.answer : JSON.stringify(raw, null, 2);
-  console.log();
-  console.log(header('Agent'));
-  console.log(answer);
-  const citations = Array.isArray(raw.citations) ? raw.citations : [];
-  if (citations.length > 0) {
-    console.log();
-    console.log(header('Sources'));
-    for (const citation of citations) {
-      const title = citation.title ?? citation.ref ?? '?';
-      const kind = citation.kind ?? 'url';
-      console.log(`  · ${title}  ${badge(kind, 'muted')}`);
+  const display = buildAgentChatDisplay(raw);
+  console.log(display.output);
+  return display.transcript;
+}
+
+export interface AgentChatDisplay {
+  output: string;
+  transcript: string;
+}
+
+const AGENT_CHAT_SOURCE_LIMIT = 6;
+const AGENT_CHAT_NEXT_HINT = 'Type /plan, /new, or /prepare to turn this into a wallet request. Type /exit to leave agent chat.';
+
+export function buildAgentChatDisplay(raw: AgentChatResponse): AgentChatDisplay {
+  const answer = cleanDisplayBlock(typeof raw.answer === 'string' ? raw.answer : JSON.stringify(raw, null, 2));
+  const sections = normalizeDisplaySections(raw.sections);
+  const next = cleanDisplayLine(raw.next) || AGENT_CHAT_NEXT_HINT;
+  const citations = normalizeDisplayCitations(raw.citations);
+
+  const lines: string[] = ['', header('Agent'), '', header('Answer')];
+  lines.push(...displayParagraph(answer));
+  for (const section of sections) {
+    lines.push('', header(section.title));
+    for (const bullet of section.bullets) {
+      lines.push(`  • ${bullet}`);
     }
   }
-  console.log(divider());
-  return answer;
+  lines.push('', header('Next'), `  ${next}`);
+  if (citations.length > 0) {
+    lines.push('', header('Sources'));
+    const shown = citations.slice(0, AGENT_CHAT_SOURCE_LIMIT);
+    shown.forEach((citation, index) => {
+      lines.push(`  [${index + 1}] ${formatDisplayCitation(citation)}`);
+    });
+    if (citations.length > shown.length) {
+      lines.push(`  ${badge(`and ${citations.length - shown.length} more`, 'muted')}`);
+    }
+  }
+  lines.push(divider());
+
+  const transcript = [
+    answer,
+    ...sections.flatMap((section) => [
+      `${section.title}:`,
+      ...section.bullets.map((bullet) => `- ${bullet}`),
+    ]),
+    next,
+  ].filter(Boolean).join('\n');
+
+  return {
+    output: lines.join('\n'),
+    transcript,
+  };
+}
+
+function normalizeDisplaySections(value: unknown): AgentChatSection[] {
+  if (!Array.isArray(value)) return [];
+  const sections: AgentChatSection[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') continue;
+    const record = entry as Record<string, unknown>;
+    const title = cleanDisplayLine(record.title);
+    const bullets = Array.isArray(record.bullets)
+      ? record.bullets
+          .map((bullet) => cleanDisplayLine(bullet))
+          .filter(Boolean)
+          .slice(0, 5)
+      : [];
+    if (!title || bullets.length === 0) continue;
+    sections.push({ title, bullets });
+    if (sections.length >= 4) break;
+  }
+  return sections;
+}
+
+function normalizeDisplayCitations(value: unknown): Array<{ kind?: string; ref?: string; title?: string }> {
+  if (!Array.isArray(value)) return [];
+  const citations: Array<{ kind?: string; ref?: string; title?: string }> = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') continue;
+    const record = entry as Record<string, unknown>;
+    const ref = cleanDisplayLine(record.ref);
+    const title = cleanDisplayLine(record.title);
+    const kind = cleanDisplayLine(record.kind);
+    if (!ref && !title) continue;
+    const key = (ref || title).toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    citations.push({
+      ...(kind ? { kind } : {}),
+      ...(ref ? { ref } : {}),
+      ...(title ? { title } : {}),
+    });
+  }
+  return citations;
+}
+
+function formatDisplayCitation(citation: { kind?: string; ref?: string; title?: string }): string {
+  const title = citation.title || citation.ref || '?';
+  const ref = citation.ref ?? '';
+  const label = citation.kind === 'url' || /^https?:\/\//i.test(ref) ? domainOrRef(ref) : (citation.kind || domainOrRef(ref));
+  return label && label !== title ? `${title} - ${badge(label, 'muted')}` : title;
+}
+
+function domainOrRef(value: string): string {
+  if (!value) return '';
+  try {
+    return new URL(value).hostname.replace(/^www\./i, '');
+  } catch {
+    return value;
+  }
+}
+
+function displayParagraph(value: string): string[] {
+  const lines = value.split('\n');
+  return lines.length ? lines.map((line) => (line ? `  ${line}` : '')) : [''];
+}
+
+function cleanDisplayBlock(value: string): string {
+  return value
+    .replace(/\r/g, '')
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+/g, ' ').trimEnd())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function cleanDisplayLine(value: unknown): string {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
 }
 
 async function preparePlanFromAgentChat(

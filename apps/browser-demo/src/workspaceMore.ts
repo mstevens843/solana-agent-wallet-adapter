@@ -32,7 +32,7 @@ export function workspaceMoreMenuItems(
   const seen = new Set(items.map((item) => item.id));
 
   for (const tab of registeredTabs) {
-    if (tab.id === 'spend' || seen.has(tab.id) || !tab.guard()) continue;
+    if (seen.has(tab.id) || !tab.guard()) continue;
     seen.add(tab.id);
     items.push({ id: tab.id, label: tab.label });
   }

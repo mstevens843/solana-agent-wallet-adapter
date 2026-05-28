@@ -17,11 +17,6 @@ if (!existsSync(project)) {
   await run('pnpm', ['exec', 'cap', 'add', 'ios'], { cwd: appDir, env: process.env });
 }
 
-patchInfoPlist();
-patchEntitlements();
-patchCapAppSpmDeploymentTarget();
-patchXcodeDeploymentTarget();
-
 const REQUIRED_PLIST_KEYS = [
   { key: 'NSFaceIDUsageDescription', valueType: 'string', value: 'Use Face ID to confirm wallet actions and protect sensitive operations.' },
   {
@@ -46,6 +41,11 @@ const REQUIRED_PLIST_KEYS = [
     value: 'https://agentic-signer.com,https://agentic-seeker.com,capacitor://localhost',
   },
 ];
+
+patchInfoPlist();
+patchEntitlements();
+patchCapAppSpmDeploymentTarget();
+patchXcodeDeploymentTarget();
 
 function patchInfoPlist() {
   if (!existsSync(infoPlist)) {

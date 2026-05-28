@@ -86,6 +86,8 @@ export class LocalBridgeBackend implements WalletBackend {
       backend: capabilities.backend,
       cluster: capabilities.cluster,
       supports: capabilities.supports,
+      walletName: capabilities.walletName,
+      walletLogoId: capabilities.walletLogoId,
     });
   }
 

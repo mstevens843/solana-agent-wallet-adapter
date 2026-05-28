@@ -13,6 +13,31 @@ describe('LocalBridgeBackend', () => {
     });
   });
 
+  it('preserves browser wallet display metadata in capabilities', async () => {
+    const backend = new LocalBridgeBackend({ cluster: 'devnet', rpcUrl: 'https://api.devnet.solana.com' });
+    backend.connectHost('11111111111111111111111111111111', {
+      backend: 'test-host',
+      cluster: ['devnet'],
+      supports: {
+        signMessage: true,
+        signTransaction: true,
+        signAndSendTransaction: true,
+        multiSign: false,
+        simulationPreview: false,
+      },
+      walletName: 'Backpack',
+      walletLogoId: 'backpack',
+      walletIcon: 'data:image/svg+xml,<svg></svg>',
+    });
+
+    await expect(backend.capabilities()).resolves.toMatchObject({
+      address: '11111111111111111111111111111111',
+      walletName: 'Backpack',
+      walletLogoId: 'backpack',
+      walletIcon: 'data:image/svg+xml,<svg></svg>',
+    });
+  });
+
   it('queues pending requests for the browser host and resolves them', async () => {
     const backend = new LocalBridgeBackend({ cluster: 'devnet', rpcUrl: 'https://api.devnet.solana.com' });
     backend.setApprovalBaseUrl('http://127.0.0.1:8787/');

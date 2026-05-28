@@ -54,6 +54,12 @@ function fakeIpc(): LedgerIpc & {
       address: ADDR,
       publicKeyB64: Buffer.from(publicKeyBytes()).toString('base64'),
     }),
+    getAddresses: async (derivationPaths) =>
+      derivationPaths.map((derivationPath) => ({
+        derivationPath,
+        address: ADDR,
+        publicKeyB64: Buffer.from(publicKeyBytes()).toString('base64'),
+      })),
     signTransaction: async (derivationPath, payload) => {
       calls.push({ derivationPath, payload });
       return Buffer.from(new Uint8Array(64).fill(1)).toString('base64');
@@ -167,6 +173,12 @@ describe('registerLedgerWallet', () => {
         address: ADDR,
         publicKeyB64: Buffer.from(publicKeyBytes()).toString('base64'),
       }),
+      getAddresses: async (derivationPaths) =>
+        derivationPaths.map((derivationPath) => ({
+          derivationPath,
+          address: ADDR,
+          publicKeyB64: Buffer.from(publicKeyBytes()).toString('base64'),
+        })),
       signTransaction: async () => '',
       signMessage: async () => '',
       disconnect: async () => {

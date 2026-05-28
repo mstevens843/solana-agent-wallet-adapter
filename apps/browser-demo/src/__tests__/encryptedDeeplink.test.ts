@@ -6,6 +6,7 @@ import nacl from 'tweetnacl';
 import { ProtocolError } from '@solana-agent-wallet-adapter/core';
 
 import {
+  approvalResourceFromError,
   buildAndroidWalletIntentUrl,
   buildEncryptedSigningUrl,
   decryptConnectResponse,
@@ -142,6 +143,25 @@ describe('encrypted deeplink request parsing and result conversion', () => {
 
     expect(() => decryptSigningResponse(url, bs58.encode(new Uint8Array(nacl.box.sharedKeyLength).fill(5))))
       .toThrow(ProtocolError);
+  });
+
+  it('converts missing-nonce signing callbacks into failed approval resources', () => {
+    const url = new URL('https://agentic-signer.com/qr-connect');
+    let err: unknown;
+    try {
+      decryptSigningResponse(url, bs58.encode(new Uint8Array(nacl.box.sharedKeyLength).fill(5)));
+    } catch (caught) {
+      err = caught;
+    }
+
+    expect(approvalResourceFromError('req-missing-nonce', err)).toMatchObject({
+      requestId: 'req-missing-nonce',
+      status: 'failed',
+      error: {
+        code: 'invalid_request',
+        message: 'Wallet callback is missing nonce.',
+      },
+    });
   });
 
   it('builds base58 signing payloads from core SigningRequest shapes', () => {

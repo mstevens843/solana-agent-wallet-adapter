@@ -15,6 +15,7 @@ import {
   type AgentChatMessage as AiChatMessage,
   type AgentChatRequest as AiChatRequest,
   type AgentChatResult as AiChatResult,
+  type AgentChatSection as AiChatSection,
   type AgentPlanReviewDecision as AiReviewDecision,
   type AgentPlanReviewMode as AiReviewMode,
   type AgentPlanReviewRequest as AiReviewRequest,
@@ -1425,7 +1426,7 @@ function aiChatMessages(request: Required<AiChatRequest>): Array<{ role: 'system
     {
       role: 'system',
       content:
-        'You are the Solana Agent Wallet CLI research assistant. Help the wallet user reason about Solana, wallet actions, tokens, protocols, connector capabilities, and risk before any plan exists. Be concise and practical. If the user asks for current or outside facts and web search is available, search reliable sources and cite source URLs. You may help identify fields needed for a later wallet request, but do not queue, sign, approve, submit, or claim anything is safe or already approved. Never request private keys, seed phrases, session keys, wallet auth tokens, or unrestricted approvals. Remind the user to type /plan, /new, or /prepare only when they want to turn the conversation into a visible wallet request.',
+        'You are the Solana Agent Wallet CLI research assistant. Help the wallet user reason about Solana, wallet actions, tokens, protocols, connector capabilities, and risk before any plan exists. Return ONLY compact JSON with shape {"answer":"direct 1-2 sentence answer","sections":[{"title":"Key Facts","bullets":["short fact"]}],"next":"optional next step"}. Use 0-4 sections and 1-5 bullets per section. Put the direct answer first; do not start with process narration like "I will check". If the user asks for current or outside facts and web search is available, search reliable sources and cite source URLs. Prefer section titles such as Key Facts, Watchouts, Wallet Angle, Comparison, or Missing Info. You may help identify fields needed for a later wallet request, but do not queue, sign, approve, submit, or claim anything is safe or already approved. Never request private keys, seed phrases, session keys, wallet auth tokens, or unrestricted approvals. If useful, set next to "Type /plan, /new, or /prepare when you want to prepare a visible wallet request."',
     },
     {
       role: 'user',
@@ -1570,8 +1571,21 @@ function aiChatFromPayload(payload: unknown): AiChatResult {
     throw new ProtocolError('wallet_unreachable', 'Agent did not return any chat text. Try again.');
   }
   const citations = sortResearchCitations(extractResearchCitations(payload));
+  const structured = normalizeStructuredAgentChatText(text);
+  if (structured) {
+    return {
+      ...structured,
+      ...(citations.length ? { citations: citations.map((citation) => ({
+        kind: 'url',
+        ref: citation.url,
+        ...(citation.title ? { title: citation.title } : {}),
+      })) } : {}),
+      checkedAt: new Date().toISOString(),
+      source: 'ai',
+    };
+  }
   return {
-    answer: compactReviewText(text, 1_600),
+    answer: compactChatText(stripAgentProcessPreamble(text), 1_600),
     ...(citations.length ? { citations: citations.map((citation) => ({
       kind: 'url',
       ref: citation.url,
@@ -1580,6 +1594,115 @@ function aiChatFromPayload(payload: unknown): AiChatResult {
     checkedAt: new Date().toISOString(),
     source: 'ai',
   };
+}
+
+interface NormalizedAgentChatText {
+  answer: string;
+  sections?: AiChatSection[];
+  next?: string;
+}
+
+function normalizeStructuredAgentChatText(text: string): NormalizedAgentChatText | null {
+  const parsed = parsePlanJson(text);
+  const answer = typeof parsed.answer === 'string' ? stripAgentProcessPreamble(parsed.answer) : '';
+  if (!answer.trim()) return null;
+  const sections = normalizeAgentChatSections(parsed.sections);
+  const next = oneLineChatText(parsed.next, 220);
+  return {
+    answer: compactReviewText(answer, 420),
+    ...(sections.length > 0 ? { sections } : {}),
+    ...(next ? { next } : {}),
+  };
+}
+
+function normalizeAgentChatSections(value: unknown): AiChatSection[] {
+  const rawSections: Array<{ title: string; value: unknown }> = [];
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      if (!entry || typeof entry !== 'object') continue;
+      const record = entry as Record<string, unknown>;
+      const title = oneLineChatText(record.title ?? record.heading ?? record.label ?? record.name, 48);
+      if (!title) continue;
+      rawSections.push({
+        title,
+        value: record.bullets ?? record.items ?? record.points ?? record.facts ?? record.content ?? record.body,
+      });
+    }
+  } else if (value && typeof value === 'object') {
+    for (const [title, entryValue] of Object.entries(value as Record<string, unknown>)) {
+      if (title.trim()) rawSections.push({ title, value: entryValue });
+    }
+  }
+
+  const sections: AiChatSection[] = [];
+  for (const section of rawSections) {
+    const title = oneLineChatText(section.title, 48);
+    if (!title || /^(answer|next|source|sources|citation|citations|reference|references)$/i.test(title)) continue;
+    const bullets = normalizeAgentChatBullets(section.value);
+    if (bullets.length === 0) continue;
+    sections.push({ title, bullets });
+    if (sections.length >= 4) break;
+  }
+  return sections;
+}
+
+function normalizeAgentChatBullets(value: unknown): string[] {
+  const candidates: unknown[] = Array.isArray(value)
+    ? value
+    : typeof value === 'string'
+      ? value.split(/\n+|(?:^|\s)[-*]\s+/).filter(Boolean)
+      : value === undefined || value === null
+        ? []
+        : [value];
+  const bullets: string[] = [];
+  for (const candidate of candidates) {
+    const text = chatBulletText(candidate);
+    if (!text) continue;
+    bullets.push(text);
+    if (bullets.length >= 5) break;
+  }
+  return bullets;
+}
+
+function chatBulletText(value: unknown): string {
+  if (typeof value === 'string') return oneLineChatText(value.replace(/^[-*•]\s*/, ''), 240);
+  if (!value || typeof value !== 'object') return '';
+  const record = value as Record<string, unknown>;
+  const label = oneLineChatText(record.label ?? record.title ?? record.name, 80);
+  const text = oneLineChatText(record.value ?? record.text ?? record.content ?? record.body, 180);
+  if (label && text) return compactReviewText(`${label}: ${text}`, 240);
+  return label || text;
+}
+
+function oneLineChatText(value: unknown, maxLength: number): string {
+  if (typeof value !== 'string') return '';
+  return compactReviewText(value.replace(/^#+\s*/, '').replace(/\s+/g, ' ').trim(), maxLength);
+}
+
+function compactChatText(value: string, maxLength: number): string {
+  const normalized = value
+    .replace(/\r/g, '')
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+/g, ' ').trimEnd())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 3).trimEnd()}...`;
+}
+
+function stripAgentProcessPreamble(value: string): string {
+  let text = value.trim();
+  let changed = true;
+  while (changed) {
+    const previous = text;
+    text = text
+      .replace(/^(?:i(?:'|’)?ll|i will|let me|i(?:'|’)?m going to|i am going to)\s+(?:check|look up|search|review|find|verify|pull|compare)[^.\n]*(?:[.\n]\s*)/i, '')
+      .replace(/^based on (?:my )?(?:search results|research|the sources|current information|available information),?\s*/i, '')
+      .replace(/^here (?:are|is) (?:the )?(?:current|main|key)?\s*[^:\n]{0,80}:\s*/i, '');
+    changed = text !== previous;
+  }
+  return text.trim();
 }
 
 function normalizeResearchEvidence(

@@ -249,6 +249,41 @@ describe('walletConnectQrOverlayHtml', () => {
     expect(html).toContain('Linking Phantom');
   });
 
+  it('uses browser-session copy on website surfaces', () => {
+    const html = walletConnectQrOverlayHtml({
+      state: {
+        mode: 'completing',
+        brandId: 'backpack',
+        uri: 'wc:xyz',
+        qrDataUrl: 'data:image/png;base64,Q',
+        error: '',
+      },
+      surface: 'website',
+    });
+    expect(html).toContain('this browser session');
+    expect(html).not.toContain('this desktop');
+  });
+
+  it('can prioritize same-device wallet launch before the QR on mobile web', () => {
+    const html = walletConnectQrOverlayHtml({
+      state: {
+        mode: 'awaiting-scan',
+        brandId: 'jupiter',
+        uri: 'wc:topic@2?relay-protocol=irn&symKey=abc',
+        qrDataUrl: 'data:image/png;base64,XXX',
+        error: '',
+      },
+      surface: 'website',
+      preferDeepLink: true,
+    });
+    const openIndex = html.indexOf('walletconnect-qr-overlay-mobile-open');
+    const qrIndex = html.indexOf('walletconnect-qr-overlay-qr');
+    expect(openIndex).toBeGreaterThan(-1);
+    expect(qrIndex).toBeGreaterThan(-1);
+    expect(openIndex).toBeLessThan(qrIndex);
+    expect(html).toContain('Open Jupiter on this device');
+  });
+
   it('wires aria-labelledby on the dialog to the rendered h2 (a11y)', () => {
     const html = walletConnectQrOverlayHtml({
       state: {

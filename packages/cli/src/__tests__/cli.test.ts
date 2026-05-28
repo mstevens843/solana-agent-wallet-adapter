@@ -594,6 +594,32 @@ test('no positional command starts the interactive app', async () => {
   }
 });
 
+test('interactive main prompt Ctrl+C exits the app', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-main-sigint-'));
+  const bridgeUrl = `http://127.0.0.1:${await freePort()}`;
+  const walletHostUrl = `http://127.0.0.1:${await freePort()}`;
+  const renderWebUrl = `http://127.0.0.1:${await freePort()}`;
+  const child = startCliInteractive([
+    '--runtime-dir',
+    runtimeDir,
+    '--bridge-url',
+    bridgeUrl,
+    '--wallet-host-url',
+    walletHostUrl,
+    '--render-web-url',
+    renderWebUrl,
+  ]);
+
+  try {
+    const { stdout } = await waitForOutput(child, /agentic>/, 30_000);
+    child.kill('SIGINT');
+    const exit = await waitForExit(child);
+    assert.equal(exit.code, 0, `stdout:\n${stdout}\nstderr:\n${await readRemaining(child.stderr)}`);
+  } finally {
+    await stopChild(child);
+  }
+});
+
 test('interactive help exposes the connectors command', async () => {
   const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-help-app-'));
   const bridgeUrl = `http://127.0.0.1:${await freePort()}`;
@@ -659,6 +685,74 @@ test('interactive connectors menu returns stdin ownership before new request men
     child.stdin.write('/quit\n');
     const exit = await waitForExit(child);
     assert.equal(exit.code, 0, `stderr:\n${await readRemaining(child.stderr)}`);
+  } finally {
+    await bridge.close();
+    await walletHost.close();
+    await stopChild(child);
+  }
+});
+
+test('interactive connect Ctrl+C returns to the main prompt', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-connect-abort-'));
+  const bridge = await startDisconnectedBridge();
+  const walletHost = await startMockWalletHost();
+  const child = startCliInteractive([
+    '--runtime-dir',
+    runtimeDir,
+    '--bridge-url',
+    bridge.url,
+    '--wallet-host-url',
+    walletHost.url,
+  ]);
+
+  try {
+    await waitForStdout(child, /agentic>/, 30_000);
+
+    const connectWait = waitForCombinedOutput(child, /Connect Wallet[\s\S]*terminal will detect the wallet\./, 10_000);
+    child.stdin.write('/connect\n');
+    await connectWait;
+
+    const cancelled = waitForStdout(child, /Cancelled\.[\s\S]*agentic>/, 10_000);
+    child.kill('SIGINT');
+    const stdout = await cancelled;
+
+    child.stdin.write('/quit\n');
+    const exit = await waitForExit(child);
+    assert.equal(exit.code, 0, `stdout:\n${stdout}\nstderr:\n${await readRemaining(child.stderr)}`);
+  } finally {
+    await bridge.close();
+    await walletHost.close();
+    await stopChild(child);
+  }
+});
+
+test('interactive legacy prompt Ctrl+C returns to the main prompt', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-legacy-prompt-abort-'));
+  const bridge = await startMockBridge([]);
+  const walletHost = await startMockWalletHost();
+  const child = startCliInteractive([
+    '--runtime-dir',
+    runtimeDir,
+    '--bridge-url',
+    bridge.url,
+    '--wallet-host-url',
+    walletHost.url,
+  ]);
+
+  try {
+    await waitForStdout(child, /agentic>/, 30_000);
+
+    const quotePrompt = waitForStdout(child, /Amount \[0\.01\]: /, 10_000);
+    child.stdin.write('/quote\n');
+    await quotePrompt;
+
+    const cancelled = waitForStdout(child, /Cancelled\.[\s\S]*agentic>/, 10_000);
+    child.kill('SIGINT');
+    const stdout = await cancelled;
+
+    child.stdin.write('/quit\n');
+    const exit = await waitForExit(child);
+    assert.equal(exit.code, 0, `stdout:\n${stdout}\nstderr:\n${await readRemaining(child.stderr)}`);
   } finally {
     await bridge.close();
     await walletHost.close();

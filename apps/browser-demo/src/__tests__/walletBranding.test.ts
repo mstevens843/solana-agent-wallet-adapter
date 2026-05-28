@@ -27,6 +27,13 @@ describe('wallet branding helpers', () => {
     expect(walletLogoIdForProviderName('com.solflare.mobile')).toBe('solflare');
   });
 
+  it('maps desktop browser-session provider labels to bundled wallet logos', () => {
+    expect(walletLogoIdForProviderName('Backpack (browser)')).toBe('backpack');
+    expect(walletLogoIdForProviderName('Phantom (browser)')).toBe('phantom');
+    expect(walletLogoIdForProviderName('Jupiter (browser)')).toBe('jupiter');
+    expect(walletLogoIdForProviderName('Solflare (browser)')).toBe('solflare');
+  });
+
   it('maps Solflare Android wallet metadata when package names are missing', () => {
     expect(
       androidWalletDisplayNameFromStatus({

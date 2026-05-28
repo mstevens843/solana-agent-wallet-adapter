@@ -195,6 +195,23 @@ describe('mountTauriLocalRuntimePanel', () => {
     expect(container.innerHTML).toContain('Advanced: run agent locally');
   });
 
+  it('renders persistent Local Bridge AI env fields in the advanced runtime setup', async () => {
+    const invoke = vi.fn().mockImplementation(async (cmd: string) => {
+      if (cmd === 'bridge_status') return fakeBridgeStatus();
+      if (cmd === 'read_env_keys') return {};
+      return undefined;
+    });
+    installTauri(invoke);
+    const container = (document as any).getElementById('panel-ai-fields');
+    mountTauriLocalRuntimePanel('panel-ai-fields');
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(container.innerHTML).toContain('Local Bridge AI provider key');
+    expect(container.innerHTML).toContain('name="AGENTIC_AI_API_KEY"');
+    expect(container.innerHTML).toContain('name="AGENTIC_AI_MODEL"');
+    expect(container.innerHTML).toContain('name="AGENTIC_AI_BASE_URL"');
+  });
+
   it('keeps the advanced details collapsed when no values are saved', async () => {
     const invoke = vi.fn().mockImplementation(async (cmd: string) => {
       if (cmd === 'bridge_status') return fakeBridgeStatus();
@@ -218,6 +235,20 @@ describe('mountTauriLocalRuntimePanel', () => {
     installTauri(invoke);
     const container = (document as any).getElementById('panel-open');
     mountTauriLocalRuntimePanel('panel-open');
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(container.innerHTML).toMatch(/<details class="tauri-local-runtime-advanced"\s+open\b/);
+  });
+
+  it('opens the advanced details when a Local Bridge AI provider key is saved', async () => {
+    const invoke = vi.fn().mockImplementation(async (cmd: string) => {
+      if (cmd === 'bridge_status') return fakeBridgeStatus();
+      if (cmd === 'read_env_keys') return { AGENTIC_AI_API_KEY: 'sk-test' };
+      return undefined;
+    });
+    installTauri(invoke);
+    const container = (document as any).getElementById('panel-ai-open');
+    mountTauriLocalRuntimePanel('panel-ai-open');
     await new Promise((r) => setTimeout(r, 0));
     await new Promise((r) => setTimeout(r, 0));
     expect(container.innerHTML).toMatch(/<details class="tauri-local-runtime-advanced"\s+open\b/);

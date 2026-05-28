@@ -251,13 +251,21 @@ export function createWalletConnectSolanaClient(
     for (const session of raw) {
       const ns = session.namespaces[SOLANA_NAMESPACE];
       if (!ns) continue;
+      const peerName = session.peer?.metadata?.name?.trim() || undefined;
+      const peerIcons = session.peer?.metadata?.icons?.filter((s) => typeof s === 'string' && s.length > 0);
       for (const account of ns.accounts ?? []) {
         const parts = account.split(':');
         if (parts.length < 3) continue;
         const chainId = `${parts[0]}:${parts[1]}`;
         const address = parts.slice(2).join(':');
         if (!address) continue;
-        out.push({ topic: session.topic, chainId, address });
+        out.push({
+          topic: session.topic,
+          chainId,
+          address,
+          ...(peerName ? { peerName } : {}),
+          ...(peerIcons && peerIcons.length > 0 ? { peerIcons } : {}),
+        });
       }
     }
     return out;

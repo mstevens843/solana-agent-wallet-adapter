@@ -109,6 +109,35 @@ export interface SelectChoice<T> {
   disabled?: boolean | string;
 }
 
+let activePromptSignal: AbortSignal | undefined;
+
+export async function withPromptSignal<T>(
+  signal: AbortSignal | undefined,
+  body: () => Promise<T>,
+): Promise<T> {
+  const previous = activePromptSignal;
+  activePromptSignal = signal;
+  try {
+    return await body();
+  } finally {
+    activePromptSignal = previous;
+  }
+}
+
+function promptContext(): { signal: AbortSignal } | undefined {
+  return activePromptSignal ? { signal: activePromptSignal } : undefined;
+}
+
+function abortPromptError(): Error {
+  const err = new Error('Prompt aborted.');
+  err.name = 'AbortPromptError';
+  return err;
+}
+
+function abortErrorFromSignal(signal: AbortSignal | undefined): Error {
+  return signal?.reason instanceof Error ? signal.reason : abortPromptError();
+}
+
 export async function select<T>(opts: {
   message: string;
   choices: Array<SelectChoice<T>>;
@@ -120,7 +149,7 @@ export async function select<T>(opts: {
     choices: opts.choices,
     ...(opts.default !== undefined ? { default: opts.default } : {}),
     pageSize: opts.pageSize ?? 12,
-  });
+  }, promptContext());
 }
 
 export async function rowSelect<T>(opts: {
@@ -142,6 +171,10 @@ export async function rowSelect<T>(opts: {
   let index = defaultIndex < opts.choices.length ? defaultIndex : 0;
   const stdin = process.stdin;
   const wasRaw = stdin.isRaw;
+  const signal = activePromptSignal;
+  if (signal?.aborted) {
+    return Promise.reject(abortErrorFromSignal(signal));
+  }
   // `@inquirer/prompts` closes its internal readline.Interface on exit, which
   // leaves stdin paused. Without an explicit resume() below, the keypress
   // listener attaches but stdin never emits 'data', so arrow keys (and Ctrl+C
@@ -166,15 +199,18 @@ export async function rowSelect<T>(opts: {
       if (cleaned) return;
       cleaned = true;
       stdin.off('keypress', onKeypress);
+      signal?.removeEventListener('abort', onAbort);
       stdin.setRawMode(wasRaw);
       if (wasPaused) stdin.pause();
       process.stdout.write('\n');
     };
     const abort = (): void => {
       cleanup();
-      const err = new Error('Prompt aborted.');
-      err.name = 'AbortPromptError';
-      reject(err);
+      reject(abortPromptError());
+    };
+    const onAbort = (): void => {
+      cleanup();
+      reject(abortErrorFromSignal(signal));
     };
     const onKeypress = (_value: string, key: readline.Key): void => {
       try {
@@ -210,6 +246,7 @@ export async function rowSelect<T>(opts: {
     };
 
     stdin.on('keypress', onKeypress);
+    signal?.addEventListener('abort', onAbort, { once: true });
     render();
   });
 }
@@ -224,7 +261,7 @@ export async function input(opts: {
   };
   if (opts.default !== undefined) built.default = opts.default;
   if (opts.validate) built.validate = opts.validate;
-  return inquirerInput(built);
+  return inquirerInput(built, promptContext());
 }
 
 export async function confirm(opts: {
@@ -234,7 +271,7 @@ export async function confirm(opts: {
   return inquirerConfirm({
     message: opts.message,
     default: opts.default ?? false,
-  });
+  }, promptContext());
 }
 
 export async function password(opts: {
@@ -244,7 +281,7 @@ export async function password(opts: {
   return inquirerPassword({
     message: opts.message,
     mask: opts.mask ?? '*',
-  });
+  }, promptContext());
 }
 
 export async function editor(opts: {
@@ -255,7 +292,7 @@ export async function editor(opts: {
     message: opts.message,
   };
   if (opts.default !== undefined) built.default = opts.default;
-  return inquirerEditor(built);
+  return inquirerEditor(built, promptContext());
 }
 
 // Free-text prompt that handles single- or multi-line input without requiring

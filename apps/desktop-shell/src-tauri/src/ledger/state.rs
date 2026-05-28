@@ -99,6 +99,12 @@ pub struct LedgerAddress {
     pub public_key: [u8; 32],
 }
 
+pub struct LedgerDerivedAddress {
+    pub derivation_path: String,
+    pub address: String,
+    pub public_key: [u8; 32],
+}
+
 pub fn get_address(
     handle: &LedgerStateHandle,
     derivation_path: &str,
@@ -116,6 +122,33 @@ pub fn get_address(
         address,
         public_key,
     })
+}
+
+pub fn get_addresses(
+    handle: &LedgerStateHandle,
+    derivation_paths: &[String],
+) -> Result<Vec<LedgerDerivedAddress>, String> {
+    if derivation_paths.len() > 256 {
+        return Err("ledger_get_addresses accepts at most 256 paths per request".into());
+    }
+
+    let _state = handle.lock()?;
+    let (mut transport, _meta) = LedgerHidTransport::open_first()?;
+    let channel = random_channel();
+    let mut out = Vec::with_capacity(derivation_paths.len());
+    for derivation_path in derivation_paths {
+        let path_payload = encode_derivation_path(derivation_path)?;
+        let apdu = build_get_pubkey_apdu(&path_payload, false)?;
+        let response = exchange_apdu(&mut transport, channel, &apdu, READ_TIMEOUT_MS)?;
+        let public_key = parse_pubkey(&response)?;
+        let address = bs58::encode(public_key).into_string();
+        out.push(LedgerDerivedAddress {
+            derivation_path: derivation_path.clone(),
+            address,
+            public_key,
+        });
+    }
+    Ok(out)
 }
 
 pub fn sign_transaction(

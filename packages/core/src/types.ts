@@ -73,6 +73,12 @@ export interface AdapterCapabilities {
     simulationPreview: boolean;
   };
   address?: string;
+  /** Display-only wallet provider label, for bridged hosts where signing runs elsewhere. */
+  walletName?: string;
+  /** Display-only app-specific logo id, when the host can map the provider to a bundled logo. */
+  walletLogoId?: string;
+  /** Display-only Wallet Standard icon URL/data URI for providers without a bundled logo. */
+  walletIcon?: string;
 }
 
 export interface ApprovalResource {

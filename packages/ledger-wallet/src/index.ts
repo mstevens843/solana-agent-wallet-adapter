@@ -5,9 +5,20 @@ export {
   type LedgerAddressResult,
   type LedgerAppConfig,
   type LedgerConnectResult,
+  type LedgerDerivedAddress,
   type LedgerDevice,
   type LedgerIpc,
 } from './ipc.js';
+export {
+  createWebHidLedgerIpc,
+  detectLedgerWebHidSupport,
+  ledgerJsDerivationPath,
+  normalizeLedgerWebHidError,
+  wrapOffchainMessage,
+  type CreateWebHidLedgerIpcOptions,
+  type LedgerWebHidSupport,
+  type LedgerWebHidUnsupportedReason,
+} from './webhid.js';
 export {
   registerLedgerWallet,
   resetLedgerRegistry,

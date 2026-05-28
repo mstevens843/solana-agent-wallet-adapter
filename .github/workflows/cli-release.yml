@@ -2,16 +2,11 @@ name: cli-release
 
 on:
   push:
-    branches:
-      - master
     tags:
       # v1.0+ standardises on `cli-v*` to disambiguate from desktop releases.
       # Legacy `v*` is still recognised so existing v0.2.x tags continue to work.
       - 'cli-v*'
       - 'v*'
-    paths:
-      - packages/cli/package.json
-      - .github/workflows/cli-release.yml
   workflow_dispatch:
     inputs:
       tag:
@@ -43,7 +38,7 @@ jobs:
           set -euo pipefail
           release_tag="$RELEASE_TAG"
           package_version="$(node -p "require('./packages/cli/package.json').version")"
-          if [ "${GITHUB_REF_TYPE:-}" = "branch" ]; then
+          if [ "${GITHUB_EVENT_NAME:-}" = "push" ] && [ "${GITHUB_REF_TYPE:-}" = "branch" ]; then
             release_tag="cli-v${package_version}"
             git fetch --force origin "refs/tags/${release_tag}:refs/tags/${release_tag}"
           fi
@@ -124,7 +119,26 @@ jobs:
             exit 0
           fi
           cd packages/cli
-          pnpm publish --access public --no-git-checks
+          for attempt in 1 2 3; do
+            set +e
+            pnpm publish --access public --no-git-checks
+            status=$?
+            set -e
+            if [ "$status" -eq 0 ]; then
+              exit 0
+            fi
+            if npm view "@solana-agent-wallet-adapter/cli@$package_version" version >/dev/null 2>&1; then
+              echo "@solana-agent-wallet-adapter/cli@$package_version now exists on npm; treating publish as complete."
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "Failed to publish @solana-agent-wallet-adapter/cli@$package_version after $attempt attempts." >&2
+              exit "$status"
+            fi
+            sleep_seconds=$((attempt * 20))
+            echo "Publish failed; retrying in ${sleep_seconds}s (attempt $attempt/3)."
+            sleep "$sleep_seconds"
+          done
 
   build:
     name: build ${{ matrix.target }}

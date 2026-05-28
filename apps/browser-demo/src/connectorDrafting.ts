@@ -582,21 +582,25 @@ export function normalizeConnectorDraftParameters(
   template: Pick<AgentPlanTemplate, 'id' | 'actionType' | 'connectorCapability'> & Partial<Pick<AgentPlanTemplate, 'fields'>>,
   parameters: Record<string, string>,
 ): Record<string, string> {
+  if (!templateCanUseConnectorParameters(template)) {
+    return stripConnectorDraftExtras(template as Pick<AgentPlanTemplate, 'fields'>, parameters);
+  }
   const templateForm = connectorSpecificActionFormForTemplate(template);
   const explicitForm = connectorActionFormById(parameters.connectorOperationId);
-  const formHint = explicitForm?.templateId === template.id
-    ? explicitForm
-    : templateForm ?? explicitForm;
+  const explicitFormForTemplate = explicitForm?.templateId === template.id ? explicitForm : undefined;
+  const formHint = explicitFormForTemplate ?? templateForm;
   const formConnector = formHint ? getAdapterMeta(formHint.connectorId) : undefined;
   const connector = formConnector ?? selectedConnectorForDraftParameters(parameters);
-  if (!connector && !isConnectorCapableTemplate(template)) return { ...parameters };
+  if (!connector && !isConnectorCapableTemplate(template)) {
+    return template.fields ? stripConnectorDraftExtras({ fields: template.fields }, parameters) : { ...parameters };
+  }
   if (!connector) return { ...parameters };
   const form = formHint ?? connectorActionFormForTemplate(template, connector);
   const operation = formHint?.operationLabel ??
     (form?.templateId === template.id && form.executionMode === 'read-only'
       ? form.operationLabel
       : normalizedConnectorOperation(connector, parameters.operation));
-  const shouldPersistForm = Boolean(form && (form === explicitForm || !isGenericConnectorActionForm(form)));
+  const shouldPersistForm = Boolean(form && (form === explicitFormForTemplate || !isGenericConnectorActionForm(form)));
   const base = {
     ...parameters,
     connectorId: connector.id,
@@ -616,11 +620,13 @@ export function scopeConnectorDraftParameters(
   template: Pick<AgentPlanTemplate, 'id' | 'actionType' | 'connectorCapability'> & Partial<Pick<AgentPlanTemplate, 'fields'>>,
   parameters: Record<string, string>,
 ): Record<string, string> {
+  if (!templateCanUseConnectorParameters(template)) {
+    return stripConnectorDraftExtras(template as Pick<AgentPlanTemplate, 'fields'>, parameters);
+  }
   const templateForm = connectorSpecificActionFormForTemplate(template);
   const explicitForm = connectorActionFormById(parameters.connectorOperationId);
-  const formHint = explicitForm?.templateId === template.id
-    ? explicitForm
-    : templateForm ?? explicitForm;
+  const explicitFormForTemplate = explicitForm?.templateId === template.id ? explicitForm : undefined;
+  const formHint = explicitFormForTemplate ?? templateForm;
   const connector = (formHint ? getAdapterMeta(formHint.connectorId) : undefined) ??
     selectedConnectorForDraftParameters(parameters);
   const form = formHint ??
@@ -629,11 +635,13 @@ export function scopeConnectorDraftParameters(
   const fields = form ? formTemplateFields(form) : template.fields ?? [];
   const allowed = new Set<string>([
     'connectorId',
-    'connectorOperationId',
     'connectorActionSource',
     'protocol',
     'operation',
   ]);
+  if (form && (form === explicitFormForTemplate || !isGenericConnectorActionForm(form))) {
+    allowed.add('connectorOperationId');
+  }
   for (const key of connectorScopedMetadataKeys(connector?.id ?? form?.connectorId)) {
     allowed.add(key);
   }
@@ -703,15 +711,37 @@ export function stripConnectorDraftExtras(
   template: Pick<AgentPlanTemplate, 'fields'>,
   parameters: Record<string, string>,
 ): Record<string, string> {
-  const next = { ...parameters };
   const fieldIds = new Set(template.fields.map((field) => field.id));
-  for (const key of ['connectorId', 'connectorActionSource', 'dapp', 'provider', 'actionUrl']) {
-    if (!fieldIds.has(key)) delete next[key];
-  }
-  for (const key of ['protocol', 'operation', 'blinkUrl', 'position']) {
-    if (!fieldIds.has(key)) delete next[key];
+  const next: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parameters)) {
+    if (fieldIds.has(key) || templateFieldMetadataKey(key, fieldIds)) {
+      next[key] = value;
+    }
   }
   return next;
+}
+
+function templateCanUseConnectorParameters(
+  template: Pick<AgentPlanTemplate, 'id' | 'actionType' | 'connectorCapability'> & Partial<Pick<AgentPlanTemplate, 'fields'>>,
+): boolean {
+  if (isConnectorCapableTemplate(template)) return true;
+  if (!template.fields) return true;
+  return template.fields.some((field) =>
+    field.id === 'protocol' ||
+    field.id === 'connectorId' ||
+    field.id === 'dapp' ||
+    field.id === 'provider' ||
+    field.id === 'route',
+  );
+}
+
+function templateFieldMetadataKey(key: string, fieldIds: Set<string>): boolean {
+  for (const suffix of CONNECTOR_FIELD_META_SUFFIXES) {
+    if (!key.endsWith(suffix)) continue;
+    const fieldId = key.slice(0, -suffix.length);
+    if (fieldIds.has(fieldId)) return true;
+  }
+  return false;
 }
 
 export function validateConnectorDraftParameters(

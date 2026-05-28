@@ -15,6 +15,15 @@ describe('cloud session policy helpers', () => {
     })).toBe(false);
   });
 
+  it('auto signs out a matching cloud session when wallet disconnect is explicit', () => {
+    expect(shouldAutoSignOutCloudSession({
+      cloudStatus: 'signed-in',
+      cloudWalletAddress: 'wallet-a',
+      connectedWalletAddress: 'wallet-a',
+      reason: 'wallet-disconnected',
+    })).toBe(true);
+  });
+
   it('auto signs out a cloud session when the wallet disconnects', () => {
     expect(shouldAutoSignOutCloudSession({
       cloudStatus: 'signed-in',

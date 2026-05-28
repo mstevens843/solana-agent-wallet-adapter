@@ -1,5 +1,5 @@
 export const HOSTED_BYOK_CLOUD_SESSION_REQUIRED =
-  'Sign in to Agentic Cloud with the connected wallet before using Hosted BYOK.';
+  'Cloud sign-in required for Hosted BYOK relay. Your AI key is not stored.';
 
 export interface CloudSessionBoundaryInput {
   cloudStatus: string;
@@ -10,8 +10,9 @@ export interface CloudSessionBoundaryInput {
 
 export function shouldAutoSignOutCloudSession(input: CloudSessionBoundaryInput): boolean {
   if (input.cloudStatus !== 'signed-in' || !input.cloudWalletAddress) return false;
-  if (input.cloudWalletAddress === input.connectedWalletAddress) return false;
   if (!input.connectedWalletAddress && input.reason === 'startup') return false;
+  if (input.reason === 'wallet-disconnected') return true;
+  if (input.cloudWalletAddress === input.connectedWalletAddress) return false;
   return true;
 }
 

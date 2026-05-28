@@ -28,11 +28,22 @@ export interface LedgerAddressResult {
   publicKeyB64: string;
 }
 
+export interface LedgerDerivedAddress extends LedgerAddressResult {
+  derivationPath: string;
+}
+
 /** Injectable IPC transport. Production wires `window.__TAURI_INTERNALS__.invoke`; tests use a fake. */
 export interface LedgerIpc {
+  /**
+   * Browser-only permission prompt for transports such as WebHID. Must be
+   * called directly from a user gesture. Tauri transports omit this and rely
+   * on their native device poll.
+   */
+  requestDevice?(): Promise<LedgerDevice | null>;
   listDevices(): Promise<LedgerDevice[]>;
   connect(): Promise<LedgerConnectResult>;
   getAddress(derivationPath: string, displayOnDevice?: boolean): Promise<LedgerAddressResult>;
+  getAddresses(derivationPaths: readonly string[]): Promise<LedgerDerivedAddress[]>;
   signTransaction(derivationPath: string, transactionB64: string): Promise<string>;
   /**
    * Sign an off-chain message via Ledger's `INS=0x07 SIGN_OFFCHAIN_MESSAGE`
@@ -68,6 +79,10 @@ export function createTauriLedgerIpc(invoke: InvokeFn): LedgerIpc {
       invoke<LedgerAddressResult>('ledger_get_address', {
         derivationPath,
         displayOnDevice: displayOnDevice ?? false,
+      }),
+    getAddresses: (derivationPaths) =>
+      invoke<LedgerDerivedAddress[]>('ledger_get_addresses', {
+        derivationPaths: [...derivationPaths],
       }),
     signTransaction: (derivationPath, transactionB64) =>
       invoke<string>('ledger_sign_transaction', { derivationPath, transactionB64 }),

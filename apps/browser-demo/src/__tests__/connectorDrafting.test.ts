@@ -19,6 +19,7 @@ import {
   normalizeConnectorDraftParameters,
   scopeConnectorDraftParameters,
   selectedConnectorForDraftParameters,
+  stripConnectorDraftExtras,
   validateConnectorDraftParameters,
 } from '../connectorDrafting.js';
 import {
@@ -111,6 +112,57 @@ describe('connector drafting helpers', () => {
     // primary `parameters.route` path remains intact for legitimate template use.
     const parameters = { route: 'kamino-lend' };
     expect(selectedConnectorForDraftParameters(parameters)?.id).toBe('kamino');
+  });
+
+  it('strips stale Kamino connector fields when returning to Portfolio check', () => {
+    const portfolio = templateById('balances');
+    const staleParameters = {
+      scope: 'SOL + configured tokens',
+      threshold: 'Show assets over $10',
+      connectorId: 'kamino',
+      connectorOperationId: 'kamino:deposit',
+      connectorActionSource: 'first-class-adapter',
+      protocol: 'Kamino Finance',
+      operation: 'Deposit',
+      token: 'SOL',
+      tokenLabel: 'SOL reserve',
+      amount: '1',
+    };
+
+    const stripped = stripConnectorDraftExtras(portfolio, staleParameters);
+    expect(stripped).toEqual({
+      scope: 'SOL + configured tokens',
+      threshold: 'Show assets over $10',
+    });
+
+    const normalized = normalizeConnectorDraftParameters(portfolio, staleParameters);
+    expect(normalized).toEqual(stripped);
+    expect(selectedConnectorForDraftParameters(normalized)).toBeUndefined();
+  });
+
+  it('ignores stale connectorOperationId values from a different template', () => {
+    const normalized = normalizeConnectorDraftParameters(templateById('protocol-position-check'), {
+      protocol: 'Kamino',
+      connectorOperationId: 'kamino:deposit',
+      token: 'SOL',
+      tokenLabel: 'SOL reserve',
+      amount: '1',
+      question: 'markets',
+      memo: 'Read positions only',
+    });
+
+    expect(normalized).toMatchObject({
+      connectorId: 'kamino',
+      protocol: 'Kamino Finance',
+      operation: 'Position check',
+      connectorActionSource: 'read-only',
+      token: 'SOL',
+      tokenLabel: 'SOL reserve',
+      question: 'markets',
+      memo: 'Read positions only',
+    });
+    expect(normalized).not.toHaveProperty('connectorOperationId');
+    expect(normalized).not.toHaveProperty('amount');
   });
 
   it('drops stale generic amount and token fields from SOL staking connector forms', () => {

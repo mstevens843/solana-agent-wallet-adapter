@@ -41,6 +41,11 @@ const FIELDS: ReadonlyArray<FieldDef> = [
   { key: 'MAGICEDEN_API_KEY', label: 'Magic Eden API key', detail: 'Required for Magic Eden first-class NFT actions on the local bridge.', placeholder: 'me-…' },
   { key: 'TENSOR_API_KEY', label: 'Tensor API key', detail: 'Required for Tensor first-class NFT actions on the local bridge.', placeholder: 'tensor-…' },
   { key: 'SANCTUM_API_KEY', label: 'Sanctum API key', detail: 'Required for Sanctum LST routing reads on the local bridge.', placeholder: 'sanctum-…' },
+  { key: 'AGENTIC_AI_PROVIDER', label: 'Local Bridge AI provider', detail: 'Provider name used by the local bridge when AGENTIC_AI_API_KEY is configured.', placeholder: 'openai' },
+  { key: 'AGENTIC_AI_API_FORMAT', label: 'Local Bridge AI format', detail: 'Provider API format for local bridge AI requests.', placeholder: 'openai-compatible' },
+  { key: 'AGENTIC_AI_API_KEY', label: 'Local Bridge AI provider key', detail: 'Optional persistent provider key for Local Bridge AI. It is written to this machine only.', placeholder: 'sk-…' },
+  { key: 'AGENTIC_AI_MODEL', label: 'Local Bridge AI model', detail: 'Model used by Local Bridge AI when the env-backed provider key is configured.', placeholder: 'gpt-5' },
+  { key: 'AGENTIC_AI_BASE_URL', label: 'Local Bridge AI base URL', detail: 'Base URL for OpenAI-compatible or provider-native local bridge AI requests.', placeholder: 'https://api.openai.com/v1', isUrl: true },
 ];
 
 // Empirically-chosen polling cadence: 5s is short enough that a bridge crash
@@ -303,7 +308,7 @@ function render(): void {
     <section class="connector-keys-panel tauri-local-runtime-panel" aria-labelledby="tauri-local-runtime-title">
       <header>
         <h3 id="tauri-local-runtime-title">Local runtime keys (Desktop)</h3>
-        <p>All fields below are optional. Agentic Desktop picks the right agent automatically — Hosted (when signed in to Agentic Cloud) or on-device — and both run policy gates against the operator's market-data APIs. Fill in your own keys only if you want to run the agent on the local bridge (offline / private mode). Keys saved here are written to the local bridge's .env file and never leave your machine.</p>
+        <p>All fields below are optional. Agentic Desktop picks the right agent automatically — Hosted (when signed in to Agentic Cloud) or on-device — and both run policy gates against the operator's market-data APIs. Fill in your own market-data or AI provider keys only if you want the local bridge to run those calls on this machine. Keys saved here are written to the local bridge's .env file and never leave your machine.</p>
       </header>
       ${state.loading ? '<p class="connector-keys-status">Loading…</p>' : ''}
       ${noticeHtml}

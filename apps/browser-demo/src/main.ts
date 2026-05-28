@@ -135,10 +135,13 @@ import {
 import {
   buildDesktopBrowserConnectUrl,
   buildDesktopBrowserIntentUrl,
+  canUseMultiPathWalletFlow,
   desktopBridgeNotReadyMessage,
   initialDesktopConnectFlowState,
   isDesktopBridgeReady,
   reduceDesktopConnectFlow,
+  shouldRenderDetachedLedgerOverlay,
+  shouldRenderDetachedWalletConnectOverlay,
   type DesktopConnectFlowAction,
   type DesktopConnectFlowState,
   type DesktopConnectMethod,
@@ -148,6 +151,7 @@ import {
   cliIntentAllowsBridgeRequestClaim,
   resolveCliCloudSignInReadiness,
   resolveCliSignInBridgeHydration,
+  resolveWalletSigningRequestCopy,
 } from './cliSignInBridge.js';
 import { computeBridgeConfigUpdate } from './bridgeTokenSync.js';
 import {
@@ -188,22 +192,35 @@ import {
 } from '@solana-agent-wallet-adapter/walletconnect-solana';
 import {
   LEDGER_WALLET_NAME,
+  createWebHidLedgerIpc,
   createTauriLedgerIpc,
   decodeLedgerPublicKey,
+  detectLedgerWebHidSupport,
   detectLedgerTauriInvoke,
   registerLedgerWallet,
+  unregisterAllLedgerWallets,
   type LedgerDevice,
+  type LedgerDerivedAddress,
   type LedgerIpc,
 } from '@solana-agent-wallet-adapter/ledger-wallet';
 import {
-  DEFAULT_LEDGER_DERIVATION_PATH,
   initialLedgerOverlayState,
+  ledgerConfirmationRetryState,
   ledgerOverlayBodyHtml,
   ledgerOverlayHtml,
   reduceLedgerOverlay,
   type LedgerOverlayAction,
   type LedgerOverlayState,
 } from './ledgerOverlay.js';
+import {
+  ledgerAccountPaths,
+  mergeLedgerAccountCandidates,
+  mergeLedgerDerivedAccounts,
+  rankLedgerAccounts,
+  toLedgerAccountCandidate,
+  type LedgerAccountCandidate,
+  type LedgerAccountPath,
+} from './ledgerAccounts.js';
 import {
   startWalletStatusPoll,
   type WalletStatusPollHandle,
@@ -272,6 +289,11 @@ import {
   hostedByokCloudSessionBlockReason,
   shouldAutoSignOutCloudSession,
 } from './cloudSessionPolicy.js';
+import { approvalErrorMessages } from './approvalDisplay.js';
+import {
+  openExternalUrlForSurface,
+  shouldInterceptExternalLink,
+} from './externalLinks.js';
 import {
   MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED,
   desktopAiModeDisabledReason,
@@ -1136,6 +1158,10 @@ interface AgenticAndroidBridge {
   biometricStatus?: () => string;
   biometricPrompt?: (requestId: string, payloadJson: string) => void;
   appLifecycleState?: () => string;
+}
+
+interface IosSystemClipboardBridge {
+  clipboardWrite?: (options: { text: string; label?: string }) => Promise<{ ok?: boolean }> | { ok?: boolean };
 }
 
 // DeviceAgentStatus / DeviceAgentRuntimeState / DeviceAgentRuntimeKind are imported
@@ -2549,6 +2575,7 @@ interface DemoState {
   wallets: DiscoveredWallet[];
   selectedWalletName: string;
   selectedWalletLogoId?: WalletProviderLogoId;
+  selectedWalletIcon?: string;
   browserWalletPickerOpen: boolean;
   /** When non-null, the wallet-host browser page is currently waiting for a
    *  named browser-extension wallet to register itself via wallet-standard.
@@ -3455,6 +3482,7 @@ const state: DemoState = {
   wallets: [],
   selectedWalletName: persisted.browserWalletSession?.cluster === initialCluster ? persisted.browserWalletSession.walletName : '',
   selectedWalletLogoId: persisted.selectedWalletLogoId,
+  selectedWalletIcon: undefined,
   browserWalletPickerOpen: false,
   walletHostOpening: null,
   browserWalletSession: persisted.browserWalletSession,
@@ -4385,9 +4413,6 @@ async function bootstrap(): Promise<void> {
     // Hydrate the per-brand picker preference (Slice D) from localStorage so
     // the "Show external browser fallback" toggle persists across launches.
     hydrateDesktopBrandPanelsPrefs();
-    // Restore any previously-paired WalletConnect sessions (Slice E). Lazy
-    // — skips if no project ID is configured.
-    void restoreWalletConnectSessions();
     // Wire the Tauri IPC for the create/import/unlock overlay (Slice C) and
     // start polling so the UI notices when the Rust-side auto-lock timer
     // fires (idle timeout). Polling errors are swallowed; the UI tolerates
@@ -4470,6 +4495,12 @@ async function bootstrap(): Promise<void> {
     await restoreIosNativeSession().catch((err) => {
       console.warn('[bootstrap] restoreIosNativeSession failed', err);
     });
+  }
+  if (multiPathWalletFlowAvailable()) {
+    // Restore any previously-paired WalletConnect sessions. Lazy — skips if
+    // no project ID is configured. This used to be desktop-only; the website
+    // now exposes the same QR path.
+    void restoreWalletConnectSessions();
   }
   if (!state.androidNativeEnvironment.isAndroidNative && !state.iosNativeEnvironment.isIosNative) {
     await restoreBrowserWalletSession();
@@ -4917,7 +4948,7 @@ async function handleQrConnectRoute(href: string): Promise<void> {
     stopQrConnectRelay();
     setQrConnectError(
       'This QR connection link is incomplete.',
-      'Go back to the desktop app and scan a fresh Phantom or Solflare QR code.',
+      'Go back to Agentic and scan a fresh Phantom or Solflare QR code.',
     );
     return;
   }
@@ -4947,7 +4978,7 @@ async function handleQrConnectRoute(href: string): Promise<void> {
       stopQrConnectRelay();
       setQrConnectError(
         'No active phone relay session was found.',
-        'Scan the QR code again from the desktop app and approve the wallet Connect prompt.',
+        'Scan the QR code again from Agentic and approve the wallet Connect prompt.',
       );
       return;
     }
@@ -4990,10 +5021,10 @@ async function handleQrConnectConnectCallback(
   wallet: EncryptedDeeplinkWalletId,
   pairing: string,
 ): Promise<void> {
-  setQrConnectProcessing(wallet, pairing, 'Decrypting wallet approval.', 'Registering this phone with the desktop pairing relay.');
+  setQrConnectProcessing(wallet, pairing, 'Decrypting wallet approval.', 'Registering this phone with the Agentic pairing relay.');
   const metadata = await fetchPairingDeeplinkMetadata(pairing);
   if (metadata.wallet !== wallet) {
-    throw new ProtocolError('invalid_request', 'Wallet response does not match the desktop QR wallet.');
+    throw new ProtocolError('invalid_request', 'Wallet response does not match this QR wallet.');
   }
   const decrypted = decryptConnectResponse(wallet, href, metadata.dappSecretKey);
   const session: EncryptedDeeplinkSessionRecord = {
@@ -5030,25 +5061,36 @@ async function handleQrConnectSignCallback(
   }
   const session = loadQrConnectSession(pairing);
   if (!session || session.wallet !== wallet) {
-    throw new ProtocolError('unauthorized', 'This phone relay session expired. Scan the desktop QR again.');
+    throw new ProtocolError('unauthorized', 'This phone relay session expired. Scan the Agentic QR again.');
   }
-  setQrConnectProcessing(wallet, pairing, 'Processing wallet approval.', 'Sending the signed result back to the desktop app.');
+  setQrConnectProcessing(wallet, pairing, 'Processing wallet approval.', 'Sending the signed result back to Agentic.');
   const request = loadQrConnectPendingRequest(pairing, effectiveRequestId);
   if (!request) {
-    throw new ProtocolError('invalid_request', 'No matching desktop signing request was found on this phone.');
+    const err = new ProtocolError('invalid_request', 'No matching Agentic signing request was found on this phone.');
+    await postPairingResult(pairing, effectiveRequestId, deeplinkApprovalResourceFromError(effectiveRequestId, err));
+    clearQrConnectPendingRequest(pairing, effectiveRequestId);
+    clearQrConnectActiveSign(pairing);
+    scrubQrConnectUrl(wallet, pairing);
+    startQrConnectRelay(session, 'relay-active');
+    return;
   }
-  const payload = decryptSigningResponse(href, session.sharedSecret);
-  const approval = await resolveSigningPayload({
-    wallet,
-    request,
-    payload,
-    sendRawTransaction: async (transaction) => sendQrConnectRawTransaction(session.cluster, transaction),
-  });
-  await postPairingResult(pairing, effectiveRequestId, { ...approval, requestId: effectiveRequestId });
-  clearQrConnectPendingRequest(pairing, effectiveRequestId);
-  clearQrConnectActiveSign(pairing);
-  scrubQrConnectUrl(wallet, pairing);
-  startQrConnectRelay(session, 'relay-active');
+  try {
+    const payload = decryptSigningResponse(href, session.sharedSecret);
+    const approval = await resolveSigningPayload({
+      wallet,
+      request,
+      payload,
+      sendRawTransaction: async (transaction) => sendQrConnectRawTransaction(session.cluster, transaction),
+    });
+    await postPairingResult(pairing, effectiveRequestId, { ...approval, requestId: effectiveRequestId });
+  } catch (err) {
+    await postPairingResult(pairing, effectiveRequestId, deeplinkApprovalResourceFromError(effectiveRequestId, err));
+  } finally {
+    clearQrConnectPendingRequest(pairing, effectiveRequestId);
+    clearQrConnectActiveSign(pairing);
+    scrubQrConnectUrl(wallet, pairing);
+    startQrConnectRelay(session, 'relay-active');
+  }
 }
 
 function setQrConnectProcessing(
@@ -5086,12 +5128,12 @@ function startQrConnectRelay(
   qrConnect.walletUrl = '';
   qrConnect.message =
     mode === 'connected'
-      ? 'Connection successful. Signing into desktop app.'
-      : 'Keep this page open to approve desktop requests.';
+      ? 'Connection successful. Signing into Agentic.'
+      : 'Keep this page open to approve Agentic requests.';
   qrConnect.detail =
     mode === 'connected'
-      ? 'The desktop app will switch to the connected wallet shortly.'
-      : 'When the desktop asks for a signature, this page will open your wallet for approval.';
+      ? 'Agentic will switch to the connected wallet shortly.'
+      : 'When Agentic asks for a signature, this page will open your wallet for approval.';
   qrConnect.pollHandle = window.setInterval(() => {
     void runQrConnectInboxTick(session);
   }, WALLET_HOST_PAIRING_INBOX_INTERVAL_MS);
@@ -5100,8 +5142,8 @@ function startQrConnectRelay(
     window.setTimeout(() => {
       if (qrConnect.mode !== 'connected' || qrConnect.pairing !== session.pairing) return;
       qrConnect.mode = 'relay-active';
-      qrConnect.message = 'Keep this page open to approve desktop requests.';
-      qrConnect.detail = 'When the desktop asks for a signature, this page will open your wallet for approval.';
+      qrConnect.message = 'Keep this page open to approve Agentic requests.';
+      qrConnect.detail = 'When Agentic asks for a signature, this page will open your wallet for approval.';
       render();
     }, 1600);
   }
@@ -5132,7 +5174,10 @@ async function runQrConnectInboxTick(session: EncryptedDeeplinkSessionRecord): P
     if (response.status === 404 || response.status === 410) {
       stopQrConnectRelay();
       clearQrConnectSession(session.pairing);
-      setQrConnectError('Desktop pairing expired.', 'Return to the desktop app and scan a fresh QR code.');
+      setQrConnectError('Agentic pairing expired.', 'Return to Agentic and scan a fresh QR code.');
+    } else if (response.status === 429) {
+      qrConnect.detail = 'The pairing relay is rate limiting this phone. Keep this page open; it will retry automatically.';
+      render();
     }
     return;
   }
@@ -5205,7 +5250,7 @@ async function openQrConnectWalletForRequest(
     // wallet's universal-link page then renders the Play Store install
     // prompt. Letting the user tap the rendered button below preserves the
     // gesture and lets the OS route the deeplink to the wallet app.
-    qrConnect.detail = 'Tap the button below — your wallet will open with the swap to approve, then return you here automatically.';
+    qrConnect.detail = 'Tap the button below — your wallet will open with the request to approve, then return you here automatically.';
     render();
   } catch (err) {
     await postPairingResult(
@@ -5245,7 +5290,7 @@ async function postQrConnectHost(session: EncryptedDeeplinkSessionRecord): Promi
         backend: 'remote-relay-deeplink',
         cluster: [session.cluster],
         supports: {
-          signMessage: true,
+          signMessage: false,
           signTransaction: true,
           signAndSendTransaction: true,
           multiSign: false,
@@ -5505,7 +5550,7 @@ function qrConnectPage(): string {
           : ''}
         ${action}
         ${qrConnect.mode === 'relay-active'
-          ? '<p class="qr-connect-warning">Closing or leaving this page stops desktop signing until you scan again.</p>'
+          ? '<p class="qr-connect-warning">Closing or leaving this page stops signing until you scan again.</p>'
           : ''}
       </section>
     </main>
@@ -5940,6 +5985,16 @@ const WALLET_CONNECT_BRAND_LOGOS: Record<string, string> = {
   magicEden: 'magiceden',
 };
 
+const WALLETCONNECT_SESSION_META_STORAGE_KEY = 'agentic-walletconnect-session-meta-v1';
+
+interface PersistedWalletConnectSessionMeta {
+  topic: string;
+  brandId: string | null;
+  peerName: string | null;
+  address: string;
+  createdAt: number;
+}
+
 interface WalletConnectRuntime {
   client: WalletConnectSolanaClient | null;
   initPromise: Promise<WalletConnectSolanaClient> | null;
@@ -5966,13 +6021,22 @@ function walletConnectAppMetadata(): {
   url: string;
   icons: string[];
 } {
+  const origin =
+    typeof window !== 'undefined' && window.location
+      ? window.location.origin
+      : 'https://agentic-signer.com';
+  if (!state.tauriNativeEnvironment.isTauriNative) {
+    return {
+      name: 'Agentic',
+      description: 'Solana Agent Wallet Adapter',
+      url: origin,
+      icons: [],
+    };
+  }
   return {
     name: 'Agentic Desktop',
     description: 'Solana Agent Wallet Adapter — desktop runtime',
-    url:
-      typeof window !== 'undefined' && window.location
-        ? window.location.origin
-        : 'https://agentic-signer.com',
+    url: origin,
     icons: [],
   };
 }
@@ -6015,6 +6079,7 @@ async function ensureWalletConnectClient(): Promise<WalletConnectSolanaClient> {
     // `standard:disconnect` feature, which DOES call client.disconnect.
     client.on('session_delete', (topic) => {
       unregisterWalletConnectSolanaWallet(topic);
+      clearWalletConnectSessionMeta(topic);
       if (state.selectedWalletName.includes('(mobile)')) {
         state.address = '';
         render();
@@ -6022,6 +6087,7 @@ async function ensureWalletConnectClient(): Promise<WalletConnectSolanaClient> {
     });
     client.on('session_expire', (topic) => {
       unregisterWalletConnectSolanaWallet(topic);
+      clearWalletConnectSessionMeta(topic);
     });
     walletConnect.client = client;
     return client;
@@ -6060,6 +6126,13 @@ function registerBrandSession(brandId: string, session: WalletConnectSession): s
     client: walletConnect.client!,
     icon: iconUrl as `data:image/svg+xml;base64,${string}`,
   });
+  saveWalletConnectSessionMeta({
+    topic: session.topic,
+    brandId,
+    peerName: session.peerName ?? null,
+    address: session.address,
+    createdAt: Date.now(),
+  });
   return walletName;
 }
 
@@ -6091,7 +6164,70 @@ function registerAnyWalletConnectSession(session: WalletConnectSession): string 
     client: walletConnect.client!,
     icon,
   });
+  saveWalletConnectSessionMeta({
+    topic: session.topic,
+    brandId: null,
+    peerName: session.peerName ?? null,
+    address: session.address,
+    createdAt: Date.now(),
+  });
   return walletName;
+}
+
+function loadWalletConnectSessionMeta(): Record<string, PersistedWalletConnectSessionMeta> {
+  try {
+    const parsed = JSON.parse(
+      window.localStorage.getItem(WALLETCONNECT_SESSION_META_STORAGE_KEY) ?? '{}',
+    ) as unknown;
+    if (!parsed || typeof parsed !== 'object') return {};
+    const out: Record<string, PersistedWalletConnectSessionMeta> = {};
+    for (const [topic, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!value || typeof value !== 'object') continue;
+      const record = value as Record<string, unknown>;
+      const brandId = record.brandId;
+      const peerName = record.peerName;
+      if (
+        typeof record.topic !== 'string' ||
+        record.topic !== topic ||
+        (typeof brandId !== 'string' && brandId !== null) ||
+        (typeof peerName !== 'string' && peerName !== null) ||
+        typeof record.address !== 'string' ||
+        typeof record.createdAt !== 'number'
+      ) {
+        continue;
+      }
+      out[topic] = {
+        topic,
+        brandId,
+        peerName,
+        address: record.address,
+        createdAt: record.createdAt,
+      };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function saveWalletConnectSessionMeta(meta: PersistedWalletConnectSessionMeta): void {
+  try {
+    const all = loadWalletConnectSessionMeta();
+    all[meta.topic] = meta;
+    window.localStorage.setItem(WALLETCONNECT_SESSION_META_STORAGE_KEY, JSON.stringify(all));
+  } catch {
+    // Best-effort display metadata only; WalletConnect owns the real session.
+  }
+}
+
+function clearWalletConnectSessionMeta(topic: string): void {
+  try {
+    const all = loadWalletConnectSessionMeta();
+    delete all[topic];
+    window.localStorage.setItem(WALLETCONNECT_SESSION_META_STORAGE_KEY, JSON.stringify(all));
+  } catch {
+    // Best-effort display metadata only.
+  }
 }
 
 async function handleScanQrForBrand(brandId: string): Promise<void> {
@@ -6138,6 +6274,7 @@ async function handleScanQrForBrand(brandId: string): Promise<void> {
     dispatchWalletConnectOverlay({ type: 'completing' });
     const walletName = registerBrandSession(brandId, session);
     dispatchWalletConnectOverlay({ type: 'close' });
+    state.wallets = visibleBrowserWallets(listAvailableWallets());
     state.selectedWalletName = walletName;
     await runConnect();
   } catch (err) {
@@ -6191,7 +6328,17 @@ async function handleScanQrAnyWallet(displayBrandId?: string): Promise<void> {
     const session = await approval();
     dispatchWalletConnectOverlay({ type: 'completing' });
     const walletName = registerAnyWalletConnectSession(session);
+    if (displayBrandId && WALLET_CONNECT_BRANDS[displayBrandId]) {
+      saveWalletConnectSessionMeta({
+        topic: session.topic,
+        brandId: displayBrandId,
+        peerName: session.peerName ?? null,
+        address: session.address,
+        createdAt: Date.now(),
+      });
+    }
     dispatchWalletConnectOverlay({ type: 'close' });
+    state.wallets = visibleBrowserWallets(listAvailableWallets());
     state.selectedWalletName = walletName;
     await runConnect();
   } catch (err) {
@@ -6247,25 +6394,45 @@ function walletConnectOverlayBlock(): string {
   // The Tauri desktop renders the same state machine inline inside the
   // discover-flow rail, so suppress the modal mount on native to avoid a
   // double-render.
-  if (state.tauriNativeEnvironment.isTauriNative) return '';
+  if (!shouldRenderDetachedWalletConnectOverlay({
+    isTauriNative: state.tauriNativeEnvironment.isTauriNative,
+    flowStep: desktopConnect.flow.step,
+  })) return '';
   return walletConnectQrOverlayHtml({
     state: walletConnect.overlay,
     logoUrl: (logoId) => (BRAND_LOGOS as Record<string, string | undefined>)[logoId] ?? null,
+    surface: walletConnectQrSurface(),
+    preferDeepLink: preferWalletConnectSameDeviceLaunch(),
   });
+}
+
+function walletConnectQrSurface(): 'desktop' | 'website' {
+  return state.tauriNativeEnvironment.isTauriNative ? 'desktop' : 'website';
+}
+
+function preferWalletConnectSameDeviceLaunch(): boolean {
+  if (state.tauriNativeEnvironment.isTauriNative) return false;
+  return state.mwaEnvironment.isAndroid || state.mwaEnvironment.isIos || isMobileAppViewport();
 }
 
 async function restoreWalletConnectSessions(): Promise<void> {
   if (!WALLETCONNECT_PROJECT_ID) return;
   try {
     const client = await ensureWalletConnectClient();
+    const metaByTopic = loadWalletConnectSessionMeta();
     for (const session of client.listSessions()) {
-      // Determine the brand from any namespace metadata we have; since WC
-      // doesn't surface brand identity, default to phantom for now — the
-      // user can disconnect+re-pair if they need a different label.
-      const brandId = inferWalletConnectBrandForSession(session);
-      if (!brandId) continue;
       try {
-        registerBrandSession(brandId, session);
+        const persisted = metaByTopic[session.topic];
+        const brandId = persisted?.brandId ?? inferWalletConnectBrandForSession(session);
+        if (brandId && WALLET_CONNECT_BRANDS[brandId]) {
+          registerBrandSession(brandId, session);
+        } else {
+          registerAnyWalletConnectSession({
+            ...session,
+            peerName: session.peerName ?? persisted?.peerName ?? undefined,
+          });
+        }
+        state.wallets = visibleBrowserWallets(listAvailableWallets());
       } catch (err) {
         console.warn('[walletconnect] failed to restore session', err);
       }
@@ -6275,11 +6442,12 @@ async function restoreWalletConnectSessions(): Promise<void> {
   }
 }
 
-function inferWalletConnectBrandForSession(_session: WalletConnectSession): string | null {
-  // WC doesn't carry the brand in the session; in Slice E we don't track it
-  // outside the live pairing. Restored sessions are labelled "WalletConnect"
-  // generically — they still sign correctly.
-  return 'phantom';
+function inferWalletConnectBrandForSession(session: WalletConnectSession): string | null {
+  const peerName = session.peerName?.toLowerCase() ?? '';
+  for (const [brandId, descriptor] of Object.entries(WALLET_CONNECT_BRANDS)) {
+    if (peerName.includes(descriptor.name.toLowerCase())) return brandId;
+  }
+  return null;
 }
 
 void unregisterAllWalletConnectWallets; // referenced by tests / future tear-down
@@ -6293,6 +6461,20 @@ void unregisterWalletConnectSolanaWallet;
 // Standard wallet, kicking off `runConnect()`).
 
 const LEDGER_SEARCH_POLL_INTERVAL_MS = 1200;
+const LEDGER_INITIAL_ACCOUNTS_PER_FAMILY = 40;
+const LEDGER_LOAD_MORE_ACCOUNTS_PER_FAMILY = 10;
+const LEDGER_MAX_ACCOUNTS_PER_FAMILY = 100;
+const LEDGER_ACTIVITY_CONCURRENCY = 6;
+const LEDGER_LAST_ACCOUNT_STORAGE_KEY = 'agentic-ledger-last-account-v1';
+
+interface PersistedLedgerAccountSelection {
+  address: string;
+  derivationPath: string;
+  family: 'default' | 'legacy';
+  index: number;
+  cluster: Cluster;
+  connectedAt: string;
+}
 
 interface LedgerRuntime {
   ipc: LedgerIpc | null;
@@ -6300,6 +6482,9 @@ interface LedgerRuntime {
   pollHandle: number | null;
   /** Per-pairing token; bumped on every overlay open so stale async work no-ops. */
   pairingToken: number;
+  accounts: LedgerAccountCandidate[];
+  nextDefaultIndex: number;
+  nextLegacyIndex: number;
 }
 
 const ledger: LedgerRuntime = {
@@ -6307,6 +6492,9 @@ const ledger: LedgerRuntime = {
   overlay: initialLedgerOverlayState(),
   pollHandle: null,
   pairingToken: 0,
+  accounts: [],
+  nextDefaultIndex: 0,
+  nextLegacyIndex: 0,
 };
 
 function dispatchLedgerOverlay(action: LedgerOverlayAction): void {
@@ -6317,9 +6505,31 @@ function dispatchLedgerOverlay(action: LedgerOverlayAction): void {
 function ensureLedgerIpc(): LedgerIpc | null {
   if (ledger.ipc) return ledger.ipc;
   const invoke = detectLedgerTauriInvoke();
-  if (!invoke) return null;
-  ledger.ipc = createTauriLedgerIpc(invoke);
+  if (invoke) {
+    ledger.ipc = createTauriLedgerIpc(invoke);
+    return ledger.ipc;
+  }
+  const webHidSupport = detectLedgerWebHidSupport();
+  if (!webHidSupport.supported) return null;
+  ledger.ipc = createWebHidLedgerIpc({
+    onDisconnect: () => {
+      if (ledger.overlay.mode !== 'closed') {
+        dispatchLedgerOverlay({
+          type: 'setError',
+          error: 'Ledger disconnected. Reconnect the device and try again.',
+        });
+      }
+    },
+  });
   return ledger.ipc;
+}
+
+function ledgerUnavailableMessage(): string {
+  if (state.tauriNativeEnvironment.isTauriNative) {
+    return 'Could not reach the Tauri runtime to talk to the Ledger device.';
+  }
+  return detectLedgerWebHidSupport().message
+    ?? 'Ledger USB is not available in this browser. Use Chrome or Edge on desktop, or connect with QR/browser extension.';
 }
 
 function stopLedgerPoll(): void {
@@ -6372,9 +6582,11 @@ async function proceedToAppCheck(
   try {
     await ipc.connect();
     if (ledger.pairingToken !== token) return;
-    const addressResult = await ipc.getAddress(DEFAULT_LEDGER_DERIVATION_PATH, false);
-    if (ledger.pairingToken !== token) return;
-    dispatchLedgerOverlay({ type: 'addressReady', address: addressResult.address });
+    await scanLedgerAccountBatch(ipc, token, {
+      defaultCount: LEDGER_INITIAL_ACCOUNTS_PER_FAMILY,
+      legacyCount: LEDGER_INITIAL_ACCOUNTS_PER_FAMILY,
+      reset: true,
+    });
   } catch (err) {
     if (ledger.pairingToken !== token) return;
     dispatchLedgerOverlay({
@@ -6384,31 +6596,272 @@ async function proceedToAppCheck(
   }
 }
 
-function openLedgerOverlay(): void {
-  if (!state.tauriNativeEnvironment.isTauriNative) {
-    pushToast(
-      'pending',
-      'Desktop only',
-      'Ledger HID pairing is available in the desktop app.',
-    );
+async function scanLedgerAccountBatch(
+  ipc: LedgerIpc,
+  token: number,
+  options: { defaultCount: number; legacyCount: number; reset: boolean },
+): Promise<void> {
+  if (options.reset) {
+    ledger.accounts = [];
+    ledger.nextDefaultIndex = 0;
+    ledger.nextLegacyIndex = 0;
+    dispatchLedgerOverlay({
+      type: 'scanStarted',
+      status: 'Retrieving addresses from your Ledger...',
+      progress: 8,
+    });
+  } else {
+    dispatchLedgerOverlay({
+      type: 'loadMoreStarted',
+      status: 'Retrieving more Ledger addresses...',
+      progress: 12,
+    });
+  }
+
+  const defaultCount = Math.min(
+    options.defaultCount,
+    Math.max(0, LEDGER_MAX_ACCOUNTS_PER_FAMILY - ledger.nextDefaultIndex),
+  );
+  const legacyCount = Math.min(
+    options.legacyCount,
+    Math.max(0, LEDGER_MAX_ACCOUNTS_PER_FAMILY - ledger.nextLegacyIndex),
+  );
+  const paths = ledgerAccountPaths({
+    defaultStart: ledger.nextDefaultIndex,
+    defaultCount,
+    legacyStart: ledger.nextLegacyIndex,
+    legacyCount,
+  });
+  if (paths.length === 0) {
+    dispatchLedgerOverlay({
+      type: 'accountsReady',
+      accounts: ledger.accounts,
+      selectedAddress: ledger.overlay.address ?? persistedLedgerSelection()?.address,
+      canLoadMore: false,
+    });
     return;
   }
+
+  const derived = await ipc.getAddresses(paths.map((path) => path.derivationPath));
+  if (ledger.pairingToken !== token) return;
+  ledger.nextDefaultIndex += defaultCount;
+  ledger.nextLegacyIndex += legacyCount;
+
+  dispatchLedgerOverlay({
+    type: 'scanProgress',
+    status: 'Checking SOL balances...',
+    progress: 58,
+  });
+  const candidates = await enrichLedgerAccounts(paths, derived);
+  if (ledger.pairingToken !== token) return;
+
+  dispatchLedgerOverlay({
+    type: 'scanProgress',
+    status: 'Ranking Ledger accounts...',
+    progress: 88,
+  });
+  const preferredAddress = ledger.overlay.address ?? persistedLedgerSelection()?.address;
+  ledger.accounts = rankLedgerAccounts(
+    mergeLedgerAccountCandidates(ledger.accounts, candidates),
+    { lastSelectedAddress: persistedLedgerSelection()?.address },
+  );
+  dispatchLedgerOverlay({
+    type: 'accountsReady',
+    accounts: ledger.accounts,
+    selectedAddress: preferredAddress,
+    canLoadMore: canLoadMoreLedgerAccounts(),
+  });
+}
+
+async function loadMoreLedgerAccounts(): Promise<void> {
+  const ipc = ledger.ipc;
+  if (!ipc || ledger.overlay.mode !== 'choose-address' || ledger.overlay.loadingMore) return;
+  const token = ledger.pairingToken;
+  try {
+    await scanLedgerAccountBatch(ipc, token, {
+      defaultCount: LEDGER_LOAD_MORE_ACCOUNTS_PER_FAMILY,
+      legacyCount: LEDGER_LOAD_MORE_ACCOUNTS_PER_FAMILY,
+      reset: false,
+    });
+  } catch (err) {
+    if (ledger.pairingToken !== token) return;
+    dispatchLedgerOverlay({
+      type: 'setError',
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+function canLoadMoreLedgerAccounts(): boolean {
+  return ledger.nextDefaultIndex < LEDGER_MAX_ACCOUNTS_PER_FAMILY
+    || ledger.nextLegacyIndex < LEDGER_MAX_ACCOUNTS_PER_FAMILY;
+}
+
+async function enrichLedgerAccounts(
+  paths: readonly LedgerAccountPath[],
+  derived: readonly LedgerDerivedAddress[],
+): Promise<LedgerAccountCandidate[]> {
+  const accounts = mergeLedgerDerivedAccounts(paths, derived);
+  const connection = new Connection(activeRpcUrl(), 'confirmed');
+  const lamportsByAddress = new Map<string, number>();
+  let balanceUnavailable = false;
+  try {
+    const infos = await connection.getMultipleAccountsInfo(
+      accounts.map((account) => new PublicKey(account.address)),
+      'confirmed',
+    );
+    accounts.forEach((account, index) => {
+      lamportsByAddress.set(account.address, infos[index]?.lamports ?? 0);
+    });
+  } catch (err) {
+    console.warn('[ledger] balance enrichment failed', err);
+    balanceUnavailable = true;
+  }
+
+  const activityByAddress = await ledgerActivityByAddress(connection, accounts);
+  return accounts.map((account) => {
+    const activity = activityByAddress.has(account.address)
+      ? activityByAddress.get(account.address)!
+      : null;
+    return toLedgerAccountCandidate(account, {
+      solBalanceLamports: lamportsByAddress.get(account.address) ?? 0,
+      balanceUnavailable,
+      hasActivity: activity,
+      activityUnavailable: activity === null,
+    });
+  });
+}
+
+async function ledgerActivityByAddress(
+  connection: Connection,
+  accounts: readonly { address: string }[],
+): Promise<Map<string, boolean | null>> {
+  const out = new Map<string, boolean | null>();
+  await mapWithConcurrency(accounts, LEDGER_ACTIVITY_CONCURRENCY, async (account) => {
+    try {
+      const signatures = await connection.getSignaturesForAddress(
+        new PublicKey(account.address),
+        { limit: 1 },
+        'confirmed',
+      );
+      out.set(account.address, signatures.length > 0);
+    } catch (err) {
+      console.warn('[ledger] activity enrichment failed', err);
+      out.set(account.address, null);
+    }
+  });
+  return out;
+}
+
+async function mapWithConcurrency<T>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async (_, workerIndex) => {
+    for (let index = workerIndex; index < items.length; index += Math.max(1, limit)) {
+      await worker(items[index]!);
+    }
+  });
+  await Promise.all(workers);
+}
+
+function persistedLedgerSelection(): PersistedLedgerAccountSelection | null {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(LEDGER_LAST_ACCOUNT_STORAGE_KEY) ?? 'null') as Partial<PersistedLedgerAccountSelection> | null;
+    if (!parsed || typeof parsed !== 'object') return null;
+    const cluster = typeof parsed.cluster === 'string' && isCluster(parsed.cluster)
+      ? parsed.cluster
+      : null;
+    if (
+      typeof parsed.address !== 'string' ||
+      typeof parsed.derivationPath !== 'string' ||
+      (parsed.family !== 'default' && parsed.family !== 'legacy') ||
+      typeof parsed.index !== 'number' ||
+      !cluster
+    ) {
+      return null;
+    }
+    return {
+      address: parsed.address,
+      derivationPath: parsed.derivationPath,
+      family: parsed.family,
+      index: parsed.index,
+      cluster,
+      connectedAt: typeof parsed.connectedAt === 'string' ? parsed.connectedAt : '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistLedgerSelection(account: LedgerAccountCandidate): void {
+  const payload: PersistedLedgerAccountSelection = {
+    address: account.address,
+    derivationPath: account.derivationPath,
+    family: account.family,
+    index: account.index,
+    cluster: state.cluster,
+    connectedAt: new Date().toISOString(),
+  };
+  try {
+    localStorage.setItem(LEDGER_LAST_ACCOUNT_STORAGE_KEY, JSON.stringify(payload));
+  } catch {
+    // Persistence is a convenience only; pairing must not depend on storage.
+  }
+}
+
+function openLedgerOverlay(): void {
   // Idempotent: double-tap on "Connect Ledger" must not reset the search
   // poll or invalidate the pairing token while a pair is already in flight.
   if (ledger.overlay.mode !== 'closed') return;
   const ipc = ensureLedgerIpc();
   if (!ipc) {
+    const message = ledgerUnavailableMessage();
     pushToast(
       'error',
       'Ledger not available',
-      'Could not reach the Tauri runtime to talk to the Ledger device.',
+      message,
     );
+    closeSiblingOverlays('ledger');
+    stopLedgerPoll();
+    ledger.pairingToken += 1;
+    dispatchLedgerOverlay({
+      type: 'setError',
+      error: message,
+    });
     return;
   }
+  const webRequest = state.tauriNativeEnvironment.isTauriNative
+    ? null
+    : ipc.requestDevice?.();
   closeSiblingOverlays('ledger');
   ledger.pairingToken += 1;
+  ledger.accounts = [];
+  ledger.nextDefaultIndex = 0;
+  ledger.nextLegacyIndex = 0;
   const token = ledger.pairingToken;
   dispatchLedgerOverlay({ type: 'open' });
+  if (webRequest) {
+    void webRequest.then((device) => {
+      if (ledger.pairingToken !== token) return;
+      if (!device) {
+        dispatchLedgerOverlay({
+          type: 'setError',
+          error: 'No Ledger device was selected.',
+        });
+        return;
+      }
+      void proceedToAppCheck(ipc, device, token);
+    }).catch((err) => {
+      if (ledger.pairingToken !== token) return;
+      dispatchLedgerOverlay({
+        type: 'setError',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+    return;
+  }
   startLedgerSearchPoll(ipc, token);
 }
 
@@ -6416,14 +6869,16 @@ async function confirmLedgerAddress(): Promise<void> {
   const ipc = ledger.ipc;
   if (!ipc) return;
   const overlay = ledger.overlay;
-  if (overlay.mode !== 'confirm-address' || !overlay.address) return;
+  if (overlay.mode !== 'choose-address' || !overlay.address) return;
+  const selectedAccount = overlay.accounts.find((account) => account.address === overlay.address);
+  if (!selectedAccount) return;
   const token = ledger.pairingToken;
   dispatchLedgerOverlay({ type: 'confirmingAddress' });
   const toastId = beginLedgerDeviceApprovalToast(ledgerConnectApprovalMessage(), { force: true });
   try {
-    // Re-fetch the address to capture the raw public key bytes. (`addressReady`
-    // only stored the base58 string; we need bytes for the Wallet Standard
-    // `WalletAccount.publicKey` field.)
+    // Re-fetch the selected address with display-on-device. The chooser
+    // already has the base64 public key from scanning, but this second call
+    // proves the user approved the exact selected path on the Ledger screen.
     await waitForLedgerPromptPaint();
     const fresh = await ipc.getAddress(overlay.derivationPath, true);
     if (ledger.pairingToken !== token) {
@@ -6444,13 +6899,16 @@ async function confirmLedgerAddress(): Promise<void> {
       return;
     }
     const publicKey = decodeLedgerPublicKey(fresh.address, fresh.publicKeyB64);
+    unregisterAllLedgerWallets();
     registerLedgerWallet({
       ipc,
       address: fresh.address,
       publicKey,
       derivationPath: overlay.derivationPath,
     });
+    persistLedgerSelection(selectedAccount);
     dispatchLedgerOverlay({ type: 'close' });
+    state.wallets = visibleBrowserWallets(listAvailableWallets());
     state.selectedWalletName = LEDGER_WALLET_NAME;
     await runConnect();
     completeLedgerDeviceApprovalToast(toastId, 'success', 'Ledger connected', short(fresh.address));
@@ -6469,15 +6927,55 @@ async function confirmLedgerAddress(): Promise<void> {
   }
 }
 
-function handleLedgerOverlayAction(action: string | undefined): void {
+function handleLedgerOverlayAction(action: string | undefined, address?: string): void {
   switch (action) {
     case 'cancel':
       stopLedgerPoll();
       ledger.pairingToken += 1; // invalidate any in-flight handlers
       dispatchLedgerOverlay({ type: 'close' });
+      if (
+        state.tauriNativeEnvironment.isTauriNative &&
+        desktopConnect.flow.step === 'ledger'
+      ) {
+        dispatchDesktopConnectFlow({ type: 'back' });
+      }
       return;
     case 'retry':
+      stopLedgerPoll();
+      ledger.pairingToken += 1;
+      {
+        const retryState = ledgerConfirmationRetryState(ledger.overlay);
+        if (retryState) {
+          ledger.overlay = retryState;
+          render();
+          void confirmLedgerAddress();
+          return;
+        }
+      }
+      dispatchLedgerOverlay({ type: 'close' });
       openLedgerOverlay();
+      return;
+    case 'select-account':
+      if (address) dispatchLedgerOverlay({ type: 'selectAccount', address });
+      return;
+    case 'copy-address':
+      if (address) {
+        if (!navigator.clipboard?.writeText) {
+          pushToast('error', 'Copy failed', 'Clipboard API is not available in this context.');
+          return;
+        }
+        void navigator.clipboard.writeText(address).then(() => {
+          pushToast('success', 'Ledger address copied', short(address));
+        }).catch((err) => {
+          pushToast('error', 'Copy failed', err instanceof Error ? err.message : String(err));
+        });
+      }
+      return;
+    case 'toggle-expanded':
+      dispatchLedgerOverlay({ type: 'toggleAccountsExpanded' });
+      return;
+    case 'load-more':
+      void loadMoreLedgerAccounts();
       return;
     case 'confirm-address':
       void confirmLedgerAddress();
@@ -6492,7 +6990,7 @@ function bindLedgerOverlay(): void {
   for (const el of document.querySelectorAll<HTMLElement>('[data-ledger-action]')) {
     el.addEventListener('click', (event) => {
       event.preventDefault();
-      handleLedgerOverlayAction(el.dataset.ledgerAction);
+      handleLedgerOverlayAction(el.dataset.ledgerAction, el.dataset.ledgerAddress);
     });
   }
 }
@@ -6501,8 +6999,11 @@ function ledgerOverlayBlock(): string {
   // The Tauri desktop renders the same state machine inline inside the
   // discover-flow rail, so suppress the modal mount on native to avoid a
   // double-render.
-  if (state.tauriNativeEnvironment.isTauriNative) return '';
-  return ledgerOverlayHtml(ledger.overlay);
+  if (!shouldRenderDetachedLedgerOverlay({
+    isTauriNative: state.tauriNativeEnvironment.isTauriNative,
+    flowStep: desktopConnect.flow.step,
+  })) return '';
+  return ledgerOverlayHtml(ledger.overlay, walletConnectQrSurface());
 }
 
 // ─── Desktop discover flow (inline rail) ─────────────────────────────────
@@ -6580,6 +7081,15 @@ const DESKTOP_BRAND_WALLET_NAMES: Record<string, readonly string[]> = {
   solflare: ['Solflare'],
 };
 
+function multiPathWalletFlowAvailable(): boolean {
+  return canUseMultiPathWalletFlow({
+    isAndroidNative: state.androidNativeEnvironment.isAndroidNative,
+    isIosNative: state.iosNativeEnvironment.isIosNative,
+    isCliMode: Boolean(cliView),
+    isTauriNative: state.tauriNativeEnvironment.isTauriNative,
+  });
+}
+
 function stopDesktopConnectPoll(): void {
   if (desktopConnect.pollHandle !== null) {
     window.clearInterval(desktopConnect.pollHandle);
@@ -6625,21 +7135,35 @@ function brandLogoMarkup(brandId: string, sizeClass = 'desktop-connect-flow-logo
 }
 
 function desktopMethodPickerBody(): string {
-  const ledgerAvailable = Boolean(detectLedgerTauriInvoke());
+  const ledgerAvailable = state.tauriNativeEnvironment.isTauriNative
+    ? Boolean(detectLedgerTauriInvoke())
+    : detectLedgerWebHidSupport().supported;
+  const ledgerDisabledReason = ledgerAvailable ? '' : ledgerUnavailableMessage();
+  const extensionSubcopy = state.tauriNativeEnvironment.isTauriNative
+    ? 'Open the wallet pairing page in your default browser. Choose Backpack, Phantom, Jupiter, or Solflare there.'
+    : 'Use an installed Backpack, Phantom, Jupiter, or Solflare extension in this browser.';
+  const qrSubcopy = state.tauriNativeEnvironment.isTauriNative
+    ? 'Pair Backpack or Jupiter over WalletConnect, or Phantom/Solflare with encrypted wallet links. Your phone signs; this desktop relays.'
+    : 'Pair Backpack or Jupiter over WalletConnect, or Phantom/Solflare with encrypted wallet links. Your phone signs; this page relays.';
+  const ledgerSubcopy = state.tauriNativeEnvironment.isTauriNative
+    ? 'USB-HID. Plug in and unlock your device, then open the Solana app.'
+    : ledgerAvailable
+      ? 'USB through WebHID. Plug in and unlock your device, then open the Solana app.'
+      : ledgerDisabledReason;
   return `
     <p class="desktop-connect-flow-lede">Choose how you'd like to connect your wallet.</p>
     <div class="desktop-connect-flow-methods">
       <button type="button" class="desktop-method-tile" data-desktop-flow-action="method:extension">
         <span class="desktop-method-tile-title">Browser extension</span>
-        <span class="desktop-method-tile-sub">Open the wallet pairing page in your default browser. Choose Backpack, Phantom, Jupiter, or Solflare there.</span>
+        <span class="desktop-method-tile-sub">${escapeHtmlForFlow(extensionSubcopy)}</span>
       </button>
       <button type="button" class="desktop-method-tile" data-desktop-flow-action="method:qr">
         <span class="desktop-method-tile-title">Scan QR with phone</span>
-        <span class="desktop-method-tile-sub">Pair Backpack or Jupiter over WalletConnect, or Phantom/Solflare with encrypted wallet links. Your phone signs; this desktop relays.</span>
+        <span class="desktop-method-tile-sub">${escapeHtmlForFlow(qrSubcopy)}</span>
       </button>
-      <button type="button" class="desktop-method-tile" data-desktop-flow-action="method:ledger" ${ledgerAvailable ? '' : 'disabled title="Ledger USB bridge unavailable."'}>
+      <button type="button" class="desktop-method-tile" data-desktop-flow-action="method:ledger" ${ledgerAvailable ? '' : `disabled title="${escapeHtmlForFlow(ledgerDisabledReason)}"`}>
         <span class="desktop-method-tile-title">Ledger hardware wallet</span>
-        <span class="desktop-method-tile-sub">USB-HID. Plug in and unlock your device, then open the Solana app.</span>
+        <span class="desktop-method-tile-sub">${escapeHtmlForFlow(ledgerSubcopy)}</span>
       </button>
     </div>
   `;
@@ -6670,6 +7194,8 @@ function desktopQrBody(): string {
   }
   if (wallet === 'backpack' || wallet === 'jupiter') {
     const brandName = wallet === 'backpack' ? 'Backpack' : 'Jupiter';
+    const websiteSurface = !state.tauriNativeEnvironment.isTauriNative;
+    const descriptor = WALLET_CONNECT_BRANDS[wallet];
     return `
       <div class="desktop-connect-flow-body walletconnect-qr-inline">
         ${walletConnectQrBodyHtml({
@@ -6682,16 +7208,19 @@ function desktopQrBody(): string {
           brand: () => ({
             id: wallet,
             name: brandName,
-            deepLinkPrefix: '',
+            deepLinkPrefix: websiteSurface ? (descriptor?.deepLinkPrefix ?? '') : '',
             logoId: wallet,
           }),
           agnostic: false,
+          surface: walletConnectQrSurface(),
+          preferDeepLink: websiteSurface && preferWalletConnectSameDeviceLaunch(),
         })}
       </div>
     `;
   }
   // Phantom/Solflare — encrypted deeplink QR.
   const brandName = wallet === 'phantom' ? 'Phantom' : 'Solflare';
+  const relayTarget = state.tauriNativeEnvironment.isTauriNative ? 'desktop' : 'Agentic';
   const cached = desktopConnect.deeplinkQr;
   const qrMarkup = cached.variant === wallet && cached.dataUrl
     ? `<img class="walletconnect-qr-overlay-qr" src="${escapeHtmlForFlow(cached.dataUrl)}" alt="QR code that opens ${escapeHtmlForFlow(brandName)} mobile" />`
@@ -6710,7 +7239,7 @@ function desktopQrBody(): string {
         Scan this QR with ${escapeHtmlForFlow(brandName)}. The wallet will show its native Connect prompt.
       </p>
       <div class="desktop-connect-flow-deeplink-note" role="note">
-        After approval, keep the phone page open. Future desktop signing requests will route through that page and reopen ${escapeHtmlForFlow(brandName)} for approval.
+        After approval, keep the phone page open. Future ${escapeHtmlForFlow(relayTarget)} signing requests will route through that page and reopen ${escapeHtmlForFlow(brandName)} for approval.
       </div>
       ${relayError}
     </div>
@@ -6748,10 +7277,10 @@ function desktopAwaitingBrowserBody(): string {
     <div class="desktop-connect-flow-awaiting">
       ${logo}
       <h3>Waiting for ${escapeHtmlForFlow(name)}…</h3>
-      <p>Choose and authorize a wallet in the browser tab. This panel closes automatically once the local bridge reports the connection.</p>
+      <p>Choose and authorize a wallet in the browser tab. This panel closes automatically once Agentic Desktop detects the wallet.</p>
       <div class="desktop-connect-flow-awaiting-status" role="status" aria-live="polite">
         <span class="desktop-connect-flow-spinner" aria-hidden="true"></span>
-        <span>Listening for your wallet on the local bridge…</span>
+        <span>Waiting for your wallet…</span>
       </div>
       <div class="desktop-connect-flow-awaiting-actions">
         <button type="button" class="utility" data-desktop-flow-action="awaiting-retry">Reopen browser</button>
@@ -6762,7 +7291,7 @@ function desktopAwaitingBrowserBody(): string {
 }
 
 function desktopConnectFlowBlock(): string {
-  if (!state.tauriNativeEnvironment.isTauriNative) return '';
+  if (!multiPathWalletFlowAvailable()) return '';
   if (desktopConnect.flow.step === 'idle') return '';
   let title = 'Discover wallet';
   let body = '';
@@ -6777,7 +7306,7 @@ function desktopConnectFlowBlock(): string {
       break;
     case 'ledger':
       title = ledger.overlay.mode === 'error' ? "Couldn't connect Ledger" : 'Connect Ledger';
-      body = `<div class="desktop-connect-flow-body ledger-overlay-inline">${ledgerOverlayBodyHtml(ledger.overlay)}</div>`;
+      body = `<div class="desktop-connect-flow-body ledger-overlay-inline">${ledgerOverlayBodyHtml(ledger.overlay, walletConnectQrSurface())}</div>`;
       break;
     case 'awaiting-browser':
       title = 'Waiting for browser';
@@ -6802,7 +7331,7 @@ function desktopConnectFlowBlock(): string {
 // ─── Desktop discover flow — handlers ────────────────────────────────────
 
 async function runDesktopDiscover(): Promise<void> {
-  if (!state.tauriNativeEnvironment.isTauriNative) return;
+  if (!multiPathWalletFlowAvailable()) return;
   if (desktopConnect.flow.step !== 'idle') return;
   // Defensive: surface any Wallet-Standard wallet that did inject (e.g.
   // Backpack Desktop, Glow Desktop) so the user can still pick those via the
@@ -6817,7 +7346,15 @@ async function runDesktopDiscover(): Promise<void> {
 
 function handleDesktopMethodSelect(method: DesktopConnectMethod): void {
   if (method === 'extension') {
-    void openDesktopBrowserConnectPage();
+    if (state.tauriNativeEnvironment.isTauriNative) {
+      void openDesktopBrowserConnectPage();
+      return;
+    }
+    void runDiscover().then(() => {
+      if (desktopConnect.flow.step !== 'idle') {
+        dispatchDesktopConnectFlow({ type: 'reset' });
+      }
+    });
     return;
   }
   if (method === 'ledger') {
@@ -7096,6 +7633,7 @@ async function adoptPairedWallet(input: {
   state.capabilities = input.capabilities;
   state.selectedWalletName = input.walletName;
   state.selectedWalletLogoId = walletProviderLogoIdForName(input.wallet) ?? input.wallet;
+  state.selectedWalletIcon = undefined;
   // The cloud-relay path does NOT activate the local Tauri bridge — the
   // signer lives on the phone, not on this machine.
   state.bridgeActive = false;
@@ -7107,7 +7645,7 @@ async function adoptPairedWallet(input: {
     console.warn('[adoptPairedWallet] afterWalletConnected failed', err);
   }
   savePersistedState();
-  trackWalletConnectSuccess('tauri_native', state.cluster, 'qr_pairing_relay');
+  trackWalletConnectSuccess(walletConnectSurface(), state.cluster, 'qr_pairing_relay');
   pushToast('success', `Connected via your phone — ${input.walletName}`, short(input.address));
   dispatchDesktopConnectFlow({ type: 'reset' });
 }
@@ -7207,8 +7745,8 @@ function startAwaitingBrowserPoll(brandId?: string | null): void {
     // bridge sidecar controls.
     pushToast(
       'pending',
-      'Bridge offline',
-      'Start the local bridge from the Local-runtime panel to auto-detect the browser connection.',
+      'Wallet service not ready',
+      'Restart Agentic Desktop, then reopen the browser wallet connection.',
     );
     return;
   }
@@ -7223,8 +7761,8 @@ function startAwaitingBrowserPoll(brandId?: string | null): void {
       if (consecutive401 >= AWAITING_BROWSER_MAX_CONSECUTIVE_401) {
         pushToast(
           'error',
-          'Bridge auth mismatch',
-          'The desktop\'s bridge token doesn\'t match the local bridge. Restart the runtime from the Local-runtime panel.',
+          'Wallet connection expired',
+          'Restart Agentic Desktop, then try connecting the browser wallet again.',
         );
         return 'stop';
       }
@@ -7276,6 +7814,32 @@ async function pollBridgeForHost(
   await adoptBridgeHost(address, capabilities, brandId ?? null);
 }
 
+function bridgeWalletProviderName(
+  capabilities: AdapterCapabilities,
+  brand: (typeof DESKTOP_BRAND_PANELS)[number] | undefined,
+): string {
+  return capabilities.walletName?.trim() || brand?.name || '';
+}
+
+function bridgeWalletLogoIdForProvider(
+  capabilities: AdapterCapabilities,
+  providerName: string,
+): WalletProviderLogoId | undefined {
+  if (isWalletProviderLogoId(capabilities.walletLogoId)) {
+    return capabilities.walletLogoId;
+  }
+  return walletProviderLogoIdForName(providerName);
+}
+
+function bridgeWalletIconForProvider(
+  capabilities: AdapterCapabilities,
+  logoId: WalletProviderLogoId | undefined,
+): string | undefined {
+  if (logoId) return undefined;
+  const icon = capabilities.walletIcon?.trim();
+  return icon || undefined;
+}
+
 async function adoptBridgeHost(
   address: string,
   capabilities: AdapterCapabilities,
@@ -7292,14 +7856,18 @@ async function adoptBridgeHost(
   });
   client = new SolanaSigningClient({ backend: walletBackend });
   const brand = brandId ? DESKTOP_BRAND_PANELS.find((b) => b.id === brandId) : undefined;
-  const walletName = brand ? `${brand.name} (browser)` : 'Browser wallet';
+  const providerName = bridgeWalletProviderName(capabilities, brand);
+  const logoId = bridgeWalletLogoIdForProvider(capabilities, providerName);
   state.address = address;
   state.capabilities = capabilities;
-  state.selectedWalletName = walletName;
-  state.selectedWalletLogoId = brand ? walletProviderLogoIdForName(brand.name) : undefined;
+  state.selectedWalletName = 'Browser wallet';
+  state.selectedWalletLogoId = logoId;
+  state.selectedWalletIcon = bridgeWalletIconForProvider(capabilities, logoId);
   state.bridgeActive = true;
   state.bridgeAutoReconnect = true;
-  state.bridgeStatus = 'Connected to local bridge via browser wallet host.';
+  state.bridgeStatus = providerName
+    ? `Browser wallet connected through ${providerName}.`
+    : 'Browser wallet connected to Agentic Desktop.';
   state.transactionStatus = `Wallet connected via browser on ${state.cluster}.`;
   startBridgePolling();
   try {
@@ -7346,7 +7914,7 @@ function handleDesktopAwaitingRetry(): void {
 }
 
 function bindDesktopConnectFlow(): void {
-  if (!state.tauriNativeEnvironment.isTauriNative) return;
+  if (!multiPathWalletFlowAvailable()) return;
   for (const el of document.querySelectorAll<HTMLElement>('[data-desktop-flow-action]')) {
     el.addEventListener('click', (event) => {
       event.preventDefault();
@@ -10516,7 +11084,6 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
                 */ ''}
                 ${tabButton('overview', 'Home')}
                 ${tabButton('agent', 'New Request', 'New')}
-                ${spendTabVisible() ? tabButton('spend', 'Spend') : ''}
                 ${tabButton('schedule', 'Repeat Payments', 'Repeats')}
                 ${tabButton('inbox', 'Needs Approval', 'Approve')}
                 ${tabButton('completed', 'Done')}
@@ -11261,7 +11828,6 @@ function walletRail(): string {
   const showPublicIosPicker = !SHOW_DEV_CONTROLS && !state.address && state.iosNativeEnvironment.isIosNative;
   const wallet = walletIdentity();
   const connected = Boolean(state.address);
-  const showAdvancedLocalSetup = !SHOW_DEV_CONTROLS && !isMobileAiPathPolicySurface();
   const headingTitleMarkup = connected
     ? `<h2>${escapeHtml(wallet.title)}</h2>`
     : `<h2 class="signer-title-desktop-only">${escapeHtml(wallet.title)}</h2>`;
@@ -11280,11 +11846,12 @@ function walletRail(): string {
           </div>
         </div>
 
-        <div class="connection-summary custody-card">
+        <div class="connection-summary custody-card ${connected ? 'has-address-copy' : ''}">
           <span class="status-dot ${connected ? 'online' : ''}"></span>
           <div>
             ${summaryStrongMarkup}
             ${summaryDetailMarkup}
+            ${connected ? walletAddressCopyButton(state.address) : ''}
           </div>
         </div>
       </div>
@@ -11307,7 +11874,7 @@ function walletRail(): string {
 
       ${publicWalletActions()}
 
-      ${state.tauriNativeEnvironment.isTauriNative ? desktopConnectFlowBlock() : ''}
+      ${desktopConnectFlowBlock()}
 
       ${showPublicIosPicker ? `
       <details class="rail-details wallet-picker-details" open>
@@ -11327,13 +11894,6 @@ function walletRail(): string {
         ${cloudWorkspaceCard()}
         ${aiSettingsPanel('rail')}
       </div>
-      ${showAdvancedLocalSetup ? `
-        <details class="rail-details rail-advanced-details">
-          <summary>Advanced local setup</summary>
-          ${publicBridgeStatusCard()}
-        </details>
-      ` : ''}
-
       ${SHOW_DEV_CONTROLS ? `
       <details class="rail-details developer-settings" ${showConnectionDetails ? 'open' : ''}>
         <summary>Developer settings</summary>
@@ -11811,6 +12371,7 @@ function preferencesActiveView(): string {
         : preferencesGroup('Agent Access', 'Manage bridge agents and protocol connectors used to prepare actions.', `
           <div class="preferences-card-grid access-preferences-grid">
             ${connectedAgentsPanel()}
+            ${publicBridgeStatusCard()}
             ${connectedDappsPanel()}
           </div>
           <div id="connector-keys-panel" class="connector-keys-mount"></div>
@@ -13685,7 +14246,7 @@ function optionalPrivateLocalModeDetails(): string {
 }
 
 function walletRailIcon(wallet: WalletIdentity): string {
-  const iconSrc = wallet.logoId ? BRAND_LOGOS[wallet.logoId] : wallet.discoveredWallet?.icon;
+  const iconSrc = wallet.iconSrc ?? (wallet.logoId ? BRAND_LOGOS[wallet.logoId] : wallet.discoveredWallet?.icon);
   if (iconSrc) {
     return `
       <span class="rail-icon wallet-provider-icon" aria-hidden="true">
@@ -13696,11 +14257,30 @@ function walletRailIcon(wallet: WalletIdentity): string {
   return `<span class="rail-icon" aria-hidden="true">${escapeHtml(wallet.icon)}</span>`;
 }
 
+function walletAddressCopyButton(address: string): string {
+  return `
+    <button
+      type="button"
+      class="wallet-action-copy compact-copy wallet-address-copy"
+      data-copy="${escapeHtml(address)}"
+      data-copy-id="connected-wallet-address"
+      data-copy-name="Address"
+      data-copy-toast="Copied address"
+      data-copy-message=""
+      aria-label="Copy wallet address"
+      title="Copy wallet address"
+    >
+      ${copyButtonIcon()}
+    </button>
+  `;
+}
+
 function publicWalletActions(): string {
   const selectedProvider = discoveredSelectedWalletName();
   const androidNative = state.androidNativeEnvironment.isAndroidNative;
   const iosNative = state.iosNativeEnvironment.isIosNative;
   const tauriNative = state.tauriNativeEnvironment.isTauriNative;
+  const multiPathFlow = multiPathWalletFlowAvailable();
   if (state.address) {
     return `
       <div class="wallet-actions public-wallet-actions connected">
@@ -13708,27 +14288,24 @@ function publicWalletActions(): string {
       </div>
     `;
   }
+  if (multiPathFlow && desktopConnect.flow.step !== 'idle') {
+    return `<div class="wallet-actions public-wallet-actions native-wallet-actions in-flow"></div>`;
+  }
   if (tauriNative) {
     // Desktop: drive the inline Discover → method flow rather than the
     // browser's Discover-then-pick-from-dropdown wiring (extensions don't
     // inject into the Tauri webview).
-    if (desktopConnect.flow.step === 'idle') {
-      return `
-        <div class="wallet-actions public-wallet-actions native-wallet-actions">
-          <button data-start-action="discover-desktop" class="primary" ${state.busy ? 'disabled' : ''}>
-            ${walletButtonIcon()}
-            <span>Discover</span>
-          </button>
-          <button data-start-action="connect" disabled title="Click Discover and choose a connection method first.">
-            Connect wallet
-          </button>
-        </div>
-      `;
-    }
-    // step !== 'idle' — the inline flow renders its own Back button in its
-    // header, so we don't need a duplicate action row here. Returning an
-    // empty container keeps the wallet-rail spacing stable.
-    return `<div class="wallet-actions public-wallet-actions native-wallet-actions in-flow"></div>`;
+    return `
+      <div class="wallet-actions public-wallet-actions native-wallet-actions">
+        <button data-start-action="discover-desktop" class="primary" ${state.busy ? 'disabled' : ''}>
+          ${walletButtonIcon()}
+          <span>Discover</span>
+        </button>
+        <button data-start-action="connect" disabled title="Click Discover and choose a connection method first.">
+          Connect wallet
+        </button>
+      </div>
+    `;
   }
   if (androidNative || iosNative) {
     return `
@@ -14735,8 +15312,6 @@ function commandCenterAiPanel(): string {
           ${commandAiRouteCards()}
         </div>
 
-        ${state.aiSettings.mode === 'bridge' ? commandBridgePrereqPanel() : ''}
-
         ${commandAiWorkflowEducation()}
 
         <div class="command-ai-boundary">
@@ -14752,13 +15327,13 @@ function commandCenterAiPanel(): string {
 
 function commandAiRouteCards(): string {
   const mobileAiPathPolicy = isMobileAiPathPolicySurface();
-  const hostedCloudStorageRequired = mobileAiPathPolicy && !cloudSessionMatchesWallet();
+  const hostedCloudSignInRequired = mobileAiPathPolicy && !cloudSessionMatchesWallet();
   const definitions: Array<{ id: AndroidAiRouteTab; mode: AiSettings['mode']; title: string; detail: string; meta: string; available: boolean }> = [
     {
       id: 'hosted',
       mode: 'hosted',
       title: 'Hosted BYOK',
-      detail: hostedCloudStorageRequired
+      detail: hostedCloudSignInRequired
         ? MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED
         : 'Connect a preset provider key through Agentic for AI agent requests.',
       meta: 'Cloud AI connection',
@@ -14936,7 +15511,7 @@ function commandAiIntroTabs(): string {
 
 function commandAiInfoCardsGroup(): string {
   const mobileAiPathPolicy = isMobileAiPathPolicySurface();
-  const hostedCloudStorageRequired = mobileAiPathPolicy && !cloudSessionMatchesWallet();
+  const hostedCloudSignInRequired = mobileAiPathPolicy && !cloudSessionMatchesWallet();
   const entries: Array<{ id: AndroidAiInfoTab; tab: string; title: string; badge: string; detail: string; foot: string; available: boolean }> = [
     {
       id: 'no-ai',
@@ -14951,12 +15526,12 @@ function commandAiInfoCardsGroup(): string {
       id: 'hosted',
       tab: 'BYOK',
       title: 'Hosted BYOK',
-      badge: hostedCloudStorageRequired ? 'Cloud Storage required' : 'Natural-language setup',
-      detail: hostedCloudStorageRequired
+      badge: hostedCloudSignInRequired ? 'Cloud sign-in required' : 'Natural-language setup',
+      detail: hostedCloudSignInRequired
         ? MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED
         : 'User brings a provider key; Agentic calls AI to translate messy intent into a structured workflow plan.',
-      foot: hostedCloudStorageRequired
-        ? 'Connect Cloud Storage with this wallet before using Hosted BYOK on mobile.'
+      foot: hostedCloudSignInRequired
+        ? 'Sign in to Agentic Cloud with this wallet before using Hosted BYOK on mobile.'
         : 'More capable at understanding intent, not more powerful over approval.',
       available: true,
     },
@@ -16198,6 +16773,9 @@ function connectorContextLabelFromParams(
 }
 
 function planConnectorContextLabel(plan: AgentPlan): string {
+  const hasSelectedConnector = Boolean(selectedConnectorForDraftParameters(plan.parameters));
+  const connectorActionKind = CONNECTOR_APPROVAL_ACTION_TYPES.has(plan.actionType) || plan.actionType === 'blink_action';
+  if (!hasSelectedConnector && !connectorActionKind) return '';
   const fromParams = connectorContextLabelFromParams(plan.parameters);
   if (fromParams) return fromParams;
   const form = connectorActionFormByActionType(plan.actionType);
@@ -17242,6 +17820,9 @@ function planAmountSummary(plan: AgentPlan): string {
   if (CONNECTOR_APPROVAL_ACTION_TYPES.has(plan.actionType)) {
     return connectorPlanAmountInfo(plan)?.label ?? 'n/a';
   }
+  if (plan.actionType === 'read_only' && !selectedConnectorForDraftParameters(plan.parameters)) {
+    return 'n/a';
+  }
   const amount = planParameter(plan, ['amountSol', 'amount', 'plannedAmount', 'maxAmount']) || 'n/a';
   const token = planParameter(plan, ['token', 'inputToken']) || (plan.actionType === 'transfer_sol' ? 'SOL' : '');
   return token ? `${amount} ${tokenDisplayLabel(token)}` : amount;
@@ -17251,6 +17832,9 @@ function planAmountTokenCopyActions(plan: AgentPlan): SummaryCopyAction[] {
   if (CONNECTOR_APPROVAL_ACTION_TYPES.has(plan.actionType)) {
     const token = connectorPlanAmountInfo(plan)?.token ?? '';
     return token ? tokenCopyActions(token, 'Copy token', 'Token mint') : [];
+  }
+  if (plan.actionType === 'read_only' && !selectedConnectorForDraftParameters(plan.parameters)) {
+    return [];
   }
   const token = planParameter(plan, ['token', 'inputToken']) || (plan.actionType === 'transfer_sol' ? 'SOL' : '');
   return token ? tokenCopyActions(token, 'Copy token', 'Token mint') : [];
@@ -18207,7 +18791,8 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
   const inactiveConfigured = inventory.inactiveConfigured.length > 0;
   const panelConfigured = configured || inactiveConfigured;
   const confirmed = isAiPlannerConfirmedForCurrentSettings();
-  const shouldOpen = state.aiSettingsPanelOpen === true;
+  const shouldOpen = state.aiSettingsPanelOpen === true
+    || (state.aiSettingsPanelOpen === null && location === 'rail' && state.aiSettings.mode === 'bridge');
   const open = shouldOpen ? 'open' : '';
   const readinessLabel = aiReadinessLabel(state.aiStatus);
   const summaryDetail = location === 'rail'
@@ -19671,7 +20256,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const sessionScope = IS_TAURI_APP || IS_ANDROID_APP ? 'this app runtime' : 'this tab';
   const sessionDescriptor = IS_TAURI_APP ? 'Desktop session' : IS_ANDROID_APP ? 'Android session' : 'Browser session';
   const keyLabel = state.aiSettings.mode === 'bridge'
-    ? 'Bridge session key'
+    ? 'AI provider key'
     : state.aiSettings.mode === 'device-agent'
       ? 'Device Agent key'
     : state.aiSettings.mode === 'hosted'
@@ -19682,9 +20267,11 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
     : state.aiSettings.mode === 'device-agent'
       ? 'Device Agent stores the draft-route config in the selected runtime boundary. Queueing, repeat payments, approvals, submissions, and signatures remain separate workflow actions.'
     : state.aiSettings.mode === 'bridge'
-      ? 'Local bridge AI drafts from your machine only. Needs Approval, repeat payments, proofs, and wallet signatures remain separate workflow actions.'
+      ? 'Local Bridge AI uses your normal provider key from the local runtime. Needs Approval, repeat payments, proofs, and wallet signatures remain separate workflow actions.'
         : `${sessionDescriptor} keys stay in ${sessionScope} and draft plans only. Queueing, repeat payments, approvals, submissions, and signatures use the active workflow, not the AI key.`;
-  const keyHint = aiProviderKeyHint(providerPreset.id);
+  const keyHint = state.aiSettings.mode === 'bridge'
+    ? `Paste your ${providerPreset.label} API key. Agentic sends it to the local bridge; it is not a second Agentic key.`
+    : aiProviderKeyHint(providerPreset.id);
   const bridgeKeyConfiguredDetail = status
     ? `${status.provider ?? status.apiFormat ?? 'AI'} - ${status.model ?? 'model configured'}`
     : 'Local bridge AI key configured';
@@ -19706,8 +20293,8 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
       `
     : `
         <div class="ai-key-configured-note" aria-live="polite">
-          <span>Bridge key</span>
-          <strong>Configured in local bridge</strong>
+          <span>Local Bridge AI</span>
+          <strong>Provider key configured</strong>
           <em>${escapeHtml(bridgeKeyConfiguredDetail)}</em>
         </div>
       `;
@@ -19787,18 +20374,19 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         </div>
       ` : ''}
       ${!isRail && !mobilePlannerSetup ? browserDeviceAgentSecretStoreControl(scope) : ''}
+      ${state.aiSettings.mode === 'bridge' && !mobilePlannerSetup ? localBridgeAiSetupCard(status, location) : ''}
       ${hideKeyEntry ? configuredKeyNote : `
         <label class="field compact ai-setting-field ai-setting-key">
           <span>${escapeHtml(keyLabel)}</span>
-          <input id="aiApiKey-${escapeHtml(scope)}" data-ai-control="api-key" type="password" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="${state.aiSettings.mode === 'bridge' ? 'Held for this tab until configured' : (IS_TAURI_APP || IS_ANDROID_APP) ? 'Held until you disconnect or close the app' : 'Held for this tab'}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
-          ${!isRail && !mobilePlannerSetup && keyHint ? `<em class="ai-route-helper">${escapeHtml(keyHint)}</em>` : ''}
+          <input id="aiApiKey-${escapeHtml(scope)}" data-ai-control="api-key" type="password" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="${state.aiSettings.mode === 'bridge' ? 'Sent to local bridge memory' : (IS_TAURI_APP || IS_ANDROID_APP) ? 'Held until you disconnect or close the app' : 'Held for this tab'}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+          ${!mobilePlannerSetup && keyHint ? `<em class="ai-route-helper">${escapeHtml(keyHint)}</em>` : ''}
         </label>
       `}
       <div class="ai-actions">
         ${state.aiSettings.mode === 'bridge'
           ? hideKeyEntry
             ? ''
-            : `<button id="saveBridgeAiKey-${escapeHtml(scope)}" data-ai-action="save-bridge-key" ${!canSaveBridgeAiKey() ? 'disabled' : ''}>Set bridge key</button>`
+            : `<button id="saveBridgeAiKey-${escapeHtml(scope)}" data-ai-action="save-bridge-key" ${!canSaveBridgeAiKey() ? 'disabled' : ''}>Send key to local bridge</button>`
           : showSaveDirectAiKey
             ? `<button id="saveDirectAiKey-${escapeHtml(scope)}" data-ai-action="save-direct-key" ${!canSaveDirectAiKey() ? 'disabled' : ''}>Use key for drafts</button>`
             : ''}
@@ -19813,7 +20401,6 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         ? '<p class="ai-security-note compact">Drafts only. Wallet approvals stay separate.</p>'
         : `
           ${aiModeLimitations()}
-          ${state.aiSettings.mode === 'bridge' ? localBridgeConnectionCard(status) : ''}
           ${state.aiSettings.mode === 'device-agent' ? deviceAgentConnectionCard(state.deviceAgentStatus) : ''}
           <div class="ai-readiness-summary" aria-label="AI planner readiness">
             <div>
@@ -19869,7 +20456,7 @@ function aiModeSelectOptions(): SelectPickerOption[] {
       ? 'Device Agent - drafts via device'
       : cloudSessionMatchesWallet()
         ? 'Hosted BYOK - cloud relay'
-        : 'Hosted BYOK - Cloud Storage required',
+        : 'Hosted BYOK - Cloud sign-in required',
   }));
   const options: Array<{ id: AiSettings['mode']; label: string }> = mobileAiPathPolicy
     ? mobileOptions
@@ -19903,11 +20490,16 @@ function aiModeSelectOptions(): SelectPickerOption[] {
     const pathState = inventory.paths.find((path) => path.mode === option.id);
     const configured = pathState?.configured === true;
     const active = option.id === state.aiSettings.mode;
+    const hostedCloudSignInNeeded = option.id === 'hosted' && Boolean(disabledReason);
     return {
       value: option.id,
       label: option.label,
       meta: 'Draft path',
-      metaSuffix: configured ? active ? 'active configured' : 'configured' : undefined,
+      metaSuffix: hostedCloudSignInNeeded
+        ? 'cloud sign-in needed'
+        : configured
+          ? active ? 'active configured' : 'configured'
+          : undefined,
       detail: disabledReason
         || (configured
           ? `${active ? 'Active' : 'Inactive'} configured path; approvals and signatures stay separate.`
@@ -20004,6 +20596,8 @@ function aiModeDisabledReason(mode: AiSettings['mode']): string {
   if (mode === 'device-agent' && !deviceAgentModeVisible()) {
     return 'Device Agent is enabled only for local dev builds, Android device-agent builds, or allowlisted wallets.';
   }
+  const hostedBlockReason = hostedByokCloudSessionReasonForMode(mode);
+  if (hostedBlockReason) return hostedBlockReason;
   if (mode === 'session' && state.aiSettings.provider === 'openai') {
     return OPENAI_BROWSER_SESSION_DISABLED_REASON;
   }
@@ -20181,42 +20775,90 @@ function deviceAgentConnectionCard(status: DeviceAgentStatus | null): string {
   `;
 }
 
-function localBridgeConnectionCard(status: BridgeAiStatus | null): string {
+function localBridgeAiSetupCard(status: BridgeAiStatus | null, location: 'rail' | 'planner'): string {
   const connected = state.bridgeActive;
   const aiConfigured = isBridgeAiConfigured(status);
-  const tone = connected ? 'connected' : aiConfigured ? 'partial' : 'offline';
+  const tauriStatus = state.tauriBridgeStatus;
+  const tauriReachable = state.tauriNativeEnvironment.isTauriNative && Boolean(tauriStatus?.bridgeReachable);
+  const bridgeReachable = connected || aiConfigured || tauriReachable;
+  const tone = connected ? 'connected' : bridgeReachable ? 'partial' : 'offline';
   const title = connected
     ? 'Local bridge connected'
-    : aiConfigured
-      ? 'Bridge AI key configured'
-      : 'Local bridge not connected';
+    : bridgeReachable
+      ? 'Local bridge reachable'
+      : state.tauriNativeEnvironment.isTauriNative
+        ? 'Start the local bridge'
+        : 'Start the local runtime';
   const detail = connected
-    ? 'Approval queue, repeat payments, proofs, and local AI route are reachable from this browser.'
-    : aiConfigured
-      ? 'The AI key is set in the local bridge, but this wallet host still needs to connect to the approval bridge.'
-      : 'Start the local runtime on this computer, then check the local bridge from this browser.';
-  const keyLabel = aiConfigured
-    ? `${status?.provider ?? status?.apiFormat ?? 'AI'} - ${status?.model ?? 'model configured'}`
-    : 'AI key not configured';
-  return `
-    <div class="local-bridge-connection-card ${tone}">
-      <div class="local-bridge-connection-head">
-        <span>${escapeHtml(connected ? 'Connected' : aiConfigured ? 'Key set' : 'Setup needed')}</span>
-        <strong>${escapeHtml(title)}</strong>
-      </div>
-      <p>${escapeHtml(detail)}</p>
-      <div class="local-bridge-facts">
-        <span>Endpoint <strong>${escapeHtml(compactEndpoint(state.bridgeUrl))}</strong></span>
-        <span>Wallet <strong>${escapeHtml(state.address ? short(state.address) : 'Not connected')}</strong></span>
-        <span>AI <strong>${escapeHtml(keyLabel)}</strong></span>
-      </div>
-      ${connected ? '' : `
-        <button type="button" class="utility" data-bridge-action="connect" ${!state.address || state.busy ? 'disabled' : ''}>
-          Check local bridge
+    ? 'This browser can reach the local runtime for AI drafts and optional private local workflow storage.'
+    : bridgeReachable
+      ? 'The local runtime is available. Connect or check the same wallet here before using private local workflow storage.'
+      : state.tauriNativeEnvironment.isTauriNative
+        ? 'Desktop usually starts the local bridge automatically. If it is offline, start it here and then confirm the planner.'
+        : 'Run the local runtime on this computer, connect the same wallet in the tab it opens, then check the bridge here.';
+  const source = localBridgeAiKeySource(status);
+  const endpoint = state.tauriNativeEnvironment.isTauriNative && tauriStatus?.bridgeUrl
+    ? tauriStatus.bridgeUrl
+    : state.bridgeUrl;
+  const runtimeSetup = state.tauriNativeEnvironment.isTauriNative
+    ? `
+      <div class="local-bridge-ai-desktop-runtime">
+        <p>Desktop keeps the local bridge on this machine. Use this only if the bridge did not start or you need to retry after changing runtime keys.</p>
+        <button type="button" class="utility" data-ai-action="start-tauri-bridge" ${state.busy ? 'disabled' : ''}>
+          ${tauriReachable ? 'Retry bridge check' : 'Start bridge'}
         </button>
-      `}
-    </div>
+      </div>
+    `
+    : localRuntimeGuide(`local-bridge-ai-runtime-guide ${location === 'rail' ? 'rail-runtime-guide' : ''}`);
+  return `
+    <details class="local-bridge-ai-setup-card local-bridge-connection-card ${tone}" open>
+      <summary>
+        <span>${escapeHtml(connected ? 'Connected' : bridgeReachable ? 'Runtime reachable' : 'Setup needed')}</span>
+        <strong>${escapeHtml(title)}</strong>
+      </summary>
+      <div class="local-bridge-ai-setup-body">
+        <p>${escapeHtml(detail)}</p>
+        ${runtimeSetup}
+        <div class="local-bridge-facts">
+          <span>Endpoint <strong>${escapeHtml(compactEndpoint(endpoint))}</strong></span>
+          <span>Wallet <strong>${escapeHtml(state.address ? short(state.address) : 'Not connected')}</strong></span>
+          <span>AI provider key <strong>${escapeHtml(source.label)}</strong></span>
+        </div>
+        <p class="local-bridge-ai-key-note">${escapeHtml(source.detail)}</p>
+        ${connected ? '' : `
+          <button type="button" class="utility" data-bridge-action="connect" ${!state.address || state.busy ? 'disabled' : ''}>
+            Check local bridge
+          </button>
+        `}
+      </div>
+    </details>
   `;
+}
+
+function localBridgeAiKeySource(status: BridgeAiStatus | null): { label: string; detail: string } {
+  if (!isBridgeAiConfigured(status)) {
+    return {
+      label: 'Not set',
+      detail: 'Paste your normal AI provider key below. It is sent to the local bridge and is not stored by Agentic.',
+    };
+  }
+  const label = `${status?.provider ?? status?.apiFormat ?? 'AI'} - ${status?.model ?? 'model configured'}`;
+  if (status?.source === 'env') {
+    return {
+      label,
+      detail: 'Configured in the local runtime env file. Manage or rotate this key in Preferences, then restart the bridge.',
+    };
+  }
+  if (status?.source === 'session') {
+    return {
+      label,
+      detail: 'Held in local bridge memory until the bridge process stops. Clear key removes the session-memory key only.',
+    };
+  }
+  return {
+    label,
+    detail: 'Configured in the local bridge. It drafts only; approvals, signatures, and workflow storage stay separate.',
+  };
 }
 
 function aiDiagnosticsPanel(): string {
@@ -20388,6 +21030,7 @@ function inactiveConfiguredAiPaths(): AiPathSetupSnapshot[] {
 function canConfirmAiPlanner(): boolean {
   if (state.busy) return false;
   if (state.aiSettings.mode === 'bridge') return true;
+  if (state.aiSettings.mode === 'hosted' && hostedByokCloudSessionReason()) return false;
   if (state.aiSettings.mode === 'device-agent') {
     if (!deviceAgentModeVisible()) return false;
     return Boolean(
@@ -20402,6 +21045,10 @@ function canConfirmAiPlanner(): boolean {
 function aiConfirmDisabledReason(): string {
   if (state.busy) return 'Wait for the current action to finish.';
   if (state.aiSettings.mode === 'bridge') return 'Start the local runtime, then confirm planner status.';
+  if (state.aiSettings.mode === 'hosted') {
+    const hostedBlockReason = hostedByokCloudSessionReason();
+    if (hostedBlockReason) return hostedBlockReason;
+  }
   if (state.aiSettings.mode === 'device-agent' && !deviceAgentModeVisible()) {
     return 'Device Agent is not enabled for this build or wallet.';
   }
@@ -20441,6 +21088,7 @@ function canSaveBridgeAiKey(): boolean {
 function canSaveDirectAiKey(): boolean {
   return state.aiSettings.mode !== 'bridge'
     && (state.aiSettings.mode !== 'device-agent' || deviceAgentModeVisible())
+    && (state.aiSettings.mode !== 'hosted' || !hostedByokCloudSessionReason())
     && Boolean(state.aiSettings.apiKey.trim())
     && Boolean(state.aiSettings.model.trim())
     && aiProviderReadyForCurrentMode()
@@ -20450,7 +21098,7 @@ function canSaveDirectAiKey(): boolean {
 function canClearAiKey(): boolean {
   return Boolean(
     state.aiSettings.apiKey.trim()
-      || (state.aiSettings.mode === 'bridge' && isBridgeAiConfigured())
+      || (state.aiSettings.mode === 'bridge' && state.aiStatus?.source === 'session')
       || (state.aiSettings.mode === 'device-agent' && state.deviceAgentStatus?.configured),
   );
 }
@@ -20528,7 +21176,7 @@ function aiGenerateDisabledReason(): string {
   }
   if (state.aiSettings.mode === 'bridge') {
     if (!state.aiStatus?.available) {
-      return 'Start the local runtime, set a bridge key, then refresh AI status.';
+      return 'Start the local runtime, send an AI provider key to the bridge, then refresh AI status.';
     }
     return 'Bridge AI is ready.';
   }
@@ -20850,7 +21498,7 @@ async function assertDeviceAgentScaffoldAvailable(action: string, signal?: Abort
 
 function deviceAgentWorkerNotImplementedError(action: string): Error {
   const fallback = isMobileAiPathPolicySurface()
-    ? 'or use Hosted BYOK after connecting Cloud Storage.'
+    ? 'or use Hosted BYOK after Cloud sign-in.'
     : 'or use Hosted BYOK, Browser Session, or Local Bridge here.';
   return new Error(
     `Device Agent ${action} runs natively on the Android device-agent build. This runtime only exposes the scaffold; install the enabled Android build to draft, ${fallback}`,
@@ -22482,6 +23130,7 @@ function requestContextDetails(): string {
 
 function bind(): void {
   bindRouteLinks();
+  bindExternalLinks();
   bindTemplatePicker();
   bindArtifactPicker();
   bindSelectPickers();
@@ -22992,6 +23641,9 @@ function bind(): void {
             void runRefreshAiStatus();
           }
           return;
+        case 'start-tauri-bridge':
+          void runStartTauriBridgeForAi();
+          return;
         case 'stop-device-agent':
           void runStopDeviceAgentRuntime();
           return;
@@ -23067,7 +23719,7 @@ function bind(): void {
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-start-action]')) {
     button.addEventListener('click', () => {
       if (button.dataset.startAction === 'discover') {
-        void runDiscover();
+        void (multiPathWalletFlowAvailable() ? runDesktopDiscover() : runDiscover());
       }
       if (button.dataset.startAction === 'discover-desktop') {
         void runDesktopDiscover();
@@ -23119,6 +23771,7 @@ function bind(): void {
     notifyLocalWorkspaceBackupReminder('Back up before switching wallet selection.');
     state.selectedWalletName = (event.currentTarget as HTMLSelectElement).value;
     state.selectedWalletLogoId = undefined;
+    state.selectedWalletIcon = undefined;
     state.browserWalletPickerOpen = false;
     clearBrowserWalletSession();
     resetWalletConnection();
@@ -23140,6 +23793,7 @@ function bind(): void {
     resetWalletConnection();
     void clearDeviceAgentForWalletBoundary();
     state.selectedWalletLogoId = walletProviderLogoIdForName(state.selectedWalletName);
+    state.selectedWalletIcon = undefined;
     void signOutCloudSessionForWalletBoundary('wallet-changed', { toast: true }).then((signedOut) => {
       if (signedOut) render();
     });
@@ -23831,7 +24485,7 @@ function bind(): void {
       const toastMessage = button.dataset.copyMessage
         ?? (isJson ? '' : formatCopyToastMessage(value));
       try {
-        await navigator.clipboard.writeText(value);
+        await writeClipboardText(value, label);
         markCopied(copyId);
         pushToast('success', toastTitle, toastMessage);
         const commandKind = trackedCliCommandKind(value);
@@ -24074,6 +24728,7 @@ async function connectCliSignInBrowserWallet(
   state.capabilities = await client.capabilities();
   state.selectedWalletName = selected.name;
   state.selectedWalletLogoId = walletProviderLogoIdForName(selected.name);
+  state.selectedWalletIcon = selected.icon;
   state.transactionStatus = `Wallet connected on ${state.cluster}.`;
   state.steps.connect = 'done';
   state.browserWalletSession = createBrowserWalletSession(selected.name, state.cluster, preferredSession?.connectedAt);
@@ -24192,6 +24847,45 @@ function bindRouteLinks(): void {
       }
       navigateTo(route);
     });
+  }
+}
+
+function bindExternalLinks(): void {
+  if (!nativeExternalLinkOpenerAvailable()) return;
+  for (const link of document.querySelectorAll<HTMLAnchorElement>('a[href]')) {
+    const href = link.dataset.externalUrl ?? link.getAttribute('href') ?? '';
+    if (!shouldInterceptExternalLink(href, window.location.href)) continue;
+    link.addEventListener('click', (event) => {
+      if (
+        event.defaultPrevented ||
+        event.button !== 0 ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.altKey
+      ) {
+        return;
+      }
+      event.preventDefault();
+      void openExternalLink(link.dataset.externalUrl ?? link.href);
+    });
+  }
+}
+
+function nativeExternalLinkOpenerAvailable(): boolean {
+  return state.tauriNativeEnvironment.isTauriNative || state.androidNativeEnvironment.isAndroidNative;
+}
+
+async function openExternalLink(url: string): Promise<void> {
+  const result = await openExternalUrlForSurface(url, {
+    isTauriNative: state.tauriNativeEnvironment.isTauriNative,
+    isAndroidNative: state.androidNativeEnvironment.isAndroidNative,
+    tauriOpenExternalUrl: tauriNativeOpenExternalUrl,
+    androidOpenExternalUrl: (target) => Boolean(agenticAndroidBridge()?.openExternal?.(target)),
+  });
+  if (!result.ok) {
+    pushToast('error', 'Could not open link', result.error ?? 'The native app could not open that URL.');
+    render();
   }
 }
 
@@ -25119,7 +25813,11 @@ function focusAdjacentTemplateOption(options: HTMLButtonElement[], direction: 1 
 async function runFirstRunAction(action: FirstRunActionId): Promise<void> {
   switch (action) {
     case 'discover-wallets':
-      await runDiscover();
+      if (multiPathWalletFlowAvailable()) {
+        await runDesktopDiscover();
+      } else {
+        await runDiscover();
+      }
       return;
     case 'connect-wallet':
       await runConnect();
@@ -25248,6 +25946,7 @@ async function runConnect(): Promise<void> {
       state.capabilities = await client.capabilities();
       state.selectedWalletName = iosWalletLabel(state.selectedIosWalletId);
       state.selectedWalletLogoId = walletProviderLogoIdForName(state.selectedWalletName);
+      state.selectedWalletIcon = undefined;
       state.iosNativeStatus = `iOS ${state.selectedWalletName} connected on ${state.cluster}.`;
       state.transactionStatus = `iOS wallet connected on ${state.cluster}.`;
       await refreshIosNativeCacheState();
@@ -25267,7 +25966,6 @@ async function runConnect(): Promise<void> {
     // throws a generic "Click Discover…" message; we want to re-open the
     // hardware-pairing overlay so the user just plugs the device in.
     if (
-      state.tauriNativeEnvironment.isTauriNative &&
       state.selectedWalletName === LEDGER_WALLET_NAME
     ) {
       const hasRegisteredLedger = state.wallets.some((w) => w.name === LEDGER_WALLET_NAME);
@@ -25315,6 +26013,7 @@ async function runConnect(): Promise<void> {
     state.transactionStatus = `Wallet connected on ${state.cluster}.`;
     state.selectedWalletName = selected.name;
     state.selectedWalletLogoId = walletProviderLogoIdForName(selected.name);
+    state.selectedWalletIcon = selected.icon;
     state.browserWalletSession = createBrowserWalletSession(selected.name, state.cluster);
     if (state.bridgeActive) {
       await connectBridgeHost();
@@ -26159,20 +26858,26 @@ async function runSignAgentPlan(): Promise<void> {
       failureLabel: undefined,
       ...(proof.metadata ? { metadata: proof.metadata } : {}),
     });
+    const signedPlanId = activeRecord && samePlan(planWithRuntimeTokenLabels(activeRecord.plan), plan)
+      ? activeRecord.id
+      : '';
     if (activeRecord?.workflowSource === 'cloud') {
       await refreshCloudWorkspaceData().catch(() => undefined);
     }
-    if (activeRecord && samePlan(planWithRuntimeTokenLabels(activeRecord.plan), plan)) {
-      if (state.generatedPlanAuditId === activeRecord.id) {
+    if (signedPlanId) {
+      if (state.generatedPlanAuditId === signedPlanId) {
         state.generatedPlanAuditId = '';
       }
       selectFallbackGeneratedPlan();
     }
-    const syncPending = state.selectedGeneratedPlanId && cloudSyncPending(state.selectedGeneratedPlanId);
+    if (signedPlanId) {
+      showCompletedHistoryForGeneratedProof(signedPlanId);
+    }
+    const syncPending = signedPlanId && cloudSyncPending(signedPlanId);
     if (syncPending) {
       pushToast('info', 'Signed locally', 'Cloud sync will retry when reachable.');
     } else {
-      pushToast('success', 'Plan completed', 'Review proof saved in Done.');
+      pushToast('success', 'Proof signed', 'Saved in Done.');
     }
   }, {
     onError: async (message, err) => {
@@ -27290,10 +27995,11 @@ async function runSignGeneratedPlan(planId: string): Promise<void> {
     if (state.agentPlan && samePlan(planWithRuntimeTokenLabels(state.agentPlan), plan)) {
       state.agentSignature = signature;
     }
+    showCompletedHistoryForGeneratedProof(planId);
     if (cloudSyncPending(planId)) {
       pushToast('info', 'Signed locally', 'Cloud sync will retry when reachable.');
     } else {
-      pushToast('success', 'Plan completed', 'Review proof saved in Done.');
+      pushToast('success', 'Proof signed', 'Saved in Done.');
     }
   }, {
     onError: async (message, err) => {
@@ -27727,6 +28433,20 @@ function showCompletedHistoryForAction(actionId?: string): void {
   state.activeTab = 'completed';
   state.completedPlanFilter = 'receipts';
   state.lastCompletedFocusId = focused?.id ?? actionId ?? records[0]?.id ?? '';
+}
+
+function showCompletedHistoryForGeneratedProof(planId: string): void {
+  const records = completedPlanRecords();
+  const generatedRecordId = `generated:${planId}`;
+  const cloudRecordId = `completed:plan:${planId}`;
+  const focused = records.find((record) =>
+    record.generatedPlanId === planId ||
+    record.id === generatedRecordId ||
+    record.id === cloudRecordId
+  );
+  state.activeTab = 'completed';
+  state.completedPlanFilter = 'all';
+  state.lastCompletedFocusId = focused?.id ?? generatedRecordId;
 }
 
 function filteredCompletedPlans(records = completedPlanRecords()): CompletedPlanRecord[] {
@@ -31924,10 +32644,10 @@ async function runSaveBridgeAiKey(): Promise<void> {
     const connected = await ensureBridgeConnectedAfterLocalCall();
     pushToast(
       'success',
-      'Bridge AI key set',
+      'Local Bridge AI key sent',
       connected
-        ? 'The key is held in local bridge memory and the approval bridge is connected.'
-        : 'The key is held in local bridge memory. Connect a wallet, then check the local bridge.',
+        ? 'The provider key is held in local bridge memory and the approval bridge is connected.'
+        : 'The provider key is held in local bridge memory. Connect a wallet, then check the local bridge.',
     );
   }, {
     async onError(message) {
@@ -32020,7 +32740,7 @@ async function runConfirmAiPlanner(): Promise<void> {
         state.aiDiagnostics = [aiRouteDiagnostic('/bridge/ai/status', 'GET')];
         await refreshBridgeAiStatus(true);
         if (!state.aiStatus?.available) {
-          throw new Error('Local bridge AI is not configured. Set a bridge key or AGENTIC_AI_API_KEY, then confirm again.');
+          throw new Error('Local Bridge AI is not configured. Send an AI provider key to the local bridge or set AGENTIC_AI_API_KEY, then confirm again.');
         }
         const detail = `${state.aiStatus.source} - ${state.aiStatus.provider ?? state.aiStatus.apiFormat ?? 'AI'} - ${state.aiStatus.model ?? 'model configured'}`;
         state.aiDiagnostics = [
@@ -32231,6 +32951,33 @@ async function runRefreshAiStatus(): Promise<void> {
   });
 }
 
+async function runStartTauriBridgeForAi(): Promise<void> {
+  if (!state.tauriNativeEnvironment.isTauriNative) {
+    return;
+  }
+  await run('ai', async () => {
+    const status = await tauriNativeStartBridge();
+    if (status) {
+      state.tauriBridgeStatus = status;
+      syncBridgeConfigFromTauriStatus(status);
+      await refreshBridgeAiStatus(false).catch(() => undefined);
+      pushToast(
+        status.bridgeReachable ? 'success' : 'error',
+        status.bridgeReachable ? 'Local bridge reachable' : 'Local bridge not ready',
+        status.bridgeReachable
+          ? 'Desktop local bridge is reachable. Confirm the planner after the provider key is configured.'
+          : status.lastError || 'The desktop bridge process started, but the endpoint is not reachable yet.',
+      );
+      return;
+    }
+    pushToast(
+      'error',
+      'Local bridge did not start',
+      tauriNativeLastBridgeError() || 'Desktop could not start the local bridge.',
+    );
+  });
+}
+
 function aiClearMessage(): string {
   if (state.aiSettings.mode === 'hosted') {
     return 'Hosted BYOK key removed from this browser session.';
@@ -32245,12 +32992,12 @@ function aiClearMessage(): string {
         ? 'Android session key removed from this app.'
         : 'Browser session key removed from this app.';
   }
-  return 'Session key removed from this app and local bridge memory.';
+  return 'Session-memory provider key removed from this app and local bridge memory. Env-backed bridge keys are managed in Preferences.';
 }
 
 function aiModeToastMessage(mode: AiSettings['mode']): string {
   if (mode === 'bridge') {
-    return 'Local bridge AI can draft plans in private local mode.';
+    return 'Local Bridge AI drafts through the local runtime. Private local workflow storage remains optional.';
   }
   if (mode === 'device-agent') {
     return 'Device Agent AI uses the gated runtime path for drafting only.';
@@ -32354,8 +33101,21 @@ async function signOutCloudSession(): Promise<boolean> {
   if (activeWorkflowMode() === 'browser-workflow') {
     refreshBrowserWorkflowData();
   }
-  await cloudRequest('/api/auth/logout', { method: 'POST' }).catch(() => undefined);
+  try {
+    await cloudRequest('/api/auth/logout', { method: 'POST' }).catch(() => undefined);
+  } finally {
+    await clearNativeCloudSessionToken();
+  }
   return true;
+}
+
+async function clearNativeCloudSessionToken(): Promise<void> {
+  if (IS_TAURI_APP) {
+    await clearTauriNativeCloudSessionToken().catch(() => false);
+  }
+  if (IS_ANDROID_APP) {
+    clearAndroidNativeCloudSessionToken();
+  }
 }
 
 async function signOutCloudSessionForWalletBoundary(
@@ -36946,6 +37706,12 @@ function recordBrowserActionActivity(actionId: string, eventType: string, metada
   const key = auditActivityKey('approval', actionId);
   const now = new Date().toISOString();
   const current = state.auditActivity[key];
+  const dedupeKey = browserActionActivityDedupeKey(eventType, metadata);
+  if (dedupeKey && current?.events.some((event) =>
+    browserActionActivityDedupeKey(event.eventType ?? event.type, event.metadata ?? {}) === dedupeKey
+  )) {
+    return;
+  }
   const event: WorkflowAuditEventRecord = {
     id: newId('browser-audit'),
     walletAddress: state.address || state.preparedActions.find((action) => action.id === actionId)?.walletAddress || '',
@@ -36963,6 +37729,21 @@ function recordBrowserActionActivity(actionId: string, eventType: string, metada
     events: [event, ...(current?.events ?? [])].slice(0, 25),
     loadedAt: now,
   };
+}
+
+function browserActionActivityDedupeKey(eventType: string, metadata: JsonObject): string {
+  const txid = stringFromJsonLike(metadata.txid);
+  const error = stringFromJsonLike(metadata.error);
+  const failureKind = stringFromJsonLike(metadata.failureKind);
+  if (!txid && !error && !failureKind) return '';
+  return stableJson({
+    eventType,
+    txid,
+    error,
+    failureKind,
+    status: stringFromJsonLike(metadata.status),
+    trigger: stringFromJsonLike(metadata.trigger),
+  });
 }
 
 function markBrowserTransactionSubmitted(action: PreparedAction, txid: string): void {
@@ -39824,6 +40605,27 @@ async function loadBridgeConfig(strict: boolean): Promise<void> {
   }
 }
 
+function walletIconForProviderName(name: string): string | undefined {
+  const normalized = name.trim().toLowerCase();
+  if (!normalized) return undefined;
+  return (
+    state.wallets.find((wallet) => wallet.name.trim().toLowerCase() === normalized)?.icon ??
+    discoveredWalletByName(name)?.icon
+  );
+}
+
+function capabilitiesWithWalletDisplay(capabilities: AdapterCapabilities): AdapterCapabilities {
+  const walletName = state.selectedWalletName.trim();
+  const walletLogoId = state.selectedWalletLogoId ?? walletProviderLogoIdForName(walletName);
+  const walletIcon = walletIconForProviderName(walletName);
+  return {
+    ...capabilities,
+    ...(walletName ? { walletName } : {}),
+    ...(walletLogoId ? { walletLogoId } : {}),
+    ...(walletIcon ? { walletIcon } : {}),
+  };
+}
+
 async function connectBridgeHost(): Promise<void> {
   if (!state.address || !state.capabilities) {
     throw new Error('Connect a wallet before connecting the bridge.');
@@ -39832,7 +40634,7 @@ async function connectBridgeHost(): Promise<void> {
     method: 'POST',
     body: JSON.stringify({
       address: state.address,
-      capabilities: state.capabilities,
+      capabilities: capabilitiesWithWalletDisplay(state.capabilities),
     }),
   });
   await bridgeTrace('browser.bridge.connected', {
@@ -39964,9 +40766,11 @@ function bridgeNextRequestPath(): string {
 
 async function handleBridgeSigningRequest(request: SigningRequest): Promise<void> {
   const signingClient = requireClient();
-  const toastId = pushToast('pending', bridgeSigningToastTitle(request.kind), request.display?.summary ?? request.id);
+  const copy = resolveWalletSigningRequestCopy(request);
+  const summary = request.display?.summary ?? request.id;
+  const toastId = pushToast('pending', copy.pendingTitle, summary);
   const toastContext: TransactionToastContext = { toastId, cluster: request.cluster };
-  state.bridgeStatus = `Opening wallet for ${request.kind}: ${request.display?.summary ?? request.id}`;
+  state.bridgeStatus = `${copy.openingStatusTitle}: ${summary}`;
   state.pendingCliSignRequest = request;
   state.lastCliSignResult = null;
   await bridgeTrace('browser.approval.start', {
@@ -39985,8 +40789,8 @@ async function handleBridgeSigningRequest(request: SigningRequest): Promise<void
         const opts = requestSignOptions(request);
         const proof = await runWalletSigningToastStep(
           toastContext,
-          'Signing message',
-          request.display?.summary ?? request.id,
+          copy.pendingTitle,
+          summary,
           () => signWalletProofMessage(request.payload.data, opts.summary ?? request.id, opts.cluster, {
             showLedgerDeviceToast: false,
           }),
@@ -40035,7 +40839,7 @@ async function handleBridgeSigningRequest(request: SigningRequest): Promise<void
         ...(proofEnvelope ?? {}),
       }),
     });
-    state.bridgeStatus = `Approved ${request.kind}: ${short(result.txid ?? result.signature)}`;
+    state.bridgeStatus = `${copy.successStatusTitle}: ${short(result.txid ?? result.signature)}`;
     state.lastCliSignResult = {
       requestId: request.id,
       status: 'approved',
@@ -40054,7 +40858,7 @@ async function handleBridgeSigningRequest(request: SigningRequest): Promise<void
         linkLabel: 'Open Solscan',
       });
     } else {
-      replaceToast(toastId, 'success', 'Bridge request approved', short(result.signature));
+      replaceToast(toastId, 'success', copy.successToastTitle, short(result.signature));
     }
   } catch (err) {
     const error = toProtocolErrorPayload(err);
@@ -40062,7 +40866,7 @@ async function handleBridgeSigningRequest(request: SigningRequest): Promise<void
       method: 'POST',
       body: JSON.stringify({ requestId: request.id, error }),
     }).catch(() => undefined);
-    state.bridgeStatus = `Rejected ${request.kind}: ${error.message}`;
+    state.bridgeStatus = `${copy.failureStatusTitle}: ${error.message}`;
     state.lastCliSignResult = {
       requestId: request.id,
       status: error.code === 'user_rejected' ? 'rejected' : 'failed',
@@ -40074,18 +40878,12 @@ async function handleBridgeSigningRequest(request: SigningRequest): Promise<void
       code: error.code,
       message: error.message,
     });
-    replaceToast(toastId, 'error', 'Bridge request failed', error.message);
+    replaceToast(toastId, 'error', copy.failureToastTitle, error.message);
   } finally {
     state.pendingCliSignRequest = null;
     await refreshInboxData().catch(() => undefined);
     render();
   }
-}
-
-function bridgeSigningToastTitle(kind: SigningRequest['kind']): string {
-  if (kind === 'sign_and_send_transaction') return 'Signing and sending transaction';
-  if (kind === 'sign_transaction') return 'Signing transaction';
-  return 'Signing message';
 }
 
 async function bridgeTrace(event: string, payload: Record<string, unknown>): Promise<void> {
@@ -41848,6 +42646,7 @@ async function restoreBrowserWalletSession(): Promise<void> {
     state.capabilities = await client.capabilities();
     state.transactionStatus = `Wallet restored on ${state.cluster}.`;
     state.selectedWalletLogoId = walletProviderLogoIdForName(selected.name);
+    state.selectedWalletIcon = selected.icon;
     state.steps.connect = 'done';
     state.browserWalletSession = createBrowserWalletSession(
       selected.name,
@@ -41865,6 +42664,7 @@ async function restoreBrowserWalletSession(): Promise<void> {
     state.steps.connect = 'idle';
     state.selectedWalletName = '';
     state.selectedWalletLogoId = undefined;
+    state.selectedWalletIcon = undefined;
     state.browserWalletPickerOpen = state.wallets.length > 0;
     clearBrowserWalletSession();
     savePersistedState();
@@ -41899,10 +42699,11 @@ async function hydrateCliSignInBridgeWallet(): Promise<void> {
   state.selectedWalletName = state.selectedWalletName || 'Browser wallet';
   state.selectedWalletLogoId =
     state.selectedWalletLogoId ?? walletProviderLogoIdForName(state.selectedWalletName);
+  state.selectedWalletIcon = undefined;
   state.bridgeStatus = decision.mismatch
-    ? 'Connected bridge wallet does not match this Cloud Storage sign-in request.'
-    : 'Wallet paired through the local bridge. Reconnect the browser wallet here to sign in.';
-  state.transactionStatus = `Wallet paired via local bridge on ${state.cluster}.`;
+    ? 'Connected wallet does not match this Cloud Storage sign-in request.'
+    : 'Wallet ready. Reconnect the browser wallet here to sign in.';
+  state.transactionStatus = `Wallet ready on ${state.cluster}.`;
   state.steps.connect = 'done';
 }
 
@@ -41927,6 +42728,7 @@ async function connectAndroidNativeWallet(forcePicker: boolean): Promise<void> {
   state.capabilities = await client.capabilities();
   state.selectedWalletName = backend.walletName();
   state.selectedWalletLogoId = backend.walletLogoId() ?? walletProviderLogoIdForName(state.selectedWalletName);
+  state.selectedWalletIcon = undefined;
   state.wallets = [];
   state.androidAuthCacheCount = backend.cacheCount();
   state.androidNativeStatus = `Android ${state.selectedWalletName} connected on ${state.cluster}.`;
@@ -41941,6 +42743,7 @@ async function applyAndroidNativeRestore(restored: AndroidNativeRestoreResult): 
   state.address = restored.address;
   state.selectedWalletName = restored.walletName;
   state.selectedWalletLogoId = restored.walletLogoId ?? walletProviderLogoIdForName(restored.walletName);
+  state.selectedWalletIcon = undefined;
   state.wallets = [];
   state.capabilities = await client.capabilities();
   state.androidAuthCacheCount = restored.cacheCount;
@@ -42014,6 +42817,7 @@ async function restoreIosNativeSession(): Promise<void> {
   state.selectedIosWalletId = restored.walletId;
   state.selectedWalletName = restored.walletName;
   state.selectedWalletLogoId = walletProviderLogoIdForName(restored.walletName);
+  state.selectedWalletIcon = undefined;
   state.capabilities = await client.capabilities();
   state.iosAuthCacheCount = restored.cacheCount;
   state.iosNativeStatus = `Restored cached ${restored.walletName} authorization on ${state.cluster}.`;
@@ -42086,6 +42890,7 @@ function resetWalletConnection(): void {
   state.activeTab = defaultWorkspaceTab;
   state.address = '';
   state.selectedWalletLogoId = undefined;
+  state.selectedWalletIcon = undefined;
   state.signature = '';
   state.txSignature = '';
   state.txid = '';
@@ -42128,6 +42933,7 @@ interface WalletIdentity {
   title: string;
   summary: string;
   detail: string;
+  iconSrc?: string;
   logoId?: BrandLogoId;
   discoveredWallet?: DiscoveredWallet;
 }
@@ -42139,6 +42945,7 @@ function walletIdentity(): WalletIdentity {
     const name = liveSelectedName || state.selectedWalletName || 'Connected wallet';
     return {
       icon: providerInitials(name),
+      iconSrc: state.selectedWalletIcon,
       logoId: state.selectedWalletLogoId ?? walletLogoIdForName(name),
       discoveredWallet: discoveredWalletByName(name),
       title: name,
@@ -42429,11 +43236,6 @@ function lockedTabReason(tab: ActiveTab): string {
   if (tab === 'schedule') return 'Connect a wallet to create or manage repeat payments.';
   if (tab === 'inbox') return 'Connect a wallet to review requests that need approval.';
   return '';
-}
-
-function spendTabVisible(): boolean {
-  const spendTab = findDevTab('spend');
-  return Boolean(spendTab?.guard());
 }
 
 function workspaceTabSelectMobile(): string {
@@ -43066,8 +43868,7 @@ function preparedActionCard(action: PreparedAction): string {
           ${recordActivityDetails('approval', action.id)}
         </div>
         ${relatedReceiptBlockForApproval(action.id)}
-        ${action.error ? `<p class="error-text">${escapeHtml(action.error)}</p>` : ''}
-        ${action.txError ? `<p class="error-text">${escapeHtml(action.txError)}</p>` : ''}
+        ${approvalErrorBlock(action)}
         ${action.txid ? txBlock(action.txid, action.cluster) : ''}
         <div class="approval-effect" data-approval-effect="${escapeHtml(action.workflowSource ?? (browserWorkflow ? 'browser' : 'local-bridge'))}">
           <strong>What this decision does</strong>
@@ -43098,6 +43899,12 @@ function preparedActionCard(action: PreparedAction): string {
       </div>
     </article>
   `;
+}
+
+function approvalErrorBlock(action: Pick<PreparedAction, 'error' | 'txError'>): string {
+  return approvalErrorMessages(action)
+    .map((message) => `<p class="error-text">${escapeHtml(message)}</p>`)
+    .join('');
 }
 
 function preparedActionMetaLabel(action: PreparedAction): string {
@@ -48716,6 +49523,40 @@ function resolveAndroidAllowLanBridge(): boolean {
 
 function agenticAndroidBridge(): AgenticAndroidBridge | undefined {
   return (globalThis as typeof globalThis & { AgenticAndroid?: AgenticAndroidBridge }).AgenticAndroid;
+}
+
+function agenticIosSystemBridge(): IosSystemClipboardBridge | undefined {
+  return (globalThis as typeof globalThis & { __agenticIosSystemBridge?: IosSystemClipboardBridge })
+    .__agenticIosSystemBridge;
+}
+
+async function writeClipboardText(value: string, label: string): Promise<void> {
+  let browserClipboardError: unknown;
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return;
+    } catch (err) {
+      browserClipboardError = err;
+    }
+  }
+
+  if (agenticAndroidBridge()?.clipboardWrite?.(value)) {
+    return;
+  }
+
+  const iosSystem = agenticIosSystemBridge();
+  if (iosSystem?.clipboardWrite) {
+    const result = await iosSystem.clipboardWrite({ text: value, label });
+    if (result?.ok !== false) {
+      return;
+    }
+  }
+
+  if (browserClipboardError instanceof Error) {
+    throw browserClipboardError;
+  }
+  throw new Error('Clipboard access is unavailable.');
 }
 
 function openAndroidMwaTest(): void {

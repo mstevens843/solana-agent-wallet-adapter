@@ -112,7 +112,7 @@ import { runSessionsMenu } from './flows/sessions.js';
 import { runAgentPaymentsMenu } from './flows/agentPayments.js';
 import { runSkillsMenu } from './flows/skills.js';
 import { runPreferencesMenu } from './flows/preferences.js';
-import { ensureTtyOrExit, withCancelGuard, isExitPromptError, select as tuiSelect, rowSelect as tuiRowSelect, header as tuiHeader, badge as tuiBadge, kv as tuiKv, divider as tuiDivider, password as tuiPassword, input as tuiInput, confirm as tuiConfirm, spinner as tuiSpinner } from './tui/index.js';
+import { ensureTtyOrExit, withCancelGuard, withPromptSignal, isExitPromptError, select as tuiSelect, rowSelect as tuiRowSelect, header as tuiHeader, badge as tuiBadge, kv as tuiKv, divider as tuiDivider, password as tuiPassword, input as tuiInput, confirm as tuiConfirm, spinner as tuiSpinner } from './tui/index.js';
 import {
   AI_PROVIDER_PRESETS,
   aiProviderPresetById,
@@ -462,6 +462,8 @@ interface ResearchLab {
   defaultInput: string;
   description: string;
 }
+
+let activeTerminalCommandSignal: AbortSignal | undefined;
 
 const RESEARCH_LABS: ResearchLab[] = [
   {
@@ -1498,7 +1500,7 @@ async function runTerminalApp(parsed: ParsedArgs): Promise<void> {
       if (!line) {
         continue;
       }
-      const shouldExit = await handleTerminalCommand(state, readlineContext, line);
+      const shouldExit = await withTerminalCommandAbort(state, () => handleTerminalCommand(state, readlineContext, line));
       if (shouldExit) {
         break;
       }
@@ -1555,7 +1557,7 @@ async function withTerminalPromptBoundary<T>(
 ): Promise<T> {
   readlineContext.closeCurrent();
   try {
-    return await body();
+    return await withPromptSignal(activeTerminalCommandSignal, body);
   } finally {
     readlineContext.recreate();
   }
@@ -1583,26 +1585,31 @@ function isReadlineClosedError(err: unknown): boolean {
 
 function abortActiveCommand(state: TerminalAppState): boolean {
   const controller = state.activeCommandAbort;
-  if (!controller || controller.signal.aborted) {
+  if (!controller) {
     return false;
   }
-  controller.abort(abortPromptError());
+  if (!controller.signal.aborted) {
+    controller.abort(abortPromptError());
+  }
   return true;
 }
 
-async function withTerminalCommandAbort(
+async function withTerminalCommandAbort<T>(
   state: TerminalAppState,
-  body: (signal: AbortSignal) => Promise<void>,
-): Promise<void> {
+  body: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
   const previous = state.activeCommandAbort;
+  const previousSignal = activeTerminalCommandSignal;
   const controller = new AbortController();
   state.activeCommandAbort = controller;
+  activeTerminalCommandSignal = controller.signal;
   try {
-    await body(controller.signal);
+    return await body(controller.signal);
   } finally {
     if (state.activeCommandAbort === controller) {
       state.activeCommandAbort = previous;
     }
+    activeTerminalCommandSignal = previousSignal;
   }
 }
 
@@ -1610,6 +1617,16 @@ function abortPromptError(): Error {
   const err = new Error('Prompt aborted.');
   err.name = 'AbortPromptError';
   return err;
+}
+
+function abortErrorFromSignal(signal: AbortSignal | undefined): Error {
+  return signal?.reason instanceof Error ? signal.reason : abortPromptError();
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) {
+    throw abortErrorFromSignal(signal);
+  }
 }
 
 function signInTimeoutOption(args: string[]): { timeoutMs?: number } {
@@ -1675,9 +1692,11 @@ async function connectOneShot(options: GlobalOptions): Promise<JsonRecord> {
 
 async function connectInteractive(
   state: TerminalAppState,
-  options: { waitForWallet: boolean; detached?: boolean; cli?: CliIntent },
+  options: { waitForWallet: boolean; detached?: boolean; cli?: CliIntent; signal?: AbortSignal },
 ): Promise<void> {
   const cli: CliIntent = options.cli ?? { intent: 'connect' };
+  const signal = options.signal ?? activeTerminalCommandSignal ?? state.activeCommandAbort?.signal;
+  throwIfAborted(signal);
   let bridgeError: unknown = null;
   const runtimeNotices: string[] = [];
   if (options.detached) {
@@ -1731,13 +1750,15 @@ async function connectInteractive(
   if (bridgeError) {
     throw new Error(`Connect page opened, but the local bridge is not ready: ${errorMessage(bridgeError)}`);
   }
-  const connected = await waitForWalletConnection(state.options, 120_000);
+  const connected = await waitForWalletConnection(state.options, 120_000, signal);
   if (!state.options.json) {
     printOk(state.options, `Wallet connected: ${connected.address ?? 'connected'}`);
   }
 }
 
 async function disconnectInteractive(state: TerminalAppState): Promise<void> {
+  const signal = activeTerminalCommandSignal ?? state.activeCommandAbort?.signal;
+  throwIfAborted(signal);
   await ensureBridge(state);
   await ensureBrowserHost(state);
   const status = await tryBridgeRequest<WalletStatus>(state.options, '/bridge/action/status');
@@ -1775,7 +1796,7 @@ async function disconnectInteractive(state: TerminalAppState): Promise<void> {
       }
       return;
     }
-    await sleep(750);
+    await sleep(750, signal);
   }
   throw new Error('Wallet still connected after 120s. Click "Disconnect wallet" in the browser and try /disconnect again.');
 }
@@ -2484,6 +2505,10 @@ async function handleTerminalCommand(
         return false;
     }
   } catch (err) {
+    if (isExitPromptError(err)) {
+      printMuted(state.options, 'Cancelled.');
+      return false;
+    }
     const friendly = friendlyBridgeError(err, state.options);
     if (friendly) {
       printError(state.options, friendly);
@@ -3098,19 +3123,24 @@ function computeInboxCounts(
 }
 
 async function approvePreparedAction(state: TerminalAppState, idOrIndex: string | undefined): Promise<void> {
+  const signal = activeTerminalCommandSignal ?? state.activeCommandAbort?.signal;
   const action = await resolveAction(state, idOrIndex);
   assertActionApprovable(action);
-  await connectInteractive(state, { waitForWallet: true });
+  await connectInteractive(state, { waitForWallet: true, signal });
   await openWalletHost(state.options, { intent: 'approve', actionId: action.id }).catch(() => undefined);
   printMuted(state.options, 'Approval request sent. Use the browser wallet popup to complete signing.');
   const result = await bridgeRequest(state.options, '/bridge/prepared-actions/execute', {
     method: 'POST',
+    ...(signal ? { signal } : {}),
     body: JSON.stringify({ actionId: action.id }),
   });
   printOk(state.options, `Approved prepared action ${action.id}.`);
   renderApproveResult(state.options, result, action);
   // Auto-poll once after a short delay to upgrade pending -> confirmed/failed.
-  const tx = await waitForPreparedActionTxStatus(state.options, action.id, 10_000).catch(() => 'timeout' as const);
+  const tx = await waitForPreparedActionTxStatus(state.options, action.id, 10_000, signal).catch((err) => {
+    if (isExitPromptError(err)) throw err;
+    return 'timeout' as const;
+  });
   if (tx === 'confirmed') {
     printOk(state.options, 'On-chain: confirmed.');
   } else if (tx === 'failed') {
@@ -4079,7 +4109,9 @@ async function signTextWithWallet(
   summary: string,
   riskLevel: RiskLevel,
 ): Promise<ApprovalResource> {
+  const signal = activeTerminalCommandSignal ?? state.activeCommandAbort?.signal;
   await requireWalletConnected(state);
+  throwIfAborted(signal);
   const status = await tryBridgeRequest<WalletStatus>(state.options, '/bridge/action/status');
   const cluster = status.ok && status.value.cluster ? status.value.cluster : 'mainnet-beta';
   const request: SigningRequest = {
@@ -4097,23 +4129,30 @@ async function signTextWithWallet(
   await openWalletHost(state.options, { intent: 'sign', requestId: request.id });
   const initial = await bridgeRequest<ApprovalResource>(state.options, '/bridge/submit', {
     method: 'POST',
+    ...(signal ? { signal } : {}),
     body: JSON.stringify({ request }),
   });
   printMuted(state.options, `Waiting for wallet approval ${initial.requestId}...`);
-  return pollApproval(state.options, initial);
+  return pollApproval(state.options, initial, signal);
 }
 
-async function pollApproval(options: GlobalOptions, initial: ApprovalResource): Promise<ApprovalResource> {
+async function pollApproval(
+  options: GlobalOptions,
+  initial: ApprovalResource,
+  signal?: AbortSignal,
+): Promise<ApprovalResource> {
   let current = initial;
   const start = Date.now();
   while (current.status === 'pending') {
+    throwIfAborted(signal);
     if (Date.now() - start > REQUEST_TIMEOUT_MS) {
       throw new Error(`Approval ${current.requestId} timed out after ${REQUEST_TIMEOUT_MS}ms.`);
     }
-    await sleep(POLL_INTERVAL_MS);
+    await sleep(POLL_INTERVAL_MS, signal);
     current = await bridgeRequest<ApprovalResource>(
       options,
       `/bridge/poll?requestId=${encodeURIComponent(current.requestId)}`,
+      signal ? { signal } : {},
     );
   }
   if (current.status !== 'approved') {
@@ -4281,7 +4320,9 @@ async function waitForPreparedActionTxStatus(
   options: GlobalOptions,
   actionId: string,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<PreparedActionTxStatus | 'timeout'> {
+  throwIfAborted(signal);
   const start = Date.now();
   const pollIntervalMs = 1500;
   while (Date.now() - start < timeoutMs) {
@@ -4289,7 +4330,7 @@ async function waitForPreparedActionTxStatus(
       const status = await bridgeRequest<{ actions?: PreparedAction[] }>(
         options,
         '/bridge/prepared-actions/tx-status',
-        { method: 'POST', body: JSON.stringify({ actionId }) },
+        { method: 'POST', ...(signal ? { signal } : {}), body: JSON.stringify({ actionId }) },
       );
       const action = status.actions?.find((a) => a.id === actionId);
       const tx = action?.txStatus;
@@ -4299,7 +4340,7 @@ async function waitForPreparedActionTxStatus(
     } catch {
       // transient — keep polling
     }
-    await sleep(pollIntervalMs);
+    await sleep(pollIntervalMs, signal);
   }
   return 'timeout';
 }
@@ -5012,7 +5053,7 @@ async function promptExistingSecret(
   currentValue: string,
 ): Promise<string> {
   const hint = currentValue ? ` [configured: ${redactUrlSecret(currentValue)}; blank keeps]` : '';
-  const answer = (await rl.question(`${label}${hint}: `)).trim();
+  const answer = (await readlineQuestion(rl, `${label}${hint}: `)).trim();
   return answer || currentValue;
 }
 
@@ -5295,14 +5336,19 @@ async function waitForWalletHost(options: GlobalOptions, timeoutMs: number): Pro
   return false;
 }
 
-async function waitForWalletConnection(options: GlobalOptions, timeoutMs: number): Promise<WalletStatus> {
+async function waitForWalletConnection(
+  options: GlobalOptions,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<WalletStatus> {
+  throwIfAborted(signal);
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const status = await tryBridgeRequest<WalletStatus>(options, '/bridge/action/status');
+    const status = await tryBridgeRequest<WalletStatus>(options, '/bridge/action/status', signal ? { signal } : undefined);
     if (status.ok && status.value.connected && status.value.address) {
       return status.value;
     }
-    await sleep(750);
+    await sleep(750, signal);
   }
   throw new Error('No wallet connected yet. Keep the Agentic Wallet Connect page open, connect your wallet, then run /wallet or /connect again.');
 }
@@ -5615,6 +5661,9 @@ async function bridgeRequest<T = unknown>(
       },
     }, REQUEST_TIMEOUT_MS + 5_000);
   } catch (err) {
+    if (init.signal?.aborted) {
+      throw abortErrorFromSignal(init.signal);
+    }
     throw new Error(`Local wallet bridge is not reachable at ${options.bridgeUrl}. Run solana-agent-wallet app or bridge start. ${errorMessage(err)}`);
   }
 
@@ -5635,6 +5684,9 @@ async function tryBridgeRequest<T>(
   try {
     return { ok: true, value: await bridgeRequest<T>(options, path, init) };
   } catch (error) {
+    if (isExitPromptError(error)) {
+      throw error;
+    }
     return { ok: false, error };
   }
 }
@@ -5656,6 +5708,9 @@ async function bridgeRequestWithTimeout<T = unknown>(
       },
     }, timeoutMs);
   } catch (err) {
+    if (init.signal?.aborted) {
+      throw abortErrorFromSignal(init.signal);
+    }
     throw new Error(`Local wallet bridge is not reachable at ${options.bridgeUrl}. ${errorMessage(err)}`);
   }
   const text = await response.text();
@@ -5676,6 +5731,9 @@ async function tryBridgeRequestWithTimeout<T>(
   try {
     return { ok: true, value: await bridgeRequestWithTimeout<T>(options, path, timeoutMs, init) };
   } catch (error) {
+    if (isExitPromptError(error)) {
+      throw error;
+    }
     return { ok: false, error };
   }
 }
@@ -5793,11 +5851,21 @@ function renderWebUrl(options: GlobalOptions, path: string): URL {
 
 async function fetchWithTimeout(input: URL | string, init: RequestInit, timeoutMs: number): Promise<Response> {
   const controller = new AbortController();
+  const upstreamSignal = init.signal;
+  const onAbort = (): void => {
+    controller.abort(upstreamSignal?.reason);
+  };
+  if (upstreamSignal?.aborted) {
+    onAbort();
+  } else {
+    upstreamSignal?.addEventListener('abort', onAbort, { once: true });
+  }
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(input, { ...init, signal: controller.signal });
   } finally {
     clearTimeout(timer);
+    upstreamSignal?.removeEventListener('abort', onAbort);
   }
 }
 
@@ -7313,13 +7381,13 @@ function parseStringParameters(values: string[]): Record<string, string> {
 }
 
 async function prompt(rl: readline.Interface, label: string, defaultValue: string): Promise<string> {
-  const answer = (await rl.question(`${label}${defaultValue ? ` [${defaultValue}]` : ''}: `)).trim();
+  const answer = (await readlineQuestion(rl, `${label}${defaultValue ? ` [${defaultValue}]` : ''}: `)).trim();
   return answer || defaultValue;
 }
 
 async function promptRequired(rl: readline.Interface, label: string): Promise<string> {
   while (true) {
-    const answer = (await rl.question(`${label}: `)).trim();
+    const answer = (await readlineQuestion(rl, `${label}: `)).trim();
     if (answer) {
       return answer;
     }
@@ -7329,11 +7397,24 @@ async function promptRequired(rl: readline.Interface, label: string): Promise<st
 
 async function confirm(rl: readline.Interface, label: string, defaultValue: boolean): Promise<boolean> {
   const hint = defaultValue ? 'Y/n' : 'y/N';
-  const answer = (await rl.question(`${label} [${hint}]: `)).trim().toLowerCase();
+  const answer = (await readlineQuestion(rl, `${label} [${hint}]: `)).trim().toLowerCase();
   if (!answer) {
     return defaultValue;
   }
   return answer === 'y' || answer === 'yes';
+}
+
+async function readlineQuestion(rl: readline.Interface, query: string): Promise<string> {
+  const signal = activeTerminalCommandSignal;
+  throwIfAborted(signal);
+  try {
+    return signal ? await rl.question(query, { signal }) : await rl.question(query);
+  } catch (err) {
+    if (signal?.aborted) {
+      throw abortErrorFromSignal(signal);
+    }
+    throw err;
+  }
 }
 
 function parseJsonBody(text: string): unknown {
@@ -7439,9 +7520,20 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolvePromise) => {
-    setTimeout(resolvePromise, ms);
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) {
+    return Promise.reject(abortErrorFromSignal(signal));
+  }
+  return new Promise((resolvePromise, rejectPromise) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolvePromise();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      rejectPromise(abortErrorFromSignal(signal));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
 

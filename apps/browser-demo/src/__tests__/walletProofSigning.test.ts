@@ -9,6 +9,7 @@ import {
   setProofSigningContext,
   shouldRouteProofThroughAndroidNative,
   shouldRouteProofThroughLedgerMemo,
+  shouldRouteProofThroughRemoteRelayMemo,
   signWalletProofMessage,
   type AndroidProofBackend,
   type ProofSigningAppState,
@@ -67,6 +68,36 @@ describe('shouldRouteProofThroughLedgerMemo', () => {
   it('routes Ledger proof signing through a memo transaction', () => {
     expect(shouldRouteProofThroughLedgerMemo(appState({ selectedWalletName: LEDGER_WALLET_NAME }))).toBe(true);
     expect(shouldRouteProofThroughLedgerMemo(appState({ selectedWalletName: 'Backpack' }))).toBe(false);
+  });
+});
+
+describe('shouldRouteProofThroughRemoteRelayMemo', () => {
+  it('routes Phantom/Solflare QR relay proof signing through a memo transaction', () => {
+    expect(
+      shouldRouteProofThroughRemoteRelayMemo(
+        appState({
+          selectedWalletName: 'Solflare mobile',
+          capabilities: {
+            backend: 'remote-relay-deeplink',
+            supports: { signMessage: false, signTransaction: true },
+          },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it('does not route non-QR relay wallets through the remote memo path', () => {
+    expect(
+      shouldRouteProofThroughRemoteRelayMemo(
+        appState({
+          selectedWalletName: 'Solflare',
+          capabilities: {
+            backend: 'wallet-standard-web',
+            supports: { signMessage: true, signTransaction: true },
+          },
+        }),
+      ),
+    ).toBe(false);
   });
 });
 
@@ -183,5 +214,43 @@ describe('signWalletProofMessage', () => {
     const signed = Transaction.from(Buffer.from(result.proofTxBase64!, 'base64'));
     const memo = signed.instructions.find((ix) => ix.programId.toBase58() === 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
     expect(new TextDecoder().decode(memo!.data)).toMatch(/^Agentic plan review proof v1\nSHA-256: [0-9a-f]{64}$/);
+  });
+
+  it('routes QR relay proofs through a signed memo transaction', async () => {
+    const signer = Keypair.generate();
+    const signature = new Uint8Array(64).fill(9);
+    const signMessage = vi.fn();
+    const signTransaction = vi.fn(async (txBase64: string) => {
+      const tx = Transaction.from(Buffer.from(txBase64, 'base64'));
+      tx.addSignature(signer.publicKey, Buffer.from(signature));
+      return {
+        signature: Buffer.from(
+          tx.serialize({ requireAllSignatures: false, verifySignatures: false }),
+        ).toString('base64'),
+      };
+    });
+    setProofSigningContext({
+      getClient: () => fakeClient({ signMessage, signTransaction }),
+      getAppState: () =>
+        appState({
+          selectedWalletName: 'Solflare mobile',
+          address: signer.publicKey.toBase58(),
+          capabilities: {
+            backend: 'remote-relay-deeplink',
+            supports: { signMessage: false, signTransaction: true },
+          },
+        }),
+      getLatestBlockhash: async () => ({ blockhash: '11111111111111111111111111111111' }),
+      getAndroidProofBackend: () => null,
+    });
+
+    const result = await signWalletProofMessage('qr proof', 'summary', 'mainnet-beta' as Cluster);
+
+    expect(signMessage).not.toHaveBeenCalled();
+    expect(signTransaction).toHaveBeenCalledOnce();
+    expect(result.proofEncoding).toBe('tx-memo-proof');
+    expect(result.signature).toBe(bs58.encode(signature));
+    expect(result.proofTxBase64).toBeTruthy();
+    expect(result.proofMemoText).toBe('qr proof');
   });
 });

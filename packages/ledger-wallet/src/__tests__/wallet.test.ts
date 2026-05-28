@@ -42,6 +42,14 @@ function makeIpc(overrides: Partial<LedgerIpc> = {}): LedgerIpc {
         address: ADDR,
         publicKeyB64: Buffer.from(publicKeyBytes()).toString('base64'),
       })),
+    getAddresses:
+      overrides.getAddresses ??
+      (async (derivationPaths) =>
+        derivationPaths.map((derivationPath) => ({
+          derivationPath,
+          address: ADDR,
+          publicKeyB64: Buffer.from(publicKeyBytes()).toString('base64'),
+        }))),
     signTransaction:
       overrides.signTransaction ??
       (async () => Buffer.from(new Uint8Array(64).fill(7)).toString('base64')),

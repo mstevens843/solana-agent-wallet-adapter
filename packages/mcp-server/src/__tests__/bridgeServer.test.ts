@@ -324,6 +324,41 @@ describe('bridge lab artifact routes', () => {
     }
   });
 
+  it('round-trips browser wallet display metadata through connect and status', async () => {
+    const handle = await startTestBridge();
+    try {
+      await bridgeFetch(handle.url, '/bridge/connect', {
+        method: 'POST',
+        body: JSON.stringify({
+          address: '11111111111111111111111111111111',
+          capabilities: {
+            backend: 'test-browser',
+            cluster: ['devnet'],
+            supports: {
+              signMessage: true,
+              signTransaction: true,
+              signAndSendTransaction: true,
+              multiSign: false,
+              simulationPreview: false,
+            },
+            walletName: 'Backpack',
+            walletLogoId: 'backpack',
+            walletIcon: 'data:image/svg+xml,<svg></svg>',
+          },
+        }),
+      });
+
+      await expect(bridgeFetch(handle.url, '/bridge/status')).resolves.toMatchObject({
+        address: '11111111111111111111111111111111',
+        walletName: 'Backpack',
+        walletLogoId: 'backpack',
+        walletIcon: 'data:image/svg+xml,<svg></svg>',
+      });
+    } finally {
+      await handle.stop();
+    }
+  });
+
   it('validates bridge Solana helper clusters before RPC calls', async () => {
     const handle = await startTestBridge({
       actionConfig: { ...DEFAULT_CONFIG, cluster: 'devnet', rpcUrl: 'http://127.0.0.1:1' },

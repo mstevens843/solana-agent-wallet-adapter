@@ -343,7 +343,15 @@ describe('disconnect', () => {
 describe('listSessions', () => {
   it('enumerates Solana-namespaced sessions only', async () => {
     const sessions: WalletConnectSessionStruct[] = [
-      buildSession(MAINNET, 'topic-1', ADDR),
+      {
+        ...buildSession(MAINNET, 'topic-1', ADDR),
+        peer: {
+          metadata: {
+            name: 'Backpack',
+            icons: ['https://example.invalid/backpack.svg'],
+          },
+        },
+      },
       {
         topic: 'topic-eth',
         namespaces: { eip155: { accounts: ['eip155:1:0xabc'] } },
@@ -358,7 +366,13 @@ describe('listSessions', () => {
       signClient: sign,
     });
     const out = client.listSessions();
-    expect(out).toEqual([{ topic: 'topic-1', chainId: MAINNET, address: ADDR }]);
+    expect(out).toEqual([{
+      topic: 'topic-1',
+      chainId: MAINNET,
+      address: ADDR,
+      peerName: 'Backpack',
+      peerIcons: ['https://example.invalid/backpack.svg'],
+    }]);
   });
 
   it('returns empty when the underlying client has no session helper', () => {

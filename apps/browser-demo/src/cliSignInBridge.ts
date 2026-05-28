@@ -26,6 +26,27 @@ export interface CliCloudSignInReadiness {
   buttonLabel: string;
 }
 
+export type WalletSigningRequestKind =
+  | 'sign_message'
+  | 'sign_transaction'
+  | 'sign_and_send_transaction';
+
+export interface WalletSigningRequestCopyInput {
+  kind: WalletSigningRequestKind;
+  display?: {
+    summary?: string;
+  } | null;
+}
+
+export interface WalletSigningRequestCopy {
+  pendingTitle: string;
+  openingStatusTitle: string;
+  successStatusTitle: string;
+  failureStatusTitle: string;
+  successToastTitle: string;
+  failureToastTitle: string;
+}
+
 export function resolveCliSignInBridgeHydration(
   input: CliSignInBridgeHydrationInput,
 ): CliSignInBridgeHydrationDecision {
@@ -85,10 +106,71 @@ export function cliIntentAllowsBridgeRequestClaim(intent?: string, surface?: str
   return true;
 }
 
+export function resolveWalletSigningRequestCopy(
+  request: WalletSigningRequestCopyInput,
+): WalletSigningRequestCopy {
+  if (isCloudStorageSignInRequest(request)) {
+    return {
+      pendingTitle: 'Signing in',
+      openingStatusTitle: 'Opening wallet for sign-in',
+      successStatusTitle: 'Signed in',
+      failureStatusTitle: 'Sign-in failed',
+      successToastTitle: 'Signed in',
+      failureToastTitle: 'Sign-in failed',
+    };
+  }
+
+  if (request.kind === 'sign_and_send_transaction') {
+    return {
+      pendingTitle: 'Signing and sending transaction',
+      openingStatusTitle: 'Opening wallet for transaction',
+      successStatusTitle: 'Transaction submitted',
+      failureStatusTitle: 'Transaction failed',
+      successToastTitle: 'Transaction submitted',
+      failureToastTitle: 'Transaction failed',
+    };
+  }
+
+  if (request.kind === 'sign_transaction') {
+    return {
+      pendingTitle: 'Signing transaction',
+      openingStatusTitle: 'Opening wallet for transaction signature',
+      successStatusTitle: 'Transaction signed',
+      failureStatusTitle: 'Transaction signing failed',
+      successToastTitle: 'Transaction signed',
+      failureToastTitle: 'Transaction signing failed',
+    };
+  }
+
+  return {
+    pendingTitle: 'Signing message',
+    openingStatusTitle: 'Opening wallet for message signature',
+    successStatusTitle: 'Message signed',
+    failureStatusTitle: 'Message signing failed',
+    successToastTitle: 'Message signed',
+    failureToastTitle: 'Message signing failed',
+  };
+}
+
+export function isCloudStorageSignInRequest(request: WalletSigningRequestCopyInput): boolean {
+  if (request.kind !== 'sign_message') return false;
+  const summary = normalizeSignInSummary(request.display?.summary);
+  return (
+    summary.includes('agentic cloud sign in') ||
+    summary.includes('agentic cli login') ||
+    summary.includes('cloud storage sign in') ||
+    summary.includes('cloud sign in')
+  );
+}
+
 function normalizeWallet(value?: string): string {
   return value?.trim() ?? '';
 }
 
 function sameWalletText(left: string, right: string): boolean {
   return left.trim().toLowerCase() === right.trim().toLowerCase();
+}
+
+function normalizeSignInSummary(value?: string): string {
+  return value?.trim().toLowerCase().replace(/[-_]+/g, ' ').replace(/\s+/g, ' ') ?? '';
 }

@@ -40,12 +40,18 @@ describe('RemoteBridgeBackend', () => {
           simulationPreview: true,
         },
         address: '7F.kdEmptyAddress',
+        walletName: 'Backpack',
+        walletLogoId: 'backpack',
+        walletIcon: 'data:image/svg+xml,<svg></svg>',
       }),
     );
     const backend = new RemoteBridgeBackend({ bridgeUrl: ORIGIN, token: TOKEN });
     const caps = await backend.capabilities();
     expect(caps.backend).toBe('remote-bridge');
     expect(caps.address).toBe('7F.kdEmptyAddress');
+    expect(caps.walletName).toBe('Backpack');
+    expect(caps.walletLogoId).toBe('backpack');
+    expect(caps.walletIcon).toBe('data:image/svg+xml,<svg></svg>');
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const call = fetchSpy.mock.calls[0]!;
     const [url, init] = call;

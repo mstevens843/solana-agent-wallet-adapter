@@ -3,14 +3,93 @@ import { describe, expect, it } from 'vitest';
 import {
   buildDesktopBrowserConnectUrl,
   buildDesktopBrowserIntentUrl,
+  canUseMultiPathWalletFlow,
   desktopBridgeNotReadyMessage,
   initialDesktopConnectFlowState,
   isDesktopBridgeReady,
   reduceDesktopConnectFlow,
+  shouldRenderDetachedLedgerOverlay,
+  shouldRenderDetachedWalletConnectOverlay,
   type DesktopConnectFlowState,
 } from '../desktopConnectFlow.js';
 
 const initial = (): DesktopConnectFlowState => initialDesktopConnectFlowState();
+
+describe('multi-path wallet flow surface gates', () => {
+  it('enables the copied connect flow on desktop and regular website surfaces', () => {
+    expect(canUseMultiPathWalletFlow({
+      isAndroidNative: false,
+      isIosNative: false,
+      isTauriNative: true,
+    })).toBe(true);
+    expect(canUseMultiPathWalletFlow({
+      isAndroidNative: false,
+      isIosNative: false,
+      isTauriNative: false,
+    })).toBe(true);
+  });
+
+  it('keeps CLI wallet-host pages on direct Wallet Standard discovery', () => {
+    expect(canUseMultiPathWalletFlow({
+      isAndroidNative: false,
+      isIosNative: false,
+      isCliMode: true,
+      isTauriNative: false,
+    })).toBe(false);
+    expect(canUseMultiPathWalletFlow({
+      isAndroidNative: false,
+      isIosNative: false,
+      isCliMode: true,
+      isTauriNative: true,
+    })).toBe(false);
+  });
+
+  it('keeps native mobile surfaces on their native wallet paths', () => {
+    expect(canUseMultiPathWalletFlow({
+      isAndroidNative: true,
+      isIosNative: false,
+      isTauriNative: false,
+    })).toBe(false);
+    expect(canUseMultiPathWalletFlow({
+      isAndroidNative: false,
+      isIosNative: true,
+      isTauriNative: false,
+    })).toBe(false);
+  });
+
+  it('suppresses detached overlays while the copied inline flow owns that step', () => {
+    expect(shouldRenderDetachedWalletConnectOverlay({
+      isTauriNative: false,
+      flowStep: 'qr',
+    })).toBe(false);
+    expect(shouldRenderDetachedLedgerOverlay({
+      isTauriNative: false,
+      flowStep: 'ledger',
+    })).toBe(false);
+  });
+
+  it('keeps detached overlays available outside inline QR/Ledger steps on the website', () => {
+    expect(shouldRenderDetachedWalletConnectOverlay({
+      isTauriNative: false,
+      flowStep: 'method',
+    })).toBe(true);
+    expect(shouldRenderDetachedLedgerOverlay({
+      isTauriNative: false,
+      flowStep: 'method',
+    })).toBe(true);
+  });
+
+  it('keeps detached WalletConnect and Ledger overlays suppressed inside Tauri', () => {
+    expect(shouldRenderDetachedWalletConnectOverlay({
+      isTauriNative: true,
+      flowStep: 'idle',
+    })).toBe(false);
+    expect(shouldRenderDetachedLedgerOverlay({
+      isTauriNative: true,
+      flowStep: 'idle',
+    })).toBe(false);
+  });
+});
 
 describe('buildDesktopBrowserConnectUrl', () => {
   it('targets the shared /connect page with desktop surface and bridge credentials', () => {

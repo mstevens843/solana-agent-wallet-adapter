@@ -167,8 +167,15 @@ export interface AgentChatRequest {
   context?: Record<string, unknown>;
 }
 
+export interface AgentChatSection {
+  title: string;
+  bullets: string[];
+}
+
 export interface AgentChatResult {
   answer: string;
+  sections?: AgentChatSection[];
+  next?: string;
   citations?: Array<{ kind: string; ref: string; title?: string }>;
   checkedAt: string;
   source: 'ai';

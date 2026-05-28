@@ -98,6 +98,7 @@ interface Receipt {
   status: string;
   summary: string;
   txid?: string;
+  cluster?: string;
   completedAt: string;
 }
 
@@ -348,7 +349,7 @@ function runtimeSetupPanel(): string {
           <input id="setupAiApiFormat" value="${escapeHtml(setup?.aiApiFormat ?? 'openai-compatible')}" />
         </label>
         <label>
-          <span>AI API key</span>
+          <span>Local Bridge AI provider key</span>
           <input id="setupAiApiKey" type="password" placeholder="${escapeHtml(aiKeyPlaceholder)}" autocomplete="off" />
         </label>
         <label>
@@ -420,6 +421,7 @@ function actionRowHtml(action: PreparedAction): string {
         ${action.error ? `<span class="error">${escapeHtml(action.error)}</span>` : ''}
       </div>
       <div class="row-actions">
+        ${action.txid ? `<button data-open-external-url="${escapeHtml(explorerUrl(action.txid, action.cluster))}">Open Solscan</button>` : ''}
         <button data-action-op="execute" data-action-id="${escapeHtml(action.id)}">Approve</button>
         <button data-action-op="reject" data-action-id="${escapeHtml(action.id)}">Reject</button>
         <button data-action-op="archive" data-action-id="${escapeHtml(action.id)}">Archive</button>
@@ -461,6 +463,11 @@ function receiptsHtml(): string {
             <span>${escapeHtml(receipt.status)} · ${escapeHtml(receipt.completedAt)}</span>
             ${receipt.txid ? `<span>${escapeHtml(short(receipt.txid))}</span>` : ''}
           </div>
+          ${receipt.txid ? `
+            <div class="row-actions">
+              <button data-open-external-url="${escapeHtml(explorerUrl(receipt.txid, receipt.cluster))}">Open Solscan</button>
+            </div>
+          ` : ''}
         </div>
       `).join('')}
     </div>
@@ -497,6 +504,12 @@ function bind(): void {
   });
   document.querySelector<HTMLButtonElement>('#openWalletHost')?.addEventListener('click', () => {
     void openWalletHost();
+  });
+  document.querySelectorAll<HTMLButtonElement>('[data-open-external-url]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const url = button.dataset.openExternalUrl;
+      if (url) void openExternalUrl(url);
+    });
   });
   document.querySelectorAll<HTMLButtonElement>('[data-action-op]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -697,6 +710,16 @@ async function openWalletHost(): Promise<void> {
   window.open(browserHostUrl(), '_blank', 'noreferrer');
 }
 
+async function openExternalUrl(url: string): Promise<void> {
+  if (state.nativeAvailable) {
+    await runNative('Opening link...', async () => {
+      await tauriInvoke<void>('open_external_url', { url });
+    });
+    return;
+  }
+  window.open(url, '_blank', 'noreferrer');
+}
+
 async function runPreparedAction(actionId: string, op: string): Promise<void> {
   const endpoint = op === 'execute'
     ? '/bridge/prepared-actions/execute'
@@ -814,6 +837,14 @@ function expectedBlinkLabel(action: PreparedAction): string {
   const token = stringParam(action, 'expectedToken') || stringParam(action, 'token');
   const recipient = stringParam(action, 'expectedRecipient') || stringParam(action, 'recipient');
   return [amount, token, recipient ? `to ${recipient}` : ''].filter(Boolean).join(' ');
+}
+
+function explorerUrl(txid: string, cluster?: string | null): string {
+  const trimmedCluster = (cluster ?? '').trim();
+  const clusterParam = trimmedCluster && trimmedCluster !== 'mainnet-beta' && trimmedCluster !== 'mainnet'
+    ? `?cluster=${encodeURIComponent(trimmedCluster)}`
+    : '';
+  return `https://solscan.io/tx/${encodeURIComponent(txid)}${clusterParam}`;
 }
 
 function stringParam(action: PreparedAction, key: string): string {

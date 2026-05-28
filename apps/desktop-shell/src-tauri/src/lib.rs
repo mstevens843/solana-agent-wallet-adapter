@@ -282,6 +282,7 @@ pub fn run() {
             ledger::ledger_list_devices,
             ledger::ledger_connect,
             ledger::ledger_get_address,
+            ledger::ledger_get_addresses,
             ledger::ledger_sign_transaction,
             ledger::ledger_sign_message,
             ledger::ledger_disconnect,

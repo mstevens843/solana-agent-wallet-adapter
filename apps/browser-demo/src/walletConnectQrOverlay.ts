@@ -170,6 +170,10 @@ export interface WalletConnectQrOverlayRenderInput {
    * the wallet identifies itself in the session response post-approval.
    */
   agnostic?: boolean;
+  /** Render copy for desktop app vs website/browser contexts. */
+  surface?: 'desktop' | 'website';
+  /** On mobile web, put the same-device wallet launch before the QR. */
+  preferDeepLink?: boolean;
 }
 
 function brandPlaceholder(): WalletConnectBrandDescriptor {
@@ -181,15 +185,18 @@ function bodyForMode(
   brand: WalletConnectBrandDescriptor,
   logoUrl?: (logoId: string) => string | null,
   agnostic?: boolean,
+  surface: 'desktop' | 'website' = 'desktop',
+  preferDeepLink = false,
 ): string {
   const promptName = agnostic ? 'your Solana mobile wallet' : `${brand.name} mobile`;
   const completingName = agnostic ? 'your wallet' : brand.name;
   const footnoteName = agnostic ? 'your Solana mobile wallet (Phantom, Solflare, Backpack, Jupiter, Magic Eden, …)' : `${brand.name} mobile app`;
+  const targetLabel = surface === 'website' ? 'this browser session' : 'this desktop app';
   if (state.mode === 'connecting') {
     return `<p class="walletconnect-qr-overlay-lede">Preparing a WalletConnect session${agnostic ? '' : ` with ${escapeHtml(brand.name)}`}…</p>`;
   }
   if (state.mode === 'completing') {
-    return `<p class="walletconnect-qr-overlay-lede">Linking ${escapeHtml(completingName)} to this desktop…</p>`;
+    return `<p class="walletconnect-qr-overlay-lede">Linking ${escapeHtml(completingName)} to ${escapeHtml(targetLabel)}…</p>`;
   }
   if (state.mode === 'error') {
     return `
@@ -214,15 +221,19 @@ function bodyForMode(
   const brandLogo = brandLogoUrl
     ? `<img class="walletconnect-qr-overlay-brand-logo" src="${escapeHtml(brandLogoUrl)}" alt="" />`
     : '';
+  const deepLinkAction = deepLink
+    ? `<a class="utility walletconnect-qr-overlay-open-wallet" href="${escapeHtml(deepLink)}" data-walletconnect-action="open-deeplink">Open ${escapeHtml(brand.name)}</a>`
+    : '';
   return `
     <div class="walletconnect-qr-overlay-brand">${brandLogo}<span>Scan with ${escapeHtml(promptName)}</span></div>
+    ${preferDeepLink && deepLinkAction ? `<div class="walletconnect-qr-overlay-mobile-open">${deepLinkAction}</div>` : ''}
     ${qrMarkup}
     <div class="walletconnect-qr-overlay-actions">
-      ${deepLink ? `<a class="utility" href="${escapeHtml(deepLink)}" data-walletconnect-action="open-deeplink">Open ${escapeHtml(brand.name)}</a>` : ''}
+      ${!preferDeepLink ? deepLinkAction : ''}
       <button type="button" class="utility" data-walletconnect-action="copy-uri">Copy URI</button>
       <button type="button" class="utility" data-walletconnect-action="cancel">Cancel</button>
     </div>
-    <p class="walletconnect-qr-overlay-footnote">Scan the code with ${escapeHtml(footnoteName)}. The pairing happens over the WalletConnect relay; your keys never leave your phone.</p>
+    <p class="walletconnect-qr-overlay-footnote">${preferDeepLink && deepLinkAction ? `Open ${escapeHtml(brand.name)} on this device, or scan the code with ${escapeHtml(footnoteName)}.` : `Scan the code with ${escapeHtml(footnoteName)}.`} The pairing happens over the WalletConnect relay; your keys never leave your phone.</p>
   `;
 }
 
@@ -250,7 +261,7 @@ export function walletConnectQrOverlayHtml(
         <button type="button" class="walletconnect-qr-overlay-close" data-walletconnect-action="cancel" aria-label="Close">&times;</button>
       </header>
       <div class="walletconnect-qr-overlay-body">
-        ${bodyForMode(state, brand, input.logoUrl, agnostic)}
+        ${bodyForMode(state, brand, input.logoUrl, agnostic, input.surface ?? 'desktop', Boolean(input.preferDeepLink))}
       </div>
     </aside>
   `;
@@ -270,5 +281,12 @@ export function walletConnectQrBodyHtml(
   const brand =
     (state.brandId && (input.brand ?? ((id) => WALLET_CONNECT_BRANDS[id]))(state.brandId)) ||
     brandPlaceholder();
-  return bodyForMode(state, brand, input.logoUrl, Boolean(input.agnostic));
+  return bodyForMode(
+    state,
+    brand,
+    input.logoUrl,
+    Boolean(input.agnostic),
+    input.surface ?? 'desktop',
+    Boolean(input.preferDeepLink),
+  );
 }

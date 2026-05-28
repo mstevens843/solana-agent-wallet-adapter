@@ -2,7 +2,7 @@
  * Centralized "sign a proof" path.
  *
  * Most wallets sign the UTF-8 proof bytes directly via `signMessage`. Several
- * Android-native MWA wallets fail this path and need a memo-tx fallback instead:
+ * wallet paths fail this path and need a memo-tx fallback instead:
  *   • Phantom — `get_capabilities` advertises only `supports_sign_and_send_transactions`.
  *   • Solflare — `get_capabilities` advertises only `solana:signTransactions`.
  *   • Seed Vault (Seeker) — the production "Wallet" app (`com.solanamobile.wallet`)
@@ -24,6 +24,12 @@
  * memo-only legacy transaction whose memo data is the same proof bytes the message
  * path would have signed. The transaction is NEVER broadcast — the wallet signature
  * serves as ownership proof and a fresh blockhash expires harmlessly.
+ *
+ * The desktop QR relay for Phantom/Solflare uses the same memo-tx proof shape
+ * directly from JS. Solflare QR can approve `signMessage` and still return to
+ * `/qr-connect` without encrypted `nonce`/`data`, which strands the phone relay.
+ * Its `signTransaction` deeplink is already the working path for swaps, so proofs
+ * use a signed memo transaction there too.
  *
  * This module is the single entry point; per-host routing is in the native bridge
  * (see `apps/android-twa/app/src/main/java/com/agentic/wallet/mwa/MwaController.kt`
@@ -59,7 +65,13 @@ export interface ProofSigningAppState {
   selectedWalletName: string;
   address: string;
   androidNativeEnvironment: { isAndroidNative: boolean };
-  capabilities?: { supports?: { signMessage?: boolean } } | null;
+  capabilities?: {
+    backend?: string;
+    supports?: {
+      signMessage?: boolean;
+      signTransaction?: boolean;
+    };
+  } | null;
 }
 
 export interface AndroidProofBackend {
@@ -101,6 +113,11 @@ export function shouldRouteProofThroughLedgerMemo(state: ProofSigningAppState): 
   return state.selectedWalletName === LEDGER_WALLET_NAME;
 }
 
+export function shouldRouteProofThroughRemoteRelayMemo(state: ProofSigningAppState): boolean {
+  return state.capabilities?.backend === 'remote-relay-deeplink'
+    && state.capabilities?.supports?.signTransaction === true;
+}
+
 export async function signWalletProofMessage(
   message: string,
   summary: string,
@@ -135,7 +152,10 @@ export async function signWalletProofMessage(
     };
   }
   if (shouldRouteProofThroughLedgerMemo(state)) {
-    return signLedgerMemoProof(message, summary, cluster, state);
+    return signMemoTransactionProof(message, summary, cluster, state);
+  }
+  if (shouldRouteProofThroughRemoteRelayMemo(state)) {
+    return signMemoTransactionProof(message, summary, cluster, state);
   }
   const client = context.getClient();
   const result = await client.signMessage(message, { cluster, summary });
@@ -146,7 +166,7 @@ export async function signWalletProofMessage(
   };
 }
 
-async function signLedgerMemoProof(
+async function signMemoTransactionProof(
   message: string,
   summary: string,
   cluster: Cluster,
@@ -188,7 +208,7 @@ function signatureFromSignedLegacyTransaction(transactionBytes: Uint8Array, sign
   const tx = Transaction.from(transactionBytes);
   const entry = tx.signatures.find((candidate) => candidate.publicKey.equals(signer));
   if (!entry?.signature) {
-    throw new Error('Ledger memo proof did not include the connected wallet signature.');
+    throw new Error('Memo proof did not include the connected wallet signature.');
   }
   return bs58.encode(new Uint8Array(entry.signature));
 }

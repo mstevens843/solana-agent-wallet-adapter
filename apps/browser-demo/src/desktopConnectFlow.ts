@@ -113,6 +113,32 @@ export interface DesktopConnectFlowState {
   qrWallet: DesktopQrWallet | null;
 }
 
+export interface MultiPathWalletSurface {
+  isAndroidNative: boolean;
+  isIosNative: boolean;
+  isCliMode?: boolean;
+  isTauriNative: boolean;
+}
+
+export function canUseMultiPathWalletFlow(surface: MultiPathWalletSurface): boolean {
+  if (surface.isCliMode) return false;
+  return surface.isTauriNative || (!surface.isAndroidNative && !surface.isIosNative);
+}
+
+export function shouldRenderDetachedWalletConnectOverlay(input: {
+  isTauriNative: boolean;
+  flowStep: DesktopConnectStep;
+}): boolean {
+  return !input.isTauriNative && input.flowStep !== 'qr';
+}
+
+export function shouldRenderDetachedLedgerOverlay(input: {
+  isTauriNative: boolean;
+  flowStep: DesktopConnectStep;
+}): boolean {
+  return !input.isTauriNative && input.flowStep !== 'ledger';
+}
+
 export type DesktopConnectFlowAction =
   | { type: 'startMethod' }
   | { type: 'pickMethod'; method: DesktopConnectInlineMethod }

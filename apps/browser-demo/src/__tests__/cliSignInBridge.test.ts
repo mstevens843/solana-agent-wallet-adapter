@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   cliIntentAllowsBridgeRequestClaim,
+  resolveWalletSigningRequestCopy,
   resolveCliCloudSignInReadiness,
   resolveCliSignInBridgeHydration,
 } from '../cliSignInBridge.js';
@@ -15,7 +16,7 @@ describe('resolveCliSignInBridgeHydration', () => {
     })).toEqual({ kind: 'skip', reason: 'already-ready' });
   });
 
-  it('displays the wallet already paired on the local bridge without making it the signer', () => {
+  it('displays the wallet already paired with the desktop wallet service without making it the signer', () => {
     expect(resolveCliSignInBridgeHydration({
       desiredWallet: 'WalletABC',
       bridgeCapabilities: { address: 'WalletABC' },
@@ -34,6 +35,51 @@ describe('resolveCliSignInBridgeHydration', () => {
       desiredWallet: 'WalletABC',
       bridgeCapabilities: { address: null },
     })).toEqual({ kind: 'skip', reason: 'bridge-wallet-missing' });
+  });
+});
+
+describe('resolveWalletSigningRequestCopy', () => {
+  it('labels Agentic Cloud sign-in message approvals as signed in', () => {
+    expect(resolveWalletSigningRequestCopy({
+      kind: 'sign_message',
+      display: { summary: 'Agentic Cloud sign-in' },
+    })).toMatchObject({
+      pendingTitle: 'Signing in',
+      successToastTitle: 'Signed in',
+      failureToastTitle: 'Sign-in failed',
+    });
+  });
+
+  it('labels CLI cloud login message approvals as signed in', () => {
+    expect(resolveWalletSigningRequestCopy({
+      kind: 'sign_message',
+      display: { summary: 'Agentic CLI login' },
+    })).toMatchObject({
+      pendingTitle: 'Signing in',
+      successToastTitle: 'Signed in',
+    });
+  });
+
+  it('keeps generic message approvals as message signing', () => {
+    expect(resolveWalletSigningRequestCopy({
+      kind: 'sign_message',
+      display: { summary: 'Sign review proof' },
+    })).toMatchObject({
+      pendingTitle: 'Signing message',
+      successToastTitle: 'Message signed',
+      failureToastTitle: 'Message signing failed',
+    });
+  });
+
+  it('labels transaction signatures without bridge terminology', () => {
+    expect(resolveWalletSigningRequestCopy({
+      kind: 'sign_transaction',
+      display: { summary: 'Sign transfer transaction' },
+    })).toMatchObject({
+      pendingTitle: 'Signing transaction',
+      successToastTitle: 'Transaction signed',
+      failureToastTitle: 'Transaction signing failed',
+    });
   });
 });
 

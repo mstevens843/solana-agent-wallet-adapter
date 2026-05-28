@@ -28,6 +28,7 @@ describe('workspace More menu items', () => {
 
     expect(workspaceMoreMenuItems(registered)).toEqual([
       ...REQUIRED_WORKSPACE_MORE_MENU_ITEMS,
+      { id: 'spend', label: 'Spend' },
       { id: 'custom-layer', label: 'Custom Layer' },
     ]);
   });

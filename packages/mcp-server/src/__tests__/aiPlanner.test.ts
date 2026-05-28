@@ -875,6 +875,48 @@ describe('BridgeAiPlanner', () => {
     expect(messages?.[1]?.content).toContain('What should I check before swapping SOL to USDC?');
   });
 
+  it('normalizes structured free agent chat into compact display sections', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            answer: 'I will check the current plan prices. Helium Mobile has Air at $15/month and Infinity at $30/month for new users.',
+            sections: [{
+              title: 'Key Facts',
+              bullets: [
+                'Air is $15/month with 10GB of high-speed data.',
+                'Infinity is $30/month with unlimited talk, text, and data.',
+              ],
+            }],
+            next: 'Type /plan when you want to prepare a visible wallet request.',
+          }),
+        },
+      }],
+    })));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-chat',
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openai/gpt-5',
+    });
+
+    const result = await planner.chat({
+      messages: [{ role: 'user', content: 'What are Helium Mobile plan prices?' }],
+    });
+
+    expect(result.answer).toBe('Helium Mobile has Air at $15/month and Infinity at $30/month for new users.');
+    expect(result.sections).toEqual([{
+      title: 'Key Facts',
+      bullets: [
+        'Air is $15/month with 10GB of high-speed data.',
+        'Infinity is $30/month with unlimited talk, text, and data.',
+      ],
+    }]);
+    expect(result.next).toContain('/plan');
+  });
+
   it('rejects askAboutPlan with an empty question', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);

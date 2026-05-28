@@ -14,6 +14,7 @@ describe('createTauriLedgerIpc', () => {
     await ipc.listDevices();
     await ipc.connect();
     await ipc.getAddress(`m/44'/501'/0'/0'`, true);
+    await ipc.getAddresses([`m/44'/501'/0'/0'`, `m/44'/501'/1'/0'`]);
     await ipc.signTransaction(`m/44'/501'/0'/0'`, 'AAAA');
     await ipc.signMessage(`m/44'/501'/0'/0'`, 'aGVsbG8=');
     await ipc.disconnect();
@@ -22,6 +23,7 @@ describe('createTauriLedgerIpc', () => {
       'ledger_list_devices',
       'ledger_connect',
       'ledger_get_address',
+      'ledger_get_addresses',
       'ledger_sign_transaction',
       'ledger_sign_message',
       'ledger_disconnect',
@@ -31,6 +33,9 @@ describe('createTauriLedgerIpc', () => {
       displayOnDevice: true,
     });
     expect(calls[3]!.args).toEqual({
+      derivationPaths: [`m/44'/501'/0'/0'`, `m/44'/501'/1'/0'`],
+    });
+    expect(calls[4]!.args).toEqual({
       derivationPath: `m/44'/501'/0'/0'`,
       transactionB64: 'AAAA',
     });

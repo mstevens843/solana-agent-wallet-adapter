@@ -86,6 +86,15 @@ pub struct LedgerAddressResult {
     pub public_key_b64: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LedgerDerivedAddress {
+    pub derivation_path: String,
+    pub address: String,
+    /// Base64-encoded raw 32-byte ed25519 public key.
+    pub public_key_b64: String,
+}
+
 // ────────────────────────────────────────────────────────────────────────
 // Tauri commands
 // ────────────────────────────────────────────────────────────────────────
@@ -123,6 +132,21 @@ pub fn ledger_get_address(
         address: address.address,
         public_key_b64: B64.encode(address.public_key),
     })
+}
+
+#[tauri::command]
+pub fn ledger_get_addresses(
+    handle: tauri::State<'_, LedgerStateHandle>,
+    derivation_paths: Vec<String>,
+) -> Result<Vec<LedgerDerivedAddress>, String> {
+    Ok(state::get_addresses(&handle, &derivation_paths)?
+        .into_iter()
+        .map(|address| LedgerDerivedAddress {
+            derivation_path: address.derivation_path,
+            address: address.address,
+            public_key_b64: B64.encode(address.public_key),
+        })
+        .collect())
 }
 
 #[tauri::command]
