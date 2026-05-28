@@ -152,6 +152,11 @@ Options:
 async function verifyLocalRender() {
   await withLocalServer(async ({ origin, serverPort }) => {
     await waitForHostedAiStatus(`${origin}/api/ai/status`);
+    if (process.env.AGENTIC_SMOKE_FORCE_HTTP_FALLBACK === '1' || !findChromePath()) {
+      await verifyLocalRenderHttpFallback(origin);
+      console.log('[smoke-render-web] SKIP browser public-host local bridge startup probe: Chrome/Chromium is unavailable or HTTP fallback was forced. Set CHROME_PATH to run browser runtime smoke.');
+      return;
+    }
     await withChrome(async (page) => {
       for (const route of publicAppRoutes) {
         const result = await page.inspect(`${origin}${route}`);
@@ -174,6 +179,37 @@ async function verifyLocalRender() {
       console.log('[smoke-render-web] PASS public-host startup did not request the local bridge.');
     });
   });
+}
+
+async function verifyLocalRenderHttpFallback(origin) {
+  for (const route of publicAppRoutes) {
+    const response = await fetch(`${origin}${route}`);
+    const contentType = response.headers.get('content-type') ?? '';
+    const raw = await response.text();
+    if (!response.ok) throw new Error(`${route} returned HTTP ${response.status}: ${snippet(raw)}`);
+    if (!/text\/html/i.test(contentType)) {
+      throw new Error(`${route} returned ${contentType || 'missing content-type'} instead of text/html: ${snippet(raw)}`);
+    }
+    if (!raw.includes('id="app"')) throw new Error(`${route} did not include the app shell.`);
+    const assetRefs = Array.from(raw.matchAll(/\b(?:src|href)="([^"]+)"/g))
+      .map((match) => match[1])
+      .filter((value) => typeof value === 'string' && value.startsWith('/assets/'));
+    const scriptRefs = assetRefs.filter((value) => value.endsWith('.js'));
+    if (scriptRefs.length === 0) {
+      throw new Error(`${route} did not include a built JavaScript asset.`);
+    }
+    await verifyReferencedAssets(origin, route, assetRefs.slice(0, 8));
+    console.log(`[smoke-render-web] PASS route ${route} returned HTML app shell with ${assetRefs.length} local asset reference(s).`);
+  }
+}
+
+async function verifyReferencedAssets(origin, route, assetRefs) {
+  for (const href of assetRefs) {
+    const response = await fetch(`${origin}${href}`);
+    if (!response.ok) {
+      throw new Error(`${route} referenced missing asset ${href}: HTTP ${response.status}`);
+    }
+  }
 }
 
 async function verifyLayoutSmoke() {
@@ -2625,6 +2661,12 @@ function close(server) {
 }
 
 function resolveChromePath() {
+  const chromePath = findChromePath();
+  if (chromePath) return chromePath;
+  throw new Error('Chrome or Chromium was not found. Set CHROME_PATH to run render smoke.');
+}
+
+function findChromePath() {
   if (process.env.CHROME_PATH) return process.env.CHROME_PATH;
   const candidates = [
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -2640,7 +2682,7 @@ function resolveChromePath() {
     const resolved = spawnSync('which', [command], { encoding: 'utf8' });
     if (resolved.status === 0 && resolved.stdout.trim()) return resolved.stdout.trim();
   }
-  throw new Error('Chrome or Chromium was not found. Set CHROME_PATH to run render smoke.');
+  return '';
 }
 
 function freePort() {
