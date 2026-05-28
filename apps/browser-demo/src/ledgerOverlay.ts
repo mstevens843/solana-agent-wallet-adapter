@@ -295,11 +295,13 @@ function accountRow(account: LedgerAccountCandidate, selected: boolean): string 
   const path = account.derivationPath;
   const status = account.lastSelected
     ? 'Last used'
-    : account.solBalanceLamports && account.solBalanceLamports > 0
-      ? 'Has SOL'
-      : account.hasActivity
-        ? 'Used before'
-        : '';
+    : account.recentRank === 1
+      ? 'Previous'
+      : account.solBalanceLamports && account.solBalanceLamports > 0
+        ? 'Has SOL'
+        : account.hasActivity
+          ? 'Used before'
+          : '';
   const selectLabel = `Use ${label} ${short}`;
   const copyLabel = `Copy Ledger address ${short}`;
   return `

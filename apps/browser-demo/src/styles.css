@@ -4695,6 +4695,251 @@ code {
   margin: 2px 0 0;
 }
 
+.wallet-balance-mobile-trigger {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: rgba(139, 205, 170, 0.92);
+  cursor: pointer;
+  display: none;
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 880;
+  letter-spacing: 0;
+  line-height: 1.1;
+  margin: 0;
+  min-height: 18px;
+  padding: 0;
+  text-align: left;
+}
+
+.wallet-balance-mobile-trigger::after {
+  content: "⌄";
+  display: inline-block;
+  font-size: 0.72rem;
+  margin-left: 4px;
+  transform: translateY(-1px);
+}
+
+.wallet-balance-mobile-trigger[aria-expanded="true"]::after {
+  transform: translateY(-1px) rotate(180deg);
+}
+
+.wallet-balance-card {
+  background: rgba(255, 255, 255, 0.026);
+  border: 1px solid rgba(224, 230, 226, 0.1);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 10px;
+  position: relative;
+}
+
+.wallet-balance-head,
+.wallet-balance-row,
+.wallet-balance-overlay-head {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+}
+
+.wallet-balance-head,
+.wallet-balance-overlay-head {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.wallet-balance-head span,
+.wallet-balance-overlay-head span {
+  color: var(--dim);
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 920;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.wallet-balance-head strong,
+.wallet-balance-overlay-head strong {
+  color: var(--text);
+  display: block;
+  font-size: 1.05rem;
+  line-height: 1.12;
+  margin-top: 3px;
+}
+
+.wallet-balance-toggle,
+.wallet-balance-close {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(224, 230, 226, 0.12);
+  border-radius: 7px;
+  color: var(--text);
+  cursor: pointer;
+  display: inline-flex;
+  height: 30px;
+  justify-content: center;
+  padding: 0;
+  width: 30px;
+}
+
+.wallet-balance-toggle span {
+  font-size: 0.95rem;
+  transform: translateY(-1px);
+  transition: transform 140ms ease;
+}
+
+.wallet-balance-card.open .wallet-balance-toggle span {
+  transform: translateY(-1px) rotate(180deg);
+}
+
+.wallet-balance-toggle:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.wallet-balance-primary-rows,
+.wallet-balance-overlay-list {
+  display: grid;
+  gap: 5px;
+}
+
+.wallet-balance-row {
+  background: rgba(0, 0, 0, 0.16);
+  border: 1px solid rgba(224, 230, 226, 0.065);
+  border-radius: 7px;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  min-height: 30px;
+  padding: 6px 7px;
+}
+
+.wallet-balance-row span {
+  color: var(--dim);
+  font-size: 0.69rem;
+  font-weight: 920;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.wallet-balance-row strong {
+  color: var(--text);
+  font-size: 0.82rem;
+  line-height: 1.1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wallet-balance-row em {
+  color: rgba(196, 205, 202, 0.82);
+  font-size: 0.76rem;
+  font-style: normal;
+  font-weight: 820;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.wallet-balance-state {
+  align-items: center;
+  background: rgba(0, 0, 0, 0.16);
+  border: 1px solid rgba(224, 230, 226, 0.065);
+  border-radius: 7px;
+  color: var(--muted);
+  display: flex;
+  font-size: 0.78rem;
+  font-weight: 780;
+  gap: 8px;
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 7px 8px;
+}
+
+.wallet-balance-state.error {
+  border-color: rgba(255, 179, 128, 0.24);
+  color: rgba(255, 218, 196, 0.9);
+}
+
+.wallet-balance-state button {
+  min-height: 26px;
+  padding: 0 9px;
+}
+
+.wallet-balance-overlay {
+  backdrop-filter: blur(18px);
+  background: rgba(9, 13, 12, 0.98);
+  border: 1px solid rgba(224, 230, 226, 0.16);
+  border-radius: 8px;
+  box-shadow:
+    0 24px 58px rgba(0, 0, 0, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  display: grid;
+  gap: 10px;
+  left: 0;
+  max-height: min(380px, calc(100vh - 96px));
+  overflow: hidden;
+  padding: 10px;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 220;
+}
+
+.wallet-balance-overlay-list {
+  max-height: 292px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.wallet-balance-overlay-empty {
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin: 0;
+}
+
+.wallet-balance-sheet {
+  display: grid;
+  gap: 10px;
+}
+
+.wallet-balance-sheet-total {
+  background:
+    linear-gradient(135deg, rgba(13, 55, 36, 0.82), rgba(12, 20, 18, 0.94)),
+    rgba(12, 20, 18, 0.94);
+  border: 1px solid rgba(139, 205, 170, 0.26);
+  border-radius: 8px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+}
+
+.wallet-balance-sheet-total span,
+.wallet-balance-sheet-section > span {
+  color: var(--dim);
+  display: block;
+  font-size: 0.68rem;
+  font-weight: 920;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.wallet-balance-sheet-total strong {
+  color: var(--text);
+  font-size: 1.45rem;
+  font-weight: 920;
+  letter-spacing: 0;
+  line-height: 1.02;
+}
+
+.wallet-balance-sheet-primary,
+.wallet-balance-sheet-section {
+  display: grid;
+  gap: 6px;
+}
+
 .status-dot,
 .step-dot,
 .trace-dot {
@@ -15774,6 +16019,21 @@ button.danger:hover:not(:disabled) {
     padding: 10px;
   }
 
+  .wallet-balance-card {
+    margin-bottom: 8px;
+    padding: 9px;
+  }
+
+  .wallet-balance-row {
+    grid-template-columns: 38px minmax(0, 1fr);
+  }
+
+  .wallet-balance-row em {
+    grid-column: 2;
+    justify-self: start;
+    margin-top: -2px;
+  }
+
   .public-wallet-actions {
     gap: 8px;
     margin-top: 8px;
@@ -22896,6 +23156,7 @@ button.danger:hover:not(:disabled) {
 
 /* /app card, form, and responsive polish pass. */
 .route-app .connection-summary,
+.route-app .wallet-balance-card,
 .route-app .rail-cloud-card,
 .route-app .rail-bridge-card,
 .route-app .rail-ai-card,
@@ -22930,6 +23191,7 @@ button.danger:hover:not(:disabled) {
 }
 
 .route-app .connection-summary,
+.route-app .wallet-balance-card,
 .route-app .rail-cloud-card,
 .route-app .rail-bridge-card,
 .route-app .rail-ai-card,
@@ -27574,6 +27836,10 @@ button.danger:hover:not(:disabled) {
     grid-template-columns: minmax(0, auto) minmax(0, 1fr);
   }
   .signer-row .rail-heading.custody-heading { margin-bottom: 0; }
+  .signer-row .rail-heading.custody-heading > div {
+    min-width: 0;
+    position: relative;
+  }
   .signer-row .connection-summary {
     align-items: center;
     margin-top: 0;
@@ -27582,6 +27848,16 @@ button.danger:hover:not(:disabled) {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .wallet-balance-mobile-trigger {
+    display: inline-flex;
+    left: 0;
+    position: absolute;
+    top: calc(100% + 1px);
+  }
+  .wallet-balance-mobile-trigger:hover,
+  .wallet-balance-mobile-trigger:focus-visible {
+    color: #dfffe9;
   }
   .signer-title-desktop-only,
   .signer-detail-desktop-only { display: none; }
@@ -28151,7 +28427,8 @@ button.danger:hover:not(:disabled) {
   }
 
   .route-app .mobile-rail-sheet-body > .rail-cloud-card,
-  .route-app .mobile-rail-sheet-body > .ai-settings-card {
+  .route-app .mobile-rail-sheet-body > .ai-settings-card,
+  .route-app .mobile-rail-sheet-body > .wallet-balance-sheet {
     background: transparent;
     border: 0;
     border-radius: 0;
@@ -28163,6 +28440,38 @@ button.danger:hover:not(:disabled) {
   .route-app .mobile-rail-sheet-body > .ai-settings-card {
     display: grid;
     gap: 8px;
+  }
+
+  .route-app .mobile-rail-sheet.wallet-balances {
+    height: min(62dvh, 540px);
+  }
+
+  .route-app .mobile-rail-sheet.wallet-balances .wallet-balance-row {
+    background: rgba(0, 0, 0, 0.2);
+    border-color: rgba(224, 230, 226, 0.09);
+    grid-template-columns: 48px minmax(0, 1fr) auto;
+    min-height: 42px;
+    padding: 9px 10px;
+  }
+
+  .route-app .mobile-rail-sheet.wallet-balances .wallet-balance-row em {
+    grid-column: auto;
+    justify-self: end;
+    margin-top: 0;
+  }
+
+  .route-app .mobile-rail-sheet.wallet-balances .wallet-balance-overlay-list {
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
+  }
+
+  .route-app .mobile-rail-sheet.wallet-balances .wallet-balance-state {
+    min-height: 46px;
+  }
+
+  .route-app .mobile-rail-sheet.wallet-balances .wallet-balance-row strong {
+    white-space: normal;
   }
 
   .route-app .mobile-rail-sheet-body .ai-actions {

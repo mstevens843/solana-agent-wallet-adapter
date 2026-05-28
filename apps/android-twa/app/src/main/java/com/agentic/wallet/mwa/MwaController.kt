@@ -34,6 +34,8 @@ import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
 import java.security.MessageDigest
+import java.text.NumberFormat
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicReference
 
 class MwaController(
@@ -41,6 +43,7 @@ class MwaController(
     private val identity: AgentMwaIdentity,
     private val cache: AuthCache = AuthCache(context),
 ) {
+    private val usdcMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
     private var activeRecord: AgentMwaAuthRecord? = null
 
     // Tracks the currently-suspended MWA call so the activity-resume watchdog can cancel it
@@ -1320,6 +1323,50 @@ class MwaController(
     } catch (err: Exception) {
         AgentMwaLog.failure("MwaController", "getConnectedBalanceLamports", "FAIL", "balance lookup failed", err, authRecordMetadata(record))
         -1L
+    }
+
+    suspend fun connectedWalletBalanceSummary(record: AgentMwaAuthRecord = requireActive()): AgentWalletBalanceSummary {
+        val lamports = getConnectedBalanceLamports(record).coerceAtLeast(0)
+        val usdc = getConnectedUsdcAmount(record).coerceAtLeast(0.0)
+        val sol = lamports.toDouble() / 1_000_000_000.0
+        return AgentWalletBalanceSummary(
+            totalText = "USD unavailable",
+            solText = "${formatAmount(sol, if (sol >= 1) 4 else 6)} SOL",
+            usdcText = "${formatAmount(usdc, 2, 2)} USDC",
+            statusText = "Native fallback shows token amounts only.",
+        )
+    }
+
+    private suspend fun getConnectedUsdcAmount(record: AgentMwaAuthRecord, rpcUrl: String = record.cluster.rpcUrl()): Double = try {
+        val params = """["${record.publicKeyBase58}",{"mint":"$usdcMint"},{"encoding":"jsonParsed","commitment":"confirmed"}]"""
+        val json = postJsonRpc(rpcUrl, "getTokenAccountsByOwner", params)
+        val accounts = json.optJSONObject("result")?.optJSONArray("value") ?: return 0.0
+        var total = 0.0
+        for (index in 0 until accounts.length()) {
+            val tokenAmount = accounts.optJSONObject(index)
+                ?.optJSONObject("account")
+                ?.optJSONObject("data")
+                ?.optJSONObject("parsed")
+                ?.optJSONObject("info")
+                ?.optJSONObject("tokenAmount")
+            total += when {
+                tokenAmount == null -> 0.0
+                tokenAmount.has("uiAmount") -> tokenAmount.optDouble("uiAmount", 0.0)
+                else -> tokenAmount.optString("uiAmountString", "0").toDoubleOrNull() ?: 0.0
+            }
+        }
+        AgentMwaLog.info("MwaController", "getConnectedUsdcAmount", "DONE", "USDC lookup completed", authRecordMetadata(record) + mapOf("amount" to total, "rpc" to rpcUrl))
+        total
+    } catch (err: Exception) {
+        AgentMwaLog.failure("MwaController", "getConnectedUsdcAmount", "FAIL", "USDC lookup failed", err, authRecordMetadata(record))
+        0.0
+    }
+
+    private fun formatAmount(amount: Double, maxFractionDigits: Int, minFractionDigits: Int = 0): String {
+        return NumberFormat.getNumberInstance(Locale.US).apply {
+            maximumFractionDigits = maxFractionDigits
+            minimumFractionDigits = minFractionDigits
+        }.format(amount.coerceAtLeast(0.0))
     }
 
     private suspend fun sendSignedTransactionViaRpc(cluster: AgentCluster, signedTx: ByteArray, rpcUrl: String = cluster.rpcUrl()): String {

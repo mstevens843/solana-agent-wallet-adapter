@@ -17,9 +17,13 @@ final class AgenticWalletController: ObservableObject {
     @Published private(set) var lastError: String?
     @Published private(set) var pendingRequest: AgenticPendingRequest?
     @Published private(set) var lastSignature: String?
+    @Published private(set) var walletBalanceSummary: AgenticWalletBalanceSummary?
+    @Published private(set) var walletBalanceLoading = false
+    @Published private(set) var walletBalanceStatus = "Connect a wallet to load balances."
 
     private let cache = AgenticAuthCache()
     private let deepLinkService = AgenticDeepLinkService()
+    private var walletBalanceTask: Task<Void, Never>?
 
     init() {
         refreshCacheSummary()
@@ -95,6 +99,7 @@ final class AgenticWalletController: ObservableObject {
                 pendingRequest = nil
                 status = "Connected"
                 refreshCacheSummary()
+                refreshWalletBalanceSummary()
             case .sign:
                 guard let record = currentRecord else {
                     throw AgenticWalletError.missingCachedAuthorization
@@ -128,6 +133,7 @@ final class AgenticWalletController: ObservableObject {
         cache.set(record)
         status = "Reconnected from cache"
         refreshCacheSummary()
+        refreshWalletBalanceSummary()
         AgenticIOSNativeLog.info("AgenticWalletController", "reconnectCached", "SUCCESS", "cached authorization restored", [
             "wallet": record.walletID.rawValue,
             "pubkey": short(record.publicKey),
@@ -142,6 +148,7 @@ final class AgenticWalletController: ObservableObject {
         }
         currentRecord = nil
         pendingRequest = nil
+        clearWalletBalanceSummary()
         status = "Disconnected; cache retained"
         AgenticIOSNativeLog.info("AgenticWalletController", "disconnect", "DONE", "local session disconnected with cache retained")
         refreshCacheSummary()
@@ -159,6 +166,7 @@ final class AgenticWalletController: ObservableObject {
         let publicKey = currentRecord?.publicKey ?? cache.latest(walletID: selectedWalletID)?.publicKey
         pendingRequest = nil
         currentRecord = nil
+        clearWalletBalanceSummary()
         if let publicKey {
             cache.clear(publicKey: publicKey)
         }
@@ -173,9 +181,47 @@ final class AgenticWalletController: ObservableObject {
     func clearAllCachedAuthorizations() {
         pendingRequest = nil
         currentRecord = nil
+        clearWalletBalanceSummary()
         cache.clearAll()
         status = "All cached authorizations cleared"
         refreshCacheSummary()
+    }
+
+    func refreshWalletBalanceSummary() {
+        guard let record = currentRecord else {
+            clearWalletBalanceSummary()
+            return
+        }
+        walletBalanceTask?.cancel()
+        walletBalanceLoading = true
+        walletBalanceStatus = "Loading balances"
+        walletBalanceTask = Task { [weak self, record] in
+            do {
+                let summary = try await AgenticWalletBalanceService.load(record: record)
+                await MainActor.run {
+                    guard let self, self.currentRecord?.publicKey == record.publicKey else { return }
+                    self.walletBalanceSummary = summary
+                    self.walletBalanceLoading = false
+                    self.walletBalanceStatus = summary.statusText
+                }
+            } catch {
+                await MainActor.run {
+                    guard let self, self.currentRecord?.publicKey == record.publicKey else { return }
+                    self.walletBalanceSummary = nil
+                    self.walletBalanceLoading = false
+                    self.walletBalanceStatus = "Balances unavailable"
+                    self.lastError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func clearWalletBalanceSummary() {
+        walletBalanceTask?.cancel()
+        walletBalanceTask = nil
+        walletBalanceSummary = nil
+        walletBalanceLoading = false
+        walletBalanceStatus = "Connect a wallet to load balances."
     }
 
     private func refreshCacheSummary() {

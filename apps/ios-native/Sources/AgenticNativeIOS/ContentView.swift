@@ -49,6 +49,17 @@ struct ContentView: View {
                             .accessibilityLabel(copiedAddress ? "Copied address" : "Copy wallet address")
                         }
                         LabeledContent("Status", value: record.authenticated ? "Authenticated" : "Disconnected")
+                        if let balance = controller.walletBalanceSummary {
+                            LabeledContent("Wallet value", value: balance.totalText)
+                            LabeledContent("SOL", value: balance.solText)
+                            LabeledContent("USDC", value: balance.usdcText)
+                        } else {
+                            LabeledContent("Balances", value: controller.walletBalanceLoading ? "Loading" : controller.walletBalanceStatus)
+                        }
+                        Button("Refresh balances") {
+                            controller.refreshWalletBalanceSummary()
+                        }
+                        .disabled(controller.walletBalanceLoading)
                     } else {
                         LabeledContent("Status", value: controller.status)
                     }

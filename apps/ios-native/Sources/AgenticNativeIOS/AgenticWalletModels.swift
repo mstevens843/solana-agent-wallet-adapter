@@ -140,6 +140,13 @@ struct AgenticSigningResult: Equatable {
     let transactionBase58: String?
 }
 
+struct AgenticWalletBalanceSummary: Equatable {
+    let totalText: String
+    let solText: String
+    let usdcText: String
+    let statusText: String
+}
+
 enum AgenticWalletError: LocalizedError {
     case unsupportedWallet(String)
     case invalidCallback(String)

@@ -20,6 +20,7 @@ import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
 import com.agentic.wallet.mwa.AgentCluster
+import com.agentic.wallet.mwa.AgentWalletBalanceSummary
 import com.agentic.wallet.mwa.AgentMwaBridgeRequest
 import com.agentic.wallet.mwa.AgentMwaIdentity
 import com.agentic.wallet.mwa.AgentMwaLog
@@ -47,8 +48,12 @@ class MwaExampleActivity : ComponentActivity() {
     private lateinit var transactionInput: EditText
     private lateinit var bridgeUrlInput: EditText
     private lateinit var bridgeTokenInput: EditText
+    private var walletBalanceView: TextView? = null
     private var bridgeSummaryView: TextView? = null
     private var requestSummaryView: TextView? = null
+    private var walletBalanceSummary: AgentWalletBalanceSummary? = null
+    private var walletBalanceLoading = false
+    private var walletBalanceStatus = "Connect a wallet to load balances."
     private val actionButtons = mutableListOf<Button>()
     private var bridgeClient: BridgeClient? = null
     private var bridgeJob: Job? = null
@@ -94,6 +99,7 @@ class MwaExampleActivity : ComponentActivity() {
         actionButtons.clear()
         bridgeSummaryView = null
         requestSummaryView = null
+        walletBalanceView = null
         val scrollView = ScrollView(this).apply {
             setBackgroundColor(Color.rgb(5, 7, 6))
         }
@@ -125,6 +131,8 @@ class MwaExampleActivity : ComponentActivity() {
             setPadding(0, dp(12), 0, dp(12))
         }
         overview.addView(statusView)
+        walletBalanceView = bodyText(walletBalanceText())
+        overview.addView(walletBalanceView)
 
         clusterSpinner = Spinner(this).apply {
             adapter = ArrayAdapter(
@@ -140,6 +148,7 @@ class MwaExampleActivity : ComponentActivity() {
             button("Connect wallet", primary = true) { connectWallet() },
             button("Reconnect") { reconnectCached() },
         )
+        overview.addView(button("Refresh balances") { refreshWalletBalanceAction() })
         root.addView(overview)
 
         val requests = panel()
@@ -240,6 +249,7 @@ class MwaExampleActivity : ComponentActivity() {
 
     private fun buildExampleContent(): View {
         actionButtons.clear()
+        walletBalanceView = null
         val scrollView = ScrollView(this)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -257,6 +267,11 @@ class MwaExampleActivity : ComponentActivity() {
             setPadding(0, 0, 0, dp(12))
         }
         root.addView(statusView)
+        walletBalanceView = TextView(this).apply {
+            textSize = 14f
+            setPadding(0, 0, 0, dp(12))
+        }
+        root.addView(walletBalanceView)
 
         clusterSpinner = Spinner(this).apply {
             adapter = ArrayAdapter(
@@ -272,6 +287,7 @@ class MwaExampleActivity : ComponentActivity() {
             button("Connect wallet") { connectWallet() },
             button("Reconnect cached") { reconnectCached() },
         )
+        root.addView(button("Refresh balances") { refreshWalletBalanceAction() })
         row(root,
             button("Disconnect") { disconnectWallet() },
             button("Clear transient") { clearTransient() },
@@ -357,6 +373,7 @@ class MwaExampleActivity : ComponentActivity() {
     private fun connectWallet() = runAction("connect") {
         val record = controller.connect(activityResultSender, selectedCluster())
         appendLog("Connected ${short(record.publicKeyBase58)} on ${record.cluster.id}.")
+        refreshWalletBalance(record)
         renderState()
     }
 
@@ -364,12 +381,14 @@ class MwaExampleActivity : ComponentActivity() {
         val record = controller.reconnectLatest(selectedCluster())
             ?: throw MwaOperationException("UNAUTHORIZED", "No cached authorization is available. Connect first.")
         appendLog("Reconnected cached ${short(record.publicKeyBase58)}.")
+        refreshWalletBalance(record)
         renderState()
     }
 
     private fun disconnectWallet() = runAction("disconnect") {
         disconnectBridgeInternal()
         controller.disconnect()
+        clearWalletBalance()
         appendLog("Wallet disconnected. Auth cache retained.")
         renderState()
     }
@@ -377,6 +396,7 @@ class MwaExampleActivity : ComponentActivity() {
     private fun clearTransient() = runAction("clearTransient") {
         disconnectBridgeInternal()
         controller.clearTransientState("android_ui")
+        clearWalletBalance()
         appendLog("Transient state cleared. Auth cache retained.")
         renderState()
     }
@@ -384,6 +404,7 @@ class MwaExampleActivity : ComponentActivity() {
     private fun clearFullReset() = runAction("clearFullReset") {
         disconnectBridgeInternal()
         controller.deauthorizeRemote(activityResultSender, "android_ui")
+        clearWalletBalance()
         appendLog("Full local wallet reset complete.")
         renderState()
     }
@@ -391,8 +412,39 @@ class MwaExampleActivity : ComponentActivity() {
     private fun clearAllAccounts() = runAction("clearAllAccounts") {
         disconnectBridgeInternal()
         controller.clearAllCachedAuthorizations()
+        clearWalletBalance()
         appendLog("All cached accounts cleared.")
         renderState()
+    }
+
+    private fun refreshWalletBalanceAction() = runAction("refreshWalletBalance") {
+        val record = controller.activeAuthorization()
+            ?: controller.reconnectLatest(selectedCluster())
+            ?: throw MwaOperationException("UNAUTHORIZED", "Connect or reconnect a wallet before loading balances.")
+        refreshWalletBalance(record)
+    }
+
+    private suspend fun refreshWalletBalance(record: com.agentic.wallet.mwa.AgentMwaAuthRecord) {
+        walletBalanceLoading = true
+        walletBalanceStatus = "Loading balances"
+        renderState()
+        try {
+            walletBalanceSummary = controller.connectedWalletBalanceSummary(record)
+            walletBalanceStatus = walletBalanceSummary?.statusText ?: "Balances loaded."
+        } catch (err: Exception) {
+            walletBalanceSummary = null
+            walletBalanceStatus = "Balances unavailable"
+            appendLog("Balance summary unavailable: ${err.message ?: err.javaClass.simpleName}")
+        } finally {
+            walletBalanceLoading = false
+            renderState()
+        }
+    }
+
+    private fun clearWalletBalance() {
+        walletBalanceSummary = null
+        walletBalanceLoading = false
+        walletBalanceStatus = "Connect a wallet to load balances."
     }
 
     private fun getCapabilities() = runAction("getCapabilities") {
@@ -585,6 +637,7 @@ class MwaExampleActivity : ComponentActivity() {
         } else {
             "Bridge is offline. Start listening when your local Agentic bridge is running."
         }
+        walletBalanceView?.text = walletBalanceText()
         if (bridgeClient == null) {
             requestSummaryView?.text = "No pending request. Connect the Agentic bridge below to listen for approvals from desktop, CLI, or MCP agents."
         } else if (requestSummaryView?.text.isNullOrBlank() || requestSummaryView?.text?.startsWith("No pending request") == true) {
@@ -592,6 +645,15 @@ class MwaExampleActivity : ComponentActivity() {
         }
         actionButtons.forEach { it.isEnabled = !busy }
         clusterSpinner.isEnabled = !busy && bridgeClient == null
+    }
+
+    private fun walletBalanceText(): String {
+        val summary = walletBalanceSummary
+        return when {
+            walletBalanceLoading -> "Balances: loading..."
+            summary != null -> "Wallet value: ${summary.totalText}\nSOL: ${summary.solText}\nUSDC: ${summary.usdcText}\n${summary.statusText}"
+            else -> "Balances: $walletBalanceStatus"
+        }
     }
 
     private fun selectedCluster(): AgentCluster =

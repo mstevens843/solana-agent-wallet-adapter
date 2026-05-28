@@ -105,6 +105,29 @@ describe('rankLedgerAccounts', () => {
     const ranked = rankLedgerAccounts(accounts, { lastSelectedAddress: 'last' });
     expect(ranked.map((account) => account.address)).toEqual(['last', 'funded', 'active', 'unused']);
     expect(ranked[0]!.lastSelected).toBe(true);
+    expect(ranked[0]!.recentRank).toBe(0);
+  });
+
+  it('keeps the two most recent addresses ahead of funded accounts', () => {
+    const accounts = [
+      toLedgerAccountCandidate(derived({ address: 'funded', order: 0 }), {
+        solBalanceLamports: 10,
+        hasActivity: false,
+      }),
+      toLedgerAccountCandidate(derived({ address: 'previous', order: 1 }), {
+        solBalanceLamports: 0,
+        hasActivity: false,
+      }),
+      toLedgerAccountCandidate(derived({ address: 'last', order: 2 }), {
+        solBalanceLamports: 0,
+        hasActivity: false,
+      }),
+    ];
+    const ranked = rankLedgerAccounts(accounts, { recentAddresses: ['last', 'previous'] });
+    expect(ranked.map((account) => account.address)).toEqual(['last', 'previous', 'funded']);
+    expect(ranked.map((account) => account.recentRank)).toEqual([0, 1, null]);
+    expect(ranked[0]!.lastSelected).toBe(true);
+    expect(ranked[1]!.lastSelected).toBe(false);
   });
 });
 

@@ -818,6 +818,12 @@ async function handleRequest(
       writeJson(res, 200, await requireActionService(actionService).balances());
       return;
     }
+    if (req.method === 'POST' && url.pathname === '/bridge/action/wallet-balance-summary') {
+      const body = await readJson(req);
+      const input = body && typeof body === 'object' && !Array.isArray(body) ? body as { mode?: unknown } : {};
+      writeJson(res, 200, await requireActionService(actionService).walletBalanceSummary(input));
+      return;
+    }
     if (req.method === 'GET' && url.pathname === '/bridge/action/portfolio') {
       writeJson(res, 200, await requireActionService(actionService).portfolioSummary());
       return;

@@ -199,7 +199,12 @@ export function createWebHidLedgerIpc(
       if (!activeApp) throw new Error('Ledger Solana app is not ready.');
       return await task(activeApp, runtimeValue);
     } catch (err) {
-      throw normalizeLedgerWebHidError(err);
+      const normalized = normalizeLedgerWebHidError(err);
+      if (isLedgerTransportStaleError(err) || isLedgerTransportStaleError(normalized)) {
+        activeTransport = null;
+        activeApp = null;
+      }
+      throw normalized;
     }
   }
 
@@ -430,6 +435,16 @@ export function normalizeLedgerWebHidError(err: unknown): Error {
     return new Error('Ledger disconnected. Reconnect the device and try again.');
   }
   return original;
+}
+
+function isLedgerTransportStaleError(err: unknown): boolean {
+  const original = err instanceof Error ? err : new Error(String(err));
+  const errorDetails = original as Error & { id?: unknown; statusCode?: unknown; statusText?: unknown };
+  const id = typeof errorDetails.id === 'string' ? String(errorDetails.id) : '';
+  const statusText = typeof errorDetails.statusText === 'string' ? String(errorDetails.statusText) : '';
+  const name = original.name || '';
+  const combined = `${name} ${id} ${statusText} ${original.message || String(original)}`;
+  return /disconnect|write|closed|InvalidStateError/i.test(combined);
 }
 
 function withLedgerTimeout<T>(

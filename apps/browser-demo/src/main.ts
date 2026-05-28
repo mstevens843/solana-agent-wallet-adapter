@@ -235,6 +235,19 @@ import {
 import { Connection, PublicKey, SystemProgram, Transaction, TransactionInstruction, VersionedTransaction } from '@solana/web3.js';
 
 import {
+  WALLET_BALANCE_SOL_MINT,
+  WALLET_BALANCE_USDC_MINT,
+  buildWalletBalanceSnapshot,
+  formatWalletBalanceAmount,
+  formatWalletBalanceSnapshotUsd,
+  formatWalletBalanceUsd,
+  walletBalanceFallbackPriceMap,
+  walletBalancePriceMapFromBirdeye,
+  walletBalanceRowsFromParsedAccounts,
+  walletBalanceUsdPricingEnabled,
+  type WalletBalanceSnapshot,
+} from './walletBalanceSummary.js';
+import {
   AndroidNativeWalletBackend,
   androidNativeCacheSummary,
   androidNativeCloudSessionToken,
@@ -583,7 +596,9 @@ setProofSigningContext({
 
 setCloudWalletBridge({
   async signMessage(message, summary) {
-    const result = await signWalletProofMessage(message, summary, state.cluster);
+    const result = await signWalletProofMessageWithToast(message, summary, state.cluster, {
+      message: `${summary}: approve this wallet proof. No transaction will be submitted.`,
+    });
     return {
       signature: result.signature,
       encoding: 'base58',
@@ -598,6 +613,7 @@ setCloudWalletBridge({
 });
 
 const LEDGER_DEVICE_APPROVAL_TOAST_KEY = 'ledger-device-approval';
+let proofSigningToastDepth = 0;
 
 function isLedgerWalletSelected(): boolean {
   return state.selectedWalletName === LEDGER_WALLET_NAME;
@@ -657,6 +673,91 @@ function dismissLedgerDeviceApprovalToast(toastId: number | undefined): void {
   }
 }
 
+function beginProofSigningToast(options: { title?: string; message?: string; key?: string } = {}): number {
+  const toastId = pushToast(
+    'pending',
+    options.title ?? (isLedgerWalletSelected() ? 'Approve on Ledger' : 'Waiting for signature'),
+    options.message ?? (isLedgerWalletSelected()
+      ? 'Review and approve this proof request on your Ledger device.'
+      : 'Approve the proof in your wallet. No transaction will be submitted.'),
+    options.key ? { key: options.key } : {},
+  );
+  proofSigningToastDepth += 1;
+  render();
+  return toastId;
+}
+
+interface ProofSigningToastOptions {
+  title?: string;
+  message?: string;
+  key?: string;
+  successTitle?: string;
+  successMessage?: string;
+  errorTitle?: string;
+  showLedgerDeviceToast?: boolean;
+}
+
+function completeProofSigningToast(
+  toastId: number | undefined,
+  kind: ToastKind,
+  title: string,
+  message: string,
+  options: ToastOptions = {},
+): void {
+  if (toastId === undefined) {
+    pushToast(kind, title, message, options);
+    render();
+    return;
+  }
+  proofSigningToastDepth = Math.max(0, proofSigningToastDepth - 1);
+  replaceToast(toastId, kind, title, message, options);
+}
+
+function markToastShown(err: unknown): unknown {
+  if (err && typeof err === 'object') {
+    (err as { toastShown?: boolean }).toastShown = true;
+    return err;
+  }
+  const wrapped = new Error(String(err));
+  (wrapped as Error & { toastShown?: boolean }).toastShown = true;
+  return wrapped;
+}
+
+async function signWalletProofMessageWithToast(
+  message: string,
+  summary: string,
+  cluster: Cluster,
+  options: ProofSigningToastOptions = {},
+) {
+  const toastId = beginProofSigningToast({
+    title: options.title,
+    message: options.message,
+    key: options.key,
+  });
+  try {
+    const result = await signWalletProofMessage(message, summary, cluster, {
+      showLedgerDeviceToast: options.showLedgerDeviceToast,
+    });
+    completeProofSigningToast(
+      toastId,
+      'success',
+      options.successTitle ?? 'Signature approved',
+      options.successMessage ?? 'Wallet signature received.',
+      options.key ? { key: options.key } : {},
+    );
+    return result;
+  } catch (err) {
+    completeProofSigningToast(
+      toastId,
+      'error',
+      options.errorTitle ?? 'Sign proof failed',
+      redactSecrets(err instanceof Error ? err.message : String(err)),
+      options.key ? { key: options.key } : {},
+    );
+    throw markToastShown(err);
+  }
+}
+
 function ledgerConnectApprovalMessage(): string {
   return 'Confirm the address on your Ledger device.';
 }
@@ -689,7 +790,7 @@ async function signWalletProofMessage(
   cluster: Cluster,
   options: { showLedgerDeviceToast?: boolean } = {},
 ) {
-  const toastId = options.showLedgerDeviceToast === false
+  const toastId = options.showLedgerDeviceToast === false || proofSigningToastDepth > 0
     ? undefined
     : beginLedgerDeviceApprovalToast('Review and approve this proof request on your Ledger device.');
   try {
@@ -735,7 +836,7 @@ type AndroidRepeatSummaryTab = 'asset' | 'recipient' | 'cadence' | 'end-conditio
 type AndroidAiIntroTab = 'benefits' | 'no-ai';
 type AndroidAiInfoTab = 'no-ai' | 'hosted' | 'bridge' | 'session' | 'device-agent';
 type AndroidCloudInfoTab = 'approval' | 'scheduler' | 'audit' | 'identity';
-type MobileRailSheet = 'workspace-storage' | 'ai-drafting';
+type MobileRailSheet = 'workspace-storage' | 'ai-drafting' | 'wallet-balances';
 type ExpandNoteFieldRef =
   | { kind: 'agent-prompt' }
   | { kind: 'recurring-note' }
@@ -1223,6 +1324,9 @@ const TX_SIGNATURE_NOT_FOUND_STALE_MS = 90_000;
 const TOKEN_PRICE_CACHE_MS = 60_000;
 const TOKEN_METADATA_CACHE_MS = 24 * 60 * 60_000;
 const TOKEN_MARKET_RETRY_BACKOFF_MS = 30_000;
+const WALLET_BALANCE_FULL_CACHE_MS = 60_000;
+let walletBalanceSummaryRequestId = 0;
+let walletBalanceFullRequestId = 0;
 const TOKEN_SEARCH_DEBOUNCE_MS = 260;
 const TOKEN_SEARCH_VISIBLE_ROWS = 5;
 const LAB_STORAGE_KEY = 'solana-agent-wallet-lab-artifacts-v1';
@@ -2469,6 +2573,32 @@ interface TemplateFieldPairPreview {
   error?: string;
 }
 
+type WalletBalanceLoadStatus = 'idle' | 'loading' | 'ready' | 'error';
+
+interface WalletBalanceViewState {
+  scopeKey: string;
+  summaryStatus: WalletBalanceLoadStatus;
+  fullStatus: WalletBalanceLoadStatus;
+  overlayOpen: boolean;
+  summary: WalletBalanceSnapshot | null;
+  full: WalletBalanceSnapshot | null;
+  summaryError: string;
+  fullError: string;
+}
+
+function emptyWalletBalanceViewState(): WalletBalanceViewState {
+  return {
+    scopeKey: '',
+    summaryStatus: 'idle',
+    fullStatus: 'idle',
+    overlayOpen: false,
+    summary: null,
+    full: null,
+    summaryError: '',
+    fullError: '',
+  };
+}
+
 interface DemoState {
   activeTab: ActiveTab;
   commandCenterView: CommandCenterView;
@@ -2589,6 +2719,7 @@ interface DemoState {
   notificationSettings: NotificationSettingsState;
   notifiedRecords: Record<string, string>;
   balances: BalanceView | null;
+  walletBalance: WalletBalanceViewState;
   preparedActions: PreparedAction[];
   preparedActionsInitialized: boolean;
   materializedActions: PreparedAction[];
@@ -3503,6 +3634,7 @@ const state: DemoState = {
   notificationSettings: notificationSettingsFromPersisted(persisted.notificationSettings),
   notifiedRecords: {},
   balances: null,
+  walletBalance: emptyWalletBalanceViewState(),
   preparedActions: initialBrowserWorkflow.preparedActions,
   preparedActionsInitialized: false,
   materializedActions: initialBrowserWorkflow.preparedActions,
@@ -3584,6 +3716,7 @@ let selectPickerController: AbortController | null = null;
 let preferencesMobilePickerController: AbortController | null = null;
 let mobileRailSheetController: AbortController | null = null;
 let expandNoteSheetController: AbortController | null = null;
+let walletBalanceOverlayController: AbortController | null = null;
 let systemHealthTimer: number | null = null;
 let systemHealthRunController: AbortController | null = null;
 const SYSTEM_HEALTH_INTERVAL_MS = 30_000;
@@ -4229,6 +4362,11 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape' && state.generatedPlanAuditId) {
     event.preventDefault();
     closeGeneratedPlanAuditModal();
+    return;
+  }
+  if (event.key === 'Escape' && state.walletBalance.overlayOpen) {
+    event.preventDefault();
+    closeWalletBalanceOverlay();
     return;
   }
   // Wallet overlays (Slice R.5). We close the overlay unconditionally on
@@ -6664,8 +6802,12 @@ const LEDGER_TAURI_INITIAL_ACCOUNTS_PER_FAMILY = 40;
 const LEDGER_WEB_INITIAL_ACCOUNTS_PER_FAMILY = 10;
 const LEDGER_LOAD_MORE_ACCOUNTS_PER_FAMILY = 10;
 const LEDGER_MAX_ACCOUNTS_PER_FAMILY = 100;
+const LEDGER_BALANCE_BATCH_SIZE = 20;
+const LEDGER_BALANCE_FALLBACK_CONCURRENCY = 4;
 const LEDGER_ACTIVITY_CONCURRENCY = 6;
 const LEDGER_LAST_ACCOUNT_STORAGE_KEY = 'agentic-ledger-last-account-v1';
+const LEDGER_RECENT_ACCOUNTS_STORAGE_KEY = 'agentic-ledger-recent-accounts-v1';
+const LEDGER_RECENT_ACCOUNT_LIMIT = 2;
 
 type LedgerWebHidRuntimeStatus = 'idle' | 'preparing' | 'ready' | 'error';
 
@@ -6894,17 +7036,22 @@ async function scanLedgerAccountBatch(
     legacyStart: ledger.nextLegacyIndex,
     legacyCount,
   });
-  if (paths.length === 0) {
+  const recentSelections = persistedLedgerSelections();
+  const discoveryPaths = dedupeLedgerAccountPaths([
+    ...(options.reset ? recentSelections.map(ledgerAccountPathFromSelection) : []),
+    ...paths,
+  ]);
+  if (discoveryPaths.length === 0) {
     dispatchLedgerOverlay({
       type: 'accountsReady',
       accounts: ledger.accounts,
-      selectedAddress: ledger.overlay.address ?? persistedLedgerSelection()?.address,
+      selectedAddress: ledger.overlay.address ?? recentSelections[0]?.address,
       canLoadMore: false,
     });
     return;
   }
 
-  const derived = await ipc.getAddresses(paths.map((path) => path.derivationPath));
+  const derived = await ipc.getAddresses(discoveryPaths.map((path) => path.derivationPath));
   if (ledger.pairingToken !== token) return;
   ledger.nextDefaultIndex += defaultCount;
   ledger.nextLegacyIndex += legacyCount;
@@ -6914,7 +7061,7 @@ async function scanLedgerAccountBatch(
     status: 'Checking SOL balances...',
     progress: 58,
   });
-  const candidates = await enrichLedgerAccounts(paths, derived);
+  const candidates = await enrichLedgerAccounts(discoveryPaths, derived);
   if (ledger.pairingToken !== token) return;
 
   dispatchLedgerOverlay({
@@ -6922,10 +7069,11 @@ async function scanLedgerAccountBatch(
     status: 'Ranking Ledger accounts...',
     progress: 88,
   });
-  const preferredAddress = ledger.overlay.address ?? persistedLedgerSelection()?.address;
+  const nextRecentSelections = persistedLedgerSelections();
+  const preferredAddress = ledger.overlay.address ?? nextRecentSelections[0]?.address;
   ledger.accounts = rankLedgerAccounts(
     mergeLedgerAccountCandidates(ledger.accounts, candidates),
-    { lastSelectedAddress: persistedLedgerSelection()?.address },
+    { recentAddresses: nextRecentSelections.map((selection) => selection.address) },
   );
   dispatchLedgerOverlay({
     type: 'accountsReady',
@@ -6959,39 +7107,77 @@ function canLoadMoreLedgerAccounts(): boolean {
     || ledger.nextLegacyIndex < LEDGER_MAX_ACCOUNTS_PER_FAMILY;
 }
 
+function ledgerAccountPathFromSelection(selection: PersistedLedgerAccountSelection): LedgerAccountPath {
+  return {
+    derivationPath: selection.derivationPath,
+    family: selection.family,
+    index: selection.index,
+    order: selection.family === 'default' ? selection.index : 10_000 + selection.index,
+  };
+}
+
+function dedupeLedgerAccountPaths(paths: readonly LedgerAccountPath[]): LedgerAccountPath[] {
+  const seen = new Set<string>();
+  const out: LedgerAccountPath[] = [];
+  for (const path of paths) {
+    if (seen.has(path.derivationPath)) continue;
+    seen.add(path.derivationPath);
+    out.push(path);
+  }
+  return out;
+}
+
 async function enrichLedgerAccounts(
   paths: readonly LedgerAccountPath[],
   derived: readonly LedgerDerivedAddress[],
 ): Promise<LedgerAccountCandidate[]> {
   const accounts = mergeLedgerDerivedAccounts(paths, derived);
   const connection = new Connection(activeRpcUrl(), 'confirmed');
-  const lamportsByAddress = new Map<string, number>();
-  let balanceUnavailable = false;
-  try {
-    const infos = await connection.getMultipleAccountsInfo(
-      accounts.map((account) => new PublicKey(account.address)),
-      'confirmed',
-    );
-    accounts.forEach((account, index) => {
-      lamportsByAddress.set(account.address, infos[index]?.lamports ?? 0);
-    });
-  } catch (err) {
-    console.warn('[ledger] balance enrichment failed', err);
-    balanceUnavailable = true;
-  }
+  const lamportsByAddress = await ledgerSolBalancesByAddress(connection, accounts);
 
   const activityByAddress = await ledgerActivityByAddress(connection, accounts);
   return accounts.map((account) => {
     const activity = activityByAddress.has(account.address)
       ? activityByAddress.get(account.address)!
       : null;
+    const hasBalance = lamportsByAddress.has(account.address);
     return toLedgerAccountCandidate(account, {
-      solBalanceLamports: lamportsByAddress.get(account.address) ?? 0,
-      balanceUnavailable,
+      solBalanceLamports: hasBalance ? lamportsByAddress.get(account.address) : null,
+      balanceUnavailable: !hasBalance,
       hasActivity: activity,
       activityUnavailable: activity === null,
     });
   });
+}
+
+async function ledgerSolBalancesByAddress(
+  connection: Connection,
+  accounts: readonly { address: string }[],
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  for (let start = 0; start < accounts.length; start += LEDGER_BALANCE_BATCH_SIZE) {
+    const chunk = accounts.slice(start, start + LEDGER_BALANCE_BATCH_SIZE);
+    try {
+      const infos = await connection.getMultipleAccountsInfo(
+        chunk.map((account) => new PublicKey(account.address)),
+        'confirmed',
+      );
+      chunk.forEach((account, index) => {
+        out.set(account.address, infos[index]?.lamports ?? 0);
+      });
+    } catch (err) {
+      console.warn('[ledger] balance batch enrichment failed', err);
+      await mapWithConcurrency(chunk, LEDGER_BALANCE_FALLBACK_CONCURRENCY, async (account) => {
+        try {
+          const lamports = await connection.getBalance(new PublicKey(account.address), 'confirmed');
+          out.set(account.address, lamports);
+        } catch (singleErr) {
+          console.warn('[ledger] balance lookup failed', account.address, singleErr);
+        }
+      });
+    }
+  }
+  return out;
 }
 
 async function ledgerActivityByAddress(
@@ -7028,33 +7214,91 @@ async function mapWithConcurrency<T>(
   await Promise.all(workers);
 }
 
-function persistedLedgerSelection(): PersistedLedgerAccountSelection | null {
+function persistedLedgerSelections(): PersistedLedgerAccountSelection[] {
+  return readLedgerSelectionStorage()
+    .filter((selection) => selection.cluster === state.cluster)
+    .slice(0, LEDGER_RECENT_ACCOUNT_LIMIT);
+}
+
+function readLedgerSelectionStorage(): PersistedLedgerAccountSelection[] {
+  const selections: PersistedLedgerAccountSelection[] = [];
   try {
-    const parsed = JSON.parse(localStorage.getItem(LEDGER_LAST_ACCOUNT_STORAGE_KEY) ?? 'null') as Partial<PersistedLedgerAccountSelection> | null;
-    if (!parsed || typeof parsed !== 'object') return null;
-    const cluster = typeof parsed.cluster === 'string' && isCluster(parsed.cluster)
-      ? parsed.cluster
-      : null;
-    if (
-      typeof parsed.address !== 'string' ||
-      typeof parsed.derivationPath !== 'string' ||
-      (parsed.family !== 'default' && parsed.family !== 'legacy') ||
-      typeof parsed.index !== 'number' ||
-      !cluster
-    ) {
-      return null;
+    const parsed = JSON.parse(localStorage.getItem(LEDGER_RECENT_ACCOUNTS_STORAGE_KEY) ?? '[]') as unknown;
+    const entries = Array.isArray(parsed) ? parsed : [parsed];
+    for (const entry of entries) {
+      const selection = parsePersistedLedgerSelection(entry);
+      if (selection) selections.push(selection);
     }
-    return {
-      address: parsed.address,
-      derivationPath: parsed.derivationPath,
-      family: parsed.family,
-      index: parsed.index,
-      cluster,
-      connectedAt: typeof parsed.connectedAt === 'string' ? parsed.connectedAt : '',
-    };
   } catch {
+    // Ignore malformed convenience storage.
+  }
+
+  try {
+    const legacy = parsePersistedLedgerSelection(
+      JSON.parse(localStorage.getItem(LEDGER_LAST_ACCOUNT_STORAGE_KEY) ?? 'null') as unknown,
+    );
+    if (legacy) selections.push(legacy);
+  } catch {
+    // Ignore malformed legacy storage.
+  }
+
+  return capLedgerSelectionsPerCluster(dedupeLedgerSelections(selections));
+}
+
+function parsePersistedLedgerSelection(value: unknown): PersistedLedgerAccountSelection | null {
+  if (!value || typeof value !== 'object') return null;
+  const parsed = value as Partial<PersistedLedgerAccountSelection>;
+  const cluster = typeof parsed.cluster === 'string' && isCluster(parsed.cluster)
+    ? parsed.cluster
+    : null;
+  if (
+    typeof parsed.address !== 'string' ||
+    parsed.address.trim().length === 0 ||
+    typeof parsed.derivationPath !== 'string' ||
+    parsed.derivationPath.trim().length === 0 ||
+    (parsed.family !== 'default' && parsed.family !== 'legacy') ||
+    !Number.isInteger(parsed.index) ||
+    Number(parsed.index) < 0 ||
+    !cluster
+  ) {
     return null;
   }
+  return {
+    address: parsed.address.trim(),
+    derivationPath: parsed.derivationPath.trim(),
+    family: parsed.family,
+    index: Number(parsed.index),
+    cluster,
+    connectedAt: typeof parsed.connectedAt === 'string' ? parsed.connectedAt : '',
+  };
+}
+
+function dedupeLedgerSelections(
+  selections: readonly PersistedLedgerAccountSelection[],
+): PersistedLedgerAccountSelection[] {
+  const seen = new Set<string>();
+  const out: PersistedLedgerAccountSelection[] = [];
+  for (const selection of selections) {
+    const key = `${selection.cluster}|${selection.address}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(selection);
+  }
+  return out;
+}
+
+function capLedgerSelectionsPerCluster(
+  selections: readonly PersistedLedgerAccountSelection[],
+): PersistedLedgerAccountSelection[] {
+  const counts = new Map<Cluster, number>();
+  const out: PersistedLedgerAccountSelection[] = [];
+  for (const selection of selections) {
+    const count = counts.get(selection.cluster) ?? 0;
+    if (count >= LEDGER_RECENT_ACCOUNT_LIMIT) continue;
+    counts.set(selection.cluster, count + 1);
+    out.push(selection);
+  }
+  return out;
 }
 
 function persistLedgerSelection(account: LedgerAccountCandidate): void {
@@ -7066,8 +7310,13 @@ function persistLedgerSelection(account: LedgerAccountCandidate): void {
     cluster: state.cluster,
     connectedAt: new Date().toISOString(),
   };
+  const next = capLedgerSelectionsPerCluster(dedupeLedgerSelections([
+    payload,
+    ...readLedgerSelectionStorage(),
+  ]));
   try {
     localStorage.setItem(LEDGER_LAST_ACCOUNT_STORAGE_KEY, JSON.stringify(payload));
+    localStorage.setItem(LEDGER_RECENT_ACCOUNTS_STORAGE_KEY, JSON.stringify(next));
   } catch {
     // Persistence is a convenience only; pairing must not depend on storage.
   }
@@ -8393,6 +8642,7 @@ function render(): void {
   trackPageView(route ?? normalizePathname(window.location.pathname), document.title);
   closeTemplatePickerInteractions();
   closeArtifactPickerInteractions();
+  closeWalletBalanceOverlayInteractions();
   closeMobileRailSheetInteractions();
   closeExpandNoteSheetInteractions();
   if (typeof document !== 'undefined' && document.body) {
@@ -11488,13 +11738,21 @@ function androidBottomTabDock(): string {
 function mobileRailBottomSheet(): string {
   const sheet = state.activeMobileRailSheet;
   if (!sheet || !isMobileAppViewport() || state.activeTab !== 'overview') return '';
-  const title = sheet === 'workspace-storage' ? 'Workspace Storage' : 'AI Drafting';
+  const title = sheet === 'workspace-storage'
+    ? 'Workspace Storage'
+    : sheet === 'wallet-balances'
+      ? 'Wallet Balances'
+      : 'AI Drafting';
   const detail = sheet === 'workspace-storage'
     ? 'Browser-local workflow storage'
-    : 'Draft route and provider setup';
+    : sheet === 'wallet-balances'
+      ? 'Wallet portfolio'
+      : 'Draft route and provider setup';
   const body = sheet === 'workspace-storage'
     ? cloudWorkspaceRailBody()
-    : aiSettingsCard('rail');
+    : sheet === 'wallet-balances'
+      ? walletBalanceSheetBodyHtml()
+      : aiSettingsCard('rail');
   return `
     <div class="mobile-rail-sheet-scrim" data-mobile-rail-sheet-close aria-hidden="true"></div>
     <aside class="mobile-rail-sheet ${escapeHtml(sheet)}" data-mobile-rail-sheet-root role="dialog" aria-modal="true" aria-labelledby="mobileRailSheetTitle">
@@ -11513,12 +11771,16 @@ function mobileRailBottomSheet(): string {
 }
 
 function isMobileRailSheet(value: string | undefined): value is MobileRailSheet {
-  return value === 'workspace-storage' || value === 'ai-drafting';
+  return value === 'workspace-storage' || value === 'ai-drafting' || value === 'wallet-balances';
 }
 
 function openMobileRailSheet(sheet: MobileRailSheet): void {
   state.activeMobileRailSheet = sheet;
   state.error = '';
+  if (sheet === 'wallet-balances') {
+    startWalletBalanceFullLoad(false, { openOverlay: false });
+    return;
+  }
   render();
 }
 
@@ -12219,6 +12481,7 @@ function walletRail(): string {
           <div>
             <p class="eyebrow mini">Signer</p>
             ${headingTitleMarkup}
+            ${connected && isMobileAppViewport() ? walletBalanceMobileTrigger() : ''}
           </div>
         </div>
 
@@ -12230,6 +12493,7 @@ function walletRail(): string {
             ${connected ? walletAddressCopyButton(state.address) : ''}
           </div>
         </div>
+        ${connected && !isMobileAppViewport() ? walletBalanceRailCard() : ''}
       </div>
 
       ${showPublicWalletPicker ? `
@@ -14648,6 +14912,150 @@ function walletAddressCopyButton(address: string): string {
     >
       ${copyButtonIcon()}
     </button>
+  `;
+}
+
+function walletBalanceMobileTrigger(): string {
+  return `
+    <button
+      type="button"
+      class="wallet-balance-mobile-trigger"
+      data-mobile-rail-sheet="wallet-balances"
+      aria-expanded="${state.activeMobileRailSheet === 'wallet-balances' ? 'true' : 'false'}"
+      aria-controls="mobileRailSheetTitle"
+    >
+      View balances
+    </button>
+  `;
+}
+
+function walletBalanceRailCard(): string {
+  const balance = state.walletBalance;
+  const summary = balance.summary;
+  const loading = balance.summaryStatus === 'loading' || balance.summaryStatus === 'idle';
+  const error = balance.summaryStatus === 'error';
+  const total = summary
+    ? formatWalletBalanceSnapshotUsd(summary, { markPartialCoverage: true })
+    : loading
+      ? 'Loading...'
+      : 'Unavailable';
+  const label = summary?.coverage === 'primary' ? 'SOL + USDC value' : 'Wallet value';
+  return `
+    <section class="wallet-balance-card ${balance.overlayOpen ? 'open' : ''}" aria-label="Wallet balance summary">
+      <div class="wallet-balance-head">
+        <div>
+          <span>${escapeHtml(label)}</span>
+          <strong>${escapeHtml(total)}</strong>
+        </div>
+        <button
+          type="button"
+          class="wallet-balance-toggle"
+          data-wallet-balance-action="toggle"
+          aria-controls="walletBalanceOverlay"
+          aria-expanded="${balance.overlayOpen ? 'true' : 'false'}"
+          title="${balance.overlayOpen ? 'Hide balances' : 'Show all balances'}"
+          ${!state.address || loading ? 'disabled' : ''}
+        >
+          <span aria-hidden="true">⌄</span>
+        </button>
+      </div>
+      ${summary ? `
+        <div class="wallet-balance-primary-rows">
+          ${walletBalanceAssetRowHtml(summary.sol)}
+          ${walletBalanceAssetRowHtml(summary.usdc)}
+        </div>
+      ` : `
+        <div class="wallet-balance-state ${error ? 'error' : 'loading'}">
+          <span>${escapeHtml(error ? 'Balances unavailable' : 'Loading balances...')}</span>
+          ${error ? `<button type="button" data-wallet-balance-action="retry-summary">Retry</button>` : ''}
+        </div>
+      `}
+      ${balance.overlayOpen ? walletBalanceOverlayHtml() : ''}
+    </section>
+  `;
+}
+
+function walletBalanceOverlayHtml(): string {
+  const balance = state.walletBalance;
+  const full = balance.full;
+  const loading = balance.fullStatus === 'loading' || balance.fullStatus === 'idle';
+  const total = full
+    ? formatWalletBalanceSnapshotUsd(full)
+    : loading
+      ? 'Loading...'
+      : 'Unavailable';
+  const rows = full ? [full.sol, full.usdc, ...full.others].filter((asset) => asset.amount > 0) : [];
+  return `
+    <div id="walletBalanceOverlay" class="wallet-balance-overlay" role="dialog" aria-label="All wallet balances">
+      <div class="wallet-balance-overlay-head">
+        <div>
+          <span>All balances</span>
+          <strong>${escapeHtml(total)}</strong>
+        </div>
+        <button type="button" class="wallet-balance-close" data-wallet-balance-action="toggle" title="Close balances">×</button>
+      </div>
+      ${
+        full
+          ? rows.length > 0
+            ? `<div class="wallet-balance-overlay-list">${rows.map(walletBalanceAssetRowHtml).join('')}</div>`
+            : `<p class="wallet-balance-overlay-empty">No balances found.</p>`
+          : `<div class="wallet-balance-state ${balance.fullStatus === 'error' ? 'error' : 'loading'}">
+              <span>${escapeHtml(balance.fullStatus === 'error' ? (balance.fullError || 'All balances unavailable') : 'Loading all balances...')}</span>
+              ${balance.fullStatus === 'error' ? `<button type="button" data-wallet-balance-action="retry-full">Retry</button>` : ''}
+            </div>`
+      }
+    </div>
+  `;
+}
+
+function walletBalanceSheetBodyHtml(): string {
+  const balance = state.walletBalance;
+  const full = balance.full;
+  const loading = balance.fullStatus === 'loading' || balance.fullStatus === 'idle';
+  if (!full) {
+    return `
+      <section class="wallet-balance-sheet" aria-label="Wallet balance details">
+      <div class="wallet-balance-sheet-total">
+        <span>Wallet value</span>
+        <strong>${escapeHtml(loading ? 'Loading...' : 'Unavailable')}</strong>
+      </div>
+        <div class="wallet-balance-state ${balance.fullStatus === 'error' ? 'error' : 'loading'}">
+          <span>${escapeHtml(balance.fullStatus === 'error' ? (balance.fullError || 'Balances unavailable') : 'Loading balances...')}</span>
+          ${balance.fullStatus === 'error' ? `<button type="button" data-wallet-balance-action="retry-full">Retry</button>` : ''}
+        </div>
+      </section>
+    `;
+  }
+  const otherRows = full.others.filter((asset) => asset.amount > 0);
+  return `
+    <section class="wallet-balance-sheet" aria-label="Wallet balance details">
+      <div class="wallet-balance-sheet-total">
+        <span>Wallet value</span>
+        <strong>${escapeHtml(formatWalletBalanceSnapshotUsd(full))}</strong>
+      </div>
+      <div class="wallet-balance-sheet-primary">
+        ${walletBalanceAssetRowHtml(full.sol)}
+        ${walletBalanceAssetRowHtml(full.usdc)}
+      </div>
+      <div class="wallet-balance-sheet-section">
+        <span>Other balances</span>
+        ${
+          otherRows.length
+            ? `<div class="wallet-balance-overlay-list">${otherRows.map(walletBalanceAssetRowHtml).join('')}</div>`
+            : `<p class="wallet-balance-overlay-empty">No other token balances.</p>`
+        }
+      </div>
+    </section>
+  `;
+}
+
+function walletBalanceAssetRowHtml(asset: { symbol: string; amount: number; valueUsd?: number }): string {
+  return `
+    <div class="wallet-balance-row">
+      <span>${escapeHtml(asset.symbol)}</span>
+      <strong>${escapeHtml(formatWalletBalanceAmount(asset.amount, asset.symbol))}</strong>
+      <em>${escapeHtml(asset.valueUsd === undefined ? 'price unavailable' : formatWalletBalanceUsd(asset.valueUsd))}</em>
+    </div>
   `;
 }
 
@@ -23533,6 +23941,7 @@ function bind(): void {
   bindArtifactPicker();
   bindSelectPickers();
   bindPreferencesMobilePicker();
+  bindWalletBalanceOverlay();
   bindMobileRailSheet();
   bindExpandNoteSheet();
 
@@ -23843,6 +24252,11 @@ function bind(): void {
   document.querySelector<HTMLButtonElement>('#discover')?.addEventListener('click', runDiscover);
   document.querySelector<HTMLButtonElement>('#connect')?.addEventListener('click', runConnect);
   document.querySelector<HTMLButtonElement>('#disconnect')?.addEventListener('click', runDisconnect);
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-wallet-balance-action]')) {
+    button.addEventListener('click', () => {
+      runWalletBalanceAction(button.dataset.walletBalanceAction);
+    });
+  }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-cli-action="open-full"]')) {
     button.addEventListener('click', () => {
       exitCliView();
@@ -25163,7 +25577,10 @@ async function completeAgenticLogin(): Promise<void> {
     // signWalletProofMessage handles the wallet quirks (signMessage vs memo-tx
     // fallback for Phantom/Solflare/Seed Vault on Android, base64 encoding, etc.)
     // so we reuse it instead of calling signMessage directly.
-    const result = await signWalletProofMessage(message, 'Agentic CLI login', state.cluster);
+    const result = await signWalletProofMessageWithToast(message, 'Agentic CLI login', state.cluster, {
+      message: 'Approve this CLI login proof in your wallet. No transaction will be submitted.',
+      successMessage: 'Sending result back to CLI.',
+    });
     setStatus('Sending result back to CLI…');
     const callbackUrl = new URL(callback);
     const response = await fetch(callbackUrl.toString(), {
@@ -25855,6 +26272,25 @@ function bindMobileRailSheet(): void {
 function closeMobileRailSheetInteractions(): void {
   mobileRailSheetController?.abort();
   mobileRailSheetController = null;
+}
+
+function bindWalletBalanceOverlay(): void {
+  const overlay = document.querySelector<HTMLElement>('#walletBalanceOverlay');
+  if (!overlay || !state.walletBalance.overlayOpen) return;
+  walletBalanceOverlayController = new AbortController();
+  const { signal } = walletBalanceOverlayController;
+  window.addEventListener('pointerdown', (event) => {
+    const target = event.target;
+    if (!(target instanceof Node)) return;
+    if (overlay.contains(target)) return;
+    if (target instanceof Element && target.closest('[data-wallet-balance-action]')) return;
+    closeWalletBalanceOverlay();
+  }, { signal, capture: true });
+}
+
+function closeWalletBalanceOverlayInteractions(): void {
+  walletBalanceOverlayController?.abort();
+  walletBalanceOverlayController = null;
 }
 
 function bindExpandNoteSheet(): void {
@@ -26811,6 +27247,7 @@ function guidedDemoReceiptPayload(
 }
 
 async function runSignGuidedDemoReceipt(): Promise<void> {
+  let proofToastId: number | undefined;
   await run('sign', async () => {
     if (state.guidedDemo.stage !== 'receipt' || !state.guidedDemo.receiptJson) {
       throw new Error('Complete the demo decision before signing a demo receipt.');
@@ -26820,6 +27257,9 @@ async function runSignGuidedDemoReceipt(): Promise<void> {
       `Receipt: ${state.guidedDemo.receiptId}`,
       state.guidedDemo.receiptJson,
     ].join('\n');
+    proofToastId = beginProofSigningToast({
+      message: 'Approve this demo receipt proof in your wallet. No transaction will be submitted.',
+    });
     const result = await signWalletProofMessage(signingMessage, 'Demo receipt signature', state.cluster);
     const scenario = selectedGuidedDemoScenario();
     state.guidedDemo.signedReceipt = result.signature;
@@ -26832,15 +27272,27 @@ async function runSignGuidedDemoReceipt(): Promise<void> {
         result.signature,
       ),
     );
-    pushToast('success', 'Demo receipt signed', 'Signature saved only inside this simulated demo.');
+    completeProofSigningToast(proofToastId, 'success', 'Demo receipt signed', 'Signature saved only inside this simulated demo.');
+  }, {
+    onError: (message) => {
+      completeProofSigningToast(proofToastId, 'error', 'Sign proof failed', message);
+    },
   });
 }
 
 async function runSignMessage(): Promise<void> {
+  let proofToastId: number | undefined;
   await run('sign', async () => {
+    proofToastId = beginProofSigningToast({
+      message: 'Approve this message proof in your wallet. No transaction will be submitted.',
+    });
     const result = await signWalletProofMessage(DEMO_MESSAGE, 'Home message signature', state.cluster);
     state.signature = result.signature;
-    pushToast('success', 'Message signed', short(result.signature));
+    completeProofSigningToast(proofToastId, 'success', 'Message signed', short(result.signature));
+  }, {
+    onError: (message) => {
+      completeProofSigningToast(proofToastId, 'error', 'Sign proof failed', message);
+    },
   });
 }
 
@@ -27239,6 +27691,7 @@ async function runGenerateAiPlan(): Promise<void> {
 }
 
 async function runSignAgentPlan(): Promise<void> {
+  let proofToastId: number | undefined;
   await run('sign', async () => {
     if (!state.agentPlan) {
       throw new Error('Create a plan before signing a review proof.');
@@ -27246,6 +27699,7 @@ async function runSignAgentPlan(): Promise<void> {
     const plan = planWithRuntimeTokenLabels(state.agentPlan);
     state.agentPlan = plan;
     const activeRecord = generatedPlanById(state.selectedGeneratedPlanId);
+    proofToastId = beginProofSigningToast();
     const proof = await signGeneratedPlanProof(activeRecord, plan);
     const signature = proof.signature;
     state.agentSignature = signature;
@@ -27273,9 +27727,9 @@ async function runSignAgentPlan(): Promise<void> {
     }
     const syncPending = signedPlanId && cloudSyncPending(signedPlanId);
     if (syncPending) {
-      pushToast('info', 'Signed locally', 'Cloud sync will retry when reachable.');
+      completeProofSigningToast(proofToastId, 'info', 'Signed locally', 'Cloud sync will retry when reachable.');
     } else {
-      pushToast('success', 'Proof signed', 'Saved in Done.');
+      completeProofSigningToast(proofToastId, 'success', 'Proof signed', 'Saved in Done.');
     }
   }, {
     onError: async (message, err) => {
@@ -27284,7 +27738,7 @@ async function runSignAgentPlan(): Promise<void> {
       // (Phase 4 in updateGeneratedPlan should already swallow this; this guard
       // protects against future cloud writes that bypass that path.)
       if (state.agentSignature && isCloudUnreachableError(err)) {
-        pushToast('info', 'Signed locally', 'Cloud sync will retry when reachable.');
+        completeProofSigningToast(proofToastId, 'info', 'Signed locally', 'Cloud sync will retry when reachable.');
         return;
       }
       if (state.selectedGeneratedPlanId) {
@@ -27294,7 +27748,7 @@ async function runSignAgentPlan(): Promise<void> {
           failureLabel: 'Sign failed - try again',
         }).catch(() => undefined);
       }
-      pushToast('error', 'Sign proof failed', message);
+      completeProofSigningToast(proofToastId, 'error', 'Sign proof failed', message);
     },
   });
 }
@@ -27448,12 +27902,18 @@ async function runDenyGeneratedPlanWithAgentReason(planId: string): Promise<void
     240,
   );
   let proofSignature: string | undefined;
+  let proofToastId: number | undefined;
   let signedNote = note;
   if (state.address) {
+    proofToastId = beginProofSigningToast({
+      message: 'Approve this agent-denial proof in your wallet. No transaction will be submitted.',
+    });
     try {
       proofSignature = await signAgentDenialProof(record.plan, review, `Agent denial: ${planSummary}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      completeProofSigningToast(proofToastId, 'error', 'Sign proof failed', redactSecrets(message));
+      proofToastId = undefined;
       signedNote = compactSentence(`${note} (Could not sign proof: ${redactSecrets(message)}.)`, 360);
     }
   } else {
@@ -27478,13 +27938,14 @@ async function runDenyGeneratedPlanWithAgentReason(planId: string): Promise<void
     error: undefined,
     failureLabel: 'Denied by agent review',
   }).catch(() => undefined);
-  pushToast(
-    'success',
-    'Agent denial saved',
-    proofSignature
-      ? `${planSummary} archived. Signed denial proof saved in Done.`
-      : `${planSummary} archived. Proof saved in Done (unsigned — wallet was unavailable).`,
-  );
+  const savedMessage = proofSignature
+    ? `${planSummary} archived. Signed denial proof saved in Done.`
+    : `${planSummary} archived. Proof saved in Done (unsigned — wallet was unavailable).`;
+  if (proofToastId !== undefined) {
+    completeProofSigningToast(proofToastId, 'success', 'Agent denial saved', savedMessage);
+  } else {
+    pushToast('success', 'Agent denial saved', savedMessage);
+  }
   if (state.generatedPlanAuditId === planId) {
     state.generatedPlanAuditId = '';
   }
@@ -28367,12 +28828,14 @@ async function runDeleteAllDone(): Promise<void> {
 
 async function runSignGeneratedPlan(planId: string): Promise<void> {
   let signedLocally = false;
+  let proofToastId: number | undefined;
   await run('sign', async () => {
     const record = requireGeneratedPlanRecord(planId);
     if (record.status === 'archived') {
       throw new Error('Restore this plan before signing a review proof.');
     }
     const plan = planWithRuntimeTokenLabels(record.plan);
+    proofToastId = beginProofSigningToast();
     const proof = await signGeneratedPlanProof(record, plan);
     const signature = proof.signature;
     signedLocally = true;
@@ -28395,14 +28858,14 @@ async function runSignGeneratedPlan(planId: string): Promise<void> {
     }
     showCompletedHistoryForGeneratedProof(planId);
     if (cloudSyncPending(planId)) {
-      pushToast('info', 'Signed locally', 'Cloud sync will retry when reachable.');
+      completeProofSigningToast(proofToastId, 'info', 'Signed locally', 'Cloud sync will retry when reachable.');
     } else {
-      pushToast('success', 'Proof signed', 'Saved in Done.');
+      completeProofSigningToast(proofToastId, 'success', 'Proof signed', 'Saved in Done.');
     }
   }, {
     onError: async (message, err) => {
       if (signedLocally && isCloudUnreachableError(err)) {
-        pushToast('info', 'Signed locally', 'Cloud sync will retry when reachable.');
+        completeProofSigningToast(proofToastId, 'info', 'Signed locally', 'Cloud sync will retry when reachable.');
         return;
       }
       await updateGeneratedPlan(planId, {
@@ -28410,7 +28873,7 @@ async function runSignGeneratedPlan(planId: string): Promise<void> {
         error: message,
         failureLabel: 'Sign failed - try again',
       });
-      pushToast('error', 'Sign proof failed', message);
+      completeProofSigningToast(proofToastId, 'error', 'Sign proof failed', message);
     },
   });
 }
@@ -33582,6 +34045,7 @@ async function afterWalletConnected(): Promise<void> {
     dispatchWalletConnectOverlay({ type: 'close' });
   }
   stopLedgerPoll();
+  startWalletBalanceConnectedLoad();
   await refreshCloudSession(false);
   hydrateLocalWorkspaceForWallet();
   if (await signOutCloudSessionForWalletBoundary('wallet-mismatch', { toast: true })) {
@@ -33611,7 +34075,10 @@ async function runCloudSignIn(): Promise<void> {
     }));
     const message = stringPayload(nonce.message, 'Auth message');
     const nonceValue = stringPayload(nonce.nonce, 'Auth nonce');
-    const result = await signWalletProofMessage(message, 'Agentic Cloud sign-in', state.cluster);
+    const result = await signWalletProofMessageWithToast(message, 'Agentic Cloud sign-in', state.cluster, {
+      message: 'Approve this cloud sign-in proof in your wallet. No transaction will be submitted.',
+      successMessage: 'Verifying cloud workspace session.',
+    });
     const session = parseSessionResponse(await cloudRequest('/api/auth/verify-wallet', {
       method: 'POST',
       body: JSON.stringify({
@@ -33897,7 +34364,10 @@ async function runConfirmCloudWorkspaceDelete(): Promise<void> {
       body: JSON.stringify({}),
     }));
     const message = stringPayload(intent.message, 'Cloud deletion message');
-    const signature = await signWalletProofMessage(message, 'Delete Agentic Cloud workspace', state.cluster);
+    const signature = await signWalletProofMessageWithToast(message, 'Delete Agentic Cloud workspace', state.cluster, {
+      message: 'Approve this cloud workspace deletion proof in your wallet. No transaction will be submitted.',
+      successMessage: 'Deleting cloud workspace records.',
+    });
     const result = parseCloudWorkspaceDeleteResponse(await cloudRequest('/api/cloud-workspace/delete', {
       method: 'POST',
       body: JSON.stringify({
@@ -35678,39 +36148,57 @@ async function runCloudPreparedActionOp(action: PreparedAction, op: string): Pro
       if (blockReason) {
         throw new Error(blockReason);
       }
-      const decisionProof = await signCloudWorkflowDecision(action, 'approved');
-      await cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/approve`, {
-        method: 'POST',
-        body: JSON.stringify({
-          proofSignature: decisionProof.signature,
-          decisionProofMessage: decisionProof.message,
-          signatureEncoding: 'base58',
-          decisionProofEncoding: decisionProof.proofEncoding,
-          decisionProofTxBase64: decisionProof.proofTxBase64,
-          note: 'Proof-only approval recorded in Agentic Cloud workspace. No transaction was submitted.',
-        }),
+      const proofToastId = beginProofSigningToast({
+        message: 'Approve this cloud decision proof in your wallet. No transaction will be submitted.',
       });
-      await refreshCloudWorkspaceData();
-      showCompletedHistoryForAction(action.id);
-      pushToast('success', 'Approval recorded', 'Cloud receipt saved in Done.');
+      try {
+        const decisionProof = await signCloudWorkflowDecision(action, 'approved');
+        await cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/approve`, {
+          method: 'POST',
+          body: JSON.stringify({
+            proofSignature: decisionProof.signature,
+            decisionProofMessage: decisionProof.message,
+            signatureEncoding: 'base58',
+            decisionProofEncoding: decisionProof.proofEncoding,
+            decisionProofTxBase64: decisionProof.proofTxBase64,
+            note: 'Proof-only approval recorded in Agentic Cloud workspace. No transaction was submitted.',
+          }),
+        });
+        await refreshCloudWorkspaceData();
+        showCompletedHistoryForAction(action.id);
+        completeProofSigningToast(proofToastId, 'success', 'Approval recorded', 'Cloud receipt saved in Done.');
+      } catch (err) {
+        const message = redactSecrets(err instanceof Error ? err.message : String(err));
+        completeProofSigningToast(proofToastId, 'error', 'Sign proof failed', message);
+        throw markToastShown(err);
+      }
       return;
     }
     case 'reject': {
-      const decisionProof = await signCloudWorkflowDecision(action, 'rejected');
-      await cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/deny`, {
-        method: 'POST',
-        body: JSON.stringify({
-          proofSignature: decisionProof.signature,
-          decisionProofMessage: decisionProof.message,
-          signatureEncoding: 'base58',
-          decisionProofEncoding: decisionProof.proofEncoding,
-          decisionProofTxBase64: decisionProof.proofTxBase64,
-          note: 'Denied in Agentic Cloud workspace.',
-        }),
+      const proofToastId = beginProofSigningToast({
+        message: 'Approve this cloud rejection proof in your wallet. No transaction will be submitted.',
       });
-      await refreshCloudWorkspaceData();
-      showCompletedHistoryForAction(action.id);
-      pushToast('success', 'Request denied', 'Cloud denial receipt saved in Done.');
+      try {
+        const decisionProof = await signCloudWorkflowDecision(action, 'rejected');
+        await cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/deny`, {
+          method: 'POST',
+          body: JSON.stringify({
+            proofSignature: decisionProof.signature,
+            decisionProofMessage: decisionProof.message,
+            signatureEncoding: 'base58',
+            decisionProofEncoding: decisionProof.proofEncoding,
+            decisionProofTxBase64: decisionProof.proofTxBase64,
+            note: 'Denied in Agentic Cloud workspace.',
+          }),
+        });
+        await refreshCloudWorkspaceData();
+        showCompletedHistoryForAction(action.id);
+        completeProofSigningToast(proofToastId, 'success', 'Request denied', 'Cloud denial receipt saved in Done.');
+      } catch (err) {
+        const message = redactSecrets(err instanceof Error ? err.message : String(err));
+        completeProofSigningToast(proofToastId, 'error', 'Sign proof failed', message);
+        throw markToastShown(err);
+      }
       return;
     }
     case 'archive':
@@ -36371,17 +36859,35 @@ async function runBrowserPreparedActionOp(actionId: string, op: string): Promise
           `Browser workflow cannot execute ${action.kind.replace(/_/g, ' ')} from this device yet.`,
         );
       }
-      const proofSignature = await signBrowserWorkflowDecision(action, 'approved');
-      completeBrowserPreparedAction(action, 'approved', proofSignature);
-      showCompletedHistoryForAction(action.id);
-      pushToast('success', 'Decision proof saved', 'Wallet proof saved in Done. No transaction was submitted.');
+      const proofToastId = beginProofSigningToast({
+        message: 'Approve this browser decision proof in your wallet. No transaction will be submitted.',
+      });
+      try {
+        const proofSignature = await signBrowserWorkflowDecision(action, 'approved');
+        completeBrowserPreparedAction(action, 'approved', proofSignature);
+        showCompletedHistoryForAction(action.id);
+        completeProofSigningToast(proofToastId, 'success', 'Decision proof saved', 'Wallet proof saved in Done. No transaction was submitted.');
+      } catch (err) {
+        const message = redactSecrets(err instanceof Error ? err.message : String(err));
+        completeProofSigningToast(proofToastId, 'error', 'Sign proof failed', message);
+        throw markToastShown(err);
+      }
       return;
     }
     case 'reject': {
-      const proofSignature = await signBrowserWorkflowDecision(action, 'rejected');
-      completeBrowserPreparedAction(action, 'rejected', proofSignature);
-      showCompletedHistoryForAction(action.id);
-      pushToast('success', 'Request rejected', 'Wallet rejection proof saved in Done.');
+      const proofToastId = beginProofSigningToast({
+        message: 'Approve this browser rejection proof in your wallet. No transaction will be submitted.',
+      });
+      try {
+        const proofSignature = await signBrowserWorkflowDecision(action, 'rejected');
+        completeBrowserPreparedAction(action, 'rejected', proofSignature);
+        showCompletedHistoryForAction(action.id);
+        completeProofSigningToast(proofToastId, 'success', 'Request rejected', 'Wallet rejection proof saved in Done.');
+      } catch (err) {
+        const message = redactSecrets(err instanceof Error ? err.message : String(err));
+        completeProofSigningToast(proofToastId, 'error', 'Sign proof failed', message);
+        throw markToastShown(err);
+      }
       return;
     }
     case 'archive':
@@ -39304,11 +39810,15 @@ function runBrowserRecurringOp(recurringId: string, op: string): void {
 }
 
 async function runCreateLabArtifact(): Promise<void> {
+  let proofToastId: number | undefined;
   await run('lab', async () => {
     const lab = activeLab();
     const fieldValues = isPublicReceiptLab(lab) ? readReceiptFieldValues(lab) : {};
     validateLabForSigning(lab, fieldValues);
     const input = isPublicReceiptLab(lab) ? receiptInputSummary(lab, fieldValues) : labInput(lab.id).trim();
+    proofToastId = beginProofSigningToast({
+      message: 'Approve this evidence proof in your wallet. No transaction will be submitted.',
+    });
     const { archiveResult } = await signAndArchiveEvidenceReceipt({
       lab,
       input,
@@ -39321,11 +39831,16 @@ async function runCreateLabArtifact(): Promise<void> {
     state.artifactSearch = '';
     state.listPages.receiptArchive = 1;
     state.artifactView = 'signed';
-    pushToast(
+    completeProofSigningToast(
+      proofToastId,
       'success',
       isPublicReceiptLab(lab) ? 'Receipt signed' : 'Evidence signed',
       archiveLabArtifactToastDetail(archiveResult, lab),
     );
+  }, {
+    onError: (message) => {
+      completeProofSigningToast(proofToastId, 'error', 'Sign proof failed', message);
+    },
   });
 }
 
@@ -39416,6 +39931,7 @@ async function runInlineReceiptProof(actionId: string, proofKind: InlineReceiptK
     pushToast('error', 'Approval not found', actionId);
     return;
   }
+  let proofToastId: number | undefined;
   await run('lab', async () => {
     if (!state.address || state.address !== action.walletAddress) {
       throw new Error('Connect the approval wallet before signing this receipt.');
@@ -39424,6 +39940,9 @@ async function runInlineReceiptProof(actionId: string, proofKind: InlineReceiptK
     if (!lab) throw new Error('Receipt type is not available.');
     const fieldValues = inlineReceiptFieldValues(action, proofKind);
     const receiptInput = receiptInputSummary(lab, fieldValues);
+    proofToastId = beginProofSigningToast({
+      message: 'Approve this saved-proof receipt in your wallet. No transaction will be submitted.',
+    });
     const { archiveResult } = await signAndArchiveEvidenceReceipt({
       lab,
       input: receiptInput,
@@ -39434,10 +39953,14 @@ async function runInlineReceiptProof(actionId: string, proofKind: InlineReceiptK
     delete state.auditActivity[auditActivityKey('approval', action.id)];
     if (proofKind === 'rejection' && !isTerminalPreparedAction(action)) {
       await rejectPreparedActionAfterReceiptProof(action);
-      pushToast('success', 'Request denied with proof', archiveLabArtifactToastDetail(archiveResult, lab));
+      completeProofSigningToast(proofToastId, 'success', 'Request denied with proof', archiveLabArtifactToastDetail(archiveResult, lab));
       return;
     }
-    pushToast('success', `${lab.title} signed`, archiveLabArtifactToastDetail(archiveResult, lab));
+    completeProofSigningToast(proofToastId, 'success', `${lab.title} signed`, archiveLabArtifactToastDetail(archiveResult, lab));
+  }, {
+    onError: (message) => {
+      completeProofSigningToast(proofToastId, 'error', 'Sign proof failed', message);
+    },
   });
 }
 
@@ -41006,6 +41529,243 @@ function isPlanWatchActive(record: GeneratedPlanRecord): boolean {
 
 async function refreshBalances(): Promise<void> {
   state.balances = await bridgeRequest<BalanceView>('/bridge/action/balances');
+}
+
+function runWalletBalanceAction(action: string | undefined): void {
+  switch (action) {
+    case 'toggle':
+      toggleWalletBalanceOverlay();
+      return;
+    case 'retry-summary':
+      startWalletBalanceSummaryLoad();
+      return;
+    case 'retry-full':
+      startWalletBalanceFullLoad(true, { openOverlay: state.activeMobileRailSheet !== 'wallet-balances' });
+      return;
+  }
+}
+
+function walletBalanceScopeKey(address = state.address, cluster = state.cluster): string {
+  return address ? `${cluster}:${address}` : '';
+}
+
+function startWalletBalanceSummaryLoad(): void {
+  if (!state.address) return;
+  const address = state.address;
+  const cluster = state.cluster;
+  const scopeKey = walletBalanceScopeKey(address, cluster);
+  state.walletBalance = {
+    ...emptyWalletBalanceViewState(),
+    scopeKey,
+    summaryStatus: 'loading',
+  };
+  render();
+  const requestId = ++walletBalanceSummaryRequestId;
+  void loadWalletBalanceSummary(address, cluster, scopeKey, requestId);
+}
+
+function startWalletBalanceConnectedLoad(): void {
+  if (!state.address) return;
+  if (isMobileAppViewport()) {
+    state.walletBalance = {
+      ...emptyWalletBalanceViewState(),
+      scopeKey: walletBalanceScopeKey(),
+    };
+    return;
+  }
+  startWalletBalanceSummaryLoad();
+}
+
+async function loadWalletBalanceSummary(address: string, cluster: Cluster, scopeKey: string, requestId: number): Promise<void> {
+  try {
+    const { solLamports, tokenRows } = await readWalletPrimaryBalanceInputs(address, cluster);
+    let prices: Map<string, number>;
+    try {
+      prices = await fetchWalletBalancePriceMap([WALLET_BALANCE_SOL_MINT, WALLET_BALANCE_USDC_MINT], cluster);
+    } catch {
+      prices = walletBalanceFallbackPriceMap([WALLET_BALANCE_USDC_MINT], cluster);
+    }
+    const snapshot = buildWalletBalanceSnapshot({
+      walletAddress: address,
+      cluster,
+      solLamports,
+      tokenRows,
+      prices,
+      knownTokens: KNOWN_BROWSER_TOKENS,
+      coverage: 'primary',
+      pricingEnabled: walletBalanceUsdPricingEnabled(cluster),
+    });
+    if (requestId !== walletBalanceSummaryRequestId || state.walletBalance.scopeKey !== scopeKey || walletBalanceScopeKey() !== scopeKey) return;
+    state.walletBalance = {
+      ...state.walletBalance,
+      summaryStatus: 'ready',
+      summary: snapshot,
+      summaryError: '',
+    };
+    render();
+  } catch (err) {
+    if (requestId !== walletBalanceSummaryRequestId || state.walletBalance.scopeKey !== scopeKey || walletBalanceScopeKey() !== scopeKey) return;
+    state.walletBalance = {
+      ...state.walletBalance,
+      summaryStatus: 'error',
+      summaryError: redactSecrets(err instanceof Error ? err.message : String(err)),
+    };
+    render();
+  }
+}
+
+function toggleWalletBalanceOverlay(): void {
+  if (!state.address) return;
+  state.walletBalance = {
+    ...state.walletBalance,
+    scopeKey: walletBalanceScopeKey(),
+    overlayOpen: !state.walletBalance.overlayOpen,
+  };
+  if (state.walletBalance.overlayOpen) {
+    startWalletBalanceFullLoad(false, { openOverlay: true });
+    return;
+  }
+  render();
+}
+
+function closeWalletBalanceOverlay(): void {
+  if (!state.walletBalance.overlayOpen) return;
+  state.walletBalance = {
+    ...state.walletBalance,
+    overlayOpen: false,
+  };
+  render();
+}
+
+function startWalletBalanceFullLoad(force: boolean, options: { openOverlay?: boolean } = { openOverlay: true }): void {
+  if (!state.address) return;
+  const openOverlay = options.openOverlay !== false;
+  const address = state.address;
+  const cluster = state.cluster;
+  const scopeKey = walletBalanceScopeKey(address, cluster);
+  const fullFresh = state.walletBalance.full
+    && state.walletBalance.scopeKey === scopeKey
+    && Date.now() - state.walletBalance.full.loadedAt < WALLET_BALANCE_FULL_CACHE_MS;
+  if (!force && fullFresh) {
+    render();
+    return;
+  }
+  if (state.walletBalance.fullStatus === 'loading' && state.walletBalance.scopeKey === scopeKey) {
+    render();
+    return;
+  }
+  state.walletBalance = {
+    ...state.walletBalance,
+    scopeKey,
+    overlayOpen: openOverlay ? true : false,
+    fullStatus: 'loading',
+    fullError: '',
+  };
+  render();
+  const requestId = ++walletBalanceFullRequestId;
+  void loadWalletBalanceFull(address, cluster, scopeKey, requestId);
+}
+
+async function loadWalletBalanceFull(address: string, cluster: Cluster, scopeKey: string, requestId: number): Promise<void> {
+  try {
+    const { solLamports, tokenRows } = await readWalletFullBalanceInputs(address, cluster);
+    const mints = [
+      WALLET_BALANCE_SOL_MINT,
+      WALLET_BALANCE_USDC_MINT,
+      ...tokenRows.map((row) => row.mint),
+    ];
+    let prices: Map<string, number>;
+    try {
+      prices = await fetchWalletBalancePriceMap(mints, cluster);
+    } catch {
+      prices = walletBalanceFallbackPriceMap([WALLET_BALANCE_USDC_MINT], cluster);
+    }
+    const snapshot = buildWalletBalanceSnapshot({
+      walletAddress: address,
+      cluster,
+      solLamports,
+      tokenRows,
+      prices,
+      knownTokens: KNOWN_BROWSER_TOKENS,
+      coverage: 'full',
+      pricingEnabled: walletBalanceUsdPricingEnabled(cluster),
+    });
+    if (requestId !== walletBalanceFullRequestId || state.walletBalance.scopeKey !== scopeKey || walletBalanceScopeKey() !== scopeKey) return;
+    state.walletBalance = {
+      ...state.walletBalance,
+      summaryStatus: 'ready',
+      summary: snapshot,
+      summaryError: '',
+      fullStatus: 'ready',
+      full: snapshot,
+      fullError: '',
+    };
+    render();
+  } catch (err) {
+    if (requestId !== walletBalanceFullRequestId || state.walletBalance.scopeKey !== scopeKey || walletBalanceScopeKey() !== scopeKey) return;
+    state.walletBalance = {
+      ...state.walletBalance,
+      fullStatus: 'error',
+      fullError: redactSecrets(err instanceof Error ? err.message : String(err)),
+    };
+    render();
+  }
+}
+
+async function readWalletPrimaryBalanceInputs(address: string, cluster: Cluster): Promise<{
+  solLamports: number;
+  tokenRows: ReturnType<typeof walletBalanceRowsFromParsedAccounts>;
+}> {
+  const connection = browserActionConnection(cluster);
+  const owner = new PublicKey(address);
+  const [solLamports, usdcAccounts] = await Promise.all([
+    connection.getBalance(owner, 'confirmed'),
+    connection.getParsedTokenAccountsByOwner(owner, { mint: new PublicKey(WALLET_BALANCE_USDC_MINT) }, 'confirmed')
+      .catch(() => ({ value: [] })),
+  ]);
+  return {
+    solLamports,
+    tokenRows: walletBalanceRowsFromParsedAccounts(usdcAccounts, 'token'),
+  };
+}
+
+async function readWalletFullBalanceInputs(address: string, cluster: Cluster): Promise<{
+  solLamports: number;
+  tokenRows: ReturnType<typeof walletBalanceRowsFromParsedAccounts>;
+}> {
+  const connection = browserActionConnection(cluster);
+  const owner = new PublicKey(address);
+  const [solLamports, tokenAccounts, token2022Accounts] = await Promise.allSettled([
+    connection.getBalance(owner, 'confirmed'),
+    connection.getParsedTokenAccountsByOwner(owner, { programId: TOKEN_PROGRAM_ID }, 'confirmed'),
+    connection.getParsedTokenAccountsByOwner(owner, { programId: TOKEN_2022_PROGRAM_ID }, 'confirmed'),
+  ]);
+  if (solLamports.status !== 'fulfilled') {
+    throw solLamports.reason instanceof Error ? solLamports.reason : new Error('Could not load SOL balance.');
+  }
+  const tokenRows = [
+    ...(tokenAccounts.status === 'fulfilled' ? walletBalanceRowsFromParsedAccounts(tokenAccounts.value, 'token') : []),
+    ...(token2022Accounts.status === 'fulfilled' ? walletBalanceRowsFromParsedAccounts(token2022Accounts.value, 'token-2022') : []),
+  ];
+  if (tokenAccounts.status === 'rejected' && token2022Accounts.status === 'rejected') {
+    throw tokenAccounts.reason instanceof Error ? tokenAccounts.reason : new Error('Could not load token balances.');
+  }
+  return {
+    solLamports: solLamports.value,
+    tokenRows,
+  };
+}
+
+async function fetchWalletBalancePriceMap(mints: string[], cluster: Cluster = state.cluster): Promise<Map<string, number>> {
+  const addresses = [...new Set(mints.filter(Boolean))];
+  if (!addresses.length) return new Map();
+  if (!walletBalanceUsdPricingEnabled(cluster)) return new Map();
+  const payload = await tokenMarketRequest('/price-multi', { addresses, includeLiquidity: false });
+  const prices = walletBalancePriceMapFromBirdeye(payload);
+  if (addresses.includes(WALLET_BALANCE_USDC_MINT) && !prices.has(WALLET_BALANCE_USDC_MINT)) {
+    prices.set(WALLET_BALANCE_USDC_MINT, 1);
+  }
+  return prices;
 }
 
 async function loadBridgeConfig(strict: boolean): Promise<void> {
@@ -43353,6 +44113,10 @@ function resetWalletConnection(): void {
   state.receipts = [];
   state.localCompletedPlans = [];
   state.capabilities = null;
+  state.walletBalance = emptyWalletBalanceViewState();
+  walletBalanceSummaryRequestId += 1;
+  walletBalanceFullRequestId += 1;
+  state.activeMobileRailSheet = null;
   state.bridgeActive = false;
   state.bridgeStatus = 'Bridge idle.';
   stopBridgePolling();

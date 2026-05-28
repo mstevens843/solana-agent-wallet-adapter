@@ -28,6 +28,7 @@ function account(overrides: Partial<LedgerAccountCandidate> = {}): LedgerAccount
     hasActivity: false,
     activityStatus: 'loaded',
     lastSelected: false,
+    recentRank: null,
     ...overrides,
   };
 }
@@ -328,6 +329,20 @@ describe('ledgerOverlayHtml', () => {
     expect(html).toContain('data-ledger-action="copy-address"');
     expect(html).toMatch(/data-ledger-action="confirm-address"[^>]*>Confirm/);
     expect(html).toContain('aria-selected="true"');
+  });
+
+  it('labels the second recent Ledger account as previous', () => {
+    const html = ledgerOverlayHtml({
+      ...initialLedgerOverlayState(),
+      mode: 'choose-address',
+      address: ADDR,
+      accounts: [
+        account({ address: ADDR, lastSelected: true, recentRank: 0 }),
+        account({ address: ADDR_2, recentRank: 1 }),
+      ],
+    });
+    expect(html).toContain('Last used');
+    expect(html).toContain('Previous');
   });
 
   it('renders confirming-address with a Ledger approval prompt and disabled actions', () => {

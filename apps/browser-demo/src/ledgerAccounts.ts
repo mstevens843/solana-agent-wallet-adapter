@@ -19,10 +19,12 @@ export interface LedgerAccountCandidate extends LedgerDerivedAccount {
   hasActivity: boolean | null;
   activityStatus: 'loaded' | 'unavailable';
   lastSelected: boolean;
+  recentRank: number | null;
 }
 
 export interface LedgerAccountOrderingContext {
   lastSelectedAddress?: string | null;
+  recentAddresses?: readonly string[];
 }
 
 export function ledgerDerivationPath(family: LedgerPathFamily, index: number): string {
@@ -119,6 +121,7 @@ export function toLedgerAccountCandidate(
     hasActivity: activityUnavailable ? null : enrichment.hasActivity ?? null,
     activityStatus: activityUnavailable ? 'unavailable' : 'loaded',
     lastSelected: false,
+    recentRank: null,
   };
 }
 
@@ -126,15 +129,25 @@ export function rankLedgerAccounts(
   accounts: readonly LedgerAccountCandidate[],
   context: LedgerAccountOrderingContext = {},
 ): LedgerAccountCandidate[] {
-  const lastSelectedAddress = context.lastSelectedAddress?.trim() || '';
+  const recentAddresses = (context.recentAddresses?.length
+    ? context.recentAddresses
+    : context.lastSelectedAddress
+      ? [context.lastSelectedAddress]
+      : [])
+    .map((address) => address.trim())
+    .filter(Boolean);
   return accounts
     .map((account) => ({
       ...account,
-      lastSelected: Boolean(lastSelectedAddress && account.address === lastSelectedAddress),
+      recentRank: recentAddresses.indexOf(account.address) >= 0
+        ? recentAddresses.indexOf(account.address)
+        : null,
+      lastSelected: recentAddresses[0] === account.address,
     }))
     .sort((a, b) => {
-      const lastDelta = Number(b.lastSelected) - Number(a.lastSelected);
-      if (lastDelta !== 0) return lastDelta;
+      const aRecent = a.recentRank ?? Number.POSITIVE_INFINITY;
+      const bRecent = b.recentRank ?? Number.POSITIVE_INFINITY;
+      if (aRecent !== bRecent) return aRecent - bRecent;
 
       const aBalance = a.solBalanceLamports ?? 0;
       const bBalance = b.solBalanceLamports ?? 0;

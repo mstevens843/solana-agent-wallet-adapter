@@ -45,6 +45,13 @@ data class AgentMwaIdentity(
     val iconUri: String,
 )
 
+data class AgentWalletBalanceSummary(
+    val totalText: String,
+    val solText: String,
+    val usdcText: String,
+    val statusText: String,
+)
+
 data class AgentMwaAuthRecord(
     val publicKeyBase58: String = "",
     val publicKeyBytes: ByteArray = ByteArray(0),

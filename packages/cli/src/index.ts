@@ -103,6 +103,7 @@ import {
 import { isMainnetCluster } from './flows/safetyGate.js';
 import { friendlyBridgeError } from './flows/_shared.js';
 import { runSignIn, runSignOut, showSignInStatus } from './flows/signIn.js';
+import { renderWalletBalanceSummary } from './flows/walletBalanceSummary.js';
 import { pickDoneFilter } from './flows/menus.js';
 import { deleteDoneRow, loadDoneRows, renderDoneRow, runDoneList, type DoneFilter, type DoneRow } from './flows/done.js';
 import { loadWorkspaceSummary } from './flows/workspaceSummary.js';
@@ -1773,6 +1774,7 @@ async function connectInteractive(
     if (status.ok && status.value.connected && status.value.address && cli.intent === 'connect') {
       if (!state.options.json) {
         printOk(state.options, `Wallet connected: ${status.value.address}`);
+        await renderWalletBalanceSummary(state.options);
       }
       return;
     }
@@ -1806,6 +1808,7 @@ async function connectInteractive(
   const connected = await waitForWalletConnection(state.options, 120_000, signal);
   if (!state.options.json) {
     printOk(state.options, `Wallet connected: ${connected.address ?? 'connected'}`);
+    await renderWalletBalanceSummary(state.options);
   }
 }
 

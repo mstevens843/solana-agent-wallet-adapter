@@ -236,6 +236,53 @@ describe('createWebHidLedgerIpc', () => {
     expect(onDisconnect).toHaveBeenCalledTimes(1);
   });
 
+  it('reopens an authorized device after a stale transport error', async () => {
+    const staleError = new Error('transport closed');
+    staleError.name = 'InvalidStateError';
+    const firstTransport = {
+      device: { vendorId: 0x2c97, productId: 0x0004, productName: 'Ledger Nano X' },
+      close: vi.fn(async () => undefined),
+      on: vi.fn(),
+    };
+    const secondTransport = {
+      device: { vendorId: 0x2c97, productId: 0x0004, productName: 'Ledger Nano X' },
+      close: vi.fn(async () => undefined),
+      on: vi.fn(),
+    };
+    const transportApi = {
+      isSupported: vi.fn(async () => true),
+      list: vi.fn(async () => [firstTransport.device]),
+      request: vi.fn(async () => firstTransport),
+      openConnected: vi.fn(async () => secondTransport),
+    };
+    const staleApp = {
+      getAppConfiguration: vi.fn(async () => {
+        throw staleError;
+      }),
+      getAddress: vi.fn(),
+      signTransaction: vi.fn(),
+      signOffchainMessage: vi.fn(),
+    };
+    const liveApp = {
+      getAppConfiguration: vi.fn(async () => ({ version: '1.0.0' })),
+      getAddress: vi.fn(),
+      signTransaction: vi.fn(),
+      signOffchainMessage: vi.fn(),
+    };
+    const ipc = createWebHidLedgerIpc({
+      transport: transportApi,
+      createSolanaApp: (transport) => transport === firstTransport ? staleApp : liveApp,
+    });
+
+    await ipc.requestDevice?.();
+    await expect(ipc.connect()).rejects.toThrow('Ledger disconnected. Reconnect the device and try again.');
+    await expect(ipc.connect()).resolves.toMatchObject({
+      device: { productName: 'Ledger Nano X' },
+      app: { major: 1, minor: 0, patch: 0 },
+    });
+    expect(transportApi.openConnected).toHaveBeenCalledTimes(1);
+  });
+
   it('times out address reads with actionable Ledger copy', async () => {
     const transport = {
       device: { vendorId: 0x2c97, productId: 0x0004, productName: 'Ledger Nano X' },

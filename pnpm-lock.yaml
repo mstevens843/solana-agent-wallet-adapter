@@ -257,6 +257,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@solana-agent-wallet-adapter/core':
+        specifier: workspace:*
+        version: link:../core
       '@inquirer/prompts':
         specifier: ^7.4.0
         version: 7.10.1(@types/node@22.19.17)

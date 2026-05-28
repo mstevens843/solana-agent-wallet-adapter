@@ -12,7 +12,16 @@ import {
 import {
   ProtocolError,
   SolanaSigningClient,
+  WALLET_BALANCE_SOL_MINT,
+  WALLET_BALANCE_USDC_MINT,
+  buildWalletBalanceSnapshot,
+  walletBalanceFallbackPriceMap,
+  walletBalancePriceMapFromBirdeye,
+  walletBalanceRowsFromParsedAccounts,
+  walletBalanceUsdPricingEnabled,
   type Cluster,
+  type WalletBalanceSnapshot,
+  type WalletBalanceTokenRow,
   type WalletBackend,
 } from '@solana-agent-wallet-adapter/core';
 
@@ -377,6 +386,7 @@ import {
   type ConnectorFactReadInput,
 } from './connectorFacts.js';
 import { redactSecrets } from './trace.js';
+import { requestBirdeyePriceMulti } from './birdeye.js';
 
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
@@ -596,6 +606,41 @@ export class AgentWalletActionService {
       lamports: lamports.toString(),
       tokens: await readConfiguredTokenBalances(this.connection, owner, this.config),
     };
+  }
+
+  async walletBalanceSummary(input: { mode?: unknown } = {}): Promise<WalletBalanceSnapshot> {
+    const mode = input.mode === 'full' ? 'full' : 'primary';
+    const address = await this.backend.getAddress();
+    const owner = new PublicKey(address);
+    const { solLamports, tokenRows } = mode === 'full'
+      ? await readWalletFullBalanceInputs(this.connection, owner)
+      : await readWalletPrimaryBalanceInputs(this.connection, owner);
+    const mints = [
+      WALLET_BALANCE_SOL_MINT,
+      WALLET_BALANCE_USDC_MINT,
+      ...tokenRows.map((row) => row.mint),
+    ];
+    let prices = new Map<string, number>();
+    if (walletBalanceUsdPricingEnabled(this.config.cluster)) {
+      try {
+        prices = walletBalancePriceMapFromBirdeye(await requestBirdeyePriceMulti(mints, { includeLiquidity: false }));
+      } catch {
+        prices = walletBalanceFallbackPriceMap([WALLET_BALANCE_USDC_MINT], this.config.cluster);
+      }
+      if (mints.includes(WALLET_BALANCE_USDC_MINT) && !prices.has(WALLET_BALANCE_USDC_MINT)) {
+        prices.set(WALLET_BALANCE_USDC_MINT, 1);
+      }
+    }
+    return buildWalletBalanceSnapshot({
+      walletAddress: address,
+      cluster: this.config.cluster,
+      solLamports,
+      tokenRows,
+      prices,
+      knownTokens: knownWalletBalanceTokens(this.config),
+      coverage: mode,
+      pricingEnabled: walletBalanceUsdPricingEnabled(this.config.cluster),
+    });
   }
 
   async portfolioSummary(): Promise<Record<string, unknown>> {
@@ -6453,6 +6498,63 @@ async function readConfiguredTokenBalances(
       amount: balance?.value.uiAmountString ?? '0',
       rawAmount: balance?.value.amount ?? '0',
     });
+  }
+  return tokens;
+}
+
+async function readWalletPrimaryBalanceInputs(
+  connection: Connection,
+  owner: PublicKey,
+): Promise<{ solLamports: number; tokenRows: WalletBalanceTokenRow[] }> {
+  const [solLamports, usdcAccounts] = await Promise.all([
+    connection.getBalance(owner, 'confirmed'),
+    connection
+      .getParsedTokenAccountsByOwner(owner, { mint: new PublicKey(WALLET_BALANCE_USDC_MINT) }, 'confirmed')
+      .catch(() => ({ value: [] })),
+  ]);
+  return {
+    solLamports,
+    tokenRows: walletBalanceRowsFromParsedAccounts(usdcAccounts, 'token'),
+  };
+}
+
+async function readWalletFullBalanceInputs(
+  connection: Connection,
+  owner: PublicKey,
+): Promise<{ solLamports: number; tokenRows: WalletBalanceTokenRow[] }> {
+  const [solLamports, tokenAccounts, token2022Accounts] = await Promise.allSettled([
+    connection.getBalance(owner, 'confirmed'),
+    connection.getParsedTokenAccountsByOwner(owner, { programId: TOKEN_PROGRAM_ID }, 'confirmed'),
+    connection.getParsedTokenAccountsByOwner(owner, { programId: TOKEN_2022_PROGRAM_ID }, 'confirmed'),
+  ]);
+  if (solLamports.status !== 'fulfilled') {
+    throw solLamports.reason instanceof Error ? solLamports.reason : new Error('Could not load SOL balance.');
+  }
+  const tokenRows = [
+    ...(tokenAccounts.status === 'fulfilled' ? walletBalanceRowsFromParsedAccounts(tokenAccounts.value, 'token') : []),
+    ...(token2022Accounts.status === 'fulfilled' ? walletBalanceRowsFromParsedAccounts(token2022Accounts.value, 'token-2022') : []),
+  ];
+  if (tokenAccounts.status === 'rejected' && token2022Accounts.status === 'rejected') {
+    throw tokenAccounts.reason instanceof Error ? tokenAccounts.reason : new Error('Could not load token balances.');
+  }
+  return {
+    solLamports: solLamports.value,
+    tokenRows,
+  };
+}
+
+function knownWalletBalanceTokens(config: AgentWalletConfig): Record<string, { symbol: string; mint: string; decimals: number }> {
+  const tokens: Record<string, { symbol: string; mint: string; decimals: number }> = {
+    SOL: { symbol: 'SOL', mint: WALLET_BALANCE_SOL_MINT, decimals: 9 },
+    WSOL: { symbol: 'SOL', mint: WALLET_BALANCE_SOL_MINT, decimals: 9 },
+    USDC: { symbol: 'USDC', mint: WALLET_BALANCE_USDC_MINT, decimals: 6 },
+  };
+  for (const token of config.tokens) {
+    tokens[token.symbol.toUpperCase()] = {
+      symbol: token.symbol,
+      mint: token.mint,
+      decimals: token.decimals,
+    };
   }
   return tokens;
 }
