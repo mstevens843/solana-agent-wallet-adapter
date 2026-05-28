@@ -47,7 +47,7 @@ jobs:
           echo "AGENTIC_ANDROID_VERSION_CODE=${{ github.run_number }}" >> "$GITHUB_ENV"
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 10.33.0
 
