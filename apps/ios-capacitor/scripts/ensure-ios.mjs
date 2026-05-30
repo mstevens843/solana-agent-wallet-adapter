@@ -47,12 +47,14 @@ patchInfoPlist();
 patchEntitlements();
 patchCapAppSpmDeploymentTarget();
 patchXcodeDeploymentTarget();
+patchXcodeCapabilities();
 
 function patchInfoPlist() {
   if (!existsSync(infoPlist)) {
     return;
   }
-  let plist = readFileSync(infoPlist, 'utf8');
+  const before = readFileSync(infoPlist, 'utf8');
+  let plist = before;
   plist = plist
     .replace(/\n\s*<key>ITSAppUsesNonExemptEncryption<\/key>\s*\n\s*<false\/>\s*(?=<\/dict>\s*<\/array>)/g, '')
     .replace(/\n\s*<key>ITSAppUsesNonExemptEncryption<\/key>\s*\n\s*<false\/>\s*(?=<\/array>)/g, '');
@@ -89,8 +91,10 @@ function patchInfoPlist() {
     const block = renderPlistEntry(entry);
     plist = plist.replace(/<\/dict>\s*<\/plist>\s*$/, `${block}\n</dict>\n</plist>\n`);
   }
-  writeFileSync(infoPlist, plist);
-  console.log('[ios-capacitor] Ensured Info.plist keys');
+  if (plist !== before) {
+    writeFileSync(infoPlist, plist);
+    console.log('[ios-capacitor] Ensured Info.plist keys');
+  }
 }
 
 function renderPlistEntry({ key, valueType, value }) {
@@ -130,8 +134,7 @@ function patchEntitlements() {
     '</plist>',
     '',
   ].join('\n');
-  writeFileSync(entitlements, contents);
-  console.log('[ios-capacitor] Wrote associated-domain entitlements template');
+  writeFileIfChanged(entitlements, contents, '[ios-capacitor] Wrote associated-domain entitlements template');
 }
 
 function patchCapAppSpmDeploymentTarget() {
@@ -165,6 +168,47 @@ function patchXcodeDeploymentTarget() {
     writeFileSync(pbxproj, src);
     console.log(`[ios-capacitor] Ensured Xcode target settings`);
   }
+}
+
+function patchXcodeCapabilities() {
+  if (!existsSync(pbxproj)) {
+    return;
+  }
+  let src = readFileSync(pbxproj, 'utf8');
+  if (src.includes('SystemCapabilities = {')) {
+    return;
+  }
+  const before = src;
+  src = src.replace(
+    /(\s+504EC3031FED79650016851F = \{\n\s+CreatedOnToolsVersion = 9\.2;\n\s+LastSwiftMigration = 1100;\n\s+ProvisioningStyle = Automatic;\n)(\s+\};)/,
+    [
+      '$1',
+      '\t\t\t\t\t\tSystemCapabilities = {',
+      '\t\t\t\t\t\t\tcom.apple.ApplicationGroups.iOS = {',
+      '\t\t\t\t\t\t\t\tenabled = 1;',
+      '\t\t\t\t\t\t\t};',
+      '\t\t\t\t\t\t\tcom.apple.AssociatedDomains = {',
+      '\t\t\t\t\t\t\t\tenabled = 1;',
+      '\t\t\t\t\t\t\t};',
+      '\t\t\t\t\t\t\tcom.apple.BackgroundModes = {',
+      '\t\t\t\t\t\t\t\tenabled = 1;',
+      '\t\t\t\t\t\t\t};',
+      '\t\t\t\t\t\t};',
+      '$2',
+    ].join('\n'),
+  );
+  if (src !== before) {
+    writeFileSync(pbxproj, src);
+    console.log('[ios-capacitor] Ensured Xcode capability metadata');
+  }
+}
+
+function writeFileIfChanged(filePath, contents, message) {
+  if (existsSync(filePath) && readFileSync(filePath, 'utf8') === contents) {
+    return;
+  }
+  writeFileSync(filePath, contents);
+  console.log(message);
 }
 
 async function run(command, args, options) {
