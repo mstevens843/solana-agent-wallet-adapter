@@ -149,6 +149,15 @@ import {
 } from './desktopConnectFlow.js';
 import {
   cliIntentAllowsBridgeRequestClaim,
+  cliWalletPageApprovalLoadingMessage,
+  cliWalletPageCloudSignOutPairingNote,
+  cliWalletPageConnectedMessage,
+  cliWalletPageConnectFooter,
+  cliWalletPageConnectInstruction,
+  cliWalletPageConnectSubtitle,
+  cliWalletPageDisconnectedMessage,
+  cliWalletPageDisconnectPrompt,
+  cliWalletPageReturnFooter,
   resolveCliCloudSignInReadiness,
   resolveCliSignInBridgeHydration,
   resolveWalletSigningRequestCopy,
@@ -241,10 +250,13 @@ import {
   formatWalletBalanceAmount,
   formatWalletBalanceSnapshotUsd,
   formatWalletBalanceUsd,
-  walletBalanceFallbackPriceMap,
-  walletBalancePriceMapFromBirdeye,
+  mergeWalletBalancePriceInfoMaps,
+  walletBalanceFallbackPriceInfoMap,
+  walletBalancePriceInfoMapFromBirdeye,
+  walletBalancePriceInfoMapFromJupiter,
   walletBalanceRowsFromParsedAccounts,
   walletBalanceUsdPricingEnabled,
+  type WalletBalancePriceInfo,
   type WalletBalanceSnapshot,
 } from './walletBalanceSummary.js';
 import {
@@ -1343,6 +1355,8 @@ const WIF_MINT = 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm';
 const PYUSD_MINT = '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo';
 const MSOL_MINT = 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So';
 const JITOSOL_MINT = 'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn';
+const JUPITER_LITE_PRICE_URL = 'https://lite-api.jup.ag/price/v3';
+const WALLET_BALANCE_PRICE_BATCH_SIZE = 50;
 const DEXSCREENER_SOLANA_TOKEN_URL = 'https://api.dexscreener.com/tokens/v1/solana';
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
@@ -7433,10 +7447,34 @@ async function confirmLedgerAddress(): Promise<void> {
       derivationPath: overlay.derivationPath,
     });
     persistLedgerSelection(selectedAccount);
-    dispatchLedgerOverlay({ type: 'close' });
     state.wallets = visibleBrowserWallets(listAvailableWallets());
     state.selectedWalletName = LEDGER_WALLET_NAME;
-    await runConnect();
+    await runConnect({
+      onError: () => {
+        // The Ledger overlay keeps the selected account context and renders
+        // the retryable failure after this call returns.
+      },
+    });
+    if (ledger.pairingToken !== token) {
+      dismissLedgerDeviceApprovalToast(toastId);
+      return;
+    }
+    if (
+      state.steps.connect === 'error'
+      || state.selectedWalletName !== LEDGER_WALLET_NAME
+      || !sameWalletAddress(state.address, fresh.address)
+    ) {
+      const message = state.error
+        || state.transactionStatus
+        || 'Ledger connection did not complete. Please retry.';
+      completeLedgerDeviceApprovalToast(toastId, 'error', 'Ledger connection failed', message);
+      dispatchLedgerOverlay({
+        type: 'setError',
+        error: message,
+      });
+      return;
+    }
+    dispatchLedgerOverlay({ type: 'close' });
     completeLedgerDeviceApprovalToast(toastId, 'success', 'Ledger connected', short(fresh.address));
   } catch (err) {
     if (ledger.pairingToken !== token) {
@@ -7477,6 +7515,9 @@ function handleLedgerOverlayAction(action: string | undefined, address?: string)
           return;
         }
       }
+      const staleIpc = ledger.ipc;
+      ledger.ipc = null;
+      void staleIpc?.disconnect().catch(() => {});
       dispatchLedgerOverlay({ type: 'close' });
       openLedgerOverlay();
       return;
@@ -7593,6 +7634,7 @@ const desktopConnect: DesktopConnectRuntime = {
 const DESKTOP_QR_ENV = ((import.meta as ImportMeta & { env?: DesktopQrConfigEnv }).env ?? {}) as DesktopQrConfigEnv;
 const PAIRING_RELAY_BASE_URL = resolveDesktopPairingRelayBaseUrl(DESKTOP_QR_ENV);
 const QR_CONNECT_APP_URL = resolveQrConnectAppUrl(DESKTOP_QR_ENV);
+const BROWSER_EXTENSION_WALLET_SELECT_ID = 'browserExtensionWalletSelect';
 
 const PAIRING_POLL_INTERVAL_MS = 1500;
 const PAIRING_TIMEOUT_MS = 5 * 60 * 1000;
@@ -7824,36 +7866,53 @@ function desktopBrowserExtensionBody(): string {
   }
   const selectedProvider = discoveredSelectedWalletName();
   const providerCount = state.wallets.length;
+  const extensionDiscovered = desktopConnect.flow.extensionDiscovered;
   const connectDisabled = providerCount === 0 || !selectedProvider || state.busy;
-  return `
-    <div class="desktop-connect-flow-body browser-extension-inline">
-      <p class="desktop-connect-flow-lede">Use an installed Backpack, Phantom, Jupiter, or Solflare extension in this browser.</p>
+  const providerField = extensionDiscovered
+    ? `
       <label class="field desktop-extension-wallet-field">
         <span>Wallet provider</span>
         ${selectPicker({
-          id: 'walletSelect',
+          id: BROWSER_EXTENSION_WALLET_SELECT_ID,
           value: state.selectedWalletName,
           options: walletSelectOptions(),
+          attrs: { 'data-wallet-select-scope': 'browser-extension' },
           disabled: providerCount === 0 || state.busy,
           open: state.browserWalletPickerOpen,
         })}
       </label>
+    `
+    : '';
+  const connectAction = extensionDiscovered
+    ? `
+      <button
+        type="button"
+        class="${providerCount ? 'primary' : ''}"
+        data-desktop-flow-action="extension-connect"
+        ${connectDisabled ? 'disabled' : ''}
+        title="${!selectedProvider ? 'Discover and select a wallet provider first.' : ''}"
+      >
+        Connect wallet
+      </button>
+    `
+    : '';
+  const status = extensionDiscovered
+    ? providerCount
+      ? `${providerCount} provider(s) discovered in this browser.`
+      : 'No compatible browser extension wallets were found.'
+    : 'Click Discover to scan this browser for compatible wallet extensions.';
+  return `
+    <div class="desktop-connect-flow-body browser-extension-inline">
+      <p class="desktop-connect-flow-lede">Use an installed Backpack, Phantom, Jupiter, or Solflare extension in this browser.</p>
+      ${providerField}
       <div class="desktop-extension-actions">
         <button type="button" class="primary" data-desktop-flow-action="extension-discover" ${state.busy ? 'disabled' : ''}>
           Discover
         </button>
-        <button
-          type="button"
-          class="${providerCount ? 'primary' : ''}"
-          data-desktop-flow-action="extension-connect"
-          ${connectDisabled ? 'disabled' : ''}
-          title="${!selectedProvider ? 'Discover and select a wallet provider first.' : ''}"
-        >
-          Connect wallet
-        </button>
+        ${connectAction}
       </div>
       <p class="desktop-extension-status">
-        ${providerCount ? `${providerCount} provider(s) discovered in this browser.` : 'Provider icons appear after discovery.'}
+        ${status}
       </p>
     </div>
   `;
@@ -7928,25 +7987,14 @@ function desktopConnectFlowBlock(): string {
 async function runDesktopDiscover(): Promise<void> {
   if (!multiPathWalletFlowAvailable()) return;
   if (desktopConnect.flow.step !== 'idle') return;
-  // Defensive: surface any Wallet-Standard wallet that did inject (e.g.
-  // Backpack Desktop, Glow Desktop) so the user can still pick those via the
-  // standard picker if they show up.
-  try {
-    state.wallets = visibleBrowserWallets(listAvailableWallets());
-  } catch {
-    // Discovery failure is non-fatal for the desktop flow.
-  }
+  clearPendingBrowserWalletChoice({ clearWallets: true });
   dispatchDesktopConnectFlow({ type: 'startMethod' });
 }
 
 function handleDesktopMethodSelect(method: DesktopConnectMethod): void {
   if (method === 'extension') {
+    clearPendingBrowserWalletChoice({ clearWallets: true });
     dispatchDesktopConnectFlow({ type: 'pickMethod', method: 'extension' });
-    if (state.tauriNativeEnvironment.isTauriNative) {
-      void openDesktopBrowserConnectPage();
-      return;
-    }
-    void runDiscover();
     return;
   }
   if (method === 'ledger') {
@@ -8515,7 +8563,8 @@ function handleDesktopAwaitingRetry(): void {
 
 function handleDesktopExtensionDiscover(): void {
   if (desktopConnect.flow.step !== 'extension' || state.tauriNativeEnvironment.isTauriNative) return;
-  void runDiscover();
+  dispatchDesktopConnectFlow({ type: 'markExtensionDiscovered' });
+  void runBrowserExtensionDiscover();
 }
 
 function handleDesktopExtensionConnect(): void {
@@ -8565,6 +8614,39 @@ function bindDesktopConnectFlow(): void {
       }
     });
   }
+}
+
+function handleBrowserWalletSelectChange(select: HTMLSelectElement): void {
+  const walletName = select.value;
+  if (!walletName) return;
+  notifyLocalWorkspaceBackupReminder('Back up before switching wallet selection.');
+  state.selectedWalletName = walletName;
+  const selected = discoveredWalletByName(walletName);
+  state.selectedWalletLogoId = walletProviderLogoIdForName(selected?.name ?? walletName);
+  state.selectedWalletIcon = selected?.icon;
+  state.browserWalletPickerOpen = false;
+  clearBrowserWalletSession();
+
+  const inlineBrowserExtensionSelection =
+    select.id === BROWSER_EXTENSION_WALLET_SELECT_ID &&
+    multiPathWalletFlowAvailable() &&
+    desktopConnect.flow.step === 'extension' &&
+    !state.address;
+  if (inlineBrowserExtensionSelection) {
+    state.error = '';
+    savePersistedState();
+    render();
+    return;
+  }
+
+  resetWalletConnection();
+  void clearDeviceAgentForWalletBoundary();
+  void signOutCloudSessionForWalletBoundary('wallet-changed', { toast: true }).then((signedOut) => {
+    if (signedOut) render();
+  });
+  state.error = '';
+  savePersistedState();
+  render();
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -9330,20 +9412,12 @@ function cliFocusedShell(args: { title: string; subtitle?: string; subtitleIcon?
   `;
 }
 
-function cliClientLabel(): string {
-  return cliView?.surface === 'desktop' ? 'desktop app' : 'CLI';
-}
-
 function cliConnectedMessage(): string {
-  return cliView?.surface === 'desktop'
-    ? 'Wallet Connected, Please navigate back to the Desktop App.'
-    : `Wallet connected to the local bridge. The ${cliClientLabel()} has picked it up.`;
+  return cliWalletPageConnectedMessage(cliView?.surface);
 }
 
 function cliConnectSubtitle(): string {
-  return cliView?.surface === 'desktop'
-    ? 'Pair a Wallet Standard wallet (Phantom, Backpack, Solflare, ...) with the Desktop App.'
-    : 'Pair a Wallet Standard wallet (Phantom, Backpack, Solflare, ...) with the local bridge.';
+  return cliWalletPageConnectSubtitle();
 }
 
 function cliCloudSignInDirectSignerReady(): boolean {
@@ -9351,10 +9425,8 @@ function cliCloudSignInDirectSignerReady(): boolean {
 }
 
 function cliReturnFooter(): string {
-  const target = cliView?.surface === 'desktop' ? 'Desktop App' : 'terminal';
-  const watcher = cliView?.surface === 'desktop' ? 'Desktop App' : 'CLI';
   return `
-    <p class="cli-focused-note">Return to the ${target} - the ${watcher} is watching for this change.</p>
+    <p class="cli-focused-note">${escapeHtml(cliWalletPageReturnFooter(cliView?.surface))}</p>
   `;
 }
 
@@ -9366,9 +9438,7 @@ function cliConnectView(): string {
       body: `
         <div class="cli-focused-success signature-state complete" role="status" aria-live="polite">
           <span class="cli-focused-tick" aria-hidden="true">✓</span>
-          <p>${cliView?.surface === 'desktop'
-            ? 'The wallet is no longer paired with the Desktop App.'
-            : 'The wallet is no longer paired with the local bridge.'}</p>
+          <p>${escapeHtml(cliWalletPageDisconnectedMessage())}</p>
         </div>
       `,
       footer: cliReturnFooter(),
@@ -9378,16 +9448,14 @@ function cliConnectView(): string {
     const logoId = state.selectedWalletLogoId ?? walletProviderLogoIdForName(state.selectedWalletName);
     const subtitleIcon = logoId ? brandLogo(logoId, 'cli-focused-wallet-logo') : undefined;
     return cliFocusedShell({
-      title: isDisconnect ? 'Confirm disconnect' : 'Wallet paired',
+      title: isDisconnect ? 'Disconnect wallet' : 'Wallet connected',
       subtitle: short(state.address),
       ...(subtitleIcon ? { subtitleIcon } : {}),
       body: `
         <div class="cli-focused-success signature-state complete" role="status" aria-live="polite">
           <span class="cli-focused-tick" aria-hidden="true">✓</span>
           <p>${isDisconnect
-            ? cliView?.surface === 'desktop'
-              ? 'Click below to disconnect this wallet from the Desktop App.'
-              : 'Click below to disconnect this wallet from the local bridge.'
+            ? escapeHtml(cliWalletPageDisconnectPrompt())
             : cliConnectedMessage()}</p>
         </div>
         <div class="cli-focused-actions">
@@ -9451,7 +9519,7 @@ function cliConnectView(): string {
     : '';
   const persistenceHint = `
     <p class="cli-focused-note cli-focused-persistence">
-      Already authorized? Your wallet may approve silently - wait a moment and the card above flips to "Wallet paired ✓".
+      Already authorized? Your wallet may approve silently - wait a moment and the card above flips to "Wallet connected ✓".
     </p>
   `;
   return cliFocusedShell({
@@ -9461,13 +9529,13 @@ function cliConnectView(): string {
       ${errorBanner}
       ${busyBanner}
       ${guidedStartPanel(
-        'Wallet pairing',
-        `Discover, select, and authorize a wallet. The ${cliClientLabel()} will detect it.`,
+        'Wallet connection',
+        cliWalletPageConnectInstruction(cliView?.surface),
         pickerMarkup,
       )}
       ${persistenceHint}
     `,
-    footer: `<p class="cli-focused-note">Return to the ${cliView?.surface === 'desktop' ? 'desktop app' : 'terminal'} once the wallet is connected.</p>`,
+    footer: `<p class="cli-focused-note">${escapeHtml(cliWalletPageConnectFooter(cliView?.surface))}</p>`,
   });
 }
 
@@ -9504,7 +9572,7 @@ function cliCloudSignInView(): string {
         <div>
           <span>Agentic Cloud</span>
           <strong>${escapeHtml(readiness.heading)}</strong>
-          <p>Cloud sign-in uses your paired wallet as identity only. It does not grant spending authority.</p>
+          <p>Cloud sign-in uses your connected wallet as identity only. It does not grant spending authority.</p>
         </div>
         <button id="agenticLoginSign" type="button" class="primary" ${readiness.canStart && !state.busy ? '' : 'disabled'}>
           ${escapeHtml(readiness.buttonLabel)}
@@ -9530,8 +9598,8 @@ function cliCloudSignOutView(): string {
         <p>Cloud workspace session cleared. Plans, approvals, repeat payments, and proofs now stay saved on this device.</p>
       </div>
       <div class="cli-cloud-safety-note">
-        <strong>Wallet pairing is separate</strong>
-        <span>Signing out of Cloud Storage does not disconnect your wallet from the local bridge.</span>
+        <strong>Wallet connection is separate</strong>
+        <span>${escapeHtml(cliWalletPageCloudSignOutPairingNote())}</span>
       </div>
     `,
     footer: cliReturnFooter(),
@@ -9590,7 +9658,7 @@ function cliApproveView(): string {
         body: `
           <div class="cli-focused-busy" role="status" aria-live="polite">
             <span class="cli-focused-busy-dot" aria-hidden="true"></span>
-            <p>Fetching the prepared action from the bridge…</p>
+            <p>${escapeHtml(cliWalletPageApprovalLoadingMessage())}</p>
           </div>
         `,
         footer: `<p class="cli-focused-note">Keep this page open — the ${surfaceLabel} is sending the request.</p>`,
@@ -9604,8 +9672,8 @@ function cliApproveView(): string {
   if (!state.address) {
     return cliFocusedShell({
       title: 'Connect a wallet first',
-      subtitle: 'A wallet must be paired before signing this approval.',
-      body: guidedStartPanel('Wallet pairing', 'Authorize a wallet, then this view will switch to the approval.'),
+      subtitle: 'A wallet must be connected before signing this approval.',
+      body: guidedStartPanel('Wallet connection', 'Authorize a wallet, then this view will switch to the approval.'),
       footer: `<p class="cli-focused-note">Once connected, the approval card will appear here.</p>`,
     });
   }
@@ -24250,7 +24318,9 @@ function bind(): void {
   }
 
   document.querySelector<HTMLButtonElement>('#discover')?.addEventListener('click', runDiscover);
-  document.querySelector<HTMLButtonElement>('#connect')?.addEventListener('click', runConnect);
+  document.querySelector<HTMLButtonElement>('#connect')?.addEventListener('click', () => {
+    void runConnect();
+  });
   document.querySelector<HTMLButtonElement>('#disconnect')?.addEventListener('click', runDisconnect);
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-wallet-balance-action]')) {
     button.addEventListener('click', () => {
@@ -24579,22 +24649,11 @@ function bind(): void {
     render();
   });
 
-  document.querySelector<HTMLSelectElement>('#walletSelect')?.addEventListener('change', (event) => {
-    notifyLocalWorkspaceBackupReminder('Back up before switching wallet selection.');
-    state.selectedWalletName = (event.currentTarget as HTMLSelectElement).value;
-    state.selectedWalletLogoId = undefined;
-    state.selectedWalletIcon = undefined;
-    state.browserWalletPickerOpen = false;
-    clearBrowserWalletSession();
-    resetWalletConnection();
-    void clearDeviceAgentForWalletBoundary();
-    void signOutCloudSessionForWalletBoundary('wallet-changed', { toast: true }).then((signedOut) => {
-      if (signedOut) render();
+  for (const select of document.querySelectorAll<HTMLSelectElement>(`#walletSelect, #${BROWSER_EXTENSION_WALLET_SELECT_ID}`)) {
+    select.addEventListener('change', (event) => {
+      handleBrowserWalletSelectChange(event.currentTarget as HTMLSelectElement);
     });
-    state.error = '';
-    savePersistedState();
-    render();
-  });
+  }
 
   document.querySelector<HTMLSelectElement>('#iosWalletSelect')?.addEventListener('change', (event) => {
     const walletId = (event.currentTarget as HTMLSelectElement).value;
@@ -26047,7 +26106,7 @@ function bindSelectPickers(): void {
     };
 
     const syncWalletPickerState = (next: boolean): void => {
-      if (select.id === 'walletSelect') {
+      if (select.id === 'walletSelect' || select.id === BROWSER_EXTENSION_WALLET_SELECT_ID) {
         state.browserWalletPickerOpen = next;
       }
     };
@@ -26733,25 +26792,48 @@ async function runDiscover(): Promise<void> {
       pushToast('success', 'iOS wallets ready', `${state.iosWallets.length} wallet path(s) available.`);
       return;
     }
-    state.wallets = visibleBrowserWallets(listAvailableWallets());
-    state.selectedWalletName = reconcileBrowserWalletSelection(state.wallets, state.selectedWalletName);
-    state.browserWalletPickerOpen = state.wallets.length > 0 && !state.selectedWalletName;
-    if (!browserWalletRestoreName(state.wallets, state.browserWalletSession, state.cluster)) {
-      clearBrowserWalletSession();
-    }
-    if (state.wallets.length === 0) {
-      state.selectedWalletName = '';
-      state.browserWalletPickerOpen = false;
-      clearBrowserWalletSession();
-      savePersistedState();
-      throw new Error('No Wallet Standard Solana wallets are registered in this browser.');
-    }
-    savePersistedState();
-    pushToast('success', 'Wallets discovered', `${state.wallets.length} provider(s) found.`);
+    discoverBrowserWallets();
   });
 }
 
-async function runConnect(): Promise<void> {
+async function runBrowserExtensionDiscover(): Promise<void> {
+  await run('discover', async () => {
+    discoverBrowserWallets({ resetSelection: true });
+  });
+}
+
+function discoverBrowserWallets(options: { resetSelection?: boolean } = {}): void {
+  if (options.resetSelection) {
+    clearPendingBrowserWalletChoice();
+  }
+  state.wallets = visibleBrowserWallets(listAvailableWallets());
+  state.selectedWalletName = options.resetSelection
+    ? ''
+    : reconcileBrowserWalletSelection(state.wallets, state.selectedWalletName);
+  state.selectedWalletLogoId = state.selectedWalletName
+    ? walletProviderLogoIdForName(state.selectedWalletName)
+    : undefined;
+  state.selectedWalletIcon = undefined;
+  state.browserWalletPickerOpen = state.wallets.length > 0 && !state.selectedWalletName;
+  if (!browserWalletRestoreName(state.wallets, state.browserWalletSession, state.cluster)) {
+    clearBrowserWalletSession();
+  }
+  if (state.wallets.length === 0) {
+    state.selectedWalletName = '';
+    state.selectedWalletLogoId = undefined;
+    state.selectedWalletIcon = undefined;
+    state.browserWalletPickerOpen = false;
+    clearBrowserWalletSession();
+    savePersistedState();
+    throw new Error('No Wallet Standard Solana wallets are registered in this browser.');
+  }
+  savePersistedState();
+  pushToast('success', 'Wallets discovered', `${state.wallets.length} provider(s) found.`);
+}
+
+async function runConnect(
+  options: { onError?: (message: string, err: unknown) => void | Promise<void> } = {},
+): Promise<void> {
   const connectSurface = walletConnectSurface();
   trackWalletConnectClick(connectSurface, 'connect_button');
   await run('connect', async () => {
@@ -26883,7 +26965,7 @@ async function runConnect(): Promise<void> {
     if (multiPathWalletFlowAvailable() && desktopConnect.flow.step !== 'idle') {
       dispatchDesktopConnectFlow({ type: 'reset' });
     }
-  });
+  }, options);
 }
 
 async function runDisconnect(): Promise<void> {
@@ -41531,6 +41613,15 @@ async function refreshBalances(): Promise<void> {
   state.balances = await bridgeRequest<BalanceView>('/bridge/action/balances');
 }
 
+type WalletBalanceTokenRows = ReturnType<typeof walletBalanceRowsFromParsedAccounts>;
+
+interface WalletBalanceReadInputs {
+  solLamports: number;
+  tokenRows: WalletBalanceTokenRows;
+  priceInfo?: Map<string, WalletBalancePriceInfo>;
+  knownTokens?: Record<string, { symbol: string; mint: string; decimals: number }>;
+}
+
 function runWalletBalanceAction(action: string | undefined): void {
   switch (action) {
     case 'toggle':
@@ -41579,18 +41670,20 @@ function startWalletBalanceConnectedLoad(): void {
 async function loadWalletBalanceSummary(address: string, cluster: Cluster, scopeKey: string, requestId: number): Promise<void> {
   try {
     const { solLamports, tokenRows } = await readWalletPrimaryBalanceInputs(address, cluster);
-    let prices: Map<string, number>;
+    const summaryMints = [WALLET_BALANCE_SOL_MINT, WALLET_BALANCE_USDC_MINT];
+    let priceInfo: Map<string, WalletBalancePriceInfo>;
     try {
-      prices = await fetchWalletBalancePriceMap([WALLET_BALANCE_SOL_MINT, WALLET_BALANCE_USDC_MINT], cluster);
+      priceInfo = await fetchWalletBalancePriceInfoMap(summaryMints, cluster);
     } catch {
-      prices = walletBalanceFallbackPriceMap([WALLET_BALANCE_USDC_MINT], cluster);
+      priceInfo = walletBalanceFallbackPriceInfoMap(summaryMints, cluster);
     }
     const snapshot = buildWalletBalanceSnapshot({
       walletAddress: address,
       cluster,
       solLamports,
       tokenRows,
-      prices,
+      prices: walletBalancePriceMapFromInfo(priceInfo),
+      priceInfo,
       knownTokens: KNOWN_BROWSER_TOKENS,
       coverage: 'primary',
       pricingEnabled: walletBalanceUsdPricingEnabled(cluster),
@@ -41668,25 +41761,29 @@ function startWalletBalanceFullLoad(force: boolean, options: { openOverlay?: boo
 
 async function loadWalletBalanceFull(address: string, cluster: Cluster, scopeKey: string, requestId: number): Promise<void> {
   try {
-    const { solLamports, tokenRows } = await readWalletFullBalanceInputs(address, cluster);
+    const { solLamports, tokenRows, priceInfo: seededPriceInfo, knownTokens } = await readWalletFullBalanceInputs(address, cluster);
     const mints = [
       WALLET_BALANCE_SOL_MINT,
       WALLET_BALANCE_USDC_MINT,
       ...tokenRows.map((row) => row.mint),
     ];
-    let prices: Map<string, number>;
+    let priceInfo: Map<string, WalletBalancePriceInfo>;
     try {
-      prices = await fetchWalletBalancePriceMap(mints, cluster);
+      priceInfo = await fetchWalletBalancePriceInfoMap(mints, cluster, { seed: seededPriceInfo });
     } catch {
-      prices = walletBalanceFallbackPriceMap([WALLET_BALANCE_USDC_MINT], cluster);
+      priceInfo = mergeWalletBalancePriceInfoMaps(
+        seededPriceInfo,
+        walletBalanceFallbackPriceInfoMap([WALLET_BALANCE_USDC_MINT], cluster),
+      );
     }
     const snapshot = buildWalletBalanceSnapshot({
       walletAddress: address,
       cluster,
       solLamports,
       tokenRows,
-      prices,
-      knownTokens: KNOWN_BROWSER_TOKENS,
+      prices: walletBalancePriceMapFromInfo(priceInfo),
+      priceInfo,
+      knownTokens: { ...KNOWN_BROWSER_TOKENS, ...(knownTokens ?? {}) },
       coverage: 'full',
       pricingEnabled: walletBalanceUsdPricingEnabled(cluster),
     });
@@ -41714,7 +41811,7 @@ async function loadWalletBalanceFull(address: string, cluster: Cluster, scopeKey
 
 async function readWalletPrimaryBalanceInputs(address: string, cluster: Cluster): Promise<{
   solLamports: number;
-  tokenRows: ReturnType<typeof walletBalanceRowsFromParsedAccounts>;
+  tokenRows: WalletBalanceTokenRows;
 }> {
   const connection = browserActionConnection(cluster);
   const owner = new PublicKey(address);
@@ -41729,10 +41826,18 @@ async function readWalletPrimaryBalanceInputs(address: string, cluster: Cluster)
   };
 }
 
-async function readWalletFullBalanceInputs(address: string, cluster: Cluster): Promise<{
-  solLamports: number;
-  tokenRows: ReturnType<typeof walletBalanceRowsFromParsedAccounts>;
-}> {
+async function readWalletFullBalanceInputs(address: string, cluster: Cluster): Promise<WalletBalanceReadInputs> {
+  if (walletBalanceUsdPricingEnabled(cluster)) {
+    try {
+      return await readWalletFullBalanceInputsFromBirdeyePortfolio(address, cluster);
+    } catch {
+      // Fall back to RPC token accounts; the price batch below still filters dust.
+    }
+  }
+  return readWalletFullBalanceInputsFromRpc(address, cluster);
+}
+
+async function readWalletFullBalanceInputsFromRpc(address: string, cluster: Cluster): Promise<WalletBalanceReadInputs> {
   const connection = browserActionConnection(cluster);
   const owner = new PublicKey(address);
   const [solLamports, tokenAccounts, token2022Accounts] = await Promise.allSettled([
@@ -41756,14 +41861,119 @@ async function readWalletFullBalanceInputs(address: string, cluster: Cluster): P
   };
 }
 
-async function fetchWalletBalancePriceMap(mints: string[], cluster: Cluster = state.cluster): Promise<Map<string, number>> {
+async function readWalletFullBalanceInputsFromBirdeyePortfolio(address: string, cluster: Cluster): Promise<WalletBalanceReadInputs> {
+  const connection = browserActionConnection(cluster);
+  const owner = new PublicKey(address);
+  const body = { walletAddress: address, uiAmountMode: 'scaled' };
+  const [solLamports, payload] = await Promise.all([
+    connection.getBalance(owner, 'confirmed'),
+    walletScopedProviderRequest('/bridge/birdeye/wallet-token-list', '/api/birdeye/wallet-token-list', {
+      bridgeBody: body,
+      cloudBody: body,
+    }),
+  ]);
+  return {
+    solLamports,
+    ...walletBalanceInputsFromBirdeyePortfolioRows(extractWalletHoldingRows(payload)),
+  };
+}
+
+function walletBalanceInputsFromBirdeyePortfolioRows(rows: Record<string, unknown>[]): Omit<WalletBalanceReadInputs, 'solLamports'> {
+  const tokenRows: WalletBalanceTokenRows = [];
+  const priceInfo = new Map<string, WalletBalancePriceInfo>();
+  const knownTokens: Record<string, { symbol: string; mint: string; decimals: number }> = {};
+  for (const row of rows) {
+    const mint = stringField(row.address) ?? stringField(row.mint) ?? stringField(row.tokenAddress);
+    const amount = numberField(row.uiAmount) ?? numberField(row.ui_amount) ?? numberField(row.amount);
+    const decimals = numberField(row.decimals);
+    if (!mint || amount === undefined || amount <= 0 || decimals === undefined || !Number.isInteger(decimals) || decimals < 0) {
+      continue;
+    }
+    tokenRows.push({ mint, amount, decimals, source: 'token' });
+    const symbol = stringField(row.symbol);
+    if (symbol) {
+      knownTokens[mint] = { symbol, mint, decimals };
+    }
+    const priceUsd = numberField(row.priceUsd) ?? numberField(row.price_usd) ?? numberField(row.price);
+    const liquidityUsd = numberField(row.liquidity) ?? numberField(row.liquidityUsd) ?? numberField(row.liquidity_usd);
+    if (priceUsd !== undefined || liquidityUsd !== undefined) {
+      priceInfo.set(mint, {
+        ...(priceUsd !== undefined ? { priceUsd } : {}),
+        ...(liquidityUsd !== undefined ? { liquidityUsd } : {}),
+        source: 'birdeye',
+      });
+    }
+  }
+  return { tokenRows, priceInfo, knownTokens };
+}
+
+async function fetchWalletBalancePriceInfoMap(
+  mints: string[],
+  cluster: Cluster = state.cluster,
+  options: { seed?: Map<string, WalletBalancePriceInfo> } = {},
+): Promise<Map<string, WalletBalancePriceInfo>> {
+  const addresses = [...new Set(mints.filter(Boolean))];
+  if (!addresses.length) return options.seed ?? new Map();
+  if (!walletBalanceUsdPricingEnabled(cluster)) return options.seed ?? new Map();
+
+  let birdeyePrices = new Map<string, WalletBalancePriceInfo>();
+  try {
+    const payload = await tokenMarketRequest('/price-multi', { addresses, includeLiquidity: true });
+    birdeyePrices = walletBalancePriceInfoMapFromBirdeye(payload);
+  } catch {
+    birdeyePrices = new Map();
+  }
+
+  const knownBeforeJupiter = mergeWalletBalancePriceInfoMaps(options.seed, birdeyePrices);
+  const jupiterMints = addresses.filter((mint) => {
+    const info = knownBeforeJupiter.get(mint);
+    if (info?.priceUsd === undefined) return true;
+    if (mint === WALLET_BALANCE_SOL_MINT || mint === WALLET_BALANCE_USDC_MINT) return false;
+    return info.liquidityUsd === undefined;
+  });
+  let jupiterPrices = new Map<string, WalletBalancePriceInfo>();
+  try {
+    jupiterPrices = await fetchJupiterLiteWalletBalancePriceInfoMap(jupiterMints);
+  } catch {
+    jupiterPrices = new Map();
+  }
+  return mergeWalletBalancePriceInfoMaps(
+    options.seed,
+    birdeyePrices,
+    jupiterPrices,
+    walletBalanceFallbackPriceInfoMap(addresses, cluster),
+  );
+}
+
+async function fetchJupiterLiteWalletBalancePriceInfoMap(mints: string[]): Promise<Map<string, WalletBalancePriceInfo>> {
   const addresses = [...new Set(mints.filter(Boolean))];
   if (!addresses.length) return new Map();
-  if (!walletBalanceUsdPricingEnabled(cluster)) return new Map();
-  const payload = await tokenMarketRequest('/price-multi', { addresses, includeLiquidity: false });
-  const prices = walletBalancePriceMapFromBirdeye(payload);
-  if (addresses.includes(WALLET_BALANCE_USDC_MINT) && !prices.has(WALLET_BALANCE_USDC_MINT)) {
-    prices.set(WALLET_BALANCE_USDC_MINT, 1);
+  const chunks: string[][] = [];
+  for (let index = 0; index < addresses.length; index += WALLET_BALANCE_PRICE_BATCH_SIZE) {
+    chunks.push(addresses.slice(index, index + WALLET_BALANCE_PRICE_BATCH_SIZE));
+  }
+  const settled = await Promise.allSettled(chunks.map(fetchJupiterLiteWalletBalancePriceChunk));
+  return mergeWalletBalancePriceInfoMaps(
+    ...settled
+      .filter((entry): entry is PromiseFulfilledResult<Map<string, WalletBalancePriceInfo>> => entry.status === 'fulfilled')
+      .map((entry) => entry.value),
+  );
+}
+
+async function fetchJupiterLiteWalletBalancePriceChunk(mints: string[]): Promise<Map<string, WalletBalancePriceInfo>> {
+  const url = new URL(JUPITER_LITE_PRICE_URL);
+  url.searchParams.set('ids', mints.join(','));
+  const response = await fetch(url.toString(), { method: 'GET' });
+  if (!response.ok) {
+    throw new Error(`Jupiter Lite Price API returned HTTP ${response.status}.`);
+  }
+  return walletBalancePriceInfoMapFromJupiter(await response.json() as unknown);
+}
+
+function walletBalancePriceMapFromInfo(priceInfo: Map<string, WalletBalancePriceInfo>): Map<string, number> {
+  const prices = new Map<string, number>();
+  for (const [mint, info] of priceInfo) {
+    if (info.priceUsd !== undefined) prices.set(mint, info.priceUsd);
   }
   return prices;
 }
@@ -43536,10 +43746,20 @@ class BridgeRequestError extends Error {
 
 async function bridgeRequest<T = unknown>(path: string, init?: RequestInit): Promise<T> {
   if (!state.bridgeToken) {
-    throw new BridgeRequestError('Bridge token is required.', 0);
+    throw new BridgeRequestError(
+      cliView
+        ? 'Wallet connection details are missing. Return to the terminal and reopen this page.'
+        : 'Bridge token is required.',
+      0,
+    );
   }
   if (!isTrustedBridgeUrl(state.bridgeUrl)) {
-    throw new BridgeRequestError('Local bridge URL must use localhost, 127.0.0.1, ::1, or a trusted private LAN host.', 0);
+    throw new BridgeRequestError(
+      cliView
+        ? 'Wallet connection URL is not valid. Return to the terminal and reopen this page.'
+        : 'Local bridge URL must use localhost, 127.0.0.1, ::1, or a trusted private LAN host.',
+      0,
+    );
   }
   const url = new URL(path, bridgeBaseUrl());
   const headers = new Headers(init?.headers);
@@ -43562,7 +43782,7 @@ async function bridgeRequest<T = unknown>(path: string, init?: RequestInit): Pro
     const error = extractBridgeError(payload);
     if (response.status === 401) {
       throw new BridgeRequestError(
-        'Wrong bridge token. Use the token printed by the bridge process.',
+        bridgeUnauthorizedMessage(),
         401,
       );
     }
@@ -43575,7 +43795,20 @@ function bridgeOfflineMessage(): string {
   if (launchParams.cliSurface === 'desktop') {
     return `Local wallet service is not running at ${compactEndpoint(state.bridgeUrl)}. Return to the desktop app, restart the local runtime, and try again.`;
   }
+  if (cliView) {
+    return `Wallet connection is not running at ${compactEndpoint(state.bridgeUrl)}. Return to the terminal, restart the CLI, and try again.`;
+  }
   return `Local approval bridge is not running at ${compactEndpoint(state.bridgeUrl)}. Run ${NPM_EXEC_COMMAND}, keep that terminal open, then click Check local bridge.`;
+}
+
+function bridgeUnauthorizedMessage(): string {
+  if (launchParams.cliSurface === 'desktop') {
+    return 'Wallet service token is wrong. Return to the desktop app and reopen this page.';
+  }
+  if (cliView) {
+    return 'Wallet connection token is wrong. Return to the terminal and reopen this page.';
+  }
+  return 'Wrong bridge token. Use the token printed by the bridge process.';
 }
 
 const RAYDIUM_ADD_LIQUIDITY_SUB_ACTIONS = new Set(['cpmm-add', 'clmm-open', 'clmm-increase']);
@@ -43740,7 +43973,8 @@ function shortenMintLabel(mint: string): string {
 }
 
 function isBridgeOfflineMessage(message: string): boolean {
-  return message.startsWith('Local approval bridge is not running at ');
+  return message.startsWith('Local approval bridge is not running at ')
+    || message.startsWith('Wallet connection is not running at ');
 }
 
 async function showBridgeOfflineToast(title: string): Promise<void> {
@@ -43818,11 +44052,24 @@ function clearBrowserWalletSession(): void {
   state.browserWalletSession = undefined;
 }
 
+function clearPendingBrowserWalletChoice(options: { clearWallets?: boolean } = {}): void {
+  if (state.address || !isBrowserWalletSurface()) return;
+  state.selectedWalletName = '';
+  state.selectedWalletLogoId = undefined;
+  state.selectedWalletIcon = undefined;
+  state.browserWalletPickerOpen = false;
+  clearBrowserWalletSession();
+  if (options.clearWallets) {
+    state.wallets = [];
+  }
+}
+
 async function restoreBrowserWalletSession(): Promise<void> {
   state.wallets = visibleBrowserWallets(listAvailableWallets());
   state.selectedWalletName = reconcileBrowserWalletSelection(state.wallets, state.selectedWalletName);
   state.browserWalletPickerOpen = false;
   if (cliView?.intent === 'connect') {
+    clearPendingBrowserWalletChoice({ clearWallets: true });
     clearBrowserWalletSession();
     savePersistedState();
     return;

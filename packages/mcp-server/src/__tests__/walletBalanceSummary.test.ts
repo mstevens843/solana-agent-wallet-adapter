@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  WALLET_BALANCE_SOL_MINT,
   WALLET_BALANCE_USDC_MINT,
   type WalletBackend,
 } from '@solana-agent-wallet-adapter/core';
@@ -20,9 +21,11 @@ describe('AgentWalletActionService wallet balance summary', () => {
   it('loads SOL and canonical USDC independently of configured token allowlist', async () => {
     vi.stubEnv('BIRDEYE_API_KEY', 'birdeye-test-key');
     const originalFetch = globalThis.fetch;
+    const upstreamUrls: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
       const url = input instanceof Request ? new URL(input.url) : new URL(String(input));
       if (url.hostname === 'public-api.birdeye.so') {
+        upstreamUrls.push(url.toString());
         return new Response(JSON.stringify({
           data: {
             So11111111111111111111111111111111111111112: { value: 150 },
@@ -54,6 +57,42 @@ describe('AgentWalletActionService wallet balance summary', () => {
     expect(snapshot.usdc.amount).toBe(25.5);
     expect(snapshot.totalUsd).toBe(325.5);
     expect(snapshot.priceStatus).toBe('ready');
+    expect(upstreamUrls[0]).toContain('include_liquidity=true');
+  });
+
+  it('falls back to Jupiter Lite prices when Birdeye is unavailable', async () => {
+    const originalFetch = globalThis.fetch;
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = input instanceof Request ? new URL(input.url) : new URL(String(input));
+      if (url.hostname === 'lite-api.jup.ag') {
+        expect(url.pathname).toBe('/price/v3');
+        expect(url.searchParams.get('ids')).toContain(WALLET_BALANCE_SOL_MINT);
+        return new Response(JSON.stringify({
+          [WALLET_BALANCE_SOL_MINT]: { usdPrice: 150, liquidity: 7_000_000_000 },
+          [WALLET_BALANCE_USDC_MINT]: { usdPrice: 1, liquidity: 500_000_000 },
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      return originalFetch(input);
+    }) as typeof fetch);
+
+    const service = new AgentWalletActionService({
+      backend: testBackend(),
+      config: {
+        ...DEFAULT_CONFIG,
+        cluster: 'mainnet-beta',
+        tokens: [],
+      },
+      connection: fakeConnection({
+        solLamports: 2_000_000_000,
+        usdcRawAmount: '25500000',
+      }),
+    });
+
+    const snapshot = await service.walletBalanceSummary({ mode: 'primary' });
+
+    expect(snapshot.totalUsd).toBe(325.5);
+    expect(snapshot.priceStatus).toBe('ready');
+    expect(snapshot.sol.priceSource).toBe('jupiter');
   });
 
   it('scans token and token-2022 accounts only in full mode', async () => {

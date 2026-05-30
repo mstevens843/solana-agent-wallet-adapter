@@ -64,9 +64,13 @@ Required GitHub Actions secrets:
 Apple Developer capabilities must be enabled before regenerating the match
 profile:
 
-- Associated Domains for `applinks:agenticwalletadapter.com` and
-  `applinks:agentic-signer.com`.
+- Associated Domains for `applinks:agentic-signer.com`.
 - App Group `group.com.agentic.wallet` for the Reown WalletConnect store.
+
+The production web service must serve
+`https://agentic-signer.com/.well-known/apple-app-site-association`. Configure
+Render with either `AGENTIC_IOS_ASSOCIATED_APP_ID=<TEAMID>.com.agentic.wallet`
+or `APPLE_TEAM_ID=<TEAMID>` plus `AGENTIC_IOS_BUNDLE_ID=com.agentic.wallet`.
 
 Fastlane lanes (`fastlane/Fastfile`):
 

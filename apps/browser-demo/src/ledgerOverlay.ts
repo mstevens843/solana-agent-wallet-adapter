@@ -3,7 +3,8 @@
 // State machine:
 //   closed → searching → app-check → scanning-addresses → choose-address
 //     → confirming-address → closed (after auto-connect)
-//   any → error → searching (Retry) | closed (Cancel)
+//   any → error → choose-address (Retry selected account)
+//             | searching (Retry discovery) | closed (Cancel)
 //
 // `main.ts` drives the IPC promises and dispatches reducer actions. This
 // module is DOM-free + Tauri-free so it can be exercised with vitest.

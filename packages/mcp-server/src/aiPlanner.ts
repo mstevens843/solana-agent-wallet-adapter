@@ -1549,7 +1549,7 @@ function parseAtomExtractionResponse(raw: string): import('@solana-agent-wallet-
 }
 
 function aiAskFromPayload(payload: unknown): AiAskResult {
-  const text = extractModelText(payload).trim();
+  const text = stripInlineCitationMarkup(extractModelText(payload)).trim();
   if (!text) {
     throw new ProtocolError('wallet_unreachable', 'Agent did not return any answer text. Try again.');
   }
@@ -1567,7 +1567,7 @@ function aiAskFromPayload(payload: unknown): AiAskResult {
 }
 
 function aiChatFromPayload(payload: unknown): AiChatResult {
-  const text = extractModelText(payload).trim();
+  const text = stripInlineCitationMarkup(extractModelText(payload)).trim();
   if (!text) {
     throw new ProtocolError('wallet_unreachable', 'Agent did not return any chat text. Try again.');
   }
@@ -1677,7 +1677,7 @@ function chatBulletText(value: unknown): string {
 
 function oneLineChatText(value: unknown, maxLength: number): string {
   if (typeof value !== 'string') return '';
-  return compactReviewText(value.replace(/^#+\s*/, '').replace(/\s+/g, ' ').trim(), maxLength);
+  return compactReviewText(stripInlineCitationMarkup(value).replace(/^#+\s*/, '').replace(/\s+/g, ' ').trim(), maxLength);
 }
 
 function compactChatText(value: string, maxLength: number): string {
@@ -1704,6 +1704,12 @@ function stripAgentProcessPreamble(value: string): string {
     changed = text !== previous;
   }
   return text.trim();
+}
+
+function stripInlineCitationMarkup(value: string): string {
+  return value
+    .replace(/<cite\b[^>]*>\s*([\s\S]*?)\s*<\/cite>/gi, '$1')
+    .replace(/<\/?cite\b[^>]*>/gi, '');
 }
 
 function normalizeResearchEvidence(
@@ -3005,13 +3011,15 @@ function parsePlanJson(content: string): Record<string, unknown> {
   for (const candidate of candidates) {
     if (!candidate || seen.has(candidate)) continue;
     seen.add(candidate);
-    try {
-      const parsed = JSON.parse(candidate);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        return parsed as Record<string, unknown>;
+    for (const parseCandidate of [candidate, escapeJsonControlCharactersInStrings(candidate)]) {
+      try {
+        const parsed = JSON.parse(parseCandidate);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          return parsed as Record<string, unknown>;
+        }
+      } catch {
+        // Try the next candidate.
       }
-    } catch {
-      // Try the next candidate.
     }
   }
   return {};
@@ -3026,6 +3034,45 @@ function jsonCodeFenceCandidates(content: string): string[] {
     if (candidate) candidates.push(candidate);
   }
   return candidates;
+}
+
+function escapeJsonControlCharactersInStrings(content: string): string {
+  let output = '';
+  let inString = false;
+  let escaped = false;
+  for (const char of content) {
+    if (escaped) {
+      output += char;
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      output += char;
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      output += char;
+      inString = !inString;
+      continue;
+    }
+    if (inString) {
+      if (char === '\n') {
+        output += '\\n';
+        continue;
+      }
+      if (char === '\r') {
+        output += '\\r';
+        continue;
+      }
+      if (char === '\t') {
+        output += '\\t';
+        continue;
+      }
+    }
+    output += char;
+  }
+  return output;
 }
 
 function balancedJsonObjectCandidates(content: string): string[] {

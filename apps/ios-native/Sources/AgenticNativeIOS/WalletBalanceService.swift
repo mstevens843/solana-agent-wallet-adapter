@@ -1,7 +1,9 @@
 import Foundation
 
 enum AgenticWalletBalanceService {
+    private static let solMint = "So11111111111111111111111111111111111111112"
     private static let usdcMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    private static let jupiterLitePriceURL = URL(string: "https://lite-api.jup.ag/price/v3")!
 
     static func load(record: AgenticAuthRecord) async throws -> AgenticWalletBalanceSummary {
         async let solLamports = rpcNumber(
@@ -16,12 +18,47 @@ enum AgenticWalletBalanceService {
         async let usdcAmount = loadUsdcAmount(record: record)
         let sol = try await solLamports / 1_000_000_000
         let usdc = try await usdcAmount
+        let prices = record.cluster == .mainnetBeta
+            ? ((try? await loadJupiterLitePrices(mints: [solMint, usdcMint])) ?? [:])
+            : [:]
+        let solPrice = prices[solMint]
+        let usdcPrice = prices[usdcMint] ?? (record.cluster == .mainnetBeta ? 1 : nil)
+        let priced = solPrice != nil || usdcPrice != nil
+        let totalUsd = (solPrice.map { sol * $0 } ?? 0) + (usdcPrice.map { usdc * $0 } ?? 0)
+        let partial = (sol > 0 && solPrice == nil) || (usdc > 0 && usdcPrice == nil)
         return AgenticWalletBalanceSummary(
-            totalText: "USD unavailable",
+            totalText: priced ? "\(usdText(totalUsd))\(partial ? "+" : "")" : "USD unavailable",
             solText: amountText(sol, symbol: "SOL", maximumFractionDigits: sol >= 1 ? 4 : 6),
             usdcText: amountText(usdc, symbol: "USDC", maximumFractionDigits: 2, minimumFractionDigits: 2),
-            statusText: "Native fallback shows token amounts only."
+            statusText: priced
+                ? (partial ? "USD value from Jupiter Price API; some prices unavailable." : "USD value from Jupiter Price API.")
+                : "Native fallback shows token amounts only."
         )
+    }
+
+    private static func loadJupiterLitePrices(mints: [String]) async throws -> [String: Double] {
+        var components = URLComponents(url: jupiterLitePriceURL, resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "ids", value: Array(Set(mints)).joined(separator: ","))
+        ]
+        let (data, response) = try await URLSession.shared.data(from: components.url!)
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw AgenticWalletError.invalidCallback("Jupiter Lite Price API returned HTTP \(http.statusCode).")
+        }
+        let decoded = try JSONSerialization.jsonObject(with: data, options: [])
+        guard let root = decoded as? [String: Any] else { return [:] }
+        var prices: [String: Double] = [:]
+        for mint in mints {
+            guard
+                let record = root[mint] as? [String: Any],
+                let price = number(record["usdPrice"]),
+                price >= 0
+            else {
+                continue
+            }
+            prices[mint] = price
+        }
+        return prices
     }
 
     private static func loadUsdcAmount(record: AgenticAuthRecord) async throws -> Double {
@@ -122,5 +159,24 @@ enum AgenticWalletBalanceService {
         formatter.maximumFractionDigits = maximumFractionDigits
         formatter.minimumFractionDigits = minimumFractionDigits
         return "\(formatter.string(from: NSNumber(value: max(0, amount))) ?? "0") \(symbol)"
+    }
+
+    private static func usdText(_ amount: Double) -> String {
+        let formatter = NumberFormatter()
+        formatter.locale = Locale(identifier: "en_US")
+        formatter.numberStyle = .currency
+        formatter.maximumFractionDigits = 2
+        formatter.minimumFractionDigits = 2
+        return formatter.string(from: NSNumber(value: max(0, amount))) ?? "$0.00"
+    }
+
+    private static func number(_ value: Any?) -> Double? {
+        if let number = value as? NSNumber {
+            return number.doubleValue
+        }
+        if let string = value as? String {
+            return Double(string)
+        }
+        return nil
     }
 }

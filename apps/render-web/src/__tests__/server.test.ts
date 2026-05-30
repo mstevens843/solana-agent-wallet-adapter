@@ -1055,6 +1055,24 @@ describe('render web hosted BYOK API', () => {
     });
   });
 
+  it('serves the iOS Apple App Site Association file before the SPA fallback', async () => {
+    vi.stubEnv('APPLE_TEAM_ID', 'ABCDE12345');
+    vi.stubEnv('AGENTIC_IOS_BUNDLE_ID', 'com.agentic.wallet');
+
+    await withServer(async (port) => {
+      const response = await getText(port, '/.well-known/apple-app-site-association');
+      const body = JSON.parse(response.body) as Record<string, unknown>;
+      const applinks = body.applinks as { details: Array<{ appID: string; paths: string[] }> };
+
+      expect(response.status).toBe(200);
+      expect(String(response.headers['content-type'])).toContain('application/json');
+      expect(response.headers['cache-control']).toBe('public, max-age=3600');
+      expect(applinks.details[0]?.appID).toBe('ABCDE12345.com.agentic.wallet');
+      expect(applinks.details[0]?.paths).toContain('/app/*');
+      expect(response.body).not.toContain('<div id="app"></div>');
+    });
+  });
+
   it('keeps Solana transaction helper routes on JSON validation paths', async () => {
     await withServer(async (port) => {
       const latest = await postJson(port, '/api/solana/latest-blockhash', { cluster: 'bogus' });

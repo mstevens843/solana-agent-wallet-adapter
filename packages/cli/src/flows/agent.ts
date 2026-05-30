@@ -148,10 +148,11 @@ const AGENT_CHAT_SOURCE_LIMIT = 6;
 const AGENT_CHAT_NEXT_HINT = 'Type /plan, /new, or /prepare to turn this into a wallet request. Type /exit to leave agent chat.';
 
 export function buildAgentChatDisplay(raw: AgentChatResponse): AgentChatDisplay {
-  const answer = cleanDisplayBlock(typeof raw.answer === 'string' ? raw.answer : JSON.stringify(raw, null, 2));
-  const sections = normalizeDisplaySections(raw.sections);
-  const next = cleanDisplayLine(raw.next) || AGENT_CHAT_NEXT_HINT;
-  const citations = normalizeDisplayCitations(raw.citations);
+  const response = normalizeAgentChatDisplayResponse(raw);
+  const sections = normalizeDisplaySections(response.sections);
+  const answer = readableAgentAnswer(response.answer, sections.length > 0);
+  const next = cleanDisplayLine(response.next) || AGENT_CHAT_NEXT_HINT;
+  const citations = normalizeDisplayCitations(response.citations);
 
   const lines: string[] = ['', header('Agent'), '', header('Answer')];
   lines.push(...displayParagraph(answer));
@@ -189,18 +190,87 @@ export function buildAgentChatDisplay(raw: AgentChatResponse): AgentChatDisplay 
   };
 }
 
+function normalizeAgentChatDisplayResponse(raw: unknown): AgentChatResponse {
+  const record = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : {};
+  const directAnswer = typeof raw === 'string' ? raw : record.answer;
+  const structured = typeof directAnswer === 'string' ? parseAgentChatResponseText(directAnswer) : null;
+  if (!structured) {
+    return raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? raw as AgentChatResponse
+      : { answer: typeof raw === 'string' ? raw : undefined };
+  }
+
+  const citations = [
+    ...arrayOrEmpty(record.citations),
+    ...arrayOrEmpty(structured.citations),
+  ];
+  const fallbackCitations = record.citations as AgentChatResponse['citations'];
+  return {
+    answer: structured.answer,
+    sections: structured.sections ?? (record.sections as AgentChatSection[] | undefined),
+    next: structured.next ?? (record.next as string | undefined),
+    citations: citations.length > 0 ? citations as AgentChatResponse['citations'] : fallbackCitations,
+  };
+}
+
+function parseAgentChatResponseText(value: string): AgentChatResponse | null {
+  if (!looksLikeStructuredAgentChat(value)) return null;
+  const parsed = parseLooseJsonObject(stripInlineCitationMarkup(value));
+  if (!parsed || typeof parsed.answer !== 'string') return null;
+  return {
+    answer: parsed.answer,
+    ...(parsed.sections !== undefined ? { sections: parsed.sections as AgentChatSection[] } : {}),
+    ...(typeof parsed.next === 'string' ? { next: parsed.next } : {}),
+    ...(Array.isArray(parsed.citations) ? { citations: parsed.citations as AgentChatResponse['citations'] } : {}),
+  };
+}
+
+function readableAgentAnswer(value: unknown, hasSections: boolean): string {
+  const answer = cleanDisplayBlock(typeof value === 'string' ? value : '');
+  if (answer && !looksLikeStructuredAgentChat(answer)) return answer;
+  if (hasSections) return 'See the details below.';
+  return 'The agent returned a malformed structured answer. Try again.';
+}
+
+function arrayOrEmpty(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
 function normalizeDisplaySections(value: unknown): AgentChatSection[] {
-  if (!Array.isArray(value)) return [];
+  const entries: Array<{ title: unknown; bullets: unknown }> = [];
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      if (!entry || typeof entry !== 'object') continue;
+      const record = entry as Record<string, unknown>;
+      entries.push({
+        title: record.title ?? record.heading ?? record.label ?? record.name,
+        bullets: record.bullets ?? record.items ?? record.points ?? record.facts ?? record.content ?? record.body,
+      });
+    }
+  } else if (value && typeof value === 'object') {
+    for (const [title, bullets] of Object.entries(value as Record<string, unknown>)) {
+      entries.push({ title, bullets });
+    }
+  } else {
+    return [];
+  }
+
   const sections: AgentChatSection[] = [];
-  for (const entry of value) {
-    if (!entry || typeof entry !== 'object') continue;
-    const record = entry as Record<string, unknown>;
-    const title = cleanDisplayLine(record.title);
-    const bullets = Array.isArray(record.bullets)
-      ? record.bullets
+  for (const entry of entries) {
+    const title = cleanDisplayLine(entry.title);
+    const bullets = Array.isArray(entry.bullets)
+      ? entry.bullets
           .map((bullet) => cleanDisplayLine(bullet))
           .filter(Boolean)
           .slice(0, 5)
+      : typeof entry.bullets === 'string'
+        ? entry.bullets
+            .split(/\n+|(?:^|\s)[-*•]\s+/)
+            .map((bullet) => cleanDisplayLine(bullet))
+            .filter(Boolean)
+            .slice(0, 5)
       : [];
     if (!title || bullets.length === 0) continue;
     sections.push({ title, bullets });
@@ -254,7 +324,7 @@ function displayParagraph(value: string): string[] {
 }
 
 function cleanDisplayBlock(value: string): string {
-  return value
+  return stripInlineCitationMarkup(value)
     .replace(/\r/g, '')
     .split('\n')
     .map((line) => line.replace(/[ \t]+/g, ' ').trimEnd())
@@ -264,7 +334,133 @@ function cleanDisplayBlock(value: string): string {
 }
 
 function cleanDisplayLine(value: unknown): string {
-  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+  return typeof value === 'string' ? stripInlineCitationMarkup(value).replace(/\s+/g, ' ').trim() : '';
+}
+
+function stripInlineCitationMarkup(value: string): string {
+  return value
+    .replace(/<cite\b[^>]*>\s*([\s\S]*?)\s*<\/cite>/gi, '$1')
+    .replace(/<\/?cite\b[^>]*>/gi, '');
+}
+
+function looksLikeStructuredAgentChat(value: string): boolean {
+  return /\{\s*"answer"\s*:/i.test(value)
+    && /"(?:sections|bullets|next|citations)"\s*:/i.test(value);
+}
+
+function parseLooseJsonObject(value: string): Record<string, unknown> | null {
+  const candidates = [
+    value.trim(),
+    ...jsonCodeFenceCandidates(value),
+    ...balancedJsonObjectCandidates(value),
+  ];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (!candidate || seen.has(candidate)) continue;
+    seen.add(candidate);
+    const parsed = parseJsonObjectCandidate(candidate);
+    if (parsed) return parsed;
+  }
+  return null;
+}
+
+function parseJsonObjectCandidate(candidate: string): Record<string, unknown> | null {
+  for (const value of [candidate, escapeJsonControlCharactersInStrings(candidate)]) {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Try the repaired candidate.
+    }
+  }
+  return null;
+}
+
+function jsonCodeFenceCandidates(value: string): string[] {
+  const candidates: string[] = [];
+  const pattern = /```(?:json)?\s*([\s\S]*?)```/gi;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(value))) {
+    const candidate = match[1]?.trim();
+    if (candidate) candidates.push(candidate);
+  }
+  return candidates;
+}
+
+function balancedJsonObjectCandidates(value: string): string[] {
+  const candidates: string[] = [];
+  for (let start = value.indexOf('{'); start >= 0; start = value.indexOf('{', start + 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < value.length; index += 1) {
+      const char = value[index];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+      if (char === '{') depth += 1;
+      if (char === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          candidates.push(value.slice(start, index + 1));
+          break;
+        }
+      }
+    }
+    if (candidates.length >= 4) break;
+  }
+  return candidates;
+}
+
+function escapeJsonControlCharactersInStrings(value: string): string {
+  let output = '';
+  let inString = false;
+  let escaped = false;
+  for (const char of value) {
+    if (escaped) {
+      output += char;
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      output += char;
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      output += char;
+      inString = !inString;
+      continue;
+    }
+    if (inString) {
+      if (char === '\n') {
+        output += '\\n';
+        continue;
+      }
+      if (char === '\r') {
+        output += '\\r';
+        continue;
+      }
+      if (char === '\t') {
+        output += '\\t';
+        continue;
+      }
+    }
+    output += char;
+  }
+  return output;
 }
 
 async function preparePlanFromAgentChat(

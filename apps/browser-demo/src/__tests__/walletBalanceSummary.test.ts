@@ -6,6 +6,8 @@ import {
   buildWalletBalanceSnapshot,
   formatWalletBalanceAmount,
   formatWalletBalanceUsd,
+  walletBalancePriceInfoMapFromBirdeye,
+  walletBalancePriceInfoMapFromJupiter,
   walletBalancePriceMapFromBirdeye,
   walletBalanceRowsFromParsedAccounts,
 } from '../walletBalanceSummary.js';
@@ -70,7 +72,7 @@ describe('wallet balance summary helpers', () => {
     expect(snapshot.others).toEqual([]);
   });
 
-  it('marks full totals partial when a token has no price', () => {
+  it('hides full-token rows that have no reliable value', () => {
     const snapshot = buildWalletBalanceSnapshot({
       walletAddress: 'Wallet111111111111111111111111111111111',
       cluster: 'mainnet-beta',
@@ -86,9 +88,8 @@ describe('wallet balance summary helpers', () => {
     });
 
     expect(snapshot.totalUsd).toBe(105);
-    expect(snapshot.hasMissingPrices).toBe(true);
-    expect(snapshot.others[0]?.mint).toBe(JUP_MINT);
-    expect(snapshot.others[0]?.valueUsd).toBeUndefined();
+    expect(snapshot.hasMissingPrices).toBe(false);
+    expect(snapshot.others).toEqual([]);
   });
 
   it('parses Birdeye multi-price payload variants', () => {
@@ -101,6 +102,44 @@ describe('wallet balance summary helpers', () => {
 
     expect(prices.get(WALLET_BALANCE_SOL_MINT)).toBe(142.25);
     expect(prices.get(WALLET_BALANCE_USDC_MINT)).toBe(1);
+  });
+
+  it('parses balance price metadata from Birdeye and Jupiter payloads', () => {
+    expect(walletBalancePriceInfoMapFromBirdeye({
+      data: { [WALLET_BALANCE_SOL_MINT]: { value: 142.25, liquidity: 7_000_000_000 } },
+    }).get(WALLET_BALANCE_SOL_MINT)).toMatchObject({
+      priceUsd: 142.25,
+      liquidityUsd: 7_000_000_000,
+      source: 'birdeye',
+    });
+    expect(walletBalancePriceInfoMapFromJupiter({
+      [JUP_MINT]: { usdPrice: 0.5, liquidity: 50_000 },
+    }).get(JUP_MINT)).toMatchObject({
+      priceUsd: 0.5,
+      liquidityUsd: 50_000,
+      source: 'jupiter',
+    });
+  });
+
+  it('keeps only liquid non-core balances worth at least one cent', () => {
+    const liquidMint = 'Liquid11111111111111111111111111111111111';
+    const dustMint = 'Dust1111111111111111111111111111111111111';
+    const snapshot = buildWalletBalanceSnapshot({
+      walletAddress: 'Wallet111111111111111111111111111111111',
+      cluster: 'mainnet-beta',
+      solLamports: 0,
+      tokenRows: [
+        { mint: liquidMint, amount: 2, decimals: 6, source: 'token' },
+        { mint: dustMint, amount: 0.001, decimals: 6, source: 'token' },
+      ],
+      prices: new Map(),
+      priceInfo: new Map([
+        [liquidMint, { priceUsd: 1, liquidityUsd: 1_001, source: 'jupiter' }],
+        [dustMint, { priceUsd: 1, liquidityUsd: 1_001, source: 'jupiter' }],
+      ]),
+    });
+
+    expect(snapshot.others.map((asset) => asset.mint)).toEqual([liquidMint]);
   });
 
   it('formats compact amounts and partial USD totals', () => {

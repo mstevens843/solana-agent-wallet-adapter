@@ -2,9 +2,12 @@ import type { Cluster } from './types.js';
 
 export const WALLET_BALANCE_SOL_MINT = 'So11111111111111111111111111111111111111112';
 export const WALLET_BALANCE_USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+export const WALLET_BALANCE_MIN_VISIBLE_VALUE_USD = 0.01;
+export const WALLET_BALANCE_MIN_VISIBLE_LIQUIDITY_USD = 1_000;
 
 export type WalletBalanceCoverage = 'primary' | 'full';
 export type WalletBalancePriceStatus = 'ready' | 'partial' | 'unavailable';
+export type WalletBalancePriceSource = 'birdeye' | 'jupiter' | 'fallback';
 
 export interface WalletBalanceKnownToken {
   symbol: string;
@@ -27,7 +30,15 @@ export interface WalletBalanceAsset {
   decimals: number;
   priceUsd?: number;
   valueUsd?: number;
+  liquidityUsd?: number;
+  priceSource?: WalletBalancePriceSource;
   source: 'native' | 'token' | 'token-2022' | 'unknown';
+}
+
+export interface WalletBalancePriceInfo {
+  priceUsd?: number;
+  liquidityUsd?: number;
+  source?: WalletBalancePriceSource;
 }
 
 export interface WalletBalanceSnapshot {
@@ -49,6 +60,7 @@ export interface BuildWalletBalanceSnapshotInput {
   solLamports: number | string | bigint;
   tokenRows: WalletBalanceTokenRow[];
   prices: Map<string, number>;
+  priceInfo?: Map<string, WalletBalancePriceInfo>;
   knownTokens?: Record<string, WalletBalanceKnownToken>;
   loadedAt?: number;
   coverage?: WalletBalanceCoverage;
@@ -110,15 +122,18 @@ export function mergeWalletBalanceTokenRows(rows: WalletBalanceTokenRow[]): Wall
 
 export function walletBalancePriceMapFromBirdeye(payload: unknown): Map<string, number> {
   const prices = new Map<string, number>();
-  const root = asRecord(payload);
-  const data = asRecord(root?.data) ?? root;
-  if (!data) return prices;
-  for (const [mint, value] of Object.entries(data)) {
-    const price = walletBalancePriceFromBirdeyeValue(value);
-    if (!mint || price === undefined || !Number.isFinite(price) || price < 0) continue;
-    prices.set(mint, price);
+  for (const [mint, info] of walletBalancePriceInfoMapFromBirdeye(payload)) {
+    if (info.priceUsd !== undefined) prices.set(mint, info.priceUsd);
   }
   return prices;
+}
+
+export function walletBalancePriceInfoMapFromBirdeye(payload: unknown): Map<string, WalletBalancePriceInfo> {
+  return walletBalancePriceInfoMapFromPayload(payload, 'birdeye', ['value', 'price', 'priceUsd', 'price_usd']);
+}
+
+export function walletBalancePriceInfoMapFromJupiter(payload: unknown): Map<string, WalletBalancePriceInfo> {
+  return walletBalancePriceInfoMapFromPayload(payload, 'jupiter', ['usdPrice', 'usd_price', 'priceUsd', 'price_usd', 'price']);
 }
 
 export function walletBalanceFallbackPriceMap(mints: string[], cluster: string | Cluster = 'mainnet-beta'): Map<string, number> {
@@ -129,6 +144,38 @@ export function walletBalanceFallbackPriceMap(mints: string[], cluster: string |
   return prices;
 }
 
+export function walletBalanceFallbackPriceInfoMap(
+  mints: string[],
+  cluster: string | Cluster = 'mainnet-beta',
+): Map<string, WalletBalancePriceInfo> {
+  const prices = new Map<string, WalletBalancePriceInfo>();
+  if (walletBalanceUsdPricingEnabled(cluster) && mints.includes(WALLET_BALANCE_USDC_MINT)) {
+    prices.set(WALLET_BALANCE_USDC_MINT, { priceUsd: 1, liquidityUsd: Number.POSITIVE_INFINITY, source: 'fallback' });
+  }
+  return prices;
+}
+
+export function mergeWalletBalancePriceInfoMaps(
+  ...maps: Array<Map<string, WalletBalancePriceInfo> | undefined>
+): Map<string, WalletBalancePriceInfo> {
+  const merged = new Map<string, WalletBalancePriceInfo>();
+  for (const map of maps) {
+    for (const [mint, info] of map ?? []) {
+      const existing = merged.get(mint);
+      if (!existing) {
+        merged.set(mint, { ...info });
+        continue;
+      }
+      merged.set(mint, {
+        priceUsd: existing.priceUsd ?? info.priceUsd,
+        liquidityUsd: existing.liquidityUsd ?? info.liquidityUsd,
+        source: existing.source ?? info.source,
+      });
+    }
+  }
+  return merged;
+}
+
 export function buildWalletBalanceSnapshot(input: BuildWalletBalanceSnapshotInput): WalletBalanceSnapshot {
   const loadedAt = input.loadedAt ?? Date.now();
   const knownByMint = knownTokensByMint(input.knownTokens);
@@ -137,13 +184,14 @@ export function buildWalletBalanceSnapshot(input: BuildWalletBalanceSnapshotInpu
   const usdcRow = mergedRows.find((row) => row.mint === WALLET_BALANCE_USDC_MINT);
   const usdcKnown = knownByMint.get(WALLET_BALANCE_USDC_MINT);
   const pricingEnabled = input.pricingEnabled ?? walletBalanceUsdPricingEnabled(input.cluster);
+  const priceInfo = input.priceInfo ?? walletBalancePriceInfoMapFromNumberMap(input.prices);
   const sol = assetFromAmount({
     mint: WALLET_BALANCE_SOL_MINT,
     amount: solAmount,
     decimals: 9,
     symbol: 'SOL',
     source: 'native',
-    prices: input.prices,
+    priceInfo,
   });
   const usdc = assetFromAmount({
     mint: WALLET_BALANCE_USDC_MINT,
@@ -151,9 +199,9 @@ export function buildWalletBalanceSnapshot(input: BuildWalletBalanceSnapshotInpu
     decimals: usdcRow?.decimals ?? usdcKnown?.decimals ?? 6,
     symbol: usdcKnown?.symbol ?? 'USDC',
     source: usdcRow?.source ?? 'token',
-    prices: input.prices,
+    priceInfo,
   });
-  const others = mergedRows
+  const allOtherAssets = mergedRows
     .filter((row) => row.mint !== WALLET_BALANCE_USDC_MINT && row.mint !== WALLET_BALANCE_SOL_MINT)
     .map((row) => {
       const known = knownByMint.get(row.mint);
@@ -163,9 +211,10 @@ export function buildWalletBalanceSnapshot(input: BuildWalletBalanceSnapshotInpu
         decimals: row.decimals,
         symbol: known?.symbol ?? walletBalanceShortMint(row.mint),
         source: row.source ?? 'unknown',
-        prices: input.prices,
+        priceInfo,
       });
-    })
+    });
+  const others = (pricingEnabled ? allOtherAssets.filter(walletBalanceAssetPassesVisibility) : allOtherAssets)
     .sort(walletBalanceAssetSort);
   const assets = [sol, usdc, ...others].filter((asset) => asset.amount > 0);
   const hasMissingPrices = pricingEnabled && assets.some((asset) => asset.priceUsd === undefined);
@@ -227,19 +276,57 @@ export function walletBalanceShortMint(mint: string): string {
   return mint.length > 10 ? `${mint.slice(0, 4)}...${mint.slice(-4)}` : mint;
 }
 
-function walletBalancePriceFromBirdeyeValue(value: unknown): number | undefined {
-  if (typeof value === 'number') return value;
-  const record = asRecord(value);
-  if (!record) return numberField(value);
-  const nestedData = asRecord(record.data);
-  return numberField(record.value)
-    ?? numberField(record.price)
-    ?? numberField(record.priceUsd)
-    ?? numberField(record.price_usd)
-    ?? numberField(nestedData?.value)
-    ?? numberField(nestedData?.price)
-    ?? numberField(nestedData?.priceUsd)
-    ?? numberField(nestedData?.price_usd);
+export function walletBalanceAssetPassesVisibility(asset: WalletBalanceAsset): boolean {
+  if (asset.mint === WALLET_BALANCE_SOL_MINT || asset.mint === WALLET_BALANCE_USDC_MINT) return asset.amount > 0;
+  return (asset.valueUsd ?? 0) >= WALLET_BALANCE_MIN_VISIBLE_VALUE_USD
+    && (asset.liquidityUsd ?? 0) >= WALLET_BALANCE_MIN_VISIBLE_LIQUIDITY_USD;
+}
+
+function walletBalancePriceInfoMapFromPayload(
+  payload: unknown,
+  source: WalletBalancePriceSource,
+  priceKeys: string[],
+): Map<string, WalletBalancePriceInfo> {
+  const prices = new Map<string, WalletBalancePriceInfo>();
+  const root = asRecord(payload);
+  const data = asRecord(root?.data) ?? root;
+  if (!data) return prices;
+  for (const [mint, value] of Object.entries(data)) {
+    const record = asRecord(value);
+    const nestedData = asRecord(record?.data);
+    const priceUsd = walletBalanceNumberFromKeys(record, priceKeys)
+      ?? walletBalanceNumberFromKeys(nestedData, priceKeys)
+      ?? (typeof value === 'number' ? value : numberField(value));
+    const liquidityUsd = walletBalanceNumberFromKeys(record, ['liquidity', 'liquidityUsd', 'liquidity_usd'])
+      ?? walletBalanceNumberFromKeys(nestedData, ['liquidity', 'liquidityUsd', 'liquidity_usd']);
+    if (!mint || (priceUsd === undefined && liquidityUsd === undefined)) continue;
+    if (priceUsd !== undefined && (!Number.isFinite(priceUsd) || priceUsd < 0)) continue;
+    if (liquidityUsd !== undefined && (!Number.isFinite(liquidityUsd) || liquidityUsd < 0)) continue;
+    prices.set(mint, {
+      ...(priceUsd !== undefined ? { priceUsd } : {}),
+      ...(liquidityUsd !== undefined ? { liquidityUsd } : {}),
+      source,
+    });
+  }
+  return prices;
+}
+
+function walletBalancePriceInfoMapFromNumberMap(prices: Map<string, number>): Map<string, WalletBalancePriceInfo> {
+  const info = new Map<string, WalletBalancePriceInfo>();
+  for (const [mint, priceUsd] of prices) {
+    if (!Number.isFinite(priceUsd) || priceUsd < 0) continue;
+    info.set(mint, { priceUsd });
+  }
+  return info;
+}
+
+function walletBalanceNumberFromKeys(record: Record<string, unknown> | undefined, keys: string[]): number | undefined {
+  if (!record) return undefined;
+  for (const key of keys) {
+    const value = numberField(record[key]);
+    if (value !== undefined) return value;
+  }
+  return undefined;
 }
 
 function parsedAccountEntries(value: unknown): unknown[] {
@@ -296,9 +383,10 @@ function assetFromAmount(input: {
   decimals: number;
   symbol: string;
   source: WalletBalanceAsset['source'];
-  prices: Map<string, number>;
+  priceInfo: Map<string, WalletBalancePriceInfo>;
 }): WalletBalanceAsset {
-  const priceUsd = input.prices.get(input.mint);
+  const info = input.priceInfo.get(input.mint);
+  const priceUsd = info?.priceUsd;
   return {
     mint: input.mint,
     symbol: input.symbol,
@@ -306,6 +394,8 @@ function assetFromAmount(input: {
     decimals: input.decimals,
     source: input.source,
     ...(priceUsd !== undefined ? { priceUsd, valueUsd: input.amount * priceUsd } : {}),
+    ...(info?.liquidityUsd !== undefined ? { liquidityUsd: info.liquidityUsd } : {}),
+    ...(info?.source ? { priceSource: info.source } : {}),
   };
 }
 

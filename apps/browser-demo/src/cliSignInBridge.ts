@@ -47,6 +47,46 @@ export interface WalletSigningRequestCopy {
   failureToastTitle: string;
 }
 
+function cliWalletPageClientLabel(surface?: string): string {
+  return surface === 'desktop' ? 'desktop app' : 'CLI';
+}
+
+export function cliWalletPageConnectedMessage(_surface?: string): string {
+  return 'Wallet connected.';
+}
+
+export function cliWalletPageConnectSubtitle(): string {
+  return 'Choose Phantom, Backpack, Solflare, or another supported wallet.';
+}
+
+export function cliWalletPageReturnFooter(surface?: string): string {
+  return `You can return to the ${surface === 'desktop' ? 'Desktop App' : 'terminal'}.`;
+}
+
+export function cliWalletPageConnectFooter(surface?: string): string {
+  return `Return to the ${surface === 'desktop' ? 'Desktop App' : 'terminal'} once the wallet is connected.`;
+}
+
+export function cliWalletPageDisconnectedMessage(): string {
+  return 'Wallet disconnected.';
+}
+
+export function cliWalletPageDisconnectPrompt(): string {
+  return 'Click below to disconnect this wallet.';
+}
+
+export function cliWalletPageConnectInstruction(surface?: string): string {
+  return `Choose a wallet and approve the connection. The ${cliWalletPageClientLabel(surface)} will update.`;
+}
+
+export function cliWalletPageCloudSignOutPairingNote(): string {
+  return 'Signing out of Cloud Storage does not disconnect your wallet.';
+}
+
+export function cliWalletPageApprovalLoadingMessage(): string {
+  return 'Loading the approval request...';
+}
+
 export function resolveCliSignInBridgeHydration(
   input: CliSignInBridgeHydrationInput,
 ): CliSignInBridgeHydrationDecision {
@@ -85,7 +125,7 @@ export function resolveCliCloudSignInReadiness(
   if (!input.requestReady) {
     warning = 'Missing Cloud Storage sign-in details. Return to the terminal and run /sign-in again.';
   } else if (!connected) {
-    warning = 'Pair your wallet first. Return to the terminal, run /connect, then run /sign-in again.';
+    warning = 'Connect your wallet first. Return to the terminal, run /connect, then run /sign-in again.';
   } else if (walletMismatch) {
     warning = 'This sign-in is for a different wallet. Switch wallets and reload this page.';
   }
@@ -94,7 +134,7 @@ export function resolveCliCloudSignInReadiness(
     walletPaired,
     walletMismatch,
     canStart: input.requestReady && walletPaired,
-    heading: directReady ? 'Ready for wallet signature' : walletPaired ? 'Wallet paired - reconnect to sign' : 'Wallet required',
+    heading: directReady ? 'Ready for wallet signature' : walletPaired ? 'Wallet connected - reconnect to sign' : 'Wallet required',
     warning,
     buttonLabel: directReady ? 'Sign in to Cloud Storage' : 'Connect wallet and sign in',
   };

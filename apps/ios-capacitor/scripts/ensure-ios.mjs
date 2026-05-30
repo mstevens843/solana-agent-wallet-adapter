@@ -120,7 +120,6 @@ function patchEntitlements() {
     '<dict>',
     '\t<key>com.apple.developer.associated-domains</key>',
     '\t<array>',
-    '\t\t<string>applinks:agenticwalletadapter.com</string>',
     '\t\t<string>applinks:agentic-signer.com</string>',
     '\t</array>',
     '\t<key>com.apple.security.application-groups</key>',

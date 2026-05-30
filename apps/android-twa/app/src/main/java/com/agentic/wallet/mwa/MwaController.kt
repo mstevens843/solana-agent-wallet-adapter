@@ -43,7 +43,9 @@ class MwaController(
     private val identity: AgentMwaIdentity,
     private val cache: AuthCache = AuthCache(context),
 ) {
+    private val solMint = "So11111111111111111111111111111111111111112"
     private val usdcMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    private val jupiterLitePriceUrl = "https://lite-api.jup.ag/price/v3"
     private var activeRecord: AgentMwaAuthRecord? = null
 
     // Tracks the currently-suspended MWA call so the activity-resume watchdog can cancel it
@@ -1329,12 +1331,58 @@ class MwaController(
         val lamports = getConnectedBalanceLamports(record).coerceAtLeast(0)
         val usdc = getConnectedUsdcAmount(record).coerceAtLeast(0.0)
         val sol = lamports.toDouble() / 1_000_000_000.0
+        val prices = if (record.cluster == AgentCluster.MainnetBeta) {
+            fetchJupiterLitePrices(listOf(solMint, usdcMint)).getOrElse {
+                AgentMwaLog.warn("MwaController", "connectedWalletBalanceSummary", "PRICE_UNAVAILABLE", "Jupiter Lite prices unavailable", authRecordMetadata(record) + AgentMwaLog.errorMetadata(it))
+                emptyMap()
+            }
+        } else {
+            emptyMap()
+        }
+        val solPrice = prices[solMint]
+        val usdcPrice = prices[usdcMint] ?: if (record.cluster == AgentCluster.MainnetBeta) 1.0 else null
+        val priced = solPrice != null || usdcPrice != null
+        val totalUsd = (solPrice?.let { sol * it } ?: 0.0) + (usdcPrice?.let { usdc * it } ?: 0.0)
+        val partial = (sol > 0 && solPrice == null) || (usdc > 0 && usdcPrice == null)
         return AgentWalletBalanceSummary(
-            totalText = "USD unavailable",
+            totalText = if (priced) "${formatUsd(totalUsd)}${if (partial) "+" else ""}" else "USD unavailable",
             solText = "${formatAmount(sol, if (sol >= 1) 4 else 6)} SOL",
             usdcText = "${formatAmount(usdc, 2, 2)} USDC",
-            statusText = "Native fallback shows token amounts only.",
+            statusText = if (priced) {
+                if (partial) "USD value from Jupiter Price API; some prices unavailable." else "USD value from Jupiter Price API."
+            } else {
+                "Native fallback shows token amounts only."
+            },
         )
+    }
+
+    private suspend fun fetchJupiterLitePrices(mints: List<String>): Result<Map<String, Double>> = runCatching {
+        withContext(Dispatchers.IO) {
+            val url = Uri.parse(jupiterLitePriceUrl)
+                .buildUpon()
+                .appendQueryParameter("ids", mints.distinct().joinToString(","))
+                .build()
+                .toString()
+            val conn = (URL(url).openConnection() as HttpURLConnection)
+            try {
+                conn.requestMethod = "GET"
+                conn.connectTimeout = 8_000
+                conn.readTimeout = 12_000
+                val status = conn.responseCode
+                val stream = if (status in 200..299) conn.inputStream else conn.errorStream
+                val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+                if (status !in 200..299) {
+                    throw IOException("Jupiter Lite Price API returned HTTP $status.")
+                }
+                val json = JSONObject(text)
+                mints.distinct().mapNotNull { mint ->
+                    val price = json.optJSONObject(mint)?.optDouble("usdPrice", Double.NaN) ?: Double.NaN
+                    if (price.isFinite() && price >= 0) mint to price else null
+                }.toMap()
+            } finally {
+                conn.disconnect()
+            }
+        }
     }
 
     private suspend fun getConnectedUsdcAmount(record: AgentMwaAuthRecord, rpcUrl: String = record.cluster.rpcUrl()): Double = try {
@@ -1366,6 +1414,13 @@ class MwaController(
         return NumberFormat.getNumberInstance(Locale.US).apply {
             maximumFractionDigits = maxFractionDigits
             minimumFractionDigits = minFractionDigits
+        }.format(amount.coerceAtLeast(0.0))
+    }
+
+    private fun formatUsd(amount: Double): String {
+        return NumberFormat.getCurrencyInstance(Locale.US).apply {
+            maximumFractionDigits = 2
+            minimumFractionDigits = 2
         }.format(amount.coerceAtLeast(0.0))
     }
 

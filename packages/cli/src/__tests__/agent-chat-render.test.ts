@@ -30,6 +30,60 @@ test('agent chat display renders answer, sections, next step, and sources separa
   assert.match(display.transcript, /Key Facts:\n- Air includes/);
 });
 
+test('agent chat display strips provider cite tags but keeps source list', () => {
+  const display = buildAgentChatDisplay({
+    answer: '<cite index="6-36,8-14,8-15">The cheapest Helium Mobile plan is the Zero plan at $0/month base cost.</cite>',
+    sections: [{
+      title: 'Key Facts',
+      bullets: [
+        '<cite index="6-36,6-37">Zero plan: $0/month with 1GB cellular.</cite>',
+        '<cite index="2-7">Air plan: $15/month.</cite>',
+      ],
+    }],
+    next: '<cite index="2-12">Type /plan when ready.</cite>',
+    citations: [
+      { kind: 'url', title: 'Helium Mobile Plans', ref: 'https://hellohelium.com/plans' },
+    ],
+  });
+  const plain = stripAnsi(display.output);
+
+  assert.match(plain, /Answer\n  The cheapest Helium Mobile plan is the Zero plan/);
+  assert.match(plain, /Key Facts\n  • Zero plan: \$0\/month with 1GB cellular/);
+  assert.match(plain, /Next\n  Type \/plan when ready/);
+  assert.match(plain, /Sources\n  \[1\] Helium Mobile Plans - hellohelium\.com/);
+  assert.doesNotMatch(plain, /<\/?cite\b/i);
+  assert.doesNotMatch(plain, /index="[^"]*"/);
+  assert.doesNotMatch(display.transcript, /<\/?cite\b/i);
+});
+
+test('agent chat display unwraps nested structured JSON answer strings', () => {
+  const display = buildAgentChatDisplay({
+    answer: `{"answer":"
+  <cite index="6-36,8-14,8-15">Helium Mobile's cheapest plan is $0/month, and the Air plan is $15/month.</cite>
+  ","sections":[{"title":"Key Facts","bullets":["
+  Zero Plan: $0/month with 3GB data, 300 texts, 100 minutes
+  ","
+  Air Plan: $15/month with unlimited talk/text and 10GB data
+  "]}],"next":"Type /plan, /new, or /prepare when you want to prepare a visible wallet request."}`,
+    citations: [
+      { kind: 'url', title: 'Helium Mobile Plans', ref: 'https://hellohelium.com/plans' },
+    ],
+  });
+  const plain = stripAnsi(display.output);
+
+  assert.match(plain, /Answer\n  Helium Mobile's cheapest plan is \$0\/month/);
+  assert.match(plain, /Key Facts\n  • Zero Plan: \$0\/month/);
+  assert.match(plain, /• Air Plan: \$15\/month/);
+  assert.match(plain, /Next\n  Type \/plan, \/new, or \/prepare/);
+  assert.match(plain, /Sources\n  \[1\] Helium Mobile Plans - hellohelium\.com/);
+  assert.doesNotMatch(plain, /\{"answer"/);
+  assert.doesNotMatch(plain, /"sections"/);
+  assert.doesNotMatch(plain, /"bullets"/);
+  assert.doesNotMatch(plain, /","/);
+  assert.doesNotMatch(plain, /<\/?cite\b/i);
+  assert.doesNotMatch(display.transcript, /\{"answer"|"sections"|"bullets"|","|<\/?cite\b/i);
+});
+
 test('agent chat display keeps plain-text fallback readable and caps noisy sources', () => {
   const display = buildAgentChatDisplay({
     answer: '## Current Plans\n- Air: $15/month\n- Infinity: $30/month',

@@ -28104,11 +28104,13 @@ button.danger:hover:not(:disabled) {
    Desktop continues to use the inline horizontal tab strip in the topbar. */
 .android-bottom-tab-dock { display: none; }
 
-.route-app.android-shell .workspace[data-active-tab]:not([data-active-tab="overview"]) .custody-panel[data-layout="app-rail"] {
+.route-app.android-shell .workspace[data-active-tab]:not([data-active-tab="overview"]) .custody-panel[data-layout="app-rail"],
+.route-app.ios-native-shell .workspace[data-active-tab]:not([data-active-tab="overview"]) .custody-panel[data-layout="app-rail"] {
   display: none;
 }
 
-.route-app.android-shell .workspace[data-active-tab]:not([data-active-tab="overview"]) {
+.route-app.android-shell .workspace[data-active-tab]:not([data-active-tab="overview"]),
+.route-app.ios-native-shell .workspace[data-active-tab]:not([data-active-tab="overview"]) {
   grid-template-columns: minmax(0, 1fr);
 }
 

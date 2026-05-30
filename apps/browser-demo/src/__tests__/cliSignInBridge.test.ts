@@ -2,10 +2,45 @@ import { describe, expect, it } from 'vitest';
 
 import {
   cliIntentAllowsBridgeRequestClaim,
+  cliWalletPageApprovalLoadingMessage,
+  cliWalletPageCloudSignOutPairingNote,
+  cliWalletPageConnectedMessage,
+  cliWalletPageConnectFooter,
+  cliWalletPageConnectInstruction,
+  cliWalletPageConnectSubtitle,
+  cliWalletPageDisconnectedMessage,
+  cliWalletPageDisconnectPrompt,
+  cliWalletPageReturnFooter,
   resolveWalletSigningRequestCopy,
   resolveCliCloudSignInReadiness,
   resolveCliSignInBridgeHydration,
 } from '../cliSignInBridge.js';
+
+describe('CLI wallet page copy', () => {
+  it('uses plain connected/disconnected language without bridge terminology', () => {
+    const copy = [
+      cliWalletPageConnectedMessage(),
+      cliWalletPageConnectedMessage('desktop'),
+      cliWalletPageConnectSubtitle(),
+      cliWalletPageReturnFooter(),
+      cliWalletPageReturnFooter('desktop'),
+      cliWalletPageConnectFooter(),
+      cliWalletPageConnectFooter('desktop'),
+      cliWalletPageDisconnectedMessage(),
+      cliWalletPageDisconnectPrompt(),
+      cliWalletPageConnectInstruction(),
+      cliWalletPageConnectInstruction('desktop'),
+      cliWalletPageCloudSignOutPairingNote(),
+      cliWalletPageApprovalLoadingMessage(),
+    ];
+
+    expect(copy).toContain('Wallet connected.');
+    expect(copy).toContain('Wallet disconnected.');
+    for (const text of copy) {
+      expect(text).not.toMatch(/\b(local bridge|bridge|picked it up)\b/i);
+    }
+  });
+});
 
 describe('resolveCliSignInBridgeHydration', () => {
   it('does nothing when the current page already has the requested wallet', () => {
@@ -107,7 +142,7 @@ describe('resolveCliCloudSignInReadiness', () => {
     })).toMatchObject({
       walletPaired: true,
       canStart: true,
-      heading: 'Wallet paired - reconnect to sign',
+      heading: 'Wallet connected - reconnect to sign',
       buttonLabel: 'Connect wallet and sign in',
     });
   });

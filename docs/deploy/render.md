@@ -225,6 +225,30 @@ The native Android release workflow builds with `AGENTIC_ANDROID_LAUNCH_URL=http
 Android builds still use the bundled fallback default unless that environment variable is provided. The Node web
 service handles direct browser visits to client-side routes such as `/app` and `/demo`.
 
+## iOS Associated Domain File
+
+For iOS universal links on the production Agentic Cloud domain, the web service must serve the Apple App Site
+Association file at:
+
+```text
+https://agentic-signer.com/.well-known/apple-app-site-association
+```
+
+Configure Render with either the full associated app id:
+
+```sh
+AGENTIC_IOS_ASSOCIATED_APP_ID="TEAMID.com.agentic.wallet"
+```
+
+or the team id and bundle id separately:
+
+```sh
+APPLE_TEAM_ID="TEAMID"
+AGENTIC_IOS_BUNDLE_ID="com.agentic.wallet"
+```
+
+The route returns `503 ios_app_id_not_configured` until one of those env configurations is present.
+
 ## Local Verification
 
 Before deploying, run:

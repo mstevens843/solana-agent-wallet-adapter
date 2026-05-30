@@ -105,6 +105,8 @@ export function desktopBridgeNotReadyMessage(
 
 export interface DesktopConnectFlowState {
   step: DesktopConnectStep;
+  /** True after the Browser extension step has explicitly scanned providers. */
+  extensionDiscovered: boolean;
   /** Optional brand context while waiting for the external browser page. */
   selectedBrandId: string | null;
   /** Epoch ms when 'awaiting-browser' was entered; used to time out the poll. */
@@ -143,6 +145,7 @@ export function shouldRenderDetachedLedgerOverlay(input: {
 export type DesktopConnectFlowAction =
   | { type: 'startMethod' }
   | { type: 'pickMethod'; method: DesktopConnectInlineMethod }
+  | { type: 'markExtensionDiscovered' }
   | { type: 'pickQrWallet'; wallet: DesktopQrWallet | null }
   | { type: 'beginAwaitingBrowser'; brandId?: string | null; startedAt: number }
   | { type: 'back' }
@@ -151,6 +154,7 @@ export type DesktopConnectFlowAction =
 export function initialDesktopConnectFlowState(): DesktopConnectFlowState {
   return {
     step: 'idle',
+    extensionDiscovered: false,
     selectedBrandId: null,
     awaitingBrowserStartedAt: null,
     qrWallet: null,
@@ -171,6 +175,7 @@ function methodToStep(method: DesktopConnectInlineMethod): DesktopConnectStep {
 function emptyAt(step: DesktopConnectStep): DesktopConnectFlowState {
   return {
     step,
+    extensionDiscovered: false,
     selectedBrandId: null,
     awaitingBrowserStartedAt: null,
     qrWallet: null,
@@ -210,6 +215,10 @@ export function reduceDesktopConnectFlow(
     case 'pickMethod':
       if (state.step !== 'method') return state;
       return emptyAt(methodToStep(action.method));
+    case 'markExtensionDiscovered':
+      if (state.step !== 'extension') return state;
+      if (state.extensionDiscovered) return state;
+      return { ...state, extensionDiscovered: true };
     case 'pickQrWallet':
       // QR wallet picks only make sense while on the QR step.
       if (state.step !== 'qr') return state;
@@ -218,6 +227,7 @@ export function reduceDesktopConnectFlow(
     case 'beginAwaitingBrowser':
       return {
         step: 'awaiting-browser',
+        extensionDiscovered: false,
         selectedBrandId: action.brandId ?? null,
         awaitingBrowserStartedAt: action.startedAt,
         qrWallet: null,

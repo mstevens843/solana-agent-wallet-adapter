@@ -178,6 +178,7 @@ describe('initialDesktopConnectFlowState', () => {
   it('starts at idle with no brand, no poll start, and no QR wallet picked', () => {
     expect(initial()).toEqual({
       step: 'idle',
+      extensionDiscovered: false,
       selectedBrandId: null,
       awaitingBrowserStartedAt: null,
       qrWallet: null,
@@ -205,6 +206,7 @@ describe('reduceDesktopConnectFlow — pickMethod', () => {
   it('extension → extension (browser wallet controls stay inline)', () => {
     const next = reduceDesktopConnectFlow(method(), { type: 'pickMethod', method: 'extension' });
     expect(next.step).toBe('extension');
+    expect(next.extensionDiscovered).toBe(false);
     expect(next.selectedBrandId).toBeNull();
   });
 
@@ -300,6 +302,31 @@ describe('reduceDesktopConnectFlow — back', () => {
   it('idle is a no-op (returns same state object)', () => {
     const initialState = initial();
     expect(reduceDesktopConnectFlow(initialState, { type: 'back' })).toBe(initialState);
+  });
+});
+
+describe('reduceDesktopConnectFlow — markExtensionDiscovered', () => {
+  function atExtension(): DesktopConnectFlowState {
+    const m = reduceDesktopConnectFlow(initial(), { type: 'startMethod' });
+    return reduceDesktopConnectFlow(m, { type: 'pickMethod', method: 'extension' });
+  }
+
+  it('marks the Browser extension step as explicitly discovered', () => {
+    const next = reduceDesktopConnectFlow(atExtension(), { type: 'markExtensionDiscovered' });
+    expect(next.step).toBe('extension');
+    expect(next.extensionDiscovered).toBe(true);
+  });
+
+  it('is ignored outside the Browser extension step', () => {
+    const method = reduceDesktopConnectFlow(initial(), { type: 'startMethod' });
+    expect(reduceDesktopConnectFlow(method, { type: 'markExtensionDiscovered' })).toBe(method);
+  });
+
+  it('back from Browser extension clears the discovery flag', () => {
+    const discovered = reduceDesktopConnectFlow(atExtension(), { type: 'markExtensionDiscovered' });
+    const back = reduceDesktopConnectFlow(discovered, { type: 'back' });
+    expect(back.step).toBe('method');
+    expect(back.extensionDiscovered).toBe(false);
   });
 });
 

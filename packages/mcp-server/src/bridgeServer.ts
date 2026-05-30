@@ -585,9 +585,16 @@ async function handleRequest(
       return;
     }
     if (req.method === 'POST' && url.pathname === '/bridge/birdeye/price-multi') {
-      const body = (await readJson(req)) as { addresses?: unknown; includeLiquidity?: boolean };
+      const body = (await readJson(req)) as {
+        addresses?: unknown;
+        includeLiquidity?: boolean;
+        checkLiquidity?: unknown;
+        uiAmountMode?: 'raw' | 'scaled' | 'both';
+      };
       writeJson(res, 200, await requestBirdeyePriceMulti(requireStringArray(body.addresses, 'addresses'), {
         includeLiquidity: body.includeLiquidity,
+        checkLiquidity: typeof body.checkLiquidity === 'number' ? body.checkLiquidity : undefined,
+        uiAmountMode: body.uiAmountMode,
       }));
       return;
     }

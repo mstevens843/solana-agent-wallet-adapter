@@ -72,7 +72,13 @@ export async function requestBirdeye(
 
 export async function requestBirdeyePriceMulti(
   addresses: string[],
-  options: { includeLiquidity?: boolean; env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch } = {},
+  options: {
+    includeLiquidity?: boolean;
+    checkLiquidity?: number;
+    uiAmountMode?: 'raw' | 'scaled' | 'both';
+    env?: NodeJS.ProcessEnv;
+    fetchImpl?: typeof fetch;
+  } = {},
 ): Promise<Record<string, unknown>> {
   const list = normalizeAddressList(addresses, 100);
   if (!list.length) {
@@ -82,6 +88,8 @@ export async function requestBirdeyePriceMulti(
     method: 'POST',
     query: {
       include_liquidity: options.includeLiquidity ?? true,
+      check_liquidity: options.checkLiquidity,
+      ui_amount_mode: options.uiAmountMode,
     },
     body: {
       list_address: list.join(','),

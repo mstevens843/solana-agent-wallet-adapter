@@ -15,11 +15,14 @@ import {
   WALLET_BALANCE_SOL_MINT,
   WALLET_BALANCE_USDC_MINT,
   buildWalletBalanceSnapshot,
-  walletBalanceFallbackPriceMap,
-  walletBalancePriceMapFromBirdeye,
+  mergeWalletBalancePriceInfoMaps,
+  walletBalanceFallbackPriceInfoMap,
+  walletBalancePriceInfoMapFromBirdeye,
+  walletBalancePriceInfoMapFromJupiter,
   walletBalanceRowsFromParsedAccounts,
   walletBalanceUsdPricingEnabled,
   type Cluster,
+  type WalletBalancePriceInfo,
   type WalletBalanceSnapshot,
   type WalletBalanceTokenRow,
   type WalletBackend,
@@ -536,6 +539,9 @@ export interface UpdateRecurringPaymentInput extends RecurringPaymentInput {
   recurringId: string;
 }
 
+const JUPITER_LITE_PRICE_URL = 'https://lite-api.jup.ag/price/v3';
+const WALLET_BALANCE_PRICE_BATCH_SIZE = 50;
+
 export class AgentWalletActionService {
   private readonly backend: WalletBackend;
   private readonly config: AgentWalletConfig;
@@ -620,23 +626,29 @@ export class AgentWalletActionService {
       WALLET_BALANCE_USDC_MINT,
       ...tokenRows.map((row) => row.mint),
     ];
-    let prices = new Map<string, number>();
+    let priceInfo = new Map<string, WalletBalancePriceInfo>();
     if (walletBalanceUsdPricingEnabled(this.config.cluster)) {
       try {
-        prices = walletBalancePriceMapFromBirdeye(await requestBirdeyePriceMulti(mints, { includeLiquidity: false }));
+        const birdeye = walletBalancePriceInfoMapFromBirdeye(await requestBirdeyePriceMulti(mints, { includeLiquidity: true }));
+        const missingMints = mints.filter((mint) => {
+          const info = birdeye.get(mint);
+          if (info?.priceUsd === undefined) return true;
+          if (mint === WALLET_BALANCE_SOL_MINT || mint === WALLET_BALANCE_USDC_MINT) return false;
+          return info.liquidityUsd === undefined;
+        });
+        priceInfo = mergeWalletBalancePriceInfoMaps(birdeye, await fetchJupiterLiteWalletBalancePriceInfoMap(missingMints));
       } catch {
-        prices = walletBalanceFallbackPriceMap([WALLET_BALANCE_USDC_MINT], this.config.cluster);
+        priceInfo = await fetchJupiterLiteWalletBalancePriceInfoMap(mints).catch(() => new Map());
       }
-      if (mints.includes(WALLET_BALANCE_USDC_MINT) && !prices.has(WALLET_BALANCE_USDC_MINT)) {
-        prices.set(WALLET_BALANCE_USDC_MINT, 1);
-      }
+      priceInfo = mergeWalletBalancePriceInfoMaps(priceInfo, walletBalanceFallbackPriceInfoMap(mints, this.config.cluster));
     }
     return buildWalletBalanceSnapshot({
       walletAddress: address,
       cluster: this.config.cluster,
       solLamports,
       tokenRows,
-      prices,
+      prices: walletBalancePriceMapFromInfo(priceInfo),
+      priceInfo,
       knownTokens: knownWalletBalanceTokens(this.config),
       coverage: mode,
       pricingEnabled: walletBalanceUsdPricingEnabled(this.config.cluster),
@@ -6557,6 +6569,39 @@ function knownWalletBalanceTokens(config: AgentWalletConfig): Record<string, { s
     };
   }
   return tokens;
+}
+
+async function fetchJupiterLiteWalletBalancePriceInfoMap(mints: string[]): Promise<Map<string, WalletBalancePriceInfo>> {
+  const addresses = [...new Set(mints.filter(Boolean))];
+  if (!addresses.length) return new Map();
+  const chunks: string[][] = [];
+  for (let index = 0; index < addresses.length; index += WALLET_BALANCE_PRICE_BATCH_SIZE) {
+    chunks.push(addresses.slice(index, index + WALLET_BALANCE_PRICE_BATCH_SIZE));
+  }
+  const settled = await Promise.allSettled(chunks.map(fetchJupiterLiteWalletBalancePriceChunk));
+  return mergeWalletBalancePriceInfoMaps(
+    ...settled
+      .filter((entry): entry is PromiseFulfilledResult<Map<string, WalletBalancePriceInfo>> => entry.status === 'fulfilled')
+      .map((entry) => entry.value),
+  );
+}
+
+async function fetchJupiterLiteWalletBalancePriceChunk(mints: string[]): Promise<Map<string, WalletBalancePriceInfo>> {
+  const url = new URL(JUPITER_LITE_PRICE_URL);
+  url.searchParams.set('ids', mints.join(','));
+  const response = await fetch(url, { method: 'GET' });
+  if (!response.ok) {
+    throw new ProtocolError('wallet_unreachable', `Jupiter Lite Price API returned HTTP ${response.status}.`);
+  }
+  return walletBalancePriceInfoMapFromJupiter(await response.json() as unknown);
+}
+
+function walletBalancePriceMapFromInfo(priceInfo: Map<string, WalletBalancePriceInfo>): Map<string, number> {
+  const prices = new Map<string, number>();
+  for (const [mint, info] of priceInfo) {
+    if (info.priceUsd !== undefined) prices.set(mint, info.priceUsd);
+  }
+  return prices;
 }
 
 function requireStringParam(action: PreparedAction, key: string): string {

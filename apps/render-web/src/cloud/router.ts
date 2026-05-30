@@ -180,6 +180,22 @@ const DEFAULT_DESKTOP_DEV_CLOUD_ORIGINS = [
 ];
 const CORS_ALLOWED_HEADERS = 'authorization, content-type, x-agentic-client';
 const CORS_ALLOWED_METHODS = 'GET, POST, PATCH, PUT, DELETE, OPTIONS';
+const APPLE_APP_SITE_ASSOCIATION_PATH = '/.well-known/apple-app-site-association';
+const DEFAULT_IOS_BUNDLE_ID = 'com.agentic.wallet';
+const IOS_UNIVERSAL_LINK_PATHS = [
+  '/app',
+  '/app/*',
+  '/connect',
+  '/connect/*',
+  '/approve',
+  '/approve/*',
+  '/sign',
+  '/sign/*',
+  '/sign-in',
+  '/sign-in/*',
+  '/agentic-login',
+  '/agentic-login/*',
+] as const;
 
 type RenderDeviceAgentState = 'stopped' | 'running';
 
@@ -543,6 +559,11 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
         return await pairingHandler.handle(req, res, url);
       }
 
+      if (url.pathname === APPLE_APP_SITE_ASSOCIATION_PATH) {
+        handleAppleAppSiteAssociation(req, res);
+        return true;
+      }
+
       try {
         applyCloudCorsHeaders(req, res);
         if (req.method === 'OPTIONS') {
@@ -663,6 +684,58 @@ function handleCloudCorsPreflight(req: IncomingMessage, res: ServerResponse): vo
   }
   res.statusCode = 204;
   res.end();
+}
+
+function handleAppleAppSiteAssociation(req: IncomingMessage, res: ServerResponse): void {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    res.setHeader('allow', 'GET, HEAD');
+    writeJson(res, 405, { error: 'method_not_allowed' });
+    return;
+  }
+
+  const appID = resolveIosAssociatedAppId(process.env);
+  if (!appID) {
+    writeJson(res, 503, { error: 'ios_app_id_not_configured' });
+    return;
+  }
+
+  const body = JSON.stringify({
+    applinks: {
+      apps: [],
+      details: [
+        {
+          appID,
+          paths: IOS_UNIVERSAL_LINK_PATHS,
+        },
+      ],
+    },
+  });
+  res.statusCode = 200;
+  res.setHeader('content-type', 'application/json; charset=utf-8');
+  res.setHeader('cache-control', 'public, max-age=3600');
+  if (req.method === 'HEAD') {
+    res.end();
+    return;
+  }
+  res.end(body);
+}
+
+function resolveIosAssociatedAppId(env: NodeJS.ProcessEnv): string | undefined {
+  const explicit = (env.AGENTIC_IOS_ASSOCIATED_APP_ID ?? env.AGENTIC_IOS_APP_ID ?? '').trim();
+  if (explicit) {
+    return isValidIosAssociatedAppId(explicit) ? explicit : undefined;
+  }
+
+  const prefix = (env.AGENTIC_IOS_APP_ID_PREFIX ?? env.APPLE_TEAM_ID ?? '').trim();
+  const bundleId = (env.AGENTIC_IOS_BUNDLE_ID ?? DEFAULT_IOS_BUNDLE_ID).trim();
+  if (!/^[A-Z0-9]{10}$/.test(prefix) || !/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(bundleId)) {
+    return undefined;
+  }
+  return `${prefix}.${bundleId}`;
+}
+
+function isValidIosAssociatedAppId(appID: string): boolean {
+  return /^[A-Z0-9]{10}\.[A-Za-z0-9][A-Za-z0-9.-]*$/.test(appID);
 }
 
 function isAllowedCloudCorsOrigin(origin: string): boolean {
@@ -2066,7 +2139,12 @@ async function handleBirdeyePriceMulti(req: IncomingMessage, res: ServerResponse
   const body = asJsonRecord(await readJsonBody(req), 'BirdEye price body');
   const addresses = requiredStringArray(body.addresses, 'addresses');
   const includeLiquidity = typeof body.includeLiquidity === 'boolean' ? body.includeLiquidity : true;
-  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyePriceMulti(addresses, { includeLiquidity })));
+  const checkLiquidity = optionalNumberBodyField(body, 'checkLiquidity');
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyePriceMulti(addresses, {
+    includeLiquidity,
+    checkLiquidity,
+    uiAmountMode: birdeyeUiAmountMode(body.uiAmountMode),
+  })));
 }
 
 async function handleBirdeyeSearch(req: IncomingMessage, res: ServerResponse): Promise<void> {

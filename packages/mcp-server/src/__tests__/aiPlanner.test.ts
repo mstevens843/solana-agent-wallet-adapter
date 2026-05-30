@@ -917,6 +917,87 @@ describe('BridgeAiPlanner', () => {
     expect(result.next).toContain('/plan');
   });
 
+  it('normalizes Anthropic multiline structured free agent chat into compact display sections', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      content: [{
+        type: 'text',
+        text: `{"answer":"
+  Helium Mobile's cheapest plan is $0/month, and the Air plan is $15/month.
+  ","sections":[{"title":"Key Facts","bullets":["
+  Zero Plan: $0/month with 3GB data, 300 texts, 100 minutes
+  ","
+  Air Plan: $15/month with unlimited talk/text and 10GB data
+  "]}],"next":"Type /plan, /new, or /prepare when you want to prepare a visible wallet request."}`,
+      }],
+    })));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-chat',
+      provider: 'anthropic',
+      apiFormat: 'anthropic',
+      baseUrl: 'https://api.anthropic.com/v1',
+      model: 'claude-opus-4-1-20250805',
+    });
+
+    const result = await planner.chat({
+      messages: [{ role: 'user', content: 'What are Helium Mobile plan prices?' }],
+    });
+
+    expect(result.answer).toBe("Helium Mobile's cheapest plan is $0/month, and the Air plan is $15/month.");
+    expect(result.sections).toEqual([{
+      title: 'Key Facts',
+      bullets: [
+        'Zero Plan: $0/month with 3GB data, 300 texts, 100 minutes',
+        'Air Plan: $15/month with unlimited talk/text and 10GB data',
+      ],
+    }]);
+    expect(result.next).toContain('/plan');
+    expect(result.answer).not.toContain('{"answer"');
+    expect(result.answer).not.toContain('"sections"');
+    expect(result.sections?.[0]?.bullets.join('\n')).not.toContain('"bullets"');
+  });
+
+  it('strips provider cite tags from free agent chat text', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            answer: '<cite index="6-36,8-14,8-15">The cheapest Helium Mobile plan is the Zero plan at $0/month base cost.</cite>',
+            sections: [{
+              title: 'Key Facts',
+              bullets: [
+                '<cite index="6-36,6-37">Zero plan: $0/month with 1GB cellular.</cite>',
+                '<cite index="2-7">Air plan: $15/month.</cite>',
+              ],
+            }],
+            next: '<cite index="2-12">Type /plan when ready.</cite>',
+          }),
+        },
+      }],
+    })));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-chat',
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openai/gpt-5',
+    });
+
+    const result = await planner.chat({
+      messages: [{ role: 'user', content: 'What is the cheapest Helium Mobile plan?' }],
+    });
+
+    expect(result.answer).toBe('The cheapest Helium Mobile plan is the Zero plan at $0/month base cost.');
+    expect(result.sections?.[0]?.bullets).toEqual([
+      'Zero plan: $0/month with 1GB cellular.',
+      'Air plan: $15/month.',
+    ]);
+    expect(result.next).toBe('Type /plan when ready.');
+    expect(JSON.stringify(result)).not.toContain('<cite');
+    expect(JSON.stringify(result)).not.toContain('index=');
+  });
+
   it('rejects askAboutPlan with an empty question', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);

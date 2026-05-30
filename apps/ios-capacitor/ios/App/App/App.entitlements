@@ -4,7 +4,6 @@
 <dict>
 	<key>com.apple.developer.associated-domains</key>
 	<array>
-		<string>applinks:agenticwalletadapter.com</string>
 		<string>applinks:agentic-signer.com</string>
 	</array>
 	<key>com.apple.security.application-groups</key>
