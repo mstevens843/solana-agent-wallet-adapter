@@ -1268,7 +1268,7 @@ export class IosNativeWalletBackend implements WalletBackend {
     }
   }
 
-  private async emitJupiterRequestLaunchStartDebug(request: SigningRequest, record: IosNativeWalletRecord): Promise<void> {
+  private async emitJupiterRequestLaunchStartDebug(request: SigningRequest, record: IosAuthRecord): Promise<void> {
     await emitMobileWalletDebug(this.logLevel, {
       appUrl: this.appUrl,
       wallet: 'jupiter',
