@@ -12,9 +12,10 @@
 //      AgenticRemoteConfigStore on first use.
 //   3. Rebuild via `pnpm copy-web && pnpm sync` from apps/ios-capacitor.
 //
-// The Solana namespace methods we use:
+// The Solana namespace methods we require:
 //   - solana_signMessage
 //   - solana_signTransaction
+// Optional, when a wallet advertises it:
 //   - solana_signAndSendTransaction
 //
 // Reference: WalletConnect v2 spec (Solana namespace).
@@ -101,11 +102,16 @@ final class AgenticWalletConnectCore {
         }
         Task {
             do {
-                let methods: Set<String> = ["solana_signMessage", "solana_signTransaction", "solana_signAndSendTransaction"]
+                let methods: Set<String> = ["solana_signMessage", "solana_signTransaction"]
+                let optionalMethods: Set<String> = ["solana_signAndSendTransaction"]
                 let events: Set<String> = ["chainChanged", "accountsChanged"]
                 let blockchain = Blockchain(chain) ?? Blockchain("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp")!
                 let namespace = ProposalNamespace(chains: [blockchain], methods: methods, events: events)
-                let uri = try await Sign.instance.connect(requiredNamespaces: ["solana": namespace])
+                let optionalNamespace = ProposalNamespace(chains: [blockchain], methods: optionalMethods, events: events)
+                let uri = try await Sign.instance.connect(
+                    requiredNamespaces: ["solana": namespace],
+                    optionalNamespaces: ["solana": optionalNamespace]
+                )
                 completion(.success((uri: uri.absoluteString, topic: uri.topic)))
             } catch {
                 completion(.failure(error))

@@ -43,20 +43,31 @@ public class AgenticWalletConnectPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc func wcLaunchWallet(_ call: CAPPluginCall) {
         guard AgenticBridgeOrigin.validate(call, on: bridge) else { return }
-        guard let uri = call.getString("uri"), let url = URL(string: uri) else {
-            call.reject("Missing or invalid WalletConnect URI.", "INVALID_URI")
+        guard let uri = call.getString("uri") else {
+            call.reject("Missing WalletConnect URI.", "INVALID_URI")
+            return
+        }
+        let walletId = call.getString("walletId", "jupiter")
+        let urls = walletConnectLaunchCandidates(uri: uri, walletId: walletId)
+        guard !urls.isEmpty else {
+            call.reject("Invalid WalletConnect URI.", "INVALID_URI")
             return
         }
         AgenticIOSLog.info("AgenticWalletConnect", "wcLaunchWallet", "START", "opening WalletConnect URI", [
-            "walletId": call.getString("walletId", "jupiter"),
+            "walletId": walletId,
             "uriBytes": String(uri.utf8.count),
+            "candidateCount": String(urls.count),
         ])
-        DispatchQueue.main.async {
-            UIApplication.shared.open(url, options: [:]) { launched in
+        openFirstWalletConnectCandidate(urls) { launched, launchedUrl in
+            DispatchQueue.main.async {
                 AgenticIOSLog.info("AgenticWalletConnect", "wcLaunchWallet", "DONE", "wallet launch attempted", [
                     "launched": String(launched),
+                    "url": launchedUrl?.scheme ?? "none",
                 ])
-                call.resolve(["launched": launched])
+                call.resolve([
+                    "launched": launched,
+                    "url": launchedUrl?.absoluteString ?? "",
+                ])
             }
         }
     }
@@ -191,5 +202,47 @@ public class AgenticWalletConnectPlugin: CAPPlugin, CAPBridgedPlugin {
         let message = "Jupiter WalletConnect requires the Reown iOS SDK. Add `https://github.com/reown-com/reown-swift.git` (from 1.0.0) to Package.swift and add `WalletConnect` to the bridge target's dependencies. See packages/ios-capacitor-bridge/ios/Plugin/AgenticWalletConnectCore.swift."
         AgenticIOSLog.fail("AgenticWalletConnect", method, "FAIL", message)
         call.reject(message, "WC_REOWN_NOT_CONFIGURED")
+    }
+
+    private func walletConnectLaunchCandidates(uri: String, walletId: String) -> [URL] {
+        var candidates: [String] = []
+        if walletId.lowercased() == "jupiter" {
+            let encoded = percentEncodeQueryValue(uri)
+            candidates.append("jupiter://wc?uri=\(encoded)")
+        }
+        candidates.append(uri)
+        var seen = Set<String>()
+        return candidates.compactMap { raw in
+            guard !seen.contains(raw), let url = URL(string: raw) else { return nil }
+            seen.insert(raw)
+            return url
+        }
+    }
+
+    private func percentEncodeQueryValue(_ value: String) -> String {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+
+    private func openFirstWalletConnectCandidate(
+        _ urls: [URL],
+        completion: @escaping (Bool, URL?) -> Void
+    ) {
+        var remaining = urls
+        guard !remaining.isEmpty else {
+            completion(false, nil)
+            return
+        }
+        let url = remaining.removeFirst()
+        DispatchQueue.main.async {
+            UIApplication.shared.open(url, options: [:]) { launched in
+                if launched {
+                    completion(true, url)
+                    return
+                }
+                self.openFirstWalletConnectCandidate(remaining, completion: completion)
+            }
+        }
     }
 }

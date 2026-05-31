@@ -124,7 +124,7 @@ interface AgenticSecureStatePlugin {
 
 interface AgenticWalletConnectPlugin {
   wcConnect(options?: { cluster?: Cluster; appUrl?: string }): Promise<{ uri?: string; topic?: string; pubkey?: string }>;
-  wcLaunchWallet(options: { uri: string; walletId?: string }): Promise<{ launched?: boolean }>;
+  wcLaunchWallet(options: { uri: string; walletId?: string }): Promise<{ launched?: boolean; url?: string }>;
   wcWaitForSession(options?: { timeoutMs?: number }): Promise<{ pubkey?: string; topic?: string }>;
   wcGetSession(): Promise<{ connected?: boolean; pubkey?: string; topic?: string }>;
   wcSignMessage(options: {
@@ -768,11 +768,17 @@ export class IosNativeWalletBackend implements WalletBackend {
     if (!pairing.uri) {
       throw new ProtocolError('wallet_unreachable', 'Jupiter WalletConnect did not return a pairing URI.');
     }
-    await callWalletConnect(
+    const launch = await callWalletConnect(
       'wcLaunchWallet',
       () => AgenticWalletConnect.wcLaunchWallet({ uri: pairing.uri!, walletId: 'jupiter' }),
       this.logLevel,
     );
+    if (launch.launched === false) {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        'iOS could not open Jupiter for WalletConnect. Open Jupiter on this device and try connecting again.',
+      );
+    }
     const session = await callWalletConnect(
       'wcWaitForSession',
       () => AgenticWalletConnect.wcWaitForSession({ timeoutMs: this.requestTtlMs }),
@@ -1345,7 +1351,7 @@ export function iosNativeWalletConnectTransactionParam(payload: SigningRequest['
   return encodeBase64(decodeSigningPayload(payload.data, payload.encoding));
 }
 
-function attachSolanaSignature(transactionBytes: Uint8Array, signerAddress: string, signatureBase58: string): Uint8Array {
+export function attachSolanaSignature(transactionBytes: Uint8Array, signerAddress: string, signatureBase58: string): Uint8Array {
   const signer = new PublicKey(signerAddress);
   const signature = bs58.decode(signatureBase58);
   if (signature.length !== 64) {

@@ -8,6 +8,7 @@ import bs58 from 'bs58';
 import {
   setProofSigningContext,
   shouldRouteProofThroughAndroidNative,
+  shouldRouteProofThroughIosNative,
   shouldRouteProofThroughLedgerMemo,
   shouldRouteProofThroughRemoteRelayMemo,
   signWalletProofMessage,
@@ -24,6 +25,7 @@ function appState(overrides: Partial<ProofSigningAppState>): ProofSigningAppStat
     selectedWalletName: 'Backpack',
     address: '11111111111111111111111111111111',
     androidNativeEnvironment: { isAndroidNative: false },
+    iosNativeEnvironment: { isIosNative: false },
     capabilities: { supports: { signMessage: true } },
     ...overrides,
   };
@@ -91,6 +93,36 @@ describe('shouldRouteProofThroughRemoteRelayMemo', () => {
       shouldRouteProofThroughRemoteRelayMemo(
         appState({
           selectedWalletName: 'Solflare',
+          capabilities: {
+            backend: 'wallet-standard-web',
+            supports: { signMessage: true, signTransaction: true },
+          },
+        }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe('shouldRouteProofThroughIosNative', () => {
+  it('routes iOS native wallets through a memo transaction when transaction signing is available', () => {
+    expect(
+      shouldRouteProofThroughIosNative(
+        appState({
+          iosNativeEnvironment: { isIosNative: true },
+          capabilities: {
+            backend: 'ios-native-phantom',
+            supports: { signMessage: true, signTransaction: true },
+          },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it('does not route non-iOS wallets through the iOS memo path', () => {
+    expect(
+      shouldRouteProofThroughIosNative(
+        appState({
+          iosNativeEnvironment: { isIosNative: false },
           capabilities: {
             backend: 'wallet-standard-web',
             supports: { signMessage: true, signTransaction: true },
@@ -252,5 +284,44 @@ describe('signWalletProofMessage', () => {
     expect(result.signature).toBe(bs58.encode(signature));
     expect(result.proofTxBase64).toBeTruthy();
     expect(result.proofMemoText).toBe('qr proof');
+  });
+
+  it('routes iOS native proofs through a signed memo transaction', async () => {
+    const signer = Keypair.generate();
+    const signature = new Uint8Array(64).fill(11);
+    const signMessage = vi.fn();
+    const signTransaction = vi.fn(async (txBase64: string) => {
+      const tx = Transaction.from(Buffer.from(txBase64, 'base64'));
+      tx.addSignature(signer.publicKey, Buffer.from(signature));
+      return {
+        signature: Buffer.from(
+          tx.serialize({ requireAllSignatures: false, verifySignatures: false }),
+        ).toString('base64'),
+      };
+    });
+    setProofSigningContext({
+      getClient: () => fakeClient({ signMessage, signTransaction }),
+      getAppState: () =>
+        appState({
+          selectedWalletName: 'Phantom',
+          address: signer.publicKey.toBase58(),
+          iosNativeEnvironment: { isIosNative: true },
+          capabilities: {
+            backend: 'ios-native-phantom',
+            supports: { signMessage: true, signTransaction: true },
+          },
+        }),
+      getLatestBlockhash: async () => ({ blockhash: '11111111111111111111111111111111' }),
+      getAndroidProofBackend: () => null,
+    });
+
+    const result = await signWalletProofMessage('ios proof', 'summary', 'mainnet-beta' as Cluster);
+
+    expect(signMessage).not.toHaveBeenCalled();
+    expect(signTransaction).toHaveBeenCalledOnce();
+    expect(result.proofEncoding).toBe('tx-memo-proof');
+    expect(result.signature).toBe(bs58.encode(signature));
+    expect(result.proofTxBase64).toBeTruthy();
+    expect(result.proofMemoText).toBe('ios proof');
   });
 });

@@ -31,6 +31,11 @@
  * Its `signTransaction` deeplink is already the working path for swaps, so proofs
  * use a signed memo transaction there too.
  *
+ * iOS-native wallet approvals use the same JS memo-tx proof fallback. Phantom,
+ * Solflare, Backpack, and Jupiter all need `signTransaction` for the main wallet
+ * action surface anyway, so proof-only actions avoid relying on per-wallet mobile
+ * `signMessage` behavior while still producing a non-broadcast ownership proof.
+ *
  * This module is the single entry point; per-host routing is in the native bridge
  * (see `apps/android-twa/app/src/main/java/com/agentic/wallet/mwa/MwaController.kt`
  * `signProofMessage`, the `WalletRegistry.reportSignMessageSupported` policy, and
@@ -65,6 +70,7 @@ export interface ProofSigningAppState {
   selectedWalletName: string;
   address: string;
   androidNativeEnvironment: { isAndroidNative: boolean };
+  iosNativeEnvironment?: { isIosNative: boolean };
   capabilities?: {
     backend?: string;
     supports?: {
@@ -118,6 +124,11 @@ export function shouldRouteProofThroughRemoteRelayMemo(state: ProofSigningAppSta
     && state.capabilities?.supports?.signTransaction === true;
 }
 
+export function shouldRouteProofThroughIosNative(state: ProofSigningAppState): boolean {
+  return state.iosNativeEnvironment?.isIosNative === true
+    && state.capabilities?.supports?.signTransaction === true;
+}
+
 export async function signWalletProofMessage(
   message: string,
   summary: string,
@@ -155,6 +166,9 @@ export async function signWalletProofMessage(
     return signMemoTransactionProof(message, summary, cluster, state);
   }
   if (shouldRouteProofThroughRemoteRelayMemo(state)) {
+    return signMemoTransactionProof(message, summary, cluster, state);
+  }
+  if (shouldRouteProofThroughIosNative(state)) {
     return signMemoTransactionProof(message, summary, cluster, state);
   }
   const client = context.getClient();
