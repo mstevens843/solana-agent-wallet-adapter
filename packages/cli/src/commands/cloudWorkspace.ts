@@ -13,6 +13,7 @@
  *   solana-agent-wallet cloud-workspace delete --confirm             # opens wallet host to sign
  */
 import type { ParsedArgs } from '../shared/types.js';
+import { clearSession } from '../auth/sessionStore.js';
 import { runSignedRequest } from '../auth/signedRequest.js';
 
 export async function dispatchCloudWorkspace(parsed: ParsedArgs): Promise<unknown> {
@@ -28,7 +29,7 @@ export async function dispatchCloudWorkspace(parsed: ParsedArgs): Promise<unknow
       requiresWalletSignature: true,
     };
   }
-  return runSignedRequest(parsed.options, {
+  const result = await runSignedRequest(parsed.options, {
     intent: {
       path: '/api/cloud-workspace/delete-intent',
       body: {},
@@ -39,6 +40,12 @@ export async function dispatchCloudWorkspace(parsed: ParsedArgs): Promise<unknow
       method: 'POST',
       label: 'Cloud workspace delete',
     },
-    summary: 'Delete entire Agentic cloud workspace',
+    summary: 'Delete Agentic Cloud Storage',
+    walletHost: {
+      path: '/delete-storage',
+      openLabel: 'Agentic Cloud Storage Deletion',
+    },
   });
+  await clearSession(parsed.options).catch(() => false);
+  return result;
 }

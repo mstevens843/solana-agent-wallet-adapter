@@ -28,7 +28,7 @@ import {
   type IosDeepLinkWalletId,
   type IosWalletId,
 } from '@solana-agent-wallet-adapter/ios-link/deeplink';
-import { Connection } from '@solana/web3.js';
+import { Connection, PublicKey, Transaction, VersionedTransaction } from '@solana/web3.js';
 
 export type IosNativeWalletId = IosWalletId;
 
@@ -313,6 +313,7 @@ if (typeof globalThis !== 'undefined') {
 const AUTH_CACHE_KEY = 'agentic-ios-auth-cache-v1';
 const PENDING_STATE_KEY = 'agentic-ios-pending-state-v1';
 const CLOUD_SESSION_TOKEN_KEY = 'cloudSessionToken';
+export const DEFAULT_IOS_APP_URL = 'https://agentic-signer.com';
 const DEFAULT_CALLBACK_SCHEME = 'agenticwallet';
 const DEFAULT_REQUEST_TTL_MS = 120_000;
 const FALSE_ENV_VALUES = new Set(['0', 'false', 'no', 'off', 'native', 'swift']);
@@ -334,6 +335,19 @@ export function capacitorIosAppEnabled(): boolean {
     viteEnv?.CAPACITATOR_IOS_APP ??
     'true';
   return !FALSE_ENV_VALUES.has(String(raw).trim().toLowerCase());
+}
+
+export function iosNativeAppUrl(): string {
+  const viteEnv = (import.meta as ImportMeta & {
+    env?: Record<string, string | boolean | undefined>;
+  }).env;
+  const lookup = (key: string) => envValue(viteEnv, key);
+  return (
+    httpsOrigin(lookup('VITE_AGENTIC_IOS_APP_URL')) ??
+    httpsOrigin(lookup('VITE_AGENTIC_CLOUD_API_BASE_URL')) ??
+    httpsOrigin(lookup('AGENTIC_CLOUD_API_BASE_URL')) ??
+    DEFAULT_IOS_APP_URL
+  );
 }
 
 export function detectIosNativeEnvironment(callbackScheme = DEFAULT_CALLBACK_SCHEME): IosNativeEnvironment {
@@ -706,7 +720,7 @@ export class IosNativeWalletBackend implements WalletBackend {
       walletUrl: urlShape(connectUrl),
       callback: urlShape(redirect),
     });
-    openWalletUrl(connectUrl);
+    await openWalletUrl(connectUrl, this.logLevel);
     const callbackUrl = await callbackPromise;
     const decoded = parseIosConnectCallback(walletId, callbackUrl, dapp.secretKey);
     const descriptor = iosWalletDescriptor(walletId)!;
@@ -863,7 +877,7 @@ export class IosNativeWalletBackend implements WalletBackend {
       walletUrl: urlShape(url),
       callback: urlShape(redirect),
     });
-    openWalletUrl(url);
+    await openWalletUrl(url, this.logLevel);
     const callbackUrl = await callbackPromise;
     const decoded = parseIosSigningCallback(callbackUrl, sharedSecret);
     await this.clearPendingRuntimeState();
@@ -895,12 +909,13 @@ export class IosNativeWalletBackend implements WalletBackend {
         return { signature: result.signature };
       }
       case 'sign_transaction': {
+        const transactionBase64 = iosNativeWalletConnectTransactionParam(request.payload);
         const result = await callWalletConnect(
           'wcSignTransaction',
           () =>
             AgenticWalletConnect.wcSignTransaction({
               pubkey: record.publicKey,
-              transaction: bs58.encode(payload),
+              transaction: transactionBase64,
               timeoutMs: this.requestTtlMs,
               walletId: 'jupiter',
             }),
@@ -912,26 +927,64 @@ export class IosNativeWalletBackend implements WalletBackend {
           return { signature: encodeBase64(signedBytes) };
         }
         if (result.signature) {
-          return { signature: result.signature };
+          return {
+            signature: encodeBase64(
+              attachSolanaSignature(payload, record.publicKey, result.signature),
+            ),
+          };
         }
         throw new ProtocolError('wallet_unreachable', 'Jupiter did not return a signed transaction.');
       }
       case 'sign_and_send_transaction': {
-        const result = await callWalletConnect(
-          'wcSignAndSendTransaction',
+        const transactionBase64 = iosNativeWalletConnectTransactionParam(request.payload);
+        try {
+          const result = await callWalletConnect(
+            'wcSignAndSendTransaction',
+            () =>
+              AgenticWalletConnect.wcSignAndSendTransaction({
+                pubkey: record.publicKey,
+                transaction: transactionBase64,
+                timeoutMs: this.requestTtlMs,
+                walletId: 'jupiter',
+              }),
+            this.logLevel,
+          );
+          const txid = result.txid ?? result.signature;
+          if (!txid) {
+            throw new ProtocolError('wallet_unreachable', 'Jupiter did not return a transaction id.');
+          }
+          return { signature: txid, txid };
+        } catch (err) {
+          if (!isUnsupportedWalletConnectMethod(err)) {
+            throw err;
+          }
+        }
+        const signed = await callWalletConnect(
+          'wcSignTransaction',
           () =>
-            AgenticWalletConnect.wcSignAndSendTransaction({
+            AgenticWalletConnect.wcSignTransaction({
               pubkey: record.publicKey,
-              transaction: bs58.encode(payload),
+              transaction: transactionBase64,
               timeoutMs: this.requestTtlMs,
               walletId: 'jupiter',
             }),
           this.logLevel,
         );
-        const txid = result.txid ?? result.signature;
-        if (!txid) {
-          throw new ProtocolError('wallet_unreachable', 'Jupiter did not return a transaction id.');
+        const signedBytes = signed.transaction
+          ? signed.transactionEncoding === 'base64'
+            ? decodeBase64(signed.transaction)
+            : bs58.decode(signed.transaction)
+          : signed.signature
+            ? attachSolanaSignature(payload, record.publicKey, signed.signature)
+            : null;
+        if (!signedBytes) {
+          throw new ProtocolError('wallet_unreachable', 'Jupiter did not return a signed transaction.');
         }
+        const txid = await this.connection.sendRawTransaction(signedBytes, {
+          preflightCommitment: 'confirmed',
+          maxRetries: 3,
+        });
+        await this.connection.confirmTransaction(txid, 'confirmed');
         return { signature: txid, txid };
       }
     }
@@ -1214,6 +1267,34 @@ function dispatchIosUrl(url: string): void {
   }
 }
 
+function httpsOrigin(value: string | boolean | undefined): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'https:') {
+      return null;
+    }
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+function envValue(
+  viteEnv: Record<string, string | boolean | undefined> | undefined,
+  key: string,
+): string | boolean | undefined {
+  const viteValue = viteEnv?.[key];
+  if (viteValue !== undefined) {
+    return viteValue;
+  }
+  return (globalThis as {
+    process?: { env?: Record<string, string | undefined> };
+  }).process?.env?.[key];
+}
+
 function callbackPhase(url: URL): 'connect' | 'sign' | null {
   const phase = url.searchParams.get('phase');
   if (phase === 'connect' || phase === 'sign') {
@@ -1232,12 +1313,79 @@ function waiterKey(phase: 'connect' | 'sign', requestId: string): string {
   return `${phase}:${requestId}`;
 }
 
-function openWalletUrl(url: string): void {
-  window.location.href = url;
+async function openWalletUrl(url: string, logLevel: IosNativeLogLevel): Promise<void> {
+  if (safeIsNativePlatform()) {
+    try {
+      const result = await AgenticSystem.openExternal({ url });
+      if (result.ok) {
+        return;
+      }
+      iosLog(logLevel, 'AgenticSystem', 'openWalletUrl', 'FALLBACK', 'info', 'native open declined wallet URL', {
+        walletUrl: urlShape(url),
+      });
+    } catch (err) {
+      iosLog(logLevel, 'AgenticSystem', 'openWalletUrl', 'FALLBACK', 'debug', 'native open failed', {
+        walletUrl: urlShape(url),
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  if (typeof window.location.assign === 'function') {
+    window.location.assign(url);
+  } else {
+    window.location.href = url;
+  }
 }
 
 function decodeSigningPayload(data: string, encoding: 'utf8' | 'base64'): Uint8Array {
   return encoding === 'utf8' ? encodeUtf8(data) : decodeBase64(data);
+}
+
+export function iosNativeWalletConnectTransactionParam(payload: SigningRequest['payload']): string {
+  return encodeBase64(decodeSigningPayload(payload.data, payload.encoding));
+}
+
+function attachSolanaSignature(transactionBytes: Uint8Array, signerAddress: string, signatureBase58: string): Uint8Array {
+  const signer = new PublicKey(signerAddress);
+  const signature = bs58.decode(signatureBase58);
+  if (signature.length !== 64) {
+    throw new ProtocolError('wallet_unreachable', 'WalletConnect returned a malformed Solana signature.');
+  }
+
+  try {
+    const legacy = Transaction.from(transactionBytes);
+    legacy.addSignature(signer, signature as unknown as Buffer);
+    return new Uint8Array(legacy.serialize({ requireAllSignatures: false, verifySignatures: false }));
+  } catch {
+    const versioned = VersionedTransaction.deserialize(transactionBytes);
+    const message = versioned.message as {
+      header: { numRequiredSignatures: number };
+      staticAccountKeys?: PublicKey[];
+      accountKeys?: PublicKey[];
+    };
+    const accountKeys = message.staticAccountKeys ?? message.accountKeys ?? [];
+    const signerIndex = accountKeys.findIndex((key) => key.equals(signer));
+    if (
+      signerIndex < 0 ||
+      signerIndex >= message.header.numRequiredSignatures ||
+      signerIndex >= versioned.signatures.length
+    ) {
+      throw new ProtocolError('wallet_unreachable', 'WalletConnect signature did not match a required transaction signer.');
+    }
+    versioned.signatures[signerIndex] = signature;
+    return versioned.serialize();
+  }
+}
+
+function isUnsupportedWalletConnectMethod(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  const lower = message.toLowerCase();
+  return (
+    lower.includes('unsupported') ||
+    lower.includes('not supported') ||
+    lower.includes('method not found') ||
+    lower.includes('wc_rpc_-32601')
+  );
 }
 
 function isUsableRecord(record: IosAuthRecord): boolean {

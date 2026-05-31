@@ -315,6 +315,7 @@ import {
   hostedByokCloudSessionBlockReason,
   shouldAutoSignOutCloudSession,
 } from './cloudSessionPolicy.js';
+import { wipeLocalAppStorage } from './localAppStorageWipe.js';
 import { approvalErrorMessages } from './approvalDisplay.js';
 import {
   openExternalUrlForSurface,
@@ -398,6 +399,7 @@ import {
   clearIosNativeCloudSessionToken,
   detectIosNativeEnvironment,
   iosNativeCacheSummary,
+  iosNativeAppUrl,
   iosNativeCloudSessionToken,
   listIosNativeWalletOptions,
   restoreLatestIosNativeWallet,
@@ -1455,7 +1457,7 @@ const BROWSER_AI_LIMITATIONS = [
   'Browser AI cannot run background jobs after the tab closes.',
 ];
 const CUSTOM_AI_MODEL_VALUE = '__custom__';
-const ROUTE_PATHS = ['/', '/docs', '/builders', '/app', '/connect', '/disconnect', '/approve', '/sign', '/sign-in', '/sign-out', '/qr-connect', '/cli', '/desktop', '/android', '/demo', '/mwa-test', '/privacy', '/terms', '/delete-account', '/agentic-login'] as const;
+const ROUTE_PATHS = ['/', '/docs', '/builders', '/app', '/connect', '/disconnect', '/approve', '/sign', '/sign-in', '/sign-out', '/delete-storage', '/qr-connect', '/cli', '/desktop', '/android', '/demo', '/mwa-test', '/privacy', '/terms', '/delete-account', '/agentic-login'] as const;
 const ROUTE_PATH_SET = new Set<string>(ROUTE_PATHS);
 const SHOW_DEV_CONTROLS = resolveDevControls();
 const IS_ANDROID_APP = resolveAndroidAppSurface();
@@ -1557,6 +1559,7 @@ const ROUTE_TITLES: Record<string, string> = {
   '/privacy': 'Privacy Policy · Agentic',
   '/terms': 'Terms of Service · Agentic',
   '/delete-account': 'Delete Account · Agentic',
+  '/delete-storage': 'Delete Cloud Storage · Agentic',
 };
 const RUNTIME_PATHS: RuntimePath[] = [
   {
@@ -3226,8 +3229,9 @@ function notificationSettingsFromPersisted(
 
 const persisted = loadPersistedState();
 const launchParams = readLaunchParams();
+const completedCloudWorkspaceDeleteNotice = readCompletedCloudWorkspaceDeleteNotice();
 clearSensitiveLaunchParams();
-type CliIntentName = 'connect' | 'disconnect' | 'approve' | 'sign' | 'sign-in' | 'sign-out';
+type CliIntentName = 'connect' | 'disconnect' | 'approve' | 'sign' | 'sign-in' | 'sign-out' | 'delete-storage';
 type CliSurfaceName = 'desktop';
 type CliView = { intent: CliIntentName; actionId?: string; requestId?: string; surface?: CliSurfaceName; walletAddress?: string };
 let cliView: CliView | null = launchParams.cliMode && launchParams.cliIntent
@@ -3917,6 +3921,17 @@ function syncBrowserDeviceAgentWalletAddress(mod = browserDeviceAgentModule): vo
   mod.setBrowserDeviceAgentWalletAddress(currentDeviceAgentWalletAddress());
 }
 
+function notifyCompletedCloudWorkspaceDeleteFromLaunch(): void {
+  if (!completedCloudWorkspaceDeleteNotice) return;
+  const count = completedCloudWorkspaceDeleteNotice.deletedCount;
+  pushToast(
+    'success',
+    'Cloud workspace deleted',
+    `${count} cloud record${count === 1 ? '' : 's'} removed. This device's app storage was cleared.`,
+    { dismissAfterMs: 10_000 },
+  );
+}
+
 async function startApp(): Promise<void> {
   try {
     if (!appRoot) {
@@ -3926,6 +3941,7 @@ async function startApp(): Promise<void> {
     warmBrowserDeviceAgent();
     normalizeInitialRoute();
     hydrateGeneratedPlansForStartup();
+    notifyCompletedCloudWorkspaceDeleteFromLaunch();
     installSpendBridgeHandlers();
     const cachedDeviceAgentStatus = loadDeviceAgentStatusCache();
     if (cachedDeviceAgentStatus) {
@@ -8986,6 +9002,7 @@ function pageContent(route: AppRoute | null): string {
     case '/sign':
     case '/sign-in':
     case '/sign-out':
+    case '/delete-storage':
       return cliAppPage();
     case '/qr-connect':
       return qrConnectPage();
@@ -9387,6 +9404,7 @@ function cliAppPage(): string {
   if (cliView.intent === 'connect' || cliView.intent === 'disconnect') return cliConnectView();
   if (cliView.intent === 'sign-in') return cliCloudSignInView();
   if (cliView.intent === 'sign-out') return cliCloudSignOutView();
+  if (cliView.intent === 'delete-storage') return cliDeleteStorageView();
   if (cliView.intent === 'approve') return cliApproveView();
   if (cliView.intent === 'sign') return cliSignView();
   return cliErrorView('Unknown CLI intent', 'Return to the terminal and try again.');
@@ -9603,6 +9621,68 @@ function cliCloudSignOutView(): string {
       </div>
     `,
     footer: cliReturnFooter(),
+  });
+}
+
+function cliDeleteStorageView(): string {
+  const url = new URL(window.location.href);
+  const nonce = url.searchParams.get('nonce') ?? '';
+  const message = url.searchParams.get('message') ?? '';
+  const callback = url.searchParams.get('callback') ?? '';
+  const desiredWallet = url.searchParams.get('walletAddress') ?? '';
+  const connected = state.address ?? '';
+  const requestReady = Boolean(nonce && message && callback);
+  const walletMismatch = Boolean(desiredWallet && connected && !sameWalletAddress(connected, desiredWallet));
+  const walletPaired = Boolean(connected) && !walletMismatch;
+  const directSignerReady = walletPaired && cliCloudSignInDirectSignerReady();
+  const canStart = requestReady && walletPaired;
+  const warning = !requestReady
+    ? 'Missing Cloud Storage deletion details. Return to the terminal and run /delete-storage again.'
+    : !connected
+      ? 'Connect your wallet first. Return to the terminal, run /connect, then run /delete-storage again.'
+      : walletMismatch
+        ? `This deletion is for ${short(desiredWallet)}, but ${short(connected)} is connected. Switch wallets and reload this page.`
+        : '';
+  const logoId = state.selectedWalletLogoId ?? walletProviderLogoIdForName(state.selectedWalletName);
+  const subtitleIcon = logoId ? brandLogo(logoId, 'cli-focused-wallet-logo') : undefined;
+  const heading = directSignerReady
+    ? 'Ready for wallet signature'
+    : walletPaired
+      ? 'Wallet connected - reconnect to sign'
+      : 'Wallet required';
+  const buttonLabel = directSignerReady ? 'Sign and delete Cloud Storage' : 'Connect wallet and delete';
+  return cliFocusedShell({
+    title: 'Delete Cloud Storage',
+    subtitle: connected ? short(connected) : 'Wallet required',
+    ...(subtitleIcon ? { subtitleIcon } : {}),
+    body: `
+      ${warning ? `
+        <div class="cli-focused-error" role="alert">
+          <p>${escapeHtml(warning)}</p>
+        </div>
+      ` : ''}
+      <section class="cli-cloud-signin-card signature-state ${walletPaired ? 'complete' : 'blocked'}">
+        <div>
+          <span>Permanent deletion</span>
+          <strong>${escapeHtml(heading)}</strong>
+          <p>This deletes the Agentic Cloud workspace for this wallet. No transaction will be submitted, and this does not grant spending authority.</p>
+        </div>
+        <button id="agenticLoginSign" type="button" class="primary danger" ${canStart && !state.busy ? '' : 'disabled'}>
+          ${escapeHtml(buttonLabel)}
+        </button>
+        <p id="agenticLoginStatus" class="cli-focused-note" role="status"></p>
+      </section>
+      <section class="cli-cloud-benefits" aria-label="Cloud Storage deletion scope">
+        ${cliCloudBenefit('Deleted from Agentic Cloud', 'Drafts, plans, approvals, recurring schedules, occurrence history, evidence receipts, audit events, encrypted connector keys, preferences, and active Cloud session state.')}
+        ${cliCloudBenefit('Cleared locally where available', 'After the deletion proof is sent, this signing page clears its localStorage, sessionStorage, IndexedDB, and CacheStorage for this site.')}
+        ${cliCloudBenefit('Not deleted', 'On-chain Solana transaction history, anonymous analytics retained by Google, limited compliance/security logs, and support correspondence outside this wallet-scoped workspace.')}
+      </section>
+      <div class="cli-cloud-safety-note">
+        <strong>Requires wallet signature</strong>
+        <span>Signing proves you own the wallet whose Cloud Storage is being deleted. Agentic never receives your private key.</span>
+      </div>
+    `,
+    footer: `<p class="cli-focused-note">Return to the terminal after the wallet signature completes.</p>`,
   });
 }
 
@@ -16760,7 +16840,7 @@ function commandCloudStorageDangerZone(): string {
   if (state.cloudSession.status !== 'signed-in') return '';
   const matched = cloudSessionMatchesWallet();
   const reason = matched
-    ? 'Deletes cloud drafts, approvals, schedules, proofs, done work, and audit events for this wallet.'
+    ? 'Deletes cloud workspace data and clears this device\'s app storage for a full reset.'
     : `Connect ${short(state.cloudSession.walletAddress)} to delete this cloud workspace.`;
   const cleanupReason = matched
     ? 'Cancels older duplicate active approvals for each recurring schedule while keeping the newest one.'
@@ -16785,8 +16865,8 @@ function commandCloudStorageDangerZone(): string {
     <div class="command-storage-danger-zone">
       <div>
         <span>Danger zone</span>
-        <strong>Delete cloud data</strong>
-        <p>${escapeHtml(reason)} Device data and on-chain history stay.</p>
+        <strong>Delete cloud and app data</strong>
+        <p>${escapeHtml(reason)} On-chain history stays.</p>
       </div>
       <button
         type="button"
@@ -16795,7 +16875,7 @@ function commandCloudStorageDangerZone(): string {
         ${!matched || state.busy ? 'disabled' : ''}
         title="${escapeHtml(matched ? 'Requires a wallet signature before deletion.' : reason)}"
       >
-        Delete cloud data
+        Delete all app data
       </button>
     </div>
   `;
@@ -19067,18 +19147,18 @@ function cloudWorkspaceDeleteModal(): string {
         <div class="generated-plan-modal-head">
           <div>
             <span class="workbench-kicker">Cloud workspace deletion</span>
-            <h2 id="cloud-delete-title">Delete Cloud Workspace Data?</h2>
-            <p>This permanently removes the Agentic Cloud workspace for ${escapeHtml(wallet)}.</p>
+            <h2 id="cloud-delete-title">Delete Cloud Workspace and App Data?</h2>
+            <p>This permanently removes the Agentic Cloud workspace for ${escapeHtml(wallet)} and clears this app's local storage on this device.</p>
           </div>
           <button class="utility" data-cloud-delete-cancel aria-label="Close cloud deletion confirmation">Close</button>
         </div>
         <div class="cloud-delete-warning delete-confirmation-content">
           <strong>Requires wallet signature</strong>
-          <p>Cloud drafts, approval items, repeat payments, proofs, done work, finalization records, and app audit events for this wallet will be deleted. Saved-on-device data and on-chain history are not deleted.</p>
+          <p>Cloud drafts, approval items, repeat payments, proofs, done work, finalization records, app audit events, local drafts, receipts, app preferences, session AI keys, Device Agent config, and native wallet authorization caches will be deleted. On-chain history is not deleted.</p>
         </div>
         <div class="generated-plan-modal-actions cloud-delete-actions">
           <button type="button" class="utility" data-cloud-delete-cancel ${state.busy ? 'disabled' : ''}>Cancel</button>
-          <button type="button" class="utility danger" data-cloud-delete-confirm ${state.busy ? 'disabled' : ''}>Sign and delete cloud data</button>
+          <button type="button" class="utility danger" data-cloud-delete-confirm ${state.busy ? 'disabled' : ''}>Sign and delete all app data</button>
         </div>
       </section>
     </div>
@@ -25517,16 +25597,49 @@ function wireAgenticLoginAutoRefresh(): void {
 
 function agenticLoginRouteActive(): boolean {
   const path = normalizePathname(window.location.pathname);
-  return path === '/agentic-login' || path === '/sign-in';
+  return path === '/agentic-login' || path === '/sign-in' || path === '/delete-storage';
 }
 
 type AgenticLoginStatusSetter = (text: string, ok?: boolean) => void;
+
+function cliIntentUsesFocusedWalletProof(): boolean {
+  return cliView?.intent === 'sign-in' || cliView?.intent === 'delete-storage';
+}
+
+function cliFocusedSigningCommandLabel(): string {
+  return cliView?.intent === 'delete-storage' ? '/delete-storage' : '/sign-in';
+}
+
+function agenticLoginSigningCopy(): {
+  title: string;
+  prompt: string;
+  successMessage: string;
+  doneStatus: string;
+  failurePrefix: string;
+} {
+  if (cliView?.intent === 'delete-storage') {
+    return {
+      title: 'Delete Agentic Cloud workspace',
+      prompt: 'Approve this cloud workspace deletion proof in your wallet. No transaction will be submitted.',
+      successMessage: 'Sending deletion proof back to CLI.',
+      doneStatus: 'Deletion approved. Return to the terminal.',
+      failurePrefix: 'Deletion failed',
+    };
+  }
+  return {
+    title: 'Agentic CLI login',
+    prompt: 'Approve this CLI login proof in your wallet. No transaction will be submitted.',
+    successMessage: 'Sending result back to CLI.',
+    doneStatus: 'Signed in. Return to the terminal.',
+    failurePrefix: 'Login failed',
+  };
+}
 
 async function ensureAgenticLoginWalletReady(
   desiredWallet: string,
   setStatus: AgenticLoginStatusSetter,
 ): Promise<string> {
-  if (cliView?.intent !== 'sign-in') {
+  if (!cliIntentUsesFocusedWalletProof()) {
     if (!state.address) {
       throw new Error('Connect a wallet first with /connect, then return here.');
     }
@@ -25577,7 +25690,7 @@ async function connectCliSignInBrowserWallet(
     reconcileBrowserWalletSelection(state.wallets, state.selectedWalletName) ||
     (state.wallets.length === 1 ? state.wallets[0]!.name : '');
   if (!preferred) {
-    throw new Error('Choose a browser wallet with /connect first, then run /sign-in again.');
+    throw new Error(`Choose a browser wallet with /connect first, then run ${cliFocusedSigningCommandLabel()} again.`);
   }
 
   state.selectedWalletName = preferred;
@@ -25632,13 +25745,14 @@ async function completeAgenticLogin(): Promise<void> {
   }
   try {
     const walletAddress = await ensureAgenticLoginWalletReady(desiredWallet, setStatus);
+    const signingCopy = agenticLoginSigningCopy();
     setStatus('Requesting wallet signature...');
     // signWalletProofMessage handles the wallet quirks (signMessage vs memo-tx
     // fallback for Phantom/Solflare/Seed Vault on Android, base64 encoding, etc.)
     // so we reuse it instead of calling signMessage directly.
-    const result = await signWalletProofMessageWithToast(message, 'Agentic CLI login', state.cluster, {
-      message: 'Approve this CLI login proof in your wallet. No transaction will be submitted.',
-      successMessage: 'Sending result back to CLI.',
+    const result = await signWalletProofMessageWithToast(message, signingCopy.title, state.cluster, {
+      message: signingCopy.prompt,
+      successMessage: signingCopy.successMessage,
     });
     setStatus('Sending result back to CLI…');
     const callbackUrl = new URL(callback);
@@ -25662,9 +25776,14 @@ async function completeAgenticLogin(): Promise<void> {
     if (!response.ok) {
       throw new Error(`Callback returned HTTP ${response.status}.`);
     }
-    setStatus('Signed in. Return to the terminal.');
+    if (cliView?.intent === 'delete-storage') {
+      setStatus('Clearing browser storage...');
+      await wipeLocalAppStorage();
+    }
+    setStatus(signingCopy.doneStatus);
   } catch (err) {
-    setStatus(`Login failed: ${err instanceof Error ? err.message : String(err)}`, false);
+    const signingCopy = agenticLoginSigningCopy();
+    setStatus(`${signingCopy.failurePrefix}: ${err instanceof Error ? err.message : String(err)}`, false);
     try {
       await fetch(callback, {
         method: 'POST',
@@ -26853,7 +26972,7 @@ async function runConnect(
       walletBackend = new IosNativeWalletBackend({
         walletId: state.selectedIosWalletId,
         cluster: state.cluster,
-        appUrl: window.location.origin,
+        appUrl: iosNativeAppUrl(),
         rpcUrl: activeRpcUrl(),
         logLevel: 'info',
       });
@@ -27067,7 +27186,7 @@ async function runReconnectIosCached(): Promise<void> {
     assertIosNativeRuntime();
     const restored = await restoreLatestIosNativeWallet({
       cluster: state.cluster,
-      appUrl: window.location.origin,
+      appUrl: iosNativeAppUrl(),
       rpcUrl: activeRpcUrl(),
       logLevel: 'info',
     });
@@ -34465,14 +34584,81 @@ async function runConfirmCloudWorkspaceDelete(): Promise<void> {
         proofTxBase64: signature.proofTxBase64,
       }),
     }));
-    resetCloudWorkspaceState();
-    refreshBrowserWorkflowData();
-    pushToast(
-      'success',
-      'Cloud workspace deleted',
-      `${cloudDeleteCount(result.deleted)} cloud record${cloudDeleteCount(result.deleted) === 1 ? '' : 's'} removed. Browser storage is still available.`,
-    );
+    const deletedCount = cloudDeleteCount(result.deleted);
+    await clearLocalAppDataAfterCloudWorkspaceDelete();
+    navigateAfterCloudWorkspaceDelete(deletedCount);
   });
+}
+
+async function clearLocalAppDataAfterCloudWorkspaceDelete(): Promise<void> {
+  try {
+    state.aiSettings.apiKey = '';
+    clearAllSessionAiApiKeys();
+    clearDeviceAgentStatusCache();
+  } catch {
+    // Session storage is wiped below; transient failures are non-fatal.
+  }
+
+  const resetTasks: Array<Promise<unknown>> = [
+    clearNativeCloudSessionToken(),
+    clearLocalDeviceAgentRuntimeConfigAfterCloudDelete(),
+  ];
+  if (state.androidNativeEnvironment.isAndroidNative) {
+    resetTasks.push(androidBackendOrNew().clearAllCachedAuthorizations());
+  }
+  if (state.iosNativeEnvironment.isIosNative) {
+    resetTasks.push(iosBackendOrNew().clearAllCachedAuthorizations());
+  }
+  const resetResults = await Promise.allSettled(resetTasks);
+  const resetFailures = resetResults.filter((result) => result.status === 'rejected');
+  if (resetFailures.length > 0) {
+    console.warn('[cloud-delete] Some native reset work failed.', resetFailures);
+  }
+
+  const wipeResult = await wipeLocalAppStorage();
+  if (
+    wipeResult.errors.length > 0 ||
+    wipeResult.indexedDbFailed.length > 0 ||
+    wipeResult.cachesFailed.length > 0
+  ) {
+    console.warn('[cloud-delete] Local app storage wipe completed with warnings.', wipeResult);
+  }
+}
+
+async function clearLocalDeviceAgentRuntimeConfigAfterCloudDelete(): Promise<void> {
+  if (IS_ANDROID_APP && isDeviceAgentBridgeAvailable()) {
+    state.deviceAgentStatus = await deviceAgentNativeStatusCall('configure', { clear: true });
+    return;
+  }
+  if (state.iosNativeEnvironment.isIosNative && isIosDeviceAgentBridgeAvailable()) {
+    state.deviceAgentStatus = await deviceAgentNativeStatusCall('configure', { clear: true });
+    return;
+  }
+  const android = agenticAndroidBridge();
+  if (IS_ANDROID_APP && android?.deviceAgentConfigure) {
+    state.deviceAgentStatus = parseDeviceAgentStatus(android.deviceAgentConfigure(JSON.stringify({ clear: true })));
+    return;
+  }
+  if (canUseDeviceAgentBrowserNative()) {
+    const { status } = await invokeBrowserDeviceAgent('configure', { clear: true });
+    state.deviceAgentStatus = parseDeviceAgentStatus(status);
+    return;
+  }
+  state.deviceAgentStatus = browserDevDeviceAgentStatus({ configured: false, state: 'stopped' });
+}
+
+function navigateAfterCloudWorkspaceDelete(deletedCount: number): void {
+  const url = new URL(window.location.href);
+  url.pathname = '/app';
+  url.search = '';
+  url.hash = '';
+  url.searchParams.set('cloudWorkspaceDeleted', '1');
+  url.searchParams.set('deletedCount', String(Math.max(0, Math.floor(deletedCount))));
+  if (typeof window.location.replace === 'function') {
+    window.location.replace(url.toString());
+  } else {
+    window.location.href = url.toString();
+  }
 }
 
 async function runCleanupRecurringBacklog(): Promise<void> {
@@ -41622,6 +41808,8 @@ interface WalletBalanceReadInputs {
   knownTokens?: Record<string, { symbol: string; mint: string; decimals: number }>;
 }
 
+type WalletBalanceLoadMode = 'primary' | 'full';
+
 function runWalletBalanceAction(action: string | undefined): void {
   switch (action) {
     case 'toggle':
@@ -41669,25 +41857,7 @@ function startWalletBalanceConnectedLoad(): void {
 
 async function loadWalletBalanceSummary(address: string, cluster: Cluster, scopeKey: string, requestId: number): Promise<void> {
   try {
-    const { solLamports, tokenRows } = await readWalletPrimaryBalanceInputs(address, cluster);
-    const summaryMints = [WALLET_BALANCE_SOL_MINT, WALLET_BALANCE_USDC_MINT];
-    let priceInfo: Map<string, WalletBalancePriceInfo>;
-    try {
-      priceInfo = await fetchWalletBalancePriceInfoMap(summaryMints, cluster);
-    } catch {
-      priceInfo = walletBalanceFallbackPriceInfoMap(summaryMints, cluster);
-    }
-    const snapshot = buildWalletBalanceSnapshot({
-      walletAddress: address,
-      cluster,
-      solLamports,
-      tokenRows,
-      prices: walletBalancePriceMapFromInfo(priceInfo),
-      priceInfo,
-      knownTokens: KNOWN_BROWSER_TOKENS,
-      coverage: 'primary',
-      pricingEnabled: walletBalanceUsdPricingEnabled(cluster),
-    });
+    const snapshot = await loadWalletBalanceSnapshot(address, cluster, 'primary');
     if (requestId !== walletBalanceSummaryRequestId || state.walletBalance.scopeKey !== scopeKey || walletBalanceScopeKey() !== scopeKey) return;
     state.walletBalance = {
       ...state.walletBalance,
@@ -41761,32 +41931,7 @@ function startWalletBalanceFullLoad(force: boolean, options: { openOverlay?: boo
 
 async function loadWalletBalanceFull(address: string, cluster: Cluster, scopeKey: string, requestId: number): Promise<void> {
   try {
-    const { solLamports, tokenRows, priceInfo: seededPriceInfo, knownTokens } = await readWalletFullBalanceInputs(address, cluster);
-    const mints = [
-      WALLET_BALANCE_SOL_MINT,
-      WALLET_BALANCE_USDC_MINT,
-      ...tokenRows.map((row) => row.mint),
-    ];
-    let priceInfo: Map<string, WalletBalancePriceInfo>;
-    try {
-      priceInfo = await fetchWalletBalancePriceInfoMap(mints, cluster, { seed: seededPriceInfo });
-    } catch {
-      priceInfo = mergeWalletBalancePriceInfoMaps(
-        seededPriceInfo,
-        walletBalanceFallbackPriceInfoMap([WALLET_BALANCE_USDC_MINT], cluster),
-      );
-    }
-    const snapshot = buildWalletBalanceSnapshot({
-      walletAddress: address,
-      cluster,
-      solLamports,
-      tokenRows,
-      prices: walletBalancePriceMapFromInfo(priceInfo),
-      priceInfo,
-      knownTokens: { ...KNOWN_BROWSER_TOKENS, ...(knownTokens ?? {}) },
-      coverage: 'full',
-      pricingEnabled: walletBalanceUsdPricingEnabled(cluster),
-    });
+    const snapshot = await loadWalletBalanceSnapshot(address, cluster, 'full');
     if (requestId !== walletBalanceFullRequestId || state.walletBalance.scopeKey !== scopeKey || walletBalanceScopeKey() !== scopeKey) return;
     state.walletBalance = {
       ...state.walletBalance,
@@ -41807,6 +41952,106 @@ async function loadWalletBalanceFull(address: string, cluster: Cluster, scopeKey
     };
     render();
   }
+}
+
+async function loadWalletBalanceSnapshot(
+  address: string,
+  cluster: Cluster,
+  mode: WalletBalanceLoadMode,
+): Promise<WalletBalanceSnapshot> {
+  let serverError: unknown;
+  try {
+    const snapshot = await loadWalletBalanceSnapshotFromBridge(address, cluster, mode);
+    if (snapshot) return snapshot;
+  } catch (err) {
+    serverError = err;
+  }
+  try {
+    return await cloudRequest<WalletBalanceSnapshot>('/api/solana/wallet-balance-summary', {
+      method: 'POST',
+      body: JSON.stringify({ walletAddress: address, cluster, mode }),
+    });
+  } catch (err) {
+    serverError = err;
+  }
+  try {
+    return await loadWalletBalanceSnapshotFromBrowser(address, cluster, mode);
+  } catch (err) {
+    if (serverError && !isLocalBrowserHost()) {
+      throw serverError instanceof Error ? serverError : new Error(String(serverError));
+    }
+    throw err;
+  }
+}
+
+async function loadWalletBalanceSnapshotFromBridge(
+  address: string,
+  cluster: Cluster,
+  mode: WalletBalanceLoadMode,
+): Promise<WalletBalanceSnapshot | undefined> {
+  if (!canAttemptLocalBridgeForCluster(cluster)) return undefined;
+  const snapshot = await bridgeRequest<WalletBalanceSnapshot>('/bridge/action/wallet-balance-summary', {
+    method: 'POST',
+    body: JSON.stringify({ walletAddress: address, cluster, mode }),
+  });
+  if (snapshot.walletAddress !== address || snapshot.cluster !== cluster) {
+    throw new Error('Local bridge returned balances for a different wallet or cluster.');
+  }
+  return snapshot;
+}
+
+async function loadWalletBalanceSnapshotFromBrowser(
+  address: string,
+  cluster: Cluster,
+  mode: WalletBalanceLoadMode,
+): Promise<WalletBalanceSnapshot> {
+  if (mode === 'full') {
+    const { solLamports, tokenRows, priceInfo: seededPriceInfo, knownTokens } = await readWalletFullBalanceInputs(address, cluster);
+    const mints = [
+      WALLET_BALANCE_SOL_MINT,
+      WALLET_BALANCE_USDC_MINT,
+      ...tokenRows.map((row) => row.mint),
+    ];
+    let priceInfo: Map<string, WalletBalancePriceInfo>;
+    try {
+      priceInfo = await fetchWalletBalancePriceInfoMap(mints, cluster, { seed: seededPriceInfo });
+    } catch {
+      priceInfo = mergeWalletBalancePriceInfoMaps(
+        seededPriceInfo,
+        walletBalanceFallbackPriceInfoMap([WALLET_BALANCE_USDC_MINT], cluster),
+      );
+    }
+    return buildWalletBalanceSnapshot({
+      walletAddress: address,
+      cluster,
+      solLamports,
+      tokenRows,
+      prices: walletBalancePriceMapFromInfo(priceInfo),
+      priceInfo,
+      knownTokens: { ...KNOWN_BROWSER_TOKENS, ...(knownTokens ?? {}) },
+      coverage: 'full',
+      pricingEnabled: walletBalanceUsdPricingEnabled(cluster),
+    });
+  }
+  const { solLamports, tokenRows } = await readWalletPrimaryBalanceInputs(address, cluster);
+  const summaryMints = [WALLET_BALANCE_SOL_MINT, WALLET_BALANCE_USDC_MINT];
+  let priceInfo: Map<string, WalletBalancePriceInfo>;
+  try {
+    priceInfo = await fetchWalletBalancePriceInfoMap(summaryMints, cluster);
+  } catch {
+    priceInfo = walletBalanceFallbackPriceInfoMap(summaryMints, cluster);
+  }
+  return buildWalletBalanceSnapshot({
+    walletAddress: address,
+    cluster,
+    solLamports,
+    tokenRows,
+    prices: walletBalancePriceMapFromInfo(priceInfo),
+    priceInfo,
+    knownTokens: KNOWN_BROWSER_TOKENS,
+    coverage: 'primary',
+    pricingEnabled: walletBalanceUsdPricingEnabled(cluster),
+  });
 }
 
 async function readWalletPrimaryBalanceInputs(address: string, cluster: Cluster): Promise<{
@@ -44256,7 +44501,7 @@ function assertAndroidNativeRuntime(): void {
 async function restoreIosNativeSession(): Promise<void> {
   const restored = await restoreLatestIosNativeWallet({
     cluster: state.cluster,
-    appUrl: window.location.origin,
+    appUrl: iosNativeAppUrl(),
     rpcUrl: activeRpcUrl(),
     logLevel: 'info',
   });
@@ -44296,7 +44541,7 @@ function iosBackendOrNew(): IosNativeMaintenanceBackend {
   return new IosNativeWalletBackend({
     walletId: state.selectedIosWalletId,
     cluster: state.cluster,
-    appUrl: window.location.origin,
+    appUrl: iosNativeAppUrl(),
     rpcUrl: activeRpcUrl(),
     logLevel: 'info',
   });
@@ -52406,6 +52651,17 @@ function isSolanaPublicKeyText(value: string): boolean {
   }
 }
 
+function readCompletedCloudWorkspaceDeleteNotice(): { deletedCount: number } | null {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('cloudWorkspaceDeleted') !== '1') return null;
+    const rawCount = Number(params.get('deletedCount') ?? '0');
+    return { deletedCount: Number.isFinite(rawCount) && rawCount > 0 ? Math.floor(rawCount) : 0 };
+  } catch {
+    return null;
+  }
+}
+
 function readLaunchParams(): {
   bridgeUrl?: string;
   bridgeToken?: string;
@@ -52433,7 +52689,8 @@ function readLaunchParams(): {
     rawIntent === 'approve' ||
     rawIntent === 'sign' ||
     rawIntent === 'sign-in' ||
-    rawIntent === 'sign-out'
+    rawIntent === 'sign-out' ||
+    rawIntent === 'delete-storage'
       ? rawIntent
       : undefined;
   const cliActionId = params.get('actionId')?.trim() || undefined;
@@ -52481,6 +52738,8 @@ function cliIntentFromPathname(pathname: string): CliIntentName | undefined {
       return 'sign-in';
     case '/sign-out':
       return 'sign-out';
+    case '/delete-storage':
+      return 'delete-storage';
     default:
       return undefined;
   }
@@ -52523,12 +52782,16 @@ function clearSensitiveLaunchParams(): void {
     url.searchParams.has('token') ||
     url.searchParams.has('intent') ||
     url.searchParams.has('actionId') ||
-    url.searchParams.has('requestId');
+    url.searchParams.has('requestId') ||
+    url.searchParams.has('cloudWorkspaceDeleted') ||
+    url.searchParams.has('deletedCount');
   if (!had) return;
   url.searchParams.delete('token');
   url.searchParams.delete('intent');
   url.searchParams.delete('actionId');
   url.searchParams.delete('requestId');
+  url.searchParams.delete('cloudWorkspaceDeleted');
+  url.searchParams.delete('deletedCount');
   window.history.replaceState(window.history.state, document.title, `${url.pathname}${url.search}${url.hash}`);
 }
 

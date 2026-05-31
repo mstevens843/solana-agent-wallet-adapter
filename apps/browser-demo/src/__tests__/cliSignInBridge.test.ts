@@ -95,6 +95,17 @@ describe('resolveWalletSigningRequestCopy', () => {
     });
   });
 
+  it('labels Cloud Storage deletion message approvals as deletion', () => {
+    expect(resolveWalletSigningRequestCopy({
+      kind: 'sign_message',
+      display: { summary: 'Delete Agentic Cloud Storage' },
+    })).toMatchObject({
+      pendingTitle: 'Deleting Cloud Storage',
+      successToastTitle: 'Deletion approved',
+      failureToastTitle: 'Deletion failed',
+    });
+  });
+
   it('keeps generic message approvals as message signing', () => {
     expect(resolveWalletSigningRequestCopy({
       kind: 'sign_message',
@@ -165,6 +176,7 @@ describe('cliIntentAllowsBridgeRequestClaim', () => {
   it('prevents cloud sign-in pages from claiming their own bridge signing request', () => {
     expect(cliIntentAllowsBridgeRequestClaim('sign-in')).toBe(false);
     expect(cliIntentAllowsBridgeRequestClaim('sign-out')).toBe(false);
+    expect(cliIntentAllowsBridgeRequestClaim('delete-storage')).toBe(false);
     expect(cliIntentAllowsBridgeRequestClaim('connect')).toBe(true);
     expect(cliIntentAllowsBridgeRequestClaim('approve')).toBe(true);
   });

@@ -136,6 +136,24 @@ describe('render web cloud wallet auth', () => {
     });
   });
 
+  it('returns an iOS bearer session for the Capacitor app origin', async () => {
+    await withServer(async (port) => {
+      const headers = {
+        origin: 'capacitor://localhost',
+        'x-agentic-client': 'ios-bundled',
+      };
+      const wallet = createTestWallet();
+      const nonce = await postJson(port, '/api/auth/nonce', {
+        walletAddress: wallet.walletAddress,
+      }, headers);
+      const verify = await postJson(port, '/api/auth/verify-wallet', signedVerifyBody(wallet, nonce.body), headers);
+
+      expect(verify.status).toBe(200);
+      expect(verify.body.sessionToken).toEqual(expect.any(String));
+      expect(String(verify.headers['access-control-allow-origin'])).toBe('capacitor://localhost');
+    });
+  });
+
   it('returns a CLI bearer session without an Origin header', async () => {
     // The Solana Agent Wallet CLI runs as a local process — fetch() in Node
     // omits Origin, so shouldReturnBearerSession must accept `cli-bundled`
@@ -172,6 +190,21 @@ describe('render web cloud wallet auth', () => {
 
       expect(response.status).toBe(204);
       expect(response.headers['access-control-allow-origin']).toBe('https://agentic.local');
+      expect(String(response.headers['access-control-allow-headers'])).toContain('authorization');
+    });
+  });
+
+  it('handles iOS Capacitor cloud CORS preflight without cookies', async () => {
+    await withServer(async (port) => {
+      const response = await requestRaw(port, '/api/solana/wallet-balance-summary', 'OPTIONS', undefined, {
+        origin: 'capacitor://localhost',
+        'x-agentic-client': 'ios-bundled',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'authorization, content-type, x-agentic-client',
+      });
+
+      expect(response.status).toBe(204);
+      expect(response.headers['access-control-allow-origin']).toBe('capacitor://localhost');
       expect(String(response.headers['access-control-allow-headers'])).toContain('authorization');
     });
   });

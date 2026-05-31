@@ -520,6 +520,7 @@ test('help prints usage without starting the interactive app', () => {
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /solana-agent-wallet\s+# interactive CLI/);
   assert.match(result.stdout, /solana-agent-wallet agent-setup\s+# Hosted BYOK or Local Bridge provider key/);
+  assert.match(result.stdout, /solana-agent-wallet delete-storage\s+# delete Agentic Cloud Storage/);
   assert.match(result.stdout, /solana-agent-wallet new\s+# create a one-time or repeat request/);
   assert.doesNotMatch(result.stdout, /solana-agent-wallet repeat\s+#/);
   assert.doesNotMatch(result.stdout, /Legacy & advanced/);
@@ -534,6 +535,7 @@ test('expanded help exposes advanced command inventory on request', () => {
   assert.doesNotMatch(result.stdout, /solana-agent-wallet repeat\s+# menu: scheduled/);
   assert.match(result.stdout, /device-agent status \| configure \| start \| stop \| clear \| set-key/);
   assert.match(result.stdout, /bridge-agents list \| register/);
+  assert.match(result.stdout, /solana-agent-wallet delete-storage/);
 });
 
 test('version prints the package version', () => {
@@ -648,7 +650,7 @@ test('interactive main prompt Ctrl+C can keep a saved agent key', async () => {
 
   try {
     await waitForStdout(child, /agentic>/, 30_000);
-    const prompt = waitForOutput(child, /Clear saved agent API key before exit\? \[y\/N\]/, 10_000);
+    const prompt = waitForOutput(child, /Clear saved agent API key before exit\? \[y\/n\]/, 10_000);
     child.kill('SIGINT');
     await prompt;
     child.stdin.write('n\n');
@@ -692,7 +694,7 @@ test('interactive main prompt Ctrl+C can clear a saved agent key', async () => {
 
   try {
     await waitForStdout(child, /agentic>/, 30_000);
-    const prompt = waitForOutput(child, /Clear saved agent API key before exit\? \[y\/N\]/, 10_000);
+    const prompt = waitForOutput(child, /Clear saved agent API key before exit\? \[y\/n\]/, 10_000);
     child.kill('SIGINT');
     await prompt;
     child.stdin.write('y\n');
@@ -740,7 +742,7 @@ test('interactive /quit can clear a saved agent key', async () => {
 
   try {
     await waitForStdout(child, /agentic>/, 30_000);
-    const prompt = waitForOutput(child, /Clear saved agent API key before exit\? \[y\/N\]/, 10_000);
+    const prompt = waitForOutput(child, /Clear saved agent API key before exit\? \[y\/n\]/, 10_000);
     child.stdin.write('/quit\n');
     await prompt;
     child.stdin.write('y\n');
@@ -781,6 +783,7 @@ test('interactive help exposes the connectors command', async () => {
     child.stdin.write('/help\n');
     const { stdout } = await helpOutput;
     assert.match(stdout, /\/connectors\s+Manage protocol connectors and BYO API keys/);
+    assert.match(stdout, /\/delete-storage\s+Delete Agentic Cloud Storage/);
     child.stdin.write('/quit\n');
     const exit = await waitForExit(child);
     assert.equal(exit.code, 0, `stdout:\n${stdout}\nstderr:\n${await readRemaining(child.stderr)}`);
@@ -1901,6 +1904,86 @@ test('signedRequest preserves payload bytes byte-for-byte through intent + final
   }
 });
 
+test('delete-storage opens dedicated deletion page and clears CLI cloud session', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-delete-storage-'));
+  const renderWeb = await startMockCloudWorkspaceRenderWeb();
+  await writeFile(
+    join(runtimeDir, 'session.json'),
+    JSON.stringify({
+      token: 'test-token',
+      walletAddress: 'TestWallet',
+      renderWebOrigin: renderWeb.url,
+      issuedAt: new Date().toISOString(),
+    }),
+    'utf8',
+  );
+
+  try {
+    const child = spawn(
+      process.execPath,
+      [
+        cliPath,
+        '--runtime-dir', runtimeDir,
+        '--render-web-url', renderWeb.url,
+        '--wallet-host-url', renderWeb.url,
+        'delete-storage',
+        '--json',
+      ],
+      {
+        env: { ...process.env, AGENT_WALLET_SKIP_OPEN: '1', NO_COLOR: '1' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    children.add(child as CliChild);
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (c) => { stdout += c.toString(); });
+    child.stderr.on('data', (c) => { stderr += c.toString(); });
+
+    const deletionUrl = await new Promise<string>((resolveOuter, rejectOuter) => {
+      const start = Date.now();
+      const tick = setInterval(() => {
+        const match = (stdout + stderr).match(/(http:\/\/[^\s]+\/delete-storage\?[^\s]+)/);
+        if (match?.[1]) { clearInterval(tick); resolveOuter(match[1]); return; }
+        if (Date.now() - start > 30_000) {
+          clearInterval(tick);
+          rejectOuter(new Error(`no delete-storage URL within 30s. stdout=${stdout} stderr=${stderr}`));
+        }
+      }, 100);
+    });
+    const parsed = new URL(deletionUrl);
+    const callback = parsed.searchParams.get('callback') ?? '';
+    const stateToken = parsed.searchParams.get('state') ?? '';
+    assert.equal(parsed.pathname, '/delete-storage');
+    assert.equal(parsed.searchParams.get('intent'), 'delete-storage');
+    assert.equal(parsed.searchParams.get('summary'), 'Delete Agentic Cloud Storage');
+    assert.ok(callback, 'delete-storage URL missing callback param');
+    assert.ok(stateToken, 'delete-storage URL missing state param');
+
+    await fetch(callback, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        signature: 'sig-delete',
+        walletAddress: 'TestWallet',
+        state: stateToken,
+        proofEncoding: 'utf8-message',
+        signatureEncoding: 'base58',
+      }),
+    });
+
+    const exitCode = await new Promise<number | null>((res) => child.once('exit', (c) => res(c)));
+    assert.equal(exitCode, 0, `exit non-zero. stdout=${stdout} stderr=${stderr}`);
+    assert.ok(renderWeb.requests.find((r) => r.path === '/api/cloud-workspace/delete-intent'));
+    const finalReq = renderWeb.requests.find((r) => r.path === '/api/cloud-workspace/delete');
+    assert.ok(finalReq, 'no cloud delete request observed');
+    assert.equal((finalReq.body as Record<string, unknown>).signature, 'sig-delete');
+    await assert.rejects(readFile(join(runtimeDir, 'session.json'), 'utf8'), /ENOENT/);
+  } finally {
+    await renderWeb.close();
+  }
+});
+
 test('doctor --strict exits 6 when bridge is offline', async () => {
   const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-doctor-strict-'));
   // No bridge running → bridge probe returns reachable:false.
@@ -2103,6 +2186,50 @@ async function startMockProfileRenderWeb(): Promise<{
       }
       if (url.pathname === '/api/agents/profile') {
         writeJsonResponse(res, { ok: true });
+        return;
+      }
+      writeJsonResponse(res, { error: 'not found' }, 404);
+    })().catch((err) => {
+      writeJsonResponse(res, { error: err instanceof Error ? err.message : String(err) }, 500);
+    });
+  });
+  const url = await listenHttp(server);
+  return { url, requests, close: () => closeHttp(server) };
+}
+
+async function startMockCloudWorkspaceRenderWeb(): Promise<{
+  url: string;
+  requests: Array<{ method: string; path: string; body: unknown }>;
+  close: () => Promise<void>;
+}> {
+  const requests: Array<{ method: string; path: string; body: unknown }> = [];
+  const server = createHttpServer((req, res) => {
+    void (async () => {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+      if (url.pathname === '/__agentic/health') {
+        writeJsonResponse(res, { ok: true, service: 'agentic-wallet-host' });
+        return;
+      }
+      const body = req.method === 'POST' ? await readRequestJson(req) : undefined;
+      requests.push({ method: req.method ?? 'GET', path: url.pathname, body });
+
+      if (url.pathname === '/api/cloud-workspace/delete-intent') {
+        writeJsonResponse(res, {
+          nonce: 'delete-nonce',
+          message: 'delete this workspace',
+          domain: '127.0.0.1',
+          issuedAt: '2026-05-21T00:00:00.000Z',
+          expiresAt: '2026-05-21T00:05:00.000Z',
+          walletAddress: 'TestWallet',
+        });
+        return;
+      }
+      if (url.pathname === '/api/cloud-workspace/delete') {
+        writeJsonResponse(res, {
+          ok: true,
+          signedOut: true,
+          deleted: { approvals: 1, plans: 1 },
+        });
         return;
       }
       writeJsonResponse(res, { error: 'not found' }, 404);

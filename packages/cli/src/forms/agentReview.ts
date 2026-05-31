@@ -23,7 +23,7 @@ export interface AgentReviewOutcome {
   decision?: string;
 }
 
-// Asks "Draft with AI? (y/N)" after the user has built and confirmed their
+// Asks "Draft with AI?" after the user has built and confirmed their
 // draft. If the user opts in, prompts for a free-text instruction, runs the
 // review against the existing draft (NOT a generated plan — the user already
 // drafted it), renders the verdict + sectioned findings, and offers the
@@ -46,7 +46,7 @@ export async function maybeReviewWithAgent(
   }
 
   const draftWithAi = await confirm({
-    message: 'Draft with AI? (y/N)',
+    message: 'Draft with AI?',
     default: false,
   });
   if (!draftWithAi) return { reviewed: false, choice: 'send' };

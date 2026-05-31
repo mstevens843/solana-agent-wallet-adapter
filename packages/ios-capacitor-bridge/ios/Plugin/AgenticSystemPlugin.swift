@@ -17,7 +17,7 @@ public class AgenticSystemPlugin: CAPPlugin, CAPBridgedPlugin {
     ]
 
     private static let allowedSchemes: Set<String> = ["https", "http", "mailto", "tel", "sms"]
-    private static let maxUrlLength = 2_048
+    private static let maxUrlLength = 32_768
     private static let maxClipboardBytes = 1_000_000
 
     // Cached haptic generators (Apple docs: create once, prepare(), reuse).

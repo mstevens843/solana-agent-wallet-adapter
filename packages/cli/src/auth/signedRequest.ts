@@ -23,7 +23,7 @@
  */
 import type { GlobalOptions, JsonRecord } from '../shared/types.js';
 import { renderWebRequest, type RenderWebRequestOptions } from '../http/index.js';
-import { signMessageViaWalletHost, type SignedProof } from './nonceFlow.js';
+import { signMessageViaWalletHost, type SignedProof, type WalletHostSigningPath } from './nonceFlow.js';
 import { isRecord } from '../shared/util.js';
 
 export interface IntentResponse extends JsonRecord {
@@ -68,6 +68,11 @@ export interface RunSignedRequestOptions {
   noOpen?: boolean;
   /** Override default 5-minute timeout for the wallet-host roundtrip. */
   timeoutMs?: number;
+  /** Route/copy for the focused wallet-host signing page. */
+  walletHost?: {
+    path?: WalletHostSigningPath;
+    openLabel?: string;
+  };
 }
 
 /**
@@ -111,6 +116,8 @@ export async function runSignedRequest<TFinal = unknown>(
   }, {
     ...(reqOptions.noOpen !== undefined ? { noOpen: reqOptions.noOpen } : {}),
     ...(reqOptions.timeoutMs !== undefined ? { timeoutMs: reqOptions.timeoutMs } : {}),
+    ...(reqOptions.walletHost?.path ? { path: reqOptions.walletHost.path } : {}),
+    ...(reqOptions.walletHost?.openLabel ? { openLabel: reqOptions.walletHost.openLabel } : {}),
   });
 
   const bodyString = buildFinalBody(

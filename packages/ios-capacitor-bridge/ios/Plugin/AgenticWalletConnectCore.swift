@@ -26,6 +26,7 @@ import WalletConnectPairing
 import WalletConnectNetworking
 import Commons
 import Combine
+import UIKit
 
 @available(iOS 16.0, *)
 final class AgenticWalletConnectCore {
@@ -38,6 +39,8 @@ final class AgenticWalletConnectCore {
     private var sessionPubkey: String?
     private var sessionTopic: String?
     private var sessionChainId: String?
+    private var walletRedirectNative: String?
+    private var walletRedirectUniversal: String?
     private var sessionWaiters: [UUID: (Result<(String, String), Error>) -> Void] = [:]
 
     private init() {}
@@ -72,6 +75,8 @@ final class AgenticWalletConnectCore {
                     let pubkey = session.namespaces.values.first?.accounts.first?.address ?? ""
                     self.sessionPubkey = pubkey
                     self.sessionTopic = session.topic
+                    self.walletRedirectNative = session.peer.redirect?.native
+                    self.walletRedirectUniversal = session.peer.redirect?.universal
                     let waiters = Array(self.sessionWaiters.values)
                     self.sessionWaiters.removeAll()
                     for waiter in waiters {
@@ -165,7 +170,7 @@ final class AgenticWalletConnectCore {
             completion(.failure(AgenticAgentError(code: "WC_NO_SESSION", message: "No active WalletConnect session.")))
             return
         }
-        let params: [String: Any] = ["pubkey": pubkey, "transaction": transaction]
+        let params: [String: Any] = ["transaction": transaction]
         sendRequest(topic: topic, method: "solana_signTransaction", params: params) { result in
             switch result {
             case .failure(let err): completion(.failure(err))
@@ -187,7 +192,14 @@ final class AgenticWalletConnectCore {
             completion(.failure(AgenticAgentError(code: "WC_NO_SESSION", message: "No active WalletConnect session.")))
             return
         }
-        let params: [String: Any] = ["pubkey": pubkey, "transaction": transaction]
+        let params: [String: Any] = [
+            "transaction": transaction,
+            "sendOptions": [
+                "skipPreflight": false,
+                "preflightCommitment": "confirmed",
+                "maxRetries": 3,
+            ],
+        ]
         sendRequest(topic: topic, method: "solana_signAndSendTransaction", params: params) { result in
             switch result {
             case .failure(let err): completion(.failure(err))
@@ -227,6 +239,8 @@ final class AgenticWalletConnectCore {
             sessionPubkey = nil
             sessionTopic = nil
             sessionChainId = nil
+            walletRedirectNative = nil
+            walletRedirectUniversal = nil
             sessionWaiters.removeAll()
         }
     }
@@ -249,6 +263,7 @@ final class AgenticWalletConnectCore {
                 let blockchain = Blockchain(chain) ?? Blockchain("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp")!
                 let request = try Request(topic: topic, method: method, params: Commons.AnyCodable(any: params), chainId: blockchain)
                 try await Sign.instance.request(params: request)
+                self.launchCurrentWalletForRequest(method: method)
                 // Subscribe to sessionResponsePublisher for the result.
                 let result = try await waitForResponse(requestId: request.id)
                 completion(.success(result))
@@ -273,6 +288,24 @@ final class AgenticWalletConnectCore {
                         continuation.resume(throwing: AgenticAgentError(code: "WC_RPC_\(err.code)", message: err.message))
                     }
                 }
+        }
+    }
+
+    private func launchCurrentWalletForRequest(method: String) {
+        let redirect = queue.sync { walletRedirectNative ?? walletRedirectUniversal }
+        guard let raw = redirect, let url = URL(string: raw) else {
+            AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "SKIP", "no wallet redirect metadata", [
+                "method": method,
+            ])
+            return
+        }
+        DispatchQueue.main.async {
+            UIApplication.shared.open(url, options: [:]) { launched in
+                AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "DONE", "wallet launch attempted", [
+                    "method": method,
+                    "launched": String(launched),
+                ])
+            }
         }
     }
 }

@@ -35,7 +35,7 @@ export interface LoginOptions {
   signal?: AbortSignal;
 }
 
-type WalletHostSigningPath = '/agentic-login' | '/sign-in';
+export type WalletHostSigningPath = '/agentic-login' | '/sign-in' | '/delete-storage';
 
 interface CallbackPayload {
   signature?: string;
@@ -227,9 +227,9 @@ function buildWalletHostLoginUrl(
   baseUrl.pathname = baseUrl.pathname.replace(/\/+$/, '') + path;
   baseUrl.searchParams.set('bridgeUrl', options.bridgeUrl);
   baseUrl.searchParams.set('token', options.token);
-  if (path === '/sign-in') {
+  if (path === '/sign-in' || path === '/delete-storage') {
     baseUrl.searchParams.set('mode', 'cli');
-    baseUrl.searchParams.set('intent', 'sign-in');
+    baseUrl.searchParams.set('intent', path === '/sign-in' ? 'sign-in' : 'delete-storage');
   }
   baseUrl.searchParams.set('nonce', intent.nonce);
   baseUrl.searchParams.set('message', intent.message);

@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { request as httpRequest, type IncomingHttpHeaders } from 'node:http';
+import { createServer, request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -77,6 +77,7 @@ describe('render web hosted BYOK API', () => {
             'POST /api/solana/send-transaction',
             'POST /api/solana/signature-status',
             'POST /api/solana/parsed-account-info',
+            'POST /api/solana/wallet-balance-summary',
             'POST /api/swap/order',
             'POST /api/swap/execute',
           ]),
@@ -1069,6 +1070,8 @@ describe('render web hosted BYOK API', () => {
       expect(response.headers['cache-control']).toBe('public, max-age=3600');
       expect(applinks.details[0]?.appID).toBe('ABCDE12345.com.agentic.wallet');
       expect(applinks.details[0]?.paths).toContain('/app/*');
+      expect(applinks.details[0]?.paths).toContain('/ios/callback/*');
+      expect(applinks.details[0]?.paths).toContain('/ios/approval/*');
       expect(response.body).not.toContain('<div id="app"></div>');
     });
   });
@@ -1105,6 +1108,54 @@ describe('render web hosted BYOK API', () => {
       expect(missingAddress.body.error).toBe('address is required.');
       expect(badAddress.status).toBe(400);
       expect(String(badAddress.body.error)).toContain('not a valid Solana public key');
+    });
+  });
+
+  it('validates /api/solana/wallet-balance-summary input', async () => {
+    await withServer(async (port) => {
+      const bogusCluster = await postJson(port, '/api/solana/wallet-balance-summary', {
+        cluster: 'bogus',
+        walletAddress: DEVICE_AGENT_WALLET_A,
+      });
+      const missingWallet = await postJson(port, '/api/solana/wallet-balance-summary', {
+        cluster: 'mainnet-beta',
+      });
+      const badWallet = await postJson(port, '/api/solana/wallet-balance-summary', {
+        cluster: 'mainnet-beta',
+        walletAddress: 'POPCAT',
+      });
+
+      expect(bogusCluster.status).toBe(400);
+      expect(bogusCluster.body.error).toBe('cluster is required.');
+      expect(missingWallet.status).toBe(400);
+      expect(missingWallet.body.error).toBe('walletAddress is required.');
+      expect(badWallet.status).toBe(400);
+      expect(String(badWallet.body.error)).toContain('Base58 value');
+    });
+  });
+
+  it('serves public wallet balance summaries through the configured RPC', async () => {
+    const rpcCalls: string[] = [];
+    await withRpcServer(rpcCalls, async (rpcUrl) => {
+      vi.stubEnv('SOLANA_RPC_URL', rpcUrl);
+      await withServer(async (port) => {
+        const response = await postJson(port, '/api/solana/wallet-balance-summary', {
+          cluster: 'devnet',
+          walletAddress: DEVICE_AGENT_WALLET_A,
+          mode: 'primary',
+        });
+
+        expect(response.status).toBe(200);
+        expect(response.body).toMatchObject({
+          walletAddress: DEVICE_AGENT_WALLET_A,
+          cluster: 'devnet',
+          coverage: 'primary',
+          priceStatus: 'unavailable',
+          sol: { amount: 2, symbol: 'SOL' },
+          usdc: { amount: 25.5, symbol: 'USDC' },
+        });
+        expect(rpcCalls).toEqual(expect.arrayContaining(['getBalance', 'getTokenAccountsByOwner']));
+      });
     });
   });
 
@@ -1475,6 +1526,88 @@ function jsonResponse(body: unknown, status = 200): Response {
     status,
     headers: { 'content-type': 'application/json' },
   });
+}
+
+async function withRpcServer(rpcCalls: string[], callback: (rpcUrl: string) => Promise<void>): Promise<void> {
+  const server = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { id?: unknown; method?: string };
+    rpcCalls.push(body.method ?? '');
+    const response = rpcResponse(body);
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(response));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  try {
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('RPC test server did not bind a TCP port.');
+    await callback(`http://127.0.0.1:${address.port}`);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => (err ? reject(err) : resolve()));
+    });
+  }
+}
+
+function rpcResponse(body: { id?: unknown; method?: string }): Record<string, unknown> {
+  if (body.method === 'getBalance') {
+    return {
+      jsonrpc: '2.0',
+      id: body.id ?? 1,
+      result: { context: { slot: 1 }, value: 2_000_000_000 },
+    };
+  }
+  if (body.method === 'getTokenAccountsByOwner') {
+    return {
+      jsonrpc: '2.0',
+      id: body.id ?? 1,
+      result: {
+        context: { slot: 1 },
+        value: [parsedRpcTokenAccount('25500000', 6, '25.5')],
+      },
+    };
+  }
+  return {
+    jsonrpc: '2.0',
+    id: body.id ?? 1,
+    error: { code: -32601, message: `Unhandled ${body.method}` },
+  };
+}
+
+function parsedRpcTokenAccount(amount: string, decimals: number, uiAmountString: string): Record<string, unknown> {
+  return {
+    pubkey: '11111111111111111111111111111111',
+    account: {
+      data: {
+        program: 'spl-token',
+        parsed: {
+          info: {
+            mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+            tokenAmount: {
+              amount,
+              decimals,
+              uiAmount: Number(uiAmountString),
+              uiAmountString,
+            },
+          },
+          type: 'account',
+        },
+        space: 165,
+      },
+      executable: false,
+      lamports: 0,
+      owner: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+      rentEpoch: 0,
+      space: 165,
+    },
+  };
 }
 
 function releaseFixture(tagName: string, assets: string[]): Record<string, unknown> {

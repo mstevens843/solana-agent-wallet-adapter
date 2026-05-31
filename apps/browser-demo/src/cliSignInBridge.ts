@@ -141,7 +141,7 @@ export function resolveCliCloudSignInReadiness(
 }
 
 export function cliIntentAllowsBridgeRequestClaim(intent?: string, surface?: string): boolean {
-  if (intent === 'sign-in' || intent === 'sign-out') return false;
+  if (intent === 'sign-in' || intent === 'sign-out' || intent === 'delete-storage') return false;
   if (surface === 'desktop' && (intent === 'connect' || intent === 'disconnect')) return false;
   return true;
 }
@@ -149,6 +149,17 @@ export function cliIntentAllowsBridgeRequestClaim(intent?: string, surface?: str
 export function resolveWalletSigningRequestCopy(
   request: WalletSigningRequestCopyInput,
 ): WalletSigningRequestCopy {
+  if (isCloudStorageDeleteRequest(request)) {
+    return {
+      pendingTitle: 'Deleting Cloud Storage',
+      openingStatusTitle: 'Opening wallet for deletion',
+      successStatusTitle: 'Deletion approved',
+      failureStatusTitle: 'Deletion failed',
+      successToastTitle: 'Deletion approved',
+      failureToastTitle: 'Deletion failed',
+    };
+  }
+
   if (isCloudStorageSignInRequest(request)) {
     return {
       pendingTitle: 'Signing in',
@@ -200,6 +211,17 @@ export function isCloudStorageSignInRequest(request: WalletSigningRequestCopyInp
     summary.includes('agentic cli login') ||
     summary.includes('cloud storage sign in') ||
     summary.includes('cloud sign in')
+  );
+}
+
+export function isCloudStorageDeleteRequest(request: WalletSigningRequestCopyInput): boolean {
+  if (request.kind !== 'sign_message') return false;
+  const summary = normalizeSignInSummary(request.display?.summary);
+  return (
+    summary.includes('delete agentic cloud storage') ||
+    summary.includes('delete agentic cloud workspace') ||
+    summary.includes('cloud storage deletion') ||
+    summary.includes('cloud workspace deletion')
   );
 }
 

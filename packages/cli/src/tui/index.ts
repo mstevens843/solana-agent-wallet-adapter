@@ -271,6 +271,11 @@ export async function confirm(opts: {
   return inquirerConfirm({
     message: opts.message,
     default: opts.default ?? false,
+    theme: {
+      style: {
+        defaultAnswer: (text: string) => `${ANSI.gray}[${text.toLowerCase()}]${ANSI.reset}`,
+      },
+    },
   }, promptContext());
 }
 

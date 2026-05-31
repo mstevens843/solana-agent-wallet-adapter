@@ -158,7 +158,7 @@ export function deleteAccountPage() {
 
         <h3>What counts as your "account"</h3>
         <p>Agentic does not use usernames, passwords, OAuth providers, email accounts, or phone numbers. Your Solana wallet public key is the account identifier. Cloud sync is optional: signed-out users have no server-side state to delete.</p>
-        <p>If you have never connected a wallet to Agentic Cloud (the "Connect Cloud Storage" tab in Preferences), there is nothing for you to delete here. On-device data such as drafts, approvals, and receipts saved on the "Saved on device" path can be cleared by clearing your browser site data or uninstalling the Android app.</p>
+        <p>If you have never connected a wallet to Agentic Cloud (the "Connect Cloud Storage" tab in Preferences), there is nothing for you to delete here. On-device data such as drafts, approvals, and receipts saved on the "Saved on device" path can be cleared by clearing your browser site data or uninstalling the app.</p>
 
         <h3>How to delete your cloud data</h3>
         <ol>
@@ -166,11 +166,11 @@ export function deleteAccountPage() {
           <li>Connect the wallet whose data you want to delete.</li>
           <li>Open <strong>Preferences → Connect Cloud Storage</strong>.</li>
           <li>Scroll to <strong>Danger Zone</strong> at the bottom of the panel.</li>
-          <li>Tap <strong>Delete cloud data</strong>.</li>
+          <li>Tap <strong>Delete all app data</strong>.</li>
           <li>Sign the deletion-confirmation message in your wallet when prompted.</li>
-          <li>All cloud data scoped to that wallet is removed immediately. The cascade delete runs atomically and cannot be undone.</li>
+          <li>All cloud data scoped to that wallet is removed immediately. After the cloud delete succeeds, the current app clears its local browser or webview storage and reloads into a fresh state.</li>
         </ol>
-        <p>On the Android app, the same flow is available inside the bundled web app under <strong>Preferences → Connect Cloud Storage → Danger Zone</strong>.</p>
+        <p>On the desktop, Android, and iOS apps, the same flow is available inside the bundled app under <strong>Preferences → Connect Cloud Storage → Danger Zone</strong>.</p>
 
         <h3>What gets deleted</h3>
         <ul>
@@ -181,6 +181,7 @@ export function deleteAccountPage() {
           <li>Encrypted connector API keys (Magic Eden, Tensor, Sanctum, and any other BYO keys you stored)</li>
           <li>Wallet preferences and saved settings</li>
           <li>Active Agentic Cloud session and signed-in state</li>
+          <li>Current app localStorage, sessionStorage, IndexedDB, CacheStorage, session AI keys, Device Agent config, and native cached wallet authorizations where available</li>
         </ul>
 
         <h3>What is kept and why</h3>

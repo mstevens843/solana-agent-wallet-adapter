@@ -685,6 +685,12 @@ async function dispatch(parsed: ParsedArgs): Promise<unknown> {
       return dispatchBridgeRouter(parsed);
     case 'cloud-workspace':
       return dispatchCloudWorkspace(parsed);
+    case 'delete-storage':
+      await ensureBrowserHostDetached(parsed.options);
+      return dispatchCloudWorkspace({
+        ...parsed,
+        positionals: ['cloud-workspace', 'delete', '--confirm', ...parsed.positionals.slice(1)],
+      });
 
     // v1.0 — skills, signals, mandates, audit
     case 'skills':
@@ -2509,6 +2515,15 @@ async function handleTerminalCommand(
         await ensureBrowserHost(state);
         await openWalletHost(state.options, { intent: 'sign-out' }).catch(() => undefined);
         return false;
+      case 'delete-storage': {
+        await ensureBrowserHost(state);
+        const result = await dispatchCloudWorkspace({
+          options: state.options,
+          positionals: ['cloud-workspace', 'delete', '--confirm', ...args],
+        });
+        printResult(result, state.options);
+        return false;
+      }
       case 'sign-in-status':
         await showSignInStatus(state.options);
         return false;
@@ -5937,7 +5952,7 @@ function walletHostOpenResult(options: GlobalOptions, cli?: CliIntent): JsonReco
 }
 
 type CliIntent =
-  | { intent: 'connect' | 'disconnect' | 'approve' | 'sign-in' | 'sign-out'; actionId?: string; requestId?: never }
+  | { intent: 'connect' | 'disconnect' | 'approve' | 'sign-in' | 'sign-out' | 'delete-storage'; actionId?: string; requestId?: never }
   | { intent: 'sign'; requestId: string; actionId?: never };
 
 function walletHostLaunchUrl(options: GlobalOptions, cli?: CliIntent): string {
@@ -5974,6 +5989,8 @@ function walletHostPageLabel(cli?: CliIntent): string {
       return 'Agentic Cloud Sign In';
     case 'sign-out':
       return 'Agentic Cloud Sign Out';
+    case 'delete-storage':
+      return 'Agentic Cloud Storage Deletion';
     case 'sign':
       return 'Agentic Proof Signing';
   }
@@ -6004,6 +6021,8 @@ function walletHostLaunchPath(cli?: CliIntent): string {
       return '/sign-in';
     case 'sign-out':
       return '/sign-out';
+    case 'delete-storage':
+      return '/delete-storage';
     case 'sign':
       return '/sign';
   }
@@ -6726,6 +6745,7 @@ function printCommandMenu(topic?: string): void {
     printSection('Setup');
     console.log('/connect           Connect wallet');
     console.log('/sign-in           Connect cloud storage (optional)');
+    console.log('/delete-storage    Delete Agentic Cloud Storage');
     console.log('/agent-setup       Add a provider key for Hosted BYOK or Local Bridge');
     console.log('/agent-disconnect  Clear the saved agent provider key');
     console.log('/connectors        Manage protocol connectors and BYO API keys');
@@ -6737,6 +6757,7 @@ function printCommandMenu(topic?: string): void {
   printSection('Setup');
   console.log('/connect           Connect wallet');
   console.log('/sign-in           Connect cloud storage (optional)');
+  console.log('/delete-storage    Delete Agentic Cloud Storage');
   console.log('/agent-setup       Add a provider key for Hosted BYOK or Local Bridge');
   console.log('/agent-disconnect  Clear the saved agent provider key');
   console.log('/connectors        Manage protocol connectors and BYO API keys');
@@ -6798,6 +6819,7 @@ function printFullCommandMenu(): void {
   console.log('/approve <id|#>    Approve via browser wallet popup');
   console.log('/reject <id|#>     Reject a prepared action');
   console.log('/sign-out          Sign out of the cloud workspace');
+  console.log('/delete-storage    Delete Agentic Cloud Storage');
   console.log('');
   printSection('Setup & diagnostics');
   console.log('/setup             Optional local BYOK setup');
@@ -6819,6 +6841,7 @@ function printFullCommandMenu(): void {
   console.log('');
   console.log('v1.0 hosted / connector commands (all support --json):');
   console.log('/auth login | logout | status     Sign in to Agentic cloud (SIWS)');
+  console.log('/delete-storage                  Delete Agentic Cloud Storage');
   console.log('/profile show | publish | delete  Agent profile (A2A) management');
   console.log('/prefs show | get | set           Cloud preferences + BYO connector keys');
   console.log('/spend-limits list                Spend envelope state (read-only)');
@@ -6861,6 +6884,7 @@ function printAdvancedCommandMenu(): void {
   console.log('');
   console.log('Scriptable groups (all support --json where applicable):');
   console.log('/auth login | logout | status');
+  console.log('/delete-storage');
   console.log('/profile show | publish | delete');
   console.log('/prefs show | get | set');
   console.log('/device-agent status | set-key');
@@ -6896,6 +6920,7 @@ Start:
 Setup:
   solana-agent-wallet connect              # connect wallet
   solana-agent-wallet sign-in              # connect cloud storage (optional)
+  solana-agent-wallet delete-storage       # delete Agentic Cloud Storage
   solana-agent-wallet agent-setup          # Hosted BYOK or Local Bridge provider key
   solana-agent-wallet agent-disconnect     # clear saved agent provider key
 
@@ -6920,6 +6945,7 @@ Flow-first commands (recommended — run with no command or "app" for the intera
   solana-agent-wallet sign-in                            # SIWS into cloud workspace
   solana-agent-wallet sign-in-status                     # show current sign-in state
   solana-agent-wallet sign-out
+  solana-agent-wallet delete-storage                     # delete Agentic Cloud Storage
   solana-agent-wallet agent-setup                        # Hosted BYOK or Local Bridge provider key
   solana-agent-wallet agent-disconnect                   # clear saved agent provider key
   solana-agent-wallet new                                # menu: one-time · repeat
@@ -6985,6 +7011,7 @@ Setup / diagnostics:
   solana-agent-wallet swap order <amount> [...]
   solana-agent-wallet swap execute <amount> [...]
   solana-agent-wallet auth login --wallet <addr> | logout | status | nonce | session
+  solana-agent-wallet delete-storage
   solana-agent-wallet profile show | publish <agent-card.json> | delete
   solana-agent-wallet prefs show | get <namespace> | set <namespace> --file <payload.json>
   solana-agent-wallet prefs agent-policies show | set --file <policies.json>
@@ -7452,8 +7479,7 @@ async function promptRequired(rl: readline.Interface, label: string): Promise<st
 }
 
 async function confirm(rl: readline.Interface, label: string, defaultValue: boolean): Promise<boolean> {
-  const hint = defaultValue ? 'Y/n' : 'y/N';
-  const answer = (await readlineQuestion(rl, `${label} [${hint}]: `)).trim().toLowerCase();
+  const answer = (await readlineQuestion(rl, `${label} [y/n]: `)).trim().toLowerCase();
   if (!answer) {
     return defaultValue;
   }

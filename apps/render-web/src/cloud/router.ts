@@ -4,7 +4,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createPairingHandler } from './pairingHandler.js';
 
 import {
+  AgentWalletActionService,
   BridgeAiPlanner,
+  DEFAULT_CONFIG,
   getTransfersByAddress,
   listCoinGeckoEndpointCatalog,
   requestBirdeyeExitLiquidityMulti,
@@ -162,6 +164,7 @@ const HOSTED_AI_RATE_LIMIT_MAX_ATTEMPTS = 30;
 // [runWithHostedAiTimeout]. Emits 504 on timeout.
 const HOSTED_AI_TIMEOUT_MS = 45_000;
 const DEFAULT_ANDROID_CLOUD_ORIGIN = 'https://agentic.local';
+const DEFAULT_IOS_CLOUD_ORIGIN = 'capacitor://localhost';
 // Tauri 2 webview origins. macOS / Linux use the `tauri://localhost` custom
 // scheme; Windows (WebView2) uses `http://tauri.localhost`. `https://tauri.localhost`
 // covers the Tauri 2 builds that opt into the secure variant and matches the
@@ -191,6 +194,10 @@ const IOS_UNIVERSAL_LINK_PATHS = [
   '/approve/*',
   '/sign',
   '/sign/*',
+  '/ios/callback',
+  '/ios/callback/*',
+  '/ios/approval',
+  '/ios/approval/*',
   '/sign-in',
   '/sign-in/*',
   '/agentic-login',
@@ -255,6 +262,7 @@ const REGISTERED_API_ROUTES = [
   'POST /api/solana/send-transaction',
   'POST /api/solana/signature-status',
   'POST /api/solana/parsed-account-info',
+  'POST /api/solana/wallet-balance-summary',
   'POST /api/swap/order',
   'POST /api/swap/execute',
   'POST /api/connector/prepare-transaction',
@@ -759,6 +767,7 @@ function isAllowedRequestOrigin(origin: string | undefined, client: string | und
 function configuredCloudCorsOrigins(): Set<string> {
   const configured = [
     DEFAULT_ANDROID_CLOUD_ORIGIN,
+    DEFAULT_IOS_CLOUD_ORIGIN,
     ...DEFAULT_DESKTOP_CLOUD_ORIGINS,
     ...(isProductionRequest() ? [] : DEFAULT_DESKTOP_DEV_CLOUD_ORIGINS),
     ...(process.env.AGENTIC_ANDROID_WEBVIEW_ORIGIN ? [process.env.AGENTIC_ANDROID_WEBVIEW_ORIGIN] : []),
@@ -856,6 +865,7 @@ export function authRateLimitedRoute(pathname: string): AuthRateLimitInput['rout
   if (pathname.startsWith('/api/connector')) return '/api/approvals:*';
   if (pathname.startsWith('/api/recurring')) return '/api/recurring:*';
   if (pathname.startsWith('/api/evidence')) return '/api/evidence:*';
+  if (pathname.startsWith('/api/solana')) return '/api/solana:*';
   if (pathname.startsWith('/api/swap')) return '/api/swap:*';
   if (pathname.startsWith('/api/birdeye')) return '/api/birdeye:*';
   if (pathname.startsWith('/api/helius')) return '/api/helius:*';
@@ -1198,6 +1208,12 @@ async function routeApiRequest(
   if (url.pathname === '/api/solana/parsed-account-info') {
     requireMethod(req, 'POST');
     await handleSolanaParsedAccountInfo(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/solana/wallet-balance-summary') {
+    requireMethod(req, 'POST');
+    await handleSolanaWalletBalanceSummary(req, res);
     return;
   }
 
@@ -2117,6 +2133,24 @@ async function handleSolanaParsedAccountInfo(req: IncomingMessage, res: ServerRe
   writeJson(res, 200, { exists: true, owner, decimals });
 }
 
+async function handleSolanaWalletBalanceSummary(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'Solana wallet balance summary body');
+  const cluster = requiredCluster(body.cluster);
+  const walletAddress = normalizeWalletAddress(requiredBodyString(body, 'walletAddress'));
+  const mode = body.mode === 'full' ? 'full' : 'primary';
+  const rpcUrl = solanaRpcUrl(cluster);
+  const service = new AgentWalletActionService({
+    backend: readOnlyWalletBalanceBackend(walletAddress, cluster),
+    config: {
+      ...DEFAULT_CONFIG,
+      cluster,
+      rpcUrl,
+    },
+    connection: new Connection(rpcUrl, 'confirmed'),
+  });
+  writeJson(res, 200, await service.walletBalanceSummary({ mode }));
+}
+
 async function handleJupiterSwapExecute(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = asJsonRecord(await readJsonBody(req), 'swap execute body');
   const signedTransaction = requiredBodyString(body, 'signedTransaction');
@@ -2440,6 +2474,34 @@ function jupiterApiKey(): string | undefined {
 
 function solanaConnection(cluster: WorkflowCluster): Connection {
   return new Connection(solanaRpcUrl(cluster), 'confirmed');
+}
+
+function readOnlyWalletBalanceBackend(walletAddress: string, cluster: WorkflowCluster) {
+  return {
+    async capabilities() {
+      return {
+        backend: 'agentic-cloud-readonly',
+        cluster: [cluster],
+        address: walletAddress,
+        supports: {
+          signMessage: false,
+          signTransaction: false,
+          signAndSendTransaction: false,
+          multiSign: false,
+          simulationPreview: false,
+        },
+      };
+    },
+    async getAddress() {
+      return walletAddress;
+    },
+    async submit() {
+      throw new Error('Cloud balance reads cannot request wallet signatures.');
+    },
+    async poll() {
+      throw new Error('Cloud balance reads cannot poll wallet approvals.');
+    },
+  };
 }
 
 function asJsonRecord(value: unknown, label: string): Record<string, unknown> {
@@ -3581,6 +3643,8 @@ function shouldReturnBearerSession(req: IncomingMessage): boolean {
   const origin = firstHeaderValue(req.headers.origin);
   const client = firstHeaderValue(req.headers['x-agentic-client'])?.toLowerCase();
   // android-bundled — Android TWA + loopback-cors. Requires CORS-allowed Origin.
+  // ios-bundled — Capacitor iOS webview. Same bearer pattern as Android,
+  //   but its custom-scheme Origin serializes as capacitor://localhost.
   // desktop-bundled — Tauri 2 webview. Same trust model as android-bundled:
   //   the bearer is only handed back when the request originates from a
   //   webview origin we explicitly recognize (tauri://localhost,
@@ -3593,7 +3657,7 @@ function shouldReturnBearerSession(req: IncomingMessage): boolean {
   //   identifier alone because the CLI is local-only and the bearer is delivered
   //   straight back to the loopback receiver the caller spun up.
   if (client === 'cli-bundled') return true;
-  if (client !== 'android-bundled' && client !== 'desktop-bundled') return false;
+  if (client !== 'android-bundled' && client !== 'ios-bundled' && client !== 'desktop-bundled') return false;
   return isAllowedRequestOrigin(origin, client);
 }
 
