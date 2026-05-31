@@ -14,8 +14,8 @@ enum AgenticWalletConnectDeepLink {
         URL(string: "jupiter://wc?uri=\(percentEncodeQueryValue(uri))")
     }
 
-    static func jupiterRequestUrl(requestId: String) -> URL? {
-        URL(string: "jupiter://wc?uri=\(percentEncodeQueryValue("wc:\(requestId)@2"))")
+    static func jupiterRequestLaunchUrl() -> URL? {
+        URL(string: "jupiter://")
     }
 
     private static func percentEncodeQueryValue(_ value: String) -> String {

@@ -140,6 +140,61 @@ describe('AI product guardrails', () => {
     expect(assertPlanGuardrails({ plan })).toEqual(report);
   });
 
+  it('treats AI user notes as queueable plan context', () => {
+    const report = evaluatePlanGuardrails({
+      plan: {
+        source: 'ai',
+        category: 'payments',
+        actionType: 'transfer_sol',
+        templateId: 'transfer-sol',
+        templateTitle: 'Send SOL',
+        intent: 'Send 0.1 SOL to a recipient',
+        route: 'Prepare a SOL transfer and show wallet approval before signing.',
+        risk: 'Medium risk. Check recipient, amount, fees, and memo before approval.',
+        approval: 'Wallet approval is required before signing or submitting.',
+        parameters: {
+          recipient: 'Recipient111111111111111111111111111111111',
+          amount: '0.1',
+        },
+        userNotes: 'Invoice payment for May services.',
+        fields: [{ label: 'Amount SOL', value: '0.1' }],
+        safeguards: ['Wallet approval is required.'],
+        cluster: 'devnet',
+      },
+    });
+
+    expect(report.verdict).toBe('pass');
+    expect(report.violations.some((violation) => violation.code === 'missing_context_note')).toBe(false);
+  });
+
+  it('still warns when a queueable AI plan has no memo, reason, note, or user notes', () => {
+    const report = evaluatePlanGuardrails({
+      plan: {
+        source: 'ai',
+        category: 'payments',
+        actionType: 'transfer_sol',
+        templateId: 'transfer-sol',
+        templateTitle: 'Send SOL',
+        intent: 'Send 0.1 SOL to a recipient',
+        route: 'Prepare a SOL transfer and show wallet approval before signing.',
+        risk: 'Medium risk. Check recipient, amount, fees, and memo before approval.',
+        approval: 'Wallet approval is required before signing or submitting.',
+        parameters: {
+          recipient: 'Recipient111111111111111111111111111111111',
+          amount: '0.1',
+        },
+        fields: [{ label: 'Amount SOL', value: '0.1' }],
+        safeguards: ['Wallet approval is required.'],
+        cluster: 'devnet',
+      },
+    });
+
+    expect(report.verdict).toBe('warn');
+    expect(report.violations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'missing_context_note' }),
+    ]));
+  });
+
   it('blocks AI drafts that claim approval, signing, or safety has already happened', () => {
     const blocked = evaluatePlanGuardrails({
       plan: {

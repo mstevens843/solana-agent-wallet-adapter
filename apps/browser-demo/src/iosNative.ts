@@ -441,7 +441,7 @@ export function listIosNativeWalletOptions(): ReadonlyArray<IosNativeWalletOptio
   return IOS_WALLETS.map((wallet) => ({
     id: wallet.id,
     name: wallet.name,
-    detail: wallet.transport === 'walletconnect' ? 'WalletConnect / Reown' : 'Encrypted iOS deeplink',
+    detail: 'iOS wallet',
     transport: wallet.transport,
     appStoreUrl: wallet.appStoreUrl,
   }));
@@ -1094,6 +1094,7 @@ export class IosNativeWalletBackend implements WalletBackend {
       switch (request.kind) {
         case 'sign_message': {
           const message = bs58.encode(payload);
+          await this.emitJupiterRequestLaunchStartDebug(request, record);
           const result = await callWalletConnect(
             'wcSignMessage',
             () =>
@@ -1119,6 +1120,7 @@ export class IosNativeWalletBackend implements WalletBackend {
         }
         case 'sign_transaction': {
           const transactionBase64 = iosNativeWalletConnectTransactionParam(request.payload);
+          await this.emitJupiterRequestLaunchStartDebug(request, record);
           const result = await callWalletConnect(
             'wcSignTransaction',
             () =>
@@ -1160,6 +1162,7 @@ export class IosNativeWalletBackend implements WalletBackend {
         case 'sign_and_send_transaction': {
           const transactionBase64 = iosNativeWalletConnectTransactionParam(request.payload);
           try {
+            await this.emitJupiterRequestLaunchStartDebug(request, record);
             const result = await callWalletConnect(
               'wcSignAndSendTransaction',
               () =>
@@ -1199,6 +1202,7 @@ export class IosNativeWalletBackend implements WalletBackend {
               message: err instanceof Error ? err.message : String(err),
             });
           }
+          await this.emitJupiterRequestLaunchStartDebug(request, record);
           const signed = await callWalletConnect(
             'wcSignTransaction',
             () =>
@@ -1262,6 +1266,22 @@ export class IosNativeWalletBackend implements WalletBackend {
       });
       throw err;
     }
+  }
+
+  private async emitJupiterRequestLaunchStartDebug(request: SigningRequest, record: IosNativeWalletRecord): Promise<void> {
+    await emitMobileWalletDebug(this.logLevel, {
+      appUrl: this.appUrl,
+      wallet: 'jupiter',
+      method: 'sign',
+      step: 'wc_request_launch_start',
+      requestId: request.id,
+      strategy: 'walletconnect',
+      kind: request.kind,
+      topic: short(record.walletConnectTopic ?? ''),
+      pubkey: short(record.publicKey),
+      walletUrl: urlShape('jupiter://'),
+      code: 'jupiter_app_root',
+    });
   }
 
   private async emitJupiterSignResultDebug(request: SigningRequest, result: object): Promise<void> {

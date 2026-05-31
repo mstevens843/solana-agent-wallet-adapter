@@ -116,6 +116,45 @@ enum AgenticAgentRuntimeState: String {
     case error
 }
 
+private final class AgenticBackgroundTask {
+    private let name: String
+    private var id = UIBackgroundTaskIdentifier.invalid
+    private var ended = false
+
+    init(name: String) {
+        self.name = name
+    }
+
+    func begin() {
+        DispatchQueue.main.async {
+            self.beginOnMain()
+        }
+    }
+
+    func end() {
+        DispatchQueue.main.async {
+            self.endOnMain()
+        }
+    }
+
+    private func beginOnMain() {
+        guard !ended, id == .invalid else { return }
+        id = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+            self?.endOnMain()
+        }
+    }
+
+    private func endOnMain() {
+        guard !ended else { return }
+        ended = true
+        let current = id
+        id = .invalid
+        if current != .invalid {
+            UIApplication.shared.endBackgroundTask(current)
+        }
+    }
+}
+
 // MARK: - Runtime singleton
 
 final class AgenticAgentRuntime {
@@ -259,14 +298,10 @@ final class AgenticAgentRuntime {
         let context = payload["context"]
         let provider = AgenticAgentProviderFactory.make(for: cfg)
 
-        // Background task — gives ~30s if the app is backgrounded mid-request.
-        var bgTaskId = UIBackgroundTaskIdentifier.invalid
-        DispatchQueue.main.async {
-            bgTaskId = UIApplication.shared.beginBackgroundTask(withName: "agentic-device-agent-\(method)") {
-                UIApplication.shared.endBackgroundTask(bgTaskId)
-                bgTaskId = .invalid
-            }
-        }
+        // Background task gives the provider a short completion window if the
+        // app backgrounds mid-request. The token is main-thread-owned.
+        let backgroundTask = AgenticBackgroundTask(name: "agentic-device-agent-\(method)")
+        backgroundTask.begin()
 
         let request = AgenticAgentRequest(
             method: method,
@@ -278,12 +313,7 @@ final class AgenticAgentRuntime {
         )
 
         provider.execute(request: request) { [weak self] result in
-            DispatchQueue.main.async {
-                if bgTaskId != .invalid {
-                    UIApplication.shared.endBackgroundTask(bgTaskId)
-                    bgTaskId = .invalid
-                }
-            }
+            backgroundTask.end()
             switch result {
             case .success(let data):
                 self?.queue.async {

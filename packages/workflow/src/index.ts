@@ -1089,7 +1089,7 @@ export function evaluatePlanGuardrails(input: {
   }
 
   if (source === 'ai') {
-    collectAiWarningViolations(plan, actionType, parameters, violations);
+    collectAiWarningViolations(plan, actionType, parameters, userNotes, violations);
   }
 
   const finalizationRequirement = finalizationRequirementForAction(actionType);
@@ -2787,6 +2787,7 @@ function collectAiWarningViolations(
   plan: Record<string, unknown>,
   actionType: string,
   parameters: Record<string, string>,
+  userNotes: string,
   violations: AiGuardrailViolation[],
 ): void {
   for (const key of ['route', 'risk', 'approval'] as const) {
@@ -2800,7 +2801,7 @@ function collectAiWarningViolations(
       });
     }
   }
-  if (isQueueableWorkflowAction(actionType) && !firstPresentParam(parameters, ['memo', 'note', 'reason'])) {
+  if (isQueueableWorkflowAction(actionType) && !firstPresentParam(parameters, ['memo', 'note', 'reason']) && !userNotes.trim()) {
     violations.push({
       code: 'missing_context_note',
       severity: 'warn',

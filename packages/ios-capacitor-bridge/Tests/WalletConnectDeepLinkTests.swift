@@ -11,10 +11,12 @@ final class WalletConnectDeepLinkTests: XCTestCase {
         ])
     }
 
-    func testJupiterRequestLaunchUsesIncompleteNativeRequestUri() throws {
-        let url = try XCTUnwrap(AgenticWalletConnectDeepLink.jupiterRequestUrl(requestId: "1780256123456789"))
+    func testJupiterRequestLaunchUsesAppRootWithoutPairingUri() throws {
+        let url = try XCTUnwrap(AgenticWalletConnectDeepLink.jupiterRequestLaunchUrl())
 
-        XCTAssertEqual(url.absoluteString, "jupiter://wc?uri=wc%3A1780256123456789%402")
+        XCTAssertEqual(url.absoluteString, "jupiter://")
+        XCTAssertFalse(url.absoluteString.contains("uri="))
+        XCTAssertFalse(url.absoluteString.contains("wc%3A"))
         XCTAssertFalse(url.absoluteString.contains("requestId="))
         XCTAssertFalse(url.absoluteString.contains("sessionTopic="))
         XCTAssertFalse(url.absoluteString.contains("https://"))

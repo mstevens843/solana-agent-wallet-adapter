@@ -307,6 +307,10 @@ import {
   type AgentEvidenceDisplaySection,
   type AgentEvidenceTone,
 } from './agentReviewPresentation.js';
+import {
+  ASK_AGENT_CONVERSATION_ONLY_REASON,
+  recoverInterruptedAgentReviews,
+} from './agentReviewRecovery.js';
 import { findingsSpecFor } from './agentFindingsSpec.js';
 import { evaluateSimulationOutcome } from './simulationOutcome.js';
 import { getCachedUsdPrice, getUsdPriceForMint } from './priceCache.js';
@@ -1238,6 +1242,7 @@ interface SelectPickerOption {
   hiddenFromMenu?: boolean;
   title?: string;
 }
+type SelectPickerPlacement = 'auto' | 'down' | 'up';
 
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -4429,8 +4434,10 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
 function hydrateGeneratedPlansForStartup(): void {
   try {
     const plans = loadGeneratedPlans();
-    state.generatedPlans = plans;
-    state.selectedGeneratedPlanId = plans.find((record) => record.status !== 'archived')?.id ?? plans[0]?.id ?? '';
+    const recovered = recoverInterruptedAgentReviews(plans, { staleAfterMs: 0 });
+    state.generatedPlans = recovered.records;
+    state.selectedGeneratedPlanId = recovered.records.find((record) => record.status !== 'archived')?.id ?? recovered.records[0]?.id ?? '';
+    if (recovered.changed) saveGeneratedPlans();
   } catch (err) {
     state.generatedPlans = [];
     state.selectedGeneratedPlanId = '';
@@ -4442,9 +4449,11 @@ function hydrateLocalWorkspaceForWallet(): void {
   if (!state.address) return;
   const cloudPlans = state.generatedPlans.filter((record) => record.workflowSource === 'cloud');
   const localPlans = loadGeneratedPlans(state.address);
-  state.generatedPlans = mergeGeneratedPlans(cloudPlans, localPlans);
+  const recovered = recoverInterruptedAgentReviews(mergeGeneratedPlans(cloudPlans, localPlans), { staleAfterMs: 0 });
+  state.generatedPlans = recovered.records;
   state.localCompletedPlans = loadLocalCompletedPlans(state.address);
   refreshBrowserWorkflowData();
+  if (recovered.changed) saveGeneratedPlans();
   selectFallbackGeneratedPlan();
 }
 
@@ -21212,6 +21221,10 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const usingCustomModel = !selectedPresetModel;
   const modeHelperText = aiModeHelperText();
   const providerHelperText = aiProviderHelperText();
+  const aiSheetMenuPlacement: SelectPickerPlacement =
+    isRail && isMobileAppViewport() && state.activeMobileRailSheet === 'ai-drafting'
+      ? 'down'
+      : 'auto';
   const setupHelperMessages = Array.from(new Set(
     (mobilePlannerSetup ? [modeHelperText] : [modeHelperText, providerHelperText]).filter(Boolean),
   ));
@@ -21304,6 +21317,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
           attrs: { 'data-ai-control': 'provider' },
           disabled: state.busy,
           title: providerHelperText,
+          menuPlacement: aiSheetMenuPlacement,
         })}
         ${!isRail && !mobilePlannerSetup ? browserNativeProviderTierChip() : ''}
         ${isRail && providerHelperText ? `<em class="ai-route-helper">${escapeHtml(providerHelperText)}</em>` : ''}
@@ -21327,6 +21341,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
           ],
           attrs: { 'data-ai-control': 'model-select' },
           disabled: state.busy,
+          menuPlacement: aiSheetMenuPlacement,
         })}
       </label>
       ${usingCustomModel ? `
@@ -26176,7 +26191,10 @@ function bindSelectPickers(): void {
       trigger.setAttribute('aria-expanded', 'true');
       menu.hidden = false;
       positionTemplatePickerMenu(trigger, menu);
-      window.requestAnimationFrame(() => positionTemplatePickerMenu(trigger, menu));
+      window.requestAnimationFrame(() => {
+        positionTemplatePickerMenu(trigger, menu);
+        scrollForcedDownSelectPickerMenuIntoView(trigger, menu);
+      });
 
       const selectedOption = enabledOptions.find((option) => option.dataset.selectPickerOption === select.value) ?? enabledOptions[0]!;
       const activeOption = focusOption === 'first'
@@ -26794,13 +26812,44 @@ function positionTemplatePickerMenu(trigger: HTMLElement, menu: HTMLElement): vo
   const safeTop = viewportTop + 10;
   const spaceBelow = Math.max(0, Math.floor(safeBottom - triggerRect.bottom - 8));
   const spaceAbove = Math.max(0, Math.floor(triggerRect.top - safeTop - 8));
+  const placement = selectPickerPlacement(trigger, menu);
   const inBottomDock = Boolean(trigger.closest('[data-layout="android-bottom-tab-dock"]'));
-  const shouldDropUp = inBottomDock || (spaceBelow < 200 && spaceAbove > spaceBelow);
-  const usableSpace = shouldDropUp ? spaceAbove : spaceBelow;
-  const maxHeight = Math.min(420, Math.max(160, usableSpace));
+  const shouldDropUp = placement === 'down'
+    ? false
+    : placement === 'up' || inBottomDock || (spaceBelow < 200 && spaceAbove > spaceBelow);
+  let usableSpace = shouldDropUp ? spaceAbove : spaceBelow;
+  const sheetBody = menu.closest<HTMLElement>('.mobile-rail-sheet-body');
+  if (sheetBody && placement === 'down') {
+    const sheetRect = sheetBody.getBoundingClientRect();
+    usableSpace = Math.max(0, Math.floor(sheetRect.bottom - triggerRect.bottom - 8));
+  }
+  const compactSheetMenu = Boolean(sheetBody && placement === 'down');
+  const maxHeight = Math.min(compactSheetMenu ? 240 : 420, Math.max(compactSheetMenu ? 120 : 160, usableSpace));
   menu.classList.toggle('drop-up', shouldDropUp);
   menu.style.setProperty('--template-menu-max-height', `${maxHeight}px`);
   menu.style.setProperty('--template-menu-max-width', `${Math.max(220, Math.floor(viewportWidth - 20))}px`);
+}
+
+function selectPickerPlacement(trigger: HTMLElement, menu: HTMLElement): SelectPickerPlacement {
+  const picker = trigger.closest<HTMLElement>('[data-select-picker]');
+  const placement = picker?.dataset.selectPickerPlacement ?? menu.dataset.selectPickerPlacement ?? 'auto';
+  return placement === 'down' || placement === 'up' ? placement : 'auto';
+}
+
+function scrollForcedDownSelectPickerMenuIntoView(trigger: HTMLElement, menu: HTMLElement): void {
+  if (selectPickerPlacement(trigger, menu) !== 'down') return;
+  const sheetBody = menu.closest<HTMLElement>('.mobile-rail-sheet-body');
+  if (!sheetBody) return;
+  const triggerRect = trigger.getBoundingClientRect();
+  const menuRect = menu.getBoundingClientRect();
+  const sheetRect = sheetBody.getBoundingClientRect();
+  const topOverflow = Math.ceil(sheetRect.top - triggerRect.top + 8);
+  const bottomOverflow = Math.ceil(menuRect.bottom - sheetRect.bottom + 12);
+  if (topOverflow > 0) {
+    sheetBody.scrollTop -= topOverflow;
+  } else if (bottomOverflow > 0) {
+    sheetBody.scrollTop += bottomOverflow;
+  }
 }
 
 function setActiveTemplateOption(
@@ -28175,7 +28224,8 @@ async function runAskAgentAnything(planId: string, question: string): Promise<vo
     schemaVersion: AGENT_REVIEW_SCHEMA_VERSION,
     required: true,
     status: 'checking',
-    reason: 'Ask-agent conversation only. No decision recorded.',
+    reason: ASK_AGENT_CONVERSATION_ONLY_REASON,
+    checkedAt: new Date().toISOString(),
     source: state.aiSettings.mode,
   };
   const exchangeId = `ask_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -28302,6 +28352,7 @@ async function runReviewGeneratedPlan(planId: string): Promise<void> {
     required: true,
     status: 'checking',
     reason: 'Agent is reviewing this draft before it can move forward.',
+    checkedAt: new Date().toISOString(),
     provider: agentReviewProviderLabel(),
     model: agentReviewModelLabel(),
     source: state.aiSettings.mode,
@@ -44677,7 +44728,7 @@ function walletIdentity(): WalletIdentity {
       logoId: walletLogoIdForName(name),
       title: 'iOS wallet standby',
       summary: name,
-      detail: state.iosAuthCacheCount > 0 ? `${state.iosAuthCacheCount} cached authorization(s)` : 'Encrypted links and WalletConnect ready',
+      detail: state.iosAuthCacheCount > 0 ? `${state.iosAuthCacheCount} cached authorization(s)` : 'Select a wallet to connect',
     };
   }
   if (providerCount > 0 && liveSelectedName) {
@@ -44722,7 +44773,7 @@ function iosWalletOptions(): string {
   return state.iosWallets
     .map(
       (wallet) =>
-        `<option value="${escapeHtml(wallet.id)}" ${wallet.id === state.selectedIosWalletId ? 'selected' : ''}>${escapeHtml(wallet.name)} - ${escapeHtml(wallet.detail)}</option>`,
+        `<option value="${escapeHtml(wallet.id)}" ${wallet.id === state.selectedIosWalletId ? 'selected' : ''}>${escapeHtml(wallet.name)}</option>`,
     )
     .join('');
 }
@@ -44732,7 +44783,6 @@ function iosWalletSelectOptions(): SelectPickerOption[] {
     value: wallet.id,
     label: wallet.name,
     meta: 'iOS wallet',
-    detail: wallet.detail,
   }));
 }
 
@@ -44755,6 +44805,7 @@ function selectPicker(input: {
   className?: string;
   title?: string;
   placeholder?: string;
+  menuPlacement?: SelectPickerPlacement;
 }): string {
   const selected = input.options.find((option) => option.value === input.value) ??
     (input.placeholder ? undefined : input.options.find((option) => !option.disabled) ?? input.options[0]);
@@ -44791,7 +44842,11 @@ function selectPicker(input: {
           </option>
         `).join('')}
       </select>
-      <div class="template-picker select-picker ${menuOpen ? 'open' : ''}" data-select-picker>
+      <div
+        class="template-picker select-picker ${menuOpen ? 'open' : ''}"
+        data-select-picker
+        data-select-picker-placement="${escapeHtml(input.menuPlacement ?? 'auto')}"
+      >
         <button
           id="${escapeHtml(`${baseId}-button`)}"
           class="template-picker-trigger select-picker-trigger"

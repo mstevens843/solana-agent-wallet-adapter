@@ -486,11 +486,9 @@ final class AgenticWalletConnectCore {
         let redirects = queue.sync {
             (native: walletRedirectNative, universal: walletRedirectUniversal)
         }
-        let urls = walletConnectRequestLaunchCandidates(
-            requestId: requestId
-        )
+        let urls = walletConnectRequestLaunchCandidates()
         guard !urls.isEmpty else {
-            AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "wc_request_launch_skip", "no wallet redirect metadata", [
+            AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "wc_request_launch_skip", "no Jupiter launch URL", [
                 "method": method,
                 "requestId": requestId.string,
                 "topic": short(topic),
@@ -501,6 +499,7 @@ final class AgenticWalletConnectCore {
             "method": method,
             "requestId": requestId.string,
             "topic": short(topic),
+            "launchMode": "jupiter_app_root",
             "candidateCount": String(urls.count),
             "firstCandidate": urlShapeForLog(urls.first?.absoluteString ?? ""),
             "peerRedirectNative": redirects.native == nil ? "false" : "true",
@@ -511,16 +510,15 @@ final class AgenticWalletConnectCore {
                 "method": method,
                 "requestId": requestId.string,
                 "topic": self.short(topic),
+                "launchMode": "jupiter_app_root",
                 "launched": String(launched),
                 "url": self.urlShapeForLog(url?.absoluteString ?? ""),
             ])
         }
     }
 
-    private func walletConnectRequestLaunchCandidates(
-        requestId: RPCID
-    ) -> [URL] {
-        guard let requestUrl = AgenticWalletConnectDeepLink.jupiterRequestUrl(requestId: requestId.string) else { return [] }
+    private func walletConnectRequestLaunchCandidates() -> [URL] {
+        guard let requestUrl = AgenticWalletConnectDeepLink.jupiterRequestLaunchUrl() else { return [] }
         return [requestUrl]
     }
 

@@ -18,6 +18,7 @@ import {
   iosNativeResolveCallbackWaiterKey,
   iosNativeWalletLaunchStrategy,
   iosNativeWalletConnectTransactionParam,
+  listIosNativeWalletOptions,
   restoreLatestIosNativeWallet,
   type IosNativeWalletId,
 } from '../iosNative.js';
@@ -51,6 +52,17 @@ describe('iosNativeAppUrl', () => {
     vi.stubEnv('VITE_AGENTIC_CLOUD_API_BASE_URL', 'https://agentic-signer.com/api/mobile-config');
 
     expect(iosNativeAppUrl()).toBe('https://agentic-signer.com');
+  });
+});
+
+describe('iOS native wallet options', () => {
+  it('keeps wallet picker copy user-facing', () => {
+    const options = listIosNativeWalletOptions();
+
+    expect(options.map((option) => option.detail)).toEqual(options.map(() => 'iOS wallet'));
+    for (const option of options) {
+      expect(`${option.name} ${option.detail}`).not.toMatch(/deeplink|walletconnect|reown/i);
+    }
   });
 });
 

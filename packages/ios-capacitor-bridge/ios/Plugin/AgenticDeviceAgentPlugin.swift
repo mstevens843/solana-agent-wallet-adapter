@@ -87,11 +87,13 @@ public class AgenticDeviceAgentPlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
         invoke(payload) { result in
-            switch result {
-            case .success(let data):
-                call.resolve(data)
-            case .failure(let err):
-                call.reject(err.message, err.code, nil, err.asJson)
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let data):
+                    call.resolve(data)
+                case .failure(let err):
+                    call.reject(err.message, err.code, nil, err.asJson)
+                }
             }
         }
     }

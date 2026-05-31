@@ -28452,6 +28452,22 @@ button.danger:hover:not(:disabled) {
     gap: 8px;
   }
 
+  .route-app .mobile-rail-sheet.ai-drafting .ai-setting-provider .select-picker.open,
+  .route-app .mobile-rail-sheet.ai-drafting .ai-setting-model .select-picker.open {
+    z-index: 360;
+  }
+
+  .route-app .mobile-rail-sheet.ai-drafting .ai-setting-provider .select-picker-menu,
+  .route-app .mobile-rail-sheet.ai-drafting .ai-setting-model .select-picker-menu,
+  .route-app .mobile-rail-sheet.ai-drafting .ai-setting-provider .select-picker-menu.drop-up,
+  .route-app .mobile-rail-sheet.ai-drafting .ai-setting-model .select-picker-menu.drop-up {
+    bottom: auto;
+    max-height: min(var(--template-menu-max-height, 220px), 42dvh);
+    overflow-y: auto;
+    top: calc(100% + 6px);
+    z-index: 360;
+  }
+
   .route-app .mobile-rail-sheet.wallet-balances {
     height: min(62dvh, 540px);
   }
