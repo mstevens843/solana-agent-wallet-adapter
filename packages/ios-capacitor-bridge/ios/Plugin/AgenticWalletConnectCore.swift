@@ -486,13 +486,13 @@ final class AgenticWalletConnectCore {
         let redirects = queue.sync {
             (native: walletRedirectNative, universal: walletRedirectUniversal)
         }
-        let urls = walletConnectRequestLaunchCandidates()
+        let urls = walletConnectRequestLaunchCandidates(requestId: requestId, topic: topic)
         guard !urls.isEmpty else {
-            AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "wc_request_launch_skip", "Jupiter has no safe iOS request foreground URL", [
+            AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "wc_request_launch_skip", "no Jupiter request launch URL", [
                 "method": method,
                 "requestId": requestId.string,
                 "topic": short(topic),
-                "launchMode": "jupiter_manual_open",
+                "launchMode": "jupiter_request_route",
             ])
             return
         }
@@ -500,7 +500,7 @@ final class AgenticWalletConnectCore {
             "method": method,
             "requestId": requestId.string,
             "topic": short(topic),
-            "launchMode": "jupiter_app_root",
+            "launchMode": "jupiter_request_route",
             "candidateCount": String(urls.count),
             "firstCandidate": urlShapeForLog(urls.first?.absoluteString ?? ""),
             "peerRedirectNative": redirects.native == nil ? "false" : "true",
@@ -511,15 +511,15 @@ final class AgenticWalletConnectCore {
                 "method": method,
                 "requestId": requestId.string,
                 "topic": self.short(topic),
-                "launchMode": "jupiter_app_root",
+                "launchMode": "jupiter_request_route",
                 "launched": String(launched),
                 "url": self.urlShapeForLog(url?.absoluteString ?? ""),
             ])
         }
     }
 
-    private func walletConnectRequestLaunchCandidates() -> [URL] {
-        guard let requestUrl = AgenticWalletConnectDeepLink.jupiterRequestLaunchUrl() else { return [] }
+    private func walletConnectRequestLaunchCandidates(requestId: RPCID, topic: String) -> [URL] {
+        guard let requestUrl = AgenticWalletConnectDeepLink.jupiterRequestLaunchUrl(requestId: requestId.string, sessionTopic: topic) else { return [] }
         return [requestUrl]
     }
 
