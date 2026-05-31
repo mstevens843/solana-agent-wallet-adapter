@@ -904,11 +904,24 @@ export function buildConnectUrl(
 ): string {
   assertUniversalLinkProvider(provider);
   const url = providerUrl(provider, CONNECT_METHOD);
-  url.searchParams.set('app_url', params.appUrl);
-  url.searchParams.set('dapp_encryption_public_key', params.dappEncryptionPublicKey);
-  url.searchParams.set('redirect_link', params.redirectLink);
-  url.searchParams.set('cluster', params.cluster);
+  applyConnectParams(url, params);
   return url.toString();
+}
+
+export function buildConnectUrlCandidates(
+  provider: IosLinkWalletDescriptor,
+  params: {
+    appUrl: string;
+    cluster: Cluster;
+    dappEncryptionPublicKey: string;
+    redirectLink: string;
+  },
+): string[] {
+  assertUniversalLinkProvider(provider);
+  return providerUrlCandidates(provider, CONNECT_METHOD).map((url) => {
+    applyConnectParams(url, params);
+    return url.toString();
+  });
 }
 
 function encryptedUrlFromCipher(
@@ -922,10 +935,7 @@ function encryptedUrlFromCipher(
   },
 ): string {
   const url = providerUrl(provider, method);
-  url.searchParams.set('dapp_encryption_public_key', params.dappEncryptionPublicKey);
-  url.searchParams.set('nonce', bs58.encode(params.nonce));
-  url.searchParams.set('redirect_link', params.redirectLink);
-  url.searchParams.set('payload', bs58.encode(params.encrypted));
+  applyEncryptedParams(url, params);
   return url.toString();
 }
 
@@ -938,6 +948,45 @@ function assertUniversalLinkProvider(provider: IosLinkWalletDescriptor): void {
 function providerUrl(provider: IosLinkWalletDescriptor, method: string): URL {
   assertUniversalLinkProvider(provider);
   return new URL(`https://${provider.universalLinkHost}/ul/v1/${method}`);
+}
+
+function providerUrlCandidates(provider: IosLinkWalletDescriptor, method: string): URL[] {
+  const urls: URL[] = [];
+  if (provider.id === 'backpack' && provider.customScheme) {
+    urls.push(new URL(`${provider.customScheme}://ul/v1/${method}`));
+  }
+  urls.push(providerUrl(provider, method));
+  return urls;
+}
+
+function applyConnectParams(
+  url: URL,
+  params: {
+    appUrl: string;
+    cluster: Cluster;
+    dappEncryptionPublicKey: string;
+    redirectLink: string;
+  },
+): void {
+  url.searchParams.set('app_url', params.appUrl);
+  url.searchParams.set('dapp_encryption_public_key', params.dappEncryptionPublicKey);
+  url.searchParams.set('redirect_link', params.redirectLink);
+  url.searchParams.set('cluster', params.cluster);
+}
+
+function applyEncryptedParams(
+  url: URL,
+  params: {
+    dappEncryptionPublicKey: string;
+    redirectLink: string;
+    nonce: Uint8Array;
+    encrypted: Uint8Array;
+  },
+): void {
+  url.searchParams.set('dapp_encryption_public_key', params.dappEncryptionPublicKey);
+  url.searchParams.set('nonce', bs58.encode(params.nonce));
+  url.searchParams.set('redirect_link', params.redirectLink);
+  url.searchParams.set('payload', bs58.encode(params.encrypted));
 }
 
 function paramsFromUrl(url: URL): URLSearchParams {
@@ -1112,5 +1161,32 @@ export function buildEncryptedUrl(
     redirectLink: params.redirectLink,
     nonce,
     encrypted,
+  });
+}
+
+export function buildEncryptedUrlCandidates(
+  provider: IosLinkWalletDescriptor,
+  method: string,
+  params: {
+    dappEncryptionPublicKey: string;
+    redirectLink: string;
+    payload: Record<string, unknown>;
+    session: IosSession & { walletEncryptionPublicKey: Uint8Array };
+    secretKey: Uint8Array;
+    nonce?: Uint8Array;
+  },
+): string[] {
+  assertUniversalLinkProvider(provider);
+  const nonce = params.nonce ?? nacl.randomBytes(nacl.box.nonceLength);
+  const plaintext = new TextEncoder().encode(JSON.stringify(params.payload));
+  const encrypted = nacl.box(plaintext, nonce, params.session.walletEncryptionPublicKey, params.secretKey);
+  return providerUrlCandidates(provider, method).map((url) => {
+    applyEncryptedParams(url, {
+      dappEncryptionPublicKey: params.dappEncryptionPublicKey,
+      redirectLink: params.redirectLink,
+      nonce,
+      encrypted,
+    });
+    return url.toString();
   });
 }

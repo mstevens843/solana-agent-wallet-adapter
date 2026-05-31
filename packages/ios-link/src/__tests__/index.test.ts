@@ -4,7 +4,9 @@ import nacl from 'tweetnacl';
 
 import {
   buildConnectUrl,
+  buildConnectUrlCandidates,
   buildEncryptedUrl,
+  buildEncryptedUrlCandidates,
   detectIosLinkEnvironment,
   IosLinkBackend,
   iosLinkTransportPlan,
@@ -112,6 +114,57 @@ describe('ios-link', () => {
     expect(JSON.parse(new TextDecoder().decode(plaintext!))).toMatchObject({
       session: 'session-123',
     });
+  });
+
+  it('offers Backpack custom-scheme candidates without changing the single universal URL builder', () => {
+    const backpack = walletDescriptor('backpack');
+    expect(backpack).toBeDefined();
+    const params = {
+      appUrl: 'https://example.com',
+      cluster: 'devnet' as const,
+      dappEncryptionPublicKey: 'DappKey111111111111111111111111111111111',
+      redirectLink: 'https://agent.example/ios/callback/connect?requestId=req_1&token=t',
+    };
+
+    const single = new URL(buildConnectUrl(backpack!, params));
+    const candidates = buildConnectUrlCandidates(backpack!, params).map((url) => new URL(url));
+
+    expect(single.origin).toBe('https://backpack.app');
+    expect(candidates).toHaveLength(2);
+    expect(candidates[0]!.protocol).toBe('backpack:');
+    expect(candidates[0]!.host).toBe('ul');
+    expect(candidates[0]!.pathname).toBe('/v1/connect');
+    expect(candidates[1]!.origin).toBe('https://backpack.app');
+    expect(candidates[1]!.pathname).toBe('/ul/v1/connect');
+    expect(candidates[0]!.searchParams.toString()).toBe(candidates[1]!.searchParams.toString());
+  });
+
+  it('offers Backpack encrypted signing candidates with the same payload', () => {
+    const backpack = walletDescriptor('backpack');
+    expect(backpack).toBeDefined();
+    const dapp = nacl.box.keyPair();
+    const wallet = nacl.box.keyPair();
+    const nonce = new Uint8Array(nacl.box.nonceLength).fill(11);
+
+    const candidates = buildEncryptedUrlCandidates(backpack!, 'signMessage', {
+      dappEncryptionPublicKey: bs58.encode(dapp.publicKey),
+      redirectLink: 'https://agent.example/ios/callback/sign?requestId=req_1&token=t',
+      payload: { session: 'session-123', message: bs58.encode(new TextEncoder().encode('hello')) },
+      session: {
+        userPublicKey: 'User1111111111111111111111111111111111',
+        token: 'session-123',
+        walletEncryptionPublicKey: wallet.publicKey,
+      },
+      secretKey: dapp.secretKey,
+      nonce,
+    }).map((url) => new URL(url));
+
+    expect(candidates).toHaveLength(2);
+    expect(candidates[0]!.protocol).toBe('backpack:');
+    expect(candidates[0]!.pathname).toBe('/v1/signMessage');
+    expect(candidates[1]!.origin).toBe('https://backpack.app');
+    expect(candidates[1]!.pathname).toBe('/ul/v1/signMessage');
+    expect(candidates[0]!.searchParams.get('payload')).toBe(candidates[1]!.searchParams.get('payload'));
   });
 
   it('fails deterministically for Jupiter when Reown project id is missing', async () => {

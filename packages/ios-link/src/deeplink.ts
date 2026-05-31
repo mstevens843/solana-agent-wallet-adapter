@@ -129,11 +129,16 @@ export function listIosDeepLinkWallets(): ReadonlyArray<IosWalletDescriptor> {
 export function buildIosConnectUrl(walletId: IosDeepLinkWalletId, params: IosConnectUrlParams): string {
   const provider = iosDeepLinkWalletDescriptor(walletId);
   const url = providerUrl(provider, CONNECT_METHOD);
-  url.searchParams.set('app_url', params.appUrl);
-  url.searchParams.set('dapp_encryption_public_key', encodePublicKey(params.dappEncryptionPublicKey));
-  url.searchParams.set('redirect_link', params.redirectLink);
-  url.searchParams.set('cluster', params.cluster);
+  applyIosConnectParams(url, params);
   return url.toString();
+}
+
+export function buildIosConnectUrlCandidates(walletId: IosDeepLinkWalletId, params: IosConnectUrlParams): string[] {
+  const provider = iosDeepLinkWalletDescriptor(walletId);
+  return providerUrlCandidates(provider, CONNECT_METHOD).map((url) => {
+    applyIosConnectParams(url, params);
+    return url.toString();
+  });
 }
 
 export function buildIosSignMessageUrl(params: IosEncryptedUrlParams & { walletId: IosDeepLinkWalletId }): string {
@@ -142,6 +147,14 @@ export function buildIosSignMessageUrl(params: IosEncryptedUrlParams & { walletI
 
 export function buildIosSignTransactionUrl(params: IosEncryptedUrlParams & { walletId: IosDeepLinkWalletId }): string {
   return buildIosEncryptedUrl(params.walletId, SIGN_TRANSACTION_METHOD, params);
+}
+
+export function buildIosSignMessageUrlCandidates(params: IosEncryptedUrlParams & { walletId: IosDeepLinkWalletId }): string[] {
+  return buildIosEncryptedUrlCandidates(params.walletId, SIGN_MESSAGE_METHOD, params);
+}
+
+export function buildIosSignTransactionUrlCandidates(params: IosEncryptedUrlParams & { walletId: IosDeepLinkWalletId }): string[] {
+  return buildIosEncryptedUrlCandidates(params.walletId, SIGN_TRANSACTION_METHOD, params);
 }
 
 export function buildIosEncryptedUrl(
@@ -154,11 +167,23 @@ export function buildIosEncryptedUrl(
   const plaintext = new TextEncoder().encode(JSON.stringify(params.payload));
   const encrypted = nacl.box.after(plaintext, nonce, params.sharedSecret);
   const url = providerUrl(provider, method);
-  url.searchParams.set('dapp_encryption_public_key', encodePublicKey(params.dappEncryptionPublicKey));
-  url.searchParams.set('nonce', bs58.encode(nonce));
-  url.searchParams.set('redirect_link', params.redirectLink);
-  url.searchParams.set('payload', bs58.encode(encrypted));
+  applyIosEncryptedParams(url, params, nonce, encrypted);
   return url.toString();
+}
+
+export function buildIosEncryptedUrlCandidates(
+  walletId: IosDeepLinkWalletId,
+  method: typeof SIGN_MESSAGE_METHOD | typeof SIGN_TRANSACTION_METHOD | string,
+  params: IosEncryptedUrlParams,
+): string[] {
+  const provider = iosDeepLinkWalletDescriptor(walletId);
+  const nonce = params.nonce ?? nacl.randomBytes(nacl.box.nonceLength);
+  const plaintext = new TextEncoder().encode(JSON.stringify(params.payload));
+  const encrypted = nacl.box.after(plaintext, nonce, params.sharedSecret);
+  return providerUrlCandidates(provider, method).map((url) => {
+    applyIosEncryptedParams(url, params, nonce, encrypted);
+    return url.toString();
+  });
 }
 
 export function parseIosConnectCallback(
@@ -336,6 +361,34 @@ function providerUrl(provider: IosWalletDescriptor, method: string): URL {
     throw new ProtocolError('unsupported_method', `${provider.name} does not expose encrypted iOS deeplinks.`);
   }
   return new URL(`https://${provider.universalLinkHost}/ul/v1/${method}`);
+}
+
+function providerUrlCandidates(provider: IosWalletDescriptor, method: string): URL[] {
+  const urls: URL[] = [];
+  if (provider.id === 'backpack' && provider.customScheme) {
+    urls.push(new URL(`${provider.customScheme}://ul/v1/${method}`));
+  }
+  urls.push(providerUrl(provider, method));
+  return urls;
+}
+
+function applyIosConnectParams(url: URL, params: IosConnectUrlParams): void {
+  url.searchParams.set('app_url', params.appUrl);
+  url.searchParams.set('dapp_encryption_public_key', encodePublicKey(params.dappEncryptionPublicKey));
+  url.searchParams.set('redirect_link', params.redirectLink);
+  url.searchParams.set('cluster', params.cluster);
+}
+
+function applyIosEncryptedParams(
+  url: URL,
+  params: IosEncryptedUrlParams,
+  nonce: Uint8Array,
+  encrypted: Uint8Array,
+): void {
+  url.searchParams.set('dapp_encryption_public_key', encodePublicKey(params.dappEncryptionPublicKey));
+  url.searchParams.set('nonce', bs58.encode(nonce));
+  url.searchParams.set('redirect_link', params.redirectLink);
+  url.searchParams.set('payload', bs58.encode(encrypted));
 }
 
 function encodePublicKey(value: Uint8Array | string): string {

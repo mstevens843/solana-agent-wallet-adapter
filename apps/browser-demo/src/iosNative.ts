@@ -15,8 +15,11 @@ import {
 } from '@solana-agent-wallet-adapter/core';
 import {
   buildIosConnectUrl,
+  buildIosConnectUrlCandidates,
   buildIosSignMessageUrl,
+  buildIosSignMessageUrlCandidates,
   buildIosSignTransactionUrl,
+  buildIosSignTransactionUrlCandidates,
   decodeBase64,
   encodeBase64,
   encodeUtf8,
@@ -710,20 +713,23 @@ export class IosNativeWalletBackend implements WalletBackend {
       dappPublicKeyBase64: encodeBase64(dapp.publicKey),
       dappSecretKeyBase64: encodeBase64(dapp.secretKey),
     });
-    const connectUrl = buildIosConnectUrl(walletId, {
+    const connectParams = {
       appUrl: this.appUrl,
       cluster: this.cluster,
       dappEncryptionPublicKey: dapp.publicKey,
       redirectLink: redirect,
-    });
+    };
+    const connectUrl = buildIosConnectUrl(walletId, connectParams);
+    const connectUrlCandidates = buildIosConnectUrlCandidates(walletId, connectParams);
     const callbackPromise = this.waitForCallback('connect', requestId);
     this.log('connectDeepLink', 'URL_BUILT', 'info', 'opening wallet connect link', {
       requestId,
       wallet: walletId,
       walletUrl: urlShape(connectUrl),
+      candidateCount: String(connectUrlCandidates.length),
       callback: urlShape(redirect),
     });
-    await openWalletUrl(connectUrl, this.logLevel);
+    await openWalletUrls(connectUrlCandidates, this.logLevel);
     const callbackUrl = await callbackPromise;
     const decoded = parseIosConnectCallback(walletId, callbackUrl, dapp.secretKey);
     const descriptor = iosWalletDescriptor(walletId)!;
@@ -882,6 +888,22 @@ export class IosNativeWalletBackend implements WalletBackend {
             payload,
             sharedSecret,
           });
+    const urlCandidates =
+      request.kind === 'sign_message'
+        ? buildIosSignMessageUrlCandidates({
+            walletId: record.walletId,
+            dappEncryptionPublicKey: dappPublicKey,
+            redirectLink: redirect,
+            payload,
+            sharedSecret,
+          })
+        : buildIosSignTransactionUrlCandidates({
+            walletId: record.walletId,
+            dappEncryptionPublicKey: dappPublicKey,
+            redirectLink: redirect,
+            payload,
+            sharedSecret,
+          });
     const callbackPromise = this.waitForCallback('sign', request.id);
     this.log('signWithDeepLink', 'URL_BUILT', 'info', 'opening wallet signing link', {
       requestId: request.id,
@@ -889,9 +911,10 @@ export class IosNativeWalletBackend implements WalletBackend {
       kind: request.kind,
       payloadKeys: Object.keys(payload).sort().join(','),
       walletUrl: urlShape(url),
+      candidateCount: String(urlCandidates.length),
       callback: urlShape(redirect),
     });
-    await openWalletUrl(url, this.logLevel);
+    await openWalletUrls(urlCandidates, this.logLevel);
     const callbackUrl = await callbackPromise;
     const decoded = parseIosSigningCallback(callbackUrl, sharedSecret);
     await this.clearPendingRuntimeState();
@@ -1327,23 +1350,33 @@ function waiterKey(phase: 'connect' | 'sign', requestId: string): string {
   return `${phase}:${requestId}`;
 }
 
-async function openWalletUrl(url: string, logLevel: IosNativeLogLevel): Promise<void> {
+async function openWalletUrls(urls: readonly string[], logLevel: IosNativeLogLevel): Promise<void> {
+  if (urls.length === 0) {
+    throw new ProtocolError('wallet_unreachable', 'No iOS wallet URL was available.');
+  }
   if (safeIsNativePlatform()) {
-    try {
-      const result = await AgenticSystem.openExternal({ url });
-      if (result.ok) {
-        return;
+    for (const url of urls) {
+      try {
+        const result = await AgenticSystem.openExternal({ url });
+        if (result.ok) {
+          iosLog(logLevel, 'AgenticSystem', 'openWalletUrls', 'DONE', 'info', 'wallet URL opened', {
+            walletUrl: urlShape(url),
+            candidateCount: String(urls.length),
+          });
+          return;
+        }
+        iosLog(logLevel, 'AgenticSystem', 'openWalletUrls', 'FALLBACK', 'info', 'native open declined wallet URL', {
+          walletUrl: urlShape(url),
+        });
+      } catch (err) {
+        iosLog(logLevel, 'AgenticSystem', 'openWalletUrls', 'FALLBACK', 'debug', 'native open failed', {
+          walletUrl: urlShape(url),
+          message: err instanceof Error ? err.message : String(err),
+        });
       }
-      iosLog(logLevel, 'AgenticSystem', 'openWalletUrl', 'FALLBACK', 'info', 'native open declined wallet URL', {
-        walletUrl: urlShape(url),
-      });
-    } catch (err) {
-      iosLog(logLevel, 'AgenticSystem', 'openWalletUrl', 'FALLBACK', 'debug', 'native open failed', {
-        walletUrl: urlShape(url),
-        message: err instanceof Error ? err.message : String(err),
-      });
     }
   }
+  const url = urls.find((candidate) => candidate.startsWith('https://')) ?? urls[0]!;
   if (typeof window.location.assign === 'function') {
     window.location.assign(url);
   } else {

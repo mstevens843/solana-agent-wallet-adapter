@@ -16,7 +16,7 @@ public class AgenticSystemPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "appLifecycleState", returnType: CAPPluginReturnPromise),
     ]
 
-    private static let allowedSchemes: Set<String> = ["https", "http", "mailto", "tel", "sms"]
+    private static let allowedSchemes: Set<String> = ["https", "http", "mailto", "tel", "sms", "phantom", "solflare", "backpack", "jupiter", "wc"]
     private static let maxUrlLength = 32_768
     private static let maxClipboardBytes = 1_000_000
 
