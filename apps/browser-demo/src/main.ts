@@ -8665,6 +8665,25 @@ function handleBrowserWalletSelectChange(select: HTMLSelectElement): void {
   render();
 }
 
+async function handleIosWalletSelectChange(select: HTMLSelectElement): Promise<void> {
+  const walletId = select.value;
+  if (!isIosNativeWalletId(walletId)) return;
+  notifyLocalWorkspaceBackupReminder('Back up before switching wallet selection.');
+  await disconnectWalletBackend().catch(() => undefined);
+  resetWalletConnection();
+  await clearDeviceAgentForWalletBoundary();
+  state.selectedIosWalletId = walletId;
+  state.selectedWalletName = iosWalletLabel(walletId);
+  state.selectedWalletLogoId = walletProviderLogoIdForName(state.selectedWalletName);
+  state.selectedWalletIcon = undefined;
+  void signOutCloudSessionForWalletBoundary('wallet-changed', { toast: true }).then((signedOut) => {
+    if (signedOut) render();
+  });
+  state.error = '';
+  savePersistedState();
+  render();
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 
 function bindEmbeddedWalletOverlay(): void {
@@ -24736,21 +24755,7 @@ function bind(): void {
   }
 
   document.querySelector<HTMLSelectElement>('#iosWalletSelect')?.addEventListener('change', (event) => {
-    const walletId = (event.currentTarget as HTMLSelectElement).value;
-    if (!isIosNativeWalletId(walletId)) return;
-    notifyLocalWorkspaceBackupReminder('Back up before switching wallet selection.');
-    state.selectedIosWalletId = walletId;
-    state.selectedWalletName = iosWalletLabel(walletId);
-    resetWalletConnection();
-    void clearDeviceAgentForWalletBoundary();
-    state.selectedWalletLogoId = walletProviderLogoIdForName(state.selectedWalletName);
-    state.selectedWalletIcon = undefined;
-    void signOutCloudSessionForWalletBoundary('wallet-changed', { toast: true }).then((signedOut) => {
-      if (signedOut) render();
-    });
-    state.error = '';
-    savePersistedState();
-    render();
+    void handleIosWalletSelectChange(event.currentTarget as HTMLSelectElement);
   });
 
   document.querySelector<HTMLInputElement>('#bridgeUrl')?.addEventListener('input', (event) => {
@@ -26969,15 +26974,16 @@ async function runConnect(
       return;
     }
     if (state.iosNativeEnvironment.isIosNative) {
-      walletBackend = new IosNativeWalletBackend({
+      const iosBackend = new IosNativeWalletBackend({
         walletId: state.selectedIosWalletId,
         cluster: state.cluster,
         appUrl: iosNativeAppUrl(),
         rpcUrl: activeRpcUrl(),
         logLevel: 'info',
       });
+      walletBackend = iosBackend;
       client = new SolanaSigningClient({ backend: walletBackend });
-      state.address = await client.getAddress();
+      state.address = await iosBackend.connectSelectedWallet();
       state.capabilities = await client.capabilities();
       state.selectedWalletName = iosWalletLabel(state.selectedIosWalletId);
       state.selectedWalletLogoId = walletProviderLogoIdForName(state.selectedWalletName);

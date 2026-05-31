@@ -446,16 +446,9 @@ export async function restoreLatestIosNativeWallet(
   options: Omit<IosNativeWalletBackendOptions, 'walletId'> & { walletId?: IosNativeWalletId },
 ): Promise<IosNativeRestoreResult | null> {
   const cache = new IosAuthCache(options.logLevel ?? 'info');
-  const latest = await cache.latest();
-  if (!latest) {
+  const latest = options.walletId ? await cache.latestForWallet(options.walletId) : await cache.latest();
+  if (!latest || !isUsableRecord(latest)) {
     iosLog(options.logLevel ?? 'info', 'IosNativeWalletBackend', 'restoreLatest', 'SKIP', 'info', 'no cached iOS authorization');
-    return null;
-  }
-  if (options.walletId && latest.walletId !== options.walletId) {
-    iosLog(options.logLevel ?? 'info', 'IosNativeWalletBackend', 'restoreLatest', 'SKIP', 'info', 'latest cache belongs to a different wallet', {
-      requestedWallet: options.walletId,
-      cachedWallet: latest.walletId,
-    });
     return null;
   }
   const backend = new IosNativeWalletBackend({
@@ -541,6 +534,13 @@ export class IosNativeWalletBackend implements WalletBackend {
     return record.publicKey;
   }
 
+  async connectSelectedWallet(): Promise<string> {
+    const record = this.walletId === 'jupiter'
+      ? await this.connectJupiter({ forceNew: true })
+      : await this.connectDeepLink(this.walletId);
+    return record.publicKey;
+  }
+
   async submit(request: SigningRequest): Promise<ApprovalResource> {
     if (request.cluster !== this.cluster) {
       throw new ProtocolError(
@@ -612,9 +612,8 @@ export class IosNativeWalletBackend implements WalletBackend {
   }
 
   async reconnectLatest(cluster = this.cluster): Promise<IosAuthRecord | null> {
-    const latestForWallet = await this.cache.latestForWallet(this.walletId);
-    const latest = latestForWallet ?? (await this.cache.latest());
-    if (!latest || !isUsableRecord(latest)) {
+    const latest = await this.cache.latestForWallet(this.walletId);
+    if (!latest || latest.walletId !== this.walletId || !isUsableRecord(latest)) {
       this.log('reconnectLatest', 'SKIP', 'info', 'no usable cached authorization', { wallet: this.walletId });
       return null;
     }
@@ -669,7 +668,11 @@ export class IosNativeWalletBackend implements WalletBackend {
   }
 
   async clearStateFullReset(reason: string): Promise<void> {
-    const pubkey = this.activeRecord?.publicKey ?? (await this.cache.latest())?.publicKey ?? '';
+    const selectedRecord =
+      this.activeRecord?.walletId === this.walletId
+        ? this.activeRecord
+        : await this.cache.latestForWallet(this.walletId);
+    const pubkey = selectedRecord?.publicKey ?? '';
     await this.clearTransientState(reason);
     if (pubkey) {
       await this.cache.clear(pubkey);
@@ -751,8 +754,13 @@ export class IosNativeWalletBackend implements WalletBackend {
     return record;
   }
 
-  private async connectJupiter(): Promise<IosAuthRecord> {
-    const existing = await callWalletConnect('wcGetSession', () => AgenticWalletConnect.wcGetSession(), this.logLevel).catch(() => null);
+  private async connectJupiter(options: { forceNew?: boolean } = {}): Promise<IosAuthRecord> {
+    if (options.forceNew) {
+      await callWalletConnect('wcDisconnect', () => AgenticWalletConnect.wcDisconnect(), this.logLevel).catch(() => undefined);
+    }
+    const existing = options.forceNew
+      ? null
+      : await callWalletConnect('wcGetSession', () => AgenticWalletConnect.wcGetSession(), this.logLevel).catch(() => null);
     if (existing?.connected && existing.pubkey) {
       return this.storeJupiterRecord(existing.pubkey, existing.topic);
     }
@@ -1395,7 +1403,7 @@ function isUnsupportedWalletConnectMethod(err: unknown): boolean {
 }
 
 function isUsableRecord(record: IosAuthRecord): boolean {
-  if (!record.publicKey || !record.walletId) {
+  if (record.authenticated === false || !record.publicKey || !record.walletId) {
     return false;
   }
   if (record.walletId === 'jupiter') {

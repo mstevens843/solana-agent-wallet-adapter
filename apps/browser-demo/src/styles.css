@@ -4697,6 +4697,7 @@ code {
 
 .wallet-balance-mobile-trigger {
   appearance: none;
+  align-items: center;
   background: transparent;
   border: 0;
   color: rgba(139, 205, 170, 0.92);
@@ -4711,6 +4712,7 @@ code {
   min-height: 18px;
   padding: 0;
   text-align: left;
+  white-space: nowrap;
 }
 
 .wallet-balance-mobile-trigger::after {
@@ -27297,8 +27299,14 @@ button.danger:hover:not(:disabled) {
   .route-app .one-time-method-filter {
     grid-auto-columns: initial;
     grid-auto-flow: initial;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1.16fr) repeat(2, minmax(0, 1fr));
     width: 100%;
+  }
+
+  .route-app .one-time-method-filter button {
+    font-size: 0.78rem;
+    min-width: 0;
+    padding-inline: 4px;
   }
 
   .route-app .top-connector-control .select-picker-shell,
