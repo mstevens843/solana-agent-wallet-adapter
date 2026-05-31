@@ -929,6 +929,7 @@ export class IosNativeWalletBackend implements WalletBackend {
         strategy: 'walletconnect',
         code: protocolErr.code,
         message: protocolErr.message,
+        ...walletConnectDiagnostics(protocolErr.message),
       });
       throw err;
     }
@@ -1668,6 +1669,10 @@ interface MobileWalletDebugEvent {
   pubkey?: string;
   kind?: string;
   resultKeys?: string;
+  relayHost?: string;
+  originHost?: string;
+  projectIdPrefix?: string;
+  socketStatus?: string;
   code?: string;
   message?: string;
 }
@@ -1811,9 +1816,33 @@ function mobileWalletDebugPayload(event: MobileWalletDebugEvent): Record<string,
     ...(event.pubkey ? { pubkey: event.pubkey } : {}),
     ...(event.kind ? { kind: event.kind } : {}),
     ...(event.resultKeys ? { resultKeys: event.resultKeys } : {}),
+    ...(event.relayHost ? { relayHost: event.relayHost } : {}),
+    ...(event.originHost ? { originHost: event.originHost } : {}),
+    ...(event.projectIdPrefix ? { projectIdPrefix: event.projectIdPrefix } : {}),
+    ...(event.socketStatus ? { socketStatus: event.socketStatus } : {}),
     ...(event.code ? { code: event.code } : {}),
     ...(event.message ? { message: event.message } : {}),
   };
+}
+
+function walletConnectDiagnostics(message: string): Partial<MobileWalletDebugEvent> {
+  const relayHost = diagnosticValue(message, 'relayHost');
+  const originHost = diagnosticValue(message, 'originHost');
+  const projectIdPrefix = diagnosticValue(message, 'projectIdPrefix');
+  const socketStatus = diagnosticValue(message, 'socketStatus');
+  return {
+    ...(relayHost ? { relayHost } : {}),
+    ...(originHost ? { originHost } : {}),
+    ...(projectIdPrefix ? { projectIdPrefix } : {}),
+    ...(socketStatus ? { socketStatus } : {}),
+  };
+}
+
+function diagnosticValue(message: string, key: string): string | undefined {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`(?:^|\\|\\s*)${escaped}=([^|]+)`).exec(message);
+  const value = match?.[1]?.trim();
+  return value || undefined;
 }
 
 async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<void> {

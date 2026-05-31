@@ -62,6 +62,10 @@ export interface IosRemoteConfig {
   readonly walletConnectProjectId?: string;
   /** Pairing timeout for WalletConnect v2 (milliseconds). */
   readonly walletConnectPairingTimeoutMs?: number;
+  /** Reown relay host used by the native iOS WalletConnect bridge. */
+  readonly walletConnectRelayHost?: string;
+  /** Origin header used by native iOS relay WebSocket requests. */
+  readonly walletConnectRelayOrigin?: string;
 }
 
 const WALLET_REGISTRY: readonly IosWalletEntry[] = [
@@ -118,6 +122,9 @@ const STATIC_FEATURE_FLAGS: Readonly<Record<string, boolean>> = {
   forceWalletConnectFallback: false,
 };
 
+const DEFAULT_WALLETCONNECT_RELAY_HOST = 'relay.walletconnect.com';
+const DEFAULT_WALLETCONNECT_RELAY_ORIGIN = 'https://agentic-signer.com';
+
 function buildFeatureFlags(env: NodeJS.ProcessEnv): Readonly<Record<string, boolean>> {
   const skrConfigured = readSkrMint(env).length > 0;
   if (!skrConfigured) return STATIC_FEATURE_FLAGS;
@@ -137,6 +144,31 @@ function readWalletConnectProjectId(env: NodeJS.ProcessEnv): string | undefined 
   return raw;
 }
 
+function readWalletConnectRelayHost(env: NodeJS.ProcessEnv): string {
+  const raw = (env.WALLETCONNECT_RELAY_HOST ?? env.REOWN_RELAY_HOST ?? '').trim();
+  if (!raw) return DEFAULT_WALLETCONNECT_RELAY_HOST;
+  const host = raw.replace(/^wss?:\/\//i, '').replace(/\/.*$/, '').trim().toLowerCase();
+  if (!/^[a-z0-9.-]+$/i.test(host)) return DEFAULT_WALLETCONNECT_RELAY_HOST;
+  return host;
+}
+
+function readWalletConnectRelayOrigin(env: NodeJS.ProcessEnv): string {
+  const raw = (
+    env.WALLETCONNECT_RELAY_ORIGIN ??
+    env.REOWN_RELAY_ORIGIN ??
+    env.AGENTIC_PUBLIC_ORIGIN ??
+    ''
+  ).trim();
+  if (!raw) return DEFAULT_WALLETCONNECT_RELAY_ORIGIN;
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'https:') return DEFAULT_WALLETCONNECT_RELAY_ORIGIN;
+    return parsed.origin;
+  } catch {
+    return DEFAULT_WALLETCONNECT_RELAY_ORIGIN;
+  }
+}
+
 export const IOS_REMOTE_CONFIG: IosRemoteConfig = {
   version: IOS_CONFIG_VERSION,
   walletRegistry: WALLET_REGISTRY,
@@ -144,12 +176,21 @@ export const IOS_REMOTE_CONFIG: IosRemoteConfig = {
   featureFlags: STATIC_FEATURE_FLAGS,
   walletConnectProjectId: undefined,
   walletConnectPairingTimeoutMs: 120_000,
+  walletConnectRelayHost: DEFAULT_WALLETCONNECT_RELAY_HOST,
+  walletConnectRelayOrigin: DEFAULT_WALLETCONNECT_RELAY_ORIGIN,
 };
 
 export function getIosRemoteConfig(env: NodeJS.ProcessEnv = process.env): IosRemoteConfig {
   const featureFlags = buildFeatureFlags(env);
   const wcProject = readWalletConnectProjectId(env);
-  if (featureFlags === STATIC_FEATURE_FLAGS && wcProject === undefined) {
+  const relayHost = readWalletConnectRelayHost(env);
+  const relayOrigin = readWalletConnectRelayOrigin(env);
+  if (
+    featureFlags === STATIC_FEATURE_FLAGS &&
+    wcProject === undefined &&
+    relayHost === DEFAULT_WALLETCONNECT_RELAY_HOST &&
+    relayOrigin === DEFAULT_WALLETCONNECT_RELAY_ORIGIN
+  ) {
     return IOS_REMOTE_CONFIG;
   }
   return {
@@ -159,5 +200,7 @@ export function getIosRemoteConfig(env: NodeJS.ProcessEnv = process.env): IosRem
     featureFlags,
     walletConnectProjectId: wcProject,
     walletConnectPairingTimeoutMs: 120_000,
+    walletConnectRelayHost: relayHost,
+    walletConnectRelayOrigin: relayOrigin,
   };
 }

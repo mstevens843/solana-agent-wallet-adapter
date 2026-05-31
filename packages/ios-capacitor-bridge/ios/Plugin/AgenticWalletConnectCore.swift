@@ -42,6 +42,10 @@ final class AgenticWalletConnectCore {
     private var sessionChainId: String?
     private var walletRedirectNative: String?
     private var walletRedirectUniversal: String?
+    private var walletConnectRelayHost = "relay.walletconnect.com"
+    private var walletConnectRelayOrigin = "https://agentic-signer.com"
+    private var walletConnectProjectIdPrefix = "unknown"
+    private var latestSocketStatus = "unknown"
     private var sessionWaiters: [UUID: (Result<(String, String), Error>) -> Void] = [:]
 
     private init() {}
@@ -53,6 +57,11 @@ final class AgenticWalletConnectCore {
             guard let projectId = snapshot.config.walletConnectProjectId, !projectId.isEmpty else {
                 throw AgenticAgentError(code: "WC_NO_PROJECT_ID", message: "WalletConnect project id missing — set WALLETCONNECT_PROJECT_ID in cloud env.")
             }
+            let relayHost = sanitizeRelayHost(snapshot.config.walletConnectRelayHost)
+            let relayOrigin = sanitizeRelayOrigin(snapshot.config.walletConnectRelayOrigin)
+            walletConnectRelayHost = relayHost
+            walletConnectRelayOrigin = relayOrigin
+            walletConnectProjectIdPrefix = String(projectId.prefix(8))
             let redirect = try AppMetadata.Redirect(native: "agenticwallet://", universal: "https://agentic-signer.com")
             let metadata = AppMetadata(
                 name: "Agentic",
@@ -62,12 +71,30 @@ final class AgenticWalletConnectCore {
                 redirect: redirect
             )
             Networking.configure(
+                relayHost: relayHost,
                 groupIdentifier: walletConnectGroupIdentifier,
                 projectId: projectId,
-                socketFactory: AgenticWebSocketFactory()
+                socketFactory: AgenticWebSocketFactory(origin: relayOrigin)
             )
             Pair.configure(metadata: metadata)
             Sign.configure(crypto: AgenticWalletConnectCryptoProvider())
+            Sign.instance.socketConnectionStatusPublisher
+                .receive(on: queue)
+                .sink { [weak self] status in
+                    guard let self else { return }
+                    switch status {
+                    case .connected:
+                        self.latestSocketStatus = "connected"
+                    case .disconnected:
+                        self.latestSocketStatus = "disconnected"
+                    }
+                    AgenticIOSLog.info("AgenticWalletConnect", "socketStatus", "DONE", "WalletConnect relay socket status changed", [
+                        "status": self.latestSocketStatus,
+                        "relayHost": self.walletConnectRelayHost,
+                        "originHost": self.originHost(self.walletConnectRelayOrigin),
+                    ])
+                }
+                .store(in: &cancellables)
             // Subscribe to session lifecycle to surface to wcWaitForSession waiters.
             Sign.instance.sessionsPublisher
                 .receive(on: queue)
@@ -132,7 +159,7 @@ final class AgenticWalletConnectCore {
                 )
                 completion(.success((uri: uri.absoluteString, topic: uri.topic)))
             } catch {
-                completion(.failure(error))
+                completion(.failure(self.wrapWalletConnectError(error, operation: "wcConnect")))
             }
         }
     }
@@ -456,6 +483,57 @@ final class AgenticWalletConnectCore {
             }
         }
     }
+
+    private func sanitizeRelayHost(_ raw: String?) -> String {
+        let fallback = "relay.walletconnect.com"
+        guard let raw else { return fallback }
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.isEmpty { return fallback }
+        if value.lowercased().hasPrefix("wss://") || value.lowercased().hasPrefix("ws://") {
+            value = URL(string: value)?.host ?? value
+        }
+        value = value.split(separator: "/").first.map(String.init) ?? value
+        guard value.range(of: #"^[A-Za-z0-9.-]+$"#, options: .regularExpression) != nil else {
+            return fallback
+        }
+        return value.lowercased()
+    }
+
+    private func sanitizeRelayOrigin(_ raw: String?) -> String {
+        let fallback = "https://agentic-signer.com"
+        guard let raw else { return fallback }
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: value),
+              url.scheme?.lowercased() == "https",
+              let host = url.host,
+              !host.isEmpty else {
+            return fallback
+        }
+        return "https://\(host.lowercased())"
+    }
+
+    private func originHost(_ origin: String) -> String {
+        URL(string: origin)?.host ?? "unknown"
+    }
+
+    private func wrapWalletConnectError(_ error: Error, operation: String) -> Error {
+        let message = [
+            error.localizedDescription,
+            "operation=\(operation)",
+            "relayHost=\(walletConnectRelayHost)",
+            "originHost=\(originHost(walletConnectRelayOrigin))",
+            "projectIdPrefix=\(walletConnectProjectIdPrefix)",
+            "socketStatus=\(latestSocketStatus)",
+        ].joined(separator: " | ")
+        AgenticIOSLog.fail("AgenticWalletConnect", operation, "FAIL", "WalletConnect relay operation failed", [
+            "relayHost": walletConnectRelayHost,
+            "originHost": originHost(walletConnectRelayOrigin),
+            "projectIdPrefix": walletConnectProjectIdPrefix,
+            "socketStatus": latestSocketStatus,
+            "message": error.localizedDescription,
+        ])
+        return AgenticAgentError(code: "WC_RELAY_FAILED", message: message)
+    }
 }
 
 // MARK: - WebSocket factory glue
@@ -472,8 +550,14 @@ final class AgenticWalletConnectCryptoProvider: CryptoProvider {
 }
 
 final class AgenticWebSocketFactory: WebSocketFactory {
+    private let origin: String
+
+    init(origin: String) {
+        self.origin = origin
+    }
+
     func create(with url: URL) -> WebSocketConnecting {
-        AgenticWebSocket(url: url)
+        AgenticWebSocket(url: url, origin: origin)
     }
 }
 
@@ -482,15 +566,35 @@ final class AgenticWebSocket: NSObject, WebSocketConnecting, URLSessionWebSocket
     var onConnect: (() -> Void)?
     var onDisconnect: ((Error?) -> Void)?
     var onText: ((String) -> Void)?
-    var request: URLRequest
+    var request: URLRequest {
+        get { rawRequest }
+        set {
+            rawRequest = newValue
+            rawRequest.setValue(origin, forHTTPHeaderField: "Origin")
+        }
+    }
+    private var rawRequest: URLRequest
+    private let origin: String
     private var task: URLSessionWebSocketTask?
     private lazy var session: URLSession = URLSession(configuration: .default, delegate: self, delegateQueue: OperationQueue())
 
-    init(url: URL) {
-        self.request = URLRequest(url: url)
+    init(url: URL, origin: String) {
+        self.origin = origin
+        var request = URLRequest(url: url)
+        request.setValue(origin, forHTTPHeaderField: "Origin")
+        self.rawRequest = request
     }
 
     func connect() {
+        if isConnected { return }
+        if task != nil {
+            task?.cancel(with: .goingAway, reason: nil)
+            task = nil
+        }
+        AgenticIOSLog.info("AgenticWalletConnect", "webSocketConnect", "START", "opening WalletConnect relay socket", [
+            "host": request.url?.host ?? "",
+            "originHost": URL(string: origin)?.host ?? "unknown",
+        ])
         task = session.webSocketTask(with: request)
         task?.resume()
         receive()
@@ -503,7 +607,25 @@ final class AgenticWebSocket: NSObject, WebSocketConnecting, URLSessionWebSocket
     }
 
     func write(string: String, completion: (() -> Void)?) {
-        task?.send(.string(string)) { _ in completion?() }
+        guard let task else {
+            let error = AgenticAgentError(code: "WC_SOCKET_NOT_OPEN", message: "WalletConnect relay socket task is not open.")
+            AgenticIOSLog.fail("AgenticWalletConnect", "webSocketWrite", "FAIL", "WalletConnect relay socket write skipped", [
+                "message": error.localizedDescription,
+            ])
+            onDisconnect?(error)
+            completion?()
+            return
+        }
+        task.send(.string(string)) { [weak self] error in
+            if let error {
+                self?.isConnected = false
+                AgenticIOSLog.fail("AgenticWalletConnect", "webSocketWrite", "FAIL", "WalletConnect relay socket write failed", [
+                    "message": error.localizedDescription,
+                ])
+                self?.onDisconnect?(error)
+            }
+            completion?()
+        }
     }
 
     private func receive() {
@@ -515,6 +637,9 @@ final class AgenticWebSocket: NSObject, WebSocketConnecting, URLSessionWebSocket
                 self.receive()
             case .failure(let err):
                 self.isConnected = false
+                AgenticIOSLog.fail("AgenticWalletConnect", "webSocketReceive", "FAIL", "WalletConnect relay socket receive failed", [
+                    "message": err.localizedDescription,
+                ])
                 self.onDisconnect?(err)
             }
         }
@@ -522,11 +647,19 @@ final class AgenticWebSocket: NSObject, WebSocketConnecting, URLSessionWebSocket
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
         isConnected = true
+        AgenticIOSLog.info("AgenticWalletConnect", "webSocketConnect", "DONE", "WalletConnect relay socket opened", [
+            "host": request.url?.host ?? "",
+        ])
         onConnect?()
     }
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
         isConnected = false
+        let reasonText = reason.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        AgenticIOSLog.info("AgenticWalletConnect", "webSocketClose", "DONE", "WalletConnect relay socket closed", [
+            "code": String(closeCode.rawValue),
+            "reason": reasonText,
+        ])
         onDisconnect?(nil)
     }
 }

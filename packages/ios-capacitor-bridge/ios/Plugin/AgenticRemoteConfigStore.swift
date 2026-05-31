@@ -14,6 +14,8 @@ struct AgenticMobileConfig: Codable, Equatable {
     let featureFlags: [String: Bool]
     let walletConnectProjectId: String?
     let walletConnectPairingTimeoutMs: Int?
+    let walletConnectRelayHost: String?
+    let walletConnectRelayOrigin: String?
 }
 
 struct AgenticWalletEntry: Codable, Equatable {
@@ -115,7 +117,9 @@ enum AgenticRemoteConfigDefaults {
         ),
         featureFlags: [:],
         walletConnectProjectId: nil,
-        walletConnectPairingTimeoutMs: 120_000
+        walletConnectPairingTimeoutMs: 120_000,
+        walletConnectRelayHost: "relay.walletconnect.com",
+        walletConnectRelayOrigin: "https://agentic-signer.com"
     )
 }
 
@@ -322,6 +326,8 @@ enum AgenticRemoteConfigParser {
         let flags = (json["featureFlags"] as? [String: Bool]) ?? [:]
         let projectId = json["walletConnectProjectId"] as? String
         let timeout = json["walletConnectPairingTimeoutMs"] as? Int
+        let relayHost = nonBlankString(json["walletConnectRelayHost"], fallback: AgenticRemoteConfigDefaults.bundled.walletConnectRelayHost)
+        let relayOrigin = nonBlankString(json["walletConnectRelayOrigin"], fallback: AgenticRemoteConfigDefaults.bundled.walletConnectRelayOrigin)
 
         return AgenticMobileConfig(
             version: version,
@@ -329,7 +335,9 @@ enum AgenticRemoteConfigParser {
             memoProofRouter: router,
             featureFlags: flags,
             walletConnectProjectId: projectId,
-            walletConnectPairingTimeoutMs: timeout
+            walletConnectPairingTimeoutMs: timeout,
+            walletConnectRelayHost: relayHost,
+            walletConnectRelayOrigin: relayOrigin
         )
     }
 
@@ -356,6 +364,12 @@ enum AgenticRemoteConfigParser {
             proofMemoPrefix: proofMemoPrefix,
             fallbackOnBlankPackage: (json["fallbackOnBlankPackage"] as? Bool) ?? true
         )
+    }
+
+    private static func nonBlankString(_ value: Any?, fallback: String?) -> String? {
+        guard let string = value as? String else { return fallback }
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? fallback : trimmed
     }
 }
 

@@ -55,6 +55,10 @@ describe('mobile wallet debug telemetry', () => {
         pubkey: 'JUP111...222',
         kind: 'sign_message',
         resultKeys: 'signature',
+        relayHost: 'relay.walletconnect.com',
+        originHost: 'agentic-signer.com',
+        projectIdPrefix: '7c5434a4',
+        socketStatus: 'disconnected',
         code: 'signature',
       }, iosHeaders());
 
@@ -63,6 +67,9 @@ describe('mobile wallet debug telemetry', () => {
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('wallet="jupiter"'));
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('kind="sign_message"'));
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('resultKeys="signature"'));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('relayHost="relay.walletconnect.com"'));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('projectIdPrefix="7c5434a4"'));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('socketStatus="disconnected"'));
     });
   });
 

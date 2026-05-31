@@ -3666,6 +3666,10 @@ const MOBILE_WALLET_DEBUG_FIELDS = [
   'pubkey',
   'kind',
   'resultKeys',
+  'relayHost',
+  'originHost',
+  'projectIdPrefix',
+  'socketStatus',
   'code',
   'message',
 ] as const;
