@@ -206,24 +206,7 @@ public class AgenticWalletConnectPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     private func walletConnectLaunchCandidates(uri: String, walletId: String) -> [URL] {
-        var candidates: [String] = []
-        if walletId.lowercased() == "jupiter" {
-            let encoded = percentEncodeQueryValue(uri)
-            candidates.append("jupiter://wc?uri=\(encoded)")
-        }
-        candidates.append(uri)
-        var seen = Set<String>()
-        return candidates.compactMap { raw in
-            guard !seen.contains(raw), let url = URL(string: raw) else { return nil }
-            seen.insert(raw)
-            return url
-        }
-    }
-
-    private func percentEncodeQueryValue(_ value: String) -> String {
-        var allowed = CharacterSet.alphanumerics
-        allowed.insert(charactersIn: "-._~")
-        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+        AgenticWalletConnectDeepLink.pairingLaunchCandidates(uri: uri, walletId: walletId)
     }
 
     private func openFirstWalletConnectCandidate(

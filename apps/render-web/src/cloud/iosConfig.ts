@@ -128,8 +128,8 @@ const STATIC_FEATURE_FLAGS: Readonly<Record<string, boolean>> = {
 
 const DEFAULT_WALLETCONNECT_RELAY_HOST = 'relay.walletconnect.com';
 const DEFAULT_WALLETCONNECT_RELAY_ORIGIN = 'https://agentic-signer.com';
-const DEFAULT_WALLETCONNECT_REDIRECT_NATIVE = 'agenticwallet://callback/walletconnect?phase=walletconnect';
-const DEFAULT_WALLETCONNECT_REDIRECT_UNIVERSAL = 'https://agentic-signer.com/ios/callback/walletconnect';
+const DEFAULT_WALLETCONNECT_REDIRECT_NATIVE = 'agenticwallet://';
+const DEFAULT_WALLETCONNECT_REDIRECT_UNIVERSAL = undefined;
 
 function buildFeatureFlags(env: NodeJS.ProcessEnv): Readonly<Record<string, boolean>> {
   const skrConfigured = readSkrMint(env).length > 0;
@@ -189,7 +189,7 @@ function readWalletConnectRedirectNative(env: NodeJS.ProcessEnv): string {
   }
 }
 
-function readWalletConnectRedirectUniversal(env: NodeJS.ProcessEnv): string {
+function readWalletConnectRedirectUniversal(env: NodeJS.ProcessEnv): string | undefined {
   const raw = (
     env.WALLETCONNECT_REDIRECT_UNIVERSAL ??
     env.REOWN_REDIRECT_UNIVERSAL ??
