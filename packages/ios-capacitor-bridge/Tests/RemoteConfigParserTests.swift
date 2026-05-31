@@ -40,7 +40,7 @@ final class RemoteConfigParserTests: XCTestCase {
         XCTAssertFalse(config.memoProofRouter.fallbackOnBlankPackage)
     }
 
-    func testWalletConnectRelayFieldsUseServerValues() throws {
+    func testWalletConnectFieldsUseServerValues() throws {
         let config = try parse("""
         {
           "version": 1,
@@ -48,16 +48,20 @@ final class RemoteConfigParserTests: XCTestCase {
           "memoProofRouter": { "envelopeVersion": "v1" },
           "walletConnectProjectId": "7c5434a4b0dffb44ae4344c1da2f9825",
           "walletConnectRelayHost": "relay.walletconnect.com",
-          "walletConnectRelayOrigin": "https://agentic-signer.com"
+          "walletConnectRelayOrigin": "https://agentic-signer.com",
+          "walletConnectRedirectNative": "agenticwallet://callback/walletconnect",
+          "walletConnectRedirectUniversal": "https://agentic-signer.com/ios/callback/walletconnect"
         }
         """)
 
         XCTAssertEqual(config.walletConnectProjectId, "7c5434a4b0dffb44ae4344c1da2f9825")
         XCTAssertEqual(config.walletConnectRelayHost, "relay.walletconnect.com")
         XCTAssertEqual(config.walletConnectRelayOrigin, "https://agentic-signer.com")
+        XCTAssertEqual(config.walletConnectRedirectNative, "agenticwallet://callback/walletconnect")
+        XCTAssertEqual(config.walletConnectRedirectUniversal, "https://agentic-signer.com/ios/callback/walletconnect")
     }
 
-    func testWalletConnectRelayFieldsFallbackWhenOmitted() throws {
+    func testWalletConnectFieldsFallbackWhenOmitted() throws {
         let config = try parse("""
         {
           "version": 1,
@@ -68,6 +72,8 @@ final class RemoteConfigParserTests: XCTestCase {
 
         XCTAssertEqual(config.walletConnectRelayHost, AgenticRemoteConfigDefaults.bundled.walletConnectRelayHost)
         XCTAssertEqual(config.walletConnectRelayOrigin, AgenticRemoteConfigDefaults.bundled.walletConnectRelayOrigin)
+        XCTAssertEqual(config.walletConnectRedirectNative, AgenticRemoteConfigDefaults.bundled.walletConnectRedirectNative)
+        XCTAssertEqual(config.walletConnectRedirectUniversal, AgenticRemoteConfigDefaults.bundled.walletConnectRedirectUniversal)
     }
 
     private func parse(_ text: String) throws -> AgenticMobileConfig {

@@ -789,6 +789,7 @@ export class IosNativeWalletBackend implements WalletBackend {
   }
 
   private async connectJupiter(options: { forceNew?: boolean } = {}): Promise<IosAuthRecord> {
+    await this.ensureCallbackSubscription();
     const requestId = newSigningRequestId();
     try {
       await emitMobileWalletDebug(this.logLevel, {
@@ -1072,6 +1073,7 @@ export class IosNativeWalletBackend implements WalletBackend {
     request: SigningRequest,
     record: IosAuthRecord,
   ): Promise<{ signature: string; txid?: string }> {
+    await this.ensureCallbackSubscription();
     const payload = decodeSigningPayload(request.payload.data, request.payload.encoding);
     await emitMobileWalletDebug(this.logLevel, {
       appUrl: this.appUrl,
@@ -1304,6 +1306,20 @@ export class IosNativeWalletBackend implements WalletBackend {
     try {
       url = new URL(rawUrl.replace(/#$/, ''));
     } catch {
+      return;
+    }
+    if (iosNativeIsWalletConnectReturnUrl(url.toString())) {
+      this.log('handleIncomingUrl', 'DONE', 'info', 'WalletConnect return callback received', {
+        callback: urlShape(url.toString()),
+      });
+      void emitMobileWalletDebug(this.logLevel, {
+        appUrl: this.appUrl,
+        wallet: this.walletId,
+        method: 'walletconnect',
+        step: 'wc_return_seen',
+        strategy: 'walletconnect',
+        callback: urlShape(url.toString()),
+      });
       return;
     }
     const phase = callbackPhase(url);
@@ -1581,6 +1597,25 @@ function callbackPhase(url: URL): 'connect' | 'sign' | null {
     return 'sign';
   }
   return null;
+}
+
+export function iosNativeIsWalletConnectReturnUrl(rawUrl: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(rawUrl.replace(/#$/, ''));
+  } catch {
+    return false;
+  }
+  const isNativeCallback =
+    url.protocol === 'agenticwallet:' &&
+    url.hostname === 'callback';
+  const isUniversalCallback =
+    url.protocol === 'https:' &&
+    url.pathname.endsWith('/ios/callback/walletconnect');
+  if (!isNativeCallback && !isUniversalCallback) {
+    return false;
+  }
+  return url.pathname.endsWith('/walletconnect') || url.searchParams.get('phase') === 'walletconnect';
 }
 
 export function iosNativeWalletLaunchStrategy(walletId: IosNativeWalletId): IosNativeWalletLaunchStrategy {

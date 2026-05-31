@@ -16,6 +16,8 @@ struct AgenticMobileConfig: Codable, Equatable {
     let walletConnectPairingTimeoutMs: Int?
     let walletConnectRelayHost: String?
     let walletConnectRelayOrigin: String?
+    let walletConnectRedirectNative: String?
+    let walletConnectRedirectUniversal: String?
 }
 
 struct AgenticWalletEntry: Codable, Equatable {
@@ -103,7 +105,7 @@ enum AgenticRemoteConfigDefaults {
             AgenticWalletEntry(
                 id: "jupiter",
                 name: "Jupiter",
-                deeplinkSchemes: ["wc"],
+                deeplinkSchemes: ["jupiter", "wc"],
                 appStoreId: "6484069059",
                 supportsSignMessages: true,
                 supportsSiws: false,
@@ -119,7 +121,9 @@ enum AgenticRemoteConfigDefaults {
         walletConnectProjectId: nil,
         walletConnectPairingTimeoutMs: 120_000,
         walletConnectRelayHost: "relay.walletconnect.com",
-        walletConnectRelayOrigin: "https://agentic-signer.com"
+        walletConnectRelayOrigin: "https://agentic-signer.com",
+        walletConnectRedirectNative: "agenticwallet://callback/walletconnect",
+        walletConnectRedirectUniversal: "https://agentic-signer.com/ios/callback/walletconnect"
     )
 }
 
@@ -328,6 +332,8 @@ enum AgenticRemoteConfigParser {
         let timeout = json["walletConnectPairingTimeoutMs"] as? Int
         let relayHost = nonBlankString(json["walletConnectRelayHost"], fallback: AgenticRemoteConfigDefaults.bundled.walletConnectRelayHost)
         let relayOrigin = nonBlankString(json["walletConnectRelayOrigin"], fallback: AgenticRemoteConfigDefaults.bundled.walletConnectRelayOrigin)
+        let redirectNative = nonBlankString(json["walletConnectRedirectNative"], fallback: AgenticRemoteConfigDefaults.bundled.walletConnectRedirectNative)
+        let redirectUniversal = nonBlankString(json["walletConnectRedirectUniversal"], fallback: AgenticRemoteConfigDefaults.bundled.walletConnectRedirectUniversal)
 
         return AgenticMobileConfig(
             version: version,
@@ -337,7 +343,9 @@ enum AgenticRemoteConfigParser {
             walletConnectProjectId: projectId,
             walletConnectPairingTimeoutMs: timeout,
             walletConnectRelayHost: relayHost,
-            walletConnectRelayOrigin: relayOrigin
+            walletConnectRelayOrigin: relayOrigin,
+            walletConnectRedirectNative: redirectNative,
+            walletConnectRedirectUniversal: redirectUniversal
         )
     }
 

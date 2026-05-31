@@ -412,4 +412,64 @@ describe('signWalletProofMessage', () => {
       signatureEncoding: 'base58',
     });
   });
+
+  it('keeps Jupiter iOS Cloud Storage sign-in on WalletConnect signMessage', async () => {
+    const signMessage = vi.fn(async () => ({ signature: 'jupiter-cloud-signin-signature' }));
+    const signTransaction = vi.fn();
+    setProofSigningContext({
+      getClient: () => fakeClient({ signMessage, signTransaction }),
+      getAppState: () =>
+        appState({
+          selectedWalletName: 'Jupiter',
+          iosNativeEnvironment: { isIosNative: true },
+          capabilities: {
+            backend: 'ios-native-jupiter',
+            supports: { signMessage: true, signTransaction: true },
+          },
+        }),
+      getLatestBlockhash: async () => ({ blockhash: '11111111111111111111111111111111' }),
+      getAndroidProofBackend: () => null,
+    });
+
+    const result = await signWalletProofMessage(
+      'Agentic Cloud wants you to sign in with your Solana wallet.',
+      'Agentic Cloud sign-in',
+      'mainnet-beta' as Cluster,
+    );
+
+    expect(signMessage).toHaveBeenCalledOnce();
+    expect(signTransaction).not.toHaveBeenCalled();
+    expect(result.proofEncoding).toBe('utf8-message');
+    expect(result.signature).toBe('jupiter-cloud-signin-signature');
+  });
+
+  it('keeps Jupiter iOS Cloud Storage deletion on WalletConnect signMessage', async () => {
+    const signMessage = vi.fn(async () => ({ signature: 'jupiter-cloud-delete-signature' }));
+    const signTransaction = vi.fn();
+    setProofSigningContext({
+      getClient: () => fakeClient({ signMessage, signTransaction }),
+      getAppState: () =>
+        appState({
+          selectedWalletName: 'Jupiter',
+          iosNativeEnvironment: { isIosNative: true },
+          capabilities: {
+            backend: 'ios-native-jupiter',
+            supports: { signMessage: true, signTransaction: true },
+          },
+        }),
+      getLatestBlockhash: async () => ({ blockhash: '11111111111111111111111111111111' }),
+      getAndroidProofBackend: () => null,
+    });
+
+    const result = await signWalletProofMessage(
+      'Agentic Cloud wants you to delete this wallet workspace.',
+      'Delete Agentic Cloud workspace',
+      'mainnet-beta' as Cluster,
+    );
+
+    expect(signMessage).toHaveBeenCalledOnce();
+    expect(signTransaction).not.toHaveBeenCalled();
+    expect(result.proofEncoding).toBe('utf8-message');
+    expect(result.signature).toBe('jupiter-cloud-delete-signature');
+  });
 });

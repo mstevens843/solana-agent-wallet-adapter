@@ -13,6 +13,7 @@ import {
   DEFAULT_IOS_APP_URL,
   IosNativeWalletBackend,
   iosNativeAppUrl,
+  iosNativeIsWalletConnectReturnUrl,
   iosNativeRedirectForWallet,
   iosNativeResolveCallbackWaiterKey,
   iosNativeWalletLaunchStrategy,
@@ -152,6 +153,14 @@ describe('iOS native Backpack deeplink compatibility', () => {
     expect(iosNativeWalletLaunchStrategy('phantom')).toBe('native-open');
     expect(iosNativeWalletLaunchStrategy('solflare')).toBe('native-open');
     expect(iosNativeWalletLaunchStrategy('jupiter')).toBe('native-open');
+  });
+
+  it('recognizes WalletConnect return callbacks without matching connect or sign callbacks', () => {
+    expect(iosNativeIsWalletConnectReturnUrl('agenticwallet://callback/walletconnect')).toBe(true);
+    expect(iosNativeIsWalletConnectReturnUrl('agenticwallet://callback/walletconnect?phase=walletconnect')).toBe(true);
+    expect(iosNativeIsWalletConnectReturnUrl('https://agentic-signer.com/ios/callback/walletconnect')).toBe(true);
+    expect(iosNativeIsWalletConnectReturnUrl('agenticwallet://callback/sign?requestId=req_1&phase=sign')).toBe(false);
+    expect(iosNativeIsWalletConnectReturnUrl('https://agentic-signer.com/ios/callback/connect')).toBe(false);
   });
 
   it('matches plain Backpack callbacks to the single active waiter for that phase', () => {

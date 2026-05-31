@@ -66,6 +66,10 @@ export interface IosRemoteConfig {
   readonly walletConnectRelayHost?: string;
   /** Origin header used by native iOS relay WebSocket requests. */
   readonly walletConnectRelayOrigin?: string;
+  /** Native callback URI shared with WalletConnect peers for returning to Agentic. */
+  readonly walletConnectRedirectNative?: string;
+  /** Universal-link callback shared with WalletConnect peers for returning to Agentic. */
+  readonly walletConnectRedirectUniversal?: string;
 }
 
 const WALLET_REGISTRY: readonly IosWalletEntry[] = [
@@ -99,7 +103,7 @@ const WALLET_REGISTRY: readonly IosWalletEntry[] = [
   {
     id: 'jupiter',
     name: 'Jupiter',
-    deeplinkSchemes: ['wc'],
+    deeplinkSchemes: ['jupiter', 'wc'],
     appStoreId: '6484069059',
     supportsSignMessages: true,
     supportsSiws: false,
@@ -124,6 +128,8 @@ const STATIC_FEATURE_FLAGS: Readonly<Record<string, boolean>> = {
 
 const DEFAULT_WALLETCONNECT_RELAY_HOST = 'relay.walletconnect.com';
 const DEFAULT_WALLETCONNECT_RELAY_ORIGIN = 'https://agentic-signer.com';
+const DEFAULT_WALLETCONNECT_REDIRECT_NATIVE = 'agenticwallet://callback/walletconnect';
+const DEFAULT_WALLETCONNECT_REDIRECT_UNIVERSAL = 'https://agentic-signer.com/ios/callback/walletconnect';
 
 function buildFeatureFlags(env: NodeJS.ProcessEnv): Readonly<Record<string, boolean>> {
   const skrConfigured = readSkrMint(env).length > 0;
@@ -169,6 +175,36 @@ function readWalletConnectRelayOrigin(env: NodeJS.ProcessEnv): string {
   }
 }
 
+function readWalletConnectRedirectNative(env: NodeJS.ProcessEnv): string {
+  const raw = (env.WALLETCONNECT_REDIRECT_NATIVE ?? env.REOWN_REDIRECT_NATIVE ?? '').trim();
+  if (!raw) return DEFAULT_WALLETCONNECT_REDIRECT_NATIVE;
+  try {
+    const parsed = new URL(raw);
+    if (!parsed.protocol || parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return DEFAULT_WALLETCONNECT_REDIRECT_NATIVE;
+    }
+    return parsed.toString();
+  } catch {
+    return DEFAULT_WALLETCONNECT_REDIRECT_NATIVE;
+  }
+}
+
+function readWalletConnectRedirectUniversal(env: NodeJS.ProcessEnv): string {
+  const raw = (
+    env.WALLETCONNECT_REDIRECT_UNIVERSAL ??
+    env.REOWN_REDIRECT_UNIVERSAL ??
+    ''
+  ).trim();
+  if (!raw) return DEFAULT_WALLETCONNECT_REDIRECT_UNIVERSAL;
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'https:') return DEFAULT_WALLETCONNECT_REDIRECT_UNIVERSAL;
+    return parsed.toString();
+  } catch {
+    return DEFAULT_WALLETCONNECT_REDIRECT_UNIVERSAL;
+  }
+}
+
 export const IOS_REMOTE_CONFIG: IosRemoteConfig = {
   version: IOS_CONFIG_VERSION,
   walletRegistry: WALLET_REGISTRY,
@@ -178,6 +214,8 @@ export const IOS_REMOTE_CONFIG: IosRemoteConfig = {
   walletConnectPairingTimeoutMs: 120_000,
   walletConnectRelayHost: DEFAULT_WALLETCONNECT_RELAY_HOST,
   walletConnectRelayOrigin: DEFAULT_WALLETCONNECT_RELAY_ORIGIN,
+  walletConnectRedirectNative: DEFAULT_WALLETCONNECT_REDIRECT_NATIVE,
+  walletConnectRedirectUniversal: DEFAULT_WALLETCONNECT_REDIRECT_UNIVERSAL,
 };
 
 export function getIosRemoteConfig(env: NodeJS.ProcessEnv = process.env): IosRemoteConfig {
@@ -185,11 +223,15 @@ export function getIosRemoteConfig(env: NodeJS.ProcessEnv = process.env): IosRem
   const wcProject = readWalletConnectProjectId(env);
   const relayHost = readWalletConnectRelayHost(env);
   const relayOrigin = readWalletConnectRelayOrigin(env);
+  const redirectNative = readWalletConnectRedirectNative(env);
+  const redirectUniversal = readWalletConnectRedirectUniversal(env);
   if (
     featureFlags === STATIC_FEATURE_FLAGS &&
     wcProject === undefined &&
     relayHost === DEFAULT_WALLETCONNECT_RELAY_HOST &&
-    relayOrigin === DEFAULT_WALLETCONNECT_RELAY_ORIGIN
+    relayOrigin === DEFAULT_WALLETCONNECT_RELAY_ORIGIN &&
+    redirectNative === DEFAULT_WALLETCONNECT_REDIRECT_NATIVE &&
+    redirectUniversal === DEFAULT_WALLETCONNECT_REDIRECT_UNIVERSAL
   ) {
     return IOS_REMOTE_CONFIG;
   }
@@ -202,5 +244,7 @@ export function getIosRemoteConfig(env: NodeJS.ProcessEnv = process.env): IosRem
     walletConnectPairingTimeoutMs: 120_000,
     walletConnectRelayHost: relayHost,
     walletConnectRelayOrigin: relayOrigin,
+    walletConnectRedirectNative: redirectNative,
+    walletConnectRedirectUniversal: redirectUniversal,
   };
 }

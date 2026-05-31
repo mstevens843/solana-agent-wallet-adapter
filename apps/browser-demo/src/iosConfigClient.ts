@@ -52,6 +52,10 @@ export interface IosRemoteConfigSnapshot {
   featureFlags: Record<string, boolean>;
   walletConnectProjectId: string | null;
   walletConnectPairingTimeoutMs: number | null;
+  walletConnectRelayHost: string | null;
+  walletConnectRelayOrigin: string | null;
+  walletConnectRedirectNative: string | null;
+  walletConnectRedirectUniversal: string | null;
 }
 
 export interface IosRemoteConfigStatus {
@@ -152,6 +156,10 @@ export async function getIosRemoteConfig(): Promise<IosRemoteConfigSnapshot | nu
       walletConnectProjectId: asString(v.walletConnectProjectId),
       walletConnectPairingTimeoutMs:
         typeof v.walletConnectPairingTimeoutMs === 'number' ? v.walletConnectPairingTimeoutMs : null,
+      walletConnectRelayHost: asString(v.walletConnectRelayHost),
+      walletConnectRelayOrigin: asString(v.walletConnectRelayOrigin),
+      walletConnectRedirectNative: asString(v.walletConnectRedirectNative),
+      walletConnectRedirectUniversal: asString(v.walletConnectRedirectUniversal),
     };
   } catch {
     return null;
