@@ -49,7 +49,7 @@ final class RemoteConfigParserTests: XCTestCase {
           "walletConnectProjectId": "7c5434a4b0dffb44ae4344c1da2f9825",
           "walletConnectRelayHost": "relay.walletconnect.com",
           "walletConnectRelayOrigin": "https://agentic-signer.com",
-          "walletConnectRedirectNative": "agenticwallet://callback/walletconnect",
+          "walletConnectRedirectNative": "agenticwallet://",
           "walletConnectRedirectUniversal": "https://agentic-signer.com/ios/callback/walletconnect"
         }
         """)
@@ -57,7 +57,7 @@ final class RemoteConfigParserTests: XCTestCase {
         XCTAssertEqual(config.walletConnectProjectId, "7c5434a4b0dffb44ae4344c1da2f9825")
         XCTAssertEqual(config.walletConnectRelayHost, "relay.walletconnect.com")
         XCTAssertEqual(config.walletConnectRelayOrigin, "https://agentic-signer.com")
-        XCTAssertEqual(config.walletConnectRedirectNative, "agenticwallet://callback/walletconnect")
+        XCTAssertEqual(config.walletConnectRedirectNative, "agenticwallet://")
         XCTAssertEqual(config.walletConnectRedirectUniversal, "https://agentic-signer.com/ios/callback/walletconnect")
     }
 

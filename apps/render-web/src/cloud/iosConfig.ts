@@ -128,7 +128,7 @@ const STATIC_FEATURE_FLAGS: Readonly<Record<string, boolean>> = {
 
 const DEFAULT_WALLETCONNECT_RELAY_HOST = 'relay.walletconnect.com';
 const DEFAULT_WALLETCONNECT_RELAY_ORIGIN = 'https://agentic-signer.com';
-const DEFAULT_WALLETCONNECT_REDIRECT_NATIVE = 'agenticwallet://callback/walletconnect';
+const DEFAULT_WALLETCONNECT_REDIRECT_NATIVE = 'agenticwallet://';
 const DEFAULT_WALLETCONNECT_REDIRECT_UNIVERSAL = 'https://agentic-signer.com/ios/callback/walletconnect';
 
 function buildFeatureFlags(env: NodeJS.ProcessEnv): Readonly<Record<string, boolean>> {

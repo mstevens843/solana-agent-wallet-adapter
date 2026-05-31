@@ -122,7 +122,7 @@ enum AgenticRemoteConfigDefaults {
         walletConnectPairingTimeoutMs: 120_000,
         walletConnectRelayHost: "relay.walletconnect.com",
         walletConnectRelayOrigin: "https://agentic-signer.com",
-        walletConnectRedirectNative: "agenticwallet://callback/walletconnect",
+        walletConnectRedirectNative: "agenticwallet://",
         walletConnectRedirectUniversal: "https://agentic-signer.com/ios/callback/walletconnect"
     )
 }

@@ -1607,15 +1607,21 @@ export function iosNativeIsWalletConnectReturnUrl(rawUrl: string): boolean {
     return false;
   }
   const isNativeCallback =
-    url.protocol === 'agenticwallet:' &&
-    url.hostname === 'callback';
+    url.protocol === 'agenticwallet:';
   const isUniversalCallback =
     url.protocol === 'https:' &&
     url.pathname.endsWith('/ios/callback/walletconnect');
   if (!isNativeCallback && !isUniversalCallback) {
     return false;
   }
-  return url.pathname.endsWith('/walletconnect') || url.searchParams.get('phase') === 'walletconnect';
+  if (isNativeCallback && !url.hostname && !url.pathname) {
+    return true;
+  }
+  return (
+    (url.hostname === 'callback' && url.pathname.endsWith('/walletconnect')) ||
+    url.searchParams.get('phase') === 'walletconnect' ||
+    isUniversalCallback
+  );
 }
 
 export function iosNativeWalletLaunchStrategy(walletId: IosNativeWalletId): IosNativeWalletLaunchStrategy {

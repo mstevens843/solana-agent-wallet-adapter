@@ -156,6 +156,7 @@ describe('iOS native Backpack deeplink compatibility', () => {
   });
 
   it('recognizes WalletConnect return callbacks without matching connect or sign callbacks', () => {
+    expect(iosNativeIsWalletConnectReturnUrl('agenticwallet://')).toBe(true);
     expect(iosNativeIsWalletConnectReturnUrl('agenticwallet://callback/walletconnect')).toBe(true);
     expect(iosNativeIsWalletConnectReturnUrl('agenticwallet://callback/walletconnect?phase=walletconnect')).toBe(true);
     expect(iosNativeIsWalletConnectReturnUrl('https://agentic-signer.com/ios/callback/walletconnect')).toBe(true);
