@@ -118,6 +118,15 @@ interface CallbackWaiter {
   timer: number;
 }
 
+export type IosNativeWalletLaunchStrategy = 'native-open' | 'webview-location';
+
+export interface IosNativeCallbackWaiterMatch {
+  status: 'match' | 'no_match' | 'ambiguous';
+  key?: string;
+  requestId?: string;
+  matchKind: 'explicit' | 'active';
+}
+
 interface AgenticSecureStatePlugin {
   get(options: { key: string }): Promise<{ value?: string | null }>;
   set(options: { key: string; value: string }): Promise<void>;
@@ -319,6 +328,7 @@ const CLOUD_SESSION_TOKEN_KEY = 'cloudSessionToken';
 export const DEFAULT_IOS_APP_URL = 'https://agentic-signer.com';
 const DEFAULT_CALLBACK_SCHEME = 'agenticwallet';
 const DEFAULT_REQUEST_TTL_MS = 120_000;
+const MOBILE_WALLET_DEBUG_TIMEOUT_MS = 1500;
 const FALSE_ENV_VALUES = new Set(['0', 'false', 'no', 'off', 'native', 'swift']);
 const IOS_URL_SUBSCRIBERS = new Set<(url: string) => void>();
 let urlDispatcherInstalled = false;
@@ -702,7 +712,7 @@ export class IosNativeWalletBackend implements WalletBackend {
     await this.ensureCallbackSubscription();
     const dapp = nacl.box.keyPair();
     const requestId = newSigningRequestId();
-    const redirect = makeIosRedirect(this.callbackScheme, 'connect', requestId);
+    const redirect = iosNativeRedirectForWallet(walletId, this.callbackScheme, 'connect', requestId);
     await this.setPendingRuntimeState({
       schema: 1,
       phase: 'connect',
@@ -730,7 +740,19 @@ export class IosNativeWalletBackend implements WalletBackend {
       candidateCount: String(connectUrlCandidates.length),
       callback: urlShape(redirect),
     });
+    await emitMobileWalletDebug(this.logLevel, {
+      appUrl: this.appUrl,
+      wallet: walletId,
+      method: 'connect',
+      step: 'url_built',
+      requestId,
+      strategy: iosNativeWalletLaunchStrategy(walletId),
+      walletUrl: urlShape(connectUrl),
+      callback: urlShape(redirect),
+      candidateCount: String(connectUrlCandidates.length),
+    });
     await openWalletUrls(connectUrlCandidates, this.logLevel, {
+      appUrl: this.appUrl,
       wallet: walletId,
       method: 'connect',
       requestId,
@@ -866,7 +888,7 @@ export class IosNativeWalletBackend implements WalletBackend {
     const sharedSecret = decodeBase64(record.sharedSecretBase64);
     const dappPublicKey = decodeBase64(record.dappPublicKeyBase64);
     const payload = this.buildDeepLinkSigningPayload(request, record.session);
-    const redirect = makeIosRedirect(this.callbackScheme, 'sign', request.id);
+    const redirect = iosNativeRedirectForWallet(record.walletId, this.callbackScheme, 'sign', request.id);
     await this.setPendingRuntimeState({
       schema: 1,
       phase: 'sign',
@@ -919,7 +941,19 @@ export class IosNativeWalletBackend implements WalletBackend {
       candidateCount: String(urlCandidates.length),
       callback: urlShape(redirect),
     });
+    await emitMobileWalletDebug(this.logLevel, {
+      appUrl: this.appUrl,
+      wallet: record.walletId,
+      method: request.kind,
+      step: 'url_built',
+      requestId: request.id,
+      strategy: iosNativeWalletLaunchStrategy(record.walletId),
+      walletUrl: urlShape(url),
+      callback: urlShape(redirect),
+      candidateCount: String(urlCandidates.length),
+    });
     await openWalletUrls(urlCandidates, this.logLevel, {
+      appUrl: this.appUrl,
       wallet: record.walletId,
       method: request.kind,
       requestId: request.id,
@@ -1104,24 +1138,45 @@ export class IosNativeWalletBackend implements WalletBackend {
       return;
     }
     const requestId = url.searchParams.get('requestId');
-    if (!requestId) {
-      this.log('handleIncomingUrl', 'FAIL', 'error', 'callback missing requestId', {
+    const match = iosNativeResolveCallbackWaiterKey(this.waiters.keys(), phase, requestId);
+    if (match.status !== 'match' || !match.key || !match.requestId) {
+      this.log('handleIncomingUrl', 'FAIL', 'error', 'callback did not match an active waiter', {
         callback: urlShape(url.toString()),
+        matchStatus: match.status,
+        matchKind: match.matchKind,
+        phase,
+      });
+      void emitMobileWalletDebug(this.logLevel, {
+        appUrl: this.appUrl,
+        wallet: this.walletId,
+        method: phase,
+        step: 'callback_unmatched',
+        callback: urlShape(url.toString()),
+        code: match.status,
       });
       return;
     }
-    const key = waiterKey(phase, requestId);
-    const waiter = this.waiters.get(key);
+    const waiter = this.waiters.get(match.key);
     this.log('handleIncomingUrl', waiter ? 'MATCH' : 'ORPHAN', 'info', 'iOS callback received', {
       phase,
-      requestId,
+      requestId: match.requestId,
+      matchKind: match.matchKind,
       callback: urlShape(url.toString()),
+    });
+    void emitMobileWalletDebug(this.logLevel, {
+      appUrl: this.appUrl,
+      wallet: this.walletId,
+      method: phase,
+      step: waiter ? 'callback_match' : 'callback_orphan',
+      requestId: match.requestId,
+      callback: urlShape(url.toString()),
+      matchKind: match.matchKind,
     });
     if (!waiter) {
       return;
     }
     clearTimeout(waiter.timer);
-    this.waiters.delete(key);
+    this.waiters.delete(match.key);
     waiter.resolve(url.toString());
   }
 
@@ -1355,14 +1410,78 @@ function callbackPhase(url: URL): 'connect' | 'sign' | null {
   return null;
 }
 
+export function iosNativeWalletLaunchStrategy(walletId: IosNativeWalletId): IosNativeWalletLaunchStrategy {
+  return walletId === 'backpack' ? 'webview-location' : 'native-open';
+}
+
+export function iosNativeRedirectForWallet(
+  walletId: IosNativeWalletId,
+  callbackScheme: string,
+  phase: 'connect' | 'sign',
+  requestId: string,
+): string {
+  if (walletId !== 'backpack') {
+    return makeIosRedirect(callbackScheme, phase, requestId);
+  }
+  const scheme = callbackScheme.replace(/:\/+$/, '').replace(/:$/, '');
+  return new URL(`${scheme}://callback/${phase}`).toString();
+}
+
+export function iosNativeResolveCallbackWaiterKey(
+  waiterKeys: Iterable<string>,
+  phase: 'connect' | 'sign',
+  requestId: string | null,
+): IosNativeCallbackWaiterMatch {
+  if (requestId) {
+    return {
+      status: 'match',
+      key: waiterKey(phase, requestId),
+      requestId,
+      matchKind: 'explicit',
+    };
+  }
+  const prefix = `${phase}:`;
+  const matches = [...waiterKeys].filter((key) => key.startsWith(prefix));
+  if (matches.length === 0) {
+    return { status: 'no_match', matchKind: 'active' };
+  }
+  if (matches.length > 1) {
+    return { status: 'ambiguous', matchKind: 'active' };
+  }
+  const key = matches[0]!;
+  return {
+    status: 'match',
+    key,
+    requestId: key.slice(prefix.length),
+    matchKind: 'active',
+  };
+}
+
 function waiterKey(phase: 'connect' | 'sign', requestId: string): string {
   return `${phase}:${requestId}`;
 }
 
 interface WalletUrlOpenContext {
+  appUrl: string;
   wallet: string;
   method: string;
   requestId: string;
+}
+
+interface MobileWalletDebugEvent {
+  appUrl: string;
+  wallet: string;
+  method: string;
+  step: string;
+  requestId?: string;
+  strategy?: string;
+  walletUrl?: string;
+  callback?: string;
+  candidateCount?: string;
+  candidateIndex?: string;
+  matchKind?: string;
+  code?: string;
+  message?: string;
 }
 
 async function openWalletUrls(
@@ -1373,24 +1492,61 @@ async function openWalletUrls(
   if (urls.length === 0) {
     throw new ProtocolError('wallet_unreachable', 'No iOS wallet URL was available.');
   }
-  if (safeIsNativePlatform()) {
+  const strategy = context ? iosNativeWalletLaunchStrategy(context.wallet as IosNativeWalletId) : 'native-open';
+  if (safeIsNativePlatform() && strategy === 'native-open') {
     for (const [index, url] of urls.entries()) {
       const metadata = {
-        ...(context ?? {}),
+        ...contextMetadata(context),
         walletUrl: urlShape(url),
         candidateIndex: String(index + 1),
         candidateCount: String(urls.length),
+        strategy,
       };
       try {
+        await emitMobileWalletDebug(logLevel, {
+          ...(context ?? { appUrl: DEFAULT_IOS_APP_URL, wallet: '', method: 'unknown', requestId: '' }),
+          step: 'native_open_start',
+          strategy,
+          walletUrl: urlShape(url),
+          candidateIndex: String(index + 1),
+          candidateCount: String(urls.length),
+        });
         const result = await AgenticSystem.openExternal({ url });
         if (result.ok) {
           iosLog(logLevel, 'AgenticSystem', 'openWalletUrls', 'DONE', 'info', 'wallet URL opened', metadata);
+          await emitMobileWalletDebug(logLevel, {
+            ...(context ?? { appUrl: DEFAULT_IOS_APP_URL, wallet: '', method: 'unknown', requestId: '' }),
+            step: 'native_open_done',
+            strategy,
+            walletUrl: urlShape(url),
+            candidateIndex: String(index + 1),
+            candidateCount: String(urls.length),
+          });
           return;
         }
         iosLog(logLevel, 'AgenticSystem', 'openWalletUrls', 'FALLBACK', 'info', 'native open declined wallet URL', metadata);
+        await emitMobileWalletDebug(logLevel, {
+          ...(context ?? { appUrl: DEFAULT_IOS_APP_URL, wallet: '', method: 'unknown', requestId: '' }),
+          step: 'native_open_declined',
+          strategy,
+          walletUrl: urlShape(url),
+          candidateIndex: String(index + 1),
+          candidateCount: String(urls.length),
+          code: 'declined',
+        });
       } catch (err) {
         iosLog(logLevel, 'AgenticSystem', 'openWalletUrls', 'FALLBACK', 'debug', 'native open failed', {
           ...metadata,
+          message: err instanceof Error ? err.message : String(err),
+        });
+        await emitMobileWalletDebug(logLevel, {
+          ...(context ?? { appUrl: DEFAULT_IOS_APP_URL, wallet: '', method: 'unknown', requestId: '' }),
+          step: 'native_open_failed',
+          strategy,
+          walletUrl: urlShape(url),
+          candidateIndex: String(index + 1),
+          candidateCount: String(urls.length),
+          code: 'error',
           message: err instanceof Error ? err.message : String(err),
         });
       }
@@ -1398,7 +1554,15 @@ async function openWalletUrls(
   }
   const url = urls.find((candidate) => candidate.startsWith('https://')) ?? urls[0]!;
   iosLog(logLevel, 'AgenticSystem', 'openWalletUrls', 'WINDOW_LOCATION', 'info', 'opening wallet URL through WebView location', {
-    ...(context ?? {}),
+    ...contextMetadata(context),
+    walletUrl: urlShape(url),
+    candidateCount: String(urls.length),
+    strategy: 'webview-location',
+  });
+  await emitMobileWalletDebug(logLevel, {
+    ...(context ?? { appUrl: DEFAULT_IOS_APP_URL, wallet: '', method: 'unknown', requestId: '' }),
+    step: 'webview_location',
+    strategy: 'webview-location',
     walletUrl: urlShape(url),
     candidateCount: String(urls.length),
   });
@@ -1406,6 +1570,77 @@ async function openWalletUrls(
     window.location.assign(url);
   } else {
     window.location.href = url;
+  }
+}
+
+function contextMetadata(context: WalletUrlOpenContext | undefined): Record<string, string> {
+  if (!context) return {};
+  return {
+    wallet: context.wallet,
+    method: context.method,
+    requestId: context.requestId,
+  };
+}
+
+async function emitMobileWalletDebug(logLevel: IosNativeLogLevel, event: MobileWalletDebugEvent): Promise<void> {
+  if (event.wallet !== 'backpack') {
+    return;
+  }
+  try {
+    const endpoint = new URL('/api/mobile-wallet-debug', event.appUrl).toString();
+    const payload = mobileWalletDebugPayload(event);
+    await fetchWithTimeout(endpoint, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-agentic-client': 'ios-bundled',
+      },
+      body: JSON.stringify(payload),
+      keepalive: true,
+    }, MOBILE_WALLET_DEBUG_TIMEOUT_MS);
+  } catch (err) {
+    iosLog(logLevel, 'MobileWalletDebug', 'emit', 'SKIP', 'debug', 'debug telemetry failed', {
+      wallet: event.wallet,
+      step: event.step,
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+function mobileWalletDebugPayload(event: MobileWalletDebugEvent): Record<string, string> {
+  return {
+    wallet: event.wallet,
+    method: event.method,
+    step: event.step,
+    ...(event.requestId ? { requestId: event.requestId } : {}),
+    ...(event.strategy ? { strategy: event.strategy } : {}),
+    ...(event.walletUrl ? { walletUrl: event.walletUrl } : {}),
+    ...(event.callback ? { callback: event.callback } : {}),
+    ...(event.candidateCount ? { candidateCount: event.candidateCount } : {}),
+    ...(event.candidateIndex ? { candidateIndex: event.candidateIndex } : {}),
+    ...(event.matchKind ? { matchKind: event.matchKind } : {}),
+    ...(event.code ? { code: event.code } : {}),
+    ...(event.message ? { message: event.message } : {}),
+  };
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<void> {
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : undefined;
+  const timer = controller
+    ? globalThis.setTimeout(() => controller.abort(), timeoutMs)
+    : undefined;
+  try {
+    const response = await fetch(url, {
+      ...init,
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+    if (!response.ok) {
+      throw new Error(`debug telemetry HTTP ${response.status}`);
+    }
+  } finally {
+    if (timer !== undefined) {
+      globalThis.clearTimeout(timer);
+    }
   }
 }
 

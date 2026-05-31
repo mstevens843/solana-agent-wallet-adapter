@@ -13,6 +13,9 @@ import {
   DEFAULT_IOS_APP_URL,
   IosNativeWalletBackend,
   iosNativeAppUrl,
+  iosNativeRedirectForWallet,
+  iosNativeResolveCallbackWaiterKey,
+  iosNativeWalletLaunchStrategy,
   iosNativeWalletConnectTransactionParam,
   restoreLatestIosNativeWallet,
   type IosNativeWalletId,
@@ -115,6 +118,50 @@ describe('IosNativeWalletBackend cache restore', () => {
     await expect(iosBackend('phantom').reconnectLatest()).resolves.toMatchObject({
       publicKey: 'Phantom111111111111111111111111111111111',
       walletId: 'phantom',
+    });
+  });
+});
+
+describe('iOS native Backpack deeplink compatibility', () => {
+  it('uses SolPulse-style plain redirects for Backpack only', () => {
+    expect(iosNativeRedirectForWallet('backpack', 'agenticwallet', 'connect', 'req_1')).toBe(
+      'agenticwallet://callback/connect',
+    );
+    expect(iosNativeRedirectForWallet('backpack', 'agenticwallet', 'sign', 'req_2')).toBe(
+      'agenticwallet://callback/sign',
+    );
+    expect(iosNativeRedirectForWallet('phantom', 'agenticwallet', 'connect', 'req_3')).toBe(
+      'agenticwallet://callback/connect?requestId=req_3&phase=connect',
+    );
+  });
+
+  it('uses WebView location launch for Backpack and native open for other iOS wallets', () => {
+    expect(iosNativeWalletLaunchStrategy('backpack')).toBe('webview-location');
+    expect(iosNativeWalletLaunchStrategy('phantom')).toBe('native-open');
+    expect(iosNativeWalletLaunchStrategy('solflare')).toBe('native-open');
+    expect(iosNativeWalletLaunchStrategy('jupiter')).toBe('native-open');
+  });
+
+  it('matches plain Backpack callbacks to the single active waiter for that phase', () => {
+    expect(iosNativeResolveCallbackWaiterKey(['connect:req_1'], 'connect', null)).toMatchObject({
+      status: 'match',
+      key: 'connect:req_1',
+      requestId: 'req_1',
+      matchKind: 'active',
+    });
+    expect(iosNativeResolveCallbackWaiterKey(['connect:req_1', 'connect:req_2'], 'connect', null)).toMatchObject({
+      status: 'ambiguous',
+      matchKind: 'active',
+    });
+    expect(iosNativeResolveCallbackWaiterKey(['sign:req_1'], 'connect', null)).toMatchObject({
+      status: 'no_match',
+      matchKind: 'active',
+    });
+    expect(iosNativeResolveCallbackWaiterKey(['connect:req_1'], 'connect', 'req_explicit')).toMatchObject({
+      status: 'match',
+      key: 'connect:req_explicit',
+      requestId: 'req_explicit',
+      matchKind: 'explicit',
     });
   });
 });

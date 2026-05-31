@@ -223,6 +223,7 @@ const REGISTERED_API_ROUTES = [
   'GET /api/releases/downloads',
   'GET /api/android-config',
   'GET /api/mobile-config',
+  'POST /api/mobile-wallet-debug',
   'POST /api/policy/enrich',
   'POST /api/ai/generate-plan',
   'POST /api/ai/review-plan',
@@ -993,6 +994,19 @@ async function routeApiRequest(
     const ua = firstHeaderValue(req.headers['user-agent']) ?? '';
     console.log(
       `mobile_config_fetch status=200 platform=${platform} ms=${Date.now() - startedAt} version=${cfg.version} wallets=${cfg.walletRegistry.length} client=${JSON.stringify(client)} ua=${JSON.stringify(ua.slice(0, 120))}`,
+    );
+    return;
+  }
+
+  if (url.pathname.replace(/\/$/, '') === '/api/mobile-wallet-debug') {
+    requireMethod(req, 'POST');
+    const startedAt = Date.now();
+    const payload = parseMobileWalletDebugPayload(await readJsonBody(req));
+    writeJson(res, 200, { ok: true });
+    console.log(
+      `mobile_wallet_debug status=200 ms=${Date.now() - startedAt} ${Object.entries(payload)
+        .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+        .join(' ')}`,
     );
     return;
   }
@@ -3603,6 +3617,68 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   } catch {
     throw new ApiError(400, 'Request body must be valid JSON.');
   }
+}
+
+function parseMobileWalletDebugPayload(body: unknown): Record<string, string> {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new ApiError(400, 'Mobile wallet debug payload must be a JSON object.');
+  }
+  const raw = body as Record<string, unknown>;
+  const approxBytes = Buffer.byteLength(JSON.stringify(raw), 'utf8');
+  if (approxBytes > 4096) {
+    throw new ApiError(413, 'Mobile wallet debug payload is too large.');
+  }
+  const payload: Record<string, string> = {};
+  for (const key of MOBILE_WALLET_DEBUG_FIELDS) {
+    const value = raw[key];
+    if (value === undefined || value === null) continue;
+    if (!['string', 'number', 'boolean'].includes(typeof value)) {
+      throw new ApiError(400, `Mobile wallet debug field "${key}" must be scalar.`);
+    }
+    const normalized = String(value).replace(/\s+/g, ' ').trim();
+    if (normalized.length > 240) {
+      throw new ApiError(400, `Mobile wallet debug field "${key}" is too large.`);
+    }
+    payload[key] = redactDebugValue(key, normalized);
+  }
+  if (!MOBILE_WALLET_DEBUG_WALLETS.has(payload.wallet ?? '')) {
+    throw new ApiError(400, 'Mobile wallet debug payload has an unsupported wallet.');
+  }
+  if (!payload.step) {
+    throw new ApiError(400, 'Mobile wallet debug payload is missing step.');
+  }
+  return payload;
+}
+
+const MOBILE_WALLET_DEBUG_FIELDS = [
+  'wallet',
+  'method',
+  'step',
+  'requestId',
+  'strategy',
+  'walletUrl',
+  'callback',
+  'candidateCount',
+  'candidateIndex',
+  'matchKind',
+  'code',
+  'message',
+] as const;
+const MOBILE_WALLET_DEBUG_WALLETS = new Set(['phantom', 'solflare', 'backpack', 'jupiter']);
+
+function redactDebugValue(key: string, value: string): string {
+  const lower = key.toLowerCase();
+  if (
+    lower.includes('token') ||
+    lower.includes('secret') ||
+    lower.includes('session') ||
+    lower.includes('payload') ||
+    lower.includes('signature') ||
+    lower.includes('transaction')
+  ) {
+    return '[redacted]';
+  }
+  return value.replace(/([?&][^=&]*(?:token|secret|session|payload|signature|transaction)[^=&]*=)[^&\s]+/gi, '$1[redacted]');
 }
 
 function requireMethod(req: IncomingMessage, method: string): void {
