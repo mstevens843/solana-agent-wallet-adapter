@@ -364,12 +364,7 @@ function providerUrl(provider: IosWalletDescriptor, method: string): URL {
 }
 
 function providerUrlCandidates(provider: IosWalletDescriptor, method: string): URL[] {
-  const urls: URL[] = [];
-  if (provider.id === 'backpack' && provider.customScheme) {
-    urls.push(new URL(`${provider.customScheme}://ul/v1/${method}`));
-  }
-  urls.push(providerUrl(provider, method));
-  return urls;
+  return [providerUrl(provider, method)];
 }
 
 function applyIosConnectParams(url: URL, params: IosConnectUrlParams): void {

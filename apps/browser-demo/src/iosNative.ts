@@ -725,11 +725,16 @@ export class IosNativeWalletBackend implements WalletBackend {
     this.log('connectDeepLink', 'URL_BUILT', 'info', 'opening wallet connect link', {
       requestId,
       wallet: walletId,
+      appUrl: urlOriginShape(this.appUrl),
       walletUrl: urlShape(connectUrl),
       candidateCount: String(connectUrlCandidates.length),
       callback: urlShape(redirect),
     });
-    await openWalletUrls(connectUrlCandidates, this.logLevel);
+    await openWalletUrls(connectUrlCandidates, this.logLevel, {
+      wallet: walletId,
+      method: 'connect',
+      requestId,
+    });
     const callbackUrl = await callbackPromise;
     const decoded = parseIosConnectCallback(walletId, callbackUrl, dapp.secretKey);
     const descriptor = iosWalletDescriptor(walletId)!;
@@ -914,7 +919,11 @@ export class IosNativeWalletBackend implements WalletBackend {
       candidateCount: String(urlCandidates.length),
       callback: urlShape(redirect),
     });
-    await openWalletUrls(urlCandidates, this.logLevel);
+    await openWalletUrls(urlCandidates, this.logLevel, {
+      wallet: record.walletId,
+      method: request.kind,
+      requestId: request.id,
+    });
     const callbackUrl = await callbackPromise;
     const decoded = parseIosSigningCallback(callbackUrl, sharedSecret);
     await this.clearPendingRuntimeState();
@@ -1350,33 +1359,49 @@ function waiterKey(phase: 'connect' | 'sign', requestId: string): string {
   return `${phase}:${requestId}`;
 }
 
-async function openWalletUrls(urls: readonly string[], logLevel: IosNativeLogLevel): Promise<void> {
+interface WalletUrlOpenContext {
+  wallet: string;
+  method: string;
+  requestId: string;
+}
+
+async function openWalletUrls(
+  urls: readonly string[],
+  logLevel: IosNativeLogLevel,
+  context?: WalletUrlOpenContext,
+): Promise<void> {
   if (urls.length === 0) {
     throw new ProtocolError('wallet_unreachable', 'No iOS wallet URL was available.');
   }
   if (safeIsNativePlatform()) {
-    for (const url of urls) {
+    for (const [index, url] of urls.entries()) {
+      const metadata = {
+        ...(context ?? {}),
+        walletUrl: urlShape(url),
+        candidateIndex: String(index + 1),
+        candidateCount: String(urls.length),
+      };
       try {
         const result = await AgenticSystem.openExternal({ url });
         if (result.ok) {
-          iosLog(logLevel, 'AgenticSystem', 'openWalletUrls', 'DONE', 'info', 'wallet URL opened', {
-            walletUrl: urlShape(url),
-            candidateCount: String(urls.length),
-          });
+          iosLog(logLevel, 'AgenticSystem', 'openWalletUrls', 'DONE', 'info', 'wallet URL opened', metadata);
           return;
         }
-        iosLog(logLevel, 'AgenticSystem', 'openWalletUrls', 'FALLBACK', 'info', 'native open declined wallet URL', {
-          walletUrl: urlShape(url),
-        });
+        iosLog(logLevel, 'AgenticSystem', 'openWalletUrls', 'FALLBACK', 'info', 'native open declined wallet URL', metadata);
       } catch (err) {
         iosLog(logLevel, 'AgenticSystem', 'openWalletUrls', 'FALLBACK', 'debug', 'native open failed', {
-          walletUrl: urlShape(url),
+          ...metadata,
           message: err instanceof Error ? err.message : String(err),
         });
       }
     }
   }
   const url = urls.find((candidate) => candidate.startsWith('https://')) ?? urls[0]!;
+  iosLog(logLevel, 'AgenticSystem', 'openWalletUrls', 'WINDOW_LOCATION', 'info', 'opening wallet URL through WebView location', {
+    ...(context ?? {}),
+    walletUrl: urlShape(url),
+    candidateCount: String(urls.length),
+  });
   if (typeof window.location.assign === 'function') {
     window.location.assign(url);
   } else {
@@ -1574,6 +1599,15 @@ function urlShape(value: string): string {
   try {
     const url = new URL(value);
     return `scheme=${url.protocol.replace(':', '')} host=${url.host} path=${url.pathname} query_keys=${[...url.searchParams.keys()].sort().join(',')}`;
+  } catch {
+    return 'invalid_url';
+  }
+}
+
+function urlOriginShape(value: string): string {
+  try {
+    const url = new URL(value);
+    return `scheme=${url.protocol.replace(':', '')} host=${url.host} path=${url.pathname}`;
   } catch {
     return 'invalid_url';
   }

@@ -116,7 +116,7 @@ describe('ios-link', () => {
     });
   });
 
-  it('offers Backpack custom-scheme candidates without changing the single universal URL builder', () => {
+  it('keeps Backpack connect candidates on the documented universal link', () => {
     const backpack = walletDescriptor('backpack');
     expect(backpack).toBeDefined();
     const params = {
@@ -130,16 +130,13 @@ describe('ios-link', () => {
     const candidates = buildConnectUrlCandidates(backpack!, params).map((url) => new URL(url));
 
     expect(single.origin).toBe('https://backpack.app');
-    expect(candidates).toHaveLength(2);
-    expect(candidates[0]!.protocol).toBe('backpack:');
-    expect(candidates[0]!.host).toBe('ul');
-    expect(candidates[0]!.pathname).toBe('/v1/connect');
-    expect(candidates[1]!.origin).toBe('https://backpack.app');
-    expect(candidates[1]!.pathname).toBe('/ul/v1/connect');
-    expect(candidates[0]!.searchParams.toString()).toBe(candidates[1]!.searchParams.toString());
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]!.origin).toBe('https://backpack.app');
+    expect(candidates[0]!.pathname).toBe('/ul/v1/connect');
+    expect(candidates[0]!.searchParams.toString()).toBe(single.searchParams.toString());
   });
 
-  it('offers Backpack encrypted signing candidates with the same payload', () => {
+  it('keeps Backpack encrypted signing candidates on the documented universal link', () => {
     const backpack = walletDescriptor('backpack');
     expect(backpack).toBeDefined();
     const dapp = nacl.box.keyPair();
@@ -159,12 +156,10 @@ describe('ios-link', () => {
       nonce,
     }).map((url) => new URL(url));
 
-    expect(candidates).toHaveLength(2);
-    expect(candidates[0]!.protocol).toBe('backpack:');
-    expect(candidates[0]!.pathname).toBe('/v1/signMessage');
-    expect(candidates[1]!.origin).toBe('https://backpack.app');
-    expect(candidates[1]!.pathname).toBe('/ul/v1/signMessage');
-    expect(candidates[0]!.searchParams.get('payload')).toBe(candidates[1]!.searchParams.get('payload'));
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]!.origin).toBe('https://backpack.app');
+    expect(candidates[0]!.pathname).toBe('/ul/v1/signMessage');
+    expect(candidates[0]!.searchParams.get('payload')).toBeTruthy();
   });
 
   it('fails deterministically for Jupiter when Reown project id is missing', async () => {
