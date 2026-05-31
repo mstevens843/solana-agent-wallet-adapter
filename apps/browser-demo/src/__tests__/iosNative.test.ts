@@ -123,16 +123,28 @@ describe('IosNativeWalletBackend cache restore', () => {
 });
 
 describe('iOS native Backpack deeplink compatibility', () => {
-  it('uses SolPulse-style plain redirects for Backpack only', () => {
+  it('uses associated-domain callbacks for Backpack only', () => {
     expect(iosNativeRedirectForWallet('backpack', 'agenticwallet', 'connect', 'req_1')).toBe(
-      'agenticwallet://callback/connect',
+      'https://agentic-signer.com/ios/callback/connect',
     );
     expect(iosNativeRedirectForWallet('backpack', 'agenticwallet', 'sign', 'req_2')).toBe(
-      'agenticwallet://callback/sign',
+      'https://agentic-signer.com/ios/callback/sign',
     );
     expect(iosNativeRedirectForWallet('phantom', 'agenticwallet', 'connect', 'req_3')).toBe(
       'agenticwallet://callback/connect?requestId=req_3&phase=connect',
     );
+  });
+
+  it('keeps Backpack callbacks on the production associated domain', () => {
+    expect(
+      iosNativeRedirectForWallet(
+        'backpack',
+        'agenticwallet',
+        'connect',
+        'req_1',
+        'https://staging.agentic-signer.com/app',
+      ),
+    ).toBe('https://agentic-signer.com/ios/callback/connect');
   });
 
   it('uses WebView location launch for Backpack and native open for other iOS wallets', () => {

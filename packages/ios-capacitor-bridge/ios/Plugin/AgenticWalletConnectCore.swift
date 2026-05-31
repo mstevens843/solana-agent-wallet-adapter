@@ -67,24 +67,42 @@ final class AgenticWalletConnectCore {
                 socketFactory: AgenticWebSocketFactory()
             )
             Pair.configure(metadata: metadata)
+            Sign.configure(crypto: AgenticWalletConnectCryptoProvider())
             // Subscribe to session lifecycle to surface to wcWaitForSession waiters.
             Sign.instance.sessionsPublisher
                 .receive(on: queue)
                 .sink { [weak self] sessions in
                     guard let self else { return }
-                    guard let session = sessions.first else { return }
-                    let pubkey = session.namespaces.values.first?.accounts.first?.address ?? ""
-                    self.sessionPubkey = pubkey
-                    self.sessionTopic = session.topic
-                    self.walletRedirectNative = session.peer.redirect?.native
-                    self.walletRedirectUniversal = session.peer.redirect?.universal
-                    let waiters = Array(self.sessionWaiters.values)
-                    self.sessionWaiters.removeAll()
-                    for waiter in waiters {
-                        waiter(.success((pubkey, session.topic)))
+                    guard let normalized = sessions.compactMap({ self.normalizeSession($0) }).first else {
+                        if sessions.isEmpty { self.clearSessionStateLocked(reason: "sessions_empty") }
+                        return
+                    }
+                    self.activateSession(normalized, source: "sessionsPublisher")
+                }
+                .store(in: &cancellables)
+            Sign.instance.sessionSettlePublisher
+                .receive(on: queue)
+                .sink { [weak self] session in
+                    guard let self else { return }
+                    guard let normalized = self.normalizeSession(session) else {
+                        AgenticIOSLog.fail("AgenticWalletConnect", "sessionSettle", "FAIL", "WalletConnect session did not contain a Solana account")
+                        return
+                    }
+                    self.activateSession(normalized, source: "sessionSettlePublisher")
+                }
+                .store(in: &cancellables)
+            Sign.instance.sessionDeletePublisher
+                .receive(on: queue)
+                .sink { [weak self] topic, _ in
+                    guard let self else { return }
+                    if topic == self.sessionTopic {
+                        self.clearSessionStateLocked(reason: "session_deleted")
                     }
                 }
                 .store(in: &cancellables)
+            if let restored = Sign.instance.getSessions().compactMap({ normalizeSession($0) }).first {
+                activateSession(restored, source: "restore")
+            }
             configured = true
         }
     }
@@ -122,7 +140,7 @@ final class AgenticWalletConnectCore {
     func waitForSession(timeoutMs: Int, completion: @escaping (Result<(pubkey: String, topic: String), Error>) -> Void) {
         do { try ensureConfigured() } catch { completion(.failure(error)); return }
         queue.async {
-            if let pubkey = self.sessionPubkey, let topic = self.sessionTopic {
+            if let pubkey = self.sessionPubkey, !pubkey.isEmpty, let topic = self.sessionTopic {
                 completion(.success((pubkey, topic)))
                 return
             }
@@ -143,16 +161,18 @@ final class AgenticWalletConnectCore {
     }
 
     func currentSession() -> (pubkey: String, topic: String)? {
-        queue.sync {
-            guard let pubkey = sessionPubkey, let topic = sessionTopic else { return nil }
+        guard (try? ensureConfigured()) != nil else { return nil }
+        return queue.sync {
+            guard let pubkey = sessionPubkey, !pubkey.isEmpty, let topic = sessionTopic else { return nil }
             return (pubkey, topic)
         }
     }
 
     func signMessage(pubkey: String, message: String, completion: @escaping (Result<String, Error>) -> Void) {
         do { try ensureConfigured() } catch { completion(.failure(error)); return }
-        guard let topic = sessionTopic else {
-            completion(.failure(AgenticAgentError(code: "WC_NO_SESSION", message: "No active WalletConnect session.")))
+        let topicResult = activeTopic(for: pubkey)
+        guard case .success(let topic) = topicResult else {
+            if case .failure(let error) = topicResult { completion(.failure(error)) }
             return
         }
         let params: [String: Any] = ["pubkey": pubkey, "message": message]
@@ -160,8 +180,7 @@ final class AgenticWalletConnectCore {
             switch result {
             case .failure(let err): completion(.failure(err))
             case .success(let data):
-                guard let dict = data as? [String: Any],
-                      let signature = dict["signature"] as? String else {
+                guard let signature = self.stringValue(data, keys: ["signature"]) else {
                     completion(.failure(AgenticAgentError(code: "WC_INVALID_RESPONSE", message: "Missing signature.")))
                     return
                 }
@@ -170,10 +189,11 @@ final class AgenticWalletConnectCore {
         }
     }
 
-    func signTransaction(pubkey: String, transaction: String, completion: @escaping (Result<(signature: String, transaction: String?), Error>) -> Void) {
+    func signTransaction(pubkey: String, transaction: String, completion: @escaping (Result<(signature: String?, transaction: String?), Error>) -> Void) {
         do { try ensureConfigured() } catch { completion(.failure(error)); return }
-        guard let topic = sessionTopic else {
-            completion(.failure(AgenticAgentError(code: "WC_NO_SESSION", message: "No active WalletConnect session.")))
+        let topicResult = activeTopic(for: pubkey)
+        guard case .success(let topic) = topicResult else {
+            if case .failure(let error) = topicResult { completion(.failure(error)) }
             return
         }
         let params: [String: Any] = ["transaction": transaction]
@@ -181,12 +201,12 @@ final class AgenticWalletConnectCore {
             switch result {
             case .failure(let err): completion(.failure(err))
             case .success(let data):
-                guard let dict = data as? [String: Any],
-                      let signature = dict["signature"] as? String else {
-                    completion(.failure(AgenticAgentError(code: "WC_INVALID_RESPONSE", message: "Missing signature.")))
+                let signature = self.stringValue(data, keys: ["signature"])
+                let tx = self.stringValue(data, keys: ["transaction"])
+                guard signature != nil || tx != nil else {
+                    completion(.failure(AgenticAgentError(code: "WC_INVALID_RESPONSE", message: "Missing signed transaction or signature.")))
                     return
                 }
-                let tx = dict["transaction"] as? String
                 completion(.success((signature: signature, transaction: tx)))
             }
         }
@@ -194,8 +214,9 @@ final class AgenticWalletConnectCore {
 
     func signAndSendTransaction(pubkey: String, transaction: String, completion: @escaping (Result<(signature: String, txid: String?), Error>) -> Void) {
         do { try ensureConfigured() } catch { completion(.failure(error)); return }
-        guard let topic = sessionTopic else {
-            completion(.failure(AgenticAgentError(code: "WC_NO_SESSION", message: "No active WalletConnect session.")))
+        let topicResult = activeTopic(for: pubkey)
+        guard case .success(let topic) = topicResult else {
+            if case .failure(let error) = topicResult { completion(.failure(error)) }
             return
         }
         let params: [String: Any] = [
@@ -210,18 +231,22 @@ final class AgenticWalletConnectCore {
             switch result {
             case .failure(let err): completion(.failure(err))
             case .success(let data):
-                guard let dict = data as? [String: Any],
-                      let signature = dict["signature"] as? String else {
-                    completion(.failure(AgenticAgentError(code: "WC_INVALID_RESPONSE", message: "Missing signature.")))
+                let txid = self.stringValue(data, keys: ["txid", "signature"])
+                guard let signature = self.stringValue(data, keys: ["signature", "txid"]) else {
+                    completion(.failure(AgenticAgentError(code: "WC_INVALID_RESPONSE", message: "Missing transaction id.")))
                     return
                 }
-                let txid = dict["txid"] as? String ?? dict["signature"] as? String
                 completion(.success((signature: signature, txid: txid)))
             }
         }
     }
 
     func disconnect(completion: @escaping (Bool) -> Void) {
+        do { try ensureConfigured() } catch {
+            clearState()
+            completion(true)
+            return
+        }
         queue.async {
             guard let topic = self.sessionTopic else { completion(true); return }
             Task {
@@ -231,6 +256,8 @@ final class AgenticWalletConnectCore {
                         self.sessionPubkey = nil
                         self.sessionTopic = nil
                         self.sessionChainId = nil
+                        self.walletRedirectNative = nil
+                        self.walletRedirectUniversal = nil
                         completion(true)
                     }
                 } catch {
@@ -240,18 +267,102 @@ final class AgenticWalletConnectCore {
         }
     }
 
+    func dispatchEnvelope(_ url: URL) -> Bool {
+        guard hasWalletConnectEnvelope(url) else { return false }
+        do {
+            try ensureConfigured()
+            try Sign.instance.dispatchEnvelope(url.absoluteString)
+            AgenticIOSLog.info("AgenticWalletConnect", "dispatchEnvelope", "DONE", "WalletConnect envelope dispatched", [
+                "scheme": url.scheme ?? "",
+                "host": url.host ?? "",
+            ])
+            return true
+        } catch {
+            AgenticIOSLog.fail("AgenticWalletConnect", "dispatchEnvelope", "FAIL", "WalletConnect envelope dispatch failed", [
+                "message": error.localizedDescription,
+            ])
+            return false
+        }
+    }
+
     func clearState() {
         queue.sync {
-            sessionPubkey = nil
-            sessionTopic = nil
-            sessionChainId = nil
-            walletRedirectNative = nil
-            walletRedirectUniversal = nil
-            sessionWaiters.removeAll()
+            clearSessionStateLocked(reason: "manual_clear")
         }
     }
 
     // MARK: - Helpers
+
+    private struct NormalizedSession {
+        let pubkey: String
+        let topic: String
+        let chainId: String
+        let redirectNative: String?
+        let redirectUniversal: String?
+    }
+
+    private func normalizeSession(_ session: Session) -> NormalizedSession? {
+        let preferredChainId = sessionChainId
+        let solanaAccounts = session.namespaces["solana"]?.accounts
+            ?? session.accounts.filter { $0.namespace == "solana" }
+        let account = solanaAccounts.first(where: { $0.blockchainIdentifier == preferredChainId })
+            ?? (preferredChainId == nil ? solanaAccounts.first : nil)
+        guard let account, !account.address.isEmpty else { return nil }
+        return NormalizedSession(
+            pubkey: account.address,
+            topic: session.topic,
+            chainId: account.blockchainIdentifier,
+            redirectNative: session.peer.redirect?.native,
+            redirectUniversal: session.peer.redirect?.universal
+        )
+    }
+
+    private func activateSession(_ session: NormalizedSession, source: String) {
+        sessionPubkey = session.pubkey
+        sessionTopic = session.topic
+        sessionChainId = session.chainId
+        walletRedirectNative = session.redirectNative
+        walletRedirectUniversal = session.redirectUniversal
+        AgenticIOSLog.info("AgenticWalletConnect", "activateSession", "DONE", "WalletConnect Solana session active", [
+            "source": source,
+            "chainId": session.chainId,
+            "topic": short(session.topic),
+            "pubkey": short(session.pubkey),
+        ])
+        let waiters = Array(sessionWaiters.values)
+        sessionWaiters.removeAll()
+        for waiter in waiters {
+            waiter(.success((session.pubkey, session.topic)))
+        }
+    }
+
+    private func clearSessionStateLocked(reason: String) {
+        sessionPubkey = nil
+        sessionTopic = nil
+        sessionChainId = nil
+        walletRedirectNative = nil
+        walletRedirectUniversal = nil
+        let waiters = Array(sessionWaiters.values)
+        sessionWaiters.removeAll()
+        for waiter in waiters {
+            waiter(.failure(AgenticAgentError(code: "WC_NO_SESSION", message: "WalletConnect session cleared before approval completed.")))
+        }
+        AgenticIOSLog.info("AgenticWalletConnect", "clearSessionState", "DONE", "WalletConnect session state cleared", [
+            "reason": reason,
+        ])
+    }
+
+    private func activeTopic(for pubkey: String) -> Result<String, Error> {
+        queue.sync {
+            guard let topic = sessionTopic, let activePubkey = sessionPubkey, !activePubkey.isEmpty else {
+                return .failure(AgenticAgentError(code: "WC_NO_SESSION", message: "No active WalletConnect session."))
+            }
+            guard activePubkey == pubkey else {
+                return .failure(AgenticAgentError(code: "WC_PUBKEY_MISMATCH", message: "WalletConnect session belongs to a different account. Disconnect and reconnect Jupiter."))
+            }
+            return .success(topic)
+        }
+    }
 
     private func solanaChainId(for cluster: String) -> String {
         switch cluster.lowercased() {
@@ -260,6 +371,37 @@ final class AgenticWalletConnectCore {
         case "testnet": return "solana:4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z"
         default: return "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp"
         }
+    }
+
+    private func hasWalletConnectEnvelope(_ url: URL) -> Bool {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: true) else { return false }
+        let names = Set((components.queryItems ?? []).map(\.name))
+        return names.contains("wc_ev") && names.contains("topic")
+    }
+
+    private func stringValue(_ value: Any, keys: [String]) -> String? {
+        if let string = value as? String, !string.isEmpty {
+            return string
+        }
+        if let anyCodable = value as? Commons.AnyCodable {
+            return stringValue(anyCodable.value, keys: keys)
+        }
+        guard let dict = value as? [String: Any] else { return nil }
+        for key in keys {
+            if let string = dict[key] as? String, !string.isEmpty {
+                return string
+            }
+            if let anyCodable = dict[key] as? Commons.AnyCodable,
+               let string = stringValue(anyCodable.value, keys: keys) {
+                return string
+            }
+        }
+        return nil
+    }
+
+    private func short(_ value: String) -> String {
+        if value.count <= 12 { return value }
+        return "\(value.prefix(6))…\(value.suffix(4))"
     }
 
     private func sendRequest(topic: String, method: String, params: [String: Any], completion: @escaping (Result<Any, Error>) -> Void) {
@@ -317,6 +459,17 @@ final class AgenticWalletConnectCore {
 }
 
 // MARK: - WebSocket factory glue
+
+final class AgenticWalletConnectCryptoProvider: CryptoProvider {
+    func recoverPubKey(signature: EthereumSignature, message: Data) throws -> Data {
+        throw AgenticAgentError(code: "WC_UNSUPPORTED_CRYPTO", message: "Ethereum signature recovery is not supported by the Agentic Solana WalletConnect bridge.")
+    }
+
+    func keccak256(_ data: Data) -> Data {
+        AgenticIOSLog.info("AgenticWalletConnect", "keccak256", "SKIP", "Ethereum keccak requested by Reown crypto provider; returning placeholder for unsupported EVM path")
+        return Data(repeating: 0, count: 32)
+    }
+}
 
 final class AgenticWebSocketFactory: WebSocketFactory {
     func create(with url: URL) -> WebSocketConnecting {

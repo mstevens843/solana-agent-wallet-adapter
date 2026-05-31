@@ -84,7 +84,7 @@ struct AgenticAgentRuntimeConfig: Codable, Equatable {
 
 // MARK: - Error envelope
 
-struct AgenticAgentError: Error {
+struct AgenticAgentError: Error, LocalizedError {
     let code: String
     let subcode: String?
     let message: String
@@ -99,6 +99,10 @@ struct AgenticAgentError: Error {
         var dict: [String: Any] = ["code": code, "message": message]
         if let subcode { dict["subcode"] = subcode }
         return dict
+    }
+
+    var errorDescription: String? {
+        message
     }
 }
 

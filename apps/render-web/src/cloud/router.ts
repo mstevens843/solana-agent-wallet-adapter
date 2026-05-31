@@ -184,6 +184,7 @@ const DEFAULT_DESKTOP_DEV_CLOUD_ORIGINS = [
 const CORS_ALLOWED_HEADERS = 'authorization, content-type, x-agentic-client';
 const CORS_ALLOWED_METHODS = 'GET, POST, PATCH, PUT, DELETE, OPTIONS';
 const APPLE_APP_SITE_ASSOCIATION_PATH = '/.well-known/apple-app-site-association';
+const DEFAULT_IOS_APP_ID_PREFIX = '42RXXMWHUH';
 const DEFAULT_IOS_BUNDLE_ID = 'com.agentic.wallet';
 const IOS_UNIVERSAL_LINK_PATHS = [
   '/app',
@@ -735,7 +736,7 @@ function resolveIosAssociatedAppId(env: NodeJS.ProcessEnv): string | undefined {
     return isValidIosAssociatedAppId(explicit) ? explicit : undefined;
   }
 
-  const prefix = (env.AGENTIC_IOS_APP_ID_PREFIX ?? env.APPLE_TEAM_ID ?? '').trim();
+  const prefix = (env.AGENTIC_IOS_APP_ID_PREFIX ?? env.APPLE_TEAM_ID ?? DEFAULT_IOS_APP_ID_PREFIX).trim();
   const bundleId = (env.AGENTIC_IOS_BUNDLE_ID ?? DEFAULT_IOS_BUNDLE_ID).trim();
   if (!/^[A-Z0-9]{10}$/.test(prefix) || !/^[A-Za-z0-9][A-Za-z0-9.-]*$/.test(bundleId)) {
     return undefined;
@@ -3661,6 +3662,10 @@ const MOBILE_WALLET_DEBUG_FIELDS = [
   'candidateCount',
   'candidateIndex',
   'matchKind',
+  'topic',
+  'pubkey',
+  'kind',
+  'resultKeys',
   'code',
   'message',
 ] as const;

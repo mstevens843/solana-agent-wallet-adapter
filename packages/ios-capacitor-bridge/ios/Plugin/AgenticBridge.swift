@@ -32,4 +32,25 @@ public enum AgenticBridge {
     public static func willResignActive() {
         AgenticIOSLog.info("AgenticBridge", "willResignActive", "DONE", "lifecycle hook")
     }
+
+    /// Route WalletConnect/Reown link-mode callbacks before Capacitor handles
+    /// ordinary app links. Returns true only when the URL contained a WC envelope.
+    public static func handleOpenUrl(_ url: URL) -> Bool {
+#if canImport(WalletConnectSign)
+        if #available(iOS 16.0, *) {
+            return AgenticWalletConnectCore.shared.dispatchEnvelope(url)
+        }
+#endif
+        return false
+    }
+
+    /// Route Universal Link WalletConnect envelopes when the wallet returns via
+    /// associated domain instead of the custom scheme.
+    public static func handleUserActivity(_ userActivity: NSUserActivity) -> Bool {
+        guard userActivity.activityType == NSUserActivityTypeBrowsingWeb,
+              let url = userActivity.webpageURL else {
+            return false
+        }
+        return handleOpenUrl(url)
+    }
 }

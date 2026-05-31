@@ -104,7 +104,7 @@ describe('shouldRouteProofThroughRemoteRelayMemo', () => {
 });
 
 describe('shouldRouteProofThroughIosNative', () => {
-  it('routes iOS native wallets through a memo transaction when transaction signing is available', () => {
+  it('routes Phantom and Solflare iOS native wallets through a memo transaction when transaction signing is available', () => {
     expect(
       shouldRouteProofThroughIosNative(
         appState({
@@ -116,6 +116,36 @@ describe('shouldRouteProofThroughIosNative', () => {
         }),
       ),
     ).toBe(true);
+  });
+
+  it('does not route Backpack iOS native proofs through the memo transaction path', () => {
+    expect(
+      shouldRouteProofThroughIosNative(
+        appState({
+          selectedWalletName: 'Backpack',
+          iosNativeEnvironment: { isIosNative: true },
+          capabilities: {
+            backend: 'ios-native-backpack',
+            supports: { signMessage: true, signTransaction: true },
+          },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('does not route Jupiter iOS WalletConnect proofs through the memo transaction path', () => {
+    expect(
+      shouldRouteProofThroughIosNative(
+        appState({
+          selectedWalletName: 'Jupiter',
+          iosNativeEnvironment: { isIosNative: true },
+          capabilities: {
+            backend: 'ios-native-jupiter',
+            supports: { signMessage: true, signTransaction: true },
+          },
+        }),
+      ),
+    ).toBe(false);
   });
 
   it('does not route non-iOS wallets through the iOS memo path', () => {
@@ -323,5 +353,63 @@ describe('signWalletProofMessage', () => {
     expect(result.signature).toBe(bs58.encode(signature));
     expect(result.proofTxBase64).toBeTruthy();
     expect(result.proofMemoText).toBe('ios proof');
+  });
+
+  it('signs Backpack iOS native proofs as messages', async () => {
+    const signMessage = vi.fn(async () => ({ signature: 'backpack-message-signature' }));
+    const signTransaction = vi.fn();
+    setProofSigningContext({
+      getClient: () => fakeClient({ signMessage, signTransaction }),
+      getAppState: () =>
+        appState({
+          selectedWalletName: 'Backpack',
+          iosNativeEnvironment: { isIosNative: true },
+          capabilities: {
+            backend: 'ios-native-backpack',
+            supports: { signMessage: true, signTransaction: true },
+          },
+        }),
+      getLatestBlockhash: async () => ({ blockhash: '11111111111111111111111111111111' }),
+      getAndroidProofBackend: () => null,
+    });
+
+    const result = await signWalletProofMessage('ios backpack proof', 'summary', 'mainnet-beta' as Cluster);
+
+    expect(signMessage).toHaveBeenCalledOnce();
+    expect(signTransaction).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      signature: 'backpack-message-signature',
+      proofEncoding: 'utf8-message',
+      signatureEncoding: 'base58',
+    });
+  });
+
+  it('signs Jupiter iOS WalletConnect proofs as messages', async () => {
+    const signMessage = vi.fn(async () => ({ signature: 'jupiter-message-signature' }));
+    const signTransaction = vi.fn();
+    setProofSigningContext({
+      getClient: () => fakeClient({ signMessage, signTransaction }),
+      getAppState: () =>
+        appState({
+          selectedWalletName: 'Jupiter',
+          iosNativeEnvironment: { isIosNative: true },
+          capabilities: {
+            backend: 'ios-native-jupiter',
+            supports: { signMessage: true, signTransaction: true },
+          },
+        }),
+      getLatestBlockhash: async () => ({ blockhash: '11111111111111111111111111111111' }),
+      getAndroidProofBackend: () => null,
+    });
+
+    const result = await signWalletProofMessage('ios jupiter proof', 'summary', 'mainnet-beta' as Cluster);
+
+    expect(signMessage).toHaveBeenCalledOnce();
+    expect(signTransaction).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      signature: 'jupiter-message-signature',
+      proofEncoding: 'utf8-message',
+      signatureEncoding: 'base58',
+    });
   });
 });

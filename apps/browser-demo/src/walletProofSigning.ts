@@ -31,10 +31,10 @@
  * Its `signTransaction` deeplink is already the working path for swaps, so proofs
  * use a signed memo transaction there too.
  *
- * iOS-native wallet approvals use the same JS memo-tx proof fallback. Phantom,
- * Solflare, Backpack, and Jupiter all need `signTransaction` for the main wallet
- * action surface anyway, so proof-only actions avoid relying on per-wallet mobile
- * `signMessage` behavior while still producing a non-broadcast ownership proof.
+ * iOS-native wallet approvals use the same JS memo-tx proof fallback for wallets
+ * whose mobile `signMessage` behavior is not reliable. Backpack's iOS deeplink
+ * path and Jupiter's WalletConnect path both have reliable message signing and
+ * avoid rendering transaction simulators for proof-only actions.
  *
  * This module is the single entry point; per-host routing is in the native bridge
  * (see `apps/android-twa/app/src/main/java/com/agentic/wallet/mwa/MwaController.kt`
@@ -126,6 +126,8 @@ export function shouldRouteProofThroughRemoteRelayMemo(state: ProofSigningAppSta
 
 export function shouldRouteProofThroughIosNative(state: ProofSigningAppState): boolean {
   return state.iosNativeEnvironment?.isIosNative === true
+    && state.capabilities?.backend !== 'ios-native-backpack'
+    && state.capabilities?.backend !== 'ios-native-jupiter'
     && state.capabilities?.supports?.signTransaction === true;
 }
 

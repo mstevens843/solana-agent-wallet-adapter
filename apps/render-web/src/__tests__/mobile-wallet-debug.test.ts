@@ -41,6 +41,31 @@ describe('mobile wallet debug telemetry', () => {
     });
   });
 
+  it('accepts redacted Jupiter WalletConnect debug breadcrumbs', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    await withServer(async (port) => {
+      const response = await postJson(port, '/api/mobile-wallet-debug', {
+        wallet: 'jupiter',
+        method: 'sign',
+        step: 'wc_sign_result',
+        requestId: 'sar_123',
+        strategy: 'walletconnect',
+        topic: 'abc123...def4',
+        pubkey: 'JUP111...222',
+        kind: 'sign_message',
+        resultKeys: 'signature',
+        code: 'signature',
+      }, iosHeaders());
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ ok: true });
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('wallet="jupiter"'));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('kind="sign_message"'));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('resultKeys="signature"'));
+    });
+  });
+
   it('rejects malformed or oversized wallet debug payloads', async () => {
     await withServer(async (port) => {
       const malformed = await postJson(port, '/api/mobile-wallet-debug', {

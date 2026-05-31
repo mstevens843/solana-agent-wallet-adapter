@@ -138,7 +138,8 @@ public class AgenticWalletConnectPlugin: CAPPlugin, CAPBridgedPlugin {
             AgenticWalletConnectCore.shared.signTransaction(pubkey: pubkey, transaction: tx) { result in
                 switch result {
                 case .success(let resp):
-                    var out: [String: Any] = ["signature": resp.signature, "transactionEncoding": "base64"]
+                    var out: [String: Any] = ["transactionEncoding": "base64"]
+                    if let sig = resp.signature { out["signature"] = sig }
                     if let t = resp.transaction { out["transaction"] = t }
                     call.resolve(out)
                 case .failure(let err): call.reject(err.localizedDescription, "WC_SIGN_TX_FAILED")
