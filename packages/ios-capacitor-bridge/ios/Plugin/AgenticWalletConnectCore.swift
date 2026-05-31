@@ -488,10 +488,11 @@ final class AgenticWalletConnectCore {
         }
         let urls = walletConnectRequestLaunchCandidates()
         guard !urls.isEmpty else {
-            AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "wc_request_launch_skip", "no Jupiter launch URL", [
+            AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "wc_request_launch_skip", "Jupiter has no safe iOS request foreground URL", [
                 "method": method,
                 "requestId": requestId.string,
                 "topic": short(topic),
+                "launchMode": "jupiter_manual_open",
             ])
             return
         }

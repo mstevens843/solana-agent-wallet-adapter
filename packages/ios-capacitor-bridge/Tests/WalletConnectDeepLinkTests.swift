@@ -11,16 +11,8 @@ final class WalletConnectDeepLinkTests: XCTestCase {
         ])
     }
 
-    func testJupiterRequestLaunchUsesAppRootWithoutPairingUri() throws {
-        let url = try XCTUnwrap(AgenticWalletConnectDeepLink.jupiterRequestLaunchUrl())
-
-        XCTAssertEqual(url.absoluteString, "jupiter://")
-        XCTAssertFalse(url.absoluteString.contains("uri="))
-        XCTAssertFalse(url.absoluteString.contains("wc%3A"))
-        XCTAssertFalse(url.absoluteString.contains("requestId="))
-        XCTAssertFalse(url.absoluteString.contains("sessionTopic="))
-        XCTAssertFalse(url.absoluteString.contains("https://"))
-        XCTAssertFalse(url.absoluteString.contains("jup.ag"))
+    func testJupiterRequestLaunchIsDisabledBecauseRootOpensBrowser() throws {
+        XCTAssertNil(AgenticWalletConnectDeepLink.jupiterRequestLaunchUrl())
     }
 
     func testNonJupiterPairingKeepsRawUriFallback() {
