@@ -495,6 +495,7 @@ export class IosNativeWalletBackend implements WalletBackend {
   private readonly waiters = new Map<string, CallbackWaiter>();
   private activeRecord: IosAuthRecord | null = null;
   private subscribed = false;
+  private lastWalletConnectReturnAt = 0;
 
   static async restoreLatest(options: Omit<IosNativeWalletBackendOptions, 'walletId'>): Promise<IosNativeRestoreResult | null> {
     return restoreLatestIosNativeWallet(options);
@@ -791,6 +792,7 @@ export class IosNativeWalletBackend implements WalletBackend {
   private async connectJupiter(options: { forceNew?: boolean } = {}): Promise<IosAuthRecord> {
     await this.ensureCallbackSubscription();
     const requestId = newSigningRequestId();
+    const startedAt = Date.now();
     try {
       await emitMobileWalletDebug(this.logLevel, {
         appUrl: this.appUrl,
@@ -918,6 +920,7 @@ export class IosNativeWalletBackend implements WalletBackend {
         pubkey: short(session.pubkey),
         topic: short(session.topic ?? pairing.topic ?? ''),
       });
+      this.scheduleWalletConnectReturnMissingDebug({ method: 'connect', requestId, startedAt });
       return this.storeJupiterRecord(session.pubkey, session.topic ?? pairing.topic);
     } catch (err) {
       const protocolErr = protocolErrorFromUnknown(err, 'Jupiter WalletConnect failed.');
@@ -1075,6 +1078,7 @@ export class IosNativeWalletBackend implements WalletBackend {
   ): Promise<{ signature: string; txid?: string }> {
     await this.ensureCallbackSubscription();
     const payload = decodeSigningPayload(request.payload.data, request.payload.encoding);
+    const startedAt = Date.now();
     await emitMobileWalletDebug(this.logLevel, {
       appUrl: this.appUrl,
       wallet: 'jupiter',
@@ -1105,6 +1109,12 @@ export class IosNativeWalletBackend implements WalletBackend {
           if (!result.signature) {
             throw new ProtocolError('wallet_unreachable', 'Jupiter did not return a message signature.');
           }
+          this.scheduleWalletConnectReturnMissingDebug({
+            method: 'sign',
+            requestId: request.id,
+            startedAt,
+            kind: request.kind,
+          });
           return { signature: result.signature };
         }
         case 'sign_transaction': {
@@ -1124,9 +1134,21 @@ export class IosNativeWalletBackend implements WalletBackend {
           if (result.transaction) {
             const signedBytes =
               result.transactionEncoding === 'base64' ? decodeBase64(result.transaction) : bs58.decode(result.transaction);
+            this.scheduleWalletConnectReturnMissingDebug({
+              method: 'sign',
+              requestId: request.id,
+              startedAt,
+              kind: request.kind,
+            });
             return { signature: encodeBase64(signedBytes) };
           }
           if (result.signature) {
+            this.scheduleWalletConnectReturnMissingDebug({
+              method: 'sign',
+              requestId: request.id,
+              startedAt,
+              kind: request.kind,
+            });
             return {
               signature: encodeBase64(
                 attachSolanaSignature(payload, record.publicKey, result.signature),
@@ -1154,6 +1176,12 @@ export class IosNativeWalletBackend implements WalletBackend {
             if (!txid) {
               throw new ProtocolError('wallet_unreachable', 'Jupiter did not return a transaction id.');
             }
+            this.scheduleWalletConnectReturnMissingDebug({
+              method: 'sign',
+              requestId: request.id,
+              startedAt,
+              kind: request.kind,
+            });
             return { signature: txid, txid };
           } catch (err) {
             if (!isUnsupportedWalletConnectMethod(err)) {
@@ -1209,6 +1237,12 @@ export class IosNativeWalletBackend implements WalletBackend {
             resultKeys: 'txid',
             code: 'fallback_sent',
             message: short(txid),
+          });
+          this.scheduleWalletConnectReturnMissingDebug({
+            method: 'sign',
+            requestId: request.id,
+            startedAt,
+            kind: request.kind,
           });
           return { signature: txid, txid };
         }
@@ -1309,6 +1343,7 @@ export class IosNativeWalletBackend implements WalletBackend {
       return;
     }
     if (iosNativeIsWalletConnectReturnUrl(url.toString())) {
+      this.lastWalletConnectReturnAt = Date.now();
       this.log('handleIncomingUrl', 'DONE', 'info', 'WalletConnect return callback received', {
         callback: urlShape(url.toString()),
       });
@@ -1316,7 +1351,7 @@ export class IosNativeWalletBackend implements WalletBackend {
         appUrl: this.appUrl,
         wallet: this.walletId,
         method: 'walletconnect',
-        step: 'wc_return_seen',
+        step: 'wc_return_callback_received',
         strategy: 'walletconnect',
         callback: urlShape(url.toString()),
       });
@@ -1384,6 +1419,31 @@ export class IosNativeWalletBackend implements WalletBackend {
       }, this.requestTtlMs);
       this.waiters.set(key, { resolve, reject, timer });
     });
+  }
+
+  private scheduleWalletConnectReturnMissingDebug(input: {
+    method: 'connect' | 'sign';
+    requestId: string;
+    startedAt: number;
+    kind?: SigningRequest['kind'];
+  }): void {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    window.setTimeout(() => {
+      if (this.lastWalletConnectReturnAt >= input.startedAt) {
+        return;
+      }
+      void emitMobileWalletDebug(this.logLevel, {
+        appUrl: this.appUrl,
+        wallet: 'jupiter',
+        method: input.method,
+        step: 'wc_return_missing_timeout',
+        requestId: input.requestId,
+        strategy: 'walletconnect',
+        ...(input.kind ? { kind: input.kind } : {}),
+      });
+    }, 1800);
   }
 
   private rejectWaiter(phase: 'connect' | 'sign', requestId: string, err: Error): void {

@@ -44,7 +44,7 @@ final class AgenticWalletConnectCore {
     private var walletRedirectUniversal: String?
     private var walletConnectRelayHost = "relay.walletconnect.com"
     private var walletConnectRelayOrigin = "https://agentic-signer.com"
-    private var walletConnectRedirectNative = "agenticwallet://"
+    private var walletConnectRedirectNative = "agenticwallet://callback/walletconnect?phase=walletconnect"
     private var walletConnectRedirectUniversal = "https://agentic-signer.com/ios/callback/walletconnect"
     private var walletConnectProjectIdPrefix = "unknown"
     private var latestSocketStatus = "unknown"
@@ -453,7 +453,7 @@ final class AgenticWalletConnectCore {
                 let blockchain = Blockchain(chain) ?? Blockchain("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp")!
                 let request = try Request(topic: topic, method: method, params: Commons.AnyCodable(any: params), chainId: blockchain)
                 try await Sign.instance.request(params: request)
-                self.launchCurrentWalletForRequest(method: method, topic: topic)
+                self.launchCurrentWalletForRequest(method: method, topic: topic, requestId: request.id)
                 // Subscribe to sessionResponsePublisher for the result.
                 let result = try await waitForResponse(requestId: request.id)
                 completion(.success(result))
@@ -481,7 +481,7 @@ final class AgenticWalletConnectCore {
         }
     }
 
-    private func launchCurrentWalletForRequest(method: String, topic: String) {
+    private func launchCurrentWalletForRequest(method: String, topic: String, requestId: RPCID) {
         let redirects = queue.sync {
             (native: walletRedirectNative, universal: walletRedirectUniversal)
         }
@@ -489,24 +489,32 @@ final class AgenticWalletConnectCore {
             peerNative: redirects.native,
             peerUniversal: redirects.universal
         )
-        let urls = walletConnectRequestLaunchCandidates(peerNative: redirects.native, peerUniversal: redirects.universal)
+        let urls = walletConnectRequestLaunchCandidates(
+            requestId: requestId,
+            topic: topic,
+            peerNative: redirects.native,
+            peerUniversal: redirects.universal
+        )
         guard !urls.isEmpty else {
-            AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "SKIP", "no wallet redirect metadata", [
+            AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "wc_request_launch_skip", "no wallet redirect metadata", [
                 "method": method,
+                "requestId": String(describing: requestId),
                 "topic": short(topic),
             ])
             return
         }
-        AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "START", "opening wallet for pending WalletConnect request", [
+        AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "wc_request_launch_start", "opening wallet for pending WalletConnect request", [
             "method": method,
+            "requestId": String(describing: requestId),
             "topic": short(topic),
             "candidateCount": String(urls.count),
             "firstCandidate": urlShapeForLog(urls.first?.absoluteString ?? ""),
             "skippedMalformedWcUri": String(skippedMalformed),
         ])
         openFirstWalletConnectCandidate(urls) { launched, url in
-            AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "DONE", "wallet request launch attempted", [
+            AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "wc_request_launch_done", "wallet request launch attempted", [
                 "method": method,
+                "requestId": String(describing: requestId),
                 "topic": self.short(topic),
                 "launched": String(launched),
                 "url": self.urlShapeForLog(url?.absoluteString ?? ""),
@@ -514,8 +522,16 @@ final class AgenticWalletConnectCore {
         }
     }
 
-    private func walletConnectRequestLaunchCandidates(peerNative: String?, peerUniversal: String?) -> [URL] {
+    private func walletConnectRequestLaunchCandidates(
+        requestId: RPCID,
+        topic: String,
+        peerNative: String?,
+        peerUniversal: String?
+    ) -> [URL] {
         var candidates: [String] = []
+        if let requestUrl = walletConnectRequestUrl(requestId: requestId, topic: topic) {
+            candidates.append(requestUrl.absoluteString)
+        }
         if let peerNative, isUsableWalletForegroundRedirect(peerNative) {
             candidates.append(peerNative)
         }
@@ -530,6 +546,17 @@ final class AgenticWalletConnectCore {
             seen.insert(trimmed)
             return url
         }
+    }
+
+    private func walletConnectRequestUrl(requestId: RPCID, topic: String) -> URL? {
+        var components = URLComponents()
+        components.scheme = "jupiter"
+        components.host = "wc"
+        components.queryItems = [
+            URLQueryItem(name: "requestId", value: String(describing: requestId)),
+            URLQueryItem(name: "sessionTopic", value: topic),
+        ]
+        return components.url
     }
 
     private func walletConnectMalformedRequestRedirectCount(peerNative: String?, peerUniversal: String?) -> Int {
@@ -604,7 +631,7 @@ final class AgenticWalletConnectCore {
     }
 
     private func sanitizeRedirectNative(_ raw: String?) -> String {
-        let fallback = "agenticwallet://"
+        let fallback = "agenticwallet://callback/walletconnect?phase=walletconnect"
         guard let raw else { return fallback }
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: value),
