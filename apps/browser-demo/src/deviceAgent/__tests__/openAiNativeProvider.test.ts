@@ -141,6 +141,15 @@ describe('OpenAiNativeProvider.reviewPlan two-pass research', () => {
     });
 
     expect(result.decision).toBe('approve');
+    expect(result.evidence).toMatchObject({
+      research: { status: 'checked' },
+      findings: expect.arrayContaining([
+        { label: 'Current research', value: expect.stringContaining('Helium Mobile'), tone: 'neutral' },
+      ]),
+      sources: expect.arrayContaining([
+        { url: 'https://www.heliummobile.com/plans', title: 'Plans' },
+      ]),
+    });
     expect(http.calls.length).toBe(2);
 
     const researchBody = JSON.parse(http.calls[0]!.body) as Record<string, unknown>;
@@ -155,6 +164,7 @@ describe('OpenAiNativeProvider.reviewPlan two-pass research', () => {
 
     const reviewBody = JSON.parse(http.calls[1]!.body) as Record<string, unknown>;
     expect('tools' in reviewBody).toBe(false);
+    expect(reviewBody.max_output_tokens).toBe(1800);
     const reviewText = reviewBody.text as Record<string, unknown>;
     // Review pass bumps verbosity to 'medium' so the "why it passed/denied" prose
     // has room to match Claude/Gemini-style breadth instead of one-liners.
@@ -163,6 +173,13 @@ describe('OpenAiNativeProvider.reviewPlan two-pass research', () => {
     expect(reviewFormat.type).toBe('json_schema');
     expect(reviewFormat.name).toBe('agentic_device_review');
     expect(reviewFormat.strict).toBe(false);
+    expect(JSON.stringify(reviewFormat.schema)).toContain('evidenceFactIds');
+    expect(JSON.stringify(reviewFormat.schema)).toContain('findings');
+    expect(JSON.stringify(reviewFormat.schema)).toContain('sources');
+    expect(JSON.stringify(reviewFormat.schema)).toContain('research');
+    expect(JSON.stringify(reviewFormat.schema)).toContain('blockingFactIds');
+    expect(JSON.stringify(reviewFormat.schema)).toContain('missingFactIds');
+    expect(JSON.stringify(reviewFormat.schema)).toContain('confidence');
     // The injected researchEvidence should be present in the user input string.
     expect(reviewBody.input as string).toContain('researchEvidence');
     expect(reviewBody.input as string).toContain('heliummobile.com');
@@ -213,6 +230,7 @@ describe('OpenAiNativeProvider.reviewPlan two-pass research', () => {
     expect(result.decision).toBe('approve');
     const body = JSON.parse(http.calls[0]!.body) as Record<string, unknown>;
     expect('tools' in body).toBe(false);
+    expect(body.max_output_tokens).toBe(1800);
     const reviewText = body.text as Record<string, unknown>;
     // Review pass verbosity is 'medium' (vs 'low' for plan/ask) — see openAiNativeProvider.ts.
     expect(reviewText.verbosity).toBe('medium');
@@ -220,6 +238,13 @@ describe('OpenAiNativeProvider.reviewPlan two-pass research', () => {
     expect(reviewFormat.type).toBe('json_schema');
     expect(reviewFormat.name).toBe('agentic_device_review');
     expect(reviewFormat.strict).toBe(false);
+    expect(JSON.stringify(reviewFormat.schema)).toContain('evidenceFactIds');
+    expect(JSON.stringify(reviewFormat.schema)).toContain('findings');
+    expect(JSON.stringify(reviewFormat.schema)).toContain('sources');
+    expect(JSON.stringify(reviewFormat.schema)).toContain('research');
+    expect(JSON.stringify(reviewFormat.schema)).toContain('blockingFactIds');
+    expect(JSON.stringify(reviewFormat.schema)).toContain('missingFactIds');
+    expect(JSON.stringify(reviewFormat.schema)).toContain('confidence');
     expect(body.instructions).toBe(DEVICE_AGENT_SYSTEM_PROMPTS.REVIEW);
     expect(body.input).toBe(buildReviewMessages(reviewPayload).userContent);
   });

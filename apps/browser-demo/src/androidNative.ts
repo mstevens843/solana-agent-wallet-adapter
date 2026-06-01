@@ -33,6 +33,7 @@ export interface AndroidNativeRestoreResult {
 export interface AndroidNativeWalletBackendOptions {
   cluster: Cluster;
   rpcUrl?: string;
+  address?: string;
 }
 
 interface AndroidNativeBridge {
@@ -158,7 +159,10 @@ export async function restoreLatestAndroidNativeWallet(
   options: AndroidNativeWalletBackendOptions,
 ): Promise<AndroidNativeRestoreResult | null> {
   const backend = new AndroidNativeWalletBackend(options);
-  const address = await backend.reconnectLatest();
+  const expectedAddress = options.address?.trim();
+  const address = expectedAddress
+    ? await backend.reconnectForPubkey(expectedAddress)
+    : await backend.reconnectLatest();
   if (!address) {
     return null;
   }
@@ -222,6 +226,20 @@ export class AndroidNativeWalletBackend implements WalletBackend {
   async reconnectLatest(): Promise<string | null> {
     const status = await androidNativeRequest<AndroidMwaStatus>('reconnectLatest', {
       cluster: this.cluster,
+      ...this.nativeRpcContext(),
+    });
+    this.applyStatus(status);
+    return status.address ?? null;
+  }
+
+  async reconnectForPubkey(pubkeyBase58: string): Promise<string | null> {
+    const pubkey = pubkeyBase58.trim();
+    if (!pubkey) return null;
+    const status = await androidNativeRequest<AndroidMwaStatus>('reconnectForPubkey', {
+      cluster: this.cluster,
+      pubkey,
+      publicKey: pubkey,
+      address: pubkey,
       ...this.nativeRpcContext(),
     });
     this.applyStatus(status);

@@ -30,6 +30,8 @@ export interface DesktopBrowserConnectUrlInput {
   walletHostUrl: string;
   bridgeUrl?: string;
   bridgeToken?: string;
+  walletBrand?: string;
+  walletAddress?: string;
 }
 
 export type DesktopBrowserIntent = 'connect' | 'approve' | 'sign';
@@ -54,13 +56,16 @@ export function buildDesktopBrowserConnectUrl(input: DesktopBrowserConnectUrlInp
 export function buildDesktopBrowserIntentUrl(input: DesktopBrowserIntentUrlInput): string {
   const url = new URL(input.walletHostUrl);
   url.pathname = desktopBrowserIntentPath(input.intent);
-  url.searchParams.delete('wallet');
   const bridgeUrl = input.bridgeUrl?.trim();
   const bridgeToken = input.bridgeToken?.trim();
+  const walletBrand = input.walletBrand?.trim();
+  const walletAddress = input.walletAddress?.trim();
   const requestId = input.requestId?.trim();
   const actionId = input.actionId?.trim();
   if (bridgeUrl) url.searchParams.set('bridgeUrl', bridgeUrl);
   if (bridgeToken) url.searchParams.set('token', bridgeToken);
+  if (walletBrand) url.searchParams.set('wallet', walletBrand);
+  if (walletAddress) url.searchParams.set('walletAddress', walletAddress);
   if (requestId) url.searchParams.set('requestId', requestId);
   if (actionId) url.searchParams.set('actionId', actionId);
   url.searchParams.set('mode', 'cli');

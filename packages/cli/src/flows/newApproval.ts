@@ -22,6 +22,14 @@ export interface PrepareAndPromptApprovalOptions {
   // Save the prepared action to /inbox without ever prompting or executing.
   // Used by the agent-review "Save to inbox without sending" choice.
   skipApprovalPrompt?: boolean;
+  // Optional hook after the action is saved but before the approval prompt.
+  // Used for tx-gate agent reviews that need the prepared transaction bytes.
+  beforeApprovalPrompt?: (result: unknown, action: PreparedActionResult | null) => Promise<PrepareAndPromptApprovalDecision | void>;
+}
+
+export interface PrepareAndPromptApprovalDecision {
+  approvalOptions?: PrepareAndPromptApprovalOptions;
+  deleteAction?: boolean;
 }
 
 export async function prepareAndPromptApproval(
@@ -36,7 +44,23 @@ export async function prepareAndPromptApproval(
   } catch (err) {
     throw new Error(inboxSaveError(err, options));
   }
-  await promptApprovalAfterSave(options, title, result, opts);
+  const action = preparedActionFromPrepareResult(result);
+  const decision = opts.beforeApprovalPrompt ? await opts.beforeApprovalPrompt(result, action) : undefined;
+  if (decision?.deleteAction && action?.id) {
+    await bridgeRequest(options, '/bridge/prepared-actions/delete', {
+      method: 'POST',
+      body: JSON.stringify({ actionId: action.id }),
+    });
+    console.log(badge('Deleted saved draft after transaction review.', 'muted'));
+    console.log(divider());
+    return;
+  }
+  const nextOpts: PrepareAndPromptApprovalOptions = {
+    ...opts,
+    ...(decision?.approvalOptions ?? {}),
+    beforeApprovalPrompt: undefined,
+  };
+  await promptApprovalAfterSave(options, title, result, nextOpts);
 }
 
 export async function promptApprovalAfterSave(

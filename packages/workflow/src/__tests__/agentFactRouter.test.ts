@@ -71,6 +71,68 @@ describe('agent review fact router', () => {
     ]));
   });
 
+  it('routes explicit SOL price thresholds through token-market evidence', () => {
+    const ids = routeIdsFor({
+      actionType: 'swap',
+      question: 'Only approve if SOL price is below $80.',
+      parameters: { amount: '0.01', slippageBps: '50' },
+      hasWallet: true,
+      hasTokenMints: true,
+    });
+
+    expect(ids).toEqual(expect.arrayContaining([
+      'birdeye.price_multi',
+      'coingecko.token_evidence',
+      'dexscreener.token_pairs',
+    ]));
+  });
+
+  it('routes explicit token-age checks through token-security evidence', () => {
+    const route = routeFor({
+      actionType: 'swap',
+      question: 'Only approve if token age is less than 1 year.',
+      parameters: { amount: '0.01', slippageBps: '50' },
+      hasWallet: true,
+      hasTokenMints: true,
+    }, 'token_security');
+
+    expect(route).toEqual(expect.objectContaining({
+      id: 'birdeye.token_security',
+      status: 'required',
+    }));
+  });
+
+  it('does not spend token-market/security routes for an off-chain Helium plan threshold on a swap', () => {
+    const ids = routeIdsFor({
+      actionType: 'swap',
+      intent: 'Swap SOL to USDC',
+      userNotes: "Only approve if Helium Mobile monthly phone plan's cheapest plan is less than $20.",
+      parameters: { amount: '0.01', slippageBps: '50', inputToken: 'SOL', outputToken: 'USDC' },
+      hasWallet: true,
+      hasTokenMints: true,
+    });
+
+    expect(ids).not.toEqual(expect.arrayContaining([
+      'birdeye.token_metadata',
+      'birdeye.token_security',
+      'birdeye.price_multi',
+      'coingecko.token_evidence',
+      'dexscreener.token_pairs',
+    ]));
+    expect(ids).toEqual(['wallet.connected_public_key']);
+    expect(planAgentReviewFactRoutes({
+      actionType: 'swap',
+      intent: 'Swap SOL to USDC',
+      userNotes: "Only approve if Helium Mobile monthly phone plan's cheapest plan is less than $20.",
+      parameters: { amount: '0.01', slippageBps: '50', inputToken: 'SOL', outputToken: 'USDC' },
+      hasWallet: true,
+      hasTokenMints: true,
+    }).skipped).toEqual(expect.arrayContaining([
+      expect.objectContaining({ need: 'swap_quote', reason: expect.stringContaining('off-chain/current-fact gate') }),
+      expect.objectContaining({ need: 'swap_route', reason: expect.stringContaining('off-chain/current-fact gate') }),
+    ]));
+  });
+
   it('selects Jupiter quote and route evidence for swap questions', () => {
     const ids = routeIdsFor({
       actionType: 'swap',

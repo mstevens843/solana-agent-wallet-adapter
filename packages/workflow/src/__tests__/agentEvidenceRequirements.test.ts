@@ -86,7 +86,7 @@ describe('agent evidence requirements', () => {
     expect(oracleReq?.ttlMs).toBe(30_000);
   });
 
-  it('upgrades swap_dex profile to require Jupiter routes when the router already selected them', () => {
+  it('does not upgrade swap_dex into blanket token-market evidence', () => {
     const routePlan = planAgentReviewFactRoutes({
       actionType: 'jupiter_swap',
       intent: 'Swap SOL for USDC',
@@ -110,11 +110,11 @@ describe('agent evidence requirements', () => {
       isWalletScoped: true,
     });
     const profile = AGENT_CONNECTOR_RISK_PROFILES.swap_dex;
-    for (const routeId of profile.requiredRouteIds) {
-      const req = requirements.find((r) => r.routeId === routeId);
-      expect(req, `missing required route ${routeId}`).toBeDefined();
-      expect(req?.blocking).toBe(true);
-    }
+    expect(profile.requiredRouteIds).toEqual([]);
+    expect(profile.requiredNeeds).toEqual([]);
+    expect(requirements.find((r) => r.routeId === 'birdeye.price_multi')).toBeUndefined();
+    expect(requirements.find((r) => r.routeId === 'birdeye.token_security')).toBeUndefined();
+    expect(requirements.find((r) => r.routeId === 'protocol_connector.read_facts')?.blocking).toBe(true);
   });
 
   it('does not synthesize routes the router did not select (decorate-only)', () => {

@@ -64,6 +64,19 @@ describe('browser wallet selection helpers', () => {
     expect(browserWalletRestoreName(discoveredWallets, session, 'mainnet-beta')).toBe('Phantom');
   });
 
+  it('persists exact browser wallet path metadata when supplied', () => {
+    expect(createBrowserWalletSession('Phantom', 'mainnet-beta', '2026-05-09T00:00:00.000Z', {
+      address: 'Wallet111111111111111111111111111111111',
+      walletBrandId: 'phantom',
+      path: 'desktop-browser-extension',
+    })).toMatchObject({
+      walletName: 'Phantom',
+      address: 'Wallet111111111111111111111111111111111',
+      walletBrandId: 'phantom',
+      path: 'desktop-browser-extension',
+    });
+  });
+
   it('rejects legacy selected-only state as a browser restore session', () => {
     expect(isPersistedBrowserWalletSession({ selectedWalletName: 'Backpack' })).toBe(false);
   });

@@ -1345,6 +1345,14 @@ class MainActivity : FragmentActivity() {
                     val record = activity.mwaController.reconnectLatest(clusterFromPayload(payload))
                     statusJson(record)
                 }
+                "reconnectForPubkey" -> {
+                    val pubkey = payload.optString("pubkey", "")
+                        .ifBlank { payload.optString("publicKey", "") }
+                        .ifBlank { payload.optString("address", "") }
+                        .ifBlank { throw MwaOperationException("INVALID_REQUEST", "reconnectForPubkey requires pubkey") }
+                    val record = activity.mwaController.reconnectForPubkey(pubkey, clusterFromPayload(payload))
+                    statusJson(record)
+                }
                 "capabilities" -> JSONObject()
                     .put("capabilities", activity.mwaController.capabilitiesJson())
                 "sign" -> signingResultJson(activity.mwaController.signBridgeRequest(activity.activityResultSender, bridgeRequestFromPayload(payload)))

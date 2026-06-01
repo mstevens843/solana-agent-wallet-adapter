@@ -59,7 +59,7 @@ class AnthropicProviderTest {
     }
 
     @Test
-    fun reviewPlanUses1024MaxTokens() = runBlocking {
+    fun reviewPlanUses1800MaxTokens() = runBlocking {
         val http = FakeHttpExecutor().apply {
             queueResponse(
                 200,
@@ -72,7 +72,7 @@ class AnthropicProviderTest {
 
         assertEquals("approve", result.optString("decision"))
         val body = JSONObject(http.calls.single().body)
-        assertEquals(1024, body.optInt("max_tokens"))
+        assertEquals(1800, body.optInt("max_tokens"))
     }
 
     @Test
@@ -106,6 +106,10 @@ class AnthropicProviderTest {
         val result = provider.reviewPlan(payload)
 
         assertEquals("approve", result.optString("decision"))
+        val evidence = result.optJSONObject("evidence")!!
+        assertEquals("checked", evidence.optJSONObject("research")!!.optString("status"))
+        assertTrue(evidence.optJSONArray("findings")!!.toString().contains("Current research"))
+        assertTrue(evidence.optJSONArray("sources")!!.toString().contains("heliummobile.com"))
         assertEquals(2, http.calls.size)
 
         // Pass 1: web_search tool attached.

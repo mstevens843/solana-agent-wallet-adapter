@@ -90,6 +90,24 @@ describe('extractAtoms', () => {
     expect(ext[0]!.subject).toContain('helium');
   });
 
+  it('classifies Helium Mobile cheapest-plan wording as a single external_price atom', () => {
+    const variants = [
+      "Only approve if Helium Mobile monthly phone plan's cheapest plan is less than $20.",
+      "Only approve if Helium monthly phone plan is less than $20.",
+      "Approve only if the Helium Mobile cheapest plan is under $20/month.",
+    ];
+
+    for (const text of variants) {
+      const { atoms } = extractAtoms({ text });
+      const ext = byType(atoms, 'external_price');
+      expect(ext, text).toEqual([
+        expect.objectContaining({ op: 'lt', value: 20, unit: 'USD' }),
+      ]);
+      expect(ext[0]!.subject, text).toContain('helium');
+      expect(ext[0]!.subject, text).not.toMatch(/\b(approve|deny|reject|if)\b/);
+    }
+  });
+
   it('does NOT double-classify a crypto-symbol threshold as external_price', () => {
     const { atoms } = extractAtoms({ text: 'SOL above $80' });
     // SOL is a known symbol → only the price atom; nothing in external_price.

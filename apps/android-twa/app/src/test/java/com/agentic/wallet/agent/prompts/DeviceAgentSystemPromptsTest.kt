@@ -35,6 +35,9 @@ class DeviceAgentSystemPromptsTest {
         assertFalse("REVIEW must not have leading/trailing whitespace", text != text.trim())
         assertTrue(text.startsWith("You review a Solana wallet action draft before it is sent for wallet approval."))
         assertTrue(text.contains("evidence.findings as an array of {label,value,tone}"))
+        assertTrue(text.contains("Use plan.actionType to decide which checks apply"))
+        assertTrue(text.contains("For first-class adapter actions"))
+        assertTrue(text.contains("jupiter_lend_*"))
         assertTrue(text.contains("\"approve if under \$20, deny if over \$20\""))
         assertTrue(text.contains("\"approve if under \$X\", \"deny if over \$Y\""))
         assertTrue(text.contains("\"\$16.79\""))
@@ -55,6 +58,8 @@ class DeviceAgentSystemPromptsTest {
         assertTrue(text.startsWith("You answer the user's question about a Solana wallet action plan."))
         assertTrue(text.contains("1 to 4 sentences, plain English"))
         assertTrue(text.contains("connectors can only read facts or prepare wallet-gated work"))
+        assertTrue(text.contains("use policyBundle.evaluations as source-of-truth"))
+        assertTrue(text.contains("answer only those targeted outside facts"))
         assertTrue(text.endsWith("say so plainly and state what fact is missing."))
     }
 

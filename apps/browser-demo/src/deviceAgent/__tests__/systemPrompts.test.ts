@@ -68,6 +68,12 @@ describe('DEVICE_AGENT_SYSTEM_PROMPTS', () => {
       expect(text).toContain('evidence.findings as an array of {label,value,tone}');
     });
 
+    it('preserves action-type review parity with the bridge prompt', () => {
+      expect(text).toContain('Use plan.actionType to decide which checks apply');
+      expect(text).toContain('For first-class adapter actions');
+      expect(text).toContain('jupiter_lend_*');
+    });
+
     it('preserves the $20 threshold example', () => {
       expect(text).toContain('"approve if under $20, deny if over $20"');
     });
@@ -112,8 +118,8 @@ describe('DEVICE_AGENT_SYSTEM_PROMPTS', () => {
       expect(text.endsWith('never user-supplied prose.')).toBe(true);
     });
 
-    it('matches the Kotlin source length (5979 chars after POLICY BUNDLE sync)', () => {
-      expect(text.length).toBe(5979);
+    it('matches the Kotlin source length (6579 chars after actionType parity sync)', () => {
+      expect(text.length).toBe(6579);
     });
   });
 
@@ -136,12 +142,17 @@ describe('DEVICE_AGENT_SYSTEM_PROMPTS', () => {
       expect(text).toContain('connectors can only read facts or prepare wallet-gated work');
     });
 
+    it('preserves targeted policy-bundle answer guidance', () => {
+      expect(text).toContain('use policyBundle.evaluations as source-of-truth');
+      expect(text).toContain('answer only those targeted outside facts');
+    });
+
     it('ends with the missing-fact disclaimer', () => {
       expect(text.endsWith('say so plainly and state what fact is missing.')).toBe(true);
     });
 
-    it('matches the Kotlin source length (1116 chars)', () => {
-      expect(text.length).toBe(1116);
+    it('matches the Kotlin source length (1435 chars)', () => {
+      expect(text.length).toBe(1435);
     });
   });
 });

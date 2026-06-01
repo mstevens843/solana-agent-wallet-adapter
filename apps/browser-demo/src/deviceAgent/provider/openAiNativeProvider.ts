@@ -41,13 +41,14 @@ import {
 } from './providerHttp.js';
 import { researchTargetsForPayload } from './researchTargets.js';
 import { extractResponsesApiCitations, extractResponsesApiText, parseModelJson } from './responseParser.js';
+import { finalizeReviewResultForPayload } from './reviewPostprocess.js';
 import type { DeviceAgentProvider } from './types.js';
 
 const PLAN_TEMPERATURE = 0.2;
 const REVIEW_TEMPERATURE = 0.2;
 const ASK_TEMPERATURE = 0.3;
 const PLAN_MAX_TOKENS = 1024;
-const REVIEW_MAX_TOKENS = 1024;
+const REVIEW_MAX_TOKENS = 1800;
 const RESEARCH_MAX_TOKENS = 1800;
 const ASK_MAX_TOKENS = 800;
 const OPENAI_REASONING_EFFORT = 'low' as const;
@@ -89,8 +90,45 @@ const REVIEW_JSON_SCHEMA = {
     summary: { type: 'string' },
     evidence: {
       type: 'object',
-      additionalProperties: false,
-      properties: {},
+      additionalProperties: true,
+      properties: {
+        findings: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: true,
+            properties: {
+              label: { type: 'string' },
+              value: { type: 'string' },
+              tone: { type: 'string', enum: ['good', 'warn', 'neutral', 'fail'] },
+            },
+            required: ['label', 'value', 'tone'],
+          },
+        },
+        sources: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: true,
+            properties: {
+              title: { type: 'string' },
+              url: { type: 'string' },
+            },
+            required: ['url'],
+          },
+        },
+        research: {
+          type: 'object',
+          additionalProperties: true,
+          properties: {
+            status: { type: 'string' },
+          },
+        },
+        policiesApplied: {
+          type: 'array',
+          items: { type: 'string' },
+        },
+      },
     },
     questions: {
       type: 'array',
@@ -124,6 +162,19 @@ const REVIEW_JSON_SCHEMA = {
         required: ['id', 'decision', 'reason'],
       },
     },
+    evidenceFactIds: {
+      type: 'array',
+      items: { type: 'string' },
+    },
+    blockingFactIds: {
+      type: 'array',
+      items: { type: 'string' },
+    },
+    missingFactIds: {
+      type: 'array',
+      items: { type: 'string' },
+    },
+    confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
   },
   required: ['decision', 'reason', 'summary', 'evidence'],
 } as const;
@@ -190,7 +241,7 @@ export class OpenAiNativeProvider implements DeviceAgentProvider {
         maxOutputTokens: REVIEW_MAX_TOKENS,
         research: false,
       }, signal);
-      return parseModelJson(extractResponsesApiText(response));
+      return finalizeReviewResultForPayload(parseModelJson(extractResponsesApiText(response)), reviewPayload);
     }
     const messages = buildReviewMessages(payload);
     const response = await this.postResponses(messages, {
@@ -199,7 +250,7 @@ export class OpenAiNativeProvider implements DeviceAgentProvider {
       maxOutputTokens: REVIEW_MAX_TOKENS,
       research: false,
     }, signal);
-    return parseModelJson(extractResponsesApiText(response));
+    return finalizeReviewResultForPayload(parseModelJson(extractResponsesApiText(response)), payload);
   }
 
   /**

@@ -37,11 +37,17 @@ internal class AnthropicProvider(
             val reviewPayload = mergeResearchSignal(enriched)
             val messages = DeviceAgentMessageAssembler.buildReviewMessages(reviewPayload)
             val response = postMessages(messages, REVIEW_MAX_TOKENS, REVIEW_TEMPERATURE, reviewPayload)
-            return ProviderResponseParser.parseModelJson(ProviderResponseParser.extractAnthropicText(response))
+            return ReviewPostprocessor.finalize(
+                ProviderResponseParser.parseModelJson(ProviderResponseParser.extractAnthropicText(response)),
+                reviewPayload,
+            )
         }
         val messages = DeviceAgentMessageAssembler.buildReviewMessages(payload)
         val response = postMessages(messages, REVIEW_MAX_TOKENS, REVIEW_TEMPERATURE, payload)
-        return ProviderResponseParser.parseModelJson(ProviderResponseParser.extractAnthropicText(response))
+        return ReviewPostprocessor.finalize(
+            ProviderResponseParser.parseModelJson(ProviderResponseParser.extractAnthropicText(response)),
+            payload,
+        )
     }
 
     override suspend fun ask(payload: JSONObject): JSONObject {
@@ -189,7 +195,7 @@ internal class AnthropicProvider(
     companion object {
         private const val ANTHROPIC_VERSION: String = "2023-06-01"
         private const val PLAN_MAX_TOKENS: Int = 1024
-        private const val REVIEW_MAX_TOKENS: Int = 1024
+        private const val REVIEW_MAX_TOKENS: Int = 1800
         private const val ASK_MAX_TOKENS: Int = 800
         private const val PLAN_TEMPERATURE: Double = 0.2
         private const val REVIEW_TEMPERATURE: Double = 0.2

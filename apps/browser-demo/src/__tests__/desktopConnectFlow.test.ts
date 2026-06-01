@@ -97,6 +97,7 @@ describe('buildDesktopBrowserConnectUrl', () => {
       walletHostUrl: 'http://127.0.0.1:5174/app?wallet=phantom',
       bridgeUrl: 'http://127.0.0.1:8787',
       bridgeToken: 'test-token',
+      walletBrand: 'phantom',
     }));
     expect(url.origin).toBe('http://127.0.0.1:5174');
     expect(url.pathname).toBe('/connect');
@@ -105,7 +106,23 @@ describe('buildDesktopBrowserConnectUrl', () => {
     expect(url.searchParams.get('mode')).toBe('cli');
     expect(url.searchParams.get('intent')).toBe('connect');
     expect(url.searchParams.get('surface')).toBe('desktop');
-    expect(url.searchParams.has('wallet')).toBe(false);
+    expect(url.searchParams.get('wallet')).toBe('phantom');
+  });
+
+  it('adds the expected wallet address to desktop sign URLs', () => {
+    const url = new URL(buildDesktopBrowserIntentUrl({
+      walletHostUrl: 'http://127.0.0.1:5174/connect',
+      bridgeUrl: 'http://127.0.0.1:8787',
+      bridgeToken: 'test-token',
+      walletBrand: 'phantom',
+      walletAddress: 'ExpectedWallet111111111111111111111111111',
+      intent: 'sign',
+      requestId: 'req-123',
+    }));
+
+    expect(url.pathname).toBe('/sign');
+    expect(url.searchParams.get('wallet')).toBe('phantom');
+    expect(url.searchParams.get('walletAddress')).toBe('ExpectedWallet111111111111111111111111111');
   });
 
   it('omits the token param when bridgeToken is empty (avoids leaking a wrong default)', () => {

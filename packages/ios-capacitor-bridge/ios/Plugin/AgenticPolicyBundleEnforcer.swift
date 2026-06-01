@@ -18,18 +18,25 @@ enum AgenticPolicyBundleEnforcer {
     /// deny and surface the failing atom ids.
     static func enforce(reviewResult: [String: Any], payload: [String: Any]) -> [String: Any] {
         guard let bundle = extractBundle(from: payload) else { return reviewResult }
-        guard let blocking = bundle["hasBlockingFailure"] as? Bool, blocking == true else { return reviewResult }
         let parsed: [String: Any]
         let text = reviewResult["text"] as? String
-        if let text,
-           let textData = text.data(using: .utf8),
-           let parsedText = try? JSONSerialization.jsonObject(with: textData, options: []) as? [String: Any] {
+        if let text {
+            guard let textData = text.data(using: .utf8),
+                  let parsedText = try? JSONSerialization.jsonObject(with: textData, options: []) as? [String: Any] else {
+                return reviewResult
+            }
             parsed = parsedText
         } else {
             parsed = reviewResult
         }
+        var corrected = mergePolicyFindings(into: parsed, bundle: bundle)
+        guard let blocking = bundle["hasBlockingFailure"] as? Bool, blocking == true else {
+            return writeBack(original: reviewResult, parsed: corrected, hadTextEnvelope: text != nil)
+        }
         let decision = (parsed["decision"] as? String)?.lowercased()
-        guard decision == "approve" else { return reviewResult }
+        guard decision == "approve" else {
+            return writeBack(original: reviewResult, parsed: corrected, hadTextEnvelope: text != nil)
+        }
 
         // Build a corrected decision payload.
         let atoms = bundle["atoms"] as? [[String: Any]] ?? []
@@ -43,21 +50,11 @@ enum AgenticPolicyBundleEnforcer {
         let reason = firstLabel.map { "User policy bundle failed: \($0)" }
             ?? "User policy bundle has at least one failing rule."
 
-        var corrected = parsed
         corrected["decision"] = "deny"
         corrected["reason"] = reason
         corrected["blockingFactIds"] = blockingFactIds
 
-        var out = reviewResult
-        if text != nil {
-            // Older provider path returned the model JSON inside `text`; preserve that shape.
-            if let correctedData = try? JSONSerialization.data(withJSONObject: corrected, options: [.sortedKeys]),
-               let correctedText = String(data: correctedData, encoding: .utf8) {
-                out["text"] = correctedText
-            }
-        } else {
-            out = corrected
-        }
+        var out = writeBack(original: reviewResult, parsed: corrected, hadTextEnvelope: text != nil)
         // Also surface the override on the envelope for callers that look at the
         // structured result instead of re-parsing `text`.
         out["safetyOverride"] = [
@@ -79,5 +76,78 @@ enum AgenticPolicyBundleEnforcer {
     private static func extractBundle(from payload: [String: Any]) -> [String: Any]? {
         guard let context = payload["context"] as? [String: Any] else { return nil }
         return context["policyBundle"] as? [String: Any]
+    }
+
+    private static func writeBack(original: [String: Any], parsed: [String: Any], hadTextEnvelope: Bool) -> [String: Any] {
+        if hadTextEnvelope {
+            var out = original
+            if let data = try? JSONSerialization.data(withJSONObject: parsed, options: [.sortedKeys]),
+               let text = String(data: data, encoding: .utf8) {
+                out["text"] = text
+            }
+            return out
+        }
+        return parsed
+    }
+
+    private static func mergePolicyFindings(into reviewResult: [String: Any], bundle: [String: Any]) -> [String: Any] {
+        let atoms = bundle["atoms"] as? [[String: Any]] ?? []
+        let validAtomIds = Set(atoms.compactMap { $0["id"] as? String })
+        let evaluations = bundle["evaluations"] as? [[String: Any]] ?? []
+        guard !evaluations.isEmpty else { return reviewResult }
+
+        var out = reviewResult
+        var evidence = out["evidence"] as? [String: Any] ?? [:]
+        var findings = evidence["findings"] as? [[String: Any]] ?? []
+        var labelIndex: [String: Int] = [:]
+        for (idx, finding) in findings.enumerated() {
+            if let label = (finding["label"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+               !label.isEmpty {
+                labelIndex[label] = idx
+            }
+        }
+
+        var factIds = out["evidenceFactIds"] as? [String] ?? []
+        var seenFactIds = Set(factIds)
+        let largeBundle = evaluations.count > 3
+        for evaluation in evaluations {
+            guard let atomId = evaluation["atomId"] as? String, validAtomIds.contains(atomId) else { continue }
+            if largeBundle, (evaluation["unresolved"] as? Bool) == true { continue }
+            guard let finding = evaluation["finding"] as? [String: Any],
+                  let rawLabel = finding["label"] as? String else { continue }
+            let label = rawLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+            if label.isEmpty { continue }
+            if !seenFactIds.contains(atomId) {
+                factIds.append(atomId)
+                seenFactIds.insert(atomId)
+            }
+            let row: [String: Any] = [
+                "label": label,
+                "value": finding["value"] as? String ?? "",
+                "tone": finding["tone"] as? String ?? "neutral",
+                "atomId": atomId,
+            ]
+            let key = label.lowercased()
+            if let idx = labelIndex[key] {
+                findings[idx] = row
+            } else {
+                findings.append(row)
+                labelIndex[key] = findings.count - 1
+            }
+        }
+        evidence["findings"] = findings
+        evidence["policyAtoms"] = atoms.map {
+            [
+                "id": $0["id"] as? String ?? "",
+                "type": $0["type"] as? String ?? "",
+                "rawText": $0["rawText"] as? String ?? "",
+            ]
+        }
+        if let txGateOutcomes = bundle["txGateOutcomes"] as? [String: Any], !txGateOutcomes.isEmpty {
+            evidence["policyTxGates"] = txGateOutcomes
+        }
+        out["evidence"] = evidence
+        out["evidenceFactIds"] = factIds
+        return out
     }
 }

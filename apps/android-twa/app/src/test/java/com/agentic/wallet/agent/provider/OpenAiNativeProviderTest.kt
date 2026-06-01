@@ -120,6 +120,10 @@ class OpenAiNativeProviderTest {
         )
 
         assertEquals("approve", result.optString("decision"))
+        val evidence = result.optJSONObject("evidence")!!
+        assertEquals("checked", evidence.optJSONObject("research")!!.optString("status"))
+        assertTrue(evidence.optJSONArray("findings")!!.toString().contains("Current research"))
+        assertTrue(evidence.optJSONArray("sources")!!.toString().contains("heliummobile.com"))
         assertEquals(2, http.calls.size)
 
         // Research pass: tools + tool_choice + include set, no text.format.
@@ -139,12 +143,22 @@ class OpenAiNativeProviderTest {
         // researchEvidence in the input.
         val reviewBody = JSONObject(http.calls[1].body)
         assertFalse(reviewBody.has("tools"))
+        assertEquals(1800, reviewBody.optInt("max_output_tokens"))
         val reviewText = reviewBody.optJSONObject("text")!!
         assertEquals("medium", reviewText.optString("verbosity"))
         val reviewFormat = reviewText.optJSONObject("format")!!
         assertEquals("json_schema", reviewFormat.optString("type"))
         assertEquals("agentic_device_review", reviewFormat.optString("name"))
         assertEquals(false, reviewFormat.optBoolean("strict"))
+        val reviewSchemaProps = reviewFormat.optJSONObject("schema")!!.optJSONObject("properties")!!
+        val evidenceProps = reviewSchemaProps.optJSONObject("evidence")!!.optJSONObject("properties")!!
+        assertTrue(evidenceProps.has("findings"))
+        assertTrue(evidenceProps.has("sources"))
+        assertTrue(evidenceProps.has("research"))
+        assertTrue(reviewSchemaProps.has("evidenceFactIds"))
+        assertTrue(reviewSchemaProps.has("blockingFactIds"))
+        assertTrue(reviewSchemaProps.has("missingFactIds"))
+        assertTrue(reviewSchemaProps.has("confidence"))
         val reviewInput = reviewBody.optString("input")
         assertTrue("input should contain researchEvidence", reviewInput.contains("researchEvidence"))
         assertTrue("input should contain official source", reviewInput.contains("heliummobile.com"))
@@ -201,11 +215,21 @@ class OpenAiNativeProviderTest {
 
         val body = JSONObject(http.calls.single().body)
         assertFalse(body.has("tools"))
+        assertEquals(1800, body.optInt("max_output_tokens"))
         val reviewText = body.optJSONObject("text")!!
         assertEquals("medium", reviewText.optString("verbosity"))
         val format = reviewText.optJSONObject("format")!!
         assertEquals("json_schema", format.optString("type"))
         assertEquals("agentic_device_review", format.optString("name"))
+        val schemaProps = format.optJSONObject("schema")!!.optJSONObject("properties")!!
+        val evidenceProps = schemaProps.optJSONObject("evidence")!!.optJSONObject("properties")!!
+        assertTrue(evidenceProps.has("findings"))
+        assertTrue(evidenceProps.has("sources"))
+        assertTrue(evidenceProps.has("research"))
+        assertTrue(schemaProps.has("evidenceFactIds"))
+        assertTrue(schemaProps.has("blockingFactIds"))
+        assertTrue(schemaProps.has("missingFactIds"))
+        assertTrue(schemaProps.has("confidence"))
         assertEquals(DeviceAgentSystemPrompts.REVIEW, body.optString("instructions"))
         assertEquals(
             DeviceAgentMessageAssembler.buildReviewMessages(payload).userContent,

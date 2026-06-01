@@ -266,6 +266,40 @@ describe('agent review presentation helpers', () => {
     expect(rows.map((row) => row.label)).not.toContain('Parse error');
   });
 
+  it('suppresses unrelated swap/token rows for research-focused plan-threshold reviews', () => {
+    const rows = reviewEvidenceRows({
+      status: 'approved',
+      evidenceFacts: [
+        { id: 'fact.wallet', label: 'Connected wallet', value: '7abc...', tone: 'good' },
+        { id: 'fact.route', label: 'Swap route', value: 'SOL -> USDC via Jupiter', tone: 'neutral' },
+        { id: 'fact.token.security', label: 'Token security', value: 'Mint disabled; freeze disabled', tone: 'neutral' },
+        { id: 'fact.token.market', label: 'Token market evidence', value: 'SOL price $82.63 via BirdEye', tone: 'neutral' },
+      ],
+      evidence: {
+        research: { status: 'checked' },
+        findings: [
+          { label: 'Plan rate', value: '$15/month', tone: 'good' },
+          { label: 'Threshold check', value: '$15 is less than $20.', tone: 'good' },
+          { label: 'Execution aggregator', value: 'Jupiter prepares the swap for separate wallet approval', tone: 'neutral' },
+        ],
+        sources: [{ title: 'Helium Mobile Plans', url: 'https://www.heliummobile.com/plans' }],
+      },
+    }, { actionType: 'swap' });
+
+    expect(rows).toEqual(expect.arrayContaining([
+      { label: 'Plan rate', value: '$15/month', tone: 'good' },
+      { label: 'Threshold check', value: '$15 is less than $20.', tone: 'good' },
+      { label: 'Source: Helium Mobile Plans', value: 'https://www.heliummobile.com/plans', tone: 'neutral' },
+    ]));
+    expect(rows.map((row) => row.label)).not.toEqual(expect.arrayContaining([
+      'Connected wallet',
+      'Swap route',
+      'Token security',
+      'Token market evidence',
+      'Execution aggregator',
+    ]));
+  });
+
   it('renders denial, missing input, connector warning, and stale state as first-class rows', () => {
     const rows = reviewEvidenceRows({
       status: 'denied',

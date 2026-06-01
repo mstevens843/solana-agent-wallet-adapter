@@ -65,7 +65,7 @@ export function renderAgentReview(response: AgentReviewResponse | null | undefin
   // Advanced Audit — delegate to the existing policy-bundle renderer for the
   // atom table + tx-gate outcomes. This is what makes /new flows surface the
   // same atom-level detail that /agent has always shown.
-  const verdict = renderPolicyBundle(response as unknown as Parameters<typeof renderPolicyBundle>[0]);
+  const verdict = renderPolicyBundle(response as unknown as Parameters<typeof renderPolicyBundle>[0], { printDecision: false });
   return verdict;
 }
 

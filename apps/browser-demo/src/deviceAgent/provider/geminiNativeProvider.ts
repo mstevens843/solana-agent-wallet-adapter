@@ -8,18 +8,13 @@
 //   - Gemini's /v1beta/openai compat endpoint does NOT support `tools: [{ google_search: {} }]`
 //     — the grounding tool is only exposed on the native :generateContent endpoint.
 //   - The native request shape (`systemInstruction`, `contents[].parts[]`,
-//     `generationConfig.{responseMimeType, temperature, maxOutputTokens}`) is incompatible
+//     `generationConfig.{responseMimeType,responseSchema,temperature,maxOutputTokens}`) is incompatible
 //     with chat completions, so it lives in its own class.
-//   - Gemini rejects `generationConfig.responseMimeType: 'application/json'` whenever any
-//     tool is attached, so the research pass MUST drop responseMimeType. We drive both
-//     `tools` attachment and `responseMimeType` removal off one condition to prevent drift.
+//   - Gemini rejects JSON response config whenever any tool is attached, so the research pass
+//     MUST drop responseMimeType/responseSchema. One condition prevents drift.
 //   - Routing is by `config.provider === 'gemini'` at the dispatcher level
 //     (deviceAgentProviderExecutor.ts), so OpenRouter/Custom stay on
 //     OpenAiCompatibleProvider unchanged.
-//
-// Kotlin parity for this class is a followup ticket — the Android Device Agent still hits
-// the OpenAI-compat passthrough.
-
 import { buildAskMessages, buildPlanMessages, buildResearchMessages, buildReviewMessages } from '../prompts/messageAssembler.js';
 import type { DeviceAgentMessages } from '../prompts/messageAssembler.js';
 import type { RuntimeConfig } from '../runtime/config.js';
@@ -34,6 +29,7 @@ import {
 } from './providerHttp.js';
 import { researchTargetsForPayload } from './researchTargets.js';
 import { extractGeminiCitations, extractGeminiText, parseModelJson } from './responseParser.js';
+import { finalizeReviewResultForPayload } from './reviewPostprocess.js';
 import type { DeviceAgentProvider } from './types.js';
 
 const GEMINI_DEFAULT_NATIVE_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
@@ -44,9 +40,121 @@ const PLAN_TEMPERATURE = 0.2;
 const REVIEW_TEMPERATURE = 0.2;
 const ASK_TEMPERATURE = 0.3;
 const PLAN_MAX_TOKENS = 1024;
-const REVIEW_MAX_TOKENS = 1024;
+const REVIEW_MAX_TOKENS = 1800;
 const RESEARCH_MAX_TOKENS = 1800;
 const ASK_MAX_TOKENS = 800;
+
+const GEMINI_STRING_ARRAY_SCHEMA = {
+  type: 'array',
+  items: { type: 'string' },
+} as const;
+
+const GEMINI_FINDING_SCHEMA = {
+  type: 'object',
+  properties: {
+    label: { type: 'string' },
+    value: { type: 'string' },
+    tone: { type: 'string', enum: ['good', 'warn', 'neutral', 'fail'] },
+  },
+  required: ['label', 'value', 'tone'],
+  propertyOrdering: ['label', 'value', 'tone'],
+} as const;
+
+const GEMINI_SOURCE_SCHEMA = {
+  type: 'object',
+  properties: {
+    title: { type: 'string' },
+    url: { type: 'string' },
+  },
+  required: ['url'],
+  propertyOrdering: ['title', 'url'],
+} as const;
+
+const GEMINI_PLAN_RESPONSE_SCHEMA = {
+  type: 'object',
+  properties: {
+    intent: { type: 'string' },
+    route: { type: 'string' },
+    risk: { type: 'string' },
+    approval: { type: 'string' },
+    safeguards: GEMINI_STRING_ARRAY_SCHEMA,
+  },
+  required: ['intent', 'route', 'risk', 'approval', 'safeguards'],
+  propertyOrdering: ['intent', 'route', 'risk', 'approval', 'safeguards'],
+} as const;
+
+const GEMINI_REVIEW_RESPONSE_SCHEMA = {
+  type: 'object',
+  properties: {
+    decision: { type: 'string', enum: ['approve', 'deny', 'needs_input'] },
+    reason: { type: 'string' },
+    summary: { type: 'string' },
+    evidence: {
+      type: 'object',
+      properties: {
+        findings: { type: 'array', items: GEMINI_FINDING_SCHEMA },
+        sources: { type: 'array', items: GEMINI_SOURCE_SCHEMA },
+        research: {
+          type: 'object',
+          properties: {
+            status: { type: 'string' },
+          },
+        },
+        policiesApplied: GEMINI_STRING_ARRAY_SCHEMA,
+      },
+      propertyOrdering: ['findings', 'sources', 'research', 'policiesApplied'],
+    },
+    questions: {
+      type: 'array',
+      maxItems: 3,
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          prompt: { type: 'string' },
+          inputKind: { type: 'string', enum: ['text', 'select', 'number'] },
+          options: GEMINI_STRING_ARRAY_SCHEMA,
+          required: { type: 'boolean' },
+          hint: { type: 'string' },
+        },
+        required: ['id', 'prompt', 'inputKind'],
+        propertyOrdering: ['id', 'prompt', 'inputKind', 'options', 'required', 'hint'],
+      },
+    },
+    reviewers: {
+      type: 'array',
+      maxItems: 4,
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', enum: ['risk', 'quote', 'policy', 'protocol'] },
+          decision: { type: 'string', enum: ['approve', 'deny', 'needs_input'] },
+          reason: { type: 'string' },
+          summary: { type: 'string' },
+        },
+        required: ['id', 'decision', 'reason'],
+        propertyOrdering: ['id', 'decision', 'reason', 'summary'],
+      },
+    },
+    evidenceFactIds: GEMINI_STRING_ARRAY_SCHEMA,
+    blockingFactIds: GEMINI_STRING_ARRAY_SCHEMA,
+    missingFactIds: GEMINI_STRING_ARRAY_SCHEMA,
+    confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
+  },
+  required: ['decision', 'reason', 'summary', 'evidence'],
+  propertyOrdering: [
+    'decision',
+    'reason',
+    'summary',
+    'evidence',
+    'questions',
+    'reviewers',
+    'evidenceFactIds',
+    'blockingFactIds',
+    'missingFactIds',
+    'confidence',
+  ],
+} as const;
 
 export class GeminiNativeProvider implements DeviceAgentProvider {
   private readonly config: RuntimeConfig;
@@ -61,6 +169,7 @@ export class GeminiNativeProvider implements DeviceAgentProvider {
     const messages = buildPlanMessages(payload);
     const response = await this.postGenerateContent(messages, {
       jsonObjectMode: true,
+      responseSchema: GEMINI_PLAN_RESPONSE_SCHEMA,
       temperature: PLAN_TEMPERATURE,
       maxOutputTokens: PLAN_MAX_TOKENS,
       research: false,
@@ -83,20 +192,22 @@ export class GeminiNativeProvider implements DeviceAgentProvider {
       const messages = buildReviewMessages(reviewPayload);
       const response = await this.postGenerateContent(messages, {
         jsonObjectMode: true,
+        responseSchema: GEMINI_REVIEW_RESPONSE_SCHEMA,
         temperature: REVIEW_TEMPERATURE,
         maxOutputTokens: REVIEW_MAX_TOKENS,
         research: false,
       }, signal);
-      return parseModelJson(extractGeminiText(response));
+      return finalizeReviewResultForPayload(parseModelJson(extractGeminiText(response)), reviewPayload);
     }
     const messages = buildReviewMessages(payload);
     const response = await this.postGenerateContent(messages, {
       jsonObjectMode: true,
+      responseSchema: GEMINI_REVIEW_RESPONSE_SCHEMA,
       temperature: REVIEW_TEMPERATURE,
       maxOutputTokens: REVIEW_MAX_TOKENS,
       research: false,
     }, signal);
-    return parseModelJson(extractGeminiText(response));
+    return finalizeReviewResultForPayload(parseModelJson(extractGeminiText(response)), payload);
   }
 
   /**
@@ -175,6 +286,7 @@ export class GeminiNativeProvider implements DeviceAgentProvider {
     messages: DeviceAgentMessages,
     options: {
       jsonObjectMode: boolean;
+      responseSchema?: Record<string, unknown>;
       temperature: number;
       maxOutputTokens: number;
       research: boolean;
@@ -192,10 +304,13 @@ export class GeminiNativeProvider implements DeviceAgentProvider {
       temperature: options.temperature,
       maxOutputTokens: options.maxOutputTokens,
     };
-    // Gemini rejects `responseMimeType: 'application/json'` whenever any tool is attached,
-    // so the research pass (which has `tools`) must omit it. Single condition prevents drift.
+    // Gemini rejects JSON response config whenever any tool is attached, so the research
+    // pass (which has `tools`) must omit it. Single condition prevents drift.
     if (options.jsonObjectMode && !options.research) {
       generationConfig.responseMimeType = 'application/json';
+      if (options.responseSchema) {
+        generationConfig.responseSchema = options.responseSchema;
+      }
     }
 
     const body: Record<string, unknown> = {

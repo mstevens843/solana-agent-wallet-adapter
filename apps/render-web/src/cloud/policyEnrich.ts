@@ -85,9 +85,11 @@ interface PolicyEnrichFailure {
 export async function handlePolicyEnrich(
   rawBody: unknown,
 ): Promise<PolicyEnrichResult | PolicyEnrichFailure> {
+  const startedAt = Date.now();
   const body = isObject(rawBody) ? (rawBody as PolicyEnrichRequest) : ({} as PolicyEnrichRequest);
   try {
     if (process.env.AGENT_WALLET_POLICY_ORCHESTRATOR === '0') {
+      tracePolicyEnrich('disabled', { ms: Date.now() - startedAt });
       return { ok: true, policyBundle: emptyBundle() };
     }
     const text = [body.instruction ?? '', body.userNotes ?? '', body.intent ?? '']
@@ -96,6 +98,7 @@ export async function handlePolicyEnrich(
     if (!text.trim()) {
       // No text to extract atoms from — return an empty-but-shaped bundle so
       // the caller can splice it without conditional checks.
+      tracePolicyEnrich('empty', { ms: Date.now() - startedAt });
       return {
         ok: true,
         policyBundle: {
@@ -116,11 +119,11 @@ export async function handlePolicyEnrich(
     const txGateContext = body.txGateContext
       ?? (simulation || body.transactionBase64 ? defaultTxGateContext(body.actionType) : undefined);
 
-    // Resolver: no Connection wired here (cloud route doesn't own one); resolvers
-    // that need RPC (wallet_balance, network_metric, etc.) will surface as
-    // unresolved. Jupiter/CoinGecko/BirdEye/Helius/AlternativeMe/web all work fine.
+    // Resolver: wire the same read-only RPC connection used for transaction
+    // simulation so wallet/network/fee atoms match hosted AI review behavior.
     const resolver = createMcpCapabilityResolver({
       config: DEFAULT_CONFIG,
+      connection: connectionForDefaultConfig(),
       requestContext: {
         ...(body.walletAddress ? { walletAddress: body.walletAddress } : {}),
         ...(body.draftParameters ? { draftParameters: body.draftParameters } : {}),
@@ -137,8 +140,22 @@ export async function handlePolicyEnrich(
       txGateContext,
     });
 
+    tracePolicyEnrich('success', {
+      ms: Date.now() - startedAt,
+      atoms: bundle.atoms.length,
+      evaluations: bundle.evaluations.length,
+      unresolved: bundle.evaluations.filter((ev) => ev.unresolved === true).length,
+      blocking: bundle.hasBlockingFailure ? 1 : 0,
+      txGates: Object.keys(bundle.txGateOutcomes).length,
+      simulated: simulation ? 1 : 0,
+      rpc: 1,
+    });
     return { ok: true, policyBundle: compactBundle(bundle) };
   } catch (err) {
+    tracePolicyEnrich('fail', {
+      ms: Date.now() - startedAt,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return {
       ok: false,
       error: err instanceof Error ? err.message : String(err),
@@ -146,7 +163,18 @@ export async function handlePolicyEnrich(
   }
 }
 
+function tracePolicyEnrich(step: string, fields: Record<string, string | number | boolean | undefined>): void {
+  if (process.env.AGENT_WALLET_TRACE !== '1') return;
+  const body = Object.entries(fields)
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+    .join(' ');
+  console.info(`policy_enrich ${step}${body ? ` ${body}` : ''}`);
+}
+
 let cachedSimulatorRpcUrl: string | undefined;
+let cachedConnectionRpcUrl: string | undefined;
+let cachedConnection: Connection | undefined;
 let cachedSimulator: ReturnType<typeof makeTransactionSimulator> | undefined;
 
 function emptyBundle(): Record<string, unknown> {
@@ -161,9 +189,17 @@ function emptyBundle(): Record<string, unknown> {
 function simulatorForDefaultConfig(): ReturnType<typeof makeTransactionSimulator> {
   if (!cachedSimulator || cachedSimulatorRpcUrl !== DEFAULT_CONFIG.rpcUrl) {
     cachedSimulatorRpcUrl = DEFAULT_CONFIG.rpcUrl;
-    cachedSimulator = makeTransactionSimulator(new Connection(DEFAULT_CONFIG.rpcUrl, 'confirmed'));
+    cachedSimulator = makeTransactionSimulator(connectionForDefaultConfig());
   }
   return cachedSimulator;
+}
+
+function connectionForDefaultConfig(): Connection {
+  if (!cachedConnection || cachedConnectionRpcUrl !== DEFAULT_CONFIG.rpcUrl) {
+    cachedConnectionRpcUrl = DEFAULT_CONFIG.rpcUrl;
+    cachedConnection = new Connection(DEFAULT_CONFIG.rpcUrl, 'confirmed');
+  }
+  return cachedConnection;
 }
 
 async function simulateTransactionBase64(transactionBase64: string): Promise<SimulationDigest | undefined> {

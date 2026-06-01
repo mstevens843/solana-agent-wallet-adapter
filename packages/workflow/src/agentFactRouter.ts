@@ -167,12 +167,16 @@ const HOLDINGS_REQUIRED_RE = /\b(balance|balances|holding|holdings|portfolio|pos
 const HOLDINGS_OPTIONAL_RE = /\b(swap|transfer|deposit|withdraw|borrow|repay|stake|unstake|liquidity|vault|lend|collateral|dca|recurring|position)\b/i;
 const TOKEN_IDENTITY_RE = /\b(token|tokens|mint|mints|symbol|metadata|name|address|verify|verified)\b/i;
 const TOKEN_SECURITY_RE = /\b(unknown token|new token|safety|safe|risk|risky|scam|honeypot|rug|mint authority|minting authority|freeze authority|mintable|owner authority|creation|created|age|true token|security|verify token|verified token)\b/i;
-const TOKEN_MARKET_RE = /\b(price|cost|usd|market cap|mcap|fdv|liquidity|volume|24h|change|volatility|spread|pool|pair|under|over|above|below|threshold|\$)\b/i;
+const TOKEN_MARKET_TERM_RE = /\b(token\s+price|coin\s+price|asset\s+price|market cap|mcap|fdv|liquidity|volume|24h|change|volatility|spread|pool|pair|onchain price|dex\s*screener|birdeye|coingecko)\b/i;
+const TOKEN_PRICE_SYMBOL_RE = /\b(sol|btc|eth|usdc|usdt|jup|bonk|wif|pyusd)\b[^.\n]{0,80}\b(price|value|worth|above|over|greater than|more than|>=?|below|under|less than|<=?|at least|at most)\b[^.\n]{0,40}\$?\s*\d/i;
+const TOKEN_PRICE_SYMBOL_REVERSED = /\b(price|value|worth|above|over|greater than|more than|>=?|below|under|less than|<=?|at least|at most)\b[^.\n]{0,80}\b(sol|btc|eth|usdc|usdt|jup|bonk|wif|pyusd)\b/i;
+const TOKEN_PRICE_SUBJECT_RE = /\b(?:input|output|this|the)?\s*(token|coin|mint|asset)\b[^.\n]{0,80}\b(price|value|worth|above|over|greater than|more than|>=?|below|under|less than|<=?|at least|at most)\b[^.\n]{0,40}\$?\s*\d/i;
 const TOKEN_MARKET_DEPTH_RE = /\b(market cap|mcap|fdv|volume|24h|change|coingecko|pool count|onchain price|history|historical)\b/i;
 const SWAP_RE = /\b(swap|quote|route|slippage|minimum received|min received|output amount|price impact|jupiter|dex|aggregator|input token|output token)\b/i;
 const PROTOCOL_RE = /\b(protocol|dapp|connector|position|positions|rewards|claim|health|collateral|vault|pool|lp|lend|borrow|repay|deposit|withdraw|stake|unstake|oracle|pyth|margin|liquidation)\b/i;
 const GLOBAL_MARKET_RE = /\b(fear\s*(?:&|and)\s*greed|sentiment|btc dominance|bitcoin dominance|eth dominance|total market cap|global market|market conditions|crypto market|risk on|risk off|macro|dominance)\b/i;
 const EXTERNAL_RESEARCH_RE = /\b(latest|current|today|news|headline|status page|outage|incident|docs?|documentation|release notes|announcement|recent exploit|exploit|hack|governance vote|proposal)\b/i;
+const OFF_CHAIN_DECISION_RE = /\b(plan|subscription|service charge|monthly|phone plan|mobile plan|membership|invoice|bill|fee|cost|rate|netflix|spotify|t-?mobile|helium|outage|incident|exploit|business day|holiday|spy|website|status page|governance vote|proposal)\b/i;
 
 export function planAgentReviewFactRoutes(input: PlanAgentReviewFactRoutesInput): AgentFactRoutePlan {
   const routes: AgentFactRoute[] = [];
@@ -180,6 +184,7 @@ export function planAgentReviewFactRoutes(input: PlanAgentReviewFactRoutesInput)
   const seen = new Set<string>();
   const actionType = normalize(input.actionType);
   const text = routePlanningText(input);
+  const decisionText = routeDecisionText(input);
   const hasWallet = input.hasWallet === true;
   const hasTokenMints = input.hasTokenMints === true;
   const connector = normalizedConnectorContext(input.connector);
@@ -234,7 +239,7 @@ export function planAgentReviewFactRoutes(input: PlanAgentReviewFactRoutesInput)
   // chain rejects insufficient-funds transactions, so we don't need a Birdeye round-trip just
   // because the plan is a transfer.
   const holdingsRequired = HOLDINGS_REQUIRED_RE.test(text);
-  const holdingsUseful = holdingsRequired || HOLDINGS_OPTIONAL_RE.test(text);
+  const holdingsUseful = holdingsRequired || (HOLDINGS_OPTIONAL_RE.test(text) && !OFF_CHAIN_DECISION_RE.test(decisionText));
   if (holdingsUseful) {
     if (hasWallet) {
       addRoute({
@@ -252,60 +257,56 @@ export function planAgentReviewFactRoutes(input: PlanAgentReviewFactRoutesInput)
     }
   }
 
-  const tokenIdentityNeeded = hasTokenMints || TOKEN_IDENTITY_RE.test(text);
-  const tokenSecurityRequired = TOKEN_SECURITY_RE.test(text);
-  const tokenMarketRequired = TOKEN_MARKET_RE.test(text);
-  if (tokenIdentityNeeded) {
+  const tokenIdentityRequired = TOKEN_IDENTITY_RE.test(decisionText);
+  const tokenSecurityRequired = TOKEN_SECURITY_RE.test(decisionText);
+  const tokenMarketRequired = tokenMarketRequiredByUser(decisionText);
+  if (tokenIdentityRequired) {
     if (hasTokenMints) {
       addRoute({
         id: 'birdeye.token_metadata',
         need: 'token_metadata',
         provider: 'birdeye',
         endpoint: 'token-meta',
-        status: TOKEN_IDENTITY_RE.test(text) ? 'required' : 'optional',
-        reason: 'Token identity should come from provider metadata when a mint is available.',
+        status: 'required',
+        reason: 'The question asks for token identity, symbol, metadata, or verification evidence.',
       });
     } else {
       skip('token_metadata', 'Token metadata lookup needs a resolved Solana mint address.');
     }
   }
 
-  if (tokenSecurityRequired || hasTokenMints) {
+  if (tokenSecurityRequired) {
     if (hasTokenMints) {
       addRoute({
         id: 'birdeye.token_security',
         need: 'token_security',
         provider: 'birdeye',
         endpoint: 'token-security',
-        status: tokenSecurityRequired ? 'required' : 'optional',
-        reason: tokenSecurityRequired
-          ? 'The question asks for token safety, authority, age, or scam-risk evidence.'
-          : 'Token security is useful context for unresolved or custom token approvals.',
+        status: 'required',
+        reason: 'The question asks for token safety, authority, age, or scam-risk evidence.',
       });
-    } else if (tokenSecurityRequired) {
+    } else {
       skip('token_security', 'Token security lookup needs a resolved Solana mint address.');
     }
   }
 
-  if (tokenMarketRequired || hasTokenMints) {
+  if (tokenMarketRequired) {
     if (hasTokenMints) {
       addRoute({
         id: 'birdeye.price_multi',
         need: 'token_market',
         provider: 'birdeye',
         endpoint: 'price-multi',
-        status: tokenMarketRequired ? 'required' : 'optional',
-        reason: tokenMarketRequired
-          ? 'The question depends on token price, liquidity, or threshold evidence.'
-          : 'Token market data is useful context for token approvals.',
+        status: 'required',
+        reason: 'The question depends on token price, liquidity, or market threshold evidence.',
       });
       addRoute({
         id: 'coingecko.token_evidence',
         need: 'token_market',
         provider: 'coingecko',
         endpoint: 'token-evidence',
-        status: TOKEN_MARKET_DEPTH_RE.test(text) ? 'required' : 'optional',
-        reason: TOKEN_MARKET_DEPTH_RE.test(text)
+        status: TOKEN_MARKET_DEPTH_RE.test(decisionText) ? 'required' : 'optional',
+        reason: TOKEN_MARKET_DEPTH_RE.test(decisionText)
           ? 'The question needs market-cap, volume, 24h change, or broader token-market evidence.'
           : 'CoinGecko can supplement BirdEye with secondary token-market evidence.',
       });
@@ -317,7 +318,7 @@ export function planAgentReviewFactRoutes(input: PlanAgentReviewFactRoutesInput)
         status: 'optional',
         reason: 'DEX Screener is a fallback when primary Solana token-market providers have no row.',
       });
-    } else if (tokenMarketRequired) {
+    } else {
       skip('token_market', 'Token market lookup needs a resolved Solana mint address.');
     }
   }
@@ -329,30 +330,40 @@ export function planAgentReviewFactRoutes(input: PlanAgentReviewFactRoutesInput)
     const slippageString = (input.parameters?.slippageBps ?? input.parameters?.maxSlippage ?? '').trim();
     const hasSlippage = slippageString.length > 0;
     const quoteDemanded = SWAP_QUOTE_DEMAND_RE.test(text) || !hasAmount || !hasSlippage;
-    const quoteStatus: AgentFactRouteStatus = quoteDemanded ? 'required' : 'optional';
-    const quoteReason = quoteDemanded
-      ? !hasAmount
-        ? 'Swap draft has no amount; a Jupiter quote is required to compute the executable order.'
-        : !hasSlippage
-          ? 'Swap draft has no slippage cap; a Jupiter quote is required before approval.'
-          : 'The question asks for live quote details (price impact, output amount, best route).'
-      : 'Quote/route resolve at the wallet step; user already supplied amount and slippage.';
-    addRoute({
-      id: 'jupiter.swap_order_preview',
-      need: 'swap_quote',
-      provider: 'jupiter',
-      endpoint: 'swap.order existing tool',
-      status: quoteStatus,
-      reason: quoteReason,
-    });
-    addRoute({
-      id: 'jupiter.swap_route',
-      need: 'swap_route',
-      provider: 'jupiter',
-      endpoint: 'swap.order routePlan',
-      status: quoteStatus,
-      reason: 'Tracks the executable Jupiter route alongside the quote.',
-    });
+    if (!quoteDemanded && offChainDecisionOnly(decisionText, {
+      tokenIdentityRequired,
+      tokenSecurityRequired,
+      tokenMarketRequired,
+      globalMarketRequired: GLOBAL_MARKET_RE.test(decisionText),
+    })) {
+      skip('swap_quote', 'Swap quote not selected: the user request only asks an off-chain/current-fact gate.');
+      skip('swap_route', 'Swap route not selected: the user request only asks an off-chain/current-fact gate.');
+    } else {
+      const quoteStatus: AgentFactRouteStatus = quoteDemanded ? 'required' : 'optional';
+      const quoteReason = quoteDemanded
+        ? !hasAmount
+          ? 'Swap draft has no amount; a Jupiter quote is required to compute the executable order.'
+          : !hasSlippage
+            ? 'Swap draft has no slippage cap; a Jupiter quote is required before approval.'
+            : 'The question asks for live quote details (price impact, output amount, best route).'
+        : 'Quote/route resolve at the wallet step; user already supplied amount and slippage.';
+      addRoute({
+        id: 'jupiter.swap_order_preview',
+        need: 'swap_quote',
+        provider: 'jupiter',
+        endpoint: 'swap.order existing tool',
+        status: quoteStatus,
+        reason: quoteReason,
+      });
+      addRoute({
+        id: 'jupiter.swap_route',
+        need: 'swap_route',
+        provider: 'jupiter',
+        endpoint: 'swap.order routePlan',
+        status: quoteStatus,
+        reason: 'Tracks the executable Jupiter route alongside the quote.',
+      });
+    }
   }
 
   // Pre-sign transaction simulation. Only tagged when the question or action source warrants
@@ -468,6 +479,23 @@ export function planAgentReviewFactRoutes(input: PlanAgentReviewFactRoutesInput)
   };
 }
 
+function offChainDecisionOnly(
+  decisionText: string,
+  flags: {
+    tokenIdentityRequired: boolean;
+    tokenSecurityRequired: boolean;
+    tokenMarketRequired: boolean;
+    globalMarketRequired: boolean;
+  },
+): boolean {
+  if (!decisionText.trim()) return false;
+  if (!OFF_CHAIN_DECISION_RE.test(decisionText)) return false;
+  if (flags.tokenIdentityRequired || flags.tokenSecurityRequired || flags.tokenMarketRequired || flags.globalMarketRequired) return false;
+  if (SWAP_QUOTE_DEMAND_RE.test(decisionText)) return false;
+  if (/\b(slippage|price impact|minimum received|min received|output amount|route|quote|jupiter|dex|aggregator|token age|mint authority|freeze authority|market cap|liquidity|volume|fear\s*(?:&|and)\s*greed|btc dominance|total market cap)\b/i.test(decisionText)) return false;
+  return true;
+}
+
 function routePlanningText(input: PlanAgentReviewFactRoutesInput): string {
   const parameterText = input.parameters
     ? Object.entries(input.parameters)
@@ -489,6 +517,33 @@ function routePlanningText(input: PlanAgentReviewFactRoutesInput): string {
     .filter((entry): entry is string => Boolean(entry?.trim()))
     .join('\n')
     .toLowerCase();
+}
+
+function routeDecisionText(input: PlanAgentReviewFactRoutesInput): string {
+  const userFacing = [
+    input.userNotes,
+    input.instruction,
+    input.question,
+    input.prompt,
+  ]
+    .filter((entry): entry is string => Boolean(entry?.trim()))
+    .join('\n')
+    .toLowerCase();
+  if (userFacing.trim().length > 0) return userFacing;
+  return [
+    input.intent,
+    input.route,
+  ]
+    .filter((entry): entry is string => Boolean(entry?.trim()))
+    .join('\n')
+    .toLowerCase();
+}
+
+function tokenMarketRequiredByUser(text: string): boolean {
+  return TOKEN_MARKET_TERM_RE.test(text) ||
+    TOKEN_PRICE_SYMBOL_RE.test(text) ||
+    TOKEN_PRICE_SYMBOL_REVERSED.test(text) ||
+    TOKEN_PRICE_SUBJECT_RE.test(text);
 }
 
 function normalize(value: string | undefined): string {
@@ -642,7 +697,7 @@ function connectorReadReason(
 ): string {
   switch (profile) {
     case 'swap_dex':
-      return `${label} swap approvals need quote, route, and token-market facts before signing.`;
+      return `${label} swap approvals need selected connector facts; live quote, route, and token-market reads are prompt-scoped.`;
     case 'lending_borrow':
       return `${label} approvals need ${capability} facts for positions, reserves, health, or claimable rewards.`;
     case 'liquidity_pool':

@@ -25,6 +25,8 @@ export interface AiSetupInventory {
   anyConfigured: boolean;
 }
 
+export type AiPathClearability = Record<AiPathMode, boolean>;
+
 export function directAiKeyStaged(input: {
   apiKey: string;
   model: string;
@@ -54,6 +56,21 @@ export function buildAiSetupInventory(input: {
     inactiveConfigured,
     anyConfigured: active.configured || inactiveConfigured.length > 0,
   };
+}
+
+export function selectAiKeyClearTarget(input: {
+  activeMode: AiPathMode;
+  inactiveConfigured: Array<Pick<AiPathSetupSnapshot, 'mode'>>;
+  clearableByMode: AiPathClearability;
+  requestedMode?: AiPathMode;
+}): AiPathMode | null {
+  if (input.requestedMode) {
+    return input.clearableByMode[input.requestedMode] ? input.requestedMode : null;
+  }
+  if (input.clearableByMode[input.activeMode]) {
+    return input.activeMode;
+  }
+  return input.inactiveConfigured.find((path) => input.clearableByMode[path.mode])?.mode ?? null;
 }
 
 export function bridgeAiSetupSnapshot(input: {

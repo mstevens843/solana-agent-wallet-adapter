@@ -5,9 +5,18 @@ import {
   buildAiSetupInventory,
   deviceAgentSetupSnapshot,
   directAiKeyStaged,
+  selectAiKeyClearTarget,
+  type AiPathClearability,
 } from '../aiSetupState.js';
 
 describe('AI setup state helpers', () => {
+  const noClearablePaths: AiPathClearability = {
+    hosted: false,
+    session: false,
+    bridge: false,
+    'device-agent': false,
+  };
+
   it('stages a direct AI key from provider/model/key readiness', () => {
     expect(directAiKeyStaged({
       apiKey: 'provider-key',
@@ -48,6 +57,37 @@ describe('AI setup state helpers', () => {
       runnable: false,
     });
     expect(inventory.anyConfigured).toBe(true);
+  });
+
+  it('targets inactive Hosted BYOK for clearing when Local Bridge is selected', () => {
+    expect(selectAiKeyClearTarget({
+      activeMode: 'bridge',
+      inactiveConfigured: [{ mode: 'hosted' }],
+      clearableByMode: {
+        ...noClearablePaths,
+        hosted: true,
+      },
+    })).toBe('hosted');
+  });
+
+  it('prefers the active path when it has a clearable key', () => {
+    expect(selectAiKeyClearTarget({
+      activeMode: 'bridge',
+      inactiveConfigured: [{ mode: 'hosted' }],
+      clearableByMode: {
+        ...noClearablePaths,
+        hosted: true,
+        bridge: true,
+      },
+    })).toBe('bridge');
+  });
+
+  it('returns null when no active or inactive path is clearable', () => {
+    expect(selectAiKeyClearTarget({
+      activeMode: 'bridge',
+      inactiveConfigured: [{ mode: 'hosted' }],
+      clearableByMode: noClearablePaths,
+    })).toBeNull();
   });
 
   it('tracks configured inactive Device Agent while Hosted BYOK is selected', () => {

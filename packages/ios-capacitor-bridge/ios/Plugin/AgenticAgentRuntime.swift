@@ -844,7 +844,7 @@ enum AgenticAgentProviderSupport {
         }
     }
 
-    static func parseProviderResult(method: String, provider: String, text: String, raw: [String: Any]) -> Result<[String: Any], AgenticAgentError> {
+    static func parseProviderResult(method: String, provider: String, text: String, raw: [String: Any], payload: [String: Any]? = nil) -> Result<[String: Any], AgenticAgentError> {
         if method == "ask" {
             if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return .failure(AgenticAgentError(code: "PROVIDER_RESPONSE", subcode: "EMPTY_TEXT", message: "Provider response had no answer text."))
@@ -853,13 +853,121 @@ enum AgenticAgentProviderSupport {
         }
         guard let parsed = AgenticProviderResponseParser.parseModelJson(text) else {
             if method == "reviewPlan" {
-                return .success(malformedReview(provider: provider))
+                return .success(malformedReview(provider: provider, text: text, raw: raw))
             }
             return .failure(AgenticAgentError(code: "PROVIDER_RESPONSE", subcode: "JSON_PARSE", message: "Provider response was not valid JSON."))
         }
         var out = parsed
         out["provider"] = provider
+        if method == "reviewPlan", let payload {
+            out = finalizeReviewResult(out, payload: payload)
+        }
         return .success(out)
+    }
+
+    static func finalizeReviewResult(_ result: [String: Any], payload: [String: Any]) -> [String: Any] {
+        var out = normalizeReviewResult(result)
+        guard let context = payload["context"] as? [String: Any],
+              let researchEvidence = context["researchEvidence"] as? [String: Any] else {
+            return out
+        }
+        var evidence = out["evidence"] as? [String: Any] ?? [:]
+        if evidence["research"] as? [String: Any] == nil {
+            var research: [String: Any] = [
+                "status": stringValue(researchEvidence["status"], fallback: "checked"),
+                "required": researchEvidence["required"] as? Bool ?? true,
+            ]
+            if let provider = nonEmptyString(researchEvidence["provider"]) { research["provider"] = provider }
+            if let checkedAt = nonEmptyString(researchEvidence["checkedAt"]) { research["checkedAt"] = checkedAt }
+            evidence["research"] = research
+        }
+        let sources = mergeSourceRows(existing: evidence["sources"], added: researchEvidence["sources"])
+        if !sources.isEmpty { evidence["sources"] = sources }
+        var findings = evidence["findings"] as? [[String: Any]] ?? []
+        if let summary = nonEmptyString(researchEvidence["summary"]),
+           !findings.contains(where: { nonEmptyString($0["label"])?.lowercased() == "current research" }) {
+            findings.append(["label": "Current research", "value": summary, "tone": "neutral"])
+        }
+        if !findings.isEmpty { evidence["findings"] = findings }
+        out["evidence"] = evidence
+        return out
+    }
+
+    private static func normalizeReviewResult(_ result: [String: Any]) -> [String: Any] {
+        var out = result
+        let decision = firstString(out, ["decision", "verdict", "status", "decision_status", "decisionStatus"])
+        if !decision.isEmpty {
+            out["decision"] = normalizeDecision(decision)
+        } else if let approved = out["approved"] as? Bool {
+            out["decision"] = approved ? "approve" : "deny"
+        }
+        if nonEmptyString(out["reason"]) == nil {
+            let reason = firstString(out, ["rationale", "explanation", "why"])
+            if !reason.isEmpty { out["reason"] = reason }
+        }
+        if nonEmptyString(out["summary"]) == nil {
+            let summary = firstString(out, ["result", "answer"])
+            if !summary.isEmpty { out["summary"] = summary }
+        }
+        var evidence = out["evidence"] as? [String: Any] ?? [:]
+        for key in ["findings", "checks", "evidenceRows", "evidence_rows", "sources", "citations"] where evidence[key] == nil && out[key] != nil {
+            evidence[key] = out[key]
+            out.removeValue(forKey: key)
+        }
+        out["evidence"] = evidence
+        return out
+    }
+
+    private static func mergeSourceRows(existing: Any?, added: Any?) -> [[String: Any]] {
+        var out: [[String: Any]] = []
+        var seen = Set<String>()
+        func append(_ rows: Any?) {
+            guard let rows = rows as? [[String: Any]] else { return }
+            for row in rows {
+                let url = nonEmptyString(row["url"]) ?? nonEmptyString(row["ref"]) ?? ""
+                if url.isEmpty || seen.contains(url) { continue }
+                seen.insert(url)
+                var next: [String: Any] = ["url": url]
+                if let title = nonEmptyString(row["title"]) { next["title"] = title }
+                out.append(next)
+            }
+        }
+        append(existing)
+        append(added)
+        return out
+    }
+
+    private static func firstString(_ dict: [String: Any], _ keys: [String]) -> String {
+        for key in keys {
+            if let value = nonEmptyString(dict[key]) { return value }
+        }
+        return ""
+    }
+
+    private static func normalizeDecision(_ value: String) -> String {
+        let lower = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: #"[\s-]+"#, with: "_", options: .regularExpression)
+        switch lower {
+        case "approved", "pass", "passed", "allow":
+            return "approve"
+        case "denied", "reject", "rejected", "fail", "failed":
+            return "deny"
+        case "needsinput", "needs_input", "needs_user_input", "manual_review":
+            return "needs_input"
+        default:
+            return lower
+        }
+    }
+
+    private static func stringValue(_ value: Any?, fallback: String) -> String {
+        return nonEmptyString(value) ?? fallback
+    }
+
+    private static func nonEmptyString(_ value: Any?) -> String? {
+        guard let text = value as? String else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     static func researchNeeded(_ payload: [String: Any]) -> Bool {
@@ -1000,14 +1108,16 @@ enum AgenticAgentProviderSupport {
         return ["output_text": "I need current outside facts to answer that, but \(provider) mode does not have native web research available. Provide a source-backed value or switch to OpenAI, Anthropic, or Gemini."]
     }
 
-    static func malformedReview(provider: String) -> [String: Any] {
+    static func malformedReview(provider: String, text: String = "", raw: [String: Any] = [:]) -> [String: Any] {
         let reason = "Device Agent \(provider) returned a malformed review response. The draft needs manual review before wallet approval."
+        let diagnostics = malformedReviewDiagnostics(provider: provider, text: text, raw: raw)
         return [
             "decision": "needs_input",
             "reason": reason,
             "summary": "The AI review response was not parseable.",
             "evidence": [
                 "provider": provider,
+                "diagnostics": diagnostics,
                 "findings": [[
                     "label": "Review format",
                     "value": reason,
@@ -1027,6 +1137,59 @@ enum AgenticAgentProviderSupport {
             "confidence": "low",
             "provider": provider,
         ]
+    }
+
+    static func isMalformedReview(_ value: [String: Any]) -> Bool {
+        guard (value["decision"] as? String) == "needs_input",
+              let evidence = value["evidence"] as? [String: Any] else { return false }
+        if let diagnostics = evidence["diagnostics"] as? [String: String] {
+            return diagnostics["parseError"] == "json_parse"
+        }
+        if let diagnostics = evidence["diagnostics"] as? [String: Any] {
+            return (diagnostics["parseError"] as? String) == "json_parse"
+        }
+        return false
+    }
+
+    static func malformedReviewDiagnostics(provider: String, text: String, raw: [String: Any]) -> [String: String] {
+        var diagnostics: [String: String] = [
+            "provider": provider,
+            "parseError": "json_parse",
+            "textChars": String(text.count),
+            "textPreview": safePreview(text),
+        ]
+        if let finishReason = finishReason(raw) {
+            diagnostics["finishReason"] = finishReason
+        }
+        if let candidates = raw["candidates"] as? [Any] {
+            diagnostics["candidateCount"] = String(candidates.count)
+        }
+        if let status = raw["status"] as? String {
+            diagnostics["status"] = status
+        }
+        return diagnostics
+    }
+
+    private static func safePreview(_ text: String) -> String {
+        let compact = text
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if compact.count <= 320 { return compact }
+        return String(compact.prefix(320))
+    }
+
+    private static func finishReason(_ raw: [String: Any]) -> String? {
+        if let candidates = raw["candidates"] as? [[String: Any]],
+           let first = candidates.first,
+           let finishReason = first["finishReason"] as? String {
+            return finishReason
+        }
+        if let output = raw["output"] as? [[String: Any]],
+           let first = output.first,
+           let status = first["status"] as? String {
+            return status
+        }
+        return nil
     }
 
     private static func sourceList(from raw: Any) -> [[String: Any]] {
@@ -1190,13 +1353,15 @@ final class AgenticAnthropicProvider: AgenticAgentProvider {
                 completion(.failure(err))
             case .success(let json):
                 let text = AgenticProviderResponseParser.extractAnthropicText(json)
-                let parsed = AgenticAgentProviderSupport.parseProviderResult(method: request.method, provider: "anthropic", text: text, raw: json)
+                let parsed = AgenticAgentProviderSupport.parseProviderResult(method: request.method, provider: "anthropic", text: text, raw: json, payload: request.payload)
                 if case .failure(let err) = parsed {
                     request.emitDebug(step: "parse_fail", [
                         "code": err.code,
                         "subcode": err.subcode ?? "",
                         "message": err.message,
                     ])
+                } else if case .success(let value) = parsed, AgenticAgentProviderSupport.isMalformedReview(value) {
+                    request.emitDebug(step: "malformed_review", AgenticAgentProviderSupport.malformedReviewDiagnostics(provider: "anthropic", text: text, raw: json))
                 }
                 completion(parsed)
             }
@@ -1242,7 +1407,7 @@ final class AgenticAnthropicProvider: AgenticAgentProvider {
         }
         let body: [String: Any] = [
             "model": request.config.model,
-            "max_tokens": request.method == "ask" ? 800 : 1024,
+            "max_tokens": tokenLimit(for: request),
             "system": messages.system,
             "messages": [["role": "user", "content": messages.userContent]],
             "temperature": request.method == "ask" ? 0.3 : 0.2,
@@ -1277,6 +1442,12 @@ final class AgenticAnthropicProvider: AgenticAgentProvider {
     private func normalizedEndpoint(_ raw: String?) -> String {
         let base = AgenticProviderHttp.normalizeBaseUrl(raw, apiFormat: "anthropic")
         return base.hasSuffix("/messages") ? base : "\(base)/messages"
+    }
+
+    private func tokenLimit(for request: AgenticAgentRequest) -> Int {
+        if request.method == "ask" { return 800 }
+        if request.method == "reviewPlan" { return 1800 }
+        return 1024
     }
 
     private func anthropicWebSearchTool(payload: [String: Any]) -> [String: Any] {
@@ -1359,13 +1530,15 @@ final class AgenticOpenAINativeProvider: AgenticAgentProvider {
                 completion(.failure(err))
             case .success(let json):
                 let text = AgenticProviderResponseParser.extractResponsesApiText(json)
-                let parsed = AgenticAgentProviderSupport.parseProviderResult(method: request.method, provider: "openai", text: text, raw: json)
+                let parsed = AgenticAgentProviderSupport.parseProviderResult(method: request.method, provider: "openai", text: text, raw: json, payload: request.payload)
                 if case .failure(let err) = parsed {
                     request.emitDebug(step: "parse_fail", [
                         "code": err.code,
                         "subcode": err.subcode ?? "",
                         "message": err.message,
                     ])
+                } else if case .success(let value) = parsed, AgenticAgentProviderSupport.isMalformedReview(value) {
+                    request.emitDebug(step: "malformed_review", AgenticAgentProviderSupport.malformedReviewDiagnostics(provider: "openai", text: text, raw: json))
                 }
                 completion(parsed)
             }
@@ -1414,7 +1587,7 @@ final class AgenticOpenAINativeProvider: AgenticAgentProvider {
             "model": request.config.model,
             "instructions": messages.system,
             "input": messages.userContent,
-            "max_output_tokens": request.method == "ask" ? 800 : (research ? 1800 : 1024),
+            "max_output_tokens": request.method == "ask" ? 800 : (research || request.method == "reviewPlan" ? 1800 : 1024),
             "store": false,
         ]
         if let jsonSchema {
@@ -1503,6 +1676,25 @@ final class AgenticOpenAINativeProvider: AgenticAgentProvider {
             "type": "array",
             "items": ["type": "string"],
         ]
+        let findingSchema: [String: Any] = [
+            "type": "object",
+            "additionalProperties": true,
+            "properties": [
+                "label": ["type": "string"],
+                "value": ["type": "string"],
+                "tone": ["type": "string", "enum": ["good", "warn", "neutral", "fail"]],
+            ],
+            "required": ["label", "value", "tone"],
+        ]
+        let sourceSchema: [String: Any] = [
+            "type": "object",
+            "additionalProperties": true,
+            "properties": [
+                "title": ["type": "string"],
+                "url": ["type": "string"],
+            ],
+            "required": ["url"],
+        ]
         return [
             "type": "object",
             "additionalProperties": false,
@@ -1510,7 +1702,22 @@ final class AgenticOpenAINativeProvider: AgenticAgentProvider {
                 "decision": ["type": "string", "enum": decisionEnum],
                 "reason": ["type": "string"],
                 "summary": ["type": "string"],
-                "evidence": ["type": "object", "additionalProperties": true],
+                "evidence": [
+                    "type": "object",
+                    "additionalProperties": true,
+                    "properties": [
+                        "findings": ["type": "array", "items": findingSchema],
+                        "sources": ["type": "array", "items": sourceSchema],
+                        "research": [
+                            "type": "object",
+                            "additionalProperties": true,
+                            "properties": [
+                                "status": ["type": "string"],
+                            ],
+                        ],
+                        "policiesApplied": stringArraySchema,
+                    ],
+                ],
                 "questions": [
                     "type": "array",
                     "maxItems": 3,
@@ -1636,13 +1843,15 @@ final class AgenticOpenAICompatibleProvider: AgenticAgentProvider {
                     return
                 }
                 let text = Self.extractText(json) ?? ""
-                let parsed = AgenticAgentProviderSupport.parseProviderResult(method: request.method, provider: request.config.provider, text: text, raw: json)
+                let parsed = AgenticAgentProviderSupport.parseProviderResult(method: request.method, provider: request.config.provider, text: text, raw: json, payload: request.payload)
                 if case .failure(let err) = parsed {
                     request.emitDebug(step: "parse_fail", [
                         "code": err.code,
                         "subcode": err.subcode ?? "",
                         "message": err.message,
                     ])
+                } else if case .success(let value) = parsed, AgenticAgentProviderSupport.isMalformedReview(value) {
+                    request.emitDebug(step: "malformed_review", AgenticAgentProviderSupport.malformedReviewDiagnostics(provider: request.config.provider, text: text, raw: json))
                 }
                 completion(parsed)
             }
@@ -1720,13 +1929,15 @@ final class AgenticGeminiProvider: AgenticAgentProvider {
                 completion(.failure(err))
             case .success(let json):
                 let text = AgenticProviderResponseParser.extractGeminiText(json)
-                let parsed = AgenticAgentProviderSupport.parseProviderResult(method: request.method, provider: "gemini", text: text, raw: json)
+                let parsed = AgenticAgentProviderSupport.parseProviderResult(method: request.method, provider: "gemini", text: text, raw: json, payload: request.payload)
                 if case .failure(let err) = parsed {
                     request.emitDebug(step: "parse_fail", [
                         "code": err.code,
                         "subcode": err.subcode ?? "",
                         "message": err.message,
                     ])
+                } else if case .success(let value) = parsed, AgenticAgentProviderSupport.isMalformedReview(value) {
+                    request.emitDebug(step: "malformed_review", AgenticAgentProviderSupport.malformedReviewDiagnostics(provider: "gemini", text: text, raw: json))
                 }
                 completion(parsed)
             }
@@ -1772,10 +1983,11 @@ final class AgenticGeminiProvider: AgenticAgentProvider {
         }
         var generationConfig: [String: Any] = [
             "temperature": request.method == "ask" ? 0.3 : 0.2,
-            "maxOutputTokens": request.method == "ask" ? 800 : (research ? 1800 : 1024),
+            "maxOutputTokens": request.method == "ask" ? 800 : (research ? 1800 : (request.method == "reviewPlan" ? 1800 : 1024)),
         ]
         if jsonObjectMode && !research {
             generationConfig["responseMimeType"] = "application/json"
+            generationConfig["responseSchema"] = schema(for: request.method)
         }
         var body: [String: Any] = [
             "systemInstruction": [
@@ -1827,6 +2039,115 @@ final class AgenticGeminiProvider: AgenticAgentProvider {
         }
         let encodedModel = config.model.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? config.model
         return URL(string: "\(nativeBase)/models/\(encodedModel):generateContent")
+    }
+
+    private func schema(for method: String) -> [String: Any] {
+        let stringArraySchema: [String: Any] = [
+            "type": "array",
+            "items": ["type": "string"],
+        ]
+        if method == "generatePlan" {
+            return [
+                "type": "object",
+                "properties": [
+                    "intent": ["type": "string"],
+                    "route": ["type": "string"],
+                    "risk": ["type": "string"],
+                    "approval": ["type": "string"],
+                    "safeguards": stringArraySchema,
+                ],
+                "required": ["intent", "route", "risk", "approval", "safeguards"],
+                "propertyOrdering": ["intent", "route", "risk", "approval", "safeguards"],
+            ]
+        }
+        let decisionEnum = ["approve", "deny", "needs_input"]
+        let inputKindEnum = ["text", "select", "number"]
+        let reviewerIdEnum = ["risk", "quote", "policy", "protocol"]
+        let findingSchema: [String: Any] = [
+            "type": "object",
+            "properties": [
+                "label": ["type": "string"],
+                "value": ["type": "string"],
+                "tone": ["type": "string", "enum": ["good", "warn", "neutral", "fail"]],
+            ],
+            "required": ["label", "value", "tone"],
+            "propertyOrdering": ["label", "value", "tone"],
+        ]
+        let sourceSchema: [String: Any] = [
+            "type": "object",
+            "properties": [
+                "title": ["type": "string"],
+                "url": ["type": "string"],
+            ],
+            "required": ["url"],
+            "propertyOrdering": ["title", "url"],
+        ]
+        let questionSchema: [String: Any] = [
+            "type": "object",
+            "properties": [
+                "id": ["type": "string"],
+                "prompt": ["type": "string"],
+                "inputKind": ["type": "string", "enum": inputKindEnum],
+                "options": stringArraySchema,
+                "required": ["type": "boolean"],
+                "hint": ["type": "string"],
+            ],
+            "required": ["id", "prompt", "inputKind"],
+            "propertyOrdering": ["id", "prompt", "inputKind", "options", "required", "hint"],
+        ]
+        let reviewerSchema: [String: Any] = [
+            "type": "object",
+            "properties": [
+                "id": ["type": "string", "enum": reviewerIdEnum],
+                "decision": ["type": "string", "enum": decisionEnum],
+                "reason": ["type": "string"],
+                "summary": ["type": "string"],
+            ],
+            "required": ["id", "decision", "reason"],
+            "propertyOrdering": ["id", "decision", "reason", "summary"],
+        ]
+        return [
+            "type": "object",
+            "properties": [
+                "decision": ["type": "string", "enum": decisionEnum],
+                "reason": ["type": "string"],
+                "summary": ["type": "string"],
+                "evidence": [
+                    "type": "object",
+                    "properties": [
+                        "findings": ["type": "array", "items": findingSchema],
+                        "sources": ["type": "array", "items": sourceSchema],
+                        "research": [
+                            "type": "object",
+                            "properties": [
+                                "status": ["type": "string"],
+                            ],
+                        ],
+                        "policiesApplied": stringArraySchema,
+                    ],
+                    "propertyOrdering": ["findings", "sources", "research", "policiesApplied"],
+                ],
+                "questions": ["type": "array", "maxItems": 3, "items": questionSchema],
+                "reviewers": ["type": "array", "maxItems": 4, "items": reviewerSchema],
+                "evidenceFactIds": stringArraySchema,
+                "blockingFactIds": stringArraySchema,
+                "missingFactIds": stringArraySchema,
+                "confidence": ["type": "string", "enum": ["high", "medium", "low"]],
+            ],
+            "required": ["decision", "reason", "summary", "evidence"],
+            "propertyOrdering": [
+                "decision",
+                "reason",
+                "summary",
+                "evidence",
+                "questions",
+                "reviewers",
+                "evidenceFactIds",
+                "blockingFactIds",
+                "missingFactIds",
+                "confidence",
+            ],
+        ]
     }
 
     private static func extractText(_ json: [String: Any]) -> String? {

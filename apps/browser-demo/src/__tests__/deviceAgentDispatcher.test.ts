@@ -4,9 +4,13 @@
 // is replaced with FakeHttpExecutor (mirrors the Phase 3 helper pattern), and
 // IndexedDB/WebCrypto are bypassed via in-memory persistence/secret stores.
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DeviceAgentClientError } from '../deviceAgentClient.js';
+import {
+  finalizeDeviceAgentPolicyResult,
+  type DeviceAgentPolicyMiddleware,
+} from '../deviceAgentPolicyMiddleware.js';
 import {
   __resetBrowserDeviceAgentForTests,
   browserDeviceAgentRequest,
@@ -25,12 +29,18 @@ import type {
   SecretStore,
   SecretStoreMode,
 } from '../deviceAgent/storage/secretStore.js';
+import { spliceBundle, type PolicyBundle } from '../policyEnrichClient.js';
 
 // Responses-API shape: `provider: 'openai'` now routes through OpenAiNativeProvider,
 // which POSTs /responses and reads from `output_text` (or output[].content[].text).
 const OPENAI_PLAN_BODY = JSON.stringify({
   output_text:
     '{"intent":"transfer","route":"system","risk":"low","approval":"once","safeguards":[]}',
+});
+
+const OPENAI_REVIEW_APPROVE_BODY = JSON.stringify({
+  output_text:
+    '{"decision":"approve","reason":"Model approved.","summary":"Approved.","evidence":{"findings":[{"label":"Helium plan","value":"model guess","tone":"neutral"}]},"evidenceFactIds":[]}',
 });
 
 interface MemorySecretStore extends SecretStore {
@@ -100,6 +110,25 @@ const validConfigPayload = {
   model: 'gpt-4o-mini',
   apiKey: 'sk-test-EXAMPLEKEY12345',
   baseUrl: 'https://api.openai.com',
+};
+
+const blockingPolicyBundle: PolicyBundle = {
+  atoms: [
+    {
+      id: 'atom.external_price.helium.lt.20',
+      type: 'external_price',
+      rawText: 'helium plan less than $20',
+    },
+  ],
+  evaluations: [
+    {
+      atomId: 'atom.external_price.helium.lt.20',
+      pass: false,
+      finding: { label: 'Helium plan', value: '$25 — web', tone: 'fail' },
+    },
+  ],
+  hasBlockingFailure: true,
+  finishedAt: '2026-05-21T00:00:00.000Z',
 };
 
 describe('browser-native Device Agent dispatcher', () => {
@@ -221,6 +250,64 @@ describe('browser-native Device Agent dispatcher', () => {
     const stopResp = await browserDeviceAgentRequest('stop');
     expect(stopResp.status.state).toBe('stopped');
     expect(stopResp.status.message).toBe('Browser Device Agent runtime is stopped.');
+  });
+
+  it('enriches browser-native reviewPlan payloads and applies policy-bundle safety', async () => {
+    const http = new FakeHttpExecutor();
+    http.queueResponse(200, OPENAI_REVIEW_APPROVE_BODY);
+    const prepare = vi.fn<DeviceAgentPolicyMiddleware['prepare']>(async (method, payload) => ({
+      payload: method === 'reviewPlan' ? spliceBundle(payload, blockingPolicyBundle) : payload,
+      bundle: method === 'reviewPlan' ? blockingPolicyBundle : null,
+    }));
+    const policyMiddleware: DeviceAgentPolicyMiddleware = {
+      prepare,
+      finalize: finalizeDeviceAgentPolicyResult,
+    };
+    initBrowserDeviceAgent({
+      persistence: createMemoryPersistence(),
+      secretStore: createMemorySecretStore(),
+      metadataStore: createMemoryMetadataStore(),
+      httpExecutor: http,
+      policyMiddleware,
+    });
+
+    await browserDeviceAgentRequest('configure', validConfigPayload);
+    await browserDeviceAgentRequest('start');
+    const reviewResp = await browserDeviceAgentRequest<Record<string, unknown>>(
+      'reviewPlan',
+      {
+        instruction: 'Approve only if Helium plan is under $20.',
+        plan: {
+          actionType: 'swap',
+          intent: 'Swap SOL to USDC',
+          parameters: { inputToken: 'SOL', outputToken: 'USDC' },
+        },
+        context: {},
+      },
+    );
+
+    expect(prepare).toHaveBeenCalledWith('reviewPlan', expect.any(Object), expect.any(Object));
+    expect(reviewResp.result?.decision).toBe('deny');
+    expect(reviewResp.result?.blockingFactIds).toEqual(['atom.external_price.helium.lt.20']);
+    const evidence = reviewResp.result?.evidence as Record<string, unknown>;
+    expect(evidence.policyAtoms).toEqual([
+      {
+        id: 'atom.external_price.helium.lt.20',
+        type: 'external_price',
+        rawText: 'helium plan less than $20',
+      },
+    ]);
+    expect(evidence.findings).toEqual(expect.arrayContaining([
+      {
+        label: 'Helium plan',
+        value: '$25 — web',
+        tone: 'fail',
+        atomId: 'atom.external_price.helium.lt.20',
+      },
+    ]));
+    const providerBody = JSON.parse(http.calls[0]!.body) as Record<string, unknown>;
+    expect(String(providerBody.input)).toContain('policyBundle');
+    expect(String(providerBody.input)).toContain('atom.external_price.helium.lt.20');
   });
 
   it('throws runtime_not_running on generatePlan before start', async () => {

@@ -190,6 +190,51 @@ export function buildAgentChatDisplay(raw: AgentChatResponse): AgentChatDisplay 
   };
 }
 
+export function buildAgentAnswerDisplay(raw: unknown): AgentChatDisplay {
+  const response = normalizeAgentChatDisplayResponse(raw);
+  const sections = normalizeDisplaySections(response.sections);
+  const answer = readableAgentAnswer(response.answer, sections.length > 0);
+  const citations = normalizeDisplayCitations(response.citations);
+
+  const lines: string[] = ['', header('Answer')];
+  lines.push(...displayParagraph(answer));
+  for (const section of sections) {
+    lines.push('', header(section.title));
+    for (const bullet of section.bullets) {
+      lines.push(`  • ${bullet}`);
+    }
+  }
+  const next = cleanDisplayLine(response.next);
+  if (next) {
+    lines.push('', header('Next'), `  ${next}`);
+  }
+  if (citations.length > 0) {
+    lines.push('', header('Sources'));
+    const shown = citations.slice(0, AGENT_CHAT_SOURCE_LIMIT);
+    shown.forEach((citation, index) => {
+      lines.push(`  [${index + 1}] ${formatDisplayCitation(citation)}`);
+    });
+    if (citations.length > shown.length) {
+      lines.push(`  ${badge(`and ${citations.length - shown.length} more`, 'muted')}`);
+    }
+  }
+  lines.push(divider());
+
+  const transcript = [
+    answer,
+    ...sections.flatMap((section) => [
+      `${section.title}:`,
+      ...section.bullets.map((bullet) => `- ${bullet}`),
+    ]),
+    next,
+  ].filter(Boolean).join('\n');
+
+  return {
+    output: lines.join('\n'),
+    transcript,
+  };
+}
+
 function normalizeAgentChatDisplayResponse(raw: unknown): AgentChatResponse {
   const record = raw && typeof raw === 'object' && !Array.isArray(raw)
     ? raw as Record<string, unknown>
@@ -876,7 +921,7 @@ export async function runAsk(options: GlobalOptions, question?: string): Promise
   const spin = spinner('Thinking…');
   try {
     const route = await resolveAgentAiRoute(options);
-    const raw = await askAgentPlan<Record<string, unknown>>(options, route, { plan: LAST_PLAN, question: q });
+    const raw = await askAgentPlan<unknown>(options, route, { plan: LAST_PLAN, question: q });
     spin.succeed('Answer received.');
     renderAnswer(raw);
   } catch (err) {
@@ -886,23 +931,8 @@ export async function runAsk(options: GlobalOptions, question?: string): Promise
   }
 }
 
-function renderAnswer(raw: Record<string, unknown>): void {
-  console.log();
-  console.log(header('Answer'));
-  const answer = typeof raw.answer === 'string' ? raw.answer : JSON.stringify(raw, null, 2);
-  console.log(answer);
-  const citations = Array.isArray(raw.citations) ? raw.citations : [];
-  if (citations.length > 0) {
-    console.log();
-    console.log(header('Citations'));
-    for (const c of citations) {
-      if (c && typeof c === 'object') {
-        const o = c as Record<string, unknown>;
-        console.log(`  · ${o.title ?? o.ref ?? '?'}  ${badge(String(o.kind ?? '—'), 'muted')}`);
-      }
-    }
-  }
-  console.log(divider());
+function renderAnswer(raw: unknown): void {
+  console.log(buildAgentAnswerDisplay(raw).output);
 }
 
 // review-plan loop: handles needs_input by re-prompting + re-submitting until

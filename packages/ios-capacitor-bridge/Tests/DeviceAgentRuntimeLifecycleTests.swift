@@ -160,7 +160,7 @@ final class DeviceAgentRuntimeLifecycleTests: XCTestCase {
             method: "reviewPlan",
             provider: "openai",
             text: "not json",
-            raw: [:]
+            raw: ["status": "completed"]
         )
 
         guard case .success(let review) = result else {
@@ -172,6 +172,12 @@ final class DeviceAgentRuntimeLifecycleTests: XCTestCase {
         XCTAssertNotNil(review["evidenceFactIds"] as? [Any])
         XCTAssertNotNil(review["blockingFactIds"] as? [Any])
         XCTAssertNotNil(review["missingFactIds"] as? [Any])
+        let evidence = review["evidence"] as? [String: Any]
+        let diagnostics = evidence?["diagnostics"] as? [String: Any]
+        XCTAssertEqual(diagnostics?["parseError"] as? String, "json_parse")
+        XCTAssertEqual(diagnostics?["textChars"] as? Int, 8)
+        XCTAssertEqual(diagnostics?["status"] as? String, "completed")
+        XCTAssertTrue(AgenticAgentProviderSupport.isMalformedReview(review))
     }
 }
 

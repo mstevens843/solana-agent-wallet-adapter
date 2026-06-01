@@ -1,16 +1,18 @@
+import type { AgentPlan } from '@solana-agent-wallet-adapter/workflow';
+
 import type { GlobalOptions } from '../shared/types.js';
 import { bridgeRequest } from '../http/index.js';
 import { select, input, badge, header } from '../tui/index.js';
 import { promptSendTokensForm, type SendTokensDraft } from '../forms/sendTokens.js';
 import { promptConnectorForm } from '../forms/connectorForm.js';
 import { listRecurringConnectors, listActions, humanizeActionKind } from '../forms/connectorMeta.js';
-import { maybeEnhanceWithAi } from '../forms/aiEnhance.js';
-import { verdictBlocksQueue } from '../forms/policyBundleRender.js';
+import { composeNoteWithReview, maybeReviewWithAgent, reviewPreparedTransactionWithAgent, type AgentReviewOutcome } from '../forms/agentReview.js';
 import { validatePositiveDecimal, validatePositiveInteger, validateClockTime } from '../forms/validators.js';
 import { fetchWalletAddress, removeUndefined, printQueuedAction } from './_shared.js';
 import { confirmHighStakes, estimateFromDraft } from './safetyGate.js';
 import { connectorSecretsForRequest, enabledConnectorIds, loadConnectorState } from './connectorState.js';
 import { runConnectorsMenu } from './connectors.js';
+import { preparedActionFromPrepareResult } from './newApproval.js';
 
 export type RepeatSubcommand = 'scheduled' | 'recurring' | 'connector';
 
@@ -115,16 +117,17 @@ export async function runRepeatScheduledWithPrefill(
   if (maxOccRaw.trim()) body.maxOccurrences = Number(maxOccRaw);
 
   const summary = `Schedule ${draft.amount} ${draft.token} → ${draft.recipient} (${cadence})`;
-  const enhanced = await maybeEnhanceWithAi(options, summary);
-  if (verdictBlocksQueue(enhanced?.verdict)) {
-    console.log(badge('AI denied this schedule — not queueing.', 'err'));
+  const plan = buildScheduledTransferAgentPlan(draft, cadence, body);
+  const review = await maybeReviewRepeatWithAgent(options, plan);
+  if (review.choice === 'delete') {
+    console.log(badge('Discarded.', 'muted'));
     return;
   }
-  const advice = enhanced?.advice ?? null;
-  // Recurring transfers only run with per-occurrence approvals; we still gate
-  // on high-risk AI advice and on a single-occurrence USD threshold so users
-  // don't accidentally schedule mainnet flows above $50/run without confirming.
-  const ok = await confirmHighStakes(options, summary, estimateFromDraft(draft), advice);
+  body.note = noteForRepeatReview(draft.note, review);
+  // Recurring transfers only run with per-occurrence approvals; still gate on
+  // a single-occurrence USD threshold so users don't accidentally schedule
+  // mainnet flows above $50/run without confirming.
+  const ok = await confirmHighStakes(options, summary, estimateFromDraft(draft), null);
   if (!ok) {
     console.log(badge('Aborted.', 'muted'));
     return;
@@ -137,32 +140,133 @@ export async function runRepeatScheduledWithPrefill(
   printQueuedAction('Scheduled transfer', result);
 }
 
+async function maybeReviewRepeatWithAgent(
+  options: GlobalOptions,
+  plan: AgentPlan,
+): Promise<AgentReviewOutcome> {
+  return maybeReviewWithAgent(options, plan, {
+    enabledPrompt: 'Review with AI before creating this repeat?',
+    instructionPrompt: 'Anything to ask or check? (ex: only create if SOL > $80, no outages, or token is verified)',
+    nextStepLabels: {
+      sendDefault: 'Create repeat now',
+      sendDenied: 'Create repeat anyway (overrides agent denial)',
+      sendNeedsInput: 'Create repeat anyway (overrides agent needs-input)',
+      sendDescription: 'Creates the repeat setup or queues the recurring connector action.',
+      save: 'Save/create without sending now',
+      saveDescription: 'Keeps the repeat setup queued; approve occurrence transactions later.',
+      delete: 'Delete repeat draft',
+      deleteDescription: 'Stops this repeat setup. Nothing is queued.',
+    },
+  });
+}
+
+function buildScheduledTransferAgentPlan(
+  draft: SendTokensDraft,
+  cadence: typeof CADENCE_CHOICES[number]['value'],
+  body: Record<string, unknown>,
+): AgentPlan {
+  return {
+    source: 'template',
+    category: 'recurring',
+    actionType: 'recurring_payment',
+    templateTitle: 'Scheduled transfer',
+    intent: `Schedule ${draft.amount} ${draft.token} to ${draft.recipient}`,
+    route: `${draft.token} -> ${draft.recipient}, ${cadence}`,
+    risk: 'Medium',
+    approval: 'Per-occurrence wallet approval required before signing',
+    parameters: stringifyParams(body),
+    fields: [
+      { label: 'Token', value: draft.token },
+      { label: 'Recipient', value: draft.recipient },
+      { label: 'Amount', value: draft.amount },
+      { label: 'Cadence', value: cadence },
+    ],
+    safeguards: ['Each occurrence requires wallet approval before signing.'],
+    userNotes: draft.note ?? '',
+  };
+}
+
+function buildConnectorRepeatAgentPlan(
+  connectorId: string,
+  actionKind: string,
+  draft: { summary: string; params: Record<string, unknown>; reason?: string; note?: string },
+): AgentPlan {
+  const parameters = stringifyParams(draft.params);
+  return {
+    source: 'template',
+    category: 'recurring',
+    actionType: actionKind,
+    templateTitle: draft.summary || `${connectorId}: ${actionKind}`,
+    intent: draft.summary || `${connectorId}: ${actionKind}`,
+    route: `${connectorId} -> ${actionKind}`,
+    risk: 'Medium',
+    approval: 'Wallet approval required before signing prepared occurrences',
+    parameters,
+    fields: Object.entries(parameters).map(([label, value]) => ({ label: humanizeParamLabel(label), value })),
+    safeguards: ['Wallet approval is required before signing any prepared occurrence.'],
+    userNotes: [draft.reason, draft.note].filter((part): part is string => Boolean(part?.trim())).join('\n'),
+  };
+}
+
+function stringifyParams(params: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(params)) {
+    if (raw === undefined || raw === null) continue;
+    out[key] = typeof raw === 'string'
+      ? raw
+      : typeof raw === 'number' || typeof raw === 'boolean'
+        ? String(raw)
+        : JSON.stringify(raw);
+  }
+  return out;
+}
+
+function noteForRepeatReview(baseNote: string | undefined, review: AgentReviewOutcome): string | undefined {
+  if (!review.reviewed) return baseNote?.trim() || undefined;
+  const decision = review.decision ?? '';
+  const isOverride = review.choice !== 'delete' && (decision === 'deny' || decision === 'needs_input');
+  const overrideLine = isOverride
+    ? `Override: ${decision === 'deny' ? 'agent denied' : 'agent needed input'}`
+    : undefined;
+  return composeNoteWithReview(baseNote, review.reviewSummary, overrideLine);
+}
+
+function humanizeParamLabel(key: string): string {
+  const spaced = key.replace(/[_-]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2');
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
 export async function runRepeatRecurring(options: GlobalOptions): Promise<void> {
   console.log(header('Recurring swap / DCA (Jupiter)'));
   // Jupiter recurring uses the schema-driven connector form. The action kind is
   // jupiter_recurring_create_time_order — its required inputs are already in
   // the Jupiter spec.
   const draft = await promptConnectorForm('jupiter', 'jupiter_recurring_create_time_order', options);
-  const enhanced = await maybeEnhanceWithAi(options, `Jupiter recurring: ${JSON.stringify(draft.params)}`);
-  if (verdictBlocksQueue(enhanced?.verdict)) {
-    console.log(badge('AI denied this recurring order — not queueing.', 'err'));
+  const plan = buildConnectorRepeatAgentPlan('jupiter', draft.actionKind, draft);
+  const review = await maybeReviewRepeatWithAgent(options, plan);
+  if (review.choice === 'delete') {
+    console.log(badge('Discarded.', 'muted'));
     return;
   }
 
   const { address, cluster } = await fetchWalletAddress(options);
   const connectorSecrets = connectorSecretsForRequest('jupiter');
+  const note = noteForRepeatReview(draft.note, review);
   const body = removeUndefined({
     kind: draft.actionKind,
     params: draft.params,
     walletAddress: address,
     cluster,
     summary: draft.summary,
+    reason: draft.reason,
+    note,
     connectorSecrets,
   });
   const result = await bridgeRequest(options, '/bridge/connector/prepare-action', {
     method: 'POST',
     body: JSON.stringify(body),
   });
+  if (await maybeReviewRepeatPreparedTransaction(options, plan, review, result) === 'deleted') return;
   printQueuedAction(draft.summary, result);
 }
 
@@ -199,25 +303,52 @@ export async function runRepeatConnector(options: GlobalOptions): Promise<void> 
     })),
   });
   const draft = await promptConnectorForm(connectorId, actionKind, options);
-  const enhanced = await maybeEnhanceWithAi(options, `${draft.summary} — ${JSON.stringify(draft.params)}`);
-  if (verdictBlocksQueue(enhanced?.verdict)) {
-    console.log(badge('AI denied this connector action — not queueing.', 'err'));
+  const plan = buildConnectorRepeatAgentPlan(connectorId, actionKind, draft);
+  const review = await maybeReviewRepeatWithAgent(options, plan);
+  if (review.choice === 'delete') {
+    console.log(badge('Discarded.', 'muted'));
     return;
   }
 
   const { address, cluster } = await fetchWalletAddress(options);
   const connectorSecrets = connectorSecretsForRequest(connectorId);
+  const note = noteForRepeatReview(draft.note, review);
   const body = removeUndefined({
     kind: draft.actionKind,
     params: draft.params,
     walletAddress: address,
     cluster,
     summary: draft.summary,
+    reason: draft.reason,
+    note,
     connectorSecrets,
   });
   const result = await bridgeRequest(options, '/bridge/connector/prepare-action', {
     method: 'POST',
     body: JSON.stringify(body),
   });
+  if (await maybeReviewRepeatPreparedTransaction(options, plan, review, result) === 'deleted') return;
   printQueuedAction(draft.summary, result);
+}
+
+async function maybeReviewRepeatPreparedTransaction(
+  options: GlobalOptions,
+  plan: AgentPlan,
+  review: AgentReviewOutcome,
+  result: unknown,
+): Promise<'ok' | 'deleted'> {
+  if (!review.needsPreparedTxReview) return 'ok';
+  const action = preparedActionFromPrepareResult(result);
+  const transactionBase64 = typeof action?.params?.transactionBase64 === 'string'
+    ? action.params.transactionBase64
+    : undefined;
+  if (!transactionBase64) return 'ok';
+  const txReview = await reviewPreparedTransactionWithAgent(options, plan, review, transactionBase64);
+  if (txReview?.choice !== 'delete' || !action?.id) return 'ok';
+  await bridgeRequest(options, '/bridge/prepared-actions/delete', {
+    method: 'POST',
+    body: JSON.stringify({ actionId: action.id }),
+  });
+  console.log(badge('Deleted saved draft after transaction review.', 'muted'));
+  return 'deleted';
 }

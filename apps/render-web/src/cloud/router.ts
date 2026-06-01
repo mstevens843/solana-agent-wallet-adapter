@@ -7,6 +7,7 @@ import {
   AgentWalletActionService,
   BridgeAiPlanner,
   DEFAULT_CONFIG,
+  makeTransactionSimulator,
   getTransfersByAddress,
   listCoinGeckoEndpointCatalog,
   requestBirdeyeExitLiquidityMulti,
@@ -1929,6 +1930,7 @@ async function handleHostedAiReviewRequest(
   const settings = hostedSettings(body.settings);
   const request = hostedReviewRequestForSession(body.request, session.walletAddress);
   const planner = new BridgeAiPlanner();
+  configureHostedAiPlanner(planner);
 
   try {
     planner.setSessionKey({
@@ -1949,6 +1951,24 @@ async function handleHostedAiReviewRequest(
     const message = err instanceof Error ? redactSecrets(err.message, settings.apiKey) : 'AI provider request failed.';
     writeJson(res, status, { error: message });
   }
+}
+
+let hostedPlannerRpcUrl: string | undefined;
+let hostedPlannerConnection: Connection | undefined;
+
+function configureHostedAiPlanner(planner: BridgeAiPlanner): void {
+  const connection = hostedAiConnection();
+  planner.runtimeConfig = DEFAULT_CONFIG;
+  planner.connection = connection;
+  planner.simulator = makeTransactionSimulator(connection);
+}
+
+function hostedAiConnection(): Connection {
+  if (!hostedPlannerConnection || hostedPlannerRpcUrl !== DEFAULT_CONFIG.rpcUrl) {
+    hostedPlannerRpcUrl = DEFAULT_CONFIG.rpcUrl;
+    hostedPlannerConnection = new Connection(DEFAULT_CONFIG.rpcUrl, 'confirmed');
+  }
+  return hostedPlannerConnection;
 }
 
 async function handleConnectorPrepareTransaction(

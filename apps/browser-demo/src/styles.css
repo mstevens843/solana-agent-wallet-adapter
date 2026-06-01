@@ -15011,9 +15011,15 @@ button.danger:hover:not(:disabled) {
   border-color: rgba(244, 208, 130, 0.28);
 }
 
+.ai-inactive-config-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
 .ai-inactive-config-note button {
   justify-self: start;
-  margin-top: 4px;
   min-height: 30px;
 }
 

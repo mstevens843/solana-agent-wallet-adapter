@@ -2,10 +2,13 @@
 //   - spliceBundle merges into existing context without clobbering siblings
 //   - enforceBlockingFailure overrides approve → deny when bundle has failures
 //   - enforceBlockingFailure passes through deny/needs_input unchanged
+//   - mergePolicyBundleEvaluations mirrors authoritative policy findings
 //   - empty bundle is a no-op
 import { describe, expect, it } from 'vitest';
 import {
+  applyPolicyBundleReviewSafety,
   enforceBlockingFailure,
+  mergePolicyBundleEvaluations,
   policyBundleNeedsResearch,
   policyBundleResearchTargets,
   spliceBundle,
@@ -151,5 +154,97 @@ describe('enforceBlockingFailure', () => {
     const out = enforceBlockingFailure(llm, malformed);
     expect(out.decision).toBe('deny');
     expect(out.blockingFactIds).toEqual([]);
+  });
+});
+
+describe('mergePolicyBundleEvaluations', () => {
+  it('mirrors policy findings and atom ids into the LLM result', () => {
+    const safe: PolicyBundle = { ...baseBundle, hasBlockingFailure: false };
+    const llm = {
+      decision: 'approve',
+      reason: 'ok',
+      evidence: {
+        findings: [{ label: 'Existing', value: 'kept', tone: 'neutral' }],
+        decisionContract: { evidenceFactIds: ['fact.wallet.connected_public_key'] },
+      },
+      evidenceFactIds: ['fact.wallet.connected_public_key'],
+    };
+
+    const out = mergePolicyBundleEvaluations(llm, safe);
+    expect(out.evidenceFactIds).toEqual([
+      'fact.wallet.connected_public_key',
+      'atom.price.sol.gte.80',
+      'atom.external_price.helium.lt.20',
+    ]);
+    expect((out.evidence as { findings: unknown[] }).findings).toEqual(expect.arrayContaining([
+      { label: 'Existing', value: 'kept', tone: 'neutral' },
+      { label: 'SOL price', value: '$146.50 — jupiter', tone: 'good', atomId: 'atom.price.sol.gte.80' },
+      { label: 'Helium plan', value: '$25 — web', tone: 'fail', atomId: 'atom.external_price.helium.lt.20' },
+    ]));
+    expect((out.evidence as unknown as { policyAtoms: unknown[] }).policyAtoms).toEqual([
+      { id: 'atom.price.sol.gte.80', type: 'price', rawText: 'SOL must be above $80' },
+      { id: 'atom.external_price.helium.lt.20', type: 'external_price', rawText: 'helium plan less than $20' },
+    ]);
+    expect(((out.evidence as Record<string, unknown>).decisionContract as Record<string, unknown>).evidenceFactIds).toEqual([
+      'fact.wallet.connected_public_key',
+      'atom.price.sol.gte.80',
+      'atom.external_price.helium.lt.20',
+    ]);
+  });
+
+  it('replaces same-label LLM findings with authoritative bundle findings', () => {
+    const safe: PolicyBundle = { ...baseBundle, hasBlockingFailure: false };
+    const out = mergePolicyBundleEvaluations({
+      decision: 'approve',
+      reason: 'ok',
+      evidence: {
+        findings: [{ label: 'Helium plan', value: 'model guess', tone: 'neutral' }],
+      },
+    }, safe);
+
+    expect((out.evidence as { findings: unknown[] }).findings).toEqual(expect.arrayContaining([
+      { label: 'Helium plan', value: '$25 — web', tone: 'fail', atomId: 'atom.external_price.helium.lt.20' },
+    ]));
+    expect((out.evidence as { findings: unknown[] }).findings).not.toEqual(expect.arrayContaining([
+      { label: 'Helium plan', value: 'model guess', tone: 'neutral' },
+    ]));
+  });
+
+  it('mirrors tx-gate outcomes onto evidence for audit/UI parity', () => {
+    const withTxGates: PolicyBundle = {
+      ...baseBundle,
+      hasBlockingFailure: false,
+      txGateOutcomes: {
+        'atom.price.sol.gte.80': {
+          rule: 'no_unrelated_instructions',
+          pass: false,
+          reason: 'Simulation touched an unrelated program.',
+        },
+      },
+    };
+    const out = mergePolicyBundleEvaluations({
+      decision: 'approve',
+      reason: 'ok',
+      evidence: {},
+    }, withTxGates);
+
+    expect((out.evidence as Record<string, unknown>).policyTxGates).toEqual(withTxGates.txGateOutcomes);
+  });
+
+  it('merges policy findings before applying blocking safety', () => {
+    const out = applyPolicyBundleReviewSafety({
+      decision: 'approve',
+      reason: 'model ignored bundle',
+      evidence: {},
+    }, baseBundle);
+
+    expect(out.decision).toBe('deny');
+    expect(out.blockingFactIds).toEqual(['atom.external_price.helium.lt.20']);
+    expect(((out.evidence as Record<string, unknown>).decisionContract as Record<string, unknown>).blockingFactIds).toEqual([
+      'atom.external_price.helium.lt.20',
+    ]);
+    expect((out.evidence as { findings: unknown[] }).findings).toEqual(expect.arrayContaining([
+      { label: 'Helium plan', value: '$25 — web', tone: 'fail', atomId: 'atom.external_price.helium.lt.20' },
+    ]));
   });
 });

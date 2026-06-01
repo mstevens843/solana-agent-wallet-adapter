@@ -32,7 +32,7 @@ export interface HostedAiStatus {
   };
 }
 
-interface AgentAiConfig {
+export interface AgentAiConfig {
   apiKey: string;
   path: AgentAiPath;
   provider: string;
@@ -46,6 +46,13 @@ export type AgentAiRoute =
   | { kind: 'hosted-byok'; config: AgentAiConfig; status: HostedAiStatus | null }
   | { kind: 'bridge'; status: BridgeAiStatus }
   | { kind: 'none'; hosted: HostedAiStatus | null; bridge: BridgeAiStatus | null; signedIn: boolean; config: AgentAiConfig | null };
+
+export interface AgentAiRouteInputs {
+  hosted: HostedAiStatus | null;
+  bridge: BridgeAiStatus | null;
+  signedIn: boolean;
+  config: AgentAiConfig | null;
+}
 
 export async function getHostedAiStatus(options: GlobalOptions, timeoutMs = 5_000): Promise<HostedAiStatus | null> {
   try {
@@ -81,29 +88,33 @@ export async function resolveAgentAiRoute(options: GlobalOptions): Promise<Agent
     loadAgentAiConfig(options),
   ]);
   const signedIn = sessionStatusSummary(session).authenticated;
+  const bridge = config?.path === 'hosted-byok'
+    ? null
+    : await tryBridgeRequest<BridgeAiStatus>(options, '/bridge/ai/status')
+        .then((result) => result.ok ? result.value : null);
+  return chooseAgentAiRoute({
+    hosted,
+    bridge,
+    signedIn,
+    config,
+  });
+}
+
+export function chooseAgentAiRoute(input: AgentAiRouteInputs): AgentAiRoute {
+  const { hosted, bridge, signedIn, config } = input;
   if (config?.path === 'hosted-byok') {
     if (signedIn && hosted?.available) {
       return { kind: 'hosted-byok', config, status: hosted };
     }
-    return {
-      kind: 'none',
-      hosted,
-      bridge: null,
-      signedIn,
-      config,
-    };
+    return { kind: 'none', hosted, bridge: null, signedIn, config };
   }
-  const bridge = await tryBridgeRequest<BridgeAiStatus>(options, '/bridge/ai/status');
-  if (bridge.ok && bridge.value.available) {
-    return { kind: 'bridge', status: bridge.value };
+  if (bridge?.available) {
+    return { kind: 'bridge', status: bridge };
   }
-  return {
-    kind: 'none',
-    hosted,
-    bridge: bridge.ok ? bridge.value : null,
-    signedIn,
-    config,
-  };
+  if (signedIn && hostedManagedAvailable(hosted)) {
+    return { kind: 'hosted-managed', status: hosted ?? {} };
+  }
+  return { kind: 'none', hosted, bridge, signedIn, config };
 }
 
 export function agentAiRouteLabel(route: AgentAiRoute): string {
@@ -257,6 +268,9 @@ export function agentAiSetupHint(route: AgentAiRoute): string {
       return 'Hosted BYOK is configured. Run /sign-in, then try /agent again.';
     }
     return 'Hosted BYOK is configured, but the hosted AI API is not reachable. Run /agent-setup and choose Local Bridge, or try again later.';
+  }
+  if (!route.signedIn && hostedManagedAvailable(route.hosted)) {
+    return 'Agentic hosted AI is available. Run /sign-in, then try /agent again.';
   }
   return 'Agent is not configured. Run /agent-setup to add a provider key.';
 }

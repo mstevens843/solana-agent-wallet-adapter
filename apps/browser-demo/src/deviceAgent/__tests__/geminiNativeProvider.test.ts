@@ -1,10 +1,9 @@
 // Pins the Gemini native :generateContent wire shape for the new Device Agent path:
 // URL is `${baseUrl}/models/${model}:generateContent` (with `/openai` stripped from
 // the preset baseUrl), x-goog-api-key header (not Authorization), systemInstruction
-// + contents[].parts[] body, responseMimeType: 'application/json' on plan/review only,
-// and google_search tool attached only on the research pass (with responseMimeType
-// removed in the same condition — Gemini rejects the combination). The Kotlin port
-// for this class is a followup ticket.
+// + contents[].parts[] body, responseMimeType + responseSchema on plan/review only,
+// and google_search tool attached only on the research pass (with JSON response config
+// removed in the same condition — Gemini rejects the combination).
 
 import { describe, expect, it } from 'vitest';
 
@@ -64,6 +63,10 @@ describe('GeminiNativeProvider.generatePlan', () => {
     expect(generationConfig.temperature).toBe(0.2);
     expect(generationConfig.maxOutputTokens).toBe(1024);
     expect(generationConfig.responseMimeType).toBe('application/json');
+    expect(generationConfig.responseSchema).toEqual(expect.objectContaining({
+      type: 'object',
+      required: ['intent', 'route', 'risk', 'approval', 'safeguards'],
+    }));
     expect('tools' in body).toBe(false);
   });
 
@@ -131,18 +134,34 @@ describe('GeminiNativeProvider.reviewPlan two-pass research', () => {
     });
 
     expect(result.decision).toBe('approve');
+    expect(result.evidence).toMatchObject({
+      research: { status: 'checked' },
+      findings: expect.arrayContaining([
+        { label: 'Current research', value: expect.stringContaining('Helium Mobile'), tone: 'neutral' },
+      ]),
+      sources: expect.arrayContaining([
+        { url: 'https://www.heliummobile.com/plans', title: 'Plans — Helium Mobile' },
+      ]),
+    });
     expect(http.calls.length).toBe(2);
 
     const researchBody = JSON.parse(http.calls[0]!.body) as Record<string, unknown>;
     expect(researchBody.tools).toEqual([{ google_search: {} }]);
     const researchGenConfig = researchBody.generationConfig as Record<string, unknown>;
     expect('responseMimeType' in researchGenConfig).toBe(false);
+    expect('responseSchema' in researchGenConfig).toBe(false);
     expect(researchGenConfig.maxOutputTokens).toBe(1800);
 
     const reviewBody = JSON.parse(http.calls[1]!.body) as Record<string, unknown>;
     expect('tools' in reviewBody).toBe(false);
     const reviewGenConfig = reviewBody.generationConfig as Record<string, unknown>;
     expect(reviewGenConfig.responseMimeType).toBe('application/json');
+    expect(reviewGenConfig.maxOutputTokens).toBe(1800);
+    expect(reviewGenConfig.responseSchema).toEqual(expect.objectContaining({
+      type: 'object',
+      required: ['decision', 'reason', 'summary', 'evidence'],
+    }));
+    expect(JSON.stringify(reviewGenConfig.responseSchema)).toContain('evidenceFactIds');
     const reviewContents = reviewBody.contents as Array<{ parts: Array<{ text: string }> }>;
     expect(reviewContents[0]!.parts[0]!.text).toContain('researchEvidence');
     expect(reviewContents[0]!.parts[0]!.text).toContain('heliummobile.com');
@@ -186,7 +205,12 @@ describe('GeminiNativeProvider.reviewPlan two-pass research', () => {
     expect(result.decision).toBe('approve');
     const body = JSON.parse(http.calls[0]!.body) as Record<string, unknown>;
     expect('tools' in body).toBe(false);
-    expect((body.generationConfig as Record<string, unknown>).responseMimeType).toBe('application/json');
+    const generationConfig = body.generationConfig as Record<string, unknown>;
+    expect(generationConfig.responseMimeType).toBe('application/json');
+    expect(generationConfig.responseSchema).toEqual(expect.objectContaining({
+      type: 'object',
+      required: ['decision', 'reason', 'summary', 'evidence'],
+    }));
     const contents = body.contents as Array<{ parts: Array<{ text: string }> }>;
     expect(contents[0]!.parts[0]!.text).toBe(buildReviewMessages(reviewPayload).userContent);
   });
@@ -203,6 +227,7 @@ describe('GeminiNativeProvider.ask', () => {
     const body = JSON.parse(http.calls[0]!.body) as Record<string, unknown>;
     const generationConfig = body.generationConfig as Record<string, unknown>;
     expect('responseMimeType' in generationConfig).toBe(false);
+    expect('responseSchema' in generationConfig).toBe(false);
     expect(generationConfig.temperature).toBe(0.3);
     expect(generationConfig.maxOutputTokens).toBe(800);
   });
@@ -218,7 +243,9 @@ describe('GeminiNativeProvider.ask', () => {
 
     const body = JSON.parse(http.calls[0]!.body) as Record<string, unknown>;
     expect(body.tools).toEqual([{ google_search: {} }]);
-    expect('responseMimeType' in (body.generationConfig as Record<string, unknown>)).toBe(false);
+    const generationConfig = body.generationConfig as Record<string, unknown>;
+    expect('responseMimeType' in generationConfig).toBe(false);
+    expect('responseSchema' in generationConfig).toBe(false);
   });
 
   it('throws provider_invalid_response when the model returns blank text', async () => {

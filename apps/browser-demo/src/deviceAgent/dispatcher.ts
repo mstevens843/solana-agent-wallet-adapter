@@ -15,6 +15,10 @@ import {
   type DeviceAgentRuntimeState,
   type DeviceAgentStatus,
 } from '../deviceAgentClient.js';
+import {
+  defaultDeviceAgentPolicyMiddleware,
+  type DeviceAgentPolicyMiddleware,
+} from '../deviceAgentPolicyMiddleware.js';
 import { BROWSER_DEVICE_AGENT_ENABLED } from '../devGate.js';
 
 import { DeviceAgentProviderExecutor } from './provider/deviceAgentProviderExecutor.js';
@@ -81,6 +85,7 @@ export interface BrowserDeviceAgentDeps {
   walletAddress?: string;
   now?: () => Date;
   httpExecutor?: HttpExecutor;
+  policyMiddleware?: DeviceAgentPolicyMiddleware;
   persistence?: RuntimePersistence;
   secretStore?: SecretStore;
   executor?: ProviderExecutor;
@@ -92,6 +97,7 @@ interface ResolvedDeps {
   walletAddress: string | undefined;
   now: () => Date;
   httpExecutor: HttpExecutor;
+  policyMiddleware: DeviceAgentPolicyMiddleware;
   persistenceOverride: RuntimePersistence | undefined;
   secretStoreOverride: SecretStore | undefined;
   executorOverride: ProviderExecutor | undefined;
@@ -303,6 +309,7 @@ function buildState(deps: BrowserDeviceAgentDeps): InternalState {
     walletAddress: deps.walletAddress,
     now: deps.now ?? (() => new Date()),
     httpExecutor: deps.httpExecutor ?? new FetchHttpExecutor(),
+    policyMiddleware: deps.policyMiddleware ?? defaultDeviceAgentPolicyMiddleware,
     persistenceOverride: deps.persistence,
     secretStoreOverride: deps.secretStore,
     executorOverride: deps.executor,
@@ -519,10 +526,17 @@ async function handleSubmit<R>(
     });
   }
 
+  const policyPreparation = await state.deps.policyMiddleware.prepare(method, payload, { signal });
+  if (signal?.aborted) {
+    throw asClientError(state, {
+      code: DEVICE_AGENT_ERROR_CODES.RUNTIME_CANCELED,
+      message: 'Device Agent request was aborted before submission.',
+    });
+  }
   const request: RuntimeRequest = {
     requestId: generateRequestId(),
     method: method as RuntimeMethodWire,
-    payload,
+    payload: policyPreparation.payload as Record<string, unknown>,
     enqueuedAtMs: state.deps.now().getTime(),
   };
 
@@ -530,7 +544,12 @@ async function handleSubmit<R>(
   // the per-request AbortController. The HTTP fetch sees a real abort and
   // unwinds; the queue then maps the resulting AbortError to runtime_canceled.
   const result = await state.registry.submit(request, signal);
-  return finalizeResult<R>(state, result);
+  const finalized = finalizeResult<R>(state, result);
+  if (finalized.result === undefined) return finalized;
+  return {
+    ...finalized,
+    result: state.deps.policyMiddleware.finalize(method, finalized.result, policyPreparation.bundle),
+  };
 }
 
 function finalizeResult<R>(

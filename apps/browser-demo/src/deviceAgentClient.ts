@@ -5,8 +5,11 @@
 // staying scaffold-only on Render and browser-dev.
 
 import { BROWSER_DEVICE_AGENT_ENABLED } from './devGate.js';
+import {
+  finalizeDeviceAgentPolicyResult,
+  prepareDeviceAgentPolicyPayload,
+} from './deviceAgentPolicyMiddleware.js';
 import type { AiDiagnosticCode, AiDiagnosticEntry } from './planner.js';
-import { fetchPolicyBundle, spliceBundle, enforceBlockingFailure, type PolicyBundle } from './policyEnrichClient.js';
 
 export type DeviceAgentRuntimeState = 'unavailable' | 'stopped' | 'starting' | 'running' | 'error';
 export type DeviceAgentRuntimeKind =
@@ -221,22 +224,17 @@ export async function deviceAgentRequest<R = unknown>(
     );
   }
 
-  // BYOK enrichment: review/ask/generatePlan calls go to the user's own LLM via
-  // the native bridge, bypassing the cloud's aiPlanner. Pre-fetch the policy
-  // bundle from /api/policy/enrich so the on-device LLM sees the same provider-
-  // resolved evidence (jupiter / coingecko / birdeye / helius / alternative_me /
-  // web). Silent degradation on failure — request still goes through with raw
-  // payload, the LLM falls back to un-enriched reasoning.
-  let appliedBundle: PolicyBundle | null = null;
-  if (shouldEnrichPolicyBundle(method, payload)) {
-    appliedBundle = await fetchPolicyBundle(
-      extractEnrichPayload(method, payload),
-      { signal: options.signal },
-    );
-    if (appliedBundle) {
-      payload = spliceBundle(payload, appliedBundle);
-    }
+  // BYOK enrichment: review/ask calls go to the user's own LLM via the native
+  // bridge, bypassing the cloud's aiPlanner. The shared middleware pre-fetches
+  // policyBundle evidence from /api/policy/enrich and silently degrades on
+  // failure, matching cloud-side aiPlanner behavior.
+  const policyPreparation = await prepareDeviceAgentPolicyPayload(method, payload, {
+    signal: options.signal,
+  });
+  if (options.signal?.aborted) {
+    throw new DeviceAgentClientError('aborted', 'Device Agent request was aborted.');
   }
+  payload = policyPreparation.payload;
 
   let payloadJson: string;
   try {
@@ -280,15 +278,10 @@ export async function deviceAgentRequest<R = unknown>(
           // Mirror cloud-side applyServerSideReviewSafety: if the policy bundle
           // had blocking failures and the LLM still returned approve, force-deny.
           // This is the BYOK device-agent equivalent of the cloud's safety net.
-          if (
-            appliedBundle &&
-            envelope.result &&
-            typeof envelope.result === 'object' &&
-            method === 'reviewPlan'
-          ) {
+          if (policyPreparation.bundle && envelope.result !== undefined) {
             envelope = {
               ...envelope,
-              result: enforceBlockingFailure(envelope.result as Record<string, unknown>, appliedBundle),
+              result: finalizeDeviceAgentPolicyResult(method, envelope.result, policyPreparation.bundle),
             };
           }
           logDeviceAgent('request', 'SUCCESS', {
@@ -385,16 +378,13 @@ export async function iosDeviceAgentRequestOrThrow<R = unknown>(
     );
   }
   let effectivePayload = payload;
-  let appliedBundle: PolicyBundle | null = null;
-  if (shouldEnrichPolicyBundle(method, effectivePayload)) {
-    appliedBundle = await fetchPolicyBundle(
-      extractEnrichPayload(method, effectivePayload),
-      { signal: options.signal },
-    );
-    if (appliedBundle) {
-      effectivePayload = spliceBundle(effectivePayload, appliedBundle);
-    }
+  const policyPreparation = await prepareDeviceAgentPolicyPayload(method, effectivePayload, {
+    signal: options.signal,
+  });
+  if (options.signal?.aborted) {
+    throw new DeviceAgentClientError('aborted', 'Device Agent request was aborted.');
   }
+  effectivePayload = policyPreparation.payload;
   const requestId = generateRequestId();
   const debugBaseUrl = mobileDeviceAgentDebugBaseUrl();
   const payloadRecord: Record<string, unknown> = {
@@ -512,15 +502,7 @@ export async function iosDeviceAgentRequestOrThrow<R = unknown>(
       );
     }
     let result = envelope.result as unknown;
-    if (
-      appliedBundle &&
-      method === 'reviewPlan' &&
-      result &&
-      typeof result === 'object' &&
-      !Array.isArray(result)
-    ) {
-      result = enforceBlockingFailure(result as Record<string, unknown>, appliedBundle);
-    }
+    result = finalizeDeviceAgentPolicyResult(method, result, policyPreparation.bundle);
     logDeviceAgent('ios-request', 'SUCCESS', {
       method,
       requestId,
@@ -558,15 +540,7 @@ export async function iosDeviceAgentRequestOrThrow<R = unknown>(
     return { status };
   }
   let result = normalizeIosDeviceAgentResult(nativeResult);
-  if (
-    appliedBundle &&
-    method === 'reviewPlan' &&
-    result &&
-    typeof result === 'object' &&
-    !Array.isArray(result)
-  ) {
-    result = enforceBlockingFailure(result as Record<string, unknown>, appliedBundle);
-  }
+  result = finalizeDeviceAgentPolicyResult(method, result, policyPreparation.bundle);
   const statusPayload = await bridge.status?.().catch(() => undefined);
   const status = parseDeviceAgentStatus(statusPayload, 'ios-native');
   logDeviceAgent('ios-request', 'SUCCESS', {
@@ -1071,54 +1045,6 @@ function payloadCharLimit(method: DeviceAgentMethod): number {
     return DEVICE_AGENT_MAX_SECURE_VALUE_CHARS;
   }
   return DEVICE_AGENT_MAX_PAYLOAD_CHARS;
-}
-
-/**
- * Only LLM-bound methods get policy enrichment — status/configure/start/stop are
- * orchestration calls that don't need facts. Skips enrichment if the payload
- * already carries a policyBundle (caller pre-built one).
- */
-function shouldEnrichPolicyBundle(method: DeviceAgentMethod, payload: unknown): boolean {
-  if (method !== 'reviewPlan' && method !== 'ask' && method !== 'generatePlan') return false;
-  if (!payload || typeof payload !== 'object') return true;
-  const ctx = (payload as { context?: unknown }).context;
-  if (ctx && typeof ctx === 'object' && !Array.isArray(ctx)) {
-    if ((ctx as { policyBundle?: unknown }).policyBundle) return false;
-  }
-  return true;
-}
-
-/**
- * Extract the fields the enrich endpoint cares about from the device-agent
- * payload. Different methods carry the instruction text in different shapes
- * (reviewPlan: `instruction`, ask: `question`, generatePlan: `userPrompt`).
- */
-function extractEnrichPayload(method: DeviceAgentMethod, payload: unknown): Record<string, unknown> {
-  const p = (payload && typeof payload === 'object' ? payload : {}) as Record<string, unknown>;
-  const plan = (p.plan && typeof p.plan === 'object' ? p.plan : {}) as Record<string, unknown>;
-  const ctx = (p.context && typeof p.context === 'object' ? p.context : {}) as Record<string, unknown>;
-  let instruction = '';
-  if (method === 'reviewPlan') {
-    instruction = (typeof p.instruction === 'string' ? p.instruction : '');
-  } else if (method === 'ask') {
-    instruction = (typeof p.question === 'string' ? p.question : '') || (typeof p.instruction === 'string' ? p.instruction : '');
-  } else if (method === 'generatePlan') {
-    instruction = (typeof p.userPrompt === 'string' ? p.userPrompt : '') || (typeof p.prompt === 'string' ? p.prompt : '');
-  }
-  return {
-    instruction,
-    userNotes: typeof plan.userNotes === 'string' ? plan.userNotes : undefined,
-    intent: typeof plan.intent === 'string' ? plan.intent : undefined,
-    walletAddress: typeof p.walletAddress === 'string' ? p.walletAddress : undefined,
-    draftParameters: plan.parameters && typeof plan.parameters === 'object' && !Array.isArray(plan.parameters)
-      ? plan.parameters as Record<string, string>
-      : undefined,
-    transactionBase64: typeof ctx.transactionBase64 === 'string' ? ctx.transactionBase64 : undefined,
-    actionType: typeof plan.actionType === 'string' ? plan.actionType : undefined,
-    knownTokenSymbols: Array.isArray(p.knownTokenSymbols)
-      ? (p.knownTokenSymbols as unknown[]).filter((s): s is string => typeof s === 'string')
-      : undefined,
-  };
 }
 
 function payloadPreview(method: DeviceAgentMethod, payload: unknown): string | undefined {

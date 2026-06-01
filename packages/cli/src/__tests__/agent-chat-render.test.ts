@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { buildAgentChatDisplay } from '../flows/agent.js';
+import { buildAgentAnswerDisplay, buildAgentChatDisplay } from '../flows/agent.js';
 
 test('agent chat display renders answer, sections, next step, and sources separately', () => {
   const display = buildAgentChatDisplay({
@@ -100,6 +100,19 @@ test('agent chat display keeps plain-text fallback readable and caps noisy sourc
   assert.match(plain, /\[6\] Source 6 - example6\.com/);
   assert.doesNotMatch(plain, /\[7\] Source 7/);
   assert.match(plain, /and 2 more/);
+});
+
+test('ask answer display uses structured chat normalization without default next prompt', () => {
+  const display = buildAgentAnswerDisplay({
+    answer: `{"answer":"<cite index=\"1-2\">SPY is above 500.</cite>","sections":[{"title":"Check","bullets":["Threshold passes."]}],"citations":[{"kind":"url","title":"Quote","ref":"https://finance.example/spy"}]}`,
+  });
+  const plain = stripAnsi(display.output);
+
+  assert.match(plain, /Answer\n  SPY is above 500/);
+  assert.match(plain, /Check\n  • Threshold passes/);
+  assert.match(plain, /Sources\n  \[1\] Quote - finance\.example/);
+  assert.doesNotMatch(plain, /Type \/plan/);
+  assert.doesNotMatch(plain, /<\/?cite\b/i);
 });
 
 function stripAnsi(value: string): string {

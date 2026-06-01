@@ -133,7 +133,7 @@ describe('AnthropicProvider.reviewPlan', () => {
 
     expect(result.decision).toBe('approve');
     const body = JSON.parse(http.calls[0]!.body) as Record<string, unknown>;
-    expect(body.max_tokens).toBe(1024);
+    expect(body.max_tokens).toBe(1800);
     expect(body.system).toBe(DEVICE_AGENT_SYSTEM_PROMPTS.REVIEW);
   });
 
@@ -172,6 +172,15 @@ describe('AnthropicProvider.reviewPlan', () => {
     const result = await provider.reviewPlan(payload);
 
     expect(result.decision).toBe('approve');
+    expect(result.evidence).toMatchObject({
+      research: { status: 'checked' },
+      findings: expect.arrayContaining([
+        { label: 'Current research', value: expect.stringContaining('Helium Mobile Air Plan'), tone: 'neutral' },
+      ]),
+      sources: expect.arrayContaining([
+        { url: 'https://heliummobile.com/plans', title: 'Helium Mobile - Plans' },
+      ]),
+    });
     expect(http.calls).toHaveLength(2);
 
     // First call: research pass — web_search tool bound.

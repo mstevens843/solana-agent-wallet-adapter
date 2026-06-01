@@ -20,10 +20,10 @@ import java.time.Instant
 //   - Gemini's /v1beta/openai compat endpoint does NOT support `tools: [{ google_search: {} }]`
 //     — the grounding tool is only exposed on the native :generateContent endpoint.
 //   - The native request shape (`systemInstruction`, `contents[].parts[]`,
-//     `generationConfig.{responseMimeType, temperature, maxOutputTokens}`) is incompatible
+//     `generationConfig.{responseMimeType,responseSchema,temperature,maxOutputTokens}`) is incompatible
 //     with chat completions, so it lives in its own class.
-//   - Gemini rejects `generationConfig.responseMimeType: 'application/json'` whenever any
-//     tool is attached, so the research pass MUST drop responseMimeType.
+//   - Gemini rejects JSON response config whenever any tool is attached, so the research
+//     pass MUST drop responseMimeType/responseSchema.
 //   - Routing is by `config.provider == "gemini"` at the dispatcher level.
 //
 // Kotlin port of apps/browser-demo/src/deviceAgent/provider/geminiNativeProvider.ts.
@@ -38,6 +38,7 @@ internal class GeminiNativeProvider(
         val response = postGenerateContent(
             messages,
             jsonObjectMode = true,
+            responseSchema = PLAN_RESPONSE_SCHEMA,
             temperature = PLAN_TEMPERATURE,
             maxOutputTokens = PLAN_MAX_TOKENS,
             research = false,
@@ -53,21 +54,29 @@ internal class GeminiNativeProvider(
             val response = postGenerateContent(
                 messages,
                 jsonObjectMode = true,
+                responseSchema = REVIEW_RESPONSE_SCHEMA,
                 temperature = REVIEW_TEMPERATURE,
                 maxOutputTokens = REVIEW_MAX_TOKENS,
                 research = false,
             )
-            return ProviderResponseParser.parseModelJson(ProviderResponseParser.extractGeminiText(response))
+            return ReviewPostprocessor.finalize(
+                ProviderResponseParser.parseModelJson(ProviderResponseParser.extractGeminiText(response)),
+                reviewPayload,
+            )
         }
         val messages = DeviceAgentMessageAssembler.buildReviewMessages(payload)
         val response = postGenerateContent(
             messages,
             jsonObjectMode = true,
+            responseSchema = REVIEW_RESPONSE_SCHEMA,
             temperature = REVIEW_TEMPERATURE,
             maxOutputTokens = REVIEW_MAX_TOKENS,
             research = false,
         )
-        return ProviderResponseParser.parseModelJson(ProviderResponseParser.extractGeminiText(response))
+        return ReviewPostprocessor.finalize(
+            ProviderResponseParser.parseModelJson(ProviderResponseParser.extractGeminiText(response)),
+            payload,
+        )
     }
 
     override suspend fun ask(payload: JSONObject): JSONObject {
@@ -148,6 +157,7 @@ internal class GeminiNativeProvider(
     private suspend fun postGenerateContent(
         messages: Messages,
         jsonObjectMode: Boolean,
+        responseSchema: JSONObject? = null,
         temperature: Double,
         maxOutputTokens: Int,
         research: Boolean,
@@ -163,10 +173,11 @@ internal class GeminiNativeProvider(
         val generationConfig = JSONObject()
             .put("temperature", temperature)
             .put("maxOutputTokens", maxOutputTokens)
-        // Gemini rejects `responseMimeType: 'application/json'` whenever any tool is attached,
-        // so the research pass (which has `tools`) must omit it.
+        // Gemini rejects JSON response config whenever any tool is attached, so the
+        // research pass (which has `tools`) must omit it.
         if (jsonObjectMode && !research) {
             generationConfig.put("responseMimeType", "application/json")
+            if (responseSchema != null) generationConfig.put("responseSchema", responseSchema)
         }
 
         val body = JSONObject()
@@ -212,9 +223,137 @@ internal class GeminiNativeProvider(
         private const val REVIEW_TEMPERATURE: Double = 0.2
         private const val ASK_TEMPERATURE: Double = 0.3
         private const val PLAN_MAX_TOKENS: Int = 1024
-        private const val REVIEW_MAX_TOKENS: Int = 1024
+        private const val REVIEW_MAX_TOKENS: Int = 1800
         private const val RESEARCH_MAX_TOKENS: Int = 1800
         private const val ASK_MAX_TOKENS: Int = 800
+
+        private val STRING_ARRAY_SCHEMA = JSONObject()
+            .put("type", "array")
+            .put("items", JSONObject().put("type", "string"))
+
+        private val FINDING_SCHEMA = JSONObject()
+            .put("type", "object")
+            .put(
+                "properties",
+                JSONObject()
+                    .put("label", JSONObject().put("type", "string"))
+                    .put("value", JSONObject().put("type", "string"))
+                    .put("tone", JSONObject().put("type", "string").put("enum", JSONArray().put("good").put("warn").put("neutral").put("fail"))),
+            )
+            .put("required", JSONArray().put("label").put("value").put("tone"))
+            .put("propertyOrdering", JSONArray().put("label").put("value").put("tone"))
+
+        private val SOURCE_SCHEMA = JSONObject()
+            .put("type", "object")
+            .put(
+                "properties",
+                JSONObject()
+                    .put("title", JSONObject().put("type", "string"))
+                    .put("url", JSONObject().put("type", "string")),
+            )
+            .put("required", JSONArray().put("url"))
+            .put("propertyOrdering", JSONArray().put("title").put("url"))
+
+        private val PLAN_RESPONSE_SCHEMA: JSONObject = JSONObject()
+            .put("type", "object")
+            .put(
+                "properties",
+                JSONObject()
+                    .put("intent", JSONObject().put("type", "string"))
+                    .put("route", JSONObject().put("type", "string"))
+                    .put("risk", JSONObject().put("type", "string"))
+                    .put("approval", JSONObject().put("type", "string"))
+                    .put("safeguards", STRING_ARRAY_SCHEMA),
+            )
+            .put("required", JSONArray().put("intent").put("route").put("risk").put("approval").put("safeguards"))
+            .put("propertyOrdering", JSONArray().put("intent").put("route").put("risk").put("approval").put("safeguards"))
+
+        private val REVIEW_RESPONSE_SCHEMA: JSONObject = buildReviewResponseSchema()
+
+        private fun buildReviewResponseSchema(): JSONObject {
+            val decisionEnum = JSONArray().put("approve").put("deny").put("needs_input")
+            val inputKindEnum = JSONArray().put("text").put("select").put("number")
+            val reviewerIdEnum = JSONArray().put("risk").put("quote").put("policy").put("protocol")
+            val confidenceEnum = JSONArray().put("high").put("medium").put("low")
+
+            val questionItem = JSONObject()
+                .put("type", "object")
+                .put(
+                    "properties",
+                    JSONObject()
+                        .put("id", JSONObject().put("type", "string"))
+                        .put("prompt", JSONObject().put("type", "string"))
+                        .put("inputKind", JSONObject().put("type", "string").put("enum", inputKindEnum))
+                        .put("options", STRING_ARRAY_SCHEMA)
+                        .put("required", JSONObject().put("type", "boolean"))
+                        .put("hint", JSONObject().put("type", "string")),
+                )
+                .put("required", JSONArray().put("id").put("prompt").put("inputKind"))
+                .put("propertyOrdering", JSONArray().put("id").put("prompt").put("inputKind").put("options").put("required").put("hint"))
+
+            val reviewerItem = JSONObject()
+                .put("type", "object")
+                .put(
+                    "properties",
+                    JSONObject()
+                        .put("id", JSONObject().put("type", "string").put("enum", reviewerIdEnum))
+                        .put("decision", JSONObject().put("type", "string").put("enum", decisionEnum))
+                        .put("reason", JSONObject().put("type", "string"))
+                        .put("summary", JSONObject().put("type", "string")),
+                )
+                .put("required", JSONArray().put("id").put("decision").put("reason"))
+                .put("propertyOrdering", JSONArray().put("id").put("decision").put("reason").put("summary"))
+
+            return JSONObject()
+                .put("type", "object")
+                .put(
+                    "properties",
+                    JSONObject()
+                        .put("decision", JSONObject().put("type", "string").put("enum", decisionEnum))
+                        .put("reason", JSONObject().put("type", "string"))
+                        .put("summary", JSONObject().put("type", "string"))
+                        .put(
+                            "evidence",
+                            JSONObject()
+                                .put("type", "object")
+                                .put(
+                                    "properties",
+                                    JSONObject()
+                                        .put("findings", JSONObject().put("type", "array").put("items", FINDING_SCHEMA))
+                                        .put("sources", JSONObject().put("type", "array").put("items", SOURCE_SCHEMA))
+                                        .put(
+                                            "research",
+                                            JSONObject()
+                                                .put("type", "object")
+                                                .put("properties", JSONObject().put("status", JSONObject().put("type", "string"))),
+                                        )
+                                        .put("policiesApplied", STRING_ARRAY_SCHEMA),
+                                )
+                                .put("propertyOrdering", JSONArray().put("findings").put("sources").put("research").put("policiesApplied")),
+                        )
+                        .put("questions", JSONObject().put("type", "array").put("maxItems", 3).put("items", questionItem))
+                        .put("reviewers", JSONObject().put("type", "array").put("maxItems", 4).put("items", reviewerItem))
+                        .put("evidenceFactIds", STRING_ARRAY_SCHEMA)
+                        .put("blockingFactIds", STRING_ARRAY_SCHEMA)
+                        .put("missingFactIds", STRING_ARRAY_SCHEMA)
+                        .put("confidence", JSONObject().put("type", "string").put("enum", confidenceEnum)),
+                )
+                .put("required", JSONArray().put("decision").put("reason").put("summary").put("evidence"))
+                .put(
+                    "propertyOrdering",
+                    JSONArray()
+                        .put("decision")
+                        .put("reason")
+                        .put("summary")
+                        .put("evidence")
+                        .put("questions")
+                        .put("reviewers")
+                        .put("evidenceFactIds")
+                        .put("blockingFactIds")
+                        .put("missingFactIds")
+                        .put("confidence"),
+                )
+        }
 
         private fun researchNeeded(payload: JSONObject): Boolean =
             payload.optJSONObject("research")?.optBoolean("needed", false) == true

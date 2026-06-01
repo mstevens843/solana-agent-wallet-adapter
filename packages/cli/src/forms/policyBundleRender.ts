@@ -4,6 +4,7 @@ interface Atom {
   id?: string;
   type?: string;
   kind?: string;
+  rawText?: string;
   query?: string;
   text?: string;
   threshold?: string | number;
@@ -16,6 +17,12 @@ interface Evaluation {
   reason?: string;
   value?: unknown;
   provider?: string;
+  unresolved?: boolean;
+  finding?: {
+    label?: string;
+    value?: unknown;
+    tone?: string;
+  };
 }
 
 interface PolicyBundle {
@@ -32,7 +39,11 @@ interface DecisionShape {
   decision?: string;
   reason?: string;
   summary?: string;
-  evidence?: Record<string, unknown> & { policyBundle?: PolicyBundle };
+  evidence?: Record<string, unknown> & {
+    policyBundle?: PolicyBundle;
+    policyAtoms?: Atom[];
+    policyTxGates?: PolicyBundle['txGateOutcomes'];
+  };
   policyBundle?: PolicyBundle;
 }
 
@@ -50,11 +61,18 @@ export interface PolicyReviewVerdict {
 // decision banner, atom verdicts, blocking-failure warning. Returns a
 // `PolicyReviewVerdict` for the caller; safe to call when the bundle is
 // missing (returns a default `decision: 'unknown'`).
-export function renderPolicyBundle(response: DecisionShape | null | undefined): PolicyReviewVerdict {
+export interface RenderPolicyBundleOptions {
+  printDecision?: boolean;
+}
+
+export function renderPolicyBundle(
+  response: DecisionShape | null | undefined,
+  options: RenderPolicyBundleOptions = {},
+): PolicyReviewVerdict {
   if (!response) {
     return { decision: 'unknown', hasBlockingFailure: false, atomCount: 0, unresolvedCount: 0 };
   }
-  const bundle = response.policyBundle ?? response.evidence?.policyBundle;
+  const bundle = policyBundleFromResponse(response);
   const decision = (response.decision ?? '').toLowerCase();
   const hasBlockingFailure = Boolean(bundle?.hasBlockingFailure);
 
@@ -65,14 +83,17 @@ export function renderPolicyBundle(response: DecisionShape | null | undefined): 
     console.log(badge('⚠ Inconsistent verdict — bridge says APPROVE but a blocking policy failed.', 'warn'));
   }
 
-  if (decision) {
+  if (decision && options.printDecision !== false) {
     console.log();
     console.log(decisionBanner(decision, response.reason ?? response.summary));
   }
 
   const atoms = bundle?.atoms ?? [];
   const evaluations = bundle?.evaluations ?? [];
-  const unresolved = bundle?.unresolvedAtoms ?? [];
+  const unresolved = bundle?.unresolvedAtoms ?? atoms.filter((atom) => {
+    const ev = atom.id ? evaluations.find((candidate) => candidate.atomId === atom.id) : undefined;
+    return ev?.unresolved === true;
+  });
   const resolutions = bundle?.resolutions ?? [];
 
   if (atoms.length > 0 || evaluations.length > 0 || unresolved.length > 0) {
@@ -140,20 +161,30 @@ function renderAtomTable(atoms: Atom[], evaluations: Evaluation[], resolutions: 
     const id = atom.id ?? '?';
     const ev = evaluations.find((e) => e.atomId === id);
     const res = resolutions.find((r) => r.atomId === id);
-    const provider = res?.provider ?? ev?.provider ?? '—';
-    const value = describeValue(ev?.value ?? res?.value);
+    const provider = res?.provider ?? ev?.provider ?? providerHint(atom, ev);
+    const value = describeValue(ev?.finding?.value ?? ev?.value ?? res?.value);
     const verdict = ev?.pass === true ? badge('✓', 'ok')
                   : ev?.pass === false ? badge('✗', 'err')
+                  : ev?.unresolved === true ? badge('?', 'warn')
                   : badge('—', 'muted');
-    console.log(`  ${verdict}  ${describeAtom(atom).padEnd(40)}  ${badge(provider, 'muted')}  ${value}`);
-    if (ev?.reason) console.log(`         ${badge(ev.reason, 'muted')}`);
+    const providerPart = provider ? `  ${badge(provider, 'muted')}` : '';
+    console.log(`  ${verdict}  ${describeAtom(atom).padEnd(40)}${providerPart}  ${value}`);
+    const reason = ev?.reason ?? (typeof ev?.finding?.label === 'string' ? ev.finding.label : undefined);
+    if (reason) console.log(`         ${badge(reason, 'muted')}`);
   }
 }
 
 function describeAtom(atom: Atom): string {
   const type = atom.kind ?? atom.type ?? 'atom';
-  const query = atom.query ?? atom.text ?? atom.symbol ?? '';
+  const query = atom.rawText ?? atom.query ?? atom.text ?? atom.symbol ?? '';
   return `${type}${query ? `  ${query}` : ''}`;
+}
+
+function providerHint(atom: Atom, ev: Evaluation | undefined): string {
+  if (ev?.unresolved) return 'unresolved';
+  if (!atom.type) return '';
+  if (atom.type === 'tx_gate') return 'tx analyzer';
+  return '';
 }
 
 function describeValue(v: unknown): string {
@@ -183,4 +214,98 @@ export interface ReviewResponse {
   questions?: ReviewQuestion[];
   evidence?: Record<string, unknown> & { policyBundle?: PolicyBundle };
   policyBundle?: PolicyBundle;
+}
+
+function policyBundleFromResponse(response: DecisionShape): PolicyBundle | undefined {
+  const explicit = response.policyBundle ?? response.evidence?.policyBundle;
+  if (explicit) {
+    const txGates = explicit.txGateOutcomes ?? response.evidence?.policyTxGates;
+    return txGates && txGates !== explicit.txGateOutcomes
+      ? { ...explicit, txGateOutcomes: txGates }
+      : explicit;
+  }
+  const evidence = response.evidence;
+  if (!evidence) return undefined;
+
+  const atoms = Array.isArray(evidence.policyAtoms)
+    ? evidence.policyAtoms.map((atom) => compactAtom(atom)).filter((atom): atom is Atom => Boolean(atom))
+    : [];
+  const txGateOutcomes = isRecord(evidence.policyTxGates)
+    ? evidence.policyTxGates as PolicyBundle['txGateOutcomes']
+    : undefined;
+  const evaluations = evidenceFindingsAsEvaluations(evidence, atoms);
+  if (atoms.length === 0 && evaluations.length === 0 && !txGateOutcomes) return undefined;
+  const unresolvedAtoms = atoms.filter((atom) => {
+    const ev = atom.id ? evaluations.find((candidate) => candidate.atomId === atom.id) : undefined;
+    return ev?.unresolved === true;
+  });
+  const blockingIds = decisionContractIds(evidence, 'blockingFactIds');
+  const hasBlockingFailure = evaluations.some((evaluation) => evaluation.pass === false)
+    || Object.values(txGateOutcomes ?? {}).some((outcome) => outcome?.pass === false)
+    || atoms.some((atom) => atom.id ? blockingIds.has(atom.id) : false);
+  return {
+    atoms,
+    evaluations,
+    unresolvedAtoms,
+    ...(txGateOutcomes ? { txGateOutcomes } : {}),
+    hasBlockingFailure,
+  };
+}
+
+function compactAtom(raw: unknown): Atom | null {
+  if (!isRecord(raw)) return null;
+  const id = stringValue(raw.id);
+  const type = stringValue(raw.type ?? raw.kind);
+  if (!id && !type) return null;
+  return {
+    ...(id ? { id } : {}),
+    ...(type ? { type } : {}),
+    ...(stringValue(raw.kind) ? { kind: stringValue(raw.kind) } : {}),
+    ...(stringValue(raw.rawText) ? { rawText: stringValue(raw.rawText) } : {}),
+    ...(stringValue(raw.query) ? { query: stringValue(raw.query) } : {}),
+    ...(stringValue(raw.text) ? { text: stringValue(raw.text) } : {}),
+    ...(stringValue(raw.symbol) ? { symbol: stringValue(raw.symbol) } : {}),
+  };
+}
+
+function evidenceFindingsAsEvaluations(evidence: Record<string, unknown>, atoms: Atom[]): Evaluation[] {
+  const findings = Array.isArray(evidence.findings) ? evidence.findings : [];
+  const atomIds = new Set(atoms.map((atom) => atom.id).filter((id): id is string => Boolean(id)));
+  const evaluations: Evaluation[] = [];
+  for (const raw of findings) {
+    if (!isRecord(raw)) continue;
+    const atomId = stringValue(raw.atomId);
+    if (!atomId || (atomIds.size > 0 && !atomIds.has(atomId))) continue;
+    const value = raw.value;
+    const tone = stringValue(raw.tone);
+    evaluations.push({
+      atomId,
+      pass: tone === 'good' || tone === 'ok' || tone === 'pass'
+        ? true
+        : tone === 'fail' || tone === 'error' || tone === 'deny'
+          ? false
+          : undefined,
+      unresolved: /^unknown$/i.test(typeof value === 'string' ? value.trim() : ''),
+      finding: {
+        ...(stringValue(raw.label) ? { label: stringValue(raw.label) } : {}),
+        ...(value !== undefined ? { value } : {}),
+        ...(tone ? { tone } : {}),
+      },
+    });
+  }
+  return evaluations;
+}
+
+function decisionContractIds(evidence: Record<string, unknown>, key: string): Set<string> {
+  const contract = isRecord(evidence.decisionContract) ? evidence.decisionContract : undefined;
+  const raw = contract?.[key];
+  return new Set(Array.isArray(raw) ? raw.filter((id): id is string => typeof id === 'string') : []);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }

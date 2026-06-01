@@ -11,6 +11,9 @@ export interface BrowserWalletSession {
   walletName: string;
   cluster: string;
   connectedAt: string;
+  address?: string;
+  walletBrandId?: string;
+  path?: 'browser-extension' | 'desktop-browser-extension';
 }
 
 export interface BrowserWalletPickerOption {
@@ -33,12 +36,20 @@ export function createBrowserWalletSession(
   walletName: string,
   cluster: string,
   connectedAt = new Date().toISOString(),
+  options: {
+    address?: string;
+    walletBrandId?: string;
+    path?: BrowserWalletSession['path'];
+  } = {},
 ): BrowserWalletSession {
   return {
     version: BROWSER_WALLET_SESSION_VERSION,
     walletName,
     cluster,
     connectedAt,
+    ...(nonEmptyString(options.address) && { address: options.address.trim() }),
+    ...(nonEmptyString(options.walletBrandId) && { walletBrandId: options.walletBrandId.trim() }),
+    ...(options.path && { path: options.path }),
   };
 }
 
@@ -49,7 +60,14 @@ export function isPersistedBrowserWalletSession(value: unknown): value is Browse
     candidate.version === BROWSER_WALLET_SESSION_VERSION &&
     nonEmptyString(candidate.walletName) &&
     nonEmptyString(candidate.cluster) &&
-    nonEmptyString(candidate.connectedAt)
+    nonEmptyString(candidate.connectedAt) &&
+    (candidate.address === undefined || nonEmptyString(candidate.address)) &&
+    (candidate.walletBrandId === undefined || nonEmptyString(candidate.walletBrandId)) &&
+    (
+      candidate.path === undefined ||
+      candidate.path === 'browser-extension' ||
+      candidate.path === 'desktop-browser-extension'
+    )
   );
 }
 

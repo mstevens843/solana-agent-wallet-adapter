@@ -752,10 +752,10 @@ function extractTxGateAtoms(text: string): ExtractorResult {
 function extractExternalPriceAtoms(text: string, consumedSpans: ReadonlyArray<{ start: number; end: number }>): ExtractorResult {
   const atoms: ExternalPriceAtom[] = [];
   const spans: Array<{ start: number; end: number }> = [];
-  // Noun phrase: up to 5 word-like tokens (letters/apostrophes/hyphens) followed by one of the
+  // Noun phrase: up to 7 word-like tokens (letters/apostrophes/hyphens) followed by one of the
   // "priced item" keywords. Restricting to a single sentence (no period, comma, or newline in
   // the noun phrase) keeps the match from running away across clauses.
-  const re = /\b((?:[a-z][a-z'-]*\s+){0,4}[a-z][a-z'-]*)\s+(plan|subscription|service|bill|fee|cost|price|rate|invoice|membership)\b\s+(?:is\s+|must\s+be\s+|should\s+be\s+|costs?\s+)?(above|over|greater than|more than|>=?|below|under|less than|<=?|at least|at most|equal to|equals|=)\s*\$?\s*(\d+(?:[.,]\d+)?)\s*(?:dollars?|usd|bucks?|\/?\s*(?:mo(?:nth)?|yr|year|week|day))?/gi;
+  const re = /\b((?:[a-z][a-z'-]*\s+){0,6}[a-z][a-z'-]*)\s+(plan|subscription|service|bill|fee|cost|price|rate|invoice|membership)\b(?:'s)?(?:\s+(?:cheapest|lowest|least\s+expensive|base|monthly|listed|available)\s+(?:plan|price|rate|cost|option))?\s+(?:is\s+|must\s+be\s+|should\s+be\s+|costs?\s+)?(above|over|greater than|more than|>=?|below|under|less than|<=?|at least|at most|equal to|equals|=)\s*\$?\s*(\d+(?:[.,]\d+)?)\s*(?:dollars?|usd|bucks?|\/?\s*(?:mo(?:nth)?|yr|year|week|day))?/gi;
   let match: RegExpExecArray | null;
   while ((match = re.exec(text)) !== null) {
     const start = match.index;
@@ -763,7 +763,7 @@ function extractExternalPriceAtoms(text: string, consumedSpans: ReadonlyArray<{ 
     // Skip if this span overlaps a span already consumed (e.g. a crypto price atom that
     // bound a $-threshold to a known token symbol).
     if (consumedSpans.some((span) => spansOverlap(span, { start, end }))) continue;
-    const subject = `${(match[1] ?? '').trim()} ${(match[2] ?? '').trim()}`.trim().toLowerCase();
+    const subject = normalizeExternalPriceSubject(`${(match[1] ?? '').trim()} ${(match[2] ?? '').trim()}`);
     const op = operatorFromText(match[3] ?? '');
     const value = Number((match[4] ?? '').replace(/,/g, ''));
     if (!op || !Number.isFinite(value) || subject.length === 0) continue;
@@ -779,6 +779,16 @@ function extractExternalPriceAtoms(text: string, consumedSpans: ReadonlyArray<{ 
     spans.push({ start, end });
   }
   return { atoms, spans };
+}
+
+function normalizeExternalPriceSubject(subject: string): string {
+  return subject
+    .trim()
+    .toLowerCase()
+    .replace(/^(?:and\s+)?(?:only\s+)?(?:approve|deny|reject)\s+(?:only\s+)?if\s+/u, '')
+    .replace(/^(?:and\s+)?(?:only\s+)?if\s+/u, '')
+    .replace(/^(?:the|a|an)\s+/u, '')
+    .trim();
 }
 
 /* -------------------------------------------------------------------------- */

@@ -33,7 +33,7 @@ class GeminiNativeProviderTest {
         """{"candidates":[{"content":{"parts":[{"text":"$text"}]}}]}"""
 
     @Test
-    fun generatePlanPostsToGenerateContentWithSystemInstructionAndResponseMimeType() = runBlocking {
+    fun generatePlanPostsToGenerateContentWithSystemInstructionAndResponseSchema() = runBlocking {
         val http = FakeHttpExecutor().apply {
             queueResponse(
                 200,
@@ -71,6 +71,9 @@ class GeminiNativeProviderTest {
         assertEquals(0.2, generationConfig.optDouble("temperature"), 0.0001)
         assertEquals(1024, generationConfig.optInt("maxOutputTokens"))
         assertEquals("application/json", generationConfig.optString("responseMimeType"))
+        val responseSchema = generationConfig.optJSONObject("responseSchema")!!
+        assertEquals("object", responseSchema.optString("type"))
+        assertTrue(responseSchema.optJSONArray("required")!!.toString().contains("safeguards"))
         assertFalse(body.has("tools"))
     }
 
@@ -107,7 +110,7 @@ class GeminiNativeProviderTest {
     }
 
     @Test
-    fun reviewPlanRunsTwoPassResearchWithGoogleSearchAndNoResponseMimeType() = runBlocking {
+    fun reviewPlanRunsTwoPassResearchWithGoogleSearchAndNoJsonResponseConfig() = runBlocking {
         val http = FakeHttpExecutor().apply {
             // Pass 1: grounded research returns text + groundingMetadata.
             queueResponse(
@@ -133,6 +136,10 @@ class GeminiNativeProviderTest {
         )
 
         assertEquals("approve", result.optString("decision"))
+        val evidence = result.optJSONObject("evidence")!!
+        assertEquals("checked", evidence.optJSONObject("research")!!.optString("status"))
+        assertTrue(evidence.optJSONArray("findings")!!.toString().contains("Current research"))
+        assertTrue(evidence.optJSONArray("sources")!!.toString().contains("heliummobile.com"))
         assertEquals(2, http.calls.size)
 
         val researchBody = JSONObject(http.calls[0].body)
@@ -141,12 +148,20 @@ class GeminiNativeProviderTest {
         assertTrue(tools.getJSONObject(0).has("google_search"))
         val researchGen = researchBody.optJSONObject("generationConfig")!!
         assertFalse(researchGen.has("responseMimeType"))
+        assertFalse(researchGen.has("responseSchema"))
         assertEquals(1800, researchGen.optInt("maxOutputTokens"))
 
         val reviewBody = JSONObject(http.calls[1].body)
         assertFalse(reviewBody.has("tools"))
         val reviewGen = reviewBody.optJSONObject("generationConfig")!!
         assertEquals("application/json", reviewGen.optString("responseMimeType"))
+        assertEquals(1800, reviewGen.optInt("maxOutputTokens"))
+        val responseSchema = reviewGen.optJSONObject("responseSchema")!!
+        assertEquals("object", responseSchema.optString("type"))
+        assertTrue(responseSchema.optJSONObject("properties")!!.has("evidenceFactIds"))
+        assertTrue(responseSchema.optJSONObject("properties")!!.has("blockingFactIds"))
+        assertTrue(responseSchema.optJSONObject("properties")!!.has("missingFactIds"))
+        assertTrue(responseSchema.optJSONObject("properties")!!.has("confidence"))
         val reviewInput =
             reviewBody.optJSONArray("contents")?.optJSONObject(0)?.optJSONArray("parts")?.optJSONObject(0)?.optString("text")
                 .orEmpty()
@@ -203,7 +218,9 @@ class GeminiNativeProviderTest {
 
         val body = JSONObject(http.calls.single().body)
         assertFalse(body.has("tools"))
-        assertEquals("application/json", body.optJSONObject("generationConfig")?.optString("responseMimeType"))
+        val generationConfig = body.optJSONObject("generationConfig")!!
+        assertEquals("application/json", generationConfig.optString("responseMimeType"))
+        assertTrue(generationConfig.optJSONObject("responseSchema")!!.optJSONObject("properties")!!.has("evidenceFactIds"))
         val input = body.optJSONArray("contents")?.optJSONObject(0)?.optJSONArray("parts")?.optJSONObject(0)?.optString("text")
         assertEquals(DeviceAgentMessageAssembler.buildReviewMessages(payload).userContent, input)
     }
@@ -219,6 +236,7 @@ class GeminiNativeProviderTest {
         assertTrue(result.optString("output_text").startsWith("It will swap"))
         val gen = JSONObject(http.calls.single().body).optJSONObject("generationConfig")!!
         assertFalse(gen.has("responseMimeType"))
+        assertFalse(gen.has("responseSchema"))
         assertEquals(0.3, gen.optDouble("temperature"), 0.0001)
         assertEquals(800, gen.optInt("maxOutputTokens"))
     }
@@ -241,7 +259,9 @@ class GeminiNativeProviderTest {
         val body = JSONObject(http.calls.single().body)
         val tools = body.optJSONArray("tools")!!
         assertTrue(tools.getJSONObject(0).has("google_search"))
-        assertFalse(body.optJSONObject("generationConfig")!!.has("responseMimeType"))
+        val generationConfig = body.optJSONObject("generationConfig")!!
+        assertFalse(generationConfig.has("responseMimeType"))
+        assertFalse(generationConfig.has("responseSchema"))
     }
 
     @Test

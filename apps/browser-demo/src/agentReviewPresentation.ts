@@ -424,9 +424,11 @@ export function reviewEvidenceRows(
     addRow({ label: check.label, value: check.value, tone: check.tone });
   }
   for (const row of evidenceFactDisplayRows(review.evidenceFacts)) {
+    if (researchFocused && row.tone !== 'fail' && row.tone !== 'warn' && isPromptScopedOperationalRow(row)) continue;
     addRow(row);
   }
   for (const finding of evidenceFindingRows(evidence)) {
+    if (researchFocused && finding.tone !== 'fail' && finding.tone !== 'warn' && isPromptScopedOperationalRow(finding)) continue;
     addRow(finding);
   }
   for (const row of tokenMismatchEvidenceRows(evidence)) {
@@ -730,8 +732,12 @@ function evidenceFindingRows(evidence: Record<string, unknown> | undefined): Age
 function hasResearchEvidence(evidence: Record<string, unknown> | undefined): boolean {
   if (!evidence) return false;
   if (isPlainRecord(evidence.research)) return true;
-  if (Array.isArray(evidence.sources) && evidence.sources.length > 0) return true;
-  return Array.isArray(evidence.citations) && evidence.citations.length > 0;
+  return false;
+}
+
+function isPromptScopedOperationalRow(row: Pick<AgentEvidenceDisplayRow, 'label' | 'value'>): boolean {
+  const text = `${row.label} ${row.value}`.toLowerCase();
+  return /\b(connected wallet|wallet approval|send for approval|swap quote|swap route|jupiter|slippage|max slippage|price impact|token identity|token metadata|token security|token safety|token market|token price|token age|mint authority|freeze authority|birdeye|coingecko|dex\s*screener)\b/u.test(text);
 }
 
 function sourceEvidenceRows(evidence: Record<string, unknown> | undefined): AgentEvidenceDisplayRow[] {

@@ -8,7 +8,7 @@ import { promptSwapForm, type SwapDraft } from '../forms/swap.js';
 import { formatSlippagePercent } from '../forms/validators.js';
 import { promptConnectorForm } from '../forms/connectorForm.js';
 import { listConnectors, listActions, humanizeActionKind, type ConnectorAction, type ActionTier } from '../forms/connectorMeta.js';
-import { maybeReviewWithAgent, composeNoteWithReview, type AgentReviewOutcome } from '../forms/agentReview.js';
+import { maybeReviewWithAgent, composeNoteWithReview, reviewPreparedTransactionWithAgent, type AgentReviewOutcome } from '../forms/agentReview.js';
 import { fetchWalletAddress, removeUndefined, listInstalledConnectorKeys } from './_shared.js';
 import { runConnectorsMenu } from './connectors.js';
 import { connectorSecretsForRequest, enabledConnectorIds, loadConnectorState } from './connectorState.js';
@@ -93,7 +93,7 @@ export async function runNewTokensWithPrefill(
           amount: draft.amount,
           note,
         })),
-      }), reviewToApprovalOpts(review));
+      }), reviewToApprovalOpts(options, plan, review));
 }
 
 // Backward-compat aliases for /new-send (SOL default) and /new-spl (USDC default).
@@ -135,7 +135,7 @@ export async function runNewSwapWithPrefill(options: GlobalOptions, prefill: Par
   await prepareAndPromptApproval(options, 'Swap', () => bridgeRequest(options, '/bridge/action/prepare-swap', {
     method: 'POST',
     body: JSON.stringify(removeUndefined({ ...draft, note })),
-  }), reviewToApprovalOpts(review));
+  }), reviewToApprovalOpts(options, plan, review));
 }
 
 // Build an AgentPlan from each /new draft. The `source: 'template'` field is
@@ -247,11 +247,31 @@ function noteForReview(baseNote: string | undefined, review: AgentReviewOutcome)
   return composeNoteWithReview(baseNote, review.reviewSummary, overrideLine);
 }
 
-function reviewToApprovalOpts(review: AgentReviewOutcome): PrepareAndPromptApprovalOptions {
-  if (!review.reviewed) return {};
-  if (review.choice === 'save') return { skipApprovalPrompt: true };
-  if (review.choice === 'send') return { autoApprove: true };
-  return {};
+function reviewToApprovalOpts(
+  options: GlobalOptions,
+  plan: AgentPlan,
+  review: AgentReviewOutcome,
+): PrepareAndPromptApprovalOptions {
+  const approvalOpts: PrepareAndPromptApprovalOptions = {};
+  if (review.reviewed) {
+    if (review.choice === 'save') approvalOpts.skipApprovalPrompt = true;
+    if (review.choice === 'send') approvalOpts.autoApprove = true;
+  }
+  if (review.needsPreparedTxReview) {
+    approvalOpts.beforeApprovalPrompt = async (_result, action) => {
+      const transactionBase64 = typeof action?.params?.transactionBase64 === 'string'
+        ? action.params.transactionBase64
+        : undefined;
+      if (!transactionBase64) return undefined;
+      const txReview = await reviewPreparedTransactionWithAgent(options, plan, review, transactionBase64);
+      if (!txReview) return undefined;
+      if (txReview.choice === 'delete') return { deleteAction: true };
+      if (txReview.choice === 'save') return { approvalOptions: { skipApprovalPrompt: true, autoApprove: false } };
+      if (txReview.choice === 'send') return { approvalOptions: { autoApprove: true, skipApprovalPrompt: false } };
+      return undefined;
+    };
+  }
+  return approvalOpts;
 }
 
 // Standalone preview-only flow: form -> quote -> done. Used by /swap-quote.
@@ -481,7 +501,7 @@ async function runConnectorWrite(options: GlobalOptions, connectorId: string, ac
   await prepareAndPromptApproval(options, draft.summary, () => bridgeRequest(options, '/bridge/connector/prepare-action', {
     method: 'POST',
     body: JSON.stringify(body),
-  }), reviewToApprovalOpts(review));
+  }), reviewToApprovalOpts(options, plan, review));
 }
 
 async function runConnectorReadOnly(options: GlobalOptions, connectorId: string, action: ConnectorAction): Promise<void> {

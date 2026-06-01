@@ -21,6 +21,28 @@ export interface AgentReviewOutcome {
   // when `reviewed === true`. Callers use this to decide whether to record an
   // override note when the user picks Send for approval despite a deny.
   decision?: string;
+  // Original instruction used for this review. Kept so prepared-transaction
+  // follow-up reviews can re-run tx-gate checks once transaction bytes exist.
+  instruction?: string;
+  // True when the request/evidence included transaction-level policy atoms that
+  // should be rechecked after prepare with context.transactionBase64.
+  needsPreparedTxReview?: boolean;
+}
+
+export interface AgentReviewOptions {
+  enabledPrompt?: string;
+  instructionPrompt?: string;
+  context?: Record<string, unknown>;
+  nextStepLabels?: {
+    sendDefault?: string;
+    sendDenied?: string;
+    sendNeedsInput?: string;
+    sendDescription?: string;
+    save?: string;
+    saveDescription?: string;
+    delete?: string;
+    deleteDescription?: string;
+  };
 }
 
 // Asks "Draft with AI?" after the user has built and confirmed their
@@ -38,6 +60,7 @@ export interface AgentReviewOutcome {
 export async function maybeReviewWithAgent(
   options: GlobalOptions,
   plan: AgentPlan,
+  reviewOptions: AgentReviewOptions = {},
 ): Promise<AgentReviewOutcome> {
   const route = await resolveAgentAiRoute(options);
   if (route.kind === 'none') {
@@ -46,26 +69,29 @@ export async function maybeReviewWithAgent(
   }
 
   const draftWithAi = await confirm({
-    message: 'Draft with AI?',
+    message: reviewOptions.enabledPrompt ?? 'Draft with AI?',
     default: false,
   });
   if (!draftWithAi) return { reviewed: false, choice: 'send' };
 
-  return reviewLoop(options, route, plan);
+  return reviewLoop(options, route, plan, reviewOptions);
 }
 
 async function reviewLoop(
   options: GlobalOptions,
   route: AgentAiRoute,
   plan: AgentPlan,
+  reviewOptions: AgentReviewOptions & { initialInstruction?: string } = {},
 ): Promise<AgentReviewOutcome> {
-  let instruction = '';
+  let instruction = reviewOptions.initialInstruction ?? '';
   let lastResponse: AgentReviewResponse | null = null;
   let lastError: string | null = null;
   let answers: Record<string, unknown> = {};
 
   // First turn: prompt for the instruction.
-  instruction = await promptInstruction('Anything to ask or check? (ex: Only approve if sol is above $70 and f&g above 20)');
+  if (!instruction) {
+    instruction = await promptInstruction(reviewOptions.instructionPrompt ?? 'Anything to ask or check? (ex: Only approve if sol is above $70 and f&g above 20)');
+  }
 
   while (true) {
     const spin = spinner(instruction.trim() ? 'Agent thinking…' : 'Agent reviewing…');
@@ -73,7 +99,11 @@ async function reviewLoop(
     try {
       const body: Record<string, unknown> = { plan, instruction };
       if (multi) body.mode = 'multi';
-      if (Object.keys(answers).length > 0) body.context = { answers };
+      const context = {
+        ...(reviewOptions.context ?? {}),
+        ...(Object.keys(answers).length > 0 ? { answers } : {}),
+      };
+      if (Object.keys(context).length > 0) body.context = context;
       lastResponse = await reviewAgentPlan<AgentReviewResponse>(options, route, body);
       spin.succeed('Review complete.');
       lastError = null;
@@ -101,7 +131,7 @@ async function reviewLoop(
       continue;
     }
 
-    const choice = await pickNextStep(lastResponse, lastError);
+    const choice = await pickNextStep(lastResponse, lastError, reviewOptions.nextStepLabels);
     if (choice === 'ask_again') {
       instruction = await promptInstruction('Anything else to ask or change? (blank to re-run as-is)');
       // New instruction is its own conversation — drop previous answers.
@@ -117,8 +147,39 @@ async function reviewLoop(
       outcome.reviewSummary = reviewSummaryLine(lastResponse);
       outcome.decision = (lastResponse.decision ?? '').toLowerCase();
     }
+    if (instruction.trim()) outcome.instruction = instruction.trim();
+    if (needsPreparedTransactionReview(instruction, lastResponse)) {
+      outcome.needsPreparedTxReview = true;
+    }
     return outcome;
   }
+}
+
+export async function reviewPreparedTransactionWithAgent(
+  options: GlobalOptions,
+  plan: AgentPlan,
+  priorReview: AgentReviewOutcome,
+  transactionBase64: string,
+): Promise<AgentReviewOutcome | null> {
+  if (!priorReview.reviewed || !priorReview.needsPreparedTxReview || !priorReview.instruction?.trim()) {
+    return null;
+  }
+  const route = await resolveAgentAiRoute(options);
+  if (route.kind === 'none') return null;
+  console.log();
+  console.log(badge('Re-checking transaction policy with prepared transaction bytes.', 'muted'));
+  return reviewLoop(options, route, plan, {
+    initialInstruction: priorReview.instruction,
+    context: { transactionBase64 },
+    nextStepLabels: {
+      sendDefault: 'Send for approval now',
+      sendDenied: 'Send for approval anyway (overrides transaction review denial)',
+      sendNeedsInput: 'Send for approval anyway (overrides transaction review needs-input)',
+      save: 'Save to inbox without sending',
+      delete: 'Delete saved draft',
+      deleteDescription: 'Removes the prepared action from the inbox.',
+    },
+  });
 }
 
 async function promptInstruction(message: string): Promise<string> {
@@ -134,16 +195,17 @@ type NextStep = AgentReviewChoice | 'ask_again';
 async function pickNextStep(
   response: AgentReviewResponse | null,
   lastError: string | null,
+  labels: AgentReviewOptions['nextStepLabels'] = {},
 ): Promise<NextStep> {
   const decision = (response?.decision ?? '').toLowerCase();
   const sendLabel = decision === 'deny'
-    ? 'Send for approval anyway (overrides agent denial)'
+    ? labels.sendDenied ?? 'Send for approval anyway (overrides agent denial)'
     : decision === 'needs_input'
-      ? 'Send for approval anyway (overrides agent needs-input)'
-      : 'Send for approval now';
+      ? labels.sendNeedsInput ?? 'Send for approval anyway (overrides agent needs-input)'
+      : labels.sendDefault ?? 'Send for approval now';
 
   const choices: Array<{ name: string; value: NextStep; description?: string }> = [
-    { name: sendLabel, value: 'send', description: 'Goes to your wallet for signing now.' },
+    { name: sendLabel, value: 'send', description: labels.sendDescription ?? 'Goes to your wallet for signing now.' },
   ];
 
   // Don't offer "Ask agent again" when the review path itself failed — no
@@ -157,8 +219,8 @@ async function pickNextStep(
   }
 
   choices.push(
-    { name: 'Save to inbox without sending', value: 'save', description: 'Queues the prepared action; sign later via /inbox.' },
-    { name: 'Delete (discard this draft)', value: 'delete', description: 'Drops the draft. Nothing is queued or sent.' },
+    { name: labels.save ?? 'Save to inbox without sending', value: 'save', description: labels.saveDescription ?? 'Queues the prepared action; sign later via /inbox.' },
+    { name: labels.delete ?? 'Delete (discard this draft)', value: 'delete', description: labels.deleteDescription ?? 'Drops the draft. Nothing is queued or sent.' },
   );
 
   const defaultChoice: NextStep = decision === 'approve' ? 'send' : 'save';
@@ -169,6 +231,22 @@ async function pickNextStep(
     default: defaultChoice,
   });
 }
+
+function needsPreparedTransactionReview(instruction: string, response: AgentReviewResponse | null): boolean {
+  if (TX_POLICY_RE.test(instruction)) return true;
+  const evidence = response?.evidence;
+  if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) return false;
+  const record = evidence as Record<string, unknown>;
+  if (record.policyTxGates && typeof record.policyTxGates === 'object') return true;
+  const atoms = Array.isArray(record.policyAtoms) ? record.policyAtoms : [];
+  return atoms.some((atom) => (
+    atom && typeof atom === 'object' && !Array.isArray(atom)
+      ? (atom as Record<string, unknown>).type === 'tx_gate'
+      : false
+  ));
+}
+
+const TX_POLICY_RE = /\b(only\s+(?:executes?|requested)\s+swap|no\s+extra\s+transfers?|no\s+unrelated\s+instructions?|touch(?:es)?\s+any\s+program|program\s+other\s+than|transaction\s+gate|tx[-\s]?gate|required\s+signatures?|instruction\s+count|sets?\s+authority|delegates?\s+token|closes?\s+account)\b/i;
 
 async function gatherAnswers(
   questions: NonNullable<AgentReviewResponse['questions']>,

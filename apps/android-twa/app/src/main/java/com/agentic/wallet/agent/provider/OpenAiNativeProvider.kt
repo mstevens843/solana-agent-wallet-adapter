@@ -54,7 +54,10 @@ internal class OpenAiNativeProvider(
                 maxOutputTokens = REVIEW_MAX_TOKENS,
                 research = false,
             )
-            return ProviderResponseParser.parseModelJson(ProviderResponseParser.extractResponsesApiText(response))
+            return ReviewPostprocessor.finalize(
+                ProviderResponseParser.parseModelJson(ProviderResponseParser.extractResponsesApiText(response)),
+                reviewPayload,
+            )
         }
         val messages = DeviceAgentMessageAssembler.buildReviewMessages(payload)
         val response = postResponses(
@@ -64,7 +67,10 @@ internal class OpenAiNativeProvider(
             maxOutputTokens = REVIEW_MAX_TOKENS,
             research = false,
         )
-        return ProviderResponseParser.parseModelJson(ProviderResponseParser.extractResponsesApiText(response))
+        return ReviewPostprocessor.finalize(
+            ProviderResponseParser.parseModelJson(ProviderResponseParser.extractResponsesApiText(response)),
+            payload,
+        )
     }
 
     override suspend fun ask(payload: JSONObject): JSONObject {
@@ -232,7 +238,7 @@ internal class OpenAiNativeProvider(
         private const val REVIEW_TEMPERATURE: Double = 0.2
         private const val ASK_TEMPERATURE: Double = 0.3
         private const val PLAN_MAX_TOKENS: Int = 1024
-        private const val REVIEW_MAX_TOKENS: Int = 1024
+        private const val REVIEW_MAX_TOKENS: Int = 1800
         private const val RESEARCH_MAX_TOKENS: Int = 1800
         private const val ASK_MAX_TOKENS: Int = 800
         private const val OPENAI_REASONING_EFFORT: String = "low"
@@ -284,6 +290,33 @@ internal class OpenAiNativeProvider(
             val inputKindEnum = JSONArray().put("text").put("select").put("number")
             val reviewerIdEnum = JSONArray().put("risk").put("quote").put("policy").put("protocol")
 
+            val stringArraySchema = JSONObject()
+                .put("type", "array")
+                .put("items", JSONObject().put("type", "string"))
+
+            val findingItem = JSONObject()
+                .put("type", "object")
+                .put("additionalProperties", true)
+                .put(
+                    "properties",
+                    JSONObject()
+                        .put("label", JSONObject().put("type", "string"))
+                        .put("value", JSONObject().put("type", "string"))
+                        .put("tone", JSONObject().put("type", "string").put("enum", JSONArray().put("good").put("warn").put("neutral").put("fail"))),
+                )
+                .put("required", JSONArray().put("label").put("value").put("tone"))
+
+            val sourceItem = JSONObject()
+                .put("type", "object")
+                .put("additionalProperties", true)
+                .put(
+                    "properties",
+                    JSONObject()
+                        .put("title", JSONObject().put("type", "string"))
+                        .put("url", JSONObject().put("type", "string")),
+                )
+                .put("required", JSONArray().put("url"))
+
             val questionItem = JSONObject()
                 .put("type", "object")
                 .put("additionalProperties", false)
@@ -295,9 +328,7 @@ internal class OpenAiNativeProvider(
                         .put("inputKind", JSONObject().put("type", "string").put("enum", inputKindEnum))
                         .put(
                             "options",
-                            JSONObject()
-                                .put("type", "array")
-                                .put("items", JSONObject().put("type", "string")),
+                            stringArraySchema,
                         )
                         .put("required", JSONObject().put("type", "boolean"))
                         .put("hint", JSONObject().put("type", "string")),
@@ -330,8 +361,21 @@ internal class OpenAiNativeProvider(
                             "evidence",
                             JSONObject()
                                 .put("type", "object")
-                                .put("additionalProperties", false)
-                                .put("properties", JSONObject()),
+                                .put("additionalProperties", true)
+                                .put(
+                                    "properties",
+                                    JSONObject()
+                                        .put("findings", JSONObject().put("type", "array").put("items", findingItem))
+                                        .put("sources", JSONObject().put("type", "array").put("items", sourceItem))
+                                        .put(
+                                            "research",
+                                            JSONObject()
+                                                .put("type", "object")
+                                                .put("additionalProperties", true)
+                                                .put("properties", JSONObject().put("status", JSONObject().put("type", "string"))),
+                                        )
+                                        .put("policiesApplied", stringArraySchema),
+                                ),
                         )
                         .put(
                             "questions",
@@ -346,7 +390,26 @@ internal class OpenAiNativeProvider(
                                 .put("type", "array")
                                 .put("maxItems", 4)
                                 .put("items", reviewerItem),
-                        ),
+                        )
+                        .put(
+                            "evidenceFactIds",
+                            JSONObject()
+                                .put("type", "array")
+                                .put("items", JSONObject().put("type", "string")),
+                        )
+                        .put(
+                            "blockingFactIds",
+                            JSONObject()
+                                .put("type", "array")
+                                .put("items", JSONObject().put("type", "string")),
+                        )
+                        .put(
+                            "missingFactIds",
+                            JSONObject()
+                                .put("type", "array")
+                                .put("items", JSONObject().put("type", "string")),
+                        )
+                        .put("confidence", JSONObject().put("type", "string").put("enum", JSONArray().put("high").put("medium").put("low"))),
                 )
                 .put("required", JSONArray().put("decision").put("reason").put("summary").put("evidence"))
         }

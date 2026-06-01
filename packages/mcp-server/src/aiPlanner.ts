@@ -4,6 +4,7 @@ import {
   assertPlanGuardrails,
   extractAtoms,
   formatDollar,
+  hasWebFallback,
   isWebOnly,
   reconcileThresholdReviewDecision,
   runPolicyPipeline,
@@ -1260,16 +1261,18 @@ function reviewNeedsWebResearch(request: Required<AiReviewRequest>): boolean {
     request.plan.userNotes ?? '',
   ].join('\n');
   // Atom-level precision wins when available: if the user's NOTE contains any atom
-  // whose capability chain is web-only (e.g. an `external_price` for "helium plan"),
-  // we definitely need the research pass — even if the keyword heuristic missed it.
+  // that still needs the web tier after API/RPC/local enrichment, we definitely need
+  // the research pass — even if the keyword heuristic missed it.
   if (webBoundAtomsForRequest(request).length > 0) return true;
   return textNeedsWebResearch(compositeText);
 }
 
 /**
- * Extract atoms from the review request and filter to those that have no on-chain /
- * crypto-API provider tier — i.e. atoms whose capability chain is web-only. These are
- * the atoms the research pass should batch into a single LLM web_search call.
+ * Extract atoms from the review request and filter to the atoms the research pass
+ * should batch into a single LLM web_search call. Before enrichment exists, this is
+ * web-only atoms. After enrichment, it is unresolved atoms whose provider chain has a
+ * web fallback (for example external_identity after the Chainalysis tier is missing,
+ * or network_metric when hosted review has no RPC connection).
  */
 function webBoundAtomsForRequest(request: Required<AiReviewRequest>): AgentAtom[] {
   const text = [
@@ -1280,7 +1283,36 @@ function webBoundAtomsForRequest(request: Required<AiReviewRequest>): AgentAtom[
   if (!text.trim()) return [];
   const knownTokenSymbols = collectKnownTokenSymbols(request);
   const { atoms } = extractAtoms({ text, knownTokenSymbols });
+  const unresolvedIds = unresolvedPolicyAtomIds(request.context);
+  if (unresolvedIds.size > 0) {
+    return atoms.filter((atom) => unresolvedIds.has(atom.id) && hasWebFallback(atom));
+  }
   return atoms.filter((atom) => isWebOnly(atom));
+}
+
+function unresolvedPolicyAtomIds(context: unknown): Set<string> {
+  const record = isJsonObjectLike(context) ? context : undefined;
+  const bundle = isJsonObjectLike(record?.policyBundle) ? record.policyBundle as Record<string, unknown> : undefined;
+  if (!bundle) return new Set();
+  const ids = new Set<string>();
+  const evaluations = Array.isArray(bundle.evaluations) ? bundle.evaluations as Array<Record<string, unknown>> : [];
+  for (const evaluation of evaluations) {
+    const atomId = typeof evaluation.atomId === 'string' ? evaluation.atomId : '';
+    if (!atomId) continue;
+    if (evaluation.unresolved === true || evaluation.pass === undefined) {
+      ids.add(atomId);
+      continue;
+    }
+    const finding = isJsonObjectLike(evaluation.finding) ? evaluation.finding as Record<string, unknown> : undefined;
+    if (typeof finding?.value === 'string' && /^unknown$/i.test(finding.value.trim())) {
+      ids.add(atomId);
+    }
+  }
+  const unresolvedAtoms = Array.isArray(bundle.unresolvedAtoms) ? bundle.unresolvedAtoms as Array<Record<string, unknown>> : [];
+  for (const atom of unresolvedAtoms) {
+    if (typeof atom.id === 'string' && atom.id) ids.add(atom.id);
+  }
+  return ids;
 }
 
 function collectKnownTokenSymbols(request: Required<AiReviewRequest>): string[] {
@@ -1298,7 +1330,7 @@ function textNeedsWebResearch(text: string): boolean {
   if (!normalized.trim()) return false;
   return (
     /\b(current|currently|latest|today|tonight|tomorrow|yesterday|now|real[-\s]?time|up[-\s]?to[-\s]?date|as of)\b/.test(normalized) ||
-    /\b(price|cost|fee|rate|plan|subscription|monthly|per\s+month|market\s+cap|liquidity|apr|apy|weather|news|status|available|availability)\b/.test(normalized) && /\b(check|find|look\s+up|search|verify|how\s+much|whether|if|less\s+than|more\s+than|under|over|approve|deny)\b/.test(normalized) ||
+    /\b(price|cost|fee|rate|plan|subscription|monthly|per\s+month|market\s+cap|liquidity|apr|apy|weather|news|status|available|availability|outage|exploit|hack|incident|upgrade|governance|vote|sec|sanctions|ofac|kyc|issuer|jailed|tps|slot|withdrawals?|paused|offline)\b/.test(normalized) && /\b(check|find|look\s+up|search|verify|how\s+much|whether|if|less\s+than|more\s+than|under|over|above|below|approve|deny|reject)\b/.test(normalized) ||
     /\$\s*\d+/.test(normalized) && /\b(less\s+than|more\s+than|under|over|approve|deny|per\s+month|monthly)\b/.test(normalized)
   );
 }

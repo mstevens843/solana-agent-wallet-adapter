@@ -19,6 +19,7 @@ import {
 } from './providerHttp.js';
 import { researchTargetsForPayload } from './researchTargets.js';
 import { extractAnthropicCitations, extractAnthropicText, parseModelJson } from './responseParser.js';
+import { finalizeReviewResultForPayload } from './reviewPostprocess.js';
 import type { DeviceAgentProvider } from './types.js';
 
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -26,7 +27,7 @@ const PLAN_TEMPERATURE = 0.2;
 const REVIEW_TEMPERATURE = 0.2;
 const ASK_TEMPERATURE = 0.3;
 const PLAN_MAX_TOKENS = 1024;
-const REVIEW_MAX_TOKENS = 1024;
+const REVIEW_MAX_TOKENS = 1800;
 const ASK_MAX_TOKENS = 800;
 
 export class AnthropicProvider implements DeviceAgentProvider {
@@ -66,11 +67,11 @@ export class AnthropicProvider implements DeviceAgentProvider {
       };
       const messages = buildReviewMessages(reviewPayload);
       const response = await this.postMessages(messages, REVIEW_MAX_TOKENS, REVIEW_TEMPERATURE, signal, reviewPayload);
-      return parseModelJson(extractAnthropicText(response));
+      return finalizeReviewResultForPayload(parseModelJson(extractAnthropicText(response)), reviewPayload);
     }
     const messages = buildReviewMessages(payload);
     const response = await this.postMessages(messages, REVIEW_MAX_TOKENS, REVIEW_TEMPERATURE, signal, payload);
-    return parseModelJson(extractAnthropicText(response));
+    return finalizeReviewResultForPayload(parseModelJson(extractAnthropicText(response)), payload);
   }
 
   /**

@@ -340,6 +340,8 @@ import {
   buildAiSetupInventory,
   deviceAgentSetupSnapshot,
   directAiKeyStaged,
+  selectAiKeyClearTarget,
+  type AiPathClearability,
   type AiPathSetupSnapshot,
   type AiSetupInventory,
 } from './aiSetupState.js';
@@ -826,6 +828,7 @@ async function signWalletProofMessage(
     if (toastId !== undefined) {
       await waitForLedgerPromptPaint();
     }
+    assertConnectedWalletMatchesSavedPath(cluster);
     return await signWalletProofMessageRaw(message, summary, cluster);
   } catch (err) {
     throw normalizeLedgerSigningError(err);
@@ -2478,10 +2481,30 @@ interface FirstRunAction {
   disabled?: boolean;
 }
 
+type WalletPathKind =
+  | 'browser-extension'
+  | 'desktop-browser-extension'
+  | 'qr'
+  | 'ledger'
+  | 'ios-native'
+  | 'android-native';
+
+interface WalletPathSession {
+  version: 1;
+  path: WalletPathKind;
+  cluster: Cluster;
+  address: string;
+  walletName: string;
+  connectedAt: string;
+  walletBrandId?: string;
+  iosWalletId?: IosNativeWalletId;
+}
+
 interface PersistedState {
   selectedWalletName?: string;
   selectedWalletLogoId?: WalletProviderLogoId;
   browserWalletSession?: BrowserWalletSession;
+  walletPathSession?: WalletPathSession;
   selectedIosWalletId?: IosNativeWalletId;
   workflowModePreference?: WorkflowModePreference;
   preferencesView?: PreferencesView;
@@ -2701,6 +2724,7 @@ interface DemoState {
    *  while we wait. Cleared on success / timeout / disconnect. */
   walletHostOpening: { brandId: string; brandLabel: string; status: 'waiting' | 'error' } | null;
   browserWalletSession?: BrowserWalletSession;
+  walletPathSession?: WalletPathSession;
   pendingCliSignRequest: SigningRequest | null;
   lastCliSignResult: { requestId: string; status: 'approved' | 'rejected' | 'failed'; signature?: string; error?: string } | null;
   androidNativeEnvironment: AndroidNativeEnvironment;
@@ -3603,12 +3627,17 @@ const state: DemoState = {
   deleteAllDoneModalOpen: false,
   preferencesView: persisted.preferencesView ?? 'workspace',
   wallets: [],
-  selectedWalletName: persisted.browserWalletSession?.cluster === initialCluster ? persisted.browserWalletSession.walletName : '',
+  selectedWalletName: persisted.browserWalletSession?.cluster === initialCluster
+    ? persisted.browserWalletSession.walletName
+    : persisted.walletPathSession?.cluster === initialCluster
+      ? persisted.walletPathSession.walletName
+      : '',
   selectedWalletLogoId: persisted.selectedWalletLogoId,
   selectedWalletIcon: undefined,
   browserWalletPickerOpen: false,
   walletHostOpening: null,
   browserWalletSession: persisted.browserWalletSession,
+  walletPathSession: persisted.walletPathSession,
   pendingCliSignRequest: null,
   lastCliSignResult: null,
   androidNativeEnvironment: initialAndroidNativeEnvironment,
@@ -4708,17 +4737,21 @@ async function bootstrap(): Promise<void> {
     !state.iosNativeEnvironment.isIosNative &&
     !state.tauriNativeEnvironment.isTauriNative
   ) {
-    void runDiscover().finally(() => {
-      state.browserWalletPickerOpen = false;
-      render();
-    });
+    if (cliView.surface === 'desktop' && launchParams.walletBrand) {
+      void runWalletHostBrandAutoConnect(launchParams.walletBrand);
+    } else {
+      void runDiscover().finally(() => {
+        state.browserWalletPickerOpen = false;
+        render();
+      });
+    }
   }
-  // Wallet-host auto-connect for `?wallet=<brandId>` (the Tauri desktop's
-  // "Browser extension" path passes this when opening the wallet host in
-  // the user's system browser). Skip in CLI mode and on every native shell.
+  // Wallet-host auto-connect for `?wallet=<brandId>` (desktop browser-extension
+  // connect/sign passes this when opening the wallet host in the system browser).
   if (
     launchParams.walletBrand &&
-    !cliView &&
+    (!cliView || cliView.surface === 'desktop') &&
+    cliView?.intent !== 'connect' &&
     !state.address &&
     !state.androidNativeEnvironment.isAndroidNative &&
     !state.iosNativeEnvironment.isIosNative &&
@@ -6235,7 +6268,7 @@ function handleDesktopBrandAction(
       return;
     case 'external-browser': {
       collapseDesktopBrandPanels();
-      void openDesktopBrowserConnectPage();
+      void openDesktopBrowserConnectPage(brandId ?? null);
       return;
     }
     case 'scan-qr':
@@ -6959,6 +6992,7 @@ function handleLedgerDeviceDisconnect(): void {
     state.selectedWalletIcon = undefined;
     state.transactionStatus = 'Ledger disconnected.';
     state.steps.connect = 'idle';
+    clearWalletPathSession();
     savePersistedState();
     pushToast('pending', 'Ledger disconnected', 'Reconnect the device and choose Ledger again.');
   }
@@ -7706,6 +7740,44 @@ const DESKTOP_BRAND_WALLET_NAMES: Record<string, readonly string[]> = {
   solflare: ['Solflare'],
 };
 
+function browserWalletNameMatchesBrand(walletName: string, brandId: string | undefined): boolean {
+  if (!brandId) return true;
+  const names = DESKTOP_BRAND_WALLET_NAMES[brandId];
+  if (!names) return false;
+  const normalized = walletName.trim().toLowerCase();
+  return names.some((name) => name.toLowerCase() === normalized);
+}
+
+function browserWalletBrandIdForName(walletName: string): string | undefined {
+  const normalized = walletName.trim().toLowerCase();
+  if (!normalized) return undefined;
+  for (const [brandId, names] of Object.entries(DESKTOP_BRAND_WALLET_NAMES)) {
+    if (names.some((name) => name.toLowerCase() === normalized)) {
+      return brandId;
+    }
+  }
+  return undefined;
+}
+
+function discoveredWalletForBrand(brandId: string): DiscoveredWallet | undefined {
+  const names = DESKTOP_BRAND_WALLET_NAMES[brandId];
+  if (!names) return undefined;
+  return state.wallets.find((wallet) => browserWalletNameMatchesBrand(wallet.name, brandId));
+}
+
+function requestedDesktopBrowserWalletBrand(): string | undefined {
+  const brandId = launchParams.walletBrand?.trim();
+  if (!brandId) return undefined;
+  if (cliView && cliView.surface !== 'desktop') return undefined;
+  return DESKTOP_BRAND_WALLET_NAMES[brandId] ? brandId : undefined;
+}
+
+function browserWalletPathForCurrentSurface(): NonNullable<BrowserWalletSession['path']> {
+  return cliView?.surface === 'desktop' || Boolean(launchParams.bridgeUrl || launchParams.bridgeToken)
+    ? 'desktop-browser-extension'
+    : 'browser-extension';
+}
+
 function multiPathWalletFlowAvailable(): boolean {
   return canUseMultiPathWalletFlow({
     isAndroidNative: state.androidNativeEnvironment.isAndroidNative,
@@ -7909,69 +7981,28 @@ function desktopQrWalletPicker(): string {
 }
 
 function desktopBrowserExtensionBody(): string {
-  if (state.tauriNativeEnvironment.isTauriNative) {
-    return `
-      <div class="desktop-connect-flow-body browser-extension-inline">
-        <p class="desktop-connect-flow-lede">Open the wallet pairing page in your default browser, then approve with Backpack, Phantom, Jupiter, or Solflare there.</p>
-        <div class="desktop-extension-actions">
-          <button type="button" class="primary" data-desktop-flow-action="extension-connect" ${state.busy ? 'disabled' : ''}>
-            Open browser
-          </button>
-        </div>
-        <p class="desktop-extension-status">Agentic Desktop will detect the connected browser wallet after approval.</p>
-      </div>
-    `;
-  }
-  const selectedProvider = discoveredSelectedWalletName();
-  const providerCount = state.wallets.length;
-  const extensionDiscovered = desktopConnect.flow.extensionDiscovered;
-  const connectDisabled = providerCount === 0 || !selectedProvider || state.busy;
-  const providerField = extensionDiscovered
-    ? `
-      <label class="field desktop-extension-wallet-field">
-        <span>Wallet provider</span>
-        ${selectPicker({
-          id: BROWSER_EXTENSION_WALLET_SELECT_ID,
-          value: state.selectedWalletName,
-          options: walletSelectOptions(),
-          attrs: { 'data-wallet-select-scope': 'browser-extension' },
-          disabled: providerCount === 0 || state.busy,
-          open: state.browserWalletPickerOpen,
-        })}
-      </label>
-    `
-    : '';
-  const connectAction = extensionDiscovered
-    ? `
-      <button
-        type="button"
-        class="${providerCount ? 'primary' : ''}"
-        data-desktop-flow-action="extension-connect"
-        ${connectDisabled ? 'disabled' : ''}
-        title="${!selectedProvider ? 'Discover and select a wallet provider first.' : ''}"
-      >
-        Connect wallet
-      </button>
-    `
-    : '';
-  const status = extensionDiscovered
-    ? providerCount
-      ? `${providerCount} provider(s) discovered in this browser.`
-      : 'No compatible browser extension wallets were found.'
-    : 'Click Discover to scan this browser for compatible wallet extensions.';
+  const rows = DESKTOP_QR_WALLETS.map((entry) => `
+    <button
+      type="button"
+      class="desktop-qr-wallet-tile"
+      data-desktop-flow-action="pick-extension-wallet"
+      data-desktop-extension-wallet="${escapeHtmlForFlow(entry.id)}"
+      ${state.busy ? 'disabled' : ''}
+    >
+      ${brandLogoMarkup(entry.logoId, 'desktop-qr-wallet-tile-logo')}
+      <span class="desktop-qr-wallet-tile-copy">
+        <span class="desktop-qr-wallet-tile-label">${escapeHtmlForFlow(entry.label)}</span>
+      </span>
+      <span class="desktop-qr-wallet-tile-arrow" aria-hidden="true">›</span>
+    </button>
+  `).join('');
+  const lede = state.tauriNativeEnvironment.isTauriNative
+    ? 'Pick the browser extension to open in your default browser. Agentic Desktop will only accept that provider for this connection.'
+    : 'Pick the browser extension to open in this browser. Agentic will only connect through that provider.';
   return `
     <div class="desktop-connect-flow-body browser-extension-inline">
-      <p class="desktop-connect-flow-lede">Use an installed Backpack, Phantom, Jupiter, or Solflare extension in this browser.</p>
-      ${providerField}
-      <div class="desktop-extension-actions">
-        <button type="button" class="primary" data-desktop-flow-action="extension-discover" ${state.busy ? 'disabled' : ''}>
-          Discover
-        </button>
-        ${connectAction}
-      </div>
-      <p class="desktop-extension-status">
-        ${status}
-      </p>
+      <p class="desktop-connect-flow-lede">${escapeHtmlForFlow(lede)}</p>
+      <div class="desktop-qr-wallet-picker" role="list">${rows}</div>
     </div>
   `;
 }
@@ -8345,6 +8376,12 @@ async function adoptPairedWallet(input: {
   state.bridgeActive = false;
   state.bridgeStatus = 'Signing through cloud pairing relay.';
   state.transactionStatus = `Wallet paired via your phone on ${state.cluster}.`;
+  rememberWalletPathSession({
+    path: 'qr',
+    address: input.address,
+    walletName: input.walletName,
+    walletBrandId: input.wallet,
+  });
   try {
     await afterWalletConnected();
   } catch (err) {
@@ -8356,19 +8393,27 @@ async function adoptPairedWallet(input: {
   dispatchDesktopConnectFlow({ type: 'reset' });
 }
 
-function desktopBrowserConnectUrl(): string {
+function desktopBrowserConnectUrl(brandId?: string | null): string {
+  const walletBrand = brandId?.trim() || undefined;
   return buildDesktopBrowserConnectUrl({
-    walletHostUrl: inferredWalletHostUrl({ route: '/connect' }),
+    walletHostUrl: inferredWalletHostUrl({ route: '/connect', wallet: walletBrand }),
     bridgeUrl: state.bridgeUrl,
     bridgeToken: state.bridgeToken,
+    ...(walletBrand ? { walletBrand } : {}),
   });
 }
 
 function desktopBrowserSignUrl(requestId: string): string {
+  const walletBrand =
+    state.walletPathSession?.path === 'desktop-browser-extension'
+      ? state.walletPathSession.walletBrandId
+      : browserWalletBrandIdForName(state.selectedWalletName);
   return buildDesktopBrowserIntentUrl({
-    walletHostUrl: inferredWalletHostUrl({ route: '/sign' }),
+    walletHostUrl: inferredWalletHostUrl({ route: '/sign', wallet: walletBrand }),
     bridgeUrl: state.bridgeUrl,
     bridgeToken: state.bridgeToken,
+    ...(walletBrand ? { walletBrand } : {}),
+    ...(state.address ? { walletAddress: state.address } : {}),
     intent: 'sign',
     requestId,
   });
@@ -8421,7 +8466,7 @@ async function openDesktopBrowserConnectPage(brandId?: string | null): Promise<v
     dispatchDesktopConnectFlow({ type: 'reset' });
     return;
   }
-  const target = desktopBrowserConnectUrl();
+  const target = desktopBrowserConnectUrl(brandId);
   void tauriNativeOpenExternalUrl(target).catch((err) => {
     pushToast(
       'error',
@@ -8515,6 +8560,15 @@ async function pollBridgeForHost(
   }
   const address = capabilities.address?.trim();
   if (!address) return;
+  if (brandId) {
+    const walletName = capabilities.walletName?.trim() ?? '';
+    if (walletName && !browserWalletNameMatchesBrand(walletName, brandId)) {
+      const expected = DESKTOP_BRAND_PANELS.find((brand) => brand.id === brandId)?.name ?? brandId;
+      state.bridgeStatus = `Waiting for ${expected}; browser reported ${walletName}.`;
+      render();
+      return;
+    }
+  }
   // Detection: a host has registered with the bridge. Stop the poll, adopt.
   stopDesktopConnectPoll();
   await adoptBridgeHost(address, capabilities, brandId ?? null);
@@ -8566,7 +8620,7 @@ async function adoptBridgeHost(
   const logoId = bridgeWalletLogoIdForProvider(capabilities, providerName);
   state.address = address;
   state.capabilities = capabilities;
-  state.selectedWalletName = 'Browser wallet';
+  state.selectedWalletName = providerName || 'Browser wallet';
   state.selectedWalletLogoId = logoId;
   state.selectedWalletIcon = bridgeWalletIconForProvider(capabilities, logoId);
   state.bridgeActive = true;
@@ -8575,6 +8629,12 @@ async function adoptBridgeHost(
     ? `Browser wallet connected through ${providerName}.`
     : 'Browser wallet connected to Agentic Desktop.';
   state.transactionStatus = `Wallet connected via browser on ${state.cluster}.`;
+  rememberWalletPathSession({
+    path: 'desktop-browser-extension',
+    address,
+    walletName: state.selectedWalletName,
+    walletBrandId: brandId ?? browserWalletBrandIdForName(providerName),
+  });
   startBridgePolling();
   try {
     await afterWalletConnected();
@@ -8619,19 +8679,32 @@ function handleDesktopAwaitingRetry(): void {
   void openDesktopBrowserConnectPage(desktopConnect.flow.selectedBrandId);
 }
 
-function handleDesktopExtensionDiscover(): void {
-  if (desktopConnect.flow.step !== 'extension' || state.tauriNativeEnvironment.isTauriNative) return;
-  dispatchDesktopConnectFlow({ type: 'markExtensionDiscovered' });
-  void runBrowserExtensionDiscover();
+async function connectBrowserExtensionBrand(brandId: DesktopQrWallet): Promise<void> {
+  const brandLabel = DESKTOP_BRAND_PANELS.find((brand) => brand.id === brandId)?.name ?? brandId;
+  let selected = false;
+  await run('discover', async () => {
+    discoverBrowserWallets({ resetSelection: true });
+    const candidate = discoveredWalletForBrand(brandId);
+    if (!candidate) {
+      throw new Error(`${brandLabel} extension not found in this browser. Install or unlock ${brandLabel}, then try again.`);
+    }
+    state.selectedWalletName = candidate.name;
+    state.selectedWalletLogoId = walletProviderLogoIdForName(candidate.name);
+    state.selectedWalletIcon = candidate.icon;
+    state.browserWalletPickerOpen = false;
+    selected = true;
+  });
+  if (!selected) return;
+  await runConnect();
 }
 
-function handleDesktopExtensionConnect(): void {
+function handleDesktopExtensionWalletSelect(brandId: DesktopQrWallet): void {
   if (desktopConnect.flow.step !== 'extension') return;
   if (state.tauriNativeEnvironment.isTauriNative) {
-    void openDesktopBrowserConnectPage();
+    void openDesktopBrowserConnectPage(brandId);
     return;
   }
-  void runConnect();
+  void connectBrowserExtensionBrand(brandId);
 }
 
 function bindDesktopConnectFlow(): void {
@@ -8658,16 +8731,15 @@ function bindDesktopConnectFlow(): void {
         }
         return;
       }
+      if (raw === 'pick-extension-wallet') {
+        const w = el.dataset.desktopExtensionWallet;
+        if (w === 'backpack' || w === 'jupiter' || w === 'phantom' || w === 'solflare') {
+          handleDesktopExtensionWalletSelect(w);
+        }
+        return;
+      }
       if (raw === 'awaiting-retry') {
         handleDesktopAwaitingRetry();
-        return;
-      }
-      if (raw === 'extension-discover') {
-        handleDesktopExtensionDiscover();
-        return;
-      }
-      if (raw === 'extension-connect') {
-        handleDesktopExtensionConnect();
         return;
       }
     });
@@ -8684,6 +8756,7 @@ function handleBrowserWalletSelectChange(select: HTMLSelectElement): void {
   state.selectedWalletIcon = selected?.icon;
   state.browserWalletPickerOpen = false;
   clearBrowserWalletSession();
+  clearWalletPathSession();
 
   const inlineBrowserExtensionSelection =
     select.id === BROWSER_EXTENSION_WALLET_SELECT_ID &&
@@ -21238,12 +21311,18 @@ function inactiveAiConfigNotice(location: 'rail' | 'planner'): string {
   const activeLabel = aiPathPreferenceLabel(state.aiSettings.mode);
   const detail = inactive.detail
     ?? `${inactive.provider ?? 'AI'} - ${inactive.model ?? 'model configured'}`;
+  const useButton = location === 'rail'
+    ? ''
+    : `<button type="button" class="utility" data-ai-mode-choice="${escapeHtml(inactive.mode)}">Use ${escapeHtml(label)}</button>`;
   return `
     <div class="ai-key-configured-note ai-inactive-config-note" aria-live="polite">
       <span>Inactive AI path</span>
       <strong>${escapeHtml(label)} configured</strong>
       <em>${escapeHtml(`${detail}. ${activeLabel} is selected.`)}</em>
-      ${location === 'rail' ? '' : `<button type="button" class="utility" data-ai-mode-choice="${escapeHtml(inactive.mode)}">Use ${escapeHtml(label)}</button>`}
+      <div class="ai-inactive-config-actions">
+        ${useButton}
+        <button type="button" class="utility danger" data-ai-action="clear-key" data-ai-clear-mode="${escapeHtml(inactive.mode)}" ${!canClearAiKey(inactive.mode) ? 'disabled' : ''}>Clear key</button>
+      </div>
     </div>
   `;
 }
@@ -22130,12 +22209,32 @@ function canSaveDirectAiKey(): boolean {
     && !state.busy;
 }
 
-function canClearAiKey(): boolean {
-  return Boolean(
-    state.aiSettings.apiKey.trim()
-      || (state.aiSettings.mode === 'bridge' && state.aiStatus?.source === 'session')
-      || (state.aiSettings.mode === 'device-agent' && state.deviceAgentStatus?.configured),
-  );
+function aiPathClearableByMode(): AiPathClearability {
+  return {
+    hosted: directAiKeyStagedForMode('hosted'),
+    session: directAiKeyStagedForMode('session'),
+    bridge: Boolean(
+      (state.aiSettings.mode === 'bridge' && state.aiSettings.apiKey.trim())
+        || state.aiStatus?.source === 'session',
+    ),
+    'device-agent': Boolean(
+      (state.aiSettings.mode === 'device-agent' && state.aiSettings.apiKey.trim())
+        || state.deviceAgentStatus?.configured,
+    ),
+  };
+}
+
+function aiKeyClearTarget(requestedMode?: AiSettings['mode']): AiSettings['mode'] | null {
+  return selectAiKeyClearTarget({
+    activeMode: state.aiSettings.mode,
+    inactiveConfigured: inactiveConfiguredAiPaths(),
+    clearableByMode: aiPathClearableByMode(),
+    requestedMode,
+  });
+}
+
+function canClearAiKey(requestedMode?: AiSettings['mode']): boolean {
+  return !state.busy && Boolean(aiKeyClearTarget(requestedMode));
 }
 
 function canStopDeviceAgentRuntime(): boolean {
@@ -22630,7 +22729,8 @@ function syncAiActionButtons(): void {
       : aiConfirmDisabledReason();
   }
   for (const clearButton of document.querySelectorAll<HTMLButtonElement>('[data-ai-action="clear-key"]')) {
-    clearButton.disabled = !canClearAiKey();
+    const clearMode = clearButton.dataset.aiClearMode;
+    clearButton.disabled = !canClearAiKey(clearMode && isAiMode(clearMode) ? clearMode : undefined);
   }
   for (const stopButton of document.querySelectorAll<HTMLButtonElement>('[data-ai-action="stop-device-agent"]')) {
     stopButton.disabled = state.busy || !canStopDeviceAgentRuntime();
@@ -24695,9 +24795,11 @@ function bind(): void {
         case 'confirm-planner':
           void runConfirmAiPlanner();
           return;
-        case 'clear-key':
-          void runClearAiKey();
+        case 'clear-key': {
+          const clearMode = button.dataset.aiClearMode;
+          void runClearAiKey(clearMode && isAiMode(clearMode) ? clearMode : undefined);
           return;
+        }
         case 'refresh-status':
           if (state.aiSettings.mode === 'device-agent') {
             void runRefreshDeviceAgentStatus();
@@ -25812,7 +25914,20 @@ async function connectCliSignInBrowserWallet(
   state.selectedWalletIcon = selected.icon;
   state.transactionStatus = `Wallet connected on ${state.cluster}.`;
   state.steps.connect = 'done';
-  state.browserWalletSession = createBrowserWalletSession(selected.name, state.cluster, preferredSession?.connectedAt);
+  const walletBrandId = browserWalletBrandIdForName(selected.name);
+  const browserWalletPath = browserWalletPathForCurrentSurface();
+  state.browserWalletSession = createBrowserWalletSession(selected.name, state.cluster, preferredSession?.connectedAt, {
+    address,
+    walletBrandId,
+    path: browserWalletPath,
+  });
+  rememberWalletPathSession({
+    path: browserWalletPath,
+    address,
+    walletName: selected.name,
+    walletBrandId,
+    connectedAt: preferredSession?.connectedAt,
+  });
   if (state.bridgeToken && isTrustedBridgeUrl(state.bridgeUrl)) {
     await connectBridgeHost().catch((err) => {
       console.info('[cli-sign-in] bridge host sync skipped.', err);
@@ -27074,6 +27189,9 @@ function discoverBrowserWallets(options: { resetSelection?: boolean } = {}): voi
   state.browserWalletPickerOpen = state.wallets.length > 0 && !state.selectedWalletName;
   if (!browserWalletRestoreName(state.wallets, state.browserWalletSession, state.cluster)) {
     clearBrowserWalletSession();
+    if (state.walletPathSession?.path === 'browser-extension' || state.walletPathSession?.path === 'desktop-browser-extension') {
+      clearWalletPathSession();
+    }
   }
   if (state.wallets.length === 0) {
     state.selectedWalletName = '';
@@ -27081,6 +27199,9 @@ function discoverBrowserWallets(options: { resetSelection?: boolean } = {}): voi
     state.selectedWalletIcon = undefined;
     state.browserWalletPickerOpen = false;
     clearBrowserWalletSession();
+    if (state.walletPathSession?.path === 'browser-extension' || state.walletPathSession?.path === 'desktop-browser-extension') {
+      clearWalletPathSession();
+    }
     savePersistedState();
     throw new Error('No Wallet Standard Solana wallets are registered in this browser.');
   }
@@ -27100,6 +27221,11 @@ async function runConnect(
       if (state.bridgeActive) {
         await connectBridgeHost();
       }
+      rememberWalletPathSession({
+        path: 'android-native',
+        address: state.address,
+        walletName: state.selectedWalletName,
+      });
       await afterWalletConnected();
       savePersistedState();
       trackWalletConnectSuccess(connectSurface, state.cluster, 'connect_button');
@@ -27127,6 +27253,13 @@ async function runConnect(
       if (state.bridgeActive) {
         await connectBridgeHost();
       }
+      rememberWalletPathSession({
+        path: 'ios-native',
+        address: state.address,
+        walletName: state.selectedWalletName,
+        walletBrandId: state.selectedIosWalletId,
+        iosWalletId: state.selectedIosWalletId,
+      });
       await afterWalletConnected();
       savePersistedState();
       trackWalletConnectSuccess(connectSurface, state.cluster, 'connect_button');
@@ -27182,13 +27315,42 @@ async function runConnect(
       rpcUrl: activeRpcUrl(),
     });
     client = new SolanaSigningClient({ backend: walletBackend });
-    state.address = await client.getAddress();
+    const connectedAddress = await client.getAddress();
+    const expectedLaunchAddress = launchParams.cliWalletAddress?.trim();
+    if (expectedLaunchAddress && !sameWalletAddress(connectedAddress, expectedLaunchAddress)) {
+      walletBackend = null;
+      client = null;
+      throw new Error(`Connected wallet ${short(connectedAddress)} does not match the requested signer ${short(expectedLaunchAddress)}.`);
+    }
+    state.address = connectedAddress;
     state.capabilities = await client.capabilities();
     state.transactionStatus = `Wallet connected on ${state.cluster}.`;
     state.selectedWalletName = selected.name;
     state.selectedWalletLogoId = walletProviderLogoIdForName(selected.name);
     state.selectedWalletIcon = selected.icon;
-    state.browserWalletSession = createBrowserWalletSession(selected.name, state.cluster);
+    const walletBrandId = browserWalletBrandIdForName(selected.name);
+    const browserWalletPath = browserWalletPathForCurrentSurface();
+    if (selected.name === LEDGER_WALLET_NAME) {
+      clearBrowserWalletSession();
+      rememberWalletPathSession({
+        path: 'ledger',
+        address: state.address,
+        walletName: selected.name,
+        walletBrandId: 'ledger',
+      });
+    } else {
+      state.browserWalletSession = createBrowserWalletSession(selected.name, state.cluster, undefined, {
+        address: state.address,
+        walletBrandId,
+        path: browserWalletPath,
+      });
+      rememberWalletPathSession({
+        path: browserWalletPath,
+        address: state.address,
+        walletName: selected.name,
+        walletBrandId,
+      });
+    }
     if (state.bridgeActive) {
       await connectBridgeHost();
     } else if (launchParams.bridgeUrl || launchParams.bridgeToken) {
@@ -27203,6 +27365,7 @@ async function runConnect(
         state.address = '';
         state.capabilities = null;
         state.browserWalletSession = undefined;
+        clearWalletPathSession();
         state.transactionStatus = `Bridge rejected the connection: ${message}`;
         walletBackend = null;
         client = null;
@@ -30982,7 +31145,7 @@ function questionAwareFindingsFromFacts(
   const slippageBps = typeof facts.limits?.detail?.slippageBps === 'number'
     ? (facts.limits.detail.slippageBps as number)
     : undefined;
-  if (slippageBps && Number.isFinite(slippageBps)) {
+  if (slippageBps && Number.isFinite(slippageBps) && /\b(slippage|max slippage|price impact|minimum received|min received)\b/i.test(instruction)) {
     findings.push({
       label: 'Slippage protection',
       value: `${(slippageBps / 100).toFixed(2)}% (${slippageBps} bps)`,
@@ -30990,7 +31153,7 @@ function questionAwareFindingsFromFacts(
     });
   }
 
-  if (planBehavesLikeSwap(plan)) {
+  if (planBehavesLikeSwap(plan) && /\b(amount|how much|swap amount|input amount|usd at risk|value)\b/i.test(instruction)) {
     const amount = planParameter(plan, ['amount', 'inputAmount', 'plannedAmount']).trim();
     const inputSymbol = (planParameter(plan, ['inputToken']).trim() || '').toUpperCase();
     if (amount && inputSymbol) {
@@ -31928,7 +32091,9 @@ interface AgentReviewEvidenceBundle {
 //   - OpenAI gpt-5 / o-series (Native)   → OpenAiNativeProvider + web_search_preview
 //   - Gemini Native                      → GeminiNativeProvider + google_search
 //   - OpenRouter / Custom OpenAI-compat  → NO (chat completions has no web-search tool)
-// Mirrors packages/mcp-server/src/aiPlanner.ts:supportsNativeWebResearch on the server side.
+// Browser-native intentionally has one extra native-research route over the
+// bridge path today: Gemini direct uses google_search grounding here, while
+// OpenRouter/custom OpenAI-compatible gateways still fail closed.
 // Used by evidenceContextForReview to set `externalResearchAvailable` so the gate doesn't
 // block external_research routes when the AI will resolve them via web search.
 function aiProviderSupportsWebResearch(): boolean {
@@ -34064,23 +34229,32 @@ async function runConfirmAiPlanner(): Promise<void> {
   }
 }
 
-async function runClearAiKey(): Promise<void> {
+async function runClearAiKey(requestedMode?: AiSettings['mode']): Promise<void> {
+  const targetMode = aiKeyClearTarget(requestedMode);
+  if (!targetMode) {
+    pushToast('error', 'No AI key to clear', 'No clearable AI key is configured for the selected path.');
+    render();
+    return;
+  }
   await run('ai', async () => {
-    state.aiSettings.apiKey = '';
-    clearAllSessionAiApiKeys();
-    resetAiPlannerConfirmation('AI key cleared.');
-    if (state.aiSettings.mode === 'bridge') {
+    const clearedActivePath = targetMode === state.aiSettings.mode;
+    if (clearedActivePath) {
+      state.aiSettings.apiKey = '';
+      resetAiPlannerConfirmation('AI key cleared.');
+    }
+    clearSessionAiApiKeysForMode(targetMode);
+    if (targetMode === 'bridge') {
       await bridgeRequest('/bridge/ai/session-key', {
         method: 'POST',
         body: JSON.stringify({ clear: true }),
       }).catch(() => undefined);
       await refreshBridgeAiStatus(false);
     }
-    if (state.aiSettings.mode === 'device-agent') {
+    if (targetMode === 'device-agent') {
       await clearDeviceAgentRuntimeConfig();
       saveDeviceAgentStatusCache(state.deviceAgentStatus);
     }
-    pushToast('success', 'AI key cleared', aiClearMessage());
+    pushToast('success', 'AI key cleared', aiClearMessage(targetMode));
   });
 }
 
@@ -34213,14 +34387,14 @@ async function runStartTauriBridgeForAi(): Promise<void> {
   });
 }
 
-function aiClearMessage(): string {
-  if (state.aiSettings.mode === 'hosted') {
+function aiClearMessage(mode: AiSettings['mode'] = state.aiSettings.mode): string {
+  if (mode === 'hosted') {
     return 'Hosted BYOK key removed from this browser session.';
   }
-  if (state.aiSettings.mode === 'device-agent') {
+  if (mode === 'device-agent') {
     return 'Device Agent key and staged runtime config removed from this app.';
   }
-  if (state.aiSettings.mode === 'session') {
+  if (mode === 'session') {
     return IS_TAURI_APP
       ? 'Desktop session key removed from this app.'
       : IS_ANDROID_APP
@@ -42613,6 +42787,7 @@ async function handleBridgeSigningRequest(request: SigningRequest): Promise<void
   render();
 
   try {
+    assertConnectedWalletMatchesSavedPath(request.cluster);
     let result: SigningResult;
     let proofEnvelope: { proofEncoding?: 'utf8-message' | 'tx-memo-proof'; proofTxBase64?: string } | undefined;
     switch (request.kind) {
@@ -44494,6 +44669,33 @@ function clearBrowserWalletSession(): void {
   state.browserWalletSession = undefined;
 }
 
+function rememberWalletPathSession(input: {
+  path: WalletPathKind;
+  address: string;
+  walletName: string;
+  walletBrandId?: string | null;
+  iosWalletId?: IosNativeWalletId;
+  connectedAt?: string;
+}): void {
+  const address = input.address.trim();
+  const walletName = input.walletName.trim();
+  if (!address || !walletName) return;
+  state.walletPathSession = {
+    version: 1,
+    path: input.path,
+    cluster: state.cluster,
+    address,
+    walletName,
+    connectedAt: input.connectedAt ?? new Date().toISOString(),
+    ...(input.walletBrandId?.trim() ? { walletBrandId: input.walletBrandId.trim() } : {}),
+    ...(input.iosWalletId ? { iosWalletId: input.iosWalletId } : {}),
+  };
+}
+
+function clearWalletPathSession(): void {
+  state.walletPathSession = undefined;
+}
+
 function clearPendingBrowserWalletChoice(options: { clearWallets?: boolean } = {}): void {
   if (state.address || !isBrowserWalletSurface()) return;
   state.selectedWalletName = '';
@@ -44501,6 +44703,7 @@ function clearPendingBrowserWalletChoice(options: { clearWallets?: boolean } = {
   state.selectedWalletIcon = undefined;
   state.browserWalletPickerOpen = false;
   clearBrowserWalletSession();
+  clearWalletPathSession();
   if (options.clearWallets) {
     state.wallets = [];
   }
@@ -44508,7 +44711,10 @@ function clearPendingBrowserWalletChoice(options: { clearWallets?: boolean } = {
 
 async function restoreBrowserWalletSession(): Promise<void> {
   state.wallets = visibleBrowserWallets(listAvailableWallets());
-  state.selectedWalletName = reconcileBrowserWalletSelection(state.wallets, state.selectedWalletName);
+  const requestedBrandId = requestedDesktopBrowserWalletBrand();
+  const requestedBrandWallet = requestedBrandId ? discoveredWalletForBrand(requestedBrandId) : undefined;
+  state.selectedWalletName = requestedBrandWallet?.name
+    ?? reconcileBrowserWalletSelection(state.wallets, state.selectedWalletName);
   state.browserWalletPickerOpen = false;
   if (cliView?.intent === 'connect') {
     clearPendingBrowserWalletChoice({ clearWallets: true });
@@ -44517,9 +44723,12 @@ async function restoreBrowserWalletSession(): Promise<void> {
     return;
   }
   const restoreName = browserWalletRestoreName(state.wallets, state.browserWalletSession, state.cluster);
-  if (!restoreName) {
+  if (!restoreName || !browserWalletNameMatchesBrand(restoreName, requestedBrandId)) {
     if (state.browserWalletSession) {
       clearBrowserWalletSession();
+      if (state.walletPathSession?.path === 'browser-extension' || state.walletPathSession?.path === 'desktop-browser-extension') {
+        clearWalletPathSession();
+      }
       savePersistedState();
     }
     return;
@@ -44535,6 +44744,14 @@ async function restoreBrowserWalletSession(): Promise<void> {
 
   try {
     const address = await backend.connect({ silent: true });
+    const expectedSessionAddress = state.browserWalletSession?.address?.trim();
+    const expectedLaunchAddress = launchParams.cliWalletAddress?.trim();
+    if (expectedSessionAddress && !sameWalletAddress(address, expectedSessionAddress)) {
+      throw new Error(`Connected wallet ${short(address)} does not match the saved ${selected.name} session ${short(expectedSessionAddress)}.`);
+    }
+    if (expectedLaunchAddress && !sameWalletAddress(address, expectedLaunchAddress)) {
+      throw new Error(`Connected wallet ${short(address)} does not match the requested signer ${short(expectedLaunchAddress)}.`);
+    }
     walletBackend = backend;
     client = new SolanaSigningClient({ backend });
     state.address = address;
@@ -44543,11 +44760,25 @@ async function restoreBrowserWalletSession(): Promise<void> {
     state.selectedWalletLogoId = walletProviderLogoIdForName(selected.name);
     state.selectedWalletIcon = selected.icon;
     state.steps.connect = 'done';
+    const walletBrandId = browserWalletBrandIdForName(selected.name);
+    const browserWalletPath = browserWalletPathForCurrentSurface();
     state.browserWalletSession = createBrowserWalletSession(
       selected.name,
       state.cluster,
       state.browserWalletSession?.connectedAt,
+      {
+        address,
+        walletBrandId,
+        path: browserWalletPath,
+      },
     );
+    rememberWalletPathSession({
+      path: browserWalletPath,
+      address,
+      walletName: selected.name,
+      walletBrandId,
+      connectedAt: state.browserWalletSession.connectedAt,
+    });
     await afterWalletConnected();
     savePersistedState();
   } catch (err) {
@@ -44562,6 +44793,7 @@ async function restoreBrowserWalletSession(): Promise<void> {
     state.selectedWalletIcon = undefined;
     state.browserWalletPickerOpen = state.wallets.length > 0;
     clearBrowserWalletSession();
+    clearWalletPathSession();
     savePersistedState();
     console.info('Browser wallet silent restore skipped.', err);
   }
@@ -44629,6 +44861,11 @@ async function connectAndroidNativeWallet(forcePicker: boolean): Promise<void> {
   state.androidNativeStatus = `Android ${state.selectedWalletName} connected on ${state.cluster}.`;
   state.transactionStatus = `Android MWA wallet connected on ${state.cluster}.`;
   state.steps.connect = 'done';
+  rememberWalletPathSession({
+    path: 'android-native',
+    address: state.address,
+    walletName: state.selectedWalletName,
+  });
   savePersistedState();
 }
 
@@ -44645,6 +44882,11 @@ async function applyAndroidNativeRestore(restored: AndroidNativeRestoreResult): 
   state.androidNativeStatus = `Restored cached ${restored.walletName} authorization on ${state.cluster}.`;
   state.transactionStatus = `Android MWA wallet connected on ${state.cluster}.`;
   state.steps.connect = 'done';
+  rememberWalletPathSession({
+    path: 'android-native',
+    address: restored.address,
+    walletName: restored.walletName,
+  });
   savePersistedState();
 }
 
@@ -44653,12 +44895,20 @@ async function restoreAndroidNativeSession(): Promise<void> {
     state.androidNativeStatus = 'Android native MWA supports mainnet-beta, devnet, and testnet. Select devnet for local testing.';
     return;
   }
+  const expectedAddress =
+    state.walletPathSession?.path === 'android-native' &&
+    state.walletPathSession.cluster === state.cluster
+      ? state.walletPathSession.address
+      : undefined;
   const restored = await restoreLatestAndroidNativeWallet({
     cluster: androidNativeCluster(),
     rpcUrl: activeRpcUrl(),
+    ...(expectedAddress ? { address: expectedAddress } : {}),
   });
   if (!restored) {
-    state.androidNativeStatus = 'No cached Android MWA authorization found. Tap Discover to open the wallet picker.';
+    state.androidNativeStatus = expectedAddress
+      ? `No cached Android MWA authorization found for ${short(expectedAddress)}. Tap Discover to reconnect that wallet.`
+      : 'No cached Android MWA authorization found. Tap Discover to open the wallet picker.';
     return;
   }
   await applyAndroidNativeRestore(restored);
@@ -44696,14 +44946,21 @@ function assertAndroidNativeRuntime(): void {
 }
 
 async function restoreIosNativeSession(): Promise<void> {
+  const savedIosWalletId =
+    state.walletPathSession?.path === 'ios-native' &&
+    state.walletPathSession.cluster === state.cluster &&
+    state.walletPathSession.iosWalletId
+      ? state.walletPathSession.iosWalletId
+      : state.selectedIosWalletId;
   const restored = await restoreLatestIosNativeWallet({
+    walletId: savedIosWalletId,
     cluster: state.cluster,
     appUrl: iosNativeAppUrl(),
     rpcUrl: activeRpcUrl(),
     logLevel: 'info',
   });
   if (!restored) {
-    state.iosNativeStatus = 'No cached iOS authorization found.';
+    state.iosNativeStatus = `No cached ${iosWalletLabel(savedIosWalletId)} authorization found.`;
     return;
   }
   walletBackend = restored.backend;
@@ -44716,6 +44973,13 @@ async function restoreIosNativeSession(): Promise<void> {
   state.capabilities = await client.capabilities();
   state.iosAuthCacheCount = restored.cacheCount;
   state.iosNativeStatus = `Restored cached ${restored.walletName} authorization on ${state.cluster}.`;
+  rememberWalletPathSession({
+    path: 'ios-native',
+    address: restored.address,
+    walletName: restored.walletName,
+    walletBrandId: restored.walletId,
+    iosWalletId: restored.walletId,
+  });
 }
 
 async function refreshIosNativeCacheState(): Promise<void> {
@@ -44762,6 +45026,17 @@ function requireClient(): SolanaSigningClient {
   return client;
 }
 
+function assertConnectedWalletMatchesSavedPath(cluster: Cluster): void {
+  const session = state.walletPathSession;
+  if (!session) return;
+  if (session.cluster !== cluster) {
+    throw new Error(`Reconnect ${session.walletName} on ${cluster}; the saved wallet path is for ${session.cluster}.`);
+  }
+  if (state.address && !sameWalletAddress(state.address, session.address)) {
+    throw new Error(`Connected wallet ${short(state.address)} does not match saved ${session.walletName} signer ${short(session.address)}.`);
+  }
+}
+
 function canSignAndSend(): boolean {
   return Boolean(
     state.address &&
@@ -44803,6 +45078,7 @@ function resetWalletConnection(): void {
   state.localCompletedPlans = [];
   state.capabilities = null;
   state.walletBalance = emptyWalletBalanceViewState();
+  clearWalletPathSession();
   walletBalanceSummaryRequestId += 1;
   walletBalanceFullRequestId += 1;
   state.activeMobileRailSheet = null;
@@ -51274,6 +51550,25 @@ function clearCurrentSessionAiApiKey(): void {
   saveSessionAiApiKey({ ...state.aiSettings, apiKey: '' });
 }
 
+function clearSessionAiApiKeysForMode(mode: AiSettings['mode']): void {
+  try {
+    const entries = loadSessionAiApiKeyEntries();
+    const prefix = `${mode}|`;
+    for (const key of Object.keys(entries)) {
+      if (key.startsWith(prefix)) {
+        delete entries[key];
+      }
+    }
+    if (Object.keys(entries).length) {
+      window.sessionStorage.setItem(AI_API_KEYS_SESSION_STORAGE_KEY, JSON.stringify(entries));
+    } else {
+      window.sessionStorage.removeItem(AI_API_KEYS_SESSION_STORAGE_KEY);
+    }
+  } catch {
+    // Best-effort browser-session cleanup.
+  }
+}
+
 function clearAllSessionAiApiKeys(): void {
   try {
     window.sessionStorage.removeItem(AI_API_KEYS_SESSION_STORAGE_KEY);
@@ -51873,6 +52168,39 @@ function encodeBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+function isPersistedWalletPathSession(value: unknown): value is WalletPathSession {
+  if (!isJsonObject(value)) return false;
+  return (
+    value.version === 1 &&
+    typeof value.path === 'string' &&
+    isWalletPathKind(value.path) &&
+    typeof value.cluster === 'string' &&
+    isCluster(value.cluster) &&
+    typeof value.address === 'string' &&
+    value.address.trim().length > 0 &&
+    typeof value.walletName === 'string' &&
+    value.walletName.trim().length > 0 &&
+    typeof value.connectedAt === 'string' &&
+    value.connectedAt.trim().length > 0 &&
+    (value.walletBrandId === undefined || typeof value.walletBrandId === 'string') &&
+    (value.iosWalletId === undefined || (
+      typeof value.iosWalletId === 'string' &&
+      isPersistedIosWalletId(value.iosWalletId)
+    ))
+  );
+}
+
+function isWalletPathKind(value: string): value is WalletPathKind {
+  return (
+    value === 'browser-extension' ||
+    value === 'desktop-browser-extension' ||
+    value === 'qr' ||
+    value === 'ledger' ||
+    value === 'ios-native' ||
+    value === 'android-native'
+  );
+}
+
 function loadPersistedState(): PersistedState {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
@@ -51882,6 +52210,7 @@ function loadPersistedState(): PersistedState {
       ...(typeof parsed.selectedWalletName === 'string' && { selectedWalletName: parsed.selectedWalletName }),
       ...(isWalletProviderLogoId(parsed.selectedWalletLogoId) && { selectedWalletLogoId: parsed.selectedWalletLogoId }),
       ...(isPersistedBrowserWalletSession(parsed.browserWalletSession) && { browserWalletSession: parsed.browserWalletSession }),
+      ...(isPersistedWalletPathSession(parsed.walletPathSession) && { walletPathSession: parsed.walletPathSession }),
       ...(typeof parsed.selectedIosWalletId === 'string' &&
         isPersistedIosWalletId(parsed.selectedIosWalletId) && { selectedIosWalletId: parsed.selectedIosWalletId }),
       ...(typeof parsed.workflowModePreference === 'string' &&
@@ -51914,6 +52243,7 @@ function savePersistedState(): void {
         selectedWalletName: state.selectedWalletName,
         selectedWalletLogoId: state.selectedWalletLogoId,
         browserWalletSession: state.browserWalletSession,
+        walletPathSession: state.walletPathSession,
         selectedIosWalletId: state.selectedIosWalletId,
         workflowModePreference: state.workflowModePreference,
         preferencesView: state.preferencesView,
@@ -52908,8 +53238,12 @@ function readLaunchParams(): {
   const cliSurface: CliSurfaceName | undefined = rawSurface === 'desktop' ? 'desktop' : undefined;
   const qrConnectRoute = normalizePathname(window.location.pathname) === '/qr-connect';
   // Legacy mobile/deeplink flows can pass ?wallet=<brandId> to auto-select a
-  // browser wallet on /app. Ignored if CLI mode is active.
-  const walletBrand = !cliMode && !qrConnectRoute ? params.get('wallet')?.trim() || undefined : undefined;
+  // browser wallet on /app. Desktop CLI wallet-host routes also use it to
+  // constrain /connect and /sign to the exact extension picked in the app.
+  const rawWalletBrand = params.get('wallet')?.trim() || undefined;
+  const walletBrand = rawWalletBrand && !qrConnectRoute && (!cliMode || cliSurface === 'desktop')
+    ? rawWalletBrand
+    : undefined;
   // The desktop's Phantom QR path embeds a pairing UUID. When the wallet-host
   // connects, it POSTs its address to `/api/pair/<pairing>/host` and runs an
   // inbox loop so the desktop can sign through the relay.

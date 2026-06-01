@@ -1136,6 +1136,56 @@ describe('BridgeAiPlanner', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('returns needs_input for unresolved external identity atoms on gateways without native web search', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-openrouter-sec',
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openrouter/auto',
+    });
+
+    const review = await planner.reviewPlan({
+      plan: transferPlan(),
+      instruction: 'Deny if there is an active SEC enforcement action against the token issuer.',
+    });
+
+    expect(review.decision).toBe('needs_input');
+    expect(review.reason).toContain('native web-search path');
+    expect(review.evidence).toMatchObject({
+      research: { status: 'unavailable', required: true },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('returns needs_input for unresolved network metric atoms on gateways without native web search', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-openrouter-tps',
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openrouter/auto',
+    });
+
+    const review = await planner.reviewPlan({
+      plan: transferPlan(),
+      instruction: 'Approve only if Solana TPS over the last hour is above 1000.',
+    });
+
+    expect(review.decision).toBe('needs_input');
+    expect(review.reason).toContain('native web-search path');
+    expect(review.evidence).toMatchObject({
+      research: { status: 'unavailable', required: true },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('enables Anthropic web search for current-fact approval reviews', async () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     vi.stubGlobal('fetch', vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {

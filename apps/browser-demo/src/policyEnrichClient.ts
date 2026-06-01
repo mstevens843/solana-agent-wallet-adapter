@@ -251,10 +251,144 @@ export function enforceBlockingFailure<R extends Record<string, unknown>>(
   const reason = first
     ? `User policy bundle failed: ${first.finding.label}`
     : 'User policy bundle has at least one failing rule.';
+  const evidence = isJsonObjectLike(llmResult.evidence)
+    ? { ...(llmResult.evidence as Record<string, unknown>) }
+    : {};
+  const existingContract = isJsonObjectLike(evidence.decisionContract)
+    ? { ...(evidence.decisionContract as Record<string, unknown>) }
+    : {};
+  const blockingFactIds = failing.map((ev) => ev.atomId);
+  const existingBlockingFactIds = Array.isArray(existingContract.blockingFactIds)
+    ? existingContract.blockingFactIds.filter((id): id is string => typeof id === 'string')
+    : [];
+  const decisionContract = {
+    ...existingContract,
+    decision: 'deny',
+    reason,
+    summary: typeof llmResult.summary === 'string' ? llmResult.summary : reason,
+    blockingFactIds: Array.from(new Set([...existingBlockingFactIds, ...blockingFactIds])),
+  };
   return {
     ...llmResult,
     decision: 'deny',
     reason,
-    blockingFactIds: failing.map((ev) => ev.atomId),
+    blockingFactIds,
+    evidence: {
+      ...evidence,
+      decisionContract,
+      serverSafetyApplied: true,
+    },
   };
+}
+
+export function mergePolicyBundleEvaluations<R extends Record<string, unknown>>(
+  llmResult: R,
+  bundle: PolicyBundle | null | undefined,
+): R {
+  if (!bundle || !Array.isArray(bundle.evaluations) || bundle.evaluations.length === 0) return llmResult;
+  const evidence = isJsonObjectLike(llmResult.evidence)
+    ? { ...(llmResult.evidence as Record<string, unknown>) }
+    : {};
+  const existingFindings = Array.isArray(evidence.findings)
+    ? (evidence.findings as unknown[]).filter(isJsonObjectLike)
+    : [];
+  const mergedFindings = [...existingFindings];
+  const byLabel = new Map<string, number>();
+  mergedFindings.forEach((finding, idx) => {
+    const label = findingLabelKey(finding.label);
+    if (label) byLabel.set(label, idx);
+  });
+  const atomIds = new Set(bundle.atoms.map((atom) => atom.id).filter(Boolean));
+  const atomIdsCited: string[] = [];
+  const existingFactIds = Array.isArray(llmResult.evidenceFactIds)
+    ? llmResult.evidenceFactIds.filter((id): id is string => typeof id === 'string' && id.length > 0)
+    : [];
+  const evidenceFactIds = new Set(existingFactIds);
+  const isLargeBundle = bundle.evaluations.length > 3;
+  for (const evaluation of bundle.evaluations) {
+    if (!evaluation || !atomIds.has(evaluation.atomId) || !evaluation.finding) continue;
+    if (isLargeBundle && evaluationUnresolved(evaluation)) continue;
+    evidenceFactIds.add(evaluation.atomId);
+    atomIdsCited.push(evaluation.atomId);
+    const finding = evaluation.finding;
+    const label = typeof finding.label === 'string' ? finding.label.trim() : '';
+    if (!label) continue;
+    const replacement = {
+      label,
+      value: typeof finding.value === 'string' ? finding.value : '',
+      tone: typeof finding.tone === 'string' ? finding.tone : 'neutral',
+      atomId: evaluation.atomId,
+    };
+    const labelKey = findingLabelKey(label);
+    const existingIdx = byLabel.get(labelKey);
+    if (existingIdx === undefined) {
+      mergedFindings.push(replacement);
+      byLabel.set(labelKey, mergedFindings.length - 1);
+      continue;
+    }
+    const prior = mergedFindings[existingIdx] ?? {};
+    mergedFindings[existingIdx] = {
+      ...prior,
+      ...replacement,
+      tone: replacement.tone === 'neutral' && typeof prior.tone === 'string'
+        ? prior.tone
+        : replacement.tone,
+    };
+  }
+  const contract = isJsonObjectLike(evidence.decisionContract)
+    ? { ...(evidence.decisionContract as Record<string, unknown>) }
+    : undefined;
+  if (contract && atomIdsCited.length > 0) {
+    const contractFactIds = Array.isArray(contract.evidenceFactIds)
+      ? contract.evidenceFactIds.filter((id): id is string => typeof id === 'string')
+      : [];
+    const seen = new Set(contractFactIds);
+    for (const id of atomIdsCited) {
+      if (!seen.has(id)) {
+        contractFactIds.push(id);
+        seen.add(id);
+      }
+    }
+    contract.evidenceFactIds = contractFactIds;
+    evidence.decisionContract = contract;
+  }
+  if (Array.isArray(bundle.atoms)) {
+    evidence.policyAtoms = bundle.atoms.map((atom) => ({
+      id: atom.id,
+      type: atom.type,
+      rawText: atom.rawText,
+    }));
+  }
+  if (bundle.txGateOutcomes && Object.keys(bundle.txGateOutcomes).length > 0) {
+    evidence.policyTxGates = bundle.txGateOutcomes;
+  }
+  return {
+    ...llmResult,
+    evidence: {
+      ...evidence,
+      findings: mergedFindings,
+    },
+    evidenceFactIds: [...evidenceFactIds],
+  };
+}
+
+export function applyPolicyBundleReviewSafety<R extends Record<string, unknown>>(
+  llmResult: R,
+  bundle: PolicyBundle | null | undefined,
+): R & { blockingFactIds?: string[] } {
+  return enforceBlockingFailure(mergePolicyBundleEvaluations(llmResult, bundle), bundle);
+}
+
+function isJsonObjectLike(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function findingLabelKey(label: unknown): string {
+  return typeof label === 'string' ? label.trim().toLowerCase() : '';
+}
+
+function evaluationUnresolved(evaluation: PolicyBundleEvaluation): boolean {
+  if (evaluation.unresolved === true) return true;
+  if (evaluation.pass !== undefined) return false;
+  return /^unknown$/iu.test(evaluation.finding.value.trim());
 }

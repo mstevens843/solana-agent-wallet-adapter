@@ -36,6 +36,9 @@ final class PolicyBundleEnforcerTests: XCTestCase {
         let reason = json?["reason"] as? String ?? ""
         XCTAssertTrue(reason.contains("Helium plan"), "reason should cite failing atom label, got: \(reason)")
         XCTAssertEqual(json?["blockingFactIds"] as? [String], ["atom.external_price.helium.lt.20"])
+        let evidence = try XCTUnwrap(json?["evidence"] as? [String: Any])
+        let findings = try XCTUnwrap(evidence["findings"] as? [[String: Any]])
+        XCTAssertTrue(findings.contains { ($0["label"] as? String) == "Helium plan" })
 
         let override = try XCTUnwrap(out["safetyOverride"] as? [String: Any])
         XCTAssertEqual(override["reason"] as? String, "policy_bundle_blocking_failure")
@@ -49,7 +52,13 @@ final class PolicyBundleEnforcerTests: XCTestCase {
         let payload: [String: Any] = ["context": ["policyBundle": bundleWithFailure]]
         let out = AgenticPolicyBundleEnforcer.enforce(reviewResult: result, payload: payload)
         XCTAssertNil(out["safetyOverride"])
-        XCTAssertEqual(out["text"] as? String, llmText)
+        let correctedText = try XCTUnwrap(out["text"] as? String)
+        let data = correctedText.data(using: .utf8)!
+        let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any]
+        XCTAssertEqual(json?["decision"] as? String, "deny")
+        let evidence = try XCTUnwrap(json?["evidence"] as? [String: Any])
+        let findings = try XCTUnwrap(evidence["findings"] as? [[String: Any]])
+        XCTAssertTrue(findings.contains { ($0["label"] as? String) == "Helium plan" })
     }
 
     func testPassesThroughWhenNoBundle() throws {
