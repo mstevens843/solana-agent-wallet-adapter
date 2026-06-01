@@ -483,66 +483,12 @@ final class AgenticWalletConnectCore {
     }
 
     private func launchCurrentWalletForRequest(method: String, topic: String, requestId: RPCID) {
-        let redirects = queue.sync {
-            (native: walletRedirectNative, universal: walletRedirectUniversal)
-        }
-        let urls = walletConnectRequestLaunchCandidates(requestId: requestId, topic: topic)
-        guard !urls.isEmpty else {
-            AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "wc_request_launch_skip", "no Jupiter request launch URL", [
-                "method": method,
-                "requestId": requestId.string,
-                "topic": short(topic),
-                "launchMode": "jupiter_request_route",
-            ])
-            return
-        }
-        AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "wc_request_launch_start", "opening wallet for pending WalletConnect request", [
+        AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "wc_request_launch_skip", "Jupiter has no safe iOS request foreground URL", [
             "method": method,
             "requestId": requestId.string,
             "topic": short(topic),
-            "launchMode": "jupiter_request_route",
-            "candidateCount": String(urls.count),
-            "firstCandidate": urlShapeForLog(urls.first?.absoluteString ?? ""),
-            "peerRedirectNative": redirects.native == nil ? "false" : "true",
-            "peerRedirectUniversal": redirects.universal == nil ? "false" : "true",
+            "launchMode": "jupiter_manual_open",
         ])
-        openFirstWalletConnectCandidate(urls) { launched, url in
-            AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "wc_request_launch_done", "wallet request launch attempted", [
-                "method": method,
-                "requestId": requestId.string,
-                "topic": self.short(topic),
-                "launchMode": "jupiter_request_route",
-                "launched": String(launched),
-                "url": self.urlShapeForLog(url?.absoluteString ?? ""),
-            ])
-        }
-    }
-
-    private func walletConnectRequestLaunchCandidates(requestId: RPCID, topic: String) -> [URL] {
-        guard let requestUrl = AgenticWalletConnectDeepLink.jupiterRequestLaunchUrl(requestId: requestId.string, sessionTopic: topic) else { return [] }
-        return [requestUrl]
-    }
-
-    private func openFirstWalletConnectCandidate(_ urls: [URL], completion: @escaping (Bool, URL?) -> Void) {
-        var remaining = urls
-        guard !remaining.isEmpty else {
-            completion(false, nil)
-            return
-        }
-        let url = remaining.removeFirst()
-        DispatchQueue.main.async {
-            UIApplication.shared.open(url, options: [:]) { launched in
-                AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "DONE", "wallet launch attempted", [
-                    "launched": String(launched),
-                    "url": self.urlShapeForLog(url.absoluteString),
-                ])
-                if launched {
-                    completion(true, url)
-                    return
-                }
-                self.openFirstWalletConnectCandidate(remaining, completion: completion)
-            }
-        }
     }
 
     private func sanitizeRelayHost(_ raw: String?) -> String {

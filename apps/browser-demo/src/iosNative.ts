@@ -1094,7 +1094,7 @@ export class IosNativeWalletBackend implements WalletBackend {
       switch (request.kind) {
         case 'sign_message': {
           const message = bs58.encode(payload);
-          await this.emitJupiterRequestLaunchStartDebug(request, record);
+          await this.emitJupiterRequestLaunchSkipDebug(request, record);
           const result = await callWalletConnect(
             'wcSignMessage',
             () =>
@@ -1120,7 +1120,7 @@ export class IosNativeWalletBackend implements WalletBackend {
         }
         case 'sign_transaction': {
           const transactionBase64 = iosNativeWalletConnectTransactionParam(request.payload);
-          await this.emitJupiterRequestLaunchStartDebug(request, record);
+          await this.emitJupiterRequestLaunchSkipDebug(request, record);
           const result = await callWalletConnect(
             'wcSignTransaction',
             () =>
@@ -1162,7 +1162,7 @@ export class IosNativeWalletBackend implements WalletBackend {
         case 'sign_and_send_transaction': {
           const transactionBase64 = iosNativeWalletConnectTransactionParam(request.payload);
           try {
-            await this.emitJupiterRequestLaunchStartDebug(request, record);
+            await this.emitJupiterRequestLaunchSkipDebug(request, record);
             const result = await callWalletConnect(
               'wcSignAndSendTransaction',
               () =>
@@ -1202,7 +1202,7 @@ export class IosNativeWalletBackend implements WalletBackend {
               message: err instanceof Error ? err.message : String(err),
             });
           }
-          await this.emitJupiterRequestLaunchStartDebug(request, record);
+          await this.emitJupiterRequestLaunchSkipDebug(request, record);
           const signed = await callWalletConnect(
             'wcSignTransaction',
             () =>
@@ -1268,19 +1268,19 @@ export class IosNativeWalletBackend implements WalletBackend {
     }
   }
 
-  private async emitJupiterRequestLaunchStartDebug(request: SigningRequest, record: IosAuthRecord): Promise<void> {
+  private async emitJupiterRequestLaunchSkipDebug(request: SigningRequest, record: IosAuthRecord): Promise<void> {
     await emitMobileWalletDebug(this.logLevel, {
       appUrl: this.appUrl,
       wallet: 'jupiter',
       method: 'sign',
-      step: 'wc_request_launch_start',
+      step: 'wc_request_launch_skip',
       requestId: request.id,
       strategy: 'walletconnect',
       kind: request.kind,
       topic: short(record.walletConnectTopic ?? ''),
       pubkey: short(record.publicKey),
-      walletUrl: urlShape(`jupiter://wc?requestId=${encodeURIComponent(request.id)}&sessionTopic=${encodeURIComponent(record.walletConnectTopic ?? '')}`),
-      code: 'jupiter_request_route',
+      code: 'jupiter_no_safe_request_link',
+      message: 'Open Jupiter manually to approve.',
     });
   }
 
@@ -1885,6 +1885,24 @@ async function openWalletUrls(
   } else {
     window.location.href = url;
   }
+}
+
+export async function iosNativeOpenExternalUrl(url: string): Promise<boolean> {
+  if (safeIsNativePlatform()) {
+    try {
+      const result = await AgenticSystem.openExternal({ url });
+      if (result.ok) return true;
+    } catch {
+      // Fall through to WebView navigation for non-native test surfaces.
+    }
+  }
+  if (typeof window === 'undefined') return false;
+  if (typeof window.location.assign === 'function') {
+    window.location.assign(url);
+  } else {
+    window.location.href = url;
+  }
+  return true;
 }
 
 function contextMetadata(context: WalletUrlOpenContext | undefined): Record<string, string> {

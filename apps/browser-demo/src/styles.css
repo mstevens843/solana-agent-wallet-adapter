@@ -13496,6 +13496,24 @@ button.danger:hover:not(:disabled) {
   padding: 0 6px;
 }
 
+.toast .toast-action-button {
+  background: rgba(83, 207, 145, 0.14);
+  border: 1px solid rgba(83, 207, 145, 0.34);
+  border-radius: calc(var(--radius) - 2px);
+  color: var(--accent-2);
+  display: inline-flex;
+  font-size: 0.82rem;
+  font-weight: 800;
+  margin-top: 8px;
+  min-height: 34px;
+  min-width: 0;
+  padding: 0 12px;
+}
+
+.toast .toast-action-button:hover {
+  background: rgba(83, 207, 145, 0.2);
+}
+
 .trust-chain,
 .timeline,
 .actions,

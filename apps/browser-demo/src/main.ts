@@ -405,6 +405,7 @@ import {
   iosNativeCacheSummary,
   iosNativeAppUrl,
   iosNativeCloudSessionToken,
+  iosNativeOpenExternalUrl,
   listIosNativeWalletOptions,
   restoreLatestIosNativeWallet,
   setIosNativeCloudSessionToken,
@@ -412,6 +413,11 @@ import {
   type IosNativeWalletId,
   type IosNativeWalletOption,
 } from './iosNative.js';
+import {
+  JUPITER_IOS_MANUAL_APPROVAL_ACTION_LABEL,
+  JUPITER_IOS_MANUAL_APPROVAL_URL,
+  jupiterIosManualApprovalMessage,
+} from './jupiterIosApprovalCopy.js';
 import {
   findPendingTransactionByAction,
   loadTransactionLedger,
@@ -692,13 +698,16 @@ function dismissLedgerDeviceApprovalToast(toastId: number | undefined): void {
 }
 
 function beginProofSigningToast(options: { title?: string; message?: string; key?: string } = {}): number {
+  const title = options.title ?? (isLedgerWalletSelected() ? 'Approve on Ledger' : 'Waiting for signature');
+  const message = options.message ?? (isLedgerWalletSelected()
+    ? 'Review and approve this proof request on your Ledger device.'
+    : 'Approve the proof in your wallet. No transaction will be submitted.');
+  const toastOptions = options.key ? { key: options.key } : {};
   const toastId = pushToast(
     'pending',
-    options.title ?? (isLedgerWalletSelected() ? 'Approve on Ledger' : 'Waiting for signature'),
-    options.message ?? (isLedgerWalletSelected()
-      ? 'Review and approve this proof request on your Ledger device.'
-      : 'Approve the proof in your wallet. No transaction will be submitted.'),
-    options.key ? { key: options.key } : {},
+    title,
+    jupiterIosManualToastMessage(message),
+    withJupiterIosManualApprovalToast(toastOptions),
   );
   proofSigningToastDepth += 1;
   render();
@@ -1718,6 +1727,8 @@ interface Toast {
   message: string;
   linkHref?: string;
   linkLabel?: string;
+  actionLabel?: string;
+  actionUrl?: string;
   key?: string;
   dismissAfterMs?: number;
 }
@@ -1725,12 +1736,31 @@ interface Toast {
 interface ToastOptions {
   linkHref?: string;
   linkLabel?: string;
+  actionLabel?: string;
+  actionUrl?: string;
   key?: string;
   dismissAfterMs?: number;
 }
 
 const LOCAL_WORKSPACE_BOUNDARY_TOAST_KEY = 'local-workspace-boundary';
 const LOCAL_WORKSPACE_REMINDER_DISMISS_MS = 7000;
+
+function isJupiterIosWalletSelected(): boolean {
+  return state.iosNativeEnvironment.isIosNative && state.selectedIosWalletId === 'jupiter';
+}
+
+function withJupiterIosManualApprovalToast(options: ToastOptions = {}): ToastOptions {
+  if (!isJupiterIosWalletSelected()) return options;
+  return {
+    ...options,
+    actionLabel: JUPITER_IOS_MANUAL_APPROVAL_ACTION_LABEL,
+    actionUrl: JUPITER_IOS_MANUAL_APPROVAL_URL,
+  };
+}
+
+function jupiterIosManualToastMessage(message: string): string {
+  return isJupiterIosWalletSelected() ? jupiterIosManualApprovalMessage(message) : message;
+}
 
 interface AiPlannerConfirmationState {
   status: AiPlannerConfirmationStatus;
@@ -25475,6 +25505,15 @@ function bind(): void {
     button.addEventListener('click', () => dismissToast(Number(button.dataset.toastDismiss)));
   }
 
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-toast-action-url]')) {
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      const url = button.dataset.toastActionUrl;
+      if (!url) return;
+      void iosNativeOpenExternalUrl(url);
+    });
+  }
+
   for (const link of document.querySelectorAll<HTMLAnchorElement>('[data-download-asset]')) {
     link.addEventListener('click', () => {
       trackDownloadClick(
@@ -36770,7 +36809,12 @@ async function executeCloudBrowserPreparedAction(action: PreparedAction): Promis
     }
   }
 
-  const toastId = pushToast('pending', 'Opening wallet', browserExecutionStartMessage(action));
+  const toastId = pushToast(
+    'pending',
+    'Opening wallet',
+    jupiterIosManualToastMessage(browserExecutionStartMessage(action)),
+    withJupiterIosManualApprovalToast(),
+  );
   const toastContext: TransactionToastContext = { toastId, actionId: action.id, cluster: action.cluster };
   updateBrowserPreparedAction(action.id, {
     status: 'approval_pending',
@@ -37731,7 +37775,12 @@ async function executeBrowserPreparedAction(action: PreparedAction): Promise<voi
     }
   }
 
-  const toastId = pushToast('pending', 'Opening wallet', browserExecutionStartMessage(action));
+  const toastId = pushToast(
+    'pending',
+    'Opening wallet',
+    jupiterIosManualToastMessage(browserExecutionStartMessage(action)),
+    withJupiterIosManualApprovalToast(),
+  );
   const toastContext: TransactionToastContext = { toastId, actionId: action.id, cluster: action.cluster };
   updateBrowserPreparedAction(action.id, {
     status: 'approval_pending',
@@ -39148,10 +39197,20 @@ function updateTransactionToast(
   message: string,
   txid?: string,
 ): void {
-  replaceToast(toastContext.toastId, kind, title, message, {
+  const linkOptions: ToastOptions = {
     linkHref: txid ? explorerUrl(txid, toastContext.cluster) : undefined,
     linkLabel: txid ? 'Open Solscan' : undefined,
-  });
+  };
+  const approvalOptions = kind === 'pending' && !txid
+    ? withJupiterIosManualApprovalToast(linkOptions)
+    : linkOptions;
+  replaceToast(
+    toastContext.toastId,
+    kind,
+    title,
+    kind === 'pending' && !txid ? jupiterIosManualToastMessage(message) : message,
+    approvalOptions,
+  );
 }
 
 async function waitBeforeTransactionRetry(
@@ -42460,7 +42519,12 @@ async function handleBridgeSigningRequest(request: SigningRequest): Promise<void
   const signingClient = requireClient();
   const copy = resolveWalletSigningRequestCopy(request);
   const summary = request.display?.summary ?? request.id;
-  const toastId = pushToast('pending', copy.pendingTitle, summary);
+  const toastId = pushToast(
+    'pending',
+    copy.pendingTitle,
+    jupiterIosManualToastMessage(summary),
+    withJupiterIosManualApprovalToast(),
+  );
   const toastContext: TransactionToastContext = { toastId, cluster: request.cluster };
   state.bridgeStatus = `${copy.openingStatusTitle}: ${summary}`;
   state.pendingCliSignRequest = request;
@@ -51605,6 +51669,7 @@ function toastStack(): string {
                 <strong>${escapeHtml(toast.title)}</strong>
                 ${toast.message ? `<p>${escapeHtml(toast.message)}</p>` : ''}
                 ${toast.linkHref ? `<a href="${escapeHtml(toast.linkHref)}" target="_blank" rel="noreferrer">${escapeHtml(toast.linkLabel ?? 'Open link')}</a>` : ''}
+                ${toast.actionUrl ? `<button class="toast-action-button" type="button" data-toast-action-url="${escapeHtml(toast.actionUrl)}">${escapeHtml(toast.actionLabel ?? 'Open')}</button>` : ''}
               </div>
               <button data-toast-dismiss="${toast.id}" aria-label="Dismiss notification">x</button>
             </div>
@@ -51642,6 +51707,12 @@ function replaceToast(
     .map((toast) => {
       if (toast.id !== id) return toast;
       replacement = { ...toast, kind, title, message, ...options };
+      if (!Object.prototype.hasOwnProperty.call(options, 'actionUrl')) {
+        delete replacement.actionUrl;
+      }
+      if (!Object.prototype.hasOwnProperty.call(options, 'actionLabel')) {
+        delete replacement.actionLabel;
+      }
       return replacement;
     });
   if (replacement) scheduleToastDismiss(replacement);
