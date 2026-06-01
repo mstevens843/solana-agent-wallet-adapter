@@ -1107,6 +1107,9 @@ export interface MobileDeviceAgentDebugEvent {
   payloadChars?: number;
   statusState?: DeviceAgentRuntimeState;
   configured?: boolean;
+  guardrailVerdict?: string;
+  guardrailCodes?: string;
+  repairApplied?: boolean;
 }
 
 export function mobileDeviceAgentDebugBreadcrumb(event: MobileDeviceAgentDebugEvent): void {
@@ -1131,6 +1134,9 @@ async function emitMobileDeviceAgentDebug(event: MobileDeviceAgentDebugEvent): P
       ...(typeof event.payloadChars === 'number' ? { payloadChars: event.payloadChars } : {}),
       ...(event.statusState ? { statusState: event.statusState } : {}),
       ...(typeof event.configured === 'boolean' ? { configured: event.configured } : {}),
+      ...(event.guardrailVerdict ? { guardrailVerdict: event.guardrailVerdict } : {}),
+      ...(event.guardrailCodes ? { guardrailCodes: event.guardrailCodes } : {}),
+      ...(typeof event.repairApplied === 'boolean' ? { repairApplied: event.repairApplied } : {}),
     };
     await fetch(endpoint, {
       method: 'POST',

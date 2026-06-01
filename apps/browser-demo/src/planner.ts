@@ -1,6 +1,7 @@
 import {
   appendReviewFinding,
   assertPlanGuardrails,
+  evaluatePlanGuardrails,
   extractAtoms,
   formatDollar,
   isWebOnly,
@@ -20,6 +21,7 @@ import type {
   AgentPlanTemplateField,
   AgentReviewQuestion,
   AgentReviewerEntry,
+  AiGuardrailReport,
   AiPlanRequest,
   TemplateRisk,
 } from '@solana-agent-wallet-adapter/workflow';
@@ -122,7 +124,26 @@ const RESEARCH_SOURCE_POLICY = [
   'When the request mentions Helium Mobile, official Helium domains include hellohelium.com, support.hellohelium.com, and heliummobile.com.',
   'Third-party sources may support context but should not override an official current pricing or policy source.',
 ].join(' ');
+export const DEVICE_AGENT_PLAN_REQUIRED_BOUNDARY =
+  'AI prepares a plan only. Wallet approval and signing happen later in the user wallet.';
 const AI_KEY_COPY_PASTE_ARTIFACTS = /[\s\u200B-\u200D\u2060\uFEFF]+/gu;
+
+export interface DeviceAgentPlanGuardrailEvent {
+  guardrailVerdict: AiGuardrailReport['verdict'];
+  guardrailCodes: string;
+  repairApplied: boolean;
+  summary: string;
+}
+
+export class DeviceAgentPlanGuardrailError extends Error {
+  readonly report: AiGuardrailReport;
+
+  constructor(report: AiGuardrailReport) {
+    super('AI draft text failed safety guardrails. Recreate the draft or use template draft.');
+    this.name = 'DeviceAgentPlanGuardrailError';
+    this.report = report;
+  }
+}
 
 interface AgentReviewResearchEvidence {
   status: 'checked';
@@ -1674,7 +1695,7 @@ export function aiMessages(request: AiPlanRequest): Array<{ role: 'system' | 'us
         parameters: request.parameters,
         protocolConnectors: request.connectorContext ?? [],
         connectorRule,
-        requiredBoundary: 'AI prepares a plan only. Wallet approval and signing happen later in the user wallet.',
+        requiredBoundary: DEVICE_AGENT_PLAN_REQUIRED_BOUNDARY,
       }),
     },
   ];
@@ -1761,6 +1782,48 @@ function browserReviewSystemPromptWithPolicyBundle(content: string): string {
 }
 
 export function normalizeAiPlan(payload: unknown, request: AiPlanRequest): AgentPlan {
+  const plan = normalizedAiPlanWithoutGuardrails(payload, request);
+  return withGuardrailReport(plan, {
+    templateId: request.template.id,
+    prompt: request.prompt,
+  });
+}
+
+export function normalizeDeviceAgentPlan(
+  payload: unknown,
+  request: AiPlanRequest,
+  options: { onGuardrail?: (event: DeviceAgentPlanGuardrailEvent) => void } = {},
+): AgentPlan {
+  const plan = normalizedAiPlanWithoutGuardrails(payload, request);
+  const report = evaluateAiPlanGuardrailReport(plan, request);
+  if (report.verdict !== 'block') {
+    return planWithGuardrailReport(plan, report);
+  }
+
+  const repaired = repairBenignDeviceAgentPlanBoundaryText(plan, report);
+  if (repaired) {
+    const repairedReport = evaluateAiPlanGuardrailReport(repaired, request);
+    if (repairedReport.verdict !== 'block') {
+      options.onGuardrail?.({
+        guardrailVerdict: report.verdict,
+        guardrailCodes: guardrailCodes(report),
+        repairApplied: true,
+        summary: report.summary,
+      });
+      return planWithGuardrailReport(repaired, repairedReport);
+    }
+  }
+
+  options.onGuardrail?.({
+    guardrailVerdict: report.verdict,
+    guardrailCodes: guardrailCodes(report),
+    repairApplied: false,
+    summary: report.summary,
+  });
+  throw new DeviceAgentPlanGuardrailError(report);
+}
+
+function normalizedAiPlanWithoutGuardrails(payload: unknown, request: AiPlanRequest): AgentPlan {
   const content = extractModelText(payload);
   const parsed = parsePlanJson(content);
   const template = templateById(request.template.id);
@@ -1775,10 +1838,85 @@ export function normalizeAiPlan(payload: unknown, request: AiPlanRequest): Agent
     userNotes: request.userNotes?.trim() || request.prompt.trim() || undefined,
     safeguards: normalizeSafeguards(parsed.safeguards, fallback.safeguards),
   };
-  return withGuardrailReport(planWithStructuredSwapText(plan), {
-    templateId: template.id,
+  return planWithStructuredSwapText(plan);
+}
+
+function evaluateAiPlanGuardrailReport(plan: AgentPlan, request: AiPlanRequest): AiGuardrailReport {
+  return evaluatePlanGuardrails({
+    plan: { ...plan },
+    source: plan.source,
+    category: plan.category,
+    actionType: plan.actionType,
+    templateId: request.template.id,
+    templateTitle: plan.templateTitle,
+    parameters: plan.parameters,
+    fields: plan.fields,
+    userNotes: plan.userNotes,
     prompt: request.prompt,
   });
+}
+
+function planWithGuardrailReport(plan: AgentPlan, report: AiGuardrailReport): AgentPlan {
+  return {
+    ...plan,
+    guardrailReport: report,
+    constraintFingerprint: report.constraintFingerprint,
+    ...(report.constraintHash ? { constraintHash: report.constraintHash } : {}),
+  };
+}
+
+function guardrailCodes(report: AiGuardrailReport): string {
+  return Array.from(new Set(report.violations.map((violation) => violation.code))).join(',');
+}
+
+function repairBenignDeviceAgentPlanBoundaryText(plan: AgentPlan, report: AiGuardrailReport): AgentPlan | null {
+  const blockingCodes = new Set(
+    report.violations
+      .filter((violation) => violation.severity === 'block')
+      .map((violation) => violation.code),
+  );
+  if (blockingCodes.size !== 1 || !blockingCodes.has('ai_bypasses_wallet')) return null;
+
+  let changed = false;
+  const repairText = (value: string): string => {
+    const repaired = repairBenignBoundaryDisclosure(value);
+    if (repaired !== value) changed = true;
+    return repaired;
+  };
+  const repaired: AgentPlan = {
+    ...plan,
+    intent: repairText(plan.intent),
+    route: repairText(plan.route),
+    risk: repairText(plan.risk),
+    approval: repairText(plan.approval),
+    safeguards: plan.safeguards.map(repairText),
+  };
+  return changed ? repaired : null;
+}
+
+function repairBenignBoundaryDisclosure(value: string): string {
+  const safeBoundary = 'Wallet approval and signing happen later in the user wallet';
+  const repaired = value
+    .replace(
+      /\b(?:(?:ai|agent|planner|model|drafts?|this draft|the draft)\s+)?(?:cannot|can't|can not|does not|doesn't|will not|won't|must not|never)\s+(?:skip|bypass)\s+(?:wallet\s+)?(?:approval|signature|signing)(?:\s+or\s+(?:wallet\s+)?(?:approval|signature|signing))?\b/giu,
+      safeBoundary,
+    )
+    .replace(
+      /\bno\s+transaction\s+can\s+be\s+(?:submitted|sent|broadcast|executed)\s+without\s+(?:wallet\s+)?(?:approval|signature|signing)\b/giu,
+      safeBoundary,
+    )
+    .replace(
+      /\b(?:skip|bypass)\s+(?:wallet\s+)?(?:approval|signature|signing)(?:\s+or\s+(?:wallet\s+)?(?:approval|signature|signing))?\s+(?:is|are)\s+(?:not\s+possible|not\s+allowed|forbidden|blocked)(?:\s+for\s+(?:ai\s+)?drafts?)?\b/giu,
+      safeBoundary,
+    )
+    .replace(
+      /\bnothing\s+(?:is|has\s+been)\s+(?:signed|submitted|approved)\s+(?:without|before)\s+(?:wallet\s+)?(?:approval|signature|signing)\b/giu,
+      safeBoundary,
+    )
+    .replace(/\s+([.,;:])/g, '$1')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  return repaired;
 }
 
 export function normalizeAiReview(

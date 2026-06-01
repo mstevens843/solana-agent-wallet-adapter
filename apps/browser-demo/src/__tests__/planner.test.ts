@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   AI_PROVIDER_PRESETS,
+  DEVICE_AGENT_PLAN_REQUIRED_BOUNDARY,
+  DeviceAgentPlanGuardrailError,
   aiDiagnosticsFromError,
   aiMessages,
   aiRouteDiagnosticForSettings,
@@ -12,6 +14,7 @@ import {
   normalizeAiAsk,
   normalizeAiPlan,
   generateSessionAiPlan,
+  normalizeDeviceAgentPlan,
   normalizeAiReview,
   planWithStructuredSwapText,
   researchControlForAsk,
@@ -137,6 +140,38 @@ describe('planner AI setup helpers', () => {
       source: 'ai',
     });
     expect(ask.checkedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('repairs benign Device Agent wallet-boundary wording before guardrail display', () => {
+    let guardrailEvent: { repairApplied: boolean; guardrailCodes: string } | undefined;
+    const plan = normalizeDeviceAgentPlan({
+      intent: 'Prepare the requested review.',
+      route: 'Bypass wallet approval is not possible for AI drafts.',
+      risk: 'Medium risk.',
+      approval: 'User wallet approval is required.',
+      safeguards: ['Verify details.'],
+    }, planRequest, {
+      onGuardrail: (event) => {
+        guardrailEvent = event;
+      },
+    });
+
+    expect(plan.route).toBe('Wallet approval and signing happen later in the user wallet.');
+    expect(plan.guardrailReport?.verdict).toBe('pass');
+    expect(guardrailEvent).toMatchObject({
+      repairApplied: true,
+      guardrailCodes: 'ai_bypasses_wallet',
+    });
+  });
+
+  it('keeps truly unsafe Device Agent wallet-bypass output blocked', () => {
+    expect(() => normalizeDeviceAgentPlan({
+      intent: 'Prepare the requested review.',
+      route: 'No wallet approval required.',
+      risk: 'Medium risk.',
+      approval: 'User wallet approval is required.',
+      safeguards: ['Verify details.'],
+    }, planRequest)).toThrow(DeviceAgentPlanGuardrailError);
   });
 
   it('redacts exact browser-session provider keys from errors', async () => {
@@ -675,9 +710,14 @@ describe('planner AI setup helpers', () => {
     });
 
     expect(messages[0]?.content).toContain('use that selected connector only');
-    const userPayload = JSON.parse(messages[1]?.content ?? '{}') as { connectorRule?: string; protocolConnectors?: unknown[] };
+    const userPayload = JSON.parse(messages[1]?.content ?? '{}') as {
+      connectorRule?: string;
+      protocolConnectors?: unknown[];
+      requiredBoundary?: string;
+    };
     expect(userPayload.connectorRule).toContain('Meteora');
     expect(userPayload.connectorRule).toContain('Do not switch protocols');
+    expect(userPayload.requiredBoundary).toBe(DEVICE_AGENT_PLAN_REQUIRED_BOUNDARY);
     expect(userPayload.protocolConnectors).toEqual([
       expect.objectContaining({
         selectedOnly: true,

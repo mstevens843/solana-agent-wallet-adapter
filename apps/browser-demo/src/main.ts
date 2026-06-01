@@ -352,6 +352,8 @@ import {
   DEFAULT_AI_BASE_URL,
   DEFAULT_AI_MODEL,
   DEFAULT_AI_PROVIDER_ID,
+  DEVICE_AGENT_PLAN_REQUIRED_BOUNDARY,
+  DeviceAgentPlanGuardrailError,
   aiDiagnosticsFromError,
   aiFormatLabel,
   aiProviderPresetById,
@@ -368,7 +370,7 @@ import {
   inferTemplateIdForPrompt,
   inferredTemplateParameters,
   normalizeAiAsk,
-  normalizeAiPlan,
+  normalizeDeviceAgentPlan,
   normalizeAiReview,
   planWithStructuredSwapText,
   redactSecrets,
@@ -385,6 +387,7 @@ import {
   type AgentPlanTemplate,
   type AgentPlanTemplateField,
   type AiDiagnosticEntry,
+  type DeviceAgentPlanGuardrailEvent,
   type AiPlanRequest,
   type AiSettings,
   type BridgeAiStatus,
@@ -22460,7 +22463,35 @@ async function generateDeviceAgentPlan(
       action: 'generate-plan',
       ...(options.signal && { signal: options.signal }),
     });
-    return normalizeAiPlan(raw, request);
+    try {
+      const plan = normalizeDeviceAgentPlan(raw, request, {
+        onGuardrail: (event) => {
+          emitIosGeneratePlanGuardrailBreadcrumb(
+            request,
+            event.repairApplied ? 'plan_repair_applied' : 'plan_guardrail_blocked',
+            event,
+          );
+        },
+      });
+      const report = plan.guardrailReport;
+      emitIosGeneratePlanGuardrailBreadcrumb(request, 'plan_parse_success', {
+        guardrailVerdict: report?.verdict ?? 'pass',
+        guardrailCodes: report ? Array.from(new Set(report.violations.map((violation) => violation.code))).join(',') : '',
+        repairApplied: false,
+        summary: report?.summary ?? 'Device Agent plan parsed successfully.',
+      });
+      return plan;
+    } catch (err) {
+      if (err instanceof DeviceAgentPlanGuardrailError) {
+        emitIosGeneratePlanGuardrailBreadcrumb(request, 'plan_repair_failed', {
+          guardrailVerdict: err.report.verdict,
+          guardrailCodes: Array.from(new Set(err.report.violations.map((violation) => violation.code))).join(','),
+          repairApplied: false,
+          summary: err.report.summary,
+        });
+      }
+      throw err;
+    }
   }
   throw deviceAgentWorkerNotImplementedError('generate-plan');
 }
@@ -22581,6 +22612,7 @@ function deviceAgentGeneratePlanPayload(request: AiPlanRequest): Record<string, 
     template: request.template,
     parameters: request.parameters,
     protocolConnectors,
+    requiredBoundary: DEVICE_AGENT_PLAN_REQUIRED_BOUNDARY,
     ...(request.userNotes ? { userNotes: request.userNotes } : {}),
     ...(request.connectorContext ? { connectorContext: request.connectorContext } : {}),
   };
@@ -28686,6 +28718,30 @@ function emitIosAskAgentBreadcrumb(planId: string, step: string, message?: strin
     level: step.includes('failed') ? 'error' : 'info',
     source: 'device-agent',
     message: `iOS Ask Agent breadcrumb: ${step}`,
+  });
+}
+
+function emitIosGeneratePlanGuardrailBreadcrumb(
+  request: AiPlanRequest,
+  step: string,
+  event: DeviceAgentPlanGuardrailEvent,
+): void {
+  if (!state.iosNativeEnvironment.isIosNative) return;
+  mobileDeviceAgentDebugBreadcrumb({
+    method: 'generatePlan',
+    phase: 'generate_plan',
+    source: 'browser-demo',
+    requestId: request.template.id.slice(0, 160) || 'unknown-template',
+    step,
+    guardrailVerdict: event.guardrailVerdict,
+    guardrailCodes: event.guardrailCodes,
+    repairApplied: event.repairApplied,
+    message: event.summary,
+  });
+  logDebug({
+    level: event.repairApplied ? 'info' : 'error',
+    source: 'device-agent',
+    message: `iOS Device Agent plan guardrail: ${step}`,
   });
 }
 

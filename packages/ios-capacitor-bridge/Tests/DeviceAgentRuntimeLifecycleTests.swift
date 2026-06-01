@@ -78,6 +78,35 @@ final class DeviceAgentRuntimeLifecycleTests: XCTestCase {
         )) is AgenticAnthropicProvider)
     }
 
+    func testPlanBoundaryMatchesWebAndroidContract() throws {
+        XCTAssertEqual(
+            AgenticDeviceAgentBoundaries.plan,
+            "AI prepares a plan only. Wallet approval and signing happen later in the user wallet."
+        )
+        XCTAssertEqual(
+            AgenticDeviceAgentBoundaries.review,
+            "This AI review can approve, deny, or request more input. It cannot sign or submit a transaction."
+        )
+        XCTAssertEqual(
+            AgenticDeviceAgentBoundaries.ask,
+            "This is conversational Q&A about a draft. It cannot sign or submit a transaction."
+        )
+        let messages = AgenticDeviceAgentMessageAssembler.buildPlanMessages([
+            "userPrompt": "swap 0.01 SOL to USDC"
+        ])
+        let data = try XCTUnwrap(messages.userContent.data(using: .utf8))
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(payload["requiredBoundary"] as? String, AgenticDeviceAgentBoundaries.plan)
+        let reviewMessages = AgenticDeviceAgentMessageAssembler.buildReviewMessages([:])
+        let reviewData = try XCTUnwrap(reviewMessages.userContent.data(using: .utf8))
+        let reviewPayload = try XCTUnwrap(JSONSerialization.jsonObject(with: reviewData) as? [String: Any])
+        XCTAssertEqual(reviewPayload["requiredBoundary"] as? String, AgenticDeviceAgentBoundaries.review)
+        let askMessages = AgenticDeviceAgentMessageAssembler.buildAskMessages([:])
+        let askData = try XCTUnwrap(askMessages.userContent.data(using: .utf8))
+        let askPayload = try XCTUnwrap(JSONSerialization.jsonObject(with: askData) as? [String: Any])
+        XCTAssertEqual(askPayload["requiredBoundary"] as? String, AgenticDeviceAgentBoundaries.ask)
+    }
+
     func testBridgeEnvelopeParsesScalarPayloadJsonObject() throws {
         let payload = try AgenticDeviceAgentBridgeEnvelope.parsePayloadJson("""
         {"instruction":"review","context":{"transactionBase64":"abc"}}

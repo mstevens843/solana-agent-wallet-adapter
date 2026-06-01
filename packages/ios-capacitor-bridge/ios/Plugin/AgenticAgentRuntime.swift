@@ -688,9 +688,9 @@ struct AgenticDeviceAgentMessages {
 }
 
 enum AgenticDeviceAgentBoundaries {
-    static let plan = "Return JSON only. Do not sign, submit, approve, or claim execution."
+    static let plan = "AI prepares a plan only. Wallet approval and signing happen later in the user wallet."
     static let review = "This AI review can approve, deny, or request more input. It cannot sign or submit a transaction."
-    static let ask = "Answer only the user's question. Do not sign, submit, approve, or claim execution."
+    static let ask = "This is conversational Q&A about a draft. It cannot sign or submit a transaction."
     static let reviewDefaultInstruction = "Review this draft before it is sent for wallet approval. Decide approve, deny, or needs_input."
 }
 

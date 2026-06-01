@@ -36,6 +36,9 @@ describe('mobile Device Agent debug telemetry', () => {
         payloadChars: 1234,
         httpHost: 'api.anthropic.com',
         responseBytes: 456,
+        guardrailVerdict: 'block',
+        guardrailCodes: 'ai_bypasses_wallet',
+        repairApplied: true,
       }, iosHeaders());
 
       expect(response.status).toBe(200);
@@ -46,6 +49,8 @@ describe('mobile Device Agent debug telemetry', () => {
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('requestId="device-agent-abc-1"'));
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('eventIndex="7"'));
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('httpHost="api.anthropic.com"'));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('guardrailCodes="ai_bypasses_wallet"'));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('repairApplied="true"'));
     });
   });
 

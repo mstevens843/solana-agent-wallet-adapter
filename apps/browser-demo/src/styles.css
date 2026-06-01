@@ -26206,6 +26206,8 @@ button.danger:hover:not(:disabled) {
 }
 
 .route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-setting-path,
+.route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-setting-provider,
+.route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-setting-model,
 .route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-setting-key,
 .route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-setting-custom-model,
 .route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-setting-base-url,
@@ -26214,11 +26216,6 @@ button.danger:hover:not(:disabled) {
 .route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-security-note,
 .route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-actions {
   grid-column: 1 / -1;
-}
-
-.route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-setting-provider,
-.route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-setting-model {
-  grid-column: auto;
 }
 
 .route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] .select-picker-trigger,
@@ -26244,13 +26241,6 @@ button.danger:hover:not(:disabled) {
   line-height: 1.25;
   margin: 0;
   padding: 8px 10px;
-}
-
-@media (max-width: 380px) {
-  .route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-setting-provider,
-  .route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] > .ai-setting-model {
-    grid-column: 1 / -1;
-  }
 }
 
 /* System health drawer */
