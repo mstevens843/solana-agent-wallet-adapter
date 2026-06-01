@@ -78,6 +78,64 @@ final class DeviceAgentRuntimeLifecycleTests: XCTestCase {
         )) is AgenticAnthropicProvider)
     }
 
+    func testBridgeEnvelopeParsesScalarPayloadJsonObject() throws {
+        let payload = try AgenticDeviceAgentBridgeEnvelope.parsePayloadJson("""
+        {"instruction":"review","context":{"transactionBase64":"abc"}}
+        """)
+
+        XCTAssertEqual(payload["instruction"] as? String, "review")
+        let context = payload["context"] as? [String: Any]
+        XCTAssertEqual(context?["transactionBase64"] as? String, "abc")
+    }
+
+    func testBridgeEnvelopeRejectsInvalidPayloadJsonShapes() {
+        XCTAssertThrowsError(try AgenticDeviceAgentBridgeEnvelope.parsePayloadJson("[1,2,3]")) { error in
+            let err = error as? AgenticAgentError
+            XCTAssertEqual(err?.code, "invalid_payload")
+            XCTAssertEqual(err?.subcode, "object_expected")
+        }
+        XCTAssertThrowsError(try AgenticDeviceAgentBridgeEnvelope.parsePayloadJson("{")) { error in
+            let err = error as? AgenticAgentError
+            XCTAssertEqual(err?.code, "invalid_payload")
+            XCTAssertEqual(err?.subcode, "json_parse")
+        }
+    }
+
+    func testBridgeEnvelopeRequestValidationMatchesAndroidContract() {
+        XCTAssertTrue(AgenticDeviceAgentBridgeEnvelope.isValidRequestId("device-agent-test_1:2.3"))
+        XCTAssertFalse(AgenticDeviceAgentBridgeEnvelope.isValidRequestId(""))
+        XCTAssertFalse(AgenticDeviceAgentBridgeEnvelope.isValidRequestId(String(repeating: "a", count: 161)))
+        XCTAssertTrue(AgenticDeviceAgentBridgeEnvelope.isSupportedMethod("reviewPlan"))
+        XCTAssertFalse(AgenticDeviceAgentBridgeEnvelope.isSupportedMethod("review_plan"))
+        XCTAssertEqual(AgenticDeviceAgentBridgeEnvelope.payloadLimit(for: "configure"), 8_192)
+        XCTAssertEqual(AgenticDeviceAgentBridgeEnvelope.payloadLimit(for: "reviewPlan"), 2_000_000)
+    }
+
+    func testBridgeEnvelopeBuildsAndroidStyleSuccessAndFailure() {
+        let status: [String: Any] = [
+            "available": true,
+            "enabled": true,
+            "configured": true,
+            "state": "stopped",
+            "runtime": "ios-native",
+        ]
+        let success = AgenticDeviceAgentBridgeEnvelope.success(
+            status: status,
+            result: ["decision": "approve"]
+        )
+        XCTAssertEqual(success["ok"] as? Bool, true)
+        XCTAssertEqual((success["result"] as? [String: Any])?["decision"] as? String, "approve")
+
+        let failure = AgenticDeviceAgentBridgeEnvelope.failure(
+            status: status,
+            error: AgenticAgentError(code: "provider_auth", subcode: "invalid_key", message: "Bad key.")
+        )
+        XCTAssertEqual(failure["ok"] as? Bool, false)
+        let error = failure["error"] as? [String: Any]
+        XCTAssertEqual(error?["code"] as? String, "provider_auth")
+        XCTAssertEqual(error?["subcode"] as? String, "invalid_key")
+    }
+
     func testResearchFallbackPayloadMarksResearchAttemptCompleted() {
         let payload: [String: Any] = [
             "instruction": "only approve if current price is under $20",

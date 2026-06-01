@@ -249,6 +249,12 @@ interface AgenticDeviceAgentStatus {
 }
 
 interface AgenticDeviceAgentPlugin {
+  deviceAgentRequest(options: {
+    requestId: string;
+    method: string;
+    payloadJson: string;
+    debugBaseUrl?: string;
+  }): Promise<unknown>;
   status(): Promise<AgenticDeviceAgentStatus>;
   configure(options: {
     clear?: boolean;

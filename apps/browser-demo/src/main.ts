@@ -579,6 +579,7 @@ import {
   iosDeviceAgentRequestOrThrow,
   isDeviceAgentBridgeAvailable,
   isIosDeviceAgentBridgeAvailable,
+  mobileDeviceAgentDebugBreadcrumb,
   parseDeviceAgentStatus as parseDeviceAgentStatusBase,
   type DeviceAgentRuntimeKind,
   type DeviceAgentRuntimeState,
@@ -28443,8 +28444,10 @@ async function runReviewGeneratedPlan(planId: string): Promise<void> {
   };
   state.activeOperation = 'review-agent-plan';
   const toastId = pushToast('pending', 'Asking agent', 'Reviewing this draft before approval.');
+  emitIosAskAgentBreadcrumb(planId, 'toast_created');
   try {
     await updateGeneratedPlan(planId, { agentReview: checkingReview, error: undefined, failureLabel: undefined });
+    emitIosAskAgentBreadcrumb(planId, 'checking_review_saved');
     if (state.agentPlan && samePlan(planWithRuntimeTokenLabels(state.agentPlan), planWithRuntimeTokenLabels(record.plan))) {
       state.selectedGeneratedPlanId = planId;
     }
@@ -28452,16 +28455,21 @@ async function runReviewGeneratedPlan(planId: string): Promise<void> {
       const refreshed = generatedPlanById(planId) ?? record;
       const reviewPlan = planWithRuntimeTokenLabels(refreshed.plan);
       const appliedPolicyIds = enabledUserAgentPolicies().map((policy) => policy.id);
+      emitIosAskAgentBreadcrumb(planId, 'facts_start');
       const deterministicFacts = await gatherAgentReviewFacts(refreshed, {
         instruction: agentReviewInstruction(refreshed, reviewPlan),
       });
+      emitIosAskAgentBreadcrumb(planId, 'facts_done');
+      emitIosAskAgentBreadcrumb(planId, 'native_review_start');
       const orchestration = await runAgentReviewWithEvidence(refreshed, reviewPlan, deterministicFacts);
+      emitIosAskAgentBreadcrumb(planId, 'native_review_returned');
       const result = normalizeAgentReviewResultForFacts(orchestration.rawResult, reviewPlan, deterministicFacts, {
         instruction: agentReviewInstruction(refreshed, reviewPlan),
       });
       const review = agentReviewStateFromResult(result, previousReview, reviewPlan, appliedPolicyIds, orchestration);
       review.facts = mergeReviewFacts(deterministicFacts, result.evidence);
       await updateGeneratedPlan(planId, { agentReview: review, error: undefined, failureLabel: undefined });
+      emitIosAskAgentBreadcrumb(planId, 'review_saved');
       if (state.agentPlan && samePlan(planWithRuntimeTokenLabels(state.agentPlan), reviewPlan)) {
         state.selectedGeneratedPlanId = planId;
       }
@@ -28486,16 +28494,36 @@ async function runReviewGeneratedPlan(planId: string): Promise<void> {
           checkedAt: new Date().toISOString(),
         };
         await updateGeneratedPlan(planId, { agentReview: failedReview });
+        emitIosAskAgentBreadcrumb(planId, 'review_failed', toastMessage);
         replaceToast(toastId, 'error', 'Agent review failed', toastMessage);
       },
     });
   } catch (err) {
     const message = redactSecrets(err instanceof Error ? err.message : String(err));
+    emitIosAskAgentBreadcrumb(planId, 'review_failed_outer', message);
     replaceToast(toastId, 'error', 'Agent review failed', message);
   } finally {
     state.activeOperation = null;
     render();
   }
+}
+
+function emitIosAskAgentBreadcrumb(planId: string, step: string, message?: string): void {
+  if (!state.iosNativeEnvironment.isIosNative) return;
+  const requestId = planId.slice(0, 160) || 'unknown-plan';
+  mobileDeviceAgentDebugBreadcrumb({
+    method: 'reviewPlan',
+    phase: 'ask_agent',
+    source: 'browser-demo',
+    requestId,
+    step,
+    ...(message ? { message } : {}),
+  });
+  logDebug({
+    level: step.includes('failed') ? 'error' : 'info',
+    source: 'device-agent',
+    message: `iOS Ask Agent breadcrumb: ${step}`,
+  });
 }
 
 function isMockPreSignDemoCreateFlow(template = selectedTemplate()): boolean {

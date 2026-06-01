@@ -29,6 +29,12 @@ type AndroidGlobal = typeof globalThis & {
     isDebugBuild?: () => boolean;
   };
   __agenticIosDeviceAgentBridge?: {
+    deviceAgentRequest?: (payload: {
+      requestId: string;
+      method: string;
+      payloadJson: string;
+      debugBaseUrl?: string;
+    }) => Promise<unknown>;
     status?: () => Promise<unknown>;
     configure?: (payload?: Record<string, unknown>) => Promise<unknown>;
     start?: (payload?: Record<string, unknown>) => Promise<unknown>;
@@ -148,6 +154,93 @@ describe('deviceAgentClient', () => {
         ask: async () => ({ text: '{"answer":"ok"}' }),
       };
       expect(isIosDeviceAgentBridgeAvailable()).toBe(true);
+    });
+
+    it('detects the Capacitor iOS envelope bridge without direct LLM methods', () => {
+      expect(isIosDeviceAgentBridgeAvailable()).toBe(false);
+      (globalThis as AndroidGlobal).__agenticIosDeviceAgentBridge = {
+        deviceAgentRequest: async () => ({
+          ok: true,
+          status: { ...successStatus, runtime: 'ios-native' },
+        }),
+      };
+      expect(isIosDeviceAgentBridgeAvailable()).toBe(true);
+    });
+
+    it('sends iOS reviewPlan over the scalar payloadJson envelope and parses the result', async () => {
+      let captured: {
+        requestId: string;
+        method: string;
+        payloadJson: string;
+        debugBaseUrl?: string;
+      } | undefined;
+      (globalThis as AndroidGlobal).__agenticIosDeviceAgentBridge = {
+        deviceAgentRequest: async (payload) => {
+          captured = payload;
+          return {
+            ok: true,
+            status: { ...successStatus, runtime: 'ios-native', state: 'stopped' },
+            result: {
+              decision: 'approve',
+              reason: 'ok',
+              evidence: { checked: true },
+            },
+          };
+        },
+        reviewPlan: async () => {
+          throw new Error('direct reviewPlan should not be used when deviceAgentRequest exists');
+        },
+      };
+
+      const largeTransaction = 'A'.repeat(96_000);
+      const { status, result } = await iosDeviceAgentRequestOrThrow<{
+        decision: string;
+        reason: string;
+      }>('reviewPlan', {
+        instruction: 'only approve if current facts pass',
+        plan: { actionType: 'swap', route: 'SOL -> USDC' },
+        context: {
+          transactionBase64: largeTransaction,
+          policyBundle: { hasBlockingFailure: false },
+        },
+      });
+
+      expect(status.runtime).toBe('ios-native');
+      expect(status.state).toBe('stopped');
+      expect(result?.decision).toBe('approve');
+      expect(captured?.requestId).toMatch(/^device-agent-/);
+      expect(captured?.method).toBe('reviewPlan');
+      expect(typeof captured?.payloadJson).toBe('string');
+      const parsed = JSON.parse(captured!.payloadJson);
+      expect(parsed.context.transactionBase64).toBe(largeTransaction);
+      expect(parsed.__agenticRequestId).toBe(captured?.requestId);
+      expect(parsed.__agenticPayloadChars).toEqual(expect.any(Number));
+    });
+
+    it('throws a DeviceAgentClientError from iOS envelope failures with status attached', async () => {
+      (globalThis as AndroidGlobal).__agenticIosDeviceAgentBridge = {
+        deviceAgentRequest: async () => ({
+          ok: false,
+          status: { ...successStatus, runtime: 'ios-native', state: 'error' },
+          error: {
+            code: 'provider_auth',
+            subcode: 'invalid_key',
+            message: 'Bad key.',
+          },
+        }),
+      };
+
+      await expect(iosDeviceAgentRequestOrThrow('reviewPlan', {
+        instruction: 'review',
+        plan: { actionType: 'swap' },
+      })).rejects.toMatchObject({
+        code: 'provider_auth',
+        subcode: 'invalid_key',
+        status: {
+          runtime: 'ios-native',
+          state: 'error',
+        },
+      });
     });
 
     it('wraps iOS native model text as output_text and returns ios-native status', async () => {

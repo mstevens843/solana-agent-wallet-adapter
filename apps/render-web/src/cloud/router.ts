@@ -663,12 +663,20 @@ function enforceSameOrigin(req: IncomingMessage, url: URL): void {
     assertSameHost(origin, requestDomain(req, url));
     return;
   }
+  if (isOriginlessBundledMobileDeviceAgentDebug(req, url)) return;
   if (!isProductionRequest()) return;
   const referer = firstHeaderValue(req.headers.referer);
   if (!referer) {
     throw new ApiError(403, 'State-changing API requests require a same-origin browser context.');
   }
   assertSameHost(referer, requestDomain(req, url));
+}
+
+function isOriginlessBundledMobileDeviceAgentDebug(req: IncomingMessage, url: URL): boolean {
+  const path = url.pathname.replace(/\/$/, '');
+  if (path !== '/api/mobile-device-agent-debug') return false;
+  const client = firstHeaderValue(req.headers['x-agentic-client'])?.toLowerCase();
+  return client === 'ios-bundled' || client === 'android-bundled';
 }
 
 function applyCloudCorsHeaders(req: IncomingMessage, res: ServerResponse): void {

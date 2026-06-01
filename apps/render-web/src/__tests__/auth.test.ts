@@ -545,6 +545,23 @@ describe('render web cloud wallet auth', () => {
     });
   });
 
+  it('accepts originless bundled iOS Device Agent debug telemetry in production', async () => {
+    await withEnv({ RENDER: 'true' }, async () => {
+      await withServer(async (port) => {
+        const response = await postJson(port, '/api/mobile-device-agent-debug', {
+          method: 'reviewPlan',
+          step: 'bridge_parse_start',
+          requestId: 'device-agent-test',
+        }, {
+          'x-agentic-client': 'ios-bundled',
+        });
+
+        expect(response.status).toBe(200);
+        expect(response.body).toEqual({ ok: true });
+      });
+    });
+  });
+
   it('rate limits wallet auth endpoints', async () => {
     const authRateLimiter: AuthRateLimiter = {
       allow: () => false,
