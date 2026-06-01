@@ -118,11 +118,13 @@ enum AgenticAgentRuntimeState: String {
 
 private final class AgenticBackgroundTask {
     private let name: String
+    private let onExpiration: (() -> Void)?
     private var id = UIBackgroundTaskIdentifier.invalid
     private var ended = false
 
-    init(name: String) {
+    init(name: String, onExpiration: (() -> Void)? = nil) {
         self.name = name
+        self.onExpiration = onExpiration
     }
 
     func begin() {
@@ -140,6 +142,7 @@ private final class AgenticBackgroundTask {
     private func beginOnMain() {
         guard !ended, id == .invalid else { return }
         id = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+            self?.onExpiration?()
             self?.endOnMain()
         }
     }
@@ -152,6 +155,141 @@ private final class AgenticBackgroundTask {
         if current != .invalid {
             UIApplication.shared.endBackgroundTask(current)
         }
+    }
+}
+
+final class AgenticAgentDispatchContext {
+    let requestId: String
+    let method: String
+    let provider: AgenticAgentProvider
+
+    private let lock = NSLock()
+    private lazy var backgroundTask = AgenticBackgroundTask(name: "agentic-device-agent-\(method)") { [weak self] in
+        self?.expire(subcode: "BACKGROUND_EXPIRED", message: "iOS ended the Device Agent background completion window.")
+    }
+    private var finished = false
+    private var timeoutWorkItem: DispatchWorkItem?
+    private let startedAt = Date()
+    private let onComplete: (Result<[String: Any], AgenticAgentError>, Int) -> Void
+
+    init(
+        requestId: String,
+        method: String,
+        provider: AgenticAgentProvider,
+        timeoutSeconds: TimeInterval,
+        onComplete: @escaping (Result<[String: Any], AgenticAgentError>, Int) -> Void
+    ) {
+        self.requestId = requestId
+        self.method = method
+        self.provider = provider
+        self.onComplete = onComplete
+        let timeout = DispatchWorkItem { [weak self] in
+            self?.expire(subcode: "REQUEST_TIMEOUT", message: "Device Agent \(method) request timed out.")
+        }
+        timeoutWorkItem = timeout
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + timeoutSeconds, execute: timeout)
+    }
+
+    func beginBackgroundTask() {
+        backgroundTask.begin()
+    }
+
+    func complete(
+        _ result: Result<[String: Any], AgenticAgentError>
+    ) {
+        guard markFinished() else {
+            AgenticIOSLog.fail("AgenticDeviceAgent", method, "LATE_COMPLETION_IGNORED", "Device Agent completion arrived after the request was already finished.", [
+                "requestId": requestId,
+                "durationMs": String(durationMs()),
+            ])
+            return
+        }
+        timeoutWorkItem?.cancel()
+        timeoutWorkItem = nil
+        backgroundTask.end()
+        onComplete(result, durationMs())
+    }
+
+    func durationMs() -> Int {
+        Int(Date().timeIntervalSince(startedAt) * 1000)
+    }
+
+    @discardableResult
+    func markFinished() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if finished { return false }
+        finished = true
+        return true
+    }
+
+    private func expire(subcode: String, message: String) {
+        complete(.failure(AgenticAgentError(
+            code: AgenticProviderErrorCodes.timeout,
+            subcode: subcode,
+            message: message
+        )))
+    }
+}
+
+enum AgenticDeviceAgentDebugTelemetry {
+    private static let lock = NSLock()
+    private static var nextEventIndex = 0
+
+    static func emit(baseUrl: String?, fields: [String: String]) {
+        var indexedFields = fields
+        indexedFields["eventIndex"] = String(claimEventIndex())
+        indexedFields["source"] = indexedFields["source"] ?? "ios-device-agent"
+        if indexedFields["appBuild"] == nil, let appBuild = appBuild() {
+            indexedFields["appBuild"] = appBuild
+        }
+        guard let endpoint = endpoint(baseUrl: baseUrl),
+              JSONSerialization.isValidJSONObject(indexedFields),
+              let body = try? JSONSerialization.data(withJSONObject: indexedFields, options: []) else {
+            return
+        }
+        var request = URLRequest(url: endpoint, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 5)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("ios-bundled", forHTTPHeaderField: "x-agentic-client")
+        request.httpBody = body
+        let session = URLSession(configuration: .ephemeral)
+        let task = session.dataTask(with: request) { _, _, _ in
+            session.finishTasksAndInvalidate()
+        }
+        task.resume()
+    }
+
+    private static func claimEventIndex() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        nextEventIndex += 1
+        return nextEventIndex
+    }
+
+    private static func appBuild() -> String? {
+        let info = Bundle.main.infoDictionary
+        let version = info?["CFBundleShortVersionString"] as? String
+        let build = info?["CFBundleVersion"] as? String
+        switch (version, build) {
+        case (.some(let version), .some(let build)):
+            return "\(version)(\(build))"
+        case (.some(let version), .none):
+            return version
+        case (.none, .some(let build)):
+            return build
+        default:
+            return nil
+        }
+    }
+
+    private static func endpoint(baseUrl: String?) -> URL? {
+        guard let raw = baseUrl,
+              let base = URL(string: raw),
+              base.scheme == "https" || base.scheme == "http" else {
+            return nil
+        }
+        return URL(string: "/api/mobile-device-agent-debug", relativeTo: base)?.absoluteURL
     }
 }
 
@@ -191,6 +329,7 @@ final class AgenticAgentRuntime {
                 _lastError = nil
                 deleteConfigFromKeychain()
                 _updatedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+                AgenticIOSLog.info("AgenticDeviceAgent", "configure", "CLEAR", "Device Agent config cleared")
                 return buildStatusJson()
             }
             guard let cfg = AgenticAgentRuntimeConfig.fromJson(json) else {
@@ -204,6 +343,11 @@ final class AgenticAgentRuntime {
                 _state = .error
                 writeConfigToKeychain(cfg)
                 _updatedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+                AgenticIOSLog.fail("AgenticDeviceAgent", "configure", "INVALID_CONFIG", err.message, [
+                    "provider": cfg.provider,
+                    "model": cfg.model,
+                    "subcode": err.subcode ?? "",
+                ])
                 return buildStatusJson()
             }
             _config = cfg
@@ -211,6 +355,12 @@ final class AgenticAgentRuntime {
             _state = .configured
             writeConfigToKeychain(cfg)
             _updatedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+            AgenticIOSLog.info("AgenticDeviceAgent", "configure", "DONE", "Device Agent config stored", [
+                "provider": cfg.provider,
+                "model": cfg.model,
+                "apiFormat": cfg.apiFormat,
+                "hasKey": cfg.apiKey?.isEmpty == false ? "true" : "false",
+            ])
             return buildStatusJson()
         }
     }
@@ -227,16 +377,26 @@ final class AgenticAgentRuntime {
             guard let cfg = _config else {
                 _lastError = "No configured Device Agent."
                 _state = .error
+                AgenticIOSLog.fail("AgenticDeviceAgent", "start", "FAIL", "No configured Device Agent.")
                 return buildStatusJson()
             }
             if let err = cfg.validationError() {
                 _lastError = err.message
                 _state = .error
+                AgenticIOSLog.fail("AgenticDeviceAgent", "start", "INVALID_CONFIG", err.message, [
+                    "provider": cfg.provider,
+                    "model": cfg.model,
+                    "subcode": err.subcode ?? "",
+                ])
                 return buildStatusJson()
             }
             _state = .running
             _lastError = nil
             _updatedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+            AgenticIOSLog.info("AgenticDeviceAgent", "start", "RUNNING", "Device Agent runtime marked running", [
+                "provider": cfg.provider,
+                "model": cfg.model,
+            ])
             return buildStatusJson()
         }
     }
@@ -245,6 +405,7 @@ final class AgenticAgentRuntime {
         return queue.sync {
             _state = .stopped
             _updatedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+            AgenticIOSLog.info("AgenticDeviceAgent", "stop", "STOPPED", "Device Agent runtime stopped")
             return buildStatusJson()
         }
     }
@@ -296,41 +457,96 @@ final class AgenticAgentRuntime {
         }
         let userInstruction = (payload["instruction"] as? String) ?? ""
         let context = payload["context"]
+        let requestId = requestId(from: payload)
+        let payloadBytes = payloadByteCount(payload)
+        let startState = sharedStateName(captured.1)
         let provider = AgenticAgentProviderFactory.make(for: cfg)
-
-        // Background task gives the provider a short completion window if the
-        // app backgrounds mid-request. The token is main-thread-owned.
-        let backgroundTask = AgenticBackgroundTask(name: "agentic-device-agent-\(method)")
-        backgroundTask.begin()
-
         let request = AgenticAgentRequest(
+            requestId: requestId,
             method: method,
             systemPrompt: systemPrompt,
             userInstruction: userInstruction,
             context: context,
             payload: payload,
+            payloadBytes: payloadBytes,
             config: cfg
         )
 
-        provider.execute(request: request) { [weak self] result in
-            backgroundTask.end()
+        let dispatchContext = AgenticAgentDispatchContext(
+            requestId: requestId,
+            method: method,
+            provider: provider,
+            timeoutSeconds: 125
+        ) { [weak self] result, durationMs in
             switch result {
             case .success(let data):
                 self?.queue.async {
                     self?._updatedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
                 }
+                request.emitDebug(step: "success", [
+                    "durationMs": String(durationMs),
+                    "statusState": startState,
+                    "configured": "true",
+                ])
+                AgenticIOSLog.info("AgenticDeviceAgent", method, "SUCCESS", "provider request completed", [
+                    "requestId": requestId,
+                    "durationMs": String(durationMs),
+                    "provider": cfg.provider,
+                    "model": cfg.model,
+                ])
                 completion(.success(data))
             case .failure(let err):
                 self?.queue.async {
                     self?._lastError = err.message
                 }
-                AgenticIOSLog.fail("AgenticDeviceAgent", method, "FAIL", "provider error", [
+                request.emitDebug(step: "fail", [
+                    "durationMs": String(durationMs),
                     "code": err.code,
                     "subcode": err.subcode ?? "",
+                    "message": err.message,
+                ])
+                AgenticIOSLog.fail("AgenticDeviceAgent", method, "FAIL", "provider error", [
+                    "requestId": requestId,
+                    "code": err.code,
+                    "subcode": err.subcode ?? "",
+                    "durationMs": String(durationMs),
                 ])
                 completion(.failure(err))
             }
         }
+        dispatchContext.beginBackgroundTask()
+        AgenticIOSLog.info("AgenticDeviceAgent", method, "START", "provider request started", [
+            "requestId": requestId,
+            "state": startState,
+            "provider": cfg.provider,
+            "model": cfg.model,
+            "bodyBytes": String(payloadBytes),
+            "researchNeeded": AgenticAgentProviderSupport.researchNeeded(payload) ? "true" : "false",
+        ])
+        request.emitDebug(step: "native_start", [
+            "payloadChars": String(payloadBytes),
+            "statusState": startState,
+            "configured": "true",
+        ])
+        dispatchContext.provider.execute(request: request) { result in
+            dispatchContext.complete(result)
+        }
+    }
+
+    private func requestId(from payload: [String: Any]) -> String {
+        if let raw = payload["__agenticRequestId"] as? String,
+           raw.range(of: #"^[A-Za-z0-9_.:-]{1,160}$"#, options: .regularExpression) != nil {
+            return raw
+        }
+        return "ios-device-agent-\(UUID().uuidString)"
+    }
+
+    private func payloadByteCount(_ payload: [String: Any]) -> Int {
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(withJSONObject: payload, options: []) else {
+            return 0
+        }
+        return data.count
     }
 
     // MARK: - Status
@@ -429,12 +645,41 @@ final class AgenticAgentRuntime {
 // MARK: - Provider abstraction
 
 struct AgenticAgentRequest {
+    let requestId: String
     let method: String
     let systemPrompt: String
     let userInstruction: String
     let context: Any?
     let payload: [String: Any]
+    let payloadBytes: Int
     let config: AgenticAgentRuntimeConfig
+}
+
+extension AgenticAgentRequest {
+    var debugBaseUrl: String? {
+        payload["__agenticDebugBaseUrl"] as? String
+    }
+
+    func httpLogMetadata(provider: String, research: Bool) -> [String: String] {
+        [
+            "requestId": requestId,
+            "method": method,
+            "provider": provider,
+            "model": config.model,
+            "research": research ? "true" : "false",
+        ]
+    }
+
+    func emitDebug(step: String, _ fields: [String: String] = [:]) {
+        AgenticDeviceAgentDebugTelemetry.emit(baseUrl: debugBaseUrl, fields: [
+            "method": method,
+            "requestId": requestId,
+            "runtime": "ios-native",
+            "provider": config.provider,
+            "model": config.model,
+            "step": step,
+        ].merging(fields) { current, _ in current })
+    }
 }
 
 struct AgenticDeviceAgentMessages {
@@ -450,7 +695,6 @@ enum AgenticDeviceAgentBoundaries {
 }
 
 enum AgenticDeviceAgentMessageAssembler {
-    private static let researchMaxUses = 3
     private static let connectorRuleDefault = "Only propose first-class or Blink executable actions for enabled connectors with matching capabilities. If a requested protocol/action is disabled, unsupported, or missing an action URL/client key, make the plan proof/read-only and state which connector fact, key, or action URL is missing."
 
     static func buildPlanMessages(_ payload: [String: Any]) -> AgenticDeviceAgentMessages {
@@ -508,7 +752,7 @@ enum AgenticDeviceAgentMessageAssembler {
                 "needed": true,
                 "mode": hasTargets ? "resolve_specific_atoms" : "collect_current_facts_only",
                 "currentDate": ISO8601DateFormatter().string(from: Date()),
-                "maxSearches": researchMaxUses,
+                "maxSearches": AgenticAgentProviderSupport.researchMaxUses(payload),
                 "sourcePolicy": sourcePolicy,
             ],
             "requiredBoundary": "This research pass cannot approve, deny, sign, or submit. It only gathers facts for a later structured review.",
@@ -538,7 +782,7 @@ enum AgenticDeviceAgentMessageAssembler {
             "needed": false,
             "mode": "not_required",
             "currentDate": ISO8601DateFormatter().string(from: Date()),
-            "maxSearches": researchMaxUses,
+            "maxSearches": AgenticAgentProviderSupport.researchMaxUses(payload),
         ]
     }
 
@@ -608,6 +852,9 @@ enum AgenticAgentProviderSupport {
             return .success(["output_text": text])
         }
         guard let parsed = AgenticProviderResponseParser.parseModelJson(text) else {
+            if method == "reviewPlan" {
+                return .success(malformedReview(provider: provider))
+            }
             return .failure(AgenticAgentError(code: "PROVIDER_RESPONSE", subcode: "JSON_PARSE", message: "Provider response was not valid JSON."))
         }
         var out = parsed
@@ -620,6 +867,25 @@ enum AgenticAgentProviderSupport {
         return (research["needed"] as? Bool) == true
     }
 
+    static func researchMaxUses(_ payload: [String: Any]) -> Int {
+        guard let research = payload["research"] as? [String: Any] else { return 3 }
+        let raw = research["maxSearches"]
+        let numeric: Double?
+        if let value = raw as? NSNumber {
+            numeric = value.doubleValue
+        } else if let value = raw as? Double {
+            numeric = value
+        } else if let value = raw as? Int {
+            numeric = Double(value)
+        } else if let value = raw as? String {
+            numeric = Double(value.trimmingCharacters(in: .whitespacesAndNewlines))
+        } else {
+            numeric = nil
+        }
+        guard let numeric, numeric.isFinite, numeric > 0 else { return 3 }
+        return max(1, min(Int(floor(numeric)), 5))
+    }
+
     static func researchTargets(_ payload: [String: Any]) -> [[String: Any]] {
         guard let context = payload["context"] as? [String: Any],
               let targets = context["researchTargets"] as? [[String: Any]] else { return [] }
@@ -627,10 +893,15 @@ enum AgenticAgentProviderSupport {
     }
 
     static func reviewPayloadWithResearch(_ payload: [String: Any], evidence: [String: Any]) -> [String: Any] {
-        var next = payload
-        var context = payload["context"] as? [String: Any] ?? [:]
+        var next = reviewPayloadAfterResearchAttempt(payload)
+        var context = next["context"] as? [String: Any] ?? [:]
         context["researchEvidence"] = evidence
         next["context"] = context
+        return next
+    }
+
+    static func reviewPayloadAfterResearchAttempt(_ payload: [String: Any]) -> [String: Any] {
+        var next = payload
         var research = payload["research"] as? [String: Any] ?? [:]
         research["needed"] = false
         research["mode"] = "provided_current_facts"
@@ -687,6 +958,10 @@ enum AgenticAgentProviderSupport {
                 "inputKind": "text",
                 "required": true,
             ]],
+            "evidenceFactIds": [],
+            "blockingFactIds": [],
+            "missingFactIds": [],
+            "confidence": "low",
         ]
     }
 
@@ -714,11 +989,44 @@ enum AgenticAgentProviderSupport {
                 "inputKind": "text",
                 "required": true,
             ]],
+            "evidenceFactIds": [],
+            "blockingFactIds": [],
+            "missingFactIds": [],
+            "confidence": "low",
         ]
     }
 
     static func currentResearchUnavailableAsk(provider: String) -> [String: Any] {
         return ["output_text": "I need current outside facts to answer that, but \(provider) mode does not have native web research available. Provide a source-backed value or switch to OpenAI, Anthropic, or Gemini."]
+    }
+
+    static func malformedReview(provider: String) -> [String: Any] {
+        let reason = "Device Agent \(provider) returned a malformed review response. The draft needs manual review before wallet approval."
+        return [
+            "decision": "needs_input",
+            "reason": reason,
+            "summary": "The AI review response was not parseable.",
+            "evidence": [
+                "provider": provider,
+                "findings": [[
+                    "label": "Review format",
+                    "value": reason,
+                    "tone": "warn",
+                ]],
+            ],
+            "questions": [[
+                "id": "device_agent_review_format",
+                "prompt": "Do you want to review this draft manually?",
+                "inputKind": "select",
+                "options": ["Review manually", "Cancel"],
+                "required": true,
+            ]],
+            "evidenceFactIds": [],
+            "blockingFactIds": [],
+            "missingFactIds": [],
+            "confidence": "low",
+            "provider": provider,
+        ]
     }
 
     private static func sourceList(from raw: Any) -> [[String: Any]] {
@@ -814,15 +1122,13 @@ enum AgenticAgentProviderSupport {
 
 enum AgenticAgentProviderFactory {
     static func make(for config: AgenticAgentRuntimeConfig) -> AgenticAgentProvider {
-        if config.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "openai" {
-            return AgenticOpenAINativeProvider()
-        }
-        if config.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "gemini" ||
-            (config.baseUrl ?? "").lowercased().contains("generativelanguage.googleapis.com") ||
-            config.model.lowercased().contains("gemini") {
-            return AgenticGeminiProvider()
-        }
-        switch config.apiFormat {
+        let provider = config.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let format = AgenticAgentRuntimeConfig.canonicalApiFormat(config.apiFormat)
+        switch format {
+        case "openai-compatible":
+            if provider == "openai" { return AgenticOpenAINativeProvider() }
+            if provider == "gemini" { return AgenticGeminiProvider() }
+            return AgenticOpenAICompatibleProvider()
         case "anthropic":
             return AgenticAnthropicProvider()
         default:
@@ -841,22 +1147,27 @@ final class AgenticAnthropicProvider: AgenticAgentProvider {
         }
 
         if request.method == "reviewPlan", AgenticAgentProviderSupport.researchNeeded(request.payload) {
-            runResearchPass(request: request, apiKey: apiKey) { [weak self] research in
-                guard let self else { return }
+            runResearchPass(request: request, apiKey: apiKey) { research in
                 let reviewPayload: [String: Any]
                 switch research {
                 case .success(let evidence):
                     reviewPayload = AgenticAgentProviderSupport.reviewPayloadWithResearch(request.payload, evidence: evidence)
                 case .failure(let err):
-                    completion(.success(AgenticAgentProviderSupport.currentResearchFailedReview(provider: "Anthropic", error: err)))
-                    return
+                    request.emitDebug(step: "research_fallback", [
+                        "code": err.code,
+                        "subcode": err.subcode ?? "",
+                        "message": err.message,
+                    ])
+                    reviewPayload = AgenticAgentProviderSupport.reviewPayloadAfterResearchAttempt(request.payload)
                 }
                 let reviewRequest = AgenticAgentRequest(
+                    requestId: request.requestId,
                     method: request.method,
                     systemPrompt: request.systemPrompt,
                     userInstruction: request.userInstruction,
                     context: reviewPayload["context"],
                     payload: reviewPayload,
+                    payloadBytes: request.payloadBytes,
                     config: request.config
                 )
                 self.executeWithoutResearch(request: reviewRequest, apiKey: apiKey, completion: completion)
@@ -879,7 +1190,15 @@ final class AgenticAnthropicProvider: AgenticAgentProvider {
                 completion(.failure(err))
             case .success(let json):
                 let text = AgenticProviderResponseParser.extractAnthropicText(json)
-                completion(AgenticAgentProviderSupport.parseProviderResult(method: request.method, provider: "anthropic", text: text, raw: json))
+                let parsed = AgenticAgentProviderSupport.parseProviderResult(method: request.method, provider: "anthropic", text: text, raw: json)
+                if case .failure(let err) = parsed {
+                    request.emitDebug(step: "parse_fail", [
+                        "code": err.code,
+                        "subcode": err.subcode ?? "",
+                        "message": err.message,
+                    ])
+                }
+                completion(parsed)
             }
         }
     }
@@ -927,7 +1246,7 @@ final class AgenticAnthropicProvider: AgenticAgentProvider {
             "system": messages.system,
             "messages": [["role": "user", "content": messages.userContent]],
             "temperature": request.method == "ask" ? 0.3 : 0.2,
-        ].merging(research ? ["tools": [anthropicWebSearchTool()]] : [:]) { current, _ in current }
+        ].merging(research ? ["tools": [anthropicWebSearchTool(payload: request.payload)]] : [:]) { current, _ in current }
         guard let payload = try? JSONSerialization.data(withJSONObject: body, options: []) else {
             completion(.failure(AgenticAgentError(code: "ENCODE_ERROR", message: "Could not encode Anthropic request body.")))
             return
@@ -938,11 +1257,15 @@ final class AgenticAnthropicProvider: AgenticAgentProvider {
         req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         req.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         req.httpBody = payload
-        AgenticAgentHttp.execute(req, secret: apiKey) { result in
+        AgenticAgentHttp.execute(req, secret: apiKey, metadata: request.httpLogMetadata(provider: "anthropic", research: research), debugBaseUrl: request.debugBaseUrl) { result in
             switch result {
             case .failure(let err): completion(.failure(err))
             case .success(let data):
                 guard let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] else {
+                    request.emitDebug(step: "parse_fail", [
+                        "code": "PROVIDER_RESPONSE",
+                        "message": "Anthropic response was not JSON.",
+                    ])
                     completion(.failure(AgenticAgentError(code: "PROVIDER_RESPONSE", message: "Anthropic response was not JSON.")))
                     return
                 }
@@ -956,11 +1279,11 @@ final class AgenticAnthropicProvider: AgenticAgentProvider {
         return base.hasSuffix("/messages") ? base : "\(base)/messages"
     }
 
-    private func anthropicWebSearchTool() -> [String: Any] {
+    private func anthropicWebSearchTool(payload: [String: Any]) -> [String: Any] {
         return [
             "type": "web_search_20250305",
             "name": "web_search",
-            "max_uses": 3,
+            "max_uses": AgenticAgentProviderSupport.researchMaxUses(payload),
             "user_location": [
                 "type": "approximate",
                 "country": "US",
@@ -988,22 +1311,27 @@ final class AgenticOpenAINativeProvider: AgenticAgentProvider {
             return
         }
         if request.method == "reviewPlan", AgenticAgentProviderSupport.researchNeeded(request.payload) {
-            runResearchPass(request: request, apiKey: apiKey) { [weak self] research in
-                guard let self else { return }
+            runResearchPass(request: request, apiKey: apiKey) { research in
                 let reviewPayload: [String: Any]
                 switch research {
                 case .success(let evidence):
                     reviewPayload = AgenticAgentProviderSupport.reviewPayloadWithResearch(request.payload, evidence: evidence)
                 case .failure(let err):
-                    completion(.success(AgenticAgentProviderSupport.currentResearchFailedReview(provider: "OpenAI", error: err)))
-                    return
+                    request.emitDebug(step: "research_fallback", [
+                        "code": err.code,
+                        "subcode": err.subcode ?? "",
+                        "message": err.message,
+                    ])
+                    reviewPayload = AgenticAgentProviderSupport.reviewPayloadAfterResearchAttempt(request.payload)
                 }
                 let reviewRequest = AgenticAgentRequest(
+                    requestId: request.requestId,
                     method: request.method,
                     systemPrompt: request.systemPrompt,
                     userInstruction: request.userInstruction,
                     context: reviewPayload["context"],
                     payload: reviewPayload,
+                    payloadBytes: request.payloadBytes,
                     config: request.config
                 )
                 self.executeWithoutResearch(request: reviewRequest, apiKey: apiKey, completion: completion)
@@ -1031,7 +1359,15 @@ final class AgenticOpenAINativeProvider: AgenticAgentProvider {
                 completion(.failure(err))
             case .success(let json):
                 let text = AgenticProviderResponseParser.extractResponsesApiText(json)
-                completion(AgenticAgentProviderSupport.parseProviderResult(method: request.method, provider: "openai", text: text, raw: json))
+                let parsed = AgenticAgentProviderSupport.parseProviderResult(method: request.method, provider: "openai", text: text, raw: json)
+                if case .failure(let err) = parsed {
+                    request.emitDebug(step: "parse_fail", [
+                        "code": err.code,
+                        "subcode": err.subcode ?? "",
+                        "message": err.message,
+                    ])
+                }
+                completion(parsed)
             }
         }
     }
@@ -1118,12 +1454,16 @@ final class AgenticOpenAINativeProvider: AgenticAgentProvider {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         req.httpBody = payload
-        AgenticAgentHttp.execute(req, secret: apiKey) { result in
+        AgenticAgentHttp.execute(req, secret: apiKey, metadata: request.httpLogMetadata(provider: "openai", research: research), debugBaseUrl: request.debugBaseUrl) { result in
             switch result {
             case .failure(let err):
                 completion(.failure(err))
             case .success(let data):
                 guard let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] else {
+                    request.emitDebug(step: "parse_fail", [
+                        "code": "PROVIDER_RESPONSE",
+                        "message": "OpenAI response was not JSON.",
+                    ])
                     completion(.failure(AgenticAgentError(code: "PROVIDER_RESPONSE", message: "OpenAI response was not JSON.")))
                     return
                 }
@@ -1156,14 +1496,57 @@ final class AgenticOpenAINativeProvider: AgenticAgentProvider {
                 "required": ["intent", "route", "risk", "approval", "safeguards"],
             ]
         }
+        let decisionEnum = ["approve", "deny", "needs_input"]
+        let inputKindEnum = ["text", "select", "number"]
+        let reviewerIdEnum = ["risk", "quote", "policy", "protocol"]
+        let stringArraySchema: [String: Any] = [
+            "type": "array",
+            "items": ["type": "string"],
+        ]
         return [
             "type": "object",
-            "additionalProperties": true,
+            "additionalProperties": false,
             "properties": [
-                "decision": ["type": "string", "enum": ["approve", "deny", "needs_input"]],
+                "decision": ["type": "string", "enum": decisionEnum],
                 "reason": ["type": "string"],
                 "summary": ["type": "string"],
                 "evidence": ["type": "object", "additionalProperties": true],
+                "questions": [
+                    "type": "array",
+                    "maxItems": 3,
+                    "items": [
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": [
+                            "id": ["type": "string"],
+                            "prompt": ["type": "string"],
+                            "inputKind": ["type": "string", "enum": inputKindEnum],
+                            "options": ["type": "array", "items": ["type": "string"]],
+                            "required": ["type": "boolean"],
+                            "hint": ["type": "string"],
+                        ],
+                        "required": ["id", "prompt", "inputKind"],
+                    ],
+                ],
+                "reviewers": [
+                    "type": "array",
+                    "maxItems": 4,
+                    "items": [
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": [
+                            "id": ["type": "string", "enum": reviewerIdEnum],
+                            "decision": ["type": "string", "enum": decisionEnum],
+                            "reason": ["type": "string"],
+                            "summary": ["type": "string"],
+                        ],
+                        "required": ["id", "decision", "reason"],
+                    ],
+                ],
+                "evidenceFactIds": stringArraySchema,
+                "blockingFactIds": stringArraySchema,
+                "missingFactIds": stringArraySchema,
+                "confidence": ["type": "string", "enum": ["high", "medium", "low"]],
             ],
             "required": ["decision", "reason", "summary", "evidence"],
         ]
@@ -1240,16 +1623,28 @@ final class AgenticOpenAICompatibleProvider: AgenticAgentProvider {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         req.httpBody = payload
-        AgenticAgentHttp.execute(req, secret: apiKey) { result in
+        AgenticAgentHttp.execute(req, secret: apiKey, metadata: request.httpLogMetadata(provider: request.config.provider, research: false), debugBaseUrl: request.debugBaseUrl) { result in
             switch result {
             case .failure(let err): completion(.failure(err))
             case .success(let data):
                 guard let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] else {
+                    request.emitDebug(step: "parse_fail", [
+                        "code": "PROVIDER_RESPONSE",
+                        "message": "OpenAI response was not JSON.",
+                    ])
                     completion(.failure(AgenticAgentError(code: "PROVIDER_RESPONSE", message: "OpenAI response was not JSON.")))
                     return
                 }
                 let text = Self.extractText(json) ?? ""
-                completion(AgenticAgentProviderSupport.parseProviderResult(method: request.method, provider: request.config.provider, text: text, raw: json))
+                let parsed = AgenticAgentProviderSupport.parseProviderResult(method: request.method, provider: request.config.provider, text: text, raw: json)
+                if case .failure(let err) = parsed {
+                    request.emitDebug(step: "parse_fail", [
+                        "code": err.code,
+                        "subcode": err.subcode ?? "",
+                        "message": err.message,
+                    ])
+                }
+                completion(parsed)
             }
         }
     }
@@ -1277,22 +1672,27 @@ final class AgenticGeminiProvider: AgenticAgentProvider {
             return
         }
         if request.method == "reviewPlan", AgenticAgentProviderSupport.researchNeeded(request.payload) {
-            runResearchPass(request: request, apiKey: apiKey) { [weak self] research in
-                guard let self else { return }
+            runResearchPass(request: request, apiKey: apiKey) { research in
                 let reviewPayload: [String: Any]
                 switch research {
                 case .success(let evidence):
                     reviewPayload = AgenticAgentProviderSupport.reviewPayloadWithResearch(request.payload, evidence: evidence)
                 case .failure(let err):
-                    completion(.success(AgenticAgentProviderSupport.currentResearchFailedReview(provider: "Gemini", error: err)))
-                    return
+                    request.emitDebug(step: "research_fallback", [
+                        "code": err.code,
+                        "subcode": err.subcode ?? "",
+                        "message": err.message,
+                    ])
+                    reviewPayload = AgenticAgentProviderSupport.reviewPayloadAfterResearchAttempt(request.payload)
                 }
                 let reviewRequest = AgenticAgentRequest(
+                    requestId: request.requestId,
                     method: request.method,
                     systemPrompt: request.systemPrompt,
                     userInstruction: request.userInstruction,
                     context: reviewPayload["context"],
                     payload: reviewPayload,
+                    payloadBytes: request.payloadBytes,
                     config: request.config
                 )
                 self.executeWithoutResearch(request: reviewRequest, apiKey: apiKey, completion: completion)
@@ -1320,7 +1720,15 @@ final class AgenticGeminiProvider: AgenticAgentProvider {
                 completion(.failure(err))
             case .success(let json):
                 let text = AgenticProviderResponseParser.extractGeminiText(json)
-                completion(AgenticAgentProviderSupport.parseProviderResult(method: request.method, provider: "gemini", text: text, raw: json))
+                let parsed = AgenticAgentProviderSupport.parseProviderResult(method: request.method, provider: "gemini", text: text, raw: json)
+                if case .failure(let err) = parsed {
+                    request.emitDebug(step: "parse_fail", [
+                        "code": err.code,
+                        "subcode": err.subcode ?? "",
+                        "message": err.message,
+                    ])
+                }
+                completion(parsed)
             }
         }
     }
@@ -1391,12 +1799,16 @@ final class AgenticGeminiProvider: AgenticAgentProvider {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
         req.httpBody = payload
-        AgenticAgentHttp.execute(req, secret: apiKey) { result in
+        AgenticAgentHttp.execute(req, secret: apiKey, metadata: request.httpLogMetadata(provider: "gemini", research: research), debugBaseUrl: request.debugBaseUrl) { result in
             switch result {
             case .failure(let err):
                 completion(.failure(err))
             case .success(let data):
                 guard let json = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] else {
+                    request.emitDebug(step: "parse_fail", [
+                        "code": "PROVIDER_RESPONSE",
+                        "message": "Gemini response was not JSON.",
+                    ])
                     completion(.failure(AgenticAgentError(code: "PROVIDER_RESPONSE", message: "Gemini response was not JSON.")))
                     return
                 }
@@ -1433,34 +1845,84 @@ final class AgenticGeminiProvider: AgenticAgentProvider {
 // MARK: - HTTP helper
 
 enum AgenticAgentHttp {
-    static func execute(_ request: URLRequest, secret: String?, completion: @escaping (Result<Data, AgenticAgentError>) -> Void) {
+    static func execute(
+        _ request: URLRequest,
+        secret: String?,
+        metadata: [String: String] = [:],
+        debugBaseUrl: String? = nil,
+        completion: @escaping (Result<Data, AgenticAgentError>) -> Void
+    ) {
+        let startedAt = Date()
         let session = URLSession(configuration: .ephemeral)
+        var startMetadata = metadata
+        startMetadata["host"] = request.url?.host ?? ""
+        AgenticIOSLog.info("AgenticDeviceAgentHTTP", request.httpMethod ?? "HTTP", "START", "provider HTTP request started", startMetadata)
+        emitDebug(baseUrl: debugBaseUrl, step: "http_start", metadata: startMetadata)
         let task = session.dataTask(with: request) { data, response, error in
+            defer { session.finishTasksAndInvalidate() }
+            let durationMs = Int(Date().timeIntervalSince(startedAt) * 1000)
+            var logMetadata = metadata
+            logMetadata["durationMs"] = String(durationMs)
+            logMetadata["host"] = request.url?.host ?? ""
             if let error {
                 let nsError = error as NSError
                 let code = nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut
                     ? AgenticProviderErrorCodes.timeout
                     : AgenticProviderErrorCodes.network
                 let redacted = AgenticSecretRedactor.redact(error.localizedDescription, secret: secret)
+                logMetadata["code"] = code
+                logMetadata["errorDomain"] = nsError.domain
+                logMetadata["errorCode"] = String(nsError.code)
+                AgenticIOSLog.fail("AgenticDeviceAgentHTTP", request.httpMethod ?? "HTTP", "FAIL", "provider HTTP request failed", logMetadata)
+                emitDebug(baseUrl: debugBaseUrl, step: "http_fail", metadata: logMetadata)
                 completion(.failure(AgenticAgentError(code: code, message: redacted)))
                 return
             }
             guard let http = response as? HTTPURLResponse else {
+                logMetadata["code"] = AgenticProviderErrorCodes.network
+                AgenticIOSLog.fail("AgenticDeviceAgentHTTP", request.httpMethod ?? "HTTP", "FAIL", "provider returned no HTTP response", logMetadata)
+                emitDebug(baseUrl: debugBaseUrl, step: "http_fail", metadata: logMetadata)
                 completion(.failure(AgenticAgentError(code: AgenticProviderErrorCodes.network, message: "No HTTP response from AI provider.")))
                 return
             }
+            logMetadata["statusCode"] = String(http.statusCode)
             let responseData = data ?? Data()
+            logMetadata["responseBytes"] = String(responseData.count)
             if let errorCode = AgenticProviderHttp.mapHttpStatusToErrorCode(http.statusCode) {
                 let bodyString = String(data: responseData, encoding: .utf8) ?? ""
                 let redacted = AgenticSecretRedactor.redact(bodyString, secret: secret)
+                logMetadata["code"] = errorCode
+                AgenticIOSLog.fail("AgenticDeviceAgentHTTP", request.httpMethod ?? "HTTP", "FAIL", "provider HTTP status failed", logMetadata)
+                emitDebug(baseUrl: debugBaseUrl, step: "http_fail", metadata: logMetadata)
                 completion(.failure(AgenticAgentError(
                     code: errorCode,
                     message: AgenticProviderHttp.composeErrorMessage(status: http.statusCode, body: String(redacted.prefix(1000)))
                 )))
                 return
             }
+            logMetadata["bytes"] = String(responseData.count)
+            AgenticIOSLog.info("AgenticDeviceAgentHTTP", request.httpMethod ?? "HTTP", "SUCCESS", "provider HTTP request completed", logMetadata)
+            emitDebug(baseUrl: debugBaseUrl, step: "http_success", metadata: logMetadata)
             completion(.success(responseData))
         }
         task.resume()
+    }
+
+    private static func emitDebug(baseUrl: String?, step: String, metadata: [String: String]) {
+        AgenticDeviceAgentDebugTelemetry.emit(baseUrl: baseUrl, fields: [
+            "method": metadata["method"] ?? "unknown",
+            "requestId": metadata["requestId"] ?? "",
+            "runtime": "ios-native",
+            "provider": metadata["provider"] ?? "",
+            "model": metadata["model"] ?? "",
+            "step": step,
+            "durationMs": metadata["durationMs"] ?? "",
+            "statusCode": metadata["statusCode"] ?? "",
+            "code": metadata["code"] ?? "",
+            "httpHost": metadata["host"] ?? "",
+            "responseBytes": metadata["responseBytes"] ?? metadata["bytes"] ?? "",
+            "errorDomain": metadata["errorDomain"] ?? "",
+            "errorCode": metadata["errorCode"] ?? "",
+        ])
     }
 }

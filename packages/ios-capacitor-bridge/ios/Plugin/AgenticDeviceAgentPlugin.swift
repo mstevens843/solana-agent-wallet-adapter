@@ -90,6 +90,11 @@ public class AgenticDeviceAgentPlugin: CAPPlugin, CAPBridgedPlugin {
             DispatchQueue.main.async {
                 switch result {
                 case .success(let data):
+                    guard JSONSerialization.isValidJSONObject(data) else {
+                        AgenticIOSLog.fail("AgenticDeviceAgentPlugin", method, "RESOLVE_FAIL", "Device Agent result was not JSON-serializable")
+                        call.reject("Device Agent result was not JSON-serializable.", "INVALID_RESPONSE")
+                        return
+                    }
                     call.resolve(data)
                 case .failure(let err):
                     call.reject(err.message, err.code, nil, err.asJson)

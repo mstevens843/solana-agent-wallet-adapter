@@ -14921,6 +14921,12 @@ button.danger:hover:not(:disabled) {
   margin: 4px 0 8px;
 }
 
+.ai-settings-card input.ios-mobile-api-key-input {
+  -webkit-touch-callout: default;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 .ai-settings-card p {
   color: var(--muted);
   font-size: 0.9rem;

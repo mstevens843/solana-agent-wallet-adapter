@@ -151,12 +151,16 @@ describe('deviceAgentClient', () => {
     });
 
     it('wraps iOS native model text as output_text and returns ios-native status', async () => {
+      let capturedPayload: Record<string, unknown> | undefined;
       (globalThis as AndroidGlobal).__agenticIosDeviceAgentBridge = {
         status: async () => ({ ...successStatus, runtime: 'ios-native', checkedAt: 1_700_000_000_000 }),
         configure: async () => successStatus,
         start: async () => successStatus,
         stop: async () => successStatus,
-        generatePlan: async (payload) => ({ provider: 'gemini', text: JSON.stringify({ intent: payload?.prompt }) }),
+        generatePlan: async (payload) => {
+          capturedPayload = payload;
+          return { provider: 'gemini', text: JSON.stringify({ intent: payload?.prompt }) };
+        },
         reviewPlan: async () => ({ text: '{"decision":"approve","reason":"ok"}' }),
         ask: async () => ({ text: '{"answer":"ok"}' }),
       };
@@ -164,6 +168,23 @@ describe('deviceAgentClient', () => {
       expect(status.runtime).toBe('ios-native');
       expect(status.checkedAt).toBe('2023-11-14T22:13:20.000Z');
       expect(result?.output_text).toBe('{"intent":"swap"}');
+      expect(capturedPayload?.__agenticRequestId).toMatch(/^device-agent-/);
+      expect(capturedPayload?.__agenticPayloadChars).toEqual(expect.any(Number));
+    });
+
+    it('times out unresolved iOS native requests with a deterministic client error', async () => {
+      (globalThis as AndroidGlobal).__agenticIosDeviceAgentBridge = {
+        status: async () => ({ ...successStatus, runtime: 'ios-native' }),
+        configure: async () => successStatus,
+        start: async () => successStatus,
+        stop: async () => successStatus,
+        generatePlan: async () => new Promise(() => undefined),
+        reviewPlan: async () => ({ text: '{"decision":"approve","reason":"ok"}' }),
+        ask: async () => ({ text: '{"answer":"ok"}' }),
+      };
+      await expect(iosDeviceAgentRequestOrThrow('generatePlan', { prompt: 'swap' }, { timeoutMs: 1 }))
+        .rejects
+        .toMatchObject({ code: 'request_timeout' });
     });
   });
 
@@ -764,6 +785,45 @@ describe('deviceAgentClient', () => {
       const startLine = captured.lines.find((line) => line.startsWith('[AgentDeviceAgent] request | START')) ?? '';
       expect(startLine).not.toContain('sk-test-secret-123');
       expect(startLine).toContain('[redacted]');
+    });
+
+    it('redacts LLM-bound iOS payload previews in debug builds', async () => {
+      (globalThis as AndroidGlobal).__agenticIosDeviceAgentBridge = {
+        status: async () => ({ ...successStatus, runtime: 'ios-native' }),
+        configure: async () => successStatus,
+        start: async () => successStatus,
+        stop: async () => successStatus,
+        generatePlan: async () => ({ intent: 'ok' }),
+        reviewPlan: async () => ({
+          decision: 'approve',
+          reason: 'ok',
+          summary: 'ok',
+          evidence: {},
+        }),
+        ask: async () => ({ output_text: 'ok' }),
+      };
+      const captured = captureConsole(['info']);
+      try {
+        await iosDeviceAgentRequestOrThrow('reviewPlan', {
+          instruction: 'only approve if the private note is true',
+          apiKey: 'sk-test-secret-456',
+          plan: { actionType: 'swap', route: 'Jupiter private route' },
+          context: {
+            transactionBase64: 'base64-transaction-secret',
+            policyBundle: { hasBlockingFailure: false },
+          },
+        });
+      } finally {
+        captured.restore();
+      }
+      const startLine = captured.lines.find((line) => line.startsWith('[AgentDeviceAgent] ios-request | START')) ?? '';
+      expect(startLine).toContain('hasInstruction');
+      expect(startLine).toContain('hasTransactionBase64');
+      expect(startLine).toContain('actionType');
+      expect(startLine).not.toContain('private note');
+      expect(startLine).not.toContain('Jupiter private route');
+      expect(startLine).not.toContain('base64-transaction-secret');
+      expect(startLine).not.toContain('sk-test-secret-456');
     });
 
     it('emits a FAIL warn line for payload_too_large preflight in debug builds', async () => {

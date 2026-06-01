@@ -36,6 +36,14 @@ const BROWSER_NATIVE_RUNNING: DeviceAgentHealthHint = {
   bridgeAvailable: false,
 };
 
+const IOS_KEYCHAIN_READY: DeviceAgentHealthHint = {
+  available: true,
+  configured: true,
+  state: 'stopped',
+  runtime: 'ios-native',
+  bridgeAvailable: true,
+};
+
 describe('checkAi (device-agent mode)', () => {
   it('reports scaffold-only on browser dev when no hint is provided', async () => {
     const result = await checkAi(baseInputs());
@@ -109,6 +117,13 @@ describe('checkAi (device-agent mode)', () => {
     const result = await checkAi(baseInputs({ deviceAgent: ANDROID_RUNNING }));
     expect(result.status).toBe('ok');
     expect(result.message).toBe('Device Agent ready');
+  });
+
+  it('reports OK when the iOS runtime is configured from Keychain but stopped', async () => {
+    const result = await checkAi(baseInputs({ deviceAgent: IOS_KEYCHAIN_READY }));
+    expect(result.status).toBe('ok');
+    expect(result.message).toBe('Device Agent ready');
+    expect(result.detail).toContain('iOS native');
   });
 
   it('reports OK when the browser-native runtime is running without an Android bridge', async () => {

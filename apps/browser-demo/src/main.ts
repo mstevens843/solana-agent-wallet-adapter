@@ -575,6 +575,7 @@ import {
   DeviceAgentClientError,
   deviceAgentDiagnosticsFromError,
   deviceAgentRequestOrThrow,
+  deviceAgentStatusReadyForDrafts,
   iosDeviceAgentRequestOrThrow,
   isDeviceAgentBridgeAvailable,
   isIosDeviceAgentBridgeAvailable,
@@ -2542,7 +2543,7 @@ interface AttachTxModalState {
 }
 
 type DebugLogLevel = 'info' | 'warn' | 'error';
-type DebugLogSource = 'rpc' | 'ai' | 'wallet' | 'ledger' | 'ui' | 'health' | 'preflight';
+type DebugLogSource = 'rpc' | 'ai' | 'wallet' | 'ledger' | 'ui' | 'health' | 'preflight' | 'device-agent';
 
 interface DebugLogEvent {
   ts: string;
@@ -2552,6 +2553,7 @@ interface DebugLogEvent {
   code?: string;
   actionId?: string;
   txid?: string;
+  requestId?: string;
 }
 
 interface NotificationSettingsState {
@@ -11987,6 +11989,13 @@ function openMobileRailSheet(sheet: MobileRailSheet): void {
     startWalletBalanceFullLoad(false, { openOverlay: false });
     return;
   }
+  if (sheet === 'ai-drafting' && state.aiSettings.mode === 'device-agent') {
+    state.deviceAgentStatusLoading = true;
+    void refreshDeviceAgentStatus(false).finally(() => {
+      state.deviceAgentStatusLoading = false;
+      render();
+    });
+  }
   render();
 }
 
@@ -19665,7 +19674,7 @@ function agentPlannerWorkbench(): string {
                   <input type="checkbox" data-ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
                   <span class="ask-agent-check" aria-hidden="true">${checkIcon()}</span>
                   <span class="ask-agent-copy">
-                    <strong>Ask agent after draft</strong>
+                    <strong>Ask Agent</strong>
                     <em>${escapeHtml(askAgentDetail)}</em>
                   </span>
                 </label>
@@ -21255,6 +21264,14 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
     isRail && isMobileAppViewport() && state.activeMobileRailSheet === 'ai-drafting'
       ? 'down'
       : 'auto';
+  const nativeIosDeviceAgentConfigured = state.iosNativeEnvironment.isIosNative
+    && state.aiSettings.mode === 'device-agent'
+    && state.deviceAgentStatus?.runtime === 'ios-native'
+    && state.deviceAgentStatus.configured;
+  const routeConfigDisabled = state.busy || nativeIosDeviceAgentConfigured;
+  const routeConfigLockedTitle = nativeIosDeviceAgentConfigured
+    ? 'Clear key to change provider, model, or gateway.'
+    : undefined;
   const setupHelperMessages = Array.from(new Set(
     (mobilePlannerSetup ? [modeHelperText] : [modeHelperText, providerHelperText]).filter(Boolean),
   ));
@@ -21278,6 +21295,13 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
     : state.aiSettings.mode === 'hosted'
       ? 'Hosted BYOK key'
       : sessionKeyLabel;
+  const iosMobileDeviceAgentKeyInput = state.iosNativeEnvironment.isIosNative
+    && state.aiSettings.mode === 'device-agent';
+  const keyInputType = iosMobileDeviceAgentKeyInput ? 'text' : 'password';
+  const keyInputClass = iosMobileDeviceAgentKeyInput ? ' class="ios-mobile-api-key-input"' : '';
+  const keyInputAssistAttrs = iosMobileDeviceAgentKeyInput
+    ? ' autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="text"'
+    : '';
   const securityCopy = state.aiSettings.mode === 'hosted'
     ? 'Hosted BYOK relays this key only for AI draft requests. It cannot queue approvals, create repeat payments, approve, submit, or sign.'
     : state.aiSettings.mode === 'device-agent'
@@ -21301,7 +21325,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         <div class="ai-key-configured-note" aria-live="polite">
           <span>Device Agent</span>
           <strong>Configured for drafts</strong>
-          <em>${escapeHtml(deviceAgentConfiguredDetail)}</em>
+          <em>${escapeHtml(nativeIosDeviceAgentConfigured ? `${deviceAgentConfiguredDetail}. Clear key to change provider or model.` : deviceAgentConfiguredDetail)}</em>
         </div>
       `
     : `
@@ -21345,8 +21369,8 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
           value: state.aiSettings.provider,
           options: aiProviderSelectOptions(),
           attrs: { 'data-ai-control': 'provider' },
-          disabled: state.busy,
-          title: providerHelperText,
+          disabled: routeConfigDisabled,
+          title: routeConfigLockedTitle ?? providerHelperText,
           menuPlacement: aiSheetMenuPlacement,
         })}
         ${!isRail && !mobilePlannerSetup ? browserNativeProviderTierChip() : ''}
@@ -21370,20 +21394,21 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
             { value: CUSTOM_AI_MODEL_VALUE, label: 'Custom model', meta: 'Model' },
           ],
           attrs: { 'data-ai-control': 'model-select' },
-          disabled: state.busy,
+          disabled: routeConfigDisabled,
+          title: routeConfigLockedTitle,
           menuPlacement: aiSheetMenuPlacement,
         })}
       </label>
       ${usingCustomModel ? `
         <label class="field compact ai-setting-field ai-setting-custom-model">
           <span>Custom model</span>
-          <input id="aiModelCustom-${escapeHtml(scope)}" data-ai-control="model-custom" value="${escapeHtml(state.aiSettings.model)}" placeholder="${escapeHtml(providerPreset.model)}" ${state.busy ? 'disabled' : ''} />
+          <input id="aiModelCustom-${escapeHtml(scope)}" data-ai-control="model-custom" value="${escapeHtml(state.aiSettings.model)}" placeholder="${escapeHtml(providerPreset.model)}" ${routeConfigLockedTitle ? `title="${escapeHtml(routeConfigLockedTitle)}"` : ''} ${routeConfigDisabled ? 'disabled' : ''} />
         </label>
       ` : ''}
       ${customProvider ? `
         <label class="field compact ai-setting-field ai-setting-base-url">
           <span>Gateway URL</span>
-          <input id="aiBaseUrl-${escapeHtml(scope)}" data-ai-control="base-url" value="${escapeHtml(state.aiSettings.baseUrl)}" placeholder="${escapeHtml(providerPreset.baseUrl)}" ${state.busy ? 'disabled' : ''} />
+          <input id="aiBaseUrl-${escapeHtml(scope)}" data-ai-control="base-url" value="${escapeHtml(state.aiSettings.baseUrl)}" placeholder="${escapeHtml(providerPreset.baseUrl)}" ${routeConfigLockedTitle ? `title="${escapeHtml(routeConfigLockedTitle)}"` : ''} ${routeConfigDisabled ? 'disabled' : ''} />
         </label>
       ` : ''}
       ${!isRail && setupHelperMessages.length ? `
@@ -21395,7 +21420,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
       ${hideKeyEntry ? configuredKeyNote : `
         <label class="field compact ai-setting-field ai-setting-key">
           <span>${escapeHtml(keyLabel)}</span>
-          <input id="aiApiKey-${escapeHtml(scope)}" data-ai-control="api-key" type="password" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="${state.aiSettings.mode === 'bridge' ? 'Sent to local bridge memory' : (IS_TAURI_APP || IS_ANDROID_APP) ? 'Held until you disconnect or close the app' : 'Held for this tab'}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+          <input id="aiApiKey-${escapeHtml(scope)}" data-ai-control="api-key"${keyInputClass} type="${keyInputType}" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="${state.aiSettings.mode === 'bridge' ? 'Sent to local bridge memory' : (IS_TAURI_APP || IS_ANDROID_APP || state.iosNativeEnvironment.isIosNative) ? 'Stored after confirm or clear key' : 'Held for this tab'}" autocomplete="off"${keyInputAssistAttrs} ${state.busy ? 'disabled' : ''} />
         </label>
       `}
       <div class="ai-actions">
@@ -22124,14 +22149,7 @@ function canGenerateAiPlanFromSettings(): boolean {
     return Boolean(state.aiStatus?.available && !state.busy);
   }
   if (state.aiSettings.mode === 'device-agent') {
-    const status = state.deviceAgentStatus;
-    return Boolean(
-      deviceAgentModeVisible()
-        && status?.available
-        && status.configured
-        && status.state === 'running'
-        && !state.busy,
-    );
+    return Boolean(deviceAgentModeVisible() && deviceAgentStatusReadyForDrafts(state.deviceAgentStatus) && !state.busy);
   }
   if (hostedByokCloudSessionReason()) return false;
   return Boolean(state.aiSettings.apiKey.trim() && modelReady && aiProviderReadyForCurrentMode() && !state.busy);
@@ -22142,8 +22160,7 @@ function hasDetectedAgentReviewPath(): boolean {
     return Boolean(state.aiStatus?.available);
   }
   if (state.aiSettings.mode === 'device-agent') {
-    const status = state.deviceAgentStatus;
-    return Boolean(status?.available && status.configured);
+    return deviceAgentStatusReadyForDrafts(state.deviceAgentStatus);
   }
   if (state.aiSettings.mode === 'hosted' && hostedByokCloudSessionReason()) {
     return false;
@@ -22166,9 +22183,11 @@ function agentReviewUnavailableReason(record?: GeneratedPlanRecord): string {
       : 'No local bridge agent detected.';
   }
   if (state.aiSettings.mode === 'device-agent') {
-    return state.deviceAgentStatus?.configured
+    return deviceAgentStatusReadyForDrafts(state.deviceAgentStatus)
       ? 'Device Agent review is ready through the gated runtime.'
-      : 'No configured Device Agent runtime detected.';
+      : state.deviceAgentStatus?.configured
+        ? 'Device Agent runtime is configured but not ready for review.'
+        : 'No configured Device Agent runtime detected.';
   }
   if (state.aiSettings.mode === 'hosted' && hostedByokCloudSessionReason()) {
     return hostedByokCloudSessionReason();
@@ -22194,7 +22213,7 @@ function aiGenerateDisabledReason(): string {
     if (!deviceAgentModeVisible()) return 'Device Agent is not enabled for this build or wallet.';
     if (!status?.available) return 'Refresh Device Agent status before generating.';
     if (!status.configured) return 'Add a Device Agent key, then confirm planner.';
-    if (status.state !== 'running') return 'Start or confirm the Device Agent runtime before generating.';
+    if (!deviceAgentStatusReadyForDrafts(status)) return 'Start or confirm the Device Agent runtime before generating.';
     return 'Device Agent runtime is ready for drafts.';
   }
   if (state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai') {
@@ -22291,7 +22310,9 @@ function aiReadinessLabel(status: BridgeAiStatus | null): string {
     const status = state.deviceAgentStatus;
     if (!deviceAgentModeVisible()) return 'Device Agent gated off';
     if (status?.available && status.configured) {
-      return status.state === 'running' ? 'Device Agent running' : 'Device Agent configured';
+      if (status.state === 'running') return 'Device Agent running';
+      if (deviceAgentStatusReadyForDrafts(status)) return 'Device Agent ready';
+      return 'Device Agent configured';
     }
     return state.aiSettings.apiKey.trim() ? 'Device config ready' : 'Device key required';
   }
@@ -22401,6 +22422,11 @@ async function invokeDeviceAgentNative<R>(
   try {
     const requestOptions = options.signal ? { signal: options.signal } : {};
     const route = chooseDeviceAgentRequestRoute(currentDeviceAgentRuntimeSurface());
+    logDebug({
+      level: 'info',
+      source: 'device-agent',
+      message: `Device Agent ${options.action} start via ${route}.`,
+    });
     const { status, result } = route === 'android-native'
       ? await deviceAgentRequestOrThrow<R>(method, payload, requestOptions)
       : route === 'ios-native'
@@ -22409,6 +22435,11 @@ async function invokeDeviceAgentNative<R>(
         ? await invokeBrowserDeviceAgent<R>(method, payload as Record<string, unknown>, requestOptions)
         : await deviceAgentRequestOrThrow<R>(method, payload, requestOptions);
     state.deviceAgentStatus = parseDeviceAgentStatus(status);
+    logDebug({
+      level: 'info',
+      source: 'device-agent',
+      message: `Device Agent ${options.action} success via ${route}; state=${state.deviceAgentStatus.state}.`,
+    });
     if (result === undefined || result === null) {
       throw new Error(`Device Agent ${options.action} returned an empty payload.`);
     }
@@ -22417,6 +22448,12 @@ async function invokeDeviceAgentNative<R>(
     if (err instanceof DeviceAgentClientError && err.status) {
       state.deviceAgentStatus = parseDeviceAgentStatus(err.status);
     }
+    logDebug({
+      level: 'error',
+      source: 'device-agent',
+      code: err instanceof DeviceAgentClientError ? err.code : undefined,
+      message: `Device Agent ${options.action} failed: ${err instanceof Error ? err.message : String(err)}`,
+    });
     throw deviceAgentNativeError(options.action, err);
   }
 }
@@ -26943,6 +26980,13 @@ async function runFirstRunAction(action: FirstRunActionId): Promise<void> {
       state.aiSettingsPanelOpen = true;
       if (isMobileAppViewport()) {
         state.activeMobileRailSheet = 'ai-drafting';
+      }
+      if (state.aiSettings.mode === 'device-agent') {
+        state.deviceAgentStatusLoading = true;
+        void refreshDeviceAgentStatus(false).finally(() => {
+          state.deviceAgentStatusLoading = false;
+          render();
+        });
       }
       state.generatedPlanAuditId = '';
       state.error = '';
@@ -33940,9 +33984,12 @@ async function runConfirmAiPlanner(): Promise<void> {
         if (state.aiSettings.apiKey.trim() || !state.deviceAgentStatus?.configured) {
           await configureDeviceAgentRuntime();
         }
-        const status = await startDeviceAgentRuntime();
+        const route = chooseDeviceAgentRequestRoute(currentDeviceAgentRuntimeSurface());
+        const status = route === 'ios-native'
+          ? await refreshDeviceAgentStatus(true)
+          : await startDeviceAgentRuntime();
         saveDeviceAgentStatusCache(state.deviceAgentStatus);
-        if (!status.available || !status.configured) {
+        if (!status.available || !status.configured || !deviceAgentStatusReadyForDrafts(status)) {
           throw new Error(status.message || 'Device Agent runtime is not configured.');
         }
         state.aiDiagnostics = [
@@ -42675,6 +42722,7 @@ async function refreshDeviceAgentStatus(strict: boolean): Promise<DeviceAgentSta
   } catch (err) {
     const status = unavailableDeviceAgentStatus(err instanceof Error ? err.message : String(err));
     state.deviceAgentStatus = status;
+    clearDeviceAgentStatusCache();
     if (strict) {
       throw err;
     }
@@ -47570,7 +47618,7 @@ function recurringComposer(): string {
             <input type="checkbox" data-ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
             <span class="ask-agent-check" aria-hidden="true">${checkIcon()}</span>
             <span class="ask-agent-copy">
-              <strong>Ask agent before start</strong>
+              <strong>Ask Agent</strong>
               <em>Optional. Agent denial or missing information creates the repeat paused.</em>
             </span>
           </label>

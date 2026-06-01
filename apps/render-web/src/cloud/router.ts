@@ -225,6 +225,7 @@ const REGISTERED_API_ROUTES = [
   'GET /api/android-config',
   'GET /api/mobile-config',
   'POST /api/mobile-wallet-debug',
+  'POST /api/mobile-device-agent-debug',
   'POST /api/policy/enrich',
   'POST /api/ai/generate-plan',
   'POST /api/ai/review-plan',
@@ -1006,6 +1007,19 @@ async function routeApiRequest(
     writeJson(res, 200, { ok: true });
     console.log(
       `mobile_wallet_debug status=200 ms=${Date.now() - startedAt} ${Object.entries(payload)
+        .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+        .join(' ')}`,
+    );
+    return;
+  }
+
+  if (url.pathname.replace(/\/$/, '') === '/api/mobile-device-agent-debug') {
+    requireMethod(req, 'POST');
+    const startedAt = Date.now();
+    const payload = parseMobileDeviceAgentDebugPayload(await readJsonBody(req));
+    writeJson(res, 200, { ok: true });
+    console.log(
+      `mobile_device_agent_debug status=200 ms=${Date.now() - startedAt} ${Object.entries(payload)
         .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
         .join(' ')}`,
     );
@@ -3651,6 +3665,37 @@ function parseMobileWalletDebugPayload(body: unknown): Record<string, string> {
   return payload;
 }
 
+function parseMobileDeviceAgentDebugPayload(body: unknown): Record<string, string> {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new ApiError(400, 'Mobile Device Agent debug payload must be a JSON object.');
+  }
+  const raw = body as Record<string, unknown>;
+  const approxBytes = Buffer.byteLength(JSON.stringify(raw), 'utf8');
+  if (approxBytes > 4096) {
+    throw new ApiError(413, 'Mobile Device Agent debug payload is too large.');
+  }
+  const payload: Record<string, string> = {};
+  for (const key of MOBILE_DEVICE_AGENT_DEBUG_FIELDS) {
+    const value = raw[key];
+    if (value === undefined || value === null) continue;
+    if (!['string', 'number', 'boolean'].includes(typeof value)) {
+      throw new ApiError(400, `Mobile Device Agent debug field "${key}" must be scalar.`);
+    }
+    const normalized = String(value).replace(/\s+/g, ' ').trim();
+    if (normalized.length > 240) {
+      throw new ApiError(400, `Mobile Device Agent debug field "${key}" is too large.`);
+    }
+    payload[key] = redactDebugValue(key, normalized);
+  }
+  if (!payload.method) {
+    throw new ApiError(400, 'Mobile Device Agent debug payload is missing method.');
+  }
+  if (!payload.step) {
+    throw new ApiError(400, 'Mobile Device Agent debug payload is missing step.');
+  }
+  return payload;
+}
+
 const MOBILE_WALLET_DEBUG_FIELDS = [
   'wallet',
   'method',
@@ -3675,8 +3720,35 @@ const MOBILE_WALLET_DEBUG_FIELDS = [
 ] as const;
 const MOBILE_WALLET_DEBUG_WALLETS = new Set(['phantom', 'solflare', 'backpack', 'jupiter']);
 
+const MOBILE_DEVICE_AGENT_DEBUG_FIELDS = [
+  'method',
+  'step',
+  'phase',
+  'requestId',
+  'runtime',
+  'provider',
+  'model',
+  'source',
+  'appBuild',
+  'eventIndex',
+  'statusState',
+  'configured',
+  'payloadChars',
+  'payloadBytes',
+  'durationMs',
+  'statusCode',
+  'httpHost',
+  'responseBytes',
+  'code',
+  'subcode',
+  'errorDomain',
+  'errorCode',
+  'message',
+] as const;
+
 function redactDebugValue(key: string, value: string): string {
   const lower = key.toLowerCase();
+  if (lower === 'payloadchars' || lower === 'payloadbytes') return value;
   if (
     lower.includes('token') ||
     lower.includes('secret') ||
@@ -3687,7 +3759,13 @@ function redactDebugValue(key: string, value: string): string {
   ) {
     return '[redacted]';
   }
-  return value.replace(/([?&][^=&]*(?:token|secret|session|payload|signature|transaction)[^=&]*=)[^&\s]+/gi, '$1[redacted]');
+  return value
+    .replace(/([?&][^=&]*(?:token|secret|session|payload|signature|transaction)[^=&]*=)[^&\s]+/gi, '$1[redacted]')
+    .replace(/\b((?:api[_-]?key|token|secret|session|payload|signature|transaction)=)[^&\s]+/gi, '$1[redacted]')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{8,}\b/gi, 'Bearer [redacted]')
+    .replace(/\bsk-proj-[A-Za-z0-9_-]{8,}\b/g, 'sk-proj-[redacted]')
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, 'sk-[redacted]')
+    .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g, '[redacted-jwt]');
 }
 
 function requireMethod(req: IncomingMessage, method: string): void {

@@ -1,5 +1,8 @@
 import type { AiSettings, BridgeAiStatus } from './planner.js';
-import type { DeviceAgentStatus } from './deviceAgentClient.js';
+import {
+  deviceAgentStatusReadyForDrafts,
+  type DeviceAgentStatus,
+} from './deviceAgentClient.js';
 
 export type AiPathMode = AiSettings['mode'];
 
@@ -77,7 +80,7 @@ export function deviceAgentSetupSnapshot(input: {
   const configured = Boolean(input.visible && input.status?.available && input.status.configured);
   return {
     configured,
-    runnable: Boolean(configured && input.status?.state === 'running'),
+    runnable: configured && deviceAgentStatusReadyForDrafts(input.status),
     provider: input.status?.provider ?? input.status?.apiFormat,
     apiFormat: input.status?.apiFormat,
     baseUrl: input.status?.baseUrl,

@@ -13939,7 +13939,7 @@ function agentPlannerWorkbench(): string {
                   <input type="checkbox" data-ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
                   <span class="ask-agent-check" aria-hidden="true">${checkIcon()}</span>
                   <span class="ask-agent-copy">
-                    <strong>Ask agent after draft</strong>
+                    <strong>Ask Agent</strong>
                     <em>${escapeHtml(askAgentDetail)}</em>
                   </span>
                 </label>
@@ -40192,7 +40192,7 @@ function recurringComposer(): string {
             <input type="checkbox" data-ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
             <span class="ask-agent-check" aria-hidden="true">${checkIcon()}</span>
             <span class="ask-agent-copy">
-              <strong>Ask agent before start</strong>
+              <strong>Ask Agent</strong>
               <em>Optional. Agent denial or missing information creates the repeat paused.</em>
             </span>
           </label>

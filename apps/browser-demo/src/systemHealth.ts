@@ -10,6 +10,7 @@ import type {
   DeviceAgentRuntimeKind,
   DeviceAgentRuntimeState,
 } from './deviceAgentClient.js';
+import { deviceAgentStatusReadyForDrafts } from './deviceAgentClient.js';
 
 export type HealthStatus = 'ok' | 'warn' | 'fail' | 'unknown';
 export type HealthCheckId = 'rpc' | 'jupiter' | 'wallet' | 'cluster' | 'ai';
@@ -410,13 +411,15 @@ function checkDeviceAgentAi(
       remediation: { label: 'Open settings', intent: 'open-settings' },
     };
   }
-  if (hint.state === 'running') {
+  if (deviceAgentStatusReadyForDrafts(hint)) {
     return {
       id: 'ai',
       label: 'AI',
       status: 'ok',
       message: 'Device Agent ready',
-      detail: hint.message ?? 'Drafting runs natively on the Android runtime.',
+      detail: hint.message ?? (hint.runtime === 'ios-native'
+        ? 'Drafting runs through the iOS native Device Agent runtime.'
+        : 'Drafting runs natively on the Android runtime.'),
       checkedAt,
     };
   }

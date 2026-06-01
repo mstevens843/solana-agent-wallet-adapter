@@ -43,6 +43,14 @@ export interface DeviceAgentStatus {
   lastError?: DeviceAgentError | null;
 }
 
+export function deviceAgentStatusReadyForDrafts(
+  status: Pick<DeviceAgentStatus, 'available' | 'configured' | 'state' | 'runtime'> | null | undefined,
+): boolean {
+  if (!status?.available || !status.configured) return false;
+  if (status.state === 'running') return true;
+  return status.runtime === 'ios-native' && status.state === 'stopped';
+}
+
 export interface DeviceAgentError {
   code: string;
   message: string;
@@ -380,34 +388,109 @@ export async function iosDeviceAgentRequestOrThrow<R = unknown>(
       effectivePayload = spliceBundle(effectivePayload, appliedBundle);
     }
   }
+  const requestId = generateRequestId();
+  const debugBaseUrl = mobileDeviceAgentDebugBaseUrl();
+  const payloadRecord: Record<string, unknown> = {
+    ...(isRecord(effectivePayload) ? effectivePayload : {}),
+    __agenticRequestId: requestId,
+    ...(debugBaseUrl ? { __agenticDebugBaseUrl: debugBaseUrl } : {}),
+  };
   let payloadJson: string;
   try {
-    payloadJson = JSON.stringify(effectivePayload ?? {});
+    payloadJson = JSON.stringify(payloadRecord);
   } catch (err) {
     throw new DeviceAgentClientError(
       'invalid_payload',
       err instanceof Error ? err.message : String(err),
     );
   }
+  payloadRecord.__agenticPayloadChars = payloadJson.length;
+  payloadJson = JSON.stringify(payloadRecord);
   const limit = payloadCharLimit(method);
   if (payloadJson.length > limit) {
+    logDeviceAgent(
+      'ios-request',
+      'FAIL',
+      {
+        method,
+        code: 'payload_too_large',
+        payloadChars: payloadJson.length,
+        limit,
+      },
+      'warn',
+    );
+    void emitMobileDeviceAgentDebug({
+      method,
+      step: 'payload_too_large',
+      code: 'payload_too_large',
+      payloadChars: payloadJson.length,
+    });
     throw new DeviceAgentClientError(
       'payload_too_large',
       `Device Agent ${method} payload exceeds ${limit} characters (${payloadJson.length}).`,
     );
   }
-  const payloadRecord = isRecord(effectivePayload) ? effectivePayload : {};
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   let nativeResult: unknown;
   try {
-    nativeResult = await invokeIosDeviceAgentBridge(bridge, method, payloadRecord);
+    logDeviceAgent('ios-request', 'START', {
+      method,
+      requestId,
+      payloadChars: payloadJson.length,
+      payload: payloadPreview(method, payloadRecord),
+    });
+    void emitMobileDeviceAgentDebug({
+      method,
+      requestId,
+      step: 'start',
+      payloadChars: payloadJson.length,
+    });
+    nativeResult = await invokeIosDeviceAgentBridgeWithTimeout(
+      bridge,
+      method,
+      payloadRecord,
+      timeoutMs,
+      options.signal,
+      requestId,
+    );
   } catch (err) {
-    throw iosDeviceAgentErrorFromUnknown(err);
+    const wrapped = iosDeviceAgentErrorFromUnknown(err);
+    logDeviceAgent('ios-request', 'FAIL', {
+      method,
+      requestId,
+      code: wrapped.code,
+      subcode: wrapped.subcode,
+      message: wrapped.message,
+    }, 'warn');
+    void emitMobileDeviceAgentDebug({
+      method,
+      requestId,
+      step: 'fail',
+      code: wrapped.code,
+      subcode: wrapped.subcode,
+      message: wrapped.message,
+    });
+    throw wrapped;
   }
   if (options.signal?.aborted) {
     throw new DeviceAgentClientError('aborted', 'Device Agent request was aborted.');
   }
   if (method === 'status' || method === 'configure' || method === 'start' || method === 'stop') {
-    return { status: parseDeviceAgentStatus(nativeResult, 'ios-native') };
+    const status = parseDeviceAgentStatus(nativeResult, 'ios-native');
+    logDeviceAgent('ios-request', 'SUCCESS', {
+      method,
+      requestId,
+      statusState: status.state,
+      configured: status.configured,
+    });
+    void emitMobileDeviceAgentDebug({
+      method,
+      requestId,
+      step: 'success',
+      statusState: status.state,
+      configured: status.configured,
+    });
+    return { status };
   }
   let result = normalizeIosDeviceAgentResult(nativeResult);
   if (
@@ -420,8 +503,23 @@ export async function iosDeviceAgentRequestOrThrow<R = unknown>(
     result = enforceBlockingFailure(result as Record<string, unknown>, appliedBundle);
   }
   const statusPayload = await bridge.status?.().catch(() => undefined);
+  const status = parseDeviceAgentStatus(statusPayload, 'ios-native');
+  logDeviceAgent('ios-request', 'SUCCESS', {
+    method,
+    requestId,
+    statusState: status.state,
+    configured: status.configured,
+    hasResult: result !== undefined,
+  });
+  void emitMobileDeviceAgentDebug({
+    method,
+    requestId,
+    step: 'success',
+    statusState: status.state,
+    configured: status.configured,
+  });
   return {
-    status: parseDeviceAgentStatus(statusPayload, 'ios-native'),
+    status,
     result: result as R,
   };
 }
@@ -620,6 +718,7 @@ type LogLevel = 'info' | 'warn';
  */
 export function deviceAgentDebugEnabled(): boolean {
   try {
+    if (getIosBridge()) return true;
     return getBridge()?.isDebugBuild?.() === true;
   } catch {
     return false;
@@ -793,6 +892,55 @@ async function invokeIosDeviceAgentBridge(
   );
 }
 
+function invokeIosDeviceAgentBridgeWithTimeout(
+  bridge: IosDeviceAgentPlugin,
+  method: DeviceAgentMethod,
+  payload: Record<string, unknown>,
+  timeoutMs: number,
+  signal: AbortSignal | undefined,
+  requestId: string,
+): Promise<unknown> {
+  if (signal?.aborted) {
+    return Promise.reject(new DeviceAgentClientError('aborted', 'Device Agent request was aborted.'));
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let abortHandler: (() => void) | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (signal && abortHandler) signal.removeEventListener('abort', abortHandler);
+      fn();
+    };
+    timer = setTimeout(() => {
+      finish(() => reject(new DeviceAgentClientError(
+        'request_timeout',
+        `iOS Device Agent ${method} request timed out.`,
+      )));
+    }, timeoutMs);
+    if (signal) {
+      abortHandler = () => {
+        finish(() => reject(new DeviceAgentClientError('aborted', 'Device Agent request was aborted.')));
+      };
+      signal.addEventListener('abort', abortHandler, { once: true });
+    }
+    invokeIosDeviceAgentBridge(bridge, method, payload).then(
+      (value) => finish(() => resolve(value)),
+      (err) => finish(() => reject(err)),
+    ).catch((err) => {
+      finish(() => reject(err));
+    });
+    if (!DEVICE_AGENT_REQUEST_ID_PATTERN.test(requestId)) {
+      finish(() => reject(new DeviceAgentClientError(
+        'invalid_request_id',
+        `Generated Device Agent request id "${requestId}" does not match the contract pattern.`,
+      )));
+    }
+  });
+}
+
 function normalizeIosDeviceAgentResult(payload: unknown): unknown {
   if (!isRecord(payload)) return payload;
   if (payload.output_text !== undefined || payload.choices !== undefined || payload.content !== undefined) return payload;
@@ -901,17 +1049,94 @@ function payloadPreview(method: DeviceAgentMethod, payload: unknown): string | u
   } catch {
     return '[unserializable]';
   }
-  return serialized.length > 200 ? `${serialized.slice(0, 200)}…` : serialized;
+  return serialized.length > 500 ? `${serialized.slice(0, 500)}…` : serialized;
 }
 
 function redactSensitivePayload(method: DeviceAgentMethod, payload: unknown): unknown {
-  if (method !== 'configure' && method !== 'start') return payload;
   if (!isRecord(payload)) return payload;
-  const copy: Record<string, unknown> = { ...payload };
-  if ('apiKey' in copy) {
-    copy.apiKey = '[redacted]';
+  const keys = Object.keys(payload).sort();
+  const copy: Record<string, unknown> = { method };
+  if (typeof payload.__agenticRequestId === 'string') copy.__agenticRequestId = payload.__agenticRequestId;
+  if (typeof payload.__agenticPayloadChars === 'number') copy.__agenticPayloadChars = payload.__agenticPayloadChars;
+
+  if (method === 'configure' || method === 'start') {
+    for (const key of ['provider', 'apiFormat', 'model', 'baseUrl', 'walletAddress'] as const) {
+      if (typeof payload[key] === 'string') copy[key] = payload[key];
+    }
+    if (typeof payload.clear === 'boolean') copy.clear = payload.clear;
+    if ('apiKey' in payload) copy.apiKey = '[redacted]';
+    copy.keys = keys;
+    return copy;
   }
+
+  copy.hasInstruction = typeof payload.instruction === 'string' && payload.instruction.length > 0;
+  copy.hasQuestion = typeof payload.question === 'string' && payload.question.length > 0;
+  copy.hasPrompt = (typeof payload.prompt === 'string' && payload.prompt.length > 0)
+    || (typeof payload.userPrompt === 'string' && payload.userPrompt.length > 0);
+  copy.hasPlan = isRecord(payload.plan);
+  copy.hasContext = isRecord(payload.context);
+  copy.hasResearch = isRecord(payload.research);
+  if (typeof payload.walletAddress === 'string') copy.hasWalletAddress = payload.walletAddress.length > 0;
+  if (isRecord(payload.plan) && typeof payload.plan.actionType === 'string') copy.actionType = payload.plan.actionType;
+  if (isRecord(payload.context)) {
+    copy.hasTransactionBase64 = typeof payload.context.transactionBase64 === 'string' && payload.context.transactionBase64.length > 0;
+    copy.hasPolicyBundle = isRecord(payload.context.policyBundle);
+    copy.hasResearchEvidence = isRecord(payload.context.researchEvidence);
+  }
+  if ('apiKey' in payload) copy.apiKey = '[redacted]';
+  copy.keys = keys;
   return copy;
+}
+
+interface MobileDeviceAgentDebugEvent {
+  method: DeviceAgentMethod;
+  requestId?: string;
+  step: string;
+  code?: string;
+  subcode?: string;
+  message?: string;
+  payloadChars?: number;
+  statusState?: DeviceAgentRuntimeState;
+  configured?: boolean;
+}
+
+async function emitMobileDeviceAgentDebug(event: MobileDeviceAgentDebugEvent): Promise<void> {
+  if (!getIosBridge()) return;
+  const baseUrl = mobileDeviceAgentDebugBaseUrl();
+  if (!baseUrl) return;
+  try {
+    const endpoint = new URL('/api/mobile-device-agent-debug', baseUrl).toString();
+    const payload: Record<string, string | number | boolean> = {
+      method: event.method,
+      step: event.step,
+      ...(event.requestId ? { requestId: event.requestId } : {}),
+      ...(event.code ? { code: event.code } : {}),
+      ...(event.subcode ? { subcode: event.subcode } : {}),
+      ...(event.message ? { message: event.message.slice(0, 240) } : {}),
+      ...(typeof event.payloadChars === 'number' ? { payloadChars: event.payloadChars } : {}),
+      ...(event.statusState ? { statusState: event.statusState } : {}),
+      ...(typeof event.configured === 'boolean' ? { configured: event.configured } : {}),
+    };
+    await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-agentic-client': 'ios-bundled',
+      },
+      body: JSON.stringify(payload),
+      keepalive: true,
+    });
+  } catch {
+    // Debug telemetry must never affect the Device Agent request path.
+  }
+}
+
+function mobileDeviceAgentDebugBaseUrl(): string | undefined {
+  const locationLike = (globalThis as typeof globalThis & { location?: Location }).location;
+  if (!locationLike && typeof window === 'undefined') return undefined;
+  return locationLike?.origin?.startsWith('http')
+    ? locationLike.origin
+    : 'https://agentic-signer.com';
 }
 
 function safeJsonParse(value: string): unknown {

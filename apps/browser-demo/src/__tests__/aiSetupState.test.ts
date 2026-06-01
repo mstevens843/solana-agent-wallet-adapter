@@ -110,4 +110,35 @@ describe('AI setup state helpers', () => {
       model: 'gpt-5',
     });
   });
+
+  it('treats iOS configured/stopped Device Agent as runnable from Keychain', () => {
+    expect(deviceAgentSetupSnapshot({
+      visible: true,
+      status: {
+        available: true,
+        enabled: true,
+        configured: true,
+        state: 'stopped',
+        runtime: 'ios-native',
+        provider: 'anthropic',
+        model: 'claude-opus-4-1',
+      },
+    })).toMatchObject({
+      configured: true,
+      runnable: true,
+      provider: 'anthropic',
+      model: 'claude-opus-4-1',
+    });
+
+    expect(deviceAgentSetupSnapshot({
+      visible: true,
+      status: {
+        available: true,
+        enabled: true,
+        configured: true,
+        state: 'stopped',
+        runtime: 'android-native',
+      },
+    }).runnable).toBe(false);
+  });
 });
