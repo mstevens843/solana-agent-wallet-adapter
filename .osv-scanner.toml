@@ -9,7 +9,3 @@ reason = "bigint-buffer <=1.1.5 toBigIntLE() buffer overflow. Reaches the tree v
 [[IgnoredVulns]]
 id = "CVE-2025-14505"
 reason = "elliptic <=6.6.1 ECDSA nonce handling issue. Reaches the tree through optional cross-chain and legacy EVM SDK dependencies; agent code does not hold user private keys or route user signing through elliptic. No upstream patch published. Tracked in docs/SECURITY.md under 'Known unpatched advisories'."
-
-[[IgnoredVulns]]
-id = "GHSA-848j-6mx2-7j84"
-reason = "Alias for CVE-2025-14505 in elliptic. Same reachability analysis as the CVE entry above; tracked in docs/SECURITY.md under 'Known unpatched advisories'."
