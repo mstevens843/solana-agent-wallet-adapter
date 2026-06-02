@@ -9,4 +9,5 @@ packages:
 # Emergency override for a real security patch: pass --config.minimumReleaseAge=0 to
 # the specific install, or add the package to minimumReleaseAgeExclude below.
 minimumReleaseAge: 10080
-minimumReleaseAgeExclude: []
+minimumReleaseAgeExclude:
+  - tmp

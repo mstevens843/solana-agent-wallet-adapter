@@ -10,12 +10,28 @@ import {
   parseFearGreedResponse,
   resetAlternativeMeClient,
 } from '../index.js';
+import type { KvCache } from '../index.js';
 
 function jsonResponse(body: unknown, init: ResponseInit = { status: 200 }): Response {
   return new Response(JSON.stringify(body), {
     ...init,
     headers: { 'content-type': 'application/json', ...(init.headers ?? {}) },
   });
+}
+
+function kvCacheMock(value?: unknown, getError?: Error) {
+  const get = vi.fn(async (_key: string): Promise<unknown> => {
+    if (getError) throw getError;
+    return value;
+  });
+  const set = vi.fn(async (_key: string, _nextValue: unknown, _ttlMs: number) => undefined);
+  const kv: KvCache = {
+    get: async <T>(key: string) => get(key) as Promise<T | undefined>,
+    set: async <T>(key: string, nextValue: T, ttlMs: number) => {
+      await set(key, nextValue, ttlMs);
+    },
+  };
+  return { kv, get, set };
 }
 
 describe('parseFearGreedResponse', () => {
@@ -100,10 +116,7 @@ describe('AlternativeMeClient', () => {
 
   it('uses the injected KvCache before going to the network', async () => {
     const cachedEntry = { entry: { value: 77, classification: 'Greed', updatedAt: '2025-01-01T00:00:00Z' }, fetchedAtMs: 1_000_000 };
-    const kv: { get: ReturnType<typeof vi.fn>; set: ReturnType<typeof vi.fn> } = {
-      get: vi.fn(async () => cachedEntry),
-      set: vi.fn(async () => undefined),
-    };
+    const { kv, get } = kvCacheMock(cachedEntry);
     const fetchImpl = vi.fn(async () => new Response('{}', { status: 200 }));
     const client = new AlternativeMeClient({
       fetchImpl: fetchImpl as unknown as typeof fetch,
@@ -113,15 +126,12 @@ describe('AlternativeMeClient', () => {
     });
     const entry = await client.getFearGreedIndex();
     expect(entry?.value).toBe(77);
-    expect(kv.get).toHaveBeenCalledWith('alternative_me:fng:limit-1');
+    expect(get).toHaveBeenCalledWith('alternative_me:fng:limit-1');
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('writes to KvCache after a fresh network fetch', async () => {
-    const kv: { get: ReturnType<typeof vi.fn>; set: ReturnType<typeof vi.fn> } = {
-      get: vi.fn(async () => undefined),
-      set: vi.fn(async () => undefined),
-    };
+    const { kv, set } = kvCacheMock();
     const fetchImpl = vi.fn(async () => jsonResponse({ data: [{ value: '15', value_classification: 'Extreme Fear', timestamp: '1700000000' }] }));
     const client = new AlternativeMeClient({
       fetchImpl: fetchImpl as unknown as typeof fetch,
@@ -131,14 +141,11 @@ describe('AlternativeMeClient', () => {
     await client.getFearGreedIndex();
     // KV set is fire-and-forget; await a microtask for the .catch chain to schedule.
     await new Promise((resolve) => setImmediate(resolve));
-    expect(kv.set).toHaveBeenCalledWith('alternative_me:fng:limit-1', expect.objectContaining({ entry: expect.objectContaining({ value: 15 }) }), 60_000);
+    expect(set).toHaveBeenCalledWith('alternative_me:fng:limit-1', expect.objectContaining({ entry: expect.objectContaining({ value: 15 }) }), 60_000);
   });
 
   it('falls back to network when KvCache read throws', async () => {
-    const kv: { get: ReturnType<typeof vi.fn>; set: ReturnType<typeof vi.fn> } = {
-      get: vi.fn(async () => { throw new Error('redis down'); }),
-      set: vi.fn(async () => undefined),
-    };
+    const { kv } = kvCacheMock(undefined, new Error('redis down'));
     const fetchImpl = vi.fn(async () => jsonResponse({ data: [{ value: '30', value_classification: 'Fear', timestamp: '1700000000' }] }));
     const client = new AlternativeMeClient({
       fetchImpl: fetchImpl as unknown as typeof fetch,

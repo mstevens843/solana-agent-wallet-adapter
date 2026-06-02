@@ -147,10 +147,10 @@ describe('pure helpers', () => {
     expect(formatMonetization(undefined)).toBe('');
     expect(
       formatMonetization({ kind: 'one-time', amount: '5', payoutWallet: 'X' }),
-    ).toBe('$5 once · paid to author');
+    ).toBe('$5 USDC once · paid to author');
     expect(
       formatMonetization({ kind: 'monthly', amount: '2', payoutWallet: 'X' }),
-    ).toBe('$2/mo · paid to author');
+    ).toBe('$2 USDC/mo · paid to author');
     expect(
       formatMonetization({ kind: 'performance-fee', feePercent: 10, payoutWallet: 'X' }),
     ).toBe('10% of profit · paid to author');
@@ -361,7 +361,7 @@ describe('renderCard', () => {
       installStatus: 'none',
     };
     const html = renderCard(row, null);
-    expect(html).toContain('$2/mo');
+    expect(html).toContain('$2 USDC/mo');
   });
 
   it('renders install-time inputs for manifests with install placeholders', () => {

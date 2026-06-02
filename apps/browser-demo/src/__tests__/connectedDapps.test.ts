@@ -68,6 +68,7 @@ describe('KNOWN_CONNECTED_DAPPS', () => {
       'marginfi',
       'project0',
       'drift',
+      'phoenix',
       'squads',
       'realms',
       'lulo',

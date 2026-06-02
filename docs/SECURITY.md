@@ -82,9 +82,10 @@ These are enforced in code; they protect users even if a contributor's machine i
 
 ## Known unpatched advisories
 
-`pnpm security:audit` may surface the following pre-existing transitive issue. It is tracked here so audit failures are not silently ignored.
+`pnpm security:audit` may surface the following pre-existing transitive issues. They are tracked here so audit failures are not silently ignored.
 
-- **GHSA-3gc7-fjrx-p6mg** — `bigint-buffer <=1.1.5`: buffer overflow in `toBigIntLE()`. Reaches the tree via `@kamino-finance/klend-sdk → @kamino-finance/kliquidity-sdk → @orca-so/common-sdk → @solana/spl-token → @solana/buffer-layout-utils → bigint-buffer`. No upstream patch is published. `@kamino-finance/klend-sdk` is an optional dependency of `packages/mcp-server` (only used for the Kamino adapter); the vulnerable code path is inside binary-layout decoding and is not reachable on data we do not deserialize ourselves. Status: tracked, audit runs non-blocking in CI until upstream ships a fix.
+- **CVE-2025-3194 / GHSA-3gc7-fjrx-p6mg** — `bigint-buffer <=1.1.5`: buffer overflow in `toBigIntLE()`. Reaches the tree via `@kamino-finance/klend-sdk → @kamino-finance/kliquidity-sdk → @orca-so/common-sdk → @solana/spl-token → @solana/buffer-layout-utils → bigint-buffer`. No upstream patch is published. `@kamino-finance/klend-sdk` is an optional dependency of `packages/mcp-server` (only used for the Kamino adapter); the vulnerable code path is inside binary-layout decoding and is not reachable on data we do not deserialize ourselves. Status: tracked, audit runs non-blocking in CI until upstream ships a fix.
+- **CVE-2025-14505 / GHSA-848j-6mx2-7j84** — `elliptic <=6.6.1`: ECDSA nonce handling issue that can expose a private key if the process signs ECDSA messages with vulnerable code. Reaches the tree through optional cross-chain SDKs (`@wormhole-foundation/sdk` / CosmJS) and legacy EVM stack dependencies (`ethers` / Metaplex / Irys). No upstream patch is published for `elliptic`. This repository does not hold user private keys or route user wallet signing through `elliptic`; signing is delegated to installed wallets through explicit approval. Status: tracked, audit runs non-blocking in CI until upstream ships a fix or the upstream SDKs replace `elliptic`.
 
 ## What to do if you suspect compromise
 
