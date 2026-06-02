@@ -385,16 +385,16 @@ const AUDIT_KEYS = new Set([
 ]);
 
 // Short audit string used in the prepared-action note field, e.g.:
-//   "Agent approved: Helium plan $15/mo ≤ $20"
-//   "Agent denied: SOL ($85) < $1,000,000 threshold"
+//   "Review passed: Helium plan $15/mo <= $20"
+//   "Review denied: SOL ($85) < $1,000,000 threshold"
 // The web app's review never lands in the note (it persists in the plan
 // record). For the CLI v1 we surface it in `note` so /inbox still shows the
 // audit trail when the user views the action later.
 export function reviewSummaryLine(response: AgentReviewResponse): string {
   const decision = (response.decision ?? 'unknown').toLowerCase();
-  const verb = decision === 'approve' ? 'Agent approved'
-    : decision === 'deny' ? 'Agent denied'
-    : decision === 'needs_input' ? 'Agent needs input'
+  const verb = decision === 'approve' ? 'Review passed'
+    : decision === 'deny' ? 'Review denied'
+    : decision === 'needs_input' ? 'Review needs input'
     : 'Agent review';
   const detail = (response.summary || response.reason || '').replace(/\s+/g, ' ').trim();
   if (!detail) return verb;

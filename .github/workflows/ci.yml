@@ -41,8 +41,10 @@ jobs:
         run: pnpm dedupe --check --config.minimumReleaseAge=0
 
       - name: Audit
+        # Blocking: a new advisory fails CI. Pre-existing, triaged advisories are
+        # suppressed via pnpm.auditConfig.ignoreCves in package.json (see docs/SECURITY.md
+        # "Known unpatched advisories"), so this only trips on something new.
         run: pnpm security:audit
-        continue-on-error: true
 
       - name: Build
         run: pnpm build

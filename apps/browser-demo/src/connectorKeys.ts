@@ -274,7 +274,13 @@ function onDocumentSubmit(event: Event): void {
     renderAll();
     return;
   }
-  void runSave(connectorAttr, { apiKey, baseUrl: baseUrlRaw || undefined });
+  const normalizedBaseUrl = normalizeConnectorBaseUrlInput(baseUrlRaw);
+  if (normalizedBaseUrl.error) {
+    panelState.error = normalizedBaseUrl.error;
+    renderAll();
+    return;
+  }
+  void runSave(connectorAttr, { apiKey, baseUrl: normalizedBaseUrl.value });
 }
 
 function isInsideMountedPanel(element: HTMLElement): boolean {
@@ -446,6 +452,28 @@ function renderForm(id: ByoKeyConnectorId, summary: ConnectorSecretSummary): str
 
 function isByoKeyConnectorId(value: string): value is ByoKeyConnectorId {
   return (BYO_KEY_CONNECTOR_IDS as readonly string[]).includes(value);
+}
+
+function normalizeConnectorBaseUrlInput(value: string): { value?: string; error?: string } {
+  const trimmed = value.trim().replace(/\/+$/, '');
+  if (!trimmed) return {};
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return { error: 'Base URL must be a valid URL.' };
+  }
+  if (parsed.protocol === 'https:') return { value: trimmed };
+  if (parsed.protocol === 'http:' && isLocalHttpHost(parsed.hostname)) return { value: trimmed };
+  return { error: 'Base URL must use HTTPS, except localhost HTTP for a local connector.' };
+}
+
+function isLocalHttpHost(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase();
+  return normalized === 'localhost' ||
+    normalized === '127.0.0.1' ||
+    normalized === '::1' ||
+    normalized === '[::1]';
 }
 
 function formatDate(iso: string): string {

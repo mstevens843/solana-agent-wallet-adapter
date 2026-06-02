@@ -700,10 +700,9 @@ describe('Pyth connectorReadFacts (end-to-end)', () => {
   it('routes capability=undefined with priceFeedId to oracle evidence', async () => {
     const { AgentWalletActionService } = await import('../../actionService.js');
     const { createMockBackend } = await import('../../mockBackend.js');
-    const { DEFAULT_CONFIG } = await import('../../config.js');
     const service = new AgentWalletActionService({
       backend: createMockBackend(),
-      config: DEFAULT_CONFIG,
+      config: fakeConfig(),
       preparedActions: inMemoryStore(),
     });
     const result = (await service.connectorReadFacts({ connectorId: 'pyth', priceFeedId: SOL_FEED })) as Record<string, unknown>;
@@ -717,10 +716,9 @@ describe('Pyth connectorReadFacts (end-to-end)', () => {
   it('routes capability=markets with query to feed search', async () => {
     const { AgentWalletActionService } = await import('../../actionService.js');
     const { createMockBackend } = await import('../../mockBackend.js');
-    const { DEFAULT_CONFIG } = await import('../../config.js');
     const service = new AgentWalletActionService({
       backend: createMockBackend(),
-      config: DEFAULT_CONFIG,
+      config: fakeConfig(),
       preparedActions: inMemoryStore(),
     });
     const result = (await service.connectorReadFacts({
@@ -735,10 +733,9 @@ describe('Pyth connectorReadFacts (end-to-end)', () => {
   it('routes capability=markets with priceFeedIds to batch read', async () => {
     const { AgentWalletActionService } = await import('../../actionService.js');
     const { createMockBackend } = await import('../../mockBackend.js');
-    const { DEFAULT_CONFIG } = await import('../../config.js');
     const service = new AgentWalletActionService({
       backend: createMockBackend(),
-      config: DEFAULT_CONFIG,
+      config: fakeConfig(),
       preparedActions: inMemoryStore(),
     });
     const result = (await service.connectorReadFacts({
@@ -753,10 +750,9 @@ describe('Pyth connectorReadFacts (end-to-end)', () => {
   it('rejects markets capability without inputs as invalid_request', async () => {
     const { AgentWalletActionService } = await import('../../actionService.js');
     const { createMockBackend } = await import('../../mockBackend.js');
-    const { DEFAULT_CONFIG } = await import('../../config.js');
     const service = new AgentWalletActionService({
       backend: createMockBackend(),
-      config: DEFAULT_CONFIG,
+      config: fakeConfig(),
       preparedActions: inMemoryStore(),
     });
     await expect(

@@ -54,6 +54,9 @@ import {
   type TxGateContext,
 } from '@solana-agent-wallet-adapter/mcp-server';
 
+/** A real Solana tx is <=1232 bytes (~1644 base64 chars); 4 KB is a generous ceiling. */
+const MAX_POLICY_ENRICH_TX_B64_CHARS = 4096;
+
 const JUPITER_AGGREGATOR_PROGRAM_IDS: ReadonlySet<string> = new Set([
   'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4',
   'JUP4Fb2cqiRUcaTHdrPC8h2gNsA2ETXiPDD33WcGuJB',
@@ -110,14 +113,22 @@ export async function handlePolicyEnrich(
       ? body.knownTokenSymbols.filter((s): s is string => typeof s === 'string' && s.length > 0)
       : [];
 
+    // Cap the transaction payload before any RPC simulation. A real Solana tx is
+    // <=1232 bytes (~1644 base64 chars); anything larger is rejected as input so an
+    // anonymous caller cannot push oversized blobs into the operator's RPC node.
+    const transactionBase64 = typeof body.transactionBase64 === 'string' &&
+      body.transactionBase64.length <= MAX_POLICY_ENRICH_TX_B64_CHARS
+      ? body.transactionBase64
+      : undefined;
+
     let simulation = body.simulationDigest;
-    if (!simulation && body.transactionBase64) {
-      simulation = await simulateTransactionBase64(body.transactionBase64).catch(() => undefined);
+    if (!simulation && transactionBase64) {
+      simulation = await simulateTransactionBase64(transactionBase64).catch(() => undefined);
     }
 
     // Tx gate context: prefer caller-supplied; otherwise build from actionType.
     const txGateContext = body.txGateContext
-      ?? (simulation || body.transactionBase64 ? defaultTxGateContext(body.actionType) : undefined);
+      ?? (simulation || transactionBase64 ? defaultTxGateContext(body.actionType) : undefined);
 
     // Resolver: wire the same read-only RPC connection used for transaction
     // simulation so wallet/network/fee atoms match hosted AI review behavior.
@@ -128,7 +139,7 @@ export async function handlePolicyEnrich(
         ...(body.walletAddress ? { walletAddress: body.walletAddress } : {}),
         ...(body.draftParameters ? { draftParameters: body.draftParameters } : {}),
         ...(simulation ? { simulationDigest: simulation } : {}),
-        ...(body.transactionBase64 ? { transactionBase64: body.transactionBase64 } : {}),
+        ...(transactionBase64 ? { transactionBase64 } : {}),
       },
     });
 

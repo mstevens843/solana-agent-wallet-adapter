@@ -2,6 +2,9 @@ import { ProtocolError } from '@solana-agent-wallet-adapter/core';
 
 export const DEFAULT_BIRDEYE_REST_BASE = 'https://public-api.birdeye.so';
 
+/** Hard ceiling on a single BirdEye REST call so a hung upstream cannot pin a request socket. */
+const BIRDEYE_REQUEST_TIMEOUT_MS = 15_000;
+
 export interface BirdeyeConfig {
   apiKey?: string;
   restBase: string;
@@ -60,6 +63,9 @@ export async function requestBirdeye(
   const response = await requester(url, {
     method: init.method ?? (init.body ? 'POST' : 'GET'),
     headers,
+    // Bound the public-relay call so a slow/hung upstream cannot pin a server
+    // request socket open indefinitely (this path serves real client traffic).
+    signal: AbortSignal.timeout(BIRDEYE_REQUEST_TIMEOUT_MS),
     ...(init.body ? { body: JSON.stringify(init.body) } : {}),
   });
   const payload = await response.json().catch(() => ({})) as unknown;

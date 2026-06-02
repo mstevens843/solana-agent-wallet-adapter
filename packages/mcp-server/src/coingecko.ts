@@ -7,6 +7,8 @@ export const DEFAULT_COINGECKO_PUBLIC_BASE = 'https://api.coingecko.com/api/v3';
 export const DEFAULT_COINGECKO_PRO_BASE = 'https://pro-api.coingecko.com/api/v3';
 export const COINGECKO_RESPONSE_BYTE_LIMIT = 512_000;
 export const COINGECKO_ENDPOINT_OVERVIEW_URL = 'https://docs.coingecko.com/reference/endpoint-overview';
+/** Hard ceiling on a single CoinGecko REST call so a hung upstream cannot pin a request socket. */
+const COINGECKO_REQUEST_TIMEOUT_MS = 15_000;
 const COINGECKO_GLOBAL_TTL_MS = 5 * 60 * 1000;
 const COINGECKO_GLOBAL_KV_KEY = 'coingecko:global';
 
@@ -182,7 +184,12 @@ export async function requestCoinGecko(
     headers[config.pro ? 'x-cg-pro-api-key' : 'x-cg-demo-api-key'] = config.apiKey;
   }
   const requester = init.fetchImpl ?? fetch;
-  const response = await requester(url, { method: 'GET', headers });
+  const response = await requester(url, {
+    method: 'GET',
+    headers,
+    // Bound the public-relay call so a slow/hung upstream cannot pin a server socket.
+    signal: AbortSignal.timeout(COINGECKO_REQUEST_TIMEOUT_MS),
+  });
   const payload = await readCoinGeckoPayload(response);
   const record = asJsonRecord(payload) ?? { data: payload };
   if (!response.ok) {

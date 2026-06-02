@@ -220,11 +220,10 @@ impl WalletState {
         self.status()
     }
 
-    pub fn sign_message(
-        &mut self,
-        address: &str,
-        message: &[u8],
-    ) -> Result<[u8; 64], String> {
+    /// Internal: produce an ed25519 signature over raw bytes after the unlocked
+    /// + address checks. Used by both the off-chain message path and the
+    /// transaction path; the domain-separation guard lives in `sign_message`.
+    fn sign_raw(&mut self, address: &str, bytes: &[u8]) -> Result<[u8; 64], String> {
         self.maybe_auto_lock();
         let session = self
             .unlocked
@@ -233,27 +232,42 @@ impl WalletState {
         if session.keypair.address != address {
             return Err("address does not match the unlocked wallet".into());
         }
-        let sig = session.keypair.sign(message);
+        let sig = session.keypair.sign(bytes);
         session.last_activity = Instant::now();
         Ok(sig)
     }
 
-    /// Sign a serialized Solana transaction. The wallet doesn't parse the
-    /// transaction here — it just signs the raw bytes — because TS-side
-    /// callers already build the message-bytes-to-sign with the Solana
-    /// transaction APIs. (For Solana, the standard is to sign the serialized
-    /// transaction message; the caller stitches the signature into the
-    /// transaction container.)
+    /// Sign an off-chain (dApp `signMessage`) payload. Refuses bytes that decode
+    /// as a Solana transaction message: otherwise a malicious connected dApp could
+    /// call the standard signMessage with transaction bytes and obtain a valid,
+    /// broadcastable transaction signature behind a benign "sign message" prompt
+    /// (message/transaction signature confusion). Transaction signing must go
+    /// through `sign_transaction`, which surfaces the decoded transaction for
+    /// approval in the overlay.
+    pub fn sign_message(
+        &mut self,
+        address: &str,
+        message: &[u8],
+    ) -> Result<[u8; 64], String> {
+        if looks_like_solana_message(message) {
+            return Err(
+                "refusing to sign: this message decodes as a Solana transaction. Use the transaction approval flow instead."
+                    .into(),
+            );
+        }
+        self.sign_raw(address, message)
+    }
+
+    /// Sign a serialized Solana transaction message. The caller stitches the
+    /// returned signature into the transaction container. (The off-chain
+    /// domain-separation guard intentionally does NOT apply here — this path is
+    /// for transactions.)
     pub fn sign_transaction(
         &mut self,
         address: &str,
         message_bytes: &[u8],
     ) -> Result<[u8; 64], String> {
-        // Same logic as sign_message for now — kept as a separate command so
-        // future Slice B can add transaction-aware checks (e.g., reject
-        // signing for an address not in the active wallet's accounts) without
-        // breaking sign_message callers.
-        self.sign_message(address, message_bytes)
+        self.sign_raw(address, message_bytes)
     }
 
     pub fn set_auto_lock(&mut self, seconds: u32) -> Result<(), String> {
@@ -322,6 +336,109 @@ fn clamp_auto_lock(seconds: u32) -> u32 {
         return 0;
     }
     seconds.clamp(MIN_AUTO_LOCK_SECS, MAX_AUTO_LOCK_SECS)
+}
+
+/// True if `bytes` fully decode as a serialized Solana transaction message
+/// (legacy or v0). Used to refuse off-chain `signMessage` payloads that are
+/// actually transactions. A full structural parse (header → accounts →
+/// blockhash → instructions → v0 lookups) that consumes every byte keeps the
+/// false-positive rate near zero: normal text / nonce payloads do not parse.
+fn looks_like_solana_message(bytes: &[u8]) -> bool {
+    parse_solana_message(bytes).is_some()
+}
+
+/// Solana shortvec (compact-u16) decoder. Returns the value and advances `off`.
+fn read_compact_u16(bytes: &[u8], off: &mut usize) -> Option<usize> {
+    let mut value: usize = 0;
+    let mut shift: u32 = 0;
+    loop {
+        let byte = *bytes.get(*off)?;
+        *off += 1;
+        value |= ((byte & 0x7f) as usize) << shift;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+        if shift > 21 {
+            return None;
+        }
+    }
+    Some(value)
+}
+
+fn parse_solana_message(bytes: &[u8]) -> Option<()> {
+    let mut off = 0usize;
+    let first = *bytes.first()?;
+    let is_v0 = first & 0x80 != 0;
+    if is_v0 {
+        // Only v0 is recognized; any other versioned prefix is not a message we sign.
+        if first != 0x80 {
+            return None;
+        }
+        off = 1;
+    }
+    // Message header: numRequiredSignatures, numReadonlySigned, numReadonlyUnsigned.
+    let num_required_sigs = *bytes.get(off)? as usize;
+    off += 1;
+    let _num_readonly_signed = *bytes.get(off)? as usize;
+    off += 1;
+    let _num_readonly_unsigned = *bytes.get(off)? as usize;
+    off += 1;
+    if num_required_sigs == 0 || num_required_sigs > 64 {
+        return None;
+    }
+    let account_count = read_compact_u16(bytes, &mut off)?;
+    if account_count == 0 || account_count < num_required_sigs || account_count > 256 {
+        return None;
+    }
+    off = off.checked_add(account_count.checked_mul(32)?)?; // account pubkeys
+    if off > bytes.len() {
+        return None;
+    }
+    off = off.checked_add(32)?; // recent blockhash
+    if off > bytes.len() {
+        return None;
+    }
+    let ix_count = read_compact_u16(bytes, &mut off)?;
+    if ix_count > 256 {
+        return None;
+    }
+    for _ in 0..ix_count {
+        let _program_id_index = *bytes.get(off)?;
+        off += 1;
+        let accounts_len = read_compact_u16(bytes, &mut off)?;
+        off = off.checked_add(accounts_len)?;
+        if off > bytes.len() {
+            return None;
+        }
+        let data_len = read_compact_u16(bytes, &mut off)?;
+        off = off.checked_add(data_len)?;
+        if off > bytes.len() {
+            return None;
+        }
+    }
+    if is_v0 {
+        let lookups = read_compact_u16(bytes, &mut off)?;
+        for _ in 0..lookups {
+            off = off.checked_add(32)?; // lookup table account
+            if off > bytes.len() {
+                return None;
+            }
+            let writable = read_compact_u16(bytes, &mut off)?;
+            off = off.checked_add(writable)?;
+            let readonly = read_compact_u16(bytes, &mut off)?;
+            off = off.checked_add(readonly)?;
+            if off > bytes.len() {
+                return None;
+            }
+        }
+    }
+    // A genuine serialized message consumes every byte; trailing data => not a message.
+    if off == bytes.len() {
+        Some(())
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -481,5 +598,48 @@ mod tests {
         assert!(state.delete_wallet("wrong").is_err());
         state.delete_wallet("p").unwrap();
         assert!(!state.status().unwrap().exists);
+    }
+
+    fn minimal_legacy_message() -> Vec<u8> {
+        let mut m = vec![1u8, 0, 0]; // header: 1 required sig
+        m.push(1); // compact-u16 account count = 1
+        m.extend_from_slice(&[7u8; 32]); // 1 account pubkey
+        m.extend_from_slice(&[9u8; 32]); // recent blockhash
+        m.push(0); // compact-u16 instruction count = 0
+        m
+    }
+
+    #[test]
+    fn detects_serialized_transaction_messages() {
+        assert!(looks_like_solana_message(&minimal_legacy_message()));
+        let mut v0 = vec![0x80u8];
+        v0.extend_from_slice(&minimal_legacy_message());
+        v0.push(0); // v0 address-table-lookups count = 0
+        assert!(looks_like_solana_message(&v0));
+    }
+
+    #[test]
+    fn does_not_flag_normal_offchain_messages() {
+        assert!(!looks_like_solana_message(b"agentic.com wants you to sign in with your Solana account"));
+        assert!(!looks_like_solana_message(&[42u8; 32])); // 32-byte nonce
+        assert!(!looks_like_solana_message(b"")); // empty
+        // A real message with trailing junk must not be treated as a clean message.
+        let mut trailing = minimal_legacy_message();
+        trailing.extend_from_slice(b"junk");
+        assert!(!looks_like_solana_message(&trailing));
+    }
+
+    #[test]
+    fn sign_message_rejects_transaction_bytes_but_sign_transaction_allows_them() {
+        let (_dir, mut state) = make_state();
+        let created = state.create("p").unwrap();
+        let address = created.address;
+        let tx = minimal_legacy_message();
+        let msg_err = state.sign_message(&address, &tx).unwrap_err();
+        assert!(msg_err.contains("decodes as a Solana transaction"));
+        // The same bytes are signable through the transaction path.
+        assert!(state.sign_transaction(&address, &tx).is_ok());
+        // And a normal off-chain message still signs.
+        assert!(state.sign_message(&address, b"hello agentic").is_ok());
     }
 }

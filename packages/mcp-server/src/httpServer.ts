@@ -1,5 +1,5 @@
 import { createServer as createHttpListener, type Server as HttpServer, type IncomingMessage } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 
@@ -25,6 +25,58 @@ export interface CreateHttpServerOptions {
    * If false (default), run statelessly: every request is independent.
    */
   stateful?: boolean;
+  /**
+   * Bearer token required on every MCP HTTP request (Authorization: Bearer <token>
+   * or x-agent-wallet-token). Mandatory when binding a non-loopback host.
+   */
+  requireToken?: string;
+  /** Explicit opt-in to bind a non-loopback host. Requires a strong requireToken. */
+  allowNonLoopbackBind?: boolean;
+}
+
+const MIN_MCP_HTTP_TOKEN_LENGTH = 24;
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
+  return normalized === '127.0.0.1' ||
+    normalized === 'localhost' ||
+    normalized === '::1' ||
+    normalized.startsWith('127.');
+}
+
+function isStrongMcpHttpToken(token: string | undefined): token is string {
+  return typeof token === 'string' && token.trim().length >= MIN_MCP_HTTP_TOKEN_LENGTH;
+}
+
+function readBearerToken(req: IncomingMessage): string | undefined {
+  const header = req.headers.authorization;
+  if (typeof header === 'string' && header.toLowerCase().startsWith('bearer ')) {
+    return header.slice(7).trim();
+  }
+  const alt = req.headers['x-agent-wallet-token'];
+  if (typeof alt === 'string' && alt.trim()) return alt.trim();
+  return undefined;
+}
+
+function tokensMatch(provided: string, expected: string): boolean {
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+function assertMcpHttpBindAllowed(host: string, options: CreateHttpServerOptions): void {
+  if (isLoopbackHost(host)) return;
+  if (!options.allowNonLoopbackBind) {
+    throw new Error(
+      `Refusing to bind the MCP HTTP server to non-loopback host "${host}". Set MCP_HTTP_ALLOW_NON_LOOPBACK=1 and a strong MCP_HTTP_TOKEN to expose it deliberately. Never expose the MCP HTTP port to the public internet.`,
+    );
+  }
+  if (!isStrongMcpHttpToken(options.requireToken)) {
+    throw new Error(
+      `Refusing to bind the MCP HTTP server to non-loopback host "${host}" without a strong MCP_HTTP_TOKEN (>= ${MIN_MCP_HTTP_TOKEN_LENGTH} chars).`,
+    );
+  }
 }
 
 export interface HttpServerHandle {
@@ -58,6 +110,7 @@ export function createHttpServer(options: CreateHttpServerOptions): HttpServerHa
     url: `http://${host}:${port}${path}`,
     port,
     async start() {
+      assertMcpHttpBindAllowed(host, options);
       if (!connected) {
         await mcpServer.connect(transport);
         connected = true;
@@ -74,6 +127,15 @@ export function createHttpServer(options: CreateHttpServerOptions): HttpServerHa
             res.statusCode = 404;
             res.end();
             return;
+          }
+          if (options.requireToken) {
+            const provided = readBearerToken(req);
+            if (!provided || !tokensMatch(provided, options.requireToken)) {
+              res.statusCode = 401;
+              res.setHeader('content-type', 'application/json');
+              res.end(JSON.stringify({ error: 'unauthorized' }));
+              return;
+            }
           }
           try {
             const body = await readJsonBody(req);

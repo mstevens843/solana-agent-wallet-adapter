@@ -2060,6 +2060,7 @@ interface BrowserTransactionExecution {
   txid: string;
   txStatus: PreparedActionTxStatus;
   explorerUrl: string;
+  messageHash?: string;
   result?: Record<string, unknown>;
 }
 
@@ -4306,12 +4307,14 @@ async function executeInlineStreamingTransaction(
   if (!detail.tx.txBase64) {
     throw new Error('Streaming transaction bytes are missing.');
   }
-  const txid = await signAndBroadcastBrowserTransactionBase64(action, detail.tx.txBase64, summary, toastContext);
+  const execution = await signAndBroadcastBrowserTransactionBase64(action, detail.tx.txBase64, summary, toastContext);
+  const txid = execution.txid;
   const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid, toastContext);
   return {
     txid,
     txStatus,
     explorerUrl: explorerUrl(txid, action.cluster),
+    messageHash: execution.messageHash,
   };
 }
 
@@ -11499,7 +11502,7 @@ function guidedDemoPolicyPreparedPlan(scenario: GuidedDemoScenario): string {
       <div class="guided-demo-policy-review-head">
         <div class="guided-demo-policy-agent-line">
           ${brandLogo('claude', 'guided-demo-policy-agent-logo')}
-          <span class="agent-review-state approved">Agent approved</span>
+          <span class="agent-review-state approved">Review passed</span>
           ${providerLine ? `<em>${escapeHtml(providerLine)}</em>` : ''}
           ${agentReviewPathBadge('mock')}
         </div>
@@ -17569,7 +17572,7 @@ function agentReviewFilterControl(scope: AgentReviewFilterScope): string {
 function agentReviewFilterOptions(): SelectPickerOption[] {
   return [
     { value: 'all', label: 'AI: All', meta: 'AI filter', detail: 'Every review status' },
-    { value: 'approved', label: 'Passed', meta: 'AI filter', detail: 'Agent approved' },
+    { value: 'approved', label: 'Passed', meta: 'AI filter', detail: 'Review passed' },
     { value: 'denied', label: 'Denied', meta: 'AI filter', detail: 'Agent denied' },
     { value: 'needs_input', label: 'Needs context', meta: 'AI filter', detail: 'Agent asked questions' },
     { value: 'checking', label: 'Checking', meta: 'AI filter', detail: 'Review in progress' },
@@ -18432,13 +18435,13 @@ function agentEvidenceSections(
 function agentReviewStripLabel(status: AgentPlanReviewStatus): string {
   switch (status) {
     case 'approved':
-      return 'Agent approved';
+      return 'Review passed';
     case 'denied':
-      return 'Agent denied';
+      return 'Review denied';
     case 'checking':
-      return 'Agent checking';
+      return 'Review checking';
     case 'needs_input':
-      return 'Agent needs input';
+      return 'Review needs input';
     case 'error':
     default:
       return 'Agent review failed';
@@ -28674,10 +28677,10 @@ async function runReviewGeneratedPlan(planId: string): Promise<void> {
           ? 'pending'
           : 'error';
       const toastTitle = review.status === 'approved'
-        ? 'Agent approved'
+        ? 'Review passed'
         : review.status === 'needs_input'
-          ? 'Agent needs input'
-          : 'Agent denied';
+          ? 'Review needs input'
+          : 'Review denied';
       replaceToast(toastId, toastKind, toastTitle, review.reason);
     }, {
       onError: async (message, err) => {
@@ -28791,7 +28794,7 @@ async function runMockPreSignPolicyReview(planId: string): Promise<void> {
     const review = mockPreSignPolicyReviewState(refreshed, previousReview);
     await updateGeneratedPlan(planId, { agentReview: review, error: undefined, failureLabel: undefined });
     completeMockPreSignApproval(refreshed, review);
-    replaceToast(toastId, 'success', 'Agent approved', 'Demo signature and approval receipt saved.');
+    replaceToast(toastId, 'success', 'Review passed', 'Demo signature and approval receipt saved.');
   } catch (err) {
     const message = redactSecrets(err instanceof Error ? err.message : String(err));
     const failedReview: AgentPlanReviewState = {
@@ -35611,6 +35614,7 @@ function cloudApprovalToPreparedAction(value: unknown): PreparedAction | null {
   const metadata = isJsonObject(record.metadata) ? record.metadata : {};
   const agentReview = parseAgentPlanReviewState(metadata.agentReview);
   const finalization = cloudFinalizationFromMetadata(record.metadata);
+  const messageHash = finalization?.messageHash ?? stringFromJsonLike(metadata.messageHash);
   return {
     id: record.id,
     kind,
@@ -35633,7 +35637,7 @@ function cloudApprovalToPreparedAction(value: unknown): PreparedAction | null {
     ...(finalization?.id && { finalizationId: finalization.id }),
     ...(finalization?.status && { finalizationStatus: finalization.status }),
     ...(finalization?.transactionHash && { transactionHash: finalization.transactionHash }),
-    ...(finalization?.messageHash && { messageHash: finalization.messageHash }),
+    ...(messageHash && { messageHash }),
     ...(finalization?.quote?.quoteHash && { quoteHash: finalization.quote.quoteHash }),
     ...(finalization?.simulation?.simulationHash && { simulationHash: finalization.simulation.simulationHash }),
     ...(finalization?.confirmationStatus && { confirmationStatus: finalization.confirmationStatus }),
@@ -37086,6 +37090,8 @@ async function executeCloudBrowserPreparedAction(action: PreparedAction): Promis
       const toastContext: TransactionToastContext = { toastId, actionId: action.id, cluster: action.cluster };
       try {
         decisionProof = await signCloudWorkflowDecision(action, 'approved');
+        const messageHash = await transactionMessageHashFromBase64(existingLedger.signedTransactionBase64)
+          .catch(() => action.messageHash);
         const txid = await broadcastSignedBrowserTransactionWithRetry(
           action.cluster,
           existingLedger.signedTransactionBase64,
@@ -37100,10 +37106,11 @@ async function executeCloudBrowserPreparedAction(action: PreparedAction): Promis
           txid,
           txStatus: 'pending',
           explorerUrl: explorerUrl(txid, action.cluster),
+          messageHash,
           decisionProof,
           note: 'Wallet submitted the transaction and confirmation is still pending.',
         });
-        await runCloudBrowserTransactionConfirm({ ...action, txid, txStatus: 'pending' });
+        await runCloudBrowserTransactionConfirm({ ...action, txid, txStatus: 'pending', ...(messageHash ? { messageHash } : {}) });
       } catch (err) {
         await handleClassifiedCloudExecutionFailure({ action, toastId, priorStatus, err, decisionProof });
       }
@@ -37143,6 +37150,7 @@ async function executeCloudBrowserPreparedAction(action: PreparedAction): Promis
       txid: execution.txid,
       txStatus: execution.txStatus,
       explorerUrl: execution.explorerUrl,
+      messageHash: execution.messageHash,
       decisionProof,
       note: execution.txStatus === 'confirmed'
         ? 'Wallet approved the swap and the transaction confirmed.'
@@ -37227,6 +37235,7 @@ async function runCloudBrowserTransactionConfirm(action: PreparedAction): Promis
       txid,
       txStatus,
       explorerUrl: explorerUrl(txid, action.cluster),
+      messageHash: action.messageHash,
       note: txStatus === 'confirmed'
         ? 'Wallet transaction confirmed and Cloud receipt was saved.'
         : 'Wallet transaction is still confirming.',
@@ -37445,6 +37454,7 @@ async function recordCloudWalletExecution(action: PreparedAction, input: {
   txid: string;
   txStatus: PreparedActionTxStatus;
   explorerUrl?: string;
+  messageHash?: string;
   error?: string;
   note?: string;
   decisionProof?: SignedCloudProof;
@@ -37454,6 +37464,7 @@ async function recordCloudWalletExecution(action: PreparedAction, input: {
     txid: input.txid,
     txStatus: input.txStatus,
     ...(input.explorerUrl ? { explorerUrl: input.explorerUrl } : {}),
+    ...(input.messageHash ? { messageHash: input.messageHash } : {}),
     ...(input.error ? { error: input.error } : {}),
     ...(input.note ? { note: input.note } : {}),
     ...(input.decisionProof ? {
@@ -38597,6 +38608,7 @@ async function executeBrowserConnectorPreparedAction(
     txid: result.txid,
     txStatus: result.txStatus as PreparedActionTxStatus,
     explorerUrl: result.explorerUrl,
+    ...(result.messageHash ? { messageHash: result.messageHash } : {}),
     ...(result.preview ? { result: result.preview } : {}),
   };
   return execution;
@@ -38618,18 +38630,20 @@ async function executeBrowserSolTransfer(
     }),
   );
   addOptionalMemo(transaction, from, stringParam(action, 'memo'));
-  const txid = await signAndBroadcastBrowserTransaction(
+  const execution = await signAndBroadcastBrowserTransaction(
     action,
     transaction,
     `Transfer ${amountSol} SOL to ${recipient.toBase58()}`,
     toastContext,
   );
-  markBrowserTransactionSubmitted(action, txid);
+  const txid = execution.txid;
+  markBrowserTransactionSubmitted(action, txid, execution.messageHash);
   const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid, toastContext);
   return {
     txid,
     txStatus,
     explorerUrl: explorerUrl(txid, action.cluster),
+    messageHash: execution.messageHash,
   };
 }
 
@@ -38679,18 +38693,20 @@ async function executeBrowserSplTransfer(
   ));
   addOptionalMemo(transaction, owner, stringParam(action, 'memo'));
 
-  const txid = await signAndBroadcastBrowserTransaction(
+  const execution = await signAndBroadcastBrowserTransaction(
     action,
     transaction,
     `Transfer ${amount} ${tokenMetadata.symbol} to ${recipientOwner.toBase58()}`,
     toastContext,
   );
-  markBrowserTransactionSubmitted(action, txid);
+  const txid = execution.txid;
+  markBrowserTransactionSubmitted(action, txid, execution.messageHash);
   const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid, toastContext);
   return {
     txid,
     txStatus,
     explorerUrl: explorerUrl(txid, action.cluster),
+    messageHash: execution.messageHash,
     result: {
       token: tokenMetadata.symbol,
       mint: tokenMetadata.mintText,
@@ -38761,13 +38777,15 @@ async function executeBrowserSkillFeeSplit(
   addOptionalMemo(transaction, owner, stringParam(action, 'memo'));
 
   const summary = `Pay author ${authorAmount} ${tokenMetadata.symbol} + Agentic ${treasuryAmount} ${tokenMetadata.symbol}`;
-  const txid = await signAndBroadcastBrowserTransaction(action, transaction, summary, toastContext);
-  markBrowserTransactionSubmitted(action, txid);
+  const execution = await signAndBroadcastBrowserTransaction(action, transaction, summary, toastContext);
+  const txid = execution.txid;
+  markBrowserTransactionSubmitted(action, txid, execution.messageHash);
   const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid, toastContext);
   return {
     txid,
     txStatus,
     explorerUrl: explorerUrl(txid, action.cluster),
+    messageHash: execution.messageHash,
     result: {
       token: tokenMetadata.symbol,
       mint: tokenMetadata.mintText,
@@ -38818,6 +38836,7 @@ async function executeBrowserSwap(
     }),
   );
   const transactionBase64 = requiredJupiterOrderTransaction(order);
+  const messageHash = await transactionMessageHashFromBase64(transactionBase64);
   const requestId = requiredResponseString(order.requestId, 'Jupiter request id');
   recordBrowserActionActivity(action.id, 'browser.swap.order_ready', {
     requestId,
@@ -38857,12 +38876,13 @@ async function executeBrowserSwap(
     txid,
   });
   syncPendingTransactionsFromLedger();
-  markBrowserTransactionSubmitted(action, txid);
+  markBrowserTransactionSubmitted(action, txid, messageHash);
   const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid, toastContext);
   return {
     txid,
     txStatus,
     explorerUrl: explorerUrl(txid, action.cluster),
+    messageHash,
     result: {
       order: orderSummaryForReceipt(order),
       execution: orderSummaryForReceipt(executed),
@@ -38881,18 +38901,20 @@ async function executeBrowserCustomTransaction(
   if (!transactionBase64) {
     throw new Error('Custom transaction is missing base64 transaction bytes.');
   }
-  const txid = await signAndBroadcastBrowserTransactionBase64(
+  const execution = await signAndBroadcastBrowserTransactionBase64(
     action,
     transactionBase64,
     action.summary || 'Custom wallet transaction',
     toastContext,
   );
-  markBrowserTransactionSubmitted(action, txid);
+  const txid = execution.txid;
+  markBrowserTransactionSubmitted(action, txid, execution.messageHash);
   const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid, toastContext);
   return {
     txid,
     txStatus,
     explorerUrl: explorerUrl(txid, action.cluster),
+    messageHash: execution.messageHash,
   };
 }
 
@@ -38901,18 +38923,20 @@ async function signAndBroadcastBrowserTransaction(
   transaction: Transaction,
   summary: string,
   toastContext: TransactionToastContext,
-): Promise<string> {
+): Promise<{ txid: string; messageHash: string }> {
   const feePayer = publicKeyFromConnectedWallet();
   const latest = await browserLatestBlockhash(action.cluster);
   transaction.feePayer = feePayer;
   transaction.recentBlockhash = latest.blockhash;
+  const messageHash = await sha256(encodeBase64(transaction.serializeMessage()));
   const transactionBase64 = encodeBase64(
     transaction.serialize({
       requireAllSignatures: false,
       verifySignatures: false,
     }),
   );
-  return signAndBroadcastBrowserTransactionBase64(action, transactionBase64, summary, toastContext);
+  const execution = await signAndBroadcastBrowserTransactionBase64(action, transactionBase64, summary, toastContext);
+  return { ...execution, messageHash };
 }
 
 async function signAndBroadcastBrowserTransactionBase64(
@@ -38920,8 +38944,9 @@ async function signAndBroadcastBrowserTransactionBase64(
   transactionBase64: string,
   summary: string,
   toastContext: TransactionToastContext,
-): Promise<string> {
+): Promise<{ txid: string; messageHash: string }> {
   const signingClient = requireClient();
+  const messageHash = await transactionMessageHashFromBase64(transactionBase64);
   if (state.capabilities?.supports.signTransaction === true) {
     const signed = await runWalletSigningToastStep(
       toastContext,
@@ -38955,7 +38980,7 @@ async function signAndBroadcastBrowserTransactionBase64(
       txid,
     });
     syncPendingTransactionsFromLedger();
-    return txid;
+    return { txid, messageHash };
   }
   if (state.capabilities?.supports.signAndSendTransaction === true) {
     const result = await runTransactionToastStep(
@@ -38982,7 +39007,7 @@ async function signAndBroadcastBrowserTransactionBase64(
     });
     syncPendingTransactionsFromLedger();
     updateTransactionToast(toastContext, 'pending', 'Confirming transaction', short(txid), txid);
-    return txid;
+    return { txid, messageHash };
   }
   throw new Error('Selected wallet cannot sign and send transactions from this browser.');
 }
@@ -39351,11 +39376,12 @@ function browserActionActivityDedupeKey(eventType: string, metadata: JsonObject)
   });
 }
 
-function markBrowserTransactionSubmitted(action: PreparedAction, txid: string): void {
+function markBrowserTransactionSubmitted(action: PreparedAction, txid: string, messageHash?: string): void {
   updateBrowserPreparedAction(action.id, {
     status: 'approval_pending',
     txStatus: 'pending',
     txid,
+    ...(messageHash ? { messageHash } : {}),
     txError: undefined,
     error: undefined,
   });
@@ -39594,6 +39620,23 @@ function signedTransactionId(signedTransactionBase64: string): string {
     // Fall through to a clear error.
   }
   throw new Error('Wallet returned signed transaction bytes without a readable transaction signature.');
+}
+
+async function transactionMessageHashFromBase64(transactionBase64: string): Promise<string> {
+  const bytes = decodeBase64(transactionBase64);
+  try {
+    const transaction = Transaction.from(bytes);
+    return sha256(encodeBase64(transaction.serializeMessage()));
+  } catch {
+    // Try versioned transaction parsing below.
+  }
+  try {
+    const transaction = VersionedTransaction.deserialize(bytes);
+    return sha256(encodeBase64(transaction.message.serialize()));
+  } catch {
+    // Fall through to a clear error.
+  }
+  throw new Error('Transaction bytes did not contain a readable message.');
 }
 
 function isZeroSignature(signature: Uint8Array): boolean {
@@ -40391,7 +40434,7 @@ async function runRecurringAgentReview(recurringId: string): Promise<void> {
       replaceToast(
         toastId,
         recurringAgentToastKind(review),
-        review.status === 'approved' ? 'Agent approved repeat' : recurringCreateToastTitle(recurringDraftFromPayment(payment), review, status),
+        review.status === 'approved' ? 'Review passed for repeat' : recurringCreateToastTitle(recurringDraftFromPayment(payment), review, status),
         compactSentence(`${review.reason || review.summary || 'Agent review recorded.'} Every due occurrence still requires wallet approval before signing.`, 360),
       );
     }, {

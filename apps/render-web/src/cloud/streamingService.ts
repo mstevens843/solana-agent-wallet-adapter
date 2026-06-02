@@ -31,6 +31,7 @@ import type {
 
 import { solanaRpcUrl } from './connectorFactsReader.js';
 import type { PgClient, PgConnection } from './postgresStore.js';
+import { postgresSslConfig } from './postgresStore.js';
 import type { Clock } from './store.js';
 
 const { Pool } = pg;
@@ -1760,13 +1761,8 @@ function envInteger(name: string, fallback: number): number {
   return Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
-function postgresSslConfig(connectionString: string): Partial<PoolConfig> {
-  const sslMode = new URL(connectionString).searchParams.get('sslmode') ?? process.env.PGSSLMODE ?? '';
-  if (sslMode === 'require' || sslMode === 'no-verify') {
-    return { ssl: { rejectUnauthorized: false } };
-  }
-  return {};
-}
+// postgresSslConfig (incl. env-driven TLS certificate verification) is centralized
+// in postgresStore so the streaming pool and the workflow pool stay in lockstep.
 
 interface StreamingSessionRow extends QueryResultRow {
   id: string;

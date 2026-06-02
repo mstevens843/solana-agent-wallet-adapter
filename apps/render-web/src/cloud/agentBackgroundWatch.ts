@@ -2,6 +2,7 @@ import { BridgeAiPlanner, type AiPlan, type AiReviewRequest, type AiReviewResult
 import type { JsonObject } from '@solana-agent-wallet-adapter/workflow';
 
 import type { RecurringService } from './recurringService.js';
+import { redactSecrets } from './redaction.js';
 import type { AgentBackgroundReviewContext } from './scheduler.js';
 import type { WorkflowService } from './workflowService.js';
 
@@ -159,6 +160,9 @@ async function persistUpdatedReview(
         ...(result.questions?.length ? { questions: result.questions } : {}),
         ...(result.reviewers?.length ? { reviewers: result.reviewers } : {}),
         backgroundCheck: true,
+        source: 'background_watch',
+        effect: 'review_context_only',
+        approvalBoundary: 'review_context_only',
       },
     };
     await options.workflowService.updatePlan(session, candidate.id, { metadata: nextMetadata as unknown as JsonObject });
@@ -192,5 +196,5 @@ function isJsonRecord(value: unknown): value is Record<string, unknown> {
 
 function redactErrorMessage(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
-  return message.replace(/sk-[A-Za-z0-9_-]+/g, 'sk-[redacted]');
+  return redactSecrets(message);
 }

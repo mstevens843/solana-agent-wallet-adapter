@@ -332,6 +332,8 @@ function service(config: AgentWalletConfig = testConfig(), connection: Connectio
 function testConfig(): AgentWalletConfig {
   return {
     ...DEFAULT_CONFIG,
+    cluster: 'mainnet-beta',
+    mainnet: { ...DEFAULT_CONFIG.mainnet, enabled: true },
     jupiter: {
       ...DEFAULT_CONFIG.jupiter,
       baseUrl: 'https://jupiter.example/swap/v2',

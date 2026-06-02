@@ -14,7 +14,7 @@ import {
 
 import { normalizeWalletAddress } from './auth.js';
 import { registerDevApiHandler, type DevApiHandler } from './devApiRegistry.js';
-import { DEV_WALLET_ALLOWLIST } from './devGate.js';
+import { devWalletAllowlist } from './devGate.js';
 import type { CloudPreferencesStore } from './store.js';
 
 const DEFAULT_SUPPORTED_TOKENS = ['USDC', 'USDT', 'SOL'];
@@ -118,7 +118,7 @@ function ifNoneMatchHits(req: IncomingMessage, etag: string): boolean {
 function resolvePublicAgentWallet(): string | undefined {
   const override = process.env.AGENTIC_AGENT_CARD_WALLET?.trim();
   if (override) return override;
-  const first = DEV_WALLET_ALLOWLIST[0];
+  const first = devWalletAllowlist()[0];
   return first && first.length > 0 ? first : undefined;
 }
 

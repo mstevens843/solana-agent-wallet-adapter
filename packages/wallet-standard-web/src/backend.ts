@@ -48,6 +48,9 @@ interface PendingApproval {
   controller: AbortController;
 }
 
+/** Upper bound on retained pending-approval entries before terminal ones are evicted. */
+const MAX_PENDING_APPROVALS = 256;
+
 export class WalletStandardWebBackend implements WalletBackend {
   private readonly wallet: Wallet;
   private readonly cluster: Cluster;
@@ -125,6 +128,7 @@ export class WalletStandardWebBackend implements WalletBackend {
       requestId: request.id,
       status: 'pending',
     };
+    this.pruneTerminalPending();
     this.pending.set(request.id, { approval, controller });
 
     void this.execute(request, account, controller.signal)
@@ -159,6 +163,21 @@ export class WalletStandardWebBackend implements WalletBackend {
       throw new ProtocolError('invalid_request', `Unknown request id: ${requestId}`);
     }
     return entry.approval;
+  }
+
+  /**
+   * Bound the pending map for long-lived agent backends. Only terminal (non-pending)
+   * entries are evicted, oldest first — in-flight requests are never dropped — so
+   * the map stops growing without bound and stops retaining signed-tx material.
+   */
+  private pruneTerminalPending(): void {
+    if (this.pending.size <= MAX_PENDING_APPROVALS) return;
+    for (const [id, entry] of this.pending) {
+      if (this.pending.size <= MAX_PENDING_APPROVALS) break;
+      if (entry.approval.status !== 'pending') {
+        this.pending.delete(id);
+      }
+    }
   }
 
   async cancel(requestId: SigningRequestId): Promise<void> {

@@ -16,6 +16,8 @@ async function main(): Promise<void> {
   const usesMock = args.mock || process.env.MCP_MOCK_BACKEND === '1';
   const bridgeUrl = args.bridgeUrl ?? process.env.BRIDGE_URL ?? process.env.AGENTIC_BRIDGE_URL;
   const bridgeToken = args.bridgeToken ?? process.env.BRIDGE_TOKEN;
+  const httpToken = args.httpToken ?? process.env.MCP_HTTP_TOKEN;
+  const allowNonLoopbackBind = process.env.MCP_HTTP_ALLOW_NON_LOOPBACK === '1';
 
   if (usesMock && bridgeUrl) {
     throw new Error('Choose either HTTP mock mode or bridge mode, not both.');
@@ -37,6 +39,8 @@ async function main(): Promise<void> {
     host,
     path,
     stateful,
+    ...(httpToken !== undefined && { requireToken: httpToken }),
+    ...(allowNonLoopbackBind && { allowNonLoopbackBind: true }),
     ...(config !== undefined && { actionConfig: config }),
     ...(config !== undefined && {
       preparedActions: new JsonPreparedActionStore(
@@ -63,6 +67,7 @@ interface CliArgs {
   env?: string;
   bridgeUrl?: string;
   bridgeToken?: string;
+  httpToken?: string;
   preparedActions?: string;
   host?: string;
   port?: number;
@@ -102,6 +107,11 @@ function parseArgs(args: string[]): CliArgs {
     }
     if (arg === '--bridge-token') {
       parsed.bridgeToken = requireValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg === '--http-token') {
+      parsed.httpToken = requireValue(args, index, arg);
       index += 1;
       continue;
     }

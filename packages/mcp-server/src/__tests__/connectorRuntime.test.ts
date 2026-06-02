@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Connection } from '@solana/web3.js';
+import { PublicKey, SystemProgram, TransactionMessage, VersionedTransaction } from '@solana/web3.js';
 import type { SolanaSigningClient } from '@solana-agent-wallet-adapter/core';
 
 import { AgentWalletActionService } from '../actionService.js';
@@ -659,7 +660,7 @@ describe('AgentWalletActionService connector runtime', () => {
 
   it('executes a Jupiter Swap API v2 order through wallet signing and /execute', async () => {
     vi.stubEnv('JUPITER_API_KEY', 'sk-test-secret-jupiter');
-    const unsignedTransaction = 'dW5zaWduZWQtdHJhbnNhY3Rpb24=';
+    const unsignedTransaction = validTransactionBase64();
     const signedTransaction = 'c2lnbmVkLXRyYW5zYWN0aW9u';
     const requests: Array<{ path: string; body?: string }> = [];
     vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
@@ -851,7 +852,6 @@ describe('AgentWalletActionService connector runtime', () => {
   });
 
   it('executes Blink prepared actions through wallet signing and RPC broadcast', async () => {
-    vi.stubEnv('AGENT_WALLET_SKIP_SIMULATION', '1');
     const store = inMemoryStore();
     const signedInputs: string[] = [];
     const sentTransactions: string[] = [];
@@ -865,10 +865,17 @@ describe('AgentWalletActionService connector runtime', () => {
         return { signature: Buffer.from('signed-blink-transaction').toString('base64') };
       },
     } as unknown as SolanaSigningClient;
+    const blinkTransaction = validTransactionBase64();
     const connection = {
       async sendRawTransaction(bytes: Buffer) {
         sentTransactions.push(bytes.toString('utf8'));
         return 'txid_blink';
+      },
+      async simulateTransaction() {
+        return { value: { err: null, logs: [] } };
+      },
+      async getLatestBlockhash() {
+        return { blockhash: '1'.repeat(32), lastValidBlockHeight: 1 };
       },
     } as unknown as Connection;
     const service = new AgentWalletActionService({
@@ -885,14 +892,14 @@ describe('AgentWalletActionService connector runtime', () => {
       summary: 'Meteora: Claim fees',
       params: {
         blinkUrl: 'https://example.com/action',
-        transactionBase64: 'base64-blink-transaction',
+        transactionBase64: blinkTransaction,
         connectorActionSource: 'blink',
       },
     });
 
     const result = await service.executePreparedAction(action.id);
 
-    expect(signedInputs).toEqual(['base64-blink-transaction']);
+    expect(signedInputs).toEqual([blinkTransaction]);
     expect(sentTransactions).toEqual(['signed-blink-transaction']);
     expect(result.preparedAction).toMatchObject({
       id: action.id,
@@ -920,6 +927,7 @@ function fakeConfig(): AgentWalletConfig {
     ...DEFAULT_CONFIG,
     cluster: 'mainnet-beta',
     rpcUrl: 'https://api.fake',
+    mainnet: { ...DEFAULT_CONFIG.mainnet, enabled: true },
     jupiter: {
       baseUrl: 'https://jupiter.example/swap/v2',
       swapBaseUrl: 'https://jupiter.example/swap/v2',
@@ -933,7 +941,27 @@ function fakeConnection(): Connection {
     async getParsedAccountInfo() {
       return { value: { data: { parsed: { info: { decimals: 6 } } } } };
     },
+    async simulateTransaction() {
+      return { value: { err: null, logs: [] } };
+    },
+    async getLatestBlockhash() {
+      return { blockhash: '1'.repeat(32), lastValidBlockHeight: 1 };
+    },
   } as unknown as Connection;
+}
+
+/**
+ * A real, deserializable v0 transaction in base64 so pre-flight simulation (now
+ * fail-closed on mainnet) can run against the mocked Connection in execute tests.
+ */
+function validTransactionBase64(): string {
+  const payer = new PublicKey('11111111111111111111111111111111');
+  const message = new TransactionMessage({
+    payerKey: payer,
+    recentBlockhash: '11111111111111111111111111111111',
+    instructions: [SystemProgram.transfer({ fromPubkey: payer, toPubkey: payer, lamports: 1 })],
+  }).compileToV0Message();
+  return Buffer.from(new VersionedTransaction(message).serialize()).toString('base64');
 }
 
 function fakeKaminoClient(input: {

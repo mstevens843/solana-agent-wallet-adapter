@@ -29,6 +29,7 @@ import {
   type SimulationDigest,
   type TxGateContext,
 } from '@solana-agent-wallet-adapter/workflow';
+import { sanitizeUserTextOrEmpty } from '@solana-agent-wallet-adapter/workflow';
 
 import { redactSecrets, trace } from './trace.js';
 import { connectorRegistryPromptContext } from './connectorRegistry.js';
@@ -1845,8 +1846,10 @@ function aiMessages(request: Required<AiPlanRequest>): Array<{ role: 'system' | 
     {
       role: 'user',
       content: JSON.stringify({
-        userPrompt: request.prompt,
-        userNotes: request.userNotes,
+        // Wrap user-controlled free text in UNTRUSTED_USER_TEXT delimiters so the
+        // system prompt's prompt-injection guard applies (mirrors the browser caller).
+        userPrompt: sanitizeUserTextOrEmpty(request.prompt, 'userPrompt'),
+        userNotes: sanitizeUserTextOrEmpty(request.userNotes, 'userNotes'),
         template: request.template,
         parameters: request.parameters,
         protocolConnectors: request.connectorContext,
@@ -1855,6 +1858,14 @@ function aiMessages(request: Required<AiPlanRequest>): Array<{ role: 'system' | 
       }),
     },
   ];
+}
+
+/** Wrap the user-controlled `userNotes` on a review plan in UNTRUSTED_USER_TEXT delimiters. */
+function sanitizeReviewPlanUserText<T>(plan: T): T {
+  if (!plan || typeof plan !== 'object') return plan;
+  const record = plan as Record<string, unknown>;
+  if (typeof record.userNotes !== 'string' || record.userNotes === '') return plan;
+  return { ...record, userNotes: sanitizeUserTextOrEmpty(record.userNotes, 'plan.userNotes') } as T;
 }
 
 function aiReviewMessages(
@@ -1884,10 +1895,13 @@ function aiReviewMessages(
     {
       role: 'user',
       content: JSON.stringify({
-        instruction: request.instruction,
+        // Wrap user-controlled free text (instruction + plan.userNotes) in
+        // UNTRUSTED_USER_TEXT delimiters so the system prompt's injection guard
+        // applies to the review path (mirrors the browser caller).
+        instruction: sanitizeUserTextOrEmpty(request.instruction, 'instruction'),
         walletAddress: request.walletAddress || 'not_connected',
         cluster: request.cluster || 'unknown',
-        plan: request.plan,
+        plan: sanitizeReviewPlanUserText(request.plan),
         context,
         reviewMode: request.mode,
         research: {

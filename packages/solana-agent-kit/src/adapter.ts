@@ -136,7 +136,17 @@ export class AgentWalletAdapterBackend implements BaseWallet {
   }
 
   async signMessage(message: Uint8Array): Promise<Uint8Array> {
-    const result = await this.client.signMessage(decodeUtf8(message), {
+    const text = decodeUtf8(message);
+    // decodeUtf8 is lossy for non-UTF-8 input. Signing the lossy string would
+    // return a signature over corrupted bytes that does not verify against the
+    // original `message` — fail loudly instead of silently corrupting.
+    if (!utf8RoundTrips(message, text)) {
+      throw new ProtocolError(
+        'invalid_request',
+        'signMessage requires a UTF-8 message on this backend; binary (non-UTF-8) messages are not supported.',
+      );
+    }
+    const result = await this.client.signMessage(text, {
       cluster: this.cluster,
       summary: 'Sign message',
     });
@@ -170,4 +180,14 @@ function summarizeTransaction(tx: Transaction | VersionedTransaction): string {
 
 function decodeUtf8(bytes: Uint8Array): string {
   return new TextDecoder().decode(bytes);
+}
+
+/** True if encoding `text` back to UTF-8 bytes reproduces `original` exactly. */
+function utf8RoundTrips(original: Uint8Array, text: string): boolean {
+  const reencoded = new TextEncoder().encode(text);
+  if (reencoded.length !== original.length) return false;
+  for (let i = 0; i < reencoded.length; i += 1) {
+    if (reencoded[i] !== original[i]) return false;
+  }
+  return true;
 }

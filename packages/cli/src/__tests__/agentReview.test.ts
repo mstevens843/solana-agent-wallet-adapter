@@ -9,7 +9,7 @@ test('reviewSummaryLine renders an approve verdict with summary', () => {
     decision: 'approve',
     summary: 'Helium plan $15/mo meets the $20 threshold.',
   });
-  assert.equal(line, 'Agent approved: Helium plan $15/mo meets the $20 threshold.');
+  assert.equal(line, 'Review passed: Helium plan $15/mo meets the $20 threshold.');
 });
 
 test('reviewSummaryLine renders a deny verdict with reason fallback', () => {
@@ -17,7 +17,7 @@ test('reviewSummaryLine renders a deny verdict with reason fallback', () => {
     decision: 'deny',
     reason: 'SOL at $85 below required $1,000,000.',
   });
-  assert.equal(line, 'Agent denied: SOL at $85 below required $1,000,000.');
+  assert.equal(line, 'Review denied: SOL at $85 below required $1,000,000.');
 });
 
 test('reviewSummaryLine truncates very long summaries to keep note under 200 chars', () => {
@@ -30,19 +30,19 @@ test('reviewSummaryLine truncates very long summaries to keep note under 200 cha
 test('composeNoteWithReview joins base + review + override under the 500-char limit', () => {
   const note = composeNoteWithReview(
     'Buy USDC',
-    'Agent approved: Helium plan OK',
+    'Review passed: Helium plan OK',
     undefined,
   );
-  assert.equal(note, 'Buy USDC | Agent approved: Helium plan OK');
+  assert.equal(note, 'Buy USDC | Review passed: Helium plan OK');
 });
 
 test('composeNoteWithReview appends override line when present', () => {
   const note = composeNoteWithReview(
     'Buy USDC',
-    'Agent denied: threshold failed',
+    'Review denied: threshold failed',
     'Override: agent denied',
   );
-  assert.equal(note, 'Buy USDC | Agent denied: threshold failed | Override: agent denied');
+  assert.equal(note, 'Buy USDC | Review denied: threshold failed | Override: agent denied');
 });
 
 test('composeNoteWithReview returns undefined when all parts blank', () => {
@@ -52,7 +52,7 @@ test('composeNoteWithReview returns undefined when all parts blank', () => {
 
 test('composeNoteWithReview trims base when over the 500-char limit, preserving the audit tail', () => {
   const longBase = 'b'.repeat(490);
-  const review = 'Agent approved: ok';
+  const review = 'Review passed: ok';
   const override = 'Override: agent denied';
   const note = composeNoteWithReview(longBase, review, override)!;
   assert.ok(note.length <= 500);
@@ -62,8 +62,8 @@ test('composeNoteWithReview trims base when over the 500-char limit, preserving 
 
 test('composeNoteWithReview returns just the review summary when base is empty', () => {
   assert.equal(
-    composeNoteWithReview(undefined, 'Agent approved: ok', undefined),
-    'Agent approved: ok',
+    composeNoteWithReview(undefined, 'Review passed: ok', undefined),
+    'Review passed: ok',
   );
 });
 

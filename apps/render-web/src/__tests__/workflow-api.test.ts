@@ -477,6 +477,7 @@ describe('cloud one-time workflow API', () => {
       const confirmed = await postJson(port, `/api/approvals/${approval.id}/wallet-execution`, {
         txid: 'blink_tx_pending',
         txStatus: 'confirmed',
+        messageHash: 'blink_message_hash',
         explorerUrl: 'https://solscan.io/tx/blink_tx_pending',
       }, walletA);
       expect(confirmed.status).toBe(200);
@@ -492,7 +493,7 @@ describe('cloud one-time workflow API', () => {
         txid: 'blink_tx_pending',
         txStatus: 'confirmed',
       });
-    });
+    }, { transactionVerifier: confirmedVerifier });
   });
 
   it('rejects executable Blink approvals without a valid Blink URL', async () => {
@@ -707,6 +708,7 @@ describe('cloud one-time workflow API', () => {
       const confirmed = await postJson(port, `/api/approvals/${approval.id}/wallet-execution`, {
         txid: 'swap_tx_pending',
         txStatus: 'confirmed',
+        messageHash: 'swap_message_hash',
         explorerUrl: 'https://solscan.io/tx/swap_tx_pending',
       }, walletA);
 
@@ -751,7 +753,111 @@ describe('cloud one-time workflow API', () => {
         txStatus: 'failed',
         error: 'Transaction failed on-chain.',
       });
-    });
+    }, { transactionVerifier: confirmedVerifier });
+  });
+
+  it('keeps browser-wallet executions pending until server confirmation succeeds', async () => {
+    await withWorkflowServer(async ({ port }) => {
+      const created = await postJson(port, '/api/approvals', {
+        summary: 'Pending browser-wallet swap',
+        kind: 'swap',
+        params: {
+          inputToken: 'SOL',
+          outputToken: 'USDC',
+          amount: '0.1',
+          slippageBps: '50',
+        },
+      }, walletA);
+      const approval = created.body.approval as ApprovalRequestRecord;
+
+      const submitted = await postJson(port, `/api/approvals/${approval.id}/wallet-execution`, {
+        ...decisionProofBody(approval, 'approved'),
+        txid: 'swap_tx_needs_server_confirmation',
+        txStatus: 'confirmed',
+        messageHash: 'swap_pending_message_hash',
+        explorerUrl: 'https://solscan.io/tx/swap_tx_needs_server_confirmation',
+      }, walletA);
+
+      expect(submitted.status).toBe(200);
+      expect(submitted.body.completed).toBeUndefined();
+      expect(submitted.body.approval).toMatchObject({
+        id: approval.id,
+        status: 'approval_pending',
+        txid: 'swap_tx_needs_server_confirmation',
+        txStatus: 'pending',
+        decisionProofVerified: true,
+        metadata: {
+          verification: {
+            status: 'pending',
+            confirmationStatus: 'processed',
+          },
+        },
+      });
+    }, { transactionVerifier: pendingVerifier });
+  });
+
+  it('rejects browser-wallet executions whose on-chain message does not match the approved review', async () => {
+    await withWorkflowServer(async ({ port }) => {
+      const created = await postJson(port, '/api/approvals', {
+        summary: 'Mismatched browser-wallet swap',
+        kind: 'swap',
+        params: {
+          inputToken: 'SOL',
+          outputToken: 'USDC',
+          amount: '0.1',
+          slippageBps: '50',
+        },
+      }, walletA);
+      const approval = created.body.approval as ApprovalRequestRecord;
+
+      const submitted = await postJson(port, `/api/approvals/${approval.id}/wallet-execution`, {
+        ...decisionProofBody(approval, 'approved'),
+        txid: 'swap_tx_message_mismatch',
+        txStatus: 'confirmed',
+        messageHash: 'swap_expected_message_hash',
+      }, walletA);
+
+      expect(submitted.status).toBe(200);
+      expect(submitted.body.completed).toBeUndefined();
+      expect(submitted.body.approval).toMatchObject({
+        id: approval.id,
+        status: 'ready',
+        txid: 'swap_tx_message_mismatch',
+        txStatus: 'failed',
+        error: 'Submitted transaction message did not match the prepared finalization.',
+        metadata: {
+          verification: {
+            status: 'message_mismatch',
+            messageHash: 'wrong_message_hash_from_chain',
+          },
+        },
+      });
+    }, { transactionVerifier: mismatchVerifier });
+  });
+
+  it('rejects confirmed browser-wallet executions without a transaction message hash', async () => {
+    await withWorkflowServer(async ({ port }) => {
+      const created = await postJson(port, '/api/approvals', {
+        summary: 'Unbound browser-wallet swap',
+        kind: 'swap',
+        params: {
+          inputToken: 'SOL',
+          outputToken: 'USDC',
+          amount: '0.1',
+          slippageBps: '50',
+        },
+      }, walletA);
+      const approval = created.body.approval as ApprovalRequestRecord;
+
+      const submitted = await postJson(port, `/api/approvals/${approval.id}/wallet-execution`, {
+        ...decisionProofBody(approval, 'approved'),
+        txid: 'swap_tx_without_message_hash',
+        txStatus: 'confirmed',
+      }, walletA);
+
+      expect(submitted.status).toBe(400);
+      expect(submitted.body.error).toBe('missing_transaction_message_hash');
+    }, { transactionVerifier: confirmedVerifier });
   });
 
   it('records transaction finalization preview and confirmed wallet receipt', async () => {

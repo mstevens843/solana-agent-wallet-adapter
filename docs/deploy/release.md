@@ -62,9 +62,14 @@ without the leading `v`.
 
    Confirm the public release environment leaves `VITE_AGENTIC_DEVICE_AGENT`, `AGENTIC_DEVICE_AGENT`,
    `VITE_AGENTIC_BROWSER_DEVICE_AGENT`, and `AGENTIC_BROWSER_DEVICE_AGENT` unset unless the release notes include
-   explicit Device Agent approval for web/Render/browser-native surfaces. For an approved Android Device Agent release
-   candidate, set `AGENTIC_ANDROID_DEVICE_AGENT=1` with a non-empty `AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST`, then run
-   `docs/smoke/android-device-agent.md` and confirm the source-completion scenario passes.
+   explicit Device Agent approval for web/Render/browser-native surfaces. Android release builds must set
+   `AGENTIC_ANDROID_RELEASE_PROFILE=public-safe` for public/store candidates. For an approved Android Device Agent
+   release candidate, set `AGENTIC_ANDROID_RELEASE_PROFILE=device-agent`, `AGENTIC_ANDROID_DEVICE_AGENT=1`, and a
+   non-empty `AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST`, then run `docs/smoke/android-device-agent.md` and confirm the
+   source-completion scenario passes.
+   Hosted `/api/solana/send-transaction` requires a signed-in wallet session in production unless
+   `AGENTIC_PUBLIC_SOLANA_RELAY=1` is intentionally set; use `AGENTIC_PUBLIC_RELAY_RATE_LIMIT_MAX` to tighten the
+   public relay bucket for that deployment.
 
 2. Push the release commit, then tag it:
 

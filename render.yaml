@@ -37,6 +37,12 @@ services:
       - fromGroup: agentic-streaming
       - key: SESSION_SECRET
         generateValue: true
+      # KEK for hosted BYOK connector API keys (Magic Eden/Tensor/Sanctum/Lulo/
+      # Phoenix). Required in production: without it resolveConnectorSecretsKek
+      # throws kek_missing and the connector-keys feature is silently disabled
+      # (users hit a 503 on save). generateValue produces a stable 32+ char secret.
+      - key: CONNECTOR_SECRET_KEY
+        generateValue: true
       - key: AGENTIC_PUBLIC_ORIGIN
         value: "https://agentic-signer.com"
       - key: VITE_AGENTIC_DEV_CONTROLS

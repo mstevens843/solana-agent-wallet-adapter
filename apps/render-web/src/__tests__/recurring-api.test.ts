@@ -598,11 +598,6 @@ describe('cloud recurring scheduler API', () => {
       expect((second.body.results as Array<{ reason: string }>)[0]?.reason).toBe('duplicate');
 
       const inbox = await requestJsonWithHeaders(port, 'GET', '/api/approvals', undefined, headers);
-      if ((inbox.body.approvals as unknown[]).length === 0) {
-        const recurring = await requestJsonWithHeaders(port, 'GET', '/api/recurring', undefined, headers);
-        // eslint-disable-next-line no-console
-        console.log(JSON.stringify(recurring.body, null, 2));
-      }
       const approvals = inbox.body.approvals as Array<{
         id: string;
         recurringScheduleId?: string;
@@ -623,7 +618,7 @@ describe('cloud recurring scheduler API', () => {
         operation: 'deposit',
         agentReviewStatus: 'approved',
         agentReviewDecision: 'approve',
-        agentReviewSummary: 'Agent approved this recurring schedule.',
+        agentReviewSummary: 'Review passed this recurring schedule.',
         approvalBoundary: 'This prepares a wallet approval request; it does not sign.',
       });
       expect(JSON.stringify(approvals[0]?.metadata)).not.toContain('rawPrompt');
@@ -1367,7 +1362,7 @@ function validSwapBody(): Record<string, unknown> {
 function approvedAgentMetadata(): Record<string, unknown> {
   return {
     agentReview: {
-      summary: 'Agent approved this recurring schedule.',
+      summary: 'Review passed this recurring schedule.',
       reason: 'Cadence and approval boundary are clear.',
       rawPrompt: 'This should never appear in audit or approval summary metadata.',
     },

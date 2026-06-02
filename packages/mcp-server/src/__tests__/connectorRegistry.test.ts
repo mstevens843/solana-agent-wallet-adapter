@@ -5,7 +5,7 @@ import {
   getConnector,
   listConnectorCapabilities,
 } from '../connectorRegistry.js';
-import { DEFAULT_CONFIG } from '../config.js';
+import { DEFAULT_CONFIG, type AgentWalletConfig } from '../config.js';
 import {
   describeOrcaUnavailableReason,
   resetOrcaClientFactory,
@@ -21,6 +21,14 @@ describe('MCP connector registry', () => {
     resetOrcaClientFactory();
     resetMarinadeClientFactory();
   });
+
+  function mainnetRegistryConfig(): AgentWalletConfig {
+    return {
+      ...DEFAULT_CONFIG,
+      cluster: 'mainnet-beta',
+      mainnet: { ...DEFAULT_CONFIG.mainnet, enabled: true },
+    };
+  }
 
   it('registers first-class Kamino, MarginFi, Project 0, and Jupiter capabilities', () => {
     const connectors = listConnectorCapabilities(DEFAULT_CONFIG);
@@ -93,11 +101,24 @@ describe('MCP connector registry', () => {
     expect(jupiter?.readTools).toContain('solana_jupiter_price_batch');
   });
 
+  it('reports cluster mismatch readiness for mainnet-only connectors on the default devnet config', () => {
+    const jupiter = listConnectorCapabilities(DEFAULT_CONFIG).find((connector) => connector.id === 'jupiter');
+
+    expect(jupiter?.readiness.reads).toMatchObject({
+      ready: false,
+      reason: expect.stringContaining('current cluster is devnet'),
+    });
+    expect(jupiter?.readiness.actions).toMatchObject({
+      ready: false,
+      reason: expect.stringContaining('current cluster is devnet'),
+    });
+  });
+
   it('keeps Jupiter swap preparation discoverable when preview credentials are missing', () => {
     vi.stubEnv('JUPITER_API_KEY', '');
     vi.stubEnv('JUP_API_KEY', '');
 
-    const jupiter = listConnectorCapabilities(DEFAULT_CONFIG).find((connector) => connector.id === 'jupiter');
+    const jupiter = listConnectorCapabilities(mainnetRegistryConfig()).find((connector) => connector.id === 'jupiter');
 
     expect(jupiter?.readiness.reads).toMatchObject({
       ready: false,
@@ -124,7 +145,8 @@ describe('MCP connector registry', () => {
     vi.stubEnv('JUPITER_API_KEY', 'test-key');
     vi.stubEnv('JUP_API_KEY', '');
 
-    const defaultJupiter = listConnectorCapabilities(DEFAULT_CONFIG).find((c) => c.id === 'jupiter');
+    const defaultConfig = mainnetRegistryConfig();
+    const defaultJupiter = listConnectorCapabilities(defaultConfig).find((c) => c.id === 'jupiter');
     expect(defaultJupiter?.readCapabilities).toContain('prediction');
     expect(defaultJupiter?.readTools).toEqual(expect.arrayContaining([
       'solana_jupiter_prediction_events',
@@ -145,11 +167,11 @@ describe('MCP connector registry', () => {
     });
 
     const optedIn = listConnectorCapabilities({
-      ...DEFAULT_CONFIG,
+      ...defaultConfig,
       connectors: {
-        ...DEFAULT_CONFIG.connectors,
+        ...defaultConfig.connectors,
         jupiter: {
-          ...DEFAULT_CONFIG.connectors?.jupiter,
+          ...defaultConfig.connectors?.jupiter,
           prediction: { enabled: true, readOnly: true },
         },
       },
@@ -159,11 +181,11 @@ describe('MCP connector registry', () => {
 
     vi.stubEnv('JUPITER_API_KEY', '');
     const noKey = listConnectorCapabilities({
-      ...DEFAULT_CONFIG,
+      ...defaultConfig,
       connectors: {
-        ...DEFAULT_CONFIG.connectors,
+        ...defaultConfig.connectors,
         jupiter: {
-          ...DEFAULT_CONFIG.connectors?.jupiter,
+          ...defaultConfig.connectors?.jupiter,
           prediction: { enabled: true, readOnly: true },
         },
       },
@@ -175,7 +197,7 @@ describe('MCP connector registry', () => {
   });
 
   it('exposes Jupiter Perps as a read-only research surface with writes denied', () => {
-    const jupiter = listConnectorCapabilities(DEFAULT_CONFIG).find((c) => c.id === 'jupiter');
+    const jupiter = listConnectorCapabilities(mainnetRegistryConfig()).find((c) => c.id === 'jupiter');
     expect(jupiter?.readCapabilities).toContain('perps');
     expect(jupiter?.readTools).toEqual(expect.arrayContaining([
       'solana_jupiter_perps_status',
@@ -241,7 +263,7 @@ describe('MCP connector registry', () => {
   });
 
   it('registers Marinade as a first-class liquid staking connector', () => {
-    const marinade = listConnectorCapabilities(DEFAULT_CONFIG).find((connector) => connector.id === 'marinade');
+    const marinade = listConnectorCapabilities(mainnetRegistryConfig()).find((connector) => connector.id === 'marinade');
     const unavailableReason = describeMarinadeUnavailableReason();
 
     expect(marinade).toMatchObject({
@@ -281,7 +303,7 @@ describe('MCP connector registry', () => {
 
   it('force-disables Jito readiness when JITO_CONNECTOR_ENABLED is false', () => {
     vi.stubEnv('JITO_CONNECTOR_ENABLED', 'false');
-    const jito = listConnectorCapabilities(DEFAULT_CONFIG).find((connector) => connector.id === 'jito');
+    const jito = listConnectorCapabilities(mainnetRegistryConfig()).find((connector) => connector.id === 'jito');
 
     expect(jito?.readiness.reads).toMatchObject({
       ready: false,
@@ -294,7 +316,7 @@ describe('MCP connector registry', () => {
   });
 
   it('registers Orca as first-class Whirlpools with explicit client readiness', () => {
-    const orca = listConnectorCapabilities(DEFAULT_CONFIG).find((connector) => connector.id === 'orca');
+    const orca = listConnectorCapabilities(mainnetRegistryConfig()).find((connector) => connector.id === 'orca');
     const unavailableReason = describeOrcaUnavailableReason();
 
     expect(orca).toMatchObject({
@@ -334,7 +356,7 @@ describe('MCP connector registry', () => {
   });
 
   it('registers Pyth as a first-class oracle connector with read readiness and gated post-update writes', () => {
-    const pyth = listConnectorCapabilities(DEFAULT_CONFIG).find((connector) => connector.id === 'pyth');
+    const pyth = listConnectorCapabilities(mainnetRegistryConfig()).find((connector) => connector.id === 'pyth');
 
     expect(pyth).toMatchObject({
       name: 'Pyth',
@@ -389,7 +411,7 @@ describe('MCP connector registry', () => {
   it('registers Magic Eden as a feature-flagged first-class marketplace connector', () => {
     vi.stubEnv('MAGICEDEN_API_KEY', '');
     vi.stubEnv('MAGICEDEN_CONNECTOR_ENABLED', '');
-    const magiceden = listConnectorCapabilities(DEFAULT_CONFIG).find((connector) => connector.id === 'magiceden');
+    const magiceden = listConnectorCapabilities(mainnetRegistryConfig()).find((connector) => connector.id === 'magiceden');
 
     expect(magiceden).toMatchObject({
       name: 'Magic Eden',

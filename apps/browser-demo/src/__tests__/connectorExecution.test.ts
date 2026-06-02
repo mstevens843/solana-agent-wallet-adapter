@@ -263,7 +263,7 @@ describe('executeBrowserConnectorAction — Phase D2 dispatcher', () => {
     return {
       cloudRequest: vi.fn(async () => payload as never),
       bridgeRequest: vi.fn(async () => payload as never),
-      signAndBroadcast: vi.fn(async () => 'tx-signature-1'),
+      signAndBroadcast: vi.fn(async () => ({ txid: 'tx-signature-1', messageHash: 'message-hash-1' })),
       resolveStatus: vi.fn(async () => 'confirmed'),
       capabilitiesSupportSignTransaction: vi.fn(() => true),
       explorerUrl: vi.fn((txid, cluster) => `https://solscan.io/tx/${txid}?cluster=${cluster}`),

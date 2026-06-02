@@ -1157,12 +1157,38 @@ fn save_config_to_disk(config: &DesktopConfig) -> Result<(), String> {
         .map_err(|err| format!("Failed to write {}: {err}", path.display()))
 }
 
+fn allow_public_bridge() -> bool {
+    std::env::var("AGENTIC_DESKTOP_ALLOW_PUBLIC_BRIDGE")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+}
+
+/// True if the bridge URL's host is a loopback address. Hand-parsed (no `url`
+/// crate dependency): scheme://[userinfo@]host[:port]/...
+fn bridge_url_host_is_loopback(url: &str) -> bool {
+    let after_scheme = url.split("://").nth(1).unwrap_or(url);
+    let authority = after_scheme.split('/').next().unwrap_or("");
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    let host = if let Some(rest) = host_port.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else {
+        host_port.split(':').next().unwrap_or("")
+    };
+    let host = host.trim().to_ascii_lowercase();
+    host == "localhost" || host == "127.0.0.1" || host == "::1" || host.starts_with("127.")
+}
+
 fn normalize_config(mut config: DesktopConfig) -> DesktopConfig {
     let defaults = default_config();
     if config.repo_root.trim().is_empty() {
         config.repo_root = defaults.repo_root;
     }
     if config.bridge_url.trim().is_empty() {
+        config.bridge_url = DEFAULT_BRIDGE_URL.into();
+    } else if !bridge_url_host_is_loopback(&config.bridge_url) && !allow_public_bridge() {
+        // The managed bridge holds a token-gated wallet API; never let a config
+        // (or a compromised webview via save_config) point it at a non-loopback
+        // interface unless the operator explicitly opts in.
         config.bridge_url = DEFAULT_BRIDGE_URL.into();
     }
     if config.bridge_token.trim().is_empty() || config.bridge_token == LEGACY_BRIDGE_TOKEN {

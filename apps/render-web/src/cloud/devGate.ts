@@ -1,6 +1,3 @@
-const RAW_ALLOWLIST = process.env.AGENTIC_DEV_WALLET_ALLOWLIST ?? '';
-const RAW_DEVICE_AGENT_ALLOWLIST = process.env.AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST ?? '';
-
 function parseList(value: string): readonly string[] {
   return Object.freeze(
     value
@@ -10,12 +7,20 @@ function parseList(value: string): readonly string[] {
   );
 }
 
-export const DEV_WALLET_ALLOWLIST: readonly string[] = parseList(RAW_ALLOWLIST);
-export const DEVICE_AGENT_WALLET_ALLOWLIST: readonly string[] = parseList(RAW_DEVICE_AGENT_ALLOWLIST);
+export function devWalletAllowlist(env: NodeJS.ProcessEnv = process.env): readonly string[] {
+  return parseList(env.AGENTIC_DEV_WALLET_ALLOWLIST ?? '');
+}
+
+export function deviceAgentWalletAllowlist(env: NodeJS.ProcessEnv = process.env): readonly string[] {
+  return parseList(env.AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST ?? '');
+}
+
+export const DEV_WALLET_ALLOWLIST: readonly string[] = devWalletAllowlist();
+export const DEVICE_AGENT_WALLET_ALLOWLIST: readonly string[] = deviceAgentWalletAllowlist();
 
 export function isAllowedDevWallet(walletAddress: string | undefined | null): boolean {
   if (!walletAddress) return false;
-  return DEV_WALLET_ALLOWLIST.includes(walletAddress);
+  return devWalletAllowlist().includes(walletAddress);
 }
 
 export function devLayer1Enabled(): boolean {
@@ -28,7 +33,7 @@ export function deviceAgentFeatureEnabled(): boolean {
 
 export function isAllowedDeviceAgentWallet(walletAddress: string | undefined | null): boolean {
   if (!walletAddress) return false;
-  return DEVICE_AGENT_WALLET_ALLOWLIST.includes(walletAddress);
+  return deviceAgentWalletAllowlist().includes(walletAddress);
 }
 
 export function deviceAgentRuntimeAvailability(): { android: boolean; browserNative: boolean } {

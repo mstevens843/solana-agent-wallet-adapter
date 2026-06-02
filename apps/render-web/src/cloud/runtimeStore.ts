@@ -60,6 +60,21 @@ export function assertProductionConfig(env: NodeJS.ProcessEnv = process.env): vo
     throw new Error(`AGENTIC_PUBLIC_ORIGIN is invalid: ${detail}`);
   }
 
+  // Surface BYOK / streaming key misconfiguration at boot rather than at first use.
+  // Absence degrades gracefully (feature disabled) so we warn; a present-but-short
+  // connector key is a clear misconfig, so we fail fast.
+  const connectorKey = env.CONNECTOR_SECRET_KEY?.trim();
+  if (!connectorKey) {
+    // eslint-disable-next-line no-console
+    console.warn('[config] CONNECTOR_SECRET_KEY is not set — hosted BYOK connector keys will be unavailable.');
+  } else if (connectorKey.length < 32) {
+    throw new Error('CONNECTOR_SECRET_KEY must be at least 32 characters.');
+  }
+  if (!env.STREAMING_SESSION_ENCRYPTION_KEY?.trim()) {
+    // eslint-disable-next-line no-console
+    console.warn('[config] STREAMING_SESSION_ENCRYPTION_KEY is not set — streaming settlement sessions will be unavailable.');
+  }
+
   try {
     const treasury = loadTreasuryConfig(env);
     if (!treasury.wallet) {

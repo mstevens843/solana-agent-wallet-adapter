@@ -249,7 +249,7 @@ test('bridge start falls back when an Agentic bridge on the configured port has 
 
     const token = (await readFile(join(runtimeDir, 'bridge-token'), 'utf8')).trim();
     const health = await waitForJson(`${started.bridgeUrl}/bridge/health?token=${encodeURIComponent(token)}`);
-    assert.equal(health.cluster, 'mainnet-beta');
+    assert.equal(health.cluster, 'devnet');
 
     if (started.pid) {
       process.kill(started.pid, 'SIGTERM');

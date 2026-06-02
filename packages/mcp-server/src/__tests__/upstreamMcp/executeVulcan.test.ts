@@ -50,6 +50,9 @@ function makeMockStore(action?: PreparedAction): PreparedActionStore {
 const CONFIG: AgentWalletConfig = {
   cluster: 'mainnet-beta',
   rpcUrl: 'http://127.0.0.1:8899',
+  // Vulcan execution is a real mainnet action; enable it so the mainnet
+  // kill-switch (requireMainnetEnabled) does not block these unit tests.
+  mainnet: { enabled: true } as AgentWalletConfig['mainnet'],
 } as AgentWalletConfig;
 
 describe('executePreparedVulcanCall', () => {

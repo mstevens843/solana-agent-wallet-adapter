@@ -79,8 +79,12 @@ interface WorkflowServiceOptions {
 
 export type TransactionVerificationStatus = 'confirmed' | 'pending' | 'failed' | 'message_mismatch';
 
+export interface TransactionVerificationSubject {
+  messageHash?: string;
+}
+
 export interface TransactionVerificationRequest {
-  finalization: TransactionFinalizationRecord;
+  finalization: TransactionVerificationSubject;
   txid: string;
   cluster: WorkflowCluster;
 }
@@ -925,12 +929,14 @@ export class WorkflowService {
     }
 
     const now = this.now();
-    const txStatus = input.txStatus ?? 'pending';
+    const verification = await this.verifyWalletExecutionConfirmation(existing, input);
+    const txStatus = verification ? txStatusFromWalletExecutionVerification(verification) : input.txStatus ?? 'pending';
     const nextStatus = txStatus === 'confirmed'
       ? 'approved'
       : txStatus === 'failed'
         ? existing.status === 'overdue' ? 'overdue' : 'ready'
         : 'approval_pending';
+    const executionError = verificationErrorMessage(verification) ?? input.error;
     const approval: ApprovalRequestRecord = {
       ...existing,
       status: nextStatus,
@@ -939,7 +945,7 @@ export class WorkflowService {
       txid: input.txid,
       txStatus,
       ...(input.explorerUrl ? { explorerUrl: input.explorerUrl } : {}),
-      ...(txStatus === 'failed' && input.error ? { txError: input.error, error: input.error } : { txError: undefined, error: undefined }),
+      ...(txStatus === 'failed' && executionError ? { txError: executionError, error: executionError } : { txError: undefined, error: undefined }),
       note: input.note ?? existing.note,
       ...(decisionProofSignature ? { decisionProofSignature } : {}),
       ...(decisionProofMessage ? { decisionProofMessage, decisionProofVerified: true } : {}),
@@ -948,8 +954,10 @@ export class WorkflowService {
         ...(input.metadata ?? {}),
         executionMode: 'wallet_execute',
         walletExecutionSource: 'browser_wallet_adapter',
+        ...(input.messageHash ? { messageHash: input.messageHash } : {}),
         ...(input.confirmationStatus ? { confirmationStatus: input.confirmationStatus } : {}),
         ...(input.explorerUrl ? { explorerUrl: input.explorerUrl } : {}),
+        ...(verification ? { verification: jsonObject(verificationMetadata(verification, now)) } : {}),
       },
     };
 
@@ -965,7 +973,8 @@ export class WorkflowService {
           txStatus,
           txid: input.txid,
           kind: approval.kind,
-          ...(input.error ? { error: input.error } : {}),
+          ...(executionError ? { error: executionError } : {}),
+          ...(verification ? { verification: jsonObject(verificationMetadata(verification, now)) } : {}),
           ...skillFeeSplitAuditMetadata(approval),
         },
       );
@@ -1126,6 +1135,27 @@ export class WorkflowService {
       finalization,
       txid: input.txid,
       cluster: finalization.cluster,
+    });
+  }
+
+  private async verifyWalletExecutionConfirmation(
+    approval: ApprovalRequestRecord,
+    input: ApprovalDecisionInput,
+  ): Promise<TransactionVerificationResult | undefined> {
+    if (input.txStatus !== 'confirmed') return undefined;
+    if (!input.txid) return undefined;
+    const subject = walletExecutionVerificationSubject(approval, input);
+    if (requiresWalletExecutionMessageHash(approval) && !subject.messageHash) {
+      throw new WorkflowServiceError(
+        400,
+        'missing_transaction_message_hash',
+        'Confirmed browser-wallet executions must include the approved transaction message hash.',
+      );
+    }
+    return this.transactionVerifier({
+      finalization: subject,
+      txid: input.txid,
+      cluster: approval.cluster ?? 'devnet',
     });
   }
 
@@ -2082,6 +2112,29 @@ function finalizationStatusFromVerification(result: TransactionVerificationResul
   return 'failed';
 }
 
+function txStatusFromWalletExecutionVerification(result: TransactionVerificationResult): TxStatus {
+  if (result.status === 'confirmed') return 'confirmed';
+  if (result.status === 'pending') return 'pending';
+  return 'failed';
+}
+
+function walletExecutionVerificationSubject(
+  approval: ApprovalRequestRecord,
+  input: ApprovalDecisionInput,
+): TransactionVerificationSubject {
+  const finalization = jsonRecordFromJson(approval.metadata, 'finalization');
+  const messageHash =
+    input.messageHash ??
+    stringFromJson(approval.metadata, 'messageHash') ??
+    stringFromJson(approval.metadata, 'transactionMessageHash') ??
+    stringFromJson(finalization, 'messageHash');
+  return messageHash ? { messageHash } : {};
+}
+
+function requiresWalletExecutionMessageHash(approval: ApprovalRequestRecord): boolean {
+  return BROWSER_WALLET_EXECUTION_KINDS.has(approval.kind) || requiresTransactionFinalization(approval.kind);
+}
+
 function verificationErrorMessage(result: TransactionVerificationResult | undefined): string | undefined {
   if (!result) return undefined;
   if (result.status === 'message_mismatch') {
@@ -2109,6 +2162,13 @@ function verificationMetadata(result: TransactionVerificationResult, checkedAt: 
 
 function redactVerifierError(message: string): string {
   return message.replace(/https?:\/\/\S+/g, '[url]').slice(0, 500);
+}
+
+function jsonRecordFromJson(value: JsonObject | undefined, key: string): JsonObject | undefined {
+  const nested = value?.[key];
+  return nested && typeof nested === 'object' && !Array.isArray(nested)
+    ? nested as JsonObject
+    : undefined;
 }
 
 function activeApprovalStatusForFinalization(

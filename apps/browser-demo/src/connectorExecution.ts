@@ -87,6 +87,7 @@ export interface BrowserTransactionExecutionResult {
   txid: string;
   txStatus: string;
   explorerUrl: string;
+  messageHash?: string;
   preview?: Record<string, unknown>;
 }
 
@@ -103,7 +104,7 @@ export interface ConnectorExecutionDeps<TAction extends ConnectorActionExecution
     transactionBase64: string,
     summary: string,
     toastContext: ConnectorExecutionToastContext,
-  ) => Promise<string>;
+  ) => Promise<{ txid: string; messageHash?: string }>;
   resolveStatus: (
     cluster: string,
     txid: string,
@@ -137,13 +138,15 @@ export async function executeBrowserConnectorAction<TAction extends ConnectorAct
   const response = await fetchPreparedTransactionWithFallback(action, routes, deps);
   const transactionBase64 = requireConnectorString(response?.transactionBase64, 'transactionBase64');
   const summary = requireConnectorString(response?.summary, 'summary');
-  const txid = await deps.signAndBroadcast(action, transactionBase64, summary, toastContext);
+  const execution = await deps.signAndBroadcast(action, transactionBase64, summary, toastContext);
+  const txid = execution.txid;
   const txStatus = await deps.resolveStatus(action.cluster, txid, toastContext);
   const explorerUrlValue = deps.explorerUrl(txid, action.cluster);
   return {
     txid,
     txStatus,
     explorerUrl: explorerUrlValue,
+    ...(execution.messageHash ? { messageHash: execution.messageHash } : {}),
     ...(response?.preview ? { preview: response.preview } : {}),
   };
 }

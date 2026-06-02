@@ -117,6 +117,10 @@ export {
   getConnector,
   listConnectorCapabilities,
 } from './connectorRegistry.js';
+export {
+  isLocalHttpHost,
+  normalizeConnectorSecretBaseUrl,
+} from './connectorSecretUrl.js';
 export type {
   ConnectorCapability,
   ConnectorCapabilityView,

@@ -13,6 +13,7 @@ function predictionConfig(
 ): AgentWalletConfig {
   return {
     ...DEFAULT_CONFIG,
+    cluster: 'mainnet-beta',
     connectors: {
       ...DEFAULT_CONFIG.connectors,
       jupiter: {

@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+
 import pg from 'pg';
 import type { PoolConfig, QueryConfig, QueryResult, QueryResultRow } from 'pg';
 
@@ -1893,10 +1895,47 @@ function envInteger(name: string, fallback: number): number {
   return Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
-function postgresSslConfig(connectionString: string): Partial<PoolConfig> {
+let warnedPgUnverifiedTls = false;
+
+/**
+ * Postgres TLS config. Certificate verification is enabled whenever a CA is
+ * provided (DATABASE_CA_CERT inline PEM/base64, or PGSSLROOTCERT file path) —
+ * this closes the MITM window on a DB holding session-token hashes and encrypted
+ * delegate keys. Without a CA we keep working (Render's managed PG presents a
+ * self-signed cert) but warn once so the unverified state is never silent.
+ * `sslmode=no-verify` is an explicit opt-out and stays silent.
+ */
+export function postgresSslConfig(connectionString: string): Partial<PoolConfig> {
   const sslMode = new URL(connectionString).searchParams.get('sslmode') ?? process.env.PGSSLMODE ?? '';
+  const ca = loadPostgresCa();
+  if (ca) {
+    return { ssl: { rejectUnauthorized: true, ca } };
+  }
   if (sslMode === 'require' || sslMode === 'no-verify') {
+    if (sslMode === 'require' && !warnedPgUnverifiedTls) {
+      warnedPgUnverifiedTls = true;
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[postgres] TLS certificate verification is DISABLED (sslmode=require, no CA). Set DATABASE_CA_CERT or PGSSLROOTCERT to enable verification.',
+      );
+    }
     return { ssl: { rejectUnauthorized: false } };
   }
   return {};
+}
+
+function loadPostgresCa(): string | undefined {
+  const inline = process.env.DATABASE_CA_CERT?.trim();
+  if (inline) {
+    return inline.includes('BEGIN CERTIFICATE') ? inline : Buffer.from(inline, 'base64').toString('utf8');
+  }
+  const path = process.env.PGSSLROOTCERT?.trim();
+  if (path) {
+    try {
+      return readFileSync(path, 'utf8');
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
 }

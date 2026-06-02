@@ -34,7 +34,7 @@ export function assertWebhookUrlAllowed(rawUrl: string, env: NodeJS.ProcessEnv =
 
 export async function assertWebhookDestinationAllowed(rawUrl: string, env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const url = assertWebhookUrlAllowed(rawUrl, env);
-  const host = url.hostname;
+  const host = url.hostname.replace(/^\[/, '').replace(/\]$/, '');
   if (isIP(host)) {
     if (isBlockedIp(host)) {
       throw new WebhookSecurityError('Webhook URL cannot target local, private, or metadata network addresses.');
@@ -91,13 +91,38 @@ function isBlockedIpv4(address: string): boolean {
 }
 
 function isBlockedIpv6(address: string): boolean {
-  const normalized = address.toLowerCase();
-  return (
+  const normalized = address.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
+  if (
     normalized === '::' ||
     normalized === '::1' ||
     normalized.startsWith('fc') ||
     normalized.startsWith('fd') ||
     normalized.startsWith('fe80:') ||
     normalized.startsWith('ff')
-  );
+  ) {
+    return true;
+  }
+  // Unwrap IPv4-mapped (::ffff:a.b.c.d or ::ffff:wwww:xxxx) and IPv4-compatible
+  // (::a.b.c.d) addresses and evaluate the embedded IPv4 through the v4 blocklist.
+  // Without this, http://[::ffff:169.254.169.254]/ (cloud metadata), ::ffff:127.0.0.1
+  // (loopback), and private ranges slip past the prefix checks above. isIP() treats
+  // these as family 6, so they route here.
+  const embeddedIpv4 = extractEmbeddedIpv4(normalized);
+  if (embeddedIpv4) {
+    return isBlockedIpv4(embeddedIpv4);
+  }
+  return false;
+}
+
+function extractEmbeddedIpv4(normalized: string): string | null {
+  const dotted = normalized.match(/^::(?:ffff:)?(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (dotted) return dotted[1]!;
+  const hexMapped = normalized.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+  if (hexMapped) {
+    const hi = Number.parseInt(hexMapped[1]!, 16);
+    const lo = Number.parseInt(hexMapped[2]!, 16);
+    if (Number.isNaN(hi) || Number.isNaN(lo)) return null;
+    return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+  }
+  return null;
 }

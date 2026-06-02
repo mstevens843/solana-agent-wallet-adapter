@@ -56,6 +56,7 @@ import {
 } from './coingecko.js';
 import { heliusConfigFromEnv } from './helius.js';
 import { defaultRpcUrl, getPhoenixVulcanPolicy, type AgentWalletConfig } from './config.js';
+import { normalizeConnectorSecretBaseUrl } from './connectorSecretUrl.js';
 import { parseDecimalAmount } from './amounts.js';
 import { LocalBridgeBackend } from './localBridgeBackend.js';
 import type { LabArtifact, LabArtifactStore } from './labArtifacts.js';
@@ -365,6 +366,14 @@ async function handleRequest(
     }
     if (req.method === 'GET' && url.pathname === '/bridge/agents') {
       const reveal = url.searchParams.get('reveal') === '1';
+      if (reveal && !usesHostBridgeToken(req, url, backend)) {
+        writeJson(res, 403, {
+          error: 'forbidden',
+          message: 'Only the wallet host bridge token can reveal agent tokens.',
+          requiredRole: 'wallet_host',
+        });
+        return;
+      }
       const agents = agentRegistry.list();
       const payload = reveal
         ? agents.map((a) => ({ ...publicizeAgent(a), token: a.token }))
@@ -1490,7 +1499,12 @@ function requiresHostBridgeToken(method: string | undefined, pathname: string): 
   return pathname === '/bridge/connect' ||
     pathname === '/bridge/disconnect' ||
     pathname === '/bridge/resolve' ||
-    pathname === '/bridge/reject';
+    pathname === '/bridge/reject' ||
+    // Token administration is wallet-host-only: a third-party full-tier agent must
+    // not be able to mint, replace, or delete agent tokens.
+    pathname === '/bridge/agents' ||
+    pathname === '/bridge/agents/issue' ||
+    pathname === '/bridge/agents/delete';
 }
 
 function requiredTier(method: string, pathname: string): AgentTier | null {
@@ -1588,9 +1602,17 @@ function parseConnectorSecrets(value: unknown): ConnectorSecretsMap | undefined 
     if (apiKey.length > 1024) {
       throw new ProtocolError('invalid_request', `connectorSecrets.${id}.apiKey is too long.`);
     }
-    const baseUrl = typeof secret.baseUrl === 'string' && secret.baseUrl.trim()
-      ? secret.baseUrl.trim()
-      : undefined;
+    let baseUrl: string | undefined;
+    if (typeof secret.baseUrl === 'string' && secret.baseUrl.trim()) {
+      try {
+        baseUrl = normalizeConnectorSecretBaseUrl(secret.baseUrl, { allowLocalHttp: true });
+      } catch {
+        throw new ProtocolError(
+          'invalid_request',
+          `connectorSecrets.${id}.baseUrl must be an https URL or a local http URL.`,
+        );
+      }
+    }
     out[id as keyof ConnectorSecretsMap] = {
       apiKey,
       ...(baseUrl ? { baseUrl } : {}),

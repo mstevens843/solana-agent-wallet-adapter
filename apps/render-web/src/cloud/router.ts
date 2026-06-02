@@ -6,10 +6,14 @@ import { createPairingHandler } from './pairingHandler.js';
 import {
   AgentWalletActionService,
   BridgeAiPlanner,
+  CONNECTOR_APPROVAL_BOUNDARY,
   DEFAULT_CONFIG,
+  getConnector,
   makeTransactionSimulator,
   getTransfersByAddress,
   listCoinGeckoEndpointCatalog,
+  listConnectorCapabilities,
+  normalizeConnectorSecretBaseUrl,
   requestBirdeyeExitLiquidityMulti,
   requestBirdeyeHistoryPrice,
   requestBirdeyeNewListings,
@@ -157,7 +161,7 @@ const AUTH_RATE_LIMIT_MAX_ATTEMPTS = 60;
 const WRITE_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
 const WRITE_RATE_LIMIT_MAX_ATTEMPTS = 180;
 const HOSTED_AI_RATE_LIMIT_MAX_ATTEMPTS = 30;
-const PUBLIC_RELAY_RATE_LIMIT_MAX_ATTEMPTS = 60;
+const DEFAULT_PUBLIC_RELAY_RATE_LIMIT_MAX_ATTEMPTS = 60;
 // Hard ceiling for upstream LLM round-trip latency. Anthropic/OpenAI streaming
 // completions routinely run 20-30s on long prompts; 45s gives headroom while
 // preventing hung-request pileup on Render's HTTP connection pool during an
@@ -272,6 +276,7 @@ const REGISTERED_API_ROUTES = [
   'POST /api/swap/execute',
   'POST /api/connector/prepare-transaction',
   'POST /api/connector/read-facts',
+  'GET /api/connector/capabilities',
   'GET /api/spend/envelopes',
   'POST /api/birdeye/price-multi',
   'POST /api/birdeye/price-volume',
@@ -874,6 +879,9 @@ export function authRateLimitedRoute(pathname: string): AuthRateLimitInput['rout
   if (pathname.startsWith('/api/recurring')) return '/api/recurring:*';
   if (pathname.startsWith('/api/evidence')) return '/api/evidence:*';
   if (pathname.startsWith('/api/solana')) return '/api/solana:*';
+  // Unauthenticated but compute-heavy (server-side RPC simulation): bucket it with
+  // the public Solana relay so anonymous callers cannot amplify operator RPC cost.
+  if (pathname === '/api/policy/enrich') return '/api/solana:*';
   if (pathname.startsWith('/api/swap')) return '/api/swap:*';
   if (pathname.startsWith('/api/birdeye')) return '/api/birdeye:*';
   if (pathname.startsWith('/api/helius')) return '/api/helius:*';
@@ -902,8 +910,12 @@ function rateLimitWindowMs(route: string): number {
 function rateLimitMaxAttempts(route: string): number {
   if (route === '/api/auth/nonce' || route === '/api/auth/verify-wallet') return AUTH_RATE_LIMIT_MAX_ATTEMPTS;
   if (route === '/api/ai/generate-plan' || route === '/api/ai/review-plan' || route === '/api/ai/ask-about-plan' || route === '/api/ai/chat') return HOSTED_AI_RATE_LIMIT_MAX_ATTEMPTS;
-  if (isPublicRelayRateLimitRoute(route)) return PUBLIC_RELAY_RATE_LIMIT_MAX_ATTEMPTS;
+  if (isPublicRelayRateLimitRoute(route)) return publicRelayRateLimitMaxAttempts();
   return WRITE_RATE_LIMIT_MAX_ATTEMPTS;
+}
+
+function publicRelayRateLimitMaxAttempts(): number {
+  return positiveIntegerEnv('AGENTIC_PUBLIC_RELAY_RATE_LIMIT_MAX', DEFAULT_PUBLIC_RELAY_RATE_LIMIT_MAX_ATTEMPTS);
 }
 
 function isPublicRelayRateLimitRoute(route: string): boolean {
@@ -1241,7 +1253,7 @@ async function routeApiRequest(
 
   if (url.pathname === '/api/solana/send-transaction') {
     requireMethod(req, 'POST');
-    await handleSolanaSendTransaction(req, res);
+    await handleSolanaSendTransaction(req, res, store, clock);
     return;
   }
 
@@ -1284,6 +1296,12 @@ async function routeApiRequest(
   if (url.pathname === '/api/connector/read-facts') {
     requireMethod(req, 'POST');
     await handleConnectorReadFacts(req, res, store, clock, statelessConnectorReader);
+    return;
+  }
+
+  if (url.pathname === '/api/connector/capabilities') {
+    requireMethod(req, 'GET');
+    await handleConnectorCapabilities(req, res, store, clock, url);
     return;
   }
 
@@ -2065,6 +2083,33 @@ async function handleConnectorReadFacts(
   }
 }
 
+async function handleConnectorCapabilities(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+  url: URL,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required.');
+  }
+  const connectorId = url.searchParams.get('connectorId')?.trim();
+  let connectors = listConnectorCapabilities(DEFAULT_CONFIG);
+  if (connectorId) {
+    const connector = getConnector(connectorId);
+    if (!connector) {
+      throw new ApiError(404, `Unknown connector: ${connectorId}`);
+    }
+    connectors = connectors.filter((entry) => entry.id === connector.id);
+  }
+  writeJson(res, 200, {
+    cluster: DEFAULT_CONFIG.cluster,
+    connectors,
+    approvalBoundary: CONNECTOR_APPROVAL_BOUNDARY,
+  });
+}
+
 async function handleJupiterSwapOrder(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = asJsonRecord(await readJsonBody(req), 'swap order body');
   const inputMint = requiredBodyString(body, 'inputMint');
@@ -2092,7 +2137,18 @@ async function handleSolanaLatestBlockhash(req: IncomingMessage, res: ServerResp
   writeJson(res, 200, await solanaConnection(cluster).getLatestBlockhash('confirmed'));
 }
 
-async function handleSolanaSendTransaction(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handleSolanaSendTransaction(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+): Promise<void> {
+  if (solanaRelayRequiresSession()) {
+    const session = await sessionFromRequest({ req, store, clock });
+    if (!session) {
+      throw new ApiError(401, 'Sign in required to submit Solana transactions through the hosted relay.');
+    }
+  }
   const body = asJsonRecord(await readJsonBody(req), 'Solana send transaction body');
   const cluster = requiredCluster(body.cluster);
   const signedTransaction = requiredBodyString(
@@ -2524,6 +2580,9 @@ async function requestJupiter(
   const response = await fetch(url, {
     method: init.method ?? 'GET',
     headers,
+    // Bound the upstream call so a slow/hung Jupiter cannot pin a server request
+    // socket open indefinitely on this public relay path.
+    signal: AbortSignal.timeout(15_000),
     ...(init.body ? { body: JSON.stringify(init.body) } : {}),
   });
   const payload = await response.json().catch(() => ({})) as unknown;
@@ -3363,15 +3422,15 @@ async function handlePostConnectorSecret(
   const baseUrlRaw = (body as { baseUrl?: unknown }).baseUrl;
   let baseUrl: string | undefined;
   if (typeof baseUrlRaw === 'string' && baseUrlRaw.trim()) {
-    const trimmed = baseUrlRaw.trim();
     try {
-      const parsed = new URL(trimmed);
-      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-        throw new Error('protocol');
-      }
-      baseUrl = trimmed;
+      baseUrl = normalizeConnectorSecretBaseUrl(baseUrlRaw, { allowLocalHttp: !isProductionRequest() });
     } catch {
-      throw new ApiError(400, 'baseUrl must be a valid http(s) URL.');
+      throw new ApiError(
+        400,
+        isProductionRequest()
+          ? 'baseUrl must be an https URL.'
+          : 'baseUrl must be an https URL or a local http URL.',
+      );
     }
   }
   const summary = await service.save(session.walletAddress, connector, {
@@ -3874,7 +3933,22 @@ function shouldReturnBearerSession(req: IncomingMessage): boolean {
 }
 
 function isProductionRequest(): boolean {
-  return process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
+  return isProductionEnv(process.env);
+}
+
+function positiveIntegerEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export function solanaRelayRequiresSession(env: NodeJS.ProcessEnv = process.env): boolean {
+  return isProductionEnv(env) && env.AGENTIC_PUBLIC_SOLANA_RELAY !== '1';
+}
+
+function isProductionEnv(env: NodeJS.ProcessEnv): boolean {
+  return env.NODE_ENV === 'production' || env.RENDER === 'true';
 }
 
 function publicOriginUsesHttps(): boolean {

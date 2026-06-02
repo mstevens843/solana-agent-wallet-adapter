@@ -5081,6 +5081,7 @@ export class AgentWalletActionService {
   async transferSol(input: { recipient: string; amountSol: string }): Promise<Record<string, unknown>> {
     requireActionAllowed(this.config);
     const lamports = parseDecimalAmount(input.amountSol, 9, 'SOL transfer amount');
+    assertMainnetTransferCap(this.config, lamports, 9, this.config.mainnet.maxSolTransfer, 'SOL transfer');
     const from = new PublicKey(await this.backend.getAddress());
     const balance = await this.connection.getBalance(from, 'confirmed');
     if (BigInt(balance) < lamports) {
@@ -5110,6 +5111,7 @@ export class AgentWalletActionService {
     requireActionAllowed(this.config);
     const tokenConfig = await resolveToken(this.config, this.connection, input.token);
     const rawAmount = parseDecimalAmount(input.amount, tokenConfig.decimals, `${tokenConfig.symbol} amount`);
+    assertMainnetTransferCap(this.config, rawAmount, tokenConfig.decimals, tokenConfig.maxTransfer, `${tokenConfig.symbol} transfer`);
     const owner = new PublicKey(await this.backend.getAddress());
     const recipientOwner = new PublicKey(input.recipient);
     const mint = new PublicKey(tokenConfig.mint);
@@ -5167,7 +5169,7 @@ export class AgentWalletActionService {
   }
 
   async jupiterPerpsStatus(input: JupiterPerpsStatusInput = {}): Promise<Record<string, unknown>> {
-    assertJupiterSwapCluster(this.config);
+    assertJupiterMainnetCluster(this.config, 'Jupiter Perps reads');
     const snapshot = buildPerpsStatus(this.config, input);
     return {
       connectorId: 'jupiter' as const,
@@ -5182,17 +5184,17 @@ export class AgentWalletActionService {
   }
 
   async jupiterPerpsPoolSnapshot(input: JupiterPerpsPoolSnapshotInput): Promise<Record<string, unknown>> {
-    assertJupiterSwapCluster(this.config);
+    assertJupiterMainnetCluster(this.config, 'Jupiter Perps reads');
     getJupiterPerpsPoolSnapshot(input);
   }
 
   async jupiterPerpsCustodySnapshot(input: JupiterPerpsCustodySnapshotInput): Promise<Record<string, unknown>> {
-    assertJupiterSwapCluster(this.config);
+    assertJupiterMainnetCluster(this.config, 'Jupiter Perps reads');
     getJupiterPerpsCustodySnapshot(input);
   }
 
   async jupiterPerpsPositionSnapshot(input: JupiterPerpsPositionSnapshotInput = {}): Promise<Record<string, unknown>> {
-    assertJupiterSwapCluster(this.config);
+    assertJupiterMainnetCluster(this.config, 'Jupiter Perps reads');
     const walletAddress = input.walletAddress?.trim() || (await this.backend.getAddress());
     getJupiterPerpsPositionSnapshot({ ...input, walletAddress });
   }
@@ -5373,6 +5375,10 @@ export class AgentWalletActionService {
         `Prepared action targets ${action.cluster}, but server is configured for ${this.config.cluster}.`,
       );
     }
+    // Operator mainnet kill-switch at the execute choke point (covers connector,
+    // adapter, swap, and blink prepared executes). No-op unless cluster is
+    // mainnet-beta with real-SOL disabled.
+    requireMainnetEnabled(this.config);
     switch (action.kind) {
       case 'transfer_sol':
         return this.executePreparedSolTransfer(action);
@@ -5828,6 +5834,9 @@ export class AgentWalletActionService {
   }
 
   private async signAndBroadcastTransaction(transaction: Transaction, summary: string): Promise<string> {
+    // Operator mainnet kill-switch at the signing choke point (covers transfer_sol,
+    // transfer_spl, skill_fee_split). No-op on devnet/localnet and on enabled mainnet.
+    requireMainnetEnabled(this.config);
     const transactionBase64 = txToBase64(transaction);
     await this.simulateBeforeSign(transactionBase64, summary);
     const signed = await this.client.signTransaction(transactionBase64, {
@@ -5928,11 +5937,31 @@ export class AgentWalletActionService {
   }
 
   private async simulateBeforeSign(transactionBase64: string, summary: string): Promise<void> {
-    if (process.env.AGENT_WALLET_SKIP_SIMULATION === '1') return;
+    // Pre-flight simulation is a mainnet safety control: on mainnet-beta it is
+    // fail-CLOSED (RPC errors / unparseable tx / the skip flag never bypass it),
+    // so we never ask the wallet to sign a tx we could not check. On
+    // devnet/localnet it stays best-effort (fail-open) so local/dev testing is
+    // not blocked by RPC hiccups, and the skip flag is honored there only.
+    const isMainnet = this.config.cluster === 'mainnet-beta';
+    if (process.env.AGENT_WALLET_SKIP_SIMULATION === '1') {
+      if (!isMainnet) return;
+      if (!warnedSkipSimulationOnMainnet) {
+        warnedSkipSimulationOnMainnet = true;
+        console.warn(
+          '[agent-wallet] AGENT_WALLET_SKIP_SIMULATION is ignored on mainnet-beta; pre-flight simulation stays enabled.',
+        );
+      }
+    }
     let bytes: Buffer;
     try {
       bytes = Buffer.from(transactionBase64, 'base64');
     } catch {
+      if (isMainnet) {
+        throw new ProtocolError(
+          'simulation_failed',
+          `Could not decode the transaction for pre-flight simulation of "${summary}". Refusing to ask the wallet to sign on mainnet.`,
+        );
+      }
       return;
     }
     let simulationErr: unknown = null;
@@ -5955,7 +5984,13 @@ export class AgentWalletActionService {
         const result = await this.connection.simulateTransaction(legacy);
         simulationErr = result.value.err;
         logs = result.value.logs ?? undefined;
-      } catch {
+      } catch (err) {
+        if (isMainnet) {
+          throw new ProtocolError(
+            'simulation_failed',
+            `Pre-flight simulation could not be performed for "${summary}" (RPC unavailable or transaction unparseable): ${err instanceof Error ? err.message : String(err)}. Refusing to ask the wallet to sign on mainnet.`,
+          );
+        }
         return;
       }
     }
@@ -6154,6 +6189,18 @@ export function assertPreparedActionExecutable(action: PreparedAction, now = new
       `Prepared action ${action.id} cannot be executed from status ${action.status}.`,
     );
   }
+  // Idempotency: a 'failed' action that already broadcast at least one tx (e.g. a
+  // store-write failure or crash between broadcast and status persistence) must not
+  // be re-executed — re-broadcasting could double-spend. Require a fresh action.
+  if (action.status === 'failed') {
+    const broadcast = txidsForAction(action);
+    if (broadcast.length > 0) {
+      throw new ProtocolError(
+        'invalid_request',
+        `Prepared action ${action.id} already broadcast ${broadcast.length === 1 ? 'a transaction' : 'transactions'} (${broadcast.join(', ')}) and cannot be re-executed. Create a new action to avoid a double-spend.`,
+      );
+    }
+  }
 }
 
 export function preparedFailureStatus(err: unknown): PreparedAction['status'] {
@@ -6174,8 +6221,49 @@ function txidsForAction(action: PreparedAction): string[] {
   return action.txid ? [action.txid] : [];
 }
 
+let warnedSkipSimulationOnMainnet = false;
+
 function requireActionAllowed(config: AgentWalletConfig): void {
+  // Read-only and prepare paths reach this guard too, so it must NOT enforce the
+  // mainnet kill-switch (that would block reads/previews on a mainnet wallet with
+  // real-SOL disabled). The kill-switch is enforced at the actual signing/broadcast
+  // choke points instead — signAndBroadcastTransaction (covers transfer_sol/
+  // transfer_spl/skill_fee_split), executePreparedAction (covers connector/adapter/
+  // blink executes), and assertJupiterSwapCluster (covers swaps). Kept as the
+  // single labelled entrypoint guard so future per-action policy can hook here.
   void config;
+}
+
+/**
+ * Enforce the configured per-amount transfer cap on mainnet-beta. Caps are a
+ * mainnet safety brake (maxSolTransfer lives under `mainnet`, token caps under
+ * `tokens[].maxTransfer`); on non-mainnet clusters they are not applied so
+ * devnet/localnet testing is unconstrained. requireMainnetEnabled already gates
+ * the cluster, so a misconfigured/unparseable cap fails open rather than wedging
+ * a correctly-enabled mainnet wallet.
+ */
+function assertMainnetTransferCap(
+  config: AgentWalletConfig,
+  rawAmount: bigint,
+  decimals: number,
+  maxDisplay: string,
+  label: string,
+): void {
+  if (config.cluster !== 'mainnet-beta') return;
+  const trimmed = maxDisplay.trim();
+  if (!trimmed) return;
+  let maxRaw: bigint;
+  try {
+    maxRaw = parseDecimalAmount(trimmed, decimals, `${label} cap`);
+  } catch {
+    return;
+  }
+  if (rawAmount > maxRaw) {
+    throw new ProtocolError(
+      'unauthorized',
+      `${label} amount exceeds the configured mainnet cap of ${trimmed}. Raise the cap in agent-wallet.config.json to allow larger amounts.`,
+    );
+  }
 }
 
 function normalizeRecurringSlippageBps(value: number | string | undefined): number | undefined {
@@ -6666,13 +6754,17 @@ interface ResolvedTokenConfig extends TokenLimitConfig {
 }
 
 function assertJupiterSwapCluster(config: AgentWalletConfig): void {
+  assertJupiterMainnetCluster(config, 'Jupiter swaps');
+  requireMainnetEnabled(config);
+}
+
+function assertJupiterMainnetCluster(config: AgentWalletConfig, product: string): void {
   if (config.cluster !== 'mainnet-beta') {
     throw new ProtocolError(
       'cluster_mismatch',
-      `Jupiter swaps are only available on mainnet-beta; current cluster is ${config.cluster}.`,
+      `${product} are only available on mainnet-beta; current cluster is ${config.cluster}.`,
     );
   }
-  requireMainnetEnabled(config);
 }
 
 async function normalizeSwapInput(

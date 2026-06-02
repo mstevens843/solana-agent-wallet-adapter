@@ -106,6 +106,68 @@ val streamingSignerEnabled = booleanFlag(
 )
 val deviceAgentWalletAllowlist = propertyOrEnv("AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST")
     ?: if (isReleaseBuild) "" else "4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd,7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w"
+val androidReleaseProfileInput = propertyOrEnv("AGENTIC_ANDROID_RELEASE_PROFILE")
+    ?: propertyOrEnv("agenticReleaseProfile")
+val androidReleaseProfile = androidReleaseProfileInput?.trim()?.lowercase() ?: if (isReleaseBuild) "" else "debug"
+val allowedAndroidReleaseProfiles = setOf("public-safe", "device-agent", "streaming-signer", "full")
+if (isReleaseBuild) {
+    if (androidReleaseProfile.isBlank()) {
+        throw GradleException(
+            "Release Android builds require AGENTIC_ANDROID_RELEASE_PROFILE. " +
+                "Use one of: ${allowedAndroidReleaseProfiles.joinToString(", ")}.",
+        )
+    }
+    if (androidReleaseProfile !in allowedAndroidReleaseProfiles) {
+        throw GradleException(
+            "AGENTIC_ANDROID_RELEASE_PROFILE must be one of: ${allowedAndroidReleaseProfiles.joinToString(", ")}. " +
+                "Current value: $androidReleaseProfile",
+        )
+    }
+    when (androidReleaseProfile) {
+        "public-safe" -> {
+            if (deviceAgentEnabled || streamingSignerEnabled) {
+                throw GradleException(
+                    "AGENTIC_ANDROID_RELEASE_PROFILE=public-safe requires AGENTIC_ANDROID_DEVICE_AGENT=false " +
+                        "and AGENTIC_ANDROID_STREAMING_SIGNER=false.",
+                )
+            }
+        }
+        "device-agent" -> {
+            if (!deviceAgentEnabled || streamingSignerEnabled) {
+                throw GradleException(
+                    "AGENTIC_ANDROID_RELEASE_PROFILE=device-agent requires AGENTIC_ANDROID_DEVICE_AGENT=true " +
+                        "and AGENTIC_ANDROID_STREAMING_SIGNER=false.",
+                )
+            }
+            if (deviceAgentWalletAllowlist.isBlank()) {
+                throw GradleException(
+                    "AGENTIC_ANDROID_RELEASE_PROFILE=device-agent requires AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST.",
+                )
+            }
+        }
+        "streaming-signer" -> {
+            if (deviceAgentEnabled || !streamingSignerEnabled) {
+                throw GradleException(
+                    "AGENTIC_ANDROID_RELEASE_PROFILE=streaming-signer requires AGENTIC_ANDROID_DEVICE_AGENT=false " +
+                        "and AGENTIC_ANDROID_STREAMING_SIGNER=true.",
+                )
+            }
+        }
+        "full" -> {
+            if (!deviceAgentEnabled || !streamingSignerEnabled) {
+                throw GradleException(
+                    "AGENTIC_ANDROID_RELEASE_PROFILE=full requires AGENTIC_ANDROID_DEVICE_AGENT=true " +
+                        "and AGENTIC_ANDROID_STREAMING_SIGNER=true.",
+                )
+            }
+            if (deviceAgentWalletAllowlist.isBlank()) {
+                throw GradleException(
+                    "AGENTIC_ANDROID_RELEASE_PROFILE=full requires AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST.",
+                )
+            }
+        }
+    }
+}
 val cloudApiBaseUrl = propertyOrEnv("AGENTIC_ANDROID_CLOUD_API_BASE_URL")
     ?: propertyOrEnv("AGENTIC_CLOUD_API_BASE_URL")
     ?: "https://agentic-signer.com"
@@ -216,6 +278,7 @@ android {
         buildConfigField("boolean", "AGENTIC_ANDROID_ALLOW_LAN_BRIDGE", allowLanBridge.toString())
         buildConfigField("boolean", "AGENTIC_ANDROID_DEVICE_AGENT", deviceAgentEnabled.toString())
         buildConfigField("boolean", "AGENTIC_ANDROID_STREAMING_SIGNER", streamingSignerEnabled.toString())
+        buildConfigField("String", "AGENTIC_ANDROID_RELEASE_PROFILE", "\"${androidReleaseProfile.replace("\"", "\\\"")}\"")
         buildConfigField("String", "AGENTIC_ANDROID_CLOUD_API_BASE_URL", "\"${cloudApiBaseUrl.replace("\"", "\\\"")}\"")
         buildConfigField("String", "AGENTIC_ANDROID_REMOTE_WEB_URL", "\"${remoteWebUrl.replace("\"", "\\\"")}\"")
         resValue("string", "launch_url", launchUrl)

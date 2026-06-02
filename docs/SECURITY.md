@@ -68,15 +68,18 @@ These are enforced in code; they protect users even if a contributor's machine i
 ### Wallet and signing
 
 - The agent process never has access to the private key. The `WalletBackend` interface in `@solana-agent-wallet-adapter/core` is the only path to a signature, and it always routes the request to the user's installed wallet for explicit approval.
+- Android may cache Mobile Wallet Adapter authorization/session records for reconnecting to the user's wallet. Those records are not private keys or custody material, must remain app-private and encrypted with Android Keystore-backed storage, and still cannot sign without a wallet approval flow.
 - **Pre-flight simulation** runs against the Solana RPC inside `signAndBroadcastTransaction`, `swap`, and `adapterContext.signAndBroadcast` (`packages/mcp-server/src/actionService.ts`). A transaction that the RPC says will fail is rejected *before* the wallet is asked to sign.
 - **Allowlist of AI provider hosts** in `aiPlanner.ts`. A stolen `.env` cannot redirect prompts and plan parameters to an attacker-controlled URL without explicit operator opt-in (`AGENTIC_AI_ALLOW_CUSTOM_BASE_URL=1`).
 - **Strict JSON parse** on AI responses. The LLM cannot smuggle hostile content past the parser by hiding a JSON object inside attacker-controlled prose.
 - **Parameter-vs-prose consistency check** in `aiPlanFromParsed`. If the LLM's prose mentions a different recipient address or amount than the structured `parameters`, the prose is discarded and a deterministic template is used. This defends the wallet UI against prompt injection that aims to display a benign address while the structured field holds a hostile one.
 - **`assertPlanGuardrails`** runs on every AI plan-generate, plan-review, and ask path before any output reaches the user.
+- **Streaming settlement — the one deliberate server-signing exception.** For streaming payments, the cloud holds an *ephemeral, per-session delegate keypair* (encrypted at rest with `STREAMING_SESSION_ENCRYPTION_KEY`) and signs settlement vouchers/transactions server-side without an interactive per-voucher wallet prompt. This is bounded and non-custodial of the user's main wallet: the delegate can only move funds up to the **on-chain cap** the user approved when opening the session, the user's main private key is never exposed, and the session (and its delegate authority) is revocable. It is the only path in the system where the server signs; every other signature still routes to the user's installed wallet for explicit approval.
 
 ### Bridge / network
 
-- The local HTTP bridge binds to `127.0.0.1` by default and refuses any non-loopback host unless `AGENT_WALLET_ALLOW_PUBLIC_BIND=1` is set. Never expose port `8787` to the public internet.
+- The local HTTP bridge binds to `127.0.0.1` by default and refuses any non-loopback host unless `BRIDGE_ALLOW_PRIVATE_BIND=1` is set **and** a strong (non-default) bridge token is configured — and even then only private/LAN hosts are permitted. Cross-origin requests are likewise loopback-only unless `BRIDGE_ALLOW_PRIVATE_ORIGINS=1`. Never expose port `8787` to the public internet.
+- The MCP **HTTP** transport (`bin/serverHttp.ts`) mirrors the bridge: it refuses a non-loopback bind unless `MCP_HTTP_ALLOW_NON_LOOPBACK=1` **and** a strong `MCP_HTTP_TOKEN` is set, and when a token is configured every request must present it (`Authorization: Bearer` or `x-agent-wallet-token`).
 - Every bridge endpoint requires a bridge-issued token. Per-agent tokens with tier gating (`bridgeServer.ts`) restrict which MCP methods each agent can reach.
 - iOS deeplink and WalletConnect payloads use NaCl box encryption with ephemeral session keys.
 

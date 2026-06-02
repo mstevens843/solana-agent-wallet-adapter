@@ -4,7 +4,7 @@ import { ProtocolError } from '@solana-agent-wallet-adapter/core';
 
 import { AgentWalletActionService } from '../actionService.js';
 import { createMockBackend } from '../mockBackend.js';
-import { DEFAULT_CONFIG } from '../config.js';
+import { DEFAULT_CONFIG, type AgentWalletConfig } from '../config.js';
 import {
   fact,
   factsFromJupiterLendBorrowHealth,
@@ -25,6 +25,14 @@ import {
 afterEach(() => {
   vi.unstubAllGlobals();
 });
+
+function mainnetTestConfig(): AgentWalletConfig {
+  return {
+    ...DEFAULT_CONFIG,
+    cluster: 'mainnet-beta',
+    mainnet: { ...DEFAULT_CONFIG.mainnet, enabled: true },
+  };
+}
 
 describe('connector fact normalization', () => {
   it('maps Kamino reserve snapshots into stable connector facts', () => {
@@ -481,7 +489,7 @@ describe('connector fact normalization', () => {
   it('returns deterministic missing-capability errors for unavailable connector reads', async () => {
     const service = new AgentWalletActionService({
       backend: createMockBackend(),
-      config: DEFAULT_CONFIG,
+      config: mainnetTestConfig(),
     });
 
     await expect(service.connectorReadFacts({ connectorId: 'jupiter', capability: 'rewards' })).rejects.toMatchObject({
@@ -516,7 +524,7 @@ describe('connector fact normalization', () => {
     vi.stubGlobal('fetch', fetchMock);
     const service = new AgentWalletActionService({
       backend: createMockBackend(),
-      config: DEFAULT_CONFIG,
+      config: mainnetTestConfig(),
     });
 
     const result = await service.connectorReadFacts({

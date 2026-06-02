@@ -243,7 +243,11 @@ worst case (settlement-tx ambiguity).
 
 - All streaming routes require a session cookie resolved to a wallet via
   `sessionFromRequest` (same path as `/api/ap2/*` and `/api/acp/*`).
-- The dev-layer-1 flag gates access; in production this defaults to off.
+- **Correction (launch hardening):** these routes are **GA** and are *not* dev-gated.
+  The `devLayer1Enabled` / `isAllowedDevWallet` helpers exist but are no longer wired
+  into the router for Layer-1 / streaming / signals / spend / skills paths — access is
+  controlled solely by the authenticated wallet session above. Do not rely on
+  `AGENTIC_DEV_AP2_ACP` to gate these in production.
 - Every route handler checks `walletAddress === session.walletAddress` against
   the path parameter where applicable — see `acceptVoucher`'s
   `WHERE id = $1 AND wallet_address = $2` clause and the route's `requireWallet`
@@ -256,7 +260,7 @@ worst case (settlement-tx ambiguity).
 | # | Severity | Finding | Remediation |
 |---|---|---|---|
 | 7.1 | NIT | The `voucher-relay` route accepts a voucher payload that includes `sessionId`. If wallet A constructs a voucher with wallet B's sessionId, the route's wallet predicate (`WHERE … wallet_address = A`) returns 404, so the voucher is rejected. ✅ correct. | Add a regression test that asserts this 404 explicitly so a future refactor doesn't break it. |
-| 7.2 | NIT | The `settle` admin-trigger route is gated by the same dev-layer-1 + wallet predicate. No additional admin scope. | Operator should not expose this endpoint to public consumers. Document in `docs/deploy/render.md` how to firewall or rate-limit it if exposed. |
+| 7.2 | NIT | The `settle` admin-trigger route is protected by the authenticated wallet-session predicate (it is GA, not dev-layer-1 gated). No additional admin scope. | Operator should not expose this endpoint to public consumers. Document in `docs/deploy/render.md` how to firewall or rate-limit it if exposed. |
 
 **Verdict:** ✅ Strong; cross-wallet isolation holds.
 

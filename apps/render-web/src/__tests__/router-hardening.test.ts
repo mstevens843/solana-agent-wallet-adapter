@@ -6,6 +6,7 @@ import {
   authRateLimitedRoute,
   rateLimitKey,
   runWithHostedAiTimeout,
+  solanaRelayRequiresSession,
 } from '../cloud/router.js';
 import { redactSecrets } from '../cloud/redaction.js';
 
@@ -125,6 +126,24 @@ describe('authRateLimitedRoute', () => {
     expect(authRateLimitedRoute('/api/ai/status')).toBeUndefined();
     expect(authRateLimitedRoute('/health')).toBeUndefined();
     expect(authRateLimitedRoute('/some/random/path')).toBeUndefined();
+  });
+});
+
+describe('solanaRelayRequiresSession', () => {
+  it('requires a session for production relay by default', () => {
+    expect(solanaRelayRequiresSession({ NODE_ENV: 'production' })).toBe(true);
+    expect(solanaRelayRequiresSession({ RENDER: 'true' })).toBe(true);
+  });
+
+  it('allows explicit public production relay opt-in', () => {
+    expect(solanaRelayRequiresSession({
+      NODE_ENV: 'production',
+      AGENTIC_PUBLIC_SOLANA_RELAY: '1',
+    })).toBe(false);
+  });
+
+  it('keeps local development relay behavior unchanged', () => {
+    expect(solanaRelayRequiresSession({ NODE_ENV: 'test' })).toBe(false);
   });
 });
 

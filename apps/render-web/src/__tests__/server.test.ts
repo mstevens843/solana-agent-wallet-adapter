@@ -31,6 +31,7 @@ interface ServerCtx {
 const DEVICE_AGENT_WALLET_A = '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd';
 const DEVICE_AGENT_WALLET_B = '7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w';
 const DEVICE_AGENT_OTHER_WALLET = '11111111111111111111111111111111';
+const DEVICE_AGENT_TEST_ALLOWLIST = `${DEVICE_AGENT_WALLET_A},${DEVICE_AGENT_WALLET_B}`;
 
 const aiRequest = {
   prompt: 'review a SOL transfer',
@@ -47,6 +48,11 @@ const aiRequest = {
     amount: '0.01',
   },
 };
+
+function stubDeviceAgentEnabled(): void {
+  vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+  vi.stubEnv('AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST', DEVICE_AGENT_TEST_ALLOWLIST);
+}
 
 describe('render web hosted BYOK API', () => {
   afterEach(() => {
@@ -208,7 +214,7 @@ describe('render web hosted BYOK API', () => {
   });
 
   it('rejects Device Agent status for non-allowlisted wallets', async () => {
-    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    stubDeviceAgentEnabled();
     await withServer(async (port, ctx) => {
       const response = await getJson(port, '/api/device-agent/status', { cookie: ctx.cookie });
       expect(response.status).toBe(403);
@@ -217,7 +223,7 @@ describe('render web hosted BYOK API', () => {
   });
 
   it.each([DEVICE_AGENT_WALLET_A, DEVICE_AGENT_WALLET_B])('serves Device Agent status for allowlisted wallet %s', async (walletAddress) => {
-    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    stubDeviceAgentEnabled();
     await withServer(async (port, ctx) => {
       const response = await getJson(port, '/api/device-agent/status', { cookie: ctx.cookie });
       expect(response.status).toBe(200);
@@ -234,7 +240,7 @@ describe('render web hosted BYOK API', () => {
   });
 
   it('reports browser-native availability when AGENTIC_BROWSER_DEVICE_AGENT is set', async () => {
-    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    stubDeviceAgentEnabled();
     vi.stubEnv('AGENTIC_BROWSER_DEVICE_AGENT', '1');
     await withServer(async (port, ctx) => {
       const response = await getJson(port, '/api/device-agent/status', { cookie: ctx.cookie });
@@ -247,7 +253,7 @@ describe('render web hosted BYOK API', () => {
   });
 
   it('stages Device Agent config without starting a cloud daemon', async () => {
-    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    stubDeviceAgentEnabled();
     await withServer(async (port, ctx) => {
       const configured = await postJson(port, '/api/device-agent/control', {
         action: 'configure',
@@ -278,7 +284,7 @@ describe('render web hosted BYOK API', () => {
   });
 
   it('records a structured audit event for Device Agent status reads', async () => {
-    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    stubDeviceAgentEnabled();
     await withServer(async (port, ctx) => {
       // Reset module-scoped session state for this wallet to start from a known baseline.
       await postJson(port, '/api/device-agent/control', { action: 'clear' }, { cookie: ctx.cookie });
@@ -305,7 +311,7 @@ describe('render web hosted BYOK API', () => {
   });
 
   it('records one audit event per Device Agent control action', async () => {
-    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    stubDeviceAgentEnabled();
     await withServer(async (port, ctx) => {
       // Reset module-scoped session state for this wallet to start from a known baseline.
       await postJson(port, '/api/device-agent/control', { action: 'clear' }, { cookie: ctx.cookie });
@@ -338,7 +344,7 @@ describe('render web hosted BYOK API', () => {
   });
 
   it('never persists provider key material or unrecognized secret-shaped fields in Device Agent state or audit metadata', async () => {
-    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    stubDeviceAgentEnabled();
     const secretFields = {
       apiKey: 'sk-redacted-test-key',
       secret: 'shhh-do-not-leak',
@@ -393,7 +399,7 @@ describe('render web hosted BYOK API', () => {
   });
 
   it('logs a structured access-denied warning with a wallet short ID when the wallet is not allowlisted', async () => {
-    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    stubDeviceAgentEnabled();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       await withServer(async (port, ctx) => {
@@ -412,7 +418,7 @@ describe('render web hosted BYOK API', () => {
   });
 
   it('logs a structured access-denied warning when there is no signed-in session', async () => {
-    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    stubDeviceAgentEnabled();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       await withServer(async (port) => {
@@ -428,7 +434,7 @@ describe('render web hosted BYOK API', () => {
   });
 
   it('rejects POST /api/device-agent/status with 405 method_not_allowed', async () => {
-    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    stubDeviceAgentEnabled();
     await withServer(async (port, ctx) => {
       const response = await postJson(port, '/api/device-agent/status', {}, { cookie: ctx.cookie });
       expect(response.status).toBe(405);
@@ -437,7 +443,7 @@ describe('render web hosted BYOK API', () => {
   });
 
   it('rejects GET /api/device-agent/control with 405 method_not_allowed', async () => {
-    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    stubDeviceAgentEnabled();
     await withServer(async (port, ctx) => {
       const response = await getJson(port, '/api/device-agent/control', { cookie: ctx.cookie });
       expect(response.status).toBe(405);
@@ -446,7 +452,7 @@ describe('render web hosted BYOK API', () => {
   });
 
   it('returns 400 with a structured warning for an unsupported Device Agent control action', async () => {
-    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    stubDeviceAgentEnabled();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       await withServer(async (port, ctx) => {
@@ -470,7 +476,7 @@ describe('render web hosted BYOK API', () => {
   });
 
   it('returns 400 with a structured warning when the Device Agent control body omits an action', async () => {
-    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    stubDeviceAgentEnabled();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       await withServer(async (port, ctx) => {
@@ -491,7 +497,7 @@ describe('render web hosted BYOK API', () => {
   });
 
   it('rejects POST /api/device-agent/control without a session and logs a structured no_session warning', async () => {
-    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    stubDeviceAgentEnabled();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       await withServer(async (port) => {
@@ -507,7 +513,7 @@ describe('render web hosted BYOK API', () => {
   });
 
   it('preserves running state when configure is called while the Device Agent is running', async () => {
-    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    stubDeviceAgentEnabled();
     await withServer(async (port, ctx) => {
       await postJson(port, '/api/device-agent/control', { action: 'clear' }, { cookie: ctx.cookie });
       const before = (await ctx.store.forWallet(ctx.walletAddress).listAuditEvents()).length;
@@ -547,7 +553,7 @@ describe('render web hosted BYOK API', () => {
   });
 
   it('drops optional provider fields from the status response after a clear action', async () => {
-    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    stubDeviceAgentEnabled();
     await withServer(async (port, ctx) => {
       const configured = await postJson(port, '/api/device-agent/control', {
         action: 'configure',
@@ -584,7 +590,7 @@ describe('render web hosted BYOK API', () => {
   });
 
   it('still returns a successful status response when the audit store fails, and logs an audit-failure warning', async () => {
-    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    stubDeviceAgentEnabled();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       await withServer(async (port, ctx) => {
@@ -1097,6 +1103,59 @@ describe('render web hosted BYOK API', () => {
       expect(latest.body.error).toBe('cluster is required.');
       expect(send.status).toBe(400);
       expect(send.body.error).toBe('signedTransaction is required.');
+    });
+  });
+
+  it('returns cloud connector runtime capabilities for signed-in sessions', async () => {
+    await withServer(async (port, ctx) => {
+      const response = await getJson(port, '/api/connector/capabilities?connectorId=kamino', { cookie: ctx.cookie });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        cluster: expect.any(String),
+        approvalBoundary: expect.stringContaining('does not sign'),
+      });
+      expect(response.body.connectors).toEqual([
+        expect.objectContaining({
+          id: 'kamino',
+          executionMode: 'first_class_prepare',
+        }),
+      ]);
+    });
+  });
+
+  it('rejects remote http connector secret base URLs', async () => {
+    vi.stubEnv('CONNECTOR_SECRET_KEY', 'connector-secret-key-for-tests-123456');
+    await withServer(async (port, ctx) => {
+      const response = await postJson(port, '/api/connector-secrets/magiceden', {
+        apiKey: 'me-test-key',
+        baseUrl: 'http://api.example.test',
+      }, { cookie: ctx.cookie });
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toBe('baseUrl must be an https URL or a local http URL.');
+    });
+  });
+
+  it('normalizes https connector secret base URLs before storing', async () => {
+    vi.stubEnv('CONNECTOR_SECRET_KEY', 'connector-secret-key-for-tests-123456');
+    await withServer(async (port, ctx) => {
+      const response = await postJson(port, '/api/connector-secrets/magiceden', {
+        apiKey: 'me-test-key',
+        baseUrl: 'https://api.example.test/v1///',
+      }, { cookie: ctx.cookie });
+
+      expect(response.status).toBe(200);
+      expect(response.body.baseUrl).toBe('https://api.example.test/v1');
+    });
+  });
+
+  it('requires a signed-in session for cloud connector runtime capabilities', async () => {
+    await withServer(async (port) => {
+      const response = await getJson(port, '/api/connector/capabilities');
+
+      expect(response.status).toBe(401);
+      expect(response.body.error).toBe('Sign in required.');
     });
   });
 

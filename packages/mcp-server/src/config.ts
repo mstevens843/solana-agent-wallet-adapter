@@ -731,7 +731,7 @@ function stripTrailingSlashes(value: string): string {
 }
 
 export function requireMainnetEnabled(config: AgentWalletConfig): void {
-  if (config.cluster === 'mainnet-beta' && !config.mainnet.enabled) {
+  if (config.cluster === 'mainnet-beta' && !config.mainnet?.enabled) {
     throw new ProtocolError(
       'unauthorized',
       'Mainnet is disabled. Set mainnet.enabled=true in agent-wallet.config.json to allow real SOL actions.',

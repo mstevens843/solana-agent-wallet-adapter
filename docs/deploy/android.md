@@ -139,11 +139,12 @@ pnpm android:build
 pnpm android:install
 ```
 
-Debug builds default `AGENTIC_ANDROID_DEVICE_AGENT` on for local smoke coverage. Release builds default it off; set
-`AGENTIC_ANDROID_DEVICE_AGENT=1` and `AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=...` only for an explicitly approved
-Device Agent release candidate. Runtime config is stored in encrypted Android Keystore-backed storage. Device Agent
-cannot approve, sign, submit, or move funds, and the wallet user still approves every transaction through the normal
-flow.
+Debug builds default `AGENTIC_ANDROID_DEVICE_AGENT` on for local smoke coverage. Release builds require an explicit
+`AGENTIC_ANDROID_RELEASE_PROFILE`: use `public-safe` for store/public builds, `device-agent` with
+`AGENTIC_ANDROID_DEVICE_AGENT=1` and `AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=...` for approved Device Agent
+candidates, `streaming-signer` with `AGENTIC_ANDROID_STREAMING_SIGNER=1`, or `full` when both gated runtimes are
+approved and allowlisted. Runtime config is stored in encrypted Android Keystore-backed storage. Device Agent cannot
+approve, sign, submit, or move funds, and the wallet user still approves every transaction through the normal flow.
 
 Before treating an APK as Device Agent release-ready, run the Device Agent smoke and verify the native Android
 bridge routes `generatePlan`, `reviewPlan`, and `ask` through the runtime queue. Any source-check failure or native
