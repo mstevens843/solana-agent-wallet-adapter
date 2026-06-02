@@ -1,6 +1,6 @@
 {
   "name": "@solana-agent-wallet-adapter/desktop-shell",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "private": true,
   "description": "Agentic desktop runtime for Solana Agent Wallet Adapter.",
   "license": "Apache-2.0",
