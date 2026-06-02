@@ -410,11 +410,13 @@ import {
   iosNativeCacheSummary,
   iosNativeAppUrl,
   iosNativeCloudSessionToken,
+  iosNativeEnsureReturnNotificationPermission,
   iosNativeOpenExternalUrl,
   listIosNativeWalletOptions,
   restoreLatestIosNativeWallet,
   setIosNativeCloudSessionToken,
   type IosNativeEnvironment,
+  type IosNativeNotificationAuthStatus,
   type IosNativeWalletId,
   type IosNativeWalletOption,
 } from './iosNative.js';
@@ -1766,8 +1768,16 @@ function withJupiterIosManualApprovalToast(options: ToastOptions = {}): ToastOpt
   };
 }
 
+function jupiterReturnCanNotify(): boolean {
+  // Until the user denies notifications we assume we can bring them back —
+  // either Jupiter bounces them (older iOS) or our return notification does.
+  return state.jupiterReturnNotifyStatus !== 'denied';
+}
+
 function jupiterIosManualToastMessage(message: string): string {
-  return isJupiterIosWalletSelected() ? jupiterIosManualApprovalMessage(message) : message;
+  return isJupiterIosWalletSelected()
+    ? jupiterIosManualApprovalMessage(message, { canNotify: jupiterReturnCanNotify() })
+    : message;
 }
 
 interface AiPlannerConfirmationState {
@@ -2739,6 +2749,10 @@ interface DemoState {
   iosNativeEnvironment: IosNativeEnvironment;
   iosWallets: ReadonlyArray<IosNativeWalletOption>;
   selectedIosWalletId: IosNativeWalletId;
+  // Resolved notification permission for the Jupiter WalletConnect return
+  // notification. Undefined until the user connects Jupiter; 'denied' switches
+  // the approval copy to ask the user to return manually.
+  jupiterReturnNotifyStatus?: IosNativeNotificationAuthStatus;
   iosAuthCacheCount: number;
   iosNativeStatus: string;
   address: string;
@@ -27299,6 +27313,12 @@ async function runConnect(
       savePersistedState();
       trackWalletConnectSuccess(connectSurface, state.cluster, 'connect_button');
       pushToast('success', 'iOS wallet connected', short(state.address));
+      if (state.selectedIosWalletId === 'jupiter') {
+        // Ask for notification permission now (the least-annoying moment) so the
+        // native bridge can post a tappable "approval complete" notification to
+        // bring the user back from Jupiter after a signing request on iOS 17+/18.
+        state.jupiterReturnNotifyStatus = await iosNativeEnsureReturnNotificationPermission();
+      }
       return;
     }
     // Ledger early-return — covers the case where `state.selectedWalletName`
@@ -27891,9 +27911,31 @@ async function runCreateDemoTransaction(): Promise<void> {
 }
 
 async function runSignTransaction(): Promise<void> {
+  const isJup = isJupiterIosWalletSelected();
+  let jupiterToastId: number | undefined;
+  const runOptions = isJup
+    ? {
+        onError: (message: string) => {
+          if (jupiterToastId !== undefined) {
+            replaceToast(jupiterToastId, 'error', 'Transaction signing failed', message);
+          } else {
+            pushToast('error', 'Transaction signing failed', message);
+          }
+        },
+      }
+    : {};
   await run('transaction', async () => {
     const signingClient = requireClient();
     state.transactionStatus = 'Opening wallet approval for transaction signature...';
+    if (isJup) {
+      jupiterToastId = pushToast(
+        'pending',
+        'Waiting for Jupiter',
+        jupiterIosManualToastMessage('Approve the transaction in Jupiter.'),
+        withJupiterIosManualApprovalToast(),
+      );
+      render();
+    }
     const result = await withLedgerDeviceApproval(
       ledgerApprovalMessage(),
       () => signingClient.signTransaction(
@@ -27904,11 +27946,28 @@ async function runSignTransaction(): Promise<void> {
     state.txSignature = result.signature;
     state.txid = '';
     state.transactionStatus = 'Transaction signed by wallet. The signed transaction bytes were not broadcast.';
-    pushToast('success', 'Transaction signed', 'Signed bytes returned.');
-  });
+    if (jupiterToastId !== undefined) {
+      replaceToast(jupiterToastId, 'success', 'Transaction signed', 'Signed bytes returned.');
+    } else {
+      pushToast('success', 'Transaction signed', 'Signed bytes returned.');
+    }
+  }, runOptions);
 }
 
 async function runSignAndSendTransaction(): Promise<void> {
+  const isJup = isJupiterIosWalletSelected();
+  let jupiterToastId: number | undefined;
+  const runOptions = isJup
+    ? {
+        onError: (message: string) => {
+          if (jupiterToastId !== undefined) {
+            replaceToast(jupiterToastId, 'error', 'Transaction failed', message);
+          } else {
+            pushToast('error', 'Transaction failed', message);
+          }
+        },
+      }
+    : {};
   await run('transaction', async () => {
     const signingClient = requireClient();
     if (!state.capabilities?.supports.signAndSendTransaction) {
@@ -27916,6 +27975,15 @@ async function runSignAndSendTransaction(): Promise<void> {
     }
 
     state.transactionStatus = `Opening wallet approval to sign and send on ${state.cluster}...`;
+    if (isJup) {
+      jupiterToastId = pushToast(
+        'pending',
+        'Waiting for Jupiter',
+        jupiterIosManualToastMessage('Approve the transaction in Jupiter.'),
+        withJupiterIosManualApprovalToast(),
+      );
+      render();
+    }
     const result = await signingClient.signAndSendTransaction(
       state.customTransactionBase64,
       signOptions('Transaction broadcast request'),
@@ -27923,8 +27991,12 @@ async function runSignAndSendTransaction(): Promise<void> {
     state.txid = result.txid ?? result.signature;
     state.txSignature = '';
     state.transactionStatus = 'Transaction sent. The transaction id is shown below.';
-    pushToast('success', 'Transaction sent', short(state.txid));
-  });
+    if (jupiterToastId !== undefined) {
+      replaceToast(jupiterToastId, 'success', 'Transaction sent', short(state.txid));
+    } else {
+      pushToast('success', 'Transaction sent', short(state.txid));
+    }
+  }, runOptions);
 }
 
 async function runGenerateAgentPlan(): Promise<void> {

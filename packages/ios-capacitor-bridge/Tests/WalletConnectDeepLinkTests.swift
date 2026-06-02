@@ -11,8 +11,13 @@ final class WalletConnectDeepLinkTests: XCTestCase {
         ])
     }
 
-    func testJupiterRequestLaunchIsDisabledBecauseRootOpensBrowser() throws {
-        XCTAssertNil(AgenticWalletConnectDeepLink.jupiterRequestLaunchUrl())
+    func testJupiterRequestLaunchUsesBareSchemeFallback() throws {
+        // Foregrounds Jupiter for an in-flight signing request. The request is
+        // already delivered over the WalletConnect relay, so there is no URI to
+        // hand over — opening bare jupiter:// just surfaces Jupiter's pending
+        // request sheet. The core prefers the session peer redirect and only
+        // falls back to this when no peer redirect is available.
+        XCTAssertEqual(AgenticWalletConnectDeepLink.jupiterRequestLaunchUrl()?.absoluteString, "jupiter://")
     }
 
     func testNonJupiterPairingKeepsRawUriFallback() {

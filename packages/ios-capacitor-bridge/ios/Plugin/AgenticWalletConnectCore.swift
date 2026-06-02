@@ -57,6 +57,9 @@ final class AgenticWalletConnectCore {
             if configured { return }
             let snapshot = AgenticRemoteConfigStore.shared.snapshot
             guard let projectId = snapshot.config.walletConnectProjectId, !projectId.isEmpty else {
+                AgenticIOSLog.fail("AgenticWalletConnect", "ensureConfigured", "NO_PROJECT_ID", "WalletConnect project id missing from /api/mobile-config — Jupiter cannot connect", [
+                    "configSource": String(describing: snapshot.source),
+                ])
                 throw AgenticAgentError(code: "WC_NO_PROJECT_ID", message: "WalletConnect project id missing — set WALLETCONNECT_PROJECT_ID in cloud env.")
             }
             let relayHost = sanitizeRelayHost(snapshot.config.walletConnectRelayHost)
@@ -68,7 +71,20 @@ final class AgenticWalletConnectCore {
             walletConnectRedirectNative = redirectNative
             walletConnectRedirectUniversal = redirectUniversal
             walletConnectProjectIdPrefix = String(projectId.prefix(8))
-            let redirect = try AppMetadata.Redirect(native: redirectNative, universal: nil, linkMode: false)
+            // Pass the (sanitized) universal link alongside the custom scheme so
+            // Jupiter can bounce the user back via Apple's associated-domain path
+            // when iOS permits it. `sanitizeRedirectUniversal` guarantees nil or a
+            // well-formed https URL; fall back to native-only if Redirect still
+            // rejects it, so a bad value never breaks connect/sign entirely.
+            let redirect: AppMetadata.Redirect
+            do {
+                redirect = try AppMetadata.Redirect(native: redirectNative, universal: redirectUniversal, linkMode: false)
+            } catch {
+                AgenticIOSLog.fail("AgenticWalletConnect", "ensureConfigured", "REDIRECT_FALLBACK", "universal redirect rejected; using native-only", [
+                    "message": error.localizedDescription,
+                ])
+                redirect = try AppMetadata.Redirect(native: redirectNative, universal: nil, linkMode: false)
+            }
             let metadata = AppMetadata(
                 name: "Agentic",
                 description: "Agentic Wallet Adapter",
@@ -89,7 +105,7 @@ final class AgenticWalletConnectCore {
                 "originHost": originHost(relayOrigin),
                 "redirectNative": urlShapeForLog(redirectNative),
                 "redirectUniversal": redirectUniversal.map(urlShapeForLog) ?? "nil",
-                "metadataRedirectUniversal": "nil",
+                "metadataRedirectUniversal": redirectUniversal.map(urlShapeForLog) ?? "nil",
                 "projectIdPrefix": walletConnectProjectIdPrefix,
             ])
             Sign.instance.socketConnectionStatusPublisher
@@ -152,6 +168,9 @@ final class AgenticWalletConnectCore {
         do {
             try ensureConfigured()
         } catch {
+            AgenticIOSLog.fail("AgenticWalletConnect", "connect", "CONFIG_FAILED", "WalletConnect not configured", [
+                "message": error.localizedDescription,
+            ])
             completion(.failure(error))
             return
         }
@@ -159,6 +178,10 @@ final class AgenticWalletConnectCore {
         queue.async {
             self.sessionChainId = chain
         }
+        AgenticIOSLog.info("AgenticWalletConnect", "connect", "START", "creating WalletConnect pairing", [
+            "cluster": cluster,
+            "chainId": chain,
+        ])
         Task {
             do {
                 let methods: Set<String> = ["solana_signMessage", "solana_signTransaction"]
@@ -171,6 +194,10 @@ final class AgenticWalletConnectCore {
                     requiredNamespaces: ["solana": namespace],
                     optionalNamespaces: ["solana": optionalNamespace]
                 )
+                AgenticIOSLog.info("AgenticWalletConnect", "connect", "PAIRING_CREATED", "WalletConnect pairing URI created", [
+                    "uriLen": String(uri.absoluteString.count),
+                    "topic": self.short(uri.topic),
+                ])
                 completion(.success((uri: uri.absoluteString, topic: uri.topic)))
             } catch {
                 completion(.failure(self.wrapWalletConnectError(error, operation: "wcConnect")))
@@ -182,9 +209,16 @@ final class AgenticWalletConnectCore {
         do { try ensureConfigured() } catch { completion(.failure(error)); return }
         queue.async {
             if let pubkey = self.sessionPubkey, !pubkey.isEmpty, let topic = self.sessionTopic {
+                AgenticIOSLog.info("AgenticWalletConnect", "waitForSession", "ALREADY_ACTIVE", "session already settled", [
+                    "pubkey": self.short(pubkey),
+                    "topic": self.short(topic),
+                ])
                 completion(.success((pubkey, topic)))
                 return
             }
+            AgenticIOSLog.info("AgenticWalletConnect", "waitForSession", "WAITING", "waiting for session to settle over relay", [
+                "timeoutMs": String(timeoutMs),
+            ])
             let waiterId = UUID()
             self.sessionWaiters[waiterId] = { result in
                 switch result {
@@ -195,6 +229,9 @@ final class AgenticWalletConnectCore {
             let timeout: DispatchTimeInterval = .milliseconds(timeoutMs)
             self.queue.asyncAfter(deadline: .now() + timeout) {
                 if let waiter = self.sessionWaiters.removeValue(forKey: waiterId) {
+                    AgenticIOSLog.fail("AgenticWalletConnect", "waitForSession", "TIMEOUT", "session never settled over relay — wallet may not have approved or relay never delivered", [
+                        "timeoutMs": String(timeoutMs),
+                    ])
                     waiter(.failure(AgenticAgentError(code: "WC_TIMEOUT", message: "WalletConnect session timed out.")))
                 }
             }
@@ -222,9 +259,14 @@ final class AgenticWalletConnectCore {
             case .failure(let err): completion(.failure(err))
             case .success(let data):
                 guard let signature = self.stringValue(data, keys: ["signature"]) else {
+                    AgenticIOSLog.fail("AgenticWalletConnect", "signMessage", "RESULT_MISSING_SIGNATURE", "wallet response had no signature field", [:])
                     completion(.failure(AgenticAgentError(code: "WC_INVALID_RESPONSE", message: "Missing signature.")))
                     return
                 }
+                AgenticIOSLog.info("AgenticWalletConnect", "signMessage", "RESULT", "message signed", [
+                    "sigLen": String(signature.count),
+                    "signature": signature,
+                ])
                 completion(.success(signature))
             }
         }
@@ -245,9 +287,16 @@ final class AgenticWalletConnectCore {
                 let signature = self.stringValue(data, keys: ["signature"])
                 let tx = self.stringValue(data, keys: ["transaction"])
                 guard signature != nil || tx != nil else {
+                    AgenticIOSLog.fail("AgenticWalletConnect", "signTransaction", "RESULT_MISSING", "wallet response had neither signature nor transaction", [:])
                     completion(.failure(AgenticAgentError(code: "WC_INVALID_RESPONSE", message: "Missing signed transaction or signature.")))
                     return
                 }
+                AgenticIOSLog.info("AgenticWalletConnect", "signTransaction", "RESULT", "transaction signed", [
+                    "hasSignature": signature != nil ? "true" : "false",
+                    "hasTransaction": tx != nil ? "true" : "false",
+                    "signature": signature ?? "",
+                    "transaction": tx ?? "",
+                ])
                 completion(.success((signature: signature, transaction: tx)))
             }
         }
@@ -274,9 +323,14 @@ final class AgenticWalletConnectCore {
             case .success(let data):
                 let txid = self.stringValue(data, keys: ["txid", "signature"])
                 guard let signature = self.stringValue(data, keys: ["signature", "txid"]) else {
+                    AgenticIOSLog.fail("AgenticWalletConnect", "signAndSendTransaction", "RESULT_MISSING_TXID", "wallet response had no txid/signature", [:])
                     completion(.failure(AgenticAgentError(code: "WC_INVALID_RESPONSE", message: "Missing transaction id.")))
                     return
                 }
+                AgenticIOSLog.info("AgenticWalletConnect", "signAndSendTransaction", "RESULT", "transaction sent by wallet", [
+                    "txid": txid ?? "",
+                    "sigLen": String(signature.count),
+                ])
                 completion(.success((signature: signature, txid: txid)))
             }
         }
@@ -289,7 +343,14 @@ final class AgenticWalletConnectCore {
             return
         }
         queue.async {
-            guard let topic = self.sessionTopic else { completion(true); return }
+            guard let topic = self.sessionTopic else {
+                AgenticIOSLog.info("AgenticWalletConnect", "disconnect", "NO_SESSION", "disconnect requested with no active session")
+                completion(true)
+                return
+            }
+            AgenticIOSLog.info("AgenticWalletConnect", "disconnect", "START", "disconnecting WalletConnect session", [
+                "topic": self.short(topic),
+            ])
             Task {
                 do {
                     try await Sign.instance.disconnect(topic: topic)
@@ -299,9 +360,13 @@ final class AgenticWalletConnectCore {
                         self.sessionChainId = nil
                         self.walletRedirectNative = nil
                         self.walletRedirectUniversal = nil
+                        AgenticIOSLog.info("AgenticWalletConnect", "disconnect", "DONE", "WalletConnect session disconnected")
                         completion(true)
                     }
                 } catch {
+                    AgenticIOSLog.fail("AgenticWalletConnect", "disconnect", "FAIL", "WalletConnect disconnect failed", [
+                        "message": error.localizedDescription,
+                    ])
                     completion(false)
                 }
             }
@@ -398,9 +463,16 @@ final class AgenticWalletConnectCore {
     private func activeTopic(for pubkey: String) -> Result<String, Error> {
         queue.sync {
             guard let topic = sessionTopic, let activePubkey = sessionPubkey, !activePubkey.isEmpty else {
+                AgenticIOSLog.fail("AgenticWalletConnect", "activeTopic", "NO_SESSION", "signing requested with no active session — connect Jupiter first", [
+                    "requestedPubkey": short(pubkey),
+                ])
                 return .failure(AgenticAgentError(code: "WC_NO_SESSION", message: "No active WalletConnect session."))
             }
             guard activePubkey == pubkey else {
+                AgenticIOSLog.fail("AgenticWalletConnect", "activeTopic", "PUBKEY_MISMATCH", "signing pubkey differs from the connected session", [
+                    "requestedPubkey": short(pubkey),
+                    "activePubkey": short(activePubkey),
+                ])
                 return .failure(AgenticAgentError(code: "WC_PUBKEY_MISMATCH", message: "WalletConnect session belongs to a different account. Disconnect and reconnect Jupiter."))
             }
             return .success(topic)
@@ -447,20 +519,117 @@ final class AgenticWalletConnectCore {
         return "\(value.prefix(6))…\(value.suffix(4))"
     }
 
+    /// Build safe log fields for an outgoing request. Payload shapes (length,
+    /// prefix) always log; the raw `transaction`/`message` values are included
+    /// under their literal key names so AgenticIOSLog redacts them unless the
+    /// opt-in raw mode is on.
+    private func requestLogFields(method: String, topic: String, chainId: String, requestId: RPCID, params: [String: Any]) -> [String: String] {
+        var fields: [String: String] = [
+            "method": method,
+            "requestId": requestId.string,
+            "topic": short(topic),
+            "chainId": chainId,
+            "paramKeys": params.keys.sorted().joined(separator: ","),
+        ]
+        if let tx = params["transaction"] as? String {
+            fields["txB64Len"] = String(tx.count)
+            fields["txB64Prefix"] = String(tx.prefix(16))
+            fields["transaction"] = tx
+        }
+        if let msg = params["message"] as? String {
+            fields["msgLen"] = String(msg.count)
+            // Key contains "payload" so AgenticIOSLog redacts it unless raw mode
+            // is on ("message" alone is not redaction-eligible and is reused for
+            // human-readable log text elsewhere).
+            fields["messagePayload"] = msg
+        }
+        if let pubkey = params["pubkey"] as? String {
+            fields["pubkey"] = short(pubkey)
+        }
+        return fields
+    }
+
+    private func responseShape(_ value: Any) -> String {
+        if let anyCodable = value as? Commons.AnyCodable {
+            return responseShape(anyCodable.value)
+        }
+        if let dict = value as? [String: Any] {
+            return "keys=\(dict.keys.sorted().joined(separator: ","))"
+        }
+        if let string = value as? String {
+            return "string(\(string.count))"
+        }
+        return String(describing: type(of: value))
+    }
+
     private func sendRequest(topic: String, method: String, params: [String: Any], completion: @escaping (Result<Any, Error>) -> Void) {
         Task {
+            var pendingRequestId: RPCID?
             do {
                 let chain = self.queue.sync { self.sessionChainId } ?? solanaChainId(for: "mainnet-beta")
                 let blockchain = Blockchain(chain) ?? Blockchain("solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp")!
                 let request = try Request(topic: topic, method: method, params: Commons.AnyCodable(any: params), chainId: blockchain)
+                pendingRequestId = request.id
+                AgenticIOSLog.info("AgenticWalletConnect", "sendRequest", "START", "sending WalletConnect request over relay", self.requestLogFields(method: method, topic: topic, chainId: chain, requestId: request.id, params: params))
                 try await Sign.instance.request(params: request)
+                AgenticIOSLog.info("AgenticWalletConnect", "sendRequest", "REQUEST_SENT", "request delivered to relay; foregrounding wallet", [
+                    "method": method,
+                    "requestId": request.id.string,
+                ])
                 self.launchCurrentWalletForRequest(method: method, topic: topic, requestId: request.id)
-                // Subscribe to sessionResponsePublisher for the result.
+                // Subscribe to sessionResponsePublisher for the result. This fires
+                // over the relay regardless of app-switching, so the action
+                // completes even when the user is still in Jupiter.
                 let result = try await waitForResponse(requestId: request.id)
+                self.notifyWalletConnectReturn(success: true, method: method, requestId: request.id)
                 completion(.success(result))
             } catch {
+                // If the request was dispatched (user likely sent to Jupiter), nudge
+                // them back to see the failure/rejection. The notifier no-ops when
+                // the app is already foregrounded, so a pre-dispatch relay error
+                // (user never left) won't post.
+                if let pendingRequestId {
+                    self.notifyWalletConnectReturn(success: false, method: method, requestId: pendingRequestId)
+                }
                 completion(.failure(error))
             }
+        }
+    }
+
+    /// Post a tappable local notification when a WalletConnect response arrives
+    /// and Agentic is backgrounded (the user is in Jupiter). On iOS 17+/18 Apple
+    /// blocks silent app-to-app redirects, so this is the reliable way back.
+    /// No-ops when the app is active — the in-app toast covers that.
+    private func notifyWalletConnectReturn(success: Bool, method: String, requestId: RPCID) {
+        DispatchQueue.main.async {
+            let appState = UIApplication.shared.applicationState
+            let appStateStr = appState == .active ? "active" : (appState == .inactive ? "inactive" : "background")
+            guard appState != .active else {
+                AgenticIOSLog.info("AgenticWalletConnect", "notifyReturn", "SKIP_FOREGROUND", "result arrived while app active; in-app toast will show it", [
+                    "method": method,
+                    "requestId": requestId.string,
+                    "success": success ? "true" : "false",
+                ])
+                return
+            }
+            AgenticIOSLog.info("AgenticWalletConnect", "notifyReturn", "POST", "posting return notification (app backgrounded)", [
+                "method": method,
+                "requestId": requestId.string,
+                "success": success ? "true" : "false",
+                "appState": appStateStr,
+            ])
+            let title = success ? "Approval complete" : "Approval needs you"
+            let body = success ? "Tap to return to Agentic." : "Open Agentic to see the result."
+            AgenticLocalNotification.postIfAuthorized(
+                title: title,
+                body: body,
+                tag: "\(AgenticLocalNotification.walletConnectPrefix)\(requestId.string)",
+                userInfo: [
+                    "agenticWcResult": success,
+                    "requestId": requestId.string,
+                    "method": method,
+                ]
+            )
         }
     }
 
@@ -474,8 +643,17 @@ final class AgenticWalletConnectCore {
                     cancellable?.cancel()
                     switch response.result {
                     case .response(let value):
+                        AgenticIOSLog.info("AgenticWalletConnect", "waitForResponse", "RESPONSE", "wallet response received over relay", [
+                            "requestId": requestId.string,
+                            "result": self.responseShape(value.value),
+                        ])
                         continuation.resume(returning: value.value)
                     case .error(let err):
+                        AgenticIOSLog.fail("AgenticWalletConnect", "waitForResponse", "ERROR", "wallet returned an RPC error", [
+                            "requestId": requestId.string,
+                            "wcErrorCode": String(err.code),
+                            "wcErrorMessage": err.message,
+                        ])
                         continuation.resume(throwing: AgenticAgentError(code: "WC_RPC_\(err.code)", message: err.message))
                     }
                 }
@@ -483,12 +661,71 @@ final class AgenticWalletConnectCore {
     }
 
     private func launchCurrentWalletForRequest(method: String, topic: String, requestId: RPCID) {
-        AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "wc_request_launch_skip", "Jupiter has no safe iOS request foreground URL", [
+        // The request is already on the relay; foreground the wallet so its
+        // pending-request sheet appears. Prefer the peer's declared redirect
+        // (captured at session settle), then the bare jupiter:// fallback.
+        // Opening *another* app is allowed on iOS — only returning to ourselves
+        // is the restricted case the notification handles.
+        let redirects: (native: String?, universal: String?) = queue.sync {
+            (walletRedirectNative, walletRedirectUniversal)
+        }
+        var raws: [String] = [redirects.native, redirects.universal].compactMap { $0 }.filter { !$0.isEmpty }
+        if let fallback = AgenticWalletConnectDeepLink.jupiterRequestLaunchUrl()?.absoluteString {
+            raws.append(fallback)
+        }
+        let urls = raws.compactMap { URL(string: $0) }
+        guard !urls.isEmpty else {
+            AgenticIOSLog.fail("AgenticWalletConnect", "launchCurrentWalletForRequest", "NO_URL", "no wallet launch URL available — cannot foreground Jupiter", [
+                "method": method,
+                "requestId": requestId.string,
+                "topic": short(topic),
+            ])
+            return
+        }
+        AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "START", "foregrounding wallet for request", [
             "method": method,
             "requestId": requestId.string,
             "topic": short(topic),
-            "launchMode": "jupiter_manual_open",
+            "candidateCount": String(urls.count),
+            "candidateSchemes": urls.map { $0.scheme ?? "?" }.joined(separator: ","),
+            "peerRedirectNative": redirects.native == nil ? "false" : "true",
+            "peerRedirectUniversal": redirects.universal == nil ? "false" : "true",
         ])
+        openWalletCandidate(urls, index: 0, method: method, requestId: requestId)
+    }
+
+    private func openWalletCandidate(_ urls: [URL], index: Int, method: String, requestId: RPCID) {
+        guard index < urls.count else {
+            AgenticIOSLog.fail("AgenticWalletConnect", "launchCurrentWalletForRequest", "FAIL", "iOS refused every candidate — Jupiter not installed or scheme not openable", [
+                "method": method,
+                "requestId": requestId.string,
+            ])
+            return
+        }
+        let url = urls[index]
+        DispatchQueue.main.async {
+            AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "ATTEMPT", "trying to open wallet", [
+                "scheme": url.scheme ?? "",
+                "index": String(index),
+                "requestId": requestId.string,
+            ])
+            UIApplication.shared.open(url, options: [:]) { launched in
+                if launched {
+                    AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "DONE", "wallet foregrounded", [
+                        "scheme": url.scheme ?? "",
+                        "method": method,
+                        "requestId": requestId.string,
+                    ])
+                } else {
+                    AgenticIOSLog.fail("AgenticWalletConnect", "launchCurrentWalletForRequest", "CANDIDATE_REFUSED", "iOS refused candidate; trying next", [
+                        "scheme": url.scheme ?? "",
+                        "index": String(index),
+                        "requestId": requestId.string,
+                    ])
+                    self.openWalletCandidate(urls, index: index + 1, method: method, requestId: requestId)
+                }
+            }
+        }
     }
 
     private func sanitizeRelayHost(_ raw: String?) -> String {

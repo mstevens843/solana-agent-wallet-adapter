@@ -1,6 +1,24 @@
 import Foundation
 
 enum AgenticIOSLog {
+    /// When true, sensitive values (payloads, signatures, transactions, …) are
+    /// logged in full instead of `[redacted]`, for a local debug session.
+    /// Defaults on only in DEBUG builds so Release never leaks raw artifacts to
+    /// the device syslog. Flip at runtime via `setRawValues(_:)` (e.g. the JS
+    /// layer enables it when logLevel === 'debug').
+    #if DEBUG
+    private static var allowRawValues = true
+    #else
+    private static var allowRawValues = false
+    #endif
+
+    private static let rawValueCap = 3000
+    private static let redactedValueCap = 240
+
+    static func setRawValues(_ enabled: Bool) {
+        allowRawValues = enabled
+    }
+
     static func info(
         _ component: String,
         _ method: String,
@@ -34,7 +52,13 @@ enum AgenticIOSLog {
             .map { "\(sanitizeKey($0.key))=\(quote(sanitizeValue(key: $0.key, value: $0.value)))" }
             .joined(separator: " ")
         let line = "[AgentIOSApp] [\(component)] \(method) | \(step) phase=\(phase) message=\(quote(message))"
-        print(suffix.isEmpty ? line : "\(line) \(suffix)")
+        let finalLine = suffix.isEmpty ? line : "\(line) \(suffix)"
+        // NSLog (not print) so the line reaches the device unified log / syslog —
+        // visible in `idevicesyslog`, Console.app, AND the Xcode console. print()
+        // only reaches stdout, which is captured solely by an attached Xcode
+        // debugger. Use an explicit "%@" format: `finalLine` contains user data
+        // with possible `%` characters that must not be interpreted as a format.
+        NSLog("%@", finalLine)
     }
 
     private static func sanitizeKey(_ key: String) -> String {
@@ -47,7 +71,7 @@ enum AgenticIOSLog {
 
     private static func sanitizeValue(key: String, value: String) -> String {
         let lower = key.lowercased()
-        if lower.contains("token")
+        let isSensitive = lower.contains("token")
             || lower.contains("secret")
             || lower.contains("private")
             || lower.contains("shared")
@@ -56,10 +80,13 @@ enum AgenticIOSLog {
             || lower.contains("signature")
             || lower.contains("transaction")
             || lower.contains("ciphertext")
-            || lower.contains("plaintext") {
-            return "[redacted]"
+            || lower.contains("plaintext")
+        if isSensitive {
+            // Opt-in raw mode (debug sessions) logs the full value so payloads /
+            // signatures can be diffed on-device; otherwise redact as before.
+            return allowRawValues ? String(value.prefix(rawValueCap)) : "[redacted]"
         }
-        return String(value.prefix(240))
+        return String(value.prefix(redactedValueCap))
     }
 
     private static func quote(_ value: String) -> String {

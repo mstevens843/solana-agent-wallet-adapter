@@ -14,8 +14,13 @@ enum AgenticWalletConnectDeepLink {
         URL(string: "jupiter://wc?uri=\(percentEncodeQueryValue(uri))")
     }
 
+    /// Fallback URL to foreground Jupiter for an in-flight signing request when
+    /// the session's peer redirect is unavailable. The request itself is already
+    /// delivered over the WalletConnect relay; opening Jupiter just surfaces its
+    /// pending-request sheet. Bare `jupiter://` (no `wc?uri=`) because, unlike
+    /// pairing, a request carries no URI to hand over.
     static func jupiterRequestLaunchUrl() -> URL? {
-        nil
+        URL(string: "jupiter://")
     }
 
     private static func percentEncodeQueryValue(_ value: String) -> String {

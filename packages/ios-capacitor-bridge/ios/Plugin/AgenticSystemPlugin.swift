@@ -13,7 +13,10 @@ public class AgenticSystemPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "clipboardWrite", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "haptic", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "showNotification", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "requestNotificationAuthorization", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "appLifecycleState", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "devLog", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setDebugLogging", returnType: CAPPluginReturnPromise),
     ]
 
     private static let allowedSchemes: Set<String> = ["https", "http", "mailto", "tel", "sms", "phantom", "solflare", "backpack", "jupiter", "wc"]
@@ -191,6 +194,53 @@ public class AgenticSystemPlugin: CAPPlugin, CAPBridgedPlugin {
                 proceed(settings.authorizationStatus)
             }
         }
+    }
+
+    @objc func requestNotificationAuthorization(_ call: CAPPluginCall) {
+        guard AgenticBridgeOrigin.validate(call, on: bridge) else { return }
+        // Request-only: prompt for permission without posting a notification, so
+        // callers can ask at a deliberate moment (e.g. right after connecting
+        // Jupiter) and then post return notifications silently later.
+        AgenticLocalNotification.requestAuthorization { status in
+            AgenticIOSLog.info("AgenticSystem", "requestNotificationAuthorization", "DONE", "resolved", [
+                "status": status,
+            ])
+            call.resolve(["status": status])
+        }
+    }
+
+    @objc func devLog(_ call: CAPPluginCall) {
+        guard AgenticBridgeOrigin.validate(call, on: bridge) else { return }
+        // Bridge JS step logs into the same native syslog stream as AgenticIOSLog
+        // so a single `idevicesyslog | grep "[AgentIOSApp]"` shows the whole
+        // Jupiter flow (native + JS) in one terminal.
+        let component = call.getString("component") ?? "JS"
+        let method = call.getString("method") ?? "log"
+        let step = call.getString("step") ?? "STEP"
+        let level = call.getString("level", "info").lowercased()
+        let message = call.getString("message") ?? ""
+        var metadata: [String: String] = [:]
+        if let obj = call.getObject("metadata") {
+            for (key, value) in obj {
+                metadata[key] = (value as? String) ?? String(describing: value)
+            }
+        }
+        if level == "fail" || level == "error" {
+            AgenticIOSLog.fail(component, method, step, message, metadata)
+        } else {
+            AgenticIOSLog.info(component, method, step, message, metadata)
+        }
+        call.resolve(["ok": true])
+    }
+
+    @objc func setDebugLogging(_ call: CAPPluginCall) {
+        guard AgenticBridgeOrigin.validate(call, on: bridge) else { return }
+        let enabled = call.getBool("enabled") ?? false
+        AgenticIOSLog.setRawValues(enabled)
+        AgenticIOSLog.info("AgenticSystem", "setDebugLogging", "DONE", "raw value logging toggled", [
+            "enabled": enabled ? "true" : "false",
+        ])
+        call.resolve(["ok": true])
     }
 
     @objc func appLifecycleState(_ call: CAPPluginCall) {

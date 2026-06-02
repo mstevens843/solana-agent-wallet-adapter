@@ -6,10 +6,27 @@ import {
   jupiterIosManualApprovalMessage,
 } from '../jupiterIosApprovalCopy.js';
 
-describe('Jupiter iOS manual approval copy', () => {
-  it('keeps the approval instruction short and user-facing', () => {
+describe('Jupiter iOS approval copy', () => {
+  it('promises an automatic return when notifications are available', () => {
     expect(jupiterIosManualApprovalMessage('Approve the proof in your wallet.')).toBe(
-      "Open Jupiter to approve. Return to Agentic when it's done. Approve the proof in your wallet.",
+      "Approve in Jupiter — we'll bring you back here when it's done. Approve the proof in your wallet.",
+    );
+  });
+
+  it('falls back to manual-return copy when notifications are denied', () => {
+    expect(
+      jupiterIosManualApprovalMessage('Approve the proof in your wallet.', { canNotify: false }),
+    ).toBe(
+      'Approve in Jupiter, then come back to Agentic to see the result. Approve the proof in your wallet.',
+    );
+  });
+
+  it('returns just the prefix when no detail is supplied', () => {
+    expect(jupiterIosManualApprovalMessage()).toBe(
+      "Approve in Jupiter — we'll bring you back here when it's done.",
+    );
+    expect(jupiterIosManualApprovalMessage('   ')).toBe(
+      "Approve in Jupiter — we'll bring you back here when it's done.",
     );
   });
 

@@ -42,6 +42,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // but if you want the App API to support tracking app url opens, make sure to keep this call
         let walletConnectHandled = AgenticBridge.handleOpenUrl(url)
         let capacitorHandled = ApplicationDelegateProxy.shared.application(app, open: url, options: options)
+        // AgenticIOSLog is internal to the bridge module; use NSLog with the same
+        // greppable prefix so this OS-entry log joins the idevicesyslog stream.
+        // capacitorHandled=true means Capacitor fired its appUrlOpen JS event.
+        NSLog("%@", "[AgentIOSApp] [AppDelegate] openURL | INBOUND phase=INFO message=\"app opened via custom-scheme URL\" scheme=\(url.scheme ?? "none") wcHandled=\(walletConnectHandled) capacitorHandled=\(capacitorHandled)")
         return walletConnectHandled || capacitorHandled
     }
 
@@ -51,6 +55,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // tracking app url opens, make sure to keep this call
         let walletConnectHandled = AgenticBridge.handleUserActivity(userActivity)
         let capacitorHandled = ApplicationDelegateProxy.shared.application(application, continue: userActivity, restorationHandler: restorationHandler)
+        NSLog("%@", "[AgentIOSApp] [AppDelegate] continueUserActivity | INBOUND phase=INFO message=\"app opened via universal link\" type=\(userActivity.activityType) host=\(userActivity.webpageURL?.host ?? "none") wcHandled=\(walletConnectHandled) capacitorHandled=\(capacitorHandled)")
         return walletConnectHandled || capacitorHandled
     }
 

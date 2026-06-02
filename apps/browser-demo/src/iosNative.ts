@@ -215,7 +215,19 @@ interface AgenticSystemPlugin {
     tag?: string;
     message?: string;
   }>;
+  requestNotificationAuthorization(): Promise<{
+    status: 'authorized' | 'provisional' | 'ephemeral' | 'denied' | 'unknown';
+  }>;
   appLifecycleState(): Promise<{ state: 'active' | 'inactive' | 'background' | 'unknown' }>;
+  devLog(options: {
+    component?: string;
+    method?: string;
+    step?: string;
+    level?: 'info' | 'fail';
+    message?: string;
+    metadata?: Record<string, string>;
+  }): Promise<{ ok: boolean }>;
+  setDebugLogging(options: { enabled: boolean }): Promise<{ ok: boolean }>;
 }
 
 interface AgenticRemoteConfigStatus {
@@ -797,6 +809,12 @@ export class IosNativeWalletBackend implements WalletBackend {
 
   private async connectJupiter(options: { forceNew?: boolean } = {}): Promise<IosAuthRecord> {
     await this.ensureCallbackSubscription();
+    // In a debug session, allow the native logger to print raw payloads/signatures
+    // (DEBUG builds already default this on; this also enables it for a Release
+    // build running with logLevel='debug'). Best-effort, native-only.
+    if (this.logLevel === 'debug' && safeIsNativePlatform()) {
+      void AgenticSystem.setDebugLogging({ enabled: true }).catch(() => undefined);
+    }
     const requestId = newSigningRequestId();
     const startedAt = Date.now();
     try {
@@ -1100,7 +1118,7 @@ export class IosNativeWalletBackend implements WalletBackend {
       switch (request.kind) {
         case 'sign_message': {
           const message = bs58.encode(payload);
-          await this.emitJupiterRequestLaunchSkipDebug(request, record);
+          await this.emitJupiterRequestLaunchDebug(request, record);
           const result = await callWalletConnect(
             'wcSignMessage',
             () =>
@@ -1126,7 +1144,7 @@ export class IosNativeWalletBackend implements WalletBackend {
         }
         case 'sign_transaction': {
           const transactionBase64 = iosNativeWalletConnectTransactionParam(request.payload);
-          await this.emitJupiterRequestLaunchSkipDebug(request, record);
+          await this.emitJupiterRequestLaunchDebug(request, record);
           const result = await callWalletConnect(
             'wcSignTransaction',
             () =>
@@ -1168,7 +1186,7 @@ export class IosNativeWalletBackend implements WalletBackend {
         case 'sign_and_send_transaction': {
           const transactionBase64 = iosNativeWalletConnectTransactionParam(request.payload);
           try {
-            await this.emitJupiterRequestLaunchSkipDebug(request, record);
+            await this.emitJupiterRequestLaunchDebug(request, record);
             const result = await callWalletConnect(
               'wcSignAndSendTransaction',
               () =>
@@ -1208,7 +1226,7 @@ export class IosNativeWalletBackend implements WalletBackend {
               message: err instanceof Error ? err.message : String(err),
             });
           }
-          await this.emitJupiterRequestLaunchSkipDebug(request, record);
+          await this.emitJupiterRequestLaunchDebug(request, record);
           const signed = await callWalletConnect(
             'wcSignTransaction',
             () =>
@@ -1274,19 +1292,22 @@ export class IosNativeWalletBackend implements WalletBackend {
     }
   }
 
-  private async emitJupiterRequestLaunchSkipDebug(request: SigningRequest, record: IosAuthRecord): Promise<void> {
+  private async emitJupiterRequestLaunchDebug(request: SigningRequest, record: IosAuthRecord): Promise<void> {
+    // The native WalletConnect core foregrounds Jupiter for the request (peer
+    // redirect → jupiter://) once the request is on the relay, and posts a
+    // tappable return notification when the response arrives while backgrounded.
     await emitMobileWalletDebug(this.logLevel, {
       appUrl: this.appUrl,
       wallet: 'jupiter',
       method: 'sign',
-      step: 'wc_request_launch_skip',
+      step: 'wc_request_launch_native',
       requestId: request.id,
       strategy: 'walletconnect',
       kind: request.kind,
       topic: short(record.walletConnectTopic ?? ''),
       pubkey: short(record.publicKey),
-      code: 'jupiter_no_safe_request_link',
-      message: 'Open Jupiter manually to approve.',
+      code: 'jupiter_native_foreground',
+      message: 'Native bridge foregrounds Jupiter and notifies on return.',
     });
   }
 
@@ -1911,6 +1932,35 @@ export async function iosNativeOpenExternalUrl(url: string): Promise<boolean> {
   return true;
 }
 
+export type IosNativeNotificationAuthStatus =
+  | 'authorized'
+  | 'provisional'
+  | 'ephemeral'
+  | 'denied'
+  | 'unknown';
+
+/**
+ * Request notification permission at a deliberate moment (e.g. right after
+ * connecting Jupiter) so the native WalletConnect layer can later post a
+ * tappable "approval complete" notification that brings the user back from
+ * Jupiter on iOS 17+/18, where silent app-to-app redirects are blocked.
+ * Returns the resolved status; never throws.
+ */
+export async function iosNativeEnsureReturnNotificationPermission(): Promise<IosNativeNotificationAuthStatus> {
+  if (!safeIsNativePlatform()) return 'unknown';
+  try {
+    const result = await AgenticSystem.requestNotificationAuthorization();
+    return result?.status ?? 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+/** Whether a resolved status lets us post return notifications. */
+export function iosNativeNotificationStatusCanNotify(status: IosNativeNotificationAuthStatus): boolean {
+  return status === 'authorized' || status === 'provisional' || status === 'ephemeral';
+}
+
 function contextMetadata(context: WalletUrlOpenContext | undefined): Record<string, string> {
   if (!context) return {};
   return {
@@ -1920,10 +1970,35 @@ function contextMetadata(context: WalletUrlOpenContext | undefined): Record<stri
   };
 }
 
+// Forward a mobile-wallet-debug event into the NATIVE syslog (via AgenticSystem.devLog
+// → AgenticIOSLog → NSLog) so the JS connect/sign steps appear in the same
+// `idevicesyslog | grep "[AgentIOSApp]"` terminal stream as the native logs. JS
+// console output never reaches the device syslog, so this bridge is what makes a
+// single unified terminal trace possible. Best-effort, native-only, fire-and-forget.
+function forwardNativeDevLog(event: MobileWalletDebugEvent): void {
+  if (!safeIsNativePlatform()) return;
+  try {
+    const metadata = mobileWalletDebugPayload(event);
+    const level: 'info' | 'fail' =
+      /fail|error|reject|timeout|missing/i.test(event.step) || event.code === 'error' ? 'fail' : 'info';
+    void AgenticSystem.devLog({
+      component: `JS:${event.wallet}`,
+      method: event.method,
+      step: event.step,
+      level,
+      message: event.message ?? '',
+      metadata,
+    }).catch(() => undefined);
+  } catch {
+    // never let logging break the flow
+  }
+}
+
 async function emitMobileWalletDebug(logLevel: IosNativeLogLevel, event: MobileWalletDebugEvent): Promise<void> {
   if (!MOBILE_WALLET_DEBUG_WALLETS.has(event.wallet)) {
     return;
   }
+  forwardNativeDevLog(event);
   try {
     const endpoint = new URL('/api/mobile-wallet-debug', event.appUrl).toString();
     const payload = mobileWalletDebugPayload(event);
