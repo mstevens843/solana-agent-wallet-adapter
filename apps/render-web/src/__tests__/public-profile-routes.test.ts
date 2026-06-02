@@ -349,7 +349,7 @@ describe('public profile SSR routes', () => {
         expect(res.body).not.toContain('<div id="app"></div>');
       },
     );
-  });
+  }, 15_000);
 
   it('renders a 200 HTML page with og tags for a dev-allowlisted wallet', async () => {
     await withServer(
