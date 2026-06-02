@@ -22,7 +22,8 @@ Agentic already has its own recurring action system:
 - Each occurrence still requires wallet approval.
 - Jupiter swaps inside Agentic recurring tasks refresh at approval time.
 
-Jupiter Recurring API is not implemented.
+Current Jupiter Recurring launch behavior is documented in
+[`docs/connectors/jupiter.md`](../docs/connectors/jupiter.md#recurring-native-dca).
 
 This connector must coexist with Agentic recurring tasks and use distinct language:
 

@@ -222,8 +222,21 @@ function rejectArbitraryMainnetTransaction(
   config: AgentWalletConfig | undefined,
   cluster: Cluster,
 ): ReturnType<typeof errorReply> | null {
-  void config;
-  void cluster;
+  if (cluster !== 'mainnet-beta' || !config) {
+    return null;
+  }
+  if (!config.mainnet.enabled) {
+    return errorReply(new ProtocolError(
+      'invalid_request',
+      'Mainnet transaction signing is disabled by this agent wallet configuration.',
+    ));
+  }
+  if (!config.mainnet.allowArbitraryTransactions) {
+    return errorReply(new ProtocolError(
+      'invalid_request',
+      'Arbitrary mainnet transaction signing is disabled. Use prepared action tools so policy checks can run before wallet approval.',
+    ));
+  }
   return null;
 }
 

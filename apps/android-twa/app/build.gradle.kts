@@ -93,7 +93,7 @@ val deviceAgentInput = providers.gradleProperty("agenticDeviceAgent").orNull
 val deviceAgentEnabled = booleanFlag(
     deviceAgentInput,
     "AGENTIC_ANDROID_DEVICE_AGENT",
-    true,
+    !isReleaseBuild,
 )
 val streamingSignerInput = providers.gradleProperty("agenticStreamingSigner").orNull
     ?: providers.gradleProperty("AGENTIC_ANDROID_STREAMING_SIGNER").orNull
@@ -102,10 +102,10 @@ val streamingSignerInput = providers.gradleProperty("agenticStreamingSigner").or
 val streamingSignerEnabled = booleanFlag(
     streamingSignerInput,
     "AGENTIC_ANDROID_STREAMING_SIGNER",
-    true,
+    !isReleaseBuild,
 )
 val deviceAgentWalletAllowlist = propertyOrEnv("AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST")
-    ?: "4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd,7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w"
+    ?: if (isReleaseBuild) "" else "4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd,7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w"
 val cloudApiBaseUrl = propertyOrEnv("AGENTIC_ANDROID_CLOUD_API_BASE_URL")
     ?: propertyOrEnv("AGENTIC_CLOUD_API_BASE_URL")
     ?: "https://agentic-signer.com"
@@ -153,23 +153,27 @@ if (isReleaseBuild && cloudApiUri.scheme != "https") {
 
 val appVersionCode = propertyOrEnv("AGENTIC_ANDROID_VERSION_CODE")
     ?: propertyOrEnv("agenticVersionCode")
-    ?: "1"
+    ?: "5"
 val appVersionName = propertyOrEnv("AGENTIC_ANDROID_VERSION_NAME")
     ?: propertyOrEnv("agenticVersionName")
-    ?: "0.1.0"
+    ?: "1.0.5"
 val parsedVersionCode = appVersionCode.toIntOrNull()
 if (parsedVersionCode == null || parsedVersionCode <= 0) {
     throw GradleException("AGENTIC_ANDROID_VERSION_CODE must be a positive integer. Current value: $appVersionCode")
 }
 
 val releaseKeystore = propertyOrEnv("AGENTIC_ANDROID_KEYSTORE")
+    ?: providers.gradleProperty("android.injected.signing.store.file").orNull
 val releaseKeyAlias = propertyOrEnv("AGENTIC_ANDROID_KEY_ALIAS")
+    ?: providers.gradleProperty("android.injected.signing.key.alias").orNull
 val releaseStorePassword = propertyOrEnv("AGENTIC_ANDROID_STORE_PASSWORD")
+    ?: providers.gradleProperty("android.injected.signing.store.password").orNull
 val releaseKeyPassword = propertyOrEnv("AGENTIC_ANDROID_KEY_PASSWORD")
+    ?: providers.gradleProperty("android.injected.signing.key.password").orNull
 val requireReleaseSigning =
     propertyOrEnv("AGENTIC_ANDROID_REQUIRE_SIGNING")
         ?.let { it == "1" || it.equals("true", ignoreCase = true) || it.equals("yes", ignoreCase = true) }
-        ?: false
+        ?: isReleaseBuild
 val releaseSigningValues = mapOf(
     "AGENTIC_ANDROID_KEYSTORE" to releaseKeystore,
     "AGENTIC_ANDROID_KEY_ALIAS" to releaseKeyAlias,
@@ -181,7 +185,7 @@ val hasReleaseSigning = missingReleaseSigning.isEmpty()
 
 if (isReleaseBuild && requireReleaseSigning && !hasReleaseSigning) {
     throw GradleException(
-        "AGENTIC_ANDROID_REQUIRE_SIGNING=1 requires complete release signing env. Missing: ${missingReleaseSigning.joinToString(", ")}",
+        "Release Android builds require complete signing config from AGENTIC_ANDROID_* env vars or Android Studio's signing wizard. Missing: ${missingReleaseSigning.joinToString(", ")}",
     )
 }
 
@@ -252,7 +256,12 @@ android {
         debug {
         }
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
             if (hasReleaseSigning) {
                 signingConfig = signingConfigs.getByName("release")
             }

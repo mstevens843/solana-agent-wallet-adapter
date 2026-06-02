@@ -24,6 +24,7 @@ export type ProfilePhase =
   | 'empty'
   | 'error'
   | 'forbidden'
+  | 'signedOut'
   | 'notDeployed'
   | 'noWallet';
 
@@ -273,11 +274,22 @@ function renderForbiddenBody(): string {
   return `
     <div class="skills-profile-card">
       <div class="skills-profile-notice skills-profile-notice-warn">
-        <strong>Wallet not on the Layer 2 dev allowlist</strong>
+        <strong>Profile not available</strong>
         <p>
-          This wallet isn't on the dev allowlist yet, so the public profile aggregator
-          won't index its receipts. Switch to an allowlisted wallet to preview your page.
+          This wallet's public skill profile is not available yet. Install a skill and approve
+          a run to start building a receipt-backed profile.
         </p>
+      </div>
+    </div>
+  `;
+}
+
+function renderSignedOutBody(): string {
+  return `
+    <div class="skills-profile-card">
+      <div class="skills-profile-notice">
+        <strong>Sign in required</strong>
+        <p>${escapeHtml(panelState.errorMessage || 'Sign in to Agentic Cloud with your wallet to preview your public skill profile.')}</p>
       </div>
     </div>
   `;
@@ -319,10 +331,10 @@ function renderNoWalletBody(): string {
   return `
     <div class="skills-profile-card">
       <div class="skills-profile-notice">
-        <strong>Connect the dev wallet</strong>
+        <strong>Connect a wallet</strong>
         <p>
-          Connect an allowlisted Layer 2 wallet to preview the public <code>/u/&lt;wallet&gt;</code>
-          profile that aggregates your skill receipts.
+          Connect the wallet you use for skills to preview the public <code>/u/&lt;wallet&gt;</code>
+          profile that aggregates receipt-backed runs.
         </p>
       </div>
     </div>
@@ -340,6 +352,9 @@ export function renderMyProfilePanel(): string {
       break;
     case 'forbidden':
       body = renderForbiddenBody();
+      break;
+    case 'signedOut':
+      body = renderSignedOutBody();
       break;
     case 'notDeployed':
       body = renderNotDeployedBody(panelState.wallet ?? '');
@@ -399,6 +414,10 @@ async function fetchWalletStats(wallet: string): Promise<void> {
     }
     case 'forbidden':
       panelState.phase = 'forbidden';
+      break;
+    case 'unauthenticated':
+      panelState.phase = 'signedOut';
+      panelState.errorMessage = result.message;
       break;
     case 'notDeployed':
       panelState.phase = 'notDeployed';

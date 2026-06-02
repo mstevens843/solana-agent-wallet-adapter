@@ -34,7 +34,7 @@ const subTabs: readonly AgentProtocolsSubTab[] = [
   },
 ];
 
-let activeSubTabId: AgentProtocolsSubTabId = 'agent-card';
+let activeSubTabId: AgentProtocolsSubTabId = 'external-agents';
 
 const hotModule = (import.meta as ImportMeta & {
   hot?: { accept: (callback: () => void) => void };

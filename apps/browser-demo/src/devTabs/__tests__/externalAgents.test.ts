@@ -453,7 +453,7 @@ describe('fetchInbound state machine', () => {
     await fetchInbound();
     const after = __externalAgentsForTests.getState();
     expect(after.status).toBe('error');
-    expect(after.errorMessage).toMatch(/disabled for this wallet/);
+    expect(after.errorMessage).toMatch(/cannot view AP2 mandates/);
   });
 
   it('transitions to error with sign-in copy on 401', async () => {

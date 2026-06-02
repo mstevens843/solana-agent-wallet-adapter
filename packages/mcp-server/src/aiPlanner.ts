@@ -30,7 +30,7 @@ import {
   type TxGateContext,
 } from '@solana-agent-wallet-adapter/workflow';
 
-import { redactSecrets } from './trace.js';
+import { redactSecrets, trace } from './trace.js';
 import { connectorRegistryPromptContext } from './connectorRegistry.js';
 import { BLINK_CLASSIFIER_REVIEW_PROMPT } from './blinkClassification.js';
 import { createMcpCapabilityResolver } from './agentResolvers/index.js';
@@ -380,9 +380,7 @@ export class BridgeAiPlanner {
       });
       const resolveOptions = process.env.AGENT_WALLET_TRACE === '1'
         ? {
-            trace: (event: unknown) => {
-              try { console.debug('[agent-policy-trace]', JSON.stringify(event)); } catch { /* no-op */ }
-            },
+            trace: (event: unknown) => trace('agent-policy-trace', { event }),
           } as Parameters<typeof runPolicyPipeline>[0]['resolveOptions']
         : undefined;
       // LLM-side atom-extraction fallback for NOTEs phrased outside the regex vocabulary.
@@ -407,7 +405,7 @@ export class BridgeAiPlanner {
       return { ...request, context: enrichedContext } as Required<AiReviewRequest>;
     } catch (err) {
       if (process.env.AGENT_WALLET_TRACE === '1') {
-        console.debug('[agent-policy-trace] enrich failed:', err instanceof Error ? err.message : err);
+        trace('agent-policy-trace.enrich_failed', { error: err instanceof Error ? err.message : err });
       }
       return request;
     }
@@ -2220,7 +2218,10 @@ function isJsonObjectLike(value: unknown): value is Record<string, unknown> {
 
 function policyBundleAtomIds(bundle: Record<string, unknown>): Set<string> {
   const atoms = Array.isArray(bundle.atoms) ? (bundle.atoms as Array<Record<string, unknown>>) : [];
-  return new Set(atoms.map((atom) => (typeof atom.id === 'string' ? atom.id : '')).filter(Boolean));
+  const atomIds = new Set(atoms.map((atom) => (typeof atom.id === 'string' ? atom.id : '')).filter(Boolean));
+  if (atomIds.size > 0) return atomIds;
+  const evaluations = Array.isArray(bundle.evaluations) ? (bundle.evaluations as Array<Record<string, unknown>>) : [];
+  return new Set(evaluations.map((evaluation) => (typeof evaluation.atomId === 'string' ? evaluation.atomId : '')).filter(Boolean));
 }
 
 const JUPITER_AGGREGATOR_PROGRAM_IDS: ReadonlySet<string> = new Set([

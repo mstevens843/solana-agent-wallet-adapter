@@ -10436,7 +10436,7 @@ function agenticLayersDocsSection(): string {
       </div>
       <div class="agentic-layer-contract" aria-label="Layer contract">
         <strong>Shared contract</strong>
-        <span>These surfaces are currently dev-gated in the app. The production contract stays the same: agents prepare, users approve, wallets sign, receipts persist.</span>
+        <span>Agents prepare, users approve, wallets sign, receipts persist. Spending Sessions add revocable SPL-token caps for repeated small payments.</span>
       </div>
     </section>
   `;
@@ -45508,7 +45508,7 @@ function mobileDockTabButton(tab: ActiveTab, label: string): string {
 const REQUIRED_MORE_SURFACES: Record<string, { label: string; render: () => string }> = {
   'agent-protocols': { label: 'Agent Payments', render: renderAgentProtocolsPanel },
   skills: { label: 'Skills', render: renderSkillsPanel },
-  sessions: { label: 'Sessions', render: renderSessionsPanel },
+  sessions: { label: 'Spending Sessions', render: renderSessionsPanel },
 };
 
 function moreMenuItems(): WorkspaceMoreMenuItem[] {

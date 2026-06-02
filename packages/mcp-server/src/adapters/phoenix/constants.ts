@@ -6,7 +6,7 @@ export const PHOENIX_ADAPTER_ID = 'phoenix' as const;
 export const PHOENIX_NAME = 'Phoenix Perpetuals';
 export const PHOENIX_WEBSITE = 'https://www.phoenix.trade';
 export const PHOENIX_DESCRIPTION =
-  'Read Phoenix Perpetuals markets, positions, and funding facts and preview leverage health. Prepare actions are policy-gated and stubbed until the Rise SDK lands on npm.';
+  'Read Phoenix Perpetuals markets, positions, and funding facts, preview leverage health, and prepare policy-gated Rise-backed actions for wallet approval when a Phoenix access code is configured.';
 
 export const PHOENIX_SUPPORTED_CLUSTERS: Cluster[] = ['mainnet-beta'];
 

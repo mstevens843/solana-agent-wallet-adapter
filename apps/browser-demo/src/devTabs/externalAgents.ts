@@ -1,5 +1,4 @@
 import { renderApprovalBadges } from '../approvalBadges.js';
-import { isDevWallet } from '../devGate.js';
 import { currentAddress, refreshConnection } from '../connectionState.js';
 import { dispatchAp2InboundDemoCreated } from '../ap2InboundDemoEvents.js';
 import { getConnectedAddress, getConnectedCluster } from '../walletState.js';
@@ -668,7 +667,7 @@ async function fetchAp2InboundSource(): Promise<InboundFetchResult> {
     headers: { Accept: 'application/json' },
   });
   if (res.status === 404) return { items: [] };
-  if (res.status === 403) return { items: [], errorMessage: 'AP2 inbound is disabled for this wallet on this deploy.' };
+  if (res.status === 403) return { items: [], errorMessage: 'This wallet cannot view AP2 mandates on this deployment.' };
   if (res.status === 401) return { items: [], errorMessage: 'Sign into Agentic Cloud to view AP2 mandates.' };
   if (!res.ok) return { items: [], errorMessage: `HTTP ${res.status}` };
   const payload = (await res.json().catch(() => null)) as
@@ -716,14 +715,12 @@ export async function fetchInbound(force = false): Promise<void> {
   // Synchronous re-entrancy guard: mutate state before any await so the
   // second call in the same tick sees `loading` and returns early.
   if (state.status === 'loading' && !force) return;
-  const initialAddr = currentAddress();
-  if (initialAddr && !isDevWallet(initialAddr)) return;
   state.status = 'loading';
   state.errorMessage = '';
   patchPanel();
   await refreshConnection();
   const addr = currentAddress();
-  if (!addr || !isDevWallet(addr)) {
+  if (!addr) {
     // Connection went away while we were resolving the session — clear the
     // loading state so the panel doesn't get stuck.
     state.status = 'idle';
@@ -755,7 +752,7 @@ function guard(): boolean {
     state.inbound = [];
     state.errorMessage = '';
   }
-  return isDevWallet(addr);
+  return true;
 }
 
 export function renderExternalAgentsPanel(): string {

@@ -425,16 +425,16 @@ describe('public profile SSR routes', () => {
     );
   });
 
-  it('returns 404 for a wallet outside the dev allowlist', async () => {
+  it('renders an empty public page for a wallet outside the old dev allowlist', async () => {
     await withServer(
       { AGENTIC_DEV_WALLET_ALLOWLIST: DEV_WALLET },
       async () => {},
       async ({ port }) => {
         const res = await rawRequest(port, 'GET', `/u/${OTHER_WALLET}`);
-        expect(res.status).toBe(404);
+        expect(res.status).toBe(200);
         expect(res.headers['content-type']).toBe('text/html; charset=utf-8');
         expect(res.headers['cache-control']).toBe('public, max-age=60');
-        expect(res.body).toContain('Not found');
+        expect(res.body).toContain('No skills installed yet.');
       },
     );
   });
@@ -518,7 +518,7 @@ describe('public profile SSR routes', () => {
     );
   });
 
-  it('returns 404 when the manifest author is not in the dev allowlist', async () => {
+  it('renders a skill page when the manifest author is outside the old dev allowlist', async () => {
     await withServer(
       { AGENTIC_DEV_WALLET_ALLOWLIST: DEV_WALLET },
       async (store) => {
@@ -533,7 +533,8 @@ describe('public profile SSR routes', () => {
       },
       async ({ port }) => {
         const res = await rawRequest(port, 'GET', '/skills/shady-skill');
-        expect(res.status).toBe(404);
+        expect(res.status).toBe(200);
+        expect(res.body).toContain('shady-skill');
       },
     );
   });

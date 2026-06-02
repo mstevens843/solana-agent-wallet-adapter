@@ -69,7 +69,10 @@ class PolicyBundleEnforcerTest {
         val text = """{"decision":"deny","reason":"bad"}"""
         val result = JSONObject().put("text", text)
         val out = PolicyBundleEnforcer.enforce(result, payload(bundleWithFailure()))
-        assertEquals(text, out.getString("text"))
+        val parsed = JSONObject(out.getString("text"))
+        assertEquals("deny", parsed.getString("decision"))
+        assertEquals("bad", parsed.getString("reason"))
+        assertTrue(parsed.getJSONObject("evidence").getJSONArray("findings").length() > 0)
         assertNull(out.optJSONObject("safetyOverride"))
     }
 

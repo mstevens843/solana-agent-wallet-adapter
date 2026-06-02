@@ -46,6 +46,20 @@ final class PolicyBundleEnforcerTests: XCTestCase {
         XCTAssertEqual(override["enforcedDecision"] as? String, "deny")
     }
 
+    func testOverridesApproveToDenyWhenAtomCatalogIsMissing() throws {
+        var bundle = bundleWithFailure
+        bundle.removeValue(forKey: "atoms")
+        let result: [String: Any] = ["text": #"{"decision":"approve","reason":"looks good"}"#]
+        let payload: [String: Any] = ["context": ["policyBundle": bundle]]
+        let out = AgenticPolicyBundleEnforcer.enforce(reviewResult: result, payload: payload)
+
+        let correctedText = try XCTUnwrap(out["text"] as? String)
+        let data = correctedText.data(using: .utf8)!
+        let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any]
+        XCTAssertEqual(json?["decision"] as? String, "deny")
+        XCTAssertEqual(json?["blockingFactIds"] as? [String], ["atom.external_price.helium.lt.20"])
+    }
+
     func testPassesThroughDeny() throws {
         let llmText = #"{"decision":"deny","reason":"too risky"}"#
         let result: [String: Any] = ["text": llmText]

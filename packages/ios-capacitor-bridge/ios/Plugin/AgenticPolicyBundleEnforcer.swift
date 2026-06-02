@@ -39,8 +39,7 @@ enum AgenticPolicyBundleEnforcer {
         }
 
         // Build a corrected decision payload.
-        let atoms = bundle["atoms"] as? [[String: Any]] ?? []
-        let validAtomIds = Set(atoms.compactMap { $0["id"] as? String })
+        let validAtomIds = validAtomIds(from: bundle)
         let evaluations = bundle["evaluations"] as? [[String: Any]] ?? []
         let failing = evaluations.filter {
             ($0["pass"] as? Bool) == false && validAtomIds.contains($0["atomId"] as? String ?? "")
@@ -90,9 +89,19 @@ enum AgenticPolicyBundleEnforcer {
         return parsed
     }
 
+    private static func validAtomIds(from bundle: [String: Any]) -> Set<String> {
+        let atoms = bundle["atoms"] as? [[String: Any]] ?? []
+        let atomIds = Set(atoms.compactMap { $0["id"] as? String }.filter { !$0.isEmpty })
+        if !atomIds.isEmpty {
+            return atomIds
+        }
+        let evaluations = bundle["evaluations"] as? [[String: Any]] ?? []
+        return Set(evaluations.compactMap { $0["atomId"] as? String }.filter { !$0.isEmpty })
+    }
+
     private static func mergePolicyFindings(into reviewResult: [String: Any], bundle: [String: Any]) -> [String: Any] {
         let atoms = bundle["atoms"] as? [[String: Any]] ?? []
-        let validAtomIds = Set(atoms.compactMap { $0["id"] as? String })
+        let validAtomIds = validAtomIds(from: bundle)
         let evaluations = bundle["evaluations"] as? [[String: Any]] ?? []
         guard !evaluations.isEmpty else { return reviewResult }
 

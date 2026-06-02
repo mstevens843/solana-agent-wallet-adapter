@@ -500,12 +500,12 @@ describe('loadCatalog', () => {
     expect(__getStateForTests().rows).toHaveLength(1);
   });
 
-  it('403 catalog → forbidden notice, phase ready, rows empty', async () => {
+  it('403 catalog → permission notice, phase ready, rows empty', async () => {
     routeFetch({ catalog: () => emptyResponse(403) });
     await loadCatalog();
     const s = __getStateForTests();
     expect(s.phase).toBe('ready');
-    expect(s.notice?.title).toBe('Dev gate active');
+    expect(s.notice?.title).toBe('Permission required');
     expect(s.rows).toHaveLength(0);
   });
 
@@ -699,11 +699,11 @@ describe('handleInstall', () => {
     expect(__getStateForTests().rows[0]!.installStatus).toBe('active');
   });
 
-  it('403 → notice set, row unchanged, busy cleared', async () => {
+  it('403 → permission notice set, row unchanged, busy cleared', async () => {
     fetchMock.mockResolvedValueOnce(emptyResponse(403));
     await handleInstall('friday-dca');
     const s = __getStateForTests();
-    expect(s.notice?.title).toBe('Dev gate active');
+    expect(s.notice?.title).toBe('Permission required');
     expect(s.rows[0]!.installStatus).toBe('none');
     expect(s.busyInstallId).toBeNull();
   });

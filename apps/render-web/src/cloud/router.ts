@@ -67,7 +67,7 @@ import { isSecureRequest, serializeClearSessionCookie, serializeSessionCookie } 
 // Side-effect import: each Phase-1 dev-API route module self-registers on load.
 import './devApiHandlers.js';
 import { listDevApiHandlers, type DevApiHandlerContext } from './devApiRegistry.js';
-import { deviceAgentFeatureEnabled, deviceAgentRuntimeAvailability, devLayer1Enabled, isAllowedDeviceAgentWallet, isAllowedDevWallet } from './devGate.js';
+import { deviceAgentFeatureEnabled, deviceAgentRuntimeAvailability, isAllowedDeviceAgentWallet } from './devGate.js';
 import { createEvidenceApiHandler, evidenceStoreAdapterForCloudStore } from './evidenceRoutes.js';
 import type { EvidenceStore } from './evidenceService.js';
 import { MemoryWorkflowStore } from './memoryStore.js';
@@ -157,6 +157,7 @@ const AUTH_RATE_LIMIT_MAX_ATTEMPTS = 60;
 const WRITE_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
 const WRITE_RATE_LIMIT_MAX_ATTEMPTS = 180;
 const HOSTED_AI_RATE_LIMIT_MAX_ATTEMPTS = 30;
+const PUBLIC_RELAY_RATE_LIMIT_MAX_ATTEMPTS = 60;
 // Hard ceiling for upstream LLM round-trip latency. Anthropic/OpenAI streaming
 // completions routinely run 20-30s on long prompts; 45s gives headroom while
 // preventing hung-request pileup on Render's HTTP connection pool during an
@@ -586,30 +587,23 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
         enforceJsonWriteRequest(req);
         await enforceAuthRateLimit(req, url, clock, authRateLimiter);
 
-        // Dev-only Layer 1 dispatch (AP2 / ACP / A2A AgentCard / Bridge router).
-        // Public routes (e.g. /.well-known/agent.json) bypass the wallet gate;
-        // all other dev routes require devLayer1Enabled() AND a session whose
-        // wallet is in AGENTIC_DEV_WALLET_ALLOWLIST. Non-matching prefixes fall
-        // through to the existing API route table below.
+        // Agent payment / skills dispatch. Public routes can answer without a
+        // wallet; private routes require the normal Agentic Cloud session.
         const devHandlers = listDevApiHandlers();
         let devHandled = false;
         for (const handler of devHandlers) {
           if (!url.pathname.startsWith(handler.prefix)) continue;
           if (!handler.methods.includes(req.method ?? 'GET')) continue;
           let walletAddress: string | undefined;
-          if (!handler.publicRoute) {
-            if (!devLayer1Enabled()) {
-              writeJson(res, 403, { error: 'dev_layer1_disabled' });
-              devHandled = true;
-              break;
-            }
-            const session = await sessionFromRequest({ req, store, clock });
-            walletAddress = session?.walletAddress;
-            if (!isAllowedDevWallet(walletAddress)) {
-              writeJson(res, 403, { error: 'dev_layer1_disabled' });
-              devHandled = true;
-              break;
-            }
+          const session = await sessionFromRequest({ req, store, clock });
+          walletAddress = session?.walletAddress;
+          if (!handler.publicRoute && !walletAddress) {
+            writeJson(res, 401, {
+              error: 'auth_required',
+              message: 'Sign in to Agentic Cloud with your wallet to use this route.',
+            });
+            devHandled = true;
+            break;
           }
           const context: DevApiHandlerContext = {
             walletAddress,
@@ -872,6 +866,8 @@ export function authRateLimitedRoute(pathname: string): AuthRateLimitInput['rout
   if (pathname === '/api/ai/review-plan') return pathname;
   if (pathname === '/api/ai/ask-about-plan') return pathname;
   if (pathname === '/api/ai/chat') return pathname;
+  if (pathname === '/api/mobile-wallet-debug') return pathname;
+  if (pathname === '/api/mobile-device-agent-debug') return pathname;
   if (pathname.startsWith('/api/plans')) return '/api/plans:*';
   if (pathname.startsWith('/api/approvals')) return '/api/approvals:*';
   if (pathname.startsWith('/api/connector')) return '/api/approvals:*';
@@ -883,13 +879,14 @@ export function authRateLimitedRoute(pathname: string): AuthRateLimitInput['rout
   if (pathname.startsWith('/api/helius')) return '/api/helius:*';
   if (pathname.startsWith('/api/coingecko')) return '/api/coingecko:*';
   if (pathname.startsWith('/api/cloud-workspace')) return '/api/cloud-workspace:*';
-  // Dev-API surfaces. Without these clauses the route categorizer returns
-  // undefined and enforceAuthRateLimit short-circuits — a dev wallet (or a
-  // compromised one) could spam these write endpoints without bound. The
-  // WRITE_RATE_LIMIT bucket (180 attempts / 5 min) is the right shape for
-  // skill installs, signal subscriptions, spend annotations, and streaming
-  // session lifecycle ops.
+  // Agentic app surfaces. Without these clauses the route categorizer returns
+  // undefined and enforceAuthRateLimit short-circuits. The WRITE_RATE_LIMIT
+  // bucket (180 attempts / 5 min) is the right shape for skill installs,
+  // agent payment requests, spend annotations, and streaming session lifecycle ops.
   if (pathname.startsWith('/api/skills')) return '/api/skills:*';
+  if (pathname.startsWith('/api/ap2')) return '/api/approvals:*';
+  if (pathname.startsWith('/api/acp')) return '/api/approvals:*';
+  if (pathname.startsWith('/api/mpp')) return '/api/approvals:*';
   if (pathname.startsWith('/api/signals')) return '/api/signals:*';
   if (pathname.startsWith('/api/spend')) return '/api/spend:*';
   if (pathname.startsWith('/api/streaming')) return '/api/streaming:*';
@@ -905,7 +902,18 @@ function rateLimitWindowMs(route: string): number {
 function rateLimitMaxAttempts(route: string): number {
   if (route === '/api/auth/nonce' || route === '/api/auth/verify-wallet') return AUTH_RATE_LIMIT_MAX_ATTEMPTS;
   if (route === '/api/ai/generate-plan' || route === '/api/ai/review-plan' || route === '/api/ai/ask-about-plan' || route === '/api/ai/chat') return HOSTED_AI_RATE_LIMIT_MAX_ATTEMPTS;
+  if (isPublicRelayRateLimitRoute(route)) return PUBLIC_RELAY_RATE_LIMIT_MAX_ATTEMPTS;
   return WRITE_RATE_LIMIT_MAX_ATTEMPTS;
+}
+
+function isPublicRelayRateLimitRoute(route: string): boolean {
+  return route === '/api/solana:*' ||
+    route === '/api/swap:*' ||
+    route === '/api/birdeye:*' ||
+    route === '/api/helius:*' ||
+    route === '/api/coingecko:*' ||
+    route === '/api/mobile-wallet-debug' ||
+    route === '/api/mobile-device-agent-debug';
 }
 
 function isStateChangingMethod(method: string | undefined): boolean {
@@ -1269,7 +1277,7 @@ async function routeApiRequest(
 
   if (url.pathname === '/api/connector/prepare-transaction') {
     requireMethod(req, 'POST');
-    await handleConnectorPrepareTransaction(req, res, statelessConnectorPreparer);
+    await handleConnectorPrepareTransaction(req, res, store, clock, statelessConnectorPreparer);
     return;
   }
 
@@ -1974,11 +1982,20 @@ function hostedAiConnection(): Connection {
 async function handleConnectorPrepareTransaction(
   req: IncomingMessage,
   res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
   preparer: StatelessConnectorTransactionPreparer,
 ): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required.');
+  }
   const body = asJsonRecord(await readJsonBody(req), 'connector prepare-transaction body');
   const kind = requiredBodyString(body, 'kind');
-  const walletAddress = requiredBodyString(body, 'walletAddress');
+  const walletAddress = requiredBodyString(body, 'walletAddress').trim();
+  if (walletAddress !== session.walletAddress) {
+    throw new ApiError(401, 'Wallet address does not match the signed-in cloud session.');
+  }
   const cluster = requiredCluster(body.cluster);
   const params = body.params;
   if (!params || typeof params !== 'object' || Array.isArray(params)) {
@@ -2091,6 +2108,7 @@ async function handleSolanaSendTransaction(req: IncomingMessage, res: ServerResp
     return;
   } catch (err) {
     if (!isRpcAuthRejectedSendError(err)) throw err;
+    if (process.env.AGENTIC_ALLOW_PUBLIC_RPC_SEND_FALLBACK !== '1') throw err;
     const fallbackUrl = publicSolanaRpcFallback(cluster);
     if (fallbackUrl === configuredUrl) throw err;
     try {

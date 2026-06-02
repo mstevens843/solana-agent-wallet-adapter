@@ -276,8 +276,15 @@ function joinManifests(rows: InstallRow[], catalog: SkillManifest[]): InstallRow
 
 function forbiddenNotice(): InstalledNotice {
   return {
-    title: 'Dev gate active',
-    body: 'Connect the allowed dev wallet to manage installed skills.',
+    title: 'Permission required',
+    body: 'This wallet cannot manage these installed skills.',
+  };
+}
+
+function signInNotice(message = 'Sign in to Agentic Cloud with your wallet to manage installed skills.'): InstalledNotice {
+  return {
+    title: 'Sign in required',
+    body: message,
   };
 }
 
@@ -306,7 +313,7 @@ function renderActionError(message: string): string {
   `;
 }
 
-function renderNotice(notice: InstalledNotice, modifier: 'is-forbidden' | 'is-not-deployed'): string {
+function renderNotice(notice: InstalledNotice, modifier: 'is-forbidden' | 'is-not-deployed' | 'is-auth'): string {
   return `
     <div class="skills-installed-banner ${modifier}" role="status">
       <div><strong>${escapeHtml(notice.title)}</strong>${escapeHtml(notice.body)}</div>
@@ -441,13 +448,24 @@ export function renderRow(row: InstallRow, opts: RowRenderOptions): string {
   const canToggle = isActive || isPaused;
   const toggleLabel = isPaused ? 'Resume' : 'Pause';
   const toggleAction = isPaused ? 'resume' : 'pause';
+  const disabled = busy ? 'disabled' : '';
+  const runNowButton = isActive
+    ? `
+      <button
+        type="button"
+        class="skills-installed-button"
+        data-skills-installed-action="run-now"
+        data-install-id="${escapeHtml(install.id)}"
+        ${disabled}
+      >Run now</button>
+    `
+    : '';
   const isPendingUninstall =
     opts.pendingUninstallId === install.id && opts.pendingUninstallExpiresAt > opts.nowMs;
   const uninstallLabel = isPendingUninstall ? 'Click again to confirm' : 'Uninstall';
   const uninstallClass = isPendingUninstall
     ? 'skills-installed-button is-confirming'
     : 'skills-installed-button is-danger';
-  const disabled = busy ? 'disabled' : '';
   const rowClasses = `skills-installed-row${busy ? ' is-busy' : ''}`;
 
   const toggleButton = canToggle
@@ -482,6 +500,7 @@ export function renderRow(row: InstallRow, opts: RowRenderOptions): string {
         ${escapeHtml(formatRecentCount(row.recentExecutionCount))}
       </div>
       <div class="skills-installed-row-actions">
+        ${runNowButton}
         ${toggleButton}
         <button
           type="button"
@@ -546,7 +565,11 @@ export function renderInstalledPanel(): string {
   const actionErrorBlock = state.actionError ? renderActionError(state.actionError) : '';
   let noticeBlock = '';
   if (state.notice) {
-    const modifier = state.notice.title === 'Dev gate active' ? 'is-forbidden' : 'is-not-deployed';
+    const modifier = state.notice.title === 'Sign in required'
+      ? 'is-auth'
+      : state.notice.title === 'Permission required'
+        ? 'is-forbidden'
+        : 'is-not-deployed';
     noticeBlock = renderNotice(state.notice, modifier);
   }
   return `
@@ -605,6 +628,15 @@ export async function loadInstalls(opts: { silent?: boolean } = {}): Promise<voi
     rerenderPanelOnly();
     return;
   }
+  if (installsRes.kind === 'unauthenticated') {
+    state.notice = signInNotice(installsRes.message);
+    state.rows = [];
+    state.phase = 'ready';
+    state.fetchedAt = Date.now();
+    state.silentRefetching = false;
+    rerenderPanelOnly();
+    return;
+  }
   if (installsRes.kind === 'error' || installsRes.kind === 'networkError') {
     state.phase = 'error';
     state.error = installsRes.message;
@@ -638,7 +670,7 @@ export function invalidateInstalledCache(): void {
 
 async function runMutation(
   installId: string,
-  action: 'pause' | 'resume' | 'uninstall',
+  action: 'pause' | 'resume' | 'uninstall' | 'run-now',
 ): Promise<void> {
   if (state.actionInFlight) return;
   const rowBefore = state.rows.find((row) => row.install.id === installId);
@@ -647,7 +679,7 @@ async function runMutation(
   rerenderPanelOnly();
 
   const result = await postJson<unknown>(
-    `/api/skills/installs/${encodeURIComponent(installId)}/${action}`,
+    `/api/skills/installs/${encodeURIComponent(installId)}/${action === 'run-now' ? 'run' : action}`,
     {},
   );
   state.actionInFlight = null;
@@ -667,8 +699,10 @@ async function runMutation(
     });
     return;
   }
-  if (result.kind === 'forbidden') {
-    state.actionError = 'Dev gate is active. Connect the allowed dev wallet to perform this action.';
+  if (result.kind === 'unauthenticated') {
+    state.actionError = result.message;
+  } else if (result.kind === 'forbidden') {
+    state.actionError = 'This wallet does not have permission to manage that skill.';
   } else if (result.kind === 'notDeployed') {
     state.actionError = 'Skills API is unavailable in this environment; this action cannot run.';
   } else {
@@ -733,6 +767,10 @@ export async function handleUninstall(installId: string): Promise<void> {
   await runMutation(installId, 'uninstall');
 }
 
+export async function handleRunNow(installId: string): Promise<void> {
+  await runMutation(installId, 'run-now');
+}
+
 export async function handleAction(action: string, installId = ''): Promise<void> {
   if (action === 'refresh') {
     await loadInstalls();
@@ -772,6 +810,10 @@ export async function handleAction(action: string, installId = ''): Promise<void
   }
   if (action === 'uninstall') {
     await handleUninstall(installId);
+    return;
+  }
+  if (action === 'run-now') {
+    await handleRunNow(installId);
     return;
   }
 }

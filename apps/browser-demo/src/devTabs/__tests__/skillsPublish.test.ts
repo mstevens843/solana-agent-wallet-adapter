@@ -173,7 +173,7 @@ describe('renderPublishPanel — phase bodies', () => {
   it('noWallet prompts for wallet connection', () => {
     __resetPanelStateForTests({ phase: 'noWallet' });
     const html = renderPublishPanel();
-    expect(html).toContain('Connect the dev wallet');
+    expect(html).toContain('Connect a wallet');
   });
 
   it('loading shows a skeleton', () => {
@@ -183,10 +183,10 @@ describe('renderPublishPanel — phase bodies', () => {
     expect(html).toContain('aria-busy="true"');
   });
 
-  it('forbidden references the dev allowlist', () => {
+  it('forbidden explains the missing permission', () => {
     __resetPanelStateForTests({ phase: 'forbidden' });
     const html = renderPublishPanel();
-    expect(html).toContain('dev allowlist');
+    expect(html).toContain('Permission required');
   });
 
   it('notDeployed explains the registry status', () => {
@@ -337,7 +337,7 @@ describe('registry render closure', () => {
     const tab = findSkillsSubTab('publish');
     expect(tab).toBeDefined();
     const html = tab!.render();
-    expect(html).toContain('Connect the dev wallet');
+    expect(html).toContain('Connect a wallet');
     expect(html).toContain('Publish a skill');
   });
 
@@ -359,7 +359,7 @@ describe('registry render closure', () => {
     (globalThis as { fetch?: typeof fetch }).fetch = fetchMock as unknown as typeof fetch;
     const tab = findSkillsSubTab('publish')!;
     setConnectedAddress(undefined);
-    expect(tab.render()).toContain('Connect the dev wallet');
+    expect(tab.render()).toContain('Connect a wallet');
     setConnectedAddress(DEV_WALLET);
     tab.render();
     expect(__getKickoffScheduledForTests()).toBe(true);

@@ -32,14 +32,48 @@ PATTERNS=(
   "pgmonitor.py"
 )
 
+# Local auth/session artifacts and live API keys must never be committed. Keep
+# this narrow so fixture-style test secrets remain usable.
+FORBIDDEN_PATHS=(
+  ".env"
+  ".env.local"
+  "session.json"
+)
+
+SENSITIVE_REGEXES=(
+  'sk-ant-api[0-9]+-[A-Za-z0-9_-]{20,}'
+  'sk-proj-[A-Za-z0-9_-]{20,}'
+  'AGENTIC_AI_API_KEY=.*sk-[A-Za-z0-9_-]{12,}'
+  'BRIDGE_TOKEN=[A-Za-z0-9._~+/=-]{16,}'
+)
+
 # Documentation files that legitimately reference these strings as forensics.
 EXCLUDE=(
   ":(exclude)docs/SECURITY.md"
   ":(exclude).github/workflows/ci.yml"
   ":(exclude)scripts/ci-ioc-tripwire.sh"
+  ":(exclude).env.example"
+  ":(exclude)**/__tests__/**"
 )
 
 fail=0
+
+tracked_forbidden=''
+for p in "${FORBIDDEN_PATHS[@]}"; do
+  if git ls-files --error-unmatch "$p" >/dev/null 2>&1 && [ -e "$p" ]; then
+    if [ -n "$tracked_forbidden" ]; then
+      tracked_forbidden="${tracked_forbidden}
+$p"
+    else
+      tracked_forbidden="$p"
+    fi
+  fi
+done
+if [ -n "$tracked_forbidden" ]; then
+  echo "FAIL: local secret/session artifact tracked in git:"
+  echo "$tracked_forbidden" | sed 's/^/  /'
+  fail=1
+fi
 
 if [ -f pnpm-lock.yaml ]; then
   for p in "${PATTERNS[@]}"; do
@@ -54,6 +88,15 @@ for p in "${PATTERNS[@]}"; do
   matches=$(git grep -F -l -- "$p" -- . "${EXCLUDE[@]}" 2>/dev/null || true)
   if [ -n "$matches" ]; then
     echo "FAIL: '$p' present in tracked file(s):"
+    echo "$matches" | sed 's/^/  /'
+    fail=1
+  fi
+done
+
+for p in "${SENSITIVE_REGEXES[@]}"; do
+  matches=$(git grep -E -l -- "$p" -- . "${EXCLUDE[@]}" 2>/dev/null || true)
+  if [ -n "$matches" ]; then
+    echo "FAIL: live-looking secret pattern present in tracked file(s):"
     echo "$matches" | sed 's/^/  /'
     fail=1
   fi

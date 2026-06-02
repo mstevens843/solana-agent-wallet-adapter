@@ -10,11 +10,6 @@
  * Posture: fail-closed. When inputs are missing, ambiguous, or the
  * simulation itself errored, the gate returns `pass: false` with a reason
  * explaining what was unverifiable, NOT a silent pass.
- *
- * Out of scope (per current design):
- *   - `no_unknown_recipients` — the project does not yet store an "allowed
- *     recipients" list per wallet, so this gate would always fail-closed
- *     until that store exists. Skipped here.
  */
 
 import type { TxGateRule } from './agentAtoms.js';
@@ -242,27 +237,42 @@ export function onlyRequestedSwap(digest: SimulationDigest, ctx: TxGateContext):
   return { rule, pass: true, reason: 'Swap program invoked with no unrelated programs or extra transfers.' };
 }
 
+/**
+ * `no_unknown_recipients` — fail closed until callers provide deterministic
+ * recipient facts. This rule is parsed from user policy text, so silently
+ * omitting it would erase an explicit wallet-owner condition.
+ */
+export function noUnknownRecipients(digest: SimulationDigest, _ctx: TxGateContext): TxGateOutcome {
+  const rule: TxGateRule = 'no_unknown_recipients';
+  const simFail = failedSimulationOutcome(rule, digest);
+  if (simFail) return simFail;
+  return failClosed(
+    rule,
+    'No allowed-recipient context is available; cannot verify that every recipient is known.',
+    { supported: false },
+  );
+}
+
 /* -------------------------------------------------------------------------- */
 /* Dispatcher                                                                 */
 /* -------------------------------------------------------------------------- */
 
-export const TX_GATE_ANALYZERS: Readonly<Record<Exclude<TxGateRule, 'no_unknown_recipients'>, (digest: SimulationDigest, ctx: TxGateContext) => TxGateOutcome>> = Object.freeze({
+export const TX_GATE_ANALYZERS: Readonly<Record<TxGateRule, (digest: SimulationDigest, ctx: TxGateContext) => TxGateOutcome>> = Object.freeze({
   only_requested_swap: onlyRequestedSwap,
   no_extra_transfers: noExtraTransfers,
+  no_unknown_recipients: noUnknownRecipients,
   no_unrelated_instructions: noUnrelatedInstructions,
 });
 
 /** Run the analyzer for a single rule. Returns undefined for unsupported rules. */
 export function analyzeTxGate(rule: TxGateRule, digest: SimulationDigest, ctx: TxGateContext): TxGateOutcome | undefined {
-  if (rule === 'no_unknown_recipients') return undefined; // not implemented yet (no allowed-recipient store)
   const fn = TX_GATE_ANALYZERS[rule];
   return fn ? fn(digest, ctx) : undefined;
 }
 
 /**
  * Run every supported tx-gate atom against a single simulation digest and return
- * outcomes keyed by atomId. Unsupported rules (currently only `no_unknown_recipients`)
- * are silently omitted from the result.
+ * outcomes keyed by atomId.
  */
 export function analyzeTxGateAtoms(
   atoms: ReadonlyArray<{ id: string; rule: TxGateRule }>,

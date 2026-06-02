@@ -210,11 +210,17 @@ describe('analyzeTxGate dispatcher', () => {
   it('routes each supported rule to the right analyzer', () => {
     expect(analyzeTxGate('only_requested_swap', cleanSwapDigest, swapCtx)?.pass).toBe(true);
     expect(analyzeTxGate('no_extra_transfers', cleanSwapDigest, swapCtx)?.pass).toBe(true);
+    expect(analyzeTxGate('no_unknown_recipients', cleanSwapDigest, swapCtx)?.pass).toBe(false);
     expect(analyzeTxGate('no_unrelated_instructions', cleanSwapDigest, swapCtx)?.pass).toBe(true);
   });
 
-  it('returns undefined for the unsupported no_unknown_recipients rule', () => {
-    expect(analyzeTxGate('no_unknown_recipients', cleanSwapDigest, swapCtx)).toBeUndefined();
+  it('fails no_unknown_recipients closed until recipient context is available', () => {
+    const outcome = analyzeTxGate('no_unknown_recipients', cleanSwapDigest, swapCtx);
+    expect(outcome).toMatchObject({
+      rule: 'no_unknown_recipients',
+      pass: false,
+    });
+    expect(outcome?.reason).toMatch(/cannot verify/i);
   });
 });
 
@@ -224,14 +230,18 @@ describe('analyzeTxGateAtoms (batch)', () => {
       { id: 'atom.tx_gate.only_requested_swap', rule: 'only_requested_swap' as const },
       { id: 'atom.tx_gate.no_extra_transfers', rule: 'no_extra_transfers' as const },
       { id: 'atom.tx_gate.no_unrelated_instructions', rule: 'no_unrelated_instructions' as const },
-      { id: 'atom.tx_gate.no_unknown_recipients', rule: 'no_unknown_recipients' as const }, // skipped
+      { id: 'atom.tx_gate.no_unknown_recipients', rule: 'no_unknown_recipients' as const },
     ];
     const outcomes = analyzeTxGateAtoms(atoms, cleanSwapDigest, swapCtx);
     expect(Object.keys(outcomes).sort()).toEqual([
       'atom.tx_gate.no_extra_transfers',
+      'atom.tx_gate.no_unknown_recipients',
       'atom.tx_gate.no_unrelated_instructions',
       'atom.tx_gate.only_requested_swap',
     ]);
-    expect(Object.values(outcomes).every((o) => o.pass)).toBe(true);
+    expect(outcomes['atom.tx_gate.no_unknown_recipients']?.pass).toBe(false);
+    expect(outcomes['atom.tx_gate.only_requested_swap']?.pass).toBe(true);
+    expect(outcomes['atom.tx_gate.no_extra_transfers']?.pass).toBe(true);
+    expect(outcomes['atom.tx_gate.no_unrelated_instructions']?.pass).toBe(true);
   });
 });

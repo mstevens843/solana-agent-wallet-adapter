@@ -13,6 +13,11 @@ build/
 .env.local
 .env.*
 !.env.example
+session.json
+*.session.json
+/test.html
+/plan.md
+*.ts.new
 .idea/
 .vscode/
 coverage/
@@ -20,7 +25,11 @@ coverage/
 target/
 apps/**/src-tauri/gen/schemas/
 apps/android-twa/local.properties
+apps/android-twa/app/release/
+*.aab
 *.jks
 *.keystore
+*.p12
+*.pem
 FUTUREMOAT.MD
 voucher_ai_path.md

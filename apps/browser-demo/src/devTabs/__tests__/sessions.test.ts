@@ -109,7 +109,7 @@ describe('sessions dev tab', () => {
   it('registers the sessions tab with the registry', () => {
     const tab = findDevTab('sessions');
     expect(tab).toBeDefined();
-    expect(tab?.label).toBe('Sessions');
+    expect(tab?.label).toBe('Spending Sessions');
     expect(listDevTabs().map((t) => t.id)).toContain('sessions');
     expect(tab?.guard()).toBe(true);
   });

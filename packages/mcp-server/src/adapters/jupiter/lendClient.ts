@@ -760,8 +760,8 @@ async function serializeEarnInstructions(
   // Jupiter Lend deposit/withdraw CPIs into multiple programs; pad CU limit.
   head.push(ComputeBudgetProgram.setComputeUnitLimit({ units: 600_000 }));
 
-  // TODO: remove wrap/unwrap once upstream @jup-ag/lend handles native SOL.
-  // Detect by checking ixs for SystemProgram.transfer ahead of the deposit.
+  // Keep explicit wrap/unwrap handling until upstream @jup-ag/lend handles
+  // native SOL instructions consistently.
   if (opts.lamportsToWrap > 0n || opts.unwrapAfter) {
     const splToken = await loadSplToken();
     const wsolAta = splToken.getAssociatedTokenAddressSync(splToken.NATIVE_MINT, feePayer, true);

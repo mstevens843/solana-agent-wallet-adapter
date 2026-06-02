@@ -83,6 +83,12 @@ const WEB_RESEARCH_ATOM_TYPES = new Set([
   'protocol_health',
 ]);
 
+function policyBundleAtomIds(bundle: PolicyBundle): Set<string> {
+  const atomIds = new Set(bundle.atoms.map((atom) => atom.id).filter(Boolean));
+  if (atomIds.size > 0) return atomIds;
+  return new Set(bundle.evaluations.map((evaluation) => evaluation.atomId).filter(Boolean));
+}
+
 export async function fetchPolicyBundle(
   payload: PolicyEnrichRequestPayload,
   options: { baseUrl?: string; signal?: AbortSignal } = {},
@@ -245,7 +251,7 @@ export function enforceBlockingFailure<R extends Record<string, unknown>>(
   if (!bundle || !bundle.hasBlockingFailure) return llmResult;
   const decision = llmResult.decision;
   if (decision !== 'approve') return llmResult;
-  const atomIds = new Set(bundle.atoms.map((atom) => atom.id).filter(Boolean));
+  const atomIds = policyBundleAtomIds(bundle);
   const failing = bundle.evaluations.filter((ev) => ev.pass === false && atomIds.has(ev.atomId));
   const first = failing[0];
   const reason = first
@@ -298,7 +304,7 @@ export function mergePolicyBundleEvaluations<R extends Record<string, unknown>>(
     const label = findingLabelKey(finding.label);
     if (label) byLabel.set(label, idx);
   });
-  const atomIds = new Set(bundle.atoms.map((atom) => atom.id).filter(Boolean));
+  const atomIds = policyBundleAtomIds(bundle);
   const atomIdsCited: string[] = [];
   const existingFactIds = Array.isArray(llmResult.evidenceFactIds)
     ? llmResult.evidenceFactIds.filter((id): id is string => typeof id === 'string' && id.length > 0)

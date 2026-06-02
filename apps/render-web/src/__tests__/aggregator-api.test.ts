@@ -290,14 +290,17 @@ describe('aggregator API (GET /api/aggregator/*)', () => {
       });
     });
 
-    it('returns 404 not_found for a wallet outside the dev allowlist, even if a snapshot exists internally', async () => {
+    it('returns wallet stats for any wallet with a snapshot', async () => {
       const store = new MemoryWorkflowStore();
       await store.saveAggregatorSnapshot(buildWalletSnapshot(NON_DEV_WALLET));
 
       await withRoutes({ AGENTIC_DEV_WALLET_ALLOWLIST: DEV_WALLET }, store, async (port) => {
         const response = await request(port, `/api/aggregator/wallets/${NON_DEV_WALLET}`);
-        expect(response.status).toBe(404);
-        expect(response.body).toEqual({ error: 'not_found' });
+        expect(response.status).toBe(200);
+        expect(response.body).toMatchObject({
+          kind: 'wallet',
+          key: `wallet:${NON_DEV_WALLET}`,
+        });
       });
     });
 

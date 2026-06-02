@@ -95,6 +95,11 @@ internal object PolicyBundleEnforcer {
         for (i in 0 until atoms.length()) {
             atoms.optJSONObject(i)?.optString("id", "")?.takeIf { it.isNotBlank() }?.let { ids.add(it) }
         }
+        if (ids.isNotEmpty()) return ids
+        val evaluations = bundle.optJSONArray("evaluations") ?: JSONArray()
+        for (i in 0 until evaluations.length()) {
+            evaluations.optJSONObject(i)?.optString("atomId", "")?.takeIf { it.isNotBlank() }?.let { ids.add(it) }
+        }
         return ids
     }
 

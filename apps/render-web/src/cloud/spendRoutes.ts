@@ -45,9 +45,9 @@ async function handleSpendRequest(
     return true;
   }
   if (!ctx.walletAddress) {
-    writeJsonNoStore(req, res, 403, {
-      error: 'dev_layer1_disabled',
-      message: 'This route is only available to allowlisted dev wallets.',
+    writeJsonNoStore(req, res, 401, {
+      error: 'auth_required',
+      message: 'Sign in to Agentic Cloud with your wallet to view spend.',
     });
     return true;
   }

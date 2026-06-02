@@ -279,8 +279,15 @@ export function normalizeStats(input: unknown): SkillStatsSnapshot | null {
 
 function forbiddenNotice(): BrowseNotice {
   return {
-    title: 'Dev gate active',
-    body: 'Connect the allowed dev wallet to install skills.',
+    title: 'Permission required',
+    body: 'This wallet cannot install skills on this deployment.',
+  };
+}
+
+function signInNotice(message = 'Sign in to Agentic Cloud with your wallet to install and manage skills.'): BrowseNotice {
+  return {
+    title: 'Sign in required',
+    body: message,
   };
 }
 
@@ -517,6 +524,13 @@ export async function loadCatalog(): Promise<void> {
 
   if (!isCurrentRequest()) return;
 
+  if (catalogRes.kind === 'unauthenticated') {
+    state.notice = signInNotice(catalogRes.message);
+    state.rows = [];
+    state.phase = 'ready';
+    rerenderPanelOnly();
+    return;
+  }
   if (catalogRes.kind === 'forbidden') {
     state.notice = forbiddenNotice();
     state.rows = [];
@@ -540,6 +554,9 @@ export async function loadCatalog(): Promise<void> {
 
   const manifests = normalizeCatalog(catalogRes.value);
   const installs = installsRes.kind === 'ok' ? normalizeInstalls(installsRes.value) : [];
+  if (installsRes.kind === 'unauthenticated') {
+    state.notice = signInNotice(installsRes.message);
+  }
   const installMap = new Map<string, SkillInstallStatus>();
   for (const i of installs) {
     installMap.set(i.skillId, i.status);
@@ -663,7 +680,9 @@ export async function handleInstall(skillId: string): Promise<void> {
     });
     return;
   }
-  if (result.kind === 'forbidden') {
+  if (result.kind === 'unauthenticated') {
+    state.notice = signInNotice(result.message);
+  } else if (result.kind === 'forbidden') {
     state.notice = forbiddenNotice();
   } else if (result.kind === 'notDeployed') {
     state.notice = notDeployedNotice();

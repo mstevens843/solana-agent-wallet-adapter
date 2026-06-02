@@ -1550,6 +1550,20 @@ const AP2_SMOKE_USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const AP2_SMOKE_SOL_MINT = 'So11111111111111111111111111111111111111112';
 const SKILLS_SMOKE_FRIDAY_TICK = '2026-05-15T14:00:00.000Z';
 
+function nextFridayDcaTickAfter(value) {
+  const installedAt = new Date(value);
+  if (Number.isNaN(installedAt.getTime())) return new Date(SKILLS_SMOKE_FRIDAY_TICK);
+  const tick = new Date(installedAt);
+  tick.setUTCSeconds(0, 0);
+  tick.setUTCHours(14, 0, 0, 0);
+  const daysUntilFriday = (5 - tick.getUTCDay() + 7) % 7;
+  tick.setUTCDate(tick.getUTCDate() + daysUntilFriday);
+  if (tick.getTime() < installedAt.getTime()) {
+    tick.setUTCDate(tick.getUTCDate() + 7);
+  }
+  return tick;
+}
+
 async function verifyAp2Smoke({ live, liveOrigin }) {
   if (live) {
     await verifyAp2LiveSmoke(liveOrigin);
@@ -1593,9 +1607,10 @@ async function verifySkillsSmoke({ live, liveOrigin }) {
       console.log(`[smoke-render-web] PASS installed friday-dca as ${install.id}.`);
 
       const { runSkillsExecuteTick } = await import(pathToFileURL(join(process.cwd(), 'apps/render-web/dist/cloud/skillExecutorService.js')).href);
+      const skillsSmokeTick = nextFridayDcaTickAfter(install.installedAt);
       const executeResult = await runSkillsExecuteTick({
         store,
-        clock: { now: () => new Date(SKILLS_SMOKE_FRIDAY_TICK) },
+        clock: { now: () => skillsSmokeTick },
       });
       if (executeResult.proposed !== 1) {
         const auditEvents = await store.forWallet(wallet.walletAddress).listAuditEvents();

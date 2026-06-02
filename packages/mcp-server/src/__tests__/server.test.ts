@@ -674,6 +674,48 @@ describe('mcp server tools', () => {
     expect(textOf(result)).toContain('"status":"pending"');
   });
 
+  it('blocks arbitrary mainnet transaction tools when mainnet policy disallows them', async () => {
+    await closeServer?.();
+    closeServer = undefined;
+
+    const linked = InMemoryTransport.createLinkedPair();
+    const server = createServer({
+      backend: createMockBackend(),
+      actionConfig: {
+        ...DEFAULT_CONFIG,
+        mainnet: {
+          ...DEFAULT_CONFIG.mainnet,
+          allowArbitraryTransactions: false,
+        },
+      },
+    });
+    client = new Client({ name: 'mcp-server-test', version: '0.0.0' });
+    await Promise.all([server.connect(linked[1]), client.connect(linked[0])]);
+    closeServer = async () => {
+      await Promise.all([client.close(), server.close()]);
+    };
+
+    const signOnly = await callTool('solana_sign_transaction', {
+      transactionBase64: 'AQID',
+      cluster: 'mainnet-beta',
+    });
+    const signAndSend = await callTool('solana_sign_and_send_transaction', {
+      transactionBase64: 'AQID',
+      cluster: 'mainnet-beta',
+    });
+    const devnet = await callTool('solana_sign_transaction', {
+      transactionBase64: 'AQID',
+      cluster: 'devnet',
+    });
+
+    expect(signOnly.isError).toBe(true);
+    expect(textOf(signOnly)).toContain('Arbitrary mainnet transaction signing is disabled');
+    expect(signAndSend.isError).toBe(true);
+    expect(textOf(signAndSend)).toContain('Arbitrary mainnet transaction signing is disabled');
+    expect(devnet.isError).not.toBe(true);
+    expect(textOf(devnet)).toContain('"status":"pending"');
+  });
+
   it('prepares a capped transfer without submitting a wallet approval', async () => {
     await closeServer?.();
     closeServer = undefined;

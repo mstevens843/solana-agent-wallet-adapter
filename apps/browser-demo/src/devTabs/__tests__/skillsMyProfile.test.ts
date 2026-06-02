@@ -117,7 +117,7 @@ describe('renderMyProfilePanel', () => {
   it('noWallet phase prompts for connection and omits the Copy URL button', () => {
     __resetPanelStateForTests({ phase: 'noWallet' });
     const html = renderMyProfilePanel();
-    expect(html).toContain('Connect the dev wallet');
+    expect(html).toContain('Connect a wallet');
     expect(html).not.toContain('data-skills-profile-action="copy-url"');
   });
 
@@ -128,10 +128,10 @@ describe('renderMyProfilePanel', () => {
     expect(html).toContain('aria-busy="true"');
   });
 
-  it('forbidden phase references the dev allowlist', () => {
+  it('forbidden phase explains that the profile is not available', () => {
     __resetPanelStateForTests({ phase: 'forbidden' });
     const html = renderMyProfilePanel();
-    expect(html).toContain('dev allowlist');
+    expect(html).toContain('Profile not available');
     expect(html).not.toContain('data-skills-profile-action="copy-url"');
   });
 
@@ -315,7 +315,7 @@ describe('registry render closure', () => {
     const tab = findSkillsSubTab('profile');
     expect(tab).toBeDefined();
     const html = tab!.render();
-    expect(html).toContain('Connect the dev wallet');
+    expect(html).toContain('Connect a wallet');
   });
 
   it('queues a single fetch when the panel mounts twice synchronously', async () => {
@@ -336,7 +336,7 @@ describe('registry render closure', () => {
     (globalThis as { fetch?: typeof fetch }).fetch = fetchMock as unknown as typeof fetch;
     const tab = findSkillsSubTab('profile')!;
     setConnectedAddress(undefined);
-    expect(tab.render()).toContain('Connect the dev wallet');
+    expect(tab.render()).toContain('Connect a wallet');
     setConnectedAddress(DEV_WALLET);
     tab.render();
     expect(__getKickoffScheduledForTests()).toBe(true);

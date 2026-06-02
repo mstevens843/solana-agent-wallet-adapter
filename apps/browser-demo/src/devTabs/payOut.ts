@@ -1277,14 +1277,14 @@ export function approveCartLocally(cart: unknown, preview: AcpPreviewDisplay): F
 function browserLocalNotice(): NoticeInfo {
   return {
     title: 'Using browser-local approvals',
-    body: 'This dev server has no ACP API route, so the approval will be saved in this browser under Needs Approval.',
+    body: 'The cloud ACP route is unavailable, so the approval will be saved in this browser under Needs Approval.',
   };
 }
 
 function forbiddenNotice(): NoticeInfo {
   return {
-    title: 'Dev gate active',
-    body: 'Connect the allowed dev wallet and sign in to Agentic Cloud to use Pay Merchant.',
+    title: 'Sign in required',
+    body: 'Sign in to Agentic Cloud with your wallet to use Pay Merchant.',
   };
 }
 

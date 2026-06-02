@@ -30,6 +30,18 @@ describe('MemoryAuthRateLimiter', () => {
     expect(grantCount).toBe(60);
   });
 
+  it('uses the stricter public relay bucket for unauthenticated RPC/API proxy routes', () => {
+    const limiter = new MemoryAuthRateLimiter();
+    const start = new Date('2026-05-20T00:00:00Z');
+    let grantCount = 0;
+    for (let i = 0; i < 80; i += 1) {
+      if (limiter.allow({ route: '/api/solana:*', key: '1.2.3.4', now: start })) {
+        grantCount += 1;
+      }
+    }
+    expect(grantCount).toBe(60);
+  });
+
   it('resets the bucket once the window has elapsed', () => {
     const limiter = new MemoryAuthRateLimiter();
     const start = new Date('2026-05-20T00:00:00Z');
@@ -94,6 +106,19 @@ describe('authRateLimitedRoute', () => {
     expect(authRateLimitedRoute('/api/auth/nonce')).toBe('/api/auth/nonce');
     expect(authRateLimitedRoute('/api/ai/generate-plan')).toBe('/api/ai/generate-plan');
     expect(authRateLimitedRoute('/api/plans/abc')).toBe('/api/plans:*');
+  });
+
+  it('rate-limits public relay endpoints under relay buckets', () => {
+    expect(authRateLimitedRoute('/api/solana/send-transaction')).toBe('/api/solana:*');
+    expect(authRateLimitedRoute('/api/swap/order')).toBe('/api/swap:*');
+    expect(authRateLimitedRoute('/api/birdeye/search')).toBe('/api/birdeye:*');
+    expect(authRateLimitedRoute('/api/helius/transfers-by-address')).toBe('/api/helius:*');
+    expect(authRateLimitedRoute('/api/coingecko/token-evidence')).toBe('/api/coingecko:*');
+  });
+
+  it('rate-limits public mobile debug telemetry endpoints', () => {
+    expect(authRateLimitedRoute('/api/mobile-wallet-debug')).toBe('/api/mobile-wallet-debug');
+    expect(authRateLimitedRoute('/api/mobile-device-agent-debug')).toBe('/api/mobile-device-agent-debug');
   });
 
   it('returns undefined for unhandled paths (no rate limit applied)', () => {

@@ -66,7 +66,10 @@ const devPreviewHandler: DevApiHandler = {
   async handle(req, res, url, context) {
     if (!context.walletAddress) {
       // Router gate guarantees a wallet for non-public routes; defensive guard.
-      writeJsonNoStore(res, 403, { error: 'dev_layer1_disabled' });
+      writeJsonNoStore(res, 401, {
+        error: 'auth_required',
+        message: 'Sign in to Agentic Cloud with your wallet to preview your Agent Card.',
+      });
       return true;
     }
     const rendered = renderAgentCard(req, url, context.walletAddress);

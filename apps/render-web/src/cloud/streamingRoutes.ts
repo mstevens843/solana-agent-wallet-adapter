@@ -386,7 +386,7 @@ function optionalSignedStatus(value: unknown): StreamingSignedTxCallbackStatus |
 
 function requireWallet(ctx: DevApiHandlerContext): string {
   if (!ctx.walletAddress) {
-    throw new StreamingServiceError(403, 'dev_layer1_disabled', 'This route is only available to allowlisted dev wallets.');
+    throw new StreamingServiceError(401, 'auth_required', 'Sign in to Agentic Cloud with your wallet to manage spending sessions.');
   }
   return ctx.walletAddress;
 }

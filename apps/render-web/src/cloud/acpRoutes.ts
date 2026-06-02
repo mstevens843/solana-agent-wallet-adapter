@@ -126,9 +126,9 @@ async function handleApprove(
   context: DevApiHandlerContext,
 ): Promise<void> {
   if (!context.walletAddress) {
-    writeJsonNoStore(res, 403, {
-      error: 'dev_layer1_disabled',
-      message: 'This route is only available to allowlisted dev wallets.',
+    writeJsonNoStore(res, 401, {
+      error: 'auth_required',
+      message: 'Sign in to Agentic Cloud with your wallet to use merchant payments.',
     });
     return;
   }
@@ -219,9 +219,9 @@ async function handleReceipt(
   approvalId: string,
 ): Promise<void> {
   if (!context.walletAddress) {
-    writeJsonNoStore(res, 403, {
-      error: 'dev_layer1_disabled',
-      message: 'This route is only available to allowlisted dev wallets.',
+    writeJsonNoStore(res, 401, {
+      error: 'auth_required',
+      message: 'Sign in to Agentic Cloud with your wallet to create merchant payment receipts.',
     });
     return;
   }

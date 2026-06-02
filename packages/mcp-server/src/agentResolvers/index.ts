@@ -232,7 +232,7 @@ export function createMcpCapabilityResolver(deps: McpResolverDeps) {
     if (atom.type === 'price') {
       if (provider === 'jupiter') return jupiterPrice(atom, config);
       if (provider === 'coingecko') return coingeckoPriceById(atom);
-      if (provider === 'birdeye') return missing('birdeye', 'BirdEye price resolver not implemented; falling through.', 'price_multi');
+      if (provider === 'birdeye') return missing('birdeye', 'BirdEye price resolver is not enabled in the default resolver; falling through.', 'price_multi');
       if (provider === 'web') return missing('web', 'deferred_to_research_pass');
     }
     // -------- market_regime atoms --------------------------------------------
@@ -264,7 +264,7 @@ export function createMcpCapabilityResolver(deps: McpResolverDeps) {
     }
     // -------- protocol_health atoms ------------------------------------------
     if (atom.type === 'protocol_health') {
-      if (provider === 'protocol_connector') return missing('protocol_connector', 'Per-protocol health resolver wires via connector adapters; not implemented in the default shim.', 'read_facts');
+      if (provider === 'protocol_connector') return missing('protocol_connector', 'Per-protocol health resolves through explicit connector read routes; default resolver falls through.', 'read_facts');
       if (provider === 'web') return missing('web', 'deferred_to_research_pass');
     }
     // -------- external_state atoms (web-only today; news/status APIs later) ---
@@ -277,7 +277,7 @@ export function createMcpCapabilityResolver(deps: McpResolverDeps) {
     }
     // -------- external_identity atoms (chainalysis → web) --------------------
     if (atom.type === 'external_identity') {
-      // TODO(external_identity): To enable structured sanctions/KYC screening, wire one of:
+      // Future extension (external_identity): To enable structured sanctions/KYC screening, wire one of:
       //   1. **Chainalysis Sanctions Oracle API** — sign up at chainalysis.com, get an API
       //      key, add CHAINALYSIS_API_KEY env, and implement a screening call here. Free
       //      tier covers OFAC sanctions screening for individual addresses.
@@ -293,7 +293,7 @@ export function createMcpCapabilityResolver(deps: McpResolverDeps) {
     }
     // -------- tradfi_price atoms (web-only; AlphaVantage tier later) ---------
     if (atom.type === 'tradfi_price') {
-      // TODO(tradfi_price): To enable structured TradFi quotes (SPY, GLD, FX), wire one of:
+      // Future extension (tradfi_price): To enable structured TradFi quotes (SPY, GLD, FX), wire one of:
       //   1. **AlphaVantage** — free API key at alphavantage.co (~5 calls/min, 500/day).
       //      Add ALPHAVANTAGE_API_KEY env and implement /query?function=GLOBAL_QUOTE here.
       //   2. **Twelve Data** — also has a free tier with similar shape.

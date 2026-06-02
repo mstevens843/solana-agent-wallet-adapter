@@ -155,6 +155,14 @@ describe('enforceBlockingFailure', () => {
     expect(out.decision).toBe('deny');
     expect(out.blockingFactIds).toEqual([]);
   });
+
+  it('uses evaluation atom ids when the atom catalog is absent', () => {
+    const missingAtoms: PolicyBundle = { ...baseBundle, atoms: [] };
+    const llm = { decision: 'approve', reason: 'ok' };
+    const out = enforceBlockingFailure(llm, missingAtoms);
+    expect(out.decision).toBe('deny');
+    expect(out.blockingFactIds).toEqual(['atom.external_price.helium.lt.20']);
+  });
 });
 
 describe('mergePolicyBundleEvaluations', () => {
@@ -229,6 +237,24 @@ describe('mergePolicyBundleEvaluations', () => {
     }, withTxGates);
 
     expect((out.evidence as Record<string, unknown>).policyTxGates).toEqual(withTxGates.txGateOutcomes);
+  });
+
+  it('mirrors evaluation findings when the atom catalog is absent', () => {
+    const missingAtoms: PolicyBundle = { ...baseBundle, atoms: [] };
+    const out = mergePolicyBundleEvaluations({
+      decision: 'approve',
+      reason: 'ok',
+      evidence: {},
+      evidenceFactIds: [],
+    }, missingAtoms);
+
+    expect(out.evidenceFactIds).toEqual([
+      'atom.price.sol.gte.80',
+      'atom.external_price.helium.lt.20',
+    ]);
+    expect((out.evidence as { findings: unknown[] }).findings).toEqual(expect.arrayContaining([
+      { label: 'Helium plan', value: '$25 — web', tone: 'fail', atomId: 'atom.external_price.helium.lt.20' },
+    ]));
   });
 
   it('merges policy findings before applying blocking safety', () => {

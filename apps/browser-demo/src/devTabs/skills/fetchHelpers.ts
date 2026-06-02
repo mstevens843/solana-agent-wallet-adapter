@@ -6,6 +6,7 @@ import { getConnectedAddress } from '../../walletState.js';
 
 export type FetchResult<T> =
   | { kind: 'ok'; value: T }
+  | { kind: 'unauthenticated'; message: string }
   | { kind: 'error'; status: number; message: string }
   | { kind: 'forbidden' }
   | { kind: 'notDeployed' }
@@ -62,6 +63,19 @@ export async function deleteJson<T = { ok: true }>(path: string): Promise<FetchR
 }
 
 async function interpretResponse<T>(res: Response): Promise<FetchResult<T>> {
+  if (res.status === 401) {
+    let message = 'Sign in to Agentic Cloud with your wallet to continue.';
+    try {
+      const parsed = await res.json();
+      if (parsed && typeof parsed === 'object' && parsed !== null) {
+        const candidate = (parsed as Record<string, unknown>).message ?? (parsed as Record<string, unknown>).error;
+        if (typeof candidate === 'string' && candidate.trim()) message = candidate.trim();
+      }
+    } catch {
+      // Keep the default message for non-JSON auth errors.
+    }
+    return { kind: 'unauthenticated', message };
+  }
   if (res.status === 403) return { kind: 'forbidden' };
   if (res.status === 404) return { kind: 'notDeployed' };
   let parsed: unknown;

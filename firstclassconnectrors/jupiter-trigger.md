@@ -19,20 +19,8 @@ Do not hide the fact that Trigger orders execute later through Jupiter automatio
 
 ## Current Repo State
 
-Jupiter Trigger is not implemented in MCP runtime.
-
-Current Jupiter support is swap-only:
-
-- `solana_jupiter_order_preview`
-- `solana_get_swap_quote`
-- `solana_prepare_swap`
-- `solana_swap`
-
-Trigger implementation will need runtime support for:
-
-- Wallet challenge signing or transaction-challenge signing.
-- In-memory Trigger JWT cache.
-- Vault/order reads.
+Current Jupiter Trigger launch behavior is documented in
+[`docs/connectors/jupiter.md`](../docs/connectors/jupiter.md#trigger-v2).
 - Multi-step deposit-sign-create flow.
 - Safety copy that distinguishes external automation from Agentic manual approvals.
 

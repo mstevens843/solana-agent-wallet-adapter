@@ -51,14 +51,13 @@ Build a release bundle/APK:
 pnpm android:release
 ```
 
-Release signing is optional for local output. To sign release builds, set:
+Release signing is required by default for release output. Set:
 
 ```sh
 export AGENTIC_ANDROID_KEYSTORE=/absolute/path/agentic-release.jks
 export AGENTIC_ANDROID_KEY_ALIAS=agentic
 export AGENTIC_ANDROID_STORE_PASSWORD=...
 export AGENTIC_ANDROID_KEY_PASSWORD=...
-export AGENTIC_ANDROID_REQUIRE_SIGNING=1
 export AGENTIC_ANDROID_VERSION_CODE=2
 export AGENTIC_ANDROID_VERSION_NAME=0.2.1
 pnpm android:release
@@ -66,8 +65,8 @@ pnpm android:release
 
 `AGENTIC_ANDROID_VERSION_CODE` must be a positive integer. `AGENTIC_ANDROID_VERSION_NAME` is the user-visible release
 label. Release builds also require `AGENTIC_ANDROID_LAUNCH_URL` to be a non-local HTTPS URL. Set
-`AGENTIC_ANDROID_REQUIRE_SIGNING=1` in production CI so incomplete signing configuration fails before artifacts are
-staged.
+`AGENTIC_ANDROID_REQUIRE_SIGNING=0` only for deliberate unsigned local release diagnostics; production CI must leave
+signing required.
 
 Override the hosted fallback URL for a build:
 
@@ -132,25 +131,26 @@ Android session BYOK, Hosted BYOK, and Desktop local bridge AI remain available 
 available after signing in to Agentic Cloud with the connected wallet; the API key is relayed only for that request and
 is not synced. See `docs/ai-byok.md`.
 
-Device Agent is enabled by default for Android app builds:
+Device Agent is enabled by default for Android debug/install builds and disabled by default for release builds:
 
 ```sh
 pnpm android:build
 pnpm android:install
 ```
 
-The default sets `AGENTIC_ANDROID_DEVICE_AGENT`, exposes the Device Agent AI path inside the bundled web app, enables
-the foreground runtime service, and stores runtime config in encrypted Android Keystore-backed storage. It does
-not route through the desktop/LAN bridge or store Device Agent provider keys on Render. Device Agent is a draft path
-only: it cannot approve, sign, submit, or move funds, and the wallet user still approves every transaction through the
-normal flow.
+Debug builds default `AGENTIC_ANDROID_DEVICE_AGENT` on for local smoke coverage. Release builds default it off; set
+`AGENTIC_ANDROID_DEVICE_AGENT=1` and `AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=...` only for an explicitly approved
+Device Agent release candidate. Runtime config is stored in encrypted Android Keystore-backed storage. Device Agent
+cannot approve, sign, submit, or move funds, and the wallet user still approves every transaction through the normal
+flow.
 
 Before treating an APK as Device Agent release-ready, run the Device Agent smoke and verify the native Android
 bridge routes `generatePlan`, `reviewPlan`, and `ask` through the runtime queue. Any source-check failure or native
 generation failure blocks Device Agent release readiness.
 
-To build an opt-out APK for regression testing or emergency rollback, pass `-PagenticDeviceAgent=false`. In that build,
-the bundled web app keeps the Device Agent AI path hidden and native Device Agent calls report unavailable.
+To build an opt-in APK for Device Agent regression testing, pass `-PagenticDeviceAgent=true` and set an explicit
+allowlist. In opt-out builds, the bundled web app keeps the Device Agent AI path hidden and native Device Agent calls
+report unavailable.
 
 MWA authorization records and Android cloud bearer sessions are stored in app-private encrypted storage backed by
 Android Keystore. Upgraded installs migrate the older plaintext MWA cache on first read, delete the plaintext file after

@@ -63,6 +63,8 @@ import type { PreparedAction, PreparedActionStore, PreparedActionTxStatus } from
 import { trace } from './trace.js';
 import { VulcanUpstreamClient, VulcanWalletRegistry } from './upstreamMcp/index.js';
 
+const MAX_BRIDGE_JSON_BYTES = 1024 * 1024;
+
 export interface BridgeServerHandle {
   url: string;
   start(): Promise<void>;
@@ -288,6 +290,14 @@ async function handleRequest(
   }
   if (!agent.enabled) {
     writeJson(res, 401, { error: 'unauthorized', message: 'Agent disabled.' });
+    return;
+  }
+  if (requiresHostBridgeToken(req.method, url.pathname) && !usesHostBridgeToken(req, url, backend)) {
+    writeJson(res, 403, {
+      error: 'forbidden',
+      message: 'Only the wallet host bridge token can control wallet connection or resolve approvals.',
+      requiredRole: 'wallet_host',
+    });
     return;
   }
   if (req.method && req.method !== 'OPTIONS') {
@@ -1444,6 +1454,23 @@ function authorize(
   return null;
 }
 
+function usesHostBridgeToken(req: IncomingMessage, url: URL, backend: LocalBridgeBackend | IosLinkBackend): boolean {
+  return requestToken(req, url) === backend.token;
+}
+
+function requestToken(req: IncomingMessage, url: URL): string {
+  const headerToken = headerValue(req.headers['x-agent-wallet-token']);
+  return url.searchParams.get('token') ?? headerToken ?? '';
+}
+
+function requiresHostBridgeToken(method: string | undefined, pathname: string): boolean {
+  if (method !== 'POST') return false;
+  return pathname === '/bridge/connect' ||
+    pathname === '/bridge/disconnect' ||
+    pathname === '/bridge/resolve' ||
+    pathname === '/bridge/reject';
+}
+
 function requiredTier(method: string, pathname: string): AgentTier | null {
   if (method === 'GET') {
     if (pathname.startsWith('/bridge/agents')) return 'full';
@@ -1741,8 +1768,14 @@ function requireActionConfig(config: AgentWalletConfig | undefined): AgentWallet
 
 async function readJson(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
+  let totalBytes = 0;
   for await (const chunk of req) {
-    chunks.push(chunk as Buffer);
+    const buffer = chunk as Buffer;
+    totalBytes += buffer.length;
+    if (totalBytes > MAX_BRIDGE_JSON_BYTES) {
+      throw new ProtocolError('invalid_request', 'Request body is too large.');
+    }
+    chunks.push(buffer);
   }
   const raw = Buffer.concat(chunks).toString('utf8');
   return raw ? JSON.parse(raw) : {};

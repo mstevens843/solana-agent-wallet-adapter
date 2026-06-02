@@ -96,6 +96,27 @@ describe('bridge lab artifact routes', () => {
     }
   });
 
+  it('rejects oversized bridge JSON bodies before parsing', async () => {
+    const handle = await startTestBridge();
+    try {
+      const response = await fetch(new URL('/bridge/trace', handle.url), {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-agent-wallet-token': 'test-token',
+        },
+        body: JSON.stringify({ event: 'oversized', payload: { data: 'x'.repeat(1024 * 1024 + 1) } }),
+      });
+      const payload = await response.json() as { error?: { code?: string; message?: string } };
+
+      expect(response.status).toBe(400);
+      expect(payload.error?.code).toBe('invalid_request');
+      expect(payload.error?.message).toContain('too large');
+    } finally {
+      await handle.stop();
+    }
+  });
+
   it('allows browser private-network preflight requests', async () => {
     const handle = await startTestBridge();
     try {
@@ -292,6 +313,80 @@ describe('bridge lab artifact routes', () => {
       const payload = (await denied.json()) as { error?: string; requiredTier?: string };
       expect(payload.error).toBe('forbidden');
       expect(payload.requiredTier).toBe('capped');
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  it('prevents issued agent tokens from controlling the wallet host or resolving approvals', async () => {
+    const registry = new AgentRegistry({ fallbackToken: 'test-token' });
+    const issued = registry.issueAgent({ label: 'Full Codex', tier: 'full' });
+    const handle = await startTestBridge({
+      agentRegistry: registry,
+      connectedAddress: '11111111111111111111111111111111',
+    });
+    const agentHeaders = {
+      'content-type': 'application/json',
+      'x-agent-wallet-token': issued.token,
+    };
+    try {
+      const status = await fetch(new URL('/bridge/status', handle.url), {
+        headers: { 'x-agent-wallet-token': issued.token },
+      });
+      expect(status.status).toBe(200);
+
+      const connectDenied = await fetch(new URL('/bridge/connect', handle.url), {
+        method: 'POST',
+        headers: agentHeaders,
+        body: JSON.stringify({ address: '22222222222222222222222222222222' }),
+      });
+      expect(connectDenied.status).toBe(403);
+      expect(await connectDenied.json()).toMatchObject({
+        error: 'forbidden',
+        requiredRole: 'wallet_host',
+      });
+
+      const request = {
+        id: 'request-agent-cannot-resolve',
+        kind: 'sign_message',
+        payload: { data: 'hello', encoding: 'utf8' },
+        cluster: 'devnet',
+      };
+      const submitted = await fetch(new URL('/bridge/submit', handle.url), {
+        method: 'POST',
+        headers: agentHeaders,
+        body: JSON.stringify({ request }),
+      });
+      expect(submitted.status).toBe(200);
+
+      const resolveDenied = await fetch(new URL('/bridge/resolve', handle.url), {
+        method: 'POST',
+        headers: agentHeaders,
+        body: JSON.stringify({ requestId: request.id, signature: 'agent-sig' }),
+      });
+      expect(resolveDenied.status).toBe(403);
+      expect(await resolveDenied.json()).toMatchObject({
+        error: 'forbidden',
+        requiredRole: 'wallet_host',
+      });
+
+      const rejectDenied = await fetch(new URL('/bridge/reject', handle.url), {
+        method: 'POST',
+        headers: agentHeaders,
+        body: JSON.stringify({ requestId: request.id, error: { code: 'rejected', message: 'No' } }),
+      });
+      expect(rejectDenied.status).toBe(403);
+
+      const approved = await bridgeFetch<{ status: string; result?: { signature?: string } }>(
+        handle.url,
+        '/bridge/resolve',
+        {
+          method: 'POST',
+          body: JSON.stringify({ requestId: request.id, signature: 'host-sig' }),
+        },
+      );
+      expect(approved.status).toBe('approved');
+      expect(approved.result?.signature).toBe('host-sig');
     } finally {
       await handle.stop();
     }

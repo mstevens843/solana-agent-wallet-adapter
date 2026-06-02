@@ -8,6 +8,7 @@ import {
   handleAction,
   handlePause,
   handleResume,
+  handleRunNow,
   handleUninstall,
   humanizeRelative,
   humanizeSchedule,
@@ -290,11 +291,11 @@ describe('renderInstalledPanel branches', () => {
   it('renders forbidden notice', () => {
     __resetStateForTests({
       phase: 'ready',
-      notice: { title: 'Dev gate active', body: 'Connect the allowed dev wallet to manage installed skills.' },
+      notice: { title: 'Permission required', body: 'This wallet cannot manage these installed skills.' },
     });
     const html = renderInstalledPanel();
     expect(html).toContain('is-forbidden');
-    expect(html).toContain('Dev gate active');
+    expect(html).toContain('Permission required');
   });
 
   it('renders notDeployed notice', () => {
@@ -364,6 +365,14 @@ describe('renderRow specifics', () => {
     const html = renderRow(row, defaultRowOpts());
     expect(html).toContain('data-skills-installed-action="pause"');
     expect(html).toContain('>Pause<');
+  });
+
+  it('renders Run now for active installs only', () => {
+    const activeHtml = renderRow(makeInstall({ status: 'active' }), defaultRowOpts());
+    const pausedHtml = renderRow(makeInstall({ status: 'paused' }), defaultRowOpts());
+    expect(activeHtml).toContain('data-skills-installed-action="run-now"');
+    expect(activeHtml).toContain('>Run now<');
+    expect(pausedHtml).not.toContain('data-skills-installed-action="run-now"');
   });
 
   it('omits toggle button for expired/revoked', () => {
@@ -445,7 +454,7 @@ describe('loadInstalls', () => {
     expect(s.rows[0]!.nextRunAt).toBe('2026-05-15T09:00:00.000Z');
   });
 
-  it('renders forbidden notice when GET returns 403', async () => {
+  it('renders permission notice when GET returns 403', async () => {
     setFetchSequence([
       { status: 403, body: { error: 'forbidden' } },
       { status: 403, body: { error: 'forbidden' } },
@@ -453,7 +462,7 @@ describe('loadInstalls', () => {
     await loadInstalls();
     const s = __getStateForTests();
     expect(s.phase).toBe('ready');
-    expect(s.notice?.title).toBe('Dev gate active');
+    expect(s.notice?.title).toBe('Permission required');
     expect(s.rows).toEqual([]);
   });
 
@@ -570,13 +579,47 @@ describe('pause / resume', () => {
     expect(mock).not.toHaveBeenCalled();
   });
 
-  it('surfaces a friendly action error on 403', async () => {
+  it('surfaces a friendly permission error on 403', async () => {
     __resetStateForTests({ phase: 'ready', rows: [makeInstall({ id: 'inst_403' })] });
     setFetchSequence([{ status: 403, body: { error: 'forbidden' } }]);
     await handlePause('inst_403');
     const s = __getStateForTests();
-    expect(s.actionError).toMatch(/Dev gate/);
+    expect(s.actionError).toMatch(/permission/);
     expect(s.actionInFlight).toBeNull();
+  });
+});
+
+describe('run now', () => {
+  it('POSTs to /run then refetches the list', async () => {
+    __resetStateForTests({ phase: 'ready', rows: [makeInstall({ id: 'inst_run' })] });
+    const mock = setFetchSequence([
+      { status: 201, body: { ok: true, approvalRequestId: 'approval_run' } },
+      { status: 200, body: { installs: [makeInstall({ id: 'inst_run', status: 'active' }).install] } },
+      { status: 200, body: { skills: [makeInstall().manifest] } },
+    ]);
+
+    await handleRunNow('inst_run');
+
+    expect(mock).toHaveBeenCalledTimes(3);
+    const [postCall, getInstallsCall, getCatalogCall] = mock.mock.calls;
+    expect(postCall![0]).toBe('/api/skills/installs/inst_run/run');
+    expect((postCall![1] as RequestInit).method).toBe('POST');
+    expect(getInstallsCall![0]).toBe('/api/skills/installs');
+    expect(getCatalogCall![0]).toBe('/api/skills');
+    expect(__getStateForTests().actionInFlight).toBeNull();
+  });
+
+  it('handleAction routes run-now clicks', async () => {
+    __resetStateForTests({ phase: 'ready', rows: [makeInstall({ id: 'inst_action_run' })] });
+    const mock = setFetchSequence([
+      { status: 201, body: { ok: true, approvalRequestId: 'approval_action_run' } },
+      { status: 200, body: { installs: [makeInstall({ id: 'inst_action_run' }).install] } },
+      { status: 200, body: { skills: [makeInstall().manifest] } },
+    ]);
+
+    await handleAction('run-now', 'inst_action_run');
+
+    expect(mock.mock.calls[0]![0]).toBe('/api/skills/installs/inst_action_run/run');
   });
 });
 

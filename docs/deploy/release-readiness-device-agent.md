@@ -14,7 +14,8 @@ and the public boundary in [ai-byok.md](../ai-byok.md).
 - Device Agent has no autonomous wallet authority. It cannot approve, sign, submit, or move funds.
 - Render remains status/control-only. Render never stores provider keys and never runs provider
   calls for Device Agent.
-- Android app builds enable Device Agent by default. Browser and Render Device Agent surfaces remain gated.
+- Android debug/install builds enable Device Agent by default for local smoke coverage. Android release, browser, and
+  Render Device Agent surfaces remain gated unless explicitly enabled and allowlisted.
   Android opt-out builds can pass `-PagenticDeviceAgent=false`.
 
 ## Env / build matrix
@@ -22,10 +23,10 @@ and the public boundary in [ai-byok.md](../ai-byok.md).
 | Surface | Default | Enabled flag(s) | Effect |
 |---|---|---|---|
 | Browser (Vite) | hidden | `VITE_AGENTIC_DEVICE_AGENT=1`, `VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=...` | Reveals Device Agent in the AI mode dropdown and Connect AI card |
-| Android (Gradle) | visible/enabled | Opt out with `-PagenticDeviceAgent=false` | Sets `BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT=true`, enables `AgentRuntimeService`, passes `VITE_AGENTIC_DEVICE_AGENT=1` into the bundled WebView |
+| Android (Gradle) | debug visible/enabled; release hidden/disabled | `AGENTIC_ANDROID_DEVICE_AGENT=1`, `AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=...` | Sets `BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT=true`, enables `AgentRuntimeService`, passes `VITE_AGENTIC_DEVICE_AGENT=1` into the bundled WebView |
 | Render (runtime) | hidden | `AGENTIC_DEVICE_AGENT=1`, `AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=...` | Status/control endpoints respond for allowlisted wallets; no provider calls |
 
-Allowlisted wallets (defaults — overridable):
+Debug allowlisted wallets (defaults — overridable; release defaults to empty):
 
 - `4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd`
 - `7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w`
@@ -252,7 +253,8 @@ endpoints exist. `RenderDeviceAgentSession` has no `apiKey` field.
 
 ## Public release guardrail
 
-- Default web and Render builds keep Device Agent disabled; Android APK builds keep Device Agent enabled.
+- Default web and Render builds keep Device Agent disabled; Android release builds keep Device Agent disabled unless
+  explicitly enabled and allowlisted.
 - Do **not** set `VITE_AGENTIC_DEVICE_AGENT=1` or `AGENTIC_DEVICE_AGENT=1` for a public production web/Render
   release unless the release owner has explicitly approved it. Android rollback builds can pass
   `-PagenticDeviceAgent=false`.

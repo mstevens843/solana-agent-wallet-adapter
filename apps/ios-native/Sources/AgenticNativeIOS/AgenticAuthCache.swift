@@ -57,7 +57,7 @@ final class AgenticAuthCache {
 
     private func readRoot() -> AgenticAuthCacheRoot {
         do {
-            guard let data = try keychainRead() ?? userDefaultsRead() else {
+            guard let data = try keychainRead() ?? debugUserDefaultsRead() else {
                 return AgenticAuthCacheRoot()
             }
             return try JSONDecoder().decode(AgenticAuthCacheRoot.self, from: data)
@@ -73,7 +73,11 @@ final class AgenticAuthCache {
             do {
                 try keychainWrite(data)
             } catch {
+                #if DEBUG
                 userDefaultsWrite(data)
+                #else
+                throw error
+                #endif
             }
         } catch {
             AgenticIOSNativeLog.fail("AgenticAuthCache", "writeRoot", "FAIL", "cache write failed", ["error": error.localizedDescription])
@@ -124,6 +128,14 @@ final class AgenticAuthCache {
 
     private func userDefaultsRead() -> Data? {
         UserDefaults.standard.data(forKey: key)
+    }
+
+    private func debugUserDefaultsRead() -> Data? {
+        #if DEBUG
+        return userDefaultsRead()
+        #else
+        return nil
+        #endif
     }
 
     private func userDefaultsWrite(_ data: Data) {

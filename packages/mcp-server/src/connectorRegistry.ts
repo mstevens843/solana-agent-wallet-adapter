@@ -961,7 +961,7 @@ export const CONNECTOR_REGISTRY: ConnectorRegistryEntry[] = [
     approvalBoundary: CONNECTOR_APPROVAL_BOUNDARY,
     limitations: [
       'Mainnet-beta only. Phoenix Perpetuals (Ellipsis Labs) is in private beta; there is no devnet — use paper mode for rehearsal.',
-      'V1 ships reads, market catalog, funding history, and policy-gated health preview. Native prepare actions are scaffolded and policy-gated but throw unsupported_method until the Rise SDK (github.com/Ellipsis-Labs/rise-public) lands on npm.',
+      'Native prepare actions use the pinned Rise SDK when a Phoenix access code is configured. The PHOENIX_USE_LEGACY_HTTP fallback is read-only and write attempts throw unsupported_method.',
       'Trade execution is available today via the Vulcan upstream bridge (github.com/Ellipsis-Labs/vulcan-cli). When config.connectors.phoenix.vulcan.enabled is true and the vulcan binary is on PATH, the MCP server exposes solana_vulcan_* tools; dangerous calls are wrapped in the prepared-action inbox and signed only after explicit user approval in the Spend tab.',
       'Leverage is capped at policy maxLeverage (default 5x); minimum liquidation buffer enforced at policy minLiquidationBufferPct (default 15%).',
       'Stop-loss triggers use Phoenix tick-based prices, not USD — adapter converts via PHOENIX_TICKS_PER_USD.',

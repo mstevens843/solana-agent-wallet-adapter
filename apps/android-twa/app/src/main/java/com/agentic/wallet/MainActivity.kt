@@ -1057,7 +1057,7 @@ class MainActivity : FragmentActivity() {
                     return@safeBridge errorEnvelope("mpp", requestId, method, SecurityException("origin denied"))
                 }
                 runCatching {
-                    validateScaffoldedBridgeRequest(requestId, method, payloadJson)
+                    validateNativeBridgeRequest(requestId, method, payloadJson)
                     notImplementedEnvelope("mpp", requestId, method)
                 }.getOrElse { err ->
                     errorEnvelope("mpp", requestId, method, err)
@@ -1191,15 +1191,15 @@ class MainActivity : FragmentActivity() {
             else -> "streaming_error"
         }
 
-        private fun validateScaffoldedBridgeRequest(requestId: String, method: String, payloadJson: String) {
+        private fun validateNativeBridgeRequest(requestId: String, method: String, payloadJson: String) {
             if (!REQUEST_ID_PATTERN.matches(requestId)) {
-                throw MwaOperationException("INVALID_REQUEST", "Invalid scaffolded bridge request id.")
+                throw MwaOperationException("INVALID_REQUEST", "Invalid native bridge request id.")
             }
             if (method.isBlank() || method.length > 64) {
-                throw MwaOperationException("UNSUPPORTED_METHOD", "Invalid scaffolded bridge method.")
+                throw MwaOperationException("UNSUPPORTED_METHOD", "Invalid native bridge method.")
             }
             if (payloadJson.length > MAX_PAYLOAD_CHARS) {
-                throw MwaOperationException("INVALID_REQUEST", "Scaffolded bridge payload is too large.")
+                throw MwaOperationException("INVALID_REQUEST", "Native bridge payload is too large.")
             }
         }
 

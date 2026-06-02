@@ -15,7 +15,8 @@ Do not implement Perps write actions in this phase.
 
 ## Current Repo State
 
-Jupiter Perps is not implemented.
+The launch surface is read-only readiness and status reporting. Perps write
+actions are intentionally outside this phase.
 
 The app has no separate leverage policy for Jupiter Perps. That means any Perps write action would need new product, legal, risk, UI, and testing treatment before implementation.
 

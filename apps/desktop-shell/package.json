@@ -10,7 +10,7 @@
     "dev": "pnpm --filter @solana-agent-wallet-adapter/browser-demo dev",
     "typecheck": "pnpm --filter @solana-agent-wallet-adapter/browser-demo typecheck",
     "tauri:dev": "pnpm --filter @solana-agent-wallet-adapter/mcp-server build && cargo tauri dev",
-    "tauri:build": "cargo tauri build",
+    "tauri:build": "CI=true cargo tauri build",
     "icons:source": "node scripts/build-icon.mjs",
     "icons:tauri": "cd src-tauri && cargo tauri icon icons/icon.png -o icons",
     "icons": "pnpm icons:source && pnpm icons:tauri"

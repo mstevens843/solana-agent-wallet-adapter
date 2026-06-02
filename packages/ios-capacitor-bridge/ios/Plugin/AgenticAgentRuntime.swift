@@ -1151,23 +1151,44 @@ enum AgenticAgentProviderSupport {
         return false
     }
 
-    static func malformedReviewDiagnostics(provider: String, text: String, raw: [String: Any]) -> [String: String] {
-        var diagnostics: [String: String] = [
+    static func malformedReviewDiagnostics(provider: String, text: String, raw: [String: Any]) -> [String: Any] {
+        var diagnostics: [String: Any] = [
             "provider": provider,
             "parseError": "json_parse",
-            "textChars": String(text.count),
+            "textChars": text.count,
             "textPreview": safePreview(text),
         ]
         if let finishReason = finishReason(raw) {
             diagnostics["finishReason"] = finishReason
         }
         if let candidates = raw["candidates"] as? [Any] {
-            diagnostics["candidateCount"] = String(candidates.count)
+            diagnostics["candidateCount"] = candidates.count
         }
         if let status = raw["status"] as? String {
             diagnostics["status"] = status
         }
         return diagnostics
+    }
+
+    static func malformedReviewDebugFields(provider: String, text: String, raw: [String: Any]) -> [String: String] {
+        stringifyDiagnosticFields(malformedReviewDiagnostics(provider: provider, text: text, raw: raw))
+    }
+
+    private static func stringifyDiagnosticFields(_ diagnostics: [String: Any]) -> [String: String] {
+        var fields: [String: String] = [:]
+        for (key, value) in diagnostics {
+            switch value {
+            case let value as String:
+                fields[key] = value
+            case let value as Int:
+                fields[key] = String(value)
+            case let value as Bool:
+                fields[key] = value ? "true" : "false"
+            default:
+                continue
+            }
+        }
+        return fields
     }
 
     private static func safePreview(_ text: String) -> String {
@@ -1361,7 +1382,7 @@ final class AgenticAnthropicProvider: AgenticAgentProvider {
                         "message": err.message,
                     ])
                 } else if case .success(let value) = parsed, AgenticAgentProviderSupport.isMalformedReview(value) {
-                    request.emitDebug(step: "malformed_review", AgenticAgentProviderSupport.malformedReviewDiagnostics(provider: "anthropic", text: text, raw: json))
+                    request.emitDebug(step: "malformed_review", AgenticAgentProviderSupport.malformedReviewDebugFields(provider: "anthropic", text: text, raw: json))
                 }
                 completion(parsed)
             }
@@ -1538,7 +1559,7 @@ final class AgenticOpenAINativeProvider: AgenticAgentProvider {
                         "message": err.message,
                     ])
                 } else if case .success(let value) = parsed, AgenticAgentProviderSupport.isMalformedReview(value) {
-                    request.emitDebug(step: "malformed_review", AgenticAgentProviderSupport.malformedReviewDiagnostics(provider: "openai", text: text, raw: json))
+                    request.emitDebug(step: "malformed_review", AgenticAgentProviderSupport.malformedReviewDebugFields(provider: "openai", text: text, raw: json))
                 }
                 completion(parsed)
             }
@@ -1851,7 +1872,7 @@ final class AgenticOpenAICompatibleProvider: AgenticAgentProvider {
                         "message": err.message,
                     ])
                 } else if case .success(let value) = parsed, AgenticAgentProviderSupport.isMalformedReview(value) {
-                    request.emitDebug(step: "malformed_review", AgenticAgentProviderSupport.malformedReviewDiagnostics(provider: request.config.provider, text: text, raw: json))
+                    request.emitDebug(step: "malformed_review", AgenticAgentProviderSupport.malformedReviewDebugFields(provider: request.config.provider, text: text, raw: json))
                 }
                 completion(parsed)
             }
@@ -1937,7 +1958,7 @@ final class AgenticGeminiProvider: AgenticAgentProvider {
                         "message": err.message,
                     ])
                 } else if case .success(let value) = parsed, AgenticAgentProviderSupport.isMalformedReview(value) {
-                    request.emitDebug(step: "malformed_review", AgenticAgentProviderSupport.malformedReviewDiagnostics(provider: "gemini", text: text, raw: json))
+                    request.emitDebug(step: "malformed_review", AgenticAgentProviderSupport.malformedReviewDebugFields(provider: "gemini", text: text, raw: json))
                 }
                 completion(parsed)
             }

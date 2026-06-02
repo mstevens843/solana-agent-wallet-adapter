@@ -53,6 +53,7 @@ import {
   skillManifestHash,
   skillManifestHashForRecord,
 } from './skillManifestIntegrity.js';
+import { runSkillsExecuteTick } from './skillExecutorService.js';
 
 type SkillManifest = DevLayer1.skills.SkillManifest;
 type SkillCaps = DevLayer1.skills.SkillCaps;
@@ -131,6 +132,7 @@ const SKILL_DETAIL_RE = /^\/api\/skills\/([a-z0-9][a-z0-9-]{0,63})$/;
 const INSTALL_PAUSE_RE = /^\/api\/skills\/installs\/([A-Za-z0-9_-]+)\/pause$/;
 const INSTALL_RESUME_RE = /^\/api\/skills\/installs\/([A-Za-z0-9_-]+)\/resume$/;
 const INSTALL_UNINSTALL_RE = /^\/api\/skills\/installs\/([A-Za-z0-9_-]+)\/uninstall$/;
+const INSTALL_RUN_RE = /^\/api\/skills\/installs\/([A-Za-z0-9_-]+)\/run$/;
 
 const FORBIDDEN_AUTHORITY_KEYS = new Set(['delegatedSigner', 'privateKey', 'seedPhrase']);
 const INSTALL_PARAM_PLACEHOLDER_RE = /\{\{install\.([A-Za-z][A-Za-z0-9_]*)\}\}/g;
@@ -183,6 +185,18 @@ class SkillInternalError extends Error {
     super(message);
     this.name = 'SkillInternalError';
   }
+}
+
+function requireSignedInWallet(
+  res: ServerResponse,
+  context: DevApiHandlerContext,
+): context is DevApiHandlerContext & { walletAddress: string } {
+  if (context.walletAddress) return true;
+  writeJsonNoStore(res, 401, {
+    error: 'auth_required',
+    message: 'Sign in to Agentic Cloud with your wallet to use Skills.',
+  });
+  return false;
 }
 
 export async function handleSkillsRequest(
@@ -259,6 +273,14 @@ export async function handleSkillsRequest(
         return true;
       }
     }
+    const runMatch = INSTALL_RUN_RE.exec(path);
+    if (runMatch) {
+      const installId = runMatch[1];
+      if (typeof installId === 'string') {
+        await handleInstallRunNow(res, context, installId);
+        return true;
+      }
+    }
     return false;
   }
 
@@ -325,13 +347,7 @@ async function handlePublishManifest(
   res: ServerResponse,
   context: DevApiHandlerContext,
 ): Promise<void> {
-  if (!context.walletAddress) {
-    writeJsonNoStore(res, 403, {
-      error: 'dev_layer1_disabled',
-      message: 'This route is only available to allowlisted dev wallets.',
-    });
-    return;
-  }
+  if (!requireSignedInWallet(res, context)) return;
   try {
     const body = await readJsonBody(req);
     assertNoForbiddenAuthority(body);
@@ -384,13 +400,7 @@ async function handleInstall(
   res: ServerResponse,
   context: DevApiHandlerContext,
 ): Promise<void> {
-  if (!context.walletAddress) {
-    writeJsonNoStore(res, 403, {
-      error: 'dev_layer1_disabled',
-      message: 'This route is only available to allowlisted dev wallets.',
-    });
-    return;
-  }
+  if (!requireSignedInWallet(res, context)) return;
   try {
     const body = await readJsonBody(req);
     assertNoForbiddenAuthority(body);
@@ -660,13 +670,7 @@ async function handleListInstalls(
   res: ServerResponse,
   context: DevApiHandlerContext,
 ): Promise<void> {
-  if (!context.walletAddress) {
-    writeJsonNoStore(res, 403, {
-      error: 'dev_layer1_disabled',
-      message: 'This route is only available to allowlisted dev wallets.',
-    });
-    return;
-  }
+  if (!requireSignedInWallet(res, context)) return;
   try {
     const store = requireSkillsStore(context);
     const records = await store.listSkillInstallsForWallet(context.walletAddress);
@@ -782,7 +786,7 @@ function getAuthorEarningsSkillId(
   schedule: RecurringScheduleRecord,
   authorWallet: string,
 ): string | null {
-  // TODO(skr-earnings): The earnings response aggregates a single USDC
+  // Known limit (skr-earnings): The earnings response aggregates a single USDC
   // run-rate today, so $SKR-priced subscriptions are intentionally skipped
   // here rather than mis-summed across currencies. A follow-up should split
   // the response into per-token buckets (USDC monthly total + SKR monthly
@@ -847,13 +851,7 @@ async function handlePlatformEarnings(
   res: ServerResponse,
   context: DevApiHandlerContext,
 ): Promise<void> {
-  if (!context.walletAddress) {
-    writeJsonNoStore(res, 403, {
-      error: 'dev_layer1_disabled',
-      message: 'This route is only available to allowlisted dev wallets.',
-    });
-    return;
-  }
+  if (!requireSignedInWallet(res, context)) return;
   const treasury = loadTreasuryConfig();
   if (!treasury.wallet) {
     writeJsonNoStore(res, 503, {
@@ -916,7 +914,7 @@ function getPlatformEarningsSkillId(
   schedule: RecurringScheduleRecord,
   treasuryWallet: string,
 ): string | null {
-  // TODO(skr-earnings): $SKR-priced installs in the bounty window route 100%
+  // Known limit (skr-earnings): $SKR-priced installs in the bounty window route 100%
   // to the author (treasury wallet receives nothing), so this aggregator
   // would have nothing to count even if it accepted SKR — keep USDC-only
   // until per-token reporting is added. See plan section P3.7.
@@ -955,13 +953,7 @@ async function handleAuthorEarnings(
   context: DevApiHandlerContext,
   authorWallet: string,
 ): Promise<void> {
-  if (!context.walletAddress) {
-    writeJsonNoStore(res, 403, {
-      error: 'dev_layer1_disabled',
-      message: 'This route is only available to allowlisted dev wallets.',
-    });
-    return;
-  }
+  if (!requireSignedInWallet(res, context)) return;
   if (context.walletAddress !== authorWallet) {
     writeJsonNoStore(res, 403, {
       error: 'author_mismatch',
@@ -1018,13 +1010,7 @@ async function handleInstallTransition(
   installId: string,
   action: InstallAction,
 ): Promise<void> {
-  if (!context.walletAddress) {
-    writeJsonNoStore(res, 403, {
-      error: 'dev_layer1_disabled',
-      message: 'This route is only available to allowlisted dev wallets.',
-    });
-    return;
-  }
+  if (!requireSignedInWallet(res, context)) return;
   try {
     const store = requireSkillsStore(context);
     const existing = await store.getSkillInstall(installId);
@@ -1084,6 +1070,74 @@ async function handleInstallTransition(
         : {}),
     }, 'skill_install', installId);
     writeJsonNoStore(res, 200, { install: updatedInstall });
+  } catch (err) {
+    writeSkillsError(res, err);
+  }
+}
+
+async function handleInstallRunNow(
+  res: ServerResponse,
+  context: DevApiHandlerContext,
+  installId: string,
+): Promise<void> {
+  if (!requireSignedInWallet(res, context)) return;
+  try {
+    const store = requireSkillsStore(context);
+    const existing = await store.getSkillInstall(installId);
+    if (!existing || existing.walletAddress !== context.walletAddress) {
+      writeJsonNoStore(res, 404, {
+        error: 'install_not_found',
+        message: `No install found for id ${installId}.`,
+      });
+      return;
+    }
+    const install = existing.install as SkillInstallRecord;
+    if (install.status !== 'active') {
+      throw new SkillInvalidStateError(
+        'invalid_state',
+        `Install must be active to run now (current status: ${install.status}).`,
+      );
+    }
+
+    const before = await store.listSkillExecutionsByInstall(installId);
+    const pending = before.find((execution) => execution.result === 'pending' && execution.approvalRequestId);
+    if (pending) {
+      writeJsonNoStore(res, 409, {
+        error: 'pending_execution',
+        message: 'This skill already has a pending Needs Approval item. Approve or reject it before running again.',
+        approvalRequestId: pending.approvalRequestId,
+      });
+      return;
+    }
+
+    const beforeIds = new Set(before.map((execution) => execution.id));
+    const result = await runSkillsExecuteTick({
+      store: context.workflowStore,
+      clock: context.clock,
+      workflowService: context.workflowService,
+      installId,
+      walletAddress: context.walletAddress,
+      forceSchedule: true,
+    });
+    const after = await store.listSkillExecutionsByInstall(installId);
+    const created = after
+      .filter((execution) => !beforeIds.has(execution.id))
+      .sort((a, b) => b.proposedAt.localeCompare(a.proposedAt))[0];
+    if (!created || result.proposed !== 1 || !created.approvalRequestId) {
+      writeJsonNoStore(res, 409, {
+        error: 'run_not_proposed',
+        message: 'The skill could not create a Needs Approval item. Check caps, expiry, and manifest settings.',
+        result,
+      });
+      return;
+    }
+
+    writeJsonNoStore(res, 201, {
+      ok: true,
+      result,
+      approvalRequestId: created.approvalRequestId,
+      execution: created.execution,
+    });
   } catch (err) {
     writeSkillsError(res, err);
   }
@@ -1341,7 +1395,7 @@ function authorEarningsSkillId(
   schedule: RecurringScheduleRecord,
   authorWallet: string,
 ): string | null {
-  // TODO(skr-earnings): Duplicate of getAuthorEarningsSkillId above — same
+  // Known limit (skr-earnings): Duplicate of getAuthorEarningsSkillId above — same
   // USDC-only filter; the $SKR-priced subscriptions are skipped pending a
   // per-token earnings response shape. See plan section P3.7.
   if (
@@ -1517,6 +1571,7 @@ function writeSkillsError(res: ServerResponse, err: unknown): void {
 const skillsHandler: DevApiHandler = {
   prefix: PREFIX,
   methods: ['GET', 'POST'],
+  publicRoute: true,
   handle: handleSkillsRequest,
 };
 

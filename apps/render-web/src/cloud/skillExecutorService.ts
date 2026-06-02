@@ -52,6 +52,17 @@ export interface SkillsExecuteTickInput {
   store: WorkflowStore;
   clock: Clock;
   /**
+   * Restrict a tick to a single install. Used by the Skills UI's manual
+   * "Run now" action so it cannot fan out across every active install.
+   */
+  installId?: string;
+  walletAddress?: string;
+  /**
+   * When true, bypasses the manifest schedule decision while still enforcing
+   * install status, caps, parameter binding, and wallet approval boundaries.
+   */
+  forceSchedule?: boolean;
+  /**
    * Override the WorkflowService used to create approval requests. Tests inject
    * a fake; production builds one internally from the same store.
    */
@@ -122,7 +133,11 @@ export async function runSkillsExecuteTick(
   const now = clock.now();
   const nowIso = now.toISOString();
 
-  const installs = await skillsStore.listActiveSkillInstalls();
+  const activeInstalls = await skillsStore.listActiveSkillInstalls();
+  const installs = activeInstalls.filter((record) => (
+    (!input.installId || record.id === input.installId) &&
+    (!input.walletAddress || record.walletAddress === input.walletAddress)
+  ));
   let evaluated = 0;
   let proposed = 0;
   let skipped = 0;
@@ -175,6 +190,17 @@ export async function runSkillsExecuteTick(
         .slice()
         .sort((a, b) => a.proposedAt.localeCompare(b.proposedAt));
       const lastExecutionAtIso = recordedExecutions.at(-1)?.proposedAt;
+      if (input.forceSchedule && recordedExecutions.some((execution) => execution.result === 'pending')) {
+        skipped += 1;
+        await writeAudit(store, install.walletAddress, 'skill.execution.skipped', {
+          installId: install.id,
+          skillId: install.skillId,
+          ...manifestAudit,
+          reason: 'pending-execution',
+          stage: 'manual-run',
+        });
+        continue;
+      }
       const executionCount = recordedExecutions.filter((e) => e.result !== 'rejected' && e.result !== 'failed').length;
       const totalExecutedAmount = recordedExecutions.reduce((sum, entry) => {
         const exec = (entry.execution ?? null) as SkillExecutionRecord | null;
@@ -197,15 +223,17 @@ export async function runSkillsExecuteTick(
           connectorFactsReader,
         ));
 
-      const scheduleDecision = await evaluateSchedule({
-        install,
-        manifest,
-        lastExecutionAtIso,
-        executionCount,
-        now,
-        cluster,
-        priceLookup,
-      });
+      const scheduleDecision = input.forceSchedule
+        ? { due: true as const }
+        : await evaluateSchedule({
+            install,
+            manifest,
+            lastExecutionAtIso,
+            executionCount,
+            now,
+            cluster,
+            priceLookup,
+          });
       if (!scheduleDecision.due) {
         skipped += 1;
         await writeAudit(store, install.walletAddress, 'skill.execution.skipped', {
@@ -268,6 +296,7 @@ export async function runSkillsExecuteTick(
           manifestVersion: manifest.version,
           manifestHash,
           manifestSource,
+          ...(input.forceSchedule ? { manualRun: true } : {}),
           capsSnapshot: install.caps as unknown as JsonObject,
         },
       };
@@ -340,6 +369,7 @@ export async function runSkillsExecuteTick(
           manifestVersion: manifest.version,
           manifestHash,
           manifestSource,
+          ...(input.forceSchedule ? { manualRun: true } : {}),
           capsSnapshot: install.caps as unknown as JsonObject,
         },
       };

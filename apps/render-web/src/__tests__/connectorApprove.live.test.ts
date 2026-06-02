@@ -21,7 +21,9 @@ import { request as httpRequest } from 'node:http';
 import { describe, expect, it } from 'vitest';
 import { PublicKey, Transaction } from '@solana/web3.js';
 
+import { SESSION_COOKIE_NAME } from '../cloud/cookies.js';
 import { MemoryWorkflowStore } from '../cloud/memoryStore.js';
+import { createWalletSession } from '../cloud/session.js';
 import { createRenderWebServer } from '../server.js';
 
 const LIVE = process.env.AGENT_WALLET_KAMINO_LIVE === '1';
@@ -46,13 +48,13 @@ describeLive('Approve and send → /api/connector/prepare-transaction (live main
     // Ensure the SDK client picks up the same RPC URL the browser flow would.
     process.env.SOLANA_RPC_URL = RPC_URL;
 
-    await withServer(async (port) => {
+    await withServer(async (port, cookie) => {
       const response = await postJson(port, '/api/connector/prepare-transaction', {
         kind: 'kamino_deposit',
         params: { token: 'SOL', amount: '0.01' },
         walletAddress: TEST_WALLET,
         cluster: 'mainnet-beta',
-      });
+      }, cookie);
 
       // Surface server-side error context to the developer if the live SDK call
       // failed — much more useful than a bare status assertion.
@@ -96,13 +98,13 @@ describeLive('Approve and send → /api/connector/prepare-transaction (live main
 
   it('emits the same SOL deposit tx shape when the browser POSTs the underlying mint instead of the symbol', async () => {
     process.env.SOLANA_RPC_URL = RPC_URL;
-    await withServer(async (port) => {
+    await withServer(async (port, cookie) => {
       const response = await postJson(port, '/api/connector/prepare-transaction', {
         kind: 'kamino_deposit',
         params: { token: SOL_MINT, amount: '0.01' },
         walletAddress: TEST_WALLET,
         cluster: 'mainnet-beta',
-      });
+      }, cookie);
       if (response.status !== 200) {
         throw new Error(`Expected 200 but got ${response.status}: ${JSON.stringify(response.body)}`);
       }
@@ -114,17 +116,23 @@ describeLive('Approve and send → /api/connector/prepare-transaction (live main
   }, 180_000);
 });
 
-async function withServer(callback: (port: number) => Promise<void>): Promise<void> {
+async function withServer(callback: (port: number, cookie: string) => Promise<void>): Promise<void> {
   const staticDir = await mkdtemp(join(tmpdir(), 'agentic-render-kamino-live-'));
   await writeFile(join(staticDir, 'index.html'), '<!doctype html><div id="app"></div>');
   await mkdir(join(staticDir, 'app'));
   await writeFile(join(staticDir, 'app', 'index.html'), '<!doctype html><div id="app"></div>');
+  const store = new MemoryWorkflowStore();
+  const session = await createWalletSession({
+    store,
+    walletAddress: TEST_WALLET,
+    clock: { now: () => new Date('2026-05-08T18:00:00.000Z') },
+  });
   // Real router. No stubs — the createCloudApiRouter constructor invokes
   // ensureKaminoConfigured(), which wires the live SDK client. This is the exact
   // boot path render-web takes on Render.
   const server = createRenderWebServer({
     staticDir,
-    store: new MemoryWorkflowStore(),
+    store,
   });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -133,7 +141,7 @@ async function withServer(callback: (port: number) => Promise<void>): Promise<vo
   try {
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('Server did not bind a TCP port.');
-    await callback(address.port);
+    await callback(address.port, `${SESSION_COOKIE_NAME}=${encodeURIComponent(session.token)}`);
   } finally {
     await new Promise<void>((resolve, reject) => {
       server.close((err) => (err ? reject(err) : resolve()));
@@ -145,6 +153,7 @@ function postJson(
   port: number,
   path: string,
   body: unknown,
+  cookie?: string,
 ): Promise<{ status: number; body: unknown }> {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify(body);
@@ -154,6 +163,7 @@ function postJson(
       path,
       method: 'POST',
       headers: {
+        ...(cookie ? { cookie } : {}),
         'content-type': 'application/json',
         'content-length': Buffer.byteLength(payload),
       },

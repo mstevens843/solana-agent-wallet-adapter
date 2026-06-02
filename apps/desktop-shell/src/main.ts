@@ -137,7 +137,7 @@ const state: DesktopState = {
   runtimeSetup: null,
   nativeStatus: null,
   bridgeUrl: localStorage.getItem('agent-wallet-desktop-bridge-url') ?? 'http://127.0.0.1:8787',
-  bridgeToken: localStorage.getItem('agent-wallet-desktop-token') ?? 'local-agent-wallet',
+  bridgeToken: sessionStorage.getItem('agent-wallet-desktop-token') ?? 'local-agent-wallet',
   health: null,
   actions: [],
   receipts: [],
@@ -162,7 +162,8 @@ async function bootstrap(): Promise<void> {
     state.bridgeUrl = state.config.bridgeUrl;
     state.bridgeToken = state.config.bridgeToken;
     localStorage.setItem('agent-wallet-desktop-bridge-url', state.bridgeUrl);
-    localStorage.setItem('agent-wallet-desktop-token', state.bridgeToken);
+    localStorage.removeItem('agent-wallet-desktop-token');
+    sessionStorage.setItem('agent-wallet-desktop-token', state.bridgeToken);
     await refreshNativeStatus();
     await refreshRuntimeSetup();
   } catch {
@@ -524,7 +525,8 @@ function bind(): void {
   });
   document.querySelector<HTMLInputElement>('#bridgeToken')?.addEventListener('input', (event) => {
     state.bridgeToken = (event.currentTarget as HTMLInputElement).value.trim();
-    localStorage.setItem('agent-wallet-desktop-token', state.bridgeToken);
+    localStorage.removeItem('agent-wallet-desktop-token');
+    sessionStorage.setItem('agent-wallet-desktop-token', state.bridgeToken);
   });
 }
 

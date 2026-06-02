@@ -500,12 +500,12 @@ export function renderSessionsPanel(): string {
     <section class="sessions-shell dev-tab-shell" data-sessions-root>
       <header class="sessions-header dev-tab-header">
         <div class="dev-tab-header-main">
-          <p class="dev-tab-kicker">Streaming payments</p>
+          <p class="dev-tab-kicker">Bounded agent spending</p>
           <div class="dev-tab-title-row">
-            <h2>Sessions</h2>
+            <h2>Spending Sessions</h2>
             <span class="sessions-live-pill">${snapshot.status === 'loading' ? 'Syncing' : 'Live'}</span>
           </div>
-          <p>Grant a bounded SPL Token delegate session, watch voucher spend, and revoke the delegate from your wallet.</p>
+          <p>Grant a revocable SPL-token delegate with a hard cap, expiry, and optional recipient allowlist. Native SOL streaming is not supported in v1.</p>
         </div>
         <div class="dev-tab-header-actions">
           <button type="button" class="primary" data-sessions-open-create>Create Session</button>
@@ -537,7 +537,7 @@ export function renderSessionsPanel(): string {
       <div class="sessions-overview" aria-label="Streaming sessions summary">
         <div class="dev-tab-stat"><span>Active</span><strong>${activeCount}</strong></div>
         <div class="dev-tab-stat"><span>Live spend</span><strong>${escapeHtml(formatAmount(String(spent)))}</strong></div>
-        <div class="dev-tab-stat"><span>Default mint</span><strong>USDC</strong></div>
+        <div class="dev-tab-stat"><span>v1 token</span><strong>SPL / USDC</strong></div>
       </div>
 
       <div class="sessions-filter-row" role="tablist" aria-label="Session status filter">
@@ -685,7 +685,7 @@ function installSessionsDomHandlers(): void {
 
 registerDevTab({
   id: 'sessions',
-  label: 'Sessions',
+  label: 'Spending Sessions',
   mobileLabel: 'Sessions',
   guard: () => true,
   render: renderSessionsPanel,

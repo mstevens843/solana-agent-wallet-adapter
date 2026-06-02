@@ -197,22 +197,13 @@ async function dispatch(
     res.end(JSON.stringify({ error: 'not_found' }));
     return;
   }
-  let walletAddress: string | undefined;
-  if (!handler.publicRoute) {
-    if (!deps.gate.devLayer1Enabled()) {
-      res.statusCode = 403;
-      res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ error: 'dev_layer1_disabled' }));
-      return;
-    }
-    const headerWallet = req.headers['x-test-wallet'];
-    walletAddress = typeof headerWallet === 'string' ? headerWallet : undefined;
-    if (!deps.gate.isAllowedDevWallet(walletAddress)) {
-      res.statusCode = 403;
-      res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ error: 'dev_layer1_disabled' }));
-      return;
-    }
+  const headerWallet = req.headers['x-test-wallet'];
+  const walletAddress = typeof headerWallet === 'string' ? headerWallet : undefined;
+  if (!handler.publicRoute && !walletAddress) {
+    res.statusCode = 401;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ error: 'auth_required' }));
+    return;
   }
   const context: DevApiHandlerContext = {
     walletAddress,
@@ -401,30 +392,30 @@ describe('skillsRoutes API', () => {
     restoreEnv(original);
   });
 
-  describe('dev gate', () => {
-    it('returns 403 without a wallet header', async () => {
+  describe('public catalog access', () => {
+    it('returns the catalog without a wallet header', async () => {
       await withSkillsServer(DEFAULT_ENV, async ({ port }) => {
         const res = await getJson(port, '/api/skills');
-        expect(res.status).toBe(403);
-        expect(res.body).toEqual({ error: 'dev_layer1_disabled' });
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ skills: [], treasuryActive: false, platformFeeBps: 0 });
       });
     });
 
-    it('returns 403 when wallet is not in the allowlist', async () => {
+    it('returns the catalog for any connected wallet', async () => {
       await withSkillsServer(DEFAULT_ENV, async ({ port }) => {
         const res = await getJson(port, '/api/skills', OTHER_WALLET);
-        expect(res.status).toBe(403);
-        expect(res.body).toEqual({ error: 'dev_layer1_disabled' });
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ skills: [], treasuryActive: false, platformFeeBps: 0 });
       });
     });
 
-    it('returns 403 when AGENTIC_DEV_AP2_ACP is disabled', async () => {
+    it('does not depend on AGENTIC_DEV_AP2_ACP', async () => {
       await withSkillsServer(
         { ...DEFAULT_ENV, AGENTIC_DEV_AP2_ACP: '0' },
         async ({ port }) => {
           const res = await getJson(port, '/api/skills', DEV_WALLET);
-          expect(res.status).toBe(403);
-          expect(res.body).toEqual({ error: 'dev_layer1_disabled' });
+          expect(res.status).toBe(200);
+          expect(res.body).toEqual({ skills: [], treasuryActive: false, platformFeeBps: 0 });
         },
       );
     });
@@ -1828,6 +1819,180 @@ describe('skillsRoutes API', () => {
         expect(rows[0]?.recentExecutionCount).toBe(1);
         expect(rows[0]?.lastExecutionAt).toBe('2026-05-13T12:00:00.000Z');
         expect(rows[0]?.nextRunAt).toBe('2026-05-15T14:00:00.000Z');
+      });
+    });
+  });
+
+  describe('POST /api/skills/installs/:id/run', () => {
+    it('creates a pending approval for an active install without waiting for the schedule', async () => {
+      const manifest = makeManifest({
+        id: 'run-now-skill',
+        action: {
+          connectorAction: 'prepare_transfer_spl',
+          paramsTemplate: {
+            token: 'USDC',
+            recipient: AUTHOR_WALLET,
+            amount: '5',
+          },
+        },
+        caps: {
+          perRunMaxAmount: '10',
+          lifetimeMaxAmount: '100',
+          allowlistedTokens: ['USDC'],
+          allowlistedRecipients: [AUTHOR_WALLET],
+          maxExecutions: 10,
+        },
+      });
+      const installCaps = {
+        perRunMaxAmount: '10',
+        lifetimeMaxAmount: '100',
+        allowlistedTokens: ['USDC'],
+        allowlistedRecipients: [AUTHOR_WALLET],
+        maxExecutions: 10,
+      };
+      await withSkillsServer(DEFAULT_ENV, async ({ port, workflowStore }) => {
+        await seedManifest(workflowStore, manifest);
+        const installRes = await postJson(
+          port,
+          '/api/skills/installs',
+          {
+            skillId: 'run-now-skill',
+            manifestVersion: '1.0.0',
+            caps: installCaps,
+            acceptMonetization: false,
+          },
+          DEV_WALLET,
+        );
+        expect(installRes.status).toBe(201);
+        const install = (installRes.body as { install: SkillInstallRecord }).install;
+
+        const res = await postJson(
+          port,
+          `/api/skills/installs/${install.id}/run`,
+          {},
+          DEV_WALLET,
+        );
+
+        expect(res.status).toBe(201);
+        const body = res.body as {
+          ok: true;
+          result: { evaluated: number; proposed: number; skipped: number };
+          approvalRequestId: string;
+          execution: SkillExecutionRecord;
+        };
+        expect(body).toMatchObject({
+          ok: true,
+          result: { evaluated: 1, proposed: 1, skipped: 0 },
+          approvalRequestId: expect.stringMatching(/^approval_/),
+          execution: {
+            installId: install.id,
+            walletAddress: DEV_WALLET,
+            skillId: 'run-now-skill',
+            result: 'pending',
+            metadata: {
+              connectorAction: 'transfer_spl',
+              manualRun: true,
+            },
+          },
+        });
+
+        const approvals = await workflowStore.listApprovals(DEV_WALLET);
+        expect(approvals).toHaveLength(1);
+        expect(approvals[0]).toMatchObject({
+          id: body.approvalRequestId,
+          kind: 'transfer_spl',
+          recipient: AUTHOR_WALLET,
+          amount: '5',
+          metadata: { manualRun: true },
+        });
+
+        const executions = await workflowStore.listSkillExecutionsByInstall(install.id);
+        expect(executions).toHaveLength(1);
+        expect(executions[0]).toMatchObject({
+          installId: install.id,
+          walletAddress: DEV_WALLET,
+          skillId: 'run-now-skill',
+          result: 'pending',
+          approvalRequestId: body.approvalRequestId,
+        });
+      });
+    });
+
+    it('refuses to run again while an approval is already pending', async () => {
+      const manifest = makeManifest({
+        id: 'run-now-pending',
+        action: {
+          connectorAction: 'prepare_transfer_spl',
+          paramsTemplate: {
+            token: 'USDC',
+            recipient: AUTHOR_WALLET,
+            amount: '5',
+          },
+        },
+        caps: {
+          perRunMaxAmount: '10',
+          lifetimeMaxAmount: '100',
+          allowlistedTokens: ['USDC'],
+          allowlistedRecipients: [AUTHOR_WALLET],
+        },
+      });
+      await withSkillsServer(DEFAULT_ENV, async ({ port, workflowStore }) => {
+        await seedManifest(workflowStore, manifest);
+        const installRes = await postJson(
+          port,
+          '/api/skills/installs',
+          {
+            skillId: 'run-now-pending',
+            manifestVersion: '1.0.0',
+            caps: {
+              perRunMaxAmount: '10',
+              lifetimeMaxAmount: '100',
+              allowlistedTokens: ['USDC'],
+              allowlistedRecipients: [AUTHOR_WALLET],
+            },
+            acceptMonetization: false,
+          },
+          DEV_WALLET,
+        );
+        const install = (installRes.body as { install: SkillInstallRecord }).install;
+        const first = await postJson(port, `/api/skills/installs/${install.id}/run`, {}, DEV_WALLET);
+        expect(first.status).toBe(201);
+        const approvalRequestId = (first.body as { approvalRequestId: string }).approvalRequestId;
+
+        const second = await postJson(port, `/api/skills/installs/${install.id}/run`, {}, DEV_WALLET);
+
+        expect(second.status).toBe(409);
+        expect(second.body).toMatchObject({
+          error: 'pending_execution',
+          approvalRequestId,
+        });
+        expect(await workflowStore.listApprovals(DEV_WALLET)).toHaveLength(1);
+        expect(await workflowStore.listSkillExecutionsByInstall(install.id)).toHaveLength(1);
+      });
+    });
+
+    it('returns 409 when the install is paused', async () => {
+      const manifest = makeManifest({ id: 'run-now-paused' });
+      await withSkillsServer(DEFAULT_ENV, async ({ port, workflowStore }) => {
+        await seedManifest(workflowStore, manifest);
+        const installRes = await postJson(
+          port,
+          '/api/skills/installs',
+          {
+            skillId: 'run-now-paused',
+            manifestVersion: '1.0.0',
+            caps: defaultCaps(),
+            acceptMonetization: false,
+          },
+          DEV_WALLET,
+        );
+        const install = (installRes.body as { install: SkillInstallRecord }).install;
+        await postJson(port, `/api/skills/installs/${install.id}/pause`, {}, DEV_WALLET);
+
+        const res = await postJson(port, `/api/skills/installs/${install.id}/run`, {}, DEV_WALLET);
+
+        expect(res.status).toBe(409);
+        expect(res.body).toMatchObject({ error: 'invalid_state' });
       });
     });
   });

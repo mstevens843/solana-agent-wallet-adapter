@@ -1171,7 +1171,7 @@ describe('render web hosted BYOK API', () => {
     });
   });
 
-  describe('POST /api/connector/prepare-transaction (public stateless route)', () => {
+  describe('POST /api/connector/prepare-transaction (session-bound stateless route)', () => {
     const stubPayload = {
       transactionBase64: 'AAAA-base64-fixture',
       summary: 'Deposit 0.5 SOL into Kamino',
@@ -1179,15 +1179,34 @@ describe('render web hosted BYOK API', () => {
       cluster: 'mainnet-beta' as const,
     };
 
-    it('returns 200 + base64 for a valid kind + params, no session required', async () => {
+    it('returns 401 when no cloud session is present', async () => {
       let calls = 0;
-      await withServer(async (port) => {
+      await withServer(async (port, ctx) => {
         const response = await postJson(port, '/api/connector/prepare-transaction', {
           kind: 'kamino_deposit',
           params: { token: 'SOL', amount: '0.5' },
-          walletAddress: 'Wallet111',
+          walletAddress: ctx.walletAddress,
           cluster: 'mainnet-beta',
         });
+        expect(response.status).toBe(401);
+        expect(calls).toBe(0);
+      }, {
+        statelessConnectorPreparer: async () => {
+          calls += 1;
+          return stubPayload;
+        },
+      });
+    });
+
+    it('returns 200 + base64 for a valid kind + params owned by the session wallet', async () => {
+      let calls = 0;
+      await withServer(async (port, ctx) => {
+        const response = await postJson(port, '/api/connector/prepare-transaction', {
+          kind: 'kamino_deposit',
+          params: { token: 'SOL', amount: '0.5' },
+          walletAddress: ctx.walletAddress,
+          cluster: 'mainnet-beta',
+        }, { cookie: ctx.cookie });
         expect(response.status).toBe(200);
         expect(response.body).toMatchObject({
           transactionBase64: 'AAAA-base64-fixture',
@@ -1199,7 +1218,7 @@ describe('render web hosted BYOK API', () => {
         statelessConnectorPreparer: async (input) => {
           calls += 1;
           expect(input.kind).toBe('kamino_deposit');
-          expect(input.walletAddress).toBe('Wallet111');
+          expect(input.walletAddress).toBe(DEVICE_AGENT_OTHER_WALLET);
           expect(input.cluster).toBe('mainnet-beta');
           expect(input.params).toEqual({ token: 'SOL', amount: '0.5' });
           return stubPayload;
@@ -1207,14 +1226,34 @@ describe('render web hosted BYOK API', () => {
       });
     });
 
+    it('returns 401 when walletAddress does not match the signed-in wallet', async () => {
+      let calls = 0;
+      await withServer(async (port, ctx) => {
+        const response = await postJson(port, '/api/connector/prepare-transaction', {
+          kind: 'kamino_deposit',
+          params: { token: 'SOL', amount: '0.5' },
+          walletAddress: DEVICE_AGENT_WALLET_A,
+          cluster: 'mainnet-beta',
+        }, { cookie: ctx.cookie });
+        expect(response.status).toBe(401);
+        expect(String(response.body.error)).toContain('Wallet address');
+        expect(calls).toBe(0);
+      }, {
+        statelessConnectorPreparer: async () => {
+          calls += 1;
+          return stubPayload;
+        },
+      });
+    });
+
     it('returns 422 when the adapter registry has no entry for the kind', async () => {
-      await withServer(async (port) => {
+      await withServer(async (port, ctx) => {
         const response = await postJson(port, '/api/connector/prepare-transaction', {
           kind: 'not_a_real_kind',
           params: {},
-          walletAddress: 'Wallet111',
+          walletAddress: ctx.walletAddress,
           cluster: 'mainnet-beta',
-        });
+        }, { cookie: ctx.cookie });
         expect(response.status).toBe(422);
         expect(String(response.body.error)).toContain('No adapter');
       }, {
@@ -1226,13 +1265,13 @@ describe('render web hosted BYOK API', () => {
     });
 
     it('returns 502 when the adapter itself fails (SDK/RPC error)', async () => {
-      await withServer(async (port) => {
+      await withServer(async (port, ctx) => {
         const response = await postJson(port, '/api/connector/prepare-transaction', {
           kind: 'kamino_deposit',
           params: { token: 'SOL', amount: '0.5' },
-          walletAddress: 'Wallet111',
+          walletAddress: ctx.walletAddress,
           cluster: 'mainnet-beta',
-        });
+        }, { cookie: ctx.cookie });
         expect(response.status).toBe(502);
       }, {
         statelessConnectorPreparer: async () => {
@@ -1242,37 +1281,37 @@ describe('render web hosted BYOK API', () => {
     });
 
     it('returns 400 when kind is missing', async () => {
-      await withServer(async (port) => {
+      await withServer(async (port, ctx) => {
         const response = await postJson(port, '/api/connector/prepare-transaction', {
           params: { token: 'SOL', amount: '0.5' },
-          walletAddress: 'Wallet111',
+          walletAddress: ctx.walletAddress,
           cluster: 'mainnet-beta',
-        });
+        }, { cookie: ctx.cookie });
         expect(response.status).toBe(400);
       }, { statelessConnectorPreparer: async () => stubPayload });
     });
 
     it('returns 400 when params is not an object', async () => {
-      await withServer(async (port) => {
+      await withServer(async (port, ctx) => {
         const response = await postJson(port, '/api/connector/prepare-transaction', {
           kind: 'kamino_deposit',
           params: 'not-an-object',
-          walletAddress: 'Wallet111',
+          walletAddress: ctx.walletAddress,
           cluster: 'mainnet-beta',
-        });
+        }, { cookie: ctx.cookie });
         expect(response.status).toBe(400);
         expect(String(response.body.error)).toContain('params');
       }, { statelessConnectorPreparer: async () => stubPayload });
     });
 
     it('returns 400 for an unknown cluster', async () => {
-      await withServer(async (port) => {
+      await withServer(async (port, ctx) => {
         const response = await postJson(port, '/api/connector/prepare-transaction', {
           kind: 'kamino_deposit',
           params: { token: 'SOL', amount: '0.5' },
-          walletAddress: 'Wallet111',
+          walletAddress: ctx.walletAddress,
           cluster: 'asgard-net',
-        });
+        }, { cookie: ctx.cookie });
         expect(response.status).toBe(400);
         expect(String(response.body.error).toLowerCase()).toContain('cluster');
       }, { statelessConnectorPreparer: async () => stubPayload });

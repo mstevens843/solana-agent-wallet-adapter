@@ -103,10 +103,12 @@ describe('connector secrets storage', () => {
 });
 
 describe('isByoKeyConnectorId', () => {
-  it('accepts the three BYO connectors', () => {
+  it('accepts BYO connectors', () => {
     expect(isByoKeyConnectorId('magiceden')).toBe(true);
     expect(isByoKeyConnectorId('tensor')).toBe(true);
     expect(isByoKeyConnectorId('sanctum')).toBe(true);
+    expect(isByoKeyConnectorId('lulo')).toBe(true);
+    expect(isByoKeyConnectorId('phoenix')).toBe(true);
   });
   it('rejects others', () => {
     expect(isByoKeyConnectorId('jupiter')).toBe(false);
@@ -145,5 +147,11 @@ describe('resolveConnectorSecretsKek', () => {
       SESSION_SECRET: 'abcdefghijklmnopqrstuvwxyzABCDEFGH',
     });
     expect(buf.length).toBeGreaterThanOrEqual(32);
+  });
+  it('does not allow SESSION_SECRET fallback in production', () => {
+    expect(() => resolveConnectorSecretsKek({
+      NODE_ENV: 'production',
+      SESSION_SECRET: 'abcdefghijklmnopqrstuvwxyzABCDEFGH',
+    })).toThrow(ConnectorSecretsError);
   });
 });

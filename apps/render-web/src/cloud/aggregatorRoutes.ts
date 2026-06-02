@@ -5,7 +5,6 @@ import {
   type DevApiHandler,
   type DevApiHandlerContext,
 } from './devApiRegistry.js';
-import { isAllowedDevWallet } from './devGate.js';
 import { isAggregatorStore, type AggregatorStore } from './store.js';
 
 const PREFIX = '/api/aggregator/';
@@ -59,10 +58,6 @@ async function handleWalletStats(
   res: ServerResponse,
   context: DevApiHandlerContext,
 ): Promise<boolean> {
-  if (!isAllowedDevWallet(walletAddress)) {
-    writeJsonNoStore(res, 404, { error: 'not_found' });
-    return true;
-  }
   if (!isAggregatorStore(context.workflowStore)) {
     writeJsonNoStore(res, 503, { error: 'aggregator_unavailable' });
     return true;

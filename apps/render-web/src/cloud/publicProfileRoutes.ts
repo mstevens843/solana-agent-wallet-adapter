@@ -2,7 +2,6 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import * as DevLayer1 from '@solana-agent-wallet-adapter/workflow/dev';
 
-import { isAllowedDevWallet } from './devGate.js';
 import {
   registerPublicSsrHandler,
   type PublicSsrContext,
@@ -277,7 +276,7 @@ async function handleWalletProfileSsr(
   ctx: PublicSsrContext,
 ): Promise<boolean> {
   const walletAddress = match[1];
-  if (!walletAddress || !isAllowedDevWallet(walletAddress)) {
+  if (!walletAddress) {
     return notFound(req, res);
   }
 
@@ -322,9 +321,6 @@ async function handleSkillProfileSsr(
   if (!manifestRec) return notFound(req, res);
 
   const manifest = manifestRec.manifest as SkillManifest;
-  if (!isAllowedDevWallet(manifest.authorWallet)) {
-    return notFound(req, res);
-  }
 
   let snapshot: SkillStatsSnapshot | undefined;
   if (isAggregatorStore(ctx.store)) {

@@ -81,6 +81,7 @@ export type PublishPhase =
   | 'empty'
   | 'error'
   | 'forbidden'
+  | 'signedOut'
   | 'notDeployed'
   | 'noWallet';
 
@@ -364,8 +365,17 @@ function renderListSection(): string {
       return `
         <section class="skills-publish-list-card">
           <div class="skills-publish-notice">
-            <strong>Connect the dev wallet</strong>
-            <p>Connect an allowlisted Layer 2 wallet to manage skills you've authored.</p>
+            <strong>Connect a wallet</strong>
+            <p>Connect the wallet that authors your skills to manage published manifests.</p>
+          </div>
+        </section>
+      `;
+    case 'signedOut':
+      return `
+        <section class="skills-publish-list-card">
+          <div class="skills-publish-notice">
+            <strong>Sign in required</strong>
+            <p>${escapeHtml(panelState.errorMessage || 'Sign in to Agentic Cloud with your wallet to manage authored skills.')}</p>
           </div>
         </section>
       `;
@@ -383,8 +393,8 @@ function renderListSection(): string {
       return `
         <section class="skills-publish-list-card">
           <div class="skills-publish-notice skills-publish-notice-warn">
-            <strong>Wallet not on the Layer 2 dev allowlist</strong>
-            <p>Switch to an allowlisted wallet to publish or manage authored skills.</p>
+            <strong>Permission required</strong>
+            <p>This wallet cannot publish or manage authored skills.</p>
           </div>
         </section>
       `;
@@ -503,6 +513,10 @@ async function fetchAuthoredSkills(wallet: string): Promise<void> {
     }
     case 'forbidden':
       panelState.phase = 'forbidden';
+      break;
+    case 'unauthenticated':
+      panelState.phase = 'signedOut';
+      panelState.errorMessage = result.message;
       break;
     case 'notDeployed':
       panelState.phase = 'notDeployed';

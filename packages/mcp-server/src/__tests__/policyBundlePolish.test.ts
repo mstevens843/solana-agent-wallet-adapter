@@ -103,6 +103,21 @@ describe('#4 applyServerSideReviewSafety — policyBundle.hasBlockingFailure enf
     expect(out.decision).toBe('deny');
     expect(contract?.blockingFactIds ?? []).toEqual([]);
   });
+
+  it('uses evaluation atom ids when the atom catalog is absent', () => {
+    const request = baseRequest({
+      policyBundle: {
+        hasBlockingFailure: true,
+        evaluations: [
+          { atomId: 'atom.external_price.helium.lt.20', pass: false, finding: { label: 'Helium plan', value: '$25', tone: 'fail' } },
+        ],
+      },
+    });
+    const out = applyServerSideReviewSafety(baseResult({ decision: 'approve' }), request);
+    const contract = (out.evidence as { decisionContract?: { blockingFactIds?: string[] } }).decisionContract;
+    expect(out.decision).toBe('deny');
+    expect(contract?.blockingFactIds).toEqual(['atom.external_price.helium.lt.20']);
+  });
 });
 
 describe('#8 mergePolicyBundleFindings — unresolved-row filter on large bundles', () => {

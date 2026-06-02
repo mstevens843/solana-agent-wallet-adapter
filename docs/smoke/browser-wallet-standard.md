@@ -5,8 +5,8 @@ Date: 2026-05-03
 ## Environment
 
 - Repo: `solana-agent-wallet-adapter`
-- Command: `pnpm smoke:web --host 127.0.0.1`
-- URL tested: `http://localhost:5173/test.html`
+- Command: `pnpm demo:browser`
+- URL tested: `http://127.0.0.1:5174/`
 - Browser wallet used: Backpack
 - Cluster: devnet
 

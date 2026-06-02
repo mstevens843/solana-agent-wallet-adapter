@@ -238,7 +238,15 @@ function deriveDataKey(
 }
 
 export function resolveConnectorSecretsKek(env: NodeJS.ProcessEnv = process.env): Buffer {
-  const raw = env.CONNECTOR_SECRET_KEY?.trim() || env.SESSION_SECRET?.trim();
+  const connectorSecret = env.CONNECTOR_SECRET_KEY?.trim();
+  const sessionSecret = env.SESSION_SECRET?.trim();
+  if (!connectorSecret && isProductionEnv(env) && sessionSecret) {
+    throw new ConnectorSecretsError(
+      'CONNECTOR_SECRET_KEY must be set in production to manage connector API keys; SESSION_SECRET fallback is non-production only.',
+      'kek_missing',
+    );
+  }
+  const raw = connectorSecret || sessionSecret;
   if (!raw) {
     throw new ConnectorSecretsError(
       'CONNECTOR_SECRET_KEY (or SESSION_SECRET fallback) must be set to manage connector API keys.',
@@ -252,4 +260,8 @@ export function resolveConnectorSecretsKek(env: NodeJS.ProcessEnv = process.env)
     );
   }
   return Buffer.from(raw, 'utf8');
+}
+
+function isProductionEnv(env: NodeJS.ProcessEnv): boolean {
+  return env.NODE_ENV === 'production' || env.RENDER === 'true';
 }
