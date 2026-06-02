@@ -69,9 +69,9 @@ The Android section links GitHub Release artifacts with these expected asset nam
 - `agentic-android.apk`
 - `agentic-android.aab`
 
-The canonical hosted Agentic Cloud origin is `https://agentic-signer.com`. The Android app still defaults to the bundled
-Agentic app shell and keeps the legacy hosted fallback at `https://agenticwalletadapter.com/#app` behind an explicit
-fallback button unless the native build overrides `AGENTIC_ANDROID_LAUNCH_URL`. The raw native Solana Mobile Wallet
+The canonical hosted Agentic Cloud origin is `https://agentic-signer.com`. The Android app defaults to the bundled
+Agentic app shell and uses `https://agentic-signer.com/app` as its hosted launch URL unless the native build overrides
+`AGENTIC_ANDROID_LAUNCH_URL`. The raw native Solana Mobile Wallet
 Adapter controls remain available as the optional `MWA` tab with
 `AGENTIC_ANDROID_SHOW_EXAMPLE_TAB=true pnpm android:install`.
 Production trusted web mode still requires `/.well-known/assetlinks.json` to contain the release signing certificate fingerprint.

@@ -106,7 +106,7 @@ export async function saveSession(options: GlobalOptions, session: CliSession): 
     renderWebOrigin: normalizeOrigin(session.renderWebOrigin || options.renderWebUrl),
     issuedAt: session.issuedAt || new Date().toISOString(),
   };
-  await writeFile(path, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  await writeFile(path, `${JSON.stringify(payload, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   try {
     // Best-effort permission tightening; Windows ignores silently.
     await chmod(path, 0o600);

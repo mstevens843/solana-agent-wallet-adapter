@@ -14,8 +14,8 @@ and the public boundary in [ai-byok.md](../ai-byok.md).
 - Device Agent has no autonomous wallet authority. It cannot approve, sign, submit, or move funds.
 - Render remains status/control-only. Render never stores provider keys and never runs provider
   calls for Device Agent.
-- Android debug/install builds enable Device Agent by default for local smoke coverage. Android release, browser, and
-  Render Device Agent surfaces remain gated unless explicitly enabled and allowlisted.
+- Android debug/install builds enable Device Agent by default for local smoke coverage. Android release, iOS, browser,
+  and Render Device Agent surfaces remain gated unless explicitly enabled and allowlisted.
   Android opt-out builds can pass `-PagenticDeviceAgent=false`.
 
 ## Env / build matrix
@@ -26,7 +26,7 @@ and the public boundary in [ai-byok.md](../ai-byok.md).
 | Android (Gradle) | debug visible/enabled; release hidden/disabled | `AGENTIC_ANDROID_DEVICE_AGENT=1`, `AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=...` | Sets `BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT=true`, enables `AgentRuntimeService`, passes `VITE_AGENTIC_DEVICE_AGENT=1` into the bundled WebView |
 | Render (runtime) | hidden | `AGENTIC_DEVICE_AGENT=1`, `AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=...` | Status/control endpoints respond for allowlisted wallets; no provider calls |
 
-Debug allowlisted wallets (defaults — overridable; release defaults to empty):
+Historical debug wallet examples for local allowlists:
 
 - `4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd`
 - `7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w`

@@ -160,7 +160,14 @@ describe('mcp server tools', () => {
     const linked = InMemoryTransport.createLinkedPair();
     const server = createServer({
       backend: createMockBackend(),
-      actionConfig: DEFAULT_CONFIG,
+      actionConfig: {
+        ...DEFAULT_CONFIG,
+        mainnet: {
+          ...DEFAULT_CONFIG.mainnet,
+          enabled: true,
+          allowArbitraryTransactions: true,
+        },
+      },
     });
     client = new Client({ name: 'mcp-server-test', version: '0.0.0' });
     await Promise.all([server.connect(linked[1]), client.connect(linked[0])]);
@@ -277,7 +284,12 @@ describe('mcp server tools', () => {
     const linked = InMemoryTransport.createLinkedPair();
     const server = createServer({
       backend: createMockBackend(),
-      actionConfig: DEFAULT_CONFIG,
+      actionConfig: {
+        ...DEFAULT_CONFIG,
+        cluster: 'mainnet-beta',
+        rpcUrl: 'https://api.mainnet-beta.solana.com',
+        mainnet: { ...DEFAULT_CONFIG.mainnet, enabled: true },
+      },
     });
     client = new Client({ name: 'mcp-server-test', version: '0.0.0' });
     await Promise.all([server.connect(linked[1]), client.connect(linked[0])]);
@@ -344,7 +356,16 @@ describe('mcp server tools', () => {
     const linked = InMemoryTransport.createLinkedPair();
     const server = createServer({
       backend: createMockBackend(),
-      actionConfig: DEFAULT_CONFIG,
+      actionConfig: {
+        ...DEFAULT_CONFIG,
+        cluster: 'mainnet-beta',
+        rpcUrl: 'https://api.mainnet-beta.solana.com',
+        mainnet: {
+          ...DEFAULT_CONFIG.mainnet,
+          enabled: true,
+          allowArbitraryTransactions: true,
+        },
+      },
     });
     client = new Client({ name: 'mcp-server-test', version: '0.0.0' });
     await Promise.all([server.connect(linked[1]), client.connect(linked[0])]);
@@ -387,7 +408,12 @@ describe('mcp server tools', () => {
     const linked = InMemoryTransport.createLinkedPair();
     const server = createServer({
       backend: createMockBackend(),
-      actionConfig: DEFAULT_CONFIG,
+      actionConfig: {
+        ...DEFAULT_CONFIG,
+        cluster: 'mainnet-beta',
+        rpcUrl: 'https://api.mainnet-beta.solana.com',
+        mainnet: { ...DEFAULT_CONFIG.mainnet, enabled: true },
+      },
     });
     client = new Client({ name: 'mcp-server-test', version: '0.0.0' });
     await Promise.all([server.connect(linked[1]), client.connect(linked[0])]);
@@ -418,7 +444,16 @@ describe('mcp server tools', () => {
     const linked = InMemoryTransport.createLinkedPair();
     const server = createServer({
       backend: createMockBackend(),
-      actionConfig: DEFAULT_CONFIG,
+      actionConfig: {
+        ...DEFAULT_CONFIG,
+        cluster: 'mainnet-beta',
+        rpcUrl: 'https://api.mainnet-beta.solana.com',
+        mainnet: {
+          ...DEFAULT_CONFIG.mainnet,
+          enabled: true,
+          allowArbitraryTransactions: true,
+        },
+      },
     });
     client = new Client({ name: 'mcp-server-test', version: '0.0.0' });
     await Promise.all([server.connect(linked[1]), client.connect(linked[0])]);
@@ -627,7 +662,12 @@ describe('mcp server tools', () => {
     const linked = InMemoryTransport.createLinkedPair();
     const server = createServer({
       backend: createMockBackend(),
-      actionConfig: DEFAULT_CONFIG,
+      actionConfig: {
+        ...DEFAULT_CONFIG,
+        cluster: 'mainnet-beta',
+        rpcUrl: 'https://api.mainnet-beta.solana.com',
+        mainnet: { ...DEFAULT_CONFIG.mainnet, enabled: true },
+      },
     });
     client = new Client({ name: 'mcp-server-test', version: '0.0.0' });
     await Promise.all([server.connect(linked[1]), client.connect(linked[0])]);
@@ -657,7 +697,16 @@ describe('mcp server tools', () => {
     const linked = InMemoryTransport.createLinkedPair();
     const server = createServer({
       backend: createMockBackend(),
-      actionConfig: DEFAULT_CONFIG,
+      actionConfig: {
+        ...DEFAULT_CONFIG,
+        cluster: 'mainnet-beta',
+        rpcUrl: 'https://api.mainnet-beta.solana.com',
+        mainnet: {
+          ...DEFAULT_CONFIG.mainnet,
+          enabled: true,
+          allowArbitraryTransactions: true,
+        },
+      },
     });
     client = new Client({ name: 'mcp-server-test', version: '0.0.0' });
     await Promise.all([server.connect(linked[1]), client.connect(linked[0])]);
@@ -683,8 +732,11 @@ describe('mcp server tools', () => {
       backend: createMockBackend(),
       actionConfig: {
         ...DEFAULT_CONFIG,
+        cluster: 'mainnet-beta',
+        rpcUrl: 'https://api.mainnet-beta.solana.com',
         mainnet: {
           ...DEFAULT_CONFIG.mainnet,
+          enabled: true,
           allowArbitraryTransactions: false,
         },
       },

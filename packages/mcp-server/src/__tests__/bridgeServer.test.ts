@@ -96,6 +96,36 @@ describe('bridge lab artifact routes', () => {
     }
   });
 
+  it('refuses non-loopback bridge binds by default', () => {
+    const backend = new LocalBridgeBackend({
+      cluster: 'devnet',
+      rpcUrl: 'https://api.devnet.solana.com',
+      token: 'strong-test-token-1234567890123456',
+    });
+
+    expect(() => createBridgeServer({ backend, host: '0.0.0.0' })).toThrow(/non-loopback host "0\.0\.0\.0"/);
+  });
+
+  it('requires a strong non-default token for explicit private bridge binds', () => {
+    vi.stubEnv('BRIDGE_ALLOW_PRIVATE_BIND', '1');
+    const weakBackend = new LocalBridgeBackend({
+      cluster: 'devnet',
+      rpcUrl: 'https://api.devnet.solana.com',
+      token: 'local-agent-wallet',
+    });
+
+    expect(() => createBridgeServer({ backend: weakBackend, host: '0.0.0.0' })).toThrow(/weak or default bridge token/);
+
+    const strongBackend = new LocalBridgeBackend({
+      cluster: 'devnet',
+      rpcUrl: 'https://api.devnet.solana.com',
+      token: 'strong-test-token-1234567890123456',
+    });
+    const bridge = createBridgeServer({ backend: strongBackend, host: '0.0.0.0', port: 8787 });
+
+    expect(bridge.url).toBe('http://0.0.0.0:8787/');
+  });
+
   it('rejects oversized bridge JSON bodies before parsing', async () => {
     const handle = await startTestBridge();
     try {
@@ -781,7 +811,12 @@ describe('bridge prepared-action prepare-transaction', () => {
       },
     });
     const handle = await startTestBridge({
-      actionConfig: { ...DEFAULT_CONFIG, rpcUrl: 'http://127.0.0.1:1' },
+      actionConfig: {
+        ...DEFAULT_CONFIG,
+        cluster: 'mainnet-beta',
+        rpcUrl: 'http://127.0.0.1:1',
+        mainnet: { ...DEFAULT_CONFIG.mainnet, enabled: true },
+      },
       preparedActions: store,
       connectedAddress: wallet,
     });
@@ -826,7 +861,12 @@ describe('bridge prepared-action prepare-transaction', () => {
       params: {},
     });
     const handle = await startTestBridge({
-      actionConfig: { ...DEFAULT_CONFIG, rpcUrl: 'http://127.0.0.1:1' },
+      actionConfig: {
+        ...DEFAULT_CONFIG,
+        cluster: 'mainnet-beta',
+        rpcUrl: 'http://127.0.0.1:1',
+        mainnet: { ...DEFAULT_CONFIG.mainnet, enabled: true },
+      },
       preparedActions: store,
       connectedAddress: wallet,
     });
@@ -895,7 +935,12 @@ describe('bridge prepared-action prepare-transaction', () => {
       join(await mkdtemp(join(tmpdir(), 'sawa-bridge-prepare-tx-')), 'actions.json'),
     );
     const handle = await startTestBridge({
-      actionConfig: { ...DEFAULT_CONFIG, rpcUrl: 'http://127.0.0.1:1' },
+      actionConfig: {
+        ...DEFAULT_CONFIG,
+        cluster: 'mainnet-beta',
+        rpcUrl: 'http://127.0.0.1:1',
+        mainnet: { ...DEFAULT_CONFIG.mainnet, enabled: true },
+      },
       preparedActions: store,
       connectedAddress: wallet,
     });
@@ -971,7 +1016,12 @@ describe('bridge connector prepare-action', () => {
       join(await mkdtemp(join(tmpdir(), 'sawa-bridge-connector-action-')), 'actions.json'),
     );
     const handle = await startTestBridge({
-      actionConfig: { ...DEFAULT_CONFIG, rpcUrl: 'http://127.0.0.1:1' },
+      actionConfig: {
+        ...DEFAULT_CONFIG,
+        cluster: 'mainnet-beta',
+        rpcUrl: 'http://127.0.0.1:1',
+        mainnet: { ...DEFAULT_CONFIG.mainnet, enabled: true },
+      },
       preparedActions: store,
       connectedAddress: wallet,
     });
@@ -1071,7 +1121,12 @@ describe('bridge connector stateless prepare-transaction', () => {
       join(await mkdtemp(join(tmpdir(), 'sawa-bridge-stateless-')), 'actions.json'),
     );
     const handle = await startTestBridge({
-      actionConfig: { ...DEFAULT_CONFIG, rpcUrl: 'http://127.0.0.1:1' },
+      actionConfig: {
+        ...DEFAULT_CONFIG,
+        cluster: 'mainnet-beta',
+        rpcUrl: 'http://127.0.0.1:1',
+        mainnet: { ...DEFAULT_CONFIG.mainnet, enabled: true },
+      },
       preparedActions: store,
       connectedAddress: wallet,
     });

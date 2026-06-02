@@ -125,9 +125,10 @@ This is enabled by default for debug/install builds and disabled by default for 
 APK testing against a laptop bridge, set it explicitly. The app still accepts only localhost, private LAN IPs, and
 `.local` bridge hosts for cleartext HTTP bridge traffic.
 
-Android users can use the app planner without an AI key through templates. If they want AI planning without a
-desktop bridge, the bundled app defaults to Device Agent BYOK so provider calls run through the Android-native runtime.
-Android session BYOK, Hosted BYOK, and Desktop local bridge AI remain available as alternate paths. Hosted BYOK is
+Android users can use the app planner without an AI key through templates. In debug/install builds, Device Agent BYOK
+is the default no-desktop-bridge AI path so provider calls run through the Android-native runtime. Release builds keep
+that path hidden unless explicitly enabled and allowlisted. Android session BYOK, Hosted BYOK, and Desktop local
+bridge AI remain available as alternate paths. Hosted BYOK is
 available after signing in to Agentic Cloud with the connected wallet; the API key is relayed only for that request and
 is not synced. See `docs/ai-byok.md`.
 

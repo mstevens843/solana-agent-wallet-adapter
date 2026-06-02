@@ -476,14 +476,14 @@ export const DEFAULT_TOKEN_REGISTRY: TokenLimitConfig[] = [
 ];
 
 export const DEFAULT_CONFIG: AgentWalletConfig = {
-  cluster: 'mainnet-beta',
-  rpcUrl: 'https://api.mainnet-beta.solana.com',
+  cluster: 'devnet',
+  rpcUrl: 'https://api.devnet.solana.com',
   mainnet: {
-    enabled: true,
+    enabled: false,
     maxSolTransfer: '0.05',
     maxSwapInput: '0.05',
     maxSlippageBps: 100,
-    allowArbitraryTransactions: true,
+    allowArbitraryTransactions: false,
   },
   tokens: DEFAULT_TOKEN_REGISTRY,
   jupiter: {

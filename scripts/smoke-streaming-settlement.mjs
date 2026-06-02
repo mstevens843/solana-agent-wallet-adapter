@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * Phase 5.11 — devnet end-to-end smoke for the streaming-payment session
- * primitive. Exercises the full happy path that the in-process tests can't
- * cover: real RPC + real SPL Token delegate + real settlement transaction.
+ * Phase 5.11 — devnet precheck for the streaming-payment session primitive.
+ * It verifies wallet, token account, and operator env readiness before the
+ * manual runbook drives the authorized render-web session steps.
  *
- * What this script does (in order):
+ * Full runbook target:
  *
  *   1. Spawns a local render-web server against an in-memory store (no
  *      Postgres needed; the smoke is about the API + on-chain pieces).
@@ -143,11 +143,9 @@ if (uiBalance < Number(capAmount)) {
 }
 
 // ----------------------------------------------------------------------------
-// Steps 3-8 below are spelled out in the runbook but left as TODOs in this
-// script because they require operator setup of a session cookie + dev-gate
-// to authorize the /api/streaming/* routes. Until that's wired (a future
-// patch can spawn the render-web server with a pre-authorized test session),
-// the script aborts here with a clear instruction.
+// This script is intentionally a precheck driver. The authorized render-web
+// session steps remain in docs/smoke/streaming-settlement.md because they
+// require an operator-held session cookie and devnet funding.
 // ----------------------------------------------------------------------------
 
 console.log(`
@@ -164,8 +162,8 @@ The remaining steps require an authorized render-web session cookie:
 Operator action required:
   - Spin up render-web at http://127.0.0.1:${renderPort} with a valid SESSION_SECRET.
   - Mint a wallet session via /api/auth/* (or use an existing devnet session cookie).
-  - Export AGENTIC_SMOKE_COOKIE='agentic_session=<token>' and re-run; the next
-    iteration of this script will pick it up and drive steps 3-8 automatically.
+  - Export AGENTIC_SMOKE_COOKIE='agentic_session=<token>' and follow the
+    runbook's steps 3-8.
 
 See docs/smoke/streaming-settlement.md for the full procedure.
 `);

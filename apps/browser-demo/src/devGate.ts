@@ -11,11 +11,6 @@ const viteEnv = (import.meta as ImportMeta & {
   };
 }).env;
 
-const DEFAULT_DEVICE_AGENT_WALLETS = [
-  '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd',
-  '7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w',
-] as const;
-
 const RAW_ALLOWLIST = String(viteEnv?.VITE_AGENTIC_DEV_WALLET_ALLOWLIST ?? '');
 const RAW_FLAG = String(viteEnv?.VITE_AGENTIC_DEV_AP2_ACP ?? '');
 const RAW_DEVICE_AGENT_FLAG = String(viteEnv?.VITE_AGENTIC_DEVICE_AGENT ?? '');
@@ -38,10 +33,7 @@ export const DEVICE_AGENT_ENABLED: boolean = enabledFlag(RAW_DEVICE_AGENT_FLAG);
 export const ANDROID_DEVICE_AGENT_ENABLED: boolean = enabledFlag(RAW_ANDROID_DEVICE_AGENT_FLAG);
 export const BROWSER_DEVICE_AGENT_ENABLED: boolean = enabledFlag(RAW_BROWSER_DEVICE_AGENT_FLAG);
 export const DEVICE_AGENT_WALLET_ALLOWLIST: readonly string[] = Object.freeze(
-  (RAW_DEVICE_AGENT_ALLOWLIST.trim()
-    ? RAW_DEVICE_AGENT_ALLOWLIST.split(',')
-    : DEFAULT_DEVICE_AGENT_WALLETS
-  )
+  RAW_DEVICE_AGENT_ALLOWLIST.split(',')
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0),
 );

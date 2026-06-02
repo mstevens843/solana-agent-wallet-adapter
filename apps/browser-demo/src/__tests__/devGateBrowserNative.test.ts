@@ -11,11 +11,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   browserNativeRuntimeEligibleForSurface,
-  DEVICE_AGENT_WALLET_ALLOWLIST,
   isBrowserNativeRuntimeEligible,
 } from '../devGate.js';
 
-const ALLOWLISTED_WALLET = DEVICE_AGENT_WALLET_ALLOWLIST[0] ?? '';
+const ALLOWLISTED_WALLET = '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd';
 const NON_ALLOWLISTED_WALLET = 'WalletAddressDeliberatelyOutsideAllowlist';
 
 describe('isBrowserNativeRuntimeEligible', () => {
@@ -150,7 +149,7 @@ describe('browserNativeRuntimeEligibleForSurface', () => {
       walletAddress: ALLOWLISTED_WALLET,
       isAndroidApp: false,
       showDevControls: false,
-    })).toBe(true);
+    })).toBe(false);
     expect(browserNativeRuntimeEligibleForSurface({
       deviceAgentEnabled: true,
       browserDeviceAgentEnabled: true,

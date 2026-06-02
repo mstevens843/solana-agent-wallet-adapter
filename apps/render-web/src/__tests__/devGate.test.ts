@@ -114,13 +114,13 @@ describe.sequential('devGate', () => {
     expect(gate.deviceAgentFeatureEnabled()).toBe(true);
   });
 
-  it('defaults Device Agent access to the two Seeker test wallets', async () => {
+  it('defaults Device Agent access to no wallets', async () => {
     process.env.AGENTIC_DEVICE_AGENT = '1';
     delete process.env.AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST;
     const gate = await loadFreshGate();
-    expect(gate.DEVICE_AGENT_WALLET_ALLOWLIST).toEqual([TEST_WALLET, SECOND_DEVICE_WALLET]);
-    expect(gate.isAllowedDeviceAgentWallet(TEST_WALLET)).toBe(true);
-    expect(gate.isAllowedDeviceAgentWallet(SECOND_DEVICE_WALLET)).toBe(true);
+    expect(gate.DEVICE_AGENT_WALLET_ALLOWLIST).toEqual([]);
+    expect(gate.isAllowedDeviceAgentWallet(TEST_WALLET)).toBe(false);
+    expect(gate.isAllowedDeviceAgentWallet(SECOND_DEVICE_WALLET)).toBe(false);
     expect(gate.isAllowedDeviceAgentWallet(OTHER_WALLET)).toBe(false);
   });
 

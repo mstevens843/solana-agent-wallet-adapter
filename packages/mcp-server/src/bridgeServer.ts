@@ -84,9 +84,9 @@ export interface CreateBridgeServerOptions {
 
 export function createBridgeServer(options: CreateBridgeServerOptions): BridgeServerHandle {
   const host = options.host ?? '127.0.0.1';
-  assertLoopbackBind(host);
-  const port = options.port ?? 8787;
   const backend = options.backend;
+  assertBridgeBindAllowed(host, backend.token);
+  const port = options.port ?? 8787;
   const actionConfig = options.actionConfig;
   const preparedActions = options.preparedActions;
   const labArtifacts = options.labArtifacts;
@@ -248,21 +248,43 @@ function buildVulcanWalletStuff(config: AgentWalletConfig): {
   return { client: new VulcanUpstreamClient(clientOptions) };
 }
 
-function assertLoopbackBind(host: string): void {
-  const normalized = host.trim().toLowerCase();
-  if (
-    normalized === 'localhost' ||
-    normalized === '::1' ||
-    normalized === '[::1]' ||
-    normalized === '0:0:0:0:0:0:0:1' ||
-    normalized.startsWith('127.')
-  ) {
+function assertBridgeBindAllowed(host: string, token: string): void {
+  if (isLoopbackBindHost(host)) {
     return;
+  }
+  if (process.env.BRIDGE_ALLOW_PRIVATE_BIND === '1' && isPrivateBindHost(host)) {
+    if (isStrongBridgeToken(token)) {
+      return;
+    }
+    throw new ProtocolError(
+      'invalid_request',
+      `Refusing to bind the local bridge to non-loopback host "${host}" with a weak or default bridge token.`,
+    );
   }
   throw new ProtocolError(
     'invalid_request',
     `Refusing to bind the local bridge to non-loopback host "${host}". Use 127.0.0.1 or localhost.`,
   );
+}
+
+function isLoopbackBindHost(hostname: string): boolean {
+  const normalized = normalizeHost(hostname);
+  return normalized === 'localhost' ||
+    normalized === '::1' ||
+    normalized === '0:0:0:0:0:0:0:1' ||
+    normalized.startsWith('127.');
+}
+
+function isPrivateBindHost(hostname: string): boolean {
+  const normalized = normalizeHost(hostname);
+  return normalized === '0.0.0.0' ||
+    normalized === '::' ||
+    isLocalOrPrivateHost(normalized);
+}
+
+function isStrongBridgeToken(token: string): boolean {
+  const trimmed = token.trim();
+  return trimmed.length >= 32 && trimmed !== 'local-agent-wallet';
 }
 
 async function handleRequest(

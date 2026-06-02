@@ -45,13 +45,13 @@ fun resolvedNodeCommand(): String {
 
 val launchUrl = propertyOrEnv("AGENTIC_ANDROID_LAUNCH_URL")
     ?: propertyOrEnv("agenticLaunchUrl")
-    ?: "https://agenticwalletadapter.com/#app"
+    ?: "https://agentic-signer.com/app"
 val launchUri = uri(launchUrl)
 val launchScheme = launchUri.scheme ?: "https"
 val launchHost = propertyOrEnv("AGENTIC_ANDROID_HOST")
     ?: propertyOrEnv("agenticHost")
     ?: launchUri.host
-    ?: "agenticwalletadapter.com"
+    ?: "agentic-signer.com"
 val launchPort = launchUri.port
 val launchOrigin = "$launchScheme://$launchHost${if (launchPort > 0) ":$launchPort" else ""}"
 val usesCleartext = launchScheme == "http"

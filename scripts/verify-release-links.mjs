@@ -14,6 +14,7 @@ const files = [
   join(root, 'docs/deploy/render.md'),
 ];
 const assetLinksFile = join(root, 'apps/browser-demo/public/.well-known/assetlinks.json');
+const zeroFingerprint = '00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00';
 
 const cliAssets = [
   'solana-agent-wallet-macos-arm64.tar.gz',
@@ -34,7 +35,7 @@ const androidAssets = [
 const releaseProducts = [
   { id: 'cli', tagPrefix: 'cli-v', assets: cliAssets },
   { id: 'desktop', tagPrefix: 'desktop-v', assets: desktopAssets },
-  { id: 'android', tagPrefix: 'v', assets: androidAssets },
+  { id: 'android', tagPrefix: 'v', assets: androidAssets, releaseOnlyAssets: ['assetlinks.json'] },
 ];
 const requiredAssets = releaseProducts.flatMap((product) => product.assets);
 
@@ -118,19 +119,8 @@ for (const command of localOnlyCommands) {
   }
 }
 
-try {
-  const assetLinks = JSON.parse(readFileSync(assetLinksFile, 'utf8'));
-  const entry = Array.isArray(assetLinks)
-    ? assetLinks.find((candidate) => candidate?.target?.package_name === 'com.agentic.wallet')
-    : undefined;
-  if (!entry) {
-    failures.push('assetlinks.json missing com.agentic.wallet target');
-  } else if (!Array.isArray(entry.target?.sha256_cert_fingerprints)) {
-    failures.push('assetlinks.json missing sha256_cert_fingerprints array');
-  }
-} catch (err) {
-  const message = err instanceof Error ? err.message : String(err);
-  failures.push(`assetlinks.json is invalid: ${message}`);
+if (!live) {
+  verifyAssetLinksJson(readFileSync(assetLinksFile, 'utf8'), failures, 'assetlinks.json');
 }
 
 if (failures.length > 0) {
@@ -245,7 +235,7 @@ async function verifyGithubReleaseProducts(attemptFailures) {
 async function verifyDownloadUrls(attemptFailures, resolvedReleases) {
   const checks = [];
   for (const { product, release } of Object.values(resolvedReleases)) {
-    for (const asset of product.assets) {
+    for (const asset of productReleaseAssets(product)) {
       const url = releaseAssetUrl(release, asset) ??
         `https://github.com/${repo}/releases/download/${release.tag_name}/${asset}`;
       checks.push({ asset, url });
@@ -258,6 +248,16 @@ async function verifyDownloadUrls(attemptFailures, resolvedReleases) {
     if (!response.ok) {
       attemptFailures.push(`${url} returned HTTP ${response.status}`);
     }
+  }));
+
+  await Promise.all(checks.filter((check) => check.asset === 'assetlinks.json').map(async ({ url }) => {
+    const response = await fetchForVerification(url, attemptFailures);
+    if (!response) return;
+    if (!response.ok) {
+      attemptFailures.push(`${url} returned HTTP ${response.status}`);
+      return;
+    }
+    verifyAssetLinksJson(await response.text(), attemptFailures, url);
   }));
 }
 
@@ -285,7 +285,11 @@ function pickLatestProductRelease(releases, product) {
 
 function missingReleaseAssets(release, product) {
   const assetNames = new Set(Array.isArray(release.assets) ? release.assets.map((asset) => asset.name) : []);
-  return product.assets.filter((asset) => !assetNames.has(asset));
+  return productReleaseAssets(product).filter((asset) => !assetNames.has(asset));
+}
+
+function productReleaseAssets(product) {
+  return [...product.assets, ...(product.releaseOnlyAssets ?? [])];
 }
 
 function releaseAssetUrl(release, assetName) {
@@ -367,6 +371,39 @@ function parseArgs(argv) {
     }
   }
   return { flags, options };
+}
+
+function normalizeFingerprint(value) {
+  const hex = value.replace(/[^a-fA-F0-9]/g, '').toUpperCase();
+  if (hex.length !== 64) return '';
+  return hex.match(/.{2}/g)?.join(':') ?? '';
+}
+
+function verifyAssetLinksJson(text, failures, label) {
+  try {
+    const assetLinks = JSON.parse(text);
+    const entry = Array.isArray(assetLinks)
+      ? assetLinks.find((candidate) => candidate?.target?.package_name === 'com.agentic.wallet')
+      : undefined;
+    if (!entry) {
+      failures.push(`${label} missing com.agentic.wallet target`);
+    } else if (!Array.isArray(entry.target?.sha256_cert_fingerprints)) {
+      failures.push(`${label} missing sha256_cert_fingerprints array`);
+    } else {
+      const fingerprints = entry.target.sha256_cert_fingerprints
+        .map((value) => normalizeFingerprint(String(value)))
+        .filter(Boolean);
+      if (fingerprints.length === 0) {
+        failures.push(`${label} has no usable sha256_cert_fingerprints entries`);
+      }
+      if (fingerprints.includes(zeroFingerprint)) {
+        failures.push(`${label} contains the placeholder zero fingerprint`);
+      }
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    failures.push(`${label} is invalid: ${message}`);
+  }
 }
 
 function parsePositiveInt(value, fallback, name) {

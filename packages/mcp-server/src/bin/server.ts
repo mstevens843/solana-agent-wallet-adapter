@@ -13,6 +13,12 @@ async function main(): Promise<void> {
   loadDotEnv(args.env);
   const config = await loadConfig(args.config);
   const usesBridge = args.bridge || Boolean(args.bridgeUrl);
+  if (usesBridge && args.mock) {
+    throw new Error('Choose either bridge mode or --mock, not both.');
+  }
+  if (!usesBridge && !args.mock) {
+    throw new Error('MCP stdio server requires --bridge/--bridge-url for a real wallet, or --mock for intentional mock backend mode.');
+  }
   const bridgeToken = args.bridgeToken ?? process.env.BRIDGE_TOKEN;
   if (usesBridge && !bridgeToken) {
     throw new Error('Local bridge mode requires --bridge-token or BRIDGE_TOKEN.');
@@ -38,6 +44,7 @@ async function main(): Promise<void> {
 
 interface CliArgs {
   bridge: boolean;
+  mock: boolean;
   config?: string;
   env?: string;
   bridgeUrl?: string;
@@ -46,11 +53,15 @@ interface CliArgs {
 }
 
 function parseArgs(args: string[]): CliArgs {
-  const parsed: CliArgs = { bridge: false };
+  const parsed: CliArgs = { bridge: false, mock: false };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === '--bridge') {
       parsed.bridge = true;
+      continue;
+    }
+    if (arg === '--mock') {
+      parsed.mock = true;
       continue;
     }
     if (arg === '--config') {

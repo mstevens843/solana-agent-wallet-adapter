@@ -1,25 +1,17 @@
 const RAW_ALLOWLIST = process.env.AGENTIC_DEV_WALLET_ALLOWLIST ?? '';
 const RAW_DEVICE_AGENT_ALLOWLIST = process.env.AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST ?? '';
 
-const DEFAULT_DEVICE_AGENT_WALLETS = [
-  '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd',
-  '7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w',
-] as const;
-
-function parseList(value: string, fallback: readonly string[] = []): readonly string[] {
-  const source = value.trim() ? value.split(',') : fallback;
+function parseList(value: string): readonly string[] {
   return Object.freeze(
-    source
+    value
+      .split(',')
       .map((entry) => entry.trim())
       .filter((entry) => entry.length > 0),
   );
 }
 
 export const DEV_WALLET_ALLOWLIST: readonly string[] = parseList(RAW_ALLOWLIST);
-export const DEVICE_AGENT_WALLET_ALLOWLIST: readonly string[] = parseList(
-  RAW_DEVICE_AGENT_ALLOWLIST,
-  DEFAULT_DEVICE_AGENT_WALLETS,
-);
+export const DEVICE_AGENT_WALLET_ALLOWLIST: readonly string[] = parseList(RAW_DEVICE_AGENT_ALLOWLIST);
 
 export function isAllowedDevWallet(walletAddress: string | undefined | null): boolean {
   if (!walletAddress) return false;

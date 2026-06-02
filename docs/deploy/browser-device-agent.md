@@ -9,9 +9,8 @@ through the installed wallet's approval flow.
 
 ## Prerequisites
 
-- An allowlisted wallet. The defaults are `4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd` and
-  `7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w`; override with `VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST` for the
-  browser build and `AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST` for the Render status block.
+- An explicitly allowlisted wallet. Set `VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST` for the browser build and
+  `AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST` for the Render status block. Unset or empty allowlists qualify no wallets.
 - A modern browser with WebCrypto and IndexedDB available. Recent Chrome, Edge, Firefox, and Safari qualify.
   Private/incognito IndexedDB blocking returns the `storage_unavailable` error code and requires the Session-only
   fallback (see Secret Store Modes).

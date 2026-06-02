@@ -33,26 +33,26 @@ async function runCapacitor(selectedCommand, forwardedArgs) {
   if (selectedCommand === 'open') {
     await run('pnpm', ['-F', '@solana-agent-wallet-adapter/ios-capacitor', 'open', ...forwardedArgs], {
       cwd: root,
-      env: iosEnv(),
+      env: iosEnv(selectedCommand),
     });
     return;
   }
 
   await run('pnpm', ['--filter', '@solana-agent-wallet-adapter/browser-demo^...', 'build'], {
     cwd: root,
-    env: iosEnv(),
+    env: iosEnv(selectedCommand),
   });
   await run('pnpm', ['-F', '@solana-agent-wallet-adapter/browser-demo', 'build'], {
     cwd: root,
-    env: iosEnv(),
+    env: iosEnv(selectedCommand),
   });
   await run('pnpm', ['-F', '@solana-agent-wallet-adapter/ios-capacitor', 'copy-web'], {
     cwd: root,
-    env: iosEnv(),
+    env: iosEnv(selectedCommand),
   });
   await run('pnpm', ['-F', '@solana-agent-wallet-adapter/ios-capacitor', 'sync'], {
     cwd: root,
-    env: iosEnv(),
+    env: iosEnv(selectedCommand),
   });
 
   if (selectedCommand === 'sync') {
@@ -91,20 +91,20 @@ async function runCapacitor(selectedCommand, forwardedArgs) {
     ],
     {
       cwd: capacitorAppDir,
-      env: xcodeEnv(),
+      env: xcodeEnv(selectedCommand),
     },
   );
 }
 
 async function runNativeSwift(selectedCommand, forwardedArgs) {
   if (selectedCommand === 'open') {
-    await run('open', [nativeAppDir], { cwd: root, env: iosEnv() });
+    await run('open', [nativeAppDir], { cwd: root, env: iosEnv(selectedCommand) });
     return;
   }
   const configuration = selectedCommand === 'release' ? 'release' : 'debug';
   await run('swift', ['build', '-c', configuration, ...forwardedArgs], {
     cwd: nativeAppDir,
-    env: iosEnv(),
+    env: iosEnv(selectedCommand),
   });
 }
 
@@ -123,7 +123,7 @@ function resolveIosFlagRaw() {
   );
 }
 
-function iosEnv() {
+function iosEnv(selectedCommand = command) {
   const raw = String(resolveIosFlagRaw());
   const env = {
     ...process.env,
@@ -132,7 +132,7 @@ function iosEnv() {
     VITE_CAPACITOR_IOS_APP: raw,
     VITE_CAPACITATOR_IOS_APP: raw,
   };
-  env.VITE_AGENTIC_DEVICE_AGENT = env.VITE_AGENTIC_DEVICE_AGENT ?? 'true';
+  env.VITE_AGENTIC_DEVICE_AGENT = env.VITE_AGENTIC_DEVICE_AGENT ?? (selectedCommand === 'release' ? 'false' : 'true');
   env.VITE_AGENTIC_BROWSER_DEVICE_AGENT = env.VITE_AGENTIC_BROWSER_DEVICE_AGENT ?? 'false';
   env.VITE_AGENTIC_CLOUD_API_BASE_URL = env.VITE_AGENTIC_CLOUD_API_BASE_URL ?? env.AGENTIC_CLOUD_API_BASE_URL ?? 'https://agentic-signer.com';
   const xcodeDeveloperDir = '/Applications/Xcode.app/Contents/Developer';
@@ -146,9 +146,9 @@ function iosEnv() {
   return env;
 }
 
-function xcodeEnv() {
+function xcodeEnv(selectedCommand = command) {
   return {
-    ...iosEnv(),
+    ...iosEnv(selectedCommand),
     HOME: process.env.AGENTIC_IOS_HOME ?? join(root, 'build/ios-home'),
   };
 }

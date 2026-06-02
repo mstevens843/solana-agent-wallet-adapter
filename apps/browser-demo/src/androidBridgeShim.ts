@@ -1,4 +1,3 @@
-import { MppApiError } from './mppClient.js';
 import {
   StreamingApiError,
   submitStreamingVoucherRelay,
@@ -6,7 +5,6 @@ import {
 } from './streamingClient.js';
 
 interface AgenticAndroidNative {
-  mppRequest?: (requestId: string, method: string, payloadJson: string) => string;
   streamingRequest?: (requestId: string, method: string, payloadJson: string) => string | void;
 }
 
@@ -41,8 +39,7 @@ interface StreamingCallbackBridge {
 export interface BridgeEnvelope {
   ok: boolean;
   status: string | Record<string, unknown>;
-  phase?: string;
-  bridge?: 'mpp' | 'streaming';
+  bridge?: 'streaming';
   requestId?: string;
   method?: string;
   code?: string;
@@ -94,7 +91,7 @@ function parseEnvelope(raw: unknown): BridgeEnvelope {
 
 export function hasNativeAndroidBridge(): boolean {
   const native = getNative();
-  return Boolean(native?.mppRequest || native?.streamingRequest);
+  return Boolean(native?.streamingRequest);
 }
 
 export function hasNativeStreamingBridge(): boolean {
@@ -105,20 +102,6 @@ export function nativeStreamingRuntime(): 'android-native' | 'ios-native' | null
   if (getNative()?.streamingRequest) return 'android-native';
   if (getIosStreamingNative()?.signVoucher) return 'ios-native';
   return null;
-}
-
-export async function callMppBridge(method: string, payload: unknown): Promise<BridgeEnvelope> {
-  const native = getNative();
-  if (!native?.mppRequest) {
-    throw new MppApiError(
-      'not_implemented',
-      'Native AgenticAndroid.mppRequest is unavailable; Phase 1 will provide a render-web HTTP fallback here.',
-    );
-  }
-  const requestId = newRequestId('mpp');
-  const payloadJson = JSON.stringify(payload ?? {});
-  const raw = native.mppRequest(requestId, method, payloadJson);
-  return parseEnvelope(raw);
 }
 
 export async function callStreamingBridge(

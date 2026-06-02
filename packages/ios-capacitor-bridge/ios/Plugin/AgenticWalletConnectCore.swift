@@ -592,8 +592,7 @@ final class AgenticWalletConnectCryptoProvider: CryptoProvider {
     }
 
     func keccak256(_ data: Data) -> Data {
-        AgenticIOSLog.info("AgenticWalletConnect", "keccak256", "SKIP", "Ethereum keccak requested by Reown crypto provider; returning placeholder for unsupported EVM path")
-        return Data(repeating: 0, count: 32)
+        AgenticKeccak256.hash(data)
     }
 }
 

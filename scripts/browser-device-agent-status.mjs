@@ -21,11 +21,6 @@ import process from 'node:process';
 
 const ROOT = process.cwd();
 
-const DEFAULT_DEVICE_AGENT_WALLETS = [
-  '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd',
-  '7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w',
-];
-
 const ENABLED_TOKENS = new Set(['1', 'true', 'yes', 'on']);
 
 const BROWSER_ENV_FILES = [
@@ -167,7 +162,7 @@ function parseAllowlist(value) {
         .split(',')
         .map((entry) => entry.trim())
         .filter((entry) => entry.length > 0)
-    : DEFAULT_DEVICE_AGENT_WALLETS.slice();
+    : [];
   return Object.freeze(items);
 }
 

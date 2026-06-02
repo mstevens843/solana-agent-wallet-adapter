@@ -1,14 +1,18 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { networkInterfaces } from 'node:os';
 
 const root = new URL('..', import.meta.url).pathname;
 const preparedActionsPath = new URL('../.agent-wallet/prepared-actions.json', import.meta.url).pathname;
+const localConfigPath = './agent-wallet.config.json';
+const exampleConfigPath = './agent-wallet.config.example.json';
 const children = new Set();
 const mobileMode = process.argv.includes('--mobile');
 const host = mobileMode ? '0.0.0.0' : '127.0.0.1';
+const bridgeToken = mobileMode ? randomBytes(24).toString('base64url') : 'local-agent-wallet';
 const browserEnv = browserDevEnv();
 const bridgeEnv = bridgeDevEnv();
 
@@ -17,8 +21,12 @@ if (!existsSync(new URL('../.env', import.meta.url))) {
   process.exit(1);
 }
 
-if (!existsSync(new URL('../agent-wallet.config.json', import.meta.url))) {
-  console.error('[dev] Missing agent-wallet.config.json. Copy agent-wallet.config.example.json first.');
+const configPath = existsSync(new URL(`../${localConfigPath}`, import.meta.url))
+  ? localConfigPath
+  : exampleConfigPath;
+
+if (!existsSync(new URL(`../${configPath}`, import.meta.url))) {
+  console.error('[dev] Missing agent-wallet.config.example.json.');
   process.exit(1);
 }
 
@@ -31,11 +39,11 @@ await run('pnpm', ['--filter', '@solana-agent-wallet-adapter/mcp-server', 'build
 const bridge = start('bridge', 'node', [
   'packages/mcp-server/dist/bin/bridge.js',
   '--token',
-  'local-agent-wallet',
+  bridgeToken,
   '--env',
   './.env',
   '--config',
-  './agent-wallet.config.json',
+  configPath,
   '--prepared-actions',
   preparedActionsPath,
   '--host',
@@ -100,8 +108,9 @@ function browserDevEnv() {
 
 function bridgeDevEnv() {
   const env = { ...process.env };
-  if (mobileMode && !env.BRIDGE_ALLOW_PRIVATE_ORIGINS) {
-    env.BRIDGE_ALLOW_PRIVATE_ORIGINS = '1';
+  if (mobileMode) {
+    env.BRIDGE_ALLOW_PRIVATE_BIND = env.BRIDGE_ALLOW_PRIVATE_BIND ?? '1';
+    env.BRIDGE_ALLOW_PRIVATE_ORIGINS = env.BRIDGE_ALLOW_PRIVATE_ORIGINS ?? '1';
   }
   return env;
 }
@@ -146,12 +155,15 @@ function assertPortFree(port, listenHost) {
 function printUrls() {
   const localBrowserUrl = new URL('http://127.0.0.1:5174/');
   localBrowserUrl.searchParams.set('bridgeUrl', 'http://127.0.0.1:8787');
-  localBrowserUrl.searchParams.set('token', 'local-agent-wallet');
+  localBrowserUrl.searchParams.set('token', bridgeToken);
   console.log(`[dev] browser: ${localBrowserUrl.toString()}`);
-  console.log(`[dev] bridge:  http://127.0.0.1:8787/?token=local-agent-wallet`);
+  console.log(`[dev] bridge:  http://127.0.0.1:8787/?token=${bridgeToken}`);
   if (!mobileMode) return;
   for (const address of lanAddresses()) {
-    console.log(`[dev] mobile browser: http://${address}:5174/?bridgeUrl=http://${address}:8787&token=local-agent-wallet`);
+    const mobileUrl = new URL(`http://${address}:5174/`);
+    mobileUrl.searchParams.set('bridgeUrl', `http://${address}:8787`);
+    mobileUrl.searchParams.set('token', bridgeToken);
+    console.log(`[dev] mobile browser: ${mobileUrl.toString()}`);
   }
 }
 

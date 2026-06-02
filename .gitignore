@@ -13,6 +13,7 @@ build/
 .env.local
 .env.*
 !.env.example
+agent-wallet.config.json
 session.json
 *.session.json
 /test.html

@@ -1,12 +1,12 @@
 {
-  "cluster": "mainnet-beta",
-  "rpcUrl": "https://api.mainnet-beta.solana.com",
+  "cluster": "devnet",
+  "rpcUrl": "https://api.devnet.solana.com",
   "mainnet": {
-    "enabled": true,
+    "enabled": false,
     "maxSolTransfer": "0.05",
     "maxSwapInput": "0.05",
     "maxSlippageBps": 100,
-    "allowArbitraryTransactions": true
+    "allowArbitraryTransactions": false
   },
   "tokens": [
     {
@@ -53,4 +53,3 @@
     "maxPerMonthAmount": { "SOL": "4",  "USDC": "400" }
   }
 }
-

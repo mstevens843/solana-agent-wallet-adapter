@@ -65,7 +65,8 @@ The bundled `bin/server.js` includes a mock backend. Use it to confirm MCP regis
 ```bash
 pnpm build
 claude mcp add --scope user solana-agent-wallet -- \
-  node <repo>/packages/mcp-server/dist/bin/server.js
+  node <repo>/packages/mcp-server/dist/bin/server.js \
+  --mock
 ```
 
 Restart the MCP client and ask:
@@ -153,6 +154,10 @@ node packages/mcp-server/dist/bin/bridge.js \
   --token local-agent-wallet
 ```
 
+When exposing the bridge to a private LAN for mobile testing, use
+`BRIDGE_ALLOW_PRIVATE_BIND=1` with a generated non-default token. The default
+`local-agent-wallet` token is accepted only for loopback binds.
+
 For Jupiter Mobile:
 
 ```bash
@@ -183,7 +188,8 @@ console.log(`MCP listening on ${handle.url}`);
 Ready-to-run binary:
 
 ```bash
-node packages/mcp-server/dist/bin/serverHttp.js
+node packages/mcp-server/dist/bin/serverHttp.js \
+  --mock
 ```
 
 Quick initialize request:

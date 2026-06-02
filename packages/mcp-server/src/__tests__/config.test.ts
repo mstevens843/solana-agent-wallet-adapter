@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { normalizeConfig } from '../config.js';
+import { DEFAULT_CONFIG, normalizeConfig } from '../config.js';
 
 const ENV_KEYS = [
   'SOLANA_RPC_URL',
@@ -39,6 +39,13 @@ afterEach(() => {
 });
 
 describe('config env aliases', () => {
+  it('defaults to devnet with mainnet and arbitrary mainnet signing disabled', () => {
+    expect(DEFAULT_CONFIG.cluster).toBe('devnet');
+    expect(DEFAULT_CONFIG.rpcUrl).toBe('https://api.devnet.solana.com');
+    expect(DEFAULT_CONFIG.mainnet.enabled).toBe(false);
+    expect(DEFAULT_CONFIG.mainnet.allowArbitraryTransactions).toBe(false);
+  });
+
   it('uses local setup env aliases for RPC and Jupiter', () => {
     setEnv('SOLANA_RPC_URL', 'https://solana.example');
     setEnv('HELIUS_RPC_URL', 'https://helius.example');

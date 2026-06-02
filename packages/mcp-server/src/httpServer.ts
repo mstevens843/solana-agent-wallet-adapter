@@ -6,6 +6,10 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { WalletBackend } from '@solana-agent-wallet-adapter/core';
 
 import { createServer as createMcpServer } from './server.js';
+import type { AgentWalletConfig } from './config.js';
+import type { PreparedActionStore } from './preparedActions.js';
+
+const MAX_MCP_HTTP_JSON_BYTES = 1024 * 1024;
 
 export interface CreateHttpServerOptions {
   backend: WalletBackend;
@@ -14,6 +18,8 @@ export interface CreateHttpServerOptions {
   path?: string;
   serverName?: string;
   serverVersion?: string;
+  actionConfig?: AgentWalletConfig;
+  preparedActions?: PreparedActionStore;
   /**
    * If true, generate a session ID per client and require it on subsequent requests.
    * If false (default), run statelessly: every request is independent.
@@ -37,6 +43,8 @@ export function createHttpServer(options: CreateHttpServerOptions): HttpServerHa
     backend: options.backend,
     ...(options.serverName !== undefined && { serverName: options.serverName }),
     ...(options.serverVersion !== undefined && { serverVersion: options.serverVersion }),
+    ...(options.actionConfig !== undefined && { actionConfig: options.actionConfig }),
+    ...(options.preparedActions !== undefined && { preparedActions: options.preparedActions }),
   });
 
   const transport = new StreamableHTTPServerTransport({
@@ -72,7 +80,7 @@ export function createHttpServer(options: CreateHttpServerOptions): HttpServerHa
             await transport.handleRequest(req, res, body);
           } catch (err) {
             if (!res.headersSent) {
-              res.statusCode = 500;
+              res.statusCode = err instanceof Error && err.message.includes('too large') ? 413 : 500;
               res.setHeader('content-type', 'application/json');
               res.end(JSON.stringify({ error: err instanceof Error ? err.message : 'unknown' }));
             } else {
@@ -99,8 +107,14 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
     return undefined;
   }
   const chunks: Buffer[] = [];
+  let totalBytes = 0;
   for await (const chunk of req) {
-    chunks.push(chunk as Buffer);
+    const buffer = chunk as Buffer;
+    totalBytes += buffer.length;
+    if (totalBytes > MAX_MCP_HTTP_JSON_BYTES) {
+      throw new Error('Request body is too large.');
+    }
+    chunks.push(buffer);
   }
   if (chunks.length === 0) return undefined;
   const raw = Buffer.concat(chunks).toString('utf8');
@@ -111,4 +125,3 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
     throw new Error(`Invalid JSON body: ${err instanceof Error ? err.message : 'parse error'}`);
   }
 }
-

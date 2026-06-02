@@ -1044,27 +1044,6 @@ class MainActivity : FragmentActivity() {
         }
 
         /**
-         * Phase 0 scaffolding bridge for the Machine Payments Protocol (MPP).
-         * Phase 1 will route this to a Kotlin-side MPP HTTP-402 interceptor.
-         * Returns a JSON envelope synchronously; the browser-side
-         * `androidBridgeShim.ts` wrapper parses it and falls back to cloud HTTP
-         * when this method is absent.
-         */
-        @JavascriptInterface
-        fun mppRequest(requestId: String, method: String, payloadJson: String): String =
-            safeBridge("mppRequest", errorEnvelope("mpp", requestId, method, RuntimeException("bridge sync prelude failed"))) {
-                if (!checkTrustedOrigin("mppRequest")) {
-                    return@safeBridge errorEnvelope("mpp", requestId, method, SecurityException("origin denied"))
-                }
-                runCatching {
-                    validateNativeBridgeRequest(requestId, method, payloadJson)
-                    notImplementedEnvelope("mpp", requestId, method)
-                }.getOrElse { err ->
-                    errorEnvelope("mpp", requestId, method, err)
-                }
-            }
-
-        /**
          * Async bridge for streaming-payment sessions. The browser installs
          * `window.__agenticAndroidStreamingBridge`; this method queues native
          * work and resolves operational success/failure through that callback
@@ -1191,18 +1170,6 @@ class MainActivity : FragmentActivity() {
             else -> "streaming_error"
         }
 
-        private fun validateNativeBridgeRequest(requestId: String, method: String, payloadJson: String) {
-            if (!REQUEST_ID_PATTERN.matches(requestId)) {
-                throw MwaOperationException("INVALID_REQUEST", "Invalid native bridge request id.")
-            }
-            if (method.isBlank() || method.length > 64) {
-                throw MwaOperationException("UNSUPPORTED_METHOD", "Invalid native bridge method.")
-            }
-            if (payloadJson.length > MAX_PAYLOAD_CHARS) {
-                throw MwaOperationException("INVALID_REQUEST", "Native bridge payload is too large.")
-            }
-        }
-
         private fun validateStreamingBridgeRequest(requestId: String, method: String, payloadJson: String) {
             if (!REQUEST_ID_PATTERN.matches(requestId)) {
                 throw MwaOperationException("INVALID_REQUEST", "Invalid Android Streaming bridge request id.")
@@ -1214,16 +1181,6 @@ class MainActivity : FragmentActivity() {
                 throw MwaOperationException("INVALID_REQUEST", "Android Streaming bridge payload is too large.")
             }
         }
-
-        private fun notImplementedEnvelope(bridge: String, requestId: String, method: String): String =
-            JSONObject()
-                .put("ok", false)
-                .put("status", "not_implemented")
-                .put("phase", "phase_0_scaffolding")
-                .put("bridge", bridge)
-                .put("requestId", requestId)
-                .put("method", method)
-                .toString()
 
         private fun errorEnvelope(bridge: String, requestId: String, method: String, err: Throwable): String =
             JSONObject()

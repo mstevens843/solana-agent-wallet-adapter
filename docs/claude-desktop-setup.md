@@ -43,7 +43,8 @@ Replace the path with the absolute path to your clone, for example:
     "solana-agent-wallet": {
       "command": "node",
       "args": [
-        "/Users/you/Desktop/projects/solana-agent-wallet-adapter/packages/mcp-server/dist/bin/server.js"
+        "/Users/you/Desktop/projects/solana-agent-wallet-adapter/packages/mcp-server/dist/bin/server.js",
+        "--mock"
       ]
     }
   }
@@ -80,6 +81,7 @@ In a new chat, type the following one at a time. Expected agent behavior is in t
 | Server starts but tools never appear | Claude Desktop wasn't fully quit. `Cmd+Q` and relaunch. |
 | Tool call returns nothing | Stale `dist/` output. Rebuild with `pnpm build`. |
 | Tool call shows raw JSON only (no narration) | Older Claude Desktop. The humanized prefix in our output is plain text and should still render; the JSON is appended for agent parsing. |
+| Server exits immediately | Missing explicit mode. Add `--mock` for the smoke config, or `--bridge-url` and `--bridge-token` for real wallet mode. |
 
 ### 8. Real-wallet bridge smoke
 
