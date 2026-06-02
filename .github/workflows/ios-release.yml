@@ -33,7 +33,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
@@ -115,7 +115,7 @@ jobs:
     name: iOS bridge XCTest
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Sync shared fixtures
         run: node packages/ios-capacitor-bridge/scripts/sync-fixtures.mjs
       - name: Resolve Swift packages
