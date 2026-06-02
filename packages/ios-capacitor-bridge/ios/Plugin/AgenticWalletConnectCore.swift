@@ -662,16 +662,30 @@ final class AgenticWalletConnectCore {
 
     private func launchCurrentWalletForRequest(method: String, topic: String, requestId: RPCID) {
         // The request is already on the relay; foreground the wallet so its
-        // pending-request sheet appears. Prefer the peer's declared redirect
-        // (captured at session settle), then the bare jupiter:// fallback.
-        // Opening *another* app is allowed on iOS — only returning to ourselves
-        // is the restricted case the notification handles.
+        // pending-request sheet appears. Opening *another* app is allowed on iOS
+        // — only returning to ourselves is the restricted case the notification
+        // handles.
+        //
+        // IMPORTANT: do NOT foreground via the session peer redirect. Jupiter
+        // Mobile advertises the Reown *sample wallet* metadata as its redirect
+        // (native "walletapp://", universal "https://lab.reown.com/wallet/"), so
+        // using it sent the user to Safari/lab.reown.com instead of Jupiter. Use
+        // the known-good "jupiter://" scheme (the same one that opened Jupiter for
+        // pairing). Only fall back to a peer NATIVE redirect if it is a real
+        // custom scheme — never the peer https universal (that is the Safari trap).
         let redirects: (native: String?, universal: String?) = queue.sync {
             (walletRedirectNative, walletRedirectUniversal)
         }
-        var raws: [String] = [redirects.native, redirects.universal].compactMap { $0 }.filter { !$0.isEmpty }
-        if let fallback = AgenticWalletConnectDeepLink.jupiterRequestLaunchUrl()?.absoluteString {
-            raws.append(fallback)
+        var raws: [String] = []
+        if let jupiterUrl = AgenticWalletConnectDeepLink.jupiterRequestLaunchUrl()?.absoluteString {
+            raws.append(jupiterUrl)
+        }
+        if let native = redirects.native,
+           !native.isEmpty,
+           let scheme = URL(string: native)?.scheme?.lowercased(),
+           scheme != "http",
+           scheme != "https" {
+            raws.append(native)
         }
         let urls = raws.compactMap { URL(string: $0) }
         guard !urls.isEmpty else {
@@ -703,13 +717,19 @@ final class AgenticWalletConnectCore {
             return
         }
         let url = urls[index]
+        // For http(s) candidates, require a real universal-link owner: with
+        // universalLinksOnly, open() returns false (and we try the next candidate)
+        // instead of silently falling back to Safari. Custom schemes use [:].
+        let scheme = url.scheme?.lowercased()
+        let options: [UIApplication.OpenExternalURLOptionsKey: Any] =
+            (scheme == "http" || scheme == "https") ? [.universalLinksOnly: true] : [:]
         DispatchQueue.main.async {
             AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "ATTEMPT", "trying to open wallet", [
                 "scheme": url.scheme ?? "",
                 "index": String(index),
                 "requestId": requestId.string,
             ])
-            UIApplication.shared.open(url, options: [:]) { launched in
+            UIApplication.shared.open(url, options: options) { launched in
                 if launched {
                     AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "DONE", "wallet foregrounded", [
                         "scheme": url.scheme ?? "",

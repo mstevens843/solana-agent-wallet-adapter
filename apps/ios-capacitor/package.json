@@ -6,6 +6,7 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
+    "build:web": "pnpm -F @solana-agent-wallet-adapter/browser-demo build && node scripts/copy-web.mjs",
     "copy-web": "node scripts/copy-web.mjs",
     "ensure:ios": "node scripts/ensure-ios.mjs",
     "sync": "node scripts/sync-ios.mjs",

@@ -35,10 +35,14 @@ Connect the device over USB, unlock it, and tap **Trust** when prompted.
 ```bash
 # from the repo root
 cd apps/ios-capacitor
-pnpm copy-web && pnpm sync       # copy the web build + sync the native bridge
+pnpm build:web && pnpm sync      # REBUILD the web app + copy it in + sync the bridge
 open ios/App/App.xcodeproj       # then select your device + Run (Debug config)
 # (SPM-based Capacitor: it's App.xcodeproj, not a .xcworkspace. Xcode resolves
 #  the Swift packages — the bridge + reown-swift — on first open; let it finish.)
+#
+# CRITICAL: use `pnpm build:web`, NOT `pnpm copy-web`. copy-web only COPIES the
+# last browser-demo build; if you skip the rebuild you'll ship stale JS (no
+# return notification, old toasts) even though the native bridge is fresh.
 ```
 
 Building the **Debug** configuration turns on full-payload logging automatically.
