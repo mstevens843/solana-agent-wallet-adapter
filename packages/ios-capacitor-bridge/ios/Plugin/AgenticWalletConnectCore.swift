@@ -442,6 +442,29 @@ final class AgenticWalletConnectCore {
         for waiter in waiters {
             waiter(.success((session.pubkey, session.topic)))
         }
+        // A non-empty waiter list means a connect was in progress (vs. a silent
+        // session restore on launch) — the user just approved pairing in Jupiter.
+        // If we're backgrounded, post a tappable notification to bring them back,
+        // mirroring the sign-request return notification.
+        if !waiters.isEmpty {
+            notifyWalletConnectConnected()
+        }
+    }
+
+    private func notifyWalletConnectConnected() {
+        DispatchQueue.main.async {
+            guard UIApplication.shared.applicationState != .active else {
+                AgenticIOSLog.info("AgenticWalletConnect", "notifyReturn", "SKIP_FOREGROUND", "session settled while app active; no return notification needed")
+                return
+            }
+            AgenticIOSLog.info("AgenticWalletConnect", "notifyReturn", "POST_CONNECT", "posting connect return notification (app backgrounded)")
+            AgenticLocalNotification.postIfAuthorized(
+                title: "Wallet connected",
+                body: "Tap to return to Agentic.",
+                tag: "\(AgenticLocalNotification.walletConnectPrefix)connect",
+                userInfo: ["agenticWcResult": true, "kind": "connect"]
+            )
+        }
     }
 
     private func clearSessionStateLocked(reason: String) {
@@ -666,26 +689,24 @@ final class AgenticWalletConnectCore {
         // — only returning to ourselves is the restricted case the notification
         // handles.
         //
-        // IMPORTANT: do NOT foreground via the session peer redirect. Jupiter
-        // Mobile advertises the Reown *sample wallet* metadata as its redirect
-        // (native "walletapp://", universal "https://lab.reown.com/wallet/"), so
-        // using it sent the user to Safari/lab.reown.com instead of Jupiter. Use
-        // the known-good "jupiter://" scheme (the same one that opened Jupiter for
-        // pairing). Only fall back to a peer NATIVE redirect if it is a real
-        // custom scheme — never the peer https universal (that is the Safari trap).
+        // A WC sign request is NOT carried in a deep link — it rides the relay to
+        // the paired wallet. The dapp-side foreground lever is the WC "incomplete
+        // URI" trigger jupiter://wc?uri=wc:<sessionTopic>@2, which reuses Jupiter's
+        // working wc?uri= handler and asks it to show the pending request.
+        //
+        // Do NOT use the session peer redirect (Jupiter advertises the Reown sample
+        // wallet's walletapp:// / https://lab.reown.com — that sent users to Safari)
+        // and do NOT use bare jupiter:// as primary (no handler → Jupiter's web view
+        // at jup.ag). Bare jupiter:// is kept only as a last-ditch fallback.
         let redirects: (native: String?, universal: String?) = queue.sync {
             (walletRedirectNative, walletRedirectUniversal)
         }
         var raws: [String] = []
-        if let jupiterUrl = AgenticWalletConnectDeepLink.jupiterRequestLaunchUrl()?.absoluteString {
-            raws.append(jupiterUrl)
+        if let foregroundUrl = AgenticWalletConnectDeepLink.jupiterRequestForegroundUrl(sessionTopic: topic)?.absoluteString {
+            raws.append(foregroundUrl)
         }
-        if let native = redirects.native,
-           !native.isEmpty,
-           let scheme = URL(string: native)?.scheme?.lowercased(),
-           scheme != "http",
-           scheme != "https" {
-            raws.append(native)
+        if let fallback = AgenticWalletConnectDeepLink.jupiterRequestLaunchUrl()?.absoluteString {
+            raws.append(fallback)
         }
         let urls = raws.compactMap { URL(string: $0) }
         guard !urls.isEmpty else {
@@ -701,7 +722,7 @@ final class AgenticWalletConnectCore {
             "requestId": requestId.string,
             "topic": short(topic),
             "candidateCount": String(urls.count),
-            "candidateSchemes": urls.map { $0.scheme ?? "?" }.joined(separator: ","),
+            "candidates": urls.map { "\($0.scheme ?? "?")://\($0.host ?? "")" }.joined(separator: ","),
             "peerRedirectNative": redirects.native == nil ? "false" : "true",
             "peerRedirectUniversal": redirects.universal == nil ? "false" : "true",
         ])
@@ -726,6 +747,7 @@ final class AgenticWalletConnectCore {
         DispatchQueue.main.async {
             AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "ATTEMPT", "trying to open wallet", [
                 "scheme": url.scheme ?? "",
+                "host": url.host ?? "",
                 "index": String(index),
                 "requestId": requestId.string,
             ])
@@ -733,6 +755,7 @@ final class AgenticWalletConnectCore {
                 if launched {
                     AgenticIOSLog.info("AgenticWalletConnect", "launchCurrentWalletForRequest", "DONE", "wallet foregrounded", [
                         "scheme": url.scheme ?? "",
+                        "host": url.host ?? "",
                         "method": method,
                         "requestId": requestId.string,
                     ])

@@ -1472,7 +1472,7 @@ const OPENAI_BROWSER_SESSION_DISABLED_REASON =
 const HOSTED_CUSTOM_PROVIDER_DISABLED_REASON =
   'Hosted BYOK supports preset providers only. Use Local bridge or Browser Session for custom gateways.';
 const MOBILE_HOSTED_CUSTOM_PROVIDER_DISABLED_REASON =
-  'Hosted BYOK supports preset providers only on Android app and mobile web.';
+  'Hosted BYOK supports preset providers only in the mobile app and mobile web.';
 const DEFAULT_ANDROID_CLOUD_API_BASE_URL = 'https://agentic-signer.com';
 const ANDROID_CLOUD_CLIENT_HEADER = 'android-bundled';
 const BROWSER_AI_LIMITATIONS = [
@@ -8811,6 +8811,16 @@ async function handleIosWalletSelectChange(select: HTMLSelectElement): Promise<v
   state.selectedWalletName = iosWalletLabel(walletId);
   state.selectedWalletLogoId = walletProviderLogoIdForName(state.selectedWalletName);
   state.selectedWalletIcon = undefined;
+  if (walletId === 'jupiter') {
+    // Request return-notification permission the moment Jupiter is selected — before
+    // any connect/sign bounce — so the native bridge's "tap to return to Agentic"
+    // notification can fire after the user approves in Jupiter. Fire-and-forget; the
+    // connect flow also ensures this resolves before the first bounce.
+    state.jupiterReturnNotifyStatus = undefined;
+    void iosNativeEnsureReturnNotificationPermission().then((status) => {
+      state.jupiterReturnNotifyStatus = status;
+    });
+  }
   void signOutCloudSessionForWalletBoundary('wallet-changed', { toast: true }).then((signedOut) => {
     if (signedOut) render();
   });
@@ -9165,7 +9175,8 @@ function pageContent(route: AppRoute | null): string {
     case '/desktop':
       return desktopPage();
     case '/android':
-      return androidPage();
+      // The Android download page is not relevant on iOS; suppress it even if deep-linked.
+      return IS_IOS_APP ? notFoundPage() : androidPage();
     case '/demo':
       return demoPage();
     case '/mwa-test':
@@ -9266,7 +9277,7 @@ function buildersPage(): string {
             <span class="logo-chip solana-chip">${brandLogo('solana', 'logo-chip-icon')}<span>Solana</span></span>
             <span class="logo-chip">${brandLogo('agentRouter', 'logo-chip-icon')}<span>MCP</span></span>
             <span class="logo-chip">${brandLogo('vercel', 'logo-chip-icon')}<span>Vercel AI</span></span>
-            <span class="logo-chip">${brandLogo('solanaMobile', 'logo-chip-icon')}<span>MWA</span></span>
+            ${IS_IOS_APP ? '' : `<span class="logo-chip">${brandLogo('solanaMobile', 'logo-chip-icon')}<span>MWA</span></span>`}
           </div>
           <p class="eyebrow mini">Builder integration</p>
           <h1 id="builders-title">
@@ -9297,7 +9308,7 @@ function buildersPage(): string {
             <div class="builders-flow-body">
               ${builderFlowStep('1', 'Agent runtime', 'MCP, CLI, Vercel AI, Solana Agent Kit, or app request.', 'agentRouter')}
               ${builderFlowStep('2', 'Agentic approval layer', 'Bridge, inbox, caps, reviews, prepared actions, and receipts.', 'codex')}
-              ${builderFlowStep('3', 'User wallet signs', 'Phantom, Solflare, Backpack, Wallet Standard, MWA, or iOS wallet link.', 'phantom')}
+              ${builderFlowStep('3', 'User wallet signs', IS_IOS_APP ? 'Phantom, Solflare, Backpack, Wallet Standard, or iOS wallet link.' : 'Phantom, Solflare, Backpack, Wallet Standard, MWA, or iOS wallet link.', 'phantom')}
               ${builderFlowStep('4', 'Evidence returns', 'Approved result, transaction id, rejection reason, or receipt context.', 'solana')}
             </div>
           </div>
@@ -9424,7 +9435,7 @@ Use solana-agent-wallet to show receipts and policy context for the last approve
         <div class="builders-package-grid">
           ${builderPackageCard('Core client', '@solana-agent-wallet-adapter/core', 'WalletBackend, SolanaSigningClient, approval resources, errors, and typed signing requests.', 'solana')}
           ${builderPackageCard('MCP server', '@solana-agent-wallet-adapter/mcp-server', 'Wallet status, balances, connector facts, prepared actions, inbox, recurring schedules, swaps, and receipts.', 'agentRouter')}
-          ${builderPackageCard('Wallet transports', 'wallet-standard-web / mwa-mobile-web / ios-link', 'Browser Wallet Standard, Android MWA, Seed Vault surfaces, and iOS wallet link compatibility.', 'solanaMobile')}
+          ${builderPackageCard('Wallet transports', IS_IOS_APP ? 'wallet-standard-web / ios-link' : 'wallet-standard-web / mwa-mobile-web / ios-link', IS_IOS_APP ? 'Browser Wallet Standard and iOS wallet link compatibility.' : 'Browser Wallet Standard, Android MWA, Seed Vault surfaces, and iOS wallet link compatibility.', 'solanaMobile')}
           ${builderPackageCard('Framework adapters', 'vercel-ai / solana-agent-kit', 'Vercel AI tool definitions and Solana Agent Kit BaseWallet replacement with no agent-held key.', 'vercel')}
         </div>
       </section>
@@ -10181,7 +10192,7 @@ function heroSection(): string {
         <div class="chain-strip" aria-label="Network and signing layer">
           <span class="logo-chip solana-chip">${brandLogo('solana', 'logo-chip-icon')}<span>Solana</span></span>
           <span class="logo-chip" aria-label="Wallet Standard">${brandLogo('solana', 'logo-chip-icon')}<span class="chip-label chip-label-full">Wallet Standard</span><span class="chip-label chip-label-mobile" aria-hidden="true">Wallet Std</span></span>
-          <span class="logo-chip" aria-label="Mobile Wallet Adapter">${brandLogo('solanaMobile', 'logo-chip-icon')}<span class="chip-label chip-label-full">Mobile Wallet Adapter</span><span class="chip-label chip-label-mobile" aria-hidden="true">MWA</span></span>
+          ${IS_IOS_APP ? '' : `<span class="logo-chip" aria-label="Mobile Wallet Adapter">${brandLogo('solanaMobile', 'logo-chip-icon')}<span class="chip-label chip-label-full">Mobile Wallet Adapter</span><span class="chip-label chip-label-mobile" aria-hidden="true">MWA</span></span>`}
         </div>
         <p class="eyebrow mini">Wallet authority for agents</p>
         <h1 id="hero-title">
@@ -10303,13 +10314,13 @@ function docsSection(): string {
         <h2 id="docs-title">A local signing boundary for agent runtimes.</h2>
         <p>
           Render serves this website, but Agentic's bridge, CLI, and Desktop App run locally beside the user's wallet.
-          Android users can use the hosted app in mobile browser surfaces that support Mobile Wallet Adapter. Agents
+          ${IS_IOS_APP ? '' : 'Android users can use the hosted app in mobile browser surfaces that support Mobile Wallet Adapter. '}Agents
           can ask for signatures, swaps, transfers, receipts, and approval requests without receiving a seed phrase,
           keypair file, or server-side private key.
         </p>
       </div>
       <div class="docs-grid">
-        ${docsCard('1. Launch the app', 'Use the hosted app and guided demo to see wallet discovery, connection, signing, and Mobile Wallet Adapter readiness.')}
+        ${docsCard('1. Launch the app', IS_IOS_APP ? 'Use the hosted app and guided demo to see wallet discovery, connection, and signing.' : 'Use the hosted app and guided demo to see wallet discovery, connection, signing, and Mobile Wallet Adapter readiness.')}
         ${docsCard('2. Install a local runtime', 'Use the npm CLI, a standalone CLI binary, or the Desktop App when Codex, Claude, or an MCP client needs a persistent local bridge.')}
         ${docsCard('3. Let agents request approval', 'Claude, Codex, MCP clients, and framework adapters send bounded actions to the local bridge; the wallet still signs every request.')}
       </div>
@@ -10796,14 +10807,15 @@ function heroWalletStrip(): string {
     { name: 'Solflare', logoId: 'solflare' },
     { name: 'Backpack', logoId: 'backpack' },
     { name: 'Jupiter Mobile', logoId: 'jupiter' },
-    { name: 'Seed Vault', logoId: 'seedVault' },
+    // Seed Vault is an Android (Solana Mobile) hardware path and is hidden in the iOS app.
+    ...(IS_IOS_APP ? [] : [{ name: 'Seed Vault' as const, logoId: 'seedVault' as BrandLogoId }]),
   ];
   return `
     <div class="wallet-chip-strip" aria-label="Supported wallet examples">
       ${wallets.map((wallet) => compactWalletChip(wallet.name, wallet.logoId)).join('')}
       <span class="wallet-chip standard-chip">
         ${brandLogo('solana', 'wallet-chip-icon')}
-        <span>Wallet Standard / MWA</span>
+        <span>${IS_IOS_APP ? 'Wallet Standard' : 'Wallet Standard / MWA'}</span>
       </span>
     </div>
   `;
@@ -10843,7 +10855,7 @@ function gapSection(): string {
         </div>
         <p class="gap-answer">
           Agentic routes each request to the user's existing Solana wallet: Phantom, Solflare, Backpack,
-          Seed Vault, Wallet Standard, MWA, and iOS wallet links. The agent gets the approved result,
+          ${IS_IOS_APP ? 'Wallet Standard, and iOS wallet links' : 'Seed Vault, Wallet Standard, MWA, and iOS wallet links'}. The agent gets the approved result,
           never the key.
         </p>
       </div>
@@ -10858,8 +10870,9 @@ function walletDirectorySection(): string {
         <p class="eyebrow mini">Wallet directory</p>
         <h2 id="wallet-directory-title">Use the wallet users already picked.</h2>
         <p>
-          Agentic targets Solana wallet authority through Wallet Standard, Mobile Wallet Adapter, Seed Vault,
-          and compatible provider surfaces. Discovered wallets use their provider-supplied icons.
+          ${IS_IOS_APP
+            ? 'Agentic targets Solana wallet authority through Wallet Standard and compatible provider surfaces.'
+            : 'Agentic targets Solana wallet authority through Wallet Standard, Mobile Wallet Adapter, Seed Vault, and compatible provider surfaces.'} Discovered wallets use their provider-supplied icons.
         </p>
       </div>
       <div class="wallet-directory-grid">
@@ -10887,15 +10900,17 @@ function walletDirectorySection(): string {
           ['jupiter'],
           'jupiter',
         )}
-        ${walletDirectoryCard(
+        ${IS_IOS_APP ? '' : walletDirectoryCard(
           'Seed Vault',
           'Android hardware-backed custody through Mobile Wallet Adapter surfaces.',
           ['seed vault', 'seedvault'],
           'seedVault',
         )}
         ${walletDirectoryCard(
-          'Wallet Standard / MWA',
-          'One adapter surface for browser wallets, Android MWA, and wallet in-app browsers.',
+          IS_IOS_APP ? 'Wallet Standard' : 'Wallet Standard / MWA',
+          IS_IOS_APP
+            ? 'One adapter surface for browser wallets and wallet in-app browsers.'
+            : 'One adapter surface for browser wallets, Android MWA, and wallet in-app browsers.',
           ['wallet standard', 'mobile wallet adapter', 'mwa'],
           'solana',
           true,
@@ -10972,7 +10987,7 @@ function cliHeroSection(): string {
         <div class="terminal-preview-body">
           <p><span>$</span> ${escapeHtml(NPM_EXEC_COMMAND)}<i class="terminal-caret" aria-hidden="true"></i></p>
           <p class="warn">bridge starts at http://127.0.0.1:8787</p>
-          <p><span>wallet</span> Phantom, Solflare, Backpack, Wallet Standard, or MWA</p>
+          <p><span>wallet</span> ${IS_IOS_APP ? 'Phantom, Solflare, Backpack, or Wallet Standard' : 'Phantom, Solflare, Backpack, Wallet Standard, or MWA'}</p>
           <p><span>agent</span> prepare transfer, swap, deposit, withdrawal, or Blink action</p>
           <p class="ok">result wallet approval required before signing</p>
         </div>
@@ -10993,7 +11008,7 @@ function desktopHeroSection(): string {
         <div class="tooling-chip-strip" aria-label="Desktop app surfaces">
           <span class="logo-chip solana-chip">${brandLogo('solana', 'logo-chip-icon')}<span>Solana</span></span>
           <span class="logo-chip">${brandLogo('phantom', 'logo-chip-icon')}<span>Wallet approvals</span></span>
-          <span class="logo-chip">${brandLogo('solanaMobile', 'logo-chip-icon')}<span>MWA</span></span>
+          ${IS_IOS_APP ? '' : `<span class="logo-chip">${brandLogo('solanaMobile', 'logo-chip-icon')}<span>MWA</span></span>`}
         </div>
         <p class="eyebrow mini">Desktop App</p>
         <h1 id="desktop-hero-title">Run the bridge with controls, logs, and a visible approval queue.</h1>
@@ -11025,7 +11040,7 @@ function desktopHeroSection(): string {
       <div class="tooling-proof-grid" aria-label="Desktop app model">
         ${toolingProofCard('Queue', 'Needs Approval inbox', 'Review prepared agent work before any wallet signature is requested.', 'codex')}
         ${toolingProofCard('Logs', 'Bridge diagnostics', 'See local bridge, wallet host, and request lifecycle state in one place.', 'agentRouter')}
-        ${toolingProofCard('Wallets', 'Same signer boundary', 'Desktop controls the runtime; Phantom, Solflare, Backpack, MWA, or Wallet Standard still sign.', 'solanaMobile')}
+        ${toolingProofCard('Wallets', 'Same signer boundary', IS_IOS_APP ? 'Desktop controls the runtime; Phantom, Solflare, Backpack, or Wallet Standard still sign.' : 'Desktop controls the runtime; Phantom, Solflare, Backpack, MWA, or Wallet Standard still sign.', 'solanaMobile')}
       </div>
     </section>
   `;
@@ -11171,7 +11186,7 @@ function guidedDemoWalkthroughPage(): string {
             <span class="logo-chip solana-chip">${brandLogo('solana', 'logo-chip-icon')}<span>Solana</span></span>
             <span class="logo-chip">${brandLogo('agentRouter', 'logo-chip-icon')}<span>Agent runtime</span></span>
             <span class="logo-chip">${brandLogo('phantom', 'logo-chip-icon')}<span>Wallet review</span></span>
-            <span class="logo-chip">${brandLogo('solanaMobile', 'logo-chip-icon')}<span>MWA</span></span>
+            ${IS_IOS_APP ? '' : `<span class="logo-chip">${brandLogo('solanaMobile', 'logo-chip-icon')}<span>MWA</span></span>`}
           </div>
           <p class="eyebrow mini">Guided demo</p>
           <h1 id="guided-demo-title">Preview wallet approval without connecting a wallet.</h1>
@@ -16406,6 +16421,12 @@ function commandCenterAiPanel(): string {
           <span>No AI route can approve, submit, sign, move funds, or change workflow authority.</span>
         </div>
 
+        <div class="command-ai-data-disclosure" aria-label="AI data sharing disclosure">
+          <strong>What is shared with your AI provider</strong>
+          <p>The AI feature is off until you enter your own provider key. When you request an agent review, this app sends to the AI provider you selected: the draft's action type, token symbol(s), amount, recipient address, and slippage; your Solana wallet's public address; any free-text note you write; and the network/cluster. It never sends your private keys, seed phrase, recovery phrase, precise location, or device identifiers.</p>
+          <p><a href="/privacy" data-site-link="/privacy">Privacy Policy</a></p>
+        </div>
+
         ${aiSettingsCard('planner')}
       </section>
     </div>
@@ -21539,7 +21560,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         ${showStopDeviceAgentRuntime ? `<button id="stopDeviceAgent-${escapeHtml(scope)}" data-ai-action="stop-device-agent" ${state.busy || !canStopDeviceAgentRuntime() ? 'disabled' : ''} title="Stop the on-device runtime. Your config (provider, model, key) stays available so you can start again.">Stop runtime</button>` : ''}
       </div>
       ${isRail || mobilePlannerSetup
-        ? `<p class="ai-security-note compact">Drafts only. Wallet approvals stay separate.</p>${bridgeSetupCard}`
+        ? `<p class="ai-security-note compact">Drafts only. Wallet approvals stay separate. Drafting sends the action details, your wallet's public address, your note, and the cluster to your chosen AI provider — never your keys, seed phrase, precise location, or device identifiers. <a href="/privacy" data-site-link="/privacy">Privacy Policy</a></p>${bridgeSetupCard}`
         : `
           ${aiModeLimitations()}
           ${bridgeSetupCard}
@@ -27291,6 +27312,16 @@ async function runConnect(
       });
       walletBackend = iosBackend;
       client = new SolanaSigningClient({ backend: walletBackend });
+      if (state.selectedIosWalletId === 'jupiter' && state.jupiterReturnNotifyStatus === undefined) {
+        // Request return-notification permission BEFORE the connect bounce, so the
+        // native bridge's "tap to return to Agentic" notification can actually fire
+        // when the user approves in Jupiter (iOS 17/18 won't auto-foreground us).
+        // Requesting after connect — as we did before — left permission undetermined
+        // when the first connect/sign result arrived, so the notification was dropped.
+        // (Selection also requests this early in handleIosWalletSelectChange; this
+        // covers a persisted/restored Jupiter selection that skipped the picker.)
+        state.jupiterReturnNotifyStatus = await iosNativeEnsureReturnNotificationPermission();
+      }
       state.address = await iosBackend.connectSelectedWallet();
       state.capabilities = await client.capabilities();
       state.selectedWalletName = iosWalletLabel(state.selectedIosWalletId);
@@ -27313,12 +27344,6 @@ async function runConnect(
       savePersistedState();
       trackWalletConnectSuccess(connectSurface, state.cluster, 'connect_button');
       pushToast('success', 'iOS wallet connected', short(state.address));
-      if (state.selectedIosWalletId === 'jupiter') {
-        // Ask for notification permission now (the least-annoying moment) so the
-        // native bridge can post a tappable "approval complete" notification to
-        // bring the user back from Jupiter after a signing request on iOS 17+/18.
-        state.jupiterReturnNotifyStatus = await iosNativeEnsureReturnNotificationPermission();
-      }
       return;
     }
     // Ledger early-return — covers the case where `state.selectedWalletName`

@@ -14,11 +14,25 @@ enum AgenticWalletConnectDeepLink {
         URL(string: "jupiter://wc?uri=\(percentEncodeQueryValue(uri))")
     }
 
-    /// Fallback URL to foreground Jupiter for an in-flight signing request when
-    /// the session's peer redirect is unavailable. The request itself is already
-    /// delivered over the WalletConnect relay; opening Jupiter just surfaces its
-    /// pending-request sheet. Bare `jupiter://` (no `wc?uri=`) because, unlike
-    /// pairing, a request carries no URI to hand over.
+    /// Foreground Jupiter for an in-flight signing request using the WalletConnect
+    /// iOS "incomplete URI" trigger: `jupiter://wc?uri=wc:<sessionTopic>@2`.
+    ///
+    /// A WC sign request is NOT carried in a deep link — it travels over the relay
+    /// to the already-paired wallet. This URL reuses Jupiter's working `wc?uri=`
+    /// handler (the same path that pairs successfully) but carries only the session
+    /// topic (no relay-protocol/symKey), which the WC mobile-linking spec defines as
+    /// a foreground trigger: the wallet matches the topic to its active session and
+    /// shows the pending request that already arrived over the relay. Crucially this
+    /// routes into Jupiter's WC screen rather than bare `jupiter://`, which has no
+    /// handler and falls through to Jupiter's web view (jup.ag).
+    static func jupiterRequestForegroundUrl(sessionTopic: String) -> URL? {
+        let incompleteUri = "wc:\(sessionTopic)@2"
+        return URL(string: "jupiter://wc?uri=\(percentEncodeQueryValue(incompleteUri))")
+    }
+
+    /// Last-ditch fallback: bare `jupiter://` (no path). Only used if the
+    /// incomplete-URI trigger can't be built. Note this opens Jupiter's home/web
+    /// view, not the request, so it is intentionally the lowest-priority candidate.
     static func jupiterRequestLaunchUrl() -> URL? {
         URL(string: "jupiter://")
     }
