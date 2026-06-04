@@ -34,6 +34,14 @@ public enum AgenticBridge {
         AgenticRemoteConfigStore.shared.refresh(force: false)
         endBackgroundTask()
         AgenticLocalNotification.clearWalletConnectNotifications()
+        // If a Jupiter connect/sign is still pending (the user bounced back without
+        // it completing — e.g. Jupiter cold-dropped the deep link to jup.ag), re-fire
+        // the launch once now that Jupiter is warm. No-ops when nothing is pending.
+#if canImport(WalletConnectSign)
+        if #available(iOS 16.0, *) {
+            AgenticWalletConnectCore.shared.reForegroundPendingWalletIfNeeded()
+        }
+#endif
         AgenticIOSLog.info("AgenticBridge", "didBecomeActive", "DONE", "lifecycle hook")
     }
 

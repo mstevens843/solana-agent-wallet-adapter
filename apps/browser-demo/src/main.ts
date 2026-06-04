@@ -412,6 +412,7 @@ import {
   iosNativeCloudSessionToken,
   iosNativeEnsureReturnNotificationPermission,
   iosNativeOpenExternalUrl,
+  iosNativeReForegroundJupiter,
   listIosNativeWalletOptions,
   restoreLatestIosNativeWallet,
   setIosNativeCloudSessionToken,
@@ -1739,6 +1740,10 @@ interface Toast {
   linkLabel?: string;
   actionLabel?: string;
   actionUrl?: string;
+  /** When true, the action button force-re-foregrounds Jupiter (re-fires the
+   * retained WC deep link) instead of opening actionUrl — avoids bare jupiter://
+   * which cold-starts to jup.ag. Falls back to actionUrl if nothing is pending. */
+  actionReForeground?: boolean;
   key?: string;
   dismissAfterMs?: number;
 }
@@ -1748,12 +1753,18 @@ interface ToastOptions {
   linkLabel?: string;
   actionLabel?: string;
   actionUrl?: string;
+  actionReForeground?: boolean;
   key?: string;
   dismissAfterMs?: number;
 }
 
 const LOCAL_WORKSPACE_BOUNDARY_TOAST_KEY = 'local-workspace-boundary';
 const LOCAL_WORKSPACE_REMINDER_DISMISS_MS = 7000;
+// Pending toast shown while a Jupiter (iOS WalletConnect) connect bounce is in
+// flight. Carries the "Open Jupiter again" re-foreground button so the user has a
+// manual backstop if Jupiter cold-dropped the deep link (jup.ag) and the one
+// automatic re-open didn't catch it.
+const JUPITER_IOS_CONNECT_TOAST_KEY = 'jupiter-ios-connect';
 
 function isJupiterIosWalletSelected(): boolean {
   return state.iosNativeEnvironment.isIosNative && state.selectedIosWalletId === 'jupiter';
@@ -1764,6 +1775,10 @@ function withJupiterIosManualApprovalToast(options: ToastOptions = {}): ToastOpt
   return {
     ...options,
     actionLabel: JUPITER_IOS_MANUAL_APPROVAL_ACTION_LABEL,
+    // Re-fire the retained WC deep link natively (the proper jupiter://wc?uri=…),
+    // not bare jupiter:// — bare cold-starts Jupiter to its jup.ag web home. The
+    // actionUrl stays as the fallback for the rare case nothing is pending.
+    actionReForeground: true,
     actionUrl: JUPITER_IOS_MANUAL_APPROVAL_URL,
   };
 }
@@ -25719,6 +25734,16 @@ function bind(): void {
     button.addEventListener('click', (event) => {
       event.preventDefault();
       const url = button.dataset.toastActionUrl;
+      // Jupiter approval toasts: force-re-foreground Jupiter for the pending
+      // connect/sign (re-fires the proper jupiter://wc?uri=… we retained), which
+      // is what actually shows the request. Only fall back to opening the raw
+      // actionUrl when there's nothing pending to re-foreground.
+      if (button.dataset.toastActionReforeground === '1') {
+        void iosNativeReForegroundJupiter().then((handled) => {
+          if (!handled && url) void iosNativeOpenExternalUrl(url);
+        });
+        return;
+      }
       if (!url) return;
       void iosNativeOpenExternalUrl(url);
     });
@@ -27312,7 +27337,8 @@ async function runConnect(
       });
       walletBackend = iosBackend;
       client = new SolanaSigningClient({ backend: walletBackend });
-      if (state.selectedIosWalletId === 'jupiter' && state.jupiterReturnNotifyStatus === undefined) {
+      const isJupiterIosConnect = state.selectedIosWalletId === 'jupiter';
+      if (isJupiterIosConnect && state.jupiterReturnNotifyStatus === undefined) {
         // Request return-notification permission BEFORE the connect bounce, so the
         // native bridge's "tap to return to Agentic" notification can actually fire
         // when the user approves in Jupiter (iOS 17/18 won't auto-foreground us).
@@ -27322,7 +27348,24 @@ async function runConnect(
         // covers a persisted/restored Jupiter selection that skipped the picker.)
         state.jupiterReturnNotifyStatus = await iosNativeEnsureReturnNotificationPermission();
       }
-      state.address = await iosBackend.connectSelectedWallet();
+      if (isJupiterIosConnect) {
+        // Show a pending toast during the bounce with the "Open Jupiter again"
+        // re-foreground backstop. Jupiter cold-starts unreliably and can drop the
+        // deep link to jup.ag; the native side auto-re-opens once on return, and
+        // this button lets the user re-fire it manually if needed.
+        pushToast(
+          'pending',
+          'Approve in Jupiter',
+          jupiterIosManualToastMessage('Opening Jupiter to connect…'),
+          withJupiterIosManualApprovalToast({ key: JUPITER_IOS_CONNECT_TOAST_KEY }),
+        );
+        render();
+      }
+      try {
+        state.address = await iosBackend.connectSelectedWallet();
+      } finally {
+        if (isJupiterIosConnect) dismissToastByKey(JUPITER_IOS_CONNECT_TOAST_KEY);
+      }
       state.capabilities = await client.capabilities();
       state.selectedWalletName = iosWalletLabel(state.selectedIosWalletId);
       state.selectedWalletLogoId = walletProviderLogoIdForName(state.selectedWalletName);
@@ -52236,7 +52279,7 @@ function toastStack(): string {
                 <strong>${escapeHtml(toast.title)}</strong>
                 ${toast.message ? `<p>${escapeHtml(toast.message)}</p>` : ''}
                 ${toast.linkHref ? `<a href="${escapeHtml(toast.linkHref)}" target="_blank" rel="noreferrer">${escapeHtml(toast.linkLabel ?? 'Open link')}</a>` : ''}
-                ${toast.actionUrl ? `<button class="toast-action-button" type="button" data-toast-action-url="${escapeHtml(toast.actionUrl)}">${escapeHtml(toast.actionLabel ?? 'Open')}</button>` : ''}
+                ${toast.actionUrl ? `<button class="toast-action-button" type="button" data-toast-action-url="${escapeHtml(toast.actionUrl)}"${toast.actionReForeground ? ' data-toast-action-reforeground="1"' : ''}>${escapeHtml(toast.actionLabel ?? 'Open')}</button>` : ''}
               </div>
               <button data-toast-dismiss="${toast.id}" aria-label="Dismiss notification">x</button>
             </div>
@@ -52279,6 +52322,9 @@ function replaceToast(
       }
       if (!Object.prototype.hasOwnProperty.call(options, 'actionLabel')) {
         delete replacement.actionLabel;
+      }
+      if (!Object.prototype.hasOwnProperty.call(options, 'actionReForeground')) {
+        delete replacement.actionReForeground;
       }
       return replacement;
     });

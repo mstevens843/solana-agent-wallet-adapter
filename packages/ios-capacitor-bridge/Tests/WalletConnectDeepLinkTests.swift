@@ -15,18 +15,15 @@ final class WalletConnectDeepLinkTests: XCTestCase {
         // A WC sign request rides the relay, not a deep link. The dapp-side
         // foreground lever is the "incomplete URI" trigger jupiter://wc?uri=wc:<topic>@2
         // (session topic only) — it reuses Jupiter's working wc?uri= handler and
-        // asks it to show the pending request, rather than bare jupiter:// (which
-        // has no handler and falls through to Jupiter's web view at jup.ag).
+        // asks it to show the pending request. This is now the SOLE sign-launch
+        // candidate: bare jupiter:// was removed because it has no request handler
+        // and falls through to Jupiter's web view at jup.ag (the "dumped on a
+        // website" failure). If iOS refuses this trigger, the in-app "Open Jupiter
+        // again" button is the recovery — never a jup.ag bounce.
         XCTAssertEqual(
             AgenticWalletConnectDeepLink.jupiterRequestForegroundUrl(sessionTopic: "abc123")?.absoluteString,
             "jupiter://wc?uri=wc%3Aabc123%402"
         )
-    }
-
-    func testJupiterRequestLaunchUsesBareSchemeFallback() throws {
-        // Last-ditch fallback only (opens Jupiter's home/web view, not the request),
-        // used only if the incomplete-URI trigger can't be built.
-        XCTAssertEqual(AgenticWalletConnectDeepLink.jupiterRequestLaunchUrl()?.absoluteString, "jupiter://")
     }
 
     func testNonJupiterPairingKeepsRawUriFallback() {

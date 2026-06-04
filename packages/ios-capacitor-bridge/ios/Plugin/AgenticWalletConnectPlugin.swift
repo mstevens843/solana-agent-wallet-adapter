@@ -13,6 +13,7 @@ public class AgenticWalletConnectPlugin: CAPPlugin, CAPBridgedPlugin {
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "wcConnect", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "wcLaunchWallet", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "wcReForeground", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "wcWaitForSession", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "wcGetSession", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "wcSignMessage", returnType: CAPPluginReturnPromise),
@@ -59,6 +60,16 @@ public class AgenticWalletConnectPlugin: CAPPlugin, CAPBridgedPlugin {
             "candidateCount": String(urls.count),
         ])
         openFirstWalletConnectCandidate(urls) { launched, launchedUrl in
+            // Retain the opened pairing URL so a return to Agentic (didBecomeActive
+            // or the manual "Open Jupiter again" button) can re-fire it if Jupiter
+            // cold-dropped the deep link to its web home instead of pairing.
+            if launched, let launchedUrl {
+#if canImport(WalletConnectSign)
+                if #available(iOS 16.0, *) {
+                    AgenticWalletConnectCore.shared.setPendingPairingLaunch(url: launchedUrl)
+                }
+#endif
+            }
             DispatchQueue.main.async {
                 AgenticIOSLog.info("AgenticWalletConnect", "wcLaunchWallet", "DONE", "wallet launch attempted", [
                     "launched": String(launched),
@@ -70,6 +81,19 @@ public class AgenticWalletConnectPlugin: CAPPlugin, CAPBridgedPlugin {
                 ])
             }
         }
+    }
+
+    @objc func wcReForeground(_ call: CAPPluginCall) {
+        guard AgenticBridgeOrigin.validate(call, on: bridge) else { return }
+#if canImport(WalletConnectSign)
+        if #available(iOS 16.0, *) {
+            AgenticIOSLog.info("AgenticWalletConnect", "wcReForeground", "START", "manual re-foreground requested")
+            AgenticWalletConnectCore.shared.reForegroundPendingWalletIfNeeded(force: true)
+            call.resolve(["ok": true])
+            return
+        }
+#endif
+        call.resolve(["ok": false])
     }
 
     @objc func wcWaitForSession(_ call: CAPPluginCall) {

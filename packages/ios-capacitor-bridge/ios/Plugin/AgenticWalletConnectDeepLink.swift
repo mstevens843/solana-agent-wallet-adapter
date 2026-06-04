@@ -30,13 +30,6 @@ enum AgenticWalletConnectDeepLink {
         return URL(string: "jupiter://wc?uri=\(percentEncodeQueryValue(incompleteUri))")
     }
 
-    /// Last-ditch fallback: bare `jupiter://` (no path). Only used if the
-    /// incomplete-URI trigger can't be built. Note this opens Jupiter's home/web
-    /// view, not the request, so it is intentionally the lowest-priority candidate.
-    static func jupiterRequestLaunchUrl() -> URL? {
-        URL(string: "jupiter://")
-    }
-
     private static func percentEncodeQueryValue(_ value: String) -> String {
         var allowed = CharacterSet.alphanumerics
         allowed.insert(charactersIn: "-._~")

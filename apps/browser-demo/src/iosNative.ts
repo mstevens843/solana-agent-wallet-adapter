@@ -159,6 +159,9 @@ interface AgenticWalletConnectPlugin {
   }): Promise<{ signature?: string; txid?: string }>;
   wcDisconnect(): Promise<{ disconnected?: boolean }>;
   wcClearState(): Promise<{ cleared?: boolean }>;
+  // Re-open Jupiter for a pending connect/sign (force). Used by the manual
+  // "Open Jupiter again" backstop when Jupiter cold-dropped the deep link.
+  wcReForeground(): Promise<{ ok?: boolean }>;
 }
 
 interface AgenticBiometricCanAuthenticateResult {
@@ -1959,6 +1962,22 @@ export async function iosNativeEnsureReturnNotificationPermission(): Promise<Ios
 /** Whether a resolved status lets us post return notifications. */
 export function iosNativeNotificationStatusCanNotify(status: IosNativeNotificationAuthStatus): boolean {
   return status === 'authorized' || status === 'provisional' || status === 'ephemeral';
+}
+
+/**
+ * Force-re-open Jupiter for a pending connect/sign. Backs the manual "Open
+ * Jupiter again" button: Jupiter cold-starts unreliably and sometimes drops our
+ * deep link to jup.ag, so the native side retains the in-flight launch and
+ * re-fires it on demand. Best-effort, native-only, never throws.
+ */
+export async function iosNativeReForegroundJupiter(): Promise<boolean> {
+  if (!safeIsNativePlatform()) return false;
+  try {
+    const result = await AgenticWalletConnect.wcReForeground();
+    return result?.ok === true;
+  } catch {
+    return false;
+  }
 }
 
 function contextMetadata(context: WalletUrlOpenContext | undefined): Record<string, string> {

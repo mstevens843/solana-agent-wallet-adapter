@@ -50,6 +50,19 @@ final class AgenticWalletConnectCore {
     private var latestSocketStatus = "unknown"
     private var sessionWaiters: [UUID: (Result<(String, String), Error>) -> Void] = [:]
 
+    // Re-foreground state. Jupiter cold-starts unreliably: on a fresh boot it
+    // sometimes drops our (spec-correct) `jupiter://wc?uri=…` deep link and shows
+    // its web home (jup.ag) instead of the request. The proven recovery is to
+    // re-fire the launch once the app is warm again. We retain just enough state
+    // to re-fire exactly one automatic retry when the user returns to Agentic
+    // without the connect/sign having completed (or unconditionally when the
+    // manual "Open Jupiter again" button calls in with force:true).
+    private var pendingPairingLaunchUrl: URL?
+    private var pairingRetried = false
+    private var pendingSignLaunch: (method: String, topic: String, requestId: RPCID)?
+    private var signRetried = false
+    private var lastWalletLaunchAt: Date?
+
     private init() {}
 
     func ensureConfigured() throws {
@@ -232,9 +245,102 @@ final class AgenticWalletConnectCore {
                     AgenticIOSLog.fail("AgenticWalletConnect", "waitForSession", "TIMEOUT", "session never settled over relay — wallet may not have approved or relay never delivered", [
                         "timeoutMs": String(timeoutMs),
                     ])
+                    // The connect attempt is over; drop the retained pairing launch
+                    // so a later didBecomeActive can't re-open Jupiter for a dead pairing.
+                    self.pendingPairingLaunchUrl = nil
+                    self.pairingRetried = false
                     waiter(.failure(AgenticAgentError(code: "WC_TIMEOUT", message: "WalletConnect session timed out.")))
                 }
             }
+        }
+    }
+
+    /// Remember the pairing deep link the plugin just opened so
+    /// `reForegroundPendingWalletIfNeeded` can re-fire it once if Jupiter
+    /// cold-dropped it. Resets the one-shot retry guard for this connect attempt.
+    func setPendingPairingLaunch(url: URL) {
+        queue.async {
+            self.pendingPairingLaunchUrl = url
+            self.pairingRetried = false
+            self.lastWalletLaunchAt = Date()
+            AgenticIOSLog.info("AgenticWalletConnect", "setPendingPairingLaunch", "DONE", "retained pairing launch URL for re-foreground", [
+                "scheme": url.scheme ?? "none",
+            ])
+        }
+    }
+
+    /// Drop the retained in-flight sign request once its relay response arrives
+    /// (or it fails), so a later return can't re-foreground Jupiter for a request
+    /// that already resolved. Matches on requestId to avoid clearing a newer one.
+    private func clearPendingSignLaunch(requestId: RPCID) {
+        queue.async {
+            if self.pendingSignLaunch?.requestId == requestId {
+                self.pendingSignLaunch = nil
+                self.signRetried = false
+            }
+        }
+    }
+
+    /// Called from `AgenticBridge.didBecomeActive()` (automatic, force=false) and
+    /// from the manual "Open Jupiter again" button via the plugin (force=true).
+    ///
+    /// Jupiter cold-starts unreliably and sometimes drops our spec-correct
+    /// `jupiter://wc?uri=…` deep link to its web home (jup.ag) instead of showing
+    /// the request. When the user returns to Agentic with the connect/sign still
+    /// pending, we re-fire the launch — Jupiter is warm by now, so it works (this
+    /// automates the user's "try again 30s later" that already succeeds).
+    ///
+    /// A ~0.9s grace lets a settling relay message land first (so we don't re-open
+    /// Jupiter right as the session/response arrives). The per-attempt `…Retried`
+    /// guards cap the automatic path at exactly one retry; force=true bypasses them.
+    func reForegroundPendingWalletIfNeeded(force: Bool = false) {
+        guard (try? ensureConfigured()) != nil else { return }
+        queue.asyncAfter(deadline: .now() + 0.9) {
+            let elapsed = self.lastWalletLaunchAt.map { Date().timeIntervalSince($0) } ?? .greatestFiniteMagnitude
+            // Don't fire during the initial open→background transition.
+            guard force || elapsed >= 1.2 else {
+                AgenticIOSLog.info("AgenticWalletConnect", "reForeground", "SKIP_TOO_SOON", "skipping re-foreground; launch too recent", [
+                    "elapsedMs": String(Int(elapsed * 1000)),
+                ])
+                return
+            }
+            // Connect pending: waiters parked and no session settled yet.
+            if self.sessionPubkey == nil, !self.sessionWaiters.isEmpty,
+               let url = self.pendingPairingLaunchUrl, force || !self.pairingRetried {
+                self.pairingRetried = true
+                AgenticIOSLog.info("AgenticWalletConnect", "reForeground", "RETRY_CONNECT", "re-opening Jupiter to recover a dropped pairing launch", [
+                    "scheme": url.scheme ?? "none",
+                    "force": force ? "true" : "false",
+                ])
+                DispatchQueue.main.async {
+                    UIApplication.shared.open(url, options: [:]) { launched in
+                        AgenticIOSLog.info("AgenticWalletConnect", "reForeground", launched ? "RETRY_CONNECT_DONE" : "RETRY_CONNECT_REFUSED", "connect re-foreground attempt finished", [
+                            "launched": launched ? "true" : "false",
+                        ])
+                    }
+                }
+                return
+            }
+            // Sign pending: a request is in flight (launched, no response yet).
+            if let pending = self.pendingSignLaunch, force || !self.signRetried {
+                self.signRetried = true
+                AgenticIOSLog.info("AgenticWalletConnect", "reForeground", "RETRY_SIGN", "re-foregrounding Jupiter for an in-flight request", [
+                    "method": pending.method,
+                    "requestId": pending.requestId.string,
+                    "force": force ? "true" : "false",
+                ])
+                // Dispatch OFF the serial queue: launchCurrentWalletForRequest does a
+                // queue.sync internally, which would deadlock if run on the queue.
+                DispatchQueue.main.async {
+                    self.launchCurrentWalletForRequest(method: pending.method, topic: pending.topic, requestId: pending.requestId)
+                }
+                return
+            }
+            AgenticIOSLog.info("AgenticWalletConnect", "reForeground", "NOOP", "nothing pending to re-foreground", [
+                "hasPendingPairing": self.pendingPairingLaunchUrl == nil ? "false" : "true",
+                "hasPendingSign": self.pendingSignLaunch == nil ? "false" : "true",
+                "sessionActive": self.sessionPubkey == nil ? "false" : "true",
+            ])
         }
     }
 
@@ -429,6 +535,10 @@ final class AgenticWalletConnectCore {
         sessionChainId = session.chainId
         walletRedirectNative = session.redirectNative
         walletRedirectUniversal = session.redirectUniversal
+        // Connect succeeded — drop the retained pairing launch so a later return
+        // can't re-open Jupiter for an already-settled pairing.
+        pendingPairingLaunchUrl = nil
+        pairingRetried = false
         AgenticIOSLog.info("AgenticWalletConnect", "activateSession", "DONE", "WalletConnect Solana session active", [
             "source": source,
             "chainId": session.chainId,
@@ -473,6 +583,8 @@ final class AgenticWalletConnectCore {
         sessionChainId = nil
         walletRedirectNative = nil
         walletRedirectUniversal = nil
+        pendingPairingLaunchUrl = nil
+        pairingRetried = false
         let waiters = Array(sessionWaiters.values)
         sessionWaiters.removeAll()
         for waiter in waiters {
@@ -599,11 +711,21 @@ final class AgenticWalletConnectCore {
                     "method": method,
                     "requestId": request.id.string,
                 ])
+                // Retain the in-flight request so a return to Agentic (didBecomeActive
+                // or the manual button) can re-foreground Jupiter if it dropped the
+                // foreground trigger. Cleared once the relay response arrives below.
+                let inFlightId = request.id
+                self.queue.async {
+                    self.pendingSignLaunch = (method: method, topic: topic, requestId: inFlightId)
+                    self.signRetried = false
+                    self.lastWalletLaunchAt = Date()
+                }
                 self.launchCurrentWalletForRequest(method: method, topic: topic, requestId: request.id)
                 // Subscribe to sessionResponsePublisher for the result. This fires
                 // over the relay regardless of app-switching, so the action
                 // completes even when the user is still in Jupiter.
                 let result = try await waitForResponse(requestId: request.id)
+                self.clearPendingSignLaunch(requestId: request.id)
                 self.notifyWalletConnectReturn(success: true, method: method, requestId: request.id)
                 completion(.success(result))
             } catch {
@@ -612,6 +734,7 @@ final class AgenticWalletConnectCore {
                 // the app is already foregrounded, so a pre-dispatch relay error
                 // (user never left) won't post.
                 if let pendingRequestId {
+                    self.clearPendingSignLaunch(requestId: pendingRequestId)
                     self.notifyWalletConnectReturn(success: false, method: method, requestId: pendingRequestId)
                 }
                 completion(.failure(error))
@@ -696,17 +819,17 @@ final class AgenticWalletConnectCore {
         //
         // Do NOT use the session peer redirect (Jupiter advertises the Reown sample
         // wallet's walletapp:// / https://lab.reown.com — that sent users to Safari)
-        // and do NOT use bare jupiter:// as primary (no handler → Jupiter's web view
-        // at jup.ag). Bare jupiter:// is kept only as a last-ditch fallback.
+        // and do NOT use bare jupiter:// at all: it has no request handler and falls
+        // through to Jupiter's web view at jup.ag, which is exactly the disrespectful
+        // "you got dumped on a website" failure. The incomplete-URI trigger is the
+        // ONLY candidate; if iOS refuses it we log FAIL and the in-app "Open Jupiter
+        // again" button (force re-foreground) is the recovery — never jup.ag.
         let redirects: (native: String?, universal: String?) = queue.sync {
             (walletRedirectNative, walletRedirectUniversal)
         }
         var raws: [String] = []
         if let foregroundUrl = AgenticWalletConnectDeepLink.jupiterRequestForegroundUrl(sessionTopic: topic)?.absoluteString {
             raws.append(foregroundUrl)
-        }
-        if let fallback = AgenticWalletConnectDeepLink.jupiterRequestLaunchUrl()?.absoluteString {
-            raws.append(fallback)
         }
         let urls = raws.compactMap { URL(string: $0) }
         guard !urls.isEmpty else {
