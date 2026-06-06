@@ -11,6 +11,14 @@
       }
     },
     {
+      "identity" : "ios-solana-wallet-adapter",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/mstevens843/ios-solana-wallet-adapter.git",
+      "state" : {
+        "revision" : "16abab6abaae568f0ab1e3fb0a1381d645f0eb99"
+      }
+    },
+    {
       "identity" : "qrcode",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/WalletConnect/QRCode",

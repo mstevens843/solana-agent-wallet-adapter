@@ -20,6 +20,11 @@ public enum AgenticBridge {
             : (Bundle.main.object(forInfoDictionaryKey: "AGENTIC_CLOUD_API_BASE_URL") as? String)
             ?? "https://agentic-signer.com"
         AgenticRemoteConfigStore.shared.initialize(baseUrl: base)
+        // Warm the native IWA wallet core so the singleton exists before any
+        // cold-start wallet callback (the wallet app can relaunch us via
+        // agenticwallet://iwa-callback). Cheap — the WalletAdapterClient itself
+        // is still built lazily on the first connect.
+        AgenticNativeWalletCore.shared.warm()
         AgenticIOSLog.info("AgenticBridge", "initialize", "DONE", "bootstrap complete", [
             "cloudBaseUrl": base,
         ])
@@ -82,24 +87,33 @@ public enum AgenticBridge {
     /// Route WalletConnect/Reown link-mode callbacks before Capacitor handles
     /// ordinary app links. Returns true only when the URL contained a WC envelope.
     public static func handleOpenUrl(_ url: URL) -> Bool {
-        var handled = false
+        var wcHandled = false
 #if canImport(WalletConnectSign)
         if #available(iOS 16.0, *) {
-            handled = AgenticWalletConnectCore.shared.dispatchEnvelope(url)
+            wcHandled = AgenticWalletConnectCore.shared.dispatchEnvelope(url)
         }
 #endif
+        // When it wasn't a WalletConnect envelope, give the native IWA core a
+        // chance to consume it (agenticwallet://iwa-callback). It returns true
+        // only for that dedicated host, so Phantom/Solflare/Backpack returns are
+        // routed to WalletAdapterClient while WC/Jupiter and other links fall
+        // through to Capacitor untouched.
+        let iwaHandled = wcHandled ? false : AgenticNativeWalletCore.shared.handleCallback(url)
+        let handled = wcHandled || iwaHandled
         // CRITICAL diagnostic: log EVERY inbound URL, including a plain
         // agenticwallet:// return from Jupiter that carries no WC envelope
         // (handled=false). This is the "did Jupiter's return-redirect actually
         // reach us?" signal — previously this path produced no log at all.
         let queryKeys = URLComponents(url: url, resolvingAgainstBaseURL: true)?
             .queryItems?.map(\.name).sorted().joined(separator: ",") ?? ""
-        AgenticIOSLog.info("AgenticBridge", "handleOpenUrl", handled ? "WC_ENVELOPE_DISPATCHED" : "INBOUND_URL", "inbound URL received", [
+        let step = wcHandled ? "WC_ENVELOPE_DISPATCHED" : (iwaHandled ? "IWA_CALLBACK_ROUTED" : "INBOUND_URL")
+        AgenticIOSLog.info("AgenticBridge", "handleOpenUrl", step, "inbound URL received", [
             "scheme": url.scheme ?? "none",
             "host": url.host ?? "none",
             "path": url.path,
             "queryKeys": queryKeys,
-            "handledAsWcEnvelope": handled ? "true" : "false",
+            "handledAsWcEnvelope": wcHandled ? "true" : "false",
+            "handledAsIwaCallback": iwaHandled ? "true" : "false",
         ])
         return handled
     }

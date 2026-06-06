@@ -21,6 +21,7 @@ const config: CapacitorConfig = {
     'AppPlugin',
     'AgenticSecureStatePlugin',
     'AgenticWalletConnectPlugin',
+    'AgenticNativeWalletPlugin',
     'AgenticBiometricPlugin',
     'AgenticSystemPlugin',
     'AgenticRemoteConfigPlugin',

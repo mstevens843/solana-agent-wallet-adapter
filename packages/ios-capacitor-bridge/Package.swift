@@ -14,6 +14,14 @@ let package = Package(
         .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", from: "8.0.0"),
         .package(url: "https://github.com/jedisct1/swift-sodium.git", from: "0.9.1"),
         .package(url: "https://github.com/reown-com/reown-swift.git", exact: "1.0.5"),
+        // Native iOS Solana wallet adapter (IWA). Pinned to a commit because the
+        // upstream repo has no release tags yet — swap to `exact: "0.1.0"` once a
+        // tag is cut. Provides the Phantom/Solflare/Backpack encrypted-deeplink
+        // signing used by AgenticNativeWalletPlugin (Jupiter stays on Reown above).
+        .package(
+            url: "https://github.com/mstevens843/ios-solana-wallet-adapter.git",
+            revision: "16abab6abaae568f0ab1e3fb0a1381d645f0eb99"
+        ),
     ],
     targets: [
         .target(
@@ -26,6 +34,11 @@ let package = Package(
                 .product(name: "WalletConnect", package: "reown-swift"),
                 .product(name: "WalletConnectPairing", package: "reown-swift"),
                 .product(name: "WalletConnectNetworking", package: "reown-swift"),
+                // SolanaWalletAdapterUI transitively brings SolanaWalletAdapter,
+                // SolanaWalletAdapterCore, and the Phantom/Solflare/Backpack provider
+                // targets, plus WalletAdapterClient, UIKitWalletURLOpener,
+                // KeychainWalletAdapterStateStore, and WalletProviderRegistry.
+                .product(name: "SolanaWalletAdapterUI", package: "ios-solana-wallet-adapter"),
             ],
             path: "ios/Plugin"
         ),

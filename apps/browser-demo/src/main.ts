@@ -422,6 +422,14 @@ import {
   type IosNativeWalletOption,
 } from './iosNative.js';
 import {
+  NativeIwaWalletBackend,
+  isNativeIwaWalletId,
+  iosNativeIwaAdapterEnabled,
+  refreshNativeIwaAdapterFlag,
+  restoreLatestNativeIwaWallet,
+  type NativeIwaWalletId,
+} from './iosNativeIwa.js';
+import {
   JUPITER_IOS_MANUAL_APPROVAL_ACTION_LABEL,
   JUPITER_IOS_MANUAL_APPROVAL_URL,
   jupiterIosManualApprovalMessage,
@@ -27328,16 +27336,28 @@ async function runConnect(
       return;
     }
     if (state.iosNativeEnvironment.isIosNative) {
-      const iosBackend = new IosNativeWalletBackend({
-        walletId: state.selectedIosWalletId,
-        cluster: state.cluster,
-        appUrl: iosNativeAppUrl(),
-        rpcUrl: activeRpcUrl(),
-        logLevel: 'info',
-      });
+      const isJupiterIosConnect = state.selectedIosWalletId === 'jupiter';
+      // Route Phantom/Solflare/Backpack through the native IWA Swift adapter when
+      // the feature flag is on (default ON). Jupiter always stays on the legacy
+      // WalletConnect backend. The shared post-connect flow below is identical for
+      // both backends — they each expose connectSelectedWallet() + WalletBackend.
+      const useNativeIwa =
+        isNativeIwaWalletId(state.selectedIosWalletId) && (await refreshNativeIwaAdapterFlag());
+      const iosBackend = useNativeIwa
+        ? new NativeIwaWalletBackend({
+            walletId: state.selectedIosWalletId as NativeIwaWalletId,
+            cluster: state.cluster,
+            logLevel: 'info',
+          })
+        : new IosNativeWalletBackend({
+            walletId: state.selectedIosWalletId,
+            cluster: state.cluster,
+            appUrl: iosNativeAppUrl(),
+            rpcUrl: activeRpcUrl(),
+            logLevel: 'info',
+          });
       walletBackend = iosBackend;
       client = new SolanaSigningClient({ backend: walletBackend });
-      const isJupiterIosConnect = state.selectedIosWalletId === 'jupiter';
       if (isJupiterIosConnect && state.jupiterReturnNotifyStatus === undefined) {
         // Request return-notification permission BEFORE the connect bounce, so the
         // native bridge's "tap to return to Agentic" notification can actually fire
@@ -27609,12 +27629,23 @@ async function runReconnectIosCached(): Promise<void> {
   trackWalletConnectClick('ios_native', 'reconnect_cached');
   await run('connect', async () => {
     assertIosNativeRuntime();
-    const restored = await restoreLatestIosNativeWallet({
-      cluster: state.cluster,
-      appUrl: iosNativeAppUrl(),
-      rpcUrl: activeRpcUrl(),
-      logLevel: 'info',
-    });
+    // Native IWA sessions live in the Keychain (per selected wallet); the legacy
+    // path restores the latest across the JS cache. Pick the source that matches
+    // the active backend for the currently selected wallet.
+    const useNativeIwa =
+      isNativeIwaWalletId(state.selectedIosWalletId) && (await refreshNativeIwaAdapterFlag());
+    const restored = useNativeIwa
+      ? await restoreLatestNativeIwaWallet({
+          walletId: state.selectedIosWalletId as NativeIwaWalletId,
+          cluster: state.cluster,
+          logLevel: 'info',
+        })
+      : await restoreLatestIosNativeWallet({
+          cluster: state.cluster,
+          appUrl: iosNativeAppUrl(),
+          rpcUrl: activeRpcUrl(),
+          logLevel: 'info',
+        });
     if (!restored) {
       throw new Error('No cached iOS wallet authorization is available. Connect once first.');
     }
@@ -45191,13 +45222,22 @@ async function restoreIosNativeSession(): Promise<void> {
     state.walletPathSession.iosWalletId
       ? state.walletPathSession.iosWalletId
       : state.selectedIosWalletId;
-  const restored = await restoreLatestIosNativeWallet({
-    walletId: savedIosWalletId,
-    cluster: state.cluster,
-    appUrl: iosNativeAppUrl(),
-    rpcUrl: activeRpcUrl(),
-    logLevel: 'info',
-  });
+  // Restore from the native IWA Keychain session for Phantom/Solflare/Backpack
+  // (flag on), else the legacy JS deeplink cache. Jupiter always uses legacy.
+  const useNativeIwa = isNativeIwaWalletId(savedIosWalletId) && (await refreshNativeIwaAdapterFlag());
+  const restored = useNativeIwa
+    ? await restoreLatestNativeIwaWallet({
+        walletId: savedIosWalletId as NativeIwaWalletId,
+        cluster: state.cluster,
+        logLevel: 'info',
+      })
+    : await restoreLatestIosNativeWallet({
+        walletId: savedIosWalletId,
+        cluster: state.cluster,
+        appUrl: iosNativeAppUrl(),
+        rpcUrl: activeRpcUrl(),
+        logLevel: 'info',
+      });
   if (!restored) {
     state.iosNativeStatus = `No cached ${iosWalletLabel(savedIosWalletId)} authorization found.`;
     return;
@@ -45237,6 +45277,15 @@ function iosBackendOrNew(): IosNativeMaintenanceBackend {
     candidate.clearAllCachedAuthorizations
   ) {
     return candidate as IosNativeMaintenanceBackend;
+  }
+  // Disconnected fallback: build a maintenance backend matching the active path.
+  // NativeIwaWalletBackend satisfies IosNativeMaintenanceBackend structurally.
+  if (isNativeIwaWalletId(state.selectedIosWalletId) && iosNativeIwaAdapterEnabled()) {
+    return new NativeIwaWalletBackend({
+      walletId: state.selectedIosWalletId as NativeIwaWalletId,
+      cluster: state.cluster,
+      logLevel: 'info',
+    });
   }
   return new IosNativeWalletBackend({
     walletId: state.selectedIosWalletId,
