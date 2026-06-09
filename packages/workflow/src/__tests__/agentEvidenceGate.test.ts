@@ -275,6 +275,9 @@ describe('evaluateAgentEvidenceGate — golden scenarios', () => {
     expect(result.decision).toBe('pass');
     expect(result.blockingFacts).toEqual([]);
     expect(result.staleRequired).toEqual([]);
+    // Deferred-to-AI research is NOT a gate gap — it must not appear in missingRequired, otherwise
+    // the post-AI validator would downgrade a research-backed approve to needs_input.
+    expect(result.missingRequired).toEqual([]);
   });
 
   it('external research required + flag undefined retains legacy block-when-blocking behavior', () => {

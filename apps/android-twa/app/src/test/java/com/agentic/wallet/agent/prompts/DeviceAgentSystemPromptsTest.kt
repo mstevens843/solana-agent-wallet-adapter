@@ -23,6 +23,7 @@ class DeviceAgentSystemPromptsTest {
         assertTrue(text.contains("Return only JSON with string fields intent, route, risk, approval, and safeguards"))
         assertTrue(text.contains("`inputTokenLabel`"))
         assertTrue(text.contains("(for example \"POPCAT\")"))
+        assertTrue(text.contains("The risk field must be exactly one of \"low\", \"medium\", or \"high\""))
         // 913dabb guardrails: forward-looking phrasing required, auto-* phrasings forbidden.
         assertTrue(text.contains("forward-looking terms"))
         assertTrue(text.contains("pre-submitted/signed/approved"))
@@ -36,6 +37,7 @@ class DeviceAgentSystemPromptsTest {
         assertTrue(text.startsWith("You review a Solana wallet action draft before it is sent for wallet approval."))
         assertTrue(text.contains("evidence.findings as an array of {label,value,tone}"))
         assertTrue(text.contains("Use plan.actionType to decide which checks apply"))
+        assertTrue(text.contains("must not add generic swap-safety, slippage, route, or MEV commentary the user did not ask about"))
         assertTrue(text.contains("For first-class adapter actions"))
         assertTrue(text.contains("jupiter_lend_*"))
         assertTrue(text.contains("\"approve if under \$20, deny if over \$20\""))

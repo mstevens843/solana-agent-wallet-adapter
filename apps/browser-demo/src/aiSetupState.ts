@@ -77,6 +77,17 @@ export function bridgeAiSetupSnapshot(input: {
   status: BridgeAiStatus | null;
 }): Omit<AiPathSetupSnapshot, 'mode' | 'active'> {
   const configured = Boolean(input.status?.configured || input.status?.available);
+  if (input.status?.engine === 'connector') {
+    const provider = bridgeConnectorDisplayLabel(input.status);
+    const model = bridgeConnectorStatusDetail(input.status);
+    return {
+      configured,
+      runnable: Boolean(input.status.available),
+      provider,
+      model,
+      detail: configured ? `${provider} - ${model}` : undefined,
+    };
+  }
   return {
     configured,
     runnable: Boolean(input.status?.available),
@@ -88,6 +99,35 @@ export function bridgeAiSetupSnapshot(input: {
       ? `${input.status?.provider ?? input.status?.apiFormat ?? 'AI'} - ${input.status?.model ?? 'model configured'}`
       : undefined,
   };
+}
+
+export function bridgeConnectorDisplayLabel(status: Pick<BridgeAiStatus, 'connector' | 'connectorLabel'> | null): string {
+  if (status?.connectorLabel?.trim()) return status.connectorLabel.trim();
+  switch (status?.connector) {
+    case 'codex':
+      return 'Codex (ChatGPT plan)';
+    case 'gemini':
+      return 'Gemini (Google AI Pro/Ultra)';
+    case 'claude':
+      return 'Claude (Agent-SDK credits)';
+    default:
+      return 'Subscription connector';
+  }
+}
+
+export function bridgeConnectorStatusDetail(
+  status: Pick<BridgeAiStatus, 'connectorAuthStatus'> | null,
+): string {
+  switch (status?.connectorAuthStatus) {
+    case 'connected':
+      return 'signed in';
+    case 'binary-not-found':
+      return 'CLI not installed';
+    case 'needs-auth':
+      return 'sign-in needed';
+    default:
+      return 'not checked';
+  }
 }
 
 export function deviceAgentSetupSnapshot(input: {

@@ -122,7 +122,7 @@ import { runSkillsMenu } from './flows/skills.js';
 import { runPreferencesMenu } from './flows/preferences.js';
 import { ensureTtyOrExit, withCancelGuard, withPromptSignal, isExitPromptError, select as tuiSelect, rowSelect as tuiRowSelect, header as tuiHeader, badge as tuiBadge, kv as tuiKv, divider as tuiDivider, password as tuiPassword, input as tuiInput, confirm as tuiConfirm, spinner as tuiSpinner } from './tui/index.js';
 import {
-  AI_PROVIDER_PRESETS,
+  visibleAiProviderPresets,
   aiProviderPresetById,
   agentProviderFromArg,
   assertCustomOpenAiCompatibleBaseUrl,
@@ -1987,7 +1987,7 @@ async function runAgentSetup(
     || Boolean(savedAgentKey)
     || env.values.AGENTIC_AI_ENGINE?.trim().toLowerCase() === 'connector';
   const choices: Array<{ name: string; value: AgentSetupChoice; description?: string }> = [
-    ...AI_PROVIDER_PRESETS.map((preset) => ({
+    ...visibleAiProviderPresets().map((preset) => ({
       name: `API key · ${preset.label}`,
       value: preset.id as AgentSetupChoice,
       description: `${agentApiFormatLabel(preset.apiFormat)} - ${preset.baseUrl}`,

@@ -4,6 +4,7 @@ import {
   AI_CONNECTORS,
   aiConnectorPreset,
   AI_PROVIDER_PRESETS,
+  visibleAiProviderPresets,
   DEFAULT_AI_PROVIDER_ID,
   DEVICE_AGENT_PLAN_REQUIRED_BOUNDARY,
   DeviceAgentPlanGuardrailError,
@@ -11,6 +12,7 @@ import {
   aiMessages,
   bridgeAiSessionKeyPayload,
   aiProviderSupportsDeviceAgent,
+  providerSupportsWebResearch,
   aiRouteDiagnosticForSettings,
   buildTemplatePlan,
   confirmHostedAiPlanner,
@@ -58,6 +60,39 @@ const sessionSettings: AiSettings = {
   model: 'openai/gpt-5',
   apiKey: 'provider-secret-value-123456789',
 };
+
+describe('visibleAiProviderPresets (provider picker)', () => {
+  it('excludes custom-openai-compatible (hidden from picker) but keeps the rest', () => {
+    const ids = visibleAiProviderPresets().map((preset) => preset.id);
+    expect(ids).not.toContain('custom-openai-compatible');
+    expect(ids).toEqual(['anthropic', 'openai', 'gemini', 'openrouter']);
+  });
+
+  it('does NOT delete the preset — it stays in AI_PROVIDER_PRESETS for config/capability lookups', () => {
+    expect(AI_PROVIDER_PRESETS.some((preset) => preset.id === 'custom-openai-compatible')).toBe(true);
+  });
+});
+
+describe('providerSupportsWebResearch (gate externalResearchAvailable source of truth)', () => {
+  it('is true for the direct research-capable providers', () => {
+    expect(providerSupportsWebResearch('anthropic', 'anthropic', 'claude-opus-4-1')).toBe(true);
+    expect(providerSupportsWebResearch('openai', 'openai-compatible', 'gpt-5')).toBe(true);
+    expect(providerSupportsWebResearch('gemini', 'openai-compatible', 'gemini-2.5-flash')).toBe(true);
+  });
+
+  it('is true for OpenRouter ONLY when the model routes to a research-capable provider', () => {
+    // anthropic/* → AnthropicProvider, openai/* → OpenAiNativeProvider (both do two-pass research).
+    expect(providerSupportsWebResearch('openrouter', 'openai-compatible', 'anthropic/claude-sonnet-4.5')).toBe(true);
+    expect(providerSupportsWebResearch('openrouter', 'openai-compatible', 'openai/gpt-5')).toBe(true);
+    // A bare OpenRouter model falls to OpenAiCompatibleProvider, which fail-closes research.
+    expect(providerSupportsWebResearch('openrouter', 'openai-compatible', 'mistralai/mixtral')).toBe(false);
+  });
+
+  it('is false for custom OpenAI-compatible (chat/completions has no native web search)', () => {
+    expect(providerSupportsWebResearch('custom-openai-compatible', 'openai-compatible', 'gpt-5')).toBe(false);
+    expect(providerSupportsWebResearch('', '', '')).toBe(false);
+  });
+});
 
 describe('planner AI setup helpers', () => {
   afterEach(() => {

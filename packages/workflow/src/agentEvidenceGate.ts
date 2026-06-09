@@ -116,14 +116,16 @@ export function evaluateAgentEvidenceGate(
     }
 
     if (!matching.length) {
+      if (req.routeId === EXTERNAL_RESEARCH_ROUTE && context.externalResearchAvailable === true) {
+        // The configured AI provider will perform two-pass web research via its native search
+        // tool (Anthropic web_search, OpenAI Responses web_search_preview, Gemini google_search).
+        // This is deferred-to-AI, NOT a gate gap — do not record it as missingRequired, otherwise
+        // the post-AI validator would downgrade a research-backed approve. validateAgentReviewDecision
+        // separately enforces that the AI actually returned research before trusting the approve.
+        continue;
+      }
       missingRequired.push(req);
       if (req.routeId === EXTERNAL_RESEARCH_ROUTE) {
-        if (context.externalResearchAvailable === true) {
-          // The configured AI provider will perform two-pass web research via its native
-          // search tool (Anthropic web_search, OpenAI Responses web_search_preview, Gemini
-          // google_search). Treat the requirement as deferred-to-AI, not a gate gap.
-          continue;
-        }
         if (context.externalResearchAvailable === false) {
           downgradeToNeedsInput(`External research required but unavailable: ${req.reason}`);
           continue;
@@ -240,6 +242,23 @@ export function validateAgentReviewDecision(
   let reason = aiResult.reason;
   let summary = aiResult.summary;
 
+  // A required external-research route that the gate DEFERRED to the AI (externalResearchAvailable
+  // === true, so it is not in missingRequired) is only satisfied if the AI actually returned
+  // research — either a matching deterministic fact resolved it pre-AI, or the AI cited research in
+  // its result. If neither holds, an approve is unsupported and must drop to needs_input.
+  const researchDeferredButUnsatisfied = (): boolean => {
+    const researchReq = requirements.find(
+      (req) => req.routeId === EXTERNAL_RESEARCH_ROUTE && req.status === 'required',
+    );
+    if (!researchReq) return false;
+    if (input.context?.externalResearchAvailable !== true) return false;
+    const satisfiedByFact = facts.some(
+      (fact) => fact.routeId === EXTERNAL_RESEARCH_ROUTE || fact.requirementId === researchReq.id,
+    );
+    if (satisfiedByFact) return false;
+    return !hasExternalResearchCitation(aiResult);
+  };
+
   if (decision === 'approve') {
     if (gate.decision === 'block') {
       decision = 'deny';
@@ -257,6 +276,10 @@ export function validateAgentReviewDecision(
       decision = 'deny';
       reason = `Required evidence is stale or blocked: ${gate.reason}`;
       violations.push('AI approved while required evidence was stale or had blocking facts.');
+    } else if (researchDeferredButUnsatisfied()) {
+      decision = 'needs_input';
+      reason = 'External research was required but the AI returned no research findings. Re-run the review or supply the value.';
+      violations.push('AI approved a research-gated action without returning research.');
     } else {
       // Gate has already verified every required requirement is present, fresh, and not blocked.
       // We DO NOT require the AI to cite an internal evidenceFactId — many valid approvals are

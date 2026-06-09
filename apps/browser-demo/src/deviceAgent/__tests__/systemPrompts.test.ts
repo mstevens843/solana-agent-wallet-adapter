@@ -46,10 +46,13 @@ describe('DEVICE_AGENT_SYSTEM_PROMPTS', () => {
       expect(text).toContain('collide with safety guardrails');
     });
 
-    it('matches the post-Phase-3 length (1715 chars)', () => {
-      // Length changed from 1394 (Kotlin source) when Phase 3 appended the
-      // forward-looking phrasing guidance. Kotlin parity is a followup ticket.
-      expect(text.length).toBe(1715);
+    it('constrains the risk field to a short label', () => {
+      expect(text).toContain('The risk field must be exactly one of "low", "medium", or "high"');
+    });
+
+    it('matches the current length (1781 chars)', () => {
+      // 1715 → 1781 when the risk-label constraint sentence was added (parity across TS/Kotlin/Swift).
+      expect(text.length).toBe(1781);
     });
   });
 
@@ -118,8 +121,13 @@ describe('DEVICE_AGENT_SYSTEM_PROMPTS', () => {
       expect(text.endsWith('never user-supplied prose.')).toBe(true);
     });
 
-    it('matches the Kotlin source length (6579 chars after actionType parity sync)', () => {
-      expect(text.length).toBe(6579);
+    it('scopes reason/summary to the user condition (no unsolicited swap-safety boilerplate)', () => {
+      expect(text).toContain('must not add generic swap-safety, slippage, route, or MEV commentary the user did not ask about');
+    });
+
+    it('matches the current length (6932 chars)', () => {
+      // 6579 → 6932 when the reason/summary scoping sentence was added (parity across TS/Kotlin/Swift).
+      expect(text.length).toBe(6932);
     });
   });
 

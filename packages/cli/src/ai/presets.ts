@@ -31,6 +31,9 @@ export interface AiProviderPreset {
   model: string;
   models: AiProviderModel[];
   hostedByok: boolean;
+  // When true the preset stays usable via --provider / config but is NOT offered in the
+  // interactive picker. Mirrors planner.ts in the web app.
+  hiddenFromPicker?: boolean;
 }
 
 export const DEFAULT_AI_BASE_URL = 'https://api.openai.com/v1';
@@ -123,11 +126,20 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     models: [
       { id: DEFAULT_AI_MODEL, label: 'GPT-5 compatible default' },
     ],
+    // Hidden from the interactive picker (raw OpenAI-compatible gateways have no web-search tool);
+    // still resolvable via --provider custom-openai-compatible / config.
+    hiddenFromPicker: true,
   },
 ];
 
 export function aiProviderPresetById(id: string | undefined): AiProviderPreset {
   return AI_PROVIDER_PRESETS.find((preset) => preset.id === id) ?? AI_PROVIDER_PRESETS[0]!;
+}
+
+// Presets offered in the interactive `/agent` setup picker. Excludes hiddenFromPicker presets;
+// AI_PROVIDER_PRESETS still holds every preset for --provider/config resolution.
+export function visibleAiProviderPresets(): AiProviderPreset[] {
+  return AI_PROVIDER_PRESETS.filter((preset) => !preset.hiddenFromPicker);
 }
 
 export function agentProviderFromArg(value: string | undefined): AgentSetupProvider {

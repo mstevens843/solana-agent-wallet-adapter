@@ -75,7 +75,9 @@ const PLAN_JSON_SCHEMA = {
   properties: {
     intent: { type: 'string' },
     route: { type: 'string' },
-    risk: { type: 'string' },
+    // Short label only — keeps the plan-card RISK box a clean "Low/Medium/High" (the strict
+    // Responses schema hard-enforces this for gpt-5/o-series; the shared prompt covers other providers).
+    risk: { type: 'string', enum: ['low', 'medium', 'high'] },
     approval: { type: 'string' },
     safeguards: {
       type: 'array',

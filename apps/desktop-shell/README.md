@@ -63,11 +63,15 @@ pnpm -F @solana-agent-wallet-adapter/desktop-shell tauri:dev
 pnpm -F @solana-agent-wallet-adapter/desktop-shell dev
 ```
 
-The Rust crate (`src-tauri/`) needs the Tauri CLI:
+The native shell also requires Rust/Cargo. On a new machine, install Rust with:
 
 ```sh
-cargo install tauri-cli --version '^2'
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
 ```
+
+The Tauri CLI is installed through this package's pnpm dev dependencies, so
+`cargo install tauri-cli` is not required for local development.
 
 For a release-style local build, stage a platform sidecar at:
 

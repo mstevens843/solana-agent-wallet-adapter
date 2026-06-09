@@ -19733,6 +19733,60 @@ button.danger:hover:not(:disabled) {
   min-width: 0;
 }
 
+.route-app .rail-ai-settings .bridge-engine-toggle {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 1fr;
+  margin-top: 0;
+}
+
+.route-app .rail-ai-settings .bridge-engine-toggle .utility {
+  font-size: 0.72rem;
+  line-height: 1.1;
+  min-height: 32px;
+  overflow-wrap: anywhere;
+  padding: 0 7px;
+  white-space: normal;
+}
+
+.route-app .rail-ai-settings .bridge-connector-section {
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.route-app .rail-ai-settings .bridge-connector-note {
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.route-app .rail-ai-settings .bridge-connector-choices {
+  gap: 6px;
+}
+
+.route-app .rail-ai-settings .bridge-connector-choice {
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.route-app .rail-ai-settings .bridge-connector-choice strong {
+  font-size: 0.78rem;
+  line-height: 1.15;
+}
+
+.route-app .rail-ai-settings .bridge-connector-choice span {
+  font-size: 0.7rem;
+  line-height: 1.25;
+}
+
+.route-app .rail-ai-settings .bridge-connector-status-row {
+  align-items: stretch;
+  gap: 6px;
+}
+
+.route-app .rail-ai-settings .bridge-connector-status-row .utility {
+  width: 100%;
+}
+
 .route-app .workflow-status-band[data-layout="workflow-status"].compact {
   grid-template-columns: minmax(176px, 0.5fr) minmax(430px, 1fr) minmax(132px, auto);
 }
@@ -27524,6 +27578,40 @@ button.danger:hover:not(:disabled) {
 }
 .tauri-bridge-panel {
   margin-bottom: 0.75rem;
+}
+.tauri-local-ai-engine {
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 0.7rem;
+  margin-bottom: 0.75rem;
+  padding: 0.85rem 0.95rem;
+}
+.tauri-local-ai-engine header {
+  margin: 0;
+}
+.tauri-local-ai-engine header h4 {
+  color: var(--text);
+  font-size: 0.95rem;
+  line-height: 1.2;
+  margin: 0;
+}
+.tauri-local-ai-engine header p {
+  color: var(--text-muted, rgba(242, 245, 243, 0.7));
+  font-size: 0.8rem;
+  line-height: 1.35;
+  margin: 0.25rem 0 0;
+}
+.tauri-local-ai-engine .bridge-engine-toggle {
+  margin-top: 0;
+}
+.tauri-local-ai-engine .tauri-connector-path-field {
+  display: grid;
+  gap: 0.55rem;
+}
+.tauri-local-ai-engine .tauri-connector-path-field header h4 {
+  font-size: 0.86rem;
 }
 .tauri-bridge-status {
   display: flex;

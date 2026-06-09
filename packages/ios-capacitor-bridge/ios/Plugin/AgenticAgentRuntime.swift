@@ -1804,7 +1804,8 @@ final class AgenticOpenAINativeProvider: AgenticAgentProvider {
                 "properties": [
                     "intent": ["type": "string"],
                     "route": ["type": "string"],
-                    "risk": ["type": "string"],
+                    // Short label only — keeps the plan-card RISK box a clean Low/Medium/High.
+                    "risk": ["type": "string", "enum": ["low", "medium", "high"]],
                     "approval": ["type": "string"],
                     "safeguards": ["type": "array", "items": ["type": "string"]],
                 ],

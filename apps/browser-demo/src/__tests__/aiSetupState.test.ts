@@ -151,6 +151,44 @@ describe('AI setup state helpers', () => {
     });
   });
 
+  it('normalizes bridge connector status into connector setup labels', () => {
+    expect(bridgeAiSetupSnapshot({
+      status: {
+        available: true,
+        configured: true,
+        source: 'session',
+        engine: 'connector',
+        connector: 'codex',
+        connectorLabel: 'Codex (ChatGPT plan)',
+        connectorAuthStatus: 'connected',
+      },
+    })).toMatchObject({
+      configured: true,
+      runnable: true,
+      provider: 'Codex (ChatGPT plan)',
+      model: 'signed in',
+      detail: 'Codex (ChatGPT plan) - signed in',
+    });
+
+    expect(bridgeAiSetupSnapshot({
+      status: {
+        available: false,
+        configured: true,
+        source: 'session',
+        engine: 'connector',
+        connector: 'gemini',
+        connectorLabel: 'Gemini (Google AI Pro/Ultra)',
+        connectorAuthStatus: 'binary-not-found',
+      },
+    })).toMatchObject({
+      configured: true,
+      runnable: false,
+      provider: 'Gemini (Google AI Pro/Ultra)',
+      model: 'CLI not installed',
+      detail: 'Gemini (Google AI Pro/Ultra) - CLI not installed',
+    });
+  });
+
   it('treats iOS configured/stopped Device Agent as runnable from Keychain', () => {
     expect(deviceAgentSetupSnapshot({
       visible: true,

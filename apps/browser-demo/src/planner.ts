@@ -301,6 +301,10 @@ export interface AiProviderPreset {
   baseUrl: string;
   model: string;
   models: AiProviderModel[];
+  // When true the preset stays defined (still selectable via flags/config and re-enable-able) but
+  // is NOT offered in the interactive provider pickers (web dropdown + CLI). Used to retire a
+  // provider from the UX without deleting its wiring.
+  hiddenFromPicker?: boolean;
 }
 
 export interface AiProviderModel {
@@ -388,11 +392,44 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     models: [
       { id: DEFAULT_AI_MODEL, label: 'GPT-5 compatible default' },
     ],
+    // Hidden from the provider pickers: raw OpenAI-compatible chat/completions gateways have no
+    // web-search tool (research dead-ends) and Hosted BYOK won't relay arbitrary gateways. The
+    // preset stays wired so existing configs / explicit selection keep working.
+    hiddenFromPicker: true,
   },
 ];
 
+// Presets offered in the interactive provider pickers (web dropdown + CLI). Excludes presets
+// flagged hiddenFromPicker. AI_PROVIDER_PRESETS still holds every preset for capability lookups,
+// persistence, and re-enabling.
+export function visibleAiProviderPresets(): AiProviderPreset[] {
+  return AI_PROVIDER_PRESETS.filter((preset) => !preset.hiddenFromPicker);
+}
+
 export function aiProviderSupportsDeviceAgent(providerId: string): boolean {
   return AI_PROVIDER_PRESETS.some((preset) => preset.id === providerId);
+}
+
+// Whether the configured AI provider/model can perform two-pass external web research on the
+// Device Agent path. This MUST mirror the routing in
+// apps/browser-demo/src/deviceAgent/provider/deviceAgentProviderExecutor.ts: the Anthropic Messages
+// provider (web_search) and the OpenAI Responses provider (web_search_preview) carry a native search
+// tool, while the OpenAI-compatible chat/completions provider fail-closes research. For OpenRouter,
+// capability follows the routed model prefix (anthropic/* → AnthropicProvider, openai/* →
+// OpenAiNativeProvider). The browser gate (evidenceContextForReview → externalResearchAvailable) uses
+// this so it defers research-gated reviews to the AI instead of blocking them.
+export function providerSupportsWebResearch(provider: string, apiFormat: string, model: string): boolean {
+  const p = (provider ?? '').trim().toLowerCase();
+  const fmt = (apiFormat ?? '').trim().toLowerCase();
+  const m = (model ?? '').trim().toLowerCase();
+  if (fmt === 'anthropic') return true;
+  if (fmt === 'openai-compatible' || fmt === 'openai') {
+    if (p === 'openai') return true;
+    if (p === 'gemini') return true;
+    if (p === 'openrouter') return m.startsWith('anthropic/') || m.startsWith('openai/');
+    return false;
+  }
+  return false;
 }
 
 const BASE_AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [

@@ -217,4 +217,47 @@ describe('validateAgentReviewDecision — golden scenarios', () => {
     expect(decisionContract.evidenceFactIds).toEqual(['fact.jupiter.quote']);
     expect(violations.join(' ')).toContain('stripped');
   });
+
+  describe('deferred external research', () => {
+    const researchReq = requirement({
+      id: 'req.external_research.helium',
+      routeId: 'external_research.current_web',
+      need: 'external_research',
+      provider: 'external_research',
+      blocking: true,
+      reason: 'The question references a current external price.',
+    });
+    const deferredContext = { walletAddress: WALLET, isWalletScoped: true, externalResearchAvailable: true } as const;
+
+    it('approve stands when the gate deferred research AND the AI returned research citations', () => {
+      const gate = evaluateAgentEvidenceGate([researchReq], [], deferredContext);
+      expect(gate.decision).toBe('pass');
+      const ai = aiResult({
+        decision: 'approve',
+        evidence: {
+          research: { status: 'checked' },
+          sources: [{ title: 'Helium plans', url: 'https://www.heliummobile.com/plans' }],
+        },
+      });
+      const { final } = validateAgentReviewDecision({ aiResult: ai, gate, facts: [], requirements: [researchReq], context: deferredContext });
+      expect(final.decision).toBe('approve');
+    });
+
+    it('approve downgrades to needs_input when research was deferred but the AI returned NONE', () => {
+      const gate = evaluateAgentEvidenceGate([researchReq], [], deferredContext);
+      const ai = aiResult({ decision: 'approve', evidence: {} });
+      const { final, violations } = validateAgentReviewDecision({ aiResult: ai, gate, facts: [], requirements: [researchReq], context: deferredContext });
+      expect(final.decision).toBe('needs_input');
+      expect(violations.join(' ')).toContain('without returning research');
+    });
+
+    it('approve stands when a deterministic fact already satisfied the research route (no AI citation needed)', () => {
+      const researchFact = fact({ id: 'fact.policy.helium_price', routeId: 'external_research.current_web', label: 'Plan rate' });
+      const gate = evaluateAgentEvidenceGate([researchReq], [researchFact], deferredContext);
+      expect(gate.decision).toBe('pass');
+      const ai = aiResult({ decision: 'approve', evidence: {} });
+      const { final } = validateAgentReviewDecision({ aiResult: ai, gate, facts: [researchFact], requirements: [researchReq], context: deferredContext });
+      expect(final.decision).toBe('approve');
+    });
+  });
 });

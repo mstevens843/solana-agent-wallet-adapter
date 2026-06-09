@@ -192,7 +192,7 @@ describe('mountTauriLocalRuntimePanel', () => {
     await new Promise((r) => setTimeout(r, 0));
     await new Promise((r) => setTimeout(r, 0));
     expect(container.innerHTML).toContain('<details class="tauri-local-runtime-advanced"');
-    expect(container.innerHTML).toContain('Advanced: run agent locally');
+    expect(container.innerHTML).toContain('Advanced: provider and market-data API keys');
   });
 
   it('renders persistent Local Bridge AI env fields in the advanced runtime setup', async () => {
@@ -210,6 +210,53 @@ describe('mountTauriLocalRuntimePanel', () => {
     expect(container.innerHTML).toContain('name="AGENTIC_AI_API_KEY"');
     expect(container.innerHTML).toContain('name="AGENTIC_AI_MODEL"');
     expect(container.innerHTML).toContain('name="AGENTIC_AI_BASE_URL"');
+  });
+
+  it('renders Local Bridge AI subscription connector setup in the desktop runtime panel', async () => {
+    const invoke = vi.fn().mockImplementation(async (cmd: string) => {
+      if (cmd === 'bridge_status') return fakeBridgeStatus();
+      if (cmd === 'read_env_keys') return {
+        AGENTIC_AI_ENGINE: 'connector',
+        AGENTIC_AI_CONNECTOR: 'codex',
+      };
+      return undefined;
+    });
+    installTauri(invoke);
+    const container = (document as any).getElementById('panel-ai-connectors');
+    mountTauriLocalRuntimePanel('panel-ai-connectors');
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(container.innerHTML).toContain('Local Bridge AI engine');
+    expect(container.innerHTML).toContain('Provider API key');
+    expect(container.innerHTML).toContain('Subscription connector');
+    expect(container.innerHTML).toContain('name="AGENTIC_AI_CONNECTOR_PATH"');
+    expect(invoke).toHaveBeenCalledWith('read_env_keys', expect.objectContaining({
+      keys: expect.arrayContaining([
+        'AGENTIC_AI_ENGINE',
+        'AGENTIC_AI_CONNECTOR',
+        'AGENTIC_AI_CONNECTOR_PATH',
+      ]),
+    }));
+  });
+
+  it('opens connector mode controls when a subscription connector is saved', async () => {
+    const invoke = vi.fn().mockImplementation(async (cmd: string) => {
+      if (cmd === 'bridge_status') return fakeBridgeStatus();
+      if (cmd === 'read_env_keys') return {
+        AGENTIC_AI_ENGINE: 'connector',
+        AGENTIC_AI_CONNECTOR: 'claude',
+      };
+      return undefined;
+    });
+    installTauri(invoke);
+    const container = (document as any).getElementById('panel-connector-open');
+    mountTauriLocalRuntimePanel('panel-connector-open');
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(container.innerHTML).toContain('Codex (ChatGPT plan)');
+    expect(container.innerHTML).toContain('Gemini (Google AI Pro/Ultra)');
+    expect(container.innerHTML).toContain('Claude (Agent-SDK credits)');
+    expect(container.innerHTML).toMatch(/data-tauri-runtime-connector="claude"[^>]*class="bridge-connector-choice active"|class="bridge-connector-choice active"[^>]*data-tauri-runtime-connector="claude"/);
   });
 
   it('keeps the advanced details collapsed when no values are saved', async () => {

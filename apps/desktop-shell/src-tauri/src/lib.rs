@@ -53,7 +53,7 @@ const DEFAULT_AI_PROVIDER: &str = "openai";
 const DEFAULT_AI_API_FORMAT: &str = "openai-compatible";
 const DEFAULT_AI_BASE_URL: &str = "https://api.openai.com/v1";
 const DEFAULT_AI_MODEL: &str = "gpt-5";
-const SETUP_ENV_KEYS: [&str; 14] = [
+const SETUP_ENV_KEYS: [&str; 17] = [
     "SOLANA_RPC_URL",
     "HELIUS_RPC_URL",
     "JUPITER_API_KEY",

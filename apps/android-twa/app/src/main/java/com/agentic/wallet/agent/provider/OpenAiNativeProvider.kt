@@ -305,7 +305,8 @@ internal class OpenAiNativeProvider(
                     JSONObject()
                         .put("intent", JSONObject().put("type", "string"))
                         .put("route", JSONObject().put("type", "string"))
-                        .put("risk", JSONObject().put("type", "string"))
+                        // Short label only — keeps the plan-card RISK box a clean Low/Medium/High.
+                        .put("risk", JSONObject().put("type", "string").put("enum", JSONArray().put("low").put("medium").put("high")))
                         .put("approval", JSONObject().put("type", "string"))
                         .put(
                             "safeguards",

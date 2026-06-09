@@ -4,6 +4,11 @@ import type { GlobalOptions } from '../shared/types.js';
 import { loadSession, sessionStatusSummary } from '../auth/sessionStore.js';
 import { bridgeRequest, fetchWithTimeout, renderWebRequest, renderWebUrl, tryBridgeRequest } from '../http/index.js';
 import {
+  connectorLabel,
+  normalizeAgentConnector,
+  type AgentConnector,
+} from '@solana-agent-wallet-adapter/mcp-server';
+import {
   aiProviderPresetById,
   normalizeAgentAiPath,
   normalizeAgentApiFormat,
@@ -44,6 +49,9 @@ export interface AgentAiConfig {
   apiFormat: AiApiFormat;
   baseUrl: string;
   model: string;
+  engine?: 'api-key' | 'connector';
+  connector?: AgentConnector;
+  connectorPath?: string;
 }
 
 export type AgentAiRoute =
@@ -116,6 +124,9 @@ export function chooseAgentAiRoute(input: AgentAiRouteInputs): AgentAiRoute {
   if (bridge?.available) {
     return { kind: 'bridge', status: bridge };
   }
+  if (config?.engine === 'connector') {
+    return { kind: 'none', hosted, bridge, signedIn, config };
+  }
   if (signedIn && hostedManagedAvailable(hosted)) {
     return { kind: 'hosted-managed', status: hosted ?? {} };
   }
@@ -143,6 +154,9 @@ export function agentAiRouteLabel(route: AgentAiRoute): string {
   }
   if (route.config?.path === 'hosted-byok') {
     return route.signedIn ? 'Hosted BYOK not reachable' : 'Hosted BYOK requires /sign-in';
+  }
+  if (route.config?.engine === 'connector' && route.config.connector) {
+    return `Connector · ${connectorLabel(route.config.connector)} (local bridge not ready)`;
   }
   return 'not configured';
 }
@@ -277,6 +291,14 @@ export async function chatAgent<T = unknown>(
 
 export function agentAiSetupHint(route: AgentAiRoute): string {
   if (route.kind !== 'none') return '';
+  if (route.bridge?.engine === 'connector' && route.bridge.connectorLabel) {
+    return route.bridge.connectorAuthStatus === 'binary-not-found'
+      ? `${route.bridge.connectorLabel} CLI is not installed on the bridge machine. Run /agent-setup or install the CLI.`
+      : `${route.bridge.connectorLabel} needs sign-in on the bridge machine. Run /agent-setup to sign in.`;
+  }
+  if (route.config?.engine === 'connector' && route.config.connector) {
+    return `${connectorLabel(route.config.connector)} connector is configured, but the local bridge is not ready. Start the bridge or run /agent-setup.`;
+  }
   if (route.config?.path === 'hosted-byok') {
     if (!route.signedIn) {
       return 'Hosted BYOK is configured. Run /sign-in, then try /agent again.';
@@ -286,7 +308,7 @@ export function agentAiSetupHint(route: AgentAiRoute): string {
   if (!route.signedIn && hostedManagedAvailable(route.hosted)) {
     return 'Agentic hosted AI is available. Run /sign-in, then try /agent again.';
   }
-  return 'Agent is not configured. Run /agent-setup to add a provider key.';
+  return 'Agent is not configured. Run /agent-setup to add a provider key or subscription connector.';
 }
 
 function hostedByokSettings(config: AgentAiConfig): Record<string, string> {
@@ -306,6 +328,22 @@ async function loadAgentAiConfig(options: GlobalOptions): Promise<AgentAiConfig 
     if (fromProcess) return fromProcess;
     return fileValues[key]?.trim() ?? '';
   };
+  if (value('AGENTIC_AI_ENGINE').toLowerCase() === 'connector') {
+    const connector = normalizeAgentConnector(value('AGENTIC_AI_CONNECTOR'));
+    if (!connector) return null;
+    const connectorPath = value('AGENTIC_AI_CONNECTOR_PATH');
+    return {
+      apiKey: '',
+      path: 'bridge',
+      provider: `connector:${connector}`,
+      apiFormat: 'openai-compatible',
+      baseUrl: '',
+      model: '',
+      engine: 'connector',
+      connector,
+      ...(connectorPath ? { connectorPath } : {}),
+    };
+  }
   const apiKey = normalizeAgentApiKey(value('AGENTIC_AI_API_KEY'));
   if (!apiKey) return null;
   const providerRaw = value('AGENTIC_AI_PROVIDER') || 'openai';

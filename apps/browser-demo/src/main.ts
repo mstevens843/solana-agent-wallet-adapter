@@ -336,6 +336,8 @@ import {
   visibleMobileAiPathModes,
 } from './aiPathPolicy.js';
 import {
+  bridgeConnectorDisplayLabel,
+  bridgeConnectorStatusDetail,
   bridgeAiSetupSnapshot,
   buildAiSetupInventory,
   deviceAgentSetupSnapshot,
@@ -360,6 +362,8 @@ import {
   aiConnectorPreset,
   aiProviderPresetById,
   aiProviderSupportsDeviceAgent,
+  providerSupportsWebResearch,
+  visibleAiProviderPresets,
   aiRouteDiagnosticForSettings,
   assertCustomOpenAiCompatibleSettings,
   bridgeAiSessionKeyPayload,
@@ -16222,14 +16226,14 @@ function commandAiPreferenceSnapshotCard(): CommandPreferenceSnapshotCard {
     ? state.aiStatus
     : null;
   const provider = bridgeConnector
-    ? (bridgeConnector.connectorLabel ?? 'Connector')
+    ? bridgeConnectorDisplayLabel(bridgeConnector)
     : state.aiSettings.mode === 'bridge' && state.aiStatus?.provider
     ? state.aiStatus.provider
     : state.aiSettings.mode === 'device-agent' && state.deviceAgentStatus?.provider
       ? state.deviceAgentStatus.provider
     : providerPreset.label;
   const model = bridgeConnector
-    ? (bridgeConnector.connectorAuthStatus === 'connected' ? 'subscription' : 'sign-in needed')
+    ? bridgeConnectorStatusDetail(bridgeConnector)
     : state.aiSettings.mode === 'bridge' && state.aiStatus?.model
     ? state.aiStatus.model
     : state.aiSettings.mode === 'device-agent' && state.deviceAgentStatus?.model
@@ -21480,9 +21484,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
     : state.aiSettings.mode === 'bridge'
       ? 'Local Bridge AI uses your normal provider key from the local runtime. Needs Approval, repeat payments, proofs, and wallet signatures remain separate workflow actions.'
         : `${sessionDescriptor} keys stay in ${sessionScope} and only help prepare or review requests. Queueing, repeat payments, approvals, submissions, and signatures use the active workflow, not the AI key.`;
-  const bridgeKeyConfiguredDetail = status
-    ? `${status.provider ?? status.apiFormat ?? 'AI'} - ${status.model ?? 'model configured'}`
-    : 'Local bridge AI key configured';
+  const bridgeConfiguredDisplay = bridgeAiConfiguredDisplay(status);
   const deviceAgentConfiguredProvider = state.deviceAgentStatus?.provider
     || state.deviceAgentStatus?.apiFormat
     || state.aiSettings.provider
@@ -21502,8 +21504,8 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
     : `
         <div class="ai-key-configured-note" aria-live="polite">
           <span>Local Bridge AI</span>
-          <strong>Provider key configured</strong>
-          <em>${escapeHtml(bridgeKeyConfiguredDetail)}</em>
+          <strong>${escapeHtml(bridgeConfiguredDisplay.title)}</strong>
+          <em>${escapeHtml(bridgeConfiguredDisplay.detail)}</em>
         </div>
       `;
   const showSaveDirectAiKey = state.aiSettings.mode !== 'bridge' && !hideKeyEntry;
@@ -21759,7 +21761,7 @@ function aiProviderOptions(): string {
 }
 
 function aiProviderSelectOptions(): SelectPickerOption[] {
-  return AI_PROVIDER_PRESETS.map((preset) => {
+  return visibleAiProviderPresets().map((preset) => {
     const disabledReason = aiProviderDisabledReason(preset.id);
     return {
       value: preset.id,
@@ -21796,6 +21798,16 @@ function connectedAiProviderLogoId(): BrandLogoId {
 
 function bridgeAiProviderLogoId(status: BridgeAiStatus | null): BrandLogoId | undefined {
   if (!status) return undefined;
+  if (status.engine === 'connector') {
+    switch (status.connector) {
+      case 'codex':
+        return 'codex';
+      case 'gemini':
+        return 'gemini';
+      case 'claude':
+        return 'claude';
+    }
+  }
   const provider = status.provider?.trim().toLowerCase() ?? '';
   const baseUrl = status.baseUrl?.trim().toLowerCase() ?? '';
   const model = status.model?.trim().toLowerCase() ?? '';
@@ -22053,15 +22065,15 @@ function localBridgeAiSetupCard(status: BridgeAiStatus | null, location: 'rail' 
       </summary>
       <div class="local-bridge-ai-setup-body">
         <p>${escapeHtml(detail)}</p>
+        ${localBridgeConnectorSection(status)}
         ${runtimeSetup}
         ${checkBridgeButton}
         <div class="local-bridge-facts">
           <span>Endpoint <strong>${escapeHtml(compactEndpoint(endpoint))}</strong></span>
           <span>Wallet <strong>${escapeHtml(state.address ? short(state.address) : 'Not connected')}</strong></span>
-          <span>AI provider key <strong>${escapeHtml(source.label)}</strong></span>
+          <span>${escapeHtml(status?.engine === 'connector' || bridgeAiEngine(status) === 'connector' ? 'AI connector' : 'AI provider key')} <strong>${escapeHtml(source.label)}</strong></span>
         </div>
         <p class="local-bridge-ai-key-note">${escapeHtml(source.detail)}</p>
-        ${localBridgeConnectorSection(status)}
       </div>
     </details>
   `;
@@ -22113,11 +22125,46 @@ function localBridgeConnectorSection(status: BridgeAiStatus | null): string {
     </div>`;
 }
 
+function bridgeAiConfiguredDisplay(status: BridgeAiStatus | null): { title: string; detail: string } {
+  if (status?.engine === 'connector') {
+    const connector = bridgeConnectorDisplayLabel(status);
+    const stateLabel = bridgeConnectorStatusDetail(status);
+    return {
+      title: status.available ? 'Connector signed in' : 'Connector configured',
+      detail: `${connector} - ${stateLabel}`,
+    };
+  }
+  return {
+    title: 'Provider key configured',
+    detail: status
+      ? `${status.provider ?? status.apiFormat ?? 'AI'} - ${status.model ?? 'model configured'}`
+      : 'Local bridge AI key configured',
+  };
+}
+
 function localBridgeAiKeySource(status: BridgeAiStatus | null): { label: string; detail: string } {
   if (!isBridgeAiConfigured(status)) {
+    if (bridgeAiEngine(status) === 'connector') {
+      return {
+        label: 'Not selected',
+        detail: 'Choose Codex, Gemini, or Claude. The bridge checks the local CLI and uses that CLI on the first AI request.',
+      };
+    }
     return {
       label: 'Not set',
       detail: 'Paste your normal AI provider key below. It is sent to the local bridge and is not stored by Agentic.',
+    };
+  }
+  if (status?.engine === 'connector') {
+    const connector = bridgeConnectorDisplayLabel(status);
+    const stateLabel = bridgeConnectorStatusDetail(status);
+    return {
+      label: `${connector} - ${stateLabel}`,
+      detail: status.available
+        ? 'The bridge will run this local CLI for AI plans, reviews, and questions. The first AI request is the real auth check.'
+        : status.connectorAuthStatus === 'binary-not-found'
+          ? `Install ${connector}, then refresh or choose another connector.`
+          : `Sign in with ${connector}, then refresh. No Agentic API key is required.`,
     };
   }
   const label = `${status?.provider ?? status?.apiFormat ?? 'AI'} - ${status?.model ?? 'model configured'}`;
@@ -22169,6 +22216,16 @@ function aiDiagnosticMessage(entry: AiDiagnosticEntry): string {
 
 function currentAiPlannerConfirmationKey(): string {
   const mode = state.aiSettings.mode;
+  if (mode === 'bridge' && bridgeAiEngine(state.aiStatus) === 'connector') {
+    const connector = state.aiStatus?.engine === 'connector'
+      ? state.aiStatus.connector ?? state.aiSettings.connector ?? ''
+      : state.aiSettings.connector ?? '';
+    const auth = state.aiStatus?.engine === 'connector'
+      ? state.aiStatus.connectorAuthStatus ?? 'unchecked'
+      : 'unconfigured';
+    const source = state.aiStatus?.engine === 'connector' ? state.aiStatus.source ?? 'none' : 'none';
+    return [mode, 'connector', connector, auth, source].join('|');
+  }
   const provider = mode === 'bridge'
     ? state.aiStatus?.provider ?? state.aiSettings.provider
     : state.aiSettings.provider;
@@ -22245,7 +22302,12 @@ function resetAiPlannerConfirmation(message = ''): void {
 
 function confirmBridgeAiPlannerFromStatus(): void {
   if (state.aiSettings.mode !== 'bridge' || !state.aiStatus?.available) return;
-  setAiPlannerConfirmation('confirmed', 'Local bridge AI is configured and reachable for AI review. Workflow capability is unchanged.');
+  setAiPlannerConfirmation(
+    'confirmed',
+    state.aiStatus.engine === 'connector'
+      ? `${bridgeConnectorDisplayLabel(state.aiStatus)} is signed in for local AI review. The first AI request will be the real auth check. Workflow capability is unchanged.`
+      : 'Local bridge AI is configured and reachable for AI review. Workflow capability is unchanged.',
+  );
 }
 
 function directAiKeyStagedForMode(mode: AiSettings['mode'] = state.aiSettings.mode): boolean {
@@ -22322,7 +22384,11 @@ function canConfirmAiPlanner(): boolean {
 
 function aiConfirmDisabledReason(): string {
   if (state.busy) return 'Wait for the current action to finish.';
-  if (state.aiSettings.mode === 'bridge') return 'Start the local runtime, then confirm planner status.';
+  if (state.aiSettings.mode === 'bridge') {
+    return bridgeAiEngine(state.aiStatus) === 'connector'
+      ? bridgeAiUnavailableReason(state.aiStatus)
+      : 'Start the local runtime, then confirm planner status.';
+  }
   if (state.aiSettings.mode === 'hosted') {
     const hostedBlockReason = hostedByokCloudSessionReason();
     if (hostedBlockReason) return hostedBlockReason;
@@ -22443,8 +22509,10 @@ function agentReviewUnavailableReason(record?: GeneratedPlanRecord): string {
   }
   if (state.aiSettings.mode === 'bridge') {
     return state.aiStatus?.available
-      ? 'Agent review is ready through the local bridge.'
-      : 'No local bridge agent detected.';
+      ? state.aiStatus.engine === 'connector'
+        ? `Agent review is ready through ${bridgeConnectorDisplayLabel(state.aiStatus)}.`
+        : 'Agent review is ready through the local bridge.'
+      : bridgeAiUnavailableReason(state.aiStatus);
   }
   if (state.aiSettings.mode === 'device-agent') {
     return deviceAgentStatusReadyForDrafts(state.deviceAgentStatus)
@@ -22468,9 +22536,11 @@ function aiGenerateDisabledReason(): string {
   }
   if (state.aiSettings.mode === 'bridge') {
     if (!state.aiStatus?.available) {
-      return 'Start the local runtime, send an AI provider key to the bridge, then refresh AI status.';
+      return bridgeAiUnavailableReason(state.aiStatus);
     }
-    return 'Bridge AI is ready.';
+    return state.aiStatus.engine === 'connector'
+      ? `${bridgeConnectorDisplayLabel(state.aiStatus)} is ready for AI planning.`
+      : 'Bridge AI is ready.';
   }
   if (state.aiSettings.mode === 'device-agent') {
     const status = state.deviceAgentStatus;
@@ -22499,6 +22569,26 @@ function aiGenerateDisabledReason(): string {
   const hostedBlockReason = hostedByokCloudSessionReason();
   if (hostedBlockReason) return hostedBlockReason;
   return 'Configure the AI Planner first, or use templates without AI.';
+}
+
+function bridgeAiUnavailableReason(status: BridgeAiStatus | null = state.aiStatus): string {
+  if (bridgeAiEngine(status) === 'connector') {
+    const live = status?.engine === 'connector' ? status : null;
+    const connector = live
+      ? bridgeConnectorDisplayLabel(live)
+      : aiConnectorPreset(state.aiSettings.connector ?? 'codex').label;
+    if (!live) {
+      return `Select ${connector} on the local bridge, then refresh AI status.`;
+    }
+    if (live.connectorAuthStatus === 'binary-not-found') {
+      return `${connector} CLI is not installed on the bridge machine. Install it or choose another connector.`;
+    }
+    if (live.connectorAuthStatus === 'needs-auth') {
+      return `${connector} needs sign-in on the bridge machine. Use Connect (sign in), then refresh.`;
+    }
+    return `${connector} is configured but not available. Refresh bridge AI status, then try again.`;
+  }
+  return 'Start the local runtime, send an AI provider key to the bridge, then refresh AI status.';
 }
 
 function isAiConfiguredForCurrentMode(): boolean {
@@ -22565,6 +22655,14 @@ function aiRouteStatusLabel(status: BridgeAiStatus | null): string {
     }
     return state.aiSettings.apiKey.trim() ? 'device agent - config entered' : 'device agent - key required';
   }
+  if (bridgeAiEngine(status) === 'connector') {
+    const live = status?.engine === 'connector' ? status : null;
+    const connector = live
+      ? bridgeConnectorDisplayLabel(live)
+      : aiConnectorPreset(state.aiSettings.connector ?? 'codex').label;
+    const detail = live ? bridgeConnectorStatusDetail(live) : 'not configured';
+    return `bridge connector - ${connector} - ${detail}`;
+  }
   return status?.available
     ? `${status.source} - ${status.provider ?? status.apiFormat ?? 'AI'} - ${status.model ?? 'model configured'}`
     : 'bridge - not configured';
@@ -22573,10 +22671,14 @@ function aiRouteStatusLabel(status: BridgeAiStatus | null): string {
 function aiReadinessLabel(status: BridgeAiStatus | null): string {
   if (state.aiSettings.mode === 'bridge') {
     if (bridgeAiEngine(status) === 'connector') {
-      const auth = status?.engine === 'connector' ? status.connectorAuthStatus : undefined;
-      if (auth === 'connected') return 'Connector connected';
-      if (auth === 'binary-not-found') return 'Connector CLI not installed';
-      return 'Connector sign-in needed';
+      const live = status?.engine === 'connector' ? status : null;
+      const connector = live
+        ? bridgeConnectorDisplayLabel(live)
+        : aiConnectorPreset(state.aiSettings.connector ?? 'codex').label;
+      const auth = live?.connectorAuthStatus;
+      if (auth === 'connected') return `${connector} signed in`;
+      if (auth === 'binary-not-found') return `${connector} CLI not installed`;
+      return `${connector} sign-in needed`;
     }
     return status?.available ? 'Bridge AI verified' : 'Bridge key required';
   }
@@ -22904,7 +23006,9 @@ function ensureAiProviderAllowedForMode(): void {
     state.aiSettings.model = preset.model;
     return;
   }
-  if (state.aiSettings.mode === 'hosted' && state.aiSettings.provider === 'custom-openai-compatible') {
+  // custom-openai-compatible is retired from the pickers — coerce it to the default provider in any
+  // mode so the option-less dropdown never holds an orphaned/hidden value at runtime.
+  if (state.aiSettings.provider === 'custom-openai-compatible') {
     const preset = aiProviderPresetById(DEFAULT_AI_PROVIDER_ID);
     state.aiSettings.provider = preset.id;
     state.aiSettings.apiFormat = preset.apiFormat;
@@ -28477,7 +28581,7 @@ async function runGenerateAiPlan(): Promise<void> {
     appendAiDiagnostic({
       code: 'AI_PLAN_READY',
       message: 'AI Planner returned a valid plan.',
-      detail: `${state.aiSettings.provider} ${state.aiSettings.model || 'model configured'}`,
+      detail: `${agentReviewProviderLabel()} ${agentReviewModelLabel()}`,
     });
     state.steps.ai = 'done';
     replaceToast(toastId, 'success', 'AI plan created', `${plan.templateTitle} is ready in Check request.`);
@@ -31936,6 +32040,9 @@ function overrideReceiptNote(review: AgentPlanReviewState, userReason: string | 
 
 function agentReviewProviderLabel(): string {
   if (state.aiSettings.mode === 'bridge') {
+    if (state.aiStatus?.engine === 'connector') {
+      return bridgeConnectorDisplayLabel(state.aiStatus);
+    }
     return state.aiStatus?.provider ?? state.aiStatus?.apiFormat ?? 'Local bridge AI';
   }
   if (state.aiSettings.mode === 'device-agent') {
@@ -31946,6 +32053,9 @@ function agentReviewProviderLabel(): string {
 
 function agentReviewModelLabel(): string {
   if (state.aiSettings.mode === 'bridge') {
+    if (state.aiStatus?.engine === 'connector') {
+      return bridgeConnectorStatusDetail(state.aiStatus);
+    }
     return state.aiStatus?.model ?? 'model configured';
   }
   if (state.aiSettings.mode === 'device-agent') {
@@ -32452,15 +32562,13 @@ interface AgentReviewEvidenceBundle {
 // Used by evidenceContextForReview to set `externalResearchAvailable` so the gate doesn't
 // block external_research routes when the AI will resolve them via web search.
 function aiProviderSupportsWebResearch(): boolean {
-  const provider = (state.aiSettings.provider ?? '').trim().toLowerCase();
-  const apiFormat = (state.aiSettings.apiFormat ?? '').trim().toLowerCase();
-  if (apiFormat === 'anthropic') return true;
-  if (apiFormat === 'openai-compatible' || apiFormat === 'openai') {
-    if (provider === 'openai') return true;
-    if (provider === 'gemini') return true;
-    return false;
-  }
-  return false;
+  // Single source of truth lives in planner.ts and mirrors deviceAgentProviderExecutor routing —
+  // notably OpenRouter (anthropic/* and openai/* models route to research-capable providers).
+  return providerSupportsWebResearch(
+    state.aiSettings.provider ?? '',
+    state.aiSettings.apiFormat ?? '',
+    state.aiSettings.model ?? '',
+  );
 }
 
 function evidenceContextForReview(record: GeneratedPlanRecord, plan: AgentPlan, routePlan: AgentFactRoutePlan): AgentEvidenceContext {
@@ -34409,6 +34517,7 @@ async function runSaveBridgeAiKey(): Promise<void> {
 
 async function syncConfiguredBridgeAiSettings(): Promise<void> {
   if (state.aiSettings.mode !== 'bridge' || !isBridgeAiConfigured()) return;
+  if (bridgeAiEngine(state.aiStatus) === 'connector') return;
   if (!state.aiSettings.model.trim()) return;
   try {
     await bridgeRequest('/bridge/ai/session-key', {
@@ -34483,9 +34592,11 @@ async function runConfirmAiPlanner(): Promise<void> {
         state.aiDiagnostics = [aiRouteDiagnostic('/bridge/ai/status', 'GET')];
         await refreshBridgeAiStatus(true);
         if (!state.aiStatus?.available) {
-          throw new Error('Local Bridge AI is not configured. Send an AI provider key to the local bridge or set AGENTIC_AI_API_KEY, then confirm again.');
+          throw new Error(bridgeAiUnavailableReason(state.aiStatus));
         }
-        const detail = `${state.aiStatus.source} - ${state.aiStatus.provider ?? state.aiStatus.apiFormat ?? 'AI'} - ${state.aiStatus.model ?? 'model configured'}`;
+        const detail = state.aiStatus.engine === 'connector'
+          ? `${state.aiStatus.source} - ${bridgeConnectorDisplayLabel(state.aiStatus)} - ${bridgeConnectorStatusDetail(state.aiStatus)}`
+          : `${state.aiStatus.source} - ${state.aiStatus.provider ?? state.aiStatus.apiFormat ?? 'AI'} - ${state.aiStatus.model ?? 'model configured'}`;
         state.aiDiagnostics = [
           aiRouteDiagnostic('/bridge/ai/status', 'GET'),
           {
@@ -34496,8 +34607,20 @@ async function runConfirmAiPlanner(): Promise<void> {
             path: '/bridge/ai/status',
           },
         ];
-        setAiPlannerConfirmation('confirmed', 'Local bridge AI is configured and reachable for AI review. Workflow capability is unchanged.');
-        replaceToast(toastId, 'success', 'Planner confirmed', 'Local bridge AI can review requests only.');
+        setAiPlannerConfirmation(
+          'confirmed',
+          state.aiStatus.engine === 'connector'
+            ? `${bridgeConnectorDisplayLabel(state.aiStatus)} is signed in for local AI review. The first AI request will be the real auth check. Workflow capability is unchanged.`
+            : 'Local bridge AI is configured and reachable for AI review. Workflow capability is unchanged.',
+        );
+        replaceToast(
+          toastId,
+          'success',
+          'Planner confirmed',
+          state.aiStatus.engine === 'connector'
+            ? `${bridgeConnectorDisplayLabel(state.aiStatus)} can review requests through the local bridge.`
+            : 'Local bridge AI can review requests only.',
+        );
         return;
       }
 
@@ -34657,6 +34780,9 @@ async function runSetAiEngine(engine: 'api-key' | 'connector'): Promise<void> {
   if (engine === 'connector' && !state.aiSettings.connector) {
     state.aiSettings.connector = 'codex';
   }
+  resetAiPlannerConfirmation(engine === 'connector'
+    ? 'Connector selected. Confirm planner after bridge status refreshes.'
+    : 'Provider API key mode selected. Confirm planner after setting a key.');
   savePersistedState();
   render();
   // Switching back to API key also leaves connector mode on the bridge (best-effort), so the
@@ -34674,6 +34800,7 @@ async function runSelectConnector(connector: AiConnector): Promise<void> {
   await run('ai', async () => {
     state.aiSettings.agentEngine = 'connector';
     state.aiSettings.connector = connector;
+    resetAiPlannerConfirmation(`${aiConnectorPreset(connector).label} selected. Confirm planner after bridge status refreshes.`);
     savePersistedState();
     await bridgeRequest('/bridge/ai/session-key', {
       method: 'POST',
@@ -34809,10 +34936,12 @@ async function runRefreshAiStatus(): Promise<void> {
       'success',
       'AI status refreshed',
       state.aiStatus?.available
-        ? connected
-          ? 'Bridge AI is available and the approval bridge is connected.'
-          : 'Bridge AI is available. Connect a wallet, then check the local bridge.'
-        : 'Bridge AI is not configured.',
+        ? state.aiStatus.engine === 'connector'
+          ? `${bridgeConnectorDisplayLabel(state.aiStatus)} is signed in for local AI requests.`
+          : connected
+            ? 'Bridge AI is available and the approval bridge is connected.'
+            : 'Bridge AI is available. Connect a wallet, then check the local bridge.'
+        : bridgeAiUnavailableReason(state.aiStatus),
     );
   }, {
     async onError(message) {
@@ -52018,7 +52147,10 @@ function persistedAiSettings(
     baseUrl: persistedState.aiBaseUrl?.trim() || provider.baseUrl,
     model,
   };
-  if (settings.mode === 'hosted' && settings.provider === 'custom-openai-compatible') {
+  // custom-openai-compatible is hidden from the provider pickers (see visibleAiProviderPresets).
+  // Coerce any persisted selection to the default provider in EVERY mode so a saved selection never
+  // leaves the (now option-less) dropdown blank/orphaned.
+  if (settings.provider === 'custom-openai-compatible') {
     return {
       mode: settings.mode,
       provider: fallback.id,

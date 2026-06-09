@@ -23,6 +23,11 @@ import {
   tauriNativeWriteEnvKeys,
   type TauriBridgeStatus,
 } from './tauriNative.js';
+import {
+  AI_CONNECTORS,
+  aiConnectorPreset,
+  type AiConnector,
+} from './planner.js';
 
 interface FieldDef {
   key: string;
@@ -47,6 +52,17 @@ const FIELDS: ReadonlyArray<FieldDef> = [
   { key: 'AGENTIC_AI_MODEL', label: 'Local Bridge AI model', detail: 'Model used by Local Bridge AI when the env-backed provider key is configured.', placeholder: 'gpt-5' },
   { key: 'AGENTIC_AI_BASE_URL', label: 'Local Bridge AI base URL', detail: 'Base URL for OpenAI-compatible or provider-native local bridge AI requests.', placeholder: 'https://api.openai.com/v1', isUrl: true },
 ];
+
+const AI_ENGINE_KEY = 'AGENTIC_AI_ENGINE';
+const AI_CONNECTOR_KEY = 'AGENTIC_AI_CONNECTOR';
+const AI_CONNECTOR_PATH_KEY = 'AGENTIC_AI_CONNECTOR_PATH';
+const ENV_KEYS: ReadonlyArray<string> = [
+  ...FIELDS.map((field) => field.key),
+  AI_ENGINE_KEY,
+  AI_CONNECTOR_KEY,
+  AI_CONNECTOR_PATH_KEY,
+];
+type AiEngine = 'api-key' | 'connector';
 
 // Empirically-chosen polling cadence: 5s is short enough that a bridge crash
 // is reflected in the UI within one tick, but long enough that the IPC call
@@ -186,10 +202,10 @@ export const TAURI_BRIDGE_STATUS_EVENT = BRIDGE_STATUS_EVENT;
 async function loadValues(): Promise<void> {
   state.loading = true;
   render();
-  const result = await tauriNativeReadEnvKeys(FIELDS.map((field) => field.key));
+  const result = await tauriNativeReadEnvKeys(ENV_KEYS);
   const next: Values = {};
-  for (const field of FIELDS) {
-    next[field.key] = (result[field.key] ?? '').trim();
+  for (const key of ENV_KEYS) {
+    next[key] = (result[key] ?? '').trim();
   }
   state.saved = next;
   state.draft = { ...next };
@@ -203,11 +219,11 @@ async function persistValues(): Promise<void> {
   state.notice = null;
   render();
   const updates: Values = {};
-  for (const field of FIELDS) {
-    const next = (state.draft[field.key] ?? '').trim();
-    const prev = (state.saved[field.key] ?? '').trim();
+  for (const key of ENV_KEYS) {
+    const next = (state.draft[key] ?? '').trim();
+    const prev = (state.saved[key] ?? '').trim();
     if (next !== prev) {
-      updates[field.key] = next;
+      updates[key] = next;
     }
   }
   if (Object.keys(updates).length === 0) {
@@ -272,8 +288,8 @@ function render(): void {
     mountedContainer.innerHTML = '';
     return;
   }
-  const dirty = FIELDS.some((field) => (state.draft[field.key] ?? '').trim() !== (state.saved[field.key] ?? '').trim());
-  const hasAnyConfigured = FIELDS.some((field) => (state.saved[field.key] ?? '').trim() !== '');
+  const dirty = hasDirtyValues();
+  const hasAnyConfigured = ENV_KEYS.some((key) => (state.saved[key] ?? '').trim() !== '');
   const advancedOpenAttr = hasAnyConfigured ? ' open' : '';
   const noticeHtml = state.notice
     ? `<p class="tauri-local-runtime-notice tone-${state.notice.tone}" role="status" aria-live="polite">${escapeHtml(state.notice.message)}</p>`
@@ -308,22 +324,77 @@ function render(): void {
     <section class="connector-keys-panel tauri-local-runtime-panel" aria-labelledby="tauri-local-runtime-title">
       <header>
         <h3 id="tauri-local-runtime-title">Local runtime keys (Desktop)</h3>
-        <p>All fields below are optional. Agentic Desktop picks the right agent automatically — Hosted (when signed in to Agentic Cloud) or on-device — and both run policy gates against the operator's market-data APIs. Fill in your own market-data or AI provider keys only if you want the local bridge to run those calls on this machine. Keys saved here are written to the local bridge's .env file and never leave your machine.</p>
+        <p>All fields below are optional. Agentic Desktop picks the right agent automatically — Hosted (when signed in to Agentic Cloud) or on-device — and both run policy gates against the operator's market-data APIs. Fill in market-data keys, choose a subscription connector, or add your own AI provider key only if you want the local bridge to run those calls on this machine. Settings saved here are written to the local bridge's .env file and never leave your machine.</p>
       </header>
       ${state.loading ? '<p class="connector-keys-status">Loading…</p>' : ''}
       ${noticeHtml}
       ${restartPromptHtml}
+      ${localBridgeAiEngineControlsHtml()}
       <details class="tauri-local-runtime-advanced"${advancedOpenAttr}>
-        <summary>Advanced: run agent locally (your own API keys)</summary>
+        <summary>Advanced: provider and market-data API keys</summary>
         <div class="connector-keys-grid">${rowsHtml}</div>
-        <div class="tauri-local-runtime-actions">
-          <button type="button" data-tauri-runtime-action="save" ${state.saving || !dirty ? 'disabled' : ''}>${state.saving ? 'Saving…' : 'Save'}</button>
-          <button type="button" data-tauri-runtime-action="reload" ${state.loading || state.saving ? 'disabled' : ''}>Reload from disk</button>
-        </div>
       </details>
+      <div class="tauri-local-runtime-actions">
+        <button type="button" data-tauri-runtime-action="save" ${state.saving || !dirty ? 'disabled' : ''}>${state.saving ? 'Saving…' : 'Save'}</button>
+        <button type="button" data-tauri-runtime-action="reload" ${state.loading || state.saving ? 'disabled' : ''}>Reload from disk</button>
+      </div>
     </section>
   `;
   attachEventHandlers();
+}
+
+function localBridgeAiEngineControlsHtml(): string {
+  const engine = normalizeAiEngine(state.draft[AI_ENGINE_KEY]);
+  const selected = normalizeAiConnector(state.draft[AI_CONNECTOR_KEY]);
+  const connectorPath = state.draft[AI_CONNECTOR_PATH_KEY] ?? '';
+  const choices = AI_CONNECTORS.map((preset) => `
+    <button
+      type="button"
+      class="bridge-connector-choice ${engine === 'connector' && selected === preset.id ? 'active' : ''}"
+      data-tauri-runtime-connector="${escapeHtml(preset.id)}"
+      ${state.saving ? 'disabled' : ''}
+    >
+      <strong>${escapeHtml(preset.label)}</strong>
+      <span>${escapeHtml(preset.billingNote)}</span>
+    </button>
+  `).join('');
+  const connectorBody = engine === 'connector'
+    ? `
+      <div class="bridge-connector-section">
+        <p class="bridge-connector-note">Use a subscription you already pay for. The local bridge shells out to the selected CLI on this machine; no AI provider API key is required.</p>
+        <div class="bridge-connector-choices">${choices}</div>
+        <label class="connector-keys-card tauri-connector-path-field" for="tauri-runtime-agentic-ai-connector-path">
+          <header>
+            <h4>Connector CLI path</h4>
+            <p>Optional. Leave blank to use the default command for ${escapeHtml(aiConnectorPreset(selected).label)}.</p>
+          </header>
+          <input
+            id="tauri-runtime-agentic-ai-connector-path"
+            name="${AI_CONNECTOR_PATH_KEY}"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Optional absolute path"
+            value="${escapeHtml(connectorPath)}"
+            data-tauri-runtime-field="${AI_CONNECTOR_PATH_KEY}"
+          />
+        </label>
+      </div>
+    `
+    : '<p class="bridge-connector-note">Provider API key mode uses the AI provider fields in Advanced. Subscription connector mode uses Codex, Gemini, or Claude CLI auth instead.</p>';
+  return `
+    <section class="tauri-local-ai-engine" aria-labelledby="tauri-local-ai-engine-title">
+      <header>
+        <h4 id="tauri-local-ai-engine-title">Local Bridge AI engine</h4>
+        <p>Choose how the local bridge should run AI review.</p>
+      </header>
+      <div class="bridge-engine-toggle" role="group" aria-label="Local Bridge AI engine">
+        <button type="button" class="utility ${engine === 'api-key' ? 'active' : ''}" data-tauri-runtime-engine="api-key" ${state.saving ? 'disabled' : ''}>Provider API key</button>
+        <button type="button" class="utility ${engine === 'connector' ? 'active' : ''}" data-tauri-runtime-engine="connector" ${state.saving ? 'disabled' : ''}>Subscription connector</button>
+      </div>
+      ${connectorBody}
+    </section>
+  `;
 }
 
 function renderBridgePanel(): void {
@@ -391,11 +462,29 @@ function attachEventHandlers(): void {
       if (!key) return;
       state.draft[key] = input.value;
       // Don't re-render on each keystroke — just toggle the save button enabled.
-      const saveButton = mountedContainer?.querySelector<HTMLButtonElement>('[data-tauri-runtime-action="save"]');
-      const dirty = FIELDS.some((field) => (state.draft[field.key] ?? '').trim() !== (state.saved[field.key] ?? '').trim());
-      if (saveButton) {
-        saveButton.disabled = state.saving || !dirty;
+      syncSaveButton();
+    });
+  });
+  mountedContainer.querySelectorAll<HTMLButtonElement>('[data-tauri-runtime-engine]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const engine = button.dataset.tauriRuntimeEngine === 'connector' ? 'connector' : 'api-key';
+      if (engine === 'connector') {
+        state.draft[AI_ENGINE_KEY] = 'connector';
+        state.draft[AI_CONNECTOR_KEY] = normalizeAiConnector(state.draft[AI_CONNECTOR_KEY]);
+      } else {
+        state.draft[AI_ENGINE_KEY] = '';
+        state.draft[AI_CONNECTOR_KEY] = '';
+        state.draft[AI_CONNECTOR_PATH_KEY] = '';
       }
+      render();
+    });
+  });
+  mountedContainer.querySelectorAll<HTMLButtonElement>('[data-tauri-runtime-connector]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const connector = normalizeAiConnector(button.dataset.tauriRuntimeConnector);
+      state.draft[AI_ENGINE_KEY] = 'connector';
+      state.draft[AI_CONNECTOR_KEY] = connector;
+      render();
     });
   });
   mountedContainer.querySelector<HTMLButtonElement>('[data-tauri-runtime-action="save"]')?.addEventListener('click', () => {
@@ -407,6 +496,25 @@ function attachEventHandlers(): void {
   mountedContainer.querySelector<HTMLButtonElement>('[data-tauri-runtime-action="restart-after-save"]')?.addEventListener('click', () => {
     void bridgeAction('restart');
   });
+}
+
+function hasDirtyValues(): boolean {
+  return ENV_KEYS.some((key) => (state.draft[key] ?? '').trim() !== (state.saved[key] ?? '').trim());
+}
+
+function syncSaveButton(): void {
+  const saveButton = mountedContainer?.querySelector<HTMLButtonElement>('[data-tauri-runtime-action="save"]');
+  if (saveButton) {
+    saveButton.disabled = state.saving || !hasDirtyValues();
+  }
+}
+
+function normalizeAiEngine(value: string | undefined): AiEngine {
+  return value?.trim().toLowerCase() === 'connector' ? 'connector' : 'api-key';
+}
+
+function normalizeAiConnector(value: string | undefined): AiConnector {
+  return value === 'codex' || value === 'gemini' || value === 'claude' ? value : 'codex';
 }
 
 function attachBridgeHandlers(): void {
