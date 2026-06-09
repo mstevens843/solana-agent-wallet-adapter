@@ -71,7 +71,7 @@ import { isSecureRequest, serializeClearSessionCookie, serializeSessionCookie } 
 // Side-effect import: each Phase-1 dev-API route module self-registers on load.
 import './devApiHandlers.js';
 import { listDevApiHandlers, type DevApiHandlerContext } from './devApiRegistry.js';
-import { deviceAgentFeatureEnabled, deviceAgentRuntimeAvailability, isAllowedDeviceAgentWallet } from './devGate.js';
+import { deviceAgentFeatureEnabled, deviceAgentRuntimeAvailability } from './devGate.js';
 import { createEvidenceApiHandler, evidenceStoreAdapterForCloudStore } from './evidenceRoutes.js';
 import type { EvidenceStore } from './evidenceService.js';
 import { MemoryWorkflowStore } from './memoryStore.js';
@@ -3096,13 +3096,6 @@ async function requireDeviceAgentSession(
   if (!session) {
     console.warn('[device-agent] access denied', { reason: 'no_session' });
     throw new ApiError(401, 'Sign in required for Device Agent.');
-  }
-  if (!isAllowedDeviceAgentWallet(session.walletAddress)) {
-    console.warn('[device-agent] access denied', {
-      reason: 'wallet_not_allowlisted',
-      walletShort: deviceAgentWalletShort(session.walletAddress),
-    });
-    throw new ApiError(403, 'Device Agent is not enabled for this wallet.');
   }
   return { walletAddress: session.walletAddress };
 }

@@ -41,8 +41,7 @@
           "enum": [
             "android-enabled",
             "android-disabled",
-            "render-allowlist",
-            "render-denylist",
+            "render-status-control",
             "bridge-regression",
             "boundary",
             "source-completion"

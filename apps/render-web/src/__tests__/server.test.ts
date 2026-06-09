@@ -31,7 +31,6 @@ interface ServerCtx {
 const DEVICE_AGENT_WALLET_A = '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd';
 const DEVICE_AGENT_WALLET_B = '7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w';
 const DEVICE_AGENT_OTHER_WALLET = '11111111111111111111111111111111';
-const DEVICE_AGENT_TEST_ALLOWLIST = `${DEVICE_AGENT_WALLET_A},${DEVICE_AGENT_WALLET_B}`;
 
 const aiRequest = {
   prompt: 'review a SOL transfer',
@@ -51,7 +50,6 @@ const aiRequest = {
 
 function stubDeviceAgentEnabled(): void {
   vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
-  vi.stubEnv('AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST', DEVICE_AGENT_TEST_ALLOWLIST);
 }
 
 describe('render web hosted BYOK API', () => {
@@ -213,16 +211,24 @@ describe('render web hosted BYOK API', () => {
     }, { walletAddress: DEVICE_AGENT_WALLET_A });
   });
 
-  it('rejects Device Agent status for non-allowlisted wallets', async () => {
+  it('serves Device Agent status for any signed-in wallet', async () => {
     stubDeviceAgentEnabled();
     await withServer(async (port, ctx) => {
       const response = await getJson(port, '/api/device-agent/status', { cookie: ctx.cookie });
-      expect(response.status).toBe(403);
-      expect(String(response.body.error)).toContain('not enabled for this wallet');
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        available: true,
+        enabled: true,
+        configured: false,
+        state: 'stopped',
+        runtime: 'render-gated',
+        runtimes: { android: true, browserNative: false },
+        walletAddress: DEVICE_AGENT_OTHER_WALLET,
+      });
     }, { walletAddress: DEVICE_AGENT_OTHER_WALLET });
   });
 
-  it.each([DEVICE_AGENT_WALLET_A, DEVICE_AGENT_WALLET_B])('serves Device Agent status for allowlisted wallet %s', async (walletAddress) => {
+  it.each([DEVICE_AGENT_WALLET_A, DEVICE_AGENT_WALLET_B])('serves Device Agent status for signed-in wallet %s', async (walletAddress) => {
     stubDeviceAgentEnabled();
     await withServer(async (port, ctx) => {
       const response = await getJson(port, '/api/device-agent/status', { cookie: ctx.cookie });
@@ -398,20 +404,16 @@ describe('render web hosted BYOK API', () => {
     }
   });
 
-  it('logs a structured access-denied warning with a wallet short ID when the wallet is not allowlisted', async () => {
+  it('does not log an access-denied warning for arbitrary signed-in wallets', async () => {
     stubDeviceAgentEnabled();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       await withServer(async (port, ctx) => {
         const response = await getJson(port, '/api/device-agent/status', { cookie: ctx.cookie });
-        expect(response.status).toBe(403);
+        expect(response.status).toBe(200);
       }, { walletAddress: DEVICE_AGENT_OTHER_WALLET });
       const denialCalls = warn.mock.calls.filter((args) => args[0] === '[device-agent] access denied');
-      expect(denialCalls).toHaveLength(1);
-      expect(denialCalls[0]?.[1]).toEqual({
-        reason: 'wallet_not_allowlisted',
-        walletShort: '1111…1111',
-      });
+      expect(denialCalls).toHaveLength(0);
     } finally {
       warn.mockRestore();
     }

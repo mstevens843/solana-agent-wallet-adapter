@@ -6,6 +6,7 @@ import {
   DeviceAgentPlanGuardrailError,
   aiDiagnosticsFromError,
   aiMessages,
+  bridgeAiSessionKeyPayload,
   aiRouteDiagnosticForSettings,
   buildTemplatePlan,
   confirmHostedAiPlanner,
@@ -279,6 +280,35 @@ describe('planner AI setup helpers', () => {
     })));
 
     await expect(generateSessionAiPlan(sessionSettings, planRequest)).rejects.toThrow('AI drafts cannot claim');
+  });
+
+  it('allows custom OpenAI-compatible browser-session gateways with a configured base URL', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            intent: 'Transfer review',
+            route: 'Draft only',
+            risk: 'Verify amount.',
+            approval: 'Wallet approval remains required.',
+            safeguards: ['Check recipient.'],
+          }),
+        },
+      }],
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await generateSessionAiPlan({
+      ...sessionSettings,
+      provider: 'custom-openai-compatible',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      model: 'gemini-2.5-flash-lite',
+    }, planRequest);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string | URL | Request, RequestInit];
+    expect(String(url)).toBe('https://generativelanguage.googleapis.com/v1beta/openai/chat/completions');
+    expect((init.headers as Record<string, string>).authorization).toBe(`Bearer ${sessionSettings.apiKey}`);
   });
 
   it('aligns stale swap prose to the structured output mint', () => {
@@ -566,6 +596,42 @@ describe('planner AI setup helpers', () => {
         path: '/api/ai/status',
       }),
     ]));
+  });
+
+  it('rejects custom OpenAI-compatible providers on Hosted BYOK confirmation', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(confirmHostedAiPlanner({
+      ...sessionSettings,
+      mode: 'hosted',
+      provider: 'custom-openai-compatible',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      model: 'gemini-2.5-flash-lite',
+    })).rejects.toThrow('Hosted BYOK supports preset providers only');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('opts custom OpenAI-compatible Local Bridge payloads into custom base URLs', () => {
+    const customSettings: AiSettings = {
+      ...sessionSettings,
+      mode: 'bridge',
+      provider: 'custom-openai-compatible',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      model: 'gemini-2.5-flash-lite',
+      apiKey: 'gemini-api-key-123456',
+    };
+
+    expect(bridgeAiSessionKeyPayload(customSettings, { includeApiKey: true })).toEqual({
+      apiKey: 'gemini-api-key-123456',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      model: 'gemini-2.5-flash-lite',
+      provider: 'custom-openai-compatible',
+      apiFormat: 'openai-compatible',
+      allowCustomBaseUrl: true,
+    });
+    expect(bridgeAiSessionKeyPayload(customSettings)).not.toHaveProperty('apiKey');
+    expect(bridgeAiSessionKeyPayload(sessionSettings)).not.toHaveProperty('allowCustomBaseUrl');
   });
 
   it('can confirm Hosted BYOK through an injected cloud fetcher', async () => {

@@ -562,7 +562,7 @@ const { status, result } = IS_ANDROID_APP && isDeviceAgentBridgeAvailable()
 - Existing tests must still pass without edits.
 
 ### Done when
-- Browser bundle with both flags + allowlisted wallet can configure→confirm→generate→review→ask.
+- Browser bundle with both flags + connected wallet can configure→confirm→generate→review→ask.
 - Same bundle with only `VITE_AGENTIC_DEVICE_AGENT=1` keeps legacy scaffold.
 - Android TWA continues `'android-native'` even with browser flag also on.
 
@@ -680,7 +680,7 @@ After Phase 0 (now): dispatch 6 agents in parallel (Phases 1, 2, 3, 4, 7, 8). Ph
 - All 5 providers: configure → confirm planner → generate SOL transfer draft → review → ask. Browser-native runtime.
 - Disabled flags: Device Agent hidden.
 - Android + browser flag both on: Android wins; browser flag inert in TWA.
-- Render `AGENTIC_DEVICE_AGENT=1 AGENTIC_BROWSER_DEVICE_AGENT=1`: status reports `runtimes:{android:true,browserNative:true}`; allowlisted wallet OK; non-allowlisted 403.
+- Render `AGENTIC_DEVICE_AGENT=1 AGENTIC_BROWSER_DEVICE_AGENT=1`: status reports `runtimes:{android:true,browserNative:true}` for signed-in wallets.
 - Session-memory: configure key, reload tab → key gone.
 - Encrypted IndexedDB: configure key, reload tab → runtime hydrates as `stopped`, key persists, start runtime, generate again.
 - Hosted BYOK, Browser Session, Local Bridge regression: each works as before.
@@ -688,7 +688,7 @@ After Phase 0 (now): dispatch 6 agents in parallel (Phases 1, 2, 3, 4, 7, 8). Ph
 ## Final Acceptance Criteria
 
 - Default browser, Render, Android builds keep both Device Agent runtimes hidden.
-- Enabled browser build (both flags + allowlisted wallet) produces real drafts for **all 5 providers** through browser-native runtime.
+- Enabled browser build (both flags + connected wallet) produces real drafts for **all 5 providers** through browser-native runtime.
 - Enabled Android build still uses `'android-native'` even with browser flag on.
 - Render deployed build never runs a Device Agent provider call; status reports `runtimes` block.
 - Bridge, Hosted BYOK, Session paths keep passing existing tests.

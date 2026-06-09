@@ -114,20 +114,22 @@ describe.sequential('devGate', () => {
     expect(gate.deviceAgentFeatureEnabled()).toBe(true);
   });
 
-  it('defaults Device Agent access to no wallets', async () => {
+  it('allows any wallet when checking Device Agent wallet access', async () => {
     process.env.AGENTIC_DEVICE_AGENT = '1';
     delete process.env.AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST;
     const gate = await loadFreshGate();
     expect(gate.DEVICE_AGENT_WALLET_ALLOWLIST).toEqual([]);
-    expect(gate.isAllowedDeviceAgentWallet(TEST_WALLET)).toBe(false);
-    expect(gate.isAllowedDeviceAgentWallet(SECOND_DEVICE_WALLET)).toBe(false);
-    expect(gate.isAllowedDeviceAgentWallet(OTHER_WALLET)).toBe(false);
+    expect(gate.isAllowedDeviceAgentWallet(TEST_WALLET)).toBe(true);
+    expect(gate.isAllowedDeviceAgentWallet(SECOND_DEVICE_WALLET)).toBe(true);
+    expect(gate.isAllowedDeviceAgentWallet(OTHER_WALLET)).toBe(true);
+    expect(gate.isAllowedDeviceAgentWallet(undefined)).toBe(false);
   });
 
-  it('allows overriding the Device Agent wallet list', async () => {
+  it('keeps the deprecated Device Agent wallet list as a no-op access input', async () => {
     process.env.AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST = OTHER_WALLET;
     const gate = await loadFreshGate();
-    expect(gate.isAllowedDeviceAgentWallet(TEST_WALLET)).toBe(false);
+    expect(gate.DEVICE_AGENT_WALLET_ALLOWLIST).toEqual([OTHER_WALLET]);
+    expect(gate.isAllowedDeviceAgentWallet(TEST_WALLET)).toBe(true);
     expect(gate.isAllowedDeviceAgentWallet(OTHER_WALLET)).toBe(true);
   });
 

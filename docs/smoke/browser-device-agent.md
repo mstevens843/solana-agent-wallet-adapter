@@ -7,8 +7,8 @@ Needs Approval and the installed wallet approval flow.
 
 ## Required Test Data
 
-- Allowlisted wallet A: `4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd`
-- Allowlisted wallet B: `7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w`
+- Test wallet A: `4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd`
+- Test wallet B: `7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w`
 - Safe devnet recipient: use a wallet you control.
 - Safe amount: `0.001 SOL`.
 - Provider setup: OpenAI, Anthropic, Gemini, OpenRouter, or a custom OpenAI-compatible gateway key that is safe for
@@ -24,7 +24,6 @@ Build and serve the enabled browser bundle:
 ```sh
 VITE_AGENTIC_DEVICE_AGENT=1 \
 VITE_AGENTIC_BROWSER_DEVICE_AGENT=1 \
-VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd,7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w \
 pnpm -F @solana-agent-wallet-adapter/browser-demo dev
 ```
 
@@ -33,7 +32,6 @@ Or for a production-style preview:
 ```sh
 VITE_AGENTIC_DEVICE_AGENT=1 \
 VITE_AGENTIC_BROWSER_DEVICE_AGENT=1 \
-VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd,7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w \
 pnpm -F @solana-agent-wallet-adapter/browser-demo build && \
 pnpm -F @solana-agent-wallet-adapter/browser-demo preview
 ```
@@ -50,7 +48,7 @@ Expected boot state:
 Repeat the steps below once per provider (OpenAI → Anthropic → Gemini → OpenRouter → custom OpenAI-compatible).
 
 1. Open the dev URL in the browser under test.
-2. Tap `Connect wallet` and approve with the allowlisted wallet.
+2. Tap `Connect wallet` and approve with the test wallet.
 3. Open `Connect AI`.
 4. In the route card grid, select `Device Agent AI`, or use the `AI path` picker and choose
    `Device Agent - drafts via device`.
@@ -187,7 +185,7 @@ Expected state inside the TWA:
 4. The browser flag is inert: toggling the browser-native `Secret store mode` selector has no effect on the Android
    Keystore-backed secret store.
 
-## Render Allowlist Gate
+## Render Gate
 
 Render Device Agent is status/control only. It must never run provider calls, store provider API keys, sign, submit, or
 start a cloud worker.
@@ -197,14 +195,12 @@ Use a Render or local Node web service with both runtime and browser gates enabl
 ```sh
 AGENTIC_DEVICE_AGENT=1 \
 AGENTIC_BROWSER_DEVICE_AGENT=1 \
-AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd,7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w \
 VITE_AGENTIC_DEVICE_AGENT=1 \
 VITE_AGENTIC_BROWSER_DEVICE_AGENT=1 \
-VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd,7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w \
 pnpm render:build
 ```
 
-For each allowlisted wallet:
+For each signed-in wallet:
 
 1. Sign in to Agentic Cloud with the wallet.
 2. Open `Connect AI`.
@@ -226,11 +222,11 @@ For each allowlisted wallet:
     - Provider API keys are not persisted on Render.
     - `Draft with AI`, review, and ask must not run a Render Device Agent provider call.
 
-For a non-allowlisted wallet:
+For any other signed-in wallet:
 
 1. Sign in to Agentic Cloud with a wallet that is not wallet A or wallet B.
-2. Confirm `Device Agent AI` is hidden.
-3. Direct status calls to `/api/device-agent/status` return 403 with `Device Agent is not enabled for this wallet.`
+2. Confirm `Device Agent AI` is visible when the browser bundle flags are enabled.
+3. Direct status calls to `/api/device-agent/status` return 200.
 
 With `AGENTIC_DEVICE_AGENT` unset or not `1`:
 
@@ -305,10 +301,9 @@ Pass criteria:
 
 - Exit 0.
 - The printed `Derived` table shows the expected flags for the local `.env` matrix.
-- For an allowlisted wallet without `--is-android-app`, the effective runtime is `browser-native`.
+- For a wallet without `--is-android-app`, the effective runtime is `browser-native`.
 - For the same wallet with `--is-android-app`, the effective runtime is `android-native`.
-- For a non-allowlisted wallet, the effective runtime is `unavailable` (or `browser-dev` when only
-  `DEVICE_AGENT_ENABLED` is on).
+- For another wallet, the effective runtime is also `browser-native` when both browser flags are on.
 
 ## Storage Probe (private mode regression)
 
@@ -393,7 +388,7 @@ Browser DevTools and storage inspection:
 - Reloading the tab hydrates the runtime as `stopped` with `configured=true` in encrypted IndexedDB mode.
 - The `Session only` toggle wipes the key on tab close.
 - Android-native wins when both bridges are present in the same WebView.
-- Render shows Device Agent only to allowlisted wallets and reports the `runtimes` block from
+- Render shows Device Agent status/control to signed-in wallets and reports the `runtimes` block from
   `/api/device-agent/status`.
 - Render never runs a Device Agent provider call.
 - Local Bridge remains a separate LAN/local runtime path.

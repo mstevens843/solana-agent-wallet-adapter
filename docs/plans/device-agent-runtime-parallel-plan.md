@@ -20,9 +20,9 @@ unless a future explicit browser runtime is added.
 Already implemented:
 
 - Browser AI mode union includes `device-agent`.
-- The AI path dropdown and Connect AI card can show Device Agent behind env/wallet gates.
+- The AI path dropdown and Connect AI card can show Device Agent behind env gates.
 - Render exposes gated `GET /api/device-agent/status` and `POST /api/device-agent/control` scaffolding.
-- Render allows only `AGENTIC_DEVICE_AGENT=1` plus allowlisted signed-in wallets.
+- Render allows signed-in wallets when `AGENTIC_DEVICE_AGENT=1`.
 - Android exposes `AgenticAndroid.deviceAgentStatus/configure/start/stop`.
 - Android has `AgentRuntimeController` and `AgentRuntimeService` scaffolded behind `agenticDeviceAgent=true`.
 - Android stores Device Agent config through the existing Keystore-backed `NativeSecureStore`.
@@ -32,8 +32,8 @@ Already implemented:
 
 - Keep mode string exactly `device-agent`.
 - Keep gates:
-  - Browser/Vite: `VITE_AGENTIC_DEVICE_AGENT=1`, `VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST`.
-  - Render runtime: `AGENTIC_DEVICE_AGENT=1`, `AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST`.
+  - Browser/Vite: `VITE_AGENTIC_DEVICE_AGENT=1`.
+  - Render runtime: `AGENTIC_DEVICE_AGENT=1`.
   - Android build: `agenticDeviceAgent=true` / `AGENTIC_ANDROID_DEVICE_AGENT=1`.
 - Shared status shape:
   - `available: boolean`
@@ -254,7 +254,7 @@ Browser behavior:
 
 - Android enabled runtime: generation/review/ask call native Device Agent.
 - Android disabled runtime: Device Agent hidden unless forced by dev env; calls return unavailable.
-- Render allowlisted wallet: Device Agent can show status/control scaffold but cannot generate.
+- Render signed-in wallet: Device Agent can show status/control scaffold but cannot generate.
 - Browser local dev: Device Agent can show scaffold if gated but cannot generate.
 
 Done when:
@@ -278,7 +278,7 @@ Files:
 
 Implement:
 
-- Keep `/api/device-agent/status` and `/api/device-agent/control` gated by runtime env and allowlisted session wallet.
+- Keep `/api/device-agent/status` and `/api/device-agent/control` gated by runtime env and a signed-in session wallet.
 - Ensure Render never stores provider keys.
 - Ensure Render never executes provider calls for Device Agent.
 - Add structured audit/log events that include wallet short IDs and action names only, no key material.
@@ -287,8 +287,8 @@ Implement:
 Done when:
 
 - Env off returns 403.
-- Wrong wallet returns 403.
-- Both allowlisted wallets can use status/control.
+- Missing session returns 401.
+- Signed-in wallets can use status/control.
 - Render status says no cloud daemon is started.
 - No provider key is persisted on Render.
 
@@ -480,7 +480,7 @@ Required scenarios:
 
 - Default web, Render, and Android builds keep Device Agent hidden.
 - Enabled Android build shows Device Agent and can execute draft/review/ask through the native runtime.
-- Render deployed build shows Device Agent only to allowlisted wallets when both runtime and Vite envs are enabled.
+- Render deployed build shows Device Agent to signed-in wallets when runtime and Vite envs are enabled.
 - Render deployed build never runs a Device Agent provider call.
 - Bridge still works as its own desktop/LAN/dev path.
 - All existing AI paths keep passing tests.

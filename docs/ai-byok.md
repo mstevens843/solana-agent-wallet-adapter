@@ -27,8 +27,8 @@ and no two paths share storage, surface, or fallback semantics.
   bundled Android shell runs provider calls inside the app and stores runtime config in Android Keystore-backed
   encrypted storage. When both Device Agent bridges are present in the same WebView, Android-native always wins.
 
-Render can expose status/control scaffolding for allowlisted wallets for either Device Agent runtime, but it does not
-run a Device Agent worker and never stores Device Agent provider keys.
+Render can expose status/control scaffolding for signed-in wallets for either Device Agent runtime, but it does not run
+a Device Agent worker and never stores Device Agent provider keys.
 
 ## Device Agent Env
 
@@ -40,7 +40,6 @@ app builds and can be explicitly disabled with `-PagenticDeviceAgent=false`.
 ```sh
 export VITE_AGENTIC_DEVICE_AGENT=1
 export VITE_AGENTIC_BROWSER_DEVICE_AGENT=1
-export VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd,7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w
 pnpm -F @solana-agent-wallet-adapter/browser-demo build
 ```
 
@@ -69,8 +68,8 @@ flow.
 | Android default build | Native status/config/start/stop enabled | `generatePlan`, `reviewPlan`, and `ask` route through the Android runtime queue | Android Keystore-backed encrypted app storage |
 | Android `agenticDeviceAgent=false` build | Hidden | None | No Device Agent config accepted |
 | Browser default build | Hidden | None | No Device Agent config accepted |
-| Browser `VITE_AGENTIC_BROWSER_DEVICE_AGENT=1` build | Browser-native status/config/start/stop enabled for allowlisted wallets | `generatePlan`, `reviewPlan`, and `ask` route through the in-tab `fetch` + WebCrypto pipeline | Encrypted IndexedDB by default; Session-only tab memory when the user selects it |
-| Render with both Device Agent gates | Allowlisted status/control only | None | Non-secret status/config only; never store provider keys |
+| Browser `VITE_AGENTIC_BROWSER_DEVICE_AGENT=1` build | Browser-native status/config/start/stop enabled for connected wallets | `generatePlan`, `reviewPlan`, and `ask` route through the in-tab `fetch` + WebCrypto pipeline | Encrypted IndexedDB by default; Session-only tab memory when the user selects it |
+| Render with both Device Agent gates | Signed-in status/control only | None | Non-secret status/config only; never store provider keys |
 
 When both the Android-native bridge and the browser-native runtime are present in the same WebView, Android-native
 wins. Treat any build that fails the matching Device Agent smoke as not release-ready for Device Agent drafting.

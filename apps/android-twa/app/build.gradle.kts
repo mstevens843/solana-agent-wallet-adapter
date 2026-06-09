@@ -139,11 +139,6 @@ if (isReleaseBuild) {
                         "and AGENTIC_ANDROID_STREAMING_SIGNER=false.",
                 )
             }
-            if (deviceAgentWalletAllowlist.isBlank()) {
-                throw GradleException(
-                    "AGENTIC_ANDROID_RELEASE_PROFILE=device-agent requires AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST.",
-                )
-            }
         }
         "streaming-signer" -> {
             if (deviceAgentEnabled || !streamingSignerEnabled) {
@@ -158,11 +153,6 @@ if (isReleaseBuild) {
                 throw GradleException(
                     "AGENTIC_ANDROID_RELEASE_PROFILE=full requires AGENTIC_ANDROID_DEVICE_AGENT=true " +
                         "and AGENTIC_ANDROID_STREAMING_SIGNER=true.",
-                )
-            }
-            if (deviceAgentWalletAllowlist.isBlank()) {
-                throw GradleException(
-                    "AGENTIC_ANDROID_RELEASE_PROFILE=full requires AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST.",
                 )
             }
         }

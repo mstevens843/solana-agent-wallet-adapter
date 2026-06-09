@@ -7,8 +7,8 @@ wallet approval flow.
 
 ## Required Test Data
 
-- Allowlisted wallet A: `4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd`
-- Allowlisted wallet B: `7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w`
+- Test wallet A: `4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd`
+- Test wallet B: `7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w`
 - Safe devnet recipient: use a wallet you control.
 - Safe amount: `0.001 SOL`.
 - Provider setup: OpenAI, Anthropic, Gemini, OpenRouter, or a custom OpenAI-compatible gateway key that is safe for
@@ -114,7 +114,7 @@ Expected state:
    `Device Agent is not enabled for this build or wallet.`
 8. No foreground notification named `Agentic Device Agent` should appear.
 
-## Render Allowlist Gate
+## Render Gate
 
 Render Device Agent is status/control only. It must never run provider calls, store provider API keys, sign, submit, or
 start a cloud worker.
@@ -123,13 +123,11 @@ Use a Render or local Node web service with both runtime and browser gates enabl
 
 ```sh
 AGENTIC_DEVICE_AGENT=1 \
-AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd,7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w \
 VITE_AGENTIC_DEVICE_AGENT=1 \
-VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd,7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w \
 pnpm render:build
 ```
 
-For each allowlisted wallet:
+For each signed-in wallet:
 
 1. Sign in to Agentic Cloud with the wallet.
 2. Open `Connect AI`.
@@ -143,11 +141,11 @@ For each allowlisted wallet:
     - Provider API keys are not persisted on Render.
     - `Draft with AI`, review, and ask must not run a Render Device Agent provider call.
 
-For a non-allowlisted wallet:
+For any other signed-in wallet:
 
 1. Sign in to Agentic Cloud with a wallet that is not wallet A or wallet B.
-2. Confirm `Device Agent AI` is hidden.
-3. Direct status calls to `/api/device-agent/status` return 403 with `Device Agent is not enabled for this wallet.`
+2. Confirm `Device Agent AI` is visible when the browser bundle flags are enabled.
+3. Direct status calls to `/api/device-agent/status` return 200.
 
 With `AGENTIC_DEVICE_AGENT` unset or not `1`:
 
@@ -216,6 +214,6 @@ Expected:
 - Standard Android builds can draft/review/ask through the Android-native runtime.
 - Opt-out Android builds hide Device Agent.
 - Source-completion tripwires fail if native generation regresses to stubbed or scaffold-only behavior.
-- Render shows Device Agent only to allowlisted wallets and reports status/control only.
+- Render shows Device Agent status/control to signed-in wallets only.
 - Local Bridge remains a separate LAN/local runtime path.
 - Every transaction still goes through `Needs Approval` and wallet approval.

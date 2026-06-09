@@ -32,8 +32,7 @@ export function deviceAgentFeatureEnabled(): boolean {
 }
 
 export function isAllowedDeviceAgentWallet(walletAddress: string | undefined | null): boolean {
-  if (!walletAddress) return false;
-  return deviceAgentWalletAllowlist().includes(walletAddress);
+  return Boolean(walletAddress);
 }
 
 export function deviceAgentRuntimeAvailability(): { android: boolean; browserNative: boolean } {

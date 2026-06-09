@@ -83,6 +83,29 @@ export interface BridgeAiStatus {
   model?: string;
 }
 
+export interface BridgeAiSessionKeyPayload {
+  apiKey?: string;
+  baseUrl: string;
+  model: string;
+  provider: AiProviderId;
+  apiFormat: AiApiFormat;
+  allowCustomBaseUrl?: true;
+}
+
+export function bridgeAiSessionKeyPayload(
+  settings: Pick<AiSettings, 'apiKey' | 'baseUrl' | 'model' | 'provider' | 'apiFormat'>,
+  options: { includeApiKey?: boolean } = {},
+): BridgeAiSessionKeyPayload {
+  return {
+    ...(options.includeApiKey ? { apiKey: settings.apiKey } : {}),
+    baseUrl: settings.baseUrl,
+    model: settings.model,
+    provider: settings.provider,
+    apiFormat: settings.apiFormat,
+    ...(settings.provider === 'custom-openai-compatible' ? { allowCustomBaseUrl: true as const } : {}),
+  };
+}
+
 export type AiDiagnosticCode =
   | 'AI_ROUTE'
   | 'AI_HTTP'
@@ -251,7 +274,7 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
   {
     id: 'custom-openai-compatible',
     label: 'Custom OpenAI-compatible',
-    detail: 'Vercel AI Gateway, Cloudflare AI Gateway, or a self-hosted proxy.',
+    detail: 'Gemini OpenAI-compatible endpoint, Vercel AI Gateway, Cloudflare AI Gateway, or a self-hosted proxy.',
     apiFormat: 'openai-compatible',
     baseUrl: DEFAULT_AI_BASE_URL,
     model: DEFAULT_AI_MODEL,

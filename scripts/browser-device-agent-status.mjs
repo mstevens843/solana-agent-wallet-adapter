@@ -92,7 +92,7 @@ function printHelp() {
       '',
       'Options:',
       '  --env-file=<path>    Additional env file to merge (repeatable)',
-      '  --wallet=<address>   Check whether this wallet is allowlisted (repeatable)',
+      '  --wallet=<address>   Check effective runtime for this wallet (repeatable)',
       '  --is-android-app     Simulate IS_ANDROID_APP=true for precedence test',
       '  --json               Emit JSON report',
       '  --help               Print this usage',
@@ -176,11 +176,11 @@ function deriveEffectiveRuntime({
   deviceAgentEnabled,
   browserDeviceAgentEnabled,
   androidPresent,
-  walletAllowlisted,
+  hasWallet,
 }) {
   if (!deviceAgentEnabled) return 'unavailable';
   if (androidPresent) return 'android-native';
-  if (browserDeviceAgentEnabled && walletAllowlisted) return 'browser-native';
+  if (browserDeviceAgentEnabled && hasWallet) return 'browser-native';
   if (deviceAgentEnabled) return 'browser-dev';
   return 'unavailable';
 }
@@ -271,17 +271,16 @@ async function main() {
   const isAndroidApp = flags.has('is-android-app');
   const wallets = options.wallet.length > 0
     ? options.wallet
-    : [...browserAllowlist, '11111111111111111111111111111111'];
+    : ['11111111111111111111111111111111'];
 
   const walletResults = wallets.map((address) => {
-    const allowlisted = browserAllowlist.includes(address);
     const effective = deriveEffectiveRuntime({
       deviceAgentEnabled: browserDeviceAgentEnabled,
       browserDeviceAgentEnabled: browserNativeEnabled,
       androidPresent: isAndroidApp,
-      walletAllowlisted: allowlisted,
+      hasWallet: address.trim().length > 0,
     });
-    return { address, allowlisted, effective };
+    return { address, effective };
   });
 
   const derived = {
@@ -329,9 +328,9 @@ async function main() {
     ['DEVICE_AGENT_ENABLED', String(browserDeviceAgentEnabled)],
     ['BROWSER_DEVICE_AGENT_ENABLED', String(browserNativeEnabled)],
     ['ANDROID_DEVICE_AGENT_ENABLED (browser flag)', String(browserAndroidFlag)],
-    ['Browser allowlist', `[${browserAllowlist.join(', ')}]`],
+    ['Browser allowlist (deprecated)', `[${browserAllowlist.join(', ')}]`],
     ['Render runtimes', `android=${renderRuntimes.android}, browserNative=${renderRuntimes.browserNative}`],
-    ['Render allowlist', `[${renderAllowlist.join(', ')}]`],
+    ['Render allowlist (deprecated)', `[${renderAllowlist.join(', ')}]`],
     ['IS_ANDROID_APP (simulated)', String(isAndroidApp)],
   ];
   process.stdout.write(`${formatTable(derivedRows, ['Setting', 'Value'])
@@ -343,9 +342,9 @@ async function main() {
   const walletRows = walletResults.map((entry) => [
     maskWallet(entry.address),
     entry.effective,
-    entry.allowlisted ? 'allowlisted' : 'not allowlisted',
+    entry.address.trim().length > 0 ? 'wallet present' : 'missing wallet',
   ]);
-  process.stdout.write(`${formatTable(walletRows, ['Wallet', 'Effective runtime', 'Allowlist'])
+  process.stdout.write(`${formatTable(walletRows, ['Wallet', 'Effective runtime', 'Wallet'])
     .split('\n')
     .map((line) => `  ${line}`)
     .join('\n')}\n`);

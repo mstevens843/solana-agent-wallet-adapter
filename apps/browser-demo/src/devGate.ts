@@ -45,8 +45,7 @@ export function isDevWallet(address: string | undefined | null): boolean {
 }
 
 export function isDeviceAgentWallet(address: string | undefined | null): boolean {
-  if (!address) return false;
-  return DEVICE_AGENT_WALLET_ALLOWLIST.includes(address);
+  return Boolean(address);
 }
 
 export interface BrowserNativeRuntimeEligibilityInput {
@@ -67,7 +66,7 @@ export function browserNativeRuntimeEligibleForSurface(
   if (input.isAndroidApp) return false;
   if (input.isIosApp) return false;
   if (input.showDevControls) return true;
-  return input.deviceAgentWalletAllowlisted ?? isDeviceAgentWallet(input.walletAddress);
+  return Boolean(input.walletAddress);
 }
 
 export function isBrowserNativeRuntimeEligible(

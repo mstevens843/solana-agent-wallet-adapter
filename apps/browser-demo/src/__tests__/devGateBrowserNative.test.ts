@@ -14,16 +14,16 @@ import {
   isBrowserNativeRuntimeEligible,
 } from '../devGate.js';
 
-const ALLOWLISTED_WALLET = '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd';
-const NON_ALLOWLISTED_WALLET = 'WalletAddressDeliberatelyOutsideAllowlist';
+const TEST_WALLET = '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd';
+const OTHER_WALLET = 'WalletAddressDeliberatelyOutsideAllowlist';
 
 describe('isBrowserNativeRuntimeEligible', () => {
   it('is a function exported from devGate', () => {
     expect(typeof isBrowserNativeRuntimeEligible).toBe('function');
   });
 
-  it('returns false when isAndroidApp is true even with an allowlisted wallet', () => {
-    expect(isBrowserNativeRuntimeEligible(ALLOWLISTED_WALLET, true)).toBe(false);
+  it('returns false when isAndroidApp is true even with a wallet', () => {
+    expect(isBrowserNativeRuntimeEligible(TEST_WALLET, true)).toBe(false);
   });
 
   it('returns false when wallet is undefined', () => {
@@ -38,27 +38,27 @@ describe('isBrowserNativeRuntimeEligible', () => {
     expect(isBrowserNativeRuntimeEligible('', false)).toBe(false);
   });
 
-  it('returns false when wallet is not in the allowlist', () => {
-    expect(isBrowserNativeRuntimeEligible(NON_ALLOWLISTED_WALLET, false)).toBe(false);
+  it('returns false when build flags are off even with another wallet', () => {
+    expect(isBrowserNativeRuntimeEligible(OTHER_WALLET, false)).toBe(false);
   });
 
-  it('returns false when build flags are off even with an allowlisted wallet (test env default)', () => {
+  it('returns false when build flags are off even with a wallet (test env default)', () => {
     // This is the production contract: with VITE_AGENTIC_DEVICE_AGENT and/or
     // VITE_AGENTIC_BROWSER_DEVICE_AGENT off, eligibility is never granted —
-    // regardless of wallet membership. The default test bundle has both off.
-    expect(isBrowserNativeRuntimeEligible(ALLOWLISTED_WALLET, false)).toBe(false);
+    // regardless of wallet. The default test bundle has both off.
+    expect(isBrowserNativeRuntimeEligible(TEST_WALLET, false)).toBe(false);
   });
 });
 
 describe('browserNativeRuntimeEligibleForSurface', () => {
-  it('allows an allowlisted browser wallet when both runtime flags are on', () => {
+  it('allows any connected browser wallet when both runtime flags are on', () => {
     expect(browserNativeRuntimeEligibleForSurface({
       deviceAgentEnabled: true,
       browserDeviceAgentEnabled: true,
-      walletAddress: ALLOWLISTED_WALLET,
+      walletAddress: OTHER_WALLET,
       isAndroidApp: false,
       showDevControls: false,
-      deviceAgentWalletAllowlisted: true,
+      deviceAgentWalletAllowlisted: false,
     })).toBe(true);
   });
 
@@ -66,7 +66,7 @@ describe('browserNativeRuntimeEligibleForSurface', () => {
     expect(browserNativeRuntimeEligibleForSurface({
       deviceAgentEnabled: false,
       browserDeviceAgentEnabled: true,
-      walletAddress: ALLOWLISTED_WALLET,
+      walletAddress: TEST_WALLET,
       isAndroidApp: false,
       showDevControls: false,
       deviceAgentWalletAllowlisted: true,
@@ -77,7 +77,7 @@ describe('browserNativeRuntimeEligibleForSurface', () => {
     expect(browserNativeRuntimeEligibleForSurface({
       deviceAgentEnabled: true,
       browserDeviceAgentEnabled: false,
-      walletAddress: ALLOWLISTED_WALLET,
+      walletAddress: TEST_WALLET,
       isAndroidApp: false,
       showDevControls: false,
       deviceAgentWalletAllowlisted: true,
@@ -88,7 +88,7 @@ describe('browserNativeRuntimeEligibleForSurface', () => {
     expect(browserNativeRuntimeEligibleForSurface({
       deviceAgentEnabled: true,
       browserDeviceAgentEnabled: true,
-      walletAddress: ALLOWLISTED_WALLET,
+      walletAddress: TEST_WALLET,
       isAndroidApp: true,
       showDevControls: false,
       deviceAgentWalletAllowlisted: true,
@@ -99,22 +99,22 @@ describe('browserNativeRuntimeEligibleForSurface', () => {
     expect(browserNativeRuntimeEligibleForSurface({
       deviceAgentEnabled: true,
       browserDeviceAgentEnabled: true,
-      walletAddress: NON_ALLOWLISTED_WALLET,
+      walletAddress: OTHER_WALLET,
       isAndroidApp: false,
       showDevControls: true,
       deviceAgentWalletAllowlisted: false,
     })).toBe(true);
   });
 
-  it('keeps browser-native runtime unavailable without allowlist membership or dev controls', () => {
+  it('allows a connected browser wallet without allowlist membership or dev controls', () => {
     expect(browserNativeRuntimeEligibleForSurface({
       deviceAgentEnabled: true,
       browserDeviceAgentEnabled: true,
-      walletAddress: NON_ALLOWLISTED_WALLET,
+      walletAddress: OTHER_WALLET,
       isAndroidApp: false,
       showDevControls: false,
       deviceAgentWalletAllowlisted: false,
-    })).toBe(false);
+    })).toBe(true);
   });
 
   it('keeps browser-native runtime unavailable when no wallet is present outside dev controls', () => {
@@ -133,29 +133,27 @@ describe('browserNativeRuntimeEligibleForSurface', () => {
     expect(browserNativeRuntimeEligibleForSurface({
       deviceAgentEnabled: true,
       browserDeviceAgentEnabled: true,
-      walletAddress: ALLOWLISTED_WALLET,
+      walletAddress: TEST_WALLET,
       isAndroidApp: true,
       showDevControls: true,
       deviceAgentWalletAllowlisted: true,
     })).toBe(false);
   });
 
-  it('falls through to isDeviceAgentWallet when deviceAgentWalletAllowlisted is omitted', () => {
-    // Without an explicit deviceAgentWalletAllowlisted flag, the helper queries
-    // the production wallet allowlist via isDeviceAgentWallet(walletAddress).
+  it('ignores the deprecated deviceAgentWalletAllowlisted flag when omitted', () => {
     expect(browserNativeRuntimeEligibleForSurface({
       deviceAgentEnabled: true,
       browserDeviceAgentEnabled: true,
-      walletAddress: ALLOWLISTED_WALLET,
+      walletAddress: TEST_WALLET,
       isAndroidApp: false,
       showDevControls: false,
-    })).toBe(false);
+    })).toBe(true);
     expect(browserNativeRuntimeEligibleForSurface({
       deviceAgentEnabled: true,
       browserDeviceAgentEnabled: true,
-      walletAddress: NON_ALLOWLISTED_WALLET,
+      walletAddress: OTHER_WALLET,
       isAndroidApp: false,
       showDevControls: false,
-    })).toBe(false);
+    })).toBe(true);
   });
 });

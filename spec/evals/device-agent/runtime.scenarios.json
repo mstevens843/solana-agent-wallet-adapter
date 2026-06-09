@@ -196,9 +196,9 @@
       ]
     },
     {
-      "id": "render-allowlist-wallet-a",
-      "title": "Render status/control is available for allowlisted wallet A",
-      "surface": "render-allowlist",
+      "id": "render-signed-in-wallet-a",
+      "title": "Render status/control is available for signed-in wallet A",
+      "surface": "render-status-control",
       "commands": [
         "AGENTIC_DEVICE_AGENT=1",
         "VITE_AGENTIC_DEVICE_AGENT=1",
@@ -237,9 +237,9 @@
       ]
     },
     {
-      "id": "render-allowlist-wallet-b",
-      "title": "Render status/control is available for allowlisted wallet B",
-      "surface": "render-allowlist",
+      "id": "render-signed-in-wallet-b",
+      "title": "Render status/control is available for signed-in wallet B",
+      "surface": "render-status-control",
       "commands": [
         "AGENTIC_DEVICE_AGENT=1",
         "VITE_AGENTIC_DEVICE_AGENT=1",
@@ -278,40 +278,41 @@
       ]
     },
     {
-      "id": "render-denylist-wallet",
-      "title": "Render hides and rejects Device Agent for non-allowlisted wallets",
-      "surface": "render-denylist",
+      "id": "render-signed-in-other-wallet",
+      "title": "Render status/control is available for any signed-in wallet",
+      "surface": "render-status-control",
       "commands": [
         "AGENTIC_DEVICE_AGENT=1",
         "VITE_AGENTIC_DEVICE_AGENT=1"
       ],
       "requiredUiLabels": [
         "Connect AI",
-        "Hosted BYOK",
-        "Browser Session",
-        "Local Bridge AI"
+        "Device Agent AI",
+        "Refresh",
+        "Use key for drafts"
       ],
       "steps": [
         {
-          "action": "Sign in to Agentic Cloud with a wallet not on the Device Agent allowlist.",
-          "expect": "Device Agent AI is hidden."
+          "action": "Sign in to Agentic Cloud with a wallet that is not wallet A or wallet B.",
+          "expect": "Device Agent AI is visible."
         },
         {
           "action": "Call /api/device-agent/status directly with the signed-in session.",
-          "expect": "The response is 403 with Device Agent is not enabled for this wallet."
+          "expect": "The response is 200 and reports render-gated status/control only."
         }
       ],
       "expectedFailureStates": [
-        "Device Agent is not enabled for this wallet.",
-        "Device Agent AI is hidden."
+        "Device Agent runtime is gated on Render; no cloud daemon is started.",
+        "Render Device Agent generation is unavailable."
       ],
       "forbiddenOutcomes": [
-        "Non-allowlisted Render wallet saw Device Agent AI",
-        "Non-allowlisted Render wallet staged Device Agent config",
+        "Render rejected a signed-in wallet because it was not allowlisted",
+        "Render executed a Device Agent provider call",
+        "Render started a Device Agent cloud worker",
         "Render stored a provider API key"
       ],
       "acceptance": [
-        "Only the two allowlisted wallets can use Render Device Agent status/control.",
+        "Any signed-in wallet can use Render Device Agent status/control when the env gate is enabled.",
         "Device Agent drafts only. It cannot approve, sign, submit, or move funds."
       ]
     },

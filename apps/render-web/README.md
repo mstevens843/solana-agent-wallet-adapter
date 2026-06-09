@@ -37,14 +37,14 @@ Common optional settings:
 - `AGW_DISABLE_SCHEDULER=1`: disables scheduler ticks when a scheduler has been enabled.
 - `VITE_AGENTIC_DEV_CONTROLS=false`: production browser build setting.
 - `VITE_AGENTIC_GA_MEASUREMENT_ID`: optional GA4 measurement ID for the browser build.
-- `AGENTIC_DEVICE_AGENT=1` and `VITE_AGENTIC_DEVICE_AGENT=1`: optional gated Device Agent scaffold. Pair with
-  `AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST` and `VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST`; Render exposes status and
-  control scaffolding only and does not run a cloud agent worker. Device Agent status reads and control actions are
+- `AGENTIC_DEVICE_AGENT=1` and `VITE_AGENTIC_DEVICE_AGENT=1`: optional gated Device Agent scaffold. Render exposes
+  status and control scaffolding only for signed-in wallets and does not run a cloud agent worker. Device Agent status
+  reads and control actions are
   written to `audit_events` for the signed-in wallet as `device-agent.status.read` and `device-agent.control.<action>`
   (`configure` / `start` / `stop` / `clear`) with metadata limited to runtime kind, action name, and resulting state.
-  Access denials are emitted to stderr as structured `[device-agent] access denied` warnings (`feature_disabled`,
-  `no_session`, or `wallet_not_allowlisted` with a `walletShort` ID). No provider key material, settings, or request
-  bodies are written to the audit log or denial warnings. Audit writes are best-effort: a failed `insertAuditEvent`
+  Access denials are emitted to stderr as structured `[device-agent] access denied` warnings (`feature_disabled` or
+  `no_session`). No provider key material, settings, or request bodies are written to the audit log or denial warnings.
+  Audit writes are best-effort: a failed `insertAuditEvent`
   emits a `[device-agent] audit failure` stderr warning but never aborts the user-facing status/control response.
   Malformed control bodies (unknown or missing `action`) emit a `[device-agent] invalid request` stderr warning before
   the server returns 400. Optional sibling env vars `AGENTIC_ANDROID_DEVICE_AGENT` (defaults to available; set `0` to

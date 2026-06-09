@@ -17,9 +17,9 @@ const REQUIRED_WALLETS = [
 const REQUIRED_SCENARIO_IDS = [
   'android-enabled-seeker-draft',
   'android-opt-out-hidden',
-  'render-allowlist-wallet-a',
-  'render-allowlist-wallet-b',
-  'render-denylist-wallet',
+  'render-signed-in-wallet-a',
+  'render-signed-in-wallet-b',
+  'render-signed-in-other-wallet',
   'bridge-remains-separate',
   'device-agent-no-autonomous-authority',
   'android-native-generation-wired',
@@ -28,8 +28,7 @@ const REQUIRED_SCENARIO_IDS = [
 const SURFACES = new Set([
   'android-enabled',
   'android-disabled',
-  'render-allowlist',
-  'render-denylist',
+  'render-status-control',
   'bridge-regression',
   'boundary',
   'source-completion',
@@ -294,7 +293,7 @@ function validateCorpus(files) {
   }
   const text = combinedText.join('\n');
   for (const wallet of REQUIRED_WALLETS) {
-    if (!includesNormalized(text, wallet)) errors.push(`scenario corpus missing allowlisted wallet: ${wallet}`);
+    if (!includesNormalized(text, wallet)) errors.push(`scenario corpus missing test wallet: ${wallet}`);
   }
   return errors;
 }
@@ -379,7 +378,7 @@ async function evaluateScenario(scenario, file) {
     assertions += assertIncludes(errors, failureText, 'Device Agent AI is hidden.', 'disabled hidden UI state');
   }
 
-  if (scenario.surface === 'render-allowlist') {
+  if (scenario.surface === 'render-status-control') {
     assertions += assertIncludes(errors, commandText, 'AGENTIC_DEVICE_AGENT=1', 'Render runtime env gate');
     assertions += assertIncludes(errors, commandText, 'VITE_AGENTIC_DEVICE_AGENT=1', 'Render browser env gate');
     assertions += assertIncludes(errors, text, 'Device Agent runtime is gated on Render; no cloud daemon is started.', 'Render no-daemon status');
@@ -387,17 +386,12 @@ async function evaluateScenario(scenario, file) {
     assertions += assertIncludes(errors, forbiddenText, 'Render executed a Device Agent provider call', 'Render provider call forbidden outcome');
   }
 
-  if (scenario.id === 'render-allowlist-wallet-a') {
-    assertions += assertIncludes(errors, text, REQUIRED_WALLETS[0], 'allowlisted wallet A');
+  if (scenario.id === 'render-signed-in-wallet-a') {
+    assertions += assertIncludes(errors, text, REQUIRED_WALLETS[0], 'test wallet A');
   }
 
-  if (scenario.id === 'render-allowlist-wallet-b') {
-    assertions += assertIncludes(errors, text, REQUIRED_WALLETS[1], 'allowlisted wallet B');
-  }
-
-  if (scenario.surface === 'render-denylist') {
-    assertions += assertIncludes(errors, failureText, 'Device Agent is not enabled for this wallet.', 'Render denylist failure state');
-    assertions += assertIncludes(errors, failureText, 'Device Agent AI is hidden.', 'Render denylist hidden UI state');
+  if (scenario.id === 'render-signed-in-wallet-b') {
+    assertions += assertIncludes(errors, text, REQUIRED_WALLETS[1], 'test wallet B');
   }
 
   if (scenario.surface === 'bridge-regression') {

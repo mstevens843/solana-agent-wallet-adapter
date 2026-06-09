@@ -127,7 +127,7 @@ APK testing against a laptop bridge, set it explicitly. The app still accepts on
 
 Android users can use the app planner without an AI key through templates. In debug/install builds, Device Agent BYOK
 is the default no-desktop-bridge AI path so provider calls run through the Android-native runtime. Release builds keep
-that path hidden unless explicitly enabled and allowlisted. Android session BYOK, Hosted BYOK, and Desktop local
+that path hidden unless explicitly enabled. Android session BYOK, Hosted BYOK, and Desktop local
 bridge AI remain available as alternate paths. Hosted BYOK is
 available after signing in to Agentic Cloud with the connected wallet; the API key is relayed only for that request and
 is not synced. See `docs/ai-byok.md`.
@@ -141,9 +141,9 @@ pnpm android:install
 
 Debug builds default `AGENTIC_ANDROID_DEVICE_AGENT` on for local smoke coverage. Release builds require an explicit
 `AGENTIC_ANDROID_RELEASE_PROFILE`: use `public-safe` for store/public builds, `device-agent` with
-`AGENTIC_ANDROID_DEVICE_AGENT=1` and `AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=...` for approved Device Agent
+`AGENTIC_ANDROID_DEVICE_AGENT=1` for approved Device Agent
 candidates, `streaming-signer` with `AGENTIC_ANDROID_STREAMING_SIGNER=1`, or `full` when both gated runtimes are
-approved and allowlisted. Runtime config is stored in encrypted Android Keystore-backed storage. Device Agent cannot
+approved. Runtime config is stored in encrypted Android Keystore-backed storage. Device Agent cannot
 approve, sign, submit, or move funds, and the wallet user still approves every transaction through the normal flow.
 
 Before treating an APK as Device Agent release-ready, run the Device Agent smoke and verify the native Android

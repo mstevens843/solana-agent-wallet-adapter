@@ -15,16 +15,16 @@ and the public boundary in [ai-byok.md](../ai-byok.md).
 - Render remains status/control-only. Render never stores provider keys and never runs provider
   calls for Device Agent.
 - Android debug/install builds enable Device Agent by default for local smoke coverage. Android release, iOS, browser,
-  and Render Device Agent surfaces remain gated unless explicitly enabled and allowlisted.
+  and Render Device Agent surfaces remain gated unless explicitly enabled.
   Android opt-out builds can pass `-PagenticDeviceAgent=false`.
 
 ## Env / build matrix
 
 | Surface | Default | Enabled flag(s) | Effect |
 |---|---|---|---|
-| Browser (Vite) | hidden | `VITE_AGENTIC_DEVICE_AGENT=1`, `VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=...` | Reveals Device Agent in the AI mode dropdown and Connect AI card |
-| Android (Gradle) | debug visible/enabled; release hidden/disabled | `AGENTIC_ANDROID_DEVICE_AGENT=1`, `AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=...` | Sets `BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT=true`, enables `AgentRuntimeService`, passes `VITE_AGENTIC_DEVICE_AGENT=1` into the bundled WebView |
-| Render (runtime) | hidden | `AGENTIC_DEVICE_AGENT=1`, `AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=...` | Status/control endpoints respond for allowlisted wallets; no provider calls |
+| Browser (Vite) | hidden | `VITE_AGENTIC_DEVICE_AGENT=1` | Reveals Device Agent in the AI mode dropdown and Connect AI card |
+| Android (Gradle) | debug visible/enabled; release hidden/disabled | `AGENTIC_ANDROID_DEVICE_AGENT=1` | Sets `BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT=true`, enables `AgentRuntimeService`, passes `VITE_AGENTIC_DEVICE_AGENT=1` into the bundled WebView |
+| Render (runtime) | hidden | `AGENTIC_DEVICE_AGENT=1` | Status/control endpoints respond for signed-in wallets; no provider calls |
 
 Historical debug wallet examples for local allowlists:
 
@@ -147,7 +147,7 @@ Run on 2026-05-15 from `master @ a22b79a` plus the polish pass above.
 | `pnpm -F @solana-agent-wallet-adapter/browser-demo typecheck` | PASS | Strict tsc clean |
 | `pnpm -F @solana-agent-wallet-adapter/browser-demo test` | PASS 800/800 (27 files) | Includes `deviceAgentClient.test.ts` 55, `deviceAgentDiagnostics.test.ts` 21, `systemHealthDeviceAgent.test.ts` 8, `planner.test.ts` 29 |
 | `pnpm -F @solana-agent-wallet-adapter/render-web typecheck` | PASS | Strict tsc clean |
-| `pnpm exec vitest run src/__tests__/devGate.test.ts src/__tests__/server.test.ts` (render-web) | PASS 50/50 | Device Agent gate + endpoint tests pass; both allowlisted wallets verified |
+| `pnpm exec vitest run src/__tests__/devGate.test.ts src/__tests__/server.test.ts` (render-web) | PASS 50/50 | Device Agent gate + endpoint tests pass |
 | `node scripts/android-device-agent-smoke.mjs` | PASS 8/8 | All deterministic source-completion checks; report at `build/android-device-agent-smoke/report.json` |
 | `pnpm android:build` | PASS | Standard APK; `AgentRuntimeService enabled=true` verified via `aapt2 dump xmltree` |
 | `pnpm android:build -- -PagenticDeviceAgent=false` | PASS | Opt-out APK; `BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT=false` and Device Agent UI hidden |
@@ -254,7 +254,7 @@ endpoints exist. `RenderDeviceAgentSession` has no `apiKey` field.
 ## Public release guardrail
 
 - Default web and Render builds keep Device Agent disabled; Android release builds keep Device Agent disabled unless
-  explicitly enabled and allowlisted.
+  explicitly enabled.
 - Do **not** set `VITE_AGENTIC_DEVICE_AGENT=1` or `AGENTIC_DEVICE_AGENT=1` for a public production web/Render
   release unless the release owner has explicitly approved it. Android rollback builds can pass
   `-PagenticDeviceAgent=false`.

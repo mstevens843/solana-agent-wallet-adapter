@@ -9,8 +9,7 @@ through the installed wallet's approval flow.
 
 ## Prerequisites
 
-- An explicitly allowlisted wallet. Set `VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST` for the browser build and
-  `AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST` for the Render status block. Unset or empty allowlists qualify no wallets.
+- A connected wallet. When the browser-native Device Agent flags are enabled, any connected wallet can use the path.
 - A modern browser with WebCrypto and IndexedDB available. Recent Chrome, Edge, Firefox, and Safari qualify.
   Private/incognito IndexedDB blocking returns the `storage_unavailable` error code and requires the Session-only
   fallback (see Secret Store Modes).
@@ -23,12 +22,11 @@ the Device Agent key field, an AI prompt, the bridge process, a Render env var, 
 
 ## Commands
 
-Run the dev server with both gates and an allowlist:
+Run the dev server with both gates:
 
 ```sh
 VITE_AGENTIC_DEVICE_AGENT=1 \
 VITE_AGENTIC_BROWSER_DEVICE_AGENT=1 \
-VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd,7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w \
 pnpm -F @solana-agent-wallet-adapter/browser-demo dev
 ```
 
@@ -37,7 +35,6 @@ Or a production-style preview:
 ```sh
 VITE_AGENTIC_DEVICE_AGENT=1 \
 VITE_AGENTIC_BROWSER_DEVICE_AGENT=1 \
-VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd,7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w \
 pnpm -F @solana-agent-wallet-adapter/browser-demo build && \
 pnpm -F @solana-agent-wallet-adapter/browser-demo preview
 ```
@@ -51,26 +48,24 @@ served — toggling a Vite flag without rebuilding has no effect.
 |---|---|---|---|
 | `VITE_AGENTIC_DEVICE_AGENT` | Browser build | unset | Umbrella Device Agent flag for the browser bundle. Required by both Android-native and browser-native browser UX. |
 | `VITE_AGENTIC_BROWSER_DEVICE_AGENT` | Browser build | unset | Enables the browser-native runtime path. Without this flag the bundle keeps the legacy scaffold-only behavior. |
-| `VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST` | Browser build | unset | Comma-separated wallet addresses allowed to use Device Agent in the browser. Empty list disables Device Agent for every wallet. |
+| `VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST` | Browser build | unset | Deprecated no-op. Device Agent wallet access is controlled by the feature flags, not this list. |
 | `VITE_AGENTIC_ANDROID_DEVICE_AGENT` | Browser build | unset | Used by Android-targeted browser builds to keep the Android-native bridge visible while the browser-native runtime is also gated. Documented in `docs/smoke/browser-device-agent.md`. |
 | `AGENTIC_DEVICE_AGENT` | Render | unset | Umbrella server-side Device Agent flag. Required for the `runtimes` status block to expose anything. |
 | `AGENTIC_BROWSER_DEVICE_AGENT` | Render | unset | Sets `runtimes.browserNative` to `true` on `/api/device-agent/status`. Has no effect on the browser bundle itself. |
-| `AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST` | Render | unset | Wallet addresses Render will accept for Device Agent status/control calls. 403 for everything else. |
+| `AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST` | Render | unset | Deprecated no-op. Render accepts any signed-in wallet when `AGENTIC_DEVICE_AGENT=1`. |
 | `AGENTIC_BROWSER_CORS_CHECK_CUSTOM_BASE_URL` | Local script env | unset | Fallback for `node scripts/browser-device-agent-cors-check.mjs --base-url=...` when running the CORS probe without flags. Read at `scripts/browser-device-agent-cors-check.mjs:424`. |
 
 Enabling only `AGENTIC_BROWSER_DEVICE_AGENT=1` on Render does not start anything — it only changes the
 `runtimes.browserNative` boolean reported by `/api/device-agent/status`. Render still serves no provider calls and
 still rejects any non-status/control Device Agent call.
 
-## Allowlist Semantics
+## Wallet Access Semantics
 
-The browser-side `VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST` and the Render-side
-`AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST` accept the same comma-separated wallet address format. The browser bundle
-hides the Device Agent card and the `Device Agent - drafts via browser` AI-path option for any wallet not on the list.
-Render returns 403 for any wallet not on the list. An unset or empty allowlist means no wallets qualify — there is no
-implicit allow-all. Keep the browser and Render copies in sync to avoid status flicker (the browser-side block plus a
-Render-side allow looks fine in DevTools but is unusable in practice, and the reverse hides a working backend behind
-an empty card).
+The browser-side `VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST` and Render-side
+`AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST` variables are retained only for backwards-compatible deployments. They no
+longer gate access. Browser-native Device Agent is available to any connected wallet when
+`VITE_AGENTIC_DEVICE_AGENT=1` and `VITE_AGENTIC_BROWSER_DEVICE_AGENT=1`; Render status/control is available to any
+signed-in wallet when `AGENTIC_DEVICE_AGENT=1`.
 
 ## Secret Store Modes
 
@@ -159,5 +154,5 @@ Two read-only scripts back the smoke path:
   `--no-post`, `--json`, `--report=<path>`, `--help`. Falls back to `AGENTIC_BROWSER_CORS_CHECK_CUSTOM_BASE_URL` when
   `--base-url` is omitted. Never prints provider keys.
 - **`node scripts/browser-device-agent-status.mjs`** — read-only derivation of the gate state for the browser-native
-  runtime (flags resolved, allowlist parsed, eligibility for a given wallet). Useful to confirm a build's gate posture
-  without booting the browser.
+  runtime (flags resolved, effective runtime for a given wallet). Useful to confirm a build's gate posture without
+  booting the browser.

@@ -19,8 +19,8 @@ Use this process to make every public installer shown on `agentic-signer.com` re
 
 ## Release Guardrails
 
-- Public production web, Render, iOS, Android APK, and Android AAB builds keep Device Agent disabled or empty-allowlist
-  by default. Debug/install Android builds keep Device Agent enabled for local smoke coverage.
+- Public production web, Render, iOS, Android APK, and Android AAB builds keep Device Agent disabled by default.
+  Debug/install Android builds keep Device Agent enabled for local smoke coverage.
 - Do not set `VITE_AGENTIC_DEVICE_AGENT=1` or `AGENTIC_DEVICE_AGENT=1` for a public web/Render release unless the
   release owner explicitly approves it.
 - If an approved web/Render Device Agent build is shipped, document the approval in the release notes and confirm Render
@@ -64,9 +64,8 @@ without the leading `v`.
    `VITE_AGENTIC_BROWSER_DEVICE_AGENT`, and `AGENTIC_BROWSER_DEVICE_AGENT` unset unless the release notes include
    explicit Device Agent approval for web/Render/browser-native surfaces. Android release builds must set
    `AGENTIC_ANDROID_RELEASE_PROFILE=public-safe` for public/store candidates. For an approved Android Device Agent
-   release candidate, set `AGENTIC_ANDROID_RELEASE_PROFILE=device-agent`, `AGENTIC_ANDROID_DEVICE_AGENT=1`, and a
-   non-empty `AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST`, then run `docs/smoke/android-device-agent.md` and confirm the
-   source-completion scenario passes.
+   release candidate, set `AGENTIC_ANDROID_RELEASE_PROFILE=device-agent` and `AGENTIC_ANDROID_DEVICE_AGENT=1`, then
+   run `docs/smoke/android-device-agent.md` and confirm the source-completion scenario passes.
    Hosted `/api/solana/send-transaction` requires a signed-in wallet session in production unless
    `AGENTIC_PUBLIC_SOLANA_RELAY=1` is intentionally set; use `AGENTIC_PUBLIC_RELAY_RATE_LIMIT_MAX` to tighten the
    public relay bucket for that deployment.

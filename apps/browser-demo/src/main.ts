@@ -358,6 +358,7 @@ import {
   aiFormatLabel,
   aiProviderPresetById,
   aiRouteDiagnosticForSettings,
+  bridgeAiSessionKeyPayload,
   buildTemplatePlan,
   confirmHostedAiPlanner,
   defaultTemplateFieldValues,
@@ -21780,7 +21781,7 @@ function aiModeDisabledReason(mode: AiSettings['mode']): string {
   });
   if (desktopDisabledReason) return desktopDisabledReason;
   if (mode === 'device-agent' && !deviceAgentModeVisible()) {
-    return 'Device Agent is enabled only for local dev builds, Android device-agent builds, or allowlisted wallets.';
+    return 'Device Agent is enabled only for local dev builds, Android device-agent builds, or browser-native Device Agent builds.';
   }
   const hostedBlockReason = hostedByokCloudSessionReasonForMode(mode);
   if (hostedBlockReason) return hostedBlockReason;
@@ -21842,7 +21843,7 @@ function aiProviderHelperText(): string {
     }
     return canUseDeviceAgentBrowserNative()
       ? 'Device Agent makes AI calls in this tab. We suggest a low-limit key to avoid burning quota; close the tab to stop it.'
-      : 'Device Agent is gated for local development or allowlisted cloud wallets.';
+      : 'Device Agent is gated by the Device Agent build/runtime flags.';
   }
   return '';
 }
@@ -21914,7 +21915,7 @@ function deviceAgentConnectionCard(status: DeviceAgentStatus | null): string {
           : status?.runtime === 'browser-native'
             ? 'The gated browser-native runtime is available for on-tab draft, review, and ask requests.'
             : 'The gated runtime path is available for setup. This surface remains status/control only.'
-        : 'Enable the Device Agent env or sign in with an allowlisted wallet to use this path.');
+        : 'Enable the Device Agent env and connect a wallet to use this path.');
   const provider = status?.provider ?? aiProviderPresetById(state.aiSettings.provider).label;
   const model = status?.model ?? state.aiSettings.model ?? aiProviderPresetById(state.aiSettings.provider).model;
   const lastError = status?.lastError ?? null;
@@ -34259,13 +34260,7 @@ async function runSaveBridgeAiKey(): Promise<void> {
     saveCurrentSessionAiApiKey();
     await bridgeRequest('/bridge/ai/session-key', {
       method: 'POST',
-      body: JSON.stringify({
-        apiKey: state.aiSettings.apiKey,
-        baseUrl: state.aiSettings.baseUrl,
-        model: state.aiSettings.model,
-        provider: state.aiSettings.provider,
-        apiFormat: state.aiSettings.apiFormat,
-      }),
+      body: JSON.stringify(bridgeAiSessionKeyPayload(state.aiSettings, { includeApiKey: true })),
     });
     await refreshBridgeAiStatus(true);
     const connected = await ensureBridgeConnectedAfterLocalCall();
@@ -34294,12 +34289,7 @@ async function syncConfiguredBridgeAiSettings(): Promise<void> {
   try {
     await bridgeRequest('/bridge/ai/session-key', {
       method: 'POST',
-      body: JSON.stringify({
-        baseUrl: state.aiSettings.baseUrl,
-        model: state.aiSettings.model,
-        provider: state.aiSettings.provider,
-        apiFormat: state.aiSettings.apiFormat,
-      }),
+      body: JSON.stringify(bridgeAiSessionKeyPayload(state.aiSettings)),
     });
     await refreshBridgeAiStatus(false);
     render();
@@ -40095,12 +40085,16 @@ async function resolveBrowserTokenMetadata(
   }
   const mint = publicKeyParam(mintText, 'token mint');
 
-  // Android WebView can't read public Solana RPC directly (api.mainnet-beta.solana.com 403s
-  // the WebView origin). Route mint reads through Render which holds the Helius key.
-  // Mirrors browserLatestBlockhash / broadcastSignedBrowserTransaction / browserSignatureStatus.
+  // Android/iOS WebView can't read public Solana RPC directly (api.mainnet-beta.solana.com 403s
+  // the WebView origin). Route mint reads through Render which holds the Helius key. Unlike the
+  // sibling helpers (browserLatestBlockhash / broadcastSignedBrowserTransaction /
+  // browserSignatureStatus), this read uses a web3.js Connection JSON-RPC call rather than an
+  // /api/* fetch, so the global /api/* -> Render fetch rewrite can't cover it — iOS must take the
+  // cloud-proxy branch explicitly, same as Android, or arbitrary-decimal tokens (e.g. Popcat)
+  // fail with "Could not read decimals".
   let ownerKey: PublicKey | undefined;
   let parsedDecimals: number | undefined;
-  if (state.androidNativeEnvironment.isAndroidNative) {
+  if (state.androidNativeEnvironment.isAndroidNative || state.iosNativeEnvironment.isIosNative) {
     const info = await cloudRequest<{ exists: boolean; owner: string | null; decimals: number | null }>(
       '/api/solana/parsed-account-info',
       {
