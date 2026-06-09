@@ -1193,6 +1193,43 @@ test('agent-setup from env supports OpenRouter provider presets', async () => {
   }
 });
 
+test('agent-setup configures a subscription connector with no API key', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-agent-setup-connector-'));
+  const envPath = join(runtimeDir, '.env');
+  const bridge = await startMockBridge([]);
+  try {
+    const result = await runCliAsync([
+      '--runtime-dir',
+      runtimeDir,
+      '--bridge-url',
+      bridge.url,
+      'agent-setup',
+      '--engine',
+      'connector',
+      '--connector',
+      'codex',
+      '--json',
+    ], {});
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout) as Record<string, unknown>;
+    assert.equal(payload.configured, true);
+    assert.equal(payload.engine, 'connector');
+    assert.equal(payload.connector, 'codex');
+
+    const raw = await readFile(envPath, 'utf8');
+    assert.match(raw, /AGENTIC_AI_ENGINE=connector/);
+    assert.match(raw, /AGENTIC_AI_CONNECTOR=codex/);
+    // Connector mode carries no API key.
+    assert.doesNotMatch(raw, /AGENTIC_AI_API_KEY=\S/);
+
+    const sessionKey = bridge.requests.find((request) => request.path === '/bridge/ai/session-key');
+    assert.ok(sessionKey);
+    assert.deepEqual(sessionKey.body, { engine: 'connector', connector: 'codex' });
+  } finally {
+    await bridge.close();
+  }
+});
+
 test('agent-setup custom OpenAI-compatible opts the bridge into a custom base URL', async () => {
   const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-agent-setup-custom-'));
   const envPath = join(runtimeDir, '.env');
@@ -1228,6 +1265,34 @@ test('agent-setup custom OpenAI-compatible opts the bridge into a custom base UR
       model: 'gateway-model',
       allowCustomBaseUrl: true,
     });
+  } finally {
+    await bridge.close();
+  }
+});
+
+test('agent-setup rejects OpenRouter URLs under custom OpenAI-compatible', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-agent-setup-custom-openrouter-'));
+  const bridge = await startMockBridge([]);
+  try {
+    const result = await runCliAsync([
+      '--runtime-dir',
+      runtimeDir,
+      '--bridge-url',
+      bridge.url,
+      'agent-setup',
+      '--from-env',
+      'TEST_AGENTIC_AI_KEY',
+      '--provider',
+      'custom-openai-compatible',
+      '--base-url',
+      'https://openrouter.ai/api/v1',
+      '--model',
+      'gateway-model',
+      '--json',
+    ], { TEST_AGENTIC_AI_KEY: 'sk-test-agent-key' });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /OpenRouter preset/);
+    assert.equal(bridge.requests.some((request) => request.path === '/bridge/ai/session-key'), false);
   } finally {
     await bridge.close();
   }
@@ -1505,6 +1570,45 @@ test('device-agent set-key rejects inline --key to keep secrets out of argv', as
   ]);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr + result.stdout, /from-env/i);
+});
+
+test('device-agent set-key rejects OpenRouter URLs under custom OpenAI-compatible before bridge request', async () => {
+  const bridge = await startMockBridge([]);
+  try {
+    const result = await runCliAsync([
+      '--bridge-url', bridge.url,
+      'device-agent', 'set-key',
+      '--from-env', 'TEST_AGENTIC_AI_KEY',
+      '--provider', 'custom-openai-compatible',
+      '--base-url', 'https://openrouter.ai/api/v1',
+      '--model', 'gateway-model',
+      '--json',
+    ], { TEST_AGENTIC_AI_KEY: 'sk-test-agent-key' });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr + result.stdout, /OpenRouter preset/);
+    assert.equal(bridge.requests.some((request) => request.path === '/bridge/ai/session-key'), false);
+  } finally {
+    await bridge.close();
+  }
+});
+
+test('device-agent configure rejects OpenRouter URLs under custom OpenAI-compatible before Render request', async () => {
+  const renderWeb = await startMockRenderWeb();
+  try {
+    const result = await runCliAsync([
+      '--render-web-url', renderWeb.url,
+      'device-agent', 'configure',
+      '--provider', 'custom-openai-compatible',
+      '--base-url', 'https://openrouter.ai/api/v1',
+      '--model', 'gateway-model',
+      '--json',
+    ]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr + result.stdout, /OpenRouter preset/);
+    assert.equal(renderWeb.requests.some((request) => request.path === '/api/device-agent/control'), false);
+  } finally {
+    await renderWeb.close();
+  }
 });
 
 test('auth login full SIWS roundtrip stores a session token', async () => {

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  AI_CONNECTORS,
+  aiConnectorPreset,
   AI_PROVIDER_PRESETS,
   DEFAULT_AI_PROVIDER_ID,
   DEVICE_AGENT_PLAN_REQUIRED_BOUNDARY,
@@ -12,6 +14,7 @@ import {
   aiRouteDiagnosticForSettings,
   buildTemplatePlan,
   confirmHostedAiPlanner,
+  customOpenAiCompatibleBaseUrlError,
   inferTemplateIdForPrompt,
   inferredTemplateParameters,
   normalizeAiAsk,
@@ -112,6 +115,14 @@ describe('planner AI setup helpers', () => {
     expect(aiProviderSupportsDeviceAgent('openrouter')).toBe(true);
     expect(aiProviderSupportsDeviceAgent('custom-openai-compatible')).toBe(true);
     expect(aiProviderSupportsDeviceAgent('unknown-provider')).toBe(false);
+  });
+
+  it('exposes the three subscription connectors with honest billing labels', () => {
+    expect(AI_CONNECTORS.map((connector) => connector.id)).toEqual(['codex', 'gemini', 'claude']);
+    // Codex/Gemini are plan-included; Claude is metered Agent-SDK credits and must say it caps out.
+    expect(aiConnectorPreset('codex').billingNote).toMatch(/plan/i);
+    expect(aiConnectorPreset('gemini').billingNote).toMatch(/plan/i);
+    expect(aiConnectorPreset('claude').billingNote).toMatch(/caps out/i);
   });
 
   it('reports the Device Agent AI route separately from hosted and bridge', () => {
@@ -656,6 +667,23 @@ describe('planner AI setup helpers', () => {
     });
     expect(bridgeAiSessionKeyPayload(customSettings)).not.toHaveProperty('apiKey');
     expect(bridgeAiSessionKeyPayload(sessionSettings)).not.toHaveProperty('allowCustomBaseUrl');
+  });
+
+  it('rejects known native provider URLs for Custom OpenAI-compatible setup', () => {
+    expect(customOpenAiCompatibleBaseUrlError('https://gateway.example/v1')).toBeNull();
+    expect(customOpenAiCompatibleBaseUrlError('https://generativelanguage.googleapis.com/v1beta/openai')).toBeNull();
+    expect(customOpenAiCompatibleBaseUrlError('https://openrouter.ai/api/v1')).toContain('OpenRouter preset');
+    expect(customOpenAiCompatibleBaseUrlError('https://api.anthropic.com/v1')).toContain('Claude / Anthropic preset');
+    expect(customOpenAiCompatibleBaseUrlError('https://generativelanguage.googleapis.com/v1beta')).toContain('Gemini preset');
+    expect(customOpenAiCompatibleBaseUrlError('http://gateway.example/v1')).toContain('https://');
+  });
+
+  it('rejects Custom OpenAI-compatible bridge payloads with OpenRouter URLs', () => {
+    expect(() => bridgeAiSessionKeyPayload({
+      ...sessionSettings,
+      provider: 'custom-openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+    })).toThrow('OpenRouter preset');
   });
 
   it('can confirm Hosted BYOK through an injected cloud fetcher', async () => {

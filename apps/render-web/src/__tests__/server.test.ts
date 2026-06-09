@@ -94,6 +94,60 @@ describe('render web hosted BYOK API', () => {
     });
   });
 
+  it('adds the Ultra referral platform fee to /api/swap/order when configured', async () => {
+    vi.stubEnv('JUPITER_API_KEY', 'jup-test-key');
+    vi.stubEnv('JUPITER_REFERRAL_ACCOUNT', DEVICE_AGENT_WALLET_A);
+    vi.stubEnv('JUPITER_REFERRAL_FEE_BPS', '50');
+    const jupiterCalls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request) => {
+      jupiterCalls.push(String(url));
+      return jsonResponse({ requestId: 'order-1', transaction: 'base64tx' });
+    }));
+
+    await withServer(async (port) => {
+      const response = await postJson(port, '/api/swap/order', {
+        inputMint: 'So11111111111111111111111111111111111111112',
+        outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        amount: '1000000',
+        taker: DEVICE_AGENT_WALLET_B,
+        slippageBps: 50,
+      });
+
+      expect(response.status).toBe(200);
+      expect(jupiterCalls).toHaveLength(1);
+      const ordered = new URL(jupiterCalls[0]!);
+      expect(ordered.pathname.endsWith('/order')).toBe(true);
+      expect(ordered.searchParams.get('referralAccount')).toBe(DEVICE_AGENT_WALLET_A);
+      expect(ordered.searchParams.get('referralFee')).toBe('50');
+    });
+  });
+
+  it('omits the swap platform fee for the iOS app', async () => {
+    vi.stubEnv('JUPITER_API_KEY', 'jup-test-key');
+    vi.stubEnv('JUPITER_REFERRAL_ACCOUNT', DEVICE_AGENT_WALLET_A);
+    vi.stubEnv('JUPITER_REFERRAL_FEE_BPS', '50');
+    const jupiterCalls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request) => {
+      jupiterCalls.push(String(url));
+      return jsonResponse({ requestId: 'order-1', transaction: 'base64tx' });
+    }));
+
+    await withServer(async (port) => {
+      const response = await postJson(port, '/api/swap/order', {
+        inputMint: 'So11111111111111111111111111111111111111112',
+        outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        amount: '1000000',
+        taker: DEVICE_AGENT_WALLET_B,
+      }, { 'x-agentic-client': 'ios-bundled' });
+
+      expect(response.status).toBe(200);
+      expect(jupiterCalls).toHaveLength(1);
+      const ordered = new URL(jupiterCalls[0]!);
+      expect(ordered.searchParams.has('referralAccount')).toBe(false);
+      expect(ordered.searchParams.has('referralFee')).toBe(false);
+    });
+  });
+
   it('uses Render-managed hosted AI without requiring a browser-supplied API key', async () => {
     vi.stubEnv('AGENTIC_HOSTED_AI_API_KEY', 'sk-managed-render-key');
     vi.stubEnv('AGENTIC_HOSTED_AI_PROVIDER', 'openai');
@@ -285,6 +339,30 @@ describe('render web hosted BYOK API', () => {
         state: 'running',
         runtimes: { android: true, browserNative: false },
         message: 'Device Agent runtime is gated on Render; no cloud daemon is started.',
+      });
+    }, { walletAddress: DEVICE_AGENT_WALLET_A });
+  });
+
+  it('rejects Custom OpenAI-compatible Device Agent config that points at OpenRouter', async () => {
+    stubDeviceAgentEnabled();
+    await withServer(async (port, ctx) => {
+      await postJson(port, '/api/device-agent/control', { action: 'clear' }, { cookie: ctx.cookie });
+      const rejected = await postJson(port, '/api/device-agent/control', {
+        action: 'configure',
+        settings: {
+          provider: 'custom-openai-compatible',
+          apiFormat: 'openai-compatible',
+          baseUrl: 'https://openrouter.ai/api/v1',
+          model: 'gateway-model',
+        },
+      }, { cookie: ctx.cookie });
+      expect(rejected.status).toBe(400);
+      expect(rejected.body.error).toContain('OpenRouter preset');
+
+      const status = await getJson(port, '/api/device-agent/status', { cookie: ctx.cookie });
+      expect(status.body).toMatchObject({
+        configured: false,
+        state: 'stopped',
       });
     }, { walletAddress: DEVICE_AGENT_WALLET_A });
   });

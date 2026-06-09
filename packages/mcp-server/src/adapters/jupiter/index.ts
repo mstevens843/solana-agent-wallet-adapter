@@ -432,6 +432,12 @@ export {
   type JupiterProduct,
 } from './client.js';
 export {
+  JUPITER_REFERRAL_MAX_FEE_BPS,
+  JUPITER_REFERRAL_MIN_FEE_BPS,
+  resolveJupiterReferral,
+  type JupiterReferralParams,
+} from './referral.js';
+export {
   JUPITER_DOCS_INDEX_URL,
   JUPITER_ENDPOINT_CATALOG,
   listJupiterEndpointCatalog,

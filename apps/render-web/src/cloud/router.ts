@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
+import { customOpenAiCompatibleBaseUrlError } from '@solana-agent-wallet-adapter/core';
 import { createPairingHandler } from './pairingHandler.js';
 
 import {
@@ -139,6 +140,7 @@ import {
   isKaminoConfigured,
   isSaveConfigured,
   isWormholeConfigured,
+  resolveJupiterReferral,
   setDriftVaultClientFactory,
   setKaminoClientFactory,
   setSaveClientFactory,
@@ -1277,7 +1279,8 @@ async function routeApiRequest(
 
   if (url.pathname === '/api/swap/order') {
     requireMethod(req, 'POST');
-    await handleJupiterSwapOrder(req, res);
+    const client = firstHeaderValue(req.headers['x-agentic-client'])?.toLowerCase();
+    await handleJupiterSwapOrder(req, res, client);
     return;
   }
 
@@ -2110,7 +2113,11 @@ async function handleConnectorCapabilities(
   });
 }
 
-async function handleJupiterSwapOrder(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handleJupiterSwapOrder(
+  req: IncomingMessage,
+  res: ServerResponse,
+  client?: string,
+): Promise<void> {
   const body = asJsonRecord(await readJsonBody(req), 'swap order body');
   const inputMint = requiredBodyString(body, 'inputMint');
   const outputMint = requiredBodyString(body, 'outputMint');
@@ -2127,6 +2134,14 @@ async function handleJupiterSwapOrder(req: IncomingMessage, res: ServerResponse)
   url.searchParams.set('taker', taker);
   if (slippageBps !== undefined) {
     url.searchParams.set('slippageBps', String(slippageBps));
+  }
+  // Platform fee on swaps only — attach the operator's Ultra referral params so
+  // Jupiter bakes the fee into the order tx. Skip iOS (App Store policy): the
+  // iOS app identifies itself via the x-agentic-client header.
+  const referral = client === 'ios-bundled' ? null : resolveJupiterReferral();
+  if (referral) {
+    url.searchParams.set('referralAccount', referral.referralAccount);
+    url.searchParams.set('referralFee', String(referral.referralFee));
   }
   writeJson(res, 200, await requestJupiter(url));
 }
@@ -3142,12 +3157,20 @@ function deviceAgentSettingsFromBody(body: unknown): Partial<RenderDeviceAgentSe
     : undefined;
   if (!settings || typeof settings !== 'object') return {};
   const input = settings as Record<string, unknown>;
-  return {
+  const normalized = {
     ...(typeof input.provider === 'string' && input.provider.trim() ? { provider: input.provider.trim() } : {}),
     ...(typeof input.apiFormat === 'string' && input.apiFormat.trim() ? { apiFormat: input.apiFormat.trim() } : {}),
     ...(typeof input.baseUrl === 'string' && input.baseUrl.trim() ? { baseUrl: input.baseUrl.trim() } : {}),
     ...(typeof input.model === 'string' && input.model.trim() ? { model: input.model.trim() } : {}),
   };
+  assertCustomOpenAiCompatibleDeviceAgentUrl(normalized.provider, normalized.baseUrl);
+  return normalized;
+}
+
+function assertCustomOpenAiCompatibleDeviceAgentUrl(provider: string | undefined, baseUrl: string | undefined): void {
+  if (provider?.trim().toLowerCase() !== 'custom-openai-compatible') return;
+  const message = customOpenAiCompatibleBaseUrlError(baseUrl ?? '');
+  if (message) throw new ApiError(400, message);
 }
 
 function deviceAgentWalletShort(walletAddress: string): string {

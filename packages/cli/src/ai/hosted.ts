@@ -19,6 +19,11 @@ export interface BridgeAiStatus {
   apiFormat?: string;
   baseUrl?: string;
   model?: string;
+  engine?: 'api-key' | 'connector';
+  connector?: string;
+  connectorLabel?: string;
+  connectorBilling?: 'plan-included' | 'metered-credits';
+  connectorAuthStatus?: 'connected' | 'needs-auth' | 'binary-not-found';
 }
 
 export interface HostedAiStatus {
@@ -123,9 +128,18 @@ export function agentAiRouteLabel(route: AgentAiRoute): string {
     return `Hosted BYOK (${agentProviderLabel(route.config.provider)} - ${route.config.model})`;
   }
   if (route.kind === 'bridge') {
+    if (route.status.engine === 'connector' && route.status.connectorLabel) {
+      return `Connector · ${route.status.connectorLabel}`;
+    }
     const provider = route.status.provider?.trim() || route.status.apiFormat?.trim() || 'local bridge AI';
     const model = route.status.model?.trim();
     return model ? `${provider} - ${model}` : provider;
+  }
+  // Connector configured on the bridge but not usable yet (CLI missing / not signed in).
+  if (route.bridge?.engine === 'connector' && route.bridge.connectorLabel) {
+    return route.bridge.connectorAuthStatus === 'binary-not-found'
+      ? `Connector · ${route.bridge.connectorLabel} (CLI not installed — run /agent-setup)`
+      : `Connector · ${route.bridge.connectorLabel} (sign-in needed — run /agent-setup)`;
   }
   if (route.config?.path === 'hosted-byok') {
     return route.signedIn ? 'Hosted BYOK not reachable' : 'Hosted BYOK requires /sign-in';

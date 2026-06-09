@@ -21,6 +21,7 @@ import process from 'node:process';
 import type { GlobalOptions, ParsedArgs } from '../shared/types.js';
 import { optionValue, removeUndefined } from '../shared/util.js';
 import { bridgeRequest, renderWebRequest } from '../http/index.js';
+import { assertCustomOpenAiCompatibleBaseUrl } from '../ai/presets.js';
 
 const KNOWN_SUBS = new Set([
   'status',
@@ -62,6 +63,9 @@ export async function dispatchDeviceAgent(parsed: ParsedArgs): Promise<unknown> 
       baseUrl: optionValue(parsed.positionals, '--base-url'),
       model: optionValue(parsed.positionals, '--model'),
     });
+    if (typeof settings.provider === 'string' && typeof settings.baseUrl === 'string') {
+      assertCustomOpenAiCompatibleBaseUrl(settings.provider, settings.baseUrl);
+    }
     return renderWebRequest(parsed.options, '/api/device-agent/control', {
       method: 'POST',
       body: JSON.stringify({ action, settings }),
@@ -88,11 +92,16 @@ export async function dispatchDeviceAgent(parsed: ParsedArgs): Promise<unknown> 
     }
     const apiKey = process.env[fromEnv];
     if (!apiKey) throw new Error(`Env var ${fromEnv} is empty or undefined.`);
+    const provider = optionValue(parsed.positionals, '--provider');
+    const baseUrl = optionValue(parsed.positionals, '--base-url');
+    if (provider && baseUrl) {
+      assertCustomOpenAiCompatibleBaseUrl(provider, baseUrl);
+    }
     const body = removeUndefined({
       apiKey,
-      provider: optionValue(parsed.positionals, '--provider'),
+      provider,
       model: optionValue(parsed.positionals, '--model'),
-      baseUrl: optionValue(parsed.positionals, '--base-url'),
+      baseUrl,
       apiFormat: optionValue(parsed.positionals, '--api-format'),
     });
     return bridgeRequest(parsed.options, '/bridge/ai/session-key', {

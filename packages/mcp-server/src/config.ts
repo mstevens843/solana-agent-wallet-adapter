@@ -4,6 +4,8 @@ import { PublicKey } from '@solana/web3.js';
 
 import { ProtocolError, type Cluster } from '@solana-agent-wallet-adapter/core';
 
+import { resolveJupiterReferral, type JupiterReferralParams } from './adapters/jupiter/referral.js';
+
 export interface TokenLimitConfig {
   symbol: string;
   mint: string;
@@ -39,6 +41,12 @@ export interface AgentWalletConfig {
     /** Optional only when official Jupiter Perps endpoints stabilize. No default; opt-in via JUPITER_PERPS_BASE_URL. */
     perpsBaseUrl?: string;
     apiKeyEnv: string;
+    /**
+     * Ultra integrator-fee params applied to swap `/order` requests when the
+     * operator has configured JUPITER_REFERRAL_ACCOUNT (+ JUPITER_REFERRAL_FEE_BPS).
+     * Absent = no platform fee. See adapters/jupiter/referral.ts.
+     */
+    referral?: JupiterReferralParams;
   };
   recurring?: RecurringPolicyConfig;
   recipients?: Record<string, RecipientCapConfig>;
@@ -610,6 +618,15 @@ export function normalizeConfig(input: Partial<AgentWalletConfig>): AgentWalletC
   }
   if (!process.env[jupiter.apiKeyEnv]?.trim() && process.env.JUP_API_KEY?.trim()) {
     jupiter.apiKeyEnv = 'JUP_API_KEY';
+  }
+  // Platform fee on swaps: apply the operator's Ultra referral params when
+  // configured via env (JUPITER_REFERRAL_ACCOUNT + JUPITER_REFERRAL_FEE_BPS).
+  // Env takes precedence over any value carried in the config file.
+  const referral = resolveJupiterReferral() ?? input.jupiter?.referral;
+  if (referral) {
+    jupiter.referral = referral;
+  } else {
+    delete jupiter.referral;
   }
   const recurring = input.recurring;
   const recipients = input.recipients;

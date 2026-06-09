@@ -228,6 +228,30 @@ describe('BridgeAiPlanner', () => {
       model: 'gateway-model',
       allowCustomBaseUrl: true,
     })).not.toThrow();
+    expect(() => planner.setSessionKey({
+      apiKey: 'sk-test-custom',
+      provider: 'custom-openai-compatible',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'gateway-model',
+      allowCustomBaseUrl: true,
+    })).toThrow('OpenRouter preset');
+    expect(() => planner.setSessionKey({
+      apiKey: 'sk-test-custom',
+      provider: 'custom-openai-compatible',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://api.anthropic.com/v1',
+      model: 'gateway-model',
+      allowCustomBaseUrl: true,
+    })).toThrow('Claude / Anthropic preset');
+    expect(() => planner.setSessionKey({
+      apiKey: 'sk-test-custom',
+      provider: 'custom-openai-compatible',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+      model: 'gateway-model',
+      allowCustomBaseUrl: true,
+    })).toThrow('Gemini preset');
   });
 
   it('rejects non-ASCII bridge session keys before provider fetch can throw a ByteString error', async () => {

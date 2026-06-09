@@ -170,6 +170,39 @@ describe('bridge lab artifact routes', () => {
     }
   });
 
+  it('detects connector availability via /bridge/ai/connector/detect', async () => {
+    const handle = await startTestBridge();
+    try {
+      const response = await fetch(new URL('/bridge/ai/connector/detect?connector=codex', handle.url), {
+        headers: { 'x-agent-wallet-token': 'test-token' },
+      });
+      expect(response.status).toBe(200);
+      const payload = await response.json() as {
+        connectors: Array<{ connector: string; authStatus: string; label: string; billing: string }>;
+      };
+      expect(payload.connectors).toHaveLength(1);
+      expect(payload.connectors[0]?.connector).toBe('codex');
+      expect(payload.connectors[0]?.billing).toBe('plan-included');
+      expect(['connected', 'needs-auth', 'binary-not-found']).toContain(payload.connectors[0]?.authStatus);
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  it('rejects an unknown connector on /bridge/ai/connector/login', async () => {
+    const handle = await startTestBridge();
+    try {
+      const response = await fetch(new URL('/bridge/ai/connector/login', handle.url), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-agent-wallet-token': 'test-token' },
+        body: JSON.stringify({ connector: 'not-a-thing' }),
+      });
+      expect(response.status).toBe(400);
+    } finally {
+      await handle.stop();
+    }
+  });
+
   it('claims a specific browser signing request by requestId', async () => {
     const handle = await startTestBridge({ connectedAddress: '11111111111111111111111111111111' });
     try {

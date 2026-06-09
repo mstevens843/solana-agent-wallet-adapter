@@ -68,6 +68,10 @@ const SETUP_ENV_KEYS: [&str; 14] = [
     "AGENTIC_AI_API_KEY",
     "AGENTIC_AI_MODEL",
     "AGENTIC_AI_BASE_URL",
+    // Agent Connector engine: use a local subscription-authed CLI instead of an API key.
+    "AGENTIC_AI_ENGINE",
+    "AGENTIC_AI_CONNECTOR",
+    "AGENTIC_AI_CONNECTOR_PATH",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +101,10 @@ struct RuntimeSetupInput {
     ai_api_key: Option<String>,
     ai_model: Option<String>,
     ai_base_url: Option<String>,
+    // Agent Connector engine: use a local subscription-authed CLI instead of an API key.
+    ai_engine: Option<String>,
+    ai_connector: Option<String>,
+    ai_connector_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -119,6 +127,9 @@ struct RuntimeSetup {
     ai_api_key_redacted: Option<String>,
     ai_model: String,
     ai_base_url: String,
+    ai_engine: String,
+    ai_connector: Option<String>,
+    ai_connector_path: Option<String>,
     ai_ready: bool,
     sol_transfers_ready: bool,
     token_transfers_ready: bool,
@@ -1280,6 +1291,20 @@ fn runtime_setup_for_config(config: &DesktopConfig) -> Result<RuntimeSetup, Stri
         .filter(|value| !value.trim().is_empty())
         .cloned()
         .unwrap_or_else(|| DEFAULT_AI_BASE_URL.into());
+    let ai_engine = values
+        .get("AGENTIC_AI_ENGINE")
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| "api-key".into());
+    let ai_connector = values
+        .get("AGENTIC_AI_CONNECTOR")
+        .filter(|value| !value.trim().is_empty())
+        .cloned();
+    let ai_connector_path = values
+        .get("AGENTIC_AI_CONNECTOR_PATH")
+        .filter(|value| !value.trim().is_empty())
+        .cloned();
+    let connector_mode = ai_engine.eq_ignore_ascii_case("connector") && ai_connector.is_some();
     let rpc_url_configured = rpc_url.is_some();
     let jupiter_api_key_configured = jupiter_api_key.is_some();
     let birdeye_api_key_configured = birdeye_api_key.is_some();
@@ -1302,7 +1327,10 @@ fn runtime_setup_for_config(config: &DesktopConfig) -> Result<RuntimeSetup, Stri
         ai_api_key_redacted: ai_api_key.as_deref().map(redact_secret),
         ai_model,
         ai_base_url,
-        ai_ready: ai_api_key_configured,
+        ai_engine,
+        ai_connector,
+        ai_connector_path,
+        ai_ready: ai_api_key_configured || connector_mode,
         sol_transfers_ready: rpc_url_configured,
         token_transfers_ready: rpc_url_configured,
         swaps_ready: rpc_url_configured && jupiter_api_key_configured,
@@ -1445,6 +1473,38 @@ fn save_runtime_setup_to_env(
         "AGENTIC_AI_BASE_URL".into(),
         normalize_setup_url(&ai_base_url, "AI base URL")?,
     );
+
+    // Agent Connector engine: persist engine/connector when set to 'connector'; clear them when the
+    // user explicitly switches back to an API key (so the bridge stops shelling out to the CLI).
+    let ai_engine = input
+        .ai_engine
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase);
+    if ai_engine.as_deref() == Some("connector") {
+        updates.insert("AGENTIC_AI_ENGINE".into(), "connector".into());
+        if let Some(connector) = input
+            .ai_connector
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            updates.insert("AGENTIC_AI_CONNECTOR".into(), connector.into());
+        }
+        if let Some(connector_path) = input
+            .ai_connector_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            updates.insert("AGENTIC_AI_CONNECTOR_PATH".into(), connector_path.into());
+        }
+    } else if ai_engine.is_some() {
+        updates.insert("AGENTIC_AI_ENGINE".into(), String::new());
+        updates.insert("AGENTIC_AI_CONNECTOR".into(), String::new());
+        updates.insert("AGENTIC_AI_CONNECTOR_PATH".into(), String::new());
+    }
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)

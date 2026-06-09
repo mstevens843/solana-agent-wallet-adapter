@@ -145,6 +145,34 @@ describe('runtime config', () => {
     });
   });
 
+  it('validates Custom OpenAI-compatible gateway URLs before runtime start', () => {
+    expect(validateRuntimeConfig({
+      ...validConfig,
+      provider: 'custom-openai-compatible',
+      baseUrl: 'https://gateway.example/v1',
+    })).toBeNull();
+    expect(validateRuntimeConfig({
+      ...validConfig,
+      provider: 'custom-openai-compatible',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    })).toBeNull();
+    expect(validateRuntimeConfig({
+      ...validConfig,
+      provider: 'custom-openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+    })).toMatchObject({ subcode: 'unsupported_format', message: expect.stringContaining('OpenRouter preset') });
+    expect(validateRuntimeConfig({
+      ...validConfig,
+      provider: 'custom-openai-compatible',
+      baseUrl: 'https://api.anthropic.com/v1',
+    })).toMatchObject({ subcode: 'unsupported_format', message: expect.stringContaining('Claude / Anthropic preset') });
+    expect(validateRuntimeConfig({
+      ...validConfig,
+      provider: 'custom-openai-compatible',
+      baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+    })).toMatchObject({ subcode: 'unsupported_format', message: expect.stringContaining('Gemini preset') });
+  });
+
   it('redacts the apiKey from the summary', () => {
     const summary = redactedSummary(validConfig);
     expect(summary).not.toHaveProperty('apiKey');

@@ -1,4 +1,7 @@
 import {
+  assertCustomOpenAiCompatibleBaseUrl,
+} from '@solana-agent-wallet-adapter/core';
+import {
   appendReviewFinding,
   assertPlanGuardrails,
   evaluatePlanGuardrails,
@@ -32,6 +35,8 @@ import {
   formTemplateFields,
 } from './connectorDrafting.js';
 
+export { customOpenAiCompatibleBaseUrlError } from '@solana-agent-wallet-adapter/core';
+
 export type {
   AgentPlan,
   AgentPlanAskRequest,
@@ -53,6 +58,27 @@ export type {
 export type AiApiFormat = 'openai-compatible' | 'anthropic';
 export type AiProviderId = 'openai' | 'anthropic' | 'gemini' | 'openrouter' | 'custom-openai-compatible';
 
+// Agent Connector engine (Local Bridge only): use a subscription you already pay for via the local
+// first-party CLI, instead of an API key. Mirrors packages/mcp-server/src/connectorCli.ts.
+export type AiConnector = 'codex' | 'gemini' | 'claude';
+
+export interface AiConnectorPreset {
+  id: AiConnector;
+  label: string;
+  /** Plain-English billing note shown in the picker. */
+  billingNote: string;
+}
+
+export const AI_CONNECTORS: AiConnectorPreset[] = [
+  { id: 'codex', label: 'Codex (ChatGPT plan)', billingNote: 'Uses your ChatGPT plan (within plan limits).' },
+  { id: 'gemini', label: 'Gemini (Google AI Pro/Ultra)', billingNote: 'Uses your Google AI Pro/Ultra plan.' },
+  { id: 'claude', label: 'Claude (Agent-SDK credits)', billingNote: 'Uses your Claude Agent-SDK credits ($20–$200/mo) — caps out, then stops.' },
+];
+
+export function aiConnectorPreset(connector: AiConnector): AiConnectorPreset {
+  return AI_CONNECTORS.find((entry) => entry.id === connector) ?? AI_CONNECTORS[0]!;
+}
+
 export interface AiSettings {
   mode: 'hosted' | 'session' | 'bridge' | 'device-agent';
   provider: AiProviderId;
@@ -62,6 +88,9 @@ export interface AiSettings {
   apiKey: string;
   multiReviewer?: boolean;
   autoBackgroundWatch?: boolean;
+  // Local-Bridge engine choice + selected connector (only meaningful when mode === 'bridge').
+  agentEngine?: 'api-key' | 'connector';
+  connector?: AiConnector;
 }
 
 export interface AiRequestOptions {
@@ -81,6 +110,11 @@ export interface BridgeAiStatus {
   apiFormat?: AiApiFormat;
   baseUrl?: string;
   model?: string;
+  engine?: 'api-key' | 'connector';
+  connector?: AiConnector;
+  connectorLabel?: string;
+  connectorBilling?: 'plan-included' | 'metered-credits';
+  connectorAuthStatus?: 'connected' | 'needs-auth' | 'binary-not-found';
 }
 
 export interface BridgeAiSessionKeyPayload {
@@ -96,6 +130,7 @@ export function bridgeAiSessionKeyPayload(
   settings: Pick<AiSettings, 'apiKey' | 'baseUrl' | 'model' | 'provider' | 'apiFormat'>,
   options: { includeApiKey?: boolean } = {},
 ): BridgeAiSessionKeyPayload {
+  assertCustomOpenAiCompatibleSettings(settings);
   return {
     ...(options.includeApiKey ? { apiKey: settings.apiKey } : {}),
     baseUrl: settings.baseUrl,
@@ -104,6 +139,10 @@ export function bridgeAiSessionKeyPayload(
     apiFormat: settings.apiFormat,
     ...(settings.provider === 'custom-openai-compatible' ? { allowCustomBaseUrl: true as const } : {}),
   };
+}
+
+export function assertCustomOpenAiCompatibleSettings(settings: Pick<AiSettings, 'provider' | 'baseUrl'>): void {
+  assertCustomOpenAiCompatibleBaseUrl(settings.provider, settings.baseUrl);
 }
 
 export type AiDiagnosticCode =
@@ -1420,6 +1459,7 @@ function unsupportedBrowserResearchAsk(provider: string): AgentPlanAskResult {
 }
 
 async function generateOpenAiCompatiblePlan(settings: AiSettings, request: AiPlanRequest, options: AiRequestOptions = {}): Promise<AgentPlan> {
+  assertCustomOpenAiCompatibleSettings(settings);
   const baseUrl = normalizeBaseUrl(settings.baseUrl, 'openai-compatible');
   const body = {
     model: settings.model.trim() || DEFAULT_AI_MODEL,
@@ -1450,6 +1490,7 @@ async function generateOpenAiCompatiblePlan(settings: AiSettings, request: AiPla
 }
 
 async function generateOpenAiCompatibleReview(settings: AiSettings, request: AgentPlanReviewRequest): Promise<AgentPlanReviewResult> {
+  assertCustomOpenAiCompatibleSettings(settings);
   const baseUrl = normalizeBaseUrl(settings.baseUrl, 'openai-compatible');
   const body = {
     model: settings.model.trim() || DEFAULT_AI_MODEL,
@@ -1478,6 +1519,7 @@ async function generateOpenAiCompatibleReview(settings: AiSettings, request: Age
 }
 
 async function generateOpenAiCompatibleAsk(settings: AiSettings, request: AgentPlanAskRequest): Promise<AgentPlanAskResult> {
+  assertCustomOpenAiCompatibleSettings(settings);
   const baseUrl = normalizeBaseUrl(settings.baseUrl, 'openai-compatible');
   const body = {
     model: settings.model.trim() || DEFAULT_AI_MODEL,
@@ -1823,7 +1865,7 @@ function isAnthropicMessagesSettings(settings: Pick<AiSettings, 'provider' | 'ap
 }
 
 function isOpenRouterSettings(settings: Pick<AiSettings, 'provider' | 'baseUrl'>): boolean {
-  return settings.provider === 'openrouter' || settings.baseUrl.includes('openrouter.ai');
+  return settings.provider === 'openrouter';
 }
 
 // Provider attribution for review evidence + diagnostics. When routed through OpenRouter we

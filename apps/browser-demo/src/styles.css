@@ -30278,3 +30278,86 @@ button.danger:hover:not(:disabled) {
     width: 100%;
   }
 }
+
+/* Agent Connector (Local Bridge): API-key vs subscription engine toggle + connector picker. */
+.bridge-engine-toggle {
+  display: flex;
+  gap: 6px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+.bridge-engine-toggle .utility.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.bridge-connector-section {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.bridge-connector-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.bridge-connector-choices {
+  display: grid;
+  gap: 8px;
+}
+.bridge-connector-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.bridge-connector-choice:hover:not(:disabled) {
+  border-color: var(--line-strong);
+}
+.bridge-connector-choice.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.bridge-connector-choice strong {
+  font-size: 13px;
+}
+.bridge-connector-choice span {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.bridge-connector-choice:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.bridge-connector-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.bridge-connector-status {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+}
+.bridge-connector-status.ok {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.bridge-connector-status.warn {
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-color: var(--warn);
+}

@@ -130,6 +130,12 @@ export type {
   ConnectorRegistryEntry,
 } from './connectorRegistry.js';
 export {
+  JUPITER_REFERRAL_MAX_FEE_BPS,
+  JUPITER_REFERRAL_MIN_FEE_BPS,
+  resolveJupiterReferral,
+  type JupiterReferralParams,
+} from './adapters/jupiter/referral.js';
+export {
   fact,
   factsFromJupiterOrderPreview,
   factsFromKaminoEarningsProof,
@@ -187,6 +193,19 @@ export type {
   UpdateRecurringPaymentInput,
 } from './actionService.js';
 export { BridgeAiPlanner } from './aiPlanner.js';
+export {
+  AGENT_CONNECTORS,
+  type AgentConnector,
+  type ConnectorAuthStatus,
+  type ConnectorBilling,
+  type ConnectorDetection,
+  type ConnectorLoginLaunch,
+  connectorBilling,
+  connectorBillingNote,
+  connectorLabel,
+  connectorLoginCommand,
+  normalizeAgentConnector,
+} from './connectorCli.js';
 export { makeTransactionSimulator } from './simulationDigest.js';
 export {
   BLINK_CLASSIFICATION_PROFILES,

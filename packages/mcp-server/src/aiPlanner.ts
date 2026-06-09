@@ -1,4 +1,7 @@
-import { ProtocolError } from '@solana-agent-wallet-adapter/core';
+import {
+  customOpenAiCompatibleBaseUrlError,
+  ProtocolError,
+} from '@solana-agent-wallet-adapter/core';
 import {
   appendReviewFinding,
   assertPlanGuardrails,
@@ -32,6 +35,14 @@ import {
 import { sanitizeUserTextOrEmpty } from '@solana-agent-wallet-adapter/workflow';
 
 import { redactSecrets, trace } from './trace.js';
+import {
+  type AgentConnector,
+  ConnectorError,
+  connectorLabel,
+  detectConnector,
+  normalizeAgentConnector,
+  runConnector,
+} from './connectorCli.js';
 import { connectorRegistryPromptContext } from './connectorRegistry.js';
 import { BLINK_CLASSIFIER_REVIEW_PROMPT } from './blinkClassification.js';
 import { createMcpCapabilityResolver } from './agentResolvers/index.js';
@@ -39,7 +50,7 @@ import { DEFAULT_CONFIG, type AgentWalletConfig } from './config.js';
 import type { TransactionSimulator } from './simulationDigest.js';
 
 export type AiApiFormat = 'openai-compatible' | 'anthropic';
-type AiTransport = 'anthropic-messages' | 'openai-responses' | 'gemini-native' | 'openai-compatible';
+type AiTransport = 'anthropic-messages' | 'openai-responses' | 'gemini-native' | 'openai-compatible' | 'cli-agent';
 export type {
   AiPlan,
   AiAskRequest,
@@ -68,6 +79,12 @@ interface AiRuntimeConfig {
   model: string;
   apiKey: string;
   source: 'env' | 'session';
+  // Connector engine: when 'connector', the bridge shells out to a local first-party CLI
+  // (Codex/Gemini/Claude) authed to the user's subscription instead of calling a provider API.
+  // apiKey is empty in this mode; baseUrl/model/apiFormat are unused by the cli-agent transport.
+  engine?: 'api-key' | 'connector';
+  connector?: AgentConnector;
+  connectorPath?: string;
 }
 
 export interface AiStatus {
@@ -78,6 +95,11 @@ export interface AiStatus {
   apiFormat?: AiApiFormat;
   baseUrl?: string;
   model?: string;
+  engine?: 'api-key' | 'connector';
+  connector?: AgentConnector;
+  connectorLabel?: string;
+  connectorBilling?: 'plan-included' | 'metered-credits';
+  connectorAuthStatus?: 'connected' | 'needs-auth' | 'binary-not-found';
 }
 
 const DEFAULT_AI_BASE_URL = 'https://api.openai.com/v1';
@@ -349,10 +371,24 @@ export class BridgeAiPlanner {
     if (!config) {
       return { available: false, configured: false, source: 'none' };
     }
+    if (config.engine === 'connector' && config.connector) {
+      const detection = detectConnector(config.connector, config.connectorPath);
+      return {
+        available: detection.authStatus === 'connected',
+        configured: true,
+        source: config.source,
+        engine: 'connector',
+        connector: config.connector,
+        connectorLabel: detection.label,
+        connectorBilling: detection.billing,
+        connectorAuthStatus: detection.authStatus,
+      };
+    }
     return {
       available: true,
       configured: true,
       source: config.source,
+      engine: 'api-key',
       provider: config.provider,
       apiFormat: config.apiFormat,
       baseUrl: stripKeyFromUrl(config.baseUrl),
@@ -368,9 +404,30 @@ export class BridgeAiPlanner {
     apiFormat?: string;
     clear?: boolean;
     allowCustomBaseUrl?: boolean;
+    engine?: string;
+    connector?: string;
+    connectorPath?: string;
   }): AiStatus {
     if (input.clear) {
       this.#sessionConfig = null;
+      return this.status();
+    }
+    if (input.engine?.trim().toLowerCase() === 'connector') {
+      const connector = normalizeAgentConnector(input.connector);
+      if (!connector) {
+        throw new ProtocolError('invalid_request', 'Unknown agent connector. Choose codex, gemini, or claude.');
+      }
+      this.#sessionConfig = {
+        provider: `connector:${connector}`,
+        apiFormat: 'openai-compatible',
+        baseUrl: '',
+        model: '',
+        apiKey: '',
+        source: 'session',
+        engine: 'connector',
+        connector,
+        connectorPath: input.connectorPath?.trim() || undefined,
+      };
       return this.status();
     }
     const providedApiKey = input.apiKey === undefined ? '' : normalizeAiApiKey(input.apiKey);
@@ -384,6 +441,7 @@ export class BridgeAiPlanner {
     const apiFormat = normalizeApiFormat(input.apiFormat ?? currentConfig?.apiFormat, provider);
     const baseUrl = normalizeBaseUrl(input.baseUrl || currentConfig?.baseUrl || defaultBaseUrl(apiFormat), apiFormat);
     assertAiBaseUrlAllowed(baseUrl, input.allowCustomBaseUrl === true);
+    assertCustomOpenAiCompatibleBaseUrl(provider, baseUrl);
     const model = input.model?.trim() || currentConfig?.model || defaultModel(apiFormat);
     assertAiRuntimeModelAllowed(provider, model);
     this.#sessionConfig = {
@@ -405,6 +463,9 @@ export class BridgeAiPlanner {
     const normalizedRequest = normalizeRequest(request);
     assertAiDraftRequestAllowed(normalizedRequest);
     const transport = resolveAiTransport(config);
+    if (transport === 'cli-agent') {
+      return this.generateConnectorPlan(config, normalizedRequest);
+    }
     if (transport === 'anthropic-messages') {
       return this.generateAnthropicPlan(config, normalizedRequest);
     }
@@ -432,6 +493,8 @@ export class BridgeAiPlanner {
     let result: AiReviewResult;
     if (reviewNeedsWebResearch(enrichedRequest) && !supportsNativeWebResearch(config)) {
       result = applyServerSideReviewSafety(unsupportedResearchReview(enrichedRequest, config), enrichedRequest);
+    } else if (transport === 'cli-agent') {
+      result = applyServerSideReviewSafety(await this.generateConnectorReview(config, enrichedRequest), enrichedRequest);
     } else if (transport === 'anthropic-messages') {
       result = applyServerSideReviewSafety(await this.generateAnthropicReview(config, enrichedRequest), enrichedRequest);
     } else if (transport === 'gemini-native') {
@@ -657,6 +720,9 @@ export class BridgeAiPlanner {
     if (askNeedsWebResearch(normalizedRequest) && !supportsNativeWebResearch(config)) {
       return unsupportedResearchAsk(normalizedRequest, config);
     }
+    if (transport === 'cli-agent') {
+      return this.generateConnectorAsk(config, normalizedRequest);
+    }
     if (transport === 'gemini-native') {
       return this.generateGeminiAsk(config, normalizedRequest);
     }
@@ -679,6 +745,9 @@ export class BridgeAiPlanner {
     const transport = resolveAiTransport(config);
     if (chatNeedsWebResearch(normalizedRequest) && !supportsNativeWebResearch(config)) {
       return unsupportedResearchChat(normalizedRequest, config);
+    }
+    if (transport === 'cli-agent') {
+      return this.generateConnectorChat(config, normalizedRequest);
     }
     if (transport === 'gemini-native') {
       return this.generateGeminiChat(config, normalizedRequest);
@@ -1384,12 +1453,108 @@ export class BridgeAiPlanner {
     return normalizeAiPlan(payload, normalizedRequest);
   }
 
+  // --- Connector engine (cli-agent transport) ---------------------------------------------
+  // Shell out to a user's locally-installed, subscription-authed CLI (Codex/Gemini/Claude). The
+  // CLI's final text is wrapped as { output_text } so the same strict normalizers the other
+  // transports use consume it unchanged — decision formatting + guardrails stay identical.
+
+  private async runConnectorText(
+    config: AiRuntimeConfig,
+    systemPrompt: string,
+    userPrompt: string,
+  ): Promise<{ output_text: string }> {
+    const connector = config.connector;
+    if (!connector) {
+      throw new ProtocolError('invalid_request', 'No agent connector configured.');
+    }
+    try {
+      const text = await runConnector(connector, {
+        systemPrompt,
+        userPrompt,
+        explicitPath: config.connectorPath,
+      });
+      return { output_text: text };
+    } catch (err) {
+      if (err instanceof ConnectorError) {
+        throw new ProtocolError('wallet_unreachable', err.message);
+      }
+      throw err;
+    }
+  }
+
+  private async generateConnectorPlan(
+    config: AiRuntimeConfig,
+    normalizedRequest: Required<AiPlanRequest>,
+  ): Promise<AiPlan> {
+    const messages = aiMessages(normalizedRequest);
+    const payload = await this.runConnectorText(
+      config,
+      messages[0]?.content ?? '',
+      messages[1]?.content ?? JSON.stringify(normalizedRequest),
+    );
+    return normalizeStrictAiPlan(payload, normalizedRequest, connectorLabel(config.connector!));
+  }
+
+  private async generateConnectorReview(
+    config: AiRuntimeConfig,
+    normalizedRequest: Required<AiReviewRequest>,
+  ): Promise<AiReviewResult> {
+    const messages = aiReviewMessages(normalizedRequest);
+    const payload = await this.runConnectorText(
+      config,
+      messages[0]?.content ?? '',
+      messages[1]?.content ?? JSON.stringify(normalizedRequest),
+    );
+    return normalizeStrictAiReview(payload, normalizedRequest, connectorLabel(config.connector!));
+  }
+
+  private async generateConnectorAsk(
+    config: AiRuntimeConfig,
+    normalizedRequest: Required<AiAskRequest>,
+  ): Promise<AiAskResult> {
+    const messages = aiAskMessages(normalizedRequest);
+    const payload = await this.runConnectorText(
+      config,
+      messages[0]?.content ?? '',
+      messages[1]?.content ?? JSON.stringify(normalizedRequest),
+    );
+    return aiAskFromPayload(payload);
+  }
+
+  private async generateConnectorChat(
+    config: AiRuntimeConfig,
+    normalizedRequest: Required<AiChatRequest>,
+  ): Promise<AiChatResult> {
+    const messages = aiChatMessages(normalizedRequest);
+    const payload = await this.runConnectorText(
+      config,
+      messages[0]?.content ?? '',
+      messages[1]?.content ?? JSON.stringify(normalizedRequest),
+    );
+    return aiChatFromPayload(payload);
+  }
+
   private config(): AiRuntimeConfig | null {
     return this.#sessionConfig ?? envConfig();
   }
 }
 
 function envConfig(): AiRuntimeConfig | null {
+  if (process.env.AGENTIC_AI_ENGINE?.trim().toLowerCase() === 'connector') {
+    const connector = normalizeAgentConnector(process.env.AGENTIC_AI_CONNECTOR);
+    if (!connector) return null;
+    return {
+      provider: `connector:${connector}`,
+      apiFormat: 'openai-compatible',
+      baseUrl: '',
+      model: '',
+      apiKey: '',
+      source: 'env',
+      engine: 'connector',
+      connector,
+      connectorPath: process.env.AGENTIC_AI_CONNECTOR_PATH?.trim() || undefined,
+    };
+  }
   const apiKey = normalizeAiApiKey(process.env.AGENTIC_AI_API_KEY ?? '');
   if (!apiKey) return null;
   assertAiApiKeyHeaderSafe(apiKey);
@@ -1397,6 +1562,7 @@ function envConfig(): AiRuntimeConfig | null {
   const apiFormat = normalizeApiFormat(process.env.AGENTIC_AI_API_FORMAT, provider);
   const baseUrl = normalizeBaseUrl(process.env.AGENTIC_AI_BASE_URL || defaultBaseUrl(apiFormat), apiFormat);
   assertAiBaseUrlAllowed(baseUrl);
+  assertCustomOpenAiCompatibleBaseUrl(provider, baseUrl);
   const model = process.env.AGENTIC_AI_MODEL?.trim() || defaultModel(apiFormat);
   assertAiRuntimeModelAllowed(provider, model);
   return {
@@ -1410,6 +1576,7 @@ function envConfig(): AiRuntimeConfig | null {
 }
 
 function resolveAiTransport(config: AiRuntimeConfig): AiTransport {
+  if (config.engine === 'connector') return 'cli-agent';
   const provider = normalizedProviderId(config.provider);
   const model = config.model.trim().toLowerCase();
   if (provider === 'openrouter') {
@@ -1448,6 +1615,12 @@ function assertAiRuntimeModelAllowed(provider: string, model: string): void {
       'OpenRouter Gemini models are disabled for agent reviews. Use the direct Gemini provider so Agentic can use native Gemini formatting.',
     );
   }
+}
+
+function assertCustomOpenAiCompatibleBaseUrl(provider: string, baseUrl: string): void {
+  if (normalizedProviderId(provider) !== 'custom-openai-compatible') return;
+  const message = customOpenAiCompatibleBaseUrlError(baseUrl);
+  if (message) throw new ProtocolError('invalid_request', message);
 }
 
 function bearerJsonHeaders(config: AiRuntimeConfig): Record<string, string> {
@@ -1588,7 +1761,10 @@ function withDefaultConnectorContext(
 }
 
 function supportsNativeWebResearch(config: AiRuntimeConfig): boolean {
-  return resolveAiTransport(config) !== 'openai-compatible';
+  const transport = resolveAiTransport(config);
+  // The connector runs locked-down (read-only, no tools) so it can't fetch live web facts; route
+  // research requests to the graceful "unsupported research" path like openai-compatible.
+  return transport !== 'openai-compatible' && transport !== 'cli-agent';
 }
 
 function askNeedsWebResearch(request: Required<AiAskRequest>): boolean {

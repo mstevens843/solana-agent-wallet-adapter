@@ -69,6 +69,38 @@ struct AgenticAgentRuntimeConfig: Codable, Equatable {
                 return AgenticAgentError(code: AgenticProviderErrorCodes.invalidConfig, message: "Device Agent config has an invalid apiKey.")
             }
         }
+        if let message = Self.customOpenAiCompatibleBaseUrlError(provider: provider, baseUrl: baseUrl) {
+            return AgenticAgentError(code: "INVALID_CONFIG", subcode: "UNSUPPORTED_FORMAT", message: message)
+        }
+        return nil
+    }
+
+    private static func customOpenAiCompatibleBaseUrlError(provider: String, baseUrl: String?) -> String? {
+        if provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "custom-openai-compatible" {
+            return nil
+        }
+        let trimmed = (baseUrl ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return "Custom OpenAI-compatible gateway URL is required."
+        }
+        guard let url = URL(string: trimmed), let scheme = url.scheme, let host = url.host else {
+            return "Custom OpenAI-compatible gateway URL must be a valid https:// URL."
+        }
+        if scheme.lowercased() != "https" {
+            return "Custom OpenAI-compatible gateway URL must use https://."
+        }
+        let normalizedHost = host.lowercased()
+        let path = url.path.lowercased()
+        if normalizedHost == "openrouter.ai" || normalizedHost.hasSuffix(".openrouter.ai") {
+            return "Use the OpenRouter preset for deterministic agent review routing; do not enter openrouter.ai under Custom OpenAI-compatible."
+        }
+        if normalizedHost == "api.anthropic.com" || normalizedHost.hasSuffix(".anthropic.com") {
+            return "Use the Claude / Anthropic preset for Anthropic URLs; Custom OpenAI-compatible expects an endpoint that implements OpenAI-compatible chat completions."
+        }
+        if (normalizedHost == "generativelanguage.googleapis.com" || normalizedHost.hasSuffix(".generativelanguage.googleapis.com")) &&
+            path.range(of: #"(^|/)openai(/|$)"#, options: .regularExpression) == nil {
+            return "Use the Gemini preset for native Gemini URLs; Custom OpenAI-compatible expects an OpenAI-compatible /openai endpoint."
+        }
         return nil
     }
 
@@ -1506,7 +1538,7 @@ final class AgenticAnthropicProvider: AgenticAgentProvider {
 
     private func isOpenRouter(config: AgenticAgentRuntimeConfig) -> Bool {
         return config.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "openrouter" ||
-            config.baseUrl.lowercased().contains("openrouter.ai")
+            config.baseUrl?.lowercased().contains("openrouter.ai") == true
     }
 
     private func webSearchTool(request: AgenticAgentRequest) -> [String: Any] {
@@ -1735,7 +1767,7 @@ final class AgenticOpenAINativeProvider: AgenticAgentProvider {
 
     private func isOpenRouter(config: AgenticAgentRuntimeConfig) -> Bool {
         return config.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "openrouter" ||
-            config.baseUrl.lowercased().contains("openrouter.ai")
+            config.baseUrl?.lowercased().contains("openrouter.ai") == true
     }
 
     private func webSearchTool(config: AgenticAgentRuntimeConfig) -> [String: Any] {

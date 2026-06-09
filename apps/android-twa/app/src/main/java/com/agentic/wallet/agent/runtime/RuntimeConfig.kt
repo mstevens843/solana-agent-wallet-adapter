@@ -1,5 +1,6 @@
 package com.agentic.wallet.agent.runtime
 
+import java.net.URI
 import org.json.JSONObject
 
 data class RuntimeConfig(
@@ -37,6 +38,13 @@ data class RuntimeConfig(
                 code = RuntimeErrorCodes.INVALID_CONFIG,
                 subcode = RuntimeConfigSubcodes.MISSING_API_KEY,
                 message = "Device Agent config is missing apiKey.",
+            )
+        }
+        customOpenAiCompatibleBaseUrlError(provider, baseUrl)?.let { message ->
+            return RuntimeError(
+                code = RuntimeErrorCodes.INVALID_CONFIG,
+                subcode = RuntimeConfigSubcodes.UNSUPPORTED_FORMAT,
+                message = message,
             )
         }
         return null
@@ -85,6 +93,35 @@ data class RuntimeConfig(
                 apiKey = apiKey,
                 walletAddress = walletAddress,
             )
+        }
+
+        private fun customOpenAiCompatibleBaseUrlError(provider: String, baseUrl: String?): String? {
+            if (!provider.trim().equals("custom-openai-compatible", ignoreCase = true)) return null
+            val trimmed = baseUrl?.trim().orEmpty()
+            if (trimmed.isEmpty()) return "Custom OpenAI-compatible gateway URL is required."
+            val uri = try {
+                URI(trimmed)
+            } catch (_: Throwable) {
+                return "Custom OpenAI-compatible gateway URL must be a valid https:// URL."
+            }
+            if (uri.scheme?.equals("https", ignoreCase = true) != true) {
+                return "Custom OpenAI-compatible gateway URL must use https://."
+            }
+            val host = uri.host?.lowercase()
+                ?: return "Custom OpenAI-compatible gateway URL must be a valid https:// URL."
+            val path = uri.path.orEmpty().lowercase()
+            if (host == "openrouter.ai" || host.endsWith(".openrouter.ai")) {
+                return "Use the OpenRouter preset for deterministic agent review routing; do not enter openrouter.ai under Custom OpenAI-compatible."
+            }
+            if (host == "api.anthropic.com" || host.endsWith(".anthropic.com")) {
+                return "Use the Claude / Anthropic preset for Anthropic URLs; Custom OpenAI-compatible expects an endpoint that implements OpenAI-compatible chat completions."
+            }
+            if ((host == "generativelanguage.googleapis.com" || host.endsWith(".generativelanguage.googleapis.com")) &&
+                !Regex("(^|/)openai(/|$)", RegexOption.IGNORE_CASE).containsMatchIn(path)
+            ) {
+                return "Use the Gemini preset for native Gemini URLs; Custom OpenAI-compatible expects an OpenAI-compatible /openai endpoint."
+            }
+            return null
         }
     }
 }

@@ -7,6 +7,7 @@ import {
   bootstrapHostConnectorFactoriesFromConfig,
   loadConfig,
   loadDotEnv,
+  resolveJupiterReferral,
 } from '@solana-agent-wallet-adapter/mcp-server';
 
 import { redactSecrets } from './cloud/redaction.js';
@@ -25,7 +26,27 @@ interface RenderWebServerOptions extends CloudApiRouterOptions {
   staticDir?: string;
 }
 
+let loggedSwapFeeStatus = false;
+
+/** One-line startup signal so the operator can confirm the swap fee is live on Render. */
+function logSwapFeeStatusOnce(): void {
+  if (loggedSwapFeeStatus) return;
+  loggedSwapFeeStatus = true;
+  const referral = resolveJupiterReferral();
+  if (referral) {
+    console.info(`[swap-fee] active: ${referral.referralFee} bps → ${referral.referralAccount}`);
+  } else if (process.env.JUPITER_REFERRAL_ACCOUNT?.trim()) {
+    console.warn(
+      '[swap-fee] JUPITER_REFERRAL_ACCOUNT is set but the swap fee is DISABLED — ' +
+        'the account is not valid base58 or JUPITER_REFERRAL_FEE_BPS is below the 50 bps floor.',
+    );
+  } else {
+    console.info('[swap-fee] disabled (set JUPITER_REFERRAL_ACCOUNT + JUPITER_REFERRAL_FEE_BPS to enable)');
+  }
+}
+
 export function createRenderWebServer(options: RenderWebServerOptions = {}): Server {
+  logSwapFeeStatusOnce();
   const staticDir = resolve(options.staticDir ?? process.env.AGENTIC_WEB_DIST ?? DEFAULT_STATIC_DIR);
   const apiRouter = createCloudApiRouter({
     store: options.store,

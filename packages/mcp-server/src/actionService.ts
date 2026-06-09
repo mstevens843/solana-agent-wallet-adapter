@@ -6907,6 +6907,11 @@ async function fetchJupiterOrder(
   taker: string | undefined,
   swap: NormalizedSwapInput,
 ): Promise<Record<string, unknown>> {
+  // Platform fee on swaps only: when the operator configured an Ultra referral
+  // account, attach referralAccount + referralFee so Jupiter bakes the fee into
+  // the order transaction. This is the local-bridge path (CLI / desktop
+  // fallback); iOS never reaches here, so no per-platform gating is needed.
+  const referral = config.jupiter.referral;
   return jupiterFetchJson(config, 'swap', '/order', {
     searchParams: {
       inputMint: swap.inputMint,
@@ -6914,6 +6919,9 @@ async function fetchJupiterOrder(
       amount: swap.amountRaw.toString(),
       taker,
       slippageBps: swap.slippageBps,
+      ...(referral
+        ? { referralAccount: referral.referralAccount, referralFee: referral.referralFee }
+        : {}),
     },
   });
 }

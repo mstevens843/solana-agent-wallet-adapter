@@ -39,3 +39,7 @@ Use [Standout features](../STANDOUT_FEATURES.MD) for the current competitive sta
 ## Outreach
 
 - [Sendaifun RFC draft](./outreach/sendaifun-rfc.md): public issue draft for positioning this adapter as a Solana Agent Kit community wallet backend.
+
+## Cash Flow
+
+- [Operation Cash Flow](./cashflow/README.md): service offers, marketplace copy, outbound scripts, and pipeline tracker for short-term specialist consulting.

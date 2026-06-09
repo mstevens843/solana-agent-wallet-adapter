@@ -12,13 +12,20 @@ import process from 'node:process';
 import * as readline from 'node:readline/promises';
 
 import {
+  AGENT_CONNECTORS,
+  type AgentConnector,
+  type ConnectorDetection,
+  type ConnectorLoginLaunch,
   DEFAULT_CONFIG,
   JsonLabArtifactStore,
   JsonPreparedActionStore,
   LocalBridgeBackend,
+  connectorBillingNote,
+  connectorLabel,
   createBridgeServer,
   defaultLabArtifactStorePath,
   loadConfig,
+  normalizeAgentConnector,
 } from '@solana-agent-wallet-adapter/mcp-server';
 import {
   defaultTemplateFieldValues,
@@ -118,6 +125,7 @@ import {
   AI_PROVIDER_PRESETS,
   aiProviderPresetById,
   agentProviderFromArg,
+  assertCustomOpenAiCompatibleBaseUrl,
   normalizeAgentAiPath,
   normalizeAgentApiFormat,
   type AgentAiPath,
@@ -190,6 +198,11 @@ const SETUP_ENV_KEYS = [
   'AGENTIC_AI_MODEL',
   'AGENTIC_AI_PATH',
   'AGENTIC_AI_ALLOW_CUSTOM_BASE_URL',
+  // Agent Connector engine: use a local subscription-authed CLI (Codex/Gemini/Claude) instead of
+  // an API key. Forwarded to the bridge child so it can shell out to the user's CLI.
+  'AGENTIC_AI_ENGINE',
+  'AGENTIC_AI_CONNECTOR',
+  'AGENTIC_AI_CONNECTOR_PATH',
 ] as const;
 const BLINK_BOUNDARY_COPY = 'Prepared Blink action. Wallet approval required.';
 
@@ -433,6 +446,11 @@ interface BridgeAiStatus {
   apiFormat?: string;
   baseUrl?: string;
   model?: string;
+  engine?: 'api-key' | 'connector';
+  connector?: AgentConnector;
+  connectorLabel?: string;
+  connectorBilling?: 'plan-included' | 'metered-credits';
+  connectorAuthStatus?: 'connected' | 'needs-auth' | 'binary-not-found';
 }
 
 type CliAgentPlan = TerminalAgentPlan | SharedAgentPlan;
@@ -1879,11 +1897,20 @@ interface AgentSetupConfig {
   baseUrl: string;
   model: string;
   allowCustomBaseUrl?: boolean;
+  // Connector engine: use a local subscription-authed CLI instead of an API key. When set, apiKey/
+  // baseUrl/model are unused and path is always 'bridge'.
+  engine?: 'api-key' | 'connector';
+  connector?: AgentConnector;
+  connectorPath?: string;
 }
+
+type AgentSetupChoice = AgentSetupProvider | `connector:${AgentConnector}` | 'clear' | 'back';
 
 async function dispatchAgentSetup(parsed: ParsedArgs): Promise<unknown> {
   const args = parsed.positionals.slice(1);
-  const nonInteractive = args.includes('--clear') || optionValue(args, '--from-env') !== undefined;
+  const nonInteractive = args.includes('--clear')
+    || optionValue(args, '--from-env') !== undefined
+    || optionValue(args, '--engine') !== undefined;
   const state = createOneShotState(parsed.options);
   if (nonInteractive) {
     return await runAgentSetup(state, args, { detached: true });
@@ -1909,6 +1936,30 @@ async function runAgentSetup(
     return clearAgentSetup(state.options);
   }
 
+  if (optionValue(args, '--engine')?.trim().toLowerCase() === 'connector') {
+    const connector = normalizeAgentConnector(optionValue(args, '--connector'));
+    if (!connector) {
+      throw new Error('Unknown agent connector. Use --connector codex|gemini|claude.');
+    }
+    const connectorPath = optionValue(args, '--connector-path')?.trim();
+    const config: AgentSetupConfig = {
+      engine: 'connector',
+      connector,
+      path: 'bridge',
+      apiKey: '',
+      provider: `connector:${connector}`,
+      apiFormat: 'openai-compatible',
+      baseUrl: '',
+      model: '',
+      ...(connectorPath ? { connectorPath } : {}),
+    };
+    return applyAgentSetup(state.options, config, {
+      ensureBridge: options.detached
+        ? () => ensureBridgeDetached(state.options)
+        : () => ensureBridge(state),
+    });
+  }
+
   const fromEnv = optionValue(args, '--from-env');
   if (fromEnv !== undefined) {
     return configureAgentFromArgs(state, args, fromEnv, options);
@@ -1932,22 +1983,31 @@ async function runAgentSetup(
   ]));
   console.log(tuiDivider());
 
-  const choices: Array<{ name: string; value: AgentSetupProvider | 'clear' | 'back'; description?: string }> = [
+  const savedConfigured = (current.ok && current.value.configured)
+    || Boolean(savedAgentKey)
+    || env.values.AGENTIC_AI_ENGINE?.trim().toLowerCase() === 'connector';
+  const choices: Array<{ name: string; value: AgentSetupChoice; description?: string }> = [
     ...AI_PROVIDER_PRESETS.map((preset) => ({
-      name: preset.label,
-      value: preset.id,
+      name: `API key · ${preset.label}`,
+      value: preset.id as AgentSetupChoice,
       description: `${agentApiFormatLabel(preset.apiFormat)} - ${preset.baseUrl}`,
     })),
+    // Connector engine: use a subscription you already pay for, via the local CLI.
+    ...AGENT_CONNECTORS.map((connector) => ({
+      name: `Connector · ${connectorLabel(connector)}`,
+      value: `connector:${connector}` as AgentSetupChoice,
+      description: connectorBillingNote(connector),
+    })),
   ];
-  if ((current.ok && current.value.configured) || savedAgentKey) {
-    choices.push({ name: 'Disconnect agent key', value: 'clear' });
+  if (savedConfigured) {
+    choices.push({ name: 'Disconnect agent', value: 'clear' });
   }
   choices.push({ name: 'Back', value: 'back' });
 
-  const choice = await tuiSelect<AgentSetupProvider | 'clear' | 'back'>({
-    message: 'Choose provider preset for /agent',
+  const choice = await tuiSelect<AgentSetupChoice>({
+    message: 'Choose how /agent thinks — an API key, or a subscription connector',
     choices,
-    default: 'openai',
+    default: 'anthropic',
   });
   if (choice === 'back') {
     return null;
@@ -1955,8 +2015,14 @@ async function runAgentSetup(
   if (choice === 'clear') {
     return clearAgentSetup(state.options);
   }
+  if (choice.startsWith('connector:')) {
+    const connector = normalizeAgentConnector(choice.slice('connector:'.length));
+    if (!connector) return null;
+    return configureAgentConnector(state, connector, { detached: options.detached });
+  }
 
-  const config = await promptAgentSetupConfig(choice, {
+  // The connector:/clear/back branches returned above, so this is an API-key provider.
+  const config = await promptAgentSetupConfig(choice as AgentSetupProvider, {
     hosted,
     signedIn: auth.authenticated,
     renderWebUrl: state.options.renderWebUrl,
@@ -2036,6 +2102,109 @@ async function promptAgentSetupConfig(
   };
 }
 
+async function configureAgentConnector(
+  state: TerminalAppState,
+  connector: AgentConnector,
+  options: { detached?: boolean } = {},
+): Promise<JsonRecord | null> {
+  const ensureBridgeFn = options.detached
+    ? () => ensureBridgeDetached(state.options)
+    : () => ensureBridge(state);
+  await ensureBridgeFn();
+
+  let detection = await detectConnectorViaBridge(state.options, connector);
+  console.log();
+  console.log(tuiKv([
+    ['Connector', connectorLabel(connector)],
+    ['Billing', connectorBillingNote(connector)],
+    ['Status', connectorStatusText(detection)],
+  ]));
+
+  if (!detection || detection.authStatus !== 'connected') {
+    const notInstalled = detection?.authStatus === 'binary-not-found';
+    const action = await tuiSelect<'connect' | 'manual' | 'save' | 'back'>({
+      message: notInstalled
+        ? `${connectorLabel(connector)} CLI was not found on PATH — how do you want to proceed?`
+        : `${connectorLabel(connector)} is not signed in — connect now?`,
+      default: notInstalled ? 'save' : 'connect',
+      choices: [
+        { name: 'Connect now (opens sign-in)', value: 'connect', description: 'Launch the CLI’s own login in your browser, then wait for it.' },
+        { name: 'I’ll sign in myself', value: 'manual', description: detection?.loginCommand ? `Run \`${detection.loginCommand}\`, then recheck.` : 'Sign in via the CLI, then recheck.' },
+        { name: 'Save anyway', value: 'save', description: 'Save the connector now; sign in before using /agent.' },
+        { name: 'Back', value: 'back' },
+      ],
+    });
+    if (action === 'back') return null;
+    if (action === 'connect') {
+      detection = (await connectConnectorViaBridge(state.options, connector)) ?? detection;
+    } else if (action === 'manual') {
+      console.log(tuiBadge(
+        detection?.loginCommand
+          ? `Run \`${detection.loginCommand}\` in another terminal, then re-run /agent-setup to verify.`
+          : 'Sign in via the connector CLI, then re-run /agent-setup to verify.',
+        'info',
+      ));
+    }
+  }
+
+  const config: AgentSetupConfig = {
+    engine: 'connector',
+    connector,
+    path: 'bridge',
+    apiKey: '',
+    provider: `connector:${connector}`,
+    apiFormat: 'openai-compatible',
+    baseUrl: '',
+    model: '',
+  };
+  return applyAgentSetup(state.options, config, { ensureBridge: ensureBridgeFn });
+}
+
+async function detectConnectorViaBridge(
+  options: GlobalOptions,
+  connector: AgentConnector,
+): Promise<ConnectorDetection | null> {
+  return bridgeRequest<{ connectors: ConnectorDetection[] }>(options, `/bridge/ai/connector/detect?connector=${connector}`)
+    .then((res) => res.connectors[0] ?? null)
+    .catch(() => null);
+}
+
+async function connectConnectorViaBridge(
+  options: GlobalOptions,
+  connector: AgentConnector,
+): Promise<ConnectorDetection | null> {
+  const launch = await bridgeRequest<ConnectorLoginLaunch>(options, '/bridge/ai/connector/login', {
+    method: 'POST',
+    body: JSON.stringify({ connector }),
+  }).catch(() => null);
+  if (!launch) {
+    console.log(tuiBadge('Could not reach the bridge to launch sign-in.', 'warn'));
+    return null;
+  }
+  if (!launch.launched) {
+    console.log(tuiBadge(launch.manualHint ?? `Run \`${launch.command}\` to sign in, then recheck.`, 'info'));
+    return null;
+  }
+  console.log(tuiBadge(`Sign-in launched (${launch.command}). Complete it in your browser…`, 'info'));
+  for (let attempt = 0; attempt < 16; attempt += 1) {
+    await sleep(2_500);
+    const detection = await detectConnectorViaBridge(options, connector);
+    if (detection?.authStatus === 'connected') {
+      console.log(tuiBadge(`${connectorLabel(connector)} connected.`, 'ok'));
+      return detection;
+    }
+  }
+  console.log(tuiBadge('Still waiting on sign-in — saving the connector. Run /agent once you finish signing in.', 'warn'));
+  return null;
+}
+
+function connectorStatusText(detection: ConnectorDetection | null): string {
+  if (!detection) return 'bridge unreachable';
+  if (detection.authStatus === 'connected') return 'connected';
+  if (detection.authStatus === 'binary-not-found') return 'CLI not installed';
+  return 'not signed in';
+}
+
 async function promptAgentAiPath(
   preset: AiProviderPreset,
   context: { hosted: HostedAiStatus | null; signedIn: boolean; renderWebUrl: string },
@@ -2077,6 +2246,31 @@ async function applyAgentSetup(
 ): Promise<JsonRecord> {
   const normalized = validateAgentSetupConfig(config);
   let status: BridgeAiStatus | null = null;
+  if (normalized.engine === 'connector' && normalized.connector) {
+    // Connector engine always runs through the local bridge (it shells out to the user's CLI).
+    await setup.ensureBridge?.();
+    status = await bridgeRequest<BridgeAiStatus>(options, '/bridge/ai/session-key', {
+      method: 'POST',
+      body: JSON.stringify({
+        engine: 'connector',
+        connector: normalized.connector,
+        ...(normalized.connectorPath ? { connectorPath: normalized.connectorPath } : {}),
+      }),
+    });
+    await persistAgentSetup(options, normalized);
+    if (!options.json) {
+      const ready = status?.connectorAuthStatus === 'connected';
+      printOk(options, `Agent connector set: ${connectorLabel(normalized.connector)}${ready ? '' : ' (sign in to start)'}`);
+    }
+    return {
+      configured: true,
+      path: 'bridge',
+      engine: 'connector',
+      connector: normalized.connector,
+      connectorAuthStatus: status?.connectorAuthStatus ?? 'needs-auth',
+      envPath: options.envPath,
+    };
+  }
   if (normalized.path === 'bridge') {
     await setup.ensureBridge?.();
     status = await bridgeRequest<BridgeAiStatus>(options, '/bridge/ai/session-key', {
@@ -2116,14 +2310,17 @@ async function clearAgentSetup(options: GlobalOptions): Promise<JsonRecord> {
     AGENTIC_AI_MODEL: '',
     AGENTIC_AI_PATH: '',
     AGENTIC_AI_ALLOW_CUSTOM_BASE_URL: '',
+    AGENTIC_AI_ENGINE: '',
+    AGENTIC_AI_CONNECTOR: '',
+    AGENTIC_AI_CONNECTOR_PATH: '',
   });
-  delete process.env.AGENTIC_AI_API_KEY;
-  delete process.env.AGENTIC_AI_PROVIDER;
-  delete process.env.AGENTIC_AI_API_FORMAT;
-  delete process.env.AGENTIC_AI_BASE_URL;
-  delete process.env.AGENTIC_AI_MODEL;
-  delete process.env.AGENTIC_AI_PATH;
-  delete process.env.AGENTIC_AI_ALLOW_CUSTOM_BASE_URL;
+  for (const key of [
+    'AGENTIC_AI_API_KEY', 'AGENTIC_AI_PROVIDER', 'AGENTIC_AI_API_FORMAT', 'AGENTIC_AI_BASE_URL',
+    'AGENTIC_AI_MODEL', 'AGENTIC_AI_PATH', 'AGENTIC_AI_ALLOW_CUSTOM_BASE_URL',
+    'AGENTIC_AI_ENGINE', 'AGENTIC_AI_CONNECTOR', 'AGENTIC_AI_CONNECTOR_PATH',
+  ]) {
+    delete process.env[key];
+  }
   const status = await bridgeRequest<BridgeAiStatus>(options, '/bridge/ai/session-key', {
     method: 'POST',
     body: JSON.stringify({ clear: true }),
@@ -2135,6 +2332,11 @@ async function clearAgentSetup(options: GlobalOptions): Promise<JsonRecord> {
 }
 
 function validateAgentSetupConfig(config: AgentSetupConfig): AgentSetupConfig {
+  if (config.engine === 'connector') {
+    const connector = normalizeAgentConnector(config.connector);
+    if (!connector) throw new Error('Unknown agent connector. Choose codex, gemini, or claude.');
+    return { ...config, engine: 'connector', connector, path: 'bridge', apiKey: '' };
+  }
   const apiKey = normalizeAgentSetupApiKey(config.apiKey);
   if (!apiKey) throw new Error('Missing AI API key.');
   const invalid = firstInvalidAgentApiKeyCharacter(apiKey);
@@ -2147,6 +2349,7 @@ function validateAgentSetupConfig(config: AgentSetupConfig): AgentSetupConfig {
   if (!provider) throw new Error('Missing AI provider.');
   if (!model) throw new Error('Missing AI model.');
   validateAgentBaseUrl(baseUrl);
+  assertCustomOpenAiCompatibleBaseUrl(provider, baseUrl);
   return {
     ...config,
     apiKey,
@@ -2198,6 +2401,31 @@ async function validateHostedByokSetup(options: GlobalOptions, config: AgentSetu
 }
 
 async function persistAgentSetup(options: GlobalOptions, config: AgentSetupConfig): Promise<void> {
+  if (config.engine === 'connector' && config.connector) {
+    // Connector mode: store the engine + connector, and clear any prior API-key config so the bridge
+    // doesn't fall back to it.
+    await writeEnvUpdates(options.envPath, {
+      AGENTIC_AI_ENGINE: 'connector',
+      AGENTIC_AI_CONNECTOR: config.connector,
+      AGENTIC_AI_CONNECTOR_PATH: config.connectorPath ?? '',
+      AGENTIC_AI_PATH: 'bridge',
+      AGENTIC_AI_API_KEY: '',
+      AGENTIC_AI_PROVIDER: '',
+      AGENTIC_AI_API_FORMAT: '',
+      AGENTIC_AI_BASE_URL: '',
+      AGENTIC_AI_MODEL: '',
+      AGENTIC_AI_ALLOW_CUSTOM_BASE_URL: '',
+    });
+    process.env.AGENTIC_AI_ENGINE = 'connector';
+    process.env.AGENTIC_AI_CONNECTOR = config.connector;
+    if (config.connectorPath) process.env.AGENTIC_AI_CONNECTOR_PATH = config.connectorPath;
+    else delete process.env.AGENTIC_AI_CONNECTOR_PATH;
+    process.env.AGENTIC_AI_PATH = 'bridge';
+    for (const key of ['AGENTIC_AI_API_KEY', 'AGENTIC_AI_PROVIDER', 'AGENTIC_AI_API_FORMAT', 'AGENTIC_AI_BASE_URL', 'AGENTIC_AI_MODEL', 'AGENTIC_AI_ALLOW_CUSTOM_BASE_URL']) {
+      delete process.env[key];
+    }
+    return;
+  }
   await writeEnvUpdates(options.envPath, {
     AGENTIC_AI_API_KEY: config.apiKey,
     AGENTIC_AI_PROVIDER: config.provider,
@@ -2206,6 +2434,10 @@ async function persistAgentSetup(options: GlobalOptions, config: AgentSetupConfi
     AGENTIC_AI_MODEL: config.model,
     AGENTIC_AI_PATH: config.path,
     AGENTIC_AI_ALLOW_CUSTOM_BASE_URL: config.allowCustomBaseUrl ? '1' : '',
+    // Clear any prior connector engine so the API-key config takes over.
+    AGENTIC_AI_ENGINE: '',
+    AGENTIC_AI_CONNECTOR: '',
+    AGENTIC_AI_CONNECTOR_PATH: '',
   });
   process.env.AGENTIC_AI_API_KEY = config.apiKey;
   process.env.AGENTIC_AI_PROVIDER = config.provider;
@@ -2213,6 +2445,9 @@ async function persistAgentSetup(options: GlobalOptions, config: AgentSetupConfi
   process.env.AGENTIC_AI_BASE_URL = config.baseUrl;
   process.env.AGENTIC_AI_MODEL = config.model;
   process.env.AGENTIC_AI_PATH = config.path;
+  delete process.env.AGENTIC_AI_ENGINE;
+  delete process.env.AGENTIC_AI_CONNECTOR;
+  delete process.env.AGENTIC_AI_CONNECTOR_PATH;
   if (config.allowCustomBaseUrl) {
     process.env.AGENTIC_AI_ALLOW_CUSTOM_BASE_URL = '1';
   } else {
@@ -4299,6 +4534,17 @@ function agentSetupStatus(
   authSummary?: ReturnType<typeof sessionStatusSummary>,
   envValues: Record<string, string> = {},
 ): string {
+  if (ai.ok && ai.value.engine === 'connector') {
+    const auth = ai.value.connectorAuthStatus;
+    const suffix = auth === 'connected'
+      ? 'connected'
+      : auth === 'binary-not-found' ? 'CLI not installed' : 'sign-in needed';
+    return `Connector · ${ai.value.connectorLabel ?? ai.value.connector ?? 'connector'} (${suffix})`;
+  }
+  if (envValues.AGENTIC_AI_ENGINE?.trim().toLowerCase() === 'connector') {
+    const connector = normalizeAgentConnector(envValues.AGENTIC_AI_CONNECTOR);
+    return `Connector · ${connector ? connectorLabel(connector) : 'Connector'}`;
+  }
   const savedKey = envValues.AGENTIC_AI_API_KEY?.trim();
   const savedPath = normalizeAgentAiPath(envValues.AGENTIC_AI_PATH);
   if (savedKey && savedPath === 'hosted-byok') {

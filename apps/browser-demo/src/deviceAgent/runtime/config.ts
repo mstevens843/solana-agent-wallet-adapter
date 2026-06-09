@@ -1,3 +1,4 @@
+import { customOpenAiCompatibleBaseUrlError } from '@solana-agent-wallet-adapter/core';
 import { RUNTIME_CONFIG_SUBCODES, RUNTIME_ERROR_CODES } from './errors.js';
 import type { RuntimeError } from './state.js';
 
@@ -52,6 +53,16 @@ export function validateRuntimeConfig(config: RuntimeConfig | null | undefined):
       code: RUNTIME_ERROR_CODES.INVALID_CONFIG,
       subcode: RUNTIME_CONFIG_SUBCODES.MISSING_API_KEY,
       message: 'Device Agent config is missing apiKey.',
+    };
+  }
+  const customBaseUrlError = config.provider.trim().toLowerCase() === 'custom-openai-compatible'
+    ? customOpenAiCompatibleBaseUrlError(config.baseUrl)
+    : null;
+  if (customBaseUrlError) {
+    return {
+      code: RUNTIME_ERROR_CODES.INVALID_CONFIG,
+      subcode: RUNTIME_CONFIG_SUBCODES.UNSUPPORTED_FORMAT,
+      message: customBaseUrlError,
     };
   }
   return null;

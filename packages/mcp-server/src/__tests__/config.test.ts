@@ -12,6 +12,8 @@ const ENV_KEYS = [
   'JUPITER_PRICE_BASE_URL',
   'JUP_ULTRA_BASE',
   'JUPITER_BASE_URL',
+  'JUPITER_REFERRAL_ACCOUNT',
+  'JUPITER_REFERRAL_FEE_BPS',
   'SKR_TOKEN_MINT',
   'SKR_TOKEN_DECIMALS',
   'SKR_TOKEN_MAX_TRANSFER',
@@ -66,6 +68,64 @@ describe('config env aliases', () => {
     expect(config.jupiter.baseUrl).toBe('https://api.jup.ag/swap/v2');
     expect(config.jupiter.swapBaseUrl).toBe('https://api.jup.ag/swap/v2');
     expect(config.jupiter.apiKeyEnv).toBe('JUPITER_API_KEY');
+  });
+
+  it('leaves the Jupiter swap referral unset when no referral account is configured', () => {
+    const config = normalizeConfig({});
+    expect(config.jupiter.referral).toBeUndefined();
+  });
+
+  it('wires the Ultra swap referral fee from env (defaulting to the 50 bps floor)', () => {
+    setEnv('JUPITER_REFERRAL_ACCOUNT', '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd');
+
+    const config = normalizeConfig({});
+
+    expect(config.jupiter.referral).toEqual({
+      referralAccount: '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd',
+      referralFee: 50,
+    });
+  });
+
+  it('ignores a sub-floor swap referral fee (Ultra would reject below 50 bps)', () => {
+    setEnv('JUPITER_REFERRAL_ACCOUNT', '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd');
+    setEnv('JUPITER_REFERRAL_FEE_BPS', '25');
+
+    const config = normalizeConfig({});
+
+    expect(config.jupiter.referral).toBeUndefined();
+  });
+
+  it('prefers the env swap referral over a config-file referral value', () => {
+    setEnv('JUPITER_REFERRAL_ACCOUNT', '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd');
+    setEnv('JUPITER_REFERRAL_FEE_BPS', '75');
+
+    const config = normalizeConfig({
+      jupiter: {
+        baseUrl: DEFAULT_CONFIG.jupiter.baseUrl,
+        apiKeyEnv: DEFAULT_CONFIG.jupiter.apiKeyEnv,
+        referral: { referralAccount: '7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w', referralFee: 200 },
+      },
+    });
+
+    expect(config.jupiter.referral).toEqual({
+      referralAccount: '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd',
+      referralFee: 75,
+    });
+  });
+
+  it('falls back to a config-file swap referral when no env is set', () => {
+    const config = normalizeConfig({
+      jupiter: {
+        baseUrl: DEFAULT_CONFIG.jupiter.baseUrl,
+        apiKeyEnv: DEFAULT_CONFIG.jupiter.apiKeyEnv,
+        referral: { referralAccount: '7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w', referralFee: 200 },
+      },
+    });
+
+    expect(config.jupiter.referral).toEqual({
+      referralAccount: '7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w',
+      referralFee: 200,
+    });
   });
 
   it('prefers the Swap API v2 base URL env over legacy aliases', () => {

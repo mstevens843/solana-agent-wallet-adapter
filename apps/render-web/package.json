@@ -26,6 +26,7 @@
     "@solana-agent-wallet-adapter/acp-adapter": "workspace:*",
     "@solana-agent-wallet-adapter/ap2-adapter": "workspace:*",
     "@solana-agent-wallet-adapter/bridge-router": "workspace:*",
+    "@solana-agent-wallet-adapter/core": "workspace:*",
     "@solana-agent-wallet-adapter/launch-skills": "workspace:*",
     "@solana-agent-wallet-adapter/mcp-server": "workspace:*",
     "@solana-agent-wallet-adapter/mpp-adapter": "workspace:*",

@@ -168,6 +168,23 @@ class DeviceAgentProviderExecutorTest {
     }
 
     @Test
+    fun customOpenAiCompatibleConfigRejectsKnownNativeProviderUrls() {
+        fun custom(baseUrl: String?): RuntimeConfig = config(
+            apiFormat = "openai-compatible",
+            provider = "custom-openai-compatible",
+        ).copy(baseUrl = baseUrl)
+
+        assertEquals(null, custom("https://gateway.example/v1").validate())
+        assertEquals(null, custom("https://generativelanguage.googleapis.com/v1beta/openai").validate())
+        assertTrue(custom("https://openrouter.ai/api/v1").validate()?.message?.contains("OpenRouter preset") == true)
+        assertTrue(custom("https://api.anthropic.com/v1").validate()?.message?.contains("Claude / Anthropic preset") == true)
+        assertTrue(custom("https://generativelanguage.googleapis.com/v1beta").validate()?.message?.contains("Gemini preset") == true)
+        assertTrue(custom("gateway.example/v1").validate()?.message?.contains("https://") == true)
+        assertTrue(custom("http://gateway.example/v1").validate()?.message?.contains("https://") == true)
+        assertTrue(custom(null).validate()?.message?.contains("required") == true)
+    }
+
+    @Test
     fun socketTimeoutFromHttpExecutorMapsToTimeout() {
         val http = FakeHttpExecutor().apply {
             queueFailure(SocketTimeoutException("timed out"))

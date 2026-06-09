@@ -24,6 +24,7 @@ import {
   type RegisteredAgent,
 } from './agentRegistry.js';
 import { BridgeAiPlanner, type AiPlanRequest, type AiReviewRequest, type AiAskRequest, type AiChatRequest } from './aiPlanner.js';
+import { AGENT_CONNECTORS, detectConnector, launchConnectorLogin, normalizeAgentConnector } from './connectorCli.js';
 import { makeTransactionSimulator } from './simulationDigest.js';
 import {
   birdeyeConfigFromEnv,
@@ -834,8 +835,29 @@ async function handleRequest(
         apiFormat?: string;
         clear?: boolean;
         allowCustomBaseUrl?: boolean;
+        engine?: string;
+        connector?: string;
+        connectorPath?: string;
       };
       writeJson(res, 200, aiPlanner.setSessionKey(body));
+      return;
+    }
+    // Detect installed/authed connector CLIs (for the engine picker, before one is configured).
+    if (req.method === 'GET' && url.pathname === '/bridge/ai/connector/detect') {
+      const requested = normalizeAgentConnector(url.searchParams.get('connector') ?? undefined);
+      const connectors = (requested ? [requested] : AGENT_CONNECTORS).map((connector) => detectConnector(connector));
+      writeJson(res, 200, { connectors });
+      return;
+    }
+    // One-click connect: launch the vendor CLI's own login; client polls /bridge/ai/status after.
+    if (req.method === 'POST' && url.pathname === '/bridge/ai/connector/login') {
+      const body = (await readJson(req)) as { connector?: string; connectorPath?: string };
+      const connector = normalizeAgentConnector(body.connector);
+      if (!connector) {
+        writeJson(res, 400, { error: 'Unknown agent connector. Choose codex, gemini, or claude.' });
+        return;
+      }
+      writeJson(res, 200, launchConnectorLogin(connector, body.connectorPath?.trim() || undefined));
       return;
     }
     if (req.method === 'POST' && url.pathname === '/bridge/ai/generate-plan') {

@@ -4,3 +4,4 @@ export * from './backend.js';
 export * from './ids.js';
 export * from './client.js';
 export * from './walletBalance.js';
+export * from './aiProviderValidation.js';

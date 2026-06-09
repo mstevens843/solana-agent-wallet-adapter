@@ -1,3 +1,9 @@
+export {
+  assertCustomOpenAiCompatibleBaseUrl,
+  customOpenAiCompatibleBaseUrlError,
+  isCustomOpenAiCompatibleProvider,
+} from '@solana-agent-wallet-adapter/core';
+
 export type AiApiFormat = 'openai-compatible' | 'anthropic';
 
 export type AgentSetupProvider =

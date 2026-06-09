@@ -101,6 +101,57 @@ final class DeviceAgentRuntimeLifecycleTests: XCTestCase {
         )) is AgenticAnthropicProvider)
     }
 
+    func testCustomOpenAICompatibleRejectsKnownNativeProviderUrls() {
+        XCTAssertNil(runtimeConfig(
+            provider: "custom-openai-compatible",
+            apiFormat: "openai-compatible",
+            model: "gateway-model",
+            baseUrl: "https://gateway.example/v1"
+        ).validationError())
+
+        XCTAssertNil(runtimeConfig(
+            provider: "custom-openai-compatible",
+            apiFormat: "openai-compatible",
+            model: "gemini-2.5-flash",
+            baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai"
+        ).validationError())
+
+        XCTAssertTrue(runtimeConfig(
+            provider: "custom-openai-compatible",
+            apiFormat: "openai-compatible",
+            model: "gateway-model",
+            baseUrl: "https://openrouter.ai/api/v1"
+        ).validationError()?.message.contains("OpenRouter preset") == true)
+
+        XCTAssertTrue(runtimeConfig(
+            provider: "custom-openai-compatible",
+            apiFormat: "openai-compatible",
+            model: "gateway-model",
+            baseUrl: "https://api.anthropic.com/v1"
+        ).validationError()?.message.contains("Claude / Anthropic preset") == true)
+
+        XCTAssertTrue(runtimeConfig(
+            provider: "custom-openai-compatible",
+            apiFormat: "openai-compatible",
+            model: "gemini-2.5-flash",
+            baseUrl: "https://generativelanguage.googleapis.com/v1beta"
+        ).validationError()?.message.contains("Gemini preset") == true)
+
+        XCTAssertTrue(runtimeConfig(
+            provider: "custom-openai-compatible",
+            apiFormat: "openai-compatible",
+            model: "gateway-model",
+            baseUrl: "http://gateway.example/v1"
+        ).validationError()?.message.contains("https://") == true)
+
+        XCTAssertTrue(runtimeConfig(
+            provider: "custom-openai-compatible",
+            apiFormat: "openai-compatible",
+            model: "gateway-model",
+            baseUrl: nil
+        ).validationError()?.message.contains("required") == true)
+    }
+
     func testPlanBoundaryMatchesWebAndroidContract() throws {
         XCTAssertEqual(
             AgenticDeviceAgentBoundaries.plan,

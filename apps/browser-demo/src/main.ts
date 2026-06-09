@@ -356,9 +356,12 @@ import {
   DeviceAgentPlanGuardrailError,
   aiDiagnosticsFromError,
   aiFormatLabel,
+  AI_CONNECTORS,
+  aiConnectorPreset,
   aiProviderPresetById,
   aiProviderSupportsDeviceAgent,
   aiRouteDiagnosticForSettings,
+  assertCustomOpenAiCompatibleSettings,
   bridgeAiSessionKeyPayload,
   buildTemplatePlan,
   confirmHostedAiPlanner,
@@ -391,6 +394,7 @@ import {
   type AiDiagnosticEntry,
   type DeviceAgentPlanGuardrailEvent,
   type AiPlanRequest,
+  type AiConnector,
   type AiSettings,
   type BridgeAiStatus,
 } from './planner.js';
@@ -2555,6 +2559,8 @@ interface PersistedState {
   aiApiFormat?: AiSettings['apiFormat'];
   aiBaseUrl?: string;
   aiModel?: string;
+  aiEngine?: AiSettings['agentEngine'];
+  aiConnector?: AiConnector;
   aiMultiReviewer?: boolean;
   aiAutoBackgroundWatch?: boolean;
   notificationSettings?: Partial<Omit<NotificationSettingsState, 'permission'>>;
@@ -4765,6 +4771,7 @@ async function bootstrap(): Promise<void> {
     }
     if (state.aiSettings.mode === 'bridge') {
       await refreshBridgeAiStatus(false);
+      await resyncConnectorEngineWithBridge();
     }
   }
   if (state.aiSettings.mode === 'device-agent') {
@@ -16211,12 +16218,19 @@ function commandAiPreferenceSnapshotCard(): CommandPreferenceSnapshotCard {
   const anyConfigured = configured || Boolean(inactive);
   const path = aiPathPreferenceLabel(state.aiSettings.mode);
   const providerPreset = aiProviderPresetById(state.aiSettings.provider);
-  const provider = state.aiSettings.mode === 'bridge' && state.aiStatus?.provider
+  const bridgeConnector = state.aiSettings.mode === 'bridge' && state.aiStatus?.engine === 'connector'
+    ? state.aiStatus
+    : null;
+  const provider = bridgeConnector
+    ? (bridgeConnector.connectorLabel ?? 'Connector')
+    : state.aiSettings.mode === 'bridge' && state.aiStatus?.provider
     ? state.aiStatus.provider
     : state.aiSettings.mode === 'device-agent' && state.deviceAgentStatus?.provider
       ? state.deviceAgentStatus.provider
     : providerPreset.label;
-  const model = state.aiSettings.mode === 'bridge' && state.aiStatus?.model
+  const model = bridgeConnector
+    ? (bridgeConnector.connectorAuthStatus === 'connected' ? 'subscription' : 'sign-in needed')
+    : state.aiSettings.mode === 'bridge' && state.aiStatus?.model
     ? state.aiStatus.model
     : state.aiSettings.mode === 'device-agent' && state.deviceAgentStatus?.model
       ? state.deviceAgentStatus.model
@@ -22047,9 +22061,56 @@ function localBridgeAiSetupCard(status: BridgeAiStatus | null, location: 'rail' 
           <span>AI provider key <strong>${escapeHtml(source.label)}</strong></span>
         </div>
         <p class="local-bridge-ai-key-note">${escapeHtml(source.detail)}</p>
+        ${localBridgeConnectorSection(status)}
       </div>
     </details>
   `;
+}
+
+/** Local-Bridge engine: switch between a provider API key and a subscription connector (Codex / Gemini / Claude). */
+function bridgeAiEngine(status: BridgeAiStatus | null): 'api-key' | 'connector' {
+  if (status?.engine === 'connector') return 'connector';
+  return state.aiSettings.agentEngine ?? 'api-key';
+}
+
+function localBridgeConnectorSection(status: BridgeAiStatus | null): string {
+  if (state.aiSettings.mode !== 'bridge') return '';
+  const engine = bridgeAiEngine(status);
+  const live = status?.engine === 'connector' ? status : null;
+  const selected: AiConnector = live?.connector ?? state.aiSettings.connector ?? 'codex';
+  const engineToggle = `
+    <div class="bridge-engine-toggle" role="group" aria-label="Local Bridge engine">
+      <button type="button" class="utility ${engine === 'api-key' ? 'active' : ''}" data-ai-action="set-engine" data-ai-engine="api-key" ${state.busy ? 'disabled' : ''}>Provider API key</button>
+      <button type="button" class="utility ${engine === 'connector' ? 'active' : ''}" data-ai-action="set-engine" data-ai-engine="connector" ${state.busy ? 'disabled' : ''}>Subscription connector</button>
+    </div>`;
+  if (engine !== 'connector') return engineToggle;
+
+  const auth = live?.connectorAuthStatus;
+  const statusBadge = !live
+    ? '<span class="bridge-connector-status warn">Pick a connector to configure the local bridge</span>'
+    : auth === 'connected'
+      ? `<span class="bridge-connector-status ok">Connected · ${escapeHtml(live.connectorLabel ?? aiConnectorPreset(selected).label)}</span>`
+      : auth === 'binary-not-found'
+        ? '<span class="bridge-connector-status warn">CLI not installed on the bridge machine</span>'
+        : '<span class="bridge-connector-status warn">Sign-in needed</span>';
+  const choices = AI_CONNECTORS.map((preset) => {
+    const active = live ? live.connector === preset.id : selected === preset.id;
+    return `
+      <button type="button" class="bridge-connector-choice ${active ? 'active' : ''}" data-ai-action="select-connector" data-ai-connector="${escapeHtml(preset.id)}" ${state.busy ? 'disabled' : ''}>
+        <strong>${escapeHtml(preset.label)}</strong>
+        <span>${escapeHtml(preset.billingNote)}</span>
+      </button>`;
+  }).join('');
+  const connectButton = live && auth !== 'connected'
+    ? `<button type="button" class="utility" data-ai-action="connector-connect" data-ai-connector="${escapeHtml(live.connector ?? selected)}" ${state.busy ? 'disabled' : ''}>Connect (sign in)</button>`
+    : '';
+  return `
+    ${engineToggle}
+    <div class="bridge-connector-section">
+      <p class="bridge-connector-note">Use a subscription you already pay for. The bridge runs your local CLI on this machine — your key never leaves it. Codex/Gemini use your plan; Claude uses metered Agent-SDK credits.</p>
+      <div class="bridge-connector-choices">${choices}</div>
+      <div class="bridge-connector-status-row">${statusBadge}${connectButton}</div>
+    </div>`;
 }
 
 function localBridgeAiKeySource(status: BridgeAiStatus | null): { label: string; detail: string } {
@@ -22460,7 +22521,11 @@ function isBridgeAiConfigured(status: BridgeAiStatus | null = state.aiStatus): b
 }
 
 function shouldHideAiKeyEntry(status: BridgeAiStatus | null = state.aiStatus): boolean {
-  if (state.aiSettings.mode === 'bridge') return isBridgeAiConfigured(status);
+  if (state.aiSettings.mode === 'bridge') {
+    // Connector mode never uses an API key — hide the key entry entirely.
+    if (bridgeAiEngine(status) === 'connector') return true;
+    return isBridgeAiConfigured(status);
+  }
   return state.aiSettings.mode === 'device-agent' && Boolean(state.deviceAgentStatus?.configured);
 }
 
@@ -22507,6 +22572,12 @@ function aiRouteStatusLabel(status: BridgeAiStatus | null): string {
 
 function aiReadinessLabel(status: BridgeAiStatus | null): string {
   if (state.aiSettings.mode === 'bridge') {
+    if (bridgeAiEngine(status) === 'connector') {
+      const auth = status?.engine === 'connector' ? status.connectorAuthStatus : undefined;
+      if (auth === 'connected') return 'Connector connected';
+      if (auth === 'binary-not-found') return 'Connector CLI not installed';
+      return 'Connector sign-in needed';
+    }
     return status?.available ? 'Bridge AI verified' : 'Bridge key required';
   }
   if (state.aiSettings.mode === 'device-agent') {
@@ -24939,6 +25010,19 @@ function bind(): void {
             void runRefreshAiStatus();
           }
           return;
+        case 'set-engine':
+          void runSetAiEngine(button.dataset.aiEngine === 'connector' ? 'connector' : 'api-key');
+          return;
+        case 'select-connector': {
+          const connector = normalizeWebConnector(button.dataset.aiConnector);
+          if (connector) void runSelectConnector(connector);
+          return;
+        }
+        case 'connector-connect': {
+          const connector = normalizeWebConnector(button.dataset.aiConnector);
+          if (connector) void runConnectorConnect(connector);
+          return;
+        }
         case 'start-tauri-bridge':
           void runStartTauriBridgeForAi();
           return;
@@ -34353,6 +34437,7 @@ async function runSaveDirectAiKey(): Promise<void> {
     return;
   }
   await run('ai', async () => {
+    assertCustomOpenAiCompatibleSettings(state.aiSettings);
     saveCurrentSessionAiApiKey();
     if (state.aiSettings.mode === 'device-agent') {
       await configureDeviceAgentRuntime();
@@ -34393,6 +34478,7 @@ async function runConfirmAiPlanner(): Promise<void> {
   const toastId = pushToast('pending', 'Confirming planner', 'Checking the selected AI review route.');
   try {
     await run('ai', async () => {
+      assertCustomOpenAiCompatibleSettings(state.aiSettings);
       if (state.aiSettings.mode === 'bridge') {
         state.aiDiagnostics = [aiRouteDiagnostic('/bridge/ai/status', 'GET')];
         await refreshBridgeAiStatus(true);
@@ -34558,6 +34644,126 @@ async function runStopDeviceAgentRuntime(): Promise<void> {
       pushToast('error', 'Device Agent stop failed', message);
     },
   });
+}
+
+function normalizeWebConnector(value: string | undefined): AiConnector | null {
+  return value === 'codex' || value === 'gemini' || value === 'claude' ? value : null;
+}
+
+let connectorAuthPollTimer: number | null = null;
+
+async function runSetAiEngine(engine: 'api-key' | 'connector'): Promise<void> {
+  state.aiSettings.agentEngine = engine;
+  if (engine === 'connector' && !state.aiSettings.connector) {
+    state.aiSettings.connector = 'codex';
+  }
+  savePersistedState();
+  render();
+  // Switching back to API key also leaves connector mode on the bridge (best-effort), so the
+  // bridge stops shelling out to the CLI. This doubles as the "disconnect" action.
+  if (engine === 'api-key' && state.aiStatus?.engine === 'connector') {
+    stopConnectorAuthPoll();
+    await bridgeRequest('/bridge/ai/session-key', { method: 'POST', body: JSON.stringify({ clear: true }) })
+      .catch(() => undefined);
+    await refreshBridgeAiStatus(false).catch(() => undefined);
+    render();
+  }
+}
+
+async function runSelectConnector(connector: AiConnector): Promise<void> {
+  await run('ai', async () => {
+    state.aiSettings.agentEngine = 'connector';
+    state.aiSettings.connector = connector;
+    savePersistedState();
+    await bridgeRequest('/bridge/ai/session-key', {
+      method: 'POST',
+      body: JSON.stringify({ engine: 'connector', connector }),
+    });
+    await refreshBridgeAiStatus(false);
+    pushToast('success', 'Connector selected', `${aiConnectorPreset(connector).label} is set on the local bridge.`);
+  }, {
+    async onError(message) {
+      if (isBridgeOfflineMessage(message)) {
+        await showBridgeOfflineToast('AI bridge offline');
+        return;
+      }
+      pushToast('error', 'Could not set connector', message);
+    },
+  });
+}
+
+async function runConnectorConnect(connector: AiConnector): Promise<void> {
+  // Launch the vendor sign-in (brief busy), then poll status in the BACKGROUND so the whole
+  // settings UI isn't frozen while the user completes sign-in in their browser.
+  let pendingToastId: number | undefined;
+  await run('ai', async () => {
+    const launch = await bridgeRequest<{ launched: boolean; command: string; manualHint?: string }>('/bridge/ai/connector/login', {
+      method: 'POST',
+      body: JSON.stringify({ connector }),
+    });
+    if (!launch.launched) {
+      pushToast('info', 'Finish sign-in', launch.manualHint ?? `Run \`${launch.command}\` on the bridge machine, then Recheck.`);
+      return;
+    }
+    pendingToastId = pushToast('pending', 'Sign-in launched', `Complete ${aiConnectorPreset(connector).label} sign-in in your browser — it connects automatically.`);
+  }, {
+    async onError(message) {
+      if (isBridgeOfflineMessage(message)) {
+        await showBridgeOfflineToast('AI bridge offline');
+        return;
+      }
+      pushToast('error', 'Connector sign-in failed', message);
+    },
+  });
+  if (pendingToastId !== undefined) {
+    startConnectorAuthPoll(connector, pendingToastId);
+  }
+}
+
+function stopConnectorAuthPoll(): void {
+  if (connectorAuthPollTimer !== null) {
+    window.clearInterval(connectorAuthPollTimer);
+    connectorAuthPollTimer = null;
+  }
+}
+
+function startConnectorAuthPoll(connector: AiConnector, pendingToastId: number): void {
+  stopConnectorAuthPoll();
+  let attempts = 0;
+  const maxAttempts = 24; // ~60s at 2.5s, non-blocking
+  connectorAuthPollTimer = window.setInterval(() => {
+    void (async () => {
+      attempts += 1;
+      await refreshBridgeAiStatus(false).catch(() => undefined);
+      const connected = state.aiStatus?.connectorAuthStatus === 'connected';
+      if (connected || attempts >= maxAttempts) {
+        stopConnectorAuthPoll();
+        dismissToast(pendingToastId);
+        pushToast(
+          connected ? 'success' : 'info',
+          connected ? 'Connected' : 'Still waiting on sign-in',
+          connected
+            ? `${aiConnectorPreset(connector).label} is ready.`
+            : 'Finish sign-in in your browser, then press Recheck.',
+        );
+      }
+      render();
+    })();
+  }, 2_500);
+}
+
+// On startup, re-apply a persisted connector choice to the bridge if its (stateful) session was lost
+// on restart — keeps the UI selection and the bridge in sync without user action.
+async function resyncConnectorEngineWithBridge(): Promise<void> {
+  if (state.aiSettings.agentEngine !== 'connector') return;
+  const connector = state.aiSettings.connector;
+  if (!connector) return;
+  if (state.aiStatus?.engine === 'connector' && state.aiStatus.connector === connector) return;
+  await bridgeRequest('/bridge/ai/session-key', {
+    method: 'POST',
+    body: JSON.stringify({ engine: 'connector', connector }),
+  }).catch(() => undefined);
+  await refreshBridgeAiStatus(false).catch(() => undefined);
 }
 
 async function runSetBrowserDeviceAgentSecretStoreMode(mode: SecretStoreMode): Promise<void> {
@@ -43457,6 +43663,7 @@ async function deviceAgentNativeStatusCall(
 }
 
 function deviceAgentConfigPayload(includeApiKey: boolean): Record<string, string> {
+  assertCustomOpenAiCompatibleSettings(state.aiSettings);
   const walletAddress = currentDeviceAgentWalletAddress();
   return {
     provider: state.aiSettings.provider,
@@ -51801,6 +52008,8 @@ function persistedAiSettings(
   const reviewPrefs = {
     multiReviewer: persistedState.aiMultiReviewer === true,
     autoBackgroundWatch: persistedState.aiAutoBackgroundWatch === true,
+    ...(persistedState.aiEngine ? { agentEngine: persistedState.aiEngine } : {}),
+    ...(persistedState.aiConnector ? { connector: persistedState.aiConnector } : {}),
   };
   const settings = {
     mode,
@@ -52614,6 +52823,8 @@ function loadPersistedState(): PersistedState {
       ...(typeof parsed.aiApiFormat === 'string' && isAiApiFormat(parsed.aiApiFormat) && { aiApiFormat: parsed.aiApiFormat }),
       ...(typeof parsed.aiBaseUrl === 'string' && { aiBaseUrl: parsed.aiBaseUrl }),
       ...(typeof parsed.aiModel === 'string' && { aiModel: parsed.aiModel }),
+      ...((parsed.aiEngine === 'api-key' || parsed.aiEngine === 'connector') && { aiEngine: parsed.aiEngine }),
+      ...((parsed.aiConnector === 'codex' || parsed.aiConnector === 'gemini' || parsed.aiConnector === 'claude') && { aiConnector: parsed.aiConnector }),
       ...(typeof parsed.aiMultiReviewer === 'boolean' && { aiMultiReviewer: parsed.aiMultiReviewer }),
       ...(typeof parsed.aiAutoBackgroundWatch === 'boolean' && { aiAutoBackgroundWatch: parsed.aiAutoBackgroundWatch }),
       ...(isPersistedNotificationSettings(parsed.notificationSettings) && {
@@ -52645,6 +52856,8 @@ function savePersistedState(): void {
         aiApiFormat: state.aiSettings.apiFormat,
         aiBaseUrl: state.aiSettings.baseUrl,
         aiModel: state.aiSettings.model,
+        ...(state.aiSettings.agentEngine ? { aiEngine: state.aiSettings.agentEngine } : {}),
+        ...(state.aiSettings.connector ? { aiConnector: state.aiSettings.connector } : {}),
         aiMultiReviewer: state.aiSettings.multiReviewer === true,
         aiAutoBackgroundWatch: state.aiSettings.autoBackgroundWatch === true,
         notificationSettings: {
