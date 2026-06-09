@@ -10,7 +10,7 @@ export type AgentReviewChoice = 'send' | 'save' | 'delete';
 
 export interface AgentReviewOutcome {
   // Whether the agent was actually consulted. When false (route not configured
-  // or user said no to "Draft with AI?"), the caller continues with the
+  // or user said no to "Plan with AI?"), the caller continues with the
   // existing flow as if the AI step never existed.
   reviewed: boolean;
   choice: AgentReviewChoice;
@@ -45,16 +45,16 @@ export interface AgentReviewOptions {
   };
 }
 
-// Asks "Draft with AI?" after the user has built and confirmed their
-// draft. If the user opts in, prompts for a free-text instruction, runs the
-// review against the existing draft (NOT a generated plan — the user already
-// drafted it), renders the verdict + sectioned findings, and offers the
+// Asks "Plan with AI?" after the user has built and confirmed their
+// plan. If the user opts in, prompts for a free-text instruction, runs the
+// review against the existing plan (NOT a generated plan — the user already
+// prepared it), renders the verdict + sectioned findings, and offers the
 // post-verdict next-step picker.
 //
 // Critical: the plan is built with source: 'template'. That distinction
 // matters because the post-LLM bypass-claim regex in
 // packages/workflow/src/index.ts is only enforced when source === 'ai'; using
-// 'template' (the user drafted it) means the regex never runs, eliminating
+// 'template' (the user prepared it) means the regex never runs, eliminating
 // the "AI drafts cannot bypass wallet approval or signing." false positive
 // that fired for /new swap before this change.
 export async function maybeReviewWithAgent(
@@ -69,7 +69,7 @@ export async function maybeReviewWithAgent(
   }
 
   const draftWithAi = await confirm({
-    message: reviewOptions.enabledPrompt ?? 'Draft with AI?',
+    message: reviewOptions.enabledPrompt ?? 'Plan with AI?',
     default: false,
   });
   if (!draftWithAi) return { reviewed: false, choice: 'send' };
@@ -176,7 +176,7 @@ export async function reviewPreparedTransactionWithAgent(
       sendDenied: 'Send for approval anyway (overrides transaction review denial)',
       sendNeedsInput: 'Send for approval anyway (overrides transaction review needs-input)',
       save: 'Save to inbox without sending',
-      delete: 'Delete saved draft',
+      delete: 'Delete saved plan',
       deleteDescription: 'Removes the prepared action from the inbox.',
     },
   });
@@ -220,7 +220,7 @@ async function pickNextStep(
 
   choices.push(
     { name: labels.save ?? 'Save to inbox without sending', value: 'save', description: labels.saveDescription ?? 'Queues the prepared action; sign later via /inbox.' },
-    { name: labels.delete ?? 'Delete (discard this draft)', value: 'delete', description: labels.deleteDescription ?? 'Drops the draft. Nothing is queued or sent.' },
+    { name: labels.delete ?? 'Delete (discard this plan)', value: 'delete', description: labels.deleteDescription ?? 'Drops the plan. Nothing is queued or sent.' },
   );
 
   const defaultChoice: NextStep = decision === 'approve' ? 'send' : 'save';

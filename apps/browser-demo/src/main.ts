@@ -357,6 +357,7 @@ import {
   aiDiagnosticsFromError,
   aiFormatLabel,
   aiProviderPresetById,
+  aiProviderSupportsDeviceAgent,
   aiRouteDiagnosticForSettings,
   bridgeAiSessionKeyPayload,
   buildTemplatePlan,
@@ -3332,6 +3333,7 @@ function notificationSettingsFromPersisted(
 }
 
 const persisted = loadPersistedState();
+let aiModeSelectionExplicit = persisted.aiMode !== undefined;
 const launchParams = readLaunchParams();
 const completedCloudWorkspaceDeleteNotice = readCompletedCloudWorkspaceDeleteNotice();
 clearSensitiveLaunchParams();
@@ -4746,7 +4748,7 @@ async function bootstrap(): Promise<void> {
   }
   await refreshCloudSession(false);
   await signOutCloudSessionForWalletBoundary('startup');
-  normalizeCurrentAiModeForSurface();
+  reconcileAiModeForSurface();
   const walletBoundDeviceAgentStatus = loadDeviceAgentStatusCache();
   if (walletBoundDeviceAgentStatus) {
     state.deviceAgentStatus = walletBoundDeviceAgentStatus;
@@ -10674,7 +10676,7 @@ function protocolConnectorsDocsSection(): string {
       </div>
       <div class="protocol-connector-flow-grid" aria-label="Protocol connector workflow">
         ${protocolConnectorFlowCard('1. Enable', 'Turn on only the protocols an agent may read or prepare against in app Preferences.')}
-        ${protocolConnectorFlowCard('2. Ask', 'Draft with AI, create a one-time plan, or schedule recurring work against an enabled connector.')}
+        ${protocolConnectorFlowCard('2. Ask', 'Prepare with AI, create a one-time plan, or schedule recurring work against an enabled connector.')}
         ${protocolConnectorFlowCard('3. Check', 'Use the inbox, one-time checks, recurring checks, and evidence receipts before approval.')}
         ${protocolConnectorFlowCard('4. Sign', 'The agent prepares. The connected wallet signs only after user approval.')}
       </div>
@@ -12083,12 +12085,12 @@ function mobileRailBottomSheet(): string {
     ? 'Workspace Storage'
     : sheet === 'wallet-balances'
       ? 'Wallet Balances'
-      : 'AI Drafting';
+      : 'AI Review';
   const detail = sheet === 'workspace-storage'
     ? 'Browser-local workflow storage'
     : sheet === 'wallet-balances'
       ? 'Wallet portfolio'
-      : 'Draft route and provider setup';
+      : 'AI route and provider setup';
   const body = sheet === 'workspace-storage'
     ? cloudWorkspaceRailBody()
     : sheet === 'wallet-balances'
@@ -12412,7 +12414,7 @@ function firstRunSteps(): FirstRunStep[] {
     {
       id: 'plan',
       label: 'Create',
-      detail: signals.hasPlan ? 'Plan saved for review.' : 'Draft from template.',
+      detail: signals.hasPlan ? 'Plan saved for review.' : 'Plan from template.',
       complete: signals.hasPlan,
     },
     {
@@ -12946,7 +12948,7 @@ const PREFERENCES_VIEW_OPTIONS: ReadonlyArray<{
   mobileLabel: string;
 }> = [
   { view: 'workspace', title: 'Workspace', desktopLabel: 'Backup & alerts', mobileLabel: 'Backup & Alerts' },
-  { view: 'ai', title: 'AI Drafting', desktopLabel: 'Prompts & review', mobileLabel: 'Prompts & Review' },
+  { view: 'ai', title: 'AI Review', desktopLabel: 'Prompts & review', mobileLabel: 'Prompts & Review' },
   { view: 'access', title: 'Agent Access', desktopLabel: 'Agents & connectors', mobileLabel: 'Agents & Connectors' },
   { view: 'rules', title: 'Review Rules', desktopLabel: 'Recipients & policy', mobileLabel: 'Recipients & Policy' },
   { view: 'tokens', title: 'Tokens & Retry', desktopLabel: 'Labels & failures', mobileLabel: 'Labels & Failures' },
@@ -13304,7 +13306,7 @@ function preferencesViewSummary(view: PreferencesView): string {
         state.plannerPrefs.houseRules.trim() ? 'house rules' : '',
         state.plannerPrefs.savedPrompts.length ? `${state.plannerPrefs.savedPrompts.length} prompts` : '',
       ].filter(Boolean);
-      return extras.length ? extras.join(' · ') : 'draft defaults';
+      return extras.length ? extras.join(' · ') : 'review defaults';
     }
     case 'access': {
       const enabledAgents = state.agents.filter((agent) => agent.enabled).length;
@@ -13346,7 +13348,7 @@ function preferencesActiveView(): string {
         </div>
       `);
     case 'ai':
-      return preferencesGroup('AI Drafting', 'Personalize drafts and optional review behavior without changing signing authority.', aiReviewPreferencesPanel());
+      return preferencesGroup('AI Review', 'Personalize prompts and review behavior without changing signing authority.', aiReviewPreferencesPanel());
     case 'access':
       return isMobileAiPathPolicySurface()
         ? preferencesGroup('Protocol Connectors', 'Manage protocol connectors used to prepare wallet-approved actions.', `
@@ -13406,12 +13408,12 @@ function aiReviewPreferencesPanel(): string {
   ].filter(Boolean);
   const status = extras.length ? extras.join(' · ') : 'Defaults';
   return `
-    <section class="ai-review-preferences-card" aria-label="AI drafting preferences">
+    <section class="ai-review-preferences-card" aria-label="AI review preferences">
       <div class="ai-review-preferences-head">
         <div>
-          <span>AI drafting</span>
+          <span>AI review</span>
           <strong>Planner personalization</strong>
-          <p>Saved prompts and review extras change drafting only. Wallet approval, submission, and signing stay separate.</p>
+          <p>Saved prompts and review extras affect AI review only. Wallet approval, submission, and signing stay separate.</p>
         </div>
         <em>${escapeHtml(status)}</em>
       </div>
@@ -13425,7 +13427,7 @@ function aiReviewPreferencesPanel(): string {
           />
           <span>
             <strong>Multi-agent review</strong>
-            <em>Ask the agent to weigh in as risk, quote, policy, and protocol reviewers in one drafting call.</em>
+            <em>Ask the agent to weigh in as risk, quote, policy, and protocol reviewers in one review call.</em>
           </span>
         </label>
         <label class="ai-toggle">
@@ -16460,6 +16462,7 @@ function commandCenterAiPanel(): string {
 function commandAiRouteCards(): string {
   const mobileAiPathPolicy = isMobileAiPathPolicySurface();
   const hostedCloudSignInRequired = mobileAiPathPolicy && !cloudSessionMatchesWallet();
+  const deviceAgentFirst = deviceAgentPathAvailableForCurrentProvider();
   const definitions: Array<{ id: AndroidAiRouteTab; mode: AiSettings['mode']; title: string; detail: string; meta: string; available: boolean }> = [
     {
       id: 'hosted',
@@ -16504,11 +16507,18 @@ function commandAiRouteCards(): string {
       available: mobileAiPathPolicy || deviceAgentModeVisible(),
     },
   ];
+  const mobileModeOrder = visibleMobileAiPathModes({
+    mobileAiPathPolicy,
+    deviceAgentVisible: deviceAgentModeVisible(),
+  });
+  const orderedMobileModeOrder = deviceAgentFirst
+    ? mobileModeOrder
+    : [
+        ...mobileModeOrder.filter((id) => id === 'hosted'),
+        ...mobileModeOrder.filter((id) => id !== 'hosted'),
+      ];
   const visible = mobileAiPathPolicy
-    ? visibleMobileAiPathModes({
-        mobileAiPathPolicy,
-        deviceAgentVisible: deviceAgentModeVisible(),
-      })
+    ? orderedMobileModeOrder
         .map((id) => definitions.find((entry) => entry.id === id && entry.available))
         .filter((entry): entry is (typeof definitions)[number] => Boolean(entry))
     : definitions.filter((entry) => entry.available);
@@ -16543,7 +16553,9 @@ function commandAiRouteCards(): string {
     ? ['device-agent', 'session', 'hosted', 'bridge']
     : IS_TAURI_APP
       ? ['bridge', 'device-agent', 'hosted']
-      : ['hosted', 'bridge', 'session', 'device-agent'];
+      : deviceAgentFirst
+        ? ['device-agent', 'hosted', 'bridge', 'session']
+        : ['hosted', 'bridge', 'session', 'device-agent'];
   return ordered
     .map((id) => visible.find((entry) => entry.id === id))
     .filter((entry): entry is (typeof definitions)[number] => Boolean(entry))
@@ -17213,7 +17225,7 @@ function commandLoopStep(label: string, detail: string, complete: boolean): stri
 
 function commandLoopBlock(openApprovalsActive: boolean, doneActive: boolean): string {
   const steps: Array<{ id: AndroidLoopTab; label: string; detail: string; complete: boolean }> = [
-    { id: 'draft', label: 'Draft', detail: 'AI or templates prepare a bounded review item.', complete: Boolean(state.agentPlan) || state.generatedPlans.length > 0 },
+    { id: 'draft', label: 'Plan', detail: 'AI or templates prepare a bounded review item.', complete: Boolean(state.agentPlan) || state.generatedPlans.length > 0 },
     { id: 'check', label: 'Check', detail: 'Review amount, route, recipient, risk, and rule.', complete: state.generatedPlans.some(isGeneratedPlanActiveInReview) },
     { id: 'approve', label: 'Approve', detail: 'Wallet signs only the visible decision.', complete: openApprovalsActive },
     { id: 'prove', label: 'Prove', detail: 'Saved proofs stay attached to Done.', complete: doneActive },
@@ -17399,7 +17411,7 @@ function agentPlanPanel(): string {
   const reviewCount = generatedPlansForPanel(true).filter(isGeneratedPlanActiveInReview).length;
   const headerTitle = state.oneTimePlanView === 'review' ? 'Check request' : 'New Request';
   const headerDetail = state.oneTimePlanView === 'review'
-    ? 'Saved one-time drafts. Send executable work to Needs Approval for a wallet decision.'
+    ? 'Saved one-time plans. Send executable work to Needs Approval for a wallet decision.'
     : 'Create a one-time payment or swap. Nothing is sent until you approve it.';
   const statusMarker = state.oneTimePlanView === 'review'
     ? `<span class="signature-state accent-note ${state.agentSignature ? 'complete' : state.agentPlan ? 'active' : ''}">${reviewCount} plan${reviewCount === 1 ? '' : 's'}</span>`
@@ -17465,12 +17477,12 @@ function oneTimeCreatePlanPanel(): string {
 }
 
 function draftFlowHint(hasOneTimePlans: boolean, walletReady: boolean): string {
-  const reviewCopy = hasOneTimePlans ? 'Check already has saved drafts.' : 'New drafts move to Check.';
+  const reviewCopy = hasOneTimePlans ? 'Check already has saved plans.' : 'New plans move to Check.';
   const walletCopy = walletReady ? 'Wallet is ready when you send work for approval.' : 'Wallet is optional until approval or proof signing.';
   return `
     <div class="draft-flow-hint">
-      <span class="accent-note">Draft flow</span>
-      <p class="accent-note">${escapeHtml(reviewCopy)} Drafts save to Check; send for approval only when ready. ${escapeHtml(walletCopy)}</p>
+      <span class="accent-note">Plan flow</span>
+      <p class="accent-note">${escapeHtml(reviewCopy)} Plans save to Check; send for approval only when ready. ${escapeHtml(walletCopy)}</p>
     </div>
   `;
 }
@@ -17541,7 +17553,7 @@ function generatedPlansPanel(embedded = false): string {
             class="utility check-toolbar-create-another"
             ${state.busy ? 'disabled' : ''}
           >
-            Create another draft
+            Create another plan
           </button>
           <button
             id="toggleArchivedGeneratedPlans"
@@ -17556,7 +17568,7 @@ function generatedPlansPanel(embedded = false): string {
       ${embedded
         ? `<div class="generated-plans-toolbar-row">${toolbar}</div>`
         : `<div class="signature-object-head">
-        ${sectionTitleLine('Check request', 'Saved one-time drafts. Send executable work to Needs Approval for a wallet decision.')}
+        ${sectionTitleLine('Check request', 'Saved one-time plans. Send executable work to Needs Approval for a wallet decision.')}
         ${toolbar}
       </div>
       `}
@@ -17567,10 +17579,10 @@ function generatedPlansPanel(embedded = false): string {
       ${
         visiblePlans.length
           ? `
-            <div class="${embedded ? 'review-plan-list' : 'generated-plan-grid'}" aria-label="Check request drafts" data-layout="${embedded ? 'review-plan-list' : 'generated-plan-grid'}">
+            <div class="${embedded ? 'review-plan-list' : 'generated-plan-grid'}" aria-label="Check request plans" data-layout="${embedded ? 'review-plan-list' : 'generated-plan-grid'}">
               ${paginatedPlans.items.map((record) => generatedPlanCard(record)).join('')}
             </div>
-            ${listPagination('review', paginatedPlans, 'Check drafts')}
+            ${listPagination('review', paginatedPlans, 'Check plans')}
           `
           : aiDraftPending ? '' : generatedPlansEmptyState(embedded, baseVisiblePlans.length > 0)
       }
@@ -17681,10 +17693,10 @@ function aiDraftPendingCard(): string {
   const templateTitle = operation?.templateTitle ?? selectedTemplate().title;
   const prompt = operation?.prompt ?? state.agentPrompt.trim();
   return `
-    <section class="ai-draft-pending-card" aria-label="AI draft in progress">
+    <section class="ai-draft-pending-card" aria-label="AI plan in progress">
       <div class="ai-draft-pending-copy">
-        <span>AI draft</span>
-        <h3>${escapeHtml(templateTitle)} is being drafted</h3>
+        <span>AI plan</span>
+        <h3>${escapeHtml(templateTitle)} is being prepared</h3>
         <p>${escapeHtml(prompt || 'Building the request for Check. Optional agent review stays off unless you enable it.')}</p>
       </div>
       <div class="ai-draft-pending-actions">
@@ -17722,7 +17734,7 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
             <span class="status-pill ${generatedPlanStatusTone(record)}">${escapeHtml(generatedPlanStatusLabel(record))}</span>
             ${storageBadgeHtml(generatedPlanStorageBadge(record))}
             ${generatedPlanConnectorChip(displayRecord)}
-            <span>${escapeHtml(record.source === 'ai' ? 'AI draft' : 'Template draft')}</span>
+            <span>${escapeHtml(record.source === 'ai' ? 'AI plan' : 'Template plan')}</span>
             ${generatedPlanFailurePill(record)}
             <span>${escapeHtml(formatDateTime(record.createdAt))}</span>
             ${metaHint ? `<span class="review-plan-meta-pill">${escapeHtml(metaHint)}</span>` : ''}
@@ -17791,8 +17803,8 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
 
 function generatedPlanErrorNotice(message: string): string {
   return `
-    <section class="review-plan-error" aria-label="AI draft issue">
-      <span>AI draft issue</span>
+    <section class="review-plan-error" aria-label="AI plan issue">
+      <span>AI plan issue</span>
       <p>${escapeHtml(message)}</p>
     </section>
   `;
@@ -18130,9 +18142,9 @@ function generatedPlanConsistencyWarning(record: GeneratedPlanRecord): string {
   const warning = swapTokenTextMismatchWarning(planWithRuntimeTokenLabels(record.plan), tokenDisplayLabel);
   if (!warning) return '';
   return `
-    <section class="review-plan-consistency-warning" aria-label="Draft consistency warning">
+    <section class="review-plan-consistency-warning" aria-label="Plan consistency warning">
       <span>Check token mismatch</span>
-      <p>${escapeHtml(warning.message)} Fix the output token or update the draft text before asking the agent or sending for approval.</p>
+      <p>${escapeHtml(warning.message)} Fix the output token or update the plan text before asking the agent or sending for approval.</p>
     </section>
   `;
 }
@@ -18155,7 +18167,7 @@ function agentReviewButton(record: GeneratedPlanRecord): string {
       data-generated-plan-action="agent-review"
       data-generated-plan-id="${escapeHtml(record.id)}"
       ${!canRunAgentReview(record) || record.status === 'archived' ? 'disabled' : ''}
-      title="${escapeHtml(canRunAgentReview(record) ? 'Ask the configured agent to approve, deny, or ask questions about this draft.' : agentReviewUnavailableReason(record))}"
+      title="${escapeHtml(canRunAgentReview(record) ? 'Ask the configured agent to approve, deny, or ask questions about this plan.' : agentReviewUnavailableReason(record))}"
     >
       ${checking ? buttonSpinner() : ''}${escapeHtml(label)}
     </button>
@@ -18173,7 +18185,7 @@ function generatedPlanAgentReviewStrip(record: GeneratedPlanRecord): string {
   const badge = agentReviewPathBadge(review.source);
   const watching = isPlanWatchActive(record);
   const watchBadge = watching
-    ? `<span class="agent-review-watch-pill" title="Background watch on. Re-checks each draft once an hour while the tab is open.">Watching</span>`
+    ? `<span class="agent-review-watch-pill" title="Background watch on. Re-checks each plan once an hour while the tab is open.">Watching</span>`
     : '';
   return `
     <section class="agent-review-strip ${escapeHtml(review.status)}${watching ? ' watching' : ''}" aria-label="Agent review">
@@ -18183,10 +18195,10 @@ function generatedPlanAgentReviewStrip(record: GeneratedPlanRecord): string {
         <em>${escapeHtml(detail)}</em>
         ${badge}
         ${watchBadge}
-        ${stale ? '<span class="agent-review-stale-pill" title="The draft changed after this review.">Stale</span>' : ''}
+        ${stale ? '<span class="agent-review-stale-pill" title="The plan changed after this review.">Stale</span>' : ''}
       </div>
       ${agentReviewDecisionCopy(review)}
-      ${stale ? '<p class="accent-note">This review is stale because the draft changed. Ask the agent again before relying on the decision.</p>' : ''}
+      ${stale ? '<p class="accent-note">This review is stale because the plan changed. Ask the agent again before relying on the decision.</p>' : ''}
       ${review.status === 'needs_input' ? agentReviewQuestionsForm(record) : ''}
       ${agentEvidenceDrawer(review, { stale, actionType: record.plan.actionType })}
       ${agentDenialActions(record)}
@@ -18345,7 +18357,7 @@ function agentDenialActions(record: GeneratedPlanRecord): string {
         data-generated-plan-action="agent-deny"
         data-generated-plan-id="${escapeHtml(record.id)}"
         ${disabled ? 'disabled' : ''}
-        title="Save a rejection proof using the agent's reason and archive this draft."
+        title="Save a rejection proof using the agent's reason and archive this plan."
       >
         Deny with agent reason
       </button>
@@ -18734,7 +18746,7 @@ function generatedPlanCardFooterActions(record: GeneratedPlanRecord): string {
       >
         Delete
       </button>
-      <div class="mobile-card-footer-actions review-plan-mobile-actions" aria-label="Mobile draft actions">
+      <div class="mobile-card-footer-actions review-plan-mobile-actions" aria-label="Mobile plan actions">
         <details class="mobile-card-action-menu">
           <summary>More actions</summary>
           <div class="mobile-card-action-menu-body">
@@ -19413,7 +19425,7 @@ function generatedPlanDeleteModal(): string {
   if (!state.generatedPlanDeleteModalId) return '';
   const record = generatedPlanById(state.generatedPlanDeleteModalId);
   if (!record) return '';
-  const status = record.status === 'archived' ? 'Archived draft' : generatedPlanStatusLabel(record);
+  const status = record.status === 'archived' ? 'Archived plan' : generatedPlanStatusLabel(record);
   return `
     <div class="generated-plan-modal-backdrop generated-plan-delete-modal-backdrop delete-confirmation-backdrop" role="presentation">
       <section class="generated-plan-modal generated-plan-delete-modal delete-confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="generated-plan-delete-title">
@@ -19427,7 +19439,7 @@ function generatedPlanDeleteModal(): string {
         </div>
         <div class="generated-plan-delete-warning delete-confirmation-content">
           <strong>${escapeHtml(status)}</strong>
-          <p>This removes the draft from Check and linked local planning state. If it already produced a receipt or approval, those records stay in Done.</p>
+          <p>This removes the plan from Check and linked local planning state. If it already produced a receipt or approval, those records stay in Done.</p>
         </div>
         <div class="generated-plan-modal-actions generated-plan-delete-actions">
           <button type="button" class="utility" data-generated-plan-delete-cancel ${state.busy ? 'disabled' : ''}>Cancel</button>
@@ -19510,14 +19522,14 @@ function deleteAllCheckModal(): string {
         <div class="generated-plan-modal-head">
           <div>
             <span class="workbench-kicker">Clear Check</span>
-            <h2 id="delete-all-check-title">Delete ${count} visible draft${count === 1 ? '' : 's'}?</h2>
-            <p>${count === 0 ? 'No visible Check drafts to delete.' : `Every visible Check draft${filterNote} will be removed.`}</p>
+            <h2 id="delete-all-check-title">Delete ${count} visible plan${count === 1 ? '' : 's'}?</h2>
+            <p>${count === 0 ? 'No visible Check plans to delete.' : `Every visible Check plan${filterNote} will be removed.`}</p>
           </div>
           <button class="utility" data-delete-all-check-cancel aria-label="Close Check bulk deletion">Close</button>
         </div>
         <div class="generated-plan-delete-warning delete-confirmation-content">
           <strong>This cannot be undone.</strong>
-          <p>Cloud and local copies of these drafts are deleted. Items that already produced a receipt or approval stay in Done.</p>
+          <p>Cloud and local copies of these plans are deleted. Items that already produced a receipt or approval stay in Done.</p>
         </div>
         <div class="generated-plan-modal-actions generated-plan-delete-actions">
           <button type="button" class="utility" data-delete-all-check-cancel ${state.busy ? 'disabled' : ''}>Cancel</button>
@@ -19743,14 +19755,14 @@ function generatedPlansEmptyState(oneTimeOnly = false, filterHasHiddenMatches = 
   const movedCount = records.filter(hasGeneratedPlanMovedPastReview).length;
   const archivedCount = records.filter((record) => record.status === 'archived').length;
   const detail = filterHasHiddenMatches
-    ? 'No drafts match this AI review filter.'
+    ? 'No plans match this AI review filter.'
     : records.length === 0
-    ? 'Create a draft first. It stays here for checking, then moves to Needs Approval or Done.'
+    ? 'Create a plan first. It stays here for checking, then moves to Needs Approval or Done.'
     : activeCount === 0 && movedCount > 0
-      ? 'All active drafts have moved forward. Open Needs Approval for queued work or Done for signed proofs and receipts.'
+      ? 'All active plans have moved forward. Open Needs Approval for queued work or Done for signed proofs and receipts.'
       : archivedCount > 0
         ? 'Archived plans are hidden. Show archived to inspect or restore them.'
-        : 'Create another draft or check Needs Approval and Done for work that already moved forward.';
+        : 'Create another plan or check Needs Approval and Done for work that already moved forward.';
   return signaturePlaceholder('No plans visible', detail);
 }
 
@@ -19773,8 +19785,8 @@ function agentPlannerWorkbench(): string {
     ? 'Describe what you want prepared or reviewed.'
     : 'Optional context, reason, or policy note saved with this plan.';
   const askAgentDetail = mockReviewAvailable && !aiPathConnected
-    ? 'Optional. Runs a local agent decision in Check after drafting. No bridge, AI key, or wallet popup.'
-    : 'Optional. Runs the review in Check after drafting. Sending for approval stays manual.';
+    ? 'Optional. Runs a local agent decision in Check after planning. No bridge, AI key, or wallet popup.'
+    : 'Optional. Runs the review in Check after planning. Sending for approval stays manual.';
   return `
     <div class="agent-planner-grid planner-single-column">
       <div class="intent-capsule intent-document-card planner-card ${state.agentPlan ? 'plan-linked' : 'draft'}">
@@ -19818,10 +19830,10 @@ function agentPlannerWorkbench(): string {
                   </span>
                 </label>
               ` : ''}
-              <button id="generatePlan" class="primary" ${draftActionBusy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}Drafting...` : 'Draft from template'}</button>
+              <button id="generatePlan" class="primary" ${draftActionBusy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}Planning...` : 'Plan from template'}</button>
               ${aiPathConnected ? `
-                <button id="generateAiPlan" class="primary ai-draft-button" ${!canUseAi || draftActionBusy ? 'disabled' : ''} title="${escapeHtml(canUseAi ? 'Draft through your configured AI planner.' : aiDisabledReason)}">
-                  ${aiGenerating ? `${buttonSpinner()}AI drafting...` : 'Draft with AI'}
+                <button id="generateAiPlan" class="primary ai-draft-button" ${!canUseAi || draftActionBusy ? 'disabled' : ''} title="${escapeHtml(canUseAi ? 'Plan with your configured AI planner.' : aiDisabledReason)}">
+                  ${aiGenerating ? `${buttonSpinner()}AI planning...` : 'Plan with AI'}
                 </button>
               ` : ''}
             </div>
@@ -19920,7 +19932,7 @@ function templateOutcomeControls(placement: 'header' | 'inline' = 'inline'): str
       <div class="one-time-method-control" role="group" aria-label="Template outcome filter">
         <span class="one-time-method-label">
           <strong>Plan method</strong>
-          <em class="accent-note">What this draft can do</em>
+          <em class="accent-note">What this plan can do</em>
         </span>
         <div class="template-filter-row one-time-method-filter">
           ${buttons}
@@ -19960,7 +19972,7 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
       ? `${readinessLabel} - ${aiConfirmationLabel()}`
       : inactiveConfigured
         ? `${aiPathPreferenceLabel(inventory.inactiveConfigured[0]!.mode)} configured inactive`
-      : 'Plan drafting optional'
+      : 'AI review optional'
     : configured
       ? `${readinessLabel} - ${aiConfirmationLabel()}`
       : inactiveConfigured
@@ -19968,7 +19980,7 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
       : 'Optional AI planner; templates work without it.';
   if (location === 'rail' && isMobileAppViewport()) {
     return `
-      <section class="ai-settings-panel ${panelConfigured ? 'configured' : 'optional'} rail-ai-settings mobile-rail-trigger-panel" data-layout="ai-setup-panel" aria-label="AI drafting status">
+      <section class="ai-settings-panel ${panelConfigured ? 'configured' : 'optional'} rail-ai-settings mobile-rail-trigger-panel" data-layout="ai-setup-panel" aria-label="AI review status">
         <button
           type="button"
           class="mobile-rail-sheet-trigger"
@@ -19976,7 +19988,7 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
           aria-expanded="${state.activeMobileRailSheet === 'ai-drafting' ? 'true' : 'false'}"
         >
           <span class="ai-summary-copy">
-            <span>AI drafting</span>
+            <span>AI review</span>
             <em>${escapeHtml(summaryDetail)}</em>
           </span>
           <strong>${confirmed ? 'confirmed' : configured ? 'configured' : inactiveConfigured ? 'configured inactive' : 'not configured'}</strong>
@@ -19988,7 +20000,7 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
     <details class="ai-settings-panel ${panelConfigured ? 'configured' : 'optional'} ${location === 'rail' ? 'rail-ai-settings' : ''}" data-layout="ai-setup-panel" ${open}>
       <summary>
         <span class="ai-summary-copy">
-          <span>AI drafting</span>
+          <span>AI review</span>
           <em>${escapeHtml(summaryDetail)}</em>
         </span>
         <strong>${confirmed ? 'confirmed' : configured ? 'configured' : inactiveConfigured ? 'configured inactive' : 'not configured'}</strong>
@@ -20001,7 +20013,7 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
 function agentPathExplainer(): string {
   return `
     <aside class="agent-route-strip" aria-label="One-time plan route">
-      ${agentRouteStep('1', 'Draft', 'Template or AI prepares a bounded request.')}
+      ${agentRouteStep('1', 'Plan', 'Template or AI prepares a bounded request.')}
       ${agentRouteStep('2', 'Check', 'Check limits, risk, route, and approval rule.')}
       ${agentRouteStep('3', 'Approve', 'Send queueable work for approval or sign proof only.')}
       ${agentRouteStep('4', 'Prove', 'Receipts and proofs stay in Done.')}
@@ -21448,12 +21460,12 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
     ? ' autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="text"'
     : '';
   const securityCopy = state.aiSettings.mode === 'hosted'
-    ? 'Hosted BYOK relays this key only for AI draft requests. It cannot queue approvals, create repeat payments, approve, submit, or sign.'
+    ? 'Hosted BYOK relays this key only for AI review requests. It cannot queue approvals, create repeat payments, approve, submit, or sign.'
     : state.aiSettings.mode === 'device-agent'
-      ? 'Device Agent stores the draft-route config in the selected runtime boundary. Queueing, repeat payments, approvals, submissions, and signatures remain separate workflow actions.'
+      ? 'Device Agent stores the AI review route config in the selected runtime boundary. Queueing, repeat payments, approvals, submissions, and signatures remain separate workflow actions.'
     : state.aiSettings.mode === 'bridge'
       ? 'Local Bridge AI uses your normal provider key from the local runtime. Needs Approval, repeat payments, proofs, and wallet signatures remain separate workflow actions.'
-        : `${sessionDescriptor} keys stay in ${sessionScope} and draft plans only. Queueing, repeat payments, approvals, submissions, and signatures use the active workflow, not the AI key.`;
+        : `${sessionDescriptor} keys stay in ${sessionScope} and only help prepare or review requests. Queueing, repeat payments, approvals, submissions, and signatures use the active workflow, not the AI key.`;
   const bridgeKeyConfiguredDetail = status
     ? `${status.provider ?? status.apiFormat ?? 'AI'} - ${status.model ?? 'model configured'}`
     : 'Local bridge AI key configured';
@@ -21469,7 +21481,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
     ? `
         <div class="ai-key-configured-note" aria-live="polite">
           <span>Device Agent</span>
-          <strong>Configured for drafts</strong>
+          <strong>Configured for review</strong>
           <em>${escapeHtml(nativeIosDeviceAgentConfigured ? `${deviceAgentConfiguredDetail}. Clear key to change provider or model.` : deviceAgentConfiguredDetail)}</em>
         </div>
       `
@@ -21574,7 +21586,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
             ? ''
             : `<button id="saveBridgeAiKey-${escapeHtml(scope)}" data-ai-action="save-bridge-key" ${!canSaveBridgeAiKey() ? 'disabled' : ''}>Send key to local bridge</button>`
           : showSaveDirectAiKey
-            ? `<button id="saveDirectAiKey-${escapeHtml(scope)}" data-ai-action="save-direct-key" ${!canSaveDirectAiKey() ? 'disabled' : ''}>Use key for drafts</button>`
+            ? `<button id="saveDirectAiKey-${escapeHtml(scope)}" data-ai-action="save-direct-key" ${!canSaveDirectAiKey() ? 'disabled' : ''}>Use key for AI review</button>`
             : ''}
         <button id="confirmAiPlanner-${escapeHtml(scope)}" data-ai-action="confirm-planner" class="utility" ${!canConfirmAiPlanner() ? 'disabled' : ''} title="${escapeHtml(canConfirmAiPlanner() ? 'Confirm planner readiness without creating a plan.' : aiConfirmDisabledReason())}">
           ${confirming ? `${buttonSpinner()}Confirming...` : 'Confirm planner'}
@@ -21584,7 +21596,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         ${showStopDeviceAgentRuntime ? `<button id="stopDeviceAgent-${escapeHtml(scope)}" data-ai-action="stop-device-agent" ${state.busy || !canStopDeviceAgentRuntime() ? 'disabled' : ''} title="Stop the on-device runtime. Your config (provider, model, key) stays available so you can start again.">Stop runtime</button>` : ''}
       </div>
       ${isRail || mobilePlannerSetup
-        ? `<p class="ai-security-note compact">Drafts only. Wallet approvals stay separate. Drafting sends the action details, your wallet's public address, your note, and the cluster to your chosen AI provider — never your keys, seed phrase, precise location, or device identifiers. <a href="/privacy" data-site-link="/privacy">Privacy Policy</a></p>${bridgeSetupCard}`
+        ? `<p class="ai-security-note compact">AI suggests approve/deny and answers questions before signing. Your provider sees request details and public wallet address - never keys, seed phrase, location, or device IDs. <a href="/privacy" data-site-link="/privacy">Privacy Policy</a></p>${bridgeSetupCard}`
         : `
           ${aiModeLimitations()}
           ${bridgeSetupCard}
@@ -21609,11 +21621,11 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
             </div>
             <div>
               <span>Impact</span>
-              <strong>Drafting only</strong>
+              <strong>Review only</strong>
             </div>
           </div>
           ${aiDiagnosticsPanel()}
-          <p class="ai-security-note">AI Planner only drafts. Templates, Needs Approval, repeat payments, and proofs use the active workflow; private local bridge is optional.</p>
+          <p class="ai-security-note">AI helps review requests. Signing and submission stay in the wallet workflow; private local bridge is optional.</p>
         `}
     </aside>
   `;
@@ -21634,13 +21646,22 @@ function aiModeOptions(): string {
 function aiModeSelectOptions(): SelectPickerOption[] {
   const mobileAiPathPolicy = isMobileAiPathPolicySurface();
   const inventory = aiSetupInventory();
-  const mobileOptions: Array<{ id: AiSettings['mode']; label: string }> = visibleMobileAiPathModes({
+  const deviceAgentVisible = deviceAgentModeVisible();
+  const deviceAgentFirst = deviceAgentPathAvailableForCurrentProvider();
+  const mobileModes = visibleMobileAiPathModes({
     mobileAiPathPolicy,
-    deviceAgentVisible: deviceAgentModeVisible(),
-  }).map((mode) => ({
+    deviceAgentVisible,
+  });
+  const orderedMobileModes = deviceAgentFirst
+    ? mobileModes
+    : [
+        ...mobileModes.filter((mode) => mode === 'hosted'),
+        ...mobileModes.filter((mode) => mode !== 'hosted'),
+      ];
+  const mobileOptions: Array<{ id: AiSettings['mode']; label: string }> = orderedMobileModes.map((mode) => ({
     id: mode,
     label: mode === 'device-agent'
-      ? 'Device Agent - drafts via device'
+      ? 'Device Agent - reviews on device'
       : cloudSessionMatchesWallet()
         ? 'Hosted BYOK - cloud relay'
         : 'Hosted BYOK - Cloud sign-in required',
@@ -21648,30 +21669,44 @@ function aiModeSelectOptions(): SelectPickerOption[] {
   const options: Array<{ id: AiSettings['mode']; label: string }> = mobileAiPathPolicy
     ? mobileOptions
     : IS_ANDROID_APP
-      ? [
-          ...(deviceAgentModeVisible()
-            ? [{ id: 'device-agent' as const, label: 'Device Agent - drafts via device' }]
-            : []),
-          { id: 'session', label: 'Android session - drafts only' },
-          { id: 'hosted', label: 'Hosted BYOK - cloud relay' },
-          { id: 'bridge', label: 'Local bridge AI - optional' },
-        ]
+      ? deviceAgentFirst
+        ? [
+            { id: 'device-agent', label: 'Device Agent - reviews on device' },
+            { id: 'session', label: 'Android session - review only' },
+            { id: 'hosted', label: 'Hosted BYOK - cloud relay' },
+            { id: 'bridge', label: 'Local bridge AI - optional' },
+          ]
+        : [
+            { id: 'hosted', label: 'Hosted BYOK - cloud relay' },
+            ...(deviceAgentVisible
+              ? [{ id: 'device-agent' as const, label: 'Device Agent - reviews on device' }]
+              : []),
+            { id: 'session', label: 'Android session - review only' },
+            { id: 'bridge', label: 'Local bridge AI - optional' },
+          ]
       : IS_TAURI_APP
         ? [
             { id: 'bridge', label: 'Local bridge AI - default' },
-            ...(deviceAgentModeVisible()
-              ? [{ id: 'device-agent' as const, label: 'Device Agent - drafts via device' }]
+            ...(deviceAgentVisible
+              ? [{ id: 'device-agent' as const, label: 'Device Agent - reviews on device' }]
               : []),
             { id: 'hosted', label: 'Hosted BYOK - cloud relay' },
           ]
-        : [
-            { id: 'hosted', label: 'Hosted BYOK - drafts only' },
-            ...(deviceAgentModeVisible()
-              ? [{ id: 'device-agent' as const, label: 'Device Agent - drafts via device' }]
-              : []),
-            { id: 'bridge', label: 'Local bridge AI - draft via bridge' },
-            { id: 'session', label: 'Browser session - drafts only' },
-          ];
+        : deviceAgentFirst
+          ? [
+              { id: 'device-agent', label: 'Device Agent - reviews on device' },
+              { id: 'hosted', label: 'Hosted BYOK - review only' },
+              { id: 'bridge', label: 'Local bridge AI - review via bridge' },
+              { id: 'session', label: 'Browser session - review only' },
+            ]
+          : [
+              { id: 'hosted', label: 'Hosted BYOK - review only' },
+              ...(deviceAgentVisible
+                ? [{ id: 'device-agent' as const, label: 'Device Agent - reviews on device' }]
+                : []),
+              { id: 'bridge', label: 'Local bridge AI - review via bridge' },
+              { id: 'session', label: 'Browser session - review only' },
+            ];
   return options.map((option) => {
     const disabledReason = aiModeDisabledReason(option.id);
     const pathState = inventory.paths.find((path) => path.mode === option.id);
@@ -21681,7 +21716,7 @@ function aiModeSelectOptions(): SelectPickerOption[] {
     return {
       value: option.id,
       label: option.label,
-      meta: 'Draft path',
+      meta: 'AI path',
       metaSuffix: hostedCloudSignInNeeded
         ? 'cloud sign-in needed'
         : configured
@@ -21690,7 +21725,7 @@ function aiModeSelectOptions(): SelectPickerOption[] {
       detail: disabledReason
         || (configured
           ? `${active ? 'Active' : 'Inactive'} configured path; approvals and signatures stay separate.`
-          : 'Drafts only; approvals and signatures stay separate.'),
+          : 'Review only; approvals and signatures stay separate.'),
       disabled: Boolean(disabledReason),
       title: disabledReason,
     };
@@ -21783,6 +21818,9 @@ function aiModeDisabledReason(mode: AiSettings['mode']): string {
   if (mode === 'device-agent' && !deviceAgentModeVisible()) {
     return 'Device Agent is enabled only for local dev builds, Android device-agent builds, or browser-native Device Agent builds.';
   }
+  if (mode === 'device-agent' && !aiProviderSupportsDeviceAgent(state.aiSettings.provider)) {
+    return 'Device Agent is not available for this AI provider. Use Hosted BYOK or choose a Device Agent-compatible provider.';
+  }
   const hostedBlockReason = hostedByokCloudSessionReasonForMode(mode);
   if (hostedBlockReason) return hostedBlockReason;
   if (mode === 'session' && state.aiSettings.provider === 'openai') {
@@ -21864,7 +21902,7 @@ function aiModeLimitations(): string {
       <div class="ai-limitations">
         <span>Hosted BYOK boundary</span>
         <ul>
-          <li>Agentic relays the key only for the current draft request.</li>
+          <li>Agentic relays the key only for the current AI review request.</li>
           <li>No AI path can approve, submit, sign, or change workflow capability.</li>
         </ul>
       </div>
@@ -21875,7 +21913,7 @@ function aiModeLimitations(): string {
       <div class="ai-limitations">
         <span>Device Agent boundary</span>
         <ul>
-          <li>Device Agent is a gated development runtime path for AI drafting only.</li>
+          <li>Device Agent is a gated development runtime path for AI review only.</li>
           <li>Approvals, submissions, signatures, repeat payments, and proofs still use the normal workflow pipeline.</li>
         </ul>
       </div>
@@ -21885,7 +21923,7 @@ function aiModeLimitations(): string {
     <div class="ai-limitations">
       <span>Local bridge AI boundary</span>
       <ul>
-        <li>Local bridge AI drafts only from your machine.</li>
+        <li>Local bridge AI reviews requests from your machine.</li>
         <li>Private local workflow remains optional and separate from AI setup.</li>
       </ul>
     </div>
@@ -22036,7 +22074,7 @@ function localBridgeAiKeySource(status: BridgeAiStatus | null): { label: string;
   }
   return {
     label,
-    detail: 'Configured in the local bridge. It drafts only; approvals, signatures, and workflow storage stay separate.',
+    detail: 'Configured in the local bridge. It only helps review; approvals, signatures, and workflow storage stay separate.',
   };
 }
 
@@ -22146,7 +22184,7 @@ function resetAiPlannerConfirmation(message = ''): void {
 
 function confirmBridgeAiPlannerFromStatus(): void {
   if (state.aiSettings.mode !== 'bridge' || !state.aiStatus?.available) return;
-  setAiPlannerConfirmation('confirmed', 'Local bridge AI is configured and reachable for drafts only. Workflow capability is unchanged.');
+  setAiPlannerConfirmation('confirmed', 'Local bridge AI is configured and reachable for AI review. Workflow capability is unchanged.');
 }
 
 function directAiKeyStagedForMode(mode: AiSettings['mode'] = state.aiSettings.mode): boolean {
@@ -22378,8 +22416,8 @@ function aiGenerateDisabledReason(): string {
     if (!deviceAgentModeVisible()) return 'Device Agent is not enabled for this build or wallet.';
     if (!status?.available) return 'Refresh Device Agent status before generating.';
     if (!status.configured) return 'Add a Device Agent key, then confirm planner.';
-    if (!deviceAgentStatusReadyForDrafts(status)) return 'Start or confirm the Device Agent runtime before generating.';
-    return 'Device Agent runtime is ready for drafts.';
+    if (!deviceAgentStatusReadyForDrafts(status)) return 'Start or confirm the Device Agent runtime before AI review.';
+    return 'Device Agent runtime is ready for AI review.';
   }
   if (state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai') {
     return OPENAI_BROWSER_SESSION_DISABLED_REASON;
@@ -22443,14 +22481,14 @@ function aiProviderReadyForMode(mode: AiSettings['mode'], providerId: AiSettings
 
 function aiRouteStatusLabel(status: BridgeAiStatus | null): string {
   if (state.aiSettings.mode === 'hosted') {
-    if (!state.aiSettings.apiKey.trim()) return 'hosted draft - key required';
+    if (!state.aiSettings.apiKey.trim()) return 'hosted review - key required';
     const hostedBlockReason = hostedByokCloudSessionReason();
-    if (hostedBlockReason) return `hosted draft staged - ${state.aiSettings.provider} - cloud sign-in required`;
-    return `hosted draft route - ${state.aiSettings.provider} - ${state.aiSettings.model || 'model configured'}`;
+    if (hostedBlockReason) return `hosted review staged - ${state.aiSettings.provider} - cloud sign-in required`;
+    return `hosted review route - ${state.aiSettings.provider} - ${state.aiSettings.model || 'model configured'}`;
   }
   if (state.aiSettings.mode === 'session') {
     if (state.aiSettings.provider === 'openai') {
-      return 'browser draft - OpenAI requires hosted or bridge';
+      return 'browser review - OpenAI requires hosted or bridge';
     }
     return state.aiSettings.apiKey.trim() ? `browser draft - ${state.aiSettings.provider} - ${state.aiSettings.model || 'model configured'}` : 'browser draft - key required';
   }
@@ -22833,9 +22871,9 @@ function syncAiActionButtons(): void {
     generateButton.disabled = !canGenerateAi || aiDrafting || state.busy;
     generateButton.classList.toggle('primary', canGenerateAi);
     generateButton.title = aiDrafting
-      ? 'AI draft is already working. Cancel it from Check request or wait for it to finish.'
+      ? 'AI plan is already working. Cancel it from Check request or wait for it to finish.'
       : canGenerateAi
-      ? 'Create a one-time draft through your configured AI planner.'
+      ? 'Create a one-time plan through your configured AI planner.'
       : aiGenerateDisabledReason();
   }
   syncAiConfirmationStatusLine();
@@ -25234,6 +25272,7 @@ function bind(): void {
       if (shouldHideAiKeyEntry()) {
         clearCurrentSessionAiApiKey();
       }
+      reconcileAiModeForSurface();
       resetAiPlannerConfirmation('AI provider changed. Confirm planner again if needed.');
       savePersistedState();
       void syncCloudPreference('ai-settings');
@@ -27544,6 +27583,7 @@ async function runDisconnect(): Promise<void> {
     resetWalletConnection();
     await clearDeviceAgentForWalletBoundary();
     const cloudSignedOut = await signOutCloudSessionForWalletBoundary('wallet-disconnected');
+    reconcileAiModeForSurface();
     if (browserWallet) {
       state.selectedWalletName = '';
       state.browserWalletPickerOpen = false;
@@ -28155,8 +28195,8 @@ function startAiDraftOperation(templateTitle: string, prompt: string, toastId: n
   return operation;
 }
 
-const AI_DRAFT_PLACEHOLDER_LABEL = 'Drafting…';
-const AI_DRAFT_FAILED_LABEL = 'AI draft failed — try again';
+const AI_DRAFT_PLACEHOLDER_LABEL = 'Planning…';
+const AI_DRAFT_FAILED_LABEL = 'AI plan failed — try again';
 
 function placeholderAgentPlanFromTemplate(
   template: AgentPlanTemplate,
@@ -28164,10 +28204,10 @@ function placeholderAgentPlanFromTemplate(
   userNotes: string,
 ): AgentPlan {
   return {
-    intent: userNotes || template.description || `Drafting ${template.title}…`,
+    intent: userNotes || template.description || `Planning ${template.title}…`,
     route: template.route || '',
     risk: template.riskText || template.risk || 'Medium',
-    approval: template.approval || 'Pending agent draft.',
+    approval: template.approval || 'Pending agent plan.',
     source: 'ai',
     category: template.category,
     actionType: template.actionType,
@@ -28223,13 +28263,13 @@ function cancelActiveAiDraft(): void {
   state.activeOperation = null;
   state.steps.ai = 'idle';
   state.error = '';
-  replaceToast(operation.toastId, 'success', 'Draft cancelled', 'No plan was saved.');
+  replaceToast(operation.toastId, 'success', 'Plan cancelled', 'No plan was saved.');
   render();
 }
 
 function assertAiDraftActive(operation: ActiveAiDraftOperation): void {
   if (operation.cancelled || operation.controller.signal.aborted) {
-    throw new Error('AI draft cancelled.');
+    throw new Error('AI plan cancelled.');
   }
 }
 
@@ -28244,12 +28284,12 @@ async function runGenerateAiPlan(): Promise<void> {
     return;
   }
   if (activeAiDraftOperation && state.activeOperation === 'generate-ai-plan') {
-    pushToast('pending', 'AI draft already working', 'Cancel the current draft or wait for it to finish.');
+    pushToast('pending', 'AI plan already working', 'Cancel the current plan or wait for it to finish.');
     render();
     return;
   }
   if (state.busy) {
-    pushToast('pending', 'Action in progress', 'Finish the current wallet or approval action before starting another AI draft.');
+    pushToast('pending', 'Action in progress', 'Finish the current wallet or approval action before starting another AI plan.');
     render();
     return;
   }
@@ -28366,7 +28406,7 @@ async function runGenerateAiPlan(): Promise<void> {
       }
       removeGeneratedPlanLocally(operation.planRecordId);
       if (!operation.cancelled) {
-        replaceToast(toastId, 'success', 'Draft cancelled', 'No plan was saved.');
+        replaceToast(toastId, 'success', 'Plan cancelled', 'No plan was saved.');
       }
     } else {
       const message = redactSecrets(err instanceof Error ? err.message : String(err));
@@ -28592,15 +28632,15 @@ async function runDenyGeneratedPlanWithAgentReason(planId: string): Promise<void
   if (!record) return;
   const review = record.agentReview;
   if (!review || review.status !== 'denied') {
-    pushToast('error', 'Cannot deny', 'Agent has not denied this draft yet.');
+    pushToast('error', 'Cannot deny', 'Agent has not denied this plan yet.');
     return;
   }
-  const confirmMessage = `Deny this draft using the agent's reason?\n\nAgent said: ${review.reason || 'No reason recorded.'}`;
+  const confirmMessage = `Deny this plan using the agent's reason?\n\nAgent said: ${review.reason || 'No reason recorded.'}`;
   if (!window.confirm(confirmMessage)) return;
   const blockingPolicies = review.policies?.filter((policy) => policy.outcome === 'block') ?? [];
   const deniedAt = new Date().toISOString();
   const actionId = `browser-agent-denial-${record.id}-${Date.now().toString(36)}`;
-  const planSummary = compactSentence(record.plan.intent || record.plan.templateTitle || 'Agent draft', 132);
+  const planSummary = compactSentence(record.plan.intent || record.plan.templateTitle || 'Agent plan', 132);
   const policyLabels = blockingPolicies.map((policy) => policy.label).filter(Boolean);
   const policyClause = policyLabels.length ? ` Policies that flagged: ${policyLabels.join(', ')}.` : '';
   const summary = compactSentence(
@@ -28667,7 +28707,7 @@ async function runAskAgentAnything(planId: string, question: string): Promise<vo
   const record = generatedPlanById(planId);
   if (!record) return;
   if (record.status === 'archived') {
-    pushToast('error', 'Restore plan first', 'Archived drafts cannot be queried.');
+    pushToast('error', 'Restore plan first', 'Archived plans cannot be queried.');
     return;
   }
   if (!canRunAgentReview()) {
@@ -28781,7 +28821,7 @@ async function runAskAgentAnything(planId: string, question: string): Promise<vo
 async function runReviewGeneratedPlan(planId: string): Promise<void> {
   const record = requireGeneratedPlanRecord(planId);
   if (record.status === 'archived') {
-    pushToast('error', 'Restore plan first', 'Archived drafts cannot be reviewed by the agent.');
+    pushToast('error', 'Restore plan first', 'Archived plans cannot be reviewed by the agent.');
     render();
     return;
   }
@@ -28805,7 +28845,7 @@ async function runReviewGeneratedPlan(planId: string): Promise<void> {
     schemaVersion: AGENT_REVIEW_SCHEMA_VERSION,
     required: true,
     status: 'checking',
-    reason: 'Agent is reviewing this draft before it can move forward.',
+    reason: 'Agent is reviewing this plan before it can move forward.',
     checkedAt: new Date().toISOString(),
     provider: agentReviewProviderLabel(),
     model: agentReviewModelLabel(),
@@ -28813,7 +28853,7 @@ async function runReviewGeneratedPlan(planId: string): Promise<void> {
     ...(previousReview?.history?.length ? { history: previousReview.history } : {}),
   };
   state.activeOperation = 'review-agent-plan';
-  const toastId = pushToast('pending', 'Asking agent', 'Reviewing this draft before approval.');
+  const toastId = pushToast('pending', 'Asking agent', 'Reviewing this plan before approval.');
   emitIosAskAgentBreadcrumb(planId, 'toast_created');
   try {
     await updateGeneratedPlan(planId, { agentReview: checkingReview, error: undefined, failureLabel: undefined });
@@ -29428,7 +29468,7 @@ async function runDeleteAllCheck(): Promise<void> {
     pushToast(
       failed ? 'pending' : 'success',
       failed ? 'Check partially cleared' : 'Check cleared',
-      `${ok} draft${ok === 1 ? '' : 's'} deleted${failed ? `, ${failed} failed` : ''}.`,
+      `${ok} plan${ok === 1 ? '' : 's'} deleted${failed ? `, ${failed} failed` : ''}.`,
     );
   });
 }
@@ -34332,10 +34372,10 @@ async function runSaveDirectAiKey(): Promise<void> {
           ? 'Android session key entered'
           : 'Browser session key entered',
       state.aiSettings.mode === 'hosted'
-        ? 'Hosted BYOK will relay only submitted AI draft requests. Queueing, schedules, and signing stay in the active workflow.'
+        ? 'Hosted BYOK will relay only submitted AI review requests. Queueing, schedules, and signing stay in the active workflow.'
         : state.aiSettings.mode === 'device-agent'
           ? 'Device Agent config was staged for the gated runtime. Queueing, schedules, and signing stay in the active workflow.'
-        : `${IS_ANDROID_APP ? 'Android session' : 'Browser session'} AI can draft plans in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'}. Queueing, schedules, and signing stay in the active workflow.`,
+        : `${IS_ANDROID_APP ? 'Android session' : 'Browser session'} AI can review requests in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'}. Queueing, schedules, and signing stay in the active workflow.`,
     );
   });
 }
@@ -34350,7 +34390,7 @@ async function runConfirmAiPlanner(): Promise<void> {
   }
 
   state.activeOperation = 'confirm-ai-planner';
-  const toastId = pushToast('pending', 'Confirming planner', 'Checking the selected AI draft route.');
+  const toastId = pushToast('pending', 'Confirming planner', 'Checking the selected AI review route.');
   try {
     await run('ai', async () => {
       if (state.aiSettings.mode === 'bridge') {
@@ -34370,8 +34410,8 @@ async function runConfirmAiPlanner(): Promise<void> {
             path: '/bridge/ai/status',
           },
         ];
-        setAiPlannerConfirmation('confirmed', 'Local bridge AI is configured and reachable for drafts only. Workflow capability is unchanged.');
-        replaceToast(toastId, 'success', 'Planner confirmed', 'Local bridge AI can draft plans only.');
+        setAiPlannerConfirmation('confirmed', 'Local bridge AI is configured and reachable for AI review. Workflow capability is unchanged.');
+        replaceToast(toastId, 'success', 'Planner confirmed', 'Local bridge AI can review requests only.');
         return;
       }
 
@@ -34382,13 +34422,13 @@ async function runConfirmAiPlanner(): Promise<void> {
           'confirmed',
           hostedBlockReason
             ? `${hostedBlockReason} Hosted BYOK key is staged; workflow capability is unchanged.`
-            : 'Hosted BYOK route is reachable for draft requests only. Provider key validity is checked on the first AI draft. Workflow capability is unchanged.',
+            : 'Hosted BYOK route is reachable for AI review requests only. Provider key validity is checked on the first AI request. Workflow capability is unchanged.',
         );
         replaceToast(
           toastId,
           'success',
           hostedBlockReason ? 'Hosted key staged' : 'Planner confirmed',
-          hostedBlockReason || 'Hosted BYOK can draft plans only.',
+          hostedBlockReason || 'Hosted BYOK can review requests only.',
         );
         return;
       }
@@ -34415,8 +34455,8 @@ async function runConfirmAiPlanner(): Promise<void> {
             path: '/api/device-agent/status',
           },
         ];
-        setAiPlannerConfirmation('confirmed', 'Device Agent runtime is configured for drafts only. Workflow capability is unchanged.');
-        replaceToast(toastId, 'success', 'Planner confirmed', 'Device Agent route is ready for drafts only.');
+        setAiPlannerConfirmation('confirmed', 'Device Agent runtime is configured for AI review. Workflow capability is unchanged.');
+        replaceToast(toastId, 'success', 'Planner confirmed', 'Device Agent route is ready for AI review.');
         return;
       }
 
@@ -34434,8 +34474,8 @@ async function runConfirmAiPlanner(): Promise<void> {
           detail: BROWSER_AI_LIMITATIONS.join(' '),
         },
       ];
-      setAiPlannerConfirmation('confirmed', 'Browser session AI config was checked for this tab. No provider request was made; it drafts only and workflow capability is unchanged.');
-      replaceToast(toastId, 'success', 'Planner confirmed', 'Browser session AI can draft plans only.');
+      setAiPlannerConfirmation('confirmed', 'Browser session AI config was checked for this tab. No provider request was made; it only helps review and workflow capability is unchanged.');
+      replaceToast(toastId, 'success', 'Planner confirmed', 'Browser session AI can review requests only.');
     }, {
       onError(message, err) {
         const toastMessage = applyAiErrorDiagnostics(err, message);
@@ -34489,7 +34529,7 @@ async function runRefreshDeviceAgentStatus(): Promise<void> {
       'Device Agent refreshed',
       status.available
         ? status.configured
-          ? 'Device Agent runtime config is staged for drafts only.'
+          ? 'Device Agent runtime config is staged for AI review.'
           : 'Device Agent runtime is visible but not configured.'
         : status.message || 'Device Agent runtime is unavailable.',
     );
@@ -34509,7 +34549,7 @@ async function runStopDeviceAgentRuntime(): Promise<void> {
       'success',
       'Device Agent stopped',
       status.state === 'stopped'
-        ? 'Device Agent runtime stopped. Config is preserved; start again to resume drafting.'
+        ? 'Device Agent runtime stopped. Config is preserved; start again to resume AI review.'
         : status.message || 'Device Agent runtime is no longer running.',
     );
   }, {
@@ -34626,17 +34666,17 @@ function aiClearMessage(mode: AiSettings['mode'] = state.aiSettings.mode): strin
 
 function aiModeToastMessage(mode: AiSettings['mode']): string {
   if (mode === 'bridge') {
-    return 'Local Bridge AI drafts through the local runtime. Private local workflow storage remains optional.';
+    return 'Local Bridge AI reviews through the local runtime. Private local workflow storage remains optional.';
   }
   if (mode === 'device-agent') {
-    return 'Device Agent AI uses the gated runtime path for drafting only.';
+    return 'Device Agent AI uses the gated runtime path for AI review only.';
   }
   if (mode === 'hosted') {
-    return 'Hosted BYOK drafts plans only. Workflow actions still require explicit wallet review.';
+    return 'Hosted BYOK reviews requests only. Workflow actions still require explicit wallet review.';
   }
   return IS_ANDROID_APP
-    ? 'Android session AI drafts plans only and keeps the key in this app runtime.'
-    : 'Browser session AI drafts plans only and keeps the key in this tab.';
+    ? 'Android session AI reviews requests only and keeps the key in this app runtime.'
+    : 'Browser session AI reviews requests only and keeps the key in this tab.';
 }
 
 function setAiPlannerMode(mode: AiSettings['mode']): void {
@@ -34644,6 +34684,7 @@ function setAiPlannerMode(mode: AiSettings['mode']): void {
     render();
     return;
   }
+  aiModeSelectionExplicit = true;
   if (state.aiSettings.mode === mode) {
     return;
   }
@@ -34814,7 +34855,9 @@ async function afterWalletConnected(): Promise<void> {
   startWalletBalanceConnectedLoad();
   await refreshCloudSession(false);
   hydrateLocalWorkspaceForWallet();
-  if (await signOutCloudSessionForWalletBoundary('wallet-mismatch', { toast: true })) {
+  const signedOutForWalletBoundary = await signOutCloudSessionForWalletBoundary('wallet-mismatch', { toast: true });
+  reconcileAiModeForSurface();
+  if (signedOutForWalletBoundary) {
     await refreshActiveWorkflowData().catch(() => undefined);
     return;
   }
@@ -36617,7 +36660,7 @@ async function runDraftRecurringWithAi(): Promise<void> {
   state.recurringDraft = readRecurringDraft();
   assertValidRecurringDraft(state.recurringDraft);
   state.activeOperation = 'generate-ai-plan';
-  const toastId = pushToast('pending', 'Drafting repeat with AI', 'Building and reviewing this repeat request.');
+  const toastId = pushToast('pending', 'Planning repeat with AI', 'Building and reviewing this repeat request.');
   try {
     await run('ai', async () => {
       let plan: AgentPlan;
@@ -48108,12 +48151,12 @@ function recurringComposer(): string {
   const aiPathConnected = hasDetectedAgentReviewPath();
   const aiDraftDisabledReason = canGenerateAiPlanFromSettings()
     ? canRunAgentReview()
-      ? 'Draft and review this repeat request with the configured agent.'
+      ? 'Plan and review this repeat request with the configured agent.'
       : agentReviewUnavailableReason()
     : aiGenerateDisabledReason();
   const aiDraftDisabled = createDisabled || !canGenerateAiPlanFromSettings() || !canRunAgentReview();
   const composerTitle = isSwap ? 'Create recurring swap' : 'Create repeat payment';
-  const createLabel = 'Draft from template';
+  const createLabel = 'Plan from template';
   const recurringHelp = isSwap
     ? browserWorkflow
       ? 'Each due swap returns to Needs Approval before wallet signing.'
@@ -48219,7 +48262,7 @@ function recurringComposer(): string {
                 ${aiDraftDisabled ? 'disabled' : ''}
                 title="${escapeHtml(aiDraftDisabledReason)}"
               >
-                Draft with AI
+                Plan with AI
               </button>
             ` : ''}
           </div>
@@ -51707,7 +51750,10 @@ async function reconnectBridgeOnStartup(): Promise<void> {
   }
 }
 
-function defaultAiMode(): AiSettings['mode'] {
+function defaultAiMode(input: {
+  deviceAgentVisible?: boolean;
+  providerSupportsDeviceAgent?: boolean;
+} = {}): AiSettings['mode'] {
   const iosNative = detectIosNativeEnvironment().isIosNative;
   const sessionToken = IS_TAURI_APP
     ? tauriNativeCloudSessionToken()
@@ -51724,6 +51770,8 @@ function defaultAiMode(): AiSettings['mode'] {
     isLocalBrowserOrigin: isLocalBrowserOrigin(),
     isTauriApp: IS_TAURI_APP,
     hasCloudSession: Boolean(sessionToken && sessionToken.trim().length > 0),
+    deviceAgentVisible: input.deviceAgentVisible,
+    providerSupportsDeviceAgent: input.providerSupportsDeviceAgent,
   }) as AiSettings['mode'];
 }
 
@@ -51734,13 +51782,22 @@ function persistedAiSettings(
 ): Omit<AiSettings, 'apiKey'> {
   const fallback = aiProviderPresetById(DEFAULT_AI_PROVIDER_ID);
   const provider = persistedState.aiProvider ? aiProviderPresetById(persistedState.aiProvider) : fallback;
+  const providerSupportsDeviceAgent = aiProviderSupportsDeviceAgent(provider.id);
+  const defaultMode = defaultAiMode({
+    deviceAgentVisible: deviceAgentVisibleOverride,
+    providerSupportsDeviceAgent,
+  });
   const mode = normalizeAiModeForSurface(
-    persistedState.aiMode ?? defaultAiMode(),
+    persistedState.aiMode ?? defaultMode,
     undefined,
     mobileAiPathPolicy,
     deviceAgentVisibleOverride,
+    provider.id,
   );
-  const model = persistedState.aiModel?.trim() || provider.model;
+  const persistedModel = persistedState.aiModel?.trim() || '';
+  const model = aiProviderModelAllowed(provider.id, persistedModel)
+    ? persistedModel
+    : provider.model;
   const reviewPrefs = {
     multiReviewer: persistedState.aiMultiReviewer === true,
     autoBackgroundWatch: persistedState.aiAutoBackgroundWatch === true,
@@ -51777,6 +51834,14 @@ function persistedAiSettings(
     ...settings,
     ...reviewPrefs,
   };
+}
+
+function aiProviderModelAllowed(providerId: string, model: string): boolean {
+  const trimmed = model.trim();
+  if (!trimmed) return false;
+  const preset = aiProviderPresetById(providerId);
+  if (preset.id !== providerId) return false;
+  return preset.models.some((option) => option.id === trimmed);
 }
 
 function aiApiKeySessionEntryKey(settings: Pick<AiSettings, 'mode' | 'provider' | 'apiFormat' | 'baseUrl'>): string {
@@ -51864,13 +51929,22 @@ function normalizeAiModeForSurface(
   walletAddress?: string,
   mobileAiPathPolicy = isMobileAiPathPolicySurface(),
   deviceAgentVisibleOverride?: boolean,
+  providerId?: AiSettings['provider'],
 ): AiSettings['mode'] {
-  const fallbackMode = defaultAiMode();
   const deviceAgentVisible = deviceAgentVisibleOverride ?? deviceAgentModeVisibleForWallet(walletAddress);
+  const providerSupportsDeviceAgent = providerId ? aiProviderSupportsDeviceAgent(providerId) : undefined;
+  const deviceAgentAvailableForProvider = deviceAgentVisible && providerSupportsDeviceAgent !== false;
+  const fallbackMode = defaultAiMode({
+    deviceAgentVisible: deviceAgentAvailableForProvider,
+    providerSupportsDeviceAgent,
+  });
+  const requestedMode = mode === 'device-agent' && providerSupportsDeviceAgent === false
+    ? fallbackMode
+    : mode;
   const afterMobile = normalizeAiModeForMobileSurface({
-    mode,
+    mode: requestedMode,
     mobileAiPathPolicy,
-    deviceAgentVisible,
+    deviceAgentVisible: deviceAgentAvailableForProvider,
     fallbackMode,
   }) as AiSettings['mode'];
   return normalizeAiModeForDesktopSurface({
@@ -51881,7 +51955,13 @@ function normalizeAiModeForSurface(
 }
 
 function normalizeCurrentAiModeForSurface(): void {
-  const normalizedMode = normalizeAiModeForSurface(state.aiSettings.mode, state.address || state.cloudSession.walletAddress);
+  const normalizedMode = normalizeAiModeForSurface(
+    state.aiSettings.mode,
+    state.address || state.cloudSession.walletAddress,
+    isMobileAiPathPolicySurface(),
+    undefined,
+    state.aiSettings.provider,
+  );
   if (normalizedMode === state.aiSettings.mode) return;
   saveCurrentSessionAiApiKey();
   state.aiSettings.mode = normalizedMode;
@@ -51891,6 +51971,31 @@ function normalizeCurrentAiModeForSurface(): void {
     clearCurrentSessionAiApiKey();
   }
   savePersistedState();
+}
+
+function reconcileAiModeForSurface(): void {
+  normalizeCurrentAiModeForSurface();
+  promoteDefaultAiModeForVisibleDeviceAgent();
+}
+
+function deviceAgentPathAvailableForCurrentProvider(): boolean {
+  return deviceAgentModeVisible() && aiProviderSupportsDeviceAgent(state.aiSettings.provider);
+}
+
+function promoteDefaultAiModeForVisibleDeviceAgent(): void {
+  if (aiModeSelectionExplicit) return;
+  if (state.aiSettings.mode === 'device-agent') return;
+  if (!deviceAgentPathAvailableForCurrentProvider()) return;
+  saveCurrentSessionAiApiKey();
+  state.aiSettings.mode = 'device-agent';
+  ensureAiProviderAllowedForMode();
+  state.aiSettings.apiKey = shouldHideAiKeyEntry() ? '' : loadSessionAiApiKey(state.aiSettings);
+  if (shouldHideAiKeyEntry()) {
+    clearCurrentSessionAiApiKey();
+  }
+  resetAiPlannerConfirmation('Device Agent is now the default AI path. Confirm planner again if needed.');
+  savePersistedState();
+  void syncCloudPreference('ai-settings');
 }
 
 function deviceAgentModeVisible(): boolean {
@@ -53148,8 +53253,18 @@ function applyCloudAgentPolicies(record: CloudPreferenceRecord): boolean {
 function applyCloudAiSettings(payload: unknown): boolean {
   if (!isJsonObject(payload)) return false;
   saveCurrentSessionAiApiKey();
+  const providerForMode = typeof payload.provider === 'string' && isAiProviderId(payload.provider)
+    ? payload.provider
+    : state.aiSettings.provider;
   if (typeof payload.mode === 'string' && isAiMode(payload.mode)) {
-    state.aiSettings.mode = normalizeAiModeForSurface(payload.mode, state.address || state.cloudSession.walletAddress);
+    aiModeSelectionExplicit = true;
+    state.aiSettings.mode = normalizeAiModeForSurface(
+      payload.mode,
+      state.address || state.cloudSession.walletAddress,
+      isMobileAiPathPolicySurface(),
+      undefined,
+      providerForMode,
+    );
   }
   if (typeof payload.provider === 'string' && isAiProviderId(payload.provider)) {
     state.aiSettings.provider = payload.provider;
@@ -53165,6 +53280,14 @@ function applyCloudAiSettings(payload: unknown): boolean {
   }
   state.aiSettings.multiReviewer = payload.multiReviewer === true;
   state.aiSettings.autoBackgroundWatch = payload.autoBackgroundWatch === true;
+  ensureAiProviderAllowedForMode();
+  state.aiSettings.mode = normalizeAiModeForSurface(
+    state.aiSettings.mode,
+    state.address || state.cloudSession.walletAddress,
+    isMobileAiPathPolicySurface(),
+    undefined,
+    state.aiSettings.provider,
+  );
   ensureAiProviderAllowedForMode();
   state.aiSettings.apiKey = shouldHideAiKeyEntry() ? '' : loadSessionAiApiKey(state.aiSettings);
   savePersistedState();

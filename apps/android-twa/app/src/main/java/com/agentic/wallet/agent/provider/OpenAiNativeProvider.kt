@@ -202,12 +202,21 @@ internal class OpenAiNativeProvider(
         }
 
         if (research) {
-            body.put("tools", JSONArray().put(openAiWebSearchTool()))
+            body.put("tools", JSONArray().put(webSearchTool()))
             body.put("tool_choice", "auto")
-            body.put("include", JSONArray().put("web_search_call.action.sources"))
+            if (!isOpenRouterConfig()) {
+                body.put("include", JSONArray().put("web_search_call.action.sources"))
+            }
         }
 
-        val headers = mapOf("Authorization" to "Bearer $apiKey")
+        val headers = if (isOpenRouterConfig()) {
+            mapOf(
+                "Authorization" to "Bearer $apiKey",
+                "X-OpenRouter-Metadata" to "enabled",
+            ) + ProviderHttp.openRouterAttributionHeaders(true)
+        } else {
+            mapOf("Authorization" to "Bearer $apiKey")
+        }
         val response = http.postJson(url, headers, body.toString())
         val errorCode = ProviderHttp.mapHttpStatusToErrorCode(response.status)
         if (errorCode != null) {
@@ -232,6 +241,31 @@ internal class OpenAiNativeProvider(
         val schema: JSONObject,
         val verbosity: String,
     )
+
+    private fun isOpenRouterConfig(): Boolean =
+        config.provider.trim().equals("openrouter", ignoreCase = true) ||
+            (config.baseUrl ?: "").contains("openrouter.ai", ignoreCase = true)
+
+    private fun webSearchTool(): JSONObject =
+        if (isOpenRouterConfig()) {
+            JSONObject()
+                .put("type", "openrouter:web_search")
+                .put(
+                    "parameters",
+                    JSONObject()
+                        .put("engine", "auto")
+                        .put("max_total_results", 3)
+                        .put(
+                            "user_location",
+                            JSONObject()
+                                .put("type", "approximate")
+                                .put("country", "US")
+                                .put("timezone", "America/Los_Angeles"),
+                        ),
+                )
+        } else {
+            openAiWebSearchTool()
+        }
 
     companion object {
         private const val PLAN_TEMPERATURE: Double = 0.2
@@ -414,10 +448,10 @@ internal class OpenAiNativeProvider(
                 .put("required", JSONArray().put("decision").put("reason").put("summary").put("evidence"))
         }
 
-        private fun openAiWebSearchTool(): JSONObject =
-            JSONObject()
-                .put("type", "web_search_preview")
-                .put(
+    private fun openAiWebSearchTool(): JSONObject =
+        JSONObject()
+            .put("type", "web_search_preview")
+            .put(
                     "user_location",
                     JSONObject()
                         .put("type", "approximate")

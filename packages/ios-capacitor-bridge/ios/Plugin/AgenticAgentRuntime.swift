@@ -1312,12 +1312,35 @@ enum AgenticAgentProviderFactory {
         case "openai-compatible":
             if provider == "openai" { return AgenticOpenAINativeProvider() }
             if provider == "gemini" { return AgenticGeminiProvider() }
+            if provider == "openrouter" {
+                let model = config.model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if model == "openrouter/auto" {
+                    return AgenticFailingProvider(message: "OpenRouter Auto Router is disabled for Device Agent reviews. Choose a specific OpenRouter model.")
+                }
+                if model.hasPrefix("anthropic/") { return AgenticAnthropicProvider() }
+                if model.hasPrefix("openai/") { return AgenticOpenAINativeProvider() }
+                if model.hasPrefix("google/") || model.contains("gemini") {
+                    return AgenticFailingProvider(message: "OpenRouter Gemini models are disabled for Device Agent reviews. Use the direct Gemini provider.")
+                }
+            }
             return AgenticOpenAICompatibleProvider()
         case "anthropic":
             return AgenticAnthropicProvider()
         default:
             return AgenticOpenAICompatibleProvider()
         }
+    }
+}
+
+final class AgenticFailingProvider: AgenticAgentProvider {
+    private let message: String
+
+    init(message: String) {
+        self.message = message
+    }
+
+    func execute(request: AgenticAgentRequest, completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void) {
+        completion(.failure(AgenticAgentError(code: "INVALID_CONFIG", subcode: "UNSUPPORTED_MODEL", message: message)))
     }
 }
 
@@ -1421,7 +1444,7 @@ final class AgenticAnthropicProvider: AgenticAgentProvider {
         research: Bool,
         completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void
     ) {
-        let endpoint = normalizedEndpoint(request.config.baseUrl)
+        let endpoint = normalizedEndpoint(request.config)
         guard let url = URL(string: endpoint) else {
             completion(.failure(AgenticAgentError(code: "INVALID_URL", message: "Invalid baseUrl: \(endpoint)")))
             return
@@ -1432,7 +1455,7 @@ final class AgenticAnthropicProvider: AgenticAgentProvider {
             "system": messages.system,
             "messages": [["role": "user", "content": messages.userContent]],
             "temperature": request.method == "ask" ? 0.3 : 0.2,
-        ].merging(research ? ["tools": [anthropicWebSearchTool(payload: request.payload)]] : [:]) { current, _ in current }
+        ].merging(research ? ["tools": [webSearchTool(request: request)]] : [:]) { current, _ in current }
         guard let payload = try? JSONSerialization.data(withJSONObject: body, options: []) else {
             completion(.failure(AgenticAgentError(code: "ENCODE_ERROR", message: "Could not encode Anthropic request body.")))
             return
@@ -1440,8 +1463,17 @@ final class AgenticAnthropicProvider: AgenticAgentProvider {
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 90)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        req.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        if isOpenRouter(config: request.config) {
+            req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            req.setValue("enabled", forHTTPHeaderField: "X-OpenRouter-Metadata")
+            // OpenRouter attribution headers (optional but recommended). iOS has no browser
+            // origin, so a stable app referer is used. Mirrors the TS/Android device agents.
+            req.setValue("https://ios-device-agent.local", forHTTPHeaderField: "HTTP-Referer")
+            req.setValue("Agentic iOS Device Agent", forHTTPHeaderField: "X-Title")
+        } else {
+            req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+            req.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        }
         req.httpBody = payload
         AgenticAgentHttp.execute(req, secret: apiKey, metadata: request.httpLogMetadata(provider: "anthropic", research: research), debugBaseUrl: request.debugBaseUrl) { result in
             switch result {
@@ -1460,8 +1492,9 @@ final class AgenticAnthropicProvider: AgenticAgentProvider {
         }
     }
 
-    private func normalizedEndpoint(_ raw: String?) -> String {
-        let base = AgenticProviderHttp.normalizeBaseUrl(raw, apiFormat: "anthropic")
+    private func normalizedEndpoint(_ config: AgenticAgentRuntimeConfig) -> String {
+        let apiFormat = isOpenRouter(config: config) ? "openai-compatible" : "anthropic"
+        let base = AgenticProviderHttp.normalizeBaseUrl(config.baseUrl, apiFormat: apiFormat)
         return base.hasSuffix("/messages") ? base : "\(base)/messages"
     }
 
@@ -1469,6 +1502,29 @@ final class AgenticAnthropicProvider: AgenticAgentProvider {
         if request.method == "ask" { return 800 }
         if request.method == "reviewPlan" { return 1800 }
         return 1024
+    }
+
+    private func isOpenRouter(config: AgenticAgentRuntimeConfig) -> Bool {
+        return config.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "openrouter" ||
+            config.baseUrl.lowercased().contains("openrouter.ai")
+    }
+
+    private func webSearchTool(request: AgenticAgentRequest) -> [String: Any] {
+        if isOpenRouter(config: request.config) {
+            return [
+                "type": "openrouter:web_search",
+                "parameters": [
+                    "engine": "auto",
+                    "max_total_results": AgenticAgentProviderSupport.researchMaxUses(request.payload),
+                    "user_location": [
+                        "type": "approximate",
+                        "country": "US",
+                        "timezone": "America/Los_Angeles",
+                    ],
+                ],
+            ]
+        }
+        return anthropicWebSearchTool(payload: request.payload)
     }
 
     private func anthropicWebSearchTool(payload: [String: Any]) -> [String: Any] {
@@ -1628,16 +1684,11 @@ final class AgenticOpenAINativeProvider: AgenticAgentProvider {
             body["reasoning"] = ["effort": "low"]
         }
         if research {
-            body["tools"] = [[
-                "type": "web_search_preview",
-                "user_location": [
-                    "type": "approximate",
-                    "country": "US",
-                    "timezone": "America/Los_Angeles",
-                ],
-            ]]
+            body["tools"] = [webSearchTool(config: request.config)]
             body["tool_choice"] = "auto"
-            body["include"] = ["web_search_call.action.sources"]
+            if !isOpenRouter(config: request.config) {
+                body["include"] = ["web_search_call.action.sources"]
+            }
         }
         guard let payload = try? JSONSerialization.data(withJSONObject: body, options: []) else {
             completion(.failure(AgenticAgentError(code: "ENCODE_ERROR", message: "Could not encode OpenAI Responses request body.")))
@@ -1647,6 +1698,13 @@ final class AgenticOpenAINativeProvider: AgenticAgentProvider {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        if isOpenRouter(config: request.config) {
+            req.setValue("enabled", forHTTPHeaderField: "X-OpenRouter-Metadata")
+            // OpenRouter attribution headers (optional but recommended). iOS has no browser
+            // origin, so a stable app referer is used. Mirrors the TS/Android device agents.
+            req.setValue("https://ios-device-agent.local", forHTTPHeaderField: "HTTP-Referer")
+            req.setValue("Agentic iOS Device Agent", forHTTPHeaderField: "X-Title")
+        }
         req.httpBody = payload
         AgenticAgentHttp.execute(req, secret: apiKey, metadata: request.httpLogMetadata(provider: "openai", research: research), debugBaseUrl: request.debugBaseUrl) { result in
             switch result {
@@ -1673,6 +1731,36 @@ final class AgenticOpenAINativeProvider: AgenticAgentProvider {
             return String(base.dropLast("/chat/completions".count)) + "/responses"
         }
         return "\(base)/responses"
+    }
+
+    private func isOpenRouter(config: AgenticAgentRuntimeConfig) -> Bool {
+        return config.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "openrouter" ||
+            config.baseUrl.lowercased().contains("openrouter.ai")
+    }
+
+    private func webSearchTool(config: AgenticAgentRuntimeConfig) -> [String: Any] {
+        if isOpenRouter(config: config) {
+            return [
+                "type": "openrouter:web_search",
+                "parameters": [
+                    "engine": "auto",
+                    "max_total_results": 3,
+                    "user_location": [
+                        "type": "approximate",
+                        "country": "US",
+                        "timezone": "America/Los_Angeles",
+                    ],
+                ],
+            ]
+        }
+        return [
+            "type": "web_search_preview",
+            "user_location": [
+                "type": "approximate",
+                "country": "US",
+                "timezone": "America/Los_Angeles",
+            ],
+        ]
     }
 
     private func schema(for method: String) -> [String: Any] {

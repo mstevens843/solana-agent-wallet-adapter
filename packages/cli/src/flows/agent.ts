@@ -524,11 +524,11 @@ async function preparePlanFromAgentChat(
 
   const transcript = agentChatTranscript(messages);
   const request = agentChatPlanRequest(transcript);
-  const spin = spinner('Preparing draft from chat...');
+  const spin = spinner('Preparing plan from chat...');
   let plan: AgentPlan | null = null;
   try {
     plan = (await generateAgentPlan<AgentPlan>(options, route, request as unknown as Record<string, unknown>)) ?? null;
-    spin.succeed('Draft prepared.');
+    spin.succeed('Plan prepared.');
   } catch (err) {
     const friendly = friendlyBridgeError(err, options);
     spin.fail(friendly ?? `Plan preparation failed: ${err instanceof Error ? err.message : String(err)}`);

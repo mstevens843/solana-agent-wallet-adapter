@@ -18,6 +18,24 @@ internal object ProviderHttp {
     private val OPENAI_COMPAT_SUFFIX = Regex("/openai/?$", RegexOption.IGNORE_CASE)
     private val VERSION_SEGMENT = Regex("/v\\d+(beta)?(/|$)", RegexOption.IGNORE_CASE)
 
+    // OpenRouter attribution headers — optional but recommended so OpenRouter attributes
+    // requests to Agentic (https://openrouter.ai/docs/api-reference/overview#headers).
+    // Mirrors the TS Device Agent's openRouterHeaders.ts. Android has no browser origin,
+    // so a stable app referer is used.
+    private const val OPENROUTER_REFERER = "https://android-device-agent.local"
+    private const val OPENROUTER_X_TITLE = "Agentic Android Device Agent"
+
+    fun isOpenRouterConfig(provider: String?, baseUrl: String?): Boolean =
+        (provider ?: "").trim().equals("openrouter", ignoreCase = true) ||
+            (baseUrl ?: "").contains("openrouter.ai", ignoreCase = true)
+
+    fun openRouterAttributionHeaders(isOpenRouter: Boolean): Map<String, String> =
+        if (isOpenRouter) {
+            mapOf("HTTP-Referer" to OPENROUTER_REFERER, "X-Title" to OPENROUTER_X_TITLE)
+        } else {
+            emptyMap()
+        }
+
     fun mapHttpStatusToErrorCode(status: Int): String? = when (status) {
         in 200..299 -> null
         401, 403 -> ProviderErrorCodes.AUTH

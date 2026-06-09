@@ -164,9 +164,11 @@ payload preview, IndexedDB plaintext, Local/Session storage), and the runtime st
 
 - **Tier:** Green. OpenRouter ships with permissive CORS headers and is the smoothest browser experience of the five
   providers.
-- **Auto-routing:** when the `openrouter/auto` model is selected, OpenRouter chooses the upstream model for each
-  request. The response body includes `model` (the resolved upstream id) and may include cost metadata in
-  `usage`. Never log these together with the key.
+- **Auto-routing disabled:** the `openrouter/auto` model is rejected for agent reviews — the runtime cannot know the
+  upstream family in advance, so decision formatting (Anthropic Messages vs OpenAI Responses) could break. Select an
+  explicit model instead: `anthropic/claude-sonnet-4.5` routes through OpenRouter's Anthropic Messages skin, and
+  `openai/gpt-5` through the OpenAI Responses API. OpenRouter Gemini (`google/*`, `*gemini*`) is likewise rejected —
+  use the direct Gemini provider so native `generateContent` formatting is used.
 - **Cost headers:** OpenRouter may include `x-prompt-tokens`, `x-completion-tokens`, and `x-ratelimit-…` headers.
   The redactor does not need to scrub these, but ensure they are not logged alongside `Authorization`.
 - **`response_format`:** OpenRouter forwards `{ "type": "json_object" }` to the upstream provider when supported. The

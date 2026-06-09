@@ -3373,9 +3373,9 @@ async function runPlanCommand(
   });
   const plan: CliAgentPlan = aiPlan ?? buildAgentPlan(intent);
   if (aiPlan) {
-    printMuted(state.options, 'Source: AI draft. Wallet approval is still required.');
+    printMuted(state.options, 'Source: AI plan. Wallet approval is still required.');
   } else {
-    printMuted(state.options, 'Source: deterministic terminal template. Configure bridge AI for richer drafts.');
+    printMuted(state.options, 'Source: deterministic terminal template. Configure bridge AI for richer plans.');
   }
   printAgentPlan(plan);
 

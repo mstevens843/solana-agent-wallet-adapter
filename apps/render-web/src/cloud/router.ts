@@ -452,7 +452,7 @@ const HOSTED_PROVIDER_PRESETS: Record<HostedProviderId, HostedProviderPreset> = 
     label: 'OpenRouter',
     apiFormat: 'openai-compatible',
     baseUrl: 'https://openrouter.ai/api/v1',
-    defaultModel: 'openrouter/auto',
+    defaultModel: 'anthropic/claude-sonnet-4.5',
   },
 };
 

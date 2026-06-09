@@ -70,6 +70,8 @@ internal class OpenAiCompatibleProvider(
         val body = buildRequestBody(messages, jsonObjectMode, temperature, maxTokens)
         val headers = mapOf(
             "Authorization" to "Bearer $apiKey",
+        ) + ProviderHttp.openRouterAttributionHeaders(
+            ProviderHttp.isOpenRouterConfig(config.provider, config.baseUrl),
         )
         val response = http.postJson(url, headers, body.toString())
         val errorCode = ProviderHttp.mapHttpStatusToErrorCode(response.status)

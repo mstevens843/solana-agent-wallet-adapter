@@ -29,9 +29,28 @@ export interface AiProviderPreset {
 
 export const DEFAULT_AI_BASE_URL = 'https://api.openai.com/v1';
 export const DEFAULT_AI_MODEL = 'gpt-5';
-export const DEFAULT_AI_PROVIDER_ID: AgentSetupProvider = 'openai';
+export const DEFAULT_AI_PROVIDER_ID: AgentSetupProvider = 'anthropic';
 
+// Anthropic is listed and defaulted before OpenAI so agent reviews default to the
+// Anthropic Messages family. OpenRouter exposes explicit Anthropic/OpenAI models only
+// (no Auto, no Gemini); direct Gemini routes natively (see resolveAiTransport).
 export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
+  {
+    id: 'anthropic',
+    label: 'Claude / Anthropic',
+    detail: 'Claude models through the Anthropic Messages API.',
+    apiFormat: 'anthropic',
+    baseUrl: 'https://api.anthropic.com/v1',
+    model: 'claude-opus-4-1-20250805',
+    hostedByok: true,
+    models: [
+      { id: 'claude-opus-4-1-20250805', label: 'Claude Opus 4.1', tokenRateLabel: '500K', tokensPerMinute: 500_000 },
+      { id: 'claude-3-5-haiku-20241022', label: 'Claude Haiku 3.5', tokenRateLabel: '50K', tokensPerMinute: 50_000 },
+      { id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5', tokenRateLabel: '30K', tokensPerMinute: 30_000 },
+      { id: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5 snapshot', tokenRateLabel: '30K', tokensPerMinute: 30_000 },
+      { id: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4', tokenRateLabel: '30K', tokensPerMinute: 30_000 },
+    ],
+  },
   {
     id: 'openai',
     label: 'OpenAI',
@@ -54,25 +73,12 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     ],
   },
   {
-    id: 'anthropic',
-    label: 'Claude / Anthropic',
-    detail: 'Claude models through the Anthropic Messages API.',
-    apiFormat: 'anthropic',
-    baseUrl: 'https://api.anthropic.com/v1',
-    model: 'claude-opus-4-1-20250805',
-    hostedByok: true,
-    models: [
-      { id: 'claude-opus-4-1-20250805', label: 'Claude Opus 4.1', tokenRateLabel: '500K', tokensPerMinute: 500_000 },
-      { id: 'claude-3-5-haiku-20241022', label: 'Claude Haiku 3.5', tokenRateLabel: '50K', tokensPerMinute: 50_000 },
-      { id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5', tokenRateLabel: '30K', tokensPerMinute: 30_000 },
-      { id: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5 snapshot', tokenRateLabel: '30K', tokensPerMinute: 30_000 },
-      { id: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4', tokenRateLabel: '30K', tokensPerMinute: 30_000 },
-    ],
-  },
-  {
     id: 'gemini',
     label: 'Gemini',
-    detail: 'Google Gemini through its OpenAI-compatible endpoint.',
+    detail: 'Google Gemini through its native generateContent API.',
+    // apiFormat stays 'openai-compatible' (the only non-anthropic format the type allows) and the
+    // baseUrl keeps the '/openai' suffix by convention — routing is by provider id, and the Gemini
+    // transport strips '/openai' to call the native :generateContent endpoint.
     apiFormat: 'openai-compatible',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
     model: 'gemini-2.5-flash-lite',
@@ -87,16 +93,17 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
   {
     id: 'openrouter',
     label: 'OpenRouter',
-    detail: 'OpenRouter gateway for many hosted models.',
+    detail: 'OpenRouter gateway with an explicit routed model. Auto routing is disabled for agent reviews.',
     apiFormat: 'openai-compatible',
     baseUrl: 'https://openrouter.ai/api/v1',
-    model: 'openrouter/auto',
+    model: 'anthropic/claude-sonnet-4.5',
     hostedByok: true,
     models: [
-      { id: 'openrouter/auto', label: 'Auto Router' },
-      { id: 'openai/gpt-5', label: 'OpenAI GPT-5' },
+      // Auto Router is intentionally hidden until routed model selection is deterministic
+      // before the review request. Gemini stays on the direct provider for native Gemini
+      // formatting.
       { id: 'anthropic/claude-sonnet-4.5', label: 'Claude Sonnet 4.5' },
-      { id: 'google/gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+      { id: 'openai/gpt-5', label: 'OpenAI GPT-5' },
     ],
   },
   {
@@ -120,6 +127,7 @@ export function aiProviderPresetById(id: string | undefined): AiProviderPreset {
 export function agentProviderFromArg(value: string | undefined): AgentSetupProvider {
   const normalized = value?.trim().toLowerCase() ?? '';
   if (normalized === 'anthropic' || normalized === 'claude') return 'anthropic';
+  if (normalized === 'openai' || normalized === 'gpt') return 'openai';
   if (normalized === 'gemini' || normalized === 'google') return 'gemini';
   if (normalized === 'openrouter') return 'openrouter';
   if (normalized === 'custom' || normalized === 'openai-compatible' || normalized === 'custom-openai-compatible') {

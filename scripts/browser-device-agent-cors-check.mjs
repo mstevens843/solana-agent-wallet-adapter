@@ -105,7 +105,7 @@ const PROVIDERS = [
       authorization: `Bearer ${DUMMY_KEY_OPENAI_COMPAT}`,
     }),
     body: JSON.stringify({
-      model: 'openrouter/auto',
+      model: 'anthropic/claude-sonnet-4.5',
       messages: [{ role: 'user', content: 'cors probe' }],
     }),
   },

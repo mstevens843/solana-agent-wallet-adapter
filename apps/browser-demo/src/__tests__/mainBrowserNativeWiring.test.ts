@@ -287,12 +287,55 @@ describe('Phase 6 browser-native Device Agent wiring helpers', () => {
       isAndroidApp: false,
       androidDeviceAgentRuntimeEnabled: true,
       isLocalBrowserOrigin: true,
+      deviceAgentVisible: false,
     })).toBe('bridge');
     expect(defaultAiModeForSurface({
       isAndroidApp: false,
       androidDeviceAgentRuntimeEnabled: true,
       isLocalBrowserOrigin: false,
+      deviceAgentVisible: false,
     })).toBe('hosted');
+  });
+
+  it('defaults web AI mode to Device Agent when visible and the provider supports it', () => {
+    expect(defaultAiModeForSurface({
+      isAndroidApp: false,
+      androidDeviceAgentRuntimeEnabled: false,
+      isLocalBrowserOrigin: false,
+      deviceAgentVisible: true,
+      providerSupportsDeviceAgent: true,
+    })).toBe('device-agent');
+    expect(defaultAiModeForSurface({
+      isAndroidApp: false,
+      androidDeviceAgentRuntimeEnabled: false,
+      isLocalBrowserOrigin: true,
+      deviceAgentVisible: true,
+      providerSupportsDeviceAgent: true,
+    })).toBe('device-agent');
+  });
+
+  it('falls back to the non-Device-Agent default when the provider does not support Device Agent', () => {
+    expect(defaultAiModeForSurface({
+      isAndroidApp: false,
+      androidDeviceAgentRuntimeEnabled: false,
+      isLocalBrowserOrigin: false,
+      deviceAgentVisible: true,
+      providerSupportsDeviceAgent: false,
+    })).toBe('hosted');
+    expect(defaultAiModeForSurface({
+      isAndroidApp: false,
+      androidDeviceAgentRuntimeEnabled: false,
+      isLocalBrowserOrigin: true,
+      deviceAgentVisible: true,
+      providerSupportsDeviceAgent: false,
+    })).toBe('bridge');
+    expect(defaultAiModeForSurface({
+      isAndroidApp: true,
+      androidDeviceAgentRuntimeEnabled: true,
+      isLocalBrowserOrigin: false,
+      deviceAgentVisible: true,
+      providerSupportsDeviceAgent: false,
+    })).toBe('session');
   });
 
   it('defaults Tauri desktop AI mode to hosted when an Agentic Cloud session is present', () => {

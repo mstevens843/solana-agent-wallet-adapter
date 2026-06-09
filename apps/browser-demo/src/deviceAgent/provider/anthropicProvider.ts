@@ -11,6 +11,7 @@ import type { RuntimeConfig } from '../runtime/config.js';
 import { filterLowAuthorityCitations, isPricingInstruction } from './citationFilter.js';
 import { PROVIDER_ERROR_CODES, ProviderHttpError } from './errorCodes.js';
 import type { HttpExecutor } from './http.js';
+import { openRouterAttributionHeaders } from './openRouterHeaders.js';
 import {
   assertApiKeyHeaderSafe,
   composeErrorMessage,
@@ -148,7 +149,8 @@ export class AnthropicProvider implements DeviceAgentProvider {
     const apiKey = (this.config.apiKey ?? '').trim();
     assertApiKeyHeaderSafe(apiKey);
 
-    const baseUrl = normalizeBaseUrl(this.config.baseUrl, 'anthropic');
+    const apiFormat = isOpenRouterConfig(this.config) ? 'openai-compatible' : 'anthropic';
+    const baseUrl = normalizeBaseUrl(this.config.baseUrl, apiFormat);
     const url = `${baseUrl}/messages`;
 
     const body: Record<string, unknown> = {
@@ -157,14 +159,20 @@ export class AnthropicProvider implements DeviceAgentProvider {
       system: messages.system,
       messages: [{ role: 'user', content: messages.userContent }],
       temperature,
-      ...(researchNeeded(payload) ? { tools: [anthropicWebSearchTool(payload)] } : {}),
+      ...(researchNeeded(payload) ? { tools: [webSearchToolForConfig(this.config, payload)] } : {}),
     };
 
-    const headers: Record<string, string> = {
-      'x-api-key': apiKey,
-      'anthropic-version': ANTHROPIC_VERSION,
-      'anthropic-dangerous-direct-browser-access': 'true',
-    };
+    const headers: Record<string, string> = isOpenRouterConfig(this.config)
+      ? {
+        Authorization: `Bearer ${apiKey}`,
+        'X-OpenRouter-Metadata': 'enabled',
+        ...openRouterAttributionHeaders(true),
+      }
+      : {
+        'x-api-key': apiKey,
+        'anthropic-version': ANTHROPIC_VERSION,
+        'anthropic-dangerous-direct-browser-access': 'true',
+      };
 
     const response = await this.http.postJson(url, headers, JSON.stringify(body), signal);
     const errorCode = mapHttpStatusToErrorCode(response.status);
@@ -211,6 +219,29 @@ function researchMaxUses(payload: Record<string, unknown>): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
     ? Math.max(1, Math.min(Math.floor(value), 5))
     : 3;
+}
+
+function isOpenRouterConfig(config: RuntimeConfig): boolean {
+  return config.provider.trim().toLowerCase() === 'openrouter' || (config.baseUrl ?? '').includes('openrouter.ai');
+}
+
+function webSearchToolForConfig(config: RuntimeConfig, payload: Record<string, unknown>): Record<string, unknown> {
+  return isOpenRouterConfig(config) ? openRouterWebSearchTool() : anthropicWebSearchTool(payload);
+}
+
+function openRouterWebSearchTool(): Record<string, unknown> {
+  return {
+    type: 'openrouter:web_search',
+    parameters: {
+      engine: 'auto',
+      max_total_results: 3,
+      user_location: {
+        type: 'approximate',
+        country: 'US',
+        timezone: 'America/Los_Angeles',
+      },
+    },
+  };
 }
 
 function anthropicWebSearchTool(payload: Record<string, unknown>): Record<string, unknown> {

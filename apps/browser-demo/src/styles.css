@@ -28053,7 +28053,7 @@ button.danger:hover:not(:disabled) {
     width: 100%;
   }
 
-  /* Check tab: hide 'Create another draft' (user goes through Start tab) and
+  /* Check tab: hide 'Create another plan' (user goes through Start tab) and
      hide the verbose 'X plans saved' and 'X moved forward' status counters. */
   .route-app .check-toolbar-create-another { display: none !important; }
   .route-app .status-detail-desktop-only { display: none !important; }

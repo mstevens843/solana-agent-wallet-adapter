@@ -1169,13 +1169,13 @@ test('agent-setup from env supports OpenRouter provider presets', async () => {
       '--provider',
       'openrouter',
       '--model',
-      'openrouter/auto',
+      'anthropic/claude-sonnet-4.5',
       '--json',
     ], { TEST_AGENTIC_AI_KEY: 'sk-or-test-agent-key' });
     assert.equal(result.status, 0, result.stderr);
     const payload = JSON.parse(result.stdout) as Record<string, unknown>;
     assert.equal(payload.provider, 'openrouter');
-    assert.equal(payload.model, 'openrouter/auto');
+    assert.equal(payload.model, 'anthropic/claude-sonnet-4.5');
     const raw = await readFile(envPath, 'utf8');
     assert.match(raw, /AGENTIC_AI_PROVIDER=openrouter/);
     assert.match(raw, /AGENTIC_AI_BASE_URL=https:\/\/openrouter\.ai\/api\/v1/);
@@ -1186,7 +1186,7 @@ test('agent-setup from env supports OpenRouter provider presets', async () => {
       provider: 'openrouter',
       apiFormat: 'openai-compatible',
       baseUrl: 'https://openrouter.ai/api/v1',
-      model: 'openrouter/auto',
+      model: 'anthropic/claude-sonnet-4.5',
     });
   } finally {
     await bridge.close();
@@ -1699,7 +1699,7 @@ async function startMockAiStatusRenderWeb(): Promise<{
             { id: 'openai', label: 'OpenAI', apiFormat: 'openai-compatible', defaultModel: 'gpt-5' },
             { id: 'anthropic', label: 'Claude / Anthropic', apiFormat: 'anthropic', defaultModel: 'claude-sonnet-4-5' },
             { id: 'gemini', label: 'Gemini', apiFormat: 'openai-compatible', defaultModel: 'gemini-2.5-pro' },
-            { id: 'openrouter', label: 'OpenRouter', apiFormat: 'openai-compatible', defaultModel: 'openrouter/auto' },
+            { id: 'openrouter', label: 'OpenRouter', apiFormat: 'openai-compatible', defaultModel: 'anthropic/claude-sonnet-4.5' },
           ],
         });
         return;

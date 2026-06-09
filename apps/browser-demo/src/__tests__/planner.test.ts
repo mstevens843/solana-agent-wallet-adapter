@@ -2,11 +2,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   AI_PROVIDER_PRESETS,
+  DEFAULT_AI_PROVIDER_ID,
   DEVICE_AGENT_PLAN_REQUIRED_BOUNDARY,
   DeviceAgentPlanGuardrailError,
   aiDiagnosticsFromError,
   aiMessages,
   bridgeAiSessionKeyPayload,
+  aiProviderSupportsDeviceAgent,
   aiRouteDiagnosticForSettings,
   buildTemplatePlan,
   confirmHostedAiPlanner,
@@ -48,7 +50,9 @@ const sessionSettings: AiSettings = {
   provider: 'openrouter',
   apiFormat: 'openai-compatible',
   baseUrl: 'https://openrouter.ai/api/v1',
-  model: 'openrouter/auto',
+  // Explicit OpenRouter OpenAI model (Auto Router removed). In browser-session mode this
+  // routes through the openai-compatible /chat/completions path these tests exercise.
+  model: 'openai/gpt-5',
   apiKey: 'provider-secret-value-123456789',
 };
 
@@ -88,6 +92,26 @@ describe('planner AI setup helpers', () => {
     const openaiModels = openai?.models ?? [];
     expect(openaiModels[0]).toMatchObject({ id: 'gpt-5.5', tokenRateLabel: '500K' });
     expect(openaiModels[openaiModels.length - 1]).toMatchObject({ id: 'gpt-4.1', tokenRateLabel: '30K' });
+  });
+
+  it('uses Anthropic as the default provider and keeps OpenAI second', () => {
+    expect(DEFAULT_AI_PROVIDER_ID).toBe('anthropic');
+    expect(AI_PROVIDER_PRESETS.map((preset) => preset.id)).toEqual([
+      'anthropic',
+      'openai',
+      'gemini',
+      'openrouter',
+      'custom-openai-compatible',
+    ]);
+  });
+
+  it('marks known provider presets as Device Agent-capable', () => {
+    expect(aiProviderSupportsDeviceAgent('anthropic')).toBe(true);
+    expect(aiProviderSupportsDeviceAgent('openai')).toBe(true);
+    expect(aiProviderSupportsDeviceAgent('gemini')).toBe(true);
+    expect(aiProviderSupportsDeviceAgent('openrouter')).toBe(true);
+    expect(aiProviderSupportsDeviceAgent('custom-openai-compatible')).toBe(true);
+    expect(aiProviderSupportsDeviceAgent('unknown-provider')).toBe(false);
   });
 
   it('reports the Device Agent AI route separately from hosted and bridge', () => {

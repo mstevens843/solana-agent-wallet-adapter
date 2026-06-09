@@ -80,11 +80,27 @@ export class DeviceAgentProviderExecutor implements ProviderExecutor {
       case 'openai-compatible':
         // Native providers route by `config.provider`: OpenAI gets the Responses API +
         // web_search_preview, Gemini gets :generateContent + google_search grounding.
-        // OpenRouter and Custom OpenAI-compatible stay on the chat-completions
-        // OpenAiCompatibleProvider, where the existing fail-closed research path
-        // (currentResearchUnavailableReview) preserves the same UX.
         if (provider === 'openai') return new OpenAiNativeProvider(config, this.http);
         if (provider === 'gemini') return new GeminiNativeProvider(config, this.http);
+        if (provider === 'openrouter') {
+          const model = config.model.trim().toLowerCase();
+          if (model === 'openrouter/auto') {
+            throw new ProviderFailedError({
+              code: RUNTIME_ERROR_CODES.INVALID_CONFIG,
+              subcode: RUNTIME_CONFIG_SUBCODES.UNSUPPORTED_FORMAT,
+              message: 'OpenRouter Auto Router is disabled for Device Agent reviews. Choose a specific OpenRouter model.',
+            });
+          }
+          if (model.startsWith('anthropic/')) return new AnthropicProvider(config, this.http);
+          if (model.startsWith('openai/')) return new OpenAiNativeProvider(config, this.http);
+          if (model.startsWith('google/') || model.includes('gemini')) {
+            throw new ProviderFailedError({
+              code: RUNTIME_ERROR_CODES.INVALID_CONFIG,
+              subcode: RUNTIME_CONFIG_SUBCODES.UNSUPPORTED_FORMAT,
+              message: 'OpenRouter Gemini models are disabled for Device Agent reviews. Use the direct Gemini provider.',
+            });
+          }
+        }
         return new OpenAiCompatibleProvider(config, this.http);
       case 'anthropic':
         return new AnthropicProvider(config, this.http);

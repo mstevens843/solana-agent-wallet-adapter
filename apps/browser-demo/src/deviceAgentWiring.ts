@@ -99,14 +99,21 @@ export function defaultAiModeForSurface(surface: {
   isLocalBrowserOrigin: boolean;
   isTauriApp?: boolean;
   hasCloudSession?: boolean;
+  deviceAgentVisible?: boolean;
+  providerSupportsDeviceAgent?: boolean;
 }): AiModeSurfaceDefault {
+  const deviceAgentSupported = surface.providerSupportsDeviceAgent !== false;
+  if (surface.deviceAgentVisible && deviceAgentSupported) {
+    return 'device-agent';
+  }
   if (surface.isAndroidApp) {
-    return surface.androidDeviceAgentRuntimeEnabled ? 'device-agent' : 'session';
+    return surface.androidDeviceAgentRuntimeEnabled && deviceAgentSupported ? 'device-agent' : 'session';
   }
   if (surface.isIosApp) {
-    return surface.iosDeviceAgentRuntimeEnabled ? 'device-agent' : 'session';
+    return surface.iosDeviceAgentRuntimeEnabled && deviceAgentSupported ? 'device-agent' : 'session';
   }
   if (surface.isTauriApp) {
+    if (!deviceAgentSupported) return surface.hasCloudSession ? 'hosted' : 'bridge';
     return surface.hasCloudSession ? 'hosted' : 'device-agent';
   }
   return surface.isLocalBrowserOrigin ? 'bridge' : 'hosted';

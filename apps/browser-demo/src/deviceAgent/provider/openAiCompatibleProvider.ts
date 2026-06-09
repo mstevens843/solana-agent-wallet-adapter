@@ -17,6 +17,7 @@ import {
   normalizeBaseUrl,
   tokenLimitKey,
 } from './providerHttp.js';
+import { openRouterAttributionHeaders } from './openRouterHeaders.js';
 import { extractOpenAiText, parseModelJson } from './responseParser.js';
 import type { DeviceAgentProvider } from './types.js';
 
@@ -26,19 +27,6 @@ const ASK_TEMPERATURE = 0.3;
 const PLAN_MAX_TOKENS = 1024;
 const REVIEW_MAX_TOKENS = 1024;
 const ASK_MAX_TOKENS = 800;
-
-// OpenRouter requires these per
-// https://openrouter.ai/docs/api-reference/overview#headers — without them
-// requests are aggressively rate-limited and excluded from analytics. We only
-// send them for the openrouter provider so other gateways don't see our origin.
-const OPENROUTER_FALLBACK_REFERER = 'https://browser-device-agent.local';
-const OPENROUTER_X_TITLE = 'Agentic Browser Device Agent';
-
-function browserOriginForOpenRouter(): string {
-  const loc = (globalThis as { location?: { origin?: string } }).location;
-  const origin = loc?.origin?.trim();
-  return origin && origin.length > 0 ? origin : OPENROUTER_FALLBACK_REFERER;
-}
 
 export class OpenAiCompatibleProvider implements DeviceAgentProvider {
   private readonly config: RuntimeConfig;
@@ -112,11 +100,8 @@ export class OpenAiCompatibleProvider implements DeviceAgentProvider {
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${apiKey}`,
+      ...openRouterAttributionHeaders(this.config.provider === 'openrouter'),
     };
-    if (this.config.provider === 'openrouter') {
-      headers['HTTP-Referer'] = browserOriginForOpenRouter();
-      headers['X-Title'] = OPENROUTER_X_TITLE;
-    }
 
     const response = await this.http.postJson(url, headers, JSON.stringify(body), signal);
     const errorCode = mapHttpStatusToErrorCode(response.status);

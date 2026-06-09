@@ -39,6 +39,7 @@ import { DEFAULT_CONFIG, type AgentWalletConfig } from './config.js';
 import type { TransactionSimulator } from './simulationDigest.js';
 
 export type AiApiFormat = 'openai-compatible' | 'anthropic';
+type AiTransport = 'anthropic-messages' | 'openai-responses' | 'gemini-native' | 'openai-compatible';
 export type {
   AiPlan,
   AiAskRequest,
@@ -83,6 +84,7 @@ const DEFAULT_AI_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_AI_MODEL = 'gpt-5';
 const DEFAULT_ANTHROPIC_BASE_URL = 'https://api.anthropic.com/v1';
 const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-5';
+const DEFAULT_GEMINI_NATIVE_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 const OPENAI_REASONING_EFFORT = 'low';
 // Plan and ask paths stay terse (cheap, snappy). Review pass bumps to 'medium' so the
 // "why it passed/denied" prose can match Claude-style breadth — listing alternatives
@@ -105,6 +107,8 @@ const SHARED_SAFEGUARDS = [
   'Amounts, recipients, routes, and policy notes must be visible before signing.',
 ];
 const AI_KEY_COPY_PASTE_ARTIFACTS = /[\s\u200B-\u200D\u2060\uFEFF]+/gu;
+const GEMINI_OPENAI_COMPAT_SUFFIX = /\/openai\/?$/i;
+const GEMINI_VERSION_SEGMENT = /\/v\d+(beta)?(\/|$)/i;
 
 const ALLOWED_AI_HOSTS: ReadonlySet<string> = new Set([
   'api.openai.com',
@@ -225,6 +229,118 @@ const REVIEW_JSON_SCHEMA = {
   required: ['decision', 'reason', 'summary', 'evidence'],
 } as const;
 
+const GEMINI_STRING_ARRAY_SCHEMA = {
+  type: 'array',
+  items: { type: 'string' },
+} as const;
+
+const GEMINI_FINDING_SCHEMA = {
+  type: 'object',
+  properties: {
+    label: { type: 'string' },
+    value: { type: 'string' },
+    tone: { type: 'string', enum: ['good', 'warn', 'neutral', 'fail'] },
+  },
+  required: ['label', 'value', 'tone'],
+  propertyOrdering: ['label', 'value', 'tone'],
+} as const;
+
+const GEMINI_SOURCE_SCHEMA = {
+  type: 'object',
+  properties: {
+    title: { type: 'string' },
+    url: { type: 'string' },
+  },
+  required: ['url'],
+  propertyOrdering: ['title', 'url'],
+} as const;
+
+const GEMINI_PLAN_RESPONSE_SCHEMA = {
+  type: 'object',
+  properties: {
+    intent: { type: 'string' },
+    route: { type: 'string' },
+    risk: { type: 'string' },
+    approval: { type: 'string' },
+    safeguards: GEMINI_STRING_ARRAY_SCHEMA,
+  },
+  required: ['intent', 'route', 'risk', 'approval', 'safeguards'],
+  propertyOrdering: ['intent', 'route', 'risk', 'approval', 'safeguards'],
+} as const;
+
+const GEMINI_REVIEW_RESPONSE_SCHEMA = {
+  type: 'object',
+  properties: {
+    decision: { type: 'string', enum: ['approve', 'deny', 'needs_input'] },
+    reason: { type: 'string' },
+    summary: { type: 'string' },
+    evidence: {
+      type: 'object',
+      properties: {
+        findings: { type: 'array', items: GEMINI_FINDING_SCHEMA },
+        sources: { type: 'array', items: GEMINI_SOURCE_SCHEMA },
+        research: {
+          type: 'object',
+          properties: {
+            status: { type: 'string' },
+          },
+        },
+        policiesApplied: GEMINI_STRING_ARRAY_SCHEMA,
+      },
+      propertyOrdering: ['findings', 'sources', 'research', 'policiesApplied'],
+    },
+    questions: {
+      type: 'array',
+      maxItems: 3,
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          prompt: { type: 'string' },
+          inputKind: { type: 'string', enum: ['text', 'select', 'number'] },
+          options: GEMINI_STRING_ARRAY_SCHEMA,
+          required: { type: 'boolean' },
+          hint: { type: 'string' },
+        },
+        required: ['id', 'prompt', 'inputKind'],
+        propertyOrdering: ['id', 'prompt', 'inputKind', 'options', 'required', 'hint'],
+      },
+    },
+    reviewers: {
+      type: 'array',
+      maxItems: 4,
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', enum: ['risk', 'quote', 'policy', 'protocol'] },
+          decision: { type: 'string', enum: ['approve', 'deny', 'needs_input'] },
+          reason: { type: 'string' },
+          summary: { type: 'string' },
+        },
+        required: ['id', 'decision', 'reason'],
+        propertyOrdering: ['id', 'decision', 'reason', 'summary'],
+      },
+    },
+    evidenceFactIds: GEMINI_STRING_ARRAY_SCHEMA,
+    blockingFactIds: GEMINI_STRING_ARRAY_SCHEMA,
+    missingFactIds: GEMINI_STRING_ARRAY_SCHEMA,
+    confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
+  },
+  required: ['decision', 'reason', 'summary', 'evidence'],
+  propertyOrdering: [
+    'decision',
+    'reason',
+    'summary',
+    'evidence',
+    'questions',
+    'reviewers',
+    'evidenceFactIds',
+    'blockingFactIds',
+    'missingFactIds',
+    'confidence',
+  ],
+} as const;
+
 export class BridgeAiPlanner {
   #sessionConfig: AiRuntimeConfig | null = null;
 
@@ -268,11 +384,13 @@ export class BridgeAiPlanner {
     const apiFormat = normalizeApiFormat(input.apiFormat ?? currentConfig?.apiFormat, provider);
     const baseUrl = normalizeBaseUrl(input.baseUrl || currentConfig?.baseUrl || defaultBaseUrl(apiFormat), apiFormat);
     assertAiBaseUrlAllowed(baseUrl, input.allowCustomBaseUrl === true);
+    const model = input.model?.trim() || currentConfig?.model || defaultModel(apiFormat);
+    assertAiRuntimeModelAllowed(provider, model);
     this.#sessionConfig = {
       provider,
       apiFormat,
       baseUrl,
-      model: input.model?.trim() || currentConfig?.model || defaultModel(apiFormat),
+      model,
       apiKey,
       source: 'session',
     };
@@ -286,10 +404,14 @@ export class BridgeAiPlanner {
     }
     const normalizedRequest = normalizeRequest(request);
     assertAiDraftRequestAllowed(normalizedRequest);
-    if (config.apiFormat === 'anthropic') {
+    const transport = resolveAiTransport(config);
+    if (transport === 'anthropic-messages') {
       return this.generateAnthropicPlan(config, normalizedRequest);
     }
-    if (shouldUseOpenAiResponses(config)) {
+    if (transport === 'gemini-native') {
+      return this.generateGeminiPlan(config, normalizedRequest);
+    }
+    if (transport === 'openai-responses') {
       return this.generateOpenAiResponsesPlan(config, normalizedRequest);
     }
     return this.generateOpenAiCompatiblePlan(config, normalizedRequest);
@@ -306,12 +428,15 @@ export class BridgeAiPlanner {
     // request.context.policyBundle with structured findings so the reviewer applies
     // user rules over already-resolved evidence instead of re-discovering facts.
     const enrichedRequest = await this.enrichRequestWithPolicyBundle(normalizedRequest);
+    const transport = resolveAiTransport(config);
     let result: AiReviewResult;
     if (reviewNeedsWebResearch(enrichedRequest) && !supportsNativeWebResearch(config)) {
       result = applyServerSideReviewSafety(unsupportedResearchReview(enrichedRequest, config), enrichedRequest);
-    } else if (config.apiFormat === 'anthropic') {
+    } else if (transport === 'anthropic-messages') {
       result = applyServerSideReviewSafety(await this.generateAnthropicReview(config, enrichedRequest), enrichedRequest);
-    } else if (shouldUseOpenAiResponses(config)) {
+    } else if (transport === 'gemini-native') {
+      result = applyServerSideReviewSafety(await this.generateGeminiReview(config, enrichedRequest), enrichedRequest);
+    } else if (transport === 'openai-responses') {
       result = applyServerSideReviewSafety(await this.generateOpenAiResponsesReview(config, enrichedRequest), enrichedRequest);
     } else {
       result = applyServerSideReviewSafety(await this.generateOpenAiCompatibleReview(config, enrichedRequest), enrichedRequest);
@@ -466,14 +591,11 @@ export class BridgeAiPlanner {
     messages: Array<{ role: 'system' | 'user'; content: string }>,
   ): Promise<string | undefined> {
     try {
-      if (config.apiFormat === 'anthropic') {
-        const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'anthropic')}/messages`, {
+      const transport = resolveAiTransport(config);
+      if (transport === 'anthropic-messages') {
+        const response = await fetch(`${anthropicMessagesUrl(config)}`, {
           method: 'POST',
-          headers: {
-            'anthropic-version': '2023-06-01',
-            'content-type': 'application/json',
-            'x-api-key': config.apiKey,
-          },
+          headers: anthropicHeaders(config),
           body: JSON.stringify({
             model: config.model,
             max_tokens: 600,
@@ -484,6 +606,16 @@ export class BridgeAiPlanner {
         });
         if (!response.ok) return undefined;
         const payload = await response.json().catch(() => undefined);
+        return extractModelText(payload).trim() || undefined;
+      }
+      if (transport === 'gemini-native') {
+        const payload = await this.postGeminiGenerateContent(config, messages[0]?.content ?? '', messages[1]?.content ?? '', {
+          jsonObjectMode: true,
+          responseSchema: undefined,
+          temperature: 0,
+          maxOutputTokens: 600,
+          research: false,
+        });
         return extractModelText(payload).trim() || undefined;
       }
       // OpenAI-compatible (chat completions). GPT-5 / o-series reject the legacy
@@ -521,13 +653,17 @@ export class BridgeAiPlanner {
     }
     const normalizedRequest = normalizeAskRequest(request);
     assertAiAskRequestAllowed(normalizedRequest);
+    const transport = resolveAiTransport(config);
     if (askNeedsWebResearch(normalizedRequest) && !supportsNativeWebResearch(config)) {
       return unsupportedResearchAsk(normalizedRequest, config);
     }
-    if (shouldUseOpenAiResponses(config) && askNeedsWebResearch(normalizedRequest)) {
+    if (transport === 'gemini-native') {
+      return this.generateGeminiAsk(config, normalizedRequest);
+    }
+    if (transport === 'openai-responses' && askNeedsWebResearch(normalizedRequest)) {
       return this.generateOpenAiResponsesAsk(config, normalizedRequest);
     }
-    if (config.apiFormat === 'anthropic') {
+    if (transport === 'anthropic-messages') {
       return this.generateAnthropicAsk(config, normalizedRequest);
     }
     return this.generateOpenAiCompatibleAsk(config, normalizedRequest);
@@ -540,13 +676,17 @@ export class BridgeAiPlanner {
     }
     const normalizedRequest = normalizeChatRequest(request);
     assertAiChatRequestAllowed(normalizedRequest);
+    const transport = resolveAiTransport(config);
     if (chatNeedsWebResearch(normalizedRequest) && !supportsNativeWebResearch(config)) {
       return unsupportedResearchChat(normalizedRequest, config);
     }
-    if (shouldUseOpenAiResponses(config) && chatNeedsWebResearch(normalizedRequest)) {
+    if (transport === 'gemini-native') {
+      return this.generateGeminiChat(config, normalizedRequest);
+    }
+    if (transport === 'openai-responses' && chatNeedsWebResearch(normalizedRequest)) {
       return this.generateOpenAiResponsesChat(config, normalizedRequest);
     }
-    if (config.apiFormat === 'anthropic') {
+    if (transport === 'anthropic-messages') {
       return this.generateAnthropicChat(config, normalizedRequest);
     }
     return this.generateOpenAiCompatibleChat(config, normalizedRequest);
@@ -562,10 +702,7 @@ export class BridgeAiPlanner {
     const research = chatNeedsWebResearch(normalizedRequest);
     const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'openai-compatible')}/responses`, {
       method: 'POST',
-      headers: {
-        authorization: `Bearer ${config.apiKey}`,
-        'content-type': 'application/json',
-      },
+      headers: bearerJsonHeaders(config),
       body: JSON.stringify({
         model: config.model,
         instructions: systemMessage,
@@ -573,9 +710,9 @@ export class BridgeAiPlanner {
         max_output_tokens: 1800,
         store: false,
         ...(research ? {
-          tools: [openAiWebSearchTool()],
+          tools: [webSearchToolForConfig(config)],
           tool_choice: 'auto',
-          include: ['web_search_call.action.sources'],
+          ...(!isOpenRouterProvider(config) ? { include: ['web_search_call.action.sources'] } : {}),
         } : {}),
         ...(isReasoningModel(config.model) && {
           reasoning: { effort: OPENAI_REASONING_EFFORT },
@@ -638,20 +775,16 @@ export class BridgeAiPlanner {
     const systemMessage = messages[0]?.content ?? '';
     const userMessage = messages[1]?.content ?? JSON.stringify(normalizedRequest);
     const research = chatNeedsWebResearch(normalizedRequest);
-    const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'anthropic')}/messages`, {
+    const response = await fetch(anthropicMessagesUrl(config), {
       method: 'POST',
-      headers: {
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-        'x-api-key': config.apiKey,
-      },
+      headers: anthropicHeaders(config),
       body: JSON.stringify({
         model: config.model,
         max_tokens: 1200,
         system: systemMessage,
         messages: [{ role: 'user', content: userMessage }],
         temperature: 0.3,
-        ...(research ? { tools: [anthropicWebSearchTool()] } : {}),
+        ...(research ? { tools: [anthropicWebSearchToolForConfig(config)] } : {}),
       }),
     }).catch((err) => {
       throw new ProtocolError(
@@ -679,10 +812,7 @@ export class BridgeAiPlanner {
     const research = askNeedsWebResearch(normalizedRequest);
     const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'openai-compatible')}/responses`, {
       method: 'POST',
-      headers: {
-        authorization: `Bearer ${config.apiKey}`,
-        'content-type': 'application/json',
-      },
+      headers: bearerJsonHeaders(config),
       body: JSON.stringify({
         model: config.model,
         instructions: systemMessage,
@@ -690,9 +820,9 @@ export class BridgeAiPlanner {
         max_output_tokens: 1200,
         store: false,
         ...(research ? {
-          tools: [openAiWebSearchTool()],
+          tools: [webSearchToolForConfig(config)],
           tool_choice: 'auto',
-          include: ['web_search_call.action.sources'],
+          ...(!isOpenRouterProvider(config) ? { include: ['web_search_call.action.sources'] } : {}),
         } : {}),
         ...(isReasoningModel(config.model) && {
           reasoning: { effort: OPENAI_REASONING_EFFORT },
@@ -755,20 +885,16 @@ export class BridgeAiPlanner {
     const systemMessage = messages[0]?.content ?? '';
     const userMessage = messages[1]?.content ?? JSON.stringify(normalizedRequest);
     const research = askNeedsWebResearch(normalizedRequest);
-    const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'anthropic')}/messages`, {
+    const response = await fetch(anthropicMessagesUrl(config), {
       method: 'POST',
-      headers: {
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-        'x-api-key': config.apiKey,
-      },
+      headers: anthropicHeaders(config),
       body: JSON.stringify({
         model: config.model,
         max_tokens: 800,
         system: systemMessage,
         messages: [{ role: 'user', content: userMessage }],
         temperature: 0.3,
-        ...(research ? { tools: [anthropicWebSearchTool()] } : {}),
+        ...(research ? { tools: [anthropicWebSearchToolForConfig(config)] } : {}),
       }),
     }).catch((err) => {
       throw new ProtocolError(
@@ -795,10 +921,7 @@ export class BridgeAiPlanner {
     const userMessage = messages[1]?.content ?? JSON.stringify(normalizedRequest);
     const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'openai-compatible')}/responses`, {
       method: 'POST',
-      headers: {
-        authorization: `Bearer ${config.apiKey}`,
-        'content-type': 'application/json',
-      },
+      headers: bearerJsonHeaders(config),
       body: JSON.stringify({
         model: config.model,
         instructions: systemMessage,
@@ -881,10 +1004,7 @@ export class BridgeAiPlanner {
     const userMessage = messages[1]?.content ?? JSON.stringify(normalizedRequest);
     const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'openai-compatible')}/responses`, {
       method: 'POST',
-      headers: {
-        authorization: `Bearer ${config.apiKey}`,
-        'content-type': 'application/json',
-      },
+      headers: bearerJsonHeaders(config),
       body: JSON.stringify({
         model: config.model,
         instructions: systemMessage,
@@ -935,19 +1055,16 @@ export class BridgeAiPlanner {
     const userMessage = messages[1]?.content ?? JSON.stringify(normalizedRequest);
     const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'openai-compatible')}/responses`, {
       method: 'POST',
-      headers: {
-        authorization: `Bearer ${config.apiKey}`,
-        'content-type': 'application/json',
-      },
+      headers: bearerJsonHeaders(config),
       body: JSON.stringify({
         model: config.model,
         instructions: systemMessage,
         input: userMessage,
         max_output_tokens: 1800,
         store: false,
-        tools: [openAiWebSearchTool()],
+        tools: [webSearchToolForConfig(config)],
         tool_choice: 'auto',
-        include: ['web_search_call.action.sources'],
+        ...(!isOpenRouterProvider(config) ? { include: ['web_search_call.action.sources'] } : {}),
         ...(isReasoningModel(config.model) && {
           reasoning: { effort: OPENAI_REASONING_EFFORT },
         }),
@@ -1002,6 +1119,163 @@ export class BridgeAiPlanner {
     return normalizeAiReview(payload, normalizedRequest);
   }
 
+  private async generateGeminiPlan(
+    config: AiRuntimeConfig,
+    normalizedRequest: Required<AiPlanRequest>,
+  ): Promise<AiPlan> {
+    const messages = aiMessages(normalizedRequest);
+    const payload = await this.postGeminiGenerateContent(
+      config,
+      messages[0]?.content ?? '',
+      messages[1]?.content ?? JSON.stringify(normalizedRequest),
+      {
+        jsonObjectMode: true,
+        responseSchema: GEMINI_PLAN_RESPONSE_SCHEMA,
+        temperature: 0.2,
+        maxOutputTokens: 1024,
+        research: false,
+      },
+    );
+    return normalizeStrictAiPlan(payload, normalizedRequest, 'Gemini');
+  }
+
+  private async generateGeminiReview(
+    config: AiRuntimeConfig,
+    normalizedRequest: Required<AiReviewRequest>,
+  ): Promise<AiReviewResult> {
+    const research = reviewNeedsWebResearch(normalizedRequest);
+    const researchResult = research
+      ? await this.generateGeminiResearchEvidence(config, normalizedRequest)
+      : undefined;
+    const messages = aiReviewMessages(normalizedRequest, researchResult?.evidence);
+    const payload = await this.postGeminiGenerateContent(
+      config,
+      messages[0]?.content ?? '',
+      messages[1]?.content ?? JSON.stringify(normalizedRequest),
+      {
+        jsonObjectMode: true,
+        responseSchema: GEMINI_REVIEW_RESPONSE_SCHEMA,
+        temperature: 0.2,
+        maxOutputTokens: 1800,
+        research: false,
+      },
+    );
+    return normalizeStrictAiReview(payload, normalizedRequest, 'Gemini', {
+      citations: researchResult?.citations,
+      researchEvidence: researchResult?.evidence,
+    });
+  }
+
+  private async generateGeminiResearchEvidence(
+    config: AiRuntimeConfig,
+    normalizedRequest: Required<AiReviewRequest>,
+  ): Promise<{ evidence: AiReviewResearchEvidence; citations: AiResearchCitation[] }> {
+    const messages = aiResearchMessages(normalizedRequest);
+    const payload = await this.postGeminiGenerateContent(
+      config,
+      messages[0]?.content ?? '',
+      messages[1]?.content ?? JSON.stringify(normalizedRequest),
+      {
+        jsonObjectMode: false,
+        temperature: 0.2,
+        maxOutputTokens: 1800,
+        research: true,
+      },
+    );
+    return normalizeResearchEvidence(payload, normalizedRequest, 'Gemini');
+  }
+
+  private async generateGeminiAsk(
+    config: AiRuntimeConfig,
+    normalizedRequest: Required<AiAskRequest>,
+  ): Promise<AiAskResult> {
+    const messages = aiAskMessages(normalizedRequest);
+    const payload = await this.postGeminiGenerateContent(
+      config,
+      messages[0]?.content ?? '',
+      messages[1]?.content ?? JSON.stringify(normalizedRequest),
+      {
+        jsonObjectMode: false,
+        temperature: 0.3,
+        maxOutputTokens: 800,
+        research: askNeedsWebResearch(normalizedRequest),
+      },
+    );
+    return aiAskFromPayload(payload);
+  }
+
+  private async generateGeminiChat(
+    config: AiRuntimeConfig,
+    normalizedRequest: Required<AiChatRequest>,
+  ): Promise<AiChatResult> {
+    const messages = aiChatMessages(normalizedRequest);
+    const payload = await this.postGeminiGenerateContent(
+      config,
+      messages[0]?.content ?? '',
+      messages[1]?.content ?? JSON.stringify(normalizedRequest),
+      {
+        jsonObjectMode: false,
+        temperature: 0.3,
+        maxOutputTokens: 1200,
+        research: chatNeedsWebResearch(normalizedRequest),
+      },
+    );
+    return aiChatFromPayload(payload);
+  }
+
+  private async postGeminiGenerateContent(
+    config: AiRuntimeConfig,
+    system: string,
+    userContent: string,
+    options: {
+      jsonObjectMode: boolean;
+      responseSchema?: unknown;
+      temperature: number;
+      maxOutputTokens: number;
+      research: boolean;
+    },
+  ): Promise<unknown> {
+    const generationConfig: Record<string, unknown> = {
+      temperature: options.temperature,
+      maxOutputTokens: options.maxOutputTokens,
+    };
+    if (options.jsonObjectMode && !options.research) {
+      generationConfig.responseMimeType = 'application/json';
+      if (options.responseSchema) generationConfig.responseSchema = options.responseSchema;
+    }
+    const response = await fetch(geminiGenerateContentUrl(config), {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-goog-api-key': config.apiKey,
+      },
+      body: JSON.stringify({
+        systemInstruction: {
+          parts: [{ text: system }],
+        },
+        contents: [{
+          role: 'user',
+          parts: [{ text: userContent }],
+        }],
+        generationConfig,
+        ...(options.research ? { tools: [{ google_search: {} }] } : {}),
+      }),
+    }).catch((err) => {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        `AI provider request failed. ${redactText(err instanceof Error ? err.message : String(err))}`,
+      );
+    });
+    const payload = await response.json().catch(() => ({})) as unknown;
+    if (!response.ok) {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        providerFailureMessage(payload, response.status),
+      );
+    }
+    return payload;
+  }
+
   private async generateAnthropicReview(
     config: AiRuntimeConfig,
     normalizedRequest: Required<AiReviewRequest>,
@@ -1013,13 +1287,9 @@ export class BridgeAiPlanner {
     const messages = aiReviewMessages(normalizedRequest, researchResult?.evidence);
     const systemMessage = messages[0]?.content ?? '';
     const userMessage = messages[1]?.content ?? JSON.stringify(normalizedRequest);
-    const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'anthropic')}/messages`, {
+    const response = await fetch(anthropicMessagesUrl(config), {
       method: 'POST',
-      headers: {
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-        'x-api-key': config.apiKey,
-      },
+      headers: anthropicHeaders(config),
       body: JSON.stringify({
         model: config.model,
         max_tokens: 1024,
@@ -1054,20 +1324,16 @@ export class BridgeAiPlanner {
     const messages = aiResearchMessages(normalizedRequest);
     const systemMessage = messages[0]?.content ?? '';
     const userMessage = messages[1]?.content ?? JSON.stringify(normalizedRequest);
-    const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'anthropic')}/messages`, {
+    const response = await fetch(anthropicMessagesUrl(config), {
       method: 'POST',
-      headers: {
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-        'x-api-key': config.apiKey,
-      },
+      headers: anthropicHeaders(config),
       body: JSON.stringify({
         model: config.model,
         max_tokens: 1800,
         system: systemMessage,
         messages: [{ role: 'user', content: userMessage }],
         temperature: 0.2,
-        tools: [anthropicWebSearchTool()],
+        tools: [anthropicWebSearchToolForConfig(config)],
       }),
     }).catch((err) => {
       throw new ProtocolError(
@@ -1092,13 +1358,9 @@ export class BridgeAiPlanner {
     const messages = aiMessages(normalizedRequest);
     const systemMessage = messages[0]?.content ?? '';
     const userMessage = messages[1]?.content ?? JSON.stringify(normalizedRequest);
-    const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'anthropic')}/messages`, {
+    const response = await fetch(anthropicMessagesUrl(config), {
       method: 'POST',
-      headers: {
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-        'x-api-key': config.apiKey,
-      },
+      headers: anthropicHeaders(config),
       body: JSON.stringify({
         model: config.model,
         max_tokens: 1024,
@@ -1135,14 +1397,106 @@ function envConfig(): AiRuntimeConfig | null {
   const apiFormat = normalizeApiFormat(process.env.AGENTIC_AI_API_FORMAT, provider);
   const baseUrl = normalizeBaseUrl(process.env.AGENTIC_AI_BASE_URL || defaultBaseUrl(apiFormat), apiFormat);
   assertAiBaseUrlAllowed(baseUrl);
+  const model = process.env.AGENTIC_AI_MODEL?.trim() || defaultModel(apiFormat);
+  assertAiRuntimeModelAllowed(provider, model);
   return {
     provider,
     apiFormat,
     baseUrl,
-    model: process.env.AGENTIC_AI_MODEL?.trim() || defaultModel(apiFormat),
+    model,
     apiKey,
     source: 'env',
   };
+}
+
+function resolveAiTransport(config: AiRuntimeConfig): AiTransport {
+  const provider = normalizedProviderId(config.provider);
+  const model = config.model.trim().toLowerCase();
+  if (provider === 'openrouter') {
+    assertAiRuntimeModelAllowed(config.provider, config.model);
+    if (model.startsWith('anthropic/')) return 'anthropic-messages';
+    if (model.startsWith('openai/')) return 'openai-responses';
+    return 'openai-compatible';
+  }
+  if (provider === 'gemini') return 'gemini-native';
+  if (provider === 'openai') return 'openai-responses';
+  if (config.apiFormat === 'anthropic') return 'anthropic-messages';
+  if (shouldUseOpenAiResponses(config)) return 'openai-responses';
+  return 'openai-compatible';
+}
+
+function normalizedProviderId(provider: string): string {
+  return provider.trim().toLowerCase();
+}
+
+function isOpenRouterProvider(config: AiRuntimeConfig): boolean {
+  return normalizedProviderId(config.provider) === 'openrouter' || /(^|\.)openrouter\.ai$/i.test(safeHost(config.baseUrl));
+}
+
+function assertAiRuntimeModelAllowed(provider: string, model: string): void {
+  if (normalizedProviderId(provider) !== 'openrouter') return;
+  const normalized = model.trim().toLowerCase();
+  if (!normalized || normalized === 'openrouter/auto') {
+    throw new ProtocolError(
+      'invalid_request',
+      'OpenRouter Auto Router is disabled for agent reviews. Choose a specific OpenRouter model such as anthropic/claude-sonnet-4.5 or openai/gpt-5.',
+    );
+  }
+  if (normalized.startsWith('google/') || normalized.includes('gemini')) {
+    throw new ProtocolError(
+      'invalid_request',
+      'OpenRouter Gemini models are disabled for agent reviews. Use the direct Gemini provider so Agentic can use native Gemini formatting.',
+    );
+  }
+}
+
+function bearerJsonHeaders(config: AiRuntimeConfig): Record<string, string> {
+  return {
+    authorization: `Bearer ${config.apiKey}`,
+    'content-type': 'application/json',
+    ...(isOpenRouterProvider(config) ? { 'X-OpenRouter-Metadata': 'enabled' } : {}),
+  };
+}
+
+function anthropicHeaders(config: AiRuntimeConfig): Record<string, string> {
+  if (isOpenRouterProvider(config)) {
+    return bearerJsonHeaders(config);
+  }
+  return {
+    'anthropic-version': '2023-06-01',
+    'content-type': 'application/json',
+    'x-api-key': config.apiKey,
+  };
+}
+
+function anthropicMessagesUrl(config: AiRuntimeConfig): string {
+  const format: AiApiFormat = isOpenRouterProvider(config) ? 'openai-compatible' : 'anthropic';
+  return `${normalizeBaseUrl(config.baseUrl, format)}/messages`;
+}
+
+function geminiGenerateContentUrl(config: AiRuntimeConfig): string {
+  const rawBase = config.baseUrl;
+  const base = normalizeGeminiNativeBaseUrl(rawBase);
+  if (/\/models\/[^/]+:generateContent$/i.test(base)) return base;
+  if (/\/models\/[^/]+$/i.test(base)) return `${base}:generateContent`;
+  const encodedModel = encodeURIComponent(config.model.trim());
+  return `${base}/models/${encodedModel}:generateContent`;
+}
+
+function normalizeGeminiNativeBaseUrl(raw: string): string {
+  const trimmed = raw.trim().replace(/\/+$/u, '');
+  if (!trimmed) return DEFAULT_GEMINI_NATIVE_BASE_URL;
+  const stripped = trimmed.replace(GEMINI_OPENAI_COMPAT_SUFFIX, '');
+  if (GEMINI_VERSION_SEGMENT.test(stripped)) return stripped;
+  return `${stripped}/v1beta`;
+}
+
+function safeHost(raw: string): string {
+  try {
+    return new URL(raw).hostname;
+  } catch {
+    return '';
+  }
 }
 
 function normalizeRequest(request: AiPlanRequest): Required<AiPlanRequest> {
@@ -1234,7 +1588,7 @@ function withDefaultConnectorContext(
 }
 
 function supportsNativeWebResearch(config: AiRuntimeConfig): boolean {
-  return config.apiFormat === 'anthropic' || shouldUseOpenAiResponses(config);
+  return resolveAiTransport(config) !== 'openai-compatible';
 }
 
 function askNeedsWebResearch(request: Required<AiAskRequest>): boolean {
@@ -1345,6 +1699,25 @@ function openAiWebSearchTool(): Record<string, unknown> {
   };
 }
 
+function openRouterWebSearchTool(): Record<string, unknown> {
+  return {
+    type: 'openrouter:web_search',
+    parameters: {
+      engine: 'auto',
+      max_total_results: RESEARCH_MAX_USES,
+      user_location: {
+        type: 'approximate',
+        country: 'US',
+        timezone: 'America/Los_Angeles',
+      },
+    },
+  };
+}
+
+function webSearchToolForConfig(config: AiRuntimeConfig): Record<string, unknown> {
+  return isOpenRouterProvider(config) ? openRouterWebSearchTool() : openAiWebSearchTool();
+}
+
 function anthropicWebSearchTool(): Record<string, unknown> {
   return {
     type: 'web_search_20250305',
@@ -1356,6 +1729,10 @@ function anthropicWebSearchTool(): Record<string, unknown> {
       timezone: 'America/Los_Angeles',
     },
   };
+}
+
+function anthropicWebSearchToolForConfig(config: AiRuntimeConfig): Record<string, unknown> {
+  return isOpenRouterProvider(config) ? openRouterWebSearchTool() : anthropicWebSearchTool();
 }
 
 function unsupportedResearchReview(
@@ -2961,11 +3338,16 @@ function extractResearchCitations(payload: unknown): AiResearchCitation[] {
       return;
     }
     const record = value as Record<string, unknown>;
-    const url = typeof record.url === 'string' ? record.url.trim() : '';
+    const url = typeof record.url === 'string'
+      ? record.url.trim()
+      : typeof record.uri === 'string'
+        ? record.uri.trim()
+        : '';
     const citationType = typeof record.type === 'string' ? record.type : '';
     const hasCitationShape = citationType.includes('citation') ||
       citationType.includes('web_search') ||
       typeof record.title === 'string' ||
+      typeof record.uri === 'string' ||
       typeof record.cited_text === 'string' ||
       typeof record.citedText === 'string';
     if (url && hasCitationShape && /^https?:\/\//i.test(url) && !seen.has(url)) {
@@ -3035,6 +3417,29 @@ function extractModelText(payload: unknown): string {
             if (!contentEntry || typeof contentEntry !== 'object') return '';
             const contentRecord = contentEntry as Record<string, unknown>;
             return typeof contentRecord.text === 'string' ? contentRecord.text : '';
+          })
+          .filter(Boolean)
+          .join('\n');
+      })
+      .filter(Boolean)
+      .join('\n');
+    if (text) return text;
+  }
+  const candidates = record.candidates;
+  if (Array.isArray(candidates)) {
+    const text = candidates
+      .map((candidate) => {
+        if (!candidate || typeof candidate !== 'object') return '';
+        const candidateRecord = candidate as Record<string, unknown>;
+        const content = candidateRecord.content;
+        if (!content || typeof content !== 'object') return '';
+        const parts = (content as Record<string, unknown>).parts;
+        if (!Array.isArray(parts)) return '';
+        return parts
+          .map((part) => {
+            if (!part || typeof part !== 'object') return '';
+            const value = (part as Record<string, unknown>).text;
+            return typeof value === 'string' ? value : '';
           })
           .filter(Boolean)
           .join('\n');

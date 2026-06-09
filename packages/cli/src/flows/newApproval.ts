@@ -51,7 +51,7 @@ export async function prepareAndPromptApproval(
       method: 'POST',
       body: JSON.stringify({ actionId: action.id }),
     });
-    console.log(badge('Deleted saved draft after transaction review.', 'muted'));
+    console.log(badge('Deleted saved plan after transaction review.', 'muted'));
     console.log(divider());
     return;
   }

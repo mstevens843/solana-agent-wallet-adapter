@@ -57,12 +57,35 @@ final class DeviceAgentRuntimeLifecycleTests: XCTestCase {
             model: "gemini-2.5-pro"
         )) is AgenticGeminiProvider)
 
+        // OpenRouter routes by explicit model family; Auto and Gemini are rejected so agent
+        // decisions never run with the wrong formatting.
+        XCTAssertTrue(AgenticAgentProviderFactory.make(for: runtimeConfig(
+            provider: "openrouter",
+            apiFormat: "openai-compatible",
+            model: "openrouter/auto",
+            baseUrl: "https://openrouter.ai/api/v1"
+        )) is AgenticFailingProvider)
+
         XCTAssertTrue(AgenticAgentProviderFactory.make(for: runtimeConfig(
             provider: "openrouter",
             apiFormat: "openai-compatible",
             model: "google/gemini-2.5-pro",
             baseUrl: "https://openrouter.ai/api/v1"
-        )) is AgenticOpenAICompatibleProvider)
+        )) is AgenticFailingProvider)
+
+        XCTAssertTrue(AgenticAgentProviderFactory.make(for: runtimeConfig(
+            provider: "openrouter",
+            apiFormat: "openai-compatible",
+            model: "anthropic/claude-sonnet-4.5",
+            baseUrl: "https://openrouter.ai/api/v1"
+        )) is AgenticAnthropicProvider)
+
+        XCTAssertTrue(AgenticAgentProviderFactory.make(for: runtimeConfig(
+            provider: "openrouter",
+            apiFormat: "openai-compatible",
+            model: "openai/gpt-5",
+            baseUrl: "https://openrouter.ai/api/v1"
+        )) is AgenticOpenAINativeProvider)
 
         XCTAssertTrue(AgenticAgentProviderFactory.make(for: runtimeConfig(
             provider: "custom-openai-compatible",

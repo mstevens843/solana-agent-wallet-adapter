@@ -154,7 +154,7 @@ async function maybeReviewRepeatWithAgent(
       sendDescription: 'Creates the repeat setup or queues the recurring connector action.',
       save: 'Save/create without sending now',
       saveDescription: 'Keeps the repeat setup queued; approve occurrence transactions later.',
-      delete: 'Delete repeat draft',
+      delete: 'Delete repeat plan',
       deleteDescription: 'Stops this repeat setup. Nothing is queued.',
     },
   });
@@ -349,6 +349,6 @@ async function maybeReviewRepeatPreparedTransaction(
     method: 'POST',
     body: JSON.stringify({ actionId: action.id }),
   });
-  console.log(badge('Deleted saved draft after transaction review.', 'muted'));
+  console.log(badge('Deleted saved plan after transaction review.', 'muted'));
   return 'deleted';
 }

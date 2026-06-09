@@ -129,13 +129,21 @@ internal class AnthropicProvider(
     ): JSONObject {
         val apiKey = (config.apiKey ?: "").trim()
         ProviderHttp.assertApiKeyHeaderSafe(apiKey)
-        val baseUrl = ProviderHttp.normalizeBaseUrl(config.baseUrl, "anthropic")
+        val apiFormat = if (isOpenRouterConfig()) "openai-compatible" else "anthropic"
+        val baseUrl = ProviderHttp.normalizeBaseUrl(config.baseUrl, apiFormat)
         val url = "$baseUrl/messages"
         val body = buildRequestBody(messages, maxTokens, temperature, payload)
-        val headers = mapOf(
-            "x-api-key" to apiKey,
-            "anthropic-version" to ANTHROPIC_VERSION,
-        )
+        val headers = if (isOpenRouterConfig()) {
+            mapOf(
+                "Authorization" to "Bearer $apiKey",
+                "X-OpenRouter-Metadata" to "enabled",
+            ) + ProviderHttp.openRouterAttributionHeaders(true)
+        } else {
+            mapOf(
+                "x-api-key" to apiKey,
+                "anthropic-version" to ANTHROPIC_VERSION,
+            )
+        }
         val response = http.postJson(url, headers, body.toString())
         val errorCode = ProviderHttp.mapHttpStatusToErrorCode(response.status)
         if (errorCode != null) {
@@ -175,10 +183,26 @@ internal class AnthropicProvider(
             body.put(
                 "tools",
                 JSONArray().put(
+                    webSearchTool(payload),
+                ),
+            )
+        }
+        return body
+    }
+
+    private fun isOpenRouterConfig(): Boolean =
+        config.provider.trim().equals("openrouter", ignoreCase = true) ||
+            (config.baseUrl ?: "").contains("openrouter.ai", ignoreCase = true)
+
+    private fun webSearchTool(payload: JSONObject): JSONObject =
+        if (isOpenRouterConfig()) {
+            JSONObject()
+                .put("type", "openrouter:web_search")
+                .put(
+                    "parameters",
                     JSONObject()
-                        .put("type", "web_search_20250305")
-                        .put("name", "web_search")
-                        .put("max_uses", researchMaxUses(payload))
+                        .put("engine", "auto")
+                        .put("max_total_results", researchMaxUses(payload))
                         .put(
                             "user_location",
                             JSONObject()
@@ -186,11 +210,20 @@ internal class AnthropicProvider(
                                 .put("country", "US")
                                 .put("timezone", "America/Los_Angeles"),
                         ),
-                ),
-            )
+                )
+        } else {
+            JSONObject()
+                .put("type", "web_search_20250305")
+                .put("name", "web_search")
+                .put("max_uses", researchMaxUses(payload))
+                .put(
+                    "user_location",
+                    JSONObject()
+                        .put("type", "approximate")
+                        .put("country", "US")
+                        .put("timezone", "America/Los_Angeles"),
+                )
         }
-        return body
-    }
 
     companion object {
         private const val ANTHROPIC_VERSION: String = "2023-06-01"

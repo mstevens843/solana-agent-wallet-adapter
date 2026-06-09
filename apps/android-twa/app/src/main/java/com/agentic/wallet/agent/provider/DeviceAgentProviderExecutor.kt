@@ -84,6 +84,28 @@ class DeviceAgentProviderExecutor(
             "openai-compatible" -> when (provider) {
                 "openai" -> OpenAiNativeProvider(config, httpExecutor)
                 "gemini" -> GeminiNativeProvider(config, httpExecutor)
+                "openrouter" -> {
+                    val model = config.model.trim().lowercase()
+                    when {
+                        model == "openrouter/auto" -> throw ProviderFailedException(
+                            RuntimeError(
+                                code = RuntimeErrorCodes.INVALID_CONFIG,
+                                subcode = RuntimeConfigSubcodes.UNSUPPORTED_FORMAT,
+                                message = "OpenRouter Auto Router is disabled for Device Agent reviews. Choose a specific OpenRouter model.",
+                            ),
+                        )
+                        model.startsWith("anthropic/") -> AnthropicProvider(config, httpExecutor)
+                        model.startsWith("openai/") -> OpenAiNativeProvider(config, httpExecutor)
+                        model.startsWith("google/") || model.contains("gemini") -> throw ProviderFailedException(
+                            RuntimeError(
+                                code = RuntimeErrorCodes.INVALID_CONFIG,
+                                subcode = RuntimeConfigSubcodes.UNSUPPORTED_FORMAT,
+                                message = "OpenRouter Gemini models are disabled for Device Agent reviews. Use the direct Gemini provider.",
+                            ),
+                        )
+                        else -> OpenAiCompatibleProvider(config, httpExecutor)
+                    }
+                }
                 else -> OpenAiCompatibleProvider(config, httpExecutor)
             }
             "anthropic" -> AnthropicProvider(config, httpExecutor)

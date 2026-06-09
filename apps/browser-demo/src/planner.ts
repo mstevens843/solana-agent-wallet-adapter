@@ -150,6 +150,70 @@ const RESEARCH_SOURCE_POLICY = [
 export const DEVICE_AGENT_PLAN_REQUIRED_BOUNDARY =
   'AI prepares a plan only. Wallet approval and signing happen later in the user wallet.';
 const AI_KEY_COPY_PASTE_ARTIFACTS = /[\s\u200B-\u200D\u2060\uFEFF]+/gu;
+const DEFAULT_GEMINI_NATIVE_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
+const GEMINI_OPENAI_COMPAT_SUFFIX = /\/openai\/?$/i;
+const GEMINI_VERSION_SEGMENT = /\/v\d+(beta)?(\/|$)/i;
+
+const GEMINI_STRING_ARRAY_SCHEMA = {
+  type: 'array',
+  items: { type: 'string' },
+} as const;
+
+const GEMINI_PLAN_RESPONSE_SCHEMA = {
+  type: 'object',
+  properties: {
+    intent: { type: 'string' },
+    route: { type: 'string' },
+    risk: { type: 'string' },
+    approval: { type: 'string' },
+    safeguards: GEMINI_STRING_ARRAY_SCHEMA,
+  },
+  required: ['intent', 'route', 'risk', 'approval', 'safeguards'],
+  propertyOrdering: ['intent', 'route', 'risk', 'approval', 'safeguards'],
+} as const;
+
+const GEMINI_REVIEW_RESPONSE_SCHEMA = {
+  type: 'object',
+  properties: {
+    decision: { type: 'string', enum: ['approve', 'deny', 'needs_input'] },
+    reason: { type: 'string' },
+    summary: { type: 'string' },
+    evidence: {
+      type: 'object',
+      properties: {
+        findings: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              label: { type: 'string' },
+              value: { type: 'string' },
+              tone: { type: 'string', enum: ['good', 'warn', 'neutral', 'fail'] },
+            },
+            required: ['label', 'value', 'tone'],
+            propertyOrdering: ['label', 'value', 'tone'],
+          },
+        },
+        sources: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              title: { type: 'string' },
+              url: { type: 'string' },
+            },
+            required: ['url'],
+            propertyOrdering: ['title', 'url'],
+          },
+        },
+        policiesApplied: GEMINI_STRING_ARRAY_SCHEMA,
+      },
+      propertyOrdering: ['findings', 'sources', 'policiesApplied'],
+    },
+  },
+  required: ['decision', 'reason', 'summary', 'evidence'],
+  propertyOrdering: ['decision', 'reason', 'summary', 'evidence'],
+} as const;
 
 export interface DeviceAgentPlanGuardrailEvent {
   guardrailVerdict: AiGuardrailReport['verdict'];
@@ -188,7 +252,7 @@ export interface AiResearchControl {
 
 export const DEFAULT_AI_BASE_URL = 'https://api.openai.com/v1';
 export const DEFAULT_AI_MODEL = 'gpt-5';
-export const DEFAULT_AI_PROVIDER_ID: AiProviderId = 'openai';
+export const DEFAULT_AI_PROVIDER_ID: AiProviderId = 'anthropic';
 
 export interface AiProviderPreset {
   id: AiProviderId;
@@ -208,6 +272,21 @@ export interface AiProviderModel {
 }
 
 export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
+  {
+    id: 'anthropic',
+    label: 'Claude / Anthropic',
+    detail: 'Claude models through the Anthropic Messages API.',
+    apiFormat: 'anthropic',
+    baseUrl: 'https://api.anthropic.com/v1',
+    model: 'claude-opus-4-1-20250805',
+    models: [
+      { id: 'claude-opus-4-1-20250805', label: 'Claude Opus 4.1', tokenRateLabel: '500K', tokensPerMinute: 500_000 },
+      { id: 'claude-3-5-haiku-20241022', label: 'Claude Haiku 3.5', tokenRateLabel: '50K', tokensPerMinute: 50_000 },
+      { id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5', tokenRateLabel: '30K', tokensPerMinute: 30_000 },
+      { id: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5 snapshot', tokenRateLabel: '30K', tokensPerMinute: 30_000 },
+      { id: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4', tokenRateLabel: '30K', tokensPerMinute: 30_000 },
+    ],
+  },
   {
     id: 'openai',
     label: 'OpenAI',
@@ -229,24 +308,12 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     ],
   },
   {
-    id: 'anthropic',
-    label: 'Claude / Anthropic',
-    detail: 'Claude models through the Anthropic Messages API.',
-    apiFormat: 'anthropic',
-    baseUrl: 'https://api.anthropic.com/v1',
-    model: 'claude-opus-4-1-20250805',
-    models: [
-      { id: 'claude-opus-4-1-20250805', label: 'Claude Opus 4.1', tokenRateLabel: '500K', tokensPerMinute: 500_000 },
-      { id: 'claude-3-5-haiku-20241022', label: 'Claude Haiku 3.5', tokenRateLabel: '50K', tokensPerMinute: 50_000 },
-      { id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5', tokenRateLabel: '30K', tokensPerMinute: 30_000 },
-      { id: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5 snapshot', tokenRateLabel: '30K', tokensPerMinute: 30_000 },
-      { id: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4', tokenRateLabel: '30K', tokensPerMinute: 30_000 },
-    ],
-  },
-  {
     id: 'gemini',
     label: 'Gemini',
-    detail: 'Google Gemini through its OpenAI-compatible endpoint.',
+    detail: 'Google Gemini through its native generateContent API.',
+    // apiFormat stays 'openai-compatible' (the only non-anthropic AiApiFormat) and the baseUrl
+    // keeps the '/openai' suffix by convention — routing is by provider id, and the Gemini
+    // transport strips '/openai' to call the native :generateContent endpoint.
     apiFormat: 'openai-compatible',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
     model: 'gemini-2.5-flash-lite',
@@ -260,15 +327,16 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
   {
     id: 'openrouter',
     label: 'OpenRouter',
-    detail: 'Use OpenRouter as a gateway for many hosted models.',
+    detail: 'Use OpenRouter with an explicit routed model. Auto routing is disabled for agent reviews.',
     apiFormat: 'openai-compatible',
     baseUrl: 'https://openrouter.ai/api/v1',
-    model: 'openrouter/auto',
+    model: 'anthropic/claude-sonnet-4.5',
     models: [
-      { id: 'openrouter/auto', label: 'Auto Router' },
-      { id: 'openai/gpt-5', label: 'OpenAI GPT-5' },
+      // Auto Router is intentionally hidden until we can make routed model selection
+      // deterministic before the review request. Gemini stays on the direct provider so
+      // Agentic can use native Gemini formatting instead of OpenRouter gateway formatting.
       { id: 'anthropic/claude-sonnet-4.5', label: 'Claude Sonnet 4.5' },
-      { id: 'google/gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+      { id: 'openai/gpt-5', label: 'OpenAI GPT-5' },
     ],
   },
   {
@@ -283,6 +351,10 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     ],
   },
 ];
+
+export function aiProviderSupportsDeviceAgent(providerId: string): boolean {
+  return AI_PROVIDER_PRESETS.some((preset) => preset.id === providerId);
+}
 
 const BASE_AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
   template('payments', 'send-tokens', 'Send Tokens', 'Prepare a token payment with recipient, amount, memo, and wallet approval. Sends native SOL or any SPL token.', 'transfer_spl', 'medium', [
@@ -756,8 +828,11 @@ export async function generateSessionAiPlan(
   if (settings.provider === 'openai') {
     throw new Error('OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.');
   }
-  if (settings.apiFormat === 'anthropic') {
+  if (isAnthropicMessagesSettings(settings)) {
     return generateAnthropicPlan(normalizedSettings, request, options);
+  }
+  if (settings.provider === 'gemini') {
+    return generateGeminiPlan(normalizedSettings, request, options);
   }
   return generateOpenAiCompatiblePlan(normalizedSettings, request, options);
 }
@@ -776,8 +851,11 @@ export async function generateSessionAiReview(
   if (settings.provider === 'openai') {
     throw new Error('OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.');
   }
-  if (settings.apiFormat === 'anthropic') {
+  if (isAnthropicMessagesSettings(settings)) {
     return generateAnthropicReview(normalizedSettings, request);
+  }
+  if (settings.provider === 'gemini') {
+    return generateGeminiReview(normalizedSettings, request);
   }
   if (reviewNeedsWebResearch(request)) {
     return unsupportedBrowserResearchReview(request, settings.provider);
@@ -958,11 +1036,14 @@ export async function generateSessionAiAsk(
   if (settings.provider === 'openai') {
     throw new Error('OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.');
   }
-  if (settings.apiFormat !== 'anthropic' && askNeedsWebResearch(request)) {
+  if (!isAnthropicMessagesSettings(settings) && settings.provider !== 'gemini' && askNeedsWebResearch(request)) {
     return unsupportedBrowserResearchAsk(settings.provider);
   }
-  if (settings.apiFormat === 'anthropic') {
+  if (isAnthropicMessagesSettings(settings)) {
     return generateAnthropicAsk(normalizedSettings, request);
+  }
+  if (settings.provider === 'gemini') {
+    return generateGeminiAsk(normalizedSettings, request);
   }
   return generateOpenAiCompatibleAsk(normalizedSettings, request);
 }
@@ -1276,6 +1357,25 @@ function anthropicWebSearchTool(): Record<string, unknown> {
   };
 }
 
+function openRouterWebSearchTool(): Record<string, unknown> {
+  return {
+    type: 'openrouter:web_search',
+    parameters: {
+      engine: 'auto',
+      max_total_results: RESEARCH_MAX_USES,
+      user_location: {
+        type: 'approximate',
+        country: 'US',
+        timezone: 'America/Los_Angeles',
+      },
+    },
+  };
+}
+
+function webSearchToolForSettings(settings: AiSettings): Record<string, unknown> {
+  return isOpenRouterSettings(settings) ? openRouterWebSearchTool() : anthropicWebSearchTool();
+}
+
 function unsupportedBrowserResearchReview(
   request: AgentPlanReviewRequest,
   provider: string,
@@ -1374,7 +1474,7 @@ async function generateOpenAiCompatibleReview(settings: AiSettings, request: Age
   if (!response.ok) {
     throw new Error(providerFailureMessage(payload, response.status, settings.apiKey));
   }
-  return normalizeAiReview(payload, request);
+  return normalizeAiReview(payload, request, { providerLabel: aiReviewProviderLabel(settings) });
 }
 
 async function generateOpenAiCompatibleAsk(settings: AiSettings, request: AgentPlanAskRequest): Promise<AgentPlanAskResult> {
@@ -1403,27 +1503,164 @@ async function generateOpenAiCompatibleAsk(settings: AiSettings, request: AgentP
   return normalizeAiAsk(payload);
 }
 
+async function generateGeminiPlan(settings: AiSettings, request: AiPlanRequest, options: AiRequestOptions = {}): Promise<AgentPlan> {
+  const messages = aiMessages(request);
+  const payload = await postGeminiGenerateContent(
+    settings,
+    messages[0]?.content ?? '',
+    messages[1]?.content ?? JSON.stringify(request),
+    {
+      jsonObjectMode: true,
+      responseSchema: GEMINI_PLAN_RESPONSE_SCHEMA,
+      temperature: 0.2,
+      maxOutputTokens: 1024,
+      research: false,
+      signal: options.signal,
+    },
+  );
+  return normalizeAiPlan(payload, request);
+}
+
+async function generateGeminiReview(settings: AiSettings, request: AgentPlanReviewRequest): Promise<AgentPlanReviewResult> {
+  const research = reviewNeedsWebResearch(request);
+  const researchResult = research ? await generateGeminiResearchEvidence(settings, request) : undefined;
+  const messages = aiReviewMessages(request, researchResult?.evidence);
+  const payload = await postGeminiGenerateContent(
+    settings,
+    messages[0]?.content ?? '',
+    messages[1]?.content ?? JSON.stringify(request),
+    {
+      jsonObjectMode: true,
+      responseSchema: GEMINI_REVIEW_RESPONSE_SCHEMA,
+      temperature: 0.2,
+      maxOutputTokens: 1800,
+      research: false,
+    },
+  );
+  return normalizeAiReview(payload, request, {
+    citations: researchResult?.citations,
+    researchEvidence: researchResult?.evidence,
+    providerLabel: 'Gemini',
+  });
+}
+
+async function generateGeminiResearchEvidence(
+  settings: AiSettings,
+  request: AgentPlanReviewRequest,
+): Promise<{ evidence: AgentReviewResearchEvidence; citations: Array<{ kind: string; ref: string; title?: string }> }> {
+  const messages = aiResearchMessages(request);
+  const payload = await postGeminiGenerateContent(
+    settings,
+    messages[0]?.content ?? '',
+    messages[1]?.content ?? JSON.stringify(request),
+    {
+      jsonObjectMode: false,
+      temperature: 0.2,
+      maxOutputTokens: 1800,
+      research: true,
+    },
+  );
+  return normalizeResearchEvidence(payload, 'Gemini');
+}
+
+async function generateGeminiAsk(settings: AiSettings, request: AgentPlanAskRequest): Promise<AgentPlanAskResult> {
+  const messages = aiAskMessages(request);
+  const payload = await postGeminiGenerateContent(
+    settings,
+    messages[0]?.content ?? '',
+    messages[1]?.content ?? JSON.stringify(request),
+    {
+      jsonObjectMode: false,
+      temperature: 0.3,
+      maxOutputTokens: 800,
+      research: askNeedsWebResearch(request),
+    },
+  );
+  return normalizeAiAsk(payload);
+}
+
+async function postGeminiGenerateContent(
+  settings: AiSettings,
+  system: string,
+  userContent: string,
+  options: {
+    jsonObjectMode: boolean;
+    responseSchema?: unknown;
+    temperature: number;
+    maxOutputTokens: number;
+    research: boolean;
+    signal?: AbortSignal;
+  },
+): Promise<unknown> {
+  const generationConfig: Record<string, unknown> = {
+    temperature: options.temperature,
+    maxOutputTokens: options.maxOutputTokens,
+  };
+  if (options.jsonObjectMode && !options.research) {
+    generationConfig.responseMimeType = 'application/json';
+    if (options.responseSchema) generationConfig.responseSchema = options.responseSchema;
+  }
+  const response = await fetch(geminiGenerateContentUrl(settings), {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-goog-api-key': settings.apiKey.trim(),
+    },
+    body: JSON.stringify({
+      systemInstruction: {
+        parts: [{ text: system }],
+      },
+      contents: [{
+        role: 'user',
+        parts: [{ text: userContent }],
+      }],
+      generationConfig,
+      ...(options.research ? { tools: [{ google_search: {} }] } : {}),
+    }),
+    ...(options.signal ? { signal: options.signal } : {}),
+  }).catch((err) => {
+    if (isAbortError(err)) throw err;
+    throw new Error(
+      `AI provider request failed. Use Hosted BYOK or Local bridge if the browser blocks direct Gemini. ${redactSecrets(err instanceof Error ? err.message : String(err), settings.apiKey)}`,
+    );
+  });
+  const payload = await response.json().catch(() => ({})) as unknown;
+  if (!response.ok) {
+    throw new Error(providerFailureMessage(payload, response.status, settings.apiKey));
+  }
+  return payload;
+}
+
+function geminiGenerateContentUrl(settings: AiSettings): string {
+  const base = normalizeGeminiNativeBaseUrl(settings.baseUrl);
+  if (/\/models\/[^/]+:generateContent$/i.test(base)) return base;
+  if (/\/models\/[^/]+$/i.test(base)) return `${base}:generateContent`;
+  return `${base}/models/${encodeURIComponent(settings.model.trim() || aiProviderPresetById('gemini').model)}:generateContent`;
+}
+
+function normalizeGeminiNativeBaseUrl(raw: string): string {
+  const trimmed = raw.trim().replace(/\/+$/u, '');
+  if (!trimmed) return DEFAULT_GEMINI_NATIVE_BASE_URL;
+  const stripped = trimmed.replace(GEMINI_OPENAI_COMPAT_SUFFIX, '');
+  if (GEMINI_VERSION_SEGMENT.test(stripped)) return stripped;
+  return `${stripped}/v1beta`;
+}
+
 async function generateAnthropicAsk(settings: AiSettings, request: AgentPlanAskRequest): Promise<AgentPlanAskResult> {
-  const baseUrl = normalizeBaseUrl(settings.baseUrl, 'anthropic');
   const messages = aiAskMessages(request);
   const systemMessage = messages[0]?.content ?? '';
   const userMessage = messages[1]?.content ?? JSON.stringify(request);
   const research = askNeedsWebResearch(request);
-  const response = await fetch(`${baseUrl}/messages`, {
+  const response = await fetch(anthropicMessagesUrlForSettings(settings), {
     method: 'POST',
-    headers: {
-      'anthropic-dangerous-direct-browser-access': 'true',
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-      'x-api-key': settings.apiKey.trim(),
-    },
+    headers: anthropicHeadersForSettings(settings),
     body: JSON.stringify({
       model: settings.model.trim() || aiProviderPresetById('anthropic').model,
       max_tokens: 800,
       system: systemMessage,
       messages: [{ role: 'user', content: userMessage }],
       temperature: 0.3,
-      ...(research ? { tools: [anthropicWebSearchTool()] } : {}),
+      ...(research ? { tools: [webSearchToolForSettings(settings)] } : {}),
     }),
   }).catch((err) => {
     throw new Error(
@@ -1580,19 +1817,58 @@ function isHostedReviewPayload(payload: unknown): payload is Partial<AgentPlanRe
   );
 }
 
+function isAnthropicMessagesSettings(settings: Pick<AiSettings, 'provider' | 'apiFormat' | 'model'>): boolean {
+  return settings.apiFormat === 'anthropic' ||
+    (settings.provider === 'openrouter' && settings.model.trim().toLowerCase().startsWith('anthropic/'));
+}
+
+function isOpenRouterSettings(settings: Pick<AiSettings, 'provider' | 'baseUrl'>): boolean {
+  return settings.provider === 'openrouter' || settings.baseUrl.includes('openrouter.ai');
+}
+
+// Provider attribution for review evidence + diagnostics. When routed through OpenRouter we
+// surface "OpenRouter · <model>" so receipts and logs reflect the gateway and the model family
+// that actually drove the decision, instead of masking it as plain "Anthropic"/"OpenAI".
+function aiReviewProviderLabel(settings: Pick<AiSettings, 'provider' | 'baseUrl' | 'model'>): string {
+  if (isOpenRouterSettings(settings)) {
+    const model = settings.model.trim();
+    const known = aiProviderPresetById('openrouter').models.find((entry) => entry.id === model);
+    return `OpenRouter · ${known?.label ?? model}`;
+  }
+  if (settings.provider === 'anthropic') return 'Anthropic';
+  if (settings.provider === 'gemini') return 'Gemini';
+  if (settings.provider === 'openai') return 'OpenAI';
+  return aiProviderPresetById(settings.provider).label;
+}
+
+function anthropicMessagesUrlForSettings(settings: Pick<AiSettings, 'provider' | 'apiFormat' | 'baseUrl'>): string {
+  const format: AiApiFormat = isOpenRouterSettings(settings) ? 'openai-compatible' : 'anthropic';
+  return `${normalizeBaseUrl(settings.baseUrl, format)}/messages`;
+}
+
+function anthropicHeadersForSettings(settings: AiSettings): Record<string, string> {
+  if (isOpenRouterSettings(settings)) {
+    return {
+      authorization: `Bearer ${settings.apiKey.trim()}`,
+      'content-type': 'application/json',
+      'X-OpenRouter-Metadata': 'enabled',
+    };
+  }
+  return {
+    'anthropic-dangerous-direct-browser-access': 'true',
+    'anthropic-version': '2023-06-01',
+    'content-type': 'application/json',
+    'x-api-key': settings.apiKey.trim(),
+  };
+}
+
 async function generateAnthropicPlan(settings: AiSettings, request: AiPlanRequest, options: AiRequestOptions = {}): Promise<AgentPlan> {
-  const baseUrl = normalizeBaseUrl(settings.baseUrl, 'anthropic');
   const messages = aiMessages(request);
   const systemMessage = messages[0]?.content ?? '';
   const userMessage = messages[1]?.content ?? JSON.stringify(request);
-  const response = await fetch(`${baseUrl}/messages`, {
+  const response = await fetch(anthropicMessagesUrlForSettings(settings), {
     method: 'POST',
-    headers: {
-      'anthropic-dangerous-direct-browser-access': 'true',
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-      'x-api-key': settings.apiKey.trim(),
-    },
+    headers: anthropicHeadersForSettings(settings),
     body: JSON.stringify({
       model: settings.model.trim() || aiProviderPresetById('anthropic').model,
       max_tokens: 1024,
@@ -1616,7 +1892,6 @@ async function generateAnthropicPlan(settings: AiSettings, request: AiPlanReques
 }
 
 async function generateAnthropicReview(settings: AiSettings, request: AgentPlanReviewRequest): Promise<AgentPlanReviewResult> {
-  const baseUrl = normalizeBaseUrl(settings.baseUrl, 'anthropic');
   const research = reviewNeedsWebResearch(request);
   const researchResult = research
     ? await generateAnthropicResearchEvidence(settings, request)
@@ -1624,14 +1899,9 @@ async function generateAnthropicReview(settings: AiSettings, request: AgentPlanR
   const messages = aiReviewMessages(request, researchResult?.evidence);
   const systemMessage = messages[0]?.content ?? '';
   const userMessage = messages[1]?.content ?? JSON.stringify(request);
-  const response = await fetch(`${baseUrl}/messages`, {
+  const response = await fetch(anthropicMessagesUrlForSettings(settings), {
     method: 'POST',
-    headers: {
-      'anthropic-dangerous-direct-browser-access': 'true',
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-      'x-api-key': settings.apiKey.trim(),
-    },
+    headers: anthropicHeadersForSettings(settings),
     body: JSON.stringify({
       model: settings.model.trim() || aiProviderPresetById('anthropic').model,
       max_tokens: 1024,
@@ -1652,7 +1922,7 @@ async function generateAnthropicReview(settings: AiSettings, request: AgentPlanR
   return normalizeAiReview(payload, request, {
     citations: researchResult?.citations,
     researchEvidence: researchResult?.evidence,
-    providerLabel: 'Anthropic',
+    providerLabel: aiReviewProviderLabel(settings),
   });
 }
 
@@ -1660,25 +1930,19 @@ async function generateAnthropicResearchEvidence(
   settings: AiSettings,
   request: AgentPlanReviewRequest,
 ): Promise<{ evidence: AgentReviewResearchEvidence; citations: Array<{ kind: string; ref: string; title?: string }> }> {
-  const baseUrl = normalizeBaseUrl(settings.baseUrl, 'anthropic');
   const messages = aiResearchMessages(request);
   const systemMessage = messages[0]?.content ?? '';
   const userMessage = messages[1]?.content ?? JSON.stringify(request);
-  const response = await fetch(`${baseUrl}/messages`, {
+  const response = await fetch(anthropicMessagesUrlForSettings(settings), {
     method: 'POST',
-    headers: {
-      'anthropic-dangerous-direct-browser-access': 'true',
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-      'x-api-key': settings.apiKey.trim(),
-    },
+    headers: anthropicHeadersForSettings(settings),
     body: JSON.stringify({
       model: settings.model.trim() || aiProviderPresetById('anthropic').model,
       max_tokens: 1800,
       system: systemMessage,
       messages: [{ role: 'user', content: userMessage }],
       temperature: 0.2,
-      tools: [anthropicWebSearchTool()],
+      tools: [webSearchToolForSettings(settings)],
     }),
   }).catch((err) => {
     throw new Error(
@@ -1689,7 +1953,7 @@ async function generateAnthropicResearchEvidence(
   if (!response.ok) {
     throw new Error(providerFailureMessage(payload, response.status, settings.apiKey));
   }
-  return normalizeResearchEvidence(payload, 'Anthropic');
+  return normalizeResearchEvidence(payload, aiReviewProviderLabel(settings));
 }
 
 export function aiMessages(request: AiPlanRequest): Array<{ role: 'system' | 'user'; content: string }> {
@@ -2558,7 +2822,7 @@ function formatSlippageBpsForDisplay(value: string): string {
 
 function normalizeBaseUrl(baseUrl: string, format: AiApiFormat): string {
   const trimmed = baseUrl.trim().replace(/\/+$/, '');
-  if (!trimmed) return aiProviderPresetById(format === 'anthropic' ? 'anthropic' : DEFAULT_AI_PROVIDER_ID).baseUrl;
+  if (!trimmed) return format === 'anthropic' ? aiProviderPresetById('anthropic').baseUrl : DEFAULT_AI_BASE_URL;
   if (format === 'anthropic') {
     return /\/v\d+(\/|$)/i.test(trimmed) ? trimmed : `${trimmed}/v1`;
   }
@@ -2667,11 +2931,16 @@ function extractResearchCitations(payload: unknown): Array<{ kind: string; ref: 
       return;
     }
     const record = value as Record<string, unknown>;
-    const url = typeof record.url === 'string' ? record.url.trim() : '';
+    const url = typeof record.url === 'string'
+      ? record.url.trim()
+      : typeof record.uri === 'string'
+        ? record.uri.trim()
+        : '';
     const citationType = typeof record.type === 'string' ? record.type : '';
     const hasCitationShape = citationType.includes('citation') ||
       citationType.includes('web_search') ||
       typeof record.title === 'string' ||
+      typeof record.uri === 'string' ||
       typeof record.cited_text === 'string' ||
       typeof record.citedText === 'string';
     if (url && hasCitationShape && /^https?:\/\//i.test(url) && !seen.has(url)) {
@@ -2781,6 +3050,28 @@ function extractModelText(payload: unknown): string {
       const text = (first as Record<string, unknown>).text;
       if (typeof text === 'string') return text;
     }
+  }
+  const candidates = record.candidates;
+  if (Array.isArray(candidates)) {
+    const text = candidates
+      .map((candidate) => {
+        if (!candidate || typeof candidate !== 'object') return '';
+        const content = (candidate as Record<string, unknown>).content;
+        if (!content || typeof content !== 'object') return '';
+        const parts = (content as Record<string, unknown>).parts;
+        if (!Array.isArray(parts)) return '';
+        return parts
+          .map((part) => {
+            if (!part || typeof part !== 'object') return '';
+            const value = (part as Record<string, unknown>).text;
+            return typeof value === 'string' ? value : '';
+          })
+          .filter(Boolean)
+          .join('\n');
+      })
+      .filter(Boolean)
+      .join('\n');
+    if (text) return text;
   }
   return JSON.stringify(payload);
 }

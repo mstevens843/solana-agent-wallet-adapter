@@ -205,6 +205,13 @@ describe('BridgeAiPlanner', () => {
       apiFormat: 'openai-compatible',
       baseUrl: 'https://openrouter.ai/api/v1',
       model: 'openrouter/auto',
+    })).toThrow('OpenRouter Auto Router is disabled');
+    expect(() => planner.setSessionKey({
+      apiKey: 'sk-test-openrouter',
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'anthropic/claude-sonnet-4.5',
     })).not.toThrow();
     expect(() => planner.setSessionKey({
       apiKey: 'sk-test-custom',
@@ -347,18 +354,19 @@ describe('BridgeAiPlanner', () => {
     }));
     const planner = new BridgeAiPlanner();
     planner.setSessionKey({
-      apiKey: 'sk-test-openrouter',
-      provider: 'openrouter',
+      apiKey: 'sk-test-custom',
+      provider: 'custom-openai-compatible',
       apiFormat: 'openai-compatible',
-      baseUrl: 'https://openrouter.ai/api/v1',
+      baseUrl: 'https://gateway.example/v1',
       model: 'openai/gpt-5',
+      allowCustomBaseUrl: true,
     });
 
     const plan = await planner.generatePlan(request);
 
     expect(plan.intent).toBe('Gateway intent');
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.url).toBe('https://openrouter.ai/api/v1/chat/completions');
+    expect(calls[0]?.url).toBe('https://gateway.example/v1/chat/completions');
     expect(calls[0]?.body.response_format).toEqual({ type: 'json_object' });
     expect(calls[0]?.body.temperature).toBeUndefined();
   });
@@ -376,10 +384,11 @@ describe('BridgeAiPlanner', () => {
     const planner = new BridgeAiPlanner();
     planner.setSessionKey({
       apiKey: 'sk-test-connectors',
-      provider: 'openrouter',
+      provider: 'custom-openai-compatible',
       apiFormat: 'openai-compatible',
-      baseUrl: 'https://openrouter.ai/api/v1',
+      baseUrl: 'https://gateway.example/v1',
       model: 'openai/gpt-5',
+      allowCustomBaseUrl: true,
     });
 
     const plan = await planner.generatePlan({
@@ -420,11 +429,12 @@ describe('BridgeAiPlanner', () => {
     }));
     const planner = new BridgeAiPlanner();
     planner.setSessionKey({
-      apiKey: 'sk-test-openrouter',
-      provider: 'openrouter',
+      apiKey: 'sk-test-custom-review',
+      provider: 'custom-openai-compatible',
       apiFormat: 'openai-compatible',
-      baseUrl: 'https://openrouter.ai/api/v1',
+      baseUrl: 'https://gateway.example/v1',
       model: 'openai/gpt-5',
+      allowCustomBaseUrl: true,
     });
 
     const review = await planner.reviewPlan({
@@ -450,7 +460,7 @@ describe('BridgeAiPlanner', () => {
       summary: 'Slippage policy did not pass.',
       source: 'ai',
     });
-    expect(calls[0]?.url).toBe('https://openrouter.ai/api/v1/chat/completions');
+    expect(calls[0]?.url).toBe('https://gateway.example/v1/chat/completions');
     expect(calls[0]?.body.messages).toEqual(expect.arrayContaining([
       expect.objectContaining({ role: 'system' }),
       expect.objectContaining({ role: 'user' }),
@@ -527,10 +537,11 @@ describe('BridgeAiPlanner', () => {
     const planner = new BridgeAiPlanner();
     planner.setSessionKey({
       apiKey: 'sk-test-policies',
-      provider: 'openrouter',
+      provider: 'custom-openai-compatible',
       apiFormat: 'openai-compatible',
-      baseUrl: 'https://openrouter.ai/api/v1',
+      baseUrl: 'https://gateway.example/v1',
       model: 'openai/gpt-5',
+      allowCustomBaseUrl: true,
     });
 
     const review = await planner.reviewPlan({
@@ -1116,11 +1127,12 @@ describe('BridgeAiPlanner', () => {
     vi.stubGlobal('fetch', fetchMock);
     const planner = new BridgeAiPlanner();
     planner.setSessionKey({
-      apiKey: 'sk-test-openrouter-research',
-      provider: 'openrouter',
+      apiKey: 'sk-test-custom-research',
+      provider: 'custom-openai-compatible',
       apiFormat: 'openai-compatible',
-      baseUrl: 'https://openrouter.ai/api/v1',
-      model: 'openrouter/auto',
+      baseUrl: 'https://gateway.example/v1',
+      model: 'gateway-model',
+      allowCustomBaseUrl: true,
     });
 
     const review = await planner.reviewPlan({
@@ -1141,11 +1153,12 @@ describe('BridgeAiPlanner', () => {
     vi.stubGlobal('fetch', fetchMock);
     const planner = new BridgeAiPlanner();
     planner.setSessionKey({
-      apiKey: 'sk-test-openrouter-sec',
-      provider: 'openrouter',
+      apiKey: 'sk-test-custom-sec',
+      provider: 'custom-openai-compatible',
       apiFormat: 'openai-compatible',
-      baseUrl: 'https://openrouter.ai/api/v1',
-      model: 'openrouter/auto',
+      baseUrl: 'https://gateway.example/v1',
+      model: 'gateway-model',
+      allowCustomBaseUrl: true,
     });
 
     const review = await planner.reviewPlan({
@@ -1166,11 +1179,12 @@ describe('BridgeAiPlanner', () => {
     vi.stubGlobal('fetch', fetchMock);
     const planner = new BridgeAiPlanner();
     planner.setSessionKey({
-      apiKey: 'sk-test-openrouter-tps',
-      provider: 'openrouter',
+      apiKey: 'sk-test-custom-tps',
+      provider: 'custom-openai-compatible',
       apiFormat: 'openai-compatible',
-      baseUrl: 'https://openrouter.ai/api/v1',
-      model: 'openrouter/auto',
+      baseUrl: 'https://gateway.example/v1',
+      model: 'gateway-model',
+      allowCustomBaseUrl: true,
     });
 
     const review = await planner.reviewPlan({
@@ -1703,15 +1717,16 @@ describe('threshold reconciliation across providers and phrasings', () => {
     }
   }
 
-  it('openai-compatible (gemini/openrouter) without native research pre-empts with needs_input', async () => {
+  it('custom openai-compatible without native research pre-empts with needs_input', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({})));
     const planner = new BridgeAiPlanner();
     planner.setSessionKey({
-      apiKey: 'sk-test-openrouter',
-      provider: 'openrouter',
+      apiKey: 'sk-test-custom',
+      provider: 'custom-openai-compatible',
       apiFormat: 'openai-compatible',
-      baseUrl: 'https://openrouter.ai/api/v1',
-      model: 'openai/gpt-4o-mini',
+      baseUrl: 'https://gateway.example/v1',
+      model: 'gateway-model',
+      allowCustomBaseUrl: true,
     });
 
     const review = await planner.reviewPlan({

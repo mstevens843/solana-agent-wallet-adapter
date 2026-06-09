@@ -32,6 +32,7 @@ import type { RuntimeConfig } from '../runtime/config.js';
 import { filterLowAuthorityCitations, isPricingInstruction } from './citationFilter.js';
 import { PROVIDER_ERROR_CODES, ProviderHttpError } from './errorCodes.js';
 import type { HttpExecutor } from './http.js';
+import { openRouterAttributionHeaders } from './openRouterHeaders.js';
 import {
   assertApiKeyHeaderSafe,
   composeErrorMessage,
@@ -375,13 +376,17 @@ export class OpenAiNativeProvider implements DeviceAgentProvider {
       body.reasoning = { effort: OPENAI_REASONING_EFFORT };
     }
     if (options.research) {
-      body.tools = [openAiWebSearchTool()];
+      body.tools = [webSearchToolForConfig(this.config)];
       body.tool_choice = 'auto';
-      body.include = ['web_search_call.action.sources'];
+      if (!isOpenRouterConfig(this.config)) {
+        body.include = ['web_search_call.action.sources'];
+      }
     }
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${apiKey}`,
+      ...(isOpenRouterConfig(this.config) ? { 'X-OpenRouter-Metadata': 'enabled' } : {}),
+      ...openRouterAttributionHeaders(isOpenRouterConfig(this.config)),
     };
 
     const response = await this.http.postJson(url, headers, JSON.stringify(body), signal);
@@ -423,6 +428,29 @@ function extractInstructionText(payload: Record<string, unknown>): string {
   if (userPrompt.length > 0) return userPrompt;
   const question = typeof payload.question === 'string' ? payload.question : '';
   return question;
+}
+
+function isOpenRouterConfig(config: RuntimeConfig): boolean {
+  return config.provider.trim().toLowerCase() === 'openrouter' || (config.baseUrl ?? '').includes('openrouter.ai');
+}
+
+function webSearchToolForConfig(config: RuntimeConfig): Record<string, unknown> {
+  return isOpenRouterConfig(config) ? openRouterWebSearchTool() : openAiWebSearchTool();
+}
+
+function openRouterWebSearchTool(): Record<string, unknown> {
+  return {
+    type: 'openrouter:web_search',
+    parameters: {
+      engine: 'auto',
+      max_total_results: 3,
+      user_location: {
+        type: 'approximate',
+        country: 'US',
+        timezone: 'America/Los_Angeles',
+      },
+    },
+  };
 }
 
 function openAiWebSearchTool(): Record<string, unknown> {
