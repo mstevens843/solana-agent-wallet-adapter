@@ -21,6 +21,14 @@ function makeFakeBinary(outputJson: string, argvOut: string): string {
   return bin;
 }
 
+function makeScriptedFakeBinary(scriptBody: string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'agentic-fake-cli-'));
+  const bin = join(dir, 'fake-cli.cjs');
+  writeFileSync(bin, `#!/usr/bin/env node\n${scriptBody}`);
+  chmodSync(bin, 0o755);
+  return bin;
+}
+
 const reviewJson = JSON.stringify({
   decision: 'approve',
   reason: 'Plan matches the request and stays under the cap.',
@@ -91,6 +99,65 @@ describe('BridgeAiPlanner connector (cli-agent) transport', () => {
     expect(argv).toContain('--sandbox');
     expect(argv).toContain('read-only');
     expect(argv).not.toContain('--yolo');
+  });
+
+  it('runs a native connector research pass before current-fact reviews', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentic-argv-'));
+    const argvOut = join(dir, 'calls.jsonl');
+    const sourceUrl = 'https://support.hellohelium.com/en/articles/7039213-all-things-helium-mobile-faq';
+    const bin = makeScriptedFakeBinary(
+      `const fs = require('fs');\n`
+      + `const args = process.argv.slice(2);\n`
+      + `fs.appendFileSync(${JSON.stringify(argvOut)}, JSON.stringify(args) + '\\n');\n`
+      + `if (args.includes('--output-schema')) {\n`
+      + `  const schemaPath = args[args.indexOf('--output-schema') + 1];\n`
+      + `  const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'));\n`
+      + `  if (!schema.properties?.sources) process.exit(2);\n`
+      + `  process.stdout.write(JSON.stringify({\n`
+      + `    summary: 'Helium Mobile Air Plan costs $15/month plus taxes and fees.',\n`
+      + `    findings: [{ label: 'Plan rate', value: '$15/month', tone: 'good' }],\n`
+      + `    sources: [{ title: 'All Things Helium Mobile FAQ', url: ${JSON.stringify(sourceUrl)} }]\n`
+      + `  }));\n`
+      + `} else {\n`
+      + `  const prompt = args[args.length - 1] || '';\n`
+      + `  if (!prompt.includes('researchEvidence')) process.exit(3);\n`
+      + `  process.stdout.write(${JSON.stringify(JSON.stringify({
+            decision: 'approve',
+            reason: 'The researched $15/month plan is under the $20 threshold.',
+            summary: 'The current price is under the user threshold.',
+            evidence: {
+              research: { status: 'checked' },
+              findings: [
+                { label: 'Plan rate', value: '$15/month', tone: 'good' },
+                { label: 'Threshold check', value: '$15/month is under $20.', tone: 'good' },
+              ],
+            },
+          }))});\n`
+      + `}\n`,
+    );
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({ engine: 'connector', connector: 'codex', connectorPath: bin });
+
+    const review = await planner.reviewPlan({
+      ...reviewRequest,
+      instruction: 'Check the current monthly Helium Mobile price and approve if under $20, deny if over $20.',
+    });
+
+    expect(review.decision).toBe('approve');
+    expect(review.evidence.sources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ url: sourceUrl }),
+    ]));
+    const calls = readFileSync(argvOut, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string[]);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toEqual(expect.arrayContaining([
+      'exec',
+      '--sandbox',
+      'read-only',
+      '-c',
+      'web_search="live"',
+      '--output-schema',
+    ]));
+    expect(calls[1]).not.toContain('--output-schema');
   });
 
   it('runs a plan through a connector that emits a JSON envelope (gemini/claude shape)', async () => {

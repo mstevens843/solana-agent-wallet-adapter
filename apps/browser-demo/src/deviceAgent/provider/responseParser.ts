@@ -24,6 +24,29 @@ export function extractOpenAiText(payload: unknown): string {
   return '';
 }
 
+// True when a chat/completions response stopped because it hit the token ceiling
+// (`choices[0].finish_reason === 'length'`). For reasoning models this is the signature of
+// reasoning consuming the whole budget before any answer text was emitted.
+export function chatCompletionTruncated(payload: unknown): boolean {
+  if (!isRecord(payload)) return false;
+  const choices = payload.choices;
+  if (!Array.isArray(choices) || choices.length === 0) return false;
+  const first = choices[0];
+  if (!isRecord(first)) return false;
+  return first.finish_reason === 'length';
+}
+
+// True when a Responses API payload was cut off by the output-token ceiling
+// (`status === 'incomplete'` with `incomplete_details.reason === 'max_output_tokens'`).
+// Mirrors the server's check in aiPlanner.ts (record.status === 'incomplete').
+export function responsesApiTruncated(payload: unknown): boolean {
+  if (!isRecord(payload)) return false;
+  if (payload.status !== 'incomplete') return false;
+  const details = payload.incomplete_details;
+  if (!isRecord(details)) return true;
+  return details.reason === 'max_output_tokens' || details.reason === undefined;
+}
+
 export function extractAnthropicText(payload: unknown): string {
   if (!isRecord(payload)) return '';
   const content = payload.content;

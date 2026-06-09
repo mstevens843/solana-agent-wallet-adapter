@@ -62,6 +62,71 @@ export function isReasoningModel(model: string): boolean {
   return isDefaultTemperatureOnlyModel(model);
 }
 
+// Reasoning models (gpt-5 / o-series) spend part of their output-token budget on hidden
+// reasoning tokens BEFORE emitting the answer. Both chat/completions `max_completion_tokens`
+// and the Responses API `max_output_tokens` count reasoning against the same ceiling, so a
+// small limit (the device agent's 1024 plan budget) can be fully consumed by reasoning —
+// leaving empty content that surfaces as "Provider response was empty." Give reasoning models
+// a floor large enough to fit reasoning + a structured answer. Non-reasoning models keep the
+// caller's tighter budget. Mirror this floor in OpenAiCompatibleProvider.kt, the iOS Swift
+// runtime, and aiPlanner.ts so every surface behaves identically.
+export const REASONING_OUTPUT_TOKEN_FLOOR = 4096;
+
+export function effectiveMaxOutputTokens(model: string, requested: number): number {
+  return isReasoningModel(model) ? Math.max(requested, REASONING_OUTPUT_TOKEN_FLOOR) : requested;
+}
+
+// Build the user-facing message for an empty model answer. When the empty response is the
+// result of the model hitting its token ceiling mid-reasoning, explain that explicitly
+// (and that the budget was already raised) instead of the opaque "Provider response was empty."
+export function emptyModelTextMessage(model: string, truncated: boolean): string {
+  if (truncated && isReasoningModel(model)) {
+    return 'The model used its entire token budget on internal reasoning before producing an answer. The Device Agent already requests a larger budget for reasoning models — try again, or switch to a non-reasoning model.';
+  }
+  return 'Provider response was empty.';
+}
+
+// Hosts that do NOT serve permissive browser CORS for their API. A browser-direct (Device
+// Agent) fetch to these fails with an opaque "Failed to fetch" no matter what headers we send,
+// because there is no Access-Control-Allow-Origin and (for OpenAI) no documented browser escape
+// hatch. api.anthropic.com is intentionally NOT listed: the browser AnthropicProvider sends
+// `anthropic-dangerous-direct-browser-access: true`, which makes it CORS-eligible.
+const KNOWN_NO_BROWSER_CORS_HOSTS = ['api.openai.com'];
+
+function hostOf(baseUrl: string | null | undefined): string {
+  const raw = (baseUrl ?? '').trim();
+  if (raw.length === 0) return '';
+  try {
+    return new URL(raw).host.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+export function hostBlocksBrowserCors(baseUrl: string | null | undefined): boolean {
+  const host = hostOf(baseUrl);
+  if (host.length === 0) return false;
+  return KNOWN_NO_BROWSER_CORS_HOSTS.some((blocked) => host === blocked || host.endsWith(`.${blocked}`));
+}
+
+// Turn a bare browser network failure ("Failed to fetch") into actionable guidance. Device Agent
+// runs in the tab, so a network error is almost always the provider's CORS policy (or a desktop
+// CSP block), not a real outage. When the configured gateway is a known no-CORS host we name the
+// fix precisely; otherwise we point at the robust server-side fallbacks.
+export function browserNetworkErrorGuidance(
+  provider: string,
+  baseUrl: string | null | undefined,
+  rawMessage: string,
+): string {
+  const base = rawMessage.trim().length > 0 ? rawMessage.trim() : 'Failed to fetch.';
+  const ending = base.endsWith('.') ? base : `${base}.`;
+  if (hostBlocksBrowserCors(baseUrl)) {
+    const host = hostOf(baseUrl);
+    return `${ending} ${host} blocks in-browser (Device Agent) calls via CORS. Use a CORS-enabled gateway such as OpenRouter, Cloudflare AI Gateway, or Vercel AI Gateway, or switch to Local Bridge or Hosted BYOK — both call the provider server-side.`;
+  }
+  return `${ending} The browser blocked the request before it completed (provider CORS or, on desktop, the app CSP) — not a key or quota problem. Check your connection and the browser devtools Network tab; if it persists, use Local Bridge or Hosted BYOK.`;
+}
+
 export function assertApiKeyHeaderSafe(value: string): void {
   if (value.length === 0) {
     throw new ProviderHttpError(

@@ -12,7 +12,7 @@
 // out. See plans/you-are-taking-over-generic-wren.md.
 
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { accessSync, constants as fsConstants } from 'node:fs';
@@ -22,6 +22,13 @@ export const AGENT_CONNECTORS: AgentConnector[] = ['codex', 'gemini', 'claude'];
 
 export type ConnectorBilling = 'plan-included' | 'metered-credits';
 export type ConnectorAuthStatus = 'connected' | 'needs-auth' | 'binary-not-found';
+export type ConnectorRunMode = 'default' | 'research';
+
+interface ConnectorRunContext {
+  mode: ConnectorRunMode;
+  schemaPath?: string;
+  schemaJson?: string;
+}
 
 interface ConnectorSpec {
   id: AgentConnector;
@@ -35,9 +42,9 @@ interface ConnectorSpec {
   /** Command the user runs to sign in (shown in the manual fallback + spawned by one-click connect). */
   loginArgs: string[];
   /** Build the locked-down, single-shot argv for one inference call. */
-  buildArgs(prompt: string): string[];
+  buildArgs(prompt: string, context: ConnectorRunContext): string[];
   /** Pull the model's final text out of the CLI's stdout envelope. */
-  extractText(stdout: string): string;
+  extractText(stdout: string, context: ConnectorRunContext): string;
   /** Credential files that indicate the CLI is signed in (heuristic; real check is at call time). */
   authFiles: string[];
 }
@@ -55,8 +62,23 @@ const CONNECTOR_SPECS: Record<AgentConnector, ConnectorSpec> = {
     loginArgs: ['login'],
     // `codex exec` runs headless, streams progress to stderr, and prints only the final agent
     // message to stdout. `--sandbox read-only` + `--skip-git-repo-check` keep it from touching the
-    // filesystem; the JSON-only prompt keeps it from using tools.
-    buildArgs: (prompt) => ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', prompt],
+    // filesystem; research mode explicitly opts into live web search.
+    buildArgs: (prompt, context) => {
+      if (context.mode === 'research') {
+        return [
+          'exec',
+          '--ephemeral',
+          '--sandbox',
+          'read-only',
+          '--skip-git-repo-check',
+          '-c',
+          'web_search="live"',
+          ...(context.schemaPath ? ['--output-schema', context.schemaPath] : []),
+          prompt,
+        ];
+      }
+      return ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', prompt];
+    },
     extractText: (stdout) => stdout.trim(),
     authFiles: [h('.codex', 'auth.json')],
   },
@@ -80,8 +102,22 @@ const CONNECTOR_SPECS: Record<AgentConnector, ConnectorSpec> = {
     binaryCandidates: ['claude'],
     loginArgs: ['login'],
     // Claude Code print mode with JSON envelope.
-    buildArgs: (prompt) => ['-p', prompt, '--output-format', 'json'],
-    extractText: (stdout) => extractEnvelopeText(stdout, ['result']),
+    buildArgs: (prompt, context) => [
+      '-p',
+      prompt,
+      '--output-format',
+      'json',
+      ...(context.mode === 'research'
+        ? [
+            '--no-session-persistence',
+            '--allowedTools',
+            'WebSearch',
+            'WebFetch',
+            ...(context.schemaJson ? ['--json-schema', context.schemaJson] : []),
+          ]
+        : []),
+    ],
+    extractText: (stdout) => extractEnvelopeText(stdout, ['result', 'structured_output']),
     authFiles: [h('.claude', '.credentials.json'), h('.claude.json')],
   },
 };
@@ -233,6 +269,8 @@ export interface RunConnectorOptions {
   explicitPath?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  mode?: ConnectorRunMode;
+  outputSchema?: unknown;
 }
 
 /**
@@ -250,9 +288,20 @@ export async function runConnector(connector: AgentConnector, options: RunConnec
     );
   }
   const prompt = `${options.systemPrompt}\n\n${options.userPrompt}`.trim();
-  const args = spec.buildArgs(prompt);
   const cwd = await mkdtemp(join(tmpdir(), 'agentic-connector-'));
   try {
+    const mode = options.mode ?? 'default';
+    const schemaJson = options.outputSchema ? JSON.stringify(options.outputSchema) : undefined;
+    const schemaPath = schemaJson ? join(cwd, 'output-schema.json') : undefined;
+    if (schemaPath && schemaJson) {
+      await writeFile(schemaPath, schemaJson, 'utf8');
+    }
+    const context: ConnectorRunContext = {
+      mode,
+      ...(schemaPath ? { schemaPath } : {}),
+      ...(schemaJson ? { schemaJson } : {}),
+    };
+    const args = spec.buildArgs(prompt, context);
     const stdout = await spawnCollect(binaryPath, args, {
       cwd,
       env: sanitizedEnv(),
@@ -260,7 +309,7 @@ export async function runConnector(connector: AgentConnector, options: RunConnec
       signal: options.signal,
       label: spec.label,
     });
-    const text = spec.extractText(stdout).trim();
+    const text = spec.extractText(stdout, context).trim();
     if (!text) {
       throw new ConnectorError(`${spec.label} returned an empty response.`, 'empty');
     }
@@ -377,6 +426,11 @@ function coerceEnvelopeText(value: unknown): string {
     const record = value as Record<string, unknown>;
     if (typeof record.text === 'string') return record.text.trim();
     if (record.content !== undefined) return coerceEnvelopeText(record.content);
+    try {
+      return JSON.stringify(record);
+    } catch {
+      return '';
+    }
   }
   return '';
 }

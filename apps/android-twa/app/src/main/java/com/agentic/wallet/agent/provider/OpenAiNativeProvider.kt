@@ -176,7 +176,7 @@ internal class OpenAiNativeProvider(
             .put("model", model)
             .put("instructions", messages.system)
             .put("input", messages.userContent)
-            .put("max_output_tokens", maxOutputTokens)
+            .put("max_output_tokens", ProviderHttp.effectiveMaxOutputTokens(model, maxOutputTokens))
             .put("store", false)
 
         if (responseSchema != null) {

@@ -28,6 +28,7 @@
 import { buildAskMessages, buildPlanMessages, buildResearchMessages, buildReviewMessages } from '../prompts/messageAssembler.js';
 import type { DeviceAgentMessages } from '../prompts/messageAssembler.js';
 import type { RuntimeConfig } from '../runtime/config.js';
+import { logDeviceAgentDiag } from '../runtime/diagnosticLog.js';
 
 import { filterLowAuthorityCitations, isPricingInstruction } from './citationFilter.js';
 import { PROVIDER_ERROR_CODES, ProviderHttpError } from './errorCodes.js';
@@ -36,12 +37,14 @@ import { openRouterAttributionHeaders } from './openRouterHeaders.js';
 import {
   assertApiKeyHeaderSafe,
   composeErrorMessage,
+  effectiveMaxOutputTokens,
+  emptyModelTextMessage,
   isReasoningModel,
   mapHttpStatusToErrorCode,
   normalizeBaseUrl,
 } from './providerHttp.js';
 import { researchTargetsForPayload } from './researchTargets.js';
-import { extractResponsesApiCitations, extractResponsesApiText, parseModelJson } from './responseParser.js';
+import { extractResponsesApiCitations, extractResponsesApiText, parseModelJson, responsesApiTruncated } from './responseParser.js';
 import { finalizeReviewResultForPayload } from './reviewPostprocess.js';
 import type { DeviceAgentProvider } from './types.js';
 
@@ -220,7 +223,7 @@ export class OpenAiNativeProvider implements DeviceAgentProvider {
       maxOutputTokens: PLAN_MAX_TOKENS,
       research: false,
     }, signal);
-    return parseModelJson(extractResponsesApiText(response));
+    return this.parseJsonResult(response);
   }
 
   async reviewPlan(payload: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
@@ -242,7 +245,7 @@ export class OpenAiNativeProvider implements DeviceAgentProvider {
         maxOutputTokens: REVIEW_MAX_TOKENS,
         research: false,
       }, signal);
-      return finalizeReviewResultForPayload(parseModelJson(extractResponsesApiText(response)), reviewPayload);
+      return finalizeReviewResultForPayload(this.parseJsonResult(response), reviewPayload);
     }
     const messages = buildReviewMessages(payload);
     const response = await this.postResponses(messages, {
@@ -251,7 +254,7 @@ export class OpenAiNativeProvider implements DeviceAgentProvider {
       maxOutputTokens: REVIEW_MAX_TOKENS,
       research: false,
     }, signal);
-    return finalizeReviewResultForPayload(parseModelJson(extractResponsesApiText(response)), payload);
+    return finalizeReviewResultForPayload(this.parseJsonResult(response), payload);
   }
 
   /**
@@ -323,10 +326,33 @@ export class OpenAiNativeProvider implements DeviceAgentProvider {
     if (text.trim().length === 0) {
       throw new ProviderHttpError(
         PROVIDER_ERROR_CODES.INVALID_RESPONSE,
-        'Provider response had no answer text.',
+        responsesApiTruncated(response)
+          ? emptyModelTextMessage(this.config.model, true)
+          : 'Provider response had no answer text.',
       );
     }
     return { output_text: text };
+  }
+
+  // Shared plan/review extraction. An empty Responses payload that was cut off by the
+  // output-token ceiling (status:'incomplete') means a reasoning model spent its whole budget
+  // before answering — surface that explicitly rather than the opaque empty-response error.
+  private parseJsonResult(response: Record<string, unknown>): Record<string, unknown> {
+    const text = extractResponsesApiText(response);
+    if (text.trim().length === 0) {
+      const truncated = responsesApiTruncated(response);
+      logDeviceAgentDiag('warn', 'provider.empty', {
+        format: 'responses',
+        model: this.config.model,
+        truncated,
+        status: typeof response.status === 'string' ? response.status : undefined,
+      });
+      throw new ProviderHttpError(
+        PROVIDER_ERROR_CODES.INVALID_RESPONSE,
+        emptyModelTextMessage(this.config.model, truncated),
+      );
+    }
+    return parseModelJson(text);
   }
 
   private async postResponses(
@@ -352,7 +378,7 @@ export class OpenAiNativeProvider implements DeviceAgentProvider {
       model,
       instructions: messages.system,
       input: messages.userContent,
-      max_output_tokens: options.maxOutputTokens,
+      max_output_tokens: effectiveMaxOutputTokens(model, options.maxOutputTokens),
       store: false,
     };
     if (options.responseSchema) {
@@ -383,9 +409,15 @@ export class OpenAiNativeProvider implements DeviceAgentProvider {
       }
     }
 
+    // Browser-direct (Device Agent) calls go through CORS. OpenRouter's documented browser
+    // headers are HTTP-Referer + X-Title only (see openRouterHeaders.ts); the undocumented
+    // `X-OpenRouter-Metadata` adds a non-allowlisted entry to the CORS preflight's
+    // Access-Control-Request-Headers, which OpenRouter can reject — surfacing as the generic
+    // "Failed to fetch". We deliberately omit it here (browser), the same way this provider's
+    // Anthropic sibling adds `anthropic-dangerous-direct-browser-access` only in the browser.
+    // The Kotlin/Swift native runtimes (no CORS) keep sending it unchanged.
     const headers: Record<string, string> = {
       Authorization: `Bearer ${apiKey}`,
-      ...(isOpenRouterConfig(this.config) ? { 'X-OpenRouter-Metadata': 'enabled' } : {}),
       ...openRouterAttributionHeaders(isOpenRouterConfig(this.config)),
     };
 

@@ -45,7 +45,9 @@ class OpenAiNativeProviderTest {
         val body = JSONObject(call.body)
         assertEquals("gpt-5", body.optString("model"))
         assertEquals(DeviceAgentSystemPrompts.PLAN, body.optString("instructions"))
-        assertEquals(1024, body.optInt("max_output_tokens"))
+        // gpt-5 is a reasoning model, so the plan budget is raised to the reasoning floor (4096)
+        // so reasoning tokens don't consume the whole budget and leave empty content.
+        assertEquals(4096, body.optInt("max_output_tokens"))
         assertEquals(false, body.optBoolean("store"))
 
         val textConfig = body.optJSONObject("text")!!
@@ -136,14 +138,14 @@ class OpenAiNativeProviderTest {
             "web_search_call.action.sources",
             researchBody.optJSONArray("include")?.optString(0),
         )
-        assertEquals(1800, researchBody.optInt("max_output_tokens"))
+        assertEquals(4096, researchBody.optInt("max_output_tokens")) // gpt-5 reasoning floor (was 1800)
         assertFalse(researchBody.has("text"))
 
         // Review pass: no tools; text.format.json_schema; verbosity=medium; injected
         // researchEvidence in the input.
         val reviewBody = JSONObject(http.calls[1].body)
         assertFalse(reviewBody.has("tools"))
-        assertEquals(1800, reviewBody.optInt("max_output_tokens"))
+        assertEquals(4096, reviewBody.optInt("max_output_tokens")) // gpt-5 reasoning floor (was 1800)
         val reviewText = reviewBody.optJSONObject("text")!!
         assertEquals("medium", reviewText.optString("verbosity"))
         val reviewFormat = reviewText.optJSONObject("format")!!
@@ -215,7 +217,7 @@ class OpenAiNativeProviderTest {
 
         val body = JSONObject(http.calls.single().body)
         assertFalse(body.has("tools"))
-        assertEquals(1800, body.optInt("max_output_tokens"))
+        assertEquals(4096, body.optInt("max_output_tokens")) // gpt-5 reasoning floor (was 1800)
         val reviewText = body.optJSONObject("text")!!
         assertEquals("medium", reviewText.optString("verbosity"))
         val format = reviewText.optJSONObject("format")!!

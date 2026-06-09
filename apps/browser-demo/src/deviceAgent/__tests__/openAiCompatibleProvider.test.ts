@@ -84,7 +84,9 @@ describe('OpenAiCompatibleProvider.generatePlan', () => {
     const body = JSON.parse(http.calls[0]!.body) as Record<string, unknown>;
     expect('temperature' in body).toBe(false);
     // GPT-5 / o-series chat completions reject `max_tokens` and require `max_completion_tokens`.
-    expect(body.max_completion_tokens).toBe(1024);
+    // Reasoning models also get the REASONING_OUTPUT_TOKEN_FLOOR (4096) so reasoning tokens
+    // don't consume the whole budget and leave empty content (see effectiveMaxOutputTokens).
+    expect(body.max_completion_tokens).toBe(4096);
     expect('max_tokens' in body).toBe(false);
   });
 
@@ -96,7 +98,7 @@ describe('OpenAiCompatibleProvider.generatePlan', () => {
 
     const body = JSON.parse(http.calls[0]!.body) as Record<string, unknown>;
     expect('temperature' in body).toBe(false);
-    expect(body.max_completion_tokens).toBe(1024);
+    expect(body.max_completion_tokens).toBe(4096);
     expect('max_tokens' in body).toBe(false);
   });
 

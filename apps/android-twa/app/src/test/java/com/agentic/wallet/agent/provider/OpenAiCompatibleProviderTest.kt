@@ -141,7 +141,8 @@ class OpenAiCompatibleProviderTest {
         val body = JSONObject(http.calls.single().body)
         assertFalse("temperature should be omitted for gpt-5 models", body.has("temperature"))
         // GPT-5 / o-series chat completions reject `max_tokens` and require `max_completion_tokens`.
-        assertEquals(1024, body.optInt("max_completion_tokens"))
+        // Reasoning models also get the reasoning floor (4096) so reasoning tokens don't starve the answer.
+        assertEquals(4096, body.optInt("max_completion_tokens"))
         assertFalse("max_tokens must not be sent for gpt-5", body.has("max_tokens"))
     }
 
@@ -154,7 +155,7 @@ class OpenAiCompatibleProviderTest {
         provider.generatePlan(JSONObject().put("userPrompt", "hi"))
         val body = JSONObject(http.calls.single().body)
         assertFalse(body.has("temperature"))
-        assertEquals(1024, body.optInt("max_completion_tokens"))
+        assertEquals(4096, body.optInt("max_completion_tokens")) // o-series reasoning floor (was 1024)
         assertFalse("max_tokens must not be sent for o-series", body.has("max_tokens"))
     }
 

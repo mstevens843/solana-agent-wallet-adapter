@@ -7,10 +7,41 @@ import { describe, expect, it } from 'vitest';
 
 import { ProviderHttpError } from '../provider/errorCodes.js';
 import {
+  chatCompletionTruncated,
   extractAnthropicText,
   extractOpenAiText,
   parseModelJson,
+  responsesApiTruncated,
 } from '../provider/responseParser.js';
+
+describe('chatCompletionTruncated', () => {
+  it('is true when choices[0].finish_reason is "length"', () => {
+    expect(chatCompletionTruncated({ choices: [{ finish_reason: 'length', message: { content: '' } }] })).toBe(true);
+  });
+
+  it('is false for stop / missing / non-object', () => {
+    expect(chatCompletionTruncated({ choices: [{ finish_reason: 'stop' }] })).toBe(false);
+    expect(chatCompletionTruncated({ choices: [] })).toBe(false);
+    expect(chatCompletionTruncated({})).toBe(false);
+    expect(chatCompletionTruncated(null)).toBe(false);
+  });
+});
+
+describe('responsesApiTruncated', () => {
+  it('is true when status is incomplete from max_output_tokens', () => {
+    expect(responsesApiTruncated({ status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' } })).toBe(true);
+  });
+
+  it('is true when status is incomplete with no detail', () => {
+    expect(responsesApiTruncated({ status: 'incomplete' })).toBe(true);
+  });
+
+  it('is false for completed / missing', () => {
+    expect(responsesApiTruncated({ status: 'completed' })).toBe(false);
+    expect(responsesApiTruncated({ status: 'incomplete', incomplete_details: { reason: 'content_filter' } })).toBe(false);
+    expect(responsesApiTruncated(null)).toBe(false);
+  });
+});
 
 describe('extractOpenAiText', () => {
   it('prefers output_text when present and non-empty', () => {

@@ -81,6 +81,15 @@ internal object ProviderHttp {
     // from the temperature drop.
     fun isReasoningModel(model: String): Boolean = isDefaultTemperatureOnlyModel(model)
 
+    // Reasoning models (gpt-5 / o-series) spend part of their output-token budget on hidden
+    // reasoning before emitting the answer; a small ceiling can be fully consumed by reasoning,
+    // leaving empty content ("Provider response was empty"). Give reasoning models a floor.
+    // Mirrors `effectiveMaxOutputTokens()` in apps/browser-demo/src/deviceAgent/provider/providerHttp.ts.
+    const val REASONING_OUTPUT_TOKEN_FLOOR: Int = 4096
+
+    fun effectiveMaxOutputTokens(model: String, requested: Int): Int =
+        if (isReasoningModel(model)) maxOf(requested, REASONING_OUTPUT_TOKEN_FLOOR) else requested
+
     /**
      * Map an OpenAI-compat Gemini baseUrl to the native :generateContent base.
      *

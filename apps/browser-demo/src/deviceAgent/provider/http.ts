@@ -16,6 +16,8 @@
 // We do NOT remap non-2xx HTTP statuses here — that is the provider layer's
 // job. The mirror in Kotlin lives in HttpExecutor.kt.
 
+import { diagNow, logDeviceAgentDiag } from '../runtime/diagnosticLog.js';
+
 import { PROVIDER_ERROR_CODES, ProviderHttpError } from './errorCodes.js';
 
 export interface HttpResponse {
@@ -81,6 +83,17 @@ export class FetchHttpExecutor implements HttpExecutor {
       finalHeaders[name] = value;
     }
 
+    // Deterministic request log — header NAMES only (never values, so the API key never leaks).
+    // For OpenRouter this shows the exact endpoint (/messages vs /responses vs /chat/completions)
+    // and confirms which headers hit the CORS preflight.
+    const startedAt = diagNow();
+    logDeviceAgentDiag('info', 'provider.request', {
+      url,
+      method: 'POST',
+      headers: Object.keys(finalHeaders).sort(),
+      bodyChars: body.length,
+    });
+
     const internal = new AbortController();
     const totalTimeoutMs = this.connectTimeoutMs + this.readTimeoutMs;
     let timedOut = false;
@@ -124,9 +137,26 @@ export class FetchHttpExecutor implements HttpExecutor {
         signal: internal.signal,
       });
       const bodyText = await this.readBodyCapped(response);
+      logDeviceAgentDiag(response.status >= 400 ? 'warn' : 'info', 'provider.response', {
+        url,
+        status: response.status,
+        ms: Math.round(diagNow() - startedAt),
+        bodyChars: bodyText.length,
+      });
       return { status: response.status, body: bodyText };
     } catch (err) {
-      throw classify(err);
+      const classified = classify(err);
+      // The single most useful failure log: a CORS/network block surfaces here as
+      // code=provider_network with the browser's verbatim message (e.g. "Failed to fetch")
+      // and the exact URL that was blocked.
+      logDeviceAgentDiag('error', 'provider.error', {
+        url,
+        ms: Math.round(diagNow() - startedAt),
+        code: classified instanceof ProviderHttpError ? classified.code : undefined,
+        name: classified instanceof Error ? classified.name : undefined,
+        message: classified instanceof Error ? classified.message : String(classified),
+      });
+      throw classified;
     } finally {
       clearTimeout(timeoutId);
       if (signal && onExternalAbort) {

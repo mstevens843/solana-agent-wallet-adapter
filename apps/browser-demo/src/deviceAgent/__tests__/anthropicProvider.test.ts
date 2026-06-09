@@ -217,3 +217,34 @@ describe('AnthropicProvider.ask', () => {
     expect(body.system).toBe(DEVICE_AGENT_SYSTEM_PROMPTS.ASK);
   });
 });
+
+describe('AnthropicProvider via OpenRouter (browser CORS)', () => {
+  function openRouterConfig(model = 'anthropic/claude-sonnet-4.5'): RuntimeConfig {
+    return {
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      model,
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: 'sk-or-test-ABCDEFGHIJKLMNOP',
+    };
+  }
+
+  it('sends Bearer + OpenRouter attribution headers but OMITS X-OpenRouter-Metadata for the browser CORS preflight', async () => {
+    const http = new FakeHttpExecutor();
+    http.queueResponse(200, JSON.stringify({ content: [{ type: 'text', text: '{"intent":"x"}' }] }));
+    const provider = new AnthropicProvider(openRouterConfig(), http);
+    await provider.generatePlan({ userPrompt: 'swap 1 SOL' });
+
+    const call = http.calls[0]!;
+    expect(call.url).toBe('https://openrouter.ai/api/v1/messages');
+    expect(call.headers.Authorization).toBe('Bearer sk-or-test-ABCDEFGHIJKLMNOP');
+    // Documented OpenRouter browser headers ARE sent...
+    expect(call.headers['HTTP-Referer']).toBeTruthy();
+    expect(call.headers['X-Title']).toBeTruthy();
+    // ...but the undocumented metadata header is omitted so it can't break the CORS preflight.
+    expect('X-OpenRouter-Metadata' in call.headers).toBe(false);
+    // Anthropic-direct headers are NOT sent on the OpenRouter route.
+    expect('x-api-key' in call.headers).toBe(false);
+    expect('anthropic-dangerous-direct-browser-access' in call.headers).toBe(false);
+  });
+});

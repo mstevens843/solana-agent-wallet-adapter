@@ -11,7 +11,7 @@ import { ProviderFailedError } from '../runtime/errors.js';
 import type { RuntimeConfig } from '../runtime/config.js';
 
 import { DeviceAgentProviderExecutor } from '../provider/deviceAgentProviderExecutor.js';
-import { ProviderHttpError } from '../provider/errorCodes.js';
+import { PROVIDER_ERROR_CODES, ProviderHttpError } from '../provider/errorCodes.js';
 
 import { FakeHttpExecutor } from './fakeHttpExecutor.helper.js';
 
@@ -348,5 +348,59 @@ describe('DeviceAgentProviderExecutor.ask — output_text wrapping', () => {
       unknown
     >;
     expect(result.output_text).toBe('This is a concise answer.');
+  });
+});
+
+describe('DeviceAgentProviderExecutor network-error guidance', () => {
+  it('enriches a provider_network failure with host-aware CORS guidance (api.openai.com)', async () => {
+    const http = new FakeHttpExecutor();
+    http.queueFailure(new ProviderHttpError(PROVIDER_ERROR_CODES.NETWORK, 'Failed to fetch'));
+    const executor = new DeviceAgentProviderExecutor(http);
+    const cfg: RuntimeConfig = {
+      provider: 'custom-openai-compatible',
+      apiFormat: 'openai-compatible',
+      model: 'gpt-4o-mini',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: API_KEY,
+    };
+
+    let captured: unknown = null;
+    try {
+      await executor.generatePlan(cfg, { userPrompt: 'swap 1 SOL' });
+    } catch (err) {
+      captured = err;
+    }
+    expect(captured).toBeInstanceOf(ProviderFailedError);
+    const failed = captured as ProviderFailedError;
+    expect(failed.error.code).toBe(PROVIDER_ERROR_CODES.NETWORK);
+    expect(failed.message).toContain('Failed to fetch.');
+    expect(failed.message).toContain('api.openai.com');
+    expect(failed.message.toLowerCase()).toContain('cors');
+    // The key must never leak into the enriched message.
+    expect(failed.message).not.toContain(API_KEY);
+  });
+
+  it('uses the generic CORS/CSP guidance for a non-listed host (OpenRouter)', async () => {
+    const http = new FakeHttpExecutor();
+    http.queueFailure(new ProviderHttpError(PROVIDER_ERROR_CODES.NETWORK, 'Failed to fetch'));
+    const executor = new DeviceAgentProviderExecutor(http);
+    const cfg: RuntimeConfig = {
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      model: 'anthropic/claude-sonnet-4.5',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: API_KEY,
+    };
+
+    let captured: unknown = null;
+    try {
+      await executor.generatePlan(cfg, { userPrompt: 'swap 1 SOL' });
+    } catch (err) {
+      captured = err;
+    }
+    expect(captured).toBeInstanceOf(ProviderFailedError);
+    const failed = captured as ProviderFailedError;
+    expect(failed.message).not.toContain('api.openai.com');
+    expect(failed.message.toLowerCase()).toContain('cors');
   });
 });

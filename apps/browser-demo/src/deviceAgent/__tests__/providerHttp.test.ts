@@ -8,11 +8,16 @@ import { describe, expect, it } from 'vitest';
 import { ProviderHttpError } from '../provider/errorCodes.js';
 import {
   assertApiKeyHeaderSafe,
+  browserNetworkErrorGuidance,
   composeErrorMessage,
+  effectiveMaxOutputTokens,
+  emptyModelTextMessage,
+  hostBlocksBrowserCors,
   isDefaultTemperatureOnlyModel,
   isReasoningModel,
   mapHttpStatusToErrorCode,
   normalizeBaseUrl,
+  REASONING_OUTPUT_TOKEN_FLOOR,
   tokenLimitKey,
 } from '../provider/providerHttp.js';
 
@@ -204,5 +209,76 @@ describe('composeErrorMessage', () => {
   it('handles malformed body by falling back to the HTTP status message', () => {
     const composed = composeErrorMessage(500, 'not even json');
     expect(composed.startsWith('AI provider returned HTTP 500.')).toBe(true);
+  });
+});
+
+describe('effectiveMaxOutputTokens', () => {
+  it('raises reasoning models to the floor when the request is below it', () => {
+    expect(effectiveMaxOutputTokens('gpt-5', 1024)).toBe(REASONING_OUTPUT_TOKEN_FLOOR);
+    expect(effectiveMaxOutputTokens('openai/gpt-5', 1800)).toBe(REASONING_OUTPUT_TOKEN_FLOOR);
+    expect(effectiveMaxOutputTokens('o3-mini', 600)).toBe(REASONING_OUTPUT_TOKEN_FLOOR);
+  });
+
+  it('keeps a reasoning model request that already exceeds the floor', () => {
+    expect(effectiveMaxOutputTokens('gpt-5', REASONING_OUTPUT_TOKEN_FLOOR + 1000)).toBe(REASONING_OUTPUT_TOKEN_FLOOR + 1000);
+  });
+
+  it('leaves non-reasoning models untouched', () => {
+    expect(effectiveMaxOutputTokens('claude-sonnet-4-5', 1024)).toBe(1024);
+    expect(effectiveMaxOutputTokens('gpt-4.1', 1800)).toBe(1800);
+    expect(effectiveMaxOutputTokens('anthropic/claude-sonnet-4.5', 1024)).toBe(1024);
+  });
+});
+
+describe('hostBlocksBrowserCors', () => {
+  it('flags api.openai.com (no browser CORS, no escape hatch)', () => {
+    expect(hostBlocksBrowserCors('https://api.openai.com/v1')).toBe(true);
+    expect(hostBlocksBrowserCors('https://api.openai.com')).toBe(true);
+  });
+
+  it('does NOT flag CORS-capable / header-eligible hosts', () => {
+    expect(hostBlocksBrowserCors('https://openrouter.ai/api/v1')).toBe(false);
+    expect(hostBlocksBrowserCors('https://api.anthropic.com/v1')).toBe(false);
+    expect(hostBlocksBrowserCors('https://my-gateway.example.com/v1')).toBe(false);
+    expect(hostBlocksBrowserCors('')).toBe(false);
+    expect(hostBlocksBrowserCors(undefined)).toBe(false);
+  });
+});
+
+describe('browserNetworkErrorGuidance', () => {
+  it('names the gateway fix for a known no-CORS host', () => {
+    const msg = browserNetworkErrorGuidance('custom-openai-compatible', 'https://api.openai.com/v1', 'Failed to fetch');
+    expect(msg).toContain('Failed to fetch.');
+    expect(msg).toContain('api.openai.com');
+    expect(msg.toLowerCase()).toContain('cors');
+    expect(msg).toContain('Local Bridge');
+  });
+
+  it('gives the generic CORS/CSP explanation for other hosts (e.g. OpenRouter)', () => {
+    const msg = browserNetworkErrorGuidance('openrouter', 'https://openrouter.ai/api/v1', 'Failed to fetch');
+    expect(msg).toContain('Failed to fetch.');
+    expect(msg).not.toContain('api.openai.com');
+    expect(msg.toLowerCase()).toContain('cors');
+  });
+
+  it('tolerates an empty raw message', () => {
+    const msg = browserNetworkErrorGuidance('openrouter', 'https://openrouter.ai/api/v1', '');
+    expect(msg.startsWith('Failed to fetch.')).toBe(true);
+  });
+});
+
+describe('emptyModelTextMessage', () => {
+  it('explains reasoning-budget starvation when a reasoning model was truncated', () => {
+    const msg = emptyModelTextMessage('gpt-5', true);
+    expect(msg.toLowerCase()).toContain('reasoning');
+    expect(msg).not.toBe('Provider response was empty.');
+  });
+
+  it('falls back to the generic empty message when not truncated', () => {
+    expect(emptyModelTextMessage('gpt-5', false)).toBe('Provider response was empty.');
+  });
+
+  it('does not claim reasoning starvation for non-reasoning models even if truncated', () => {
+    expect(emptyModelTextMessage('claude-sonnet-4-5', true)).toBe('Provider response was empty.');
   });
 });

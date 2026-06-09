@@ -162,10 +162,15 @@ export class AnthropicProvider implements DeviceAgentProvider {
       ...(researchNeeded(payload) ? { tools: [webSearchToolForConfig(this.config, payload)] } : {}),
     };
 
+    // Browser-direct (Device Agent) calls go through CORS. OpenRouter's documented browser
+    // headers are HTTP-Referer + X-Title only; the undocumented `X-OpenRouter-Metadata` adds a
+    // non-allowlisted entry to the CORS preflight that OpenRouter can reject (surfacing as a
+    // bare "Failed to fetch"), so we omit it on this browser path — the same deliberate
+    // browser-vs-native divergence as the `anthropic-dangerous-direct-browser-access` header
+    // below. The Kotlin/Swift native runtimes (no CORS) keep sending it unchanged.
     const headers: Record<string, string> = isOpenRouterConfig(this.config)
       ? {
         Authorization: `Bearer ${apiKey}`,
-        'X-OpenRouter-Metadata': 'enabled',
         ...openRouterAttributionHeaders(true),
       }
       : {

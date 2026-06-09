@@ -37,6 +37,7 @@ import { sanitizeUserTextOrEmpty } from '@solana-agent-wallet-adapter/workflow';
 import { redactSecrets, trace } from './trace.js';
 import {
   type AgentConnector,
+  type ConnectorRunMode,
   ConnectorError,
   connectorLabel,
   detectConnector,
@@ -249,6 +250,45 @@ const REVIEW_JSON_SCHEMA = {
     },
   },
   required: ['decision', 'reason', 'summary', 'evidence'],
+} as const;
+
+const RESEARCH_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    summary: { type: 'string' },
+    findings: {
+      type: 'array',
+      maxItems: 8,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          label: { type: 'string' },
+          value: { type: 'string' },
+          tone: { type: 'string', enum: ['good', 'warn', 'neutral', 'fail'] },
+        },
+        required: ['label', 'value'],
+      },
+    },
+    sources: {
+      type: 'array',
+      maxItems: 8,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          title: { type: 'string' },
+          url: { type: 'string' },
+          citedText: { type: 'string' },
+        },
+        required: ['url'],
+      },
+    },
+    checkedAt: { type: 'string' },
+    sourcePolicy: { type: 'string' },
+  },
+  required: ['summary', 'sources'],
 } as const;
 
 const GEMINI_STRING_ARRAY_SCHEMA = {
@@ -655,6 +695,14 @@ export class BridgeAiPlanner {
   ): Promise<string | undefined> {
     try {
       const transport = resolveAiTransport(config);
+      if (transport === 'cli-agent') {
+        const payload = await this.runConnectorText(
+          config,
+          messages[0]?.content ?? '',
+          messages[1]?.content ?? '',
+        );
+        return extractModelText(payload).trim() || undefined;
+      }
       if (transport === 'anthropic-messages') {
         const response = await fetch(`${anthropicMessagesUrl(config)}`, {
           method: 'POST',
@@ -696,7 +744,7 @@ export class BridgeAiPlanner {
         body: JSON.stringify({
           model: config.model,
           messages,
-          [tokenKey]: 600,
+          [tokenKey]: effectiveMaxOutputTokens(config.model, 600),
           ...(defaultTempOnly ? {} : { temperature: 0 }),
           response_format: { type: 'json_object' },
         }),
@@ -776,7 +824,7 @@ export class BridgeAiPlanner {
         model: config.model,
         instructions: systemMessage,
         input: userMessage,
-        max_output_tokens: 1800,
+        max_output_tokens: effectiveMaxOutputTokens(config.model, 1800),
         store: false,
         ...(research ? {
           tools: [webSearchToolForConfig(config)],
@@ -886,7 +934,7 @@ export class BridgeAiPlanner {
         model: config.model,
         instructions: systemMessage,
         input: userMessage,
-        max_output_tokens: 1200,
+        max_output_tokens: effectiveMaxOutputTokens(config.model, 1200),
         store: false,
         ...(research ? {
           tools: [webSearchToolForConfig(config)],
@@ -1129,7 +1177,7 @@ export class BridgeAiPlanner {
         model: config.model,
         instructions: systemMessage,
         input: userMessage,
-        max_output_tokens: 1800,
+        max_output_tokens: effectiveMaxOutputTokens(config.model, 1800),
         store: false,
         tools: [webSearchToolForConfig(config)],
         tool_choice: 'auto',
@@ -1462,6 +1510,7 @@ export class BridgeAiPlanner {
     config: AiRuntimeConfig,
     systemPrompt: string,
     userPrompt: string,
+    options: { mode?: ConnectorRunMode; outputSchema?: unknown } = {},
   ): Promise<{ output_text: string }> {
     const connector = config.connector;
     if (!connector) {
@@ -1472,6 +1521,8 @@ export class BridgeAiPlanner {
         systemPrompt,
         userPrompt,
         explicitPath: config.connectorPath,
+        ...(options.mode ? { mode: options.mode } : {}),
+        ...(options.outputSchema !== undefined ? { outputSchema: options.outputSchema } : {}),
       });
       return { output_text: text };
     } catch (err) {
@@ -1499,13 +1550,41 @@ export class BridgeAiPlanner {
     config: AiRuntimeConfig,
     normalizedRequest: Required<AiReviewRequest>,
   ): Promise<AiReviewResult> {
-    const messages = aiReviewMessages(normalizedRequest);
+    const research = reviewNeedsWebResearch(normalizedRequest);
+    const researchResult = research
+      ? await this.generateConnectorResearchEvidence(config, normalizedRequest)
+      : undefined;
+    const messages = aiReviewMessages(normalizedRequest, researchResult?.evidence);
     const payload = await this.runConnectorText(
       config,
       messages[0]?.content ?? '',
       messages[1]?.content ?? JSON.stringify(normalizedRequest),
     );
-    return normalizeStrictAiReview(payload, normalizedRequest, connectorLabel(config.connector!));
+    return normalizeStrictAiReview(payload, normalizedRequest, connectorLabel(config.connector!), {
+      citations: researchResult?.citations,
+      researchEvidence: researchResult?.evidence,
+    });
+  }
+
+  private async generateConnectorResearchEvidence(
+    config: AiRuntimeConfig,
+    normalizedRequest: Required<AiReviewRequest>,
+  ): Promise<{ evidence: AiReviewResearchEvidence; citations: AiResearchCitation[] }> {
+    const messages = aiResearchMessages(normalizedRequest);
+    const payload = await this.runConnectorText(
+      config,
+      messages[0]?.content ?? '',
+      messages[1]?.content ?? JSON.stringify(normalizedRequest),
+      {
+        mode: 'research',
+        outputSchema: RESEARCH_JSON_SCHEMA,
+      },
+    );
+    return normalizeResearchEvidence(
+      connectorResearchPayload(payload.output_text),
+      normalizedRequest,
+      connectorLabel(config.connector!),
+    );
   }
 
   private async generateConnectorAsk(
@@ -1513,10 +1592,12 @@ export class BridgeAiPlanner {
     normalizedRequest: Required<AiAskRequest>,
   ): Promise<AiAskResult> {
     const messages = aiAskMessages(normalizedRequest);
+    const research = askNeedsWebResearch(normalizedRequest);
     const payload = await this.runConnectorText(
       config,
       messages[0]?.content ?? '',
       messages[1]?.content ?? JSON.stringify(normalizedRequest),
+      { mode: research ? 'research' : 'default' },
     );
     return aiAskFromPayload(payload);
   }
@@ -1526,10 +1607,12 @@ export class BridgeAiPlanner {
     normalizedRequest: Required<AiChatRequest>,
   ): Promise<AiChatResult> {
     const messages = aiChatMessages(normalizedRequest);
+    const research = chatNeedsWebResearch(normalizedRequest);
     const payload = await this.runConnectorText(
       config,
       messages[0]?.content ?? '',
       messages[1]?.content ?? JSON.stringify(normalizedRequest),
+      { mode: research ? 'research' : 'default' },
     );
     return aiChatFromPayload(payload);
   }
@@ -1762,9 +1845,9 @@ function withDefaultConnectorContext(
 
 function supportsNativeWebResearch(config: AiRuntimeConfig): boolean {
   const transport = resolveAiTransport(config);
-  // The connector runs locked-down (read-only, no tools) so it can't fetch live web facts; route
-  // research requests to the graceful "unsupported research" path like openai-compatible.
-  return transport !== 'openai-compatible' && transport !== 'cli-agent';
+  // Custom OpenAI-compatible gateways do not expose a consistent web/research contract. First-party
+  // connectors are bridge-local and invoke their own native web-capable CLI mode.
+  return transport !== 'openai-compatible';
 }
 
 function askNeedsWebResearch(request: Required<AiAskRequest>): boolean {
@@ -2331,6 +2414,70 @@ function normalizeResearchEvidence(
       sourcePolicy: RESEARCH_SOURCE_POLICY,
     },
   };
+}
+
+function connectorResearchPayload(rawText: string): unknown {
+  const parsed = parsePlanJson(rawText);
+  const evidence = jsonObjectOr(parsed.evidence, {});
+  const sources = connectorResearchSources(parsed.sources ?? evidence.sources);
+  const findings = Array.isArray(parsed.findings)
+    ? parsed.findings
+    : Array.isArray(evidence.findings)
+      ? (evidence.findings as unknown[])
+      : [];
+  const summary = connectorResearchSummary(parsed, findings, rawText);
+  return {
+    output_text: summary,
+    ...(sources.length ? { sources } : {}),
+  };
+}
+
+function connectorResearchSummary(parsed: Record<string, unknown>, findings: unknown[], fallback: string): string {
+  const parts: string[] = [];
+  if (typeof parsed.summary === 'string' && parsed.summary.trim()) {
+    parts.push(parsed.summary.trim());
+  }
+  for (const finding of findings) {
+    if (!finding || typeof finding !== 'object') continue;
+    const record = finding as Record<string, unknown>;
+    const label = typeof record.label === 'string' ? record.label.trim() : '';
+    const value = typeof record.value === 'string' ? record.value.trim() : '';
+    if (label && value) parts.push(`${label}: ${value}`);
+    else if (value) parts.push(value);
+    if (parts.length >= 8) break;
+  }
+  return (parts.join('\n').trim() || fallback.trim()).slice(0, 4_000);
+}
+
+function connectorResearchSources(value: unknown): Array<Record<string, string>> {
+  if (!Array.isArray(value)) return [];
+  const sources: Array<Record<string, string>> = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') continue;
+    const record = entry as Record<string, unknown>;
+    const url = typeof record.url === 'string'
+      ? record.url.trim()
+      : typeof record.uri === 'string'
+        ? record.uri.trim()
+        : '';
+    if (!/^https?:\/\//i.test(url) || seen.has(url)) continue;
+    seen.add(url);
+    const title = typeof record.title === 'string' ? record.title.trim() : '';
+    const citedText = typeof record.citedText === 'string'
+      ? record.citedText.trim()
+      : typeof record.cited_text === 'string'
+        ? record.cited_text.trim()
+        : '';
+    sources.push({
+      type: 'url_citation',
+      url,
+      ...(title ? { title } : {}),
+      ...(citedText ? { citedText } : {}),
+    });
+    if (sources.length >= 8) break;
+  }
+  return sources;
 }
 
 function assertAiAskRequestAllowed(request: Required<AiAskRequest>): void {
@@ -3364,6 +3511,14 @@ function isOfficialOpenAiBaseUrl(baseUrl: string): boolean {
 
 function isReasoningModel(model: string): boolean {
   return isDefaultTemperatureOnlyModel(model);
+}
+
+// Reasoning models (gpt-5 / o-series) spend part of their output-token budget on hidden
+// reasoning before answering, so a tight ceiling can be fully consumed by reasoning and yield
+// an empty/incomplete response. Give reasoning models a floor. Mirrors effectiveMaxOutputTokens()
+// in apps/browser-demo/src/deviceAgent/provider/providerHttp.ts and the Kotlin/Swift runtimes.
+function effectiveMaxOutputTokens(model: string, requested: number): number {
+  return isReasoningModel(model) ? Math.max(requested, OPENAI_MAX_OUTPUT_TOKENS) : requested;
 }
 
 function isDefaultTemperatureOnlyModel(model: string): boolean {

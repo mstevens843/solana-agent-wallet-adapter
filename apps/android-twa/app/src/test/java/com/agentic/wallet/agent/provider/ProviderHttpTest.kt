@@ -80,6 +80,19 @@ class ProviderHttpTest {
     }
 
     @Test
+    fun effectiveMaxOutputTokensRaisesReasoningModelsToFloor() {
+        // Reasoning models below the floor are raised so reasoning tokens don't starve the answer.
+        assertEquals(4096, ProviderHttp.effectiveMaxOutputTokens("gpt-5", 1024))
+        assertEquals(4096, ProviderHttp.effectiveMaxOutputTokens("openai/gpt-5", 1800))
+        assertEquals(4096, ProviderHttp.effectiveMaxOutputTokens("o3-mini", 600))
+        // A reasoning request already above the floor is preserved.
+        assertEquals(5096, ProviderHttp.effectiveMaxOutputTokens("gpt-5", 5096))
+        // Non-reasoning models are untouched.
+        assertEquals(1024, ProviderHttp.effectiveMaxOutputTokens("claude-opus-4-5", 1024))
+        assertEquals(1800, ProviderHttp.effectiveMaxOutputTokens("gpt-4o", 1800))
+    }
+
+    @Test
     fun normalizeNativeBaseUrlStripsOpenAiCompatSuffix() {
         assertEquals(
             "https://generativelanguage.googleapis.com/v1beta",

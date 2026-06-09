@@ -73,6 +73,16 @@ enum AgenticProviderHttp {
         return isDefaultTemperatureOnlyModel(model)
     }
 
+    // Reasoning models (gpt-5 / o-series) spend part of their output-token budget on hidden
+    // reasoning before answering; a small ceiling can be fully consumed by reasoning, leaving
+    // empty content ("Provider response was empty"). Give reasoning models a floor. Mirrors
+    // `effectiveMaxOutputTokens()` in apps/browser-demo/src/deviceAgent/provider/providerHttp.ts.
+    static let reasoningOutputTokenFloor: Int = 4096
+
+    static func effectiveMaxOutputTokens(_ model: String, requested: Int) -> Int {
+        return isReasoningModel(model) ? max(requested, reasoningOutputTokenFloor) : requested
+    }
+
     static func assertApiKeyHeaderSafe(_ value: String) throws {
         if value.isEmpty {
             throw AgenticAgentError(

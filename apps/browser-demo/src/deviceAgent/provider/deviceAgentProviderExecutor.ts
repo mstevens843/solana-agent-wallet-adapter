@@ -5,6 +5,7 @@
 // invalid_config code + unsupported_format subcode (NOT the provider tier).
 
 import { canonicalApiFormat, type RuntimeConfig } from '../runtime/config.js';
+import { diagNow, logDeviceAgentDiag } from '../runtime/diagnosticLog.js';
 import {
   ProviderFailedError,
   RUNTIME_CONFIG_SUBCODES,
@@ -16,6 +17,7 @@ import { AnthropicProvider } from './anthropicProvider.js';
 import { PROVIDER_ERROR_CODES, ProviderHttpError } from './errorCodes.js';
 import { GeminiNativeProvider } from './geminiNativeProvider.js';
 import { FetchHttpExecutor, type HttpExecutor } from './http.js';
+import { browserNetworkErrorGuidance } from './providerHttp.js';
 import { OpenAiCompatibleProvider } from './openAiCompatibleProvider.js';
 import { OpenAiNativeProvider } from './openAiNativeProvider.js';
 import { redactSecret } from './secretRedactor.js';
@@ -29,47 +31,77 @@ export class DeviceAgentProviderExecutor implements ProviderExecutor {
   }
 
   generatePlan(config: RuntimeConfig, payload: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
-    return this.execute(config, signal, (provider) => provider.generatePlan(payload, signal));
+    return this.execute(config, 'generate-plan', signal, (provider) => provider.generatePlan(payload, signal));
   }
 
   reviewPlan(config: RuntimeConfig, payload: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
-    return this.execute(config, signal, (provider) => provider.reviewPlan(payload, signal));
+    return this.execute(config, 'review-plan', signal, (provider) => provider.reviewPlan(payload, signal));
   }
 
   ask(config: RuntimeConfig, payload: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
-    return this.execute(config, signal, (provider) => provider.ask(payload, signal));
+    return this.execute(config, 'ask', signal, (provider) => provider.ask(payload, signal));
   }
 
   private async execute(
     config: RuntimeConfig,
+    op: string,
     signal: AbortSignal | undefined,
     block: (provider: DeviceAgentProvider) => Promise<Record<string, unknown>>,
   ): Promise<Record<string, unknown>> {
     const provider = this.providerFor(config);
+    // Deterministic routing log: which concrete provider (and therefore which endpoint family)
+    // handled this op for the configured provider/model. Pairs with the http.ts request log,
+    // whose URL is the source of truth for the endpoint (/messages, /responses, /chat/completions).
+    logDeviceAgentDiag('info', 'op.route', {
+      op,
+      provider: config.provider,
+      apiFormat: config.apiFormat,
+      model: config.model,
+      handler: provider.constructor.name,
+    });
+    const startedAt = diagNow();
     try {
-      return await block(provider);
+      const result = await block(provider);
+      logDeviceAgentDiag('info', 'op.ok', { op, model: config.model, ms: Math.round(diagNow() - startedAt) });
+      return result;
     } catch (err) {
       // AbortError propagates verbatim; the queue maps it to runtime_canceled.
       if (isAbortError(err) || signal?.aborted === true) {
+        logDeviceAgentDiag('warn', 'op.canceled', { op, ms: Math.round(diagNow() - startedAt) });
         throw err;
       }
+      let failed: ProviderFailedError;
       if (err instanceof ProviderHttpError) {
-        throw new ProviderFailedError({
+        // A browser network failure is almost always CORS/CSP, not an outage — enrich the bare
+        // "Failed to fetch" with host-aware, actionable guidance. Other codes pass through.
+        const message = err.code === PROVIDER_ERROR_CODES.NETWORK
+          ? browserNetworkErrorGuidance(config.provider, config.baseUrl, err.message)
+          : err.message;
+        failed = new ProviderFailedError({
           code: err.code,
-          message: redactSecret(err.message, config.apiKey),
+          message: redactSecret(message, config.apiKey),
+        });
+      } else {
+        const rawMessage =
+          err instanceof Error && err.message.trim().length > 0
+            ? err.message
+            : 'Provider call failed.';
+        const code = hasCauseName(err, 'TimeoutError')
+          ? PROVIDER_ERROR_CODES.TIMEOUT
+          : PROVIDER_ERROR_CODES.NETWORK;
+        failed = new ProviderFailedError({
+          code,
+          message: redactSecret(rawMessage, config.apiKey),
         });
       }
-      const rawMessage =
-        err instanceof Error && err.message.trim().length > 0
-          ? err.message
-          : 'Provider call failed.';
-      const code = hasCauseName(err, 'TimeoutError')
-        ? PROVIDER_ERROR_CODES.TIMEOUT
-        : PROVIDER_ERROR_CODES.NETWORK;
-      throw new ProviderFailedError({
-        code,
-        message: redactSecret(rawMessage, config.apiKey),
+      logDeviceAgentDiag('error', 'op.error', {
+        op,
+        provider: config.provider,
+        model: config.model,
+        code: failed.error.code,
+        ms: Math.round(diagNow() - startedAt),
       });
+      throw failed;
     }
   }
 

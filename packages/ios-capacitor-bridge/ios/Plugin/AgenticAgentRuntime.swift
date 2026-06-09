@@ -1692,11 +1692,12 @@ final class AgenticOpenAINativeProvider: AgenticAgentProvider {
             completion(.failure(AgenticAgentError(code: "INVALID_URL", message: "Invalid baseUrl: \(endpoint)")))
             return
         }
+        let requestedMaxOutputTokens = request.method == "ask" ? 800 : (research || request.method == "reviewPlan" ? 1800 : 1024)
         var body: [String: Any] = [
             "model": request.config.model,
             "instructions": messages.system,
             "input": messages.userContent,
-            "max_output_tokens": request.method == "ask" ? 800 : (research || request.method == "reviewPlan" ? 1800 : 1024),
+            "max_output_tokens": AgenticProviderHttp.effectiveMaxOutputTokens(request.config.model, requested: requestedMaxOutputTokens),
             "store": false,
         ]
         if let jsonSchema {

@@ -52,7 +52,9 @@ describe('OpenAiNativeProvider.generatePlan', () => {
     expect(body.model).toBe('gpt-5');
     expect(body.instructions).toBe(DEVICE_AGENT_SYSTEM_PROMPTS.PLAN);
     expect(body.input).toBe(buildPlanMessages({ userPrompt: 'swap 1 SOL for USDC' }).userContent);
-    expect(body.max_output_tokens).toBe(1024);
+    // gpt-5 is a reasoning model, so the plan budget is raised to REASONING_OUTPUT_TOKEN_FLOOR
+    // (4096) — reasoning tokens count against max_output_tokens and would otherwise starve the answer.
+    expect(body.max_output_tokens).toBe(4096);
     expect(body.store).toBe(false);
     const textConfig = body.text as Record<string, unknown>;
     expect(textConfig.verbosity).toBe('low');
@@ -158,13 +160,13 @@ describe('OpenAiNativeProvider.reviewPlan two-pass research', () => {
     expect(tools[0]!.type).toBe('web_search_preview');
     expect(researchBody.tool_choice).toBe('auto');
     expect(researchBody.include).toEqual(['web_search_call.action.sources']);
-    expect(researchBody.max_output_tokens).toBe(1800);
+    expect(researchBody.max_output_tokens).toBe(4096); // gpt-5 reasoning floor (was 1800 base)
     // Research pass: free-text output, no JSON-object format coercion.
     expect('text' in researchBody).toBe(false);
 
     const reviewBody = JSON.parse(http.calls[1]!.body) as Record<string, unknown>;
     expect('tools' in reviewBody).toBe(false);
-    expect(reviewBody.max_output_tokens).toBe(1800);
+    expect(reviewBody.max_output_tokens).toBe(4096); // gpt-5 reasoning floor (was 1800 base)
     const reviewText = reviewBody.text as Record<string, unknown>;
     // Review pass bumps verbosity to 'medium' so the "why it passed/denied" prose
     // has room to match Claude/Gemini-style breadth instead of one-liners.
@@ -230,7 +232,7 @@ describe('OpenAiNativeProvider.reviewPlan two-pass research', () => {
     expect(result.decision).toBe('approve');
     const body = JSON.parse(http.calls[0]!.body) as Record<string, unknown>;
     expect('tools' in body).toBe(false);
-    expect(body.max_output_tokens).toBe(1800);
+    expect(body.max_output_tokens).toBe(4096); // gpt-5 reasoning floor (was 1800 base)
     const reviewText = body.text as Record<string, unknown>;
     // Review pass verbosity is 'medium' (vs 'low' for plan/ask) — see openAiNativeProvider.ts.
     expect(reviewText.verbosity).toBe('medium');
@@ -419,5 +421,53 @@ describe('OpenAiNativeProvider error handling', () => {
     }
     expect(captured).toBeInstanceOf(ProviderHttpError);
     expect((captured as ProviderHttpError).code).toBe('provider_invalid_response');
+  });
+});
+
+describe('OpenAiNativeProvider via OpenRouter (browser CORS)', () => {
+  it('omits X-OpenRouter-Metadata, sends attribution headers, and applies the reasoning floor', async () => {
+    const http = new FakeHttpExecutor();
+    http.queueResponse(
+      200,
+      JSON.stringify({
+        output_text: '{"intent":"x","route":"r","risk":"low","approval":"once","safeguards":[]}',
+      }),
+    );
+    const openRouterConfig: RuntimeConfig = {
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      model: 'openai/gpt-5',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      apiKey: 'sk-or-test-ABCDEFGHIJKLMNOP',
+    };
+    const provider = new OpenAiNativeProvider(openRouterConfig, http);
+    await provider.generatePlan({ userPrompt: 'swap 1 SOL' });
+
+    const call = http.calls[0]!;
+    expect(call.url).toBe('https://openrouter.ai/api/v1/responses');
+    expect(call.headers.Authorization).toBe('Bearer sk-or-test-ABCDEFGHIJKLMNOP');
+    expect(call.headers['HTTP-Referer']).toBeTruthy();
+    expect(call.headers['X-Title']).toBeTruthy();
+    expect('X-OpenRouter-Metadata' in call.headers).toBe(false);
+    const body = JSON.parse(call.body) as Record<string, unknown>;
+    expect(body.max_output_tokens).toBe(4096); // openai/gpt-5 is a reasoning model
+  });
+
+  it('reports reasoning-budget starvation when the Responses payload is empty + incomplete', async () => {
+    const http = new FakeHttpExecutor();
+    http.queueResponse(
+      200,
+      JSON.stringify({ status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, output: [] }),
+    );
+    const provider = new OpenAiNativeProvider(config('gpt-5'), http);
+    let captured: unknown = null;
+    try {
+      await provider.generatePlan({ userPrompt: 'swap 1 SOL' });
+    } catch (err) {
+      captured = err;
+    }
+    expect(captured).toBeInstanceOf(ProviderHttpError);
+    expect((captured as ProviderHttpError).code).toBe('provider_invalid_response');
+    expect((captured as ProviderHttpError).message.toLowerCase()).toContain('reasoning');
   });
 });
