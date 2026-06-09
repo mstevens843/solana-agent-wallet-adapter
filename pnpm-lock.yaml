@@ -194,6 +194,9 @@ importers:
       '@solana-agent-wallet-adapter/bridge-router':
         specifier: workspace:*
         version: link:../../packages/bridge-router
+      '@solana-agent-wallet-adapter/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@solana-agent-wallet-adapter/launch-skills':
         specifier: workspace:*
         version: link:../../packages/launch-skills
@@ -2166,6 +2169,7 @@ packages:
 
   '@mrgnlabs/marginfi-client-v2@6.4.1':
     resolution: {integrity: sha512-tLsdgntluUK4qUlwWNPMw35x23VUSmdMH9zT/i2/bs9+f8ai3JM3zUA1GiMoDW5EhkOi92IKBi9oDlL36k7Pwg==}
+    deprecated: Deprecated — migrate to https://github.com/0dotxyz/p0-ts-sdk for continued support of the marginfi program.
 
   '@mrgnlabs/mrgn-common@2.0.7':
     resolution: {integrity: sha512-sSB9jGgRJISBKG5Fh2SL7Ltn85FCnp74Hxoo8TrMq2FYsrh+mZQfEQW82CVVy939EDL8EHNpxqoDb/nlD0VGRQ==}
