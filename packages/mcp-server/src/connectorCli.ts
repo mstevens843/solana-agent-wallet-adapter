@@ -291,7 +291,11 @@ export async function runConnector(connector: AgentConnector, options: RunConnec
   const cwd = await mkdtemp(join(tmpdir(), 'agentic-connector-'));
   try {
     const mode = options.mode ?? 'default';
-    const schemaJson = options.outputSchema ? JSON.stringify(options.outputSchema) : undefined;
+    // Forward a strict-safe schema to the connector CLIs (Codex --output-schema / Claude
+    // --json-schema); they relay it to the provider with strict:true, which rejects our lenient
+    // research schema (maxItems / optional fields) with an HTTP 400 on text.format.schema.
+    const strictSchema = options.outputSchema ? toOpenAiStrictSchema(options.outputSchema) : undefined;
+    const schemaJson = strictSchema ? JSON.stringify(strictSchema) : undefined;
     const schemaPath = schemaJson ? join(cwd, 'output-schema.json') : undefined;
     if (schemaPath && schemaJson) {
       await writeFile(schemaPath, schemaJson, 'utf8');
@@ -373,6 +377,74 @@ function spawnCollect(
       )));
     });
   });
+}
+
+// OpenAI's Responses API rejects (status 400, param=text.format.schema) any structured-output
+// schema that isn't "strict-safe": it forbids assertion keywords like maxItems/minItems, requires
+// `additionalProperties:false` on every object, and requires EVERY declared property to appear in
+// `required`. The Codex CLI's `--output-schema` (and Claude's `--json-schema`) forward our schema
+// with `strict:true`, so a lenient schema (e.g. RESEARCH_JSON_SCHEMA, which uses maxItems and leaves
+// fields optional) blows up there even though our own API-key path sends it with `strict:false`.
+// This sanitizer rewrites any schema into the strict-compatible form at the single point where the
+// connector serializes it. Pure: clones, never mutates the (often `as const`) input. NOTE: $ref /
+// definitions are not resolved — no connector schema uses them today; add resolution before passing
+// a ref-bearing schema through here.
+const OPENAI_UNSUPPORTED_SCHEMA_KEYS = new Set([
+  'maxItems', 'minItems', 'maxLength', 'minLength', 'pattern', 'format',
+  'minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf',
+  'default', 'examples', 'propertyOrdering',
+]);
+
+export function toOpenAiStrictSchema(schema: unknown): unknown {
+  return sanitizeStrictNode(schema);
+}
+
+function sanitizeStrictNode(input: unknown): unknown {
+  if (Array.isArray(input)) return input.map(sanitizeStrictNode);
+  if (!input || typeof input !== 'object') return input;
+  const node = input as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(node)) {
+    if (OPENAI_UNSUPPORTED_SCHEMA_KEYS.has(key)) continue;
+    out[key] = value;
+  }
+  for (const combinator of ['anyOf', 'oneOf', 'allOf'] as const) {
+    if (Array.isArray(out[combinator])) {
+      out[combinator] = (out[combinator] as unknown[]).map(sanitizeStrictNode);
+    }
+  }
+  if (out.items !== undefined) out.items = sanitizeStrictNode(out.items);
+  const props = out.properties;
+  if (props && typeof props === 'object' && !Array.isArray(props)) {
+    const originalRequired = new Set(Array.isArray(node.required) ? (node.required as string[]) : []);
+    const keys = Object.keys(props as Record<string, unknown>);
+    const sanitizedProps: Record<string, unknown> = {};
+    for (const key of keys) {
+      let child = sanitizeStrictNode((props as Record<string, unknown>)[key]);
+      // Strict mode requires every property in `required`; widen the previously-optional ones to a
+      // nullable union so the model can still legally emit null instead of a value.
+      if (!originalRequired.has(key)) child = makeNullableSchema(child);
+      sanitizedProps[key] = child;
+    }
+    out.properties = sanitizedProps;
+    out.required = keys;
+    out.additionalProperties = false;
+  }
+  return out;
+}
+
+function makeNullableSchema(node: unknown): unknown {
+  if (!node || typeof node !== 'object' || Array.isArray(node)) return node;
+  const n = node as Record<string, unknown>;
+  // enum / combinator nodes can't simply add "null" to a type field — wrap them in anyOf instead.
+  if (n.enum !== undefined || n.anyOf !== undefined || n.oneOf !== undefined || n.allOf !== undefined) {
+    return { anyOf: [n, { type: 'null' }] };
+  }
+  if (typeof n.type === 'string') return { ...n, type: [n.type, 'null'] };
+  if (Array.isArray(n.type)) {
+    return (n.type as unknown[]).includes('null') ? n : { ...n, type: [...(n.type as unknown[]), 'null'] };
+  }
+  return { anyOf: [n, { type: 'null' }] };
 }
 
 /** The connector uses its own cached creds — strip the bridge's AI/wallet secrets from the child. */

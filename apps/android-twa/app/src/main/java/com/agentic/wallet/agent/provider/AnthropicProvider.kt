@@ -80,9 +80,13 @@ internal class AnthropicProvider(
             val instruction = extractInstructionText(payload)
             val filteredCitations = CitationFilter.filterLowAuthorityCitations(rawCitations, instruction)
 
-            val dropped = rawCitations.isNotEmpty() && filteredCitations.isEmpty()
+            // A pricing question with no usable official citation is unverified — whether citations
+            // were filtered out as low-authority OR the provider returned none at all (a model
+            // answering from training because its web-search tool silently never ran, the
+            // OpenRouter+Claude Helium "$0"). Never propagate an un-sourced price; force needs_input.
             val pricingQuestion = CitationFilter.isPricingInstruction(instruction)
-            val summary = if (dropped && pricingQuestion) {
+            val unverifiedPricing = pricingQuestion && filteredCitations.isEmpty()
+            val summary = if (unverifiedPricing) {
                 "Current pricing could not be verified against an official source. Ask the user to confirm the plan name and price."
             } else {
                 rawSummary.ifEmpty { "Research ran but produced no summary text." }
@@ -194,36 +198,24 @@ internal class AnthropicProvider(
         config.provider.trim().equals("openrouter", ignoreCase = true) ||
             (config.baseUrl ?: "").contains("openrouter.ai", ignoreCase = true)
 
+    // This provider always speaks the Anthropic Messages format (/messages), whether direct or
+    // via OpenRouter's Anthropic-compat skin. OpenRouter's openrouter:web_search server tool only
+    // works on its Chat Completions / Responses endpoints — NOT the Messages skin — so binding it
+    // here meant the tool was silently dropped and Claude answered ungrounded (the
+    // OpenRouter+Claude Helium "$0" bug). Always bind Anthropic's NATIVE web_search tool;
+    // OpenRouter's skin forwards native tool use to Anthropic 1P.
     private fun webSearchTool(payload: JSONObject): JSONObject =
-        if (isOpenRouterConfig()) {
-            JSONObject()
-                .put("type", "openrouter:web_search")
-                .put(
-                    "parameters",
-                    JSONObject()
-                        .put("engine", "auto")
-                        .put("max_total_results", researchMaxUses(payload))
-                        .put(
-                            "user_location",
-                            JSONObject()
-                                .put("type", "approximate")
-                                .put("country", "US")
-                                .put("timezone", "America/Los_Angeles"),
-                        ),
-                )
-        } else {
-            JSONObject()
-                .put("type", "web_search_20250305")
-                .put("name", "web_search")
-                .put("max_uses", researchMaxUses(payload))
-                .put(
-                    "user_location",
-                    JSONObject()
-                        .put("type", "approximate")
-                        .put("country", "US")
-                        .put("timezone", "America/Los_Angeles"),
-                )
-        }
+        JSONObject()
+            .put("type", "web_search_20250305")
+            .put("name", "web_search")
+            .put("max_uses", researchMaxUses(payload))
+            .put(
+                "user_location",
+                JSONObject()
+                    .put("type", "approximate")
+                    .put("country", "US")
+                    .put("timezone", "America/Los_Angeles"),
+            )
 
     companion object {
         private const val ANTHROPIC_VERSION: String = "2023-06-01"

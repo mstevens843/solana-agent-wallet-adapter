@@ -285,12 +285,14 @@ export class OpenAiNativeProvider implements DeviceAgentProvider {
       const instruction = extractInstructionText(payload);
       const filteredCitations = filterLowAuthorityCitations(rawCitations, instruction);
 
-      // If filtering dropped every citation AND the question is a pricing question,
-      // suppress the summary too — better to let the structured review fall through to
-      // needs_input than surface a stale answer from a discarded blog post.
-      const dropped = rawCitations.length > 0 && filteredCitations.length === 0;
+      // A pricing question with no usable official citation is "unverified" — whether the
+      // citations were filtered out as low-authority OR the provider returned none at all
+      // (e.g. a model answering from training because its web-search tool silently never ran).
+      // Never propagate an un-sourced price: replace it with the could-not-verify summary so the
+      // structured review returns needs_input instead of approving on a fabricated figure.
       const pricingQuestion = isPricingInstruction(instruction);
-      const summary = (dropped && pricingQuestion)
+      const unverifiedPricing = pricingQuestion && filteredCitations.length === 0;
+      const summary = unverifiedPricing
         ? 'Current pricing could not be verified against an official source. Ask the user to confirm the plan name and price.'
         : (rawSummary || 'Research ran but produced no summary text.');
 

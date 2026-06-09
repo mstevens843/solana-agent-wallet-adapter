@@ -70,6 +70,8 @@ describe('BridgeAiPlanner', () => {
     const planSchema = (planFormat as { schema?: unknown } | undefined)?.schema;
     expect(planSchema, 'expected agentic_ai_plan schema to be present on the request').toBeDefined();
     expectAdditionalPropertiesClosed(planSchema, 'agentic_ai_plan root');
+    // Sent with strict:true, so it must be fully strict-safe (required-complete, no maxItems etc.).
+    expectOpenAiStrictSafe(planSchema, 'agentic_ai_plan root');
   });
 
   it('sends the OpenAI Responses review request with strict:false to allow open-shaped evidence', async () => {
@@ -1288,6 +1290,113 @@ describe('BridgeAiPlanner', () => {
     ]));
   });
 
+  it('binds Anthropic NATIVE web_search (not openrouter:web_search) when Claude is routed via OpenRouter', async () => {
+    const calls: Array<{ body: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown> });
+      if (calls.length === 1) {
+        return jsonResponse({
+          content: [{
+            type: 'text',
+            text: 'Official Helium Mobile support lists the Air Plan at $15/month plus taxes and fees.',
+            citations: [{
+              url: 'https://support.hellohelium.com/en/articles/7039213-all-things-helium-mobile-faq',
+              title: 'All Things Helium Mobile FAQ',
+            }],
+          }],
+        });
+      }
+      return jsonResponse({
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            decision: 'approve',
+            reason: 'The researched monthly price is $15, under the $20 rule.',
+            summary: 'Price is under the user threshold.',
+            evidence: {
+              research: { status: 'checked' },
+              findings: [{ label: 'Current price', value: 'Air Plan: $15/month', tone: 'good' }],
+              sources: [{ title: 'All Things Helium Mobile FAQ', url: 'https://support.hellohelium.com/en/articles/7039213-all-things-helium-mobile-faq' }],
+            },
+          }),
+          citations: [{
+            url: 'https://support.hellohelium.com/en/articles/7039213-all-things-helium-mobile-faq',
+            title: 'All Things Helium Mobile FAQ',
+          }],
+        }],
+      });
+    }));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-openrouter-anthropic',
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'anthropic/claude-sonnet-4.5',
+    });
+
+    const review = await planner.reviewPlan({
+      plan: transferPlan(),
+      instruction: 'Check the current monthly Helium Mobile price and approve if under $20, deny if over $20.',
+    });
+
+    expect(review.decision).toBe('approve');
+    expect(calls).toHaveLength(2);
+    // The fix: OpenRouter's Anthropic skin (/messages) does NOT honor openrouter:web_search;
+    // bind Anthropic's native server tool, which it forwards to Anthropic 1P.
+    expect(calls[0]?.body.tools).toEqual([expect.objectContaining({
+      type: 'web_search_20250305',
+      name: 'web_search',
+    })]);
+    expect(JSON.stringify(calls[0]?.body)).not.toContain('openrouter:web_search');
+  });
+
+  it('does not surface an un-sourced price: pricing research with zero citations falls back to could-not-verify', async () => {
+    const calls: Array<{ body: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown> });
+      if (calls.length === 1) {
+        // Research pass: a price produced from training knowledge with ZERO citations — the
+        // OpenRouter+Claude Helium "$0" failure mode (web search silently never ran).
+        return jsonResponse({
+          content: [{ type: 'text', text: "Helium's Zero Plan is $0/month." }],
+        });
+      }
+      return jsonResponse({
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            decision: 'needs_input',
+            reason: 'Current price could not be verified against an official source.',
+            summary: 'Confirm the plan price.',
+            evidence: { research: { status: 'checked' } },
+          }),
+        }],
+      });
+    }));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-openrouter-anthropic-nocite',
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'anthropic/claude-sonnet-4.5',
+    });
+
+    const review = await planner.reviewPlan({
+      plan: transferPlan(),
+      instruction: 'Check the current monthly Helium Mobile price and approve if under $20, deny if over $20.',
+    });
+
+    expect(calls).toHaveLength(2);
+    // The un-sourced "$0" is replaced by the could-not-verify message before it reaches the
+    // structured review pass, so it can never be approved as a researched fact.
+    const reviewMessages = JSON.stringify(calls[1]?.body.messages);
+    expect(reviewMessages).toContain('could not be verified');
+    expect(reviewMessages).not.toContain('$0');
+    expect(review.decision).toBe('needs_input');
+  });
+
   it('does not convert malformed researched reviews into fallback denials', async () => {
     const calls: Array<{ body: Record<string, unknown> }> = [];
     vi.stubGlobal('fetch', vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
@@ -1868,6 +1977,43 @@ function expectAdditionalPropertiesClosed(node: unknown, path: string): void {
       branches.forEach((branch, index) => {
         expectAdditionalPropertiesClosed(branch, `${path}.${combinator}[${index}]`);
       });
+    }
+  }
+}
+
+// Stricter than expectAdditionalPropertiesClosed: also asserts required-completeness and the
+// absence of OpenAI-unsupported assertion keywords. Apply ONLY to schemas sent with strict:true
+// (e.g. agentic_ai_plan). The review schema is intentionally lenient (strict:false), so it must
+// NOT be run through this.
+function expectOpenAiStrictSafe(node: unknown, path: string): void {
+  if (Array.isArray(node)) {
+    node.forEach((child, index) => expectOpenAiStrictSafe(child, `${path}[${index}]`));
+    return;
+  }
+  if (!node || typeof node !== 'object') return;
+  const schema = node as Record<string, unknown>;
+  for (const key of [
+    'maxItems', 'minItems', 'maxLength', 'minLength', 'pattern', 'format',
+    'minimum', 'maximum', 'multipleOf', 'default', 'examples', 'propertyOrdering',
+  ]) {
+    expect(schema, `${path}: strict schema must not carry unsupported keyword ${key}`).not.toHaveProperty(key);
+  }
+  if (schema.properties && typeof schema.properties === 'object') {
+    const keys = Object.keys(schema.properties as Record<string, unknown>);
+    expect(schema.additionalProperties, `${path}: strict object must be closed`).toBe(false);
+    expect(
+      new Set(schema.required as string[]),
+      `${path}: strict object must list every property in required`,
+    ).toEqual(new Set(keys));
+    for (const key of keys) {
+      expectOpenAiStrictSafe((schema.properties as Record<string, unknown>)[key], `${path}.${key}`);
+    }
+  }
+  if (schema.items) expectOpenAiStrictSafe(schema.items, `${path}[]`);
+  for (const combinator of ['anyOf', 'oneOf', 'allOf'] as const) {
+    const branches = schema[combinator];
+    if (Array.isArray(branches)) {
+      branches.forEach((branch, index) => expectOpenAiStrictSafe(branch, `${path}.${combinator}[${index}]`));
     }
   }
 }

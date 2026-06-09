@@ -1433,23 +1433,14 @@ function anthropicWebSearchTool(): Record<string, unknown> {
   };
 }
 
-function openRouterWebSearchTool(): Record<string, unknown> {
-  return {
-    type: 'openrouter:web_search',
-    parameters: {
-      engine: 'auto',
-      max_total_results: RESEARCH_MAX_USES,
-      user_location: {
-        type: 'approximate',
-        country: 'US',
-        timezone: 'America/Los_Angeles',
-      },
-    },
-  };
-}
-
-function webSearchToolForSettings(settings: AiSettings): Record<string, unknown> {
-  return isOpenRouterSettings(settings) ? openRouterWebSearchTool() : anthropicWebSearchTool();
+function webSearchToolForSettings(_settings: AiSettings): Record<string, unknown> {
+  // Only used on the Anthropic Messages transport (api.anthropic.com or OpenRouter's
+  // Anthropic-compat skin at /messages). OpenRouter's `openrouter:web_search` server tool only
+  // works on its Chat Completions / Responses endpoints — NOT the Messages skin — so binding it
+  // here meant the tool was silently dropped and the model answered ungrounded (the
+  // OpenRouter+Claude Helium "$0" bug). Always bind Anthropic's NATIVE web_search tool;
+  // OpenRouter's skin forwards native tool use to Anthropic 1P.
+  return anthropicWebSearchTool();
 }
 
 function unsupportedBrowserResearchReview(
@@ -1639,7 +1630,7 @@ async function generateGeminiResearchEvidence(
       research: true,
     },
   );
-  return normalizeResearchEvidence(payload, 'Gemini');
+  return normalizeResearchEvidence(payload, 'Gemini', request.instruction ?? '');
 }
 
 async function generateGeminiAsk(settings: AiSettings, request: AgentPlanAskRequest): Promise<AgentPlanAskResult> {
@@ -2032,7 +2023,7 @@ async function generateAnthropicResearchEvidence(
   if (!response.ok) {
     throw new Error(providerFailureMessage(payload, response.status, settings.apiKey));
   }
-  return normalizeResearchEvidence(payload, aiReviewProviderLabel(settings));
+  return normalizeResearchEvidence(payload, aiReviewProviderLabel(settings), request.instruction ?? '');
 }
 
 export function aiMessages(request: AiPlanRequest): Array<{ role: 'system' | 'user'; content: string }> {
@@ -2375,9 +2366,14 @@ function decisionContractFromParsed(
 function normalizeResearchEvidence(
   payload: unknown,
   providerLabel: string,
+  instruction = '',
 ): { evidence: AgentReviewResearchEvidence; citations: Array<{ kind: string; ref: string; title?: string }> } {
   const citations = extractResearchCitations(payload);
   const text = extractModelText(payload).trim();
+  // A pricing question with no citation is "unverified" — the model produced a price with no
+  // source (e.g. answering from training because its web-search tool silently never ran, the
+  // OpenRouter+Claude Helium "$0"). Never propagate an un-sourced price; force needs_input.
+  const unverifiedPricing = citations.length === 0 && isPricingInstructionText(instruction);
   const sources = citations.map((citation) => ({
     ...(citation.title ? { title: citation.title } : {}),
     url: citation.ref,
@@ -2389,13 +2385,19 @@ function normalizeResearchEvidence(
       required: true,
       provider: providerLabel,
       checkedAt: new Date().toISOString(),
-      summary: text
-        ? compactReviewText(text, 1600)
-        : 'Research ran, but the provider did not return readable source-backed findings.',
+      summary: unverifiedPricing
+        ? 'Current pricing could not be verified against an official source. Ask the user to confirm the plan name and price.'
+        : (text
+          ? compactReviewText(text, 1600)
+          : 'Research ran, but the provider did not return readable source-backed findings.'),
       sources,
       sourcePolicy: RESEARCH_SOURCE_POLICY,
     },
   };
+}
+
+function isPricingInstructionText(text: string): boolean {
+  return /\b(price|cost|fee|rate|plan|plans|subscription|monthly|per[\s-]?month)\b|\$\s*\d/iu.test(text);
 }
 
 function malformedAiReviewResult(

@@ -247,4 +247,68 @@ describe('AnthropicProvider via OpenRouter (browser CORS)', () => {
     expect('x-api-key' in call.headers).toBe(false);
     expect('anthropic-dangerous-direct-browser-access' in call.headers).toBe(false);
   });
+
+  it('research pass binds Anthropic NATIVE web_search (NOT openrouter:web_search) on the /messages skin', async () => {
+    const http = new FakeHttpExecutor();
+    // Research pass: official citation present → grounded $15 answer flows through.
+    http.queueResponse(200, JSON.stringify({
+      content: [{
+        type: 'text',
+        text: 'Helium Mobile Air Plan is $15/month per the official Helium Mobile site.',
+        citations: [{ url: 'https://heliummobile.com/plans', title: 'Helium Mobile - Plans' }],
+      }],
+    }));
+    // Structured review pass.
+    http.queueResponse(200, JSON.stringify({
+      content: [{ type: 'text', text: '{"decision":"approve","reason":"$15 < $20","summary":"ok","evidence":{}}' }],
+    }));
+    const provider = new AnthropicProvider(openRouterConfig(), http);
+    const result = await provider.reviewPlan({
+      instruction: 'Approve only if the lowest helium monthly phone plan is less than $20',
+      plan: {},
+      research: { needed: true, mode: 'auto_current_facts', currentDate: '2026-06-09T00:00:00.000Z', maxSearches: 3 },
+    });
+
+    expect(result.decision).toBe('approve');
+    expect(http.calls).toHaveLength(2);
+    const researchCall = http.calls[0]!;
+    expect(researchCall.url).toBe('https://openrouter.ai/api/v1/messages');
+    const researchBody = JSON.parse(researchCall.body) as Record<string, unknown>;
+    const tools = researchBody.tools as Array<Record<string, unknown>>;
+    // The fix: native Anthropic server tool, which OpenRouter's Anthropic skin forwards to
+    // Anthropic 1P. The old `openrouter:web_search` was silently dropped on /messages, leaving
+    // Claude to answer ungrounded from training (the Helium "$0" bug).
+    expect(tools[0]).toMatchObject({ type: 'web_search_20250305', name: 'web_search' });
+    expect(researchCall.body).not.toContain('openrouter:web_search');
+  });
+
+  it('pricing research with NO citations falls back to "could not be verified" (never a fabricated price)', async () => {
+    const http = new FakeHttpExecutor();
+    // Research pass: model produced a price from training but returned ZERO citations — exactly
+    // what happens when a web-search tool silently never runs (the OpenRouter+Claude "$0").
+    http.queueResponse(200, JSON.stringify({
+      content: [{ type: 'text', text: "Helium's Zero Plan is $0/month." }],
+    }));
+    // Structured review pass.
+    http.queueResponse(200, JSON.stringify({
+      content: [{ type: 'text', text: '{"decision":"needs_input","reason":"confirm price","summary":"verify","evidence":{}}' }],
+    }));
+    const provider = new AnthropicProvider(openRouterConfig(), http);
+    await provider.reviewPlan({
+      instruction: 'Approve only if the lowest helium monthly phone plan is less than $20',
+      plan: {},
+      research: { needed: true, mode: 'auto_current_facts', currentDate: '2026-06-09T00:00:00.000Z', maxSearches: 3 },
+    });
+
+    expect(http.calls).toHaveLength(2);
+    const reviewBody = JSON.parse(http.calls[1]!.body) as Record<string, unknown>;
+    const reviewMessages = reviewBody.messages as Array<{ role: string; content: string }>;
+    const reviewUserContent = JSON.parse(reviewMessages[0]!.content) as Record<string, unknown>;
+    const evidence = (reviewUserContent.context as Record<string, unknown>).researchEvidence as Record<string, unknown>;
+    expect(evidence).toBeDefined();
+    expect(String(evidence.summary)).toContain('could not be verified');
+    // The ungrounded "$0" never reaches the review pass as a researched fact.
+    expect(String(evidence.summary)).not.toContain('$0');
+    expect(evidence.sources).toEqual([]);
+  });
 });

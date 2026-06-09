@@ -252,6 +252,10 @@ const REVIEW_JSON_SCHEMA = {
   required: ['decision', 'reason', 'summary', 'evidence'],
 } as const;
 
+// Lenient on purpose (optional fields + maxItems) for the tolerant connector parser. The connector
+// transport runs it through toOpenAiStrictSchema() before handing it to Codex/Claude, so do NOT
+// hand-edit this to be strict-safe — that would couple it to one transport and lose the optional
+// intent. The API-key path sends it to nobody (OpenAI research uses the native web_search tool).
 const RESEARCH_JSON_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -1527,7 +1531,13 @@ export class BridgeAiPlanner {
       return { output_text: text };
     } catch (err) {
       if (err instanceof ConnectorError) {
-        throw new ProtocolError('wallet_unreachable', err.message);
+        // 'binary-not-found' is a setup/auth problem (CLI not installed / not signed in), not a
+        // transient outage — map it to 'unauthorized' (non-recoverable) so diagnostics don't
+        // conflate "connector CLI missing" with "the wallet bridge is down". Transient failures
+        // (timeout/exit/empty/spawn-failed) stay 'wallet_unreachable' (recoverable). The verbatim
+        // message is preserved in every branch so the real connector error still surfaces.
+        const code = err.code === 'binary-not-found' ? 'unauthorized' : 'wallet_unreachable';
+        throw new ProtocolError(code, err.message);
       }
       throw err;
     }
@@ -1990,8 +2000,14 @@ function anthropicWebSearchTool(): Record<string, unknown> {
   };
 }
 
-function anthropicWebSearchToolForConfig(config: AiRuntimeConfig): Record<string, unknown> {
-  return isOpenRouterProvider(config) ? openRouterWebSearchTool() : anthropicWebSearchTool();
+function anthropicWebSearchToolForConfig(_config: AiRuntimeConfig): Record<string, unknown> {
+  // This selector is only used on the Anthropic Messages transport (api.anthropic.com or
+  // OpenRouter's Anthropic-compat skin at /messages). OpenRouter's `openrouter:web_search`
+  // server tool only works on its Chat Completions / Responses endpoints — NOT the Messages
+  // skin — so binding it here meant the tool was silently dropped and the model answered the
+  // research prompt ungrounded (the OpenRouter+Claude Helium "$0" bug). Always bind Anthropic's
+  // NATIVE web_search tool; OpenRouter's skin forwards native tool use to Anthropic 1P.
+  return anthropicWebSearchTool();
 }
 
 function unsupportedResearchReview(
@@ -2392,8 +2408,12 @@ function normalizeResearchEvidence(
   // stale price as if it were current.
   const citations = filterLowAuthorityCitationsLocal(rawCitations, instruction);
   const text = extractModelText(payload).trim();
+  // A pricing question with no usable official citation is "unverified" — whether the citations
+  // were filtered out as low-authority OR the provider returned none at all (e.g. a model
+  // answering from training because its web-search tool silently never ran, the OpenRouter+Claude
+  // Helium "$0"). Never propagate an un-sourced price; force the review to needs_input.
   const droppedAllForPricing =
-    rawCitations.length > 0 && citations.length === 0 && isPricingInstructionLocal(instruction);
+    citations.length === 0 && isPricingInstructionLocal(instruction);
   const summary = droppedAllForPricing
     ? 'Current pricing could not be verified against an official source. Ask the user to confirm the plan name and price.'
     : (text ? compactReviewText(text, 1600) : 'Research ran, but the provider did not return readable source-backed findings.');

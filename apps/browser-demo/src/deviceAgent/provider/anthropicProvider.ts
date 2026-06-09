@@ -97,12 +97,15 @@ export class AnthropicProvider implements DeviceAgentProvider {
       const instruction = extractInstructionText(payload);
       const filteredCitations = filterLowAuthorityCitations(rawCitations, instruction);
 
-      // If filtering dropped every citation AND the question is a pricing question,
-      // suppress the summary too — better to let the structured review fall through to
-      // needs_input than surface a stale answer from a discarded blog post.
-      const dropped = rawCitations.length > 0 && filteredCitations.length === 0;
+      // A pricing question with no usable official citation is "unverified" — whether the
+      // citations were filtered out as low-authority OR the provider returned none at all
+      // (e.g. a model answering from training because its web-search tool silently never ran —
+      // the root cause of the OpenRouter+Claude Helium "$0"). Never propagate an un-sourced
+      // price: replace it with the could-not-verify summary so the structured review returns
+      // needs_input instead of approving on a fabricated figure.
       const pricingQuestion = isPricingInstruction(instruction);
-      const summary = (dropped && pricingQuestion)
+      const unverifiedPricing = pricingQuestion && filteredCitations.length === 0;
+      const summary = unverifiedPricing
         ? 'Current pricing could not be verified against an official source. Ask the user to confirm the plan name and price.'
         : (rawSummary || 'Research ran but produced no summary text.');
 
@@ -159,7 +162,13 @@ export class AnthropicProvider implements DeviceAgentProvider {
       system: messages.system,
       messages: [{ role: 'user', content: messages.userContent }],
       temperature,
-      ...(researchNeeded(payload) ? { tools: [webSearchToolForConfig(this.config, payload)] } : {}),
+      // This provider always speaks the Anthropic Messages format (/messages), whether direct
+      // or via OpenRouter's Anthropic-compat skin. OpenRouter's `openrouter:web_search` server
+      // tool only works on its Chat Completions / Responses endpoints — NOT the Messages skin —
+      // so binding it here meant the tool was silently dropped and Claude answered the research
+      // prompt ungrounded (the Helium "$0" bug). Always bind Anthropic's NATIVE web_search tool;
+      // OpenRouter's skin forwards native tool use to Anthropic 1P, which executes it.
+      ...(researchNeeded(payload) ? { tools: [anthropicWebSearchTool(payload)] } : {}),
     };
 
     // Browser-direct (Device Agent) calls go through CORS. OpenRouter's documented browser
@@ -228,25 +237,6 @@ function researchMaxUses(payload: Record<string, unknown>): number {
 
 function isOpenRouterConfig(config: RuntimeConfig): boolean {
   return config.provider.trim().toLowerCase() === 'openrouter' || (config.baseUrl ?? '').includes('openrouter.ai');
-}
-
-function webSearchToolForConfig(config: RuntimeConfig, payload: Record<string, unknown>): Record<string, unknown> {
-  return isOpenRouterConfig(config) ? openRouterWebSearchTool() : anthropicWebSearchTool(payload);
-}
-
-function openRouterWebSearchTool(): Record<string, unknown> {
-  return {
-    type: 'openrouter:web_search',
-    parameters: {
-      engine: 'auto',
-      max_total_results: 3,
-      user_location: {
-        type: 'approximate',
-        country: 'US',
-        timezone: 'America/Los_Angeles',
-      },
-    },
-  };
 }
 
 function anthropicWebSearchTool(payload: Record<string, unknown>): Record<string, unknown> {

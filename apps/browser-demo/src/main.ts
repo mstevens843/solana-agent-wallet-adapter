@@ -21614,7 +21614,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
       ${isRail || mobilePlannerSetup
         ? `<p class="ai-security-note compact">AI suggests approve/deny and answers questions before signing. Your provider sees request details and public wallet address - never keys, seed phrase, location, or device IDs. <a href="/privacy" data-site-link="/privacy">Privacy Policy</a></p>${bridgeSetupCard}`
         : `
-          ${aiModeLimitations()}
+          ${state.aiSettings.mode === 'bridge' ? '' : aiModeLimitations()}
           ${bridgeSetupCard}
           ${state.aiSettings.mode === 'device-agent' ? deviceAgentConnectionCard(state.deviceAgentStatus) : ''}
           <div class="ai-readiness-summary" aria-label="AI planner readiness">
@@ -36804,6 +36804,17 @@ async function runConnectBridge(): Promise<void> {
   await run('bridge', async () => {
     state.bridgeUrl = inputValue('#bridgeUrl') || state.bridgeUrl;
     state.bridgeToken = inputValue('#bridgeToken') || state.bridgeToken;
+    // On desktop the Tauri sidecar owns the bridge; if it died, respawn it (and pick up the
+    // possibly-shifted port + rotated token) before connecting, so "Check local bridge" actually
+    // heals a stopped bridge instead of re-pinging a dead endpoint. The synced values are
+    // authoritative on desktop, so apply them after reading the inputs above.
+    if (state.tauriNativeEnvironment.isTauriNative) {
+      const status = await tauriNativeStartBridge();
+      if (status) {
+        state.tauriBridgeStatus = status;
+        syncBridgeConfigFromTauriStatus(status);
+      }
+    }
     await activateBridgeConnection({ refreshConfig: true, strictSync: true });
     if (state.aiSettings.mode === 'bridge') {
       await refreshBridgeAiStatus(false);
@@ -45052,6 +45063,12 @@ async function bridgeRequest<T = unknown>(path: string, init?: RequestInit): Pro
 }
 
 function bridgeOfflineMessage(): string {
+  if (state.tauriNativeEnvironment.isTauriNative) {
+    // The desktop app owns and auto-starts its own bridge — never tell the user to run the CLI
+    // (that starts a *second* bridge on a different port). Keep the recognized prefix so
+    // isBridgeOfflineMessage() still classifies this as offline (toast + poll teardown).
+    return `Local approval bridge is not running at ${compactEndpoint(state.bridgeUrl)}. The desktop app manages this bridge — click Start bridge (or Retry bridge check), then Check local bridge. You do not need to run the CLI.`;
+  }
   if (launchParams.cliSurface === 'desktop') {
     return `Local wallet service is not running at ${compactEndpoint(state.bridgeUrl)}. Return to the desktop app, restart the local runtime, and try again.`;
   }
@@ -45245,6 +45262,10 @@ async function showBridgeOfflineToast(title: string): Promise<void> {
 
 async function bridgeOfflineDiagnosticMessage(): Promise<string> {
   const bridgeEndpoint = compactEndpoint(state.bridgeUrl);
+  if (state.tauriNativeEnvironment.isTauriNative) {
+    // Desktop owns its bridge; the wallet-host probe + "run the CLI" guidance below is for web/CLI.
+    return `Local approval bridge is not running at ${bridgeEndpoint}. The desktop app manages this bridge — click Start bridge (or Retry bridge check), then Check local bridge. You do not need to run the CLI.`;
+  }
   const walletHostUrl = inferredWalletHostUrl();
   const walletHostReachable = walletHostUrl ? await canReachLocalEndpoint(walletHostUrl) : false;
   if (walletHostReachable) {

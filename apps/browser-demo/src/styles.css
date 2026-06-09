@@ -20992,6 +20992,10 @@ button.danger:hover:not(:disabled) {
   grid-column: span 2;
 }
 
+.command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] > .local-bridge-ai-setup-card {
+  grid-column: 1 / -1;
+}
+
 .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] > .ai-setting-key {
   grid-column: 1 / -1;
 }

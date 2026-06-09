@@ -115,9 +115,13 @@ internal class OpenAiNativeProvider(
             val instruction = extractInstructionText(payload)
             val filteredCitations = CitationFilter.filterLowAuthorityCitations(rawCitations, instruction)
 
-            val dropped = rawCitations.isNotEmpty() && filteredCitations.isEmpty()
+            // A pricing question with no usable official citation is unverified — whether citations
+            // were filtered out as low-authority OR the provider returned none at all (a model
+            // answering from training because its web-search tool silently never ran, the
+            // OpenRouter+Claude Helium "$0"). Never propagate an un-sourced price; force needs_input.
             val pricingQuestion = CitationFilter.isPricingInstruction(instruction)
-            val summary = if (dropped && pricingQuestion) {
+            val unverifiedPricing = pricingQuestion && filteredCitations.isEmpty()
+            val summary = if (unverifiedPricing) {
                 "Current pricing could not be verified against an official source. Ask the user to confirm the plan name and price."
             } else {
                 rawSummary.ifEmpty { "Research ran but produced no summary text." }
