@@ -3,6 +3,17 @@ import { REQUEST_TIMEOUT_MS } from '../shared/types.js';
 import { errorMessage, parseJsonBody, responseError } from '../shared/util.js';
 import { loadBearerToken } from '../auth/sessionStore.js';
 
+// The bridge's 4 AI planner endpoints stream a keepalive heartbeat and therefore always return HTTP
+// 200 — a failure comes back as a 200 body with a top-level `error` (see writeJsonWithKeepalive in
+// the bridge). Only these paths get the 200-error treatment; other /bridge/ai/* routes (status,
+// session-key, connector/*) keep normal status codes and may carry a benign `error` field.
+const STREAMING_AI_BRIDGE_PATHS = [
+  '/bridge/ai/generate-plan',
+  '/bridge/ai/review-plan',
+  '/bridge/ai/ask-about-plan',
+  '/bridge/ai/chat',
+];
+
 export function bridgeUrl(options: GlobalOptions, path: string): URL {
   const base = options.bridgeUrl.endsWith('/') ? options.bridgeUrl : `${options.bridgeUrl}/`;
   const url = new URL(path.startsWith('/') ? path.slice(1) : path, base);
@@ -50,8 +61,11 @@ export async function bridgeRequest<T = unknown>(
 
   const text = await response.text();
   const body = parseJsonBody(text);
-  if (!response.ok) {
-    const error = responseError(body);
+  // Streaming AI endpoints signal failure with a top-level `error` on a 200; everything else uses the
+  // HTTP status. parseJsonBody tolerates the leading keepalive whitespace before the JSON.
+  const streamingAiError = STREAMING_AI_BRIDGE_PATHS.includes(path) ? responseError(body) : undefined;
+  if (!response.ok || streamingAiError) {
+    const error = streamingAiError ?? responseError(body);
     throw new Error(error ?? `Local wallet bridge returned HTTP ${response.status}.`);
   }
   return body as T;

@@ -860,20 +860,29 @@ async function handleRequest(
       writeJson(res, 200, launchConnectorLogin(connector, body.connectorPath?.trim() || undefined));
       return;
     }
+    // The 4 AI endpoints stream a keepalive heartbeat (see writeJsonWithKeepalive): a connector
+    // (subscription-CLI) review can run for minutes, longer than an embedding webview's request
+    // timeout. The request parse runs INSIDE producePayload so a parse/validation throw lands in the
+    // streamed `{ error }` envelope rather than escaping to the global 400 catch (which the streamed
+    // client can no longer classify once the 200 head is flushed).
     if (req.method === 'POST' && url.pathname === '/bridge/ai/generate-plan') {
-      writeJson(res, 200, await aiPlanner.generatePlan((await readJson(req)) as AiPlanRequest));
+      await writeJsonWithKeepalive(res, async () =>
+        aiPlanner.generatePlan((await readJson(req)) as AiPlanRequest));
       return;
     }
     if (req.method === 'POST' && url.pathname === '/bridge/ai/review-plan') {
-      writeJson(res, 200, await aiPlanner.reviewPlan(await bridgeReviewRequestWithWallet(backend, await readJson(req))));
+      await writeJsonWithKeepalive(res, async () =>
+        aiPlanner.reviewPlan(await bridgeReviewRequestWithWallet(backend, await readJson(req))));
       return;
     }
     if (req.method === 'POST' && url.pathname === '/bridge/ai/ask-about-plan') {
-      writeJson(res, 200, await aiPlanner.askAboutPlan(await bridgeAskRequestWithWallet(backend, await readJson(req))));
+      await writeJsonWithKeepalive(res, async () =>
+        aiPlanner.askAboutPlan(await bridgeAskRequestWithWallet(backend, await readJson(req))));
       return;
     }
     if (req.method === 'POST' && url.pathname === '/bridge/ai/chat') {
-      writeJson(res, 200, await aiPlanner.chat(await bridgeChatRequestWithOptionalWallet(backend, await readJson(req))));
+      await writeJsonWithKeepalive(res, async () =>
+        aiPlanner.chat(await bridgeChatRequestWithOptionalWallet(backend, await readJson(req))));
       return;
     }
     if (req.method === 'GET' && url.pathname === '/bridge/action/status') {
@@ -1480,6 +1489,10 @@ async function handleRequest(
     }
     writeJson(res, 404, { error: 'not_found' });
   } catch (err) {
+    // A streaming handler (writeJsonWithKeepalive) commits the 200 head before the payload is known
+    // and writes its own error envelope, so it never reaches here. Guard anyway: once the head is
+    // flushed we cannot set a 400, and a second write would throw / corrupt the response.
+    if (res.headersSent || res.writableEnded) return;
     const protocolErr =
       err instanceof ProtocolError
         ? err
@@ -1932,6 +1945,53 @@ function writeJson(res: ServerResponse, status: number, payload: unknown): void 
   res.statusCode = status;
   res.setHeader('content-type', 'application/json');
   res.end(JSON.stringify(payload));
+}
+
+// How often to flush a keepalive byte while a slow AI handler runs. 15s gives several heartbeats
+// before a typical ~60s webview inactivity timeout. Operators behind an aggressive proxy can lower it
+// via AGENT_WALLET_KEEPALIVE_MS; tests use it to force a drip deterministically.
+function aiKeepaliveIntervalMs(): number {
+  const fromEnv = Number(process.env.AGENT_WALLET_KEEPALIVE_MS);
+  return Number.isFinite(fromEnv) && fromEnv > 0 ? fromEnv : 15_000;
+}
+
+// Stream a JSON response while a slow handler runs, flushing a whitespace heartbeat so an embedding
+// webview (WKWebView / WebView2) never trips its ~60s request-inactivity timeout — which our
+// subscription-connector reviews routinely exceed (a research pass + a review pass, each capped at
+// 120s). Plain browsers don't impose that timeout, so for web/CLI this is purely belt-and-suspenders.
+//
+// Because the 200 status + headers are committed before the payload is known, these endpoints ALWAYS
+// return HTTP 200: success payloads have no top-level `error`, failures serialize
+// `{ error: protocolErr.toPayload() }` (byte-identical to the non-streamed 400 body), and clients
+// branch on the presence of a top-level `error`. JSON permits leading insignificant whitespace, so
+// the dripped spaces never corrupt the body. The mapping here mirrors the global catch below so the
+// error contract is unchanged apart from the status code.
+async function writeJsonWithKeepalive(
+  res: ServerResponse,
+  producePayload: () => Promise<unknown>,
+): Promise<void> {
+  res.statusCode = 200;
+  res.setHeader('content-type', 'application/json');
+  // No content-length: the heartbeat spaces make the final length unknown up front, so Node streams
+  // the body with chunked transfer-encoding once we write() before end().
+  const heartbeat = setInterval(() => {
+    if (!res.writableEnded && !res.destroyed) res.write(' ');
+  }, aiKeepaliveIntervalMs());
+  heartbeat.unref?.();
+  const endWith = (value: unknown): void => {
+    if (!res.writableEnded) res.end(JSON.stringify(value));
+  };
+  try {
+    endWith(await producePayload());
+  } catch (err) {
+    const protocolErr =
+      err instanceof ProtocolError
+        ? err
+        : new ProtocolError('wallet_unreachable', err instanceof Error ? err.message : 'Bridge error.');
+    endWith({ error: protocolErr.toPayload() });
+  } finally {
+    clearInterval(heartbeat);
+  }
 }
 
 function writeHtml(res: ServerResponse, body: string): void {

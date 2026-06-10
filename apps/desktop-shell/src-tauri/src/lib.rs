@@ -764,6 +764,17 @@ fn spawn_managed_process(
             command
         }
     };
+    // Finder/Dock-launched builds inherit a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin) that omits
+    // Homebrew / npm / pnpm dirs, so the bridge can't resolve the codex/claude/gemini connector
+    // binaries (it scans PATH). Augment PATH with the common install locations. No-op on Windows (GUI
+    // launches inherit the user PATH there). A terminal-launched `tauri:dev` already has the full
+    // shell PATH, so this only ever adds missing dirs.
+    #[cfg(not(target_os = "windows"))]
+    {
+        let path = augmented_path();
+        runtime.logs.push_back(format!("[desktop] {label} PATH={path}"));
+        command.env("PATH", path);
+    }
     command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1842,6 +1853,48 @@ fn runtime_data_dir() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".solana-agent-wallet")
 }
 
+/// Build a PATH for the bridge subprocess that includes the user's common CLI install dirs, so the
+/// connector binaries (codex/claude/gemini) resolve even when the app is launched from Finder/Dock
+/// (which gives a minimal PATH). Inherited entries keep highest precedence; the well-known install
+/// dirs are appended after, de-duplicated and order-preserving. macOS/Linux only.
+#[cfg(not(target_os = "windows"))]
+fn augmented_path() -> String {
+    augment_path_with(
+        std::env::var("PATH").unwrap_or_default(),
+        std::env::var("HOME").ok().as_deref(),
+    )
+}
+
+// Pure core of augmented_path() (no env reads), so it can be unit-tested deterministically.
+#[cfg(not(target_os = "windows"))]
+fn augment_path_with(existing: String, home: Option<&str>) -> String {
+    let mut all: Vec<String> = existing.split(':').map(|s| s.to_string()).collect();
+    all.extend([
+        "/opt/homebrew/bin".to_string(),
+        "/opt/homebrew/sbin".to_string(),
+        "/usr/local/bin".to_string(),
+        "/usr/local/sbin".to_string(),
+    ]);
+    if let Some(home) = home.filter(|h| !h.is_empty()) {
+        all.extend([
+            format!("{home}/.local/bin"),
+            format!("{home}/.cargo/bin"),
+            format!("{home}/.npm-global/bin"),
+            format!("{home}/.local/share/pnpm"),
+            format!("{home}/.bun/bin"),
+            format!("{home}/.deno/bin"),
+        ]);
+    }
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut ordered: Vec<String> = Vec::new();
+    for dir in all {
+        if !dir.is_empty() && seen.insert(dir.clone()) {
+            ordered.push(dir);
+        }
+    }
+    ordered.join(":")
+}
+
 fn bridge_endpoint_reachable(url: &str) -> bool {
     endpoint_reachable(url, 8787, Duration::from_millis(150))
 }
@@ -2065,6 +2118,32 @@ mod tests {
         // Port 0 makes the OS pick an available ephemeral port; we just care
         // the alias didn't break the bind call.
         assert!(chosen == 0 || chosen > 0);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn augment_path_appends_common_dirs_without_duplicates() {
+        // A Finder-launched minimal PATH that already happens to include one of the dirs we append.
+        let path = augment_path_with("/usr/bin:/opt/homebrew/bin".to_string(), Some("/home/u"));
+        let entries: Vec<&str> = path.split(':').collect();
+        // Inherited entries stay first and keep precedence.
+        assert_eq!(entries[0], "/usr/bin");
+        // Common install dirs (Homebrew, /usr/local) are present.
+        assert!(entries.contains(&"/opt/homebrew/bin"));
+        assert!(entries.contains(&"/usr/local/bin"));
+        // The home-relative dirs are expanded from HOME.
+        assert!(entries.contains(&"/home/u/.local/bin"));
+        assert!(entries.contains(&"/home/u/.local/share/pnpm"));
+        // The already-present /opt/homebrew/bin is not duplicated.
+        assert_eq!(entries.iter().filter(|e| **e == "/opt/homebrew/bin").count(), 1);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn augment_path_skips_home_dirs_when_home_is_absent() {
+        let path = augment_path_with("/usr/bin".to_string(), None);
+        assert!(path.split(':').all(|entry| !entry.contains("/.local/bin")));
+        assert!(path.split(':').any(|entry| entry == "/usr/local/bin"));
     }
 
     #[test]

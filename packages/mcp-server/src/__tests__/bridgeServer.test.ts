@@ -1,5 +1,6 @@
 import { createServer } from 'node:net';
 import { mkdtemp } from 'node:fs/promises';
+import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -812,6 +813,69 @@ describe('bridge lab artifact routes', () => {
       await handle.stop();
     }
   });
+
+  it('returns HTTP 200 with an { error } envelope when a connector review fails', async () => {
+    // The 4 AI endpoints stream a keepalive heartbeat, so they commit a 200 head before the outcome
+    // is known and can no longer send a 4xx — a failure must come back as a 200 body carrying the
+    // REAL cause, not a transport-level "bridge offline". A connector pointed at a missing binary is
+    // a deterministic failure that exercises this contract.
+    const handle = await startTestBridge({ connectedAddress: CONNECTOR_TEST_WALLET });
+    try {
+      const configured = await fetch(new URL('/bridge/ai/session-key', handle.url), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-agent-wallet-token': 'test-token' },
+        body: JSON.stringify({ engine: 'connector', connector: 'codex', connectorPath: '/no/such/codex-binary' }),
+      });
+      expect(configured.ok).toBe(true);
+
+      const response = await fetch(new URL('/bridge/ai/review-plan', handle.url), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-agent-wallet-token': 'test-token' },
+        body: JSON.stringify(connectorReviewBody()),
+      });
+
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { error?: { code?: string; message?: string } };
+      expect(body.error?.code).toBe('unauthorized');
+      expect(body.error?.message).toMatch(/Codex.*not found/i);
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  it('streams keepalive whitespace yet stays parseable for a slow connector', async () => {
+    // Force a drip: a fake connector that sleeps past a shrunk heartbeat interval, then prints a valid
+    // review. The body must carry leading whitespace AND still parse to the success result.
+    vi.stubEnv('AGENT_WALLET_KEEPALIVE_MS', '10');
+    const slowBin = makeDelayedFakeConnector(60, JSON.stringify({
+      decision: 'approve',
+      reason: 'Looks fine.',
+      summary: 'Approved.',
+      evidence: {},
+    }));
+    const handle = await startTestBridge({ connectedAddress: CONNECTOR_TEST_WALLET });
+    try {
+      await fetch(new URL('/bridge/ai/session-key', handle.url), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-agent-wallet-token': 'test-token' },
+        body: JSON.stringify({ engine: 'connector', connector: 'codex', connectorPath: slowBin }),
+      });
+
+      const response = await fetch(new URL('/bridge/ai/review-plan', handle.url), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-agent-wallet-token': 'test-token' },
+        body: JSON.stringify(connectorReviewBody()),
+      });
+
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      expect(text.startsWith(' '), 'expected a leading keepalive space').toBe(true);
+      const body = JSON.parse(text) as { decision?: string };
+      expect(body.decision).toBe('approve');
+    } finally {
+      await handle.stop();
+    }
+  });
 });
 
 describe('bridge prepared-action prepare-transaction', () => {
@@ -1410,4 +1474,42 @@ function jsonResponse(body: unknown, status = 200): Response {
     status,
     headers: { 'content-type': 'application/json' },
   });
+}
+
+// A minimal review request with no policy NOTE / outside facts, so it takes a single connector pass
+// (no research) — keeping the keepalive/error-envelope assertions deterministic.
+const CONNECTOR_TEST_WALLET = '11111111111111111111111111111111';
+
+function connectorReviewBody(): Record<string, unknown> {
+  return {
+    walletAddress: CONNECTOR_TEST_WALLET,
+    plan: {
+      intent: 'Transfer SOL',
+      route: 'SOL transfer',
+      risk: 'Low',
+      approval: 'Wallet approval required.',
+      source: 'template',
+      category: 'payments',
+      actionType: 'transfer_sol',
+      templateTitle: 'Transfer SOL',
+      parameters: { recipient: 'So11111111111111111111111111111111111111112', amount: '0.01' },
+      fields: [{ label: 'Amount', value: '0.01' }],
+      safeguards: ['Check recipient.'],
+    },
+    instruction: 'No outside facts needed; just verify the draft.',
+  };
+}
+
+// A fake connector CLI that prints `outputJson` after `delayMs`, so the bridge stays silent long
+// enough for the keepalive heartbeat to drip at least once.
+function makeDelayedFakeConnector(delayMs: number, outputJson: string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'sawa-fake-cli-'));
+  const bin = join(dir, 'fake-cli.cjs');
+  writeFileSync(
+    bin,
+    `#!/usr/bin/env node\n`
+    + `setTimeout(() => { process.stdout.write(${JSON.stringify(outputJson)}); }, ${delayMs});\n`,
+  );
+  chmodSync(bin, 0o755);
+  return bin;
 }

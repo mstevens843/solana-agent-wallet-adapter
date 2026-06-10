@@ -63,6 +63,16 @@ function makeScriptedFakeBinary(scriptBody: string): string {
   return bin;
 }
 
+// Pull the most recent structured `[connector] {...}` line out of a console.error spy's calls.
+function lastConnectorLog(calls: unknown[][]): Record<string, unknown> {
+  const line = calls
+    .map((call) => String(call[0]))
+    .reverse()
+    .find((text) => text.startsWith('[connector]'));
+  if (!line) throw new Error('no [connector] log line was emitted');
+  return JSON.parse(line.slice('[connector] '.length)) as Record<string, unknown>;
+}
+
 const reviewJson = JSON.stringify({
   decision: 'approve',
   reason: 'Plan matches the request and stays under the cap.',
@@ -290,6 +300,51 @@ describe('BridgeAiPlanner connector (cli-agent) transport', () => {
       recoverable: true,
       message: expect.stringMatching(/Codex.*exited with code 1.*text\.format\.schema/i),
     });
+  });
+
+  it('emits a deterministic [connector] log line on a successful run', async () => {
+    const argvOut = join(mkdtempSync(join(tmpdir(), 'agentic-argv-')), 'argv.json');
+    const bin = makeFakeBinary(reviewJson, argvOut);
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // Snapshot the recorded calls BEFORE mockRestore() — restore clears mock.calls.
+    let calls: unknown[][] = [];
+    try {
+      const planner = new BridgeAiPlanner();
+      planner.setSessionKey({ engine: 'connector', connector: 'codex', connectorPath: bin });
+      await planner.reviewPlan(reviewRequest);
+      calls = errSpy.mock.calls.map((call) => [...call]);
+    } finally {
+      errSpy.mockRestore();
+    }
+    const event = lastConnectorLog(calls);
+    expect(event).toMatchObject({ phase: 'ok', connector: 'codex', mode: 'default' });
+    expect(typeof event.elapsedMs).toBe('number');
+  });
+
+  it('logs a connector failure with its error code and a redacted stderr tail', async () => {
+    // The CLI leaks a provider key on stderr and exits non-zero. The diagnostic log is the user-facing
+    // record in the desktop Logs panel, so it must capture the failure WITHOUT the secret.
+    const bin = makeScriptedFakeBinary(
+      `process.stderr.write('boom: api-key sk-abcdefgh12345678 rejected by provider');\n`
+      + `process.exit(1);\n`,
+    );
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let lines: string[] = [];
+    try {
+      const planner = new BridgeAiPlanner();
+      planner.setSessionKey({ engine: 'connector', connector: 'codex', connectorPath: bin });
+      await expect(planner.reviewPlan(reviewRequest)).rejects.toMatchObject({ code: 'wallet_unreachable' });
+      lines = errSpy.mock.calls.map((call) => String(call[0]));
+    } finally {
+      errSpy.mockRestore();
+    }
+    const failLine = lines.find((text) => text.startsWith('[connector]') && text.includes('"phase":"fail"'));
+    expect(failLine, 'expected a failing [connector] log line').toBeTruthy();
+    const event = JSON.parse(failLine!.slice('[connector] '.length)) as Record<string, unknown>;
+    expect(event).toMatchObject({ phase: 'fail', connector: 'codex', errorCode: 'exit' });
+    // The raw secret must never reach the log; redact() rewrote it.
+    expect(failLine).not.toContain('sk-abcdefgh12345678');
+    expect(String(event.message)).toContain('[redacted]');
   });
 
   it('toOpenAiStrictSchema rewrites a lenient schema into strict-compatible form', () => {

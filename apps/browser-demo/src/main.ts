@@ -28540,7 +28540,7 @@ async function runGenerateAiPlan(): Promise<void> {
     ];
     render();
     const generatedPlan = state.aiSettings.mode === 'bridge'
-      ? await bridgeRequest<AgentPlan>('/bridge/ai/generate-plan', {
+      ? await bridgeAiRequest<AgentPlan>('/bridge/ai/generate-plan', {
         method: 'POST',
         body: JSON.stringify(request),
         signal: operation.controller.signal,
@@ -28963,7 +28963,7 @@ async function runAskAgentAnything(planId: string, question: string): Promise<vo
   try {
     let result: AgentPlanAskResult;
     if (state.aiSettings.mode === 'bridge') {
-      result = await bridgeRequest<AgentPlanAskResult>('/bridge/ai/ask-about-plan', {
+      result = await bridgeAiRequest<AgentPlanAskResult>('/bridge/ai/ask-about-plan', {
         method: 'POST',
         body: JSON.stringify(request),
       });
@@ -31071,7 +31071,7 @@ async function runAgentReview(
   ];
   render();
   if (state.aiSettings.mode === 'bridge') {
-    return bridgeRequest<AgentPlanReviewResult>('/bridge/ai/review-plan', {
+    return bridgeAiRequest<AgentPlanReviewResult>('/bridge/ai/review-plan', {
       method: 'POST',
       body: JSON.stringify(request),
     });
@@ -37081,7 +37081,7 @@ async function generateRecurringAiPlan(draft: RecurringDraft): Promise<AgentPlan
   ];
   render();
   const generated = state.aiSettings.mode === 'bridge'
-    ? await bridgeRequest<AgentPlan>('/bridge/ai/generate-plan', {
+    ? await bridgeAiRequest<AgentPlan>('/bridge/ai/generate-plan', {
       method: 'POST',
       body: JSON.stringify(request),
     })
@@ -45046,6 +45046,20 @@ async function bridgeRequest<T = unknown>(path: string, init?: RequestInit): Pro
     });
   } catch (err) {
     if (isAbortError(err)) throw err;
+    // A non-abort fetch rejection here is a TRANSPORT failure, which is not necessarily an offline
+    // bridge: an embedding webview also rejects fetch when it kills a long-running request on its
+    // idle timeout (e.g. a slow subscription-connector review). Only claim the bridge is offline when
+    // we have no recent sign it was reachable — otherwise surface the truth so the user checks the
+    // Logs, not a red herring about starting the bridge.
+    const bridgeRecentlyReachable =
+      state.bridgeActive ||
+      (state.tauriNativeEnvironment.isTauriNative && Boolean(state.tauriBridgeStatus?.bridgeReachable));
+    if (bridgeRecentlyReachable) {
+      throw new BridgeRequestError(
+        'The local bridge accepted the request but it did not complete in time. A subscription-connector review can take a while — check the Logs panel for the connector error, then retry.',
+        0,
+      );
+    }
     throw new BridgeRequestError(bridgeOfflineMessage(), 0);
   }
   const payload = (await response.json().catch(() => ({}))) as unknown;
@@ -45058,6 +45072,21 @@ async function bridgeRequest<T = unknown>(path: string, init?: RequestInit): Pro
       );
     }
     throw new BridgeRequestError(error, response.status);
+  }
+  return payload as T;
+}
+
+// AI bridge endpoints stream a keepalive heartbeat and therefore ALWAYS return HTTP 200 (see
+// writeJsonWithKeepalive in the bridge): a failure comes back as a 200 body with a top-level `error`
+// instead of a 4xx. bridgeRequest can't tell that apart from success, so AI callers go through this
+// wrapper, which re-applies the same handling the HTTP-error path uses — so the real connector
+// message (e.g. "Codex (ChatGPT plan) timed out after 120s.") reaches the UI. We deliberately do NOT
+// fold this into bridgeRequest: non-AI 200 bodies (e.g. a rejected ApprovalResource) legitimately
+// carry a top-level `error` and must still be treated as success.
+async function bridgeAiRequest<T = unknown>(path: string, init?: RequestInit): Promise<T> {
+  const payload = await bridgeRequest<unknown>(path, init);
+  if (payload && typeof payload === 'object' && (payload as { error?: unknown }).error != null) {
+    throw new BridgeRequestError(extractBridgeError(payload), 200);
   }
   return payload as T;
 }

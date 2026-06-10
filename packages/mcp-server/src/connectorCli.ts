@@ -280,17 +280,22 @@ export interface RunConnectorOptions {
  */
 export async function runConnector(connector: AgentConnector, options: RunConnectorOptions): Promise<string> {
   const spec = CONNECTOR_SPECS[connector];
-  const binaryPath = resolveConnectorBinary(connector, options.explicitPath);
-  if (!binaryPath) {
-    throw new ConnectorError(
-      `${spec.label} CLI not found. Install it and run \`${connectorLoginCommand(connector, options.explicitPath)}\`, then reconnect.`,
-      'binary-not-found',
-    );
-  }
-  const prompt = `${options.systemPrompt}\n\n${options.userPrompt}`.trim();
-  const cwd = await mkdtemp(join(tmpdir(), 'agentic-connector-'));
+  const mode = options.mode ?? 'default';
+  // Deterministic, secret-safe lifecycle logging: one line on success, one on failure (covering
+  // binary-not-found / spawn-failed / timeout / exit / empty), so a connector review that fails for
+  // ANY reason leaves a precise record in the desktop Logs panel — not the generic "bridge offline".
+  const startedAt = Date.now();
+  let cwd: string | undefined;
   try {
-    const mode = options.mode ?? 'default';
+    const binaryPath = resolveConnectorBinary(connector, options.explicitPath);
+    if (!binaryPath) {
+      throw new ConnectorError(
+        `${spec.label} CLI not found. Install it and run \`${connectorLoginCommand(connector, options.explicitPath)}\`, then reconnect.`,
+        'binary-not-found',
+      );
+    }
+    const prompt = `${options.systemPrompt}\n\n${options.userPrompt}`.trim();
+    cwd = await mkdtemp(join(tmpdir(), 'agentic-connector-'));
     // Forward a strict-safe schema to the connector CLIs (Codex --output-schema / Claude
     // --json-schema); they relay it to the provider with strict:true, which rejects our lenient
     // research schema (maxItems / optional fields) with an HTTP 400 on text.format.schema.
@@ -317,9 +322,21 @@ export async function runConnector(connector: AgentConnector, options: RunConnec
     if (!text) {
       throw new ConnectorError(`${spec.label} returned an empty response.`, 'empty');
     }
+    logConnectorEvent({ phase: 'ok', connector, mode, elapsedMs: Date.now() - startedAt, bytes: stdout.length });
     return text;
+  } catch (err) {
+    logConnectorEvent({
+      phase: 'fail',
+      connector,
+      mode,
+      elapsedMs: Date.now() - startedAt,
+      errorCode: err instanceof ConnectorError ? err.code : 'unknown',
+      // Connector error messages already redact their stderr tail; redact again defensively.
+      message: redact(err instanceof Error ? err.message : String(err)),
+    });
+    throw err;
   } finally {
-    await rm(cwd, { recursive: true, force: true }).catch(() => {});
+    if (cwd) await rm(cwd, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -529,4 +546,24 @@ function redact(message: string): string {
   return message
     .replace(/\b(sk|pk|sr|rk)-[A-Za-z0-9_-]{8,}\b/g, '$1-[redacted]')
     .replace(/((?:api[_-]?key|authorization|bearer|token)["'\s:=]+)\S+/gi, '$1[redacted]');
+}
+
+// Always-on, secret-safe connector lifecycle log. Emitted to stderr so the desktop shell's log
+// reader surfaces it in the Logs panel without any flag — trace() can't, because it's gated behind
+// AGENT_WALLET_TRACE, which the desktop bridge subprocess never sets. Only `message` is free text and
+// callers pass it through redact(); the rest (connector, mode, code, timings) is non-secret.
+function logConnectorEvent(event: {
+  phase: 'ok' | 'fail';
+  connector: AgentConnector;
+  mode: ConnectorRunMode;
+  elapsedMs: number;
+  bytes?: number;
+  errorCode?: string;
+  message?: string;
+}): void {
+  try {
+    console.error(`[connector] ${JSON.stringify({ ts: new Date().toISOString(), ...event })}`);
+  } catch {
+    // Logging must never affect the connector result.
+  }
 }
