@@ -130,7 +130,7 @@ export function createBridgeServer(options: CreateBridgeServerOptions): BridgeSe
   // through the same local /bridge/ai handlers (subscription connector CLI). The
   // bridge stays loopback-bound; only this outbound channel reaches the relay.
   const pairingController = new BridgePairingController({
-    dispatch: createBridgeAiDispatch(aiPlanner, backend),
+    dispatch: createBridgeAiDispatch(aiPlanner),
   });
   const url = `http://${host}:${port}/`;
   backend.setApprovalBaseUrl(url);
@@ -305,7 +305,19 @@ function isStrongBridgeToken(token: string): boolean {
 // CLI, wallet-context enrichment, structured output) as the desktop webview.
 // The relay only forwards this fixed allowlist of paths (see
 // bridgeAiRelayHandler FORWARDABLE_AI_PATHS).
-function createBridgeAiDispatch(aiPlanner: BridgeAiPlanner, backend: WalletBackend): BridgeAiDispatch {
+// Trust the phone-supplied walletAddress for a paired-bridge review/ask/chat (the phone is
+// deviceBearer-authenticated). Unlike bridgeReviewRequestWithWallet, this does NOT scope against the
+// desktop bridge's own wallet — that wallet may differ from the phone's and would spuriously reject.
+function pairedTrustedRequest<T extends { walletAddress?: string; context?: Record<string, unknown>; cluster?: string }>(
+  input: unknown,
+  label: string,
+): T {
+  const request = requireJsonObject(input, label) as unknown as T;
+  const wallet = typeof request.walletAddress === 'string' ? request.walletAddress.trim() : '';
+  return wallet ? withTrustedAiWalletContext(request, wallet) : request;
+}
+
+function createBridgeAiDispatch(aiPlanner: BridgeAiPlanner): BridgeAiDispatch {
   return async (path, body) => {
     switch (path) {
       case '/bridge/ai/status':
@@ -325,14 +337,19 @@ function createBridgeAiDispatch(aiPlanner: BridgeAiPlanner, backend: WalletBacke
         }
         return launchConnectorLogin(connector, b.connectorPath?.trim() || undefined);
       }
+      // A paired phone is authenticated by its deviceBearer and supplies its OWN connected wallet.
+      // Do NOT scope review/ask against the DESKTOP bridge's wallet (bridgeReviewRequestWithWallet),
+      // which may differ from the phone's → spurious 'unauthorized'. Instead trust the phone-supplied
+      // walletAddress: review/ask enrich context.wallet from it (pairedTrustedRequest), while
+      // generate-plan passes the body through raw — neither scopes against the desktop wallet.
       case '/bridge/ai/generate-plan':
         return aiPlanner.generatePlan((body ?? {}) as AiPlanRequest);
       case '/bridge/ai/review-plan':
-        return aiPlanner.reviewPlan(await bridgeReviewRequestWithWallet(backend, body));
+        return aiPlanner.reviewPlan(pairedTrustedRequest<AiReviewRequest>(body, 'AI review request'));
       case '/bridge/ai/ask-about-plan':
-        return aiPlanner.askAboutPlan(await bridgeAskRequestWithWallet(backend, body));
+        return aiPlanner.askAboutPlan(pairedTrustedRequest<AiAskRequest>(body, 'AI ask request'));
       case '/bridge/ai/chat':
-        return aiPlanner.chat(await bridgeChatRequestWithOptionalWallet(backend, body));
+        return aiPlanner.chat(pairedTrustedRequest<AiChatRequest>(body, 'AI chat request'));
       default:
         return { error: `Unsupported bridge AI path: ${path}` };
     }

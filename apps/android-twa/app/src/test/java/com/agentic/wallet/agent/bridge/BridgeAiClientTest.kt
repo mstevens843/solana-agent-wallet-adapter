@@ -63,6 +63,7 @@ class BridgeAiClientTest {
     @Test
     fun runForwardSubmitsThenPollsUntilResolved() = runBlocking {
         val transport = FakeBridgeRelayTransport().apply {
+            queueResponse(200, """{"paired":true,"desktopOnline":true}""") // preflight status()
             queueResponse(200, """{"requestId":"req-1","status":"pending"}""") // forward
             queueResponse(200, """{"status":"pending"}""") // poll 1
             queueResponse(200, """{"status":"resolved","result":{"intent":"swap","source":"codex"}}""") // poll 2
@@ -71,7 +72,7 @@ class BridgeAiClientTest {
         assertEquals("swap", result.getString("intent"))
         assertEquals("codex", result.getString("source"))
 
-        val forwardCall = transport.calls.first()
+        val forwardCall = transport.calls[1] // calls[0] is the preflight status() GET
         assertEquals("POST", forwardCall.method)
         assertEquals("https://agentic-signer.com/api/bridge-ai/${pairing.pairUuid}/forward", forwardCall.url)
         assertEquals("Bearer device-bearer-token", forwardCall.headers["Authorization"])
@@ -79,7 +80,7 @@ class BridgeAiClientTest {
         assertEquals("/bridge/ai/generate-plan", forwardBody.getString("path"))
         assertEquals("swap 1 SOL", forwardBody.getJSONObject("body").getString("prompt"))
 
-        val pollCall = transport.calls[1]
+        val pollCall = transport.calls[2]
         assertEquals("GET", pollCall.method)
         assertEquals("https://agentic-signer.com/api/bridge-ai/${pairing.pairUuid}/result/req-1", pollCall.url)
         assertNull(pollCall.body)
@@ -88,6 +89,7 @@ class BridgeAiClientTest {
     @Test
     fun runForwardReRaisesDesktopErrorEnvelope() = runBlocking {
         val transport = FakeBridgeRelayTransport().apply {
+            queueResponse(200, """{"paired":true,"desktopOnline":true}""") // preflight status()
             queueResponse(200, """{"requestId":"req-2","status":"pending"}""")
             queueResponse(200, """{"status":"resolved","result":{"error":"Codex (ChatGPT plan) CLI not found."}}""")
         }
@@ -98,6 +100,22 @@ class BridgeAiClientTest {
             assertEquals(ProviderErrorCodes.UPSTREAM, e.code)
             assertTrue(e.message.contains("CLI not found"))
         }
+    }
+
+    @Test
+    fun runForwardFailsFastWhenDesktopOffline() = runBlocking {
+        // Preflight status() reports the desktop isn't polling the relay -> fail fast, no forward.
+        val transport = FakeBridgeRelayTransport().apply {
+            queueResponse(200, """{"paired":true,"desktopOnline":false}""")
+        }
+        try {
+            client(transport).runForward("/bridge/ai/generate-plan", JSONObject())
+            fail("expected fast-fail")
+        } catch (e: ProviderHttpException) {
+            assertEquals(ProviderErrorCodes.UPSTREAM, e.code)
+            assertTrue(e.message.contains("isn't connected", ignoreCase = true))
+        }
+        assertEquals("only the preflight status() call, no forward", 1, transport.calls.size)
     }
 
     @Test
@@ -116,6 +134,7 @@ class BridgeAiClientTest {
     @Test
     fun runForwardTimesOutWhenDesktopNeverResponds() = runBlocking {
         val transport = FakeBridgeRelayTransport().apply {
+            queueResponse(200, """{"paired":true,"desktopOnline":true}""") // preflight status()
             queueResponse(200, """{"requestId":"req-3","status":"pending"}""")
             repeat(20) { queueResponse(200, """{"status":"pending"}""") }
         }
@@ -129,13 +148,44 @@ class BridgeAiClientTest {
 
     @Test
     fun runForwardMapsAuthFailureToAuthCode() = runBlocking {
-        val transport = FakeBridgeRelayTransport().apply { queueResponse(401, """{"error":"device_auth_failed"}""") }
+        val transport = FakeBridgeRelayTransport().apply {
+            queueResponse(200, """{"paired":true,"desktopOnline":true}""") // preflight status()
+            queueResponse(401, """{"error":"device_auth_failed"}""") // forward
+        }
         try {
             client(transport).runForward("/bridge/ai/generate-plan", JSONObject())
             fail("expected auth error")
         } catch (e: ProviderHttpException) {
             assertEquals(ProviderErrorCodes.AUTH, e.code)
         }
+    }
+
+    @Test
+    fun runForwardRetriesTransientPollBlipThenResolves() = runBlocking {
+        // A dropped result-poll (NETWORK) must NOT fail the request — keep polling; the relay holds the
+        // resolved result in its grace window. Critically, this must NOT re-dispatch (no double-meter).
+        val transport = FakeBridgeRelayTransport().apply {
+            queueResponse(200, """{"paired":true,"desktopOnline":true}""") // preflight
+            queueResponse(200, """{"requestId":"req-x","status":"pending"}""") // forward
+            queueFailure(ProviderHttpException(ProviderErrorCodes.NETWORK, "dropped")) // transient poll blip
+            queueResponse(200, """{"status":"resolved","result":{"intent":"swap"}}""") // recovered poll
+        }
+        val result = client(transport).runForward("/bridge/ai/generate-plan", JSONObject())
+        assertEquals("swap", result.getString("intent"))
+        // Exactly one forward (calls: status, forward, poll-fail, poll-ok).
+        assertEquals(1, transport.calls.count { it.method == "POST" && it.url.endsWith("/forward") })
+    }
+
+    @Test
+    fun runForwardProceedsWhenPreflightStatusThrows() = runBlocking {
+        // A status() blip must not block the request — live=null → proceed to forward.
+        val transport = FakeBridgeRelayTransport().apply {
+            queueFailure(ProviderHttpException(ProviderErrorCodes.NETWORK, "status blip")) // preflight throws
+            queueResponse(200, """{"requestId":"req-y","status":"pending"}""") // forward
+            queueResponse(200, """{"status":"resolved","result":{"intent":"swap"}}""") // poll
+        }
+        val result = client(transport).runForward("/bridge/ai/generate-plan", JSONObject())
+        assertEquals("swap", result.getString("intent"))
     }
 
     @Test

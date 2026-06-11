@@ -21,16 +21,22 @@ import {
 } from './bridgePairing.js';
 import { logDeviceAgentDiag } from './deviceAgent/runtime/diagnosticLog.js';
 
-let activeModal: HTMLElement | null = null;
+// The single close() of the currently-open modal — runs its registered cleanup (poll timers, camera
+// stream) so opening another modal or any close path never leaks them.
+let activeClose: (() => void) | null = null;
 
 function closeActiveModal(): void {
-  if (activeModal) {
-    activeModal.remove();
-    activeModal = null;
-  }
+  activeClose?.();
 }
 
-function buildModalShell(title: string): { overlay: HTMLElement; body: HTMLElement; close: () => void } {
+interface ModalShell {
+  body: HTMLElement;
+  close: () => void;
+  /** Register teardown (clear intervals, stop camera). Runs once, on ANY close path. */
+  onClose: (cleanup: () => void) => void;
+}
+
+function buildModalShell(title: string): ModalShell {
   closeActiveModal();
   const overlay = document.createElement('div');
   overlay.className = 'bridge-pair-overlay';
@@ -56,17 +62,27 @@ function buildModalShell(title: string): { overlay: HTMLElement; body: HTMLEleme
   header.append(heading, closeBtn);
   panel.append(header, body);
   overlay.append(panel);
+  let cleanup: (() => void) | null = null;
+  let closed = false;
   const close = () => {
+    if (closed) return;
+    closed = true;
+    try {
+      cleanup?.();
+    } catch {
+      // teardown must never throw out of a close handler
+    }
     overlay.remove();
-    if (activeModal === overlay) activeModal = null;
+    if (activeClose === close) activeClose = null;
   };
   closeBtn.addEventListener('click', close);
+  // Backdrop click closes too — must run the SAME close() so cleanup fires (camera/timers).
   overlay.addEventListener('click', (e) => {
     if (e.target === overlay) close();
   });
   document.body.append(overlay);
-  activeModal = overlay;
-  return { overlay, body, close };
+  activeClose = close;
+  return { body, close, onClose: (fn) => { cleanup = fn; } };
 }
 
 function statusLine(text: string, tone: 'info' | 'ok' | 'warn' = 'info'): HTMLElement {
@@ -84,7 +100,7 @@ export interface DesktopPairingDeps {
 }
 
 export async function openDesktopPairingModal(deps: DesktopPairingDeps): Promise<void> {
-  const { body, close } = buildModalShell('Pair a phone');
+  const { body, onClose } = buildModalShell('Pair a phone');
   const intro = document.createElement('p');
   intro.style.cssText = 'margin:0;font-size:13px;color:#bcd3c7;';
   intro.textContent =
@@ -95,21 +111,30 @@ export async function openDesktopPairingModal(deps: DesktopPairingDeps): Promise
   body.append(intro, qrWrap, status);
 
   let polling: ReturnType<typeof setInterval> | null = null;
+  let pollFailures = 0;
   const stopPolling = () => {
     if (polling) {
       clearInterval(polling);
       polling = null;
     }
   };
-  // Best-effort revoke + stop polling when the modal closes.
-  const origClose = close;
-  const closeAll = () => {
+  // On close: stop the UI poll, then ask the relay AUTHORITATIVELY whether a phone actually claimed.
+  // Stop the desktop controller ONLY if not paired — a just-paired session reports paired:true and
+  // keeps running to serve the phone; an abandoned (never-scanned) one is torn down so its controller
+  // doesn't poll the relay forever (each poll touch()es the session, so it never TTL-sweeps). Using
+  // server truth (not the ≤2s-lagging UI flag) closes BOTH the round-1 close-race and the round-2
+  // abandoned-pairing leak.
+  onClose(() => {
     stopPolling();
-    void stopDesktopPairing(deps.bridgeRequest).catch(() => {});
-    origClose();
-  };
-  // Re-bind the close button + overlay click to closeAll.
-  body.parentElement?.querySelector<HTMLButtonElement>('button[aria-label="Close"]')?.addEventListener('click', closeAll);
+    void (async () => {
+      try {
+        const s = await pollDesktopPairStatus(deps.bridgeRequest);
+        if (!s.paired) await stopDesktopPairing(deps.bridgeRequest);
+      } catch {
+        // Can't confirm — leave it; the controller's own abandon timeout reaps an unclaimed session.
+      }
+    })();
+  });
 
   try {
     const state = await startDesktopPairing(deps.bridgeRequest);
@@ -137,6 +162,7 @@ export async function openDesktopPairingModal(deps: DesktopPairingDeps): Promise
     polling = setInterval(async () => {
       try {
         const s = await pollDesktopPairStatus(deps.bridgeRequest);
+        pollFailures = 0;
         if (s.paired) {
           stopPolling();
           liveStatus.textContent = '✓ Phone paired. You can close this and use AI on your phone.';
@@ -147,7 +173,14 @@ export async function openDesktopPairingModal(deps: DesktopPairingDeps): Promise
           liveStatus.style.color = '#ffb27a';
         }
       } catch {
-        // transient — keep polling
+        // Bound the "Waiting…" state — after repeated poll failures the bridge/relay is unreachable,
+        // so surface a terminal error instead of spinning forever.
+        pollFailures += 1;
+        if (pollFailures >= 5) {
+          stopPolling();
+          liveStatus.textContent = 'Couldn’t reach the pairing service. Check your connection, then close and try again.';
+          liveStatus.style.color = '#ffb27a';
+        }
       }
     }, 2000);
   } catch (err) {
@@ -165,7 +198,7 @@ export interface PhonePairingDeps {
 }
 
 export function openPhonePairingModal(deps: PhonePairingDeps): void {
-  const { body, close } = buildModalShell('Use your ChatGPT / Claude plan');
+  const { body, onClose } = buildModalShell('Use your ChatGPT / Claude plan');
   const intro = document.createElement('p');
   intro.style.cssText = 'margin:0;font-size:13px;color:#bcd3c7;';
   intro.textContent =
@@ -195,8 +228,9 @@ export function openPhonePairingModal(deps: PhonePairingDeps): void {
     stream?.getTracks().forEach((t) => t.stop());
     stream = null;
   };
-  body.parentElement?.querySelector<HTMLButtonElement>('button[aria-label="Close"]')?.addEventListener('click', cleanup);
-  void close;
+  // Runs on EVERY close path (button, backdrop, opening another modal) so the camera light goes off
+  // and the poll interval stops.
+  onClose(cleanup);
 
   const beginPairing = async (payload: PairingPayload) => {
     cleanup();

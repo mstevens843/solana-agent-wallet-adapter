@@ -92,6 +92,10 @@ export interface AiSettings {
   // Local-Bridge engine choice + selected connector (only meaningful when mode === 'bridge').
   agentEngine?: 'api-key' | 'connector';
   connector?: AiConnector;
+  // Android "use your ChatGPT/Claude plan from your paired computer" path (mode === 'device-agent').
+  // When set, the device-agent config is the paired-bridge config (no API key) and inference runs on
+  // the user's own desktop connector via the relay. See bridgePairing.ts / BridgeRelayProvider.kt.
+  pairedBridge?: boolean;
 }
 
 export interface AiRequestOptions {
@@ -1774,6 +1778,11 @@ export function aiAskMessages(request: AgentPlanAskRequest): Array<{ role: 'syst
 }
 
 export function normalizeAiAsk(payload: unknown): AgentPlanAskResult {
+  // Already-normalized ask result (paired-bridge: the desktop returns { answer, checkedAt, source:'ai' },
+  // not raw model text). extractModelText would miss it and JSON.stringify the whole object — pass through.
+  if (isNormalizedAskPayload(payload)) {
+    return normalizeHostedAiAsk(payload);
+  }
   const text = extractModelText(payload).trim();
   if (!text) {
     throw new Error('Agent did not return an answer.');
@@ -1815,7 +1824,17 @@ function normalizeHostedAiPlan(payload: unknown, request: AiPlanRequest): AgentP
   if (!isHostedPlanPayload(payload)) {
     throw new Error('Hosted AI returned an invalid plan.');
   }
-  const record = payload as Partial<AgentPlan>;
+  return withGuardrailReport(planFromNormalizedPayload(payload as Partial<AgentPlan>, request), {
+    templateId: request.template.id,
+    prompt: request.prompt,
+  });
+}
+
+// Build a full AgentPlan from an already-normalized payload (preserving fields/category/parameters
+// the desktop/hosted side produced) WITHOUT applying guardrails. Shared by the hosted relay path
+// (normalizeHostedAiPlan) and the paired-bridge/device-agent path (normalizedAiPlanWithoutGuardrails),
+// so a remote-normalized plan isn't lossily re-derived from raw text.
+function planFromNormalizedPayload(record: Partial<AgentPlan>, request: AiPlanRequest): AgentPlan {
   const fields = Array.isArray(record.fields)
     ? record.fields.filter((field): field is AgentPlanField => (
         Boolean(field) &&
@@ -1843,10 +1862,7 @@ function normalizeHostedAiPlan(payload: unknown, request: AiPlanRequest): AgentP
     fields,
     safeguards,
   };
-  return withGuardrailReport(plan, {
-    templateId: request.template.id,
-    prompt: request.prompt,
-  });
+  return plan;
 }
 
 function isHostedPlanPayload(payload: unknown): payload is Partial<AgentPlan> {
@@ -1886,6 +1902,14 @@ function isHostedReviewPayload(payload: unknown): payload is Partial<AgentPlanRe
     (record.decision === 'approve' || record.decision === 'deny' || record.decision === 'needs_input') &&
     typeof record.reason === 'string'
   );
+}
+
+// An already-normalized ask result ({ answer, source:'ai' }) vs raw model output. Used to pass a
+// paired-bridge/desktop-normalized answer through instead of re-extracting text from it.
+function isNormalizedAskPayload(payload: unknown): payload is Partial<AgentPlanAskResult> {
+  if (!payload || typeof payload !== 'object') return false;
+  const record = payload as Partial<AgentPlanAskResult>;
+  return record.source === 'ai' && typeof record.answer === 'string';
 }
 
 function isAnthropicMessagesSettings(settings: Pick<AiSettings, 'provider' | 'apiFormat' | 'model'>): boolean {
@@ -2182,6 +2206,11 @@ export function normalizeDeviceAgentPlan(
 }
 
 function normalizedAiPlanWithoutGuardrails(payload: unknown, request: AiPlanRequest): AgentPlan {
+  // Already-normalized plan (paired-bridge: the desktop returns a complete AgentPlan, not raw model
+  // text). Re-deriving it from text would lose fields/category/parameters — use it directly.
+  if (isHostedPlanPayload(payload)) {
+    return planWithStructuredSwapText(planFromNormalizedPayload(payload as Partial<AgentPlan>, request));
+  }
   const content = extractModelText(payload);
   const parsed = parsePlanJson(content);
   const template = templateById(request.template.id);
@@ -2286,6 +2315,15 @@ export function normalizeAiReview(
     providerLabel?: string;
   } = {},
 ): AgentPlanReviewResult {
+  // Already-normalized review (top-level {decision,reason}) from the device-agent
+  // (finalizeReviewResultForPayload) or paired-bridge desktop. extractModelText can't parse a
+  // top-level object, so we MUST short-circuit it — but still run reconcileThresholdReviewDecision so
+  // the threshold safety gate (flip wrong approve/deny, demote to needs_input when no value extracts)
+  // applies on EVERY review path, not just raw model text. (Round-1 returned the verdict verbatim and
+  // silently skipped the gate.)
+  if (isHostedReviewPayload(payload)) {
+    return reconcileThresholdReviewDecision(normalizeHostedAiReview(payload), request);
+  }
   const content = extractModelText(payload);
   const parsed = parsePlanJson(content);
   const decision = reviewDecisionOrUndefined(parsed.decision);

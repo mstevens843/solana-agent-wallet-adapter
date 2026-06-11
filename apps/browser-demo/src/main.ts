@@ -335,7 +335,7 @@ import {
   shouldUseMobileAiPathPolicy,
   visibleMobileAiPathModes,
 } from './aiPathPolicy.js';
-import { phonePairingEnabled, pairedBridgeDeviceAgentConfig } from './bridgePairing.js';
+import { phonePairingEnabled, unpairPhone, readPhonePairStatus, shouldClearPersistedPairedBridge } from './bridgePairing.js';
 import { openDesktopPairingModal, openPhonePairingModal } from './bridgePairingUi.js';
 import {
   bridgeConnectorDisplayLabel,
@@ -1310,6 +1310,7 @@ interface AgenticAndroidBridge {
   bridgePair?: (payloadJson: string) => string;
   bridgePairStatus?: () => string;
   bridgeUnpair?: () => string;
+  bridgeRelayStatus?: () => string;
   // Remote config (Phase 1f). Backed by /api/android-config; APK caches + falls back.
   remoteConfigGet?: () => string;
   remoteConfigRefresh?: () => string;
@@ -2572,6 +2573,7 @@ interface PersistedState {
   aiBaseUrl?: string;
   aiModel?: string;
   aiEngine?: AiSettings['agentEngine'];
+  pairedBridge?: boolean;
   aiConnector?: AiConnector;
   aiMultiReviewer?: boolean;
   aiAutoBackgroundWatch?: boolean;
@@ -21974,6 +21976,41 @@ function aiModeLimitations(): string {
   `;
 }
 
+// Throttled cache for the phone-pairing UI flag: native bridgePairEnabled() is a synchronous binder
+// call, so don't hit it on every render. The native side re-checks the flag authoritatively on every
+// bridgePair/bridgePairStatus call, so a ≤5s-stale UI value is safe (the button can't act when off).
+let phonePairAvailableCache: { value: boolean; at: number } | null = null;
+function phonePairingAvailable(): boolean {
+  if (!IS_ANDROID_APP) return false;
+  const now = Date.now();
+  if (!phonePairAvailableCache || now - phonePairAvailableCache.at > 5000) {
+    phonePairAvailableCache = { value: phonePairingEnabled(agenticAndroidBridge()), at: now };
+  }
+  return phonePairAvailableCache.value;
+}
+
+// Throttled "computer online/offline" chip for the paired-bridge card. Native bridgeRelayStatus()
+// returns its last async probe + kicks a fresh one, so the chip converges over a few renders without
+// a blocking call. (B6 — gives the paired user a persistent reachability signal beyond the modal.)
+let relayStatusCache: { online: boolean; at: number } | null = null;
+function pairedBridgeStatusChip(): string {
+  if (!IS_ANDROID_APP) return '';
+  const now = Date.now();
+  if (!relayStatusCache || now - relayStatusCache.at > 4000) {
+    let online = false;
+    try {
+      const raw = agenticAndroidBridge()?.bridgeRelayStatus?.();
+      if (raw) online = Boolean((JSON.parse(raw) as { desktopOnline?: boolean }).desktopOnline);
+    } catch {
+      online = false;
+    }
+    relayStatusCache = { online, at: now };
+  }
+  return relayStatusCache.online
+    ? '<span class="bridge-online-chip ok" style="color:#5fe3a1">● computer online</span>'
+    : '<span class="bridge-online-chip warn" style="color:#ffb27a">● computer offline — open the desktop app</span>';
+}
+
 function deviceAgentConnectionCard(status: DeviceAgentStatus | null): string {
   const available = Boolean(status?.available);
   const configured = Boolean(status?.configured);
@@ -22009,12 +22046,17 @@ function deviceAgentConnectionCard(status: DeviceAgentStatus | null): string {
   const runtimeState = status?.state ?? (checking ? 'checking' : 'unavailable');
   // "Use your ChatGPT/Claude plan from your computer": on Android, when the operator has enabled
   // phone pairing, offer the QR-pairing path next to the on-device API-key path.
-  const phonePairBlock = IS_ANDROID_APP && phonePairingEnabled(agenticAndroidBridge())
-    ? `<div class="device-agent-phone-pair">
-        <button type="button" class="utility" data-ai-action="pair-phone-android">Use your ChatGPT / Claude plan (paired computer)</button>
-        <p class="device-agent-note">Runs AI on your own computer's plan instead of an API key. Keep the desktop app open and the connector signed in.</p>
-      </div>`
-    : '';
+  const phonePairBlock = !phonePairingAvailable()
+    ? ''
+    : state.aiSettings.pairedBridge
+      ? `<div class="device-agent-phone-pair">
+          <p class="device-agent-note">Running AI on your computer's ChatGPT / Claude plan. ${pairedBridgeStatusChip()}</p>
+          <button type="button" class="utility" data-ai-action="unpair-phone">Unpair this computer</button>
+        </div>`
+      : `<div class="device-agent-phone-pair">
+          <button type="button" class="utility" data-ai-action="pair-phone-android">Use your ChatGPT / Claude plan (paired computer)</button>
+          <p class="device-agent-note">Runs AI on your own computer's plan instead of an API key. Keep the desktop app open and the connector signed in.</p>
+        </div>`;
   const showNotificationNote = (status?.runtime === 'android-native' || status?.runtime === 'browser-native')
     && (runtimeState === 'stopped' || runtimeState === 'unavailable');
   const notificationNote = showNotificationNote
@@ -22403,6 +22445,9 @@ function canConfirmAiPlanner(): boolean {
   if (state.aiSettings.mode === 'hosted' && hostedByokCloudSessionReason()) return false;
   if (state.aiSettings.mode === 'device-agent') {
     if (!deviceAgentModeVisible()) return false;
+    // Paired-bridge needs no API key/model/provider — credentials live on the paired desktop. The
+    // only prerequisite is that the phone is paired (or pairing is configured).
+    if (state.aiSettings.pairedBridge) return true;
     return Boolean(
       (state.aiSettings.apiKey.trim() || state.deviceAgentStatus?.configured)
         && state.aiSettings.model.trim()
@@ -22427,6 +22472,11 @@ function aiConfirmDisabledReason(): string {
     return 'Device Agent is not enabled for this build or wallet.';
   }
   if (state.aiSettings.mode === 'device-agent') {
+    if (state.aiSettings.pairedBridge) {
+      return state.deviceAgentStatus?.configured
+        ? 'Confirm planner readiness before generating.'
+        : 'Pair your computer first (tap “Use your ChatGPT / Claude plan”).';
+    }
     if (!state.aiSettings.model.trim()) return 'Choose or enter an AI model before confirming.';
     if (!aiProviderReadyForCurrentMode()) return 'Add a browser-compatible gateway URL for this provider.';
     if (!state.aiSettings.apiKey.trim() && !state.deviceAgentStatus?.configured) {
@@ -25167,15 +25217,12 @@ function bind(): void {
           openPhonePairingModal({
             bridge: agenticAndroidBridge(),
             onPaired: () => {
-              // Route AI through the paired desktop connector, then switch to the device-agent path.
-              try {
-                agenticAndroidBridge()?.deviceAgentConfigure?.(pairedBridgeDeviceAgentConfig());
-              } catch {
-                // configure is best-effort; setAiPlannerMode re-validates and surfaces errors
-              }
-              setAiPlannerMode('device-agent');
+              void runEnablePairedBridge();
             },
           });
+          return;
+        case 'unpair-phone':
+          runUnpairPairedBridge();
           return;
         case 'stop-device-agent':
           void runStopDeviceAgentRuntime();
@@ -34622,6 +34669,64 @@ async function runSaveDirectAiKey(): Promise<void> {
   });
 }
 
+// Enable the paired-bridge ("use your ChatGPT/Claude plan from your computer") device-agent path
+// after a successful phone pairing: flag it, switch to device-agent mode, and actually START the
+// runtime with the paired-bridge config (deviceAgentConfigPayload now emits it). The "AI runs on
+// your computer" confirmation is gated on the runtime reaching ready, so a pairing that connects but
+// fails to start surfaces honestly instead of silently failing on the first request.
+async function runEnablePairedBridge(): Promise<void> {
+  state.aiSettings.pairedBridge = true;
+  state.aiSettings.mode = 'device-agent';
+  aiModeSelectionExplicit = true;
+  savePersistedState();
+  void syncCloudPreference('ai-settings');
+  try {
+    const status = await startDeviceAgentRuntime();
+    saveDeviceAgentStatusCache(state.deviceAgentStatus);
+    if (deviceAgentStatusReadyForDrafts(status)) {
+      setAiPlannerConfirmation(
+        'confirmed',
+        'Your computer’s ChatGPT / Claude plan is connected for AI on this phone. Wallet approval is still required.',
+      );
+      pushToast('success', 'Paired', 'AI now runs on your computer’s plan.');
+    } else {
+      setAiPlannerConfirmation('failed', status.message || 'Paired, but the AI runtime did not start.');
+      pushToast(
+        'error',
+        'Paired — runtime not started',
+        status.message || 'Could not start the paired AI runtime. Make sure the desktop app is open and the connector is signed in.',
+      );
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    setAiPlannerConfirmation('failed', message);
+    pushToast('error', 'Could not start paired AI', message);
+  }
+  render();
+}
+
+// Leave the paired-bridge path: revoke the native pairing (deletes the stored deviceBearer + relay
+// session) and drop back to the API-key device-agent path. Also the only exit from paired mode when
+// the picker would otherwise be a same-mode no-op.
+function runUnpairPairedBridge(): void {
+  unpairPhone(agenticAndroidBridge());
+  state.aiSettings.pairedBridge = false;
+  relayStatusCache = null;
+  savePersistedState();
+  void syncCloudPreference('ai-settings');
+  resetAiPlannerConfirmation('Unpaired from your computer. Paste an API key or pair again to use Device Agent AI.');
+  // STOP the runtime, not just refresh: after unpairing, the on-device runtime is still RUNNING with
+  // the now-credential-less paired-bridge config (the bearer is cleared), so the card would keep
+  // reporting "ready" and the next request would fail confusingly with "not paired". Stopping forces
+  // a clean re-configure (paste a key or re-pair) before the next draft/review.
+  void stopDeviceAgentRuntime()
+    .catch(() => undefined)
+    .then(() => refreshDeviceAgentStatus(false))
+    .then(() => render());
+  pushToast('success', 'Unpaired', 'This phone is no longer linked to your computer.');
+  render();
+}
+
 async function runConfirmAiPlanner(): Promise<void> {
   if (!canConfirmAiPlanner()) {
     const message = aiConfirmDisabledReason();
@@ -35073,6 +35178,9 @@ function setAiPlannerMode(mode: AiSettings['mode']): void {
   }
   saveCurrentSessionAiApiKey();
   state.aiSettings.mode = mode;
+  // An explicit mode pick is the API-key/normal path; the paired-bridge path is entered only via
+  // runEnablePairedBridge (the "Use your plan" button), so clear the paired flag here.
+  state.aiSettings.pairedBridge = false;
   ensureAiProviderAllowedForMode();
   state.aiSettings.apiKey = shouldHideAiKeyEntry() ? '' : loadSessionAiApiKey(state.aiSettings);
   if (shouldHideAiKeyEntry()) {
@@ -43895,6 +44003,19 @@ async function deviceAgentNativeStatusCall(
 }
 
 function deviceAgentConfigPayload(includeApiKey: boolean): Record<string, string> {
+  // Paired-bridge: inference runs on the user's own paired desktop connector, so this config carries
+  // NO provider/model/apiKey of its own — the native side (RuntimeConfig.isPairedBridge ->
+  // BridgeRelayProvider) routes it to the relay. Returning the state-derived config here would
+  // clobber the paired config and route to a normal provider instead.
+  if (state.aiSettings.pairedBridge) {
+    const walletAddress = currentDeviceAgentWalletAddress();
+    return {
+      provider: 'paired-bridge',
+      apiFormat: 'paired-bridge',
+      model: 'connector',
+      ...(walletAddress ? { walletAddress } : {}),
+    };
+  }
   assertCustomOpenAiCompatibleSettings(state.aiSettings);
   const walletAddress = currentDeviceAgentWalletAddress();
   return {
@@ -52282,6 +52403,7 @@ function persistedAiSettings(
     multiReviewer: persistedState.aiMultiReviewer === true,
     autoBackgroundWatch: persistedState.aiAutoBackgroundWatch === true,
     ...(persistedState.aiEngine ? { agentEngine: persistedState.aiEngine } : {}),
+    ...(persistedState.pairedBridge ? { pairedBridge: true } : {}),
     ...(persistedState.aiConnector ? { connector: persistedState.aiConnector } : {}),
   };
   const settings = {
@@ -52459,8 +52581,25 @@ function normalizeCurrentAiModeForSurface(): void {
 }
 
 function reconcileAiModeForSurface(): void {
+  reconcilePairedBridgeFlag();
   normalizeCurrentAiModeForSurface();
   promoteDefaultAiModeForVisibleDeviceAgent();
+}
+
+// Heal a persisted paired-bridge flag that desynced from native reality: if the flag says paired but
+// the native pairing is gone (app-data wipe, unpaired elsewhere, or the flag rode onto a non-Android
+// surface), clear it so we don't boot into a mode where every request throws "not paired".
+function reconcilePairedBridgeFlag(): void {
+  if (!state.aiSettings.pairedBridge) return;
+  const clear = shouldClearPersistedPairedBridge({
+    pairedBridge: true,
+    isAndroid: IS_ANDROID_APP,
+    nativePaired: IS_ANDROID_APP ? readPhonePairStatus(agenticAndroidBridge()).paired : false,
+  });
+  if (clear) {
+    state.aiSettings.pairedBridge = false;
+    savePersistedState();
+  }
 }
 
 function deviceAgentPathAvailableForCurrentProvider(): boolean {
@@ -53100,6 +53239,7 @@ function loadPersistedState(): PersistedState {
       ...(typeof parsed.aiBaseUrl === 'string' && { aiBaseUrl: parsed.aiBaseUrl }),
       ...(typeof parsed.aiModel === 'string' && { aiModel: parsed.aiModel }),
       ...((parsed.aiEngine === 'api-key' || parsed.aiEngine === 'connector') && { aiEngine: parsed.aiEngine }),
+      ...(parsed.pairedBridge === true && { pairedBridge: true }),
       ...((parsed.aiConnector === 'codex' || parsed.aiConnector === 'gemini' || parsed.aiConnector === 'claude') && { aiConnector: parsed.aiConnector }),
       ...(typeof parsed.aiMultiReviewer === 'boolean' && { aiMultiReviewer: parsed.aiMultiReviewer }),
       ...(typeof parsed.aiAutoBackgroundWatch === 'boolean' && { aiAutoBackgroundWatch: parsed.aiAutoBackgroundWatch }),
@@ -53133,6 +53273,7 @@ function savePersistedState(): void {
         aiBaseUrl: state.aiSettings.baseUrl,
         aiModel: state.aiSettings.model,
         ...(state.aiSettings.agentEngine ? { aiEngine: state.aiSettings.agentEngine } : {}),
+        ...(state.aiSettings.pairedBridge ? { pairedBridge: true } : {}),
         ...(state.aiSettings.connector ? { aiConnector: state.aiSettings.connector } : {}),
         aiMultiReviewer: state.aiSettings.multiReviewer === true,
         aiAutoBackgroundWatch: state.aiSettings.autoBackgroundWatch === true,

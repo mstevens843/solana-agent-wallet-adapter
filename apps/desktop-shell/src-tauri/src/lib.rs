@@ -821,8 +821,40 @@ fn stop_process_slot(
     if let Some(mut process) = process_slot.take() {
         let pid = process.pid;
         let mut error = None;
-        if let Err(err) = process.child.kill() {
-            error = Some(format!("Failed to stop {label} pid={pid}: {err}"));
+        // Prefer a graceful SIGTERM (Unix) so the bridge runs its shutdown hook — which revokes any
+        // active phone pairing via /unpair. `Child::kill()` is SIGKILL (uncatchable), so on its own
+        // the unpair never fires on a normal desktop quit. Fall back to SIGKILL if it doesn't exit.
+        #[cfg(unix)]
+        {
+            let _ = std::process::Command::new("kill")
+                .arg("-TERM")
+                .arg(pid.to_string())
+                .status();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(2000);
+            loop {
+                match process.child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) => {
+                        if std::time::Instant::now() >= deadline {
+                            if let Err(err) = process.child.kill() {
+                                error = Some(format!("Failed to stop {label} pid={pid}: {err}"));
+                            }
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    Err(err) => {
+                        error = Some(format!("Failed to wait for {label} pid={pid}: {err}"));
+                        break;
+                    }
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            if let Err(err) = process.child.kill() {
+                error = Some(format!("Failed to stop {label} pid={pid}: {err}"));
+            }
         }
         let _ = process.child.wait();
         return Some(ProcessEvent {

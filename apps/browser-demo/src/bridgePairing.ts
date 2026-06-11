@@ -128,6 +128,18 @@ export interface PhonePairStatus {
   error: string | null;
 }
 
+/** Self-heal decision: a persisted `pairedBridge` flag should be cleared when it's set but the device
+ *  can't actually be paired (not an Android app surface, or the native pairing is gone). Keeps the JS
+ *  flag from booting into a "every request throws not-paired" mode after an app-data wipe / unpair. */
+export function shouldClearPersistedPairedBridge(input: {
+  pairedBridge: boolean;
+  isAndroid: boolean;
+  nativePaired: boolean;
+}): boolean {
+  if (!input.pairedBridge) return false;
+  return !input.isAndroid || !input.nativePaired;
+}
+
 export function phonePairingEnabled(bridge: NativePairBridge | undefined): boolean {
   try {
     return Boolean(bridge?.bridgePairEnabled?.());
@@ -196,12 +208,6 @@ export function unpairPhone(bridge: NativePairBridge | undefined): boolean {
   } catch {
     return false;
   }
-}
-
-/** The device-agent config that routes a request to the paired desktop connector (see
- *  RuntimeConfig.isPairedBridge / DeviceAgentProviderExecutor on Android). */
-export function pairedBridgeDeviceAgentConfig(): string {
-  return JSON.stringify({ provider: 'paired-bridge', apiFormat: 'paired-bridge', model: 'connector' });
 }
 
 function safeParse(text: string): Record<string, unknown> {

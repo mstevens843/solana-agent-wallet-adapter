@@ -345,3 +345,73 @@ describe('bridgeAiRelayHandler — revocation & status', () => {
     expect((await call(handler, 'POST', `/api/bridge-pair/${UUID}/unpair`)).status).toBe(401);
   });
 });
+
+describe('bridgeAiRelayHandler — duplicate-run + one-shot hardening', () => {
+  let handler: BridgeAiRelayHandler;
+  let bearer: string;
+  beforeEach(async () => {
+    handler = createBridgeAiRelayHandler();
+    await register(handler);
+    bearer = await claim(handler);
+  });
+  afterEach(() => handler.shutdown());
+
+  async function forwardOne(): Promise<string> {
+    const r = await call(handler, 'POST', `/api/bridge-ai/${UUID}/forward`, {
+      headers: deviceAuth(bearer),
+      body: { path: '/bridge/ai/generate-plan', body: { prompt: 'x' } },
+    });
+    return r.body.requestId as string;
+  }
+
+  it('poll hands out at most ONE request even when several are queued (lease-of-one)', async () => {
+    await forwardOne();
+    await forwardOne();
+    await forwardOne();
+    const poll = await call(handler, 'GET', `/api/bridge-pair/${UUID}/poll`, { headers: bridgeAuth });
+    expect((poll.body.requests as unknown[]).length).toBe(1);
+  });
+
+  it('respond is idempotent — a duplicate late result does not overwrite the first', async () => {
+    const reqId = await forwardOne();
+    await call(handler, 'GET', `/api/bridge-pair/${UUID}/poll`, { headers: bridgeAuth });
+    expect((await call(handler, 'POST', `/api/bridge-pair/${UUID}/respond/${reqId}`, { headers: bridgeAuth, body: { plan: 'first' } })).status).toBe(200);
+    const dup = await call(handler, 'POST', `/api/bridge-pair/${UUID}/respond/${reqId}`, { headers: bridgeAuth, body: { plan: 'second' } });
+    expect(dup.body.duplicate).toBe(true);
+    const result = await call(handler, 'GET', `/api/bridge-ai/${UUID}/result/${reqId}`, { headers: deviceAuth(bearer) });
+    expect((result.body.result as Record<string, unknown>).plan).toBe('first');
+  });
+
+  it('result survives a re-read within the grace window (consumed-on-read, not deleted)', async () => {
+    const reqId = await forwardOne();
+    await call(handler, 'GET', `/api/bridge-pair/${UUID}/poll`, { headers: bridgeAuth });
+    await call(handler, 'POST', `/api/bridge-pair/${UUID}/respond/${reqId}`, { headers: bridgeAuth, body: { plan: 'done' } });
+    const first = await call(handler, 'GET', `/api/bridge-ai/${UUID}/result/${reqId}`, { headers: deviceAuth(bearer) });
+    expect(first.body.status).toBe('resolved');
+    // A dropped 200 body would make the phone re-GET — it must still get the completed result.
+    const second = await call(handler, 'GET', `/api/bridge-ai/${UUID}/result/${reqId}`, { headers: deviceAuth(bearer) });
+    expect(second.body.status).toBe('resolved');
+    expect((second.body.result as Record<string, unknown>).plan).toBe('done');
+  });
+
+  it('rejects the now-removed session-key / connector-login / chat / status forward paths', async () => {
+    for (const path of ['/bridge/ai/session-key', '/bridge/ai/connector/login', '/bridge/ai/chat', '/bridge/ai/status', '/bridge/ai/connector/detect']) {
+      const r = await call(handler, 'POST', `/api/bridge-ai/${UUID}/forward`, { headers: deviceAuth(bearer), body: { path, body: {} } });
+      expect(r.body.error).toBe('path_not_allowed');
+    }
+  });
+});
+
+describe('bridgeAiRelayHandler — per-IP register limit', () => {
+  it('rate-limits new registers per IP (9th from the same IP is 429)', async () => {
+    const handler = createBridgeAiRelayHandler();
+    for (let i = 0; i < 8; i += 1) {
+      const uuid = `0000000${i}-89ab-4def-8123-456789abcdef`;
+      const r = await call(handler, 'POST', `/api/bridge-pair/${uuid}/register`, { body: { pairToken: PAIR_TOKEN, bridgeSecret: BRIDGE_SECRET } });
+      expect(r.status).toBe(200);
+    }
+    const ninth = await call(handler, 'POST', `/api/bridge-pair/00000008-89ab-4def-8123-456789abcdef/register`, { body: { pairToken: PAIR_TOKEN, bridgeSecret: BRIDGE_SECRET } });
+    expect(ninth.status).toBe(429);
+    handler.shutdown();
+  });
+});

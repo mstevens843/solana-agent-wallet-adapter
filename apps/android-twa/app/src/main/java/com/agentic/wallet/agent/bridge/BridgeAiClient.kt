@@ -34,7 +34,10 @@ internal class BridgeAiClient(
     private val transport: BridgeRelayTransport,
     private val pairingSource: BridgePairingSource,
     private val pollIntervalMs: Long = 1500,
-    private val requestTimeoutMs: Long = 180_000,
+    // Must outlive the relay's in-flight lease (10 min) which itself outlives the desktop connector
+    // budget, so the phone never gives up while the desktop is still running (orphaned, wasted plan).
+    // Invariant: phoneDeadline >= relayLease >= desktopConnectorTimeout. Most runs finish in seconds.
+    private val requestTimeoutMs: Long = 600_000,
     private val now: () -> Long = { System.currentTimeMillis() },
     private val sleep: suspend (Long) -> Unit = { delay(it) },
 ) {
@@ -75,11 +78,33 @@ internal class BridgeAiClient(
             }
         val tag = tagFor(pairing.pairUuid)
         val startedAt = now()
-        // `bodyJson` is gated to DEBUG builds by AgentMwaLog (release shows [debug-only]), so the
-        // exact forwarded payload is captured in a debug build without ever leaking in release.
+        val bodyStr = body.toString()
+        // Fail fast with an actionable message instead of an opaque relay 413.
+        if (bodyStr.length > MAX_FORWARD_BODY_CHARS) {
+            AgentMwaLog.warn("BridgeAiClient", "runForward", "TOO_LARGE", "forward body exceeds cap", mapOf("tag" to tag, "path" to path, "bodyBytes" to bodyStr.length))
+            throw ProviderHttpException(ProviderErrorCodes.INVALID_CONFIG, "This request is too large to send to your paired computer. Try a shorter prompt.")
+        }
+        // Preflight: if the desktop isn't currently polling the relay, fail fast (seconds) instead of
+        // pending the full timeout (~10 min). We only check BEFORE enqueue — once a request is picked
+        // up, the desktop's poll loop can be busy running a connector and legitimately stops
+        // heartbeating, so a mid-run check would false-positive. A status() blip is non-fatal (proceed).
+        val live = try {
+            status()
+        } catch (_: Throwable) {
+            null
+        }
+        if (live != null && live.paired && !live.desktopOnline) {
+            AgentMwaLog.warn("BridgeAiClient", "runForward", "DESKTOP_OFFLINE", "desktop not polling relay", mapOf("tag" to tag, "path" to path))
+            throw ProviderHttpException(
+                ProviderErrorCodes.UPSTREAM,
+                "Your computer isn't connected right now. Open the Agentic desktop app (and keep it awake), then try again.",
+            )
+        }
+        // The `bodyPayloadJson` key matches AgentMwaLog.isDebugOnlyValueKey (endsWith "payloadjson"),
+        // so the exact forwarded payload is captured ONLY in debug builds — release shows [debug-only].
         AgentMwaLog.info(
             "BridgeAiClient", "runForward", "FORWARD", "submitting $path",
-            mapOf("tag" to tag, "path" to path, "bodyBytes" to body.toString().length, "bodyJson" to body.toString()),
+            mapOf("tag" to tag, "path" to path, "bodyBytes" to bodyStr.length, "bodyPayloadJson" to bodyStr),
         )
         val requestId = forward(pairing, path, body)
         AgentMwaLog.info("BridgeAiClient", "runForward", "ENQUEUED", "request accepted", mapOf("tag" to tag, "requestId" to requestId, "path" to path))
@@ -88,7 +113,18 @@ internal class BridgeAiClient(
         while (now() < deadline) {
             sleep(pollIntervalMs)
             polls += 1
-            val result = pollResult(pairing, requestId)
+            val result = try {
+                pollResult(pairing, requestId)
+            } catch (e: ProviderHttpException) {
+                // Transient transport blip (e.g. a dropped 200 body) — keep polling. The relay holds a
+                // resolved result for a grace window, so a re-poll recovers a run the desktop already
+                // completed/metered instead of failing it. Terminal codes (auth/config) still propagate.
+                if (e.code == ProviderErrorCodes.NETWORK || e.code == ProviderErrorCodes.TIMEOUT) {
+                    AgentMwaLog.info("BridgeAiClient", "runForward", "POLL_RETRY", "transient poll failure", mapOf("tag" to tag, "requestId" to requestId, "code" to e.code))
+                    continue
+                }
+                throw e
+            }
             if (result.resolved) {
                 val payload = result.payload ?: JSONObject()
                 // The desktop relays a connector failure as an { error } envelope (same shape the
@@ -179,6 +215,10 @@ internal class BridgeAiClient(
     private data class PollOutcome(val resolved: Boolean, val payload: JSONObject?)
 
     private companion object {
+        // Best-effort client guard below the relay's 1 MB body cap (leaves headroom for the
+        // {path, body} wrapper); the relay cap is the hard backstop.
+        const val MAX_FORWARD_BODY_CHARS = 950_000
+
         /** Correlation id shared across phone/relay/desktop: first 8 hex of sha256(pairUuid). Never
          *  reveals the uuid (a bearer-grade secret) yet lines up logs across all three hops. */
         fun tagFor(uuid: String): String =

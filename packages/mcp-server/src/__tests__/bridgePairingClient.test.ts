@@ -20,6 +20,7 @@ class FakeRelay {
     }
   >();
   unpaired: string[] = [];
+  forcePollStatus: number | null = null; // when set, /poll returns this status (for backoff/auth tests)
   private reqSeq = 0;
 
   fetch = async (
@@ -48,6 +49,9 @@ class FakeRelay {
     const session = this.sessions.get(uuid!);
     if (!session) return json(404, { error: 'pairing_not_found' });
 
+    if (action === 'poll' && method === 'GET' && this.forcePollStatus) {
+      return json(this.forcePollStatus, { error: 'forced' });
+    }
     if (action === 'poll' && method === 'GET') {
       if (secret !== session.bridgeSecret) return json(401, { error: 'bridge_auth_failed' });
       const ready = session.inbox.filter((e) => e.status === 'pending');
@@ -99,6 +103,11 @@ class FakeRelay {
     const entry = session?.inbox.find((e) => e.requestId === requestId);
     if (!entry) return { status: 'not_found' };
     return entry.status === 'resolved' ? { status: 'resolved', result: entry.result } : { status: entry.status };
+  }
+  // Simulate a relay re-delivery (lease lapse / respond blip): the same requestId becomes pending again.
+  redeliver(uuid: string, requestId: string): void {
+    const entry = this.sessions.get(uuid)?.inbox.find((e) => e.requestId === requestId);
+    if (entry) entry.status = 'pending';
   }
 }
 
@@ -191,14 +200,82 @@ describe('BridgePairingController', () => {
     expect(controller.state().active).toBe(false);
   });
 
-  it('stops the loop when the relay reports the session is gone (404)', async () => {
+  it('fully resets local state when the relay reports the session is gone (404)', async () => {
     const relay = new FakeRelay();
     const { controller } = makeController(relay);
     await controller.start();
+    relay.claim(FIXED_IDS.pairUuid);
     relay.sessions.delete(FIXED_IDS.pairUuid); // simulate sweep/revoke
     const summary = await controller.pollOnce();
     expect(summary.handled).toBe(0);
+    const state = controller.state();
+    expect(state.active).toBe(false);
+    expect(state.paired).toBe(false);
+    expect(state.pairUuid).toBeNull();
+    expect(state.qrPayload).toBeNull(); // no phantom un-claimable QR
+    await controller.stop();
+  });
+
+  it('dedupes a re-delivered request — re-posts the cached result without re-dispatching', async () => {
+    const relay = new FakeRelay();
+    const dispatch = vi.fn(async (path: string, body: unknown) => ({ echoed: path, got: body }));
+    const { controller } = makeController(relay, dispatch);
+    await controller.start();
+    relay.claim(FIXED_IDS.pairUuid);
+    const reqId = relay.forward(FIXED_IDS.pairUuid, '/bridge/ai/generate-plan', {});
+    expect((await controller.pollOnce()).handled).toBe(1);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(relay.result(FIXED_IDS.pairUuid, reqId).status).toBe('resolved');
+
+    // Relay re-delivers the same requestId (e.g. a respond blip lapsed the lease).
+    relay.redeliver(FIXED_IDS.pairUuid, reqId);
+    await controller.pollOnce();
+    expect(dispatch).toHaveBeenCalledTimes(1); // NOT re-run — the metered connector fired only once
+    expect(relay.result(FIXED_IDS.pairUuid, reqId).status).toBe('resolved');
+    await controller.stop();
+  });
+
+  it('throws on a 5xx poll so the loop backs off (A5)', async () => {
+    const relay = new FakeRelay();
+    const { controller } = makeController(relay);
+    await controller.start();
+    relay.forcePollStatus = 503;
+    await expect(controller.pollOnce()).rejects.toThrow(/poll_status_503/);
+    await controller.stop();
+  });
+
+  it('tears down on a 401 poll — a dead session must not spin forever (C6)', async () => {
+    const relay = new FakeRelay();
+    const { controller } = makeController(relay);
+    await controller.start();
+    relay.claim(FIXED_IDS.pairUuid);
+    relay.forcePollStatus = 401;
+    await controller.pollOnce();
+    const state = controller.state();
+    expect(state.active).toBe(false);
+    expect(state.pairUuid).toBeNull();
+    await controller.stop();
+  });
+
+  it('tears down + revokes an abandoned (never-claimed) pairing after the timeout (A2)', async () => {
+    const relay = new FakeRelay();
+    let clock = 0;
+    const controller = new BridgePairingController({
+      dispatch: vi.fn(async () => ({})),
+      relayBaseUrl: 'https://relay.test',
+      fetchImpl: relay.fetch,
+      generateIds: () => FIXED_IDS,
+      sleep: () => Promise.resolve(),
+      now: () => clock,
+    });
+    await controller.start();
+    await controller.pollOnce(); // no claim yet, within window → still active
+    expect(controller.state().active).toBe(true);
+    clock = 130_000; // past the 120s abandon window
+    await controller.pollOnce();
     expect(controller.state().active).toBe(false);
+    expect(controller.state().pairUuid).toBeNull();
+    expect(relay.unpaired).toContain(FIXED_IDS.pairUuid); // session revoked, not left to leak
     await controller.stop();
   });
 });

@@ -9,10 +9,21 @@ import {
   readPhonePairStatus,
   phonePairingEnabled,
   unpairPhone,
-  pairedBridgeDeviceAgentConfig,
+  shouldClearPersistedPairedBridge,
   type NativePairBridge,
   type BridgeRequestFn,
 } from '../bridgePairing.js';
+
+describe('shouldClearPersistedPairedBridge (self-heal)', () => {
+  it('clears a stale flag when native says not paired or the surface is not Android', () => {
+    expect(shouldClearPersistedPairedBridge({ pairedBridge: true, isAndroid: true, nativePaired: false })).toBe(true);
+    expect(shouldClearPersistedPairedBridge({ pairedBridge: true, isAndroid: false, nativePaired: false })).toBe(true);
+  });
+  it('keeps the flag when actually paired on Android, and is a no-op when unset', () => {
+    expect(shouldClearPersistedPairedBridge({ pairedBridge: true, isAndroid: true, nativePaired: true })).toBe(false);
+    expect(shouldClearPersistedPairedBridge({ pairedBridge: false, isAndroid: true, nativePaired: false })).toBe(false);
+  });
+});
 
 describe('parsePairingPayload', () => {
   it('parses a well-formed QR payload', () => {
@@ -94,11 +105,5 @@ describe('phone pairing', () => {
     expect(unpairPhone({ bridgeUnpair })).toBe(true);
     expect(bridgeUnpair).toHaveBeenCalled();
     expect(unpairPhone(undefined)).toBe(false);
-  });
-});
-
-describe('pairedBridgeDeviceAgentConfig', () => {
-  it('produces a paired-bridge device-agent config', () => {
-    expect(JSON.parse(pairedBridgeDeviceAgentConfig())).toEqual({ provider: 'paired-bridge', apiFormat: 'paired-bridge', model: 'connector' });
   });
 });

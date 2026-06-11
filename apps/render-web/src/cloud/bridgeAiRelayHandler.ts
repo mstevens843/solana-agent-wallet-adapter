@@ -40,29 +40,45 @@ const AI_PATH_PREFIX = '/api/bridge-ai/';
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 const SMALL_BODY_BYTES = 8 * 1024; // pairing control messages
-const AI_BODY_BYTES = 512 * 1024; // plan/review payloads (policy bundles, prompts) can be large
+// Match the web/desktop review route's 1 MB JSON cap — grounded reviews (plan + policyBundle +
+// evidenceFacts + sources) routinely hit 80-200 KB; a tighter cap here 413s a payload that succeeds
+// on web. The result is the larger side, so this gates both forward and respond.
+const AI_BODY_BYTES = 1024 * 1024;
 const DEFAULT_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_PAIR_TOKEN_TTL_MS = 90 * 1000;
 const SWEEP_INTERVAL_MS = 60 * 1000;
 const MAX_INBOX_PER_SESSION = 16;
+// Keep a resolved result this long AFTER the phone first reads it, so a re-GET on a dropped 200 body
+// (mobile network) still returns the completed/metered result instead of a misleading 404.
+const CONSUMED_RESULT_GRACE_MS = 60_000;
+// Cap total live sessions so unauthenticated `register` can't grow the store unbounded (DoS).
+const MAX_SESSIONS = 10_000;
 const REQUESTS_PER_MINUTE = 120;
+// `forward` maps 1:1 to a metered connector run on the user's machine (~0.25/min realistic), so it
+// gets a far tighter ceiling than control-plane polls. `register` is rate-limited per-IP (below); the
+// global `register` ceiling is only a coarse backstop set high enough not to block legit pairings.
+const RATE_LIMITS: Partial<Record<RateGroup, number>> = { forward: 12, register: 400 };
+const REGISTER_PER_IP_PER_MINUTE = 8;
+const MAX_REGISTER_IPS = 50_000;
 const RATE_LIMIT_WINDOW_MS = 60_000;
-const DEFAULT_IN_FLIGHT_LEASE_MS = 5 * 60 * 1000; // a connector run can take minutes
+// A connector run can take minutes (research mode + 2-pass review). Lease must be ≥ 2× the desktop's
+// worst-case connector budget so an in-flight request is never re-delivered while still running
+// (which would double-run a metered plan). Invariant: phoneDeadline ≥ relayLease ≥ connectorTimeout.
+const DEFAULT_IN_FLIGHT_LEASE_MS = 10 * 60 * 1000;
 const DESKTOP_ONLINE_WINDOW_MS = 20 * 1000;
 const MIN_SECRET_LEN = 20;
 
 // The phone may only forward to these exact bridge AI paths — JSON to known AI
 // endpoints, nothing else. Keep in sync with the desktop bridge's /bridge/ai/*
 // routes (bridgeServer.ts) and bridgePairingClient.ts's dispatcher.
+// Least-privilege: ONLY the three AI verbs the phone's BridgeRelayProvider actually forwards. Excludes
+// session-key/connector-login (would reconfigure the desktop or spawn a browser OAuth), status &
+// connector/detect (the phone uses the dedicated /api/bridge-ai/:uuid/status route, not a forward),
+// and /chat (the broadest "spend the user's plan" primitive, with no plan/review framing).
 export const FORWARDABLE_AI_PATHS: ReadonlySet<string> = new Set([
-  '/bridge/ai/status',
-  '/bridge/ai/session-key',
-  '/bridge/ai/connector/detect',
-  '/bridge/ai/connector/login',
   '/bridge/ai/generate-plan',
   '/bridge/ai/review-plan',
   '/bridge/ai/ask-about-plan',
-  '/bridge/ai/chat',
 ]);
 
 export interface RelayClock {
@@ -83,6 +99,9 @@ interface AiRequestEntry {
   status: 'pending' | 'in_flight' | 'resolved';
   result: unknown | undefined;
   inFlightUntil: number | undefined;
+  /** When the phone first read the resolved result. Kept (not deleted) for a grace window so a
+   *  re-GET after a dropped 200 body still returns it; reclaimed by the sweeper / inbox-pressure. */
+  consumedAt: number | undefined;
 }
 
 interface RelaySession {
@@ -125,17 +144,67 @@ export function createBridgeAiRelayHandler(options: BridgeAiRelayOptions = {}): 
   const generateRequestId = options.generateRequestId ?? (() => randomToken(12));
   const generateDeviceBearer = options.generateDeviceBearer ?? (() => randomToken(32));
   const store = new Map<string, RelaySession>();
+  // Limiters for NEW-session registers — the only route that bootstraps before per-session
+  // rate-limiting, and unauthenticated, so it's the DoS vector. Per-IP (so one abuser can't block
+  // everyone) + a coarse global backstop. The per-IP map is bounded + swept.
+  const registerRate: RateBucket = { windowStart: clock.now(), count: 0 };
+  const registerIpRate = new Map<string, RateBucket>();
 
   const sweeper = setInterval(() => {
-    const cutoff = clock.now() - ttlMs;
+    const now = clock.now();
+    const cutoff = now - ttlMs;
+    const consumedCutoff = now - CONSUMED_RESULT_GRACE_MS;
     for (const [uuid, session] of store) {
-      if (session.lastSeenAt < cutoff) store.delete(uuid);
+      if (session.lastSeenAt < cutoff) {
+        store.delete(uuid);
+        continue;
+      }
+      // Reclaim results the phone already read once the grace window has passed.
+      if (session.inbox.some((e) => e.consumedAt !== undefined && e.consumedAt < consumedCutoff)) {
+        session.inbox = session.inbox.filter((e) => e.consumedAt === undefined || e.consumedAt >= consumedCutoff);
+      }
+    }
+    // Prune expired per-IP register buckets so the map doesn't grow between the inline >50k prune.
+    for (const [ip, bucket] of registerIpRate) {
+      if (now - bucket.windowStart >= RATE_LIMIT_WINDOW_MS) registerIpRate.delete(ip);
     }
   }, SWEEP_INTERVAL_MS);
   if (typeof sweeper.unref === 'function') sweeper.unref();
 
   function touch(session: RelaySession): void {
     session.lastSeenAt = clock.now();
+  }
+
+  /** Sweep expired sessions then check the session ceiling — backstop against unbounded growth. */
+  function sweepExpired(): void {
+    const cutoff = clock.now() - ttlMs;
+    for (const [uuid, session] of store) {
+      if (session.lastSeenAt < cutoff) store.delete(uuid);
+    }
+  }
+
+  function allowNewRegister(ip: string): boolean {
+    const now = clock.now();
+    let ipBucket = registerIpRate.get(ip);
+    if (!ipBucket || now - ipBucket.windowStart >= RATE_LIMIT_WINDOW_MS) {
+      ipBucket = { windowStart: now, count: 0 };
+      registerIpRate.set(ip, ipBucket);
+    }
+    if (ipBucket.count >= REGISTER_PER_IP_PER_MINUTE) return false;
+    if (now - registerRate.windowStart >= RATE_LIMIT_WINDOW_MS) {
+      registerRate.windowStart = now;
+      registerRate.count = 0;
+    }
+    if (registerRate.count >= (RATE_LIMITS.register ?? REQUESTS_PER_MINUTE)) return false;
+    ipBucket.count += 1;
+    registerRate.count += 1;
+    // Bound the per-IP map: drop expired buckets if it grows too large (defends the map itself).
+    if (registerIpRate.size > MAX_REGISTER_IPS) {
+      for (const [key, bucket] of registerIpRate) {
+        if (now - bucket.windowStart >= RATE_LIMIT_WINDOW_MS) registerIpRate.delete(key);
+      }
+    }
+    return true;
   }
 
   function checkRate(session: RelaySession, group: RateGroup): { ok: true } | { ok: false; retryAfterMs: number } {
@@ -146,7 +215,8 @@ export function createBridgeAiRelayHandler(options: BridgeAiRelayOptions = {}): 
       bucket.count = 0;
     }
     session.rate[group] = bucket;
-    if (bucket.count >= REQUESTS_PER_MINUTE) {
+    const limit = RATE_LIMITS[group] ?? REQUESTS_PER_MINUTE;
+    if (bucket.count >= limit) {
       return { ok: false, retryAfterMs: Math.max(1000, RATE_LIMIT_WINDOW_MS - (now - bucket.windowStart)) };
     }
     bucket.count += 1;
@@ -277,6 +347,16 @@ export function createBridgeAiRelayHandler(options: BridgeAiRelayOptions = {}): 
       writeJson(res, 200, { ok: true });
       return true;
     }
+    // New session: per-IP + global rate-limit + cap to bound memory against register floods.
+    if (!allowNewRegister(clientIp(req))) {
+      writeRateLimited(res, RATE_LIMIT_WINDOW_MS);
+      return true;
+    }
+    sweepExpired();
+    if (store.size >= MAX_SESSIONS) {
+      writeJson(res, 503, { error: 'relay_at_capacity' });
+      return true;
+    }
     store.set(uuid, {
       uuid,
       pairTokenHash: sha256(pairToken),
@@ -324,15 +404,17 @@ export function createBridgeAiRelayHandler(options: BridgeAiRelayOptions = {}): 
     requireBridgeSecret(req, session);
     const now = clock.now();
     session.lastDesktopPollAt = now;
-    // Hand out pending requests plus stale in-flight ones (phone-side retries
-    // shouldn't be lost if the desktop crashed mid-run). Fresh in-flight stay
-    // hidden so the desktop never double-runs a connector.
-    const ready = session.inbox.filter(
+    // Hand out AT MOST ONE request per poll so the in-flight lease clock aligns with the desktop's
+    // run clock (it runs one connector at a time). Batching would lease request #2 at hand-out while
+    // it waits behind #1, lapsing its lease and causing a metered double-run. Stale in-flight (desktop
+    // crashed mid-run) are re-offered. The desktop polls every ~2s so throughput is unaffected.
+    const next = session.inbox.find(
       (e) => e.status === 'pending' || (e.status === 'in_flight' && (e.inFlightUntil ?? 0) <= now),
     );
-    for (const entry of ready) {
-      entry.status = 'in_flight';
-      entry.inFlightUntil = now + inFlightLeaseMs;
+    const ready = next ? [next] : [];
+    if (next) {
+      next.status = 'in_flight';
+      next.inFlightUntil = now + inFlightLeaseMs;
     }
     const paired = session.pairedSignal;
     session.pairedSignal = false;
@@ -357,6 +439,13 @@ export function createBridgeAiRelayHandler(options: BridgeAiRelayOptions = {}): 
       writeJson(res, 404, { error: 'request_not_found' });
       return true;
     }
+    if (entry.status === 'resolved') {
+      // Idempotent: a re-delivered duplicate run's late result must NOT overwrite the result the
+      // phone already read. Accept silently so the desktop stops retrying.
+      logRelayEvent({ phase: 'respond', tag: relayTag(session.uuid), requestId, path: entry.path, duplicate: true });
+      writeJson(res, 200, { ok: true, duplicate: true });
+      return true;
+    }
     const body = await readJsonBody(req, AI_BODY_BYTES);
     if (!body || typeof body !== 'object') {
       writeJson(res, 400, { error: 'invalid_result_payload' });
@@ -367,7 +456,7 @@ export function createBridgeAiRelayHandler(options: BridgeAiRelayOptions = {}): 
     entry.inFlightUntil = undefined;
     const hasError =
       Boolean(body && typeof body === 'object' && typeof (body as Record<string, unknown>).error === 'string');
-    logRelayEvent({ phase: 'respond', tag: relayTag(session.uuid), requestId, path: entry.path, hasError, ...bodyDigest(body) });
+    logRelayEvent({ phase: 'respond', tag: relayTag(session.uuid), requestId, path: entry.path, hasError, ...digestForLog(body) });
     writeJson(res, 200, { ok: true });
     return true;
   }
@@ -409,11 +498,11 @@ export function createBridgeAiRelayHandler(options: BridgeAiRelayOptions = {}): 
       writeJson(res, 400, { error: 'path_not_allowed' });
       return true;
     }
-    const now = clock.now();
-    // Drop the oldest resolved entry to make room before rejecting; if nothing
-    // is resolved, the phone is firing faster than the desktop can answer.
+    // Make room before rejecting: evict an already-consumed entry first (its result was read), then
+    // any resolved-but-unread; only reject when everything is still in-flight (phone firing too fast).
     if (session.inbox.length >= MAX_INBOX_PER_SESSION) {
-      const idx = session.inbox.findIndex((e) => e.status === 'resolved');
+      let idx = session.inbox.findIndex((e) => e.consumedAt !== undefined);
+      if (idx === -1) idx = session.inbox.findIndex((e) => e.status === 'resolved');
       if (idx === -1) {
         writeJson(res, 429, { error: 'inbox_full' });
         return true;
@@ -428,9 +517,9 @@ export function createBridgeAiRelayHandler(options: BridgeAiRelayOptions = {}): 
       status: 'pending',
       result: undefined,
       inFlightUntil: undefined,
+      consumedAt: undefined,
     });
-    void now;
-    logRelayEvent({ phase: 'forward', tag: relayTag(session.uuid), requestId, path, ...bodyDigest(body.body ?? {}) });
+    logRelayEvent({ phase: 'forward', tag: relayTag(session.uuid), requestId, path, ...digestForLog(body.body ?? {}) });
     writeJson(res, 200, { requestId, status: 'pending' });
     return true;
   }
@@ -444,6 +533,10 @@ export function createBridgeAiRelayHandler(options: BridgeAiRelayOptions = {}): 
     }
     logRelayEvent({ phase: 'result', tag: relayTag(session.uuid), requestId, resolved: entry.status === 'resolved', state: entry.status });
     if (entry.status === 'resolved') {
+      // Consumed-on-read (NOT deleted): stamp consumedAt and keep the entry for a grace window so a
+      // re-GET after a dropped 200 body still returns the completed/metered result. Reclaimed by the
+      // sweeper + inbox-pressure eviction (which prefer consumed entries).
+      if (entry.consumedAt === undefined) entry.consumedAt = clock.now();
       writeJson(res, 200, { status: 'resolved', result: entry.result ?? null });
       return true;
     }
@@ -496,6 +589,18 @@ function safeEqualHashOf(plaintext: string, expectedHashHex: string): boolean {
 
 function randomToken(bytes: number): string {
   return randomBytes(bytes).toString('base64url');
+}
+
+/** Client IP for per-IP register limiting. Uses the RIGHTMOST X-Forwarded-For hop, not the leftmost:
+ *  a client can prepend fake leftmost entries, but the trusted proxy (Render, single hop) appends the
+ *  real peer on the right, which the client can't forge. Falls back to the socket address. Coarse — a
+ *  backstop, not an auth boundary (MAX_SESSIONS is the absolute cap). Assumes one trusted proxy hop;
+ *  revisit if the deployment adds proxies in front of Render. */
+function clientIp(req: IncomingMessage): string {
+  const xff = req.headers['x-forwarded-for'];
+  const raw = Array.isArray(xff) ? xff[xff.length - 1] : xff;
+  const parts = raw?.split(',').map((p) => p.trim()).filter(Boolean) ?? [];
+  return parts[parts.length - 1] || req.socket?.remoteAddress || 'unknown';
 }
 
 function headerValue(req: IncomingMessage, name: string): string {
@@ -569,6 +674,13 @@ function logRelayEvent(event: Record<string, unknown>): void {
   } catch {
     // logging must never affect the relay result
   }
+}
+
+/** Lazy wrapper: skip the stringify+SHA entirely when logging is silenced (tests), so a 1 MB
+ *  payload isn't hashed for a log line that's never emitted. */
+function digestForLog(value: unknown): Record<string, unknown> {
+  if (RELAY_LOG_SILENCED) return {};
+  return bodyDigest(value);
 }
 
 /** Size + content hash of a value; full deep-redacted body only under BRIDGE_RELAY_LOG_BODIES. */

@@ -214,6 +214,16 @@ describe('planner AI setup helpers', () => {
     expect(ask.checkedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
+  it('passes an already-normalized ask result through (paired-bridge), not JSON-stringified', () => {
+    // The paired-bridge desktop returns { answer, checkedAt, source:'ai' } — NOT raw model text.
+    // Without the short-circuit, normalizeAiAsk would extractModelText -> miss -> JSON.stringify the
+    // whole object, and the user would see `{"answer":"…","source":"ai"}`.
+    const ask = normalizeAiAsk({ answer: 'You hold 1.5 SOL.', checkedAt: '2026-01-02T03:04:05Z', source: 'ai' });
+    expect(ask.answer).toBe('You hold 1.5 SOL.');
+    expect(ask.source).toBe('ai');
+    expect(ask.answer).not.toContain('{');
+  });
+
   it('repairs benign Device Agent wallet-boundary wording before guardrail display', () => {
     let guardrailEvent: { repairApplied: boolean; guardrailCodes: string } | undefined;
     const plan = normalizeDeviceAgentPlan({
@@ -572,6 +582,27 @@ describe('planner AI setup helpers', () => {
     expect(review.evidence.findings).toEqual(expect.arrayContaining([
       expect.objectContaining({ label: 'Threshold check', tone: 'good' }),
     ]));
+  });
+
+  it('reconciles a top-level already-normalized review instead of trusting the verdict (regression)', () => {
+    // Device-agent / paired-bridge reviews arrive as a top-level { decision, reason } (no `source`,
+    // no model-text envelope — finalizeReviewResultForPayload). The short-circuit MUST still run
+    // reconcileThresholdReviewDecision; round-1 returned the verdict verbatim, so an over-threshold
+    // 'approve' was wrongly trusted. extractModelText can't parse a top-level object, so the
+    // short-circuit (not the raw path) is the only thing that handles this shape.
+    const plan = buildTemplatePlan(templateById('swap'), {
+      inputToken: 'SOL', outputToken: 'USDC', amount: '0.01', slippageBps: '50',
+    }, 'ai');
+    const review = normalizeAiReview({
+      decision: 'approve',
+      reason: 'Helium Mobile rate is $29.99/month — approving the swap.',
+      summary: 'Model approved.',
+      evidence: { findings: [{ label: 'Plan rate', value: '$29.99/month', tone: 'neutral' }] },
+    }, {
+      plan,
+      instruction: 'Check if helium mobile monthly plan is under $20. If it is approve swap. if it isn\'t deny it with reason.',
+    });
+    expect(review.decision).toBe('deny'); // $29.99 > $20 → reconcile flips the wrong approve
   });
 
   describe('threshold reconciliation phrasing fixtures', () => {

@@ -5,14 +5,14 @@ import java.net.URI
 /**
  * Security guard for the relay URL carried in a scanned pairing QR.
  *
- * Cert-pinning (res/xml/network_security_config.xml) only protects connections to the KNOWN relay
- * host — it does nothing for an arbitrary host. So a malicious QR encoding `relay:"https://evil.com"`
- * would otherwise let the phone pair against an attacker's relay over ordinary TLS. We therefore
- * reject any relay whose host is not on this allowlist BEFORE claiming a pairing. The allowlist
- * matches the host the app pins; keep the two in lockstep.
+ * A scanned QR could encode `relay:"https://evil.com"` and pair the phone against an attacker's relay
+ * over ordinary TLS, so we reject any relay whose host isn't on this allowlist BEFORE claiming a
+ * pairing. NOTE: certificate pinning of the allowlisted host is deferred GA hardening (no
+ * network_security_config.xml ships yet, needs the SPKI hash) — until then this allowlist + HTTPS is
+ * the transport posture. Keep the allowlist in lockstep with the eventual pin-set.
  */
 internal object BridgeRelayPolicy {
-    /** Hosts the app trusts as relays (and pins). Subdomains of these are accepted. */
+    /** Hosts the app trusts as relays (to be pinned at GA). Subdomains of these are accepted. */
     val ALLOWED_RELAY_HOSTS: Set<String> = setOf("agentic-signer.com")
 
     fun isAllowedRelay(url: String?): Boolean {

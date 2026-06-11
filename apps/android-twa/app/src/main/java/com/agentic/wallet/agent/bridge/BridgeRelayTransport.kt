@@ -25,9 +25,10 @@ import kotlin.coroutines.resumeWithException
  *    transport failures (timeout/network/oversize/non-https).
  *  - Cancellation aborts the in-flight request.
  *
- * Cert-pinning the relay host is enforced declaratively via res/xml/network_security_config.xml
- * (the relay is a fixed, app-owned host), so this transport stays plain HttpURLConnection — the OS
- * rejects a mismatched relay certificate before any token is sent.
+ * v1 transport security: HTTPS-only + the relay-host allowlist (BridgeRelayPolicy). NOTE: certificate
+ * PINNING is NOT yet in place (no res/xml/network_security_config.xml ships) — it's deferred GA
+ * hardening that needs the production relay's SPKI hash + a backup pin. Until then a malicious CA on
+ * the allowlisted host is not blocked; the bearer + one-time token are the primary trust anchors.
  */
 internal interface BridgeRelayTransport {
     suspend fun request(method: String, url: String, headers: Map<String, String>, body: String?): HttpResponse

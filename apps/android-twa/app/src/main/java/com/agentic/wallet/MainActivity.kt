@@ -76,6 +76,10 @@ class MainActivity : FragmentActivity() {
     private lateinit var bridgeAiClient: BridgeAiClient
     @Volatile private var bridgePairInProgress: Boolean = false
     @Volatile private var bridgePairLastError: String? = null
+    // Last-known relay/desktop reachability, refreshed asynchronously by bridgeRelayStatus() so the
+    // JS status chip can show "computer online/offline" without a blocking binder-thread network call.
+    @Volatile private var relayDesktopOnline: Boolean = false
+    @Volatile private var relayProbeInFlight: Boolean = false
     // Held across the OS camera-permission dialog so the WebView's getUserMedia request can be
     // granted once the user approves (QR scanner for desktop pairing).
     private var pendingCameraPermissionRequest: PermissionRequest? = null
@@ -371,6 +375,9 @@ class MainActivity : FragmentActivity() {
      */
     private fun startBridgePairing(payloadJson: String): JSONObject {
         if (!bridgePairingFeatureEnabled()) return JSONObject().put("ok", false).put("error", "not_enabled")
+        // Reject re-entry: a second concurrent claim would race the in-progress flag and make
+        // bridgePairStatus() report "not pairing" prematurely (JS polls it as source of truth).
+        if (bridgePairInProgress) return JSONObject().put("ok", false).put("error", "already_pairing")
         val payload = try {
             JSONObject(payloadJson)
         } catch (_: Throwable) {
@@ -410,6 +417,31 @@ class MainActivity : FragmentActivity() {
             .put("enabled", bridgePairingFeatureEnabled())
             .put("error", bridgePairLastError ?: JSONObject.NULL)
 
+    /** Returns {paired, desktopOnline} from the last async probe and triggers a fresh one. Never
+     *  blocks the binder thread on the network. */
+    private fun bridgeRelayStatusJson(): JSONObject {
+        val paired = bridgePairingStore.isPaired()
+        if (paired) {
+            // De-dup: only one probe in flight at a time, so a slow relay + frequent polling doesn't
+            // stack identical GETs.
+            if (!relayProbeInFlight) {
+                relayProbeInFlight = true
+                lifecycleScope.launch {
+                    try {
+                        relayDesktopOnline = bridgeAiClient.status().desktopOnline
+                    } catch (_: Throwable) {
+                        // keep last-known value; a blip shouldn't flip the chip to offline
+                    } finally {
+                        relayProbeInFlight = false
+                    }
+                }
+            }
+        } else {
+            relayDesktopOnline = false
+        }
+        return JSONObject().put("paired", paired).put("desktopOnline", relayDesktopOnline)
+    }
+
     private fun clearBridgePairing(): JSONObject {
         bridgePairingStore.clear()
         bridgePairLastError = null
@@ -425,8 +457,19 @@ class MainActivity : FragmentActivity() {
             request.grant(arrayOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE))
             return
         }
+        // Deny any prior in-flight request before overwriting so a stale request (pointing at a dead
+        // WebView) is never left hanging.
+        pendingCameraPermissionRequest?.deny()
         pendingCameraPermissionRequest = request
         ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST_CODE)
+    }
+
+    override fun onDestroy() {
+        // If the activity is destroyed while the OS camera dialog is up, deny the held request — it
+        // points at a WebView that's going away; the recreated activity's WebView re-issues if needed.
+        pendingCameraPermissionRequest?.deny()
+        pendingCameraPermissionRequest = null
+        super.onDestroy()
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
@@ -841,6 +884,14 @@ class MainActivity : FragmentActivity() {
         fun bridgePairStatus(): String = safeBridge("bridgePairStatus", "{}") {
             if (!checkTrustedOrigin("bridgePairStatus")) return@safeBridge "{}"
             activity.bridgePairStatusJson().toString()
+        }
+
+        /** {paired, desktopOnline}. desktopOnline is the LAST async probe (non-blocking); calling this
+         *  also kicks off a fresh probe, so the JS chip converges within a couple of polls. */
+        @JavascriptInterface
+        fun bridgeRelayStatus(): String = safeBridge("bridgeRelayStatus", "{}") {
+            if (!checkTrustedOrigin("bridgeRelayStatus")) return@safeBridge "{}"
+            activity.bridgeRelayStatusJson().toString()
         }
 
         @JavascriptInterface
