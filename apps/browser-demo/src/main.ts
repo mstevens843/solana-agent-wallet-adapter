@@ -345,7 +345,7 @@ import {
   stopDesktopPairing as stopBridgeDesktopPairing,
   renderPairingQrDataUrl,
 } from './bridgePairing.js';
-import { openDesktopPairingModal, openPhonePairingModal } from './bridgePairingUi.js';
+import { mountPhonePairingPanel, openDesktopPairingModal, openPhonePairingModal } from './bridgePairingUi.js';
 import {
   bridgeConnectorDisplayLabel,
   bridgeConnectorStatusDetail,
@@ -903,11 +903,12 @@ type AndroidSetupTab = 'ai' | 'cloud' | 'connectors' | 'rules';
 type AndroidWorkspaceBackupTab = 'pending' | 'unresolved' | 'sections';
 type AndroidTrustTab = 'custody' | 'ai-checks' | 'receipts';
 type AndroidLoopTab = 'draft' | 'check' | 'approve' | 'prove';
-type AndroidAiRouteTab = 'hosted' | 'bridge' | 'session' | 'device-agent';
+type AndroidAiRouteTab = 'hosted' | 'bridge' | 'session' | 'device-agent' | 'plan-connector';
 type AndroidStorageTab = 'local' | 'cloud' | 'bridge';
 type AndroidRepeatSummaryTab = 'asset' | 'recipient' | 'cadence' | 'end-condition';
 type AndroidAiIntroTab = 'benefits' | 'no-ai';
-type AndroidAiInfoTab = 'no-ai' | 'hosted' | 'bridge' | 'session' | 'device-agent';
+type AndroidAiInfoTab = 'no-ai' | 'hosted' | 'bridge' | 'session' | 'device-agent' | 'plan-connector';
+type AiReviewSetupTab = 'api-key' | 'plan-connector';
 type AndroidCloudInfoTab = 'approval' | 'scheduler' | 'audit' | 'identity';
 type MobileRailSheet = 'workspace-storage' | 'ai-drafting' | 'wallet-balances';
 type ExpandNoteFieldRef =
@@ -1509,6 +1510,7 @@ const ANDROID_RELEASE_PAGE_URL = `${GITHUB_RELEASES_URL}/tag/${ANDROID_RELEASE_T
 const NPM_GLOBAL_INSTALL_COMMAND = 'npm install -g @solana-agent-wallet-adapter/cli';
 const NPM_EXEC_COMMAND = 'npm exec @solana-agent-wallet-adapter/cli -- app';
 const INSTALLED_APP_COMMAND = 'solana-agent-wallet app';
+const PLAN_CONNECTOR_SETUP_URL = 'https://agentic-signer.com/aiconnectors';
 const BROWSER_SESSION_DEFAULT_PROVIDER_ID = 'openrouter';
 const OPENAI_BROWSER_SESSION_DISABLED_REASON =
   'OpenAI cannot be called directly from Browser Session. Use Hosted BYOK or Local bridge for OpenAI.';
@@ -2765,6 +2767,7 @@ interface DemoState {
   androidRepeatSummaryTab: AndroidRepeatSummaryTab;
   androidAiIntroTab: AndroidAiIntroTab;
   androidAiInfoTab: AndroidAiInfoTab;
+  aiReviewSetupTab: AiReviewSetupTab;
   androidCloudInfoTab: AndroidCloudInfoTab;
   oneTimePlanView: OneTimePlanView;
   askAgentAfterDraft: boolean;
@@ -3673,6 +3676,7 @@ const state: DemoState = {
   androidRepeatSummaryTab: 'asset',
   androidAiIntroTab: 'benefits',
   androidAiInfoTab: 'no-ai',
+  aiReviewSetupTab: 'api-key',
   androidCloudInfoTab: 'approval',
   oneTimePlanView: 'create',
   askAgentAfterDraft: false,
@@ -3882,6 +3886,7 @@ let preferencesMobilePickerController: AbortController | null = null;
 let mobileRailSheetController: AbortController | null = null;
 let expandNoteSheetController: AbortController | null = null;
 let walletBalanceOverlayController: AbortController | null = null;
+let planConnectorPairingPanelCleanup: (() => void) | null = null;
 let systemHealthTimer: number | null = null;
 let systemHealthRunController: AbortController | null = null;
 const SYSTEM_HEALTH_INTERVAL_MS = 30_000;
@@ -8987,6 +8992,7 @@ function render(): void {
   closeTemplatePickerInteractions();
   closeArtifactPickerInteractions();
   closeWalletBalanceOverlayInteractions();
+  closePlanConnectorPairingPanelInteractions();
   closeMobileRailSheetInteractions();
   closeExpandNoteSheetInteractions();
   if (typeof document !== 'undefined' && document.body) {
@@ -9015,6 +9021,7 @@ function render(): void {
   bindWalletConnectOverlay();
   bindLedgerOverlay();
   bindQrConnectPage();
+  mountPlanConnectorPairingPanel();
   mountConnectorKeysPanel({ container: 'connector-keys-panel' });
   if (state.tauriNativeEnvironment.isTauriNative) {
     mountTauriLocalRuntimePanel('tauri-local-runtime-panel');
@@ -10255,7 +10262,7 @@ function aiConnectorsPage(): string {
         <div class="ai-connectors-steps" role="list" aria-label="AI connector setup steps">
           ${aiConnectorStep(1, 'Open this page on your AI-connected computer', 'Use the computer where the AI CLI is already signed in.')}
           ${aiConnectorStep(2, 'Start the lightweight connector', 'Run the command below. It starts the local bridge and selects the subscription connector.')}
-          ${aiConnectorStep(3, 'Scan from Android', 'In the Android app, choose Use Connector and scan the QR shown here.')}
+          ${aiConnectorStep(3, 'Scan from Android', 'In the Android app, choose Plan Connector and scan the QR shown here.')}
         </div>
 
         <section class="ai-connectors-primary" aria-labelledby="ai-connectors-primary-title">
@@ -10379,7 +10386,7 @@ function aiConnectorsPairingCopy(readiness: AiConnectorsReadiness): { kicker: st
       return {
         kicker: 'Scan now',
         title: 'QR is ready.',
-        detail: aiConnectorsPairingState.message || 'Open Agentic Android, choose Use Connector, and scan this code.',
+        detail: aiConnectorsPairingState.message || 'Open Agentic Android, choose Plan Connector, and scan this code.',
       };
     case 'paired':
       return {
@@ -10582,7 +10589,7 @@ async function runStartAiConnectorsPairing(): Promise<void> {
     }
     aiConnectorsPairingState = {
       status: 'waiting',
-      message: 'Open Agentic Android, choose Use Connector, and scan this code.',
+      message: 'Open Agentic Android, choose Plan Connector, and scan this code.',
       qrDataUrl,
     };
     startAiConnectorsPairingPoll();
@@ -12644,6 +12651,13 @@ function openMobileRailSheet(sheet: MobileRailSheet): void {
     });
   }
   render();
+}
+
+function openPlanConnectorSetupSheet(): void {
+  state.aiReviewSetupTab = 'plan-connector';
+  state.androidAiRouteTab = 'plan-connector';
+  state.androidAiInfoTab = 'plan-connector';
+  openMobileRailSheet('ai-drafting');
 }
 
 function closeMobileRailSheet(): void {
@@ -16905,6 +16919,19 @@ function countPhrase(count: number, singular: string, plural = `${singular}s`): 
   return `${count} ${count === 1 ? singular : plural}`;
 }
 
+function androidMobileAiPathTabLabel(mode: AiSettings['mode']): string {
+  switch (mode) {
+    case 'device-agent':
+      return 'Device Agent';
+    case 'hosted':
+      return 'BYOK';
+    case 'bridge':
+      return 'Bridge';
+    case 'session':
+      return 'Session';
+  }
+}
+
 function approvalsCardDetail(openApprovals: PreparedAction[]): string {
   const next = openApprovals[0];
   if (!next) return 'No approvals waiting';
@@ -16982,7 +17009,8 @@ function commandAiRouteCards(): string {
   const mobileAiPathPolicy = isMobileAiPathPolicySurface();
   const hostedCloudSignInRequired = mobileAiPathPolicy && !cloudSessionMatchesWallet();
   const deviceAgentFirst = deviceAgentPathAvailableForCurrentProvider();
-  const definitions: Array<{ id: AndroidAiRouteTab; mode: AiSettings['mode']; title: string; detail: string; meta: string; available: boolean }> = [
+  const planConnectorAvailable = IS_ANDROID_APP && phonePairingAvailable();
+  const definitions: Array<{ id: AndroidAiRouteTab; mode: AiSettings['mode'] | null; title: string; detail: string; meta: string; available: boolean }> = [
     {
       id: 'hosted',
       mode: 'hosted',
@@ -17025,6 +17053,16 @@ function commandAiRouteCards(): string {
         : 'Device AI connection',
       available: mobileAiPathPolicy || deviceAgentModeVisible(),
     },
+    {
+      id: 'plan-connector',
+      mode: null,
+      title: 'Plan Connector',
+      detail: state.aiSettings.pairedBridge
+        ? 'Your phone is paired to this computer plan connector.'
+        : 'Use Codex, Claude, or Gemini from your signed-in computer. Scan one QR from Android.',
+      meta: state.aiSettings.pairedBridge ? 'Computer plan connected' : 'Computer plan connection',
+      available: planConnectorAvailable,
+    },
   ];
   const mobileModeOrder = visibleMobileAiPathModes({
     mobileAiPathPolicy,
@@ -17036,8 +17074,18 @@ function commandAiRouteCards(): string {
         ...mobileModeOrder.filter((id) => id === 'hosted'),
         ...mobileModeOrder.filter((id) => id !== 'hosted'),
       ];
+  const orderedMobileRouteTabs: AndroidAiRouteTab[] = mobileAiPathPolicy
+    ? [
+        ...orderedMobileModeOrder,
+        ...(planConnectorAvailable ? ['plan-connector' as const] : []),
+      ]
+    : orderedMobileModeOrder;
+  const renderRouteEntry = (entry: (typeof definitions)[number]): string =>
+    entry.mode
+      ? commandAiRouteCard(entry.mode, entry.title, entry.detail, entry.meta)
+      : commandPlanConnectorRouteCard();
   const visible = mobileAiPathPolicy
-    ? orderedMobileModeOrder
+    ? orderedMobileRouteTabs
         .map((id) => definitions.find((entry) => entry.id === id && entry.available))
         .filter((entry): entry is (typeof definitions)[number] => Boolean(entry))
     : definitions.filter((entry) => entry.available);
@@ -17047,10 +17095,11 @@ function commandAiRouteCards(): string {
       : visible[0]!.id;
     const activeEntry = visible.find((entry) => entry.id === activeId) ?? visible[0]!;
     const shortLabels: Record<AndroidAiRouteTab, string> = {
-      hosted: 'Hosted',
+      hosted: 'BYOK',
       bridge: 'Bridge',
       session: 'Session',
-      'device-agent': 'Device',
+      'device-agent': 'Device Agent',
+      'plan-connector': 'Plan Connector',
     };
     return `
       <div class="command-route-tabs android-tab-card" data-android-tab-group="ai-route">
@@ -17058,18 +17107,20 @@ function commandAiRouteCards(): string {
           ${visible.map((entry) => mobileTabButton(
             'ai-route',
             entry.id,
-            mobileAiPathPolicy ? mobileAiPathTabLabel(entry.mode) : shortLabels[entry.id] ?? entry.title,
+            mobileAiPathPolicy && entry.mode
+              ? IS_ANDROID_APP ? androidMobileAiPathTabLabel(entry.mode) : mobileAiPathTabLabel(entry.mode)
+              : shortLabels[entry.id] ?? entry.title,
             entry.id === activeId,
           )).join('')}
         </div>
         <div class="android-tab-body command-route-body" role="tabpanel">
-          ${commandAiRouteCard(activeEntry.mode, activeEntry.title, activeEntry.detail, activeEntry.meta)}
+          ${renderRouteEntry(activeEntry)}
         </div>
       </div>
     `;
   }
   const ordered = IS_ANDROID_APP
-    ? ['device-agent', 'session', 'hosted', 'bridge']
+    ? ['device-agent', 'plan-connector', 'session', 'hosted', 'bridge']
     : IS_TAURI_APP
       ? ['bridge', 'device-agent', 'hosted']
       : deviceAgentFirst
@@ -17078,7 +17129,7 @@ function commandAiRouteCards(): string {
   return ordered
     .map((id) => visible.find((entry) => entry.id === id))
     .filter((entry): entry is (typeof definitions)[number] => Boolean(entry))
-    .map((entry) => commandAiRouteCard(entry.mode, entry.title, entry.detail, entry.meta))
+    .map(renderRouteEntry)
     .join('');
 }
 
@@ -17233,14 +17284,28 @@ function commandAiInfoCardsGroup(): string {
         : 'Useful for Seeker testing without changing approval authority.',
       available: mobileAiPathPolicy || deviceAgentModeVisible(),
     },
+    {
+      id: 'plan-connector',
+      tab: 'PLAN CONNECTOR',
+      title: 'Plan Connector',
+      badge: state.aiSettings.pairedBridge ? 'Computer plan connected' : 'Computer plan route',
+      detail: 'Android sends encrypted AI planning requests to your own signed-in computer connector for Codex, Claude, or Gemini.',
+      foot: state.aiSettings.pairedBridge
+        ? 'Keep the computer awake while planning. Wallet approval stays on Android.'
+        : 'Scan the computer QR once; no provider API key is stored on the phone.',
+      available: IS_ANDROID_APP && phonePairingAvailable(),
+    },
   ];
   const visible = entries.filter((entry) => entry.available);
   if (isMobileAppViewport()) {
     const routeEntries = mobileAiPathPolicy
-      ? visibleMobileAiPathModes({
-          mobileAiPathPolicy,
-          deviceAgentVisible: deviceAgentModeVisible(),
-        })
+      ? [
+          ...visibleMobileAiPathModes({
+            mobileAiPathPolicy,
+            deviceAgentVisible: deviceAgentModeVisible(),
+          }),
+          ...(IS_ANDROID_APP && phonePairingAvailable() ? ['plan-connector' as const] : []),
+        ]
           .map((id) => visible.find((entry) => entry.id === id))
           .filter((entry): entry is (typeof entries)[number] => Boolean(entry))
       : visible.filter((entry) => entry.id !== 'no-ai');
@@ -17252,7 +17317,11 @@ function commandAiInfoCardsGroup(): string {
           ${routeEntries.map((entry) => mobileTabButton(
             'ai-info',
             entry.id,
-            mobileAiPathPolicy ? mobileAiPathTabLabel(entry.id as AiSettings['mode']) : entry.tab,
+            mobileAiPathPolicy && entry.id !== 'plan-connector'
+              ? IS_ANDROID_APP
+                ? androidMobileAiPathTabLabel(entry.id as AiSettings['mode'])
+                : mobileAiPathTabLabel(entry.id as AiSettings['mode'])
+              : entry.tab,
             entry.id === active.id,
           )).join('')}
         </div>
@@ -17301,6 +17370,117 @@ function commandAiRouteCard(mode: AiSettings['mode'], title: string, detail: str
         ${active ? 'Selected' : configured ? 'Switch' : 'Use route'}
       </button>
     </article>
+  `;
+}
+
+function preferredPlanConnector(): 'codex' | 'claude' | 'gemini' {
+  return state.aiSettings.connector === 'claude' || state.aiSettings.connector === 'gemini'
+    ? state.aiSettings.connector
+    : 'codex';
+}
+
+function planConnectorCommand(): string {
+  return aiConnectorsCommand(preferredPlanConnector());
+}
+
+function commandPlanConnectorRouteCard(): string {
+  const paired = Boolean(state.aiSettings.pairedBridge);
+  return `
+    <article class="command-route-card plan-connector-route-card ${paired ? 'active connected' : ''}">
+      <div>
+        <span>${escapeHtml(paired ? 'Computer plan connected' : 'Computer plan connection')}</span>
+        <strong>Plan Connector</strong>
+        <p>${escapeHtml(paired
+          ? 'AI planning runs on your signed-in computer. Keep it awake while using Android.'
+          : 'Use Codex, Claude, or Gemini from your signed-in computer instead of pasting an API key on Android.')}</p>
+      </div>
+      <button
+        type="button"
+        class="${paired ? 'utility' : 'primary'}"
+        data-ai-action="open-plan-connector-sheet"
+        ${state.busy ? 'disabled' : ''}
+      >
+        ${paired ? 'Manage' : 'Connect'}
+      </button>
+    </article>
+  `;
+}
+
+function aiReviewSetupTabs(): string {
+  const active = state.aiReviewSetupTab;
+  const tabs: Array<{ id: AiReviewSetupTab; label: string }> = [
+    { id: 'api-key', label: 'API Key' },
+    { id: 'plan-connector', label: 'Plan Connector' },
+  ];
+  return `
+    <div class="ai-review-setup-tabs" role="tablist" aria-label="AI setup type">
+      ${tabs.map((tab) => `
+        <button
+          type="button"
+          role="tab"
+          aria-selected="${tab.id === active ? 'true' : 'false'}"
+          class="${tab.id === active ? 'active' : ''}"
+          data-ai-review-setup-tab="${escapeHtml(tab.id)}"
+        >
+          ${escapeHtml(tab.label)}
+        </button>
+      `).join('')}
+    </div>
+  `;
+}
+
+function planConnectorSheetPanel(): string {
+  const paired = Boolean(state.aiSettings.pairedBridge);
+  const available = phonePairingAvailable();
+  const command = planConnectorCommand();
+  const connectedBlock = paired
+    ? `
+        <div class="plan-connector-connected" aria-live="polite">
+          <span>Connected</span>
+          <strong>Computer plan is linked</strong>
+          <p>AI planning uses your computer connector. Wallet approval, signing, and submission stay on Android. ${pairedBridgeStatusChip()}</p>
+          <div class="plan-connector-actions">
+            <button type="button" class="utility" data-ai-action="refresh-status" ${state.busy ? 'disabled' : ''}>Refresh status</button>
+            <button type="button" class="utility danger" data-ai-action="unpair-phone">Unpair</button>
+          </div>
+        </div>
+      `
+    : available
+      ? '<div class="plan-connector-pairing-mount" data-plan-connector-pairing-panel aria-live="polite"></div>'
+      : `
+        <div class="plan-connector-unavailable" aria-live="polite">
+          <strong>Plan Connector is hidden in this build.</strong>
+          <p>Install a debug APK or enable the Android bridgePairingEnabled remote flag, then reopen this sheet.</p>
+        </div>
+      `;
+  return `
+    <section class="plan-connector-panel ${paired ? 'connected' : ''}">
+      <div class="plan-connector-summary">
+        <span>Plan Connector</span>
+        <strong>${paired ? 'Ready to use your computer plan' : 'Connect Android to your computer plan'}</strong>
+        <p>Open the connector page on the computer that is already signed in to Codex, Claude, or Gemini. Android scans that QR once, then sends encrypted AI planning requests through the relay.</p>
+      </div>
+      <div class="plan-connector-setup">
+        <div class="plan-connector-step">
+          <span>1</span>
+          <p>On your AI-connected computer, open <strong>${escapeHtml(PLAN_CONNECTOR_SETUP_URL)}</strong>.</p>
+        </div>
+        <div class="plan-connector-step command">
+          <span>2</span>
+          <p>For local testing, run the connector command and keep that terminal open.</p>
+          <div class="bridge-command-row plan-connector-command">
+            <code>${escapeHtml(command)}</code>
+            <button type="button" data-copy="${escapeHtml(command)}" data-copy-name="Plan Connector command">Copy</button>
+          </div>
+        </div>
+        <div class="plan-connector-step">
+          <span>3</span>
+          <p>Scan the computer QR below, or paste the pairing code from the computer page.</p>
+        </div>
+      </div>
+      ${connectedBlock}
+      <p class="ai-security-note compact">The computer does the AI thinking. Android keeps wallet approval and signing. The relay only forwards encrypted request and response payloads.</p>
+    </section>
   `;
 }
 
@@ -21933,6 +22113,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const isRail = location === 'rail';
   const mobileAiPathPolicy = isMobileAiPathPolicySurface();
   const mobilePlannerSetup = !isRail && mobileAiPathPolicy;
+  const androidRailAiSetupTabs = IS_ANDROID_APP && isRail && isMobileAppViewport();
   const scope = isRail ? 'rail' : 'command';
   const formatLabel = aiFormatLabel(state.aiSettings.apiFormat);
   const customProvider = providerPreset.id === 'custom-openai-compatible';
@@ -22020,8 +22201,17 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const bridgeSetupCard = state.aiSettings.mode === 'bridge' && !mobilePlannerSetup
     ? localBridgeAiSetupCard(status, location)
     : '';
+  if (androidRailAiSetupTabs && state.aiReviewSetupTab === 'plan-connector') {
+    return `
+      <aside class="ai-settings-card plan-connector-settings-card" data-ai-settings-scope="${escapeHtml(scope)}">
+        ${aiReviewSetupTabs()}
+        ${planConnectorSheetPanel()}
+      </aside>
+    `;
+  }
   return `
     <aside class="ai-settings-card" data-ai-settings-scope="${escapeHtml(scope)}" ${mobilePlannerSetup ? 'data-mobile-ai-policy="true"' : ''}>
+      ${androidRailAiSetupTabs ? aiReviewSetupTabs() : ''}
       ${isRail || mobilePlannerSetup ? '' : `<div class="ai-settings-intro">
         <span class="workbench-kicker">Connect AI</span>
         <h3>Agent setup</h3>
@@ -22493,7 +22683,7 @@ function pairedBridgeStatusChip(): string {
   }
   return relayStatusCache.online
     ? '<span class="bridge-online-chip ok" style="color:#5fe3a1">● computer online</span>'
-    : '<span class="bridge-online-chip warn" style="color:#ffb27a">● computer offline — open the desktop app</span>';
+    : '<span class="bridge-online-chip warn" style="color:#ffb27a">● computer offline — open the connector page</span>';
 }
 
 function deviceAgentConnectionCard(status: DeviceAgentStatus | null): string {
@@ -22535,12 +22725,12 @@ function deviceAgentConnectionCard(status: DeviceAgentStatus | null): string {
     ? ''
     : state.aiSettings.pairedBridge
       ? `<div class="device-agent-phone-pair">
-          <p class="device-agent-note">Running AI on your computer's ChatGPT / Claude plan. ${pairedBridgeStatusChip()}</p>
+          <p class="device-agent-note">Plan Connector is using your computer's AI plan. ${pairedBridgeStatusChip()}</p>
           <button type="button" class="utility" data-ai-action="unpair-phone">Unpair this computer</button>
         </div>`
       : `<div class="device-agent-phone-pair">
-          <button type="button" class="utility" data-ai-action="pair-phone-android">Use your ChatGPT / Claude plan (paired computer)</button>
-          <p class="device-agent-note">Runs AI on your own computer's plan instead of an API key. Keep the desktop app open and the connector signed in.</p>
+          <button type="button" class="utility" data-ai-action="open-plan-connector-sheet">Set up Plan Connector</button>
+          <p class="device-agent-note">Runs AI on your own computer's connector instead of an Android API key. Keep that computer awake and signed in.</p>
         </div>`;
   const showNotificationNote = (status?.runtime === 'android-native' || status?.runtime === 'browser-native')
     && (runtimeState === 'stopped' || runtimeState === 'unavailable');
@@ -22601,7 +22791,7 @@ function localBridgeAiSetupCard(status: BridgeAiStatus | null, location: 'rail' 
           ${tauriReachable ? 'Retry bridge check' : 'Start bridge'}
         </button>
         <button type="button" class="utility" data-ai-action="pair-phone-desktop" title="Show a QR so the Agentic phone app can run AI on this computer's ChatGPT/Claude plan.">
-          Pair a phone
+          Show Android QR
         </button>
       </div>
     `
@@ -22960,7 +23150,7 @@ function aiConfirmDisabledReason(): string {
     if (state.aiSettings.pairedBridge) {
       return state.deviceAgentStatus?.configured
         ? 'Confirm planner readiness before generating.'
-        : 'Pair your computer first (tap “Use your ChatGPT / Claude plan”).';
+        : 'Open Plan Connector and scan the computer QR first.';
     }
     if (!state.aiSettings.model.trim()) return 'Choose or enter an AI model before confirming.';
     if (!aiProviderReadyForCurrentMode()) return 'Add a browser-compatible gateway URL for this provider.';
@@ -25294,7 +25484,7 @@ function bind(): void {
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-ai-route-tab]')) {
     button.addEventListener('click', () => {
       const tab = button.dataset.androidAiRouteTab as AndroidAiRouteTab | undefined;
-      if (tab !== 'hosted' && tab !== 'bridge' && tab !== 'session' && tab !== 'device-agent') return;
+      if (tab !== 'hosted' && tab !== 'bridge' && tab !== 'session' && tab !== 'device-agent' && tab !== 'plan-connector') return;
       if (state.androidAiRouteTab === tab) return;
       state.androidAiRouteTab = tab;
       render();
@@ -25334,9 +25524,19 @@ function bind(): void {
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-android-ai-info-tab]')) {
     button.addEventListener('click', () => {
       const tab = button.dataset.androidAiInfoTab as AndroidAiInfoTab | undefined;
-      if (tab !== 'no-ai' && tab !== 'hosted' && tab !== 'bridge' && tab !== 'session' && tab !== 'device-agent') return;
+      if (tab !== 'no-ai' && tab !== 'hosted' && tab !== 'bridge' && tab !== 'session' && tab !== 'device-agent' && tab !== 'plan-connector') return;
       if (state.androidAiInfoTab === tab) return;
       state.androidAiInfoTab = tab;
+      render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-ai-review-setup-tab]')) {
+    button.addEventListener('click', () => {
+      const tab = button.dataset.aiReviewSetupTab as AiReviewSetupTab | undefined;
+      if (tab !== 'api-key' && tab !== 'plan-connector') return;
+      if (state.aiReviewSetupTab === tab) return;
+      state.aiReviewSetupTab = tab;
       render();
     });
   }
@@ -25705,6 +25905,9 @@ function bind(): void {
               void runEnablePairedBridge();
             },
           });
+          return;
+        case 'open-plan-connector-sheet':
+          openPlanConnectorSetupSheet();
           return;
         case 'unpair-phone':
           runUnpairPairedBridge();
@@ -27571,6 +27774,9 @@ function bindMobileRailSheet(): void {
     trigger.addEventListener('click', () => {
       const sheet = trigger.dataset.mobileRailSheet;
       if (!isMobileRailSheet(sheet)) return;
+      if (sheet === 'ai-drafting') {
+        state.aiReviewSetupTab = 'api-key';
+      }
       openMobileRailSheet(sheet);
     });
   }
@@ -27593,6 +27799,32 @@ function bindMobileRailSheet(): void {
 function closeMobileRailSheetInteractions(): void {
   mobileRailSheetController?.abort();
   mobileRailSheetController = null;
+}
+
+function mountPlanConnectorPairingPanel(): void {
+  const container = document.querySelector<HTMLElement>('[data-plan-connector-pairing-panel]');
+  if (!container) return;
+  planConnectorPairingPanelCleanup = mountPhonePairingPanel(container, {
+    bridge: agenticAndroidBridge(),
+    onPaired: () => {
+      void runEnablePairedBridge();
+    },
+  }, {
+    introText: 'Point Android at the QR displayed on your AI-connected computer. The computer must stay awake while planning.',
+    scanLabel: 'Scan computer QR',
+    pasteLabel: 'Or paste the computer pairing code:',
+    pasteButtonLabel: 'Connect Plan Connector',
+    connectedText: '✓ Connected. AI now runs on your computer plan.',
+    invalidCodeText: 'That code is not valid. Copy the whole pairing code from the computer connector page.',
+  });
+}
+
+function closePlanConnectorPairingPanelInteractions(): void {
+  try {
+    planConnectorPairingPanelCleanup?.();
+  } finally {
+    planConnectorPairingPanelCleanup = null;
+  }
 }
 
 function bindWalletBalanceOverlay(): void {
@@ -35197,7 +35429,7 @@ async function runEnablePairedBridge(): Promise<void> {
       pushToast(
         'error',
         'Paired — runtime not started',
-        status.message || 'Could not start the paired AI runtime. Make sure the desktop app is open and the connector is signed in.',
+        status.message || 'Could not start the paired AI runtime. Make sure the computer connector page is open and signed in.',
       );
     }
   } catch (err) {

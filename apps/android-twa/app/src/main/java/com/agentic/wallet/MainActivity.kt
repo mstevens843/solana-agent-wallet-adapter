@@ -208,7 +208,8 @@ class MainActivity : FragmentActivity() {
                 // code" in the WebView when the OS camera permission isn't held.
                 override fun onPermissionRequest(request: PermissionRequest) {
                     val wantsCamera = request.resources.any { it == PermissionRequest.RESOURCE_VIDEO_CAPTURE }
-                    if (!wantsCamera) {
+                    val originAllowed = isAllowedInWebView(request.origin)
+                    if (!wantsCamera || !originAllowed) {
                         request.deny()
                         return
                     }
@@ -364,9 +365,9 @@ class MainActivity : FragmentActivity() {
         )
     }
 
-    /** True when the operator has enabled the phone-pairing feature via /api/android-config. */
+    /** True when debug builds expose Plan Connector locally or release config enables it remotely. */
     private fun bridgePairingFeatureEnabled(): Boolean =
-        RemoteConfigLoader.current().config.featureFlags["bridgePairingEnabled"] == true
+        BuildConfig.DEBUG || RemoteConfigLoader.current().config.featureFlags["bridgePairingEnabled"] == true
 
     /**
      * Validate a scanned/pasted pairing payload and start the claim asynchronously. The relay host

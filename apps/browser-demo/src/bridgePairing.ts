@@ -26,8 +26,8 @@ export interface PairingPayload {
 /** Honest AI-path copy (WS5): never imply a pure-phone subscription path exists. */
 export const AI_PLAN_OPTION_COPY = {
   pairedBridge: {
-    title: 'Use your ChatGPT / Claude plan',
-    subtitle: 'Runs on your own computer — keep the desktop app open and the connector signed in.',
+    title: 'Plan Connector',
+    subtitle: 'Runs on your own computer — keep the connector page open and signed in.',
   },
   byoKey: {
     title: 'Paste an API key',

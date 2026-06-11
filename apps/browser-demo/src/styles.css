@@ -15370,6 +15370,156 @@ button.danger:hover:not(:disabled) {
   min-height: 38px;
 }
 
+.ai-review-setup-tabs {
+  background: rgba(6, 10, 9, 0.72);
+  border: 1px solid rgba(224, 230, 226, 0.12);
+  border-radius: 10px;
+  display: grid;
+  gap: 3px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 3px;
+}
+
+.ai-review-setup-tabs button {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  color: rgba(203, 214, 210, 0.68);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0;
+  min-height: 38px;
+  padding: 8px 10px;
+}
+
+.ai-review-setup-tabs button.active {
+  background:
+    linear-gradient(180deg, rgba(72, 211, 139, 0.2), rgba(25, 84, 55, 0.22)),
+    rgba(15, 36, 27, 0.92);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px rgba(94, 231, 158, 0.22);
+}
+
+.plan-connector-settings-card {
+  align-content: start;
+}
+
+.plan-connector-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.plan-connector-summary,
+.plan-connector-connected,
+.plan-connector-unavailable,
+.plan-connector-pairing-mount {
+  background: rgba(7, 13, 11, 0.56);
+  border: 1px solid rgba(224, 230, 226, 0.1);
+  border-radius: 8px;
+  display: grid;
+  gap: 7px;
+  padding: 12px;
+}
+
+.plan-connector-summary span,
+.plan-connector-connected span {
+  color: var(--dim);
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.plan-connector-summary strong,
+.plan-connector-connected strong,
+.plan-connector-unavailable strong {
+  color: var(--text);
+  font-size: 0.98rem;
+  font-weight: 900;
+  line-height: 1.18;
+}
+
+.plan-connector-setup {
+  display: grid;
+  gap: 8px;
+}
+
+.plan-connector-step {
+  align-items: start;
+  background: rgba(255, 255, 255, 0.026);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: 8px;
+  display: grid;
+  gap: 6px 9px;
+  grid-template-columns: 24px minmax(0, 1fr);
+  padding: 10px;
+}
+
+.plan-connector-step > span {
+  align-items: center;
+  background: rgba(94, 231, 158, 0.14);
+  border: 1px solid rgba(94, 231, 158, 0.28);
+  border-radius: 999px;
+  color: #bff7d7;
+  display: inline-flex;
+  font-size: 0.72rem;
+  font-weight: 900;
+  height: 24px;
+  justify-content: center;
+  line-height: 1;
+  width: 24px;
+}
+
+.plan-connector-step p {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.32;
+  margin: 0;
+  min-width: 0;
+}
+
+.plan-connector-step strong {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.plan-connector-command {
+  grid-column: 2;
+  margin-top: 0;
+  min-width: 0;
+}
+
+.plan-connector-command code {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.plan-connector-actions {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.plan-connector-actions button {
+  width: 100%;
+}
+
+.plan-connector-pairing-mount textarea,
+.phone-pairing-panel textarea {
+  box-sizing: border-box;
+}
+
+.plan-connector-pairing-mount .bridge-pair-button {
+  min-height: 40px;
+}
+
+.plan-connector-route-card.connected {
+  border-color: rgba(94, 231, 158, 0.32);
+}
+
 .ai-advanced-toggles {
   display: grid;
   gap: 8px;
@@ -28944,6 +29094,10 @@ button.danger:hover:not(:disabled) {
     overflow-y: auto;
     top: calc(100% + 6px);
     z-index: 360;
+  }
+
+  .route-app .mobile-rail-sheet.ai-drafting {
+    height: min(72dvh, 640px);
   }
 
   .route-app .mobile-rail-sheet.wallet-balances {

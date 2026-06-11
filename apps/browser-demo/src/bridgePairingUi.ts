@@ -100,11 +100,11 @@ export interface DesktopPairingDeps {
 }
 
 export async function openDesktopPairingModal(deps: DesktopPairingDeps): Promise<void> {
-  const { body, onClose } = buildModalShell('Pair a phone');
+  const { body, onClose } = buildModalShell('Plan Connector QR');
   const intro = document.createElement('p');
   intro.style.cssText = 'margin:0;font-size:13px;color:#bcd3c7;';
   intro.textContent =
-    'Scan this with the Agentic app on your phone to run AI on your ChatGPT / Claude plan from this computer. Keep the desktop app open.';
+    'Scan this with Agentic Android to run AI on the plan connected to this computer. Keep this computer awake and signed in.';
   const qrWrap = document.createElement('div');
   qrWrap.style.cssText = 'display:flex;justify-content:center;margin:16px 0;min-height:240px;align-items:center;';
   const status = statusLine('Starting…');
@@ -157,7 +157,7 @@ export async function openDesktopPairingModal(deps: DesktopPairingDeps): Promise
       pre.style.cssText = 'width:100%;height:90px;font-family:monospace;font-size:11px;background:#06100c;color:#cfe;border:1px solid #1f3a2c;border-radius:8px;padding:8px;';
       qrWrap.append(pre);
     }
-    status.replaceWith(statusLine('Waiting for your phone to scan…'));
+    status.replaceWith(statusLine('Waiting for Android to scan…'));
     const liveStatus = body.lastElementChild as HTMLElement;
     polling = setInterval(async () => {
       try {
@@ -165,7 +165,7 @@ export async function openDesktopPairingModal(deps: DesktopPairingDeps): Promise
         pollFailures = 0;
         if (s.paired) {
           stopPolling();
-          liveStatus.textContent = '✓ Phone paired. You can close this and use AI on your phone.';
+          liveStatus.textContent = '✓ Android connected. You can close this and use AI from the phone.';
           liveStatus.style.color = '#5fe3a1';
         } else if (!s.active) {
           stopPolling();
@@ -197,26 +197,50 @@ export interface PhonePairingDeps {
   onPaired: () => void;
 }
 
+export interface PhonePairingPanelOptions {
+  introText?: string;
+  scanLabel?: string;
+  pasteLabel?: string;
+  pasteButtonLabel?: string;
+  connectedText?: string;
+  invalidCodeText?: string;
+}
+
 export function openPhonePairingModal(deps: PhonePairingDeps): void {
-  const { body, onClose } = buildModalShell('Use your ChatGPT / Claude plan');
+  const { body, onClose } = buildModalShell('Scan computer QR');
+  const cleanup = mountPhonePairingPanel(body, deps, {
+    introText:
+      'On your AI-connected computer, open the Agentic connector QR page. Then scan that QR here or paste the pairing code.',
+  });
+  onClose(cleanup);
+}
+
+export function mountPhonePairingPanel(
+  container: HTMLElement,
+  deps: PhonePairingDeps,
+  options: PhonePairingPanelOptions = {},
+): () => void {
+  container.innerHTML = '';
+  container.classList.add('phone-pairing-panel');
   const intro = document.createElement('p');
   intro.style.cssText = 'margin:0;font-size:13px;color:#bcd3c7;';
   intro.textContent =
-    'On your computer, open the Agentic desktop app and choose “Pair a phone”. Then scan that QR here (or paste the code).';
+    options.introText
+      ?? 'On your AI-connected computer, open the Agentic connector QR page. Then scan that QR here or paste the pairing code.';
   const video = document.createElement('video');
   video.setAttribute('playsinline', 'true');
   video.muted = true;
   video.style.cssText = 'width:100%;border-radius:10px;margin:12px 0;display:none;background:#000;max-height:260px;';
-  const scanBtn = makeButton('Scan QR with camera');
+  const scanBtn = makeButton(options.scanLabel ?? 'Scan computer QR');
   const pasteLabel = document.createElement('label');
-  pasteLabel.textContent = 'Or paste the pairing code:';
+  pasteLabel.textContent = options.pasteLabel ?? 'Or paste the pairing code:';
   pasteLabel.style.cssText = 'display:block;font-size:12px;color:#9fb8ab;margin-top:12px;';
   const pasteArea = document.createElement('textarea');
   pasteArea.placeholder = '{"v":1,"relay":"…","uuid":"…","token":"…"}';
   pasteArea.style.cssText = 'width:100%;height:64px;font-family:monospace;font-size:11px;background:#06100c;color:#cfe;border:1px solid #1f3a2c;border-radius:8px;padding:8px;margin-top:4px;';
-  const pasteBtn = makeButton('Pair with this code');
+  const pasteBtn = makeButton(options.pasteButtonLabel ?? 'Pair with this code');
   const status = statusLine('');
-  body.append(intro, video, scanBtn, pasteLabel, pasteArea, pasteBtn, status);
+  container.append(intro, video, scanBtn, pasteLabel, pasteArea, pasteBtn, status);
 
   let polling: ReturnType<typeof setInterval> | null = null;
   let stream: MediaStream | null = null;
@@ -228,9 +252,6 @@ export function openPhonePairingModal(deps: PhonePairingDeps): void {
     stream?.getTracks().forEach((t) => t.stop());
     stream = null;
   };
-  // Runs on EVERY close path (button, backdrop, opening another modal) so the camera light goes off
-  // and the poll interval stops.
-  onClose(cleanup);
 
   const beginPairing = async (payload: PairingPayload) => {
     cleanup();
@@ -248,7 +269,7 @@ export function openPhonePairingModal(deps: PhonePairingDeps): void {
       if (s.paired) {
         if (polling) clearInterval(polling);
         polling = null;
-        status.textContent = '✓ Paired. AI now runs on your computer’s plan.';
+        status.textContent = options.connectedText ?? '✓ Paired. AI now runs on your computer’s plan.';
         status.style.color = '#5fe3a1';
         deps.onPaired();
       } else if (s.error) {
@@ -263,7 +284,7 @@ export function openPhonePairingModal(deps: PhonePairingDeps): void {
   pasteBtn.addEventListener('click', () => {
     const payload = parsePairingPayload(pasteArea.value);
     if (!payload) {
-      status.textContent = 'That code isn’t valid. Copy the whole pairing code from the desktop.';
+      status.textContent = options.invalidCodeText ?? 'That code isn’t valid. Copy the whole pairing code from the computer.';
       status.style.color = '#ffb27a';
       return;
     }
@@ -307,12 +328,15 @@ export function openPhonePairingModal(deps: PhonePairingDeps): void {
       status.style.color = '#ffb27a';
     }
   });
+
+  return cleanup;
 }
 
 function makeButton(label: string): HTMLButtonElement {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.textContent = label;
+  btn.className = 'bridge-pair-button';
   btn.style.cssText =
     'width:100%;margin-top:8px;padding:10px;border-radius:8px;border:1px solid #2a5340;background:#12241b;color:#e7f2ea;font-size:13px;cursor:pointer;';
   return btn;
@@ -321,12 +345,12 @@ function makeButton(label: string): HTMLButtonElement {
 function pairErrorMessage(code: string | undefined): string {
   switch (code) {
     case 'not_enabled':
-      return 'Phone pairing isn’t enabled yet.';
+      return 'Plan Connector is not enabled in this app build.';
     case 'relay_not_allowed':
-      return 'That code points at an untrusted server — scan the QR from your own desktop app.';
+      return 'That code points at an untrusted server — scan the QR from your own computer.';
     case 'incomplete_payload':
     case 'bad_payload':
-      return 'That code is incomplete. Copy the whole pairing code from the desktop.';
+      return 'That code is incomplete. Copy the whole pairing code from the computer.';
     case 'bridge_unavailable':
       return 'Pairing isn’t available in this app build.';
     default:

@@ -87,7 +87,7 @@ internal class BridgeAiClient(
                 AgentMwaLog.warn("BridgeAiClient", "runForward", "UNPAIRED", "no pairing for $path", emptyMap())
                 throw ProviderHttpException(
                     ProviderErrorCodes.INVALID_CONFIG,
-                    "This phone isn't paired to a computer. Open the desktop app, choose \"Pair a phone\", and scan the QR.",
+                    "This phone isn't paired to a computer. Open Plan Connector on the computer, then scan the QR.",
                 )
             }
         val tag = tagFor(pairing.pairUuid)
@@ -168,7 +168,7 @@ internal class BridgeAiClient(
         )
         throw ProviderHttpException(
             ProviderErrorCodes.TIMEOUT,
-            "Your computer didn't respond in time. Make sure it's awake, the desktop app is running, and the connector is signed in.",
+            "Your computer didn't respond in time. Make sure it's awake, the connector page is open, and the connector is signed in.",
         )
     }
 
