@@ -58,7 +58,7 @@
     "@meteora-ag/dlmm": "1.9.7",
     "@mrgnlabs/marginfi-client-v2": "6.4.1",
     "@mrgnlabs/mrgn-common": "2.0.7",
-    "@orca-so/whirlpools": "2.2.0",
+    "@orca-so/whirlpools": "8.0.0",
     "@pythnetwork/pyth-solana-receiver": "0.8.2",
     "@raydium-io/raydium-sdk-v2": "0.1.126-alpha",
     "@solana/kit": "2.3.0",
