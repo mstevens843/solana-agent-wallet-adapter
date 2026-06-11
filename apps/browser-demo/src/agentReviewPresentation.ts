@@ -258,9 +258,21 @@ function formatUsdInline(value: number): string {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
 }
 
+// Drop "capability gap" rows (a provider couldn't be reached, an API key is missing, or cloud sign-in
+// is required) from the rendered review findings — they describe the local environment, not the user's
+// request, and read as noise (e.g. "Jupiter connector facts unavailable: missing JUPITER_API_KEY").
+// Display-only: the evidence gate still sees the underlying facts. Never hides a blocking/fail row.
+function isUnavailableCapabilityFact(fact: AgentEvidenceFactRow): boolean {
+  if (fact.severity === 'block' || fact.tone === 'fail') return false;
+  const value = (fact.value ?? '').toLowerCase();
+  return value.includes('unavailable')
+    || /\bmissing\b[^.]*\bapi[_ -]?key\b/.test(value)
+    || /\bset\b[^.]*\bapi[_ -]?key\b/.test(value);
+}
+
 export function evidenceFactDisplayRows(facts: AgentEvidenceFactRow[] | undefined): AgentEvidenceDisplayRow[] {
   if (!facts?.length) return [];
-  return facts.map((fact) => {
+  return facts.filter((fact) => !isUnavailableCapabilityFact(fact)).map((fact) => {
     const tone: AgentEvidenceTone = fact.tone ?? (fact.severity === 'block'
       ? 'fail'
       : fact.severity === 'warn' || fact.freshness === 'stale' || fact.freshness === 'missing'

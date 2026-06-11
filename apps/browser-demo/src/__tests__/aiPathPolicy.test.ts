@@ -13,6 +13,7 @@ import {
   visibleDesktopAiPathModes,
   visibleMobileAiPathModes,
 } from '../aiPathPolicy.js';
+import { defaultAiModeForSurface } from '../deviceAgentWiring.js';
 
 describe('mobile AI path policy', () => {
   it('applies to Android app and mobile wallet browser surfaces', () => {
@@ -131,6 +132,14 @@ describe('mobile AI path policy', () => {
 });
 
 describe('desktop AI path policy', () => {
+  it('defaults the desktop app to the local bridge (connector home) regardless of cloud session', () => {
+    // Regression: a cloud STORAGE session used to force the desktop default to "hosted", which hid the
+    // subscription-connector picker + Start/Retry-bridge button (both gated on bridge mode).
+    const base = { isAndroidApp: false, androidDeviceAgentRuntimeEnabled: false, isLocalBrowserOrigin: false, isTauriApp: true };
+    expect(defaultAiModeForSurface({ ...base, hasCloudSession: true })).toBe('bridge');
+    expect(defaultAiModeForSurface({ ...base, hasCloudSession: false })).toBe('bridge');
+  });
+
   it('applies to the Tauri desktop app', () => {
     expect(shouldUseDesktopAiPathPolicy({ isTauriApp: true })).toBe(true);
     expect(shouldUseDesktopAiPathPolicy({ isTauriApp: false })).toBe(false);

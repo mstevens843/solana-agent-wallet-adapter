@@ -1939,7 +1939,7 @@ async function runAgentSetup(
   if (optionValue(args, '--engine')?.trim().toLowerCase() === 'connector') {
     const connector = normalizeAgentConnector(optionValue(args, '--connector'));
     if (!connector) {
-      throw new Error('Unknown agent connector. Use --connector codex|gemini|claude.');
+      throw new Error('Unknown agent connector. Use --connector codex|gemini|claude|antigravity.');
     }
     const connectorPath = optionValue(args, '--connector-path')?.trim();
     const config: AgentSetupConfig = {
@@ -2334,7 +2334,7 @@ async function clearAgentSetup(options: GlobalOptions): Promise<JsonRecord> {
 function validateAgentSetupConfig(config: AgentSetupConfig): AgentSetupConfig {
   if (config.engine === 'connector') {
     const connector = normalizeAgentConnector(config.connector);
-    if (!connector) throw new Error('Unknown agent connector. Choose codex, gemini, or claude.');
+    if (!connector) throw new Error('Unknown agent connector. Choose codex, gemini, claude, or antigravity.');
     return { ...config, engine: 'connector', connector, path: 'bridge', apiKey: '' };
   }
   const apiKey = normalizeAgentSetupApiKey(config.apiKey);

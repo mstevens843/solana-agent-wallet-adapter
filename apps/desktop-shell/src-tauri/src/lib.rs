@@ -1228,31 +1228,74 @@ fn normalize_config(mut config: DesktopConfig) -> DesktopConfig {
     config
 }
 
+/// The desktop is a consumer **mainnet** wallet. The bundled local bridge derives its cluster
+/// solely from the action-config file (see packages/mcp-server `loadConfig`/`DEFAULT_CONFIG`);
+/// when that file has no `cluster`, the loader defaults to **devnet**, which silently shows a
+/// devnet balance with USD pricing disabled ("USD unavailable"). Pin the desktop to mainnet-beta.
+const DESKTOP_ACTION_CONFIG_CLUSTER: &str = "mainnet-beta";
+
 fn ensure_bridge_runtime_files(config: &DesktopConfig) -> Result<Vec<String>, String> {
     ensure_runtime_dirs(config)?;
-    ensure_json_file_exists(
-        Path::new(&config.action_config_path),
-        "action config",
-        "{}\n",
-    )
+    ensure_mainnet_action_config(Path::new(&config.action_config_path))
 }
 
-fn ensure_json_file_exists(
-    path: &Path,
-    label: &str,
-    contents: &str,
-) -> Result<Vec<String>, String> {
-    if path.is_file() {
-        return Ok(Vec::new());
-    }
+fn default_mainnet_action_config_json() -> String {
+    serde_json::json!({
+        "cluster": DESKTOP_ACTION_CONFIG_CLUSTER,
+        "mainnet": { "enabled": true }
+    })
+    .to_string()
+}
+
+/// Seed a new action config on mainnet-beta, or migrate an existing cluster-less config (e.g.
+/// the legacy empty `{}`) up to mainnet-beta. An explicit `cluster` (mainnet-beta OR a
+/// developer's devnet) is always preserved, and any explicit `mainnet.enabled` is respected.
+fn ensure_mainnet_action_config(path: &Path) -> Result<Vec<String>, String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|err| format!("Failed to create {}: {err}", parent.display()))?;
     }
-    fs::write(path, contents)
+    if !path.is_file() {
+        fs::write(path, format!("{}\n", default_mainnet_action_config_json()))
+            .map_err(|err| format!("Failed to write {}: {err}", path.display()))?;
+        return Ok(vec![format!(
+            "[desktop] created default action config (mainnet-beta) at {}",
+            path.display()
+        )]);
+    }
+    let raw = fs::read_to_string(path)
+        .map_err(|err| format!("Failed to read {}: {err}", path.display()))?;
+    let mut value: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|err| format!("Failed to parse {}: {err}", path.display()))?;
+    let object = match value.as_object_mut() {
+        Some(object) => object,
+        // Not a JSON object — leave the file untouched rather than clobber it.
+        None => return Ok(Vec::new()),
+    };
+    if object.contains_key("cluster") {
+        // A cluster was chosen explicitly (e.g. a developer on devnet) — respect it.
+        return Ok(Vec::new());
+    }
+    object.insert(
+        "cluster".into(),
+        serde_json::Value::String(DESKTOP_ACTION_CONFIG_CLUSTER.into()),
+    );
+    match object.get_mut("mainnet") {
+        Some(serde_json::Value::Object(mainnet)) => {
+            if !mainnet.contains_key("enabled") {
+                mainnet.insert("enabled".into(), serde_json::Value::Bool(true));
+            }
+        }
+        _ => {
+            object.insert("mainnet".into(), serde_json::json!({ "enabled": true }));
+        }
+    }
+    let serialized = serde_json::to_string_pretty(&value)
+        .map_err(|err| format!("Failed to serialize {}: {err}", path.display()))?;
+    fs::write(path, format!("{serialized}\n"))
         .map_err(|err| format!("Failed to write {}: {err}", path.display()))?;
     Ok(vec![format!(
-        "[desktop] created default {label} at {}",
+        "[desktop] migrated action config to mainnet-beta at {}",
         path.display()
     )])
 }
@@ -2174,13 +2217,35 @@ mod tests {
 
         assert!(env_parent.is_dir());
         assert!(prepared_parent.is_dir());
-        assert_eq!(
-            fs::read_to_string(action_config_path).expect("action config should exist"),
-            "{}\n"
-        );
+        let raw = fs::read_to_string(action_config_path).expect("action config should exist");
+        let value: serde_json::Value =
+            serde_json::from_str(&raw).expect("action config should be valid JSON");
+        assert_eq!(value["cluster"], "mainnet-beta");
+        assert_eq!(value["mainnet"]["enabled"], true);
         assert_eq!(messages.len(), 1);
         assert!(messages[0].contains("created default action config"));
         assert!(messages[0].contains(&config.action_config_path));
+    }
+
+    #[test]
+    fn bridge_runtime_files_migrate_clusterless_action_config() {
+        let dir = tempfile::tempdir().expect("tempdir should be created");
+        let config = fixture_config_in(dir.path());
+        let action_config_path = Path::new(&config.action_config_path);
+        fs::create_dir_all(action_config_path.parent().unwrap())
+            .expect("config parent should be created");
+        fs::write(action_config_path, "{}\n").expect("legacy empty config should be written");
+
+        let messages = ensure_bridge_runtime_files(&config)
+            .expect("runtime files should be prepared");
+
+        let raw = fs::read_to_string(action_config_path).expect("action config should exist");
+        let value: serde_json::Value =
+            serde_json::from_str(&raw).expect("action config should be valid JSON");
+        assert_eq!(value["cluster"], "mainnet-beta");
+        assert_eq!(value["mainnet"]["enabled"], true);
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains("migrated action config to mainnet-beta"));
     }
 
     #[test]

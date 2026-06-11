@@ -20,6 +20,27 @@ interface RawResponse {
   headers: IncomingHttpHeaders;
 }
 
+describe('getAndroidRemoteConfig — bridgePairingEnabled kill-switch', () => {
+  it('omits the flag by default (feature dark)', () => {
+    const config = getAndroidRemoteConfig({});
+    expect(config.featureFlags.bridgePairingEnabled).toBeUndefined();
+    // No env-conditional flags -> returns the canonical constant by identity.
+    expect(config).toBe(ANDROID_REMOTE_CONFIG);
+  });
+
+  it('serves bridgePairingEnabled:true when BRIDGE_PAIRING_ENABLED=1', () => {
+    const config = getAndroidRemoteConfig({ BRIDGE_PAIRING_ENABLED: '1' });
+    expect(config.featureFlags.bridgePairingEnabled).toBe(true);
+    // Static flags are preserved alongside the env-conditional one.
+    expect(config.featureFlags.forceMemoTxFallback).toBe(false);
+  });
+
+  it('treats any value other than "1" as off', () => {
+    expect(getAndroidRemoteConfig({ BRIDGE_PAIRING_ENABLED: '0' }).featureFlags.bridgePairingEnabled).toBeUndefined();
+    expect(getAndroidRemoteConfig({ BRIDGE_PAIRING_ENABLED: 'true' }).featureFlags.bridgePairingEnabled).toBeUndefined();
+  });
+});
+
 describe('GET /api/android-config', () => {
   it('serves the canonical Android remote config as JSON with a public cache header', async () => {
     await withServer(async (port) => {

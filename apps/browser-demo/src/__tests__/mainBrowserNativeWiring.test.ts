@@ -338,37 +338,21 @@ describe('Phase 6 browser-native Device Agent wiring helpers', () => {
     })).toBe('session');
   });
 
-  it('defaults Tauri desktop AI mode to hosted when an Agentic Cloud session is present', () => {
-    expect(defaultAiModeForSurface({
-      isAndroidApp: false,
-      androidDeviceAgentRuntimeEnabled: false,
-      isLocalBrowserOrigin: true,
-      isTauriApp: true,
-      hasCloudSession: true,
-    })).toBe('hosted');
-    expect(defaultAiModeForSurface({
-      isAndroidApp: false,
-      androidDeviceAgentRuntimeEnabled: false,
-      isLocalBrowserOrigin: false,
-      isTauriApp: true,
-      hasCloudSession: true,
-    })).toBe('hosted');
-  });
-
-  it('defaults Tauri desktop AI mode to device-agent when no Agentic Cloud session exists', () => {
-    expect(defaultAiModeForSurface({
-      isAndroidApp: false,
-      androidDeviceAgentRuntimeEnabled: false,
-      isLocalBrowserOrigin: true,
-      isTauriApp: true,
-      hasCloudSession: false,
-    })).toBe('device-agent');
-    expect(defaultAiModeForSurface({
-      isAndroidApp: false,
-      androidDeviceAgentRuntimeEnabled: false,
-      isLocalBrowserOrigin: false,
-      isTauriApp: true,
-    })).toBe('device-agent');
+  it('defaults Tauri desktop AI mode to the local bridge (connector home) regardless of cloud session', () => {
+    // The desktop's home is the local bridge — the subscription-connector picker + Start/Retry-bridge
+    // button live in bridge mode. A cloud STORAGE session must NOT force hosted (it used to), which hid
+    // that UI on every restart. Device Agent / Hosted BYOK stay available via explicit user choice.
+    for (const hasCloudSession of [true, false]) {
+      for (const isLocalBrowserOrigin of [true, false]) {
+        expect(defaultAiModeForSurface({
+          isAndroidApp: false,
+          androidDeviceAgentRuntimeEnabled: false,
+          isLocalBrowserOrigin,
+          isTauriApp: true,
+          hasCloudSession,
+        })).toBe('bridge');
+      }
+    }
   });
 
   it('keeps Android AI mode ahead of Tauri when both surface flags are set', () => {

@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { customOpenAiCompatibleBaseUrlError } from '@solana-agent-wallet-adapter/core';
 import { createPairingHandler } from './pairingHandler.js';
+import { createBridgeAiRelayHandler } from './bridgeAiRelayHandler.js';
 
 import {
   AgentWalletActionService,
@@ -562,6 +563,11 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
   // rate-limiting (pairing UUIDs are the secret, so it sits OUTSIDE the
   // same-origin gate other /api routes enforce).
   const pairingHandler = createPairingHandler();
+  // Android "use your plan from your phone" relay: the desktop bridge dials out
+  // and long-polls, the phone POSTs AI requests. Like pairingHandler, tokens are
+  // the secret, so it owns its own CORS/auth and sits OUTSIDE the same-origin
+  // gate. See bridgeAiRelayHandler.ts.
+  const bridgeAiRelayHandler = createBridgeAiRelayHandler();
   return {
     store,
     async handle(req, res, url) {
@@ -577,6 +583,9 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
       // for any other route — falls through to the normal pipeline.
       if (url.pathname.startsWith('/api/pair/')) {
         return await pairingHandler.handle(req, res, url);
+      }
+      if (url.pathname.startsWith('/api/bridge-pair/') || url.pathname.startsWith('/api/bridge-ai/')) {
+        return await bridgeAiRelayHandler.handle(req, res, url);
       }
 
       if (url.pathname === APPLE_APP_SITE_ASSOCIATION_PATH) {

@@ -142,10 +142,24 @@ const MEMO_PROOF_ROUTER: AndroidMemoProofRouterConfig = {
  *   skrSessionDefault: when true (and `skrEnabled`), the cloud session-create
  *     endpoint defaults streaming-session `tokenMint` to $SKR for Android
  *     clients that omit it. Web clients are unaffected.
+ *
+ *   bridgePairingEnabled: gates the Android "use your ChatGPT/Claude plan from
+ *     your phone" feature — the QR pairing to the user's own desktop bridge
+ *     (see bridgeAiRelayHandler.ts / bridgePairingClient.ts). Env-conditional
+ *     (`BRIDGE_PAIRING_ENABLED=1`) and OFF by default, so the whole feature can
+ *     be dark-launched and killed within one config refresh (~hourly / on
+ *     foreground) without an APK release. The relay URL itself rides in the
+ *     scanned QR (validated against the app's pinned relay host), so no relay
+ *     endpoint is served here.
  */
 const STATIC_FEATURE_FLAGS: Readonly<Record<string, boolean>> = {
   forceMemoTxFallback: false,
 };
+
+/** Operator dark-launch / kill-switch for the Android phone-pairing feature. */
+function isBridgePairingEnabled(env: NodeJS.ProcessEnv): boolean {
+  return (env.BRIDGE_PAIRING_ENABLED ?? '').trim() === '1';
+}
 
 function buildFeatureFlags(env: NodeJS.ProcessEnv): Readonly<Record<string, boolean>> {
   // A malformed `SKR_TOKEN_MINT` (operator typo) must NOT cause the Android
@@ -153,12 +167,20 @@ function buildFeatureFlags(env: NodeJS.ProcessEnv): Readonly<Record<string, bool
   // anything that isn't a base58 pubkey, keeping enablement consistent across
   // every $SKR-aware surface (install, recurring, streaming-session create).
   const skrConfigured = readSkrMint(env).length > 0;
-  if (!skrConfigured) return STATIC_FEATURE_FLAGS;
+  const bridgePairing = isBridgePairingEnabled(env);
+  // Preserve the STATIC reference (and the identity check in
+  // getAndroidRemoteConfig) when no env-conditional flag is active.
+  if (!skrConfigured && !bridgePairing) return STATIC_FEATURE_FLAGS;
   return Object.freeze({
     ...STATIC_FEATURE_FLAGS,
-    skrEnabled: true,
-    skrSkillBountyActive: isSkrSkillBountyActive(env),
-    skrSessionDefault: isSkrSessionDefaultActive(env),
+    ...(skrConfigured
+      ? {
+          skrEnabled: true,
+          skrSkillBountyActive: isSkrSkillBountyActive(env),
+          skrSessionDefault: isSkrSessionDefaultActive(env),
+        }
+      : {}),
+    ...(bridgePairing ? { bridgePairingEnabled: true } : {}),
   });
 }
 

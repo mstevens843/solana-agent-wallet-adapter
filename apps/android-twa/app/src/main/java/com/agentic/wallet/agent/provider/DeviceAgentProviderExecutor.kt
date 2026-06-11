@@ -30,8 +30,12 @@ import java.net.SocketTimeoutException
  *  - Thread-safe: a single instance may serve concurrent requests. Each call constructs its
  *    own provider implementation and HTTP connection; no shared mutable state.
  */
-class DeviceAgentProviderExecutor(
+class DeviceAgentProviderExecutor internal constructor(
     private val httpExecutor: HttpExecutor = DefaultHttpExecutor(),
+    /** Set on Android to route paired-bridge ("use your plan from your computer") configs to the
+     *  relay instead of an on-device API-key provider. Null on builds without the feature. The
+     *  constructor is `internal` because this param exposes the internal DeviceAgentProvider type. */
+    private val bridgeRelayProvider: DeviceAgentProvider? = null,
 ) : ProviderExecutor {
 
     override suspend fun generatePlan(config: RuntimeConfig, payload: JSONObject): JSONObject =
@@ -78,6 +82,15 @@ class DeviceAgentProviderExecutor(
     }
 
     private fun providerFor(config: RuntimeConfig): DeviceAgentProvider {
+        if (config.isPairedBridge()) {
+            return bridgeRelayProvider ?: throw ProviderFailedException(
+                RuntimeError(
+                    code = RuntimeErrorCodes.INVALID_CONFIG,
+                    subcode = RuntimeConfigSubcodes.UNSUPPORTED_FORMAT,
+                    message = "Paired-bridge AI isn't available on this build. Update the app or pair again.",
+                ),
+            )
+        }
         val format = RuntimeConfig.canonicalApiFormat(config.apiFormat)
         val provider = config.provider.trim().lowercase()
         return when (format) {

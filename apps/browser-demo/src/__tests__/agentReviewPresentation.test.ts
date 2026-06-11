@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   evidenceEntryTone,
+  evidenceFactDisplayRows,
   isAuditEvidenceKey,
   isTokenMismatchEvidenceKey,
   reviewEvidenceRows,
@@ -38,6 +39,25 @@ function swapPlan(overrides: Partial<AgentPlan> = {}): AgentPlan {
 }
 
 describe('agent review presentation helpers', () => {
+  it('drops unavailable capability-gap fact rows but keeps resolved ones', () => {
+    const rows = evidenceFactDisplayRows([
+      { id: 'fact.connectorRead', label: 'Connector read facts', value: 'Jupiter connector facts unavailable: missing JUPITER_API_KEY.', tone: 'warn', severity: 'warn' },
+      { id: 'fact.walletHoldings', label: 'Wallet holdings', value: 'Wallet holdings unavailable: no signed-in cloud session.', tone: 'warn', severity: 'warn' },
+      { id: 'fact.tokenMint', label: 'Token identity', value: 'SOL and USDC resolved to known mints', tone: 'good', severity: 'info' },
+    ]);
+    const labels = rows.map((r) => r.label);
+    expect(labels).toContain('Token identity');
+    expect(labels).not.toContain('Connector read facts');
+    expect(labels).not.toContain('Wallet holdings');
+  });
+
+  it('never hides a blocking (fail) row even if it mentions "unavailable"', () => {
+    const rows = evidenceFactDisplayRows([
+      { id: 'fact.oracle', label: 'Oracle', value: 'Price oracle unavailable', tone: 'fail', severity: 'block' },
+    ]);
+    expect(rows.map((r) => r.label)).toContain('Oracle');
+  });
+
   it('warns when swap text says USDC but the active output token is a different mint', () => {
     const warning = swapTokenTextMismatchWarning(
       swapPlan({ parameters: { inputToken: 'SOL', outputToken: POPCAT_MINT, amount: '0.1', slippageBps: '50' } }),

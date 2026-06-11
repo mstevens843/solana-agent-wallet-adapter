@@ -335,6 +335,8 @@ import {
   shouldUseMobileAiPathPolicy,
   visibleMobileAiPathModes,
 } from './aiPathPolicy.js';
+import { phonePairingEnabled, pairedBridgeDeviceAgentConfig } from './bridgePairing.js';
+import { openDesktopPairingModal, openPhonePairingModal } from './bridgePairingUi.js';
 import {
   bridgeConnectorDisplayLabel,
   bridgeConnectorStatusDetail,
@@ -1302,6 +1304,12 @@ interface AgenticAndroidBridge {
   deviceAgentConfigure?: (configJson: string) => string;
   deviceAgentRequest?: (requestId: string, method: string, payloadJson: string) => void;
   mwaRequest?: (requestId: string, method: string, payloadJson: string) => void;
+  // Phone↔desktop pairing ("use your ChatGPT/Claude plan from your computer"). Gated by the
+  // bridgePairingEnabled remote-config flag. See bridgePairing.ts + native MainActivity methods.
+  bridgePairEnabled?: () => boolean;
+  bridgePair?: (payloadJson: string) => string;
+  bridgePairStatus?: () => string;
+  bridgeUnpair?: () => string;
   // Remote config (Phase 1f). Backed by /api/android-config; APK caches + falls back.
   remoteConfigGet?: () => string;
   remoteConfigRefresh?: () => string;
@@ -4615,6 +4623,9 @@ function renderStartupFailure(err: unknown): void {
 }
 
 async function bootstrap(): Promise<void> {
+  // Cloud sign-in diagnostic: a fresh "app-bootstrap" line after a sign attempt (with DevTools
+  // "Preserve log" on) means the webview actually reloaded; absence means it was only a re-render.
+  cloudSignInDiag('app-bootstrap', { path: typeof window !== 'undefined' ? window.location.pathname : '' });
   state.mwaRegistration = await registerAgentMobileWalletAdapter({
     appIdentity: {
       name: 'Agentic',
@@ -4662,6 +4673,7 @@ async function bootstrap(): Promise<void> {
           embeddedWallet.status = status;
         },
         onAutoLocked: () => {
+          traceWalletCleared('embedded-wallet-auto-locked');
           state.address = '';
           pushToast(
             'pending',
@@ -6540,6 +6552,7 @@ async function ensureWalletConnectClient(): Promise<WalletConnectSolanaClient> {
       unregisterWalletConnectSolanaWallet(topic);
       clearWalletConnectSessionMeta(topic);
       if (state.selectedWalletName.includes('(mobile)')) {
+        traceWalletCleared('walletconnect-session-delete');
         state.address = '';
         render();
       }
@@ -7042,6 +7055,7 @@ function handleLedgerDeviceDisconnect(): void {
   if (state.selectedWalletName === LEDGER_WALLET_NAME) {
     client = null;
     walletBackend = null;
+    traceWalletCleared('ledger-teardown');
     state.address = '';
     state.capabilities = null;
     state.selectedWalletName = '';
@@ -18682,10 +18696,14 @@ function reviewPlanDetailRow(label: string, value: string): string {
 }
 
 function compactRiskLabel(value: string): string {
-  if (/high/i.test(value)) return 'High';
-  if (/medium/i.test(value)) return 'Medium';
-  if (/low/i.test(value)) return 'Low';
-  return compactSentence(value);
+  // The risk field is meant to be a level. Map common phrasings (word boundaries so "allow"/"highly"/
+  // "below" never false-match) and NEVER leak a prose sentence into the compact badge — some models
+  // (e.g. Gemini) write a full sentence in `risk`; default to the neutral level instead. The full risk
+  // wording is still shown in the expanded plan details.
+  if (/\b(high|severe|critical|significant)\b/i.test(value)) return 'High';
+  if (/\b(medium|moderate)\b/i.test(value)) return 'Medium';
+  if (/\b(low|minimal|negligible)\b/i.test(value)) return 'Low';
+  return 'Medium';
 }
 
 function compactSentence(value: string, maxLength = 132): string {
@@ -21989,6 +22007,14 @@ function deviceAgentConnectionCard(status: DeviceAgentStatus | null): string {
       )}</strong> ${escapeHtml(lastError.message)}</p>`
     : '';
   const runtimeState = status?.state ?? (checking ? 'checking' : 'unavailable');
+  // "Use your ChatGPT/Claude plan from your computer": on Android, when the operator has enabled
+  // phone pairing, offer the QR-pairing path next to the on-device API-key path.
+  const phonePairBlock = IS_ANDROID_APP && phonePairingEnabled(agenticAndroidBridge())
+    ? `<div class="device-agent-phone-pair">
+        <button type="button" class="utility" data-ai-action="pair-phone-android">Use your ChatGPT / Claude plan (paired computer)</button>
+        <p class="device-agent-note">Runs AI on your own computer's plan instead of an API key. Keep the desktop app open and the connector signed in.</p>
+      </div>`
+    : '';
   const showNotificationNote = (status?.runtime === 'android-native' || status?.runtime === 'browser-native')
     && (runtimeState === 'stopped' || runtimeState === 'unavailable');
   const notificationNote = showNotificationNote
@@ -22005,6 +22031,7 @@ function deviceAgentConnectionCard(status: DeviceAgentStatus | null): string {
       <p>${escapeHtml(detail)}</p>
       ${lastErrorBlock}
       ${notificationNote}
+      ${phonePairBlock}
       <div class="local-bridge-facts">
         <span>Runtime <strong>${escapeHtml(status?.runtime ?? (checking ? 'checking…' : 'not enabled'))}</strong></span>
         <span>Wallet <strong>${escapeHtml(state.address ? short(state.address) : state.cloudSession.walletAddress ? short(state.cloudSession.walletAddress) : 'Not connected')}</strong></span>
@@ -22045,6 +22072,9 @@ function localBridgeAiSetupCard(status: BridgeAiStatus | null, location: 'rail' 
         <p>Desktop keeps the local bridge on this machine. Use this only if the bridge did not start or you need to retry after changing runtime keys.</p>
         <button type="button" class="utility" data-ai-action="start-tauri-bridge" ${state.busy ? 'disabled' : ''}>
           ${tauriReachable ? 'Retry bridge check' : 'Start bridge'}
+        </button>
+        <button type="button" class="utility" data-ai-action="pair-phone-desktop" title="Show a QR so the Agentic phone app can run AI on this computer's ChatGPT/Claude plan.">
+          Pair a phone
         </button>
       </div>
     `
@@ -25130,6 +25160,23 @@ function bind(): void {
         case 'start-tauri-bridge':
           void runStartTauriBridgeForAi();
           return;
+        case 'pair-phone-desktop':
+          void openDesktopPairingModal({ bridgeRequest });
+          return;
+        case 'pair-phone-android':
+          openPhonePairingModal({
+            bridge: agenticAndroidBridge(),
+            onPaired: () => {
+              // Route AI through the paired desktop connector, then switch to the device-agent path.
+              try {
+                agenticAndroidBridge()?.deviceAgentConfigure?.(pairedBridgeDeviceAgentConfig());
+              } catch {
+                // configure is best-effort; setAiPlannerMode re-validates and surfaces errors
+              }
+              setAiPlannerMode('device-agent');
+            },
+          });
+          return;
         case 'stop-device-agent':
           void runStopDeviceAgentRuntime();
           return;
@@ -27733,6 +27780,7 @@ async function runConnect(
         await activateBridgeConnection({ refreshConfig: false, strictSync: false });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        traceWalletCleared('bridge-connection-rejected');
         state.address = '';
         state.capabilities = null;
         state.browserWalletSession = undefined;
@@ -35208,46 +35256,90 @@ async function afterWalletConnected(): Promise<void> {
   }
 }
 
+// --- Cloud sign-in diagnostics (temporary, secret-safe) -----------------------------------------
+// Additive logging only — no behavior change. Reproduce a desktop cloud sign-in once with DevTools
+// open and these [cloud-signin-diag] lines pinpoint whether the proof sign threw and exactly which
+// wallet-disconnect path cleared state.address (and its caller stack). Never logs signatures/tokens.
+function cloudSignInDiag(event: string, detail?: Record<string, unknown>): void {
+  try {
+    // eslint-disable-next-line no-console
+    console.log(`[cloud-signin-diag] ${JSON.stringify({ ts: new Date().toISOString(), event, ...(detail ?? {}) })}`);
+  } catch {
+    // logging must never affect the flow
+  }
+}
+
+// Call right BEFORE a `state.address = ''` so we capture the address that's about to be wiped + the
+// caller chain (which disconnect event fired) + whether a cloud session was in flight.
+function traceWalletCleared(site: string): void {
+  let stack = '';
+  try {
+    stack = (new Error().stack ?? '').split('\n').slice(2, 7).map((line) => line.trim()).join(' <- ');
+  } catch {
+    // ignore
+  }
+  cloudSignInDiag('wallet-address-cleared', {
+    site,
+    hadAddress: Boolean(state.address),
+    address: state.address ? short(state.address) : '',
+    cloudStatus: state.cloudSession?.status,
+    bridgeActive: state.bridgeActive,
+    stack,
+  });
+}
+
 async function runCloudSignIn(): Promise<void> {
+  cloudSignInDiag('start', { hasWallet: Boolean(state.address), address: state.address ? short(state.address) : '', cluster: state.cluster });
   await run('connect', async () => {
-    if (!state.address) {
-      throw new Error('Connect a wallet before signing in to Agentic Cloud.');
-    }
-    const nonce = parseAuthNonceResponse(await cloudRequest('/api/auth/nonce', {
-      method: 'POST',
-      body: JSON.stringify({ walletAddress: state.address }),
-    }));
-    const message = stringPayload(nonce.message, 'Auth message');
-    const nonceValue = stringPayload(nonce.nonce, 'Auth nonce');
-    const result = await signWalletProofMessageWithToast(message, 'Agentic Cloud sign-in', state.cluster, {
-      message: 'Approve this cloud sign-in proof in your wallet. No transaction will be submitted.',
-      successMessage: 'Verifying cloud workspace session.',
-    });
-    const session = parseSessionResponse(await cloudRequest('/api/auth/verify-wallet', {
-      method: 'POST',
-      body: JSON.stringify({
-        walletAddress: state.address,
-        nonce: nonceValue,
-        message,
-        signature: result.signature,
-        domain: stringPayload(nonce.domain, 'Auth domain'),
-        issuedAt: stringPayload(nonce.issuedAt, 'Auth issued time'),
-        expiresAt: stringPayload(nonce.expiresAt, 'Auth expiration time'),
-        signatureEncoding: 'base58',
-        proofEncoding: result.proofEncoding,
-        proofTxBase64: result.proofTxBase64,
-      }),
-    }));
-    state.cloudSession = cloudSessionFromResponse(session);
-    state.workflowModePreference = 'auto';
-    savePersistedState();
-    await refreshCloudWorkspaceData();
-    dismissToastByKey(LOCAL_WORKSPACE_BOUNDARY_TOAST_KEY);
-    const transfer = await transferLocalWorkspaceToCloud({ confirm: false, showEmptyToast: false });
-    if (transfer.total > 0) {
-      toastLocalWorkspaceStorageTransfer(transfer);
-    } else {
-      pushToast('success', 'Cloud workspace signed in', short(state.address));
+    try {
+      if (!state.address) {
+        throw new Error('Connect a wallet before signing in to Agentic Cloud.');
+      }
+      const nonce = parseAuthNonceResponse(await cloudRequest('/api/auth/nonce', {
+        method: 'POST',
+        body: JSON.stringify({ walletAddress: state.address }),
+      }));
+      cloudSignInDiag('nonce-ok', { walletStillConnected: Boolean(state.address) });
+      const message = stringPayload(nonce.message, 'Auth message');
+      const nonceValue = stringPayload(nonce.nonce, 'Auth nonce');
+      cloudSignInDiag('signing', { walletStillConnected: Boolean(state.address) });
+      const result = await signWalletProofMessageWithToast(message, 'Agentic Cloud sign-in', state.cluster, {
+        message: 'Approve this cloud sign-in proof in your wallet. No transaction will be submitted.',
+        successMessage: 'Verifying cloud workspace session.',
+      });
+      cloudSignInDiag('signed', { proofEncoding: result.proofEncoding, walletStillConnected: Boolean(state.address) });
+      const session = parseSessionResponse(await cloudRequest('/api/auth/verify-wallet', {
+        method: 'POST',
+        body: JSON.stringify({
+          walletAddress: state.address,
+          nonce: nonceValue,
+          message,
+          signature: result.signature,
+          domain: stringPayload(nonce.domain, 'Auth domain'),
+          issuedAt: stringPayload(nonce.issuedAt, 'Auth issued time'),
+          expiresAt: stringPayload(nonce.expiresAt, 'Auth expiration time'),
+          signatureEncoding: 'base58',
+          proofEncoding: result.proofEncoding,
+          proofTxBase64: result.proofTxBase64,
+        }),
+      }));
+      cloudSignInDiag('verify-ok', { walletStillConnected: Boolean(state.address) });
+      state.cloudSession = cloudSessionFromResponse(session);
+      state.workflowModePreference = 'auto';
+      savePersistedState();
+      cloudSignInDiag('session-set', { status: state.cloudSession.status, walletStillConnected: Boolean(state.address) });
+      await refreshCloudWorkspaceData();
+      dismissToastByKey(LOCAL_WORKSPACE_BOUNDARY_TOAST_KEY);
+      const transfer = await transferLocalWorkspaceToCloud({ confirm: false, showEmptyToast: false });
+      cloudSignInDiag('done', { transferred: transfer.total, walletStillConnected: Boolean(state.address), cloudStatus: state.cloudSession?.status });
+      if (transfer.total > 0) {
+        toastLocalWorkspaceStorageTransfer(transfer);
+      } else {
+        pushToast('success', 'Cloud workspace signed in', short(state.address));
+      }
+    } catch (err) {
+      cloudSignInDiag('threw', { message: err instanceof Error ? err.message : String(err), walletStillConnected: Boolean(state.address), cloudStatus: state.cloudSession?.status });
+      throw err;
     }
   });
 }
@@ -45477,6 +45569,7 @@ async function restoreBrowserWalletSession(): Promise<void> {
   } catch (err) {
     client = null;
     walletBackend = null;
+    traceWalletCleared('connect-flow-failed');
     state.address = '';
     state.capabilities = null;
     state.transactionStatus = '';
@@ -45768,6 +45861,7 @@ function publicKeyFromConnectedWallet(): PublicKey {
 function resetWalletConnection(): void {
   client = null;
   walletBackend = null;
+  traceWalletCleared('reset-wallet-connection');
   state.activeTab = defaultWorkspaceTab;
   state.address = '';
   state.selectedWalletLogoId = undefined;

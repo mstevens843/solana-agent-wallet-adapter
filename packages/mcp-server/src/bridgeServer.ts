@@ -25,6 +25,7 @@ import {
 } from './agentRegistry.js';
 import { BridgeAiPlanner, type AiPlanRequest, type AiReviewRequest, type AiAskRequest, type AiChatRequest } from './aiPlanner.js';
 import { AGENT_CONNECTORS, detectConnector, launchConnectorLogin, normalizeAgentConnector } from './connectorCli.js';
+import { BridgePairingController, type BridgeAiDispatch } from './bridgePairingClient.js';
 import { makeTransactionSimulator } from './simulationDigest.js';
 import {
   birdeyeConfigFromEnv,
@@ -124,6 +125,13 @@ export function createBridgeServer(options: CreateBridgeServerOptions): BridgeSe
     ...(options.agentsPersistPath ? { persistPath: options.agentsPersistPath } : {}),
     fallbackToken: backend.token,
   });
+  // Android "use your plan from your phone" pairing: dials OUT to the cloud
+  // relay and long-polls for AI requests the phone submitted, running them
+  // through the same local /bridge/ai handlers (subscription connector CLI). The
+  // bridge stays loopback-bound; only this outbound channel reaches the relay.
+  const pairingController = new BridgePairingController({
+    dispatch: createBridgeAiDispatch(aiPlanner, backend),
+  });
   const url = `http://${host}:${port}/`;
   backend.setApprovalBaseUrl(url);
 
@@ -146,13 +154,16 @@ export function createBridgeServer(options: CreateBridgeServerOptions): BridgeSe
       }
       await new Promise<void>((resolve, reject) => {
         server = createServer((req, res) => {
-          void handleRequest(req, res, backend, actionConfig, preparedActions, labArtifacts, actionService, aiPlanner, agentRegistry);
+          void handleRequest(req, res, backend, actionConfig, preparedActions, labArtifacts, actionService, aiPlanner, agentRegistry, pairingController);
         });
         server.once('error', reject);
         server.listen(port, host, () => resolve());
       });
     },
     async stop() {
+      // Stop the outbound relay poll loop and revoke the pairing session before
+      // closing, so a paired phone learns the desktop went away.
+      await pairingController.stop().catch(() => {});
       if (server) {
         await new Promise<void>((resolve, reject) => {
           server!.close((err) => (err ? reject(err) : resolve()));
@@ -289,6 +300,45 @@ function isStrongBridgeToken(token: string): boolean {
   return trimmed.length >= 32 && trimmed !== 'local-agent-wallet';
 }
 
+// Maps a forwarded /bridge/ai/* path to the same local handler the loopback
+// route uses, so a paired phone gets identical behavior (subscription connector
+// CLI, wallet-context enrichment, structured output) as the desktop webview.
+// The relay only forwards this fixed allowlist of paths (see
+// bridgeAiRelayHandler FORWARDABLE_AI_PATHS).
+function createBridgeAiDispatch(aiPlanner: BridgeAiPlanner, backend: WalletBackend): BridgeAiDispatch {
+  return async (path, body) => {
+    switch (path) {
+      case '/bridge/ai/status':
+        return aiPlanner.status();
+      case '/bridge/ai/session-key':
+        return aiPlanner.setSessionKey((body ?? {}) as Parameters<BridgeAiPlanner['setSessionKey']>[0]);
+      case '/bridge/ai/connector/detect': {
+        const requested = normalizeAgentConnector((body as { connector?: string } | null)?.connector);
+        const connectors = (requested ? [requested] : AGENT_CONNECTORS).map((connector) => detectConnector(connector));
+        return { connectors };
+      }
+      case '/bridge/ai/connector/login': {
+        const b = (body ?? {}) as { connector?: string; connectorPath?: string };
+        const connector = normalizeAgentConnector(b.connector);
+        if (!connector) {
+          return { error: 'Unknown agent connector. Choose codex, gemini, claude, or antigravity.' };
+        }
+        return launchConnectorLogin(connector, b.connectorPath?.trim() || undefined);
+      }
+      case '/bridge/ai/generate-plan':
+        return aiPlanner.generatePlan((body ?? {}) as AiPlanRequest);
+      case '/bridge/ai/review-plan':
+        return aiPlanner.reviewPlan(await bridgeReviewRequestWithWallet(backend, body));
+      case '/bridge/ai/ask-about-plan':
+        return aiPlanner.askAboutPlan(await bridgeAskRequestWithWallet(backend, body));
+      case '/bridge/ai/chat':
+        return aiPlanner.chat(await bridgeChatRequestWithOptionalWallet(backend, body));
+      default:
+        return { error: `Unsupported bridge AI path: ${path}` };
+    }
+  };
+}
+
 async function handleRequest(
   req: IncomingMessage,
   res: ServerResponse,
@@ -299,6 +349,7 @@ async function handleRequest(
   actionService: AgentWalletActionService | undefined,
   aiPlanner: BridgeAiPlanner,
   agentRegistry: AgentRegistry,
+  pairingController: BridgePairingController,
 ): Promise<void> {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
   setCors(req, res);
@@ -849,12 +900,28 @@ async function handleRequest(
       writeJson(res, 200, { connectors });
       return;
     }
+    // Android phone-pairing control plane (loopback-only — the desktop's own
+    // webview calls these). start() mints a fresh pairing + QR and begins the
+    // outbound relay poll loop; stop() revokes it. See bridgePairingClient.ts.
+    if (req.method === 'POST' && url.pathname === '/bridge/pair/start') {
+      writeJson(res, 200, await pairingController.start());
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/pair/stop') {
+      await pairingController.stop();
+      writeJson(res, 200, { ok: true });
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/bridge/pair/status') {
+      writeJson(res, 200, pairingController.state());
+      return;
+    }
     // One-click connect: launch the vendor CLI's own login; client polls /bridge/ai/status after.
     if (req.method === 'POST' && url.pathname === '/bridge/ai/connector/login') {
       const body = (await readJson(req)) as { connector?: string; connectorPath?: string };
       const connector = normalizeAgentConnector(body.connector);
       if (!connector) {
-        writeJson(res, 400, { error: 'Unknown agent connector. Choose codex, gemini, or claude.' });
+        writeJson(res, 400, { error: 'Unknown agent connector. Choose codex, gemini, claude, or antigravity.' });
         return;
       }
       writeJson(res, 200, launchConnectorLogin(connector, body.connectorPath?.trim() || undefined));

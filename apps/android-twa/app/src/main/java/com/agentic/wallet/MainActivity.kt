@@ -8,7 +8,12 @@ import android.net.Uri
 import android.os.Bundle
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
+import android.Manifest
+import android.content.pm.PackageManager
+import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -23,6 +28,12 @@ import androidx.lifecycle.lifecycleScope
 import com.agentic.wallet.agent.AgentRuntimeController
 import com.agentic.wallet.agent.StreamingVoucherWorker
 import com.agentic.wallet.agent.provider.DeviceAgentProviderExecutor
+import com.agentic.wallet.agent.bridge.BridgeAiClient
+import com.agentic.wallet.agent.bridge.BridgePairing
+import com.agentic.wallet.agent.bridge.BridgePairingStore
+import com.agentic.wallet.agent.bridge.BridgeRelayPolicy
+import com.agentic.wallet.agent.bridge.BridgeRelayProvider
+import com.agentic.wallet.agent.bridge.DefaultBridgeRelayTransport
 import com.agentic.wallet.agent.runtime.RuntimeMethod
 import com.agentic.wallet.agent.runtime.RuntimeRequest
 import com.agentic.wallet.agent.runtime.RuntimeResult
@@ -59,6 +70,15 @@ class MainActivity : FragmentActivity() {
     private lateinit var mwaController: MwaController
     private lateinit var secureStore: NativeSecureStore
     private lateinit var agentRuntimeController: AgentRuntimeController
+    // Phone↔desktop "use your plan from your computer" pairing state. The claim is a network call
+    // run off the binder thread in lifecycleScope; JS polls bridgePairStatus() for the outcome.
+    private lateinit var bridgePairingStore: BridgePairingStore
+    private lateinit var bridgeAiClient: BridgeAiClient
+    @Volatile private var bridgePairInProgress: Boolean = false
+    @Volatile private var bridgePairLastError: String? = null
+    // Held across the OS camera-permission dialog so the WebView's getUserMedia request can be
+    // granted once the user approves (QR scanner for desktop pairing).
+    private var pendingCameraPermissionRequest: PermissionRequest? = null
     private lateinit var activityResultSender: ActivityResultSender
     private lateinit var systemBridge: SystemBridge
     private lateinit var biometricBridge: BiometricBridge
@@ -85,13 +105,19 @@ class MainActivity : FragmentActivity() {
         activityResultSender = ActivityResultSender(this)
         mwaController = MwaController(applicationContext, defaultMwaIdentity())
         secureStore = NativeSecureStore(applicationContext)
+        bridgePairingStore = BridgePairingStore(secureStore)
+        bridgeAiClient = BridgeAiClient(DefaultBridgeRelayTransport(), bridgePairingStore)
         RemoteConfigLoader.initialize(BuildConfig.AGENTIC_ANDROID_CLOUD_API_BASE_URL, secureStore)
         RemoteConfigLoader.refresh(lifecycleScope)
         systemBridge = SystemBridge(this)
         biometricBridge = BiometricBridge(this)
         agentRuntimeController = AgentRuntimeController(applicationContext, secureStore)
         if (BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT) {
-            agentRuntimeController.setProviderExecutor(DeviceAgentProviderExecutor())
+            // Inject the relay provider so a paired-bridge config routes to the user's own desktop
+            // connector (Codex/Claude) instead of an on-device API key.
+            agentRuntimeController.setProviderExecutor(
+                DeviceAgentProviderExecutor(bridgeRelayProvider = BridgeRelayProvider(bridgeAiClient)),
+            )
         }
         // Device Agent is session-scoped to the connected wallet AND the live app
         // process. On a cold launcher entry (no saved instance state, no deep-link
@@ -170,6 +196,18 @@ class MainActivity : FragmentActivity() {
                         )
                     }
                     return true
+                }
+
+                // The in-app QR scanner (desktop pairing) calls getUserMedia. Grant the camera to
+                // our own bundled origin only; everything else is denied. Falls back to "paste the
+                // code" in the WebView when the OS camera permission isn't held.
+                override fun onPermissionRequest(request: PermissionRequest) {
+                    val wantsCamera = request.resources.any { it == PermissionRequest.RESOURCE_VIDEO_CAPTURE }
+                    if (!wantsCamera) {
+                        request.deny()
+                        return
+                    }
+                    runOnUiThread { handleCameraPermissionRequest(request) }
                 }
             }
             webViewClient = object : WebViewClient() {
@@ -319,6 +357,89 @@ class MainActivity : FragmentActivity() {
             // the wallet ever responds — that's the bug Mathew hit on Seed Vault + Backpack.
             iconUri = "favicon.ico",
         )
+    }
+
+    /** True when the operator has enabled the phone-pairing feature via /api/android-config. */
+    private fun bridgePairingFeatureEnabled(): Boolean =
+        RemoteConfigLoader.current().config.featureFlags["bridgePairingEnabled"] == true
+
+    /**
+     * Validate a scanned/pasted pairing payload and start the claim asynchronously. The relay host
+     * is checked against the pinned allowlist BEFORE any token leaves the device. Returns an
+     * immediate status; the actual network claim runs in lifecycleScope and updates state polled
+     * via [bridgePairStatusJson].
+     */
+    private fun startBridgePairing(payloadJson: String): JSONObject {
+        if (!bridgePairingFeatureEnabled()) return JSONObject().put("ok", false).put("error", "not_enabled")
+        val payload = try {
+            JSONObject(payloadJson)
+        } catch (_: Throwable) {
+            return JSONObject().put("ok", false).put("error", "bad_payload")
+        }
+        val relay = payload.optString("relay", "").trim()
+        val uuid = payload.optString("uuid", "").trim()
+        val token = payload.optString("token", "").trim()
+        if (relay.isEmpty() || uuid.isEmpty() || token.isEmpty()) {
+            return JSONObject().put("ok", false).put("error", "incomplete_payload")
+        }
+        if (!BridgeRelayPolicy.isAllowedRelay(relay)) {
+            AgentMwaLog.warn("MainActivity", "startBridgePairing", "RELAY_REJECTED", "relay host not allowlisted", mapOf("relay" to relay))
+            return JSONObject().put("ok", false).put("error", "relay_not_allowed")
+        }
+        bridgePairLastError = null
+        bridgePairInProgress = true
+        lifecycleScope.launch {
+            try {
+                val bearer = bridgeAiClient.claim(relay, uuid, token)
+                bridgePairingStore.save(BridgePairing(relayBaseUrl = relay, pairUuid = uuid, deviceBearer = bearer))
+                AgentMwaLog.info("MainActivity", "startBridgePairing", "PAIRED", "phone paired to desktop", emptyMap())
+            } catch (err: Throwable) {
+                bridgePairLastError = err.message ?: "Pairing failed."
+                AgentMwaLog.failure("MainActivity", "startBridgePairing", "FAIL", "pairing claim failed", err)
+            } finally {
+                bridgePairInProgress = false
+            }
+        }
+        return JSONObject().put("ok", true).put("status", "pairing")
+    }
+
+    private fun bridgePairStatusJson(): JSONObject =
+        JSONObject()
+            .put("paired", bridgePairingStore.isPaired())
+            .put("pairing", bridgePairInProgress)
+            .put("enabled", bridgePairingFeatureEnabled())
+            .put("error", bridgePairLastError ?: JSONObject.NULL)
+
+    private fun clearBridgePairing(): JSONObject {
+        bridgePairingStore.clear()
+        bridgePairLastError = null
+        bridgePairInProgress = false
+        AgentMwaLog.info("MainActivity", "clearBridgePairing", "UNPAIRED", "phone unpaired", emptyMap())
+        return JSONObject().put("ok", true)
+    }
+
+    /** Grant the WebView's camera request if we hold the OS permission, else request it and grant
+     *  on approval (the held [PermissionRequest] stays valid until granted/denied). */
+    private fun handleCameraPermissionRequest(request: PermissionRequest) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            request.grant(arrayOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE))
+            return
+        }
+        pendingCameraPermissionRequest = request
+        ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST_CODE)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != CAMERA_PERMISSION_REQUEST_CODE) return
+        val pending = pendingCameraPermissionRequest
+        pendingCameraPermissionRequest = null
+        val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            pending?.grant(arrayOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE))
+        } else {
+            pending?.deny()
+        }
     }
 
     private fun dispatchDeviceAgentResolve(requestId: String, envelope: JSONObject) {
@@ -690,6 +811,42 @@ class MainActivity : FragmentActivity() {
             validateSecureStoreRequest(key)
             activity.secureStore.remove(key)
             true
+        }
+
+        // ── Phone↔desktop pairing ("use your ChatGPT/Claude plan from your computer") ──────────
+        // Gated by the bridgePairingEnabled remote-config flag (operator dark-launch/kill-switch).
+        // The relay URL is carried in the scanned QR and validated against the pinned host
+        // allowlist (BridgeRelayPolicy) before any token is claimed.
+
+        @JavascriptInterface
+        fun bridgePairEnabled(): Boolean = safeBridge("bridgePairEnabled", false) {
+            if (!checkTrustedOrigin("bridgePairEnabled")) return@safeBridge false
+            activity.bridgePairingFeatureEnabled()
+        }
+
+        /**
+         * Claim a pairing from a scanned/pasted desktop QR. Payload JSON: { relay, uuid, token }.
+         * Validates the relay host, then claims + stores asynchronously (off the binder thread, so a
+         * slow relay never ANRs the WebView). Returns an immediate envelope { ok, status, error? };
+         * JS polls bridgePairStatus() for the final paired/error outcome.
+         */
+        @JavascriptInterface
+        fun bridgePair(payloadJson: String): String =
+            safeBridge("bridgePair", "{\"ok\":false,\"error\":\"bridge_unavailable\"}") {
+                if (!checkTrustedOrigin("bridgePair")) return@safeBridge "{\"ok\":false,\"error\":\"origin\"}"
+                activity.startBridgePairing(payloadJson).toString()
+            }
+
+        @JavascriptInterface
+        fun bridgePairStatus(): String = safeBridge("bridgePairStatus", "{}") {
+            if (!checkTrustedOrigin("bridgePairStatus")) return@safeBridge "{}"
+            activity.bridgePairStatusJson().toString()
+        }
+
+        @JavascriptInterface
+        fun bridgeUnpair(): String = safeBridge("bridgeUnpair", "{}") {
+            if (!checkTrustedOrigin("bridgeUnpair")) return@safeBridge "{}"
+            activity.clearBridgePairing().toString()
         }
 
         @JavascriptInterface
@@ -1730,6 +1887,7 @@ class MainActivity : FragmentActivity() {
     }
 
     private companion object {
+        private const val CAMERA_PERMISSION_REQUEST_CODE = 0x0CA3
         private const val LOCAL_APP_HOST = "agentic.local"
         private const val LOCAL_APP_START_URL = "https://agentic.local/"
 

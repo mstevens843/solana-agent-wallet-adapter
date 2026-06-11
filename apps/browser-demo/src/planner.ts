@@ -60,7 +60,7 @@ export type AiProviderId = 'openai' | 'anthropic' | 'gemini' | 'openrouter' | 'c
 
 // Agent Connector engine (Local Bridge only): use a subscription you already pay for via the local
 // first-party CLI, instead of an API key. Mirrors packages/mcp-server/src/connectorCli.ts.
-export type AiConnector = 'codex' | 'gemini' | 'claude';
+export type AiConnector = 'codex' | 'gemini' | 'claude' | 'antigravity';
 
 export interface AiConnectorPreset {
   id: AiConnector;
@@ -73,6 +73,7 @@ export const AI_CONNECTORS: AiConnectorPreset[] = [
   { id: 'codex', label: 'Codex (ChatGPT plan)', billingNote: 'Uses your ChatGPT plan (within plan limits).' },
   { id: 'gemini', label: 'Gemini (Google AI Pro/Ultra)', billingNote: 'Uses your Google AI Pro/Ultra plan.' },
   { id: 'claude', label: 'Claude (Agent-SDK credits)', billingNote: 'Uses your Claude Agent-SDK credits ($20–$200/mo) — caps out, then stops.' },
+  { id: 'antigravity', label: 'Antigravity (Google AI)', billingNote: 'Uses your Google AI Pro/Ultra plan via the Antigravity CLI (Gemini CLI successor).' },
 ];
 
 export function aiConnectorPreset(connector: AiConnector): AiConnectorPreset {

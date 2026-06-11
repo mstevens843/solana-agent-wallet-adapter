@@ -17,8 +17,8 @@ import { homedir, tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { accessSync, constants as fsConstants } from 'node:fs';
 
-export type AgentConnector = 'codex' | 'gemini' | 'claude';
-export const AGENT_CONNECTORS: AgentConnector[] = ['codex', 'gemini', 'claude'];
+export type AgentConnector = 'codex' | 'gemini' | 'claude' | 'antigravity';
+export const AGENT_CONNECTORS: AgentConnector[] = ['codex', 'gemini', 'claude', 'antigravity'];
 
 export type ConnectorBilling = 'plan-included' | 'metered-credits';
 export type ConnectorAuthStatus = 'connected' | 'needs-auth' | 'binary-not-found';
@@ -41,12 +41,22 @@ interface ConnectorSpec {
   binaryCandidates: string[];
   /** Command the user runs to sign in (shown in the manual fallback + spawned by one-click connect). */
   loginArgs: string[];
-  /** Build the locked-down, single-shot argv for one inference call. */
-  buildArgs(prompt: string, context: ConnectorRunContext): string[];
+  /**
+   * Build the locked-down, single-shot argv for one inference call. codex/gemini have no separate
+   * system-prompt mechanism so they merge system+user internally; claude routes the system prompt to
+   * its `--system-prompt` flag so our review/plan rules stay authoritative (matching the API path)
+   * instead of being demoted under Claude Code's default agent prompt.
+   */
+  buildArgs(systemPrompt: string, userPrompt: string, context: ConnectorRunContext): string[];
   /** Pull the model's final text out of the CLI's stdout envelope. */
   extractText(stdout: string, context: ConnectorRunContext): string;
   /** Credential files that indicate the CLI is signed in (heuristic; real check is at call time). */
   authFiles: string[];
+  /**
+   * Some CLIs (e.g. Antigravity) store credentials in the OS keyring with no on-disk file. When true,
+   * detection treats a present binary as connectable and defers the real auth check to call time.
+   */
+  authViaKeyring?: boolean;
 }
 
 const HOME = homedir();
@@ -62,8 +72,12 @@ const CONNECTOR_SPECS: Record<AgentConnector, ConnectorSpec> = {
     loginArgs: ['login'],
     // `codex exec` runs headless, streams progress to stderr, and prints only the final agent
     // message to stdout. `--sandbox read-only` + `--skip-git-repo-check` keep it from touching the
-    // filesystem; research mode explicitly opts into live web search.
-    buildArgs: (prompt, context) => {
+    // filesystem; research mode explicitly opts into live web search. `--output-schema` is OpenAI's
+    // strict structured-output mechanism — applied in BOTH research and default (plan/review) mode so
+    // the draft/review matches the API-key format instead of free-form prose.
+    buildArgs: (systemPrompt, userPrompt, context) => {
+      // codex `exec` takes a single prompt arg with no separate system flag, so merge as before.
+      const prompt = `${systemPrompt}\n\n${userPrompt}`.trim();
       if (context.mode === 'research') {
         return [
           'exec',
@@ -77,7 +91,14 @@ const CONNECTOR_SPECS: Record<AgentConnector, ConnectorSpec> = {
           prompt,
         ];
       }
-      return ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', prompt];
+      return [
+        'exec',
+        '--sandbox',
+        'read-only',
+        '--skip-git-repo-check',
+        ...(context.schemaPath ? ['--output-schema', context.schemaPath] : []),
+        prompt,
+      ];
     },
     extractText: (stdout) => stdout.trim(),
     authFiles: [h('.codex', 'auth.json')],
@@ -90,7 +111,12 @@ const CONNECTOR_SPECS: Record<AgentConnector, ConnectorSpec> = {
     binaryCandidates: ['gemini'],
     loginArgs: [],
     // Headless prompt with structured output. No `--yolo` so it never auto-approves tool calls.
-    buildArgs: (prompt) => ['-p', prompt, '--output-format', 'json'],
+    // No system-prompt flag on the gemini CLI, so merge system+user (the schema contract is already
+    // embedded into userPrompt by runConnector for gemini). `--skip-trust` is required because we run
+    // in a throwaway temp cwd (read-only, no file writes), which the CLI's trusted-folders check would
+    // otherwise reject headless with exit code 55. Warnings ("Ripgrep…", "Skill conflict…") go to
+    // stderr, so stdout stays clean JSON for extractText.
+    buildArgs: (systemPrompt, userPrompt) => ['-p', `${systemPrompt}\n\n${userPrompt}`.trim(), '--output-format', 'json', '--skip-trust'],
     extractText: (stdout) => extractEnvelopeText(stdout, ['response']),
     authFiles: [h('.gemini', 'oauth_creds.json'), h('.gemini', 'google_accounts.json')],
   },
@@ -101,24 +127,47 @@ const CONNECTOR_SPECS: Record<AgentConnector, ConnectorSpec> = {
     billingNote: 'Uses your Claude Agent-SDK credits ($20–$200/mo) — caps out, then stops.',
     binaryCandidates: ['claude'],
     loginArgs: ['login'],
-    // Claude Code print mode with JSON envelope.
-    buildArgs: (prompt, context) => [
+    // Claude Code print mode with JSON envelope. Our review/plan rules go through `--system-prompt`
+    // (replacing Claude Code's default verbose coding-agent prompt) so they stay authoritative like
+    // the API path — only the user payload goes through `-p`. `--json-schema` (Anthropic's structured
+    // output) applies in default (plan/review) mode too, not just research. Web tools stay
+    // research-only. We deliberately avoid `--bare` (it forces ANTHROPIC_API_KEY auth and never reads
+    // the subscription's OAuth/keychain creds) and `--exclude-dynamic-system-prompt-sections` (a no-op
+    // once --system-prompt replaces the default).
+    buildArgs: (systemPrompt, userPrompt, context) => [
+      '--system-prompt',
+      systemPrompt,
       '-p',
-      prompt,
+      userPrompt,
       '--output-format',
       'json',
+      ...(context.schemaJson ? ['--json-schema', context.schemaJson] : []),
       ...(context.mode === 'research'
-        ? [
-            '--no-session-persistence',
-            '--allowedTools',
-            'WebSearch',
-            'WebFetch',
-            ...(context.schemaJson ? ['--json-schema', context.schemaJson] : []),
-          ]
+        ? ['--no-session-persistence', '--allowedTools', 'WebSearch', 'WebFetch']
         : []),
     ],
-    extractText: (stdout) => extractEnvelopeText(stdout, ['result', 'structured_output']),
+    // With --json-schema the validated object is in the envelope's `structured_output` field, while
+    // `result` holds the model's prose — so prefer structured_output. Without a schema (ask/chat),
+    // structured_output is absent and this falls through to `result` as before.
+    extractText: (stdout) => extractEnvelopeText(stdout, ['structured_output', 'result']),
     authFiles: [h('.claude', '.credentials.json'), h('.claude.json')],
+  },
+  antigravity: {
+    id: 'antigravity',
+    label: 'Antigravity (Google AI)',
+    billing: 'plan-included',
+    billingNote: 'Uses your Google AI Pro/Ultra plan via the Antigravity CLI (the Gemini CLI successor).',
+    binaryCandidates: ['agy'],
+    loginArgs: [], // `agy` signs in on first interactive run (Google Sign-In; creds cached in the OS keyring)
+    // agy 1.0.7 has NO --output-format/--json-schema flag: `agy -p "<prompt>"` runs one non-interactive
+    // turn and prints the model's plain-text response to stdout (Codex-style). So we merge system+user
+    // into one prompt, embed the JSON schema in the prompt (done in runConnector, like gemini), and
+    // extract raw stdout. NOTE: agy is an agent — if headless review/research needs it, add
+    // '--dangerously-skip-permissions' / '--sandbox' here (confirm via a smoke once authenticated).
+    buildArgs: (systemPrompt, userPrompt) => ['-p', `${systemPrompt}\n\n${userPrompt}`.trim()],
+    extractText: (stdout) => stdout.trim(),
+    authFiles: [],
+    authViaKeyring: true,
   },
 };
 
@@ -139,6 +188,7 @@ export function normalizeAgentConnector(value: string | undefined): AgentConnect
   if (normalized === 'codex' || normalized === 'openai' || normalized === 'chatgpt') return 'codex';
   if (normalized === 'gemini' || normalized === 'google') return 'gemini';
   if (normalized === 'claude' || normalized === 'anthropic') return 'claude';
+  if (normalized === 'antigravity' || normalized === 'agy') return 'antigravity';
   return null;
 }
 
@@ -200,6 +250,10 @@ export function detectConnector(connector: AgentConnector, explicitPath?: string
   let authStatus: ConnectorAuthStatus;
   if (!binaryPath) {
     authStatus = 'binary-not-found';
+  } else if (spec.authViaKeyring) {
+    // Keyring-based auth (e.g. Antigravity) leaves no credential file to check — treat a present
+    // binary as connectable; the authoritative auth check happens at call time (surfaces an auth error).
+    authStatus = 'connected';
   } else {
     authStatus = spec.authFiles.some((file) => fileExists(file)) ? 'connected' : 'needs-auth';
   }
@@ -275,8 +329,9 @@ export interface RunConnectorOptions {
 
 /**
  * Run one locked-down inference through the connector CLI and return the model's final text.
- * Combines system+user into a single prompt (these CLIs take one prompt), runs in a throwaway cwd,
- * and strips the bridge's own AI secrets from the child env (the CLI uses its own cached creds).
+ * Passes the system + user prompt to the connector spec's buildArgs (codex/gemini merge them into one
+ * prompt; claude routes the system prompt to --system-prompt so our rules stay authoritative). Runs in
+ * a throwaway cwd and strips the bridge's own AI secrets from the child env (the CLI uses its own creds).
  */
 export async function runConnector(connector: AgentConnector, options: RunConnectorOptions): Promise<string> {
   const spec = CONNECTOR_SPECS[connector];
@@ -294,7 +349,9 @@ export async function runConnector(connector: AgentConnector, options: RunConnec
         'binary-not-found',
       );
     }
-    const prompt = `${options.systemPrompt}\n\n${options.userPrompt}`.trim();
+    // Keep system and user separate so claude can route the system prompt to --system-prompt;
+    // codex/gemini re-merge them inside their own buildArgs.
+    let userPrompt = options.userPrompt;
     cwd = await mkdtemp(join(tmpdir(), 'agentic-connector-'));
     // Forward a strict-safe schema to the connector CLIs (Codex --output-schema / Claude
     // --json-schema); they relay it to the provider with strict:true, which rejects our lenient
@@ -305,12 +362,19 @@ export async function runConnector(connector: AgentConnector, options: RunConnec
     if (schemaPath && schemaJson) {
       await writeFile(schemaPath, schemaJson, 'utf8');
     }
+    // Gemini's CLI exposes no schema flag (unlike Codex --output-schema / Claude --json-schema), so
+    // embed the strict schema in the prompt to coax structured output that matches the API-key format.
+    // Gemini follows instructions less strictly than a native schema, so be emphatic. parsePlanJson
+    // still strips fences downstream as a safety net, but a clean bare object is what we want.
+    if ((connector === 'gemini' || connector === 'antigravity') && schemaJson) {
+      userPrompt = `${userPrompt}\n\nOUTPUT CONTRACT: Respond with EXACTLY ONE JSON object and nothing else — no explanation, no preamble, and do NOT wrap it in markdown code fences. The object MUST validate against this JSON Schema:\n${schemaJson}`;
+    }
     const context: ConnectorRunContext = {
       mode,
       ...(schemaPath ? { schemaPath } : {}),
       ...(schemaJson ? { schemaJson } : {}),
     };
-    const args = spec.buildArgs(prompt, context);
+    const args = spec.buildArgs(options.systemPrompt, userPrompt, context);
     const stdout = await spawnCollect(binaryPath, args, {
       cwd,
       env: sanitizedEnv(),

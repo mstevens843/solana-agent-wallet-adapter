@@ -2,8 +2,8 @@
  * Polish-pass tests for the post-sweep items:
  *   - #4 hasBlockingFailure enforcement: applyServerSideReviewSafety must downgrade
  *     an AI "approve" when policyBundle.hasBlockingFailure === true.
- *   - #8 unresolved-row filter: mergePolicyBundleFindings drops unresolved rows on
- *     bundles larger than 3 atoms (noise control) but keeps them on small bundles.
+ *   - #8 unresolved-row filter: mergePolicyBundleFindings drops unresolved ("UNKNOWN")
+ *     atom rows regardless of bundle size (a bare UNKNOWN row is never informative).
  *   - #10 compact bundle: the LLM-facing policyBundle is compact (no resolutions.attempts).
  */
 
@@ -118,10 +118,33 @@ describe('#4 applyServerSideReviewSafety — policyBundle.hasBlockingFailure enf
     expect(out.decision).toBe('deny');
     expect(contract?.blockingFactIds).toEqual(['atom.external_price.helium.lt.20']);
   });
+
+  it('keeps a cited policyBundle atom id (does not strip it or downgrade)', () => {
+    // evidenceFacts present so the validation block runs; the model cites ONLY a policyBundle atom id.
+    // It used to be stripped (knownIds was built from evidenceFacts only) → spurious approve→needs_input.
+    const request = baseRequest({
+      evidenceFacts: [{ id: 'fact.wallet.connected_public_key' }],
+      policyBundle: {
+        atoms: [{ id: 'atom.external_price.lowest_helium_monthly_phone_plan.lt.20' }],
+        evaluations: [
+          { atomId: 'atom.external_price.lowest_helium_monthly_phone_plan.lt.20', pass: true, finding: { label: 'Lowest Helium plan', value: '$15/month — web', tone: 'good' } },
+        ],
+      },
+    });
+    const result = baseResult({
+      decision: 'approve',
+      evidence: { decisionContract: { evidenceFactIds: ['atom.external_price.lowest_helium_monthly_phone_plan.lt.20'] } },
+    });
+    const out = applyServerSideReviewSafety(result, request);
+    expect(out.decision).toBe('approve');
+    const contract = (out.evidence as { decisionContract?: { evidenceFactIds?: string[]; serverSafetyStrippedIds?: string[] } }).decisionContract;
+    expect(contract?.evidenceFactIds).toContain('atom.external_price.lowest_helium_monthly_phone_plan.lt.20');
+    expect(contract?.serverSafetyStrippedIds ?? []).not.toContain('atom.external_price.lowest_helium_monthly_phone_plan.lt.20');
+  });
 });
 
-describe('#8 mergePolicyBundleFindings — unresolved-row filter on large bundles', () => {
-  it('keeps unresolved rows when the bundle is small (≤3 atoms)', () => {
+describe('#8 mergePolicyBundleFindings — drops unresolved (UNKNOWN) atom rows', () => {
+  it('drops unresolved rows even when the bundle is small (a bare "UNKNOWN" row is never informative)', () => {
     const evaluations = [
       { atomId: 'a1', pass: true, finding: { label: 'A', value: 'ok — jupiter', tone: 'good' } },
       { atomId: 'a2', pass: undefined, unresolved: true, finding: { label: 'B', value: 'unknown', tone: 'warn' } },
@@ -129,7 +152,9 @@ describe('#8 mergePolicyBundleFindings — unresolved-row filter on large bundle
     const request = baseRequest({ policyBundle: { evaluations, atoms: [{ id: 'a1' }, { id: 'a2' }] } });
     const out = mergePolicyBundleFindings(baseResult(), request);
     const findings = (out.evidence as { findings?: Array<{ label: string }> }).findings ?? [];
-    expect(findings.map((f) => f.label)).toEqual(expect.arrayContaining(['A', 'B']));
+    const labels = findings.map((f) => f.label);
+    expect(labels).toContain('A');
+    expect(labels).not.toContain('B');
   });
 
   it('drops unresolved rows when the bundle is large (>3 atoms)', () => {

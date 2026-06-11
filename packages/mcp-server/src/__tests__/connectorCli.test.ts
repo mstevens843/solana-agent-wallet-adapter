@@ -153,7 +153,9 @@ describe('BridgeAiPlanner connector (cli-agent) transport', () => {
       `const fs = require('fs');\n`
       + `const args = process.argv.slice(2);\n`
       + `fs.appendFileSync(${JSON.stringify(argvOut)}, JSON.stringify(args) + '\\n');\n`
-      + `if (args.includes('--output-schema')) {\n`
+      // Both passes now carry --output-schema (review is schema-constrained too), so distinguish the
+      // research pass by its live-web-search flag instead.
+      + `if (args.includes('web_search="live"')) {\n`
       + `  const schemaPath = args[args.indexOf('--output-schema') + 1];\n`
       + `  const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'));\n`
       + `  if (!schema.properties?.sources) process.exit(2);\n`
@@ -201,7 +203,217 @@ describe('BridgeAiPlanner connector (cli-agent) transport', () => {
       'web_search="live"',
       '--output-schema',
     ]));
-    expect(calls[1]).not.toContain('--output-schema');
+    // The review pass is now schema-constrained too (CONNECTOR_REVIEW_SCHEMA) but never web-searches.
+    expect(calls[1]).toContain('--output-schema');
+    expect(calls[1]).not.toContain('web_search="live"');
+  });
+
+  it('schema-constrains the codex connector review in default mode with evidence.findings', async () => {
+    // Default-mode review must carry --output-schema, and the schema must expose evidence.findings —
+    // the closed-empty REVIEW_JSON_SCHEMA would have dropped it under strict sanitizing.
+    const dir = mkdtempSync(join(tmpdir(), 'agentic-argv-'));
+    const argvOut = join(dir, 'argv.json');
+    const schemaOut = join(dir, 'schema.json'); // copied out of the connector's throwaway cwd
+    const bin = makeScriptedFakeBinary(
+      `const fs = require('fs');\n`
+      + `const args = process.argv.slice(2);\n`
+      + `fs.writeFileSync(${JSON.stringify(argvOut)}, JSON.stringify(args));\n`
+      + `const i = args.indexOf('--output-schema');\n`
+      + `if (i >= 0) fs.copyFileSync(args[i + 1], ${JSON.stringify(schemaOut)});\n`
+      + `process.stdout.write(${JSON.stringify(reviewJson)});\n`,
+    );
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({ engine: 'connector', connector: 'codex', connectorPath: bin });
+    await planner.reviewPlan(reviewRequest); // instruction needs no research → single default pass
+
+    const argv = JSON.parse(readFileSync(argvOut, 'utf8')) as string[];
+    expect(argv).toContain('--output-schema');
+    const schema = JSON.parse(readFileSync(schemaOut, 'utf8')) as {
+      properties?: { evidence?: { properties?: Record<string, unknown> } };
+    };
+    expect(schema.properties?.evidence?.properties ?? {}).toHaveProperty('findings');
+  });
+
+  it('schema-constrains the codex connector plan in default mode', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agentic-argv-'));
+    const argvOut = join(dir, 'argv.json');
+    const schemaOut = join(dir, 'schema.json');
+    const bin = makeScriptedFakeBinary(
+      `const fs = require('fs');\n`
+      + `const args = process.argv.slice(2);\n`
+      + `fs.writeFileSync(${JSON.stringify(argvOut)}, JSON.stringify(args));\n`
+      + `const i = args.indexOf('--output-schema');\n`
+      + `if (i >= 0) fs.copyFileSync(args[i + 1], ${JSON.stringify(schemaOut)});\n`
+      + `process.stdout.write(${JSON.stringify(planJson)});\n`,
+    );
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({ engine: 'connector', connector: 'codex', connectorPath: bin });
+    const plan = await planner.generatePlan(planRequest);
+    expect(plan.intent).toBe('Send 0.01 SOL');
+
+    const argv = JSON.parse(readFileSync(argvOut, 'utf8')) as string[];
+    expect(argv).toContain('--output-schema');
+    const schema = JSON.parse(readFileSync(schemaOut, 'utf8')) as { properties?: Record<string, unknown> };
+    expect(schema.properties ?? {}).toHaveProperty('intent');
+    expect(schema.properties ?? {}).toHaveProperty('safeguards');
+  });
+
+  it('schema-constrains the claude connector review in default mode (--json-schema)', async () => {
+    const argvOut = join(mkdtempSync(join(tmpdir(), 'agentic-argv-')), 'argv.json');
+    const bin = makeFakeBinary(reviewJson, argvOut);
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({ engine: 'connector', connector: 'claude', connectorPath: bin });
+    await planner.reviewPlan(reviewRequest);
+
+    const argv = JSON.parse(readFileSync(argvOut, 'utf8')) as string[];
+    expect(argv).toContain('--json-schema');
+    // Claude takes the schema inline as JSON (not a file path).
+    const schema = JSON.parse(argv[argv.indexOf('--json-schema') + 1] ?? '{}') as { properties?: Record<string, unknown> };
+    expect(schema.properties ?? {}).toHaveProperty('evidence');
+    // Our review rules must go through --system-prompt (authoritative), not be merged into -p.
+    expect(argv).toContain('--system-prompt');
+    const systemArg = argv[argv.indexOf('--system-prompt') + 1] ?? '';
+    expect(systemArg).toContain('You review a Solana wallet action draft');
+    const userArg = argv[argv.indexOf('-p') + 1] ?? '';
+    expect(userArg).not.toContain('You review a Solana wallet action draft');
+  });
+
+  it('embeds the schema in the prompt for the gemini connector (no schema flag exists)', async () => {
+    const argvOut = join(mkdtempSync(join(tmpdir(), 'agentic-argv-')), 'argv.json');
+    const bin = makeFakeBinary(JSON.stringify({ response: reviewJson }), argvOut);
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({ engine: 'connector', connector: 'gemini', connectorPath: bin });
+    await planner.reviewPlan(reviewRequest);
+
+    const argv = JSON.parse(readFileSync(argvOut, 'utf8')) as string[];
+    expect(argv).not.toContain('--json-schema');
+    expect(argv).not.toContain('--output-schema');
+    // The connector runs in a throwaway temp cwd, so --skip-trust is required or the gemini CLI exits
+    // with code 55 (trusted-folders check) in headless mode.
+    expect(argv).toContain('--skip-trust');
+    const prompt = argv[argv.indexOf('-p') + 1] ?? '';
+    expect(prompt).toContain('JSON Schema');
+    expect(prompt).toContain('"decision"');
+  });
+
+  it('parses a gemini connector review even when the model wraps the JSON in markdown fences', async () => {
+    // Gemini has no schema flag, so it may ignore "no fences" and wrap the object in ```json ... ```.
+    // The parse chain must still recover a valid review (parsePlanJson strips fences downstream).
+    const argvOut = join(mkdtempSync(join(tmpdir(), 'agentic-argv-')), 'argv.json');
+    const fenced = '```json\n' + reviewJson + '\n```';
+    const bin = makeFakeBinary(JSON.stringify({ response: fenced }), argvOut);
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({ engine: 'connector', connector: 'gemini', connectorPath: bin });
+    const review = await planner.reviewPlan(reviewRequest);
+    expect(review.decision).toBe('approve');
+  });
+
+  it('reads Claude --json-schema structured_output for plans, not the prose result', async () => {
+    // Real `claude --output-format json --json-schema` envelope: the validated object is in
+    // structured_output; `result` holds model prose. Reading `result` first failed isPlanJson ("not a
+    // valid Agentic plan JSON"). The prose here even contains a guard-tripping claim, proving we must
+    // use the structured field.
+    const argvOut = join(mkdtempSync(join(tmpdir(), 'agentic-argv-')), 'argv.json');
+    const envelope = JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: "Here's the plan — this swap is guaranteed safe and risk-free.",
+      structured_output: JSON.parse(planJson),
+    });
+    const bin = makeFakeBinary(envelope, argvOut);
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({ engine: 'connector', connector: 'claude', connectorPath: bin });
+    const plan = await planner.generatePlan(planRequest);
+    expect(plan.intent).toBe('Send 0.01 SOL');
+  });
+
+  it('reads Claude --json-schema structured_output for reviews, not the prose result', async () => {
+    const argvOut = join(mkdtempSync(join(tmpdir(), 'agentic-argv-')), 'argv.json');
+    const envelope = JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: 'Sure — I reviewed the draft and it looks fine overall.',
+      structured_output: JSON.parse(reviewJson),
+    });
+    const bin = makeFakeBinary(envelope, argvOut);
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({ engine: 'connector', connector: 'claude', connectorPath: bin });
+    const review = await planner.reviewPlan(reviewRequest);
+    expect(review.decision).toBe('approve');
+  });
+
+  it('runs the antigravity (agy) connector as plain `-p` with a prompt-embedded schema', async () => {
+    // agy 1.0.7 has no --output-format/--json-schema flag: it prints the model's plain-text response to
+    // stdout (Codex-style), so the schema is embedded in the prompt and we extract raw stdout.
+    const argvOut = join(mkdtempSync(join(tmpdir(), 'agentic-argv-')), 'argv.json');
+    const bin = makeFakeBinary(reviewJson, argvOut);
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({ engine: 'connector', connector: 'antigravity', connectorPath: bin });
+    const review = await planner.reviewPlan(reviewRequest);
+    expect(review.decision).toBe('approve');
+
+    const argv = JSON.parse(readFileSync(argvOut, 'utf8')) as string[];
+    expect(argv[0]).toBe('-p');
+    expect(argv).not.toContain('--output-format');
+    expect(argv).not.toContain('--json-schema');
+    expect(argv).not.toContain('--output-schema');
+    const prompt = argv[1] ?? '';
+    expect(prompt).toContain('JSON Schema');
+    expect(prompt).toContain('"decision"');
+  });
+
+  it('detects an installed antigravity binary as connected (keyring auth, no credential file)', () => {
+    const argvOut = join(mkdtempSync(join(tmpdir(), 'agentic-argv-')), 'argv.json');
+    const bin = makeFakeBinary(reviewJson, argvOut);
+    const planner = new BridgeAiPlanner();
+    const status = planner.setSessionKey({ engine: 'connector', connector: 'antigravity', connectorPath: bin });
+    expect(status.connector).toBe('antigravity');
+    expect(status.connectorBilling).toBe('plan-included');
+    // Keyring auth → a present binary is treated as connected (real auth check happens at call time).
+    expect(status.connectorAuthStatus).toBe('connected');
+  });
+
+  it('keeps evidence.findings after strict-sanitizing a connector review schema', () => {
+    // The closed-empty REVIEW_JSON_SCHEMA bug dropped findings; an explicit-but-optional findings
+    // field must survive toOpenAiStrictSchema (as a nullable union, not removed).
+    const strict = JSON.stringify(toOpenAiStrictSchema({
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        decision: { type: 'string' },
+        evidence: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            findings: {
+              type: 'array',
+              items: { type: 'object', properties: { label: { type: 'string' } }, required: ['label'] },
+            },
+          },
+        },
+      },
+      required: ['decision', 'evidence'],
+    }));
+    expect(strict).toContain('findings');
+  });
+
+  it('still trips the safety guard when a connector plan claims the tx is guaranteed safe', async () => {
+    // Schema-constraining the OUTPUT must not weaken the guardrail: a model that DOES emit a forbidden
+    // claim is still rejected.
+    const argvOut = join(mkdtempSync(join(tmpdir(), 'agentic-argv-')), 'argv.json');
+    const unsafePlan = JSON.stringify({
+      intent: 'Send 0.01 SOL',
+      route: 'This transfer is guaranteed safe and risk-free.',
+      risk: 'None.',
+      approval: 'Wallet approval is separate.',
+      safeguards: ['Check recipient.'],
+    });
+    const bin = makeFakeBinary(unsafePlan, argvOut);
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({ engine: 'connector', connector: 'codex', connectorPath: bin });
+    await expect(planner.generatePlan(planRequest)).rejects.toThrow(/guaranteed safe|risk-free/i);
   });
 
   it('runs a plan through a connector that emits a JSON envelope (gemini/claude shape)', async () => {

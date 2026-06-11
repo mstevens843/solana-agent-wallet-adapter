@@ -11,6 +11,11 @@ data class RuntimeConfig(
     val apiKey: String?,
     val walletAddress: String?,
 ) {
+    /** The paired-bridge ("use your plan from your computer") path: inference runs on the user's
+     *  own desktop connector, so this config carries NO apiKey/model/apiFormat of its own — the
+     *  device bearer + relay live in NativeSecureStore (BridgePairingStore). */
+    fun isPairedBridge(): Boolean = provider.trim().equals(PAIRED_BRIDGE_PROVIDER, ignoreCase = true)
+
     fun validate(): RuntimeError? {
         if (provider.isBlank()) {
             return RuntimeError(
@@ -19,6 +24,9 @@ data class RuntimeConfig(
                 message = "Device Agent config is missing provider.",
             )
         }
+        // Paired-bridge skips the API-key/model/format checks below — its credentials live on the
+        // paired desktop, not in this config.
+        if (isPairedBridge()) return null
         if (apiFormat.isBlank() || apiFormat !in SUPPORTED_API_FORMATS) {
             return RuntimeError(
                 code = RuntimeErrorCodes.INVALID_CONFIG,
@@ -66,6 +74,7 @@ data class RuntimeConfig(
         .put("baseUrl", baseUrl ?: "")
 
     companion object {
+        const val PAIRED_BRIDGE_PROVIDER = "paired-bridge"
         val SUPPORTED_API_FORMATS = setOf("openai-compatible", "anthropic")
 
         fun canonicalApiFormat(value: String): String =

@@ -326,6 +326,15 @@ android {
             assets.srcDir(rootProject.layout.projectDirectory.dir("../browser-demo/dist"))
         }
     }
+
+    testOptions {
+        unitTests {
+            // Let JVM unit tests exercise code paths that touch android.util.Log (e.g. AgentMwaLog
+            // diagnostics in BridgeAiClient) — unmocked android.jar methods return defaults instead
+            // of throwing "not mocked". Logging is verified for real on-device, not in unit tests.
+            isReturnDefaultValues = true
+        }
+    }
 }
 
 val buildBundledWebAssetDependencies = tasks.register<Exec>("buildBundledWebAssetDependencies") {

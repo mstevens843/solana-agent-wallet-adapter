@@ -113,8 +113,12 @@ export function defaultAiModeForSurface(surface: {
     return surface.iosDeviceAgentRuntimeEnabled && deviceAgentSupported ? 'device-agent' : 'session';
   }
   if (surface.isTauriApp) {
-    if (!deviceAgentSupported) return surface.hasCloudSession ? 'hosted' : 'bridge';
-    return surface.hasCloudSession ? 'hosted' : 'device-agent';
+    // The desktop app's home is the local bridge — the subscription-connector picker and the
+    // Start/Retry-bridge button live in 'bridge' mode. Never auto-default to hosted/cloud-relay (or
+    // device-agent) just because a cloud STORAGE session exists; that hides the connector UI on every
+    // restart, which is the desktop's core feature. The user can still switch to Hosted BYOK or Device
+    // Agent explicitly (respected via aiModeSelectionExplicit). Cloud storage sign-in is independent.
+    return 'bridge';
   }
   return surface.isLocalBrowserOrigin ? 'bridge' : 'hosted';
 }

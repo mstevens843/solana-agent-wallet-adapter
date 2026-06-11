@@ -152,12 +152,13 @@ describe('planner AI setup helpers', () => {
     expect(aiProviderSupportsDeviceAgent('unknown-provider')).toBe(false);
   });
 
-  it('exposes the three subscription connectors with honest billing labels', () => {
-    expect(AI_CONNECTORS.map((connector) => connector.id)).toEqual(['codex', 'gemini', 'claude']);
-    // Codex/Gemini are plan-included; Claude is metered Agent-SDK credits and must say it caps out.
+  it('exposes the subscription connectors with honest billing labels', () => {
+    expect(AI_CONNECTORS.map((connector) => connector.id)).toEqual(['codex', 'gemini', 'claude', 'antigravity']);
+    // Codex/Gemini/Antigravity are plan-included; Claude is metered Agent-SDK credits and must say it caps out.
     expect(aiConnectorPreset('codex').billingNote).toMatch(/plan/i);
     expect(aiConnectorPreset('gemini').billingNote).toMatch(/plan/i);
     expect(aiConnectorPreset('claude').billingNote).toMatch(/caps out/i);
+    expect(aiConnectorPreset('antigravity').billingNote).toMatch(/plan/i);
   });
 
   it('reports the Device Agent AI route separately from hosted and bridge', () => {
