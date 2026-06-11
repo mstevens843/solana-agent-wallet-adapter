@@ -31,11 +31,38 @@ describe('parsePairingPayload', () => {
     expect(payload).toEqual({ relay: 'https://agentic-signer.com', uuid: 'u-1', token: 't-1' });
   });
 
+  it('preserves v2 e2ee QR payload fields for native pairing', () => {
+    const payload = parsePairingPayload(JSON.stringify({
+      v: 2,
+      relay: 'https://agentic-signer.com',
+      uuid: 'u-1',
+      token: 't-1',
+      e2ee: { alg: 'P256-HKDF-SHA256-A256GCM', desktopPub: 'desktop-pub', pairSecret: 'pair-secret' },
+    }));
+    expect(payload).toEqual({
+      relay: 'https://agentic-signer.com',
+      uuid: 'u-1',
+      token: 't-1',
+      e2ee: { alg: 'P256-HKDF-SHA256-A256GCM', desktopPub: 'desktop-pub', pairSecret: 'pair-secret' },
+    });
+  });
+
   it('rejects missing fields, bad JSON, and empty input', () => {
     expect(parsePairingPayload(JSON.stringify({ relay: 'x', uuid: 'y' }))).toBeNull();
     expect(parsePairingPayload('not json')).toBeNull();
     expect(parsePairingPayload('')).toBeNull();
     expect(parsePairingPayload(JSON.stringify({ relay: '', uuid: 'y', token: 'z' }))).toBeNull();
+  });
+
+  it('rejects v2 payloads without complete e2ee setup', () => {
+    expect(parsePairingPayload(JSON.stringify({ v: 2, relay: 'x', uuid: 'y', token: 'z' }))).toBeNull();
+    expect(parsePairingPayload(JSON.stringify({
+      v: 2,
+      relay: 'x',
+      uuid: 'y',
+      token: 'z',
+      e2ee: { alg: 'P256-HKDF-SHA256-A256GCM', desktopPub: 'desktop-pub' },
+    }))).toBeNull();
   });
 });
 

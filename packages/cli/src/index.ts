@@ -806,6 +806,9 @@ async function dispatch(parsed: ParsedArgs): Promise<unknown> {
     case 'connect-agent':
     case 'ai-setup':
       return dispatchAgentSetup(parsed);
+    case 'aiconnectors':
+    case 'ai-connectors':
+      return runAiConnectorsLauncher(parsed);
     case 'agent-disconnect':
     case 'ai-disconnect':
     case 'agent-clear':
@@ -1921,6 +1924,66 @@ async function dispatchAgentSetup(parsed: ParsedArgs): Promise<unknown> {
     result = await runAgentSetup(state, args, { detached: true });
   });
   return result ?? NO_OUTPUT;
+}
+
+async function runAiConnectorsLauncher(parsed: ParsedArgs): Promise<JsonRecord> {
+  const args = parsed.positionals.slice(1);
+  const connector = aiConnectorsCommandConnector(optionValue(args, '--connector') ?? 'codex');
+  const connectorPath = optionValue(args, '--connector-path')?.trim();
+  const state = createOneShotState(parsed.options);
+  await runAgentSetup(
+    state,
+    [
+      '--engine',
+      'connector',
+      '--connector',
+      connector,
+      ...(connectorPath ? ['--connector-path', connectorPath] : []),
+    ],
+    { detached: true },
+  );
+  const walletHost = await ensureBrowserHostDetached(parsed.options);
+  const launchUrl = aiConnectorsLaunchUrl(parsed.options, connector);
+  const openError = await tryOpenUrl(launchUrl);
+  if (!parsed.options.json) {
+    printSection('AI Connectors');
+    for (const notice of walletHost.notices) console.log(notice);
+    console.log(openError ? `Open manually: ${launchUrl}` : 'Opened: Agentic AI Connectors');
+    console.log(`Connector: ${connectorLabel(connector)}`);
+    console.log('Scan the QR from Agentic Android after the page loads.');
+    console.log('Keep this computer awake and the connector signed in.');
+    if (openError) {
+      console.log(`Browser open failed: ${openError}`);
+    }
+  }
+  return {
+    configured: true,
+    opened: !openError,
+    url: launchUrl,
+    bridgeUrl: parsed.options.bridgeUrl,
+    walletHostUrl: parsed.options.walletHostUrl,
+    connector,
+    ...(walletHost.notices.length > 0 ? { notices: walletHost.notices } : {}),
+    ...(connectorPath ? { connectorPath } : {}),
+    ...(openError ? { openError } : {}),
+  };
+}
+
+function aiConnectorsCommandConnector(value: string | undefined): AgentConnector {
+  const connector = normalizeAgentConnector(value);
+  if (connector === 'codex' || connector === 'claude' || connector === 'gemini') {
+    return connector;
+  }
+  throw new Error('Unknown AI connector. Use --connector codex|claude|gemini.');
+}
+
+function aiConnectorsLaunchUrl(options: GlobalOptions, connector: AgentConnector): string {
+  const url = new URL(options.walletHostUrl);
+  url.pathname = '/aiconnectors';
+  url.searchParams.set('bridgeUrl', options.bridgeUrl);
+  url.searchParams.set('token', options.token);
+  url.searchParams.set('connector', connector);
+  return url.toString();
 }
 
 async function dispatchAgentDisconnect(parsed: ParsedArgs): Promise<unknown> {
@@ -7005,6 +7068,7 @@ function printCommandMenu(topic?: string): void {
   console.log('/sign-in           Connect cloud storage (optional)');
   console.log('/delete-storage    Delete Agentic Cloud Storage');
   console.log('/agent-setup       Add a provider key for Hosted BYOK or Local Bridge');
+  console.log('/aiconnectors      Open Android AI connector QR setup');
   console.log('/agent-disconnect  Clear the saved agent provider key');
   console.log('/connectors        Manage protocol connectors and BYO API keys');
   console.log('');
@@ -7031,6 +7095,7 @@ function printFullCommandMenu(): void {
   console.log('/sign-in           Sign in to your cloud workspace (SIWS)');
   console.log('/connect           Connect your wallet (opens browser, then stays in CLI)');
   console.log('/agent-setup       Add a provider key for Hosted BYOK or Local Bridge');
+  console.log('/aiconnectors      Open Android AI connector QR setup');
   console.log('/agent-disconnect  Clear the saved agent provider key');
   console.log('/new               New request: one-time · repeat');
   console.log('/agent             Chat with agent, then prepare a wallet request');
@@ -7121,6 +7186,7 @@ function printAdvancedCommandMenu(): void {
   printSection('Advanced');
   console.log('/api-keys                                  Optional BYOK RPC · Jupiter · Birdeye · Helius overrides');
   console.log('/setup                                     Optional local BYOK setup');
+  console.log('/aiconnectors --connector codex            Open Android AI connector QR setup');
   console.log('/schedule list|create|pause|resume|delete    Recurring approvals (raw)');
   console.log('/inbox <filter>                              Prepared approvals (any status)');
   console.log('/plan <request>                              Build/sign/queue an agent plan');
@@ -7168,6 +7234,7 @@ Setup:
   solana-agent-wallet sign-in              # connect cloud storage (optional)
   solana-agent-wallet delete-storage       # delete Agentic Cloud Storage
   solana-agent-wallet agent-setup          # Hosted BYOK or Local Bridge provider key
+  solana-agent-wallet aiconnectors --connector codex  # Android AI connector QR setup
   solana-agent-wallet agent-disconnect     # clear saved agent provider key
 
 Work:
@@ -7193,6 +7260,7 @@ Flow-first commands (recommended — run with no command or "app" for the intera
   solana-agent-wallet sign-out
   solana-agent-wallet delete-storage                     # delete Agentic Cloud Storage
   solana-agent-wallet agent-setup                        # Hosted BYOK or Local Bridge provider key
+  solana-agent-wallet aiconnectors --connector codex      # Android AI connector QR setup
   solana-agent-wallet agent-disconnect                   # clear saved agent provider key
   solana-agent-wallet new                                # menu: one-time · repeat
   solana-agent-wallet new-send                           # Send tokens form (SOL default)

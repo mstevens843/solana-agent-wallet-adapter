@@ -335,7 +335,16 @@ import {
   shouldUseMobileAiPathPolicy,
   visibleMobileAiPathModes,
 } from './aiPathPolicy.js';
-import { phonePairingEnabled, unpairPhone, readPhonePairStatus, shouldClearPersistedPairedBridge } from './bridgePairing.js';
+import {
+  phonePairingEnabled,
+  unpairPhone,
+  readPhonePairStatus,
+  shouldClearPersistedPairedBridge,
+  startDesktopPairing as startBridgePairing,
+  pollDesktopPairStatus as pollBridgePairStatus,
+  stopDesktopPairing as stopBridgeDesktopPairing,
+  renderPairingQrDataUrl,
+} from './bridgePairing.js';
 import { openDesktopPairingModal, openPhonePairingModal } from './bridgePairingUi.js';
 import {
   bridgeConnectorDisplayLabel,
@@ -349,6 +358,12 @@ import {
   type AiPathSetupSnapshot,
   type AiSetupInventory,
 } from './aiSetupState.js';
+import {
+  aiConnectorsCommand,
+  aiConnectorsReadinessFromBridgeStatus,
+  normalizeAiConnectorsConnector,
+  type AiConnectorsReadiness,
+} from './aiConnectorsSetup.js';
 import {
   AI_PROVIDER_PRESETS,
   AGENT_PLAN_TEMPLATES,
@@ -1509,7 +1524,7 @@ const BROWSER_AI_LIMITATIONS = [
   'Browser AI cannot run background jobs after the tab closes.',
 ];
 const CUSTOM_AI_MODEL_VALUE = '__custom__';
-const ROUTE_PATHS = ['/', '/docs', '/builders', '/app', '/connect', '/disconnect', '/approve', '/sign', '/sign-in', '/sign-out', '/delete-storage', '/qr-connect', '/cli', '/desktop', '/android', '/demo', '/mwa-test', '/privacy', '/terms', '/delete-account', '/agentic-login'] as const;
+const ROUTE_PATHS = ['/', '/docs', '/builders', '/app', '/connect', '/disconnect', '/approve', '/sign', '/sign-in', '/sign-out', '/delete-storage', '/qr-connect', '/cli', '/desktop', '/aiconnectors', '/android', '/demo', '/mwa-test', '/privacy', '/terms', '/delete-account', '/agentic-login'] as const;
 const ROUTE_PATH_SET = new Set<string>(ROUTE_PATHS);
 const SHOW_DEV_CONTROLS = resolveDevControls();
 const IS_ANDROID_APP = resolveAndroidAppSurface();
@@ -1607,6 +1622,7 @@ const NAV_ITEMS: ReadonlyArray<NavItem> = [
 const ROUTE_TITLES: Record<string, string> = {
   '/builders': 'Builders · Agentic',
   '/qr-connect': 'QR Connect · Agentic',
+  '/aiconnectors': 'AI Connectors · Agentic',
   '/mwa-test': 'MWA · Agentic',
   '/privacy': 'Privacy Policy · Agentic',
   '/terms': 'Terms of Service · Agentic',
@@ -8947,6 +8963,19 @@ function render(): void {
   if (route !== '/qr-connect' && qrConnect.pollHandle !== null) {
     stopQrConnectRelay();
   }
+  if (
+    route !== '/aiconnectors' &&
+    (
+      aiConnectorsPairingPollTimer !== null ||
+      aiConnectorsPairingState.status !== 'idle' ||
+      aiConnectorsReadinessKeyValue ||
+      aiConnectorsReadinessState.status !== 'missing-credentials'
+    )
+  ) {
+    stopAiConnectorsPairingPoll();
+    resetAiConnectorsPairingState();
+    resetAiConnectorsReadinessState();
+  }
   if (state.activeMobileRailSheet && (route !== '/app' || !isMobileAppViewport() || state.activeTab !== 'overview')) {
     state.activeMobileRailSheet = null;
   }
@@ -8991,6 +9020,7 @@ function render(): void {
     mountTauriLocalRuntimePanel('tauri-local-runtime-panel');
   }
   scheduleQrConnectRoute();
+  scheduleAiConnectorsReadinessRefresh();
   updateTabTitleBadge();
   scheduleInboxSwapQuoteHydration();
   scheduleVisibleTokenMarketHydration();
@@ -9227,6 +9257,8 @@ function pageContent(route: AppRoute | null): string {
       return cliPage();
     case '/desktop':
       return desktopPage();
+    case '/aiconnectors':
+      return aiConnectorsPage();
     case '/android':
       // The Android download page is not relevant on iOS; suppress it even if deep-linked.
       return IS_IOS_APP ? notFoundPage() : androidPage();
@@ -10180,6 +10212,459 @@ function desktopPage(): string {
     ${desktopHeroSection()}
     ${desktopDownloadSection()}
   `;
+}
+
+type AiConnectorsPairingStatus = 'idle' | 'starting' | 'waiting' | 'paired' | 'expired' | 'error';
+
+let aiConnectorsReadinessState: AiConnectorsReadiness = aiConnectorsReadinessFromBridgeStatus({
+  connector: 'codex',
+  hasBridgeCredentials: false,
+});
+let aiConnectorsReadinessKeyValue = '';
+let aiConnectorsReadinessInFlightKey = '';
+let aiConnectorsReadinessRequestId = 0;
+let aiConnectorsPairingState: {
+  status: AiConnectorsPairingStatus;
+  message: string;
+  qrDataUrl: string;
+} = {
+  status: 'idle',
+  message: '',
+  qrDataUrl: '',
+};
+let aiConnectorsPairingPollTimer: number | null = null;
+
+function aiConnectorsPage(): string {
+  const connector = aiConnectorsRouteConnector();
+  const connectorLabel = aiConnectorPreset(connector).label;
+  const canUseLocalBridge = aiConnectorsCanUseLocalBridge();
+  const readiness = aiConnectorsReadinessForRender(connector, canUseLocalBridge);
+  const command = aiConnectorsCommand(connector);
+  return `
+    <section class="ai-connectors-page" aria-labelledby="ai-connectors-title">
+      <div class="ai-connectors-layout">
+        <header class="ai-connectors-head">
+          <p class="eyebrow mini">Android AI connector setup</p>
+          <h1 id="ai-connectors-title">Pair Android to this computer's AI login.</h1>
+          <p>
+            Open this page on the computer where Codex, Claude, or Gemini is signed in. Start the
+            lightweight connector, then scan the QR from the Agentic Android app.
+          </p>
+        </header>
+
+        <div class="ai-connectors-steps" role="list" aria-label="AI connector setup steps">
+          ${aiConnectorStep(1, 'Open this page on your AI-connected computer', 'Use the computer where the AI CLI is already signed in.')}
+          ${aiConnectorStep(2, 'Start the lightweight connector', 'Run the command below. It starts the local bridge and selects the subscription connector.')}
+          ${aiConnectorStep(3, 'Scan from Android', 'In the Android app, choose Use Connector and scan the QR shown here.')}
+        </div>
+
+        <section class="ai-connectors-primary" aria-labelledby="ai-connectors-primary-title">
+          <div>
+            <span class="ai-connectors-kicker">Primary</span>
+            <h2 id="ai-connectors-primary-title">Run lightweight connector</h2>
+            <p>
+              Selected connector: <strong>${escapeHtml(connectorLabel)}</strong>. Keep this computer awake
+              and signed in; the local connector bridge keeps running in the background after the command opens this page.
+            </p>
+          </div>
+          ${runtimeCommandRow('Lightweight connector', command, 'Copy command')}
+          <p class="ai-connectors-note">
+            A web page cannot directly use your local Codex, Claude, or Gemini login. The lightweight connector runs locally so Agentic can use that signed-in session without installing the full desktop app.
+          </p>
+          ${aiConnectorsReadinessPanel(readiness)}
+          ${aiConnectorsQrPanel(readiness)}
+        </section>
+
+        <div class="ai-connectors-options" aria-label="Other setup options">
+          <article>
+            <span>Secondary</span>
+            <h3>Use desktop app</h3>
+            <p>Install the full desktop app if you want a managed local runtime with the same Android pairing path.</p>
+            <a class="button-link" href="/desktop">Desktop app</a>
+          </article>
+          <article>
+            <span>Fallback</span>
+            <h3>Use API key</h3>
+            <p>Use Android's API-key setup when this computer is unavailable or you do not want a local connector process.</p>
+            <a class="button-link" href="/app">Open app setup</a>
+          </article>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function aiConnectorStep(index: number, title: string, detail: string): string {
+  return `
+    <article role="listitem">
+      <span>${index}</span>
+      <div>
+        <strong>${escapeHtml(title)}</strong>
+        <p>${escapeHtml(detail)}</p>
+      </div>
+    </article>
+  `;
+}
+
+function aiConnectorsReadinessPanel(readiness: AiConnectorsReadiness): string {
+  const refreshDisabled = readiness.status === 'missing-credentials' || readiness.status === 'checking';
+  return `
+    <div class="ai-connectors-status-card ${escapeHtml(readiness.tone)}" data-ai-connectors-readiness="${escapeHtml(readiness.status)}" aria-live="polite">
+      <div>
+        <span>Connector status</span>
+        <strong>${escapeHtml(readiness.title)}</strong>
+        <p>${escapeHtml(readiness.detail)}</p>
+      </div>
+      <button
+        type="button"
+        class="utility"
+        data-ai-connectors-action="refresh-status"
+        ${refreshDisabled ? 'disabled' : ''}
+      >
+        Refresh status
+      </button>
+    </div>
+  `;
+}
+
+function aiConnectorsQrPanel(readiness: AiConnectorsReadiness): string {
+  const stateCopy = aiConnectorsPairingCopy(readiness);
+  const qr = aiConnectorsPairingState.qrDataUrl
+    ? `<img src="${escapeHtml(aiConnectorsPairingState.qrDataUrl)}" alt="Android pairing QR code" />`
+    : `<div class="ai-connectors-qr-placeholder" aria-hidden="true">QR</div>`;
+  return `
+    <div class="ai-connectors-qr-card ${escapeHtml(aiConnectorsPairingState.status)}">
+      <div class="ai-connectors-qr-copy">
+        <span>${escapeHtml(stateCopy.kicker)}</span>
+        <strong>${escapeHtml(stateCopy.title)}</strong>
+        <p>${escapeHtml(stateCopy.detail)}</p>
+      </div>
+      <div class="ai-connectors-qr-box">
+        ${qr}
+      </div>
+      <div class="ai-connectors-qr-actions">
+        <button
+          type="button"
+          class="primary"
+          data-ai-connectors-action="start-pairing"
+          ${!readiness.canStartPairing || aiConnectorsPairingState.status === 'starting' ? 'disabled' : ''}
+        >
+          ${aiConnectorsPairingState.status === 'waiting' ? 'Refresh QR' : 'Start QR pairing'}
+        </button>
+        ${aiConnectorsPairingState.status === 'waiting'
+          ? '<button type="button" class="utility" data-ai-connectors-action="stop-pairing">Stop pairing</button>'
+          : ''}
+      </div>
+    </div>
+  `;
+}
+
+function aiConnectorsPairingCopy(readiness: AiConnectorsReadiness): { kicker: string; title: string; detail: string } {
+  if (!readiness.canStartPairing) {
+    const kicker = readiness.status === 'missing-credentials'
+      ? 'Waiting for connector'
+      : readiness.status === 'checking'
+        ? 'Checking connector'
+        : 'Connector not ready';
+    return {
+      kicker,
+      title: readiness.title,
+      detail: readiness.detail,
+    };
+  }
+  switch (aiConnectorsPairingState.status) {
+    case 'starting':
+      return { kicker: 'Starting', title: 'Creating pairing QR...', detail: 'The local connector is registering a short-lived pairing code.' };
+    case 'waiting':
+      return {
+        kicker: 'Scan now',
+        title: 'QR is ready.',
+        detail: aiConnectorsPairingState.message || 'Open Agentic Android, choose Use Connector, and scan this code.',
+      };
+    case 'paired':
+      return {
+        kicker: 'Paired',
+        title: 'Android is connected.',
+        detail: 'Keep this computer awake and the connector signed in while Android uses AI planning.',
+      };
+    case 'expired':
+      return { kicker: 'Expired', title: 'Pairing expired.', detail: 'Start a fresh QR, then scan it from Android.' };
+    case 'error':
+      return {
+        kicker: 'Needs attention',
+        title: 'Could not create QR.',
+        detail: aiConnectorsPairingState.message || 'Make sure the local connector bridge is ready, then try again.',
+      };
+    default:
+      return { kicker: 'Ready', title: 'Generate the Android QR.', detail: 'Connector ready. Scan this QR from Agentic Android.' };
+  }
+}
+
+function aiConnectorsRouteConnector(): AiConnector {
+  try {
+    return normalizeAiConnectorsConnector(new URLSearchParams(window.location.search).get('connector')) ?? 'codex';
+  } catch {
+    return 'codex';
+  }
+}
+
+function aiConnectorsCanUseLocalBridge(): boolean {
+  return Boolean(state.bridgeToken && isTrustedBridgeUrl(state.bridgeUrl));
+}
+
+function aiConnectorsReadinessKey(connector: AiConnector): string {
+  if (!aiConnectorsCanUseLocalBridge()) return '';
+  return `${connector}|${state.bridgeUrl}|${state.bridgeToken}`;
+}
+
+function aiConnectorsReadinessForRender(
+  connector: AiConnector,
+  canUseLocalBridge: boolean,
+): AiConnectorsReadiness {
+  const key = canUseLocalBridge ? aiConnectorsReadinessKey(connector) : '';
+  if (!canUseLocalBridge) {
+    return aiConnectorsReadinessFromBridgeStatus({
+      connector,
+      hasBridgeCredentials: false,
+    });
+  }
+  if (aiConnectorsReadinessKeyValue !== key) {
+    return aiConnectorsReadinessFromBridgeStatus({
+      connector,
+      hasBridgeCredentials: true,
+      checking: true,
+    });
+  }
+  return aiConnectorsReadinessState;
+}
+
+function resetAiConnectorsReadinessState(): void {
+  aiConnectorsReadinessRequestId += 1;
+  aiConnectorsReadinessKeyValue = '';
+  aiConnectorsReadinessInFlightKey = '';
+  aiConnectorsReadinessState = aiConnectorsReadinessFromBridgeStatus({
+    connector: 'codex',
+    hasBridgeCredentials: false,
+  });
+}
+
+function scheduleAiConnectorsReadinessRefresh(): void {
+  if (currentRoute() !== '/aiconnectors') return;
+  const connector = aiConnectorsRouteConnector();
+  const canUseLocalBridge = aiConnectorsCanUseLocalBridge();
+  if (!canUseLocalBridge) {
+    aiConnectorsReadinessKeyValue = '';
+    aiConnectorsReadinessInFlightKey = '';
+    aiConnectorsReadinessState = aiConnectorsReadinessFromBridgeStatus({
+      connector,
+      hasBridgeCredentials: false,
+    });
+    return;
+  }
+  const key = aiConnectorsReadinessKey(connector);
+  if (aiConnectorsReadinessInFlightKey === key) return;
+  if (aiConnectorsReadinessKeyValue === key && aiConnectorsReadinessState.status !== 'checking') return;
+  void refreshAiConnectorsReadiness(false);
+}
+
+async function refreshAiConnectorsReadiness(force: boolean): Promise<void> {
+  const connector = aiConnectorsRouteConnector();
+  const canUseLocalBridge = aiConnectorsCanUseLocalBridge();
+  if (!canUseLocalBridge) {
+    aiConnectorsReadinessKeyValue = '';
+    aiConnectorsReadinessInFlightKey = '';
+    aiConnectorsReadinessState = aiConnectorsReadinessFromBridgeStatus({
+      connector,
+      hasBridgeCredentials: false,
+    });
+    if (force && currentRoute() === '/aiconnectors') render();
+    return;
+  }
+
+  const key = aiConnectorsReadinessKey(connector);
+  if (!force && aiConnectorsReadinessInFlightKey === key) return;
+  if (!force && aiConnectorsReadinessKeyValue === key && aiConnectorsReadinessState.status !== 'checking') return;
+
+  const requestId = aiConnectorsReadinessRequestId + 1;
+  aiConnectorsReadinessRequestId = requestId;
+  aiConnectorsReadinessInFlightKey = key;
+  aiConnectorsReadinessKeyValue = key;
+  aiConnectorsReadinessState = aiConnectorsReadinessFromBridgeStatus({
+    connector,
+    hasBridgeCredentials: true,
+    checking: true,
+  });
+  if (currentRoute() === '/aiconnectors') render();
+
+  try {
+    const bridgeStatus = await bridgeRequest<BridgeAiStatus>('/bridge/ai/status');
+    if (!aiConnectorsReadinessRequestIsCurrent(requestId, key, connector)) return;
+    aiConnectorsReadinessState = aiConnectorsReadinessFromBridgeStatus({
+      connector,
+      hasBridgeCredentials: true,
+      status: bridgeStatus,
+    });
+  } catch (err) {
+    if (!aiConnectorsReadinessRequestIsCurrent(requestId, key, connector)) return;
+    aiConnectorsReadinessState = aiConnectorsReadinessFromBridgeStatus({
+      connector,
+      hasBridgeCredentials: true,
+      failure: aiConnectorsReadinessFailure(err),
+      failureMessage: redactSecrets(err instanceof Error ? err.message : String(err)),
+    });
+  } finally {
+    if (requestId === aiConnectorsReadinessRequestId) {
+      aiConnectorsReadinessInFlightKey = '';
+    }
+    if (currentRoute() === '/aiconnectors' && requestId === aiConnectorsReadinessRequestId) {
+      render();
+    }
+  }
+}
+
+function aiConnectorsReadinessRequestIsCurrent(
+  requestId: number,
+  key: string,
+  connector: AiConnector,
+): boolean {
+  return requestId === aiConnectorsReadinessRequestId
+    && currentRoute() === '/aiconnectors'
+    && aiConnectorsReadinessKey(connector) === key;
+}
+
+function aiConnectorsReadinessFailure(err: unknown): 'offline' | 'unauthorized' | 'error' {
+  if (err instanceof BridgeRequestError) {
+    if (err.status === 401) return 'unauthorized';
+    if (err.status === 0) return 'offline';
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  return /not running|not reachable|failed to fetch|network/i.test(message) ? 'offline' : 'error';
+}
+
+function stopAiConnectorsPairingPoll(): void {
+  if (aiConnectorsPairingPollTimer === null || typeof window === 'undefined') return;
+  window.clearInterval(aiConnectorsPairingPollTimer);
+  aiConnectorsPairingPollTimer = null;
+}
+
+function resetAiConnectorsPairingState(): void {
+  aiConnectorsPairingState = {
+    status: 'idle',
+    message: '',
+    qrDataUrl: '',
+  };
+}
+
+async function runStartAiConnectorsPairing(): Promise<void> {
+  const connector = aiConnectorsRouteConnector();
+  const readiness = aiConnectorsReadinessForRender(connector, aiConnectorsCanUseLocalBridge());
+  if (!readiness.canStartPairing) {
+    pushToast('error', 'Connector not ready', readiness.detail);
+    void refreshAiConnectorsReadiness(true);
+    render();
+    return;
+  }
+  stopAiConnectorsPairingPoll();
+  aiConnectorsPairingState = {
+    status: 'starting',
+    message: '',
+    qrDataUrl: '',
+  };
+  render();
+  try {
+    const pairing = await startBridgePairing(bridgeRequest);
+    if (!pairing.qrPayload) {
+      throw new Error('The local connector did not return a pairing QR. Restart the connector and try again.');
+    }
+    const qrDataUrl = await renderPairingQrDataUrl(pairing.qrPayload);
+    if (!qrDataUrl) {
+      throw new Error('The browser could not render the pairing QR. Restart the connector and try again.');
+    }
+    aiConnectorsPairingState = {
+      status: 'waiting',
+      message: 'Open Agentic Android, choose Use Connector, and scan this code.',
+      qrDataUrl,
+    };
+    startAiConnectorsPairingPoll();
+  } catch (err) {
+    const message = aiConnectorsPairingErrorMessage(err);
+    aiConnectorsPairingState = {
+      status: 'error',
+      message,
+      qrDataUrl: '',
+    };
+    pushToast('error', 'Pairing QR failed', message);
+  }
+  render();
+}
+
+async function runStopAiConnectorsPairing(): Promise<void> {
+  stopAiConnectorsPairingPoll();
+  await stopBridgeDesktopPairing(bridgeRequest).catch(() => undefined);
+  resetAiConnectorsPairingState();
+  render();
+}
+
+async function runRefreshAiConnectorsStatus(): Promise<void> {
+  await refreshAiConnectorsReadiness(true);
+}
+
+function startAiConnectorsPairingPoll(): void {
+  if (typeof window === 'undefined') return;
+  stopAiConnectorsPairingPoll();
+  let failures = 0;
+  let inFlight = false;
+  aiConnectorsPairingPollTimer = window.setInterval(() => {
+    if (inFlight) return;
+    inFlight = true;
+    void (async () => {
+      if (currentRoute() !== '/aiconnectors') {
+        stopAiConnectorsPairingPoll();
+        return;
+      }
+      try {
+        const pairState = await pollBridgePairStatus(bridgeRequest);
+        failures = 0;
+        if (pairState.paired) {
+          stopAiConnectorsPairingPoll();
+          aiConnectorsPairingState = {
+            ...aiConnectorsPairingState,
+            status: 'paired',
+            message: 'Android is paired. Keep this computer awake and the connector signed in.',
+          };
+          pushToast('success', 'Android paired', 'The phone can now use this computer for AI planning.');
+          render();
+          return;
+        }
+        if (!pairState.active) {
+          stopAiConnectorsPairingPoll();
+          aiConnectorsPairingState = {
+            ...aiConnectorsPairingState,
+            status: 'expired',
+            message: 'The pairing code expired. Start a fresh QR and scan again.',
+          };
+          render();
+        }
+      } catch (err) {
+        failures += 1;
+        if (failures < 5) return;
+        stopAiConnectorsPairingPoll();
+        aiConnectorsPairingState = {
+          status: 'error',
+          message: aiConnectorsPairingErrorMessage(err),
+          qrDataUrl: '',
+        };
+        render();
+      } finally {
+        inFlight = false;
+      }
+    })();
+  }, 2_000);
+}
+
+function aiConnectorsPairingErrorMessage(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  return redactSecrets(message || 'The local connector bridge is not reachable. Rerun the lightweight connector command, then refresh status.');
 }
 
 function androidPage(): string {
@@ -26053,6 +26538,24 @@ function bind(): void {
         pushToast('error', 'Copy failed', message);
       }
       render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-ai-connectors-action]')) {
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      const action = button.dataset.aiConnectorsAction;
+      if (action === 'start-pairing') {
+        void runStartAiConnectorsPairing();
+        return;
+      }
+      if (action === 'stop-pairing') {
+        void runStopAiConnectorsPairing();
+        return;
+      }
+      if (action === 'refresh-status') {
+        void runRefreshAiConnectorsStatus();
+      }
     });
   }
 

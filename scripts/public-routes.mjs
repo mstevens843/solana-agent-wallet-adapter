@@ -6,6 +6,7 @@ export const publicAppRoutes = [
   '/qr-connect',
   '/cli',
   '/desktop',
+  '/aiconnectors',
   '/android',
   '/demo',
   '/mwa-test',

@@ -29,6 +29,7 @@ import com.agentic.wallet.agent.AgentRuntimeController
 import com.agentic.wallet.agent.StreamingVoucherWorker
 import com.agentic.wallet.agent.provider.DeviceAgentProviderExecutor
 import com.agentic.wallet.agent.bridge.BridgeAiClient
+import com.agentic.wallet.agent.bridge.BridgeE2ee
 import com.agentic.wallet.agent.bridge.BridgePairing
 import com.agentic.wallet.agent.bridge.BridgePairingStore
 import com.agentic.wallet.agent.bridge.BridgeRelayPolicy
@@ -386,6 +387,18 @@ class MainActivity : FragmentActivity() {
         val relay = payload.optString("relay", "").trim()
         val uuid = payload.optString("uuid", "").trim()
         val token = payload.optString("token", "").trim()
+        val version = payload.optInt("v", 1)
+        val e2eeQr = try {
+            BridgeE2ee.parseQr(payload.optJSONObject("e2ee"))
+        } catch (_: Throwable) {
+            return JSONObject().put("ok", false).put("error", "bad_payload")
+        }
+        if (version <= 0) {
+            return JSONObject().put("ok", false).put("error", "bad_payload")
+        }
+        if (version >= 2 && e2eeQr == null) {
+            return JSONObject().put("ok", false).put("error", "e2ee_required")
+        }
         if (relay.isEmpty() || uuid.isEmpty() || token.isEmpty()) {
             return JSONObject().put("ok", false).put("error", "incomplete_payload")
         }
@@ -397,8 +410,8 @@ class MainActivity : FragmentActivity() {
         bridgePairInProgress = true
         lifecycleScope.launch {
             try {
-                val bearer = bridgeAiClient.claim(relay, uuid, token)
-                bridgePairingStore.save(BridgePairing(relayBaseUrl = relay, pairUuid = uuid, deviceBearer = bearer))
+                val claim = bridgeAiClient.claim(relay, uuid, token, e2eeQr)
+                bridgePairingStore.save(BridgePairing(relayBaseUrl = relay, pairUuid = uuid, deviceBearer = claim.deviceBearer, e2ee = claim.e2ee))
                 AgentMwaLog.info("MainActivity", "startBridgePairing", "PAIRED", "phone paired to desktop", emptyMap())
             } catch (err: Throwable) {
                 bridgePairLastError = err.message ?: "Pairing failed."
@@ -428,7 +441,13 @@ class MainActivity : FragmentActivity() {
                 relayProbeInFlight = true
                 lifecycleScope.launch {
                     try {
-                        relayDesktopOnline = bridgeAiClient.status().desktopOnline
+                        val status = bridgeAiClient.status()
+                        if (!status.paired) {
+                            bridgePairingStore.clear()
+                            relayDesktopOnline = false
+                        } else {
+                            relayDesktopOnline = status.desktopOnline
+                        }
                     } catch (_: Throwable) {
                         // keep last-known value; a blip shouldn't flip the chip to offline
                     } finally {
@@ -443,9 +462,19 @@ class MainActivity : FragmentActivity() {
     }
 
     private fun clearBridgePairing(): JSONObject {
+        val pairing = bridgePairingStore.current()
         bridgePairingStore.clear()
         bridgePairLastError = null
         bridgePairInProgress = false
+        if (pairing != null) {
+            lifecycleScope.launch {
+                try {
+                    bridgeAiClient.unpair(pairing)
+                } catch (err: Throwable) {
+                    AgentMwaLog.warn("MainActivity", "clearBridgePairing", "RELAY_UNPAIR_FAILED", err.message ?: "relay unpair failed", emptyMap())
+                }
+            }
+        }
         AgentMwaLog.info("MainActivity", "clearBridgePairing", "UNPAIRED", "phone unpaired", emptyMap())
         return JSONObject().put("ok", true)
     }

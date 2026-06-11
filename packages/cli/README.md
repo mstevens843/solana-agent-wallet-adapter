@@ -26,6 +26,12 @@ solana-agent-wallet agent-setup
 The setup flow supports OpenAI, Claude / Anthropic, Gemini, OpenRouter, and custom OpenAI-compatible gateways. It can save
 the key for Local Bridge AI or Hosted BYOK. Use `solana-agent-wallet agent-disconnect` to remove the saved agent key.
 
+Android connector QR setup without the desktop app:
+
+```sh
+npm exec @solana-agent-wallet-adapter/cli -- aiconnectors --connector codex
+```
+
 ## Standalone Downloads
 
 Download the asset for your platform from the latest GitHub Release:

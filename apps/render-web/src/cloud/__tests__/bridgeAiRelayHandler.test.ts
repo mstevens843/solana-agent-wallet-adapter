@@ -90,14 +90,29 @@ class MutableClock implements RelayClock {
 const bridgeAuth = { 'x-bridge-secret': BRIDGE_SECRET };
 const deviceAuth = (bearer: string) => ({ authorization: `Bearer ${bearer}` });
 
-async function register(handler: BridgeAiRelayHandler) {
+async function register(handler: BridgeAiRelayHandler, extra: Record<string, unknown> = {}) {
   return call(handler, 'POST', `/api/bridge-pair/${UUID}/register`, {
-    body: { pairToken: PAIR_TOKEN, bridgeSecret: BRIDGE_SECRET },
+    body: { pairToken: PAIR_TOKEN, bridgeSecret: BRIDGE_SECRET, ...extra },
   });
 }
 
 async function claim(handler: BridgeAiRelayHandler): Promise<string> {
   const r = await call(handler, 'POST', `/api/bridge-pair/${UUID}/claim`, { body: { pairToken: PAIR_TOKEN } });
+  expect(r.status).toBe(200);
+  return r.body.deviceBearer as string;
+}
+
+async function claimE2ee(handler: BridgeAiRelayHandler): Promise<string> {
+  const r = await call(handler, 'POST', `/api/bridge-pair/${UUID}/claim`, {
+    body: {
+      pairToken: PAIR_TOKEN,
+      e2ee: {
+        alg: 'P256-HKDF-SHA256-A256GCM',
+        phonePub: 'phone-public-key',
+        proof: 'phone-proof',
+      },
+    },
+  });
   expect(r.status).toBe(200);
   return r.body.deviceBearer as string;
 }
@@ -199,6 +214,16 @@ describe('bridgeAiRelayHandler — pairing lifecycle', () => {
     const r = await call(handler, 'POST', `/api/bridge-pair/${UUID}/register`, { body: { pairToken: 'x', bridgeSecret: 'y' } });
     expect(r.status).toBe(400);
   });
+
+  it('requires an e2ee claim for v2 encrypted pairing sessions before burning the token', async () => {
+    await register(handler, { e2eeRequired: true, e2eeAlg: 'P256-HKDF-SHA256-A256GCM' });
+    const plaintextClaim = await call(handler, 'POST', `/api/bridge-pair/${UUID}/claim`, { body: { pairToken: PAIR_TOKEN } });
+    expect(plaintextClaim.status).toBe(400);
+    expect(plaintextClaim.body.error).toBe('e2ee_required');
+
+    const bearer = await claimE2ee(handler);
+    expect(typeof bearer).toBe('string');
+  });
 });
 
 describe('bridgeAiRelayHandler — desktop poll auth', () => {
@@ -222,6 +247,16 @@ describe('bridgeAiRelayHandler — desktop poll auth', () => {
     expect(first.body.justPaired).toBe(true);
     const second = await call(handler, 'GET', `/api/bridge-pair/${UUID}/poll`, { headers: bridgeAuth });
     expect(second.body.justPaired).toBe(false);
+  });
+
+  it('forwards the optional e2ee claim to desktop polls', async () => {
+    await claimE2ee(handler);
+    const poll = await call(handler, 'GET', `/api/bridge-pair/${UUID}/poll`, { headers: bridgeAuth });
+    expect(poll.body.e2eeClaim).toEqual({
+      alg: 'P256-HKDF-SHA256-A256GCM',
+      phonePub: 'phone-public-key',
+      proof: 'phone-proof',
+    });
   });
 });
 
@@ -337,6 +372,12 @@ describe('bridgeAiRelayHandler — revocation & status', () => {
 
   it('unpair drops the session so the phone can no longer reach it', async () => {
     expect((await call(handler, 'POST', `/api/bridge-pair/${UUID}/unpair`, { headers: bridgeAuth })).status).toBe(200);
+    const r = await call(handler, 'GET', `/api/bridge-ai/${UUID}/status`, { headers: deviceAuth(bearer) });
+    expect(r.status).toBe(404);
+  });
+
+  it('phone unpair drops the session using the device bearer', async () => {
+    expect((await call(handler, 'POST', `/api/bridge-ai/${UUID}/unpair`, { headers: deviceAuth(bearer) })).status).toBe(200);
     const r = await call(handler, 'GET', `/api/bridge-ai/${UUID}/status`, { headers: deviceAuth(bearer) });
     expect(r.status).toBe(404);
   });

@@ -28,6 +28,7 @@
 //   POST /api/bridge-ai/:uuid/forward           phone (Bearer) submits {path, body} -> {requestId}
 //   GET  /api/bridge-ai/:uuid/result/:reqId     phone (Bearer) polls for the result
 //   GET  /api/bridge-ai/:uuid/status            phone (Bearer) -> {paired, desktopOnline}
+//   POST /api/bridge-ai/:uuid/unpair            phone (Bearer) revokes the session
 //
 // Tests live in `__tests__/bridgeAiRelayHandler.test.ts`; the handler is driven
 // through its public `handle(req, res, url)` entry point.
@@ -90,7 +91,7 @@ interface RateBucket {
   count: number;
 }
 
-type RateGroup = 'register' | 'claim' | 'poll' | 'respond' | 'forward' | 'result' | 'status' | 'other';
+type RateGroup = 'register' | 'claim' | 'poll' | 'respond' | 'forward' | 'result' | 'status' | 'unpair' | 'other';
 
 interface AiRequestEntry {
   requestId: string;
@@ -104,6 +105,12 @@ interface AiRequestEntry {
   consumedAt: number | undefined;
 }
 
+interface RelayE2eeClaim {
+  alg: string;
+  phonePub: string;
+  proof: string;
+}
+
 interface RelaySession {
   uuid: string;
   pairTokenHash: string | null;
@@ -113,6 +120,11 @@ interface RelaySession {
   paired: boolean;
   /** One-shot flag so the desktop's first poll after a claim learns it paired. */
   pairedSignal: boolean;
+  /** v2 desktop QR sessions require an E2EE claim before the pair token can be burned. */
+  e2eeRequired: boolean;
+  e2eeAlg: string | undefined;
+  /** Optional phone public key + QR proof for v2 end-to-end encrypted payload sessions. */
+  e2eeClaim: RelayE2eeClaim | undefined;
   inbox: AiRequestEntry[];
   lastDesktopPollAt: number;
   createdAt: number;
@@ -328,7 +340,13 @@ export function createBridgeAiRelayHandler(options: BridgeAiRelayOptions = {}): 
     const body = (await readJsonBody(req, SMALL_BODY_BYTES)) as Record<string, unknown>;
     const pairToken = trimmedString(body.pairToken);
     const bridgeSecret = trimmedString(body.bridgeSecret);
+    const e2eeRequired = body.e2eeRequired === true;
+    const e2eeAlg = trimmedString(body.e2eeAlg);
     if (pairToken.length < MIN_SECRET_LEN || bridgeSecret.length < MIN_SECRET_LEN) {
+      writeJson(res, 400, { error: 'invalid_register_payload' });
+      return true;
+    }
+    if (e2eeAlg.length > 80) {
       writeJson(res, 400, { error: 'invalid_register_payload' });
       return true;
     }
@@ -343,6 +361,9 @@ export function createBridgeAiRelayHandler(options: BridgeAiRelayOptions = {}): 
       }
       existing.pairTokenHash = sha256(pairToken);
       existing.pairTokenExpiresAt = now + pairTokenTtlMs;
+      existing.e2eeRequired = e2eeRequired;
+      existing.e2eeAlg = e2eeAlg || undefined;
+      existing.e2eeClaim = undefined;
       existing.lastSeenAt = now;
       writeJson(res, 200, { ok: true });
       return true;
@@ -365,6 +386,9 @@ export function createBridgeAiRelayHandler(options: BridgeAiRelayOptions = {}): 
       deviceBearerHash: null,
       paired: false,
       pairedSignal: false,
+      e2eeRequired,
+      e2eeAlg: e2eeAlg || undefined,
+      e2eeClaim: undefined,
       inbox: [],
       lastDesktopPollAt: 0,
       createdAt: now,
@@ -390,12 +414,18 @@ export function createBridgeAiRelayHandler(options: BridgeAiRelayOptions = {}): 
       writeJson(res, 403, { error: 'invalid_pair_token' });
       return true;
     }
+    const e2eeClaim = parseE2eeClaim(body.e2ee);
+    if (session.e2eeRequired && !e2eeClaim) {
+      writeJson(res, 400, { error: 'e2ee_required' });
+      return true;
+    }
     const deviceBearer = generateDeviceBearer();
     session.deviceBearerHash = sha256(deviceBearer);
     session.paired = true;
     session.pairedSignal = true;
+    session.e2eeClaim = e2eeClaim;
     session.pairTokenHash = null; // one-time: burn it
-    logRelayEvent({ phase: 'claim', tag: relayTag(session.uuid), status: 'paired' });
+    logRelayEvent({ phase: 'claim', tag: relayTag(session.uuid), status: 'paired', e2ee: Boolean(session.e2eeClaim) });
     writeJson(res, 200, { status: 'paired', deviceBearer });
     return true;
   }
@@ -422,6 +452,7 @@ export function createBridgeAiRelayHandler(options: BridgeAiRelayOptions = {}): 
     writeJson(res, 200, {
       paired: session.paired,
       justPaired: paired,
+      ...(session.e2eeClaim ? { e2eeClaim: session.e2eeClaim } : {}),
       requests: ready.map((e) => ({ requestId: e.requestId, path: e.path, body: e.body })),
     });
     return true;
@@ -486,6 +517,7 @@ export function createBridgeAiRelayHandler(options: BridgeAiRelayOptions = {}): 
     if (action === 'forward' && method === 'POST' && !trailing) return await postForward(req, res, session);
     if (action === 'result' && method === 'GET' && trailing) return getResult(req, res, session, trailing);
     if (action === 'status' && method === 'GET' && !trailing) return getStatus(req, res, session);
+    if (action === 'unpair' && method === 'POST' && !trailing) return postDeviceUnpair(req, res, session);
     writeJson(res, 405, { error: 'method_not_allowed' });
     return true;
   }
@@ -550,6 +582,13 @@ export function createBridgeAiRelayHandler(options: BridgeAiRelayOptions = {}): 
     writeJson(res, 200, { paired: session.paired, desktopOnline });
     return true;
   }
+
+  function postDeviceUnpair(req: IncomingMessage, res: ServerResponse, session: RelaySession): boolean {
+    requireDeviceBearer(req, session);
+    store.delete(session.uuid);
+    writeJson(res, 200, { ok: true });
+    return true;
+  }
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -573,6 +612,7 @@ function aiRateGroup(action: string, method: string, hasTrailing: boolean): Rate
   if (action === 'forward' && method === 'POST') return 'forward';
   if (action === 'result' && method === 'GET' && hasTrailing) return 'result';
   if (action === 'status' && method === 'GET') return 'status';
+  if (action === 'unpair' && method === 'POST') return 'unpair';
   return 'other';
 }
 
@@ -617,6 +657,19 @@ function bearerToken(req: IncomingMessage): string {
 
 function trimmedString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function parseE2eeClaim(value: unknown): RelayE2eeClaim | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const obj = value as Record<string, unknown>;
+  const alg = trimmedString(obj.alg);
+  const phonePub = trimmedString(obj.phonePub);
+  const proof = trimmedString(obj.proof);
+  if (!alg || !phonePub || !proof) return undefined;
+  // Keep this route crypto-agnostic: the relay only stores and forwards the claim. The desktop
+  // verifies alg/proof against the QR-only pair secret, which the relay never receives.
+  if (alg.length > 80 || phonePub.length > 200 || proof.length > 100) return undefined;
+  return { alg, phonePub, proof };
 }
 
 async function readJsonBody(req: IncomingMessage, maxBytes: number): Promise<unknown> {
@@ -695,8 +748,20 @@ function bodyDigest(value: unknown): Record<string, unknown> {
     bytes: Buffer.byteLength(serialized, 'utf8'),
     sha8: createHash('sha256').update(serialized, 'utf8').digest('hex').slice(0, 8),
   };
+  if (isEncryptedEnvelope(value)) {
+    digest.encrypted = true;
+    return digest;
+  }
   if (LOG_RELAY_BODIES) digest.body = redactDeep(value);
   return digest;
+}
+
+function isEncryptedEnvelope(value: unknown): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const e2ee = (value as { e2ee?: unknown }).e2ee;
+  if (!e2ee || typeof e2ee !== 'object') return false;
+  const obj = e2ee as Record<string, unknown>;
+  return obj.v === 2 && obj.alg === 'A256GCM' && typeof obj.nonce === 'string' && typeof obj.ciphertext === 'string';
 }
 
 const SECRET_KEY_PATTERN = /token|secret|bearer|api[_-]?key|authorization|private|seed|mnemonic|passphrase/i;

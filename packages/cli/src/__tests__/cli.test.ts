@@ -1230,6 +1230,65 @@ test('agent-setup configures a subscription connector with no API key', async ()
   }
 });
 
+test('aiconnectors configures connector and opens local Android QR setup', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-aiconnectors-'));
+  const bridge = await startMockBridge([]);
+  const walletHost = await startMockWalletHost();
+  try {
+    const result = await runCliAsync([
+      '--runtime-dir',
+      runtimeDir,
+      '--bridge-url',
+      bridge.url,
+      '--wallet-host-url',
+      walletHost.url,
+      '--token',
+      'test-token',
+      '--render-web-url',
+      'https://agentic-signer.com',
+      'aiconnectors',
+      '--connector',
+      'codex',
+      '--json',
+    ]);
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout) as Record<string, unknown>;
+    assert.equal(payload.configured, true);
+    assert.equal(payload.opened, true);
+    assert.equal(payload.connector, 'codex');
+    assert.equal(payload.bridgeUrl, bridge.url);
+    assert.equal(payload.walletHostUrl, walletHost.url);
+
+    const url = new URL(String(payload.url));
+    assert.equal(url.origin, walletHost.url);
+    assert.equal(url.pathname, '/aiconnectors');
+    assert.equal(url.searchParams.get('bridgeUrl'), bridge.url);
+    assert.equal(url.searchParams.get('token'), 'test-token');
+    assert.equal(url.searchParams.get('connector'), 'codex');
+
+    const sessionKey = bridge.requests.find((request) => request.path === '/bridge/ai/session-key');
+    assert.ok(sessionKey);
+    assert.deepEqual(sessionKey.body, { engine: 'connector', connector: 'codex' });
+  } finally {
+    await bridge.close();
+    await walletHost.close();
+  }
+});
+
+test('aiconnectors rejects unsupported connector names', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-aiconnectors-invalid-'));
+  const result = await runCliAsync([
+    '--runtime-dir',
+    runtimeDir,
+    'aiconnectors',
+    '--connector',
+    'antigravity',
+    '--json',
+  ]);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /codex\|claude\|gemini/);
+});
+
 test('agent-setup custom OpenAI-compatible opts the bridge into a custom base URL', async () => {
   const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-agent-setup-custom-'));
   const envPath = join(runtimeDir, '.env');

@@ -16,6 +16,11 @@ export interface PairingPayload {
   relay: string;
   uuid: string;
   token: string;
+  e2ee?: {
+    alg: string;
+    desktopPub: string;
+    pairSecret: string;
+  };
 }
 
 /** Honest AI-path copy (WS5): never imply a pure-phone subscription path exists. */
@@ -30,7 +35,7 @@ export const AI_PLAN_OPTION_COPY = {
   },
 } as const;
 
-/** Parse a scanned/pasted QR payload: JSON `{ v, relay, uuid, token }` (see bridgePairingClient.ts). */
+/** Parse a scanned/pasted QR payload: JSON `{ v, relay, uuid, token, e2ee? }` (see bridgePairingClient.ts). */
 export function parsePairingPayload(text: string): PairingPayload | null {
   const trimmed = (text ?? '').trim();
   if (!trimmed) return null;
@@ -46,7 +51,21 @@ export function parsePairingPayload(text: string): PairingPayload | null {
   const uuid = typeof obj.uuid === 'string' ? obj.uuid.trim() : '';
   const token = typeof obj.token === 'string' ? obj.token.trim() : '';
   if (!relay || !uuid || !token) return null;
-  return { relay, uuid, token };
+  const version = obj.v === undefined ? 1 : Number(obj.v);
+  if (!Number.isInteger(version) || version < 1) return null;
+  const e2ee = parsePairingE2ee(obj.e2ee);
+  if (version >= 2 && !e2ee) return null;
+  return { relay, uuid, token, ...(e2ee ? { e2ee } : {}) };
+}
+
+function parsePairingE2ee(value: unknown): PairingPayload['e2ee'] | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const obj = value as Record<string, unknown>;
+  const alg = typeof obj.alg === 'string' ? obj.alg.trim() : '';
+  const desktopPub = typeof obj.desktopPub === 'string' ? obj.desktopPub.trim() : '';
+  const pairSecret = typeof obj.pairSecret === 'string' ? obj.pairSecret.trim() : '';
+  if (!alg || !desktopPub || !pairSecret) return undefined;
+  return { alg, desktopPub, pairSecret };
 }
 
 /** Correlation tag: first 8 hex of sha256(uuid). Best-effort (returns '' if SubtleCrypto absent). */
