@@ -9,10 +9,13 @@ import {
 describe('aiConnectorsCommand', () => {
   it('builds the hosted Android connector setup command', () => {
     expect(aiConnectorsCommand('codex')).toBe(
-      'npm exec @solana-agent-wallet-adapter/cli -- aiconnectors --connector codex',
+      'npm exec --yes --package @solana-agent-wallet-adapter/cli -- solana-agent-wallet aiconnectors --connector codex',
     );
     expect(aiConnectorsCommand('claude')).toBe(
-      'npm exec @solana-agent-wallet-adapter/cli -- aiconnectors --connector claude',
+      'npm exec --yes --package @solana-agent-wallet-adapter/cli -- solana-agent-wallet aiconnectors --connector claude',
+    );
+    expect(aiConnectorsCommand('gemini')).toBe(
+      'npm exec --yes --package @solana-agent-wallet-adapter/cli -- solana-agent-wallet aiconnectors --connector gemini',
     );
   });
 });

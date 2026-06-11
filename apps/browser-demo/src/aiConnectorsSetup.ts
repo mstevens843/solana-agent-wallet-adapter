@@ -1,7 +1,7 @@
 import { aiConnectorPreset, type AiConnector, type BridgeAiStatus } from './planner.js';
 
 export const AI_CONNECTORS_DEFAULT_COMMAND =
-  'npm exec @solana-agent-wallet-adapter/cli -- aiconnectors --connector codex';
+  'npm exec --yes --package @solana-agent-wallet-adapter/cli -- solana-agent-wallet aiconnectors --connector codex';
 
 export type AiConnectorsReadinessStatus =
   | 'missing-credentials'
@@ -33,7 +33,7 @@ export function normalizeAiConnectorsConnector(value: string | null | undefined)
 export function aiConnectorsCommand(connector: AiConnector): string {
   return connector === 'codex'
     ? AI_CONNECTORS_DEFAULT_COMMAND
-    : `npm exec @solana-agent-wallet-adapter/cli -- aiconnectors --connector ${connector}`;
+    : `npm exec --yes --package @solana-agent-wallet-adapter/cli -- solana-agent-wallet aiconnectors --connector ${connector}`;
 }
 
 export function aiConnectorsReadinessFromBridgeStatus(input: {

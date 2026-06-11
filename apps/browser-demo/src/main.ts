@@ -336,6 +336,12 @@ import {
   visibleMobileAiPathModes,
 } from './aiPathPolicy.js';
 import {
+  shouldApplyMobileRailBodyDataset,
+  shouldClearActiveMobileRailSheet,
+  shouldResetAiReviewSetupTabOnMobileRailOpen,
+  shouldRefreshDeviceAgentStatusForMobileRailOpen,
+} from './mobileRailSheetPolicy.js';
+import {
   phonePairingEnabled,
   unpairPhone,
   readPhonePairStatus,
@@ -3887,6 +3893,8 @@ let mobileRailSheetController: AbortController | null = null;
 let expandNoteSheetController: AbortController | null = null;
 let walletBalanceOverlayController: AbortController | null = null;
 let planConnectorPairingPanelCleanup: (() => void) | null = null;
+let mobileRailDeviceAgentStatusRefresh: Promise<DeviceAgentStatus> | null = null;
+let suppressMobileRailSheetEnterAnimation = false;
 let systemHealthTimer: number | null = null;
 let systemHealthRunController: AbortController | null = null;
 const SYSTEM_HEALTH_INTERVAL_MS = 30_000;
@@ -8981,7 +8989,12 @@ function render(): void {
     resetAiConnectorsPairingState();
     resetAiConnectorsReadinessState();
   }
-  if (state.activeMobileRailSheet && (route !== '/app' || !isMobileAppViewport() || state.activeTab !== 'overview')) {
+  if (shouldClearActiveMobileRailSheet({
+    activeTab: state.activeTab,
+    mobileViewport: isMobileAppViewport(),
+    route,
+    sheet: state.activeMobileRailSheet,
+  })) {
     state.activeMobileRailSheet = null;
   }
   if (state.activeExpandNoteField && !isMobileAppViewport()) {
@@ -8996,8 +9009,17 @@ function render(): void {
   closeMobileRailSheetInteractions();
   closeExpandNoteSheetInteractions();
   if (typeof document !== 'undefined' && document.body) {
-    if (route === '/app' && isMobileAppViewport() && state.activeMobileRailSheet) {
-      document.body.dataset.mobileRailSheet = state.activeMobileRailSheet;
+    const activeMobileRailSheet = state.activeMobileRailSheet;
+    if (
+      activeMobileRailSheet &&
+      shouldApplyMobileRailBodyDataset({
+        activeTab: state.activeTab,
+        mobileViewport: isMobileAppViewport(),
+        route,
+        sheet: activeMobileRailSheet,
+      })
+    ) {
+      document.body.dataset.mobileRailSheet = activeMobileRailSheet;
     } else {
       delete document.body.dataset.mobileRailSheet;
     }
@@ -9032,6 +9054,7 @@ function render(): void {
   scheduleInboxSwapQuoteHydration();
   scheduleVisibleTokenMarketHydration();
   scheduleReleaseDownloadHydration();
+  suppressMobileRailSheetEnterAnimation = false;
 }
 
 interface PendingSpendNavigation {
@@ -10233,13 +10256,45 @@ let aiConnectorsReadinessRequestId = 0;
 let aiConnectorsPairingState: {
   status: AiConnectorsPairingStatus;
   message: string;
+  pairingCode: string;
   qrDataUrl: string;
 } = {
   status: 'idle',
   message: '',
+  pairingCode: '',
   qrDataUrl: '',
 };
 let aiConnectorsPairingPollTimer: number | null = null;
+
+const PLAN_CONNECTOR_CHOICES: AiConnector[] = ['codex', 'claude', 'gemini'];
+
+function planConnectorOptions(): SelectPickerOption[] {
+  return PLAN_CONNECTOR_CHOICES.map((connector) => {
+    const preset = aiConnectorPreset(connector);
+    return {
+      value: connector,
+      label: preset.label,
+      detail: preset.billingNote,
+    };
+  });
+}
+
+function planConnectorSelectPicker(input: {
+  id: string;
+  value: AiConnector;
+  attrs: Record<string, string | boolean | undefined>;
+  disabled?: boolean;
+  menuPlacement?: SelectPickerPlacement;
+}): string {
+  return selectPicker({
+    id: input.id,
+    value: input.value,
+    options: planConnectorOptions(),
+    attrs: input.attrs,
+    disabled: input.disabled,
+    menuPlacement: input.menuPlacement,
+  });
+}
 
 function aiConnectorsPage(): string {
   const connector = aiConnectorsRouteConnector();
@@ -10274,6 +10329,16 @@ function aiConnectorsPage(): string {
               and signed in; the local connector bridge keeps running in the background after the command opens this page.
             </p>
           </div>
+          <label class="field compact ai-connectors-connector-field">
+            <span>Plan connector</span>
+            ${planConnectorSelectPicker({
+              id: 'aiConnectorsConnector',
+              value: connector,
+              attrs: { 'data-ai-connectors-control': 'connector' },
+              disabled: aiConnectorsPairingState.status === 'starting' || aiConnectorsPairingState.status === 'waiting',
+              menuPlacement: 'down',
+            })}
+          </label>
           ${runtimeCommandRow('Lightweight connector', command, 'Copy command')}
           <p class="ai-connectors-note">
             A web page cannot directly use your local Codex, Claude, or Gemini login. The lightweight connector runs locally so Agentic can use that signed-in session without installing the full desktop app.
@@ -10338,7 +10403,27 @@ function aiConnectorsQrPanel(readiness: AiConnectorsReadiness): string {
   const stateCopy = aiConnectorsPairingCopy(readiness);
   const qr = aiConnectorsPairingState.qrDataUrl
     ? `<img src="${escapeHtml(aiConnectorsPairingState.qrDataUrl)}" alt="Android pairing QR code" />`
-    : `<div class="ai-connectors-qr-placeholder" aria-hidden="true">QR</div>`;
+    : aiConnectorsPairingState.pairingCode
+      ? `
+        <div class="ai-connectors-qr-fallback">
+          <span>Pairing code ready</span>
+          <strong>Paste fallback</strong>
+          <button
+            type="button"
+            class="utility"
+            data-copy="${escapeHtml(aiConnectorsPairingState.pairingCode)}"
+            data-copy-name="Plan Connector pairing code"
+          >
+            Copy code
+          </button>
+        </div>
+      `
+      : `
+        <div class="ai-connectors-qr-placeholder">
+          <span>QR locked</span>
+          <strong>Not ready</strong>
+        </div>
+      `;
   return `
     <div class="ai-connectors-qr-card ${escapeHtml(aiConnectorsPairingState.status)}">
       <div class="ai-connectors-qr-copy">
@@ -10413,6 +10498,19 @@ function aiConnectorsRouteConnector(): AiConnector {
   } catch {
     return 'codex';
   }
+}
+
+function selectAiConnectorsRouteConnector(connector: AiConnector): void {
+  if (connector === aiConnectorsRouteConnector()) return;
+  stopAiConnectorsPairingPoll();
+  resetAiConnectorsPairingState();
+  resetAiConnectorsReadinessState();
+  if (typeof window !== 'undefined') {
+    const url = new URL(window.location.href);
+    url.searchParams.set('connector', connector);
+    window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+  }
+  render();
 }
 
 function aiConnectorsCanUseLocalBridge(): boolean {
@@ -10558,6 +10656,7 @@ function resetAiConnectorsPairingState(): void {
   aiConnectorsPairingState = {
     status: 'idle',
     message: '',
+    pairingCode: '',
     qrDataUrl: '',
   };
 }
@@ -10575,6 +10674,7 @@ async function runStartAiConnectorsPairing(): Promise<void> {
   aiConnectorsPairingState = {
     status: 'starting',
     message: '',
+    pairingCode: '',
     qrDataUrl: '',
   };
   render();
@@ -10585,11 +10685,20 @@ async function runStartAiConnectorsPairing(): Promise<void> {
     }
     const qrDataUrl = await renderPairingQrDataUrl(pairing.qrPayload);
     if (!qrDataUrl) {
-      throw new Error('The browser could not render the pairing QR. Restart the connector and try again.');
+      aiConnectorsPairingState = {
+        status: 'waiting',
+        message: 'QR image rendering failed. Copy this pairing code and paste it in Agentic Android.',
+        pairingCode: pairing.qrPayload,
+        qrDataUrl: '',
+      };
+      startAiConnectorsPairingPoll();
+      render();
+      return;
     }
     aiConnectorsPairingState = {
       status: 'waiting',
       message: 'Open Agentic Android, choose Plan Connector, and scan this code.',
+      pairingCode: pairing.qrPayload,
       qrDataUrl,
     };
     startAiConnectorsPairingPoll();
@@ -10598,6 +10707,7 @@ async function runStartAiConnectorsPairing(): Promise<void> {
     aiConnectorsPairingState = {
       status: 'error',
       message,
+      pairingCode: '',
       qrDataUrl: '',
     };
     pushToast('error', 'Pairing QR failed', message);
@@ -10649,6 +10759,8 @@ function startAiConnectorsPairingPoll(): void {
             ...aiConnectorsPairingState,
             status: 'expired',
             message: 'The pairing code expired. Start a fresh QR and scan again.',
+            pairingCode: '',
+            qrDataUrl: '',
           };
           render();
         }
@@ -10659,6 +10771,7 @@ function startAiConnectorsPairingPoll(): void {
         aiConnectorsPairingState = {
           status: 'error',
           message: aiConnectorsPairingErrorMessage(err),
+          pairingCode: '',
           qrDataUrl: '',
         };
         render();
@@ -12615,9 +12728,10 @@ function mobileRailBottomSheet(): string {
     : sheet === 'wallet-balances'
       ? walletBalanceSheetBodyHtml()
       : aiSettingsCard('rail');
+  const enterAnimationClass = suppressMobileRailSheetEnterAnimation ? ' mobile-rail-sheet-no-enter' : '';
   return `
-    <div class="mobile-rail-sheet-scrim" data-mobile-rail-sheet-close aria-hidden="true"></div>
-    <aside class="mobile-rail-sheet ${escapeHtml(sheet)}" data-mobile-rail-sheet-root role="dialog" aria-modal="true" aria-labelledby="mobileRailSheetTitle">
+    <div class="mobile-rail-sheet-scrim${enterAnimationClass}" data-mobile-rail-sheet-close aria-hidden="true"></div>
+    <aside class="mobile-rail-sheet ${escapeHtml(sheet)}${enterAnimationClass}" data-mobile-rail-sheet-root role="dialog" aria-modal="true" aria-labelledby="mobileRailSheetTitle">
       <header class="mobile-rail-sheet-header">
         <div>
           <span>${escapeHtml(detail)}</span>
@@ -12636,6 +12750,28 @@ function isMobileRailSheet(value: string | undefined): value is MobileRailSheet 
   return value === 'workspace-storage' || value === 'ai-drafting' || value === 'wallet-balances';
 }
 
+function maybeRefreshDeviceAgentStatusForMobileRailOpen(sheet: MobileRailSheet): void {
+  const refreshInFlight = state.deviceAgentStatusLoading || Boolean(mobileRailDeviceAgentStatusRefresh);
+  if (!shouldRefreshDeviceAgentStatusForMobileRailOpen({
+    aiMode: state.aiSettings.mode,
+    refreshInFlight,
+    setupTab: state.aiReviewSetupTab,
+    sheet,
+  })) {
+    return;
+  }
+  state.deviceAgentStatusLoading = true;
+  const refresh = refreshDeviceAgentStatus(false);
+  mobileRailDeviceAgentStatusRefresh = refresh;
+  void refresh.finally(() => {
+    if (mobileRailDeviceAgentStatusRefresh === refresh) {
+      mobileRailDeviceAgentStatusRefresh = null;
+      state.deviceAgentStatusLoading = false;
+      render();
+    }
+  });
+}
+
 function openMobileRailSheet(sheet: MobileRailSheet): void {
   state.activeMobileRailSheet = sheet;
   state.error = '';
@@ -12643,13 +12779,7 @@ function openMobileRailSheet(sheet: MobileRailSheet): void {
     startWalletBalanceFullLoad(false, { openOverlay: false });
     return;
   }
-  if (sheet === 'ai-drafting' && state.aiSettings.mode === 'device-agent') {
-    state.deviceAgentStatusLoading = true;
-    void refreshDeviceAgentStatus(false).finally(() => {
-      state.deviceAgentStatusLoading = false;
-      render();
-    });
-  }
+  maybeRefreshDeviceAgentStatusForMobileRailOpen(sheet);
   render();
 }
 
@@ -12657,6 +12787,12 @@ function openPlanConnectorSetupSheet(): void {
   state.aiReviewSetupTab = 'plan-connector';
   state.androidAiRouteTab = 'plan-connector';
   state.androidAiInfoTab = 'plan-connector';
+  if (state.activeMobileRailSheet === 'ai-drafting') {
+    state.error = '';
+    suppressMobileRailSheetEnterAnimation = true;
+    render();
+    return;
+  }
   openMobileRailSheet('ai-drafting');
 }
 
@@ -17432,6 +17568,7 @@ function aiReviewSetupTabs(): string {
 function planConnectorSheetPanel(): string {
   const paired = Boolean(state.aiSettings.pairedBridge);
   const available = phonePairingAvailable();
+  const connector = preferredPlanConnector();
   const command = planConnectorCommand();
   const connectedBlock = paired
     ? `
@@ -17468,6 +17605,16 @@ function planConnectorSheetPanel(): string {
         <div class="plan-connector-step command">
           <span>2</span>
           <p>For local testing, run the connector command and keep that terminal open.</p>
+          <label class="field compact plan-connector-command-picker">
+            <span>Computer AI login</span>
+            ${planConnectorSelectPicker({
+              id: 'planConnectorSheetConnector',
+              value: connector,
+              attrs: { 'data-ai-control': 'plan-connector-connector' },
+              disabled: state.busy,
+              menuPlacement: 'down',
+            })}
+          </label>
           <div class="bridge-command-row plan-connector-command">
             <code>${escapeHtml(command)}</code>
             <button type="button" data-copy="${escapeHtml(command)}" data-copy-name="Plan Connector command">Copy</button>
@@ -25532,11 +25679,19 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-ai-review-setup-tab]')) {
-    button.addEventListener('click', () => {
+    button.addEventListener('pointerdown', (event) => {
+      event.stopPropagation();
+    });
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
       const tab = button.dataset.aiReviewSetupTab as AiReviewSetupTab | undefined;
       if (tab !== 'api-key' && tab !== 'plan-connector') return;
       if (state.aiReviewSetupTab === tab) return;
       state.aiReviewSetupTab = tab;
+      if (state.activeMobileRailSheet === 'ai-drafting') {
+        suppressMobileRailSheetEnterAnimation = true;
+      }
       render();
     });
   }
@@ -26295,6 +26450,22 @@ function bind(): void {
     });
   }
 
+  for (const control of document.querySelectorAll<HTMLSelectElement>('[data-ai-control="plan-connector-connector"]')) {
+    control.addEventListener('change', (event) => {
+      const connector = normalizeWebConnector((event.currentTarget as HTMLSelectElement).value);
+      if (!connector) {
+        render();
+        return;
+      }
+      state.aiSettings.connector = connector;
+      savePersistedState();
+      if (state.activeMobileRailSheet === 'ai-drafting') {
+        suppressMobileRailSheetEnterAnimation = true;
+      }
+      render();
+    });
+  }
+
   for (const control of document.querySelectorAll<HTMLSelectElement>('[data-ai-control="device-agent-secret-store-mode"]')) {
     control.addEventListener('change', (event) => {
       const mode = (event.currentTarget as HTMLSelectElement).value;
@@ -26741,6 +26912,17 @@ function bind(): void {
         pushToast('error', 'Copy failed', message);
       }
       render();
+    });
+  }
+
+  for (const control of document.querySelectorAll<HTMLSelectElement>('[data-ai-connectors-control="connector"]')) {
+    control.addEventListener('change', (event) => {
+      const connector = normalizeWebConnector((event.currentTarget as HTMLSelectElement).value);
+      if (!connector) {
+        render();
+        return;
+      }
+      selectAiConnectorsRouteConnector(connector);
     });
   }
 
@@ -27771,10 +27953,15 @@ function closePreferencesMobilePickerInteractions(): void {
 
 function bindMobileRailSheet(): void {
   for (const trigger of document.querySelectorAll<HTMLButtonElement>('[data-mobile-rail-sheet]')) {
-    trigger.addEventListener('click', () => {
+    trigger.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
       const sheet = trigger.dataset.mobileRailSheet;
       if (!isMobileRailSheet(sheet)) return;
-      if (sheet === 'ai-drafting') {
+      if (shouldResetAiReviewSetupTabOnMobileRailOpen({
+        currentSheet: state.activeMobileRailSheet,
+        nextSheet: sheet,
+      })) {
         state.aiReviewSetupTab = 'api-key';
       }
       openMobileRailSheet(sheet);
@@ -27783,12 +27970,21 @@ function bindMobileRailSheet(): void {
 
   const root = document.querySelector<HTMLElement>('[data-mobile-rail-sheet-root]');
   if (!root) return;
-  for (const closeControl of document.querySelectorAll<HTMLElement>('[data-mobile-rail-sheet-close]')) {
-    closeControl.addEventListener('click', closeMobileRailSheet);
-  }
-
   mobileRailSheetController = new AbortController();
   const { signal } = mobileRailSheetController;
+  root.addEventListener('pointerdown', (event) => {
+    event.stopPropagation();
+  }, { signal });
+  root.addEventListener('click', (event) => {
+    event.stopPropagation();
+  }, { signal });
+  for (const closeControl of document.querySelectorAll<HTMLElement>('[data-mobile-rail-sheet-close]')) {
+    closeControl.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      closeMobileRailSheet();
+    }, { signal });
+  }
   window.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
     event.preventDefault();
@@ -28255,14 +28451,9 @@ async function runFirstRunAction(action: FirstRunActionId): Promise<void> {
       state.commandCenterView = 'ai';
       state.aiSettingsPanelOpen = true;
       if (isMobileAppViewport()) {
+        state.aiReviewSetupTab = 'api-key';
         state.activeMobileRailSheet = 'ai-drafting';
-      }
-      if (state.aiSettings.mode === 'device-agent') {
-        state.deviceAgentStatusLoading = true;
-        void refreshDeviceAgentStatus(false).finally(() => {
-          state.deviceAgentStatusLoading = false;
-          render();
-        });
+        maybeRefreshDeviceAgentStatusForMobileRailOpen('ai-drafting');
       }
       state.generatedPlanAuditId = '';
       state.error = '';

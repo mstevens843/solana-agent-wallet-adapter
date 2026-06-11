@@ -2639,6 +2639,14 @@ code {
   padding: 12px 14px;
 }
 
+.ai-connectors-connector-field {
+  max-width: 440px;
+}
+
+.ai-connectors-connector-field .select-picker-menu {
+  z-index: 30;
+}
+
 .ai-connectors-status-card {
   align-items: center;
   background: rgba(10, 12, 12, 0.62);
@@ -2753,18 +2761,53 @@ code {
 
 .ai-connectors-qr-placeholder {
   align-items: center;
-  background:
-    linear-gradient(90deg, rgba(5, 7, 6, 0.08) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(5, 7, 6, 0.08) 1px, transparent 1px);
-  background-size: 16px 16px;
-  color: rgba(5, 7, 6, 0.45);
-  display: flex;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 1.1rem;
+  background: rgba(7, 13, 11, 0.94);
+  border: 1px solid rgba(224, 230, 226, 0.12);
+  color: rgba(214, 225, 220, 0.72);
+  display: grid;
+  font-size: 0.72rem;
   font-weight: 860;
+  gap: 6px;
   height: 100%;
   justify-content: center;
+  line-height: 1.2;
+  padding: 14px;
+  text-align: center;
+  text-transform: uppercase;
   width: 100%;
+}
+
+.ai-connectors-qr-placeholder strong {
+  color: var(--text);
+  font-size: 0.9rem;
+  text-transform: none;
+}
+
+.ai-connectors-qr-fallback {
+  align-items: center;
+  background: rgba(7, 13, 11, 0.94);
+  border: 1px solid rgba(139, 205, 170, 0.18);
+  color: rgba(214, 225, 220, 0.78);
+  display: grid;
+  gap: 8px;
+  height: 100%;
+  justify-content: stretch;
+  padding: 14px;
+  text-align: center;
+  width: 100%;
+}
+
+.ai-connectors-qr-fallback span {
+  color: var(--accent-2);
+  font-size: 0.68rem;
+  font-weight: 860;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ai-connectors-qr-fallback strong {
+  color: var(--text);
+  font-size: 0.92rem;
 }
 
 .ai-connectors-qr-actions {
@@ -15490,6 +15533,16 @@ button.danger:hover:not(:disabled) {
   grid-column: 2;
   margin-top: 0;
   min-width: 0;
+}
+
+.plan-connector-command-picker {
+  grid-column: 2;
+  margin-top: 4px;
+  min-width: 0;
+}
+
+.plan-connector-command-picker .select-picker-menu {
+  z-index: 370;
 }
 
 .plan-connector-command code {
@@ -29102,6 +29155,11 @@ button.danger:hover:not(:disabled) {
 
   .route-app .mobile-rail-sheet.wallet-balances {
     height: min(62dvh, 540px);
+  }
+
+  .route-app .mobile-rail-sheet.mobile-rail-sheet-no-enter,
+  .route-app .mobile-rail-sheet-scrim.mobile-rail-sheet-no-enter {
+    animation: none;
   }
 
   .route-app .mobile-rail-sheet.wallet-balances .wallet-balance-row {

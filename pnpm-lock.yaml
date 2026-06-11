@@ -285,10 +285,10 @@ importers:
       '@inquirer/prompts':
         specifier: ^7.4.0
         version: 7.10.1(@types/node@22.19.17)
+    devDependencies:
       '@solana-agent-wallet-adapter/core':
         specifier: workspace:*
         version: link:../core
-    devDependencies:
       '@solana-agent-wallet-adapter/mcp-server':
         specifier: workspace:*
         version: link:../mcp-server

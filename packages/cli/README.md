@@ -29,7 +29,7 @@ the key for Local Bridge AI or Hosted BYOK. Use `solana-agent-wallet agent-disco
 Android connector QR setup without the desktop app:
 
 ```sh
-npm exec @solana-agent-wallet-adapter/cli -- aiconnectors --connector codex
+npm exec --yes --package @solana-agent-wallet-adapter/cli -- solana-agent-wallet aiconnectors --connector codex
 ```
 
 ## Standalone Downloads
