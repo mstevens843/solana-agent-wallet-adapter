@@ -56,6 +56,6 @@
     "@solana-agent-wallet-adapter/workflow": "workspace:*",
     "@yao-pkg/pkg": "^6.19.0",
     "esbuild": "^0.25.12",
-    "typescript": "^5.6.0"
+    "typescript": "^6.0.3"
   }
 }
