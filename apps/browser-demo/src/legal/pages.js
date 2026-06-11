@@ -19,7 +19,7 @@ export function privacyPage() {
           <li><strong>No private keys:</strong> Agentic does not ask for, collect, store, transmit, recover, or custody seed phrases, private keys, or wallet recovery credentials.</li>
           <li><strong>No hosted account required:</strong> the current public app does not require an Agentic account.</li>
           <li><strong>Local-first runtime:</strong> CLI, desktop, bridge settings, approval queues, bridge tokens, Android MWA authorization cache, and app logs are designed to stay on your device unless you choose to send information to us for support or connect them to third-party services.</li>
-          <li><strong>Android permissions:</strong> the Android app currently requests Internet access and foreground data-sync service permissions for wallet approval and bridge polling. It does not request camera, microphone, contacts, SMS, phone, precise location, health, calendar, or file-system permissions.</li>
+          <li><strong>Android permissions:</strong> the Android app currently requests Internet access, foreground data-sync service permissions for wallet approval and bridge polling, and optional camera access for Plan Connector QR pairing. It does not request microphone, contacts, SMS, phone, precise location, health, calendar, or file-system permissions.</li>
           <li><strong>No ad sale:</strong> we do not sell personal information and do not share it for cross-context behavioral advertising.</li>
           <li><strong>Public blockchain:</strong> wallet addresses, transaction IDs, signatures, balances, token activity, timing, and other on-chain data may be public, permanent, and outside our control.</li>
         </ul>

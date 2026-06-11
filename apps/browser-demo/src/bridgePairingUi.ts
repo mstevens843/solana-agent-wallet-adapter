@@ -21,6 +21,27 @@ import {
 } from './bridgePairing.js';
 import { logDeviceAgentDiag } from './deviceAgent/runtime/diagnosticLog.js';
 
+interface NativeQrScanResult {
+  ok?: boolean;
+  rawValue?: string;
+  error?: string;
+}
+
+interface NativeQrScannerPending {
+  resolve: (value: string) => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+interface NativeQrScannerCallbackBridge {
+  resolve(requestId: string, envelope: NativeQrScanResult): void;
+  reject(requestId: string, envelope: NativeQrScanResult): void;
+}
+
+const NATIVE_QR_SCAN_TIMEOUT_MS = 120_000;
+const nativeQrScannerPending = new Map<string, NativeQrScannerPending>();
+let nativeQrScannerNonce = 0;
+
 // The single close() of the currently-open modal — runs its registered cleanup (poll timers, camera
 // stream) so opening another modal or any close path never leaks them.
 let activeClose: (() => void) | null = null;
@@ -229,6 +250,7 @@ export function mountPhonePairingPanel(
       ?? 'On your AI-connected computer, open the Agentic connector QR page. Then scan that QR here or paste the pairing code.';
   const video = document.createElement('video');
   video.setAttribute('playsinline', 'true');
+  video.setAttribute('autoplay', 'true');
   video.muted = true;
   video.style.cssText = 'width:100%;border-radius:10px;margin:12px 0;display:none;background:#000;max-height:260px;';
   const scanBtn = makeButton(options.scanLabel ?? 'Scan computer QR');
@@ -292,6 +314,29 @@ export function mountPhonePairingPanel(
   });
 
   scanBtn.addEventListener('click', async () => {
+    if (deps.bridge?.bridgeScanPairingQr) {
+      scanBtn.disabled = true;
+      status.textContent = 'Opening camera…';
+      status.style.color = '#bcd3c7';
+      try {
+        const rawValue = await scanPairingQrNative(deps.bridge);
+        const payload = parsePairingPayload(rawValue);
+        if (!payload) {
+          status.textContent = options.invalidCodeText ?? 'That code isn’t valid. Copy the whole pairing code from the computer.';
+          status.style.color = '#ffb27a';
+          return;
+        }
+        void beginPairing(payload);
+      } catch (err) {
+        const code = err instanceof Error ? err.message : String(err);
+        status.textContent = nativeQrScanErrorMessage(code);
+        status.style.color = code === 'cancelled' ? '#bcd3c7' : '#ffb27a';
+      } finally {
+        scanBtn.disabled = false;
+      }
+      return;
+    }
+
     const Detector = (globalThis as Record<string, unknown>).BarcodeDetector as
       | (new (opts?: { formats?: string[] }) => { detect: (src: CanvasImageSource) => Promise<Array<{ rawValue: string }>> })
       | undefined;
@@ -301,9 +346,17 @@ export function mountPhonePairingPanel(
       return;
     }
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+        audio: false,
+      });
       video.srcObject = stream;
       video.style.display = 'block';
+      video.setAttribute('controls', 'false');
       await video.play();
       const detector = new Detector({ formats: ['qr_code'] });
       scanning = true;
@@ -330,6 +383,73 @@ export function mountPhonePairingPanel(
   });
 
   return cleanup;
+}
+
+function scanPairingQrNative(bridge: NativePairBridge): Promise<string> {
+  const fn = bridge.bridgeScanPairingQr;
+  if (!fn) return Promise.reject(new Error('scanner_unavailable'));
+  installNativeQrScannerCallbackBridge();
+  const requestId = `pairing-qr-${Date.now()}-${nativeQrScannerNonce++}`;
+  return new Promise((resolve, reject) => {
+    const timer = globalThis.setTimeout(() => {
+      nativeQrScannerPending.delete(requestId);
+      reject(new Error('timeout'));
+    }, NATIVE_QR_SCAN_TIMEOUT_MS);
+    nativeQrScannerPending.set(requestId, { resolve, reject, timer });
+    try {
+      fn(requestId);
+    } catch (err) {
+      globalThis.clearTimeout(timer);
+      nativeQrScannerPending.delete(requestId);
+      reject(err instanceof Error ? err : new Error(String(err)));
+    }
+  });
+}
+
+function installNativeQrScannerCallbackBridge(): void {
+  const root = globalThis as typeof globalThis & { __agenticAndroidQrScannerBridge?: NativeQrScannerCallbackBridge };
+  if (root.__agenticAndroidQrScannerBridge) return;
+  root.__agenticAndroidQrScannerBridge = {
+    resolve(requestId, envelope) {
+      settleNativeQrScan(requestId, envelope, false);
+    },
+    reject(requestId, envelope) {
+      settleNativeQrScan(requestId, envelope, true);
+    },
+  };
+}
+
+function settleNativeQrScan(requestId: string, envelope: NativeQrScanResult, forceReject: boolean): void {
+  const pending = nativeQrScannerPending.get(requestId);
+  if (!pending) return;
+  nativeQrScannerPending.delete(requestId);
+  globalThis.clearTimeout(pending.timer);
+  const error = typeof envelope?.error === 'string' ? envelope.error : 'scan_failed';
+  if (forceReject || envelope?.ok === false) {
+    pending.reject(new Error(error));
+    return;
+  }
+  const rawValue = typeof envelope?.rawValue === 'string' ? envelope.rawValue.trim() : '';
+  if (!rawValue) {
+    pending.reject(new Error(error));
+    return;
+  }
+  pending.resolve(rawValue);
+}
+
+function nativeQrScanErrorMessage(code: string): string {
+  switch (code) {
+    case 'cancelled':
+      return 'Scanner closed. Scan again or paste the code instead.';
+    case 'permission_denied':
+      return 'Camera permission is off — allow camera access or paste the code instead.';
+    case 'camera_unavailable':
+      return 'No usable camera was found — paste the code instead.';
+    case 'timeout':
+      return 'Scanner timed out. Scan again or paste the code instead.';
+    default:
+      return 'Couldn’t scan the QR — paste the code instead.';
+  }
 }
 
 function makeButton(label: string): HTMLButtonElement {

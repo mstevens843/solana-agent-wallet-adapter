@@ -2818,6 +2818,21 @@ code {
   justify-content: flex-end;
 }
 
+.ai-connectors-pairing-code-action {
+  align-items: end;
+  display: grid;
+  gap: 6px;
+  justify-items: end;
+  max-width: 230px;
+}
+
+.ai-connectors-pairing-code-action span {
+  color: rgba(196, 205, 202, 0.72);
+  font-size: 0.74rem;
+  line-height: 1.25;
+  text-align: right;
+}
+
 .ai-connectors-options {
   display: grid;
   gap: 10px;
@@ -14079,6 +14094,16 @@ button.danger:hover:not(:disabled) {
     justify-content: center;
     width: 100%;
   }
+
+  .ai-connectors-pairing-code-action {
+    align-items: stretch;
+    justify-items: stretch;
+    max-width: none;
+  }
+
+  .ai-connectors-pairing-code-action span {
+    text-align: center;
+  }
 }
 
 @media (max-width: 1240px) {
@@ -15501,7 +15526,8 @@ button.danger:hover:not(:disabled) {
   padding: 10px;
 }
 
-.plan-connector-step > span {
+.plan-connector-step > span,
+.plan-connector-step summary > span {
   align-items: center;
   background: rgba(94, 231, 158, 0.14);
   border: 1px solid rgba(94, 231, 158, 0.28);
@@ -15529,16 +15555,64 @@ button.danger:hover:not(:disabled) {
   overflow-wrap: anywhere;
 }
 
+.plan-connector-step.command.collapsed {
+  display: block;
+  padding: 0;
+}
+
+.plan-connector-step.command.collapsed summary {
+  align-items: start;
+  cursor: pointer;
+  display: grid;
+  gap: 6px 9px;
+  grid-template-columns: 24px minmax(0, 1fr);
+  list-style: none;
+  padding: 10px;
+}
+
+.plan-connector-step.command.collapsed summary::-webkit-details-marker {
+  display: none;
+}
+
+.plan-connector-step.command.collapsed summary::after {
+  color: var(--dim);
+  content: "Expand";
+  font-size: 0.68rem;
+  font-weight: 900;
+  grid-column: 2;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.plan-connector-step.command.collapsed[open] summary::after {
+  content: "Collapse";
+}
+
+.plan-connector-command-body {
+  display: grid;
+  gap: 8px;
+  padding: 0 10px 10px 43px;
+}
+
 .plan-connector-command {
   grid-column: 2;
   margin-top: 0;
   min-width: 0;
 }
 
+.plan-connector-command-body .plan-connector-command {
+  grid-column: auto;
+}
+
 .plan-connector-command-picker {
   grid-column: 2;
   margin-top: 4px;
   min-width: 0;
+}
+
+.plan-connector-command-body .plan-connector-command-picker {
+  grid-column: auto;
+  margin-top: 0;
 }
 
 .plan-connector-command-picker .select-picker-menu {

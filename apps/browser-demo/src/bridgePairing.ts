@@ -138,6 +138,7 @@ export interface NativePairBridge {
   bridgePair?: (payloadJson: string) => string;
   bridgePairStatus?: () => string;
   bridgeUnpair?: () => string;
+  bridgeScanPairingQr?: (requestId: string) => void;
 }
 
 export interface PhonePairStatus {

@@ -134,6 +134,79 @@ describe('mountPhonePairingPanel', () => {
     cleanup();
   });
 
+  it('uses the native Android QR scanner when the bridge exposes it', async () => {
+    vi.useFakeTimers();
+    const document = installFakeDocument();
+    vi.stubGlobal('crypto', {
+      subtle: {
+        digest: vi.fn(async () => new ArrayBuffer(32)),
+      },
+    });
+    const onPaired = vi.fn();
+    let scanRequestId = '';
+    const bridgeScanPairingQr = vi.fn((requestId: string) => {
+      scanRequestId = requestId;
+    });
+    const bridgePair = vi.fn((_json: string) => JSON.stringify({ ok: true, status: 'pairing' }));
+    const bridgePairStatus = vi.fn(() => JSON.stringify({ paired: true, pairing: false, enabled: true, error: null }));
+    const bridge: NativePairBridge = { bridgeScanPairingQr, bridgePair, bridgePairStatus };
+    const container = document.createElement('div');
+    const cleanup = mountPhonePairingPanel(container as unknown as HTMLElement, { bridge, onPaired });
+
+    elementsByTag(container, 'button')[0]!.click();
+    await flushMicrotasks();
+
+    expect(bridgeScanPairingQr).toHaveBeenCalledTimes(1);
+    expect(scanRequestId).toMatch(/^pairing-qr-/);
+
+    const callbackBridge = (globalThis as unknown as {
+      __agenticAndroidQrScannerBridge: {
+        resolve: (requestId: string, envelope: { ok: boolean; rawValue: string }) => void;
+      };
+    }).__agenticAndroidQrScannerBridge;
+    callbackBridge.resolve(scanRequestId, {
+      ok: true,
+      rawValue: JSON.stringify({
+        relay: 'https://agentic-signer.com',
+        uuid: 'uuid-1',
+        token: 'token-1',
+      }),
+    });
+    await flushMicrotasks();
+
+    expect(bridgePair).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1200);
+    expect(bridgePairStatus).toHaveBeenCalled();
+    expect(onPaired).toHaveBeenCalledTimes(1);
+    cleanup();
+  });
+
+  it('keeps paste fallback available when native QR scanner is cancelled', async () => {
+    const document = installFakeDocument();
+    let scanRequestId = '';
+    const bridgeScanPairingQr = vi.fn((requestId: string) => {
+      scanRequestId = requestId;
+    });
+    const container = document.createElement('div');
+    const cleanup = mountPhonePairingPanel(container as unknown as HTMLElement, {
+      bridge: { bridgeScanPairingQr },
+      onPaired: vi.fn(),
+    });
+
+    elementsByTag(container, 'button')[0]!.click();
+    await flushMicrotasks();
+    (globalThis as unknown as {
+      __agenticAndroidQrScannerBridge: {
+        resolve: (requestId: string, envelope: { ok: false; error: string }) => void;
+      };
+    }).__agenticAndroidQrScannerBridge.resolve(scanRequestId, { ok: false, error: 'cancelled' });
+    await flushMicrotasks();
+
+    expect(container.lastElementChild?.textContent).toContain('Scanner closed');
+    expect(elementsByTag(container, 'textarea')[0]).toBeTruthy();
+    cleanup();
+  });
+
   it('pairs through the native bridge and calls onPaired after status confirms', async () => {
     vi.useFakeTimers();
     const document = installFakeDocument();

@@ -57,6 +57,11 @@
             android:theme="@style/AppTheme" />
 
         <activity
+            android:name=".QrScannerActivity"
+            android:exported="false"
+            android:theme="@style/AppTheme" />
+
+        <activity
             android:name=".WebLaunchActivity"
             android:enabled="${agenticWebFallbackEnabled}"
             android:exported="true"

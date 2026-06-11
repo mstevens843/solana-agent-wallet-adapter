@@ -1333,6 +1333,7 @@ interface AgenticAndroidBridge {
   bridgePairStatus?: () => string;
   bridgeUnpair?: () => string;
   bridgeRelayStatus?: () => string;
+  bridgeScanPairingQr?: (requestId: string) => void;
   // Remote config (Phase 1f). Backed by /api/android-config; APK caches + falls back.
   remoteConfigGet?: () => string;
   remoteConfigRefresh?: () => string;
@@ -10401,20 +10402,22 @@ function aiConnectorsReadinessPanel(readiness: AiConnectorsReadiness): string {
 
 function aiConnectorsQrPanel(readiness: AiConnectorsReadiness): string {
   const stateCopy = aiConnectorsPairingCopy(readiness);
+  const pairingCode = aiConnectorsPairingState.pairingCode;
+  const hasQr = Boolean(aiConnectorsPairingState.qrDataUrl);
   const qr = aiConnectorsPairingState.qrDataUrl
     ? `<img src="${escapeHtml(aiConnectorsPairingState.qrDataUrl)}" alt="Android pairing QR code" />`
-    : aiConnectorsPairingState.pairingCode
+    : pairingCode
       ? `
         <div class="ai-connectors-qr-fallback">
           <span>Pairing code ready</span>
-          <strong>Paste fallback</strong>
+          <strong>Pairing code</strong>
           <button
             type="button"
             class="utility"
-            data-copy="${escapeHtml(aiConnectorsPairingState.pairingCode)}"
+            data-copy="${escapeHtml(pairingCode)}"
             data-copy-name="Plan Connector pairing code"
           >
-            Copy code
+            Copy pairing code
           </button>
         </div>
       `
@@ -10435,6 +10438,21 @@ function aiConnectorsQrPanel(readiness: AiConnectorsReadiness): string {
         ${qr}
       </div>
       <div class="ai-connectors-qr-actions">
+        ${hasQr && pairingCode
+          ? `
+            <div class="ai-connectors-pairing-code-action">
+              <span>Use only if Android camera scanning fails.</span>
+              <button
+                type="button"
+                class="utility"
+                data-copy="${escapeHtml(pairingCode)}"
+                data-copy-name="Plan Connector pairing code"
+              >
+                Copy pairing code
+              </button>
+            </div>
+          `
+          : ''}
         <button
           type="button"
           class="primary"
@@ -17602,24 +17620,28 @@ function planConnectorSheetPanel(): string {
           <span>1</span>
           <p>On your AI-connected computer, open <strong>${escapeHtml(PLAN_CONNECTOR_SETUP_URL)}</strong>.</p>
         </div>
-        <div class="plan-connector-step command">
-          <span>2</span>
-          <p>For local testing, run the connector command and keep that terminal open.</p>
-          <label class="field compact plan-connector-command-picker">
-            <span>Computer AI login</span>
-            ${planConnectorSelectPicker({
-              id: 'planConnectorSheetConnector',
-              value: connector,
-              attrs: { 'data-ai-control': 'plan-connector-connector' },
-              disabled: state.busy,
-              menuPlacement: 'down',
-            })}
-          </label>
-          <div class="bridge-command-row plan-connector-command">
-            <code>${escapeHtml(command)}</code>
-            <button type="button" data-copy="${escapeHtml(command)}" data-copy-name="Plan Connector command">Copy</button>
+        <details class="plan-connector-step command collapsed">
+          <summary>
+            <span>2</span>
+            <p>Run connector command and keep terminal open.</p>
+          </summary>
+          <div class="plan-connector-command-body">
+            <label class="field compact plan-connector-command-picker">
+              <span>Computer AI login</span>
+              ${planConnectorSelectPicker({
+                id: 'planConnectorSheetConnector',
+                value: connector,
+                attrs: { 'data-ai-control': 'plan-connector-connector' },
+                disabled: state.busy,
+                menuPlacement: 'down',
+              })}
+            </label>
+            <div class="bridge-command-row plan-connector-command">
+              <code>${escapeHtml(command)}</code>
+              <button type="button" data-copy="${escapeHtml(command)}" data-copy-name="Plan Connector command">Copy</button>
+            </div>
           </div>
-        </div>
+        </details>
         <div class="plan-connector-step">
           <span>3</span>
           <p>Scan the computer QR below, or paste the pairing code from the computer page.</p>
@@ -28008,7 +28030,7 @@ function mountPlanConnectorPairingPanel(): void {
   }, {
     introText: 'Point Android at the QR displayed on your AI-connected computer. The computer must stay awake while planning.',
     scanLabel: 'Scan computer QR',
-    pasteLabel: 'Or paste the computer pairing code:',
+    pasteLabel: 'Camera not working? Paste the pairing code from the computer page:',
     pasteButtonLabel: 'Connect Plan Connector',
     connectedText: '✓ Connected. AI now runs on your computer plan.',
     invalidCodeText: 'That code is not valid. Copy the whole pairing code from the computer connector page.',
