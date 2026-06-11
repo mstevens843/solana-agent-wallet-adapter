@@ -34,7 +34,7 @@
     "@drift-labs/vaults-sdk": "0.11.1",
     "@ellipsis-labs/rise": "0.4.9",
     "@jup-ag/lend": "0.1.9",
-    "@noble/hashes": "^1.4.0",
+    "@noble/hashes": "^2.2.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@pythnetwork/price-service-client": "1.11.0",
     "@solana-agent-wallet-adapter/core": "workspace:*",
