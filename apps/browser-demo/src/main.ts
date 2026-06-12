@@ -18221,8 +18221,19 @@ function planConnectorSheetPanel(): string {
           </div>
         </div>
       `
-    : available
-      ? '<div class="plan-connector-pairing-mount" data-plan-connector-pairing-panel aria-live="polite"></div>'
+    : (available || IS_ANDROID_APP)
+      // TEMP(expose-test): on Android, always mount the pairing panel — even when the native
+      // bridgePairEnabled() flag is off/absent — so the scanner + paste box can be tested over a
+      // Render redeploy on the published store APK. Non-Android surfaces keep the old message.
+      // Revert to the plain `available ?` gate once testing is done.
+      ? `
+        ${available ? '' : `
+        <div class="plan-connector-unavailable" aria-live="polite" style="margin-bottom:8px;">
+          <strong>Test mode — native pairing not detected in this build.</strong>
+          <p>The scanner and paste box are exposed for testing. Pairing may not complete unless this app build includes the connector engine.</p>
+        </div>`}
+        <div class="plan-connector-pairing-mount" data-plan-connector-pairing-panel aria-live="polite"></div>
+      `
       : `
         <div class="plan-connector-unavailable" aria-live="polite">
           <strong>Plan Connector is hidden in this build.</strong>
