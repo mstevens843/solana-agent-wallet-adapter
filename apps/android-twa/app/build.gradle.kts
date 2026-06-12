@@ -212,10 +212,10 @@ if (isReleaseBuild && cloudApiUri.scheme != "https") {
 
 val appVersionCode = propertyOrEnv("AGENTIC_ANDROID_VERSION_CODE")
     ?: propertyOrEnv("agenticVersionCode")
-    ?: "5"
+    ?: "7"
 val appVersionName = propertyOrEnv("AGENTIC_ANDROID_VERSION_NAME")
     ?: propertyOrEnv("agenticVersionName")
-    ?: "1.0.5"
+    ?: "1.0.7"
 val parsedVersionCode = appVersionCode.toIntOrNull()
 if (parsedVersionCode == null || parsedVersionCode <= 0) {
     throw GradleException("AGENTIC_ANDROID_VERSION_CODE must be a positive integer. Current value: $appVersionCode")
@@ -247,6 +247,9 @@ if (isReleaseBuild && requireReleaseSigning && !hasReleaseSigning) {
         "Release Android builds require complete signing config from AGENTIC_ANDROID_* env vars or Android Studio's signing wizard. Missing: ${missingReleaseSigning.joinToString(", ")}",
     )
 }
+
+val bundledWebDistDir = rootProject.layout.projectDirectory.dir("../browser-demo/dist")
+val filteredBundledWebAssetsDir = layout.buildDirectory.dir("generated/filteredBundledWebAssets")
 
 android {
     namespace = "com.agentic.wallet"
@@ -330,7 +333,7 @@ android {
 
     sourceSets {
         getByName("main") {
-            assets.srcDir(rootProject.layout.projectDirectory.dir("../browser-demo/dist"))
+            assets.srcDir(filteredBundledWebAssetsDir)
         }
     }
 
@@ -409,6 +412,16 @@ val verifyBundledWebAssets = tasks.register<Exec>("verifyBundledWebAssets") {
     dependsOn(buildBundledWebAssets)
 }
 
+val syncFilteredBundledWebAssets = tasks.register<Sync>("syncFilteredBundledWebAssets") {
+    dependsOn(verifyBundledWebAssets)
+    from(bundledWebDistDir)
+    into(filteredBundledWebAssetsDir)
+    exclude(
+        "og/**",
+        "**/*.bak",
+    )
+}
+
 buildBundledWebAssets.configure {
     dependsOn(typecheckBundledWebAssets)
 }
@@ -420,7 +433,13 @@ typecheckBundledWebAssets.configure {
 tasks.matching { task ->
     task.name.startsWith("merge") && task.name.endsWith("Assets")
 }.configureEach {
-    dependsOn(verifyBundledWebAssets)
+    dependsOn(syncFilteredBundledWebAssets)
+}
+
+tasks.matching { task ->
+    task.name.contains("LintVital", ignoreCase = true)
+}.configureEach {
+    dependsOn(syncFilteredBundledWebAssets)
 }
 
 dependencies {
