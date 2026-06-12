@@ -3,6 +3,9 @@
   "identifier": "default",
   "description": "Capabilities for the Agentic desktop main window.",
   "windows": ["main"],
+  "remote": {
+    "urls": ["https://agentic-signer.com", "https://agentic-signer.com/*"]
+  },
   "permissions": [
     "core:default",
     "core:window:default",

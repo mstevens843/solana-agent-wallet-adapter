@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-write-env-keys"
+description = "Enables the write_env_keys command without any pre-configured scope."
+commands.allow = ["write_env_keys"]
+
+[[permission]]
+identifier = "deny-write-env-keys"
+description = "Denies the write_env_keys command without any pre-configured scope."
+commands.deny = ["write_env_keys"]

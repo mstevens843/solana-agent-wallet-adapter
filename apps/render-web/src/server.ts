@@ -186,7 +186,11 @@ function setCommonHeaders(req: IncomingMessage, res: ServerResponse): void {
       "font-src 'self' https://fonts.gstatic.com",
       "style-src 'self' https://fonts.googleapis.com 'unsafe-inline'",
       "script-src 'self'",
-      "connect-src 'self' https: wss: http://127.0.0.1:* http://localhost:* http://[::1]:*",
+      // `ipc:` + `http://ipc.localhost` let the Tauri 2 desktop shell — which
+      // live-loads this page from Render — reach the native IPC bridge
+      // (window.__TAURI_INTERNALS__.invoke) for wallet/ledger/bridge commands.
+      // Harmless to browsers (the schemes are inert outside a Tauri webview).
+      "connect-src 'self' https: wss: ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:* http://[::1]:*",
     ].join('; '),
   );
   if (shouldSetStrictTransport(req)) {

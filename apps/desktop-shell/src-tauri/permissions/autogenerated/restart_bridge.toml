@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-restart-bridge"
+description = "Enables the restart_bridge command without any pre-configured scope."
+commands.allow = ["restart_bridge"]
+
+[[permission]]
+identifier = "deny-restart-bridge"
+description = "Denies the restart_bridge command without any pre-configured scope."
+commands.deny = ["restart_bridge"]

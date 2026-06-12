@@ -271,6 +271,7 @@ import {
   type AndroidNativeEnvironment,
   type AndroidNativeRestoreResult,
 } from './androidNative.js';
+import { readBridgeLaunchToken } from './bridgeLaunchToken.js';
 import {
   CLOUD_SESSION_REHYDRATED_EVENT,
   TAURI_DEEP_LINK_EVENT,
@@ -55737,7 +55738,9 @@ function readLaunchParams(): {
 } {
   const params = new URLSearchParams(window.location.search);
   const bridgeUrl = params.get('bridgeUrl')?.trim();
-  const bridgeToken = params.get('token')?.trim();
+  // Token comes from the URL fragment (CLI/desktop launches) or query (legacy /
+  // QR / deeplink); fragments are never sent to a remote wallet-host origin.
+  const bridgeToken = readBridgeLaunchToken(window.location.search, window.location.hash);
   if (bridgeToken) {
     saveSessionBridgeToken(bridgeToken);
   }

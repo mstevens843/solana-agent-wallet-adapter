@@ -211,6 +211,24 @@ enum LaunchCommand {
     },
 }
 
+/// Quick reachability probe for the live Render origin. Returns false when there
+/// is no usable route (offline / DNS failure / connection refused) — the signal
+/// to keep serving the bundled `frontendDist` instead of navigating to the
+/// remote UI. Runs off the main thread so it never blocks startup.
+#[cfg(not(debug_assertions))]
+fn agentic_remote_reachable() -> bool {
+    let addrs = match ("agentic-signer.com", 443).to_socket_addrs() {
+        Ok(addrs) => addrs,
+        Err(_) => return false,
+    };
+    for addr in addrs {
+        if TcpStream::connect_timeout(&addr, Duration::from_secs(2)).is_ok() {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let runtime = SharedRuntime::new(RuntimeState {
@@ -258,6 +276,39 @@ pub fn run() {
                 let urls: Vec<String> = event.urls().iter().map(|u| u.to_string()).collect();
                 let _ = app_handle.emit("agentic://deep-link", urls);
             });
+
+            // Live-load the UI from Render in RELEASE builds so web/UI changes ship
+            // via Render redeploy with no new binary — the desktop counterpart to the
+            // Android/iOS WebView shells. `tauri dev` (debug) keeps loading the local
+            // dev/bundled frontend, so the integrated dev loop is untouched.
+            //
+            // The window's initial content is the bundled `frontendDist`; we only
+            // upgrade to the remote origin after a quick off-thread reachability probe
+            // succeeds. When offline we never navigate, so the user keeps the baked-in
+            // UI instead of a blank page (mirrors the iOS reachability fallback).
+            // Off-thread (not setup-blocking) so cold start stays responsive even
+            // on a slow/flaky network; when online the only visible cost is the
+            // brief reachability probe before the swap to the live UI.
+            #[cfg(not(debug_assertions))]
+            if let Some(window) = app.get_webview_window("main") {
+                thread::spawn(move || {
+                    if agentic_remote_reachable() {
+                        match "https://agentic-signer.com".parse::<Url>() {
+                            Ok(url) => {
+                                if let Err(err) = window.navigate(url) {
+                                    eprintln!(
+                                        "[agentic-desktop] navigate to live UI failed; staying on bundled: {err}"
+                                    );
+                                }
+                            }
+                            Err(err) => {
+                                eprintln!("[agentic-desktop] invalid live UI url: {err}");
+                            }
+                        }
+                    }
+                });
+            }
+
             Ok(())
         })
         .manage(runtime)

@@ -211,7 +211,12 @@ test('runtime bridge token persists across CLI invocations', async () => {
   assert.equal((await readFile(tokenPath, 'utf8')).trim(), token);
 
   const status = JSON.parse(second.stdout) as { walletHostLaunchUrl?: string };
-  assert.equal(new URL(status.walletHostLaunchUrl ?? '').searchParams.get('token'), token);
+  // The bridge token now travels in the URL fragment (never sent to a remote
+  // wallet-host origin / logs); read it back from the hash.
+  assert.equal(
+    new URLSearchParams(new URL(status.walletHostLaunchUrl ?? '').hash.replace(/^#/, '')).get('token'),
+    token,
+  );
 });
 
 test('BRIDGE_TOKEN overrides the runtime bridge token file', async () => {
@@ -222,7 +227,10 @@ test('BRIDGE_TOKEN overrides the runtime bridge token file', async () => {
   );
   assert.equal(result.status, 0, result.stderr);
   const status = JSON.parse(result.stdout) as { walletHostLaunchUrl?: string };
-  assert.equal(new URL(status.walletHostLaunchUrl ?? '').searchParams.get('token'), 'manual-test-token');
+  assert.equal(
+    new URLSearchParams(new URL(status.walletHostLaunchUrl ?? '').hash.replace(/^#/, '')).get('token'),
+    'manual-test-token',
+  );
   await assert.rejects(readFile(join(runtimeDir, 'bridge-token'), 'utf8'), /ENOENT/);
 });
 
@@ -1263,7 +1271,7 @@ test('aiconnectors configures connector and opens local Android QR setup', async
     assert.equal(url.origin, walletHost.url);
     assert.equal(url.pathname, '/aiconnectors');
     assert.equal(url.searchParams.get('bridgeUrl'), bridge.url);
-    assert.equal(url.searchParams.get('token'), 'test-token');
+    assert.equal(new URLSearchParams(url.hash.replace(/^#/, '')).get('token'), 'test-token');
     assert.equal(url.searchParams.get('connector'), 'codex');
 
     const sessionKey = bridge.requests.find((request) => request.path === '/bridge/ai/session-key');

@@ -37,6 +37,11 @@ import {
 } from '@solana-agent-wallet-adapter/workflow';
 
 // v1.0 command modules — added alongside the legacy dispatchers in this file.
+import {
+  pickWalletHostLaunchBase,
+  redactWalletHostLaunchUrl,
+  setWalletHostLaunchToken,
+} from './walletHostLaunch.js';
 import { dispatchDeviceAgent } from './commands/deviceAgent.js';
 import { dispatchPrepareConnector, dispatchConnectorGroup } from './commands/connector.js';
 import { dispatchMarket, dispatchTokens } from './commands/market.js';
@@ -221,6 +226,12 @@ interface GlobalOptions {
   bridgeSessionPath: string;
   walletHostUrl: string;
   walletHostUrlSource: 'default' | 'env' | 'flag';
+  // Resolved base for the OPENED wallet-host URL: the Render-hosted UI when the
+  // host is the default and Render is reachable (so pages auto-update without a
+  // CLI republish), otherwise `walletHostUrl` (local serve / explicit override).
+  // Kept separate from `walletHostUrl` so the local server bind address is
+  // unchanged. Resolved once by resolveWalletHostLaunchBase().
+  walletHostLaunchBase?: string;
   repoRoot: string | null;
   runtimeDir: string;
   envPath: string;
@@ -1979,11 +1990,11 @@ function aiConnectorsCommandConnector(value: string | undefined): AgentConnector
 }
 
 function aiConnectorsLaunchUrl(options: GlobalOptions, connector: AgentConnector): string {
-  const url = new URL(options.walletHostUrl);
+  const url = new URL(options.walletHostLaunchBase ?? options.walletHostUrl);
   url.pathname = '/aiconnectors';
   url.searchParams.set('bridgeUrl', options.bridgeUrl);
-  url.searchParams.set('token', options.token);
   url.searchParams.set('connector', connector);
+  setWalletHostLaunchToken(url, options.token);
   return url.toString();
 }
 
@@ -4929,6 +4940,18 @@ async function ensureBrowserHostForOptions(
   onChild?: (child: ChildProcess) => void,
 ): Promise<WalletHostEnsureResult> {
   const notices: string[] = [];
+
+  // When the default resolves to the Render-hosted UI, the page is served by
+  // Render and reaches the local bridge directly — no local wallet-host server
+  // is needed. The bundled local host stays available as the offline/explicit
+  // fallback (resolveWalletHostLaunchBase returns local when Render is down or
+  // when --wallet-host-url/env is set).
+  const launchBase = await resolveWalletHostLaunchBase(options);
+  if (launchBase !== options.walletHostUrl) {
+    notices.push(`Using the Render-hosted wallet UI (${launchBase}); local bridge handles signing.`);
+    return { reused: false, child: null, notices };
+  }
+
   await recoverWalletHostPortIfNeeded(options, notices);
 
   const reusable = await probeWalletHost(options);
@@ -5762,6 +5785,33 @@ async function isAgenticWalletHostReachable(walletHostUrl: string): Promise<bool
   return (await probeAgenticWalletHost(walletHostUrl)).status === 'reachable';
 }
 
+/**
+ * Decide which origin actually serves the wallet UI we open. Default behaviour:
+ * prefer the Render-hosted UI so its pages auto-update on Render redeploy with no
+ * CLI republish, and fall back to the bundled local host when Render is
+ * unreachable (offline / air-gapped). An explicit `--wallet-host-url` / env value
+ * always wins and is served locally as before. The local *bridge* (signing) is
+ * unaffected either way; the result is cached on `options.walletHostLaunchBase`.
+ */
+async function resolveWalletHostLaunchBase(options: GlobalOptions): Promise<string> {
+  if (options.walletHostLaunchBase) {
+    return options.walletHostLaunchBase;
+  }
+  if (options.walletHostUrlSource !== 'default') {
+    options.walletHostLaunchBase = options.walletHostUrl;
+    return options.walletHostLaunchBase;
+  }
+  const remote = stripTrailingSlash(options.renderWebUrl || DEFAULT_RENDER_WEB_URL);
+  const remoteReachable = /^https?:\/\//i.test(remote) && (await isUrlReachable(remote));
+  options.walletHostLaunchBase = pickWalletHostLaunchBase({
+    source: options.walletHostUrlSource,
+    walletHostUrl: options.walletHostUrl,
+    remote,
+    remoteReachable,
+  });
+  return options.walletHostLaunchBase;
+}
+
 async function probeWalletHost(options: GlobalOptions): Promise<WalletHostProbe> {
   if (walletHostAssetsAvailable(options)) {
     return probeAgenticWalletHost(options.walletHostUrl);
@@ -6262,6 +6312,7 @@ async function fetchWithTimeout(input: URL | string, init: RequestInit, timeoutM
 }
 
 async function openWalletHost(options: GlobalOptions, cli?: CliIntent): Promise<void> {
+  await resolveWalletHostLaunchBase(options);
   await openUrl(walletHostLaunchUrl(options, cli));
 }
 
@@ -6277,10 +6328,10 @@ type CliIntent =
   | { intent: 'sign'; requestId: string; actionId?: never };
 
 function walletHostLaunchUrl(options: GlobalOptions, cli?: CliIntent): string {
-  const url = new URL(options.walletHostUrl);
+  const url = new URL(options.walletHostLaunchBase ?? options.walletHostUrl);
   url.pathname = walletHostLaunchPath(cli);
   url.searchParams.set('bridgeUrl', options.bridgeUrl);
-  url.searchParams.set('token', options.token);
+  setWalletHostLaunchToken(url, options.token);
   if (cli) {
     url.searchParams.set('mode', 'cli');
     url.searchParams.set('intent', cli.intent);
@@ -6314,18 +6365,6 @@ function walletHostPageLabel(cli?: CliIntent): string {
       return 'Agentic Cloud Storage Deletion';
     case 'sign':
       return 'Agentic Proof Signing';
-  }
-}
-
-function redactWalletHostLaunchUrl(raw: string): string {
-  try {
-    const url = new URL(raw);
-    if (url.searchParams.has('token')) {
-      url.searchParams.set('token', 'redacted');
-    }
-    return url.toString();
-  } catch {
-    return raw.replace(/([?&]token=)[^&]+/i, '$1redacted');
   }
 }
 

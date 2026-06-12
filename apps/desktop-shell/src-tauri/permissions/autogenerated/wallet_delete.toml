@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-delete"
+description = "Enables the wallet_delete command without any pre-configured scope."
+commands.allow = ["wallet_delete"]
+
+[[permission]]
+identifier = "deny-wallet-delete"
+description = "Denies the wallet_delete command without any pre-configured scope."
+commands.deny = ["wallet_delete"]

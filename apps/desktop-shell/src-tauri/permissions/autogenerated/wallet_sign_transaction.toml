@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-sign-transaction"
+description = "Enables the wallet_sign_transaction command without any pre-configured scope."
+commands.allow = ["wallet_sign_transaction"]
+
+[[permission]]
+identifier = "deny-wallet-sign-transaction"
+description = "Denies the wallet_sign_transaction command without any pre-configured scope."
+commands.deny = ["wallet_sign_transaction"]

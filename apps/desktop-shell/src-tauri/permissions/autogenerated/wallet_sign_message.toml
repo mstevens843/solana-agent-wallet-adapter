@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-sign-message"
+description = "Enables the wallet_sign_message command without any pre-configured scope."
+commands.allow = ["wallet_sign_message"]
+
+[[permission]]
+identifier = "deny-wallet-sign-message"
+description = "Denies the wallet_sign_message command without any pre-configured scope."
+commands.deny = ["wallet_sign_message"]

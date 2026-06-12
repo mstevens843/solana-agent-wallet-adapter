@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-import"
+description = "Enables the wallet_import command without any pre-configured scope."
+commands.allow = ["wallet_import"]
+
+[[permission]]
+identifier = "deny-wallet-import"
+description = "Denies the wallet_import command without any pre-configured scope."
+commands.deny = ["wallet_import"]

@@ -98,6 +98,10 @@ class MainActivity : FragmentActivity() {
         .takeIf { it.isNotBlank() }
         ?.let { runCatching { Uri.parse(it).host?.lowercase() }.getOrNull() }
     private var didFallback = false
+    // Monotonic timestamp (elapsedRealtime) of the last bundled fallback, so onResume
+    // can retry the live URL after a cooldown instead of stranding the user on the
+    // stale baked-in bundle for the whole session after a transient remote failure.
+    private var fallbackAt = 0L
 
     // Top-frame URL cache for the origin guard. WebView.getUrl() is UI-thread only and
     // throws RuntimeException when called from the WebView's @JavascriptInterface JS
@@ -323,6 +327,7 @@ class MainActivity : FragmentActivity() {
         val host = request.url?.host?.lowercase() ?: return
         if (host != remoteWebHost) return
         didFallback = true
+        fallbackAt = android.os.SystemClock.elapsedRealtime()
         AgentMwaLog.warn(
             "MainActivity",
             "maybeFallbackToBundled",
@@ -346,6 +351,20 @@ class MainActivity : FragmentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // Recover from a transient remote failure: if we fell back to the bundled
+        // (stale) UI but the cooldown has elapsed, retry the live Render URL so the
+        // user isn't stranded on baked-in assets for the rest of the session once
+        // connectivity returns. If the remote is still down, maybeFallbackToBundled
+        // simply falls back again (no churn — gated by cooldown + a foreground event).
+        if (didFallback &&
+            remoteWebUrl.isNotBlank() &&
+            ::webView.isInitialized &&
+            android.os.SystemClock.elapsedRealtime() - fallbackAt >= REMOTE_RETRY_COOLDOWN_MS
+        ) {
+            didFallback = false
+            currentWebViewOrigin.set(remoteWebUrl)
+            webView.loadUrl(remoteWebUrl)
+        }
         // Debounced inside the loader, so onResume → onResume churn doesn't spam the
         // network. Forces a fetch when the app is foregrounded after >60s in background.
         RemoteConfigLoader.refresh(lifecycleScope)
@@ -2376,6 +2395,9 @@ class MainActivity : FragmentActivity() {
         private const val CAMERA_PERMISSION_REQUEST_CODE = 0x0CA3
         private const val LOCAL_APP_HOST = "agentic.local"
         private const val LOCAL_APP_START_URL = "https://agentic.local/"
+        // Minimum gap before a foregrounded app retries the live URL after a
+        // bundled fallback (avoids hammering a flaky remote on rapid resumes).
+        private const val REMOTE_RETRY_COOLDOWN_MS = 60_000L
 
         private fun sha256First8(bytes: ByteArray): String =
             MessageDigest.getInstance("SHA-256")

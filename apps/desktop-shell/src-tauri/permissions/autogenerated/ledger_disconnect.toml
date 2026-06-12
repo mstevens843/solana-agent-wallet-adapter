@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-ledger-disconnect"
+description = "Enables the ledger_disconnect command without any pre-configured scope."
+commands.allow = ["ledger_disconnect"]
+
+[[permission]]
+identifier = "deny-ledger-disconnect"
+description = "Denies the ledger_disconnect command without any pre-configured scope."
+commands.deny = ["ledger_disconnect"]

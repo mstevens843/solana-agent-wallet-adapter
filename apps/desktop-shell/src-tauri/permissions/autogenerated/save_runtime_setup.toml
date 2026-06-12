@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-save-runtime-setup"
+description = "Enables the save_runtime_setup command without any pre-configured scope."
+commands.allow = ["save_runtime_setup"]
+
+[[permission]]
+identifier = "deny-save-runtime-setup"
+description = "Denies the save_runtime_setup command without any pre-configured scope."
+commands.deny = ["save_runtime_setup"]

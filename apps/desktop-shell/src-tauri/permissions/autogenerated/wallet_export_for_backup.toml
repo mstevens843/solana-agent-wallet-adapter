@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-wallet-export-for-backup"
+description = "Enables the wallet_export_for_backup command without any pre-configured scope."
+commands.allow = ["wallet_export_for_backup"]
+
+[[permission]]
+identifier = "deny-wallet-export-for-backup"
+description = "Denies the wallet_export_for_backup command without any pre-configured scope."
+commands.deny = ["wallet_export_for_backup"]
