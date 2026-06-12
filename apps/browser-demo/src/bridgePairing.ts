@@ -16,6 +16,8 @@ export interface PairingPayload {
   relay: string;
   uuid: string;
   token: string;
+  /** Subscription connector the desktop runs (codex/claude/gemini), for provider display on the phone. */
+  connector?: string;
   e2ee?: {
     alg: string;
     desktopPub: string;
@@ -55,7 +57,10 @@ export function parsePairingPayload(text: string): PairingPayload | null {
   if (!Number.isInteger(version) || version < 1) return null;
   const e2ee = parsePairingE2ee(obj.e2ee);
   if (version >= 2 && !e2ee) return null;
-  return { relay, uuid, token, ...(e2ee ? { e2ee } : {}) };
+  const connector = typeof obj.connector === 'string' && ['codex', 'claude', 'gemini'].includes(obj.connector.trim())
+    ? obj.connector.trim()
+    : undefined;
+  return { relay, uuid, token, ...(connector ? { connector } : {}), ...(e2ee ? { e2ee } : {}) };
 }
 
 function parsePairingE2ee(value: unknown): PairingPayload['e2ee'] | undefined {

@@ -20297,6 +20297,12 @@ button.danger:hover:not(:disabled) {
 .route-app .ask-agent-after-draft input {
   accent-color: var(--accent);
   margin: 0;
+  pointer-events: none;
+}
+
+.route-app .ask-agent-after-draft.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .route-app .ask-agent-after-draft .ask-agent-check {
@@ -29050,17 +29056,13 @@ button.danger:hover:not(:disabled) {
   .route-app .check-toolbar-create-another { display: none !important; }
   .route-app .status-detail-desktop-only { display: none !important; }
 
-  /* Repeat Payments: hide the top-section Refresh button on mobile; small
-     Refresh button lives inline with the Repeat type row instead. Make the
-     Repeat type label compact and squeeze refresh onto the same row as the
-     scheduled-transfer dropdown. */
-  .route-app .refresh-button-desktop-only { display: none !important; }
-
+  /* Repeat Payments: make the Repeat type label compact and let the
+     scheduled-transfer dropdown fill the row. */
   .route-app .recurring-method-control {
     align-items: center;
     display: grid !important;
     gap: 8px !important;
-    grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto !important;
+    grid-template-columns: minmax(0, auto) minmax(0, 1fr) !important;
     justify-content: stretch !important;
     justify-self: stretch !important;
     margin: 0 !important;
@@ -29085,14 +29087,6 @@ button.danger:hover:not(:disabled) {
   .route-app .recurring-method-control .select-picker-shell {
     min-width: 0;
     width: 100%;
-  }
-
-  .route-app .recurring-inline-refresh {
-    flex: 0 0 auto;
-    font-size: 0.74rem;
-    min-height: 34px;
-    padding: 0 10px;
-    white-space: nowrap;
   }
 
   /* Right-align toolbar actions (Refresh, Delete All, filter pickers) inside
@@ -29251,7 +29245,7 @@ button.danger:hover:not(:disabled) {
   }
 
   .route-app .android-bottom-tab-dock .workspace-bottom-tab:hover:not(:disabled),
-  .route-app .android-bottom-tab-dock .workspace-bottom-more[open] > .workspace-bottom-tab {
+  .route-app .android-bottom-tab-dock .workspace-bottom-more.open > .workspace-bottom-tab {
     border-color: rgba(224, 230, 226, 0.16);
     color: #f2fff7;
   }
@@ -29288,7 +29282,7 @@ button.danger:hover:not(:disabled) {
     transform: translateY(-1px);
   }
 
-  .route-app .android-bottom-tab-dock .workspace-bottom-more[open] .workspace-more-caret {
+  .route-app .android-bottom-tab-dock .workspace-bottom-more.open .workspace-more-caret {
     transform: translateY(-1px) rotate(180deg);
   }
 
@@ -29313,6 +29307,12 @@ button.danger:hover:not(:disabled) {
     top: auto !important;
     width: 100% !important;
     z-index: 260;
+  }
+
+  /* Higher specificity than the base rule above so the `hidden` attribute actually
+     collapses the (now non-<details>) drop-up menu when state.moreMenuOpen is false. */
+  .route-app .android-bottom-tab-dock .workspace-bottom-more-menu[hidden] {
+    display: none !important;
   }
 
   .route-app .android-bottom-tab-dock .workspace-bottom-more-menu .workspace-more-item {

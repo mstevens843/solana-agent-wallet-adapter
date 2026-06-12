@@ -131,6 +131,9 @@ export function createBridgeServer(options: CreateBridgeServerOptions): BridgeSe
   // bridge stays loopback-bound; only this outbound channel reaches the relay.
   const pairingController = new BridgePairingController({
     dispatch: createBridgeAiDispatch(aiPlanner),
+    // Advertise the configured subscription connector in the QR so the paired phone can show the
+    // real provider (Codex/Claude/Gemini) instead of a generic "Device Agent" label.
+    getConnector: () => aiPlanner.status().connector,
   });
   const url = `http://${host}:${port}/`;
   backend.setApprovalBaseUrl(url);

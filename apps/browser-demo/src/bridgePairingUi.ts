@@ -215,8 +215,9 @@ export async function openDesktopPairingModal(deps: DesktopPairingDeps): Promise
 
 export interface PhonePairingDeps {
   bridge: NativePairBridge | undefined;
-  /** Called once the phone reports paired — wire this to configure the paired-bridge device agent. */
-  onPaired: () => void;
+  /** Called once the phone reports paired — wire this to configure the paired-bridge device agent.
+   *  `connector` is the desktop's subscription connector from the QR (codex/claude/gemini), if present. */
+  onPaired: (connector?: string) => void;
 }
 
 export interface PhonePairingPanelOptions {
@@ -310,7 +311,7 @@ export function mountPhonePairingPanel(
         logDeviceAgentDiag('info', 'bridge-pair.phone_pair_status_paired', { tag });
         status.textContent = options.connectedText ?? '✓ Paired. AI now runs on your computer’s plan.';
         status.style.color = '#5fe3a1';
-        deps.onPaired();
+        deps.onPaired(payload.connector);
       } else if (s.error) {
         if (polling) clearInterval(polling);
         polling = null;

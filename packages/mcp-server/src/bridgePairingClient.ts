@@ -105,6 +105,9 @@ export interface BridgePairingControllerOptions {
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   onLog?: (event: Record<string, unknown>) => void;
+  /** Lets the QR advertise which subscription connector the desktop runs (codex/claude/gemini),
+   *  so the paired phone can show the real provider instead of a generic "Device Agent" label. */
+  getConnector?: () => string | undefined;
 }
 
 export interface BridgePairingState {
@@ -180,6 +183,7 @@ export class BridgePairingController {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => number;
   private readonly onLog: (event: Record<string, unknown>) => void;
+  private readonly getConnector?: () => string | undefined;
 
   // Stable for the controller's lifetime; bridgeSecret never leaves the process.
   private readonly bridgeSecret: string;
@@ -217,6 +221,7 @@ export class BridgePairingController {
     this.sleep = options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms).unref?.()));
     this.now = options.now ?? (() => Date.now());
     this.onLog = options.onLog ?? defaultPairingLogger;
+    this.getConnector = options.getConnector;
     // bridgeSecret is fixed for the controller's lifetime and taken from this one generateIds() call;
     // the pairUuid/pairToken from it are intentionally discarded (start() generates fresh ones each
     // pairing and discards THAT call's bridgeSecret). A stateful/counter-based test generateIds must
@@ -579,12 +584,14 @@ export class BridgePairingController {
   }
 
   private buildQrPayload(pairUuid: string, pairToken: string): string {
-    // Short keys keep the QR dense. v=schema, relay=base URL, uuid, token.
+    // Short keys keep the QR dense. v=schema, relay=base URL, uuid, token, connector (codex/claude/gemini).
+    const connector = this.getConnector?.();
     return JSON.stringify({
       v: 2,
       relay: this.relayBaseUrl,
       uuid: pairUuid,
       token: pairToken,
+      ...(connector ? { connector } : {}),
       ...(this.e2eePairing ? { e2ee: this.e2eePairing.qr } : {}),
     });
   }

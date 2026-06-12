@@ -2786,6 +2786,7 @@ interface DemoState {
   androidCloudInfoTab: AndroidCloudInfoTab;
   oneTimePlanView: OneTimePlanView;
   askAgentAfterDraft: boolean;
+  moreMenuOpen: boolean;
   recurringView: RecurringView;
   activeRecurringCardId: string;
   artifactView: ArtifactView;
@@ -3695,6 +3696,7 @@ const state: DemoState = {
   androidCloudInfoTab: 'approval',
   oneTimePlanView: 'create',
   askAgentAfterDraft: false,
+  moreMenuOpen: false,
   recurringView: 'create',
   activeRecurringCardId: '',
   artifactView: 'create',
@@ -4122,6 +4124,7 @@ async function startApp(): Promise<void> {
     }
     startNotificationTicker();
     startAgentBackgroundWatch();
+    startRelayPresenceWatch();
     window.addEventListener('popstate', () => render());
     window.addEventListener('keydown', handleGlobalKeydown);
     installPayOutApprovalCreatedListener();
@@ -17032,15 +17035,19 @@ function commandAiPreferenceSnapshotCard(): CommandPreferenceSnapshotCard {
   const bridgeConnector = state.aiSettings.mode === 'bridge' && state.aiStatus?.engine === 'connector'
     ? state.aiStatus
     : null;
-  const provider = bridgeConnector
-    ? bridgeConnectorDisplayLabel(bridgeConnector)
+  // Plan Connector (paired-bridge or local-bridge connector engine): show "Plan Connector - Codex" +
+  // a plan note (NOT the connector auth status, which was the previous model-slot bug).
+  const isPlanConnector = Boolean(state.aiSettings.pairedBridge) || Boolean(bridgeConnector);
+  const planConnector = isPlanConnector ? activePlanConnector() : undefined;
+  const provider = isPlanConnector
+    ? planConnectorTitle(planConnector)
     : state.aiSettings.mode === 'bridge' && state.aiStatus?.provider
     ? state.aiStatus.provider
     : state.aiSettings.mode === 'device-agent' && state.deviceAgentStatus?.provider
       ? state.deviceAgentStatus.provider
     : providerPreset.label;
-  const model = bridgeConnector
-    ? bridgeConnectorStatusDetail(bridgeConnector)
+  const model = isPlanConnector
+    ? (state.aiStatus?.model?.trim() || connectorPlanNote(planConnector))
     : state.aiSettings.mode === 'bridge' && state.aiStatus?.model
     ? state.aiStatus.model
     : state.aiSettings.mode === 'device-agent' && state.deviceAgentStatus?.model
@@ -17066,7 +17073,9 @@ function commandAiPreferenceSnapshotCard(): CommandPreferenceSnapshotCard {
     icon: anyConfigured ? 'aiConnected' : 'ai',
     ...(anyConfigured
       ? {
-          logoId: configured ? connectedAiProviderLogoId() : aiProviderLogoId(state.aiSettings.provider),
+          logoId: isPlanConnector
+            ? connectorBrandLogoId(planConnector)
+            : configured ? connectedAiProviderLogoId() : aiProviderLogoId(state.aiSettings.provider),
           logoLabel: displayProvider,
         }
       : {}),
@@ -19718,6 +19727,11 @@ function agentReviewQuestionsForm(record: GeneratedPlanRecord): string {
 }
 
 function agentReviewSourceLabel(review: AgentPlanReviewState): string {
+  // Remap records stored under the generic paired-bridge placeholders to the real connector.
+  if (review.provider === 'paired-bridge' || review.model === 'connector') {
+    const connector = activePlanConnector();
+    return [planConnectorTitle(connector), connectorPlanNote(connector)].join(' - ');
+  }
   const parts = [
     review.provider || (review.source ? `${review.source} AI` : 'Agent'),
     review.model,
@@ -20893,7 +20907,7 @@ function agentPlannerWorkbench(): string {
     : 'Optional context, reason, or policy note saved with this plan.';
   const askAgentDetail = mockReviewAvailable && !aiPathConnected
     ? 'Optional. Runs a local agent decision in Check after planning. No bridge, AI key, or wallet popup.'
-    : 'Optional. Runs the review in Check after planning. Sending for approval stays manual.';
+    : 'Optional. Runs the agent review in Check after planning. Sending for approval stays manual.';
   return `
     <div class="agent-planner-grid planner-single-column">
       <div class="intent-capsule intent-document-card planner-card ${state.agentPlan ? 'plan-linked' : 'draft'}">
@@ -20928,8 +20942,8 @@ function agentPlannerWorkbench(): string {
           <div class="agent-actions signature-actions intent-document-actions">
             <div class="agent-actions-row">
               ${reviewAfterDraftAvailable ? `
-                <label class="ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''}">
-                  <input type="checkbox" data-ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
+                <label class="ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''}${state.busy ? ' is-disabled' : ''}" data-ask-agent-after-draft role="checkbox" aria-checked="${state.askAgentAfterDraft ? 'true' : 'false'}" tabindex="0">
+                  <input type="checkbox" tabindex="-1" aria-hidden="true" ${state.askAgentAfterDraft ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
                   <span class="ask-agent-check" aria-hidden="true">${checkIcon()}</span>
                   <span class="ask-agent-copy">
                     <strong>Ask Agent</strong>
@@ -20937,12 +20951,7 @@ function agentPlannerWorkbench(): string {
                   </span>
                 </label>
               ` : ''}
-              <button id="generatePlan" class="primary" ${draftActionBusy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}Planning...` : 'Plan from template'}</button>
-              ${aiPathConnected ? `
-                <button id="generateAiPlan" class="primary ai-draft-button" ${!canUseAi || draftActionBusy ? 'disabled' : ''} title="${escapeHtml(canUseAi ? 'Plan with your configured AI planner.' : aiDisabledReason)}">
-                  ${aiGenerating ? `${buttonSpinner()}AI planning...` : 'Plan with AI'}
-                </button>
-              ` : ''}
+              <button id="generatePlan" class="primary" ${draftActionBusy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}Creating plan...` : 'Create Plan'}</button>
             </div>
           </div>
         </div>
@@ -21126,7 +21135,7 @@ function aiRailIdentity(
   confirmed: boolean,
 ): AiRailIdentity {
   const fallback = currentAiRailFallback();
-  return buildAiRailIdentity({
+  const identity = buildAiRailIdentity({
     inventory,
     pathLabels: {
       hosted: aiPathPreferenceLabel('hosted'),
@@ -21139,6 +21148,16 @@ function aiRailIdentity(
     confirmationLabel: aiConfirmationLabel(),
     confirmed,
   });
+  // Paired-bridge (Android Plan Connector) reports a generic provider="paired-bridge"/model="connector".
+  // Show the real connector the desktop runs (from the QR) + its provider logo instead.
+  if (state.aiSettings.mode === 'device-agent' && state.aiSettings.pairedBridge) {
+    const connector = activePlanConnector();
+    identity.provider = planConnectorTitle(connector);
+    identity.model = connectorPlanNote(connector);
+    identity.detail = connectorPlanNote(connector);
+    identity.logoHint = connectorRailLogoHint(connector);
+  }
+  return identity;
 }
 
 function currentAiRailFallback(): { provider: string; model: string; logoHint: AiRailLogoHint } {
@@ -23143,8 +23162,69 @@ function phonePairingAvailable(): boolean {
 // returns its last async probe + kicks a fresh one, so the chip converges over a few renders without
 // a blocking call. (B6 — gives the paired user a persistent reachability signal beyond the modal.)
 let relayStatusCache: { online: boolean; at: number } | null = null;
-function pairedBridgeStatusChip(): string {
-  if (!IS_ANDROID_APP) return '';
+// Transition tracking for the one-shot "connector disconnected" toast. `null` = unknown (first read).
+let relayPreviouslyOnline: boolean | null = null;
+let relayDisconnectToastShown = false;
+
+// Friendly name of the connected Plan Connector for toasts/cards (e.g. "Codex").
+function shortConnectorName(connector: AiConnector): string {
+  return connector.charAt(0).toUpperCase() + connector.slice(1);
+}
+function planConnectorDisplayName(): string {
+  const connector = state.aiStatus?.connector ?? state.aiSettings.connector;
+  return connector ? shortConnectorName(connector) : 'AI connector';
+}
+// The connector backing the active paired-bridge session (from the QR), if known.
+function activePlanConnector(): AiConnector | undefined {
+  return state.aiStatus?.connector ?? state.aiSettings.connector;
+}
+// Short plan/billing note used as the secondary line on the connector card (the phone doesn't
+// receive the desktop's exact model name).
+function connectorPlanNote(connector: AiConnector | undefined): string {
+  switch (connector) {
+    case 'codex':
+      return 'ChatGPT plan';
+    case 'claude':
+      return 'Agent-SDK credits';
+    case 'gemini':
+      return 'Google AI Pro/Ultra';
+    default:
+      return 'Subscription plan';
+  }
+}
+// "Plan Connector - Codex" style title for the active paired-bridge connector.
+function planConnectorTitle(connector: AiConnector | undefined): string {
+  return connector ? `Plan Connector - ${shortConnectorName(connector)}` : 'Plan Connector';
+}
+// Maps a connector to the rail-summary logo hint (codex/claude/gemini SVGs).
+function connectorRailLogoHint(connector: AiConnector | undefined): AiRailLogoHint {
+  switch (connector) {
+    case 'claude':
+      return 'claude';
+    case 'gemini':
+      return 'gemini';
+    case 'codex':
+    default:
+      return 'codex';
+  }
+}
+// Maps a connector to the brand-logo id used by brandLogo()/snapshot cards.
+function connectorBrandLogoId(connector: AiConnector | undefined): BrandLogoId {
+  switch (connector) {
+    case 'claude':
+      return 'claude';
+    case 'gemini':
+      return 'gemini';
+    case 'codex':
+    default:
+      return 'codex';
+  }
+}
+
+// Reads native relay presence (throttled), updates relayStatusCache, and fires a one-shot disconnect
+// toast on the online->offline transition while paired. Android-only; safe no-op elsewhere.
+function refreshRelayPresence(): boolean {
+  if (!IS_ANDROID_APP) return false;
   const now = Date.now();
   if (!relayStatusCache || now - relayStatusCache.at > 4000) {
     let online = false;
@@ -23155,8 +23235,32 @@ function pairedBridgeStatusChip(): string {
       online = false;
     }
     relayStatusCache = { online, at: now };
+    if (state.aiSettings.pairedBridge) {
+      if (relayPreviouslyOnline === true && !online && !relayDisconnectToastShown) {
+        relayDisconnectToastShown = true;
+        pushToast(
+          'error',
+          `${planConnectorDisplayName()} disconnected`,
+          'Computer bridge went offline — reopen the connector page on your computer to keep planning.',
+          {
+            key: 'plan-connector-disconnect',
+            actionLabel: 'Open connector page',
+            actionUrl: 'https://agentic-signer.com/aiconnectors',
+          },
+        );
+      }
+      if (online) relayDisconnectToastShown = false; // re-arm once it comes back
+      relayPreviouslyOnline = online;
+    } else {
+      relayPreviouslyOnline = null; // not paired -> next read is "unknown"
+    }
   }
-  return relayStatusCache.online
+  return relayStatusCache.online;
+}
+
+function pairedBridgeStatusChip(): string {
+  if (!IS_ANDROID_APP) return '';
+  return refreshRelayPresence()
     ? '<span class="bridge-online-chip ok" style="color:#5fe3a1">● computer online</span>'
     : '<span class="bridge-online-chip warn" style="color:#ffb27a">● computer offline — open the connector page</span>';
 }
@@ -25068,7 +25172,7 @@ function scheduledApprovalsPanel(): string {
     <section class="approval-object signature-stage stage-schedule stage-anchor ${recurringPayments.length ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head app-inline-head">
         ${sectionTitleLine('Repeat Payments', 'Set up payments that repeat. Each payment still asks for approval before it sends.')}
-        <button id="refreshInbox" class="utility refresh-button-desktop-only" ${state.busy ? 'disabled' : ''}>Refresh</button>
+        ${inboxRefreshButton('refreshInbox')}
       </div>
 
       ${scheduleStatusLine()}
@@ -25840,6 +25944,7 @@ function bind(): void {
   bindPreferencesMobilePicker();
   bindWalletBalanceOverlay();
   bindMobileRailSheet();
+  bindMobileMoreMenu();
   bindExpandNoteSheet();
 
   const workspaceTabSelect = document.getElementById('workspaceTabMobile') as HTMLSelectElement | null;
@@ -25873,6 +25978,7 @@ function bind(): void {
       }
       state.activeMobileRailSheet = null;
       state.activeExpandNoteField = null;
+      state.moreMenuOpen = false;
       state.error = '';
       render();
       if (tab === 'inbox') {
@@ -26193,20 +26299,26 @@ function bind(): void {
   document.querySelector<HTMLButtonElement>('#signTx')?.addEventListener('click', runSignTransaction);
   document.querySelector<HTMLButtonElement>('#sendTx')?.addEventListener('click', runSignAndSendTransaction);
   document.querySelector<HTMLButtonElement>('#generatePlan')?.addEventListener('click', runGenerateAgentPlan);
-  document.querySelector<HTMLButtonElement>('#generateAiPlan')?.addEventListener('click', runGenerateAiPlan);
   document.querySelector<HTMLButtonElement>('[data-ai-draft-action="cancel"]')?.addEventListener('click', cancelActiveAiDraft);
-  document.querySelectorAll<HTMLInputElement>('[data-ask-agent-after-draft]').forEach((input) => {
-    input.addEventListener('change', (event) => {
-      state.askAgentAfterDraft = (event.currentTarget as HTMLInputElement).checked;
+  // Drive the Ask Agent toggle from an explicit click on the label (both plan + repeat tabs).
+  // The native label->checkbox `change` event is unreliable in the Android WebView / iOS
+  // WKWebView, so we own the toggle in JS and preventDefault any native flip.
+  document.querySelectorAll<HTMLElement>('[data-ask-agent-after-draft]').forEach((label) => {
+    const toggle = (event: Event): void => {
+      if (state.busy) return;
+      event.preventDefault();
+      state.askAgentAfterDraft = !state.askAgentAfterDraft;
       render();
+    };
+    label.addEventListener('click', toggle);
+    label.addEventListener('keydown', (event) => {
+      if (event.key !== ' ' && event.key !== 'Enter') return;
+      toggle(event);
     });
   });
   document.querySelector<HTMLButtonElement>('#signAgentPlan')?.addEventListener('click', runSignAgentPlan);
   document.querySelector<HTMLButtonElement>('#queueAgentPlan')?.addEventListener('click', runQueueAgentPlan);
   document.querySelector<HTMLButtonElement>('#refreshCompletedPlans')?.addEventListener('click', runRefreshInbox);
-  document.querySelector<HTMLButtonElement>('#draftRecurringWithAi')?.addEventListener('click', () => {
-    void runDraftRecurringWithAi();
-  });
   document.querySelector<HTMLButtonElement>('#toggleArchivedGeneratedPlans')?.addEventListener('click', () => {
     state.showArchivedGeneratedPlans = !state.showArchivedGeneratedPlans;
     state.listPages.review = 1;
@@ -26393,8 +26505,8 @@ function bind(): void {
         case 'pair-phone-android':
           openPhonePairingModal({
             bridge: agenticAndroidBridge(),
-            onPaired: () => {
-              void runEnablePairedBridge();
+            onPaired: (connector) => {
+              void runEnablePairedBridge(connector);
             },
           });
           return;
@@ -26464,7 +26576,7 @@ function bind(): void {
     button.addEventListener('click', runConnectBridge);
   }
   document.querySelector<HTMLButtonElement>('#disconnectBridge')?.addEventListener('click', runDisconnectBridge);
-  for (const button of document.querySelectorAll<HTMLButtonElement>('#refreshInbox, [data-refresh-inbox]')) {
+  for (const button of document.querySelectorAll<HTMLButtonElement>('#refreshInbox')) {
     button.addEventListener('click', runRefreshInbox);
   }
   document.querySelector<HTMLButtonElement>('#deleteAllInbox')?.addEventListener('click', openDeleteAllInboxModal);
@@ -28343,13 +28455,40 @@ function closeMobileRailSheetInteractions(): void {
   mobileRailSheetController = null;
 }
 
+// Explicit toggle for the bottom-nav "More+" overflow menu. Replaces the native <details>
+// toggle (unreliable in the Android WebView / iOS WKWebView). Re-bound on every render().
+function bindMobileMoreMenu(): void {
+  const trigger = document.querySelector<HTMLButtonElement>('[data-more-menu-trigger]');
+  if (!trigger) {
+    if (state.moreMenuOpen) state.moreMenuOpen = false;
+    return;
+  }
+  trigger.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    state.moreMenuOpen = !state.moreMenuOpen;
+    render();
+  });
+  if (!state.moreMenuOpen) return;
+  // Outside-tap dismiss. Bound only while open; torn down automatically on the next render()
+  // because innerHTML is fully replaced (the listener removes itself on first outside tap).
+  const onPointerDown = (event: PointerEvent): void => {
+    const target = event.target;
+    if (target instanceof Element && target.closest('[data-more-menu]')) return;
+    window.removeEventListener('pointerdown', onPointerDown, true);
+    state.moreMenuOpen = false;
+    render();
+  };
+  window.addEventListener('pointerdown', onPointerDown, true);
+}
+
 function mountPlanConnectorPairingPanel(): void {
   const container = document.querySelector<HTMLElement>('[data-plan-connector-pairing-panel]');
   if (!container) return;
   planConnectorPairingPanelCleanup = mountPhonePairingPanel(container, {
     bridge: agenticAndroidBridge(),
-    onPaired: () => {
-      void runEnablePairedBridge();
+    onPaired: (connector) => {
+      void runEnablePairedBridge(connector);
     },
   }, {
     introText: 'Point Android at the QR displayed on your AI-connected computer. The computer must stay awake while planning.',
@@ -33406,10 +33545,11 @@ function overrideReceiptNote(review: AgentPlanReviewState, userReason: string | 
 }
 
 function agentReviewProviderLabel(): string {
+  // Plan Connector (paired-bridge, or local-bridge connector engine): show "Plan Connector - Codex".
+  if (state.aiSettings.pairedBridge || (state.aiSettings.mode === 'bridge' && state.aiStatus?.engine === 'connector')) {
+    return planConnectorTitle(activePlanConnector());
+  }
   if (state.aiSettings.mode === 'bridge') {
-    if (state.aiStatus?.engine === 'connector') {
-      return bridgeConnectorDisplayLabel(state.aiStatus);
-    }
     return state.aiStatus?.provider ?? state.aiStatus?.apiFormat ?? 'Local bridge AI';
   }
   if (state.aiSettings.mode === 'device-agent') {
@@ -33419,10 +33559,12 @@ function agentReviewProviderLabel(): string {
 }
 
 function agentReviewModelLabel(): string {
+  // Plan Connector: the phone doesn't get the desktop's exact model, so show the plan note instead of
+  // the connector auth status (the previous bug here and on the snapshot card).
+  if (state.aiSettings.pairedBridge || (state.aiSettings.mode === 'bridge' && state.aiStatus?.engine === 'connector')) {
+    return state.aiStatus?.model?.trim() || connectorPlanNote(activePlanConnector());
+  }
   if (state.aiSettings.mode === 'bridge') {
-    if (state.aiStatus?.engine === 'connector') {
-      return bridgeConnectorStatusDetail(state.aiStatus);
-    }
     return state.aiStatus?.model ?? 'model configured';
   }
   if (state.aiSettings.mode === 'device-agent') {
@@ -35946,9 +36088,14 @@ async function runSaveDirectAiKey(): Promise<void> {
 // runtime with the paired-bridge config (deviceAgentConfigPayload now emits it). The "AI runs on
 // your computer" confirmation is gated on the runtime reaching ready, so a pairing that connects but
 // fails to start surfaces honestly instead of silently failing on the first request.
-async function runEnablePairedBridge(): Promise<void> {
+async function runEnablePairedBridge(connector?: string): Promise<void> {
   state.aiSettings.pairedBridge = true;
   state.aiSettings.mode = 'device-agent';
+  // Record which connector the paired desktop runs (from the QR) so the home/rail cards can show the
+  // real provider (Codex/Claude/Gemini) + logo instead of a generic "Device Agent" label.
+  if (connector === 'codex' || connector === 'claude' || connector === 'gemini') {
+    state.aiSettings.connector = connector;
+  }
   aiModeSelectionExplicit = true;
   savePersistedState();
   void syncCloudPreference('ai-settings');
@@ -35984,6 +36131,8 @@ function runUnpairPairedBridge(): void {
   unpairPhone(agenticAndroidBridge());
   state.aiSettings.pairedBridge = false;
   relayStatusCache = null;
+  relayPreviouslyOnline = null;
+  relayDisconnectToastShown = false;
   savePersistedState();
   void syncCloudPreference('ai-settings');
   resetAiPlannerConfirmation('Unpaired from your computer. Paste an API key or pair again to use Device Agent AI.');
@@ -44284,6 +44433,27 @@ function stopAgentBackgroundWatch(): void {
   }
 }
 
+// Android-only watcher so the connector online->offline transition (and its disconnect toast) is
+// caught even when the user is on the Home tab and the paired-bridge card isn't rendering.
+let relayPresenceTimer: number | null = null;
+function startRelayPresenceWatch(): void {
+  if (!IS_ANDROID_APP) return;
+  stopRelayPresenceWatch();
+  relayPresenceTimer = window.setInterval(() => {
+    if (!state.aiSettings.pairedBridge) return;
+    relayStatusCache = null; // force a fresh native read each tick
+    const before = state.toasts.length;
+    refreshRelayPresence();
+    if (state.toasts.length !== before) render(); // surface the toast immediately
+  }, 5_000);
+}
+function stopRelayPresenceWatch(): void {
+  if (relayPresenceTimer !== null) {
+    window.clearInterval(relayPresenceTimer);
+    relayPresenceTimer = null;
+  }
+}
+
 function isPlanWatchActive(record: GeneratedPlanRecord): boolean {
   if (!state.aiSettings.autoBackgroundWatch) return false;
   return isPlanEligibleForBackgroundWatch(record);
@@ -47705,13 +47875,16 @@ function moreMenuButton(): string {
 function mobileMoreMenuButton(): string {
   const items = mobileMoreMenuItems();
   const activeInMenu = items.some((item) => state.activeTab === item.id);
+  const open = state.moreMenuOpen;
+  // State-driven (not native <details>): the native <summary> toggle is unreliable in the
+  // Android WebView / iOS WKWebView, so an explicit click handler owns `state.moreMenuOpen`.
   return `
-    <details class="workspace-more workspace-bottom-more${activeInMenu ? ' has-active' : ''}">
-      <summary class="workspace-more-trigger workspace-bottom-tab ${activeInMenu ? 'active' : ''}" aria-haspopup="menu">
+    <div class="workspace-more workspace-bottom-more${activeInMenu ? ' has-active' : ''}${open ? ' open' : ''}" data-more-menu>
+      <button type="button" class="workspace-more-trigger workspace-bottom-tab ${activeInMenu ? 'active' : ''}" data-more-menu-trigger aria-haspopup="menu" aria-expanded="${open ? 'true' : 'false'}">
         <span class="nav-label">More+</span>
         <span class="workspace-more-caret" aria-hidden="true">▾</span>
-      </summary>
-      <div class="workspace-more-menu workspace-bottom-more-menu template-picker-menu drop-up" role="menu">
+      </button>
+      <div class="workspace-more-menu workspace-bottom-more-menu template-picker-menu drop-up" role="menu" ${open ? '' : 'hidden'}>
         ${items
           .map((item) => {
             const active = state.activeTab === item.id;
@@ -47733,7 +47906,7 @@ function mobileMoreMenuButton(): string {
           })
           .join('')}
       </div>
-    </details>
+    </div>
   `;
 }
 
@@ -50033,7 +50206,7 @@ function recurringComposer(): string {
     : aiGenerateDisabledReason();
   const aiDraftDisabled = createDisabled || !canGenerateAiPlanFromSettings() || !canRunAgentReview();
   const composerTitle = isSwap ? 'Create recurring swap' : 'Create repeat payment';
-  const createLabel = 'Plan from template';
+  const createLabel = 'Create Plan';
   const recurringHelp = isSwap
     ? browserWorkflow
       ? 'Each due swap returns to Needs Approval before wallet signing.'
@@ -50120,8 +50293,8 @@ function recurringComposer(): string {
       </div>
       <div class="recurring-create-primary-row">
         ${aiPathConnected ? `
-          <label class="ask-agent-after-draft recurring-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''}">
-            <input type="checkbox" data-ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
+          <label class="ask-agent-after-draft recurring-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''}${state.busy ? ' is-disabled' : ''}" data-ask-agent-after-draft role="checkbox" aria-checked="${state.askAgentAfterDraft ? 'true' : 'false'}" tabindex="0">
+            <input type="checkbox" tabindex="-1" aria-hidden="true" ${state.askAgentAfterDraft ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
             <span class="ask-agent-check" aria-hidden="true">${checkIcon()}</span>
             <span class="ask-agent-copy">
               <strong>Ask Agent</strong>
@@ -50132,16 +50305,6 @@ function recurringComposer(): string {
         <div class="recurring-form-actions contract-actions">
           <div class="agent-actions-row recurring-actions-row">
             <button id="createRecurring" class="primary" ${createDisabled ? 'disabled' : ''}>${escapeHtml(createLabel)}</button>
-            ${aiPathConnected ? `
-              <button
-                id="draftRecurringWithAi"
-                class="primary ai-draft-button"
-                ${aiDraftDisabled ? 'disabled' : ''}
-                title="${escapeHtml(aiDraftDisabledReason)}"
-              >
-                Plan with AI
-              </button>
-            ` : ''}
           </div>
           ${actionHelper ? `<span class="contract-helper accent-note">${escapeHtml(actionHelper)}</span>` : ''}
         </div>
@@ -50390,15 +50553,6 @@ function recurringPresetMethodControls(): string {
         <em>What repeats</em>
       </span>
       ${recurringPresetControls()}
-      <button
-        type="button"
-        class="utility recurring-inline-refresh"
-        data-refresh-inbox
-        aria-label="Refresh repeat payments"
-        ${state.busy ? 'disabled' : ''}
-      >
-        Refresh
-      </button>
     </div>
   `;
 }
