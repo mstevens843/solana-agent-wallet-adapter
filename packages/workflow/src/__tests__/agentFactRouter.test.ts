@@ -344,6 +344,109 @@ describe('agent review fact router', () => {
     expect(plan.routes.some((route) => route.id === 'wallet.connected_public_key' && route.status === 'required')).toBe(true);
   });
 
+  // Regression: swap-execution evidence (Jupiter quote/route/slippage) applies ONLY to actions that
+  // actually execute a swap. A send, a proof-sign (manual_review), an evidence review (read_only),
+  // or a transfer must never be dragged into the swap branch by incidental prose — the medium-risk
+  // template ("…fees, route, and memo…"), the default route copy ("…expose the route…"), and the
+  // "DCA review proof" description ("…swap-capable recurring engine…") all mention "route"/"swap"
+  // yet describe no swap draft. swapLike is authoritative on actionType, so the SAME off-chain gate
+  // question is answered identically no matter the wallet-action type.
+  describe('answers the question regardless of wallet-action type (no bogus swap gate)', () => {
+    const MEDIUM_RISK_PROSE =
+      'Medium signing risk. Verify recipient, amount, network, fees, route, and memo before approving.';
+    const DEFAULT_ROUTE_PROSE =
+      'Prepare the request, expose the route and policy checks, then require a separate wallet approval before signing.';
+    const HELIUM_GATE = 'Approve send if Helium Mobile Phone monthly phone plan is less than $20.';
+
+    it('transfer_sol with an off-chain threshold gate does NOT add Jupiter swap routes', () => {
+      const ids = routeIdsFor({
+        actionType: 'transfer_sol',
+        risk: MEDIUM_RISK_PROSE,
+        route: 'Prepare a SOL transfer to alice.sol for 0.2 SOL. Queue through the active approval workflow when connected.',
+        prompt: HELIUM_GATE,
+        parameters: { amount: '0.2', recipient: 'alice.sol' },
+        hasWallet: true,
+      });
+      expect(ids).not.toContain('jupiter.swap_order_preview');
+      expect(ids).not.toContain('jupiter.swap_route');
+    });
+
+    it('transfer_spl with an off-chain threshold gate does NOT add Jupiter swap routes', () => {
+      const ids = routeIdsFor({
+        actionType: 'transfer_spl',
+        risk: MEDIUM_RISK_PROSE,
+        prompt: HELIUM_GATE,
+        parameters: { amount: '15', token: 'USDC', recipient: 'alice.sol' },
+        hasWallet: true,
+      });
+      expect(ids).not.toContain('jupiter.swap_order_preview');
+      expect(ids).not.toContain('jupiter.swap_route');
+    });
+
+    it('non-swap recurring_payment (actionKind=transfer) with an off-chain gate does NOT add swap routes', () => {
+      const ids = routeIdsFor({
+        actionType: 'recurring_payment',
+        risk: MEDIUM_RISK_PROSE,
+        prompt: HELIUM_GATE,
+        parameters: { actionKind: 'transfer', amount: '15', token: 'USDC', recipient: 'alice.sol' },
+        hasWallet: true,
+      });
+      expect(ids).not.toContain('jupiter.swap_order_preview');
+      expect(ids).not.toContain('jupiter.swap_route');
+    });
+
+    // Exact proof-sign repro: the "DCA review proof" template is manual_review, medium risk, and its
+    // description literally says "swap-capable recurring engine" — which used to keyword-match and
+    // demand a Jupiter quote the proof can never have. A proof signs no swap, so: no swap routes.
+    it('proof-sign (manual_review, "DCA review proof") does NOT add swap routes despite "swap" in prose', () => {
+      const ids = routeIdsFor({
+        actionType: 'manual_review',
+        intent: 'DCA review proof',
+        prompt: 'Sign a review proof for a recurring DCA strategy before using a swap-capable recurring engine.',
+        route: DEFAULT_ROUTE_PROSE,
+        risk: MEDIUM_RISK_PROSE,
+        userNotes: 'Approve proof sign if lowest helium mobile monthly plan is less than $20.',
+        hasWallet: true,
+      });
+      expect(ids).not.toContain('jupiter.swap_order_preview');
+      expect(ids).not.toContain('jupiter.swap_route');
+    });
+
+    it('evidence review (read_only) with an off-chain gate does NOT add swap routes', () => {
+      const ids = routeIdsFor({
+        actionType: 'read_only',
+        route: DEFAULT_ROUTE_PROSE,
+        risk: MEDIUM_RISK_PROSE,
+        userNotes: 'Approve evidence proof if lowest helium mobile monthly plan is less than $20.',
+        hasWallet: true,
+      });
+      expect(ids).not.toContain('jupiter.swap_order_preview');
+      expect(ids).not.toContain('jupiter.swap_route');
+    });
+
+    // actionType is authoritative: even text that explicitly says swap/slippage/Jupiter/route cannot
+    // turn a non-swap action into a swap.
+    it('manual_review whose text literally says "swap" still does NOT add swap routes', () => {
+      const ids = routeIdsFor({
+        actionType: 'manual_review',
+        prompt: 'Review this swap, slippage cap, and Jupiter route before I sign the proof.',
+        hasWallet: true,
+      });
+      expect(ids).not.toContain('jupiter.swap_order_preview');
+      expect(ids).not.toContain('jupiter.swap_route');
+    });
+
+    it('still classifies a recurring DCA (actionKind=swap) as a swap', () => {
+      const ids = routeIdsFor({
+        actionType: 'recurring_payment',
+        prompt: 'Buy USDC with SOL on a weekly schedule.',
+        parameters: { actionKind: 'swap', amount: '0.01', inputToken: 'SOL', outputToken: 'USDC' },
+        hasWallet: true,
+      });
+      expect(ids).toEqual(expect.arrayContaining(['jupiter.swap_order_preview', 'jupiter.swap_route']));
+    });
+  });
+
   it('does NOT tag Helius for an imperative "send to X" without history wording', () => {
     const plan = planAgentReviewFactRoutes({
       actionType: 'transfer_sol',

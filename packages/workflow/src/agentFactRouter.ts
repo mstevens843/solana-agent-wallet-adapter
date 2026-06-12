@@ -172,7 +172,6 @@ const TOKEN_PRICE_SYMBOL_RE = /\b(sol|btc|eth|usdc|usdt|jup|bonk|wif|pyusd)\b[^.
 const TOKEN_PRICE_SYMBOL_REVERSED = /\b(price|value|worth|above|over|greater than|more than|>=?|below|under|less than|<=?|at least|at most)\b[^.\n]{0,80}\b(sol|btc|eth|usdc|usdt|jup|bonk|wif|pyusd)\b/i;
 const TOKEN_PRICE_SUBJECT_RE = /\b(?:input|output|this|the)?\s*(token|coin|mint|asset)\b[^.\n]{0,80}\b(price|value|worth|above|over|greater than|more than|>=?|below|under|less than|<=?|at least|at most)\b[^.\n]{0,40}\$?\s*\d/i;
 const TOKEN_MARKET_DEPTH_RE = /\b(market cap|mcap|fdv|volume|24h|change|coingecko|pool count|onchain price|history|historical)\b/i;
-const SWAP_RE = /\b(swap|quote|route|slippage|minimum received|min received|output amount|price impact|jupiter|dex|aggregator|input token|output token)\b/i;
 const PROTOCOL_RE = /\b(protocol|dapp|connector|position|positions|rewards|claim|health|collateral|vault|pool|lp|lend|borrow|repay|deposit|withdraw|stake|unstake|oracle|pyth|margin|liquidation)\b/i;
 const GLOBAL_MARKET_RE = /\b(fear\s*(?:&|and)\s*greed|sentiment|btc dominance|bitcoin dominance|eth dominance|total market cap|global market|market conditions|crypto market|risk on|risk off|macro|dominance)\b/i;
 const EXTERNAL_RESEARCH_RE = /\b(latest|current|today|news|headline|status page|outage|incident|docs?|documentation|release notes|announcement|recent exploit|exploit|hack|governance vote|proposal)\b/i;
@@ -323,7 +322,16 @@ export function planAgentReviewFactRoutes(input: PlanAgentReviewFactRoutesInput)
     }
   }
 
-  const swapLike = actionType === 'swap' || input.parameters?.actionKind === 'swap' || SWAP_RE.test(text);
+  // Swap-execution evidence (Jupiter quote/route/slippage) describes a SWAP DRAFT, so it is required
+  // ONLY for actions that actually execute a swap: an explicit swap, or a recurring DCA swap. Action
+  // type is the SOLE determinant — never free-text prose. A send, a proof-sign (manual_review), an
+  // evidence review (read_only), a transfer, or any connector action has no swap draft and must
+  // answer the user's question on its own merits — never blocked by a bogus "Swap draft has no
+  // slippage cap" gate just because incidental prose (e.g. the medium-risk template "…fees, route,
+  // and memo…" or the "DCA review proof" copy "…swap-capable recurring engine…") mentions the word.
+  const swapLike =
+    actionType === 'swap' ||
+    (actionType === 'recurring_payment' && input.parameters?.actionKind === 'swap');
   if (swapLike) {
     const amountString = (input.parameters?.amount ?? input.parameters?.inputAmount ?? '').trim();
     const hasAmount = amountString.length > 0 && Number(amountString) > 0;
