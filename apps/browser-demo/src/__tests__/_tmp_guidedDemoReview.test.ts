@@ -7,7 +7,7 @@
 // NOTE: filename keeps a `_tmp_` prefix only because the dev environment blocked file rename/delete; the test
 // itself is a keeper. Rename to e.g. guidedDemoAgentDecisionReview.test.ts when convenient.
 import { describe, expect, it } from 'vitest';
-import { reviewEvidenceSections } from '../agentReviewPresentation';
+import { reviewEvidenceSections } from '../agentReviewPresentation.js';
 
 // Mirrors the review object guidedDemoReviewPreparedPlan() builds for Plan 2 (Helium).
 const heliumReview = {
