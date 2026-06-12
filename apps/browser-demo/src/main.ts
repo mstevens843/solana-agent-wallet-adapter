@@ -10416,6 +10416,7 @@ function aiConnectorsQrPanel(readiness: AiConnectorsReadiness): string {
     pairingCode,
     pairingStatus: aiConnectorsPairingState.status,
   });
+  const hasPairingCode = pairingCode.trim().length > 0;
   const copyPairingCodeAction = copyAction.visible
     ? `
         <button
@@ -10424,7 +10425,7 @@ function aiConnectorsQrPanel(readiness: AiConnectorsReadiness): string {
           data-ai-connectors-action="copy-pairing-code"
           ${copyAction.disabled ? 'disabled' : ''}
         >
-          ${escapeHtml(copyAction.label)}
+          ${escapeHtml(hasPairingCode ? 'Copy pairing code' : copyAction.label)}
         </button>
       `
     : '';
@@ -10485,10 +10486,10 @@ function aiConnectorsQrPanel(readiness: AiConnectorsReadiness): string {
         >
           ${aiConnectorsPairingState.status === 'waiting' ? 'Refresh QR' : 'Start QR pairing'}
         </button>
+        ${copyPairingCodeAction}
         ${aiConnectorsPairingState.status === 'waiting'
           ? '<button type="button" class="utility" data-ai-connectors-action="stop-pairing">Stop pairing</button>'
           : ''}
-        ${copyPairingCodeAction}
       </div>
       ${pairingCodeFallback}
     </div>

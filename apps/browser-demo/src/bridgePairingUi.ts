@@ -445,8 +445,7 @@ export function mountPhonePairingPanel(
 }
 
 function scanPairingQrNative(bridge: NativePairBridge): Promise<string> {
-  const fn = bridge.bridgeScanPairingQr;
-  if (!fn) return Promise.reject(new Error('scanner_unavailable'));
+  if (!bridge.bridgeScanPairingQr) return Promise.reject(new Error('scanner_unavailable'));
   installNativeQrScannerCallbackBridge();
   const requestId = `pairing-qr-${Date.now()}-${nativeQrScannerNonce++}`;
   logDeviceAgentDiag('info', 'bridge-pair.native_scan_start', { requestId });
@@ -458,7 +457,10 @@ function scanPairingQrNative(bridge: NativePairBridge): Promise<string> {
     }, NATIVE_QR_SCAN_TIMEOUT_MS);
     nativeQrScannerPending.set(requestId, { resolve, reject, timer });
     try {
-      fn(requestId);
+      // Call AS a method on the bridge so `this` is the injected `AgenticAndroid`
+      // object. Android WebView rejects detached @JavascriptInterface calls with
+      // "Java bridge method can't be invoked on a non-injected object".
+      bridge.bridgeScanPairingQr!(requestId);
       logDeviceAgentDiag('info', 'bridge-pair.native_scan_invoked', { requestId });
     } catch (err) {
       globalThis.clearTimeout(timer);

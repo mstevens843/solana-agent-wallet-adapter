@@ -79,6 +79,18 @@ describe('aiConnectorsPairingCodeActionState', () => {
       pairingStatus: 'starting',
     })).toMatchObject({ visible: true, disabled: true });
   });
+
+  it('hides copy when the connector is not ready and no pairing code exists', () => {
+    expect(aiConnectorsPairingCodeActionState({
+      canStartPairing: false,
+      pairingCode: '',
+      pairingStatus: 'idle',
+    })).toEqual({
+      visible: false,
+      disabled: false,
+      label: 'Generate & copy pairing code',
+    });
+  });
 });
 
 describe('aiConnectorWebsiteSetupState', () => {

@@ -161,7 +161,12 @@ describe('mountPhonePairingPanel', () => {
     });
     const onPaired = vi.fn();
     let scanRequestId = '';
-    const bridgeScanPairingQr = vi.fn((requestId: string) => {
+    // Regular function (not arrow) so `this` is observable: Android WebView requires
+    // bridge methods to be invoked as a property of the injected object. A detached
+    // call would land here with `this === undefined`, mirroring the native rejection.
+    let scanThis: unknown;
+    const bridgeScanPairingQr = vi.fn(function (this: unknown, requestId: string) {
+      scanThis = this;
       scanRequestId = requestId;
     });
     const bridgePair = vi.fn((_json: string) => JSON.stringify({ ok: true, status: 'pairing' }));
@@ -174,6 +179,7 @@ describe('mountPhonePairingPanel', () => {
     await flushMicrotasks();
 
     expect(bridgeScanPairingQr).toHaveBeenCalledTimes(1);
+    expect(scanThis).toBe(bridge);
     expect(scanRequestId).toMatch(/^pairing-qr-/);
     expect(logged(logs.info, 'bridge-pair.scan_click')).toBe(true);
     expect(logged(logs.info, 'nativeScanner=true')).toBe(true);
