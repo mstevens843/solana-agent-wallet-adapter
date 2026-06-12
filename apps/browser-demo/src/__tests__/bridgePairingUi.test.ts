@@ -97,6 +97,18 @@ async function flushMicrotasks(): Promise<void> {
   }
 }
 
+function captureDiagLogs(): { info: ReturnType<typeof vi.spyOn>; warn: ReturnType<typeof vi.spyOn> } {
+  vi.stubGlobal('__AGENTIC_DEVICE_AGENT_DEBUG__', true);
+  return {
+    info: vi.spyOn(console, 'info').mockImplementation(() => undefined),
+    warn: vi.spyOn(console, 'warn').mockImplementation(() => undefined),
+  };
+}
+
+function logged(spy: ReturnType<typeof vi.spyOn>, pattern: string): boolean {
+  return spy.mock.calls.some((call: unknown[]) => String(call[0]).includes(pattern));
+}
+
 describe('mountPhonePairingPanel', () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -106,6 +118,7 @@ describe('mountPhonePairingPanel', () => {
 
   it('shows a clear error for invalid pasted pairing codes', () => {
     const document = installFakeDocument();
+    const logs = captureDiagLogs();
     const container = document.createElement('div');
     const cleanup = mountPhonePairingPanel(container as unknown as HTMLElement, {
       bridge: undefined,
@@ -116,6 +129,9 @@ describe('mountPhonePairingPanel', () => {
     elementsByTag(container, 'button')[1]!.click();
 
     expect(container.lastElementChild?.textContent).toContain('valid');
+    expect(logged(logs.info, 'bridge-pair.phone_panel_mount')).toBe(true);
+    expect(logged(logs.info, 'bridge-pair.paste_click chars=21')).toBe(true);
+    expect(logged(logs.warn, 'bridge-pair.paste_bad_payload chars=21')).toBe(true);
     cleanup();
   });
 
@@ -137,6 +153,7 @@ describe('mountPhonePairingPanel', () => {
   it('uses the native Android QR scanner when the bridge exposes it', async () => {
     vi.useFakeTimers();
     const document = installFakeDocument();
+    const logs = captureDiagLogs();
     vi.stubGlobal('crypto', {
       subtle: {
         digest: vi.fn(async () => new ArrayBuffer(32)),
@@ -158,6 +175,8 @@ describe('mountPhonePairingPanel', () => {
 
     expect(bridgeScanPairingQr).toHaveBeenCalledTimes(1);
     expect(scanRequestId).toMatch(/^pairing-qr-/);
+    expect(logged(logs.info, 'bridge-pair.scan_click')).toBe(true);
+    expect(logged(logs.info, 'nativeScanner=true')).toBe(true);
 
     const callbackBridge = (globalThis as unknown as {
       __agenticAndroidQrScannerBridge: {
@@ -175,6 +194,8 @@ describe('mountPhonePairingPanel', () => {
     await flushMicrotasks();
 
     expect(bridgePair).toHaveBeenCalledTimes(1);
+    expect(logged(logs.info, 'bridge-pair.native_scan_payload_ok')).toBe(true);
+    expect(logged(logs.info, 'relayHost=agentic-signer.com')).toBe(true);
     await vi.advanceTimersByTimeAsync(1200);
     expect(bridgePairStatus).toHaveBeenCalled();
     expect(onPaired).toHaveBeenCalledTimes(1);

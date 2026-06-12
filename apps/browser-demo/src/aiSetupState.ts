@@ -16,6 +16,7 @@ export interface AiPathSetupSnapshot {
   baseUrl?: string;
   model?: string;
   detail?: string;
+  logoHint?: AiRailLogoHint;
 }
 
 export interface AiSetupInventory {
@@ -26,6 +27,21 @@ export interface AiSetupInventory {
 }
 
 export type AiPathClearability = Record<AiPathMode, boolean>;
+export type AiRailLogoHint = 'agentRouter' | 'agentic' | 'claude' | 'codex' | 'gemini';
+
+export interface AiRailIdentity {
+  path: AiPathMode;
+  pathLabel: string;
+  provider: string;
+  model: string;
+  detail: string;
+  configured: boolean;
+  inactive: boolean;
+  statusLabel: string;
+  statusTone: 'confirmed' | 'configured' | 'inactive' | 'optional';
+  statusTitle: string;
+  logoHint: AiRailLogoHint;
+}
 
 export function directAiKeyStaged(input: {
   apiKey: string;
@@ -86,18 +102,29 @@ export function bridgeAiSetupSnapshot(input: {
       provider,
       model,
       detail: configured ? `${provider} - ${model}` : undefined,
+      logoHint: aiProviderLogoHint({
+        engine: input.status.engine,
+        connector: input.status.connector,
+      }),
     };
   }
+  const provider = input.status?.provider ?? input.status?.apiFormat;
+  const model = input.status?.model;
   return {
     configured,
     runnable: Boolean(input.status?.available),
-    provider: input.status?.provider ?? input.status?.apiFormat,
+    provider,
     apiFormat: input.status?.apiFormat,
     baseUrl: input.status?.baseUrl,
-    model: input.status?.model,
+    model,
     detail: configured
-      ? `${input.status?.provider ?? input.status?.apiFormat ?? 'AI'} - ${input.status?.model ?? 'model configured'}`
+      ? `${provider ?? 'AI'} - ${model ?? 'model configured'}`
       : undefined,
+    logoHint: aiProviderLogoHint({
+      provider,
+      baseUrl: input.status?.baseUrl,
+      model,
+    }),
   };
 }
 
@@ -135,15 +162,126 @@ export function deviceAgentSetupSnapshot(input: {
   visible: boolean;
 }): Omit<AiPathSetupSnapshot, 'mode' | 'active'> {
   const configured = Boolean(input.visible && input.status?.available && input.status.configured);
+  const provider = input.status?.provider ?? input.status?.apiFormat;
+  const model = input.status?.model;
   return {
     configured,
     runnable: configured && deviceAgentStatusReadyForDrafts(input.status),
-    provider: input.status?.provider ?? input.status?.apiFormat,
+    provider,
     apiFormat: input.status?.apiFormat,
     baseUrl: input.status?.baseUrl,
-    model: input.status?.model,
+    model,
     detail: configured
-      ? `${input.status?.provider ?? input.status?.apiFormat ?? 'AI'} - ${input.status?.model ?? 'model configured'}`
+      ? `${provider ?? 'AI'} - ${model ?? 'model configured'}`
       : undefined,
+    logoHint: aiProviderLogoHint({
+      provider,
+      baseUrl: input.status?.baseUrl,
+      model,
+    }),
   };
+}
+
+export function aiProviderLogoHint(input: {
+  provider?: string;
+  baseUrl?: string;
+  model?: string;
+  engine?: BridgeAiStatus['engine'];
+  connector?: BridgeAiStatus['connector'];
+}): AiRailLogoHint {
+  if (input.engine === 'connector') {
+    switch (input.connector) {
+      case 'codex':
+        return 'codex';
+      case 'gemini':
+      case 'antigravity':
+        return 'gemini';
+      case 'claude':
+        return 'claude';
+      default:
+        return 'agentRouter';
+    }
+  }
+
+  const provider = normalizeAiRailText(input.provider);
+  const baseUrl = normalizeAiRailText(input.baseUrl);
+  const model = normalizeAiRailText(input.model);
+  const joined = `${provider} ${baseUrl} ${model}`.trim();
+
+  if (/\b(anthropic|claude)\b/u.test(joined)) return 'claude';
+  if (/\b(gemini|google|antigravity)\b/u.test(joined)) return 'gemini';
+  if (/\b(openrouter|openai compatible|openai-compatible|custom)\b/u.test(joined)) return 'agentRouter';
+  if (/\b(openai|codex|gpt-[\w.-]+)\b/u.test(joined)) return 'codex';
+  return 'agentic';
+}
+
+export function buildAiRailIdentity(input: {
+  inventory: AiSetupInventory;
+  pathLabels: Record<AiPathMode, string>;
+  activeFallback: {
+    provider?: string;
+    model?: string;
+    logoHint?: AiRailLogoHint;
+  };
+  readinessLabel: string;
+  confirmationLabel: string;
+  confirmed: boolean;
+}): AiRailIdentity {
+  const active = input.inventory.active;
+  const inactiveConfigured = input.inventory.inactiveConfigured[0];
+  const display = active.configured ? active : inactiveConfigured ?? active;
+  const inactive = !active.configured && Boolean(inactiveConfigured);
+  const pathLabel = input.pathLabels[display.mode] ?? display.mode;
+  const activePathLabel = input.pathLabels[active.mode] ?? active.mode;
+  const provider = cleanAiRailValue(display.provider)
+    ?? cleanAiRailValue(input.activeFallback.provider)
+    ?? 'AI provider';
+  const model = cleanAiRailValue(display.model)
+    ?? cleanAiRailValue(input.activeFallback.model)
+    ?? 'model not selected';
+  const configured = Boolean(display.configured);
+  const statusLabel = input.confirmed && active.configured && !inactive
+    ? 'confirmed'
+    : active.configured
+      ? 'configured'
+      : inactive
+        ? 'configured inactive'
+        : 'not configured';
+  const statusTone = statusLabel === 'confirmed'
+    ? 'confirmed'
+    : statusLabel === 'configured'
+      ? 'configured'
+      : statusLabel === 'configured inactive'
+        ? 'inactive'
+        : 'optional';
+  const statusTitle = active.configured
+    ? `${input.readinessLabel} - ${input.confirmationLabel}`
+    : inactive
+      ? `${pathLabel} configured; ${activePathLabel} selected.`
+      : 'AI review optional';
+
+  return {
+    path: display.mode,
+    pathLabel,
+    provider,
+    model,
+    detail: `${model} - ${pathLabel}`,
+    configured,
+    inactive,
+    statusLabel,
+    statusTone,
+    statusTitle,
+    logoHint: display.logoHint
+      ?? input.activeFallback.logoHint
+      ?? aiProviderLogoHint({ provider, model }),
+  };
+}
+
+function cleanAiRailValue(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
+}
+
+function normalizeAiRailText(value: string | undefined): string {
+  return (value ?? '').trim().toLowerCase().replace(/[_./:-]+/gu, ' ');
 }

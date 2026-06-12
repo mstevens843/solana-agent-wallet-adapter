@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  aiProviderLogoHint,
   bridgeAiSetupSnapshot,
+  buildAiRailIdentity,
   buildAiSetupInventory,
   deviceAgentSetupSnapshot,
   directAiKeyStaged,
   selectAiKeyClearTarget,
   type AiPathClearability,
+  type AiSetupInventory,
 } from '../aiSetupState.js';
 
 describe('AI setup state helpers', () => {
@@ -16,6 +19,27 @@ describe('AI setup state helpers', () => {
     bridge: false,
     'device-agent': false,
   };
+  const pathLabels = {
+    hosted: 'Hosted BYOK',
+    session: 'Browser Session',
+    bridge: 'Local Bridge',
+    'device-agent': 'Device Agent',
+  };
+
+  function railIdentity(inventory: AiSetupInventory, confirmed = false) {
+    return buildAiRailIdentity({
+      inventory,
+      pathLabels,
+      activeFallback: {
+        provider: 'OpenAI',
+        model: 'gpt-5',
+        logoHint: 'codex',
+      },
+      readinessLabel: 'Device Agent running',
+      confirmationLabel: 'Runtime ready',
+      confirmed,
+    });
+  }
 
   it('stages a direct AI key from provider/model/key readiness', () => {
     expect(directAiKeyStaged({
@@ -168,6 +192,7 @@ describe('AI setup state helpers', () => {
       provider: 'Codex (ChatGPT plan)',
       model: 'signed in',
       detail: 'Codex (ChatGPT plan) - signed in',
+      logoHint: 'codex',
     });
 
     expect(bridgeAiSetupSnapshot({
@@ -186,6 +211,7 @@ describe('AI setup state helpers', () => {
       provider: 'Gemini (Google AI Pro/Ultra)',
       model: 'CLI not installed',
       detail: 'Gemini (Google AI Pro/Ultra) - CLI not installed',
+      logoHint: 'gemini',
     });
   });
 
@@ -218,5 +244,93 @@ describe('AI setup state helpers', () => {
         runtime: 'android-native',
       },
     }).runnable).toBe(false);
+  });
+
+  it('builds the rail identity from active configured Device Agent details', () => {
+    const inventory = buildAiSetupInventory({
+      activeMode: 'device-agent',
+      hosted: { configured: false, runnable: false },
+      session: { configured: false, runnable: false },
+      bridge: { configured: false, runnable: false },
+      deviceAgent: {
+        configured: true,
+        runnable: true,
+        provider: 'openai',
+        model: 'gpt-5',
+        logoHint: 'codex',
+      },
+    });
+
+    expect(railIdentity(inventory, true)).toMatchObject({
+      path: 'device-agent',
+      pathLabel: 'Device Agent',
+      provider: 'openai',
+      model: 'gpt-5',
+      detail: 'gpt-5 - Device Agent',
+      statusLabel: 'confirmed',
+      statusTone: 'confirmed',
+      logoHint: 'codex',
+    });
+  });
+
+  it('shows inactive configured AI path details when the selected path is not configured', () => {
+    const inventory = buildAiSetupInventory({
+      activeMode: 'hosted',
+      hosted: {
+        configured: false,
+        runnable: false,
+        provider: 'OpenAI',
+        model: 'gpt-5',
+        logoHint: 'codex',
+      },
+      session: { configured: false, runnable: false },
+      bridge: { configured: false, runnable: false },
+      deviceAgent: {
+        configured: true,
+        runnable: true,
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-5',
+        logoHint: 'claude',
+      },
+    });
+
+    expect(railIdentity(inventory)).toMatchObject({
+      path: 'device-agent',
+      provider: 'anthropic',
+      model: 'claude-sonnet-4-5',
+      detail: 'claude-sonnet-4-5 - Device Agent',
+      inactive: true,
+      statusLabel: 'configured inactive',
+      statusTone: 'inactive',
+      logoHint: 'claude',
+    });
+  });
+
+  it('falls back to selected provider and model when no AI path is configured', () => {
+    const inventory = buildAiSetupInventory({
+      activeMode: 'bridge',
+      hosted: { configured: false, runnable: false },
+      session: { configured: false, runnable: false },
+      bridge: { configured: false, runnable: false },
+      deviceAgent: { configured: false, runnable: false },
+    });
+
+    expect(railIdentity(inventory)).toMatchObject({
+      path: 'bridge',
+      provider: 'OpenAI',
+      model: 'gpt-5',
+      detail: 'gpt-5 - Local Bridge',
+      statusLabel: 'not configured',
+      statusTone: 'optional',
+      logoHint: 'codex',
+    });
+  });
+
+  it('maps AI providers and connector labels to bundled logo hints', () => {
+    expect(aiProviderLogoHint({ provider: 'openai', model: 'gpt-5' })).toBe('codex');
+    expect(aiProviderLogoHint({ provider: 'anthropic', model: 'claude-sonnet-4-5' })).toBe('claude');
+    expect(aiProviderLogoHint({ provider: 'gemini', model: 'gemini-2.5-pro' })).toBe('gemini');
+    expect(aiProviderLogoHint({ provider: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1' })).toBe('agentRouter');
+    expect(aiProviderLogoHint({ engine: 'connector', connector: 'claude' })).toBe('claude');
   });
 });

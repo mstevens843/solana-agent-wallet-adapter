@@ -384,47 +384,151 @@ class MainActivity : FragmentActivity() {
      * via [bridgePairStatusJson].
      */
     private fun startBridgePairing(payloadJson: String): JSONObject {
-        if (!bridgePairingFeatureEnabled()) return JSONObject().put("ok", false).put("error", "not_enabled")
+        if (!bridgePairingFeatureEnabled()) {
+            AgentMwaLog.warn(
+                "MainActivity",
+                "startBridgePairing",
+                "NOT_ENABLED",
+                "pairing payload rejected because feature is disabled",
+                mapOf("payloadBytes" to payloadJson.toByteArray(Charsets.UTF_8).size),
+            )
+            return JSONObject().put("ok", false).put("error", "not_enabled")
+        }
         // Reject re-entry: a second concurrent claim would race the in-progress flag and make
         // bridgePairStatus() report "not pairing" prematurely (JS polls it as source of truth).
-        if (bridgePairInProgress) return JSONObject().put("ok", false).put("error", "already_pairing")
+        if (bridgePairInProgress) {
+            AgentMwaLog.warn(
+                "MainActivity",
+                "startBridgePairing",
+                "ALREADY_PAIRING",
+                "pairing payload rejected because another claim is in flight",
+                mapOf("payloadBytes" to payloadJson.toByteArray(Charsets.UTF_8).size),
+            )
+            return JSONObject().put("ok", false).put("error", "already_pairing")
+        }
         val payload = try {
             JSONObject(payloadJson)
-        } catch (_: Throwable) {
+        } catch (err: Throwable) {
+            AgentMwaLog.warn(
+                "MainActivity",
+                "startBridgePairing",
+                "BAD_JSON",
+                "pairing payload was not valid JSON",
+                mapOf(
+                    "payloadBytes" to payloadJson.toByteArray(Charsets.UTF_8).size,
+                    "class" to err.javaClass.simpleName,
+                ),
+            )
             return JSONObject().put("ok", false).put("error", "bad_payload")
         }
         val relay = payload.optString("relay", "").trim()
         val uuid = payload.optString("uuid", "").trim()
         val token = payload.optString("token", "").trim()
         val version = payload.optInt("v", 1)
+        val tag = bridgePairTag(uuid)
         val e2eeQr = try {
             BridgeE2ee.parseQr(payload.optJSONObject("e2ee"))
-        } catch (_: Throwable) {
+        } catch (err: Throwable) {
+            AgentMwaLog.warn(
+                "MainActivity",
+                "startBridgePairing",
+                "BAD_E2EE",
+                "pairing payload encrypted setup was invalid",
+                mapOf("tag" to tag, "version" to version, "class" to err.javaClass.simpleName),
+            )
             return JSONObject().put("ok", false).put("error", "bad_payload")
         }
+        AgentMwaLog.info(
+            "MainActivity",
+            "startBridgePairing",
+            "PARSED",
+            "pairing payload parsed",
+            mapOf(
+                "tag" to tag,
+                "version" to version,
+                "relayHost" to relayHostForLog(relay),
+                "hasRelay" to relay.isNotEmpty(),
+                "hasUuid" to uuid.isNotEmpty(),
+                "hasToken" to token.isNotEmpty(),
+                "hasE2ee" to (e2eeQr != null),
+                "payloadBytes" to payloadJson.toByteArray(Charsets.UTF_8).size,
+            ),
+        )
         if (version <= 0) {
+            AgentMwaLog.warn(
+                "MainActivity",
+                "startBridgePairing",
+                "BAD_VERSION",
+                "pairing payload version was invalid",
+                mapOf("tag" to tag, "version" to version),
+            )
             return JSONObject().put("ok", false).put("error", "bad_payload")
         }
         if (version >= 2 && e2eeQr == null) {
+            AgentMwaLog.warn(
+                "MainActivity",
+                "startBridgePairing",
+                "E2EE_REQUIRED",
+                "v2 pairing payload omitted encrypted setup",
+                mapOf("tag" to tag, "version" to version),
+            )
             return JSONObject().put("ok", false).put("error", "e2ee_required")
         }
         if (relay.isEmpty() || uuid.isEmpty() || token.isEmpty()) {
+            AgentMwaLog.warn(
+                "MainActivity",
+                "startBridgePairing",
+                "INCOMPLETE",
+                "pairing payload omitted required fields",
+                mapOf(
+                    "tag" to tag,
+                    "hasRelay" to relay.isNotEmpty(),
+                    "hasUuid" to uuid.isNotEmpty(),
+                    "hasToken" to token.isNotEmpty(),
+                ),
+            )
             return JSONObject().put("ok", false).put("error", "incomplete_payload")
         }
         if (!BridgeRelayPolicy.isAllowedRelay(relay)) {
-            AgentMwaLog.warn("MainActivity", "startBridgePairing", "RELAY_REJECTED", "relay host not allowlisted", mapOf("relay" to relay))
+            AgentMwaLog.warn(
+                "MainActivity",
+                "startBridgePairing",
+                "RELAY_REJECTED",
+                "relay host not allowlisted",
+                mapOf("tag" to tag, "relayHost" to relayHostForLog(relay)),
+            )
             return JSONObject().put("ok", false).put("error", "relay_not_allowed")
         }
         bridgePairLastError = null
         bridgePairInProgress = true
+        AgentMwaLog.info(
+            "MainActivity",
+            "startBridgePairing",
+            "CLAIM_START",
+            "pairing claim launched",
+            mapOf("tag" to tag, "relayHost" to relayHostForLog(relay), "hasE2ee" to (e2eeQr != null)),
+        )
         lifecycleScope.launch {
             try {
                 val claim = bridgeAiClient.claim(relay, uuid, token, e2eeQr)
                 bridgePairingStore.save(BridgePairing(relayBaseUrl = relay, pairUuid = uuid, deviceBearer = claim.deviceBearer, e2ee = claim.e2ee))
-                AgentMwaLog.info("MainActivity", "startBridgePairing", "PAIRED", "phone paired to desktop", emptyMap())
+                AgentMwaLog.info(
+                    "MainActivity",
+                    "startBridgePairing",
+                    "PAIRED",
+                    "phone paired to desktop",
+                    mapOf("tag" to tag, "relayHost" to relayHostForLog(relay), "hasE2ee" to (claim.e2ee != null)),
+                )
             } catch (err: Throwable) {
                 bridgePairLastError = err.message ?: "Pairing failed."
-                AgentMwaLog.failure("MainActivity", "startBridgePairing", "FAIL", "pairing claim failed", err)
+                AgentMwaLog.failure(
+                    "MainActivity",
+                    "startBridgePairing",
+                    "FAIL",
+                    "pairing claim failed",
+                    err,
+                    mapOf("tag" to tag, "relayHost" to relayHostForLog(relay)),
+                )
             } finally {
                 bridgePairInProgress = false
             }
@@ -492,6 +596,13 @@ class MainActivity : FragmentActivity() {
      *  on approval (the held [PermissionRequest] stays valid until granted/denied). */
     private fun handleCameraPermissionRequest(request: PermissionRequest) {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            AgentMwaLog.info(
+                "MainActivity",
+                "handleCameraPermissionRequest",
+                "GRANT_EXISTING",
+                "granting WebView camera request with existing OS permission",
+                mapOf("origin" to request.origin.toString()),
+            )
             request.grant(arrayOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE))
             return
         }
@@ -499,6 +610,13 @@ class MainActivity : FragmentActivity() {
         // WebView) is never left hanging.
         pendingCameraPermissionRequest?.deny()
         pendingCameraPermissionRequest = request
+        AgentMwaLog.info(
+            "MainActivity",
+            "handleCameraPermissionRequest",
+            "REQUEST_OS_PERMISSION",
+            "requesting OS camera permission for WebView camera request",
+            mapOf("origin" to request.origin.toString()),
+        )
         ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST_CODE)
     }
 
@@ -517,6 +635,13 @@ class MainActivity : FragmentActivity() {
         val pending = pendingCameraPermissionRequest
         pendingCameraPermissionRequest = null
         val granted = grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED
+        AgentMwaLog.info(
+            "MainActivity",
+            "onRequestPermissionsResult",
+            if (granted) "GRANTED" else "DENIED",
+            "WebView camera permission result received",
+            mapOf("granted" to granted, "hadPendingRequest" to (pending != null)),
+        )
         if (granted) {
             pending?.grant(arrayOf(PermissionRequest.RESOURCE_VIDEO_CAPTURE))
         } else {
@@ -1051,7 +1176,15 @@ class MainActivity : FragmentActivity() {
         @JavascriptInterface
         fun bridgePairEnabled(): Boolean = safeBridge("bridgePairEnabled", false) {
             if (!checkTrustedOrigin("bridgePairEnabled")) return@safeBridge false
-            activity.bridgePairingFeatureEnabled()
+            val enabled = activity.bridgePairingFeatureEnabled()
+            AgentMwaLog.debug(
+                "AndroidBridge",
+                "bridgePairEnabled",
+                "DONE",
+                "bridge pairing feature flag read",
+                mapOf("enabled" to enabled),
+            )
+            enabled
         }
 
         /**
@@ -1064,7 +1197,26 @@ class MainActivity : FragmentActivity() {
         fun bridgePair(payloadJson: String): String =
             safeBridge("bridgePair", "{\"ok\":false,\"error\":\"bridge_unavailable\"}") {
                 if (!checkTrustedOrigin("bridgePair")) return@safeBridge "{\"ok\":false,\"error\":\"origin\"}"
-                activity.startBridgePairing(payloadJson).toString()
+                AgentMwaLog.info(
+                    "AndroidBridge",
+                    "bridgePair",
+                    "START",
+                    "pairing payload received from web",
+                    mapOf("payloadBytes" to payloadJson.toByteArray(Charsets.UTF_8).size),
+                )
+                val result = activity.startBridgePairing(payloadJson)
+                AgentMwaLog.info(
+                    "AndroidBridge",
+                    "bridgePair",
+                    "DONE",
+                    "pairing payload returned immediate status",
+                    mapOf(
+                        "ok" to result.optBoolean("ok", false),
+                        "status" to result.optString("status", ""),
+                        "error" to result.optString("error", ""),
+                    ),
+                )
+                result.toString()
             }
 
         @JavascriptInterface
@@ -1125,6 +1277,13 @@ class MainActivity : FragmentActivity() {
                     )
                     return
                 }
+                AgentMwaLog.info(
+                    "AndroidBridge",
+                    "bridgeScanPairingQr",
+                    "ACCEPT",
+                    "QR scanner bridge request accepted",
+                    mapOf("requestId" to requestId),
+                )
                 activity.startPairingQrScanner(requestId)
             } catch (err: Throwable) {
                 AgentMwaLog.failure(
@@ -1146,7 +1305,20 @@ class MainActivity : FragmentActivity() {
         @JavascriptInterface
         fun bridgePairStatus(): String = safeBridge("bridgePairStatus", "{}") {
             if (!checkTrustedOrigin("bridgePairStatus")) return@safeBridge "{}"
-            activity.bridgePairStatusJson().toString()
+            val status = activity.bridgePairStatusJson()
+            AgentMwaLog.debug(
+                "AndroidBridge",
+                "bridgePairStatus",
+                "DONE",
+                "bridge pairing status read",
+                mapOf(
+                    "paired" to status.optBoolean("paired", false),
+                    "pairing" to status.optBoolean("pairing", false),
+                    "enabled" to status.optBoolean("enabled", false),
+                    "hasError" to !status.isNull("error"),
+                ),
+            )
+            status.toString()
         }
 
         /** {paired, desktopOnline}. desktopOnline is the LAST async probe (non-blocking); calling this
@@ -2210,5 +2382,14 @@ class MainActivity : FragmentActivity() {
                 .digest(bytes)
                 .take(8)
                 .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+
+        private fun bridgePairTag(uuid: String): String =
+            if (uuid.isBlank()) "" else MessageDigest.getInstance("SHA-256")
+                .digest(uuid.toByteArray(Charsets.UTF_8))
+                .take(4)
+                .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+
+        private fun relayHostForLog(relay: String): String =
+            Uri.parse(relay).host?.lowercase().orEmpty()
     }
 }

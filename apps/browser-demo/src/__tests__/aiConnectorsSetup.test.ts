@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  aiConnectorWebsiteSetupState,
   aiConnectorsCommand,
+  aiConnectorsPairingCodeActionState,
   aiConnectorsReadinessFromBridgeStatus,
+  aiConnectorsWebsiteCommand,
   normalizeAiConnectorsConnector,
 } from '../aiConnectorsSetup.js';
 
@@ -20,6 +23,20 @@ describe('aiConnectorsCommand', () => {
   });
 });
 
+describe('aiConnectorsWebsiteCommand', () => {
+  it('builds the website connector setup command without opening the Android QR page', () => {
+    expect(aiConnectorsWebsiteCommand('codex')).toBe(
+      'npm exec --yes --package @solana-agent-wallet-adapter/cli -- solana-agent-wallet agent-setup --engine connector --connector codex',
+    );
+    expect(aiConnectorsWebsiteCommand('claude')).toBe(
+      'npm exec --yes --package @solana-agent-wallet-adapter/cli -- solana-agent-wallet agent-setup --engine connector --connector claude',
+    );
+    expect(aiConnectorsWebsiteCommand('gemini')).toBe(
+      'npm exec --yes --package @solana-agent-wallet-adapter/cli -- solana-agent-wallet agent-setup --engine connector --connector gemini',
+    );
+  });
+});
+
 describe('normalizeAiConnectorsConnector', () => {
   it('accepts only the Android connector setup pilot connectors', () => {
     expect(normalizeAiConnectorsConnector('codex')).toBe('codex');
@@ -27,6 +44,120 @@ describe('normalizeAiConnectorsConnector', () => {
     expect(normalizeAiConnectorsConnector('claude')).toBe('claude');
     expect(normalizeAiConnectorsConnector('antigravity')).toBeNull();
     expect(normalizeAiConnectorsConnector('openai')).toBeNull();
+  });
+});
+
+describe('aiConnectorsPairingCodeActionState', () => {
+  it('shows generate-and-copy when the connector is ready but no pairing code exists', () => {
+    expect(aiConnectorsPairingCodeActionState({
+      canStartPairing: true,
+      pairingCode: '',
+      pairingStatus: 'idle',
+    })).toEqual({
+      visible: true,
+      disabled: false,
+      label: 'Generate & copy pairing code',
+    });
+  });
+
+  it('keeps copy visible for an existing code even after pairing expires or readiness changes', () => {
+    expect(aiConnectorsPairingCodeActionState({
+      canStartPairing: false,
+      pairingCode: '{"v":2,"relay":"https://agentic-signer.com","uuid":"u","token":"t","e2ee":{"alg":"x","desktopPub":"d","pairSecret":"p"}}',
+      pairingStatus: 'expired',
+    })).toEqual({
+      visible: true,
+      disabled: false,
+      label: 'Copy pairing code',
+    });
+  });
+
+  it('disables copy only while a pairing payload is being minted', () => {
+    expect(aiConnectorsPairingCodeActionState({
+      canStartPairing: true,
+      pairingCode: '',
+      pairingStatus: 'starting',
+    })).toMatchObject({ visible: true, disabled: true });
+  });
+});
+
+describe('aiConnectorWebsiteSetupState', () => {
+  it('reports connected only when the selected connector is connected on the bridge', () => {
+    const state = aiConnectorWebsiteSetupState({
+      connector: 'codex',
+      hasBridgeCredentials: true,
+      status: {
+        available: true,
+        configured: true,
+        source: 'session',
+        engine: 'connector',
+        connector: 'codex',
+        connectorLabel: 'Codex (ChatGPT plan)',
+        connectorAuthStatus: 'connected',
+      },
+    });
+
+    expect(state).toMatchObject({
+      status: 'ready',
+      connected: true,
+      tone: 'ready',
+      title: 'Codex (ChatGPT plan) is connected.',
+    });
+  });
+
+  it('keeps the website connector panel actionable while the bridge is offline', () => {
+    const state = aiConnectorWebsiteSetupState({
+      connector: 'claude',
+      hasBridgeCredentials: true,
+      failure: 'offline',
+    });
+
+    expect(state.status).toBe('offline');
+    expect(state.connected).toBe(false);
+    expect(state.detail).toContain('Terminal');
+  });
+
+  it('distinguishes wrong connector, missing CLI, and sign-in-needed states', () => {
+    const wrongConnector = aiConnectorWebsiteSetupState({
+      connector: 'codex',
+      hasBridgeCredentials: true,
+      status: {
+        available: true,
+        configured: true,
+        source: 'session',
+        engine: 'connector',
+        connector: 'gemini',
+        connectorAuthStatus: 'connected',
+      },
+    });
+    const missingCli = aiConnectorWebsiteSetupState({
+      connector: 'gemini',
+      hasBridgeCredentials: true,
+      status: {
+        available: false,
+        configured: true,
+        source: 'session',
+        engine: 'connector',
+        connector: 'gemini',
+        connectorAuthStatus: 'binary-not-found',
+      },
+    });
+    const needsAuth = aiConnectorWebsiteSetupState({
+      connector: 'claude',
+      hasBridgeCredentials: true,
+      status: {
+        available: false,
+        configured: true,
+        source: 'session',
+        engine: 'connector',
+        connector: 'claude',
+        connectorAuthStatus: 'needs-auth',
+      },
+    });
+
+    expect(wrongConnector.status).toBe('wrong-connector');
+    expect(missingCli.status).toBe('binary-not-found');
+    expect(needsAuth.status).toBe('needs-auth');
   });
 });
 

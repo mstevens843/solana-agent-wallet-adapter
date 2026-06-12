@@ -3,6 +3,9 @@ import { aiConnectorPreset, type AiConnector, type BridgeAiStatus } from './plan
 export const AI_CONNECTORS_DEFAULT_COMMAND =
   'npm exec --yes --package @solana-agent-wallet-adapter/cli -- solana-agent-wallet aiconnectors --connector codex';
 
+export const AI_CONNECTORS_WEBSITE_DEFAULT_COMMAND =
+  'npm exec --yes --package @solana-agent-wallet-adapter/cli -- solana-agent-wallet agent-setup --engine connector --connector codex';
+
 export type AiConnectorsReadinessStatus =
   | 'missing-credentials'
   | 'checking'
@@ -26,6 +29,34 @@ export interface AiConnectorsReadiness {
   tone: AiConnectorsReadinessTone;
 }
 
+export interface AiConnectorWebsiteSetupState {
+  status: AiConnectorsReadinessStatus;
+  connector: AiConnector;
+  title: string;
+  detail: string;
+  connected: boolean;
+  tone: AiConnectorsReadinessTone;
+}
+
+export interface AiConnectorsPairingCodeActionState {
+  visible: boolean;
+  disabled: boolean;
+  label: 'Copy pairing code' | 'Generate & copy pairing code';
+}
+
+export function aiConnectorsPairingCodeActionState(input: {
+  canStartPairing: boolean;
+  pairingCode: string;
+  pairingStatus: string;
+}): AiConnectorsPairingCodeActionState {
+  const hasPairingCode = input.pairingCode.trim().length > 0;
+  return {
+    visible: input.canStartPairing || hasPairingCode,
+    disabled: input.pairingStatus === 'starting',
+    label: hasPairingCode ? 'Copy pairing code' : 'Generate & copy pairing code',
+  };
+}
+
 export function normalizeAiConnectorsConnector(value: string | null | undefined): AiConnector | null {
   return value === 'codex' || value === 'gemini' || value === 'claude' ? value : null;
 }
@@ -34,6 +65,132 @@ export function aiConnectorsCommand(connector: AiConnector): string {
   return connector === 'codex'
     ? AI_CONNECTORS_DEFAULT_COMMAND
     : `npm exec --yes --package @solana-agent-wallet-adapter/cli -- solana-agent-wallet aiconnectors --connector ${connector}`;
+}
+
+export function aiConnectorsWebsiteCommand(connector: AiConnector): string {
+  return connector === 'codex'
+    ? AI_CONNECTORS_WEBSITE_DEFAULT_COMMAND
+    : `npm exec --yes --package @solana-agent-wallet-adapter/cli -- solana-agent-wallet agent-setup --engine connector --connector ${connector}`;
+}
+
+export function aiConnectorWebsiteSetupState(input: {
+  connector: AiConnector;
+  hasBridgeCredentials: boolean;
+  status?: BridgeAiStatus | null;
+  checking?: boolean;
+  failure?: 'offline' | 'unauthorized' | 'error';
+  failureMessage?: string;
+}): AiConnectorWebsiteSetupState {
+  const selectedLabel = aiConnectorPreset(input.connector).label;
+  if (!input.hasBridgeCredentials) {
+    return {
+      status: 'missing-credentials',
+      connector: input.connector,
+      title: 'Run the command first.',
+      detail: 'Run the copied connector command in Terminal, then refresh status here.',
+      connected: false,
+      tone: 'pending',
+    };
+  }
+
+  if (input.checking) {
+    return {
+      status: 'checking',
+      connector: input.connector,
+      title: `Checking ${selectedLabel}.`,
+      detail: 'Confirming the local bridge is running and set to this subscription connector.',
+      connected: false,
+      tone: 'pending',
+    };
+  }
+
+  if (input.failure === 'unauthorized') {
+    return {
+      status: 'unauthorized',
+      connector: input.connector,
+      title: 'Connector credentials expired.',
+      detail: 'Rerun the connector command so this page and the local bridge use the same token.',
+      connected: false,
+      tone: 'error',
+    };
+  }
+
+  if (input.failure === 'offline') {
+    return {
+      status: 'offline',
+      connector: input.connector,
+      title: 'Connector bridge not reachable.',
+      detail: 'Paste the connector command in Terminal, keep it running, then refresh status.',
+      connected: false,
+      tone: 'error',
+    };
+  }
+
+  if (input.failure === 'error') {
+    return {
+      status: 'error',
+      connector: input.connector,
+      title: 'Could not check connector.',
+      detail: input.failureMessage || 'Refresh status after rerunning the connector command.',
+      connected: false,
+      tone: 'error',
+    };
+  }
+
+  const status = input.status;
+  if (!status || status.engine !== 'connector' || !status.configured) {
+    return {
+      status: 'not-configured',
+      connector: input.connector,
+      title: 'Plan Connector is not selected.',
+      detail: `Run the command for ${selectedLabel} so the local bridge uses a subscription connector instead of an API key.`,
+      connected: false,
+      tone: 'warn',
+    };
+  }
+
+  if (status.connector !== input.connector) {
+    const actualLabel = status.connector ? aiConnectorPreset(status.connector).label : 'another connector';
+    return {
+      status: 'wrong-connector',
+      connector: input.connector,
+      title: `Bridge is set to ${actualLabel}.`,
+      detail: `Run the command for ${selectedLabel}, then refresh status here.`,
+      connected: false,
+      tone: 'warn',
+    };
+  }
+
+  if (status.connectorAuthStatus === 'binary-not-found') {
+    return {
+      status: 'binary-not-found',
+      connector: input.connector,
+      title: `${selectedLabel} CLI not found.`,
+      detail: `Install or repair ${selectedLabel} on this computer, then rerun the connector command.`,
+      connected: false,
+      tone: 'warn',
+    };
+  }
+
+  if (status.available && status.connectorAuthStatus === 'connected') {
+    return {
+      status: 'ready',
+      connector: input.connector,
+      title: `${status.connectorLabel || selectedLabel} is connected.`,
+      detail: 'Website AI review will use this computer connector. Workflow approval and signing stay separate.',
+      connected: true,
+      tone: 'ready',
+    };
+  }
+
+  return {
+    status: 'needs-auth',
+    connector: input.connector,
+    title: `${selectedLabel} sign-in needed.`,
+    detail: `Sign in to ${selectedLabel} on this computer, then refresh status here.`,
+    connected: false,
+    tone: 'warn',
+  };
 }
 
 export function aiConnectorsReadinessFromBridgeStatus(input: {

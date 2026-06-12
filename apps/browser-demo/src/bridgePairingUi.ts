@@ -18,6 +18,7 @@ import {
   renderPairingQrDataUrl,
   startPhonePairing,
   readPhonePairStatus,
+  pairTag,
 } from './bridgePairing.js';
 import { logDeviceAgentDiag } from './deviceAgent/runtime/diagnosticLog.js';
 
@@ -241,6 +242,11 @@ export function mountPhonePairingPanel(
   deps: PhonePairingDeps,
   options: PhonePairingPanelOptions = {},
 ): () => void {
+  logDeviceAgentDiag('info', 'bridge-pair.phone_panel_mount', {
+    nativeScanner: Boolean(deps.bridge?.bridgeScanPairingQr),
+    nativePair: Boolean(deps.bridge?.bridgePair),
+    nativeStatus: Boolean(deps.bridge?.bridgePairStatus),
+  });
   container.innerHTML = '';
   container.classList.add('phone-pairing-panel');
   const intro = document.createElement('p');
@@ -276,12 +282,22 @@ export function mountPhonePairingPanel(
   };
 
   const beginPairing = async (payload: PairingPayload) => {
+    const tag = await pairTag(payload.uuid);
+    logDeviceAgentDiag('info', 'bridge-pair.phone_pair_begin', {
+      tag,
+      relayHost: relayHostForLog(payload.relay),
+      e2ee: Boolean(payload.e2ee),
+    });
     cleanup();
     video.style.display = 'none';
     status.textContent = 'Pairing…';
     status.style.color = '#bcd3c7';
     const result = await startPhonePairing(deps.bridge, payload);
     if (!result.ok) {
+      logDeviceAgentDiag('warn', 'bridge-pair.phone_pair_start_failed', {
+        tag,
+        error: result.error ?? '',
+      });
       status.textContent = pairErrorMessage(result.error);
       status.style.color = '#ffb27a';
       return;
@@ -291,12 +307,17 @@ export function mountPhonePairingPanel(
       if (s.paired) {
         if (polling) clearInterval(polling);
         polling = null;
+        logDeviceAgentDiag('info', 'bridge-pair.phone_pair_status_paired', { tag });
         status.textContent = options.connectedText ?? '✓ Paired. AI now runs on your computer’s plan.';
         status.style.color = '#5fe3a1';
         deps.onPaired();
       } else if (s.error) {
         if (polling) clearInterval(polling);
         polling = null;
+        logDeviceAgentDiag('warn', 'bridge-pair.phone_pair_status_error', {
+          tag,
+          error: s.error,
+        });
         status.textContent = pairErrorMessage(s.error);
         status.style.color = '#ffb27a';
       }
@@ -304,16 +325,35 @@ export function mountPhonePairingPanel(
   };
 
   pasteBtn.addEventListener('click', () => {
+    const raw = pasteArea.value;
+    logDeviceAgentDiag('info', 'bridge-pair.paste_click', { chars: raw.length });
     const payload = parsePairingPayload(pasteArea.value);
     if (!payload) {
+      logDeviceAgentDiag('warn', 'bridge-pair.paste_bad_payload', { chars: raw.length });
       status.textContent = options.invalidCodeText ?? 'That code isn’t valid. Copy the whole pairing code from the computer.';
       status.style.color = '#ffb27a';
       return;
     }
+    void pairTag(payload.uuid).then((tag) => {
+      logDeviceAgentDiag('info', 'bridge-pair.paste_payload_ok', {
+        tag,
+        relayHost: relayHostForLog(payload.relay),
+        e2ee: Boolean(payload.e2ee),
+      });
+    }).catch(() => undefined);
     void beginPairing(payload);
   });
 
   scanBtn.addEventListener('click', async () => {
+    const Detector = (globalThis as Record<string, unknown>).BarcodeDetector as
+      | (new (opts?: { formats?: string[] }) => { detect: (src: CanvasImageSource) => Promise<Array<{ rawValue: string }>> })
+      | undefined;
+    const browserMedia = typeof navigator !== 'undefined' && Boolean(navigator.mediaDevices?.getUserMedia);
+    logDeviceAgentDiag('info', 'bridge-pair.scan_click', {
+      nativeScanner: Boolean(deps.bridge?.bridgeScanPairingQr),
+      browserDetector: Boolean(Detector),
+      browserMedia,
+    });
     if (deps.bridge?.bridgeScanPairingQr) {
       scanBtn.disabled = true;
       status.textContent = 'Opening camera…';
@@ -329,6 +369,12 @@ export function mountPhonePairingPanel(
           status.style.color = '#ffb27a';
           return;
         }
+        const tag = await pairTag(payload.uuid);
+        logDeviceAgentDiag('info', 'bridge-pair.native_scan_payload_ok', {
+          tag,
+          relayHost: relayHostForLog(payload.relay),
+          e2ee: Boolean(payload.e2ee),
+        });
         void beginPairing(payload);
       } catch (err) {
         const code = err instanceof Error ? err.message : String(err);
@@ -341,15 +387,17 @@ export function mountPhonePairingPanel(
       return;
     }
 
-    const Detector = (globalThis as Record<string, unknown>).BarcodeDetector as
-      | (new (opts?: { formats?: string[] }) => { detect: (src: CanvasImageSource) => Promise<Array<{ rawValue: string }>> })
-      | undefined;
-    if (!Detector || !navigator.mediaDevices?.getUserMedia) {
+    if (!Detector || !browserMedia) {
+      logDeviceAgentDiag('warn', 'bridge-pair.camera_unavailable', {
+        browserDetector: Boolean(Detector),
+        browserMedia,
+      });
       status.textContent = 'Camera scanning isn’t available here — paste the code instead.';
       status.style.color = '#ffb27a';
       return;
     }
     try {
+      logDeviceAgentDiag('info', 'bridge-pair.camera_get_user_media_start', {});
       stream = await navigator.mediaDevices.getUserMedia({
         video: {
           facingMode: { ideal: 'environment' },
@@ -362,6 +410,7 @@ export function mountPhonePairingPanel(
       video.style.display = 'block';
       video.setAttribute('controls', 'false');
       await video.play();
+      logDeviceAgentDiag('info', 'bridge-pair.camera_stream_ready', {});
       const detector = new Detector({ formats: ['qr_code'] });
       scanning = true;
       const tick = async () => {
@@ -370,6 +419,12 @@ export function mountPhonePairingPanel(
           const codes = await detector.detect(video);
           const payload = codes.length ? parsePairingPayload(codes[0]!.rawValue) : null;
           if (payload) {
+            const tag = await pairTag(payload.uuid);
+            logDeviceAgentDiag('info', 'bridge-pair.camera_payload_ok', {
+              tag,
+              relayHost: relayHostForLog(payload.relay),
+              e2ee: Boolean(payload.e2ee),
+            });
             void beginPairing(payload);
             return;
           }
@@ -484,6 +539,14 @@ function nativeQrScanErrorMessage(code: string): string {
       return 'Scanner did not return a QR code — scan again or paste the code instead.';
     default:
       return 'Couldn’t scan the QR — paste the code instead.';
+  }
+}
+
+function relayHostForLog(relay: string): string {
+  try {
+    return new URL(relay).host;
+  } catch {
+    return 'invalid';
   }
 }
 
