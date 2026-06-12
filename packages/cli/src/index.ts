@@ -2,7 +2,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
 import { chmod, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { dirname, extname, join, normalize, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1952,6 +1952,7 @@ async function runAiConnectorsLauncher(parsed: ParsedArgs): Promise<JsonRecord> 
     console.log(`Connector: ${connectorLabel(connector)}`);
     console.log('Scan the QR from Agentic Android after the page loads.');
     console.log('Keep this computer awake and the connector signed in.');
+    console.log(`Bridge log: ${join(parsed.options.runtimeDir, 'bridge.log')}`);
     if (openError) {
       console.log(`Browser open failed: ${openError}`);
     }
@@ -5010,13 +5011,19 @@ function startBridgeProcess(options: GlobalOptions): ChildProcess {
 
 function startBridgeDetached(options: GlobalOptions): ChildProcess {
   const invocation = cliInvocation(['bridge', 'serve', ...childGlobalArgs(options)]);
+  // Give the detached bridge its OWN log file instead of a pipe to this (short-lived)
+  // launcher. With a parent-owned stderr pipe, the bridge's first stderr write after the
+  // launcher exits (e.g. the `phone_paired` log at pair time) hit a broken pipe → uncaught
+  // async EPIPE → the bridge crashed exactly when pairing completed. A file fd has no such
+  // parent dependency, so the bridge survives — matching the wallet-host's `stdio: 'ignore'`.
+  mkdirSync(options.runtimeDir, { recursive: true });
+  const logFd = openSync(join(options.runtimeDir, 'bridge.log'), 'a');
   const child = spawn(invocation.command, invocation.args, {
     cwd: processCwd(options),
     env: bridgeEnv(options),
-    stdio: ['ignore', 'ignore', 'pipe'],
+    stdio: ['ignore', logFd, logFd],
     detached: true,
   });
-  (child.stderr as (NodeJS.ReadableStream & { unref?: () => void }) | null)?.unref?.();
   child.unref();
   return child;
 }
@@ -5072,6 +5079,11 @@ function startRepoWalletHostProcess(
 }
 
 async function serveBridge(options: GlobalOptions): Promise<void> {
+  // Defensive: never let a broken stdout/stderr pipe crash the long-lived bridge daemon.
+  // Today's spawn redirects to a log file (no pipe), but this guards any future re-piping —
+  // an unhandled async EPIPE 'error' event would otherwise take the whole process down.
+  process.stdout.on('error', (err) => { if ((err as NodeJS.ErrnoException).code !== 'EPIPE') throw err; });
+  process.stderr.on('error', (err) => { if ((err as NodeJS.ErrnoException).code !== 'EPIPE') throw err; });
   await ensureRuntimeFiles(options);
   await loadDotEnvFile(options.envPath);
   const config = await loadConfig(options.configPath);
