@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
+import android.util.Size
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -23,6 +24,9 @@ import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
@@ -50,6 +54,8 @@ class QrScannerActivity : ComponentActivity() {
     private var camera: Camera? = null
     @Volatile private var completed = false
     @Volatile private var analyzing = false
+    @Volatile private var firstFrameLogged = false
+    private var frameCounter = 0L // analyzer-thread-confined; no @Volatile needed
     private val cameraPermissionLauncher: ActivityResultLauncher<String> =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
             AgentMwaLog.info(
@@ -212,7 +218,20 @@ class QrScannerActivity : ComponentActivity() {
                 val preview = Preview.Builder().build().also {
                     it.surfaceProvider = previewView.surfaceProvider
                 }
+                // Feed ML Kit a 720p analysis stream. Without a ResolutionSelector, CameraX
+                // defaults ImageAnalysis to ~640x480 — too few pixels-per-module to decode a
+                // dense, monitor-displayed QR even when the preview is sharp.
+                val resolutionSelector = ResolutionSelector.Builder()
+                    .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
+                    .setResolutionStrategy(
+                        ResolutionStrategy(
+                            Size(1280, 720),
+                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER,
+                        ),
+                    )
+                    .build()
                 val analysis = ImageAnalysis.Builder()
+                    .setResolutionSelector(resolutionSelector)
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
                     .also {
@@ -253,28 +272,87 @@ class QrScannerActivity : ComponentActivity() {
             imageProxy.close()
             return
         }
+
+        frameCounter++
+        // Read frame metadata from the ImageProxy before process() consumes the underlying image.
+        val frameWidth = imageProxy.width
+        val frameHeight = imageProxy.height
+        val rotation = imageProxy.imageInfo.rotationDegrees
+        val format = imageProxy.format
+
+        if (!firstFrameLogged) {
+            firstFrameLogged = true
+            AgentMwaLog.info(
+                "QrScannerActivity",
+                "analyzeImage",
+                "FIRST_FRAME",
+                "QR scanner received first analysis frame",
+                mapOf(
+                    "width" to frameWidth,
+                    "height" to frameHeight,
+                    "rotationDegrees" to rotation,
+                    "imageFormat" to format,
+                ),
+            )
+        }
+
         analyzing = true
-        val input = InputImage.fromMediaImage(image, imageProxy.imageInfo.rotationDegrees)
-        scanner.process(input)
-            .addOnSuccessListener { barcodes ->
-                if (completed) return@addOnSuccessListener
-                val rawValue = barcodes.firstOrNull { !it.rawValue.isNullOrBlank() }?.rawValue
-                if (!rawValue.isNullOrBlank()) {
-                    completed = true
-                    AgentMwaLog.info(
+        try {
+            val input = InputImage.fromMediaImage(image, rotation)
+            scanner.process(input)
+                .addOnSuccessListener { barcodes ->
+                    if (completed) return@addOnSuccessListener
+                    if (frameCounter % 30L == 0L) {
+                        AgentMwaLog.debug(
+                            "QrScannerActivity",
+                            "analyzeImage",
+                            "HEARTBEAT",
+                            "QR scanner analysis heartbeat",
+                            mapOf(
+                                "frame" to frameCounter,
+                                "barcodeCount" to barcodes.size,
+                                "width" to frameWidth,
+                                "height" to frameHeight,
+                            ),
+                        )
+                    }
+                    val rawValue = barcodes.firstOrNull { !it.rawValue.isNullOrBlank() }?.rawValue
+                    if (!rawValue.isNullOrBlank()) {
+                        completed = true
+                        AgentMwaLog.info(
+                            "QrScannerActivity",
+                            "analyzeImage",
+                            "QR_DETECTED",
+                            "QR scanner decoded a QR payload",
+                            mapOf("rawChars" to rawValue.length),
+                        )
+                        finishOk(rawValue)
+                    }
+                }
+                .addOnFailureListener { err ->
+                    AgentMwaLog.failure(
                         "QrScannerActivity",
                         "analyzeImage",
-                        "QR_DETECTED",
-                        "QR scanner decoded a QR payload",
-                        mapOf("rawChars" to rawValue.length),
+                        "PROCESS_FAILED",
+                        "QR scanner ML Kit process() failed",
+                        err,
                     )
-                    finishOk(rawValue)
                 }
-            }
-            .addOnCompleteListener {
-                analyzing = false
-                imageProxy.close()
-            }
+                .addOnCompleteListener {
+                    analyzing = false
+                    imageProxy.close()
+                }
+        } catch (err: Throwable) {
+            AgentMwaLog.failure(
+                "QrScannerActivity",
+                "analyzeImage",
+                "PROCESS_THREW",
+                "QR scanner process() threw synchronously",
+                err,
+            )
+            analyzing = false
+            imageProxy.close()
+        }
     }
 
     private fun focusAt(x: Float, y: Float) {

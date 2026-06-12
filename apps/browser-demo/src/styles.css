@@ -2818,11 +2818,17 @@ code {
 }
 
 .ai-connectors-qr-actions {
-  align-items: center;
+  align-items: stretch;
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 10px;
-  justify-content: flex-end;
+  justify-content: flex-start;
+}
+
+.ai-connectors-qr-actions button {
+  justify-content: center;
+  white-space: nowrap;
+  width: 100%;
 }
 
 .ai-connectors-pairing-code-action {

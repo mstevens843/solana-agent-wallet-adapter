@@ -57,6 +57,62 @@ export function aiConnectorsPairingCodeActionState(input: {
   };
 }
 
+export type AiConnectorsQrAction = 'start-pairing' | 'copy-pairing-code' | 'stop-pairing';
+
+export interface AiConnectorsQrActionButton {
+  action: AiConnectorsQrAction;
+  label: string;
+  kind: 'primary' | 'utility';
+  disabled: boolean;
+}
+
+/**
+ * Single source of truth for the ordered button row beside the connector QR.
+ * Both `aiConnectorsQrPanel()` (rendering) and the unit tests consume this so the
+ * "Generate & copy pairing code" / "Copy pairing code" fallback can never silently
+ * drop out of the row again. Order is the on-screen (top-to-bottom) order.
+ */
+export function aiConnectorsQrActionButtons(input: {
+  canStartPairing: boolean;
+  pairingStatus: string;
+  pairingCode: string;
+}): AiConnectorsQrActionButton[] {
+  const isWaiting = input.pairingStatus === 'waiting';
+  const buttons: AiConnectorsQrActionButton[] = [
+    {
+      action: 'start-pairing',
+      label: isWaiting ? 'Refresh QR' : 'Start QR pairing',
+      kind: 'primary',
+      disabled: !input.canStartPairing || input.pairingStatus === 'starting',
+    },
+  ];
+
+  const copy = aiConnectorsPairingCodeActionState({
+    canStartPairing: input.canStartPairing,
+    pairingCode: input.pairingCode,
+    pairingStatus: input.pairingStatus,
+  });
+  if (copy.visible) {
+    buttons.push({
+      action: 'copy-pairing-code',
+      label: copy.label,
+      kind: 'utility',
+      disabled: copy.disabled,
+    });
+  }
+
+  if (isWaiting) {
+    buttons.push({
+      action: 'stop-pairing',
+      label: 'Stop pairing',
+      kind: 'utility',
+      disabled: false,
+    });
+  }
+
+  return buttons;
+}
+
 export function normalizeAiConnectorsConnector(value: string | null | undefined): AiConnector | null {
   return value === 'codex' || value === 'gemini' || value === 'claude' ? value : null;
 }

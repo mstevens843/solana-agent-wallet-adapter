@@ -4,10 +4,14 @@ import {
   aiConnectorWebsiteSetupState,
   aiConnectorsCommand,
   aiConnectorsPairingCodeActionState,
+  aiConnectorsQrActionButtons,
   aiConnectorsReadinessFromBridgeStatus,
   aiConnectorsWebsiteCommand,
   normalizeAiConnectorsConnector,
 } from '../aiConnectorsSetup.js';
+
+const PAIRING_CODE =
+  '{"v":2,"relay":"https://agentic-signer.com","uuid":"u","token":"t","e2ee":{"alg":"x","desktopPub":"d","pairSecret":"p"}}';
 
 describe('aiConnectorsCommand', () => {
   it('builds the hosted Android connector setup command', () => {
@@ -90,6 +94,63 @@ describe('aiConnectorsPairingCodeActionState', () => {
       disabled: false,
       label: 'Generate & copy pairing code',
     });
+  });
+});
+
+describe('aiConnectorsQrActionButtons', () => {
+  it('shows Start QR pairing then Generate & copy pairing code when ready before any QR exists', () => {
+    expect(aiConnectorsQrActionButtons({
+      canStartPairing: true,
+      pairingStatus: 'idle',
+      pairingCode: '',
+    })).toEqual([
+      { action: 'start-pairing', label: 'Start QR pairing', kind: 'primary', disabled: false },
+      { action: 'copy-pairing-code', label: 'Generate & copy pairing code', kind: 'utility', disabled: false },
+    ]);
+  });
+
+  it('shows Refresh QR, Copy pairing code, then Stop pairing once a QR is waiting to be scanned', () => {
+    expect(aiConnectorsQrActionButtons({
+      canStartPairing: true,
+      pairingStatus: 'waiting',
+      pairingCode: PAIRING_CODE,
+    })).toEqual([
+      { action: 'start-pairing', label: 'Refresh QR', kind: 'primary', disabled: false },
+      { action: 'copy-pairing-code', label: 'Copy pairing code', kind: 'utility', disabled: false },
+      { action: 'stop-pairing', label: 'Stop pairing', kind: 'utility', disabled: false },
+    ]);
+  });
+
+  it('keeps both actions present but disabled while a pairing payload is being minted', () => {
+    expect(aiConnectorsQrActionButtons({
+      canStartPairing: true,
+      pairingStatus: 'starting',
+      pairingCode: '',
+    })).toEqual([
+      { action: 'start-pairing', label: 'Start QR pairing', kind: 'primary', disabled: true },
+      { action: 'copy-pairing-code', label: 'Generate & copy pairing code', kind: 'utility', disabled: true },
+    ]);
+  });
+
+  it('keeps the copy action available for an existing code even when readiness drops', () => {
+    expect(aiConnectorsQrActionButtons({
+      canStartPairing: false,
+      pairingStatus: 'expired',
+      pairingCode: PAIRING_CODE,
+    })).toEqual([
+      { action: 'start-pairing', label: 'Start QR pairing', kind: 'primary', disabled: true },
+      { action: 'copy-pairing-code', label: 'Copy pairing code', kind: 'utility', disabled: false },
+    ]);
+  });
+
+  it('drops the copy action only when the connector is not ready and no pairing code exists', () => {
+    expect(aiConnectorsQrActionButtons({
+      canStartPairing: false,
+      pairingStatus: 'idle',
+      pairingCode: '',
+    })).toEqual([
+      { action: 'start-pairing', label: 'Start QR pairing', kind: 'primary', disabled: true },
+    ]);
   });
 });
 

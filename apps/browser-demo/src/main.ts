@@ -372,7 +372,7 @@ import {
 import {
   aiConnectorWebsiteSetupState,
   aiConnectorsCommand,
-  aiConnectorsPairingCodeActionState,
+  aiConnectorsQrActionButtons,
   aiConnectorsReadinessFromBridgeStatus,
   aiConnectorsWebsiteCommand,
   normalizeAiConnectorsConnector,
@@ -10411,24 +10411,25 @@ function aiConnectorsReadinessPanel(readiness: AiConnectorsReadiness): string {
 function aiConnectorsQrPanel(readiness: AiConnectorsReadiness): string {
   const stateCopy = aiConnectorsPairingCopy(readiness);
   const pairingCode = aiConnectorsPairingState.pairingCode;
-  const copyAction = aiConnectorsPairingCodeActionState({
+  const actionButtons = aiConnectorsQrActionButtons({
     canStartPairing: readiness.canStartPairing,
-    pairingCode,
     pairingStatus: aiConnectorsPairingState.status,
+    pairingCode,
   });
-  const hasPairingCode = pairingCode.trim().length > 0;
-  const copyPairingCodeAction = copyAction.visible
-    ? `
+  const actionsMarkup = actionButtons
+    .map(
+      (button) => `
         <button
           type="button"
-          class="utility"
-          data-ai-connectors-action="copy-pairing-code"
-          ${copyAction.disabled ? 'disabled' : ''}
+          class="${button.kind}"
+          data-ai-connectors-action="${button.action}"
+          ${button.disabled ? 'disabled' : ''}
         >
-          ${escapeHtml(hasPairingCode ? 'Copy pairing code' : copyAction.label)}
+          ${escapeHtml(button.label)}
         </button>
-      `
-    : '';
+      `,
+    )
+    .join('');
   const pairingCodeFallback = pairingCode
     ? `
       <div class="ai-connectors-pairing-code-panel">
@@ -10458,7 +10459,7 @@ function aiConnectorsQrPanel(readiness: AiConnectorsReadiness): string {
         <div class="ai-connectors-qr-fallback">
           <span>Pairing code ready</span>
           <strong>Pairing code</strong>
-          <em>Use the copy button next to the QR actions.</em>
+          <em>Use the Copy pairing code button to paste it into Android.</em>
         </div>
       `
       : `
@@ -10478,18 +10479,7 @@ function aiConnectorsQrPanel(readiness: AiConnectorsReadiness): string {
         ${qr}
       </div>
       <div class="ai-connectors-qr-actions">
-        <button
-          type="button"
-          class="primary"
-          data-ai-connectors-action="start-pairing"
-          ${!readiness.canStartPairing || aiConnectorsPairingState.status === 'starting' ? 'disabled' : ''}
-        >
-          ${aiConnectorsPairingState.status === 'waiting' ? 'Refresh QR' : 'Start QR pairing'}
-        </button>
-        ${copyPairingCodeAction}
-        ${aiConnectorsPairingState.status === 'waiting'
-          ? '<button type="button" class="utility" data-ai-connectors-action="stop-pairing">Stop pairing</button>'
-          : ''}
+        ${actionsMarkup}
       </div>
       ${pairingCodeFallback}
     </div>
