@@ -88,6 +88,12 @@ export interface AgentFactRoutePlan {
   routes: AgentFactRoute[];
   skipped: AgentFactSkippedNeed[];
   routeText: string;
+  /**
+   * True when the user's decision is a pure off-chain/current-fact gate that does not reference the
+   * protocol/position. Threaded into the evidence context so the connector risk-profile upgrade does
+   * not re-require connector reads the router deliberately demoted to optional.
+   */
+  offChainGateOnly: boolean;
 }
 
 export interface PlanAgentReviewFactRoutesInput {
@@ -259,6 +265,17 @@ export function planAgentReviewFactRoutes(input: PlanAgentReviewFactRoutesInput)
   const tokenIdentityRequired = TOKEN_IDENTITY_RE.test(decisionText);
   const tokenSecurityRequired = TOKEN_SECURITY_RE.test(decisionText);
   const tokenMarketRequired = tokenMarketRequiredByUser(decisionText);
+  // True when the user's decision is a pure off-chain/current-fact gate (e.g. "approve if Helium
+  // plan < $20"). Action-mechanics evidence (swap quote/route, connector reads) must not be REQUIRED
+  // for such a question — answer only what was asked. The extra !PROTOCOL_RE guard keeps connector
+  // facts required whenever the question actually references the protocol/position/health.
+  const offChainDecision = offChainDecisionOnly(decisionText, {
+    tokenIdentityRequired,
+    tokenSecurityRequired,
+    tokenMarketRequired,
+    globalMarketRequired: GLOBAL_MARKET_RE.test(decisionText),
+  });
+  const offChainGateOnly = offChainDecision && !PROTOCOL_RE.test(decisionText);
   if (tokenIdentityRequired) {
     if (hasTokenMints) {
       addRoute({
@@ -338,12 +355,7 @@ export function planAgentReviewFactRoutes(input: PlanAgentReviewFactRoutesInput)
     const slippageString = (input.parameters?.slippageBps ?? input.parameters?.maxSlippage ?? '').trim();
     const hasSlippage = slippageString.length > 0;
     const quoteDemanded = SWAP_QUOTE_DEMAND_RE.test(text) || !hasAmount || !hasSlippage;
-    if (!quoteDemanded && offChainDecisionOnly(decisionText, {
-      tokenIdentityRequired,
-      tokenSecurityRequired,
-      tokenMarketRequired,
-      globalMarketRequired: GLOBAL_MARKET_RE.test(decisionText),
-    })) {
+    if (!quoteDemanded && offChainDecision) {
       skip('swap_quote', 'Swap quote not selected: the user request only asks an off-chain/current-fact gate.');
       skip('swap_route', 'Swap route not selected: the user request only asks an off-chain/current-fact gate.');
     } else {
@@ -421,7 +433,10 @@ export function planAgentReviewFactRoutes(input: PlanAgentReviewFactRoutesInput)
         need: 'protocol_position',
         provider: 'protocol_connector',
         endpoint: 'connector-read-facts',
-        status: connectorPlan.required ? 'required' : 'optional',
+        // Off-chain gate questions that don't reference the protocol demote connector reads to
+        // optional context so they never block (parity with the swap branch above). The risk-profile
+        // upgrade in agentEvidenceRequirements honors the same offChainGateOnly flag.
+        status: connectorPlan.required && !offChainGateOnly ? 'required' : 'optional',
         reason: connectorPlan.reason,
         cacheKey: `${connector.id}:${connectorPlan.capability}`,
         params: stripEmptyRouteParams({
@@ -484,6 +499,7 @@ export function planAgentReviewFactRoutes(input: PlanAgentReviewFactRoutesInput)
     routes,
     skipped,
     routeText: routePlanText(routes, skipped),
+    offChainGateOnly,
   };
 }
 

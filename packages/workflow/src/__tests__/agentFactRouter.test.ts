@@ -505,6 +505,51 @@ describe('agent review fact router', () => {
     }));
   });
 
+  // Parity with the swap branch: a purely off-chain gate question must not REQUIRE connector reads,
+  // so selecting any of the connectors can't block "approve if Helium plan < $20". Connector facts
+  // stay optional context. They remain REQUIRED whenever the question references the protocol/health.
+  describe('off-chain gate questions do not require connector reads', () => {
+    const HELIUM_GATE = 'Approve if Helium Mobile monthly plan is less than $20.';
+
+    it('demotes connector read facts to optional for a pure off-chain gate', () => {
+      const plan = planAgentReviewFactRoutes({
+        actionType: 'marginfi_borrow',
+        userNotes: HELIUM_GATE,
+        hasWallet: true,
+        connector: { id: 'marginfi', name: 'MarginFi', enabled: true, readReady: true, actionKind: 'marginfi_borrow', operation: 'Borrow' },
+      });
+      const route = plan.routes.find((entry) => entry.id === 'protocol_connector.read_facts');
+      expect(route?.status).toBe('optional');
+      expect(plan.offChainGateOnly).toBe(true);
+    });
+
+    it('keeps connector read facts required when the question references the protocol/health', () => {
+      const plan = planAgentReviewFactRoutes({
+        actionType: 'marginfi_borrow',
+        question: 'Approve this borrow only if my health factor stays safe.',
+        hasWallet: true,
+        connector: { id: 'marginfi', name: 'MarginFi', enabled: true, readReady: true, actionKind: 'marginfi_borrow', operation: 'Borrow' },
+      });
+      const route = plan.routes.find((entry) => entry.id === 'protocol_connector.read_facts');
+      expect(route?.status).toBe('required');
+      expect(plan.offChainGateOnly).toBe(false);
+    });
+
+    it('demotes connector reads for a swap-via-connector off-chain gate', () => {
+      const plan = planAgentReviewFactRoutes({
+        actionType: 'swap',
+        userNotes: HELIUM_GATE,
+        hasWallet: true,
+        parameters: { amount: '0.01', slippageBps: '50', inputToken: 'SOL', outputToken: 'USDC' },
+        connector: { id: 'jupiter', name: 'Jupiter', enabled: true, readReady: true, actionKind: 'jupiter_swap' },
+      });
+      const route = plan.routes.find((entry) => entry.id === 'protocol_connector.read_facts');
+      expect(route?.status).toBe('optional');
+      // The swap-draft routes are also skipped for the off-chain gate (slippage already supplied).
+      expect(plan.routes.some((entry) => entry.id === 'jupiter.swap_order_preview')).toBe(false);
+    });
+  });
+
   it('records skipped connector reads when the selected connector is not ready', () => {
     const plan = planAgentReviewFactRoutes({
       actionType: 'raydium_remove_liquidity',

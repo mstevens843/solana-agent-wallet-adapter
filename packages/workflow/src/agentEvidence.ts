@@ -144,6 +144,12 @@ export interface AgentEvidenceContext {
   isWalletScoped?: boolean;
   enabledUserPolicyIds?: string[];
   externalResearchAvailable?: boolean;
+  /**
+   * True when the user's decision is a pure off-chain/current-fact gate that does not reference the
+   * protocol/position (mirrors AgentFactRoutePlan.offChainGateOnly). When set, the connector
+   * risk-profile upgrade is skipped so connector reads the router demoted to optional stay optional.
+   */
+  offChainGateOnly?: boolean;
 }
 
 export const AGENT_EVIDENCE_RECEIPT_SCHEMA_VERSION = 1 as const;

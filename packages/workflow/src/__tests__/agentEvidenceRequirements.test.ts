@@ -60,6 +60,35 @@ describe('agent evidence requirements', () => {
     expect(connectorReq?.blocking).toBe(true);
   });
 
+  it('does not upgrade connector reads to required+blocking for a pure off-chain gate', () => {
+    const routePlan = planAgentReviewFactRoutes({
+      actionType: 'marginfi_borrow',
+      userNotes: 'Approve if Helium Mobile monthly plan is less than $20.',
+      hasWallet: true,
+      connector: {
+        id: 'marginfi',
+        name: 'MarginFi',
+        enabled: true,
+        readReady: true,
+        actionKind: 'marginfi_borrow',
+      },
+    });
+    expect(routePlan.offChainGateOnly).toBe(true);
+    const requirements = buildEvidenceRequirements(routePlan, {
+      walletAddress: 'Wallet1111111111111111111111111111111111111',
+      cluster: 'mainnet-beta',
+      connectorId: 'marginfi',
+      connectorProfile: 'lending_borrow',
+      connectorEnabled: true,
+      connectorReadReady: true,
+      isWalletScoped: true,
+      offChainGateOnly: true,
+    });
+    const connectorReq = requirements.find((req) => req.routeId === 'protocol_connector.read_facts');
+    expect(connectorReq?.status).toBe('optional');
+    expect(connectorReq?.blocking).toBe(false);
+  });
+
   it('applies oracle profile TTL to connector reads (30s)', () => {
     const routePlan = planAgentReviewFactRoutes({
       actionType: 'read_only',

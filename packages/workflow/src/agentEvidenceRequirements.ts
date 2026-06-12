@@ -172,6 +172,10 @@ export function applyConnectorRiskProfileRequirements(
   _routePlan: AgentFactRoutePlan,
   context: AgentEvidenceContext,
 ): AgentEvidenceRequirement[] {
+  // A pure off-chain gate question does not depend on the connector's positions/health, so do not
+  // upgrade connector reads to required+blocking — the router already demoted them to optional and
+  // they remain available as non-blocking context. Answer only what was asked.
+  if (context.offChainGateOnly) return requirements;
   const profileKind = context.connectorProfile;
   if (!profileKind) return requirements;
   const profile = AGENT_CONNECTOR_RISK_PROFILES[profileKind];

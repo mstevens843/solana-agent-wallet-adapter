@@ -34292,6 +34292,7 @@ function agentFactRoutePlanFact(routePlan: AgentFactRoutePlan): AgentReviewFact 
         ...(route.params ? { params: route.params } : {}),
       })),
       skipped: routePlan.skipped,
+      offChainGateOnly: routePlan.offChainGateOnly,
     },
   };
 }
@@ -34657,6 +34658,7 @@ function evidenceContextForReview(record: GeneratedPlanRecord, plan: AgentPlan, 
     isWalletScoped: true,
     enabledUserPolicyIds: enabledUserAgentPolicies().map((policy) => policy.id),
     externalResearchAvailable: aiProviderSupportsWebResearch(),
+    offChainGateOnly: routePlan.offChainGateOnly,
   };
 }
 
@@ -34912,7 +34914,7 @@ function buildAgentReviewEvidenceBundle(
 
 function routePlanFactToRoutePlan(fact: AgentReviewFact | undefined): AgentFactRoutePlan | undefined {
   if (!fact?.detail) return undefined;
-  const detail = fact.detail as { routes?: unknown; skipped?: unknown };
+  const detail = fact.detail as { routes?: unknown; skipped?: unknown; offChainGateOnly?: unknown };
   if (!Array.isArray(detail.routes)) return undefined;
   const routes = detail.routes
     .filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === 'object')
@@ -34931,7 +34933,12 @@ function routePlanFactToRoutePlan(fact: AgentReviewFact | undefined): AgentFactR
   const skipped = Array.isArray(detail.skipped)
     ? (detail.skipped as Array<{ need: AgentFactNeed; reason: string }>)
     : [];
-  return { routes, skipped, routeText: typeof fact.message === 'string' ? fact.message : '' };
+  return {
+    routes,
+    skipped,
+    routeText: typeof fact.message === 'string' ? fact.message : '',
+    offChainGateOnly: detail.offChainGateOnly === true,
+  };
 }
 
 function routePlanHasAnyNeed(routePlan: AgentFactRoutePlan, needs: AgentFactNeed[]): boolean {
