@@ -91,7 +91,10 @@ async function handleRequest(
 
     if (
       url.pathname.startsWith('/api/') ||
-      url.pathname.startsWith('/.well-known/') ||
+      // `/.well-known/assetlinks.json` is a static Digital Asset Links file (Android App Links
+      // verification) shipped in the SPA's public/ dir. Let it fall through to serveStatic; the
+      // API router only serves the other /.well-known/* JSON (e.g. agent.json) and would 404 it.
+      (url.pathname.startsWith('/.well-known/') && url.pathname !== '/.well-known/assetlinks.json') ||
       url.pathname.startsWith('/agents/')
     ) {
       await apiRouter.handle(req, res, url);
