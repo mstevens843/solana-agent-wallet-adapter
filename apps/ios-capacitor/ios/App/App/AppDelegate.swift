@@ -1,5 +1,6 @@
 import UIKit
 import Capacitor
+import SystemConfiguration
 import SolanaAgentWalletAdapterIosCapacitorBridge
 
 @UIApplicationMain
@@ -59,4 +60,51 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         return walletConnectHandled || capacitorHandled
     }
 
+}
+
+/// Root web container. Live-loads the UI from `server.url`
+/// (https://agentic-signer.com) so Render deploys update the app with no new
+/// App Store build — the iOS counterpart to the Android WebView shell.
+///
+/// OFFLINE FALLBACK (mirrors Android's `maybeFallbackToBundled`,
+/// apps/android-twa/.../MainActivity.kt): if the live origin is unreachable when
+/// the app cold-launches (airplane mode, no signal), we null out the remote
+/// `serverURL` so Capacitor serves the bundled `webDir` copy from
+/// capacitor://localhost instead of showing a blank screen. The next launch with
+/// connectivity loads the live Render bundle again. Both origins are trusted by
+/// AgenticBridgeOrigin.swift, so the native plugins work in either state.
+///
+/// Wired in Base.lproj/Main.storyboard (customClass=AgenticBridgeViewController,
+/// module=App). Lives in this already-compiled file so no new target/source
+/// entry is needed.
+///
+/// Note: launch-time reachability covers the device-offline case. If the device
+/// is online but Render itself is unreachable mid-session, the WebView shows the
+/// remote error rather than auto-falling-back; Render's health check + fast
+/// redeploys keep that window small.
+final class AgenticBridgeViewController: CAPBridgeViewController {
+    override func instanceDescriptor() -> InstanceDescriptor {
+        let descriptor = super.instanceDescriptor()
+        if let server = descriptor.serverURL,
+           let host = URL(string: server)?.host,
+           !AgenticBridgeViewController.isHostReachable(host) {
+            NSLog("%@", "[AgentIOSApp] [BridgeVC] instanceDescriptor | FALLBACK phase=WARN message=\"live origin unreachable at launch; serving bundled webDir\" host=\(host)")
+            descriptor.serverURL = nil
+        }
+        return descriptor
+    }
+
+    /// Synchronous route-availability check (no server round-trip). Returns false
+    /// when there is no usable network path to `host`, which is the signal to fall
+    /// back to the bundled assets.
+    private static func isHostReachable(_ host: String) -> Bool {
+        guard let reachability = SCNetworkReachabilityCreateWithName(nil, host) else {
+            return false
+        }
+        var flags = SCNetworkReachabilityFlags()
+        guard SCNetworkReachabilityGetFlags(reachability, &flags) else {
+            return false
+        }
+        return flags.contains(.reachable) && !flags.contains(.connectionRequired)
+    }
 }

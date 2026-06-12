@@ -107,6 +107,26 @@ export function detectAndroidNativeEnvironment(): AndroidNativeEnvironment {
   };
 }
 
+/**
+ * True when the UI is running inside the Android app shell.
+ *
+ * The build-time `VITE_AGENTIC_ANDROID_APP` flag is only set when the APK bakes
+ * its own bundle. The release app live-loads the SAME bundle Render serves to
+ * the public website (which has NO build flag), so we must ALSO detect the shell
+ * at runtime via the injected `AgenticAndroid` bridge — otherwise Android-only UI
+ * stays hidden in the live bundle and only a new APK could surface it. Desktop
+ * browsers have no bridge global, so this stays false there. Mirrors the runtime
+ * fallback in `resolveTauriAppSurface` and keeps shell identity bundle-agnostic.
+ */
+export function resolveAndroidAppSurface(): boolean {
+  const viteEnv = (import.meta as ImportMeta & {
+    env?: { VITE_AGENTIC_ANDROID_APP?: string };
+  }).env;
+  const explicit = String(viteEnv?.VITE_AGENTIC_ANDROID_APP ?? '').trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(explicit)) return true;
+  return Boolean(androidNativeBridge());
+}
+
 export async function androidNativeCacheSummary(): Promise<{ count: number }> {
   const status = await androidNativeRequest<AndroidMwaStatus>('status');
   return { count: status.cachedCount };

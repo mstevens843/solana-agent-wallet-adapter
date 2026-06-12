@@ -265,6 +265,7 @@ import {
   androidNativeCloudSessionToken,
   clearAndroidNativeCloudSessionToken,
   detectAndroidNativeEnvironment,
+  resolveAndroidAppSurface,
   restoreLatestAndroidNativeWallet,
   setAndroidNativeCloudSessionToken,
   type AndroidNativeEnvironment,
@@ -657,6 +658,7 @@ import { setConnectedAddress, setConnectedCluster } from './walletState.js';
 import './devTabs/index.js';
 import { setCloudWalletBridge } from './cloudWalletBridge.js';
 import { mobileWorkspaceMoreMenuItems, workspaceMoreMenuItems, type WorkspaceMoreMenuItem } from './workspaceMore.js';
+import { installWebViewControlDelegates, restoreDisclosureOpenState } from './webViewControlFix.js';
 import { setProofSigningContext, signWalletProofMessage as signWalletProofMessageRaw } from './walletProofSigning.js';
 import {
   isWalletProviderLogoId,
@@ -4103,6 +4105,11 @@ function notifyCompletedCloudWorkspaceDeleteFromLaunch(): void {
   );
 }
 
+// Open/closed state for presentational <details> keyed by a stable derived id.
+// Persists across render()'s wholesale innerHTML replacement so a disclosure the
+// user opened stays open across re-renders. See ./webViewControlFix.ts.
+const disclosureOpenState = new Map<string, boolean>();
+
 async function startApp(): Promise<void> {
   try {
     if (!appRoot) {
@@ -4127,6 +4134,7 @@ async function startApp(): Promise<void> {
     startRelayPresenceWatch();
     window.addEventListener('popstate', () => render());
     window.addEventListener('keydown', handleGlobalKeydown);
+    installWebViewControlDelegates(disclosureOpenState);
     installPayOutApprovalCreatedListener();
     await bootstrap();
   } catch (err) {
@@ -9048,6 +9056,7 @@ function render(): void {
     + ledgerOverlayBlock();
   flushPendingSpendNavigation();
   bind();
+  restoreDisclosureOpenState(disclosureOpenState);
   bindEmbeddedWalletOverlay();
   bindDesktopBrandPanels();
   bindDesktopConnectFlow();
@@ -12304,7 +12313,7 @@ function guidedDemoPolicyPreparedPlan(scenario: GuidedDemoScenario): string {
           ${brandLogo('claude', 'guided-demo-policy-agent-logo')}
           <span class="agent-review-state approved">Review passed</span>
           ${providerLine ? `<em>${escapeHtml(providerLine)}</em>` : ''}
-          ${agentReviewPathBadge('mock')}
+          ${agentReviewPathBadge({ source: 'mock' })}
         </div>
         <div class="guided-demo-card-heading">
           <span>Prepared plan</span>
@@ -19294,7 +19303,7 @@ function generatedPlanAgentReviewStrip(record: GeneratedPlanRecord): string {
   const detail = review.checkedAt
     ? `${agentReviewSourceLabel(review)} - ${formatDateTime(review.checkedAt)}`
     : agentReviewSourceLabel(review);
-  const badge = agentReviewPathBadge(review.source);
+  const badge = agentReviewPathBadge(review);
   const watching = isPlanWatchActive(record);
   const watchBadge = watching
     ? `<span class="agent-review-watch-pill" title="Background watch on. Re-checks each plan once an hour while the tab is open.">Watching</span>`
@@ -19631,9 +19640,18 @@ function agentReviewStripLabel(status: AgentPlanReviewStatus): string {
   }
 }
 
-function agentReviewPathBadge(source: AgentReviewSource | undefined): string {
-  const label = agentReviewPathLabel(source);
-  const modifier = source ?? 'none';
+// Pill label "Codex Connector" for the active Plan Connector (falls back to "Plan Connector" when the
+// connector identity hasn't reached the phone yet — never the generic "Device Agent").
+function connectorPillLabel(connector: AiConnector | undefined): string {
+  return connector ? `${shortConnectorName(connector)} Connector` : 'Plan Connector';
+}
+
+function agentReviewPathBadge(review: Pick<AgentPlanReviewState, 'source' | 'provider' | 'model'>): string {
+  // A Plan Connector review is stored under the placeholders provider='paired-bridge'/model='connector';
+  // show the connector name, not "Device Agent". Real on-device agents keep "Device Agent".
+  const isConnector = review.provider === 'paired-bridge' || review.model === 'connector';
+  const label = isConnector ? connectorPillLabel(activePlanConnector()) : agentReviewPathLabel(review.source);
+  const modifier = isConnector ? 'connector' : (review.source ?? 'none');
   return `<span class="agent-path-pill ${escapeHtml(modifier)}" title="Agent review path">${escapeHtml(label)}</span>`;
 }
 
@@ -23163,7 +23181,8 @@ function phonePairingAvailable(): boolean {
 // a blocking call. (B6 — gives the paired user a persistent reachability signal beyond the modal.)
 let relayStatusCache: { online: boolean; at: number } | null = null;
 // Transition tracking for the one-shot "connector disconnected" toast. `null` = unknown (first read).
-let relayPreviouslyOnline: boolean | null = null;
+let relayHasBeenOnline = false; // true once we've seen the desktop online — gates the first-load false fire
+let relayOfflineStreak = 0; // consecutive offline reads (ignoring in-flight) before we trust "disconnected"
 let relayDisconnectToastShown = false;
 
 // Friendly name of the connected Plan Connector for toasts/cards (e.g. "Codex").
@@ -23236,23 +23255,38 @@ function refreshRelayPresence(): boolean {
     }
     relayStatusCache = { online, at: now };
     if (state.aiSettings.pairedBridge) {
-      if (relayPreviouslyOnline === true && !online && !relayDisconnectToastShown) {
-        relayDisconnectToastShown = true;
-        pushToast(
-          'error',
-          `${planConnectorDisplayName()} disconnected`,
-          'Computer bridge went offline — reopen the connector page on your computer to keep planning.',
-          {
-            key: 'plan-connector-disconnect',
-            actionLabel: 'Open connector page',
-            actionUrl: 'https://agentic-signer.com/aiconnectors',
-          },
-        );
+      // While the agent is planning/reviewing, the desktop blocks its relay heartbeat to run the
+      // (minutes-long) connector, so a stale "offline" here means BUSY, not disconnected — don't alarm.
+      const aiRequestInFlight = state.activeOperation === 'generate-ai-plan'
+        || state.activeOperation === 'review-agent-plan'
+        || state.activeOperation === 'confirm-ai-planner';
+      if (online) {
+        relayOfflineStreak = 0;
+        relayDisconnectToastShown = false; // re-arm once it comes back
+        relayHasBeenOnline = true;
+      } else if (aiRequestInFlight) {
+        relayOfflineStreak = 0; // busy, not offline
+      } else {
+        relayOfflineStreak += 1;
+        // Only trust "disconnected" after it persists (>=2 reads ~ 10s on the 5s watch), and only if
+        // we'd actually seen it online before — so a single stale blip never toasts.
+        if (relayHasBeenOnline && relayOfflineStreak >= 2 && !relayDisconnectToastShown) {
+          relayDisconnectToastShown = true;
+          pushToast(
+            'error',
+            `${planConnectorDisplayName()} disconnected`,
+            'Computer bridge went offline — reopen the connector page on your computer to keep planning.',
+            {
+              key: 'plan-connector-disconnect',
+              actionLabel: 'Open connector page',
+              actionUrl: 'https://agentic-signer.com/aiconnectors',
+            },
+          );
+        }
       }
-      if (online) relayDisconnectToastShown = false; // re-arm once it comes back
-      relayPreviouslyOnline = online;
     } else {
-      relayPreviouslyOnline = null; // not paired -> next read is "unknown"
+      relayOfflineStreak = 0;
+      relayHasBeenOnline = false;
     }
   }
   return relayStatusCache.online;
@@ -30577,15 +30611,19 @@ async function runReviewGeneratedPlan(planId: string): Promise<void> {
       if (state.agentPlan && samePlan(planWithRuntimeTokenLabels(state.agentPlan), reviewPlan)) {
         state.selectedGeneratedPlanId = planId;
       }
+      // needs_input is a terminal state awaiting OPTIONAL user follow-up, not an
+      // in-progress operation — use an auto-dismissing 'info' toast (not the
+      // never-dismissing 'pending' kind) so the app never feels stuck. The
+      // questions form renders from review.status independently of the toast.
       const toastKind: ToastKind = review.status === 'approved'
         ? 'success'
         : review.status === 'needs_input'
-          ? 'pending'
+          ? 'info'
           : 'error';
       const toastTitle = review.status === 'approved'
         ? 'Review passed'
         : review.status === 'needs_input'
-          ? 'Review needs input'
+          ? 'Agent has a question'
           : 'Review denied';
       replaceToast(toastId, toastKind, toastTitle, review.reason);
     }, {
@@ -32599,13 +32637,37 @@ interface AgentReviewOrchestrationResult {
   auditReceipt: AgentDecisionAuditReceipt;
 }
 
+// Hard ceiling on a single agent review. The underlying call reaches a native
+// connector/AI bridge that can hang (no response). Without this, state.busy set
+// by run('ai', …) would never clear and the ~277 busy-gated controls would stay
+// disabled until the app is force-quit. On timeout we reject so the caller's
+// error path (run()'s catch / onError) fires and clears busy. Generous so a
+// legitimately slow review isn't killed.
+const AGENT_REVIEW_TIMEOUT_MS = 120_000;
+
+async function withAgentReviewTimeout<T>(promise: Promise<T>): Promise<T> {
+  let timeoutId: number | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeoutId = window.setTimeout(() => {
+          reject(new Error('The agent did not respond in time. Check the connector and ask again.'));
+        }, AGENT_REVIEW_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+  }
+}
+
 async function runAgentReviewWithEvidence(
   record: GeneratedPlanRecord,
   plan: AgentPlan,
   deterministicFacts: AgentReviewFactSet,
 ): Promise<AgentReviewOrchestrationResult> {
   const bundle = buildAgentReviewEvidenceBundle(record, plan, deterministicFacts);
-  const rawResult = await runAgentReview(record, deterministicFacts, bundle);
+  const rawResult = await withAgentReviewTimeout(runAgentReview(record, deterministicFacts, bundle));
   const validated = validateAgentReviewDecision({
     aiResult: rawResult,
     gate: bundle.gate,
@@ -36131,7 +36193,8 @@ function runUnpairPairedBridge(): void {
   unpairPhone(agenticAndroidBridge());
   state.aiSettings.pairedBridge = false;
   relayStatusCache = null;
-  relayPreviouslyOnline = null;
+  relayHasBeenOnline = false;
+  relayOfflineStreak = 0;
   relayDisconnectToastShown = false;
   savePersistedState();
   void syncCloudPreference('ai-settings');
@@ -38587,7 +38650,9 @@ function recurringAgentReviewErrorState(err: unknown, plan: AgentPlan): AgentPla
 
 function recurringAgentToastKind(review: AgentPlanReviewState | undefined): ToastKind {
   if (!review || review.status === 'approved') return 'success';
-  if (review.status === 'needs_input') return 'pending';
+  // Auto-dismissing 'info' (not never-dismissing 'pending') so the repeat-request
+  // review never leaves a stuck toast when the agent asks for more input.
+  if (review.status === 'needs_input') return 'info';
   return 'error';
 }
 
@@ -51041,7 +51106,7 @@ function recurringAgentReviewStrip(payment: RecurringPayment): string {
         <span>Agent review</span>
         <strong class="agent-review-state ${escapeHtml(review.status)}">${escapeHtml(label)}</strong>
         <em>${escapeHtml(detail)}</em>
-        ${agentReviewPathBadge(review.source)}
+        ${agentReviewPathBadge(review)}
       </div>
       ${agentReviewDecisionCopy(review, stateDetail)}
       <p class="accent-note">${escapeHtml(stateDetail)}</p>
@@ -54145,16 +54210,6 @@ function resolveAndroidExampleTab(): boolean {
     };
   }).env;
   const explicit = String(viteEnv?.VITE_AGENTIC_ANDROID_SHOW_EXAMPLE_TAB ?? '').trim().toLowerCase();
-  return ['1', 'true', 'yes', 'on'].includes(explicit);
-}
-
-function resolveAndroidAppSurface(): boolean {
-  const viteEnv = (import.meta as ImportMeta & {
-    env?: {
-      VITE_AGENTIC_ANDROID_APP?: string;
-    };
-  }).env;
-  const explicit = String(viteEnv?.VITE_AGENTIC_ANDROID_APP ?? '').trim().toLowerCase();
   return ['1', 'true', 'yes', 'on'].includes(explicit);
 }
 

@@ -434,6 +434,14 @@ export function createBridgeAiRelayHandler(options: BridgeAiRelayOptions = {}): 
     requireBridgeSecret(req, session);
     const now = clock.now();
     session.lastDesktopPollAt = now;
+    // presenceOnly heartbeat: the desktop pings WHILE it is busy running a (minutes-long) connector so
+    // its blocking dispatch loop doesn't appear offline. Refresh presence but hand out NO request and
+    // take NO lease — so we never double-lease/double-run the request already in flight.
+    if (/[?&]presenceonly=1(?:&|$)/i.test(req.url ?? '')) {
+      logRelayEvent({ phase: 'poll', tag: relayTag(session.uuid), paired: session.paired, presenceOnly: true });
+      writeJson(res, 200, { paired: session.paired, justPaired: false, requests: [] });
+      return true;
+    }
     // Hand out AT MOST ONE request per poll so the in-flight lease clock aligns with the desktop's
     // run clock (it runs one connector at a time). Batching would lease request #2 at hand-out while
     // it waits behind #1, lapsing its lease and causing a metered double-run. Stale in-flight (desktop

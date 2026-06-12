@@ -128,6 +128,9 @@ interface PollResult {
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 2000;
+// Presence heartbeat while a long connector request blocks the poll loop. Well under the relay's 20s
+// desktop-online window so a busy desktop never reads as offline mid-run.
+const PRESENCE_HEARTBEAT_INTERVAL_MS = 8000;
 const MAX_PROCESSED_CACHE = 32;
 const RESPOND_MAX_ATTEMPTS = 3;
 const MAX_POLL_BACKOFF_MS = 30_000;
@@ -377,6 +380,7 @@ export class BridgePairingController {
     let decoded: DecodedBridgeRequest | null = null;
     let result: unknown;
     let ok = true;
+    let stopHeartbeat: (() => void) | null = null;
     try {
       decoded = this.decodeRequestBody(request.path, request.body);
       const clientNonce = decoded.clientNonce;
@@ -397,6 +401,9 @@ export class BridgePairingController {
         this.inProgressClientNonces.add(clientNonce);
       }
       this.inProgress.add(request.requestId);
+      // Keep the relay presence fresh while this (minutes-long) connector run blocks the poll loop, so
+      // the phone doesn't see a false "disconnected" and the request's lease isn't disturbed.
+      stopHeartbeat = this.startPresenceHeartbeat(uuid);
       result = await this.dispatch(request.path, decoded.body);
     } catch (err) {
       // Mirror the bridge's streamed `{ error }` envelope so the phone client
@@ -404,6 +411,7 @@ export class BridgePairingController {
       ok = false;
       result = { error: redact(err instanceof Error ? err.message : String(err)) };
     } finally {
+      stopHeartbeat?.();
       this.inProgress.delete(request.requestId);
       if (decoded?.clientNonce) this.inProgressClientNonces.delete(decoded.clientNonce);
     }
@@ -427,6 +435,20 @@ export class BridgePairingController {
       ...(LOG_PAIR_BODIES ? { result: redactBody(result) } : {}),
     });
     await this.postResult(uuid, request.requestId, serialized, tag);
+  }
+
+  /** Ping the relay's presence-only poll while a long request runs, so `desktopOnline` stays true and
+   *  the phone doesn't show a false disconnect. Returns a stop() to clear the interval. */
+  private startPresenceHeartbeat(uuid: string): () => void {
+    const tick = (): void => {
+      void this.relayFetch(`/api/bridge-pair/${uuid}/poll?presenceOnly=1`, {
+        method: 'GET',
+        headers: { 'x-bridge-secret': this.bridgeSecret },
+      }).catch(() => {}); // best-effort presence; a failed heartbeat must never break the run
+    };
+    const handle = setInterval(tick, PRESENCE_HEARTBEAT_INTERVAL_MS);
+    handle.unref?.();
+    return () => clearInterval(handle);
   }
 
   private buildResponsePayload(path: string, requestId: string, result: unknown, clientNonce?: string): unknown {

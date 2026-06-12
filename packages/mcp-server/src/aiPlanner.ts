@@ -1655,9 +1655,22 @@ export class BridgeAiPlanner {
     normalizedRequest: Required<AiReviewRequest>,
   ): Promise<AiReviewResult> {
     const research = reviewNeedsWebResearch(normalizedRequest);
-    const researchResult = research
-      ? await this.generateConnectorResearchEvidence(config, normalizedRequest)
-      : undefined;
+    // Harden the research pass: a failure here must NOT silently fall through to a no-evidence review
+    // (which then fails the numeric-threshold check as "no numeric value"). Surface it and continue
+    // best-effort. Tracing (AGENT_WALLET_TRACE=1 → bridge.log) makes the research outcome auditable so
+    // an Android-vs-desktop discrepancy is diagnosable from the next run.
+    let researchResult: { evidence: AiReviewResearchEvidence; citations: AiResearchCitation[] } | undefined;
+    if (research) {
+      try {
+        researchResult = await this.generateConnectorResearchEvidence(config, normalizedRequest);
+        trace('connector-review.research_ok', { connector: config.connector, sources: researchResult.citations?.length ?? 0 });
+      } catch (err) {
+        trace('connector-review.research_failed', { connector: config.connector, error: err instanceof Error ? err.message : String(err) });
+        researchResult = undefined;
+      }
+    } else {
+      trace('connector-review.research_skipped', { connector: config.connector });
+    }
     const messages = aiReviewMessages(normalizedRequest, researchResult?.evidence);
     const payload = await this.runConnectorText(
       config,
@@ -1667,10 +1680,17 @@ export class BridgeAiPlanner {
       // matching the API-key paths instead of free-form prose.
       { outputSchema: CONNECTOR_REVIEW_SCHEMA },
     );
-    return normalizeStrictAiReview(payload, normalizedRequest, connectorLabel(config.connector!), {
+    const review = normalizeStrictAiReview(payload, normalizedRequest, connectorLabel(config.connector!), {
       citations: researchResult?.citations,
       researchEvidence: researchResult?.evidence,
     });
+    trace('connector-review.result', {
+      connector: config.connector,
+      researchProvided: Boolean(researchResult),
+      decision: review.decision,
+      reason: review.reason,
+    });
+    return review;
   }
 
   private async generateConnectorResearchEvidence(

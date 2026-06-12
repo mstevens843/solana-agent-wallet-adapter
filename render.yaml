@@ -45,6 +45,16 @@ services:
         generateValue: true
       - key: AGENTIC_PUBLIC_ORIGIN
         value: "https://agentic-signer.com"
+      # Plan Connector (Android "use your ChatGPT/Claude plan from your computer"
+      # path). Setting this to "1" makes /api/android-config emit
+      # bridgePairingEnabled:true (apps/render-web/src/cloud/androidConfig.ts),
+      # which the native shell reads to expose the Plan Connector tab + QR
+      # pairing in RELEASE builds (debug builds force it on). Server-controlled
+      # kill-switch — ships via Render redeploy, no APK rebuild. Requires the
+      # published store APK to already contain the native pairing methods
+      # (QR scanner + bridge pairing).
+      - key: BRIDGE_PAIRING_ENABLED
+        value: "1"
       - key: VITE_AGENTIC_DEV_CONTROLS
         value: "false"
       - key: VITE_AGENTIC_GA_MEASUREMENT_ID
