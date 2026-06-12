@@ -326,6 +326,35 @@ describe('AI setup state helpers', () => {
     });
   });
 
+  it('keeps the selected-provider logo when the active device-agent path is unconfigured', () => {
+    const inventory = buildAiSetupInventory({
+      activeMode: 'device-agent',
+      hosted: { configured: false, runnable: false },
+      session: { configured: false, runnable: false },
+      bridge: { configured: false, runnable: false },
+      deviceAgent: deviceAgentSetupSnapshot({ visible: true, status: null }),
+    });
+
+    expect(inventory.active.logoHint).toBe('agentic');
+
+    expect(buildAiRailIdentity({
+      inventory,
+      pathLabels,
+      activeFallback: {
+        provider: 'Claude / Anthropic',
+        model: 'claude-opus-4-1-20250805',
+        logoHint: 'claude',
+      },
+      readinessLabel: 'Device Agent running',
+      confirmationLabel: 'Runtime ready',
+      confirmed: false,
+    })).toMatchObject({
+      provider: 'Claude / Anthropic',
+      statusLabel: 'not configured',
+      logoHint: 'claude',
+    });
+  });
+
   it('maps AI providers and connector labels to bundled logo hints', () => {
     expect(aiProviderLogoHint({ provider: 'openai', model: 'gpt-5' })).toBe('codex');
     expect(aiProviderLogoHint({ provider: 'anthropic', model: 'claude-sonnet-4-5' })).toBe('claude');

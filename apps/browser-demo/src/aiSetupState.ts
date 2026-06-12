@@ -271,7 +271,7 @@ export function buildAiRailIdentity(input: {
     statusLabel,
     statusTone,
     statusTitle,
-    logoHint: display.logoHint
+    logoHint: (display.configured ? display.logoHint : undefined)
       ?? input.activeFallback.logoHint
       ?? aiProviderLogoHint({ provider, model }),
   };

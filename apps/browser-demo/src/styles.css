@@ -1822,6 +1822,82 @@ code {
   min-height: 0;
 }
 
+/* AGENT DECISION card: a container div (not a button) holding the plan tabs + a clickable select body. */
+.guided-demo-scenario-card.agent-decision {
+  cursor: default;
+}
+
+.guided-demo-plan-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  width: 100%;
+}
+
+.guided-demo-plan-tab {
+  appearance: none;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(224, 230, 226, 0.12);
+  border-radius: 999px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.7rem;
+  font-weight: 760;
+  letter-spacing: 0.03em;
+  line-height: 1;
+  padding: 5px 11px;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+}
+
+.guided-demo-plan-tab:hover,
+.guided-demo-plan-tab:focus-visible {
+  border-color: rgba(139, 205, 170, 0.4);
+  color: var(--text);
+}
+
+.guided-demo-plan-tab.active {
+  background: rgba(63, 189, 131, 0.16);
+  border-color: rgba(139, 205, 170, 0.5);
+  color: #d7f6e7;
+}
+
+.guided-demo-plan-tab:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.guided-demo-scenario-select {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  padding: 0;
+  text-align: left;
+  width: 100%;
+}
+
+/* Typewriter pre-step: the typed text plus a blinking block caret (reuses the commandCaret keyframes). */
+.guided-demo-typing {
+  min-height: 1.2em;
+}
+
+.guided-demo-type-caret {
+  animation: commandCaret 1s steps(1) infinite;
+  background: currentColor;
+  display: inline-block;
+  height: 1.05em;
+  margin-left: 1px;
+  vertical-align: -0.18em;
+  width: 0.55em;
+}
+
 .guided-demo-scenario-groups {
   display: grid;
   gap: 8px;

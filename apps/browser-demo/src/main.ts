@@ -1089,7 +1089,7 @@ type PreparedActionKind =
 type GuidedDemoScenarioId = 'transfer' | 'swap' | 'policy-swap' | 'dca' | 'payouts';
 type GuidedDemoStage = 'request' | 'prepared' | 'queued' | 'receipt';
 type GuidedDemoDecision = 'pending' | 'approved' | 'denied';
-type GuidedDemoAgentFlowStep = 'idle' | 'asking' | 'drafting' | 'reviewing';
+type GuidedDemoAgentFlowStep = 'idle' | 'typing' | 'asking' | 'drafting' | 'reviewing';
 type GuidedDemoSwapFlowStep = 'idle' | 'preparing' | 'signing' | 'sending' | 'confirmed';
 type FirstRunStepId = 'wallet' | 'plan' | 'review' | 'decision' | 'receipt';
 type FirstRunActionId =
@@ -2546,8 +2546,43 @@ interface GuidedDemoScenario {
   agentChecks?: Array<{ label: string; value: string; tone?: AgentEvidenceTone }>;
 }
 
+// One tabbed variant of the AGENT DECISION card. All variants live under the single `policy-swap`
+// scenario id (so the existing flow gating keeps working); `selectedAgentPlanIndex` picks the active one.
+interface AgentDecisionPlan {
+  tabLabel: string;
+  title: string;
+  prompt: string;
+  cardIntro: string;
+  cardGroups: Array<{ title: string; items: string[] }>;
+  planTitle: string;
+  detail: string;
+  route: string;
+  risk: string;
+  approvalBoundary: string;
+  receiptType: string;
+  receiptSummary: string;
+  constraints: string[];
+  facts: Array<{ label: string; value: string }>;
+  agentProvider: string;
+  agentModel: string;
+  agentLogo: BrandLogoId;
+  agentSource?: AgentReviewSource;
+  // 'checks' = flat "What the agent checked" list (Plan 1); 'review' = rich grouped findings (Plan 2/3).
+  presentation: 'checks' | 'review';
+  agentChecks?: Array<{ label: string; value: string; tone?: AgentEvidenceTone }>;
+  review?: {
+    summary: string;
+    reason: string;
+    metrics?: Array<{ label: string; value: string; detail: string }>;
+    findings: Array<{ label: string; value: string; tone?: AgentEvidenceTone }>;
+    sources?: Array<{ title: string; url: string }>;
+    decisionContract?: Record<string, unknown>;
+  };
+}
+
 interface GuidedDemoState {
   selectedScenarioId: GuidedDemoScenarioId;
+  selectedAgentPlanIndex: number;
   stage: GuidedDemoStage;
   decision: GuidedDemoDecision;
   receiptId: string;
@@ -3658,6 +3693,200 @@ const GUIDED_DEMO_SCENARIOS: ReadonlyArray<GuidedDemoScenario> = [
   },
 ];
 
+// The AGENT DECISION card is tabbed across three plans. Plan 1 reuses the existing `policy-swap` scenario
+// content (flat "What the agent checked" list); Plan 2 and Plan 3 render the rich grouped agent-findings card.
+const POLICY_SWAP_BASE_SCENARIO = GUIDED_DEMO_SCENARIOS.find((scenario) => scenario.id === 'policy-swap')!;
+
+const AGENT_DECISION_PLANS: ReadonlyArray<AgentDecisionPlan> = [
+  {
+    tabLabel: 'Plan 1',
+    title: POLICY_SWAP_BASE_SCENARIO.title,
+    prompt: POLICY_SWAP_BASE_SCENARIO.prompt,
+    cardIntro: POLICY_SWAP_BASE_SCENARIO.cardIntro ?? POLICY_SWAP_BASE_SCENARIO.prompt,
+    cardGroups: POLICY_SWAP_BASE_SCENARIO.cardGroups ?? [],
+    planTitle: POLICY_SWAP_BASE_SCENARIO.planTitle,
+    detail: POLICY_SWAP_BASE_SCENARIO.detail,
+    route: POLICY_SWAP_BASE_SCENARIO.route,
+    risk: POLICY_SWAP_BASE_SCENARIO.risk,
+    approvalBoundary: POLICY_SWAP_BASE_SCENARIO.approvalBoundary,
+    receiptType: POLICY_SWAP_BASE_SCENARIO.receiptType,
+    receiptSummary: POLICY_SWAP_BASE_SCENARIO.receiptSummary,
+    constraints: POLICY_SWAP_BASE_SCENARIO.constraints,
+    facts: POLICY_SWAP_BASE_SCENARIO.facts,
+    agentProvider: POLICY_SWAP_BASE_SCENARIO.agentProvider ?? 'anthropic',
+    agentModel: POLICY_SWAP_BASE_SCENARIO.agentModel ?? 'claude-sonnet-4-5',
+    agentLogo: 'claude',
+    agentSource: 'mock',
+    presentation: 'checks',
+    agentChecks: POLICY_SWAP_BASE_SCENARIO.agentChecks,
+  },
+  {
+    tabLabel: 'Plan 2',
+    title: 'Helium plan check',
+    prompt:
+      "Check Helium Mobile's cheapest monthly plan. If it's less than $20, approve sending $20 to my Coinbase address. Otherwise deny and tell me why.",
+    cardIntro: 'Research the real price, then approve the payment only if it clears my $20 rule.',
+    cardGroups: [
+      {
+        title: 'Research gates',
+        items: ["check Helium Mobile's current price", 'use official Helium sources'],
+      },
+      {
+        title: 'Threshold gates',
+        items: ['monthly plan must be under $20', 'approve $20 to Coinbase only if under'],
+      },
+      {
+        title: 'Transaction gates',
+        items: ['only sends the approved $20', 'no extra transfers', 'recipient is my Coinbase address'],
+      },
+    ],
+    planTitle: 'Threshold rule passed - payout approved',
+    detail: 'The agent looked up the live Helium Mobile price and approved the $20 payout because it cleared the $20 rule.',
+    route: 'New Request -> Agent research -> Approval receipt',
+    risk: 'The decision checks the live Helium Mobile monthly price against the $20 rule and limits the payout to $20 to the saved Coinbase address.',
+    approvalBoundary: 'No wallet opens in this demo. The agent result is simulated, then a local demo signature and approval receipt are created.',
+    receiptType: 'price_threshold_decision_receipt',
+    receiptSummary: 'The agent approved the $20 Coinbase payout after the Helium Mobile price cleared the $20 rule.',
+    constraints: [
+      'Helium Mobile cheapest plan is $15/month, under the $20 rule.',
+      'Only $20 is approved to the saved Coinbase address.',
+      'No extra transfers or unknown recipients.',
+      'Threshold rule promoted the decision to APPROVE on the resolved $15 price.',
+    ],
+    facts: [
+      { label: 'Route', value: '$20 -> Coinbase' },
+      { label: 'Threshold', value: '$15 vs $20' },
+      { label: 'Agent result', value: 'APPROVE' },
+    ],
+    agentProvider: 'openai',
+    agentModel: 'gpt-5.5',
+    agentLogo: 'codex',
+    agentSource: 'mock',
+    presentation: 'review',
+    review: {
+      summary: 'Threshold rule checked: $15 is under $20.',
+      reason: "Monthly rate is $15, under the user's $20 threshold, so the agent approved the $20 payout for wallet approval.",
+      metrics: [
+        { label: 'Route', value: '$20 -> Coinbase', detail: 'approved payout only' },
+        { label: 'Threshold', value: '$15 vs $20', detail: 'under the rule' },
+        { label: 'Agent result', value: 'APPROVE', detail: 'rule cleared' },
+      ],
+      findings: [
+        { label: 'Threshold check', value: 'Corrected model comparison: $15 is under $20. Original decision was deny.', tone: 'good' },
+        { label: 'Threshold rule promoted', value: 'true', tone: 'good' },
+        { label: 'Monthly rate', value: '$15/month', tone: 'good' },
+        { label: 'Transaction simulation', value: 'Runs after the wallet signs and broadcasts. Not required for draft review unless the prompt asks about on-chain effects.', tone: 'neutral' },
+        { label: 'Helium Mobile lowest plan', value: '$15/month', tone: 'good' },
+        { label: 'Action mismatch', value: 'None - the prepared $20 payout matches the approved action.', tone: 'good' },
+        { label: 'Prepared action', value: 'Send $20 USDC to the saved Coinbase address.', tone: 'neutral' },
+        { label: 'Requested action', value: 'Check Helium Mobile lowest monthly plan and approve only if under $20.', tone: 'neutral' },
+      ],
+      sources: [
+        { title: 'All Things Helium Mobile FAQ', url: 'https://support.hellohelium.com/en/articles/7039213-all-things-helium-mobile-faq' },
+        { title: 'Helium Mobile plan terms', url: 'https://heliummobile.com/' },
+      ],
+      decisionContract: {
+        decision: 'approve',
+        confidence: 'high',
+        evidenceFactIds: ['price.helium.monthly', 'rule.threshold.lt20', 'recipient.coinbase'],
+        blockingFactIds: [],
+        missingFactIds: [],
+        warnings: [],
+      },
+    },
+  },
+  {
+    tabLabel: 'Plan 3',
+    title: 'Mad Lads floor check',
+    prompt:
+      "Check the Mad Lads floor price on Magic Eden right now. If it's under 30 SOL, approve buying the cheapest listing. Otherwise hold and tell me the floor.",
+    cardIntro: 'Pull the live floor, then approve the buy only if it clears my 30 SOL ceiling.',
+    cardGroups: [
+      {
+        title: 'Market gates',
+        items: ['floor must be under 30 SOL', 'use the live Magic Eden floor'],
+      },
+      {
+        title: 'Listing gates',
+        items: ['buy only the cheapest active listing', 'verified Mad Lads collection'],
+      },
+      {
+        title: 'Transaction gates',
+        items: ['only buys the one approved NFT', 'no extra transfers', 'no unknown recipients'],
+      },
+    ],
+    planTitle: 'Floor rule passed - buy approved',
+    detail: 'The agent pulled the live Mad Lads floor and approved buying the cheapest listing because it cleared the 30 SOL ceiling.',
+    route: 'New Request -> Agent research -> Approval receipt',
+    risk: 'The decision checks the live Mad Lads floor against the 30 SOL ceiling and limits the buy to the single cheapest verified listing.',
+    approvalBoundary: 'No wallet opens in this demo. The agent result is simulated, then a local demo signature and approval receipt are created.',
+    receiptType: 'nft_floor_decision_receipt',
+    receiptSummary: 'The agent approved buying the cheapest Mad Lads listing after the floor cleared the 30 SOL ceiling.',
+    constraints: [
+      'Mad Lads floor is 26.4 SOL, under the 30 SOL ceiling.',
+      'Buys only the cheapest active listing (Mad Lad #4198).',
+      'No extra transfers or unknown recipients.',
+      'Collection verified on Magic Eden before the buy.',
+    ],
+    facts: [
+      { label: 'Route', value: 'Buy cheapest Mad Lad' },
+      { label: 'Floor', value: '26.4 / 30 SOL' },
+      { label: 'Agent result', value: 'APPROVE' },
+    ],
+    agentProvider: 'anthropic',
+    agentModel: 'claude-sonnet-4-5',
+    agentLogo: 'claude',
+    agentSource: 'mock',
+    presentation: 'review',
+    review: {
+      summary: 'Floor rule checked: 26.4 SOL is under 30 SOL.',
+      reason: "Mad Lads floor is 26.4 SOL, under the user's 30 SOL ceiling, so the agent approved buying the cheapest listing for wallet approval.",
+      metrics: [
+        { label: 'Route', value: 'Buy cheapest Mad Lad', detail: 'one listing only' },
+        { label: 'Floor', value: '26.4 / 30 SOL', detail: 'under ceiling' },
+        { label: 'Agent result', value: 'APPROVE', detail: 'rule cleared' },
+      ],
+      findings: [
+        { label: 'Threshold check', value: 'Floor 26.4 SOL is under the 30 SOL approval threshold.', tone: 'good' },
+        { label: 'Decision rule', value: 'Floor under the ceiling -> APPROVE buying the cheapest listing.', tone: 'good' },
+        { label: 'Floor price', value: '26.4 SOL', tone: 'good' },
+        { label: '24h volume', value: '812 SOL across 41 sales', tone: 'neutral' },
+        { label: 'Buy scope', value: 'Buys only the one approved NFT; no extra transfer or unknown recipient.', tone: 'good' },
+        { label: 'Transaction simulation', value: 'Runs after the wallet signs and broadcasts. Not required for draft review unless the prompt asks about on-chain effects.', tone: 'neutral' },
+        { label: 'Cheapest listing', value: '26.4 SOL - Mad Lad #4198', tone: 'good' },
+        { label: 'Collection verified', value: 'Mad Lads is a verified Magic Eden collection.', tone: 'good' },
+        { label: 'Prepared action', value: 'Buy Mad Lad #4198 for 26.4 SOL on Magic Eden.', tone: 'neutral' },
+      ],
+      sources: [
+        { title: 'Magic Eden - Mad Lads', url: 'https://magiceden.io/marketplace/mad_lads' },
+        { title: 'Magic Eden collection stats API', url: 'https://api-mainnet.magiceden.dev/v2/collections/mad_lads/stats' },
+      ],
+      decisionContract: {
+        decision: 'approve',
+        confidence: 'high',
+        evidenceFactIds: ['floor.madlads.magiceden', 'rule.threshold.lt30sol', 'listing.cheapest'],
+        blockingFactIds: [],
+        missingFactIds: [],
+        warnings: [],
+      },
+    },
+  },
+];
+
+function activeAgentDecisionPlanIndex(): number {
+  const index = state.guidedDemo.selectedAgentPlanIndex;
+  if (!Number.isInteger(index) || index < 0) return 0;
+  if (index >= AGENT_DECISION_PLANS.length) return AGENT_DECISION_PLANS.length - 1;
+  return index;
+}
+
+function activeAgentDecisionPlan(): AgentDecisionPlan {
+  return AGENT_DECISION_PLANS[activeAgentDecisionPlanIndex()]!;
+}
+
+// Fixed timestamp for the demo review header (kept stable so the card never renders a "just now"/drifting time).
+const GUIDED_DEMO_REVIEW_CHECKED_AT = '2026-05-17T16:59:00.000Z';
+
 const GUIDED_DEMO_SWAP_TX_ID = '2EDzBNAT8XPAaVwVLBk71zBRr4PfqzqZfqeNXCCfkQ473ndztaAjmD76hK69rtDycE3FrroFMN7t4kA74VP8XusB';
 const GUIDED_DEMO_SWAP_TX_URL = `https://solscan.io/tx/${GUIDED_DEMO_SWAP_TX_ID}`;
 const GUIDED_DEMO_SWAP_REVIEW_ID = '019e2c78...030f95cc';
@@ -3667,10 +3896,18 @@ let guidedDemoSwapFlowRunId = 0;
 let guidedDemoSwapFlowTimer: number | undefined;
 let guidedDemoAgentFlowRunId = 0;
 let guidedDemoAgentFlowTimer: number | undefined;
+// Typewriter pre-step: target total duration and per-tick cadence (chunk size scales to the prompt length).
+const GUIDED_DEMO_TYPE_TOTAL_MS = 1400;
+const GUIDED_DEMO_TYPE_TICK_MS = 18;
+let guidedDemoTypeTimer: number | undefined;
 
-function defaultGuidedDemoState(scenarioId: GuidedDemoScenarioId = 'transfer'): GuidedDemoState {
+function defaultGuidedDemoState(
+  scenarioId: GuidedDemoScenarioId = 'transfer',
+  agentPlanIndex = 0,
+): GuidedDemoState {
   return {
     selectedScenarioId: scenarioId,
+    selectedAgentPlanIndex: agentPlanIndex,
     stage: 'request',
     decision: 'pending',
     receiptId: '',
@@ -12090,6 +12327,7 @@ function guidedDemoTrustItem(title: string, detail: string, logoId: BrandLogoId)
 }
 
 function guidedDemoScenarioCard(scenario: GuidedDemoScenario): string {
+  if (scenario.id === 'policy-swap') return guidedDemoAgentDecisionCard(scenario);
   const active = scenario.id === state.guidedDemo.selectedScenarioId;
   const groups = scenario.cardGroups?.length
     ? `
@@ -12117,6 +12355,53 @@ function guidedDemoScenarioCard(scenario: GuidedDemoScenario): string {
   `;
 }
 
+// The AGENT DECISION card carries Plan 1/2/3 tabs (under the eyebrow, above the title). It can't be a single
+// <button> because the tabs are buttons too, so it is a container <div> with a separate clickable select body.
+function guidedDemoAgentDecisionCard(scenario: GuidedDemoScenario): string {
+  const active = scenario.id === state.guidedDemo.selectedScenarioId;
+  const activeIndex = activeAgentDecisionPlanIndex();
+  const plan = activeAgentDecisionPlan();
+  const tabs = AGENT_DECISION_PLANS.map((entry, index) => `
+    <button
+      type="button"
+      role="tab"
+      class="guided-demo-plan-tab ${index === activeIndex ? 'active' : ''}"
+      data-demo-agent-plan="${index}"
+      aria-selected="${index === activeIndex ? 'true' : 'false'}"
+      ${state.busy ? 'disabled' : ''}
+    >${escapeHtml(entry.tabLabel)}</button>
+  `).join('');
+  const groups = plan.cardGroups.length
+    ? `
+      <div class="guided-demo-scenario-groups" aria-label="${escapeHtml(`${plan.title} gates`)}">
+        ${plan.cardGroups.map(guidedDemoScenarioGroup).join('')}
+      </div>
+    `
+    : '';
+  return `
+    <div class="guided-demo-scenario-card agent-decision compact ${active ? 'active' : ''}">
+      <div class="guided-demo-scenario-head">
+        ${brandLogo(guidedDemoScenarioLogo(scenario.id), 'guided-demo-scenario-logo')}
+        <span>${escapeHtml(scenario.eyebrow)}</span>
+      </div>
+      <div class="guided-demo-plan-tabs" role="tablist" aria-label="Agent decision plans">
+        ${tabs}
+      </div>
+      <button
+        type="button"
+        class="guided-demo-scenario-select"
+        data-demo-scenario="${escapeHtml(scenario.id)}"
+        aria-pressed="${active ? 'true' : 'false'}"
+        ${state.busy ? 'disabled' : ''}
+      >
+        <strong>${escapeHtml(plan.title)}</strong>
+        <em>${escapeHtml(plan.cardIntro)}</em>
+        ${groups}
+      </button>
+    </div>
+  `;
+}
+
 function guidedDemoScenarioGroup(group: { title: string; items: string[] }): string {
   return `
     <section class="guided-demo-scenario-group">
@@ -12129,7 +12414,11 @@ function guidedDemoScenarioGroup(group: { title: string; items: string[] }): str
 }
 
 function guidedDemoScenarioGateText(value: string): string {
-  return escapeHtml(value).replace(/(\$60|24h|\b20\b)/g, '<span class="guided-demo-scenario-value">$1</span>');
+  // Highlight dollar amounts ($20, $60), SOL amounts (30 SOL, 26.4 SOL), hour gates (24h), and bare gate numbers.
+  return escapeHtml(value).replace(
+    /(\$\d+(?:\.\d+)?|\b\d+(?:\.\d+)?\s?SOL\b|\b\d+h\b|\b\d+\b)/g,
+    '<span class="guided-demo-scenario-value">$1</span>',
+  );
 }
 
 function guidedDemoScenarioLogo(scenarioId: GuidedDemoScenarioId): BrandLogoId {
@@ -12183,6 +12472,8 @@ function guidedDemoStepRail(): string {
 
 function guidedDemoMobileStageCard(scenario: GuidedDemoScenario): string {
   if (scenario.id === 'policy-swap' && state.guidedDemo.agentFlowStep !== 'idle') {
+    // During the typing pre-step the request card holds the typewriter, so keep it on screen.
+    if (state.guidedDemo.agentFlowStep === 'typing') return guidedDemoRequestCard(scenario);
     return guidedDemoAgentFlowCard(state.guidedDemo.agentFlowStep);
   }
   switch (state.guidedDemo.stage) {
@@ -12199,11 +12490,17 @@ function guidedDemoMobileStageCard(scenario: GuidedDemoScenario): string {
 }
 
 function guidedDemoRequestCard(scenario: GuidedDemoScenario): string {
+  const typing = scenario.id === 'policy-swap' && state.guidedDemo.agentFlowStep === 'typing';
+  // While typing, the <p> starts empty and is filled char-by-char by runGuidedDemoPromptTypewriter
+  // (so the clear -> retype is visible). Otherwise show the full prompt.
+  const promptHtml = typing
+    ? `<p class="guided-demo-typing" data-guided-demo-typing><span class="guided-demo-typed"></span><span class="guided-demo-type-caret" aria-hidden="true"></span></p>`
+    : `<p>${escapeHtml(scenario.prompt)}</p>`;
   return `
-    <article class="guided-demo-request-card">
+    <article class="guided-demo-request-card${typing ? ' typing' : ''}">
       <div>
         <span>User request</span>
-        <p>${escapeHtml(scenario.prompt)}</p>
+        ${promptHtml}
       </div>
       <strong>Simulation only</strong>
     </article>
@@ -12228,8 +12525,8 @@ function guidedDemoAgentFlowCard(step: GuidedDemoAgentFlowStep): string {
       ${step === 'reviewing' ? `
         <div class="guided-demo-agent-review-meta">
           <span>Agent checking</span>
-          <em>anthropic - claude-sonnet-4-5</em>
-          <strong>Local bridge</strong>
+          <em>${escapeHtml(guidedDemoActivePlanProviderLine())}</em>
+          <strong>Local demo</strong>
         </div>
         <details class="guided-demo-agent-question">
           <summary>Ask agent about this request</summary>
@@ -12239,7 +12536,20 @@ function guidedDemoAgentFlowCard(step: GuidedDemoAgentFlowStep): string {
   `;
 }
 
+function guidedDemoActivePlanProviderLine(): string {
+  const plan = activeAgentDecisionPlan();
+  return [plan.agentProvider, plan.agentModel].filter(Boolean).join(' - ') || 'Agent';
+}
+
 function guidedDemoAgentFlowCopy(step: GuidedDemoAgentFlowStep): { eyebrow: string; title: string; detail: string; status: string } {
+  if (step === 'typing') {
+    return {
+      eyebrow: 'Agent',
+      title: 'Sending to agent',
+      detail: 'Handing your request to the agent.',
+      status: 'Working',
+    };
+  }
   if (step === 'asking') {
     return {
       eyebrow: 'Agent',
@@ -12278,7 +12588,10 @@ function guidedDemoPreparedPlan(scenario: GuidedDemoScenario): string {
     `;
   }
   if (scenario.id === 'policy-swap') {
-    return guidedDemoPolicyPreparedPlan(scenario);
+    const plan = activeAgentDecisionPlan();
+    return plan.presentation === 'review'
+      ? guidedDemoReviewPreparedPlan(plan)
+      : guidedDemoPolicyPreparedPlan(scenario);
   }
   return `
     <article class="guided-demo-plan-card">
@@ -12345,6 +12658,93 @@ function guidedDemoPolicyPreparedPlan(scenario: GuidedDemoScenario): string {
         </ul>
       </div>
     </article>
+  `;
+}
+
+// Plan 2/3 render the rich grouped agent-findings card. We build a plain review object and reuse the real
+// app's presentation helpers (Summary / Why it passed + auto-bucketed findings drawer), so the demo matches
+// the device-agent review UI exactly.
+function guidedDemoReviewPreparedPlan(plan: AgentDecisionPlan): string {
+  const review = plan.review;
+  if (!review) return guidedDemoPolicyPreparedPlan(selectedGuidedDemoScenario());
+  const providerLine = [plan.agentProvider, plan.agentModel].filter(Boolean).join(' - ');
+  const source = plan.agentSource ?? 'mock';
+  const reviewState: AgentPlanReviewState = {
+    required: true,
+    status: 'approved',
+    decision: 'approve',
+    summary: review.summary,
+    reason: review.reason,
+    provider: plan.agentProvider,
+    model: plan.agentModel,
+    source,
+    checkedAt: GUIDED_DEMO_REVIEW_CHECKED_AT,
+    checks: review.findings.map((finding) => ({
+      label: finding.label,
+      value: finding.value,
+      tone: finding.tone,
+      source: 'ai',
+    })),
+    evidence: {
+      ...(review.sources?.length ? { sources: review.sources } : {}),
+      ...(review.decisionContract ? { decisionContract: review.decisionContract } : {}),
+    },
+  };
+  const metricsHtml = review.metrics?.length
+    ? `
+      <div class="guided-demo-policy-metrics" aria-label="Agent decision approval summary">
+        ${review.metrics.map((metric) => guidedDemoPolicyMetric(metric.label, metric.value, metric.detail)).join('')}
+      </div>
+    `
+    : '';
+  return `
+    <article class="guided-demo-plan-card guided-demo-policy-plan guided-demo-review-plan">
+      <div class="guided-demo-policy-review-head">
+        <div class="guided-demo-policy-agent-line">
+          ${brandLogo(plan.agentLogo, 'guided-demo-policy-agent-logo')}
+          <span class="agent-review-state approved">Review passed</span>
+          ${providerLine ? `<em>${escapeHtml(providerLine)}</em>` : ''}
+          ${agentReviewPathBadge({ source })}
+        </div>
+        <div class="guided-demo-card-heading">
+          <span>Prepared plan</span>
+          <h3>${escapeHtml(plan.planTitle)}</h3>
+          <p>${escapeHtml(plan.detail)}</p>
+        </div>
+      </div>
+      ${metricsHtml}
+      ${agentReviewDecisionCopy(reviewState)}
+      ${guidedDemoReviewDrawer(reviewState)}
+      <div class="guided-demo-constraint-list guided-demo-policy-constraints">
+        <span>Approval constraints</span>
+        <ul>
+          ${plan.constraints.map((constraint) => `<li>${escapeHtml(constraint)}</li>`).join('')}
+        </ul>
+      </div>
+    </article>
+  `;
+}
+
+// Open-by-default variant of agentEvidenceDrawer for the demo (so the grouped findings show without a click).
+function guidedDemoReviewDrawer(review: AgentPlanReviewState): string {
+  const sections = agentEvidenceSections(review, { actionType: 'transfer_sol' });
+  const visibleSections = sections.filter((section) => !section.advanced);
+  const advancedSection = sections.find((section) => section.advanced);
+  const visibleCount = visibleSections.reduce((sum, section) => sum + section.rows.length, 0);
+  if (!visibleCount && !advancedSection) return '';
+  return `
+    <details class="agent-evidence-drawer guided-demo-policy-checks" open>
+      <summary>
+        <span class="agent-evidence-summary-left">
+          <span class="agent-evidence-summary-label">Agent findings (${visibleCount})</span>
+          <span class="agent-evidence-summary-state pass">Pass</span>
+        </span>
+      </summary>
+      <div class="agent-evidence-sections">
+        ${visibleSections.map(agentEvidenceSectionHtml).join('')}
+      </div>
+      ${advancedSection ? agentEvidenceAdvancedSectionHtml(advancedSection, review) : ''}
+    </details>
   `;
 }
 
@@ -12545,7 +12945,30 @@ function guidedDemoSwapFlowMessage(step: GuidedDemoSwapFlowStep): string {
 }
 
 function selectedGuidedDemoScenario(): GuidedDemoScenario {
-  return guidedDemoScenarioById(state.guidedDemo.selectedScenarioId);
+  const base = guidedDemoScenarioById(state.guidedDemo.selectedScenarioId);
+  if (base.id !== 'policy-swap') return base;
+  // The AGENT DECISION scenario is tabbed; overlay the active plan so every existing reader
+  // (request card, preview panel, review/receipt cards, prepared plan) reflects the chosen plan.
+  const plan = activeAgentDecisionPlan();
+  return {
+    ...base,
+    title: plan.title,
+    prompt: plan.prompt,
+    cardIntro: plan.cardIntro,
+    cardGroups: plan.cardGroups,
+    planTitle: plan.planTitle,
+    detail: plan.detail,
+    route: plan.route,
+    risk: plan.risk,
+    approvalBoundary: plan.approvalBoundary,
+    receiptType: plan.receiptType,
+    receiptSummary: plan.receiptSummary,
+    constraints: plan.constraints,
+    facts: plan.facts,
+    agentProvider: plan.agentProvider,
+    agentModel: plan.agentModel,
+    agentChecks: plan.agentChecks,
+  };
 }
 
 function guidedDemoScenarioById(scenarioId: string | undefined): GuidedDemoScenario {
@@ -26231,10 +26654,26 @@ function bind(): void {
       const anchorTop = button.getBoundingClientRect().top;
       clearGuidedDemoSwapFlowTimer();
       clearGuidedDemoAgentFlowTimer();
-      state.guidedDemo = defaultGuidedDemoState(scenario.id);
+      // Re-selecting the AGENT DECISION card keeps the active plan tab; switching scenarios resets it.
+      const planIndex = scenario.id === 'policy-swap' ? activeAgentDecisionPlanIndex() : 0;
+      state.guidedDemo = defaultGuidedDemoState(scenario.id, planIndex);
       state.error = '';
       render();
       restoreGuidedDemoScenarioAnchor(scenario.id, anchorTop);
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-demo-agent-plan]')) {
+    button.addEventListener('click', () => {
+      const planIndex = Number(button.dataset.demoAgentPlan);
+      if (!Number.isInteger(planIndex)) return;
+      const anchorTop = button.getBoundingClientRect().top;
+      clearGuidedDemoSwapFlowTimer();
+      clearGuidedDemoAgentFlowTimer();
+      state.guidedDemo = defaultGuidedDemoState('policy-swap', planIndex);
+      state.error = '';
+      render();
+      restoreGuidedDemoScenarioAnchor('policy-swap', anchorTop);
     });
   }
 
@@ -29017,6 +29456,11 @@ function focusLayoutTarget(layoutName: string): void {
   });
 }
 
+function androidWalletConnectedToastTitle(): string {
+  const name = state.selectedWalletName?.trim();
+  return name && name !== 'Mobile Wallet Adapter' ? `${name} connected` : 'Wallet connected';
+}
+
 async function runDiscover(): Promise<void> {
   await run('discover', async () => {
     if (state.androidNativeEnvironment.isAndroidNative) {
@@ -29024,7 +29468,7 @@ async function runDiscover(): Promise<void> {
       await connectAndroidNativeWallet(true);
       await afterWalletConnected();
       trackWalletConnectSuccess('android_native', state.cluster, 'discover_button');
-      pushToast('success', 'Android MWA connected', short(state.address));
+      pushToast('success', androidWalletConnectedToastTitle(), short(state.address));
       return;
     }
     if (state.iosNativeEnvironment.isIosNative) {
@@ -29100,7 +29544,7 @@ async function runConnect(
       await afterWalletConnected();
       savePersistedState();
       trackWalletConnectSuccess(connectSurface, state.cluster, 'connect_button');
-      pushToast('success', 'Android MWA connected', short(state.address));
+      pushToast('success', androidWalletConnectedToastTitle(), short(state.address));
       return;
     }
     if (state.iosNativeEnvironment.isIosNative) {
@@ -29547,17 +29991,54 @@ function clearGuidedDemoAgentFlowTimer(): void {
     window.clearTimeout(guidedDemoAgentFlowTimer);
     guidedDemoAgentFlowTimer = undefined;
   }
+  if (guidedDemoTypeTimer !== undefined) {
+    window.clearTimeout(guidedDemoTypeTimer);
+    guidedDemoTypeTimer = undefined;
+  }
 }
 
 function startGuidedDemoAgentFlow(): void {
   clearGuidedDemoAgentFlowTimer();
   const runId = guidedDemoAgentFlowRunId;
   state.guidedDemo = {
-    ...defaultGuidedDemoState(state.guidedDemo.selectedScenarioId),
-    agentFlowStep: 'asking',
+    ...defaultGuidedDemoState(state.guidedDemo.selectedScenarioId, activeAgentDecisionPlanIndex()),
+    agentFlowStep: 'typing',
   };
   render();
-  scheduleGuidedDemoAgentFlowStep(runId, 'drafting');
+  // Retype the request, then begin the real agent flow once typing finishes.
+  runGuidedDemoPromptTypewriter(runId, selectedGuidedDemoScenario().prompt, () => {
+    if (runId !== guidedDemoAgentFlowRunId) return;
+    state.guidedDemo = { ...state.guidedDemo, agentFlowStep: 'asking' };
+    render();
+    scheduleGuidedDemoAgentFlowStep(runId, 'drafting');
+  });
+}
+
+// Types the prompt char-by-char into every visible request card (desktop + mobile copies), then calls onDone.
+// Re-queries each tick so a stray re-render mid-typing doesn't break it; aborts if the run is superseded.
+function runGuidedDemoPromptTypewriter(runId: number, text: string, onDone: () => void): void {
+  const targets = (): HTMLElement[] =>
+    Array.from(document.querySelectorAll<HTMLElement>('[data-guided-demo-typing] .guided-demo-typed'));
+  if (!targets().length) {
+    onDone();
+    return;
+  }
+  const totalTicks = Math.max(1, Math.round(GUIDED_DEMO_TYPE_TOTAL_MS / GUIDED_DEMO_TYPE_TICK_MS));
+  const chunk = Math.max(1, Math.ceil(text.length / totalTicks));
+  let cursor = 0;
+  const tick = (): void => {
+    if (runId !== guidedDemoAgentFlowRunId) return;
+    cursor = Math.min(text.length, cursor + chunk);
+    const slice = text.slice(0, cursor);
+    for (const node of targets()) node.textContent = slice;
+    if (cursor >= text.length) {
+      guidedDemoTypeTimer = undefined;
+      onDone();
+      return;
+    }
+    guidedDemoTypeTimer = window.setTimeout(tick, GUIDED_DEMO_TYPE_TICK_MS);
+  };
+  tick();
 }
 
 function scheduleGuidedDemoAgentFlowStep(runId: number, step: GuidedDemoAgentFlowStep | 'approved'): void {
