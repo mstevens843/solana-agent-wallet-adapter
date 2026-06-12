@@ -17784,7 +17784,9 @@ function commandAiRouteCards(): string {
       title: IS_ANDROID_APP ? 'Android Session' : 'Browser Session',
       detail: `Connect a temporary key in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'} without saving it to Agentic.`,
       meta: 'Session AI connection',
-      available: !mobileAiPathPolicy && !IS_TAURI_APP,
+      // Session works in the Android Chromium WebView (and in mobile/desktop web);
+      // hidden on iOS WKWebView (unverified CORS) and the Tauri desktop webview.
+      available: !IS_TAURI_APP && (!mobileAiPathPolicy || IS_ANDROID_APP),
     },
     {
       id: 'device-agent',
@@ -17820,6 +17822,7 @@ function commandAiRouteCards(): string {
   const mobileModeOrder = visibleMobileAiPathModes({
     mobileAiPathPolicy,
     deviceAgentVisible: deviceAgentModeVisible(),
+    isAndroidApp: IS_ANDROID_APP,
   });
   const orderedMobileModeOrder = deviceAgentFirst
     ? mobileModeOrder
@@ -18009,7 +18012,8 @@ function commandAiInfoCardsGroup(): string {
       badge: 'Session drafting',
       detail: `AI drafts inside ${IS_ANDROID_APP ? 'this app runtime' : 'this browser session'}, then the plan enters the same normalized workflow pipeline.`,
       foot: 'Useful for temporary keys, but subject to provider and session limits.',
-      available: !mobileAiPathPolicy && !IS_TAURI_APP,
+      // Mirror the route-tab gate: Session on Android app + web, off iOS/Tauri.
+      available: !IS_TAURI_APP && (!mobileAiPathPolicy || IS_ANDROID_APP),
     },
     {
       id: 'bridge',
@@ -18056,6 +18060,7 @@ function commandAiInfoCardsGroup(): string {
           ...visibleMobileAiPathModes({
             mobileAiPathPolicy,
             deviceAgentVisible: deviceAgentModeVisible(),
+            isAndroidApp: IS_ANDROID_APP,
           }),
           ...(IS_ANDROID_APP && phonePairingAvailable() ? ['plan-connector' as const] : []),
         ]
@@ -23326,6 +23331,7 @@ function aiModeSelectOptions(): SelectPickerOption[] {
   const mobileModes = visibleMobileAiPathModes({
     mobileAiPathPolicy,
     deviceAgentVisible,
+    isAndroidApp: IS_ANDROID_APP,
   });
   const orderedMobileModes = deviceAgentFirst
     ? mobileModes
@@ -54664,6 +54670,7 @@ function normalizeAiModeForSurface(
     mobileAiPathPolicy,
     deviceAgentVisible: deviceAgentAvailableForProvider,
     fallbackMode,
+    isAndroidApp: IS_ANDROID_APP,
   }) as AiSettings['mode'];
   return normalizeAiModeForDesktopSurface({
     mode: afterMobile,

@@ -79,24 +79,35 @@ describe('mobile AI path policy', () => {
     })).toEqual(['hosted', 'bridge', 'session', 'device-agent']);
   });
 
-  it('shows Device Agent, Hosted BYOK, and Session AI on mobile when Device Agent is available', () => {
+  it('shows Device Agent, Hosted BYOK, and Session AI on the Android app', () => {
     expect(visibleMobileAiPathModes({
       mobileAiPathPolicy: true,
       deviceAgentVisible: true,
+      isAndroidApp: true,
     })).toEqual(['device-agent', 'hosted', 'session']);
   });
 
-  it('labels the mobile AI path tabs with full names', () => {
+  it('hides Session AI on non-Android mobile (e.g. iOS WKWebView, unverified CORS)', () => {
     expect(visibleMobileAiPathModes({
       mobileAiPathPolicy: true,
       deviceAgentVisible: true,
+      isAndroidApp: false,
+    })).toEqual(['device-agent', 'hosted']);
+  });
+
+  it('labels the Android mobile AI path tabs with full names', () => {
+    expect(visibleMobileAiPathModes({
+      mobileAiPathPolicy: true,
+      deviceAgentVisible: true,
+      isAndroidApp: true,
     }).map(mobileAiPathTabLabel)).toEqual(['Device Agent AI', 'Hosted BYOK', 'Session AI']);
   });
 
-  it('keeps Device Agent, Hosted BYOK, and Session AI visible on mobile when Device Agent is unavailable', () => {
+  it('keeps Device Agent, Hosted BYOK, and Session AI visible on the Android app when Device Agent runtime is not yet ready', () => {
     expect(visibleMobileAiPathModes({
       mobileAiPathPolicy: true,
       deviceAgentVisible: false,
+      isAndroidApp: true,
     })).toEqual(['device-agent', 'hosted', 'session']);
   });
 
@@ -131,13 +142,32 @@ describe('mobile AI path policy', () => {
     })).toBe('device-agent');
   });
 
-  it('keeps Session AI as-is on mobile (now a visible key-only path)', () => {
+  it('keeps Session AI as-is on the Android app (a visible key-only path)', () => {
     expect(normalizeAiModeForMobileSurface({
       mode: 'session',
       mobileAiPathPolicy: true,
       deviceAgentVisible: false,
       fallbackMode: 'session',
+      isAndroidApp: true,
     })).toBe('session');
+  });
+
+  it('coerces Session AI to the best visible path on non-Android mobile (iOS)', () => {
+    expect(normalizeAiModeForMobileSurface({
+      mode: 'session',
+      mobileAiPathPolicy: true,
+      deviceAgentVisible: true,
+      fallbackMode: 'session',
+      isAndroidApp: false,
+    })).toBe('device-agent');
+
+    expect(normalizeAiModeForMobileSurface({
+      mode: 'session',
+      mobileAiPathPolicy: true,
+      deviceAgentVisible: false,
+      fallbackMode: 'session',
+      isAndroidApp: false,
+    })).toBe('hosted');
   });
 });
 

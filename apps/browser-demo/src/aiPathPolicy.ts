@@ -41,14 +41,19 @@ export function mobileAiPathTabLabel(mode: AiPathMode): string {
 export function visibleMobileAiPathModes(input: {
   mobileAiPathPolicy: boolean;
   deviceAgentVisible: boolean;
+  isAndroidApp?: boolean;
 }): AiPathMode[] {
   if (!input.mobileAiPathPolicy) return ['hosted', 'bridge', 'session', 'device-agent'];
   // Session AI calls the provider direct from the WebView with the user's pasted
   // key — no relay, no cloud sign-in — so it's the key-only path for
-  // Anthropic/Gemini on mobile (OpenAI stays blocked from Session via CORS and
-  // routes to Hosted). `bridge` stays hidden: the native app can't reach a local
-  // HTTP bridge sidecar.
-  return ['device-agent', 'hosted', 'session'];
+  // Anthropic/Gemini. It's verified on the Android Chromium WebView (Anthropic
+  // sends `anthropic-dangerous-direct-browser-access`; OpenAI stays blocked by
+  // CORS and routes to Device Agent/Hosted). iOS WKWebView CORS is unverified, so
+  // keep Session Android-only under the mobile policy. `bridge` stays hidden: the
+  // native app can't reach a local HTTP bridge sidecar.
+  return input.isAndroidApp
+    ? ['device-agent', 'hosted', 'session']
+    : ['device-agent', 'hosted'];
 }
 
 // Hosted BYOK requires an Agentic Cloud session because the API key is relayed
@@ -75,11 +80,18 @@ export function normalizeAiModeForMobileSurface(input: {
   mobileAiPathPolicy: boolean;
   deviceAgentVisible: boolean;
   fallbackMode: AiPathMode;
+  isAndroidApp?: boolean;
 }): AiPathMode {
   if (input.mode === 'device-agent' && !input.deviceAgentVisible) {
     return input.mobileAiPathPolicy ? 'hosted' : input.fallbackMode;
   }
-  if (input.mobileAiPathPolicy && input.mode === 'bridge') {
+  // `bridge` is always hidden on mobile; `session` is hidden on non-Android mobile
+  // (iOS) — coerce either to the best visible path so a persisted mode that the UI
+  // no longer offers doesn't leave the picker on an invisible tab.
+  if (
+    input.mobileAiPathPolicy &&
+    (input.mode === 'bridge' || (input.mode === 'session' && !input.isAndroidApp))
+  ) {
     return input.deviceAgentVisible ? 'device-agent' : 'hosted';
   }
   return input.mode;
