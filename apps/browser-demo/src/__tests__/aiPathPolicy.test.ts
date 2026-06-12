@@ -79,25 +79,33 @@ describe('mobile AI path policy', () => {
     })).toEqual(['hosted', 'bridge', 'session', 'device-agent']);
   });
 
-  it('shows only Device Agent and Hosted BYOK on mobile when Device Agent is available', () => {
+  it('shows Device Agent, Hosted BYOK, and Session AI on mobile when Device Agent is available', () => {
     expect(visibleMobileAiPathModes({
       mobileAiPathPolicy: true,
       deviceAgentVisible: true,
-    })).toEqual(['device-agent', 'hosted']);
+    })).toEqual(['device-agent', 'hosted', 'session']);
   });
 
-  it('labels the two mobile AI path tabs with full names', () => {
+  it('labels the mobile AI path tabs with full names', () => {
     expect(visibleMobileAiPathModes({
       mobileAiPathPolicy: true,
       deviceAgentVisible: true,
-    }).map(mobileAiPathTabLabel)).toEqual(['Device Agent AI', 'Hosted BYOK']);
+    }).map(mobileAiPathTabLabel)).toEqual(['Device Agent AI', 'Hosted BYOK', 'Session AI']);
   });
 
-  it('keeps Device Agent and Hosted BYOK as the only visible mobile paths when Device Agent is unavailable', () => {
+  it('keeps Device Agent, Hosted BYOK, and Session AI visible on mobile when Device Agent is unavailable', () => {
     expect(visibleMobileAiPathModes({
       mobileAiPathPolicy: true,
       deviceAgentVisible: false,
-    })).toEqual(['device-agent', 'hosted']);
+    })).toEqual(['device-agent', 'hosted', 'session']);
+  });
+
+  it('does not disable Session AI on mobile (key-only, no cloud sign-in)', () => {
+    expect(mobileAiModeDisabledReason({
+      mobileAiPathPolicy: true,
+      mode: 'session',
+      cloudSessionMatchesWallet: false,
+    })).toBe('');
   });
 
   it('disables Hosted BYOK on mobile until Cloud sign-in matches the wallet', () => {
@@ -114,20 +122,22 @@ describe('mobile AI path policy', () => {
     })).toBe('');
   });
 
-  it('normalizes hidden mobile bridge and session modes to the best visible path', () => {
+  it('normalizes the hidden mobile bridge mode to the best visible path', () => {
     expect(normalizeAiModeForMobileSurface({
       mode: 'bridge',
       mobileAiPathPolicy: true,
       deviceAgentVisible: true,
       fallbackMode: 'bridge',
     })).toBe('device-agent');
+  });
 
+  it('keeps Session AI as-is on mobile (now a visible key-only path)', () => {
     expect(normalizeAiModeForMobileSurface({
       mode: 'session',
       mobileAiPathPolicy: true,
       deviceAgentVisible: false,
       fallbackMode: 'session',
-    })).toBe('hosted');
+    })).toBe('session');
   });
 });
 

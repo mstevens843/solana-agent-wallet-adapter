@@ -163,6 +163,32 @@ class SystemBridge(private val activity: Activity) {
     }
 
     /**
+     * Read the current clipboard text. Android WebView denies the async
+     * navigator.clipboard.readText() API (no permission UI), so the WebView UI
+     * routes the "Paste key" affordance through this native method instead.
+     * Returns the coerced primary-clip text, or "" when the clipboard is empty
+     * or unreadable.
+     */
+    fun clipboardRead(): String {
+        return try {
+            val cm = activity.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                ?: return ""
+            val clip = cm.primaryClip ?: return ""
+            if (clip.itemCount == 0) return ""
+            clip.getItemAt(0)?.coerceToText(activity)?.toString() ?: ""
+        } catch (err: Exception) {
+            AgentMwaLog.warn(
+                "SystemBridge",
+                "clipboardRead",
+                "FAIL",
+                "clipboard read failed",
+                mapOf("class" to err.javaClass.simpleName, "message" to err.message),
+            )
+            ""
+        }
+    }
+
+    /**
      * Fire a haptic pulse. [pattern] accepts "light", "medium", "heavy" — anything
      * else falls back to "light". On Android 12+ uses VibratorManager; on older
      * APIs uses the legacy Vibrator service. Requires the VIBRATE permission

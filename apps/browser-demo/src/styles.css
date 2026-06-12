@@ -2715,6 +2715,27 @@ code {
   padding: 12px 14px;
 }
 
+.ai-connectors-primary .ai-connectors-instruction {
+  color: var(--text);
+  font-weight: 600;
+  margin: 0;
+}
+
+/* Small, muted keep-alive hint tucked under the QR panel — not a prominent banner. The connector is
+   a detached background daemon, so closing this tab is genuinely harmless; the note just reassures. */
+.ai-connectors-keepalive {
+  align-items: center;
+  color: rgba(196, 205, 202, 0.72);
+  display: flex;
+  font-size: 0.82rem;
+  gap: 6px;
+  margin: 10px 0 0;
+}
+.ai-connectors-keepalive span {
+  color: #5fe3a1;
+  font-size: 0.72rem;
+}
+
 .ai-connectors-connector-field {
   max-width: 440px;
 }
@@ -7380,6 +7401,20 @@ code {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* Post-pair "checking computer…" chip — sits inline where the ● computer online/offline chip goes. */
+.bridge-checking-chip {
+  align-items: center;
+  display: inline-flex;
+  font-weight: 600;
+  gap: 4px;
+}
+.bridge-checking-chip .button-spinner {
+  height: 12px;
+  margin-right: 0;
+  vertical-align: 0;
+  width: 12px;
 }
 
 .transaction-field textarea,
@@ -15583,6 +15618,38 @@ button.danger:hover:not(:disabled) {
 .ai-inactive-config-note button {
   justify-self: start;
   min-height: 30px;
+}
+
+/* API-key input + inline Paste button. The Paste button sits on the right edge of the field so a
+   one-tap paste is reachable even when the soft keyboard covers the bottom sheet. */
+.ai-key-input-wrap {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  width: 100%;
+}
+
+.ai-key-input-wrap input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.ai-key-paste-btn {
+  flex: 0 0 auto;
+  min-height: 38px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(95, 227, 161, 0.4);
+  background: rgba(18, 36, 27, 0.9);
+  color: #e7f2ea;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ai-key-paste-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .ai-actions {

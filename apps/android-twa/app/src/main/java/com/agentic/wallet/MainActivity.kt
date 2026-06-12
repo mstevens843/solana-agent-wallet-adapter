@@ -1513,6 +1513,16 @@ class MainActivity : FragmentActivity() {
             activity.systemBridge.clipboardWrite(text)
         }
 
+        /**
+         * Read the system clipboard text (empty string if none). Backs the WebView
+         * "Paste key" button, since Android WebView blocks navigator.clipboard.readText().
+         */
+        @JavascriptInterface
+        fun clipboardRead(): String = safeBridge("clipboardRead", "") {
+            if (!checkTrustedOrigin("clipboardRead")) return@safeBridge ""
+            activity.systemBridge.clipboardRead()
+        }
+
         /** Haptic feedback: "light"|"medium"|"heavy". Returns true on success. */
         @JavascriptInterface
         fun haptic(pattern: String): Boolean = safeBridge("haptic", false) {

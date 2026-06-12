@@ -43,7 +43,12 @@ export function visibleMobileAiPathModes(input: {
   deviceAgentVisible: boolean;
 }): AiPathMode[] {
   if (!input.mobileAiPathPolicy) return ['hosted', 'bridge', 'session', 'device-agent'];
-  return ['device-agent', 'hosted'];
+  // Session AI calls the provider direct from the WebView with the user's pasted
+  // key — no relay, no cloud sign-in — so it's the key-only path for
+  // Anthropic/Gemini on mobile (OpenAI stays blocked from Session via CORS and
+  // routes to Hosted). `bridge` stays hidden: the native app can't reach a local
+  // HTTP bridge sidecar.
+  return ['device-agent', 'hosted', 'session'];
 }
 
 // Hosted BYOK requires an Agentic Cloud session because the API key is relayed
@@ -56,7 +61,7 @@ export function mobileAiModeDisabledReason(input: {
   cloudSessionMatchesWallet: boolean;
 }): string {
   if (!input.mobileAiPathPolicy) return '';
-  if (input.mode === 'bridge' || input.mode === 'session') {
+  if (input.mode === 'bridge') {
     return 'This AI path is not available in the native mobile app or mobile web.';
   }
   if (input.mode === 'hosted' && !input.cloudSessionMatchesWallet) {
@@ -74,7 +79,7 @@ export function normalizeAiModeForMobileSurface(input: {
   if (input.mode === 'device-agent' && !input.deviceAgentVisible) {
     return input.mobileAiPathPolicy ? 'hosted' : input.fallbackMode;
   }
-  if (input.mobileAiPathPolicy && (input.mode === 'bridge' || input.mode === 'session')) {
+  if (input.mobileAiPathPolicy && input.mode === 'bridge') {
     return input.deviceAgentVisible ? 'device-agent' : 'hosted';
   }
   return input.mode;

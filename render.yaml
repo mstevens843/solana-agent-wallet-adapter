@@ -55,6 +55,20 @@ services:
       # (QR scanner + bridge pairing).
       - key: BRIDGE_PAIRING_ENABLED
         value: "1"
+      # Device Agent runtime for the Android app surface (on-device AI review +
+      # the Plan Connector "use your ChatGPT/Claude plan from your computer"
+      # paired-bridge, which is wired on top of the device-agent runtime). The
+      # Android app loads this SPA live, so this Vite flag — not the APK's gradle
+      # flag — is what gates deviceAgentModeVisible() at runtime. The shipped
+      # store build is already the `device-agent` profile
+      # (AGENTIC_ANDROID_DEVICE_AGENT=true) with BridgeRelayProvider injected, so
+      # turning this on aligns the JS gate with the native runtime already on the
+      # device and makes Plan Connector + Device Agent work without an APK
+      # rebuild. Scoped to the Android app surface only via isAndroidApp in
+      # deviceAgentModeVisibleForSurface(); VITE_AGENTIC_DEVICE_AGENT stays unset
+      # so web/iOS are unaffected.
+      - key: VITE_AGENTIC_ANDROID_DEVICE_AGENT
+        value: "true"
       - key: VITE_AGENTIC_DEV_CONTROLS
         value: "false"
       - key: VITE_AGENTIC_GA_MEASUREMENT_ID

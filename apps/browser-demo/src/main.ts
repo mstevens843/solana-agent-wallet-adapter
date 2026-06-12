@@ -1354,6 +1354,9 @@ interface AgenticAndroidBridge {
   openExternal?: (url: string) => boolean;
   systemInfo?: () => string;
   clipboardWrite?: (text: string) => boolean;
+  // Returns the current clipboard text (empty string if none). Optional: older shipped APKs
+  // predate this method, so callers fall back to navigator.clipboard when it is absent.
+  clipboardRead?: () => string;
   haptic?: (pattern: string) => boolean;
   showNotification?: (payloadJson: string) => string;
   biometricStatus?: () => string;
@@ -10602,12 +10605,19 @@ function aiConnectorsPage(): string {
               menuPlacement: 'down',
             })}
           </label>
+          <p class="ai-connectors-instruction">
+            No app to install — open a terminal in any directory and paste this command in.
+            It starts the connector and opens this page automatically.
+          </p>
           ${runtimeCommandRow('Lightweight connector', command, 'Copy command')}
           <p class="ai-connectors-note">
             A web page cannot directly use your local Codex, Claude, or Gemini login. The lightweight connector runs locally so Agentic can use that signed-in session without installing the full desktop app.
           </p>
           ${aiConnectorsReadinessPanel(readiness)}
           ${aiConnectorsQrPanel(readiness)}
+          <p class="ai-connectors-keepalive">
+            <span aria-hidden="true">●</span> Stays paired while this computer is awake &amp; signed in — you can close this tab.
+          </p>
         </section>
 
         <div class="ai-connectors-options" aria-label="Other setup options">
@@ -23239,7 +23249,10 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
       ${hideKeyEntry ? configuredKeyNote : `
         <label class="field compact ai-setting-field ai-setting-key">
           <span>${escapeHtml(keyLabel)}</span>
-          <input id="aiApiKey-${escapeHtml(scope)}" data-ai-control="api-key"${keyInputClass} type="${keyInputType}" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="${state.aiSettings.mode === 'bridge' ? 'Sent to local bridge memory' : (IS_TAURI_APP || IS_ANDROID_APP || state.iosNativeEnvironment.isIosNative) ? 'Stored after confirm or clear key' : 'Held for this tab'}" autocomplete="off"${keyInputAssistAttrs} ${state.busy ? 'disabled' : ''} />
+          <div class="ai-key-input-wrap">
+            <input id="aiApiKey-${escapeHtml(scope)}" data-ai-control="api-key"${keyInputClass} type="${keyInputType}" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="${state.aiSettings.mode === 'bridge' ? 'Sent to local bridge memory' : (IS_TAURI_APP || IS_ANDROID_APP || state.iosNativeEnvironment.isIosNative) ? 'Stored after confirm or clear key' : 'Held for this tab'}" autocomplete="off"${keyInputAssistAttrs} ${state.busy ? 'disabled' : ''} />
+            <button type="button" id="pasteAiKey-${escapeHtml(scope)}" data-ai-action="paste-api-key" data-ai-paste-target="${escapeHtml(scope)}" class="ai-key-paste-btn" ${state.busy ? 'disabled' : ''} title="Paste your key from the clipboard" aria-label="Paste key from clipboard">Paste</button>
+          </div>
         </label>
       `}
       <div class="ai-actions">
@@ -23324,9 +23337,11 @@ function aiModeSelectOptions(): SelectPickerOption[] {
     id: mode,
     label: mode === 'device-agent'
       ? 'Device Agent - reviews on device'
-      : cloudSessionMatchesWallet()
-        ? 'Hosted BYOK - cloud relay'
-        : 'Hosted BYOK - Cloud sign-in required',
+      : mode === 'session'
+        ? 'Session AI - your key, no sign-in'
+        : cloudSessionMatchesWallet()
+          ? 'Hosted BYOK - cloud relay'
+          : 'Hosted BYOK - Cloud sign-in required',
   }));
   const options: Array<{ id: AiSettings['mode']; label: string }> = mobileAiPathPolicy
     ? mobileOptions
@@ -23623,6 +23638,15 @@ let relayStatusCache: { online: boolean; at: number } | null = null;
 let relayHasBeenOnline = false; // true once we've seen the desktop online — gates the first-load false fire
 let relayOfflineStreak = 0; // consecutive offline reads (ignoring in-flight) before we trust "disconnected"
 let relayDisconnectToastShown = false;
+// Post-pair "checking…" grace: the first relay read right after a fresh QR pair is usually still
+// desktopOnline:false (the relay hasn't reflected the desktop yet), which would flash a false
+// "computer offline" for a couple seconds. While relayCheckingSince is set and within the grace
+// window, pairedBridgeStatusChip() shows a spinner instead — flipping to online the moment the relay
+// reports it, or to the honest offline chip only after the grace elapses. Transient UI state only;
+// never persisted in state.aiSettings.
+let relayCheckingSince: number | null = null;
+const RELAY_CHECKING_GRACE_MS = 15_000;
+let relayCheckingTimer: number | null = null;
 
 // Friendly name of the connected Plan Connector for toasts/cards (e.g. "Codex").
 function shortConnectorName(connector: AiConnector): string {
@@ -23733,9 +23757,25 @@ function refreshRelayPresence(): boolean {
 
 function pairedBridgeStatusChip(): string {
   if (!IS_ANDROID_APP) return '';
-  return refreshRelayPresence()
-    ? '<span class="bridge-online-chip ok" style="color:#5fe3a1">● computer online</span>'
-    : '<span class="bridge-online-chip warn" style="color:#ffb27a">● computer offline — open the connector page</span>';
+  const online = refreshRelayPresence();
+  if (online) {
+    // Resolved positive — close any pending post-pair checking window and stop its fast loop.
+    if (relayCheckingSince !== null) {
+      relayCheckingSince = null;
+      stopRelayCheckingWatch();
+    }
+    return '<span class="bridge-online-chip ok" style="color:#5fe3a1">● computer online</span>';
+  }
+  if (relayCheckingSince !== null) {
+    if (Date.now() - relayCheckingSince < RELAY_CHECKING_GRACE_MS) {
+      // Still inside the post-pair grace window and not yet online — show the spinner, not "offline".
+      return '<span class="bridge-checking-chip" style="color:#cfe9db"><span class="button-spinner" aria-hidden="true"></span>checking computer…</span>';
+    }
+    // Grace elapsed and still offline — give up on the spinner and show the honest offline chip.
+    relayCheckingSince = null;
+    stopRelayCheckingWatch();
+  }
+  return '<span class="bridge-online-chip warn" style="color:#ffb27a">● computer offline — open the connector page</span>';
 }
 
 function deviceAgentConnectionCard(status: DeviceAgentStatus | null): string {
@@ -24307,6 +24347,13 @@ function hasDetectedAgentReviewPath(): boolean {
     return Boolean(state.aiStatus?.available);
   }
   if (state.aiSettings.mode === 'device-agent') {
+    // Paired-bridge (Plan Connector) runs inference on the user's own desktop connector via the
+    // relay, so the path is "detected" whenever the desktop is reachable — even if the local
+    // foreground runtime was reclaimed mid-session (the desktop blocks its relay heartbeat for the
+    // minutes a connector takes). Keep the Review path live on relay presence; fall back to local
+    // runtime readiness otherwise. BridgeAiClient.runForward preflights desktop-online and fails
+    // fast with a clear message, so this only widens the gate, never the execution.
+    if (state.aiSettings.pairedBridge && refreshRelayPresence()) return true;
     return deviceAgentStatusReadyForDrafts(state.deviceAgentStatus);
   }
   if (state.aiSettings.mode === 'hosted' && hostedByokCloudSessionReason()) {
@@ -26954,6 +27001,9 @@ function bind(): void {
         case 'save-direct-key':
           void runSaveDirectAiKey();
           return;
+        case 'paste-api-key':
+          void runPasteAiKey(button.dataset.aiPasteTarget);
+          return;
         case 'confirm-planner':
           void runConfirmAiPlanner();
           return;
@@ -27385,6 +27435,19 @@ function bind(): void {
       saveCurrentSessionAiApiKey();
       resetAiPlannerConfirmation('AI key changed. Confirm planner again if needed.');
       syncAiActionButtons();
+    });
+    // On mobile the soft keyboard slides up over the bottom sheet and covers this field, so the
+    // native long-press "Paste" affordance is unreachable. Scroll the field into the centre on
+    // focus so it clears the keyboard (pairs with the explicit Paste button below).
+    control.addEventListener('focus', (event) => {
+      const target = event.currentTarget as HTMLInputElement;
+      window.setTimeout(() => {
+        try {
+          target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        } catch {
+          target.scrollIntoView();
+        }
+      }, 250);
     });
   }
 
@@ -36665,6 +36728,16 @@ async function runEnablePairedBridge(connector?: string): Promise<void> {
   aiModeSelectionExplicit = true;
   savePersistedState();
   void syncCloudPreference('ai-settings');
+  // Open the post-pair "checking…" window: the very first relay read is usually still false, so start
+  // a clean grace window plus a fast re-render loop. Reset the cache + disconnect-toast tracking so
+  // the window starts from a known state and the online->offline disconnect toast can't misfire from a
+  // stale pre-pair "offline" read.
+  relayStatusCache = null;
+  relayHasBeenOnline = false;
+  relayOfflineStreak = 0;
+  relayDisconnectToastShown = false;
+  relayCheckingSince = Date.now();
+  startRelayCheckingWatch();
   try {
     const status = await startDeviceAgentRuntime();
     saveDeviceAgentStatusCache(state.deviceAgentStatus);
@@ -36700,6 +36773,8 @@ function runUnpairPairedBridge(): void {
   relayHasBeenOnline = false;
   relayOfflineStreak = 0;
   relayDisconnectToastShown = false;
+  relayCheckingSince = null;
+  stopRelayCheckingWatch();
   savePersistedState();
   void syncCloudPreference('ai-settings');
   resetAiPlannerConfirmation('Unpaired from your computer. Paste an API key or pair again to use Device Agent AI.');
@@ -45020,6 +45095,43 @@ function stopRelayPresenceWatch(): void {
   if (relayPresenceTimer !== null) {
     window.clearInterval(relayPresenceTimer);
     relayPresenceTimer = null;
+  }
+}
+
+// Fast (~1.5s) re-render loop that runs ONLY during the post-pair "checking…" window so the chip
+// flips to online the moment the relay reports it, and so the grace expiry promptly resolves to the
+// offline chip. Self-terminates once relayCheckingSince is cleared (online seen or grace elapsed).
+// Distinct from the 5s startRelayPresenceWatch loop (which keeps running for ongoing disconnect
+// detection); the two don't conflict — both just refresh + maybe render.
+function startRelayCheckingWatch(): void {
+  if (!IS_ANDROID_APP) return;
+  stopRelayCheckingWatch();
+  relayCheckingTimer = window.setInterval(() => {
+    if (relayCheckingSince === null) {
+      stopRelayCheckingWatch();
+      return;
+    }
+    // Hard stop on grace expiry even if the chip isn't currently mounted (e.g. user navigated away),
+    // so a stale checking window can never keep a timer — or a spinner — alive forever.
+    if (Date.now() - relayCheckingSince >= RELAY_CHECKING_GRACE_MS) {
+      relayCheckingSince = null;
+      stopRelayCheckingWatch();
+      render();
+      return;
+    }
+    relayStatusCache = null; // force a fresh native read each tick
+    const online = refreshRelayPresence();
+    render(); // chip is cheap; surface checking->online/offline promptly
+    if (online) {
+      relayCheckingSince = null;
+      stopRelayCheckingWatch();
+    }
+  }, 1_500);
+}
+function stopRelayCheckingWatch(): void {
+  if (relayCheckingTimer !== null) {
+    window.clearInterval(relayCheckingTimer);
+    relayCheckingTimer = null;
   }
 }
 
@@ -54781,6 +54893,55 @@ async function writeClipboardText(value: string, label: string): Promise<void> {
     throw browserClipboardError;
   }
   throw new Error('Clipboard access is unavailable.');
+}
+
+// Read clipboard text for the "Paste" affordance. Android WebView denies navigator.clipboard.readText
+// (no permission UI), so the native bridge clipboardRead() is the reliable path there; the web API is
+// the fallback for desktop/web and any shell that doesn't expose the native method. Returns null when
+// no clipboard text could be read (caller falls back to manual paste guidance).
+async function readClipboardText(): Promise<string | null> {
+  const androidRead = agenticAndroidBridge()?.clipboardRead;
+  if (typeof androidRead === 'function') {
+    try {
+      const text = androidRead();
+      if (typeof text === 'string') return text;
+    } catch {
+      // fall through to the web API
+    }
+  }
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.readText) {
+    try {
+      return await navigator.clipboard.readText();
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+async function runPasteAiKey(targetScope?: string): Promise<void> {
+  if (state.busy) return;
+  const text = await readClipboardText();
+  if (text == null) {
+    // Programmatic read was blocked (typical on Android WebView before the native clipboardRead
+    // method ships). Focus the field and tell the user to long-press → Paste.
+    const input = document.querySelector<HTMLInputElement>(
+      targetScope ? `#aiApiKey-${cssEscape(targetScope)}` : '[data-ai-control="api-key"]',
+    );
+    input?.focus();
+    pushToast('info', 'Paste manually', 'Long-press the key field, then tap Paste.');
+    return;
+  }
+  const trimmed = text.trim();
+  if (!trimmed) {
+    pushToast('error', 'Clipboard empty', 'Copy your AI provider key first, then tap Paste.');
+    return;
+  }
+  state.aiSettings.apiKey = trimmed;
+  saveCurrentSessionAiApiKey();
+  resetAiPlannerConfirmation('AI key changed. Confirm planner again if needed.');
+  render();
+  pushToast('success', 'Key pasted', 'Pasted your AI provider key. Confirm planner or use it for AI review.');
 }
 
 function openAndroidMwaTest(): void {
