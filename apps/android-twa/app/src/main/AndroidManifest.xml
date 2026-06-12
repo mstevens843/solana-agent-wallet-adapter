@@ -41,6 +41,16 @@
             android:name="asset_statements"
             android:resource="@string/asset_statements" />
 
+        <!-- Firebase / Google Analytics: collect baseline app analytics (installs, app-opens,
+             sessions, crashes) but NOT the Advertising ID, keeping the Play Data Safety
+             disclosure minimal for a wallet app. -->
+        <meta-data
+            android:name="google_analytics_adid_collection_enabled"
+            android:value="false" />
+        <meta-data
+            android:name="google_analytics_default_allow_ad_personalization_signals"
+            android:value="false" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true"

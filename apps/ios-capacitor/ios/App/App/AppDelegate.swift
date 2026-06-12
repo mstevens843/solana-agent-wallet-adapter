@@ -1,4 +1,5 @@
 import UIKit
+import WebKit
 import Capacitor
 import SystemConfiguration
 import SolanaAgentWalletAdapterIosCapacitorBridge
@@ -7,6 +8,11 @@ import SolanaAgentWalletAdapterIosCapacitorBridge
 class AppDelegate: UIResponder, UIApplicationDelegate {
 
     var window: UIWindow?
+
+    // Set once the app has been backgrounded, so the WKWebView content-process liveness probe in
+    // applicationDidBecomeActive runs only on a RETURN from background — not on first launch, where
+    // the page is still loading and a probe could trigger a spurious reload.
+    private var didBackgroundAtLeastOnce = false
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         // Bootstrap the native bridge: hydrates remote config from Keychain cache,
@@ -22,6 +28,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func applicationDidEnterBackground(_ application: UIApplication) {
         // Reserved for Phase 3 (DeviceAgent in-flight snapshot) and Phase 4
         // (streaming session checkpoint).
+        didBackgroundAtLeastOnce = true
     }
 
     func applicationWillEnterForeground(_ application: UIApplication) {
@@ -32,6 +39,25 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // Mirrors Android MainActivity.onResume — refresh remote config (debounced
         // 60s in-store). Future phases drain in-flight DeviceAgent requests here.
         AgenticBridge.didBecomeActive()
+        if didBackgroundAtLeastOnce {
+            recoverWebViewIfContentProcessTerminated()
+        }
+    }
+
+    /// Recover from a terminated WKWebView content process. iOS reclaims the web-content process of
+    /// a backgrounded app under memory pressure; on return the WebView is blank/black and Capacitor's
+    /// delegate logs the termination but does not reload. We probe the live JS context and reload
+    /// ONLY when it's actually dead, so a healthy resume is left untouched. This is the iOS analog of
+    /// the Android onRenderProcessGone recovery.
+    private func recoverWebViewIfContentProcessTerminated() {
+        guard let webView = (window?.rootViewController as? CAPBridgeViewController)?.webView else {
+            return
+        }
+        webView.evaluateJavaScript("true") { _, error in
+            guard error != nil else { return }
+            NSLog("%@", "[AgentIOSApp] [AppDelegate] webContentProbe | RECOVER phase=WARN message=\"WKWebView content process appears terminated; reloading\"")
+            webView.reload()
+        }
     }
 
     func applicationWillTerminate(_ application: UIApplication) {

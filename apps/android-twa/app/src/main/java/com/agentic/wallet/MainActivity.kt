@@ -102,6 +102,9 @@ class MainActivity : FragmentActivity() {
     // can retry the live URL after a cooldown instead of stranding the user on the
     // stale baked-in bundle for the whole session after a transient remote failure.
     private var fallbackAt = 0L
+    // Set by the render-process-gone recovery just before recreate(): the WebView is dead, so
+    // onSaveInstanceState must NOT persist its (broken) state. Resets on the fresh instance.
+    private var suppressWebViewStateSave = false
 
     // Top-frame URL cache for the origin guard. WebView.getUrl() is UI-thread only and
     // throws RuntimeException when called from the WebView's @JavascriptInterface JS
@@ -291,19 +294,43 @@ class MainActivity : FragmentActivity() {
                     openExternal(uri)
                     return true
                 }
+
+                override fun onRenderProcessGone(
+                    view: WebView,
+                    detail: android.webkit.RenderProcessGoneDetail,
+                ): Boolean = handleRenderProcessGone(view, detail)
             }
         }
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
         setContentView(webView)
         applySystemBarInsets(webView)
 
-        if (savedInstanceState == null) {
-            val startUrl = if (remoteWebUrl.isNotBlank()) remoteWebUrl else LOCAL_APP_START_URL
-            // Seed the origin cache before loadUrl returns. onPageStarted will overwrite this
-            // once the page actually loads, but bridge calls during early page bootstrap need
-            // a non-null value to satisfy the origin guard.
-            currentWebViewOrigin.set(startUrl)
+        val startUrl = if (remoteWebUrl.isNotBlank()) remoteWebUrl else LOCAL_APP_START_URL
+        // Seed the origin cache before loadUrl returns. onPageStarted will overwrite this
+        // once the page actually loads, but bridge calls during early page bootstrap need
+        // a non-null value to satisfy the origin guard.
+        currentWebViewOrigin.set(startUrl)
+        // Always ensure the WebView actually loads on (re)creation. This used to only run when
+        // savedInstanceState == null, so an activity recreated FROM saved state — which happens
+        // when the OS reclaims the backgrounded process and the user reopens the app ("first
+        // open after a while") — left the freshly-created WebView unloaded → a black screen
+        // until a hard-kill cleared the saved Bundle. Restore the prior WebView nav state if it
+        // was persisted (onSaveInstanceState below); if there is nothing to restore, load the
+        // start URL.
+        if (savedInstanceState == null || webView.restoreState(savedInstanceState) == null) {
             webView.loadUrl(startUrl)
+        }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        // Persist the WebView's navigation state so a process-death recreation can restore it
+        // (and so restoreState() above has something to return); the guard avoids touching the
+        // lateinit WebView if onCreate failed before it was built.
+        // suppressWebViewStateSave is set by the render-process-gone recovery: the WebView is dead,
+        // so saving its state would persist a broken snapshot (and can throw on a destroyed view).
+        if (::webView.isInitialized && !suppressWebViewStateSave) {
+            webView.saveState(outState)
         }
     }
 
@@ -318,6 +345,45 @@ class MainActivity : FragmentActivity() {
         val current = currentWebViewOrigin.get() ?: return false
         val uri = runCatching { Uri.parse(current) }.getOrNull() ?: return false
         return isAllowedInWebView(uri)
+    }
+
+    // The WebView's renderer process can be killed independently of our app process (system memory
+    // reclaim while backgrounded, or a renderer crash). The dead WebView can never be reused; left
+    // unhandled the framework leaves a black surface or tears the whole app down. Recreate the
+    // Activity so onCreate builds a fresh WebView and reloads the start URL. A short throttle stops
+    // a crash→recreate→crash loop: if the renderer dies again within the window we stop auto-
+    // recovering (degrades to the pre-fix behavior, never worse) but still return true so the app
+    // process survives.
+    private fun handleRenderProcessGone(
+        view: WebView,
+        detail: android.webkit.RenderProcessGoneDetail,
+    ): Boolean {
+        val crashed = detail.didCrash()
+        val isCurrent = view === webView
+        AgentMwaLog.warn(
+            "MainActivity",
+            "onRenderProcessGone",
+            "WEBVIEW_RENDER_GONE",
+            if (crashed) "WebView render process crashed" else "WebView render process reclaimed by system",
+            mapOf("didCrash" to crashed, "isCurrent" to isCurrent),
+        )
+        (view.parent as? android.view.ViewGroup)?.removeView(view)
+        if (!isCurrent || isFinishing || isDestroyed) {
+            view.destroy()
+            return true
+        }
+        val now = android.os.SystemClock.elapsedRealtime()
+        val looping = lastRenderRecoveryAt != 0L &&
+            now - lastRenderRecoveryAt < RENDER_RECOVERY_MIN_INTERVAL_MS
+        lastRenderRecoveryAt = now
+        view.destroy()
+        if (!looping) {
+            // Skip persisting the dead WebView during the recreate save pass; onCreate then takes
+            // the "nothing to restore → loadUrl" path and reloads the start URL cleanly.
+            suppressWebViewStateSave = true
+            recreate()
+        }
+        return true
     }
 
     private fun maybeFallbackToBundled(view: WebView, request: WebResourceRequest, reason: String) {
@@ -2398,6 +2464,11 @@ class MainActivity : FragmentActivity() {
         // Minimum gap before a foregrounded app retries the live URL after a
         // bundled fallback (avoids hammering a flaky remote on rapid resumes).
         private const val REMOTE_RETRY_COOLDOWN_MS = 60_000L
+        // Min gap between render-process-gone recoveries. Process-static (companion) so it survives
+        // the recreate() the recovery performs, letting us detect a tight renderer-death loop and
+        // stop auto-recovering instead of looping recreate→crash→recreate.
+        private const val RENDER_RECOVERY_MIN_INTERVAL_MS = 5_000L
+        @Volatile private var lastRenderRecoveryAt = 0L
 
         private fun sha256First8(bytes: ByteArray): String =
             MessageDigest.getInstance("SHA-256")

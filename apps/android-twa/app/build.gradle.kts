@@ -3,6 +3,7 @@ import java.io.File
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("com.google.gms.google-services")
 }
 
 fun propertyOrEnv(name: String): String? =
@@ -162,6 +163,12 @@ val cloudApiBaseUrl = propertyOrEnv("AGENTIC_ANDROID_CLOUD_API_BASE_URL")
     ?: propertyOrEnv("AGENTIC_CLOUD_API_BASE_URL")
     ?: "https://agentic-signer.com"
 val cloudApiUri = uri(cloudApiBaseUrl)
+// GA4 measurement id baked into the bundled (offline-fallback) browser-demo build. The live
+// WebView path loads from Render, which already injects this via render.yaml; this keeps
+// analytics working when the bundled assets are served. Mirrors render.yaml's value.
+val gaMeasurementId = propertyOrEnv("VITE_AGENTIC_GA_MEASUREMENT_ID")
+    ?: propertyOrEnv("AGENTIC_GA_MEASUREMENT_ID")
+    ?: "G-MJ3VZ7VEX7"
 val localLaunchHosts = setOf("localhost", "127.0.0.1", "0.0.0.0", "::1")
 
 // Live-update URL: when non-empty, the WebView loads this remote origin at launch instead of
@@ -366,6 +373,7 @@ val buildBundledWebAssets = tasks.register<Exec>("buildBundledWebAssets") {
     environment("VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST", deviceAgentWalletAllowlist)
     environment("VITE_AGENTIC_CLOUD_API_BASE_URL", cloudApiBaseUrl)
     environment("VITE_CAPACITOR_IOS_APP", "false")
+    environment("VITE_AGENTIC_GA_MEASUREMENT_ID", gaMeasurementId)
 }
 
 val typecheckBundledWebAssets = tasks.register<Exec>("typecheckBundledWebAssets") {
@@ -386,6 +394,7 @@ val typecheckBundledWebAssets = tasks.register<Exec>("typecheckBundledWebAssets"
     environment("VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST", deviceAgentWalletAllowlist)
     environment("VITE_AGENTIC_CLOUD_API_BASE_URL", cloudApiBaseUrl)
     environment("VITE_CAPACITOR_IOS_APP", "false")
+    environment("VITE_AGENTIC_GA_MEASUREMENT_ID", gaMeasurementId)
 }
 
 val verifyBundledWebAssets = tasks.register<Exec>("verifyBundledWebAssets") {
@@ -430,6 +439,15 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
     implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
+
+    // Firebase Analytics (Google Analytics for Firebase) — baseline native app analytics
+    // (installs, app-opens, sessions, crashes). Advertising-ID collection is disabled via
+    // AndroidManifest meta-data; the ad-id module is excluded so it is never pulled in
+    // transitively, keeping the Play Data Safety disclosure minimal for a wallet app.
+    implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
+    implementation("com.google.firebase:firebase-analytics") {
+        exclude(group = "com.google.android.gms", module = "play-services-ads-identifier")
+    }
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
     androidTestImplementation("androidx.test:core-ktx:1.6.1")

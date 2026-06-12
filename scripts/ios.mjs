@@ -135,6 +135,9 @@ function iosEnv(selectedCommand = command) {
   env.VITE_AGENTIC_DEVICE_AGENT = env.VITE_AGENTIC_DEVICE_AGENT ?? (selectedCommand === 'release' ? 'false' : 'true');
   env.VITE_AGENTIC_BROWSER_DEVICE_AGENT = env.VITE_AGENTIC_BROWSER_DEVICE_AGENT ?? 'false';
   env.VITE_AGENTIC_CLOUD_API_BASE_URL = env.VITE_AGENTIC_CLOUD_API_BASE_URL ?? env.AGENTIC_CLOUD_API_BASE_URL ?? 'https://agentic-signer.com';
+  // GA4 measurement id so the offline-fallback bundle still reports analytics. The live path
+  // (Capacitor server.url -> Render) already inherits this from render.yaml.
+  env.VITE_AGENTIC_GA_MEASUREMENT_ID = env.VITE_AGENTIC_GA_MEASUREMENT_ID ?? env.AGENTIC_GA_MEASUREMENT_ID ?? 'G-MJ3VZ7VEX7';
   const xcodeDeveloperDir = '/Applications/Xcode.app/Contents/Developer';
   if (!env.DEVELOPER_DIR && existsSync(xcodeDeveloperDir)) {
     env.DEVELOPER_DIR = xcodeDeveloperDir;

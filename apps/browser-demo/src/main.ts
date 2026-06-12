@@ -4353,7 +4353,11 @@ async function startApp(): Promise<void> {
     if (!appRoot) {
       throw new Error('Missing #app');
     }
-    initializeAnalytics();
+    // Tag the GA session with the runtime surface so the single Web stream can segment
+    // web vs in-app (android/ios) vs desktop traffic. IS_* constants resolve at module load.
+    initializeAnalytics(
+      IS_TAURI_APP ? 'desktop' : IS_IOS_APP ? 'ios' : IS_ANDROID_APP ? 'android' : 'web',
+    );
     warmBrowserDeviceAgent();
     normalizeInitialRoute();
     hydrateGeneratedPlansForStartup();

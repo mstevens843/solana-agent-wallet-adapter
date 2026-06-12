@@ -12,7 +12,7 @@ const MEASUREMENT_ID = resolveMeasurementId();
 let initialized = false;
 let lastTrackedPagePath = '';
 
-export function initializeAnalytics(): void {
+export function initializeAnalytics(surface?: string): void {
   if (!MEASUREMENT_ID || initialized || typeof window === 'undefined' || typeof document === 'undefined') {
     return;
   }
@@ -42,6 +42,11 @@ export function initializeAnalytics(): void {
     allow_google_signals: false,
     allow_ad_personalization_signals: false,
   });
+  if (surface) {
+    // User-scoped dimension so the single Web stream can split web vs android/ios in-app vs
+    // desktop traffic. Register `app_surface` as a custom dimension in the GA4 UI to report on it.
+    analyticsWindow.gtag('set', 'user_properties', { app_surface: safeDimension(surface) });
+  }
 
   if (!document.getElementById(GA_SCRIPT_ID)) {
     const script = document.createElement('script');

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "989557563524",
+    "project_id": "agentic-wallet-adapter",
+    "storage_bucket": "agentic-wallet-adapter.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:989557563524:android:586da80bd897cfba6ae2d1",
+        "android_client_info": {
+          "package_name": "com.agentic.wallet"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBL9xpqaq30xrKVeFDN3pZLXWf6ZnAfL2o"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
