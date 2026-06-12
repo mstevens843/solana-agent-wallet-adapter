@@ -10403,7 +10403,29 @@ function aiConnectorsReadinessPanel(readiness: AiConnectorsReadiness): string {
 function aiConnectorsQrPanel(readiness: AiConnectorsReadiness): string {
   const stateCopy = aiConnectorsPairingCopy(readiness);
   const pairingCode = aiConnectorsPairingState.pairingCode;
-  const hasQr = Boolean(aiConnectorsPairingState.qrDataUrl);
+  const pairingCodeFallback = pairingCode
+    ? `
+      <div class="ai-connectors-pairing-code-panel">
+        <div>
+          <span>Camera fallback</span>
+          <strong>Pairing code is available.</strong>
+          <p>Use this if Android camera scanning fails.</p>
+        </div>
+        <details>
+          <summary>Show pairing code</summary>
+          <textarea readonly spellcheck="false">${escapeHtml(pairingCode)}</textarea>
+        </details>
+        <button
+          type="button"
+          class="utility"
+          data-copy="${escapeHtml(pairingCode)}"
+          data-copy-name="Plan Connector pairing code"
+        >
+          Copy pairing code
+        </button>
+      </div>
+    `
+    : '';
   const qr = aiConnectorsPairingState.qrDataUrl
     ? `<img src="${escapeHtml(aiConnectorsPairingState.qrDataUrl)}" alt="Android pairing QR code" />`
     : pairingCode
@@ -10438,21 +10460,6 @@ function aiConnectorsQrPanel(readiness: AiConnectorsReadiness): string {
         ${qr}
       </div>
       <div class="ai-connectors-qr-actions">
-        ${hasQr && pairingCode
-          ? `
-            <div class="ai-connectors-pairing-code-action">
-              <span>Use only if Android camera scanning fails.</span>
-              <button
-                type="button"
-                class="utility"
-                data-copy="${escapeHtml(pairingCode)}"
-                data-copy-name="Plan Connector pairing code"
-              >
-                Copy pairing code
-              </button>
-            </div>
-          `
-          : ''}
         <button
           type="button"
           class="primary"
@@ -10465,6 +10472,7 @@ function aiConnectorsQrPanel(readiness: AiConnectorsReadiness): string {
           ? '<button type="button" class="utility" data-ai-connectors-action="stop-pairing">Stop pairing</button>'
           : ''}
       </div>
+      ${pairingCodeFallback}
     </div>
   `;
 }

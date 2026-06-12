@@ -207,6 +207,74 @@ describe('mountPhonePairingPanel', () => {
     cleanup();
   });
 
+  it('shows the native scanner feature-disabled error clearly', async () => {
+    const document = installFakeDocument();
+    let scanRequestId = '';
+    const bridgeScanPairingQr = vi.fn((requestId: string) => {
+      scanRequestId = requestId;
+    });
+    const container = document.createElement('div');
+    const cleanup = mountPhonePairingPanel(container as unknown as HTMLElement, {
+      bridge: { bridgeScanPairingQr },
+      onPaired: vi.fn(),
+    });
+
+    elementsByTag(container, 'button')[0]!.click();
+    await flushMicrotasks();
+    (globalThis as unknown as {
+      __agenticAndroidQrScannerBridge: {
+        resolve: (requestId: string, envelope: { ok: false; error: string }) => void;
+      };
+    }).__agenticAndroidQrScannerBridge.resolve(scanRequestId, { ok: false, error: 'not_enabled' });
+    await flushMicrotasks();
+
+    expect(container.lastElementChild?.textContent).toContain('not enabled');
+    cleanup();
+  });
+
+  it('shows the native scanner busy error clearly', async () => {
+    const document = installFakeDocument();
+    let scanRequestId = '';
+    const bridgeScanPairingQr = vi.fn((requestId: string) => {
+      scanRequestId = requestId;
+    });
+    const container = document.createElement('div');
+    const cleanup = mountPhonePairingPanel(container as unknown as HTMLElement, {
+      bridge: { bridgeScanPairingQr },
+      onPaired: vi.fn(),
+    });
+
+    elementsByTag(container, 'button')[0]!.click();
+    await flushMicrotasks();
+    (globalThis as unknown as {
+      __agenticAndroidQrScannerBridge: {
+        resolve: (requestId: string, envelope: { ok: false; error: string }) => void;
+      };
+    }).__agenticAndroidQrScannerBridge.resolve(scanRequestId, { ok: false, error: 'scanner_busy' });
+    await flushMicrotasks();
+
+    expect(container.lastElementChild?.textContent).toContain('already open');
+    cleanup();
+  });
+
+  it('shows a native scanner exception instead of a generic scan failure', async () => {
+    const document = installFakeDocument();
+    const bridgeScanPairingQr = vi.fn(() => {
+      throw new Error('Java exception was raised during method invocation');
+    });
+    const container = document.createElement('div');
+    const cleanup = mountPhonePairingPanel(container as unknown as HTMLElement, {
+      bridge: { bridgeScanPairingQr },
+      onPaired: vi.fn(),
+    });
+
+    elementsByTag(container, 'button')[0]!.click();
+    await flushMicrotasks();
+
+    expect(container.lastElementChild?.textContent).toContain('Android could not open the scanner');
+    cleanup();
+  });
+
   it('pairs through the native bridge and calls onPaired after status confirms', async () => {
     vi.useFakeTimers();
     const document = installFakeDocument();

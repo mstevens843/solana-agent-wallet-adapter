@@ -26,6 +26,7 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import com.agentic.wallet.mwa.AgentMwaLog
 import com.google.mlkit.vision.barcode.BarcodeScanner
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
@@ -51,15 +52,36 @@ class QrScannerActivity : ComponentActivity() {
     @Volatile private var analyzing = false
     private val cameraPermissionLauncher: ActivityResultLauncher<String> =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            AgentMwaLog.info(
+                "QrScannerActivity",
+                "cameraPermission",
+                if (granted) "GRANTED" else "DENIED",
+                "QR scanner camera permission result received",
+                mapOf("granted" to granted),
+            )
             if (granted) startCamera() else finishError("permission_denied")
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         buildUi()
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+        val permissionGranted = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        AgentMwaLog.info(
+            "QrScannerActivity",
+            "onCreate",
+            "START",
+            "QR scanner activity created",
+            mapOf("cameraPermissionGranted" to permissionGranted),
+        )
+        if (permissionGranted) {
             startCamera()
         } else {
+            AgentMwaLog.info(
+                "QrScannerActivity",
+                "cameraPermission",
+                "REQUEST",
+                "requesting QR scanner camera permission",
+            )
             cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
         }
     }
@@ -166,12 +188,24 @@ class QrScannerActivity : ComponentActivity() {
     }
 
     private fun startCamera() {
+        AgentMwaLog.info(
+            "QrScannerActivity",
+            "startCamera",
+            "START",
+            "starting QR scanner camera",
+        )
         val providerFuture = ProcessCameraProvider.getInstance(this)
         providerFuture.addListener({
             try {
                 val provider = providerFuture.get()
                 cameraProvider = provider
                 if (!provider.hasCamera(CameraSelector.DEFAULT_BACK_CAMERA)) {
+                    AgentMwaLog.warn(
+                        "QrScannerActivity",
+                        "startCamera",
+                        "NO_BACK_CAMERA",
+                        "QR scanner could not find a back camera",
+                    )
                     finishError("camera_unavailable")
                     return@addListener
                 }
@@ -186,10 +220,24 @@ class QrScannerActivity : ComponentActivity() {
                     }
                 provider.unbindAll()
                 camera = provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+                AgentMwaLog.info(
+                    "QrScannerActivity",
+                    "startCamera",
+                    "BOUND",
+                    "QR scanner camera bound",
+                    mapOf("previewWidth" to previewView.width, "previewHeight" to previewView.height),
+                )
                 previewView.postDelayed({
                     focusAt(previewView.width / 2f, previewView.height / 2f)
                 }, 450)
-            } catch (_: Throwable) {
+            } catch (err: Throwable) {
+                AgentMwaLog.failure(
+                    "QrScannerActivity",
+                    "startCamera",
+                    "BIND_FAILED",
+                    "QR scanner camera bind failed",
+                    err,
+                )
                 finishError("camera_unavailable")
             }
         }, ContextCompat.getMainExecutor(this))
@@ -213,6 +261,13 @@ class QrScannerActivity : ComponentActivity() {
                 val rawValue = barcodes.firstOrNull { !it.rawValue.isNullOrBlank() }?.rawValue
                 if (!rawValue.isNullOrBlank()) {
                     completed = true
+                    AgentMwaLog.info(
+                        "QrScannerActivity",
+                        "analyzeImage",
+                        "QR_DETECTED",
+                        "QR scanner decoded a QR payload",
+                        mapOf("rawChars" to rawValue.length),
+                    )
                     finishOk(rawValue)
                 }
             }
@@ -224,6 +279,13 @@ class QrScannerActivity : ComponentActivity() {
 
     private fun focusAt(x: Float, y: Float) {
         val currentCamera = camera ?: return
+        AgentMwaLog.debug(
+            "QrScannerActivity",
+            "focusAt",
+            "START",
+            "QR scanner focus requested",
+            mapOf("x" to x, "y" to y),
+        )
         val point = previewView.meteringPointFactory.createPoint(x, y)
         val action = FocusMeteringAction.Builder(
             point,
@@ -254,16 +316,36 @@ class QrScannerActivity : ComponentActivity() {
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     private fun finishOk(rawValue: String) {
+        AgentMwaLog.info(
+            "QrScannerActivity",
+            "finishOk",
+            "DONE",
+            "QR scanner returning payload",
+            mapOf("rawChars" to rawValue.length),
+        )
         setResult(RESULT_OK, Intent().putExtra(EXTRA_RAW_VALUE, rawValue))
         finish()
     }
 
     private fun finishCancelled() {
+        AgentMwaLog.info(
+            "QrScannerActivity",
+            "finishCancelled",
+            "DONE",
+            "QR scanner cancelled",
+        )
         setResult(RESULT_CANCELED, Intent().putExtra(EXTRA_ERROR, "cancelled"))
         finish()
     }
 
     private fun finishError(error: String) {
+        AgentMwaLog.warn(
+            "QrScannerActivity",
+            "finishError",
+            "DONE",
+            "QR scanner returning error",
+            mapOf("error" to error),
+        )
         setResult(RESULT_CANCELED, Intent().putExtra(EXTRA_ERROR, error))
         finish()
     }

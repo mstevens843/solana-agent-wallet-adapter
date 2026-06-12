@@ -2833,6 +2833,68 @@ code {
   text-align: right;
 }
 
+.ai-connectors-pairing-code-panel {
+  align-items: center;
+  background: rgba(7, 13, 11, 0.72);
+  border: 1px solid rgba(139, 205, 170, 0.18);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 12px;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 0.9fr) auto;
+  min-width: 0;
+  padding: 12px;
+}
+
+.ai-connectors-pairing-code-panel > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ai-connectors-pairing-code-panel span {
+  color: var(--accent-2);
+  font-size: 0.68rem;
+  font-weight: 860;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.ai-connectors-pairing-code-panel strong {
+  color: var(--text);
+  font-size: 0.92rem;
+  line-height: 1.2;
+}
+
+.ai-connectors-pairing-code-panel p {
+  color: rgba(196, 205, 202, 0.74);
+  font-size: 0.8rem;
+  line-height: 1.35;
+  margin: 0;
+}
+
+.ai-connectors-pairing-code-panel details {
+  min-width: 0;
+}
+
+.ai-connectors-pairing-code-panel summary {
+  color: rgba(214, 225, 220, 0.86);
+  cursor: pointer;
+  font-size: 0.84rem;
+  font-weight: 760;
+  min-height: 32px;
+  padding-top: 7px;
+}
+
+.ai-connectors-pairing-code-panel textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.72rem;
+  margin-top: 8px;
+  min-height: 82px;
+  resize: vertical;
+}
+
 .ai-connectors-options {
   display: grid;
   gap: 10px;
@@ -14103,6 +14165,16 @@ button.danger:hover:not(:disabled) {
 
   .ai-connectors-pairing-code-action span {
     text-align: center;
+  }
+
+  .ai-connectors-pairing-code-panel {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+  }
+
+  .ai-connectors-pairing-code-panel button {
+    justify-content: center;
+    width: 100%;
   }
 }
 

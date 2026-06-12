@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Looper
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.Manifest
@@ -524,8 +525,22 @@ class MainActivity : FragmentActivity() {
     }
 
     private fun startPairingQrScanner(requestId: String) {
+        AgentMwaLog.info(
+            "MainActivity",
+            "bridgeScanPairingQr",
+            "QUEUE_LAUNCH",
+            "posting QR scanner launch to UI thread",
+            mapOf("requestId" to requestId),
+        )
         runOnUiThread {
             if (pendingQrScannerRequestId != null) {
+                AgentMwaLog.warn(
+                    "MainActivity",
+                    "bridgeScanPairingQr",
+                    "SCANNER_BUSY",
+                    "QR scanner launch rejected because another scan is pending",
+                    mapOf("requestId" to requestId, "pendingRequestId" to pendingQrScannerRequestId),
+                )
                 dispatchQrScannerResult(
                     "resolve",
                     requestId,
@@ -535,6 +550,13 @@ class MainActivity : FragmentActivity() {
             }
             pendingQrScannerRequestId = requestId
             try {
+                AgentMwaLog.info(
+                    "MainActivity",
+                    "bridgeScanPairingQr",
+                    "LAUNCH",
+                    "launching QR scanner activity",
+                    mapOf("requestId" to requestId),
+                )
                 qrScannerLauncher.launch(Intent(this, QrScannerActivity::class.java))
             } catch (err: Throwable) {
                 pendingQrScannerRequestId = null
@@ -556,9 +578,31 @@ class MainActivity : FragmentActivity() {
     }
 
     private fun handleQrScannerResult(resultCode: Int, data: Intent?) {
-        val requestId = pendingQrScannerRequestId ?: return
+        val requestId = pendingQrScannerRequestId
+        if (requestId == null) {
+            AgentMwaLog.warn(
+                "MainActivity",
+                "handleQrScannerResult",
+                "MISSING_REQUEST",
+                "QR scanner result arrived without a pending request",
+                mapOf("resultCode" to resultCode),
+            )
+            return
+        }
         pendingQrScannerRequestId = null
         val rawValue = data?.getStringExtra(QrScannerActivity.EXTRA_RAW_VALUE).orEmpty()
+        AgentMwaLog.info(
+            "MainActivity",
+            "handleQrScannerResult",
+            "START",
+            "QR scanner result received",
+            mapOf(
+                "requestId" to requestId,
+                "resultCode" to resultCode,
+                "hasRawValue" to rawValue.isNotBlank(),
+                "error" to data?.getStringExtra(QrScannerActivity.EXTRA_ERROR).orEmpty(),
+            ),
+        )
         if (resultCode == RESULT_OK && rawValue.isNotBlank()) {
             dispatchQrScannerResult(
                 "resolve",
@@ -576,7 +620,32 @@ class MainActivity : FragmentActivity() {
     }
 
     private fun dispatchQrScannerResult(callback: String, requestId: String, envelope: JSONObject) {
-        if (isDestroyed) return
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            AgentMwaLog.info(
+                "MainActivity",
+                "dispatchQrScannerResult",
+                "QUEUE_UI",
+                "queueing QR scanner callback on UI thread",
+                mapOf(
+                    "callback" to callback,
+                    "requestId" to requestId,
+                    "ok" to envelope.optBoolean("ok", false),
+                    "error" to envelope.optString("error", ""),
+                ),
+            )
+            runOnUiThread { dispatchQrScannerResult(callback, requestId, envelope) }
+            return
+        }
+        if (isDestroyed) {
+            AgentMwaLog.warn(
+                "MainActivity",
+                "dispatchQrScannerResult",
+                "SKIP_DESTROYED",
+                "QR scanner callback skipped because activity is destroyed",
+                mapOf("callback" to callback, "requestId" to requestId),
+            )
+            return
+        }
         val js =
             "(function(){var b=window.__agenticAndroidQrScannerBridge;if(b&&b.$callback){b.$callback(${JSONObject.quote(requestId)},$envelope);}})();"
         AgentMwaLog.info(
@@ -584,7 +653,13 @@ class MainActivity : FragmentActivity() {
             "dispatchQrScannerResult",
             "START",
             "evaluating QR scanner callback",
-            mapOf("callback" to callback, "requestId" to requestId, "ok" to envelope.optBoolean("ok", false)),
+            mapOf(
+                "callback" to callback,
+                "requestId" to requestId,
+                "ok" to envelope.optBoolean("ok", false),
+                "error" to envelope.optString("error", ""),
+                "hasRawValue" to envelope.optString("rawValue", "").isNotBlank(),
+            ),
         )
         webView.evaluateJavascript(js) { result ->
             AgentMwaLog.info(
@@ -993,25 +1068,79 @@ class MainActivity : FragmentActivity() {
             }
 
         @JavascriptInterface
-        fun bridgeScanPairingQr(requestId: String) = safeBridge("bridgeScanPairingQr", Unit) {
-            if (!checkTrustedOrigin("bridgeScanPairingQr")) return@safeBridge
-            if (!REQUEST_ID_PATTERN.matches(requestId)) {
+        fun bridgeScanPairingQr(requestId: String) {
+            AgentMwaLog.info(
+                "AndroidBridge",
+                "bridgeScanPairingQr",
+                "START",
+                "QR scanner bridge request received",
+                mapOf(
+                    "requestId" to requestId,
+                    "requestIdValid" to REQUEST_ID_PATTERN.matches(requestId),
+                ),
+            )
+            try {
+                if (!checkTrustedOrigin("bridgeScanPairingQr")) {
+                    AgentMwaLog.warn(
+                        "AndroidBridge",
+                        "bridgeScanPairingQr",
+                        "ORIGIN_DENIED",
+                        "QR scanner bridge origin denied",
+                        mapOf("requestId" to requestId),
+                    )
+                    activity.dispatchQrScannerResult(
+                        "resolve",
+                        requestId,
+                        JSONObject().put("ok", false).put("error", "origin"),
+                    )
+                    return
+                }
+                if (!REQUEST_ID_PATTERN.matches(requestId)) {
+                    AgentMwaLog.warn(
+                        "AndroidBridge",
+                        "bridgeScanPairingQr",
+                        "INVALID_REQUEST",
+                        "QR scanner bridge request id rejected",
+                        mapOf("requestId" to requestId),
+                    )
+                    activity.dispatchQrScannerResult(
+                        "resolve",
+                        requestId,
+                        JSONObject().put("ok", false).put("error", "invalid_request"),
+                    )
+                    return
+                }
+                if (!activity.bridgePairingFeatureEnabled()) {
+                    AgentMwaLog.warn(
+                        "AndroidBridge",
+                        "bridgeScanPairingQr",
+                        "NOT_ENABLED",
+                        "QR scanner bridge feature disabled",
+                        mapOf("requestId" to requestId),
+                    )
+                    activity.dispatchQrScannerResult(
+                        "resolve",
+                        requestId,
+                        JSONObject().put("ok", false).put("error", "not_enabled"),
+                    )
+                    return
+                }
+                activity.startPairingQrScanner(requestId)
+            } catch (err: Throwable) {
+                AgentMwaLog.failure(
+                    "AndroidBridge",
+                    "bridgeScanPairingQr",
+                    "SYNC_THROW",
+                    "QR scanner bridge method threw before launch",
+                    err,
+                    mapOf("requestId" to requestId),
+                )
                 activity.dispatchQrScannerResult(
                     "resolve",
                     requestId,
-                    JSONObject().put("ok", false).put("error", "invalid_request"),
+                    JSONObject().put("ok", false).put("error", "native_exception"),
                 )
-                return@safeBridge
             }
-            if (!activity.bridgePairingFeatureEnabled()) {
-                activity.dispatchQrScannerResult(
-                    "resolve",
-                    requestId,
-                    JSONObject().put("ok", false).put("error", "not_enabled"),
-                )
-                return@safeBridge
-            }
-            activity.startPairingQrScanner(requestId)
         }
 
         @JavascriptInterface

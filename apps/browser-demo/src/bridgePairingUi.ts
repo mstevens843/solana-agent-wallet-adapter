@@ -319,9 +319,12 @@ export function mountPhonePairingPanel(
       status.textContent = 'Opening camera…';
       status.style.color = '#bcd3c7';
       try {
+        logDeviceAgentDiag('info', 'bridge-pair.native_scan_click', {});
         const rawValue = await scanPairingQrNative(deps.bridge);
+        logDeviceAgentDiag('info', 'bridge-pair.native_scan_result', { rawChars: rawValue.length });
         const payload = parsePairingPayload(rawValue);
         if (!payload) {
+          logDeviceAgentDiag('warn', 'bridge-pair.native_scan_bad_payload', { rawChars: rawValue.length });
           status.textContent = options.invalidCodeText ?? 'That code isn’t valid. Copy the whole pairing code from the computer.';
           status.style.color = '#ffb27a';
           return;
@@ -329,6 +332,7 @@ export function mountPhonePairingPanel(
         void beginPairing(payload);
       } catch (err) {
         const code = err instanceof Error ? err.message : String(err);
+        logDeviceAgentDiag('warn', 'bridge-pair.native_scan_failed', { code });
         status.textContent = nativeQrScanErrorMessage(code);
         status.style.color = code === 'cancelled' ? '#bcd3c7' : '#ffb27a';
       } finally {
@@ -390,18 +394,25 @@ function scanPairingQrNative(bridge: NativePairBridge): Promise<string> {
   if (!fn) return Promise.reject(new Error('scanner_unavailable'));
   installNativeQrScannerCallbackBridge();
   const requestId = `pairing-qr-${Date.now()}-${nativeQrScannerNonce++}`;
+  logDeviceAgentDiag('info', 'bridge-pair.native_scan_start', { requestId });
   return new Promise((resolve, reject) => {
     const timer = globalThis.setTimeout(() => {
       nativeQrScannerPending.delete(requestId);
+      logDeviceAgentDiag('warn', 'bridge-pair.native_scan_timeout', { requestId });
       reject(new Error('timeout'));
     }, NATIVE_QR_SCAN_TIMEOUT_MS);
     nativeQrScannerPending.set(requestId, { resolve, reject, timer });
     try {
       fn(requestId);
+      logDeviceAgentDiag('info', 'bridge-pair.native_scan_invoked', { requestId });
     } catch (err) {
       globalThis.clearTimeout(timer);
       nativeQrScannerPending.delete(requestId);
-      reject(err instanceof Error ? err : new Error(String(err)));
+      logDeviceAgentDiag('error', 'bridge-pair.native_scan_sync_throw', {
+        requestId,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      reject(new Error('native_exception'));
     }
   });
 }
@@ -421,19 +432,29 @@ function installNativeQrScannerCallbackBridge(): void {
 
 function settleNativeQrScan(requestId: string, envelope: NativeQrScanResult, forceReject: boolean): void {
   const pending = nativeQrScannerPending.get(requestId);
-  if (!pending) return;
+  if (!pending) {
+    logDeviceAgentDiag('warn', 'bridge-pair.native_scan_unmatched_callback', {
+      requestId,
+      error: typeof envelope?.error === 'string' ? envelope.error : '',
+      ok: envelope?.ok === true,
+    });
+    return;
+  }
   nativeQrScannerPending.delete(requestId);
   globalThis.clearTimeout(pending.timer);
   const error = typeof envelope?.error === 'string' ? envelope.error : 'scan_failed';
   if (forceReject || envelope?.ok === false) {
+    logDeviceAgentDiag('warn', 'bridge-pair.native_scan_callback_error', { requestId, error });
     pending.reject(new Error(error));
     return;
   }
   const rawValue = typeof envelope?.rawValue === 'string' ? envelope.rawValue.trim() : '';
   if (!rawValue) {
+    logDeviceAgentDiag('warn', 'bridge-pair.native_scan_empty_callback', { requestId, error });
     pending.reject(new Error(error));
     return;
   }
+  logDeviceAgentDiag('info', 'bridge-pair.native_scan_callback_ok', { requestId, rawChars: rawValue.length });
   pending.resolve(rawValue);
 }
 
@@ -447,6 +468,20 @@ function nativeQrScanErrorMessage(code: string): string {
       return 'No usable camera was found — paste the code instead.';
     case 'timeout':
       return 'Scanner timed out. Scan again or paste the code instead.';
+    case 'origin':
+      return 'Scanner was blocked by the Android bridge origin check — reload the app and try again.';
+    case 'invalid_request':
+      return 'Scanner request was rejected by Android — reload the app and try again.';
+    case 'not_enabled':
+      return 'Plan Connector scanning is not enabled in this app build — paste the code instead.';
+    case 'scanner_busy':
+      return 'Scanner is already open. Close it or wait, then scan again.';
+    case 'scanner_unavailable':
+      return 'This app build does not expose the native scanner — paste the code instead.';
+    case 'native_exception':
+      return 'Android could not open the scanner. Check logcat, or paste the code instead.';
+    case 'scan_failed':
+      return 'Scanner did not return a QR code — scan again or paste the code instead.';
     default:
       return 'Couldn’t scan the QR — paste the code instead.';
   }
