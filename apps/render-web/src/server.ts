@@ -185,7 +185,10 @@ function setCommonHeaders(req: IncomingMessage, res: ServerResponse): void {
       "img-src 'self' data: https:",
       "font-src 'self' https://fonts.gstatic.com",
       "style-src 'self' https://fonts.googleapis.com 'unsafe-inline'",
-      "script-src 'self'",
+      // googletagmanager.com hosts the GA4 gtag.js loader (analytics.ts injects it). The
+      // analytics collect beacons go to *.google-analytics.com over connect-src/img-src `https:`
+      // (already allowed below), so only the script origin needs whitelisting here.
+      "script-src 'self' https://www.googletagmanager.com",
       // `ipc:` + `http://ipc.localhost` let the Tauri 2 desktop shell — which
       // live-loads this page from Render — reach the native IPC bridge
       // (window.__TAURI_INTERNALS__.invoke) for wallet/ledger/bridge commands.
