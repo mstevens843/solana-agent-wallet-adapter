@@ -456,6 +456,7 @@ import {
   iosNativeEnsureReturnNotificationPermission,
   iosNativeOpenExternalUrl,
   iosNativeReForegroundJupiter,
+  isIosQrScannerAvailable,
   listIosNativeWalletOptions,
   restoreLatestIosNativeWallet,
   setIosNativeCloudSessionToken,
@@ -464,6 +465,12 @@ import {
   type IosNativeWalletId,
   type IosNativeWalletOption,
 } from './iosNative.js';
+import {
+  buildIosPairBridge,
+  iosForwardPlanRequest,
+  iosRelayPresence,
+  loadIosPairCreds,
+} from './iosPairBridge.js';
 import {
   NativeIwaWalletBackend,
   isNativeIwaWalletId,
@@ -626,6 +633,7 @@ import {
   ANDROID_DEVICE_AGENT_ENABLED,
   BROWSER_DEVICE_AGENT_ENABLED,
   DEVICE_AGENT_ENABLED,
+  IOS_DEVICE_AGENT_ENABLED,
   browserNativeRuntimeEligibleForSurface,
   isDeviceAgentWallet,
 } from './devGate.js';
@@ -1366,6 +1374,7 @@ interface AgenticAndroidBridge {
 
 interface IosSystemClipboardBridge {
   clipboardWrite?: (options: { text: string; label?: string }) => Promise<{ ok?: boolean }> | { ok?: boolean };
+  clipboardRead?: () => Promise<{ text?: string }> | { text?: string };
 }
 
 // DeviceAgentStatus / DeviceAgentRuntimeState / DeviceAgentRuntimeKind are imported
@@ -17758,7 +17767,8 @@ function commandAiRouteCards(): string {
   const hostedCloudSignInRequired = mobileAiPathPolicy && !cloudSessionMatchesWallet();
   const deviceAgentFirst = deviceAgentPathAvailableForCurrentProvider();
   const websitePlanConnectorAvailable = websitePlanConnectorSetupAvailable();
-  const planConnectorAvailable = (IS_ANDROID_APP && phonePairingAvailable()) || websitePlanConnectorAvailable;
+  // phonePairingAvailable() self-gates by platform (Android bridge or iOS scanner), so no IS_ANDROID_APP prefix.
+  const planConnectorAvailable = phonePairingAvailable() || websitePlanConnectorAvailable;
   const definitions: Array<{ id: AndroidAiRouteTab; mode: AiSettings['mode'] | null; title: string; detail: string; meta: string; available: boolean }> = [
     {
       id: 'hosted',
@@ -18050,7 +18060,7 @@ function commandAiInfoCardsGroup(): string {
       foot: state.aiSettings.pairedBridge
         ? 'Keep the computer awake while planning. Wallet approval stays on Android.'
         : 'Scan the computer QR once; no provider API key is stored on the phone.',
-      available: IS_ANDROID_APP && phonePairingAvailable(),
+      available: phonePairingAvailable(),
     },
   ];
   const visible = entries.filter((entry) => entry.available);
@@ -18062,7 +18072,7 @@ function commandAiInfoCardsGroup(): string {
             deviceAgentVisible: deviceAgentModeVisible(),
             isAndroidApp: IS_ANDROID_APP,
           }),
-          ...(IS_ANDROID_APP && phonePairingAvailable() ? ['plan-connector' as const] : []),
+          ...(phonePairingAvailable() ? ['plan-connector' as const] : []),
         ]
           .map((id) => visible.find((entry) => entry.id === id))
           .filter((entry): entry is (typeof entries)[number] => Boolean(entry))
@@ -23078,8 +23088,12 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const mobileAiPathPolicy = isMobileAiPathPolicySurface();
   const mobilePlannerSetup = !isRail && mobileAiPathPolicy;
   const androidRailAiSetupTabs = IS_ANDROID_APP && isRail && isMobileAppViewport();
+  // iOS gets the same API Key | Plan Connector tab bar as Android, but only once the Plan Connector is
+  // actually usable (scanner binary shipped) — gating on phonePairingAvailable() avoids a dead/single-tab
+  // bar in the interim and is automatically old-binary-safe.
+  const iosRailAiSetupTabs = IS_IOS_APP && isRail && isMobileAppViewport() && phonePairingAvailable();
   const websitePlanConnectorTabs = websitePlanConnectorSetupAvailable();
-  const aiReviewSetupTabsVisible = androidRailAiSetupTabs || websitePlanConnectorTabs;
+  const aiReviewSetupTabsVisible = androidRailAiSetupTabs || iosRailAiSetupTabs || websitePlanConnectorTabs;
   const scope = isRail ? 'rail' : 'command';
   const formatLabel = aiFormatLabel(state.aiSettings.apiFormat);
   const customProvider = providerPreset.id === 'custom-openai-compatible';
@@ -23628,12 +23642,21 @@ function aiModeLimitations(): string {
 // bridgePair/bridgePairStatus call, so a ≤5s-stale UI value is safe (the button can't act when off).
 let phonePairAvailableCache: { value: boolean; at: number } | null = null;
 function phonePairingAvailable(): boolean {
+  if (IS_IOS_APP) return iosPlanConnectorAvailable();
   if (!IS_ANDROID_APP) return false;
   const now = Date.now();
   if (!phonePairAvailableCache || now - phonePairAvailableCache.at > 5000) {
     phonePairAvailableCache = { value: phonePairingEnabled(agenticAndroidBridge()), at: now };
   }
   return phonePairAvailableCache.value;
+}
+
+// iOS Plan Connector availability — the "two flags must agree" gate for pairing: the live Render flag
+// (IOS_DEVICE_AGENT_ENABLED) AND the native AVFoundation QR scanner actually present in this binary.
+// On an old binary (no scanner plugin) this stays false, so live JS never shows a broken Plan Connector
+// tab or pairing button.
+function iosPlanConnectorAvailable(): boolean {
+  return IS_IOS_APP && IOS_DEVICE_AGENT_ENABLED && isIosQrScannerAvailable();
 }
 
 // Throttled "computer online/offline" chip for the paired-bridge card. Native bridgeRelayStatus()
@@ -23709,9 +23732,74 @@ function connectorBrandLogoId(connector: AiConnector | undefined): BrandLogoId {
   }
 }
 
-// Reads native relay presence (throttled), updates relayStatusCache, and fires a one-shot disconnect
-// toast on the online->offline transition while paired. Android-only; safe no-op elsewhere.
+// One-shot disconnect-toast + streak bookkeeping applied to each fresh relay-presence read while paired.
+// Shared by the Android (sync native) and iOS (async relay HTTP) presence paths.
+function applyPairedRelayPresence(online: boolean): void {
+  if (!state.aiSettings.pairedBridge) {
+    relayOfflineStreak = 0;
+    relayHasBeenOnline = false;
+    return;
+  }
+  // While the agent is planning/reviewing, the desktop blocks its relay heartbeat to run the
+  // (minutes-long) connector, so a stale "offline" here means BUSY, not disconnected — don't alarm.
+  const aiRequestInFlight = state.activeOperation === 'generate-ai-plan'
+    || state.activeOperation === 'review-agent-plan'
+    || state.activeOperation === 'confirm-ai-planner';
+  if (online) {
+    relayOfflineStreak = 0;
+    relayDisconnectToastShown = false; // re-arm once it comes back
+    relayHasBeenOnline = true;
+  } else if (aiRequestInFlight) {
+    relayOfflineStreak = 0; // busy, not offline
+  } else {
+    relayOfflineStreak += 1;
+    // Only trust "disconnected" after it persists (>=2 reads ~ 10s on the 5s watch), and only if
+    // we'd actually seen it online before — so a single stale blip never toasts.
+    if (relayHasBeenOnline && relayOfflineStreak >= 2 && !relayDisconnectToastShown) {
+      relayDisconnectToastShown = true;
+      pushToast(
+        'error',
+        `${planConnectorDisplayName()} disconnected`,
+        'Computer bridge went offline — reopen the connector page on your computer to keep planning.',
+        {
+          key: 'plan-connector-disconnect',
+          actionLabel: 'Open connector page',
+          actionUrl: 'https://agentic-signer.com/aiconnectors',
+        },
+      );
+    }
+  }
+}
+
+// iOS relay presence is an async HTTP probe (fetch), so it can't be read synchronously during render.
+// Keep relayStatusCache fed by a throttled background probe and return the last known value.
+let iosRelayPresenceInFlight = false;
+function refreshIosRelayPresence(): boolean {
+  const now = Date.now();
+  if ((!relayStatusCache || now - relayStatusCache.at > 4000) && !iosRelayPresenceInFlight) {
+    iosRelayPresenceInFlight = true;
+    void (async () => {
+      let online = false;
+      try {
+        const presence = await iosRelayPresence();
+        online = Boolean(presence?.desktopOnline);
+      } catch {
+        online = false;
+      } finally {
+        relayStatusCache = { online, at: Date.now() };
+        applyPairedRelayPresence(online);
+        iosRelayPresenceInFlight = false;
+        render();
+      }
+    })();
+  }
+  return relayStatusCache?.online ?? false;
+}
+
+// Reads relay presence (throttled), updates relayStatusCache, and fires a one-shot disconnect toast on
+// the online->offline transition while paired. Android (sync native) + iOS (async HTTP); no-op elsewhere.
 function refreshRelayPresence(): boolean {
+  if (IS_IOS_APP) return refreshIosRelayPresence();
   if (!IS_ANDROID_APP) return false;
   const now = Date.now();
   if (!relayStatusCache || now - relayStatusCache.at > 4000) {
@@ -23723,46 +23811,13 @@ function refreshRelayPresence(): boolean {
       online = false;
     }
     relayStatusCache = { online, at: now };
-    if (state.aiSettings.pairedBridge) {
-      // While the agent is planning/reviewing, the desktop blocks its relay heartbeat to run the
-      // (minutes-long) connector, so a stale "offline" here means BUSY, not disconnected — don't alarm.
-      const aiRequestInFlight = state.activeOperation === 'generate-ai-plan'
-        || state.activeOperation === 'review-agent-plan'
-        || state.activeOperation === 'confirm-ai-planner';
-      if (online) {
-        relayOfflineStreak = 0;
-        relayDisconnectToastShown = false; // re-arm once it comes back
-        relayHasBeenOnline = true;
-      } else if (aiRequestInFlight) {
-        relayOfflineStreak = 0; // busy, not offline
-      } else {
-        relayOfflineStreak += 1;
-        // Only trust "disconnected" after it persists (>=2 reads ~ 10s on the 5s watch), and only if
-        // we'd actually seen it online before — so a single stale blip never toasts.
-        if (relayHasBeenOnline && relayOfflineStreak >= 2 && !relayDisconnectToastShown) {
-          relayDisconnectToastShown = true;
-          pushToast(
-            'error',
-            `${planConnectorDisplayName()} disconnected`,
-            'Computer bridge went offline — reopen the connector page on your computer to keep planning.',
-            {
-              key: 'plan-connector-disconnect',
-              actionLabel: 'Open connector page',
-              actionUrl: 'https://agentic-signer.com/aiconnectors',
-            },
-          );
-        }
-      }
-    } else {
-      relayOfflineStreak = 0;
-      relayHasBeenOnline = false;
-    }
+    applyPairedRelayPresence(online);
   }
   return relayStatusCache.online;
 }
 
 function pairedBridgeStatusChip(): string {
-  if (!IS_ANDROID_APP) return '';
+  if (!IS_ANDROID_APP && !IS_IOS_APP) return '';
   const online = refreshRelayPresence();
   if (online) {
     // Resolved positive — close any pending post-pair checking window and stop its fast loop.
@@ -24600,12 +24655,16 @@ async function generateDeviceAgentPlan(
   request: AiPlanRequest,
   options: { signal?: AbortSignal } = {},
 ): Promise<AgentPlan> {
-  await assertDeviceAgentScaffoldAvailable('generate-plan', options.signal);
-  if (canUseDeviceAgentNative()) {
-    const raw = await invokeDeviceAgentNative<unknown>('generatePlan', deviceAgentGeneratePlanPayload(request), {
-      action: 'generate-plan',
-      ...(options.signal && { signal: options.signal }),
-    });
+  // iOS paired bridge: forward through the JS relay to the user's desktop connector (no native runtime).
+  const iosPaired = IS_IOS_APP && Boolean(state.aiSettings.pairedBridge);
+  if (!iosPaired) await assertDeviceAgentScaffoldAvailable('generate-plan', options.signal);
+  if (iosPaired || canUseDeviceAgentNative()) {
+    const raw = iosPaired
+      ? await iosForwardPlanRequest<unknown>('/bridge/ai/generate-plan', deviceAgentGeneratePlanPayload(request), options.signal ? { signal: options.signal } : {})
+      : await invokeDeviceAgentNative<unknown>('generatePlan', deviceAgentGeneratePlanPayload(request), {
+        action: 'generate-plan',
+        ...(options.signal && { signal: options.signal }),
+      });
     try {
       const plan = normalizeDeviceAgentPlan(raw, request, {
         onGuardrail: (event) => {
@@ -24640,22 +24699,28 @@ async function generateDeviceAgentPlan(
 }
 
 async function generateDeviceAgentReview(request: AgentPlanReviewRequest): Promise<AgentPlanReviewResult> {
-  await assertDeviceAgentScaffoldAvailable('review-plan');
-  if (canUseDeviceAgentNative()) {
-    const raw = await invokeDeviceAgentNative<unknown>('reviewPlan', deviceAgentReviewPayload(request), {
-      action: 'review-plan',
-    });
+  const iosPaired = IS_IOS_APP && Boolean(state.aiSettings.pairedBridge);
+  if (!iosPaired) await assertDeviceAgentScaffoldAvailable('review-plan');
+  if (iosPaired || canUseDeviceAgentNative()) {
+    const raw = iosPaired
+      ? await iosForwardPlanRequest<unknown>('/bridge/ai/review-plan', deviceAgentReviewPayload(request))
+      : await invokeDeviceAgentNative<unknown>('reviewPlan', deviceAgentReviewPayload(request), {
+        action: 'review-plan',
+      });
     return normalizeAiReview(raw, request);
   }
   throw deviceAgentWorkerNotImplementedError('review-plan');
 }
 
 async function generateDeviceAgentAsk(request: AgentPlanAskRequest): Promise<AgentPlanAskResult> {
-  await assertDeviceAgentScaffoldAvailable('ask-about-plan');
-  if (canUseDeviceAgentNative()) {
-    const raw = await invokeDeviceAgentNative<unknown>('ask', deviceAgentAskPayload(request), {
-      action: 'ask-about-plan',
-    });
+  const iosPaired = IS_IOS_APP && Boolean(state.aiSettings.pairedBridge);
+  if (!iosPaired) await assertDeviceAgentScaffoldAvailable('ask-about-plan');
+  if (iosPaired || canUseDeviceAgentNative()) {
+    const raw = iosPaired
+      ? await iosForwardPlanRequest<unknown>('/bridge/ai/ask-about-plan', deviceAgentAskPayload(request))
+      : await invokeDeviceAgentNative<unknown>('ask', deviceAgentAskPayload(request), {
+        action: 'ask-about-plan',
+      });
     return normalizeAiAsk(raw);
   }
   throw deviceAgentWorkerNotImplementedError('ask-about-plan');
@@ -27050,6 +27115,7 @@ function bind(): void {
         case 'pair-phone-android':
           openPhonePairingModal({
             bridge: agenticAndroidBridge(),
+            ...(IS_IOS_APP ? { asyncBridge: buildIosPairBridge() } : {}),
             onPaired: (connector) => {
               void runEnablePairedBridge(connector);
             },
@@ -29045,11 +29111,14 @@ function mountPlanConnectorPairingPanel(): void {
   if (!container) return;
   planConnectorPairingPanelCleanup = mountPhonePairingPanel(container, {
     bridge: agenticAndroidBridge(),
+    ...(IS_IOS_APP ? { asyncBridge: buildIosPairBridge() } : {}),
     onPaired: (connector) => {
       void runEnablePairedBridge(connector);
     },
   }, {
-    introText: 'Point Android at the QR displayed on your AI-connected computer. The computer must stay awake while planning.',
+    introText: IS_IOS_APP
+      ? 'Point your iPhone at the QR displayed on your AI-connected computer. The computer must stay awake while planning.'
+      : 'Point Android at the QR displayed on your AI-connected computer. The computer must stay awake while planning.',
     scanLabel: 'Scan computer QR',
     pasteLabel: 'Camera not working? Paste the pairing code from the computer page:',
     pasteButtonLabel: 'Connect Plan Connector',
@@ -36744,6 +36813,20 @@ async function runEnablePairedBridge(connector?: string): Promise<void> {
   relayDisconnectToastShown = false;
   relayCheckingSince = Date.now();
   startRelayCheckingWatch();
+  if (IS_IOS_APP) {
+    // iOS routes paired AI through the JS relay (iosForwardPlanRequest), NOT the native device-agent
+    // runtime — there is no on-device runtime to "start". Pairing already stored the credentials, so
+    // mark the synthetic paired-runtime status ready and confirm.
+    state.deviceAgentStatus = iosPairedBridgeStatus();
+    saveDeviceAgentStatusCache(state.deviceAgentStatus);
+    setAiPlannerConfirmation(
+      'confirmed',
+      'Your computer’s plan is connected for AI on this phone. Wallet approval is still required.',
+    );
+    pushToast('success', 'Paired', 'AI now runs on your computer’s plan.');
+    render();
+    return;
+  }
   try {
     const status = await startDeviceAgentRuntime();
     saveDeviceAgentStatusCache(state.deviceAgentStatus);
@@ -36773,7 +36856,12 @@ async function runEnablePairedBridge(connector?: string): Promise<void> {
 // session) and drop back to the API-key device-agent path. Also the only exit from paired mode when
 // the picker would otherwise be a same-mode no-op.
 function runUnpairPairedBridge(): void {
-  unpairPhone(agenticAndroidBridge());
+  if (IS_IOS_APP) {
+    // Revoke the relay session + clear Keychain credentials (best-effort, async).
+    void buildIosPairBridge().unpair();
+  } else {
+    unpairPhone(agenticAndroidBridge());
+  }
   state.aiSettings.pairedBridge = false;
   relayStatusCache = null;
   relayHasBeenOnline = false;
@@ -45087,7 +45175,7 @@ function stopAgentBackgroundWatch(): void {
 // caught even when the user is on the Home tab and the paired-bridge card isn't rendering.
 let relayPresenceTimer: number | null = null;
 function startRelayPresenceWatch(): void {
-  if (!IS_ANDROID_APP) return;
+  if (!IS_ANDROID_APP && !IS_IOS_APP) return;
   stopRelayPresenceWatch();
   relayPresenceTimer = window.setInterval(() => {
     if (!state.aiSettings.pairedBridge) return;
@@ -45110,7 +45198,7 @@ function stopRelayPresenceWatch(): void {
 // Distinct from the 5s startRelayPresenceWatch loop (which keeps running for ongoing disconnect
 // detection); the two don't conflict — both just refresh + maybe render.
 function startRelayCheckingWatch(): void {
-  if (!IS_ANDROID_APP) return;
+  if (!IS_ANDROID_APP && !IS_IOS_APP) return;
   stopRelayCheckingWatch();
   relayCheckingTimer = window.setInterval(() => {
     if (relayCheckingSince === null) {
@@ -46203,6 +46291,25 @@ function unavailableDeviceAgentStatus(message: string): DeviceAgentStatus {
     state: 'unavailable',
     runtime: defaultDeviceAgentRuntime(),
     message,
+  };
+}
+
+// Synthetic Device Agent status for an iOS Plan Connector pairing. iOS forwards paired AI through the
+// JS relay rather than a native runtime, so there is no real runtime to query — but the planner UI
+// gates drafts on deviceAgentStatusReadyForDrafts(), so present a ready 'ios-native' running status.
+function iosPairedBridgeStatus(): DeviceAgentStatus {
+  const connector = state.aiSettings.connector;
+  return {
+    available: true,
+    enabled: true,
+    configured: true,
+    state: 'running',
+    runtime: 'ios-native',
+    provider: connector ?? state.aiSettings.provider,
+    apiFormat: state.aiSettings.apiFormat,
+    model: connector ? `${shortConnectorName(connector)} plan` : 'computer plan',
+    walletAddress: state.address || state.cloudSession.walletAddress,
+    message: 'Plan Connector: AI runs on your paired computer’s plan.',
   };
 }
 
@@ -54484,7 +54591,7 @@ function defaultAiMode(input: {
     isAndroidApp: IS_ANDROID_APP,
     androidDeviceAgentRuntimeEnabled: ANDROID_DEVICE_AGENT_ENABLED,
     isIosApp: iosNative,
-    iosDeviceAgentRuntimeEnabled: DEVICE_AGENT_ENABLED,
+    iosDeviceAgentRuntimeEnabled: iosDeviceAgentSurfaceEnabled(),
     isLocalBrowserOrigin: isLocalBrowserOrigin(),
     isTauriApp: IS_TAURI_APP,
     hasCloudSession: Boolean(sessionToken && sessionToken.trim().length > 0),
@@ -54709,14 +54816,46 @@ function reconcileAiModeForSurface(): void {
 // surface), clear it so we don't boot into a mode where every request throws "not paired".
 function reconcilePairedBridgeFlag(): void {
   if (!state.aiSettings.pairedBridge) return;
+  if (IS_IOS_APP) {
+    // iOS credentials live in the Keychain (async). Reconcile once loaded so we never clear a valid
+    // pairing on a cold-boot cache miss; the async path re-renders if it heals the flag.
+    void reconcileIosPairedBridgeFlag();
+    return;
+  }
   const clear = shouldClearPersistedPairedBridge({
     pairedBridge: true,
-    isAndroid: IS_ANDROID_APP,
+    surfaceSupportsPairing: IS_ANDROID_APP,
     nativePaired: IS_ANDROID_APP ? readPhonePairStatus(agenticAndroidBridge()).paired : false,
   });
   if (clear) {
     state.aiSettings.pairedBridge = false;
     savePersistedState();
+  }
+}
+
+async function reconcileIosPairedBridgeFlag(): Promise<void> {
+  const creds = await loadIosPairCreds();
+  const clear = shouldClearPersistedPairedBridge({
+    pairedBridge: Boolean(state.aiSettings.pairedBridge),
+    surfaceSupportsPairing: iosPlanConnectorAvailable(),
+    nativePaired: Boolean(creds),
+  });
+  if (clear) {
+    if (state.aiSettings.pairedBridge) {
+      state.aiSettings.pairedBridge = false;
+      savePersistedState();
+      render();
+    }
+    return;
+  }
+  // Valid pairing restored from the Keychain — surface the synthetic ready status so the planner is
+  // usable immediately after a relaunch without re-pairing.
+  if (creds) {
+    if (creds.connector === 'codex' || creds.connector === 'claude' || creds.connector === 'gemini') {
+      state.aiSettings.connector = creds.connector;
+    }
+    state.deviceAgentStatus = iosPairedBridgeStatus();
+    render();
   }
 }
 
@@ -54744,6 +54883,14 @@ function deviceAgentModeVisible(): boolean {
   return deviceAgentModeVisibleForWallet(state.address || state.cloudSession.walletAddress);
 }
 
+// Two flags must agree on iOS: the live Render JS flag (VITE_AGENTIC_IOS_DEVICE_AGENT,
+// ships instantly) AND a real on-device capability — the AgenticDeviceAgent plugin is
+// actually registered in the shipped binary. A flag flip alone can never expose a broken
+// control on a frozen binary (this is the generalized fix for the 2026-06-12 mismatch).
+function iosDeviceAgentSurfaceEnabled(): boolean {
+  return IOS_DEVICE_AGENT_ENABLED && isIosDeviceAgentBridgeAvailable();
+}
+
 function deviceAgentModeVisibleForWallet(walletAddress?: string): boolean {
   return deviceAgentModeVisibleForRuntime({
     walletAddress,
@@ -54764,7 +54911,7 @@ function deviceAgentModeVisibleForRuntime(input: {
     isAndroidApp: IS_ANDROID_APP,
     androidDeviceAgentRuntimeEnabled: ANDROID_DEVICE_AGENT_ENABLED,
     isIosApp: input.isIosNative,
-    iosDeviceAgentRuntimeEnabled: DEVICE_AGENT_ENABLED,
+    iosDeviceAgentRuntimeEnabled: iosDeviceAgentSurfaceEnabled(),
     walletIsDeviceAgentAllowlisted,
     browserNativeEligible: browserNativeRuntimeEligibleForSurface({
       deviceAgentEnabled: DEVICE_AGENT_ENABLED,
@@ -54912,6 +55059,18 @@ async function readClipboardText(): Promise<string | null> {
     try {
       const text = androidRead();
       if (typeof text === 'string') return text;
+    } catch {
+      // fall through to the web API
+    }
+  }
+  // iOS WKWebView: mirror the Android native read via the AgenticSystem plugin's clipboardRead, so the
+  // Paste button is one-tap on iOS too (the navigator.clipboard fallback below works but surfaces the
+  // iOS paste callout). Absent on older binaries that predate the method → falls through.
+  const iosRead = agenticIosSystemBridge()?.clipboardRead;
+  if (typeof iosRead === 'function') {
+    try {
+      const result = await iosRead();
+      if (result && typeof result.text === 'string') return result.text;
     } catch {
       // fall through to the web API
     }

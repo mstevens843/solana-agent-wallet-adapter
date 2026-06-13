@@ -11,6 +11,7 @@ public class AgenticSystemPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "openExternal", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "systemInfo", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "clipboardWrite", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "clipboardRead", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "haptic", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "showNotification", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestNotificationAuthorization", returnType: CAPPluginReturnPromise),
@@ -119,6 +120,20 @@ public class AgenticSystemPlugin: CAPPlugin, CAPBridgedPlugin {
             UIPasteboard.general.string = text
             AgenticIOSLog.info("AgenticSystem", "clipboardWrite", "DONE", "written", ["bytes": String(text.utf8.count)])
             call.resolve(["ok": true])
+        }
+    }
+
+    // Read the system clipboard text for the WebView "Paste key" button. WKWebView's
+    // navigator.clipboard.readText() works only over a secure context + user gesture and
+    // surfaces the iOS paste callout, so the native read gives the same one-tap paste as
+    // the Android clipboardRead bridge. UIPasteboard.general reads are unrestricted (no
+    // Info.plist entry); iOS provides its own paste affordance. Returns "" when empty.
+    @objc func clipboardRead(_ call: CAPPluginCall) {
+        guard AgenticBridgeOrigin.validate(call, on: bridge) else { return }
+        DispatchQueue.main.async {
+            let text = UIPasteboard.general.string ?? ""
+            AgenticIOSLog.info("AgenticSystem", "clipboardRead", "DONE", "read", ["bytes": String(text.utf8.count)])
+            call.resolve(["text": text])
         }
     }
 

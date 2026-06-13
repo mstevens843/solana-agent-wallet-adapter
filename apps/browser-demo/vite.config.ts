@@ -49,6 +49,10 @@ const androidDeviceAgent =
   process.env.VITE_AGENTIC_ANDROID_DEVICE_AGENT ??
   process.env.AGENTIC_ANDROID_DEVICE_AGENT ??
   'false';
+const iosDeviceAgent =
+  process.env.VITE_AGENTIC_IOS_DEVICE_AGENT ??
+  process.env.AGENTIC_IOS_DEVICE_AGENT ??
+  'false';
 const deviceAgent =
   process.env.VITE_AGENTIC_DEVICE_AGENT ??
   process.env.AGENTIC_DEVICE_AGENT ??
@@ -106,6 +110,7 @@ export default defineConfig({
     'import.meta.env.VITE_AGENTIC_ANDROID_SHOW_EXAMPLE_TAB': JSON.stringify(androidShowExampleTab),
     'import.meta.env.VITE_AGENTIC_ANDROID_ALLOW_LAN_BRIDGE': JSON.stringify(androidAllowLanBridge),
     'import.meta.env.VITE_AGENTIC_ANDROID_DEVICE_AGENT': JSON.stringify(androidDeviceAgent),
+    'import.meta.env.VITE_AGENTIC_IOS_DEVICE_AGENT': JSON.stringify(iosDeviceAgent),
     'import.meta.env.VITE_AGENTIC_DEVICE_AGENT': JSON.stringify(deviceAgent),
     'import.meta.env.VITE_AGENTIC_BROWSER_DEVICE_AGENT': JSON.stringify(browserDeviceAgent),
     'import.meta.env.VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST': JSON.stringify(deviceAgentWalletAllowlist),

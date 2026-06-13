@@ -153,16 +153,37 @@ export interface PhonePairStatus {
   error: string | null;
 }
 
+/**
+ * Async pairing driver for surfaces whose native bridge is Promise-based (iOS Capacitor) rather than
+ * the synchronous `@JavascriptInterface` Android exposes. `mountPhonePairingPanel` routes scan/pair/
+ * status/unpair through this when present, leaving the synchronous Android `NativePairBridge` path
+ * untouched. The concrete iOS implementation lives in `iosPairBridge.ts`.
+ */
+export interface AsyncPairBridge {
+  /** Capability check: the native scanner/relay plumbing is present in this binary. */
+  enabled(): boolean;
+  /** Launch the native camera scanner and resolve with the raw scanned QR string. */
+  scanQr(): Promise<string>;
+  /** Claim the pairing (relay HTTP) and persist credentials. */
+  pair(payload: PairingPayload): Promise<{ ok: boolean; error?: string }>;
+  /** Current pairing status (local credentials + optional relay refinement). */
+  status(): Promise<PhonePairStatus>;
+  /** Revoke the pairing and clear stored credentials. */
+  unpair(): Promise<void>;
+}
+
 /** Self-heal decision: a persisted `pairedBridge` flag should be cleared when it's set but the device
  *  can't actually be paired (not an Android app surface, or the native pairing is gone). Keeps the JS
  *  flag from booting into a "every request throws not-paired" mode after an app-data wipe / unpair. */
 export function shouldClearPersistedPairedBridge(input: {
   pairedBridge: boolean;
-  isAndroid: boolean;
+  /** True when the current app surface can hold a native pairing at all (Android, or iOS with the
+   *  pairing plugin present). A flag that rode onto a surface that can't pair is always cleared. */
+  surfaceSupportsPairing: boolean;
   nativePaired: boolean;
 }): boolean {
   if (!input.pairedBridge) return false;
-  return !input.isAndroid || !input.nativePaired;
+  return !input.surfaceSupportsPairing || !input.nativePaired;
 }
 
 export function phonePairingEnabled(bridge: NativePairBridge | undefined): boolean {

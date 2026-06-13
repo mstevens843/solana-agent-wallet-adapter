@@ -62,6 +62,8 @@
 	</array>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Use Face ID to confirm wallet actions and protect sensitive operations.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Agentic uses the camera to scan the pairing QR code shown on your computer to connect your AI plan. The camera is not used for anything else.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>

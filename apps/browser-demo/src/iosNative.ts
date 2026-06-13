@@ -210,6 +210,7 @@ interface AgenticSystemPlugin {
   openExternal(options: { url: string }): Promise<{ ok: boolean }>;
   systemInfo(): Promise<AgenticSystemInfo>;
   clipboardWrite(options: { text: string; label?: string }): Promise<{ ok: boolean }>;
+  clipboardRead(): Promise<{ text?: string }>;
   haptic(options: { pattern: 'light' | 'medium' | 'heavy' | 'success' | 'warning' | 'error' }): Promise<{ ok: boolean }>;
   showNotification(options: { title: string; body?: string; tag?: string; channelId?: string }): Promise<{
     ok: boolean;
@@ -323,6 +324,13 @@ interface AgenticStreamingSessionPlugin {
   notificationState(): Promise<{ activeCount: number; remainingDisplay: string; text: string }>;
 }
 
+// Native AVFoundation QR scanner for Plan Connector pairing. The native body lives in
+// AgenticQrScannerPlugin.swift and ships with the App Store binary; on older binaries the plugin is
+// absent and `isIosQrScannerAvailable()` returns false so the live JS keeps the feature hidden.
+interface AgenticQrScannerPlugin {
+  scan(): Promise<{ ok: boolean; rawValue?: string; error?: string }>;
+}
+
 const AgenticSecureState = registerPlugin<AgenticSecureStatePlugin>('AgenticSecureState');
 const AgenticWalletConnect = registerPlugin<AgenticWalletConnectPlugin>('AgenticWalletConnect');
 // New plugins (Phase 0.5 wiring; native bodies filled in Phases 1–4):
@@ -331,6 +339,7 @@ const AgenticSystem = registerPlugin<AgenticSystemPlugin>('AgenticSystem');
 const AgenticRemoteConfig = registerPlugin<AgenticRemoteConfigPlugin>('AgenticRemoteConfig');
 const AgenticDeviceAgent = registerPlugin<AgenticDeviceAgentPlugin>('AgenticDeviceAgent');
 const AgenticStreamingSession = registerPlugin<AgenticStreamingSessionPlugin>('AgenticStreamingSession');
+const AgenticQrScanner = registerPlugin<AgenticQrScannerPlugin>('AgenticQrScanner');
 // Re-export under named globals so cross-platform call sites can address them
 // the same way they address the Android equivalents. Phases 1–4 fill these in.
 if (typeof globalThis !== 'undefined') {
@@ -341,6 +350,51 @@ if (typeof globalThis !== 'undefined') {
   g.__agenticIosRemoteConfigBridge = AgenticRemoteConfig;
   g.__agenticIosDeviceAgentBridge = AgenticDeviceAgent;
   g.__agenticIosStreamingBridge = AgenticStreamingSession;
+  g.__agenticIosQrScannerBridge = AgenticQrScanner;
+}
+
+/** Error thrown by {@link scanIosPairingQr}; `code` mirrors the native/Android scanner codes
+ *  (`permission_denied`, `camera_unavailable`, `cancelled`, `scan_failed`). */
+export class IosQrScanError extends Error {
+  constructor(readonly code: string) {
+    super(code);
+    this.name = 'IosQrScanError';
+  }
+}
+
+/** True only on an iOS binary that actually bundles the native AgenticQrScanner plugin. This is the
+ *  capability half of the "two flags must agree" gate — live JS never shows Plan Connector on an old
+ *  binary that can't scan. */
+export function isIosQrScannerAvailable(): boolean {
+  try {
+    return safeIsNativePlatform() && Capacitor.isPluginAvailable('AgenticQrScanner');
+  } catch {
+    return false;
+  }
+}
+
+/** Launch the native camera QR scanner and resolve with the raw scanned string. Throws an
+ *  {@link IosQrScanError} on cancel / permission / camera failure. */
+export async function scanIosPairingQr(): Promise<string> {
+  const result = await AgenticQrScanner.scan();
+  if (result?.ok && typeof result.rawValue === 'string' && result.rawValue.length > 0) {
+    return result.rawValue;
+  }
+  throw new IosQrScanError(typeof result?.error === 'string' && result.error ? result.error : 'scan_failed');
+}
+
+/** Keychain-backed secure storage for Plan Connector credentials (device bearer + E2EE keys). Falls
+ *  back to localStorage off-native (web never pairs, so the fallback only matters for dev). */
+export async function iosSecureGet(key: string): Promise<string | null> {
+  return readState(key, 'info');
+}
+
+export async function iosSecureSet(key: string, value: string): Promise<void> {
+  return writeState(key, value, 'info');
+}
+
+export async function iosSecureRemove(key: string): Promise<void> {
+  return removeState(key, 'info');
 }
 
 const AUTH_CACHE_KEY = 'agentic-ios-auth-cache-v1';

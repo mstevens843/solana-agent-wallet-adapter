@@ -69,6 +69,21 @@ services:
       # so web/iOS are unaffected.
       - key: VITE_AGENTIC_ANDROID_DEVICE_AGENT
         value: "true"
+      # Device Agent runtime for the iOS app surface (on-device AI review +
+      # the Plan Connector "use your ChatGPT/Claude plan from your computer"
+      # paired-bridge). The iOS app loads this SPA live, so this Vite flag —
+      # not a frozen binary flag — is what gates the iOS Device Agent + Plan
+      # Connector surfaces at runtime. The shipped store binary already bundles
+      # AgenticDeviceAgentPlugin, so turning this on aligns the JS gate with the
+      # on-device native runtime. To prevent the 2026-06-12 "two flags must
+      # agree" class of bug, the JS still AND's this flag with a live
+      # capability check (AgenticDeviceAgent.status() / AgenticQrScanner plugin
+      # presence) so an old binary never shows a broken control even if this is
+      # on. Scoped to the iOS app surface only via isIosApp in
+      # deviceAgentModeVisibleForSurface(); VITE_AGENTIC_DEVICE_AGENT stays unset
+      # so web/Android are unaffected.
+      - key: VITE_AGENTIC_IOS_DEVICE_AGENT
+        value: "true"
       - key: VITE_AGENTIC_DEV_CONTROLS
         value: "false"
       - key: VITE_AGENTIC_GA_MEASUREMENT_ID

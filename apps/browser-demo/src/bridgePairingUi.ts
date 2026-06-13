@@ -8,6 +8,7 @@
 //    device-agent and switches the AI mode).
 
 import {
+  type AsyncPairBridge,
   type BridgeRequestFn,
   type NativePairBridge,
   type PairingPayload,
@@ -215,6 +216,9 @@ export async function openDesktopPairingModal(deps: DesktopPairingDeps): Promise
 
 export interface PhonePairingDeps {
   bridge: NativePairBridge | undefined;
+  /** Async pairing driver for iOS (Promise-based native scanner + relay + E2EE). When present, scan/
+   *  pair/status route through it instead of the synchronous Android `bridge`. */
+  asyncBridge?: AsyncPairBridge;
   /** Called once the phone reports paired — wire this to configure the paired-bridge device agent.
    *  `connector` is the desktop's subscription connector from the QR (codex/claude/gemini), if present. */
   onPaired: (connector?: string) => void;
@@ -247,6 +251,7 @@ export function mountPhonePairingPanel(
     nativeScanner: Boolean(deps.bridge?.bridgeScanPairingQr),
     nativePair: Boolean(deps.bridge?.bridgePair),
     nativeStatus: Boolean(deps.bridge?.bridgePairStatus),
+    asyncBridge: Boolean(deps.asyncBridge),
   });
   container.innerHTML = '';
   container.classList.add('phone-pairing-panel');
@@ -293,6 +298,27 @@ export function mountPhonePairingPanel(
     video.style.display = 'none';
     status.textContent = 'Pairing…';
     status.style.color = '#bcd3c7';
+    // iOS: claim runs in JS (relay + E2EE); a successful claim persists credentials, so the pairing is
+    // confirmed immediately — no native status poll needed.
+    if (deps.asyncBridge) {
+      let asyncResult: { ok: boolean; error?: string };
+      try {
+        asyncResult = await deps.asyncBridge.pair(payload);
+      } catch (err) {
+        asyncResult = { ok: false, error: err instanceof Error ? err.message : 'pair_failed' };
+      }
+      if (!asyncResult.ok) {
+        logDeviceAgentDiag('warn', 'bridge-pair.phone_pair_start_failed', { tag, error: asyncResult.error ?? '' });
+        status.textContent = pairErrorMessage(asyncResult.error);
+        status.style.color = '#ffb27a';
+        return;
+      }
+      logDeviceAgentDiag('info', 'bridge-pair.phone_pair_status_paired', { tag });
+      status.textContent = options.connectedText ?? '✓ Paired. AI now runs on your computer’s plan.';
+      status.style.color = '#5fe3a1';
+      deps.onPaired(payload.connector);
+      return;
+    }
     const result = await startPhonePairing(deps.bridge, payload);
     if (!result.ok) {
       logDeviceAgentDiag('warn', 'bridge-pair.phone_pair_start_failed', {
@@ -352,9 +378,34 @@ export function mountPhonePairingPanel(
     const browserMedia = typeof navigator !== 'undefined' && Boolean(navigator.mediaDevices?.getUserMedia);
     logDeviceAgentDiag('info', 'bridge-pair.scan_click', {
       nativeScanner: Boolean(deps.bridge?.bridgeScanPairingQr),
+      asyncScanner: Boolean(deps.asyncBridge),
       browserDetector: Boolean(Detector),
       browserMedia,
     });
+    // iOS: the native AVFoundation scanner resolves a Promise directly (no global callback bridge).
+    if (deps.asyncBridge) {
+      scanBtn.disabled = true;
+      status.textContent = 'Opening camera…';
+      status.style.color = '#bcd3c7';
+      try {
+        const rawValue = await deps.asyncBridge.scanQr();
+        const payload = parsePairingPayload(rawValue);
+        if (!payload) {
+          status.textContent = options.invalidCodeText ?? 'That code isn’t valid. Copy the whole pairing code from the computer.';
+          status.style.color = '#ffb27a';
+          return;
+        }
+        void beginPairing(payload);
+      } catch (err) {
+        const code = err instanceof Error ? err.message : String(err);
+        logDeviceAgentDiag('warn', 'bridge-pair.ios_scan_failed', { code });
+        status.textContent = nativeQrScanErrorMessage(code);
+        status.style.color = code === 'cancelled' ? '#bcd3c7' : '#ffb27a';
+      } finally {
+        scanBtn.disabled = false;
+      }
+      return;
+    }
     if (deps.bridge?.bridgeScanPairingQr) {
       scanBtn.disabled = true;
       status.textContent = 'Opening camera…';

@@ -15,13 +15,13 @@ import {
 } from '../bridgePairing.js';
 
 describe('shouldClearPersistedPairedBridge (self-heal)', () => {
-  it('clears a stale flag when native says not paired or the surface is not Android', () => {
-    expect(shouldClearPersistedPairedBridge({ pairedBridge: true, isAndroid: true, nativePaired: false })).toBe(true);
-    expect(shouldClearPersistedPairedBridge({ pairedBridge: true, isAndroid: false, nativePaired: false })).toBe(true);
+  it('clears a stale flag when native says not paired or the surface cannot pair', () => {
+    expect(shouldClearPersistedPairedBridge({ pairedBridge: true, surfaceSupportsPairing: true, nativePaired: false })).toBe(true);
+    expect(shouldClearPersistedPairedBridge({ pairedBridge: true, surfaceSupportsPairing: false, nativePaired: false })).toBe(true);
   });
-  it('keeps the flag when actually paired on Android, and is a no-op when unset', () => {
-    expect(shouldClearPersistedPairedBridge({ pairedBridge: true, isAndroid: true, nativePaired: true })).toBe(false);
-    expect(shouldClearPersistedPairedBridge({ pairedBridge: false, isAndroid: true, nativePaired: false })).toBe(false);
+  it('keeps the flag when actually paired on a pairing-capable surface, and is a no-op when unset', () => {
+    expect(shouldClearPersistedPairedBridge({ pairedBridge: true, surfaceSupportsPairing: true, nativePaired: true })).toBe(false);
+    expect(shouldClearPersistedPairedBridge({ pairedBridge: false, surfaceSupportsPairing: true, nativePaired: false })).toBe(false);
   });
 });
 

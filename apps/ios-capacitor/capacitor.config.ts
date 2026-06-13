@@ -39,6 +39,7 @@ const config: CapacitorConfig = {
     'AgenticRemoteConfigPlugin',
     'AgenticDeviceAgentPlugin',
     'AgenticStreamingSessionPlugin',
+    'AgenticQrScannerPlugin',
   ],
 };
 
