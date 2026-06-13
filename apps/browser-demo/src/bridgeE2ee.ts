@@ -70,10 +70,16 @@ export function base64UrlDecode(value: string): Uint8Array {
   return out;
 }
 
-export function randomClientNonce(): string {
-  const bytes = new Uint8Array(16);
+function randomBytes(length: number): Uint8Array {
+  const getRandomValues = (globalThis.crypto as Crypto | undefined)?.getRandomValues;
+  if (!getRandomValues) throw new Error('e2ee_crypto_unavailable');
+  const bytes = new Uint8Array(length);
   globalThis.crypto.getRandomValues(bytes);
-  return base64UrlEncode(bytes);
+  return bytes;
+}
+
+export function randomClientNonce(): string {
+  return base64UrlEncode(randomBytes(16));
 }
 
 export function parseE2eeQr(value: unknown): BridgeE2eeQrPayload | null {
@@ -157,8 +163,7 @@ export async function prepareClaim(pairUuid: string, qr: BridgeE2eeQrPayload): P
 /** Encrypt a request payload object with the request key. Returns the `{ e2ee: {...} }` envelope the
  *  relay forward body wraps as `body` (matching Kotlin BridgeE2ee.encrypt / BridgeAiClient.forward). */
 export async function encryptRequest(session: BridgeE2eeSession, payload: unknown): Promise<BridgeE2eeEnvelope> {
-  const nonce = new Uint8Array(12);
-  globalThis.crypto.getRandomValues(nonce);
+  const nonce = randomBytes(12);
   const key = await subtleCrypto().importKey('raw', session.requestKey as unknown as ArrayBuffer, { name: 'AES-GCM' }, false, ['encrypt']);
   const plaintext = textEncoder.encode(JSON.stringify(payload));
   const ciphertext = new Uint8Array(

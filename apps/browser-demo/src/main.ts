@@ -14100,9 +14100,22 @@ function walletRail(): string {
   const summaryDetailMarkup = connected
     ? `<p>${escapeHtml(wallet.detail)}</p>`
     : `<p class="signer-detail-desktop-only">${escapeHtml(wallet.detail)}</p>`;
+  const connectionsReadiness = connected
+    ? 'Wallet connected — you can review, approve, and sign.'
+    : 'Connect your wallet to approve and sign. AI review and cloud sync are optional.';
+  // Connections re-org (reviewer feedback): group the wallet/AI/cloud connections under one
+  // prioritized "Connections" header with Required/Optional labels. Android app only for now so it
+  // can be tested in isolation before web/iOS get it.
+  const connectionsRailHead = IS_ANDROID_APP ? `
+      <div class="connections-rail-head">
+        <p class="eyebrow mini">Connections</p>
+        <p class="connections-rail-readiness">${escapeHtml(connectionsReadiness)}</p>
+      </div>
+      <p class="connection-group-label">Required</p>` : '';
   return `
     <aside class="panel custody-panel custody-module" data-layout="app-rail">
-      <div class="signer-row">
+      ${connectionsRailHead}
+      <div class="signer-row ${connected ? 'connected' : 'disconnected'}${IS_ANDROID_APP ? ' android-connection-signer' : ''}">
         <div class="rail-heading custody-heading">
           ${walletRailIcon(wallet)}
           <div>
@@ -14157,6 +14170,7 @@ function walletRail(): string {
         </label>
       </details>` : ''}
 
+      ${IS_ANDROID_APP ? '<p class="connection-group-label">Optional</p>' : ''}
       <div class="rail-primary-stack">
         ${cloudWorkspaceCard()}
         ${aiSettingsPanel('rail')}
@@ -14747,19 +14761,39 @@ function cloudWorkspaceCard(): string {
   const open = state.workspaceStoragePanelOpen === true ? 'open' : '';
   const body = cloudWorkspaceRailBody();
   if (isMobileAppViewport()) {
-    return `
-      <section class="workspace-storage-panel ${escapeHtml(mode)} ${signedIn ? 'signed-in' : ''} mobile-rail-trigger-panel" data-layout="workspace-storage-panel" aria-label="Workspace storage status">
-        <button
-          type="button"
-          class="mobile-rail-sheet-trigger"
-          data-mobile-rail-sheet="workspace-storage"
-          aria-expanded="${state.activeMobileRailSheet === 'workspace-storage' ? 'true' : 'false'}"
-        >
+    // Android Connections re-org: give the Workspace card the same icon + tone-pill anatomy as the
+    // AI Review card so the three connections read as one consistent set. Web/iOS keep the original.
+    const tone = matched ? 'good' : signedIn ? 'warn' : 'idle';
+    const railSummaryDetail = IS_ANDROID_APP && !signedIn
+      ? 'Saved on this device'
+      : summaryDetail;
+    const actionLabel = signedIn ? 'Manage' : 'Sign in';
+    const trigger = IS_ANDROID_APP
+      ? `
+          <span class="rail-conn-identity">
+            <span class="rail-conn-icon ${escapeHtml(tone)}">${commandCenterIcon('cloud')}</span>
+            <span class="workspace-storage-summary-copy">
+              <span>Workspace storage</span>
+              <em>${escapeHtml(railSummaryDetail)}</em>
+            </span>
+          </span>
+          <strong class="rail-conn-status ${escapeHtml(tone)}">${escapeHtml(status)}</strong>
+          <span class="rail-conn-action">${escapeHtml(actionLabel)}</span>`
+      : `
           <span class="workspace-storage-summary-copy">
             <span>Workspace storage</span>
             <em>${escapeHtml(summaryDetail)}</em>
           </span>
-          <strong>${escapeHtml(status)}</strong>
+          <strong>${escapeHtml(status)}</strong>`;
+    return `
+      <section class="workspace-storage-panel ${escapeHtml(mode)} ${signedIn ? 'signed-in' : ''} mobile-rail-trigger-panel" data-layout="workspace-storage-panel" aria-label="Workspace storage status">
+        <button
+          type="button"
+          class="mobile-rail-sheet-trigger${IS_ANDROID_APP ? ' rail-conn-trigger' : ''}"
+          data-mobile-rail-sheet="workspace-storage"
+          aria-expanded="${state.activeMobileRailSheet === 'workspace-storage' ? 'true' : 'false'}"
+        >
+          ${trigger}
         </button>
       </section>
     `;
@@ -21584,11 +21618,11 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
       <section class="ai-settings-panel ${panelConfigured ? 'configured' : 'optional'} rail-ai-settings mobile-rail-trigger-panel" data-layout="ai-setup-panel" aria-label="AI review status">
         <button
           type="button"
-          class="mobile-rail-sheet-trigger"
+          class="mobile-rail-sheet-trigger${IS_ANDROID_APP ? ' rail-conn-trigger' : ''}"
           data-mobile-rail-sheet="ai-drafting"
           aria-expanded="${state.activeMobileRailSheet === 'ai-drafting' ? 'true' : 'false'}"
         >
-          ${aiRailSummaryContent(railIdentity!)}
+          ${aiRailSummaryContent(railIdentity!, IS_ANDROID_APP ? { actionLabel: aiRailActionLabel(railIdentity!) } : undefined)}
         </button>
       </section>
     `;
@@ -21639,6 +21673,12 @@ function aiRailIdentity(
     identity.detail = connectorPlanNote(connector);
     identity.logoHint = connectorRailLogoHint(connector);
   }
+  if (IS_ANDROID_APP && !identity.configured && !identity.inactive) {
+    identity.provider = 'Not set up';
+    identity.model = 'API key or Plan Connector';
+    identity.detail = 'API key or Plan Connector';
+    identity.logoHint = 'agentic';
+  }
   return identity;
 }
 
@@ -21673,7 +21713,11 @@ function currentAiRailFallback(): { provider: string; model: string; logoHint: A
   };
 }
 
-function aiRailSummaryContent(identity: AiRailIdentity): string {
+function aiRailActionLabel(identity: AiRailIdentity): string {
+  return identity.configured || identity.inactive ? 'Manage' : 'Set up';
+}
+
+function aiRailSummaryContent(identity: AiRailIdentity, options: { actionLabel?: string } = {}): string {
   return `
     <span class="ai-summary-identity">
       ${brandLogo(identity.logoHint, 'ai-summary-logo')}
@@ -21684,6 +21728,7 @@ function aiRailSummaryContent(identity: AiRailIdentity): string {
       </span>
     </span>
     <strong class="ai-summary-status ${escapeHtml(identity.statusTone)}" title="${escapeHtml(identity.statusTitle)}">${escapeHtml(identity.statusLabel)}</strong>
+    ${options.actionLabel ? `<span class="rail-conn-action">${escapeHtml(options.actionLabel)}</span>` : ''}
   `;
 }
 
@@ -23663,6 +23708,9 @@ function iosPlanConnectorAvailable(): boolean {
 // returns its last async probe + kicks a fresh one, so the chip converges over a few renders without
 // a blocking call. (B6 — gives the paired user a persistent reachability signal beyond the modal.)
 let relayStatusCache: { online: boolean; at: number } | null = null;
+// Guards reestablishAndroidPairedRuntime() so the boot reconcile (called on several events) can't fire
+// overlapping native re-config calls.
+let androidPairedReestablishInFlight = false;
 // Transition tracking for the one-shot "connector disconnected" toast. `null` = unknown (first read).
 let relayHasBeenOnline = false; // true once we've seen the desktop online — gates the first-load false fire
 let relayOfflineStreak = 0; // consecutive offline reads (ignoring in-flight) before we trust "disconnected"
@@ -24391,12 +24439,23 @@ function canStopDeviceAgentRuntime(): boolean {
   return runtimeState === 'running' || runtimeState === 'starting';
 }
 
+// Plan Connector (paired bridge) is a distinct sub-mode of 'device-agent': inference runs on the
+// user's own paired computer via the relay, so readiness is "paired + reachable", NOT an on-device
+// device-agent key. The real reachability is enforced at execution (the relay preflight in
+// forwardAi/runForward) + surfaced by the online/offline chip, so the gates only need to treat paired
+// as ready (mirrors the already-paired-aware hasDetectedAgentReviewPath). This is what unblocks Plan
+// Connector after the Android cold-launch config wipe and on iOS regardless of status timing.
+function pairedBridgeActive(): boolean {
+  return state.aiSettings.mode === 'device-agent' && Boolean(state.aiSettings.pairedBridge);
+}
+
 function canGenerateAiPlanFromSettings(): boolean {
   const modelReady = Boolean(state.aiSettings.model.trim());
   if (state.aiSettings.mode === 'bridge') {
     return Boolean(state.aiStatus?.available && !state.busy);
   }
   if (state.aiSettings.mode === 'device-agent') {
+    if (pairedBridgeActive()) return !state.busy;
     return Boolean(deviceAgentModeVisible() && deviceAgentStatusReadyForDrafts(state.deviceAgentStatus) && !state.busy);
   }
   if (hostedByokCloudSessionReason()) return false;
@@ -24440,6 +24499,11 @@ function agentReviewUnavailableReason(record?: GeneratedPlanRecord): string {
       : bridgeAiUnavailableReason(state.aiStatus);
   }
   if (state.aiSettings.mode === 'device-agent') {
+    if (pairedBridgeActive()) {
+      return refreshRelayPresence()
+        ? 'Plan Connector review is ready — runs on your computer’s plan.'
+        : 'Plan Connector review is ready once your computer is online — open the connector page on your computer.';
+    }
     return deviceAgentStatusReadyForDrafts(state.deviceAgentStatus)
       ? 'Device Agent review is ready through the gated runtime.'
       : state.deviceAgentStatus?.configured
@@ -24468,6 +24532,11 @@ function aiGenerateDisabledReason(): string {
       : 'Bridge AI is ready.';
   }
   if (state.aiSettings.mode === 'device-agent') {
+    if (pairedBridgeActive()) {
+      return refreshRelayPresence()
+        ? 'Plan Connector is ready — AI runs on your computer’s plan.'
+        : 'Open the connector page on your computer (and keep it awake) to use Plan Connector.';
+    }
     const status = state.deviceAgentStatus;
     if (!deviceAgentModeVisible()) return 'Device Agent is not enabled for this build or wallet.';
     if (!status?.available) return 'Refresh Device Agent status before generating.';
@@ -24875,9 +24944,25 @@ function isDeviceAgentErrorDiagnostics(err: unknown): boolean {
 
 async function assertDeviceAgentScaffoldAvailable(action: string, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
-  const status = await refreshDeviceAgentStatus(true);
+  let status = await refreshDeviceAgentStatus(true);
+  // Plan Connector (paired bridge) readiness is "paired + relay reachable", not an on-device key.
+  // Android wipes the device-agent runtime config on every cold launch, so re-establish the paired
+  // config on demand (deviceAgentConfigPayload emits the paired-bridge config; the native side routes
+  // it to BridgeRelayProvider) instead of falsely blocking. iOS never reaches here for paired (the
+  // generateDeviceAgent* iOS branch skips this assert and forwards over the JS relay).
+  if (pairedBridgeActive() && (!status.available || !status.configured)) {
+    try {
+      status = await startDeviceAgentRuntime();
+    } catch {
+      // fall through to the paired-specific error below
+    }
+  }
   if (!status.available || !status.configured) {
-    throw new Error('Device Agent runtime is not configured. Add a key, confirm planner, then try again.');
+    throw new Error(
+      pairedBridgeActive()
+        ? 'Plan Connector needs your computer online. Open the connector page on your computer (and keep it awake), then try again.'
+        : 'Device Agent runtime is not configured. Add a key, confirm planner, then try again.',
+    );
   }
   state.aiDiagnostics = [
     aiRouteDiagnostic(`/api/device-agent/${action}`),
@@ -54817,6 +54902,10 @@ function reconcileAiModeForSurface(): void {
 function reconcilePairedBridgeFlag(): void {
   if (!state.aiSettings.pairedBridge) return;
   if (IS_IOS_APP) {
+    // Set the synthetic ready status SYNCHRONOUSLY so no gate can observe a null/unconfigured status
+    // in the window before the async Keychain verify resolves. The verify then clears it if the creds
+    // turn out to be gone.
+    state.deviceAgentStatus = iosPairedBridgeStatus();
     // iOS credentials live in the Keychain (async). Reconcile once loaded so we never clear a valid
     // pairing on a cold-boot cache miss; the async path re-renders if it heals the flag.
     void reconcileIosPairedBridgeFlag();
@@ -54830,6 +54919,34 @@ function reconcilePairedBridgeFlag(): void {
   if (clear) {
     state.aiSettings.pairedBridge = false;
     savePersistedState();
+    return;
+  }
+  // Android wipes the device-agent runtime config on every cold launch (MainActivity clear), but the
+  // pairing (device bearer) persists. Re-establish the paired-bridge runtime config so generate/review/
+  // ask aren't blocked by a false "not configured". Idempotent: only when not already configured.
+  if (IS_ANDROID_APP && state.deviceAgentStatus?.configured !== true) {
+    void reestablishAndroidPairedRuntime();
+  }
+}
+
+// Re-send the paired-bridge config to the Android native runtime after the cold-launch wipe. This sets
+// status.configured=true (deviceAgentConfigPayload emits the paired config → BridgeRelayProvider) so
+// the gates pass; it does NOT require the desktop to be online. Best-effort + idempotent.
+async function reestablishAndroidPairedRuntime(): Promise<void> {
+  if (androidPairedReestablishInFlight) return;
+  androidPairedReestablishInFlight = true;
+  try {
+    const status = await startDeviceAgentRuntime();
+    saveDeviceAgentStatusCache(state.deviceAgentStatus);
+    if (deviceAgentStatusReadyForDrafts(status)) render();
+  } catch (err) {
+    logDebug({
+      level: 'warn',
+      source: 'device-agent',
+      message: `Plan Connector runtime re-establish failed: ${err instanceof Error ? err.message : String(err)}`,
+    });
+  } finally {
+    androidPairedReestablishInFlight = false;
   }
 }
 

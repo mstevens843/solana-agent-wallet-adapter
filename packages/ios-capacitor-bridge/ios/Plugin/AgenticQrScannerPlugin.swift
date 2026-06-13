@@ -165,12 +165,15 @@ final class AgenticQrScannerViewController: UIViewController, AVCaptureMetadataO
 
         let cancel = UIButton(type: .system)
         cancel.translatesAutoresizingMaskIntoConstraints = false
-        cancel.setTitle("Cancel", for: .normal)
-        cancel.setTitleColor(.white, for: .normal)
-        cancel.titleLabel?.font = .systemFont(ofSize: 17, weight: .semibold)
-        cancel.backgroundColor = UIColor(white: 0, alpha: 0.55)
-        cancel.layer.cornerRadius = 10
-        cancel.contentEdgeInsets = UIEdgeInsets(top: 10, left: 24, bottom: 10, right: 24)
+        var cancelConfig = UIButton.Configuration.plain()
+        var cancelTitle = AttributeContainer()
+        cancelTitle.font = .systemFont(ofSize: 17, weight: .semibold)
+        cancelConfig.attributedTitle = AttributedString("Cancel", attributes: cancelTitle)
+        cancelConfig.baseForegroundColor = .white
+        cancelConfig.background.backgroundColor = UIColor(white: 0, alpha: 0.55)
+        cancelConfig.background.cornerRadius = 10
+        cancelConfig.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 24, bottom: 10, trailing: 24)
+        cancel.configuration = cancelConfig
         cancel.addTarget(self, action: #selector(cancelTapped), for: .touchUpInside)
         view.addSubview(cancel)
 

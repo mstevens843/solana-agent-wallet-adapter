@@ -1,6 +1,7 @@
 import UIKit
 import WebKit
 import Capacitor
+import CapApp_SPM
 import SystemConfiguration
 import SolanaAgentWalletAdapterIosCapacitorBridge
 
@@ -15,6 +16,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     private var didBackgroundAtLeastOnce = false
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+        configureAgenticFirebaseAnalytics()
         // Bootstrap the native bridge: hydrates remote config from Keychain cache,
         // kicks a non-blocking refresh, prepares background-task plumbing.
         AgenticBridge.initialize()

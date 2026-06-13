@@ -54,15 +54,30 @@ export function hasIosPairCreds(): boolean {
 }
 
 async function storeCreds(creds: BridgePairCreds): Promise<void> {
+  // The in-memory cache is authoritative for this session; the Keychain write only governs
+  // persistence across launches. Surface a write failure (so a non-persisting pairing is visible)
+  // without breaking the live session.
   credsCache = creds;
   credsLoaded = true;
-  await iosSecureSet(CREDS_KEY, JSON.stringify(creds));
+  try {
+    await iosSecureSet(CREDS_KEY, JSON.stringify(creds));
+  } catch (err) {
+    logDeviceAgentDiag('warn', 'bridge-pair.ios_creds_persist_failed', {
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 export async function clearIosPairCreds(): Promise<void> {
   credsCache = null;
   credsLoaded = true;
-  await iosSecureRemove(CREDS_KEY);
+  try {
+    await iosSecureRemove(CREDS_KEY);
+  } catch (err) {
+    logDeviceAgentDiag('warn', 'bridge-pair.ios_creds_clear_failed', {
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 async function ensureCreds(): Promise<BridgePairCreds | null> {

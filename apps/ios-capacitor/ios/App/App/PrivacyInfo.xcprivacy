@@ -10,9 +10,10 @@
       - apps/ios-native/Sources/AgenticNativeIOS/AgenticAuthCache.swift
         uses UserDefaults as a fallback bucket when Keychain rejects writes
         (category CA92.1: app's own bucket for own purposes).
-      - All network calls go to api.agentic-signer.com (no tracking domains).
-      - Agentic does NOT track users across apps/websites — wallet sessions
-        are user-initiated and scoped to the dApp.
+      - Firebase AnalyticsCore provides baseline native app measurement.
+        Agentic disables tracking, ad personalization, and IDFA-capable
+        Firebase Analytics support; wallet sessions remain user-initiated
+        and scoped to the dApp.
 
     When adding APIs (e.g., file-timestamp readers, system-boot-time,
     disk-space) in the future, add a matching NSPrivacyAccessedAPIType dict

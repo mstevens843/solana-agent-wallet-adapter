@@ -42,7 +42,7 @@ Features:
 - Streaming session signers for sub-second voucher signing
 - Biometric (Face ID / Touch ID) gating on sensitive actions
 - Server-driven wallet routing - fixes ship without an App Store update
-- Full Privacy Manifest disclosure; no tracking, no analytics on iOS native shell
+- Full Privacy Manifest disclosure; no tracking, no Ad ID, no personalized ads
 ```
 
 ## Keywords (max 100 chars, comma-separated)
@@ -71,8 +71,8 @@ solana,wallet,ai agent,jupiter,phantom,solflare,backpack,defi,signer,walletconne
 Per the team's existing data-disclosure stance (see `feedback_play_store_data_safety`
 in stored decisions): mirror Phantom/Solflare disclosures; do not over-declare.
 
-- Data collected: **None** linked to identity. Wallet addresses are user-generated
-  on-device.
+- Data collected: app usage and diagnostics analytics, **not linked to identity**. Wallet addresses are user-generated
+  on-device and are not sent to Google Analytics.
 - Data used to track: **None**.
 - Crypto transactions are not categorized as "Purchase history" - they are user-
   initiated wallet actions, equivalent to Phantom/Solflare disclosures.

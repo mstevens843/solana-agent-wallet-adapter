@@ -133,6 +133,10 @@ async function relayFetch(url: string, init: RequestInit): Promise<Response> {
   try {
     return await fetch(url, init);
   } catch (err) {
+    // Caller cancelled (AbortSignal) — propagate as terminal, never retried.
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw new BridgeRelayError('aborted', 'Cancelled.');
+    }
     // Network-level failure (offline, dropped connection) — transient; runForward keeps polling.
     throw new BridgeRelayError('network', err instanceof Error ? err.message : 'Network error.', true);
   }
@@ -198,10 +202,11 @@ function sessionFromCreds(creds: BridgePairCreds): BridgeE2eeSession | undefined
 }
 
 /** Lightweight health probe: is the relay session live and is the desktop currently polling? */
-export async function relayStatus(creds: BridgePairCreds): Promise<BridgeRelayStatus> {
+export async function relayStatus(creds: BridgePairCreds, signal?: AbortSignal): Promise<BridgeRelayStatus> {
   const response = await relayFetch(`${stripTrailingSlash(creds.relay)}/api/bridge-ai/${creds.uuid}/status`, {
     method: 'GET',
     headers: bearerHeaders(creds),
+    ...(signal ? { signal } : {}),
   });
   if (response.status === 404) return { paired: false, desktopOnline: false };
   if (!response.ok) {
@@ -318,8 +323,9 @@ export async function forwardAi<T = unknown>(creds: BridgePairCreds, path: strin
   // stops heartbeating while busy running a connector).
   let live: BridgeRelayStatus | null = null;
   try {
-    live = await relayStatus(creds);
-  } catch {
+    live = await relayStatus(creds, signal);
+  } catch (err) {
+    if (err instanceof BridgeRelayError && err.code === 'aborted') throw err;
     live = null;
   }
   if (live && live.paired && !live.desktopOnline) {

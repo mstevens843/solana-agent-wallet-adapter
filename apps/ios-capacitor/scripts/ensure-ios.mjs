@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 
 const IOS_DEPLOYMENT_TARGET = '16.0';
+const FIREBASE_IOS_SDK_VERSION = '12.7.0';
 const CODE_SIGN_ENTITLEMENTS = 'App/App.entitlements';
 
 const appDir = resolve(new URL('..', import.meta.url).pathname);
@@ -35,6 +36,11 @@ const REQUIRED_PLIST_KEYS = [
     valueType: 'array',
     value: ['phantom', 'solflare', 'backpack', 'wc', 'https'],
   },
+  {
+    key: 'GOOGLE_ANALYTICS_DEFAULT_ALLOW_AD_PERSONALIZATION_SIGNALS',
+    valueType: 'bool',
+    value: false,
+  },
   { key: 'AGENTIC_CLOUD_API_BASE_URL', valueType: 'string', value: 'https://agentic-signer.com' },
   {
     key: 'AGENTIC_ALLOWED_ORIGINS',
@@ -46,6 +52,7 @@ const REQUIRED_PLIST_KEYS = [
 patchInfoPlist();
 patchEntitlements();
 patchCapAppSpmDeploymentTarget();
+patchCapAppSpmFirebase();
 patchXcodeDeploymentTarget();
 patchXcodeCapabilities();
 
@@ -101,6 +108,9 @@ function renderPlistEntry({ key, valueType, value }) {
   if (valueType === 'string') {
     return `\t<key>${key}</key>\n\t<string>${escapeXml(value)}</string>`;
   }
+  if (valueType === 'bool') {
+    return `\t<key>${key}</key>\n\t<${value ? 'true' : 'false'}/>`;
+  }
   if (valueType === 'array') {
     const items = value.map((v) => `\t\t<string>${escapeXml(v)}</string>`).join('\n');
     return `\t<key>${key}</key>\n\t<array>\n${items}\n\t</array>`;
@@ -150,6 +160,30 @@ function patchCapAppSpmDeploymentTarget() {
   if (src !== before) {
     writeFileSync(capAppSpm, src);
     console.log(`[ios-capacitor] Bumped CapApp-SPM platform to .iOS(.v${IOS_DEPLOYMENT_TARGET.split('.')[0]})`);
+  }
+}
+
+function patchCapAppSpmFirebase() {
+  if (!existsSync(capAppSpm)) {
+    return;
+  }
+  let src = readFileSync(capAppSpm, 'utf8');
+  const before = src;
+  if (!src.includes('firebase/firebase-ios-sdk.git')) {
+    src = src.replace(
+      '        .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", exact: "8.3.1"),\n',
+      `        .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", exact: "8.3.1"),\n        .package(url: "https://github.com/firebase/firebase-ios-sdk.git", .upToNextMajor(from: "${FIREBASE_IOS_SDK_VERSION}")),\n`,
+    );
+  }
+  if (!src.includes('.product(name: "FirebaseCore", package: "firebase-ios-sdk")')) {
+    src = src.replace(
+      '                .product(name: "Cordova", package: "capacitor-swift-pm"),\n',
+      '                .product(name: "Cordova", package: "capacitor-swift-pm"),\n                .product(name: "FirebaseCore", package: "firebase-ios-sdk"),\n                .product(name: "FirebaseAnalyticsCore", package: "firebase-ios-sdk"),\n',
+    );
+  }
+  if (src !== before) {
+    writeFileSync(capAppSpm, src);
+    console.log('[ios-capacitor] Ensured Firebase AnalyticsCore SPM dependency');
   }
 }
 

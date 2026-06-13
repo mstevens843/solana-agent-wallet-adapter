@@ -5645,6 +5645,91 @@ code {
   content: "-";
 }
 
+/* Android Connections re-org (reviewer feedback): one prioritized "Connections" group with
+   Required/Optional labels + a readiness line, and a consistent icon + tone-pill row anatomy
+   shared by the Workspace and AI Review cards. Android app only for now (gated in main.ts). */
+.connections-rail-head {
+  display: grid;
+  gap: 2px;
+  margin: 2px 0 8px;
+}
+
+.connections-rail-readiness {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+  margin: 0;
+}
+
+.connection-group-label {
+  color: var(--dim);
+  font-size: 0.62rem;
+  font-weight: 900;
+  letter-spacing: 0.09em;
+  margin: 12px 0 6px;
+  text-transform: uppercase;
+}
+
+.rail-conn-identity {
+  align-items: center;
+  display: inline-flex;
+  gap: 9px;
+  min-width: 0;
+}
+
+.rail-conn-icon {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 26px;
+  justify-content: center;
+  width: 26px;
+}
+
+.rail-conn-icon.good {
+  background: rgba(94, 231, 158, 0.08);
+  border-color: rgba(139, 205, 170, 0.32);
+}
+
+.rail-conn-icon.warn {
+  background: rgba(214, 168, 79, 0.08);
+  border-color: rgba(214, 168, 79, 0.34);
+}
+
+.rail-conn-icon .command-center-card-icon {
+  height: 15px;
+  width: 15px;
+}
+
+.rail-conn-icon.good .command-center-card-icon {
+  color: rgba(111, 222, 164, 0.92);
+}
+
+.rail-conn-icon.warn .command-center-card-icon {
+  color: rgba(214, 168, 79, 0.92);
+}
+
+.workspace-storage-panel > .mobile-rail-sheet-trigger strong.rail-conn-status.good {
+  background: rgba(94, 231, 158, 0.1);
+  border-color: rgba(139, 205, 170, 0.34);
+  color: #bce3cc;
+}
+
+.workspace-storage-panel > .mobile-rail-sheet-trigger strong.rail-conn-status.warn {
+  background: rgba(214, 168, 79, 0.1);
+  border-color: rgba(214, 168, 79, 0.36);
+  color: #e7c987;
+}
+
+.workspace-storage-panel > .mobile-rail-sheet-trigger strong.rail-conn-status.idle {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: var(--line);
+  color: rgba(196, 205, 202, 0.8);
+}
+
 .workspace-storage-panel > .rail-cloud-card {
   margin: 10px 0 0;
 }
@@ -31504,4 +31589,188 @@ button.danger:hover:not(:disabled) {
   color: var(--warn);
   background: var(--warn-soft);
   border-color: var(--warn);
+}
+
+/* Android /app Connections polish: explicit setup/manage actions and calmer first-run density. */
+.route-app .rail-conn-trigger {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.route-app .rail-ai-settings > .rail-conn-trigger::after,
+.route-app .workspace-storage-panel > .rail-conn-trigger::after {
+  content: none;
+  display: none;
+}
+
+.route-app .rail-conn-action {
+  align-items: center;
+  align-self: center;
+  background: rgba(139, 205, 170, 0.1);
+  border: 1px solid rgba(139, 205, 170, 0.22);
+  border-radius: 999px;
+  color: #dfffea;
+  display: inline-flex;
+  font-size: 0.74rem;
+  font-weight: 900;
+  justify-content: center;
+  line-height: 1;
+  min-height: 31px;
+  min-width: max-content;
+  padding: 6px 11px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.route-app .workspace-storage-panel > .rail-conn-trigger .rail-conn-status,
+.route-app .rail-ai-settings > .rail-conn-trigger > .ai-summary-status {
+  font-size: 0.72rem;
+  min-height: 26px;
+  padding: 5px 8px;
+}
+
+.route-app .rail-ai-settings.optional > .rail-conn-trigger {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.045), rgba(94, 231, 158, 0.035)),
+    rgba(12, 18, 16, 0.74);
+  border-color: rgba(224, 230, 226, 0.12);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.025),
+    0 10px 24px rgba(0, 0, 0, 0.16);
+  grid-template-areas: "identity status action";
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  min-height: 52px;
+  padding: 9px 10px;
+}
+
+.route-app .rail-ai-settings.optional > .rail-conn-trigger:hover,
+.route-app .rail-ai-settings.optional > .rail-conn-trigger[aria-expanded="true"] {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.06), rgba(94, 231, 158, 0.05)),
+    rgba(14, 21, 18, 0.82);
+  border-color: rgba(139, 205, 170, 0.22);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.03),
+    0 12px 26px rgba(0, 0, 0, 0.18);
+}
+
+.route-app .rail-ai-settings.optional .ai-summary-logo {
+  background: rgba(255, 255, 255, 0.036);
+  border-color: rgba(224, 230, 226, 0.1);
+}
+
+.route-app .rail-ai-settings.optional > .rail-conn-trigger > .ai-summary-status.optional {
+  background: rgba(255, 255, 255, 0.052);
+  border-color: rgba(224, 230, 226, 0.14);
+  color: rgba(226, 236, 231, 0.86);
+}
+
+.route-app .rail-ai-settings.optional > .rail-conn-trigger > .ai-summary-identity {
+  grid-area: identity;
+}
+
+.route-app .rail-ai-settings.optional > .rail-conn-trigger > .ai-summary-status {
+  grid-area: status;
+  justify-self: end;
+}
+
+.route-app .rail-ai-settings.optional > .rail-conn-trigger > .rail-conn-action {
+  grid-area: action;
+  justify-self: end;
+}
+
+@media (max-width: 899px) {
+  .route-app .signer-row.android-connection-signer.disconnected {
+    align-items: center;
+  }
+
+  .route-app .signer-row.android-connection-signer.disconnected .connection-summary {
+    background: transparent;
+    border-color: transparent;
+    box-shadow: none;
+    margin-bottom: 0;
+    padding: 0;
+  }
+
+  .route-app .signer-row.android-connection-signer.disconnected .connection-summary > div {
+    background: transparent;
+    border: 0;
+    padding: 0;
+  }
+
+  .route-app .signer-row.android-connection-signer.disconnected .connection-summary strong {
+    color: rgba(235, 244, 239, 0.92);
+    font-size: 0.92rem;
+  }
+}
+
+@media (max-width: 520px) {
+  .route-app .rail-ai-settings > .rail-conn-trigger {
+    grid-template-areas:
+      "identity action"
+      "status status";
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: 6px;
+  }
+
+  .route-app .rail-ai-settings > .rail-conn-trigger > .ai-summary-identity {
+    grid-area: identity;
+  }
+
+  .route-app .rail-ai-settings > .rail-conn-trigger > .ai-summary-status {
+    grid-area: status;
+    justify-self: start;
+    max-width: 100%;
+    text-align: left;
+  }
+
+  .route-app .rail-ai-settings > .rail-conn-trigger > .rail-conn-action {
+    grid-area: action;
+    justify-self: end;
+  }
+
+  .route-app .rail-ai-settings.optional > .rail-conn-trigger {
+    grid-template-areas: "identity status action";
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    row-gap: 0;
+  }
+
+  .route-app .rail-ai-settings.optional > .rail-conn-trigger > .ai-summary-status {
+    justify-self: end;
+  }
+}
+
+@media (max-width: 390px) {
+  .route-app .workspace-storage-panel > .rail-conn-trigger {
+    grid-template-areas:
+      "identity action"
+      "status status";
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: 6px;
+  }
+
+  .route-app .workspace-storage-panel > .rail-conn-trigger > .rail-conn-identity {
+    grid-area: identity;
+  }
+
+  .route-app .workspace-storage-panel > .rail-conn-trigger > .rail-conn-status {
+    grid-area: status;
+    justify-self: start;
+  }
+
+  .route-app .workspace-storage-panel > .rail-conn-trigger > .rail-conn-action {
+    grid-area: action;
+    justify-self: end;
+  }
+
+  .route-app .rail-ai-settings.optional > .rail-conn-trigger {
+    grid-template-areas:
+      "identity action"
+      "status status";
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: 6px;
+  }
+
+  .route-app .rail-ai-settings.optional > .rail-conn-trigger > .ai-summary-status {
+    justify-self: start;
+  }
 }

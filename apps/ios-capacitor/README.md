@@ -85,7 +85,7 @@ The bridge package pins Reown Swift `1.0.5` so `AgenticWalletConnect` can compil
 
 ## Compliance
 
-- Privacy Manifest: `ios/App/App/PrivacyInfo.xcprivacy` covers UserDefaults, FileTimestamp, SystemBootTime, DiskSpace.
+- Privacy Manifest: `ios/App/App/PrivacyInfo.xcprivacy` covers UserDefaults, FileTimestamp, SystemBootTime, DiskSpace; Firebase AnalyticsCore is wired without IDFA/ad-personalization support.
 - App Privacy questionnaire: see `app-store-assets/listing.md` — mirror Phantom/Solflare disclosure stance per stored team decision.
 - Encryption export: `ITSAppUsesNonExemptEncryption=false` (standard SSL plus bundled cryptographic libraries, no custom encryption protocol).
 

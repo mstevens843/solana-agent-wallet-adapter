@@ -684,7 +684,33 @@ async function appLayoutReport(page, label) {
         if (overlaps) errors.push('review cards ' + i + ' and ' + j + ' overlap');
       }
     }
-    return { errors, innerWidth, label, rects, reviewCards, scrollWidth, scrollY: window.scrollY };
+    const connectionTriggers = Array.from(document.querySelectorAll('.rail-conn-trigger')).map((trigger, index) => {
+      const rect = trigger.getBoundingClientRect();
+      const action = trigger.querySelector('.rail-conn-action');
+      const actionRect = action?.getBoundingClientRect();
+      return {
+        actionText: action?.textContent?.trim() ?? '',
+        afterContent: window.getComputedStyle(trigger, '::after').content,
+        index,
+        rect: { bottom: rect.bottom, left: rect.left, right: rect.right, top: rect.top, width: rect.width },
+        actionRect: actionRect ? { bottom: actionRect.bottom, left: actionRect.left, right: actionRect.right, top: actionRect.top, width: actionRect.width } : null,
+      };
+    });
+    for (const trigger of connectionTriggers) {
+      if (!['Sign in', 'Manage', 'Set up'].includes(trigger.actionText)) {
+        errors.push('connection trigger ' + trigger.index + ' missing expected action chip');
+      }
+      const after = String(trigger.afterContent ?? '').replace(/["']/g, '').trim();
+      if (after === '+' || after === '-') {
+        errors.push('connection trigger ' + trigger.index + ' still uses plus/minus affordance');
+      }
+      if (!trigger.actionRect || trigger.actionRect.width <= 0) {
+        errors.push('connection trigger ' + trigger.index + ' action has empty geometry');
+      } else if (trigger.actionRect.left < trigger.rect.left - 1 || trigger.actionRect.right > trigger.rect.right + 1) {
+        errors.push('connection trigger ' + trigger.index + ' action clips outside row');
+      }
+    }
+    return { connectionTriggers, errors, innerWidth, label, rects, reviewCards, scrollWidth, scrollY: window.scrollY };
   })()`);
 }
 
