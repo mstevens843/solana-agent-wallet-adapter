@@ -271,23 +271,24 @@ async function verifyAndroidLayoutSmoke() {
     { width: 430, height: 932 },
     { width: 390, height: 844 },
   ];
-  const tabs = ['overview', 'agent', 'inbox', 'completed', 'schedule', 'skills', 'agent-protocols', 'sessions'];
+  const tabs = ['agent', 'inbox', 'completed', 'labs', 'preferences', 'schedule', 'agent-protocols', 'skills', 'sessions'];
   await withLocalServer(async ({ origin }) => {
     const wallet = createTestWallet();
     await withWalletSigner(wallet, async ({ origin: signerOrigin }) => {
-      await withChrome(async (page) => {
-        await page.addInitScript(fakeAndroidShellBridgeScript());
-        await page.addInitScript(fakeWalletScript(wallet, signerOrigin));
-        for (const viewport of viewports) {
+      for (const viewport of viewports) {
+        await withChrome(async (page) => {
+          await page.addInitScript(fakeAndroidShellBridgeScript());
+          await page.addInitScript(fakeWalletScript(wallet, signerOrigin));
           await page.setViewport(viewport.width, viewport.height);
           await page.inspect(`${origin}/demo`);
           await assertAndroidShellGestureScrolls(page, `${viewport.width}x${viewport.height} /demo`, { requireScrollable: true });
           await page.inspect(`${origin}/app`);
           await connectFakeWallet(page);
           for (const tab of tabs) {
-            await resetPageScrollToTop(page);
+            await scrollNativeAppBeforeTabSwitch(page);
             await clickAppLayoutTab(page, tab, viewport.width);
             await page.waitFor(`Array.from(document.querySelectorAll('[data-tab="${tab}"]')).some((el) => el.classList.contains('active') || el.getAttribute('aria-current') === 'page')`);
+            await page.waitFor('window.scrollY < 3 || Math.max(0, document.documentElement.scrollHeight - window.innerHeight) < 3', 5_000);
             const report = await appLayoutReport(page, `android ${viewport.width}x${viewport.height} ${tab}`);
             const androidLayoutErrors = report.errors.filter((error) => {
               if (error.startsWith('connection trigger ')) return false;
@@ -298,9 +299,24 @@ async function verifyAndroidLayoutSmoke() {
               throw new Error(`Android layout failed for ${report.label}: ${androidLayoutErrors.join('; ')}\n${formatLayoutRects(report)}`);
             }
             await assertAndroidShellGestureScrolls(page, `android ${viewport.width}x${viewport.height} ${tab}`);
+            if (tab === 'labs') {
+              await scrollNativeAppBeforeTabSwitch(page);
+              await clickAndWait(page, '[data-artifact-view="signed"]', 'mobile layout proof saved view');
+              await page.waitFor(`document.querySelector('[data-artifact-view="signed"]')?.classList.contains('active')`);
+              await page.waitFor('window.scrollY < 3 || Math.max(0, document.documentElement.scrollHeight - window.innerHeight) < 3', 5_000);
+              const signedReport = await appLayoutReport(page, `android ${viewport.width}x${viewport.height} labs saved-proofs`);
+              const signedErrors = signedReport.errors.filter((error) => {
+                if (error.startsWith('connection trigger ')) return false;
+                if (error.startsWith('rail ')) return false;
+                return true;
+              });
+              if (signedErrors.length) {
+                throw new Error(`Android layout failed for ${signedReport.label}: ${signedErrors.join('; ')}\n${formatLayoutRects(signedReport)}`);
+              }
+            }
           }
-        }
-      });
+        });
+      }
     });
   });
 }
@@ -369,13 +385,26 @@ async function resetPageScrollToTop(page) {
   await page.waitFor('window.scrollY < 3 || Math.max(0, document.documentElement.scrollHeight - window.innerHeight) < 3', 5_000);
 }
 
+async function scrollNativeAppBeforeTabSwitch(page) {
+  await page.evaluate(`(() => {
+    const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+    const target = Math.min(260, maxScroll);
+    window.scrollTo(0, target);
+    document.documentElement.scrollTop = target;
+    document.body.scrollTop = target;
+  })()`);
+  await page.waitFor('window.scrollY > 20 || Math.max(0, document.documentElement.scrollHeight - window.innerHeight) < 24', 5_000);
+}
+
 async function androidShellScrollState(page, label) {
   return page.evaluate(`(() => {
     const label = ${JSON.stringify(label)};
     const shell = document.querySelector('.shell');
+    const nav = document.querySelector('.homepage-nav');
     const htmlStyle = window.getComputedStyle(document.documentElement);
     const bodyStyle = window.getComputedStyle(document.body);
     const shellStyle = shell ? window.getComputedStyle(shell) : null;
+    const navRect = nav?.getBoundingClientRect();
     return {
       bodyExpandNoteSheet: document.body.dataset.expandNoteSheet || '',
       bodyMobileRailSheet: document.body.dataset.mobileRailSheet || '',
@@ -388,6 +417,7 @@ async function androidShellScrollState(page, label) {
       innerWidth: window.innerWidth,
       label,
       maxScroll: Math.max(0, document.documentElement.scrollHeight - window.innerHeight),
+      navTop: navRect ? navRect.top : null,
       scrollHeight: document.documentElement.scrollHeight,
       scrollY: window.scrollY,
       shellOverflowY: shellStyle?.overflowY ?? '',
@@ -407,6 +437,8 @@ function androidShellScrollErrors(state, { requireScrollable = false } = {}) {
   if (state.htmlTouchAction === 'none') errors.push('html touch-action none');
   if (state.bodyTouchAction === 'none') errors.push('body touch-action none');
   if (state.shellTouchAction === 'none') errors.push('shell touch-action none');
+  if (typeof state.navTop === 'number' && state.navTop < 30) errors.push(`android nav top too high: ${state.navTop}`);
+  if (typeof state.navTop === 'number' && state.navTop > 48) errors.push(`android nav top too low: ${state.navTop}`);
   if (requireScrollable && state.maxScroll < 40) errors.push(`page is not scrollable: max=${state.maxScroll}`);
   return errors;
 }
@@ -709,9 +741,11 @@ async function appLayoutReport(page, label) {
     const label = ${JSON.stringify(label)};
     const usesMobileTabs = window.innerWidth < 900;
     const activeTab = document.querySelector('[data-layout="app-shell"]')?.getAttribute('data-active-tab') ?? '';
+    const hasWorkspaceIntro = document.querySelector('[data-layout="app-root"]')?.getAttribute('data-has-workspace-intro') !== 'false';
     const required = {
       nav: '[data-layout="app-nav"]',
-      intro: '[data-layout="app-intro"]',
+      appRoot: '[data-layout="app-root"]',
+      ...(hasWorkspaceIntro ? { intro: '[data-layout="app-intro"]' } : {}),
       shell: '[data-layout="app-shell"]',
       rail: '[data-layout="app-rail"]',
       main: '[data-layout="app-main"]',
@@ -725,6 +759,9 @@ async function appLayoutReport(page, label) {
     const rectFor = (selector) => {
       const element = document.querySelector(selector);
       if (!element) return null;
+      return rectForElement(element);
+    };
+    const rectForElement = (element) => {
       const rect = element.getBoundingClientRect();
       const style = window.getComputedStyle(element);
       return {
@@ -739,7 +776,26 @@ async function appLayoutReport(page, label) {
         width: rect.width,
       };
     };
+    const visible = (element) => {
+      if (!element) return false;
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    };
     const rects = Object.fromEntries(Object.entries(required).map(([key, selector]) => [key, rectFor(selector)]));
+    const activePanelElement = document.querySelector('[data-layout="active-panel"]');
+    const activeContentElement = activePanelElement
+      ? Array.from(activePanelElement.children).find(visible)
+      : null;
+    const activeContent = activeContentElement ? rectForElement(activeContentElement) : null;
+    const shellChildren = Array.from(document.querySelector('.shell')?.children ?? []).map((child, index) => ({
+      className: child.className || '',
+      dataLayout: child.getAttribute('data-layout') || '',
+      height: child.getBoundingClientRect().height,
+      index,
+      tag: child.tagName.toLowerCase(),
+      top: child.getBoundingClientRect().top,
+    }));
     const errors = [];
     const innerWidth = window.innerWidth;
     const scrollWidth = document.documentElement.scrollWidth;
@@ -780,6 +836,16 @@ async function appLayoutReport(page, label) {
         errors.push('nav overlaps active panel');
       }
     }
+    const nativeShell = Boolean(document.querySelector('.shell.android-shell, .shell.ios-native-shell'));
+    const nativeActiveTopGap = nav && activeContent ? activeContent.top - nav.bottom : null;
+    if (usesMobileTabs && nativeShell && activeTab !== 'overview' && window.scrollY < 3 && typeof nativeActiveTopGap === 'number') {
+      if (nativeActiveTopGap < -1) {
+        errors.push('native active panel starts under nav');
+      }
+      if (nativeActiveTopGap > 56) {
+        errors.push('native active panel starts too low: ' + Math.round(nativeActiveTopGap) + 'px below nav');
+      }
+    }
     const reviewCards = Array.from(document.querySelectorAll('[data-layout="review-plan-card"]')).map((card, index) => {
       const rect = card.getBoundingClientRect();
       const actions = card.querySelector('.review-plan-actions')?.getBoundingClientRect();
@@ -816,12 +882,6 @@ async function appLayoutReport(page, label) {
         if (overlaps) errors.push('review cards ' + i + ' and ' + j + ' overlap');
       }
     }
-    const visible = (element) => {
-      if (!element) return false;
-      const rect = element.getBoundingClientRect();
-      const style = window.getComputedStyle(element);
-      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
-    };
     const mobileCardContracts = usesMobileTabs
       ? Array.from(document.querySelectorAll('[data-layout="review-plan-card"], .approval-ticket.inbox-approval-card, .recurring-item.recurring-card')).map((card, index) => {
         const rect = card.getBoundingClientRect();
@@ -884,17 +944,23 @@ async function appLayoutReport(page, label) {
         errors.push('connection trigger ' + trigger.index + ' action clips outside row');
       }
     }
-    return { connectionTriggers, errors, innerWidth, label, mobileCardContracts, rects, reviewCards, scrollWidth, scrollY: window.scrollY };
+    return { activeContent, connectionTriggers, errors, innerWidth, label, mobileCardContracts, nativeActiveTopGap, rects, reviewCards, scrollWidth, scrollY: window.scrollY, shellChildren };
   })()`);
 }
 
 function formatLayoutRects(report) {
-  return Object.entries(report.rects)
+  const rects = Object.entries(report.rects)
     .map(([key, rect]) => {
       if (!rect) return `${key}: missing`;
       return `${key}: x=${Math.round(rect.left)} y=${Math.round(rect.top)} w=${Math.round(rect.width)} h=${Math.round(rect.height)}`;
     })
     .join('\n');
+  const shellChildren = Array.isArray(report.shellChildren)
+    ? report.shellChildren
+        .map((child) => `shell child ${child.index}: <${child.tag}> layout=${child.dataLayout || '-'} class=${String(child.className).slice(0, 80)} y=${Math.round(child.top)} h=${Math.round(child.height)}`)
+        .join('\n')
+    : '';
+  return shellChildren ? `${rects}\n${shellChildren}` : rects;
 }
 
 async function verifyWorkflowSmoke({ requireLocalBridge: bridgeRequired }) {

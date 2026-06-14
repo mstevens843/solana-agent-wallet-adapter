@@ -9663,14 +9663,14 @@ function isAppRoute(pathname: string): pathname is AppRoute {
 
 function pageShell(content: string, activeRoute: AppRoute | null): string {
   const routeClass = activeRoute ? `route-${activeRoute === '/' ? 'home' : activeRoute.slice(1).replace(/[^a-z0-9-]/g, '-')}` : 'route-unknown';
-  const platformClass = state.iosNativeEnvironment.isIosNative
+  const platformClass = state.iosNativeEnvironment.isIosNative || IS_IOS_APP
     ? 'ios-native-shell'
-    : state.androidNativeEnvironment.bridgeAvailable
+    : isAndroidAppShellSurface()
       ? 'android-shell'
       : '';
   return `
+    ${toastStack()}
     <section class="shell homepage-shell ${routeClass} ${platformClass}">
-      ${toastStack()}
       ${homepageNav(activeRoute)}
       ${content}
       ${cloudWorkspaceDeleteModal()}
@@ -13361,17 +13361,18 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
   const workspaceId = mode === 'demo' ? 'demo-workspace' : 'workspace';
   const titleId = mode === 'demo' ? 'demo-workspace-title' : 'workspace-title';
   const modeClass = mode === 'demo' ? 'demo-workspace-mode' : 'launch-workspace-mode';
-  const iosAppNonHomeTab = mode === 'app' && state.iosNativeEnvironment.isIosNative && state.activeTab !== 'overview';
-  const showWorkspaceIntro = !iosAppNonHomeTab;
+  const showWorkspaceIntro = mode === 'demo' || state.activeTab === 'overview' || !isNativeAppShellSurface();
+  const introClass = showWorkspaceIntro ? 'has-workspace-intro' : 'no-workspace-intro';
   const shortWorkspaceIntroCopy =
-    state.androidNativeEnvironment.isAndroidNative ||
+    isAndroidAppShellSurface() ||
     state.iosNativeEnvironment.isIosNative ||
+    IS_IOS_APP ||
     state.tauriNativeEnvironment.isTauriNative;
   const sectionLabel = showWorkspaceIntro
     ? `aria-labelledby="${titleId}"`
     : 'aria-label="Agentic approval workspace"';
   return `
-    <section id="${workspaceId}" class="app-workspace-section ${appModeClass} ${modeClass}" ${sectionLabel} data-layout="app-root">
+    <section id="${workspaceId}" class="app-workspace-section ${appModeClass} ${modeClass} ${introClass}" ${sectionLabel} data-layout="app-root" data-has-workspace-intro="${showWorkspaceIntro ? 'true' : 'false'}">
       ${SHOW_DEV_CONTROLS ? systemHealthStrip() : ''}
       ${SHOW_DEV_CONTROLS ? systemHealthDrawer() : ''}
       ${attachTxModalRender()}
@@ -27853,6 +27854,7 @@ function bind(): void {
       const next = workspaceTabSelect.value as ActiveTab;
       if (!next || next === state.activeTab) return;
       const previous = state.activeTab;
+      const resetNativeScroll = shouldResetNativeAppTabScroll(next, previous);
       trackNavClick(`${currentRoute() ?? '/app'}#${next}`, 'workspace');
       state.activeTab = next;
       if (state.activeTab === 'labs') {
@@ -27861,6 +27863,7 @@ function bind(): void {
       state.activeMobileRailSheet = null;
       state.activeExpandNoteField = null;
       state.error = '';
+      if (resetNativeScroll) resetNativeAppScrollToTop();
       render();
       handleWorkspaceTabEntry(next, previous);
     });
@@ -27871,6 +27874,7 @@ function bind(): void {
       const tab = button.dataset.tab as ActiveTab;
       const spendOpen = button.dataset.spendOpen;
       const previous = state.activeTab;
+      const resetNativeScroll = shouldResetNativeAppTabScroll(tab, previous);
       trackNavClick(`${currentRoute() ?? '/app'}#${tab}`, 'workspace');
       state.activeTab = tab;
       if (state.activeTab === 'labs') {
@@ -27880,6 +27884,7 @@ function bind(): void {
       state.activeExpandNoteField = null;
       state.moreMenuOpen = false;
       state.error = '';
+      if (resetNativeScroll) resetNativeAppScrollToTop();
       render();
       handleWorkspaceTabEntry(tab, previous);
       if (tab === 'sessions' && spendOpen) {
@@ -28967,12 +28972,15 @@ function bind(): void {
       const view = button.dataset.artifactView;
       if (view !== 'create' && view !== 'signed') return;
       const previous = state.artifactView;
+      const resetNativeScroll = previous !== view && shouldResetNativeAppSurfaceScroll();
       state.artifactView = view;
       if (view === 'signed') {
         state.listPages.receiptArchive = 1;
       }
       state.error = '';
+      if (resetNativeScroll) resetNativeAppScrollToTop();
       render();
+      if (resetNativeScroll) resetNativeAppPanelScroll('labs');
       if (view === 'signed' && previous !== 'signed' && isMobileAppViewport() && !state.busy) {
         void refreshLabArtifactsData({ toast: false });
       }
@@ -29539,6 +29547,7 @@ function bind(): void {
 }
 
 function handleWorkspaceTabEntry(tab: ActiveTab, previous: ActiveTab): void {
+  resetNativeAppTabScroll(tab, previous);
   if (tab === 'inbox') {
     void reconcilePendingTransactions({ trigger: 'tab-entry' });
   }
@@ -29548,6 +29557,32 @@ function handleWorkspaceTabEntry(tab: ActiveTab, previous: ActiveTab): void {
   if (tab === 'labs' && previous !== 'labs' && state.artifactView === 'signed' && isMobileAppViewport() && !state.busy) {
     void refreshLabArtifactsData({ toast: false });
   }
+}
+
+function resetNativeAppTabScroll(tab: ActiveTab, previous: ActiveTab): void {
+  if (!shouldResetNativeAppTabScroll(tab, previous)) return;
+  resetNativeAppPanelScroll(tab);
+}
+
+function shouldResetNativeAppTabScroll(tab: ActiveTab, _previous: ActiveTab): boolean {
+  return Boolean(tab) && shouldResetNativeAppSurfaceScroll();
+}
+
+function shouldResetNativeAppSurfaceScroll(): boolean {
+  return currentRoute() === '/app' && isNativeAppShellSurface();
+}
+
+function resetNativeAppPanelScroll(expectedTab: ActiveTab = state.activeTab): void {
+  if (!shouldResetNativeAppSurfaceScroll()) return;
+  resetNativeAppScrollToTop();
+  const resetIfStillActive = () => {
+    if (currentRoute() !== '/app' || !isNativeAppShellSurface() || state.activeTab !== expectedTab) return;
+    resetNativeAppScrollToTop();
+  };
+  window.requestAnimationFrame(() => {
+    resetIfStillActive();
+    window.requestAnimationFrame(resetIfStillActive);
+  });
 }
 
 let agenticLoginAutoRefreshAttached = false;
@@ -50220,7 +50255,7 @@ function lockedTabReason(tab: ActiveTab): string {
 }
 
 function workspaceTabSelectMobile(): string {
-  const approvalLabel = state.androidNativeEnvironment.bridgeAvailable || IS_ANDROID_APP
+  const approvalLabel = isAndroidAppShellSurface()
     ? 'Sign Approval'
     : 'Needs Approval';
   return `
@@ -53274,11 +53309,39 @@ function recurringList(): string {
 }
 
 function isMobileAppViewport(): boolean {
-  if (IS_ANDROID_APP) return true;
-  if (state.androidNativeEnvironment.bridgeAvailable) return true;
-  if (state.iosNativeEnvironment.isIosNative) return true;
+  if (isNativeAppShellSurface()) return true;
   if (typeof window === 'undefined') return false;
   return window.innerWidth < 900;
+}
+
+function isAndroidAppShellSurface(): boolean {
+  return IS_ANDROID_APP || state.androidNativeEnvironment.isAndroidNative || state.androidNativeEnvironment.bridgeAvailable;
+}
+
+function isNativeAppShellSurface(): boolean {
+  return isAndroidAppShellSurface() || IS_IOS_APP || state.iosNativeEnvironment.isIosNative;
+}
+
+function resetNativeAppScrollToTop(): void {
+  if (typeof window === 'undefined') return;
+  const html = document.documentElement;
+  const body = document.body;
+  const scroller = document.scrollingElement as HTMLElement | null;
+  const previousHtmlBehavior = html.style.scrollBehavior;
+  const previousBodyBehavior = body.style.scrollBehavior;
+  html.style.scrollBehavior = 'auto';
+  body.style.scrollBehavior = 'auto';
+  window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+  if (scroller) {
+    scroller.scrollTop = 0;
+    scroller.scrollLeft = 0;
+  }
+  html.scrollTop = 0;
+  html.scrollLeft = 0;
+  body.scrollTop = 0;
+  body.scrollLeft = 0;
+  html.style.scrollBehavior = previousHtmlBehavior;
+  body.style.scrollBehavior = previousBodyBehavior;
 }
 
 function isMobileAiPathPolicySurface(): boolean {

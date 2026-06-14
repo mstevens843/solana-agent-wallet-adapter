@@ -17801,7 +17801,10 @@ button.danger:hover:not(:disabled) {
       calc(var(--mobile-side-pad) + env(safe-area-inset-left, 0px));
   }
 
-  .shell.android-shell,
+  .shell.android-shell {
+    --mobile-nav-safe-top: max(env(safe-area-inset-top, 0px), 28px);
+  }
+
   .shell.ios-native-shell {
     --mobile-nav-safe-top: 0px;
   }
@@ -18487,6 +18490,11 @@ button.danger:hover:not(:disabled) {
   .route-app .app-workspace-section.public-app,
   .route-demo .app-workspace-section.public-app {
     padding-top: 8px;
+  }
+
+  .route-app.android-shell .app-workspace-section.public-app.no-workspace-intro,
+  .route-app.ios-native-shell .app-workspace-section.public-app.no-workspace-intro {
+    padding-top: 0;
   }
 
   .route-app .workspace-intro,
@@ -30027,6 +30035,8 @@ button.danger:hover:not(:disabled) {
 @media (max-width: 899px) {
   .route-app.android-shell,
   .route-app.ios-native-shell {
+    align-content: start;
+    grid-auto-rows: max-content;
     min-height: 100dvh;
     overflow-y: visible;
     touch-action: pan-y;
@@ -30038,7 +30048,40 @@ button.danger:hover:not(:disabled) {
   .route-app.ios-native-shell .app-workspace-section,
   .route-app.android-shell .main-panel[data-layout="app-main"],
   .route-app.ios-native-shell .main-panel[data-layout="app-main"] {
+    min-height: 0;
     overflow-y: visible;
+  }
+
+  .route-app.android-shell .workspace[data-layout="app-shell"],
+  .route-app.ios-native-shell .workspace[data-layout="app-shell"],
+  .route-app.android-shell .app-workspace-section,
+  .route-app.ios-native-shell .app-workspace-section {
+    align-content: start;
+    align-items: start;
+  }
+
+  .route-app.android-shell .main-panel[data-layout="app-main"],
+  .route-app.ios-native-shell .main-panel[data-layout="app-main"] {
+    align-content: start;
+    align-items: start;
+    display: grid;
+    grid-template-rows: max-content;
+  }
+
+  .route-app.android-shell [data-layout="active-panel"],
+  .route-app.ios-native-shell [data-layout="active-panel"],
+  .route-app.android-shell .approval-object.signature-stage,
+  .route-app.ios-native-shell .approval-object.signature-stage,
+  .route-app.android-shell .guided-start.signature-stage,
+  .route-app.ios-native-shell .guided-start.signature-stage,
+  .route-app.android-shell .lab-panel,
+  .route-app.ios-native-shell .lab-panel,
+  .route-app.android-shell .preferences-page,
+  .route-app.ios-native-shell .preferences-page {
+    align-content: start;
+    align-self: start;
+    margin-top: 0;
+    min-height: 0;
   }
 
   .route-app .android-bottom-tab-dock {
@@ -30786,10 +30829,6 @@ button.danger:hover:not(:disabled) {
 }
 
 @media (max-width: 899px) {
-  .route-app.android-shell {
-    --mobile-nav-safe-top: max(58px, env(safe-area-inset-top, 0px));
-  }
-
   .route-app.ios-native-shell {
     --mobile-nav-safe-top: max(62px, env(safe-area-inset-top, 0px));
   }
@@ -31383,6 +31422,30 @@ button.danger:hover:not(:disabled) {
   .route-app .mobile-recurring-contract #createRecurring {
     min-height: 50px;
     min-width: 132px;
+  }
+
+  .route-app.android-shell .mobile-recurring-contract .recurring-create-primary-row,
+  .route-app.ios-native-shell .mobile-recurring-contract .recurring-create-primary-row {
+    align-items: stretch;
+  }
+
+  .route-app.android-shell .mobile-recurring-contract .recurring-form-actions.contract-actions,
+  .route-app.ios-native-shell .mobile-recurring-contract .recurring-form-actions.contract-actions,
+  .route-app.android-shell .mobile-recurring-contract .recurring-actions-row,
+  .route-app.ios-native-shell .mobile-recurring-contract .recurring-actions-row {
+    justify-items: stretch;
+    width: 100%;
+  }
+
+  .route-app.android-shell .mobile-recurring-contract .recurring-actions-row,
+  .route-app.ios-native-shell .mobile-recurring-contract .recurring-actions-row {
+    justify-content: flex-start;
+  }
+
+  .route-app.android-shell .mobile-recurring-contract #createRecurring,
+  .route-app.ios-native-shell .mobile-recurring-contract #createRecurring {
+    min-width: 0;
+    width: 100%;
   }
 
   .route-app .mobile-recurring-contract .recurring-advanced-details {
