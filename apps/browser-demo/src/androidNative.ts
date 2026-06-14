@@ -82,6 +82,21 @@ interface AndroidNativeSignProofResult {
   transactionBase64?: string;
 }
 
+export interface AndroidNativeSignInResult {
+  signature: string;
+  signedMessage: string;
+  publicKey: string;
+  address: string;
+  accountLabel?: string;
+  chains?: string[];
+  features?: string[];
+  authToken?: string;
+  authTokenLen?: number;
+  walletPackage?: string;
+  cluster?: Cluster;
+  path?: string;
+}
+
 const ANDROID_NATIVE_TIMEOUT_MS = 120_000;
 // Defense-in-depth grace timers for the OS-chooser-dismissal bug. If the user dismisses the
 // Android system "Open with Wallet" chooser by tapping outside, the native MWA library
@@ -406,6 +421,55 @@ export class AndroidNativeWalletBackend implements WalletBackend {
     };
   }
 
+  async signInWithSolana(input: {
+    domain: string;
+    statement: string;
+  }): Promise<AndroidNativeSignInResult> {
+    const domain = input.domain.trim();
+    const statement = input.statement.trim();
+    if (!domain || !statement) {
+      throw new ProtocolError('invalid_request', 'Android SIWS sign-in requires a domain and statement.');
+    }
+    logAndroidNative('signInWithSolana', 'START', {
+      cluster: this.cluster,
+      domain,
+      statementChars: statement.length,
+    });
+    const result = await androidNativeRequest<AndroidNativeSignInResult>('signIn', {
+      cluster: this.cluster,
+      domain,
+      statement,
+      ...this.nativeRpcContext(),
+    });
+    const address = (result.address || result.publicKey || '').trim();
+    if (!address) {
+      throw new ProtocolError('wallet_unreachable', 'Android MWA SIWS did not return a wallet address.');
+    }
+    await this.refreshStatus().catch(() => undefined);
+    if (!this.activeStatus?.address) {
+      this.applyStatus({
+        connected: true,
+        address,
+        cluster: this.cluster,
+        walletPackage: result.walletPackage,
+        accountLabel: result.accountLabel,
+        cachedCount: 1,
+        capabilities: androidCapabilities(this.cluster, address),
+      });
+    }
+    logAndroidNative('signInWithSolana', 'SUCCESS', {
+      cluster: this.cluster,
+      address: shortAddress(address),
+      path: result.path ?? '',
+      signedMessageChars: result.signedMessage?.length ?? 0,
+    });
+    return {
+      ...result,
+      address,
+      publicKey: result.publicKey || address,
+    };
+  }
+
   async disconnect(): Promise<void> {
     const status = await androidNativeRequest<AndroidMwaStatus>('disconnect');
     this.applyStatus(status);
@@ -705,6 +769,7 @@ function nativeErrorCode(code?: string): ErrorCode {
     case 'CLUSTER_MISMATCH':
       return 'cluster_mismatch';
     case 'UNSUPPORTED_METHOD':
+    case 'SIWS_UNSUPPORTED_FOR_WALLET':
     case 'WALLET_SIGN_MESSAGES_UNSUPPORTED':
     case 'JUPITER_SIGN_TRANSACTION_UNSUPPORTED':
       return 'unsupported_method';
@@ -858,4 +923,8 @@ function deterministicHash(value: string): string {
     hash = Math.imul(hash, 0x01000193);
   }
   return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function shortAddress(value: string): string {
+  return value.length <= 12 ? value : `${value.slice(0, 4)}...${value.slice(-4)}`;
 }

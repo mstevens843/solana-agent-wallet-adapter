@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  aiReviewSetupTabForMobileRailOpen,
   mobileRailSheetRouteAllowed,
   shouldApplyMobileRailBodyDataset,
   shouldClearActiveMobileRailSheet,
+  shouldCloseWorkspaceStorageSheetAfterCloudSignIn,
   shouldResetAiReviewSetupTabOnMobileRailOpen,
   shouldRefreshDeviceAgentStatusForMobileRailOpen,
+  shouldSuppressMobileRailSheetEnterAnimation,
 } from '../mobileRailSheetPolicy.js';
 
 describe('mobile rail sheet policy', () => {
@@ -107,6 +110,68 @@ describe('mobile rail sheet policy', () => {
     expect(shouldResetAiReviewSetupTabOnMobileRailOpen({
       currentSheet: 'ai-drafting',
       nextSheet: 'wallet-balances',
+    })).toBe(false);
+  });
+
+  it('chooses the connected AI Review setup tab when opening from outside', () => {
+    expect(aiReviewSetupTabForMobileRailOpen({
+      currentSheet: null,
+      nextSheet: 'ai-drafting',
+      currentSetupTab: 'api-key',
+      planConnectorConfigured: true,
+      apiKeyConfigured: true,
+    })).toBe('plan-connector');
+    expect(aiReviewSetupTabForMobileRailOpen({
+      currentSheet: null,
+      nextSheet: 'ai-drafting',
+      currentSetupTab: 'plan-connector',
+      planConnectorConfigured: false,
+      apiKeyConfigured: true,
+    })).toBe('api-key');
+  });
+
+  it('preserves the AI Review setup tab while the sheet is already open', () => {
+    expect(aiReviewSetupTabForMobileRailOpen({
+      currentSheet: 'ai-drafting',
+      nextSheet: 'ai-drafting',
+      currentSetupTab: 'plan-connector',
+      planConnectorConfigured: false,
+      apiKeyConfigured: true,
+    })).toBe('plan-connector');
+  });
+
+  it('does not auto-close mobile Workspace Storage after cloud actions', () => {
+    expect(shouldCloseWorkspaceStorageSheetAfterCloudSignIn('workspace-storage')).toBe(false);
+    expect(shouldCloseWorkspaceStorageSheetAfterCloudSignIn('ai-drafting')).toBe(false);
+    expect(shouldCloseWorkspaceStorageSheetAfterCloudSignIn('wallet-balances')).toBe(false);
+    expect(shouldCloseWorkspaceStorageSheetAfterCloudSignIn(null)).toBe(false);
+  });
+
+  it('suppresses enter animation on same-sheet re-renders only', () => {
+    expect(shouldSuppressMobileRailSheetEnterAnimation({
+      currentSheet: 'ai-drafting',
+      previousSheet: null,
+      forceSuppress: false,
+    })).toBe(false);
+    expect(shouldSuppressMobileRailSheetEnterAnimation({
+      currentSheet: 'ai-drafting',
+      previousSheet: 'ai-drafting',
+      forceSuppress: false,
+    })).toBe(true);
+    expect(shouldSuppressMobileRailSheetEnterAnimation({
+      currentSheet: 'ai-drafting',
+      previousSheet: 'workspace-storage',
+      forceSuppress: false,
+    })).toBe(false);
+    expect(shouldSuppressMobileRailSheetEnterAnimation({
+      currentSheet: 'wallet-balances',
+      previousSheet: null,
+      forceSuppress: true,
+    })).toBe(true);
+    expect(shouldSuppressMobileRailSheetEnterAnimation({
+      currentSheet: null,
+      previousSheet: 'wallet-balances',
+      forceSuppress: true,
     })).toBe(false);
   });
 });

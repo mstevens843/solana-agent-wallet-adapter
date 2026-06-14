@@ -13,6 +13,7 @@ import {
   bridgeAiSessionKeyPayload,
   aiProviderSupportsDeviceAgent,
   providerSupportsWebResearch,
+  aiRouteSupportsWebResearch,
   aiRouteDiagnosticForSettings,
   buildTemplatePlan,
   confirmHostedAiPlanner,
@@ -91,6 +92,34 @@ describe('providerSupportsWebResearch (gate externalResearchAvailable source of 
   it('is false for custom OpenAI-compatible (chat/completions has no native web search)', () => {
     expect(providerSupportsWebResearch('custom-openai-compatible', 'openai-compatible', 'gpt-5')).toBe(false);
     expect(providerSupportsWebResearch('', '', '')).toBe(false);
+  });
+
+  it('is true for Plan Connector paired-bridge placeholder configs', () => {
+    expect(aiRouteSupportsWebResearch({
+      provider: 'paired-bridge',
+      apiFormat: 'paired-bridge',
+      model: 'connector',
+      pairedBridge: true,
+      connector: 'codex',
+    })).toBe(true);
+  });
+
+  it('is true for local bridge connector engine routes', () => {
+    expect(aiRouteSupportsWebResearch({
+      provider: 'custom-openai-compatible',
+      apiFormat: 'openai-compatible',
+      model: 'gpt-5',
+      bridgeEngine: 'connector',
+      connector: 'codex',
+    })).toBe(true);
+  });
+
+  it('keeps unsupported custom gateways false without a connector route', () => {
+    expect(aiRouteSupportsWebResearch({
+      provider: 'custom-openai-compatible',
+      apiFormat: 'openai-compatible',
+      model: 'gpt-5',
+    })).toBe(false);
   });
 });
 

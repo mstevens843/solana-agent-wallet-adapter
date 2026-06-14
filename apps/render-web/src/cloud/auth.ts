@@ -15,6 +15,7 @@ export const AUTH_NONCE_TTL_MS = 5 * 60 * 1000;
 
 export type AuthNonceResponse = SharedAuthNonceResponse & { walletAddress: string };
 export type CloudWorkspaceDeleteIntentResponse = AuthNonceResponse;
+export type WalletProofEncoding = 'utf8-message' | 'tx-memo-proof' | 'siws-message';
 
 export interface VerifyWalletRequest extends
   Omit<SharedVerifyWalletRequest, 'domain' | 'issuedAt' | 'expiresAt' | 'signatureEncoding'> {
@@ -26,8 +27,9 @@ export interface VerifyWalletRequest extends
   issuedAt?: string;
   expiresAt?: string;
   signatureEncoding?: 'base58' | 'base64';
-  proofEncoding?: 'utf8-message' | 'tx-memo-proof';
+  proofEncoding?: WalletProofEncoding;
   proofTxBase64?: string;
+  signedMessageBase64?: string;
 }
 
 export interface LoginMessageFields {
@@ -55,6 +57,25 @@ export function createAuthNonceResponse(input: {
   return {
     ...fields,
     message: buildWalletLoginMessage(fields),
+  };
+}
+
+export function createSiwsAuthNonceResponse(input: {
+  domain: string;
+  clock: Clock;
+}): AuthNonceResponse {
+  const issuedAt = input.clock.now();
+  const expiresAt = new Date(issuedAt.getTime() + AUTH_NONCE_TTL_MS);
+  const fields = {
+    domain: input.domain,
+    walletAddress: '',
+    nonce: encodeBase58(randomBytes(24)),
+    issuedAt: issuedAt.toISOString(),
+    expiresAt: expiresAt.toISOString(),
+  };
+  return {
+    ...fields,
+    message: buildWalletLoginSiwsStatement(fields),
   };
 }
 
@@ -135,6 +156,18 @@ export function buildWalletLoginMessage(fields: LoginMessageFields): string {
   ].join('\n');
 }
 
+export function buildWalletLoginSiwsStatement(fields: LoginMessageFields): string {
+  return [
+    'Agentic Cloud wants you to sign in with your Solana wallet.',
+    '',
+    `Nonce: ${fields.nonce}`,
+    `Issued At: ${fields.issuedAt}`,
+    `Expires At: ${fields.expiresAt}`,
+    '',
+    'This signature proves wallet ownership only. It does not grant spending authority, transaction approval, delegated signing, or permission to move funds.',
+  ].join('\n');
+}
+
 export function buildCloudWorkspaceDeleteMessage(fields: LoginMessageFields): string {
   return [
     'Agentic Cloud wants you to delete this wallet workspace.',
@@ -192,8 +225,9 @@ export function verifyWalletSignature(input: {
    * apps/browser-demo/src/walletProofSigning.ts). For that path, the signature
    * is over the compiled transaction message, not the UTF-8 message bytes.
    */
-  proofEncoding?: 'utf8-message' | 'tx-memo-proof';
+  proofEncoding?: WalletProofEncoding;
   proofTxBase64?: string;
+  signedMessageBase64?: string;
 }): boolean {
   try {
     const publicKeyBytes = decodeBase58(input.walletAddress);
@@ -218,10 +252,41 @@ export function verifyWalletSignature(input: {
       });
       return verified;
     }
+    if (input.proofEncoding === 'siws-message') {
+      if (!input.signedMessageBase64) return false;
+      const signedMessageBytes = Buffer.from(input.signedMessageBase64, 'base64');
+      if (signedMessageBytes.length === 0) return false;
+      return verifyDetached(null, signedMessageBytes, key, signatureBytes);
+    }
     return verifyDetached(null, Buffer.from(input.message, 'utf8'), key, signatureBytes);
   } catch {
     return false;
   }
+}
+
+export function decodeSiwsSignedMessageBase64(value: string): string {
+  try {
+    const bytes = Buffer.from(value, 'base64');
+    if (bytes.length === 0) {
+      throw new AuthValidationError('SIWS signed message is empty.');
+    }
+    return bytes.toString('utf8');
+  } catch (err) {
+    if (err instanceof AuthValidationError) throw err;
+    throw new AuthValidationError('SIWS signed message must be base64-encoded.');
+  }
+}
+
+export function siwsSignedMessageMatchesNonce(input: {
+  signedMessageBase64: string;
+  statement: string;
+  domain: string;
+  nonce: string;
+}): boolean {
+  const signedMessage = decodeSiwsSignedMessageBase64(input.signedMessageBase64);
+  return signedMessage.includes(input.statement) &&
+    signedMessage.includes(input.domain) &&
+    signedMessage.includes(input.nonce);
 }
 
 // Envelope shapes produced by `apps/android-twa/.../MemoProofRouter.buildProofMemo`.
@@ -401,6 +466,7 @@ export function parseVerifyWalletRequest(input: unknown): VerifyWalletRequest {
     ...optionalSignatureEncodingProp(record.signatureEncoding),
     ...optionalProofEncodingProp(record.proofEncoding),
     ...optionalStringProp(record, 'proofTxBase64'),
+    ...optionalStringProp(record, 'signedMessageBase64'),
   };
 }
 
@@ -460,7 +526,7 @@ function stringField(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-function optionalStringProp<K extends 'domain' | 'issuedAt' | 'expiresAt' | 'proofTxBase64'>(
+function optionalStringProp<K extends 'domain' | 'issuedAt' | 'expiresAt' | 'proofTxBase64' | 'signedMessageBase64'>(
   record: Record<string, unknown>,
   key: K,
 ): Partial<Pick<VerifyWalletRequest, K>> {
@@ -480,7 +546,7 @@ function optionalSignatureEncodingProp(value: unknown): Pick<VerifyWalletRequest
 
 function optionalProofEncodingProp(value: unknown): Pick<VerifyWalletRequest, 'proofEncoding'> {
   if (value === undefined || value === null || value === '') return {};
-  if (value === 'utf8-message' || value === 'tx-memo-proof') {
+  if (value === 'utf8-message' || value === 'tx-memo-proof' || value === 'siws-message') {
     return { proofEncoding: value };
   }
   throw new AuthValidationError('Unsupported proof encoding.');

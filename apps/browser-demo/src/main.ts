@@ -338,10 +338,13 @@ import {
   visibleMobileAiPathModes,
 } from './aiPathPolicy.js';
 import {
+  aiReviewSetupTabForMobileRailOpen,
   shouldApplyMobileRailBodyDataset,
   shouldClearActiveMobileRailSheet,
+  shouldCloseWorkspaceStorageSheetAfterCloudSignIn,
   shouldResetAiReviewSetupTabOnMobileRailOpen,
   shouldRefreshDeviceAgentStatusForMobileRailOpen,
+  shouldSuppressMobileRailSheetEnterAnimation,
 } from './mobileRailSheetPolicy.js';
 import {
   phonePairingEnabled,
@@ -395,7 +398,7 @@ import {
   aiConnectorPreset,
   aiProviderPresetById,
   aiProviderSupportsDeviceAgent,
-  providerSupportsWebResearch,
+  aiRouteSupportsWebResearch,
   visibleAiProviderPresets,
   aiRouteDiagnosticForSettings,
   assertCustomOpenAiCompatibleSettings,
@@ -4157,7 +4160,17 @@ let expandNoteSheetController: AbortController | null = null;
 let walletBalanceOverlayController: AbortController | null = null;
 let planConnectorPairingPanelCleanup: (() => void) | null = null;
 let mobileRailDeviceAgentStatusRefresh: Promise<DeviceAgentStatus> | null = null;
+let lastRenderedMobileRailSheet: MobileRailSheet | null = null;
 let suppressMobileRailSheetEnterAnimation = false;
+const MOBILE_RAIL_SHEET_ENTER_ANIMATION_MS = 260;
+const MOBILE_SHEET_CLEANUP_TIMEOUT_MS = 12_000;
+interface MobileRailRenderSnapshot {
+  sheet: MobileRailSheet;
+  scrollTop: number;
+  focusSelector?: string;
+  selectionStart?: number | null;
+  selectionEnd?: number | null;
+}
 let systemHealthTimer: number | null = null;
 let systemHealthRunController: AbortController | null = null;
 const SYSTEM_HEALTH_INTERVAL_MS = 30_000;
@@ -5003,9 +5016,12 @@ async function bootstrap(): Promise<void> {
     // below so we re-validate the cloud session.
     void tauriNativeCloudSessionToken();
     window.addEventListener(CLOUD_SESSION_REHYDRATED_EVENT, () => {
-      void refreshCloudSession(true).catch((err) => {
-        console.warn('[bootstrap] refreshCloudSession after rehydrate failed', err);
-      });
+      void refreshCloudSession(true)
+        .then(() => signOutCloudSessionForWalletBoundary('startup'))
+        .then(() => render())
+        .catch((err) => {
+          console.warn('[bootstrap] refreshCloudSession after rehydrate failed', err);
+        });
     });
     // Snapshot the current bridge status synchronously so device-agent routing
     // has a value to consult immediately.
@@ -5042,9 +5058,12 @@ async function bootstrap(): Promise<void> {
   if (state.iosNativeEnvironment.isIosNative) {
     void iosNativeCloudSessionToken();
     window.addEventListener(IOS_CLOUD_SESSION_REHYDRATED_EVENT, () => {
-      void refreshCloudSession(true).catch((err) => {
-        console.warn('[bootstrap] refreshCloudSession after iOS rehydrate failed', err);
-      });
+      void refreshCloudSession(true)
+        .then(() => signOutCloudSessionForWalletBoundary('startup'))
+        .then(() => render())
+        .catch((err) => {
+          console.warn('[bootstrap] refreshCloudSession after iOS rehydrate failed', err);
+        });
     });
   }
   await refreshIosNativeCacheState();
@@ -9225,10 +9244,74 @@ function bindEmbeddedWalletOverlay(): void {
   }
 }
 
+function captureMobileRailRenderSnapshot(): MobileRailRenderSnapshot | null {
+  const sheet = state.activeMobileRailSheet;
+  if (!sheet || typeof document === 'undefined') return null;
+  const root = document.querySelector<HTMLElement>('[data-mobile-rail-sheet-root]');
+  const body = document.querySelector<HTMLElement>('.mobile-rail-sheet-body');
+  if (!root || !body) return null;
+  const snapshot: MobileRailRenderSnapshot = {
+    sheet,
+    scrollTop: body.scrollTop,
+  };
+  const active = document.activeElement;
+  if (
+    active instanceof HTMLElement &&
+    root.contains(active) &&
+    (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement)
+  ) {
+    if (active.id) {
+      snapshot.focusSelector = `#${cssEscape(active.id)}`;
+    }
+    snapshot.selectionStart = active.selectionStart;
+    snapshot.selectionEnd = active.selectionEnd;
+  }
+  return snapshot;
+}
+
+function restoreMobileRailRenderSnapshot(snapshot: MobileRailRenderSnapshot | null): void {
+  if (!snapshot || state.activeMobileRailSheet !== snapshot.sheet || typeof document === 'undefined') return;
+  const apply = () => {
+    if (state.activeMobileRailSheet !== snapshot.sheet) return;
+    const body = document.querySelector<HTMLElement>('.mobile-rail-sheet-body');
+    if (body) body.scrollTop = snapshot.scrollTop;
+    if (!snapshot.focusSelector) return;
+    const target = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(snapshot.focusSelector);
+    if (!target) return;
+    target.focus({ preventScroll: true });
+    if (
+      typeof snapshot.selectionStart === 'number' &&
+      typeof snapshot.selectionEnd === 'number' &&
+      typeof target.setSelectionRange === 'function'
+    ) {
+      target.setSelectionRange(snapshot.selectionStart, snapshot.selectionEnd);
+    }
+  };
+  apply();
+  window.requestAnimationFrame(apply);
+}
+
+async function withMobileSheetCleanupTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+  let timeoutId: number | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeoutId = window.setTimeout(() => {
+          reject(new Error(`${label} timed out. Close and reopen this sheet, then try again.`));
+        }, MOBILE_SHEET_CLEANUP_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 
 function render(): void {
   if (!appRoot) return;
+  const mobileRailSnapshot = captureMobileRailRenderSnapshot();
   // Publish the connected wallet address to the shared dev-tab sinks BEFORE
   // pageContent() runs, so dev-tab guards (which fire inside pageContent's
   // tab-nav fan-out) see the current address synchronously. Both writes are
@@ -9282,18 +9365,23 @@ function render(): void {
   closePlanConnectorPairingPanelInteractions();
   closeMobileRailSheetInteractions();
   closeExpandNoteSheetInteractions();
+  const currentMobileRailSheet = state.activeMobileRailSheet;
+  suppressMobileRailSheetEnterAnimation = shouldSuppressMobileRailSheetEnterAnimation({
+    currentSheet: currentMobileRailSheet,
+    previousSheet: lastRenderedMobileRailSheet,
+    forceSuppress: suppressMobileRailSheetEnterAnimation,
+  });
   if (typeof document !== 'undefined' && document.body) {
-    const activeMobileRailSheet = state.activeMobileRailSheet;
     if (
-      activeMobileRailSheet &&
+      currentMobileRailSheet &&
       shouldApplyMobileRailBodyDataset({
         activeTab: state.activeTab,
         mobileViewport: isMobileAppViewport(),
         route,
-        sheet: activeMobileRailSheet,
+        sheet: currentMobileRailSheet,
       })
     ) {
-      document.body.dataset.mobileRailSheet = activeMobileRailSheet;
+      document.body.dataset.mobileRailSheet = currentMobileRailSheet;
     } else {
       delete document.body.dataset.mobileRailSheet;
     }
@@ -9318,6 +9406,7 @@ function render(): void {
   bindWalletConnectOverlay();
   bindLedgerOverlay();
   bindQrConnectPage();
+  restoreMobileRailRenderSnapshot(mobileRailSnapshot);
   mountPlanConnectorPairingPanel();
   mountConnectorKeysPanel({ container: 'connector-keys-panel' });
   if (state.tauriNativeEnvironment.isTauriNative) {
@@ -9329,6 +9418,7 @@ function render(): void {
   scheduleInboxSwapQuoteHydration();
   scheduleVisibleTokenMarketHydration();
   scheduleReleaseDownloadHydration();
+  lastRenderedMobileRailSheet = state.activeMobileRailSheet;
   suppressMobileRailSheetEnterAnimation = false;
 }
 
@@ -13319,6 +13409,29 @@ function isMobileRailSheet(value: string | undefined): value is MobileRailSheet 
   return value === 'workspace-storage' || value === 'ai-drafting' || value === 'wallet-balances';
 }
 
+function preferredAiReviewSetupTabForMobileRailOpen(nextSheet: MobileRailSheet): AiReviewSetupTab {
+  const inventory = aiSetupInventory();
+  const planConnectorConfigured = Boolean(
+    state.aiSettings.pairedBridge ||
+      (state.aiSettings.mode === 'bridge' &&
+        state.aiStatus?.engine === 'connector' &&
+        (state.aiStatus.configured || state.aiStatus.available)),
+  );
+  const apiKeyConfigured = inventory.paths.some((path) => {
+    if (!path.configured) return false;
+    if (state.aiSettings.pairedBridge && path.mode === 'device-agent') return false;
+    if (path.mode === 'bridge' && state.aiStatus?.engine === 'connector') return false;
+    return true;
+  });
+  return aiReviewSetupTabForMobileRailOpen({
+    currentSheet: state.activeMobileRailSheet,
+    nextSheet,
+    currentSetupTab: state.aiReviewSetupTab,
+    planConnectorConfigured,
+    apiKeyConfigured,
+  });
+}
+
 function maybeRefreshDeviceAgentStatusForMobileRailOpen(sheet: MobileRailSheet): void {
   const refreshInFlight = state.deviceAgentStatusLoading || Boolean(mobileRailDeviceAgentStatusRefresh);
   if (!shouldRefreshDeviceAgentStatusForMobileRailOpen({
@@ -13330,14 +13443,23 @@ function maybeRefreshDeviceAgentStatusForMobileRailOpen(sheet: MobileRailSheet):
     return;
   }
   state.deviceAgentStatusLoading = true;
+  const openedAt = Date.now();
   const refresh = refreshDeviceAgentStatus(false);
   mobileRailDeviceAgentStatusRefresh = refresh;
   void refresh.finally(() => {
-    if (mobileRailDeviceAgentStatusRefresh === refresh) {
-      mobileRailDeviceAgentStatusRefresh = null;
-      state.deviceAgentStatusLoading = false;
-      render();
+    const finish = () => {
+      if (mobileRailDeviceAgentStatusRefresh === refresh) {
+        mobileRailDeviceAgentStatusRefresh = null;
+        state.deviceAgentStatusLoading = false;
+        render();
+      }
+    };
+    const remainingEnterMs = MOBILE_RAIL_SHEET_ENTER_ANIMATION_MS - (Date.now() - openedAt);
+    if (remainingEnterMs > 0 && state.activeMobileRailSheet === sheet) {
+      window.setTimeout(finish, remainingEnterMs);
+      return;
     }
+    finish();
   });
 }
 
@@ -13415,6 +13537,13 @@ function closeMobileRailSheet(): void {
   if (!state.activeMobileRailSheet) return;
   state.activeMobileRailSheet = null;
   render();
+}
+
+function closeWorkspaceStorageSheetAfterCloudSignIn(): void {
+  if (shouldCloseWorkspaceStorageSheetAfterCloudSignIn(state.activeMobileRailSheet)) {
+    state.activeMobileRailSheet = null;
+  }
+  state.workspaceStoragePanelOpen = false;
 }
 
 function expandNoteRefAttr(ref: ExpandNoteFieldRef): string {
@@ -14761,13 +14890,24 @@ function cloudWorkspaceCard(): string {
   const open = state.workspaceStoragePanelOpen === true ? 'open' : '';
   const body = cloudWorkspaceRailBody();
   if (isMobileAppViewport()) {
-    // Android Connections re-org: give the Workspace card the same icon + tone-pill anatomy as the
-    // AI Review card so the three connections read as one consistent set. Web/iOS keep the original.
+    // Android gets the richer icon + tone-pill anatomy. All mobile shells use sibling action buttons
+    // so quick actions are not nested inside a sheet-opening button.
     const tone = matched ? 'good' : signedIn ? 'warn' : 'idle';
     const railSummaryDetail = IS_ANDROID_APP && !signedIn
       ? 'Saved on this device'
       : summaryDetail;
     const actionLabel = signedIn ? 'Manage' : 'Sign in';
+    const railActions = `
+        <span class="rail-conn-actions">
+          <button
+            type="button"
+            class="rail-conn-action"
+            data-mobile-rail-sheet="workspace-storage"
+            aria-expanded="${state.activeMobileRailSheet === 'workspace-storage' ? 'true' : 'false'}"
+          >${escapeHtml(actionLabel)}</button>
+          ${signedIn ? `<button type="button" class="rail-conn-action danger" data-cloud-action="sign-out" ${state.busy ? 'disabled' : ''}>Sign out</button>` : ''}
+        </span>
+      `;
     const trigger = IS_ANDROID_APP
       ? `
           <span class="rail-conn-identity">
@@ -14778,23 +14918,22 @@ function cloudWorkspaceCard(): string {
             </span>
           </span>
           <strong class="rail-conn-status ${escapeHtml(tone)}">${escapeHtml(status)}</strong>
-          <span class="rail-conn-action">${escapeHtml(actionLabel)}</span>`
+          ${railActions}`
       : `
           <span class="workspace-storage-summary-copy">
             <span>Workspace storage</span>
             <em>${escapeHtml(summaryDetail)}</em>
           </span>
-          <strong>${escapeHtml(status)}</strong>`;
+          <strong>${escapeHtml(status)}</strong>
+          ${railActions}`;
     return `
       <section class="workspace-storage-panel ${escapeHtml(mode)} ${signedIn ? 'signed-in' : ''} mobile-rail-trigger-panel" data-layout="workspace-storage-panel" aria-label="Workspace storage status">
-        <button
-          type="button"
-          class="mobile-rail-sheet-trigger${IS_ANDROID_APP ? ' rail-conn-trigger' : ''}"
-          data-mobile-rail-sheet="workspace-storage"
+        <div
+          class="mobile-rail-sheet-trigger${IS_ANDROID_APP || IS_IOS_APP ? ' rail-conn-trigger' : ''}"
           aria-expanded="${state.activeMobileRailSheet === 'workspace-storage' ? 'true' : 'false'}"
         >
           ${trigger}
-        </button>
+        </div>
       </section>
     `;
   }
@@ -14819,7 +14958,6 @@ function cloudWorkspaceRailBody(): string {
   const mismatch = cloudSessionWalletMismatch();
   const reconnectNeeded = signedIn && !matched && !mismatch;
   const unavailable = state.cloudSession.status === 'unavailable';
-  const noWalletCloudAction = firstRunNextAction();
   const detail = unavailable
     ? 'Cloud sign-in is unavailable from this host. Plans, approvals, and proofs stay on this device.'
     : signedIn
@@ -14842,11 +14980,11 @@ function cloudWorkspaceRailBody(): string {
           <button
             type="button"
             class="rail-cloud-button"
-            data-first-run-action="${escapeHtml(noWalletCloudAction.id)}"
+            data-cloud-action="sign-in"
             ${state.busy ? 'disabled' : ''}
-            title="Connect a wallet before signing in to Agentic Cloud."
+            title="Connect your wallet and sign in to Agentic Cloud."
           >
-            Connect wallet to sign in
+            Connect Cloud Storage
           </button>
         ` : unavailable ? `
           <button id="cloudSignIn" class="rail-cloud-button" disabled title="Cloud APIs are unavailable from this host.">Sign in</button>
@@ -18407,13 +18545,23 @@ function websitePlanConnectorSetupPanel(scope: string): string {
 function commandCenterStoragePanel(): string {
   const signedIn = state.cloudSession.status === 'signed-in' && cloudSessionMatchesWallet();
   const unavailable = state.cloudSession.status === 'unavailable';
-  const headerAction = !state.address
-    ? ''
-    : unavailable
+  const selectedProvider = discoveredSelectedWalletName();
+  const canStartCloudSignIn = Boolean(state.address) ||
+    IS_ANDROID_APP ||
+    IS_IOS_APP ||
+    IS_TAURI_APP ||
+    (state.wallets.length > 0 && Boolean(selectedProvider));
+  const headerAction = unavailable
       ? `<button type="button" class="utility" disabled>Cloud unavailable</button>`
       : signedIn
         ? `<button type="button" class="utility" disabled>Cloud connected</button>`
-        : `<button type="button" class="primary" data-cloud-action="sign-in" ${state.busy ? 'disabled' : ''}>Connect Cloud Storage</button>`;
+        : `<button
+            type="button"
+            class="primary"
+            data-cloud-action="sign-in"
+            ${state.busy || !canStartCloudSignIn ? 'disabled' : ''}
+            title="${canStartCloudSignIn ? 'Connect your wallet and sign in to Agentic Cloud.' : 'Discover and select a wallet provider first.'}"
+          >Connect Cloud Storage</button>`;
   return `
     <div class="command-detail-stack command-storage-panel">
       <section class="approval-object signature-stage command-page-card">
@@ -18727,6 +18875,7 @@ function commandStorageCloudCard(): string {
   const reconnectNeeded = signedIn && !matched && !mismatch;
   const selectedProvider = discoveredSelectedWalletName();
   const hasDiscoveredWallet = state.wallets.length > 0 && Boolean(selectedProvider);
+  const cloudSignInCanConnect = IS_ANDROID_APP || IS_IOS_APP || IS_TAURI_APP || hasDiscoveredWallet;
   const status = unavailable
     ? 'Unavailable'
     : active
@@ -18755,18 +18904,18 @@ function commandStorageCloudCard(): string {
               type="button"
               class="primary command-storage-discover"
               data-first-run-action="discover-wallets"
-              ${state.busy ? 'disabled' : ''}
+              ${IS_ANDROID_APP || IS_IOS_APP || IS_TAURI_APP || state.busy ? 'disabled' : ''}
             >
               Discover
             </button>
             <button
               type="button"
               class="${hasDiscoveredWallet ? 'primary' : 'utility'} command-storage-connect"
-              data-first-run-action="connect-wallet"
-              ${hasDiscoveredWallet && !state.busy ? '' : 'disabled'}
-              title="${hasDiscoveredWallet ? 'Connect the selected wallet provider.' : 'Discover and select a wallet provider first.'}"
+              data-cloud-action="sign-in"
+              ${cloudSignInCanConnect && !state.busy ? '' : 'disabled'}
+              title="${cloudSignInCanConnect ? 'Connect your wallet and sign in to Agentic Cloud.' : 'Discover and select a wallet provider first.'}"
             >
-              Connect wallet
+              Connect Cloud Storage
             </button>
           `
           : unavailable
@@ -19703,9 +19852,16 @@ function generatedPlanReviewSummaryGrid(record: GeneratedPlanRecord): string {
         }
       : { label: 'Risk', value: compactRiskLabel(plan.risk) },
   ];
+  const isWalletSlippageRouteRiskGrid =
+    rows.length === 4 &&
+    rows.map((row) => row.label).join('|') === 'Wallet|Slippage|Route|Risk';
+  const gridClass = [
+    'review-plan-summary-grid',
+    isWalletSlippageRouteRiskGrid ? 'wallet-slippage-route-risk-grid' : '',
+  ].filter(Boolean).join(' ');
   return `
     <section class="review-plan-summary" aria-label="Review summary">
-      <dl class="review-plan-summary-grid">
+      <dl class="${gridClass}">
         ${rows.map(walletActionSummaryRow).join('')}
       </dl>
     </section>
@@ -21616,14 +21772,12 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
   if (location === 'rail' && isMobileAppViewport()) {
     return `
       <section class="ai-settings-panel ${panelConfigured ? 'configured' : 'optional'} rail-ai-settings mobile-rail-trigger-panel" data-layout="ai-setup-panel" aria-label="AI review status">
-        <button
-          type="button"
-          class="mobile-rail-sheet-trigger${IS_ANDROID_APP ? ' rail-conn-trigger' : ''}"
-          data-mobile-rail-sheet="ai-drafting"
+        <div
+          class="mobile-rail-sheet-trigger${IS_ANDROID_APP || IS_IOS_APP ? ' rail-conn-trigger' : ''}"
           aria-expanded="${state.activeMobileRailSheet === 'ai-drafting' ? 'true' : 'false'}"
         >
-          ${aiRailSummaryContent(railIdentity!, IS_ANDROID_APP ? { actionLabel: aiRailActionLabel(railIdentity!) } : undefined)}
-        </button>
+          ${aiRailSummaryContent(railIdentity!, { actionHtml: mobileAiRailQuickActions(railIdentity!) })}
+        </div>
       </section>
     `;
   }
@@ -21717,7 +21871,28 @@ function aiRailActionLabel(identity: AiRailIdentity): string {
   return identity.configured || identity.inactive ? 'Manage' : 'Set up';
 }
 
-function aiRailSummaryContent(identity: AiRailIdentity, options: { actionLabel?: string } = {}): string {
+function mobileAiRailQuickActions(identity: AiRailIdentity): string {
+  const manageLabel = aiRailActionLabel(identity);
+  const clearTarget = aiKeyClearTarget();
+  const quickAction = state.aiSettings.pairedBridge
+    ? `<button type="button" class="rail-conn-action danger" data-ai-action="unpair-phone">Disconnect</button>`
+    : clearTarget && (identity.configured || identity.inactive)
+      ? `<button type="button" class="rail-conn-action danger" data-ai-action="clear-key" data-ai-clear-mode="${escapeHtml(clearTarget)}" ${!canClearAiKey(clearTarget) ? 'disabled' : ''}>Clear key</button>`
+      : '';
+  return `
+    <span class="rail-conn-actions">
+      <button
+        type="button"
+        class="rail-conn-action"
+        data-mobile-rail-sheet="ai-drafting"
+        aria-expanded="${state.activeMobileRailSheet === 'ai-drafting' ? 'true' : 'false'}"
+      >${escapeHtml(manageLabel)}</button>
+      ${quickAction}
+    </span>
+  `;
+}
+
+function aiRailSummaryContent(identity: AiRailIdentity, options: { actionLabel?: string; actionHtml?: string } = {}): string {
   return `
     <span class="ai-summary-identity">
       ${brandLogo(identity.logoHint, 'ai-summary-logo')}
@@ -21728,7 +21903,7 @@ function aiRailSummaryContent(identity: AiRailIdentity, options: { actionLabel?:
       </span>
     </span>
     <strong class="ai-summary-status ${escapeHtml(identity.statusTone)}" title="${escapeHtml(identity.statusTitle)}">${escapeHtml(identity.statusLabel)}</strong>
-    ${options.actionLabel ? `<span class="rail-conn-action">${escapeHtml(options.actionLabel)}</span>` : ''}
+    ${options.actionHtml ?? (options.actionLabel ? `<span class="rail-conn-action">${escapeHtml(options.actionLabel)}</span>` : '')}
   `;
 }
 
@@ -23311,13 +23486,13 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
       ` : ''}
       ${!isRail && !mobilePlannerSetup ? browserDeviceAgentSecretStoreControl(scope) : ''}
       ${hideKeyEntry ? configuredKeyNote : `
-        <label class="field compact ai-setting-field ai-setting-key">
-          <span>${escapeHtml(keyLabel)}</span>
+        <div class="field compact ai-setting-field ai-setting-key">
+          <span><label for="aiApiKey-${escapeHtml(scope)}">${escapeHtml(keyLabel)}</label></span>
           <div class="ai-key-input-wrap">
             <input id="aiApiKey-${escapeHtml(scope)}" data-ai-control="api-key"${keyInputClass} type="${keyInputType}" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="${state.aiSettings.mode === 'bridge' ? 'Sent to local bridge memory' : (IS_TAURI_APP || IS_ANDROID_APP || state.iosNativeEnvironment.isIosNative) ? 'Stored after confirm or clear key' : 'Held for this tab'}" autocomplete="off"${keyInputAssistAttrs} ${state.busy ? 'disabled' : ''} />
             <button type="button" id="pasteAiKey-${escapeHtml(scope)}" data-ai-action="paste-api-key" data-ai-paste-target="${escapeHtml(scope)}" class="ai-key-paste-btn" ${state.busy ? 'disabled' : ''} title="Paste your key from the clipboard" aria-label="Paste key from clipboard">Paste</button>
           </div>
-        </label>
+        </div>
       `}
       <div class="ai-actions">
         ${state.aiSettings.mode === 'bridge'
@@ -27149,7 +27324,9 @@ function bind(): void {
     }
   });
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-ai-action]')) {
-    button.addEventListener('click', () => {
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
       switch (button.dataset.aiAction) {
         case 'save-bridge-key':
           void runSaveBridgeAiKey();
@@ -27210,7 +27387,7 @@ function bind(): void {
           openPlanConnectorSetupSheet();
           return;
         case 'unpair-phone':
-          runUnpairPairedBridge();
+          void runUnpairPairedBridge();
           return;
         case 'stop-device-agent':
           void runStopDeviceAgentRuntime();
@@ -27228,10 +27405,20 @@ function bind(): void {
       state.workspaceStoragePanelOpen = (event.currentTarget as HTMLDetailsElement).open;
     });
   }
-  document.querySelector<HTMLButtonElement>('#cloudSignIn')?.addEventListener('click', runCloudSignIn);
-  document.querySelector<HTMLButtonElement>('#cloudLogout')?.addEventListener('click', runCloudLogout);
+  document.querySelector<HTMLButtonElement>('#cloudSignIn')?.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    void runCloudSignIn();
+  });
+  document.querySelector<HTMLButtonElement>('#cloudLogout')?.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    void runCloudLogout();
+  });
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-cloud-action]')) {
-    button.addEventListener('click', () => {
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
       if (button.dataset.cloudAction === 'sign-in') {
         void runCloudSignIn();
       }
@@ -29129,7 +29316,7 @@ function bindMobileRailSheet(): void {
         currentSheet: state.activeMobileRailSheet,
         nextSheet: sheet,
       })) {
-        state.aiReviewSetupTab = 'api-key';
+        state.aiReviewSetupTab = preferredAiReviewSetupTabForMobileRailOpen(sheet);
       }
       openMobileRailSheet(sheet);
     });
@@ -29648,7 +29835,7 @@ async function runFirstRunAction(action: FirstRunActionId): Promise<void> {
       state.commandCenterView = 'ai';
       state.aiSettingsPanelOpen = true;
       if (isMobileAppViewport()) {
-        state.aiReviewSetupTab = 'api-key';
+        state.aiReviewSetupTab = preferredAiReviewSetupTabForMobileRailOpen('ai-drafting');
         state.activeMobileRailSheet = 'ai-drafting';
         maybeRefreshDeviceAgentStatusForMobileRailOpen('ai-drafting');
       }
@@ -29763,9 +29950,13 @@ function discoverBrowserWallets(options: { resetSelection?: boolean } = {}): voi
 }
 
 async function runConnect(
-  options: { onError?: (message: string, err: unknown) => void | Promise<void> } = {},
+  options: {
+    onError?: (message: string, err: unknown) => void | Promise<void>;
+    successToast?: boolean;
+  } = {},
 ): Promise<void> {
   const connectSurface = walletConnectSurface();
+  const showSuccessToast = options.successToast !== false;
   trackWalletConnectClick(connectSurface, 'connect_button');
   await run('connect', async () => {
     if (state.androidNativeEnvironment.isAndroidNative) {
@@ -29782,7 +29973,9 @@ async function runConnect(
       await afterWalletConnected();
       savePersistedState();
       trackWalletConnectSuccess(connectSurface, state.cluster, 'connect_button');
-      pushToast('success', androidWalletConnectedToastTitle(), short(state.address));
+      if (showSuccessToast) {
+        pushToast('success', androidWalletConnectedToastTitle(), short(state.address));
+      }
       return;
     }
     if (state.iosNativeEnvironment.isIosNative) {
@@ -29856,7 +30049,9 @@ async function runConnect(
       await afterWalletConnected();
       savePersistedState();
       trackWalletConnectSuccess(connectSurface, state.cluster, 'connect_button');
-      pushToast('success', 'iOS wallet connected', short(state.address));
+      if (showSuccessToast) {
+        pushToast('success', 'iOS wallet connected', short(state.address));
+      }
       return;
     }
     // Ledger early-return — covers the case where `state.selectedWalletName`
@@ -29974,7 +30169,9 @@ async function runConnect(
     await afterWalletConnected();
     savePersistedState();
     trackWalletConnectSuccess(connectSurface, state.cluster, 'connect_button');
-    pushToast('success', 'Wallet connected', short(state.address));
+    if (showSuccessToast) {
+      pushToast('success', 'Wallet connected', short(state.address));
+    }
     // Collapse the inline Discover flow if the user reached this point via
     // the copied Browser extension / QR / Ledger rail.
     if (multiPathWalletFlowAvailable() && desktopConnect.flow.step !== 'idle') {
@@ -34854,13 +35051,18 @@ interface AgentReviewEvidenceBundle {
 // Used by evidenceContextForReview to set `externalResearchAvailable` so the gate doesn't
 // block external_research routes when the AI will resolve them via web search.
 function aiProviderSupportsWebResearch(): boolean {
-  // Single source of truth lives in planner.ts and mirrors deviceAgentProviderExecutor routing —
-  // notably OpenRouter (anthropic/* and openai/* models route to research-capable providers).
-  return providerSupportsWebResearch(
-    state.aiSettings.provider ?? '',
-    state.aiSettings.apiFormat ?? '',
-    state.aiSettings.model ?? '',
-  );
+  // Single source of truth lives in planner.ts and mirrors deviceAgentProviderExecutor routing.
+  // Plan Connector uses placeholder provider/model values on-device, so pass route state too.
+  return aiRouteSupportsWebResearch({
+    provider: state.aiSettings.provider ?? '',
+    apiFormat: state.aiSettings.apiFormat ?? '',
+    model: state.aiSettings.model ?? '',
+    pairedBridge: pairedBridgeActive(),
+    bridgeEngine: state.aiSettings.mode === 'bridge'
+      ? (state.aiStatus?.engine ?? state.aiSettings.agentEngine)
+      : undefined,
+    connector: state.aiStatus?.connector ?? state.aiSettings.connector,
+  });
 }
 
 function evidenceContextForReview(record: GeneratedPlanRecord, plan: AgentPlan, routePlan: AgentFactRoutePlan): AgentEvidenceContext {
@@ -36940,14 +37142,10 @@ async function runEnablePairedBridge(connector?: string): Promise<void> {
 // Leave the paired-bridge path: revoke the native pairing (deletes the stored deviceBearer + relay
 // session) and drop back to the API-key device-agent path. Also the only exit from paired mode when
 // the picker would otherwise be a same-mode no-op.
-function runUnpairPairedBridge(): void {
-  if (IS_IOS_APP) {
-    // Revoke the relay session + clear Keychain credentials (best-effort, async).
-    void buildIosPairBridge().unpair();
-  } else {
-    unpairPhone(agenticAndroidBridge());
-  }
+async function runUnpairPairedBridge(): Promise<void> {
   state.aiSettings.pairedBridge = false;
+  state.deviceAgentStatus = clearedDeviceAgentStatus('Unpaired from your computer. Paste an API key or pair again.');
+  clearDeviceAgentStatusCache();
   relayStatusCache = null;
   relayHasBeenOnline = false;
   relayOfflineStreak = 0;
@@ -36957,16 +37155,24 @@ function runUnpairPairedBridge(): void {
   savePersistedState();
   void syncCloudPreference('ai-settings');
   resetAiPlannerConfirmation('Unpaired from your computer. Paste an API key or pair again to use Device Agent AI.');
-  // STOP the runtime, not just refresh: after unpairing, the on-device runtime is still RUNNING with
-  // the now-credential-less paired-bridge config (the bearer is cleared), so the card would keep
-  // reporting "ready" and the next request would fail confusingly with "not paired". Stopping forces
-  // a clean re-configure (paste a key or re-pair) before the next draft/review.
-  void stopDeviceAgentRuntime()
-    .catch(() => undefined)
-    .then(() => refreshDeviceAgentStatus(false))
-    .then(() => render());
-  pushToast('success', 'Unpaired', 'This phone is no longer linked to your computer.');
-  render();
+  await run('ai', async () => {
+    if (IS_IOS_APP) {
+      await withMobileSheetCleanupTimeout(buildIosPairBridge().unpair(), 'Plan Connector disconnect');
+    } else {
+      unpairPhone(agenticAndroidBridge());
+    }
+    // Clear the runtime config, not just stop: after unpairing, a stored paired-bridge config would
+    // still report configured and keep the card's connected pill alive.
+    await withMobileSheetCleanupTimeout(clearDeviceAgentRuntimeConfig(), 'Device Agent clear');
+    await refreshDeviceAgentStatus(false);
+    saveDeviceAgentStatusCache(state.deviceAgentStatus);
+    pushToast('success', 'Unpaired', 'This phone is no longer linked to your computer.');
+  }, {
+    onError(message) {
+      state.error = '';
+      pushToast('error', 'Disconnect incomplete', message);
+    },
+  });
 }
 
 async function runConfirmAiPlanner(): Promise<void> {
@@ -37100,13 +37306,17 @@ async function runClearAiKey(requestedMode?: AiSettings['mode']): Promise<void> 
     render();
     return;
   }
+  const clearedActivePath = targetMode === state.aiSettings.mode;
+  if (clearedActivePath) {
+    state.aiSettings.apiKey = '';
+    resetAiPlannerConfirmation('AI key cleared.');
+  }
+  clearSessionAiApiKeysForMode(targetMode);
+  if (targetMode === 'device-agent') {
+    state.deviceAgentStatus = clearedDeviceAgentStatus();
+    clearDeviceAgentStatusCache();
+  }
   await run('ai', async () => {
-    const clearedActivePath = targetMode === state.aiSettings.mode;
-    if (clearedActivePath) {
-      state.aiSettings.apiKey = '';
-      resetAiPlannerConfirmation('AI key cleared.');
-    }
-    clearSessionAiApiKeysForMode(targetMode);
     if (targetMode === 'bridge') {
       await bridgeRequest('/bridge/ai/session-key', {
         method: 'POST',
@@ -37115,7 +37325,7 @@ async function runClearAiKey(requestedMode?: AiSettings['mode']): Promise<void> 
       await refreshBridgeAiStatus(false);
     }
     if (targetMode === 'device-agent') {
-      await clearDeviceAgentRuntimeConfig();
+      await withMobileSheetCleanupTimeout(clearDeviceAgentRuntimeConfig(), 'Device Agent clear');
       saveDeviceAgentStatusCache(state.deviceAgentStatus);
     }
     pushToast('success', 'AI key cleared', aiClearMessage(targetMode));
@@ -37644,6 +37854,26 @@ function traceWalletCleared(site: string): void {
 
 async function runCloudSignIn(): Promise<void> {
   cloudSignInDiag('start', { hasWallet: Boolean(state.address), address: state.address ? short(state.address) : '', cluster: state.cluster });
+  if (state.androidNativeEnvironment.isAndroidNative && !state.address) {
+    let fallbackToProofSignIn = false;
+    await run('connect', async () => {
+      try {
+        await runAndroidSiwsCloudSignIn();
+      } catch (err) {
+        if (isAndroidSiwsUnsupported(err)) {
+          fallbackToProofSignIn = true;
+          cloudSignInDiag('android-siws-fallback', { message: err instanceof Error ? err.message : String(err) });
+          return;
+        }
+        throw err;
+      }
+    });
+    if (!fallbackToProofSignIn) return;
+  }
+  if (!state.address) {
+    await runConnect({ successToast: false });
+    if (!state.address) return;
+  }
   await run('connect', async () => {
     try {
       if (!state.address) {
@@ -37678,24 +37908,83 @@ async function runCloudSignIn(): Promise<void> {
         }),
       }));
       cloudSignInDiag('verify-ok', { walletStillConnected: Boolean(state.address) });
-      state.cloudSession = cloudSessionFromResponse(session);
-      state.workflowModePreference = 'auto';
-      savePersistedState();
-      cloudSignInDiag('session-set', { status: state.cloudSession.status, walletStillConnected: Boolean(state.address) });
-      await refreshCloudWorkspaceData();
-      dismissToastByKey(LOCAL_WORKSPACE_BOUNDARY_TOAST_KEY);
-      const transfer = await transferLocalWorkspaceToCloud({ confirm: false, showEmptyToast: false });
-      cloudSignInDiag('done', { transferred: transfer.total, walletStillConnected: Boolean(state.address), cloudStatus: state.cloudSession?.status });
-      if (transfer.total > 0) {
-        toastLocalWorkspaceStorageTransfer(transfer);
-      } else {
-        pushToast('success', 'Cloud workspace signed in', short(state.address));
-      }
+      await finishCloudSignIn(session);
     } catch (err) {
       cloudSignInDiag('threw', { message: err instanceof Error ? err.message : String(err), walletStillConnected: Boolean(state.address), cloudStatus: state.cloudSession?.status });
       throw err;
     }
   });
+}
+
+async function runAndroidSiwsCloudSignIn(): Promise<void> {
+  const backend = androidBackendOrNew();
+  walletBackend = backend;
+  client = new SolanaSigningClient({ backend });
+  const nonce = parseAuthNonceResponse(await cloudRequest('/api/auth/siws-nonce', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  }));
+  const domain = stringPayload(nonce.domain, 'SIWS auth domain');
+  const message = stringPayload(nonce.message, 'SIWS auth statement');
+  const nonceValue = stringPayload(nonce.nonce, 'SIWS auth nonce');
+  cloudSignInDiag('android-siws-nonce-ok', { domain, statementChars: message.length });
+  const signIn = await backend.signInWithSolana({ domain, statement: message });
+  state.address = signIn.address || signIn.publicKey;
+  state.capabilities = await client.capabilities();
+  state.selectedWalletName = backend.walletName();
+  state.selectedWalletLogoId = backend.walletLogoId() ?? walletProviderLogoIdForName(state.selectedWalletName);
+  state.selectedWalletIcon = undefined;
+  state.wallets = [];
+  state.androidAuthCacheCount = backend.cacheCount();
+  state.androidNativeStatus = `Android ${state.selectedWalletName} connected on ${state.cluster}.`;
+  state.transactionStatus = `Android MWA wallet connected on ${state.cluster}.`;
+  state.steps.connect = 'done';
+  rememberWalletPathSession({
+    path: 'android-native',
+    address: state.address,
+    walletName: state.selectedWalletName,
+  });
+  await afterWalletConnected();
+  savePersistedState();
+  const session = parseSessionResponse(await cloudRequest('/api/auth/verify-wallet', {
+    method: 'POST',
+    body: JSON.stringify({
+      walletAddress: state.address,
+      nonce: nonceValue,
+      message,
+      signature: signIn.signature,
+      domain,
+      issuedAt: stringPayload(nonce.issuedAt, 'SIWS auth issued time'),
+      expiresAt: stringPayload(nonce.expiresAt, 'SIWS auth expiration time'),
+      signatureEncoding: 'base58',
+      proofEncoding: 'siws-message',
+      signedMessageBase64: signIn.signedMessage,
+    }),
+  }));
+  await finishCloudSignIn(session);
+}
+
+function isAndroidSiwsUnsupported(err: unknown): boolean {
+  if (err instanceof ProtocolError && err.code === 'unsupported_method') return true;
+  const message = err instanceof Error ? err.message : String(err);
+  return /SIWS_UNSUPPORTED_FOR_WALLET|Sign In With Solana|SIWS/i.test(message);
+}
+
+async function finishCloudSignIn(session: CloudSessionResponse): Promise<void> {
+  state.cloudSession = cloudSessionFromResponse(session);
+  closeWorkspaceStorageSheetAfterCloudSignIn();
+  state.workflowModePreference = 'auto';
+  savePersistedState();
+  cloudSignInDiag('session-set', { status: state.cloudSession.status, walletStillConnected: Boolean(state.address) });
+  await refreshCloudWorkspaceData();
+  dismissToastByKey(LOCAL_WORKSPACE_BOUNDARY_TOAST_KEY);
+  const transfer = await transferLocalWorkspaceToCloud({ confirm: false, showEmptyToast: false });
+  cloudSignInDiag('done', { transferred: transfer.total, walletStillConnected: Boolean(state.address), cloudStatus: state.cloudSession?.status });
+  if (transfer.total > 0) {
+    toastLocalWorkspaceStorageTransfer(transfer);
+  } else {
+    pushToast('success', 'Cloud workspace signed in', short(state.address));
+  }
 }
 
 async function runCloudLogout(): Promise<void> {
@@ -46365,6 +46654,22 @@ function browserDevDeviceAgentStatus(input: { configured: boolean; state: Device
     message: input.configured
       ? 'Device Agent runtime scaffold is staged in this dev browser build.'
       : 'Device Agent runtime scaffold is visible. Add a key to stage config.',
+  };
+}
+
+function clearedDeviceAgentStatus(message = 'Device Agent runtime config cleared.'): DeviceAgentStatus {
+  return {
+    available: deviceAgentModeVisible(),
+    enabled: DEVICE_AGENT_ENABLED || ANDROID_DEVICE_AGENT_ENABLED || BROWSER_DEVICE_AGENT_ENABLED,
+    configured: false,
+    state: 'stopped',
+    runtime: defaultDeviceAgentRuntime(),
+    provider: '',
+    apiFormat: state.aiSettings.apiFormat,
+    baseUrl: '',
+    model: '',
+    walletAddress: state.address || state.cloudSession.walletAddress,
+    message,
   };
 }
 
@@ -55207,11 +55512,13 @@ async function runPasteAiKey(targetScope?: string): Promise<void> {
   const text = await readClipboardText();
   if (text == null) {
     // Programmatic read was blocked (typical on Android WebView before the native clipboardRead
-    // method ships). Focus the field and tell the user to long-press → Paste.
-    const input = document.querySelector<HTMLInputElement>(
-      targetScope ? `#aiApiKey-${cssEscape(targetScope)}` : '[data-ai-control="api-key"]',
-    );
-    input?.focus();
+    // method ships). Do not focus the field on mobile: tapping Paste must not open the keyboard.
+    if (!isMobileAppViewport()) {
+      const input = document.querySelector<HTMLInputElement>(
+        targetScope ? `#aiApiKey-${cssEscape(targetScope)}` : '[data-ai-control="api-key"]',
+      );
+      input?.focus();
+    }
     pushToast('info', 'Paste manually', 'Long-press the key field, then tap Paste.');
     return;
   }
@@ -55223,7 +55530,11 @@ async function runPasteAiKey(targetScope?: string): Promise<void> {
   state.aiSettings.apiKey = trimmed;
   saveCurrentSessionAiApiKey();
   resetAiPlannerConfirmation('AI key changed. Confirm planner again if needed.');
-  render();
+  const input = document.querySelector<HTMLInputElement>(
+    targetScope ? `#aiApiKey-${cssEscape(targetScope)}` : '[data-ai-control="api-key"]',
+  );
+  if (input) input.value = trimmed;
+  syncAiActionButtons();
   pushToast('success', 'Key pasted', 'Pasted your AI provider key. Confirm planner or use it for AI review.');
 }
 

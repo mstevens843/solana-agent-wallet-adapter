@@ -10,7 +10,6 @@ export interface CloudSessionBoundaryInput {
 
 export function shouldAutoSignOutCloudSession(input: CloudSessionBoundaryInput): boolean {
   if (input.cloudStatus !== 'signed-in' || !input.cloudWalletAddress) return false;
-  if (!input.connectedWalletAddress && input.reason === 'startup') return false;
   if (input.reason === 'wallet-disconnected') return true;
   if (input.cloudWalletAddress === input.connectedWalletAddress) return false;
   return true;

@@ -29721,6 +29721,14 @@ button.danger:hover:not(:disabled) {
     gap: 8px;
   }
 
+  .route-app .mobile-rail-sheet.ai-drafting .ai-review-setup-tabs {
+    backdrop-filter: blur(10px);
+    box-shadow: 0 8px 18px rgba(0, 0, 0, 0.22);
+    position: sticky;
+    top: 0;
+    z-index: 12;
+  }
+
   .route-app .mobile-rail-sheet.ai-drafting .ai-setting-provider .select-picker.open,
   .route-app .mobile-rail-sheet.ai-drafting .ai-setting-model .select-picker.open {
     z-index: 360;
@@ -30953,6 +30961,10 @@ button.danger:hover:not(:disabled) {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .route-app .review-plan-summary-grid.wallet-slippage-route-risk-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .route-app .review-plan-summary-grid div,
   .route-app .inbox-approval-summary-grid div,
   .route-app .recurring-card-summary-grid div,
@@ -31605,13 +31617,16 @@ button.danger:hover:not(:disabled) {
 .route-app .rail-conn-action {
   align-items: center;
   align-self: center;
+  appearance: none;
   background: rgba(139, 205, 170, 0.1);
   border: 1px solid rgba(139, 205, 170, 0.22);
   border-radius: 999px;
   color: #dfffea;
+  cursor: pointer;
   display: inline-flex;
   font-size: 0.74rem;
   font-weight: 900;
+  font-family: inherit;
   justify-content: center;
   line-height: 1;
   min-height: 31px;
@@ -31619,6 +31634,27 @@ button.danger:hover:not(:disabled) {
   padding: 6px 11px;
   text-align: center;
   white-space: nowrap;
+}
+
+.route-app .rail-conn-action.danger {
+  background: rgba(255, 118, 118, 0.1);
+  border-color: rgba(255, 118, 118, 0.32);
+  color: #ffc4c4;
+}
+
+.route-app .rail-conn-action:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.route-app .rail-conn-actions {
+  align-items: center;
+  align-self: center;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  min-width: max-content;
 }
 
 .route-app .workspace-storage-panel > .rail-conn-trigger .rail-conn-status,
@@ -31673,7 +31709,7 @@ button.danger:hover:not(:disabled) {
   justify-self: end;
 }
 
-.route-app .rail-ai-settings.optional > .rail-conn-trigger > .rail-conn-action {
+.route-app .rail-ai-settings.optional > .rail-conn-trigger > .rail-conn-actions {
   grid-area: action;
   justify-self: end;
 }
@@ -31723,7 +31759,7 @@ button.danger:hover:not(:disabled) {
     text-align: left;
   }
 
-  .route-app .rail-ai-settings > .rail-conn-trigger > .rail-conn-action {
+  .route-app .rail-ai-settings > .rail-conn-trigger > .rail-conn-actions {
     grid-area: action;
     justify-self: end;
   }
@@ -31757,7 +31793,7 @@ button.danger:hover:not(:disabled) {
     justify-self: start;
   }
 
-  .route-app .workspace-storage-panel > .rail-conn-trigger > .rail-conn-action {
+  .route-app .workspace-storage-panel > .rail-conn-trigger > .rail-conn-actions {
     grid-area: action;
     justify-self: end;
   }

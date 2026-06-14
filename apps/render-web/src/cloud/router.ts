@@ -60,8 +60,11 @@ import {
   createAgentProfileTakedownIntentResponse,
   createAuthNonceResponse,
   createCloudWorkspaceDeleteIntentResponse,
+  createSiwsAuthNonceResponse,
+  decodeSiwsSignedMessageBase64,
   normalizeWalletAddress,
   parseVerifyWalletRequest,
+  siwsSignedMessageMatchesNonce,
   verifyWalletSignature,
 } from './auth.js';
 import {
@@ -243,6 +246,7 @@ const REGISTERED_API_ROUTES = [
   'GET /api/device-agent/status',
   'POST /api/device-agent/control',
   'POST /api/auth/nonce',
+  'POST /api/auth/siws-nonce',
   'POST /api/auth/verify-wallet',
   'POST /api/auth/logout',
   'POST /api/cloud-workspace/delete-intent',
@@ -870,14 +874,14 @@ async function enforceAuthRateLimit(
   if (!allowed) {
     throw new ApiError(429, route === '/api/ai/generate-plan' || route === '/api/ai/review-plan' || route === '/api/ai/ask-about-plan' || route === '/api/ai/chat'
       ? 'Too many hosted AI drafting attempts. Try again later.'
-      : route === '/api/auth/nonce' || route === '/api/auth/verify-wallet'
+      : route === '/api/auth/nonce' || route === '/api/auth/siws-nonce' || route === '/api/auth/verify-wallet'
         ? 'Too many wallet auth attempts. Try again later.'
         : 'Too many workflow requests. Try again later.');
   }
 }
 
 export function authRateLimitedRoute(pathname: string): AuthRateLimitInput['route'] | undefined {
-  if (pathname === '/api/auth/nonce' || pathname === '/api/auth/verify-wallet') return pathname;
+  if (pathname === '/api/auth/nonce' || pathname === '/api/auth/siws-nonce' || pathname === '/api/auth/verify-wallet') return pathname;
   if (pathname === '/api/ai/generate-plan') return pathname;
   if (pathname === '/api/ai/review-plan') return pathname;
   if (pathname === '/api/ai/ask-about-plan') return pathname;
@@ -914,12 +918,12 @@ export function authRateLimitedRoute(pathname: string): AuthRateLimitInput['rout
 }
 
 function rateLimitWindowMs(route: string): number {
-  if (route === '/api/auth/nonce' || route === '/api/auth/verify-wallet') return AUTH_RATE_LIMIT_WINDOW_MS;
+  if (route === '/api/auth/nonce' || route === '/api/auth/siws-nonce' || route === '/api/auth/verify-wallet') return AUTH_RATE_LIMIT_WINDOW_MS;
   return WRITE_RATE_LIMIT_WINDOW_MS;
 }
 
 function rateLimitMaxAttempts(route: string): number {
-  if (route === '/api/auth/nonce' || route === '/api/auth/verify-wallet') return AUTH_RATE_LIMIT_MAX_ATTEMPTS;
+  if (route === '/api/auth/nonce' || route === '/api/auth/siws-nonce' || route === '/api/auth/verify-wallet') return AUTH_RATE_LIMIT_MAX_ATTEMPTS;
   if (route === '/api/ai/generate-plan' || route === '/api/ai/review-plan' || route === '/api/ai/ask-about-plan' || route === '/api/ai/chat') return HOSTED_AI_RATE_LIMIT_MAX_ATTEMPTS;
   if (isPublicRelayRateLimitRoute(route)) return publicRelayRateLimitMaxAttempts();
   return WRITE_RATE_LIMIT_MAX_ATTEMPTS;
@@ -1188,6 +1192,12 @@ async function routeApiRequest(
   if (url.pathname === '/api/auth/nonce') {
     requireMethod(req, 'POST');
     await handleAuthNonce(req, res, url, store, clock);
+    return;
+  }
+
+  if (url.pathname === '/api/auth/siws-nonce') {
+    requireMethod(req, 'POST');
+    await handleSiwsAuthNonce(req, res, url, store, clock);
     return;
   }
 
@@ -1471,6 +1481,25 @@ async function handleAuthNonce(
   writeJson(res, 200, response);
 }
 
+async function handleSiwsAuthNonce(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  store: WorkflowStore,
+  clock: Clock,
+): Promise<void> {
+  await store.cleanupExpired(clock.now().toISOString());
+  const response = createSiwsAuthNonceResponse({
+    domain: requestDomain(req, url),
+    clock,
+  });
+  await store.createAuthNonce({
+    ...response,
+    createdAt: response.issuedAt,
+  });
+  writeJson(res, 200, response);
+}
+
 async function handleVerifyWallet(
   req: IncomingMessage,
   res: ServerResponse,
@@ -1484,7 +1513,11 @@ async function handleVerifyWallet(
   if (!nonce || nonce.consumedAt) {
     throw new ApiError(401, 'Invalid or already used auth nonce.');
   }
-  if (nonce.walletAddress !== body.walletAddress) {
+  const siwsProof = body.proofEncoding === 'siws-message';
+  if (!siwsProof && nonce.walletAddress !== body.walletAddress) {
+    throw new ApiError(401, 'Wallet address does not match auth nonce.');
+  }
+  if (siwsProof && nonce.walletAddress && nonce.walletAddress !== body.walletAddress) {
     throw new ApiError(401, 'Wallet address does not match auth nonce.');
   }
   if (nonce.domain !== requestDomain(req, url)) {
@@ -1502,9 +1535,24 @@ async function handleVerifyWallet(
   if (Date.parse(nonce.issuedAt) > now.getTime() || Date.parse(nonce.expiresAt) <= now.getTime()) {
     throw new ApiError(401, 'Auth nonce has expired.');
   }
-  const expectedMessage = buildWalletLoginMessage(nonce);
-  if (body.message !== nonce.message || body.message !== expectedMessage) {
-    throw new ApiError(401, 'Signed message does not match auth nonce.');
+  if (siwsProof) {
+    if (!body.signedMessageBase64) {
+      throw new ApiError(400, 'Missing SIWS signed message.');
+    }
+    decodeSiwsSignedMessageBase64(body.signedMessageBase64);
+    if (body.message !== nonce.message || !siwsSignedMessageMatchesNonce({
+      signedMessageBase64: body.signedMessageBase64,
+      statement: nonce.message,
+      domain: nonce.domain,
+      nonce: nonce.nonce,
+    })) {
+      throw new ApiError(401, 'Signed SIWS message does not match auth nonce.');
+    }
+  } else {
+    const expectedMessage = buildWalletLoginMessage(nonce);
+    if (body.message !== nonce.message || body.message !== expectedMessage) {
+      throw new ApiError(401, 'Signed message does not match auth nonce.');
+    }
   }
   if (!verifyWalletSignature(body)) {
     throw new ApiError(401, 'Wallet signature could not be verified.');

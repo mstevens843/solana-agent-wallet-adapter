@@ -375,6 +375,83 @@ describe('render web cloud wallet auth', () => {
     });
   });
 
+  it('creates a cloud session from a valid Android SIWS signature', async () => {
+    await withServer(async (port) => {
+      const wallet = createTestWallet();
+      const nonce = await postJson(port, '/api/auth/siws-nonce', {});
+      const verify = await postJson(port, '/api/auth/verify-wallet', signedSiwsVerifyBody(wallet, nonce.body), {
+        origin: 'https://agentic.local',
+        'x-agentic-client': 'android-bundled',
+      });
+
+      expect(nonce.status).toBe(200);
+      expect(String(nonce.body.message)).toContain('does not grant spending authority');
+      expect(verify.status).toBe(200);
+      expect(verify.body.sessionToken).toEqual(expect.any(String));
+      expect(verify.body).toMatchObject({
+        signedIn: true,
+        user: { walletAddress: wallet.walletAddress },
+      });
+    });
+  });
+
+  it('rejects replayed Android SIWS nonces', async () => {
+    await withServer(async (port) => {
+      const wallet = createTestWallet();
+      const nonce = await postJson(port, '/api/auth/siws-nonce', {});
+      const body = signedSiwsVerifyBody(wallet, nonce.body);
+
+      const first = await postJson(port, '/api/auth/verify-wallet', body);
+      const replay = await postJson(port, '/api/auth/verify-wallet', body);
+
+      expect(first.status).toBe(200);
+      expect(replay.status).toBe(401);
+      expect(String(replay.body.error)).toContain('used');
+    });
+  });
+
+  it('rejects Android SIWS messages that do not contain the nonce statement', async () => {
+    await withServer(async (port) => {
+      const wallet = createTestWallet();
+      const nonce = await postJson(port, '/api/auth/siws-nonce', {});
+      const body = signedSiwsVerifyBody(wallet, nonce.body, `Sign in to ${String(nonce.body.domain)}`);
+
+      const verify = await postJson(port, '/api/auth/verify-wallet', body);
+
+      expect(verify.status).toBe(401);
+      expect(String(verify.body.error)).toContain('SIWS');
+    });
+  });
+
+  it('rejects Android SIWS signatures for a different wallet address', async () => {
+    await withServer(async (port) => {
+      const wallet = createTestWallet();
+      const otherWallet = createTestWallet();
+      const nonce = await postJson(port, '/api/auth/siws-nonce', {});
+      const body = signedSiwsVerifyBody(wallet, nonce.body);
+      body.walletAddress = otherWallet.walletAddress;
+
+      const verify = await postJson(port, '/api/auth/verify-wallet', body);
+
+      expect(verify.status).toBe(401);
+      expect(String(verify.body.error)).toContain('signature');
+    });
+  });
+
+  it('rejects expired Android SIWS nonces', async () => {
+    const clock = mutableClock('2026-05-08T18:00:00.000Z');
+    await withServer(async (port) => {
+      const wallet = createTestWallet();
+      const nonce = await postJson(port, '/api/auth/siws-nonce', {});
+      clock.set('2026-05-08T18:06:00.000Z');
+
+      const verify = await postJson(port, '/api/auth/verify-wallet', signedSiwsVerifyBody(wallet, nonce.body));
+
+      expect(verify.status).toBe(401);
+      expect(String(verify.body.error)).toContain('expired');
+    }, { clock });
+  });
+
   it('rejects invalid wallet signatures', async () => {
     await withServer(async (port) => {
       const wallet = createTestWallet();
@@ -1448,6 +1525,30 @@ function createTestWallet(): TestWallet {
 
 function signMessage(message: string, privateKey: KeyObject): string {
   return encodeBase58(signDetached(null, Buffer.from(message, 'utf8'), privateKey));
+}
+
+function signBytes(message: Buffer, privateKey: KeyObject): string {
+  return encodeBase58(signDetached(null, message, privateKey));
+}
+
+function signedSiwsVerifyBody(
+  wallet: TestWallet,
+  nonce: Record<string, unknown>,
+  signedMessage = `Sign in to ${String(nonce.domain)}\n\n${String(nonce.message)}`,
+): Record<string, unknown> {
+  const signedMessageBytes = Buffer.from(signedMessage, 'utf8');
+  return {
+    walletAddress: wallet.walletAddress,
+    nonce: nonce.nonce,
+    message: nonce.message,
+    signature: signBytes(signedMessageBytes, wallet.privateKey),
+    domain: nonce.domain,
+    issuedAt: nonce.issuedAt,
+    expiresAt: nonce.expiresAt,
+    signatureEncoding: 'base58',
+    proofEncoding: 'siws-message',
+    signedMessageBase64: signedMessageBytes.toString('base64'),
+  };
 }
 
 function sessionCookie(response: JsonResponse): string {

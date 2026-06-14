@@ -437,6 +437,25 @@ export function providerSupportsWebResearch(provider: string, apiFormat: string,
   return false;
 }
 
+export interface AiRouteWebResearchInput {
+  provider?: string;
+  apiFormat?: string;
+  model?: string;
+  pairedBridge?: boolean;
+  bridgeEngine?: string;
+  connector?: string;
+}
+
+// Route-level capability for the evidence gate. Provider capability alone is not enough for
+// Plan Connector: paired-bridge configs intentionally use placeholders
+// provider="paired-bridge"/model="connector", while the desktop bridge actually runs a connector
+// research pass before the structured review.
+export function aiRouteSupportsWebResearch(input: AiRouteWebResearchInput): boolean {
+  if (input.pairedBridge === true) return true;
+  if ((input.bridgeEngine ?? '').trim().toLowerCase() === 'connector') return true;
+  return providerSupportsWebResearch(input.provider ?? '', input.apiFormat ?? '', input.model ?? '');
+}
+
 const BASE_AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
   template('payments', 'send-tokens', 'Send Tokens', 'Prepare a token payment with recipient, amount, memo, and wallet approval. Sends native SOL or any SPL token.', 'transfer_spl', 'medium', [
     selectField('token', 'Token', ['SOL', 'USDC', 'USDT', 'JUP', 'BONK', 'WIF', 'PYUSD'], 'SOL'),

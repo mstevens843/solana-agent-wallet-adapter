@@ -55,6 +55,7 @@ patchCapAppSpmDeploymentTarget();
 patchCapAppSpmFirebase();
 patchXcodeDeploymentTarget();
 patchXcodeCapabilities();
+patchFrameworkDsymBuildPhase();
 
 function patchInfoPlist() {
   if (!existsSync(infoPlist)) {
@@ -237,6 +238,55 @@ function patchXcodeCapabilities() {
   }
 }
 
+function patchFrameworkDsymBuildPhase() {
+  if (!existsSync(pbxproj)) {
+    return;
+  }
+  let src = readFileSync(pbxproj, 'utf8');
+  if (src.includes('Generate Firebase dSYMs')) {
+    return;
+  }
+  const before = src;
+  src = src.replace(
+    '\t\t\t\t504EC3021FED79650016851F /* Resources */,\n',
+    '\t\t\t\t504EC3021FED79650016851F /* Resources */,\n\t\t\t\tB16C00000000000000000003 /* Generate Firebase dSYMs */,\n',
+  );
+  src = src.replace(
+    '/* End PBXResourcesBuildPhase section */\n\n',
+    [
+      '/* End PBXResourcesBuildPhase section */',
+      '',
+      '/* Begin PBXShellScriptBuildPhase section */',
+      '\t\tB16C00000000000000000003 /* Generate Firebase dSYMs */ = {',
+      '\t\t\tisa = PBXShellScriptBuildPhase;',
+      '\t\t\talwaysOutOfDate = 1;',
+      '\t\t\tbuildActionMask = 2147483647;',
+      '\t\t\tfiles = (',
+      '\t\t\t);',
+      '\t\t\tinputFileListPaths = (',
+      '\t\t\t);',
+      '\t\t\tinputPaths = (',
+      '\t\t\t);',
+      '\t\t\tname = "Generate Firebase dSYMs";',
+      '\t\t\toutputFileListPaths = (',
+      '\t\t\t);',
+      '\t\t\toutputPaths = (',
+      '\t\t\t);',
+      '\t\t\trunOnlyForDeploymentPostprocessing = 0;',
+      '\t\t\tshellPath = /bin/sh;',
+      '\t\t\tshellScript = "sh \\\"${SRCROOT}/../../scripts/generate-ios-framework-dsyms.sh\\\"\\n";',
+      '\t\t};',
+      '/* End PBXShellScriptBuildPhase section */',
+      '',
+      '',
+    ].join('\n'),
+  );
+  if (src === before) {
+    throw new Error('Could not add Firebase dSYM build phase to project.pbxproj');
+  }
+  writeFileSync(pbxproj, src);
+  console.log('[ios-capacitor] Ensured Firebase framework dSYM archive phase');
+}
 function writeFileIfChanged(filePath, contents, message) {
   if (existsSync(filePath) && readFileSync(filePath, 'utf8') === contents) {
     return;

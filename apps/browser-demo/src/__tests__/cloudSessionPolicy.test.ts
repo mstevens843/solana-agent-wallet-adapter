@@ -42,13 +42,13 @@ describe('cloud session policy helpers', () => {
     })).toBe(true);
   });
 
-  it('keeps a signed-in cloud session during startup when no wallet restored yet', () => {
+  it('auto signs out a signed-in cloud session during startup when no wallet restored yet', () => {
     expect(shouldAutoSignOutCloudSession({
       cloudStatus: 'signed-in',
       cloudWalletAddress: 'wallet-a',
       connectedWalletAddress: '',
       reason: 'startup',
-    })).toBe(false);
+    })).toBe(true);
   });
 
   it('auto signs out a stale cloud session when another wallet connects', () => {
