@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  aiRailQuickActionKind,
   aiProviderLogoHint,
   bridgeAiSetupSnapshot,
   buildAiRailIdentity,
@@ -112,6 +113,36 @@ describe('AI setup state helpers', () => {
       inactiveConfigured: [{ mode: 'hosted' }],
       clearableByMode: noClearablePaths,
     })).toBeNull();
+  });
+
+  it('keeps mobile rail quick actions mutually exclusive', () => {
+    expect(aiRailQuickActionKind({
+      pairedBridge: true,
+      configured: false,
+      inactive: false,
+      clearTarget: null,
+    })).toBe('disconnect-plan-connector');
+
+    expect(aiRailQuickActionKind({
+      pairedBridge: false,
+      configured: true,
+      inactive: false,
+      clearTarget: 'device-agent',
+    })).toBe('clear-key');
+
+    expect(aiRailQuickActionKind({
+      pairedBridge: false,
+      configured: false,
+      inactive: false,
+      clearTarget: null,
+    })).toBe('setup');
+
+    expect(aiRailQuickActionKind({
+      pairedBridge: false,
+      configured: true,
+      inactive: false,
+      clearTarget: null,
+    })).toBe('none');
   });
 
   it('tracks configured inactive Device Agent while Hosted BYOK is selected', () => {
@@ -244,6 +275,39 @@ describe('AI setup state helpers', () => {
         runtime: 'android-native',
       },
     }).runnable).toBe(false);
+  });
+
+  it('treats a paired Plan Connector as configured before runtime status catches up', () => {
+    const inventory = buildAiSetupInventory({
+      activeMode: 'device-agent',
+      hosted: { configured: false, runnable: false },
+      session: { configured: false, runnable: false },
+      bridge: { configured: false, runnable: false },
+      deviceAgent: deviceAgentSetupSnapshot({
+        visible: false,
+        status: null,
+        pairedBridge: true,
+        pairedProvider: 'Plan Connector - Codex',
+        pairedModel: 'ChatGPT plan',
+        pairedLogoHint: 'codex',
+      }),
+    });
+
+    expect(inventory.active).toMatchObject({
+      mode: 'device-agent',
+      configured: true,
+      runnable: true,
+      provider: 'Plan Connector - Codex',
+      model: 'ChatGPT plan',
+      logoHint: 'codex',
+    });
+    expect(railIdentity(inventory)).toMatchObject({
+      configured: true,
+      inactive: false,
+      statusLabel: 'configured',
+      statusTone: 'configured',
+      provider: 'Plan Connector - Codex',
+    });
   });
 
   it('builds the rail identity from active configured Device Agent details', () => {

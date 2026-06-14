@@ -233,7 +233,7 @@ export function aiConnectorWebsiteSetupState(input: {
       status: 'ready',
       connector: input.connector,
       title: `${status.connectorLabel || selectedLabel} is connected.`,
-      detail: 'Website AI review will use this computer connector. Workflow approval and signing stay separate.',
+      detail: 'Website AI Connector will use this computer connector. Workflow approval and signing stay separate.',
       connected: true,
       tone: 'ready',
     };

@@ -313,6 +313,12 @@ import {
   ASK_AGENT_CONVERSATION_ONLY_REASON,
   recoverInterruptedAgentReviews,
 } from './agentReviewRecovery.js';
+import {
+  agentReviewDisplayPath,
+  agentReviewDisplayPathLabel,
+  isAgentReviewDisplayPath,
+  type AgentReviewDisplayPath,
+} from './agentReviewPathDisplay.js';
 import { findingsSpecFor } from './agentFindingsSpec.js';
 import { evaluateSimulationOutcome } from './simulationOutcome.js';
 import { getCachedUsdPrice, getUsdPriceForMint } from './priceCache.js';
@@ -360,6 +366,7 @@ import { mountPhonePairingPanel, openDesktopPairingModal, openPhonePairingModal 
 import { logDeviceAgentDiag } from './deviceAgent/runtime/diagnosticLog.js';
 import {
   aiProviderLogoHint,
+  aiRailQuickActionKind,
   bridgeConnectorDisplayLabel,
   bridgeConnectorStatusDetail,
   bridgeAiSetupSnapshot,
@@ -946,7 +953,8 @@ type MobileRailSheet = 'workspace-storage' | 'ai-drafting' | 'wallet-balances';
 type ExpandNoteFieldRef =
   | { kind: 'agent-prompt' }
   | { kind: 'recurring-note' }
-  | { kind: 'lab-field'; labId: string; fieldId: string };
+  | { kind: 'lab-field'; labId: string; fieldId: string }
+  | { kind: 'lab-advanced'; labId: string };
 type CommandCenterIconId =
   | 'wallet'
   | 'approvals'
@@ -1179,6 +1187,7 @@ interface AgentReviewOverride {
   provider?: string;
   model?: string;
   source?: AgentReviewSource;
+  path?: AgentReviewDisplayPath;
 }
 
 interface AgentReviewerEntry {
@@ -1271,6 +1280,7 @@ interface AgentPlanReviewState {
   provider?: string;
   model?: string;
   source?: AgentReviewSource;
+  path?: AgentReviewDisplayPath;
   evidence?: Record<string, unknown>;
   checks?: AgentReviewCheck[];
   questions?: AgentReviewQuestion[];
@@ -4162,6 +4172,7 @@ let selectPickerOpenOrder = 0;
 let preferencesMobilePickerController: AbortController | null = null;
 let mobileRailSheetController: AbortController | null = null;
 let expandNoteSheetController: AbortController | null = null;
+let expandNoteViewportController: AbortController | null = null;
 let walletBalanceOverlayController: AbortController | null = null;
 let planConnectorPairingPanelCleanup: (() => void) | null = null;
 let mobileRailDeviceAgentStatusRefresh: Promise<DeviceAgentStatus> | null = null;
@@ -13381,7 +13392,7 @@ function mobileRailBottomSheet(): string {
     ? 'Workspace Storage'
     : sheet === 'wallet-balances'
       ? 'Wallet Balances'
-      : 'AI Review';
+      : 'AI Connector';
   const detail = sheet === 'workspace-storage'
     ? 'Browser-local workflow storage'
     : sheet === 'wallet-balances'
@@ -13555,6 +13566,9 @@ function expandNoteRefAttr(ref: ExpandNoteFieldRef): string {
   if (ref.kind === 'lab-field') {
     return `lab-field:${ref.labId}:${ref.fieldId}`;
   }
+  if (ref.kind === 'lab-advanced') {
+    return `lab-advanced:${ref.labId}`;
+  }
   return ref.kind;
 }
 
@@ -13568,12 +13582,18 @@ function expandNoteRefFromAttr(value: string | null | undefined): ExpandNoteFiel
     if (sep <= 0 || sep === rest.length - 1) return null;
     return { kind: 'lab-field', labId: rest.slice(0, sep), fieldId: rest.slice(sep + 1) };
   }
+  if (value.startsWith('lab-advanced:')) {
+    const labId = value.slice('lab-advanced:'.length);
+    if (!labId) return null;
+    return { kind: 'lab-advanced', labId };
+  }
   return null;
 }
 
 function getExpandNoteValue(ref: ExpandNoteFieldRef): string {
   if (ref.kind === 'agent-prompt') return state.agentPrompt;
   if (ref.kind === 'recurring-note') return state.recurringDraft.note;
+  if (ref.kind === 'lab-advanced') return labInput(ref.labId);
   return state.labFieldValues[ref.labId]?.[ref.fieldId] ?? '';
 }
 
@@ -13591,12 +13611,20 @@ function setExpandNoteValue(ref: ExpandNoteFieldRef, value: string): void {
     delete state.recurringErrors.recurringNote;
     return;
   }
+  if (ref.kind === 'lab-advanced') {
+    state.labInputs[ref.labId] = value;
+    delete state.labFieldErrors[receiptFieldErrorKey(ref.labId, '__advanced')];
+    state.error = '';
+    syncLabActionButton();
+    return;
+  }
   state.labFieldValues[ref.labId] = {
     ...(state.labFieldValues[ref.labId] ?? {}),
     [ref.fieldId]: value,
   };
   delete state.labFieldErrors[receiptFieldErrorKey(ref.labId, ref.fieldId)];
   state.error = '';
+  syncLabActionButton();
 }
 
 function expandNoteSheetLabels(ref: ExpandNoteFieldRef): { subtitle: string; title: string; placeholder: string } {
@@ -13615,6 +13643,13 @@ function expandNoteSheetLabels(ref: ExpandNoteFieldRef): { subtitle: string; tit
     };
   }
   const lab = LABS.find((candidate) => candidate.id === ref.labId);
+  if (ref.kind === 'lab-advanced') {
+    return {
+      subtitle: lab?.title.replace(/^\d+\.\s*/, '') ?? 'Proof record',
+      title: 'Evidence note',
+      placeholder: 'Paste or summarize the evidence to sign.',
+    };
+  }
   const field = lab?.fields?.find((candidate) => candidate.id === ref.fieldId);
   return {
     subtitle: lab?.title.replace(/^\d+\.\s*/, '') ?? 'Proof note',
@@ -13629,24 +13664,25 @@ function expandNoteBottomSheet(): string {
   const { subtitle, title, placeholder } = expandNoteSheetLabels(ref);
   const value = getExpandNoteValue(ref);
   return `
-    <div class="mobile-rail-sheet-scrim expand-note-sheet-scrim" data-expand-note-close aria-hidden="true"></div>
-    <aside class="mobile-rail-sheet expand-note-sheet" data-expand-note-root role="dialog" aria-modal="true" aria-labelledby="expandNoteSheetTitle">
-      <header class="mobile-rail-sheet-header">
-        <div>
+    <div class="mobile-text-composer-backdrop" data-expand-note-close aria-hidden="true"></div>
+    <section class="mobile-text-composer" data-expand-note-root role="dialog" aria-modal="true" aria-labelledby="expandNoteSheetTitle">
+      <span class="mobile-text-composer-grip" aria-hidden="true"></span>
+      <header class="mobile-text-composer-header">
+        <button type="button" class="mobile-text-composer-close" data-expand-note-close aria-label="Close ${escapeHtml(title)}">&times;</button>
+        <div class="mobile-text-composer-title">
           <span>${escapeHtml(subtitle)}</span>
           <h2 id="expandNoteSheetTitle">${escapeHtml(title)}</h2>
         </div>
-        <button type="button" class="mobile-rail-sheet-close" data-expand-note-close aria-label="Close ${escapeHtml(title)}">&times;</button>
+        <button type="button" class="mobile-text-composer-done" data-expand-note-confirm>Done</button>
       </header>
-      <div class="mobile-rail-sheet-body expand-note-sheet-body">
+      <div class="mobile-text-composer-body">
         <textarea
-          class="expand-note-sheet-textarea"
+          class="mobile-text-composer-textarea"
           data-expand-note-input
           placeholder="${escapeHtml(placeholder)}"
         >${escapeHtml(value)}</textarea>
-        <button type="button" class="expand-note-sheet-confirm" data-expand-note-confirm>Confirm</button>
       </div>
-    </aside>
+    </section>
   `;
 }
 
@@ -13664,6 +13700,7 @@ function openExpandNoteSheet(ref: ExpandNoteFieldRef): void {
   render();
   if (typeof window !== 'undefined') {
     requestAnimationFrame(() => {
+      syncExpandNoteComposerViewport();
       const textarea = document.querySelector<HTMLTextAreaElement>('[data-expand-note-input]');
       if (!textarea) return;
       textarea.focus();
@@ -13673,6 +13710,21 @@ function openExpandNoteSheet(ref: ExpandNoteFieldRef): void {
       }
     });
   }
+}
+
+function syncExpandNoteComposerViewport(): void {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
+  const composer = document.querySelector<HTMLElement>('[data-expand-note-root]');
+  if (!composer) return;
+  const viewport = window.visualViewport;
+  const height = Math.max(320, Math.floor(viewport?.height ?? window.innerHeight));
+  const width = Math.max(320, Math.floor(viewport?.width ?? window.innerWidth));
+  const offsetTop = Math.max(0, Math.floor(viewport?.offsetTop ?? 0));
+  const keyboardInset = Math.max(0, Math.floor(window.innerHeight - height - offsetTop));
+  composer.style.setProperty('--mobile-composer-vvh', `${height}px`);
+  composer.style.setProperty('--mobile-composer-vvw', `${width}px`);
+  composer.style.setProperty('--mobile-composer-vv-top', `${offsetTop}px`);
+  composer.style.setProperty('--mobile-composer-keyboard-inset', `${keyboardInset}px`);
 }
 
 function closeExpandNoteSheet(options: { fromPopState?: boolean } = {}): void {
@@ -13691,7 +13743,8 @@ function closeExpandNoteSheet(options: { fromPopState?: boolean } = {}): void {
 
 function mobileExpandNoteLink(ref: ExpandNoteFieldRef): string {
   if (!isMobileAppViewport()) return '';
-  return `<button type="button" class="expand-note-link" data-expand-note="${escapeHtml(expandNoteRefAttr(ref))}" ${state.busy ? 'disabled' : ''}>Expand note</button>`;
+  const label = getExpandNoteValue(ref).trim() ? 'Edit note' : 'Add note';
+  return `<button type="button" class="expand-note-link" data-expand-note="${escapeHtml(expandNoteRefAttr(ref))}" ${state.busy ? 'disabled' : ''}>${escapeHtml(label)}</button>`;
 }
 
 function trustLayerPanel(): string {
@@ -14236,7 +14289,7 @@ function walletRail(): string {
     : `<p class="signer-detail-desktop-only">${escapeHtml(wallet.detail)}</p>`;
   const connectionsReadiness = connected
     ? 'Wallet connected — you can review, approve, and sign.'
-    : 'Connect your wallet to approve and sign. AI review and cloud sync are optional.';
+    : 'Connect your wallet to approve and sign. AI connector and cloud sync are optional.';
   // Connections re-org (reviewer feedback): group the wallet/AI/cloud connections under one
   // prioritized "Connections" header with Required/Optional labels. Android app only for now so it
   // can be tested in isolation before web/iOS get it.
@@ -14373,7 +14426,7 @@ const PREFERENCES_VIEW_OPTIONS: ReadonlyArray<{
   mobileLabel: string;
 }> = [
   { view: 'workspace', title: 'Workspace', desktopLabel: 'Backup & alerts', mobileLabel: 'Backup & Alerts' },
-  { view: 'ai', title: 'AI Review', desktopLabel: 'Prompts & review', mobileLabel: 'Prompts & Review' },
+  { view: 'ai', title: 'AI Connector', desktopLabel: 'Prompts & connector', mobileLabel: 'Prompts & Connector' },
   { view: 'access', title: 'Agent Access', desktopLabel: 'Agents & connectors', mobileLabel: 'Agents & Connectors' },
   { view: 'rules', title: 'Review Rules', desktopLabel: 'Recipients & policy', mobileLabel: 'Recipients & Policy' },
   { view: 'tokens', title: 'Tokens & Retry', desktopLabel: 'Labels & failures', mobileLabel: 'Labels & Failures' },
@@ -14773,7 +14826,7 @@ function preferencesActiveView(): string {
         </div>
       `);
     case 'ai':
-      return preferencesGroup('AI Review', 'Personalize prompts and review behavior without changing signing authority.', aiReviewPreferencesPanel());
+      return preferencesGroup('AI Connector', 'Personalize prompts and connector behavior without changing signing authority.', aiReviewPreferencesPanel());
     case 'access':
       return isMobileAiPathPolicySurface()
         ? preferencesGroup('Protocol Connectors', 'Manage protocol connectors used to prepare wallet-approved actions.', `
@@ -14833,12 +14886,12 @@ function aiReviewPreferencesPanel(): string {
   ].filter(Boolean);
   const status = extras.length ? extras.join(' · ') : 'Defaults';
   return `
-    <section class="ai-review-preferences-card" aria-label="AI review preferences">
+    <section class="ai-review-preferences-card" aria-label="AI connector preferences">
       <div class="ai-review-preferences-head">
         <div>
-          <span>AI review</span>
+          <span>AI connector</span>
           <strong>Planner personalization</strong>
-          <p>Saved prompts and review extras affect AI review only. Wallet approval, submission, and signing stay separate.</p>
+          <p>Saved prompts and review extras affect the AI connector only. Wallet approval, submission, and signing stay separate.</p>
         </div>
         <em>${escapeHtml(status)}</em>
       </div>
@@ -14897,19 +14950,31 @@ function cloudWorkspaceCard(): string {
   if (isMobileAppViewport()) {
     // Android gets the richer icon + tone-pill anatomy. All mobile shells use sibling action buttons
     // so quick actions are not nested inside a sheet-opening button.
+    const nativeMobileApp = IS_ANDROID_APP || IS_IOS_APP;
     const tone = matched ? 'good' : signedIn ? 'warn' : 'idle';
     const railSummaryDetail = IS_ANDROID_APP && !signedIn
       ? 'Saved on this device'
       : summaryDetail;
-    const actionLabel = signedIn ? 'Manage' : 'Sign in';
-    const railActions = `
+    const legacyActionLabel = signedIn ? 'Manage' : 'Sign in';
+    const railActions = nativeMobileApp
+      ? signedIn ? `
+          <span class="rail-conn-actions">
+            <button
+              type="button"
+              class="rail-conn-action danger"
+              data-cloud-action="sign-out"
+              ${state.busy ? 'disabled' : ''}
+            >Sign out</button>
+          </span>
+        ` : ''
+      : `
         <span class="rail-conn-actions">
           <button
             type="button"
             class="rail-conn-action"
             data-mobile-rail-sheet="workspace-storage"
             aria-expanded="${state.activeMobileRailSheet === 'workspace-storage' ? 'true' : 'false'}"
-          >${escapeHtml(actionLabel)}</button>
+          >${escapeHtml(legacyActionLabel)}</button>
           ${signedIn ? `<button type="button" class="rail-conn-action danger" data-cloud-action="sign-out" ${state.busy ? 'disabled' : ''}>Sign out</button>` : ''}
         </span>
       `;
@@ -14934,8 +14999,10 @@ function cloudWorkspaceCard(): string {
     return `
       <section class="workspace-storage-panel ${escapeHtml(mode)} ${signedIn ? 'signed-in' : ''} mobile-rail-trigger-panel" data-layout="workspace-storage-panel" aria-label="Workspace storage status">
         <div
-          class="mobile-rail-sheet-trigger${IS_ANDROID_APP || IS_IOS_APP ? ' rail-conn-trigger' : ''}"
+          class="mobile-rail-sheet-trigger${nativeMobileApp ? ' rail-conn-trigger' : ''}"
+          ${nativeMobileApp ? 'data-mobile-rail-sheet="workspace-storage"' : ''}
           aria-expanded="${state.activeMobileRailSheet === 'workspace-storage' ? 'true' : 'false'}"
+          ${nativeMobileApp ? 'aria-label="Open workspace storage setup" role="button" tabindex="0"' : ''}
         >
           ${trigger}
         </div>
@@ -18355,7 +18422,7 @@ function commandPlanConnectorRouteCard(): string {
     : paired ? 'Computer plan connected' : 'Computer plan connection';
   const detail = website
     ? connected
-      ? 'AI review uses the signed-in connector running on this computer.'
+      ? 'AI Connector uses the signed-in connector running on this computer.'
       : 'Use Codex, Claude, or Gemini from this computer instead of pasting a provider API key.'
     : paired
       ? 'AI planning runs on your signed-in computer. Keep it awake while using Android.'
@@ -18504,7 +18571,7 @@ function websitePlanConnectorSetupPanel(scope: string): string {
       <div class="plan-connector-summary">
         <span>Plan Connector</span>
         <strong>${escapeHtml(setup.connected ? `${connectorLabel} connected` : 'Use your computer plan from the website')}</strong>
-        <p>Run a lightweight local connector for Codex, Claude, or Gemini. The website sends AI review requests to that local bridge instead of storing a provider API key.</p>
+        <p>Run a lightweight local connector for Codex, Claude, or Gemini. The website sends AI Connector requests to that local bridge instead of storing a provider API key.</p>
       </div>
 
       <label class="field compact plan-connector-command-picker">
@@ -18541,7 +18608,7 @@ function websitePlanConnectorSetupPanel(scope: string): string {
         <li>Return here and refresh to confirm the planner.</li>
       </ol>
 
-      <p class="ai-security-note compact">Plan Connector changes only the AI review route. Approvals, submissions, signatures, repeat payments, and proofs remain separate wallet workflow actions.</p>
+      <p class="ai-security-note compact">Plan Connector changes only the AI Connector route. Approvals, submissions, signatures, repeat payments, and proofs remain separate wallet workflow actions.</p>
     </section>
   `;
 }
@@ -19408,7 +19475,7 @@ function agentReviewFilterControl(scope: AgentReviewFilterScope): string {
     attrs: { 'data-agent-review-filter': scope },
     disabled: state.busy,
     className: 'agent-review-filter-control',
-    title: 'Filter by AI review status',
+    title: 'Filter by AI Connector status',
   });
 }
 
@@ -19498,6 +19565,27 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
   const metaHint = generatedPlanMetaHint(displayRecord, guardrailBlocked);
   const agentReviewAction = agentReviewButton(record);
   const reviewActionLayoutClass = agentReviewAction ? 'has-agent-review-action' : 'solo-primary-action';
+  const primaryReviewAction = approvalCapable ? `
+    <button
+      class="review-action-inbox"
+      data-generated-plan-action="queue"
+      data-generated-plan-id="${escapeHtml(record.id)}"
+      ${queueDisabled}
+      title="${escapeHtml(generatedQueuePlanTitle(displayRecord))}"
+    >
+      ${escapeHtml(queueActionLabelForPlan(plan))}
+    </button>
+  ` : `
+    <button
+      class="review-action-proof"
+      data-generated-plan-action="sign-proof"
+      data-generated-plan-id="${escapeHtml(record.id)}"
+      ${proofDisabled}
+      title="${escapeHtml(signProofTitle(displayRecord))}"
+    >
+      Sign proof
+    </button>
+  `;
   return `
     <article class="generated-plan-card review-plan-card ${selected ? 'selected' : ''} ${archived ? 'archived' : ''}" data-layout="review-plan-card">
       <div class="review-plan-card-head">
@@ -19516,28 +19604,8 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
         </div>
         ${generatedPlanHeroValue(displayRecord)}
         <div class="review-plan-actions ${reviewActionLayoutClass}">
+          ${primaryReviewAction}
           ${agentReviewAction}
-          ${approvalCapable ? `
-            <button
-              class="review-action-inbox"
-              data-generated-plan-action="queue"
-              data-generated-plan-id="${escapeHtml(record.id)}"
-              ${queueDisabled}
-              title="${escapeHtml(generatedQueuePlanTitle(displayRecord))}"
-            >
-              ${escapeHtml(queueActionLabelForPlan(plan))}
-            </button>
-          ` : `
-            <button
-              class="review-action-proof"
-              data-generated-plan-action="sign-proof"
-              data-generated-plan-id="${escapeHtml(record.id)}"
-              ${proofDisabled}
-              title="${escapeHtml(signProofTitle(displayRecord))}"
-            >
-              Sign proof
-            </button>
-          `}
         </div>
       </div>
 
@@ -19953,10 +20021,17 @@ function agentReviewButton(record: GeneratedPlanRecord): string {
   `;
 }
 
-function generatedPlanAgentReviewStrip(record: GeneratedPlanRecord): string {
+type AgentReviewStripOptions = {
+  stale?: boolean;
+  fallback?: string;
+  actionType?: string;
+  includeAskPanel?: boolean;
+};
+
+function generatedPlanAgentReviewStrip(record: GeneratedPlanRecord, opts: AgentReviewStripOptions = {}): string {
   const review = record.agentReview;
   if (!review?.required) return '';
-  const stale = isAgentReviewStale(record);
+  const stale = opts.stale ?? isAgentReviewStale(record);
   const label = agentReviewStripLabel(review.status);
   const detail = review.checkedAt
     ? `${agentReviewSourceLabel(review)} - ${formatDateTime(review.checkedAt)}`
@@ -19976,14 +20051,29 @@ function generatedPlanAgentReviewStrip(record: GeneratedPlanRecord): string {
         ${watchBadge}
         ${stale ? '<span class="agent-review-stale-pill" title="The plan changed after this review.">Stale</span>' : ''}
       </div>
-      ${agentReviewDecisionCopy(review)}
-      ${stale ? '<p class="accent-note">This review is stale because the plan changed. Ask the agent again before relying on the decision.</p>' : ''}
+      ${agentReviewMobileDecisionCopy(review, opts.fallback)}
+      ${agentReviewDecisionCopy(review, opts.fallback)}
+      ${stale ? '<p class="accent-note agent-review-stale-copy">This review is stale because the plan changed. Ask the agent again before relying on the decision.</p>' : ''}
       ${review.status === 'needs_input' ? agentReviewQuestionsForm(record) : ''}
-      ${agentEvidenceDrawer(review, { stale, actionType: record.plan.actionType })}
+      ${agentEvidenceDrawer(review, { stale, actionType: opts.actionType ?? record.plan.actionType })}
       ${agentDenialActions(record)}
-      ${agentAskAnythingPanel(record)}
+      ${opts.includeAskPanel === false ? '' : agentAskAnythingPanel(record)}
     </section>
   `;
+}
+
+function agentReviewMobileDecisionCopy(
+  review: AgentPlanReviewState,
+  fallback = 'Agent review is available for context. Sending for approval is still your decision.',
+): string {
+  return `<p class="agent-review-mobile-copy">${escapeHtml(agentReviewCompactDecisionText(review, fallback))}</p>`;
+}
+
+function agentReviewCompactDecisionText(
+  review: AgentPlanReviewState,
+  fallback = 'Agent review is available for context. Sending for approval is still your decision.',
+): string {
+  return compactSentence(review.summary?.trim() || review.reason?.trim() || fallback, 156);
 }
 
 function agentReviewDecisionCopy(
@@ -20006,7 +20096,7 @@ function agentReviewDecisionCopy(
     `
     : '';
   return `
-    <div class="agent-review-copy">
+    <div class="agent-review-copy agent-review-desktop-copy">
       ${summaryHtml}
       ${agentReviewReasonPanel(review, reason)}
     </div>
@@ -20168,7 +20258,7 @@ function agentEvidenceDrawer(
     <details class="agent-evidence-drawer">
       <summary>
         <span class="agent-evidence-summary-left">
-          <span class="agent-evidence-summary-label">Agent findings (${visibleCount})</span>
+          <span class="agent-evidence-summary-label">Review details (${visibleCount})</span>
           <span class="agent-evidence-summary-state ${statusTone}">${escapeHtml(statusLabel)}</span>
         </span>
       </summary>
@@ -20298,36 +20388,23 @@ function agentReviewStripLabel(status: AgentPlanReviewStatus): string {
   }
 }
 
-// Pill label "Codex Connector" for the active Plan Connector (falls back to "Plan Connector" when the
-// connector identity hasn't reached the phone yet — never the generic "Device Agent").
-function connectorPillLabel(connector: AiConnector | undefined): string {
-  return connector ? `${shortConnectorName(connector)} Connector` : 'Plan Connector';
-}
+type AgentReviewPathDisplayRecord = Pick<AgentPlanReviewState, 'source' | 'provider' | 'model' | 'path'>;
 
-function agentReviewPathBadge(review: Pick<AgentPlanReviewState, 'source' | 'provider' | 'model'>): string {
-  // A Plan Connector review is stored under the placeholders provider='paired-bridge'/model='connector';
-  // show the connector name, not "Device Agent". Real on-device agents keep "Device Agent".
-  const isConnector = review.provider === 'paired-bridge' || review.model === 'connector';
-  const label = isConnector ? connectorPillLabel(activePlanConnector()) : agentReviewPathLabel(review.source);
-  const modifier = isConnector ? 'connector' : (review.source ?? 'none');
+function agentReviewPathBadge(review: Partial<AgentReviewPathDisplayRecord>): string {
+  const path = agentReviewDisplayPath(review);
+  const label = agentReviewDisplayPathLabel(path);
+  const modifier = path ?? 'none';
   return `<span class="agent-path-pill ${escapeHtml(modifier)}" title="Agent review path">${escapeHtml(label)}</span>`;
 }
 
-function agentReviewPathLabel(source: AgentReviewSource | undefined): string {
-  switch (source) {
-    case 'hosted':
-      return 'Hosted BYOK';
-    case 'bridge':
-      return 'Local bridge';
-    case 'device-agent':
-      return 'Device Agent';
-    case 'session':
-      return 'Browser session';
-    case 'mock':
-      return 'Local demo';
-    default:
-      return 'No agent';
-  }
+function agentReviewPathLabel(pathOrReview: AgentReviewSource | AgentReviewDisplayPath | Partial<AgentReviewPathDisplayRecord> | undefined): string {
+  const path = typeof pathOrReview === 'object' && pathOrReview
+    ? agentReviewDisplayPath(pathOrReview)
+    : agentReviewDisplayPath({
+        ...(isAgentReviewDisplayPath(pathOrReview) ? { path: pathOrReview } : {}),
+        ...(isAgentReviewSource(pathOrReview) ? { source: pathOrReview } : {}),
+      });
+  return agentReviewDisplayPathLabel(path);
 }
 
 function isAgentReviewSource(value: unknown): value is AgentReviewSource {
@@ -20403,10 +20480,16 @@ function agentReviewQuestionsForm(record: GeneratedPlanRecord): string {
 }
 
 function agentReviewSourceLabel(review: AgentPlanReviewState): string {
-  // Remap records stored under the generic paired-bridge placeholders to the real connector.
-  if (review.provider === 'paired-bridge' || review.model === 'connector') {
+  // Remap Plan Connector records away from generic device-agent transport labels.
+  if (agentReviewDisplayPath(review) === 'plan-connector') {
     const connector = activePlanConnector();
-    return [planConnectorTitle(connector), connectorPlanNote(connector)].join(' - ');
+    const provider = review.provider && review.provider !== 'paired-bridge'
+      ? review.provider
+      : planConnectorTitle(connector);
+    const model = review.model && review.model !== 'connector'
+      ? review.model
+      : connectorPlanNote(connector);
+    return [provider, model].filter(Boolean).join(' - ');
   }
   const parts = [
     review.provider || (review.source ? `${review.source} AI` : 'Agent'),
@@ -20420,7 +20503,7 @@ function agentOverrideStrip(override: AgentReviewOverride | undefined): string {
   const verdict = overrideShortLabel(override);
   const userReason = override.userReason?.trim();
   const agentReason = override.agentReason?.trim();
-  const pathLabel = agentReviewPathLabel(override.source);
+  const pathLabel = agentReviewPathLabel(override);
   return `
     <section class="agent-override-strip" aria-label="Agent override receipt">
       <div>
@@ -20579,16 +20662,16 @@ function generatedPlanCardFooterActions(record: GeneratedPlanRecord): string {
             >
               ${archived ? 'Restore' : 'Archive'}
             </button>
+            <button
+              class="utility danger review-delete-mini"
+              data-generated-plan-action="delete"
+              data-generated-plan-id="${escapeHtml(record.id)}"
+              ${state.busy ? 'disabled' : ''}
+            >
+              Delete
+            </button>
           </div>
         </details>
-        <button
-          class="utility danger review-delete-mini"
-          data-generated-plan-action="delete"
-          data-generated-plan-id="${escapeHtml(record.id)}"
-          ${state.busy ? 'disabled' : ''}
-        >
-          Delete
-        </button>
       </div>
     </div>
   `;
@@ -21552,7 +21635,7 @@ function generatedPlansEmptyState(oneTimeOnly = false, filterHasHiddenMatches = 
   const movedCount = records.filter(hasGeneratedPlanMovedPastReview).length;
   const archivedCount = records.filter((record) => record.status === 'archived').length;
   const detail = filterHasHiddenMatches
-    ? 'No plans match this AI review filter.'
+    ? 'No plans match this AI Connector filter.'
     : records.length === 0
     ? 'Create a plan first. It stays here for checking, then moves to Needs Approval or Done.'
     : activeCount === 0 && movedCount > 0
@@ -21764,7 +21847,7 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
       ? `${readinessLabel} - ${aiConfirmationLabel()}`
       : inactiveConfigured
         ? `${aiPathPreferenceLabel(inventory.inactiveConfigured[0]!.mode)} configured inactive`
-      : 'AI review optional'
+      : 'AI connector optional'
     : configured
       ? `${readinessLabel} - ${aiConfirmationLabel()}`
       : inactiveConfigured
@@ -21774,11 +21857,14 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
     ? aiRailIdentity(inventory, readinessLabel, confirmed)
     : null;
   if (location === 'rail' && isMobileAppViewport()) {
+    const nativeMobileApp = IS_ANDROID_APP || IS_IOS_APP;
     return `
-      <section class="ai-settings-panel ${panelConfigured ? 'configured' : 'optional'} rail-ai-settings mobile-rail-trigger-panel" data-layout="ai-setup-panel" aria-label="AI review status">
+      <section class="ai-settings-panel ${panelConfigured ? 'configured' : 'optional'} rail-ai-settings mobile-rail-trigger-panel" data-layout="ai-setup-panel" aria-label="AI connector status">
         <div
-          class="mobile-rail-sheet-trigger${IS_ANDROID_APP || IS_IOS_APP ? ' rail-conn-trigger' : ''}"
+          class="mobile-rail-sheet-trigger${nativeMobileApp ? ' rail-conn-trigger' : ''}"
+          ${nativeMobileApp ? 'data-mobile-rail-sheet="ai-drafting"' : ''}
           aria-expanded="${state.activeMobileRailSheet === 'ai-drafting' ? 'true' : 'false'}"
+          ${nativeMobileApp ? 'aria-label="Open AI Connector setup" role="button" tabindex="0"' : ''}
         >
           ${aiRailSummaryContent(railIdentity!, { actionHtml: mobileAiRailQuickActions(railIdentity!) })}
         </div>
@@ -21792,7 +21878,7 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
           ? aiRailSummaryContent(railIdentity)
           : `
             <span class="ai-summary-copy">
-              <span>AI review</span>
+              <span>AI connector</span>
               <em>${escapeHtml(summaryDetail)}</em>
             </span>
             <strong class="ai-summary-status">${confirmed ? 'confirmed' : configured ? 'configured' : inactiveConfigured ? 'configured inactive' : 'not configured'}</strong>
@@ -21824,11 +21910,18 @@ function aiRailIdentity(
   });
   // Paired-bridge (Android Plan Connector) reports a generic provider="paired-bridge"/model="connector".
   // Show the real connector the desktop runs (from the QR) + its provider logo instead.
-  if (state.aiSettings.mode === 'device-agent' && state.aiSettings.pairedBridge) {
+  if (state.aiSettings.pairedBridge) {
     const connector = activePlanConnector();
+    identity.path = 'device-agent';
+    identity.pathLabel = 'Plan Connector';
     identity.provider = planConnectorTitle(connector);
     identity.model = connectorPlanNote(connector);
     identity.detail = connectorPlanNote(connector);
+    identity.configured = true;
+    identity.inactive = false;
+    identity.statusLabel = confirmed ? 'confirmed' : 'configured';
+    identity.statusTone = confirmed ? 'confirmed' : 'configured';
+    identity.statusTitle = `${connectorPlanNote(connector)} - ${aiConfirmationLabel()}`;
     identity.logoHint = connectorRailLogoHint(connector);
   }
   if (IS_ANDROID_APP && !identity.configured && !identity.inactive) {
@@ -21876,22 +21969,29 @@ function aiRailActionLabel(identity: AiRailIdentity): string {
 }
 
 function mobileAiRailQuickActions(identity: AiRailIdentity): string {
-  const manageLabel = aiRailActionLabel(identity);
   const clearTarget = aiKeyClearTarget();
-  const quickAction = state.aiSettings.pairedBridge
+  const quickAction = aiRailQuickActionKind({
+    pairedBridge: Boolean(state.aiSettings.pairedBridge),
+    configured: identity.configured,
+    inactive: identity.inactive,
+    clearTarget,
+  });
+  if (quickAction === 'none') return '';
+  const actionButton = quickAction === 'disconnect-plan-connector'
     ? `<button type="button" class="rail-conn-action danger" data-ai-action="unpair-phone">Disconnect</button>`
-    : clearTarget && (identity.configured || identity.inactive)
+    : quickAction === 'clear-key' && clearTarget
       ? `<button type="button" class="rail-conn-action danger" data-ai-action="clear-key" data-ai-clear-mode="${escapeHtml(clearTarget)}" ${!canClearAiKey(clearTarget) ? 'disabled' : ''}>Clear API key</button>`
-      : '';
+      : `
+        <button
+          type="button"
+          class="rail-conn-action"
+          data-mobile-rail-sheet="ai-drafting"
+          aria-expanded="${state.activeMobileRailSheet === 'ai-drafting' ? 'true' : 'false'}"
+        >${escapeHtml(aiRailActionLabel(identity))}</button>
+      `;
   return `
     <span class="rail-conn-actions">
-      <button
-        type="button"
-        class="rail-conn-action"
-        data-mobile-rail-sheet="ai-drafting"
-        aria-expanded="${state.activeMobileRailSheet === 'ai-drafting' ? 'true' : 'false'}"
-      >${escapeHtml(manageLabel)}</button>
-      ${quickAction}
+      ${actionButton}
     </span>
   `;
 }
@@ -21901,7 +22001,7 @@ function aiRailSummaryContent(identity: AiRailIdentity, options: { actionLabel?:
     <span class="ai-summary-identity">
       ${brandLogo(identity.logoHint, 'ai-summary-logo')}
       <span class="ai-summary-copy">
-        <span>AI review</span>
+        <span>AI connector</span>
         <strong>${escapeHtml(identity.provider)}</strong>
         <em>${escapeHtml(identity.detail)}</em>
       </span>
@@ -23333,7 +23433,7 @@ function aiKeySetupActionHtml(scope: string): string {
       data-ai-action="set-confirm-key"
       class="primary ai-key-primary-action"
       ${!canSetAndConfirmAiKey() ? 'disabled' : ''}
-      title="${escapeHtml(canSetAndConfirmAiKey() ? 'Save this key and check the selected AI review route.' : aiConfirmDisabledReason())}"
+      title="${escapeHtml(canSetAndConfirmAiKey() ? 'Save this key and check the selected AI Connector route.' : aiConfirmDisabledReason())}"
     >Set and confirm API key</button>
   `;
 }
@@ -23400,9 +23500,9 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
     ? ' autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="text"'
     : '';
   const securityCopy = state.aiSettings.mode === 'hosted'
-    ? 'Hosted BYOK relays this key only for AI review requests. It cannot queue approvals, create repeat payments, approve, submit, or sign.'
+    ? 'Hosted BYOK relays this key only for AI Connector requests. It cannot queue approvals, create repeat payments, approve, submit, or sign.'
     : state.aiSettings.mode === 'device-agent'
-      ? 'Device Agent stores the AI review route config in the selected runtime boundary. Queueing, repeat payments, approvals, submissions, and signatures remain separate workflow actions.'
+      ? 'Device Agent stores the AI Connector route config in the selected runtime boundary. Queueing, repeat payments, approvals, submissions, and signatures remain separate workflow actions.'
     : state.aiSettings.mode === 'bridge'
       ? 'Local Bridge AI uses your normal provider key from the local runtime. Needs Approval, repeat payments, proofs, and wallet signatures remain separate workflow actions.'
         : `${sessionDescriptor} keys stay in ${sessionScope} and only help prepare or review requests. Queueing, repeat payments, approvals, submissions, and signatures use the active workflow, not the AI key.`;
@@ -23506,6 +23606,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
             })),
             { value: CUSTOM_AI_MODEL_VALUE, label: 'Custom model', meta: 'Model' },
           ],
+          className: 'ai-model-preset-picker',
           attrs: { 'data-ai-control': 'model-select' },
           disabled: routeConfigDisabled,
           title: routeConfigLockedTitle,
@@ -23854,7 +23955,7 @@ function aiModeLimitations(): string {
       <div class="ai-limitations">
         <span>Hosted BYOK boundary</span>
         <ul>
-          <li>Agentic relays the key only for the current AI review request.</li>
+          <li>Agentic relays the key only for the current AI Connector request.</li>
           <li>No AI path can approve, submit, sign, or change workflow capability.</li>
         </ul>
       </div>
@@ -23865,7 +23966,7 @@ function aiModeLimitations(): string {
       <div class="ai-limitations">
         <span>Device Agent boundary</span>
         <ul>
-          <li>Device Agent is a gated development runtime path for AI review only.</li>
+          <li>Device Agent is a gated development runtime path for AI Connector only.</li>
           <li>Approvals, submissions, signatures, repeat payments, and proofs still use the normal workflow pipeline.</li>
         </ul>
       </div>
@@ -23875,7 +23976,7 @@ function aiModeLimitations(): string {
     <div class="ai-limitations">
       <span>Local bridge AI boundary</span>
       <ul>
-        <li>Local bridge AI reviews requests from your machine.</li>
+        <li>Local bridge AI Connector reviews requests from your machine.</li>
         <li>Private local workflow remains optional and separate from AI setup.</li>
       </ul>
     </div>
@@ -24453,8 +24554,8 @@ function confirmBridgeAiPlannerFromStatus(): void {
   setAiPlannerConfirmation(
     'confirmed',
     state.aiStatus.engine === 'connector'
-      ? `${bridgeConnectorDisplayLabel(state.aiStatus)} is signed in for local AI review. The first AI request will be the real auth check. Workflow capability is unchanged.`
-      : 'Local bridge AI is configured and reachable for AI review. Workflow capability is unchanged.',
+      ? `${bridgeConnectorDisplayLabel(state.aiStatus)} is signed in for local AI Connector. The first AI request will be the real auth check. Workflow capability is unchanged.`
+      : 'Local bridge AI is configured and reachable for AI Connector. Workflow capability is unchanged.',
   );
 }
 
@@ -24517,6 +24618,10 @@ function aiSetupInventory(): AiSetupInventory {
     deviceAgent: deviceAgentSetupSnapshot({
       status: state.deviceAgentStatus,
       visible: deviceAgentModeVisible(),
+      pairedBridge: Boolean(state.aiSettings.pairedBridge),
+      pairedProvider: planConnectorTitle(activePlanConnector()),
+      pairedModel: connectorPlanNote(activePlanConnector()),
+      pairedLogoHint: connectorRailLogoHint(activePlanConnector()),
     }),
   });
 }
@@ -24741,8 +24846,8 @@ function aiGenerateDisabledReason(): string {
     if (!deviceAgentModeVisible()) return 'Device Agent is not enabled for this build or wallet.';
     if (!status?.available) return 'Refresh Device Agent status before generating.';
     if (!status.configured) return 'Add a Device Agent key, then confirm planner.';
-    if (!deviceAgentStatusReadyForDrafts(status)) return 'Start or confirm the Device Agent runtime before AI review.';
-    return 'Device Agent runtime is ready for AI review.';
+    if (!deviceAgentStatusReadyForDrafts(status)) return 'Start or confirm the Device Agent runtime before using AI Connector.';
+    return 'Device Agent runtime is ready for AI Connector.';
   }
   if (state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai') {
     return OPENAI_BROWSER_SESSION_DISABLED_REASON;
@@ -25252,7 +25357,7 @@ function syncAiActionButtons(): void {
     const canSet = canSetAndConfirmAiKey();
     setConfirmButton.disabled = !canSet;
     setConfirmButton.title = canSet
-      ? 'Save this key and check the selected AI review route.'
+      ? 'Save this key and check the selected AI Connector route.'
       : aiConfirmDisabledReason();
   }
   for (const confirmButton of document.querySelectorAll<HTMLButtonElement>('[data-ai-action="confirm-planner"]')) {
@@ -26319,7 +26424,10 @@ function advancedLabInput(lab: LabDefinition): string {
   const error = state.labFieldErrors[receiptFieldErrorKey(lab.id, '__advanced')];
   return `
     <label class="field agent-prompt lab-intent-document ${error ? 'field-error' : ''}">
-      <span>Evidence note *</span>
+      <span class="field-label-row">
+        <span class="field-label-text">Evidence note *</span>
+        ${mobileExpandNoteLink({ kind: 'lab-advanced', labId: lab.id })}
+      </span>
       <textarea id="labInput" ${state.busy ? 'disabled' : ''}>${escapeHtml(labInput(lab.id))}</textarea>
       ${error ? `<em class="field-error-text">${escapeHtml(error)}</em>` : ''}
     </label>
@@ -29369,19 +29477,37 @@ function closePreferencesMobilePickerInteractions(): void {
 }
 
 function bindMobileRailSheet(): void {
-  for (const trigger of document.querySelectorAll<HTMLButtonElement>('[data-mobile-rail-sheet]')) {
+  const nestedInteractiveSelector = 'button, a, input, select, textarea, [data-mobile-rail-sheet-ignore]';
+  const eventStartedOnNestedInteractive = (event: Event, trigger: HTMLElement): boolean => {
+    const target = event.target;
+    if (!(target instanceof Element) || target === trigger) return false;
+    const interactive = target.closest(nestedInteractiveSelector);
+    return Boolean(interactive && interactive !== trigger);
+  };
+  const openFromTrigger = (event: Event, trigger: HTMLElement) => {
+    if (eventStartedOnNestedInteractive(event, trigger)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const sheet = trigger.dataset.mobileRailSheet;
+    if (!isMobileRailSheet(sheet)) return;
+    if (shouldResetAiReviewSetupTabOnMobileRailOpen({
+      currentSheet: state.activeMobileRailSheet,
+      nextSheet: sheet,
+    })) {
+      state.aiReviewSetupTab = preferredAiReviewSetupTabForMobileRailOpen(sheet);
+    }
+    openMobileRailSheet(sheet);
+  };
+  for (const trigger of document.querySelectorAll<HTMLElement>('[data-mobile-rail-sheet]')) {
     trigger.addEventListener('click', (event) => {
+      openFromTrigger(event, trigger);
+    });
+    if (trigger instanceof HTMLButtonElement) continue;
+    trigger.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      if (eventStartedOnNestedInteractive(event, trigger)) return;
       event.preventDefault();
-      event.stopPropagation();
-      const sheet = trigger.dataset.mobileRailSheet;
-      if (!isMobileRailSheet(sheet)) return;
-      if (shouldResetAiReviewSetupTabOnMobileRailOpen({
-        currentSheet: state.activeMobileRailSheet,
-        nextSheet: sheet,
-      })) {
-        state.aiReviewSetupTab = preferredAiReviewSetupTabForMobileRailOpen(sheet);
-      }
-      openMobileRailSheet(sheet);
+      openFromTrigger(event, trigger);
     });
   }
 
@@ -29498,6 +29624,8 @@ function bindExpandNoteSheet(): void {
     });
   }
 
+  bindMobileExpandNoteSourceFields();
+
   const sheetRoot = document.querySelector<HTMLElement>('[data-expand-note-root]');
   if (!sheetRoot) return;
 
@@ -29520,6 +29648,13 @@ function bindExpandNoteSheet(): void {
     closeExpandNoteSheet();
   });
 
+  syncExpandNoteComposerViewport();
+  expandNoteViewportController = new AbortController();
+  const viewportSignal = expandNoteViewportController.signal;
+  window.visualViewport?.addEventListener('resize', syncExpandNoteComposerViewport, { signal: viewportSignal });
+  window.visualViewport?.addEventListener('scroll', syncExpandNoteComposerViewport, { signal: viewportSignal });
+  window.addEventListener('resize', syncExpandNoteComposerViewport, { signal: viewportSignal });
+
   expandNoteSheetController = new AbortController();
   const { signal } = expandNoteSheetController;
   window.addEventListener('keydown', (event) => {
@@ -29537,6 +29672,42 @@ function bindExpandNoteSheet(): void {
 function closeExpandNoteSheetInteractions(): void {
   expandNoteSheetController?.abort();
   expandNoteSheetController = null;
+  expandNoteViewportController?.abort();
+  expandNoteViewportController = null;
+}
+
+function expandNoteRefForSourceField(source: HTMLTextAreaElement): ExpandNoteFieldRef | null {
+  if (source.id === 'agentPrompt') return { kind: 'agent-prompt' };
+  if (source.id === 'recurringNote') return { kind: 'recurring-note' };
+  if (source.id === 'labInput') return { kind: 'lab-advanced', labId: state.activeLab };
+  const fieldId = source.dataset.labField;
+  const labId = source.dataset.labId || state.activeLab;
+  if (fieldId && labId) return { kind: 'lab-field', labId, fieldId };
+  return null;
+}
+
+function bindMobileExpandNoteSourceFields(): void {
+  if (!isMobileAppViewport()) return;
+  const selector = [
+    '#agentPrompt',
+    '#recurringNote',
+    '#labInput',
+    'textarea[data-lab-field][data-lab-id]',
+  ].join(',');
+  for (const source of document.querySelectorAll<HTMLTextAreaElement>(selector)) {
+    if (source.disabled) continue;
+    const ref = expandNoteRefForSourceField(source);
+    if (!ref) continue;
+    const openFromSource = (event: Event) => {
+      if (!isMobileAppViewport() || state.activeExpandNoteField) return;
+      event.preventDefault();
+      event.stopPropagation();
+      source.blur();
+      openExpandNoteSheet(ref);
+    };
+    source.addEventListener('pointerdown', openFromSource);
+    source.addEventListener('focus', openFromSource);
+  }
 }
 
 function syncExpandNoteSourceField(ref: ExpandNoteFieldRef, value: string): void {
@@ -29548,6 +29719,11 @@ function syncExpandNoteSourceField(ref: ExpandNoteFieldRef, value: string): void
   }
   if (ref.kind === 'recurring-note') {
     const source = document.querySelector<HTMLTextAreaElement>('#recurringNote');
+    if (source && source.value !== value) source.value = value;
+    return;
+  }
+  if (ref.kind === 'lab-advanced') {
+    const source = document.querySelector<HTMLTextAreaElement>('#labInput');
     if (source && source.value !== value) source.value = value;
     return;
   }
@@ -31356,7 +31532,7 @@ async function runDenyGeneratedPlanWithAgentReason(planId: string): Promise<void
     240,
   );
   const note = compactSentence(
-    `Agent path: ${agentReviewPathLabel(review.source)}. Agent denied at ${formatDateTime(review.checkedAt ?? deniedAt)}.`,
+    `Agent path: ${agentReviewPathLabel(review)}. Agent denied at ${formatDateTime(review.checkedAt ?? deniedAt)}.`,
     240,
   );
   let proofSignature: string | undefined;
@@ -31422,13 +31598,14 @@ async function runAskAgentAnything(planId: string, question: string): Promise<vo
     pushToast('error', 'Agent not detected', agentReviewUnavailableReason());
     return;
   }
+  const currentReviewIdentity = currentAgentReviewIdentity();
   const review = record.agentReview ?? {
     schemaVersion: AGENT_REVIEW_SCHEMA_VERSION,
     required: true,
     status: 'checking',
     reason: ASK_AGENT_CONVERSATION_ONLY_REASON,
     checkedAt: new Date().toISOString(),
-    source: state.aiSettings.mode,
+    ...currentReviewIdentity,
   };
   const exchangeId = `ask_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
   const askedAt = new Date().toISOString();
@@ -31437,9 +31614,9 @@ async function runAskAgentAnything(planId: string, question: string): Promise<vo
     question: question.slice(0, 400),
     askedAt,
     pending: true,
-    source: state.aiSettings.mode,
-    provider: agentReviewProviderLabel(),
-    model: agentReviewModelLabel(),
+    source: currentReviewIdentity.source,
+    provider: currentReviewIdentity.provider,
+    model: currentReviewIdentity.model,
   };
   const initialConversation = [...(review.conversation ?? []), pendingExchange].slice(-6);
   await updateGeneratedPlan(planId, {
@@ -31555,9 +31732,7 @@ async function runReviewGeneratedPlan(planId: string): Promise<void> {
     status: 'checking',
     reason: 'Agent is reviewing this plan before it can move forward.',
     checkedAt: new Date().toISOString(),
-    provider: agentReviewProviderLabel(),
-    model: agentReviewModelLabel(),
-    source: state.aiSettings.mode,
+    ...currentAgentReviewIdentity(),
     ...(previousReview?.history?.length ? { history: previousReview.history } : {}),
   };
   state.activeOperation = 'review-agent-plan';
@@ -33046,7 +33221,7 @@ function completedPlanFromAgentOverride(receipt: ActionReceipt): CompletedPlanRe
       ['Type', 'Agent override proof'],
       ['Status', status],
       ['Plan', override.planSummary],
-      ['Agent path', agentReviewPathLabel(review.source)],
+      ['Agent path', agentReviewPathLabel(review)],
       ['Agent said', review.reason || 'No reason recorded.'],
       review.summary ? ['Agent summary', review.summary] : undefined,
       review.provider ? ['Agent provider', review.provider] : undefined,
@@ -33574,7 +33749,7 @@ function agentDenialProofMessage(plan: AgentPlan, review: AgentPlanReviewState):
     `Approval: ${plan.approval}`,
     `Parameters: ${stableJson(plan.parameters)}`,
     `User notes: ${plan.userNotes || 'None'}`,
-    `Agent path: ${agentReviewPathLabel(review.source)}`,
+    `Agent path: ${agentReviewPathLabel(review)}`,
     `Agent provider: ${review.provider || 'unspecified'}`,
     `Agent model: ${review.model || 'unspecified'}`,
     `Agent decided at: ${review.checkedAt ?? 'not recorded'}`,
@@ -33824,9 +33999,7 @@ function agentReviewStateFromResult(
     reason: result.reason,
     summary: result.summary,
     checkedAt: result.checkedAt,
-    provider: agentReviewProviderLabel(),
-    model: agentReviewModelLabel(),
-    source: state.aiSettings.mode,
+    ...currentAgentReviewIdentity(),
     evidence: result.evidence,
     ...(checks?.length ? { checks } : {}),
     ...(result.questions?.length ? { questions: result.questions } : {}),
@@ -34505,7 +34678,10 @@ function isAgentReviewStale(record: GeneratedPlanRecord | undefined): boolean {
   const review = record?.agentReview;
   if (!review?.reviewedPlanFingerprint) return false;
   if (review.status !== 'approved' && review.status !== 'needs_input' && review.status !== 'denied') return false;
-  return planFingerprint(planWithRuntimeTokenLabels(record!.plan)) !== review.reviewedPlanFingerprint;
+  const currentFingerprint = planFingerprint(record!.plan);
+  const normalizedFingerprint = planFingerprint(planWithRuntimeTokenLabels(record!.plan));
+  return currentFingerprint !== review.reviewedPlanFingerprint &&
+    normalizedFingerprint !== review.reviewedPlanFingerprint;
 }
 
 function appendReviewAttempt(prev: AgentReviewAttempt[] | undefined, attempt: AgentReviewAttempt): AgentReviewAttempt[] {
@@ -34534,6 +34710,7 @@ async function recordAgentOverrideReceipt(record: GeneratedPlanRecord, userReaso
     ...(review.provider ? { provider: review.provider } : {}),
     ...(review.model ? { model: review.model } : {}),
     ...(review.source ? { source: review.source } : {}),
+    ...(agentReviewDisplayPath(review) ? { path: agentReviewDisplayPath(review)! } : {}),
   };
   await updateGeneratedPlan(record.id, { agentOverride: overrideEntry }).catch(() => undefined);
   const receipt: ActionReceipt = {
@@ -34613,6 +34790,25 @@ function agentReviewModelLabel(): string {
     return state.deviceAgentStatus?.model ?? state.aiSettings.model ?? 'model configured';
   }
   return state.aiSettings.model || aiProviderPresetById(state.aiSettings.provider).model;
+}
+
+function currentAgentReviewIdentity(): Pick<AgentPlanReviewState, 'provider' | 'model' | 'source' | 'path'> {
+  const source = state.aiSettings.mode;
+  const provider = agentReviewProviderLabel();
+  const model = agentReviewModelLabel();
+  const path = agentReviewDisplayPath({
+    source,
+    provider,
+    model,
+    pairedBridge: state.aiSettings.pairedBridge,
+    bridgeConnector: state.aiSettings.mode === 'bridge' && state.aiStatus?.engine === 'connector',
+  });
+  return {
+    provider,
+    model,
+    source,
+    ...(path ? { path } : {}),
+  };
 }
 
 function factSetForContext(facts: AgentReviewFactSet): Record<string, unknown> | undefined {
@@ -37129,7 +37325,7 @@ async function runSaveDirectAiKey(): Promise<void> {
           ? 'Android session key entered'
           : 'Browser session key entered',
       state.aiSettings.mode === 'hosted'
-        ? 'Hosted BYOK will relay only submitted AI review requests. Queueing, schedules, and signing stay in the active workflow.'
+        ? 'Hosted BYOK will relay only submitted AI Connector requests. Queueing, schedules, and signing stay in the active workflow.'
         : state.aiSettings.mode === 'device-agent'
           ? 'Device Agent config was staged for the gated runtime. Queueing, schedules, and signing stay in the active workflow.'
         : `${IS_ANDROID_APP ? 'Android session' : 'Browser session'} AI can review requests in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'}. Queueing, schedules, and signing stay in the active workflow.`,
@@ -37263,7 +37459,7 @@ async function runConfirmAiPlanner(): Promise<void> {
   }
 
   state.activeOperation = 'confirm-ai-planner';
-  const toastId = pushToast('pending', 'Confirming planner', 'Checking the selected AI review route.');
+  const toastId = pushToast('pending', 'Confirming planner', 'Checking the selected AI Connector route.');
   try {
     await run('ai', async () => {
       assertCustomOpenAiCompatibleSettings(state.aiSettings);
@@ -37289,8 +37485,8 @@ async function runConfirmAiPlanner(): Promise<void> {
         setAiPlannerConfirmation(
           'confirmed',
           state.aiStatus.engine === 'connector'
-            ? `${bridgeConnectorDisplayLabel(state.aiStatus)} is signed in for local AI review. The first AI request will be the real auth check. Workflow capability is unchanged.`
-            : 'Local bridge AI is configured and reachable for AI review. Workflow capability is unchanged.',
+            ? `${bridgeConnectorDisplayLabel(state.aiStatus)} is signed in for local AI Connector. The first AI request will be the real auth check. Workflow capability is unchanged.`
+            : 'Local bridge AI is configured and reachable for AI Connector. Workflow capability is unchanged.',
         );
         replaceToast(
           toastId,
@@ -37310,7 +37506,7 @@ async function runConfirmAiPlanner(): Promise<void> {
           'confirmed',
           hostedBlockReason
             ? `${hostedBlockReason} Hosted BYOK key is staged; workflow capability is unchanged.`
-            : 'Hosted BYOK route is reachable for AI review requests only. Provider key validity is checked on the first AI request. Workflow capability is unchanged.',
+            : 'Hosted BYOK route is reachable for AI Connector requests only. Provider key validity is checked on the first AI request. Workflow capability is unchanged.',
         );
         replaceToast(
           toastId,
@@ -37343,8 +37539,8 @@ async function runConfirmAiPlanner(): Promise<void> {
             path: '/api/device-agent/status',
           },
         ];
-        setAiPlannerConfirmation('confirmed', 'Device Agent runtime is configured for AI review. Workflow capability is unchanged.');
-        replaceToast(toastId, 'success', 'Planner confirmed', 'Device Agent route is ready for AI review.');
+        setAiPlannerConfirmation('confirmed', 'Device Agent runtime is configured for AI Connector. Workflow capability is unchanged.');
+        replaceToast(toastId, 'success', 'Planner confirmed', 'Device Agent route is ready for AI Connector.');
         return;
       }
 
@@ -37421,7 +37617,7 @@ async function runRefreshDeviceAgentStatus(): Promise<void> {
       'Device Agent refreshed',
       status.available
         ? status.configured
-          ? 'Device Agent runtime config is staged for AI review.'
+          ? 'Device Agent runtime config is staged for AI Connector.'
           : 'Device Agent runtime is visible but not configured.'
         : status.message || 'Device Agent runtime is unavailable.',
     );
@@ -37441,7 +37637,7 @@ async function runStopDeviceAgentRuntime(): Promise<void> {
       'success',
       'Device Agent stopped',
       status.state === 'stopped'
-        ? 'Device Agent runtime stopped. Config is preserved; start again to resume AI review.'
+        ? 'Device Agent runtime stopped. Config is preserved; start again to resume AI Connector.'
         : status.message || 'Device Agent runtime is no longer running.',
     );
   }, {
@@ -37684,17 +37880,17 @@ function aiClearMessage(mode: AiSettings['mode'] = state.aiSettings.mode): strin
 
 function aiModeToastMessage(mode: AiSettings['mode']): string {
   if (mode === 'bridge') {
-    return 'Local Bridge AI reviews through the local runtime. Private local workflow storage remains optional.';
+    return 'Local Bridge AI Connector runs through the local runtime. Private local workflow storage remains optional.';
   }
   if (mode === 'device-agent') {
-    return 'Device Agent AI uses the gated runtime path for AI review only.';
+    return 'Device Agent AI uses the gated runtime path for AI Connector only.';
   }
   if (mode === 'hosted') {
     return 'Hosted BYOK reviews requests only. Workflow actions still require explicit wallet review.';
   }
   return IS_ANDROID_APP
-    ? 'Android session AI reviews requests only and keeps the key in this app runtime.'
-    : 'Browser session AI reviews requests only and keeps the key in this tab.';
+    ? 'Android session AI Connector reviews requests only and keeps the key in this app runtime.'
+    : 'Browser session AI Connector reviews requests only and keeps the key in this tab.';
 }
 
 function setAiPlannerMode(mode: AiSettings['mode']): void {
@@ -39755,9 +39951,7 @@ function recurringAgentReviewErrorState(err: unknown, plan: AgentPlan): AgentPla
     reason: compactSentence(`Agent review failed: ${message}. The repeat schedule was paused instead of started.`, 280),
     summary: 'Agent review failed; repeat schedule paused.',
     checkedAt,
-    provider: agentReviewProviderLabel(),
-    model: agentReviewModelLabel(),
-    source: state.aiSettings.mode,
+    ...currentAgentReviewIdentity(),
     evidence: {
       findings: [
         { label: 'Agent review', value: message, tone: 'fail' },
@@ -49707,9 +49901,9 @@ function preparedActionCard(action: PreparedAction): string {
                 ${action.status === 'failed' || action.txError ? `<button class="utility inbox-footer-action" data-debug-export data-action-id="${escapeHtml(action.id)}">Copy debug log</button>` : ''}
                 <button class="utility inbox-footer-action" data-action-op="archive" data-action-id="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''} title="Remove from Needs Approval without signing a denial proof.">Archive</button>
                 <button class="utility danger inbox-footer-action" data-action-op="reject" data-action-id="${escapeHtml(action.id)}" ${state.busy || isTerminalPreparedAction(action) ? 'disabled' : ''}>${escapeHtml(decisionLabels.reject)}</button>
+                <button class="utility danger recurring-delete-mini" data-inbox-delete="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''}>Delete</button>
               </div>
             </details>
-            <button class="utility danger recurring-delete-mini" data-inbox-delete="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''}>Delete</button>
           </div>
         </div>
       </div>
@@ -51131,6 +51325,9 @@ function preparedActionAgentReviewStrip(action: PreparedAction): string {
     cluster: action.cluster,
     status: 'queued',
     agentReview: action.agentReview,
+  }, {
+    stale: false,
+    actionType: action.kind,
   });
 }
 
@@ -52043,7 +52240,7 @@ function recurringList(): string {
   }
   const payments = filterRecurringPaymentsByAgentReview(allPayments);
   if (payments.length === 0) {
-    return signaturePlaceholder('No repeats match', 'No saved repeat payments match this AI review filter.');
+    return signaturePlaceholder('No repeats match', 'No saved repeat payments match this AI Connector filter.');
   }
   const paginatedPayments = paginateList(payments, 'recurring');
   if (paginatedPayments.items.length > 1 && isMobileAppViewport()) {
@@ -52305,8 +52502,9 @@ function recurringAgentReviewStrip(payment: RecurringPayment): string {
         <em>${escapeHtml(detail)}</em>
         ${agentReviewPathBadge(review)}
       </div>
+      ${agentReviewMobileDecisionCopy(review, stateDetail)}
       ${agentReviewDecisionCopy(review, stateDetail)}
-      <p class="accent-note">${escapeHtml(stateDetail)}</p>
+      <p class="accent-note recurring-agent-state-note ${payment.status === 'paused' || review.status !== 'approved' ? 'attention' : ''}">${escapeHtml(stateDetail)}</p>
       ${agentEvidenceDrawer(review, { actionType: 'recurring_payment' })}
     </section>
   `;
@@ -52320,6 +52518,8 @@ function recurringCardFooter(
   nextRuns: string[],
 ): string {
   const completed = isRecurringPaymentCompleted(payment);
+  const safePaymentId = escapeHtml(payment.id);
+  const historyLabel = history ? 'Refresh past payments' : 'Load past payments';
   return `
     <div class="recurring-card-footer-row">
       <div class="recurring-card-footer-stack">
@@ -52328,7 +52528,16 @@ function recurringCardFooter(
         ${recurringNotificationsPanel(payment, notifications, source)}
       </div>
       <div class="recurring-card-footer-actions">
-        <button class="utility danger recurring-delete-mini" data-recurring-op="delete" data-recurring-id="${payment.id}" ${completed || state.busy ? 'disabled' : ''}>Delete</button>
+        <button class="utility danger recurring-delete-mini" data-recurring-op="delete" data-recurring-id="${safePaymentId}" ${completed || state.busy ? 'disabled' : ''}>Delete</button>
+        <div class="mobile-card-footer-actions recurring-card-mobile-actions" aria-label="Mobile repeat actions">
+          <details class="mobile-card-action-menu">
+            <summary>More actions</summary>
+            <div class="mobile-card-action-menu-body">
+              <button class="utility recurring-history-action" data-recurring-op="history" data-recurring-id="${safePaymentId}" ${state.busy ? 'disabled' : ''}>${escapeHtml(historyLabel)}</button>
+              <button class="utility danger recurring-delete-mini" data-recurring-op="delete" data-recurring-id="${safePaymentId}" ${completed || state.busy ? 'disabled' : ''}>Delete</button>
+            </div>
+          </details>
+        </div>
       </div>
     </div>
   `;
@@ -55611,7 +55820,7 @@ async function runPasteAiKey(targetScope?: string): Promise<void> {
   const input = aiApiKeyInput(targetScope);
   if (input) input.value = trimmed;
   syncAiActionButtons();
-  setAiKeyPasteStatus(targetScope, 'success', 'Key pasted', 'Confirm planner or use it for AI review.');
+  setAiKeyPasteStatus(targetScope, 'success', 'Key pasted', 'Confirm planner or use it for AI Connector.');
 }
 
 function openAndroidMwaTest(): void {
@@ -57711,6 +57920,7 @@ function parseAgentPlanReviewState(value: unknown): AgentPlanReviewState | undef
     ...(typeof value.provider === 'string' && { provider: value.provider }),
     ...(typeof value.model === 'string' && { model: value.model }),
     ...(isAgentReviewSource(value.source) ? { source: value.source } : {}),
+    ...(isAgentReviewDisplayPath(value.path) ? { path: value.path } : {}),
     ...(isJsonObject(value.evidence) && { evidence: value.evidence }),
     ...(checks && { checks }),
     ...(questions && { questions }),
@@ -57809,6 +58019,7 @@ function parseAgentReviewOverride(value: unknown): AgentReviewOverride | undefin
     ...(typeof value.provider === 'string' && { provider: value.provider }),
     ...(typeof value.model === 'string' && { model: value.model }),
     ...(isAgentReviewSource(value.source) ? { source: value.source } : {}),
+    ...(isAgentReviewDisplayPath(value.path) ? { path: value.path } : {}),
   };
 }
 

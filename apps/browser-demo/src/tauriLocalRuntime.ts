@@ -386,7 +386,7 @@ function localBridgeAiEngineControlsHtml(): string {
     <section class="tauri-local-ai-engine" aria-labelledby="tauri-local-ai-engine-title">
       <header>
         <h4 id="tauri-local-ai-engine-title">Local Bridge AI engine</h4>
-        <p>Choose how the local bridge should run AI review.</p>
+        <p>Choose how the local bridge should run AI Connector.</p>
       </header>
       <div class="bridge-engine-toggle" role="group" aria-label="Local Bridge AI engine">
         <button type="button" class="utility ${engine === 'api-key' ? 'active' : ''}" data-tauri-runtime-engine="api-key" ${state.saving ? 'disabled' : ''}>Provider API key</button>

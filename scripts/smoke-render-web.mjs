@@ -377,7 +377,10 @@ async function verifyAppInteractionContracts(page, origin, wallet) {
   }
   const noWalletCloudCta = await page.evaluate(`(() => {
     const buttons = Array.from(document.querySelectorAll('.rail-cloud-actions button'));
-    return buttons.some((button) => /Connect wallet to sign in/i.test(button.textContent || '') && button.dataset.firstRunAction);
+    return buttons.some((button) => (
+      /Connect (Cloud Storage|wallet to sign in)/i.test(button.textContent || '') &&
+      (button.dataset.cloudAction === 'sign-in' || Boolean(button.dataset.firstRunAction))
+    ));
   })()`);
   assert(noWalletCloudCta, 'cloud sign-in CTA did not route through wallet connect when no wallet is connected');
 
@@ -684,6 +687,48 @@ async function appLayoutReport(page, label) {
         if (overlaps) errors.push('review cards ' + i + ' and ' + j + ' overlap');
       }
     }
+    const visible = (element) => {
+      if (!element) return false;
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    };
+    const mobileCardContracts = usesMobileTabs
+      ? Array.from(document.querySelectorAll('[data-layout="review-plan-card"], .approval-ticket.inbox-approval-card, .recurring-item.recurring-card')).map((card, index) => {
+        const rect = card.getBoundingClientRect();
+        const approvalEffectVisible = Array.from(card.querySelectorAll('.approval-effect')).some(visible);
+        const desktopAgentCopyVisible = Array.from(card.querySelectorAll('.agent-review-desktop-copy')).some(visible);
+        const mobileAgentCopyVisible = Array.from(card.querySelectorAll('.agent-review-mobile-copy')).some(visible);
+        const directDeleteVisible = Array.from(card.querySelectorAll(':scope .review-plan-footer-actions > .review-delete-mini, :scope .inbox-approval-footer-row > .recurring-delete-mini, :scope .recurring-card-footer-actions > .recurring-delete-mini')).some(visible);
+        const hasAgentReview = Boolean(card.querySelector('.agent-review-strip'));
+        const kind = card.matches('[data-layout="review-plan-card"]')
+          ? 'review'
+          : card.matches('.inbox-approval-card')
+            ? 'approval'
+            : 'recurring';
+        return {
+          approvalEffectVisible,
+          desktopAgentCopyVisible,
+          directDeleteVisible,
+          hasAgentReview,
+          height: rect.height,
+          index,
+          kind,
+          mobileAgentCopyVisible,
+        };
+      })
+      : [];
+    for (const card of mobileCardContracts) {
+      if (card.height > window.innerHeight * 1.12) {
+        errors.push('mobile ' + card.kind + ' card ' + card.index + ' exceeds one viewport');
+      }
+      if (card.approvalEffectVisible) errors.push('mobile ' + card.kind + ' card ' + card.index + ' shows approval effect copy');
+      if (card.desktopAgentCopyVisible) errors.push('mobile ' + card.kind + ' card ' + card.index + ' shows desktop agent review copy');
+      if (card.directDeleteVisible) errors.push('mobile ' + card.kind + ' card ' + card.index + ' exposes direct delete action');
+      if (card.hasAgentReview && !card.mobileAgentCopyVisible) {
+        errors.push('mobile ' + card.kind + ' card ' + card.index + ' hides compact agent decision copy');
+      }
+    }
     const connectionTriggers = Array.from(document.querySelectorAll('.rail-conn-trigger')).map((trigger, index) => {
       const rect = trigger.getBoundingClientRect();
       const action = trigger.querySelector('.rail-conn-action');
@@ -710,7 +755,7 @@ async function appLayoutReport(page, label) {
         errors.push('connection trigger ' + trigger.index + ' action clips outside row');
       }
     }
-    return { connectionTriggers, errors, innerWidth, label, rects, reviewCards, scrollWidth, scrollY: window.scrollY };
+    return { connectionTriggers, errors, innerWidth, label, mobileCardContracts, rects, reviewCards, scrollWidth, scrollY: window.scrollY };
   })()`);
 }
 
@@ -1191,23 +1236,104 @@ async function connectFakeWallet(page) {
     const discoverSelector = '[data-start-action="discover"], [data-first-run-action="discover-wallets"], #discover';
     const connectSelector = '[data-start-action="connect"], [data-first-run-action="connect-wallet"], #connect';
     await page.waitFor(`Boolean(document.querySelector(${JSON.stringify(discoverSelector)}))`);
+    await waitForSmokeWalletRegistered(page);
     await clickAndWait(page, discoverSelector, 'discover wallet button');
-    await page.evaluate(`(() => {
-      const select = document.querySelector('#walletSelect');
-      if (!select || select.value) return;
-      const option = Array.from(select.options).find((entry) => !entry.disabled && entry.value);
-      if (!option) return;
-      select.value = option.value;
-      select.dispatchEvent(new Event('change', { bubbles: true }));
-    })()`);
-    await page.waitFor(`Array.from(document.querySelectorAll(${JSON.stringify(connectSelector)})).some((el) => !el.disabled)`);
-    await clickAndWait(page, connectSelector, 'connect wallet button');
+    const hasMultiPathChooser = await page.evaluate(`Boolean(document.querySelector('[data-desktop-flow-action="method:extension"]'))`);
+    if (hasMultiPathChooser) {
+      await clickAndWait(page, '[data-desktop-flow-action="method:extension"]', 'browser extension wallet method');
+      await page.waitFor(`Boolean(document.querySelector('[data-desktop-flow-action="pick-extension-wallet"][data-desktop-extension-wallet="backpack"]'))`);
+      await clickAndWait(page, '[data-desktop-flow-action="pick-extension-wallet"][data-desktop-extension-wallet="backpack"]', 'Backpack extension wallet');
+    } else {
+      await page.evaluate(`(() => {
+        const select = document.querySelector('#walletSelect');
+        if (!select || select.value) return;
+        const option = Array.from(select.options).find((entry) => !entry.disabled && entry.value);
+        if (!option) return;
+        select.value = option.value;
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      })()`);
+      try {
+        await page.waitFor(`Array.from(document.querySelectorAll(${JSON.stringify(connectSelector)})).some((el) => !el.disabled)`);
+      } catch (err) {
+        const debug = await browserWalletConnectDebug(page, discoverSelector, connectSelector);
+        throw new Error(`${err instanceof Error ? err.message : String(err)}\n${debug}`);
+      }
+      await clickAndWait(page, connectSelector, 'connect wallet button');
+    }
     await page.waitFor(`Boolean(document.querySelector('#disconnect')) || document.body.innerText.includes('Wallet connected on')`);
   }
   if (!await page.evaluate(`Boolean(document.querySelector('#generatePlan'))`)) {
     await clickAndWait(page, '[data-tab="agent"]', 'one-time plan tab');
   }
   await ensureCreatePlanView(page);
+}
+
+async function waitForSmokeWalletRegistered(page) {
+  await page.waitFor(`Number(window.__agenticSmokeWalletRegistered?.registrations || 0) > 0`, 10_000);
+}
+
+async function browserWalletConnectDebug(page, discoverSelector, connectSelector) {
+  const snapshot = await page.evaluate(`(async () => {
+    const describeButton = (el) => ({
+      text: (el.textContent || '').trim(),
+      disabled: Boolean(el.disabled),
+      ariaDisabled: el.getAttribute('aria-disabled'),
+      hidden: el.hidden,
+      display: getComputedStyle(el).display,
+      visibility: getComputedStyle(el).visibility,
+    });
+    const walletSelect = document.querySelector('#walletSelect');
+    const walletOptions = walletSelect
+      ? Array.from(walletSelect.options).map((option) => ({
+          value: option.value,
+          label: option.label || option.textContent || '',
+          disabled: option.disabled,
+          selected: option.selected,
+        }))
+      : [];
+    return {
+      bodyExcerpt: document.body.innerText.slice(0, 800),
+      connectButtons: Array.from(document.querySelectorAll(${JSON.stringify(connectSelector)})).map(describeButton),
+      discoverButtons: Array.from(document.querySelectorAll(${JSON.stringify(discoverSelector)})).map(describeButton),
+      smokeWallet: window.__agenticSmokeWalletRegistered || null,
+      startupFailure: Boolean(document.querySelector('[data-agentic-startup-failure]')),
+      walletStandardProbe: await (async () => {
+        const href = Array.from(document.querySelectorAll('link[href], script[src]'))
+          .map((el) => el.getAttribute('href') || el.getAttribute('src') || '')
+          .find((value) => /wallet-standard.*\\.js/.test(value));
+        if (!href) return { found: false };
+        try {
+          const mod = await import(new URL(href, window.location.href).href);
+          const probes = [];
+          for (const [key, value] of Object.entries(mod)) {
+            if (typeof value !== 'function') continue;
+            try {
+              const result = value();
+              if (result && typeof result === 'object' && typeof result.get === 'function') {
+                probes.push({
+                  key,
+                  kind: 'registry',
+                  names: result.get().map((wallet) => wallet?.name || ''),
+                });
+              } else if (Array.isArray(result) && result.every((entry) => entry && typeof entry === 'object' && 'name' in entry)) {
+                probes.push({
+                  key,
+                  kind: 'wallet-list',
+                  names: result.map((entry) => entry.name),
+                });
+              }
+            } catch {}
+          }
+          return { found: true, href, probes };
+        } catch (err) {
+          return { found: true, href, error: err instanceof Error ? err.message : String(err) };
+        }
+      })(),
+      walletOptions,
+      walletSelectValue: walletSelect?.value || '',
+    };
+  })()`);
+  return `wallet connect debug: ${JSON.stringify(snapshot, null, 2)}`;
 }
 
 async function ensureCloudSignedIn(page) {
@@ -1460,10 +1586,28 @@ async function recurringCardCount(page) {
 
 async function clickAppLayoutTab(page, tab, viewportWidth) {
   if (viewportWidth < 900) {
-    await clickAndWait(page, '[data-layout="app-mobile-tabs"] summary', `open mobile layout tab menu for ${tab}`);
-    await clickAndWait(page, `[data-layout="app-mobile-tabs"] [data-tab="${tab}"]`, `mobile layout tab ${tab}`);
-    return;
+    const directMobileSelector = `[data-layout="app-mobile-tabs"] [data-tab="${tab}"]`;
+    const hasDirectMobileTab = await page.evaluate(`(() => {
+      const el = document.querySelector(${JSON.stringify(directMobileSelector)});
+      if (!el) return false;
+      const style = getComputedStyle(el);
+      return !el.disabled && el.getClientRects().length > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+    })()`);
+    if (hasDirectMobileTab) {
+      await clickAndWait(page, directMobileSelector, `mobile layout tab ${tab}`);
+      return;
+    }
+    const hasMobileTabs = await page.evaluate(`Boolean(document.querySelector('[data-layout="app-mobile-tabs"]'))`);
+    if (hasMobileTabs) {
+      await clickAndWait(page, '[data-layout="app-mobile-tabs"] [data-more-menu-trigger]', `open mobile layout tab menu for ${tab}`);
+      await clickAndWait(page, `[data-layout="app-mobile-tabs"] [data-tab="${tab}"]`, `mobile layout tab ${tab}`);
+      return;
+    }
   }
+  await clickDesktopAppLayoutTab(page, tab);
+}
+
+async function clickDesktopAppLayoutTab(page, tab) {
   if (['labs', 'agent-protocols', 'skills', 'sessions'].includes(tab)) {
     await clickAndWait(page, '[data-layout="app-tabs"] .workspace-more-trigger', `open layout more menu for ${tab}`);
     await clickAndWait(page, `[data-layout="app-tabs"] [data-tab="${tab}"]`, `layout more tab ${tab}`);
@@ -2173,6 +2317,12 @@ function hostedAiRequest() {
 function fakeWalletScript(wallet, signerOrigin = '') {
   return `
 (() => {
+  if (window.__agenticSmokeWalletRegistered) return;
+  window.__agenticSmokeWalletRegistered = {
+    appReadyEvents: 0,
+    injectedAt: Date.now(),
+    registrations: 0,
+  };
   const publicKey = new Uint8Array(${JSON.stringify([...wallet.publicKeyBytes])});
   const signerOrigin = ${JSON.stringify(signerOrigin)};
   const signMessage = async (message) => {
@@ -2195,7 +2345,7 @@ function fakeWalletScript(wallet, signerOrigin = '') {
   };
   const wallet = {
     version: '1.0.0',
-    name: 'Agentic Smoke Wallet',
+    name: 'Backpack',
     icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg"/>',
     chains,
     accounts: [account],
@@ -2216,8 +2366,14 @@ function fakeWalletScript(wallet, signerOrigin = '') {
       },
     },
   };
-  const register = (api) => api.register(wallet);
-  window.addEventListener('wallet-standard:app-ready', (event) => register(event.detail));
+  const register = (api) => {
+    window.__agenticSmokeWalletRegistered.registrations += 1;
+    return api.register(wallet);
+  };
+  window.addEventListener('wallet-standard:app-ready', (event) => {
+    window.__agenticSmokeWalletRegistered.appReadyEvents += 1;
+    register(event.detail);
+  });
   window.dispatchEvent(new CustomEvent('wallet-standard:register-wallet', { detail: register }));
 })();
 `;
@@ -2783,6 +2939,7 @@ async function connectPage(port) {
   if (!page?.webSocketDebuggerUrl) throw new Error('No Chrome page target was available.');
   const ws = new WebSocket(page.webSocketDebuggerUrl);
   let id = 0;
+  const initScripts = [];
   const pending = new Map();
   let events = [];
 
@@ -2818,6 +2975,7 @@ async function connectPage(port) {
 
   return {
     async addInitScript(source) {
+      initScripts.push(source);
       await send('Page.addScriptToEvaluateOnNewDocument', { source });
     },
     async setCookie(cookie) {
@@ -2834,6 +2992,10 @@ async function connectPage(port) {
     async inspect(url) {
       events = [];
       await send('Page.navigate', { url });
+      await sleep(250);
+      for (const source of initScripts) {
+        await this.evaluate(source);
+      }
       await sleep(1_000);
       const page = await this.evaluate(`(${async function inspectApp() {
         for (let index = 0; index < 50; index += 1) {

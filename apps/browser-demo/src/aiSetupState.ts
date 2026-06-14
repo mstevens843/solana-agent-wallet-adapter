@@ -43,6 +43,8 @@ export interface AiRailIdentity {
   logoHint: AiRailLogoHint;
 }
 
+export type AiRailQuickActionKind = 'setup' | 'clear-key' | 'disconnect-plan-connector' | 'none';
+
 export function directAiKeyStaged(input: {
   apiKey: string;
   model: string;
@@ -87,6 +89,19 @@ export function selectAiKeyClearTarget(input: {
     return input.activeMode;
   }
   return input.inactiveConfigured.find((path) => input.clearableByMode[path.mode])?.mode ?? null;
+}
+
+export function aiRailQuickActionKind(input: {
+  pairedBridge: boolean;
+  configured: boolean;
+  inactive: boolean;
+  clearTarget: AiPathMode | null;
+}): AiRailQuickActionKind {
+  if (input.pairedBridge) return 'disconnect-plan-connector';
+  if (input.configured || input.inactive) {
+    return input.clearTarget ? 'clear-key' : 'none';
+  }
+  return 'setup';
 }
 
 export function bridgeAiSetupSnapshot(input: {
@@ -160,7 +175,29 @@ export function bridgeConnectorStatusDetail(
 export function deviceAgentSetupSnapshot(input: {
   status: DeviceAgentStatus | null;
   visible: boolean;
+  pairedBridge?: boolean;
+  pairedProvider?: string;
+  pairedModel?: string;
+  pairedLogoHint?: AiRailLogoHint;
 }): Omit<AiPathSetupSnapshot, 'mode' | 'active'> {
+  if (input.pairedBridge) {
+    const provider = cleanAiRailValue(input.pairedProvider)
+      ?? cleanAiRailValue(input.status?.provider)
+      ?? 'Plan Connector';
+    const model = cleanAiRailValue(input.pairedModel)
+      ?? cleanAiRailValue(input.status?.model)
+      ?? 'computer plan connected';
+    return {
+      configured: true,
+      runnable: true,
+      provider,
+      apiFormat: input.status?.apiFormat,
+      baseUrl: input.status?.baseUrl,
+      model,
+      detail: `${provider} - ${model}`,
+      logoHint: input.pairedLogoHint ?? aiProviderLogoHint({ provider, model }),
+    };
+  }
   const configured = Boolean(input.visible && input.status?.available && input.status.configured);
   const provider = input.status?.provider ?? input.status?.apiFormat;
   const model = input.status?.model;
@@ -258,7 +295,7 @@ export function buildAiRailIdentity(input: {
     ? `${input.readinessLabel} - ${input.confirmationLabel}`
     : inactive
       ? `${pathLabel} configured; ${activePathLabel} selected.`
-      : 'AI review optional';
+      : 'AI connector optional';
 
   return {
     path: display.mode,
