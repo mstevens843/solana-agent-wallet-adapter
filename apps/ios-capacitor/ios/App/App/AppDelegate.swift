@@ -111,10 +111,28 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 /// remote error rather than auto-falling-back; Render's health check + fast
 /// redeploys keep that window small.
 final class AgenticBridgeViewController: CAPBridgeViewController {
+    private static let appBackgroundColor = UIColor(
+        red: 5.0 / 255.0,
+        green: 7.0 / 255.0,
+        blue: 6.0 / 255.0,
+        alpha: 1.0
+    )
+
+    override var preferredStatusBarStyle: UIStatusBarStyle {
+        .lightContent
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
+        applyAppBackground()
         webView?.scrollView.bounces = false
         webView?.scrollView.alwaysBounceVertical = false
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        applyAppBackground()
+        setNeedsStatusBarAppearanceUpdate()
     }
 
     override func instanceDescriptor() -> InstanceDescriptor {
@@ -126,6 +144,19 @@ final class AgenticBridgeViewController: CAPBridgeViewController {
             descriptor.serverURL = nil
         }
         return descriptor
+    }
+
+    private func applyAppBackground() {
+        let background = Self.appBackgroundColor
+        overrideUserInterfaceStyle = .dark
+        view.backgroundColor = background
+        view.window?.backgroundColor = background
+        webView?.backgroundColor = background
+        webView?.isOpaque = false
+        webView?.scrollView.backgroundColor = background
+        if #available(iOS 15.0, *) {
+            webView?.underPageBackgroundColor = background
+        }
     }
 
     /// Synchronous route-availability check (no server round-trip). Returns false

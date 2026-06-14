@@ -17783,6 +17783,13 @@ button.danger:hover:not(:disabled) {
     touch-action: pan-y;
   }
 
+  html:has(.shell.ios-native-shell),
+  body:has(.shell.ios-native-shell),
+  #app:has(.shell.ios-native-shell),
+  .shell.ios-native-shell {
+    background-color: #050706;
+  }
+
   #app:has(.shell.android-shell),
   #app:has(.shell.ios-native-shell),
   .shell.android-shell,
