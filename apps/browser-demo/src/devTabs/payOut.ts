@@ -752,7 +752,10 @@ function entryModeTabs(entryMode: EntryMode): string {
 function manualRequestPanel(draft: PayOutDraft, disabled: string): string {
   const total = draftTotal(draft);
   const paymentToken = normalizePaymentToken(draft.paymentToken);
-  const lineRows = draft.lineItems.map((item, index) => lineItemDraftRow(item, index, disabled, paymentToken, draft)).join('');
+  const visibleLineItems = visibleLineItemDrafts(draft);
+  const lineRows = visibleLineItems
+    .map(({ item, index }) => lineItemDraftRow(item, index, disabled, paymentToken, draft, visibleLineItems.length))
+    .join('');
   return `
     <section class="pay-out-manual-request" data-pay-out-builder data-payment-token="${escapeHtml(paymentToken)}" role="tabpanel" aria-label="Payment details">
       <div class="pay-out-builder-head">
@@ -769,19 +772,19 @@ function manualRequestPanel(draft: PayOutDraft, disabled: string): string {
         </div>
       </div>
       <div class="pay-out-field-grid">
-        <label>
+        <label class="pay-out-field pay-out-field--merchant">
           <span>Merchant name</span>
           <input class="pay-out-input" name="merchantName" value="${escapeHtml(draft.merchantName)}" placeholder="Acme Coffee" ${disabled}>
         </label>
-        <label>
+        <label class="pay-out-field pay-out-field--recipient">
           <span>Recipient wallet</span>
           <input class="pay-out-input" name="recipient" value="${escapeHtml(draft.recipient)}" placeholder="Merchant Solana address" ${disabled}>
         </label>
-        <label>
+        <label class="pay-out-field pay-out-field--token">
           <span>Payment token</span>
           ${tokenPicker(paymentToken, disabled)}
         </label>
-        <label>
+        <label class="pay-out-field pay-out-field--memo">
           <span>Memo</span>
           <input class="pay-out-input" name="memo" value="${escapeHtml(draft.memo)}" placeholder="Invoice, order, or note" ${disabled}>
         </label>
@@ -789,7 +792,7 @@ function manualRequestPanel(draft: PayOutDraft, disabled: string): string {
       <div class="pay-out-line-editor">
         <div class="pay-out-line-editor-head">
           <span>Line items</span>
-          <em>Quantity x unit amount becomes the total</em>
+          <em>Qty x unit amount becomes the total</em>
         </div>
         <div class="pay-out-line-grid" role="group" aria-label="Line items">
           ${lineRows}
@@ -803,6 +806,17 @@ function manualRequestPanel(draft: PayOutDraft, disabled: string): string {
       </div>
     </section>
   `;
+}
+
+function visibleLineItemDrafts(draft: PayOutDraft): Array<{ item: PayOutLineDraft; index: number }> {
+  const filled = draft.lineItems
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => item.name.trim() || item.unitAmount.trim() || item.quantity.trim() !== '1');
+  const firstEmpty = draft.lineItems
+    .map((item, index) => ({ item, index }))
+    .find(({ item }) => !item.name.trim() && !item.unitAmount.trim() && item.quantity.trim() === '1');
+  const rows = firstEmpty ? [...filled, firstEmpty] : filled;
+  return rows.length ? rows.sort((a, b) => a.index - b.index) : [{ item: emptyLineDraft(), index: 0 }];
 }
 
 function formatDraftPaymentTotal(draft: PayOutDraft, total = draftTotal(draft)): string {
@@ -875,8 +889,16 @@ function lineItemSolEstimateText(item: PayOutLineDraft, draft: PayOutDraft): str
   return estimatedUsdForSolAmount(draft, unitAmount) || 'Price needed';
 }
 
-function lineItemDraftRow(item: PayOutLineDraft, index: number, disabled: string, paymentToken: PayOutPaymentToken, draft: PayOutDraft): string {
+function lineItemDraftRow(
+  item: PayOutLineDraft,
+  index: number,
+  disabled: string,
+  paymentToken: PayOutPaymentToken,
+  draft: PayOutDraft,
+  totalRows: number,
+): string {
   const row = index + 1;
+  const canRemove = totalRows > 1 || item.name.trim() || item.unitAmount.trim();
   const unitAmountInput = `
     <input class="pay-out-input ${paymentToken === 'SOL' ? 'pay-out-input-inline' : ''}" name="lineUnitAmount" inputmode="decimal" value="${escapeHtml(item.unitAmount)}" placeholder="0.00" ${disabled}>
   `;
@@ -896,7 +918,12 @@ function lineItemDraftRow(item: PayOutLineDraft, index: number, disabled: string
           ? `<span class="pay-out-amount-field">${unitAmountInput}<em data-pay-out-line-estimate>${escapeHtml(lineItemSolEstimateText(item, draft))}</em></span>`
           : unitAmountInput}
       </label>
-      <button type="button" class="pay-out-button secondary pay-out-line-remove" data-pay-out-action="remove-line-item:${index}" aria-label="Remove line item ${row}" ${disabled}>Remove</button>
+      ${canRemove
+        ? `<button type="button" class="pay-out-button secondary pay-out-line-remove" data-pay-out-action="remove-line-item:${index}" aria-label="Remove line item ${row}" ${disabled}>
+            <span class="pay-out-line-remove-symbol" aria-hidden="true">×</span>
+            <span class="pay-out-line-remove-label">Remove</span>
+          </button>`
+        : '<span class="pay-out-line-remove-spacer" aria-hidden="true"></span>'}
     </div>
   `;
 }

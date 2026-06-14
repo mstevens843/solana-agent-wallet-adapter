@@ -34,6 +34,10 @@
   --font-readable: 0.68rem;
   --addr-mono-size: 0.78rem;
   --bottom-dock-clearance: calc(92px + env(safe-area-inset-bottom, 0px));
+  --mobile-nav-safe-top: env(safe-area-inset-top, 0px);
+  --mobile-nav-top-gap: 8px;
+  --mobile-content-gap: 10px;
+  --mobile-nav-height: 58px;
   color: var(--text);
   background: var(--bg);
   font-family:
@@ -5645,13 +5649,13 @@ code {
   content: "-";
 }
 
-/* Android Connections re-org (reviewer feedback): one prioritized "Connections" group with
+/* Native app Connections re-org (reviewer feedback): one prioritized "Connections" group with
    Required/Optional labels + a readiness line, and a consistent icon + tone-pill row anatomy
-   shared by the Workspace and AI Connector cards. Android app only for now (gated in main.ts). */
+   shared by the Workspace and AI Connector cards. */
 .connections-rail-head {
   display: grid;
   gap: 2px;
-  margin: 2px 0 8px;
+  margin: 2px 0 0;
 }
 
 .connections-rail-readiness {
@@ -5666,8 +5670,12 @@ code {
   font-size: 0.62rem;
   font-weight: 900;
   letter-spacing: 0.09em;
-  margin: 12px 0 6px;
+  margin: 8px 0 4px;
   text-transform: uppercase;
+}
+
+.connections-rail-head .connection-group-label {
+  margin: 4px 0 0;
 }
 
 .rail-conn-identity {
@@ -14753,17 +14761,7 @@ button.danger:hover:not(:disabled) {
     left: calc(16px + env(safe-area-inset-left, 0px));
     max-width: calc(100vw - 32px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
     right: calc(16px + env(safe-area-inset-right, 0px));
-    top: calc(16px + env(safe-area-inset-top, 0px));
-  }
-
-  /* Native shells (Android TWA, iOS Capacitor) under-report safe-area-inset-top,
-     so clamp it to the matching toolbar baseline used elsewhere in the shell. */
-  .shell.android-shell .toast-stack {
-    top: calc(max(48px, env(safe-area-inset-top, 0px)) + 16px);
-  }
-
-  .shell.ios-native-shell .toast-stack {
-    top: calc(max(54px, env(safe-area-inset-top, 0px)) + 16px);
+    top: calc(var(--mobile-nav-safe-top) + 16px);
   }
 
   .homepage-demo-cta {
@@ -16827,7 +16825,7 @@ button.danger:hover:not(:disabled) {
 
   .shell {
     padding:
-      calc(12px + env(safe-area-inset-top, 0px))
+      calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap) + var(--mobile-nav-height) + var(--mobile-content-gap))
       calc(14px + env(safe-area-inset-right, 0px))
       calc(36px + env(safe-area-inset-bottom, 0px))
       calc(14px + env(safe-area-inset-left, 0px));
@@ -16847,7 +16845,7 @@ button.danger:hover:not(:disabled) {
     overflow: hidden;
     padding: 7px 8px;
     position: sticky;
-    top: max(8px, env(safe-area-inset-top, 0px));
+    top: calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap));
   }
 
   .homepage-brand {
@@ -17765,7 +17763,7 @@ button.danger:hover:not(:disabled) {
   }
 
   html {
-    scroll-padding-top: 118px;
+    scroll-padding-top: calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap) + var(--mobile-nav-height) + var(--mobile-content-gap));
   }
 
   html,
@@ -17776,22 +17774,29 @@ button.danger:hover:not(:disabled) {
     overflow-x: hidden;
   }
 
+  html:has(.shell.android-shell),
+  html:has(.shell.ios-native-shell),
+  body:has(.shell.android-shell),
+  body:has(.shell.ios-native-shell),
+  #app:has(.shell.android-shell),
+  #app:has(.shell.ios-native-shell),
+  .shell.android-shell,
+  .shell.ios-native-shell {
+    overscroll-behavior-y: none;
+  }
+
   .shell {
     --mobile-side-pad: 12px;
-    --native-toolbar-offset: env(safe-area-inset-top, 0px);
     padding:
-      calc(var(--native-toolbar-offset) + var(--mobile-nav-height) + 18px)
+      calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap) + var(--mobile-nav-height) + var(--mobile-content-gap))
       calc(var(--mobile-side-pad) + env(safe-area-inset-right, 0px))
       calc(34px + env(safe-area-inset-bottom, 0px))
       calc(var(--mobile-side-pad) + env(safe-area-inset-left, 0px));
   }
 
-  .shell.android-shell {
-    --native-toolbar-offset: max(48px, env(safe-area-inset-top, 0px));
-  }
-
+  .shell.android-shell,
   .shell.ios-native-shell {
-    --native-toolbar-offset: max(54px, env(safe-area-inset-top, 0px));
+    --mobile-nav-safe-top: 0px;
   }
 
   .homepage-shell {
@@ -17815,7 +17820,7 @@ button.danger:hover:not(:disabled) {
     padding: 6px 7px;
     position: fixed;
     right: calc(var(--mobile-side-pad) + env(safe-area-inset-right, 0px));
-    top: calc(var(--native-toolbar-offset) + 6px);
+    top: calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap));
     z-index: 100;
   }
 
@@ -18399,22 +18404,13 @@ button.danger:hover:not(:disabled) {
   .shell {
     --mobile-nav-height: 54px;
     --mobile-side-pad: var(--page-padding-x);
-    --native-toolbar-offset: max(46px, env(safe-area-inset-top, 0px));
-    padding-top: calc(var(--native-toolbar-offset) + var(--mobile-nav-height) + 12px);
-  }
-
-  .shell.android-shell {
-    --native-toolbar-offset: max(58px, env(safe-area-inset-top, 0px));
-  }
-
-  .shell.ios-native-shell {
-    --native-toolbar-offset: max(62px, env(safe-area-inset-top, 0px));
+    padding-top: calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap) + var(--mobile-nav-height) + var(--mobile-content-gap));
   }
 
   .shell::before {
     background: linear-gradient(180deg, rgba(5, 8, 7, 0.99), rgba(5, 8, 7, 0.95) 72%, rgba(5, 8, 7, 0));
     content: "";
-    height: calc(var(--native-toolbar-offset) + var(--mobile-nav-height) + 18px);
+    height: calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap) + var(--mobile-nav-height) + var(--mobile-content-gap));
     left: 0;
     pointer-events: none;
     position: fixed;
@@ -18428,7 +18424,7 @@ button.danger:hover:not(:disabled) {
     height: var(--mobile-nav-height);
     min-height: 0;
     position: fixed;
-    top: calc(var(--native-toolbar-offset) + 5px);
+    top: calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap));
     z-index: 120;
   }
 
@@ -19004,11 +19000,11 @@ button.danger:hover:not(:disabled) {
   .route-home {
     --mobile-nav-height: 54px;
     gap: 16px;
-    padding-top: calc(var(--native-toolbar-offset) + var(--mobile-nav-height) + 12px);
+    padding-top: calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap) + var(--mobile-nav-height) + var(--mobile-content-gap));
   }
 
   .route-home::before {
-    height: calc(var(--native-toolbar-offset) + var(--mobile-nav-height) + 14px);
+    height: calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap) + var(--mobile-nav-height) + var(--mobile-content-gap));
   }
 
   .route-home .homepage-nav {
@@ -19019,7 +19015,7 @@ button.danger:hover:not(:disabled) {
     gap: 5px;
     height: var(--mobile-nav-height);
     padding: 5px 6px;
-    top: calc(var(--native-toolbar-offset) + 5px);
+    top: calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap));
   }
 
   .route-home .homepage-brand {
@@ -19365,7 +19361,7 @@ button.danger:hover:not(:disabled) {
   .route-home {
     --mobile-nav-height: 52px;
     gap: 15px;
-    padding-top: calc(var(--native-toolbar-offset) + var(--mobile-nav-height) + 11px);
+    padding-top: calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap) + var(--mobile-nav-height) + var(--mobile-content-gap));
   }
 
   .route-home .homepage-nav {
@@ -19473,7 +19469,7 @@ button.danger:hover:not(:disabled) {
 @media (max-width: 760px) {
   .route-demo {
     overflow-x: hidden;
-    scroll-padding-top: 76px;
+    scroll-padding-top: calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap) + var(--mobile-nav-height) + var(--mobile-content-gap));
   }
 
   .route-demo .homepage-nav {
@@ -25156,10 +25152,9 @@ button.danger:hover:not(:disabled) {
     --app-cell-pad: 8px;
     --app-shell-pad-x: 12px;
     --app-nav-h: 58px;
-    --native-toolbar-offset: env(safe-area-inset-top, 0px);
     gap: 10px;
     padding:
-      calc(var(--native-toolbar-offset) + 12px)
+      calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap))
       calc(var(--app-shell-pad-x) + env(safe-area-inset-right, 0px))
       calc(32px + env(safe-area-inset-bottom, 0px))
       calc(var(--app-shell-pad-x) + env(safe-area-inset-left, 0px));
@@ -26526,6 +26521,12 @@ button.danger:hover:not(:disabled) {
   position: relative;
 }
 
+.preferences-mobile-tabs,
+.preferences-mobile-section-tabs {
+  display: none;
+  min-width: 0;
+}
+
 .preferences-subtabs button {
   align-items: start;
   background:
@@ -27286,7 +27287,9 @@ button.danger:hover:not(:disabled) {
     display: none;
   }
 
-  .route-app .preferences-mobile-picker {
+  .route-app .preferences-mobile-picker,
+  .route-app .preferences-mobile-tabs,
+  .route-app .preferences-mobile-section-tabs {
     display: block;
     width: 100%;
   }
@@ -27466,13 +27469,562 @@ button.danger:hover:not(:disabled) {
   display: none;
 }
 
-.route-app.android-shell .preferences-mobile-picker {
+.route-app.android-shell .preferences-mobile-picker,
+.route-app.android-shell .preferences-mobile-tabs,
+.route-app.android-shell .preferences-mobile-section-tabs {
   display: block;
   width: 100%;
 }
 
 .route-app.android-shell .preferences-page .preferences-group-head {
   display: none;
+}
+
+@media (max-width: 899px) {
+  .route-app .preferences-mobile-tabs {
+    border-radius: 10px;
+    position: sticky;
+    top: calc(var(--app-native-top-guard, 0px) + 4px);
+    z-index: 236;
+  }
+
+  .route-app .preferences-mobile-tabs-strip {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .route-app .preferences-mobile-tabs .android-tab {
+    gap: 3px;
+    min-height: 46px;
+    padding: 6px 3px;
+  }
+
+  .route-app .preferences-mobile-tabs .android-tab-icon {
+    height: 15px;
+    width: 15px;
+  }
+
+  .route-app .preferences-mobile-tabs .android-tab-icon svg {
+    height: 14px;
+    width: 14px;
+  }
+
+  .route-app .preferences-mobile-tabs .android-tab-label {
+    font-size: 0.58rem;
+    letter-spacing: 0;
+    line-height: 1.05;
+  }
+
+  .route-app .preferences-mobile-section-tabs {
+    border-radius: 9px;
+  }
+
+  .route-app .preferences-mobile-section-tabs-strip.columns-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .route-app .preferences-mobile-section-tabs-strip.columns-3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .route-app .preferences-mobile-section-tabs .android-tab {
+    min-height: 38px;
+    padding: 7px 6px;
+  }
+
+  .route-app .preferences-mobile-section-tabs .android-tab-label {
+    font-size: 0.68rem;
+    letter-spacing: 0;
+  }
+
+  .route-app .preferences-mobile-subview {
+    display: grid;
+    gap: 9px;
+    min-width: 0;
+  }
+
+  .route-app .mobile-preference-panel-head {
+    align-items: center;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    min-width: 0;
+  }
+
+  .route-app .mobile-preference-panel-head strong {
+    color: var(--text);
+    display: block;
+    font-size: 0.98rem;
+    font-weight: 900;
+    line-height: 1.12;
+  }
+
+  .route-app .mobile-preference-panel-head p {
+    color: rgba(196, 205, 202, 0.72);
+    font-size: 0.75rem;
+    font-weight: 760;
+    line-height: 1.18;
+    margin: 3px 0 0;
+    overflow-wrap: anywhere;
+  }
+
+  .route-app .mobile-preference-panel-head > span {
+    align-items: center;
+    background: rgba(125, 231, 176, 0.1);
+    border: 1px solid rgba(125, 231, 176, 0.22);
+    border-radius: 999px;
+    color: #d8f9e6;
+    display: inline-flex;
+    font-size: 0.66rem;
+    font-weight: 900;
+    line-height: 1;
+    min-height: 24px;
+    padding: 4px 8px;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .route-app .mobile-connected-dapps-panel {
+    background:
+      linear-gradient(180deg, rgba(30, 35, 33, 0.78), rgba(17, 21, 20, 0.94)),
+      rgba(17, 21, 20, 0.94);
+    border: 1px solid rgba(224, 230, 226, 0.1);
+    border-radius: 8px;
+    display: grid;
+    gap: 9px;
+    min-width: 0;
+    padding: 10px;
+  }
+
+  .route-app .mobile-connected-dapps-panel .connected-dapps-card {
+    background: transparent;
+    border: 0;
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+  }
+
+  .route-app .mobile-connected-dapps-panel .connected-dapps-intro {
+    font-size: 0.78rem;
+    line-height: 1.28;
+  }
+
+  .route-app .mobile-connected-dapps-panel .connected-dapps-catalog {
+    align-items: end;
+    gap: 7px;
+    grid-template-columns: minmax(0, 1fr) minmax(78px, 0.34fr);
+  }
+
+  .route-app .mobile-connected-dapps-panel .connected-dapps-catalog button.primary {
+    min-height: 40px;
+  }
+
+  .route-app .protocol-connector-advanced {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(224, 230, 226, 0.09);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .route-app .protocol-connector-advanced > summary {
+    align-items: center;
+    cursor: pointer;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    list-style: none;
+    min-height: 38px;
+    padding: 8px 10px;
+  }
+
+  .route-app .protocol-connector-advanced > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .route-app .protocol-connector-advanced > summary span {
+    color: var(--text);
+    font-size: 0.82rem;
+    font-weight: 900;
+  }
+
+  .route-app .protocol-connector-advanced > summary em {
+    color: rgba(196, 205, 202, 0.68);
+    font-size: 0.72rem;
+    font-style: normal;
+    font-weight: 780;
+  }
+
+  .route-app .protocol-connector-advanced .protocol-connector-key-field {
+    border-top: 1px solid rgba(224, 230, 226, 0.07);
+    padding: 9px;
+  }
+
+  .route-app .mobile-connected-dapp-row {
+    gap: 0;
+    overflow: hidden;
+    padding: 0;
+  }
+
+  .route-app .mobile-connected-dapp-summary {
+    align-items: center;
+    cursor: pointer;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: auto minmax(0, 1fr) auto 12px;
+    list-style: none;
+    min-height: 50px;
+    padding: 9px;
+  }
+
+  .route-app .mobile-connected-dapp-summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .route-app .mobile-connected-dapp-summary::after {
+    color: rgba(125, 231, 176, 0.8);
+    content: "+";
+    font-size: 1rem;
+    font-weight: 900;
+    line-height: 1;
+    text-align: center;
+  }
+
+  .route-app .mobile-connected-dapp-row[open] > .mobile-connected-dapp-summary::after {
+    content: "-";
+  }
+
+  .route-app .mobile-connected-dapp-copy {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .route-app .mobile-connected-dapp-copy strong {
+    color: var(--text);
+    font-size: 0.86rem;
+    font-weight: 900;
+    line-height: 1.12;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .route-app .mobile-connected-dapp-copy em {
+    color: rgba(196, 205, 202, 0.72);
+    font-size: 0.7rem;
+    font-style: normal;
+    font-weight: 760;
+    line-height: 1.18;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .route-app .mobile-connected-dapp-detail {
+    border-top: 1px solid rgba(224, 230, 226, 0.07);
+    display: grid;
+    gap: 8px;
+    padding: 9px;
+  }
+
+  .route-app .mobile-connected-dapp-detail p {
+    color: rgba(196, 205, 202, 0.78);
+    font-size: 0.76rem;
+    line-height: 1.28;
+    margin: 0;
+  }
+
+  .route-app .mobile-connected-dapp-detail .connected-dapp-capability-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .route-app .workspace-backup-metric-pills {
+    display: grid;
+    gap: 6px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .route-app .workspace-backup-metric-pills span {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(224, 230, 226, 0.08);
+    border-radius: 8px;
+    display: grid;
+    gap: 2px;
+    justify-items: center;
+    min-width: 0;
+    padding: 8px 4px;
+  }
+
+  .route-app .workspace-backup-metric-pills strong {
+    color: var(--text);
+    font-size: 1.18rem;
+    font-weight: 900;
+    line-height: 1;
+  }
+
+  .route-app .workspace-backup-metric-pills em {
+    color: rgba(196, 205, 202, 0.68);
+    font-size: 0.58rem;
+    font-style: normal;
+    font-weight: 900;
+    letter-spacing: 0.03em;
+    line-height: 1;
+    text-transform: uppercase;
+  }
+
+  .route-app .workspace-backup-metric-pills span.warn strong {
+    color: var(--warn, #f5a623);
+  }
+
+  .route-app .workspace-backup-notes-disclosure {
+    background: rgba(255, 255, 255, 0.018);
+    border: 1px solid rgba(224, 230, 226, 0.08);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .route-app .workspace-backup-notes-disclosure > summary {
+    color: rgba(224, 230, 226, 0.86);
+    cursor: pointer;
+    font-size: 0.78rem;
+    font-weight: 900;
+    list-style: none;
+    min-height: 36px;
+    padding: 9px 10px;
+  }
+
+  .route-app .workspace-backup-notes-disclosure > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .route-app .workspace-backup-notes-disclosure .workspace-backup-notes {
+    border-top: 1px solid rgba(224, 230, 226, 0.07);
+    margin: 0;
+    padding: 9px 10px 10px 22px;
+  }
+
+  .route-app .failure-policy-group-list {
+    display: grid;
+    gap: 8px;
+  }
+
+  .route-app .failure-policy-group {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(224, 230, 226, 0.085);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .route-app .failure-policy-group > summary {
+    align-items: center;
+    cursor: pointer;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    list-style: none;
+    min-height: 44px;
+    padding: 9px;
+  }
+
+  .route-app .failure-policy-group > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .route-app .failure-policy-group > summary span {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .route-app .failure-policy-group > summary strong {
+    color: var(--text);
+    font-size: 0.86rem;
+    line-height: 1.1;
+  }
+
+  .route-app .failure-policy-group > summary em {
+    color: rgba(196, 205, 202, 0.66);
+    font-size: 0.7rem;
+    font-style: normal;
+    font-weight: 760;
+    line-height: 1.18;
+  }
+
+  .route-app .failure-policy-group > summary b {
+    background: rgba(255, 255, 255, 0.045);
+    border: 1px solid rgba(224, 230, 226, 0.1);
+    border-radius: 999px;
+    color: rgba(224, 230, 226, 0.76);
+    font-size: 0.62rem;
+    line-height: 1;
+    padding: 5px 7px;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .route-app .failure-policy-group[open] > summary b {
+    background: rgba(125, 231, 176, 0.1);
+    border-color: rgba(125, 231, 176, 0.22);
+    color: #d8f9e6;
+  }
+
+  .route-app .failure-policy-group .failure-policy-list {
+    border-top: 1px solid rgba(224, 230, 226, 0.07);
+    gap: 7px;
+    padding: 8px;
+  }
+
+  .route-app .preferences-page .failure-policy-row {
+    gap: 7px;
+    padding: 8px;
+  }
+
+  .route-app .preferences-page .failure-policy-row > div:first-child em {
+    display: none;
+  }
+
+  .route-app .preferences-page .failure-policy-mode-controls button {
+    min-height: 36px;
+  }
+
+  .route-app .mobile-safety-rail-section {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(224, 230, 226, 0.085);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .route-app .mobile-safety-rail-section > summary {
+    align-items: center;
+    cursor: pointer;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    list-style: none;
+    min-height: 42px;
+    padding: 9px 10px;
+  }
+
+  .route-app .mobile-safety-rail-section > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .route-app .mobile-safety-rail-section > summary span {
+    color: var(--text);
+    font-size: 0.86rem;
+    font-weight: 900;
+  }
+
+  .route-app .mobile-safety-rail-section > summary em {
+    color: rgba(196, 205, 202, 0.68);
+    font-size: 0.7rem;
+    font-style: normal;
+    font-weight: 780;
+  }
+
+  .route-app .mobile-safety-rail-section .safety-rails-section {
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    border-top: 1px solid rgba(224, 230, 226, 0.07);
+  }
+
+  .route-app .connector-keys-mount {
+    margin-top: 0;
+  }
+
+  .route-app .connector-keys-panel {
+    border-radius: 8px;
+    padding: 10px;
+  }
+
+  .route-app .connector-keys-panel header {
+    gap: 5px;
+    margin-bottom: 8px;
+  }
+
+  .route-app .connector-keys-panel header p {
+    font-size: 0.78rem;
+    line-height: 1.28;
+  }
+
+  .route-app .connector-keys-grid {
+    gap: 8px;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .mobile-connector-key-card {
+    gap: 0;
+    overflow: hidden;
+    padding: 0;
+  }
+
+  .route-app .mobile-connector-key-card > summary {
+    cursor: pointer;
+    display: block;
+    list-style: none;
+    min-height: 52px;
+    padding: 9px;
+  }
+
+  .route-app .mobile-connector-key-card > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .route-app .mobile-connector-key-card > summary header {
+    align-items: center;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    margin: 0;
+  }
+
+  .route-app .mobile-connector-key-card > summary header p {
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 1;
+    display: -webkit-box;
+    overflow: hidden;
+  }
+
+  .route-app .connector-key-card-body {
+    border-top: 1px solid rgba(224, 230, 226, 0.07);
+    display: grid;
+    gap: 8px;
+    padding: 9px;
+  }
+
+  .route-app .preferences-page .recipient-save-form,
+  .route-app .preferences-page .custom-token-save-form,
+  .route-app .preferences-page .agent-policy-save-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .route-app .preferences-page .custom-token-save-form > label:first-child {
+    grid-column: 1 / -1;
+  }
+
+  .route-app .preferences-page .recipient-save-actions,
+  .route-app .preferences-page .custom-token-save-actions,
+  .route-app .preferences-page .agent-policy-save-actions,
+  .route-app .preferences-page .workspace-backup-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .route-app .preferences-page .recipient-rule-toggles {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .route-app .preferences-page .ai-toggle {
+    gap: 8px;
+    padding: 8px;
+  }
+
+  .route-app .preferences-page .ai-toggle em {
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    display: -webkit-box;
+    overflow: hidden;
+  }
 }
 
 .route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"][data-mobile-ai-policy="true"] {
@@ -30021,6 +30573,7 @@ button.danger:hover:not(:disabled) {
   .route-app .mobile-text-composer {
     --mobile-composer-vvh: 100dvh;
     --mobile-composer-vv-top: 0px;
+    --mobile-text-composer-top-pad: calc(10px + env(safe-area-inset-top, 0px));
     animation: mobile-text-composer-in 180ms cubic-bezier(0.2, 0.86, 0.22, 1) both;
     background:
       linear-gradient(180deg, rgba(21, 29, 26, 0.985) 0%, rgba(10, 14, 13, 0.992) 56%, rgba(5, 7, 6, 1) 100%);
@@ -30036,7 +30589,7 @@ button.danger:hover:not(:disabled) {
     left: 0;
     overflow: hidden;
     padding:
-      calc(10px + env(safe-area-inset-top, 0px))
+      var(--mobile-text-composer-top-pad)
       calc(16px + env(safe-area-inset-right, 0px))
       calc(14px + env(safe-area-inset-bottom, 0px))
       calc(16px + env(safe-area-inset-left, 0px));
@@ -30202,6 +30755,648 @@ button.danger:hover:not(:disabled) {
       opacity: 1;
       transform: translateY(0);
     }
+  }
+}
+
+@media (max-width: 899px) {
+  .route-app.android-shell {
+    --mobile-nav-safe-top: max(58px, env(safe-area-inset-top, 0px));
+  }
+
+  .route-app.ios-native-shell {
+    --mobile-nav-safe-top: max(62px, env(safe-area-inset-top, 0px));
+  }
+
+  .route-app {
+    --app-native-top-guard: calc(var(--mobile-nav-safe-top) + var(--mobile-nav-top-gap));
+  }
+
+  .route-app.android-shell .mobile-text-composer,
+  .route-app.ios-native-shell .mobile-text-composer {
+    --mobile-text-composer-top-pad: calc(var(--app-native-top-guard) + 12px);
+  }
+
+  .route-app.android-shell::before,
+  .route-app.ios-native-shell::before {
+    background: linear-gradient(180deg, rgba(5, 8, 7, 0.98), rgba(5, 8, 7, 0.92) 70%, rgba(5, 8, 7, 0));
+    content: "";
+    display: block;
+    height: var(--app-native-top-guard);
+    left: 0;
+    pointer-events: none;
+    position: fixed;
+    right: 0;
+    top: 0;
+    z-index: 235;
+  }
+
+  .route-app .one-time-plan-control-row.has-connector {
+    align-items: center;
+    backdrop-filter: blur(14px);
+    background:
+      linear-gradient(180deg, rgba(7, 12, 10, 0.92), rgba(7, 12, 10, 0.78)),
+      rgba(7, 12, 10, 0.78);
+    border: 1px solid rgba(224, 230, 226, 0.08);
+    border-radius: 10px;
+    display: grid !important;
+    gap: 7px;
+    grid-template-areas:
+      "steps connector"
+      "method method";
+    grid-template-columns: minmax(116px, 132px) minmax(0, 1fr) !important;
+    margin: 0 0 10px;
+    padding: 7px;
+    position: sticky;
+    top: calc(var(--app-native-top-guard) + 4px);
+    z-index: 220;
+  }
+
+  .route-app .one-time-plan-control-row.has-connector .one-time-plan-tabs {
+    grid-area: steps;
+    justify-self: stretch;
+    width: 100%;
+  }
+
+  .route-app .one-time-plan-control-row.has-connector .one-time-plan-tabs button {
+    font-size: 0.7rem;
+    min-height: 32px;
+    padding: 0 6px;
+  }
+
+  .route-app .one-time-plan-control-row.has-connector .top-connector-control {
+    grid-area: connector;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .route-app .one-time-plan-control-row.has-connector .top-connector-control .select-picker-shell,
+  .route-app .one-time-plan-control-row.has-connector .top-connector-control .select-picker-trigger {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .route-app .one-time-plan-control-row.has-connector .top-connector-control .select-picker-trigger {
+    min-height: 34px;
+    padding: 5px 8px;
+  }
+
+  .route-app .one-time-plan-control-row.has-connector .top-connector-control .template-picker-current strong {
+    font-size: 0.76rem;
+  }
+
+  .route-app .one-time-plan-control-row.has-connector .one-time-method-control {
+    display: block !important;
+    grid-area: method;
+    justify-self: stretch;
+    margin: 0;
+    width: 100%;
+  }
+
+  .route-app .one-time-plan-control-row.has-connector .one-time-method-label {
+    display: none;
+  }
+
+  .route-app .one-time-plan-control-row.has-connector .one-time-method-filter {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    padding: 2px;
+    width: 100%;
+  }
+
+  .route-app .one-time-plan-control-row.has-connector .one-time-method-filter button {
+    font-size: 0.68rem;
+    line-height: 1.05;
+    min-height: 30px;
+    min-width: 0;
+    padding: 0 4px;
+    white-space: normal;
+  }
+
+  .route-app .intent-document-card.planner-card {
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .route-app .planner-template-block,
+  .route-app .planner-form-body {
+    gap: 8px;
+  }
+
+  .route-app .planner-template-select > span {
+    display: none;
+  }
+
+  .route-app .planner-template-select .template-picker-trigger {
+    min-height: 42px;
+    padding: 7px 10px;
+  }
+
+  .route-app .planner-template-select .template-picker-current strong {
+    font-size: 0.9rem;
+  }
+
+  .route-app .template-description {
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    color: rgba(224, 230, 226, 0.74);
+    display: -webkit-box;
+    font-size: 0.82rem;
+    line-height: 1.26;
+    overflow: hidden;
+  }
+
+  .route-app .planner-fields.mobile-planner-fields {
+    display: grid;
+    gap: 9px;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .mobile-planner-field-row {
+    display: grid;
+    gap: 9px;
+    min-width: 0;
+  }
+
+  .route-app .mobile-planner-field-row.mobile-field-pair {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .route-app .mobile-planner-field-row.mobile-field-full,
+  .route-app .mobile-planner-field-row.mobile-field-short-single {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .mobile-planner-field {
+    min-width: 0;
+  }
+
+  .route-app .mobile-planner-field > .field,
+  .route-app .mobile-planner-field > .planner-field {
+    height: 100%;
+    min-width: 0;
+  }
+
+  .route-app .mobile-planner-fields .field.compact,
+  .route-app .mobile-planner-fields .planner-field {
+    gap: 5px;
+  }
+
+  .route-app .mobile-planner-fields .field.compact > span,
+  .route-app .mobile-planner-fields .planner-field > span:not(.token-choice-head),
+  .route-app .mobile-planner-fields .token-choice-head > span:first-child {
+    color: rgba(190, 202, 197, 0.76);
+    font-size: 0.62rem;
+    letter-spacing: 0;
+    line-height: 1;
+  }
+
+  .route-app .mobile-planner-fields .planner-field input,
+  .route-app .mobile-planner-fields .planner-field textarea,
+  .route-app .mobile-planner-fields .planner-field select,
+  .route-app .mobile-planner-fields .select-picker-trigger,
+  .route-app .mobile-planner-fields .token-search-shell input {
+    border-radius: 9px;
+    min-height: 50px;
+    padding: 8px 10px;
+  }
+
+  .route-app .mobile-planner-fields .template-picker-current {
+    min-width: 0;
+  }
+
+  .route-app .mobile-planner-fields .template-picker-current strong {
+    font-size: 0.96rem;
+    line-height: 1.1;
+  }
+
+  .route-app .mobile-planner-fields .template-picker-current em,
+  .route-app .mobile-planner-fields .template-picker-category {
+    display: none;
+  }
+
+  .route-app .mobile-planner-fields .token-choice-head {
+    gap: 6px;
+    min-height: 22px;
+  }
+
+  .route-app .mobile-planner-fields .token-choice-mode {
+    grid-template-columns: repeat(2, minmax(34px, 1fr));
+    padding: 1px;
+  }
+
+  .route-app .mobile-planner-fields .token-choice-mode button {
+    font-size: 0.55rem;
+    min-height: 20px;
+    padding: 0 5px;
+  }
+
+  .route-app .mobile-planner-fields .planner-field-hint {
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    display: -webkit-box;
+    font-size: 0.66rem;
+    line-height: 1.2;
+    overflow: hidden;
+  }
+
+  .route-app .planner-prompt textarea {
+    max-height: 88px;
+    min-height: 76px;
+    resize: none;
+  }
+
+  .route-app .planner-prompt > .field-label-row {
+    gap: 8px;
+  }
+
+  .route-app .planner-prompt .field-label-text {
+    color: rgba(190, 202, 197, 0.76);
+    font-size: 0.62rem;
+    letter-spacing: 0;
+    line-height: 1;
+  }
+
+  .route-app .planner-prompt .expand-note-link {
+    min-height: 28px;
+    padding: 6px 9px;
+  }
+
+  .route-app .agent-actions-row {
+    gap: 7px;
+  }
+
+  .route-app .agent-actions-row #generatePlan {
+    min-height: 50px;
+  }
+
+  .route-app .agent-actions-row > .ask-agent-after-draft {
+    min-height: 42px;
+    padding: 8px;
+  }
+
+  .route-app .ask-agent-copy em {
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 1;
+    display: -webkit-box;
+    overflow: hidden;
+  }
+
+  .route-app .draft-flow-hint {
+    gap: 6px;
+    grid-template-columns: auto minmax(0, 1fr);
+    margin-top: 2px;
+    padding: 7px 9px;
+  }
+
+  .route-app .draft-flow-hint span {
+    font-size: 0.66rem;
+  }
+
+  .route-app .draft-flow-hint p {
+    font-size: 0.76rem;
+    line-height: 1.22;
+  }
+}
+
+@media (max-width: 899px) {
+  .route-app .mobile-recurring-stage {
+    gap: 9px;
+  }
+
+  .route-app .mobile-recurring-title-head {
+    margin-bottom: 0;
+    padding-bottom: 8px;
+  }
+
+  .route-app .mobile-recurring-head-row {
+    align-items: start;
+    display: grid;
+    gap: 10px;
+    grid-template-columns: minmax(0, 1fr) minmax(132px, auto);
+    width: 100%;
+  }
+
+  .route-app .mobile-recurring-title-copy {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+  }
+
+  .route-app .mobile-recurring-title-copy h2 {
+    font-size: 1.18rem;
+    line-height: 1.08;
+    margin: 0;
+  }
+
+  .route-app .mobile-recurring-title-copy p {
+    color: rgba(224, 230, 226, 0.78);
+    font-size: 0.8rem;
+    line-height: 1.2;
+    margin: 0;
+  }
+
+  .route-app .mobile-recurring-view-tabs {
+    align-self: start;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    justify-self: end;
+    min-width: 132px;
+    width: auto;
+  }
+
+  .route-app .mobile-recurring-view-tabs button {
+    font-size: 0.7rem;
+    min-height: 32px;
+    padding: 0 7px;
+    white-space: nowrap;
+  }
+
+  .route-app .mobile-recurring-stats {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.024);
+    border: 1px solid rgba(224, 230, 226, 0.09);
+    border-radius: var(--app-card-radius);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 7px;
+  }
+
+  .route-app .mobile-recurring-stats strong,
+  .route-app .mobile-recurring-stats span {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.032);
+    border: 1px solid rgba(224, 230, 226, 0.08);
+    border-radius: 999px;
+    color: rgba(224, 230, 226, 0.82);
+    display: inline-flex;
+    font-size: 0.72rem;
+    font-weight: 850;
+    line-height: 1;
+    min-height: 26px;
+    padding: 0 9px;
+    white-space: nowrap;
+  }
+
+  .route-app .mobile-recurring-stats strong {
+    background: rgba(125, 231, 176, 0.1);
+    border-color: rgba(139, 205, 170, 0.18);
+    color: #d8ffe8;
+  }
+
+  .route-app .mobile-recurring-controls {
+    display: grid;
+    gap: 8px;
+    margin: 0 0 2px;
+    min-width: 0;
+  }
+
+  .route-app .mobile-recurring-controls.create {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .route-app .mobile-recurring-controls.active {
+    align-items: end;
+    grid-template-columns: minmax(0, 1fr) minmax(96px, auto);
+  }
+
+  .route-app .mobile-recurring-controls .top-connector-control,
+  .route-app .mobile-recurring-controls .recurring-method-control,
+  .route-app .mobile-recurring-controls .recurring-connector-action-control,
+  .route-app .mobile-recurring-controls .agent-review-filter-control {
+    display: block !important;
+    justify-self: stretch !important;
+    margin: 0 !important;
+    max-width: none !important;
+    min-width: 0 !important;
+    width: 100% !important;
+  }
+
+  .route-app .mobile-recurring-controls .one-time-method-label {
+    display: none;
+  }
+
+  .route-app .mobile-recurring-controls .select-picker-shell,
+  .route-app .mobile-recurring-controls .select-picker-trigger {
+    min-width: 0 !important;
+    width: 100%;
+  }
+
+  .route-app .mobile-recurring-controls .select-picker-trigger {
+    min-height: 38px;
+    padding: 6px 9px;
+  }
+
+  .route-app .mobile-recurring-controls .template-picker-current strong {
+    font-size: 0.78rem;
+  }
+
+  .route-app .mobile-recurring-controls .template-picker-category,
+  .route-app .mobile-recurring-controls .template-picker-current em {
+    display: none;
+  }
+
+  .route-app .mobile-recurring-controls #deleteAllRepeats {
+    min-height: 38px;
+    padding-inline: 10px;
+    width: 100%;
+  }
+
+  .route-app .mobile-recurring-contract {
+    gap: 9px;
+    padding: 0 8px 10px;
+  }
+
+  .route-app .mobile-recurring-contract .recurring-contract-summary-tabbed {
+    display: none;
+  }
+
+  .route-app .mobile-recurring-contract .recurring-create-section,
+  .route-app .mobile-recurring-contract .recurring-advanced-section {
+    border-top-color: rgba(224, 230, 226, 0.055);
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(0, 1fr) !important;
+    padding-top: 8px;
+  }
+
+  .route-app .mobile-recurring-contract .recurring-create-section > div:first-child,
+  .route-app .mobile-recurring-contract .recurring-advanced-section > div:first-child {
+    display: none;
+  }
+
+  .route-app .mobile-recurring-contract .recurring-grid,
+  .route-app .mobile-recurring-contract .schedule-grid,
+  .route-app .mobile-recurring-contract .recurring-advanced-grid {
+    display: grid;
+    gap: 8px;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+
+  .route-app .mobile-recurring-contract .recipient-field,
+  .route-app .mobile-recurring-contract .recurring-note-field,
+  .route-app .mobile-recurring-contract .field:has(#recurringWebhookUrl),
+  .route-app .mobile-recurring-contract .recurring-time-field {
+    grid-column: 1 / -1;
+  }
+
+  .route-app .mobile-recurring-contract .field.compact,
+  .route-app .mobile-recurring-contract .token-choice-field {
+    gap: 5px;
+    min-width: 0;
+  }
+
+  .route-app .mobile-recurring-contract .field.compact > span,
+  .route-app .mobile-recurring-contract .token-choice-head > span:first-child,
+  .route-app .mobile-recurring-contract .field-label-text {
+    color: rgba(190, 202, 197, 0.76);
+    font-size: 0.62rem;
+    letter-spacing: 0;
+    line-height: 1;
+  }
+
+  .route-app .mobile-recurring-contract .field input,
+  .route-app .mobile-recurring-contract .field select,
+  .route-app .mobile-recurring-contract .select-picker-trigger,
+  .route-app .mobile-recurring-contract .token-search-shell input {
+    border-radius: 9px;
+    min-height: 50px;
+    padding: 8px 10px;
+  }
+
+  .route-app .mobile-recurring-contract .template-picker-current {
+    min-width: 0;
+  }
+
+  .route-app .mobile-recurring-contract .template-picker-current strong {
+    font-size: 0.96rem;
+    line-height: 1.1;
+  }
+
+  .route-app .mobile-recurring-contract .template-picker-current em,
+  .route-app .mobile-recurring-contract .template-picker-category {
+    display: none;
+  }
+
+  .route-app .mobile-recurring-contract .token-choice-head {
+    gap: 6px;
+    min-height: 22px;
+  }
+
+  .route-app .mobile-recurring-contract .token-choice-mode {
+    grid-template-columns: repeat(2, minmax(34px, 1fr));
+    padding: 1px;
+  }
+
+  .route-app .mobile-recurring-contract .token-choice-mode button {
+    font-size: 0.55rem;
+    min-height: 20px;
+    padding: 0 5px;
+  }
+
+  .route-app .mobile-recurring-contract .recurring-time-controls {
+    gap: 6px;
+    grid-template-columns: minmax(58px, 0.8fr) auto minmax(58px, 0.8fr) minmax(78px, 1fr);
+  }
+
+  .route-app .mobile-recurring-contract .recurring-note-section {
+    padding-top: 8px;
+  }
+
+  .route-app .mobile-recurring-contract .recurring-note-field textarea {
+    max-height: 88px;
+    min-height: 76px;
+    resize: none;
+  }
+
+  .route-app .mobile-recurring-contract .recurring-note-field > .field-label-row {
+    align-items: center;
+    display: flex;
+    gap: 8px;
+    justify-content: space-between;
+  }
+
+  .route-app .mobile-recurring-contract .recurring-note-field .expand-note-link {
+    min-height: 28px;
+    padding: 6px 9px;
+  }
+
+  .route-app .mobile-recurring-contract .recurring-create-primary-row {
+    align-items: end;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(0, 1fr);
+    padding-top: 0;
+  }
+
+  .route-app .mobile-recurring-contract .recurring-action-spacer {
+    display: none;
+  }
+
+  .route-app .mobile-recurring-contract .recurring-agent-after-draft {
+    min-height: 42px;
+    padding: 8px;
+  }
+
+  .route-app .mobile-recurring-contract .ask-agent-copy em {
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 1;
+    display: -webkit-box;
+    overflow: hidden;
+  }
+
+  .route-app .mobile-recurring-contract .recurring-form-actions.contract-actions {
+    justify-items: end;
+  }
+
+  .route-app .mobile-recurring-contract .recurring-actions-row {
+    justify-content: flex-end;
+  }
+
+  .route-app .mobile-recurring-contract #createRecurring {
+    min-height: 50px;
+    min-width: 132px;
+  }
+
+  .route-app .mobile-recurring-contract .recurring-advanced-details {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding-top: 0;
+  }
+
+  .route-app .mobile-recurring-contract .recurring-advanced-details > summary {
+    justify-self: start;
+    min-height: 38px;
+  }
+
+  .route-app .mobile-recurring-contract .recurring-advanced-details[open] > .contract-section {
+    margin-top: 0;
+  }
+
+  .route-app .mobile-recurring-contract .recurring-production-preview {
+    gap: 6px 10px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: 8px 10px;
+  }
+
+  .route-app .mobile-recurring-contract .recurring-production-preview p {
+    grid-column: 1 / -1;
+    font-size: 0.74rem;
+    line-height: 1.18;
+  }
+}
+
+@media (max-width: 380px) {
+  .route-app .mobile-recurring-head-row,
+  .route-app .mobile-recurring-controls.create,
+  .route-app .mobile-recurring-controls.active {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .mobile-recurring-view-tabs {
+    justify-self: stretch;
+    width: 100%;
   }
 }
 
@@ -31587,6 +32782,773 @@ button.danger:hover:not(:disabled) {
   }
 }
 
+@media (max-width: 899px) {
+  .route-app .mobile-proof-stage {
+    gap: 9px;
+  }
+
+  .route-app .mobile-proof-stage .artifact-workspace-head {
+    gap: 8px;
+    padding-bottom: 8px;
+  }
+
+  .route-app .mobile-proof-stage .artifact-workspace-head .section-title-line {
+    gap: 4px;
+  }
+
+  .route-app .mobile-proof-stage .artifact-view-tabs {
+    justify-self: end;
+    min-width: 0;
+  }
+
+  .route-app .mobile-proof-stage .artifact-view-tabs button {
+    font-size: 0.74rem;
+    min-height: 34px;
+    padding: 0 10px;
+    white-space: nowrap;
+  }
+
+  .route-app .mobile-proof-stage .signed-artifacts-panel {
+    gap: 9px;
+  }
+
+  .route-app .mobile-artifact-archive-control-panel {
+    background: rgba(255, 255, 255, 0.018);
+    border: 1px solid rgba(224, 230, 226, 0.075);
+    border-radius: var(--app-card-radius);
+    display: grid;
+    gap: 8px;
+    padding: 8px;
+  }
+
+  .route-app .mobile-artifact-filter-row {
+    display: grid;
+    gap: 5px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    margin: 0;
+  }
+
+  .route-app .mobile-artifact-filter-row button {
+    border-radius: 7px;
+    font-size: 0.7rem;
+    min-height: 32px;
+    padding: 0 4px;
+    white-space: nowrap;
+  }
+
+  .route-app .mobile-artifact-search-row {
+    display: grid;
+    gap: 7px;
+    grid-template-columns: minmax(112px, 0.42fr) minmax(0, 1fr);
+  }
+
+  .route-app .mobile-artifact-search-row .field {
+    margin: 0;
+    min-width: 0;
+  }
+
+  .route-app .mobile-artifact-search-row .select-picker-shell,
+  .route-app .mobile-artifact-search-row .select-picker-trigger,
+  .route-app .mobile-artifact-search-row input {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .route-app .mobile-artifact-search-row .select-picker-trigger,
+  .route-app .mobile-artifact-search-row input {
+    min-height: 40px;
+    padding: 7px 9px;
+  }
+
+  .route-app .mobile-artifact-search-row .template-picker-current strong {
+    font-size: 0.82rem;
+  }
+
+  .route-app .mobile-artifact-search-row .template-picker-category,
+  .route-app .mobile-artifact-search-row .template-picker-current em {
+    display: none;
+  }
+
+  .route-app .mobile-artifact-status-line {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .route-app .mobile-artifact-status-line strong,
+  .route-app .mobile-artifact-status-line span {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.032);
+    border: 1px solid rgba(224, 230, 226, 0.08);
+    border-radius: 999px;
+    color: rgba(224, 230, 226, 0.78);
+    display: inline-flex;
+    font-size: 0.7rem;
+    font-weight: 850;
+    line-height: 1;
+    min-height: 24px;
+    padding: 0 8px;
+  }
+
+  .route-app .mobile-artifact-status-line strong {
+    background: rgba(125, 231, 176, 0.1);
+    border-color: rgba(139, 205, 170, 0.18);
+    color: #d8ffe8;
+  }
+
+  .route-app .mobile-proof-stage #refreshLabArtifacts {
+    display: none !important;
+  }
+
+  .route-app .mobile-receipt-proof-card {
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .route-app .mobile-receipt-proof-head {
+    display: grid;
+    gap: 5px;
+    min-width: 0;
+  }
+
+  .route-app .mobile-receipt-proof-meta {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    min-width: 0;
+  }
+
+  .route-app .mobile-receipt-proof-meta .status-pill,
+  .route-app .mobile-receipt-proof-kind {
+    font-size: 0.64rem;
+    min-height: 22px;
+    padding: 4px 7px;
+  }
+
+  .route-app .mobile-receipt-proof-kind {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.045);
+    border: 1px solid rgba(224, 230, 226, 0.09);
+    border-radius: 999px;
+    color: rgba(213, 223, 219, 0.82);
+    display: inline-flex;
+    font-weight: 860;
+    line-height: 1;
+  }
+
+  .route-app .mobile-receipt-proof-head h3 {
+    color: var(--text);
+    font-size: 1.03rem;
+    font-weight: 900;
+    line-height: 1.18;
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .route-app .mobile-receipt-proof-head p {
+    align-items: center;
+    color: rgba(224, 230, 226, 0.72);
+    display: flex;
+    flex-wrap: wrap;
+    font-size: 0.76rem;
+    gap: 6px;
+    line-height: 1.2;
+    margin: 0;
+  }
+
+  .route-app .mobile-receipt-proof-head p span::before {
+    color: rgba(196, 205, 202, 0.44);
+    content: "·";
+    margin-right: 6px;
+  }
+
+  .route-app .mobile-receipt-proof-hash {
+    color: var(--accent);
+    font-size: 0.9rem;
+    font-weight: 900;
+    line-height: 1.1;
+    overflow-wrap: anywhere;
+  }
+
+  .route-app .mobile-receipt-proof-summary {
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    color: rgba(224, 230, 226, 0.82);
+    display: -webkit-box;
+    font-size: 0.84rem;
+    line-height: 1.28;
+    margin: 0;
+    overflow: hidden;
+  }
+
+  .route-app .mobile-receipt-proof-rows,
+  .route-app .mobile-receipt-proof-detail-rows {
+    background: rgba(255, 255, 255, 0.014);
+    border: 1px solid rgba(224, 230, 226, 0.075);
+    border-radius: var(--app-card-radius);
+    display: grid;
+    gap: 0;
+    margin: 0;
+    overflow: hidden;
+  }
+
+  .route-app .mobile-receipt-proof-rows > div,
+  .route-app .mobile-receipt-proof-detail-rows > div {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid rgba(224, 230, 226, 0.055);
+    border-radius: 0;
+    display: grid;
+    gap: 6px 10px;
+    grid-template-columns: minmax(74px, 0.36fr) minmax(0, 1fr);
+    min-height: 0;
+    padding: 7px 9px;
+  }
+
+  .route-app .mobile-receipt-proof-rows > div:last-child,
+  .route-app .mobile-receipt-proof-detail-rows > div:last-child {
+    border-bottom: 0;
+  }
+
+  .route-app .mobile-receipt-proof-rows dt,
+  .route-app .mobile-receipt-proof-detail-rows dt {
+    color: rgba(190, 202, 197, 0.72);
+    font-size: 0.6rem;
+    font-weight: 900;
+    letter-spacing: 0.05em;
+    line-height: 1;
+    margin: 0;
+    text-transform: uppercase;
+  }
+
+  .route-app .mobile-receipt-proof-rows dd,
+  .route-app .mobile-receipt-proof-detail-rows dd {
+    color: var(--text);
+    font-size: 0.84rem;
+    font-weight: 840;
+    line-height: 1.2;
+    margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .route-app .mobile-receipt-proof-detail-rows dd > span {
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    display: -webkit-box;
+    overflow: hidden;
+  }
+
+  .route-app .mobile-receipt-proof-rows dd.has-copy,
+  .route-app .mobile-receipt-proof-detail-rows dd.has-copy {
+    align-items: center;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .route-app .mobile-receipt-proof-rows .wallet-action-copy,
+  .route-app .mobile-receipt-proof-detail-rows .wallet-action-copy {
+    min-height: 28px;
+    padding: 4px 8px;
+  }
+
+  .route-app .mobile-receipt-proof-footer {
+    display: grid;
+    gap: 7px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(82px, 0.75fr);
+    position: relative;
+  }
+
+  .route-app .mobile-receipt-proof-footer > button,
+  .route-app .mobile-receipt-proof-footer > details > summary {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.038);
+    border: 1px solid rgba(224, 230, 226, 0.14);
+    border-radius: var(--app-card-radius);
+    color: rgba(242, 245, 243, 0.92);
+    cursor: pointer;
+    display: flex;
+    font-size: 0.78rem;
+    font-weight: 900;
+    justify-content: center;
+    line-height: 1;
+    list-style: none;
+    min-height: 36px;
+    padding: 0 8px;
+    text-align: center;
+    width: 100%;
+  }
+
+  .route-app .mobile-receipt-proof-footer > details > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .route-app .mobile-receipt-proof-more {
+    min-width: 0;
+    position: relative;
+  }
+
+  .route-app .mobile-receipt-proof-more[open] {
+    grid-column: 1 / -1;
+  }
+
+  .route-app .mobile-receipt-proof-more-body {
+    background: rgba(8, 11, 10, 0.98);
+    border: 1px solid rgba(224, 230, 226, 0.14);
+    border-radius: var(--app-card-radius);
+    box-shadow: 0 18px 42px rgba(0, 0, 0, 0.36);
+    display: grid;
+    gap: 7px;
+    margin-top: 7px;
+    padding: 8px;
+  }
+
+  .route-app .mobile-receipt-proof-more .receipt-proof-storage-badges {
+    gap: 5px;
+  }
+
+  .route-app .mobile-receipt-proof-more .receipt-proof-delete-button {
+    justify-self: stretch;
+    min-height: 36px;
+    width: 100%;
+  }
+
+  .route-app .mobile-receipt-proof-more .signed-artifact-details {
+    margin: 0;
+    padding-top: 0;
+  }
+
+  .route-app .mobile-receipt-proof-more .signed-artifact-details > summary {
+    min-height: 34px;
+  }
+
+  .route-app .mobile-receipt-proof-more .receipt-tech-detail {
+    gap: 8px;
+  }
+
+  .route-app .mobile-receipt-proof-more .artifact-detail-grid,
+  .route-app .mobile-receipt-proof-more .artifact-evidence-row,
+  .route-app .mobile-receipt-proof-more .hash-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .mobile-completed-stage {
+    gap: 9px;
+  }
+
+  .route-app .mobile-completed-stage #refreshCompletedPlans {
+    display: none !important;
+  }
+
+  .route-app .mobile-completed-head {
+    align-items: start;
+    border-bottom: 1px solid rgba(224, 230, 226, 0.07);
+    display: grid;
+    gap: 10px;
+    grid-template-columns: minmax(0, 1fr) minmax(156px, auto);
+    padding-bottom: 8px;
+  }
+
+  .route-app .mobile-completed-title {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .route-app .mobile-completed-title h2 {
+    color: var(--text);
+    font-size: 1.18rem;
+    font-weight: 900;
+    line-height: 1.08;
+    margin: 0;
+  }
+
+  .route-app .mobile-completed-title p {
+    color: rgba(224, 230, 226, 0.78);
+    font-size: 0.78rem;
+    line-height: 1.22;
+    margin: 0;
+  }
+
+  .route-app .mobile-completed-controls {
+    align-items: end;
+    display: grid;
+    gap: 7px;
+    grid-template-columns: minmax(0, 1fr) minmax(74px, auto);
+    justify-self: end;
+    min-width: 156px;
+  }
+
+  .route-app .mobile-completed-controls .completed-filter-control {
+    gap: 3px;
+    min-width: 0;
+  }
+
+  .route-app .mobile-completed-controls .filter-field-label {
+    font-size: 0.58rem;
+    letter-spacing: 0.06em;
+  }
+
+  .route-app .mobile-completed-controls .completed-filter-select,
+  .route-app .mobile-completed-controls .completed-filter-select .select-picker-trigger {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .route-app .mobile-completed-controls .select-picker-trigger,
+  .route-app .mobile-completed-controls #deleteAllDone {
+    min-height: 36px;
+    padding: 6px 9px;
+  }
+
+  .route-app .mobile-completed-controls .template-picker-current strong {
+    font-size: 0.78rem;
+  }
+
+  .route-app .mobile-completed-controls .template-picker-category {
+    display: none;
+  }
+
+  .route-app .mobile-completed-stats {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .route-app .mobile-completed-stats strong,
+  .route-app .mobile-completed-stats span {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.032);
+    border: 1px solid rgba(224, 230, 226, 0.08);
+    border-radius: 999px;
+    color: rgba(224, 230, 226, 0.78);
+    display: inline-flex;
+    font-size: 0.7rem;
+    font-weight: 850;
+    line-height: 1;
+    min-height: 25px;
+    padding: 0 8px;
+    white-space: nowrap;
+  }
+
+  .route-app .mobile-completed-stats strong {
+    background: rgba(125, 231, 176, 0.1);
+    border-color: rgba(139, 205, 170, 0.18);
+    color: #d8ffe8;
+  }
+
+  .route-app .mobile-completed-source {
+    color: rgba(196, 205, 202, 0.72);
+    font-size: 0.72rem;
+    line-height: 1.2;
+    margin: -2px 0 0;
+  }
+
+  .route-app .completed-plan-grid {
+    gap: 10px;
+  }
+
+  .route-app .mobile-completed-card {
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .route-app .mobile-completed-card-head {
+    display: grid;
+    gap: 5px;
+    min-width: 0;
+  }
+
+  .route-app .mobile-completed-card-meta {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    min-width: 0;
+  }
+
+  .route-app .mobile-completed-card-meta .status-pill,
+  .route-app .mobile-completed-card-meta .review-plan-meta-pill,
+  .route-app .mobile-completed-kind {
+    font-size: 0.64rem;
+    min-height: 22px;
+    padding: 4px 7px;
+  }
+
+  .route-app .mobile-completed-kind {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.045);
+    border: 1px solid rgba(224, 230, 226, 0.09);
+    border-radius: 999px;
+    color: rgba(213, 223, 219, 0.82);
+    display: inline-flex;
+    font-weight: 860;
+    line-height: 1;
+  }
+
+  .route-app .mobile-completed-card-head h3 {
+    color: var(--text);
+    font-size: 1.03rem;
+    font-weight: 900;
+    line-height: 1.18;
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .route-app .mobile-completed-card-head p {
+    align-items: center;
+    color: rgba(224, 230, 226, 0.72);
+    display: flex;
+    flex-wrap: wrap;
+    font-size: 0.76rem;
+    gap: 6px;
+    line-height: 1.2;
+    margin: 0;
+  }
+
+  .route-app .mobile-completed-card-head p span + span::before {
+    color: rgba(196, 205, 202, 0.44);
+    content: "·";
+    margin-right: 6px;
+  }
+
+  .route-app .mobile-completed-summary-list {
+    background: rgba(255, 255, 255, 0.014);
+    border: 1px solid rgba(224, 230, 226, 0.075);
+    border-radius: var(--app-card-radius);
+    display: grid;
+    gap: 0;
+    margin: 0;
+    overflow: hidden;
+  }
+
+  .route-app .mobile-completed-summary-list > div {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    border-bottom: 1px solid rgba(224, 230, 226, 0.055);
+    border-radius: 0;
+    display: grid;
+    gap: 6px 10px;
+    grid-template-columns: minmax(64px, 0.36fr) minmax(0, 1fr);
+    min-height: 0;
+    padding: 7px 9px;
+  }
+
+  .route-app .mobile-completed-summary-list > div:last-child {
+    border-bottom: 0;
+  }
+
+  .route-app .mobile-completed-summary-list dt {
+    color: rgba(190, 202, 197, 0.72);
+    font-size: 0.6rem;
+    font-weight: 900;
+    letter-spacing: 0.05em;
+    line-height: 1;
+    margin: 0;
+    text-transform: uppercase;
+  }
+
+  .route-app .mobile-completed-summary-list dd {
+    color: var(--text);
+    font-size: 0.84rem;
+    font-weight: 840;
+    line-height: 1.2;
+    margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .route-app .mobile-completed-summary-list dd.has-copy {
+    align-items: center;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .route-app .mobile-completed-summary-list dd > span {
+    min-width: 0;
+  }
+
+  .route-app .mobile-completed-summary-amount dd {
+    color: #c9f4dc;
+  }
+
+  .route-app .mobile-completed-summary-list .summary-copy-actions {
+    flex-wrap: nowrap;
+  }
+
+  .route-app .mobile-completed-summary-list .wallet-action-copy {
+    min-height: 28px;
+    padding: 4px 8px;
+  }
+
+  .route-app .mobile-completed-card .completed-history-note {
+    background: rgba(255, 255, 255, 0.014);
+    gap: 5px;
+    grid-template-columns: minmax(0, 1fr);
+    padding: 7px 9px;
+  }
+
+  .route-app .mobile-completed-card .completed-history-note p {
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    display: -webkit-box;
+    overflow: hidden;
+  }
+
+  .route-app .mobile-decision-proof,
+  .route-app .mobile-completed-more {
+    background: rgba(255, 255, 255, 0.018);
+    border: 1px solid rgba(224, 230, 226, 0.085);
+    border-radius: var(--app-card-radius);
+    margin: 0;
+    padding: 5px 8px;
+  }
+
+  .route-app .mobile-decision-proof[open],
+  .route-app .mobile-completed-more[open] {
+    padding-bottom: 8px;
+  }
+
+  .route-app .mobile-decision-proof > summary,
+  .route-app .mobile-completed-more > summary {
+    align-items: center;
+    color: rgba(244, 247, 245, 0.94);
+    cursor: pointer;
+    display: flex;
+    font-size: 0.82rem;
+    font-weight: 900;
+    gap: 7px;
+    justify-content: space-between;
+    line-height: 1.1;
+    list-style: none;
+    min-height: 24px;
+  }
+
+  .route-app .mobile-decision-proof > summary::-webkit-details-marker,
+  .route-app .mobile-completed-more > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .route-app .mobile-decision-proof > summary::after,
+  .route-app .mobile-completed-more > summary::after {
+    color: rgba(139, 205, 170, 0.95);
+    content: "+";
+    font-size: 1rem;
+    line-height: 1;
+  }
+
+  .route-app .mobile-decision-proof[open] > summary::after,
+  .route-app .mobile-completed-more[open] > summary::after {
+    content: "-";
+  }
+
+  .route-app .mobile-decision-proof > summary strong {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .route-app .mobile-decision-proof .decision-proof-icon {
+    flex: 0 0 auto;
+    height: 18px;
+    width: 18px;
+  }
+
+  .route-app .mobile-decision-proof .decision-proof-grid {
+    background: rgba(255, 255, 255, 0.014);
+    border: 1px solid rgba(224, 230, 226, 0.06);
+    border-radius: var(--app-card-radius);
+    display: grid;
+    gap: 0;
+    grid-template-columns: minmax(0, 1fr);
+    margin: 7px 0 0;
+    overflow: hidden;
+  }
+
+  .route-app .mobile-decision-proof .decision-proof-grid div {
+    border-bottom: 1px solid rgba(224, 230, 226, 0.05);
+    display: grid;
+    gap: 5px;
+    grid-template-columns: minmax(70px, 0.36fr) minmax(0, 1fr);
+    padding: 7px 9px;
+  }
+
+  .route-app .mobile-decision-proof .decision-proof-grid div:last-child {
+    border-bottom: 0;
+  }
+
+  .route-app .mobile-decision-proof .decision-proof-grid dt,
+  .route-app .mobile-decision-proof .decision-proof-grid dd {
+    margin: 0;
+  }
+
+  .route-app .mobile-decision-proof .decision-proof-grid dt {
+    font-size: 0.6rem;
+    letter-spacing: 0.05em;
+  }
+
+  .route-app .mobile-decision-proof .decision-proof-grid dd {
+    font-size: 0.78rem;
+    line-height: 1.18;
+    overflow-wrap: anywhere;
+    word-break: normal;
+  }
+
+  .route-app .mobile-decision-proof .decision-proof-actions {
+    gap: 6px;
+    margin-top: 7px;
+  }
+
+  .route-app .mobile-decision-proof .decision-proof-actions button {
+    min-height: 34px;
+  }
+
+  .route-app .mobile-completed-more-body {
+    display: grid;
+    gap: 7px;
+    margin-top: 7px;
+  }
+
+  .route-app .mobile-completed-more .record-activity,
+  .route-app .mobile-completed-more .completed-history-details,
+  .route-app .mobile-completed-more .related-receipts {
+    margin: 0;
+  }
+
+  .route-app .mobile-completed-more .completed-plan-details .proof-grid.compact {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .mobile-completed-action-grid {
+    display: grid;
+    gap: 7px;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .mobile-completed-action-grid button {
+    min-height: 38px;
+    width: 100%;
+  }
+}
+
+@media (max-width: 380px) {
+  .route-app .mobile-completed-head,
+  .route-app .mobile-completed-controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .mobile-completed-controls {
+    justify-self: stretch;
+    width: 100%;
+  }
+}
+
 /* CLI focused-mode overrides — hide non-essential chrome and center the focused card. */
 [data-cli-mode="true"] .homepage-nav,
 [data-cli-mode="true"] .homepage-footer,
@@ -32098,7 +34060,7 @@ button.danger:hover:not(:disabled) {
   border-color: var(--warn);
 }
 
-/* Android /app Connections polish: explicit setup/manage actions and calmer first-run density. */
+/* Native /app Connections polish: explicit setup/manage actions and calmer first-run density. */
 .route-app .rail-conn-trigger {
   grid-template-columns: minmax(0, 1fr) auto auto;
 }
@@ -32210,11 +34172,19 @@ button.danger:hover:not(:disabled) {
 }
 
 @media (max-width: 899px) {
-  .route-app .signer-row.android-connection-signer.disconnected {
+  .route-app .connections-rail-head {
+    gap: 1px;
+  }
+
+  .route-app .connections-rail-head .connection-group-label {
+    margin-top: 3px;
+  }
+
+  .route-app .signer-row.native-connection-signer.disconnected {
     align-items: center;
   }
 
-  .route-app .signer-row.android-connection-signer.disconnected .connection-summary {
+  .route-app .signer-row.native-connection-signer.disconnected .connection-summary {
     background: transparent;
     border-color: transparent;
     box-shadow: none;
@@ -32222,13 +34192,13 @@ button.danger:hover:not(:disabled) {
     padding: 0;
   }
 
-  .route-app .signer-row.android-connection-signer.disconnected .connection-summary > div {
+  .route-app .signer-row.native-connection-signer.disconnected .connection-summary > div {
     background: transparent;
     border: 0;
     padding: 0;
   }
 
-  .route-app .signer-row.android-connection-signer.disconnected .connection-summary strong {
+  .route-app .signer-row.native-connection-signer.disconnected .connection-summary strong {
     color: rgba(235, 244, 239, 0.92);
     font-size: 0.92rem;
   }

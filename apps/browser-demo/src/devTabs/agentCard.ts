@@ -733,16 +733,20 @@ function bodyHtml(): string {
   }
   if (tabState.status === 'unavailable') {
     return `
-      <p class="dev-agent-card-empty dev-tab-empty-state">
-        Sign in to Agentic Cloud to manage this wallet's payment profile. Connect your wallet and complete the cloud sign-in challenge, then return here.
-      </p>
-      <button type="button" class="button utility" data-profile-action="refresh">Retry</button>
+      <div class="dev-agent-card-empty-state">
+        <p class="dev-agent-card-empty dev-tab-empty-state">
+          Sign in to Agentic Cloud to manage this wallet's payment profile. Connect your wallet and complete the cloud sign-in challenge, then return here.
+        </p>
+        <button type="button" class="button utility" data-profile-action="refresh">Retry</button>
+      </div>
     `;
   }
   if (tabState.status === 'error') {
     return `
-      <p class="dev-agent-card-empty dev-tab-empty-state">Could not load profile: ${escapeHtml(tabState.errorMessage ?? 'Unknown error')}</p>
-      <button type="button" class="button utility" data-profile-action="refresh">Retry</button>
+      <div class="dev-agent-card-empty-state">
+        <p class="dev-agent-card-empty dev-tab-empty-state">Could not load profile: ${escapeHtml(tabState.errorMessage ?? 'Unknown error')}</p>
+        <button type="button" class="button utility" data-profile-action="refresh">Retry</button>
+      </div>
     `;
   }
   const address = currentAddress();
@@ -766,8 +770,7 @@ export function panelHtml(): string {
             <span class="dev-agent-card-identity-pill">Approval required</span>
           </div>
           <p>
-            Let compatible apps find this wallet, send payment requests, and route checkout carts. You stay in
-            control because every request must be approved in your wallet before signing.
+            Let compatible apps find this wallet and send payment requests. Every request still needs wallet approval.
           </p>
           <div class="dev-agent-card-actions dev-tab-actions">
             <button type="button" class="button utility" data-profile-action="refresh">Refresh</button>

@@ -1,7 +1,7 @@
 import './agentProtocols.css';
 import { registerDevTab } from '../devTabRegistry.js';
 import { renderAgentCardPanel } from './agentCard.js';
-import { renderExternalAgentsPanel } from './externalAgents.js';
+import { fetchInbound, renderExternalAgentsPanel } from './externalAgents.js';
 import { renderPayOutPanel } from './payOut.js';
 
 type AgentProtocolsSubTabId = 'agent-card' | 'pay-out' | 'external-agents';
@@ -9,28 +9,36 @@ type AgentProtocolsSubTabId = 'agent-card' | 'pay-out' | 'external-agents';
 interface AgentProtocolsSubTab {
   id: AgentProtocolsSubTabId;
   label: string;
+  mobileLabel: string;
   description: string;
   render: () => string;
+  onActivate?: () => void;
 }
 
 const subTabs: readonly AgentProtocolsSubTab[] = [
   {
     id: 'agent-card',
     label: 'Profile',
+    mobileLabel: 'Profile',
     description: 'How compatible apps discover this wallet',
     render: renderAgentCardPanel,
   },
   {
     id: 'pay-out',
     label: 'Pay Merchant',
+    mobileLabel: 'Pay',
     description: 'Review a merchant cart and pay from this wallet',
     render: renderPayOutPanel,
   },
   {
     id: 'external-agents',
     label: 'Incoming Requests',
+    mobileLabel: 'Incoming',
     description: 'Review payment requests sent to this wallet',
     render: renderExternalAgentsPanel,
+    onActivate: () => {
+      void fetchInbound(true);
+    },
   },
 ];
 
@@ -65,7 +73,8 @@ function renderSubTabButton(tab: AgentProtocolsSubTab): string {
       title="${escapeHtml(tab.description)}"
       data-agent-protocols-subtab="${escapeHtml(tab.id)}"
     >
-      ${escapeHtml(tab.label)}
+      <span class="agent-protocols-label-full">${escapeHtml(tab.label)}</span>
+      <span class="agent-protocols-label-mobile">${escapeHtml(tab.mobileLabel)}</span>
     </button>
   `;
 }
@@ -116,8 +125,11 @@ if (typeof document !== 'undefined') {
     const id = trigger.dataset.agentProtocolsSubtab;
     if (!id || !findSubTab(id)) return;
     event.preventDefault();
+    const tab = findSubTab(id);
+    if (!tab) return;
     activeSubTabId = id as AgentProtocolsSubTabId;
     rerenderPanelOnly();
+    tab.onActivate?.();
   });
 }
 

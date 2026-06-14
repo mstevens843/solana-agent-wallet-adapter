@@ -111,6 +111,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 /// remote error rather than auto-falling-back; Render's health check + fast
 /// redeploys keep that window small.
 final class AgenticBridgeViewController: CAPBridgeViewController {
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        webView?.scrollView.bounces = false
+        webView?.scrollView.alwaysBounceVertical = false
+    }
+
     override func instanceDescriptor() -> InstanceDescriptor {
         let descriptor = super.instanceDescriptor()
         if let server = descriptor.serverURL,

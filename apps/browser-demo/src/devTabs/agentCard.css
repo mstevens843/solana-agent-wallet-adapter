@@ -183,6 +183,11 @@
   min-width: 0;
 }
 
+.dev-agent-card-empty-state {
+  display: grid;
+  gap: 10px;
+}
+
 .dev-agent-card-readable {
   display: grid;
   gap: 12px;
@@ -858,6 +863,126 @@
 }
 
 @media (max-width: 720px) {
+  .dev-agent-card-panel {
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .dev-agent-card-head {
+    gap: 10px;
+    grid-template-columns: 1fr;
+    padding-bottom: 0;
+  }
+
+  .dev-agent-card-head .dev-tab-header-main {
+    gap: 8px;
+  }
+
+  .dev-agent-card-head .dev-tab-title-row {
+    align-items: center;
+    gap: 8px;
+  }
+
+  .dev-agent-card-head h2 {
+    font-size: 1.3rem;
+    line-height: 1.08;
+  }
+
+  .dev-agent-card-head p {
+    display: -webkit-box;
+    font-size: 0.88rem;
+    line-height: 1.35;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+  }
+
+  .dev-agent-card-identity-pill {
+    font-size: 0.64rem;
+    padding: 4px 8px;
+  }
+
+  .dev-agent-card-head .dev-agent-card-actions {
+    display: none;
+  }
+
+  .dev-agent-card-route-card {
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .dev-agent-card-status-head {
+    align-items: center;
+    display: flex;
+    gap: 8px;
+    justify-content: space-between;
+  }
+
+  .dev-agent-card-status-head strong {
+    font-size: 0.96rem;
+    text-align: right;
+  }
+
+  .dev-agent-card-route-body {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .dev-agent-card-route-body > div {
+    align-items: center;
+    display: inline-flex;
+    flex: 1 1 auto;
+    gap: 6px;
+    min-height: 32px;
+    padding: 6px 8px;
+  }
+
+  .dev-agent-card-route-body > div:not(.dev-agent-card-status-cell) > span,
+  .dev-agent-card-status-head > span {
+    font-size: 0.6rem;
+    letter-spacing: 0.06em;
+  }
+
+  .dev-agent-card-route-body strong {
+    font-size: 0.78rem;
+  }
+
+  .dev-agent-card-status {
+    font-size: 0.68rem;
+    min-height: 22px;
+    padding: 3px 7px;
+  }
+
+  .dev-agent-card-body {
+    gap: 10px;
+  }
+
+  .dev-agent-card-empty-state {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.012)),
+      rgba(8, 12, 11, 0.68);
+    border: 1px solid rgba(224, 230, 226, 0.1);
+    border-radius: var(--app-card-radius, var(--radius));
+    padding: 12px;
+  }
+
+  .dev-agent-card-empty-state .dev-tab-empty-state {
+    background: transparent;
+    border: 0;
+    line-height: 1.35;
+    margin: 0;
+    padding: 0;
+    text-align: left;
+  }
+
+  .dev-agent-card-empty-state .button {
+    justify-self: start;
+    min-height: 34px;
+    padding-inline: 12px;
+    width: auto;
+  }
+
   .dev-agent-card-explainer-grid {
     grid-template-columns: 1fr;
   }

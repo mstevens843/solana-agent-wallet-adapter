@@ -383,8 +383,94 @@
 }
 
 @media (max-width: 760px) {
+  .external-agents-panel {
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .external-agents-header {
+    gap: 10px;
+    padding-bottom: 0;
+  }
+
+  .external-agents-header .dev-tab-header-main {
+    gap: 8px;
+  }
+
+  .external-agents-header .dev-tab-title-row {
+    align-items: center;
+    gap: 8px;
+  }
+
+  .external-agents-header h2 {
+    font-size: 1.3rem;
+    line-height: 1.08;
+  }
+
+  .external-agents-live-pill {
+    font-size: 0.64rem;
+    padding: 4px 8px;
+  }
+
+  .external-agents-header .dev-tab-header-main > p:not(.dev-tab-kicker) {
+    display: -webkit-box;
+    font-size: 0.88rem;
+    line-height: 1.35;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+  }
+
+  .external-agents-header .dev-tab-header-actions {
+    display: grid;
+    gap: 8px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .external-agents-header .dev-tab-header-actions button {
+    font-size: 0.82rem;
+    min-height: 38px;
+    padding-inline: 8px;
+    width: 100%;
+  }
+
+  .external-agents-header [data-external-agents-refresh] {
+    display: none;
+  }
+
   .external-agents-overview {
-    grid-template-columns: 1fr;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.012)),
+      rgba(8, 12, 11, 0.68);
+    border: 1px solid rgba(224, 230, 226, 0.1);
+    border-radius: var(--app-card-radius, var(--radius));
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 8px;
+  }
+
+  .external-agents-overview .dev-tab-stat {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.035);
+    border: 1px solid rgba(224, 230, 226, 0.08);
+    border-radius: 999px;
+    display: inline-flex;
+    flex: 1 1 auto;
+    gap: 6px;
+    min-height: 30px;
+    min-width: max-content;
+    padding: 4px 8px;
+  }
+
+  .external-agents-overview .dev-tab-stat span,
+  .external-agents-overview .dev-tab-stat strong {
+    font-size: 0.72rem;
+    line-height: 1;
+  }
+
+  .external-agents-overview .dev-tab-stat strong {
+    order: -1;
   }
 
   .external-agents-row {

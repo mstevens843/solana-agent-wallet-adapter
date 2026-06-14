@@ -162,6 +162,10 @@ import {
   resolveCliSignInBridgeHydration,
   resolveWalletSigningRequestCopy,
 } from './cliSignInBridge.js';
+import {
+  shouldFallbackToProofAfterAndroidSiwsError,
+  shouldUseAndroidSiwsCloudSignIn,
+} from './cloudSignInPolicy.js';
 import { computeBridgeConfigUpdate } from './bridgeTokenSync.js';
 import {
   resolveDesktopPairingRelayBaseUrl,
@@ -517,6 +521,12 @@ import {
   transactionFailureToastCopy,
   type TransactionFailureKind,
 } from './transactionFailure.js';
+import {
+  MOBILE_PREFERENCES_VIEW_ORDER,
+  groupedFailureRetryKinds,
+  mobilePreferencesDefaultView,
+  type PreferenceViewId,
+} from './preferencesMobile.js';
 import {
   connectedDappsSummary,
   connectorHasCapability,
@@ -936,6 +946,9 @@ type ActiveTab =
   | (string & {});
 type SpendNavFilter = 'all' | 'needs_approval' | 'active_schedules' | 'live_streams' | 'settled';
 type PreferencesView = 'workspace' | 'ai' | 'access' | 'rules' | 'tokens';
+type PreferencesAccessMobileTab = 'protocols' | 'keys';
+type PreferencesRulesMobileTab = 'recipients' | 'rails' | 'policies';
+type PreferencesTokensMobileTab = 'labels' | 'retry';
 type CommandCenterView = 'center' | 'ai' | 'storage';
 type AndroidWorkspaceTab = 'wallet' | 'approvals' | 'payments' | 'proof';
 type AndroidSetupTab = 'ai' | 'cloud' | 'connectors' | 'rules';
@@ -1566,6 +1579,9 @@ const HOSTED_CUSTOM_PROVIDER_DISABLED_REASON =
 const MOBILE_HOSTED_CUSTOM_PROVIDER_DISABLED_REASON =
   'Hosted BYOK supports preset providers only in the mobile app and mobile web.';
 const DEFAULT_ANDROID_CLOUD_API_BASE_URL = 'https://agentic-signer.com';
+// Android Cloud sign-in uses connect + wallet proof signing until real wallet SIWS
+// messages are verified against the server nonce contract per provider.
+const ANDROID_CLOUD_SIWS_FAST_PATH = false;
 const ANDROID_CLOUD_CLIENT_HEADER = 'android-bundled';
 const BROWSER_AI_LIMITATIONS = [
   'Provider may block direct browser calls.',
@@ -2874,6 +2890,9 @@ interface DemoState {
   deleteAllRepeatsModalOpen: boolean;
   deleteAllDoneModalOpen: boolean;
   preferencesView: PreferencesView;
+  preferencesAccessMobileTab: PreferencesAccessMobileTab;
+  preferencesRulesMobileTab: PreferencesRulesMobileTab;
+  preferencesTokensMobileTab: PreferencesTokensMobileTab;
   wallets: DiscoveredWallet[];
   selectedWalletName: string;
   selectedWalletLogoId?: WalletProviderLogoId;
@@ -3491,6 +3510,9 @@ const defaultWorkspaceTab: ActiveTab = 'overview';
 const initialAndroidNativeEnvironment = detectAndroidNativeEnvironment();
 const initialIosNativeEnvironment = detectIosNativeEnvironment();
 const initialTauriNativeEnvironment = detectTauriNativeEnvironment();
+const initialNativeMobileShell = IS_ANDROID_APP ||
+  initialAndroidNativeEnvironment.bridgeAvailable ||
+  initialIosNativeEnvironment.isIosNative;
 const initialMwaEnvironment = detectMwaEnvironment();
 const initialMobileAiPathPolicy = shouldUseMobileAiPathPolicy({
   isAndroidApp: IS_ANDROID_APP,
@@ -3995,7 +4017,10 @@ const state: DemoState = {
   deleteAllCheckModalOpen: false,
   deleteAllRepeatsModalOpen: false,
   deleteAllDoneModalOpen: false,
-  preferencesView: persisted.preferencesView ?? 'workspace',
+  preferencesView: mobilePreferencesDefaultView(persisted.preferencesView, initialNativeMobileShell) as PreferencesView,
+  preferencesAccessMobileTab: 'protocols',
+  preferencesRulesMobileTab: 'recipients',
+  preferencesTokensMobileTab: 'labels',
   wallets: [],
   selectedWalletName: persisted.browserWalletSession?.cluster === initialCluster
     ? persisted.browserWalletSession.walletName
@@ -13318,19 +13343,29 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
   const workspaceId = mode === 'demo' ? 'demo-workspace' : 'workspace';
   const titleId = mode === 'demo' ? 'demo-workspace-title' : 'workspace-title';
   const modeClass = mode === 'demo' ? 'demo-workspace-mode' : 'launch-workspace-mode';
+  const iosAppNonHomeTab = mode === 'app' && state.iosNativeEnvironment.isIosNative && state.activeTab !== 'overview';
+  const showWorkspaceIntro = !iosAppNonHomeTab;
+  const shortWorkspaceIntroCopy =
+    state.androidNativeEnvironment.isAndroidNative ||
+    state.iosNativeEnvironment.isIosNative ||
+    state.tauriNativeEnvironment.isTauriNative;
+  const sectionLabel = showWorkspaceIntro
+    ? `aria-labelledby="${titleId}"`
+    : 'aria-label="Agentic approval workspace"';
   return `
-    <section id="${workspaceId}" class="app-workspace-section ${appModeClass} ${modeClass}" aria-labelledby="${titleId}" data-layout="app-root">
+    <section id="${workspaceId}" class="app-workspace-section ${appModeClass} ${modeClass}" ${sectionLabel} data-layout="app-root">
       ${SHOW_DEV_CONTROLS ? systemHealthStrip() : ''}
       ${SHOW_DEV_CONTROLS ? systemHealthDrawer() : ''}
       ${attachTxModalRender()}
+      ${showWorkspaceIntro ? `
       <div class="workspace-intro" data-layout="app-intro">
         <div>
           ${mode === 'demo' ? '<p class="eyebrow mini">Interactive demo</p>' : '<!-- Launch App eyebrow intentionally hidden. -->'}
           <h2 id="${titleId}">${mode === 'demo' ? 'Live approval demo.' : 'Agentic approval workspace.'}</h2>
-          ${mode === 'demo' ? '' : (state.androidNativeEnvironment.isAndroidNative || state.tauriNativeEnvironment.isTauriNative ? '<p>AI or templates prepare review items. You approve.</p>' : '<p>AI or templates prepare review items. You check the route, recipient, amount, policy, and wallet action before signing.</p>')}
+          ${mode === 'demo' ? '' : (shortWorkspaceIntroCopy ? '<p>AI or templates prepare review items. You approve.</p>' : '<p>AI or templates prepare review items. You check the route, recipient, amount, policy, and wallet action before signing.</p>')}
         </div>
         ${SHOW_DEV_CONTROLS ? systemSpine() : ''}
-      </div>
+      </div>` : ''}
       ${SHOW_DEV_CONTROLS ? missionStrip() : ''}
       ${SHOW_DEV_CONTROLS ? `<header class="app-header command-bar">
         <div class="brand-lockup">
@@ -14291,18 +14326,18 @@ function walletRail(): string {
     ? 'Wallet connected — you can review, approve, and sign.'
     : 'Connect your wallet to approve and sign. AI connector and cloud sync are optional.';
   // Connections re-org (reviewer feedback): group the wallet/AI/cloud connections under one
-  // prioritized "Connections" header with Required/Optional labels. Android app only for now so it
-  // can be tested in isolation before web/iOS get it.
-  const connectionsRailHead = IS_ANDROID_APP ? `
+  // prioritized "Connections" header with Required/Optional labels for native mobile app shells.
+  const nativeConnectionRail = IS_ANDROID_APP || IS_IOS_APP;
+  const connectionsRailHead = nativeConnectionRail ? `
       <div class="connections-rail-head">
         <p class="eyebrow mini">Connections</p>
         <p class="connections-rail-readiness">${escapeHtml(connectionsReadiness)}</p>
-      </div>
-      <p class="connection-group-label">Required</p>` : '';
+        <p class="connection-group-label">Required</p>
+      </div>` : '';
   return `
     <aside class="panel custody-panel custody-module" data-layout="app-rail">
       ${connectionsRailHead}
-      <div class="signer-row ${connected ? 'connected' : 'disconnected'}${IS_ANDROID_APP ? ' android-connection-signer' : ''}">
+      <div class="signer-row ${connected ? 'connected' : 'disconnected'}${nativeConnectionRail ? ' native-connection-signer' : ''}">
         <div class="rail-heading custody-heading">
           ${walletRailIcon(wallet)}
           <div>
@@ -14357,7 +14392,7 @@ function walletRail(): string {
         </label>
       </details>` : ''}
 
-      ${IS_ANDROID_APP ? '<p class="connection-group-label">Optional</p>' : ''}
+      ${nativeConnectionRail ? '<p class="connection-group-label">Optional</p>' : ''}
       <div class="rail-primary-stack">
         ${cloudWorkspaceCard()}
         ${aiSettingsPanel('rail')}
@@ -14411,7 +14446,7 @@ function preferencesPanel(): string {
       <nav class="preferences-subtabs" role="tablist" aria-label="Preferences sections">
         ${PREFERENCES_VIEW_OPTIONS.map((option) => preferencesViewButton(option.view, option.title, option.desktopLabel)).join('')}
       </nav>
-      ${preferencesMobilePicker()}
+      ${preferencesMobileTabs()}
       <div class="preferences-view">
         ${preferencesActiveView()}
       </div>
@@ -14440,6 +14475,61 @@ function preferencesMobileLabel(option: (typeof PREFERENCES_VIEW_OPTIONS)[number
   return option.view === 'access' && isMobileAiPathPolicySurface()
     ? 'Protocol Connectors'
     : option.mobileLabel;
+}
+
+function preferencesMobileViewOptions(): Array<(typeof PREFERENCES_VIEW_OPTIONS)[number]> {
+  return MOBILE_PREFERENCES_VIEW_ORDER
+    .map((view) => preferencesViewOption(view as PreferencesView));
+}
+
+function preferencesMobileTabs(): string {
+  const options = preferencesMobileViewOptions();
+  return `
+    <nav class="preferences-mobile-tabs android-tab-card" role="tablist" aria-label="Preferences sections">
+      <div class="android-tab-strip preferences-mobile-tabs-strip">
+        ${options.map(preferencesMobileTabButton).join('')}
+      </div>
+    </nav>
+  `;
+}
+
+function preferencesMobileTabButton(option: (typeof PREFERENCES_VIEW_OPTIONS)[number]): string {
+  const active = state.preferencesView === option.view;
+  return `
+    <button
+      type="button"
+      class="android-tab preferences-mobile-tab${active ? ' active' : ''}"
+      role="tab"
+      aria-selected="${active ? 'true' : 'false'}"
+      data-preferences-view="${escapeHtml(option.view)}"
+      title="${escapeHtml(preferencesViewSummary(option.view))}"
+    >
+      <span class="android-tab-icon">${commandCenterIcon(preferencesMobileTabIcon(option.view))}</span>
+      <span class="android-tab-label">${escapeHtml(preferencesMobileShortLabel(option))}</span>
+    </button>
+  `;
+}
+
+function preferencesMobileShortLabel(option: (typeof PREFERENCES_VIEW_OPTIONS)[number]): string {
+  if (option.view === 'access') return 'Connectors';
+  if (option.view === 'workspace') return 'Backup';
+  if (option.view === 'tokens') return 'Tokens';
+  if (option.view === 'rules') return 'Rules';
+  return 'AI';
+}
+
+function preferencesMobileTabIcon(view: PreferencesView): CommandCenterIconId {
+  switch (view) {
+    case 'access':
+      return 'connectors';
+    case 'rules':
+    case 'tokens':
+      return 'guardrails';
+    case 'ai':
+      return 'ai';
+    case 'workspace':
+      return 'recurring';
+  }
 }
 
 function preferencesMobilePicker(): string {
@@ -14828,6 +14918,9 @@ function preferencesActiveView(): string {
     case 'ai':
       return preferencesGroup('AI Connector', 'Personalize prompts and connector behavior without changing signing authority.', aiReviewPreferencesPanel());
     case 'access':
+      if (isMobileAppViewport()) {
+        return preferencesGroup('Protocol Connectors', 'Manage protocol connectors and connector API keys.', mobileAccessPreferencesContent());
+      }
       return isMobileAiPathPolicySurface()
         ? preferencesGroup('Protocol Connectors', 'Manage protocol connectors used to prepare wallet-approved actions.', `
           <div class="preferences-card-grid access-preferences-grid">
@@ -14846,6 +14939,9 @@ function preferencesActiveView(): string {
           ${state.tauriNativeEnvironment.isTauriNative ? '<div id="tauri-local-runtime-panel" class="connector-keys-mount"></div>' : ''}
         `);
     case 'rules':
+      if (isMobileAppViewport()) {
+        return preferencesGroup('Review Rules', 'Recipients, rails, and agent policy guidance.', mobileRulesPreferencesContent());
+      }
       return preferencesGroup('Review Rules', 'Optional checks that help the signer review recipients, routes, and agent advice.', `
         <div class="preferences-card-grid rules-preferences-stack">
           ${recipientRulesPanel()}
@@ -14854,6 +14950,9 @@ function preferencesActiveView(): string {
         </div>
       `);
     case 'tokens':
+      if (isMobileAppViewport()) {
+        return preferencesGroup('Tokens & Retry', 'Token display labels and retry behavior.', mobileTokensPreferencesContent());
+      }
       return preferencesGroup('Tokens & Retry', 'Token display names and failure retry defaults.', `
         <div class="preferences-card-grid tokens-preferences-grid">
           ${customTokensPanel()}
@@ -14861,6 +14960,82 @@ function preferencesActiveView(): string {
         </div>
       `);
   }
+}
+
+function mobileAccessPreferencesContent(): string {
+  const active = state.preferencesAccessMobileTab;
+  return `
+    ${preferencesMobileSectionTabs('access', [
+      { id: 'protocols', label: 'Protocols' },
+      { id: 'keys', label: 'API Keys' },
+    ], active)}
+    <div class="preferences-mobile-subview">
+      ${active === 'keys'
+        ? `<div id="connector-keys-panel" class="connector-keys-mount mobile-connector-keys-mount"></div>`
+        : `<div class="preferences-card-grid access-preferences-grid">${connectedDappsPanel()}</div>`}
+      ${active === 'keys' && state.tauriNativeEnvironment.isTauriNative ? '<div id="tauri-local-runtime-panel" class="connector-keys-mount"></div>' : ''}
+    </div>
+  `;
+}
+
+function mobileRulesPreferencesContent(): string {
+  const active = state.preferencesRulesMobileTab;
+  return `
+    ${preferencesMobileSectionTabs('rules', [
+      { id: 'recipients', label: 'Recipients' },
+      { id: 'rails', label: 'Rails' },
+      { id: 'policies', label: 'Policies' },
+    ], active)}
+    <div class="preferences-mobile-subview">
+      ${active === 'rails'
+        ? safetyRailsPanel()
+        : active === 'policies'
+          ? agentPoliciesPanel()
+          : recipientRulesPanel()}
+    </div>
+  `;
+}
+
+function mobileTokensPreferencesContent(): string {
+  const active = state.preferencesTokensMobileTab;
+  return `
+    ${preferencesMobileSectionTabs('tokens', [
+      { id: 'labels', label: 'Labels' },
+      { id: 'retry', label: 'Retry' },
+    ], active)}
+    <div class="preferences-mobile-subview">
+      ${active === 'retry' ? failurePoliciesPanel() : customTokensPanel()}
+    </div>
+  `;
+}
+
+function preferencesMobileSectionTabs(
+  group: 'access' | 'rules' | 'tokens',
+  tabs: Array<{ id: string; label: string }>,
+  active: string,
+): string {
+  const attr = group === 'access'
+    ? 'data-preferences-access-tab'
+    : group === 'rules'
+      ? 'data-preferences-rules-tab'
+      : 'data-preferences-tokens-tab';
+  return `
+    <div class="preferences-mobile-section-tabs android-tab-card" data-preferences-mobile-section="${escapeHtml(group)}">
+      <div class="android-tab-strip preferences-mobile-section-tabs-strip columns-${tabs.length}" role="tablist" aria-label="${escapeHtml(group)} preferences">
+        ${tabs.map((tab) => `
+          <button
+            type="button"
+            class="android-tab${tab.id === active ? ' active' : ''}"
+            role="tab"
+            aria-selected="${tab.id === active ? 'true' : 'false'}"
+            ${attr}="${escapeHtml(tab.id)}"
+          >
+            <span class="android-tab-label">${escapeHtml(tab.label)}</span>
+          </button>
+        `).join('')}
+      </div>
+    </div>
+  `;
 }
 
 function preferencesGroup(title: string, detail: string, content: string): string {
@@ -15076,8 +15251,9 @@ function safetyRailsPanel(): string {
   const rails = state.safetyRails;
   const anyEnabled = rails.programs.enabled || rails.tokens.enabled || rails.spend.enabled || rails.slippage.enabled;
   const summary = safetyRailsSummary();
+  const mobile = isMobileAppViewport();
   return `
-    <details class="safety-rails-panel rail-details ${anyEnabled ? 'enabled' : 'disabled'}" data-layout="safety-rails-panel" ${anyEnabled ? 'open' : ''}>
+    <details class="safety-rails-panel rail-details ${anyEnabled ? 'enabled' : 'disabled'}" data-layout="safety-rails-panel" ${mobile || anyEnabled ? 'open' : ''}>
       <summary>
         <span class="safety-rails-summary-copy">
           <span>Safety rails</span>
@@ -15086,11 +15262,23 @@ function safetyRailsPanel(): string {
         <strong>${anyEnabled ? 'on' : 'off'}</strong>
       </summary>
       <section class="safety-rails-card" aria-label="Safety rails">
-        ${safetyRailsProgramsSection()}
-        ${safetyRailsTokensSection()}
-        ${safetyRailsSpendSection()}
-        ${safetyRailsSlippageSection()}
+        ${mobile ? mobileSafetyRailSection('Programs', rails.programs.enabled, `${rails.programs.allowlist.length} configured`, safetyRailsProgramsSection()) : safetyRailsProgramsSection()}
+        ${mobile ? mobileSafetyRailSection('Tokens', rails.tokens.enabled, `${rails.tokens.allowlist.length} configured`, safetyRailsTokensSection()) : safetyRailsTokensSection()}
+        ${mobile ? mobileSafetyRailSection('Spend caps', rails.spend.enabled, `${rails.spend.caps.length} caps`, safetyRailsSpendSection()) : safetyRailsSpendSection()}
+        ${mobile ? mobileSafetyRailSection('Slippage', rails.slippage.enabled, `${rails.slippage.maxBps} bps`, safetyRailsSlippageSection()) : safetyRailsSlippageSection()}
       </section>
+    </details>
+  `;
+}
+
+function mobileSafetyRailSection(title: string, enabled: boolean, detail: string, body: string): string {
+  return `
+    <details class="mobile-safety-rail-section ${enabled ? 'enabled' : 'disabled'}" ${enabled ? 'open' : ''}>
+      <summary>
+        <span>${escapeHtml(title)}</span>
+        <em>${escapeHtml(detail)}</em>
+      </summary>
+      ${body}
     </details>
   `;
 }
@@ -15208,7 +15396,7 @@ function safetyRailsSlippageSection(): string {
 function recipientRulesPanel(): string {
   const rules = state.recipientRules;
   const savedCount = rules.recipients.length;
-  const open = rules.enabled || savedCount > 0 ? 'open' : '';
+  const open = isMobileAppViewport() || rules.enabled || savedCount > 0 ? 'open' : '';
   const summary = recipientRulesSummary();
   return `
     <details class="recipient-rules-panel rail-details ${rules.enabled ? 'enabled' : 'disabled'}" data-layout="recipient-rules-panel" ${open}>
@@ -15276,7 +15464,55 @@ function connectedDappsPanel(): string {
   const disabledConnectors = disabledProtocolConnectors(dapps, state.cluster);
   const enabledCount = enabledConnectors.length;
   const summary = connectedDappsSummary(dapps, state.cluster);
+  const mobile = isMobileAppViewport();
   const open = 'open';
+  const card = `
+    <section class="connected-dapps-card" aria-label="Protocol Connectors">
+      <p class="connected-dapps-intro">${mobile
+        ? 'Choose protocols the agent can inspect or prepare. Wallet approval stays separate.'
+        : 'Add a protocol so the agent can read facts or prepare Blink actions against it. You still approve every transaction.'}</p>
+      <div class="connected-dapps-catalog">
+        <label class="field compact">
+          <span id="protocolConnectorCatalogLabel">Add protocol</span>
+          ${selectPicker({
+            id: 'protocolConnectorCatalog',
+            value: disabledConnectors[0]?.id ?? '',
+            options: protocolConnectorSelectOptions(disabledConnectors),
+            attrs: { 'data-connected-dapp-catalog': true },
+            disabled: disabledConnectors.length === 0 || state.busy,
+            labelId: 'protocolConnectorCatalogLabel',
+            className: 'protocol-connector-picker',
+          })}
+        </label>
+        <button
+          type="button"
+          class="primary"
+          data-connected-dapp-action="add-selected"
+          ${state.busy || disabledConnectors.length === 0 ? 'disabled' : ''}
+        >${mobile ? 'Add' : '+ Add protocol'}</button>
+      </div>
+      ${mobile ? protocolConnectorAdvancedReads() : protocolConnectorKeyField()}
+      <div class="connected-dapps-list">
+        ${enabledConnectors.length
+          ? enabledConnectors.map((adapter) => connectedDappRow(adapter)).join('')
+          : '<div class="connected-dapps-empty">No protocol connectors enabled. Add one from the catalog when you want the agent to inspect or prepare protocol work.</div>'}
+      </div>
+    </section>
+  `;
+  if (mobile) {
+    return `
+      <section class="connected-dapps-panel mobile-connected-dapps-panel ${enabledCount ? 'enabled' : 'disabled'}" data-layout="connected-dapps-panel">
+        <header class="mobile-preference-panel-head">
+          <div>
+            <strong>Protocol Connectors</strong>
+            <p>${escapeHtml(summary)}</p>
+          </div>
+          <span>${enabledCount ? `${enabledCount} on` : 'off'}</span>
+        </header>
+        ${card}
+      </section>
+    `;
+  }
   return `
     <details class="connected-dapps-panel rail-details ${enabledCount ? 'enabled' : 'disabled'}" data-layout="connected-dapps-panel" ${open}>
       <summary>
@@ -15286,45 +15522,36 @@ function connectedDappsPanel(): string {
         </span>
         <strong>${enabledCount ? `${enabledCount} on` : 'off'}</strong>
       </summary>
-      <section class="connected-dapps-card" aria-label="Protocol Connectors">
-        <p class="connected-dapps-intro">Add a protocol so the agent can read facts or prepare Blink actions against it. You still approve every transaction.</p>
-        <div class="connected-dapps-catalog">
-          <label class="field compact">
-            <span id="protocolConnectorCatalogLabel">Add protocol</span>
-            ${selectPicker({
-              id: 'protocolConnectorCatalog',
-              value: disabledConnectors[0]?.id ?? '',
-              options: protocolConnectorSelectOptions(disabledConnectors),
-              attrs: { 'data-connected-dapp-catalog': true },
-              disabled: disabledConnectors.length === 0 || state.busy,
-              labelId: 'protocolConnectorCatalogLabel',
-              className: 'protocol-connector-picker',
-            })}
-          </label>
-          <button
-            type="button"
-            class="primary"
-            data-connected-dapp-action="add-selected"
-            ${state.busy || disabledConnectors.length === 0 ? 'disabled' : ''}
-          >+ Add protocol</button>
-        </div>
-        <label class="field compact protocol-connector-key-field">
-          <span>Dialect client key</span>
-          <input
-            data-protocol-connector-pref="dialectClientKey"
-            value="${escapeHtml(state.protocolConnectorPrefs.dialectClientKey)}"
-            placeholder="Optional key for read positions/rewards"
-            autocomplete="off"
-            ${state.busy ? 'disabled' : ''}
-          />
-          <em>Only needed for connectors that read positions, rewards, or markets through Dialect. Blink action URLs can still be reviewed without it.</em>
-        </label>
-        <div class="connected-dapps-list">
-          ${enabledConnectors.length
-            ? enabledConnectors.map((adapter) => connectedDappRow(adapter)).join('')
-            : '<div class="connected-dapps-empty">No protocol connectors enabled. Add one from the catalog when you want the agent to inspect or prepare protocol work.</div>'}
-        </div>
-      </section>
+      ${card}
+    </details>
+  `;
+}
+
+function protocolConnectorKeyField(): string {
+  return `
+    <label class="field compact protocol-connector-key-field">
+      <span>Dialect client key</span>
+      <input
+        data-protocol-connector-pref="dialectClientKey"
+        value="${escapeHtml(state.protocolConnectorPrefs.dialectClientKey)}"
+        placeholder="Optional key for read positions/rewards"
+        autocomplete="off"
+        ${state.busy ? 'disabled' : ''}
+      />
+      <em>Only needed for connectors that read positions, rewards, or markets through Dialect. Blink action URLs can still be reviewed without it.</em>
+    </label>
+  `;
+}
+
+function protocolConnectorAdvancedReads(): string {
+  const configured = Boolean(state.protocolConnectorPrefs.dialectClientKey.trim());
+  return `
+    <details class="protocol-connector-advanced">
+      <summary>
+        <span>Advanced reads</span>
+        <em>${configured ? 'Dialect key saved' : 'Optional Dialect key'}</em>
+      </summary>
+      ${protocolConnectorKeyField()}
     </details>
   `;
 }
@@ -15359,6 +15586,19 @@ function connectedDappRow(adapter: ConnectedDappAdapter): string {
       ? `Disable ${adapter.name}`
       : `Enable ${adapter.name}`
     : `${adapter.name} is only available on ${adapter.supportedClusters.join(', ')}`;
+  if (isMobileAppViewport()) {
+    return connectedDappRowMobile({
+      adapter,
+      enabled,
+      clusterOk,
+      clusterChip,
+      capabilityChips,
+      actionChips,
+      capabilityRows,
+      toggleLabel,
+      toggleTitle,
+    });
+  }
   return `
     <article class="connected-dapp-row ${enabled ? 'enabled' : 'disabled'} ${clusterOk ? '' : 'cluster-blocked'}" data-connected-dapp="${escapeHtml(adapter.id)}">
       <div class="connected-dapp-row-head">
@@ -15391,6 +15631,68 @@ function connectedDappRow(adapter: ConnectedDappAdapter): string {
       </div>
     </article>
   `;
+}
+
+function connectedDappRowMobile(input: {
+  adapter: ConnectedDappAdapter;
+  enabled: boolean;
+  clusterOk: boolean;
+  clusterChip: string;
+  capabilityChips: string;
+  actionChips: string;
+  capabilityRows: string;
+  toggleLabel: string;
+  toggleTitle: string;
+}): string {
+  const { adapter, enabled, clusterOk, clusterChip, capabilityChips, actionChips, capabilityRows, toggleLabel, toggleTitle } = input;
+  return `
+    <details class="connected-dapp-row mobile-connected-dapp-row ${enabled ? 'enabled' : 'disabled'} ${clusterOk ? '' : 'cluster-blocked'}" data-connected-dapp="${escapeHtml(adapter.id)}">
+      <summary class="mobile-connected-dapp-summary">
+        ${connectedDappLogo(adapter)}
+        <span class="mobile-connected-dapp-copy">
+          <strong>${escapeHtml(adapter.name)}</strong>
+          <em>${escapeHtml(mobileConnectedDappSummary(adapter))}</em>
+        </span>
+        <span class="connected-dapp-row-meta">
+          ${clusterChip}
+          <span class="connected-dapp-state-pill ${enabled ? 'connected' : 'disconnected'}">${enabled ? 'On' : 'Off'}</span>
+        </span>
+      </summary>
+      <div class="mobile-connected-dapp-detail">
+        <p>${escapeHtml(adapter.description)}</p>
+        <a class="connected-dapp-website" href="${escapeHtml(adapter.website)}" target="_blank" rel="noopener noreferrer">${escapeHtml(formatConnectedDappHostname(adapter.website))}</a>
+        <div class="connected-dapp-capability-chips">${capabilityChips}</div>
+        <div class="connected-dapp-action-chips">${actionChips}</div>
+        <dl class="connected-dapp-capability-summary" aria-label="${escapeHtml(adapter.name)} connector capabilities">
+          ${capabilityRows}
+        </dl>
+        <div class="connected-dapp-row-actions">
+          <button
+            type="button"
+            class="primary"
+            data-connected-dapp-action="toggle"
+            data-connected-dapp-id="${escapeHtml(adapter.id)}"
+            data-connected-dapp-next="${enabled ? 'off' : 'on'}"
+            title="${escapeHtml(toggleTitle)}"
+            ${state.busy || !clusterOk ? 'disabled' : ''}
+          >${toggleLabel}</button>
+        </div>
+      </div>
+    </details>
+  `;
+}
+
+function mobileConnectedDappSummary(adapter: ConnectedDappAdapter): string {
+  const reads = [
+    connectorHasCapability(adapter, 'read_positions') ? 'positions' : '',
+    connectorHasCapability(adapter, 'read_rewards') ? 'rewards' : '',
+    connectorHasCapability(adapter, 'read_markets') ? 'markets' : '',
+  ].filter(Boolean);
+  const actions = adapter.supportedActions.slice(0, 2).map(compactConnectorActionLabel);
+  return [
+    reads.length ? `Reads ${reads.join(', ')}` : '',
+    actions.length ? actions.join(', ') : '',
+  ].filter(Boolean).join(' · ') || 'Connector enabled';
 }
 
 function connectorCapabilitySummaryRows(adapter: ConnectedDappAdapter): Array<{ label: string; value: string; title?: string; tone?: 'ready' | 'warn' | 'blocked' }> {
@@ -15550,7 +15852,7 @@ function formatConnectedDappHostname(url: string): string {
 function agentPoliciesPanel(): string {
   const policies = state.agentPolicies;
   const enabledCount = policies.filter((policy) => policy.enabled).length;
-  const open = policies.length > 0 ? 'open' : '';
+  const open = isMobileAppViewport() || policies.length > 0 ? 'open' : '';
   const summary = policies.length
     ? `${enabledCount} of ${policies.length} on`
     : 'No saved policies yet';
@@ -15616,7 +15918,7 @@ function customTokenFieldError(key: string): string {
 
 function customTokensPanel(): string {
   const tokens = state.customTokens;
-  const open = tokens.length > 0 ? 'open' : '';
+  const open = isMobileAppViewport() || tokens.length > 0 ? 'open' : '';
   const summary = tokens.length === 0
     ? 'No custom tokens'
     : `${tokens.length} custom ${tokens.length === 1 ? 'token' : 'tokens'}`;
@@ -18669,6 +18971,7 @@ function workspaceBackupPanel(): string {
     ? `<p class="workspace-backup-status">${escapeHtml(state.workspaceBackupStatus)}</p>`
     : '';
   const statsMarkup = workspaceBackupStatsMarkup(pendingCount, unresolved, sectionCount);
+  const notesMarkup = workspaceBackupNotesMarkup(unresolved);
   return `
     <section class="workspace-backup-panel" aria-label="Workspace backup">
       <div class="workspace-backup-header">
@@ -18686,13 +18989,26 @@ function workspaceBackupPanel(): string {
           <span class="utility-button">Import workspace</span>
         </label>
       </div>
-      <ul class="workspace-backup-notes">
-        <li>AI route/provider settings are included. AI keys, bridge tokens, and desktop tokens are never exported.</li>
-        <li>Cloud sync is separate from this manual browser-local export.</li>
-        ${unresolved > 0 ? '<li class="warn">Resolve unresolved transactions before restoring on another device.</li>' : ''}
-      </ul>
+      ${notesMarkup}
       ${statusLine}
     </section>
+  `;
+}
+
+function workspaceBackupNotesMarkup(unresolved: number): string {
+  const list = `
+    <ul class="workspace-backup-notes">
+      <li>AI route/provider settings are included. AI keys, bridge tokens, and desktop tokens are never exported.</li>
+      <li>Cloud sync is separate from this manual browser-local export.</li>
+      ${unresolved > 0 ? '<li class="warn">Resolve unresolved transactions before restoring on another device.</li>' : ''}
+    </ul>
+  `;
+  if (!isMobileAppViewport()) return list;
+  return `
+    <details class="workspace-backup-notes-disclosure">
+      <summary>What backup includes</summary>
+      ${list}
+    </details>
   `;
 }
 
@@ -18710,29 +19026,11 @@ function workspaceBackupStatsMarkup(
       </div>
     `;
   }
-  const backupTabs: Array<{
-    id: AndroidWorkspaceBackupTab;
-    label: string;
-    icon: CommandCenterIconId;
-    value: number;
-    bodyLabel: string;
-    warn: boolean;
-  }> = [
-    { id: 'pending', label: 'Pending', icon: 'recurring', value: pendingCount, bodyLabel: 'Pending tx records', warn: false },
-    { id: 'unresolved', label: 'Unresolved', icon: 'approvals', value: unresolved, bodyLabel: 'Unresolved on-chain', warn: unresolved > 0 },
-    { id: 'sections', label: 'Sections', icon: 'guardrails', value: sectionCount, bodyLabel: 'Sections', warn: false },
-  ];
-  const active = state.androidWorkspaceBackupTab;
-  const activeTab = backupTabs.find((tab) => tab.id === active) ?? backupTabs[0]!;
   return `
-    <div class="android-tab-card workspace-backup-tabs" data-android-tab-group="workspace-backup">
-      <div class="android-tab-strip workspace-backup-tabs-strip" role="tablist" aria-label="Workspace backup stats">
-        ${backupTabs.map((tab) => androidTabButton('workspace-backup', tab.id, tab.label, tab.icon, tab.id === active)).join('')}
-      </div>
-      <div class="android-tab-body workspace-backup-tabs-body${activeTab.warn ? ' warn' : ''}" role="tabpanel">
-        <em>${activeTab.bodyLabel}</em>
-        <strong>${activeTab.value}</strong>
-      </div>
+    <div class="workspace-backup-metric-pills" aria-label="Workspace backup stats">
+      <span><strong>${pendingCount}</strong><em>pending</em></span>
+      <span class="${unresolved > 0 ? 'warn' : ''}"><strong>${unresolved}</strong><em>unresolved</em></span>
+      <span><strong>${sectionCount}</strong><em>sections</em></span>
     </div>
   `;
 }
@@ -19304,24 +19602,22 @@ function oneTimePlanViewButton(view: OneTimePlanView, label: string): string {
 }
 
 function oneTimeCreatePlanPanel(): string {
-  const walletReady = Boolean(state.address);
   const hasOneTimePlans = generatedPlansForPanel(true).length > 0;
   return `
     <div class="one-time-create-panel">
       ${agentPlannerWorkbench()}
 
-      ${draftFlowHint(hasOneTimePlans, walletReady)}
+      ${draftFlowHint(hasOneTimePlans)}
     </div>
   `;
 }
 
-function draftFlowHint(hasOneTimePlans: boolean, walletReady: boolean): string {
-  const reviewCopy = hasOneTimePlans ? 'Check already has saved plans.' : 'New plans move to Check.';
-  const walletCopy = walletReady ? 'Wallet is ready when you send work for approval.' : 'Wallet is optional until approval or proof signing.';
+function draftFlowHint(hasOneTimePlans: boolean): string {
+  const reviewCopy = hasOneTimePlans ? 'Plans stay in Check.' : 'Plans move to Check.';
   return `
     <div class="draft-flow-hint">
       <span class="accent-note">Plan flow</span>
-      <p class="accent-note">${escapeHtml(reviewCopy)} Plans save to Check; send for approval only when ready. ${escapeHtml(walletCopy)}</p>
+      <p class="accent-note">${escapeHtml(reviewCopy)} Send for approval when ready; your wallet signs later.</p>
     </div>
   `;
 }
@@ -21687,8 +21983,8 @@ function agentPlannerWorkbench(): string {
           <p class="template-description">${escapeHtml(template.description)}</p>
         </div>
         <div class="planner-form-body">
-          <div class="planner-fields">
-            ${effectiveTemplateFields(template).map(templateFieldInput).join('')}
+          <div class="planner-fields ${isMobileAppViewport() ? 'mobile-planner-fields' : ''}">
+            ${plannerFieldsHtml(template)}
           </div>
           <label class="intent-document planner-prompt">
             <span class="field-label-row">
@@ -22129,11 +22425,159 @@ function connectorTemplateSourceLabel(form: ConnectorActionForm | undefined): st
   return 'First-class';
 }
 
+type MobilePlannerFieldWidth = 'short' | 'full';
+
+interface RenderedPlannerField {
+  fieldDef: AgentPlanTemplateField;
+  html: string;
+  width: MobilePlannerFieldWidth;
+}
+
+function plannerFieldsHtml(template: AgentPlanTemplate): string {
+  const fields = effectiveTemplateFields(template)
+    .map((fieldDef) => {
+      const html = templateFieldInput(fieldDef);
+      return html.trim()
+        ? {
+            fieldDef,
+            html,
+            width: mobilePlannerFieldWidth(fieldDef),
+          }
+        : undefined;
+    })
+    .filter((field): field is RenderedPlannerField => Boolean(field));
+
+  if (!isMobileAppViewport()) {
+    return fields.map((field) => field.html).join('');
+  }
+
+  return mobilePlannerFieldRows(template, fields);
+}
+
+function mobilePlannerFieldRows(template: AgentPlanTemplate, fields: RenderedPlannerField[]): string {
+  const ordered = orderMobilePlannerFields(template, fields);
+  const rows: string[] = [];
+  for (let index = 0; index < ordered.length; index += 1) {
+    const current = ordered[index];
+    if (!current) continue;
+    const next = ordered[index + 1];
+    if (current.width === 'short' && next?.width === 'short') {
+      rows.push(mobilePlannerFieldRow([current, next], 'pair'));
+      index += 1;
+      continue;
+    }
+    rows.push(mobilePlannerFieldRow([current], current.width === 'short' ? 'short-single' : 'full'));
+  }
+  return rows.join('');
+}
+
+function mobilePlannerFieldRow(fields: RenderedPlannerField[], shape: 'pair' | 'short-single' | 'full'): string {
+  const shapeClass = shape === 'pair'
+    ? 'mobile-field-pair'
+    : shape === 'short-single'
+      ? 'mobile-field-short-single'
+      : 'mobile-field-full';
+  return `
+    <div class="mobile-planner-field-row ${shapeClass}">
+      ${fields.map((field) => `
+        <div class="mobile-planner-field ${escapeHtml(mobilePlannerFieldKindClass(field.fieldDef))}">
+          ${field.html}
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+function orderMobilePlannerFields(
+  template: AgentPlanTemplate,
+  fields: RenderedPlannerField[],
+): RenderedPlannerField[] {
+  const preferredOrder = mobilePreferredFieldOrder(template.id);
+  if (preferredOrder.length === 0) return fields;
+  const rank = new Map(preferredOrder.map((fieldId, index) => [fieldId, index]));
+  return [...fields].sort((a, b) => {
+    const aRank = rank.get(a.fieldDef.id);
+    const bRank = rank.get(b.fieldDef.id);
+    if (aRank === undefined && bRank === undefined) return 0;
+    if (aRank === undefined) return 1;
+    if (bRank === undefined) return -1;
+    return aRank - bRank;
+  });
+}
+
+function mobilePreferredFieldOrder(templateId: string): string[] {
+  if (templateId === 'swap') return ['inputToken', 'outputToken', 'amount', 'slippageBps'];
+  if (templateId === 'send-tokens') return ['token', 'amount', 'recipient', 'memo'];
+  if (templateId === 'dca') return ['token', 'amount', 'cadence', 'recipient', 'memo'];
+  if (templateId === 'subscription') return ['token', 'amount', 'cadence', 'recipient', 'memo'];
+  return [];
+}
+
+function mobilePlannerFieldWidth(fieldDef: AgentPlanTemplateField): MobilePlannerFieldWidth {
+  const id = fieldDef.id.toLowerCase();
+  if (fieldDef.type === 'textarea' || fieldDef.id === 'policy') return 'full';
+  if (fieldDef.type === 'cascading-select' || fieldDef.cascading) return 'full';
+  if (fieldDef.id === 'protocol' || fieldDef.id === 'operation') return 'full';
+  if (isRecipientTemplateField(fieldDef)) return 'full';
+  if (fieldDef.id === 'intervalSeconds') return 'full';
+  if (isLongPlannerFieldId(id)) return 'full';
+  if (isTokenSelectField(fieldDef)) return 'short';
+  if (isSlippageBpsField(fieldDef.id)) return 'short';
+  if (fieldDef.type === 'datetime-local') return 'short';
+  if (fieldDef.type === 'select') return 'short';
+  if (isShortPlannerFieldId(id)) return 'short';
+  return 'full';
+}
+
+function isLongPlannerFieldId(fieldId: string): boolean {
+  return /(?:address|recipient|wallet|account|authority|owner|delegate|url|uri|webhook|blink|memo|reason|note|policy|instruction|description|message|collection|nft|pool|position|vault|reserve|market|realm|proposal|multisig|lookup|route|path)/i
+    .test(fieldId);
+}
+
+function isShortPlannerFieldId(fieldId: string): boolean {
+  return /(?:amount|slippage|bps|percent|price|threshold|limit|count|orders|number|duration|cadence|frequency|interval|days|hours|minutes|side|direction|mode|type|tier|token|mint|symbol|protocol|operation|action)/i
+    .test(fieldId);
+}
+
+function mobilePlannerFieldKindClass(fieldDef: AgentPlanTemplateField): string {
+  const id = fieldDef.id.toLowerCase();
+  if (isTokenSelectField(fieldDef)) return 'mobile-field-token';
+  if (isSlippageBpsField(fieldDef.id)) return 'mobile-field-slippage';
+  if (isRecipientTemplateField(fieldDef) || /address|recipient|wallet|account|url|blink/i.test(id)) {
+    return 'mobile-field-address';
+  }
+  if (/amount|price|threshold|limit|count|orders|number|percent|duration/i.test(id)) return 'mobile-field-number';
+  if (fieldDef.type === 'select' || fieldDef.type === 'cascading-select') return 'mobile-field-select';
+  if (fieldDef.type === 'textarea' || fieldDef.id === 'policy') return 'mobile-field-textarea';
+  return 'mobile-field-text';
+}
+
+function mobileTemplateFieldDisplayLabel(
+  template: AgentPlanTemplate,
+  fieldDef: AgentPlanTemplateField,
+  fallback: string,
+): string {
+  if (!isMobileAppViewport()) return fallback;
+  if (template.id === 'swap') {
+    if (fieldDef.id === 'inputToken') return 'From';
+    if (fieldDef.id === 'outputToken') return 'To';
+    if (fieldDef.id === 'slippageBps') return 'Slippage';
+    if (fieldDef.id === 'amount') return 'Amount';
+  }
+  if (template.id === 'send-tokens') {
+    if (fieldDef.id === 'recipient') return 'Recipient';
+    if (fieldDef.id === 'memo') return 'Memo';
+  }
+  if (isSlippageBpsField(fieldDef.id)) return 'Slippage';
+  return fallback;
+}
+
 function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
   const template = selectedTemplate();
   const value = templateFieldValue(fieldDef.id);
   const disabled = state.busy ? 'disabled' : '';
-  const label = `${templateFieldDisplayLabel(fieldDef)}${fieldDef.required ? ' *' : ''}`;
+  const displayLabel = mobileTemplateFieldDisplayLabel(template, fieldDef, templateFieldDisplayLabel(fieldDef));
+  const label = `${displayLabel}${fieldDef.required ? ' *' : ''}`;
   const error = fieldError(fieldDef.id);
   if (connectorCreateOwnsTemplateField(template, fieldDef.id)) {
     return '';
@@ -25564,26 +26008,34 @@ function completedPlansPanel(): string {
   const receiptCount = plans.filter(completedPlanHasReceipt).length;
   const proofCount = plans.filter((plan) => Boolean(plan.signature)).length;
   const recurringCount = plans.filter((plan) => plan.kind === 'recurring').length;
+  const mobile = isMobileAppViewport();
   return `
-    <section class="approval-object signature-stage stage-completed stage-anchor ${plans.length ? 'stage-active' : 'stage-draft'}">
-      <div class="signature-object-head">
-        ${sectionTitleLine('Done', 'Approved, denied, cancelled, signed, and ended work stays here until you delete it.')}
-        <div class="generated-plans-toolbar signature-toolbar">
-          <span class="signature-state">${escapeHtml(`${plans.length} completed`)}</span>
-          ${inboxRefreshButton('refreshCompletedPlans')}
-          <button id="deleteAllDone" class="utility danger" ${state.busy || visiblePlans.length === 0 ? 'disabled' : ''}>Delete All</button>
+    <section class="approval-object signature-stage stage-completed stage-anchor ${mobile ? 'mobile-completed-stage' : ''} ${plans.length ? 'stage-active' : 'stage-draft'}">
+      ${mobile ? completedPlansMobileHeader({
+        visibleCount: visiblePlans.length,
+        receiptCount,
+        proofCount,
+        recurringCount,
+      }) : `
+        <div class="signature-object-head">
+          ${sectionTitleLine('Done', 'Approved, denied, cancelled, signed, and ended work stays here until you delete it.')}
+          <div class="generated-plans-toolbar signature-toolbar">
+            <span class="signature-state">${escapeHtml(`${plans.length} completed`)}</span>
+            ${inboxRefreshButton('refreshCompletedPlans')}
+            <button id="deleteAllDone" class="utility danger" ${state.busy || visiblePlans.length === 0 ? 'disabled' : ''}>Delete All</button>
+          </div>
         </div>
-      </div>
 
-      ${completedPlanFilterControls()}
-      <div class="queue-status completed-plan-status">
-        <span>${escapeHtml(completedHistorySourceLabel())}</span>
-        <strong>${visiblePlans.length} visible</strong>
-        <span>${receiptCount} receipt${receiptCount === 1 ? '' : 's'}</span>
-        <span>${proofCount} proof${proofCount === 1 ? '' : 's'}</span>
-        <span>${recurringCount} recurring</span>
-      </div>
-      ${completedBridgeStatusHint()}
+        ${completedPlanFilterControls()}
+        <div class="queue-status completed-plan-status">
+          <span>${escapeHtml(completedHistorySourceLabel())}</span>
+          <strong>${visiblePlans.length} visible</strong>
+          <span>${receiptCount} receipt${receiptCount === 1 ? '' : 's'}</span>
+          <span>${proofCount} proof${proofCount === 1 ? '' : 's'}</span>
+          <span>${recurringCount} recurring</span>
+        </div>
+        ${completedBridgeStatusHint()}
+      `}
       ${
         visiblePlans.length
           ? `<div class="generated-plan-grid completed-plan-grid" aria-label="Done work">${visiblePlans.map(completedPlanCard).join('')}</div>`
@@ -25592,6 +26044,45 @@ function completedPlansPanel(): string {
       ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ''}
     </section>
   `;
+}
+
+function completedPlansMobileHeader(counts: {
+  visibleCount: number;
+  receiptCount: number;
+  proofCount: number;
+  recurringCount: number;
+}): string {
+  return `
+    <div class="mobile-completed-head">
+      <div class="mobile-completed-title">
+        <h2>Done</h2>
+        <p>Approved, denied, signed, ended.</p>
+      </div>
+      <div class="mobile-completed-controls">
+        <label class="completed-filter-control filter-field" for="completedFilter">
+          <span class="filter-field-label">Filter</span>
+          ${completedPlanFilterSelect()}
+        </label>
+        <button id="deleteAllDone" class="utility danger" ${state.busy || counts.visibleCount === 0 ? 'disabled' : ''}>Delete All</button>
+      </div>
+    </div>
+    <div class="mobile-completed-stats" aria-label="Done work summary">
+      <strong>${counts.visibleCount} visible</strong>
+      <span>${counts.receiptCount} receipt${counts.receiptCount === 1 ? '' : 's'}</span>
+      <span>${counts.proofCount} proof${counts.proofCount === 1 ? '' : 's'}</span>
+      <span>${counts.recurringCount} repeat${counts.recurringCount === 1 ? '' : 's'}</span>
+    </div>
+    ${completedMobileSourceHint()}
+  `;
+}
+
+function completedMobileSourceHint(): string {
+  const text = activeWorkflowMode() === 'agentic-cloud'
+    ? 'Cloud done work.'
+    : activeWorkflowMode() === 'local-bridge'
+      ? 'Private local receipts.'
+      : 'Stored on this device.';
+  return `<p class="mobile-completed-source">${escapeHtml(text)}</p>`;
 }
 
 function approvalInboxDescription(): string {
@@ -25627,16 +26118,10 @@ function completedHistorySourceLabel(): string {
 }
 
 function completedPlanFilterControls(): string {
-  const filters: Array<[CompletedPlanFilter, string]> = [
-    ['all', 'All'],
-    ['one-time', 'One-time'],
-    ['recurring', 'Repeats'],
-    ['proofs', 'Proofs'],
-    ['receipts', 'Receipts'],
-  ];
+  const filters = completedPlanFilterOptions();
   return `
     <div class="template-filter-row completed-filter-row" role="group" aria-label="Done work filter">
-      ${filters.map(([filter, label]) => `
+      ${filters.map(({ value: filter, label }) => `
         <button
           type="button"
           data-completed-filter="${escapeHtml(filter)}"
@@ -25648,6 +26133,33 @@ function completedPlanFilterControls(): string {
       `).join('')}
     </div>
   `;
+}
+
+function completedPlanFilterSelect(): string {
+  return selectPicker({
+    id: 'completedFilter',
+    value: state.completedPlanFilter,
+    options: completedPlanFilterOptions(),
+    className: 'completed-filter-select',
+  });
+}
+
+function completedPlanFilterOptions(): SelectPickerOption[] {
+  return [
+    { value: 'all', label: 'All' },
+    { value: 'one-time', label: 'One-time' },
+    { value: 'recurring', label: 'Repeats' },
+    { value: 'proofs', label: 'Proofs' },
+    { value: 'receipts', label: 'Receipts' },
+  ];
+}
+
+function isCompletedPlanFilter(value: string): value is CompletedPlanFilter {
+  return value === 'all' ||
+    value === 'one-time' ||
+    value === 'recurring' ||
+    value === 'proofs' ||
+    value === 'receipts';
 }
 
 function completedPlansEmptyState(totalCount: number): string {
@@ -25696,12 +26208,8 @@ function decisionProofRow(plan: CompletedPlanRecord): string {
 }
 
 function completedPlanCard(plan: CompletedPlanRecord): string {
-  const deleteRequiresBridge = Boolean(
-    plan.workflowSource !== 'cloud' &&
-    !state.bridgeActive &&
-    ((plan.actionId && !isBrowserWorkflowId(plan.actionId)) ||
-      (completedPlanIsEndedSchedule(plan) && plan.recurringId && !isBrowserWorkflowId(plan.recurringId))),
-  );
+  if (isMobileAppViewport()) return completedPlanCardMobile(plan);
+  const deleteRequiresBridge = completedPlanDeleteRequiresBridge(plan);
   const evidenceBadge = evidenceBadgeForCompletedPlan(plan);
   const copyLabel = completedPlanHasReceipt(plan) ? 'Copy receipt JSON' : plan.signature ? 'Copy proof JSON' : 'Copy schedule JSON';
   const focused = state.lastCompletedFocusId === plan.id || Boolean(plan.actionId && state.lastCompletedFocusId === plan.actionId);
@@ -25776,6 +26284,221 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
         </div>
       </div>
     </article>
+  `;
+}
+
+function completedPlanDeleteRequiresBridge(plan: CompletedPlanRecord): boolean {
+  return Boolean(
+    plan.workflowSource !== 'cloud' &&
+    !state.bridgeActive &&
+    ((plan.actionId && !isBrowserWorkflowId(plan.actionId)) ||
+      (completedPlanIsEndedSchedule(plan) && plan.recurringId && !isBrowserWorkflowId(plan.recurringId))),
+  );
+}
+
+function completedPlanCardMobile(plan: CompletedPlanRecord): string {
+  const deleteRequiresBridge = completedPlanDeleteRequiresBridge(plan);
+  const focused = state.lastCompletedFocusId === plan.id || Boolean(plan.actionId && state.lastCompletedFocusId === plan.actionId);
+  const evidenceBadge = evidenceBadgeForCompletedPlan(plan);
+  const submissionPill = completedPlanSubmissionPill(plan);
+  const connectorMeta = resolveConnectorMetaForAction(plan.actionKind, (plan.metadata ?? {}) as Record<string, unknown>);
+  const copyLabel = completedPlanHasReceipt(plan) ? 'Copy receipt JSON' : plan.signature ? 'Copy proof JSON' : 'Copy schedule JSON';
+  const rows = completedPlanMobileSummaryRows(plan);
+  return `
+    <article class="generated-plan-card completed-plan-card mobile-completed-card ${focused ? 'focused' : ''}" ${focused ? 'data-completed-focus="true"' : ''}>
+      <div class="mobile-completed-card-head">
+        <div class="mobile-completed-card-meta">
+          <span class="status-pill ${escapeHtml(plan.tone)}">${escapeHtml(plan.status)}</span>
+          ${connectorChip(connectorMeta?.id, connectorMeta?.name)}
+          ${evidenceBadgeHtml(evidenceBadge)}
+          ${submissionPill}
+          <span class="mobile-completed-kind">${escapeHtml(plan.kind === 'recurring' ? 'Repeat' : 'One-time')}</span>
+        </div>
+        <h3 title="${escapeHtml(plan.title)}">${escapeHtml(completedPlanDisplayTitle(plan))}</h3>
+        <p>
+          <span>${escapeHtml(completedPlanMobileTypeLabel(plan))}</span>
+          <span>${escapeHtml(formatDateTime(plan.completedAt))}</span>
+        </p>
+      </div>
+      ${rows.length ? `
+        <dl class="mobile-completed-summary-list" aria-label="Done work summary">
+          ${rows.map(completedPlanMobileSummaryRow).join('')}
+        </dl>
+      ` : ''}
+      ${completedPlanSummaryNote(plan)}
+      ${completedPlanMobileDecisionProof(plan)}
+      <details class="mobile-completed-more">
+        <summary>More</summary>
+        <div class="mobile-completed-more-body">
+          ${plan.actionId ? recordActivityDetails('approval', plan.actionId) : recordActivityDetails('completed', plan.id)}
+          <details class="generated-plan-inline-details completed-plan-details completed-history-details">
+            <summary>View details</summary>
+            <div>
+              <dl class="proof-grid compact">
+                ${plan.detailRows.map(([label, value]) => definitionRow(label, value)).join('')}
+              </dl>
+              ${plan.txid ? txBlock(plan.txid, plan.cluster) : ''}
+            </div>
+          </details>
+          ${plan.actionId ? relatedReceiptBlockForApproval(plan.actionId) : ''}
+          <div class="mobile-completed-action-grid">
+            <button class="utility inbox-footer-action" data-copy="${escapeHtml(plan.copyPayload)}" data-copy-name="Done item">${escapeHtml(copyLabel)}</button>
+            ${plan.trustBundlePayload ? `<button class="utility inbox-footer-action" data-copy="${escapeHtml(plan.trustBundlePayload)}" data-copy-name="Trust bundle">Copy trust bundle</button>` : ''}
+            <button
+              class="utility danger recurring-delete-mini"
+              data-completed-delete="${escapeHtml(plan.id)}"
+              ${state.busy || deleteRequiresBridge ? 'disabled' : ''}
+              title="${deleteRequiresBridge ? 'Connect the local bridge before deleting bridge-backed done work.' : 'Delete this item from Done.'}"
+            >
+              Delete
+            </button>
+          </div>
+        </div>
+      </details>
+    </article>
+  `;
+}
+
+function completedPlanMobileTypeLabel(plan: CompletedPlanRecord): string {
+  const record = completedPlanRecordRef(plan);
+  if (record.label === 'Proof only') return 'Proof only';
+  if (record.label === 'Tx') return 'Receipt';
+  if (record.label === 'Repeat') return 'Repeat';
+  if (completedPlanConnectorRead(plan)) return 'Connector receipt';
+  return plan.kind === 'recurring' ? 'Repeat done' : 'One-time done';
+}
+
+type CompletedPlanMobileSummaryRow = {
+  label: string;
+  value: string;
+  title?: string;
+  copyValue?: string;
+  copyLabel?: string;
+  copyName?: string;
+  copyActions?: SummaryCopyAction[];
+  tone?: 'amount';
+};
+
+function completedPlanMobileSummaryRows(plan: CompletedPlanRecord): CompletedPlanMobileSummaryRow[] {
+  const connectorRead = completedPlanConnectorRead(plan);
+  const amountLabel = completedPlanAmountLabel(plan);
+  const record = completedPlanRecordRef(plan);
+  if (connectorRead) {
+    return [
+      {
+        label: 'Result',
+        value: stringFromJsonLike(connectorRead.resultSummary) || amountLabel,
+        title: stringFromJsonLike(connectorRead.resultSummary) || amountLabel,
+        tone: 'amount',
+      },
+      {
+        label: 'Feed',
+        value: stringFromJsonLike(connectorRead.feedLabel) || stringFromJsonLike(connectorRead.symbol) || short(stringFromJsonLike(connectorRead.priceFeedId)),
+        title: stringFromJsonLike(connectorRead.priceFeedId) || stringFromJsonLike(connectorRead.feedLabel) || stringFromJsonLike(connectorRead.symbol),
+        copyValue: stringFromJsonLike(connectorRead.priceFeedId) || undefined,
+        copyLabel: stringFromJsonLike(connectorRead.priceFeedId) ? 'Copy feed' : undefined,
+        copyName: 'Pyth price feed',
+      },
+      {
+        label: record.label,
+        value: record.value,
+        title: record.title ?? record.copyValue ?? record.value,
+        copyValue: record.copyValue,
+        copyLabel: record.copyLabel,
+        copyName: record.copyName,
+        copyActions: record.copyActions,
+      },
+    ];
+  }
+  const rows: CompletedPlanMobileSummaryRow[] = [
+    {
+      label: 'Wallet',
+      value: plan.walletAddress ? short(plan.walletAddress) : 'No wallet',
+      title: plan.walletAddress || 'No wallet',
+      copyValue: plan.walletAddress || undefined,
+      copyLabel: 'Copy wallet',
+      copyName: 'Wallet address',
+    },
+  ];
+  if (completedPlanMobileShouldShowAmount(plan, amountLabel)) {
+    rows.push({
+      label: 'Amount',
+      value: amountLabel,
+      title: amountLabel,
+      tone: 'amount',
+      copyActions: completedPlanTokenCopyActions(plan),
+    });
+  }
+  rows.push({
+    label: completedPlanMobileRecordLabel(record.label),
+    value: record.value,
+    title: record.title ?? record.copyValue ?? record.value,
+    copyValue: record.copyValue,
+    copyLabel: record.copyLabel,
+    copyName: record.copyName,
+    copyActions: record.copyActions,
+  });
+  return rows;
+}
+
+function completedPlanMobileRecordLabel(label: string): string {
+  if (label === 'Proof only') return 'Proof';
+  return label;
+}
+
+function completedPlanMobileShouldShowAmount(plan: CompletedPlanRecord, amountLabel: string): boolean {
+  if (!amountLabel || amountLabel === 'Completed') return false;
+  if (!plan.signature) return true;
+  const proofShort = short(plan.signature);
+  return !(amountLabel.toLowerCase().startsWith('proof ') && amountLabel.includes(proofShort));
+}
+
+function completedPlanMobileSummaryRow(row: CompletedPlanMobileSummaryRow): string {
+  const copyActions = summaryCopyActions(row);
+  return `
+    <div class="${row.tone ? `mobile-completed-summary-${row.tone}` : ''}" title="${escapeHtml(row.title ?? row.value)}">
+      <dt>${escapeHtml(row.label)}</dt>
+      <dd class="${copyActions.length ? 'has-copy' : ''}">
+        <span>${escapeHtml(row.value)}</span>
+        ${summaryCopyActionsHtml(copyActions, row.label)}
+      </dd>
+    </div>
+  `;
+}
+
+function completedPlanMobileDecisionProof(plan: CompletedPlanRecord): string {
+  if (!plan.signature && plan.decisionProofVerified === undefined) return '';
+  const verified = plan.decisionProofVerified === true;
+  const sigShort = plan.signature ? short(plan.signature) : '';
+  const when = formatDateTime(plan.completedAt);
+  const walletShort = plan.walletAddress ? short(plan.walletAddress) : 'unknown wallet';
+  const headline = verified
+    ? 'Signature verified'
+    : plan.signature
+      ? 'Signature recorded'
+      : '';
+  if (!headline) return '';
+  const proofMessageBlock = plan.decisionProofMessage
+    ? `<details class="decision-proof-message"><summary>What you signed</summary><pre class="decision-proof-text">${escapeHtml(plan.decisionProofMessage)}</pre></details>`
+    : '';
+  const copyButtons = [
+    plan.signature ? `<button data-copy="${escapeHtml(plan.signature)}" data-copy-name="Decision signature">Copy signature</button>` : '',
+    plan.decisionProofMessage ? `<button data-copy="${escapeHtml(plan.decisionProofMessage)}" data-copy-name="Signed text">Copy signed text</button>` : '',
+  ].filter(Boolean).join('');
+  return `
+    <details class="mobile-decision-proof ${verified ? 'verified' : ''}">
+      <summary>
+        <span class="decision-proof-icon" aria-hidden="true">${verified ? '✓' : '!'}</span>
+        <strong>${escapeHtml(headline)}</strong>
+      </summary>
+      <dl class="decision-proof-grid">
+        <div><dt>Wallet</dt><dd title="${escapeHtml(plan.walletAddress)}">${escapeHtml(walletShort)}</dd></div>
+        <div><dt>When</dt><dd>${escapeHtml(when)}</dd></div>
+        ${sigShort ? `<div><dt>Signature</dt><dd title="${escapeHtml(plan.signature ?? '')}">${escapeHtml(sigShort)}</dd></div>` : ''}
+      </dl>
+      ${proofMessageBlock}
+      ${copyButtons ? `<div class="decision-proof-actions">${copyButtons}</div>` : ''}
+    </details>
   `;
 }
 
@@ -26156,18 +26879,75 @@ function scheduledApprovalsPanel(): string {
   }
   const recurringPayments = activeWorkflowRecurringPayments();
   const activeCount = recurringPayments.filter((payment) => payment.status === 'active' && !isRecurringPaymentCompleted(payment)).length;
+  const mobile = isMobileAppViewport();
+  const active = state.recurringView === 'active';
+  const recurringContent = active
+    ? recurringList() || signaturePlaceholder(
+        'No active repeats',
+        mobile ? 'Create one from the Create tab.' : 'Create a repeat payment to track active repeats here.',
+      )
+    : recurringComposer();
   return `
-    <section class="approval-object signature-stage stage-schedule stage-anchor ${recurringPayments.length ? 'stage-active' : 'stage-draft'}">
-      <div class="signature-object-head app-inline-head">
-        ${sectionTitleLine('Repeat Payments', 'Set up payments that repeat. Each payment still asks for approval before it sends.')}
-        ${inboxRefreshButton('refreshInbox')}
+    <section class="approval-object signature-stage stage-schedule stage-anchor ${mobile ? 'mobile-recurring-stage' : ''} ${recurringPayments.length ? 'stage-active' : 'stage-draft'}">
+      <div class="signature-object-head app-inline-head ${mobile ? 'mobile-recurring-title-head' : ''}">
+        ${mobile ? mobileRecurringHeader(activeCount) : `
+          ${sectionTitleLine('Repeat Payments', 'Set up payments that repeat. Each payment still asks for approval before it sends.')}
+          ${inboxRefreshButton('refreshInbox')}
+        `}
       </div>
 
-      ${scheduleStatusLine()}
-      ${recurringViewTabs(activeCount)}
-      ${state.recurringView === 'active' ? recurringList() || signaturePlaceholder('No active repeats', 'Create a repeat payment to track active repeats here.') : recurringComposer()}
+      ${mobile ? (active ? mobileRecurringStatsLine(recurringPayments) : '') : scheduleStatusLine()}
+      ${mobile ? recurringMobileModeControls() : recurringViewTabs(activeCount)}
+      ${recurringContent}
       ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ''}
     </section>
+  `;
+}
+
+function mobileRecurringHeader(activeCount: number): string {
+  return `
+    <div class="mobile-recurring-head-row">
+      <div class="mobile-recurring-title-copy">
+        <h2>Repeat Payments</h2>
+        <p>Repeats ask for approval before each send.</p>
+      </div>
+      <div class="tabs compact-tabs recurring-view-tabs mobile-recurring-view-tabs" role="tablist" aria-label="Repeat payment views">
+        ${recurringViewButton('create', 'Create')}
+        ${recurringViewButton('active', activeCount ? `Active ${activeCount}` : 'Active')}
+      </div>
+    </div>
+  `;
+}
+
+function mobileRecurringStatsLine(payments: RecurringPayment[]): string {
+  const active = payments.filter((payment) => payment.status === 'active' && !isRecurringPaymentCompleted(payment)).length;
+  const completed = payments.filter(isRecurringPaymentCompleted).length;
+  const total = payments.length;
+  return `
+    <div class="mobile-recurring-stats" aria-label="Repeat payment stats">
+      <strong>${active} active</strong>
+      <span>${total} saved</span>
+      <span>${completed} completed</span>
+    </div>
+  `;
+}
+
+function recurringMobileModeControls(): string {
+  const creating = state.recurringView === 'create';
+  const connector = creating ? recurringDraftConnector(state.recurringDraft) : undefined;
+  if (creating) {
+    return `
+      <div class="mobile-recurring-controls create">
+        ${recurringConnectorPicker()}
+        ${connector ? recurringConnectorActionPicker(state.recurringDraft, connector) : recurringPresetMethodControls()}
+      </div>
+    `;
+  }
+  return `
+    <div class="mobile-recurring-controls active">
+      ${agentReviewFilterControl('recurring')}
+      <button id="deleteAllRepeats" class="utility danger" ${state.busy || filterRecurringPaymentsByAgentReview(activeWorkflowRecurringPayments()).length === 0 ? 'disabled' : ''}>Delete All</button>
+    </div>
   `;
 }
 
@@ -26229,12 +27009,15 @@ function labsPanel(): string {
   const artifact = latestLabArtifact(lab.id);
   const signedArtifacts = state.labArtifacts.filter((entry) => recordMatchesWalletScope(entry, state.address));
   const complete = state.artifactView === 'signed' ? signedArtifacts.length > 0 : Boolean(artifact);
+  const mobile = isMobileAppViewport();
   const detail =
     state.artifactView === 'signed'
-      ? `Review wallet-signed proofs saved on this device${state.bridgeActive ? ' and mirrored to the local bridge archive' : ''}.`
+      ? mobile
+        ? 'Wallet-signed proofs on this device.'
+        : `Review wallet-signed proofs saved on this device${state.bridgeActive ? ' and mirrored to the local bridge archive' : ''}.`
       : 'Save wallet-signed proof for a request, approval, denial, or result.';
   return `
-    <section class="approval-object signature-stage stage-labs stage-anchor ${complete ? 'stage-complete' : 'stage-draft'}">
+    <section class="approval-object signature-stage stage-labs stage-anchor ${mobile ? 'mobile-proof-stage' : ''} ${complete ? 'stage-complete' : 'stage-draft'}">
       <div class="signature-object-head artifact-workspace-head">
         ${sectionTitleLine('Save Proof', detail)}
         ${artifactWorkspaceTabs()}
@@ -26445,18 +27228,13 @@ function signedArtifactsPanel(): string {
 }
 
 function artifactArchiveControls(visibleCount: number): string {
-  const filters: Array<[ArtifactFilter, string]> = [
-    ['all', 'All'],
-    ['verified', 'Verified'],
-    ['warnings', 'Warnings'],
-    ['blocked', 'Blocked'],
-  ];
+  if (isMobileAppViewport()) return artifactArchiveControlsMobile(visibleCount);
   return `
     <div class="artifact-archive-control-panel">
       <div class="artifact-archive-primary-row">
         <span class="signature-state artifact-visible-count">${escapeHtml(`${visibleCount} visible`)}</span>
       <div class="template-filter-row artifact-filter-row" role="group" aria-label="Saved proof filter">
-        ${filters.map(([filter, label]) => `
+        ${artifactFilterOptions(false).map(([filter, label]) => `
           <button
             type="button"
             data-artifact-filter="${escapeHtml(filter)}"
@@ -26471,21 +27249,7 @@ function artifactArchiveControls(visibleCount: number): string {
         ${selectPicker({
           id: 'artifactTypeFilter',
           value: state.artifactTypeFilter,
-          options: [
-            { value: 'all', label: 'All types', meta: 'Proof type' },
-            ...RECEIPT_LABS.map((lab) => ({
-              value: lab.id,
-              label: lab.title,
-              meta: 'Saved proof',
-              detail: lab.description,
-            })),
-            ...ADVANCED_EVIDENCE_LABS.map((lab) => ({
-              value: lab.id,
-              label: `Legacy / ${lab.title}`,
-              meta: 'Advanced evidence',
-              detail: lab.description,
-            })),
-          ],
+          options: artifactTypeFilterOptions(),
           disabled: state.busy,
         })}
       </label>
@@ -26497,6 +27261,75 @@ function artifactArchiveControls(visibleCount: number): string {
       ${artifactArchiveStatusLine()}
     </div>
   `;
+}
+
+function artifactArchiveControlsMobile(visibleCount: number): string {
+  return `
+    <div class="artifact-archive-control-panel mobile-artifact-archive-control-panel">
+      <div class="template-filter-row artifact-filter-row mobile-artifact-filter-row" role="group" aria-label="Saved proof filter">
+        ${artifactFilterOptions(true).map(([filter, label]) => `
+          <button
+            type="button"
+            data-artifact-filter="${escapeHtml(filter)}"
+            class="${state.artifactFilter === filter ? 'active' : ''}"
+            ${state.busy ? 'disabled' : ''}
+          >
+            ${escapeHtml(label)}
+          </button>
+        `).join('')}
+      </div>
+      <div class="mobile-artifact-search-row">
+        <label class="field compact mobile-artifact-type-filter">
+          ${selectPicker({
+            id: 'artifactTypeFilter',
+            value: state.artifactTypeFilter,
+            options: artifactTypeFilterOptions(),
+            disabled: state.busy,
+          })}
+        </label>
+        <label class="field compact artifact-search-field mobile-artifact-search-field">
+          <input id="artifactSearch" value="${escapeHtml(state.artifactSearch)}" placeholder="Search proofs" ${state.busy ? 'disabled' : ''} />
+        </label>
+      </div>
+      <div class="mobile-artifact-status-line" aria-label="Saved proof archive summary">
+        <strong>${visibleCount} visible</strong>
+        <span>${escapeHtml(artifactMobileArchiveStatusText())}</span>
+      </div>
+    </div>
+  `;
+}
+
+function artifactFilterOptions(mobile: boolean): Array<[ArtifactFilter, string]> {
+  return [
+    ['all', 'All'],
+    ['verified', 'Verified'],
+    ['warnings', mobile ? 'Warn' : 'Warnings'],
+    ['blocked', 'Blocked'],
+  ];
+}
+
+function artifactTypeFilterOptions(): SelectPickerOption[] {
+  return [
+    { value: 'all', label: 'All types', meta: 'Proof type' },
+    ...RECEIPT_LABS.map((lab) => ({
+      value: lab.id,
+      label: lab.title,
+      meta: 'Saved proof',
+      detail: lab.description,
+    })),
+    ...ADVANCED_EVIDENCE_LABS.map((lab) => ({
+      value: lab.id,
+      label: `Legacy / ${lab.title}`,
+      meta: 'Advanced evidence',
+      detail: lab.description,
+    })),
+  ];
+}
+
+function artifactMobileArchiveStatusText(): string {
+  if (activeWorkflowMode() === 'agentic-cloud') return 'Cloud archive synced when signed in.';
+  if (activeWorkflowMode() === 'local-bridge' || state.bridgeActive) return 'Private local archive.';
+  return 'Stored on this device.';
 }
 
 function artifactArchiveStatusLine(): string {
@@ -26568,6 +27401,7 @@ function artifactSearchText(artifact: LabArtifact): string {
 }
 
 function signedArtifactRow(artifact: LabArtifact): string {
+  if (isMobileAppViewport()) return signedArtifactRowMobile(artifact);
   const lab = labById(artifact.labId);
   const legacy = !lab || lab.category === 'advanced';
   const receiptLabel = legacy ? 'Legacy receipt' : receiptLabelForKind(artifact.kind);
@@ -26615,6 +27449,63 @@ function signedArtifactRow(artifact: LabArtifact): string {
         </summary>
         ${signedArtifactDetail(artifact)}
       </details>
+    </article>
+  `;
+}
+
+function signedArtifactRowMobile(artifact: LabArtifact): string {
+  const lab = labById(artifact.labId);
+  const legacy = !lab || lab.category === 'advanced';
+  const receiptLabel = legacy ? 'Legacy receipt' : receiptLabelForKind(artifact.kind);
+  const requested = receiptRequestedText(artifact);
+  const proves = receiptProvesText(artifact);
+  const signatureHash = `${short(artifact.signature)} / ${short(artifact.artifactHash)}`;
+  const searchText = artifactSearchText(artifact);
+  const verdict = artifact.payload.metrics.find((metric) => metric.label.toLowerCase() === 'verdict')?.value ?? (artifact.verified ? 'verified' : 'signed');
+  return `
+    <article class="signed-artifact-row receipt-proof-card mobile-receipt-proof-card ${legacy ? 'legacy' : ''}" data-artifact-search-text="${escapeHtml(searchText)}">
+      <div class="mobile-receipt-proof-head">
+        <div class="mobile-receipt-proof-meta">
+          <span class="status-pill ${artifact.verified ? 'tx-confirmed' : 'tx-pending'}">${artifact.verified ? 'wallet verified' : 'signed'}</span>
+          <span class="mobile-receipt-proof-kind">${escapeHtml(labKindLabel(artifact.kind))}</span>
+        </div>
+        <h3>${escapeHtml(receiptLabel)}</h3>
+        <p>
+          <time datetime="${escapeHtml(artifact.createdAt)}">${escapeHtml(formatDateTime(artifact.createdAt))}</time>
+          <span>${escapeHtml(verdict)}</span>
+        </p>
+        <strong class="mobile-receipt-proof-hash">${escapeHtml(short(artifact.artifactHash))}</strong>
+      </div>
+      <p class="mobile-receipt-proof-summary">${escapeHtml(artifact.payload.summary ?? artifact.payload.thesis)}</p>
+      <dl class="mobile-receipt-proof-rows" aria-label="Saved proof summary">
+        ${receiptProofSummaryItem('Signed by', short(artifact.walletAddress), artifact.walletAddress, artifact.walletAddress)}
+        ${receiptProofSummaryItem('Hash', short(artifact.artifactHash), artifact.artifactHash, artifact.artifactHash)}
+      </dl>
+      <div class="mobile-receipt-proof-footer">
+        <button data-share-receipt="${escapeHtml(artifact.id)}">Share</button>
+        <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Proof JSON">Copy JSON</button>
+        <details class="mobile-receipt-proof-more">
+          <summary>More</summary>
+          <div class="mobile-receipt-proof-more-body">
+            <dl class="mobile-receipt-proof-detail-rows">
+              ${receiptProofSummaryItem('Requested', requested)}
+              ${receiptProofSummaryItem('Proves', proves)}
+              ${receiptProofSummaryItem('Signature', signatureHash, `${artifact.signature} / ${artifact.artifactHash}`, `${artifact.signature} / ${artifact.artifactHash}`)}
+            </dl>
+            <div class="receipt-proof-storage-badges">
+              ${receiptStorageBadges(artifact)}
+            </div>
+            <button class="utility danger receipt-proof-delete-button" data-artifact-delete="${escapeHtml(artifact.id)}" ${state.busy ? 'disabled' : ''}>Delete</button>
+            <details class="artifact-technical-details signed-artifact-details">
+              <summary>
+                <span>Technical details</span>
+                <strong>Exact signed text, hashes, signature, and receipt fields</strong>
+              </summary>
+              ${signedArtifactDetail(artifact)}
+            </details>
+          </div>
+        </details>
+      </div>
     </article>
   `;
 }
@@ -26943,6 +27834,7 @@ function bind(): void {
     workspaceTabSelect.addEventListener('change', () => {
       const next = workspaceTabSelect.value as ActiveTab;
       if (!next || next === state.activeTab) return;
+      const previous = state.activeTab;
       trackNavClick(`${currentRoute() ?? '/app'}#${next}`, 'workspace');
       state.activeTab = next;
       if (state.activeTab === 'labs') {
@@ -26952,9 +27844,7 @@ function bind(): void {
       state.activeExpandNoteField = null;
       state.error = '';
       render();
-      if (next === 'inbox') {
-        void reconcilePendingTransactions({ trigger: 'tab-entry' });
-      }
+      handleWorkspaceTabEntry(next, previous);
     });
   }
 
@@ -26962,6 +27852,7 @@ function bind(): void {
     button.addEventListener('click', () => {
       const tab = button.dataset.tab as ActiveTab;
       const spendOpen = button.dataset.spendOpen;
+      const previous = state.activeTab;
       trackNavClick(`${currentRoute() ?? '/app'}#${tab}`, 'workspace');
       state.activeTab = tab;
       if (state.activeTab === 'labs') {
@@ -26972,9 +27863,7 @@ function bind(): void {
       state.moreMenuOpen = false;
       state.error = '';
       render();
-      if (tab === 'inbox') {
-        void reconcilePendingTransactions({ trigger: 'tab-entry' });
-      }
+      handleWorkspaceTabEntry(tab, previous);
       if (tab === 'sessions' && spendOpen) {
         void openSessionDetail(spendOpen).catch((err) => {
           state.error = redactSecrets(err instanceof Error ? err.message : String(err));
@@ -27144,9 +28033,10 @@ function bind(): void {
     button.addEventListener('click', () => {
       const view = button.dataset.skillsSubtab;
       if (!view) return;
-      void import('./devTabs/skills/subTabRegistry.js').then(({ setActiveSkillsSubTab }) => {
+      void import('./devTabs/skills/subTabRegistry.js').then(({ findSkillsSubTab, setActiveSkillsSubTab }) => {
         setActiveSkillsSubTab(view);
         render();
+        findSkillsSubTab(view)?.onMount?.();
       });
     });
   }
@@ -27235,6 +28125,33 @@ function bind(): void {
       const view = button.dataset.preferencesView as PreferencesView | undefined;
       if (!view || !isPreferencesView(view)) return;
       setPreferencesView(view);
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-preferences-access-tab]')) {
+    button.addEventListener('click', () => {
+      const tab = button.dataset.preferencesAccessTab as PreferencesAccessMobileTab | undefined;
+      if (!tab || !isPreferencesAccessMobileTab(tab) || state.preferencesAccessMobileTab === tab) return;
+      state.preferencesAccessMobileTab = tab;
+      render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-preferences-rules-tab]')) {
+    button.addEventListener('click', () => {
+      const tab = button.dataset.preferencesRulesTab as PreferencesRulesMobileTab | undefined;
+      if (!tab || !isPreferencesRulesMobileTab(tab) || state.preferencesRulesMobileTab === tab) return;
+      state.preferencesRulesMobileTab = tab;
+      render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-preferences-tokens-tab]')) {
+    button.addEventListener('click', () => {
+      const tab = button.dataset.preferencesTokensTab as PreferencesTokensMobileTab | undefined;
+      if (!tab || !isPreferencesTokensMobileTab(tab) || state.preferencesTokensMobileTab === tab) return;
+      state.preferencesTokensMobileTab = tab;
+      render();
     });
   }
 
@@ -28031,12 +28948,16 @@ function bind(): void {
     button.addEventListener('click', () => {
       const view = button.dataset.artifactView;
       if (view !== 'create' && view !== 'signed') return;
+      const previous = state.artifactView;
       state.artifactView = view;
       if (view === 'signed') {
         state.listPages.receiptArchive = 1;
       }
       state.error = '';
       render();
+      if (view === 'signed' && previous !== 'signed' && isMobileAppViewport() && !state.busy) {
+        void refreshLabArtifactsData({ toast: false });
+      }
     });
   }
 
@@ -28115,6 +29036,14 @@ function bind(): void {
   document.querySelector<HTMLSelectElement>('#inboxFilter')?.addEventListener('change', (event) => {
     state.inboxFilter = (event.currentTarget as HTMLSelectElement).value as InboxFilter;
     state.listPages.inbox = 1;
+    render();
+  });
+
+  document.querySelector<HTMLSelectElement>('#completedFilter')?.addEventListener('change', (event) => {
+    const filter = (event.currentTarget as HTMLSelectElement).value;
+    if (!isCompletedPlanFilter(filter)) return;
+    state.completedPlanFilter = filter;
+    state.error = '';
     render();
   });
 
@@ -28589,6 +29518,18 @@ function bind(): void {
   // We attach the watcher once globally — wireAgenticLoginAutoRefresh is a no-op
   // on subsequent calls.
   wireAgenticLoginAutoRefresh();
+}
+
+function handleWorkspaceTabEntry(tab: ActiveTab, previous: ActiveTab): void {
+  if (tab === 'inbox') {
+    void reconcilePendingTransactions({ trigger: 'tab-entry' });
+  }
+  if (tab === 'completed' && previous !== 'completed' && isMobileAppViewport() && !state.busy) {
+    void refreshWorkspaceData({ toast: false });
+  }
+  if (tab === 'labs' && previous !== 'labs' && state.artifactView === 'signed' && isMobileAppViewport() && !state.busy) {
+    void refreshLabArtifactsData({ toast: false });
+  }
 }
 
 let agenticLoginAutoRefreshAttached = false;
@@ -29741,6 +30682,9 @@ function syncExpandNoteSourceField(ref: ExpandNoteFieldRef, value: string): void
 function setPreferencesView(view: PreferencesView): boolean {
   const changed = state.preferencesView !== view;
   state.preferencesView = view;
+  if (changed && view === 'access') state.preferencesAccessMobileTab = 'protocols';
+  if (changed && view === 'rules') state.preferencesRulesMobileTab = 'recipients';
+  if (changed && view === 'tokens') state.preferencesTokensMobileTab = 'labels';
   state.error = '';
   savePersistedState();
   render();
@@ -38128,21 +39072,27 @@ function traceWalletCleared(site: string): void {
 
 async function runCloudSignIn(): Promise<void> {
   cloudSignInDiag('start', { hasWallet: Boolean(state.address), address: state.address ? short(state.address) : '', cluster: state.cluster });
-  if (state.androidNativeEnvironment.isAndroidNative && !state.address) {
+  if (shouldUseAndroidSiwsCloudSignIn({
+    isAndroidNative: state.androidNativeEnvironment.isAndroidNative,
+    hasWalletAddress: Boolean(state.address),
+    siwsFastPathEnabled: ANDROID_CLOUD_SIWS_FAST_PATH,
+  })) {
     let fallbackToProofSignIn = false;
     await run('connect', async () => {
       try {
         await runAndroidSiwsCloudSignIn();
       } catch (err) {
-        if (isAndroidSiwsUnsupported(err)) {
+        if (shouldFallbackToProofAfterAndroidSiwsError(err)) {
           fallbackToProofSignIn = true;
-          cloudSignInDiag('android-siws-fallback', { message: err instanceof Error ? err.message : String(err) });
+          cloudSignInDiag('android-siws-fallback', { message: err instanceof Error ? err.message : String(err), hasWallet: Boolean(state.address) });
           return;
         }
         throw err;
       }
     });
     if (!fallbackToProofSignIn) return;
+  } else if (state.androidNativeEnvironment.isAndroidNative && !state.address) {
+    cloudSignInDiag('android-proof-connect-first', { reason: 'siws-fast-path-disabled' });
   }
   if (!state.address) {
     await runConnect({ successToast: false });
@@ -38236,12 +39186,6 @@ async function runAndroidSiwsCloudSignIn(): Promise<void> {
     }),
   }));
   await finishCloudSignIn(session);
-}
-
-function isAndroidSiwsUnsupported(err: unknown): boolean {
-  if (err instanceof ProtocolError && err.code === 'unsupported_method') return true;
-  const message = err instanceof Error ? err.message : String(err);
-  return /SIWS_UNSUPPORTED_FOR_WALLET|Sign In With Solana|SIWS/i.test(message);
 }
 
 async function finishCloudSignIn(session: CloudSessionResponse): Promise<void> {
@@ -39862,7 +40806,7 @@ async function runDisconnectBridge(): Promise<void> {
   });
 }
 
-async function runRefreshInbox(): Promise<void> {
+async function refreshWorkspaceData(options: { toast: boolean } = { toast: true }): Promise<void> {
   await run('inbox', async () => {
     if (activeWorkflowMode() === 'local-bridge') {
       await Promise.all([refreshInboxData(), refreshHealth(), refreshBalances().catch(() => undefined), syncLabArtifactsWithBridge()]);
@@ -39870,8 +40814,14 @@ async function runRefreshInbox(): Promise<void> {
       await refreshActiveWorkflowData();
     }
     await reconcilePendingTransactions({ trigger: 'refresh' });
-    pushToast('success', 'Workspace refreshed', `${activeWorkflowPreparedActions().length} approval request(s) loaded from ${activeWorkflowLabel()}.`);
+    if (options.toast) {
+      pushToast('success', 'Workspace refreshed', `${activeWorkflowPreparedActions().length} approval request(s) loaded from ${activeWorkflowLabel()}.`);
+    }
   });
+}
+
+async function runRefreshInbox(): Promise<void> {
+  await refreshWorkspaceData({ toast: true });
 }
 
 async function runCreateRecurring(): Promise<void> {
@@ -44403,7 +45353,7 @@ function archiveLabArtifactToastDetail(result: ArchiveLabArtifactResult, lab: La
   return 'Saved to the local device archive.';
 }
 
-async function runRefreshLabArtifacts(): Promise<void> {
+async function refreshLabArtifactsData(options: { toast: boolean } = { toast: true }): Promise<void> {
   await run('lab', async () => {
     await refreshCloudSession(false);
     await signOutCloudSessionForWalletBoundary('wallet-mismatch');
@@ -44414,8 +45364,14 @@ async function runRefreshLabArtifacts(): Promise<void> {
     if (activeWorkflowMode() === 'agentic-cloud') {
       await syncLabArtifactsWithCloud();
     }
-    pushToast('success', 'Receipts refreshed', `${state.labArtifacts.length} receipt${state.labArtifacts.length === 1 ? '' : 's'} loaded.`);
+    if (options.toast) {
+      pushToast('success', 'Receipts refreshed', `${state.labArtifacts.length} receipt${state.labArtifacts.length === 1 ? '' : 's'} loaded.`);
+    }
   });
+}
+
+async function runRefreshLabArtifacts(): Promise<void> {
+  await refreshLabArtifactsData({ toast: true });
 }
 
 async function runDeleteLabArtifact(artifactId: string): Promise<void> {
@@ -49370,6 +50326,18 @@ function isPreferencesView(value: string): value is PreferencesView {
   return value === 'workspace' || value === 'ai' || value === 'access' || value === 'rules' || value === 'tokens';
 }
 
+function isPreferencesAccessMobileTab(value: string): value is PreferencesAccessMobileTab {
+  return value === 'protocols' || value === 'keys';
+}
+
+function isPreferencesRulesMobileTab(value: string): value is PreferencesRulesMobileTab {
+  return value === 'recipients' || value === 'rails' || value === 'policies';
+}
+
+function isPreferencesTokensMobileTab(value: string): value is PreferencesTokensMobileTab {
+  return value === 'labels' || value === 'retry';
+}
+
 function step(name: StepName, title: string, detail: string): string {
   return `
     <li class="${state.steps[name]}">
@@ -51652,6 +52620,7 @@ function actionPreview(action: PreparedAction): string {
 function recurringComposer(): string {
   const draft = state.recurringDraft;
   const isSwap = recurringDraftIsSwap(draft);
+  const mobile = isMobileAppViewport();
   const recipient = draft.recipient ? recipientDisplayLabel(draft.recipient) : 'Recipient required';
   const limit = recurringDraftLimitLabel(draft);
   const workflowMode = activeWorkflowMode();
@@ -51681,15 +52650,15 @@ function recurringComposer(): string {
         ? ''
         : 'Future payments will appear in Needs Approval.';
   return `
-    <div class="recurring-panel recurring-contract">
-      <div class="contract-head app-inline-head recurring-composer-head">
+    <div class="recurring-panel recurring-contract ${mobile ? 'mobile-recurring-contract' : ''}">
+      ${mobile ? '' : `<div class="contract-head app-inline-head recurring-composer-head">
         <div>
           <h3>${escapeHtml(composerTitle)}</h3>
           <p class="recurring-help">${escapeHtml(recurringHelp)}</p>
         </div>
-      </div>
-      ${recurringContractSummaryView(draft, isSwap, recipient, limit)}
-      <div class="contract-section recurring-create-section">
+      </div>`}
+      ${mobile ? '' : recurringContractSummaryView(draft, isSwap, recipient, limit)}
+      <div class="contract-section recurring-create-section recurring-payment-section">
         <div>
           <span>${escapeHtml(isSwap ? 'Swap terms' : 'Payment terms')}</span>
           <p>${escapeHtml(isSwap ? 'Input token, output token, amount, slippage.' : 'Token, amount, recipient.')}</p>
@@ -51697,9 +52666,9 @@ function recurringComposer(): string {
         <div class="recurring-grid ${isSwap ? 'recurring-swap-grid' : ''}">
           ${isSwap
             ? `
-              ${recurringTokenSelectField('inputToken', 'Input token *', draft.inputToken)}
-              ${recurringTokenSelectField('outputToken', 'Output token *', draft.outputToken)}
-              ${fieldInput('recurringAmount', 'Token amount *', draft.amount)}
+              ${recurringTokenSelectField('inputToken', mobile ? 'From *' : 'Input token *', draft.inputToken)}
+              ${recurringTokenSelectField('outputToken', mobile ? 'To *' : 'Output token *', draft.outputToken)}
+              ${fieldInput('recurringAmount', mobile ? 'Amount *' : 'Token amount *', draft.amount)}
               ${recurringSlippageInput(draft.slippageBps)}
             `
             : `
@@ -51709,7 +52678,7 @@ function recurringComposer(): string {
             `}
         </div>
       </div>
-      <div class="contract-section recurring-create-section">
+      <div class="contract-section recurring-create-section recurring-schedule-section">
         <div>
           <span>Schedule terms</span>
           <p>Cadence and local time.</p>
@@ -51770,13 +52739,13 @@ function recurringComposer(): string {
       </div>
       <details class="recurring-advanced-details">
         <summary>Advanced</summary>
-        <div class="contract-section">
+        <div class="contract-section recurring-advanced-section">
           <div>
             <span>Caps and reminders</span>
             <p>Stop time and webhook reminders.</p>
           </div>
-          <div class="recurring-grid">
-            ${fieldInput('recurringMaxOccurrences', 'Max occurrences', draft.maxOccurrences, 'empty for indefinite')}
+          <div class="recurring-grid recurring-advanced-grid">
+            ${fieldInput('recurringMaxOccurrences', 'Max occurrences', draft.maxOccurrences, mobile ? 'No limit' : 'empty for indefinite')}
             ${fieldInput('recurringExpiresAt', 'Expires at', draft.expiresAt, '', 'datetime-local')}
             ${fieldInput('recurringWebhookUrl', 'Webhook URL', draft.webhookUrl, 'https://example.com/agentic-webhook')}
           </div>
@@ -51960,6 +52929,11 @@ function recurringDraftPreviewPanel(draft: RecurringDraft): string {
   const spendToken = recurringDraftSpendToken(draft);
   const max = Number(draft.maxOccurrences || '');
   const remainingDisplay = Number.isFinite(max) && max > 0 ? String(max) : '∞';
+  const spendCopy = spend
+    ? isMobileAppViewport()
+      ? recurringLifetimeSpendMobileCopy(spend, spendToken)
+      : lifetimeSpendCopy(spend, spendToken)
+    : '';
   return `
     <div class="recurring-next-preview recurring-production-preview">
       <div>
@@ -51970,9 +52944,18 @@ function recurringDraftPreviewPanel(draft: RecurringDraft): string {
         <span>Recurrences</span>
         <strong>${escapeHtml(remainingDisplay)}</strong>
       </div>
-      ${spend ? `<p>${escapeHtml(lifetimeSpendCopy(spend, spendToken))}</p>` : ''}
+      ${spendCopy ? `<p>${escapeHtml(spendCopy)}</p>` : ''}
     </div>
   `;
+}
+
+function recurringLifetimeSpendMobileCopy(spend: LifetimeSpend, token: string): string {
+  const tokenLabel = tokenDisplayLabel(token);
+  const rate = `${recurringRateAmountLabel(spend.perWeek)} ${tokenLabel}/wk · ${recurringRateAmountLabel(spend.perMonth)} ${tokenLabel}/mo`;
+  if (spend.bounded && spend.totalAmount !== undefined && spend.totalRuns !== undefined) {
+    return `Up to ${spend.totalRuns} run${spend.totalRuns === 1 ? '' : 's'} · ${spend.totalAmount} ${tokenLabel}. ${rate}.`;
+  }
+  return `No cap · ${rate}.`;
 }
 
 function lifetimeSpendCopy(spend: LifetimeSpend, token: string): string {
@@ -52126,9 +53109,10 @@ function recurringTokenSelectField(field: RecurringTokenField, label: string, va
 
 function recurringSlippageInput(value: string): string {
   const error = fieldError('recurringSlippageBps');
+  const label = isMobileAppViewport() ? 'Slippage' : 'Max slippage';
   return `
     <label class="field compact ${state.recurringErrors.recurringSlippageBps ? 'field-error' : ''}">
-      <span>Max slippage</span>
+      <span>${escapeHtml(label)}</span>
       <input
         id="recurringSlippageBps"
         data-recurring-field="slippageBps"
@@ -58390,8 +59374,9 @@ function plannerPrefsSection(scope: string): string {
   const prompts = state.plannerPrefs.savedPrompts;
   const draft = state.savedPromptDraft;
   const errors = state.savedPromptErrors;
+  const open = houseRules.trim() || prompts.length > 0 ? 'open' : '';
   return `
-    <details class="planner-prefs" aria-label="Planner personalization">
+    <details class="planner-prefs" aria-label="Planner personalization" ${open}>
       <summary>
         <span>Planner personalization</span>
         <em>${houseRules ? 'House rules on' : 'Off'} · ${prompts.length} saved prompt${prompts.length === 1 ? '' : 's'}</em>
@@ -59014,7 +59999,8 @@ function setFailurePolicyMaxAttempts(kind: TransactionFailureKind, value: string
 function failurePoliciesPanel(): string {
   const policies = state.failurePolicies;
   const autoCount = policies.filter((p) => p.mode === 'auto').length;
-  const open = autoCount > 0 ? 'open' : '';
+  const mobile = isMobileAppViewport();
+  const open = mobile || autoCount > 0 ? 'open' : '';
   return `
     <details class="failure-policies-panel rail-details" data-layout="failure-policies-panel" ${open}>
       <summary>
@@ -59029,17 +60015,49 @@ function failurePoliciesPanel(): string {
         <div class="failure-policies-actions">
           <button type="button" class="utility" data-failure-policy-action="reset">Use recommended defaults</button>
         </div>
-        <div class="failure-policy-list">
-          ${policies.map(failurePolicyRow).join('')}
-        </div>
+        ${mobile ? failurePolicyGroupedList(policies) : `
+          <div class="failure-policy-list">
+            ${policies.map(failurePolicyRow).join('')}
+          </div>
+        `}
       </section>
     </details>
+  `;
+}
+
+function failurePolicyGroupedList(policies: FailureRetryPolicy[]): string {
+  const policiesByKind = new Map(policies.map((policy) => [policy.kind, policy]));
+  const groups = groupedFailureRetryKinds(FAILURE_RETRY_KINDS);
+  return `
+    <div class="failure-policy-group-list">
+      ${groups.map((group) => {
+        const groupPolicies = group.kinds
+          .map((kind) => isTransactionFailureKind(kind) ? policiesByKind.get(kind) : undefined)
+          .filter((policy): policy is FailureRetryPolicy => Boolean(policy));
+        const autoCount = groupPolicies.filter((policy) => policy.mode === 'auto').length;
+        return `
+          <details class="failure-policy-group" ${autoCount > 0 ? 'open' : ''}>
+            <summary>
+              <span>
+                <strong>${escapeHtml(group.title)}</strong>
+                <em>${escapeHtml(group.detail)}</em>
+              </span>
+              <b>${autoCount > 0 ? `${autoCount} auto` : 'ask'}</b>
+            </summary>
+            <div class="failure-policy-list">
+              ${groupPolicies.map(failurePolicyRow).join('')}
+            </div>
+          </details>
+        `;
+      }).join('')}
+    </div>
   `;
 }
 
 function failurePolicyRow(policy: FailureRetryPolicy): string {
   const label = FAILURE_KIND_LABEL[policy.kind] ?? policy.kind;
   const help = FAILURE_KIND_HELP[policy.kind] ?? 'Choose whether this failure should retry.';
+  const showAttempts = !isMobileAppViewport() || policy.mode === 'auto';
   return `
     <article class="failure-policy-row mode-${escapeHtml(policy.mode)}" data-failure-policy-kind="${escapeHtml(policy.kind)}">
       <div>
@@ -59051,10 +60069,10 @@ function failurePolicyRow(policy: FailureRetryPolicy): string {
         ${failurePolicyModeButton(policy, 'ask', 'Ask')}
         ${failurePolicyModeButton(policy, 'disabled', 'Off')}
       </div>
-      <label class="failure-policy-max-attempts">
+      ${showAttempts ? `<label class="failure-policy-max-attempts">
         <span>Max retries</span>
         <input type="number" inputmode="numeric" min="0" max="10" step="1" value="${policy.maxAttempts}" data-failure-policy-field="maxAttempts" data-failure-policy-kind="${escapeHtml(policy.kind)}" ${state.busy ? 'disabled' : ''} />
-      </label>
+      </label>` : ''}
     </article>
   `;
 }

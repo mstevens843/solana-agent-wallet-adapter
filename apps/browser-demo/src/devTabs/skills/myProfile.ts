@@ -150,9 +150,8 @@ function renderHeading(): string {
       <span class="skills-profile-tag">Public profile</span>
       <h2>My track record</h2>
       <p>
-        This is the preview of what visitors see on <code>agentic-signer.com/u/&lt;wallet&gt;</code>.
-        Every stat below is rolled up from on-chain receipts &mdash; nothing self-reported.
-        Copy the URL when you want to share this wallet's skill record outside the app.
+        Preview the public receipt-backed profile for this wallet. Copy the URL when
+        you want to share the skill record outside the app.
       </p>
     </header>
   `;
@@ -164,24 +163,26 @@ function renderCopyUrlRow(wallet: string): string {
   return `
     <div class="skills-profile-actions">
       <code class="skills-profile-url">${safeUrl}</code>
-      <button
-        type="button"
-        class="skills-profile-button"
-        data-skills-profile-action="copy-url"
-        data-skills-profile-value="${safeUrl}"
-      >Copy public URL</button>
-      <a
-        class="skills-profile-button skills-profile-button-secondary"
-        href="${safeUrl}"
-        target="_blank"
-        rel="noreferrer"
-        data-skills-profile-action="view-live"
-      >View live →</a>
-      <button
-        type="button"
-        class="skills-profile-button skills-profile-button-ghost"
-        data-skills-profile-action="refresh"
-      >Refresh</button>
+      <div class="skills-profile-action-buttons">
+        <button
+          type="button"
+          class="skills-profile-button"
+          data-skills-profile-action="copy-url"
+          data-skills-profile-value="${safeUrl}"
+        >Copy URL</button>
+        <a
+          class="skills-profile-button skills-profile-button-secondary"
+          href="${safeUrl}"
+          target="_blank"
+          rel="noreferrer"
+          data-skills-profile-action="view-live"
+        >View live →</a>
+        <button
+          type="button"
+          class="skills-profile-button skills-profile-button-ghost"
+          data-skills-profile-action="refresh"
+        >Refresh</button>
+      </div>
     </div>
   `;
 }
@@ -519,7 +520,21 @@ if (typeof document !== 'undefined') {
 registerSkillsSubTab({
   id: 'profile',
   label: 'My Profile',
+  mobileLabel: 'Profile',
   description: 'Your verifiable public track record.',
+  onMount: () => {
+    if (panelState.phase === 'loading' || kickoffScheduled) return;
+    const wallet = getConnectedAddress();
+    if (!wallet) {
+      panelState.phase = 'noWallet';
+      panelState.wallet = undefined;
+      panelState.snapshot = null;
+      panelState.errorMessage = '';
+      rerenderPanelOnly();
+      return;
+    }
+    void fetchWalletStats(wallet);
+  },
   render: () => {
     const wallet = getConnectedAddress();
     if (!wallet) {

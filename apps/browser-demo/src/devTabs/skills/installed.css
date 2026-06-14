@@ -358,6 +358,111 @@
 
 @media (max-width: 600px) {
   .skills-installed-root {
-    padding: 16px;
+    border-radius: 10px;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .skills-installed-header {
+    align-items: center;
+    gap: 8px;
+  }
+
+  .skills-installed-header h2 {
+    font-size: 1.05rem;
+    margin-bottom: 3px;
+  }
+
+  .skills-installed-header p {
+    display: -webkit-box;
+    font-size: 0.8rem;
+    line-height: 1.35;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .skills-installed-header-actions .skills-installed-button {
+    display: none;
+  }
+
+  .skills-installed-grid {
+    gap: 9px;
+  }
+
+  .skills-installed-row {
+    align-items: start;
+    border-radius: 10px;
+    gap: 8px 10px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 12px;
+  }
+
+  .skills-installed-row-name {
+    gap: 2px;
+  }
+
+  .skills-installed-row-name strong {
+    font-size: 0.94rem;
+  }
+
+  .skills-installed-row-id {
+    font-size: 0.66rem;
+  }
+
+  .skills-installed-row-status {
+    font-size: 0.58rem;
+    padding: 4px 7px;
+  }
+
+  .skills-installed-row-meta {
+    grid-column: 1 / -1;
+    gap: 2px;
+  }
+
+  .skills-installed-row-meta span {
+    font-size: 0.76rem;
+    line-height: 1.3;
+  }
+
+  .skills-installed-row-boundary {
+    display: none;
+  }
+
+  .skills-installed-row-runs {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.032);
+    border: 1px solid rgba(224, 230, 226, 0.075);
+    border-radius: 999px;
+    display: inline-flex;
+    gap: 5px;
+    grid-column: 1 / -1;
+    justify-self: start;
+    padding: 5px 8px;
+    text-align: left;
+  }
+
+  .skills-installed-row-runs .skills-installed-row-runs-label {
+    display: inline;
+    font-size: 0.56rem;
+    letter-spacing: 0.04em;
+  }
+
+  .skills-installed-row-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
+  .skills-installed-button {
+    border-radius: 8px;
+    font-size: 0.74rem;
+    min-height: 32px;
+    padding: 0 9px;
+  }
+
+  .skills-installed-loading,
+  .skills-installed-empty {
+    font-size: 0.82rem;
+    padding: 18px 8px;
   }
 }

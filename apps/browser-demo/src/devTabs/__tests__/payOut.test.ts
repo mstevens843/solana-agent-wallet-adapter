@@ -279,7 +279,9 @@ describe('renderPayOutPanel', () => {
     expect(html).not.toContain('Solana (SOL)');
     expect(html).toContain('Line items');
     expect(html).toContain('data-pay-out-action="add-line-item"');
-    expect(html).toContain('data-pay-out-action="remove-line-item:0"');
+    expect(html).toContain('data-pay-out-line-index="0"');
+    expect(html).not.toContain('data-pay-out-line-index="1"');
+    expect(html).not.toContain('data-pay-out-action="remove-line-item:0"');
     expect(html).not.toContain('pay-out-amount-field');
     expect(html).not.toContain('data-pay-out-line-estimate');
     expect(html).toContain('Type payment details');

@@ -389,21 +389,45 @@ function renderCard(id: ByoKeyConnectorId, state: PanelState): string {
     ? `Connected${summary.savedAt ? ` · saved ${formatDate(summary.savedAt)}` : ''}`
     : 'Not connected';
   const statusTone = summary.hasKey ? 'on' : 'off';
+  const mobile = isMobileConnectorKeysSurface();
+  const head = `
+    <header>
+      <div>
+        <h4>${escapeHtml(meta.label)}</h4>
+        <p>${escapeHtml(meta.description)}</p>
+      </div>
+      <span class="connector-key-status" data-status="${statusTone}">${escapeHtml(status)}</span>
+    </header>
+  `;
+  const body = `
+    ${editing ? renderForm(id, summary) : renderActions(id, summary, busy)}
+    <footer>
+      <a href="${escapeAttr(meta.portalUrl)}" target="_blank" rel="noreferrer noopener">${escapeHtml(meta.portalLinkLabel ?? 'Get an API key →')}</a>
+    </footer>
+  `;
+  if (mobile) {
+    return `
+      <details class="connector-key-card mobile-connector-key-card" data-connector="${escapeAttr(id)}" ${editing ? 'open' : ''}>
+        <summary>
+          ${head}
+        </summary>
+        <div class="connector-key-card-body">
+          ${body}
+        </div>
+      </details>
+    `;
+  }
   return `
     <article class="connector-key-card" data-connector="${escapeAttr(id)}">
-      <header>
-        <div>
-          <h4>${escapeHtml(meta.label)}</h4>
-          <p>${escapeHtml(meta.description)}</p>
-        </div>
-        <span class="connector-key-status" data-status="${statusTone}">${escapeHtml(status)}</span>
-      </header>
-      ${editing ? renderForm(id, summary) : renderActions(id, summary, busy)}
-      <footer>
-        <a href="${escapeAttr(meta.portalUrl)}" target="_blank" rel="noreferrer noopener">${escapeHtml(meta.portalLinkLabel ?? 'Get an API key →')}</a>
-      </footer>
+      ${head}
+      ${body}
     </article>
   `;
+}
+
+function isMobileConnectorKeysSurface(): boolean {
+  if (typeof document !== 'undefined' && document.querySelector('.shell.android-shell, .shell.ios-native-shell')) return true;
+  return typeof window !== 'undefined' && window.innerWidth < 900;
 }
 
 function renderActions(id: ByoKeyConnectorId, summary: ConnectorSecretSummary, busy: boolean): string {

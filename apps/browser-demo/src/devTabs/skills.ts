@@ -27,6 +27,7 @@ function renderSubTabPills(activeId: string): string {
       ${subTabs
         .map((tab) => {
           const active = tab.id === activeId;
+          const mobileLabel = tab.mobileLabel ?? tab.label;
           return `
             <button
               type="button"
@@ -35,8 +36,11 @@ function renderSubTabPills(activeId: string): string {
               role="tab"
               aria-selected="${active ? 'true' : 'false'}"
             >
-              <strong>${escapeHtmlLocal(tab.label)}</strong>
-              <span>${escapeHtmlLocal(tab.description)}</span>
+              <strong>
+                <span class="skills-subtab-label-full">${escapeHtmlLocal(tab.label)}</span>
+                <span class="skills-subtab-label-mobile">${escapeHtmlLocal(mobileLabel)}</span>
+              </strong>
+              <span class="skills-subtab-description">${escapeHtmlLocal(tab.description)}</span>
             </button>
           `;
         })
@@ -78,7 +82,7 @@ function renderEmptyPlaceholder(): string {
 
 function renderSkillsGuide(): string {
   return `
-    <section class="skills-guide" aria-label="How skills work">
+    <section class="skills-guide skills-guide-desktop" aria-label="How skills work">
       <div class="skills-guide-heading">
         <span>How skills work</span>
         <strong>Install a recipe. Approve every run.</strong>
@@ -106,6 +110,22 @@ function renderSkillsGuide(): string {
         <span>Delete an installed skill from the Installed tab with Uninstall.</span>
       </div>
     </section>
+    <details class="skills-guide skills-guide-mobile" aria-label="How skills work">
+      <summary>
+        <span>How skills work</span>
+        <strong>Install. Approve. Share.</strong>
+      </summary>
+      <div class="skills-guide-grid">
+        <div>
+          <strong>Install</strong>
+          <span>Recipes create approval requests; they never move funds alone.</span>
+        </div>
+        <div>
+          <strong>Share</strong>
+          <span>Your receipts become a public track record when you publish it.</span>
+        </div>
+      </div>
+    </details>
   `;
 }
 

@@ -165,6 +165,12 @@
   padding: 10px;
 }
 
+.skills-profile-action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .skills-profile-url {
   background: rgba(0, 0, 0, 0.28);
   border: 1px solid rgba(224, 230, 226, 0.08);
@@ -319,27 +325,104 @@
 }
 
 @media (max-width: 720px) {
+  .skills-profile {
+    gap: 10px;
+  }
+
   .skills-profile-heading,
   .skills-profile-card {
-    padding: 16px;
+    border-radius: 10px;
+    padding: 12px;
+  }
+
+  .skills-profile-heading {
+    gap: 6px;
+  }
+
+  .skills-profile-tag {
+    font-size: 0.58rem;
+    margin-bottom: 7px;
+    padding: 3px 8px;
+  }
+
+  .skills-profile-heading h2 {
+    font-size: 1.05rem;
+    margin-bottom: 3px;
+  }
+
+  .skills-profile-heading p {
+    display: -webkit-box;
+    font-size: 0.8rem;
+    line-height: 1.35;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
   }
 
   .skills-profile-stats {
+    gap: 7px;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .skills-profile-stat-card {
+    border-radius: 8px;
+    gap: 3px;
+    padding: 9px;
+  }
+
+  .skills-profile-stat-label {
+    font-size: 0.56rem;
+    letter-spacing: 0.04em;
+  }
+
+  .skills-profile-stat-value {
+    font-size: 0.94rem;
   }
 
   .skills-profile-actions {
     align-items: stretch;
-    flex-direction: column;
+    border-radius: 10px;
+    display: grid;
+    gap: 8px;
+    padding: 8px;
   }
 
   .skills-profile-url {
     flex: 1 1 auto;
+    font-size: 0.74rem;
+    padding: 7px 9px;
+  }
+
+  .skills-profile-action-buttons {
+    display: grid;
+    gap: 7px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .skills-profile-button {
+    border-radius: 8px;
+    font-size: 0.74rem;
+    min-height: 32px;
+    padding: 0 8px;
+  }
+
+  .skills-profile-button-ghost {
+    display: none;
+  }
+
+  .skills-profile-notice {
+    border-radius: 8px;
+    padding: 12px;
+  }
+
+  .skills-profile-notice p {
+    font-size: 0.8rem;
+    line-height: 1.35;
   }
 }
 
 @media (max-width: 460px) {
   .skills-profile-stats {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

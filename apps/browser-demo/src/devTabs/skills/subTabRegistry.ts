@@ -3,6 +3,7 @@ export type SkillsSubTabId = 'browse' | 'installed' | 'profile' | 'publish' | (s
 export interface SkillsSubTabSpec {
   id: SkillsSubTabId;
   label: string;
+  mobileLabel?: string;
   description: string;
   render: () => string;
   onMount?: () => void;

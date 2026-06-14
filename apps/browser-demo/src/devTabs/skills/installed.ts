@@ -489,8 +489,8 @@ export function renderRow(row: InstallRow, opts: RowRenderOptions): string {
       <span class="skills-installed-row-status ${statusModifier(install.status)}">${escapeHtml(statusLabel(install.status))}</span>
       <div class="skills-installed-row-meta">
         <span class="skills-installed-row-schedule">${escapeHtml(rowScheduleLine(row, opts.nowMs))}</span>
-        <span>${escapeHtml(rowRunBoundaryLine(row))}</span>
-        ${row.lastExecutionAt ? `<span>Last run ${escapeHtml(humanizeRelative(row.lastExecutionAt, opts.nowMs))}</span>` : ''}
+        <span class="skills-installed-row-boundary">${escapeHtml(rowRunBoundaryLine(row))}</span>
+        ${row.lastExecutionAt ? `<span class="skills-installed-row-last">Last run ${escapeHtml(humanizeRelative(row.lastExecutionAt, opts.nowMs))}</span>` : ''}
         ${(() => { const line = rowMonetizationLine(row); return line ? `<span class="skills-installed-row-monetization">${escapeHtml(line)}</span>` : ''; })()}
       </div>
       ${rowDeferredBanner(row)}
@@ -533,7 +533,7 @@ function renderHeader(): string {
     <header class="skills-installed-header">
       <div>
         <h2>Installed</h2>
-        <p>Active skills with status, next run, and Pause / Resume / Uninstall. Every run still proposes an approval — skills never sign on their own.</p>
+        <p>Active skills, next run, and controls. Every run still needs approval.</p>
       </div>
       <div class="skills-installed-header-actions">
         ${spinner}
@@ -839,7 +839,12 @@ if (typeof document !== 'undefined') {
 registerSkillsSubTab({
   id: 'installed',
   label: 'Installed',
+  mobileLabel: 'Installed',
   description: 'Your skills with status, next run, pause / uninstall.',
+  onMount: () => {
+    if (state.phase === 'loading' || state.silentRefetching) return;
+    void loadInstalls({ silent: state.phase === 'ready' && state.rows.length > 0 });
+  },
   render: () => {
     if (state.phase === 'idle') {
       state.phase = 'loading';

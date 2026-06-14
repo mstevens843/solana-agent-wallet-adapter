@@ -70,6 +70,10 @@
   white-space: pre;
 }
 
+.skills-publish-mobile-snippet {
+  display: none;
+}
+
 .skills-publish-cli-actions {
   display: flex;
   flex-wrap: wrap;
@@ -329,8 +333,159 @@
 }
 
 @media (max-width: 600px) {
+  .skills-publish {
+    gap: 10px;
+  }
+
   .skills-publish-cli-card,
   .skills-publish-list-card {
-    padding: 16px;
+    border-radius: 10px;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .skills-publish-tag {
+    font-size: 0.58rem;
+    margin-bottom: 7px;
+    padding: 3px 8px;
+  }
+
+  .skills-publish-cli-card h2 {
+    font-size: 1.05rem;
+    margin-bottom: 3px;
+  }
+
+  .skills-publish-cli-card p {
+    display: -webkit-box;
+    font-size: 0.8rem;
+    line-height: 1.35;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .skills-publish-pre {
+    display: none;
+  }
+
+  .skills-publish-mobile-snippet {
+    background: rgba(0, 0, 0, 0.18);
+    border: 1px solid rgba(224, 230, 226, 0.08);
+    border-radius: 8px;
+    display: grid;
+    min-width: 0;
+  }
+
+  .skills-publish-mobile-snippet summary {
+    color: #d0f5e0;
+    cursor: pointer;
+    font-size: 0.78rem;
+    font-weight: 800;
+    list-style: none;
+    padding: 9px 10px;
+  }
+
+  .skills-publish-mobile-snippet summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .skills-publish-mobile-snippet summary::after {
+    color: var(--accent-2);
+    content: '+';
+    float: right;
+    font-weight: 860;
+  }
+
+  .skills-publish-mobile-snippet[open] summary::after {
+    content: '-';
+  }
+
+  .skills-publish-mobile-snippet pre {
+    border-top: 1px solid rgba(224, 230, 226, 0.065);
+    color: #d0f5e0;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 0.72rem;
+    line-height: 1.5;
+    margin: 0;
+    overflow-x: auto;
+    padding: 10px;
+    white-space: pre;
+  }
+
+  .skills-publish-cli-actions {
+    display: grid;
+    gap: 7px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .skills-publish-button {
+    border-radius: 8px;
+    font-size: 0.74rem;
+    min-height: 32px;
+    padding: 0 9px;
+  }
+
+  .skills-publish-row {
+    border-radius: 10px;
+    gap: 8px 10px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 12px;
+  }
+
+  .skills-publish-row-name {
+    grid-column: 1 / 2;
+  }
+
+  .skills-publish-skill-name {
+    font-size: 0.94rem;
+  }
+
+  .skills-publish-skill-meta {
+    font-size: 0.72rem;
+  }
+
+  .skills-publish-row-category {
+    justify-self: end;
+  }
+
+  .skills-publish-chip {
+    font-size: 0.58rem;
+    padding: 3px 7px;
+  }
+
+  .skills-publish-row-installs,
+  .skills-publish-row-earned {
+    background: rgba(255, 255, 255, 0.032);
+    border: 1px solid rgba(224, 230, 226, 0.075);
+    border-radius: 8px;
+    padding: 7px 8px;
+  }
+
+  .skills-publish-cell-label {
+    font-size: 0.56rem;
+    letter-spacing: 0.04em;
+  }
+
+  .skills-publish-cell-value {
+    font-size: 0.82rem;
+  }
+
+  .skills-publish-row-actions {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+
+  .skills-publish-row-actions a {
+    width: auto;
+  }
+
+  .skills-publish-notice {
+    border-radius: 8px;
+    padding: 12px;
+  }
+
+  .skills-publish-notice p {
+    font-size: 0.8rem;
+    line-height: 1.35;
   }
 }

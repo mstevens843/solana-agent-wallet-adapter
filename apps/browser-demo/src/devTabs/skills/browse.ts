@@ -413,10 +413,14 @@ export function renderCard(row: CardRow, busyInstallId: string | null): string {
       </div>
       <p class="skills-browse-card-description">${escapeHtml(row.manifest.description)}</p>
       <dl class="skills-browse-stats">
-        <dt>Installs</dt>
-        <dd>${escapeHtml(formatInstalls(row.stats?.installs))}</dd>
-        <dt>Success</dt>
-        <dd>${escapeHtml(formatSuccessRate(row.stats?.successRate))}</dd>
+        <div class="skills-browse-stat">
+          <dt>Installs</dt>
+          <dd>${escapeHtml(formatInstalls(row.stats?.installs))}</dd>
+        </div>
+        <div class="skills-browse-stat">
+          <dt>Success</dt>
+          <dd>${escapeHtml(formatSuccessRate(row.stats?.successRate))}</dd>
+        </div>
       </dl>
       ${monetizationLine ? `<p class="skills-browse-monetization">${escapeHtml(monetizationLine)}</p>` : ''}
       ${renderMonetizationAcceptance(row, busy)}
@@ -762,7 +766,12 @@ if (typeof document !== 'undefined') {
 registerSkillsSubTab({
   id: 'browse',
   label: 'Browse',
+  mobileLabel: 'Browse',
   description: 'Installable strategy recipes',
+  onMount: () => {
+    if (state.phase === 'loading') return;
+    void loadCatalog();
+  },
   render: () => {
     if (state.phase === 'idle') {
       state.phase = 'loading';

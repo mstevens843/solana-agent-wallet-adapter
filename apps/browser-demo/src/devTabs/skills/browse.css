@@ -175,6 +175,11 @@
   overflow: hidden;
 }
 
+.skills-browse-stat {
+  display: grid;
+  min-width: 0;
+}
+
 .skills-browse-stats dt,
 .skills-browse-stats dd {
   margin: 0;
@@ -197,8 +202,7 @@
   font-weight: 760;
 }
 
-.skills-browse-stats dt:nth-of-type(2),
-.skills-browse-stats dd:nth-of-type(2) {
+.skills-browse-stat + .skills-browse-stat {
   border-left: 1px solid rgba(224, 230, 226, 0.055);
 }
 
@@ -213,22 +217,34 @@
   background: rgba(255, 255, 255, 0.028);
   border: 1px solid rgba(224, 230, 226, 0.08);
   border-radius: var(--radius);
+  box-sizing: border-box;
   color: rgba(218, 229, 224, 0.82);
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 8px;
   line-height: 1.35;
+  max-width: 100%;
+  overflow: hidden;
   padding: 9px 10px;
+  width: 100%;
 }
 
-.skills-browse-paid-terms input {
+.skills-browse-paid-terms input[type="checkbox"] {
   accent-color: var(--accent);
+  align-self: start;
   flex: 0 0 auto;
-  margin-top: 2px;
+  height: 16px;
+  margin: 1px 0 0;
+  min-height: 16px;
+  min-width: 16px;
+  width: 16px;
 }
 
 .skills-browse-paid-terms span {
   font-size: 0.78rem;
   font-weight: 700;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .skills-browse-install-params {
@@ -411,10 +427,154 @@
 
 @media (max-width: 600px) {
   .skills-browse-root {
-    padding: 16px;
+    border-radius: 10px;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .skills-browse-header {
+    gap: 8px;
+  }
+
+  .skills-browse-header h2 {
+    font-size: 1.05rem;
+    margin-bottom: 3px;
+  }
+
+  .skills-browse-header p {
+    display: -webkit-box;
+    font-size: 0.8rem;
+    line-height: 1.35;
+    max-width: none;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+
+  .skills-browse-header-actions {
+    display: none;
   }
 
   .skills-browse-grid {
+    gap: 10px;
     grid-template-columns: 1fr;
+  }
+
+  .skills-browse-card {
+    border-radius: 10px;
+    gap: 8px;
+    min-height: 0;
+    padding: 12px;
+  }
+
+  .skills-browse-card-head {
+    align-items: center;
+    gap: 8px;
+  }
+
+  .skills-browse-card-head h3 {
+    font-size: 0.98rem;
+    line-height: 1.18;
+  }
+
+  .skills-browse-category {
+    font-size: 0.6rem;
+    padding: 3px 7px;
+  }
+
+  .skills-browse-card-description {
+    font-size: 0.8rem;
+    line-height: 1.36;
+    -webkit-line-clamp: 2;
+  }
+
+  .skills-browse-stats {
+    background: transparent;
+    border: 0;
+    gap: 6px;
+    overflow: visible;
+  }
+
+  .skills-browse-stat {
+    align-items: center;
+    background: rgba(255, 255, 255, 0.032);
+    border: 1px solid rgba(224, 230, 226, 0.075);
+    border-radius: 8px;
+    display: flex;
+    gap: 6px;
+    justify-content: space-between;
+    padding: 6px 8px;
+  }
+
+  .skills-browse-stat + .skills-browse-stat {
+    border-left: 1px solid rgba(224, 230, 226, 0.075);
+  }
+
+  .skills-browse-stats dt,
+  .skills-browse-stats dd {
+    border: 0;
+    padding: 0;
+  }
+
+  .skills-browse-stats dt {
+    font-size: 0.58rem;
+    letter-spacing: 0.04em;
+  }
+
+  .skills-browse-stats dd {
+    font-size: 0.76rem;
+  }
+
+  .skills-browse-monetization {
+    font-size: 0.74rem;
+    line-height: 1.35;
+  }
+
+  .skills-browse-paid-terms {
+    border-radius: 8px;
+    gap: 7px;
+    padding: 8px;
+  }
+
+  .skills-browse-paid-terms span {
+    font-size: 0.72rem;
+    line-height: 1.3;
+  }
+
+  .skills-browse-install-params {
+    gap: 7px;
+  }
+
+  .skills-browse-param-field {
+    gap: 4px;
+  }
+
+  .skills-browse-param-field span {
+    font-size: 0.6rem;
+    letter-spacing: 0.04em;
+  }
+
+  .skills-browse-param-field input {
+    border-radius: 8px;
+    font-size: 0.8rem;
+    min-height: 38px;
+    padding: 8px 9px;
+  }
+
+  .skills-browse-card-footer {
+    margin-top: 0;
+  }
+
+  .skills-browse-button {
+    border-radius: 8px;
+    font-size: 0.8rem;
+    min-height: 36px;
+    padding: 0 12px;
+  }
+
+  .skills-browse-loading,
+  .skills-browse-empty {
+    font-size: 0.82rem;
+    padding: 18px 8px;
   }
 }

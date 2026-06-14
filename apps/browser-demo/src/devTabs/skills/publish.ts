@@ -292,15 +292,18 @@ function renderCliCard(): string {
   return `
     <section class="skills-publish-cli-card">
       <header>
-        <span class="skills-publish-tag">Author flow</span>
-        <h2>Publish a skill</h2>
-        <p>
-          Authoring lives in the <code>agentic-skill</code> CLI. Scaffold a manifest, validate it
-          locally, then publish to the cloud registry. Every skill ships with hard caps and
-          per-action wallet approval &mdash; never delegated signing.
-        </p>
+      <span class="skills-publish-tag">Author flow</span>
+      <h2>Publish a skill</h2>
+      <p>
+          Author in the <code>agentic-skill</code> CLI, validate locally, then publish
+          to the registry. Every skill ships with caps and wallet approval.
+      </p>
       </header>
       <pre class="skills-publish-pre" aria-label="CLI install snippet">${safeSnippet}</pre>
+      <details class="skills-publish-mobile-snippet">
+        <summary>CLI snippet</summary>
+        <pre aria-label="CLI install snippet">${safeSnippet}</pre>
+      </details>
       <div class="skills-publish-cli-actions">
         <button
           type="button"
@@ -627,7 +630,21 @@ if (typeof document !== 'undefined') {
 registerSkillsSubTab({
   id: 'publish',
   label: 'Publish',
+  mobileLabel: 'Publish',
   description: 'Ship your own skill via the CLI.',
+  onMount: () => {
+    if (panelState.phase === 'loading' || kickoffScheduled) return;
+    const wallet = getConnectedAddress();
+    if (!wallet) {
+      panelState.phase = 'noWallet';
+      panelState.wallet = undefined;
+      panelState.records = [];
+      panelState.errorMessage = '';
+      rerenderPanelOnly();
+      return;
+    }
+    void fetchAuthoredSkills(wallet);
+  },
   render: () => {
     const wallet = getConnectedAddress();
     if (!wallet) {

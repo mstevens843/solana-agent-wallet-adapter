@@ -14,15 +14,25 @@
   grid-template-columns: none;
 }
 
+.agent-protocols-label-mobile {
+  display: none;
+}
+
 .agent-protocols-active-panel {
   min-width: 0;
 }
 
 @media (max-width: 720px) {
+  .agent-protocols-shell {
+    gap: 10px;
+  }
+
   .agent-protocols-tab-control {
     align-items: stretch;
     grid-template-columns: 1fr;
     justify-self: stretch;
+    gap: 8px;
+    padding: 10px;
     width: 100%;
   }
 
@@ -34,19 +44,30 @@
   .agent-protocols-tab-list {
     display: grid;
     grid-auto-flow: initial;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 5px;
     width: 100%;
   }
 
   .agent-protocols-tab-list button {
     justify-content: center;
+    min-height: 40px;
     min-width: 0;
-    white-space: normal;
+    padding: 0 8px;
+    white-space: nowrap;
+  }
+
+  .agent-protocols-label-full {
+    display: none;
+  }
+
+  .agent-protocols-label-mobile {
+    display: inline;
   }
 }
 
 @media (max-width: 430px) {
   .agent-protocols-tab-list {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
