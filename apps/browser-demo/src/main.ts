@@ -9348,6 +9348,42 @@ async function withMobileSheetCleanupTimeout<T>(promise: Promise<T>, label: stri
   }
 }
 
+function syncBodyScrollLockDatasets(route: AppRoute | null): void {
+  if (typeof document === 'undefined' || !document.body) return;
+  const mobileViewport = isMobileAppViewport();
+  const currentMobileRailSheet = state.activeMobileRailSheet;
+  if (
+    currentMobileRailSheet &&
+    shouldApplyMobileRailBodyDataset({
+      activeTab: state.activeTab,
+      mobileViewport,
+      route,
+      sheet: currentMobileRailSheet,
+    })
+  ) {
+    document.body.dataset.mobileRailSheet = currentMobileRailSheet;
+  } else {
+    delete document.body.dataset.mobileRailSheet;
+  }
+  if (mobileViewport && state.activeExpandNoteField) {
+    document.body.dataset.expandNoteSheet = state.activeExpandNoteField.kind;
+  } else {
+    delete document.body.dataset.expandNoteSheet;
+  }
+}
+
+function reconcileBodyScrollLockDatasetsAfterRender(): void {
+  if (typeof document === 'undefined' || !document.body) return;
+  if (document.body.dataset.mobileRailSheet && !document.querySelector('[data-mobile-rail-sheet-root]')) {
+    state.activeMobileRailSheet = null;
+    delete document.body.dataset.mobileRailSheet;
+  }
+  if (document.body.dataset.expandNoteSheet && !document.querySelector('[data-expand-note-root]')) {
+    state.activeExpandNoteField = null;
+    delete document.body.dataset.expandNoteSheet;
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 
 function render(): void {
@@ -9412,31 +9448,13 @@ function render(): void {
     previousSheet: lastRenderedMobileRailSheet,
     forceSuppress: suppressMobileRailSheetEnterAnimation,
   });
-  if (typeof document !== 'undefined' && document.body) {
-    if (
-      currentMobileRailSheet &&
-      shouldApplyMobileRailBodyDataset({
-        activeTab: state.activeTab,
-        mobileViewport: isMobileAppViewport(),
-        route,
-        sheet: currentMobileRailSheet,
-      })
-    ) {
-      document.body.dataset.mobileRailSheet = currentMobileRailSheet;
-    } else {
-      delete document.body.dataset.mobileRailSheet;
-    }
-    if (isMobileAppViewport() && state.activeExpandNoteField) {
-      document.body.dataset.expandNoteSheet = state.activeExpandNoteField.kind;
-    } else {
-      delete document.body.dataset.expandNoteSheet;
-    }
-  }
+  syncBodyScrollLockDatasets(route);
   appRoot.innerHTML =
     pageShell(pageContent(route), route)
     + embeddedWalletOverlayHtml(embeddedWallet.overlay)
     + walletConnectOverlayBlock()
     + ledgerOverlayBlock();
+  reconcileBodyScrollLockDatasetsAfterRender();
   flushPendingSpendNavigation();
   bind();
   restoreDisclosureOpenState(disclosureOpenState);

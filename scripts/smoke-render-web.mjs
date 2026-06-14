@@ -34,6 +34,8 @@ async function main() {
       await verifyLiveRender(options.liveOrigin);
     } else if (options.mode === 'layout') {
       await verifyLayoutSmoke();
+    } else if (options.mode === 'android-layout') {
+      await verifyAndroidLayoutSmoke();
     } else if (options.mode === 'workflow') {
       await verifyWorkflowSmoke({ requireLocalBridge: options.requireLocalBridge });
     } else if (options.mode === 'ap2') {
@@ -75,6 +77,8 @@ function parseArgs(rawArgs) {
       setMode('workflow', arg);
     } else if (arg === '--layout') {
       setMode('layout', arg);
+    } else if (arg === '--android-layout') {
+      setMode('android-layout', arg);
     } else if (arg === '--ap2') {
       setMode('ap2', arg);
     } else if (arg === '--skills') {
@@ -125,6 +129,7 @@ function printUsage() {
   console.log(`Usage:
   pnpm smoke:render-web
   pnpm smoke:render-web -- --layout
+  pnpm smoke:render-web -- --android-layout
   pnpm smoke:render-web -- --workflow
   pnpm smoke:render-web -- --workflow --require-local-bridge
   pnpm smoke:render-web -- --live [origin]
@@ -136,6 +141,7 @@ function printUsage() {
 Modes:
   default                 Build-output route smoke against local Render server.
   --layout                Browser geometry smoke for deterministic /app layout.
+  --android-layout        Android-shell geometry and touch-scroll smoke for /demo and /app.
   --workflow              End-to-end cloud/browser workflow release smoke.
   --live [origin]         Content-type smoke against a deployed origin.
   --ap2                   End-to-end AP2 inbound smoke against a local Render server.
@@ -260,6 +266,45 @@ async function verifyLayoutSmoke() {
   });
 }
 
+async function verifyAndroidLayoutSmoke() {
+  const viewports = [
+    { width: 430, height: 932 },
+    { width: 390, height: 844 },
+  ];
+  const tabs = ['overview', 'agent', 'inbox', 'completed', 'schedule', 'skills', 'agent-protocols', 'sessions'];
+  await withLocalServer(async ({ origin }) => {
+    const wallet = createTestWallet();
+    await withWalletSigner(wallet, async ({ origin: signerOrigin }) => {
+      await withChrome(async (page) => {
+        await page.addInitScript(fakeAndroidShellBridgeScript());
+        await page.addInitScript(fakeWalletScript(wallet, signerOrigin));
+        for (const viewport of viewports) {
+          await page.setViewport(viewport.width, viewport.height);
+          await page.inspect(`${origin}/demo`);
+          await assertAndroidShellGestureScrolls(page, `${viewport.width}x${viewport.height} /demo`, { requireScrollable: true });
+          await page.inspect(`${origin}/app`);
+          await connectFakeWallet(page);
+          for (const tab of tabs) {
+            await resetPageScrollToTop(page);
+            await clickAppLayoutTab(page, tab, viewport.width);
+            await page.waitFor(`Array.from(document.querySelectorAll('[data-tab="${tab}"]')).some((el) => el.classList.contains('active') || el.getAttribute('aria-current') === 'page')`);
+            const report = await appLayoutReport(page, `android ${viewport.width}x${viewport.height} ${tab}`);
+            const androidLayoutErrors = report.errors.filter((error) => {
+              if (error.startsWith('connection trigger ')) return false;
+              if (tab !== 'overview' && error.startsWith('rail ')) return false;
+              return true;
+            });
+            if (androidLayoutErrors.length) {
+              throw new Error(`Android layout failed for ${report.label}: ${androidLayoutErrors.join('; ')}\n${formatLayoutRects(report)}`);
+            }
+            await assertAndroidShellGestureScrolls(page, `android ${viewport.width}x${viewport.height} ${tab}`);
+          }
+        }
+      });
+    });
+  });
+}
+
 async function verifyPublicRouteLayoutSmoke(page, origin) {
   const viewports = [
     { width: 430, height: 932 },
@@ -280,6 +325,90 @@ async function verifyPublicRouteLayoutSmoke(page, origin) {
       console.log(`[smoke-render-web] PASS public layout ${report.label} nav=${report.visibleNavLabels.join('|')} scroll=${report.scrollWidth}/${report.innerWidth}`);
     }
   }
+}
+
+async function assertAndroidShellGestureScrolls(page, label, { requireScrollable = false } = {}) {
+  await resetPageScrollToTop(page);
+  const before = await androidShellScrollState(page, label);
+  const errors = androidShellScrollErrors(before, { requireScrollable });
+  if (errors.length) {
+    throw new Error(`Android scroll lock failed for ${label}: ${errors.join('; ')}\n${JSON.stringify(before, null, 2)}`);
+  }
+  if (before.maxScroll < 40) {
+    console.log(`[smoke-render-web] SKIP android touch-scroll ${label}: content is not scrollable (max=${before.maxScroll}).`);
+    return;
+  }
+  const startX = Math.round(before.innerWidth / 2);
+  const startY = Math.round(Math.min(before.innerHeight - 128, before.innerHeight * 0.74));
+  const endY = Math.round(Math.max(96, before.innerHeight * 0.24));
+  await page.touchDrag(startX, startY, startX, endY);
+  await page.waitFor('window.scrollY > 20', 5_000);
+  const after = await androidShellScrollState(page, label);
+  if (after.scrollY <= 20) {
+    throw new Error(`Android touch drag did not move page for ${label}.\n${JSON.stringify({ before, after }, null, 2)}`);
+  }
+  console.log(`[smoke-render-web] PASS android touch-scroll ${label} y=${after.scrollY}/${after.maxScroll}`);
+}
+
+async function resetPageScrollToTop(page) {
+  await page.evaluate(`(() => {
+    const html = document.documentElement;
+    const body = document.body;
+    const scroller = document.scrollingElement || html;
+    const previousHtmlBehavior = html.style.scrollBehavior;
+    const previousBodyBehavior = body.style.scrollBehavior;
+    html.style.scrollBehavior = 'auto';
+    body.style.scrollBehavior = 'auto';
+    window.scrollTo(0, 0);
+    scroller.scrollTop = 0;
+    html.scrollTop = 0;
+    body.scrollTop = 0;
+    html.style.scrollBehavior = previousHtmlBehavior;
+    body.style.scrollBehavior = previousBodyBehavior;
+  })()`);
+  await page.waitFor('window.scrollY < 3 || Math.max(0, document.documentElement.scrollHeight - window.innerHeight) < 3', 5_000);
+}
+
+async function androidShellScrollState(page, label) {
+  return page.evaluate(`(() => {
+    const label = ${JSON.stringify(label)};
+    const shell = document.querySelector('.shell');
+    const htmlStyle = window.getComputedStyle(document.documentElement);
+    const bodyStyle = window.getComputedStyle(document.body);
+    const shellStyle = shell ? window.getComputedStyle(shell) : null;
+    return {
+      bodyExpandNoteSheet: document.body.dataset.expandNoteSheet || '',
+      bodyMobileRailSheet: document.body.dataset.mobileRailSheet || '',
+      bodyOverflowY: bodyStyle.overflowY,
+      bodyTouchAction: bodyStyle.touchAction,
+      hasAndroidShell: Boolean(document.querySelector('.shell.android-shell')),
+      htmlOverflowY: htmlStyle.overflowY,
+      htmlTouchAction: htmlStyle.touchAction,
+      innerHeight: window.innerHeight,
+      innerWidth: window.innerWidth,
+      label,
+      maxScroll: Math.max(0, document.documentElement.scrollHeight - window.innerHeight),
+      scrollHeight: document.documentElement.scrollHeight,
+      scrollY: window.scrollY,
+      shellOverflowY: shellStyle?.overflowY ?? '',
+      shellTouchAction: shellStyle?.touchAction ?? '',
+    };
+  })()`);
+}
+
+function androidShellScrollErrors(state, { requireScrollable = false } = {}) {
+  const errors = [];
+  if (!state.hasAndroidShell) errors.push('android shell class missing');
+  if (state.bodyMobileRailSheet) errors.push(`stale mobile rail sheet lock: ${state.bodyMobileRailSheet}`);
+  if (state.bodyExpandNoteSheet) errors.push(`stale expand note lock: ${state.bodyExpandNoteSheet}`);
+  if (state.htmlOverflowY === 'hidden') errors.push('html overflow-y hidden');
+  if (state.bodyOverflowY === 'hidden') errors.push('body overflow-y hidden');
+  if (state.shellOverflowY === 'hidden') errors.push('shell overflow-y hidden');
+  if (state.htmlTouchAction === 'none') errors.push('html touch-action none');
+  if (state.bodyTouchAction === 'none') errors.push('body touch-action none');
+  if (state.shellTouchAction === 'none') errors.push('shell touch-action none');
+  if (requireScrollable && state.maxScroll < 40) errors.push(`page is not scrollable: max=${state.maxScroll}`);
+  return errors;
 }
 
 async function publicRouteLayoutReport(page, label) {
@@ -2379,6 +2508,32 @@ function fakeWalletScript(wallet, signerOrigin = '') {
 `;
 }
 
+function fakeAndroidShellBridgeScript() {
+  return `
+(() => {
+  if (window.AgenticAndroid) return;
+  const emptyJson = () => '{}';
+  window.AgenticAndroid = {
+    bridgePairEnabled: () => false,
+    bridgePairStatus: emptyJson,
+    bridgeRelayStatus: emptyJson,
+    clipboardRead: () => '',
+    clipboardWrite: () => true,
+    deviceAgentStatus: emptyJson,
+    haptic: () => true,
+    isDebugBuild: () => true,
+    isExampleTabEnabled: () => false,
+    openExternal: () => true,
+    remoteConfigGet: emptyJson,
+    remoteConfigStatus: emptyJson,
+    secureDelete: () => true,
+    secureGet: () => '',
+    secureSet: () => true
+  };
+})();
+`;
+}
+
 function createTestWallet() {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const publicKeyDer = publicKey.export({ format: 'der', type: 'spki' });
@@ -2988,6 +3143,14 @@ async function connectPage(port) {
         mobile: width < 700,
         width,
       });
+      if (width < 700) {
+        await send('Emulation.setTouchEmulationEnabled', {
+          enabled: true,
+          maxTouchPoints: 5,
+        });
+      } else {
+        await send('Emulation.setTouchEmulationEnabled', { enabled: false });
+      }
     },
     async inspect(url) {
       events = [];
@@ -3039,6 +3202,28 @@ async function connectPage(port) {
         await sleep(200);
       }
       throw lastError instanceof Error ? lastError : new Error(`Timed out waiting for browser expression: ${expression}`);
+    },
+    async touchDrag(startX, startY, endX, endY, steps = 8) {
+      const point = (x, y) => ({ x: Math.round(x), y: Math.round(y), radiusX: 2, radiusY: 2, force: 1 });
+      await send('Input.dispatchTouchEvent', {
+        type: 'touchStart',
+        touchPoints: [point(startX, startY)],
+      });
+      for (let index = 1; index <= steps; index += 1) {
+        const progress = index / steps;
+        const x = startX + ((endX - startX) * progress);
+        const y = startY + ((endY - startY) * progress);
+        await send('Input.dispatchTouchEvent', {
+          type: 'touchMove',
+          touchPoints: [point(x, y)],
+        });
+        await sleep(25);
+      }
+      await send('Input.dispatchTouchEvent', {
+        type: 'touchEnd',
+        touchPoints: [],
+      });
+      await sleep(250);
     },
     close() {
       ws.close();

@@ -17777,12 +17777,19 @@ button.danger:hover:not(:disabled) {
   html:has(.shell.android-shell),
   html:has(.shell.ios-native-shell),
   body:has(.shell.android-shell),
-  body:has(.shell.ios-native-shell),
+  body:has(.shell.ios-native-shell) {
+    overflow-y: auto;
+    overscroll-behavior-y: auto;
+    touch-action: pan-y;
+  }
+
   #app:has(.shell.android-shell),
   #app:has(.shell.ios-native-shell),
   .shell.android-shell,
   .shell.ios-native-shell {
-    overscroll-behavior-y: none;
+    overflow-y: visible;
+    overscroll-behavior-y: auto;
+    touch-action: pan-y;
   }
 
   .shell {
@@ -30018,6 +30025,22 @@ button.danger:hover:not(:disabled) {
 .route-app .android-bottom-tab-dock .workspace-tabs-mobile { display: block !important; }
 
 @media (max-width: 899px) {
+  .route-app.android-shell,
+  .route-app.ios-native-shell {
+    min-height: 100dvh;
+    overflow-y: visible;
+    touch-action: pan-y;
+  }
+
+  .route-app.android-shell .workspace[data-layout="app-shell"],
+  .route-app.ios-native-shell .workspace[data-layout="app-shell"],
+  .route-app.android-shell .app-workspace-section,
+  .route-app.ios-native-shell .app-workspace-section,
+  .route-app.android-shell .main-panel[data-layout="app-main"],
+  .route-app.ios-native-shell .main-panel[data-layout="app-main"] {
+    overflow-y: visible;
+  }
+
   .route-app .android-bottom-tab-dock {
     background: linear-gradient(180deg, rgba(5, 7, 6, 0), rgba(5, 7, 6, 0.92) 34%, #050706 100%) !important;
     backdrop-filter: blur(14px);
@@ -30211,7 +30234,9 @@ button.danger:hover:not(:disabled) {
 }
 
 @media (max-width: 899px) {
-  body[data-mobile-rail-sheet] {
+  body[data-mobile-rail-sheet],
+  body[data-mobile-rail-sheet]:has(.shell.android-shell),
+  body[data-mobile-rail-sheet]:has(.shell.ios-native-shell) {
     overflow: hidden;
   }
 
@@ -30465,7 +30490,9 @@ button.danger:hover:not(:disabled) {
 }
 
 @media (max-width: 899px) {
-  body[data-expand-note-sheet] {
+  body[data-expand-note-sheet],
+  body[data-expand-note-sheet]:has(.shell.android-shell),
+  body[data-expand-note-sheet]:has(.shell.ios-native-shell) {
     overflow: hidden;
     touch-action: none;
   }
