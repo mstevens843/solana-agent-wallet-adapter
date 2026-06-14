@@ -32,6 +32,8 @@
     "ios:debug": "node scripts/ios.mjs debug",
     "ios:release": "node scripts/ios.mjs release",
     "ios:sync": "node scripts/ios.mjs sync",
+    "ios:live": "node scripts/ios.mjs live",
+    "ios:local": "node scripts/ios.mjs local",
     "ios:open": "node scripts/ios.mjs open",
     "render:prepare": "node scripts/prepare-render-site.mjs",
     "render:build": "pnpm render:prepare && pnpm -F @solana-agent-wallet-adapter/browser-demo typecheck && pnpm -F @solana-agent-wallet-adapter/browser-demo build && node scripts/verify-browser-dist.mjs && node scripts/write-spa-route-fallbacks.mjs && pnpm -F @solana-agent-wallet-adapter/render-web build && pnpm smoke:render-web",

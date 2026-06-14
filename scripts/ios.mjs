@@ -8,52 +8,64 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const capacitorAppDir = join(root, 'apps/ios-capacitor');
 const nativeAppDir = join(root, 'apps/ios-native');
 const [command = 'build', ...extraArgs] = process.argv.slice(2);
+const iosWebMode = resolveIosWebMode(command);
+const selectedCommand = iosWebMode ? 'sync' : command;
 
-const commands = new Set(['mode', 'build', 'debug', 'release', 'sync', 'open']);
+const commands = new Set(['mode', 'build', 'debug', 'release', 'sync', 'live', 'local', 'open']);
 if (!commands.has(command)) {
   console.error(`[ios] Unknown command: ${command}`);
-  console.error('[ios] Use one of: mode, build, debug, release, sync, open');
+  console.error('[ios] Use one of: mode, build, debug, release, sync, live, local, open');
   process.exit(1);
 }
 
-const mode = capacitorIosEnabled() ? 'capacitor' : 'native-swift';
-console.log(`[ios] mode=${mode} CAPACITOR_IOS_APP=${String(resolveIosFlagRaw())}`);
+const mode = iosWebMode ? 'capacitor' : capacitorIosEnabled() ? 'capacitor' : 'native-swift';
+const displayedIosFlag = iosWebMode ? 'true' : String(resolveIosFlagRaw());
+console.log(
+  `[ios] mode=${mode} CAPACITOR_IOS_APP=${displayedIosFlag} AGENTIC_IOS_WEB_MODE=${iosWebMode ?? resolveConfiguredIosWebMode()}`,
+);
 
 if (command === 'mode') {
   process.exit(0);
 }
 
 if (mode === 'capacitor') {
-  await runCapacitor(command, extraArgs);
+  await runCapacitor(selectedCommand, extraArgs, iosWebMode);
 } else {
-  await runNativeSwift(command, extraArgs);
+  await runNativeSwift(selectedCommand, extraArgs, iosWebMode);
 }
 
-async function runCapacitor(selectedCommand, forwardedArgs) {
+async function runCapacitor(selectedCommand, forwardedArgs, webMode) {
   if (selectedCommand === 'open') {
     await run('pnpm', ['-F', '@solana-agent-wallet-adapter/ios-capacitor', 'open', ...forwardedArgs], {
       cwd: root,
-      env: iosEnv(selectedCommand),
+      env: iosEnv(selectedCommand, webMode),
     });
     return;
   }
 
   await run('pnpm', ['--filter', '@solana-agent-wallet-adapter/browser-demo^...', 'build'], {
     cwd: root,
-    env: iosEnv(selectedCommand),
+    env: iosEnv(selectedCommand, webMode),
   });
   await run('pnpm', ['-F', '@solana-agent-wallet-adapter/browser-demo', 'build'], {
     cwd: root,
-    env: iosEnv(selectedCommand),
+    env: iosEnv(selectedCommand, webMode),
   });
   await run('pnpm', ['-F', '@solana-agent-wallet-adapter/ios-capacitor', 'copy-web'], {
     cwd: root,
-    env: iosEnv(selectedCommand),
+    env: iosEnv(selectedCommand, webMode),
   });
   await run('pnpm', ['-F', '@solana-agent-wallet-adapter/ios-capacitor', 'sync'], {
     cwd: root,
-    env: iosEnv(selectedCommand),
+    env: iosEnv(selectedCommand, webMode),
   });
+
+  if (webMode) {
+    await run('node', ['scripts/verify-ios-web-mode.mjs', webMode], {
+      cwd: root,
+      env: iosEnv(selectedCommand, webMode),
+    });
+  }
 
   if (selectedCommand === 'sync') {
     return;
@@ -91,20 +103,23 @@ async function runCapacitor(selectedCommand, forwardedArgs) {
     ],
     {
       cwd: capacitorAppDir,
-      env: xcodeEnv(selectedCommand),
+      env: xcodeEnv(selectedCommand, webMode),
     },
   );
 }
 
-async function runNativeSwift(selectedCommand, forwardedArgs) {
+async function runNativeSwift(selectedCommand, forwardedArgs, webMode) {
+  if (webMode) {
+    throw new Error(`ios:${webMode} prepares the Capacitor iOS app and cannot run with CAPACITOR_IOS_APP=false.`);
+  }
   if (selectedCommand === 'open') {
-    await run('open', [nativeAppDir], { cwd: root, env: iosEnv(selectedCommand) });
+    await run('open', [nativeAppDir], { cwd: root, env: iosEnv(selectedCommand, webMode) });
     return;
   }
   const configuration = selectedCommand === 'release' ? 'release' : 'debug';
   await run('swift', ['build', '-c', configuration, ...forwardedArgs], {
     cwd: nativeAppDir,
-    env: iosEnv(selectedCommand),
+    env: iosEnv(selectedCommand, webMode),
   });
 }
 
@@ -123,7 +138,22 @@ function resolveIosFlagRaw() {
   );
 }
 
-function iosEnv(selectedCommand = command) {
+function resolveIosWebMode(selectedCommand = command) {
+  if (selectedCommand === 'live') return 'live';
+  if (selectedCommand === 'local') return 'local';
+  return undefined;
+}
+
+function resolveConfiguredIosWebMode() {
+  const raw = String(process.env.AGENTIC_IOS_WEB_MODE ?? process.env.VITE_AGENTIC_IOS_WEB_MODE ?? 'live')
+    .trim()
+    .toLowerCase();
+  if (!raw || raw === 'live') return 'live';
+  if (raw === 'local') return 'local';
+  return raw;
+}
+
+function iosEnv(selectedCommand = command, webMode = iosWebMode) {
   const raw = String(resolveIosFlagRaw());
   const env = {
     ...process.env,
@@ -132,7 +162,15 @@ function iosEnv(selectedCommand = command) {
     VITE_CAPACITOR_IOS_APP: raw,
     VITE_CAPACITATOR_IOS_APP: raw,
   };
-  env.VITE_AGENTIC_DEVICE_AGENT = env.VITE_AGENTIC_DEVICE_AGENT ?? (selectedCommand === 'release' ? 'false' : 'true');
+  if (webMode) {
+    env.CAPACITOR_IOS_APP = 'true';
+    env.CAPACITATOR_IOS_APP = 'true';
+    env.VITE_CAPACITOR_IOS_APP = 'true';
+    env.VITE_CAPACITATOR_IOS_APP = 'true';
+    env.AGENTIC_IOS_WEB_MODE = webMode;
+    env.VITE_AGENTIC_IOS_WEB_MODE = webMode;
+  }
+  applyDeviceAgentBuildDefaults(env, selectedCommand, webMode);
   env.VITE_AGENTIC_BROWSER_DEVICE_AGENT = env.VITE_AGENTIC_BROWSER_DEVICE_AGENT ?? 'false';
   env.VITE_AGENTIC_CLOUD_API_BASE_URL = env.VITE_AGENTIC_CLOUD_API_BASE_URL ?? env.AGENTIC_CLOUD_API_BASE_URL ?? 'https://agentic-signer.com';
   // GA4 measurement id so the offline-fallback bundle still reports analytics. The live path
@@ -149,9 +187,27 @@ function iosEnv(selectedCommand = command) {
   return env;
 }
 
-function xcodeEnv(selectedCommand = command) {
+function applyDeviceAgentBuildDefaults(env, selectedCommand, webMode) {
+  if (webMode === 'live') {
+    env.VITE_AGENTIC_DEVICE_AGENT = 'false';
+    env.VITE_AGENTIC_IOS_DEVICE_AGENT = 'false';
+    env.VITE_AGENTIC_BROWSER_DEVICE_AGENT = 'false';
+    env.AGENTIC_DEVICE_AGENT = '0';
+    env.AGENTIC_IOS_DEVICE_AGENT = '0';
+    env.AGENTIC_BROWSER_DEVICE_AGENT = '0';
+    return;
+  }
+  if (webMode === 'local') {
+    env.VITE_AGENTIC_DEVICE_AGENT = env.VITE_AGENTIC_DEVICE_AGENT ?? 'true';
+    env.VITE_AGENTIC_IOS_DEVICE_AGENT = env.VITE_AGENTIC_IOS_DEVICE_AGENT ?? 'true';
+    return;
+  }
+  env.VITE_AGENTIC_DEVICE_AGENT = env.VITE_AGENTIC_DEVICE_AGENT ?? (selectedCommand === 'release' ? 'false' : 'true');
+}
+
+function xcodeEnv(selectedCommand = command, webMode = iosWebMode) {
   return {
-    ...iosEnv(selectedCommand),
+    ...iosEnv(selectedCommand, webMode),
     HOME: process.env.AGENTIC_IOS_HOME ?? join(root, 'build/ios-home'),
   };
 }

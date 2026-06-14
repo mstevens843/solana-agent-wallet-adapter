@@ -384,6 +384,10 @@ import {
   type AiConnectorsReadiness,
 } from './aiConnectorsSetup.js';
 import {
+  aiKeyPasteUnavailableCopy,
+  readAiKeyPasteClipboardText,
+} from './aiKeyPaste.js';
+import {
   AI_PROVIDER_PRESETS,
   AGENT_PLAN_TEMPLATES,
   AiPlanConnectionError,
@@ -4154,6 +4158,7 @@ let copyResetTimer: number | null = null;
 let templatePickerController: AbortController | null = null;
 let artifactPickerController: AbortController | null = null;
 let selectPickerController: AbortController | null = null;
+let selectPickerOpenOrder = 0;
 let preferencesMobilePickerController: AbortController | null = null;
 let mobileRailSheetController: AbortController | null = null;
 let expandNoteSheetController: AbortController | null = null;
@@ -17966,9 +17971,8 @@ function commandAiRouteCards(): string {
       title: IS_ANDROID_APP ? 'Android Session' : 'Browser Session',
       detail: `Connect a temporary key in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'} without saving it to Agentic.`,
       meta: 'Session AI connection',
-      // Session works in the Android Chromium WebView (and in mobile/desktop web);
-      // hidden on iOS WKWebView (unverified CORS) and the Tauri desktop webview.
-      available: !IS_TAURI_APP && (!mobileAiPathPolicy || IS_ANDROID_APP),
+      // Session is a browser/web route, not a native mobile app route.
+      available: !IS_TAURI_APP && !mobileAiPathPolicy,
     },
     {
       id: 'device-agent',
@@ -21877,7 +21881,7 @@ function mobileAiRailQuickActions(identity: AiRailIdentity): string {
   const quickAction = state.aiSettings.pairedBridge
     ? `<button type="button" class="rail-conn-action danger" data-ai-action="unpair-phone">Disconnect</button>`
     : clearTarget && (identity.configured || identity.inactive)
-      ? `<button type="button" class="rail-conn-action danger" data-ai-action="clear-key" data-ai-clear-mode="${escapeHtml(clearTarget)}" ${!canClearAiKey(clearTarget) ? 'disabled' : ''}>Clear key</button>`
+      ? `<button type="button" class="rail-conn-action danger" data-ai-action="clear-key" data-ai-clear-mode="${escapeHtml(clearTarget)}" ${!canClearAiKey(clearTarget) ? 'disabled' : ''}>Clear API key</button>`
       : '';
   return `
     <span class="rail-conn-actions">
@@ -23295,9 +23299,42 @@ function inactiveAiConfigNotice(location: 'rail' | 'planner'): string {
       <em>${escapeHtml(`${detail}. ${activeLabel} is selected.`)}</em>
       <div class="ai-inactive-config-actions">
         ${useButton}
-        <button type="button" class="utility danger" data-ai-action="clear-key" data-ai-clear-mode="${escapeHtml(inactive.mode)}" ${!canClearAiKey(inactive.mode) ? 'disabled' : ''}>Clear key</button>
+        <button type="button" class="utility danger" data-ai-action="clear-key" data-ai-clear-mode="${escapeHtml(inactive.mode)}" ${!canClearAiKey(inactive.mode) ? 'disabled' : ''}>Clear API key</button>
       </div>
     </div>
+  `;
+}
+
+function currentAiKeyActionConfigured(): boolean {
+  return aiKeyClearTarget(state.aiSettings.mode) === state.aiSettings.mode;
+}
+
+function canSetAndConfirmAiKey(): boolean {
+  return state.aiSettings.mode === 'bridge'
+    ? canSaveBridgeAiKey()
+    : canSaveDirectAiKey();
+}
+
+function aiKeySetupActionHtml(scope: string): string {
+  if (currentAiKeyActionConfigured()) {
+    return `
+      <button
+        id="clearAiKey-${escapeHtml(scope)}"
+        data-ai-action="clear-key"
+        data-ai-clear-mode="${escapeHtml(state.aiSettings.mode)}"
+        class="utility danger ai-key-primary-action"
+        ${!canClearAiKey(state.aiSettings.mode) ? 'disabled' : ''}
+      >Clear API key</button>
+    `;
+  }
+  return `
+    <button
+      id="setConfirmAiKey-${escapeHtml(scope)}"
+      data-ai-action="set-confirm-key"
+      class="primary ai-key-primary-action"
+      ${!canSetAndConfirmAiKey() ? 'disabled' : ''}
+      title="${escapeHtml(canSetAndConfirmAiKey() ? 'Save this key and check the selected AI review route.' : aiConfirmDisabledReason())}"
+    >Set and confirm API key</button>
   `;
 }
 
@@ -23331,7 +23368,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
     && state.deviceAgentStatus.configured;
   const routeConfigDisabled = state.busy || nativeIosDeviceAgentConfigured;
   const routeConfigLockedTitle = nativeIosDeviceAgentConfigured
-    ? 'Clear key to change provider, model, or gateway.'
+    ? 'Clear API key to change provider, model, or gateway.'
     : undefined;
   const setupHelperMessages = Array.from(new Set(
     (mobilePlannerSetup ? [modeHelperText] : [modeHelperText, providerHelperText]).filter(Boolean),
@@ -23340,7 +23377,6 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const readinessLabel = aiReadinessLabel(status);
   const confirmationLabel = aiConfirmationLabel();
   const confirmationDetail = aiConfirmationDetail();
-  const confirming = state.activeOperation === 'confirm-ai-planner';
   const hideKeyEntry = shouldHideAiKeyEntry(status);
   const sessionKeyLabel = IS_TAURI_APP
     ? 'Desktop session key'
@@ -23384,7 +23420,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         <div class="ai-key-configured-note" aria-live="polite">
           <span>Device Agent</span>
           <strong>Configured for review</strong>
-          <em>${escapeHtml(nativeIosDeviceAgentConfigured ? `${deviceAgentConfiguredDetail}. Clear key to change provider or model.` : deviceAgentConfiguredDetail)}</em>
+          <em>${escapeHtml(nativeIosDeviceAgentConfigured ? `${deviceAgentConfiguredDetail}. Clear API key to change provider or model.` : deviceAgentConfiguredDetail)}</em>
         </div>
       `
     : `
@@ -23394,13 +23430,21 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
           <em>${escapeHtml(bridgeConfiguredDisplay.detail)}</em>
         </div>
       `;
-  const showSaveDirectAiKey = state.aiSettings.mode !== 'bridge' && !hideKeyEntry;
-  const showStopDeviceAgentRuntime = state.aiSettings.mode === 'device-agent'
-    && (hideKeyEntry || canStopDeviceAgentRuntime());
   const inactiveConfigNote = inactiveAiConfigNotice(location);
   const bridgeSetupCard = state.aiSettings.mode === 'bridge' && !mobilePlannerSetup
     ? localBridgeAiSetupCard(status, location)
     : '';
+  const keyEntryHtml = hideKeyEntry
+    ? configuredKeyNote
+    : `
+        <div class="field compact ai-setting-field ai-setting-key">
+          <span><label for="aiApiKey-${escapeHtml(scope)}">${escapeHtml(keyLabel)}</label></span>
+          <div class="ai-key-input-wrap">
+            <input id="aiApiKey-${escapeHtml(scope)}" data-ai-control="api-key"${keyInputClass} type="${keyInputType}" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="${state.aiSettings.mode === 'bridge' ? 'Sent to local bridge memory' : (IS_TAURI_APP || IS_ANDROID_APP || state.iosNativeEnvironment.isIosNative) ? 'Stored after confirm or clear API key' : 'Held for this tab'}" autocomplete="off"${keyInputAssistAttrs} ${state.busy ? 'disabled' : ''} />
+            <button type="button" id="pasteAiKey-${escapeHtml(scope)}" data-ai-action="paste-api-key" data-ai-paste-target="${escapeHtml(scope)}" class="ai-key-paste-btn" ${state.busy ? 'disabled' : ''} title="Paste your key from the clipboard" aria-label="Paste key from clipboard">Paste</button>
+          </div>
+        </div>
+      `;
   if (aiReviewSetupTabsVisible && state.aiReviewSetupTab === 'plan-connector') {
     return `
       <aside class="ai-settings-card plan-connector-settings-card" data-ai-settings-scope="${escapeHtml(scope)}">
@@ -23417,6 +23461,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         <h3>Agent setup</h3>
         <p>${escapeHtml(securityCopy)}</p>
       </div>`}
+      ${keyEntryHtml}
       ${inactiveConfigNote}
       <label class="field compact ai-setting-field ai-setting-path">
         <span>AI path</span>
@@ -23485,29 +23530,8 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         </div>
       ` : ''}
       ${!isRail && !mobilePlannerSetup ? browserDeviceAgentSecretStoreControl(scope) : ''}
-      ${hideKeyEntry ? configuredKeyNote : `
-        <div class="field compact ai-setting-field ai-setting-key">
-          <span><label for="aiApiKey-${escapeHtml(scope)}">${escapeHtml(keyLabel)}</label></span>
-          <div class="ai-key-input-wrap">
-            <input id="aiApiKey-${escapeHtml(scope)}" data-ai-control="api-key"${keyInputClass} type="${keyInputType}" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="${state.aiSettings.mode === 'bridge' ? 'Sent to local bridge memory' : (IS_TAURI_APP || IS_ANDROID_APP || state.iosNativeEnvironment.isIosNative) ? 'Stored after confirm or clear key' : 'Held for this tab'}" autocomplete="off"${keyInputAssistAttrs} ${state.busy ? 'disabled' : ''} />
-            <button type="button" id="pasteAiKey-${escapeHtml(scope)}" data-ai-action="paste-api-key" data-ai-paste-target="${escapeHtml(scope)}" class="ai-key-paste-btn" ${state.busy ? 'disabled' : ''} title="Paste your key from the clipboard" aria-label="Paste key from clipboard">Paste</button>
-          </div>
-        </div>
-      `}
-      <div class="ai-actions">
-        ${state.aiSettings.mode === 'bridge'
-          ? hideKeyEntry
-            ? ''
-            : `<button id="saveBridgeAiKey-${escapeHtml(scope)}" data-ai-action="save-bridge-key" ${!canSaveBridgeAiKey() ? 'disabled' : ''}>Send key to local bridge</button>`
-          : showSaveDirectAiKey
-            ? `<button id="saveDirectAiKey-${escapeHtml(scope)}" data-ai-action="save-direct-key" ${!canSaveDirectAiKey() ? 'disabled' : ''}>Use key for AI review</button>`
-            : ''}
-        <button id="confirmAiPlanner-${escapeHtml(scope)}" data-ai-action="confirm-planner" class="utility" ${!canConfirmAiPlanner() ? 'disabled' : ''} title="${escapeHtml(canConfirmAiPlanner() ? 'Confirm planner readiness without creating a plan.' : aiConfirmDisabledReason())}">
-          ${confirming ? `${buttonSpinner()}Confirming...` : 'Confirm planner'}
-        </button>
-        <button id="clearAiKey-${escapeHtml(scope)}" data-ai-action="clear-key" ${!canClearAiKey() ? 'disabled' : ''}>Clear key</button>
-        ${state.aiSettings.mode === 'bridge' || state.aiSettings.mode === 'device-agent' ? `<button id="refreshAiStatus-${escapeHtml(scope)}" data-ai-action="refresh-status" ${state.busy ? 'disabled' : ''}>Refresh</button>` : ''}
-        ${showStopDeviceAgentRuntime ? `<button id="stopDeviceAgent-${escapeHtml(scope)}" data-ai-action="stop-device-agent" ${state.busy || !canStopDeviceAgentRuntime() ? 'disabled' : ''} title="Stop the on-device runtime. Your config (provider, model, key) stays available so you can start again.">Stop runtime</button>` : ''}
+      <div class="ai-actions ai-key-actions">
+        ${aiKeySetupActionHtml(scope)}
       </div>
       ${isRail || mobilePlannerSetup
         ? `<p class="ai-security-note compact">AI suggests approve/deny and answers questions before signing. Your provider sees request details and public wallet address - never keys, seed phrase, location, or device IDs. <a href="/privacy" data-site-link="/privacy">Privacy Policy</a></p>${bridgeSetupCard}`
@@ -23567,12 +23591,7 @@ function aiModeSelectOptions(): SelectPickerOption[] {
     deviceAgentVisible,
     isAndroidApp: IS_ANDROID_APP,
   });
-  const orderedMobileModes = deviceAgentFirst
-    ? mobileModes
-    : [
-        ...mobileModes.filter((mode) => mode === 'hosted'),
-        ...mobileModes.filter((mode) => mode !== 'hosted'),
-      ];
+  const orderedMobileModes = mobileModes;
   const mobileOptions: Array<{ id: AiSettings['mode']; label: string }> = orderedMobileModes.map((mode) => ({
     id: mode,
     label: mode === 'device-agent'
@@ -23625,11 +23644,13 @@ function aiModeSelectOptions(): SelectPickerOption[] {
               { id: 'session', label: 'Browser session - review only' },
             ];
   return options.map((option) => {
-    const disabledReason = aiModeDisabledReason(option.id);
+    const rawDisabledReason = aiModeDisabledReason(option.id);
+    const selectableNativeMobilePath = mobileAiPathPolicy && (option.id === 'device-agent' || option.id === 'hosted');
+    const disabledReason = selectableNativeMobilePath ? '' : rawDisabledReason;
     const pathState = inventory.paths.find((path) => path.mode === option.id);
     const configured = pathState?.configured === true;
     const active = option.id === state.aiSettings.mode;
-    const hostedCloudSignInNeeded = option.id === 'hosted' && Boolean(disabledReason);
+    const hostedCloudSignInNeeded = option.id === 'hosted' && Boolean(hostedByokCloudSessionReasonForMode('hosted'));
     return {
       value: option.id,
       label: option.label,
@@ -23639,7 +23660,10 @@ function aiModeSelectOptions(): SelectPickerOption[] {
         : configured
           ? active ? 'active configured' : 'configured'
           : undefined,
-      detail: disabledReason
+      detail: rawDisabledReason
+        || (hostedCloudSignInNeeded
+          ? MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED
+          : '')
         || (configured
           ? `${active ? 'Active' : 'Inactive'} configured path; approvals and signatures stay separate.`
           : 'Review only; approvals and signatures stay separate.'),
@@ -23731,8 +23755,9 @@ function bridgeAiProviderLogoId(status: BridgeAiStatus | null): BrandLogoId | un
 }
 
 function aiModeDisabledReason(mode: AiSettings['mode']): string {
+  const mobileAiPathPolicy = isMobileAiPathPolicySurface();
   const mobileDisabledReason = mobileAiModeDisabledReason({
-    mobileAiPathPolicy: isMobileAiPathPolicySurface(),
+    mobileAiPathPolicy,
     mode,
     cloudSessionMatchesWallet: cloudSessionMatchesWallet(),
   });
@@ -23742,14 +23767,14 @@ function aiModeDisabledReason(mode: AiSettings['mode']): string {
     mode,
   });
   if (desktopDisabledReason) return desktopDisabledReason;
-  if (mode === 'device-agent' && !deviceAgentModeVisible()) {
+  if (!mobileAiPathPolicy && mode === 'device-agent' && !deviceAgentModeVisible()) {
     return 'Device Agent is enabled only for local dev builds, Android device-agent builds, or browser-native Device Agent builds.';
   }
   if (mode === 'device-agent' && !aiProviderSupportsDeviceAgent(state.aiSettings.provider)) {
     return 'Device Agent is not available for this AI provider. Use Hosted BYOK or choose a Device Agent-compatible provider.';
   }
   const hostedBlockReason = hostedByokCloudSessionReasonForMode(mode);
-  if (hostedBlockReason) return hostedBlockReason;
+  if (!mobileAiPathPolicy && hostedBlockReason) return hostedBlockReason;
   if (mode === 'session' && state.aiSettings.provider === 'openai') {
     return OPENAI_BROWSER_SESSION_DISABLED_REASON;
   }
@@ -24300,7 +24325,7 @@ function localBridgeAiKeySource(status: BridgeAiStatus | null): { label: string;
   if (status?.source === 'session') {
     return {
       label,
-      detail: 'Held in local bridge memory until the bridge process stops. Clear key removes the session-memory key only.',
+      detail: 'Held in local bridge memory until the bridge process stops. Clear API key removes the session-memory key only.',
     };
   }
   return {
@@ -25222,6 +25247,13 @@ function syncAiActionButtons(): void {
   }
   for (const directKeyButton of document.querySelectorAll<HTMLButtonElement>('[data-ai-action="save-direct-key"]')) {
     directKeyButton.disabled = !canSaveDirectAiKey();
+  }
+  for (const setConfirmButton of document.querySelectorAll<HTMLButtonElement>('[data-ai-action="set-confirm-key"]')) {
+    const canSet = canSetAndConfirmAiKey();
+    setConfirmButton.disabled = !canSet;
+    setConfirmButton.title = canSet
+      ? 'Save this key and check the selected AI review route.'
+      : aiConfirmDisabledReason();
   }
   for (const confirmButton of document.querySelectorAll<HTMLButtonElement>('[data-ai-action="confirm-planner"]')) {
     const canConfirm = canConfirmAiPlanner();
@@ -27324,6 +27356,16 @@ function bind(): void {
     }
   });
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-ai-action]')) {
+    if (button.dataset.aiAction === 'paste-api-key') {
+      const blockPastePointerFocus = (event: Event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      };
+      button.addEventListener('pointerdown', blockPastePointerFocus);
+      button.addEventListener('touchstart', (event) => {
+        event.stopPropagation();
+      }, { passive: true });
+    }
     button.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -27333,6 +27375,9 @@ function bind(): void {
           return;
         case 'save-direct-key':
           void runSaveDirectAiKey();
+          return;
+        case 'set-confirm-key':
+          void runSetAndConfirmAiKey();
           return;
         case 'paste-api-key':
           void runPasteAiKey(button.dataset.aiPasteTarget);
@@ -29033,6 +29078,18 @@ function closeArtifactPickerInteractions(): void {
   artifactPickerController = null;
 }
 
+function closeOpenSelectPickers(except?: HTMLElement): void {
+  for (const openPicker of document.querySelectorAll<HTMLElement>('[data-select-picker].open')) {
+    if (openPicker === except) continue;
+    openPicker.classList.remove('open');
+    openPicker.style.removeProperty('--select-picker-z-index');
+    openPicker.style.removeProperty('--select-picker-menu-z-index');
+    openPicker.querySelector<HTMLElement>('.select-picker-trigger')?.setAttribute('aria-expanded', 'false');
+    const openMenu = openPicker.querySelector<HTMLElement>('.select-picker-menu');
+    if (openMenu) openMenu.hidden = true;
+  }
+}
+
 function bindSelectPickers(): void {
   for (const picker of document.querySelectorAll<HTMLElement>('[data-select-picker]')) {
     const shell = picker.closest<HTMLElement>('.select-picker-shell');
@@ -29045,7 +29102,11 @@ function bindSelectPickers(): void {
 
     const openPicker = (focusOption: 'selected' | 'first' | 'last' | false = false): void => {
       if (trigger.disabled) return;
+      closeOpenSelectPickers(picker);
       closeSelectPickerInteractions();
+      const openOrder = ++selectPickerOpenOrder;
+      picker.style.setProperty('--select-picker-z-index', String(220 + openOrder));
+      picker.style.setProperty('--select-picker-menu-z-index', String(240 + openOrder));
       picker.classList.add('open');
       trigger.setAttribute('aria-expanded', 'true');
       menu.hidden = false;
@@ -29081,6 +29142,8 @@ function bindSelectPickers(): void {
 
     const closePicker = (returnFocus: boolean): void => {
       picker.classList.remove('open');
+      picker.style.removeProperty('--select-picker-z-index');
+      picker.style.removeProperty('--select-picker-menu-z-index');
       trigger.setAttribute('aria-expanded', 'false');
       menu.hidden = true;
       closeSelectPickerInteractions();
@@ -37072,6 +37135,21 @@ async function runSaveDirectAiKey(): Promise<void> {
         : `${IS_ANDROID_APP ? 'Android session' : 'Browser session'} AI can review requests in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'}. Queueing, schedules, and signing stay in the active workflow.`,
     );
   });
+}
+
+async function runSetAndConfirmAiKey(): Promise<void> {
+  if (!canSetAndConfirmAiKey()) {
+    pushToast('error', 'AI setup incomplete', aiConfirmDisabledReason());
+    render();
+    return;
+  }
+  if (state.aiSettings.mode === 'bridge') {
+    await runSaveBridgeAiKey();
+  } else {
+    await runSaveDirectAiKey();
+  }
+  if (!canConfirmAiPlanner()) return;
+  await runConfirmAiPlanner();
 }
 
 // Enable the paired-bridge ("use your ChatGPT/Claude plan from your computer") device-agent path
@@ -55471,71 +55549,69 @@ async function writeClipboardText(value: string, label: string): Promise<void> {
   throw new Error('Clipboard access is unavailable.');
 }
 
-// Read clipboard text for the "Paste" affordance. Android WebView denies navigator.clipboard.readText
-// (no permission UI), so the native bridge clipboardRead() is the reliable path there; the web API is
-// the fallback for desktop/web and any shell that doesn't expose the native method. Returns null when
-// no clipboard text could be read (caller falls back to manual paste guidance).
-async function readClipboardText(): Promise<string | null> {
-  const androidRead = agenticAndroidBridge()?.clipboardRead;
-  if (typeof androidRead === 'function') {
-    try {
-      const text = androidRead();
-      if (typeof text === 'string') return text;
-    } catch {
-      // fall through to the web API
-    }
+async function readClipboardText() {
+  return readAiKeyPasteClipboardText({
+    android: agenticAndroidBridge(),
+    ios: agenticIosSystemBridge(),
+    isAndroidApp: IS_ANDROID_APP,
+    isIosApp: IS_IOS_APP || state.iosNativeEnvironment.isIosNative,
+    web: typeof navigator !== 'undefined' ? navigator.clipboard : undefined,
+  });
+}
+
+function aiApiKeyInputSelector(targetScope?: string): string {
+  return targetScope ? `#aiApiKey-${cssEscape(targetScope)}` : '[data-ai-control="api-key"]';
+}
+
+function aiApiKeyInput(targetScope?: string): HTMLInputElement | null {
+  return document.querySelector<HTMLInputElement>(aiApiKeyInputSelector(targetScope));
+}
+
+function setAiKeyPasteStatus(
+  targetScope: string | undefined,
+  kind: 'error' | 'info' | 'success',
+  title: string,
+  message: string,
+): void {
+  const input = aiApiKeyInput(targetScope);
+  const field = input?.closest<HTMLElement>('.ai-setting-key')
+    ?? document.querySelector<HTMLElement>('.ai-setting-key');
+  if (!field) return;
+  let status = field.querySelector<HTMLElement>('[data-ai-key-paste-status]');
+  if (!status) {
+    status = document.createElement('p');
+    status.dataset.aiKeyPasteStatus = 'true';
+    field.append(status);
   }
-  // iOS WKWebView: mirror the Android native read via the AgenticSystem plugin's clipboardRead, so the
-  // Paste button is one-tap on iOS too (the navigator.clipboard fallback below works but surfaces the
-  // iOS paste callout). Absent on older binaries that predate the method → falls through.
-  const iosRead = agenticIosSystemBridge()?.clipboardRead;
-  if (typeof iosRead === 'function') {
-    try {
-      const result = await iosRead();
-      if (result && typeof result.text === 'string') return result.text;
-    } catch {
-      // fall through to the web API
-    }
-  }
-  if (typeof navigator !== 'undefined' && navigator.clipboard?.readText) {
-    try {
-      return await navigator.clipboard.readText();
-    } catch {
-      return null;
-    }
-  }
-  return null;
+  status.className = `ai-key-paste-status ${kind}`;
+  status.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+  status.setAttribute('aria-live', kind === 'error' ? 'assertive' : 'polite');
+  status.innerHTML = `<strong>${escapeHtml(title)}</strong>${message ? ` ${escapeHtml(message)}` : ''}`;
 }
 
 async function runPasteAiKey(targetScope?: string): Promise<void> {
   if (state.busy) return;
-  const text = await readClipboardText();
-  if (text == null) {
-    // Programmatic read was blocked (typical on Android WebView before the native clipboardRead
-    // method ships). Do not focus the field on mobile: tapping Paste must not open the keyboard.
+  const clipboard = await readClipboardText();
+  if (clipboard.kind === 'unavailable') {
+    const copy = aiKeyPasteUnavailableCopy(clipboard.reason);
     if (!isMobileAppViewport()) {
-      const input = document.querySelector<HTMLInputElement>(
-        targetScope ? `#aiApiKey-${cssEscape(targetScope)}` : '[data-ai-control="api-key"]',
-      );
-      input?.focus();
+      aiApiKeyInput(targetScope)?.focus();
     }
-    pushToast('info', 'Paste manually', 'Long-press the key field, then tap Paste.');
+    setAiKeyPasteStatus(targetScope, clipboard.reason.includes('native') ? 'error' : 'info', copy.title, copy.message);
     return;
   }
-  const trimmed = text.trim();
+  const trimmed = clipboard.text.trim();
   if (!trimmed) {
-    pushToast('error', 'Clipboard empty', 'Copy your AI provider key first, then tap Paste.');
+    setAiKeyPasteStatus(targetScope, 'error', 'Clipboard empty', 'Copy your AI provider key first, then tap Paste.');
     return;
   }
   state.aiSettings.apiKey = trimmed;
   saveCurrentSessionAiApiKey();
   resetAiPlannerConfirmation('AI key changed. Confirm planner again if needed.');
-  const input = document.querySelector<HTMLInputElement>(
-    targetScope ? `#aiApiKey-${cssEscape(targetScope)}` : '[data-ai-control="api-key"]',
-  );
+  const input = aiApiKeyInput(targetScope);
   if (input) input.value = trimmed;
   syncAiActionButtons();
-  pushToast('success', 'Key pasted', 'Pasted your AI provider key. Confirm planner or use it for AI review.');
+  setAiKeyPasteStatus(targetScope, 'success', 'Key pasted', 'Confirm planner or use it for AI review.');
 }
 
 function openAndroidMwaTest(): void {

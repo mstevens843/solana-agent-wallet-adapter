@@ -1,22 +1,27 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
+const LIVE_ORIGIN = 'https://agentic-signer.com';
+const ALLOW_NAVIGATION = ['agentic-signer.com', 'agentic-seeker.com'];
+const iosWebMode = resolveIosWebMode();
+
 const config: CapacitorConfig = {
   appId: 'com.agentic.wallet',
   appName: 'Agentic',
   webDir: 'dist',
   bundledWebRuntime: false,
-  // Live-load the UI from Render so web changes ship without a new App Store
-  // build, mirroring the Android WebView shell. `webDir: 'dist'` is still bundled
-  // and acts as the OFFLINE FALLBACK: AgenticBridgeViewController (App target)
-  // nulls `server.url` at launch when agentic-signer.com is unreachable, so the
-  // app serves the baked-in copy from capacitor://localhost instead of blanking.
-  // Both origins are trusted by AgenticBridgeOrigin.swift, so native plugins work
-  // in either state.
-  server: {
-    url: 'https://agentic-signer.com',
-    cleartext: false,
-    allowNavigation: ['agentic-signer.com', 'agentic-seeker.com'],
-  },
+  // AGENTIC_IOS_WEB_MODE=live is the App Store mode. It live-loads the UI from
+  // Render so web changes ship through a Render redeploy without a new App Store
+  // build. AGENTIC_IOS_WEB_MODE=local omits `server.url` and serves the bundled
+  // local dist from capacitor://localhost for device testing.
+  ...(iosWebMode === 'live'
+    ? {
+        server: {
+          url: LIVE_ORIGIN,
+          cleartext: false,
+          allowNavigation: ALLOW_NAVIGATION,
+        },
+      }
+    : {}),
   ios: {
     contentInset: 'automatic',
   },
@@ -44,3 +49,12 @@ const config: CapacitorConfig = {
 };
 
 export default config;
+
+function resolveIosWebMode(): 'live' | 'local' {
+  const raw = String(process.env.AGENTIC_IOS_WEB_MODE ?? process.env.VITE_AGENTIC_IOS_WEB_MODE ?? 'live')
+    .trim()
+    .toLowerCase();
+  if (!raw || raw === 'live') return 'live';
+  if (raw === 'local') return 'local';
+  throw new Error(`Unsupported AGENTIC_IOS_WEB_MODE=${raw}. Use "live" or "local".`);
+}

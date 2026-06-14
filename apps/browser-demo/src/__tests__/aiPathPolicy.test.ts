@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DESKTOP_BROWSER_SESSION_DISABLED_REASON,
-  MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED,
   desktopAiModeDisabledReason,
   mobileAiModeDisabledReason,
   mobileAiPathTabLabel,
@@ -79,15 +78,15 @@ describe('mobile AI path policy', () => {
     })).toEqual(['hosted', 'bridge', 'session', 'device-agent']);
   });
 
-  it('shows Device Agent, Hosted BYOK, and Session AI on the Android app', () => {
+  it('shows only Device Agent and Hosted BYOK on the Android app', () => {
     expect(visibleMobileAiPathModes({
       mobileAiPathPolicy: true,
       deviceAgentVisible: true,
       isAndroidApp: true,
-    })).toEqual(['device-agent', 'hosted', 'session']);
+    })).toEqual(['device-agent', 'hosted']);
   });
 
-  it('hides Session AI on non-Android mobile (e.g. iOS WKWebView, unverified CORS)', () => {
+  it('shows only Device Agent and Hosted BYOK on non-Android mobile too', () => {
     expect(visibleMobileAiPathModes({
       mobileAiPathPolicy: true,
       deviceAgentVisible: true,
@@ -100,31 +99,37 @@ describe('mobile AI path policy', () => {
       mobileAiPathPolicy: true,
       deviceAgentVisible: true,
       isAndroidApp: true,
-    }).map(mobileAiPathTabLabel)).toEqual(['Device Agent AI', 'Hosted BYOK', 'Session AI']);
+    }).map(mobileAiPathTabLabel)).toEqual(['Device Agent AI', 'Hosted BYOK']);
   });
 
-  it('keeps Device Agent, Hosted BYOK, and Session AI visible on the Android app when Device Agent runtime is not yet ready', () => {
+  it('keeps Device Agent and Hosted BYOK visible on the Android app when Device Agent runtime is not yet ready', () => {
     expect(visibleMobileAiPathModes({
       mobileAiPathPolicy: true,
       deviceAgentVisible: false,
       isAndroidApp: true,
-    })).toEqual(['device-agent', 'hosted', 'session']);
+    })).toEqual(['device-agent', 'hosted']);
   });
 
-  it('does not disable Session AI on mobile (key-only, no cloud sign-in)', () => {
+  it('disables hidden mobile-only-invalid paths without disabling the visible native paths', () => {
     expect(mobileAiModeDisabledReason({
       mobileAiPathPolicy: true,
       mode: 'session',
       cloudSessionMatchesWallet: false,
     })).toBe('');
+
+    expect(mobileAiModeDisabledReason({
+      mobileAiPathPolicy: true,
+      mode: 'bridge',
+      cloudSessionMatchesWallet: true,
+    })).toBe('This AI path is not available in the native mobile app or mobile web.');
   });
 
-  it('disables Hosted BYOK on mobile until Cloud sign-in matches the wallet', () => {
+  it('does not disable Hosted BYOK in the native picker just because Cloud sign-in is missing', () => {
     expect(mobileAiModeDisabledReason({
       mobileAiPathPolicy: true,
       mode: 'hosted',
       cloudSessionMatchesWallet: false,
-    })).toBe(MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED);
+    })).toBe('');
 
     expect(mobileAiModeDisabledReason({
       mobileAiPathPolicy: true,
@@ -140,19 +145,34 @@ describe('mobile AI path policy', () => {
       deviceAgentVisible: true,
       fallbackMode: 'bridge',
     })).toBe('device-agent');
+
+    expect(normalizeAiModeForMobileSurface({
+      mode: 'bridge',
+      mobileAiPathPolicy: true,
+      deviceAgentVisible: false,
+      fallbackMode: 'bridge',
+    })).toBe('device-agent');
   });
 
-  it('keeps Session AI as-is on the Android app (a visible key-only path)', () => {
+  it('coerces persisted Session AI to the best visible Android app path', () => {
     expect(normalizeAiModeForMobileSurface({
       mode: 'session',
       mobileAiPathPolicy: true,
       deviceAgentVisible: false,
       fallbackMode: 'session',
       isAndroidApp: true,
-    })).toBe('session');
+    })).toBe('device-agent');
+
+    expect(normalizeAiModeForMobileSurface({
+      mode: 'session',
+      mobileAiPathPolicy: true,
+      deviceAgentVisible: true,
+      fallbackMode: 'session',
+      isAndroidApp: true,
+    })).toBe('device-agent');
   });
 
-  it('coerces Session AI to the best visible path on non-Android mobile (iOS)', () => {
+  it('coerces persisted Session AI to the best visible path on non-Android mobile (iOS)', () => {
     expect(normalizeAiModeForMobileSurface({
       mode: 'session',
       mobileAiPathPolicy: true,
@@ -167,7 +187,16 @@ describe('mobile AI path policy', () => {
       deviceAgentVisible: false,
       fallbackMode: 'session',
       isAndroidApp: false,
-    })).toBe('hosted');
+    })).toBe('device-agent');
+  });
+
+  it('keeps Device Agent selected on native mobile even before runtime readiness is known', () => {
+    expect(normalizeAiModeForMobileSurface({
+      mode: 'device-agent',
+      mobileAiPathPolicy: true,
+      deviceAgentVisible: false,
+      fallbackMode: 'hosted',
+    })).toBe('device-agent');
   });
 });
 

@@ -44,16 +44,10 @@ export function visibleMobileAiPathModes(input: {
   isAndroidApp?: boolean;
 }): AiPathMode[] {
   if (!input.mobileAiPathPolicy) return ['hosted', 'bridge', 'session', 'device-agent'];
-  // Session AI calls the provider direct from the WebView with the user's pasted
-  // key — no relay, no cloud sign-in — so it's the key-only path for
-  // Anthropic/Gemini. It's verified on the Android Chromium WebView (Anthropic
-  // sends `anthropic-dangerous-direct-browser-access`; OpenAI stays blocked by
-  // CORS and routes to Device Agent/Hosted). iOS WKWebView CORS is unverified, so
-  // keep Session Android-only under the mobile policy. `bridge` stays hidden: the
-  // native app can't reach a local HTTP bridge sidecar.
-  return input.isAndroidApp
-    ? ['device-agent', 'hosted', 'session']
-    : ['device-agent', 'hosted'];
+  // Native/mobile app shells should expose only the supported product paths.
+  // Session AI is a direct-from-WebView browser path and should not appear in
+  // Android/iOS app setup. Local Bridge also stays hidden on mobile.
+  return ['device-agent', 'hosted'];
 }
 
 // Hosted BYOK requires an Agentic Cloud session because the API key is relayed
@@ -69,9 +63,6 @@ export function mobileAiModeDisabledReason(input: {
   if (input.mode === 'bridge') {
     return 'This AI path is not available in the native mobile app or mobile web.';
   }
-  if (input.mode === 'hosted' && !input.cloudSessionMatchesWallet) {
-    return MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED;
-  }
   return '';
 }
 
@@ -82,17 +73,17 @@ export function normalizeAiModeForMobileSurface(input: {
   fallbackMode: AiPathMode;
   isAndroidApp?: boolean;
 }): AiPathMode {
-  if (input.mode === 'device-agent' && !input.deviceAgentVisible) {
-    return input.mobileAiPathPolicy ? 'hosted' : input.fallbackMode;
-  }
-  // `bridge` is always hidden on mobile; `session` is hidden on non-Android mobile
-  // (iOS) — coerce either to the best visible path so a persisted mode that the UI
-  // no longer offers doesn't leave the picker on an invisible tab.
+  // `bridge` and `session` are hidden on mobile app surfaces — coerce either to
+  // the primary supported native path so a persisted older mode never leaves the
+  // picker on an invisible/unsupported option.
   if (
     input.mobileAiPathPolicy &&
-    (input.mode === 'bridge' || (input.mode === 'session' && !input.isAndroidApp))
+    (input.mode === 'bridge' || input.mode === 'session')
   ) {
-    return input.deviceAgentVisible ? 'device-agent' : 'hosted';
+    return 'device-agent';
+  }
+  if (input.mode === 'device-agent' && !input.deviceAgentVisible) {
+    return input.mobileAiPathPolicy ? 'device-agent' : input.fallbackMode;
   }
   return input.mode;
 }

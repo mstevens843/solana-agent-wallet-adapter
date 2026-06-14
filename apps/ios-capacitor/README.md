@@ -26,8 +26,15 @@ Native plugins shipped (Capacitor 8 auto-discovers them via `packageClassList` i
 pnpm ios:mode      # toggle CAPACITOR_IOS_APP mode
 pnpm ios:build     # build the web shell
 pnpm ios:sync      # pnpm copy-web && cap sync ios (runs ensure-ios.mjs)
+pnpm ios:live      # prepare Xcode for App Store archive; WebView live-loads https://agentic-signer.com
+pnpm ios:local     # prepare Xcode for phone testing; WebView serves bundled capacitor://localhost assets
 pnpm ios:open      # open in Xcode
 ```
+
+Use `pnpm ios:live` before opening Xcode to archive/upload the App Store build.
+That generated project is auto-updateable for web UI/API/config changes through a
+Render redeploy. Use `pnpm ios:local` before opening Xcode to build and run the
+bundled local web app on a phone.
 
 The deployment target is iOS 16. Required for BGTaskScheduler, os.OSAllocatedUnfairLock, and the native bridge dependencies.
 

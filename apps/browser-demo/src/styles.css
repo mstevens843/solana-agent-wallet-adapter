@@ -15168,7 +15168,7 @@ button.danger:hover:not(:disabled) {
 }
 
 .template-picker.open {
-  z-index: 80;
+  z-index: var(--select-picker-z-index, 80);
 }
 
 .template-picker-trigger {
@@ -15257,7 +15257,7 @@ button.danger:hover:not(:disabled) {
 }
 
 .select-picker-menu {
-  z-index: 180;
+  z-index: var(--select-picker-menu-z-index, 180);
 }
 
 .select-picker-option[disabled] {
@@ -15737,6 +15737,38 @@ button.danger:hover:not(:disabled) {
   cursor: default;
 }
 
+.ai-key-paste-status {
+  border: 1px solid rgba(139, 205, 170, 0.2);
+  border-radius: 8px;
+  color: rgba(225, 238, 231, 0.86);
+  font-size: 0.76rem;
+  font-style: normal;
+  line-height: 1.25;
+  margin: 2px 0 0;
+  padding: 7px 8px;
+}
+
+.ai-key-paste-status strong {
+  color: #e9fff1;
+  font-weight: 900;
+}
+
+.ai-key-paste-status.success {
+  background: rgba(32, 206, 121, 0.11);
+  border-color: rgba(95, 227, 161, 0.28);
+}
+
+.ai-key-paste-status.info {
+  background: rgba(90, 143, 235, 0.1);
+  border-color: rgba(127, 171, 247, 0.28);
+}
+
+.ai-key-paste-status.error {
+  background: rgba(255, 118, 118, 0.1);
+  border-color: rgba(255, 118, 118, 0.3);
+  color: #ffd9d9;
+}
+
 .ai-actions {
   display: flex;
   flex-wrap: wrap;
@@ -15745,6 +15777,12 @@ button.danger:hover:not(:disabled) {
 
 .ai-actions button {
   min-height: 38px;
+}
+
+.ai-key-actions .ai-key-primary-action {
+  flex: 1 1 100%;
+  min-height: 42px;
+  width: 100%;
 }
 
 .ai-review-setup-tabs {
@@ -29729,20 +29767,23 @@ button.danger:hover:not(:disabled) {
     z-index: 12;
   }
 
+  .route-app .mobile-rail-sheet.ai-drafting .ai-setting-path .select-picker.open,
   .route-app .mobile-rail-sheet.ai-drafting .ai-setting-provider .select-picker.open,
   .route-app .mobile-rail-sheet.ai-drafting .ai-setting-model .select-picker.open {
-    z-index: 360;
+    z-index: var(--select-picker-z-index, 360);
   }
 
+  .route-app .mobile-rail-sheet.ai-drafting .ai-setting-path .select-picker-menu,
   .route-app .mobile-rail-sheet.ai-drafting .ai-setting-provider .select-picker-menu,
   .route-app .mobile-rail-sheet.ai-drafting .ai-setting-model .select-picker-menu,
+  .route-app .mobile-rail-sheet.ai-drafting .ai-setting-path .select-picker-menu.drop-up,
   .route-app .mobile-rail-sheet.ai-drafting .ai-setting-provider .select-picker-menu.drop-up,
   .route-app .mobile-rail-sheet.ai-drafting .ai-setting-model .select-picker-menu.drop-up {
     bottom: auto;
     max-height: min(var(--template-menu-max-height, 220px), 42dvh);
     overflow-y: auto;
     top: calc(100% + 6px);
-    z-index: 360;
+    z-index: var(--select-picker-menu-z-index, 360);
   }
 
   .route-app .mobile-rail-sheet.ai-drafting {
