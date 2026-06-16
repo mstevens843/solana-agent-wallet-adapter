@@ -1215,22 +1215,24 @@ class MwaController(
     ): AgentMwaAuthRecord {
         val publicKeyBytes = auth.publicKey ?: auth.accounts?.firstOrNull()?.publicKey ?: ByteArray(0)
         val publicKeyBase58 = Base58.encode(publicKeyBytes)
+        val existing = if (publicKeyBase58.isNotBlank()) {
+            cache.get(publicKeyBase58) ?: activeRecord?.takeIf { it.publicKeyBase58 == publicKeyBase58 }
+        } else {
+            null
+        }
         val walletUriBase = auth.walletUriBase?.toString().orEmpty()
         val walletIcon = auth.walletIcon?.toString().orEmpty()
-        val walletPackage = WalletRegistry.inferPackage(walletUriBase, targetWalletPackage, walletIcon)
-        val record = AgentMwaAuthRecord(
+        val record = buildAppliedAuthorizationRecord(
             publicKeyBase58 = publicKeyBase58,
             publicKeyBytes = publicKeyBytes,
-            authToken = auth.authToken.orEmpty(),
+            incomingAuthToken = auth.authToken.orEmpty(),
             walletUriBase = walletUriBase,
             walletIcon = walletIcon,
-            walletPackage = walletPackage,
-            walletType = WalletRegistry.walletType(walletPackage, walletUriBase, walletIcon),
+            targetWalletPackage = targetWalletPackage,
             accountLabel = auth.accountLabel ?: auth.accounts?.firstOrNull()?.accountLabel ?: "",
             cluster = cluster,
-            timestampUnixSeconds = System.currentTimeMillis() / 1000L,
-            authenticated = true,
-            capabilitiesCsv = activeRecord?.capabilitiesCsv.orEmpty(),
+            existing = existing,
+            capabilitiesCsv = activeRecord?.capabilitiesCsv ?: existing?.capabilitiesCsv.orEmpty(),
         )
         activeRecord = record
         cache.set(record)
@@ -1239,7 +1241,11 @@ class MwaController(
             "applyAuthorization",
             "DONE",
             "authorization cached",
-            authRecordMetadata(record) + mapOf("publicKeyBytes" to publicKeyBytes.size),
+            authRecordMetadata(record) + mapOf(
+                "publicKeyBytes" to publicKeyBytes.size,
+                "incomingAuthLen" to auth.authToken.orEmpty().length,
+                "preservedAuthToken" to (auth.authToken.isNullOrBlank() && existing?.authToken?.isNotBlank() == true),
+            ),
         )
         return record
     }
@@ -1866,6 +1872,44 @@ class MwaController(
         private const val RPC_MAX_ATTEMPTS = 3
         private const val RPC_RETRY_BASE_DELAY_MS = 350L
     }
+}
+
+internal fun buildAppliedAuthorizationRecord(
+    publicKeyBase58: String,
+    publicKeyBytes: ByteArray,
+    incomingAuthToken: String,
+    walletUriBase: String,
+    walletIcon: String,
+    targetWalletPackage: String,
+    accountLabel: String,
+    cluster: AgentCluster,
+    existing: AgentMwaAuthRecord?,
+    capabilitiesCsv: String,
+    timestampUnixSeconds: Long = System.currentTimeMillis() / 1000L,
+): AgentMwaAuthRecord {
+    val resolvedWalletUriBase = walletUriBase.ifBlank { existing?.walletUriBase.orEmpty() }
+    val resolvedWalletIcon = walletIcon.ifBlank { existing?.walletIcon.orEmpty() }
+    val resolvedTargetWalletPackage = targetWalletPackage.ifBlank { existing?.walletPackage.orEmpty() }
+    val authToken = incomingAuthToken.ifBlank { existing?.authToken.orEmpty() }
+    val walletPackage = WalletRegistry.inferPackage(
+        resolvedWalletUriBase,
+        resolvedTargetWalletPackage,
+        resolvedWalletIcon,
+    )
+    return AgentMwaAuthRecord(
+        publicKeyBase58 = publicKeyBase58,
+        publicKeyBytes = publicKeyBytes,
+        authToken = authToken,
+        walletUriBase = resolvedWalletUriBase,
+        walletIcon = resolvedWalletIcon,
+        walletPackage = walletPackage,
+        walletType = WalletRegistry.walletType(walletPackage, resolvedWalletUriBase, resolvedWalletIcon),
+        accountLabel = accountLabel.ifBlank { existing?.accountLabel.orEmpty() },
+        cluster = cluster,
+        timestampUnixSeconds = timestampUnixSeconds,
+        authenticated = true,
+        capabilitiesCsv = capabilitiesCsv.ifBlank { existing?.capabilitiesCsv.orEmpty() },
+    )
 }
 
 private class RpcHttpException(

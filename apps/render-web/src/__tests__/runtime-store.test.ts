@@ -85,6 +85,28 @@ describe('runtime workflow store configuration', () => {
       AGENTIC_MOCK_FINALIZATION: '1',
     })).toThrow(/AGENTIC_MOCK_FINALIZATION/);
   });
+
+  it('requires mobile frontend device-agent flags when bridge pairing is enabled', () => {
+    const base = {
+      NODE_ENV: 'production',
+      DATABASE_URL: 'postgres://db',
+      SESSION_SECRET: 'x'.repeat(32),
+      AGENTIC_PUBLIC_ORIGIN: 'https://agentic-signer.com',
+      BRIDGE_PAIRING_ENABLED: '1',
+    };
+
+    expect(() => assertProductionConfig(base)).toThrow(/VITE_AGENTIC_ANDROID_DEVICE_AGENT/);
+    expect(() => assertProductionConfig({
+      ...base,
+      VITE_AGENTIC_ANDROID_DEVICE_AGENT: 'false',
+      VITE_AGENTIC_IOS_DEVICE_AGENT: 'true',
+    })).toThrow(/VITE_AGENTIC_ANDROID_DEVICE_AGENT/);
+    expect(() => assertProductionConfig({
+      ...base,
+      VITE_AGENTIC_ANDROID_DEVICE_AGENT: 'true',
+      VITE_AGENTIC_IOS_DEVICE_AGENT: 'true',
+    })).not.toThrow();
+  });
 });
 
 function restoreEnvValue(key: string, value: string | undefined): void {

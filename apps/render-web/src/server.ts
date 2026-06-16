@@ -120,7 +120,10 @@ async function serveStatic(req: IncomingMessage, res: ServerResponse, staticDir:
   const payload = await readFile(file);
   res.statusCode = 200;
   res.setHeader('content-type', contentType(file));
-  res.setHeader('cache-control', extname(file) === '.html' ? 'no-cache' : 'public, max-age=31536000, immutable');
+  res.setHeader(
+    'cache-control',
+    extname(file) === '.html' ? 'no-store, must-revalidate' : 'public, max-age=31536000, immutable',
+  );
   if (req.method === 'HEAD') {
     res.end();
     return;

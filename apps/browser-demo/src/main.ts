@@ -713,6 +713,7 @@ import { setCloudWalletBridge } from './cloudWalletBridge.js';
 import { mobileWorkspaceMoreMenuItems, workspaceMoreMenuItems, type WorkspaceMoreMenuItem } from './workspaceMore.js';
 import { installWebViewControlDelegates, restoreDisclosureOpenState } from './webViewControlFix.js';
 import { setProofSigningContext, signWalletProofMessage as signWalletProofMessageRaw } from './walletProofSigning.js';
+import { checkNativeLiveUpdate } from './nativeLiveUpdate.js';
 import {
   isWalletProviderLogoId,
   walletLogoIdForProviderName,
@@ -4516,12 +4517,53 @@ async function startApp(): Promise<void> {
     startRelayPresenceWatch();
     window.addEventListener('popstate', () => render());
     window.addEventListener('keydown', handleGlobalKeydown);
+    installNativeLiveUpdateWatcher();
     installWebViewControlDelegates(disclosureOpenState);
     installPayOutApprovalCreatedListener();
+    if (await runNativeLiveUpdateCheck('startup') === 'reloading') return;
     await bootstrap();
   } catch (err) {
     renderStartupFailure(err);
   }
+}
+
+function installNativeLiveUpdateWatcher(): void {
+  if (!nativeLiveUpdateEnabled()) return;
+  window.addEventListener('focus', () => {
+    void runNativeLiveUpdateCheck('focus');
+  });
+  window.addEventListener('pageshow', () => {
+    void runNativeLiveUpdateCheck('pageshow');
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+      void runNativeLiveUpdateCheck('visible');
+    }
+  });
+}
+
+async function runNativeLiveUpdateCheck(trigger: string): Promise<'skipped' | 'current' | 'reloading' | 'error'> {
+  const result = await checkNativeLiveUpdate({
+    enabled: nativeLiveUpdateEnabled(),
+    fetch: window.fetch.bind(window),
+    storage: window.localStorage,
+    location: window.location,
+    nowMs: () => Date.now(),
+    walletRequestActive: nativeLiveUpdateRequestActive,
+    logger: console,
+  });
+  if (result === 'reloading') {
+    console.info('[native-live-update] reload scheduled', { trigger });
+  }
+  return result;
+}
+
+function nativeLiveUpdateEnabled(): boolean {
+  return IS_ANDROID_APP || IS_IOS_APP || IS_TAURI_APP;
+}
+
+function nativeLiveUpdateRequestActive(): boolean {
+  return Boolean(state.busy || state.pendingCliSignRequest || proofSigningToastDepth > 0);
 }
 
 function installPayOutApprovalCreatedListener(): void {
@@ -40406,27 +40448,27 @@ async function cloudRequest<T = unknown>(path: string, init: RequestInit = {}): 
   if (!response.ok) {
     if (response.status === 401) {
       state.cloudSession = emptyCloudSession('signed-out');
-      void clearNativeCloudSessionToken();
+      await clearNativeCloudSessionToken();
     }
     throw new Error(cloudErrorMessage(payload, response.status));
   }
   if (payload === null) {
     throw new Error('Agentic Cloud did not return JSON. Use the same-origin Render app for cloud workflow APIs.');
   }
-  applyAndroidCloudSessionResponse(path, payload);
+  await applyNativeCloudSessionResponse(path, payload);
   return payload as T;
 }
 
-function applyAndroidCloudSessionResponse(path: string, payload: unknown): void {
+async function applyNativeCloudSessionResponse(path: string, payload: unknown): Promise<void> {
   if (!nativeCloudApiSurfaceActive()) return;
   if (!payload || typeof payload !== 'object') return;
   const record = payload as Record<string, unknown>;
   if (typeof record.sessionToken === 'string' && record.sessionToken.trim()) {
-    void setNativeCloudSessionToken(record.sessionToken.trim());
+    await setNativeCloudSessionToken(record.sessionToken.trim());
     return;
   }
   if (path.startsWith('/api/auth/logout') || record.signedIn === false || record.signedOut === true) {
-    void clearNativeCloudSessionToken();
+    await clearNativeCloudSessionToken();
   }
 }
 

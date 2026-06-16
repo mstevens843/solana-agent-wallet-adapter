@@ -13,6 +13,10 @@ export interface RuntimeWorkflowStoreOptions {
 }
 
 const REQUIRED_PRODUCTION_ENV = ['DATABASE_URL', 'SESSION_SECRET', 'AGENTIC_PUBLIC_ORIGIN'] as const;
+const REQUIRED_BRIDGE_PAIRING_FRONTEND_ENV = [
+  'VITE_AGENTIC_ANDROID_DEVICE_AGENT',
+  'VITE_AGENTIC_IOS_DEVICE_AGENT',
+] as const;
 const MIN_SESSION_SECRET_LENGTH = 32;
 
 export async function createRuntimeWorkflowStore(
@@ -43,6 +47,17 @@ export function assertProductionConfig(env: NodeJS.ProcessEnv = process.env): vo
 
   if (env.AGENTIC_MOCK_FINALIZATION === '1') {
     throw new Error('AGENTIC_MOCK_FINALIZATION must not be enabled in production.');
+  }
+
+  if (env.BRIDGE_PAIRING_ENABLED === '1') {
+    const disabledFrontendFlags = REQUIRED_BRIDGE_PAIRING_FRONTEND_ENV.filter(
+      (name) => !isEnabledProductionFlag(env[name]),
+    );
+    if (disabledFrontendFlags.length > 0) {
+      throw new Error(
+        `BRIDGE_PAIRING_ENABLED=1 requires enabled frontend build flag(s): ${disabledFrontendFlags.join(', ')}.`,
+      );
+    }
   }
 
   const sessionSecret = env.SESSION_SECRET?.trim() ?? '';
@@ -94,4 +109,9 @@ export function assertProductionConfig(env: NodeJS.ProcessEnv = process.env): vo
 
 export function isProductionRuntime(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.NODE_ENV === 'production' || env.RENDER === 'true';
+}
+
+function isEnabledProductionFlag(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
 }

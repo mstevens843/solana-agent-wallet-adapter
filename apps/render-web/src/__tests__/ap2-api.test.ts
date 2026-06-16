@@ -64,6 +64,13 @@ function fixedClock(): Clock {
   return { now: () => FROZEN_NOW };
 }
 
+function monotonicClock(start: Date = FROZEN_NOW): Clock {
+  let tick = start.getTime();
+  return {
+    now: () => new Date(tick++),
+  };
+}
+
 function makeMandate(
   overrides: Partial<{
     mandateId: string;
@@ -214,7 +221,7 @@ function makeFakeAdapter(opts: FakeAdapterOpts = {}): Ap2RouteAdapter {
 async function startServer(adapter: Ap2RouteAdapter, capture: VerifyCapture): Promise<ServerHandle> {
   const workflowStore = new MemoryWorkflowStore();
   const evidenceStore = new MemoryEvidenceStore();
-  const workflowService = new WorkflowService(workflowStore);
+  const workflowService = new WorkflowService(workflowStore, { clock: monotonicClock().now });
   const handler = createAp2ApiHandler({
     workflowService,
     workflowStore,

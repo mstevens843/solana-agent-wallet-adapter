@@ -136,6 +136,66 @@ describe('render web cloud wallet auth', () => {
     });
   });
 
+  it('returns an Android bearer session for the production same-origin app shell', async () => {
+    await withEnv({
+      RENDER: 'true',
+      AGENTIC_PUBLIC_ORIGIN: 'https://agentic-signer.com',
+      AGENTIC_CLOUD_CORS_ORIGINS: 'http://127.0.0.1:5174,http://localhost:5174',
+    }, async () => {
+      await withServer(async (port) => {
+        const headers = {
+          origin: 'https://agentic-signer.com',
+          'x-agentic-client': 'android-bundled',
+        };
+        const wallet = createTestWallet();
+        const nonce = await postJson(port, '/api/auth/nonce', {
+          walletAddress: wallet.walletAddress,
+        }, headers);
+        const verify = await postJson(port, '/api/auth/verify-wallet', signedVerifyBody(wallet, nonce.body), headers);
+
+        expect(verify.status).toBe(200);
+        expect(verify.body.sessionToken).toEqual(expect.any(String));
+
+        const session = await getJson(port, '/api/session', {
+          origin: 'https://agentic-signer.com',
+          'x-agentic-client': 'android-bundled',
+          authorization: `Bearer ${String(verify.body.sessionToken)}`,
+        });
+        expect(session.status).toBe(200);
+        expect(session.body).toMatchObject({
+          signedIn: true,
+          user: { walletAddress: wallet.walletAddress },
+        });
+      });
+    });
+  });
+
+  it('returns a native bearer session for the HTTPS request host without CORS env duplication', async () => {
+    await withEnv({
+      RENDER: 'true',
+      AGENTIC_PUBLIC_ORIGIN: 'https://agentic-signer.com',
+      AGENTIC_CLOUD_CORS_ORIGINS: 'http://127.0.0.1:5174,http://localhost:5174',
+    }, async () => {
+      await withServer(async (port) => {
+        const headers = {
+          host: 'agentic-seeker.com',
+          origin: 'https://agentic-seeker.com',
+          'x-forwarded-host': 'agentic-seeker.com',
+          'x-forwarded-proto': 'https',
+          'x-agentic-client': 'android-bundled',
+        };
+        const wallet = createTestWallet();
+        const nonce = await postJson(port, '/api/auth/nonce', {
+          walletAddress: wallet.walletAddress,
+        }, headers);
+        const verify = await postJson(port, '/api/auth/verify-wallet', signedVerifyBody(wallet, nonce.body), headers);
+
+        expect(verify.status).toBe(200);
+        expect(verify.body.sessionToken).toEqual(expect.any(String));
+      });
+    });
+  });
+
   it('returns an iOS bearer session for the Capacitor app origin', async () => {
     await withServer(async (port) => {
       const headers = {

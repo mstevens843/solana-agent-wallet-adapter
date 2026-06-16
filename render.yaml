@@ -45,6 +45,8 @@ services:
         generateValue: true
       - key: AGENTIC_PUBLIC_ORIGIN
         value: "https://agentic-signer.com"
+      - key: AGENTIC_CLOUD_CORS_ORIGINS
+        value: "http://127.0.0.1:5174,http://localhost:5174,https://agentic-signer.com,https://agentic-seeker.com"
       # Plan Connector (Android "use your ChatGPT/Claude plan from your computer"
       # path). Setting this to "1" makes /api/android-config emit
       # bridgePairingEnabled:true (apps/render-web/src/cloud/androidConfig.ts),

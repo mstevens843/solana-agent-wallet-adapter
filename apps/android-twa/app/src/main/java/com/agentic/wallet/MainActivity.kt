@@ -295,14 +295,24 @@ class MainActivity : FragmentActivity() {
         // once the page actually loads, but bridge calls during early page bootstrap need
         // a non-null value to satisfy the origin guard.
         currentWebViewOrigin.set(startUrl)
-        // Always ensure the WebView actually loads on (re)creation. This used to only run when
-        // savedInstanceState == null, so an activity recreated FROM saved state — which happens
-        // when the OS reclaims the backgrounded process and the user reopens the app ("first
-        // open after a while") — left the freshly-created WebView unloaded → a black screen
-        // until a hard-kill cleared the saved Bundle. Restore the prior WebView nav state if it
-        // was persisted (onSaveInstanceState below); if there is nothing to restore, load the
-        // start URL.
-        if (savedInstanceState == null || webView.restoreState(savedInstanceState) == null) {
+        // Restore WebView state only for the bundled local shell. Release builds that live-load
+        // Render must always navigate to the remote start URL on Activity creation; restoring a
+        // saved remote document can keep old JS alive after a Render deploy.
+        val restoredLocalState = shouldRestoreSavedWebViewState(remoteWebUrl, savedInstanceState != null) &&
+            webView.restoreState(savedInstanceState!!) != null
+        AgentMwaLog.info(
+            "MainActivity",
+            "onCreate",
+            if (restoredLocalState) "RESTORE_LOCAL_STATE" else "LOAD_START_URL",
+            "webview startup navigation resolved",
+            mapOf(
+                "remoteWebUrl" to remoteWebUrl,
+                "restoredLocalState" to restoredLocalState,
+                "savedInstanceState" to (savedInstanceState != null),
+                "startUrl" to startUrl,
+            ),
+        )
+        if (!restoredLocalState) {
             webView.loadUrl(startUrl)
         }
     }
@@ -314,7 +324,7 @@ class MainActivity : FragmentActivity() {
         // lateinit WebView if onCreate failed before it was built.
         // suppressWebViewStateSave is set by the render-process-gone recovery: the WebView is dead,
         // so saving its state would persist a broken snapshot (and can throw on a destroyed view).
-        if (::webView.isInitialized && !suppressWebViewStateSave) {
+        if (::webView.isInitialized && !suppressWebViewStateSave && remoteWebUrl.isBlank()) {
             webView.saveState(outState)
         }
     }
@@ -416,6 +426,20 @@ class MainActivity : FragmentActivity() {
             currentWebViewOrigin.set(remoteWebUrl)
             webView.loadUrl(remoteWebUrl)
         }
+        if (!didFallback && shouldReloadRemoteFromCurrentUrl()) {
+            AgentMwaLog.info(
+                "MainActivity",
+                "onResume",
+                "REMOTE_RELOAD",
+                "foregrounded on bundled or stale webview URL; reloading live Render shell",
+                mapOf(
+                    "remoteWebUrl" to remoteWebUrl,
+                    "currentUrl" to currentWebViewOrigin.get().orEmpty(),
+                ),
+            )
+            currentWebViewOrigin.set(remoteWebUrl)
+            webView.loadUrl(remoteWebUrl)
+        }
         // Debounced inside the loader, so onResume → onResume churn doesn't spam the
         // network. Forces a fetch when the app is foregrounded after >60s in background.
         RemoteConfigLoader.refresh(lifecycleScope)
@@ -423,6 +447,12 @@ class MainActivity : FragmentActivity() {
         // RESUMED past the grace window, the user dismissed the OS chooser without picking a
         // wallet — cancel the suspended call so the JS busy flag releases.
         mwaController.notifyActivityResumed(this)
+    }
+
+    private fun shouldReloadRemoteFromCurrentUrl(): Boolean {
+        if (remoteWebUrl.isBlank() || !::webView.isInitialized) return false
+        val current = currentWebViewOrigin.get() ?: webView.url ?: return true
+        return shouldReloadRemoteFromWebViewUrl(remoteWebUrl, remoteWebHost, current)
     }
 
     private fun defaultMwaIdentity(): AgentMwaIdentity {
@@ -2523,4 +2553,17 @@ class MainActivity : FragmentActivity() {
         private fun relayHostForLog(relay: String): String =
             Uri.parse(relay).host?.lowercase().orEmpty()
     }
+}
+
+internal fun shouldRestoreSavedWebViewState(remoteWebUrl: String, savedInstanceStatePresent: Boolean): Boolean =
+    remoteWebUrl.isBlank() && savedInstanceStatePresent
+
+internal fun shouldReloadRemoteFromWebViewUrl(
+    remoteWebUrl: String,
+    remoteWebHost: String?,
+    currentUrl: String,
+): Boolean {
+    if (remoteWebUrl.isBlank()) return false
+    val host = runCatching { java.net.URI(currentUrl).host?.lowercase() }.getOrNull() ?: return true
+    return host == "agentic.local" || (remoteWebHost != null && host != remoteWebHost)
 }

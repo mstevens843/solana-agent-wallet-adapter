@@ -94,6 +94,22 @@ describe('render web hosted BYOK API', () => {
     });
   });
 
+  it('serves app build metadata as no-store JSON for native live-update checks', async () => {
+    vi.stubEnv('RENDER_GIT_COMMIT', 'abcdef1234567890');
+    vi.stubEnv('RENDER_DEPLOY_TIMESTAMP', '2026-06-16T08:30:00.000Z');
+    await withServer(async (port) => {
+      const response = await getText(port, '/api/app-build');
+
+      expect(response.status).toBe(200);
+      expect(String(response.headers['content-type'])).toContain('application/json');
+      expect(response.headers['cache-control']).toBe('no-store');
+      expect(JSON.parse(response.body)).toEqual({
+        commit: 'abcdef123456',
+        deployedAt: '2026-06-16T08:30:00.000Z',
+      });
+    });
+  });
+
   it('adds the Ultra referral platform fee to /api/swap/order when configured', async () => {
     vi.stubEnv('JUPITER_API_KEY', 'jup-test-key');
     vi.stubEnv('JUPITER_REFERRAL_ACCOUNT', DEVICE_AGENT_WALLET_A);
@@ -1111,7 +1127,7 @@ describe('render web hosted BYOK API', () => {
 
         expect(response.status).toBe(200);
         expect(String(response.headers['content-type'])).toContain('text/html');
-        expect(response.headers['cache-control']).toBe('no-cache');
+        expect(response.headers['cache-control']).toBe('no-store, must-revalidate');
         expect(response.body).toContain('<div id="app"></div>');
       }
     });

@@ -233,6 +233,7 @@ interface RenderDeviceAgentSession {
 const renderDeviceAgentSessions = new Map<string, RenderDeviceAgentSession>();
 
 const REGISTERED_API_ROUTES = [
+  'GET /api/app-build',
   'GET /api/ai/status',
   'GET /api/releases/downloads',
   'GET /api/android-config',
@@ -677,6 +678,7 @@ function enforceSameOrigin(req: IncomingMessage, url: URL): void {
   const client = firstHeaderValue(req.headers['x-agentic-client'])?.toLowerCase();
   if (origin) {
     if (isAllowedRequestOrigin(origin, client)) return;
+    if (isPublicSameOrigin(req, origin)) return;
     assertSameHost(origin, requestDomain(req, url));
     return;
   }
@@ -790,6 +792,15 @@ function isAllowedRequestOrigin(origin: string | undefined, client: string | und
   if (origin && isAllowedCloudCorsOrigin(origin)) return true;
   if (origin === 'null' && client === 'desktop-bundled') return true;
   return false;
+}
+
+function isPublicSameOrigin(req: IncomingMessage, origin: string | undefined): boolean {
+  const normalizedOrigin = origin ? normalizeOrigin(origin) : '';
+  if (!normalizedOrigin) return false;
+  if (process.env.AGENTIC_PUBLIC_ORIGIN && normalizedOrigin === normalizeOrigin(process.env.AGENTIC_PUBLIC_ORIGIN)) {
+    return true;
+  }
+  return requestSameOriginCandidates(req).has(normalizedOrigin);
 }
 
 function configuredCloudCorsOrigins(): Set<string> {
@@ -969,6 +980,7 @@ async function routeApiRequest(
   if (url.pathname === '/api/ai/status') {
     requireMethod(req, 'GET');
     const managed = managedHostedAiSettings();
+    const build = currentBuildMetadata();
     writeJson(res, 200, {
       available: true,
       mode: managed ? 'hosted-managed' : 'hosted-byok',
@@ -987,11 +999,16 @@ async function routeApiRequest(
         defaultModel,
       })),
       build: {
-        commit: process.env.RENDER_GIT_COMMIT?.slice(0, 12) ?? process.env.AGENTIC_BUILD_ID ?? 'unknown',
-        deployedAt: process.env.RENDER_DEPLOY_TIMESTAMP ?? null,
+        ...build,
         routes: REGISTERED_API_ROUTES,
       },
     });
+    return;
+  }
+
+  if (url.pathname === '/api/app-build') {
+    requireMethod(req, 'GET');
+    writeJson(res, 200, currentBuildMetadata());
     return;
   }
 
@@ -4045,7 +4062,15 @@ function shouldReturnBearerSession(req: IncomingMessage): boolean {
   //   straight back to the loopback receiver the caller spun up.
   if (client === 'cli-bundled') return true;
   if (client !== 'android-bundled' && client !== 'ios-bundled' && client !== 'desktop-bundled') return false;
+  if (isPublicSameOrigin(req, origin)) return true;
   return isAllowedRequestOrigin(origin, client);
+}
+
+function currentBuildMetadata(): { commit: string; deployedAt: string | null } {
+  return {
+    commit: process.env.RENDER_GIT_COMMIT?.slice(0, 12) ?? process.env.AGENTIC_BUILD_ID ?? 'unknown',
+    deployedAt: process.env.RENDER_DEPLOY_TIMESTAMP ?? null,
+  };
 }
 
 function isProductionRequest(): boolean {
@@ -4074,6 +4099,22 @@ function publicOriginUsesHttps(): boolean {
   } catch {
     return false;
   }
+}
+
+function requestSameOriginCandidates(req: IncomingMessage): Set<string> {
+  const proto = isSecureRequest(req) || isProductionRequest() || publicOriginUsesHttps() ? 'https' : 'http';
+  const hosts = [
+    ...splitHeaderList(firstHeaderValue(req.headers['x-forwarded-host'])),
+    ...splitHeaderList(firstHeaderValue(req.headers.host)),
+  ];
+  return new Set(hosts.map((host) => normalizeOrigin(`${proto}://${host}`)).filter(Boolean));
+}
+
+function splitHeaderList(value: string | undefined): string[] {
+  return (value ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
 }
 
 function isHostedProviderId(value: string): value is HostedProviderId {
