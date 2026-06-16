@@ -33,6 +33,11 @@
 //      || 'selected connector'` without trim. Kotlin trims each candidate.
 //      We mirror Kotlin.
 
+import {
+  agentReviewLocalizationMessages,
+  type AgentReviewLocalizationPayload,
+} from '@solana-agent-wallet-adapter/workflow';
+
 import { DEVICE_AGENT_BOUNDARIES } from './boundaries.js';
 import { DEVICE_AGENT_SYSTEM_PROMPTS } from './systemPrompts.js';
 
@@ -172,6 +177,17 @@ export function buildAskMessages(
   return {
     system: DEVICE_AGENT_SYSTEM_PROMPTS.ASK,
     userContent: JSON.stringify(userContent),
+  };
+}
+
+// Review-result localization: translate display copy into the user's language. The system +
+// user content come from the SHARED workflow builder so the device-agent runtime, the hosted
+// MCP path, and (once mirrored) the native runtimes all use byte-identical translate prompts.
+export function buildLocalizeMessages(payload: Record<string, unknown>): DeviceAgentMessages {
+  const messages = agentReviewLocalizationMessages(payload as unknown as AgentReviewLocalizationPayload);
+  return {
+    system: messages[0]?.content ?? '',
+    userContent: messages[1]?.content ?? JSON.stringify(payload),
   };
 }
 

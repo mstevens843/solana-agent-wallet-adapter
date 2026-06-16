@@ -3,7 +3,7 @@
 // gpt-5 / o-series temperature drop. Wire body field order kept compatible
 // with the Kotlin runtime.
 
-import { buildAskMessages, buildPlanMessages, buildReviewMessages } from '../prompts/messageAssembler.js';
+import { buildAskMessages, buildLocalizeMessages, buildPlanMessages, buildReviewMessages } from '../prompts/messageAssembler.js';
 import type { DeviceAgentMessages } from '../prompts/messageAssembler.js';
 import type { RuntimeConfig } from '../runtime/config.js';
 import { logDeviceAgentDiag } from '../runtime/diagnosticLog.js';
@@ -82,6 +82,21 @@ export class OpenAiCompatibleProvider implements DeviceAgentProvider {
       };
     }
     const messages = buildAskMessages(payload);
+    const response = await this.postChatCompletion(messages, false, ASK_TEMPERATURE, ASK_MAX_TOKENS, signal);
+    const text = extractOpenAiText(response);
+    if (text.trim().length === 0) {
+      throw new ProviderHttpError(
+        PROVIDER_ERROR_CODES.INVALID_RESPONSE,
+        chatCompletionTruncated(response)
+          ? emptyModelTextMessage(this.config.model, true)
+          : 'Provider response had no answer text.',
+      );
+    }
+    return { output_text: text };
+  }
+
+  async localize(payload: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    const messages = buildLocalizeMessages(payload);
     const response = await this.postChatCompletion(messages, false, ASK_TEMPERATURE, ASK_MAX_TOKENS, signal);
     const text = extractOpenAiText(response);
     if (text.trim().length === 0) {

@@ -223,6 +223,11 @@ interface AgenticSystemPlugin {
     status: 'authorized' | 'provisional' | 'ephemeral' | 'denied' | 'unknown';
   }>;
   appLifecycleState(): Promise<{ state: 'active' | 'inactive' | 'background' | 'unknown' }>;
+  keyboardMetrics(): Promise<{ keyboardInset?: number; visible?: boolean }>;
+  addListener(
+    eventName: 'keyboardInsetChange',
+    listener: (event: { keyboardInset?: number; visible?: boolean }) => void,
+  ): Promise<{ remove: () => Promise<void> }>;
   devLog(options: {
     component?: string;
     method?: string;

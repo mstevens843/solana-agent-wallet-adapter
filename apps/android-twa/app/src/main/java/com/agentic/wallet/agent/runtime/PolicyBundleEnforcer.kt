@@ -28,6 +28,27 @@ internal object PolicyBundleEnforcer {
         }
         val parsed = parsedReviewResult(reviewResult)
         mergePolicyFindings(parsed, bundle)
+        if (languageRequiresInput(bundle)) {
+            parsed.put("decision", "needs_input")
+            parsed.put(
+                "reason",
+                "Agentic could not safely translate this non-English policy rule. Rephrase it or provide the rule in English before approval.",
+            )
+            parsed.put("missingFactIds", JSONArray().put("policy.language.canonicalization"))
+            val evidence = parsed.optJSONObject("evidence") ?: JSONObject()
+            evidence.put("language", bundle.optJSONObject("language") ?: JSONObject())
+            evidence.put("languageSafetyApplied", true)
+            evidence.put("serverSafetyApplied", true)
+            parsed.put("evidence", evidence)
+            val out = writeBack(reviewResult, parsed)
+            out.put(
+                "safetyOverride",
+                JSONObject()
+                    .put("reason", "policy_language_canonicalization_failed")
+                    .put("enforcedDecision", "needs_input")
+            )
+            return out
+        }
         if (!bundle.optBoolean("hasBlockingFailure", false)) return writeBack(reviewResult, parsed)
         val decision = parsed.optString("decision", "").lowercase()
         if (decision != "approve") return writeBack(reviewResult, parsed)
@@ -65,6 +86,12 @@ internal object PolicyBundleEnforcer {
                 .put("blockingFactIds", blockingFactIds)
         )
         return out
+    }
+
+    private fun languageRequiresInput(bundle: JSONObject): Boolean {
+        val language = bundle.optJSONObject("language") ?: return false
+        return language.optBoolean("requiresInput", false) ||
+            language.optString("canonicalizationStatus", "") == "failed"
     }
 
     private fun extractBundle(payload: JSONObject): JSONObject? {

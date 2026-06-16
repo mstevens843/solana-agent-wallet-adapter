@@ -9,6 +9,7 @@ export type AiPathMode = AiSettings['mode'];
 export interface AiPathSetupSnapshot {
   mode: AiPathMode;
   active: boolean;
+  staged?: boolean;
   configured: boolean;
   runnable: boolean;
   provider?: string;
@@ -36,9 +37,10 @@ export interface AiRailIdentity {
   model: string;
   detail: string;
   configured: boolean;
+  staged: boolean;
   inactive: boolean;
   statusLabel: string;
-  statusTone: 'confirmed' | 'configured' | 'inactive' | 'optional';
+  statusTone: 'confirmed' | 'configured' | 'staged' | 'inactive' | 'optional';
   statusTitle: string;
   logoHint: AiRailLogoHint;
 }
@@ -51,6 +53,20 @@ export function directAiKeyStaged(input: {
   providerReady: boolean;
 }): boolean {
   return Boolean(input.apiKey.trim() && input.model.trim() && input.providerReady);
+}
+
+export function deviceAgentConfiguredForRequests(input: {
+  status: DeviceAgentStatus | null | undefined;
+  visible: boolean;
+}): boolean {
+  return Boolean(input.visible && input.status?.available && input.status.configured);
+}
+
+export function deviceAgentNeedsStartForRequests(input: {
+  status: DeviceAgentStatus | null | undefined;
+  visible: boolean;
+}): boolean {
+  return deviceAgentConfiguredForRequests(input) && !deviceAgentStatusReadyForDrafts(input.status);
 }
 
 export function buildAiSetupInventory(input: {
@@ -67,12 +83,12 @@ export function buildAiSetupInventory(input: {
     { mode: 'device-agent', active: input.activeMode === 'device-agent', ...input.deviceAgent },
   ];
   const active = paths.find((path) => path.active) ?? paths[0]!;
-  const inactiveConfigured = paths.filter((path) => !path.active && path.configured);
+  const inactiveConfigured = paths.filter((path) => !path.active && (path.configured || path.staged));
   return {
     active,
     paths,
     inactiveConfigured,
-    anyConfigured: active.configured || inactiveConfigured.length > 0,
+    anyConfigured: active.configured || Boolean(active.staged) || inactiveConfigured.length > 0,
   };
 }
 
@@ -176,6 +192,10 @@ export function deviceAgentSetupSnapshot(input: {
   status: DeviceAgentStatus | null;
   visible: boolean;
   pairedBridge?: boolean;
+  stagedKey?: boolean;
+  stagedProvider?: string;
+  stagedModel?: string;
+  stagedLogoHint?: AiRailLogoHint;
   pairedProvider?: string;
   pairedModel?: string;
   pairedLogoHint?: AiRailLogoHint;
@@ -198,9 +218,24 @@ export function deviceAgentSetupSnapshot(input: {
       logoHint: input.pairedLogoHint ?? aiProviderLogoHint({ provider, model }),
     };
   }
-  const configured = Boolean(input.visible && input.status?.available && input.status.configured);
+  const configured = deviceAgentConfiguredForRequests(input);
   const provider = input.status?.provider ?? input.status?.apiFormat;
   const model = input.status?.model;
+  if (!configured && input.stagedKey) {
+    const stagedProvider = cleanAiRailValue(input.stagedProvider) ?? cleanAiRailValue(provider) ?? 'AI provider';
+    const stagedModel = cleanAiRailValue(input.stagedModel) ?? cleanAiRailValue(model) ?? 'model selected';
+    return {
+      staged: true,
+      configured: false,
+      runnable: false,
+      provider: stagedProvider,
+      apiFormat: input.status?.apiFormat,
+      baseUrl: input.status?.baseUrl,
+      model: stagedModel,
+      detail: `${stagedProvider} - ${stagedModel}`,
+      logoHint: input.stagedLogoHint ?? aiProviderLogoHint({ provider: stagedProvider, model: stagedModel }),
+    };
+  }
   return {
     configured,
     runnable: configured && deviceAgentStatusReadyForDrafts(input.status),
@@ -266,8 +301,9 @@ export function buildAiRailIdentity(input: {
 }): AiRailIdentity {
   const active = input.inventory.active;
   const inactiveConfigured = input.inventory.inactiveConfigured[0];
-  const display = active.configured ? active : inactiveConfigured ?? active;
-  const inactive = !active.configured && Boolean(inactiveConfigured);
+  const activeReadyOrStaged = active.configured || Boolean(active.staged);
+  const display = activeReadyOrStaged ? active : inactiveConfigured ?? active;
+  const inactive = !activeReadyOrStaged && Boolean(inactiveConfigured);
   const pathLabel = input.pathLabels[display.mode] ?? display.mode;
   const activePathLabel = input.pathLabels[active.mode] ?? active.mode;
   const provider = cleanAiRailValue(display.provider)
@@ -277,24 +313,33 @@ export function buildAiRailIdentity(input: {
     ?? cleanAiRailValue(input.activeFallback.model)
     ?? 'model not selected';
   const configured = Boolean(display.configured);
+  const staged = Boolean(display.staged);
   const statusLabel = input.confirmed && active.configured && !inactive
     ? 'confirmed'
     : active.configured
       ? 'configured'
+      : active.staged
+        ? 'key staged'
       : inactive
-        ? 'configured inactive'
+        ? display.staged ? 'key staged inactive' : 'configured inactive'
         : 'not configured';
   const statusTone = statusLabel === 'confirmed'
     ? 'confirmed'
     : statusLabel === 'configured'
       ? 'configured'
-      : statusLabel === 'configured inactive'
+      : statusLabel === 'key staged'
+        ? 'staged'
+      : statusLabel === 'configured inactive' || statusLabel === 'key staged inactive'
         ? 'inactive'
         : 'optional';
   const statusTitle = active.configured
     ? `${input.readinessLabel} - ${input.confirmationLabel}`
+    : active.staged
+      ? `API key staged for ${activePathLabel}. Set and confirm it to configure the runtime.`
     : inactive
-      ? `${pathLabel} configured; ${activePathLabel} selected.`
+      ? display.staged
+        ? `${pathLabel} key staged; ${activePathLabel} selected.`
+        : `${pathLabel} configured; ${activePathLabel} selected.`
       : 'AI connector optional';
 
   return {
@@ -304,11 +349,12 @@ export function buildAiRailIdentity(input: {
     model,
     detail: `${model} - ${pathLabel}`,
     configured,
+    staged,
     inactive,
     statusLabel,
     statusTone,
     statusTitle,
-    logoHint: (display.configured ? display.logoHint : undefined)
+    logoHint: (display.configured || display.staged ? display.logoHint : undefined)
       ?? input.activeFallback.logoHint
       ?? aiProviderLogoHint({ provider, model }),
   };

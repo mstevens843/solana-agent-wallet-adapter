@@ -1,5 +1,17 @@
 import { header, badge, divider, kv } from '../tui/index.js';
 import { renderPolicyBundle, type PolicyReviewVerdict } from './policyBundleRender.js';
+import {
+  agentReviewLocalizedFindingLabel,
+  agentReviewLocalizedLabel,
+  agentReviewLocalizedProse,
+  normalizeReviewLanguageCode,
+  shouldLocalizeAgentReview,
+  sourceLanguageFromReview,
+  type AgentReviewLocalizedCopy,
+  type AgentReviewLocalizedFinding,
+  type AgentReviewLocalizedLabelKey,
+  type PolicyLanguageCode,
+} from '@solana-agent-wallet-adapter/workflow';
 
 export type EvidenceTone = 'good' | 'warn' | 'neutral' | 'fail';
 
@@ -34,6 +46,7 @@ export interface AgentReviewResponse {
   model?: string;
   checkedAt?: string;
   questions?: Array<{ id?: string; label?: string; prompt?: string; options?: string[]; required?: boolean }>;
+  localized?: AgentReviewLocalizedCopy;
 }
 
 // Renders the agent's verdict the way the web app does: a green/red banner with
@@ -70,34 +83,36 @@ export function renderAgentReview(response: AgentReviewResponse | null | undefin
 }
 
 function printBanner(decision: string, response: AgentReviewResponse): void {
+  const language = displayLanguage(response);
   const provider = response.provider?.trim();
   const model = response.model?.trim();
   const checkedAt = formatCheckedAt(response.checkedAt);
   const meta = [provider, model, checkedAt].filter(Boolean).join(' · ');
 
   let chip: string;
-  if (decision === 'approve') chip = badge('AGENT APPROVED', 'ok');
-  else if (decision === 'deny') chip = badge('AGENT DENIED', 'err');
-  else if (decision === 'needs_input') chip = badge('AGENT NEEDS INPUT', 'warn');
-  else chip = badge(`AGENT ${decision.toUpperCase() || 'REVIEW'}`, 'muted');
+  if (decision === 'approve') chip = badge(label('reviewPassed', language), 'ok');
+  else if (decision === 'deny') chip = badge(label('reviewDenied', language), 'err');
+  else if (decision === 'needs_input') chip = badge(label('reviewNeedsInput', language), 'warn');
+  else chip = badge(decision ? `${label('review', language)} ${decision}` : label('review', language), 'muted');
 
   console.log();
   console.log(meta ? `${chip}  ${badge(meta, 'muted')}` : chip);
 
   const rows: Array<[string, string]> = [];
-  if (response.summary?.trim()) rows.push(['Summary', response.summary.trim()]);
-  const reason = response.reason?.trim();
-  if (reason && reason !== response.summary?.trim()) {
-    rows.push([reasonLabel(decision), reason]);
+  const summary = displaySummary(response, language);
+  if (summary) rows.push([label('summary', language), summary]);
+  const reason = displayReason(response, language);
+  if (reason && reason !== summary) {
+    rows.push([reasonLabel(decision, language), reason]);
   }
   if (rows.length > 0) console.log(kv(rows));
 }
 
-function reasonLabel(decision: string): string {
-  if (decision === 'approve') return 'Approval summary';
-  if (decision === 'deny') return 'Denial reason';
-  if (decision === 'needs_input') return 'Missing information';
-  return 'Reason';
+function reasonLabel(decision: string, language: PolicyLanguageCode): string {
+  if (decision === 'approve') return label('approvalSummary', language);
+  if (decision === 'deny') return label('denialReason', language);
+  if (decision === 'needs_input') return label('missingInformation', language);
+  return label('reason', language);
 }
 
 function formatCheckedAt(checkedAt: string | undefined): string {
@@ -156,6 +171,7 @@ function toneMark(tone: EvidenceTone): string {
 // findings spec and the cross-app helpers (token-mismatch checks, web-research
 // fallback) trimmed down to what the CLI needs.
 function sectionize(response: AgentReviewResponse): EvidenceDisplaySection[] {
+  const language = displayLanguage(response);
   const sections = new Map<EvidenceSectionId, EvidenceDisplayRow[]>();
   const addRow = (id: EvidenceSectionId, row: EvidenceDisplayRow): void => {
     const list = sections.get(id) ?? [];
@@ -184,12 +200,15 @@ function sectionize(response: AgentReviewResponse): EvidenceDisplaySection[] {
 
   // findings[] or evidenceRows[] inside evidence — primary structured findings
   // the LLM emits. Same shape as checks.
-  for (const finding of arrayValue(evidence?.findings)) {
-    const row = checkRow(finding);
+  const localizedFindings = response.localized?.findings ?? [];
+  for (let index = 0; index < arrayValue(evidence?.findings).length; index += 1) {
+    const finding = arrayValue(evidence?.findings)[index];
+    const row = checkRow(finding, localizedFindingForEvidenceEntry(localizedFindings, finding, index));
     if (row) enqueue(row);
   }
-  for (const finding of arrayValue(evidence?.evidenceRows)) {
-    const row = checkRow(finding);
+  for (let index = 0; index < arrayValue(evidence?.evidenceRows).length; index += 1) {
+    const finding = arrayValue(evidence?.evidenceRows)[index];
+    const row = checkRow(finding, localizedFindingForEvidenceEntry(localizedFindings, finding, index));
     if (row) enqueue(row);
   }
   for (const finding of arrayValue(evidence?.evidenceFacts)) {
@@ -233,19 +252,23 @@ function sectionize(response: AgentReviewResponse): EvidenceDisplaySection[] {
   const ordered: EvidenceDisplaySection[] = [];
   for (const id of ['decision', 'market', 'token', 'transaction', 'sources', 'other'] as const) {
     const rows = sections.get(id);
-    if (rows?.length) ordered.push({ id, label: sectionLabel(id), rows });
+    if (rows?.length) ordered.push({
+      id,
+      label: sectionLabel(id, language),
+      rows: rows.map((row) => localizedRow(row, language)),
+    });
   }
   return ordered;
 }
 
-function sectionLabel(id: EvidenceSectionId): string {
+function sectionLabel(id: EvidenceSectionId, language: PolicyLanguageCode): string {
   switch (id) {
-    case 'decision': return 'Decision';
-    case 'market': return 'Market & Price';
-    case 'token': return 'Token Safety';
-    case 'transaction': return 'Transaction Safety';
-    case 'sources': return 'Sources';
-    case 'other': return 'Other Checks';
+    case 'decision': return label('decision', language);
+    case 'market': return label('marketAndPrice', language);
+    case 'token': return label('tokenSafety', language);
+    case 'transaction': return label('transactionSafety', language);
+    case 'sources': return label('sources', language);
+    case 'other': return label('otherChecks', language);
   }
 }
 
@@ -256,19 +279,34 @@ function routeRowToSection(row: EvidenceDisplayRow): EvidenceSectionId {
   const value = row.value.toLowerCase();
   const text = `${label} ${value}`;
   if (/^source:|^source$/i.test(row.label) || /^https?:\/\//i.test(row.value) || /www\./i.test(row.value)) return 'sources';
-  if (/\b(threshold|decision|approval summary|denial reason|missing input|requested input|stale review)\b/.test(text)) return 'decision';
+  if (/\b(threshold|decision|approval summary|approval|denial reason|denial|missing input|requested input|stale review|umbral|decisión|aprobación|rechazo|しきい値|判断|承認|拒否|schwellenwert|entscheidung|genehmigung|ablehnung|soglia|decisione|approvazione|rifiuto|seuil|décision|approbation|refus|limite|decisão|aprovação|recusa|임계값|결정|승인|거부|порог|решение|одобрение|отказ)\b|阈值|閾值|門檻|决策|決策|批准|核准|拒绝|拒絕|条件|條件/.test(text)) return 'decision';
   if (/\b(token|mint|freeze authority|mint authority|symbol|verified|age)\b/.test(text)) return 'token';
   if (/\b(price|rate|usd|market|liquidity|volume|dominance|fear\s*&\s*greed|fear and greed|coingecko|birdeye|dex screener|cap)\b/.test(text)) return 'market';
   if (/\b(route|quote|slippage|swap amount|simulation|recipient|wallet|transfer|instruction|connector|protocol|policy|limit|schedule|program)\b/.test(text)) return 'transaction';
   return 'other';
 }
 
-function checkRow(raw: unknown): EvidenceDisplayRow | null {
+function checkRow(raw: unknown, localized?: AgentReviewLocalizedFinding): EvidenceDisplayRow | null {
   if (!isPlainRecord(raw)) return null;
-  const label = textValue(raw.label);
-  const value = textValue(raw.value);
+  const label = textValue(localized?.label) || textValue(raw.label);
+  const value = textValue(localized?.value) || textValue(raw.value);
   if (!label || !value) return null;
   return { label, value, tone: normalizeTone(raw.tone) ?? 'neutral' };
+}
+
+function localizedFindingForEvidenceEntry(
+  localized: AgentReviewLocalizedFinding[],
+  raw: unknown,
+  index: number,
+): AgentReviewLocalizedFinding | undefined {
+  if (isPlainRecord(raw)) {
+    const atomId = textValue(raw.atomId);
+    if (atomId) {
+      const byAtom = localized.find((candidate) => candidate.atomId === atomId);
+      if (byAtom) return byAtom;
+    }
+  }
+  return localized.find((candidate) => candidate.index === index);
 }
 
 function factRow(raw: unknown): EvidenceDisplayRow | null {
@@ -391,13 +429,68 @@ const AUDIT_KEYS = new Set([
 // record). For the CLI v1 we surface it in `note` so /inbox still shows the
 // audit trail when the user views the action later.
 export function reviewSummaryLine(response: AgentReviewResponse): string {
+  const language = displayLanguage(response);
   const decision = (response.decision ?? 'unknown').toLowerCase();
-  const verb = decision === 'approve' ? 'Review passed'
-    : decision === 'deny' ? 'Review denied'
-    : decision === 'needs_input' ? 'Review needs input'
-    : 'Agent review';
-  const detail = (response.summary || response.reason || '').replace(/\s+/g, ' ').trim();
+  const verb = decision === 'approve' ? label('reviewPassed', language)
+    : decision === 'deny' ? label('reviewDenied', language)
+    : decision === 'needs_input' ? label('reviewNeedsInput', language)
+    : label('review', language);
+  const detail = (displaySummary(response, language) || displayReason(response, language)).replace(/\s+/g, ' ').trim();
   if (!detail) return verb;
   const joined = `${verb}: ${detail}`;
   return joined.length > 200 ? `${joined.slice(0, 197)}…` : joined;
+}
+
+const ROW_LABEL_KEYS: Record<string, AgentReviewLocalizedLabelKey> = {
+  summary: 'summary',
+  reason: 'reason',
+  approvalsummary: 'approvalSummary',
+  denialreason: 'denialReason',
+  missinginformation: 'missingInformation',
+  missinginput: 'missingInput',
+  requestedinput: 'requestedInput',
+  stalereview: 'staleReview',
+};
+
+function displayLanguage(response: AgentReviewResponse): PolicyLanguageCode {
+  const localizedLanguage = normalizeReviewLanguageCode(response.localized?.language);
+  if (localizedLanguage !== 'unknown') return localizedLanguage;
+  return sourceLanguageFromReview(response);
+}
+
+function displaySummary(response: AgentReviewResponse, language = displayLanguage(response)): string {
+  return response.localized?.summary?.trim() ||
+    agentReviewLocalizedProse(response.summary, language) ||
+    response.summary?.trim() ||
+    '';
+}
+
+function displayReason(response: AgentReviewResponse, language = displayLanguage(response)): string {
+  return response.localized?.reason?.trim() ||
+    agentReviewLocalizedProse(response.reason, language) ||
+    response.reason?.trim() ||
+    '';
+}
+
+function localizedRow(row: EvidenceDisplayRow, language: PolicyLanguageCode): EvidenceDisplayRow {
+  if (!shouldLocalizeAgentReview(language)) return row;
+  return {
+    ...row,
+    label: localizedRowLabel(row.label, language),
+    value: agentReviewLocalizedProse(row.value, language) ?? row.value,
+  };
+}
+
+function localizedRowLabel(value: string, language: PolicyLanguageCode): string {
+  const source = /^source:\s*(.+)$/iu.exec(value);
+  if (source) return `${agentReviewLocalizedFindingLabel('Source', language)}: ${source[1]!.trim()}`;
+  const policy = /^policy:\s*(.+)$/iu.exec(value);
+  if (policy) return `${agentReviewLocalizedFindingLabel('Policy', language)}: ${policy[1]!.trim()}`;
+  const key = ROW_LABEL_KEYS[normalizeKey(value)];
+  if (key) return label(key, language);
+  return agentReviewLocalizedFindingLabel(value, language);
+}
+
+function label(key: AgentReviewLocalizedLabelKey, language: PolicyLanguageCode): string {
+  return agentReviewLocalizedLabel(key, language);
 }

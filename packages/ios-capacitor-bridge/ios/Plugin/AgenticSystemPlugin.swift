@@ -16,6 +16,7 @@ public class AgenticSystemPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "showNotification", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "requestNotificationAuthorization", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "appLifecycleState", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "keyboardMetrics", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "devLog", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setDebugLogging", returnType: CAPPluginReturnPromise),
     ]
@@ -37,6 +38,27 @@ public class AgenticSystemPlugin: CAPPlugin, CAPBridgedPlugin {
     private lazy var notificationFeedback: UINotificationFeedbackGenerator = {
         let gen = UINotificationFeedbackGenerator(); gen.prepare(); return gen
     }()
+    private var keyboardInset: CGFloat = 0
+
+    public override func load() {
+        super.load()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(keyboardFrameChanged(_:)),
+            name: UIResponder.keyboardWillChangeFrameNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(keyboardFrameChanged(_:)),
+            name: UIResponder.keyboardWillHideNotification,
+            object: nil
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
 
     // Mirrors apps/android-twa/.../system/SystemBridge.kt.
 
@@ -270,5 +292,45 @@ public class AgenticSystemPlugin: CAPPlugin, CAPBridgedPlugin {
             }
             call.resolve(["state": state])
         }
+    }
+
+    @objc func keyboardMetrics(_ call: CAPPluginCall) {
+        guard AgenticBridgeOrigin.validate(call, on: bridge) else { return }
+        DispatchQueue.main.async {
+            call.resolve(self.keyboardMetricsPayload())
+        }
+    }
+
+    @objc private func keyboardFrameChanged(_ notification: Notification) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let nextInset = self.keyboardInset(from: notification)
+            guard abs(self.keyboardInset - nextInset) >= 1 else { return }
+            self.keyboardInset = nextInset
+            self.notifyListeners("keyboardInsetChange", data: self.keyboardMetricsPayload())
+        }
+    }
+
+    private func keyboardInset(from notification: Notification) -> CGFloat {
+        if notification.name == UIResponder.keyboardWillHideNotification {
+            return 0
+        }
+        guard
+            let webView = bridge?.webView,
+            let frameValue = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue
+        else {
+            return 0
+        }
+        let keyboardFrame = webView.convert(frameValue.cgRectValue, from: nil)
+        let overlap = max(0, webView.bounds.maxY - keyboardFrame.minY)
+        return max(0, overlap - webView.safeAreaInsets.bottom)
+    }
+
+    private func keyboardMetricsPayload() -> [String: Any] {
+        let inset = max(0, Int(round(keyboardInset)))
+        return [
+            "keyboardInset": inset,
+            "visible": inset > 0,
+        ]
     }
 }

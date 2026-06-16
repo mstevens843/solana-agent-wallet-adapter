@@ -19,7 +19,8 @@ internal fun isoTimestamp(epochMs: Long): String =
 enum class RuntimeMethod(val wire: String) {
     GENERATE_PLAN("generatePlan"),
     REVIEW_PLAN("reviewPlan"),
-    ASK("ask");
+    ASK("ask"),
+    LOCALIZE("localize");
 
     companion object {
         fun fromWire(value: String?): RuntimeMethod? =

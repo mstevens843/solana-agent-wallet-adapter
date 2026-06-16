@@ -1,21 +1,11 @@
-// Mirrors apps/render-web/src/cloud/policyEnrich.ts + the cloud aiPlanner's
-// applyServerSideReviewSafety: when the policy bundle in context.policyBundle
-// has at least one failing evaluation (hasBlockingFailure === true) and the LLM
-// returned decision === "approve", force-deny.
-//
-// Necessary on the BYOK device-agent path: the LLM HTTP call happens directly
-// from the device with the user's own key, bypassing the cloud's safety net.
-// Without this, an LLM hallucination could "approve" something the user's own
-// policy rule already failed.
-//
-// Same logic on the JS-side (apps/browser-demo/src/policyEnrichClient.ts
-// enforceBlockingFailure) but defense-in-depth on the native side too.
 import Foundation
 
+/// Foundation-only policy bundle safety enforcement shared by the iOS plugin and SwiftPM tests.
 enum AgenticPolicyBundleEnforcer {
     /// Inspect the LLM review result alongside the request payload. If the
     /// bundle had blocking failures and the LLM returned approve, downgrade to
-    /// deny and surface the failing atom ids.
+    /// deny and surface the failing atom ids. If non-English policy text could
+    /// not be safely canonicalized, force needs_input.
     static func enforce(reviewResult: [String: Any], payload: [String: Any]) -> [String: Any] {
         guard let bundle = extractBundle(from: payload) else { return reviewResult }
         let parsed: [String: Any]
@@ -30,6 +20,23 @@ enum AgenticPolicyBundleEnforcer {
             parsed = reviewResult
         }
         var corrected = mergePolicyFindings(into: parsed, bundle: bundle)
+        if languageRequiresInput(bundle: bundle) {
+            let reason = "Agentic could not safely translate this non-English policy rule. Rephrase it or provide the rule in English before approval."
+            corrected["decision"] = "needs_input"
+            corrected["reason"] = reason
+            corrected["missingFactIds"] = ["policy.language.canonicalization"]
+            var evidence = corrected["evidence"] as? [String: Any] ?? [:]
+            evidence["language"] = bundle["language"] as? [String: Any] ?? [:]
+            evidence["languageSafetyApplied"] = true
+            evidence["serverSafetyApplied"] = true
+            corrected["evidence"] = evidence
+            var out = writeBack(original: reviewResult, parsed: corrected, hadTextEnvelope: text != nil)
+            out["safetyOverride"] = [
+                "reason": "policy_language_canonicalization_failed",
+                "enforcedDecision": "needs_input",
+            ]
+            return out
+        }
         guard let blocking = bundle["hasBlockingFailure"] as? Bool, blocking == true else {
             return writeBack(original: reviewResult, parsed: corrected, hadTextEnvelope: text != nil)
         }
@@ -38,7 +45,6 @@ enum AgenticPolicyBundleEnforcer {
             return writeBack(original: reviewResult, parsed: corrected, hadTextEnvelope: text != nil)
         }
 
-        // Build a corrected decision payload.
         let validAtomIds = validAtomIds(from: bundle)
         let evaluations = bundle["evaluations"] as? [[String: Any]] ?? []
         let failing = evaluations.filter {
@@ -54,21 +60,12 @@ enum AgenticPolicyBundleEnforcer {
         corrected["blockingFactIds"] = blockingFactIds
 
         var out = writeBack(original: reviewResult, parsed: corrected, hadTextEnvelope: text != nil)
-        // Also surface the override on the envelope for callers that look at the
-        // structured result instead of re-parsing `text`.
         out["safetyOverride"] = [
             "reason": "policy_bundle_blocking_failure",
             "originalDecision": "approve",
             "enforcedDecision": "deny",
             "blockingFactIds": blockingFactIds,
         ]
-        AgenticIOSLog.info(
-            "AgenticPolicyBundleEnforcer",
-            "enforce",
-            "OVERRIDE",
-            "LLM approve overridden by hasBlockingFailure",
-            ["blockingCount": String(blockingFactIds.count)]
-        )
         return out
     }
 
@@ -97,6 +94,12 @@ enum AgenticPolicyBundleEnforcer {
         }
         let evaluations = bundle["evaluations"] as? [[String: Any]] ?? []
         return Set(evaluations.compactMap { $0["atomId"] as? String }.filter { !$0.isEmpty })
+    }
+
+    private static func languageRequiresInput(bundle: [String: Any]) -> Bool {
+        guard let language = bundle["language"] as? [String: Any] else { return false }
+        if (language["requiresInput"] as? Bool) == true { return true }
+        return (language["canonicalizationStatus"] as? String) == "failed"
     }
 
     private static func mergePolicyFindings(into reviewResult: [String: Any], bundle: [String: Any]) -> [String: Any] {

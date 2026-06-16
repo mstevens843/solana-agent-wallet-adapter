@@ -19,10 +19,16 @@ final class DeviceAgentSystemPromptsTests: XCTestCase {
         XCTAssertEqual(AgenticDeviceAgentSystemPrompts.ask, fixture.ask, "ASK prompt diverged from Android source")
     }
 
+    func testLocalizePromptByteIdentical() throws {
+        let fixture = try fixture()
+        XCTAssertEqual(AgenticDeviceAgentSystemPrompts.localize, fixture.localize, "LOCALIZE prompt diverged from the canonical source")
+    }
+
     private struct Prompts: Codable {
         let plan: String
         let review: String
         let ask: String
+        let localize: String
     }
 
     private func fixture() throws -> Prompts {

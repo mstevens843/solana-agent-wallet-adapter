@@ -14,6 +14,7 @@ enum AgenticDeviceAgentBridgeEnvelope {
         "generatePlan",
         "reviewPlan",
         "ask",
+        "localize",
     ]
 
     static func isSupportedMethod(_ method: String) -> Bool {
@@ -93,6 +94,7 @@ public class AgenticDeviceAgentPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "generatePlan", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "reviewPlan", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "ask", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "localize", returnType: CAPPluginReturnPromise),
     ]
 
     // Backed by AgenticAgentRuntime (Phase 3).
@@ -240,6 +242,10 @@ public class AgenticDeviceAgentPlugin: CAPPlugin, CAPBridgedPlugin {
             dispatchEnvelope(call, method: method, requestId: requestId, payload: payload, debugBaseUrl: payloadDebugBaseUrl) { payload, completion in
                 AgenticAgentRuntime.shared.ask(payload, completion: completion)
             }
+        case "localize":
+            dispatchEnvelope(call, method: method, requestId: requestId, payload: payload, debugBaseUrl: payloadDebugBaseUrl) { payload, completion in
+                AgenticAgentRuntime.shared.localize(payload, completion: completion)
+            }
         default:
             resolveEnvelopeError(
                 call,
@@ -297,6 +303,12 @@ public class AgenticDeviceAgentPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func ask(_ call: CAPPluginCall) {
         dispatch(call, method: "ask") { payload, completion in
             AgenticAgentRuntime.shared.ask(payload, completion: completion)
+        }
+    }
+
+    @objc func localize(_ call: CAPPluginCall) {
+        dispatch(call, method: "localize") { payload, completion in
+            AgenticAgentRuntime.shared.localize(payload, completion: completion)
         }
     }
 

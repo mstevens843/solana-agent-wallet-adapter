@@ -60,6 +60,16 @@ internal class AnthropicProvider(
         return JSONObject().put("output_text", text)
     }
 
+    override suspend fun localize(payload: JSONObject): JSONObject {
+        val messages = DeviceAgentMessageAssembler.buildLocalizeMessages(payload)
+        val response = postMessages(messages, ASK_MAX_TOKENS, ASK_TEMPERATURE, payload)
+        val text = ProviderResponseParser.extractAnthropicText(response)
+        if (text.isBlank()) {
+            throw ProviderHttpException(ProviderErrorCodes.INVALID_RESPONSE, "Provider response had no answer text.")
+        }
+        return JSONObject().put("output_text", text)
+    }
+
     /**
      * Research pass — separate LLM call with web search bound. Captures the model's research
      * summary + citations and returns the original payload with `context.researchEvidence`

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   aiReviewSetupTabForMobileRailOpen,
+  computeMobileRailViewportVars,
   mobileRailSheetRouteAllowed,
   shouldApplyMobileRailBodyDataset,
   shouldClearActiveMobileRailSheet,
@@ -82,13 +83,25 @@ describe('mobile rail sheet policy', () => {
   it('refreshes Device Agent status once for API key Device Agent opens', () => {
     expect(shouldRefreshDeviceAgentStatusForMobileRailOpen({
       aiMode: 'device-agent',
+      deviceAgentConfigured: false,
       refreshInFlight: false,
       setupTab: 'api-key',
       sheet: 'ai-drafting',
     })).toBe(true);
     expect(shouldRefreshDeviceAgentStatusForMobileRailOpen({
       aiMode: 'device-agent',
+      deviceAgentConfigured: false,
       refreshInFlight: true,
+      setupTab: 'api-key',
+      sheet: 'ai-drafting',
+    })).toBe(false);
+  });
+
+  it('does not refresh Device Agent status on open when native config is already confirmed', () => {
+    expect(shouldRefreshDeviceAgentStatusForMobileRailOpen({
+      aiMode: 'device-agent',
+      deviceAgentConfigured: true,
+      refreshInFlight: false,
       setupTab: 'api-key',
       sheet: 'ai-drafting',
     })).toBe(false);
@@ -173,5 +186,70 @@ describe('mobile rail sheet policy', () => {
       previousSheet: 'wallet-balances',
       forceSuppress: true,
     })).toBe(false);
+  });
+});
+
+describe('computeMobileRailViewportVars', () => {
+  it('reports no keyboard inset when the visual viewport fills the window', () => {
+    expect(computeMobileRailViewportVars({ viewportHeight: 800, viewportOffsetTop: 0, innerHeight: 800 }))
+      .toEqual({ vvh: 800, keyboardInset: 0 });
+  });
+
+  it('derives the keyboard inset from the shrunken visual viewport', () => {
+    expect(computeMobileRailViewportVars({ viewportHeight: 480, viewportOffsetTop: 0, innerHeight: 800 }))
+      .toEqual({ vvh: 480, keyboardInset: 320 });
+  });
+
+  it('accounts for a scrolled viewport offset (iOS) in the inset', () => {
+    expect(computeMobileRailViewportVars({ viewportHeight: 480, viewportOffsetTop: 40, innerHeight: 800 }))
+      .toEqual({ vvh: 480, keyboardInset: 280 });
+  });
+
+  it('clamps the inset to zero when the window is briefly shorter than the viewport (collapsing URL bar)', () => {
+    expect(computeMobileRailViewportVars({ viewportHeight: 820, viewportOffsetTop: 0, innerHeight: 800 }))
+      .toEqual({ vvh: 820, keyboardInset: 0 });
+  });
+
+  it('floors the display height at 320px but keeps the true inset in short landscape', () => {
+    // Landscape phone (innerHeight 375) with the keyboard open shrinking the viewport to 230.
+    // vvh floors to 320 for sizing, but the inset must reflect the real 145px keyboard so the
+    // sheet is not pushed under it.
+    expect(computeMobileRailViewportVars({ viewportHeight: 230, viewportOffsetTop: 0, innerHeight: 375 }))
+      .toEqual({ vvh: 320, keyboardInset: 145 });
+  });
+
+  it('falls back to innerHeight when visualViewport is unavailable', () => {
+    expect(computeMobileRailViewportVars({ innerHeight: 740 }))
+      .toEqual({ vvh: 740, keyboardInset: 0 });
+  });
+
+  it('uses native keyboard inset when the WebView visual viewport does not resize', () => {
+    expect(computeMobileRailViewportVars({
+      viewportHeight: 800,
+      viewportOffsetTop: 0,
+      innerHeight: 800,
+      nativeKeyboardInset: 320,
+      nativeKeyboardVisible: true,
+    })).toEqual({ vvh: 480, keyboardInset: 320 });
+  });
+
+  it('does not double count native keyboard inset when visualViewport also shrinks', () => {
+    expect(computeMobileRailViewportVars({
+      viewportHeight: 480,
+      viewportOffsetTop: 0,
+      innerHeight: 800,
+      nativeKeyboardInset: 320,
+      nativeKeyboardVisible: true,
+    })).toEqual({ vvh: 480, keyboardInset: 320 });
+  });
+
+  it('ignores stale native inset when native visibility is false', () => {
+    expect(computeMobileRailViewportVars({
+      viewportHeight: 800,
+      viewportOffsetTop: 0,
+      innerHeight: 800,
+      nativeKeyboardInset: 320,
+      nativeKeyboardVisible: false,
+    })).toEqual({ vvh: 800, keyboardInset: 0 });
   });
 });

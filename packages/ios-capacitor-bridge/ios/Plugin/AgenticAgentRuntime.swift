@@ -47,6 +47,17 @@ struct AgenticAgentRuntimeConfig: Codable, Equatable {
         )
     }
 
+    func mergingStoredSecret(with incoming: AgenticAgentRuntimeConfig) -> AgenticAgentRuntimeConfig {
+        return AgenticAgentRuntimeConfig(
+            provider: incoming.provider.isEmpty ? provider : incoming.provider,
+            apiFormat: incoming.apiFormat.isEmpty ? apiFormat : incoming.apiFormat,
+            model: incoming.model.isEmpty ? model : incoming.model,
+            baseUrl: incoming.baseUrl ?? baseUrl,
+            apiKey: incoming.apiKey ?? apiKey,
+            walletAddress: incoming.walletAddress ?? walletAddress
+        )
+    }
+
     func validationError() -> AgenticAgentError? {
         if provider.isEmpty {
             return AgenticAgentError(code: "INVALID_CONFIG", subcode: "MISSING_PROVIDER", message: "Device Agent config is missing provider.")
@@ -364,11 +375,12 @@ final class AgenticAgentRuntime {
                 AgenticIOSLog.info("AgenticDeviceAgent", "configure", "CLEAR", "Device Agent config cleared")
                 return buildStatusJson()
             }
-            guard let cfg = AgenticAgentRuntimeConfig.fromJson(json) else {
+            guard let incoming = AgenticAgentRuntimeConfig.fromJson(json) else {
                 _lastError = "Empty config payload"
                 _state = .error
                 return buildStatusJson()
             }
+            let cfg = resolveIncomingConfig(incoming)
             if let err = cfg.validationError() {
                 _config = cfg
                 _lastError = err.message
@@ -401,7 +413,8 @@ final class AgenticAgentRuntime {
         return queue.sync {
             // Merge fresh config if provided; otherwise use existing.
             if !json.isEmpty {
-                if let merged = AgenticAgentRuntimeConfig.fromJson(json) {
+                if let incoming = AgenticAgentRuntimeConfig.fromJson(json) {
+                    let merged = resolveIncomingConfig(incoming)
                     _config = merged
                     writeConfigToKeychain(merged)
                 }
@@ -464,6 +477,12 @@ final class AgenticAgentRuntime {
 
     func ask(_ payload: [String: Any], completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void) {
         dispatch(method: "ask", systemPrompt: AgenticDeviceAgentSystemPrompts.ask, payload: payload, completion: completion)
+    }
+
+    // Translate a finished review's display copy into the user's language using the user's OWN
+    // provider key. Text-in/text-out like `ask` (returns { output_text }); the JS bridge parses it.
+    func localize(_ payload: [String: Any], completion: @escaping (Result<[String: Any], AgenticAgentError>) -> Void) {
+        dispatch(method: "localize", systemPrompt: AgenticDeviceAgentSystemPrompts.localize, payload: payload, completion: completion)
     }
 
     // MARK: - Dispatch
@@ -582,6 +601,13 @@ final class AgenticAgentRuntime {
     }
 
     // MARK: - Status
+
+    private func resolveIncomingConfig(_ incoming: AgenticAgentRuntimeConfig) -> AgenticAgentRuntimeConfig {
+        guard incoming.apiKey == nil, let existing = _config, existing.apiKey?.isEmpty == false else {
+            return incoming
+        }
+        return existing.mergingStoredSecret(with: incoming)
+    }
 
     private func buildStatusJson() -> [String: Any] {
         var status: [String: Any] = [
@@ -808,6 +834,26 @@ enum AgenticDeviceAgentMessageAssembler {
         return AgenticDeviceAgentMessages(system: AgenticDeviceAgentSystemPrompts.ask, userContent: stringify(userContent))
     }
 
+    // Mirrors packages/workflow/src/agentReviewLocalization.ts:agentReviewLocalizationMessages.
+    // The `payload` is the reviewLocalizationPayload display copy; it becomes `displayCopy`.
+    static func buildLocalizeMessages(_ payload: [String: Any]) -> AgenticDeviceAgentMessages {
+        let userContent: [String: Any] = [
+            "targetLanguage": payload["language"] ?? "",
+            "displayCopy": payload,
+            "requiredOutputShape": [
+                "summary": "translated summary if present",
+                "reason": "translated reason if present",
+                "findings": [["index": 0, "atomId": "same optional atomId", "label": "translated label", "value": "translated value"]],
+                "questions": [["id": "same id", "prompt": "translated prompt", "hint": "translated hint", "options": ["translated options"]]],
+                "reviewers": [["id": "same optional id", "label": "translated label", "reason": "translated reason", "summary": "translated summary"]],
+                "policies": [["index": 0, "label": "translated label", "ruleText": "translated rule text"]],
+                "facts": [["key": "same fact key", "message": "translated message"]],
+                "counterfactuals": [["index": 0, "rationale": "translated rationale"]],
+            ],
+        ]
+        return AgenticDeviceAgentMessages(system: AgenticDeviceAgentSystemPrompts.localize, userContent: stringify(userContent))
+    }
+
     private static func researchObject(_ payload: [String: Any]) -> [String: Any] {
         if let research = payload["research"] as? [String: Any] { return research }
         return [
@@ -869,6 +915,8 @@ enum AgenticAgentProviderSupport {
             return AgenticDeviceAgentMessageAssembler.buildReviewMessages(request.payload)
         case "ask":
             return AgenticDeviceAgentMessageAssembler.buildAskMessages(request.payload)
+        case "localize":
+            return AgenticDeviceAgentMessageAssembler.buildLocalizeMessages(request.payload)
         case "research":
             return AgenticDeviceAgentMessageAssembler.buildResearchMessages(request.payload, researchTargets: researchTargets)
         default:
@@ -877,7 +925,7 @@ enum AgenticAgentProviderSupport {
     }
 
     static func parseProviderResult(method: String, provider: String, text: String, raw: [String: Any], payload: [String: Any]? = nil) -> Result<[String: Any], AgenticAgentError> {
-        if method == "ask" {
+        if method == "ask" || method == "localize" {
             if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return .failure(AgenticAgentError(code: "PROVIDER_RESPONSE", subcode: "EMPTY_TEXT", message: "Provider response had no answer text."))
             }

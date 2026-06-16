@@ -6,6 +6,7 @@ interface ProviderExecutor {
     suspend fun generatePlan(config: RuntimeConfig, payload: JSONObject): JSONObject
     suspend fun reviewPlan(config: RuntimeConfig, payload: JSONObject): JSONObject
     suspend fun ask(config: RuntimeConfig, payload: JSONObject): JSONObject
+    suspend fun localize(config: RuntimeConfig, payload: JSONObject): JSONObject
 }
 
 class ProviderUnavailableException(val error: RuntimeError) : Exception(error.message)
@@ -21,6 +22,9 @@ class ScaffoldProviderExecutor : ProviderExecutor {
 
     override suspend fun ask(config: RuntimeConfig, payload: JSONObject): JSONObject =
         throw unavailable("ask")
+
+    override suspend fun localize(config: RuntimeConfig, payload: JSONObject): JSONObject =
+        throw unavailable("localize")
 
     private fun unavailable(method: String): ProviderUnavailableException =
         ProviderUnavailableException(

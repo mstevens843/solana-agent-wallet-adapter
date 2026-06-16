@@ -8,6 +8,7 @@ import {
   extractAtoms,
   formatDollar,
   isWebOnly,
+  normalizeAgentReviewLocalizedCopy,
   reconcileThresholdReviewDecision,
 } from '@solana-agent-wallet-adapter/workflow';
 import type {
@@ -1903,6 +1904,7 @@ function normalizeHostedAiReview(payload: unknown): AgentPlanReviewResult {
   const record = payload as Partial<AgentPlanReviewResult>;
   const decision = normalizeReviewDecision(record.decision);
   const questions = normalizeReviewQuestions((record as Record<string, unknown>).questions);
+  const localized = normalizeAgentReviewLocalizedCopy((record as Record<string, unknown>).localized);
   return {
     decision,
     reason: compactReviewText(stringOr(record.reason, 'Agent review did not return a reason.'), 280),
@@ -1910,6 +1912,7 @@ function normalizeHostedAiReview(payload: unknown): AgentPlanReviewResult {
     evidence: jsonObjectOr(record.evidence, {}),
     checkedAt: stringOr(record.checkedAt, new Date().toISOString()),
     source: 'ai',
+    ...(localized ? { localized } : {}),
     ...(questions ? { questions } : {}),
   };
 }
@@ -2377,6 +2380,7 @@ export function normalizeAiReview(
   if (decisionContract) {
     evidence.decisionContract = decisionContract;
   }
+  const localized = normalizeAgentReviewLocalizedCopy(parsed.localized);
   const result: AgentPlanReviewResult = {
     decision,
     reason: compactReviewText(reason, 280),
@@ -2384,6 +2388,7 @@ export function normalizeAiReview(
     evidence: withResearchCitations(evidence, citations),
     checkedAt: new Date().toISOString(),
     source: 'ai',
+    ...(localized ? { localized } : {}),
     ...(questions ? { questions } : {}),
   };
   return reconcileThresholdReviewDecision(result, request);

@@ -20,6 +20,15 @@ test('reviewSummaryLine renders a deny verdict with reason fallback', () => {
   assert.equal(line, 'Review denied: SOL at $85 below required $1,000,000.');
 });
 
+test('reviewSummaryLine localizes non-English review summaries', () => {
+  const line = reviewSummaryLine({
+    decision: 'approve',
+    summary: 'Cheapest Helium Mobile monthly plan is under $20, so the swap draft passes the stated condition.',
+    evidence: { language: { sourceLanguage: 'zh-Hans' } },
+  });
+  assert.equal(line, '审核通过: Helium Mobile 最便宜的月度套餐低于 $20，因此该 swap 草稿符合条件。');
+});
+
 test('reviewSummaryLine truncates very long summaries to keep note under 200 chars', () => {
   const long = 'a'.repeat(500);
   const line = reviewSummaryLine({ decision: 'approve', summary: long });
@@ -98,7 +107,7 @@ test('renderAgentReview surfaces mirrored policy atoms and tx gates without dupl
 
     assert.equal(verdict.decision, 'deny');
     assert.equal(verdict.hasBlockingFailure, true);
-    assert.match(plain, /AGENT DENIED/);
+    assert.match(plain, /Review denied/);
     assert.match(plain, /Policy atoms/);
     assert.match(plain, /tx_gate  no unrelated instructions/);
     assert.match(plain, /Tx-gate outcomes/);

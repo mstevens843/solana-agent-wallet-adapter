@@ -53,7 +53,7 @@ const METADATA_LOCAL_STORAGE_KEY = 'agentic-device-agent-config-metadata';
 const RUNTIME_KIND = 'browser-native' as const;
 const DEFAULT_SECRET_STORE_MODE: SecretStoreMode = 'encrypted-indexeddb';
 
-const RUNTIME_METHOD_WIRES: ReadonlySet<RuntimeMethodWire> = new Set(['generatePlan', 'reviewPlan', 'ask']);
+const RUNTIME_METHOD_WIRES: ReadonlySet<RuntimeMethodWire> = new Set(['generatePlan', 'reviewPlan', 'ask', 'localize']);
 
 // State-based status messages — Kotlin parity with AgentRuntimeController.kt
 // (lines 40-46, 193). Phase 6 surfaces these via state.deviceAgentStatus.message
@@ -264,6 +264,7 @@ export async function browserDeviceAgentRequest<R = unknown>(
     case 'generatePlan':
     case 'reviewPlan':
     case 'ask':
+    case 'localize':
       return handleSubmit<R>(state, method, payload, options.signal);
     default: {
       const status = buildStatus(state);

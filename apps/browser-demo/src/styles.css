@@ -8383,7 +8383,14 @@ code {
   overflow-wrap: anywhere;
 }
 
-.agent-review-strip.needs_input {
+.agent-review-state.wallet_required {
+  background: rgba(246, 194, 107, 0.14);
+  border-color: rgba(246, 194, 107, 0.3);
+  color: #f2ddb0;
+}
+
+.agent-review-strip.needs_input,
+.agent-review-strip.wallet_required {
   background: rgba(246, 194, 107, 0.075);
   border-color: rgba(246, 194, 107, 0.28);
 }
@@ -8618,6 +8625,12 @@ code {
   color: #e09aa2;
 }
 
+.agent-evidence-summary-state.warn {
+  background: rgba(246, 194, 107, 0.12);
+  border-color: rgba(246, 194, 107, 0.3);
+  color: #f2ddb0;
+}
+
 .agent-evidence-summary-state.neutral {
   background: rgba(140, 164, 255, 0.1);
   border-color: rgba(140, 164, 255, 0.22);
@@ -8838,6 +8851,22 @@ code {
 
 .agent-evidence-value-source {
   color: rgba(224, 230, 226, 0.95);
+}
+
+.agent-review-strip[data-review-language] .agent-review-copy-card > span,
+.agent-review-strip[data-review-language] .agent-evidence-section-head span,
+.agent-review-strip[data-review-language] .agent-evidence-advanced > summary span,
+.agent-review-strip[data-review-language] .agent-evidence-row dt {
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.agent-review-strip[data-review-language] .agent-review-copy-text .expandable-copy-preview,
+.agent-review-strip[data-review-language] .agent-review-copy-text .expandable-copy-static,
+.agent-review-strip[data-review-language] .agent-review-copy-text .expandable-copy-full,
+.agent-review-strip[data-review-language] .agent-evidence-row dd {
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .guided-demo-policy-checks .agent-evidence-rows {
@@ -15799,6 +15828,12 @@ button.danger:hover:not(:disabled) {
   width: 100%;
 }
 
+.ai-key-actions .ai-key-secondary-action {
+  flex: 1 1 100%;
+  min-height: 38px;
+  width: 100%;
+}
+
 .ai-review-setup-tabs {
   background: rgba(6, 10, 9, 0.72);
   border: 1px solid rgba(224, 230, 226, 0.12);
@@ -16096,6 +16131,28 @@ button.danger:hover:not(:disabled) {
 .plan-connector-pairing-mount textarea,
 .phone-pairing-panel textarea {
   box-sizing: border-box;
+}
+
+.phone-pairing-panel textarea {
+  font-size: 16px !important;
+}
+
+.phone-pairing-actions {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(76px, 1fr) minmax(0, 3fr);
+  margin-top: 8px;
+}
+
+.phone-pairing-actions .bridge-pair-button {
+  margin-top: 0 !important;
+  min-width: 0;
+  width: auto !important;
+}
+
+.phone-pairing-clipboard-paste-button {
+  padding-left: 8px !important;
+  padding-right: 8px !important;
 }
 
 .plan-connector-pairing-mount .bridge-pair-button {
@@ -16716,6 +16773,14 @@ button.danger:hover:not(:disabled) {
   background: rgba(52, 211, 153, 0.14);
   border-color: rgba(94, 231, 158, 0.3);
   color: #d9ffea;
+}
+
+.ai-settings-panel > summary > .ai-summary-status.staged,
+.ai-settings-panel > .mobile-rail-sheet-trigger > .ai-summary-status.staged,
+.route-app .rail-ai-settings > .rail-conn-trigger > .ai-summary-status.staged {
+  background: rgba(245, 190, 58, 0.13);
+  border-color: rgba(245, 190, 58, 0.34);
+  color: #ffe7a8;
 }
 
 .ai-settings-panel > summary::after,
@@ -30301,6 +30366,8 @@ button.danger:hover:not(:disabled) {
   }
 
   .route-app .mobile-rail-sheet {
+    --mobile-rail-keyboard-inset: 0px;
+    --mobile-rail-vvh: 100dvh;
     animation: mobile-rail-sheet-slide-up 240ms cubic-bezier(0.2, 0.86, 0.22, 1) both;
     background:
       linear-gradient(180deg, rgba(30, 37, 35, 0.98), rgba(18, 22, 21, 0.99)),
@@ -30308,16 +30375,16 @@ button.danger:hover:not(:disabled) {
     border: 1px solid rgba(224, 230, 226, 0.12);
     border-bottom: 0;
     border-radius: 18px 18px 0 0;
-    bottom: 0;
+    bottom: var(--mobile-rail-keyboard-inset);
     box-shadow:
       0 -24px 80px rgba(0, 0, 0, 0.54),
       inset 0 1px 0 rgba(255, 255, 255, 0.045);
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
-    height: min(58dvh, 520px);
+    height: min(58dvh, 520px, calc(var(--mobile-rail-vvh) - 18px - env(safe-area-inset-top, 0px)));
     left: 0;
-    max-height: calc(100dvh - 18px - env(safe-area-inset-top, 0px));
-    min-height: 340px;
+    max-height: calc(var(--mobile-rail-vvh) - 18px - env(safe-area-inset-top, 0px));
+    min-height: min(340px, calc(var(--mobile-rail-vvh) - 18px - env(safe-area-inset-top, 0px)));
     overflow: hidden;
     padding-bottom: env(safe-area-inset-bottom, 0px);
     position: fixed;
@@ -30443,11 +30510,11 @@ button.danger:hover:not(:disabled) {
   }
 
   .route-app .mobile-rail-sheet.ai-drafting {
-    height: min(72dvh, 640px);
+    height: min(72dvh, 640px, calc(var(--mobile-rail-vvh) - 18px - env(safe-area-inset-top, 0px)));
   }
 
   .route-app .mobile-rail-sheet.wallet-balances {
-    height: min(62dvh, 540px);
+    height: min(62dvh, 540px, calc(var(--mobile-rail-vvh) - 18px - env(safe-area-inset-top, 0px)));
   }
 
   .route-app .mobile-rail-sheet.mobile-rail-sheet-no-enter,
@@ -34412,7 +34479,8 @@ button.danger:hover:not(:disabled) {
   justify-content: center;
 }
 
-.ai-key-actions .ai-key-primary-action {
+.ai-key-actions .ai-key-primary-action,
+.ai-key-actions .ai-key-secondary-action {
   flex: 0 1 340px;
   justify-content: center;
   max-width: 340px;

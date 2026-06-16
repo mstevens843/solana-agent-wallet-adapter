@@ -4,7 +4,7 @@
 // HttpURLConnection has no CORS, so the Kotlin runtime omits it (and its
 // AnthropicProviderTest pins the absence). Mirrors the planner.ts pattern.
 
-import { buildAskMessages, buildPlanMessages, buildResearchMessages, buildReviewMessages } from '../prompts/messageAssembler.js';
+import { buildAskMessages, buildLocalizeMessages, buildPlanMessages, buildResearchMessages, buildReviewMessages } from '../prompts/messageAssembler.js';
 import type { DeviceAgentMessages } from '../prompts/messageAssembler.js';
 import type { RuntimeConfig } from '../runtime/config.js';
 
@@ -131,6 +131,19 @@ export class AnthropicProvider implements DeviceAgentProvider {
 
   async ask(payload: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
     const messages = buildAskMessages(payload);
+    const response = await this.postMessages(messages, ASK_MAX_TOKENS, ASK_TEMPERATURE, signal, payload);
+    const text = extractAnthropicText(response);
+    if (text.trim().length === 0) {
+      throw new ProviderHttpError(
+        PROVIDER_ERROR_CODES.INVALID_RESPONSE,
+        'Provider response had no answer text.',
+      );
+    }
+    return { output_text: text };
+  }
+
+  async localize(payload: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    const messages = buildLocalizeMessages(payload);
     const response = await this.postMessages(messages, ASK_MAX_TOKENS, ASK_TEMPERATURE, signal, payload);
     const text = extractAnthropicText(response);
     if (text.trim().length === 0) {

@@ -26,4 +26,11 @@ internal class BridgeRelayProvider(
 
     override suspend fun ask(payload: JSONObject): JSONObject =
         client.runForward("/bridge/ai/ask-about-plan", payload)
+
+    // Paired reviews are already localized by the desktop bridge's aiPlanner
+    // (review.localized.source === "model"), so the JS chokepoint skips a localize call here.
+    // This forward exists for interface completeness + forward-compat; if the desktop bridge
+    // lacks the route the JS side falls back to the cloud endpoint.
+    override suspend fun localize(payload: JSONObject): JSONObject =
+        client.runForward("/bridge/ai/localize", payload)
 }

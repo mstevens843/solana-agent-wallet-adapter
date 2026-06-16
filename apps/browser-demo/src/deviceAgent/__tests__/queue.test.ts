@@ -30,7 +30,7 @@ function makeRequest(overrides: Partial<RuntimeRequest> = {}): RuntimeRequest {
 }
 
 interface CapturedCall {
-  readonly method: 'generatePlan' | 'reviewPlan' | 'ask';
+  readonly method: 'generatePlan' | 'reviewPlan' | 'ask' | 'localize';
   readonly config: RuntimeConfig;
   readonly payload: Record<string, unknown>;
   readonly signal?: AbortSignal;
@@ -66,6 +66,7 @@ function stubExecutor(
     generatePlan: wrap('generatePlan'),
     reviewPlan: wrap('reviewPlan'),
     ask: wrap('ask'),
+    localize: wrap('localize'),
   };
 }
 
@@ -248,6 +249,7 @@ describe('RequestQueue provider error handling', () => {
       },
       reviewPlan: async () => ({ ok: true }),
       ask: async () => ({ ok: true }),
+      localize: async () => ({ ok: true }),
     };
     const queue = new RequestQueue({
       executorProvider: () => executor,
@@ -360,6 +362,7 @@ describe('RequestQueue exactly-once', () => {
       }),
       reviewPlan: async () => ({ ok: true }),
       ask: async () => ({ ok: true }),
+      localize: async () => ({ ok: true }),
     };
     const queue = new RequestQueue({
       executorProvider: () => executor,
@@ -401,6 +404,7 @@ describe('RequestQueue exactly-once', () => {
       }),
       reviewPlan: async () => ({ ok: true }),
       ask: async () => ({ ok: true }),
+      localize: async () => ({ ok: true }),
     };
     const queue = new RequestQueue({
       executorProvider: () => executor,
@@ -428,6 +432,7 @@ describe('RequestQueue exactly-once', () => {
       generatePlan: async () => ({ ok: true }),
       reviewPlan: async () => ({ ok: true }),
       ask: async () => ({ ok: true }),
+      localize: async () => ({ ok: true }),
     };
     const queue = new RequestQueue({
       executorProvider: () => executor,

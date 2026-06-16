@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  auditReceiptDisplayRows,
   evidenceEntryTone,
   evidenceFactDisplayRows,
   isAuditEvidenceKey,
@@ -10,6 +11,7 @@ import {
   swapTokenTextMismatchWarning,
   tokenMismatchEvidenceRows,
 } from '../agentReviewPresentation.js';
+import type { AgentAuditReceiptLike } from '../agentReviewPresentation.js';
 import type { AgentPlan } from '../planner.js';
 
 const POPCAT_MINT = '7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr';
@@ -232,6 +234,156 @@ describe('agent review presentation helpers', () => {
     ]));
   });
 
+  it('localizes decision and evidence sections from source language metadata', () => {
+    const sections = reviewEvidenceSections({
+      status: 'approved',
+      summary: 'Cheapest Helium Mobile monthly plan is under $20, so the swap draft passes the stated condition.',
+      reason: "Helium Mobile's cheapest listed monthly mobile plan is $0/month, which is below the user's $20 approval threshold.",
+      evidence: {
+        language: { sourceLanguage: 'zh-Hans' },
+        findings: [
+          { label: 'Threshold check', value: '$0/month is below $20, so the approve-when condition holds.', tone: 'good' },
+          { label: 'Monthly rate', value: '$0/month', tone: 'good' },
+        ],
+      },
+    }, { actionType: 'swap' });
+
+    const decision = sections.find((section) => section.id === 'decision');
+    const market = sections.find((section) => section.id === 'market');
+    expect(decision?.label).toBe('决策');
+    expect(decision?.rows.map((row) => row.label)).toEqual(['摘要', '批准摘要', '阈值检查']);
+    expect(decision?.rows[0]?.value).toContain('低于 $20');
+    expect(market?.label).toBe('市场与价格');
+    expect(market?.rows).toEqual([
+      { label: '月费', value: '$0/month', tone: 'good' },
+    ]);
+  });
+
+  it('prefers model-localized finding values in evidence sections', () => {
+    const sections = reviewEvidenceSections({
+      status: 'approved',
+      summary: 'Approve the swap because the cheapest Helium Mobile monthly plan is under $20.',
+      reason: "Helium Mobile's cheapest monthly phone plan found is $15/month, which is below the user's $20 approval threshold.",
+      localized: {
+        language: 'zh-Hans',
+        status: 'ready',
+        source: 'model',
+        summary: '批准该 swap，因为 Helium Mobile 最便宜的月度套餐低于 $20。',
+        reason: 'Helium Mobile 最便宜的月度手机套餐为 $15/month，低于用户的 $20 批准阈值。',
+        findings: [
+          { index: 0, label: '阈值检查', value: '$15/month 低于 $20，因此用户的批准条件成立。' },
+        ],
+      },
+      evidence: {
+        language: { sourceLanguage: 'zh-Hans' },
+        findings: [
+          { label: 'Threshold check', value: '$15/month is below $20, so the user’s approval condition holds.', tone: 'good' },
+        ],
+      },
+    }, { actionType: 'swap' });
+
+    const decision = sections.find((section) => section.id === 'decision');
+    expect(decision?.rows).toEqual(expect.arrayContaining([
+      { label: '阈值检查', value: '$15/month 低于 $20，因此用户的批准条件成立。', tone: 'good' },
+    ]));
+  });
+
+  it('prefers model-localized reviewer and question copy in evidence rows', () => {
+    const rows = reviewEvidenceRows({
+      status: 'denied',
+      reason: 'Risk reviewer flagged the mint authority.',
+      reviewers: [
+        { id: 'risk', label: 'Risk reviewer', decision: 'deny', reason: 'Token mint authority is still enabled.' },
+      ],
+      questions: [
+        { id: 'q1', prompt: 'Which DLMM position should be checked?', required: true },
+      ],
+      localized: {
+        language: 'zh-Hans',
+        status: 'ready',
+        source: 'model',
+        reviewers: [
+          { id: 'risk', label: '风险审核员', reason: '代币 mint 权限仍处于启用状态。' },
+        ],
+        questions: [
+          { id: 'q1', prompt: '应检查哪个 DLMM 仓位？' },
+        ],
+      },
+    });
+
+    // Reviewer row: model-translated name + reason, and the verdict word ("Denied")
+    // localized through the shared finding-label pack ("已拒绝").
+    expect(rows).toEqual(expect.arrayContaining([
+      { label: '风险审核员: 已拒绝', value: '代币 mint 权限仍处于启用状态。', tone: 'fail' },
+      { label: 'Missing input', value: '应检查哪个 DLMM 仓位？', tone: 'warn' },
+    ]));
+  });
+
+  it('falls back to source reviewer/question text when no model translation is present', () => {
+    const rows = reviewEvidenceRows({
+      status: 'denied',
+      reviewers: [
+        { id: 'risk', label: 'Risk reviewer', decision: 'deny', reason: 'Token mint authority is still enabled.' },
+      ],
+      questions: [
+        { id: 'q1', prompt: 'Which DLMM position should be checked?', required: true },
+      ],
+    });
+
+    expect(rows).toEqual(expect.arrayContaining([
+      { label: 'Risk reviewer: Denied', value: 'Token mint authority is still enabled.', tone: 'fail' },
+      { label: 'Missing input', value: 'Which DLMM position should be checked?', tone: 'warn' },
+    ]));
+  });
+
+  it('prefers model-localized policy and fact copy in evidence rows', () => {
+    const rows = reviewEvidenceRows({
+      status: 'denied',
+      reason: 'Denied by user policy.',
+      policies: [{ label: 'Spend cap', ruleText: 'Deny if over $20.', outcome: 'block' }],
+      facts: { route: { state: 'checked', message: 'SOL -> USDC via Jupiter.' } },
+      localized: {
+        language: 'zh-Hans',
+        status: 'ready',
+        source: 'model',
+        policies: [{ index: 0, label: '消费上限', ruleText: '若超过 $20 则拒绝。' }],
+        facts: [{ key: 'route', message: 'SOL -> USDC 通过 Jupiter。' }],
+      },
+    }, { actionType: 'swap' });
+
+    expect(rows).toEqual(expect.arrayContaining([
+      { label: 'Policy: 消费上限', value: '若超过 $20 则拒绝。', tone: 'fail' },
+      { label: 'Route', value: 'SOL -> USDC 通过 Jupiter。', tone: 'good' },
+    ]));
+  });
+
+  it('localizes counterfactual rationale from the localized copy', () => {
+    const receipt: AgentAuditReceiptLike = {
+      schemaVersion: 1,
+      receiptId: 'rcpt_1',
+      planFingerprint: 'fp_1',
+      walletAddress: '11111111111111111111111111111111',
+      cluster: 'mainnet',
+      routePlanHash: 'rph_1',
+      evidenceHash: 'eh_1',
+      aiDecisionHash: 'adh_1',
+      finalDecision: 'deny',
+      gateDecision: 'block',
+      checkedAt: '2026-06-15T00:00:00.000Z',
+      providerRoutes: [],
+      evidenceFactIds: [],
+      blockingFactIds: [],
+      missingRequirementIds: [],
+      counterfactualSummary: [{ id: 'cf1', rationale: 'If under $20 it would approve.', decisionAfter: 'approve' }],
+    };
+
+    const rows = auditReceiptDisplayRows(receipt, [{ index: 0, rationale: '若低于 $20 则会批准。' }]);
+
+    expect(rows).toEqual(expect.arrayContaining([
+      { label: 'Counterfactual → approve', value: '若低于 $20 则会批准。', tone: 'good' },
+    ]));
+  });
+
   it('renders research sources as first-class rows without raw source JSON', () => {
     const rows = reviewEvidenceRows({
       status: 'approved',
@@ -352,6 +504,22 @@ describe('agent review presentation helpers', () => {
     })).toEqual([
       { label: 'Summary', value: 'The agent needs more information.', tone: 'warn' },
       { label: 'Missing information', value: 'Recipient is missing.', tone: 'warn' },
+    ]);
+  });
+
+  it('renders wallet-required reviews as warning context, not failures', () => {
+    expect(reviewEvidenceRows({
+      status: 'wallet_required',
+      decision: 'needs_input',
+      summary: 'Condition passed; connect a wallet to continue.',
+      reason: 'Condition passed, but a wallet must be connected before this draft can continue.',
+    })).toEqual([
+      { label: 'Summary', value: 'Condition passed; connect a wallet to continue.', tone: 'warn' },
+      {
+        label: 'Wallet required',
+        value: 'Condition passed, but a wallet must be connected before this draft can continue.',
+        tone: 'warn',
+      },
     ]);
   });
 

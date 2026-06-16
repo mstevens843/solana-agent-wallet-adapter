@@ -177,6 +177,26 @@ class DeviceAgentMessageAssemblerTest {
     }
 
     @Test
+    fun localizeBuildsTargetLanguageDisplayCopyAndOutputShape() {
+        val payload = JSONObject()
+            .put("language", "zh-Hans")
+            .put("summary", "Approve the swap.")
+        val messages = DeviceAgentMessageAssembler.buildLocalizeMessages(payload)
+        assertEquals(DeviceAgentSystemPrompts.LOCALIZE, messages.system)
+        val userJson = JSONObject(messages.userContent)
+        assertEquals("zh-Hans", userJson.optString("targetLanguage"))
+        assertEquals("Approve the swap.", userJson.optJSONObject("displayCopy")?.optString("summary"))
+        val shape = userJson.optJSONObject("requiredOutputShape")!!
+        // Full-coverage output shape: every translatable array the model may return.
+        assertTrue(shape.has("findings"))
+        assertTrue(shape.has("questions"))
+        assertTrue(shape.has("reviewers"))
+        assertTrue(shape.has("policies"))
+        assertTrue(shape.has("facts"))
+        assertTrue(shape.has("counterfactuals"))
+    }
+
+    @Test
     fun planUserNotesOmittedWhenAbsent() {
         val messages = DeviceAgentMessageAssembler.buildPlanMessages(
             JSONObject().put("userPrompt", "send 1 SOL"),

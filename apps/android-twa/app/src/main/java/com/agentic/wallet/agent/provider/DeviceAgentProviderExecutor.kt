@@ -47,6 +47,9 @@ class DeviceAgentProviderExecutor internal constructor(
     override suspend fun ask(config: RuntimeConfig, payload: JSONObject): JSONObject =
         execute(config) { it.ask(payload) }
 
+    override suspend fun localize(config: RuntimeConfig, payload: JSONObject): JSONObject =
+        execute(config) { it.localize(payload) }
+
     private suspend fun execute(
         config: RuntimeConfig,
         block: suspend (DeviceAgentProvider) -> JSONObject,

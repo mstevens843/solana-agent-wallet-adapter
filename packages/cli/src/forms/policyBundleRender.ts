@@ -25,6 +25,18 @@ interface Evaluation {
   };
 }
 
+interface PolicyLanguage {
+  sourceLanguage?: string;
+  canonicalized?: boolean;
+  canonicalizationMethod?: string;
+  canonicalizationStatus?: string;
+  requiresInput?: boolean;
+  confidence?: number;
+  probablePolicy?: boolean;
+  canonicalizationHash?: string;
+  warnings?: string[];
+}
+
 interface PolicyBundle {
   atoms?: Atom[];
   resolutions?: Array<{ atomId?: string; provider?: string; value?: unknown; success?: boolean }>;
@@ -32,7 +44,12 @@ interface PolicyBundle {
   unresolvedAtoms?: Atom[];
   hasBlockingFailure?: boolean;
   txGateOutcomes?: Record<string, { pass?: boolean; reason?: string }>;
+  language?: PolicyLanguage;
   finishedAt?: string;
+}
+
+function languageRequiresInput(language: PolicyLanguage | undefined): boolean {
+  return language?.requiresInput === true || language?.canonicalizationStatus === 'failed';
 }
 
 interface DecisionShape {
@@ -73,8 +90,10 @@ export function renderPolicyBundle(
     return { decision: 'unknown', hasBlockingFailure: false, atomCount: 0, unresolvedCount: 0 };
   }
   const bundle = policyBundleFromResponse(response);
+  const language = policyLanguageFromResponse(response);
   const decision = (response.decision ?? '').toLowerCase();
   const hasBlockingFailure = Boolean(bundle?.hasBlockingFailure);
+  const needsLanguageInput = languageRequiresInput(language);
 
   if (decision && decision !== 'approve' && hasBlockingFailure) {
     // ok — decision and bundle agree.
@@ -83,9 +102,23 @@ export function renderPolicyBundle(
     console.log(badge('⚠ Inconsistent verdict — bridge says APPROVE but a blocking policy failed.', 'warn'));
   }
 
+  if (decision === 'approve' && needsLanguageInput) {
+    console.log();
+    console.log(badge('⚠ Inconsistent verdict — bridge says APPROVE but a non-English policy could not be safely translated.', 'warn'));
+  }
+
   if (decision && options.printDecision !== false) {
     console.log();
     console.log(decisionBanner(decision, response.reason ?? response.summary));
+  }
+
+  if (needsLanguageInput) {
+    console.log();
+    console.log(badge('Non-English policy translation needs review — rephrase in English or confirm the rule.', 'warn'));
+    if (language?.sourceLanguage) console.log(`  ${badge(`source: ${language.sourceLanguage}`, 'muted')}`);
+    for (const warning of language?.warnings ?? []) {
+      console.log(`  · ${warning}`);
+    }
   }
 
   const atoms = bundle?.atoms ?? [];
@@ -216,6 +249,17 @@ export interface ReviewResponse {
   policyBundle?: PolicyBundle;
 }
 
+// Language metadata can ride on the bundle (BYOK enrich path) or directly on
+// evidence.language (hosted/CLI review path, where the canonicalization failure may carry
+// zero atoms). Read from both so the warning surfaces regardless of which path produced it.
+function policyLanguageFromResponse(response: DecisionShape): PolicyLanguage | undefined {
+  const bundleLanguage = (response.policyBundle ?? response.evidence?.policyBundle)?.language;
+  if (bundleLanguage) return bundleLanguage;
+  const evidence = response.evidence;
+  if (evidence && isRecord(evidence.language)) return evidence.language as PolicyLanguage;
+  return undefined;
+}
+
 function policyBundleFromResponse(response: DecisionShape): PolicyBundle | undefined {
   const explicit = response.policyBundle ?? response.evidence?.policyBundle;
   if (explicit) {
@@ -248,6 +292,7 @@ function policyBundleFromResponse(response: DecisionShape): PolicyBundle | undef
     evaluations,
     unresolvedAtoms,
     ...(txGateOutcomes ? { txGateOutcomes } : {}),
+    ...(isRecord(evidence.language) ? { language: evidence.language as PolicyLanguage } : {}),
     hasBlockingFailure,
   };
 }

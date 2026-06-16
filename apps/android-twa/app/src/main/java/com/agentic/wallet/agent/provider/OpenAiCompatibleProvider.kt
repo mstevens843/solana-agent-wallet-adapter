@@ -57,6 +57,21 @@ internal class OpenAiCompatibleProvider(
         return JSONObject().put("output_text", text)
     }
 
+    override suspend fun localize(payload: JSONObject): JSONObject {
+        val messages = DeviceAgentMessageAssembler.buildLocalizeMessages(payload)
+        val response = postChatCompletion(
+            messages,
+            jsonObjectMode = false,
+            temperature = ASK_TEMPERATURE,
+            maxTokens = ASK_MAX_TOKENS,
+        )
+        val text = ProviderResponseParser.extractOpenAiText(response)
+        if (text.isBlank()) {
+            throw ProviderHttpException(ProviderErrorCodes.INVALID_RESPONSE, "Provider response had no answer text.")
+        }
+        return JSONObject().put("output_text", text)
+    }
+
     private suspend fun postChatCompletion(
         messages: Messages,
         jsonObjectMode: Boolean,

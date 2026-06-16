@@ -200,8 +200,8 @@ describe('runtime config', () => {
 });
 
 describe('runtime request', () => {
-  it('lists the three method wires', () => {
-    expect(RUNTIME_METHODS).toEqual(['generatePlan', 'reviewPlan', 'ask']);
+  it('lists the method wires', () => {
+    expect(RUNTIME_METHODS).toEqual(['generatePlan', 'reviewPlan', 'ask', 'localize']);
   });
 
   it('recognizes valid method wires', () => {

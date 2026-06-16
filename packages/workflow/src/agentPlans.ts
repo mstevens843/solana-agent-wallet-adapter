@@ -1,4 +1,5 @@
 import type { AiGuardrailReport } from './index.js';
+import type { AgentReviewLocalizedCopy } from './agentReviewLocalization.js';
 
 export type AgentPlanSource = 'template' | 'ai';
 export type TemplateRisk = 'low' | 'medium' | 'high';
@@ -134,6 +135,7 @@ export interface AgentPlanReviewResult {
   evidence: Record<string, unknown>;
   checkedAt: string;
   source: 'ai';
+  localized?: AgentReviewLocalizedCopy;
   questions?: AgentReviewQuestion[];
   reviewers?: AgentReviewerEntry[];
 }

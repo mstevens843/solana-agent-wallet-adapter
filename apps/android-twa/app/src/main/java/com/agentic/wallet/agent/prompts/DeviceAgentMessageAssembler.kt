@@ -54,6 +54,55 @@ internal object DeviceAgentMessageAssembler {
     }
 
     /**
+     * Build the message pair for the review-localization pass. Mirrors
+     * packages/workflow/src/agentReviewLocalization.ts:agentReviewLocalizationMessages — the
+     * `payload` is the reviewLocalizationPayload display copy, nested as `displayCopy`.
+     */
+    fun buildLocalizeMessages(payload: JSONObject): Messages {
+        val requiredOutputShape = JSONObject().apply {
+            put("summary", "translated summary if present")
+            put("reason", "translated reason if present")
+            put("findings", JSONArray().put(JSONObject().apply {
+                put("index", 0)
+                put("atomId", "same optional atomId")
+                put("label", "translated label")
+                put("value", "translated value")
+            }))
+            put("questions", JSONArray().put(JSONObject().apply {
+                put("id", "same id")
+                put("prompt", "translated prompt")
+                put("hint", "translated hint")
+                put("options", JSONArray().put("translated options"))
+            }))
+            put("reviewers", JSONArray().put(JSONObject().apply {
+                put("id", "same optional id")
+                put("label", "translated label")
+                put("reason", "translated reason")
+                put("summary", "translated summary")
+            }))
+            put("policies", JSONArray().put(JSONObject().apply {
+                put("index", 0)
+                put("label", "translated label")
+                put("ruleText", "translated rule text")
+            }))
+            put("facts", JSONArray().put(JSONObject().apply {
+                put("key", "same fact key")
+                put("message", "translated message")
+            }))
+            put("counterfactuals", JSONArray().put(JSONObject().apply {
+                put("index", 0)
+                put("rationale", "translated rationale")
+            }))
+        }
+        val userContent = JSONObject().apply {
+            put("targetLanguage", payload.optString("language", ""))
+            put("displayCopy", payload)
+            put("requiredOutputShape", requiredOutputShape)
+        }
+        return Messages(DeviceAgentSystemPrompts.LOCALIZE, userContent.toString())
+    }
+
+    /**
      * Build the message pair for the research pass — Device Agent parity with the local-bridge
      * two-pass flow. When the review needs current outside facts, the LLM gets a research-only
      * turn (with web search bound) before the structured review turn. Mirrors

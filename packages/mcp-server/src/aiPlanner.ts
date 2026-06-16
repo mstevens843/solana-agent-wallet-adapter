@@ -11,6 +11,20 @@ import {
   isWebOnly,
   reconcileThresholdReviewDecision,
   runPolicyPipeline,
+  compactPolicyLanguageForWire,
+  localizeAgentReviewResultForDisplay,
+  normalizeAgentReviewLocalizedCopy,
+  normalizeReviewLanguageCode,
+  policyLanguageRequiresInput,
+  reviewLocalizationPayload,
+  reviewLocalizationPayloadHasText,
+  agentReviewLocalizationMessages,
+  agentReviewLocalizedCopyFromModel,
+  shouldLocalizeAgentReview,
+  sourceLanguageFromReview,
+  POLICY_LANGUAGE_NEEDS_INPUT_REASON,
+  POLICY_LANGUAGE_NEEDS_INPUT_SUMMARY,
+  POLICY_LANGUAGE_MISSING_FACT_ID,
   VERIFIED_PROGRAM_IDS,
   type AgentAtom,
   type AgentPlan as AiPlan,
@@ -28,7 +42,11 @@ import {
   type AgentReviewerEntry as AiReviewerEntry,
   type AiPlanRequest as WorkflowAiPlanRequest,
   type AiPlanTemplateContext,
+  type AgentReviewLocalizedCopy,
+  type LocalizableAgentReview,
   type PolicyEvaluationBundle,
+  type PolicyLanguageCode,
+  type PolicyTextCanonicalizer,
   type SimulationDigest,
   type TxGateContext,
 } from '@solana-agent-wallet-adapter/workflow';
@@ -642,7 +660,8 @@ export class BridgeAiPlanner {
     // Merge structured policyBundle findings into evidence.findings so the inbox card
     // renders them. The LLM may also have produced findings; we dedupe by label and
     // prefer server-sourced (orchestrator) rows since they cite a concrete provider.
-    return mergePolicyBundleFindings(result, enrichedRequest);
+    const merged = mergePolicyBundleFindings(result, enrichedRequest);
+    return this.localizeReviewForDisplay(merged, enrichedRequest);
   }
 
   /**
@@ -716,10 +735,15 @@ export class BridgeAiPlanner {
         resolver,
         resolveOptions,
         llmAtomExtractor,
+        policyTextCanonicalizer: this.buildPolicyTextCanonicalizer(),
         simulation,
         txGateContext,
       });
-      if (bundle.atoms.length === 0) return request;
+      // Normally an empty bundle (no atoms) means "nothing to enrich" and we pass through.
+      // EXCEPTION: a non-English policy that failed canonicalization also yields zero atoms
+      // but sets language.requiresInput — we MUST keep the bundle so applyServerSideReviewSafety
+      // can fail the review closed (needs_input) instead of letting the model approve blindly.
+      if (bundle.atoms.length === 0 && !policyLanguageRequiresInput(bundle.language)) return request;
       // Drop verbose resolution internals (attempts[], detail strings) before embedding
       // in request.context — the LLM only needs atoms + evaluations + tx-gate outcomes +
       // hasBlockingFailure to do its job. mergePolicyBundleFindings reads back from the
@@ -779,6 +803,63 @@ export class BridgeAiPlanner {
     };
   }
 
+  private buildPolicyTextCanonicalizer(): PolicyTextCanonicalizer | undefined {
+    if (process.env.AGENTIC_POLICY_TRANSLATION === '0') return undefined;
+    const config = this.config();
+    if (!config) return undefined;
+    return async ({ text, sourceLanguage, knownTokenSymbols }) => {
+      const messages = policyCanonicalizationMessages(text, sourceLanguage, knownTokenSymbols ?? []);
+      const json = await this.callLlmJson(config, messages);
+      if (!json) return undefined;
+      return parsePolicyCanonicalizationResponse(json);
+    };
+  }
+
+  private async localizeReviewForDisplay(
+    result: AiReviewResult,
+    request: Required<AiReviewRequest>,
+  ): Promise<AiReviewResult> {
+    const fallbackText = reviewLocalizationFallbackText(request);
+    const phraseLocalized = localizeAgentReviewResultForDisplay(result, { fallbackText });
+    const language = normalizeReviewLanguageCode(
+      phraseLocalized.localized?.language ?? sourceLanguageFromReview(phraseLocalized, fallbackText),
+    );
+    if (!shouldLocalizeAgentReview(language)) return phraseLocalized;
+    const candidate = await this.localizeReview(result, language);
+    if (!candidate) return phraseLocalized;
+    return localizeAgentReviewResultForDisplay({ ...result, localized: candidate }, {
+      language,
+      fallbackText,
+    });
+  }
+
+  /**
+   * Model-backed translation of a review's user-facing display copy into `language`.
+   * Shared by the hosted review path (localizeReviewForDisplay) AND the cloud
+   * `/api/review/localize` endpoint that serves device-agent (BYOK) clients whose
+   * on-device LLM produced an English review and cannot translate it themselves.
+   * Returns undefined (caller keeps the phrase-pack / English copy) when localization
+   * is disabled, the language is English/unknown, no operator config, empty payload, or
+   * the model call fails — every path stays graceful.
+   */
+  async localizeReview(
+    review: LocalizableAgentReview,
+    language: PolicyLanguageCode,
+  ): Promise<AgentReviewLocalizedCopy | undefined> {
+    if (process.env.AGENTIC_REVIEW_LOCALIZATION === '0') return undefined;
+    if (!shouldLocalizeAgentReview(language)) return undefined;
+    const config = this.config();
+    if (!config) return undefined;
+    const payload = reviewLocalizationPayload(review, language);
+    if (!reviewLocalizationPayloadHasText(payload)) return undefined;
+    const json = await this.callLlmJson(config, agentReviewLocalizationMessages(payload), {
+      maxOutputTokens: 1800,
+    });
+    if (!json) return undefined;
+    const parsed = parsePlanJson(json);
+    return agentReviewLocalizedCopyFromModel(parsed, review, language);
+  }
+
   /**
    * Provider-agnostic JSON call: sends a system + user message pair and returns the
    * parsed model output as a string (the first text/content block). Returns undefined
@@ -787,7 +868,9 @@ export class BridgeAiPlanner {
   private async callLlmJson(
     config: AiRuntimeConfig,
     messages: Array<{ role: 'system' | 'user'; content: string }>,
+    options: { maxOutputTokens?: number } = {},
   ): Promise<string | undefined> {
+    const maxOutputTokens = options.maxOutputTokens ?? 600;
     try {
       const transport = resolveAiTransport(config);
       if (transport === 'cli-agent') {
@@ -804,7 +887,7 @@ export class BridgeAiPlanner {
           headers: anthropicHeaders(config),
           body: JSON.stringify({
             model: config.model,
-            max_tokens: 600,
+            max_tokens: maxOutputTokens,
             system: messages[0]?.content ?? '',
             messages: [{ role: 'user', content: messages[1]?.content ?? '' }],
             temperature: 0,
@@ -819,7 +902,7 @@ export class BridgeAiPlanner {
           jsonObjectMode: true,
           responseSchema: undefined,
           temperature: 0,
-          maxOutputTokens: 600,
+          maxOutputTokens,
           research: false,
         });
         return extractModelText(payload).trim() || undefined;
@@ -839,7 +922,7 @@ export class BridgeAiPlanner {
         body: JSON.stringify({
           model: config.model,
           messages,
-          [tokenKey]: effectiveMaxOutputTokens(config.model, 600),
+          [tokenKey]: effectiveMaxOutputTokens(config.model, maxOutputTokens),
           ...(defaultTempOnly ? {} : { temperature: 0 }),
           response_format: { type: 'json_object' },
         }),
@@ -2323,6 +2406,51 @@ function atomExtractionMessages(text: string, knownTokenSymbols: ReadonlyArray<s
   ];
 }
 
+function policyCanonicalizationMessages(
+  text: string,
+  sourceLanguage: string,
+  knownTokenSymbols: ReadonlyArray<string>,
+): Array<{ role: 'system' | 'user'; content: string }> {
+  return [
+    {
+      role: 'system',
+      content:
+        'You canonicalize non-English Solana wallet policy text into strict English for a deterministic parser. ' +
+        'Return ONLY JSON with shape {"canonicalEnglish":"...","warnings":[]}. Do not approve, deny, search, or add facts. ' +
+        'Preserve token symbols, wallet addresses, mint addresses, protocol names, amounts, currency symbols, thresholds, dates, times, and comparison operators exactly. ' +
+        'Translate only the user policy/instruction into concise parser-friendly English, such as "approve only if SOL is above $80" or "Helium monthly plan is under $20". ' +
+        'Never invent a threshold or action the user did not state.',
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        sourceLanguage,
+        knownTokenSymbols,
+        text,
+      }),
+    },
+  ];
+}
+
+function parsePolicyCanonicalizationResponse(raw: string): { canonicalEnglish: string; warnings: string[] } | undefined {
+  if (!raw || typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/```$/i, '').trim();
+  let parsed: unknown;
+  try { parsed = JSON.parse(trimmed); } catch { return undefined; }
+  if (!parsed || typeof parsed !== 'object') return undefined;
+  const record = parsed as Record<string, unknown>;
+  const canonicalEnglish = typeof record.canonicalEnglish === 'string'
+    ? record.canonicalEnglish.trim()
+    : typeof record.normalizedText === 'string'
+      ? record.normalizedText.trim()
+      : '';
+  if (!canonicalEnglish) return undefined;
+  const warnings = Array.isArray(record.warnings)
+    ? record.warnings.filter((entry): entry is string => typeof entry === 'string')
+    : [];
+  return { canonicalEnglish, warnings };
+}
+
 /**
  * Parse the model's atom-extraction response into a typed atom list. Tolerates the response
  * being either a bare JSON object or wrapped in markdown fencing.
@@ -2754,6 +2882,12 @@ function aiReviewMessages(
   ];
 }
 
+function reviewLocalizationFallbackText(request: Required<AiReviewRequest>): string {
+  return [request.instruction, request.plan.userNotes, request.plan.intent]
+    .filter((entry): entry is string => typeof entry === 'string' && Boolean(entry.trim()))
+    .join('\n');
+}
+
 function normalizeAiPlan(payload: unknown, request: Required<AiPlanRequest>): AiPlan {
   const parsed = parsePlanJson(extractModelText(payload));
   return aiPlanFromParsed(parsed, request);
@@ -2932,6 +3066,7 @@ function aiReviewFromParsed(
   if (decisionContract) {
     evidence.decisionContract = decisionContract;
   }
+  const localized = normalizeAgentReviewLocalizedCopy(parsed.localized);
   const result: AiReviewResult = {
     decision,
     reason: compactReviewText(reason, 280),
@@ -2939,6 +3074,7 @@ function aiReviewFromParsed(
     evidence: withResearchCitations(evidence, options.citations ?? []),
     checkedAt: new Date().toISOString(),
     source: 'ai',
+    ...(localized ? { localized } : {}),
     ...(questions ? { questions } : {}),
     ...(reviewers && reviewers.length ? { reviewers } : {}),
   };
@@ -3053,6 +3189,36 @@ export function applyServerSideReviewSafety(
     }
   }
 
+  // Language canonicalization fail-closed: if the orchestrator could not safely turn a
+  // non-English policy NOTE into atoms (language.requiresInput / canonicalizationStatus
+  // === 'failed'), the model must NOT be trusted to approve OR deny over text it may have
+  // misread — force needs_input. This mirrors the browser device-agent enforcer
+  // (enforceLanguageNeedsInput) and the native Android/iOS enforcers, closing the same hole
+  // on the hosted-managed AI path and the CLI bridge review path.
+  const policyLanguage = policyBundle && isJsonObjectLike(policyBundle.language)
+    ? (policyBundle.language as Record<string, unknown>)
+    : undefined;
+  if (policyLanguage && policyLanguageRequiresInput(policyLanguage)) {
+    decision = 'needs_input';
+    reason = POLICY_LANGUAGE_NEEDS_INPUT_REASON;
+    summary = POLICY_LANGUAGE_NEEDS_INPUT_SUMMARY;
+    safetyTriggered = true;
+    evidence.language = policyLanguage;
+    evidence.languageSafetyApplied = true;
+    const existingMissing = Array.isArray(evidence.missingFactIds)
+      ? (evidence.missingFactIds as unknown[]).filter((id): id is string => typeof id === 'string')
+      : [];
+    evidence.missingFactIds = Array.from(new Set([...existingMissing, POLICY_LANGUAGE_MISSING_FACT_ID]));
+    const targetContract = contract ?? policyContract ?? { decision, reason, summary, evidenceFactIds: [] };
+    const contractMissing = Array.isArray(targetContract.missingFactIds)
+      ? (targetContract.missingFactIds as unknown[]).filter((id): id is string => typeof id === 'string')
+      : [];
+    targetContract.missingFactIds = Array.from(new Set([...contractMissing, POLICY_LANGUAGE_MISSING_FACT_ID]));
+    if (!contract && !policyContract) {
+      policyContract = targetContract;
+    }
+  }
+
   if (!safetyTriggered) return result;
   const finalContract = contract ?? policyContract;
   if (finalContract) {
@@ -3108,6 +3274,10 @@ function compactPolicyBundleForLlm(bundle: PolicyEvaluationBundle): Record<strin
     })),
     ...(Object.keys(bundle.txGateOutcomes).length > 0 ? { txGateOutcomes: bundle.txGateOutcomes } : {}),
     hasBlockingFailure: bundle.hasBlockingFailure,
+    // Surface language/canonicalization metadata (same wire shape as the cloud
+    // /api/policy/enrich endpoint) so applyServerSideReviewSafety can enforce the
+    // non-English fail-closed contract and the model has visibility into it.
+    language: compactPolicyLanguageForWire(bundle.language),
     finishedAt: bundle.finishedAt,
   };
 }
@@ -3149,11 +3319,14 @@ export function mergePolicyBundleFindings(
   const context = (request.context ?? {}) as Record<string, unknown>;
   const bundle = isJsonObjectLike(context.policyBundle) ? (context.policyBundle as Record<string, unknown>) : undefined;
   if (!bundle) return result;
+  const evidence = isJsonObjectLike(result.evidence) ? { ...(result.evidence as Record<string, unknown>) } : {};
+  if (isJsonObjectLike(bundle.language)) {
+    evidence.language = bundle.language;
+  }
   const evaluations = Array.isArray(bundle.evaluations) ? (bundle.evaluations as Array<Record<string, unknown>>) : [];
-  if (evaluations.length === 0) return result;
+  if (evaluations.length === 0) return evidence === result.evidence ? result : { ...result, evidence };
   const validPolicyAtomIds = policyBundleAtomIds(bundle);
 
-  const evidence = isJsonObjectLike(result.evidence) ? { ...(result.evidence as Record<string, unknown>) } : {};
   const existingFindings = Array.isArray(evidence.findings)
     ? (evidence.findings as Array<Record<string, unknown>>).slice()
     : [];

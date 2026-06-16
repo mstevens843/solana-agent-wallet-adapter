@@ -25,7 +25,7 @@
 // chat completions via OpenAiCompatibleProvider.kt. The TS chat-completions wire shape
 // that Kotlin owns is unchanged; this is a new path on top.
 
-import { buildAskMessages, buildPlanMessages, buildResearchMessages, buildReviewMessages } from '../prompts/messageAssembler.js';
+import { buildAskMessages, buildLocalizeMessages, buildPlanMessages, buildResearchMessages, buildReviewMessages } from '../prompts/messageAssembler.js';
 import type { DeviceAgentMessages } from '../prompts/messageAssembler.js';
 import type { RuntimeConfig } from '../runtime/config.js';
 import { logDeviceAgentDiag } from '../runtime/diagnosticLog.js';
@@ -325,6 +325,26 @@ export class OpenAiNativeProvider implements DeviceAgentProvider {
       temperature: ASK_TEMPERATURE,
       maxOutputTokens: ASK_MAX_TOKENS,
       research,
+    }, signal);
+    const text = extractResponsesApiText(response);
+    if (text.trim().length === 0) {
+      throw new ProviderHttpError(
+        PROVIDER_ERROR_CODES.INVALID_RESPONSE,
+        responsesApiTruncated(response)
+          ? emptyModelTextMessage(this.config.model, true)
+          : 'Provider response had no answer text.',
+      );
+    }
+    return { output_text: text };
+  }
+
+  async localize(payload: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    const messages = buildLocalizeMessages(payload);
+    const response = await this.postResponses(messages, {
+      // localization is a pure translation — never trigger web search.
+      temperature: ASK_TEMPERATURE,
+      maxOutputTokens: ASK_MAX_TOKENS,
+      research: false,
     }, signal);
     const text = extractResponsesApiText(response);
     if (text.trim().length === 0) {

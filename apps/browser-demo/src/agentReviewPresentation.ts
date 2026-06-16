@@ -1,5 +1,18 @@
 import type { AgentPlan } from './planner.js';
 import { findingsSpecFor, type DeterministicFactKey } from './agentFindingsSpec.js';
+import {
+  agentReviewLocalizedFindingLabel,
+  agentReviewLocalizedLabel,
+  agentReviewLocalizedProse,
+  normalizeReviewLanguageCode,
+  shouldLocalizeAgentReview,
+  sourceLanguageFromReview,
+  type AgentReviewLocalizedCopy,
+  type AgentReviewLocalizedCounterfactual,
+  type AgentReviewLocalizedFinding,
+  type AgentReviewLocalizedLabelKey,
+  type PolicyLanguageCode,
+} from '@solana-agent-wallet-adapter/workflow';
 
 export type AgentEvidenceTone = 'good' | 'warn' | 'neutral' | 'fail';
 
@@ -43,12 +56,14 @@ export interface AgentEvidencePolicyLike {
 }
 
 export interface AgentEvidenceReviewerLike {
+  id?: string;
   label: string;
   decision: 'approve' | 'deny' | 'needs_input';
   reason: string;
 }
 
 export interface AgentEvidenceQuestionLike {
+  id?: string;
   prompt: string;
   required?: boolean;
 }
@@ -96,7 +111,7 @@ export interface AgentAuditReceiptLike {
 }
 
 export interface AgentEvidenceReviewLike {
-  status?: 'checking' | 'approved' | 'denied' | 'needs_input' | 'error';
+  status?: 'checking' | 'approved' | 'denied' | 'needs_input' | 'wallet_required' | 'error';
   decision?: 'approve' | 'deny' | 'needs_input';
   reason?: string;
   summary?: string;
@@ -115,6 +130,7 @@ export interface AgentEvidenceReviewLike {
   decisionContract?: unknown;
   evidenceGate?: unknown;
   decisionViolations?: string[];
+  localized?: AgentReviewLocalizedCopy;
 }
 
 export interface ReviewEvidenceRowsOptions {
@@ -291,7 +307,10 @@ export function evidenceFactDisplayRows(facts: AgentEvidenceFactRow[] | undefine
   });
 }
 
-export function auditReceiptDisplayRows(receipt: AgentAuditReceiptLike | undefined): AgentEvidenceDisplayRow[] {
+export function auditReceiptDisplayRows(
+  receipt: AgentAuditReceiptLike | undefined,
+  localizedCounterfactuals: AgentReviewLocalizedCounterfactual[] = [],
+): AgentEvidenceDisplayRow[] {
   if (!receipt) return [];
   const rows: AgentEvidenceDisplayRow[] = [];
   const decisionTone: AgentEvidenceTone = receipt.finalDecision === 'approve'
@@ -334,15 +353,17 @@ export function auditReceiptDisplayRows(receipt: AgentAuditReceiptLike | undefin
     });
   }
   if (receipt.counterfactualSummary?.length) {
-    for (const cf of receipt.counterfactualSummary) {
+    for (let cfIndex = 0; cfIndex < receipt.counterfactualSummary.length; cfIndex += 1) {
+      const cf = receipt.counterfactualSummary[cfIndex]!;
       const tone: AgentEvidenceTone = cf.decisionAfter === 'approve'
         ? 'good'
         : cf.decisionAfter === 'needs_input'
           ? 'warn'
           : 'fail';
+      const localizedRationale = localizedCounterfactuals.find((entry) => entry.index === cfIndex)?.rationale;
       rows.push({
         label: `Counterfactual → ${cf.decisionAfter}`,
-        value: cf.rationale,
+        value: textValue(localizedRationale) || cf.rationale,
         tone,
       });
     }
@@ -409,6 +430,11 @@ export function tokenMismatchEvidenceRows(evidence: Record<string, unknown> | un
   }];
 }
 
+// Builds the flat evidence rows. Model-translated PROSE (finding/fact/policy/reviewer/question
+// values, summary, reason) is injected here from review.localized so standalone callers get it.
+// Phrase-pack translation of structural LABELS happens one layer up in reviewEvidenceSections via
+// localizedEvidenceRow — so the live render path is fully localized; a direct caller of this
+// function gets localized prose but English structural labels.
 export function reviewEvidenceRows(
   review: AgentEvidenceReviewLike,
   options: ReviewEvidenceRowsOptions = {},
@@ -417,6 +443,7 @@ export function reviewEvidenceRows(
   const seen = new Set<string>();
   const evidence = review.evidence && isPlainRecord(review.evidence) ? review.evidence : undefined;
   const stringify = options.stringify ?? stableStringify;
+  const language = reviewDisplayLanguage(review);
   const researchFocused = hasResearchEvidence(evidence) || Boolean(review.facts?.research);
   const addRow = (row: Partial<AgentEvidenceDisplayRow>): void => {
     const label = textValue(row.label).slice(0, 96);
@@ -439,7 +466,7 @@ export function reviewEvidenceRows(
     if (researchFocused && row.tone !== 'fail' && row.tone !== 'warn' && isPromptScopedOperationalRow(row)) continue;
     addRow(row);
   }
-  for (const finding of evidenceFindingRows(evidence)) {
+  for (const finding of evidenceFindingRows(review)) {
     if (researchFocused && finding.tone !== 'fail' && finding.tone !== 'warn' && isPromptScopedOperationalRow(finding)) continue;
     addRow(finding);
   }
@@ -471,23 +498,29 @@ export function reviewEvidenceRows(
     const slotOrder = spec.slots.includes('research') || !facts.research
       ? spec.slots
       : (['research', ...spec.slots] as DeterministicFactKey[]);
+    const localizedFacts = review.localized?.facts ?? [];
     for (const key of slotOrder) {
       const fact = facts[key];
       if (!fact) continue;
       if (researchFocused && key !== 'research' && fact.state !== 'fail' && fact.state !== 'warn') continue;
       const label = spec.labels?.[key] ?? defaultLabels[key];
+      const localizedMessage = localizedFacts.find((entry) => entry.key === key)?.message;
       addRow({
         label,
-        value: textValue(fact.message) || agentEvidenceFactStateLabel(fact.state),
+        value: textValue(localizedMessage) || textValue(fact.message) || agentEvidenceFactStateLabel(fact.state),
         tone: agentEvidenceFactTone(fact.state),
       });
     }
   }
 
+  const localizedQuestions = review.localized?.questions ?? [];
+  let questionIndex = 0;
   for (const question of review.questions ?? []) {
+    const localizedQuestion = localizedQuestionForEntry(localizedQuestions, question, questionIndex);
+    questionIndex += 1;
     addRow({
       label: question.required === false ? 'Requested input' : 'Missing input',
-      value: question.prompt,
+      value: textValue(localizedQuestion?.prompt) || question.prompt,
       tone: 'warn',
     });
   }
@@ -495,10 +528,15 @@ export function reviewEvidenceRows(
     addRow(row);
   }
 
+  const localizedPolicies = review.localized?.policies ?? [];
+  let policyIndex = 0;
   for (const snapshot of review.policies ?? []) {
+    const localizedPolicy = localizedPolicies.find((entry) => entry.index === policyIndex);
+    policyIndex += 1;
+    const policyLabel = textValue(localizedPolicy?.label) || snapshot.label;
     addRow({
-      label: `Policy: ${snapshot.label}`,
-      value: snapshot.ruleText,
+      label: `Policy: ${policyLabel}`,
+      value: textValue(localizedPolicy?.ruleText) || snapshot.ruleText,
       tone: snapshot.outcome === 'pass'
         ? 'good'
         : snapshot.outcome === 'warn'
@@ -509,15 +547,16 @@ export function reviewEvidenceRows(
     });
   }
 
+  const localizedReviewers = review.localized?.reviewers ?? [];
+  let reviewerIndex = 0;
   for (const reviewer of review.reviewers ?? []) {
-    const decisionLabel = reviewer.decision === 'approve'
-      ? 'Approved'
-      : reviewer.decision === 'needs_input'
-        ? 'Needs input'
-        : 'Denied';
+    const localizedReviewer = localizedReviewerForEntry(localizedReviewers, reviewer, reviewerIndex);
+    reviewerIndex += 1;
+    const reviewerName = textValue(localizedReviewer?.label) || reviewer.label;
+    const decisionLabel = reviewerDecisionLabel(reviewer.decision, language);
     addRow({
-      label: `${reviewer.label}: ${decisionLabel}`,
-      value: reviewer.reason,
+      label: `${reviewerName}: ${decisionLabel}`,
+      value: textValue(localizedReviewer?.reason) || reviewer.reason,
       tone: reviewer.decision === 'approve' ? 'good' : reviewer.decision === 'needs_input' ? 'warn' : 'fail',
     });
   }
@@ -557,6 +596,7 @@ export function reviewEvidenceSections(
   review: AgentEvidenceReviewLike,
   options: ReviewEvidenceRowsOptions = {},
 ): AgentEvidenceDisplaySection[] {
+  const language = reviewDisplayLanguage(review);
   const sections = new Map<AgentEvidenceSectionId, AgentEvidenceDisplayRow[]>();
   const addToSection = (id: AgentEvidenceSectionId, row: AgentEvidenceDisplayRow): void => {
     const rows = sections.get(id) ?? [];
@@ -581,7 +621,11 @@ export function reviewEvidenceSections(
   for (const id of ['decision', 'market', 'token', 'transaction', 'sources', 'other'] as const) {
     const rows = sections.get(id);
     if (rows?.length) {
-      ordered.push({ id, label: evidenceSectionLabel(id), rows });
+      ordered.push({
+        id,
+        label: evidenceSectionLabel(id, language),
+        rows: rows.map((row) => localizedEvidenceRow(row, language)),
+      });
     }
   }
 
@@ -589,8 +633,8 @@ export function reviewEvidenceSections(
   if (advancedRows.length) {
     ordered.push({
       id: 'advanced',
-      label: evidenceSectionLabel('advanced'),
-      rows: advancedRows,
+      label: evidenceSectionLabel('advanced', language),
+      rows: advancedRows.map((row) => localizedEvidenceRow(row, language)),
       advanced: true,
     });
   }
@@ -672,7 +716,7 @@ export function advancedEvidenceRows(
     addRow({ label: 'Validation issues', value: review.decisionViolations.join('; '), tone: 'warn' });
   }
 
-  for (const row of auditReceiptDisplayRows(review.auditReceipt)) {
+  for (const row of auditReceiptDisplayRows(review.auditReceipt, review.localized?.counterfactuals ?? [])) {
     addRow(row);
   }
 
@@ -715,7 +759,8 @@ export function evidenceEntryTone(label: string, value: string): AgentEvidenceTo
     : 'neutral';
 }
 
-function evidenceFindingRows(evidence: Record<string, unknown> | undefined): AgentEvidenceDisplayRow[] {
+function evidenceFindingRows(review: AgentEvidenceReviewLike): AgentEvidenceDisplayRow[] {
+  const evidence = review.evidence && isPlainRecord(review.evidence) ? review.evidence : undefined;
   if (!evidence) return [];
   const raw = Array.isArray(evidence.findings)
     ? evidence.findings
@@ -723,13 +768,16 @@ function evidenceFindingRows(evidence: Record<string, unknown> | undefined): Age
       ? evidence.checks
       : Array.isArray(evidence.evidenceRows)
         ? evidence.evidenceRows
-        : undefined;
+      : undefined;
   if (!raw) return [];
   const rows: AgentEvidenceDisplayRow[] = [];
-  for (const entry of raw) {
+  const localized = review.localized?.findings ?? [];
+  for (let index = 0; index < raw.length; index += 1) {
+    const entry = raw[index];
     if (!isPlainRecord(entry)) continue;
-    const label = textValue(entry.label);
-    const value = textValue(entry.value);
+    const localizedEntry = localizedFindingForEvidenceEntry(localized, entry, index);
+    const label = textValue(localizedEntry?.label) || textValue(entry.label);
+    const value = textValue(localizedEntry?.value) || textValue(entry.value);
     if (!label || !value) continue;
     rows.push({
       label,
@@ -739,6 +787,66 @@ function evidenceFindingRows(evidence: Record<string, unknown> | undefined): Age
     if (rows.length >= 24) break;
   }
   return rows;
+}
+
+function localizedFindingForEvidenceEntry(
+  localized: AgentReviewLocalizedFinding[],
+  entry: Record<string, unknown>,
+  index: number,
+): AgentReviewLocalizedFinding | undefined {
+  const atomId = typeof entry.atomId === 'string' && entry.atomId.trim() ? entry.atomId.trim() : '';
+  if (atomId) {
+    const byAtom = localized.find((candidate) => candidate.atomId === atomId);
+    if (byAtom) return byAtom;
+  }
+  return localized.find((candidate) => candidate.index === index);
+}
+
+type LocalizedReviewerCopy = NonNullable<AgentReviewLocalizedCopy['reviewers']>[number];
+type LocalizedQuestionCopy = NonNullable<AgentReviewLocalizedCopy['questions']>[number];
+
+// Match a rendered reviewer/question against its model-translated counterpart in
+// review.localized (the localize verb / cloud pass). Prefer a stable id; fall back to
+// position, which holds because the sanitizer emits localized entries in source order.
+function localizedReviewerForEntry(
+  localized: LocalizedReviewerCopy[],
+  reviewer: AgentEvidenceReviewerLike,
+  index: number,
+): LocalizedReviewerCopy | undefined {
+  const id = typeof reviewer.id === 'string' && reviewer.id.trim() ? reviewer.id.trim() : '';
+  if (id) {
+    const byId = localized.find((candidate) => candidate.id === id);
+    if (byId) return byId;
+  }
+  return localized[index];
+}
+
+function localizedQuestionForEntry(
+  localized: LocalizedQuestionCopy[],
+  question: AgentEvidenceQuestionLike,
+  index: number,
+): LocalizedQuestionCopy | undefined {
+  const id = typeof question.id === 'string' && question.id.trim() ? question.id.trim() : '';
+  if (id) {
+    const byId = localized.find((candidate) => candidate.id === id);
+    if (byId) return byId;
+  }
+  return localized[index];
+}
+
+// Localize the reviewer verdict word ("Approved"/"Denied"/"Needs input") via the shared
+// finding-label pack so the composite "<name>: <verdict>" row label is translated too.
+// English wording is preserved verbatim for non-localized languages.
+function reviewerDecisionLabel(
+  decision: AgentEvidenceReviewerLike['decision'],
+  language: PolicyLanguageCode,
+): string {
+  const english = decision === 'approve'
+    ? 'Approved'
+    : decision === 'needs_input'
+      ? 'Needs input'
+      : 'Denied';
+  return agentReviewLocalizedFindingLabel(english, language);
 }
 
 function hasResearchEvidence(evidence: Record<string, unknown> | undefined): boolean {
@@ -797,13 +905,15 @@ function missingInputEvidenceRows(
 
 function reviewDecisionDisplayRows(review: AgentEvidenceReviewLike): AgentEvidenceDisplayRow[] {
   const status = review.status ?? (review.decision === 'approve' ? 'approved' : review.decision === 'deny' ? 'denied' : undefined);
+  const language = reviewDisplayLanguage(review);
   const rows: AgentEvidenceDisplayRow[] = [];
-  if (review.summary) {
-    rows.push({ label: 'Summary', value: review.summary, tone: statusTone(status) });
+  const summary = localizedReviewSummary(review, language);
+  if (summary) {
+    rows.push({ label: localizedLabel('summary', language), value: summary, tone: statusTone(status) });
   }
-  const reason = textValue(review.reason);
-  if (reason && reason !== review.summary) {
-    rows.push({ label: reasonFallbackLabel(status), value: reason, tone: statusTone(status) });
+  const reason = localizedReviewReason(review, language);
+  if (reason && reason !== summary) {
+    rows.push({ label: reasonFallbackLabel(status, language), value: reason, tone: statusTone(status) });
   }
   return rows;
 }
@@ -828,16 +938,19 @@ function addFallbackRows(
   addRow: (row: Partial<AgentEvidenceDisplayRow>) => void,
 ): void {
   const status = review.status ?? (review.decision === 'approve' ? 'approved' : review.decision === 'deny' ? 'denied' : undefined);
-  if (review.summary) {
-    addRow({ label: 'Summary', value: review.summary, tone: statusTone(status) });
+  const language = reviewDisplayLanguage(review);
+  const summary = localizedReviewSummary(review, language);
+  const reason = localizedReviewReason(review, language);
+  if (summary) {
+    addRow({ label: 'Summary', value: summary, tone: statusTone(status) });
   }
-  if (review.reason) {
-    addRow({ label: reasonFallbackLabel(status), value: review.reason, tone: statusTone(status) });
+  if (reason) {
+    addRow({ label: reasonFallbackLabel(status), value: reason, tone: statusTone(status) });
   }
-  if (!review.summary && !review.reason) {
+  if (!summary && !reason) {
     addRow({
       label: 'Review state',
-      value: status ? humanizeEvidenceKey(status) : 'No findings were returned by the agent.',
+      value: status ? humanizeEvidenceKey(status) : localizedLabel('noFindings', language),
       tone: statusTone(status),
     });
   }
@@ -846,48 +959,118 @@ function addFallbackRows(
 function evidenceSectionForRow(row: AgentEvidenceDisplayRow): AgentEvidenceSectionId {
   const text = `${row.label} ${row.value}`.toLowerCase();
   if (/^source:|^source$|https?:\/\/|www\./i.test(row.label) || /^https?:\/\//i.test(row.value)) return 'sources';
-  if (/\b(threshold|decision|approval|denial|missing input|requested input|stale review)\b/.test(text)) return 'decision';
+  if (/\b(threshold|decision|approval|denial|missing input|requested input|stale review|umbral|decisión|aprobación|rechazo|しきい値|判断|承認|拒否|schwellenwert|entscheidung|genehmigung|ablehnung|soglia|decisione|approvazione|rifiuto|seuil|décision|approbation|refus|limite|decisão|aprovação|recusa|임계값|결정|승인|거부|порог|решение|одобрение|отказ)\b|阈值|閾值|門檻|决策|決策|批准|核准|拒绝|拒絕|条件|條件/.test(text)) return 'decision';
   if (/\b(token|mint|freeze authority|mint authority|age|symbol)\b/.test(text)) return 'token';
   if (/\b(price|rate|usd|market|liquidity|volume|dominance|fear\s*&\s*greed|fear and greed|coingecko|birdeye|dex screener)\b/.test(text)) return 'market';
   if (/\b(route|quote|slippage|swap amount|simulation|recipient|wallet|transfer|instruction|connector|protocol|policy|limit|schedule|program)\b/.test(text)) return 'transaction';
   return 'other';
 }
 
-function evidenceSectionLabel(id: AgentEvidenceSectionId): string {
+function evidenceSectionLabel(id: AgentEvidenceSectionId, language: PolicyLanguageCode = 'en'): string {
   switch (id) {
     case 'decision':
-      return 'Decision';
+      return localizedLabel('decision', language);
     case 'market':
-      return 'Market & Price';
+      return localizedLabel('marketAndPrice', language);
     case 'token':
-      return 'Token Safety';
+      return localizedLabel('tokenSafety', language);
     case 'transaction':
-      return 'Transaction Safety';
+      return localizedLabel('transactionSafety', language);
     case 'sources':
-      return 'Sources';
+      return localizedLabel('sources', language);
     case 'advanced':
-      return 'Advanced Audit';
+      return localizedLabel('advancedAudit', language);
     case 'other':
     default:
-      return 'Other Checks';
+      return localizedLabel('otherChecks', language);
   }
 }
 
-function reasonFallbackLabel(status: AgentEvidenceReviewLike['status'] | undefined): string {
+function reasonFallbackLabel(
+  status: AgentEvidenceReviewLike['status'] | undefined,
+  language: PolicyLanguageCode = 'en',
+): string {
   switch (status) {
     case 'approved':
-      return 'Approval summary';
+      return localizedLabel('approvalSummary', language);
     case 'denied':
-      return 'Denial reason';
+      return localizedLabel('denialReason', language);
     case 'needs_input':
-      return 'Missing information';
+      return localizedLabel('missingInformation', language);
+    case 'wallet_required':
+      return localizedLabel('walletRequired', language);
     case 'error':
-      return 'Review error';
+      return localizedLabel('reviewError', language);
     case 'checking':
-      return 'Review status';
+      return localizedLabel('reviewStatus', language);
     default:
-      return 'Reason';
+      return localizedLabel('reason', language);
   }
+}
+
+const ROW_LABEL_KEYS: Record<string, AgentReviewLocalizedLabelKey> = {
+  summary: 'summary',
+  reason: 'reason',
+  approvalsummary: 'approvalSummary',
+  denialreason: 'denialReason',
+  missinginformation: 'missingInformation',
+  walletrequired: 'walletRequired',
+  reviewerror: 'reviewError',
+  reviewstatus: 'reviewStatus',
+  reviewstate: 'reviewState',
+  missinginput: 'missingInput',
+  requestedinput: 'requestedInput',
+  stalereview: 'staleReview',
+};
+
+function reviewDisplayLanguage(review: AgentEvidenceReviewLike): PolicyLanguageCode {
+  const localizedLanguage = normalizeReviewLanguageCode(review.localized?.language);
+  if (localizedLanguage !== 'unknown') return localizedLanguage;
+  return sourceLanguageFromReview(review);
+}
+
+function localizedReviewSummary(
+  review: AgentEvidenceReviewLike,
+  language: PolicyLanguageCode = reviewDisplayLanguage(review),
+): string {
+  return textValue(review.localized?.summary) ||
+    agentReviewLocalizedProse(review.summary, language) ||
+    textValue(review.summary);
+}
+
+function localizedReviewReason(
+  review: AgentEvidenceReviewLike,
+  language: PolicyLanguageCode = reviewDisplayLanguage(review),
+): string {
+  return textValue(review.localized?.reason) ||
+    agentReviewLocalizedProse(review.reason, language) ||
+    textValue(review.reason);
+}
+
+function localizedEvidenceRow(
+  row: AgentEvidenceDisplayRow,
+  language: PolicyLanguageCode,
+): AgentEvidenceDisplayRow {
+  if (!shouldLocalizeAgentReview(language)) return row;
+  return {
+    ...row,
+    label: localizedRowLabel(row.label, language),
+    value: agentReviewLocalizedProse(row.value, language) ?? row.value,
+  };
+}
+
+function localizedRowLabel(label: string, language: PolicyLanguageCode): string {
+  const source = /^source:\s*(.+)$/iu.exec(label);
+  if (source) return `${agentReviewLocalizedFindingLabel('Source', language)}: ${source[1]!.trim()}`;
+  const policy = /^policy:\s*(.+)$/iu.exec(label);
+  if (policy) return `${agentReviewLocalizedFindingLabel('Policy', language)}: ${policy[1]!.trim()}`;
+  const key = ROW_LABEL_KEYS[normalizeEvidenceKey(label)];
+  if (key) return localizedLabel(key, language);
+  return agentReviewLocalizedFindingLabel(label, language);
+}
+
+function localizedLabel(key: AgentReviewLocalizedLabelKey, language: PolicyLanguageCode): string {
+  return agentReviewLocalizedLabel(key, language);
 }
 
 function statusTone(status: AgentEvidenceReviewLike['status'] | undefined): AgentEvidenceTone {
@@ -898,6 +1081,7 @@ function statusTone(status: AgentEvidenceReviewLike['status'] | undefined): Agen
     case 'error':
       return 'fail';
     case 'needs_input':
+    case 'wallet_required':
       return 'warn';
     case 'checking':
     default:

@@ -241,6 +241,7 @@ export function validateAgentReviewDecision(
   let decision: AgentPlanReviewResult['decision'] = contract.decision;
   let reason = aiResult.reason;
   let summary = aiResult.summary;
+  let walletRequiredAfterConditionPass = false;
 
   // A required external-research route that the gate DEFERRED to the AI (externalResearchAvailable
   // === true, so it is not in missingRequired) is only satisfied if the AI actually returned
@@ -261,9 +262,17 @@ export function validateAgentReviewDecision(
 
   if (decision === 'approve') {
     if (gate.decision === 'block') {
-      decision = 'deny';
-      reason = `Gate blocked: ${gate.reason}`;
-      violations.push('AI approved while gate blocked.');
+      if (isWalletRequiredResearchApproval(aiResult, gate, input.context, requirements)) {
+        decision = 'needs_input';
+        reason = `Condition passed, but a wallet must be connected before this draft can continue. ${aiResult.reason}`.trim();
+        summary = 'Condition passed; connect a wallet to continue.';
+        walletRequiredAfterConditionPass = true;
+        violations.push('Wallet connection required after off-chain condition passed.');
+      } else {
+        decision = 'deny';
+        reason = `Gate blocked: ${gate.reason}`;
+        violations.push('AI approved while gate blocked.');
+      }
     } else if (gate.decision === 'needs_input') {
       decision = 'needs_input';
       reason = `Gate needs input: ${gate.reason}`;
@@ -303,11 +312,17 @@ export function validateAgentReviewDecision(
     // deny preserved
   }
 
-  if (decision !== contract.decision) {
+  if (decision !== contract.decision && !walletRequiredAfterConditionPass) {
     summary = `${summary} [adjusted by validator]`.trim();
   }
 
   const sanitizedFactIds = contract.evidenceFactIds.filter((id) => knownFactIds.has(id));
+  const missingFactIds = walletRequiredAfterConditionPass
+    ? uniqueStrings([...(contract.missingFactIds ?? []), WALLET_IDENTITY_ROUTE])
+    : contract.missingFactIds;
+  const warnings = walletRequiredAfterConditionPass
+    ? uniqueStrings([...(contract.warnings ?? []), 'Wallet connection required before approval can continue.'])
+    : contract.warnings;
 
   // Deterministic confidence calibration. Combines gate health with the AI's stated band
   // as a weighted input, producing a numeric score and a band the receipt can record.
@@ -340,6 +355,8 @@ export function validateAgentReviewDecision(
     reason,
     summary,
     evidenceFactIds: sanitizedFactIds,
+    ...(missingFactIds ? { missingFactIds } : {}),
+    ...(warnings ? { warnings } : {}),
     confidence: confidence.band,
     confidenceScore: confidence.score,
     confidenceFactors: confidence.factors,
@@ -353,6 +370,13 @@ export function validateAgentReviewDecision(
     summary,
     evidence: {
       ...(aiResult.evidence ?? {}),
+      ...(walletRequiredAfterConditionPass
+        ? {
+            walletRequired: true,
+            conditionDecision: 'approve',
+            walletGateReason: gate.reason,
+          }
+        : {}),
       decisionContract: sanitizedContract,
     },
   };
@@ -393,6 +417,49 @@ function extractDecisionContractFromAiResult(
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isWalletRequiredResearchApproval(
+  aiResult: AgentPlanReviewResult,
+  gate: AgentEvidenceGateResult,
+  context: AgentEvidenceContext | undefined,
+  requirements: AgentEvidenceRequirement[],
+): boolean {
+  if (!context || context.offChainGateOnly !== true) return false;
+  if (context.isWalletScoped === false || context.walletAddress?.trim()) return false;
+  if (!isWalletOnlyGateBlock(gate, context, requirements)) return false;
+  return hasExternalResearchCitation(aiResult) || hasThresholdRulePromotion(aiResult);
+}
+
+function isWalletOnlyGateBlock(
+  gate: AgentEvidenceGateResult,
+  context: AgentEvidenceContext,
+  requirements: AgentEvidenceRequirement[],
+): boolean {
+  if (gate.decision !== 'block') return false;
+  if (gate.staleRequired.length > 0 || gate.blockingFacts.length > 0) return false;
+  if (gate.missingRequired.some((req) => req.routeId !== WALLET_IDENTITY_ROUTE)) return false;
+  if (context.connectorId) {
+    if (context.connectorEnabled === false) return false;
+    const connectorReadRequired = requirements.some(
+      (req) => req.routeId === CONNECTOR_READ_ROUTE && req.status === 'required',
+    );
+    if (connectorReadRequired && context.connectorReadReady === false) return false;
+  }
+  const reason = gate.reason.toLowerCase();
+  const hasWalletBlock = gate.missingRequired.some((req) => req.routeId === WALLET_IDENTITY_ROUTE) ||
+    reason.includes('wallet-scoped action requires a connected public key') ||
+    reason.includes('connected public key');
+  return hasWalletBlock;
+}
+
+function hasThresholdRulePromotion(aiResult: AgentPlanReviewResult): boolean {
+  const evidence = aiResult.evidence as Record<string, unknown> | undefined;
+  return isJsonObject(evidence) && evidence.thresholdRulePromoted === true;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return Array.from(new Set(values.filter((value) => value.trim().length > 0)));
 }
 
 /**
@@ -471,4 +538,3 @@ export async function createDecisionAuditReceipt(
     ...(counterfactualSummary.length ? { counterfactualSummary } : {}),
   };
 }
-

@@ -38,6 +38,8 @@ export * from './agentAtoms.js';
 export * from './agentCapabilityRegistry.js';
 export * from './policyEvaluator.js';
 export * from './policyOrchestrator.js';
+export * from './policyLanguage.js';
+export * from './agentReviewLocalization.js';
 export * from './txGates.js';
 export * from './verifiedPrograms.js';
 export * from './promptInjectionDefense.js';

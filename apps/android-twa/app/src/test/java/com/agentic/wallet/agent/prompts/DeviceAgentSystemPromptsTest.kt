@@ -66,6 +66,16 @@ class DeviceAgentSystemPromptsTest {
     }
 
     @Test
+    fun localizePromptIsVerbatim() {
+        // Byte-for-byte parity with packages/workflow/src/agentReviewLocalization.ts
+        // (agentReviewLocalizationMessages system content) and the Swift `localize` constant.
+        assertEquals(
+            "Translate only user-facing Solana agent review display text into the requested target language. Return only JSON with optional string fields summary and reason, optional arrays findings, questions, reviewers, policies, and facts. Keep every finding index, policy index, fact key, and atomId unchanged. Do not add, remove, or reorder facts. Preserve exact numbers, currencies, percentages, token symbols, wallet addresses, URLs, dates, source names, product names, and approve/deny/needs_input meaning. Do not translate raw JSON, evidence ids, wallet addresses, URLs, token symbols, or provider/source names. Do not change the decision, invent facts, soften a denial, or add wallet-signature disclaimers.",
+            DeviceAgentSystemPrompts.LOCALIZE,
+        )
+    }
+
+    @Test
     fun boundariesAreVerbatim() {
         assertEquals(
             "AI prepares a plan only. Wallet approval and signing happen later in the user wallet.",

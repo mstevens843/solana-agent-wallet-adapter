@@ -26,7 +26,15 @@ function requirement(partial: Partial<AgentEvidenceRequirement>): AgentEvidenceR
   };
 }
 
-function fact(partial: { id: string; label: string; routeId?: string; tone?: AgentEvidenceFact['tone']; severity?: AgentEvidenceFact['severity'] }): AgentEvidenceFact {
+function fact(partial: {
+  id: string;
+  label: string;
+  routeId?: string;
+  tone?: AgentEvidenceFact['tone'];
+  severity?: AgentEvidenceFact['severity'];
+  checkedAt?: string;
+  ttlMs?: number;
+}): AgentEvidenceFact {
   return normalizeAgentEvidenceFact({
     id: partial.id,
     label: partial.label,
@@ -35,8 +43,8 @@ function fact(partial: { id: string; label: string; routeId?: string; tone?: Age
     source: 'deterministic',
     severity: partial.severity,
     routeId: partial.routeId,
-    checkedAt: new Date().toISOString(),
-    ttlMs: 60_000,
+    checkedAt: partial.checkedAt ?? new Date().toISOString(),
+    ttlMs: partial.ttlMs ?? 60_000,
   });
 }
 
@@ -258,6 +266,134 @@ describe('validateAgentReviewDecision — golden scenarios', () => {
       const ai = aiResult({ decision: 'approve', evidence: {} });
       const { final } = validateAgentReviewDecision({ aiResult: ai, gate, facts: [researchFact], requirements: [researchReq], context: deferredContext });
       expect(final.decision).toBe('approve');
+    });
+  });
+
+  describe('walletless off-chain condition approvals', () => {
+    const walletReq = requirement({
+      id: 'req.wallet.connected_public_key',
+      routeId: 'wallet.connected_public_key',
+      need: 'wallet_identity',
+      provider: 'wallet',
+      ttlMs: Number.POSITIVE_INFINITY,
+      reason: 'A connected wallet public key is required before wallet approval.',
+    });
+    const researchReq = requirement({
+      id: 'req.external_research.helium',
+      routeId: 'external_research.current_web',
+      need: 'external_research',
+      provider: 'external_research',
+      blocking: true,
+      reason: 'The question depends on a current off-chain plan price.',
+    });
+    const walletlessOffChainContext = {
+      isWalletScoped: true,
+      offChainGateOnly: true,
+      externalResearchAvailable: true,
+    } as const;
+
+    it('returns needs_input, not deny, when research proves the off-chain condition but no wallet is connected', () => {
+      const gate = evaluateAgentEvidenceGate([walletReq, researchReq], [], walletlessOffChainContext);
+      expect(gate.decision).toBe('block');
+      const ai = aiResult({
+        decision: 'approve',
+        reason: 'Helium Mobile lists a $15/month plan, which is under the $20 threshold.',
+        evidence: {
+          thresholdRulePromoted: true,
+          research: { status: 'checked' },
+          sources: [{ title: 'Helium Mobile plans', url: 'https://hellohelium.com' }],
+          decisionContract: {
+            decision: 'approve',
+            reason: 'Research-backed threshold pass.',
+            summary: 'Helium plan is under the threshold.',
+            evidenceFactIds: [],
+          },
+        },
+      });
+
+      const { final, decisionContract, violations } = validateAgentReviewDecision({
+        aiResult: ai,
+        gate,
+        facts: [],
+        requirements: [walletReq, researchReq],
+        context: walletlessOffChainContext,
+      });
+      const evidence = final.evidence as Record<string, unknown>;
+
+      expect(final.decision).toBe('needs_input');
+      expect(final.summary).toBe('Condition passed; connect a wallet to continue.');
+      expect(final.reason).toMatch(/wallet must be connected/i);
+      expect(final.reason).not.toMatch(/Gate blocked/i);
+      expect(evidence.walletRequired).toBe(true);
+      expect(evidence.conditionDecision).toBe('approve');
+      expect(decisionContract.decision).toBe('needs_input');
+      expect(decisionContract.missingFactIds).toContain('wallet.connected_public_key');
+      expect(violations).toContain('Wallet connection required after off-chain condition passed.');
+    });
+
+    it('still denies walletless approvals when the condition is not marked as off-chain-only', () => {
+      const context = {
+        isWalletScoped: true,
+        offChainGateOnly: false,
+        externalResearchAvailable: true,
+      } as const;
+      const gate = evaluateAgentEvidenceGate([walletReq, researchReq], [], context);
+      const ai = aiResult({
+        decision: 'approve',
+        evidence: {
+          thresholdRulePromoted: true,
+          research: { status: 'checked' },
+        },
+      });
+
+      const { final } = validateAgentReviewDecision({
+        aiResult: ai,
+        gate,
+        facts: [],
+        requirements: [walletReq, researchReq],
+        context,
+      });
+
+      expect(final.decision).toBe('deny');
+      expect((final.evidence as Record<string, unknown>).walletRequired).toBeUndefined();
+    });
+
+    it('still denies when another deterministic blocker exists alongside the missing wallet', () => {
+      const quoteReq = requirement({
+        id: 'req.jupiter.quote',
+        routeId: 'jupiter.swap_order_preview',
+        need: 'swap_quote',
+        provider: 'jupiter',
+        ttlMs: 1_000,
+      });
+      const staleQuote = fact({
+        id: 'fact.jupiter.quote',
+        routeId: 'jupiter.swap_order_preview',
+        label: 'Quote',
+        checkedAt: new Date(Date.now() - 60_000).toISOString(),
+        ttlMs: 1_000,
+      });
+      const gate = evaluateAgentEvidenceGate([walletReq, quoteReq, researchReq], [staleQuote], walletlessOffChainContext);
+      expect(gate.decision).toBe('block');
+      expect(gate.staleRequired).toHaveLength(1);
+      const ai = aiResult({
+        decision: 'approve',
+        evidence: {
+          thresholdRulePromoted: true,
+          research: { status: 'checked' },
+        },
+      });
+
+      const { final } = validateAgentReviewDecision({
+        aiResult: ai,
+        gate,
+        facts: [staleQuote],
+        requirements: [walletReq, quoteReq, researchReq],
+        context: walletlessOffChainContext,
+      });
+
+      expect(final.decision).toBe('deny');
+      expect((final.evidence as Record<string, unknown>).walletRequired).toBeUndefined();
     });
   });
 });

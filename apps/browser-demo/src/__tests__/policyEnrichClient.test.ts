@@ -48,6 +48,22 @@ describe('spliceBundle', () => {
     expect(spliceBundle(payload, empty)).toBe(payload);
   });
 
+  it('keeps an empty bundle when language canonicalization requires input', () => {
+    const failedLanguage: PolicyBundle = {
+      ...baseBundle,
+      atoms: [],
+      evaluations: [],
+      hasBlockingFailure: false,
+      language: {
+        sourceLanguage: 'zh-Hans',
+        canonicalizationStatus: 'failed',
+        requiresInput: true,
+      },
+    };
+    const out = spliceBundle({ instruction: '仅当这个奇怪条件满足时才批准。' }, failedLanguage) as Record<string, unknown>;
+    expect((out.context as Record<string, unknown>).policyBundle).toEqual(failedLanguage);
+  });
+
   it('creates context when missing', () => {
     const out = spliceBundle({ instruction: 'do x' }, baseBundle) as Record<string, unknown>;
     expect(out.instruction).toBe('do x');
@@ -272,5 +288,31 @@ describe('mergePolicyBundleEvaluations', () => {
     expect((out.evidence as { findings: unknown[] }).findings).toEqual(expect.arrayContaining([
       { label: 'Helium plan', value: '$25 — web', tone: 'fail', atomId: 'atom.external_price.helium.lt.20' },
     ]));
+  });
+
+  it('forces needs_input when language canonicalization failed', () => {
+    const failedLanguage: PolicyBundle = {
+      ...baseBundle,
+      atoms: [],
+      evaluations: [],
+      hasBlockingFailure: false,
+      language: {
+        sourceLanguage: 'zh-Hans',
+        canonicalizationStatus: 'failed',
+        requiresInput: true,
+      },
+    };
+    const out = applyPolicyBundleReviewSafety({
+      decision: 'approve',
+      reason: 'model ignored language failure',
+      evidence: {},
+    }, failedLanguage);
+
+    expect(out.decision).toBe('needs_input');
+    expect(out.reason).toContain('could not safely translate');
+    expect((out.evidence as Record<string, unknown>).languageSafetyApplied).toBe(true);
+    expect(out.missingFactIds).toEqual(['policy.language.canonicalization']);
+    expect((out.localized as Record<string, unknown> | undefined)?.language).toBe('zh-Hans');
+    expect((out.localized as Record<string, unknown> | undefined)?.summary).toBe('非英语策略翻译需要审核。');
   });
 });

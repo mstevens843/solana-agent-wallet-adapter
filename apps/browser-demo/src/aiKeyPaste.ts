@@ -42,25 +42,31 @@ export interface AiKeyPasteClipboardOptions {
 export async function readAiKeyPasteClipboardText(
   options: AiKeyPasteClipboardOptions,
 ): Promise<AiKeyPasteClipboardResult> {
-  const androidRead = options.android?.clipboardRead;
+  const androidClipboard = options.android;
   if (options.isAndroidApp) {
-    if (typeof androidRead !== 'function') {
+    if (typeof androidClipboard?.clipboardRead !== 'function') {
       return { kind: 'unavailable', reason: 'android-native-missing' };
     }
     try {
-      return { kind: 'text', source: 'android-native', text: androidRead() };
+      return { kind: 'text', source: 'android-native', text: androidClipboard.clipboardRead() };
     } catch {
+      // Native clipboardRead returns "" on read failure / untrusted origin (never throws),
+      // so this catch only fires for a bridge-not-injected / detached-call failure.
       return { kind: 'unavailable', reason: 'android-native-failed' };
     }
   }
 
-  const iosRead = options.ios?.clipboardRead;
-  if (options.isIosApp && typeof iosRead !== 'function') {
+  const iosClipboard = options.ios;
+  if (options.isIosApp && typeof iosClipboard?.clipboardRead !== 'function') {
     return { kind: 'unavailable', reason: 'ios-native-missing' };
   }
-  if (typeof iosRead === 'function') {
+  // Gate on isIosApp: on web/Android the `ios` bridge is the Capacitor registerPlugin
+  // proxy, whose property reads ALWAYS return a function. Without this gate every
+  // non-iOS surface would invoke it, reject with "not implemented on web", and never
+  // reach the navigator.clipboard fallback below.
+  if (options.isIosApp && typeof iosClipboard?.clipboardRead === 'function') {
     try {
-      const result = await iosRead();
+      const result = await iosClipboard.clipboardRead();
       if (result && typeof result.text === 'string') {
         return { kind: 'text', source: 'ios-native', text: result.text };
       }

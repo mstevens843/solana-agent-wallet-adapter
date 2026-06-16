@@ -50,6 +50,7 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import { getAndroidRemoteConfig } from './androidConfig.js';
 import { getIosRemoteConfig } from './iosConfig.js';
 import { handlePolicyEnrich } from './policyEnrich.js';
+import { handleReviewLocalize } from './reviewLocalize.js';
 import {
   AuthValidationError,
   buildAgentProfilePublishMessage,
@@ -239,6 +240,7 @@ const REGISTERED_API_ROUTES = [
   'POST /api/mobile-wallet-debug',
   'POST /api/mobile-device-agent-debug',
   'POST /api/policy/enrich',
+  'POST /api/review/localize',
   'POST /api/ai/generate-plan',
   'POST /api/ai/review-plan',
   'POST /api/ai/ask-about-plan',
@@ -886,6 +888,7 @@ export function authRateLimitedRoute(pathname: string): AuthRateLimitInput['rout
   if (pathname === '/api/ai/review-plan') return pathname;
   if (pathname === '/api/ai/ask-about-plan') return pathname;
   if (pathname === '/api/ai/chat') return pathname;
+  if (pathname === '/api/review/localize') return pathname;
   if (pathname === '/api/mobile-wallet-debug') return pathname;
   if (pathname === '/api/mobile-device-agent-debug') return pathname;
   if (pathname.startsWith('/api/plans')) return '/api/plans:*';
@@ -924,7 +927,7 @@ function rateLimitWindowMs(route: string): number {
 
 function rateLimitMaxAttempts(route: string): number {
   if (route === '/api/auth/nonce' || route === '/api/auth/siws-nonce' || route === '/api/auth/verify-wallet') return AUTH_RATE_LIMIT_MAX_ATTEMPTS;
-  if (route === '/api/ai/generate-plan' || route === '/api/ai/review-plan' || route === '/api/ai/ask-about-plan' || route === '/api/ai/chat') return HOSTED_AI_RATE_LIMIT_MAX_ATTEMPTS;
+  if (route === '/api/ai/generate-plan' || route === '/api/ai/review-plan' || route === '/api/ai/ask-about-plan' || route === '/api/ai/chat' || route === '/api/review/localize') return HOSTED_AI_RATE_LIMIT_MAX_ATTEMPTS;
   if (isPublicRelayRateLimitRoute(route)) return publicRelayRateLimitMaxAttempts();
   return WRITE_RATE_LIMIT_MAX_ATTEMPTS;
 }
@@ -1097,6 +1100,35 @@ async function routeApiRequest(
     console.log(
       `policy_enrich_fetch status=${res.statusCode} ms=${Date.now() - startedAt} atoms=${atomCount} client=${JSON.stringify(client)}`,
     );
+    return;
+  }
+
+  if (url.pathname === '/api/review/localize') {
+    requireMethod(req, 'POST');
+    let body: unknown;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      res.statusCode = 400;
+      res.setHeader('content-type', 'application/json; charset=utf-8');
+      res.end(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : 'Invalid JSON body' }));
+      return;
+    }
+    const planner = new BridgeAiPlanner();
+    configureHostedAiPlanner(planner);
+    const result = await handleReviewLocalize(body, (review, language) =>
+      runWithHostedAiTimeout(planner.localizeReview(review, language)));
+    // ReviewLocalizeErrorCode → HTTP: bad_request→400, too_large→413, localize_failed→502 (upstream LLM).
+    res.statusCode = result.ok
+      ? 200
+      : result.code === 'bad_request'
+        ? 400
+        : result.code === 'too_large'
+          ? 413
+          : 502;
+    res.setHeader('content-type', 'application/json; charset=utf-8');
+    res.setHeader('cache-control', 'no-store');
+    res.end(JSON.stringify(result));
     return;
   }
 
@@ -3131,9 +3163,20 @@ async function handleDeviceAgentControl(
     return;
   }
   const settings = deviceAgentSettingsFromBody(body);
+  const hasSettings = Object.keys(settings).length > 0;
   const configured = action === 'configure' || action === 'start'
-    ? {
-        configured: Boolean(settings.provider || settings.model || settings.baseUrl),
+    ? action === 'start' && !hasSettings
+      ? {
+        configured: current?.configured ?? false,
+        state: 'running' as const,
+        updatedAt: now,
+        provider: current?.provider,
+        apiFormat: current?.apiFormat,
+        baseUrl: current?.baseUrl,
+        model: current?.model,
+      }
+      : {
+        configured: hasSettings,
         state: action === 'start' ? 'running' as const : current?.state ?? 'stopped' as const,
         updatedAt: now,
         ...settings,

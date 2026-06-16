@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { NativePairBridge } from '../bridgePairing.js';
-import { mountPhonePairingPanel } from '../bridgePairingUi.js';
+import type { AsyncPairBridge, NativePairBridge } from '../bridgePairing.js';
+import { buildPhonePairingDeps, mountPhonePairingPanel } from '../bridgePairingUi.js';
 
 class FakeElement {
   readonly tagName: string;
@@ -91,6 +91,22 @@ function elementsByTag(root: FakeElement, tagName: string): FakeElement[] {
   ];
 }
 
+// Select by stable class instead of positional button index so a future control inserted
+// before these does not silently mis-target a test.
+function byClass(root: FakeElement, className: string): FakeElement | null {
+  if (root.className.split(/\s+/).filter(Boolean).includes(className)) return root;
+  for (const child of root.children) {
+    const found = byClass(child, className);
+    if (found) return found;
+  }
+  return null;
+}
+
+const scanButton = (root: FakeElement): FakeElement | null => byClass(root, 'phone-pairing-scan-button');
+const clipboardPasteButton = (root: FakeElement): FakeElement | null =>
+  byClass(root, 'phone-pairing-clipboard-paste-button');
+const connectButton = (root: FakeElement): FakeElement | null => byClass(root, 'phone-pairing-connect-button');
+
 async function flushMicrotasks(): Promise<void> {
   for (let i = 0; i < 8; i += 1) {
     await Promise.resolve();
@@ -126,12 +142,148 @@ describe('mountPhonePairingPanel', () => {
     });
 
     elementsByTag(container, 'textarea')[0]!.value = 'not a pairing payload';
-    elementsByTag(container, 'button')[1]!.click();
+    connectButton(container)!.click();
 
     expect(container.lastElementChild?.textContent).toContain('valid');
+    expect(container.lastElementChild?.attributes.role).toBe('alert');
+    expect(container.lastElementChild?.attributes['aria-live']).toBe('assertive');
     expect(logged(logs.info, 'bridge-pair.phone_panel_mount')).toBe(true);
     expect(logged(logs.info, 'bridge-pair.paste_click chars=21')).toBe(true);
     expect(logged(logs.warn, 'bridge-pair.paste_bad_payload chars=21')).toBe(true);
+    cleanup();
+  });
+
+  it('pastes a pairing code from the native clipboard without connecting immediately', async () => {
+    const document = installFakeDocument();
+    const logs = captureDiagLogs();
+    const container = document.createElement('div');
+    const pairingCode = JSON.stringify({
+      relay: 'https://agentic-signer.com',
+      uuid: 'uuid-1',
+      token: 'token-1',
+    });
+    const bridgePair = vi.fn();
+    const cleanup = mountPhonePairingPanel(container as unknown as HTMLElement, {
+      bridge: { bridgePair },
+      readClipboardText: vi.fn(async () => ({
+        kind: 'text' as const,
+        source: 'android-native' as const,
+        text: ` ${pairingCode} `,
+      })),
+      onPaired: vi.fn(),
+    });
+    const textarea = elementsByTag(container, 'textarea')[0]!;
+    const focusSpy = vi.fn();
+    (textarea as unknown as { focus: (options?: unknown) => void }).focus = focusSpy;
+
+    clipboardPasteButton(container)!.click();
+    await flushMicrotasks();
+
+    expect(textarea.value).toBe(pairingCode);
+    expect(focusSpy).not.toHaveBeenCalled();
+    expect(bridgePair).not.toHaveBeenCalled();
+    expect(container.lastElementChild?.textContent).toContain('Pairing code pasted');
+    expect(logged(logs.info, 'bridge-pair.clipboard_paste_done')).toBe(true);
+    cleanup();
+  });
+
+  it('shows a clear error when the pairing clipboard is empty', async () => {
+    const document = installFakeDocument();
+    const container = document.createElement('div');
+    const cleanup = mountPhonePairingPanel(container as unknown as HTMLElement, {
+      bridge: undefined,
+      readClipboardText: vi.fn(async () => ({
+        kind: 'text' as const,
+        source: 'android-native' as const,
+        text: '   ',
+      })),
+      onPaired: vi.fn(),
+    });
+
+    clipboardPasteButton(container)!.click();
+    await flushMicrotasks();
+
+    expect(container.lastElementChild?.textContent).toContain('Clipboard empty');
+    cleanup();
+  });
+
+  it('shows a native clipboard failure when pairing paste is blocked', async () => {
+    const document = installFakeDocument();
+    const container = document.createElement('div');
+    const cleanup = mountPhonePairingPanel(container as unknown as HTMLElement, {
+      bridge: undefined,
+      readClipboardText: vi.fn(async () => ({
+        kind: 'unavailable' as const,
+        reason: 'android-native-failed' as const,
+      })),
+      onPaired: vi.fn(),
+    });
+
+    clipboardPasteButton(container)!.click();
+    await flushMicrotasks();
+
+    expect(container.lastElementChild?.textContent).toContain('Android blocked clipboard access');
+    expect(clipboardPasteButton(container)!.disabled).toBe(false);
+    cleanup();
+  });
+
+  it('explains the Paste button is unavailable when no clipboard reader is wired', async () => {
+    const document = installFakeDocument();
+    const container = document.createElement('div');
+    const cleanup = mountPhonePairingPanel(container as unknown as HTMLElement, {
+      bridge: undefined,
+      onPaired: vi.fn(),
+    });
+
+    const pasteButton = clipboardPasteButton(container)!;
+    pasteButton.click();
+    await flushMicrotasks();
+
+    expect(container.lastElementChild?.textContent).toContain('unavailable here');
+    // Guard returns before the disable/finally, so the button must stay tappable.
+    expect(pasteButton.disabled).toBe(false);
+    cleanup();
+  });
+
+  it('re-enables the Paste button after an empty clipboard', async () => {
+    const document = installFakeDocument();
+    const container = document.createElement('div');
+    const cleanup = mountPhonePairingPanel(container as unknown as HTMLElement, {
+      bridge: undefined,
+      readClipboardText: vi.fn(async () => ({
+        kind: 'text' as const,
+        source: 'android-native' as const,
+        text: '   ',
+      })),
+      onPaired: vi.fn(),
+    });
+
+    clipboardPasteButton(container)!.click();
+    await flushMicrotasks();
+
+    expect(clipboardPasteButton(container)!.disabled).toBe(false);
+    cleanup();
+  });
+
+  it.each([
+    ['android-native-missing', 'does not expose one-tap paste'],
+    ['ios-native-missing', 'does not expose one-tap paste'],
+    ['ios-native-failed', 'iOS blocked clipboard access'],
+    ['web-unavailable', 'unavailable here'],
+    ['web-failed', 'unavailable here'],
+  ] as const)('maps the %s clipboard reason to clear pairing copy', async (reason, expected) => {
+    const document = installFakeDocument();
+    const container = document.createElement('div');
+    const cleanup = mountPhonePairingPanel(container as unknown as HTMLElement, {
+      bridge: undefined,
+      readClipboardText: vi.fn(async () => ({ kind: 'unavailable' as const, reason })),
+      onPaired: vi.fn(),
+    });
+
+    clipboardPasteButton(container)!.click();
+    await flushMicrotasks();
+
+    expect(container.lastElementChild?.textContent).toContain(expected);
     cleanup();
   });
 
@@ -144,7 +296,7 @@ describe('mountPhonePairingPanel', () => {
       onPaired: vi.fn(),
     });
 
-    elementsByTag(container, 'button')[0]!.click();
+    scanButton(container)!.click();
 
     expect(container.lastElementChild?.textContent).toContain('paste the code instead');
     cleanup();
@@ -175,7 +327,7 @@ describe('mountPhonePairingPanel', () => {
     const container = document.createElement('div');
     const cleanup = mountPhonePairingPanel(container as unknown as HTMLElement, { bridge, onPaired });
 
-    elementsByTag(container, 'button')[0]!.click();
+    scanButton(container)!.click();
     await flushMicrotasks();
 
     expect(bridgeScanPairingQr).toHaveBeenCalledTimes(1);
@@ -220,7 +372,7 @@ describe('mountPhonePairingPanel', () => {
       onPaired: vi.fn(),
     });
 
-    elementsByTag(container, 'button')[0]!.click();
+    scanButton(container)!.click();
     await flushMicrotasks();
     (globalThis as unknown as {
       __agenticAndroidQrScannerBridge: {
@@ -246,7 +398,7 @@ describe('mountPhonePairingPanel', () => {
       onPaired: vi.fn(),
     });
 
-    elementsByTag(container, 'button')[0]!.click();
+    scanButton(container)!.click();
     await flushMicrotasks();
     (globalThis as unknown as {
       __agenticAndroidQrScannerBridge: {
@@ -271,7 +423,7 @@ describe('mountPhonePairingPanel', () => {
       onPaired: vi.fn(),
     });
 
-    elementsByTag(container, 'button')[0]!.click();
+    scanButton(container)!.click();
     await flushMicrotasks();
     (globalThis as unknown as {
       __agenticAndroidQrScannerBridge: {
@@ -295,7 +447,7 @@ describe('mountPhonePairingPanel', () => {
       onPaired: vi.fn(),
     });
 
-    elementsByTag(container, 'button')[0]!.click();
+    scanButton(container)!.click();
     await flushMicrotasks();
 
     expect(container.lastElementChild?.textContent).toContain('Android could not open the scanner');
@@ -322,7 +474,7 @@ describe('mountPhonePairingPanel', () => {
       uuid: 'uuid-1',
       token: 'token-1',
     });
-    elementsByTag(container, 'button')[1]!.click();
+    connectButton(container)!.click();
 
     await flushMicrotasks();
     expect(bridgePair).toHaveBeenCalledTimes(1);
@@ -331,6 +483,8 @@ describe('mountPhonePairingPanel', () => {
     expect(bridgePairStatus).toHaveBeenCalled();
     expect(onPaired).toHaveBeenCalledTimes(1);
     expect(container.lastElementChild?.textContent).toContain('AI now runs on your computer');
+    expect(container.lastElementChild?.attributes.role).toBe('status');
+    expect(container.lastElementChild?.attributes['aria-live']).toBe('polite');
     cleanup();
   });
 
@@ -356,10 +510,37 @@ describe('mountPhonePairingPanel', () => {
       onPaired: vi.fn(),
     });
 
-    elementsByTag(container, 'button')[0]!.click();
+    scanButton(container)!.click();
     await flushMicrotasks();
     cleanup();
 
     expect(stop).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('buildPhonePairingDeps', () => {
+  it('always forwards readClipboardText so the one-tap Paste button stays wired', () => {
+    const readClipboardText = vi.fn(async () => ({ kind: 'unavailable' as const, reason: 'web-unavailable' as const }));
+    const onPaired = vi.fn();
+    const bridge = { bridgePair: vi.fn() } as unknown as NativePairBridge;
+
+    const deps = buildPhonePairingDeps({ bridge, readClipboardText, onPaired });
+
+    expect(deps.readClipboardText).toBe(readClipboardText);
+    expect(deps.bridge).toBe(bridge);
+    expect(deps.onPaired).toBe(onPaired);
+    expect('asyncBridge' in deps).toBe(false);
+  });
+
+  it('includes asyncBridge only when provided', () => {
+    const asyncBridge = { scan: vi.fn(), pair: vi.fn(), status: vi.fn() } as unknown as AsyncPairBridge;
+    const deps = buildPhonePairingDeps({
+      bridge: undefined,
+      asyncBridge,
+      readClipboardText: vi.fn(async () => ({ kind: 'unavailable' as const, reason: 'web-unavailable' as const })),
+      onPaired: vi.fn(),
+    });
+
+    expect(deps.asyncBridge).toBe(asyncBridge);
   });
 });

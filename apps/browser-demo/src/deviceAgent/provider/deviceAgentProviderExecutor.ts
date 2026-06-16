@@ -42,6 +42,10 @@ export class DeviceAgentProviderExecutor implements ProviderExecutor {
     return this.execute(config, 'ask', signal, (provider) => provider.ask(payload, signal));
   }
 
+  localize(config: RuntimeConfig, payload: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    return this.execute(config, 'localize', signal, (provider) => provider.localize(payload, signal));
+  }
+
   private async execute(
     config: RuntimeConfig,
     op: string,

@@ -143,6 +143,55 @@ describe('#4 applyServerSideReviewSafety — policyBundle.hasBlockingFailure enf
   });
 });
 
+describe('applyServerSideReviewSafety — non-English language fail-closed enforcement', () => {
+  it('forces needs_input when the policy bundle language requires input', () => {
+    const request = baseRequest({
+      policyBundle: {
+        atoms: [],
+        evaluations: [],
+        hasBlockingFailure: false,
+        language: { sourceLanguage: 'zh-Hans', canonicalizationStatus: 'failed', requiresInput: true },
+      },
+    });
+    const out = applyServerSideReviewSafety(baseResult({ decision: 'approve' }), request);
+    expect(out.decision).toBe('needs_input');
+    expect(out.reason).toMatch(/could not safely translate/i);
+    const evidence = out.evidence as { languageSafetyApplied?: boolean; missingFactIds?: string[]; decisionContract?: { missingFactIds?: string[] } };
+    expect(evidence.languageSafetyApplied).toBe(true);
+    expect(evidence.missingFactIds).toContain('policy.language.canonicalization');
+    expect(evidence.decisionContract?.missingFactIds).toContain('policy.language.canonicalization');
+  });
+
+  it('enforces on canonicalizationStatus=failed even without the requiresInput flag', () => {
+    const request = baseRequest({
+      policyBundle: { atoms: [], evaluations: [], hasBlockingFailure: false, language: { sourceLanguage: 'ru', canonicalizationStatus: 'failed' } },
+    });
+    const out = applyServerSideReviewSafety(baseResult({ decision: 'approve' }), request);
+    expect(out.decision).toBe('needs_input');
+  });
+
+  it('overrides a model deny too — an untranslatable rule cannot be safely denied either', () => {
+    const request = baseRequest({
+      policyBundle: { atoms: [], evaluations: [], hasBlockingFailure: false, language: { requiresInput: true } },
+    });
+    const out = applyServerSideReviewSafety(baseResult({ decision: 'deny' }), request);
+    expect(out.decision).toBe('needs_input');
+  });
+
+  it('does NOT downgrade when canonicalization succeeded', () => {
+    const request = baseRequest({
+      policyBundle: {
+        atoms: [{ id: 'atom.price.sol.gt.80' }],
+        evaluations: [{ atomId: 'atom.price.sol.gt.80', pass: true, finding: { label: 'SOL price', value: '$146 — jupiter', tone: 'good' } }],
+        hasBlockingFailure: false,
+        language: { sourceLanguage: 'zh-Hans', canonicalizationStatus: 'success', requiresInput: false },
+      },
+    });
+    const out = applyServerSideReviewSafety(baseResult({ decision: 'approve' }), request);
+    expect(out.decision).toBe('approve');
+  });
+});
+
 describe('#8 mergePolicyBundleFindings — drops unresolved (UNKNOWN) atom rows', () => {
   it('drops unresolved rows even when the bundle is small (a bare "UNKNOWN" row is never informative)', () => {
     const evaluations = [

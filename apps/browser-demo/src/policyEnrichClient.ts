@@ -15,11 +15,22 @@
  * behavior (`enrichRequestWithPolicyBundle` swallows errors).
  */
 
+import {
+  localizeAgentReviewResultForDisplay,
+  POLICY_LANGUAGE_NEEDS_INPUT_REASON,
+  POLICY_LANGUAGE_NEEDS_INPUT_SUMMARY,
+  type AgentReviewLocalizedCopy,
+  type LocalizableAgentReview,
+} from '@solana-agent-wallet-adapter/workflow';
+
 const DEFAULT_BASE_URL = inferBaseUrl();
 const TIMEOUT_MS = 10_000;
 
 export interface PolicyEnrichRequestPayload {
   instruction?: string;
+  canonicalInstruction?: string;
+  sourceLanguage?: string;
+  canonicalizationMethod?: string;
   userNotes?: string;
   intent?: string;
   knownTokenSymbols?: string[];
@@ -60,6 +71,17 @@ export interface PolicyBundle {
   evaluations: PolicyBundleEvaluation[];
   txGateOutcomes?: Record<string, PolicyBundleTxGateOutcome>;
   hasBlockingFailure: boolean;
+  language?: {
+    sourceLanguage?: string;
+    canonicalized?: boolean;
+    canonicalizationMethod?: string;
+    canonicalizationStatus?: string;
+    requiresInput?: boolean;
+    confidence?: number;
+    probablePolicy?: boolean;
+    canonicalizationHash?: string;
+    warnings?: string[];
+  };
   finishedAt: string;
 }
 
@@ -126,12 +148,85 @@ export async function fetchPolicyBundle(
 }
 
 /**
+ * Trim a finished review down to the user-facing display copy the localizer needs
+ * (summary / reason / finding rows / questions / reviewers / policies / facts /
+ * counterfactual rationale), dropping bulky evidence internals (policyBundle,
+ * decisionContract, hashes) so the POST stays small.
+ */
+function reviewDisplayCopyForLocalization(review: LocalizableAgentReview): LocalizableAgentReview {
+  const evidence = review.evidence && typeof review.evidence === 'object' ? review.evidence : undefined;
+  const findings = Array.isArray(evidence?.findings)
+    ? evidence!.findings
+    : Array.isArray(evidence?.checks)
+      ? evidence!.checks
+      : Array.isArray(evidence?.evidenceRows)
+        ? evidence!.evidenceRows
+        : undefined;
+  const counterfactualSummary = review.auditReceipt?.counterfactualSummary;
+  return {
+    ...(review.reason ? { reason: review.reason } : {}),
+    ...(review.summary ? { summary: review.summary } : {}),
+    ...(findings ? { evidence: { findings } } : {}),
+    ...(review.questions?.length ? { questions: review.questions } : {}),
+    ...(review.reviewers?.length ? { reviewers: review.reviewers } : {}),
+    ...(review.policies?.length ? { policies: review.policies } : {}),
+    ...(review.facts ? { facts: review.facts } : {}),
+    ...(counterfactualSummary?.length ? { auditReceipt: { counterfactualSummary } } : {}),
+  };
+}
+
+/**
+ * Ask the cloud `/api/review/localize` endpoint to translate a finished review's display
+ * copy into `language` (model-backed, operator key). Used by the device-agent (BYOK) path,
+ * whose on-device LLM produced an English review and cannot translate it. Returns null on
+ * disable / English / network failure / timeout so the caller keeps the phrase-pack copy.
+ */
+export async function fetchReviewLocalization(
+  review: LocalizableAgentReview,
+  language: string,
+  options: { baseUrl?: string; signal?: AbortSignal; fallbackText?: string } = {},
+): Promise<AgentReviewLocalizedCopy | null> {
+  const baseUrl = options.baseUrl ?? DEFAULT_BASE_URL;
+  if (!baseUrl) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const cleanupSignal = () => {
+    if (options.signal?.aborted) controller.abort();
+  };
+  options.signal?.addEventListener('abort', cleanupSignal, { once: true });
+  try {
+    const response = await fetch(`${baseUrl}/api/review/localize`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-agentic-client': 'browser-demo-byok',
+      },
+      body: JSON.stringify({
+        review: reviewDisplayCopyForLocalization(review),
+        language,
+        ...(options.fallbackText ? { fallbackText: options.fallbackText } : {}),
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    const body = (await response.json()) as { ok?: boolean; localized?: AgentReviewLocalizedCopy | null };
+    if (!body.ok) return null;
+    return body.localized ?? null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener('abort', cleanupSignal);
+  }
+}
+
+/**
  * Splice a policyBundle into the device-agent payload under `context.policyBundle`.
  * Used by deviceAgentClient before invoking the native bridge for BYOK LLM calls.
  * Idempotent: callers can invoke unconditionally; a null bundle is a no-op.
  */
 export function spliceBundle(payload: unknown, bundle: PolicyBundle | null): unknown {
-  if (!bundle || bundle.atoms.length === 0) return payload;
+  if (!bundle || (bundle.atoms.length === 0 && !languageRequiresInput(bundle))) return payload;
   const researchTargets = policyBundleResearchTargets(bundle);
   const researchPatch = researchTargets.length > 0
     ? {
@@ -287,14 +382,54 @@ export function enforceBlockingFailure<R extends Record<string, unknown>>(
   };
 }
 
+export function enforceLanguageNeedsInput<R extends Record<string, unknown>>(
+  llmResult: R,
+  bundle: PolicyBundle | null | undefined,
+): R & { missingFactIds?: string[] } {
+  if (!languageRequiresInput(bundle)) return llmResult;
+  const reason = POLICY_LANGUAGE_NEEDS_INPUT_REASON;
+  const evidence = isJsonObjectLike(llmResult.evidence)
+    ? { ...(llmResult.evidence as Record<string, unknown>) }
+    : {};
+  const existingContract = isJsonObjectLike(evidence.decisionContract)
+    ? { ...(evidence.decisionContract as Record<string, unknown>) }
+    : {};
+  return {
+    ...llmResult,
+    decision: 'needs_input',
+    reason,
+    summary: POLICY_LANGUAGE_NEEDS_INPUT_SUMMARY,
+    missingFactIds: ['policy.language.canonicalization'],
+    evidence: {
+      ...evidence,
+      language: bundle?.language,
+      decisionContract: {
+        ...existingContract,
+        decision: 'needs_input',
+        reason,
+        summary: POLICY_LANGUAGE_NEEDS_INPUT_SUMMARY,
+        missingFactIds: ['policy.language.canonicalization'],
+      },
+      languageSafetyApplied: true,
+      serverSafetyApplied: true,
+    },
+  };
+}
+
 export function mergePolicyBundleEvaluations<R extends Record<string, unknown>>(
   llmResult: R,
   bundle: PolicyBundle | null | undefined,
 ): R {
-  if (!bundle || !Array.isArray(bundle.evaluations) || bundle.evaluations.length === 0) return llmResult;
+  if (!bundle) return llmResult;
   const evidence = isJsonObjectLike(llmResult.evidence)
     ? { ...(llmResult.evidence as Record<string, unknown>) }
     : {};
+  if (bundle.language) {
+    evidence.language = bundle.language;
+  }
+  if (!Array.isArray(bundle.evaluations) || bundle.evaluations.length === 0) {
+    return { ...llmResult, evidence };
+  }
   const existingFindings = Array.isArray(evidence.findings)
     ? (evidence.findings as unknown[]).filter(isJsonObjectLike)
     : [];
@@ -381,8 +516,17 @@ export function mergePolicyBundleEvaluations<R extends Record<string, unknown>>(
 export function applyPolicyBundleReviewSafety<R extends Record<string, unknown>>(
   llmResult: R,
   bundle: PolicyBundle | null | undefined,
-): R & { blockingFactIds?: string[] } {
-  return enforceBlockingFailure(mergePolicyBundleEvaluations(llmResult, bundle), bundle);
+): R & { blockingFactIds?: string[]; missingFactIds?: string[]; localized?: AgentReviewLocalizedCopy } {
+  const result = enforceLanguageNeedsInput(
+    enforceBlockingFailure(mergePolicyBundleEvaluations(llmResult, bundle), bundle),
+    bundle,
+  );
+  return localizeAgentReviewResultForDisplay(result as R & LocalizableAgentReview & {
+    blockingFactIds?: string[];
+    missingFactIds?: string[];
+  }, {
+    language: bundle?.language?.sourceLanguage,
+  }) as R & { blockingFactIds?: string[]; missingFactIds?: string[]; localized?: AgentReviewLocalizedCopy };
 }
 
 function isJsonObjectLike(value: unknown): value is Record<string, unknown> {
@@ -397,4 +541,9 @@ function evaluationUnresolved(evaluation: PolicyBundleEvaluation): boolean {
   if (evaluation.unresolved === true) return true;
   if (evaluation.pass !== undefined) return false;
   return /^unknown$/iu.test(evaluation.finding.value.trim());
+}
+
+function languageRequiresInput(bundle: PolicyBundle | null | undefined): boolean {
+  return bundle?.language?.requiresInput === true ||
+    bundle?.language?.canonicalizationStatus === 'failed';
 }

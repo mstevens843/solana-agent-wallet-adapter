@@ -9,6 +9,7 @@ const viteEnv = (import.meta as ImportMeta & {
     VITE_AGENTIC_ANDROID_DEVICE_AGENT?: string;
     VITE_AGENTIC_IOS_DEVICE_AGENT?: string;
     VITE_AGENTIC_BROWSER_DEVICE_AGENT?: string;
+    VITE_AGENTIC_REVIEW_MODEL_LOCALIZATION?: string;
   };
 }).env;
 
@@ -19,9 +20,16 @@ const RAW_DEVICE_AGENT_ALLOWLIST = String(viteEnv?.VITE_AGENTIC_DEVICE_AGENT_WAL
 const RAW_ANDROID_DEVICE_AGENT_FLAG = String(viteEnv?.VITE_AGENTIC_ANDROID_DEVICE_AGENT ?? '');
 const RAW_IOS_DEVICE_AGENT_FLAG = String(viteEnv?.VITE_AGENTIC_IOS_DEVICE_AGENT ?? '');
 const RAW_BROWSER_DEVICE_AGENT_FLAG = String(viteEnv?.VITE_AGENTIC_BROWSER_DEVICE_AGENT ?? '');
+const RAW_REVIEW_MODEL_LOCALIZATION_FLAG = String(viteEnv?.VITE_AGENTIC_REVIEW_MODEL_LOCALIZATION ?? '');
 
 function enabledFlag(value: string): boolean {
   return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
+}
+
+// Default-ON flag: enabled unless explicitly turned off. Lets the device-agent model
+// localization pass be killed via a Render env without shipping a new bundle/binary.
+function defaultOnFlag(value: string): boolean {
+  return !['0', 'false', 'no', 'off'].includes(value.trim().toLowerCase());
 }
 
 export const DEV_WALLET_ALLOWLIST: readonly string[] = Object.freeze(
@@ -35,6 +43,9 @@ export const DEVICE_AGENT_ENABLED: boolean = enabledFlag(RAW_DEVICE_AGENT_FLAG);
 export const ANDROID_DEVICE_AGENT_ENABLED: boolean = enabledFlag(RAW_ANDROID_DEVICE_AGENT_FLAG);
 export const IOS_DEVICE_AGENT_ENABLED: boolean = enabledFlag(RAW_IOS_DEVICE_AGENT_FLAG);
 export const BROWSER_DEVICE_AGENT_ENABLED: boolean = enabledFlag(RAW_BROWSER_DEVICE_AGENT_FLAG);
+// Device-agent (BYOK) review-result localization model pass. Default ON; set
+// VITE_AGENTIC_REVIEW_MODEL_LOCALIZATION=0 to disable (phrase-pack localization still runs).
+export const REVIEW_MODEL_LOCALIZATION_ENABLED: boolean = defaultOnFlag(RAW_REVIEW_MODEL_LOCALIZATION_FLAG);
 export const DEVICE_AGENT_WALLET_ALLOWLIST: readonly string[] = Object.freeze(
   RAW_DEVICE_AGENT_ALLOWLIST.split(',')
     .map((entry) => entry.trim())

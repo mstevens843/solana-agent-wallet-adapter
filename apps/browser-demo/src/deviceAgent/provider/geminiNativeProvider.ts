@@ -15,7 +15,7 @@
 //   - Routing is by `config.provider === 'gemini'` at the dispatcher level
 //     (deviceAgentProviderExecutor.ts), so OpenRouter/Custom stay on
 //     OpenAiCompatibleProvider unchanged.
-import { buildAskMessages, buildPlanMessages, buildResearchMessages, buildReviewMessages } from '../prompts/messageAssembler.js';
+import { buildAskMessages, buildLocalizeMessages, buildPlanMessages, buildResearchMessages, buildReviewMessages } from '../prompts/messageAssembler.js';
 import type { DeviceAgentMessages } from '../prompts/messageAssembler.js';
 import type { RuntimeConfig } from '../runtime/config.js';
 
@@ -273,6 +273,24 @@ export class GeminiNativeProvider implements DeviceAgentProvider {
       temperature: ASK_TEMPERATURE,
       maxOutputTokens: ASK_MAX_TOKENS,
       research,
+    }, signal);
+    const text = extractGeminiText(response);
+    if (text.trim().length === 0) {
+      throw new ProviderHttpError(
+        PROVIDER_ERROR_CODES.INVALID_RESPONSE,
+        'Provider response had no answer text.',
+      );
+    }
+    return { output_text: text };
+  }
+
+  async localize(payload: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    const messages = buildLocalizeMessages(payload);
+    const response = await this.postGenerateContent(messages, {
+      jsonObjectMode: false,
+      temperature: ASK_TEMPERATURE,
+      maxOutputTokens: ASK_MAX_TOKENS,
+      research: false,
     }, signal);
     const text = extractGeminiText(response);
     if (text.trim().length === 0) {

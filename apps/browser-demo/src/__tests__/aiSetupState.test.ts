@@ -6,6 +6,8 @@ import {
   bridgeAiSetupSnapshot,
   buildAiRailIdentity,
   buildAiSetupInventory,
+  deviceAgentConfiguredForRequests,
+  deviceAgentNeedsStartForRequests,
   deviceAgentSetupSnapshot,
   directAiKeyStaged,
   selectAiKeyClearTarget,
@@ -277,6 +279,30 @@ describe('AI setup state helpers', () => {
     }).runnable).toBe(false);
   });
 
+  it('treats Android configured/stopped Device Agent as connected for request UI but needing start', () => {
+    const status = {
+      available: true,
+      enabled: true,
+      configured: true,
+      state: 'stopped' as const,
+      runtime: 'android-native' as const,
+      provider: 'openai',
+      model: 'gpt-5.5',
+    };
+
+    expect(deviceAgentSetupSnapshot({
+      visible: true,
+      status,
+    })).toMatchObject({
+      configured: true,
+      runnable: false,
+      provider: 'openai',
+      model: 'gpt-5.5',
+    });
+    expect(deviceAgentConfiguredForRequests({ visible: true, status })).toBe(true);
+    expect(deviceAgentNeedsStartForRequests({ visible: true, status })).toBe(true);
+  });
+
   it('treats a paired Plan Connector as configured before runtime status catches up', () => {
     const inventory = buildAiSetupInventory({
       activeMode: 'device-agent',
@@ -310,6 +336,49 @@ describe('AI setup state helpers', () => {
     });
   });
 
+  it('surfaces a pasted Device Agent key as staged until the native runtime confirms it', () => {
+    const inventory = buildAiSetupInventory({
+      activeMode: 'device-agent',
+      hosted: { configured: false, runnable: false },
+      session: { configured: false, runnable: false },
+      bridge: { configured: false, runnable: false },
+      deviceAgent: deviceAgentSetupSnapshot({
+        visible: true,
+        status: {
+          available: true,
+          enabled: true,
+          configured: false,
+          state: 'stopped',
+          runtime: 'android-native',
+        },
+        stagedKey: true,
+        stagedProvider: 'OpenAI',
+        stagedModel: 'gpt-5.5',
+        stagedLogoHint: 'codex',
+      }),
+    });
+
+    expect(inventory.active).toMatchObject({
+      mode: 'device-agent',
+      configured: false,
+      staged: true,
+      runnable: false,
+      provider: 'OpenAI',
+      model: 'gpt-5.5',
+    });
+    expect(inventory.anyConfigured).toBe(true);
+    expect(railIdentity(inventory)).toMatchObject({
+      provider: 'OpenAI',
+      model: 'gpt-5.5',
+      configured: false,
+      staged: true,
+      inactive: false,
+      statusLabel: 'key staged',
+      statusTone: 'staged',
+      logoHint: 'codex',
+    });
+  });
+
   it('builds the rail identity from active configured Device Agent details', () => {
     const inventory = buildAiSetupInventory({
       activeMode: 'device-agent',
@@ -333,6 +402,46 @@ describe('AI setup state helpers', () => {
       detail: 'gpt-5 - Device Agent',
       statusLabel: 'confirmed',
       statusTone: 'confirmed',
+      logoHint: 'codex',
+    });
+  });
+
+  it('labels an inactive staged Device Agent key separately from confirmed configuration', () => {
+    const inventory = buildAiSetupInventory({
+      activeMode: 'hosted',
+      hosted: {
+        configured: false,
+        runnable: false,
+        provider: 'OpenAI',
+        model: 'gpt-5',
+        logoHint: 'codex',
+      },
+      session: { configured: false, runnable: false },
+      bridge: { configured: false, runnable: false },
+      deviceAgent: {
+        configured: false,
+        staged: true,
+        runnable: false,
+        provider: 'OpenAI',
+        model: 'gpt-5.5',
+        logoHint: 'codex',
+      },
+    });
+
+    expect(inventory.inactiveConfigured).toEqual([
+      expect.objectContaining({
+        mode: 'device-agent',
+        staged: true,
+        configured: false,
+      }),
+    ]);
+    expect(railIdentity(inventory)).toMatchObject({
+      path: 'device-agent',
+      provider: 'OpenAI',
+      model: 'gpt-5.5',
+      inactive: true,
+      statusLabel: 'key staged inactive',
+      statusTone: 'inactive',
       logoHint: 'codex',
     });
   });

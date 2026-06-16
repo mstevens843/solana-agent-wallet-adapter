@@ -34,7 +34,8 @@ class AgentRuntimeController(
         if (!BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT) return disabledStatusJson()
 
         val config = configJson()
-        val configured = config != null
+        val runtimeConfig = RuntimeConfig.fromJson(config)
+        val configured = runtimeConfig?.validate() == null && runtimeConfig != null
         val snapshot = RuntimeRegistry.currentSnapshot()
         val stateWire = snapshot.state.wire
         val message = when (stateWire) {
@@ -74,7 +75,7 @@ class AgentRuntimeController(
         if (config.optBoolean("clear", false)) {
             clearConfigAndStop()
         } else {
-            persistConfig(config)
+            persistConfig(resolveConfigForPersistence(config))
         }
         return statusJson()
     }
@@ -86,8 +87,11 @@ class AgentRuntimeController(
             clearConfigAndStop()
             return statusJson()
         }
-        persistConfig(config)
-        val parsed = RuntimeConfig.fromJson(config)
+        val resolved = resolveStartConfig(config)
+        if (resolved.persist && resolved.config != null) {
+            persistConfig(resolved.config)
+        }
+        val parsed = RuntimeConfig.fromJson(resolved.config)
         val result = runBlocking { RuntimeRegistry.transitionStart(parsed, persistence) }
         when (result) {
             RuntimeState.RUNNING -> {
@@ -177,6 +181,44 @@ class AgentRuntimeController(
         runBlocking { RuntimeRegistry.transitionStop(persistence) }
         context.stopService(Intent(context, AgentRuntimeService::class.java))
         AgentMwaLog.info("AgentRuntime", "configure", "CLEAR", "device agent config cleared")
+    }
+
+    private data class ResolvedConfig(val config: JSONObject?, val persist: Boolean)
+
+    private fun resolveConfigForPersistence(config: JSONObject): JSONObject {
+        val stored = configJson()
+        if (stored != null && shouldMergeWithStoredSecret(config)) {
+            return mergeStoredSecretConfig(stored, config)
+        }
+        return config
+    }
+
+    private fun resolveStartConfig(config: JSONObject): ResolvedConfig {
+        val stored = configJson()
+        if (RuntimeConfig.fromJson(config) == null) {
+            return ResolvedConfig(stored, false)
+        }
+        if (stored != null && shouldMergeWithStoredSecret(config)) {
+            return ResolvedConfig(mergeStoredSecretConfig(stored, config), true)
+        }
+        return ResolvedConfig(config, true)
+    }
+
+    private fun shouldMergeWithStoredSecret(config: JSONObject): Boolean {
+        val parsed = RuntimeConfig.fromJson(config) ?: return false
+        if (parsed.isPairedBridge()) return false
+        return parsed.apiKey.isNullOrBlank()
+    }
+
+    private fun mergeStoredSecretConfig(stored: JSONObject, incoming: JSONObject): JSONObject {
+        val merged = JSONObject(stored.toString())
+        for (key in listOf("provider", "apiFormat", "baseUrl", "model", "walletAddress")) {
+            val value = incoming.optString(key, "").trim()
+            if (value.isNotBlank()) {
+                merged.put(key, value)
+            }
+        }
+        return merged
     }
 
     private fun disabledStatusJson(): JSONObject =

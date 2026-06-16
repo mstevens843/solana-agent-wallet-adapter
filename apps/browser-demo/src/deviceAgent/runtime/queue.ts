@@ -19,6 +19,7 @@ export interface ProviderExecutor {
   generatePlan(config: RuntimeConfig, payload: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
   reviewPlan(config: RuntimeConfig, payload: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
   ask(config: RuntimeConfig, payload: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
+  localize(config: RuntimeConfig, payload: Record<string, unknown>, signal?: AbortSignal): Promise<unknown>;
 }
 
 export interface RequestQueueOptions {
@@ -218,6 +219,8 @@ export class RequestQueue {
         return executor.reviewPlan(config, request.payload, signal);
       case 'ask':
         return executor.ask(config, request.payload, signal);
+      case 'localize':
+        return executor.localize(config, request.payload, signal);
     }
   }
 

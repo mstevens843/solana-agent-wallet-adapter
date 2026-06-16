@@ -1,11 +1,12 @@
 import type { RuntimeError } from './state.js';
 
-export type RuntimeMethodWire = 'generatePlan' | 'reviewPlan' | 'ask';
+export type RuntimeMethodWire = 'generatePlan' | 'reviewPlan' | 'ask' | 'localize';
 
 export const RUNTIME_METHODS: readonly RuntimeMethodWire[] = Object.freeze([
   'generatePlan',
   'reviewPlan',
   'ask',
+  'localize',
 ]);
 
 export function isRuntimeMethodWire(value: unknown): value is RuntimeMethodWire {

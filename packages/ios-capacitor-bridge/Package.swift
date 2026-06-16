@@ -3,7 +3,11 @@ import PackageDescription
 
 let package = Package(
     name: "SolanaAgentWalletAdapterIosCapacitorBridge",
-    platforms: [.iOS(.v16)],
+    // macOS is declared so `swift test` can plan a macOS-hosted build of the
+    // Foundation-only enforcer tests (reown-swift needs macOS 11, the Solana
+    // wallet adapter needs macOS 13). The shipped iOS plugin remains iOS-only;
+    // CocoaPods consumes ios/Plugin/** as a single module via the podspec.
+    platforms: [.iOS(.v16), .macOS(.v13)],
     products: [
         .library(
             name: "SolanaAgentWalletAdapterIosCapacitorBridge",

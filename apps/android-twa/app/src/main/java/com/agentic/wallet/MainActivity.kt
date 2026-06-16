@@ -112,6 +112,8 @@ class MainActivity : FragmentActivity() {
     // invocation" on every bridge call. We snapshot the URL from the UI thread inside
     // WebViewClient callbacks and have isCurrentOriginAllowed() read this reference.
     private val currentWebViewOrigin = AtomicReference<String?>(null)
+    @Volatile private var keyboardInsetCssPx: Int = 0
+    @Volatile private var keyboardVisible: Boolean = false
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -137,23 +139,6 @@ class MainActivity : FragmentActivity() {
             // connector (Codex/Claude) instead of an on-device API key.
             agentRuntimeController.setProviderExecutor(
                 DeviceAgentProviderExecutor(bridgeRelayProvider = BridgeRelayProvider(bridgeAiClient)),
-            )
-        }
-        // Device Agent is session-scoped to the connected wallet AND the live app
-        // process. On a cold launcher entry (no saved instance state, no deep-link
-        // intent), wipe any persisted native config so the previous session's API
-        // key does not survive a hard app exit. Config-change recreations and
-        // deep-link launches preserve the active session.
-        if (BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT
-            && savedInstanceState == null
-            && intent?.action == Intent.ACTION_MAIN
-        ) {
-            agentRuntimeController.configure("{\"clear\":true}")
-            AgentMwaLog.info(
-                "MainActivity",
-                "onCreate",
-                "DEVICE_AGENT_COLD_CLEAR",
-                "cold launch cleared persisted device agent config",
             )
         }
         AgentMwaLog.info(
@@ -1150,10 +1135,46 @@ class MainActivity : FragmentActivity() {
     private fun applySystemBarInsets(view: WebView) {
         ViewCompat.setOnApplyWindowInsetsListener(view) { target, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            updateKeyboardInsets(insets)
             target.setPadding(bars.left, bars.top, bars.right, bars.bottom)
             insets
         }
         ViewCompat.requestApplyInsets(view)
+    }
+
+    private fun keyboardInsetsJson(): JSONObject =
+        JSONObject()
+            .put("keyboardInset", keyboardInsetCssPx)
+            .put("visible", keyboardVisible)
+
+    private fun updateKeyboardInsets(insets: WindowInsetsCompat) {
+        val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+        val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+        val imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime())
+        val density = resources.displayMetrics.density.takeIf { it > 0f } ?: 1f
+        val insetPx = if (imeVisible) maxOf(0, ime.bottom - bars.bottom) else 0
+        val insetCssPx = (insetPx / density).toInt()
+        val visible = imeVisible && insetCssPx > 0
+        if (keyboardInsetCssPx == insetCssPx && keyboardVisible == visible) return
+        keyboardInsetCssPx = insetCssPx
+        keyboardVisible = visible
+        dispatchKeyboardInsetsToWebView()
+    }
+
+    private fun dispatchKeyboardInsetsToWebView() {
+        if (!::webView.isInitialized) return
+        val payload = keyboardInsetsJson().toString()
+        val js = """
+            (function(){
+              var bridge = window.__agenticAndroidKeyboardInsetBridge;
+              if (bridge && typeof bridge.update === 'function') {
+                bridge.update($payload);
+              }
+            })();
+        """.trimIndent()
+        webView.post {
+            webView.evaluateJavascript(js, null)
+        }
     }
 
     private class AndroidBridge(private val activity: MainActivity) {
@@ -1251,6 +1272,12 @@ class MainActivity : FragmentActivity() {
             validateSecureStoreRequest(key)
             activity.secureStore.remove(key)
             true
+        }
+
+        @JavascriptInterface
+        fun keyboardInsets(): String = safeBridge("keyboardInsets", "{\"keyboardInset\":0,\"visible\":false}") {
+            if (!checkTrustedOrigin("keyboardInsets")) return@safeBridge "{\"keyboardInset\":0,\"visible\":false}"
+            activity.keyboardInsetsJson().toString()
         }
 
         // ── Phone↔desktop pairing ("use your ChatGPT/Claude plan from your computer") ──────────
@@ -2188,7 +2215,7 @@ class MainActivity : FragmentActivity() {
                 "configure" -> DeviceAgentOutcome(activity.agentRuntimeController.configure(payload.toString()), null)
                 "start" -> DeviceAgentOutcome(activity.agentRuntimeController.start(activity, payload.toString()), null)
                 "stop" -> DeviceAgentOutcome(activity.agentRuntimeController.stop(activity), null)
-                "generatePlan", "reviewPlan", "ask" -> {
+                "generatePlan", "reviewPlan", "ask", "localize" -> {
                     val runtimeMethod = RuntimeMethod.fromWire(method)
                         ?: throw DeviceAgentException(
                             code = "unsupported_method",
@@ -2396,6 +2423,7 @@ class MainActivity : FragmentActivity() {
                 "generatePlan",
                 "reviewPlan",
                 "ask",
+                "localize",
             )
             private val ALLOWED_STREAMING_METHODS = setOf(
                 "status",

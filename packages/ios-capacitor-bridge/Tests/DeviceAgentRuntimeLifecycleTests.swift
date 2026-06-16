@@ -152,6 +152,32 @@ final class DeviceAgentRuntimeLifecycleTests: XCTestCase {
         ).validationError()?.message.contains("required") == true)
     }
 
+    func testRuntimeConfigMergesKeylessRouteUpdateWithoutDroppingStoredSecret() {
+        let stored = runtimeConfig(
+            provider: "anthropic",
+            apiFormat: "anthropic",
+            model: "claude-opus-4-1",
+            baseUrl: nil,
+            apiKey: "sk-stored"
+        )
+        let incoming = AgenticAgentRuntimeConfig(
+            provider: "openai",
+            apiFormat: "openai-compatible",
+            model: "gpt-5.5",
+            baseUrl: nil,
+            apiKey: nil,
+            walletAddress: nil
+        )
+
+        let merged = stored.mergingStoredSecret(with: incoming)
+
+        XCTAssertEqual(merged.provider, "openai")
+        XCTAssertEqual(merged.apiFormat, "openai-compatible")
+        XCTAssertEqual(merged.model, "gpt-5.5")
+        XCTAssertEqual(merged.apiKey, "sk-stored")
+        XCTAssertNil(merged.validationError())
+    }
+
     func testPlanBoundaryMatchesWebAndroidContract() throws {
         XCTAssertEqual(
             AgenticDeviceAgentBoundaries.plan,
@@ -288,14 +314,15 @@ private func runtimeConfig(
     provider: String,
     apiFormat: String,
     model: String,
-    baseUrl: String? = nil
+    baseUrl: String? = nil,
+    apiKey: String = "sk-test"
 ) -> AgenticAgentRuntimeConfig {
     AgenticAgentRuntimeConfig(
         provider: provider,
         apiFormat: apiFormat,
         model: model,
         baseUrl: baseUrl,
-        apiKey: "sk-test",
+        apiKey: apiKey,
         walletAddress: nil
     )
 }

@@ -99,6 +99,25 @@ internal class GeminiNativeProvider(
         return JSONObject().put("output_text", text)
     }
 
+    override suspend fun localize(payload: JSONObject): JSONObject {
+        val messages = DeviceAgentMessageAssembler.buildLocalizeMessages(payload)
+        val response = postGenerateContent(
+            messages,
+            jsonObjectMode = false,
+            temperature = ASK_TEMPERATURE,
+            maxOutputTokens = ASK_MAX_TOKENS,
+            research = false,
+        )
+        val text = ProviderResponseParser.extractGeminiText(response)
+        if (text.isBlank()) {
+            throw ProviderHttpException(
+                ProviderErrorCodes.INVALID_RESPONSE,
+                "Provider response had no answer text.",
+            )
+        }
+        return JSONObject().put("output_text", text)
+    }
+
     private suspend fun runResearchPass(payload: JSONObject): JSONObject {
         return try {
             val messages = DeviceAgentMessageAssembler.buildResearchMessages(payload, researchTargetsForPayload(payload))

@@ -42,6 +42,7 @@ import {
   Connection,
 } from '@solana/web3.js';
 import {
+  compactPolicyLanguageForWire,
   VERIFIED_PROGRAM_IDS,
 } from '@solana-agent-wallet-adapter/workflow';
 import {
@@ -64,6 +65,9 @@ const JUPITER_AGGREGATOR_PROGRAM_IDS: ReadonlySet<string> = new Set([
 
 interface PolicyEnrichRequest {
   instruction?: string;
+  canonicalInstruction?: string;
+  sourceLanguage?: string;
+  canonicalizationMethod?: string;
   userNotes?: string;
   intent?: string;
   knownTokenSymbols?: string[];
@@ -95,7 +99,7 @@ export async function handlePolicyEnrich(
       tracePolicyEnrich('disabled', { ms: Date.now() - startedAt });
       return { ok: true, policyBundle: emptyBundle() };
     }
-    const text = [body.instruction ?? '', body.userNotes ?? '', body.intent ?? '']
+    const text = [body.instruction ?? body.canonicalInstruction ?? '', body.userNotes ?? '', body.intent ?? '']
       .filter(Boolean)
       .join('\n');
     if (!text.trim()) {
@@ -233,6 +237,7 @@ function compactBundle(bundle: PolicyEvaluationBundle): Record<string, unknown> 
     })),
     ...(Object.keys(bundle.txGateOutcomes).length > 0 ? { txGateOutcomes: bundle.txGateOutcomes } : {}),
     hasBlockingFailure: bundle.hasBlockingFailure,
+    language: compactPolicyLanguageForWire(bundle.language),
     finishedAt: bundle.finishedAt,
   };
 }

@@ -1,3 +1,4 @@
+import { agentReviewLocalizationMessages } from '@solana-agent-wallet-adapter/workflow';
 import { describe, expect, it } from 'vitest';
 
 import { DEVICE_AGENT_BOUNDARIES } from '../prompts/boundaries.js';
@@ -187,6 +188,27 @@ describe('DEVICE_AGENT_BOUNDARIES', () => {
   it('REVIEW_DEFAULT_INSTRUCTION matches the verbatim Kotlin string', () => {
     expect(DEVICE_AGENT_BOUNDARIES.REVIEW_DEFAULT_INSTRUCTION).toBe(
       'Review this draft before it is sent for wallet approval. Decide approve, deny, or needs_input.',
+    );
+  });
+});
+
+// The review-localization (`localize`) system prompt is the canonical source that the native
+// Swift (`AgenticDeviceAgentSystemPrompts.localize`) and Kotlin (`DeviceAgentSystemPrompts.LOCALIZE`)
+// constants + the system-prompts.json fixtures are copied from. Pin it here so any change to the
+// shared workflow builder fires a reminder to update the three native copies in lockstep.
+describe('review localization system prompt parity', () => {
+  it('matches the byte-identical canonical string used by Swift + Kotlin + the fixtures', () => {
+    const [system] = agentReviewLocalizationMessages({
+      language: 'es',
+      findings: [],
+      questions: [],
+      reviewers: [],
+      policies: [],
+      facts: [],
+      counterfactuals: [],
+    });
+    expect(system?.content).toBe(
+      'Translate only user-facing Solana agent review display text into the requested target language. Return only JSON with optional string fields summary and reason, optional arrays findings, questions, reviewers, policies, and facts. Keep every finding index, policy index, fact key, and atomId unchanged. Do not add, remove, or reorder facts. Preserve exact numbers, currencies, percentages, token symbols, wallet addresses, URLs, dates, source names, product names, and approve/deny/needs_input meaning. Do not translate raw JSON, evidence ids, wallet addresses, URLs, token symbols, or provider/source names. Do not change the decision, invent facts, soften a denial, or add wallet-signature disclaimers.',
     );
   });
 });

@@ -27,7 +27,8 @@ export type DeviceAgentMethod =
   | 'stop'
   | 'generatePlan'
   | 'reviewPlan'
-  | 'ask';
+  | 'ask'
+  | 'localize';
 
 export interface DeviceAgentStatus {
   available: boolean;
@@ -140,6 +141,9 @@ interface IosDeviceAgentPlugin {
   generatePlan?: (payload?: Record<string, unknown>) => Promise<unknown>;
   reviewPlan?: (payload?: Record<string, unknown>) => Promise<unknown>;
   ask?: (payload?: Record<string, unknown>) => Promise<unknown>;
+  // Optional: present only once the native binary ships the localize verb. When absent the
+  // dispatch falls through to unsupported_method and the caller uses the cloud fallback.
+  localize?: (payload?: Record<string, unknown>) => Promise<unknown>;
 }
 
 interface DeviceAgentCallbackBridge {
@@ -934,6 +938,9 @@ async function invokeIosDeviceAgentBridge(
     case 'ask':
       if (!bridge.ask) break;
       return bridge.ask(payload);
+    case 'localize':
+      if (!bridge.localize) break;
+      return bridge.localize(payload);
   }
   throw new DeviceAgentClientError(
     'unsupported_method',

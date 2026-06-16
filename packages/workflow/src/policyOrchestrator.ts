@@ -40,6 +40,12 @@ import {
   type TxGateContext,
   type TxGateOutcome,
 } from './txGates.js';
+import {
+  mergeModelPolicyTextNormalization,
+  normalizePolicyText,
+  type PolicyTextCanonicalizer,
+  type PolicyTextNormalizationResult,
+} from './policyLanguage.js';
 
 export interface RunPolicyPipelineInput {
   /** Free-form NOTE / instruction text the user typed. */
@@ -60,6 +66,12 @@ export interface RunPolicyPipelineInput {
    * NOTE into structured atoms. Useful for novel phrasings outside the regex vocabulary.
    */
   llmAtomExtractor?: AgentAtomLlmExtractor;
+  /**
+   * Optional model-backed canonicalizer for non-English policy text. Deterministic phrase-pack
+   * normalization always runs first; this hook is only used when non-English policy-like text
+   * could not be converted into extractable canonical English.
+   */
+  policyTextCanonicalizer?: PolicyTextCanonicalizer;
 }
 
 export interface PolicyEvaluationBundle {
@@ -71,6 +83,8 @@ export interface PolicyEvaluationBundle {
   unresolvedAtoms: AgentAtom[];
   /** Whether any decisive evaluation reported pass=false. Useful for short-circuit denial. */
   hasBlockingFailure: boolean;
+  /** Language/canonicalization metadata for the raw user policy text. */
+  language: PolicyTextNormalizationResult;
   /** ISO timestamp of pipeline completion. */
   finishedAt: string;
 }
@@ -89,12 +103,7 @@ export interface PolicyEvaluationBundle {
  * goes through the resolver, so unit tests can pass stubs.
  */
 export async function runPolicyPipeline(input: RunPolicyPipelineInput): Promise<PolicyEvaluationBundle> {
-  const extracted = input.llmAtomExtractor
-    ? await extractAtomsWithLlmFallback(
-        { text: input.text, knownTokenSymbols: input.knownTokenSymbols },
-        { llm: input.llmAtomExtractor },
-      )
-    : extractAtoms({ text: input.text, knownTokenSymbols: input.knownTokenSymbols });
+  const { extracted, language } = await extractAtomsForPolicyPipeline(input);
   const { atoms } = extracted;
   const finishedAt = () => new Date().toISOString();
   if (atoms.length === 0) {
@@ -105,6 +114,7 @@ export async function runPolicyPipeline(input: RunPolicyPipelineInput): Promise<
       txGateOutcomes: {},
       unresolvedAtoms: [],
       hasBlockingFailure: false,
+      language,
       finishedAt: finishedAt(),
     };
   }
@@ -175,8 +185,108 @@ export async function runPolicyPipeline(input: RunPolicyPipelineInput): Promise<
     txGateOutcomes,
     unresolvedAtoms,
     hasBlockingFailure,
+    language,
     finishedAt: finishedAt(),
   };
+}
+
+async function extractAtomsForPolicyPipeline(input: RunPolicyPipelineInput): Promise<{
+  extracted: ReturnType<typeof extractAtoms>;
+  language: PolicyTextNormalizationResult;
+}> {
+  const knownTokenSymbols = input.knownTokenSymbols ?? [];
+  const rawExtracted = extractAtoms({ text: input.text, knownTokenSymbols });
+  const deterministic = normalizePolicyText({ text: input.text, knownTokenSymbols });
+  // English fast-path: the raw English-oriented extractor found atoms, so no canonicalization
+  // is needed. We deliberately do NOT take this shortcut for non-English text (sourceLanguage
+  // !== 'en'): an accidental English-token match (e.g. "SOL"/"$80") inside a non-English NOTE
+  // could otherwise return partial atoms and silently drop the untranslatable clauses. Routing
+  // non-English text through canonicalization below captures the full rule set or fails closed.
+  if (rawExtracted.atoms.length > 0 && deterministic.sourceLanguage === 'en') {
+    return {
+      extracted: rawExtracted,
+      language: {
+        ...deterministic,
+        canonicalEnglish: input.text,
+        canonicalized: false,
+        method: 'none',
+        status: 'not_needed',
+        requiresInput: false,
+      },
+    };
+  }
+
+  if (deterministic.status === 'success' && deterministic.canonicalized) {
+    const canonicalExtracted = extractAtoms({ text: deterministic.canonicalEnglish, knownTokenSymbols });
+    if (canonicalExtracted.atoms.length > 0) {
+      return { extracted: canonicalExtracted, language: deterministic };
+    }
+  }
+
+  if ((deterministic.requiresInput || (deterministic.canonicalized && deterministic.probablePolicy)) && input.policyTextCanonicalizer) {
+    const modelResult = await input.policyTextCanonicalizer({
+      text: input.text,
+      sourceLanguage: deterministic.sourceLanguage,
+      knownTokenSymbols,
+    });
+    const modelNormalization = mergeModelPolicyTextNormalization(deterministic, modelResult);
+    if (modelNormalization.status === 'success') {
+      const modelExtracted = extractAtoms({ text: modelNormalization.canonicalEnglish, knownTokenSymbols });
+      if (modelExtracted.atoms.length > 0) {
+        return { extracted: modelExtracted, language: modelNormalization };
+      }
+      const llmFromCanonical = input.llmAtomExtractor
+        ? await extractAtomsWithLlmFallback(
+            { text: modelNormalization.canonicalEnglish, knownTokenSymbols },
+            { llm: input.llmAtomExtractor },
+          )
+        : modelExtracted;
+      if (llmFromCanonical.atoms.length > 0) {
+        return { extracted: llmFromCanonical, language: modelNormalization };
+      }
+      return {
+        extracted: modelExtracted,
+        language: {
+          ...modelNormalization,
+          status: 'failed',
+          requiresInput: deterministic.probablePolicy,
+          warnings: [...modelNormalization.warnings, 'Canonical English did not produce extractable policy atoms.'],
+        },
+      };
+    }
+    return { extracted: rawExtracted, language: modelNormalization };
+  }
+
+  if (input.llmAtomExtractor) {
+    const fallbackText = deterministic.status === 'success' && deterministic.canonicalized
+      ? deterministic.canonicalEnglish
+      : input.text;
+    const llmExtracted = await extractAtomsWithLlmFallback(
+      { text: fallbackText, knownTokenSymbols },
+      { llm: input.llmAtomExtractor },
+    );
+    if (llmExtracted.atoms.length > 0) {
+      return { extracted: llmExtracted, language: deterministic };
+    }
+  }
+
+  if (deterministic.requiresInput) {
+    return { extracted: rawExtracted, language: deterministic };
+  }
+  if (deterministic.status === 'success' && deterministic.canonicalized) {
+    return {
+      extracted: rawExtracted,
+      language: {
+        ...deterministic,
+        status: deterministic.probablePolicy ? 'failed' : deterministic.status,
+        requiresInput: deterministic.probablePolicy,
+        warnings: deterministic.probablePolicy
+          ? [...deterministic.warnings, 'Canonicalized text did not produce extractable policy atoms.']
+          : deterministic.warnings,
+      },
+    };
+  }
+  return { extracted: rawExtracted, language: deterministic };
 }
 
 /**

@@ -53,6 +53,7 @@ function noopExecutor(): ProviderExecutor {
     generatePlan: async () => ({ ok: true }),
     reviewPlan: async () => ({ ok: true }),
     ask: async () => ({ ok: true }),
+    localize: async () => ({ ok: true }),
   };
 }
 
@@ -158,6 +159,7 @@ describe('BrowserRuntimeRegistry.start', () => {
         generatePlan: executor,
         reviewPlan: executor,
         ask: executor,
+        localize: executor,
       }),
     });
     await registry.hydrate();
@@ -278,6 +280,7 @@ describe('BrowserRuntimeRegistry.submit', () => {
         },
         reviewPlan: async () => ({ ok: true }),
         ask: async () => ({ ok: true }),
+        localize: async () => ({ ok: true }),
       }),
     });
     await registry.hydrate();
@@ -350,6 +353,7 @@ describe('BrowserRuntimeRegistry concurrency', () => {
       generatePlan: async () => ({ via: 'explicit' }),
       reviewPlan: async () => ({ ok: true }),
       ask: async () => ({ ok: true }),
+      localize: async () => ({ ok: true }),
     };
     registry.setExecutor(explicit);
     await registry.start(VALID_CONFIG);
@@ -400,6 +404,7 @@ describe('BrowserRuntimeRegistry persistence degradation', () => {
         },
         reviewPlan: async () => ({ ok: true }),
         ask: async () => ({ ok: true }),
+        localize: async () => ({ ok: true }),
       }),
     });
 

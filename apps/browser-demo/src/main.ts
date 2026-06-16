@@ -53,12 +53,24 @@ import {
   parseRecurringOccurrenceRecord,
   parseRecurringScheduleRecord,
   parseSessionResponse,
+  agentReviewCanonicalHash,
+  agentReviewLocalizedCopyFromModel,
+  agentReviewLocalizedLabel,
+  agentReviewLocalizedProse,
   formatOccurrenceStatus,
   formatScheduleStatus,
   lifetimeSpendEstimate,
+  localizeAgentReviewResultForDisplay,
+  normalizeAgentReviewLocalizedCopy,
+  normalizeReviewLanguageCode,
+  parseAgentReviewLocalizationJson,
   planAgentReviewFactRoutes,
   previewUpcoming,
   reconcileThresholdReviewDecision,
+  reviewLocalizationPayload,
+  reviewLocalizationPayloadHasText,
+  shouldLocalizeAgentReview,
+  sourceLanguageFromReview,
   validateAgentReviewDecision,
   type AgentConnectorProfileKind,
   type AgentDecisionAuditReceipt,
@@ -70,6 +82,9 @@ import {
   type AgentFactNeed,
   type AgentFactRoute,
   type AgentFactRoutePlan,
+  type AgentReviewLocalizedCopy,
+  type PolicyLanguageCode,
+  type AgentReviewLocalizedLabelKey,
   type AiGuardrailReport,
   type ApprovalRequestRecord as WorkflowApprovalRequestRecord,
   type AuditEventRecord as WorkflowAuditEventRecord,
@@ -349,6 +364,7 @@ import {
 } from './aiPathPolicy.js';
 import {
   aiReviewSetupTabForMobileRailOpen,
+  computeMobileRailViewportVars,
   shouldApplyMobileRailBodyDataset,
   shouldClearActiveMobileRailSheet,
   shouldCloseWorkspaceStorageSheetAfterCloudSignIn,
@@ -366,7 +382,7 @@ import {
   stopDesktopPairing as stopBridgeDesktopPairing,
   renderPairingQrDataUrl,
 } from './bridgePairing.js';
-import { mountPhonePairingPanel, openDesktopPairingModal, openPhonePairingModal } from './bridgePairingUi.js';
+import { buildPhonePairingDeps, mountPhonePairingPanel, openDesktopPairingModal, openPhonePairingModal } from './bridgePairingUi.js';
 import { logDeviceAgentDiag } from './deviceAgent/runtime/diagnosticLog.js';
 import {
   aiProviderLogoHint,
@@ -376,6 +392,8 @@ import {
   bridgeAiSetupSnapshot,
   buildAiRailIdentity,
   buildAiSetupInventory,
+  deviceAgentConfiguredForRequests,
+  deviceAgentNeedsStartForRequests,
   deviceAgentSetupSnapshot,
   directAiKeyStaged,
   selectAiKeyClearTarget,
@@ -658,9 +676,11 @@ import {
   BROWSER_DEVICE_AGENT_ENABLED,
   DEVICE_AGENT_ENABLED,
   IOS_DEVICE_AGENT_ENABLED,
+  REVIEW_MODEL_LOCALIZATION_ENABLED,
   browserNativeRuntimeEligibleForSurface,
   isDeviceAgentWallet,
 } from './devGate.js';
+import { fetchReviewLocalization } from './policyEnrichClient.js';
 import type { SecretStoreMode } from './deviceAgent/index.js';
 import {
   DeviceAgentClientError,
@@ -1010,7 +1030,7 @@ interface TokenFieldSelection {
   priceUsd?: number;
   decimals?: number;
 }
-type AgentPlanReviewStatus = 'checking' | 'approved' | 'denied' | 'needs_input' | 'error';
+type AgentPlanReviewStatus = 'checking' | 'approved' | 'denied' | 'needs_input' | 'wallet_required' | 'error';
 type AgentReviewFilter = AgentPlanReviewStatus | 'all' | 'not_asked';
 type AgentReviewFilterScope = 'generated' | 'recurring';
 type RecurringPresetId = 'scheduled-transfer' | 'recurring-swap';
@@ -1312,6 +1332,7 @@ interface AgentPlanReviewState {
   decisionContract?: AgentDecisionContract;
   auditReceipt?: AgentDecisionAuditReceipt;
   decisionViolations?: string[];
+  localized?: AgentReviewLocalizedCopy;
 }
 
 type AgentPolicyKind =
@@ -1395,6 +1416,7 @@ interface AgenticAndroidBridge {
   // Returns the current clipboard text (empty string if none). Optional: older shipped APKs
   // predate this method, so callers fall back to navigator.clipboard when it is absent.
   clipboardRead?: () => string;
+  keyboardInsets?: () => string;
   haptic?: (pattern: string) => boolean;
   showNotification?: (payloadJson: string) => string;
   biometricStatus?: () => string;
@@ -1405,6 +1427,13 @@ interface AgenticAndroidBridge {
 interface IosSystemClipboardBridge {
   clipboardWrite?: (options: { text: string; label?: string }) => Promise<{ ok?: boolean }> | { ok?: boolean };
   clipboardRead?: () => Promise<{ text?: string }> | { text?: string };
+  keyboardMetrics?: () =>
+    | Promise<{ keyboardInset?: number; visible?: boolean }>
+    | { keyboardInset?: number; visible?: boolean };
+  addListener?: (
+    eventName: 'keyboardInsetChange',
+    listener: (event: { keyboardInset?: number; visible?: boolean }) => void,
+  ) => Promise<{ remove: () => Promise<void> }> | { remove: () => Promise<void> };
 }
 
 // DeviceAgentStatus / DeviceAgentRuntimeState / DeviceAgentRuntimeKind are imported
@@ -4196,6 +4225,16 @@ let selectPickerController: AbortController | null = null;
 let selectPickerOpenOrder = 0;
 let preferencesMobilePickerController: AbortController | null = null;
 let mobileRailSheetController: AbortController | null = null;
+let nativeKeyboardInsetsBound = false;
+let nativeKeyboardInset = 0;
+let nativeKeyboardVisible = false;
+let virtualKeyboardInsetsBound = false;
+let virtualKeyboardInset = 0;
+let virtualKeyboardVisible = false;
+// True only during the programmatic focus restore in restoreMobileRailRenderSnapshot.
+// The rail focus listener checks this so it does not smooth-scroll (defeating the
+// deliberate {preventScroll:true}) when a background re-render re-focuses the field.
+let restoringMobileRailFocus = false;
 let expandNoteSheetController: AbortController | null = null;
 let expandNoteViewportController: AbortController | null = null;
 let walletBalanceOverlayController: AbortController | null = null;
@@ -4263,12 +4302,35 @@ function currentDeviceAgentWalletAddress(): string | undefined {
   return state.address || state.cloudSession.walletAddress || undefined;
 }
 
-interface PersistedDeviceAgentStatus {
+interface PersistedDeviceAgentStatusV1 {
   v: 1;
   walletAddress: string;
   mode: AiSettings['mode'];
   savedAt: number;
   status: DeviceAgentStatus;
+}
+
+interface PersistedDeviceAgentStatusV2 {
+  v: 2;
+  scope: 'app' | 'wallet';
+  walletAddress?: string;
+  mode: AiSettings['mode'];
+  savedAt: number;
+  status: DeviceAgentStatus;
+}
+
+type PersistedDeviceAgentStatus = PersistedDeviceAgentStatusV1 | PersistedDeviceAgentStatusV2;
+
+function deviceAgentStatusCacheScope(status: DeviceAgentStatus): 'app' | 'wallet' {
+  const apiFormat = status.apiFormat as string | undefined;
+  if (
+    state.aiSettings.pairedBridge ||
+    status.provider === 'paired-bridge' ||
+    apiFormat === 'paired-bridge'
+  ) {
+    return 'wallet';
+  }
+  return 'app';
 }
 
 function saveDeviceAgentStatusCache(status: DeviceAgentStatus | null): void {
@@ -4279,12 +4341,14 @@ function saveDeviceAgentStatusCache(status: DeviceAgentStatus | null): void {
     clearDeviceAgentStatusCache();
     return;
   }
+  const scope = deviceAgentStatusCacheScope(status);
   const walletAddress = currentDeviceAgentWalletAddress();
-  if (!walletAddress) return;
+  if (scope === 'wallet' && !walletAddress) return;
   try {
     const payload: PersistedDeviceAgentStatus = {
-      v: 1,
-      walletAddress,
+      v: 2,
+      scope,
+      ...(scope === 'wallet' && walletAddress ? { walletAddress } : {}),
       mode: 'device-agent',
       savedAt: Date.now(),
       status,
@@ -4296,8 +4360,6 @@ function saveDeviceAgentStatusCache(status: DeviceAgentStatus | null): void {
 }
 
 function loadDeviceAgentStatusCache(): DeviceAgentStatus | null {
-  const walletAddress = currentDeviceAgentWalletAddress();
-  if (!walletAddress) return null;
   let raw: string | null;
   try {
     raw = window.localStorage.getItem(DEVICE_AGENT_STATUS_STORAGE_KEY);
@@ -4315,19 +4377,31 @@ function loadDeviceAgentStatusCache(): DeviceAgentStatus | null {
   if (
     !parsed
     || typeof parsed !== 'object'
-    || (parsed as { v?: unknown }).v !== 1
+    || ((parsed as { v?: unknown }).v !== 1 && (parsed as { v?: unknown }).v !== 2)
   ) {
     clearDeviceAgentStatusCache();
     return null;
   }
   const entry = parsed as Partial<PersistedDeviceAgentStatus>;
+  const walletAddress = currentDeviceAgentWalletAddress();
   if (
-    entry.walletAddress !== walletAddress
-    || entry.mode !== 'device-agent'
+    entry.mode !== 'device-agent'
     || typeof entry.savedAt !== 'number'
     || Date.now() - entry.savedAt > DEVICE_AGENT_STATUS_CACHE_MAX_AGE_MS
   ) {
     return null;
+  }
+  if (entry.v === 1) {
+    const legacyEntry = entry as Partial<PersistedDeviceAgentStatusV1>;
+    if (!walletAddress || legacyEntry.walletAddress !== walletAddress) return null;
+  } else {
+    const scopedEntry = entry as Partial<PersistedDeviceAgentStatusV2>;
+    if (scopedEntry.scope === 'wallet') {
+      if (!walletAddress || scopedEntry.walletAddress !== walletAddress) return null;
+    } else if (scopedEntry.scope !== 'app') {
+      clearDeviceAgentStatusCache();
+      return null;
+    }
   }
   try {
     return parseDeviceAgentStatus(entry.status);
@@ -9319,7 +9393,14 @@ function restoreMobileRailRenderSnapshot(snapshot: MobileRailRenderSnapshot | nu
     if (!snapshot.focusSelector) return;
     const target = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(snapshot.focusSelector);
     if (!target) return;
-    target.focus({ preventScroll: true });
+    // Flag is read synchronously by the rail focusin listener (focus dispatches the
+    // event inline) so it skips the smooth re-center that would defeat preventScroll.
+    restoringMobileRailFocus = true;
+    try {
+      target.focus({ preventScroll: true });
+    } finally {
+      restoringMobileRailFocus = false;
+    }
     if (
       typeof snapshot.selectionStart === 'number' &&
       typeof snapshot.selectionEnd === 'number' &&
@@ -13502,10 +13583,32 @@ function preferredAiReviewSetupTabForMobileRailOpen(nextSheet: MobileRailSheet):
   });
 }
 
+function deviceAgentStatusRenderSignature(status: DeviceAgentStatus | null | undefined): string {
+  if (!status) return 'none';
+  return [
+    status.available ? '1' : '0',
+    status.enabled ? '1' : '0',
+    status.configured ? '1' : '0',
+    status.state,
+    status.runtime,
+    status.provider ?? '',
+    status.apiFormat ?? '',
+    status.baseUrl ?? '',
+    status.model ?? '',
+    status.walletAddress ?? '',
+    status.message ?? '',
+    status.lastError?.code ?? '',
+    status.lastError?.subcode ?? '',
+    status.lastError?.message ?? '',
+  ].join('|');
+}
+
 function maybeRefreshDeviceAgentStatusForMobileRailOpen(sheet: MobileRailSheet): void {
   const refreshInFlight = state.deviceAgentStatusLoading || Boolean(mobileRailDeviceAgentStatusRefresh);
+  const beforeSignature = deviceAgentStatusRenderSignature(state.deviceAgentStatus);
   if (!shouldRefreshDeviceAgentStatusForMobileRailOpen({
     aiMode: state.aiSettings.mode,
+    deviceAgentConfigured: deviceAgentConfiguredForCurrentRequests(),
     refreshInFlight,
     setupTab: state.aiReviewSetupTab,
     sheet,
@@ -13521,7 +13624,13 @@ function maybeRefreshDeviceAgentStatusForMobileRailOpen(sheet: MobileRailSheet):
       if (mobileRailDeviceAgentStatusRefresh === refresh) {
         mobileRailDeviceAgentStatusRefresh = null;
         state.deviceAgentStatusLoading = false;
-        render();
+        if (
+          state.activeMobileRailSheet === sheet &&
+          deviceAgentStatusRenderSignature(state.deviceAgentStatus) !== beforeSignature
+        ) {
+          suppressMobileRailSheetEnterAnimation = true;
+          render();
+        }
       }
     };
     const remainingEnterMs = MOBILE_RAIL_SHEET_ENTER_ANIMATION_MS - (Date.now() - openedAt);
@@ -13540,8 +13649,8 @@ function openMobileRailSheet(sheet: MobileRailSheet): void {
     startWalletBalanceFullLoad(false, { openOverlay: false });
     return;
   }
-  maybeRefreshDeviceAgentStatusForMobileRailOpen(sheet);
   render();
+  maybeRefreshDeviceAgentStatusForMobileRailOpen(sheet);
 }
 
 function openPlanConnectorSetupSheet(): void {
@@ -19800,6 +19909,7 @@ function agentReviewFilterOptions(): SelectPickerOption[] {
     { value: 'approved', label: 'Passed', meta: 'AI filter', detail: 'Review passed' },
     { value: 'denied', label: 'Denied', meta: 'AI filter', detail: 'Agent denied' },
     { value: 'needs_input', label: 'Needs context', meta: 'AI filter', detail: 'Agent asked questions' },
+    { value: 'wallet_required', label: 'Wallet required', meta: 'AI filter', detail: 'Condition passed; wallet needed' },
     { value: 'checking', label: 'Checking', meta: 'AI filter', detail: 'Review in progress' },
     { value: 'error', label: 'Failed', meta: 'AI filter', detail: 'Review failed' },
     { value: 'not_asked', label: 'Not asked', meta: 'AI filter', detail: 'No agent review yet' },
@@ -19807,13 +19917,16 @@ function agentReviewFilterOptions(): SelectPickerOption[] {
 }
 
 function isAgentReviewFilter(value: string | undefined): value is AgentReviewFilter {
-  return value === 'all' ||
+  return value === 'all' || value === 'not_asked' || isAgentPlanReviewStatus(value);
+}
+
+function isAgentPlanReviewStatus(value: unknown): value is AgentPlanReviewStatus {
+  return value === 'checking' ||
     value === 'approved' ||
     value === 'denied' ||
     value === 'needs_input' ||
-    value === 'checking' ||
-    value === 'error' ||
-    value === 'not_asked';
+    value === 'wallet_required' ||
+    value === 'error';
 }
 
 function agentReviewFilterLabel(filter: AgentReviewFilter): string {
@@ -19824,6 +19937,8 @@ function agentReviewFilterLabel(filter: AgentReviewFilter): string {
       return 'Denied';
     case 'needs_input':
       return 'Needs context';
+    case 'wallet_required':
+      return 'Wallet required';
     case 'checking':
       return 'Checking';
     case 'error':
@@ -20320,7 +20435,7 @@ function agentReviewButton(record: GeneratedPlanRecord): string {
     ? 'Asking agent...'
     : review?.status === 'needs_input'
       ? 'Answer or ask again'
-      : review?.status === 'approved' || review?.status === 'denied' || review?.status === 'error'
+      : review?.status === 'approved' || review?.status === 'denied' || review?.status === 'wallet_required' || review?.status === 'error'
         ? 'Ask agent again'
         : 'Ask agent';
   return `
@@ -20347,19 +20462,23 @@ function generatedPlanAgentReviewStrip(record: GeneratedPlanRecord, opts: AgentR
   const review = record.agentReview;
   if (!review?.required) return '';
   const stale = opts.stale ?? isAgentReviewStale(record);
-  const label = agentReviewStripLabel(review.status);
+  const label = agentReviewStripLabel(review.status, review);
   const detail = review.checkedAt
     ? `${agentReviewSourceLabel(review)} - ${formatDateTime(review.checkedAt)}`
     : agentReviewSourceLabel(review);
   const badge = agentReviewPathBadge(review);
   const watching = isPlanWatchActive(record);
+  const language = agentReviewDisplayLanguage(review);
+  const reviewLanguageAttrs = shouldLocalizeAgentReview(language)
+    ? ` lang="${escapeHtml(language)}" data-review-language="${escapeHtml(language)}"`
+    : '';
   const watchBadge = watching
     ? `<span class="agent-review-watch-pill" title="Background watch on. Re-checks each plan once an hour while the tab is open.">Watching</span>`
     : '';
   return `
-    <section class="agent-review-strip ${escapeHtml(review.status)}${watching ? ' watching' : ''}" aria-label="Agent review">
+    <section class="agent-review-strip ${escapeHtml(review.status)}${watching ? ' watching' : ''}" aria-label="Agent review"${reviewLanguageAttrs}>
       <div class="agent-review-strip-head">
-        <span>Agent review</span>
+        <span>${escapeHtml(agentReviewUiLabel('review', language))}</span>
         <strong class="agent-review-state ${escapeHtml(review.status)}">${escapeHtml(label)}</strong>
         <em>${escapeHtml(detail)}</em>
         ${badge}
@@ -20388,19 +20507,20 @@ function agentReviewCompactDecisionText(
   review: AgentPlanReviewState,
   fallback = 'Agent review is available for context. Sending for approval is still your decision.',
 ): string {
-  return compactSentence(review.summary?.trim() || review.reason?.trim() || fallback, 156);
+  return compactSentence(agentReviewDisplaySummary(review) || agentReviewDisplayReason(review) || fallback, 156);
 }
 
 function agentReviewDecisionCopy(
   review: AgentPlanReviewState,
   fallback = 'Agent review is available for context. Sending for approval is still your decision.',
 ): string {
-  const reason = review.reason?.trim() || fallback;
-  const summary = review.summary?.trim();
+  const reason = agentReviewDisplayReason(review) || fallback;
+  const summary = agentReviewDisplaySummary(review);
+  const language = agentReviewDisplayLanguage(review);
   const summaryHtml = summary && summary !== reason
     ? `
       <section class="agent-review-copy-card">
-        <span>Summary</span>
+        <span>${escapeHtml(agentReviewUiLabel('summary', language))}</span>
         ${expandableCopyHtml(summary, {
           className: 'agent-review-copy-text',
           showLabel: 'Show full summary',
@@ -20419,20 +20539,25 @@ function agentReviewDecisionCopy(
 }
 
 function agentReviewReasonPanel(review: AgentPlanReviewState, reason: string): string {
+  const language = agentReviewDisplayLanguage(review);
   const label = review.status === 'denied' || review.status === 'error'
-    ? 'Blocking reason'
-    : review.status === 'needs_input'
-      ? 'Needs input'
-      : review.status === 'approved'
-        ? 'Why it passed'
-        : 'Review status';
+    ? agentReviewUiLabel('blockingReason', language)
+    : review.status === 'wallet_required'
+      ? agentReviewUiLabel('walletRequired', language)
+      : review.status === 'needs_input'
+        ? agentReviewUiLabel('needsInput', language)
+        : review.status === 'approved'
+          ? agentReviewUiLabel('whyItPassed', language)
+          : agentReviewUiLabel('reviewStatus', language);
   const tone = review.status === 'denied' || review.status === 'error'
     ? 'danger'
-    : review.status === 'needs_input'
+    : review.status === 'wallet_required'
       ? 'warn'
-      : review.status === 'approved'
-        ? 'pass'
-        : 'neutral';
+      : review.status === 'needs_input'
+        ? 'warn'
+        : review.status === 'approved'
+          ? 'pass'
+          : 'neutral';
   return `
     <section class="agent-review-copy-card agent-review-reason-panel ${escapeHtml(tone)}" aria-label="${escapeHtml(label)}">
       <span>${escapeHtml(label)}</span>
@@ -20553,6 +20678,7 @@ function agentEvidenceDrawer(
   review: AgentPlanReviewState,
   opts: { stale?: boolean; actionType?: string } = {},
 ): string {
+  const language = agentReviewDisplayLanguage(review);
   const sections = agentEvidenceSections(review, opts);
   const visibleSections = sections.filter((section) => !section.advanced);
   const advancedSection = sections.find((section) => section.advanced);
@@ -20563,17 +20689,21 @@ function agentEvidenceDrawer(
     ? 'pass'
     : review.status === 'denied' || review.status === 'error'
       ? 'fail'
-      : 'neutral';
+      : review.status === 'wallet_required' || review.status === 'needs_input'
+        ? 'warn'
+        : 'neutral';
   const statusLabel = review.status === 'approved'
-    ? 'Pass'
+    ? agentReviewUiLabel('pass', language)
     : review.status === 'denied' || review.status === 'error'
-      ? 'Fail'
-      : 'Review';
+      ? agentReviewUiLabel('fail', language)
+      : review.status === 'wallet_required'
+        ? agentReviewUiLabel('wallet', language)
+        : agentReviewUiLabel('review', language);
   return `
     <details class="agent-evidence-drawer">
       <summary>
         <span class="agent-evidence-summary-left">
-          <span class="agent-evidence-summary-label">Review details (${visibleCount})</span>
+          <span class="agent-evidence-summary-label">${escapeHtml(agentReviewUiLabel('reviewDetails', language))} (${visibleCount})</span>
           <span class="agent-evidence-summary-state ${statusTone}">${escapeHtml(statusLabel)}</span>
         </span>
       </summary>
@@ -20687,19 +20817,52 @@ function agentEvidenceSections(
   });
 }
 
-function agentReviewStripLabel(status: AgentPlanReviewStatus): string {
+function agentReviewDisplayLanguage(review: AgentPlanReviewState): ReturnType<typeof normalizeReviewLanguageCode> {
+  const localizedLanguage = normalizeReviewLanguageCode(review.localized?.language);
+  if (localizedLanguage !== 'unknown') return localizedLanguage;
+  return sourceLanguageFromReview(review);
+}
+
+function agentReviewDisplaySummary(review: AgentPlanReviewState): string {
+  const language = agentReviewDisplayLanguage(review);
+  return review.localized?.summary?.trim() ||
+    agentReviewLocalizedProse(review.summary, language) ||
+    review.summary?.trim() ||
+    '';
+}
+
+function agentReviewDisplayReason(review: AgentPlanReviewState): string {
+  const language = agentReviewDisplayLanguage(review);
+  return review.localized?.reason?.trim() ||
+    agentReviewLocalizedProse(review.reason, language) ||
+    review.reason?.trim() ||
+    '';
+}
+
+function agentReviewUiLabel(
+  key: AgentReviewLocalizedLabelKey,
+  language: ReturnType<typeof normalizeReviewLanguageCode>,
+): string {
+  if (!shouldLocalizeAgentReview(language)) return agentReviewLocalizedLabel(key, 'en');
+  return agentReviewLocalizedLabel(key, language);
+}
+
+function agentReviewStripLabel(status: AgentPlanReviewStatus, review?: AgentPlanReviewState): string {
+  const language = review ? agentReviewDisplayLanguage(review) : 'en';
   switch (status) {
     case 'approved':
-      return 'Review passed';
+      return agentReviewUiLabel('reviewPassed', language);
     case 'denied':
-      return 'Review denied';
+      return agentReviewUiLabel('reviewDenied', language);
     case 'checking':
-      return 'Review checking';
+      return agentReviewUiLabel('reviewChecking', language);
     case 'needs_input':
-      return 'Review needs input';
+      return agentReviewUiLabel('reviewNeedsInput', language);
+    case 'wallet_required':
+      return agentReviewUiLabel('walletRequired', language);
     case 'error':
     default:
-      return 'Agent review failed';
+      return agentReviewUiLabel('agentReviewFailed', language);
   }
 }
 
@@ -20730,12 +20893,19 @@ function agentReviewQuestionsForm(record: GeneratedPlanRecord): string {
   const review = record.agentReview;
   if (!review || review.status !== 'needs_input' || !review.questions?.length) return '';
   const disabled = !canRunAgentReview() || record.status === 'archived';
+  const localizedQuestions = new Map((review.localized?.questions ?? []).map((question) => [question.id, question]));
   const inputs = review.questions.map((question, index) => {
+    const localizedQuestion = localizedQuestions.get(question.id);
+    const prompt = localizedQuestion?.prompt?.trim() || question.prompt;
+    const hint = localizedQuestion?.hint?.trim() || question.hint;
     const value = review.answers?.[question.id] ?? '';
     const safeId = `agent-review-q-${escapeHtml(record.id)}-${escapeHtml(question.id)}`;
-    const labelHtml = `<label for="${safeId}"><strong>${index + 1}.</strong> ${escapeHtml(question.prompt)}${question.required ? ' <em class="agent-review-required">*</em>' : ''}</label>`;
+    const labelHtml = `<label for="${safeId}"><strong>${index + 1}.</strong> ${escapeHtml(prompt)}${question.required ? ' <em class="agent-review-required">*</em>' : ''}</label>`;
     if (question.inputKind === 'select' && question.options?.length) {
-      const options = question.options.map((option) => `<option value="${escapeHtml(option)}" ${option === value ? 'selected' : ''}>${escapeHtml(option)}</option>`).join('');
+      const options = question.options.map((option, optionIndex) => {
+        const optionLabel = localizedQuestion?.options?.[optionIndex]?.trim() || option;
+        return `<option value="${escapeHtml(option)}" ${option === value ? 'selected' : ''}>${escapeHtml(optionLabel)}</option>`;
+      }).join('');
       return `
         <div class="agent-review-question">
           ${labelHtml}
@@ -20749,7 +20919,7 @@ function agentReviewQuestionsForm(record: GeneratedPlanRecord): string {
             <option value="" disabled ${value ? '' : 'selected'}>Choose...</option>
             ${options}
           </select>
-          ${question.hint ? `<small>${escapeHtml(question.hint)}</small>` : ''}
+          ${hint ? `<small>${escapeHtml(hint)}</small>` : ''}
         </div>
       `;
     }
@@ -20768,7 +20938,7 @@ function agentReviewQuestionsForm(record: GeneratedPlanRecord): string {
           ${question.required ? 'required' : ''}
           ${disabled ? 'disabled' : ''}
         />
-        ${question.hint ? `<small>${escapeHtml(question.hint)}</small>` : ''}
+        ${hint ? `<small>${escapeHtml(hint)}</small>` : ''}
       </div>
     `;
   }).join('');
@@ -22150,8 +22320,9 @@ function templateOutcomeSummary(template: AgentPlanTemplate): string {
 function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
   const inventory = aiSetupInventory();
   const configured = inventory.active.configured;
+  const staged = Boolean(inventory.active.staged);
   const inactiveConfigured = inventory.inactiveConfigured.length > 0;
-  const panelConfigured = configured || inactiveConfigured;
+  const panelConfigured = configured || staged || inactiveConfigured;
   const confirmed = isAiPlannerConfirmedForCurrentSettings();
   const shouldOpen = state.aiSettingsPanelOpen === true
     || (state.aiSettingsPanelOpen === null && location === 'rail' && state.aiSettings.mode === 'bridge');
@@ -22160,11 +22331,15 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
   const summaryDetail = location === 'rail'
     ? configured
       ? `${readinessLabel} - ${aiConfirmationLabel()}`
+      : staged
+        ? 'API key staged'
       : inactiveConfigured
         ? `${aiPathPreferenceLabel(inventory.inactiveConfigured[0]!.mode)} configured inactive`
       : 'AI connector optional'
     : configured
       ? `${readinessLabel} - ${aiConfirmationLabel()}`
+      : staged
+        ? `${aiPathPreferenceLabel(state.aiSettings.mode)} key staged. Set and confirm it to configure the runtime.`
       : inactiveConfigured
         ? `${aiPathPreferenceLabel(inventory.inactiveConfigured[0]!.mode)} configured; ${aiPathPreferenceLabel(state.aiSettings.mode)} selected.`
       : 'Optional AI planner; templates work without it.';
@@ -22233,13 +22408,14 @@ function aiRailIdentity(
     identity.model = connectorPlanNote(connector);
     identity.detail = connectorPlanNote(connector);
     identity.configured = true;
+    identity.staged = false;
     identity.inactive = false;
     identity.statusLabel = confirmed ? 'confirmed' : 'configured';
     identity.statusTone = confirmed ? 'confirmed' : 'configured';
     identity.statusTitle = `${connectorPlanNote(connector)} - ${aiConfirmationLabel()}`;
     identity.logoHint = connectorRailLogoHint(connector);
   }
-  if (IS_ANDROID_APP && !identity.configured && !identity.inactive) {
+  if (IS_ANDROID_APP && !identity.configured && !identity.staged && !identity.inactive) {
     identity.provider = 'Not set up';
     identity.model = 'API key or Plan Connector';
     identity.detail = 'API key or Plan Connector';
@@ -23869,7 +24045,14 @@ function inactiveAiConfigNotice(location: 'rail' | 'planner'): string {
 }
 
 function currentAiKeyActionConfigured(): boolean {
-  return aiKeyClearTarget(state.aiSettings.mode) === state.aiSettings.mode;
+  const stagedKey = Boolean(state.aiSettings.apiKey.trim());
+  if (state.aiSettings.mode === 'device-agent') {
+    return Boolean(state.deviceAgentStatus?.configured && !stagedKey);
+  }
+  if (state.aiSettings.mode === 'bridge') {
+    return Boolean(isBridgeAiConfigured() && !stagedKey);
+  }
+  return false;
 }
 
 function canSetAndConfirmAiKey(): boolean {
@@ -23890,6 +24073,16 @@ function aiKeySetupActionHtml(scope: string): string {
       >Clear API key</button>
     `;
   }
+  const clearButton = canClearAiKey(state.aiSettings.mode)
+    ? `
+      <button
+        id="clearAiKey-${escapeHtml(scope)}"
+        data-ai-action="clear-key"
+        data-ai-clear-mode="${escapeHtml(state.aiSettings.mode)}"
+        class="utility danger ai-key-secondary-action"
+      >Clear API key</button>
+    `
+    : '';
   return `
     <button
       id="setConfirmAiKey-${escapeHtml(scope)}"
@@ -23898,6 +24091,7 @@ function aiKeySetupActionHtml(scope: string): string {
       ${!canSetAndConfirmAiKey() ? 'disabled' : ''}
       title="${escapeHtml(canSetAndConfirmAiKey() ? 'Save this key and check the selected AI Connector route.' : aiConfirmDisabledReason())}"
     >Set and confirm API key</button>
+    ${clearButton}
   `;
 }
 
@@ -23925,12 +24119,14 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
     isRail && isMobileAppViewport() && state.activeMobileRailSheet === 'ai-drafting'
       ? 'down'
       : 'auto';
-  const nativeIosDeviceAgentConfigured = state.iosNativeEnvironment.isIosNative
+  const stagedKey = Boolean(state.aiSettings.apiKey.trim());
+  const nativeDeviceAgentConfiguredWithoutStagedKey = (IS_ANDROID_APP || state.iosNativeEnvironment.isIosNative)
     && state.aiSettings.mode === 'device-agent'
-    && state.deviceAgentStatus?.runtime === 'ios-native'
-    && state.deviceAgentStatus.configured;
-  const routeConfigDisabled = state.busy || nativeIosDeviceAgentConfigured;
-  const routeConfigLockedTitle = nativeIosDeviceAgentConfigured
+    && (state.deviceAgentStatus?.runtime === 'android-native' || state.deviceAgentStatus?.runtime === 'ios-native')
+    && state.deviceAgentStatus.configured
+    && !stagedKey;
+  const routeConfigDisabled = state.busy || nativeDeviceAgentConfiguredWithoutStagedKey;
+  const routeConfigLockedTitle = nativeDeviceAgentConfiguredWithoutStagedKey
     ? 'Clear API key to change provider, model, or gateway.'
     : undefined;
   const setupHelperMessages = Array.from(new Set(
@@ -23983,7 +24179,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         <div class="ai-key-configured-note" aria-live="polite">
           <span>Device Agent</span>
           <strong>Configured for review</strong>
-          <em>${escapeHtml(nativeIosDeviceAgentConfigured ? `${deviceAgentConfiguredDetail}. Clear API key to change provider or model.` : deviceAgentConfiguredDetail)}</em>
+          <em>${escapeHtml(nativeDeviceAgentConfiguredWithoutStagedKey ? `${deviceAgentConfiguredDetail}. Clear API key to change provider or model.` : deviceAgentConfiguredDetail)}</em>
         </div>
       `
     : `
@@ -25081,6 +25277,17 @@ function aiSetupInventory(): AiSetupInventory {
     deviceAgent: deviceAgentSetupSnapshot({
       status: state.deviceAgentStatus,
       visible: deviceAgentModeVisible(),
+      stagedKey: state.aiSettings.mode === 'device-agent' &&
+        !state.aiSettings.pairedBridge &&
+        directAiKeyStagedForMode('device-agent') &&
+        state.deviceAgentStatus?.configured !== true,
+      stagedProvider: aiProviderPresetById(state.aiSettings.provider).label,
+      stagedModel: state.aiSettings.model,
+      stagedLogoHint: aiProviderLogoHint({
+        provider: state.aiSettings.provider,
+        baseUrl: state.aiSettings.baseUrl,
+        model: state.aiSettings.model,
+      }),
       pairedBridge: Boolean(state.aiSettings.pairedBridge),
       pairedProvider: planConnectorTitle(activePlanConnector()),
       pairedModel: connectorPlanNote(activePlanConnector()),
@@ -25217,6 +25424,20 @@ function pairedBridgeActive(): boolean {
   return state.aiSettings.mode === 'device-agent' && Boolean(state.aiSettings.pairedBridge);
 }
 
+function deviceAgentConfiguredForCurrentRequests(status: DeviceAgentStatus | null = state.deviceAgentStatus): boolean {
+  return deviceAgentConfiguredForRequests({
+    status,
+    visible: deviceAgentModeVisible(),
+  });
+}
+
+function deviceAgentNeedsStartForCurrentRequests(status: DeviceAgentStatus | null = state.deviceAgentStatus): boolean {
+  return deviceAgentNeedsStartForRequests({
+    status,
+    visible: deviceAgentModeVisible(),
+  });
+}
+
 function canGenerateAiPlanFromSettings(): boolean {
   const modelReady = Boolean(state.aiSettings.model.trim());
   if (state.aiSettings.mode === 'bridge') {
@@ -25224,7 +25445,7 @@ function canGenerateAiPlanFromSettings(): boolean {
   }
   if (state.aiSettings.mode === 'device-agent') {
     if (pairedBridgeActive()) return !state.busy;
-    return Boolean(deviceAgentModeVisible() && deviceAgentStatusReadyForDrafts(state.deviceAgentStatus) && !state.busy);
+    return Boolean(deviceAgentConfiguredForCurrentRequests() && !state.busy);
   }
   if (hostedByokCloudSessionReason()) return false;
   return Boolean(state.aiSettings.apiKey.trim() && modelReady && aiProviderReadyForCurrentMode() && !state.busy);
@@ -25242,7 +25463,7 @@ function hasDetectedAgentReviewPath(): boolean {
     // runtime readiness otherwise. BridgeAiClient.runForward preflights desktop-online and fails
     // fast with a clear message, so this only widens the gate, never the execution.
     if (state.aiSettings.pairedBridge && refreshRelayPresence()) return true;
-    return deviceAgentStatusReadyForDrafts(state.deviceAgentStatus);
+    return deviceAgentConfiguredForCurrentRequests();
   }
   if (state.aiSettings.mode === 'hosted' && hostedByokCloudSessionReason()) {
     return false;
@@ -25272,10 +25493,10 @@ function agentReviewUnavailableReason(record?: GeneratedPlanRecord): string {
         ? 'Plan Connector review is ready — runs on your computer’s plan.'
         : 'Plan Connector review is ready once your computer is online — open the connector page on your computer.';
     }
-    return deviceAgentStatusReadyForDrafts(state.deviceAgentStatus)
-      ? 'Device Agent review is ready through the gated runtime.'
+    return deviceAgentConfiguredForCurrentRequests()
+      ? 'Device Agent review is ready; the native runtime starts from the stored key when needed.'
       : state.deviceAgentStatus?.configured
-        ? 'Device Agent runtime is configured but not ready for review.'
+        ? 'Device Agent runtime is configured but not available on this build.'
         : 'No configured Device Agent runtime detected.';
   }
   if (state.aiSettings.mode === 'hosted' && hostedByokCloudSessionReason()) {
@@ -25309,7 +25530,8 @@ function aiGenerateDisabledReason(): string {
     if (!deviceAgentModeVisible()) return 'Device Agent is not enabled for this build or wallet.';
     if (!status?.available) return 'Refresh Device Agent status before generating.';
     if (!status.configured) return 'Add a Device Agent key, then confirm planner.';
-    if (!deviceAgentStatusReadyForDrafts(status)) return 'Start or confirm the Device Agent runtime before using AI Connector.';
+    if (!deviceAgentConfiguredForCurrentRequests(status)) return 'Add a Device Agent key, then confirm planner.';
+    if (!deviceAgentStatusReadyForDrafts(status)) return 'Device Agent config is ready; the runtime starts when you use AI Connector.';
     return 'Device Agent runtime is ready for AI Connector.';
   }
   if (state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai') {
@@ -25373,12 +25595,13 @@ function isBridgeAiConfigured(status: BridgeAiStatus | null = state.aiStatus): b
 }
 
 function shouldHideAiKeyEntry(status: BridgeAiStatus | null = state.aiStatus): boolean {
+  const stagedKey = Boolean(state.aiSettings.apiKey.trim());
   if (state.aiSettings.mode === 'bridge') {
     // Connector mode never uses an API key — hide the key entry entirely.
     if (bridgeAiEngine(status) === 'connector') return true;
-    return isBridgeAiConfigured(status);
+    return Boolean(isBridgeAiConfigured(status) && !stagedKey);
   }
-  return state.aiSettings.mode === 'device-agent' && Boolean(state.deviceAgentStatus?.configured);
+  return state.aiSettings.mode === 'device-agent' && Boolean(state.deviceAgentStatus?.configured && !stagedKey);
 }
 
 function aiProviderReadyForCurrentMode(): boolean {
@@ -25544,9 +25767,74 @@ async function generateDeviceAgentReview(request: AgentPlanReviewRequest): Promi
       : await invokeDeviceAgentNative<unknown>('reviewPlan', deviceAgentReviewPayload(request), {
         action: 'review-plan',
       });
-    return normalizeAiReview(raw, request);
+    return localizeDeviceAgentReviewResult(normalizeAiReview(raw, request), request);
   }
   throw deviceAgentWorkerNotImplementedError('review-plan');
+}
+
+/**
+ * Device-agent (BYOK) reviews run the LLM on-device / in the native runtime, which only
+ * applies the deterministic phrase-pack — free-form LLM prose stays English. This second
+ * pass translates that prose into the user's language via the cloud `/api/review/localize`
+ * endpoint (operator key; the device key never leaves native). Phrase-pack localization in
+ * `agentReviewStateFromResult` still merges on top. Skips English, the kill flag, and the
+ * iOS-paired/hosted results that the server already localized (`localized.source === 'model'`).
+ * Any failure returns the original result unchanged (graceful English/phrase-pack fallback).
+ */
+async function localizeDeviceAgentReviewResult(
+  review: AgentPlanReviewResult,
+  request: AgentPlanReviewRequest,
+): Promise<AgentPlanReviewResult> {
+  try {
+    if (!REVIEW_MODEL_LOCALIZATION_ENABLED) return review;
+    if (review.localized?.source === 'model') return review;
+    const fallbackText = [request.instruction, request.plan?.userNotes, request.plan?.intent]
+      .filter((entry): entry is string => typeof entry === 'string' && Boolean(entry.trim()))
+      .join('\n');
+    const language = sourceLanguageFromReview(review, fallbackText);
+    if (!shouldLocalizeAgentReview(language)) return review;
+    const localized = await localizeDeviceAgentReviewCopy(review, language, fallbackText);
+    if (!localized) return review;
+    // Stamp the hash over the FULL review so agentReviewStateFromResult's cache check reuses
+    // this model copy (the on-device/endpoint payload hashed a trimmed display-copy subset).
+    return { ...review, localized: { ...localized, canonicalHash: agentReviewCanonicalHash(review) } };
+  } catch {
+    return review;
+  }
+}
+
+/**
+ * Get the localized display copy for a device-agent review. PREFERS on-device translation
+ * using the user's OWN BYOK key (the `localize` runtime verb) so no operator key/cloud is
+ * involved — this works on browser-native / Tauri now, and on Android/iOS once the native
+ * `localize` verb ships in an app build. Falls back to the cloud `/api/review/localize`
+ * endpoint (operator key) only when on-device translation is unavailable (e.g. mobile-native
+ * before the verb ships). Returns null on any failure so the caller keeps the phrase-pack copy.
+ */
+async function localizeDeviceAgentReviewCopy(
+  review: AgentPlanReviewResult,
+  language: PolicyLanguageCode,
+  fallbackText: string,
+): Promise<AgentReviewLocalizedCopy | null> {
+  const payload = reviewLocalizationPayload(review, language);
+  if (reviewLocalizationPayloadHasText(payload)) {
+    try {
+      const raw = await invokeDeviceAgentNative<{ output_text?: unknown }>(
+        'localize',
+        payload as unknown as Record<string, unknown>,
+        { action: 'localize-review' },
+      );
+      const text = raw && typeof raw === 'object' && typeof raw.output_text === 'string' ? raw.output_text : '';
+      if (text.trim()) {
+        const onDevice = agentReviewLocalizedCopyFromModel(parseAgentReviewLocalizationJson(text), review, language);
+        if (onDevice) return onDevice;
+      }
+    } catch {
+      // Native `localize` verb not present yet (pre-binary) or a provider failure — fall
+      // through to the cloud endpoint so the review is still localized.
+    }
+  }
+  return fetchReviewLocalization(review, language, { fallbackText });
 }
 
 async function generateDeviceAgentAsk(request: AgentPlanAskRequest): Promise<AgentPlanAskResult> {
@@ -25591,7 +25879,7 @@ function currentDeviceAgentRuntimeSurface() {
 }
 
 async function invokeDeviceAgentNative<R>(
-  method: 'generatePlan' | 'reviewPlan' | 'ask',
+  method: 'generatePlan' | 'reviewPlan' | 'ask' | 'localize',
   payload: unknown,
   options: { action: string; signal?: AbortSignal },
 ): Promise<R> {
@@ -25635,7 +25923,7 @@ async function invokeDeviceAgentNative<R>(
 }
 
 async function invokeBrowserDeviceAgent<R>(
-  method: 'status' | 'configure' | 'start' | 'stop' | 'generatePlan' | 'reviewPlan' | 'ask',
+  method: 'status' | 'configure' | 'start' | 'stop' | 'generatePlan' | 'reviewPlan' | 'ask' | 'localize',
   payload: Record<string, unknown>,
   options: { signal?: AbortSignal } = {},
 ): Promise<{ status: DeviceAgentStatus; result?: R }> {
@@ -25725,12 +26013,26 @@ async function assertDeviceAgentScaffoldAvailable(action: string, signal?: Abort
       // fall through to the paired-specific error below
     }
   }
+  if (!pairedBridgeActive() && deviceAgentNeedsStartForCurrentRequests(status)) {
+    try {
+      status = await startDeviceAgentRuntime();
+    } catch (err) {
+      logDebug({
+        level: 'warn',
+        source: 'device-agent',
+        message: `Device Agent ${action} stored-config start failed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+  }
   if (!status.available || !status.configured) {
     throw new Error(
       pairedBridgeActive()
         ? 'Plan Connector needs your computer online. Open the connector page on your computer (and keep it awake), then try again.'
         : 'Device Agent runtime is not configured. Add a key, confirm planner, then try again.',
     );
+  }
+  if (!pairedBridgeActive() && !deviceAgentStatusReadyForDrafts(status)) {
+    throw new Error(status.message || 'Device Agent runtime is configured but could not start. Refresh status, then try again.');
   }
   state.aiDiagnostics = [
     aiRouteDiagnostic(`/api/device-agent/${action}`),
@@ -28425,7 +28727,7 @@ function bind(): void {
           void runSaveDirectAiKey();
           return;
         case 'set-confirm-key':
-          void runSetAndConfirmAiKey();
+          void runSetAndConfirmAiKey(button);
           return;
         case 'paste-api-key':
           void runPasteAiKey(button.dataset.aiPasteTarget);
@@ -28468,13 +28770,14 @@ function bind(): void {
           void openDesktopPairingModal({ bridgeRequest });
           return;
         case 'pair-phone-android':
-          openPhonePairingModal({
+          openPhonePairingModal(buildPhonePairingDeps({
             bridge: agenticAndroidBridge(),
             ...(IS_IOS_APP ? { asyncBridge: buildIosPairBridge() } : {}),
+            readClipboardText,
             onPaired: (connector) => {
               void runEnablePairedBridge(connector);
             },
-          });
+          }));
           return;
         case 'open-plan-connector-sheet':
           openPlanConnectorSetupSheet();
@@ -28813,16 +29116,14 @@ function bind(): void {
         render();
         return;
       }
+      const previousApiKey = state.aiSettings.apiKey;
       saveCurrentSessionAiApiKey();
       state.aiSettings.provider = preset.id;
       state.aiSettings.apiFormat = preset.apiFormat;
       state.aiSettings.baseUrl = preset.baseUrl;
       state.aiSettings.model = preset.model;
-      state.aiSettings.apiKey = shouldHideAiKeyEntry() ? '' : loadSessionAiApiKey(state.aiSettings);
-      if (shouldHideAiKeyEntry()) {
-        clearCurrentSessionAiApiKey();
-      }
       reconcileAiModeForSurface();
+      restoreVisibleAiKeyAfterRouteChange(previousApiKey);
       resetAiPlannerConfirmation('AI provider changed. Confirm planner again if needed.');
       savePersistedState();
       void syncCloudPreference('ai-settings');
@@ -28876,6 +29177,10 @@ function bind(): void {
     // On mobile the soft keyboard slides up over the bottom sheet and covers this field, so the
     // native long-press "Paste" affordance is unreachable. Scroll the field into the centre on
     // focus so it clears the keyboard (pairs with the explicit Paste button below).
+    // Rail-mounted instances are driven by the delegated focusin handler in bindMobileRailSheet
+    // (which also re-syncs the keyboard-aware viewport vars), so skip them here to avoid a
+    // double scrollIntoView; this handler still covers the non-rail planner/panel inputs.
+    if (control.closest('[data-mobile-rail-sheet-root]')) continue;
     control.addEventListener('focus', (event) => {
       const target = event.currentTarget as HTMLInputElement;
       window.setTimeout(() => {
@@ -30470,7 +30775,146 @@ function closePreferencesMobilePickerInteractions(): void {
   preferencesMobilePickerController = null;
 }
 
+interface VirtualKeyboardLike extends EventTarget {
+  boundingRect?: DOMRectReadOnly;
+}
+
+function virtualKeyboard(): VirtualKeyboardLike | undefined {
+  return (navigator as Navigator & { virtualKeyboard?: VirtualKeyboardLike }).virtualKeyboard;
+}
+
+function normalizeNativeKeyboardInsets(payload: unknown): { keyboardInset: number; visible: boolean } {
+  let value = payload;
+  if (typeof payload === 'string') {
+    try {
+      value = JSON.parse(payload) as unknown;
+    } catch {
+      value = {};
+    }
+  }
+  const record = isJsonObject(value) ? value : {};
+  const rawInset = Number(record.keyboardInset ?? 0);
+  const keyboardInset = Number.isFinite(rawInset) ? Math.max(0, Math.floor(rawInset)) : 0;
+  const visible = typeof record.visible === 'boolean' ? record.visible && keyboardInset > 0 : keyboardInset > 0;
+  return {
+    keyboardInset: visible ? keyboardInset : 0,
+    visible,
+  };
+}
+
+function applyNativeKeyboardInsets(payload: unknown): void {
+  const next = normalizeNativeKeyboardInsets(payload);
+  if (nativeKeyboardInset === next.keyboardInset && nativeKeyboardVisible === next.visible) return;
+  nativeKeyboardInset = next.keyboardInset;
+  nativeKeyboardVisible = next.visible;
+  syncMobileRailSheetViewport();
+}
+
+function applyVirtualKeyboardInsets(): void {
+  const keyboard = virtualKeyboard();
+  const rawInset = Number(keyboard?.boundingRect?.height ?? 0);
+  const keyboardInset = Number.isFinite(rawInset) ? Math.max(0, Math.floor(rawInset)) : 0;
+  const visible = keyboardInset > 0;
+  if (virtualKeyboardInset === keyboardInset && virtualKeyboardVisible === visible) return;
+  virtualKeyboardInset = visible ? keyboardInset : 0;
+  virtualKeyboardVisible = visible;
+  syncMobileRailSheetViewport();
+}
+
+function bindVirtualKeyboardInsets(): void {
+  if (virtualKeyboardInsetsBound) return;
+  const keyboard = virtualKeyboard();
+  if (!keyboard) return;
+  virtualKeyboardInsetsBound = true;
+  try {
+    keyboard.addEventListener('geometrychange', applyVirtualKeyboardInsets);
+  } catch {
+    // Older WebViews may expose a partial navigator.virtualKeyboard object.
+  }
+  applyVirtualKeyboardInsets();
+}
+
+function bindNativeKeyboardInsets(): void {
+  if (nativeKeyboardInsetsBound) return;
+  nativeKeyboardInsetsBound = true;
+  bindVirtualKeyboardInsets();
+  if (IS_ANDROID_APP) {
+    (globalThis as typeof globalThis & {
+      __agenticAndroidKeyboardInsetBridge?: { update?: (payload: unknown) => void };
+    }).__agenticAndroidKeyboardInsetBridge = {
+      update: applyNativeKeyboardInsets,
+    };
+    try {
+      const current = agenticAndroidBridge()?.keyboardInsets?.();
+      if (current) applyNativeKeyboardInsets(current);
+    } catch {
+      // Older APKs do not expose keyboardInsets; visualViewport remains the fallback.
+    }
+  }
+  if (IS_IOS_APP) {
+    const bridge = agenticIosSystemBridge();
+    try {
+      void Promise.resolve(bridge?.keyboardMetrics?.())
+        .then((payload) => {
+          if (payload) applyNativeKeyboardInsets(payload);
+        })
+        .catch(() => undefined);
+    } catch {
+      // Older iOS binaries do not expose keyboardMetrics; visualViewport remains the fallback.
+    }
+    try {
+      void Promise.resolve(bridge?.addListener?.('keyboardInsetChange', applyNativeKeyboardInsets))
+        .then(() => undefined)
+        .catch(() => undefined);
+    } catch {
+      // Older iOS binaries do not expose keyboard inset events.
+    }
+  }
+}
+
+function syncMobileRailSheetViewport(): void {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
+  const sheet = document.querySelector<HTMLElement>('[data-mobile-rail-sheet-root]');
+  if (!sheet) return;
+  const viewport = window.visualViewport;
+  const measuredKeyboardInset = Math.max(nativeKeyboardInset, virtualKeyboardInset);
+  const measuredKeyboardVisible = nativeKeyboardVisible || virtualKeyboardVisible;
+  const { vvh, keyboardInset } = computeMobileRailViewportVars({
+    viewportHeight: viewport?.height,
+    viewportOffsetTop: viewport?.offsetTop,
+    innerHeight: window.innerHeight,
+    nativeKeyboardInset: measuredKeyboardInset,
+    nativeKeyboardVisible: measuredKeyboardVisible,
+  });
+  sheet.style.setProperty('--mobile-rail-vvh', `${vvh}px`);
+  sheet.style.setProperty('--mobile-rail-keyboard-inset', `${keyboardInset}px`);
+}
+
+const MOBILE_RAIL_FOCUS_VIEWPORT_SYNC_DELAYS_MS = [0, 80, 180, 320] as const;
+
+function scheduleMobileRailViewportSyncs(): void {
+  for (const delay of MOBILE_RAIL_FOCUS_VIEWPORT_SYNC_DELAYS_MS) {
+    window.setTimeout(syncMobileRailSheetViewport, delay);
+  }
+}
+
+function scrollFocusedMobileRailControlIntoView(target: HTMLElement): void {
+  // Skip programmatic focus restores (background re-renders): those pass preventScroll
+  // deliberately and should not trigger an animated re-center.
+  if (restoringMobileRailFocus) return;
+  scheduleMobileRailViewportSyncs();
+  window.setTimeout(() => {
+    syncMobileRailSheetViewport();
+    try {
+      target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    } catch {
+      target.scrollIntoView();
+    }
+  }, 320);
+}
+
 function bindMobileRailSheet(): void {
+  bindNativeKeyboardInsets();
   const nestedInteractiveSelector = 'button, a, input, select, textarea, [data-mobile-rail-sheet-ignore]';
   const eventStartedOnNestedInteractive = (event: Event, trigger: HTMLElement): boolean => {
     const target = event.target;
@@ -30514,6 +30958,19 @@ function bindMobileRailSheet(): void {
   }, { signal });
   root.addEventListener('click', (event) => {
     event.stopPropagation();
+  }, { signal });
+  syncMobileRailSheetViewport();
+  window.visualViewport?.addEventListener('resize', syncMobileRailSheetViewport, { signal });
+  window.visualViewport?.addEventListener('scroll', syncMobileRailSheetViewport, { signal });
+  window.addEventListener('resize', syncMobileRailSheetViewport, { signal });
+  // Delegated focusin (focus does not bubble, focusin does) so dynamically-mounted
+  // controls — e.g. the Plan Connector pairing textarea injected after bind() — are
+  // covered without re-running attachment after mount.
+  root.addEventListener('focusin', (event) => {
+    const target = event.target;
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+      scrollFocusedMobileRailControlIntoView(target);
+    }
   }, { signal });
   for (const closeControl of document.querySelectorAll<HTMLElement>('[data-mobile-rail-sheet-close]')) {
     closeControl.addEventListener('click', (event) => {
@@ -30564,13 +31021,14 @@ function bindMobileMoreMenu(): void {
 function mountPlanConnectorPairingPanel(): void {
   const container = document.querySelector<HTMLElement>('[data-plan-connector-pairing-panel]');
   if (!container) return;
-  planConnectorPairingPanelCleanup = mountPhonePairingPanel(container, {
+  planConnectorPairingPanelCleanup = mountPhonePairingPanel(container, buildPhonePairingDeps({
     bridge: agenticAndroidBridge(),
     ...(IS_IOS_APP ? { asyncBridge: buildIosPairBridge() } : {}),
+    readClipboardText,
     onPaired: (connector) => {
       void runEnablePairedBridge(connector);
     },
-  }, {
+  }), {
     introText: IS_IOS_APP
       ? 'Point your iPhone at the QR displayed on your AI-connected computer. The computer must stay awake while planning.'
       : 'Point Android at the QR displayed on your AI-connected computer. The computer must stay awake while planning.',
@@ -31073,11 +31531,13 @@ async function runFirstRunAction(action: FirstRunActionId): Promise<void> {
       if (isMobileAppViewport()) {
         state.aiReviewSetupTab = preferredAiReviewSetupTabForMobileRailOpen('ai-drafting');
         state.activeMobileRailSheet = 'ai-drafting';
-        maybeRefreshDeviceAgentStatusForMobileRailOpen('ai-drafting');
       }
       state.generatedPlanAuditId = '';
       state.error = '';
       render();
+      if (isMobileAppViewport()) {
+        maybeRefreshDeviceAgentStatusForMobileRailOpen('ai-drafting');
+      }
       focusLayoutTarget('ai-setup-panel');
       return;
     case 'open-review':
@@ -32769,14 +33229,16 @@ async function runReviewGeneratedPlan(planId: string): Promise<void> {
       // questions form renders from review.status independently of the toast.
       const toastKind: ToastKind = review.status === 'approved'
         ? 'success'
-        : review.status === 'needs_input'
+        : review.status === 'needs_input' || review.status === 'wallet_required'
           ? 'info'
           : 'error';
       const toastTitle = review.status === 'approved'
         ? 'Review passed'
-        : review.status === 'needs_input'
-          ? 'Agent has a question'
-          : 'Review denied';
+        : review.status === 'wallet_required'
+          ? 'Connect wallet'
+          : review.status === 'needs_input'
+            ? 'Agent has a question'
+            : 'Review denied';
       replaceToast(toastId, toastKind, toastTitle, review.reason);
     }, {
       onError: async (message, err) => {
@@ -34971,11 +35433,20 @@ function agentReviewStateFromResult(
   appliedUserPolicyIds?: string[],
   orchestration?: AgentReviewOrchestrationResult,
 ): AgentPlanReviewState {
-  const status: AgentPlanReviewStatus = result.decision === 'approve'
-    ? 'approved'
-    : result.decision === 'needs_input'
-      ? 'needs_input'
-      : 'denied';
+  const localizedResult = localizeAgentReviewResultForDisplay(result, {
+    fallbackText: [
+      reviewedPlan?.userNotes,
+      reviewedPlan?.intent,
+      previous?.reason,
+    ].filter((entry): entry is string => typeof entry === 'string' && Boolean(entry.trim())).join('\n'),
+  });
+  const status: AgentPlanReviewStatus = isWalletRequiredAgentReviewResult(result)
+    ? 'wallet_required'
+    : result.decision === 'approve'
+      ? 'approved'
+      : result.decision === 'needs_input'
+        ? 'needs_input'
+        : 'denied';
   const history = appendReviewAttempt(previous?.history, {
     attemptId: `attempt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
     startedAt: result.checkedAt,
@@ -34992,19 +35463,20 @@ function agentReviewStateFromResult(
     schemaVersion: AGENT_REVIEW_SCHEMA_VERSION,
     required: true,
     status,
-    decision: result.decision,
-    reason: result.reason,
-    summary: result.summary,
-    checkedAt: result.checkedAt,
+    decision: localizedResult.decision,
+    reason: localizedResult.reason,
+    summary: localizedResult.summary,
+    checkedAt: localizedResult.checkedAt,
     ...currentAgentReviewIdentity(),
-    evidence: result.evidence,
+    evidence: localizedResult.evidence,
+    ...(localizedResult.localized ? { localized: localizedResult.localized } : {}),
     ...(checks?.length ? { checks } : {}),
-    ...(result.questions?.length ? { questions: result.questions } : {}),
+    ...(localizedResult.questions?.length ? { questions: localizedResult.questions } : {}),
     ...(carriedAnswers ? { answers: carriedAnswers } : {}),
     ...(history.length ? { history } : {}),
     ...(fingerprint ? { reviewedPlanFingerprint: fingerprint } : {}),
     ...(appliedUserPolicyIds && appliedUserPolicyIds.length ? { appliedUserPolicyIds } : {}),
-    ...(result.reviewers?.length ? { reviewers: result.reviewers as AgentReviewerEntry[] } : {}),
+    ...(localizedResult.reviewers?.length ? { reviewers: localizedResult.reviewers as AgentReviewerEntry[] } : {}),
     ...(orchestration
       ? {
           evidenceRequirements: orchestration.bundle.requirements,
@@ -35018,6 +35490,14 @@ function agentReviewStateFromResult(
         }
       : {}),
   };
+}
+
+function isWalletRequiredAgentReviewResult(result: AgentPlanReviewResult): boolean {
+  return result.decision === 'needs_input' && isWalletRequiredAgentReviewEvidence(result.evidence);
+}
+
+function isWalletRequiredAgentReviewEvidence(evidence: Record<string, unknown> | undefined): boolean {
+  return isJsonObject(evidence) && evidence.walletRequired === true && evidence.conditionDecision === 'approve';
 }
 
 function agentReviewChecksFromEvidence(evidence: Record<string, unknown> | undefined): AgentReviewCheck[] | undefined {
@@ -35674,7 +36154,7 @@ function planFingerprint(plan: AgentPlan): string {
 function isAgentReviewStale(record: GeneratedPlanRecord | undefined): boolean {
   const review = record?.agentReview;
   if (!review?.reviewedPlanFingerprint) return false;
-  if (review.status !== 'approved' && review.status !== 'needs_input' && review.status !== 'denied') return false;
+  if (review.status !== 'approved' && review.status !== 'needs_input' && review.status !== 'wallet_required' && review.status !== 'denied') return false;
   const currentFingerprint = planFingerprint(record!.plan);
   const normalizedFingerprint = planFingerprint(planWithRuntimeTokenLabels(record!.plan));
   return currentFingerprint !== review.reviewedPlanFingerprint &&
@@ -35743,11 +36223,13 @@ function overrideReceiptSummary(
     ? 'agent denied'
     : status === 'checking'
       ? 'agent still checking'
-      : status === 'needs_input'
-        ? 'agent needed input'
-        : status === 'error'
-          ? 'agent review failed'
-          : 'agent not approved';
+      : status === 'wallet_required'
+        ? 'agent required wallet connection'
+        : status === 'needs_input'
+          ? 'agent needed input'
+          : status === 'error'
+            ? 'agent review failed'
+            : 'agent not approved';
   const reasonPart = userReason ? ` User reason: ${userReason}.` : '';
   return compactSentence(`Overrode ${verdict}. Sent ${planSummary} for approval anyway.${reasonPart}`, 240);
 }
@@ -38245,20 +38727,7 @@ function gatherDeterministicFacts(record: GeneratedPlanRecord): AgentReviewFactS
 
 async function runSaveBridgeAiKey(): Promise<void> {
   await run('ai', async () => {
-    saveCurrentSessionAiApiKey();
-    await bridgeRequest('/bridge/ai/session-key', {
-      method: 'POST',
-      body: JSON.stringify(bridgeAiSessionKeyPayload(state.aiSettings, { includeApiKey: true })),
-    });
-    await refreshBridgeAiStatus(true);
-    const connected = await ensureBridgeConnectedAfterLocalCall();
-    pushToast(
-      'success',
-      'Local Bridge AI key sent',
-      connected
-        ? 'The provider key is held in local bridge memory and the approval bridge is connected.'
-        : 'The provider key is held in local bridge memory. Connect a wallet, then check the local bridge.',
-    );
+    await saveBridgeAiKeyCore();
   }, {
     async onError(message) {
       state.error = '';
@@ -38269,6 +38738,26 @@ async function runSaveBridgeAiKey(): Promise<void> {
       pushToast('error', 'AI setup failed', message);
     },
   });
+}
+
+async function saveBridgeAiKeyCore(options: { toast?: boolean } = {}): Promise<void> {
+  const showToast = options.toast !== false;
+  saveCurrentSessionAiApiKey();
+  await bridgeRequest('/bridge/ai/session-key', {
+    method: 'POST',
+    body: JSON.stringify(bridgeAiSessionKeyPayload(state.aiSettings, { includeApiKey: true })),
+  });
+  await refreshBridgeAiStatus(true);
+  const connected = await ensureBridgeConnectedAfterLocalCall();
+  if (showToast) {
+    pushToast(
+      'success',
+      'Local Bridge AI key sent',
+      connected
+        ? 'The provider key is held in local bridge memory and the approval bridge is connected.'
+        : 'The provider key is held in local bridge memory. Connect a wallet, then check the local bridge.',
+    );
+  }
 }
 
 async function syncConfiguredBridgeAiSettings(): Promise<void> {
@@ -38302,14 +38791,21 @@ async function runSaveDirectAiKey(): Promise<void> {
     return;
   }
   await run('ai', async () => {
-    assertCustomOpenAiCompatibleSettings(state.aiSettings);
-    saveCurrentSessionAiApiKey();
-    if (state.aiSettings.mode === 'device-agent') {
-      await configureDeviceAgentRuntime();
-      saveDeviceAgentStatusCache(state.deviceAgentStatus);
-    }
-    resetAiPlannerConfirmation('AI draft key saved. Confirm planner before generating if you want a route or config check.');
-    appendAiDiagnostic(aiRouteDiagnostic(aiDraftRoutePath('generate-plan')));
+    await saveDirectAiKeyCore();
+  });
+}
+
+async function saveDirectAiKeyCore(options: { toast?: boolean } = {}): Promise<void> {
+  const showToast = options.toast !== false;
+  assertCustomOpenAiCompatibleSettings(state.aiSettings);
+  saveCurrentSessionAiApiKey();
+  if (state.aiSettings.mode === 'device-agent') {
+    await configureDeviceAgentRuntime();
+    saveDeviceAgentStatusCache(state.deviceAgentStatus);
+  }
+  resetAiPlannerConfirmation('AI draft key saved. Confirm planner before generating if you want a route or config check.');
+  appendAiDiagnostic(aiRouteDiagnostic(aiDraftRoutePath('generate-plan')));
+  if (showToast) {
     pushToast(
       'success',
       state.aiSettings.mode === 'hosted'
@@ -38327,22 +38823,59 @@ async function runSaveDirectAiKey(): Promise<void> {
           ? 'Device Agent config was staged for the gated runtime. Queueing, schedules, and signing stay in the active workflow.'
         : `${IS_ANDROID_APP ? 'Android session' : 'Browser session'} AI can review requests in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'}. Queueing, schedules, and signing stay in the active workflow.`,
     );
-  });
+  }
 }
 
-async function runSetAndConfirmAiKey(): Promise<void> {
+async function runSetAndConfirmAiKey(trigger?: HTMLButtonElement): Promise<void> {
   if (!canSetAndConfirmAiKey()) {
     pushToast('error', 'AI setup incomplete', aiConfirmDisabledReason());
     render();
     return;
   }
-  if (state.aiSettings.mode === 'bridge') {
-    await runSaveBridgeAiKey();
+  const quietMobileSheet = state.activeMobileRailSheet === 'ai-drafting' && isMobileAppViewport();
+  state.error = '';
+  state.busy = true;
+  state.steps.ai = 'active';
+  state.activeOperation = 'confirm-ai-planner';
+  if (trigger) trigger.setAttribute('aria-busy', 'true');
+  if (quietMobileSheet) {
+    syncAiActionButtons();
   } else {
-    await runSaveDirectAiKey();
+    render();
   }
-  if (!canConfirmAiPlanner()) return;
-  await runConfirmAiPlanner();
+  const replaceToastFn = quietMobileSheet ? replaceToastWithoutRender : replaceToast;
+  const toastId = pushToast('pending', 'Setting AI key', 'Saving the key and checking the selected AI Connector route.');
+  try {
+    if (state.aiSettings.mode === 'bridge') {
+      await saveBridgeAiKeyCore({ toast: false });
+    } else {
+      await saveDirectAiKeyCore({ toast: false });
+    }
+    if (!canConfirmAiPlanner()) {
+      throw new Error(aiConfirmDisabledReason());
+    }
+    await confirmAiPlannerCore(toastId, replaceToastFn);
+    if (state.aiSettings.mode === 'device-agent') {
+      state.aiSettings.apiKey = '';
+      clearCurrentSessionAiApiKey();
+    }
+    state.steps.ai = 'done';
+  } catch (err) {
+    state.steps.ai = 'error';
+    const message = redactSecrets(err instanceof Error ? err.message : String(err));
+    state.error = message;
+    const toastMessage = applyAiErrorDiagnostics(err, message);
+    setAiPlannerConfirmation('failed', toastMessage);
+    replaceToastFn(toastId, 'error', aiConfirmErrorToastTitle(err), toastMessage);
+  } finally {
+    state.busy = false;
+    state.activeOperation = null;
+    if (trigger) trigger.removeAttribute('aria-busy');
+    if (quietMobileSheet) {
+      suppressMobileRailSheetEnterAnimation = true;
+    }
+    render();
+  }
 }
 
 // Enable the paired-bridge ("use your ChatGPT/Claude plan from your computer") device-agent path
@@ -38446,6 +38979,115 @@ async function runUnpairPairedBridge(): Promise<void> {
   });
 }
 
+type ReplaceToastFn = (
+  id: number,
+  kind: ToastKind,
+  title: string,
+  message: string,
+  options?: ToastOptions,
+) => void;
+
+async function confirmAiPlannerCore(toastId: number, replaceToastFn: ReplaceToastFn = replaceToast): Promise<void> {
+  assertCustomOpenAiCompatibleSettings(state.aiSettings);
+  if (state.aiSettings.mode === 'bridge') {
+    state.aiDiagnostics = [aiRouteDiagnostic('/bridge/ai/status', 'GET')];
+    await refreshBridgeAiStatus(true);
+    if (!state.aiStatus?.available) {
+      throw new Error(bridgeAiUnavailableReason(state.aiStatus));
+    }
+    const detail = state.aiStatus.engine === 'connector'
+      ? `${state.aiStatus.source} - ${bridgeConnectorDisplayLabel(state.aiStatus)} - ${bridgeConnectorStatusDetail(state.aiStatus)}`
+      : `${state.aiStatus.source} - ${state.aiStatus.provider ?? state.aiStatus.apiFormat ?? 'AI'} - ${state.aiStatus.model ?? 'model configured'}`;
+    state.aiDiagnostics = [
+      aiRouteDiagnostic('/bridge/ai/status', 'GET'),
+      {
+        code: 'AI_PLAN_READY',
+        message: 'Local bridge AI planner confirmed. No plan was generated.',
+        detail,
+        method: 'GET',
+        path: '/bridge/ai/status',
+      },
+    ];
+    setAiPlannerConfirmation(
+      'confirmed',
+      state.aiStatus.engine === 'connector'
+        ? `${bridgeConnectorDisplayLabel(state.aiStatus)} is signed in for local AI Connector. The first AI request will be the real auth check. Workflow capability is unchanged.`
+        : 'Local bridge AI is configured and reachable for AI Connector. Workflow capability is unchanged.',
+    );
+    replaceToastFn(
+      toastId,
+      'success',
+      'Planner confirmed',
+      state.aiStatus.engine === 'connector'
+        ? `${bridgeConnectorDisplayLabel(state.aiStatus)} can review requests through the local bridge.`
+        : 'Local bridge AI can review requests only.',
+    );
+    return;
+  }
+
+  if (state.aiSettings.mode === 'hosted') {
+    state.aiDiagnostics = await confirmHostedAiPlanner(state.aiSettings, hostedAiRequestOptions());
+    const hostedBlockReason = hostedByokCloudSessionReason();
+    setAiPlannerConfirmation(
+      'confirmed',
+      hostedBlockReason
+        ? `${hostedBlockReason} Hosted BYOK key is staged; workflow capability is unchanged.`
+        : 'Hosted BYOK route is reachable for AI Connector requests only. Provider key validity is checked on the first AI request. Workflow capability is unchanged.',
+    );
+    replaceToastFn(
+      toastId,
+      'success',
+      hostedBlockReason ? 'Hosted key staged' : 'Planner confirmed',
+      hostedBlockReason || 'Hosted BYOK can review requests only.',
+    );
+    return;
+  }
+
+  if (state.aiSettings.mode === 'device-agent') {
+    if (state.aiSettings.apiKey.trim() || !state.deviceAgentStatus?.configured) {
+      await configureDeviceAgentRuntime();
+    }
+    const route = chooseDeviceAgentRequestRoute(currentDeviceAgentRuntimeSurface());
+    const status = route === 'ios-native'
+      ? await refreshDeviceAgentStatus(true)
+      : await startDeviceAgentRuntime();
+    saveDeviceAgentStatusCache(state.deviceAgentStatus);
+    if (!status.available || !status.configured || !deviceAgentStatusReadyForDrafts(status)) {
+      throw new Error(status.message || 'Device Agent runtime is not configured.');
+    }
+    state.aiDiagnostics = [
+      aiRouteDiagnostic('/api/device-agent/status', 'GET'),
+      {
+        code: 'AI_PLAN_READY',
+        message: 'Device Agent planner route confirmed. No plan was generated.',
+        detail: `${status.runtime} - ${status.provider ?? state.aiSettings.provider} - ${(status.model ?? state.aiSettings.model) || 'model configured'}`,
+        method: 'GET',
+        path: '/api/device-agent/status',
+      },
+    ];
+    setAiPlannerConfirmation('confirmed', 'Device Agent runtime is configured for AI Connector. Workflow capability is unchanged.');
+    replaceToastFn(toastId, 'success', 'Planner confirmed', 'Device Agent route is ready for AI Connector.');
+    return;
+  }
+
+  if (state.aiSettings.provider === 'openai') {
+    throw new Error(OPENAI_BROWSER_SESSION_DISABLED_REASON);
+  }
+  if (!state.aiSettings.apiKey.trim() || !state.aiSettings.model.trim() || !aiProviderReadyForCurrentMode()) {
+    throw new Error(aiConfirmDisabledReason());
+  }
+  state.aiDiagnostics = [
+    aiRouteDiagnostic('browser-session'),
+    {
+      code: 'AI_PLAN_READY',
+      message: 'Browser session planner configuration confirmed. No provider request was made.',
+      detail: BROWSER_AI_LIMITATIONS.join(' '),
+    },
+  ];
+  setAiPlannerConfirmation('confirmed', 'Browser session AI config was checked for this tab. No provider request was made; it only helps review and workflow capability is unchanged.');
+  replaceToastFn(toastId, 'success', 'Planner confirmed', 'Browser session AI can review requests only.');
+}
+
 async function runConfirmAiPlanner(): Promise<void> {
   if (!canConfirmAiPlanner()) {
     const message = aiConfirmDisabledReason();
@@ -38459,104 +39101,7 @@ async function runConfirmAiPlanner(): Promise<void> {
   const toastId = pushToast('pending', 'Confirming planner', 'Checking the selected AI Connector route.');
   try {
     await run('ai', async () => {
-      assertCustomOpenAiCompatibleSettings(state.aiSettings);
-      if (state.aiSettings.mode === 'bridge') {
-        state.aiDiagnostics = [aiRouteDiagnostic('/bridge/ai/status', 'GET')];
-        await refreshBridgeAiStatus(true);
-        if (!state.aiStatus?.available) {
-          throw new Error(bridgeAiUnavailableReason(state.aiStatus));
-        }
-        const detail = state.aiStatus.engine === 'connector'
-          ? `${state.aiStatus.source} - ${bridgeConnectorDisplayLabel(state.aiStatus)} - ${bridgeConnectorStatusDetail(state.aiStatus)}`
-          : `${state.aiStatus.source} - ${state.aiStatus.provider ?? state.aiStatus.apiFormat ?? 'AI'} - ${state.aiStatus.model ?? 'model configured'}`;
-        state.aiDiagnostics = [
-          aiRouteDiagnostic('/bridge/ai/status', 'GET'),
-          {
-            code: 'AI_PLAN_READY',
-            message: 'Local bridge AI planner confirmed. No plan was generated.',
-            detail,
-            method: 'GET',
-            path: '/bridge/ai/status',
-          },
-        ];
-        setAiPlannerConfirmation(
-          'confirmed',
-          state.aiStatus.engine === 'connector'
-            ? `${bridgeConnectorDisplayLabel(state.aiStatus)} is signed in for local AI Connector. The first AI request will be the real auth check. Workflow capability is unchanged.`
-            : 'Local bridge AI is configured and reachable for AI Connector. Workflow capability is unchanged.',
-        );
-        replaceToast(
-          toastId,
-          'success',
-          'Planner confirmed',
-          state.aiStatus.engine === 'connector'
-            ? `${bridgeConnectorDisplayLabel(state.aiStatus)} can review requests through the local bridge.`
-            : 'Local bridge AI can review requests only.',
-        );
-        return;
-      }
-
-      if (state.aiSettings.mode === 'hosted') {
-        state.aiDiagnostics = await confirmHostedAiPlanner(state.aiSettings, hostedAiRequestOptions());
-        const hostedBlockReason = hostedByokCloudSessionReason();
-        setAiPlannerConfirmation(
-          'confirmed',
-          hostedBlockReason
-            ? `${hostedBlockReason} Hosted BYOK key is staged; workflow capability is unchanged.`
-            : 'Hosted BYOK route is reachable for AI Connector requests only. Provider key validity is checked on the first AI request. Workflow capability is unchanged.',
-        );
-        replaceToast(
-          toastId,
-          'success',
-          hostedBlockReason ? 'Hosted key staged' : 'Planner confirmed',
-          hostedBlockReason || 'Hosted BYOK can review requests only.',
-        );
-        return;
-      }
-
-      if (state.aiSettings.mode === 'device-agent') {
-        if (state.aiSettings.apiKey.trim() || !state.deviceAgentStatus?.configured) {
-          await configureDeviceAgentRuntime();
-        }
-        const route = chooseDeviceAgentRequestRoute(currentDeviceAgentRuntimeSurface());
-        const status = route === 'ios-native'
-          ? await refreshDeviceAgentStatus(true)
-          : await startDeviceAgentRuntime();
-        saveDeviceAgentStatusCache(state.deviceAgentStatus);
-        if (!status.available || !status.configured || !deviceAgentStatusReadyForDrafts(status)) {
-          throw new Error(status.message || 'Device Agent runtime is not configured.');
-        }
-        state.aiDiagnostics = [
-          aiRouteDiagnostic('/api/device-agent/status', 'GET'),
-          {
-            code: 'AI_PLAN_READY',
-            message: 'Device Agent planner route confirmed. No plan was generated.',
-            detail: `${status.runtime} - ${status.provider ?? state.aiSettings.provider} - ${(status.model ?? state.aiSettings.model) || 'model configured'}`,
-            method: 'GET',
-            path: '/api/device-agent/status',
-          },
-        ];
-        setAiPlannerConfirmation('confirmed', 'Device Agent runtime is configured for AI Connector. Workflow capability is unchanged.');
-        replaceToast(toastId, 'success', 'Planner confirmed', 'Device Agent route is ready for AI Connector.');
-        return;
-      }
-
-      if (state.aiSettings.provider === 'openai') {
-        throw new Error(OPENAI_BROWSER_SESSION_DISABLED_REASON);
-      }
-      if (!state.aiSettings.apiKey.trim() || !state.aiSettings.model.trim() || !aiProviderReadyForCurrentMode()) {
-        throw new Error(aiConfirmDisabledReason());
-      }
-      state.aiDiagnostics = [
-        aiRouteDiagnostic('browser-session'),
-        {
-          code: 'AI_PLAN_READY',
-          message: 'Browser session planner configuration confirmed. No provider request was made.',
-          detail: BROWSER_AI_LIMITATIONS.join(' '),
-        },
-      ];
-      setAiPlannerConfirmation('confirmed', 'Browser session AI config was checked for this tab. No provider request was made; it only helps review and workflow capability is unchanged.');
-      replaceToast(toastId, 'success', 'Planner confirmed', 'Browser session AI can review requests only.');
+      await confirmAiPlannerCore(toastId);
     }, {
       onError(message, err) {
         const toastMessage = applyAiErrorDiagnostics(err, message);
@@ -40974,7 +41519,7 @@ function recurringAgentToastKind(review: AgentPlanReviewState | undefined): Toas
   if (!review || review.status === 'approved') return 'success';
   // Auto-dismissing 'info' (not never-dismissing 'pending') so the repeat-request
   // review never leaves a stuck toast when the agent asks for more input.
-  if (review.status === 'needs_input') return 'info';
+  if (review.status === 'needs_input' || review.status === 'wallet_required') return 'info';
   return 'error';
 }
 
@@ -40986,6 +41531,7 @@ function recurringCreateToastTitle(
   const noun = recurringDraftIsSwap(draft) ? 'Recurring swap' : 'Repeat payment';
   if (!review) return `${noun} created`;
   if (status === 'active' && review.status === 'approved') return `${noun} started after agent approval`;
+  if (review.status === 'wallet_required') return `${noun} paused: connect wallet`;
   if (review.status === 'needs_input') return `${noun} paused: input needed`;
   if (review.status === 'error') return `${noun} paused: agent error`;
   return `${noun} paused by agent`;
@@ -47702,7 +48248,7 @@ async function configureDeviceAgentRuntime(): Promise<DeviceAgentStatus> {
 }
 
 async function startDeviceAgentRuntime(): Promise<DeviceAgentStatus> {
-  const config = deviceAgentConfigPayload(true);
+  const config = deviceAgentStartPayload();
   if (IS_ANDROID_APP && isDeviceAgentBridgeAvailable()) {
     const status = await deviceAgentNativeStatusCall('start', config);
     state.deviceAgentStatus = status;
@@ -47778,23 +48324,13 @@ async function stopDeviceAgentRuntime(): Promise<DeviceAgentStatus> {
   return status;
 }
 
-// Wipe Device Agent material when the wallet boundary changes (disconnect,
-// wallet/cluster change, full reset). The Device Agent path is session-scoped
-// to the connected wallet: clear the visible sessionStorage entry, the in-memory
-// apiKey, and the native encrypted config (which also stops the foreground
-// service on Android). Best-effort: must not block the wallet-boundary action.
+// Confirmed Device Agent API-key config is app-level on mobile, like the native
+// wallet auth cache: disconnecting, switching wallets, or resetting MWA/IWA auth
+// must not silently remove it. Explicit "Clear API key", Plan Connector unpair,
+// and full local app-data deletion still clear the native runtime config.
 async function clearDeviceAgentForWalletBoundary(): Promise<void> {
-  try {
-    state.aiSettings.apiKey = '';
-    clearCurrentSessionAiApiKey();
-    clearDeviceAgentStatusCache();
-  } catch {
-    // sessionStorage write failures are non-fatal at wallet boundaries.
-  }
-  try {
-    await clearDeviceAgentRuntimeConfig();
-  } catch (err) {
-    console.warn('[device-agent] clear on wallet boundary failed.', err);
+  if (state.deviceAgentStatus?.configured) {
+    saveDeviceAgentStatusCache(state.deviceAgentStatus);
   }
 }
 
@@ -47893,15 +48429,24 @@ function deviceAgentConfigPayload(includeApiKey: boolean): Record<string, string
     };
   }
   assertCustomOpenAiCompatibleSettings(state.aiSettings);
-  const walletAddress = currentDeviceAgentWalletAddress();
   return {
     provider: state.aiSettings.provider,
     apiFormat: state.aiSettings.apiFormat,
     baseUrl: state.aiSettings.baseUrl,
     model: state.aiSettings.model,
     ...(includeApiKey ? { apiKey: state.aiSettings.apiKey } : {}),
-    ...(walletAddress ? { walletAddress } : {}),
   };
+}
+
+function deviceAgentStartPayload(): Record<string, string> {
+  if (
+    state.aiSettings.pairedBridge ||
+    state.aiSettings.apiKey.trim() ||
+    !state.deviceAgentStatus?.configured
+  ) {
+    return deviceAgentConfigPayload(true);
+  }
+  return {};
 }
 
 function defaultDeviceAgentRuntime(): DeviceAgentRuntimeKind {
@@ -48330,6 +48875,7 @@ function agentReviewQueueBlockReason(record: GeneratedPlanRecord | undefined): s
   }
   if (review.status === 'checking') return 'Agent is still reviewing this draft.';
   if (review.status === 'denied') return review.reason || 'Agent denied this draft. Edit it or ask again before sending.';
+  if (review.status === 'wallet_required') return review.reason || 'Condition passed. Connect a wallet before sending for approval.';
   if (review.status === 'needs_input') return review.reason || 'Agent has questions before approving. Answer them or send anyway.';
   if (review.status === 'error') return review.reason || 'Agent review failed. Ask again before sending.';
   return 'Ask agent before sending this agentic draft for approval.';
@@ -48365,6 +48911,9 @@ function agentReviewQueueOverrideMessage(record: GeneratedPlanRecord | undefined
   }
   if (review.status === 'denied') {
     return `Agent said No${review.reason ? `: ${review.reason}` : ''}\n\nSend for approval anyway?`;
+  }
+  if (review.status === 'wallet_required') {
+    return `The condition passed, but no wallet is connected${review.reason ? `: ${review.reason}` : ''}\n\nSend for approval anyway?`;
   }
   if (review.status === 'needs_input') {
     return `Agent has questions before approving${review.reason ? `: ${review.reason}` : ''}\n\nSend for approval anyway?`;
@@ -48722,11 +49271,13 @@ function overrideShortLabel(override: AgentReviewOverride): string {
     ? 'agent denied'
     : override.agentStatus === 'checking'
       ? 'agent still checking'
-      : override.agentStatus === 'needs_input'
-        ? 'agent needed input'
-        : override.agentStatus === 'error'
-          ? 'agent review failed'
-          : 'agent did not approve';
+      : override.agentStatus === 'wallet_required'
+        ? 'agent required wallet connection'
+        : override.agentStatus === 'needs_input'
+          ? 'agent needed input'
+          : override.agentStatus === 'error'
+            ? 'agent review failed'
+            : 'agent did not approve';
   return override.userReason ? `${verdict}; user: ${override.userReason}` : verdict;
 }
 
@@ -53436,12 +53987,14 @@ function recurringAgentDecisionPill(payment: RecurringPayment): string {
   if (!review?.required) return '';
   const tone = review.status === 'approved'
     ? 'good'
-    : review.status === 'needs_input'
+    : review.status === 'needs_input' || review.status === 'wallet_required'
       ? 'warn'
       : review.status === 'checking'
         ? 'checking'
         : 'fail';
-  return `<span class="recurring-agent-decision-pill ${tone}" title="${escapeHtml(review.reason || agentReviewStripLabel(review.status))}">${escapeHtml(agentReviewStripLabel(review.status))}</span>`;
+  const label = agentReviewStripLabel(review.status, review);
+  const reason = agentReviewDisplayReason(review) || label;
+  return `<span class="recurring-agent-decision-pill ${tone}" title="${escapeHtml(reason)}">${escapeHtml(label)}</span>`;
 }
 
 function recurringCardSubtitle(payment: RecurringPayment): string {
@@ -53552,17 +54105,21 @@ function recurringCardNote(payment: RecurringPayment): string {
 function recurringAgentReviewStrip(payment: RecurringPayment): string {
   const review = payment.agentReview;
   if (!review?.required) return '';
-  const label = agentReviewStripLabel(review.status);
+  const label = agentReviewStripLabel(review.status, review);
   const detail = review.checkedAt
     ? `${agentReviewSourceLabel(review)} - ${formatDateTime(review.checkedAt)}`
     : agentReviewSourceLabel(review);
   const stateDetail = payment.status === 'paused' && review.status !== 'approved'
     ? 'Schedule is paused until the agent approves or you resume manually.'
     : 'Schedule remains manual at each due wallet approval.';
+  const language = agentReviewDisplayLanguage(review);
+  const reviewLanguageAttrs = shouldLocalizeAgentReview(language)
+    ? ` lang="${escapeHtml(language)}" data-review-language="${escapeHtml(language)}"`
+    : '';
   return `
-    <section class="agent-review-strip recurring-agent-review ${escapeHtml(review.status)}" aria-label="Repeat agent review">
+    <section class="agent-review-strip recurring-agent-review ${escapeHtml(review.status)}" aria-label="Repeat agent review"${reviewLanguageAttrs}>
       <div class="agent-review-strip-head">
-        <span>Agent review</span>
+        <span>${escapeHtml(agentReviewUiLabel('review', language))}</span>
         <strong class="agent-review-state ${escapeHtml(review.status)}">${escapeHtml(label)}</strong>
         <em>${escapeHtml(detail)}</em>
         ${agentReviewPathBadge(review)}
@@ -56470,6 +57027,19 @@ function clearCurrentSessionAiApiKey(): void {
   saveSessionAiApiKey({ ...state.aiSettings, apiKey: '' });
 }
 
+function restoreVisibleAiKeyAfterRouteChange(previousApiKey: string): void {
+  if (shouldHideAiKeyEntry()) {
+    state.aiSettings.apiKey = '';
+    clearCurrentSessionAiApiKey();
+    return;
+  }
+  const carriedKey = previousApiKey.trim() ? previousApiKey : '';
+  state.aiSettings.apiKey = carriedKey || loadSessionAiApiKey(state.aiSettings);
+  if (carriedKey) {
+    saveCurrentSessionAiApiKey();
+  }
+}
+
 function clearSessionAiApiKeysForMode(mode: AiSettings['mode']): void {
   try {
     const entries = loadSessionAiApiKeyEntries();
@@ -56537,13 +57107,11 @@ function normalizeCurrentAiModeForSurface(): void {
     state.aiSettings.provider,
   );
   if (normalizedMode === state.aiSettings.mode) return;
+  const previousApiKey = state.aiSettings.apiKey;
   saveCurrentSessionAiApiKey();
   state.aiSettings.mode = normalizedMode;
   ensureAiProviderAllowedForMode();
-  state.aiSettings.apiKey = shouldHideAiKeyEntry() ? '' : loadSessionAiApiKey(state.aiSettings);
-  if (shouldHideAiKeyEntry()) {
-    clearCurrentSessionAiApiKey();
-  }
+  restoreVisibleAiKeyAfterRouteChange(previousApiKey);
   savePersistedState();
 }
 
@@ -56641,13 +57209,11 @@ function promoteDefaultAiModeForVisibleDeviceAgent(): void {
   if (aiModeSelectionExplicit) return;
   if (state.aiSettings.mode === 'device-agent') return;
   if (!deviceAgentPathAvailableForCurrentProvider()) return;
+  const previousApiKey = state.aiSettings.apiKey;
   saveCurrentSessionAiApiKey();
   state.aiSettings.mode = 'device-agent';
   ensureAiProviderAllowedForMode();
-  state.aiSettings.apiKey = shouldHideAiKeyEntry() ? '' : loadSessionAiApiKey(state.aiSettings);
-  if (shouldHideAiKeyEntry()) {
-    clearCurrentSessionAiApiKey();
-  }
+  restoreVisibleAiKeyAfterRouteChange(previousApiKey);
   resetAiPlannerConfirmation('Device Agent is now the default AI path. Confirm planner again if needed.');
   savePersistedState();
   void syncCloudPreference('ai-settings');
@@ -56863,29 +57429,38 @@ function setAiKeyPasteStatus(
   status.innerHTML = `<strong>${escapeHtml(title)}</strong>${message ? ` ${escapeHtml(message)}` : ''}`;
 }
 
+let aiKeyPasteInFlight = false;
 async function runPasteAiKey(targetScope?: string): Promise<void> {
-  if (state.busy) return;
-  const clipboard = await readClipboardText();
-  if (clipboard.kind === 'unavailable') {
-    const copy = aiKeyPasteUnavailableCopy(clipboard.reason);
-    if (!isMobileAppViewport()) {
-      aiApiKeyInput(targetScope)?.focus();
+  // aiKeyPasteInFlight guards against a double-tap firing two concurrent clipboard reads
+  // (state.busy only covers plan generation, not the paste itself) — parity with the
+  // pairing Paste button, which disables during its async read.
+  if (state.busy || aiKeyPasteInFlight) return;
+  aiKeyPasteInFlight = true;
+  try {
+    const clipboard = await readClipboardText();
+    if (clipboard.kind === 'unavailable') {
+      const copy = aiKeyPasteUnavailableCopy(clipboard.reason);
+      if (!isMobileAppViewport()) {
+        aiApiKeyInput(targetScope)?.focus();
+      }
+      setAiKeyPasteStatus(targetScope, clipboard.reason.includes('native') ? 'error' : 'info', copy.title, copy.message);
+      return;
     }
-    setAiKeyPasteStatus(targetScope, clipboard.reason.includes('native') ? 'error' : 'info', copy.title, copy.message);
-    return;
+    const trimmed = clipboard.text.trim();
+    if (!trimmed) {
+      setAiKeyPasteStatus(targetScope, 'error', 'Clipboard empty', 'Copy your AI provider key first, then tap Paste.');
+      return;
+    }
+    state.aiSettings.apiKey = trimmed;
+    saveCurrentSessionAiApiKey();
+    resetAiPlannerConfirmation('AI key changed. Confirm planner again if needed.');
+    const input = aiApiKeyInput(targetScope);
+    if (input) input.value = trimmed;
+    syncAiActionButtons();
+    setAiKeyPasteStatus(targetScope, 'success', 'Key pasted', 'Confirm planner or use it for AI Connector.');
+  } finally {
+    aiKeyPasteInFlight = false;
   }
-  const trimmed = clipboard.text.trim();
-  if (!trimmed) {
-    setAiKeyPasteStatus(targetScope, 'error', 'Clipboard empty', 'Copy your AI provider key first, then tap Paste.');
-    return;
-  }
-  state.aiSettings.apiKey = trimmed;
-  saveCurrentSessionAiApiKey();
-  resetAiPlannerConfirmation('AI key changed. Confirm planner again if needed.');
-  const input = aiApiKeyInput(targetScope);
-  if (input) input.value = trimmed;
-  syncAiActionButtons();
-  setAiKeyPasteStatus(targetScope, 'success', 'Key pasted', 'Confirm planner or use it for AI Connector.');
 }
 
 function openAndroidMwaTest(): void {
@@ -57170,7 +57745,7 @@ function pushToast(
   return toast.id;
 }
 
-function replaceToast(
+function replaceToastState(
   id: number,
   kind: ToastKind,
   title: string,
@@ -57195,7 +57770,27 @@ function replaceToast(
       return replacement;
     });
   if (replacement) scheduleToastDismiss(replacement);
+}
+
+function replaceToast(
+  id: number,
+  kind: ToastKind,
+  title: string,
+  message: string,
+  options: ToastOptions = {},
+): void {
+  replaceToastState(id, kind, title, message, options);
   render();
+}
+
+function replaceToastWithoutRender(
+  id: number,
+  kind: ToastKind,
+  title: string,
+  message: string,
+  options: ToastOptions = {},
+): void {
+  replaceToastState(id, kind, title, message, options);
 }
 
 function dismissToast(id: number): void {
@@ -57976,6 +58571,7 @@ function applyCloudAgentPolicies(record: CloudPreferenceRecord): boolean {
 
 function applyCloudAiSettings(payload: unknown): boolean {
   if (!isJsonObject(payload)) return false;
+  const previousApiKey = state.aiSettings.apiKey;
   saveCurrentSessionAiApiKey();
   const providerForMode = typeof payload.provider === 'string' && isAiProviderId(payload.provider)
     ? payload.provider
@@ -58013,7 +58609,7 @@ function applyCloudAiSettings(payload: unknown): boolean {
     state.aiSettings.provider,
   );
   ensureAiProviderAllowedForMode();
-  state.aiSettings.apiKey = shouldHideAiKeyEntry() ? '' : loadSessionAiApiKey(state.aiSettings);
+  restoreVisibleAiKeyAfterRouteChange(previousApiKey);
   savePersistedState();
   if (state.aiSettings.autoBackgroundWatch) {
     startAgentBackgroundWatch();
@@ -58950,15 +59546,12 @@ function isCloudSyncStatus(value: unknown): value is CloudSyncStatus {
 
 function parseAgentPlanReviewState(value: unknown): AgentPlanReviewState | undefined {
   if (!isJsonObject(value)) return undefined;
-  if (
-    value.status !== 'checking' &&
-    value.status !== 'approved' &&
-    value.status !== 'denied' &&
-    value.status !== 'needs_input' &&
-    value.status !== 'error'
-  ) {
-    return undefined;
-  }
+  if (!isAgentPlanReviewStatus(value.status)) return undefined;
+  const status: AgentPlanReviewStatus = value.status === 'needs_input' && isWalletRequiredAgentReviewEvidence(
+    isJsonObject(value.evidence) ? value.evidence : undefined,
+  )
+    ? 'wallet_required'
+    : value.status;
   const decision = value.decision === 'approve' || value.decision === 'deny' || value.decision === 'needs_input'
     ? value.decision
     : undefined;
@@ -58971,13 +59564,14 @@ function parseAgentPlanReviewState(value: unknown): AgentPlanReviewState | undef
   const facts = parseAgentReviewFactSet(value.facts);
   const checks = parseAgentReviewChecks(value.checks);
   const conversation = parseAgentAskConversation(value.conversation);
+  const localized = normalizeAgentReviewLocalizedCopy(value.localized);
   const appliedUserPolicyIds = Array.isArray(value.appliedUserPolicyIds)
     ? value.appliedUserPolicyIds.filter((entry): entry is string => typeof entry === 'string')
     : undefined;
   return {
     schemaVersion: AGENT_REVIEW_SCHEMA_VERSION,
     required: value.required !== false,
-    status: value.status,
+    status,
     ...(decision ? { decision } : {}),
     reason: typeof value.reason === 'string' ? value.reason : '',
     ...(typeof value.summary === 'string' && { summary: value.summary }),
@@ -58987,6 +59581,7 @@ function parseAgentPlanReviewState(value: unknown): AgentPlanReviewState | undef
     ...(isAgentReviewSource(value.source) ? { source: value.source } : {}),
     ...(isAgentReviewDisplayPath(value.path) ? { path: value.path } : {}),
     ...(isJsonObject(value.evidence) && { evidence: value.evidence }),
+    ...(localized && { localized }),
     ...(checks && { checks }),
     ...(questions && { questions }),
     ...(answers && { answers }),
@@ -59062,15 +59657,7 @@ function parseAgentReviewOverride(value: unknown): AgentReviewOverride | undefin
   if (typeof value.overriddenAt !== 'string') return undefined;
   if (typeof value.agentReason !== 'string') return undefined;
   const status = value.agentStatus;
-  if (
-    status !== 'checking' &&
-    status !== 'approved' &&
-    status !== 'denied' &&
-    status !== 'needs_input' &&
-    status !== 'error'
-  ) {
-    return undefined;
-  }
+  if (!isAgentPlanReviewStatus(status)) return undefined;
   const decision = value.agentDecision === 'approve' || value.agentDecision === 'deny' || value.agentDecision === 'needs_input'
     ? value.agentDecision
     : undefined;

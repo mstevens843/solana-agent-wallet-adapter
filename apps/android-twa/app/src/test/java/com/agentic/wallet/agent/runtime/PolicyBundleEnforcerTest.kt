@@ -95,6 +95,28 @@ class PolicyBundleEnforcerTest {
     }
 
     @Test
+    fun languageCanonicalizationFailureForcesNeedsInput() {
+        val bundle = JSONObject()
+            .put("hasBlockingFailure", false)
+            .put("evaluations", JSONArray())
+            .put(
+                "language",
+                JSONObject()
+                    .put("sourceLanguage", "zh-Hans")
+                    .put("canonicalizationStatus", "failed")
+                    .put("requiresInput", true),
+            )
+        val result = JSONObject().put("text", """{"decision":"approve","reason":"ok"}""")
+        val out = PolicyBundleEnforcer.enforce(result, payload(bundle))
+        val parsed = JSONObject(out.getString("text"))
+        assertEquals("needs_input", parsed.getString("decision"))
+        assertTrue(parsed.getString("reason").contains("could not safely translate"))
+        assertEquals("policy.language.canonicalization", parsed.getJSONArray("missingFactIds").getString(0))
+        assertTrue(parsed.getJSONObject("evidence").getBoolean("languageSafetyApplied"))
+        assertEquals("policy_language_canonicalization_failed", out.getJSONObject("safetyOverride").getString("reason"))
+    }
+
+    @Test
     fun passesThroughWhenLlmTextNotJson() {
         val result = JSONObject().put("text", "this is not json")
         val out = PolicyBundleEnforcer.enforce(result, payload(bundleWithFailure()))

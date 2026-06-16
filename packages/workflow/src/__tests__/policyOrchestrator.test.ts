@@ -137,6 +137,38 @@ describe('runPolicyPipeline', () => {
     expect(bundle.evaluations.find((e) => e.atomId.startsWith('atom.price.'))?.pass).toBe(false);
   });
 
+  it('normalizes non-English policy text before atom extraction', async () => {
+    const resolver = async (atom: AgentAtom, tier: CapabilityTier): Promise<CapabilityResolutionAttempt> => {
+      const first = chainForAtom(atom)[0];
+      if (tier !== first) return { status: 'missing' as const, source: tier.provider, checkedAt: new Date().toISOString() };
+      if (atom.type === 'price') return okValue(146, tier);
+      return { status: 'missing' as const, source: tier.provider, checkedAt: new Date().toISOString() };
+    };
+    const bundle = await runPolicyPipeline({
+      text: '仅当 SOL 高于 80 美元时才批准。',
+      knownTokenSymbols: ['SOL'],
+      resolver,
+      resolveOptions: { retryDelayMs: 0 },
+    });
+
+    expect(bundle.language.sourceLanguage).toBe('zh-Hans');
+    expect(bundle.language.canonicalized).toBe(true);
+    expect(bundle.atoms.map((atom) => atom.id)).toContain('atom.price.sol.gt.80');
+    expect(bundle.evaluations.find((e) => e.atomId === 'atom.price.sol.gt.80')?.pass).toBe(true);
+  });
+
+  it('marks unsupported non-English policy text as needing input instead of silently dropping it', async () => {
+    const bundle = await runPolicyPipeline({
+      text: '仅当这个奇怪条件满足时才批准。',
+      resolver: async () => ({ status: 'missing', source: 'web', checkedAt: new Date().toISOString() }),
+      resolveOptions: { retryDelayMs: 0 },
+    });
+
+    expect(bundle.atoms).toHaveLength(0);
+    expect(bundle.language.status).toBe('failed');
+    expect(bundle.language.requiresInput).toBe(true);
+  });
+
   it('marks tx_gate atoms unresolved when no simulation supplied', async () => {
     const resolver = async (_atom: AgentAtom, tier: CapabilityTier) => ({ status: 'missing' as const, source: tier.provider, checkedAt: new Date().toISOString() });
     const bundle = await runPolicyPipeline({
@@ -165,5 +197,88 @@ describe('runPolicyPipeline', () => {
     const auditEval = bundle.evaluations.find((e) => e.atomId.startsWith('atom.token_audit.'));
     expect(priceEval?.pass).toBe(true);
     expect(auditEval?.pass).toBe(true);
+  });
+
+  const missingResolver = async (_atom: AgentAtom, tier: CapabilityTier): Promise<CapabilityResolutionAttempt> =>
+    ({ status: 'missing' as const, source: tier.provider, checkedAt: new Date().toISOString() });
+
+  it('invokes the model canonicalizer for untranslatable non-English policy text', async () => {
+    let called = 0;
+    const bundle = await runPolicyPipeline({
+      text: '仅当这个奇怪条件满足时才批准。',
+      knownTokenSymbols: ['SOL'],
+      resolver: missingResolver,
+      resolveOptions: { retryDelayMs: 0 },
+      policyTextCanonicalizer: async ({ sourceLanguage }) => {
+        called += 1;
+        expect(sourceLanguage).toBe('zh-Hans');
+        return 'approve only if SOL is above $80';
+      },
+    });
+    expect(called).toBe(1);
+    expect(bundle.language.method).toBe('model');
+    expect(bundle.language.requiresInput).toBe(false);
+    expect(bundle.atoms.map((atom) => atom.id)).toContain('atom.price.sol.gt.80');
+  });
+
+  it('fails closed when the model canonicalizer returns nothing', async () => {
+    const bundle = await runPolicyPipeline({
+      text: '仅当这个奇怪条件满足时才批准。',
+      resolver: missingResolver,
+      resolveOptions: { retryDelayMs: 0 },
+      policyTextCanonicalizer: async () => '',
+    });
+    expect(bundle.atoms).toHaveLength(0);
+    expect(bundle.language.method).toBe('model');
+    expect(bundle.language.status).toBe('failed');
+    expect(bundle.language.requiresInput).toBe(true);
+  });
+
+  it('falls back to the LLM atom extractor for English policy prose with no regex atoms', async () => {
+    let called = 0;
+    const llmAtom: AgentAtom = {
+      id: 'atom.token_audit.mint_authority_disabled.true',
+      type: 'token_audit',
+      rawText: 'mint authority must be disabled',
+      field: 'mint_authority_disabled',
+      expected: true,
+    };
+    const bundle = await runPolicyPipeline({
+      text: 'approve only when the mint authority situation is clean',
+      resolver: missingResolver,
+      resolveOptions: { retryDelayMs: 0 },
+      llmAtomExtractor: async () => {
+        called += 1;
+        return [llmAtom];
+      },
+    });
+    expect(called).toBe(1);
+    expect(bundle.atoms.map((atom) => atom.id)).toContain('atom.token_audit.mint_authority_disabled.true');
+  });
+
+  it('routes non-English text through canonicalization instead of the raw fast-path (P0.4)', async () => {
+    // Mixed text: the English-parseable "SOL above $80" would satisfy the raw extractor, but
+    // the accented Spanish framing must be detected as non-English so canonicalization runs.
+    const bundle = await runPolicyPipeline({
+      text: 'Según la regla: aprobar si SOL above $80 y el límite es válido',
+      knownTokenSymbols: ['SOL'],
+      resolver: missingResolver,
+      resolveOptions: { retryDelayMs: 0 },
+    });
+    expect(bundle.language.sourceLanguage).not.toBe('en');
+    expect(bundle.language.method).not.toBe('none');
+    expect(bundle.atoms.map((atom) => atom.id)).toContain('atom.price.sol.gt.80');
+  });
+
+  it('does not return partial atoms when a non-English policy has an unsupported extra clause', async () => {
+    const bundle = await runPolicyPipeline({
+      text: '仅当 SOL 高于 $80 且这个奇怪条件满足时才批准。',
+      knownTokenSymbols: ['SOL'],
+      resolver: missingResolver,
+      resolveOptions: { retryDelayMs: 0 },
+    });
+    expect(bundle.atoms).toHaveLength(0);
+    expect(bundle.language.status).toBe('failed');
+    expect(bundle.language.requiresInput).toBe(true);
   });
 });

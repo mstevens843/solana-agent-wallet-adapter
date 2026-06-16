@@ -94,6 +94,34 @@ final class PolicyBundleEnforcerTests: XCTestCase {
         XCTAssertNil(out["safetyOverride"])
     }
 
+    func testLanguageCanonicalizationFailureForcesNeedsInput() throws {
+        let bundle: [String: Any] = [
+            "atoms": [],
+            "evaluations": [],
+            "hasBlockingFailure": false,
+            "language": [
+                "sourceLanguage": "zh-Hans",
+                "canonicalizationStatus": "failed",
+                "requiresInput": true,
+            ],
+            "finishedAt": "2026-05-21T00:00:00.000Z",
+        ]
+        let result: [String: Any] = ["text": #"{"decision":"approve","reason":"ok"}"#]
+        let payload: [String: Any] = ["context": ["policyBundle": bundle]]
+        let out = AgenticPolicyBundleEnforcer.enforce(reviewResult: result, payload: payload)
+
+        let correctedText = try XCTUnwrap(out["text"] as? String)
+        let data = correctedText.data(using: .utf8)!
+        let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any]
+        XCTAssertEqual(json?["decision"] as? String, "needs_input")
+        XCTAssertTrue((json?["reason"] as? String ?? "").contains("could not safely translate"))
+        XCTAssertEqual(json?["missingFactIds"] as? [String], ["policy.language.canonicalization"])
+        let evidence = try XCTUnwrap(json?["evidence"] as? [String: Any])
+        XCTAssertEqual(evidence["languageSafetyApplied"] as? Bool, true)
+        let override = try XCTUnwrap(out["safetyOverride"] as? [String: Any])
+        XCTAssertEqual(override["reason"] as? String, "policy_language_canonicalization_failed")
+    }
+
     func testPassesThroughWhenLlmTextNotJson() throws {
         let result: [String: Any] = ["text": "this is not json"]
         let payload: [String: Any] = ["context": ["policyBundle": bundleWithFailure]]

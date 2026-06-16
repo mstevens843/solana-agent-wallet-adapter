@@ -21,6 +21,10 @@ import {
   readPhonePairStatus,
   pairTag,
 } from './bridgePairing.js';
+import type {
+  AiKeyPasteClipboardResult,
+  AiKeyPasteClipboardUnavailableReason,
+} from './aiKeyPaste.js';
 import { logDeviceAgentDiag } from './deviceAgent/runtime/diagnosticLog.js';
 
 interface NativeQrScanResult {
@@ -110,10 +114,18 @@ function buildModalShell(title: string): ModalShell {
 
 function statusLine(text: string, tone: 'info' | 'ok' | 'warn' = 'info'): HTMLElement {
   const el = document.createElement('p');
-  el.textContent = text;
-  const color = tone === 'ok' ? '#5fe3a1' : tone === 'warn' ? '#ffb27a' : '#bcd3c7';
-  el.style.cssText = `margin:10px 0 0;font-size:13px;color:${color};`;
+  el.style.cssText = 'margin:10px 0 0;font-size:13px;';
+  setStatusLine(el, text, tone);
   return el;
+}
+
+function setStatusLine(el: HTMLElement, text: string, tone: 'info' | 'ok' | 'warn' = 'info'): void {
+  el.textContent = text;
+  el.style.color = tone === 'ok' ? '#5fe3a1' : tone === 'warn' ? '#ffb27a' : '#bcd3c7';
+  // Live region so paste/pairing outcomes are announced to assistive tech.
+  // Warnings interrupt; ordinary progress/success messages stay polite.
+  el.setAttribute('role', tone === 'warn' ? 'alert' : 'status');
+  el.setAttribute('aria-live', tone === 'warn' ? 'assertive' : 'polite');
 }
 
 // --- Desktop -----------------------------------------------------------------------------------
@@ -222,12 +234,34 @@ export interface PhonePairingDeps {
   /** Called once the phone reports paired — wire this to configure the paired-bridge device agent.
    *  `connector` is the desktop's subscription connector from the QR (codex/claude/gemini), if present. */
   onPaired: (connector?: string) => void;
+  readClipboardText?: () => Promise<AiKeyPasteClipboardResult>;
+}
+
+/**
+ * Single assembly point for PhonePairingDeps so both mount sites (the Android pair-phone
+ * modal and the Plan Connector panel) stay in lockstep. `readClipboardText` is REQUIRED here,
+ * so a call site that forgets to wire the one-tap Paste button fails typecheck rather than
+ * silently degrading to "Clipboard paste is unavailable here".
+ */
+export function buildPhonePairingDeps(input: {
+  bridge: NativePairBridge | undefined;
+  asyncBridge?: AsyncPairBridge;
+  readClipboardText: () => Promise<AiKeyPasteClipboardResult>;
+  onPaired: (connector?: string) => void;
+}): PhonePairingDeps {
+  return {
+    bridge: input.bridge,
+    ...(input.asyncBridge ? { asyncBridge: input.asyncBridge } : {}),
+    readClipboardText: input.readClipboardText,
+    onPaired: input.onPaired,
+  };
 }
 
 export interface PhonePairingPanelOptions {
   introText?: string;
   scanLabel?: string;
   pasteLabel?: string;
+  clipboardPasteButtonLabel?: string;
   pasteButtonLabel?: string;
   connectedText?: string;
   invalidCodeText?: string;
@@ -266,15 +300,29 @@ export function mountPhonePairingPanel(
   video.muted = true;
   video.style.cssText = 'width:100%;border-radius:10px;margin:12px 0;display:none;background:#000;max-height:260px;';
   const scanBtn = makeButton(options.scanLabel ?? 'Scan computer QR');
+  scanBtn.classList.add('phone-pairing-scan-button');
   const pasteLabel = document.createElement('label');
   pasteLabel.textContent = options.pasteLabel ?? 'Or paste the pairing code:';
   pasteLabel.style.cssText = 'display:block;font-size:12px;color:#9fb8ab;margin-top:12px;';
   const pasteArea = document.createElement('textarea');
+  // Stable id so captureMobileRailRenderSnapshot/restoreMobileRailRenderSnapshot can
+  // preserve focus + caret across rail-sheet re-renders (it only restores elements with an id).
+  pasteArea.id = 'phonePairingPasteArea';
   pasteArea.placeholder = '{"v":1,"relay":"…","uuid":"…","token":"…"}';
-  pasteArea.style.cssText = 'width:100%;height:64px;font-family:monospace;font-size:11px;background:#06100c;color:#cfe;border:1px solid #1f3a2c;border-radius:8px;padding:8px;margin-top:4px;';
-  const pasteBtn = makeButton(options.pasteButtonLabel ?? 'Pair with this code');
+  // font-size:16px avoids iOS zoom-on-focus (mirrors the .phone-pairing-panel textarea rule).
+  pasteArea.style.cssText = 'width:100%;height:64px;font-family:monospace;font-size:16px;background:#06100c;color:#cfe;border:1px solid #1f3a2c;border-radius:8px;padding:8px;margin-top:4px;';
+  const clipboardPasteBtn = makeButton(options.clipboardPasteButtonLabel ?? 'Paste');
+  clipboardPasteBtn.classList.add('phone-pairing-clipboard-paste-button');
+  const connectLabel = options.pasteButtonLabel ?? 'Pair with this code';
+  const pasteBtn = makeButton(connectLabel);
+  pasteBtn.classList.add('phone-pairing-connect-button');
+  // Layout (grid, gap, margins, button width/margin overrides) is owned by the
+  // .phone-pairing-actions rules in styles.css — no inline duplication here.
+  const pasteActionRow = document.createElement('div');
+  pasteActionRow.className = 'phone-pairing-actions';
+  pasteActionRow.append(clipboardPasteBtn, pasteBtn);
   const status = statusLine('');
-  container.append(intro, video, scanBtn, pasteLabel, pasteArea, pasteBtn, status);
+  container.append(intro, video, scanBtn, pasteLabel, pasteArea, pasteActionRow, status);
 
   let polling: ReturnType<typeof setInterval> | null = null;
   let stream: MediaStream | null = null;
@@ -296,8 +344,7 @@ export function mountPhonePairingPanel(
     });
     cleanup();
     video.style.display = 'none';
-    status.textContent = 'Pairing…';
-    status.style.color = '#bcd3c7';
+    setStatusLine(status, 'Pairing…');
     // iOS: claim runs in JS (relay + E2EE); a successful claim persists credentials, so the pairing is
     // confirmed immediately — no native status poll needed.
     if (deps.asyncBridge) {
@@ -309,13 +356,11 @@ export function mountPhonePairingPanel(
       }
       if (!asyncResult.ok) {
         logDeviceAgentDiag('warn', 'bridge-pair.phone_pair_start_failed', { tag, error: asyncResult.error ?? '' });
-        status.textContent = pairErrorMessage(asyncResult.error);
-        status.style.color = '#ffb27a';
+        setStatusLine(status, pairErrorMessage(asyncResult.error), 'warn');
         return;
       }
       logDeviceAgentDiag('info', 'bridge-pair.phone_pair_status_paired', { tag });
-      status.textContent = options.connectedText ?? '✓ Paired. AI now runs on your computer’s plan.';
-      status.style.color = '#5fe3a1';
+      setStatusLine(status, options.connectedText ?? '✓ Paired. AI now runs on your computer’s plan.', 'ok');
       deps.onPaired(payload.connector);
       return;
     }
@@ -325,8 +370,7 @@ export function mountPhonePairingPanel(
         tag,
         error: result.error ?? '',
       });
-      status.textContent = pairErrorMessage(result.error);
-      status.style.color = '#ffb27a';
+      setStatusLine(status, pairErrorMessage(result.error), 'warn');
       return;
     }
     polling = setInterval(() => {
@@ -335,8 +379,7 @@ export function mountPhonePairingPanel(
         if (polling) clearInterval(polling);
         polling = null;
         logDeviceAgentDiag('info', 'bridge-pair.phone_pair_status_paired', { tag });
-        status.textContent = options.connectedText ?? '✓ Paired. AI now runs on your computer’s plan.';
-        status.style.color = '#5fe3a1';
+        setStatusLine(status, options.connectedText ?? '✓ Paired. AI now runs on your computer’s plan.', 'ok');
         deps.onPaired(payload.connector);
       } else if (s.error) {
         if (polling) clearInterval(polling);
@@ -345,11 +388,47 @@ export function mountPhonePairingPanel(
           tag,
           error: s.error,
         });
-        status.textContent = pairErrorMessage(s.error);
-        status.style.color = '#ffb27a';
+        setStatusLine(status, pairErrorMessage(s.error), 'warn');
       }
     }, 1200);
   };
+
+  clipboardPasteBtn.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+  });
+  clipboardPasteBtn.addEventListener('click', async () => {
+    logDeviceAgentDiag('info', 'bridge-pair.clipboard_paste_click', {
+      available: Boolean(deps.readClipboardText),
+    });
+    if (!deps.readClipboardText) {
+      setStatusLine(status, 'Clipboard paste is unavailable here. Type the code or use the system paste menu.', 'warn');
+      return;
+    }
+    clipboardPasteBtn.disabled = true;
+    try {
+      const clipboard = await deps.readClipboardText();
+      if (clipboard.kind === 'unavailable') {
+        logDeviceAgentDiag('warn', 'bridge-pair.clipboard_paste_unavailable', {
+          reason: clipboard.reason,
+        });
+        setStatusLine(status, pairingPasteUnavailableMessage(clipboard.reason), 'warn');
+        return;
+      }
+      const text = clipboard.text.trim();
+      if (!text) {
+        logDeviceAgentDiag('warn', 'bridge-pair.clipboard_paste_empty', {});
+        setStatusLine(status, 'Clipboard empty. Copy the pairing code from your computer, then tap Paste.', 'warn');
+        return;
+      }
+      pasteArea.value = text;
+      logDeviceAgentDiag('info', 'bridge-pair.clipboard_paste_done', {
+        chars: text.length,
+      });
+      setStatusLine(status, `Pairing code pasted. Tap ${connectLabel}.`);
+    } finally {
+      clipboardPasteBtn.disabled = false;
+    }
+  });
 
   pasteBtn.addEventListener('click', () => {
     const raw = pasteArea.value;
@@ -357,8 +436,11 @@ export function mountPhonePairingPanel(
     const payload = parsePairingPayload(pasteArea.value);
     if (!payload) {
       logDeviceAgentDiag('warn', 'bridge-pair.paste_bad_payload', { chars: raw.length });
-      status.textContent = options.invalidCodeText ?? 'That code isn’t valid. Copy the whole pairing code from the computer.';
-      status.style.color = '#ffb27a';
+      setStatusLine(
+        status,
+        options.invalidCodeText ?? 'That code isn’t valid. Copy the whole pairing code from the computer.',
+        'warn',
+      );
       return;
     }
     void pairTag(payload.uuid).then((tag) => {
@@ -385,22 +467,23 @@ export function mountPhonePairingPanel(
     // iOS: the native AVFoundation scanner resolves a Promise directly (no global callback bridge).
     if (deps.asyncBridge) {
       scanBtn.disabled = true;
-      status.textContent = 'Opening camera…';
-      status.style.color = '#bcd3c7';
+      setStatusLine(status, 'Opening camera…');
       try {
         const rawValue = await deps.asyncBridge.scanQr();
         const payload = parsePairingPayload(rawValue);
         if (!payload) {
-          status.textContent = options.invalidCodeText ?? 'That code isn’t valid. Copy the whole pairing code from the computer.';
-          status.style.color = '#ffb27a';
+          setStatusLine(
+            status,
+            options.invalidCodeText ?? 'That code isn’t valid. Copy the whole pairing code from the computer.',
+            'warn',
+          );
           return;
         }
         void beginPairing(payload);
       } catch (err) {
         const code = err instanceof Error ? err.message : String(err);
         logDeviceAgentDiag('warn', 'bridge-pair.ios_scan_failed', { code });
-        status.textContent = nativeQrScanErrorMessage(code);
-        status.style.color = code === 'cancelled' ? '#bcd3c7' : '#ffb27a';
+        setStatusLine(status, nativeQrScanErrorMessage(code), code === 'cancelled' ? 'info' : 'warn');
       } finally {
         scanBtn.disabled = false;
       }
@@ -408,8 +491,7 @@ export function mountPhonePairingPanel(
     }
     if (deps.bridge?.bridgeScanPairingQr) {
       scanBtn.disabled = true;
-      status.textContent = 'Opening camera…';
-      status.style.color = '#bcd3c7';
+      setStatusLine(status, 'Opening camera…');
       try {
         logDeviceAgentDiag('info', 'bridge-pair.native_scan_click', {});
         const rawValue = await scanPairingQrNative(deps.bridge);
@@ -417,8 +499,11 @@ export function mountPhonePairingPanel(
         const payload = parsePairingPayload(rawValue);
         if (!payload) {
           logDeviceAgentDiag('warn', 'bridge-pair.native_scan_bad_payload', { rawChars: rawValue.length });
-          status.textContent = options.invalidCodeText ?? 'That code isn’t valid. Copy the whole pairing code from the computer.';
-          status.style.color = '#ffb27a';
+          setStatusLine(
+            status,
+            options.invalidCodeText ?? 'That code isn’t valid. Copy the whole pairing code from the computer.',
+            'warn',
+          );
           return;
         }
         const tag = await pairTag(payload.uuid);
@@ -431,8 +516,7 @@ export function mountPhonePairingPanel(
       } catch (err) {
         const code = err instanceof Error ? err.message : String(err);
         logDeviceAgentDiag('warn', 'bridge-pair.native_scan_failed', { code });
-        status.textContent = nativeQrScanErrorMessage(code);
-        status.style.color = code === 'cancelled' ? '#bcd3c7' : '#ffb27a';
+        setStatusLine(status, nativeQrScanErrorMessage(code), code === 'cancelled' ? 'info' : 'warn');
       } finally {
         scanBtn.disabled = false;
       }
@@ -444,8 +528,7 @@ export function mountPhonePairingPanel(
         browserDetector: Boolean(Detector),
         browserMedia,
       });
-      status.textContent = 'Camera scanning isn’t available here — paste the code instead.';
-      status.style.color = '#ffb27a';
+      setStatusLine(status, 'Camera scanning isn’t available here — paste the code instead.', 'warn');
       return;
     }
     try {
@@ -488,8 +571,7 @@ export function mountPhonePairingPanel(
       void tick();
     } catch (err) {
       logDeviceAgentDiag('warn', 'bridge-pair.camera_failed', { message: err instanceof Error ? err.message : String(err) });
-      status.textContent = 'Couldn’t open the camera — paste the code instead.';
-      status.style.color = '#ffb27a';
+      setStatusLine(status, 'Couldn’t open the camera — paste the code instead.', 'warn');
     }
   });
 
@@ -593,6 +675,21 @@ function nativeQrScanErrorMessage(code: string): string {
       return 'Scanner did not return a QR code — scan again or paste the code instead.';
     default:
       return 'Couldn’t scan the QR — paste the code instead.';
+  }
+}
+
+function pairingPasteUnavailableMessage(reason: AiKeyPasteClipboardUnavailableReason): string {
+  switch (reason) {
+    case 'android-native-missing':
+      return 'This Android build does not expose one-tap paste. Update the app, or type the code manually.';
+    case 'android-native-failed':
+      return 'Android blocked clipboard access. Copy the pairing code again, then tap Paste.';
+    case 'ios-native-missing':
+      return 'This iOS build does not expose one-tap paste. Update the app, or type the code manually.';
+    case 'ios-native-failed':
+      return 'iOS blocked clipboard access. Copy the pairing code again, then tap Paste.';
+    default:
+      return 'Clipboard paste is unavailable here. Type the code or use the system paste menu.';
   }
 }
 

@@ -93,6 +93,25 @@ internal class OpenAiNativeProvider(
         return JSONObject().put("output_text", text)
     }
 
+    override suspend fun localize(payload: JSONObject): JSONObject {
+        val messages = DeviceAgentMessageAssembler.buildLocalizeMessages(payload)
+        val response = postResponses(
+            messages,
+            responseSchema = null,
+            temperature = ASK_TEMPERATURE,
+            maxOutputTokens = ASK_MAX_TOKENS,
+            research = false,
+        )
+        val text = ProviderResponseParser.extractResponsesApiText(response)
+        if (text.isBlank()) {
+            throw ProviderHttpException(
+                ProviderErrorCodes.INVALID_RESPONSE,
+                "Provider response had no answer text.",
+            )
+        }
+        return JSONObject().put("output_text", text)
+    }
+
     /**
      * Research pass mirroring AnthropicProvider.runResearchPass. Runs a Responses API call
      * with `web_search_preview` bound, captures the research summary + citations, filters

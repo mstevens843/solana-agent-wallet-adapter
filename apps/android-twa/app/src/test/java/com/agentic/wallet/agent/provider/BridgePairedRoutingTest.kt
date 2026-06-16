@@ -31,6 +31,7 @@ class BridgePairedRoutingTest {
         }
         override suspend fun reviewPlan(payload: JSONObject): JSONObject = JSONObject().put("routed", "bridge")
         override suspend fun ask(payload: JSONObject): JSONObject = JSONObject().put("output_text", "bridge")
+        override suspend fun localize(payload: JSONObject): JSONObject = JSONObject().put("output_text", "bridge")
     }
 
     @Test
