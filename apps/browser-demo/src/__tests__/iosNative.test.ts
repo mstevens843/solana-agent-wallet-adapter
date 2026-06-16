@@ -19,7 +19,9 @@ import {
   iosNativeWalletLaunchStrategy,
   iosNativeWalletConnectTransactionParam,
   listIosNativeWalletOptions,
+  mergeIosAuthRecordForCache,
   restoreLatestIosNativeWallet,
+  type IosAuthRecord,
   type IosNativeWalletId,
 } from '../iosNative.js';
 
@@ -132,6 +134,68 @@ describe('IosNativeWalletBackend cache restore', () => {
       publicKey: 'Phantom111111111111111111111111111111111',
       walletId: 'phantom',
     });
+  });
+
+  it('preserves cached deeplink session metadata when an incoming record is partial', () => {
+    const existing = iosAuthRecord('phantom', 'Phantom111111111111111111111111111111111', 1);
+    const partial: IosAuthRecord = {
+      publicKey: 'Phantom111111111111111111111111111111111',
+      walletId: 'phantom',
+      walletName: 'Phantom',
+      cluster: 'mainnet-beta',
+      session: '',
+      walletEncryptionPublicKeyBase64: '',
+      walletEncryptionPublicKeyBase58: undefined,
+      sharedSecretBase64: '',
+      dappPublicKeyBase64: undefined,
+      dappSecretKeyBase64: '',
+      timestampUnixSeconds: 2,
+      authenticated: true,
+    };
+
+    expect(mergeIosAuthRecordForCache(partial, existing)).toMatchObject({
+      publicKey: 'Phantom111111111111111111111111111111111',
+      session: 'phantom-session',
+      walletEncryptionPublicKeyBase64: 'phantom-wallet-key-b64',
+      walletEncryptionPublicKeyBase58: 'phantom-wallet-key-b58',
+      sharedSecretBase64: 'phantom-shared-secret',
+      dappPublicKeyBase64: 'phantom-dapp-key',
+      dappSecretKeyBase64: 'phantom-dapp-secret',
+      timestampUnixSeconds: 2,
+      authenticated: true,
+    });
+  });
+
+  it('preserves cached Jupiter WalletConnect topic when reconnect metadata is partial', () => {
+    const existing: IosAuthRecord = {
+      publicKey: 'Jupiter111111111111111111111111111111111',
+      walletId: 'jupiter',
+      walletName: 'Jupiter',
+      cluster: 'mainnet-beta',
+      walletConnectTopic: 'cached-topic',
+      timestampUnixSeconds: 1,
+      authenticated: true,
+    };
+    const partial: IosAuthRecord = {
+      ...existing,
+      walletConnectTopic: '',
+      timestampUnixSeconds: 2,
+    };
+
+    expect(mergeIosAuthRecordForCache(partial, existing)).toMatchObject({
+      walletConnectTopic: 'cached-topic',
+      timestampUnixSeconds: 2,
+    });
+  });
+
+  it('does not merge session metadata across different iOS wallets', () => {
+    const existing = iosAuthRecord('phantom', 'Shared1111111111111111111111111111111111', 1);
+    const incoming: IosAuthRecord = {
+      ...iosAuthRecord('solflare', 'Shared1111111111111111111111111111111111', 2),
+      session: '',
+    };
+
+    expect(mergeIosAuthRecordForCache(incoming, existing).session).toBe('');
   });
 });
 
@@ -297,7 +361,7 @@ function installLocalStorage(): void {
   });
 }
 
-function seedIosAuthCache(records: Array<Record<string, unknown>>): void {
+function seedIosAuthCache(records: IosAuthRecord[]): void {
   localStorage.setItem(
     IOS_AUTH_CACHE_KEY,
     JSON.stringify({
@@ -313,7 +377,7 @@ function iosAuthRecord(
   publicKey: string,
   timestampUnixSeconds: number,
   authenticated = true,
-): Record<string, unknown> {
+): IosAuthRecord {
   const walletName = walletId === 'phantom' ? 'Phantom' : walletId === 'solflare' ? 'Solflare' : 'Backpack';
   return {
     publicKey,

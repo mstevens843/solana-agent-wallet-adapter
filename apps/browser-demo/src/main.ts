@@ -724,6 +724,7 @@ declare const __AGENTIC_CLI_RELEASE_TAG__: string;
 declare const __AGENTIC_APP_RELEASE_TAG__: string;
 declare const __AGENTIC_DESKTOP_RELEASE_TAG__: string;
 declare const __AGENTIC_ANDROID_RELEASE_TAG__: string;
+declare const __AGENTIC_BROWSER_BUILD_COMMIT__: string;
 
 setProofSigningContext({
   getClient: requireClient,
@@ -1609,6 +1610,7 @@ const HOSTED_CUSTOM_PROVIDER_DISABLED_REASON =
 const MOBILE_HOSTED_CUSTOM_PROVIDER_DISABLED_REASON =
   'Hosted BYOK supports preset providers only in the mobile app and mobile web.';
 const DEFAULT_ANDROID_CLOUD_API_BASE_URL = 'https://agentic-signer.com';
+const NATIVE_LIVE_UPDATE_VISIBLE_INTERVAL_MS = 60_000;
 // Android Cloud sign-in uses connect + wallet proof signing until real wallet SIWS
 // messages are verified against the server nonce contract per provider.
 const ANDROID_CLOUD_SIWS_FAST_PATH = false;
@@ -4532,6 +4534,9 @@ function installNativeLiveUpdateWatcher(): void {
   window.addEventListener('focus', () => {
     void runNativeLiveUpdateCheck('focus');
   });
+  window.addEventListener('online', () => {
+    void runNativeLiveUpdateCheck('online');
+  });
   window.addEventListener('pageshow', () => {
     void runNativeLiveUpdateCheck('pageshow');
   });
@@ -4540,11 +4545,18 @@ function installNativeLiveUpdateWatcher(): void {
       void runNativeLiveUpdateCheck('visible');
     }
   });
+  window.setInterval(() => {
+    if (document.visibilityState !== 'hidden') {
+      void runNativeLiveUpdateCheck('visible-interval');
+    }
+  }, NATIVE_LIVE_UPDATE_VISIBLE_INTERVAL_MS);
 }
 
 async function runNativeLiveUpdateCheck(trigger: string): Promise<'skipped' | 'current' | 'reloading' | 'error'> {
   const result = await checkNativeLiveUpdate({
     enabled: nativeLiveUpdateEnabled(),
+    currentBuildCommit: __AGENTIC_BROWSER_BUILD_COMMIT__,
+    liveOrigin: androidCloudApiBaseUrl(),
     fetch: window.fetch.bind(window),
     storage: window.localStorage,
     location: window.location,
@@ -4564,6 +4576,12 @@ function nativeLiveUpdateEnabled(): boolean {
 
 function nativeLiveUpdateRequestActive(): boolean {
   return Boolean(state.busy || state.pendingCliSignRequest || proofSigningToastDepth > 0);
+}
+
+if (nativeLiveUpdateEnabled() && typeof window !== 'undefined') {
+  (window as Window & {
+    __agenticNativeLiveUpdateRequestActive?: () => boolean;
+  }).__agenticNativeLiveUpdateRequestActive = nativeLiveUpdateRequestActive;
 }
 
 function installPayOutApprovalCreatedListener(): void {

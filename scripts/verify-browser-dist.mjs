@@ -7,10 +7,12 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const dist = resolve(root, process.argv[2] ?? 'apps/browser-demo/dist');
 const indexPath = resolve(dist, 'index.html');
+const buildMetadataPath = resolve(dist, 'agentic-build.json');
 
 const html = await readFile(indexPath, 'utf8').catch((err) => {
   fail(`Unable to read ${indexPath}: ${err.message}`);
 });
+const buildMetadata = await readBuildMetadata(buildMetadataPath);
 
 const references = localReferences(html);
 const missing = [];
@@ -48,6 +50,7 @@ if (missing.length > 0 || empty.length > 0) {
 }
 
 console.log(`[browser-dist] Verified ${references.length} local asset reference(s) in ${indexPath}.`);
+console.log(`[browser-dist] Verified browser build metadata commit=${buildMetadata.commit}.`);
 
 function localReferences(source) {
   const values = new Set();
@@ -64,6 +67,23 @@ function localReferences(source) {
 
 function isExternal(value) {
   return /^[a-z][a-z0-9+.-]*:/i.test(value) || value.startsWith('//');
+}
+
+async function readBuildMetadata(path) {
+  const raw = await readFile(path, 'utf8').catch((err) => {
+    fail(`Unable to read ${path}: ${err.message}`);
+  });
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    fail(`Unable to parse ${path}: ${err.message}`);
+  }
+  const commit = typeof parsed.commit === 'string' ? parsed.commit.trim() : '';
+  if (!commit || commit === 'unknown') {
+    fail(`${path} is missing a usable commit. Set RENDER_GIT_COMMIT or AGENTIC_BUILD_ID, or run inside a git checkout.`);
+  }
+  return { commit };
 }
 
 function fail(message) {

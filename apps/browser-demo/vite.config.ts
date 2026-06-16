@@ -1,4 +1,5 @@
 import { defineConfig, loadEnv } from 'vite';
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +24,22 @@ function packageVersion(packageJsonPath: string): string {
     throw new Error(`${packageJsonPath} is missing a package version`);
   }
   return packageJson.version;
+}
+
+function browserBuildCommit(): string {
+  const renderCommit = process.env.RENDER_GIT_COMMIT?.trim();
+  if (renderCommit) return renderCommit.slice(0, 12);
+  const explicitBuildId = process.env.AGENTIC_BUILD_ID?.trim();
+  if (explicitBuildId) return explicitBuildId;
+  try {
+    return execFileSync('git', ['rev-parse', '--short=12', 'HEAD'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    return '';
+  }
 }
 
 const capacitorIosApp =
@@ -99,9 +116,25 @@ const walletConnectProjectId =
   process.env.AGENTIC_WC_PROJECT_ID ??
   envFromDotfiles.VITE_AGENTIC_WC_PROJECT_ID ??
   '';
+const buildCommit = browserBuildCommit();
 
 export default defineConfig({
-  plugins: [acpDevApiPlugin()],
+  plugins: [
+    acpDevApiPlugin(),
+    {
+      name: 'agentic-build-metadata',
+      generateBundle() {
+        this.emitFile({
+          type: 'asset',
+          fileName: 'agentic-build.json',
+          source: JSON.stringify({
+            commit: buildCommit || 'unknown',
+            deployedAt: process.env.RENDER_DEPLOY_TIMESTAMP ?? null,
+          }),
+        });
+      },
+    },
+  ],
   define: {
     'import.meta.env.VITE_CAPACITOR_IOS_APP': JSON.stringify(capacitorIosApp),
     'import.meta.env.VITE_CAPACITATOR_IOS_APP': JSON.stringify(capacitorIosApp),
@@ -123,6 +156,7 @@ export default defineConfig({
     __AGENTIC_APP_RELEASE_TAG__: JSON.stringify(appReleaseTag),
     __AGENTIC_DESKTOP_RELEASE_TAG__: JSON.stringify(desktopReleaseTag),
     __AGENTIC_ANDROID_RELEASE_TAG__: JSON.stringify(androidReleaseTag),
+    __AGENTIC_BROWSER_BUILD_COMMIT__: JSON.stringify(buildCommit),
   },
   build: {
     rollupOptions: {

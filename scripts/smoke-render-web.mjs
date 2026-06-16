@@ -158,6 +158,7 @@ Options:
 async function verifyLocalRender() {
   await withLocalServer(async ({ origin, serverPort }) => {
     await waitForHostedAiStatus(`${origin}/api/ai/status`);
+    await verifyAppBuildMetadata(`${origin}/api/app-build`);
     if (process.env.AGENTIC_SMOKE_FORCE_HTTP_FALLBACK === '1' || !findChromePath()) {
       await verifyLocalRenderHttpFallback(origin);
       console.log('[smoke-render-web] SKIP browser public-host local bridge startup probe: Chrome/Chromium is unavailable or HTTP fallback was forced. Set CHROME_PATH to run browser runtime smoke.');
@@ -1899,6 +1900,7 @@ async function apiRaw(origin, path, options = {}) {
 async function verifyLiveRender(origin) {
   const base = origin.replace(/\/+$/, '');
   await verifyHostedAiStatus(`${base}/api/ai/status`);
+  await verifyAppBuildMetadata(`${base}/api/app-build`);
   await verifyJsonSession(`${base}/api/session`);
   await verifyJsonApiRoute(`${base}/api/plans`, [401]);
   await verifyJsonApiRoute(`${base}/api/approvals`, [401]);
@@ -2318,6 +2320,26 @@ async function verifyHostedAiStatus(url) {
     throw new Error(`${url} returned unexpected hosted AI status: ${JSON.stringify(payload)}`);
   }
   console.log(`[smoke-render-web] PASS ${url} returned hosted BYOK JSON.`);
+}
+
+async function verifyAppBuildMetadata(url) {
+  const response = await fetch(url, { cache: 'no-store' });
+  const contentType = response.headers.get('content-type') ?? '';
+  const cacheControl = response.headers.get('cache-control') ?? '';
+  const raw = await response.text();
+  if (!response.ok) throw new Error(`${url} returned HTTP ${response.status}: ${snippet(raw)}`);
+  if (!/application\/json/i.test(contentType)) {
+    throw new Error(`${url} returned ${contentType || 'missing content-type'} instead of application/json: ${snippet(raw)}`);
+  }
+  if (!/no-store/i.test(cacheControl)) {
+    throw new Error(`${url} returned cache-control=${JSON.stringify(cacheControl)} instead of no-store.`);
+  }
+  const payload = parseJson(raw, url);
+  const commit = typeof payload?.commit === 'string' ? payload.commit.trim() : '';
+  if (!commit || commit === 'unknown') {
+    throw new Error(`${url} returned unusable build metadata: ${JSON.stringify(payload)}`);
+  }
+  console.log(`[smoke-render-web] PASS ${url} returned build metadata commit=${commit}.`);
 }
 
 async function verifyJsonSession(url) {

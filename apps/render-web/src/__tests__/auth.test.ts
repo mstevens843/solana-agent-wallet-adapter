@@ -180,7 +180,6 @@ describe('render web cloud wallet auth', () => {
         const headers = {
           host: 'agentic-seeker.com',
           origin: 'https://agentic-seeker.com',
-          'x-forwarded-host': 'agentic-seeker.com',
           'x-forwarded-proto': 'https',
           'x-agentic-client': 'android-bundled',
         };
@@ -192,6 +191,7 @@ describe('render web cloud wallet auth', () => {
 
         expect(verify.status).toBe(200);
         expect(verify.body.sessionToken).toEqual(expect.any(String));
+        expect(verify.headers['access-control-allow-origin']).toBe('https://agentic-seeker.com');
       });
     });
   });
@@ -251,6 +251,29 @@ describe('render web cloud wallet auth', () => {
       expect(response.status).toBe(204);
       expect(response.headers['access-control-allow-origin']).toBe('https://agentic.local');
       expect(String(response.headers['access-control-allow-headers'])).toContain('authorization');
+    });
+  });
+
+  it('handles production same-origin native preflight without CORS env duplication', async () => {
+    await withEnv({
+      RENDER: 'true',
+      AGENTIC_PUBLIC_ORIGIN: 'https://agentic-signer.com',
+      AGENTIC_CLOUD_CORS_ORIGINS: 'http://127.0.0.1:5174,http://localhost:5174',
+    }, async () => {
+      await withServer(async (port) => {
+        const response = await requestRaw(port, '/api/session', 'OPTIONS', undefined, {
+          host: 'agentic-seeker.com',
+          origin: 'https://agentic-seeker.com',
+          'x-forwarded-proto': 'https',
+          'x-agentic-client': 'android-bundled',
+          'access-control-request-method': 'GET',
+          'access-control-request-headers': 'authorization, content-type, x-agentic-client',
+        });
+
+        expect(response.status).toBe(204);
+        expect(response.headers['access-control-allow-origin']).toBe('https://agentic-seeker.com');
+        expect(String(response.headers['access-control-allow-headers'])).toContain('authorization');
+      });
     });
   });
 

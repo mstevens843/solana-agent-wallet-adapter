@@ -30,14 +30,41 @@ final class AgenticAuthCache {
 
     func set(_ record: AgenticAuthRecord) {
         var root = readRoot()
-        root.records[record.publicKey] = record
+        let merged = Self.mergedRecord(record, existing: root.records[record.publicKey])
+        root.records[record.publicKey] = merged
         root.latest = record.publicKey
         writeRoot(root)
         AgenticIOSNativeLog.info("AgenticAuthCache", "set", "DONE", "authorization cached", [
-            "wallet": record.walletID.rawValue,
-            "pubkey": short(record.publicKey),
-            "authenticated": String(record.authenticated),
+            "wallet": merged.walletID.rawValue,
+            "pubkey": short(merged.publicKey),
+            "authenticated": String(merged.authenticated),
         ])
+    }
+
+    static func mergedRecord(_ incoming: AgenticAuthRecord, existing: AgenticAuthRecord?) -> AgenticAuthRecord {
+        guard let existing,
+              existing.publicKey == incoming.publicKey,
+              existing.walletID == incoming.walletID else {
+            return incoming
+        }
+        var merged = incoming
+        merged.sessionBase58 = nonBlank(incoming.sessionBase58, existing.sessionBase58)
+        merged.walletEncryptionPublicKeyBase58 = nonBlank(
+            incoming.walletEncryptionPublicKeyBase58,
+            existing.walletEncryptionPublicKeyBase58
+        )
+        merged.sharedSecretBase64 = nonBlank(incoming.sharedSecretBase64, existing.sharedSecretBase64)
+        merged.dappPublicKeyBase64 = nonBlank(incoming.dappPublicKeyBase64, existing.dappPublicKeyBase64)
+        merged.dappSecretKeyBase64 = nonBlank(incoming.dappSecretKeyBase64, existing.dappSecretKeyBase64)
+        merged.walletConnectTopic = nonBlank(incoming.walletConnectTopic, existing.walletConnectTopic)
+        return merged
+    }
+
+    private static func nonBlank(_ incoming: String?, _ cached: String?) -> String? {
+        if let incoming, !incoming.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return incoming
+        }
+        return cached ?? incoming
     }
 
     func clear(publicKey: String) {
@@ -57,13 +84,21 @@ final class AgenticAuthCache {
 
     private func readRoot() -> AgenticAuthCacheRoot {
         do {
-            guard let data = try keychainRead() ?? debugUserDefaultsRead() else {
+            guard let data = keychainReadWithDebugUserDefaultsFallback() else {
                 return AgenticAuthCacheRoot()
             }
             return try JSONDecoder().decode(AgenticAuthCacheRoot.self, from: data)
         } catch {
             AgenticIOSNativeLog.fail("AgenticAuthCache", "readRoot", "FAIL", "cache read failed", ["error": error.localizedDescription])
             return AgenticAuthCacheRoot()
+        }
+    }
+
+    private func keychainReadWithDebugUserDefaultsFallback() -> Data? {
+        do {
+            return try keychainRead() ?? debugUserDefaultsRead()
+        } catch {
+            return debugUserDefaultsRead()
         }
     }
 

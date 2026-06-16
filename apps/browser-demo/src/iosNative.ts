@@ -73,7 +73,7 @@ export interface IosNativeWalletOption {
 
 export type IosNativeLogLevel = 'silent' | 'error' | 'info' | 'debug';
 
-interface IosAuthRecord {
+export interface IosAuthRecord {
   publicKey: string;
   walletId: IosNativeWalletId;
   walletName: string;
@@ -1632,7 +1632,7 @@ class IosAuthCache {
 
   async set(record: IosAuthRecord): Promise<void> {
     const root = await this.load();
-    root.records[record.publicKey] = record;
+    root.records[record.publicKey] = mergeIosAuthRecordForCache(record, root.records[record.publicKey]);
     root.latest = record.publicKey;
     await this.save(root);
     iosLog(this.logLevel, 'IosAuthCache', 'set', 'DONE', 'info', 'cache record saved', {
@@ -1684,6 +1684,34 @@ class IosAuthCache {
   private async save(root: IosAuthCacheRoot): Promise<void> {
     await writeState(AUTH_CACHE_KEY, JSON.stringify(root), this.logLevel);
   }
+}
+
+export function mergeIosAuthRecordForCache(incoming: IosAuthRecord, existing?: IosAuthRecord | null): IosAuthRecord {
+  if (!existing || existing.publicKey !== incoming.publicKey || existing.walletId !== incoming.walletId) {
+    return incoming;
+  }
+  return {
+    ...incoming,
+    walletName: nonBlank(incoming.walletName, existing.walletName),
+    session: nonBlank(incoming.session, existing.session),
+    walletEncryptionPublicKeyBase64: nonBlank(
+      incoming.walletEncryptionPublicKeyBase64,
+      existing.walletEncryptionPublicKeyBase64,
+    ),
+    walletEncryptionPublicKeyBase58: nonBlank(
+      incoming.walletEncryptionPublicKeyBase58,
+      existing.walletEncryptionPublicKeyBase58,
+    ),
+    sharedSecretBase64: nonBlank(incoming.sharedSecretBase64, existing.sharedSecretBase64),
+    dappPublicKeyBase64: nonBlank(incoming.dappPublicKeyBase64, existing.dappPublicKeyBase64),
+    dappSecretKeyBase64: nonBlank(incoming.dappSecretKeyBase64, existing.dappSecretKeyBase64),
+    walletConnectTopic: nonBlank(incoming.walletConnectTopic, existing.walletConnectTopic),
+  };
+}
+
+function nonBlank<T extends string | undefined>(incoming: T, cached: T): T {
+  if (typeof incoming === 'string' && incoming.trim().length > 0) return incoming;
+  return cached ?? incoming;
 }
 
 async function installIosUrlDispatcher(): Promise<void> {

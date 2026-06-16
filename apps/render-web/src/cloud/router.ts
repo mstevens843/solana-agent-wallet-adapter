@@ -701,7 +701,7 @@ function isOriginlessBundledMobileDeviceAgentDebug(req: IncomingMessage, url: UR
 function applyCloudCorsHeaders(req: IncomingMessage, res: ServerResponse): void {
   const origin = firstHeaderValue(req.headers.origin);
   const client = firstHeaderValue(req.headers['x-agentic-client'])?.toLowerCase();
-  if (!origin || !isAllowedRequestOrigin(origin, client)) return;
+  if (!origin || !isAllowedCorsRequest(req, origin, client)) return;
   // For opaque `null` origins (custom-scheme Tauri webviews) echo `null` back
   // so Chromium's CORS check passes. Normal allowlisted origins get the
   // canonical scheme://host form.
@@ -716,7 +716,7 @@ function applyCloudCorsHeaders(req: IncomingMessage, res: ServerResponse): void 
 function handleCloudCorsPreflight(req: IncomingMessage, res: ServerResponse): void {
   const origin = firstHeaderValue(req.headers.origin);
   const client = firstHeaderValue(req.headers['x-agentic-client'])?.toLowerCase();
-  if (!origin || !isAllowedRequestOrigin(origin, client)) {
+  if (!origin || !isAllowedCorsRequest(req, origin, client)) {
     writeJson(res, 403, { error: 'cors_origin_not_allowed' });
     return;
   }
@@ -792,6 +792,10 @@ function isAllowedRequestOrigin(origin: string | undefined, client: string | und
   if (origin && isAllowedCloudCorsOrigin(origin)) return true;
   if (origin === 'null' && client === 'desktop-bundled') return true;
   return false;
+}
+
+function isAllowedCorsRequest(req: IncomingMessage, origin: string | undefined, client: string | undefined): boolean {
+  return isAllowedRequestOrigin(origin, client) || isPublicSameOrigin(req, origin);
 }
 
 function isPublicSameOrigin(req: IncomingMessage, origin: string | undefined): boolean {
@@ -4103,10 +4107,7 @@ function publicOriginUsesHttps(): boolean {
 
 function requestSameOriginCandidates(req: IncomingMessage): Set<string> {
   const proto = isSecureRequest(req) || isProductionRequest() || publicOriginUsesHttps() ? 'https' : 'http';
-  const hosts = [
-    ...splitHeaderList(firstHeaderValue(req.headers['x-forwarded-host'])),
-    ...splitHeaderList(firstHeaderValue(req.headers.host)),
-  ];
+  const hosts = splitHeaderList(firstHeaderValue(req.headers.host));
   return new Set(hosts.map((host) => normalizeOrigin(`${proto}://${host}`)).filter(Boolean));
 }
 

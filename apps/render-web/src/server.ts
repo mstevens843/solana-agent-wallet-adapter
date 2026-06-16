@@ -26,6 +26,11 @@ interface RenderWebServerOptions extends CloudApiRouterOptions {
   staticDir?: string;
 }
 
+interface AppBuildMetadata {
+  commit: string;
+  deployedAt: string | null;
+}
+
 let loggedSwapFeeStatus = false;
 
 /** One-line startup signal so the operator can confirm the swap fee is live on Render. */
@@ -76,6 +81,16 @@ async function handleRequest(
   setCommonHeaders(req, res);
 
   try {
+    if (url.pathname === '/api/app-build') {
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        writeJson(res, 405, { error: 'method_not_allowed' });
+        return;
+      }
+      const metadata = await currentAppBuildMetadata(staticDir);
+      writeJson(res, 200, metadata, req.method === 'HEAD');
+      return;
+    }
+
     // Layer 2 public SSR routes (e.g. /u/:wallet, /skills/:id) run before
     // /api/ dispatch and SPA fallback. Handlers enforce their own visibility.
     if (req.method === 'GET' || req.method === 'HEAD') {
@@ -225,11 +240,44 @@ function publicOriginUsesHttps(): boolean {
   }
 }
 
-function writeJson(res: ServerResponse, status: number, payload: unknown): void {
+async function currentAppBuildMetadata(staticDir: string): Promise<AppBuildMetadata> {
+  const artifact = await readAppBuildMetadataArtifact(staticDir);
+  if (artifact) {
+    return {
+      commit: artifact.commit,
+      deployedAt: artifact.deployedAt ?? process.env.RENDER_DEPLOY_TIMESTAMP ?? null,
+    };
+  }
+  return envAppBuildMetadata();
+}
+
+async function readAppBuildMetadataArtifact(staticDir: string): Promise<AppBuildMetadata | null> {
+  try {
+    const raw = await readFile(join(staticDir, 'agentic-build.json'), 'utf8');
+    const parsed = JSON.parse(raw) as Partial<AppBuildMetadata>;
+    const commit = typeof parsed.commit === 'string' ? parsed.commit.trim() : '';
+    if (!commit || commit === 'unknown') return null;
+    return {
+      commit,
+      deployedAt: typeof parsed.deployedAt === 'string' ? parsed.deployedAt : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function envAppBuildMetadata(): AppBuildMetadata {
+  return {
+    commit: process.env.RENDER_GIT_COMMIT?.slice(0, 12) ?? process.env.AGENTIC_BUILD_ID ?? 'unknown',
+    deployedAt: process.env.RENDER_DEPLOY_TIMESTAMP ?? null,
+  };
+}
+
+function writeJson(res: ServerResponse, status: number, payload: unknown, head = false): void {
   res.statusCode = status;
   res.setHeader('content-type', 'application/json; charset=utf-8');
   res.setHeader('cache-control', 'no-store');
-  res.end(JSON.stringify(payload));
+  res.end(head ? undefined : JSON.stringify(payload));
 }
 
 class HttpError extends Error {
@@ -252,7 +300,7 @@ async function start(): Promise<void> {
     server.once('error', reject);
     server.listen(port, host, resolve);
   });
-  const commit = process.env.RENDER_GIT_COMMIT?.slice(0, 12) ?? process.env.AGENTIC_BUILD_ID ?? 'unknown';
+  const commit = envAppBuildMetadata().commit;
   console.log(`Agentic web server listening on http://${host}:${port}`);
   console.log(`Agentic build commit=${commit} workflow_routes=enabled`);
 }

@@ -110,6 +110,26 @@ describe('render web hosted BYOK API', () => {
     });
   });
 
+  it('prefers emitted browser build metadata for native live-update checks', async () => {
+    vi.stubEnv('RENDER_GIT_COMMIT', 'runtime9999999999');
+    vi.stubEnv('RENDER_DEPLOY_TIMESTAMP', '2026-06-16T08:30:00.000Z');
+    await withServer(async (port) => {
+      const response = await getText(port, '/api/app-build');
+
+      expect(response.status).toBe(200);
+      expect(response.headers['cache-control']).toBe('no-store');
+      expect(JSON.parse(response.body)).toEqual({
+        commit: 'bundle123456',
+        deployedAt: '2026-06-16T08:30:00.000Z',
+      });
+    }, {
+      appBuildMetadata: {
+        commit: 'bundle123456',
+        deployedAt: null,
+      },
+    });
+  });
+
   it('adds the Ultra referral platform fee to /api/swap/order when configured', async () => {
     vi.stubEnv('JUPITER_API_KEY', 'jup-test-key');
     vi.stubEnv('JUPITER_REFERRAL_ACCOUNT', DEVICE_AGENT_WALLET_A);
@@ -1551,12 +1571,16 @@ describe('render web hosted BYOK API', () => {
 async function withServer(
   callback: (port: number, ctx: ServerCtx) => Promise<void>,
   options: {
+    appBuildMetadata?: Record<string, unknown>;
     statelessConnectorPreparer?: import('../cloud/prepareConnectorTransaction.js').StatelessConnectorTransactionPreparer;
     walletAddress?: string;
   } = {},
 ): Promise<void> {
   const staticDir = await mkdtemp(join(tmpdir(), 'agentic-render-web-'));
   await writeFile(join(staticDir, 'index.html'), '<!doctype html><div id="app"></div>');
+  if (options.appBuildMetadata) {
+    await writeFile(join(staticDir, 'agentic-build.json'), JSON.stringify(options.appBuildMetadata));
+  }
   await mkdir(join(staticDir, 'app'));
   await writeFile(join(staticDir, 'app', 'index.html'), '<!doctype html><div id="app"></div>');
   const store = new MemoryWorkflowStore();

@@ -44,6 +44,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         if didBackgroundAtLeastOnce {
             recoverWebViewIfContentProcessTerminated()
         }
+        recoverRemoteWebViewURLIfNeeded()
     }
 
     /// Recover from a terminated WKWebView content process. iOS reclaims the web-content process of
@@ -60,6 +61,18 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
             NSLog("%@", "[AgentIOSApp] [AppDelegate] webContentProbe | RECOVER phase=WARN message=\"WKWebView content process appears terminated; reloading\"")
             webView.reload()
         }
+    }
+
+    /// If a live-mode build cold-launched into the bundled offline fallback, bring
+    /// it back to the configured Render shell once the app is foregrounded with a
+    /// reachable live host. This deliberately runs after the content-process probe
+    /// and uses the web app's wallet-request guard so return-from-wallet flows are
+    /// not interrupted.
+    private func recoverRemoteWebViewURLIfNeeded() {
+        guard let controller = window?.rootViewController as? AgenticBridgeViewController else {
+            return
+        }
+        controller.recoverRemoteWebViewURLIfNeeded()
     }
 
     func applicationWillTerminate(_ application: UIApplication) {
@@ -99,8 +112,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
 /// the app cold-launches (airplane mode, no signal), we null out the remote
 /// `serverURL` so Capacitor serves the bundled `webDir` copy from
 /// capacitor://localhost instead of showing a blank screen. The next launch with
-/// connectivity loads the live Render bundle again. Both origins are trusted by
-/// AgenticBridgeOrigin.swift, so the native plugins work in either state.
+/// connectivity, or a foreground retry after connectivity returns, loads the
+/// live Render bundle again. Both origins are trusted by AgenticBridgeOrigin.swift,
+/// so the native plugins work in either state.
 ///
 /// Wired in Base.lproj/Main.storyboard (customClass=AgenticBridgeViewController,
 /// module=App). Lives in this already-compiled file so no new target/source
@@ -122,6 +136,12 @@ final class AgenticBridgeViewController: CAPBridgeViewController {
         .lightContent
     }
 
+    private var configuredLiveServerURL: String?
+    private var launchedWithBundledFallback = false
+    private var fallbackRecoveryRetryCount = 0
+    private var fallbackRecoveryRetryScheduled = false
+    private static let fallbackRecoveryRetryInterval: TimeInterval = 15
+
     override func viewDidLoad() {
         super.viewDidLoad()
         applyAppBackground()
@@ -133,17 +153,94 @@ final class AgenticBridgeViewController: CAPBridgeViewController {
         super.viewDidAppear(animated)
         applyAppBackground()
         setNeedsStatusBarAppearanceUpdate()
+        if launchedWithBundledFallback {
+            scheduleFallbackRecoveryRetry()
+        }
     }
 
     override func instanceDescriptor() -> InstanceDescriptor {
         let descriptor = super.instanceDescriptor()
+        if let server = descriptor.serverURL {
+            configuredLiveServerURL = server
+        }
         if let server = descriptor.serverURL,
            let host = URL(string: server)?.host,
            !AgenticBridgeViewController.isHostReachable(host) {
             NSLog("%@", "[AgentIOSApp] [BridgeVC] instanceDescriptor | FALLBACK phase=WARN message=\"live origin unreachable at launch; serving bundled webDir\" host=\(host)")
+            launchedWithBundledFallback = true
             descriptor.serverURL = nil
         }
         return descriptor
+    }
+
+    func recoverRemoteWebViewURLIfNeeded() {
+        guard let liveURL = configuredLiveServerURL,
+              let webView else {
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self, weak webView] in
+            guard let self,
+                  let webView else {
+                return
+            }
+            self.webWalletRequestActive(webView: webView) { walletRequestActive in
+                guard let host = URL(string: liveURL)?.host else {
+                    return
+                }
+                let currentUrl = webView.url?.absoluteString
+                if currentUrl == nil && !self.launchedWithBundledFallback {
+                    return
+                }
+                let decision = AgenticWebViewRecoveryPolicy.decision(
+                    liveUrl: liveURL,
+                    currentUrl: currentUrl,
+                    walletRequestActive: walletRequestActive,
+                    liveHostReachable: Self.isHostReachable(host)
+                )
+                guard decision.shouldReload,
+                      let url = URL(string: liveURL) else {
+                    if self.launchedWithBundledFallback {
+                        self.scheduleFallbackRecoveryRetry()
+                    }
+                    return
+                }
+                self.launchedWithBundledFallback = false
+                NSLog("%@", "[AgentIOSApp] [BridgeVC] foregroundLiveUrlRecovery | RELOAD phase=WARN message=\"foregrounded on fallback or unexpected WebView URL; loading live Render shell\" reason=\(decision.reason) liveUrl=\(liveURL) currentUrl=\(webView.url?.absoluteString ?? "nil")")
+                webView.load(URLRequest(url: url))
+            }
+        }
+    }
+
+    private func scheduleFallbackRecoveryRetry() {
+        guard launchedWithBundledFallback,
+              !fallbackRecoveryRetryScheduled else {
+            return
+        }
+        fallbackRecoveryRetryScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.fallbackRecoveryRetryInterval) { [weak self] in
+            guard let self else { return }
+            self.fallbackRecoveryRetryScheduled = false
+            guard self.launchedWithBundledFallback else { return }
+            self.fallbackRecoveryRetryCount += 1
+            guard UIApplication.shared.applicationState == .active else { return }
+            self.recoverRemoteWebViewURLIfNeeded()
+        }
+    }
+
+    private func webWalletRequestActive(webView: WKWebView, completion: @escaping (Bool) -> Void) {
+        let script = """
+        (() => {
+          const fn = window.__agenticNativeLiveUpdateRequestActive;
+          return typeof fn === 'function' ? Boolean(fn()) : false;
+        })()
+        """
+        webView.evaluateJavaScript(script) { value, error in
+            if error != nil {
+                completion(false)
+                return
+            }
+            completion((value as? Bool) == true)
+        }
     }
 
     private func applyAppBackground() {
