@@ -62,6 +62,7 @@
     "demo:agent:build": "pnpm -F reference-agent build",
     "verify:release-links": "node scripts/verify-release-links.mjs",
     "verify:release-links:live": "node scripts/verify-release-links.mjs --live",
+    "verify:production-app": "node scripts/verify-production-app.mjs",
     "security:audit": "pnpm audit --prod",
     "hooks:install": "lefthook install",
     "clean": "pnpm -r exec rm -rf dist .turbo node_modules/.cache"

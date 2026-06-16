@@ -212,10 +212,10 @@ if (isReleaseBuild && cloudApiUri.scheme != "https") {
 
 val appVersionCode = propertyOrEnv("AGENTIC_ANDROID_VERSION_CODE")
     ?: propertyOrEnv("agenticVersionCode")
-    ?: "7"
+    ?: "8"
 val appVersionName = propertyOrEnv("AGENTIC_ANDROID_VERSION_NAME")
     ?: propertyOrEnv("agenticVersionName")
-    ?: "1.0.7"
+    ?: "1.0.8"
 val parsedVersionCode = appVersionCode.toIntOrNull()
 if (parsedVersionCode == null || parsedVersionCode <= 0) {
     throw GradleException("AGENTIC_ANDROID_VERSION_CODE must be a positive integer. Current value: $appVersionCode")

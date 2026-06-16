@@ -93,6 +93,8 @@ export interface MobileRailViewportInput {
   nativeKeyboardInset?: number;
   /** Native keyboard visibility. false ignores nativeKeyboardInset during keyboard-close races. */
   nativeKeyboardVisible?: boolean;
+  /** Last-resort CSS px estimate while a text control is focused and no keyboard metric is available. */
+  focusedControlFallbackInset?: number;
 }
 
 export interface MobileRailViewportVars {
@@ -114,12 +116,32 @@ export function computeMobileRailViewportVars(input: MobileRailViewportInput): M
   const offsetTop = Math.max(0, Math.floor(input.viewportOffsetTop ?? 0));
   const nativeKeyboardInset = Math.max(0, Math.floor(input.nativeKeyboardInset ?? 0));
   const useNativeKeyboardInset = nativeKeyboardInset > 0 && input.nativeKeyboardVisible !== false;
+  const visualKeyboardInset = Math.max(0, Math.floor(innerHeight - viewportRawHeight - offsetTop));
+  const focusedControlFallbackInset = Math.max(0, Math.floor(input.focusedControlFallbackInset ?? 0));
+  const useFocusedControlFallback =
+    !useNativeKeyboardInset &&
+    visualKeyboardInset === 0 &&
+    focusedControlFallbackInset > 0;
   const rawHeight = useNativeKeyboardInset
     ? Math.max(0, Math.min(viewportRawHeight, innerHeight - nativeKeyboardInset))
+    : useFocusedControlFallback
+      ? Math.max(0, Math.min(viewportRawHeight, innerHeight - focusedControlFallbackInset))
     : viewportRawHeight;
   const keyboardInset = useNativeKeyboardInset
     ? nativeKeyboardInset
-    : Math.max(0, Math.floor(innerHeight - rawHeight - offsetTop));
+    : useFocusedControlFallback
+      ? focusedControlFallbackInset
+    : visualKeyboardInset;
   const vvh = Math.max(320, rawHeight);
   return { vvh, keyboardInset };
+}
+
+export function inferMobileRailFocusedKeyboardInset(innerHeight: number): number {
+  if (!Number.isFinite(innerHeight) || innerHeight <= 0) return 0;
+  const height = Math.floor(innerHeight);
+  const maxInset = Math.max(0, Math.min(460, height - 360));
+  if (maxInset <= 0) return 0;
+  const minInset = Math.min(300, maxInset);
+  const preferredInset = Math.round(height * 0.52);
+  return Math.min(maxInset, Math.max(minInset, preferredInset));
 }

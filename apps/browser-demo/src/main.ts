@@ -365,6 +365,7 @@ import {
 import {
   aiReviewSetupTabForMobileRailOpen,
   computeMobileRailViewportVars,
+  inferMobileRailFocusedKeyboardInset,
   shouldApplyMobileRailBodyDataset,
   shouldClearActiveMobileRailSheet,
   shouldCloseWorkspaceStorageSheetAfterCloudSignIn,
@@ -1389,6 +1390,7 @@ interface AgenticAndroidBridge {
   openMwaExample?: () => void;
   isExampleTabEnabled?: () => boolean;
   isDebugBuild?: () => boolean;
+  appRuntimeInfo?: () => string;
   secureGet?: (key: string) => string;
   secureSet?: (key: string, value: string) => boolean;
   secureDelete?: (key: string) => boolean;
@@ -1611,6 +1613,9 @@ const MOBILE_HOSTED_CUSTOM_PROVIDER_DISABLED_REASON =
   'Hosted BYOK supports preset providers only in the mobile app and mobile web.';
 const DEFAULT_ANDROID_CLOUD_API_BASE_URL = 'https://agentic-signer.com';
 const NATIVE_LIVE_UPDATE_VISIBLE_INTERVAL_MS = 60_000;
+const NATIVE_LIVE_UPDATE_BUILD_COMMIT_STORAGE_KEY = 'agentic:lastSeenBuildCommit';
+const NATIVE_LIVE_UPDATE_RELOAD_COMMIT_STORAGE_KEY = 'agentic:lastReloadBuildCommit';
+const NATIVE_LIVE_UPDATE_RELOAD_ATTEMPT_STORAGE_KEY = 'agentic:nativeLiveUpdateReloadAttempt';
 // Android Cloud sign-in uses connect + wallet proof signing until real wallet SIWS
 // messages are verified against the server nonce contract per provider.
 const ANDROID_CLOUD_SIWS_FAST_PATH = false;
@@ -4234,6 +4239,18 @@ let nativeKeyboardVisible = false;
 let virtualKeyboardInsetsBound = false;
 let virtualKeyboardInset = 0;
 let virtualKeyboardVisible = false;
+type MobileRailKeyboardMetricSource =
+  | 'none'
+  | 'native'
+  | 'virtual-keyboard'
+  | 'visual-viewport'
+  | 'focused-control-fallback';
+let lastMobileRailKeyboardInset = 0;
+let lastMobileRailKeyboardMetricSource: MobileRailKeyboardMetricSource = 'none';
+type NativeLiveUpdateCheckResult = 'skipped' | 'current' | 'reloading' | 'error';
+let lastNativeLiveUpdateResult: NativeLiveUpdateCheckResult | 'not-run' = 'not-run';
+let lastNativeLiveUpdateTrigger = '';
+let lastNativeLiveUpdateCheckedAt = '';
 // True only during the programmatic focus restore in restoreMobileRailRenderSnapshot.
 // The rail focus listener checks this so it does not smooth-scroll (defeating the
 // deliberate {preventScroll:true}) when a background re-render re-focuses the field.
@@ -4564,6 +4581,9 @@ async function runNativeLiveUpdateCheck(trigger: string): Promise<'skipped' | 'c
     walletRequestActive: nativeLiveUpdateRequestActive,
     logger: console,
   });
+  lastNativeLiveUpdateResult = result;
+  lastNativeLiveUpdateTrigger = trigger;
+  lastNativeLiveUpdateCheckedAt = new Date().toISOString();
   if (result === 'reloading') {
     console.info('[native-live-update] reload scheduled', { trigger });
   }
@@ -24269,6 +24289,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
       <aside class="ai-settings-card plan-connector-settings-card" data-ai-settings-scope="${escapeHtml(scope)}">
         ${aiReviewSetupTabs()}
         ${websitePlanConnectorTabs ? websitePlanConnectorSetupPanel(scope) : planConnectorSheetPanel()}
+        ${nativeRuntimeDiagnosticsPanel()}
       </aside>
     `;
   }
@@ -24354,7 +24375,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         ${aiKeySetupActionHtml(scope)}
       </div>
       ${isRail || mobilePlannerSetup
-        ? `<p class="ai-security-note compact">AI suggests approve/deny and answers questions before signing. Your provider sees request details and public wallet address - never keys, seed phrase, location, or device IDs. <a href="/privacy" data-site-link="/privacy">Privacy Policy</a></p>${bridgeSetupCard}`
+        ? `<p class="ai-security-note compact">AI suggests approve/deny and answers questions before signing. Your provider sees request details and public wallet address - never keys, seed phrase, location, or device IDs. <a href="/privacy" data-site-link="/privacy">Privacy Policy</a></p>${bridgeSetupCard}${nativeRuntimeDiagnosticsPanel()}`
         : `
           ${state.aiSettings.mode === 'bridge' ? '' : aiModeLimitations()}
           ${bridgeSetupCard}
@@ -24383,6 +24404,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
             </div>
           </div>
           ${aiDiagnosticsPanel()}
+          ${nativeRuntimeDiagnosticsPanel()}
           <p class="ai-security-note">AI helps review requests. Signing and submission stay in the wallet workflow; private local bridge is optional.</p>
         `}
     </aside>
@@ -25152,6 +25174,148 @@ function localBridgeAiKeySource(status: BridgeAiStatus | null): { label: string;
     label,
     detail: 'Configured in the local bridge. It only helps review; approvals, signatures, and workflow storage stay separate.',
   };
+}
+
+function nativeRuntimeDiagnosticsPanel(): string {
+  if (!(IS_ANDROID_APP || IS_IOS_APP)) return '';
+  const rows = nativeRuntimeDiagnosticsRows();
+  return `
+    <details class="ai-diagnostics native-runtime-diagnostics">
+      <summary>Runtime diagnostics</summary>
+      <div class="ai-diagnostics-list">
+        ${rows.map(([label, value]) => `
+          <div class="ai-diagnostic-entry">
+            <strong>${escapeHtml(label)}</strong>
+            <p>${escapeHtml(value)}</p>
+          </div>
+        `).join('')}
+      </div>
+      <button type="button" class="utility" data-ai-action="copy-runtime-diagnostics">Copy diagnostics</button>
+    </details>
+  `;
+}
+
+function nativeRuntimeDiagnosticsRows(): Array<[string, string]> {
+  const payload = nativeRuntimeDiagnosticsPayload();
+  const nativeInfo = isRecord(payload.nativeInfo) ? payload.nativeInfo : {};
+  const liveUpdate = isRecord(payload.liveUpdate) ? payload.liveUpdate : {};
+  const keyboard = isRecord(payload.keyboard) ? payload.keyboard : {};
+  const rows: Array<[string, string]> = [
+    ['Surface', String(payload.surface ?? 'unknown')],
+    ['Web commit', String(payload.webBuildCommit ?? 'unknown')],
+    ['Deployed commit', String(payload.deployedBuildCommit || 'not checked yet')],
+    ['Live update', [
+      liveUpdate.result ? `result=${String(liveUpdate.result)}` : 'result=not-run',
+      liveUpdate.trigger ? `trigger=${String(liveUpdate.trigger)}` : '',
+      liveUpdate.checkedAt ? `checked=${String(liveUpdate.checkedAt)}` : '',
+    ].filter(Boolean).join(' | ')],
+    ['Native app', nativeInfo.available === true
+      ? [
+          nativeInfo.versionName ? `version=${String(nativeInfo.versionName)}` : '',
+          nativeInfo.versionCode ? `code=${String(nativeInfo.versionCode)}` : '',
+          nativeInfo.releaseProfile ? `profile=${String(nativeInfo.releaseProfile)}` : '',
+        ].filter(Boolean).join(' | ') || 'available'
+      : 'unavailable in this installed APK'],
+    ['Keyboard metrics', [
+      keyboard.source ? `source=${String(keyboard.source)}` : 'source=none',
+      keyboard.insetPx !== undefined ? `inset=${String(keyboard.insetPx)}px` : '',
+    ].filter(Boolean).join(' | ')],
+    ['Keyboard bridge', String(payload.keyboardBridge ?? 'unknown')],
+  ];
+  if (nativeInfo.remoteWebUrl) rows.push(['Remote web URL', String(nativeInfo.remoteWebUrl)]);
+  if (payload.lastReloadBuildCommit) rows.push(['Last reload target', String(payload.lastReloadBuildCommit)]);
+  return rows;
+}
+
+function nativeRuntimeDiagnosticsPayload(): Record<string, unknown> {
+  const nativeInfo = readNativeAppRuntimeInfo();
+  const reloadAttempt = parseStoredJson(safeLocalStorageGet(NATIVE_LIVE_UPDATE_RELOAD_ATTEMPT_STORAGE_KEY));
+  return {
+    generatedAt: new Date().toISOString(),
+    surface: IS_ANDROID_APP ? 'android' : IS_IOS_APP ? 'ios' : IS_TAURI_APP ? 'desktop' : 'web',
+    location: window.location.href,
+    userAgent: window.navigator.userAgent,
+    webBuildCommit: __AGENTIC_BROWSER_BUILD_COMMIT__ || 'unknown',
+    deployedBuildCommit: safeLocalStorageGet(NATIVE_LIVE_UPDATE_BUILD_COMMIT_STORAGE_KEY),
+    lastReloadBuildCommit: safeLocalStorageGet(NATIVE_LIVE_UPDATE_RELOAD_COMMIT_STORAGE_KEY),
+    reloadAttempt,
+    liveUpdate: {
+      result: lastNativeLiveUpdateResult,
+      trigger: lastNativeLiveUpdateTrigger,
+      checkedAt: lastNativeLiveUpdateCheckedAt,
+    },
+    keyboard: {
+      source: lastMobileRailKeyboardMetricSource,
+      insetPx: lastMobileRailKeyboardInset,
+      nativeInsetPx: nativeKeyboardInset,
+      nativeVisible: nativeKeyboardVisible,
+      virtualInsetPx: virtualKeyboardInset,
+      virtualVisible: virtualKeyboardVisible,
+      focusedControlFallbackInsetPx: mobileRailFocusedControlFallbackInset(),
+    },
+    keyboardBridge: keyboardBridgeDiagnosticLabel(),
+    nativeInfo: nativeInfo
+      ? { available: true, ...nativeInfo }
+      : { available: false },
+  };
+}
+
+function keyboardBridgeDiagnosticLabel(): string {
+  if (IS_ANDROID_APP) {
+    const bridge = agenticAndroidBridge();
+    return typeof bridge?.keyboardInsets === 'function'
+      ? 'android keyboardInsets available'
+      : 'android keyboardInsets missing';
+  }
+  if (IS_IOS_APP) {
+    const bridge = agenticIosSystemBridge();
+    const metrics = typeof bridge?.keyboardMetrics === 'function' ? 'metrics' : '';
+    const listener = typeof bridge?.addListener === 'function' ? 'listener' : '';
+    return [metrics, listener].filter(Boolean).join(' + ') || 'ios keyboard bridge missing';
+  }
+  return 'not native mobile';
+}
+
+function readNativeAppRuntimeInfo(): Record<string, unknown> | null {
+  if (IS_ANDROID_APP) {
+    try {
+      const raw = agenticAndroidBridge()?.appRuntimeInfo?.();
+      const parsed = parseStoredJson(typeof raw === 'string' ? raw : '');
+      return isRecord(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function parseStoredJson(value: string): unknown {
+  if (!value.trim()) return null;
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return value;
+  }
+}
+
+function safeLocalStorageGet(key: string): string {
+  try {
+    return window.localStorage.getItem(key) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+async function copyNativeRuntimeDiagnostics(): Promise<void> {
+  await writeClipboardText(
+    JSON.stringify(nativeRuntimeDiagnosticsPayload(), null, 2),
+    'runtime diagnostics',
+  );
+  pushToast('success', 'Diagnostics copied', 'Runtime state copied to clipboard.');
 }
 
 function aiDiagnosticsPanel(): string {
@@ -28792,6 +28956,9 @@ function bind(): void {
         case 'paste-api-key':
           void runPasteAiKey(button.dataset.aiPasteTarget);
           return;
+        case 'copy-runtime-diagnostics':
+          void copyNativeRuntimeDiagnostics();
+          return;
         case 'confirm-planner':
           void runConfirmAiPlanner();
           return;
@@ -30932,6 +31099,27 @@ function bindNativeKeyboardInsets(): void {
   }
 }
 
+function focusedMobileRailTextControl(): HTMLInputElement | HTMLTextAreaElement | null {
+  const root = document.querySelector<HTMLElement>('[data-mobile-rail-sheet-root]');
+  const active = document.activeElement;
+  if (
+    !root ||
+    !(active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) ||
+    !root.contains(active) ||
+    active.disabled ||
+    active.readOnly
+  ) {
+    return null;
+  }
+  return active;
+}
+
+function mobileRailFocusedControlFallbackInset(): number {
+  if (!(IS_ANDROID_APP || IS_IOS_APP) || !isMobileAppViewport()) return 0;
+  if (!focusedMobileRailTextControl()) return 0;
+  return inferMobileRailFocusedKeyboardInset(window.innerHeight);
+}
+
 function syncMobileRailSheetViewport(): void {
   if (typeof window === 'undefined' || typeof document === 'undefined') return;
   const sheet = document.querySelector<HTMLElement>('[data-mobile-rail-sheet-root]');
@@ -30939,15 +31127,39 @@ function syncMobileRailSheetViewport(): void {
   const viewport = window.visualViewport;
   const measuredKeyboardInset = Math.max(nativeKeyboardInset, virtualKeyboardInset);
   const measuredKeyboardVisible = nativeKeyboardVisible || virtualKeyboardVisible;
+  const viewportHeight = viewport?.height;
+  const viewportOffsetTop = viewport?.offsetTop;
+  const visualKeyboardInset = Math.max(
+    0,
+    Math.floor(
+      window.innerHeight -
+        Math.floor(viewportHeight ?? window.innerHeight) -
+        Math.max(0, Math.floor(viewportOffsetTop ?? 0)),
+    ),
+  );
+  const focusedControlFallbackInset = mobileRailFocusedControlFallbackInset();
   const { vvh, keyboardInset } = computeMobileRailViewportVars({
-    viewportHeight: viewport?.height,
-    viewportOffsetTop: viewport?.offsetTop,
+    viewportHeight,
+    viewportOffsetTop,
     innerHeight: window.innerHeight,
     nativeKeyboardInset: measuredKeyboardInset,
     nativeKeyboardVisible: measuredKeyboardVisible,
+    focusedControlFallbackInset,
   });
   sheet.style.setProperty('--mobile-rail-vvh', `${vvh}px`);
   sheet.style.setProperty('--mobile-rail-keyboard-inset', `${keyboardInset}px`);
+  lastMobileRailKeyboardInset = keyboardInset;
+  lastMobileRailKeyboardMetricSource = keyboardInset <= 0
+    ? 'none'
+    : nativeKeyboardVisible && nativeKeyboardInset > 0
+      ? 'native'
+      : virtualKeyboardVisible && virtualKeyboardInset > 0
+        ? 'virtual-keyboard'
+        : visualKeyboardInset > 0
+          ? 'visual-viewport'
+          : focusedControlFallbackInset > 0
+            ? 'focused-control-fallback'
+            : 'none';
 }
 
 const MOBILE_RAIL_FOCUS_VIEWPORT_SYNC_DELAYS_MS = [0, 80, 180, 320] as const;
@@ -31030,6 +31242,13 @@ function bindMobileRailSheet(): void {
     const target = event.target;
     if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
       scrollFocusedMobileRailControlIntoView(target);
+    }
+  }, { signal });
+  root.addEventListener('focusout', (event) => {
+    const target = event.target;
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+      window.setTimeout(syncMobileRailSheetViewport, 0);
+      window.setTimeout(syncMobileRailSheetViewport, 120);
     }
   }, { signal });
   for (const closeControl of document.querySelectorAll<HTMLElement>('[data-mobile-rail-sheet-close]')) {

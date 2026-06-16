@@ -16480,6 +16480,19 @@ button.danger:hover:not(:disabled) {
   text-transform: uppercase;
 }
 
+.native-runtime-diagnostics summary {
+  color: var(--dim);
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.native-runtime-diagnostics[open] summary {
+  margin-bottom: 2px;
+}
+
 .ai-diagnostics-list {
   display: grid;
   gap: 7px;
@@ -16508,6 +16521,12 @@ button.danger:hover:not(:disabled) {
   line-height: 1.35;
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+.native-runtime-diagnostics .utility {
+  justify-self: start;
+  min-height: 32px;
+  padding: 7px 10px;
 }
 
 .plan-field-grid {

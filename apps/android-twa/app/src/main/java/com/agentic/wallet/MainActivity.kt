@@ -1282,6 +1282,23 @@ class MainActivity : FragmentActivity() {
         }
 
         @JavascriptInterface
+        fun appRuntimeInfo(): String = safeBridge("appRuntimeInfo", "{}") {
+            if (!checkTrustedOrigin("appRuntimeInfo")) return@safeBridge "{}"
+            JSONObject()
+                .put("platform", "android")
+                .put("versionName", BuildConfig.VERSION_NAME)
+                .put("versionCode", BuildConfig.VERSION_CODE)
+                .put("debug", BuildConfig.DEBUG)
+                .put("releaseProfile", BuildConfig.AGENTIC_ANDROID_RELEASE_PROFILE)
+                .put("remoteWebUrl", BuildConfig.AGENTIC_ANDROID_REMOTE_WEB_URL)
+                .put("cloudApiBaseUrl", BuildConfig.AGENTIC_ANDROID_CLOUD_API_BASE_URL)
+                .put("keyboardInsetsBridge", true)
+                .put("webFallbackEnabled", BuildConfig.AGENTIC_ANDROID_ENABLE_WEB_FALLBACK)
+                .put("deviceAgentEnabled", BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT)
+                .toString()
+        }
+
+        @JavascriptInterface
         fun secureGet(key: String): String = safeBridge("secureGet", "") {
             if (!checkTrustedOrigin("secureGet")) return@safeBridge ""
             validateSecureStoreRequest(key)

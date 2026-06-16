@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   aiReviewSetupTabForMobileRailOpen,
   computeMobileRailViewportVars,
+  inferMobileRailFocusedKeyboardInset,
   mobileRailSheetRouteAllowed,
   shouldApplyMobileRailBodyDataset,
   shouldClearActiveMobileRailSheet,
@@ -251,5 +252,47 @@ describe('computeMobileRailViewportVars', () => {
       nativeKeyboardInset: 320,
       nativeKeyboardVisible: false,
     })).toEqual({ vvh: 800, keyboardInset: 0 });
+  });
+
+  it('uses a focused-control fallback only when no native or visual keyboard metric exists', () => {
+    expect(computeMobileRailViewportVars({
+      viewportHeight: 760,
+      viewportOffsetTop: 0,
+      innerHeight: 760,
+      focusedControlFallbackInset: 395,
+    })).toEqual({ vvh: 365, keyboardInset: 395 });
+  });
+
+  it('prefers visual viewport keyboard metrics over the focused-control fallback', () => {
+    expect(computeMobileRailViewportVars({
+      viewportHeight: 500,
+      viewportOffsetTop: 0,
+      innerHeight: 760,
+      focusedControlFallbackInset: 395,
+    })).toEqual({ vvh: 500, keyboardInset: 260 });
+  });
+
+  it('prefers native keyboard metrics over the focused-control fallback', () => {
+    expect(computeMobileRailViewportVars({
+      viewportHeight: 760,
+      viewportOffsetTop: 0,
+      innerHeight: 760,
+      nativeKeyboardInset: 340,
+      nativeKeyboardVisible: true,
+      focusedControlFallbackInset: 395,
+    })).toEqual({ vvh: 420, keyboardInset: 340 });
+  });
+});
+
+describe('inferMobileRailFocusedKeyboardInset', () => {
+  it('estimates a high mobile keyboard while leaving visible sheet space', () => {
+    expect(inferMobileRailFocusedKeyboardInset(764)).toBe(397);
+    expect(inferMobileRailFocusedKeyboardInset(740)).toBe(380);
+  });
+
+  it('caps tall screens and avoids impossible short viewports', () => {
+    expect(inferMobileRailFocusedKeyboardInset(900)).toBe(460);
+    expect(inferMobileRailFocusedKeyboardInset(375)).toBe(15);
+    expect(inferMobileRailFocusedKeyboardInset(0)).toBe(0);
   });
 });
