@@ -42,6 +42,9 @@ if (jsPath) {
     '__agenticAndroidKeyboardInsetBridge',
     'keyboardInsets',
     'focused-control-fallback',
+    'layout-viewport-resize',
+    'stableInnerHeightPx',
+    'keyboardOpen',
   ]) {
     if (!required || !js.includes(required)) {
       failures.push(`production JS ${jsPath} is missing ${required || 'deployed commit'}`);
@@ -56,6 +59,12 @@ if (cssPath) {
   }
   if (!/bottom:\s*var\(--mobile-rail-keyboard-inset\)/.test(css)) {
     failures.push(`production CSS ${cssPath} does not position the mobile rail sheet with keyboard inset`);
+  }
+  if (!/data-keyboard-open/.test(css)) {
+    failures.push(`production CSS ${cssPath} is missing keyboard-open sheet sizing`);
+  }
+  if (!/max-height:\s*calc\(var\(--mobile-rail-vvh\)/.test(css)) {
+    failures.push(`production CSS ${cssPath} is missing visible viewport max-height sizing`);
   }
 }
 

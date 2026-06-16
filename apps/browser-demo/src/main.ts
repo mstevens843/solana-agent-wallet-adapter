@@ -4244,9 +4244,11 @@ type MobileRailKeyboardMetricSource =
   | 'native'
   | 'virtual-keyboard'
   | 'visual-viewport'
+  | 'layout-viewport-resize'
   | 'focused-control-fallback';
 let lastMobileRailKeyboardInset = 0;
 let lastMobileRailKeyboardMetricSource: MobileRailKeyboardMetricSource = 'none';
+let mobileRailStableInnerHeight = 0;
 type NativeLiveUpdateCheckResult = 'skipped' | 'current' | 'reloading' | 'error';
 let lastNativeLiveUpdateResult: NativeLiveUpdateCheckResult | 'not-run' = 'not-run';
 let lastNativeLiveUpdateTrigger = '';
@@ -25251,6 +25253,10 @@ function nativeRuntimeDiagnosticsPayload(): Record<string, unknown> {
       nativeVisible: nativeKeyboardVisible,
       virtualInsetPx: virtualKeyboardInset,
       virtualVisible: virtualKeyboardVisible,
+      stableInnerHeightPx: mobileRailStableInnerHeight,
+      innerHeightPx: Math.floor(window.innerHeight),
+      visualViewportHeightPx: Math.floor(window.visualViewport?.height ?? window.innerHeight),
+      visualViewportOffsetTopPx: Math.floor(window.visualViewport?.offsetTop ?? 0),
       focusedControlFallbackInsetPx: mobileRailFocusedControlFallbackInset(),
     },
     keyboardBridge: keyboardBridgeDiagnosticLabel(),
@@ -31114,6 +31120,35 @@ function focusedMobileRailTextControl(): HTMLInputElement | HTMLTextAreaElement 
   return active;
 }
 
+function currentMobileRailVisualKeyboardInset(): number {
+  const viewport = window.visualViewport;
+  return Math.max(
+    0,
+    Math.floor(
+      window.innerHeight -
+        Math.floor(viewport?.height ?? window.innerHeight) -
+        Math.max(0, Math.floor(viewport?.offsetTop ?? 0)),
+    ),
+  );
+}
+
+function recordMobileRailStableViewportHeight(): void {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
+  if (!(IS_ANDROID_APP || IS_IOS_APP) || !isMobileAppViewport()) return;
+  const innerHeight = Math.floor(window.innerHeight);
+  if (!Number.isFinite(innerHeight) || innerHeight <= 0) return;
+  if (mobileRailStableInnerHeight <= 0) {
+    mobileRailStableInnerHeight = innerHeight;
+  }
+  const hasKeyboardMetric =
+    nativeKeyboardVisible ||
+    virtualKeyboardVisible ||
+    currentMobileRailVisualKeyboardInset() > 0;
+  if (!focusedMobileRailTextControl() && !hasKeyboardMetric) {
+    mobileRailStableInnerHeight = innerHeight;
+  }
+}
+
 function mobileRailFocusedControlFallbackInset(): number {
   if (!(IS_ANDROID_APP || IS_IOS_APP) || !isMobileAppViewport()) return 0;
   if (!focusedMobileRailTextControl()) return 0;
@@ -31124,42 +31159,41 @@ function syncMobileRailSheetViewport(): void {
   if (typeof window === 'undefined' || typeof document === 'undefined') return;
   const sheet = document.querySelector<HTMLElement>('[data-mobile-rail-sheet-root]');
   if (!sheet) return;
+  recordMobileRailStableViewportHeight();
   const viewport = window.visualViewport;
   const measuredKeyboardInset = Math.max(nativeKeyboardInset, virtualKeyboardInset);
   const measuredKeyboardVisible = nativeKeyboardVisible || virtualKeyboardVisible;
   const viewportHeight = viewport?.height;
   const viewportOffsetTop = viewport?.offsetTop;
-  const visualKeyboardInset = Math.max(
-    0,
-    Math.floor(
-      window.innerHeight -
-        Math.floor(viewportHeight ?? window.innerHeight) -
-        Math.max(0, Math.floor(viewportOffsetTop ?? 0)),
-    ),
-  );
+  const visualKeyboardInset = currentMobileRailVisualKeyboardInset();
   const focusedControlFallbackInset = mobileRailFocusedControlFallbackInset();
-  const { vvh, keyboardInset } = computeMobileRailViewportVars({
+  const { vvh, keyboardInset, keyboardOpen, source } = computeMobileRailViewportVars({
     viewportHeight,
     viewportOffsetTop,
     innerHeight: window.innerHeight,
+    baselineInnerHeight: mobileRailStableInnerHeight || window.innerHeight,
     nativeKeyboardInset: measuredKeyboardInset,
     nativeKeyboardVisible: measuredKeyboardVisible,
     focusedControlFallbackInset,
   });
   sheet.style.setProperty('--mobile-rail-vvh', `${vvh}px`);
   sheet.style.setProperty('--mobile-rail-keyboard-inset', `${keyboardInset}px`);
+  sheet.dataset.keyboardOpen = keyboardOpen ? 'true' : 'false';
+  sheet.dataset.keyboardSource = source;
   lastMobileRailKeyboardInset = keyboardInset;
-  lastMobileRailKeyboardMetricSource = keyboardInset <= 0
-    ? 'none'
-    : nativeKeyboardVisible && nativeKeyboardInset > 0
+  lastMobileRailKeyboardMetricSource = source === 'native'
+    ? nativeKeyboardVisible && nativeKeyboardInset > 0
       ? 'native'
       : virtualKeyboardVisible && virtualKeyboardInset > 0
         ? 'virtual-keyboard'
-        : visualKeyboardInset > 0
-          ? 'visual-viewport'
-          : focusedControlFallbackInset > 0
-            ? 'focused-control-fallback'
-            : 'none';
+        : 'native'
+    : source === 'visual-viewport' && visualKeyboardInset > 0
+      ? 'visual-viewport'
+      : source === 'layout-viewport-resize'
+        ? 'layout-viewport-resize'
+        : source === 'focused-control-fallback' && focusedControlFallbackInset > 0
+          ? 'focused-control-fallback'
+          : 'none';
 }
 
 const MOBILE_RAIL_FOCUS_VIEWPORT_SYNC_DELAYS_MS = [0, 80, 180, 320] as const;
@@ -31168,6 +31202,14 @@ function scheduleMobileRailViewportSyncs(): void {
   for (const delay of MOBILE_RAIL_FOCUS_VIEWPORT_SYNC_DELAYS_MS) {
     window.setTimeout(syncMobileRailSheetViewport, delay);
   }
+}
+
+function blurFocusedMobileRailControl(): boolean {
+  const target = focusedMobileRailTextControl();
+  if (!target) return false;
+  target.blur();
+  scheduleMobileRailViewportSyncs();
+  return true;
 }
 
 function scrollFocusedMobileRailControlIntoView(target: HTMLElement): void {
@@ -31187,6 +31229,7 @@ function scrollFocusedMobileRailControlIntoView(target: HTMLElement): void {
 
 function bindMobileRailSheet(): void {
   bindNativeKeyboardInsets();
+  recordMobileRailStableViewportHeight();
   const nestedInteractiveSelector = 'button, a, input, select, textarea, [data-mobile-rail-sheet-ignore]';
   const eventStartedOnNestedInteractive = (event: Event, trigger: HTMLElement): boolean => {
     const target = event.target;
@@ -31255,6 +31298,9 @@ function bindMobileRailSheet(): void {
     closeControl.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
+      if (closeControl.classList.contains('mobile-rail-sheet-scrim') && blurFocusedMobileRailControl()) {
+        return;
+      }
       closeMobileRailSheet();
     }, { signal });
   }

@@ -193,22 +193,22 @@ describe('mobile rail sheet policy', () => {
 describe('computeMobileRailViewportVars', () => {
   it('reports no keyboard inset when the visual viewport fills the window', () => {
     expect(computeMobileRailViewportVars({ viewportHeight: 800, viewportOffsetTop: 0, innerHeight: 800 }))
-      .toEqual({ vvh: 800, keyboardInset: 0 });
+      .toEqual({ vvh: 800, keyboardInset: 0, keyboardOpen: false, source: 'none' });
   });
 
   it('derives the keyboard inset from the shrunken visual viewport', () => {
     expect(computeMobileRailViewportVars({ viewportHeight: 480, viewportOffsetTop: 0, innerHeight: 800 }))
-      .toEqual({ vvh: 480, keyboardInset: 320 });
+      .toEqual({ vvh: 480, keyboardInset: 320, keyboardOpen: true, source: 'visual-viewport' });
   });
 
   it('accounts for a scrolled viewport offset (iOS) in the inset', () => {
     expect(computeMobileRailViewportVars({ viewportHeight: 480, viewportOffsetTop: 40, innerHeight: 800 }))
-      .toEqual({ vvh: 480, keyboardInset: 280 });
+      .toEqual({ vvh: 480, keyboardInset: 280, keyboardOpen: true, source: 'visual-viewport' });
   });
 
   it('clamps the inset to zero when the window is briefly shorter than the viewport (collapsing URL bar)', () => {
     expect(computeMobileRailViewportVars({ viewportHeight: 820, viewportOffsetTop: 0, innerHeight: 800 }))
-      .toEqual({ vvh: 820, keyboardInset: 0 });
+      .toEqual({ vvh: 820, keyboardInset: 0, keyboardOpen: false, source: 'none' });
   });
 
   it('floors the display height at 320px but keeps the true inset in short landscape', () => {
@@ -216,12 +216,12 @@ describe('computeMobileRailViewportVars', () => {
     // vvh floors to 320 for sizing, but the inset must reflect the real 145px keyboard so the
     // sheet is not pushed under it.
     expect(computeMobileRailViewportVars({ viewportHeight: 230, viewportOffsetTop: 0, innerHeight: 375 }))
-      .toEqual({ vvh: 320, keyboardInset: 145 });
+      .toEqual({ vvh: 320, keyboardInset: 145, keyboardOpen: true, source: 'visual-viewport' });
   });
 
   it('falls back to innerHeight when visualViewport is unavailable', () => {
     expect(computeMobileRailViewportVars({ innerHeight: 740 }))
-      .toEqual({ vvh: 740, keyboardInset: 0 });
+      .toEqual({ vvh: 740, keyboardInset: 0, keyboardOpen: false, source: 'none' });
   });
 
   it('uses native keyboard inset when the WebView visual viewport does not resize', () => {
@@ -231,7 +231,7 @@ describe('computeMobileRailViewportVars', () => {
       innerHeight: 800,
       nativeKeyboardInset: 320,
       nativeKeyboardVisible: true,
-    })).toEqual({ vvh: 480, keyboardInset: 320 });
+    })).toEqual({ vvh: 480, keyboardInset: 320, keyboardOpen: true, source: 'native' });
   });
 
   it('does not double count native keyboard inset when visualViewport also shrinks', () => {
@@ -241,7 +241,28 @@ describe('computeMobileRailViewportVars', () => {
       innerHeight: 800,
       nativeKeyboardInset: 320,
       nativeKeyboardVisible: true,
-    })).toEqual({ vvh: 480, keyboardInset: 320 });
+    })).toEqual({ vvh: 480, keyboardInset: 320, keyboardOpen: true, source: 'native' });
+  });
+
+  it('does not add native inset when Android adjustResize already shrank the layout viewport', () => {
+    expect(computeMobileRailViewportVars({
+      baselineInnerHeight: 800,
+      viewportHeight: 480,
+      viewportOffsetTop: 0,
+      innerHeight: 480,
+      nativeKeyboardInset: 320,
+      nativeKeyboardVisible: true,
+    })).toEqual({ vvh: 480, keyboardInset: 0, keyboardOpen: true, source: 'layout-viewport-resize' });
+  });
+
+  it('uses layout viewport resize over the focused-control fallback', () => {
+    expect(computeMobileRailViewportVars({
+      baselineInnerHeight: 760,
+      viewportHeight: 500,
+      viewportOffsetTop: 0,
+      innerHeight: 500,
+      focusedControlFallbackInset: 319,
+    })).toEqual({ vvh: 500, keyboardInset: 0, keyboardOpen: true, source: 'layout-viewport-resize' });
   });
 
   it('ignores stale native inset when native visibility is false', () => {
@@ -251,7 +272,7 @@ describe('computeMobileRailViewportVars', () => {
       innerHeight: 800,
       nativeKeyboardInset: 320,
       nativeKeyboardVisible: false,
-    })).toEqual({ vvh: 800, keyboardInset: 0 });
+    })).toEqual({ vvh: 800, keyboardInset: 0, keyboardOpen: false, source: 'none' });
   });
 
   it('uses a focused-control fallback only when no native or visual keyboard metric exists', () => {
@@ -260,7 +281,7 @@ describe('computeMobileRailViewportVars', () => {
       viewportOffsetTop: 0,
       innerHeight: 760,
       focusedControlFallbackInset: 395,
-    })).toEqual({ vvh: 365, keyboardInset: 395 });
+    })).toEqual({ vvh: 365, keyboardInset: 395, keyboardOpen: true, source: 'focused-control-fallback' });
   });
 
   it('prefers visual viewport keyboard metrics over the focused-control fallback', () => {
@@ -269,7 +290,7 @@ describe('computeMobileRailViewportVars', () => {
       viewportOffsetTop: 0,
       innerHeight: 760,
       focusedControlFallbackInset: 395,
-    })).toEqual({ vvh: 500, keyboardInset: 260 });
+    })).toEqual({ vvh: 500, keyboardInset: 260, keyboardOpen: true, source: 'visual-viewport' });
   });
 
   it('prefers native keyboard metrics over the focused-control fallback', () => {
@@ -280,18 +301,18 @@ describe('computeMobileRailViewportVars', () => {
       nativeKeyboardInset: 340,
       nativeKeyboardVisible: true,
       focusedControlFallbackInset: 395,
-    })).toEqual({ vvh: 420, keyboardInset: 340 });
+    })).toEqual({ vvh: 420, keyboardInset: 340, keyboardOpen: true, source: 'native' });
   });
 });
 
 describe('inferMobileRailFocusedKeyboardInset', () => {
   it('estimates a high mobile keyboard while leaving visible sheet space', () => {
-    expect(inferMobileRailFocusedKeyboardInset(764)).toBe(397);
-    expect(inferMobileRailFocusedKeyboardInset(740)).toBe(380);
+    expect(inferMobileRailFocusedKeyboardInset(764)).toBe(321);
+    expect(inferMobileRailFocusedKeyboardInset(740)).toBe(311);
   });
 
   it('caps tall screens and avoids impossible short viewports', () => {
-    expect(inferMobileRailFocusedKeyboardInset(900)).toBe(460);
+    expect(inferMobileRailFocusedKeyboardInset(900)).toBe(378);
     expect(inferMobileRailFocusedKeyboardInset(375)).toBe(15);
     expect(inferMobileRailFocusedKeyboardInset(0)).toBe(0);
   });
