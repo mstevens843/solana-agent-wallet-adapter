@@ -401,7 +401,7 @@ function renderContactEmailField(): string {
         data-profile-field="contactEmail"
         value="${escapeHtml(tabState.draft.contactEmail)}"
         maxlength="254"
-        placeholder="you@example.com"
+        placeholder="${escapeHtml(t('you@example.com'))}"
         autocomplete="off"
       />
       ${error ? `<p class="dev-agent-card-form-error">${escapeHtml(error)}</p>` : ''}

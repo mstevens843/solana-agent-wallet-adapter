@@ -3,7 +3,7 @@
 // fetch / error-shape logic.
 
 import { getConnectedAddress } from '../../walletState.js';
-import { t } from '../../demo-i18n/uiLang.js';
+import { t, tf } from '../../demo-i18n/uiLang.js';
 
 export type FetchResult<T> =
   | { kind: 'ok'; value: T }
@@ -89,8 +89,8 @@ async function interpretResponse<T>(res: Response): Promise<FetchResult<T>> {
   if (!res.ok) {
     const message =
       parsed && typeof parsed === 'object' && parsed !== null && 'error' in parsed
-        ? String((parsed as Record<string, unknown>).error ?? `HTTP ${res.status}`)
-        : `HTTP ${res.status}`;
+        ? String((parsed as Record<string, unknown>).error ?? tf('HTTP {status}', { status: res.status }))
+        : tf('HTTP {status}', { status: res.status });
     return { kind: 'error', status: res.status, message };
   }
   return { kind: 'ok', value: parsed as T };

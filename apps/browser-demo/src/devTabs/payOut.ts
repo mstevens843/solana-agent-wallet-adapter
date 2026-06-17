@@ -58,6 +58,7 @@ export interface PanelState {
 
 const SAMPLE_CART_FALLBACK_RECIPIENT = '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd';
 const PAYMENT_TOKEN_OPTIONS: readonly PayOutPaymentToken[] = ['USDC', 'USDT', 'SOL'];
+const UNKNOWN_MERCHANT_NAME = 'Unknown merchant';
 
 function sampleCartPayload(recipient: string): Record<string, unknown> {
   return {
@@ -310,15 +311,15 @@ function buildCartTextFromDraft(draft: PayOutDraft): string {
     const quantityText = normalizeDecimalInput(item.quantity);
     const unitAmount = normalizeDecimalInput(item.unitAmount);
     if (!name && !quantityText && !unitAmount) return [];
-    if (!name) throw new Error(`Line item ${index + 1} needs a name.`);
-    if (!quantityText) throw new Error(`Line item ${index + 1} needs a quantity.`);
-    if (!unitAmount) throw new Error(`Line item ${index + 1} needs an amount.`);
+    if (!name) throw new Error(tf('Line item {index} needs a name.', { index: index + 1 }));
+    if (!quantityText) throw new Error(tf('Line item {index} needs a quantity.', { index: index + 1 }));
+    if (!unitAmount) throw new Error(tf('Line item {index} needs an amount.', { index: index + 1 }));
     const quantity = Number(quantityText);
     if (!Number.isInteger(quantity) || quantity <= 0) {
-      throw new Error(`Line item ${index + 1} quantity must be a positive whole number.`);
+      throw new Error(tf('Line item {index} quantity must be a positive whole number.', { index: index + 1 }));
     }
     if (!DECIMAL_AMOUNT_REGEX.test(unitAmount)) {
-      throw new Error(`Line item ${index + 1} amount must be a decimal value.`);
+      throw new Error(tf('Line item {index} amount must be a decimal value.', { index: index + 1 }));
     }
     return [{
       id: `item_${String(index + 1).padStart(3, '0')}`,
@@ -419,7 +420,7 @@ export function normalizePreview(input: unknown): AcpPreviewDisplay {
     ? (cartRec.merchant as Record<string, unknown>)
     : {});
 
-  const merchantName = isStringField(merchantRaw.name) ? merchantRaw.name : 'Unknown merchant';
+  const merchantName = isStringField(merchantRaw.name) ? merchantRaw.name : UNKNOWN_MERCHANT_NAME;
   const merchantRecipient = isStringField(merchantRaw.recipient) ? merchantRaw.recipient : '';
 
   const lineItemsRaw = Array.isArray(cartRec.lineItems) ? cartRec.lineItems : [];
@@ -994,6 +995,7 @@ function demoRequestPanel(disabled: string): string {
 function previewView(preview: AcpPreviewDisplay, busy: boolean): string {
   const disabled = busy ? 'disabled' : '';
   const paymentLabel = `${preview.transferAmount} ${preview.paymentToken}`;
+  const merchantName = preview.merchant.name === UNKNOWN_MERCHANT_NAME ? t('Unknown merchant') : preview.merchant.name;
   const totalFiat = preview.totalFiat ? `<span>${escapeHtml(preview.totalFiat)}</span>` : '';
   const lineRows = preview.lineItems
     .map(
@@ -1035,7 +1037,7 @@ function previewView(preview: AcpPreviewDisplay, busy: boolean): string {
         <div class="pay-out-preview-head">
           <div>
             <span>${t('Merchant')}</span>
-            <strong>${escapeHtml(preview.merchant.name)}</strong>
+            <strong>${escapeHtml(merchantName)}</strong>
           </div>
           <div class="pay-out-preview-total">
             <span>${t('Payment')}</span>
@@ -1047,7 +1049,7 @@ function previewView(preview: AcpPreviewDisplay, busy: boolean): string {
         <dl class="pay-out-meta">
           <div>
             <dt>${t('Merchant')}</dt>
-            <dd>${escapeHtml(preview.merchant.name)} ${merchantWalletHint}</dd>
+            <dd>${escapeHtml(merchantName)} ${merchantWalletHint}</dd>
           </div>
           <div>
             <dt>${t('Recipient')}</dt>

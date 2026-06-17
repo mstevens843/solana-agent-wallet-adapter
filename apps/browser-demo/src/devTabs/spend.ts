@@ -44,13 +44,6 @@ interface SpendEnvelopeResponse {
 
 const FILTERS: readonly SpendFilter[] = ['all', 'needs_approval', 'active_schedules', 'live_streams', 'settled'];
 const PAGE_LIMIT = 50;
-const FILTER_LABELS: Record<SpendFilter, string> = {
-  all: 'All',
-  needs_approval: 'Needs Approval',
-  active_schedules: 'Active Schedules',
-  live_streams: 'Live Streams',
-  settled: 'Settled',
-};
 
 const state: SpendState = {
   status: 'idle',
@@ -64,6 +57,21 @@ const state: SpendState = {
   selectedEnvelopeKey: null,
   loadingMore: false,
 };
+
+function filterLabel(filter: SpendFilter): string {
+  switch (filter) {
+    case 'all':
+      return t('All');
+    case 'needs_approval':
+      return t('Needs Approval');
+    case 'active_schedules':
+      return t('Active Schedules');
+    case 'live_streams':
+      return t('Live Streams');
+    case 'settled':
+      return t('Settled');
+  }
+}
 
 function escapeHtml(value: string): string {
   return value
@@ -156,7 +164,7 @@ function filterButton(filter: SpendFilter): string {
       class="spend-filter-chip ${active ? 'active' : ''}"
       data-spend-filter="${escapeHtml(filter)}"
     >
-      <span>${escapeHtml(t(FILTER_LABELS[filter]))}</span>
+      <span>${escapeHtml(filterLabel(filter))}</span>
       <strong>${filterCount(filter)}</strong>
     </button>
   `;
@@ -350,7 +358,7 @@ export function spendBodyHtml(snapshot: SpendState = state): string {
   if (rows.length === 0) {
     return `
       <div class="dev-tab-empty-state spend-list-state">
-        <p>${escapeHtml(tf('No {filter} spend envelopes.', { filter: t(FILTER_LABELS[snapshot.filter]).toLowerCase() }))}</p>
+        <p>${escapeHtml(tf('No {filter} spend envelopes.', { filter: filterLabel(snapshot.filter).toLowerCase() }))}</p>
       </div>
     `;
   }
@@ -450,7 +458,7 @@ export async function loadSpendEnvelopes(force = false, append = false): Promise
       headers: { Accept: 'application/json' },
     });
     if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
+      throw new Error(tf('HTTP {status}', { status: res.status }));
     }
     const payload = (await res.json()) as SpendEnvelopeResponse;
     const page = responseEnvelopes(payload);

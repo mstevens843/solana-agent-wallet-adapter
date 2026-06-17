@@ -670,7 +670,7 @@ async function fetchAp2InboundSource(): Promise<InboundFetchResult> {
   if (res.status === 404) return { items: [] };
   if (res.status === 403) return { items: [], errorMessage: t('This wallet cannot view AP2 mandates on this deployment.') };
   if (res.status === 401) return { items: [], errorMessage: t('Sign into Agentic Cloud to view AP2 mandates.') };
-  if (!res.ok) return { items: [], errorMessage: `HTTP ${res.status}` };
+  if (!res.ok) return { items: [], errorMessage: tf('HTTP {status}', { status: res.status }) };
   const payload = (await res.json().catch(() => null)) as
     | { inbound?: NormalizedApproval[]; items?: NormalizedApproval[] }
     | null;

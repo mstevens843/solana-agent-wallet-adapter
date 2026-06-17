@@ -25,6 +25,7 @@ if (onlyFile) {
   files.push(join(root, onlyFile));
 } else {
   files.push(join(srcDir, 'main.ts'));
+  files.push(join(srcDir, 'connectorKeys.ts'));
   const walk = (dir) => {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, e.name);

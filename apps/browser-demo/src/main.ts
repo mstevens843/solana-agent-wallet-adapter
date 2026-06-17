@@ -894,8 +894,8 @@ async function signWalletProofMessageWithToast(
     completeProofSigningToast(
       toastId,
       'success',
-      options.successTitle ?? 'Signature approved',
-      options.successMessage ?? 'Wallet signature received.',
+      options.successTitle ?? t('Signature approved'),
+      options.successMessage ?? t('Wallet signature received.'),
       options.key ? { key: options.key } : {},
     );
     return result;
@@ -903,7 +903,7 @@ async function signWalletProofMessageWithToast(
     completeProofSigningToast(
       toastId,
       'error',
-      options.errorTitle ?? 'Sign proof failed',
+      options.errorTitle ?? t('Sign proof failed'),
       redactSecrets(err instanceof Error ? err.message : String(err)),
       options.key ? { key: options.key } : {},
     );
@@ -4641,14 +4641,14 @@ function installPayOutApprovalCreatedListener(): void {
 function handleAp2InboundDemoCreated(detail: Ap2InboundDemoCreatedDetail): void {
   const action = cloudApprovalToPreparedAction(detail.approval);
   if (!action) {
-    state.error = 'The local AP2 demo did not return a valid approval card.';
+    state.error = t('The local AP2 demo did not return a valid approval card.');
     pushToast('error', t('Incoming request failed'), state.error);
     render();
     return;
   }
   const walletAddress = state.address || action.walletAddress;
   if (!walletAddress) {
-    state.error = 'Connect a wallet before creating an incoming request demo.';
+    state.error = t('Connect a wallet before creating an incoming request demo.');
     pushToast('error', t('Incoming request failed'), state.error);
     render();
     return;
@@ -4702,7 +4702,7 @@ async function handlePayOutApprovalCreated(detail: PayOutApprovalCreatedDetail):
   try {
     await refreshCloudSession(false);
     if (!cloudSessionMatchesWallet()) {
-      throw new Error('Connect the signed-in Agentic Cloud wallet to view the Pay Merchant approval.');
+      throw new Error(t('Connect the signed-in Agentic Cloud wallet to view the Pay Merchant approval.'));
     }
     await refreshCloudWorkspaceData();
     state.steps.inbox = 'done';
@@ -4723,11 +4723,11 @@ async function handlePayOutApprovalCreated(detail: PayOutApprovalCreatedDetail):
 
 function materializeLocalPayOutApproval(detail: PayOutApprovalCreatedDetail): PreparedAction {
   if (!state.address) {
-    throw new Error('Connect a wallet before adding the Pay Merchant approval to Needs Approval.');
+    throw new Error(t('Connect a wallet before adding the Pay Merchant approval to Needs Approval.'));
   }
   const action = cloudApprovalToPreparedAction(detail.approval);
   if (!action) {
-    throw new Error('The local ACP dev route did not return a valid approval card.');
+    throw new Error(t('The local ACP dev route did not return a valid approval card.'));
   }
   const localAction: PreparedAction = {
     ...action,
@@ -4840,11 +4840,11 @@ async function handleStreamingApprovalExecuteRequested(detail: StreamingApproval
 
 function materializeInlineStreamingApproval(detail: StreamingApprovalExecuteRequestedDetail): PreparedAction {
   if (!state.address) {
-    throw new Error('Connect a wallet before signing the streaming session transaction.');
+    throw new Error(t('Connect a wallet before signing the streaming session transaction.'));
   }
   const walletAddress = detail.walletAddress?.trim() || state.address;
   if (walletAddress !== state.address) {
-    throw new Error(`Connect ${short(walletAddress)} before signing this streaming session transaction.`);
+    throw new Error(tf('Connect {wallet} before signing this streaming session transaction.', { wallet: short(walletAddress) }));
   }
   const cluster = streamingApprovalCluster(detail);
   const now = new Date().toISOString();
@@ -4895,7 +4895,7 @@ async function executeInlineStreamingTransaction(
   toastContext: TransactionToastContext,
 ): Promise<BrowserTransactionExecution> {
   if (!detail.tx.txBase64) {
-    throw new Error('Streaming transaction bytes are missing.');
+    throw new Error(t('Streaming transaction bytes are missing.'));
   }
   const execution = await signAndBroadcastBrowserTransactionBase64(action, detail.tx.txBase64, summary, toastContext);
   const txid = execution.txid;
@@ -4923,11 +4923,11 @@ async function checkInlineStreamingTransaction(
 
 function materializeLocalStreamingApproval(detail: StreamingApprovalRequestedDetail): PreparedAction {
   if (!state.address) {
-    throw new Error('Connect a wallet before adding the streaming session approval to Needs Approval.');
+    throw new Error(t('Connect a wallet before adding the streaming session approval to Needs Approval.'));
   }
   const walletAddress = detail.walletAddress?.trim() || state.address;
   if (walletAddress !== state.address) {
-    throw new Error(`Connect ${short(walletAddress)} before adding this streaming session approval to Needs Approval.`);
+    throw new Error(tf('Connect {wallet} before adding this streaming session approval to Needs Approval.', { wallet: short(walletAddress) }));
   }
   const cluster = streamingApprovalCluster(detail);
   const now = new Date().toISOString();
@@ -11667,7 +11667,7 @@ function commandDeckAction(runtimePath: RuntimePath, copyId: string, copied: boo
       data-copy="${escapeHtml(runtimePath.command)}"
       data-copy-id="${escapeHtml(copyId)}"
       data-copy-name="${escapeHtml(runtimePath.copyName ?? runtimePath.label)}"
-      title="Copy command: ${escapeHtml(runtimePath.command)}"
+      title="${escapeHtml(tf('Copy command: {command}', { command: runtimePath.command }))}"
     >
       ${copied ? escapeHtml(t('Copied')) : escapeHtml(runtimePath.actionLabel)}
     </button>
@@ -11862,7 +11862,7 @@ function agenticLayerDocsPanel(layer: AgenticLayerDocs): string {
         <span class="agentic-layer-surface">${escapeHtml(layer.surface)}</span>
       </div>
       <p class="agentic-layer-summary">${escapeHtml(layer.summary)}</p>
-      <div class="agentic-layer-tabs" aria-label="${escapeHtml(layer.title)} app tabs">
+      <div class="agentic-layer-tabs" aria-label="${escapeHtml(tf('{title} app tabs', { title: layer.title }))}">
         ${layer.tabs.map((tab) => `<span>${escapeHtml(tab)}</span>`).join('')}
       </div>
       <div class="agentic-layer-bet-list">
@@ -12063,7 +12063,7 @@ function protocolConnectorFlowCard(title: string, detail: string): string {
 
 function protocolConnectorDocsGroup(group: ProtocolConnectorDocsGroup): string {
   return `
-    <section class="protocol-connector-group" aria-label="${escapeHtml(group.title)} connectors">
+    <section class="protocol-connector-group" aria-label="${escapeHtml(tf('{title} connectors', { title: group.title }))}">
       <div class="protocol-connector-group-head">
         <h3>${escapeHtml(group.title)}</h3>
         <p>${escapeHtml(group.detail)}</p>
@@ -12092,7 +12092,7 @@ function protocolConnectorDocsCard(id: ConnectedDappId): string {
         <strong class="protocol-connector-status ${status.tone}">${escapeHtml(status.label)}</strong>
       </div>
       <p>${escapeHtml(copy.summary)}</p>
-      <div class="protocol-connector-meta" aria-label="${escapeHtml(connector.name)} capabilities">
+      <div class="protocol-connector-meta" aria-label="${escapeHtml(tf('{connector} capabilities', { connector: connector.name }))}">
         ${labels.map((label) => `<span>${escapeHtml(label)}</span>`).join('')}
       </div>
     </article>
@@ -12981,7 +12981,7 @@ function guidedDemoScenarioCard(scenario: GuidedDemoScenario): string {
   const active = scenario.id === state.guidedDemo.selectedScenarioId;
   const groups = scenario.cardGroups?.length
     ? `
-      <div class="guided-demo-scenario-groups" aria-label="${escapeHtml(`${scenario.title} gates`)}">
+      <div class="guided-demo-scenario-groups" aria-label="${escapeHtml(tf('{title} gates', { title: scenario.title }))}">
         ${scenario.cardGroups.map(guidedDemoScenarioGroup).join('')}
       </div>
     `
@@ -13023,7 +13023,7 @@ function guidedDemoAgentDecisionCard(scenario: GuidedDemoScenario): string {
   `).join('');
   const groups = plan.cardGroups.length
     ? `
-      <div class="guided-demo-scenario-groups" aria-label="${escapeHtml(`${plan.title} gates`)}">
+      <div class="guided-demo-scenario-groups" aria-label="${escapeHtml(tf('{title} gates', { title: plan.title }))}">
         ${plan.cardGroups.map(guidedDemoScenarioGroup).join('')}
       </div>
     `
@@ -13868,9 +13868,9 @@ function runtimeCommandRow(label: string, command: string, actionLabel: string):
         data-copy="${escapeHtml(command)}"
         data-copy-id="${escapeHtml(copyId)}"
         data-copy-name="${escapeHtml(label)}"
-        title="Copy command: ${escapeHtml(command)}"
+        title="${escapeHtml(tf('Copy command: {command}', { command }))}"
       >
-        ${copied ? 'Copied' : escapeHtml(actionLabel)}
+        ${copied ? escapeHtml(t('Copied')) : escapeHtml(t(actionLabel))}
       </button>
     </div>
   `;
@@ -13968,10 +13968,10 @@ function mobileRailBottomSheet(): string {
       ? 'Wallet Balances'
       : 'AI Connector';
   const detail = sheet === 'workspace-storage'
-    ? 'Browser-local workflow storage'
+    ? t('Browser-local workflow storage')
     : sheet === 'wallet-balances'
-      ? 'Wallet portfolio'
-      : 'AI route and provider setup';
+      ? t('Wallet portfolio')
+      : t('AI route and provider setup');
   const body = sheet === 'workspace-storage'
     ? cloudWorkspaceRailBody()
     : sheet === 'wallet-balances'
@@ -13986,7 +13986,7 @@ function mobileRailBottomSheet(): string {
           <span>${escapeHtml(detail)}</span>
           <h2 id="mobileRailSheetTitle">${escapeHtml(title)}</h2>
         </div>
-        <button type="button" class="mobile-rail-sheet-close" data-mobile-rail-sheet-close aria-label="Close ${escapeHtml(title)}">&times;</button>
+        <button type="button" class="mobile-rail-sheet-close" data-mobile-rail-sheet-close aria-label="${escapeHtml(tf('Close {title}', { title }))}">&times;</button>
       </header>
       <div class="mobile-rail-sheet-body">
         ${body}
@@ -14232,31 +14232,31 @@ function setExpandNoteValue(ref: ExpandNoteFieldRef, value: string): void {
 function expandNoteSheetLabels(ref: ExpandNoteFieldRef): { subtitle: string; title: string; placeholder: string } {
   if (ref.kind === 'agent-prompt') {
     return {
-      subtitle: 'New request',
-      title: 'Notes for review record',
-      placeholder: 'Add any policy, gates, or notes for the reviewer.',
+      subtitle: t('New request'),
+      title: t('Notes for review record'),
+      placeholder: t('Add any policy, gates, or notes for the reviewer.'),
     };
   }
   if (ref.kind === 'recurring-note') {
     return {
-      subtitle: 'Repeat payment',
-      title: 'Notes for approval',
-      placeholder: 'Example: rent, payroll, DCA, subscription, or invoice #42',
+      subtitle: t('Repeat payment'),
+      title: t('Notes for approval'),
+      placeholder: t('Example: rent, payroll, DCA, subscription, or invoice #42'),
     };
   }
   const lab = LABS.find((candidate) => candidate.id === ref.labId);
   if (ref.kind === 'lab-advanced') {
     return {
-      subtitle: lab?.title.replace(/^\d+\.\s*/, '') ?? 'Proof record',
-      title: 'Evidence note',
-      placeholder: 'Paste or summarize the evidence to sign.',
+      subtitle: lab ? t(lab.title.replace(/^\d+\.\s*/, '')) : t('Proof record'),
+      title: t('Evidence note'),
+      placeholder: t('Paste or summarize the evidence to sign.'),
     };
   }
   const field = lab?.fields?.find((candidate) => candidate.id === ref.fieldId);
   return {
-    subtitle: lab?.title.replace(/^\d+\.\s*/, '') ?? 'Proof note',
-    title: field?.label ?? 'Note',
-    placeholder: field?.placeholder ?? '',
+    subtitle: lab ? t(lab.title.replace(/^\d+\.\s*/, '')) : t('Proof note'),
+    title: t(field?.label ?? 'Note'),
+    placeholder: field?.placeholder ? t(field.placeholder) : '',
   };
 }
 
@@ -14270,7 +14270,7 @@ function expandNoteBottomSheet(): string {
     <section class="mobile-text-composer" data-expand-note-root role="dialog" aria-modal="true" aria-labelledby="expandNoteSheetTitle">
       <span class="mobile-text-composer-grip" aria-hidden="true"></span>
       <header class="mobile-text-composer-header">
-        <button type="button" class="mobile-text-composer-close" data-expand-note-close aria-label="Close ${escapeHtml(title)}">&times;</button>
+        <button type="button" class="mobile-text-composer-close" data-expand-note-close aria-label="${escapeHtml(tf('Close {title}', { title }))}">&times;</button>
         <div class="mobile-text-composer-title">
           <span>${escapeHtml(subtitle)}</span>
           <h2 id="expandNoteSheetTitle">${escapeHtml(title)}</h2>
@@ -14458,11 +14458,11 @@ function firstRunStepItem(stepItem: FirstRunStep, index: number, currentStepId: 
       data-first-run-step="${escapeHtml(stepItem.id)}"
       role="listitem"
       aria-current="${stepItem.id === currentStepId ? 'step' : 'false'}"
-      title="${escapeHtml(stepItem.detail)}"
+      title="${escapeHtml(t(stepItem.detail))}"
     >
       <span>${index + 1}</span>
-      <strong>${escapeHtml(stepItem.label)}</strong>
-      <p>${escapeHtml(stepItem.detail)}</p>
+      <strong>${escapeHtml(t(stepItem.label))}</strong>
+      <p>${escapeHtml(t(stepItem.detail))}</p>
     </div>
   `;
 }
@@ -14473,32 +14473,32 @@ function firstRunSteps(): FirstRunStep[] {
   const steps: Array<Omit<FirstRunStep, 'active'>> = [
     {
       id: 'wallet',
-      label: 'Connect',
-      detail: signals.hasWallet ? shortFirstRunWallet(state.address) : 'Use your wallet signer.',
+      label: t('Connect'),
+      detail: signals.hasWallet ? shortFirstRunWallet(state.address) : t('Use your wallet signer.'),
       complete: signals.hasWallet,
     },
     {
       id: 'plan',
-      label: 'Create',
-      detail: signals.hasPlan ? 'Plan saved for review.' : 'Plan from template.',
+      label: t('Create'),
+      detail: signals.hasPlan ? t('Plan saved for review.') : t('Plan from template.'),
       complete: signals.hasPlan,
     },
     {
       id: 'review',
-      label: 'Review',
-      detail: signals.hasReview ? 'Wallet action is visible.' : 'Check route and limits.',
+      label: t('Review'),
+      detail: signals.hasReview ? t('Wallet action is visible.') : t('Check route and limits.'),
       complete: signals.hasReview,
     },
     {
       id: 'decision',
-      label: 'Decide',
-      detail: signals.hasReceipt ? 'Decision recorded.' : signals.activeApprovalCount ? 'Waiting for approval.' : 'Send for approval.',
+      label: t('Decide'),
+      detail: signals.hasReceipt ? t('Decision recorded.') : signals.activeApprovalCount ? t('Waiting for approval.') : t('Send for approval.'),
       complete: signals.hasReceipt,
     },
     {
       id: 'receipt',
-      label: 'Receipt',
-      detail: signals.hasReceipt ? 'Saved in Done.' : 'Saved after decision.',
+      label: t('Receipt'),
+      detail: signals.hasReceipt ? t('Saved in Done.') : t('Saved after decision.'),
       complete: signals.hasReceipt,
     },
   ];
@@ -15598,9 +15598,10 @@ function preferencesMobileSectionTabs(
     : group === 'rules'
       ? 'data-preferences-rules-tab'
       : 'data-preferences-tokens-tab';
+  const groupLabel = group === 'access' ? t('Access') : group === 'rules' ? t('Rules') : t('Tokens');
   return `
     <div class="preferences-mobile-section-tabs android-tab-card" data-preferences-mobile-section="${escapeHtml(group)}">
-      <div class="android-tab-strip preferences-mobile-section-tabs-strip columns-${tabs.length}" role="tablist" aria-label="${escapeHtml(group)} preferences">
+      <div class="android-tab-strip preferences-mobile-section-tabs-strip columns-${tabs.length}" role="tablist" aria-label="${escapeHtml(tf('{group} preferences', { group: groupLabel }))}">
         ${tabs.map((tab) => `
           <button
             type="button"
@@ -16010,7 +16011,7 @@ function recipientRulesPanel(): string {
         <div class="recipient-save-form">
           <label class="field compact">
             <span>${t('Name')}</span>
-            <input data-recipient-field="name" value="${escapeHtml(state.recipientDraft.name)}" placeholder="Jeremy" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+            <input data-recipient-field="name" value="${escapeHtml(state.recipientDraft.name)}" placeholder="${escapeHtml(t('Jeremy'))}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
             ${recipientFieldError('name')}
           </label>
           <label class="field compact">
@@ -16492,7 +16493,7 @@ function agentPoliciesPanel(): string {
             <button type="button" class="primary" data-agent-policy-action="save" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Save policy'))}</button>
             <button type="button" class="utility" data-agent-policy-action="reset" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Clear'))}</button>
           </div>
-          ${errors._form ? `<p class="error-text">${escapeHtml(errors._form)}</p>` : ''}
+          ${errors._form ? `<p class="error-text">${escapeHtml(t(errors._form))}</p>` : ''}
         </div>
         ${policies.length ? savedAgentPolicyList(policies) : `<div class="agent-policy-empty">${escapeHtml(t('No saved agent policies yet'))}</div>`}
       </section>
@@ -16502,12 +16503,12 @@ function agentPoliciesPanel(): string {
 
 function agentPolicyFieldError(key: string): string {
   const message = state.agentPolicyErrors[key];
-  return message ? `<small class="error-text">${escapeHtml(message)}</small>` : '';
+  return message ? `<small class="error-text">${escapeHtml(t(message))}</small>` : '';
 }
 
 function customTokenFieldError(key: string): string {
   const message = state.customTokenErrors[key];
-  return message ? `<small class="error-text">${escapeHtml(message)}</small>` : '';
+  return message ? `<small class="error-text">${escapeHtml(t(message))}</small>` : '';
 }
 
 function customTokensPanel(): string {
@@ -16586,9 +16587,33 @@ function customTokenRow(token: CustomToken): string {
   `;
 }
 
+function agentErrorDisplayMessage(message: string): string {
+  if (message === 'Connect the local bridge before issuing agent tokens.') {
+    return t('Connect the local bridge before issuing agent tokens.');
+  }
+  const bridgeSyncPrefix = 'Bridge sync failed: ';
+  if (message.startsWith(bridgeSyncPrefix)) {
+    return tf('Bridge sync failed: {message}', {
+      message: agentErrorDetailDisplayMessage(message.slice(bridgeSyncPrefix.length)),
+    });
+  }
+  const issuePrefix = 'Issue failed: ';
+  if (message.startsWith(issuePrefix)) {
+    return tf('Issue failed: {message}', {
+      message: agentErrorDetailDisplayMessage(message.slice(issuePrefix.length)),
+    });
+  }
+  return t(message);
+}
+
+function agentErrorDetailDisplayMessage(message: string): string {
+  const trimmed = message.trim();
+  return trimmed === 'unknown error' ? t('unknown error') : message;
+}
+
 function agentFieldError(key: string): string {
   const message = state.agentErrors[key];
-  return message ? `<small class="error-text">${escapeHtml(message)}</small>` : '';
+  return message ? `<small class="error-text">${escapeHtml(agentErrorDisplayMessage(message))}</small>` : '';
 }
 
 function connectedAgentsPanel(): string {
@@ -16614,7 +16639,7 @@ function connectedAgentsPanel(): string {
         <div class="agent-save-form">
           <label class="field compact">
             <span>${escapeHtml(t('Label'))}</span>
-            <input data-agent-field="label" value="${escapeHtml(draft.label)}" placeholder="Codex devnet" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+            <input data-agent-field="label" value="${escapeHtml(draft.label)}" placeholder="${escapeHtml(t('Codex devnet'))}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
             ${agentFieldError('label')}
           </label>
           <label class="field compact">
@@ -16635,7 +16660,7 @@ function connectedAgentsPanel(): string {
             <button type="button" class="primary" data-agent-action="issue" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Issue token'))}</button>
             <button type="button" class="utility" data-agent-action="reset" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Clear'))}</button>
           </div>
-          ${errors._form ? `<p class="error-text">${escapeHtml(errors._form)}</p>` : ''}
+          ${errors._form ? `<p class="error-text">${escapeHtml(agentErrorDisplayMessage(errors._form))}</p>` : ''}
         </div>
         ${agents.length ? connectedAgentList(agents) : `<div class="agent-empty">${escapeHtml(t('No agents connected yet. Issue a token above and paste it into your MCP client.'))}</div>`}
         ${state.agentReveal ? agentRevealModal(state.agentReveal) : ''}
@@ -16710,7 +16735,7 @@ function agentRevealModal(reveal: AgentRevealState): string {
       <p>${tf('Copy this token now. We cannot show it again. Paste it into your MCP client config (header {code}) for this agent.', { code: '<code>x-agent-wallet-token</code>' })}</p>
       <code class="agent-reveal-token">${escapeHtml(reveal.token)}</code>
       <div class="agent-reveal-actions">
-        <button type="button" class="primary" data-copy="${escapeHtml(reveal.token)}" data-copy-name="agent token">${escapeHtml(t('Copy token'))}</button>
+        <button type="button" class="primary" data-copy="${escapeHtml(reveal.token)}" data-copy-name="${escapeHtml(t('Agent token'))}">${escapeHtml(t('Copy token'))}</button>
         <button type="button" class="utility" data-agent-action="dismiss-reveal">${escapeHtml(t('Done'))}</button>
       </div>
     </div>
@@ -17590,7 +17615,7 @@ function toggleRecipientIsMine(recipientId: string): void {
 
 function recipientFieldError(field: keyof RecipientDraft): string {
   const message = state.recipientErrors[field];
-  return message ? `<em class="field-error-text">${escapeHtml(message)}</em>` : '';
+  return message ? `<em class="field-error-text">${escapeHtml(t(message))}</em>` : '';
 }
 
 function publicBridgeStatusCard(): string {
@@ -17647,7 +17672,7 @@ function optionalPrivateLocalModeDetails(): string {
         </ol>
         <div class="bridge-command-row primary-runtime-command">
           <code>${escapeHtml(NPM_EXEC_COMMAND)}</code>
-          <button type="button" data-copy="${escapeHtml(NPM_EXEC_COMMAND)}" data-copy-name="local runtime command">${escapeHtml(t('Copy'))}</button>
+          <button type="button" data-copy="${escapeHtml(NPM_EXEC_COMMAND)}" data-copy-name="${escapeHtml(t('local runtime command'))}">${escapeHtml(t('Copy'))}</button>
         </div>
       </div>
     </details>
@@ -18022,11 +18047,11 @@ function bridgeBox(): string {
           : ''}
         <button id="disconnectBridge" ${!state.bridgeActive || state.busy ? 'disabled' : ''}>${escapeHtml(t('Disconnect'))}</button>
       </div>
-      <p class="bridge-ops-status">${escapeHtml(state.bridgeStatus)}</p>
+      <p class="bridge-ops-status">${escapeHtml(bridgeStatusLabel(state.bridgeStatus))}</p>
       <div class="bridge-terminal-hint">
         <span>${escapeHtml(t('Start local runtime'))}</span>
         <code>${NPM_EXEC_COMMAND}</code>
-        <button data-copy="${NPM_EXEC_COMMAND}" data-copy-name="CLI one-shot command" title="${escapeHtml(t('Copy terminal command'))}">${escapeHtml(t('Copy'))}</button>
+        <button data-copy="${NPM_EXEC_COMMAND}" data-copy-name="${escapeHtml(t('CLI one-shot command'))}" title="${escapeHtml(t('Copy terminal command'))}">${escapeHtml(t('Copy'))}</button>
         <p>${escapeHtml(t('Run this in Terminal and keep that window open. Pressing Ctrl+C stops the bridge.'))}</p>
       </div>
       <details class="bridge-advanced-settings">
@@ -18151,10 +18176,10 @@ function terminalCommandRow(label: string, command: string, badge: string): stri
         class="${copied ? 'copied' : ''}"
         data-copy="${escapeHtml(command)}"
         data-copy-id="${escapeHtml(copyId)}"
-        data-copy-name="${escapeHtml(label)} command"
-        title="Copy ${escapeHtml(label)} command"
+        data-copy-name="${escapeHtml(tf('{label} command', { label }))}"
+        title="${escapeHtml(tf('Copy {label} command', { label }))}"
       >
-        ${copied ? 'Copied' : 'Copy'}
+        ${copied ? escapeHtml(t('Copied')) : escapeHtml(t('Copy'))}
       </button>
     </div>
   `;
@@ -19056,7 +19081,7 @@ function commandBridgePrereqPanel(): string {
       </div>
       <div class="bridge-command-row primary-runtime-command">
         <code>${escapeHtml(NPM_EXEC_COMMAND)}</code>
-        <button type="button" data-copy="${escapeHtml(NPM_EXEC_COMMAND)}" data-copy-name="local runtime command">${escapeHtml(t('Copy'))}</button>
+        <button type="button" data-copy="${escapeHtml(NPM_EXEC_COMMAND)}" data-copy-name="${escapeHtml(t('local runtime command'))}">${escapeHtml(t('Copy'))}</button>
       </div>
       <details class="command-bridge-details">
         <summary>${escapeHtml(t('Setup details and Desktop App'))}</summary>
@@ -19069,12 +19094,12 @@ function commandBridgePrereqPanel(): string {
           <span class="local-runtime-alt-label">${escapeHtml(t('Install CLI globally'))}</span>
           <div class="bridge-command-row">
             <code>${escapeHtml(NPM_GLOBAL_INSTALL_COMMAND)}</code>
-            <button type="button" data-copy="${escapeHtml(NPM_GLOBAL_INSTALL_COMMAND)}" data-copy-name="CLI install command">${escapeHtml(t('Copy'))}</button>
+            <button type="button" data-copy="${escapeHtml(NPM_GLOBAL_INSTALL_COMMAND)}" data-copy-name="${escapeHtml(t('CLI install command'))}">${escapeHtml(t('Copy'))}</button>
           </div>
           <span class="local-runtime-alt-label">${escapeHtml(t('Run installed CLI'))}</span>
           <div class="bridge-command-row">
             <code>${escapeHtml(INSTALLED_APP_COMMAND)}</code>
-            <button type="button" data-copy="${escapeHtml(INSTALLED_APP_COMMAND)}" data-copy-name="installed CLI command">${escapeHtml(t('Copy'))}</button>
+            <button type="button" data-copy="${escapeHtml(INSTALLED_APP_COMMAND)}" data-copy-name="${escapeHtml(t('installed CLI command'))}">${escapeHtml(t('Copy'))}</button>
           </div>
           <a class="button-link local-runtime-desktop-link" href="/desktop">${escapeHtml(t('Desktop App downloads'))}</a>
         </div>
@@ -19439,7 +19464,7 @@ function planConnectorSheetPanel(): string {
             </label>
             <div class="bridge-command-row plan-connector-command">
               <code>${escapeHtml(command)}</code>
-              <button type="button" data-copy="${escapeHtml(command)}" data-copy-name="Plan Connector command">${escapeHtml(t('Copy'))}</button>
+              <button type="button" data-copy="${escapeHtml(command)}" data-copy-name="${escapeHtml(t('Plan Connector command'))}">${escapeHtml(t('Copy'))}</button>
             </div>
           </div>
         </details>
@@ -19488,7 +19513,7 @@ function websitePlanConnectorSetupPanel(scope: string): string {
 
       <div class="bridge-command-row plan-connector-command website-plan-connector-command">
         <code>${escapeHtml(command)}</code>
-        <button type="button" data-copy="${escapeHtml(command)}" data-copy-name="Plan Connector command">Copy command</button>
+        <button type="button" data-copy="${escapeHtml(command)}" data-copy-name="${escapeHtml(t('Plan Connector command'))}">${escapeHtml(t('Copy command'))}</button>
       </div>
 
       <div class="website-plan-connector-status ${escapeHtml(setup.tone)}" aria-live="polite">
@@ -20590,13 +20615,31 @@ function generatedPlanConnectorChip(record: GeneratedPlanRecord): string {
 
 function generatedPlanFailurePill(record: GeneratedPlanRecord): string {
   if (record.status !== 'failed' && !record.error && !record.failureLabel) return '';
-  const label = record.failureLabel ||
-    (record.plan.actionType === 'swap'
-      ? 'Swap failed - try again'
+  const label = record.failureLabel
+    ? generatedPlanFailureLabel(record.failureLabel)
+    : record.plan.actionType === 'swap'
+      ? t('Swap failed - try again')
       : record.plan.actionType === 'transfer_sol' || record.plan.actionType === 'transfer_spl'
-        ? 'Send failed - try again'
-        : 'Action failed - try again');
+        ? t('Send failed - try again')
+        : t('Action failed - try again');
   return `<span class="status-pill tx-failed">${escapeHtml(label)}</span>`;
+}
+
+function generatedPlanFailureLabel(label: string): string {
+  switch (label) {
+    case AI_DRAFT_PLACEHOLDER_LABEL:
+      return t('Planning…');
+    case AI_DRAFT_FAILED_LABEL:
+      return t('AI plan failed — try again');
+    case 'Sign failed - try again':
+      return t('Sign failed - try again');
+    case 'Send failed - try again':
+      return t('Send failed - try again');
+    case 'Denied by agent review':
+      return t('Denied by agent review');
+    default:
+      return t(label);
+  }
 }
 
 function generatedPlanReviewSummary(record: GeneratedPlanRecord): string {
@@ -20780,12 +20823,12 @@ function reviewPlanMetric(plan: AgentPlan): { primary: string; secondary: string
   if (plan.actionType === 'manual_review') {
     const amount = planAmountSummary(plan);
     return {
-      primary: amount === 'n/a' ? 'Review proof' : amount,
-      secondary: compactSentence(plan.templateTitle || 'Manual review', 56),
+      primary: amount === 'n/a' ? t('Review proof') : amount,
+      secondary: compactSentence(plan.templateTitle || t('Manual review'), 56),
     };
   }
   return {
-    primary: plan.actionType === 'read_only' ? 'Evidence only' : compactRiskLabel(plan.risk),
+    primary: plan.actionType === 'read_only' ? t('Evidence only') : compactRiskLabel(plan.risk),
     secondary: compactSentence(plan.templateTitle || plan.actionType.replace(/_/g, ' '), 56),
   };
 }
@@ -20802,11 +20845,11 @@ function generatedPlanReviewSummaryGrid(record: GeneratedPlanRecord): string {
   const rows: WalletActionSummaryRow[] = [
     {
       label: 'Wallet',
-      value: record.walletAddress ? short(record.walletAddress) : 'No wallet yet',
+      value: record.walletAddress ? short(record.walletAddress) : t('No wallet yet'),
       title: record.walletAddress,
       tone: 'wallet',
       copyValue: record.walletAddress,
-      copyName: 'Wallet address',
+      copyName: t('Wallet address'),
     },
     {
       label: plan.actionType === 'swap' ? 'Slippage' : 'Amount',
@@ -20827,7 +20870,7 @@ function generatedPlanReviewSummaryGrid(record: GeneratedPlanRecord): string {
           value: recipientDisplayLabel(destination),
           title: destination,
           copyValue: destination,
-          copyName: 'Destination recipient',
+          copyName: t('Destination recipient'),
         }
       : { label: 'Risk', value: compactRiskLabel(plan.risk) },
   ];
@@ -20883,8 +20926,8 @@ function expandableCopyHtml(
       <summary>
         <span class="expandable-copy-preview">${escapeHtml(normalized)}</span>
         <span class="expandable-copy-toggle">
-          <span class="expandable-copy-show">+ ${escapeHtml(opts.showLabel ?? 'Show full text')}</span>
-          <span class="expandable-copy-hide">- ${escapeHtml(opts.hideLabel ?? 'Hide text')}</span>
+          <span class="expandable-copy-show">+ ${escapeHtml(opts.showLabel ?? t('Show full text'))}</span>
+          <span class="expandable-copy-hide">- ${escapeHtml(opts.hideLabel ?? t('Hide text'))}</span>
         </span>
       </summary>
       <p class="expandable-copy-full ${escapeHtml(opts.paragraphClassName ?? '')}">${escapeHtml(value.trim())}</p>
@@ -20909,19 +20952,22 @@ function agentReviewButton(record: GeneratedPlanRecord): string {
   const review = record.agentReview;
   const checking = state.activeOperation === 'review-agent-plan' && review?.status === 'checking';
   const label = checking
-    ? 'Asking agent...'
+    ? t('Asking agent...')
     : review?.status === 'needs_input'
-      ? 'Answer or ask again'
+      ? t('Answer or ask again')
       : review?.status === 'approved' || review?.status === 'denied' || review?.status === 'wallet_required' || review?.status === 'error'
-        ? 'Ask agent again'
-        : 'Ask agent';
+        ? t('Ask agent again')
+        : t('Ask agent');
+  const title = canRunAgentReview(record)
+    ? t('Ask the configured agent to approve, deny, or ask questions about this plan.')
+    : agentReviewUnavailableReason(record);
   return `
     <button
       class="utility review-action-agent ${review ? `agent-${escapeHtml(review.status)}` : ''}"
       data-generated-plan-action="agent-review"
       data-generated-plan-id="${escapeHtml(record.id)}"
       ${!canRunAgentReview(record) || record.status === 'archived' ? 'disabled' : ''}
-      title="${escapeHtml(canRunAgentReview(record) ? 'Ask the configured agent to approve, deny, or ask questions about this plan.' : agentReviewUnavailableReason(record))}"
+      title="${escapeHtml(title)}"
     >
       ${checking ? buttonSpinner() : ''}${escapeHtml(label)}
     </button>
@@ -21493,10 +21539,11 @@ function reviewPlanDetailRows(record: GeneratedPlanRecord): Array<[string, strin
 
 function reviewPlanDetailRow(label: string, value: string): string {
   const wide = /^(Rule|Effect|Fields|Safeguards)$/i.test(label) || value.length > 88;
+  const displayValue = t(value);
   return `
     <div class="${wide ? 'wide' : ''}" title="${escapeHtml(value)}">
-      <dt>${escapeHtml(label)}</dt>
-      <dd>${escapeHtml(value)}</dd>
+      <dt>${escapeHtml(t(label))}</dt>
+      <dd>${escapeHtml(displayValue)}</dd>
     </div>
   `;
 }
@@ -21506,10 +21553,10 @@ function compactRiskLabel(value: string): string {
   // "below" never false-match) and NEVER leak a prose sentence into the compact badge — some models
   // (e.g. Gemini) write a full sentence in `risk`; default to the neutral level instead. The full risk
   // wording is still shown in the expanded plan details.
-  if (/\b(high|severe|critical|significant)\b/i.test(value)) return 'High';
-  if (/\b(medium|moderate)\b/i.test(value)) return 'Medium';
-  if (/\b(low|minimal|negligible)\b/i.test(value)) return 'Low';
-  return 'Medium';
+  if (/\b(high|severe|critical|significant)\b/i.test(value)) return t('High');
+  if (/\b(medium|moderate)\b/i.test(value)) return t('Medium');
+  if (/\b(low|minimal|negligible)\b/i.test(value)) return t('Low');
+  return t('Medium');
 }
 
 function compactSentence(value: string, maxLength = 132): string {
@@ -21520,7 +21567,7 @@ function compactSentence(value: string, maxLength = 132): string {
 
 function planSlippageSummary(plan: AgentPlan): string {
   const slippage = plan.parameters.slippageBps;
-  return slippage ? `${slippageBpsToPercentInput(slippage)} max` : 'Default';
+  return slippage ? tf('{value} max', { value: slippageBpsToPercentInput(slippage) }) : t('Default');
 }
 
 function generatedPlanCompactExtras(plan: AgentPlan): string {
@@ -21641,7 +21688,7 @@ function generatedPlanCardFooterActions(record: GeneratedPlanRecord): string {
 
 function generatedPlanMetaHint(record: GeneratedPlanRecord, guardrailBlocked: boolean): string {
   if (record.status === 'archived' || guardrailBlocked || state.address) return '';
-  return 'Connect wallet to continue';
+  return t('Connect wallet to continue');
 }
 
 function generatedPlanInlineDetailsContent(plan: AgentPlan): string {
@@ -21661,7 +21708,7 @@ function generatedPlanInlineDetailsContent(plan: AgentPlan): string {
     ${plan.safeguards.length ? `
       <section>
         <span>${escapeHtml(t('Safeguards'))}</span>
-        <ul>${plan.safeguards.map((safeguard) => `<li>${escapeHtml(safeguard)}</li>`).join('')}</ul>
+        <ul>${plan.safeguards.map((safeguard) => `<li>${escapeHtml(t(safeguard))}</li>`).join('')}</ul>
       </section>
     ` : ''}
   `;
@@ -21679,8 +21726,8 @@ function generatedPlanDecisionRows(plan: AgentPlan): Array<[string, string]> {
 function generatedPlanDecisionItem(label: string, value: string): string {
   return `
     <div title="${escapeHtml(value)}">
-      <span>${escapeHtml(label)}</span>
-      <p>${escapeHtml(value)}</p>
+      <span>${escapeHtml(t(label))}</span>
+      <p>${escapeHtml(t(value))}</p>
     </div>
   `;
 }
@@ -21702,7 +21749,7 @@ function generatedPlanWalletActionSummary(record: GeneratedPlanRecord): string {
     ? tokenRouteDisplaySummary(record.plan.parameters.inputToken || 'input', record.plan.parameters.outputToken || 'output')
     : undefined;
   const rows: WalletActionSummaryRow[] = [
-    { label: 'Wallet', value: record.walletAddress || 'No wallet at creation', tone: 'wallet' },
+    { label: 'Wallet', value: record.walletAddress || t('No wallet at creation'), tone: 'wallet' },
     {
       label: 'Amount',
       value: planAmountSummary(record.plan),
@@ -21798,9 +21845,9 @@ function walletActionLabelForPlan(plan: AgentPlan): string {
 
 function planAmountSummary(plan: AgentPlan): string {
   if (plan.actionType === 'swap') {
-    const input = plan.parameters.inputToken || planParameter(plan, ['token']) || 'Input token';
-    const output = plan.parameters.outputToken || 'Output token';
-    const amount = planParameter(plan, ['amount', 'inputAmount', 'plannedAmount']) || 'Amount';
+    const input = plan.parameters.inputToken || planParameter(plan, ['token']) || t('Input token');
+    const output = plan.parameters.outputToken || t('Output token');
+    const amount = planParameter(plan, ['amount', 'inputAmount', 'plannedAmount']) || t('Amount');
     return `${amount} ${tokenDisplayLabel(input)} -> ${tokenDisplayLabel(output)}`;
   }
   if (CONNECTOR_APPROVAL_ACTION_TYPES.has(plan.actionType)) {
@@ -21817,13 +21864,13 @@ function planAmountSummary(plan: AgentPlan): string {
 function planAmountTokenCopyActions(plan: AgentPlan): SummaryCopyAction[] {
   if (CONNECTOR_APPROVAL_ACTION_TYPES.has(plan.actionType)) {
     const token = connectorPlanAmountInfo(plan)?.token ?? '';
-    return token ? tokenCopyActions(token, 'Copy token', 'Token mint') : [];
+    return token ? tokenCopyActions(token, t('Copy token'), t('Token mint')) : [];
   }
   if (plan.actionType === 'read_only' && !selectedConnectorForDraftParameters(plan.parameters)) {
     return [];
   }
   const token = planParameter(plan, ['token', 'inputToken']) || (plan.actionType === 'transfer_sol' ? 'SOL' : '');
-  return token ? tokenCopyActions(token, 'Copy token', 'Token mint') : [];
+  return token ? tokenCopyActions(token, t('Copy token'), t('Token mint')) : [];
 }
 
 function connectorPlanAmountInfo(plan: AgentPlan): ConnectorActionAmountInfo | undefined {
@@ -22041,8 +22088,8 @@ function generatedPlanEffectLabel(record: GeneratedPlanRecord): string {
 function generatedPlanFact(label: string, value: string): string {
   return `
     <div title="${escapeHtml(value)}">
-      <span>${escapeHtml(label)}</span>
-      <strong>${escapeHtml(value)}</strong>
+      <span>${escapeHtml(t(label))}</span>
+      <strong>${escapeHtml(t(value))}</strong>
     </div>
   `;
 }
@@ -22051,11 +22098,11 @@ function generatedPlanInlineDetails(plan: AgentPlan, detailsCount: number): stri
   if (detailsCount === 0) return '';
   return `
     <details class="generated-plan-inline-details">
-      <summary>${escapeHtml(`${detailsCount} review details`)}</summary>
+      <summary>${escapeHtml(tf('{count} review details', { count: detailsCount }))}</summary>
       <div>
-        ${plan.userNotes ? generatedPlanMiniSection('User notes', [plan.userNotes]) : ''}
-        ${plan.fields.length ? generatedPlanMiniSection('Fields', plan.fields.map((field) => `${field.label}: ${field.value}`)) : ''}
-        ${plan.safeguards.length ? generatedPlanMiniSection('Safeguards', plan.safeguards) : ''}
+        ${plan.userNotes ? generatedPlanMiniSection(t('User notes'), [plan.userNotes]) : ''}
+        ${plan.fields.length ? generatedPlanMiniSection(t('Fields'), plan.fields.map((field) => `${t(field.label)}: ${field.value}`)) : ''}
+        ${plan.safeguards.length ? generatedPlanMiniSection(t('Safeguards'), plan.safeguards.map((safeguard) => t(safeguard))) : ''}
       </div>
     </details>
   `;
@@ -22064,9 +22111,9 @@ function generatedPlanInlineDetails(plan: AgentPlan, detailsCount: number): stri
 function generatedPlanMiniSection(label: string, values: string[]): string {
   return `
     <section>
-      <span>${escapeHtml(label)}</span>
+      <span>${escapeHtml(t(label))}</span>
       <ul>
-        ${values.map((value) => `<li>${escapeHtml(value)}</li>`).join('')}
+        ${values.map((value) => `<li>${escapeHtml(t(value))}</li>`).join('')}
       </ul>
     </section>
   `;
@@ -22076,8 +22123,8 @@ function generatedPlanOutcomeStrip(record: GeneratedPlanRecord): string {
   if (!record.signature && !record.preparedActionId) return '';
   return `
     <div class="generated-plan-outcomes">
-      ${record.signature ? `<span title="${escapeHtml(record.signature)}">Proof ${escapeHtml(short(record.signature))}</span>` : ''}
-      ${record.preparedActionId ? `<span title="${escapeHtml(record.preparedActionId)}">Approval ${escapeHtml(short(record.preparedActionId))}</span>` : ''}
+      ${record.signature ? `<span title="${escapeHtml(record.signature)}">${escapeHtml(tf('Proof {id}', { id: short(record.signature) }))}</span>` : ''}
+      ${record.preparedActionId ? `<span title="${escapeHtml(record.preparedActionId)}">${escapeHtml(tf('Approval {id}', { id: short(record.preparedActionId) }))}</span>` : ''}
     </div>
   `;
 }
@@ -22134,25 +22181,25 @@ function localRuntimeGuide(extraClass = '', options: { compact?: boolean } = {})
   if (options.compact) {
     return `
     <div class="local-runtime-guide ${escapeHtml(extraClass)} compact-runtime-guide">
-      <span class="local-runtime-command-label">Run this in Terminal</span>
+      <span class="local-runtime-command-label">${escapeHtml(t('Run this in Terminal'))}</span>
       <div class="bridge-command-row primary-runtime-command">
         <code>${escapeHtml(NPM_EXEC_COMMAND)}</code>
-        <button type="button" data-copy="${escapeHtml(NPM_EXEC_COMMAND)}" data-copy-name="local runtime command">Copy</button>
+        <button type="button" data-copy="${escapeHtml(NPM_EXEC_COMMAND)}" data-copy-name="${escapeHtml(t('local runtime command'))}">${escapeHtml(t('Copy'))}</button>
       </div>
-      <p><strong>No separate install step.</strong> This command downloads and starts Agentic's local runtime. Keep the Terminal window open.</p>
+      <p><strong>${escapeHtml(t('No separate install step.'))}</strong> ${escapeHtml(t("This command downloads and starts Agentic's local runtime. Keep the Terminal window open."))}</p>
       <ol class="local-runtime-steps compact">
-        <li>Paste the command and press Enter.</li>
-        <li>Connect your wallet in the tab it opens.</li>
-        <li>Return here and click Check.</li>
+        <li>${escapeHtml(t('Paste the command and press Enter.'))}</li>
+        <li>${escapeHtml(t('Connect your wallet in the tab it opens.'))}</li>
+        <li>${escapeHtml(t('Return here and click Check.'))}</li>
       </ol>
       <details class="local-runtime-alt">
-        <summary>Desktop App or permanent install</summary>
+        <summary>${escapeHtml(t('Desktop App or permanent install'))}</summary>
         <div class="local-runtime-alt-body">
-          <a class="button-link local-runtime-desktop-link" href="/desktop">Use Desktop App instead</a>
-          <span class="local-runtime-alt-label">Install CLI once</span>
+          <a class="button-link local-runtime-desktop-link" href="/desktop">${escapeHtml(t('Use Desktop App instead'))}</a>
+          <span class="local-runtime-alt-label">${escapeHtml(t('Install CLI once'))}</span>
           <div class="bridge-command-row">
             <code>${escapeHtml(NPM_GLOBAL_INSTALL_COMMAND)}</code>
-            <button type="button" data-copy="${escapeHtml(NPM_GLOBAL_INSTALL_COMMAND)}" data-copy-name="CLI install command">Copy</button>
+            <button type="button" data-copy="${escapeHtml(NPM_GLOBAL_INSTALL_COMMAND)}" data-copy-name="${escapeHtml(t('CLI install command'))}">${escapeHtml(t('Copy'))}</button>
           </div>
         </div>
       </details>
@@ -22162,34 +22209,34 @@ function localRuntimeGuide(extraClass = '', options: { compact?: boolean } = {})
   return `
     <div class="local-runtime-guide ${escapeHtml(extraClass)}">
       <div class="local-runtime-guide-head">
-        <span>Required on this computer</span>
+        <span>${escapeHtml(t('Required on this computer'))}</span>
         <strong>${escapeHtml(compactEndpoint(state.bridgeUrl))}</strong>
       </div>
-      <p>Use this optional local runtime when you want AI keys and private workflow storage to stay on this computer. The website cannot start it for you.</p>
+      <p>${escapeHtml(t('Use this optional local runtime when you want AI keys and private workflow storage to stay on this computer. The website cannot start it for you.'))}</p>
       <ol class="local-runtime-steps">
-        <li>Copy and run the command in Terminal. No separate install step is required.</li>
-        <li>Connect your wallet in the browser tab it opens.</li>
-        <li>Come back here and check the local bridge.</li>
+        <li>${escapeHtml(t('Copy and run the command in Terminal. No separate install step is required.'))}</li>
+        <li>${escapeHtml(t('Connect your wallet in the browser tab it opens.'))}</li>
+        <li>${escapeHtml(t('Come back here and check the local bridge.'))}</li>
       </ol>
-      <span class="local-runtime-command-label">Run local runtime</span>
+      <span class="local-runtime-command-label">${escapeHtml(t('Run local runtime'))}</span>
       <div class="bridge-command-row primary-runtime-command">
         <code>${escapeHtml(NPM_EXEC_COMMAND)}</code>
-        <button type="button" data-copy="${escapeHtml(NPM_EXEC_COMMAND)}" data-copy-name="local runtime command">Copy</button>
+        <button type="button" data-copy="${escapeHtml(NPM_EXEC_COMMAND)}" data-copy-name="${escapeHtml(t('local runtime command'))}">${escapeHtml(t('Copy'))}</button>
       </div>
       <details class="local-runtime-alt">
-        <summary>Install CLI once or use Desktop App</summary>
+        <summary>${escapeHtml(t('Install CLI once or use Desktop App'))}</summary>
         <div class="local-runtime-alt-body">
-          <span class="local-runtime-alt-label">Install CLI globally</span>
+          <span class="local-runtime-alt-label">${escapeHtml(t('Install CLI globally'))}</span>
           <div class="bridge-command-row">
             <code>${escapeHtml(NPM_GLOBAL_INSTALL_COMMAND)}</code>
-            <button type="button" data-copy="${escapeHtml(NPM_GLOBAL_INSTALL_COMMAND)}" data-copy-name="CLI install command">Copy</button>
+            <button type="button" data-copy="${escapeHtml(NPM_GLOBAL_INSTALL_COMMAND)}" data-copy-name="${escapeHtml(t('CLI install command'))}">${escapeHtml(t('Copy'))}</button>
           </div>
-          <span class="local-runtime-alt-label">Run installed CLI</span>
+          <span class="local-runtime-alt-label">${escapeHtml(t('Run installed CLI'))}</span>
           <div class="bridge-command-row">
             <code>${escapeHtml(INSTALLED_APP_COMMAND)}</code>
-            <button type="button" data-copy="${escapeHtml(INSTALLED_APP_COMMAND)}" data-copy-name="installed CLI command">Copy</button>
+            <button type="button" data-copy="${escapeHtml(INSTALLED_APP_COMMAND)}" data-copy-name="${escapeHtml(t('installed CLI command'))}">${escapeHtml(t('Copy'))}</button>
           </div>
-          <a class="button-link local-runtime-desktop-link" href="/desktop">Desktop App downloads</a>
+          <a class="button-link local-runtime-desktop-link" href="/desktop">${escapeHtml(t('Desktop App downloads'))}</a>
         </div>
       </details>
     </div>
@@ -22235,8 +22282,8 @@ function completedDeleteModal(): string {
       ? 'the local bridge archive'
       : 'this browser';
   const descriptor = [
-    record.kind === 'recurring' ? 'Repeat payment' : 'One-time approval',
-    record.status,
+    record.kind === 'recurring' ? t('Repeat payment') : t('One-time approval'),
+    completedStatusDisplay(record.status),
     formatDateTime(record.completedAt),
   ].join(' - ');
   return `
@@ -22267,7 +22314,7 @@ function generatedPlanDeleteModal(): string {
   if (!state.generatedPlanDeleteModalId) return '';
   const record = generatedPlanById(state.generatedPlanDeleteModalId);
   if (!record) return '';
-  const status = record.status === 'archived' ? 'Archived plan' : generatedPlanStatusLabel(record);
+  const status = record.status === 'archived' ? t('Archived plan') : generatedPlanStatusLabel(record);
   return `
     <div class="generated-plan-modal-backdrop generated-plan-delete-modal-backdrop delete-confirmation-backdrop" role="presentation">
       <section class="generated-plan-modal generated-plan-delete-modal delete-confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="generated-plan-delete-title">
@@ -22920,7 +22967,7 @@ function currentAiRailFallback(): { provider: string; model: string; logoHint: A
     };
   }
   const preset = aiProviderPresetById(state.aiSettings.provider);
-  const model = state.aiSettings.model || preset.model || 'model not selected';
+  const model = state.aiSettings.model || preset.model || t('model not selected');
   return {
     provider: preset.label,
     model,
@@ -22969,12 +23016,12 @@ function aiRailSummaryContent(identity: AiRailIdentity, options: { actionLabel?:
     <span class="ai-summary-identity">
       ${brandLogo(identity.logoHint, 'ai-summary-logo')}
       <span class="ai-summary-copy">
-        <span>AI connector</span>
+        <span>${escapeHtml(t('AI connector'))}</span>
         <strong>${escapeHtml(identity.provider)}</strong>
         <em>${escapeHtml(identity.detail)}</em>
       </span>
     </span>
-    <strong class="ai-summary-status ${escapeHtml(identity.statusTone)}" title="${escapeHtml(identity.statusTitle)}">${escapeHtml(identity.statusLabel)}</strong>
+    <strong class="ai-summary-status ${escapeHtml(identity.statusTone)}" title="${escapeHtml(t(identity.statusTitle))}">${escapeHtml(t(identity.statusLabel))}</strong>
     ${options.actionHtml ?? (options.actionLabel ? `<span class="rail-conn-action">${escapeHtml(options.actionLabel)}</span>` : '')}
   `;
 }
@@ -22994,8 +23041,8 @@ function agentRouteStep(index: string, title: string, detail: string): string {
   return `
     <div>
       <span>${escapeHtml(index)}</span>
-      <strong>${escapeHtml(title)}</strong>
-      <p>${escapeHtml(detail)}</p>
+      <strong>${escapeHtml(t(title))}</strong>
+      <p>${escapeHtml(t(detail))}</p>
     </div>
   `;
 }
@@ -24264,7 +24311,7 @@ function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label:
     <div class="field compact planner-field token-choice-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
       <span class="token-choice-head">
         <span>${escapeHtml(label)}</span>
-        <span class="token-choice-mode" role="group" aria-label="${escapeHtml(tf('{field} input mode', { field: fieldDef.label }))}">
+        <span class="token-choice-mode" role="group" aria-label="${escapeHtml(tf('{field} input mode', { field: t(fieldDef.label) }))}">
           <button
             type="button"
             data-token-field-mode="preset"
@@ -24453,7 +24500,7 @@ function recipientPolicyHint(status: RecipientPolicyStatus): string {
 
 function fieldError(fieldId: string): string {
   const message = state.templateFieldErrors[fieldId] ?? state.recurringErrors[fieldId];
-  return message ? `<em class="field-error-text">${escapeHtml(message)}</em>` : '';
+  return message ? `<em class="field-error-text">${escapeHtml(t(message))}</em>` : '';
 }
 
 function browserDeviceAgentUiVisible(): boolean {
@@ -25466,7 +25513,7 @@ function localBridgeAiSetupCard(status: BridgeAiStatus | null, location: 'rail' 
         <div class="local-bridge-facts">
           <span>${escapeHtml(t('Endpoint'))} <strong>${escapeHtml(compactEndpoint(endpoint))}</strong></span>
           <span>${escapeHtml(t('Wallet'))} <strong>${escapeHtml(state.address ? short(state.address) : t('Not connected'))}</strong></span>
-          <span>${escapeHtml(status?.engine === 'connector' || bridgeAiEngine(status) === 'connector' ? 'AI connector' : t('AI provider key'))} <strong>${escapeHtml(source.label)}</strong></span>
+          <span>${escapeHtml(status?.engine === 'connector' || bridgeAiEngine(status) === 'connector' ? t('AI connector') : t('AI provider key'))} <strong>${escapeHtml(source.label)}</strong></span>
         </div>
         <p class="local-bridge-ai-key-note">${escapeHtml(source.detail)}</p>
       </div>
@@ -25486,20 +25533,20 @@ function localBridgeConnectorSection(status: BridgeAiStatus | null): string {
   const live = status?.engine === 'connector' ? status : null;
   const selected: AiConnector = live?.connector ?? state.aiSettings.connector ?? 'codex';
   const engineToggle = `
-    <div class="bridge-engine-toggle" role="group" aria-label="Local Bridge engine">
-      <button type="button" class="utility ${engine === 'api-key' ? 'active' : ''}" data-ai-action="set-engine" data-ai-engine="api-key" ${state.busy ? 'disabled' : ''}>Provider API key</button>
-      <button type="button" class="utility ${engine === 'connector' ? 'active' : ''}" data-ai-action="set-engine" data-ai-engine="connector" ${state.busy ? 'disabled' : ''}>Subscription connector</button>
+    <div class="bridge-engine-toggle" role="group" aria-label="${escapeHtml(t('Local Bridge engine'))}">
+      <button type="button" class="utility ${engine === 'api-key' ? 'active' : ''}" data-ai-action="set-engine" data-ai-engine="api-key" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Provider API key'))}</button>
+      <button type="button" class="utility ${engine === 'connector' ? 'active' : ''}" data-ai-action="set-engine" data-ai-engine="connector" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Subscription connector'))}</button>
     </div>`;
   if (engine !== 'connector') return engineToggle;
 
   const auth = live?.connectorAuthStatus;
   const statusBadge = !live
-    ? '<span class="bridge-connector-status warn">Pick a connector to configure the local bridge</span>'
+    ? `<span class="bridge-connector-status warn">${escapeHtml(t('Pick a connector to configure the local bridge'))}</span>`
     : auth === 'connected'
-      ? `<span class="bridge-connector-status ok">Connected · ${escapeHtml(live.connectorLabel ?? aiConnectorPreset(selected).label)}</span>`
-      : auth === 'binary-not-found'
-        ? '<span class="bridge-connector-status warn">CLI not installed on the bridge machine</span>'
-        : '<span class="bridge-connector-status warn">Sign-in needed</span>';
+      ? `<span class="bridge-connector-status ok">${escapeHtml(tf('Connected · {connector}', { connector: live.connectorLabel ?? aiConnectorPreset(selected).label }))}</span>`
+    : auth === 'binary-not-found'
+        ? `<span class="bridge-connector-status warn">${escapeHtml(t('CLI not installed on the bridge machine'))}</span>`
+        : `<span class="bridge-connector-status warn">${escapeHtml(t('Sign-in needed'))}</span>`;
   const choices = AI_CONNECTORS.map((preset) => {
     const active = live ? live.connector === preset.id : selected === preset.id;
     return `
@@ -25509,12 +25556,12 @@ function localBridgeConnectorSection(status: BridgeAiStatus | null): string {
       </button>`;
   }).join('');
   const connectButton = live && auth !== 'connected'
-    ? `<button type="button" class="utility" data-ai-action="connector-connect" data-ai-connector="${escapeHtml(live.connector ?? selected)}" ${state.busy ? 'disabled' : ''}>Connect (sign in)</button>`
+    ? `<button type="button" class="utility" data-ai-action="connector-connect" data-ai-connector="${escapeHtml(live.connector ?? selected)}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Connect (sign in)'))}</button>`
     : '';
   return `
     ${engineToggle}
     <div class="bridge-connector-section">
-      <p class="bridge-connector-note">Use a subscription you already pay for. The bridge runs your local CLI on this machine — your key never leaves it. Codex/Gemini use your plan; Claude uses metered Agent-SDK credits.</p>
+      <p class="bridge-connector-note">${escapeHtml(t('Use a subscription you already pay for. The bridge runs your local CLI on this machine — your key never leaves it. Codex/Gemini use your plan; Claude uses metered Agent-SDK credits.'))}</p>
       <div class="bridge-connector-choices">${choices}</div>
       <div class="bridge-connector-status-row">${statusBadge}${connectButton}</div>
     </div>`;
@@ -26302,31 +26349,31 @@ function aiReadinessLabel(status: BridgeAiStatus | null): string {
   }
   if (state.aiSettings.mode === 'device-agent') {
     const status = state.deviceAgentStatus;
-    if (!deviceAgentModeVisible()) return 'Device Agent gated off';
+    if (!deviceAgentModeVisible()) return t('Device Agent gated off');
     if (status?.available && status.configured) {
-      if (status.state === 'running') return 'Device Agent running';
-      if (deviceAgentStatusReadyForDrafts(status)) return 'Device Agent ready';
-      return 'Device Agent configured';
+      if (status.state === 'running') return t('Device Agent running');
+      if (deviceAgentStatusReadyForDrafts(status)) return t('Device Agent ready');
+      return t('Device Agent configured');
     }
-    return state.aiSettings.apiKey.trim() ? 'Device config ready' : 'Device key required';
+    return state.aiSettings.apiKey.trim() ? t('Device config ready') : t('Device key required');
   }
   if (state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai') {
-    return 'Use hosted or bridge for OpenAI';
+    return t('Use hosted or bridge for OpenAI');
   }
   if (!state.aiSettings.apiKey.trim()) {
-    return state.aiSettings.mode === 'hosted' ? 'Hosted key required' : 'Browser key required';
+    return state.aiSettings.mode === 'hosted' ? t('Hosted key required') : t('Browser key required');
   }
   if (!state.aiSettings.model.trim()) {
-    return 'Choose a model';
+    return t('Choose a model');
   }
   if (!aiProviderReadyForCurrentMode()) {
-    return state.aiSettings.mode === 'hosted' ? 'Choose hosted provider' : 'Gateway URL required';
+    return state.aiSettings.mode === 'hosted' ? t('Choose hosted provider') : t('Gateway URL required');
   }
   const hostedBlockReason = hostedByokCloudSessionReason();
   if (hostedBlockReason) {
-    return 'Hosted key staged';
+    return t('Hosted key staged');
   }
-  return state.aiSettings.mode === 'hosted' ? 'Hosted key entered' : 'Config ready for this tab';
+  return state.aiSettings.mode === 'hosted' ? t('Hosted key entered') : t('Config ready for this tab');
 }
 
 function aiRouteDiagnostic(path: string, method = 'POST'): AiDiagnosticEntry {
@@ -26373,7 +26420,7 @@ async function generateDeviceAgentPlan(
         guardrailVerdict: report?.verdict ?? 'pass',
         guardrailCodes: report ? Array.from(new Set(report.violations.map((violation) => violation.code))).join(',') : '',
         repairApplied: false,
-        summary: report?.summary ?? 'Device Agent plan parsed successfully.',
+        summary: report?.summary ?? t('Device Agent plan parsed successfully.'),
       });
       return plan;
     } catch (err) {
@@ -26538,7 +26585,7 @@ async function invokeDeviceAgentNative<R>(
       message: `Device Agent ${options.action} success via ${route}; state=${state.deviceAgentStatus.state}.`,
     });
     if (result === undefined || result === null) {
-      throw new Error(`Device Agent ${options.action} returned an empty payload.`);
+      throw new Error(tf('Device Agent {action} returned an empty payload.', { action: options.action }));
     }
     return result;
   } catch (err) {
@@ -26616,12 +26663,12 @@ function deviceAgentNativeError(action: string, err: unknown): Error {
       model: state.deviceAgentStatus?.model ?? state.aiSettings.model,
     });
     return new AiPlanConnectionError(
-      `Device Agent ${action} failed: ${err.message}`,
+      tf('Device Agent {action} failed: {message}', { action, message: err.message }),
       diagnostics,
     );
   }
   if (err instanceof Error) return err;
-  return new Error(`Device Agent ${action} failed: ${String(err)}`);
+  return new Error(tf('Device Agent {action} failed: {message}', { action, message: String(err) }));
 }
 
 function isDeviceAgentErrorDiagnostics(err: unknown): boolean {
@@ -26660,12 +26707,12 @@ async function assertDeviceAgentScaffoldAvailable(action: string, signal?: Abort
   if (!status.available || !status.configured) {
     throw new Error(
       pairedBridgeActive()
-        ? 'Plan Connector needs your computer online. Open the connector page on your computer (and keep it awake), then try again.'
-        : 'Device Agent runtime is not configured. Add a key, confirm planner, then try again.',
+        ? t('Plan Connector needs your computer online. Open the connector page on your computer (and keep it awake), then try again.')
+        : t('Device Agent runtime is not configured. Add a key, confirm planner, then try again.'),
     );
   }
   if (!pairedBridgeActive() && !deviceAgentStatusReadyForDrafts(status)) {
-    throw new Error(status.message || 'Device Agent runtime is configured but could not start. Refresh status, then try again.');
+    throw new Error(status.message || t('Device Agent runtime is configured but could not start. Refresh status, then try again.'));
   }
   state.aiDiagnostics = [
     aiRouteDiagnostic(`/api/device-agent/${action}`),
@@ -26681,10 +26728,13 @@ async function assertDeviceAgentScaffoldAvailable(action: string, signal?: Abort
 
 function deviceAgentWorkerNotImplementedError(action: string): Error {
   const fallback = isMobileAiPathPolicySurface()
-    ? 'or use Hosted BYOK after Cloud sign-in.'
-    : 'or use Hosted BYOK, Browser Session, or Local Bridge here.';
+    ? t('or use Hosted BYOK after Cloud sign-in.')
+    : t('or use Hosted BYOK, Browser Session, or Local Bridge here.');
   return new Error(
-    `Device Agent ${action} runs in the enabled native Android or iOS build. This runtime only exposes the scaffold; install an enabled native build to draft, ${fallback}`,
+    tf('Device Agent {action} runs in the enabled native Android or iOS build. This runtime only exposes the scaffold; install an enabled native build to draft, {fallback}', {
+      action,
+      fallback,
+    }),
   );
 }
 
@@ -26707,13 +26757,13 @@ function applyAiErrorDiagnostics(err: unknown, fallbackMessage: string): string 
 }
 
 function aiErrorToastTitle(err: unknown): string {
-  if (isDeviceAgentErrorDiagnostics(err)) return 'Device Agent draft failed';
-  return aiRouteMismatchDiagnostic(err) ? 'Hosted AI route failed' : 'AI plan failed';
+  if (isDeviceAgentErrorDiagnostics(err)) return t('Device Agent draft failed');
+  return aiRouteMismatchDiagnostic(err) ? t('Hosted AI route failed') : t('AI plan failed');
 }
 
 function aiConfirmErrorToastTitle(err: unknown): string {
-  if (isDeviceAgentErrorDiagnostics(err)) return 'Device Agent planner check failed';
-  return aiRouteMismatchDiagnostic(err) ? 'Hosted AI route failed' : 'Planner check failed';
+  if (isDeviceAgentErrorDiagnostics(err)) return t('Device Agent planner check failed');
+  return aiRouteMismatchDiagnostic(err) ? t('Hosted AI route failed') : t('Planner check failed');
 }
 
 function aiRouteMismatchDiagnostic(err: unknown): AiDiagnosticEntry | undefined {
@@ -26880,10 +26930,14 @@ function listPagination(pageKey: AppListPageKey, pagination: PaginatedList<unkno
   const previousPage = Math.max(1, pagination.page - 1);
   const nextPage = Math.min(pagination.totalPages, pagination.page + 1);
   return `
-    <nav class="list-pagination" aria-label="${escapeHtml(label)} pagination">
+    <nav class="list-pagination" aria-label="${escapeHtml(tf('{label} pagination', { label }))}">
       <span class="list-pagination-summary">
         <strong>${escapeHtml(label)}</strong>
-        <span>Showing ${pagination.start}-${pagination.end} of ${pagination.total}</span>
+        <span>${escapeHtml(tf('Showing {start}-{end} of {total}', {
+          start: pagination.start,
+          end: pagination.end,
+          total: pagination.total,
+        }))}</span>
       </span>
       <div class="list-pagination-actions">
         <button
@@ -26893,9 +26947,9 @@ function listPagination(pageKey: AppListPageKey, pagination: PaginatedList<unkno
           data-list-page="${previousPage}"
           ${pagination.page <= 1 ? 'disabled' : ''}
         >
-          Previous
+          ${escapeHtml(t('Previous'))}
         </button>
-        <span class="list-pagination-page">Page ${pagination.page} / ${pagination.totalPages}</span>
+        <span class="list-pagination-page">${escapeHtml(tf('Page {page} / {total}', { page: pagination.page, total: pagination.totalPages }))}</span>
         <button
           type="button"
           class="utility"
@@ -26903,7 +26957,7 @@ function listPagination(pageKey: AppListPageKey, pagination: PaginatedList<unkno
           data-list-page="${nextPage}"
           ${pagination.page >= pagination.totalPages ? 'disabled' : ''}
         >
-          Next
+          ${escapeHtml(t('Next'))}
         </button>
       </div>
     </nav>
@@ -27684,7 +27738,7 @@ function completedPlanSummaryItem(row: { label: string; value: string; title?: s
   const copyActions = summaryCopyActions(row);
   return `
     <div class="${row.tone ? `completed-history-summary-${row.tone}` : ''}" title="${escapeHtml(title)}">
-      <dt>${escapeHtml(row.label)}</dt>
+      <dt>${escapeHtml(t(row.label))}</dt>
       <dd class="${copyActions.length ? 'has-copy' : ''}">
         <span>${escapeHtml(row.value)}</span>
         ${summaryCopyActionsHtml(copyActions, row.label)}
@@ -28127,7 +28181,7 @@ function receiptFieldInput(lab: LabDefinition, field: LabFieldDefinition): strin
           },
           disabled: state.busy,
         })}
-        ${error ? `<em class="field-error-text">${escapeHtml(error)}</em>` : ''}
+        ${error ? `<em class="field-error-text">${escapeHtml(t(error))}</em>` : ''}
       </label>
     `;
   }
@@ -28144,7 +28198,7 @@ function receiptFieldInput(lab: LabDefinition, field: LabFieldDefinition): strin
       <label class="field compact receipt-field ${error ? 'field-error' : ''}">
         ${labelRow}
         <textarea ${attrs} placeholder="${escapeHtml(field.placeholder ? t(field.placeholder) : '')}">${escapeHtml(value)}</textarea>
-        ${error ? `<em class="field-error-text">${escapeHtml(error)}</em>` : ''}
+        ${error ? `<em class="field-error-text">${escapeHtml(t(error))}</em>` : ''}
       </label>
     `;
   }
@@ -28152,7 +28206,7 @@ function receiptFieldInput(lab: LabDefinition, field: LabFieldDefinition): strin
     <label class="field compact receipt-field ${error ? 'field-error' : ''}">
       ${labelRow}
       <input ${attrs} value="${escapeHtml(value)}" placeholder="${escapeHtml(field.placeholder ? t(field.placeholder) : '')}" />
-      ${error ? `<em class="field-error-text">${escapeHtml(error)}</em>` : ''}
+      ${error ? `<em class="field-error-text">${escapeHtml(t(error))}</em>` : ''}
     </label>
   `;
 }
@@ -28166,7 +28220,7 @@ function advancedLabInput(lab: LabDefinition): string {
         ${mobileExpandNoteLink({ kind: 'lab-advanced', labId: lab.id })}
       </span>
       <textarea id="labInput" ${state.busy ? 'disabled' : ''}>${escapeHtml(labInput(lab.id))}</textarea>
-      ${error ? `<em class="field-error-text">${escapeHtml(error)}</em>` : ''}
+      ${error ? `<em class="field-error-text">${escapeHtml(t(error))}</em>` : ''}
     </label>
   `;
 }
@@ -28295,11 +28349,68 @@ function artifactArchiveStatusLine(): string {
   const cloudClass = cloudSessionMatchesWallet() ? 'cloud-active' : 'cloud-inactive';
   return `
     <div class="artifact-archive-status">
-      <span>${escapeHtml(t(state.labArchiveStatus))}</span>
-      <span class="cloud-evidence-status ${cloudClass}">${escapeHtml(t(state.cloudEvidenceStatus))}</span>
+      <span>${escapeHtml(labArchiveStatusLabel(state.labArchiveStatus))}</span>
+      <span class="cloud-evidence-status ${cloudClass}">${escapeHtml(cloudEvidenceStatusLabel(state.cloudEvidenceStatus))}</span>
       <strong>${escapeHtml(bridge)}</strong>
     </div>
   `;
+}
+
+function bridgeStatusLabel(status: string): string {
+  switch (status) {
+    case 'Bridge idle.':
+      return t('Bridge idle.');
+    case 'Signing through cloud pairing relay.':
+      return t('Signing through cloud pairing relay.');
+    case 'Bridge disconnected.':
+      return t('Bridge disconnected.');
+    case 'Connected to local bridge. Waiting for agent requests.':
+      return t('Connected to local bridge. Waiting for agent requests.');
+    case 'Connected wallet does not match this Cloud Storage sign-in request.':
+      return t('Connected wallet does not match this Cloud Storage sign-in request.');
+    case 'Wallet ready. Reconnect the browser wallet here to sign in.':
+      return t('Wallet ready. Reconnect the browser wallet here to sign in.');
+  }
+  const receiptFailed = status.match(/^Receipt bridge archive failed: (.+)$/);
+  if (receiptFailed) return tf('Receipt bridge archive failed: {message}', { message: receiptFailed[1] ?? '' });
+  const receiptUnavailable = status.match(/^Receipt bridge archive unavailable: (.+)$/);
+  if (receiptUnavailable) return tf('Receipt bridge archive unavailable: {message}', { message: receiptUnavailable[1] ?? '' });
+  const waiting = status.match(/^Waiting for (.+); browser reported (.+)\.$/);
+  if (waiting) return tf('Waiting for {expected}; browser reported {wallet}.', { expected: waiting[1] ?? '', wallet: waiting[2] ?? '' });
+  const browserWallet = status.match(/^Browser wallet connected through (.+)\.$/);
+  if (browserWallet) return tf('Browser wallet connected through {provider}.', { provider: browserWallet[1] ?? '' });
+  return status;
+}
+
+function cloudEvidenceStatusLabel(status: string): string {
+  switch (status) {
+    case 'Cloud evidence archive: sign in to also store receipts in Agentic Cloud.':
+      return t('Cloud evidence archive: sign in to also store receipts in Agentic Cloud.');
+    case 'Cloud evidence archive synced for the signed-in wallet.':
+      return t('Cloud evidence archive synced for the signed-in wallet.');
+    case 'Cloud evidence archive ready (no receipts yet).':
+      return t('Cloud evidence archive ready (no receipts yet).');
+    case 'Cloud receipt id missing — refresh archive then retry delete.':
+      return t('Cloud receipt id missing — refresh archive then retry delete.');
+    case 'Private local mode: receipts stay off Agentic Cloud.':
+      return t('Private local mode: receipts stay off Agentic Cloud.');
+  }
+  return status;
+}
+
+function labArchiveStatusLabel(status: string): string {
+  switch (status) {
+    case 'Browser archive loading.':
+      return t('Browser archive loading.');
+    case 'Browser archive ready.':
+      return t('Browser archive ready.');
+    case 'Persistent browser archive ready.':
+      return t('Persistent browser archive ready.');
+    case 'Browser archive synced with bridge.':
+      return t('Browser archive synced with bridge.');
+    default:
+      return t(status);
+  }
 }
 
 function signedArtifactsEmptyState(): string {
@@ -28561,7 +28672,7 @@ function signedArtifactDetail(artifact: LabArtifact): string {
         <button data-copy="${escapeHtml(artifact.signature)}" data-copy-name="${escapeHtml(t('Receipt signature'))}">${t('Copy signature')}</button>
       </div>
       <div class="artifact-detail-grid receipt-tech-id-grid">
-        ${archiveFact(t('Receipt type'), t(artifact.title))}
+        ${archiveFact(t('Receipt type'), artifact.title)}
         ${archiveFact(t('Kind'), labKindLabel(artifact.kind))}
         ${archiveFact(t('Created'), formatDateTime(artifact.createdAt))}
         ${archiveFact(t('Cluster'), titleCaseCluster(artifact.cluster))}
@@ -28578,8 +28689,8 @@ function signedArtifactDetail(artifact: LabArtifact): string {
       </div>
       ${artifact.payload.whatThisProves || artifact.payload.recommendedUse ? `
         <div class="artifact-detail-grid receipt-tech-explainer-grid">
-          ${artifact.payload.whatThisProves ? archiveFact(t('What this proves'), t(artifact.payload.whatThisProves)) : ''}
-          ${artifact.payload.recommendedUse ? archiveFact(t('Recommended use'), t(artifact.payload.recommendedUse)) : ''}
+          ${artifact.payload.whatThisProves ? archiveFact(t('What this proves'), artifact.payload.whatThisProves) : ''}
+          ${artifact.payload.recommendedUse ? archiveFact(t('Recommended use'), artifact.payload.recommendedUse) : ''}
         </div>
       ` : ''}
       <div class="artifact-evidence-row receipt-tech-metric-row">
@@ -30295,8 +30406,9 @@ function bind(): void {
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-copy]')) {
     button.addEventListener('click', async () => {
       const value = button.dataset.copy ?? '';
-      const label = button.dataset.copyName ?? 'Value';
-      const copyId = button.dataset.copyId ?? commandCopyId('copy', label, value);
+      const rawLabel = button.dataset.copyName ?? t('Value');
+      const label = t(rawLabel);
+      const copyId = button.dataset.copyId ?? commandCopyId('copy', rawLabel, value);
       const isJson = button.dataset.copyKind === 'json' || looksLikeJsonValue(value);
       const toastTitle = button.dataset.copyToast ?? (isJson ? t('JSON copied') : tf('{label} copied', { label }));
       const toastMessage = button.dataset.copyMessage
@@ -30598,7 +30710,7 @@ async function ensureAgenticLoginWalletReady(
 ): Promise<string> {
   if (!cliIntentUsesFocusedWalletProof()) {
     if (!state.address) {
-      throw new Error('Connect a wallet first with /connect, then return here.');
+      throw new Error(t('Connect a wallet first with /connect, then return here.'));
     }
     return state.address;
   }
@@ -30613,7 +30725,7 @@ async function ensureAgenticLoginWalletReady(
 
   if (!isBrowserWalletSurface()) {
     if (!state.address) {
-      throw new Error('Connect a wallet first with /connect, then return here.');
+      throw new Error(t('Connect a wallet first with /connect, then return here.'));
     }
     return state.address;
   }
@@ -32370,7 +32482,7 @@ function discoverBrowserWallets(options: { resetSelection?: boolean } = {}): voi
       clearWalletPathSession();
     }
     savePersistedState();
-    throw new Error('No Wallet Standard Solana wallets are registered in this browser.');
+    throw new Error(t('No Wallet Standard Solana wallets are registered in this browser.'));
   }
   savePersistedState();
   pushToast('success', t('Wallets discovered'), tf('{count} provider(s) found.', { count: state.wallets.length }));
@@ -32649,7 +32761,7 @@ async function runReconnectAndroidCached(): Promise<void> {
       rpcUrl: activeRpcUrl(),
     });
     if (!restored) {
-      throw new Error('No cached Android MWA authorization found.');
+      throw new Error(t('No cached Android MWA authorization found.'));
     }
     await applyAndroidNativeRestore(restored);
     if (state.bridgeActive) {
@@ -33020,7 +33132,7 @@ async function runSignGuidedDemoReceipt(): Promise<void> {
   let proofToastId: number | undefined;
   await run('sign', async () => {
     if (state.guidedDemo.stage !== 'receipt' || !state.guidedDemo.receiptJson) {
-      throw new Error('Complete the demo decision before signing a demo receipt.');
+      throw new Error(t('Complete the demo decision before signing a demo receipt.'));
     }
     const signingMessage = [
       'Agentic demo receipt',
@@ -33028,7 +33140,7 @@ async function runSignGuidedDemoReceipt(): Promise<void> {
       state.guidedDemo.receiptJson,
     ].join('\n');
     proofToastId = beginProofSigningToast({
-      message: 'Approve this demo receipt proof in your wallet. No transaction will be submitted.',
+      message: t('Approve this demo receipt proof in your wallet. No transaction will be submitted.'),
     });
     const result = await signWalletProofMessage(signingMessage, 'Demo receipt signature', state.cluster);
     const scenario = selectedGuidedDemoScenario();
@@ -33042,10 +33154,10 @@ async function runSignGuidedDemoReceipt(): Promise<void> {
         result.signature,
       ),
     );
-    completeProofSigningToast(proofToastId, 'success', 'Demo receipt signed', 'Signature saved only inside this simulated demo.');
+    completeProofSigningToast(proofToastId, 'success', t('Demo receipt signed'), t('Signature saved only inside this simulated demo.'));
   }, {
     onError: (message) => {
-      completeProofSigningToast(proofToastId, 'error', 'Sign proof failed', message);
+      completeProofSigningToast(proofToastId, 'error', t('Sign proof failed'), message);
     },
   });
 }
@@ -33054,14 +33166,14 @@ async function runSignMessage(): Promise<void> {
   let proofToastId: number | undefined;
   await run('sign', async () => {
     proofToastId = beginProofSigningToast({
-      message: 'Approve this message proof in your wallet. No transaction will be submitted.',
+      message: t('Approve this message proof in your wallet. No transaction will be submitted.'),
     });
     const result = await signWalletProofMessage(DEMO_MESSAGE, 'Home message signature', state.cluster);
     state.signature = result.signature;
-    completeProofSigningToast(proofToastId, 'success', 'Message signed', short(result.signature));
+    completeProofSigningToast(proofToastId, 'success', t('Message signed'), short(result.signature));
   }, {
     onError: (message) => {
-      completeProofSigningToast(proofToastId, 'error', 'Sign proof failed', message);
+      completeProofSigningToast(proofToastId, 'error', t('Sign proof failed'), message);
     },
   });
 }
@@ -33069,7 +33181,7 @@ async function runSignMessage(): Promise<void> {
 async function runAirdrop(): Promise<void> {
   await run('transaction', async () => {
     if (state.cluster !== 'devnet') {
-      throw new Error('Devnet SOL is available only when the cluster is devnet.');
+      throw new Error(t('Devnet SOL is available only when the cluster is devnet.'));
     }
     const publicKey = publicKeyFromConnectedWallet();
     state.transactionStatus = 'Requesting 1 devnet SOL from the Solana faucet...';
@@ -33087,14 +33199,14 @@ async function runAirdrop(): Promise<void> {
 async function runCreateDemoTransaction(): Promise<void> {
   await run('transaction', async () => {
     if (state.cluster !== 'devnet') {
-      throw new Error('The built-in memo transaction is devnet-only.');
+      throw new Error(t('The built-in memo transaction is devnet-only.'));
     }
     const feePayer = publicKeyFromConnectedWallet();
     const connection = new Connection(defaultRpcUrl('devnet'), 'confirmed');
     const balance = await connection.getBalance(feePayer, 'confirmed');
     if (balance === 0) {
       state.transactionStatus = 'This devnet account has 0 SOL. Request devnet SOL before signing the demo transaction.';
-      throw new Error('Not enough devnet SOL for transaction fees. Click Request devnet SOL, then try again.');
+      throw new Error(t('Not enough devnet SOL for transaction fees. Click Request devnet SOL, then try again.'));
     }
 
     const { blockhash } = await connection.getLatestBlockhash();
@@ -33183,7 +33295,7 @@ async function runSignAndSendTransaction(): Promise<void> {
   await run('transaction', async () => {
     const signingClient = requireClient();
     if (!state.capabilities?.supports.signAndSendTransaction) {
-      throw new Error('Selected wallet does not support sign and send.');
+      throw new Error(t('Selected wallet does not support sign and send.'));
     }
 
     state.transactionStatus = `Opening wallet approval to sign and send on ${state.cluster}...`;
@@ -33236,7 +33348,7 @@ async function runGenerateAgentPlan(): Promise<void> {
         if (state.askAgentAfterDraft && (hasDetectedAgentReviewPath() || isMockPreSignPolicyPlan(record))) {
           reviewAfterDraftId = record.id;
         }
-        replaceToast(toastId, 'success', t('Plan created'), `${template.title} is ready in Check request.`);
+        replaceToast(toastId, 'success', t('Plan created'), tf('{title} is ready in Check request.', { title: t(template.title) }));
       },
       { onError: (message) => replaceToast(toastId, 'error', t('Template plan failed'), message) },
     );
@@ -33341,7 +33453,7 @@ function cancelActiveAiDraft(): void {
 
 function assertAiDraftActive(operation: ActiveAiDraftOperation): void {
   if (operation.cancelled || operation.controller.signal.aborted) {
-    throw new Error('AI plan cancelled.');
+    throw new Error(t('AI plan cancelled.'));
   }
 }
 
@@ -33464,11 +33576,11 @@ async function runGenerateAiPlan(): Promise<void> {
     }
     appendAiDiagnostic({
       code: 'AI_PLAN_READY',
-      message: 'AI Planner returned a valid plan.',
+      message: t('AI Planner returned a valid plan.'),
       detail: `${agentReviewProviderLabel()} ${agentReviewModelLabel()}`,
     });
     state.steps.ai = 'done';
-    replaceToast(toastId, 'success', t('AI plan created'), `${plan.templateTitle} is ready in Check request.`);
+    replaceToast(toastId, 'success', t('AI plan created'), tf('{title} is ready in Check request.', { title: t(plan.templateTitle) }));
   } catch (err) {
     const isCurrentOperation = activeAiDraftOperation?.id === operation.id;
     if (operation.cancelled || isAbortError(err)) {
@@ -33516,7 +33628,7 @@ async function runSignAgentPlan(): Promise<void> {
   let proofToastId: number | undefined;
   await run('sign', async () => {
     if (!state.agentPlan) {
-      throw new Error('Create a plan before signing a review proof.');
+      throw new Error(t('Create a plan before signing a review proof.'));
     }
     const plan = planWithRuntimeTokenLabels(state.agentPlan);
     state.agentPlan = plan;
@@ -33549,9 +33661,9 @@ async function runSignAgentPlan(): Promise<void> {
     }
     const syncPending = signedPlanId && cloudSyncPending(signedPlanId);
     if (syncPending) {
-      completeProofSigningToast(proofToastId, 'info', 'Signed locally', 'Cloud sync will retry when reachable.');
+      completeProofSigningToast(proofToastId, 'info', t('Signed locally'), t('Cloud sync will retry when reachable.'));
     } else {
-      completeProofSigningToast(proofToastId, 'success', 'Proof signed', 'Saved in Done.');
+      completeProofSigningToast(proofToastId, 'success', t('Proof signed'), t('Saved in Done.'));
     }
   }, {
     onError: async (message, err) => {
@@ -33560,7 +33672,7 @@ async function runSignAgentPlan(): Promise<void> {
       // (Phase 4 in updateGeneratedPlan should already swallow this; this guard
       // protects against future cloud writes that bypass that path.)
       if (state.agentSignature && isCloudUnreachableError(err)) {
-        completeProofSigningToast(proofToastId, 'info', 'Signed locally', 'Cloud sync will retry when reachable.');
+        completeProofSigningToast(proofToastId, 'info', t('Signed locally'), t('Cloud sync will retry when reachable.'));
         return;
       }
       if (state.selectedGeneratedPlanId) {
@@ -33570,7 +33682,7 @@ async function runSignAgentPlan(): Promise<void> {
           failureLabel: 'Sign failed - try again',
         }).catch(() => undefined);
       }
-      completeProofSigningToast(proofToastId, 'error', 'Sign proof failed', message);
+      completeProofSigningToast(proofToastId, 'error', t('Sign proof failed'), message);
     },
   });
 }
@@ -33578,7 +33690,7 @@ async function runSignAgentPlan(): Promise<void> {
 async function runQueueAgentPlan(): Promise<void> {
   await run('inbox', async () => {
     if (!state.agentPlan) {
-      throw new Error('Create a plan before sending it for approval.');
+      throw new Error(t('Create a plan before sending it for approval.'));
     }
     const plan = planWithRuntimeTokenLabels(state.agentPlan);
     state.agentPlan = plan;
@@ -33653,7 +33765,7 @@ async function runGeneratedPlanAction(planId: string, action: string): Promise<v
   }
   if (action === 'reuse' || action === 'make-active') {
     useGeneratedPlanAsStartingPoint(record);
-    pushToast('success', t('Starting point loaded'), tf('{title} is ready in Create Plan.', { title: record.plan.templateTitle }));
+    pushToast('success', t('Starting point loaded'), tf('{title} is ready in Create Plan.', { title: t(record.plan.templateTitle) }));
     render();
     return;
   }
@@ -33663,14 +33775,14 @@ async function runGeneratedPlanAction(planId: string, action: string): Promise<v
       state.generatedPlanAuditId = '';
     }
     selectFallbackGeneratedPlan();
-    pushToast('success', t('Plan archived'), record.plan.templateTitle);
+    pushToast('success', t('Plan archived'), t(record.plan.templateTitle));
     render();
     return;
   }
   if (action === 'restore') {
     await updateGeneratedPlan(planId, { status: restoredGeneratedPlanStatus(record) });
     state.selectedGeneratedPlanId = planId;
-    pushToast('success', t('Plan restored'), record.plan.templateTitle);
+    pushToast('success', t('Plan restored'), t(record.plan.templateTitle));
     render();
     return;
   }
@@ -33730,13 +33842,13 @@ async function runDenyGeneratedPlanWithAgentReason(planId: string): Promise<void
   let signedNote = note;
   if (state.address) {
     proofToastId = beginProofSigningToast({
-      message: 'Approve this agent-denial proof in your wallet. No transaction will be submitted.',
+      message: t('Approve this agent-denial proof in your wallet. No transaction will be submitted.'),
     });
     try {
       proofSignature = await signAgentDenialProof(record.plan, review, `Agent denial: ${planSummary}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      completeProofSigningToast(proofToastId, 'error', 'Sign proof failed', redactSecrets(message));
+      completeProofSigningToast(proofToastId, 'error', t('Sign proof failed'), redactSecrets(message));
       proofToastId = undefined;
       signedNote = compactSentence(`${note} (Could not sign proof: ${redactSecrets(message)}.)`, 360);
     }
@@ -33766,7 +33878,7 @@ async function runDenyGeneratedPlanWithAgentReason(planId: string): Promise<void
     ? `${planSummary} archived. Signed denial proof saved in Done.`
     : `${planSummary} archived. Proof saved in Done (unsigned — wallet was unavailable).`;
   if (proofToastId !== undefined) {
-    completeProofSigningToast(proofToastId, 'success', 'Agent denial saved', savedMessage);
+    completeProofSigningToast(proofToastId, 'success', t('Agent denial saved'), savedMessage);
   } else {
     pushToast('success', t('Agent denial saved'), savedMessage);
   }
@@ -34349,7 +34461,7 @@ async function runDeleteCompletedPlan(completedId: string): Promise<void> {
         saveBrowserWorkflowState();
       } else {
       if (!state.bridgeActive) {
-        throw new Error('Connect the local bridge before deleting bridge-backed done work.');
+        throw new Error(t('Connect the local bridge before deleting bridge-backed done work.'));
       }
       await bridgeRequest('/bridge/prepared-actions/delete', {
         method: 'POST',
@@ -34363,7 +34475,7 @@ async function runDeleteCompletedPlan(completedId: string): Promise<void> {
         saveBrowserWorkflowState();
       } else {
       if (!state.bridgeActive) {
-        throw new Error('Connect the local bridge before deleting repeat payment history.');
+        throw new Error(t('Connect the local bridge before deleting repeat payment history.'));
       }
       await bridgeRequest('/bridge/recurring-payments/delete', {
         method: 'POST',
@@ -34477,7 +34589,7 @@ async function deletePreparedActionWithoutReceipt(action: PreparedAction): Promi
     return;
   }
   if (!state.bridgeActive) {
-    throw new Error('Connect the local bridge before deleting bridge-backed requests.');
+    throw new Error(t('Connect the local bridge before deleting bridge-backed requests.'));
   }
   await bridgeRequest('/bridge/prepared-actions/delete', {
     method: 'POST',
@@ -34595,7 +34707,7 @@ async function runDeleteAllRepeats(): Promise<void> {
           touchedCloud = true;
         } else {
           if (!state.bridgeActive) {
-            throw new Error('Connect the local bridge before deleting bridge-backed repeats.');
+            throw new Error(t('Connect the local bridge before deleting bridge-backed repeats.'));
           }
           await bridgeRequest('/bridge/recurring-payments/delete', {
             method: 'POST',
@@ -34664,7 +34776,7 @@ async function runDeleteAllDone(): Promise<void> {
               state.receipts = state.receipts.filter((receipt) => receipt.actionId !== record.actionId);
             } else {
               if (!state.bridgeActive) {
-                throw new Error('Connect the local bridge before deleting bridge-backed Done work.');
+                throw new Error(t('Connect the local bridge before deleting bridge-backed Done work.'));
               }
               await bridgeRequest('/bridge/prepared-actions/delete', {
                 method: 'POST',
@@ -34678,7 +34790,7 @@ async function runDeleteAllDone(): Promise<void> {
               state.recurringPayments = state.recurringPayments.filter((candidate) => candidate.id !== record.recurringId);
             } else {
               if (!state.bridgeActive) {
-                throw new Error('Connect the local bridge before deleting repeat payment history.');
+                throw new Error(t('Connect the local bridge before deleting repeat payment history.'));
               }
               await bridgeRequest('/bridge/recurring-payments/delete', {
                 method: 'POST',
@@ -34740,7 +34852,7 @@ async function runSignGeneratedPlan(planId: string): Promise<void> {
   await run('sign', async () => {
     const record = requireGeneratedPlanRecord(planId);
     if (record.status === 'archived') {
-      throw new Error('Restore this plan before signing a review proof.');
+      throw new Error(t('Restore this plan before signing a review proof.'));
     }
     const plan = planWithRuntimeTokenLabels(record.plan);
     proofToastId = beginProofSigningToast();
@@ -34766,14 +34878,14 @@ async function runSignGeneratedPlan(planId: string): Promise<void> {
     }
     showCompletedHistoryForGeneratedProof(planId);
     if (cloudSyncPending(planId)) {
-      completeProofSigningToast(proofToastId, 'info', 'Signed locally', 'Cloud sync will retry when reachable.');
+      completeProofSigningToast(proofToastId, 'info', t('Signed locally'), t('Cloud sync will retry when reachable.'));
     } else {
-      completeProofSigningToast(proofToastId, 'success', 'Proof signed', 'Saved in Done.');
+      completeProofSigningToast(proofToastId, 'success', t('Proof signed'), t('Saved in Done.'));
     }
   }, {
     onError: async (message, err) => {
       if (signedLocally && isCloudUnreachableError(err)) {
-        completeProofSigningToast(proofToastId, 'info', 'Signed locally', 'Cloud sync will retry when reachable.');
+        completeProofSigningToast(proofToastId, 'info', t('Signed locally'), t('Cloud sync will retry when reachable.'));
         return;
       }
       await updateGeneratedPlan(planId, {
@@ -34781,7 +34893,7 @@ async function runSignGeneratedPlan(planId: string): Promise<void> {
         error: message,
         failureLabel: 'Sign failed - try again',
       });
-      completeProofSigningToast(proofToastId, 'error', 'Sign proof failed', message);
+      completeProofSigningToast(proofToastId, 'error', t('Sign proof failed'), message);
     },
   });
 }
@@ -34790,7 +34902,7 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
   await run('inbox', async () => {
     const record = requireGeneratedPlanRecord(planId);
     if (record.status === 'archived') {
-      throw new Error('Restore this plan before sending it for approval.');
+      throw new Error(t('Restore this plan before sending it for approval.'));
     }
     const plan = planWithRuntimeTokenLabels(record.plan);
     assertPlanCanQueue(plan);
@@ -34870,17 +34982,17 @@ async function saveGeneratedPlan(
       }),
     }));
     if (options.signal?.aborted) {
-      throw new Error('AI draft cancelled.');
+      throw new Error(t('AI draft cancelled.'));
     }
     const record = cloudPlanToGeneratedPlan(cloudPlan);
     if (!record) {
-      throw new Error('Agentic Cloud did not return a valid plan draft.');
+      throw new Error(t('Agentic Cloud did not return a valid plan draft.'));
     }
     state.generatedPlans = mergeGeneratedPlans([record], state.generatedPlans.filter((candidate) => candidate.id !== record.id));
     return record;
   }
   if (options.signal?.aborted) {
-    throw new Error('AI draft cancelled.');
+    throw new Error(t('AI draft cancelled.'));
   }
   const now = new Date().toISOString();
   const record: GeneratedPlanRecord = {
@@ -34967,7 +35079,7 @@ async function updateGeneratedPlan(
       }));
       const record = cloudPlanToGeneratedPlan(cloudPlan);
       if (!record) {
-        throw new Error('Agentic Cloud did not return a valid plan update.');
+        throw new Error(t('Agentic Cloud did not return a valid plan update.'));
       }
       state.generatedPlans = mergeGeneratedPlans(
         [{ ...record, cloudSyncStatus: 'synced', cloudSyncError: undefined }],
@@ -35328,13 +35440,13 @@ function completedPlanFromGeneratedPlan(
     ...(record.metadata ? { metadata: record.metadata } : {}),
     copyPayload: stableJson(payload),
     detailRows: completedRows([
-      ['Type', 'One-time plan'],
-      ['Status', status],
+      ['Type', t('One-time plan')],
+      ['Status', completedStatusDisplay(status)],
       ['Template', record.templateTitle],
       ['Action', record.plan.actionType.replace(/_/g, ' ')],
       ...connectorReadDetailRows(connectorRead),
       ['Source', planSourceLabel(record.plan)],
-      ['Wallet', (receipt?.walletAddress ?? action?.walletAddress ?? record.walletAddress) || 'No wallet at creation'],
+      ['Wallet', (receipt?.walletAddress ?? action?.walletAddress ?? record.walletAddress) || t('No wallet at creation')],
       ['Created', formatDateTime(record.createdAt)],
       ['Completed', formatDateTime(completedAt)],
       actionId ? ['Approval id', actionId] : undefined,
@@ -35395,8 +35507,8 @@ function completedPlanFromReceipt(receipt: ActionReceipt, action: PreparedAction
     ...(workflowSource ? { workflowSource } : {}),
     copyPayload: stableJson(payload),
     detailRows: completedRows([
-      ['Type', kind === 'recurring' ? 'Repeat payment' : 'One-time approval'],
-      ['Status', status],
+      ['Type', kind === 'recurring' ? t('Repeat payment') : t('One-time approval')],
+      ['Status', completedStatusDisplay(status)],
       ['Action id', receipt.actionId],
       recurringId ? ['Repeat id', recurringId] : undefined,
       occurrenceKey ? ['Occurrence', occurrenceKey] : undefined,
@@ -35426,7 +35538,7 @@ function completedPlanFromAgentOverride(receipt: ActionReceipt): CompletedPlanRe
     kind: 'one-time',
     status,
     tone: 'warn',
-    title: 'Overrode agent warning',
+    title: t('Overrode agent warning'),
     summary: receipt.summary,
     completedAt: receipt.completedAt,
     createdAt: receipt.createdAt,
@@ -35436,18 +35548,18 @@ function completedPlanFromAgentOverride(receipt: ActionReceipt): CompletedPlanRe
     workflowSource: 'browser',
     copyPayload: stableJson(payload),
     detailRows: completedRows([
-      ['Type', 'Agent override proof'],
-      ['Status', status],
+      ['Type', t('Agent override proof')],
+      ['Status', completedStatusDisplay(status)],
       ['Plan', override.planSummary],
       ['Agent path', agentReviewPathLabel(review)],
-      ['Agent said', review.reason || 'No reason recorded.'],
+      ['Agent said', review.reason || t('No reason recorded.')],
       review.summary ? ['Agent summary', review.summary] : undefined,
       review.provider ? ['Agent provider', review.provider] : undefined,
       review.model ? ['Agent model', review.model] : undefined,
-      ['Agent decided', review.checkedAt ? formatDateTime(review.checkedAt) : 'not recorded'],
+      ['Agent decided', review.checkedAt ? formatDateTime(review.checkedAt) : t('not recorded')],
       ['User overrode', formatDateTime(override.overriddenAt)],
-      override.userReason ? ['User reason', override.userReason] : ['User reason', 'No reason given'],
-      ['Wallet', receipt.walletAddress || 'No wallet at override'],
+      override.userReason ? ['User reason', override.userReason] : ['User reason', t('No reason given')],
+      ['Wallet', receipt.walletAddress || t('No wallet at override')],
     ]),
   };
 }
@@ -35481,8 +35593,8 @@ function completedPlanFromAction(action: PreparedAction): CompletedPlanRecord {
     ...(action.workflowSource ? { workflowSource: action.workflowSource } : {}),
     copyPayload: stableJson({ type: kind === 'recurring' ? 'completed_recurring_occurrence' : 'completed_one_time_approval', action }),
     detailRows: completedRows([
-      ['Type', kind === 'recurring' ? 'Repeat payment' : 'One-time approval'],
-      ['Status', status],
+      ['Type', kind === 'recurring' ? t('Repeat payment') : t('One-time approval')],
+      ['Status', completedStatusDisplay(status)],
       ['Action id', action.id],
       action.recurringId ? ['Repeat id', action.recurringId] : undefined,
       action.occurrenceKey ? ['Occurrence', action.occurrenceKey] : undefined,
@@ -35521,8 +35633,8 @@ function completedPlanFromEndedRecurring(payment: RecurringPayment): CompletedPl
     workflowSource: recurringPaymentWorkflowSource(payment),
     copyPayload: stableJson({ type: 'completed_recurring_schedule', recurringPayment: payment }),
     detailRows: completedRows([
-      ['Type', 'Repeat payment'],
-      ['Status', 'schedule complete'],
+      ['Type', t('Repeat payment')],
+      ['Status', completedStatusDisplay('schedule complete')],
       ['Repeat id', payment.id],
       ['Wallet', payment.walletAddress],
       ['Recipient', payment.recipient],
@@ -35539,6 +35651,35 @@ function completedPlanFromEndedRecurring(payment: RecurringPayment): CompletedPl
 
 function completedRows(rows: Array<[string, string] | undefined>): Array<[string, string]> {
   return rows.filter((row): row is [string, string] => Boolean(row && row[1]));
+}
+
+function completedStatusDisplay(status: string): string {
+  switch (status) {
+    case 'approved':
+      return t('approved');
+    case 'rejected':
+      return t('rejected');
+    case 'cancelled':
+      return t('cancelled');
+    case 'failed':
+      return t('failed');
+    case 'expired':
+      return t('expired');
+    case 'blocked':
+      return t('blocked');
+    case 'archived':
+      return t('archived');
+    case 'completed':
+      return t('completed');
+    case 'proof signed':
+      return t('proof signed');
+    case 'agent override':
+      return t('agent override');
+    case 'schedule complete':
+      return t('schedule complete');
+    default:
+      return t(status);
+  }
 }
 
 function isTerminalPreparedAction(action: PreparedAction): boolean {
@@ -35611,7 +35752,7 @@ function generatedPlanById(planId: string): GeneratedPlanRecord | undefined {
 function requireGeneratedPlanRecord(planId: string): GeneratedPlanRecord {
   const record = generatedPlanById(planId);
   if (!record) {
-    throw new Error('Plan was not found.');
+    throw new Error(t('Plan was not found.'));
   }
   return record;
 }
@@ -35816,11 +35957,11 @@ async function connectorReadReceiptForPlan(
   }
   const facts = connectorFactsFromReadResponse(response);
   if (!facts.length) {
-    throw new Error('Pyth did not return connector facts for this price feed.');
+    throw new Error(t('Pyth did not return connector facts for this price feed.'));
   }
   const selectedFact = pythFactForQuestion(facts, question) ?? facts[0];
   if (!selectedFact) {
-    throw new Error('Pyth did not return a usable connector fact for this price feed.');
+    throw new Error(t('Pyth did not return a usable connector fact for this price feed.'));
   }
   const resultSummary = connectorFactSummary(selectedFact) || 'Pyth facts recorded';
   const feedLabel = pythFeedLabelFromRead(plan, response, selectedFact);
@@ -35865,7 +36006,7 @@ function pythConnectorReadRequest(plan: AgentPlan, question: PythReadQuestion): 
   const feedId = looksLikePythFeedId(rawFeed) ? rawFeed : '';
   const symbol = feedId ? rawLabel : rawFeed || rawLabel;
   if (!feedId && !symbol) {
-    throw new Error('Choose a Pyth price feed before signing this read proof.');
+    throw new Error(t('Choose a Pyth price feed before signing this read proof.'));
   }
   const maxAgeSeconds = numericPlanParam(plan, ['maxAgeSeconds']);
   const maxConfidenceBps = numericPlanParam(plan, ['maxConfidenceBps']);
@@ -37944,7 +38085,7 @@ async function enrichSimulationFactsForAgent(
     const versioned = tryDeserializeVersionedTx(bytes);
     const legacy = versioned ? undefined : tryDeserializeLegacyTx(bytes);
     if (!versioned && !legacy) {
-      throw new Error('Could not deserialize transaction bytes.');
+      throw new Error(t('Could not deserialize transaction bytes.'));
     }
     const writableProgramIds = collectWritableProgramIds(versioned ?? legacy!);
     const connection = browserActionConnection(record.cluster);
@@ -38268,7 +38409,7 @@ function connectorReadSourceForAgent(record: GeneratedPlanRecord): 'cloud' | 'lo
   if (record.workflowSource === 'cloud' && cloudSessionMatchesWallet()) return 'cloud';
   if (state.bridgeActive && state.bridgeToken && isTrustedBridgeUrl(state.bridgeUrl)) return 'local-bridge';
   if (cloudSessionMatchesWallet()) return 'cloud';
-  throw new Error('Connector facts need Agentic Cloud sign-in or a connected private local bridge.');
+  throw new Error(t('Connector facts need Agentic Cloud sign-in or a connected private local bridge.'));
 }
 
 function connectorReadCapabilityForAction(actionKind: string): string | undefined {
@@ -38544,7 +38685,7 @@ async function walletScopedProviderRequest(
     }
   }
   if (bridgeError) throw bridgeError;
-  throw new Error('No signed-in cloud session or connected local bridge is available for wallet-scoped provider data.');
+  throw new Error(t('No signed-in cloud session or connected local bridge is available for wallet-scoped provider data.'));
 }
 
 function extractHeliusTransferRows(payload: unknown): Record<string, unknown>[] {
@@ -39795,14 +39936,14 @@ async function confirmAiPlannerCore(toastId: number, replaceToastFn: ReplaceToas
     setAiPlannerConfirmation(
       'confirmed',
       hostedBlockReason
-        ? `${hostedBlockReason} Hosted BYOK key is staged; workflow capability is unchanged.`
-        : 'Hosted BYOK route is reachable for AI Connector requests only. Provider key validity is checked on the first AI request. Workflow capability is unchanged.',
+        ? tf('{reason} Hosted BYOK key is staged; workflow capability is unchanged.', { reason: hostedBlockReason })
+        : t('Hosted BYOK route is reachable for AI Connector requests only. Provider key validity is checked on the first AI request. Workflow capability is unchanged.'),
     );
     replaceToastFn(
       toastId,
       'success',
-      hostedBlockReason ? 'Hosted key staged' : 'Planner confirmed',
-      hostedBlockReason || 'Hosted BYOK can review requests only.',
+      hostedBlockReason ? t('Hosted key staged') : t('Planner confirmed'),
+      hostedBlockReason || t('Hosted BYOK can review requests only.'),
     );
     return;
   }
@@ -39966,8 +40107,8 @@ async function runSetAiEngine(engine: 'api-key' | 'connector'): Promise<void> {
     state.aiSettings.connector = 'codex';
   }
   resetAiPlannerConfirmation(engine === 'connector'
-    ? 'Connector selected. Confirm planner after bridge status refreshes.'
-    : 'Provider API key mode selected. Confirm planner after setting a key.');
+    ? t('Connector selected. Confirm planner after bridge status refreshes.')
+    : t('Provider API key mode selected. Confirm planner after setting a key.'));
   savePersistedState();
   render();
   // Switching back to API key also leaves connector mode on the bridge (best-effort), so the
@@ -40090,7 +40231,7 @@ async function runSetBrowserDeviceAgentSecretStoreMode(mode: SecretStoreMode): P
   await run('ai', async () => {
     const mod = await ensureBrowserDeviceAgentInitialized();
     if (!mod) {
-      throw new Error('Browser-native Device Agent runtime is not available in this build.');
+      throw new Error(t('Browser-native Device Agent runtime is not available in this build.'));
     }
     const status = await mod.setBrowserDeviceAgentSecretStoreMode(mode);
     persistBrowserDeviceAgentSecretStoreMode(mode);
@@ -40467,7 +40608,7 @@ async function runCloudSignIn(): Promise<void> {
   await run('connect', async () => {
     try {
       if (!state.address) {
-        throw new Error('Connect a wallet before signing in to Agentic Cloud.');
+        throw new Error(t('Connect a wallet before signing in to Agentic Cloud.'));
       }
       const nonce = parseAuthNonceResponse(await cloudRequest('/api/auth/nonce', {
         method: 'POST',
@@ -40526,8 +40667,11 @@ async function runAndroidSiwsCloudSignIn(): Promise<void> {
   state.selectedWalletIcon = undefined;
   state.wallets = [];
   state.androidAuthCacheCount = backend.cacheCount();
-  state.androidNativeStatus = `Android ${state.selectedWalletName} connected on ${state.cluster}.`;
-  state.transactionStatus = `Android MWA wallet connected on ${state.cluster}.`;
+  state.androidNativeStatus = tf('Android {wallet} connected on {cluster}.', {
+    wallet: state.selectedWalletName,
+    cluster: state.cluster,
+  });
+  state.transactionStatus = tf('Android MWA wallet connected on {cluster}.', { cluster: state.cluster });
   state.steps.connect = 'done';
   rememberWalletPathSession({
     path: 'android-native',
@@ -40595,7 +40739,7 @@ interface LocalWorkspaceStorageTransferResult {
 
 async function transferLocalWorkspaceToCloud(options: { confirm: boolean; showEmptyToast: boolean }): Promise<LocalWorkspaceStorageTransferResult> {
   if (!cloudSessionMatchesWallet()) {
-    throw new Error('Sign in to Agentic Cloud with the connected wallet before transferring local workspace data.');
+    throw new Error(t('Sign in to Agentic Cloud with the connected wallet before transferring local workspace data.'));
   }
   const candidates = localCloudImportCandidates();
   const total = candidates.summary.total;
@@ -40831,7 +40975,7 @@ async function runConfirmCloudWorkspaceDelete(): Promise<void> {
   state.cloudWorkspaceDeleteModalOpen = false;
   await run('connect', async () => {
     if (!cloudSessionMatchesWallet()) {
-      throw new Error('Connect the signed-in wallet before deleting this cloud workspace.');
+      throw new Error(t('Connect the signed-in wallet before deleting this cloud workspace.'));
     }
     const intent = parseCloudWorkspaceDeleteIntentResponse(await cloudRequest('/api/cloud-workspace/delete-intent', {
       method: 'POST',
@@ -40937,7 +41081,7 @@ function navigateAfterCloudWorkspaceDelete(deletedCount: number): void {
 async function runCleanupRecurringBacklog(): Promise<void> {
   await run('connect', async () => {
     if (!cloudSessionMatchesWallet()) {
-      throw new Error('Connect the signed-in wallet before cleaning recurring approvals.');
+      throw new Error(t('Connect the signed-in wallet before cleaning recurring approvals.'));
     }
     const preview = await cloudCleanupRecurringBacklog(true);
     if (preview.cancelled === 0) {
@@ -41009,7 +41153,7 @@ function resetCloudWorkspaceState(): void {
 async function runSetWorkflowModePreference(preference: WorkflowModePreference): Promise<void> {
   await run('bridge', async () => {
     if (preference === 'local-bridge' && !state.bridgeActive) {
-      throw new Error('Connect the local bridge before using private local mode.');
+      throw new Error(t('Connect the local bridge before using private local mode.'));
     }
     state.workflowModePreference = preference;
     savePersistedState();
@@ -41062,7 +41206,7 @@ function refreshBrowserWorkflowData(): void {
 
 async function refreshCloudWorkspaceData(): Promise<void> {
   if (state.cloudSession.status !== 'signed-in') {
-    throw new Error('Sign in to Agentic Cloud before loading cloud workflow data.');
+    throw new Error(t('Sign in to Agentic Cloud before loading cloud workflow data.'));
   }
   void hydratePreferencesFromCloud();
   const browserWorkflow = loadBrowserWorkflowState(state.address);
@@ -41203,7 +41347,7 @@ async function cloudRequest<T = unknown>(path: string, init: RequestInit = {}): 
     throw new Error(cloudErrorMessage(payload, response.status));
   }
   if (payload === null) {
-    throw new Error('Agentic Cloud did not return JSON. Use the same-origin Render app for cloud workflow APIs.');
+    throw new Error(t('Agentic Cloud did not return JSON. Use the same-origin Render app for cloud workflow APIs.'));
   }
   await applyNativeCloudSessionResponse(path, payload);
   return payload as T;
@@ -41226,7 +41370,7 @@ function cloudRequestUrl(path: string): string {
   if (!cloudApiUsesRemoteOrigin()) return path;
   const trimmed = path.trim();
   if (!trimmed.startsWith('/api/')) {
-    throw new Error('Agentic Cloud requests from the bundled app must target /api/ paths.');
+    throw new Error(t('Agentic Cloud requests from the bundled app must target /api/ paths.'));
   }
   return new URL(trimmed, `${androidCloudApiBaseUrl().replace(/\/+$/, '')}/`).toString();
 }
@@ -41368,18 +41512,18 @@ function cloudErrorMessage(payload: unknown, status: number): string {
     const record = payload as Record<string, unknown>;
     if (typeof record.message === 'string' && record.message.trim()) return record.message;
     if (typeof record.error === 'string' && record.error.trim()) {
-      if (status === 404 && record.error === 'not_found') return 'Agentic Cloud workflow APIs are not available from this host yet.';
+      if (status === 404 && record.error === 'not_found') return t('Agentic Cloud workflow APIs are not available from this host yet.');
       return record.error;
     }
   }
-  if (status === 404) return 'Agentic Cloud workflow APIs are not available from this host yet.';
-  if (status === 401) return 'Sign in to Agentic Cloud before using cloud workflow actions.';
-  return `Agentic Cloud request failed with HTTP ${status}.`;
+  if (status === 404) return t('Agentic Cloud workflow APIs are not available from this host yet.');
+  if (status === 401) return t('Sign in to Agentic Cloud before using cloud workflow actions.');
+  return tf('Agentic Cloud request failed with HTTP {status}.', { status });
 }
 
 function stringPayload(value: unknown, label: string): string {
   if (typeof value === 'string' && value.trim()) return value;
-  throw new Error(`${label} was missing from Agentic Cloud.`);
+  throw new Error(tf('{label} was missing from Agentic Cloud.', { label: t(label) }));
 }
 
 function parseCloudPlanResponse(payload: unknown): CloudPlanDraftRecord {
@@ -41401,7 +41545,7 @@ function cloudResponseObject(payload: unknown, label: string): Record<string, un
   if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
     return payload as Record<string, unknown>;
   }
-  throw new Error(`Agentic Cloud returned an invalid ${label}.`);
+  throw new Error(tf('Agentic Cloud returned an invalid {label}.', { label: t(label) }));
 }
 
 function cloudPlanToGeneratedPlan(value: unknown): GeneratedPlanRecord | null {
@@ -41601,8 +41745,8 @@ function cloudCompletedToCompletedPlan(value: unknown): CompletedPlanRecord | nu
     detailRows: Array.isArray(record.detailRows) && record.detailRows.every(isDetailRow)
       ? record.detailRows
       : completedRows([
-          ['Type', kind === 'recurring' ? 'Cloud repeat approval' : 'Cloud one-time approval'],
-          ['Status', record.status],
+          ['Type', kind === 'recurring' ? t('Cloud repeat approval') : t('Cloud one-time approval')],
+          ['Status', completedStatusDisplay(record.status)],
           actionId ? ['Approval id', actionId] : undefined,
           generatedPlanId ? ['Plan id', generatedPlanId] : undefined,
           ['Wallet', record.walletAddress],
@@ -41678,8 +41822,8 @@ function cloudEndedScheduleToCompletedPlan(value: unknown): CompletedPlanRecord 
     recurringId: record.id,
     copyPayload: stableJson(record),
     detailRows: completedRows([
-      ['Type', isSwap ? 'Cloud recurring swap' : 'Cloud repeat payment'],
-      ['Status', record.status],
+      ['Type', isSwap ? t('Cloud recurring swap') : t('Cloud repeat payment')],
+      ['Status', completedStatusDisplay(record.status)],
       ['Cadence', record.cadence],
       isSwap ? ['Route', `${inputToken} -> ${outputToken}`] : ['Recipient', record.recipient],
       [`Amount ${inputToken}`, record.amount],
@@ -41947,7 +42091,7 @@ async function cloudRecurringNotifications(id: string): Promise<RecurringNotific
   const payload = await cloudRequest(`/api/recurring/${encodeURIComponent(id)}/notifications?limit=10`, {
     method: 'GET',
   });
-  if (!isJsonObject(payload)) throw new Error('Agentic Cloud returned invalid notification status.');
+  if (!isJsonObject(payload)) throw new Error(t('Agentic Cloud returned invalid notification status.'));
   const deliveries = Array.isArray(payload.deliveries)
     ? payload.deliveries.map(recurringNotificationDelivery).filter((entry): entry is RecurringNotificationDelivery => Boolean(entry))
     : [];
@@ -42021,7 +42165,7 @@ async function cloudRecurringOccurrences(
     method: 'GET',
   });
   if (!isJsonObject(payload) || !Array.isArray(payload.occurrences)) {
-    throw new Error('Agentic Cloud returned invalid repeat payment history.');
+    throw new Error(t('Agentic Cloud returned invalid repeat payment history.'));
   }
   const occurrences = payload.occurrences
     .map(cloudRecurringOccurrenceView)
@@ -42331,26 +42475,38 @@ function recurringCreateToastTitle(
   review: AgentPlanReviewState | undefined,
   status: 'active' | 'paused',
 ): string {
-  const noun = recurringDraftIsSwap(draft) ? 'Recurring swap' : 'Repeat payment';
-  if (!review) return `${noun} created`;
-  if (status === 'active' && review.status === 'approved') return `${noun} started after agent approval`;
-  if (review.status === 'wallet_required') return `${noun} paused: connect wallet`;
-  if (review.status === 'needs_input') return `${noun} paused: input needed`;
-  if (review.status === 'error') return `${noun} paused: agent error`;
-  return `${noun} paused by agent`;
+  const isSwap = recurringDraftIsSwap(draft);
+  if (!review) return isSwap ? t('Recurring swap created') : t('Repeat payment created');
+  if (status === 'active' && review.status === 'approved') {
+    return isSwap ? t('Recurring swap started after agent approval') : t('Repeat payment started after agent approval');
+  }
+  if (review.status === 'wallet_required') {
+    return isSwap ? t('Recurring swap paused: connect wallet') : t('Repeat payment paused: connect wallet');
+  }
+  if (review.status === 'needs_input') {
+    return isSwap ? t('Recurring swap paused: input needed') : t('Repeat payment paused: input needed');
+  }
+  if (review.status === 'error') {
+    return isSwap ? t('Recurring swap paused: agent error') : t('Repeat payment paused: agent error');
+  }
+  return isSwap ? t('Recurring swap paused by agent') : t('Repeat payment paused by agent');
 }
 
 function recurringCreateToastDetail(
   createMode: ActiveWorkflowMode,
   review: AgentPlanReviewState | undefined,
 ): string {
-  const walletBoundary = 'Every due occurrence still requires wallet approval before signing.';
+  const walletBoundary = t('Every due occurrence still requires wallet approval before signing.');
   if (review) {
-    return compactSentence(`${review.reason || review.summary || 'Agent review recorded.'} ${walletBoundary}`, 360);
+    return compactSentence(`${review.reason || review.summary || t('Agent review recorded.')} ${walletBoundary}`, 360);
   }
-  if (createMode === 'local-bridge') return `Future payments will appear in Needs Approval. ${walletBoundary}`;
-  if (createMode === 'agentic-cloud') return `Each run returns to your wallet for review. ${walletBoundary}`;
-  return `Created one local approval now. Saved-on-device workflow does not run background repeats after this tab closes. ${walletBoundary}`;
+  if (createMode === 'local-bridge') {
+    return t('Future payments will appear in Needs Approval. Every due occurrence still requires wallet approval before signing.');
+  }
+  if (createMode === 'agentic-cloud') {
+    return t('Each run returns to your wallet for review. Every due occurrence still requires wallet approval before signing.');
+  }
+  return t('Created one local approval now. Saved-on-device workflow does not run background repeats after this tab closes. Every due occurrence still requires wallet approval before signing.');
 }
 
 async function runDraftRecurringWithAi(): Promise<void> {
@@ -42627,7 +42783,7 @@ async function runPreparedActionOp(actionId: string, op: string): Promise<void> 
   }
 
   if (!action) {
-    throw new Error('Approval request was not found.');
+    throw new Error(t('Approval request was not found.'));
   }
 
   if (op === 'execute' && isExecutableBrowserAction(action)) {
@@ -42667,7 +42823,7 @@ async function runPreparedActionOp(actionId: string, op: string): Promise<void> 
           const policyError = actionRecipientPolicyBlockReason(action);
           if (policyError) throw new Error(policyError);
         }
-        throw new Error('This approval cannot be sent by the bridge. Use a browser-wallet supported request so the connected wallet signs and submits it.');
+        throw new Error(t('This approval cannot be sent by the bridge. Use a browser-wallet supported request so the connected wallet signs and submits it.'));
       case 'reject':
         await bridgeRequest('/bridge/prepared-actions/reject', {
           method: 'POST',
@@ -42694,7 +42850,7 @@ async function runPreparedActionOp(actionId: string, op: string): Promise<void> 
         pushToast('success', t('Deleted permanently'), actionId);
         break;
       default:
-        throw new Error(`Unknown action operation: ${op}`);
+        throw new Error(tf('Unknown action operation: {operation}', { operation: op }));
     }
     if (state.activeTab !== 'completed') {
       await refreshInboxData();
@@ -42710,7 +42866,7 @@ async function runCloudPreparedActionOp(action: PreparedAction, op: string): Pro
         return;
       }
       if (!canConfirmCloudFinalization(action)) {
-        throw new Error('This request does not have a submitted cloud transaction to confirm.');
+        throw new Error(t('This request does not have a submitted cloud transaction to confirm.'));
       }
       await runCloudFinalizationConfirm(action);
       return;
@@ -42733,7 +42889,7 @@ async function runCloudPreparedActionOp(action: PreparedAction, op: string): Pro
         throw new Error(blockReason);
       }
       const proofToastId = beginProofSigningToast({
-        message: 'Approve this cloud decision proof in your wallet. No transaction will be submitted.',
+        message: t('Approve this cloud decision proof in your wallet. No transaction will be submitted.'),
       });
       try {
         const decisionProof = await signCloudWorkflowDecision(action, 'approved');
@@ -42750,17 +42906,17 @@ async function runCloudPreparedActionOp(action: PreparedAction, op: string): Pro
         });
         await refreshCloudWorkspaceData();
         showCompletedHistoryForAction(action.id);
-        completeProofSigningToast(proofToastId, 'success', 'Approval recorded', 'Cloud receipt saved in Done.');
+        completeProofSigningToast(proofToastId, 'success', t('Approval recorded'), t('Cloud receipt saved in Done.'));
       } catch (err) {
         const message = redactSecrets(err instanceof Error ? err.message : String(err));
-        completeProofSigningToast(proofToastId, 'error', 'Sign proof failed', message);
+        completeProofSigningToast(proofToastId, 'error', t('Sign proof failed'), message);
         throw markToastShown(err);
       }
       return;
     }
     case 'reject': {
       const proofToastId = beginProofSigningToast({
-        message: 'Approve this cloud rejection proof in your wallet. No transaction will be submitted.',
+        message: t('Approve this cloud rejection proof in your wallet. No transaction will be submitted.'),
       });
       try {
         const decisionProof = await signCloudWorkflowDecision(action, 'rejected');
@@ -42777,10 +42933,10 @@ async function runCloudPreparedActionOp(action: PreparedAction, op: string): Pro
         });
         await refreshCloudWorkspaceData();
         showCompletedHistoryForAction(action.id);
-        completeProofSigningToast(proofToastId, 'success', 'Request denied', 'Cloud denial receipt saved in Done.');
+        completeProofSigningToast(proofToastId, 'success', t('Request denied'), t('Cloud denial receipt saved in Done.'));
       } catch (err) {
         const message = redactSecrets(err instanceof Error ? err.message : String(err));
-        completeProofSigningToast(proofToastId, 'error', 'Sign proof failed', message);
+        completeProofSigningToast(proofToastId, 'error', t('Sign proof failed'), message);
         throw markToastShown(err);
       }
       return;
@@ -42799,7 +42955,7 @@ async function runCloudPreparedActionOp(action: PreparedAction, op: string): Pro
       pushToast('success', t('Request deleted'), t('Removed from cloud workspace.'));
       return;
     default:
-      throw new Error(`Unknown action operation: ${op}`);
+      throw new Error(tf('Unknown action operation: {operation}', { operation: op }));
   }
 }
 
@@ -42941,10 +43097,10 @@ async function runCloudSolTransferFinalization(action: PreparedAction): Promise<
   await refreshCloudWorkspaceData();
   if (submittedFinalization?.status === 'failed') {
     replaceToast(toastId, 'error', t('Transaction failed'), submittedFinalization.error ?? t('Submitted transaction failed server verification.'));
-    throw new Error(submittedFinalization.error ?? 'Submitted transaction failed server verification.');
+    throw new Error(submittedFinalization.error ?? t('Submitted transaction failed server verification.'));
   }
   if (!isJsonObject(submitObject.completed)) {
-    replaceToast(toastId, 'pending', t('Transaction submitted'), `Server verification is still pending: ${short(txid)}`, {
+    replaceToast(toastId, 'pending', t('Transaction submitted'), tf('Server verification is still pending: {tx}', { tx: short(txid) }), {
       linkHref: explorerUrl(txid, action.cluster),
       linkLabel: t('Open Solscan'),
     });
@@ -42959,7 +43115,7 @@ async function runCloudSolTransferFinalization(action: PreparedAction): Promise<
 
 async function runCloudFinalizationConfirm(action: PreparedAction): Promise<void> {
   if (!action.finalizationId) {
-    throw new Error('Finalization id is missing.');
+    throw new Error(t('Finalization id is missing.'));
   }
   const response = await cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/finalization/${encodeURIComponent(action.finalizationId)}/confirm`, {
     method: 'POST',
@@ -42969,7 +43125,7 @@ async function runCloudFinalizationConfirm(action: PreparedAction): Promise<void
   const finalization = cloudFinalizationFromRecord(responseObject.finalization);
   await refreshCloudWorkspaceData();
   if (finalization?.status === 'failed') {
-    throw new Error(finalization.error ?? 'Submitted transaction failed server verification.');
+    throw new Error(finalization.error ?? t('Submitted transaction failed server verification.'));
   }
   if (!isJsonObject(responseObject.completed)) {
     pushToast(
@@ -43111,11 +43267,11 @@ async function executeCloudBrowserPreparedAction(action: PreparedAction): Promis
 
 async function runCloudBrowserTransactionConfirm(action: PreparedAction): Promise<void> {
   if (!canConfirmCloudBrowserTransaction(action)) {
-    throw new Error('This request does not have a submitted cloud wallet transaction to confirm.');
+    throw new Error(t('This request does not have a submitted cloud wallet transaction to confirm.'));
   }
   const txid = action.txid ?? findPendingActionLedgerEntry(action.id)?.txid;
   if (!txid) {
-    throw new Error('Submitted transaction id is missing.');
+    throw new Error(t('Submitted transaction id is missing.'));
   }
   const toastId = pushToast('pending', t('Checking confirmation'), short(txid), {
     linkHref: explorerUrl(txid, action.cluster),
@@ -43139,7 +43295,7 @@ async function runCloudBrowserTransactionConfirm(action: PreparedAction): Promis
         pushToast('error', t('Cloud receipt sync failed'), redactSecrets(syncErr instanceof Error ? syncErr.message : String(syncErr)));
       });
       await refreshCloudWorkspaceData().catch(() => undefined);
-      replaceToast(toastId, 'success', t('Pending cleared'), `${message} The approval is ready again.`, {
+      replaceToast(toastId, 'success', t('Pending cleared'), tf('{message} The approval is ready again.', { message }), {
         linkHref: explorerUrl(txid, action.cluster),
         linkLabel: t('Open Solscan'),
       });
@@ -43408,7 +43564,7 @@ function cloudPreparedFinalizationFromResponse(payload: unknown): {
   const response = cloudResponseObject(payload, 'finalization prepare response');
   const finalization = cloudFinalizationFromRecord(response.finalization);
   if (!finalization) {
-    throw new Error('Finalization prepare response was missing finalization.');
+    throw new Error(t('Finalization prepare response was missing finalization.'));
   }
   return {
     finalization,
@@ -43420,7 +43576,7 @@ function cloudFinalizationFromResponse(payload: unknown): CloudTransactionFinali
   const response = cloudResponseObject(payload, 'finalization response');
   const finalization = cloudFinalizationFromRecord(response.finalization);
   if (!finalization) {
-    throw new Error('Finalization response was missing finalization.');
+    throw new Error(t('Finalization response was missing finalization.'));
   }
   return finalization;
 }
@@ -43433,7 +43589,7 @@ function cloudFinalizationFromRecord(value: unknown): CloudTransactionFinalizati
 async function runBrowserPreparedActionOp(actionId: string, op: string): Promise<void> {
   const action = state.preparedActions.find((candidate) => candidate.id === actionId);
   if (!action) {
-    throw new Error('Approval request was not found.');
+    throw new Error(t('Approval request was not found.'));
   }
   switch (op) {
     case 'confirm':
@@ -43460,32 +43616,32 @@ async function runBrowserPreparedActionOp(actionId: string, op: string): Promise
         );
       }
       const proofToastId = beginProofSigningToast({
-        message: 'Approve this browser decision proof in your wallet. No transaction will be submitted.',
+        message: t('Approve this browser decision proof in your wallet. No transaction will be submitted.'),
       });
       try {
         const proofSignature = await signBrowserWorkflowDecision(action, 'approved');
         completeBrowserPreparedAction(action, 'approved', proofSignature);
         showCompletedHistoryForAction(action.id);
-        completeProofSigningToast(proofToastId, 'success', 'Decision proof saved', 'Wallet proof saved in Done. No transaction was submitted.');
+        completeProofSigningToast(proofToastId, 'success', t('Decision proof saved'), t('Wallet proof saved in Done. No transaction was submitted.'));
       } catch (err) {
         const message = redactSecrets(err instanceof Error ? err.message : String(err));
-        completeProofSigningToast(proofToastId, 'error', 'Sign proof failed', message);
+        completeProofSigningToast(proofToastId, 'error', t('Sign proof failed'), message);
         throw markToastShown(err);
       }
       return;
     }
     case 'reject': {
       const proofToastId = beginProofSigningToast({
-        message: 'Approve this browser rejection proof in your wallet. No transaction will be submitted.',
+        message: t('Approve this browser rejection proof in your wallet. No transaction will be submitted.'),
       });
       try {
         const proofSignature = await signBrowserWorkflowDecision(action, 'rejected');
         completeBrowserPreparedAction(action, 'rejected', proofSignature);
         showCompletedHistoryForAction(action.id);
-        completeProofSigningToast(proofToastId, 'success', 'Request rejected', 'Wallet rejection proof saved in Done.');
+        completeProofSigningToast(proofToastId, 'success', t('Request rejected'), t('Wallet rejection proof saved in Done.'));
       } catch (err) {
         const message = redactSecrets(err instanceof Error ? err.message : String(err));
-        completeProofSigningToast(proofToastId, 'error', 'Sign proof failed', message);
+        completeProofSigningToast(proofToastId, 'error', t('Sign proof failed'), message);
         throw markToastShown(err);
       }
       return;
@@ -43509,17 +43665,17 @@ async function runBrowserPreparedActionOp(actionId: string, op: string): Promise
       pushToast('success', t('Deleted permanently'), action.id);
       return;
     default:
-      throw new Error(`Unknown action operation: ${op}`);
+      throw new Error(tf('Unknown action operation: {operation}', { operation: op }));
   }
 }
 
 async function runBrowserTransactionConfirm(action: PreparedAction): Promise<void> {
   if (!canConfirmBrowserTransaction(action)) {
-    throw new Error('This request does not have a submitted browser transaction to confirm.');
+    throw new Error(t('This request does not have a submitted browser transaction to confirm.'));
   }
   const txid = action.txid ?? findPendingActionLedgerEntry(action.id)?.txid;
   if (!txid) {
-    throw new Error('Submitted transaction id is missing.');
+    throw new Error(t('Submitted transaction id is missing.'));
   }
   const toastId = pushToast('pending', t('Checking confirmation'), short(txid), {
     linkHref: explorerUrl(txid, action.cluster),
@@ -43538,7 +43694,7 @@ async function runBrowserTransactionConfirm(action: PreparedAction): Promise<voi
           txStatus: 'failed',
           error: message,
         });
-        replaceToast(toastId, 'success', t('Pending cleared'), `${message} The approval is ready again.`, {
+        replaceToast(toastId, 'success', t('Pending cleared'), tf('{message} The approval is ready again.', { message }), {
           linkHref: explorerUrl(txid, action.cluster),
           linkLabel: t('Open Solscan'),
         });
@@ -43730,7 +43886,7 @@ function streamingApprovalCallbackInfo(action: PreparedAction): StreamingApprova
 
 async function clearStaleBrowserPendingTransaction(action: PreparedAction): Promise<void> {
   if (!isExecutableBrowserAction(action)) {
-    throw new Error('Only browser-wallet transactions can clear local pending state here.');
+    throw new Error(t('Only browser-wallet transactions can clear local pending state here.'));
   }
   const ledger = findPendingTransactionByAction(action.id);
   const txid = action.txid ?? ledger?.txid;
@@ -43745,7 +43901,7 @@ async function clearStaleBrowserPendingTransaction(action: PreparedAction): Prom
       render();
       return;
     }
-    throw new Error('No pending transaction id was found for this request.');
+    throw new Error(t('No pending transaction id was found for this request.'));
   }
 
   const toastId = pushToast('pending', t('Checking transaction'), short(txid), {
@@ -44401,13 +44557,13 @@ function browserExecutionStartMessage(action: PreparedAction): string {
 
 function assertBrowserActionWalletReady(action: PreparedAction): void {
   if (!state.address) {
-    throw new Error('Connect the approval wallet before sending this transaction.');
+    throw new Error(t('Connect the approval wallet before sending this transaction.'));
   }
   if (state.address !== action.walletAddress) {
-    throw new Error(`Connect ${short(action.walletAddress)} before sending this transaction.`);
+    throw new Error(tf('Connect {wallet} before sending this transaction.', { wallet: short(action.walletAddress) }));
   }
   if (action.cluster !== state.cluster) {
-    throw new Error(`Switch to ${titleCaseCluster(action.cluster)} before sending this transaction.`);
+    throw new Error(tf('Switch to {cluster} before sending this transaction.', { cluster: titleCaseCluster(action.cluster) }));
   }
 }
 
@@ -44434,13 +44590,13 @@ async function executeBrowserPreparedActionRecord(
       if ((action.metadata as { source?: unknown } | null | undefined)?.source === 'acp_outbound') {
         return executeBrowserAcpOutbound(action, toastContext);
       }
-      throw new Error('Browser workflow cannot broadcast manual_review without ACP metadata.');
+      throw new Error(t('Browser workflow cannot broadcast manual_review without ACP metadata.'));
     }
     default:
       if (isConnectorApprovalKind(action)) {
         return executeBrowserConnectorPreparedAction(action, toastContext);
       }
-      throw new Error(`Browser workflow cannot broadcast ${action.kind}.`);
+      throw new Error(tf('Browser workflow cannot broadcast {kind}.', { kind: action.kind }));
   }
 }
 
@@ -44589,7 +44745,7 @@ async function executeBrowserSplTransfer(
   const destinationAta = associatedTokenAddress(tokenMetadata.mint, recipientOwner, tokenMetadata.tokenProgramId);
   const sourceBalance = await connection.getTokenAccountBalance(sourceAta, 'confirmed').catch(() => null);
   if (!sourceBalance || BigInt(sourceBalance.value.amount) < rawAmount) {
-    throw new Error(`Insufficient ${tokenMetadata.symbol} balance for ${amount}.`);
+    throw new Error(tf('Insufficient {token} balance for {amount}.', { token: tokenMetadata.symbol, amount }));
   }
 
   const transaction = new Transaction();
@@ -44636,7 +44792,7 @@ async function executeBrowserSkillFeeSplit(
 ): Promise<BrowserTransactionExecution> {
   const token = requiredActionParam(action, 'token');
   if (isNativeSolToken(token)) {
-    throw new Error('skill_fee_split is SPL-only; SOL splits are not supported.');
+    throw new Error(t('skill_fee_split is SPL-only; SOL splits are not supported.'));
   }
   const authorRecipient = publicKeyParam(requiredActionParam(action, 'authorRecipient'), 'authorRecipient');
   const treasuryRecipient = publicKeyParam(requiredActionParam(action, 'treasuryRecipient'), 'treasuryRecipient');
@@ -44649,7 +44805,7 @@ async function executeBrowserSkillFeeSplit(
   const authorRawAmount = parseDecimalAmountToRaw(authorAmount, tokenMetadata.decimals, `${tokenMetadata.symbol} author amount`);
   const treasuryRawAmount = parseDecimalAmountToRaw(treasuryAmount, tokenMetadata.decimals, `${tokenMetadata.symbol} platform amount`);
   if (treasuryRawAmount <= 0n) {
-    throw new Error('skill_fee_split requires a positive platform amount; fall back to transfer_spl when the cut rounds to zero.');
+    throw new Error(t('skill_fee_split requires a positive platform amount; fall back to transfer_spl when the cut rounds to zero.'));
   }
   const totalRaw = authorRawAmount + treasuryRawAmount;
   const sourceAta = associatedTokenAddress(tokenMetadata.mint, owner, tokenMetadata.tokenProgramId);
@@ -44657,7 +44813,11 @@ async function executeBrowserSkillFeeSplit(
   const treasuryAta = associatedTokenAddress(tokenMetadata.mint, treasuryRecipient, tokenMetadata.tokenProgramId);
   const sourceBalance = await connection.getTokenAccountBalance(sourceAta, 'confirmed').catch(() => null);
   if (!sourceBalance || BigInt(sourceBalance.value.amount) < totalRaw) {
-    throw new Error(`Insufficient ${tokenMetadata.symbol} balance for ${authorAmount} + ${treasuryAmount}.`);
+    throw new Error(tf('Insufficient {token} balance for {authorAmount} + {treasuryAmount}.', {
+      token: tokenMetadata.symbol,
+      authorAmount,
+      treasuryAmount,
+    }));
   }
 
   const transaction = new Transaction();
@@ -44718,7 +44878,7 @@ async function executeBrowserSwap(
 ): Promise<BrowserTransactionExecution> {
   const signingClient = requireClient();
   if (state.capabilities?.supports.signTransaction !== true) {
-    throw new Error('Selected wallet cannot sign swap transactions from this browser.');
+    throw new Error(t('Selected wallet cannot sign swap transactions from this browser.'));
   }
   const taker = state.address;
   const connection = browserActionConnection(action.cluster);
@@ -44760,10 +44920,14 @@ async function executeBrowserSwap(
   const signed = await runWalletSigningToastStep(
     toastContext,
     'Signing swap',
-    `Sign Jupiter swap ${short(requestId)} in your wallet.`,
+    tf('Sign Jupiter swap {request} in your wallet.', { request: short(requestId) }),
     () => signingClient.signTransaction(transactionBase64, {
       cluster: action.cluster,
-      summary: `Swap ${requiredActionParam(action, 'amount')} ${inputToken.symbol} to ${outputToken.symbol}`,
+      summary: tf('Swap {amount} {inputToken} to {outputToken}', {
+        amount: requiredActionParam(action, 'amount'),
+        inputToken: inputToken.symbol,
+        outputToken: outputToken.symbol,
+      }),
     }),
   );
   const signedSwapTxid = signedTransactionId(signed.signature);
@@ -44814,12 +44978,12 @@ async function executeBrowserCustomTransaction(
     stringParam(action, 'base64') ||
     stringParam(action, 'tx');
   if (!transactionBase64) {
-    throw new Error('Custom transaction is missing base64 transaction bytes.');
+    throw new Error(t('Custom transaction is missing base64 transaction bytes.'));
   }
   const execution = await signAndBroadcastBrowserTransactionBase64(
     action,
     transactionBase64,
-    action.summary || 'Custom wallet transaction',
+    action.summary || t('Custom wallet transaction'),
     toastContext,
   );
   const txid = execution.txid;
@@ -44901,7 +45065,7 @@ async function signAndBroadcastBrowserTransactionBase64(
     const result = await runTransactionToastStep(
       toastContext,
       'Signing and sending transaction',
-      `${summary}. This wallet path cannot be safely retried without a returned transaction id.`,
+      tf('{summary}. This wallet path cannot be safely retried without a returned transaction id.', { summary }),
       () => signingClient.signAndSendTransaction(transactionBase64, {
         cluster: action.cluster,
         summary,
@@ -44924,7 +45088,7 @@ async function signAndBroadcastBrowserTransactionBase64(
     updateTransactionToast(toastContext, 'pending', 'Confirming transaction', short(txid), txid);
     return { txid, messageHash };
   }
-  throw new Error('Selected wallet cannot sign and send transactions from this browser.');
+  throw new Error(t('Selected wallet cannot sign and send transactions from this browser.'));
 }
 
 async function executeSignedJupiterSwapWithRetry(
@@ -44949,7 +45113,7 @@ async function executeSignedJupiterSwapWithRetry(
       attempt === 1 ? 'Sending swap transaction' : 'Retrying swap transaction',
       attempt === 1
         ? 'Submitting the signed swap through Jupiter.'
-        : `Retry ${attempt} of ${TX_RETRY_MAX_ATTEMPTS} with the same signed transaction.`,
+        : tf('Retry {attempt} of {max} with the same signed transaction.', { attempt, max: TX_RETRY_MAX_ATTEMPTS }),
       signedTxid,
     );
 
@@ -44983,7 +45147,7 @@ async function executeSignedJupiterSwapWithRetry(
     await waitBeforeTransactionRetry(toastContext, lastError, TX_RETRY_MAX_ATTEMPTS, signedTxid);
     return { signature: signedTxid, status: await finalTransactionStatusOrPending(action.cluster, signedTxid) };
   }
-  throw lastError instanceof Error ? lastError : new Error(String(lastError ?? 'Jupiter swap execution failed.'));
+  throw lastError instanceof Error ? lastError : new Error(String(lastError ?? t('Jupiter swap execution failed.')));
 }
 
 async function broadcastSignedBrowserTransactionWithRetry(
@@ -45006,7 +45170,7 @@ async function broadcastSignedBrowserTransactionWithRetry(
       attempt === 1 ? 'Sending transaction' : 'Retrying transaction send',
       attempt === 1
         ? 'Broadcasting the signed transaction to Solana RPC.'
-        : `Retry ${attempt} of ${TX_RETRY_MAX_ATTEMPTS} with the same signed transaction.`,
+        : tf('Retry {attempt} of {max} with the same signed transaction.', { attempt, max: TX_RETRY_MAX_ATTEMPTS }),
       signedTxid,
     );
 
@@ -45033,7 +45197,7 @@ async function broadcastSignedBrowserTransactionWithRetry(
     await finalTransactionStatusOrPending(cluster, signedTxid);
     return signedTxid;
   }
-  throw lastError instanceof Error ? lastError : new Error('Transaction broadcast failed.');
+  throw lastError instanceof Error ? lastError : new Error(t('Transaction broadcast failed.'));
 }
 
 async function resolveSubmittedTransactionStatus(
@@ -45060,7 +45224,7 @@ async function resolveSubmittedTransactionStatusResult(
     );
     lastStatus = status;
     if (status.txStatus === 'failed') {
-      throw new Error(`Transaction ${short(txid)} failed on-chain: ${status.error ?? status.confirmationStatus ?? 'failed'}`);
+      throw new Error(tf('Transaction {tx} failed on-chain: {reason}', { tx: short(txid), reason: status.error ?? status.confirmationStatus ?? t('failed') }));
     }
     if (status.txStatus === 'confirmed') {
       return status;
@@ -45073,7 +45237,7 @@ async function resolveSubmittedTransactionStatusResult(
           'Transaction submitted',
           lastStatus.txStatus === 'status_unreachable'
             ? 'Status check could not reach RPC yet. Use Check confirmation or Solscan before retrying.'
-            : `${short(txid)} is still confirming.`,
+            : tf('{tx} is still confirming.', { tx: short(txid) }),
           txid,
         );
       }
@@ -45092,7 +45256,7 @@ async function pollWithTimeout(
     const timer = setTimeout(() => {
       if (resolved) return;
       resolved = true;
-      resolve({ txStatus: 'status_unreachable', error: `RPC status check exceeded ${timeoutMs}ms` });
+      resolve({ txStatus: 'status_unreachable', error: tf('RPC status check exceeded {timeout}ms', { timeout: timeoutMs }) });
     }, timeoutMs);
     call().then(
       (value) => {
@@ -45245,7 +45409,7 @@ function updateBrowserPreparedAction(actionId: string, patch: Partial<PreparedAc
   state.materializedActions = state.preparedActions;
   saveBrowserWorkflowState();
   if (!updated) {
-    throw new Error(`Approval request ${actionId} was not found.`);
+    throw new Error(tf('Approval request {action} was not found.', { action: actionId }));
   }
   return updated;
 }
@@ -45446,9 +45610,11 @@ function updateTransactionToast(
   message: string,
   txid?: string,
 ): void {
+  const localizedTitle = t(title);
+  const localizedMessage = t(message);
   const linkOptions: ToastOptions = {
     linkHref: txid ? explorerUrl(txid, toastContext.cluster) : undefined,
-    linkLabel: txid ? 'Open Solscan' : undefined,
+    linkLabel: txid ? t('Open Solscan') : undefined,
   };
   const approvalOptions = kind === 'pending' && !txid
     ? withJupiterIosManualApprovalToast(linkOptions)
@@ -45456,8 +45622,8 @@ function updateTransactionToast(
   replaceToast(
     toastContext.toastId,
     kind,
-    title,
-    kind === 'pending' && !txid ? jupiterIosManualToastMessage(message) : message,
+    localizedTitle,
+    kind === 'pending' && !txid ? jupiterIosManualToastMessage(localizedMessage) : localizedMessage,
     approvalOptions,
   );
 }
@@ -45474,8 +45640,11 @@ async function waitBeforeTransactionRetry(
     'pending',
     attempt >= TX_RETRY_MAX_ATTEMPTS ? 'Checking transaction status' : 'Send retry queued',
     attempt >= TX_RETRY_MAX_ATTEMPTS
-      ? `Checking ${short(txid)} before reporting the final status.`
-      : `First send failed: ${message}. Retrying in ${Math.round(TX_RETRY_DELAY_MS / 1000)} seconds with the same signed transaction.`,
+      ? tf('Checking {tx} before reporting the final status.', { tx: short(txid) })
+      : tf('First send failed: {message}. Retrying in {seconds} seconds with the same signed transaction.', {
+        message,
+        seconds: Math.round(TX_RETRY_DELAY_MS / 1000),
+      }),
     txid,
   );
   await sleep(TX_RETRY_DELAY_MS);
@@ -45488,7 +45657,7 @@ async function transactionStatusSeenForRetry(
   const status = await browserSignatureStatus(cluster, txid).catch(() => null);
   if (!status) return null;
   if (status.txStatus === 'failed') {
-    throw new Error(`Transaction ${short(txid)} failed on-chain: ${status.error ?? status.confirmationStatus ?? 'failed'}`);
+    throw new Error(tf('Transaction {tx} failed on-chain: {reason}', { tx: short(txid), reason: status.error ?? status.confirmationStatus ?? t('failed') }));
   }
   if (status.txStatus === 'confirmed') {
     return 'confirmed';
@@ -45504,7 +45673,7 @@ async function finalTransactionStatusOrPending(
   while (Date.now() < deadline) {
     const status = await browserSignatureStatus(cluster, txid).catch(() => null);
     if (status?.txStatus === 'failed') {
-      throw new Error(`Transaction ${short(txid)} failed on-chain: ${status.error ?? status.confirmationStatus ?? 'failed'}`);
+      throw new Error(tf('Transaction {tx} failed on-chain: {reason}', { tx: short(txid), reason: status.error ?? status.confirmationStatus ?? t('failed') }));
     }
     if (status?.txStatus === 'confirmed') {
       return 'confirmed';
@@ -45537,7 +45706,7 @@ function signedTransactionId(signedTransactionBase64: string): string {
   } catch {
     // Fall through to a clear error.
   }
-  throw new Error('Wallet returned signed transaction bytes without a readable transaction signature.');
+  throw new Error(t('Wallet returned signed transaction bytes without a readable transaction signature.'));
 }
 
 async function transactionMessageHashFromBase64(transactionBase64: string): Promise<string> {
@@ -45554,7 +45723,7 @@ async function transactionMessageHashFromBase64(transactionBase64: string): Prom
   } catch {
     // Fall through to a clear error.
   }
-  throw new Error('Transaction bytes did not contain a readable message.');
+  throw new Error(t('Transaction bytes did not contain a readable message.'));
 }
 
 function isZeroSignature(signature: Uint8Array): boolean {
@@ -45744,7 +45913,7 @@ async function sameOriginTransactionRequest<T>(path: string, body: Record<string
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   }).catch(() => {
-    throw new Error('Agentic transaction APIs are not reachable from this page.');
+    throw new Error(t('Agentic transaction APIs are not reachable from this page.'));
   });
   const contentType = response.headers.get('content-type') ?? '';
   if (!contentType.toLowerCase().includes('application/json')) {
@@ -45781,16 +45950,16 @@ function transactionApiUnavailableError(err: unknown): Error {
 
 function transactionApiUnavailableMessage(): string {
   if (isLocalBrowserHost()) {
-    return 'Transaction RPC is not reachable from this browser. Check the selected RPC endpoint or network connection, then approve again.';
+    return t('Transaction RPC is not reachable from this browser. Check the selected RPC endpoint or network connection, then approve again.');
   }
-  return 'Transaction RPC is not reachable from this page. Check the selected RPC endpoint or network connection, then approve again.';
+  return t('Transaction RPC is not reachable from this page. Check the selected RPC endpoint or network connection, then approve again.');
 }
 
 function swapApiUnavailableMessage(): string {
   if (isLocalBrowserHost()) {
-    return 'Swap execution is not reachable from this browser. Check the hosted swap API or network connection, then approve again.';
+    return t('Swap execution is not reachable from this browser. Check the hosted swap API or network connection, then approve again.');
   }
-  return 'Swap execution is not reachable from this page. Check the hosted swap API or network connection, then approve again.';
+  return t('Swap execution is not reachable from this page. Check the hosted swap API or network connection, then approve again.');
 }
 
 function isLocalBrowserHost(): boolean {
@@ -45805,7 +45974,7 @@ function browserActionConnection(cluster: Cluster): Connection {
 function requiredActionParam(action: PreparedAction, key: string): string {
   const value = stringParam(action, key).trim();
   if (!value) {
-    throw new Error(`Approval ${short(action.id)} is missing ${key}.`);
+    throw new Error(tf('Approval {approval} is missing {key}.', { approval: short(action.id), key }));
   }
   return value;
 }
@@ -45814,7 +45983,7 @@ function publicKeyParam(value: string, label: string): PublicKey {
   try {
     return new PublicKey(value);
   } catch {
-    throw new Error(`${label} is not a valid Solana address.`);
+    throw new Error(tf('{label} is not a valid Solana address.', { label: t(label) }));
   }
 }
 
@@ -45876,7 +46045,7 @@ async function resolveBrowserTokenMetadata(
   const tokenProgramId = ownerKey?.equals(TOKEN_2022_PROGRAM_ID) ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
   const decimals = known?.decimals ?? parsedDecimals;
   if (typeof decimals !== 'number' || !Number.isInteger(decimals) || decimals < 0) {
-    throw new Error(`Could not read decimals for token ${tokenDisplayLabel(mintText)}.`);
+    throw new Error(tf('Could not read decimals for token {token}.', { token: tokenDisplayLabel(mintText) }));
   }
   return {
     symbol,
@@ -46028,7 +46197,7 @@ async function hostedSwapRequest(path: '/api/swap/order' | '/api/swap/execute', 
 
 function requiredResponseString(value: unknown, label: string): string {
   if (typeof value === 'string' && value.trim()) return value;
-  throw new Error(`${label} was missing.`);
+  throw new Error(tf('{label} was missing.', { label: t(label) }));
 }
 
 function requiredJupiterOrderTransaction(order: Record<string, unknown>): string {
@@ -46036,7 +46205,7 @@ function requiredJupiterOrderTransaction(order: Record<string, unknown>): string
     return order.transaction;
   }
   const detail = jupiterOrderMissingTransactionDetail(order);
-  throw new Error(`Jupiter order failed: ${detail}`);
+  throw new Error(tf('Jupiter order failed: {detail}', { detail }));
 }
 
 function jupiterOrderMissingTransactionDetail(order: Record<string, unknown>): string {
@@ -46051,19 +46220,21 @@ function jupiterOrderMissingTransactionDetail(order: Record<string, unknown>): s
   }
   if (parts.length > 0) return parts.join(' - ');
   const requestId = typeof order.requestId === 'string' && order.requestId.trim()
-    ? ` Request ${short(order.requestId)} returned no transaction.`
+    ? short(order.requestId)
     : '';
-  return `No transaction returned for this order.${requestId}`;
+  return requestId
+    ? tf('No transaction returned for this order. Request {request} returned no transaction.', { request: requestId })
+    : t('No transaction returned for this order.');
 }
 
 function assertJupiterExecutionSucceeded(executed: Record<string, unknown>): void {
   const status = typeof executed.status === 'string' ? executed.status.toLowerCase() : '';
   const error = executed.error ?? executed.errorMessage ?? executed.message;
   if (status && status !== 'success' && status !== 'succeeded' && status !== 'submitted') {
-    throw new Error(`Jupiter execute failed: ${typeof error === 'string' ? error : stableJson(executed)}`);
+    throw new Error(tf('Jupiter execute failed: {detail}', { detail: typeof error === 'string' ? error : stableJson(executed) }));
   }
   if (typeof error === 'string' && error.trim() && !executed.signature && !executed.txid) {
-    throw new Error(`Jupiter execute failed: ${error}`);
+    throw new Error(tf('Jupiter execute failed: {detail}', { detail: error }));
   }
 }
 
@@ -46086,24 +46257,24 @@ function orderSummaryForReceipt(value: Record<string, unknown>): Record<string, 
 function parseDecimalAmountToRaw(value: string, decimals: number, label: string): bigint {
   const trimmed = value.trim();
   if (!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(trimmed)) {
-    throw new Error(`${label} must be a positive decimal string.`);
+    throw new Error(tf('{label} must be a positive decimal string.', { label: t(label) }));
   }
   const [wholeRaw = '0', fractionRaw = ''] = trimmed.split('.');
   if (fractionRaw.length > decimals) {
-    throw new Error(`${label} has too many decimal places for a ${decimals}-decimal token.`);
+    throw new Error(tf('{label} has too many decimal places for a {decimals}-decimal token.', { label: t(label), decimals }));
   }
   const whole = BigInt(wholeRaw || '0');
   const fraction = BigInt((fractionRaw || '').padEnd(decimals, '0') || '0');
   const amount = whole * (10n ** BigInt(decimals)) + fraction;
   if (amount <= 0n) {
-    throw new Error(`${label} must be greater than zero.`);
+    throw new Error(tf('{label} must be greater than zero.', { label: t(label) }));
   }
   return amount;
 }
 
 function rawLamportsToNumber(value: bigint): number {
   if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new Error('SOL amount is too large for this browser transaction builder.');
+    throw new Error(t('SOL amount is too large for this browser transaction builder.'));
   }
   return Number(value);
 }
@@ -46283,7 +46454,7 @@ async function runRecurringOp(recurringId: string, op: string, cursor?: string):
           await cloudDeleteRecurring(recurringId);
           break;
         default:
-          throw new Error(`Unknown recurring operation: ${op}`);
+          throw new Error(tf('Unknown recurring operation: {operation}', { operation: op }));
       }
       if (op !== 'history' && op !== 'history-more' && op !== 'notifications') {
         await refreshCloudWorkspaceData();
@@ -46327,7 +46498,7 @@ async function runRecurringOp(recurringId: string, op: string, cursor?: string):
             ? '/bridge/recurring-payments/delete'
             : '';
     if (!path) {
-      throw new Error(`Unknown recurring operation: ${op}`);
+      throw new Error(tf('Unknown recurring operation: {operation}', { operation: op }));
     }
     await bridgeRequest(path, {
       method: 'POST',
@@ -46451,7 +46622,7 @@ function runBrowserRecurringOp(recurringId: string, op: string): void {
     candidate.id === recurringId && recurringPaymentWorkflowSource(candidate) === 'browser'
   ));
   if (!payment) {
-    throw new Error('Repeat payment was not found.');
+    throw new Error(t('Repeat payment was not found.'));
   }
   const updatedAt = new Date().toISOString();
   switch (op) {
@@ -46473,7 +46644,7 @@ function runBrowserRecurringOp(recurringId: string, op: string): void {
       pushToast('success', t('Deleted permanently'), recurringId);
       return;
     default:
-      throw new Error(`Unknown recurring operation: ${op}`);
+      throw new Error(tf('Unknown recurring operation: {operation}', { operation: op }));
   }
 }
 
@@ -46485,7 +46656,7 @@ async function runCreateLabArtifact(): Promise<void> {
     validateLabForSigning(lab, fieldValues);
     const input = isPublicReceiptLab(lab) ? receiptInputSummary(lab, fieldValues) : labInput(lab.id).trim();
     proofToastId = beginProofSigningToast({
-      message: 'Approve this evidence proof in your wallet. No transaction will be submitted.',
+      message: t('Approve this evidence proof in your wallet. No transaction will be submitted.'),
     });
     const { archiveResult } = await signAndArchiveEvidenceReceipt({
       lab,
@@ -46502,12 +46673,12 @@ async function runCreateLabArtifact(): Promise<void> {
     completeProofSigningToast(
       proofToastId,
       'success',
-      isPublicReceiptLab(lab) ? 'Receipt signed' : 'Evidence signed',
+      isPublicReceiptLab(lab) ? t('Receipt signed') : t('Evidence signed'),
       archiveLabArtifactToastDetail(archiveResult, lab),
     );
   }, {
     onError: (message) => {
-      completeProofSigningToast(proofToastId, 'error', 'Sign proof failed', message);
+      completeProofSigningToast(proofToastId, 'error', t('Sign proof failed'), message);
     },
   });
 }
@@ -46602,14 +46773,14 @@ async function runInlineReceiptProof(actionId: string, proofKind: InlineReceiptK
   let proofToastId: number | undefined;
   await run('lab', async () => {
     if (!state.address || state.address !== action.walletAddress) {
-      throw new Error('Connect the approval wallet before signing this receipt.');
+      throw new Error(t('Connect the approval wallet before signing this receipt.'));
     }
     const lab = labById(receiptLabIdForInlineKind(proofKind));
-    if (!lab) throw new Error('Receipt type is not available.');
+    if (!lab) throw new Error(t('Receipt type is not available.'));
     const fieldValues = inlineReceiptFieldValues(action, proofKind);
     const receiptInput = receiptInputSummary(lab, fieldValues);
     proofToastId = beginProofSigningToast({
-      message: 'Approve this saved-proof receipt in your wallet. No transaction will be submitted.',
+      message: t('Approve this saved-proof receipt in your wallet. No transaction will be submitted.'),
     });
     const { archiveResult } = await signAndArchiveEvidenceReceipt({
       lab,
@@ -46621,13 +46792,13 @@ async function runInlineReceiptProof(actionId: string, proofKind: InlineReceiptK
     delete state.auditActivity[auditActivityKey('approval', action.id)];
     if (proofKind === 'rejection' && !isTerminalPreparedAction(action)) {
       await rejectPreparedActionAfterReceiptProof(action);
-      completeProofSigningToast(proofToastId, 'success', 'Request denied with proof', archiveLabArtifactToastDetail(archiveResult, lab));
+      completeProofSigningToast(proofToastId, 'success', t('Request denied with proof'), archiveLabArtifactToastDetail(archiveResult, lab));
       return;
     }
-    completeProofSigningToast(proofToastId, 'success', `${lab.title} signed`, archiveLabArtifactToastDetail(archiveResult, lab));
+    completeProofSigningToast(proofToastId, 'success', tf('{title} signed', { title: t(lab.title) }), archiveLabArtifactToastDetail(archiveResult, lab));
   }, {
     onError: (message) => {
-      completeProofSigningToast(proofToastId, 'error', 'Sign proof failed', message);
+      completeProofSigningToast(proofToastId, 'error', t('Sign proof failed'), message);
     },
   });
 }
@@ -46850,7 +47021,7 @@ async function runShareLabArtifact(artifactId: string): Promise<void> {
     await navigator.clipboard.writeText(text);
     pushToast('success', t('Receipt share text copied'), short(artifact.artifactHash));
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Share was cancelled or blocked.';
+    const message = err instanceof Error ? err.message : t('Share was cancelled or blocked.');
     pushToast('error', t('Share failed'), message);
   }
 }
@@ -46860,10 +47031,10 @@ async function runRetryCloudArtifact(artifactId: string): Promise<void> {
   if (!artifact) return;
   await run('lab', async () => {
     if (!cloudSessionMatchesWallet()) {
-      throw new Error('Sign in to Agentic Cloud with this wallet before retrying proof upload.');
+      throw new Error(t('Sign in to Agentic Cloud with this wallet before retrying proof upload.'));
     }
     if (!isCloudEvidenceReceiptKind(artifact.kind)) {
-      throw new Error('This proof type is not supported by Agentic Cloud evidence storage.');
+      throw new Error(t('This proof type is not supported by Agentic Cloud evidence storage.'));
     }
     const uploaded = await uploadLabArtifactToCloud(artifact);
     state.labArtifacts = mergeLabArtifacts([uploaded], state.labArtifacts);
@@ -46974,7 +47145,7 @@ async function uploadLabArtifactToCloud(artifact: LabArtifact): Promise<LabArtif
     });
     const cloudId = typeof response.receipt?.id === 'string' && response.receipt.id ? response.receipt.id : undefined;
     if (!cloudId) {
-      throw new Error('Cloud accepted the proof but did not return a receipt id.');
+      throw new Error(t('Cloud accepted the proof but did not return a receipt id.'));
     }
     state.cloudEvidenceStatus = 'Cloud evidence archive synced for the signed-in wallet.';
     return {
@@ -47415,7 +47586,7 @@ async function copyHealthDebugSnapshot(): Promise<void> {
     await navigator.clipboard.writeText(text);
     pushToast('success', t('Debug log copied'), t('System health snapshot is on your clipboard.'));
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Could not copy debug log.';
+    const message = err instanceof Error ? err.message : t('Could not copy debug log.');
     pushToast('error', t('Copy failed'), message);
   }
 }
@@ -48485,7 +48656,7 @@ async function loadWalletBalanceSnapshotFromBridge(
     body: JSON.stringify({ walletAddress: address, cluster, mode }),
   });
   if (snapshot.walletAddress !== address || snapshot.cluster !== cluster) {
-    throw new Error('Local bridge returned balances for a different wallet or cluster.');
+    throw new Error(t('Local bridge returned balances for a different wallet or cluster.'));
   }
   return snapshot;
 }
@@ -48700,7 +48871,7 @@ async function fetchJupiterLiteWalletBalancePriceChunk(mints: string[]): Promise
   url.searchParams.set('ids', mints.join(','));
   const response = await fetch(url.toString(), { method: 'GET' });
   if (!response.ok) {
-    throw new Error(`Jupiter Lite Price API returned HTTP ${response.status}.`);
+    throw new Error(tf('Jupiter Lite Price API returned HTTP {status}.', { status: response.status }));
   }
   return walletBalancePriceInfoMapFromJupiter(await response.json() as unknown);
 }
@@ -48717,7 +48888,7 @@ async function loadBridgeConfig(strict: boolean): Promise<void> {
   try {
     const config = await bridgeRequest<{ cluster: Cluster; rpcUrl: string }>('/bridge/config');
     if (!isCluster(config.cluster) || !config.rpcUrl) {
-      throw new Error('Local bridge returned an invalid runtime config.');
+      throw new Error(t('Local bridge returned an invalid runtime config.'));
     }
     state.cluster = config.cluster;
     state.bridgeRpcUrl = config.rpcUrl;
@@ -48753,7 +48924,7 @@ function capabilitiesWithWalletDisplay(capabilities: AdapterCapabilities): Adapt
 
 async function connectBridgeHost(): Promise<void> {
   if (!state.address || !state.capabilities) {
-    throw new Error('Connect a wallet before connecting the bridge.');
+    throw new Error(t('Connect a wallet before connecting the bridge.'));
   }
   await bridgeRequest('/bridge/connect', {
     method: 'POST',
@@ -49587,9 +49758,9 @@ function fieldIsVisible(
 function assertRequiredTemplateFields(template: AgentPlanTemplate, parameters: Record<string, string>): void {
   const missing = effectiveTemplateFieldsForParameters(template, parameters)
     .filter((fieldDef) => fieldDef.required && fieldIsVisible(fieldDef, parameters, template) && !parameters[fieldDef.id]?.trim())
-    .map((fieldDef) => fieldDef.label);
+    .map((fieldDef) => t(fieldDef.label));
   if (missing.length > 0) {
-    throw new Error(`Complete required planner fields: ${missing.join(', ')}.`);
+    throw new Error(tf('Complete required planner fields: {fields}.', { fields: missing.join(', ') }));
   }
 }
 
@@ -49610,7 +49781,7 @@ function assertValidTemplatePlanInput(
       isConnectorCapableTemplate(template) &&
       (fieldDef.id === 'blinkUrl' || fieldDef.id === 'actionUrl');
     if (fieldDef.required && !parameters[fieldDef.id]?.trim() && !aiConnectorMissingFact) {
-      errors[fieldDef.id] = `${fieldDef.label} is required.`;
+      errors[fieldDef.id] = tf('{label} is required.', { label: t(fieldDef.label) });
     }
     if (isRecipientFieldId(fieldDef.id)) {
       const policyError = recipientPolicyBlockReason(parameters[fieldDef.id] ?? '');
@@ -49625,7 +49796,8 @@ function assertValidTemplatePlanInput(
   Object.assign(errors, connectorValidation.errors);
   state.templateFieldErrors = errors;
   if (Object.keys(errors).length > 0) {
-    throw new Error(Object.values(errors)[0] ?? 'Complete required fields before creating this plan.');
+    const firstError = Object.values(errors)[0];
+    throw new Error(firstError ? t(firstError) : t('Complete required fields before creating this plan.'));
   }
 }
 
@@ -49635,7 +49807,7 @@ function templateRequiresUserNotes(template: AgentPlanTemplate): boolean {
 
 function assertRequiredUserNotes(template: AgentPlanTemplate, userNotes: string): void {
   if (templateRequiresUserNotes(template) && !userNotes.trim()) {
-    throw new Error('Describe the custom request before generating this plan.');
+    throw new Error(t('Describe the custom request before generating this plan.'));
   }
 }
 
@@ -49923,7 +50095,7 @@ async function queuePlanThroughBridge(plan: AgentPlan, sourceRecord?: GeneratedP
       return { id: response.recurringPayment?.id ?? response.payment?.id ?? 'recurring-payment' };
     }
     default:
-      throw new Error('This plan type creates a review/proof only and cannot be queued as a bridge action yet.');
+      throw new Error(t('This plan type creates a review/proof only and cannot be queued as a bridge action yet.'));
   }
 }
 
@@ -49966,7 +50138,7 @@ async function queuePlanThroughActiveWorkflow(
 
 async function queuePlanThroughCloud(plan: AgentPlan, sourceRecord?: GeneratedPlanRecord): Promise<{ id: string; planRecordId: string }> {
   if (!cloudSessionMatchesWallet()) {
-    throw new Error('Sign in to Agentic Cloud with the connected wallet before sending to Cloud Needs Approval.');
+    throw new Error(t('Sign in to Agentic Cloud with the connected wallet before sending to Cloud Needs Approval.'));
   }
   const unsupported = cloudQueueUnsupportedReason(plan);
   if (unsupported) throw new Error(unsupported);
@@ -49996,7 +50168,7 @@ async function queuePlanThroughCloud(plan: AgentPlan, sourceRecord?: GeneratedPl
   }));
   const approval = cloudApprovalToPreparedAction(approvalRecord);
   if (!approval) {
-    throw new Error('Agentic Cloud did not return a valid approval request.');
+    throw new Error(t('Agentic Cloud did not return a valid approval request.'));
   }
   return { id: approval.id, planRecordId: planId };
 }
@@ -50024,7 +50196,7 @@ function cloudQueueUnsupportedReason(plan: AgentPlan): string | undefined {
 
 async function queueRecurringPlanThroughCloud(plan: AgentPlan, sourceRecord?: GeneratedPlanRecord): Promise<{ id: string }> {
   if (!cloudSessionMatchesWallet()) {
-    throw new Error('Sign in to Agentic Cloud with the connected wallet before creating cloud repeat payments.');
+    throw new Error(t('Sign in to Agentic Cloud with the connected wallet before creating cloud repeat payments.'));
   }
   const isSwap = recurringPlanIsSwap(plan);
   const inputToken = planParameter(plan, ['inputToken', 'token']) || 'SOL';
@@ -50059,7 +50231,7 @@ async function queueRecurringPlanThroughCloud(plan: AgentPlan, sourceRecord?: Ge
   }));
   const schedule = cloudRecurringScheduleToPayment(cloudSchedule);
   if (!schedule) {
-    throw new Error('Agentic Cloud did not return a valid repeat payment.');
+    throw new Error(t('Agentic Cloud did not return a valid repeat payment.'));
   }
   await cloudMaterializeRecurring().catch(() => undefined);
   return { id: schedule.id };
@@ -50067,7 +50239,7 @@ async function queueRecurringPlanThroughCloud(plan: AgentPlan, sourceRecord?: Ge
 
 async function queuePlanThroughBrowserWorkflow(plan: AgentPlan, sourceRecord?: GeneratedPlanRecord): Promise<{ id: string }> {
   if (!state.address) {
-    throw new Error('Connect a wallet before sending for approval.');
+    throw new Error(t('Connect a wallet before sending for approval.'));
   }
   if (plan.actionType === 'recurring_payment') {
     const recurring = browserRecurringPaymentFromPlan(plan, sourceRecord);
@@ -50179,7 +50351,7 @@ function browserActionKindForPlan(plan: AgentPlan): PreparedActionKind {
   if (CONNECTOR_APPROVAL_ACTION_TYPES.has(plan.actionType) && isPreparedActionKind(plan.actionType)) {
     return plan.actionType;
   }
-  throw new Error('Only transfers, swaps, Blink actions, custom transactions, and repeat payments can be queued.');
+  throw new Error(t('Only transfers, swaps, Blink actions, custom transactions, and repeat payments can be queued.'));
 }
 
 function browserActionParams(plan: AgentPlan, kind: PreparedActionKind): Record<string, unknown> {
@@ -50239,9 +50411,9 @@ function blinkSingleTransaction(prepared: BlinkPreparedAction): string {
   const transactions = prepared.transactions?.filter((transaction) => transaction.trim());
   if (transactions?.length === 1) return transactions[0]!.trim();
   if (transactions?.length && transactions.length > 1) {
-    throw new Error('This Blink returned multiple transactions. V1 supports reviewing one prepared transaction at a time.');
+    throw new Error(t('This Blink returned multiple transactions. V1 supports reviewing one prepared transaction at a time.'));
   }
-  throw new Error('Blink action did not return transaction bytes.');
+  throw new Error(t('Blink action did not return transaction bytes.'));
 }
 
 function browserRecurringPaymentFromPlan(plan: AgentPlan, sourceRecord?: GeneratedPlanRecord): RecurringPayment {
@@ -50564,7 +50736,7 @@ function nextScheduleStartIso(): string {
 function requiredPlanParam(plan: AgentPlan, id: string): string {
   const value = plan.parameters[id]?.trim();
   if (!value) {
-    throw new Error(`Plan is missing ${templateFieldLabel(templateById(state.selectedTemplateId), id)}.`);
+    throw new Error(tf('Plan is missing {field}.', { field: t(templateFieldLabel(templateById(state.selectedTemplateId), id)) }));
   }
   return value;
 }
@@ -50831,7 +51003,7 @@ async function runRaydiumPairPreview(templateId: string, subAction: string): Pro
       pairedAmount: '',
       fetchedAt: Date.now(),
       estimateNote: '',
-      error: error instanceof Error ? error.message : 'Failed to load paired-amount preview.',
+      error: error instanceof Error ? error.message : t('Failed to load paired-amount preview.'),
     };
     render();
   }
@@ -51095,7 +51267,7 @@ async function hydrateCliSignInBridgeWallet(): Promise<void> {
 function selectedWallet(): DiscoveredWallet {
   const wallet = state.wallets.find((candidate) => candidate.name === state.selectedWalletName);
   if (!wallet) {
-    throw new Error('Click Discover, choose a wallet, then connect.');
+    throw new Error(t('Click Discover, choose a wallet, then connect.'));
   }
   return wallet;
 }
@@ -51137,8 +51309,11 @@ async function applyAndroidNativeRestore(restored: AndroidNativeRestoreResult): 
   state.wallets = [];
   state.capabilities = await client.capabilities();
   state.androidAuthCacheCount = restored.cacheCount;
-  state.androidNativeStatus = `Restored cached ${restored.walletName} authorization on ${state.cluster}.`;
-  state.transactionStatus = `Android MWA wallet connected on ${state.cluster}.`;
+  state.androidNativeStatus = tf('Restored cached {wallet} authorization on {cluster}.', {
+    wallet: restored.walletName,
+    cluster: state.cluster,
+  });
+  state.transactionStatus = tf('Android MWA wallet connected on {cluster}.', { cluster: state.cluster });
   state.steps.connect = 'done';
   rememberWalletPathSession({
     path: 'android-native',
@@ -51150,7 +51325,7 @@ async function applyAndroidNativeRestore(restored: AndroidNativeRestoreResult): 
 
 async function restoreAndroidNativeSession(): Promise<void> {
   if (state.cluster === 'localnet') {
-    state.androidNativeStatus = 'Android native MWA supports mainnet-beta, devnet, and testnet. Select devnet for local testing.';
+    state.androidNativeStatus = t('Android native MWA supports mainnet-beta, devnet, and testnet. Select devnet for local testing.');
     return;
   }
   const expectedAddress =
@@ -51165,8 +51340,8 @@ async function restoreAndroidNativeSession(): Promise<void> {
   });
   if (!restored) {
     state.androidNativeStatus = expectedAddress
-      ? `No cached Android MWA authorization found for ${short(expectedAddress)}. Tap Discover to reconnect that wallet.`
-      : 'No cached Android MWA authorization found. Tap Discover to open the wallet picker.';
+      ? tf('No cached Android MWA authorization found for {wallet}. Tap Discover to reconnect that wallet.', { wallet: short(expectedAddress) })
+      : t('No cached Android MWA authorization found. Tap Discover to open the wallet picker.');
     return;
   }
   await applyAndroidNativeRestore(restored);
@@ -51199,7 +51374,7 @@ function androidNativeCluster(): Cluster {
 
 function assertAndroidNativeRuntime(): void {
   if (!state.androidNativeEnvironment.isAndroidNative) {
-    throw new Error('Android native MWA controls are available only inside the Android app.');
+    throw new Error(t('Android native MWA controls are available only inside the Android app.'));
   }
 }
 
@@ -51291,13 +51466,13 @@ async function disconnectWalletBackend(): Promise<void> {
 
 function assertIosNativeRuntime(): void {
   if (!state.iosNativeEnvironment.isIosNative) {
-    throw new Error('iOS native wallet controls are available only inside the Capacitor iOS app.');
+    throw new Error(t('iOS native wallet controls are available only inside the Capacitor iOS app.'));
   }
 }
 
 function requireClient(): SolanaSigningClient {
   if (!client) {
-    throw new Error('Connect a wallet before requesting a signature.');
+    throw new Error(t('Connect a wallet before requesting a signature.'));
   }
   return client;
 }
@@ -51306,10 +51481,18 @@ function assertConnectedWalletMatchesSavedPath(cluster: Cluster): void {
   const session = state.walletPathSession;
   if (!session) return;
   if (session.cluster !== cluster) {
-    throw new Error(`Reconnect ${session.walletName} on ${cluster}; the saved wallet path is for ${session.cluster}.`);
+    throw new Error(tf('Reconnect {wallet} on {cluster}; the saved wallet path is for {savedCluster}.', {
+      wallet: session.walletName,
+      cluster,
+      savedCluster: session.cluster,
+    }));
   }
   if (state.address && !sameWalletAddress(state.address, session.address)) {
-    throw new Error(`Connected wallet ${short(state.address)} does not match saved ${session.walletName} signer ${short(session.address)}.`);
+    throw new Error(tf('Connected wallet {wallet} does not match saved {savedWallet} signer {signer}.', {
+      wallet: short(state.address),
+      savedWallet: session.walletName,
+      signer: short(session.address),
+    }));
   }
 }
 
@@ -51326,7 +51509,7 @@ function publicKeyFromConnectedWallet(): PublicKey {
   try {
     return new PublicKey(state.address);
   } catch {
-    throw new Error('Connected wallet address is not a valid Solana public key.');
+    throw new Error(t('Connected wallet address is not a valid Solana public key.'));
   }
 }
 
@@ -51505,7 +51688,7 @@ function selectPicker(input: {
   const menuOptions = input.options.filter((option) => !option.hiddenFromMenu);
   const menuOpen = Boolean(input.open && !input.disabled && menuOptions.some((option) => !option.disabled));
   const baseId = selectPickerBaseId(input);
-  const selectedLabel = selected?.label ?? input.placeholder ?? 'Select';
+  const selectedLabel = selected?.label ?? input.placeholder ?? t('Select');
   const selectedMeta = selected?.meta ?? '';
   const selectedMetaSuffix = selected?.metaSuffix ?? '';
   const selectedLogo = selected?.logoId ? selectPickerLogo(selected.logoId) : '';
@@ -51846,8 +52029,12 @@ function step(name: StepName, title: string, detail: string): string {
 function transactionStepDetail(): string {
   if (state.txid) return short(state.txid);
   if (state.txSignature) return short(state.txSignature);
-  if (state.customTransactionBase64) return `Ready to sign: ${short(state.customTransactionBase64)}`;
-  return state.cluster === 'devnet' ? 'Create or paste a base64 transaction to test' : 'Paste a base64 transaction to test';
+  if (state.customTransactionBase64) {
+    return tf('Ready to sign: {value}', { value: short(state.customTransactionBase64) });
+  }
+  return state.cluster === 'devnet'
+    ? t('Create or paste a base64 transaction to test')
+    : t('Paste a base64 transaction to test');
 }
 
 function resultBlock(): string {
@@ -51927,7 +52114,7 @@ function reviewSummaryRows(plan: AgentPlan): Array<[string, string]> {
   return [
     ['Prepared by', planPreparedBy(plan)],
     ['Source', planSourceLabel(plan)],
-    ['Wallet', state.address ? short(state.address) : 'Connect wallet to sign'],
+    ['Wallet', state.address ? short(state.address) : t('Connect wallet to sign')],
     ['Network', titleCaseCluster(state.cluster)],
     ['Template', plan.templateTitle],
     ['Action', plan.actionType.replace(/_/g, ' ')],
@@ -51935,11 +52122,11 @@ function reviewSummaryRows(plan: AgentPlan): Array<[string, string]> {
 }
 
 function planPreparedBy(plan: AgentPlan): string {
-  return plan.source === 'ai' ? 'AI plan reviewed in Agentic' : 'You in Agentic';
+  return plan.source === 'ai' ? t('AI plan reviewed in Agentic') : t('You in Agentic');
 }
 
 function planSourceLabel(plan: AgentPlan): string {
-  return plan.source === 'ai' ? 'Bring-your-own-key AI plan' : 'Keyless template, no AI';
+  return plan.source === 'ai' ? t('Bring-your-own-key AI plan') : t('Keyless template, no AI');
 }
 
 function agentResultBlock(): string {
@@ -52459,7 +52646,7 @@ type TokenRouteDisplaySummary = {
 
 function inboxApprovalTokenSummary(action: PreparedAction): { label?: string; value: string; title: string; html?: string; copyActions?: SummaryCopyAction[] } {
   if (action.kind === 'transfer_sol') {
-    return { label: 'Token', ...tokenDisplaySummary('SOL', { copyLabel: 'Copy token' }) };
+    return { label: 'Token', ...tokenDisplaySummary('SOL', { copyLabel: t('Copy token') }) };
   }
   const connectorSummary = isConnectorApprovalKind(action) ? connectorActionTokenOrTargetSummary(action) : undefined;
   if (connectorSummary) {
@@ -52467,7 +52654,7 @@ function inboxApprovalTokenSummary(action: PreparedAction): { label?: string; va
   }
   const token = stringParam(action, 'token');
   if (token) {
-    return { label: 'Token', ...tokenDisplaySummary(token, { copyLabel: 'Copy token' }) };
+    return { label: 'Token', ...tokenDisplaySummary(token, { copyLabel: t('Copy token') }) };
   }
   const inputToken = stringParam(action, 'inputToken');
   const outputToken = stringParam(action, 'outputToken');
@@ -52486,9 +52673,9 @@ function tokenDisplaySummary(
     value: tokenDisplayLabel(value),
     title: tokenDisplayTitle(value),
     ...(mint ? { mint, copyActions: [{
-      label: options.copyLabel ?? 'Copy',
+      label: options.copyLabel ?? t('Copy'),
       value: mint,
-      name: options.copyName ?? 'Token mint',
+      name: options.copyName ?? t('Token mint'),
     }] } : {}),
   };
 }
@@ -52497,8 +52684,8 @@ function tokenRouteDisplaySummary(
   inputToken: string,
   outputToken: string,
 ): TokenRouteDisplaySummary {
-  const input = tokenDisplaySummary(inputToken, { copyLabel: 'Copy input', copyName: 'Input token mint' });
-  const output = tokenDisplaySummary(outputToken, { copyLabel: 'Copy output', copyName: 'Output token mint' });
+  const input = tokenDisplaySummary(inputToken, { copyLabel: t('Copy input'), copyName: t('Input token mint') });
+  const output = tokenDisplaySummary(outputToken, { copyLabel: t('Copy output'), copyName: t('Output token mint') });
   return {
     value: `${input.value} -> ${output.value}`,
     title: `${input.title} -> ${output.title}`,
@@ -52522,15 +52709,15 @@ function tokenRouteLegHtml(label: string, copyAction: SummaryCopyAction | undefi
   `;
 }
 
-function tokenCopyActions(value: string, copyLabel = 'Copy token', copyName = 'Token mint'): SummaryCopyAction[] {
+function tokenCopyActions(value: string, copyLabel = t('Copy token'), copyName = t('Token mint')): SummaryCopyAction[] {
   const mint = resolveTokenMintForCopy(value);
   return mint ? [{ label: copyLabel, value: mint, name: copyName }] : [];
 }
 
 function tokenRouteCopyActions(inputToken: string, outputToken: string): SummaryCopyAction[] {
   return [
-    ...tokenCopyActions(inputToken, 'Copy input', 'Input token mint'),
-    ...tokenCopyActions(outputToken, 'Copy output', 'Output token mint'),
+    ...tokenCopyActions(inputToken, t('Copy input'), t('Input token mint')),
+    ...tokenCopyActions(outputToken, t('Copy output'), t('Output token mint')),
   ];
 }
 
@@ -52903,7 +53090,7 @@ async function tokenMarketRequest(path: string, body: Record<string, unknown>): 
     const contentType = response.headers.get('content-type') ?? '';
     if (!contentType.toLowerCase().includes('application/json')) {
       recordEvidenceProviderUnavailable('birdeye', cloudPath, response.status, contentType);
-      throw new Error('BirdEye market data APIs are not reachable from this page.');
+      throw new Error(t('BirdEye market data APIs are not reachable from this page.'));
     }
     const payload = await response.json().catch(() => null) as unknown;
     if (!response.ok) {
@@ -52924,14 +53111,19 @@ function recordEvidenceProviderUnavailable(
   contentType: string,
   payload?: unknown,
 ): void {
+  const providerLabel = provider === 'birdeye' ? 'BirdEye' : 'CoinGecko';
+  const keyLabel = provider === 'birdeye' ? 'BIRDEYE_API_KEY' : 'COINGECKO_API_KEY';
   const reason = status === 501
-    ? `${provider === 'birdeye' ? 'BirdEye' : 'CoinGecko'} operator key is not configured on the cloud (HTTP 501).`
+    ? tf('{provider} operator key is not configured on the cloud (HTTP 501).', { provider: providerLabel })
     : !contentType.toLowerCase().includes('application/json')
-      ? `${provider === 'birdeye' ? 'BirdEye' : 'CoinGecko'} endpoint returned ${contentType || 'no content-type'} instead of JSON.`
-      : `${provider === 'birdeye' ? 'BirdEye' : 'CoinGecko'} endpoint failed: ${cloudErrorMessage(payload, status)}`;
+      ? tf('{provider} endpoint returned {contentType} instead of JSON.', { provider: providerLabel, contentType: contentType || 'no content-type' })
+      : tf('{provider} endpoint failed: {message}', { provider: providerLabel, message: cloudErrorMessage(payload, status) });
   appendAiDiagnostic({
     code: 'EVIDENCE_PROVIDER_UNAVAILABLE',
-    message: `${reason} Start the local bridge or set ${provider === 'birdeye' ? 'BIRDEYE_API_KEY' : 'COINGECKO_API_KEY'} on the cloud to populate evidence facts.`,
+    message: tf('{reason} Start the local bridge or set {key} on the cloud to populate evidence facts.', {
+      reason,
+      key: keyLabel,
+    }),
     detail: `provider=${provider} status=${status} contentType=${contentType || 'unknown'}`,
     method: 'POST',
     path,
@@ -54986,7 +55178,7 @@ function recurringCardSummaryItem(row: { label: string; value: string; html?: st
   const copyActions = summaryCopyActions(row);
   return `
     <div class="${row.tone ? `recurring-card-summary-${row.tone}` : ''}" title="${escapeHtml(title)}">
-      <dt>${escapeHtml(row.label)}</dt>
+      <dt>${escapeHtml(t(row.label))}</dt>
       <dd class="${copyActions.length ? 'has-copy' : ''}">
         ${row.html ?? `<span>${escapeHtml(row.value)}</span>`}
         ${row.html ? '' : summaryCopyActionsHtml(copyActions, row.label)}
@@ -55291,7 +55483,7 @@ function labArtifactCard(artifact: LabArtifact): string {
       </div>
       <div class="lab-actions lab-signature-action">
         <button type="button" class="utility" data-artifact-view="signed">${escapeHtml(t('View in archive'))}</button>
-        <button type="button" data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Receipt JSON">${escapeHtml(t('Copy receipt JSON'))}</button>
+        <button type="button" data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="${escapeHtml(t('Receipt JSON'))}">${escapeHtml(t('Copy receipt JSON'))}</button>
         <button type="button" class="utility" data-lab-action="create-another">${escapeHtml(t('Create another'))}</button>
       </div>
       <details class="artifact-technical-details">
@@ -55300,16 +55492,16 @@ function labArtifactCard(artifact: LabArtifact): string {
           <strong>${escapeHtml(t('Hashes and signed message'))}</strong>
         </summary>
         <div class="hash-grid">
-          ${hashTile('Pre-signature', artifact.preSignatureHash)}
-          ${hashTile('Receipt', artifact.artifactHash)}
-          ${hashTile('Signature', artifact.signature)}
-          ${hashTile('Wallet', artifact.walletAddress)}
+          ${hashTile(t('Pre-signature'), artifact.preSignatureHash)}
+          ${hashTile(t('Receipt'), artifact.artifactHash)}
+          ${hashTile(t('Signature'), artifact.signature)}
+          ${hashTile(t('Wallet'), artifact.walletAddress)}
         </div>
         <div class="results compact-results">
           <div class="result-row">
             <span>${escapeHtml(t('Signing message'))}</span>
             <code>${escapeHtml(artifact.signingMessage)}</code>
-            <button data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="Copy signed message">${escapeHtml(t('Copy'))}</button>
+            <button data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="${escapeHtml(t('Signed message'))}">${escapeHtml(t('Copy'))}</button>
           </div>
         </div>
       </details>
@@ -55341,7 +55533,7 @@ function labHistory(): string {
           <article>
             <strong>${escapeHtml(artifact.title)}</strong>
             <span>${escapeHtml(formatDateTime(artifact.createdAt))}</span>
-            <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Receipt JSON">${escapeHtml(t('Copy receipt JSON'))}</button>
+            <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="${escapeHtml(t('Receipt JSON'))}">${escapeHtml(t('Copy receipt JSON'))}</button>
           </article>
         `,
       ).join('')}
@@ -55737,7 +55929,7 @@ function evidencePolicy(): { status: string; detail: string; meta?: string } {
     if (state.artifactView === 'signed') {
       return {
         status: state.bridgeActive ? t('Bridge mirrored') : t('Local archive'),
-        detail: t(state.labArchiveStatus),
+        detail: labArchiveStatusLabel(state.labArchiveStatus),
         meta: state.health?.labArtifactStorePath ?? (state.bridgeActive ? t('Bridge archive connected') : t('Browser durable storage')),
       };
     }
@@ -55918,7 +56110,7 @@ function trustNode(label: string, complete: boolean, active: boolean): string {
   return `
     <div class="trust-node ${complete ? 'complete' : ''} ${active ? 'active' : ''}">
       <span></span>
-      <strong>${escapeHtml(label)}</strong>
+      <strong>${escapeHtml(t(label))}</strong>
     </div>
   `;
 }
@@ -55938,8 +56130,8 @@ function txBlock(txid: string, cluster: Cluster): string {
     <div class="tx-block">
       <code>${escapeHtml(txid)}</code>
       <a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(t('Open Solscan'))}</a>
-      <button data-copy="${escapeHtml(txid)}" data-copy-name="Transaction id">${escapeHtml(t('Copy txid'))}</button>
-      <button data-copy="${escapeHtml(url)}" data-copy-name="Solscan transaction link">${escapeHtml(t('Copy Solscan link'))}</button>
+      <button data-copy="${escapeHtml(txid)}" data-copy-name="${escapeHtml(t('Transaction id'))}">${escapeHtml(t('Copy txid'))}</button>
+      <button data-copy="${escapeHtml(url)}" data-copy-name="${escapeHtml(tf('{brand} transaction link', { brand: 'Solscan' }))}">${escapeHtml(t('Copy Solscan link'))}</button>
     </div>
   `;
 }
@@ -55965,25 +56157,25 @@ function definitionRow(label: string, value: string): string {
 function surfaceEyebrow(): string {
   switch (state.activeTab) {
     case 'overview':
-      return 'Home';
+      return t('Home');
     case 'wallet':
-      return 'Direct signing';
+      return t('Direct signing');
     case 'agent':
-      return 'New request';
+      return t('New request');
     case 'generated':
-      return 'Review';
+      return t('Review');
     case 'inbox':
-      return 'Needs approval';
+      return t('Needs approval');
     case 'completed':
-      return 'Done';
+      return t('Done');
     case 'schedule':
-      return 'Repeat payments';
+      return t('Repeat payments');
     case 'labs':
-      return state.artifactView === 'signed' ? 'Saved proofs' : 'Save proof';
+      return state.artifactView === 'signed' ? t('Saved proofs') : t('Save proof');
     case 'preferences':
-      return 'Preferences';
+      return t('Preferences');
     default: {
-      return findDevTab(state.activeTab) || requiredMoreSurface(state.activeTab) ? 'Layer 1 dev' : 'Home';
+      return findDevTab(state.activeTab) || requiredMoreSurface(state.activeTab) ? t('Layer 1 dev') : t('Home');
     }
   }
 }
@@ -56573,8 +56765,8 @@ function connectorActionLiquidityPairLabel(action: PreparedAction): string {
 
 function connectorActionLiquidityTokenCopyActions(action: PreparedAction): SummaryCopyAction[] {
   return [
-    { label: 'Copy token A', value: connectorActionLiquidityTokenMint(action, 'tokenA'), name: 'Token A mint' },
-    { label: 'Copy token B', value: connectorActionLiquidityTokenMint(action, 'tokenB'), name: 'Token B mint' },
+    { label: t('Copy token A'), value: connectorActionLiquidityTokenMint(action, 'tokenA'), name: t('Token A mint') },
+    { label: t('Copy token B'), value: connectorActionLiquidityTokenMint(action, 'tokenB'), name: t('Token B mint') },
   ].filter((entry) => looksLikeMintAddress(entry.value));
 }
 
@@ -57203,10 +57395,14 @@ function labIndexLabel(): string {
   const lab = activeLab();
   if (isPublicReceiptLab(lab)) {
     const index = RECEIPT_LABS.findIndex((candidate) => candidate.id === lab.id);
-    return index >= 0 ? `receipt ${index + 1} of ${RECEIPT_LABS.length}` : 'receipt';
+    return index >= 0
+      ? tf('receipt {index} of {total}', { index: index + 1, total: RECEIPT_LABS.length })
+      : t('receipt');
   }
   const index = ADVANCED_EVIDENCE_LABS.findIndex((candidate) => candidate.id === lab.id);
-  return index >= 0 ? `advanced lab ${index + 1} of ${ADVANCED_EVIDENCE_LABS.length}` : 'legacy lab';
+  return index >= 0
+    ? tf('advanced lab {index} of {total}', { index: index + 1, total: ADVANCED_EVIDENCE_LABS.length })
+    : t('legacy lab');
 }
 
 function receiptFieldValue(labId: string, fieldId: string): string {
@@ -57233,17 +57429,17 @@ function validateLabForSigning(lab: LabDefinition, fieldValues: Record<string, s
   if (isPublicReceiptLab(lab)) {
     for (const field of lab.fields ?? []) {
       if (field.required && !fieldValues[field.id]?.trim()) {
-        state.labFieldErrors[receiptFieldErrorKey(lab.id, field.id)] = `${field.label} is required.`;
+        state.labFieldErrors[receiptFieldErrorKey(lab.id, field.id)] = tf('{label} is required.', { label: t(field.label) });
       }
     }
   } else {
     const input = labInput(lab.id).trim();
     if (!input || input === lab.defaultInput.trim()) {
-      state.labFieldErrors[receiptFieldErrorKey(lab.id, '__advanced')] = 'Add your own evidence note before signing this advanced lab.';
+      state.labFieldErrors[receiptFieldErrorKey(lab.id, '__advanced')] = t('Add your own evidence note before signing this advanced lab.');
     }
   }
   if (Object.keys(state.labFieldErrors).length > 0) {
-    throw new Error('Complete the required evidence fields before signing.');
+    throw new Error(t('Complete the required evidence fields before signing.'));
   }
 }
 
@@ -57511,7 +57707,7 @@ function assertValidRecurringDraft(draft: RecurringDraft): void {
   }
   state.recurringErrors = errors;
   if (Object.keys(errors).length > 0) {
-    throw new Error('Complete required recurring fields before creating this schedule.');
+    throw new Error(t('Complete required recurring fields before creating this schedule.'));
   }
 }
 
@@ -58360,7 +58556,7 @@ async function writeClipboardText(value: string, label: string): Promise<void> {
   if (browserClipboardError instanceof Error) {
     throw browserClipboardError;
   }
-  throw new Error('Clipboard access is unavailable.');
+  throw new Error(t('Clipboard access is unavailable.'));
 }
 
 async function readClipboardText() {
@@ -58489,7 +58685,7 @@ function inputValue(selector: string): string {
 function localDateTimeToIso(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
-    throw new Error('Start time must be a valid local date and time.');
+    throw new Error(t('Start time must be a valid local date and time.'));
   }
   return date.toISOString();
 }
@@ -58535,7 +58731,7 @@ function toProtocolErrorPayload(err: unknown): ProtocolErrorPayload {
   }
   return {
     code: 'wallet_unreachable',
-    message: err instanceof Error ? err.message : 'Wallet request failed.',
+    message: err instanceof Error ? err.message : t('Wallet request failed.'),
     recoverable: true,
   };
 }
@@ -60961,11 +61157,11 @@ async function loadIndexedLabArtifacts(): Promise<LabArtifact[]> {
     const store = transaction.objectStore(LAB_ARCHIVE_STORE_NAME);
     const request = store.getAll();
     request.onsuccess = () => resolve(mergeLabArtifacts((request.result as unknown[]).filter(isLabArtifact)));
-    request.onerror = () => reject(request.error ?? new Error('Unable to load lab artifact archive.'));
+    request.onerror = () => reject(request.error ?? new Error(t('Unable to load lab artifact archive.')));
     transaction.oncomplete = () => db.close();
     transaction.onerror = () => {
       db.close();
-      reject(transaction.error ?? new Error('Unable to load lab artifact archive.'));
+      reject(transaction.error ?? new Error(t('Unable to load lab artifact archive.')));
     };
   });
 }
@@ -60981,14 +61177,14 @@ async function saveIndexedLabArtifacts(artifacts: LabArtifact[]): Promise<void> 
         store.put(artifact);
       }
     };
-    clearRequest.onerror = () => reject(clearRequest.error ?? new Error('Unable to clear lab artifact archive.'));
+    clearRequest.onerror = () => reject(clearRequest.error ?? new Error(t('Unable to clear lab artifact archive.')));
     transaction.oncomplete = () => {
       db.close();
       resolve();
     };
     transaction.onerror = () => {
       db.close();
-      reject(transaction.error ?? new Error('Unable to save lab artifact archive.'));
+      reject(transaction.error ?? new Error(t('Unable to save lab artifact archive.')));
     };
   });
 }
@@ -60996,7 +61192,7 @@ async function saveIndexedLabArtifacts(artifacts: LabArtifact[]): Promise<void> 
 function openLabArchiveDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     if (!window.indexedDB) {
-      reject(new Error('IndexedDB is unavailable.'));
+      reject(new Error(t('IndexedDB is unavailable.')));
       return;
     }
     const request = window.indexedDB.open(LAB_ARCHIVE_DB_NAME, LAB_ARCHIVE_DB_VERSION);
@@ -61008,7 +61204,7 @@ function openLabArchiveDb(): Promise<IDBDatabase> {
       }
     };
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error ?? new Error('Unable to open lab artifact archive.'));
+    request.onerror = () => reject(request.error ?? new Error(t('Unable to open lab artifact archive.')));
   });
 }
 
@@ -61042,12 +61238,12 @@ function plannerPrefsSection(scope: string): string {
           <label class="field compact">
             <span>${escapeHtml(t('New prompt label'))}</span>
             <input data-saved-prompt-field="label" value="${escapeHtml(draft.label)}" placeholder="${escapeHtml(t('Weekly rebalance'))}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
-            ${errors.label ? `<em class="error-text">${escapeHtml(errors.label)}</em>` : ''}
+            ${errors.label ? `<em class="error-text">${escapeHtml(t(errors.label))}</em>` : ''}
           </label>
           <label class="field compact planner-prompt-body-field">
             <span>${escapeHtml(t('Prompt body'))}</span>
             <textarea data-saved-prompt-field="prompt" rows="2" placeholder="${escapeHtml(t('Rebalance to 50% SOL / 30% USDC / 20% JUP'))}" ${state.busy ? 'disabled' : ''}>${escapeHtml(draft.prompt)}</textarea>
-            ${errors.prompt ? `<em class="error-text">${escapeHtml(errors.prompt)}</em>` : ''}
+            ${errors.prompt ? `<em class="error-text">${escapeHtml(t(errors.prompt))}</em>` : ''}
           </label>
           <div class="planner-prompts-actions">
             <button type="button" class="primary" data-saved-prompt-action="save" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Save prompt'))}</button>
@@ -61205,7 +61401,7 @@ async function copyDiagnosticBundle(actionId?: string): Promise<void> {
     await navigator.clipboard.writeText(text);
     pushToast('success', t('Debug log copied'), t('Safe to share. No keys, signed bytes, or secrets included.'));
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Could not copy debug log.';
+    const message = err instanceof Error ? err.message : t('Could not copy debug log.');
     pushToast('error', t('Copy failed'), message);
   }
 }
@@ -61297,7 +61493,7 @@ async function runAttachTxLookup(txid: string): Promise<void> {
     state.attachTxModal = { ...modal, txidInput: txid, resolution, validation, busy: false };
     render();
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Lookup failed.';
+    const message = err instanceof Error ? err.message : t('Lookup failed.');
     state.attachTxModal = { ...modal, txidInput: txid, busy: false, error: message };
     logDebug({ level: 'error', source: 'rpc', message: `attach-tx lookup failed: ${message}`, txid });
     render();
@@ -61350,7 +61546,7 @@ async function runAttachTxConfirm(): Promise<void> {
     );
     render();
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Attach failed.';
+    const message = err instanceof Error ? err.message : t('Attach failed.');
     state.attachTxModal = { ...modal, busy: false, error: message };
     logDebug({ level: 'error', source: 'ledger', message: `attach-tx confirm failed: ${message}`, actionId: action?.id });
     render();
@@ -61433,14 +61629,19 @@ function runNotificationTick(): void {
     if (state.notificationSettings.pending && (record.phase === 'submitted' || record.phase === 'ambiguous')) {
       const reference = record.submittedAt ?? record.lastAttemptAt;
       if (reference && Date.now() - new Date(reference).getTime() > 60_000) {
-        fireNotificationOnce('pending', record.id, 'Transaction still pending', `Awaiting confirmation for ${short(record.txid ?? record.id)}.`);
+        fireNotificationOnce(
+          'pending',
+          record.id,
+          t('Transaction still pending'),
+          tf('Awaiting confirmation for {tx}.', { tx: short(record.txid ?? record.id) }),
+        );
       }
     }
     if (state.notificationSettings.confirmed && record.phase === 'confirmed') {
-      fireNotificationOnce('confirmed', record.id, 'Transaction confirmed', short(record.txid ?? record.id));
+      fireNotificationOnce('confirmed', record.id, t('Transaction confirmed'), short(record.txid ?? record.id));
     }
     if (state.notificationSettings.failed && record.phase === 'failed') {
-      fireNotificationOnce('failed', record.id, 'Transaction failed', record.lastError ?? short(record.id));
+      fireNotificationOnce('failed', record.id, t('Transaction failed'), record.lastError ?? short(record.id));
     }
   }
   if (state.notificationSettings.due) {
@@ -61449,7 +61650,16 @@ function runNotificationTick(): void {
       if (schedule.status !== 'active') continue;
       const next = schedule.startAt ? new Date(schedule.startAt).getTime() : NaN;
       if (!Number.isNaN(next) && next <= now + 5 * 60 * 1000 && next >= now - 5 * 60 * 1000) {
-        fireNotificationOnce('due', schedule.id, 'Repeat payment due', `${schedule.amount} ${schedule.token} to ${short(schedule.recipient)}`);
+        fireNotificationOnce(
+          'due',
+          schedule.id,
+          t('Repeat payment due'),
+          tf('{amount} {token} to {recipient}', {
+            amount: schedule.amount,
+            token: schedule.token,
+            recipient: short(schedule.recipient),
+          }),
+        );
       }
     }
   }
@@ -61480,7 +61690,7 @@ async function handleNotificationAction(op: string): Promise<void> {
         savePersistedState();
         render();
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Permission request failed.';
+        const message = err instanceof Error ? err.message : t('Permission request failed.');
         pushToast('error', t('Permission failed'), message);
       }
       return;
@@ -61650,9 +61860,9 @@ function failurePoliciesPanel(): string {
       <summary>
         <span class="failure-policies-summary-copy">
           <span>${escapeHtml(t('Failure auto-retry'))}</span>
-          <em>${autoCount === 0 ? 'All ask' : `${autoCount} kinds auto`}</em>
+          <em>${escapeHtml(autoCount === 0 ? t('All ask') : tf('{count} kinds auto', { count: autoCount }))}</em>
         </span>
-        <strong>${autoCount === 0 ? 'off' : `${autoCount}`}</strong>
+        <strong>${autoCount === 0 ? t('off') : `${autoCount}`}</strong>
       </summary>
       <section class="failure-policies-card" aria-label="${escapeHtml(t('Failure retry preferences'))}">
         <p class="failure-policies-intro">${escapeHtml(t('Most failures should stop and ask. Use auto-retry only for network conditions you are comfortable replaying up to the cap.'))}</p>
@@ -61873,7 +62083,7 @@ function deleteGeneratedPlanTemplate(planId: string): void {
   if (!record) return;
   state.generatedPlans = state.generatedPlans.filter((entry) => entry.id !== planId);
   saveGeneratedPlans();
-  pushToast('success', t('Template removed'), record.templateLabel ?? 'Template');
+  pushToast('success', t('Template removed'), record.templateLabel ?? t('Template'));
   render();
 }
 

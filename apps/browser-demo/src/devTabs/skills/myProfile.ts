@@ -38,6 +38,7 @@ export interface ProfilePanelState {
 }
 
 const PUBLIC_PROFILE_URL_BASE = 'https://agentic-signer.com/u/';
+const MALFORMED_WALLET_STATS_RESPONSE = 'Malformed wallet stats response.';
 
 const panelState: ProfilePanelState = {
   phase: 'idle',
@@ -309,11 +310,14 @@ function renderNotDeployedBody(wallet: string): string {
 }
 
 function renderErrorBody(errorMessage: string): string {
+  const displayMessage = errorMessage === MALFORMED_WALLET_STATS_RESPONSE
+    ? t('Malformed wallet stats response.')
+    : errorMessage;
   return `
     <div class="skills-profile-card">
       <div class="skills-profile-notice skills-profile-notice-error">
         <strong>${t('Couldn\'t load profile stats')}</strong>
-        <p>${escapeHtml(errorMessage)}</p>
+        <p>${escapeHtml(displayMessage)}</p>
         <button
           type="button"
           class="skills-profile-button"
@@ -394,7 +398,7 @@ async function fetchWalletStats(wallet: string): Promise<void> {
       if (!snap) {
         panelState.snapshot = null;
         panelState.phase = 'error';
-        panelState.errorMessage = 'Malformed wallet stats response.';
+        panelState.errorMessage = MALFORMED_WALLET_STATS_RESPONSE;
         break;
       }
       panelState.snapshot = snap;

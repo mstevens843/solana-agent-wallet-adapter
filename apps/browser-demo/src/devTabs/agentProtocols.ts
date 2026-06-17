@@ -63,6 +63,17 @@ function findSubTab(id: string): AgentProtocolsSubTab | undefined {
   return subTabs.find((tab) => tab.id === id);
 }
 
+function subTabDescription(tab: AgentProtocolsSubTab): string {
+  switch (tab.id) {
+    case 'agent-card':
+      return t('How compatible apps discover this wallet');
+    case 'pay-out':
+      return t('Review a merchant cart and pay from this wallet');
+    case 'external-agents':
+      return t('Review payment requests sent to this wallet');
+  }
+}
+
 function renderSubTabButton(tab: AgentProtocolsSubTab): string {
   const active = tab.id === activeSubTabId;
   return `
@@ -71,7 +82,7 @@ function renderSubTabButton(tab: AgentProtocolsSubTab): string {
       class="${active ? 'active' : ''}"
       role="tab"
       aria-selected="${active ? 'true' : 'false'}"
-      title="${escapeHtml(t(tab.description))}"
+      title="${escapeHtml(subTabDescription(tab))}"
       data-agent-protocols-subtab="${escapeHtml(tab.id)}"
     >
       <span class="agent-protocols-label-full">${escapeHtml(t(tab.label))}</span>

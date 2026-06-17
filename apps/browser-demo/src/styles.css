@@ -15569,6 +15569,12 @@ button.danger:hover:not(:disabled) {
   width: auto;
 }
 
+.guided-demo-eyebrow-row .demo-language-picker-trigger,
+.guided-demo-eyebrow-row .demo-language-picker-option {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
 .demo-language-picker-globe {
   color: #8bcdaa;
   flex: 0 0 auto;
@@ -15602,6 +15608,12 @@ button.danger:hover:not(:disabled) {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   background: rgb(14, 17, 16);
+}
+
+.guided-demo-eyebrow-row .demo-language-picker-menu {
+  left: auto;
+  max-width: min(260px, calc(100vw - 28px));
+  right: 0;
 }
 
 .demo-language-picker-option {

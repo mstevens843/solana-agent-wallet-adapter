@@ -6,7 +6,7 @@
 // them into the prepare-transaction path at request time. This module is the
 // user-facing UX for managing those keys.
 
-import { uiLanguage } from './demo-i18n/uiLang.js';
+import { t, tf, uiLanguage } from './demo-i18n/uiLang.js';
 
 export const BYO_KEY_CONNECTOR_IDS = ['magiceden', 'tensor', 'sanctum', 'lulo', 'phoenix'] as const;
 export type ByoKeyConnectorId = (typeof BYO_KEY_CONNECTOR_IDS)[number];
@@ -14,57 +14,43 @@ export type ByoKeyConnectorId = (typeof BYO_KEY_CONNECTOR_IDS)[number];
 export interface ByoKeyConnectorMeta {
   id: ByoKeyConnectorId;
   label: string;
-  description: string;
   portalUrl: string;
   defaultBaseUrl: string;
-  // Phoenix uses an invite/activation code, not a per-request API key. These overrides
-  // let each connector customize the BYO card labels; defaults match the historic
-  // "API key" copy when omitted.
-  addButtonLabel?: string;
-  formFieldLabel?: string;
-  formPlaceholderTemplate?: (label: string) => string;
-  portalLinkLabel?: string;
+  // Phoenix uses an invite/activation code, not a per-request API key.
+  credentialKind?: 'api-key' | 'access-code';
 }
 
 export const BYO_KEY_CONNECTOR_META: Record<ByoKeyConnectorId, ByoKeyConnectorMeta> = {
   magiceden: {
     id: 'magiceden',
     label: 'Magic Eden',
-    description: 'NFT marketplace bids, listings, and buys on Solana mainnet.',
     portalUrl: 'https://docs.magiceden.io/reference/getting-started',
     defaultBaseUrl: 'https://api-mainnet.magiceden.dev/v2',
   },
   tensor: {
     id: 'tensor',
     label: 'Tensor',
-    description: 'NFT marketplace bids, listings, and sweep on Solana mainnet.',
     portalUrl: 'https://docs.tensor.trade/',
     defaultBaseUrl: 'https://api.mainnet.tensordev.io/api/v1',
   },
   sanctum: {
     id: 'sanctum',
     label: 'Sanctum',
-    description: 'Liquid staking token routing and Infinity pool.',
     portalUrl: 'https://docs.sanctum.so/',
     defaultBaseUrl: 'https://sanctum-api.ironforge.network',
   },
   lulo: {
     id: 'lulo',
     label: 'Lulo',
-    description: 'Protected, Boost, and Regular lending: rates, balances, deposits, and withdrawals.',
     portalUrl: 'https://app.lulo.fi/',
     defaultBaseUrl: 'https://api.lulo.fi',
   },
   phoenix: {
     id: 'phoenix',
     label: 'Phoenix Perpetuals',
-    description: 'Perp futures on Solana (Ellipsis Labs). Paste the invite/activation code from your Phoenix waitlist email; it activates your wallet as a trader on first use.',
     portalUrl: 'https://www.phoenix.trade',
     defaultBaseUrl: 'https://perp-api.phoenix.trade',
-    addButtonLabel: 'Add access code',
-    formFieldLabel: 'Access code',
-    formPlaceholderTemplate: (label) => `Paste your ${label} invite/activation code`,
-    portalLinkLabel: 'Request an access code →',
+    credentialKind: 'access-code',
   },
 };
 
@@ -103,7 +89,7 @@ export async function listConnectorSecrets(): Promise<ListConnectorSecretsRespon
     return { available: false, secrets: EMPTY_SECRETS_SUMMARY };
   }
   if (!response.ok) {
-    throw await responseError(response, 'Failed to load saved connector credentials.');
+    throw await responseError(response, t('Failed to load saved connector credentials.'));
   }
   return (await response.json()) as ListConnectorSecretsResponse;
 }
@@ -122,7 +108,7 @@ export async function saveConnectorSecret(
     }),
   });
   if (!response.ok) {
-    throw await responseError(response, `Failed to save ${connectorDisplayCredential(connector)}.`);
+    throw await responseError(response, tf('Failed to save {credential}.', { credential: connectorDisplayCredential(connector) }));
   }
   return (await response.json()) as ConnectorSecretSummary & { connector: ByoKeyConnectorId };
 }
@@ -136,7 +122,7 @@ export async function deleteConnectorSecret(
     headers: { accept: 'application/json' },
   });
   if (!response.ok) {
-    throw await responseError(response, `Failed to remove ${connectorDisplayCredential(connector)}.`);
+    throw await responseError(response, tf('Failed to remove {credential}.', { credential: connectorDisplayCredential(connector) }));
   }
   return (await response.json()) as { removed: boolean };
 }
@@ -145,7 +131,7 @@ export async function deleteConnectorSecret(
 // connector + credential noun used in save/remove error toasts.
 function connectorDisplayCredential(connector: ByoKeyConnectorId): string {
   const meta = BYO_KEY_CONNECTOR_META[connector];
-  const noun = (meta.formFieldLabel ?? 'API key').toLowerCase();
+  const noun = connectorCredentialFieldLabel(meta).toLowerCase();
   return `${meta.label} ${noun}`;
 }
 
@@ -157,7 +143,7 @@ async function responseError(response: Response, fallback: string): Promise<Erro
   } catch {
     // ignore
   }
-  return new Error(detail || `${fallback} (HTTP ${response.status})`);
+  return new Error(detail || tf('{fallback} (HTTP {status})', { fallback, status: response.status }));
 }
 
 export interface ConnectorKeysPanelOptions {
@@ -271,8 +257,8 @@ function onDocumentSubmit(event: Event): void {
   const apiKey = String(data.get('apiKey') ?? '').trim();
   const baseUrlRaw = String(data.get('baseUrl') ?? '').trim();
   if (!apiKey) {
-    const fieldLabel = BYO_KEY_CONNECTOR_META[connectorAttr].formFieldLabel ?? 'API key';
-    panelState.error = `${fieldLabel} is required.`;
+    const fieldLabel = connectorCredentialFieldLabel(BYO_KEY_CONNECTOR_META[connectorAttr]);
+    panelState.error = tf('{label} is required.', { label: fieldLabel });
     renderAll();
     return;
   }
@@ -306,7 +292,7 @@ async function runSave(connector: ByoKeyConnectorId, input: SaveConnectorSecretI
     panelState.editing = undefined;
     lastChangeHandler?.();
   } catch (err) {
-    panelState.error = err instanceof Error ? err.message : 'Save failed.';
+    panelState.error = err instanceof Error ? err.message : t('Save failed.');
   } finally {
     panelState.busy = undefined;
     renderAll();
@@ -322,7 +308,7 @@ async function runRemove(connector: ByoKeyConnectorId): Promise<void> {
     panelState.secrets[connector] = { hasKey: false };
     lastChangeHandler?.();
   } catch (err) {
-    panelState.error = err instanceof Error ? err.message : 'Remove failed.';
+    panelState.error = err instanceof Error ? err.message : t('Remove failed.');
   } finally {
     panelState.busy = undefined;
     renderAll();
@@ -341,7 +327,7 @@ async function refresh(): Promise<void> {
       panelState.available = available;
       panelState.loaded = true;
     } catch (err) {
-      panelState.error = err instanceof Error ? err.message : 'Failed to load.';
+      panelState.error = err instanceof Error ? err.message : t('Failed to load.');
     } finally {
       panelState.loading = false;
       inflightFetch = undefined;
@@ -362,17 +348,17 @@ function renderAll(): void {
 
 function renderPanel(state: PanelState): string {
   const intro = state.available
-    ? 'Magic Eden, Tensor, Sanctum, Lulo, and Phoenix Perpetuals require your own keys (Phoenix uses a one-time invite/activation code). Credentials are encrypted per wallet and only injected when the cloud prepares a transaction for you.'
-    : 'Connector key storage is not configured on this server. Set CONNECTOR_SECRET_KEY (or SESSION_SECRET) on the host to enable per-user keys.';
+    ? t('Magic Eden, Tensor, Sanctum, Lulo, and Phoenix Perpetuals require your own keys (Phoenix uses a one-time invite/activation code). Credentials are encrypted per wallet and only injected when the cloud prepares a transaction for you.')
+    : t('Connector key storage is not configured on this server. Set CONNECTOR_SECRET_KEY (or SESSION_SECRET) on the host to enable per-user keys.');
   const cards = BYO_KEY_CONNECTOR_IDS.map((id) => renderCard(id, state)).join('');
   const error = state.error
-    ? `<p class="connector-keys-error" role="alert">${escapeHtml(state.error)}</p>`
+    ? `<p class="connector-keys-error" role="alert">${escapeHtml(t(state.error))}</p>`
     : '';
-  const status = state.loading ? '<p class="connector-keys-status">Loading…</p>' : '';
+  const status = state.loading ? `<p class="connector-keys-status">${escapeHtml(t('Loading…'))}</p>` : '';
   return `
     <section class="connector-keys-panel" aria-labelledby="connector-keys-title">
       <header>
-        <h3 id="connector-keys-title">Connector API keys</h3>
+        <h3 id="connector-keys-title">${escapeHtml(t('Connector API keys'))}</h3>
         <p>${escapeHtml(intro)}</p>
       </header>
       ${status}
@@ -388,15 +374,17 @@ function renderCard(id: ByoKeyConnectorId, state: PanelState): string {
   const busy = state.busy === id;
   const editing = state.editing === id;
   const status = summary.hasKey
-    ? `Connected${summary.savedAt ? ` · saved ${formatDate(summary.savedAt)}` : ''}`
-    : 'Not connected';
+    ? summary.savedAt
+      ? tf('Connected · saved {date}', { date: formatDate(summary.savedAt) })
+      : t('Connected')
+    : t('Not connected');
   const statusTone = summary.hasKey ? 'on' : 'off';
   const mobile = isMobileConnectorKeysSurface();
   const head = `
     <header>
       <div>
         <h4>${escapeHtml(meta.label)}</h4>
-        <p>${escapeHtml(meta.description)}</p>
+        <p>${escapeHtml(connectorDescription(id))}</p>
       </div>
       <span class="connector-key-status" data-status="${statusTone}">${escapeHtml(status)}</span>
     </header>
@@ -404,7 +392,7 @@ function renderCard(id: ByoKeyConnectorId, state: PanelState): string {
   const body = `
     ${editing ? renderForm(id, summary) : renderActions(id, summary, busy)}
     <footer>
-      <a href="${escapeAttr(meta.portalUrl)}" target="_blank" rel="noreferrer noopener">${escapeHtml(meta.portalLinkLabel ?? 'Get an API key →')}</a>
+      <a href="${escapeAttr(meta.portalUrl)}" target="_blank" rel="noreferrer noopener">${escapeHtml(connectorPortalLinkLabel(meta))}</a>
     </footer>
   `;
   if (mobile) {
@@ -432,16 +420,54 @@ function isMobileConnectorKeysSurface(): boolean {
   return typeof window !== 'undefined' && window.innerWidth < 900;
 }
 
+function connectorAddCredentialLabel(meta: ByoKeyConnectorMeta): string {
+  return meta.credentialKind === 'access-code' ? t('Add access code') : t('Add API key');
+}
+
+function connectorUpdateCredentialLabel(meta: ByoKeyConnectorMeta): string {
+  return meta.credentialKind === 'access-code' ? t('Update access code') : t('Update API key');
+}
+
+function connectorCredentialFieldLabel(meta: ByoKeyConnectorMeta): string {
+  return meta.credentialKind === 'access-code' ? t('Access code') : t('API key');
+}
+
+function connectorCredentialPlaceholder(meta: ByoKeyConnectorMeta): string {
+  if (meta.credentialKind === 'access-code') {
+    return tf('Paste your {label} invite/activation code', { label: meta.label });
+  }
+  return tf('Paste your {label} key', { label: meta.label });
+}
+
+function connectorPortalLinkLabel(meta: ByoKeyConnectorMeta): string {
+  return meta.credentialKind === 'access-code' ? t('Request an access code →') : t('Get an API key →');
+}
+
+function connectorDescription(id: ByoKeyConnectorId): string {
+  switch (id) {
+    case 'magiceden':
+      return t('NFT marketplace bids, listings, and buys on Solana mainnet.');
+    case 'tensor':
+      return t('NFT marketplace bids, listings, and sweep on Solana mainnet.');
+    case 'sanctum':
+      return t('Liquid staking token routing and Infinity pool.');
+    case 'lulo':
+      return t('Protected, Boost, and Regular lending: rates, balances, deposits, and withdrawals.');
+    case 'phoenix':
+      return t('Perp futures on Solana (Ellipsis Labs). Paste the invite/activation code from your Phoenix waitlist email; it activates your wallet as a trader on first use.');
+  }
+}
+
 function renderActions(id: ByoKeyConnectorId, summary: ConnectorSecretSummary, busy: boolean): string {
   const meta = BYO_KEY_CONNECTOR_META[id];
   const disabled = busy ? 'disabled' : '';
-  const addLabel = meta.addButtonLabel ?? 'Add API key';
+  const addLabel = connectorAddCredentialLabel(meta);
   if (summary.hasKey) {
-    const updateLabel = addLabel.replace(/^Add\b/i, 'Update');
+    const updateLabel = connectorUpdateCredentialLabel(meta);
     return `
       <div class="connector-key-actions">
         <button type="button" class="utility" data-connector="${escapeAttr(id)}" data-connector-key-action="edit" ${disabled}>${escapeHtml(updateLabel)}</button>
-        <button type="button" class="utility utility-danger" data-connector="${escapeAttr(id)}" data-connector-key-action="remove" ${disabled}>Remove</button>
+        <button type="button" class="utility utility-danger" data-connector="${escapeAttr(id)}" data-connector-key-action="remove" ${disabled}>${escapeHtml(t('Remove'))}</button>
       </div>
     `;
   }
@@ -454,10 +480,8 @@ function renderActions(id: ByoKeyConnectorId, summary: ConnectorSecretSummary, b
 
 function renderForm(id: ByoKeyConnectorId, summary: ConnectorSecretSummary): string {
   const meta = BYO_KEY_CONNECTOR_META[id];
-  const fieldLabel = meta.formFieldLabel ?? 'API key';
-  const placeholder = meta.formPlaceholderTemplate
-    ? meta.formPlaceholderTemplate(meta.label)
-    : `Paste your ${meta.label} key`;
+  const fieldLabel = connectorCredentialFieldLabel(meta);
+  const placeholder = connectorCredentialPlaceholder(meta);
   return `
     <form class="connector-key-form" data-connector="${escapeAttr(id)}" data-connector-key-form>
       <label>
@@ -465,12 +489,12 @@ function renderForm(id: ByoKeyConnectorId, summary: ConnectorSecretSummary): str
         <input type="password" name="apiKey" autocomplete="off" required minlength="1" maxlength="1024" placeholder="${escapeAttr(placeholder)}" />
       </label>
       <label>
-        <span>Base URL <em>(optional)</em></span>
+        <span>${escapeHtml(t('Base URL'))} <em>${escapeHtml(t('(optional)'))}</em></span>
         <input type="url" name="baseUrl" autocomplete="off" placeholder="${escapeAttr(meta.defaultBaseUrl)}" value="${escapeAttr(summary.baseUrl ?? '')}" />
       </label>
       <div class="connector-key-actions">
-        <button type="submit" class="primary">Save</button>
-        <button type="button" class="utility" data-connector="${escapeAttr(id)}" data-connector-key-action="cancel">Cancel</button>
+        <button type="submit" class="primary">${escapeHtml(t('Save'))}</button>
+        <button type="button" class="utility" data-connector="${escapeAttr(id)}" data-connector-key-action="cancel">${escapeHtml(t('Cancel'))}</button>
       </div>
     </form>
   `;
@@ -487,11 +511,11 @@ function normalizeConnectorBaseUrlInput(value: string): { value?: string; error?
   try {
     parsed = new URL(trimmed);
   } catch {
-    return { error: 'Base URL must be a valid URL.' };
+    return { error: t('Base URL must be a valid URL.') };
   }
   if (parsed.protocol === 'https:') return { value: trimmed };
   if (parsed.protocol === 'http:' && isLocalHttpHost(parsed.hostname)) return { value: trimmed };
-  return { error: 'Base URL must use HTTPS, except localhost HTTP for a local connector.' };
+  return { error: t('Base URL must use HTTPS, except localhost HTTP for a local connector.') };
 }
 
 function isLocalHttpHost(hostname: string): boolean {
