@@ -27,7 +27,7 @@
     "@solana-agent-wallet-adapter/workflow": "workspace:*",
     "@solana-agent-wallet-adapter/wallet-standard-web": "workspace:*",
     "@capacitor/app": "^8.1.0",
-    "@capacitor/core": "^8.1.0",
+    "@capacitor/core": "^8.4.0",
     "@solana/web3.js": "^1.95.0",
     "@walletconnect/sign-client": "^2.23.9",
     "bs58": "^6.0.0",
