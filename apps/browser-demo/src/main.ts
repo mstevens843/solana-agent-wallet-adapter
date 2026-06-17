@@ -343,6 +343,14 @@ import { evaluateSimulationOutcome } from './simulationOutcome.js';
 import { getCachedUsdPrice, getUsdPriceForMint } from './priceCache.js';
 import { privacyPage, termsPage, deleteAccountPage } from './legal/pages.js';
 import {
+  tDemo,
+  tDemoFormat,
+  isDemoLanguage,
+  demoLanguageOption,
+  DEMO_LANGUAGE_OPTIONS,
+  type DemoLanguage,
+} from './demo-i18n/tDemo.js';
+import {
   hostedByokCloudSessionBlockReason,
   shouldAutoSignOutCloudSession,
 } from './cloudSessionPolicy.js';
@@ -2717,6 +2725,7 @@ interface PersistedState {
   selectedIosWalletId?: IosNativeWalletId;
   workflowModePreference?: WorkflowModePreference;
   preferencesView?: PreferencesView;
+  demoLanguage?: DemoLanguage;
   cluster?: Cluster;
   bridgeUrl?: string;
   bridgeAutoReconnect?: boolean;
@@ -2914,6 +2923,7 @@ interface DemoState {
   selectedRuntimePath: RuntimePathId;
   recentCopyId: string;
   guidedDemo: GuidedDemoState;
+  demoLanguage: DemoLanguage;
   inboxFilter: InboxFilter;
   listPages: Record<AppListPageKey, number>;
   workflowModePreference: WorkflowModePreference;
@@ -3609,54 +3619,6 @@ const RECURRING_PRESETS: RecurringPreset[] = [
 
 const GUIDED_DEMO_SCENARIOS: ReadonlyArray<GuidedDemoScenario> = [
   {
-    id: 'transfer',
-    eyebrow: 'One-time transfer',
-    title: '0.2 SOL transfer',
-    prompt: 'Prepare a 0.2 SOL transfer. Don\'t send until I approve.',
-    detail: 'The agent prepares the payment terms, but the wallet still owns the final approve or deny step.',
-    planTitle: 'Prepared SOL transfer for wallet review',
-    route: 'New Request -> Needs Approval',
-    risk: 'Confirm the recipient, amount, cluster, and network fee before approving the final wallet request.',
-    approvalBoundary: 'No transaction is signed or submitted until you approve it from the wallet review step.',
-    receiptType: 'one_time_transfer_receipt',
-    receiptSummary: 'A bounded SOL transfer was prepared and reviewed before wallet approval.',
-    constraints: [
-      'Amount is capped at 0.2 SOL.',
-      'Recipient must match the final wallet review.',
-      'No recurring allowance or delegated signer is created.',
-      'User approval is required before any send.',
-    ],
-    facts: [
-      { label: 'Action', value: 'Send Tokens' },
-      { label: 'Amount', value: '0.2 SOL max' },
-      { label: 'Custody', value: 'User wallet' },
-    ],
-  },
-  {
-    id: 'swap',
-    eyebrow: 'Swap review',
-    title: 'SOL to USDC swap',
-    prompt: 'Prepare a SOL to USDC swap review before signing. Amount: 0.01 SOL. Max slippage: 0.5%. Do not submit anything.',
-    detail: 'AI prepares the review summary; the wallet owner checks route, amount, protocol, and slippage before approval.',
-    planTitle: 'Prepared SOL to USDC swap review',
-    route: 'New Request -> Needs Approval',
-    risk: 'Review price impact, route programs, minimum output, and final quote before approving.',
-    approvalBoundary: 'AI prepares the request. The wallet owner approves only after checking the wallet action.',
-    receiptType: 'swap_review_receipt',
-    receiptSummary: 'A swap request was constrained by a 1% slippage cap before review.',
-    constraints: [
-      'Maximum slippage is 50 bps.',
-      'Final wallet quote must show the actual minimum output.',
-      'Unexpected authority grants should be rejected.',
-      'Route changes require a fresh wallet review.',
-    ],
-    facts: [
-      { label: 'Route', value: 'SOL -> USDC' },
-      { label: 'Limit', value: '0.5% slippage' },
-      { label: 'Signer', value: 'Wallet only' },
-    ],
-  },
-  {
     id: 'policy-swap',
     eyebrow: 'Agent decision',
     title: 'SOL to POPCAT pre-sign decision',
@@ -3726,6 +3688,54 @@ const GUIDED_DEMO_SCENARIOS: ReadonlyArray<GuidedDemoScenario> = [
       { label: 'Amount', value: '0.04 SOL (~$3.6383 at $90.96/SOL).', tone: 'good' },
       { label: 'Risk factors', value: 'POPCAT volatility noted; decision still passes under the configured gates.', tone: 'warn' },
       { label: 'Decision rule', value: 'Agent pre-signing decision returned APPROVE.', tone: 'good' },
+    ],
+  },
+  {
+    id: 'transfer',
+    eyebrow: 'One-time transfer',
+    title: '0.2 SOL transfer',
+    prompt: 'Prepare a 0.2 SOL transfer. Don\'t send until I approve.',
+    detail: 'The agent prepares the payment terms, but the wallet still owns the final approve or deny step.',
+    planTitle: 'Prepared SOL transfer for wallet review',
+    route: 'New Request -> Needs Approval',
+    risk: 'Confirm the recipient, amount, cluster, and network fee before approving the final wallet request.',
+    approvalBoundary: 'No transaction is signed or submitted until you approve it from the wallet review step.',
+    receiptType: 'one_time_transfer_receipt',
+    receiptSummary: 'A bounded SOL transfer was prepared and reviewed before wallet approval.',
+    constraints: [
+      'Amount is capped at 0.2 SOL.',
+      'Recipient must match the final wallet review.',
+      'No recurring allowance or delegated signer is created.',
+      'User approval is required before any send.',
+    ],
+    facts: [
+      { label: 'Action', value: 'Send Tokens' },
+      { label: 'Amount', value: '0.2 SOL max' },
+      { label: 'Custody', value: 'User wallet' },
+    ],
+  },
+  {
+    id: 'swap',
+    eyebrow: 'Swap review',
+    title: 'SOL to USDC swap',
+    prompt: 'Prepare a SOL to USDC swap review before signing. Amount: 0.01 SOL. Max slippage: 0.5%. Do not submit anything.',
+    detail: 'AI prepares the review summary; the wallet owner checks route, amount, protocol, and slippage before approval.',
+    planTitle: 'Prepared SOL to USDC swap review',
+    route: 'New Request -> Needs Approval',
+    risk: 'Review price impact, route programs, minimum output, and final quote before approving.',
+    approvalBoundary: 'AI prepares the request. The wallet owner approves only after checking the wallet action.',
+    receiptType: 'swap_review_receipt',
+    receiptSummary: 'A swap request was constrained by a 1% slippage cap before review.',
+    constraints: [
+      'Maximum slippage is 50 bps.',
+      'Final wallet quote must show the actual minimum output.',
+      'Unexpected authority grants should be rejected.',
+      'Route changes require a fresh wallet review.',
+    ],
+    facts: [
+      { label: 'Route', value: 'SOL -> USDC' },
+      { label: 'Limit', value: '0.5% slippage' },
+      { label: 'Signer', value: 'Wallet only' },
     ],
   },
   {
@@ -3969,7 +3979,7 @@ function activeAgentDecisionPlanIndex(): number {
 }
 
 function activeAgentDecisionPlan(): AgentDecisionPlan {
-  return AGENT_DECISION_PLANS[activeAgentDecisionPlanIndex()]!;
+  return localizePlan(AGENT_DECISION_PLANS[activeAgentDecisionPlanIndex()]!, state.demoLanguage);
 }
 
 // Fixed timestamp for the demo review header (kept stable so the card never renders a "just now"/drifting time).
@@ -3990,7 +4000,7 @@ const GUIDED_DEMO_TYPE_TICK_MS = 18;
 let guidedDemoTypeTimer: number | undefined;
 
 function defaultGuidedDemoState(
-  scenarioId: GuidedDemoScenarioId = 'transfer',
+  scenarioId: GuidedDemoScenarioId = 'policy-swap',
   agentPlanIndex = 0,
 ): GuidedDemoState {
   return {
@@ -4032,6 +4042,7 @@ const state: DemoState = {
   selectedRuntimePath: 'exec',
   recentCopyId: '',
   guidedDemo: defaultGuidedDemoState(),
+  demoLanguage: persisted.demoLanguage ?? 'en',
   inboxFilter: 'all',
   listPages: {
     review: 1,
@@ -4232,6 +4243,7 @@ let artifactPickerController: AbortController | null = null;
 let selectPickerController: AbortController | null = null;
 let selectPickerOpenOrder = 0;
 let preferencesMobilePickerController: AbortController | null = null;
+let demoLanguagePickerController: AbortController | null = null;
 let mobileRailSheetController: AbortController | null = null;
 let nativeKeyboardInsetsBound = false;
 let nativeKeyboardInset = 0;
@@ -9600,6 +9612,7 @@ function render(): void {
   applyRouteTitle(route);
   trackPageView(route ?? normalizePathname(window.location.pathname), document.title);
   closeTemplatePickerInteractions();
+  closeDemoLanguagePickerInteractions();
   closeArtifactPickerInteractions();
   closeWalletBalanceOverlayInteractions();
   closePlanConnectorPairingPanelInteractions();
@@ -12529,6 +12542,264 @@ function homepageDemoCtaSection(): string {
   `;
 }
 
+// === /demo localization (Android dApp language switcher) ===
+// Demo copy is authored once in English; ./demo-i18n carries the translations.
+// `td` wraps inline chrome literals; `localizeScenario`/`localizePlan` deep-translate
+// the centralized scenario/plan data once per render so every downstream render helper
+// emits translated values with no further edits. English short-circuits to the identity.
+
+/** Translate an inline demo chrome literal into the active demo language. */
+function td(text: string): string {
+  return tDemo(text, state.demoLanguage);
+}
+
+function localizeScenario(scenario: GuidedDemoScenario, language: DemoLanguage): GuidedDemoScenario {
+  if (language === 'en') return scenario;
+  const t = (value: string): string => tDemo(value, language);
+  return {
+    ...scenario,
+    eyebrow: t(scenario.eyebrow),
+    title: t(scenario.title),
+    prompt: t(scenario.prompt),
+    cardIntro: scenario.cardIntro !== undefined ? t(scenario.cardIntro) : scenario.cardIntro,
+    cardGroups: scenario.cardGroups?.map((group) => ({
+      title: t(group.title),
+      items: group.items.map(t),
+    })),
+    detail: t(scenario.detail),
+    planTitle: t(scenario.planTitle),
+    route: t(scenario.route),
+    risk: t(scenario.risk),
+    approvalBoundary: t(scenario.approvalBoundary),
+    receiptSummary: t(scenario.receiptSummary),
+    constraints: scenario.constraints.map(t),
+    facts: scenario.facts.map((fact) => ({ label: t(fact.label), value: t(fact.value) })),
+    agentChecks: scenario.agentChecks?.map((check) => ({ ...check, label: t(check.label), value: t(check.value) })),
+    // id, receiptType, agentProvider, agentModel are technical identifiers — never translated.
+  };
+}
+
+function localizePlan(plan: AgentDecisionPlan, language: DemoLanguage): AgentDecisionPlan {
+  if (language === 'en') return plan;
+  const t = (value: string): string => tDemo(value, language);
+  return {
+    ...plan,
+    tabLabel: t(plan.tabLabel),
+    title: t(plan.title),
+    prompt: t(plan.prompt),
+    cardIntro: t(plan.cardIntro),
+    cardGroups: plan.cardGroups.map((group) => ({ title: t(group.title), items: group.items.map(t) })),
+    planTitle: t(plan.planTitle),
+    detail: t(plan.detail),
+    route: t(plan.route),
+    risk: t(plan.risk),
+    approvalBoundary: t(plan.approvalBoundary),
+    receiptSummary: t(plan.receiptSummary),
+    constraints: plan.constraints.map(t),
+    facts: plan.facts.map((fact) => ({ label: t(fact.label), value: t(fact.value) })),
+    agentChecks: plan.agentChecks?.map((check) => ({ ...check, label: t(check.label), value: t(check.value) })),
+    // `review` is intentionally left English (via the spread): the rich Plan 2/3 drawer
+    // reuses the shared evidence system, which buckets findings by English keyword BEFORE
+    // localizing. guidedDemoReviewPreparedPlan controls the English-vs-translated split.
+    // agentProvider, agentModel, agentLogo, agentSource, presentation, receiptType untouched.
+  };
+}
+
+const DEMO_LANGUAGE_GLOBE_ICON =
+  '<svg class="demo-language-picker-globe" viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="6.4"/><path d="M1.6 8h12.8M8 1.6c1.8 1.8 2.7 4 2.7 6.4S9.8 12.6 8 14.4C6.2 12.6 5.3 10.4 5.3 8S6.2 3.4 8 1.6z"/></svg>';
+
+// Dainty Android-only language switcher; reuses the /app template-picker component styling.
+function demoLanguagePicker(): string {
+  const active = demoLanguageOption(state.demoLanguage);
+  return `
+    <div class="demo-language-picker template-picker" data-demo-language-picker>
+      <button
+        id="demoLanguagePickerButton"
+        class="template-picker-trigger demo-language-picker-trigger"
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded="false"
+        aria-controls="demoLanguagePickerMenu"
+        aria-label="Demo language"
+      >
+        ${DEMO_LANGUAGE_GLOBE_ICON}
+        <span class="template-picker-current demo-language-picker-current">
+          <strong id="demoLanguagePickerValue">${escapeHtml(active.native)}</strong>
+        </span>
+        <span class="template-picker-caret" aria-hidden="true"></span>
+      </button>
+      <div
+        id="demoLanguagePickerMenu"
+        class="template-picker-menu demo-language-picker-menu"
+        role="listbox"
+        aria-label="Demo language"
+        hidden
+      >
+        <div class="template-picker-group demo-language-picker-group">
+          ${DEMO_LANGUAGE_OPTIONS.map(demoLanguagePickerOption).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function demoLanguagePickerOption(option: (typeof DEMO_LANGUAGE_OPTIONS)[number]): string {
+  const selected = state.demoLanguage === option.code;
+  return `
+    <button
+      class="template-picker-option demo-language-picker-option ${selected ? 'selected active' : ''}"
+      type="button"
+      role="option"
+      aria-selected="${selected ? 'true' : 'false'}"
+      data-demo-language="${escapeHtml(option.code)}"
+      tabindex="${selected ? '0' : '-1'}"
+    >
+      <strong>${escapeHtml(option.native)}</strong>
+    </button>
+  `;
+}
+
+function setDemoLanguage(code: DemoLanguage): boolean {
+  if (state.demoLanguage === code) return false;
+  state.demoLanguage = code;
+  state.error = '';
+  savePersistedState();
+  // If the agent-flow typewriter is mid-run, restart it so the prompt retypes in the
+  // new language (it re-renders internally); otherwise a plain re-render is enough.
+  if (state.guidedDemo.agentFlowStep === 'typing') {
+    startGuidedDemoAgentFlow();
+  } else {
+    render();
+  }
+  return true;
+}
+
+function closeDemoLanguagePickerInteractions(): void {
+  demoLanguagePickerController?.abort();
+  demoLanguagePickerController = null;
+}
+
+function bindDemoLanguagePicker(): void {
+  const picker = document.querySelector<HTMLElement>('[data-demo-language-picker]');
+  if (!picker) return;
+  const trigger = picker.querySelector<HTMLButtonElement>('#demoLanguagePickerButton');
+  const menu = picker.querySelector<HTMLElement>('#demoLanguagePickerMenu');
+  const options = [...picker.querySelectorAll<HTMLButtonElement>('[data-demo-language]')];
+  if (!trigger || !menu || options.length === 0) return;
+
+  const openPicker = (focusOption: 'selected' | 'first' | 'last' | false = false): void => {
+    if (trigger.disabled) return;
+    closeDemoLanguagePickerInteractions();
+    picker.classList.add('open');
+    trigger.setAttribute('aria-expanded', 'true');
+    menu.hidden = false;
+    positionTemplatePickerMenu(trigger, menu);
+    window.requestAnimationFrame(() => positionTemplatePickerMenu(trigger, menu));
+
+    const selectedOption = options.find((option) => option.dataset.demoLanguage === state.demoLanguage) ?? options[0]!;
+    const activeOption = focusOption === 'first'
+      ? options[0]!
+      : focusOption === 'last'
+        ? options[options.length - 1]!
+        : selectedOption;
+    setActiveTemplateOption(options, activeOption, Boolean(focusOption));
+
+    demoLanguagePickerController = new AbortController();
+    const { signal } = demoLanguagePickerController;
+    window.addEventListener('pointerdown', (event) => {
+      if (event.target instanceof Node && picker.contains(event.target)) return;
+      closePicker(false);
+    }, { signal });
+    window.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closePicker(true);
+      }
+    }, { signal });
+    window.addEventListener('resize', () => positionTemplatePickerMenu(trigger, menu), { signal });
+    window.visualViewport?.addEventListener('resize', () => positionTemplatePickerMenu(trigger, menu), { signal });
+  };
+
+  const closePicker = (returnFocus: boolean): void => {
+    picker.classList.remove('open');
+    trigger.setAttribute('aria-expanded', 'false');
+    menu.hidden = true;
+    closeDemoLanguagePickerInteractions();
+    if (returnFocus) {
+      trigger.focus({ preventScroll: true });
+    }
+  };
+
+  const chooseOption = (option: HTMLButtonElement): void => {
+    const code = option.dataset.demoLanguage;
+    if (!code || !isDemoLanguage(code)) return;
+    closePicker(false);
+    // setDemoLanguage re-renders (discarding this trigger); only restore focus on no-op.
+    if (!setDemoLanguage(code)) {
+      if (document.contains(trigger)) {
+        trigger.focus({ preventScroll: true });
+      }
+    }
+  };
+
+  trigger.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (menu.hidden) {
+      openPicker(false);
+    } else {
+      closePicker(false);
+    }
+  });
+
+  trigger.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      openPicker('selected');
+      focusAdjacentTemplateOption(options, 1);
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      openPicker('selected');
+      focusAdjacentTemplateOption(options, -1);
+    }
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      openPicker('selected');
+    }
+  });
+
+  menu.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      focusAdjacentTemplateOption(options, 1);
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      focusAdjacentTemplateOption(options, -1);
+    }
+    if (event.key === 'Home') {
+      event.preventDefault();
+      setActiveTemplateOption(options, options[0]!, true);
+    }
+    if (event.key === 'End') {
+      event.preventDefault();
+      setActiveTemplateOption(options, options[options.length - 1]!, true);
+    }
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      const activeOption = document.activeElement instanceof HTMLButtonElement
+        ? document.activeElement
+        : options.find((option) => option.classList.contains('active')) ?? options[0]!;
+      chooseOption(activeOption);
+    }
+  });
+
+  for (const option of options) {
+    option.addEventListener('click', () => chooseOption(option));
+    option.addEventListener('pointermove', () => setActiveTemplateOption(options, option, false));
+  }
+}
+
 function guidedDemoWalkthroughPage(): string {
   const scenario = selectedGuidedDemoScenario();
   return `
@@ -12536,39 +12807,41 @@ function guidedDemoWalkthroughPage(): string {
       <div class="guided-demo-hero">
         <div class="guided-demo-hero-copy">
           <div class="tooling-chip-strip demo-chip-strip" aria-label="Demo approval surfaces">
-            <span class="logo-chip solana-chip">${brandLogo('solana', 'logo-chip-icon')}<span>Solana</span></span>
-            <span class="logo-chip">${brandLogo('agentRouter', 'logo-chip-icon')}<span>Agent runtime</span></span>
-            <span class="logo-chip">${brandLogo('phantom', 'logo-chip-icon')}<span>Wallet review</span></span>
-            ${IS_IOS_APP ? '' : `<span class="logo-chip">${brandLogo('solanaMobile', 'logo-chip-icon')}<span>MWA</span></span>`}
+            <span class="logo-chip solana-chip">${brandLogo('solana', 'logo-chip-icon')}<span>${escapeHtml(td('Solana'))}</span></span>
+            <span class="logo-chip">${brandLogo('agentRouter', 'logo-chip-icon')}<span>${escapeHtml(td('Agent runtime'))}</span></span>
+            <span class="logo-chip">${brandLogo('phantom', 'logo-chip-icon')}<span>${escapeHtml(td('Wallet review'))}</span></span>
+            ${IS_IOS_APP ? '' : `<span class="logo-chip">${brandLogo('solanaMobile', 'logo-chip-icon')}<span>${escapeHtml(td('MWA'))}</span></span>`}
           </div>
-          <p class="eyebrow mini">Guided demo</p>
-          <h1 id="guided-demo-title">Preview wallet approval without connecting a wallet.</h1>
+          <div class="guided-demo-eyebrow-row">
+            <p class="eyebrow mini">${escapeHtml(td('Guided demo'))}</p>
+            ${IS_ANDROID_APP ? demoLanguagePicker() : ''}
+          </div>
+          <h1 id="guided-demo-title">${escapeHtml(td('Preview wallet approval without connecting a wallet.'))}</h1>
           <p>
-            Pick a practical Solana request and watch Agentic turn it into a bounded wallet review. This demo
-            simulates the approval flow, does not move funds, and never asks you to start the local bridge.
+            ${escapeHtml(td('Pick a practical Solana request and watch Agentic turn it into a bounded wallet review. This demo simulates the approval flow, does not move funds, and never asks you to start the local bridge.'))}
           </p>
           <div class="guided-demo-hero-actions">
-            <a class="button-link nav-pill-link launch-app-link" href="#demo-runner">Walk through demo</a>
-            <a class="button-link" href="/app">Open full app</a>
+            <a class="button-link nav-pill-link launch-app-link" href="#demo-runner">${escapeHtml(td('Walk through demo'))}</a>
+            <a class="button-link" href="/app">${escapeHtml(td('Open full app'))}</a>
           </div>
         </div>
         ${guidedDemoPreviewPanel(scenario)}
         <div class="guided-demo-trust-grid" aria-label="Demo safety model">
-          ${guidedDemoTrustItem('No key handoff', 'The agent never receives your seed phrase, private key, or unlimited signer.', 'agentRouter')}
-          ${guidedDemoTrustItem('Explicit approval', 'Prepared actions wait until the wallet owner approves or denies them.', 'phantom')}
-          ${guidedDemoTrustItem('Receipt trail', 'Every demo decision ends with a receipt you can inspect or copy.', 'solana')}
+          ${guidedDemoTrustItem(td('No key handoff'), td('The agent never receives your seed phrase, private key, or unlimited signer.'), 'agentRouter')}
+          ${guidedDemoTrustItem(td('Explicit approval'), td('Prepared actions wait until the wallet owner approves or denies them.'), 'phantom')}
+          ${guidedDemoTrustItem(td('Receipt trail'), td('Every demo decision ends with a receipt you can inspect or copy.'), 'solana')}
         </div>
       </div>
 
       <div class="guided-demo-shell">
         <aside class="guided-demo-scenarios" aria-label="Choose a demo scenario">
           <div>
-            <p class="eyebrow mini">Use cases</p>
-            <h2>Start with a real request.</h2>
-            <p>These are the approval moments Agentic is built for: the agent drafts, the wallet decides.</p>
+            <p class="eyebrow mini">${escapeHtml(td('Use cases'))}</p>
+            <h2>${escapeHtml(td('Start with a real request.'))}</h2>
+            <p>${escapeHtml(td('These are the approval moments Agentic is built for: the agent drafts, the wallet decides.'))}</p>
           </div>
           <div class="guided-demo-scenario-list">
-            ${GUIDED_DEMO_SCENARIOS.map((candidate) => guidedDemoScenarioCard(candidate)).join('')}
+            ${GUIDED_DEMO_SCENARIOS.map((candidate) => guidedDemoScenarioCard(localizeScenario(candidate, state.demoLanguage))).join('')}
           </div>
         </aside>
 
@@ -12597,11 +12870,11 @@ function guidedDemoWalkthroughPage(): string {
 
       <div class="guided-demo-footer-cta">
         <div>
-          <span>Ready for the real workspace?</span>
-          <strong>Create requests, connect optional AI, review approvals, and save signed proofs in /app.</strong>
+          <span>${escapeHtml(td('Ready for the real workspace?'))}</span>
+          <strong>${escapeHtml(td('Create requests, connect optional AI, review approvals, and save signed proofs in /app.'))}</strong>
         </div>
-        <a class="button-link launch-app-link mobile-redundant-nav" href="/app">Launch full app</a>
-        <a class="button-link mobile-redundant-nav" href="/docs">Read docs</a>
+        <a class="button-link launch-app-link mobile-redundant-nav" href="/app">${escapeHtml(td('Launch full app'))}</a>
+        <a class="button-link mobile-redundant-nav" href="/docs">${escapeHtml(td('Read docs'))}</a>
       </div>
     </section>
   `;
@@ -12620,18 +12893,18 @@ function guidedDemoPreviewPanel(scenario: GuidedDemoScenario): string {
         <strong>simulated-route</strong>
       </div>
       <div class="guided-demo-preview-body">
-        <p><span>user</span> ${escapeHtml(scenario.prompt)}</p>
-        ${guidedDemoPreviewRow('Agent prepares', scenario.planTitle, scenario.detail, prepared ? 'complete' : 'active')}
+        <p><span>${escapeHtml(td('user'))}</span> ${escapeHtml(scenario.prompt)}</p>
+        ${guidedDemoPreviewRow(td('Agent prepares'), scenario.planTitle, scenario.detail, prepared ? 'complete' : 'active')}
         ${guidedDemoPreviewRow(
-          'Wallet reviews',
-          'Wallet-owned signing boundary',
+          td('Wallet reviews'),
+          td('Wallet-owned signing boundary'),
           scenario.approvalBoundary,
           queued ? 'complete' : prepared ? 'active' : 'idle',
         )}
         ${guidedDemoPreviewRow(
-          'Receipt records',
-          receiptReady ? scenario.receiptSummary : 'Decision evidence waits for approval or denial.',
-          receiptReady ? formatDateTime(state.guidedDemo.receiptCreatedAt) : 'No funds move in this demo.',
+          td('Receipt records'),
+          receiptReady ? scenario.receiptSummary : td('Decision evidence waits for approval or denial.'),
+          receiptReady ? formatDateTime(state.guidedDemo.receiptCreatedAt) : td('No funds move in this demo.'),
           receiptReady ? 'complete' : 'idle',
         )}
       </div>
@@ -12704,7 +12977,7 @@ function guidedDemoAgentDecisionCard(scenario: GuidedDemoScenario): string {
       data-demo-agent-plan="${index}"
       aria-selected="${index === activeIndex ? 'true' : 'false'}"
       ${state.busy ? 'disabled' : ''}
-    >${escapeHtml(entry.tabLabel)}</button>
+    >${escapeHtml(td(entry.tabLabel))}</button>
   `).join('');
   const groups = plan.cardGroups.length
     ? `
@@ -12774,13 +13047,13 @@ function guidedDemoScenarioLogo(scenarioId: GuidedDemoScenarioId): BrandLogoId {
 function guidedDemoStepRail(): string {
   const receiptComplete = state.guidedDemo.stage === 'receipt';
   const steps = [
-    { id: 'request', label: 'Request', detail: 'Choose a use case' },
-    { id: 'prepared', label: 'Prepared plan', detail: 'Agent drafts limits' },
-    { id: 'queued', label: 'Wallet review', detail: 'Approve or deny' },
+    { id: 'request', label: td('Request'), detail: td('Choose a use case') },
+    { id: 'prepared', label: td('Prepared plan'), detail: td('Agent drafts limits') },
+    { id: 'queued', label: td('Wallet review'), detail: td('Approve or deny') },
     {
       id: 'receipt',
-      label: receiptComplete ? 'Demo complete' : 'Receipt',
-      detail: receiptComplete ? 'Receipt ready' : 'Decision recorded',
+      label: receiptComplete ? td('Demo complete') : td('Receipt'),
+      detail: receiptComplete ? td('Receipt ready') : td('Decision recorded'),
     },
   ] satisfies Array<{ id: GuidedDemoStage; label: string; detail: string }>;
   const activeIndex = guidedDemoStageIndex(state.guidedDemo.stage);
@@ -12834,10 +13107,10 @@ function guidedDemoRequestCard(scenario: GuidedDemoScenario): string {
   return `
     <article class="guided-demo-request-card${typing ? ' typing' : ''}">
       <div>
-        <span>User request</span>
+        <span>${escapeHtml(td('User request'))}</span>
         ${promptHtml}
       </div>
-      <strong>Simulation only</strong>
+      <strong>${escapeHtml(td('Simulation only'))}</strong>
     </article>
   `;
 }
@@ -12859,12 +13132,12 @@ function guidedDemoAgentFlowCard(step: GuidedDemoAgentFlowStep): string {
       </div>
       ${step === 'reviewing' ? `
         <div class="guided-demo-agent-review-meta">
-          <span>Agent checking</span>
+          <span>${escapeHtml(td('Agent checking'))}</span>
           <em>${escapeHtml(guidedDemoActivePlanProviderLine())}</em>
-          <strong>Local demo</strong>
+          <strong>${escapeHtml(td('Local demo'))}</strong>
         </div>
         <details class="guided-demo-agent-question">
-          <summary>Ask agent about this request</summary>
+          <summary>${escapeHtml(td('Ask agent about this request'))}</summary>
         </details>
       ` : ''}
     </article>
@@ -12873,39 +13146,39 @@ function guidedDemoAgentFlowCard(step: GuidedDemoAgentFlowStep): string {
 
 function guidedDemoActivePlanProviderLine(): string {
   const plan = activeAgentDecisionPlan();
-  return [plan.agentProvider, plan.agentModel].filter(Boolean).join(' - ') || 'Agent';
+  return [plan.agentProvider, plan.agentModel].filter(Boolean).join(' - ') || td('Agent');
 }
 
 function guidedDemoAgentFlowCopy(step: GuidedDemoAgentFlowStep): { eyebrow: string; title: string; detail: string; status: string } {
   if (step === 'typing') {
     return {
-      eyebrow: 'Agent',
-      title: 'Sending to agent',
-      detail: 'Handing your request to the agent.',
-      status: 'Working',
+      eyebrow: td('Agent'),
+      title: td('Sending to agent'),
+      detail: td('Handing your request to the agent.'),
+      status: td('Working'),
     };
   }
   if (step === 'asking') {
     return {
-      eyebrow: 'Agent',
-      title: 'Asking agent',
-      detail: 'Reviewing this draft before approval.',
-      status: 'Working',
+      eyebrow: td('Agent'),
+      title: td('Asking agent'),
+      detail: td('Reviewing this draft before approval.'),
+      status: td('Working'),
     };
   }
   if (step === 'drafting') {
     return {
-      eyebrow: 'AI draft',
-      title: 'Swap tokens is being drafted',
-      detail: 'Review a new DeFi position before signing. Check route, amount, protocol, and slippage before my wallet approves.',
-      status: 'Working',
+      eyebrow: td('AI draft'),
+      title: td('Swap tokens is being drafted'),
+      detail: td('Review a new DeFi position before signing. Check route, amount, protocol, and slippage before my wallet approves.'),
+      status: td('Working'),
     };
   }
   return {
-    eyebrow: 'Agent review',
-    title: 'Agent is reviewing this draft before it can move forward.',
-    detail: 'Agent checks the prepared swap against the configured decision gates.',
-    status: 'Agent checking',
+    eyebrow: td('Agent review'),
+    title: td('Agent is reviewing this draft before it can move forward.'),
+    detail: td('Agent checks the prepared swap against the configured decision gates.'),
+    status: td('Agent checking'),
   };
 }
 
@@ -12916,9 +13189,9 @@ function guidedDemoPreparedPlan(scenario: GuidedDemoScenario): string {
   if (!guidedDemoAtLeast('prepared')) {
     return `
       <article class="guided-demo-placeholder">
-        <span>Next</span>
-        <h3>Prepare the request</h3>
-        <p>Click Prepare request to see the structured plan the agent would hand back for wallet review.</p>
+        <span>${escapeHtml(td('Next'))}</span>
+        <h3>${escapeHtml(td('Prepare the request'))}</h3>
+        <p>${escapeHtml(td('Click Prepare request to see the structured plan the agent would hand back for wallet review.'))}</p>
       </article>
     `;
   }
@@ -12931,7 +13204,7 @@ function guidedDemoPreparedPlan(scenario: GuidedDemoScenario): string {
   return `
     <article class="guided-demo-plan-card">
       <div class="guided-demo-card-heading">
-        <span>Prepared plan</span>
+        <span>${escapeHtml(td('Prepared plan'))}</span>
         <h3>${escapeHtml(scenario.planTitle)}</h3>
         <p>${escapeHtml(scenario.detail)}</p>
       </div>
@@ -12939,13 +13212,13 @@ function guidedDemoPreparedPlan(scenario: GuidedDemoScenario): string {
         ${scenario.facts.map((fact) => guidedDemoFact(fact.label, fact.value)).join('')}
       </div>
       <div class="guided-demo-constraint-list">
-        <span>Approval constraints</span>
+        <span>${escapeHtml(td('Approval constraints'))}</span>
         <ul>
           ${scenario.constraints.map((constraint) => `<li>${escapeHtml(constraint)}</li>`).join('')}
         </ul>
       </div>
       <div class="guided-demo-risk-note">
-        <span>Risk check</span>
+        <span>${escapeHtml(td('Risk check'))}</span>
         <p>${escapeHtml(scenario.risk)}</p>
       </div>
     </article>
@@ -12960,26 +13233,26 @@ function guidedDemoPolicyPreparedPlan(scenario: GuidedDemoScenario): string {
       <div class="guided-demo-policy-review-head">
         <div class="guided-demo-policy-agent-line">
           ${brandLogo('claude', 'guided-demo-policy-agent-logo')}
-          <span class="agent-review-state approved">Review passed</span>
+          <span class="agent-review-state approved">${escapeHtml(td('Review passed'))}</span>
           ${providerLine ? `<em>${escapeHtml(providerLine)}</em>` : ''}
-          ${agentReviewPathBadge({ source: 'mock' })}
+          ${demoLocalReviewBadge('mock')}
         </div>
         <div class="guided-demo-card-heading">
-          <span>Prepared plan</span>
+          <span>${escapeHtml(td('Prepared plan'))}</span>
           <h3>${escapeHtml(scenario.planTitle)}</h3>
           <p>${escapeHtml(scenario.detail)}</p>
         </div>
       </div>
       <div class="guided-demo-policy-metrics" aria-label="Agent decision approval summary">
-        ${guidedDemoPolicyMetric('Route', '0.04 SOL -> POPCAT', 'requested swap only')}
-        ${guidedDemoPolicyMetric('Market gates', 'SOL $90.96 / F&G 42', 'both thresholds passed')}
-        ${guidedDemoPolicyMetric('Agent result', 'APPROVE', 'all gates passed')}
+        ${guidedDemoPolicyMetric(td('Route'), td('0.04 SOL -> POPCAT'), td('requested swap only'))}
+        ${guidedDemoPolicyMetric(td('Market gates'), td('SOL $90.96 / F&G 42'), td('both thresholds passed'))}
+        ${guidedDemoPolicyMetric(td('Agent result'), td('APPROVE'), td('all gates passed'))}
       </div>
       <details class="agent-evidence-drawer guided-demo-policy-checks" open>
         <summary>
           <span class="agent-evidence-summary-left">
-            <span class="agent-evidence-summary-label">What the agent checked (${checks.length})</span>
-            <span class="agent-evidence-summary-state pass">Pass</span>
+            <span class="agent-evidence-summary-label">${escapeHtml(td('What the agent checked'))} (${checks.length})</span>
+            <span class="agent-evidence-summary-state pass">${escapeHtml(td('Pass'))}</span>
           </span>
         </summary>
         <dl class="agent-evidence-rows">
@@ -12987,7 +13260,7 @@ function guidedDemoPolicyPreparedPlan(scenario: GuidedDemoScenario): string {
         </dl>
       </details>
       <div class="guided-demo-constraint-list guided-demo-policy-constraints">
-        <span>Approval constraints</span>
+        <span>${escapeHtml(td('Approval constraints'))}</span>
         <ul>
           ${scenario.constraints.map((constraint) => `<li>${escapeHtml(constraint)}</li>`).join('')}
         </ul>
@@ -13008,12 +13281,16 @@ function guidedDemoReviewPreparedPlan(plan: AgentDecisionPlan): string {
     required: true,
     status: 'approved',
     decision: 'approve',
+    // English fallbacks; the translated copy is supplied via `localized` below.
     summary: review.summary,
     reason: review.reason,
     provider: plan.agentProvider,
     model: plan.agentModel,
     source,
     checkedAt: GUIDED_DEMO_REVIEW_CHECKED_AT,
+    // Findings stay ENGLISH so the shared evidence system buckets them by keyword correctly
+    // (it buckets on the raw row, then localizes). guidedDemoReviewDrawer post-translates the
+    // rendered rows from our catalog.
     checks: review.findings.map((finding) => ({
       label: finding.label,
       value: finding.value,
@@ -13021,14 +13298,26 @@ function guidedDemoReviewPreparedPlan(plan: AgentDecisionPlan): string {
       source: 'ai',
     })),
     evidence: {
-      ...(review.sources?.length ? { sources: review.sources } : {}),
+      ...(review.sources?.length
+        ? { sources: review.sources.map((src) => ({ ...src, title: td(src.title) })) }
+        : {}),
       ...(review.decisionContract ? { decisionContract: review.decisionContract } : {}),
+    },
+    // `localized.language` is what `reviewDisplayLanguage` reads first, so this drives the shared
+    // chrome — section headers, Summary / Why-it-passed labels, and the translated summary/reason.
+    // (Evidence-row VALUES still come from our catalog via guidedDemoReviewDrawer's post-translate.)
+    localized: {
+      language: state.demoLanguage,
+      status: 'ready',
+      source: 'phrase_pack',
+      summary: td(review.summary),
+      reason: td(review.reason),
     },
   };
   const metricsHtml = review.metrics?.length
     ? `
       <div class="guided-demo-policy-metrics" aria-label="Agent decision approval summary">
-        ${review.metrics.map((metric) => guidedDemoPolicyMetric(metric.label, metric.value, metric.detail)).join('')}
+        ${review.metrics.map((metric) => guidedDemoPolicyMetric(td(metric.label), td(metric.value), td(metric.detail))).join('')}
       </div>
     `
     : '';
@@ -13037,12 +13326,12 @@ function guidedDemoReviewPreparedPlan(plan: AgentDecisionPlan): string {
       <div class="guided-demo-policy-review-head">
         <div class="guided-demo-policy-agent-line">
           ${brandLogo(plan.agentLogo, 'guided-demo-policy-agent-logo')}
-          <span class="agent-review-state approved">Review passed</span>
+          <span class="agent-review-state approved">${escapeHtml(td('Review passed'))}</span>
           ${providerLine ? `<em>${escapeHtml(providerLine)}</em>` : ''}
-          ${agentReviewPathBadge({ source })}
+          ${demoLocalReviewBadge(source)}
         </div>
         <div class="guided-demo-card-heading">
-          <span>Prepared plan</span>
+          <span>${escapeHtml(td('Prepared plan'))}</span>
           <h3>${escapeHtml(plan.planTitle)}</h3>
           <p>${escapeHtml(plan.detail)}</p>
         </div>
@@ -13051,7 +13340,7 @@ function guidedDemoReviewPreparedPlan(plan: AgentDecisionPlan): string {
       ${agentReviewDecisionCopy(reviewState)}
       ${guidedDemoReviewDrawer(reviewState)}
       <div class="guided-demo-constraint-list guided-demo-policy-constraints">
-        <span>Approval constraints</span>
+        <span>${escapeHtml(td('Approval constraints'))}</span>
         <ul>
           ${plan.constraints.map((constraint) => `<li>${escapeHtml(constraint)}</li>`).join('')}
         </ul>
@@ -13062,7 +13351,7 @@ function guidedDemoReviewPreparedPlan(plan: AgentDecisionPlan): string {
 
 // Open-by-default variant of agentEvidenceDrawer for the demo (so the grouped findings show without a click).
 function guidedDemoReviewDrawer(review: AgentPlanReviewState): string {
-  const sections = agentEvidenceSections(review, { actionType: 'transfer_sol' });
+  const sections = agentEvidenceSections(review, { actionType: 'transfer_sol' }).map(localizeDemoEvidenceSection);
   const visibleSections = sections.filter((section) => !section.advanced);
   const advancedSection = sections.find((section) => section.advanced);
   const visibleCount = visibleSections.reduce((sum, section) => sum + section.rows.length, 0);
@@ -13071,8 +13360,8 @@ function guidedDemoReviewDrawer(review: AgentPlanReviewState): string {
     <details class="agent-evidence-drawer guided-demo-policy-checks" open>
       <summary>
         <span class="agent-evidence-summary-left">
-          <span class="agent-evidence-summary-label">Agent findings (${visibleCount})</span>
-          <span class="agent-evidence-summary-state pass">Pass</span>
+          <span class="agent-evidence-summary-label">${escapeHtml(td('Agent findings'))} (${visibleCount})</span>
+          <span class="agent-evidence-summary-state pass">${escapeHtml(td('Pass'))}</span>
         </span>
       </summary>
       <div class="agent-evidence-sections">
@@ -13081,6 +13370,27 @@ function guidedDemoReviewDrawer(review: AgentPlanReviewState): string {
       ${advancedSection ? agentEvidenceAdvancedSectionHtml(advancedSection, review) : ''}
     </details>
   `;
+}
+
+// The shared evidence system localizes section headers + dictionary-known labels via the review
+// language, but cannot translate the demo's finding VALUES offline (no phrase-pack template).
+// Fill the gap from our catalog: English values + uncovered labels become catalog keys and
+// translate; text the shared system already localized (or our translated summary/reason rows) are
+// not catalog keys, so td() falls through and keeps them. Section titles stay as the dict set them.
+function localizeDemoEvidenceSection(section: AgentEvidenceDisplaySection): AgentEvidenceDisplaySection {
+  // quiet: the shared system may have already localized a row (dict/prose), so a catalog miss
+  // here is expected and not a real gap.
+  const tq = (text: string): string => tDemo(text, state.demoLanguage, { quiet: true });
+  return {
+    ...section,
+    rows: section.rows.map((row) => ({ ...row, label: tq(row.label), value: tq(row.value) })),
+  };
+}
+
+// The shared agentReviewPathBadge label is hardcoded English; render a translated demo badge.
+function demoLocalReviewBadge(source: AgentReviewSource): string {
+  if (source !== 'mock') return agentReviewPathBadge({ source });
+  return `<span class="agent-path-pill mock" title="Agent review path">${escapeHtml(td('Local demo'))}</span>`;
 }
 
 function guidedDemoPolicyMetric(label: string, value: string, detail: string): string {
@@ -13099,7 +13409,7 @@ function guidedDemoPolicyCheckRow(check: { label: string; value: string; tone?: 
     <div class="agent-evidence-row ${check.tone ? escapeHtml(check.tone) : ''}">
       <dt>
         <span class="agent-evidence-row-label">${escapeHtml(check.label)}</span>
-        <span class="agent-evidence-row-pill ${status.className}">${status.label}</span>
+        <span class="agent-evidence-row-pill ${status.className}">${escapeHtml(status.label)}</span>
       </dt>
       <dd>${guidedDemoPolicyCheckValueHtml(check.value)}</dd>
     </div>
@@ -13107,10 +13417,10 @@ function guidedDemoPolicyCheckRow(check: { label: string; value: string; tone?: 
 }
 
 function guidedDemoPolicyCheckStatus(tone?: AgentEvidenceTone): { label: string; className: string } {
-  if (tone === 'fail') return { label: 'Fail', className: 'fail' };
-  if (tone === 'warn') return { label: 'Note', className: 'warn' };
-  if (tone === 'neutral') return { label: 'Info', className: 'neutral' };
-  return { label: 'Pass', className: 'pass' };
+  if (tone === 'fail') return { label: td('Fail'), className: 'fail' };
+  if (tone === 'warn') return { label: td('Note'), className: 'warn' };
+  if (tone === 'neutral') return { label: td('Info'), className: 'neutral' };
+  return { label: td('Pass'), className: 'pass' };
 }
 
 function guidedDemoPolicyCheckValueHtml(value: string): string {
@@ -13124,18 +13434,18 @@ function guidedDemoReviewCard(scenario: GuidedDemoScenario): string {
   if (!guidedDemoAtLeast('queued')) return '';
   const receiptReady = state.guidedDemo.stage === 'receipt';
   const approved = state.guidedDemo.decision === 'approved';
-  const status = receiptReady ? (approved ? 'Approved' : 'Denied') : 'Waiting for you';
+  const status = receiptReady ? (approved ? td('Approved') : td('Denied')) : td('Waiting for you');
   return `
     <article class="guided-demo-review-card ${receiptReady ? state.guidedDemo.decision : ''}">
       <div class="guided-demo-card-heading">
-        <span>Wallet review</span>
+        <span>${escapeHtml(td('Wallet review'))}</span>
         <h3>${escapeHtml(status)}</h3>
         <p>${escapeHtml(scenario.approvalBoundary)}</p>
       </div>
       <div class="guided-demo-review-route">
-        ${guidedDemoFact('Route', scenario.route)}
-        ${guidedDemoFact('Signer', state.address ? short(state.address) : 'Demo wallet')}
-        ${guidedDemoFact('Result', receiptReady ? status : 'Pending decision')}
+        ${guidedDemoFact(td('Route'), scenario.route)}
+        ${guidedDemoFact(td('Signer'), state.address ? short(state.address) : td('Demo wallet'))}
+        ${guidedDemoFact(td('Result'), receiptReady ? status : td('Pending decision'))}
       </div>
     </article>
   `;
@@ -13145,25 +13455,25 @@ function guidedDemoReceiptCard(scenario: GuidedDemoScenario): string {
   if (state.guidedDemo.stage !== 'receipt') return '';
   const signed = Boolean(state.guidedDemo.signedReceipt);
   const approved = state.guidedDemo.decision === 'approved';
-  const decisionCopy = approved ? 'You approved the simulated wallet review.' : 'You denied the simulated wallet review.';
+  const decisionCopy = approved ? td('You approved the simulated wallet review.') : td('You denied the simulated wallet review.');
   return `
     <article class="guided-demo-receipt-card ${state.guidedDemo.decision}">
       <div class="guided-demo-card-heading">
-        <span>${escapeHtml(approved ? 'Approval receipt' : 'Denial receipt')}</span>
+        <span>${escapeHtml(approved ? td('Approval receipt') : td('Denial receipt'))}</span>
         <h3>${escapeHtml(scenario.receiptSummary)}</h3>
-        <p>This is demo output only. It shows the record a real approval flow would preserve for review.</p>
+        <p>${escapeHtml(td('This is demo output only. It shows the record a real approval flow would preserve for review.'))}</p>
       </div>
       <div class="guided-demo-human-summary">
-        <span>Human-readable summary</span>
-        <p>${escapeHtml(`${decisionCopy} ${scenario.receiptSummary} No funds moved in this demo.`)}</p>
+        <span>${escapeHtml(td('Human-readable summary'))}</span>
+        <p>${escapeHtml(`${decisionCopy} ${scenario.receiptSummary} ${td('No funds moved in this demo.')}`)}</p>
       </div>
       <div class="guided-demo-review-route">
-        ${guidedDemoFact('Receipt', state.guidedDemo.receiptId || 'demo')}
-        ${guidedDemoFact('Created', formatDateTime(state.guidedDemo.receiptCreatedAt))}
-        ${guidedDemoFact('Signature', signed ? short(state.guidedDemo.signedReceipt) : 'Optional')}
+        ${guidedDemoFact(td('Receipt'), state.guidedDemo.receiptId || 'demo')}
+        ${guidedDemoFact(td('Created'), formatDateTime(state.guidedDemo.receiptCreatedAt))}
+        ${guidedDemoFact(td('Signature'), signed ? short(state.guidedDemo.signedReceipt) : td('Optional'))}
       </div>
       <details class="guided-demo-json">
-        <summary>Technical receipt JSON</summary>
+        <summary>${escapeHtml(td('Technical receipt JSON'))}</summary>
         <pre>${escapeHtml(state.guidedDemo.receiptJson)}</pre>
       </details>
     </article>
@@ -13187,7 +13497,7 @@ function guidedDemoActions(): string {
   if (isMockPolicy && demo.agentFlowStep !== 'idle') {
     return `
       <div class="guided-demo-actions">
-        <button class="primary" disabled><span class="button-spinner" aria-hidden="true"></span>Ask AI Agent</button>
+        <button class="primary" disabled><span class="button-spinner" aria-hidden="true"></span>${escapeHtml(td('Ask AI Agent'))}</button>
       </div>
     `;
   }
@@ -13197,7 +13507,7 @@ function guidedDemoActions(): string {
   if (demo.stage === 'request') {
     return `
       <div class="guided-demo-actions">
-        <button class="primary" data-demo-action="prepare" ${disabled}>${escapeHtml(isMockPolicy ? 'Ask AI Agent' : 'Prepare request')}</button>
+        <button class="primary" data-demo-action="prepare" ${disabled}>${escapeHtml(isMockPolicy ? td('Ask AI Agent') : td('Prepare request'))}</button>
       </div>
     `;
   }
@@ -13205,25 +13515,25 @@ function guidedDemoActions(): string {
     if (isMockPolicy) {
       return `
         <div class="guided-demo-actions">
-          <button class="primary" data-demo-action="approve" ${disabled}>Approve swap</button>
-          <button data-demo-action="reset" ${disabled}>Reset demo</button>
-          <span class="guided-demo-action-note">The agent already returned APPROVE, so the next step records a local demo signature.</span>
+          <button class="primary" data-demo-action="approve" ${disabled}>${escapeHtml(td('Approve swap'))}</button>
+          <button data-demo-action="reset" ${disabled}>${escapeHtml(td('Reset demo'))}</button>
+          <span class="guided-demo-action-note">${escapeHtml(td('The agent already returned APPROVE, so the next step records a local demo signature.'))}</span>
         </div>
       `;
     }
     return `
       <div class="guided-demo-actions">
-        <button class="primary" data-demo-action="queue" ${disabled}>Move to wallet review</button>
-        <button data-demo-action="reset" ${disabled}>Reset demo</button>
+        <button class="primary" data-demo-action="queue" ${disabled}>${escapeHtml(td('Move to wallet review'))}</button>
+        <button data-demo-action="reset" ${disabled}>${escapeHtml(td('Reset demo'))}</button>
       </div>
     `;
   }
   if (demo.stage === 'queued') {
     return `
       <div class="guided-demo-actions">
-        <button class="primary" data-demo-action="approve" ${disabled}>Approve simulation</button>
-        <button data-demo-action="deny" ${disabled}>Deny simulation</button>
-        <button data-demo-action="reset" ${disabled}>Reset demo</button>
+        <button class="primary" data-demo-action="approve" ${disabled}>${escapeHtml(td('Approve simulation'))}</button>
+        <button data-demo-action="deny" ${disabled}>${escapeHtml(td('Deny simulation'))}</button>
+        <button data-demo-action="reset" ${disabled}>${escapeHtml(td('Reset demo'))}</button>
       </div>
     `;
   }
@@ -13231,25 +13541,25 @@ function guidedDemoActions(): string {
     <div class="guided-demo-actions receipt-actions">
       <button
         data-copy="${escapeHtml(demo.receiptJson)}"
-        data-copy-name="Demo receipt JSON"
-        data-copy-toast="Demo receipt copied"
-        data-copy-message="Receipt JSON is on your clipboard."
+        data-copy-name="${escapeHtml(td('Demo receipt JSON'))}"
+        data-copy-toast="${escapeHtml(td('Demo receipt copied'))}"
+        data-copy-message="${escapeHtml(td('Receipt JSON is on your clipboard.'))}"
         ${demo.receiptJson ? '' : 'disabled'}
-      >Copy receipt</button>
+      >${escapeHtml(td('Copy receipt'))}</button>
       ${
         state.address
-          ? `<button data-demo-action="sign-receipt" ${disabled || demo.signedReceipt ? 'disabled' : ''}>${demo.signedReceipt ? 'Receipt signed' : 'Sign demo receipt'}</button>`
-          : '<span class="guided-demo-action-note">Real wallet signing happens in the full app. This demo never moves funds.</span>'
+          ? `<button data-demo-action="sign-receipt" ${disabled || demo.signedReceipt ? 'disabled' : ''}>${escapeHtml(demo.signedReceipt ? td('Receipt signed') : td('Sign demo receipt'))}</button>`
+          : `<span class="guided-demo-action-note">${escapeHtml(td('Real wallet signing happens in the full app. This demo never moves funds.'))}</span>`
       }
-      <button data-demo-action="reset" ${disabled}>Reset demo</button>
-      <a class="button-link launch-app-link mobile-redundant-nav" href="/app">Try in full app</a>
+      <button data-demo-action="reset" ${disabled}>${escapeHtml(td('Reset demo'))}</button>
+      <a class="button-link launch-app-link mobile-redundant-nav" href="/app">${escapeHtml(td('Try in full app'))}</a>
     </div>
   `;
 }
 
 function guidedDemoSwapFlowAction(step: GuidedDemoSwapFlowStep, disabled: string): string {
   const done = step === 'confirmed';
-  const title = done ? 'Swap confirmed' : guidedDemoSwapFlowTitle(step);
+  const title = done ? td('Swap confirmed') : guidedDemoSwapFlowTitle(step);
   return `
     <div class="guided-demo-actions guided-demo-swap-flow-actions">
       <div class="guided-demo-inline-tx-status ${done ? 'success' : 'pending'}" role="status" aria-live="polite">
@@ -13257,26 +13567,28 @@ function guidedDemoSwapFlowAction(step: GuidedDemoSwapFlowStep, disabled: string
         <div>
           <strong>${escapeHtml(title)}</strong>
           <p>${escapeHtml(guidedDemoSwapFlowMessage(step))}</p>
-          ${done ? `<a href="${escapeHtml(GUIDED_DEMO_SWAP_TX_URL)}" target="_blank" rel="noreferrer">Open Solscan</a>` : ''}
+          ${done ? `<a href="${escapeHtml(GUIDED_DEMO_SWAP_TX_URL)}" target="_blank" rel="noreferrer">${escapeHtml(td('Open Solscan'))}</a>` : ''}
         </div>
       </div>
-      ${done ? `<button data-demo-action="reset" ${disabled}>Reset demo</button>` : ''}
+      ${done ? `<button data-demo-action="reset" ${disabled}>${escapeHtml(td('Reset demo'))}</button>` : ''}
     </div>
   `;
 }
 
 function guidedDemoSwapFlowTitle(step: GuidedDemoSwapFlowStep): string {
-  if (step === 'preparing') return 'Preparing swap';
-  if (step === 'signing') return 'Signing swap';
-  if (step === 'sending') return 'Sending swap transaction';
-  return 'Swap confirmed';
+  if (step === 'preparing') return td('Preparing swap');
+  if (step === 'signing') return td('Signing swap');
+  if (step === 'sending') return td('Sending swap transaction');
+  return td('Swap confirmed');
 }
 
 function guidedDemoSwapFlowMessage(step: GuidedDemoSwapFlowStep): string {
-  if (step === 'preparing') return 'Fetching the Jupiter transaction for wallet review.';
-  if (step === 'signing') return `Sign Jupiter swap ${GUIDED_DEMO_SWAP_REVIEW_ID} in your wallet.`;
-  if (step === 'sending') return 'Submitting the signed swap through Jupiter.';
-  return `${short(GUIDED_DEMO_SWAP_TX_ID)} - Solscan link saved in Done.`;
+  if (step === 'preparing') return td('Fetching the Jupiter transaction for wallet review.');
+  if (step === 'signing') {
+    return tDemoFormat('Sign Jupiter swap {id} in your wallet.', state.demoLanguage, { id: GUIDED_DEMO_SWAP_REVIEW_ID });
+  }
+  if (step === 'sending') return td('Submitting the signed swap through Jupiter.');
+  return tDemoFormat('{tx} - Solscan link saved in Done.', state.demoLanguage, { tx: short(GUIDED_DEMO_SWAP_TX_ID) });
 }
 
 function selectedGuidedDemoScenario(): GuidedDemoScenario {
@@ -13307,7 +13619,8 @@ function selectedGuidedDemoScenario(): GuidedDemoScenario {
 }
 
 function guidedDemoScenarioById(scenarioId: string | undefined): GuidedDemoScenario {
-  return GUIDED_DEMO_SCENARIOS.find((scenario) => scenario.id === scenarioId) ?? GUIDED_DEMO_SCENARIOS[0]!;
+  const scenario = GUIDED_DEMO_SCENARIOS.find((candidate) => candidate.id === scenarioId) ?? GUIDED_DEMO_SCENARIOS[0]!;
+  return localizeScenario(scenario, state.demoLanguage);
 }
 
 function guidedDemoStageIndex(stage: GuidedDemoStage): number {
@@ -15351,7 +15664,16 @@ function cloudWorkspaceCard(): string {
               ${state.busy ? 'disabled' : ''}
             >Sign out</button>
           </span>
-        ` : ''
+        ` : `
+          <span class="rail-conn-actions">
+            <button
+              type="button"
+              class="rail-conn-action cloud-signin"
+              data-cloud-action="sign-in"
+              ${state.busy ? 'disabled' : ''}
+            >Sign in</button>
+          </span>
+        `
       : `
         <span class="rail-conn-actions">
           <button
@@ -15372,14 +15694,14 @@ function cloudWorkspaceCard(): string {
               <em>${escapeHtml(railSummaryDetail)}</em>
             </span>
           </span>
-          <strong class="rail-conn-status ${escapeHtml(tone)}">${escapeHtml(status)}</strong>
+          ${signedIn ? `<strong class="rail-conn-status ${escapeHtml(tone)}">${escapeHtml(status)}</strong>` : ''}
           ${railActions}`
       : `
           <span class="workspace-storage-summary-copy">
             <span>Workspace storage</span>
             <em>${escapeHtml(summaryDetail)}</em>
           </span>
-          <strong>${escapeHtml(status)}</strong>
+          ${signedIn || !nativeMobileApp ? `<strong>${escapeHtml(status)}</strong>` : ''}
           ${railActions}`;
     return `
       <section class="workspace-storage-panel ${escapeHtml(mode)} ${signedIn ? 'signed-in' : ''} mobile-rail-trigger-panel" data-layout="workspace-storage-panel" aria-label="Workspace storage status">
@@ -15401,7 +15723,13 @@ function cloudWorkspaceCard(): string {
           <span>Workspace storage</span>
           <em>${escapeHtml(summaryDetail)}</em>
         </span>
-        <strong>${escapeHtml(status)}</strong>
+        ${signedIn ? `<strong>${escapeHtml(status)}</strong>` : `<button
+          type="button"
+          class="rail-cloud-signin-summary"
+          data-cloud-action="sign-in"
+          ${state.busy || unavailable ? 'disabled' : ''}
+          title="${unavailable ? 'Cloud APIs are unavailable from this host.' : 'Sign in with a wallet ownership proof.'}"
+        >Sign in</button>`}
       </summary>
       ${body}
     </details>
@@ -28375,6 +28703,7 @@ function bind(): void {
   bindArtifactPicker();
   bindSelectPickers();
   bindPreferencesMobilePicker();
+  bindDemoLanguagePicker();
   bindWalletBalanceOverlay();
   bindMobileRailSheet();
   bindMobileMoreMenu();
@@ -32573,8 +32902,8 @@ function completeGuidedDemo(
   if (options.toast !== false) {
     pushToast(
       'success',
-      decision === 'approved' ? 'Simulation approved' : 'Simulation denied',
-      mockSignature ? 'Demo signature and approval receipt saved.' : 'Demo receipt created. Nothing was signed or submitted.',
+      decision === 'approved' ? td('Simulation approved') : td('Simulation denied'),
+      mockSignature ? td('Demo signature and approval receipt saved.') : td('Demo receipt created. Nothing was signed or submitted.'),
     );
   }
   render();
@@ -58244,6 +58573,7 @@ function loadPersistedState(): PersistedState {
       ...(typeof parsed.workflowModePreference === 'string' &&
         isWorkflowModePreference(parsed.workflowModePreference) && { workflowModePreference: parsed.workflowModePreference }),
       ...(typeof parsed.preferencesView === 'string' && isPreferencesView(parsed.preferencesView) && { preferencesView: parsed.preferencesView }),
+      ...(typeof parsed.demoLanguage === 'string' && isDemoLanguage(parsed.demoLanguage) && { demoLanguage: parsed.demoLanguage }),
       ...(typeof parsed.cluster === 'string' && isCluster(parsed.cluster) && { cluster: parsed.cluster }),
       ...(typeof parsed.bridgeUrl === 'string' && { bridgeUrl: parsed.bridgeUrl }),
       ...(typeof parsed.bridgeAutoReconnect === 'boolean' && { bridgeAutoReconnect: parsed.bridgeAutoReconnect }),
@@ -58278,6 +58608,7 @@ function savePersistedState(): void {
         selectedIosWalletId: state.selectedIosWalletId,
         workflowModePreference: state.workflowModePreference,
         preferencesView: state.preferencesView,
+        demoLanguage: state.demoLanguage,
         cluster: state.cluster,
         bridgeUrl: state.bridgeUrl,
         bridgeAutoReconnect: state.bridgeAutoReconnect,

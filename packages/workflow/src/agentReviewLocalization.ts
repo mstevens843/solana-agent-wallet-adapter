@@ -1312,7 +1312,7 @@ function safeLocalizedText(source: string | undefined, candidate: string | undef
   return preservesProtectedTokens(sourceText, text) ? text : undefined;
 }
 
-function preservesProtectedTokens(source: string, candidate: string): boolean {
+export function preservesProtectedTokens(source: string, candidate: string): boolean {
   for (const token of protectedTokens(source)) {
     if (candidate.includes(token)) continue;
     // Currency amounts are frequently reformatted by translation ("$20" -> "20 USD" /
