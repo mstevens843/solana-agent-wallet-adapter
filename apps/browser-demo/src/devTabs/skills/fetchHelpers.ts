@@ -3,6 +3,7 @@
 // fetch / error-shape logic.
 
 import { getConnectedAddress } from '../../walletState.js';
+import { t } from '../../demo-i18n/uiLang.js';
 
 export type FetchResult<T> =
   | { kind: 'ok'; value: T }
@@ -64,7 +65,7 @@ export async function deleteJson<T = { ok: true }>(path: string): Promise<FetchR
 
 async function interpretResponse<T>(res: Response): Promise<FetchResult<T>> {
   if (res.status === 401) {
-    let message = 'Sign in to Agentic Cloud with your wallet to continue.';
+    let message = t('Sign in to Agentic Cloud with your wallet to continue.');
     try {
       const parsed = await res.json();
       if (parsed && typeof parsed === 'object' && parsed !== null) {
@@ -83,7 +84,7 @@ async function interpretResponse<T>(res: Response): Promise<FetchResult<T>> {
     parsed = await res.json();
   } catch {
     if (res.ok) return { kind: 'ok', value: undefined as unknown as T };
-    return { kind: 'error', status: res.status, message: 'Non-JSON error response.' };
+    return { kind: 'error', status: res.status, message: t('Non-JSON error response.') };
   }
   if (!res.ok) {
     const message =

@@ -1,3 +1,5 @@
+import { t } from '../demo-i18n/uiLang.js';
+
 interface DevTabUseCase {
   title: string;
   body: string;
@@ -24,7 +26,7 @@ export function renderUseCaseDisclosure(config: DevTabUseCaseDisclosure): string
     <details class="dev-tab-use-cases" data-dev-tab-use-cases="${escapeHtml(config.id)}">
       <summary>
         <span class="dev-tab-use-case-summary-copy">
-          <strong>Use cases</strong>
+          <strong>${escapeHtml(t('Use cases'))}</strong>
           <em>${escapeHtml(config.summary)}</em>
         </span>
       </summary>

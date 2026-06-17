@@ -11,6 +11,12 @@
     "test": "vitest run",
     "demo:i18n:check": "node scripts/check-demo-i18n.mjs",
     "demo:i18n:generate": "node scripts/generate-demo-i18n.mjs",
+    "ui:i18n:check": "node scripts/check-demo-i18n.mjs",
+    "ui:i18n:generate": "node scripts/generate-demo-i18n.mjs",
+    "ui:i18n:audit": "node scripts/audit-raw-ui.mjs",
+    "ui:i18n:seed": "node scripts/extract-form-strings.mjs && node scripts/extract-ui-keys.mjs",
+    "ui:i18n:prepare": "node scripts/i18n-prepare-chunks.mjs",
+    "ui:i18n:merge": "node scripts/i18n-merge-chunks.mjs",
     "typecheck": "pnpm -F @solana-agent-wallet-adapter/core build && pnpm -F @solana-agent-wallet-adapter/ios-link build && pnpm -F @solana-agent-wallet-adapter/wallet-standard-web build && pnpm -F @solana-agent-wallet-adapter/mwa-mobile-web build && pnpm -F @solana-agent-wallet-adapter/embedded-wallet build && pnpm -F @solana-agent-wallet-adapter/walletconnect-solana build && pnpm -F @solana-agent-wallet-adapter/ledger-wallet build && pnpm -F @solana-agent-wallet-adapter/a2a-agent-card build && pnpm -F @solana-agent-wallet-adapter/acp-adapter build && pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/skills-runtime build && pnpm -F @solana-agent-wallet-adapter/launch-skills build && node scripts/check-demo-i18n.mjs && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

@@ -1,5 +1,6 @@
 import './skills.css';
 import { registerDevTab } from '../devTabRegistry.js';
+import { t } from '../demo-i18n/uiLang.js';
 import {
   findSkillsSubTab,
   getActiveSkillsSubTab,
@@ -23,7 +24,7 @@ function renderSubTabPills(activeId: string): string {
   const subTabs = listSkillsSubTabs();
   if (subTabs.length === 0) return '';
   return `
-    <div class="skills-subtab-row" role="tablist" aria-label="Skills sections">
+    <div class="skills-subtab-row" role="tablist" aria-label="${escapeHtmlLocal(t('Skills sections'))}">
       ${subTabs
         .map((tab) => {
           const active = tab.id === activeId;
@@ -37,10 +38,10 @@ function renderSubTabPills(activeId: string): string {
               aria-selected="${active ? 'true' : 'false'}"
             >
               <strong>
-                <span class="skills-subtab-label-full">${escapeHtmlLocal(tab.label)}</span>
-                <span class="skills-subtab-label-mobile">${escapeHtmlLocal(mobileLabel)}</span>
+                <span class="skills-subtab-label-full">${escapeHtmlLocal(t(tab.label))}</span>
+                <span class="skills-subtab-label-mobile">${escapeHtmlLocal(t(mobileLabel))}</span>
               </strong>
-              <span class="skills-subtab-description">${escapeHtmlLocal(tab.description)}</span>
+              <span class="skills-subtab-description">${escapeHtmlLocal(t(tab.description))}</span>
             </button>
           `;
         })
@@ -52,28 +53,27 @@ function renderSubTabPills(activeId: string): string {
 function renderEmptyPlaceholder(): string {
   return `
     <div class="skills-placeholder">
-      <span class="skills-placeholder-tag">Skills unavailable</span>
-      <h2>Skills Hub</h2>
+      <span class="skills-placeholder-tag">${escapeHtmlLocal(t('Skills unavailable'))}</span>
+      <h2>${escapeHtmlLocal(t('Skills Hub'))}</h2>
       <p>
-        The Skills container loaded, but no sections registered in this build. Rebuild the browser app
-        with the Skills sub-tab modules included.
+        ${escapeHtmlLocal(t('The Skills container loaded, but no sections registered in this build. Rebuild the browser app with the Skills sub-tab modules included.'))}
       </p>
       <div class="skills-placeholder-grid">
         <div class="skills-placeholder-card">
-          <strong>Browse</strong>
-          <span>Catalog of installable skills, sorted by track record.</span>
+          <strong>${escapeHtmlLocal(t('Browse'))}</strong>
+          <span>${escapeHtmlLocal(t('Catalog of installable skills, sorted by track record.'))}</span>
         </div>
         <div class="skills-placeholder-card">
-          <strong>Installed</strong>
-          <span>Active skills with next-run countdown, pause / resume, uninstall.</span>
+          <strong>${escapeHtmlLocal(t('Installed'))}</strong>
+          <span>${escapeHtmlLocal(t('Active skills with next-run countdown, pause / resume, uninstall.'))}</span>
         </div>
         <div class="skills-placeholder-card">
-          <strong>My Profile</strong>
-          <span>Public <code>/u/&lt;wallet&gt;</code> page aggregating receipts into a verifiable performance record.</span>
+          <strong>${escapeHtmlLocal(t('My Profile'))}</strong>
+          <span>${escapeHtmlLocal(t('Public'))} <code>/u/&lt;wallet&gt;</code> ${escapeHtmlLocal(t('page aggregating receipts into a verifiable performance record.'))}</span>
         </div>
         <div class="skills-placeholder-card">
-          <strong>Publish</strong>
-          <span>Author dashboard for uploading skills via <code>agentic-skill</code> CLI.</span>
+          <strong>${escapeHtmlLocal(t('Publish'))}</strong>
+          <span>${escapeHtmlLocal(t('Author dashboard for uploading skills via'))} <code>agentic-skill</code> ${escapeHtmlLocal(t('CLI.'))}</span>
         </div>
       </div>
     </div>
@@ -82,47 +82,47 @@ function renderEmptyPlaceholder(): string {
 
 function renderSkillsGuide(): string {
   return `
-    <section class="skills-guide skills-guide-desktop" aria-label="How skills work">
+    <section class="skills-guide skills-guide-desktop" aria-label="${escapeHtmlLocal(t('How skills work'))}">
       <div class="skills-guide-heading">
-        <span>How skills work</span>
-        <strong>Install a recipe. Approve every run.</strong>
+        <span>${escapeHtmlLocal(t('How skills work'))}</span>
+        <strong>${escapeHtmlLocal(t('Install a recipe. Approve every run.'))}</strong>
       </div>
       <div class="skills-guide-grid">
         <div>
-          <strong>Library</strong>
-          <span>Browse shows curated and author-published skill manifests from the registry.</span>
+          <strong>${escapeHtmlLocal(t('Library'))}</strong>
+          <span>${escapeHtmlLocal(t('Browse shows curated and author-published skill manifests from the registry.'))}</span>
         </div>
         <div>
-          <strong>Install</strong>
-          <span>Install stores caps, params, and a signed manifest snapshot. No funds move.</span>
+          <strong>${escapeHtmlLocal(t('Install'))}</strong>
+          <span>${escapeHtmlLocal(t('Install stores caps, params, and a signed manifest snapshot. No funds move.'))}</span>
         </div>
         <div>
-          <strong>Run</strong>
-          <span>The scheduler creates a Needs Approval item when due; your wallet signs each action.</span>
+          <strong>${escapeHtmlLocal(t('Run'))}</strong>
+          <span>${escapeHtmlLocal(t('The scheduler creates a Needs Approval item when due; your wallet signs each action.'))}</span>
         </div>
         <div>
-          <strong>Share</strong>
-          <span>Your public URL is a receipt-backed track record for buyers and collaborators.</span>
+          <strong>${escapeHtmlLocal(t('Share'))}</strong>
+          <span>${escapeHtmlLocal(t('Your public URL is a receipt-backed track record for buyers and collaborators.'))}</span>
         </div>
       </div>
       <div class="skills-guide-footer">
-        <span>Publish with <code>agentic-skill init</code>, <code>agentic-skill test</code>, then <code>agentic-skill publish</code>.</span>
-        <span>Delete an installed skill from the Installed tab with Uninstall.</span>
+        <span>${escapeHtmlLocal(t('Publish with'))} <code>agentic-skill init</code>, <code>agentic-skill test</code>, ${escapeHtmlLocal(t('then'))} <code>agentic-skill publish</code>.</span>
+        <span>${escapeHtmlLocal(t('Delete an installed skill from the Installed tab with Uninstall.'))}</span>
       </div>
     </section>
-    <details class="skills-guide skills-guide-mobile" aria-label="How skills work">
+    <details class="skills-guide skills-guide-mobile" aria-label="${escapeHtmlLocal(t('How skills work'))}">
       <summary>
-        <span>How skills work</span>
-        <strong>Install. Approve. Share.</strong>
+        <span>${escapeHtmlLocal(t('How skills work'))}</span>
+        <strong>${escapeHtmlLocal(t('Install. Approve. Share.'))}</strong>
       </summary>
       <div class="skills-guide-grid">
         <div>
-          <strong>Install</strong>
-          <span>Recipes create approval requests; they never move funds alone.</span>
+          <strong>${escapeHtmlLocal(t('Install'))}</strong>
+          <span>${escapeHtmlLocal(t('Recipes create approval requests; they never move funds alone.'))}</span>
         </div>
         <div>
-          <strong>Share</strong>
-          <span>Your receipts become a public track record when you publish it.</span>
+          <strong>${escapeHtmlLocal(t('Share'))}</strong>
+          <span>${escapeHtmlLocal(t('Your receipts become a public track record when you publish it.'))}</span>
         </div>
       </div>
     </details>

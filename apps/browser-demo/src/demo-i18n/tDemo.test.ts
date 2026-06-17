@@ -1,3 +1,7 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { describe, expect, it } from 'vitest';
 
 import { tDemo, tDemoFormat, isDemoLanguage, DEMO_LANGUAGE_OPTIONS, DEMO_EN_ENTRIES } from './tDemo.js';
@@ -57,6 +61,40 @@ describe('demo i18n tDemo', () => {
   });
 
   it('catalog covers the full English source set', () => {
-    expect(Object.keys(DEMO_EN_ENTRIES).length).toBe(338);
+    // Regression floor — the catalog only grows as more of the app is localized.
+    expect(Object.keys(DEMO_EN_ENTRIES).length).toBeGreaterThanOrEqual(3000);
+  });
+});
+
+describe('demo i18n catalog parity', () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const catalogDir = join(here, 'catalog');
+  const langs = ['zh-Hans', 'zh-Hant', 'es', 'ja', 'de', 'it', 'fr', 'pt', 'ko', 'ru'];
+  const load = (lang: string) =>
+    JSON.parse(readFileSync(join(catalogDir, `${lang}.json`), 'utf8')) as {
+      language: string;
+      entries: Record<string, string>;
+    };
+  const en = load('en');
+  const enKeys = Object.keys(en.entries);
+  const placeholders = (value: string) =>
+    [...new Set(value.match(/\{[a-zA-Z0-9_]+\}/g) ?? [])].sort().join(',');
+
+  it.each(langs)('%s has exact key parity with en (no missing/stale) and no empties', (lang) => {
+    const cat = load(lang);
+    expect(cat.language).toBe(lang);
+    const keys = Object.keys(cat.entries);
+    expect(keys.length).toBe(enKeys.length);
+    const keySet = new Set(keys);
+    expect(enKeys.filter((k) => !keySet.has(k))).toEqual([]); // missing
+    const enKeySet = new Set(enKeys);
+    expect(keys.filter((k) => !enKeySet.has(k))).toEqual([]); // stale
+    expect(keys.filter((k) => !cat.entries[k]?.trim())).toEqual([]); // empty
+  });
+
+  it.each(langs)('%s preserves the {placeholder} set of every key', (lang) => {
+    const cat = load(lang);
+    const mismatches = enKeys.filter((k) => placeholders(k) !== placeholders(cat.entries[k] ?? ''));
+    expect(mismatches).toEqual([]);
   });
 });

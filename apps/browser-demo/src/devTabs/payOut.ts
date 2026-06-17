@@ -4,6 +4,7 @@ import { dispatchPayOutApprovalCreated } from '../payOutApprovalEvents.js';
 import { getUsdPriceForMint } from '../priceCache.js';
 import { getConnectedAddress } from '../walletState.js';
 import { renderUseCaseDisclosure } from './useCases.js';
+import { t, tf } from '../demo-i18n/uiLang.js';
 
 export interface AcpLineItemDisplay {
   name: string;
@@ -82,7 +83,7 @@ function sampleCartPayload(recipient: string): Record<string, unknown> {
 
 export function sampleCartForRecipient(recipient: string): string {
   const trimmed = recipient.trim();
-  if (!trimmed) throw new Error('Connect a wallet before loading the demo request.');
+  if (!trimmed) throw new Error(t('Connect a wallet before loading the demo request.'));
   return JSON.stringify(sampleCartPayload(trimmed), null, 2);
 }
 
@@ -134,13 +135,13 @@ export function shortAddress(address: string): string {
 export function parseCartText(text: string): unknown {
   const trimmed = text.trim();
   if (!trimmed) {
-    throw new Error('Create, load, or import a merchant payment before reviewing.');
+    throw new Error(t('Create, load, or import a merchant payment before reviewing.'));
   }
   try {
     return JSON.parse(trimmed);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`Cart is not valid JSON: ${message}`);
+    throw new Error(tf('Cart is not valid JSON: {message}', { message }));
   }
 }
 
@@ -203,7 +204,7 @@ function formatTokenAmount(value: number): string {
 }
 
 function formatUsdDisplay(value: number): string {
-  if (!Number.isFinite(value)) return 'USD unavailable';
+  if (!Number.isFinite(value)) return t('USD unavailable');
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: 'USD',
@@ -300,9 +301,9 @@ function draftTotal(draft: PayOutDraft): number {
 
 function buildCartTextFromDraft(draft: PayOutDraft): string {
   const merchantName = draft.merchantName.trim();
-  if (!merchantName) throw new Error('Merchant name is required.');
+  if (!merchantName) throw new Error(t('Merchant name is required.'));
   const recipient = draft.recipient.trim();
-  if (!recipient) throw new Error('Recipient wallet is required.');
+  if (!recipient) throw new Error(t('Recipient wallet is required.'));
   const paymentToken = normalizePaymentToken(draft.paymentToken);
   const lineItems = draft.lineItems.flatMap((item, index) => {
     const name = item.name.trim();
@@ -327,7 +328,7 @@ function buildCartTextFromDraft(draft: PayOutDraft): string {
       currency: 'USD',
     }];
   });
-  if (lineItems.length === 0) throw new Error('Add at least one line item.');
+  if (lineItems.length === 0) throw new Error(t('Add at least one line item.'));
   const tokenTotal = lineItems.reduce((sum, item) => sum + Number(item.unitAmount) * Number(item.quantity), 0);
   let cartLineItems = lineItems;
   let totalAmount = formatMoney(tokenTotal);
@@ -335,7 +336,7 @@ function buildCartTextFromDraft(draft: PayOutDraft): string {
   if (paymentToken === 'SOL') {
     const price = draft.solUsdPerToken;
     if (typeof price !== 'number' || !Number.isFinite(price) || price <= 0) {
-      throw new Error('SOL price is unavailable. Wait for the USD estimate before review.');
+      throw new Error(t('SOL price is unavailable. Wait for the USD estimate before review.'));
     }
     solPaymentAmount = formatTokenAmount(tokenTotal);
     cartLineItems = lineItems.map((item) => ({
@@ -404,13 +405,13 @@ function formatFiat(value: unknown): string {
 // apps/render-web/src/__tests__/acp-api.test.ts:331-345.
 export function normalizePreview(input: unknown): AcpPreviewDisplay {
   if (!input || typeof input !== 'object') {
-    throw new Error('Server returned an empty cart preview.');
+    throw new Error(t('Server returned an empty cart preview.'));
   }
   const env = input as Record<string, unknown>;
   const cart = env.cart;
   const transfer = env.transfer;
-  if (!cart || typeof cart !== 'object') throw new Error('Cart preview is missing the cart object.');
-  if (!transfer || typeof transfer !== 'object') throw new Error('Cart preview is missing the transfer object.');
+  if (!cart || typeof cart !== 'object') throw new Error(t('Cart preview is missing the cart object.'));
+  if (!transfer || typeof transfer !== 'object') throw new Error(t('Cart preview is missing the transfer object.'));
 
   const cartRec = cart as Record<string, unknown>;
   const transferRec = transfer as Record<string, unknown>;
@@ -448,7 +449,7 @@ export function normalizePreview(input: unknown): AcpPreviewDisplay {
   const transferAmount = isStringField(transferRec.amount) ? transferRec.amount : paymentAmount || totalAmount;
 
   if (!totalAmount || !transferRecipient) {
-    throw new Error('Cart preview is missing totalAmount or transfer.recipient.');
+    throw new Error(t('Cart preview is missing totalAmount or transfer.recipient.'));
   }
 
   const result: AcpPreviewDisplay = {
@@ -472,7 +473,7 @@ export function normalizePreview(input: unknown): AcpPreviewDisplay {
 
 function requiredString(record: JsonRecord, key: string, label: string): string {
   const value = record[key];
-  if (!isStringField(value)) throw new Error(`${label} is required.`);
+  if (!isStringField(value)) throw new Error(tf('{label} is required.', { label }));
   return value;
 }
 
@@ -484,28 +485,28 @@ function optionalString(record: JsonRecord, key: string): string | undefined {
 function normalizeAcpCluster(value: string): string {
   if (value === 'mainnet') return 'mainnet-beta';
   if (value === 'mainnet-beta' || value === 'devnet' || value === 'testnet' || value === 'localnet') return value;
-  throw new Error('Cluster must be mainnet-beta, devnet, testnet, or localnet.');
+  throw new Error(t('Cluster must be mainnet-beta, devnet, testnet, or localnet.'));
 }
 
 function parseLocalLineItems(value: unknown): { items: JsonRecord[]; computedTotal: number } {
   if (!Array.isArray(value) || value.length === 0) {
-    throw new Error('Merchant cart must include at least one line item.');
+    throw new Error(t('Merchant cart must include at least one line item.'));
   }
   let computedTotal = 0;
   const items = value.map((entry, index): JsonRecord => {
-    if (!isObjectRecord(entry)) throw new Error(`Line item ${index + 1} must be an object.`);
-    const id = requiredString(entry, 'id', `Line item ${index + 1} id`);
-    const name = requiredString(entry, 'name', `Line item ${index + 1} name`);
+    if (!isObjectRecord(entry)) throw new Error(tf('Line item {index} must be an object.', { index: index + 1 }));
+    const id = requiredString(entry, 'id', tf('Line item {index} id', { index: index + 1 }));
+    const name = requiredString(entry, 'name', tf('Line item {index} name', { index: index + 1 }));
     const quantity = entry.quantity;
     if (typeof quantity !== 'number' || !Number.isInteger(quantity) || quantity <= 0) {
-      throw new Error(`Line item ${index + 1} quantity must be a positive whole number.`);
+      throw new Error(tf('Line item {index} quantity must be a positive whole number.', { index: index + 1 }));
     }
-    const unitAmount = requiredString(entry, 'unitAmount', `Line item ${index + 1} unit amount`);
+    const unitAmount = requiredString(entry, 'unitAmount', tf('Line item {index} unit amount', { index: index + 1 }));
     if (!DECIMAL_AMOUNT_REGEX.test(unitAmount)) {
-      throw new Error(`Line item ${index + 1} unit amount must be a decimal string.`);
+      throw new Error(tf('Line item {index} unit amount must be a decimal string.', { index: index + 1 }));
     }
-    const currency = requiredString(entry, 'currency', `Line item ${index + 1} currency`);
-    if (currency !== 'USD') throw new Error('Only USD merchant carts are supported in this preview.');
+    const currency = requiredString(entry, 'currency', tf('Line item {index} currency', { index: index + 1 }));
+    if (currency !== 'USD') throw new Error(t('Only USD merchant carts are supported in this preview.'));
     computedTotal += Number(unitAmount) * quantity;
     return { id, name, quantity, unitAmount, currency };
   });
@@ -515,74 +516,74 @@ function parseLocalLineItems(value: unknown): { items: JsonRecord[]; computedTot
 function resolveLocalTokenMint(cart: JsonRecord, cluster: string, paymentToken: string): string {
   const explicitMint = optionalString(cart, 'paymentTokenMint');
   if (paymentToken === 'SOL') {
-    if (explicitMint) throw new Error('SOL payments use native SOL and cannot set paymentTokenMint.');
+    if (explicitMint) throw new Error(t('SOL payments use native SOL and cannot set paymentTokenMint.'));
     return SOL_MINT_KEY;
   }
   const defaultMint = LOCAL_TOKEN_MINTS[cluster]?.[paymentToken];
   if (explicitMint) {
     if (!SOLANA_ADDRESS_REGEX.test(explicitMint)) {
-      throw new Error('paymentTokenMint must be a Solana token mint address.');
+      throw new Error(t('paymentTokenMint must be a Solana token mint address.'));
     }
     if (defaultMint && explicitMint !== defaultMint) {
-      throw new Error(`paymentTokenMint does not match canonical ${paymentToken} on ${cluster}.`);
+      throw new Error(tf('paymentTokenMint does not match canonical {token} on {cluster}.', { token: paymentToken, cluster }));
     }
     return explicitMint;
   }
   if (!defaultMint) {
-    throw new Error(`${paymentToken} is not supported on ${cluster} without paymentTokenMint.`);
+    throw new Error(tf('{token} is not supported on {cluster} without paymentTokenMint.', { token: paymentToken, cluster }));
   }
   return defaultMint;
 }
 
 function buildLocalPreviewEnvelope(cartInput: unknown): JsonRecord {
-  if (!isObjectRecord(cartInput)) throw new Error('Merchant cart must be a JSON object.');
-  const cartId = requiredString(cartInput, 'id', 'Merchant cart id');
-  const cartVersion = requiredString(cartInput, 'cartVersion', 'Merchant cart version');
-  if (cartVersion !== '1') throw new Error('Only cartVersion 1 merchant carts are supported.');
-  if (!isObjectRecord(cartInput.merchant)) throw new Error('Merchant details are required.');
+  if (!isObjectRecord(cartInput)) throw new Error(t('Merchant cart must be a JSON object.'));
+  const cartId = requiredString(cartInput, 'id', t('Merchant cart id'));
+  const cartVersion = requiredString(cartInput, 'cartVersion', t('Merchant cart version'));
+  if (cartVersion !== '1') throw new Error(t('Only cartVersion 1 merchant carts are supported.'));
+  if (!isObjectRecord(cartInput.merchant)) throw new Error(t('Merchant details are required.'));
   const merchant = cartInput.merchant;
-  const merchantId = requiredString(merchant, 'id', 'Merchant id');
-  const merchantName = requiredString(merchant, 'name', 'Merchant name');
-  const recipient = requiredString(merchant, 'recipient', 'Merchant recipient');
+  const merchantId = requiredString(merchant, 'id', t('Merchant id'));
+  const merchantName = requiredString(merchant, 'name', t('Merchant name'));
+  const recipient = requiredString(merchant, 'recipient', t('Merchant recipient'));
   if (!SOLANA_ADDRESS_REGEX.test(recipient)) {
-    throw new Error('Merchant recipient must be a Solana wallet address.');
+    throw new Error(t('Merchant recipient must be a Solana wallet address.'));
   }
   const { items, computedTotal } = parseLocalLineItems(cartInput.lineItems);
-  const totalAmount = requiredString(cartInput, 'totalAmount', 'Total amount');
-  if (!DECIMAL_AMOUNT_REGEX.test(totalAmount)) throw new Error('Total amount must be a decimal string.');
+  const totalAmount = requiredString(cartInput, 'totalAmount', t('Total amount'));
+  if (!DECIMAL_AMOUNT_REGEX.test(totalAmount)) throw new Error(t('Total amount must be a decimal string.'));
   const total = Number(totalAmount);
-  if (!Number.isFinite(total) || total <= 0) throw new Error('Total amount must be greater than zero.');
+  if (!Number.isFinite(total) || total <= 0) throw new Error(t('Total amount must be greater than zero.'));
   if (Math.abs(total - computedTotal) > LOCAL_TOTAL_TOLERANCE) {
-    throw new Error(`Total amount (${total.toFixed(2)}) does not match line items (${computedTotal.toFixed(2)}).`);
+    throw new Error(tf('Total amount ({total}) does not match line items ({computedTotal}).', { total: total.toFixed(2), computedTotal: computedTotal.toFixed(2) }));
   }
-  const currency = requiredString(cartInput, 'currency', 'Currency');
-  if (currency !== 'USD') throw new Error('Only USD merchant carts are supported in this preview.');
-  const paymentToken = requiredString(cartInput, 'paymentToken', 'Payment token');
+  const currency = requiredString(cartInput, 'currency', t('Currency'));
+  if (currency !== 'USD') throw new Error(t('Only USD merchant carts are supported in this preview.'));
+  const paymentToken = requiredString(cartInput, 'paymentToken', t('Payment token'));
   if (paymentToken !== 'USDC' && paymentToken !== 'USDT' && paymentToken !== 'SOL') {
-    throw new Error('Payment token must be USDC, USDT, or SOL.');
+    throw new Error(t('Payment token must be USDC, USDT, or SOL.'));
   }
-  const cluster = normalizeAcpCluster(requiredString(cartInput, 'cluster', 'Cluster'));
+  const cluster = normalizeAcpCluster(requiredString(cartInput, 'cluster', t('Cluster')));
   const resolvedTokenMint = resolveLocalTokenMint(cartInput, cluster, paymentToken);
   const paymentAmount = optionalString(cartInput, 'paymentAmount');
   let transferAmount = totalAmount;
   if (paymentToken === 'SOL') {
-    if (!paymentAmount) throw new Error('SOL merchant payments must include paymentAmount.');
-    if (!DECIMAL_AMOUNT_REGEX.test(paymentAmount)) throw new Error('SOL paymentAmount must be a decimal string.');
+    if (!paymentAmount) throw new Error(t('SOL merchant payments must include paymentAmount.'));
+    if (!DECIMAL_AMOUNT_REGEX.test(paymentAmount)) throw new Error(t('SOL paymentAmount must be a decimal string.'));
     const solAmount = Number(paymentAmount);
-    if (!Number.isFinite(solAmount) || solAmount <= 0) throw new Error('SOL paymentAmount must be greater than zero.');
+    if (!Number.isFinite(solAmount) || solAmount <= 0) throw new Error(t('SOL paymentAmount must be greater than zero.'));
     transferAmount = normalizeDecimalInput(paymentAmount);
   } else if (paymentAmount) {
-    if (!DECIMAL_AMOUNT_REGEX.test(paymentAmount)) throw new Error('paymentAmount must be a decimal string.');
+    if (!DECIMAL_AMOUNT_REGEX.test(paymentAmount)) throw new Error(t('paymentAmount must be a decimal string.'));
     if (Math.abs(Number(paymentAmount) - total) > LOCAL_TOTAL_TOLERANCE) {
-      throw new Error('Stablecoin paymentAmount must match totalAmount.');
+      throw new Error(t('Stablecoin paymentAmount must match totalAmount.'));
     }
     transferAmount = normalizeDecimalInput(paymentAmount);
   }
   const expiresAt = optionalString(cartInput, 'expiresAt');
   if (expiresAt) {
     const expiresMs = Date.parse(expiresAt);
-    if (!Number.isFinite(expiresMs)) throw new Error('Expiration must be an ISO timestamp.');
-    if (expiresMs <= Date.now()) throw new Error('This merchant cart is expired.');
+    if (!Number.isFinite(expiresMs)) throw new Error(t('Expiration must be an ISO timestamp.'));
+    if (expiresMs <= Date.now()) throw new Error(t('This merchant cart is expired.'));
   }
   const memo = optionalString(cartInput, 'memo');
   const paymentTokenMint = optionalString(cartInput, 'paymentTokenMint');
@@ -637,19 +638,19 @@ export function renderPayOutPanel(): string {
     <section class="pay-out-panel dev-tab-shell" data-pay-out-root>
       <header class="pay-out-header dev-tab-header">
         <div class="dev-tab-header-main">
-          <p class="dev-tab-kicker">Agentic Commerce Protocol</p>
+          <p class="dev-tab-kicker">${t('Agentic Commerce Protocol')}</p>
           <div class="dev-tab-title-row">
-            <h2>Pay Merchant</h2>
-            <span class="pay-out-mode">Manual approval</span>
+            <h2>${t('Pay Merchant')}</h2>
+            <span class="pay-out-mode">${t('Manual approval')}</span>
           </div>
-          <p>Review a merchant cart, then add the payment to Needs Approval. Your wallet signs later; this screen never transfers automatically.</p>
-          <div class="pay-out-capability-row" aria-label="Pay Merchant safeguards">
-            <span class="dev-tab-pill">Readable cart review</span>
-            <span class="dev-tab-pill">Cart validation</span>
-            <span class="dev-tab-pill">Wallet approval required</span>
+          <p>${t('Review a merchant cart, then add the payment to Needs Approval. Your wallet signs later; this screen never transfers automatically.')}</p>
+          <div class="pay-out-capability-row" aria-label="${t('Pay Merchant safeguards')}">
+            <span class="dev-tab-pill">${t('Readable cart review')}</span>
+            <span class="dev-tab-pill">${t('Cart validation')}</span>
+            <span class="dev-tab-pill">${t('Wallet approval required')}</span>
           </div>
         </div>
-        <div class="pay-out-route-card terminal-preview-window" aria-label="Payment route">
+        <div class="pay-out-route-card terminal-preview-window" aria-label="${t('Payment route')}">
           <div class="terminal-preview-bar pay-out-route-bar">
             <span></span>
             <span></span>
@@ -658,35 +659,35 @@ export function renderPayOutPanel(): string {
           </div>
           <div class="pay-out-route-body">
             <div>
-              <span>Merchant</span>
-              <strong>Merchant or agent</strong>
+              <span>${t('Merchant')}</span>
+              <strong>${t('Merchant or agent')}</strong>
             </div>
             <div>
-              <span>Review</span>
-              <strong>Human-readable details</strong>
+              <span>${t('Review')}</span>
+              <strong>${t('Human-readable details')}</strong>
             </div>
             <div>
-              <span>Approval</span>
-              <strong>Needs Approval</strong>
+              <span>${t('Approval')}</span>
+              <strong>${t('Needs Approval')}</strong>
             </div>
           </div>
         </div>
       </header>
       ${renderUseCaseDisclosure({
         id: 'agent-payments-pay-merchant',
-        summary: 'When an agent prepares a merchant checkout, but you want the final say.',
+        summary: t('When an agent prepares a merchant checkout, but you want the final say.'),
         useCases: [
           {
-            title: 'AI fills a checkout cart',
-            body: 'A shopping or travel agent prepares the merchant, items, amount, token, and recipient so you can inspect the full cart before paying.',
+            title: t('AI fills a checkout cart'),
+            body: t('A shopping or travel agent prepares the merchant, items, amount, token, and recipient so you can inspect the full cart before paying.'),
           },
           {
-            title: 'Turn a cart into wallet approval',
-            body: 'After the review looks right, the cart becomes a Needs Approval card. This screen queues the payment; it does not transfer funds by itself.',
+            title: t('Turn a cart into wallet approval'),
+            body: t('After the review looks right, the cart becomes a Needs Approval card. This screen queues the payment; it does not transfer funds by itself.'),
           },
           {
-            title: 'Catch wrong merchants or amounts',
-            body: 'Use it when you want a human-readable checkpoint before signing a merchant payment requested by software.',
+            title: t('Catch wrong merchants or amounts'),
+            body: t('Use it when you want a human-readable checkpoint before signing a merchant payment requested by software.'),
           },
         ],
       })}
@@ -706,25 +707,25 @@ function composeView(cartText: string, busy: boolean): string {
     <form class="pay-out-form dev-tab-panel" data-pay-out-form onsubmit="return false;">
       <div class="pay-out-form-head">
         <div>
-          <span class="pay-out-section-label">Merchant payment</span>
-          <h3>Create a merchant payment</h3>
-          <p>Type the merchant payment details, review the human-readable summary, then add it to Needs Approval.</p>
+          <span class="pay-out-section-label">${t('Merchant payment')}</span>
+          <h3>${t('Create a merchant payment')}</h3>
+          <p>${t('Type the merchant payment details, review the human-readable summary, then add it to Needs Approval.')}</p>
         </div>
         ${entryModeTabs(entryMode)}
       </div>
-      <section class="pay-out-entry-card" aria-label="Create merchant payment">
+      <section class="pay-out-entry-card" aria-label="${t('Create merchant payment')}">
         ${entryMode === 'json' ? advancedJsonPanel(cartText, disabled) : manualRequestPanel(draft, disabled)}
       </section>
       <div class="pay-out-request-layout pay-out-sample-layout">
         ${demoRequestPanel(disabled)}
       </div>
       <div class="pay-out-actions">
-        <span class="pay-out-action-note">${hasRequest ? 'Loaded cart values are editable above.' : 'No developer JSON required for normal use.'}</span>
+        <span class="pay-out-action-note">${hasRequest ? t('Loaded cart values are editable above.') : t('No developer JSON required for normal use.')}</span>
         <div class="pay-out-actions-end">
-          ${hasRequest ? `<button type="button" class="pay-out-button secondary" data-pay-out-action="clear" ${disabled}>Clear payment</button>` : ''}
+          ${hasRequest ? `<button type="button" class="pay-out-button secondary" data-pay-out-action="clear" ${disabled}>${t('Clear payment')}</button>` : ''}
         </div>
       </div>
-      ${busy ? '<p class="pay-out-busy" data-pay-out-busy>Working…</p>' : ''}
+      ${busy ? `<p class="pay-out-busy" data-pay-out-busy>${t('Working…')}</p>` : ''}
     </form>
   `;
 }
@@ -742,9 +743,9 @@ function entryModeTabs(entryMode: EntryMode): string {
     </button>
   `;
   return `
-    <div class="pay-out-entry-tabs" role="tablist" aria-label="Merchant payment entry mode">
-      ${tab('details', 'Type payment details')}
-      ${tab('json', 'Paste cart JSON')}
+    <div class="pay-out-entry-tabs" role="tablist" aria-label="${t('Merchant payment entry mode')}">
+      ${tab('details', t('Type payment details'))}
+      ${tab('json', t('Paste cart JSON'))}
     </div>
   `;
 }
@@ -757,15 +758,15 @@ function manualRequestPanel(draft: PayOutDraft, disabled: string): string {
     .map(({ item, index }) => lineItemDraftRow(item, index, disabled, paymentToken, draft, visibleLineItems.length))
     .join('');
   return `
-    <section class="pay-out-manual-request" data-pay-out-builder data-payment-token="${escapeHtml(paymentToken)}" role="tabpanel" aria-label="Payment details">
+    <section class="pay-out-manual-request" data-pay-out-builder data-payment-token="${escapeHtml(paymentToken)}" role="tabpanel" aria-label="${t('Payment details')}">
       <div class="pay-out-builder-head">
         <div>
-          <span class="pay-out-request-status">Normal entry</span>
-          <h4>Payment details</h4>
+          <span class="pay-out-request-status">${t('Normal entry')}</span>
+          <h4>${t('Payment details')}</h4>
         </div>
         <div class="pay-out-builder-side">
-          <button type="button" class="pay-out-button secondary pay-out-builder-add" data-pay-out-action="add-line-item" ${disabled}>Add item</button>
-          <div class="pay-out-builder-total" aria-label="Current calculated total" data-pay-out-builder-total>
+          <button type="button" class="pay-out-button secondary pay-out-builder-add" data-pay-out-action="add-line-item" ${disabled}>${t('Add item')}</button>
+          <div class="pay-out-builder-total" aria-label="${t('Current calculated total')}" data-pay-out-builder-total>
             ${builderTotalLabelHtml(draft, total)}
             <strong>${escapeHtml(formatDraftPaymentTotal(draft, total))}</strong>
           </div>
@@ -773,35 +774,35 @@ function manualRequestPanel(draft: PayOutDraft, disabled: string): string {
       </div>
       <div class="pay-out-field-grid">
         <label class="pay-out-field pay-out-field--merchant">
-          <span>Merchant name</span>
-          <input class="pay-out-input" name="merchantName" value="${escapeHtml(draft.merchantName)}" placeholder="Acme Coffee" ${disabled}>
+          <span>${t('Merchant name')}</span>
+          <input class="pay-out-input" name="merchantName" value="${escapeHtml(draft.merchantName)}" placeholder="${t('Acme Coffee')}" ${disabled}>
         </label>
         <label class="pay-out-field pay-out-field--recipient">
-          <span>Recipient wallet</span>
-          <input class="pay-out-input" name="recipient" value="${escapeHtml(draft.recipient)}" placeholder="Merchant Solana address" ${disabled}>
+          <span>${t('Recipient wallet')}</span>
+          <input class="pay-out-input" name="recipient" value="${escapeHtml(draft.recipient)}" placeholder="${t('Merchant Solana address')}" ${disabled}>
         </label>
         <label class="pay-out-field pay-out-field--token">
-          <span>Payment token</span>
+          <span>${t('Payment token')}</span>
           ${tokenPicker(paymentToken, disabled)}
         </label>
         <label class="pay-out-field pay-out-field--memo">
-          <span>Memo</span>
-          <input class="pay-out-input" name="memo" value="${escapeHtml(draft.memo)}" placeholder="Invoice, order, or note" ${disabled}>
+          <span>${t('Memo')}</span>
+          <input class="pay-out-input" name="memo" value="${escapeHtml(draft.memo)}" placeholder="${t('Invoice, order, or note')}" ${disabled}>
         </label>
       </div>
       <div class="pay-out-line-editor">
         <div class="pay-out-line-editor-head">
-          <span>Line items</span>
-          <em>Qty x unit amount becomes the total</em>
+          <span>${t('Line items')}</span>
+          <em>${t('Qty x unit amount becomes the total')}</em>
         </div>
-        <div class="pay-out-line-grid" role="group" aria-label="Line items">
+        <div class="pay-out-line-grid" role="group" aria-label="${t('Line items')}">
           ${lineRows}
         </div>
       </div>
       <div class="pay-out-actions">
-        <span class="pay-out-action-note">Validation runs before anything reaches Needs Approval.</span>
+        <span class="pay-out-action-note">${t('Validation runs before anything reaches Needs Approval.')}</span>
         <div class="pay-out-actions-end">
-          <button type="button" class="pay-out-button" data-pay-out-action="preview" ${disabled}>Review merchant payment</button>
+          <button type="button" class="pay-out-button" data-pay-out-action="preview" ${disabled}>${t('Review merchant payment')}</button>
         </div>
       </div>
     </section>
@@ -829,9 +830,9 @@ function formatDraftPaymentTotal(draft: PayOutDraft, total = draftTotal(draft)):
 function builderTotalLabelHtml(draft: PayOutDraft, total = draftTotal(draft)): string {
   if (draft.paymentToken === 'SOL') {
     const usd = estimatedUsdForSolAmount(draft, total);
-    return `<span><em>${escapeHtml(usd ? `${usd} USD` : 'USD estimate')}</em><b>Estimated total</b></span>`;
+    return `<span><em>${escapeHtml(usd ? `${usd} USD` : t('USD estimate'))}</em><b>${t('Estimated total')}</b></span>`;
   }
-  return '<span>Total</span>';
+  return `<span>${t('Total')}</span>`;
 }
 
 function tokenPicker(selectedToken: PayOutPaymentToken, disabled: string): string {
@@ -884,9 +885,9 @@ function tokenPicker(selectedToken: PayOutPaymentToken, disabled: string): strin
 function lineItemSolEstimateText(item: PayOutLineDraft, draft: PayOutDraft): string {
   if (draft.paymentToken !== 'SOL') return '';
   const unitAmount = Number(normalizeDecimalInput(item.unitAmount || '0'));
-  if (!Number.isFinite(unitAmount) || unitAmount <= 0) return 'USD estimate';
-  if (draft.solPriceStatus === 'loading') return 'Estimating...';
-  return estimatedUsdForSolAmount(draft, unitAmount) || 'Price needed';
+  if (!Number.isFinite(unitAmount) || unitAmount <= 0) return t('USD estimate');
+  if (draft.solPriceStatus === 'loading') return t('Estimating...');
+  return estimatedUsdForSolAmount(draft, unitAmount) || t('Price needed');
 }
 
 function lineItemDraftRow(
@@ -905,23 +906,23 @@ function lineItemDraftRow(
   return `
     <div class="pay-out-line-row" data-pay-out-line-item data-pay-out-line-index="${index}">
       <label>
-        <span>Item ${row}</span>
-        <input class="pay-out-input" name="lineName" value="${escapeHtml(item.name)}" placeholder="${row === 1 ? 'Latte' : 'Optional item'}" ${disabled}>
+        <span>${tf('Item {row}', { row })}</span>
+        <input class="pay-out-input" name="lineName" value="${escapeHtml(item.name)}" placeholder="${row === 1 ? t('Latte') : t('Optional item')}" ${disabled}>
       </label>
       <label>
-        <span>Qty</span>
+        <span>${t('Qty')}</span>
         <input class="pay-out-input" name="lineQuantity" inputmode="numeric" value="${escapeHtml(item.quantity)}" placeholder="1" ${disabled}>
       </label>
       <label>
-        <span>Unit amount</span>
+        <span>${t('Unit amount')}</span>
         ${paymentToken === 'SOL'
           ? `<span class="pay-out-amount-field">${unitAmountInput}<em data-pay-out-line-estimate>${escapeHtml(lineItemSolEstimateText(item, draft))}</em></span>`
           : unitAmountInput}
       </label>
       ${canRemove
-        ? `<button type="button" class="pay-out-button secondary pay-out-line-remove" data-pay-out-action="remove-line-item:${index}" aria-label="Remove line item ${row}" ${disabled}>
+        ? `<button type="button" class="pay-out-button secondary pay-out-line-remove" data-pay-out-action="remove-line-item:${index}" aria-label="${tf('Remove line item {row}', { row })}" ${disabled}>
             <span class="pay-out-line-remove-symbol" aria-hidden="true">×</span>
-            <span class="pay-out-line-remove-label">Remove</span>
+            <span class="pay-out-line-remove-label">${t('Remove')}</span>
           </button>`
         : '<span class="pay-out-line-remove-spacer" aria-hidden="true"></span>'}
     </div>
@@ -930,13 +931,13 @@ function lineItemDraftRow(
 
 function advancedJsonPanel(cartText: string, disabled: string): string {
   return `
-    <section class="pay-out-import-request pay-out-advanced-json" role="tabpanel" aria-label="Paste cart JSON">
+    <section class="pay-out-import-request pay-out-advanced-json" role="tabpanel" aria-label="${t('Paste cart JSON')}">
       <div class="pay-out-import-head">
         <div>
-          <span class="pay-out-request-status">Developer import</span>
-          <h4>Paste cart JSON</h4>
+          <span class="pay-out-request-status">${t('Developer import')}</span>
+          <h4>${t('Paste cart JSON')}</h4>
         </div>
-        <button type="button" class="pay-out-button secondary" data-pay-out-action="paste-clipboard" ${disabled}>Paste from clipboard</button>
+        <button type="button" class="pay-out-button secondary" data-pay-out-action="paste-clipboard" ${disabled}>${t('Paste from clipboard')}</button>
       </div>
       <div class="pay-out-editor-shell terminal-preview-window">
         <div class="terminal-preview-bar pay-out-editor-bar">
@@ -957,9 +958,9 @@ function advancedJsonPanel(cartText: string, disabled: string): string {
         >${escapeHtml(cartText)}</textarea>
       </div>
       <div class="pay-out-actions">
-        <span class="pay-out-action-note">Use this only for checkout, QR, or external-agent payloads.</span>
+        <span class="pay-out-action-note">${t('Use this only for checkout, QR, or external-agent payloads.')}</span>
         <div class="pay-out-actions-end">
-          <button type="button" class="pay-out-button secondary" data-pay-out-action="preview-json" ${disabled}>Review raw JSON</button>
+          <button type="button" class="pay-out-button secondary" data-pay-out-action="preview-json" ${disabled}>${t('Review raw JSON')}</button>
         </div>
       </div>
     </section>
@@ -968,24 +969,24 @@ function advancedJsonPanel(cartText: string, disabled: string): string {
 
 function demoRequestPanel(disabled: string): string {
   return `
-    <section class="pay-out-demo-request" aria-label="Demo merchant cart">
-      <span class="pay-out-request-status">Sample cart</span>
+    <section class="pay-out-demo-request" aria-label="${t('Demo merchant cart')}">
+      <span class="pay-out-request-status">${t('Sample cart')}</span>
       <div class="pay-out-request-title-row">
-        <h4>Acme Coffee</h4>
+        <h4>${t('Acme Coffee')}</h4>
         <strong>17.80 USDC</strong>
       </div>
-      <p>Latte x2, Croissant, Tax</p>
+      <p>${t('Latte x2, Croissant, Tax')}</p>
       <dl class="pay-out-request-mini-grid">
         <div>
-          <dt>Source</dt>
-          <dd>Checkout</dd>
+          <dt>${t('Source')}</dt>
+          <dd>${t('Checkout')}</dd>
         </div>
         <div>
-          <dt>Approval</dt>
-          <dd>Manual</dd>
+          <dt>${t('Approval')}</dt>
+          <dd>${t('Manual')}</dd>
         </div>
       </dl>
-      <button type="button" class="pay-out-button secondary" data-pay-out-action="load-sample" ${disabled}>Load sample cart</button>
+      <button type="button" class="pay-out-button secondary" data-pay-out-action="load-sample" ${disabled}>${t('Load sample cart')}</button>
     </section>
   `;
 }
@@ -1008,7 +1009,7 @@ function previewView(preview: AcpPreviewDisplay, busy: boolean): string {
     .join('');
 
   const mintHint = preview.resolvedTokenMint === SOL_MINT_KEY
-    ? '<span class="muted">(native)</span>'
+    ? `<span class="muted">${t('(native)')}</span>`
     : preview.resolvedTokenMint
     ? `<span class="muted" title="${escapeHtml(preview.resolvedTokenMint)}">(${escapeHtml(shortAddress(preview.resolvedTokenMint))})</span>`
     : '';
@@ -1016,7 +1017,7 @@ function previewView(preview: AcpPreviewDisplay, busy: boolean): string {
     ? `<span class="pay-out-fiat-hint">${escapeHtml(preview.totalFiat)}</span>`
     : '';
   const memoRow = preview.memo
-    ? `<dt>Memo</dt><dd>${escapeHtml(preview.memo)}</dd>`
+    ? `<dt>${t('Memo')}</dt><dd>${escapeHtml(preview.memo)}</dd>`
     : '';
   const merchantWalletHint = preview.merchant.recipient
     ? `<span class="muted" title="${escapeHtml(preview.merchant.recipient)}">(${escapeHtml(shortAddress(preview.merchant.recipient))})</span>`
@@ -1033,11 +1034,11 @@ function previewView(preview: AcpPreviewDisplay, busy: boolean): string {
       <div class="pay-out-preview-body">
         <div class="pay-out-preview-head">
           <div>
-            <span>Merchant</span>
+            <span>${t('Merchant')}</span>
             <strong>${escapeHtml(preview.merchant.name)}</strong>
           </div>
           <div class="pay-out-preview-total">
-            <span>Payment</span>
+            <span>${t('Payment')}</span>
             <strong>${escapeHtml(paymentLabel)}</strong>
             ${totalFiat}
           </div>
@@ -1045,44 +1046,44 @@ function previewView(preview: AcpPreviewDisplay, busy: boolean): string {
 
         <dl class="pay-out-meta">
           <div>
-            <dt>Merchant</dt>
+            <dt>${t('Merchant')}</dt>
             <dd>${escapeHtml(preview.merchant.name)} ${merchantWalletHint}</dd>
           </div>
           <div>
-            <dt>Recipient</dt>
+            <dt>${t('Recipient')}</dt>
             <dd title="${escapeHtml(preview.recipient)}">${escapeHtml(shortAddress(preview.recipient))}</dd>
           </div>
           <div>
-            <dt>Pay with</dt>
+            <dt>${t('Pay with')}</dt>
             <dd>${escapeHtml(preview.paymentToken)} ${mintHint}</dd>
           </div>
           ${memoRow ? `<div>${memoRow}</div>` : ''}
         </dl>
 
-        <table class="pay-out-line-items" aria-label="Line items">
+        <table class="pay-out-line-items" aria-label="${t('Line items')}">
           <thead>
-            <tr><th scope="col">Item</th><th scope="col" class="amount">Unit amount</th></tr>
+            <tr><th scope="col">${t('Item')}</th><th scope="col" class="amount">${t('Unit amount')}</th></tr>
           </thead>
           <tbody>${lineRows}</tbody>
         </table>
 
         <div class="pay-out-total">
-          <span class="label">Payment</span>
+          <span class="label">${t('Payment')}</span>
           <span>
             <span aria-hidden="true">${escapeHtml(preview.paymentToken)} </span>${escapeHtml(preview.transferAmount)}
             ${fiatHint}
           </span>
         </div>
 
-        <p class="pay-out-disclaimer">Confirming adds this merchant payment to Needs Approval. No transfer happens until your wallet approves it.</p>
+        <p class="pay-out-disclaimer">${t('Confirming adds this merchant payment to Needs Approval. No transfer happens until your wallet approves it.')}</p>
 
         <div class="pay-out-actions">
-          <button type="button" class="pay-out-button secondary" data-pay-out-action="edit" ${disabled}>Change payment</button>
+          <button type="button" class="pay-out-button secondary" data-pay-out-action="edit" ${disabled}>${t('Change payment')}</button>
           <div class="pay-out-actions-end">
-            <button type="button" class="pay-out-button" data-pay-out-action="confirm" ${disabled}>Add to Needs Approval</button>
+            <button type="button" class="pay-out-button" data-pay-out-action="confirm" ${disabled}>${t('Add to Needs Approval')}</button>
           </div>
         </div>
-        ${busy ? '<p class="pay-out-busy" data-pay-out-busy>Creating approval…</p>' : ''}
+        ${busy ? `<p class="pay-out-busy" data-pay-out-busy>${t('Creating approval…')}</p>` : ''}
       </div>
     </div>
   `;
@@ -1091,8 +1092,8 @@ function previewView(preview: AcpPreviewDisplay, busy: boolean): string {
 function errorBanner(message: string): string {
   return `
     <div class="pay-out-error" role="alert" data-pay-out-error>
-      <div><strong>Couldn't continue</strong>${escapeHtml(message)}</div>
-      <button type="button" class="dismiss" aria-label="Dismiss" data-pay-out-action="dismiss-error">×</button>
+      <div><strong>${t('Couldn\'t continue')}</strong>${escapeHtml(message)}</div>
+      <button type="button" class="dismiss" aria-label="${t('Dismiss')}" data-pay-out-action="dismiss-error">×</button>
     </div>
   `;
 }
@@ -1101,7 +1102,7 @@ function noticeBanner(title: string, body: string): string {
   return `
     <div class="pay-out-notice" role="status" data-pay-out-notice>
       <div><strong>${escapeHtml(title)}</strong>${escapeHtml(body)}</div>
-      <button type="button" class="dismiss" aria-label="Dismiss" data-pay-out-action="dismiss-notice">×</button>
+      <button type="button" class="dismiss" aria-label="${t('Dismiss')}" data-pay-out-action="dismiss-notice">×</button>
     </div>
   `;
 }
@@ -1133,22 +1134,22 @@ async function postJson<T>(path: string, body: unknown): Promise<FetchResult<T>>
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return { kind: 'error', message: `Network error: ${message}` };
+    return { kind: 'error', message: tf('Network error: {message}', { message }) };
   }
   if (res.status === 404) return { kind: 'notDeployed' };
   if (res.status === 403) return { kind: 'forbidden' };
   if (res.status === 400) {
-    return { kind: 'badRequest', message: await extractErrorMessage(res, 'Cart was rejected by the server.') };
+    return { kind: 'badRequest', message: await extractErrorMessage(res, t('Cart was rejected by the server.')) };
   }
   if (!res.ok) {
-    return { kind: 'error', message: await extractErrorMessage(res, `Request failed (${res.status})`) };
+    return { kind: 'error', message: await extractErrorMessage(res, tf('Request failed ({status})', { status: res.status })) };
   }
   try {
     const data = (await res.json()) as T;
     return { kind: 'ok', value: data };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return { kind: 'error', message: `Bad JSON response: ${message}` };
+    return { kind: 'error', message: tf('Bad JSON response: {message}', { message }) };
   }
 }
 
@@ -1183,7 +1184,7 @@ export async function approveCart(cart: unknown): Promise<FetchResult<ApprovalCr
     : undefined;
   const cartIdRaw = result.value.cartId;
   if (!isStringField(approvalIdRaw) || !isStringField(cartIdRaw)) {
-    return { kind: 'error', message: 'Server did not return approval.id and cartId.' };
+    return { kind: 'error', message: t('Server did not return approval.id and cartId.') };
   }
   const created: ApprovalCreated = { cartId: cartIdRaw, approvalId: approvalIdRaw };
   const cartHashRaw = result.value.cartHash;
@@ -1236,11 +1237,11 @@ function cartRecordForLocalApproval(cart: unknown, preview: AcpPreviewDisplay): 
 export function approveCartLocally(cart: unknown, preview: AcpPreviewDisplay): FetchResult<ApprovalCreated> {
   const walletAddress = getConnectedAddress();
   if (!walletAddress) {
-    return { kind: 'badRequest', message: 'Connect a wallet before adding the merchant payment to Needs Approval.' };
+    return { kind: 'badRequest', message: t('Connect a wallet before adding the merchant payment to Needs Approval.') };
   }
   const cartRecord = cartRecordForLocalApproval(cart, preview);
   const cartId = isStringField(cartRecord.id) ? cartRecord.id : preview.cartId;
-  if (!cartId) return { kind: 'badRequest', message: 'Payment request is missing an id.' };
+  if (!cartId) return { kind: 'badRequest', message: t('Payment request is missing an id.') };
   const now = new Date().toISOString();
   const dueAt = optionalString(cartRecord, 'expiresAt') ?? now;
   const merchant = isObjectRecord(cartRecord.merchant) ? cartRecord.merchant : preview.merchant;
@@ -1303,15 +1304,15 @@ export function approveCartLocally(cart: unknown, preview: AcpPreviewDisplay): F
 
 function browserLocalNotice(): NoticeInfo {
   return {
-    title: 'Using browser-local approvals',
-    body: 'The cloud ACP route is unavailable, so the approval will be saved in this browser under Needs Approval.',
+    title: t('Using browser-local approvals'),
+    body: t('The cloud ACP route is unavailable, so the approval will be saved in this browser under Needs Approval.'),
   };
 }
 
 function forbiddenNotice(): NoticeInfo {
   return {
-    title: 'Sign in required',
-    body: 'Sign in to Agentic Cloud with your wallet to use Pay Merchant.',
+    title: t('Sign in required'),
+    body: t('Sign in to Agentic Cloud with your wallet to use Pay Merchant.'),
   };
 }
 
@@ -1418,7 +1419,7 @@ async function ensureSolPriceForDraft(draft: PayOutDraft): Promise<void> {
   const snapshot = await getUsdPriceForMint(SOL_MINT_KEY);
   if (!snapshot || !Number.isFinite(snapshot.usdPerToken)) {
     draft.solPriceStatus = 'error';
-    draft.solPriceError = 'SOL price is unavailable. Try again when the USD estimate loads.';
+    draft.solPriceError = t('SOL price is unavailable. Try again when the USD estimate loads.');
     throw new Error(draft.solPriceError);
   }
   applySolPriceSnapshot(draft, snapshot);
@@ -1443,7 +1444,7 @@ async function refreshSolPriceForVisibleDraft(): Promise<void> {
     applySolPriceSnapshot(latest, snapshot);
   } else {
     latest.solPriceStatus = 'error';
-    latest.solPriceError = 'SOL price is unavailable. Review is blocked until the estimate loads.';
+    latest.solPriceError = t('SOL price is unavailable. Review is blocked until the estimate loads.');
   }
   panelState.draft = latest;
   updateBuilderDerivedUi();
@@ -1475,14 +1476,14 @@ function updateBuilderDerivedUi(): void {
 async function pasteRequestFromClipboard(): Promise<void> {
   if (panelState.busy) return;
   if (typeof navigator === 'undefined' || !navigator.clipboard?.readText) {
-    panelState.error = 'Clipboard paste is unavailable in this browser. Paste the request into the text box.';
+    panelState.error = t('Clipboard paste is unavailable in this browser. Paste the request into the text box.');
     rerenderPanelOnly();
     return;
   }
   try {
     const text = await navigator.clipboard.readText();
     if (!text.trim()) {
-      panelState.error = 'Clipboard is empty.';
+      panelState.error = t('Clipboard is empty.');
       rerenderPanelOnly();
       return;
     }
@@ -1495,7 +1496,7 @@ async function pasteRequestFromClipboard(): Promise<void> {
     panelState.preview = null;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    panelState.error = `Clipboard paste failed: ${message}`;
+    panelState.error = tf('Clipboard paste failed: {message}', { message });
   }
   rerenderPanelOnly();
 }
@@ -1658,7 +1659,7 @@ async function runConfirm(): Promise<void> {
   }
   panelState.busy = false;
   if (result.kind === 'ok') {
-    showToast(`Approval ready · ${shortAddress(result.value.approvalId)} — review in Needs Approval`);
+    showToast(tf('Approval ready · {id} — review in Needs Approval', { id: shortAddress(result.value.approvalId) }));
     const dispatched = dispatchPayOutApprovalCreated({
       source: 'acp_outbound',
       approvalId: result.value.approvalId,

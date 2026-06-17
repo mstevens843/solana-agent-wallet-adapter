@@ -2,6 +2,7 @@ import './myProfile.css';
 import { getJson } from './fetchHelpers.js';
 import { registerSkillsSubTab } from './subTabRegistry.js';
 import { getConnectedAddress } from '../../walletState.js';
+import { t, tf } from '../../demo-i18n/uiLang.js';
 
 // Mirrors WalletStatsSnapshot at packages/workflow/src/dev/aggregator.ts:18-27.
 // Inlined to keep the workflow `/dev` subpath (which transitively pulls
@@ -112,13 +113,13 @@ export function formatRelativeTime(iso: string, now: number = Date.now()): strin
   if (!Number.isFinite(ts)) return '';
   const deltaMs = Math.max(0, now - ts);
   const sec = Math.floor(deltaMs / 1000);
-  if (sec < 60) return `${sec}s ago`;
+  if (sec < 60) return tf('{n}s ago', { n: sec });
   const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m ago`;
+  if (min < 60) return tf('{n}m ago', { n: min });
   const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
+  if (hr < 24) return tf('{n}h ago', { n: hr });
   const days = Math.floor(hr / 24);
-  return `${days}d ago`;
+  return tf('{n}d ago', { n: days });
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -147,11 +148,10 @@ export function normalizeWalletStats(input: unknown): WalletStatsSnapshot | null
 function renderHeading(): string {
   return `
     <header class="skills-profile-heading">
-      <span class="skills-profile-tag">Public profile</span>
-      <h2>My track record</h2>
+      <span class="skills-profile-tag">${t('Public profile')}</span>
+      <h2>${t('My track record')}</h2>
       <p>
-        Preview the public receipt-backed profile for this wallet. Copy the URL when
-        you want to share the skill record outside the app.
+        ${t('Preview the public receipt-backed profile for this wallet. Copy the URL when you want to share the skill record outside the app.')}
       </p>
     </header>
   `;
@@ -169,19 +169,19 @@ function renderCopyUrlRow(wallet: string): string {
           class="skills-profile-button"
           data-skills-profile-action="copy-url"
           data-skills-profile-value="${safeUrl}"
-        >Copy URL</button>
+        >${t('Copy URL')}</button>
         <a
           class="skills-profile-button skills-profile-button-secondary"
           href="${safeUrl}"
           target="_blank"
           rel="noreferrer"
           data-skills-profile-action="view-live"
-        >View live →</a>
+        >${t('View live →')}</a>
         <button
           type="button"
           class="skills-profile-button skills-profile-button-ghost"
           data-skills-profile-action="refresh"
-        >Refresh</button>
+        >${t('Refresh')}</button>
       </div>
     </div>
   `;
@@ -199,18 +199,18 @@ function renderStatCard(label: string, value: string): string {
 function renderStatsRow(snapshot: WalletStatsSnapshot): string {
   return `
     <div class="skills-profile-stats">
-      ${renderStatCard('Skills installed', String(snapshot.totalSkillsInstalled))}
-      ${renderStatCard('Executions', String(snapshot.totalExecutions))}
-      ${renderStatCard('Success rate', formatSuccessRate(snapshot.successRate))}
-      ${renderStatCard('Profit (USD)', formatUsd(snapshot.totalProfitUsd))}
-      ${renderStatCard('Gas spent (USD)', formatUsd(snapshot.totalGasUsd))}
+      ${renderStatCard(t('Skills installed'), String(snapshot.totalSkillsInstalled))}
+      ${renderStatCard(t('Executions'), String(snapshot.totalExecutions))}
+      ${renderStatCard(t('Success rate'), formatSuccessRate(snapshot.successRate))}
+      ${renderStatCard(t('Profit (USD)'), formatUsd(snapshot.totalProfitUsd))}
+      ${renderStatCard(t('Gas spent (USD)'), formatUsd(snapshot.totalGasUsd))}
     </div>
   `;
 }
 
 function renderSkillsChips(ids: readonly string[]): string {
   if (ids.length === 0) {
-    return '<p class="skills-profile-empty-chips">No skills installed yet.</p>';
+    return `<p class="skills-profile-empty-chips">${t('No skills installed yet.')}</p>`;
   }
   const items = ids
     .map(
@@ -225,7 +225,7 @@ function renderSkillsChips(ids: readonly string[]): string {
 
 function renderLoadedBody(snapshot: WalletStatsSnapshot, wallet: string): string {
   const computed = formatRelativeTime(snapshot.computedAt);
-  const computedText = computed ? `Computed ${escapeHtml(computed)}` : 'Computed just now';
+  const computedText = computed ? tf('Computed {when}', { when: escapeHtml(computed) }) : t('Computed just now');
   return `
     <div class="skills-profile-card">
       <div class="skills-profile-header">
@@ -236,7 +236,7 @@ function renderLoadedBody(snapshot: WalletStatsSnapshot, wallet: string): string
       </div>
       ${renderStatsRow(snapshot)}
       <div class="skills-profile-section">
-        <span class="skills-profile-section-label">Installed skills</span>
+        <span class="skills-profile-section-label">${t('Installed skills')}</span>
         ${renderSkillsChips(snapshot.installedSkillIds)}
       </div>
     </div>
@@ -248,10 +248,9 @@ function renderEmptyBody(wallet: string): string {
   return `
     <div class="skills-profile-card">
       <div class="skills-profile-notice">
-        <strong>No executions yet</strong>
+        <strong>${t('No executions yet')}</strong>
         <p>
-          Install a skill from the <em>Browse</em> tab and approve its first proposal to start
-          building a verifiable track record. Stats appear here once receipts land.
+          ${tf('Install a skill from the {browse} tab and approve its first proposal to start building a verifiable track record. Stats appear here once receipts land.', { browse: `<em>${t('Browse')}</em>` })}
         </p>
       </div>
     </div>
@@ -275,10 +274,9 @@ function renderForbiddenBody(): string {
   return `
     <div class="skills-profile-card">
       <div class="skills-profile-notice skills-profile-notice-warn">
-        <strong>Profile not available</strong>
+        <strong>${t('Profile not available')}</strong>
         <p>
-          This wallet's public skill profile is not available yet. Install a skill and approve
-          a run to start building a receipt-backed profile.
+          ${t('This wallet\'s public skill profile is not available yet. Install a skill and approve a run to start building a receipt-backed profile.')}
         </p>
       </div>
     </div>
@@ -289,8 +287,8 @@ function renderSignedOutBody(): string {
   return `
     <div class="skills-profile-card">
       <div class="skills-profile-notice">
-        <strong>Sign in required</strong>
-        <p>${escapeHtml(panelState.errorMessage || 'Sign in to Agentic Cloud with your wallet to preview your public skill profile.')}</p>
+        <strong>${t('Sign in required')}</strong>
+        <p>${escapeHtml(panelState.errorMessage || t('Sign in to Agentic Cloud with your wallet to preview your public skill profile.'))}</p>
       </div>
     </div>
   `;
@@ -300,11 +298,9 @@ function renderNotDeployedBody(wallet: string): string {
   return `
     <div class="skills-profile-card">
       <div class="skills-profile-notice">
-        <strong>Profile aggregator API unavailable</strong>
+        <strong>${t('Profile aggregator API unavailable')}</strong>
         <p>
-          The <code>/api/aggregator/wallets/&lt;wallet&gt;</code> endpoint returned 404 in this
-          environment. The public URL pattern below is still the canonical place for your page
-          when this UI is pointed at a render-web server with aggregator routes enabled.
+          ${tf('The {endpoint} endpoint returned 404 in this environment. The public URL pattern below is still the canonical place for your page when this UI is pointed at a render-web server with aggregator routes enabled.', { endpoint: '<code>/api/aggregator/wallets/&lt;wallet&gt;</code>' })}
         </p>
       </div>
     </div>
@@ -316,13 +312,13 @@ function renderErrorBody(errorMessage: string): string {
   return `
     <div class="skills-profile-card">
       <div class="skills-profile-notice skills-profile-notice-error">
-        <strong>Couldn't load profile stats</strong>
+        <strong>${t('Couldn\'t load profile stats')}</strong>
         <p>${escapeHtml(errorMessage)}</p>
         <button
           type="button"
           class="skills-profile-button"
           data-skills-profile-action="retry"
-        >Retry</button>
+        >${t('Retry')}</button>
       </div>
     </div>
   `;
@@ -332,10 +328,9 @@ function renderNoWalletBody(): string {
   return `
     <div class="skills-profile-card">
       <div class="skills-profile-notice">
-        <strong>Connect a wallet</strong>
+        <strong>${t('Connect a wallet')}</strong>
         <p>
-          Connect the wallet you use for skills to preview the public <code>/u/&lt;wallet&gt;</code>
-          profile that aggregates receipt-backed runs.
+          ${tf('Connect the wallet you use for skills to preview the public {path} profile that aggregates receipt-backed runs.', { path: '<code>/u/&lt;wallet&gt;</code>' })}
         </p>
       </div>
     </div>
@@ -361,7 +356,7 @@ export function renderMyProfilePanel(): string {
       body = renderNotDeployedBody(panelState.wallet ?? '');
       break;
     case 'error':
-      body = renderErrorBody(panelState.errorMessage || 'Unknown error');
+      body = renderErrorBody(panelState.errorMessage || t('Unknown error'));
       break;
     case 'empty':
       body = renderEmptyBody(panelState.wallet ?? '');
@@ -477,9 +472,9 @@ async function handleAction(action: string, dataset: DOMStringMap): Promise<void
       if (!value) return;
       try {
         await navigator.clipboard.writeText(value);
-        showToast('Public URL copied');
+        showToast(t('Public URL copied'));
       } catch {
-        showToast('Copy failed — clipboard permission denied');
+        showToast(t('Copy failed — clipboard permission denied'));
       }
       return;
     }

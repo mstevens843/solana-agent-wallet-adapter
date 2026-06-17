@@ -1,5 +1,6 @@
 import './agentProtocols.css';
 import { registerDevTab } from '../devTabRegistry.js';
+import { t, tf } from '../demo-i18n/uiLang.js';
 import { renderAgentCardPanel } from './agentCard.js';
 import { fetchInbound, renderExternalAgentsPanel } from './externalAgents.js';
 import { renderPayOutPanel } from './payOut.js';
@@ -70,11 +71,11 @@ function renderSubTabButton(tab: AgentProtocolsSubTab): string {
       class="${active ? 'active' : ''}"
       role="tab"
       aria-selected="${active ? 'true' : 'false'}"
-      title="${escapeHtml(tab.description)}"
+      title="${escapeHtml(t(tab.description))}"
       data-agent-protocols-subtab="${escapeHtml(tab.id)}"
     >
-      <span class="agent-protocols-label-full">${escapeHtml(tab.label)}</span>
-      <span class="agent-protocols-label-mobile">${escapeHtml(tab.mobileLabel)}</span>
+      <span class="agent-protocols-label-full">${escapeHtml(t(tab.label))}</span>
+      <span class="agent-protocols-label-mobile">${escapeHtml(t(tab.mobileLabel))}</span>
     </button>
   `;
 }
@@ -83,10 +84,10 @@ function renderSubTabControl(): string {
   return `
     <div class="one-time-method-control agent-protocols-tab-control" role="presentation">
       <span class="one-time-method-label">
-        <strong>Agent Payments</strong>
-        <em class="accent-note">Profile, pay, receive</em>
+        <strong>${t('Agent Payments')}</strong>
+        <em class="accent-note">${t('Profile, pay, receive')}</em>
       </span>
-      <div class="template-filter-row one-time-method-filter agent-protocols-tab-list" role="tablist" aria-label="Agent payment sections">
+      <div class="template-filter-row one-time-method-filter agent-protocols-tab-list" role="tablist" aria-label="${escapeHtml(t('Agent payment sections'))}">
         ${subTabs.map(renderSubTabButton).join('')}
       </div>
     </div>
@@ -141,6 +142,7 @@ if (hotModule) {
 
 registerDevTab({
   id: 'agent-protocols',
+  // Raw English — the nav re-wraps with t(item.label) at render (t() here would freeze at import time).
   label: 'Agent Payments',
   mobileLabel: 'Agents',
   guard: () => true,

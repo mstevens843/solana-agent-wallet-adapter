@@ -15596,6 +15596,12 @@ button.danger:hover:not(:disabled) {
   max-width: min(260px, 86vw);
   min-width: 168px;
   width: max-content;
+  /* The picker lives inside .guided-demo-hero, whose ::before runs an infinite ambient
+     animation. The inherited backdrop-filter blur re-samples that layer every frame, which
+     reads as a constant blink on Android WebView. Use a solid opaque background instead. */
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: rgb(14, 17, 16);
 }
 
 .demo-language-picker-option {
@@ -15607,6 +15613,21 @@ button.danger:hover:not(:disabled) {
   font-size: 0.92rem;
   font-weight: 640;
   line-height: 1.15;
+  white-space: nowrap;
+}
+
+/* Android-only Language control in /app Preferences (reuses .demo-language-picker). */
+.preferences-language-row {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.preferences-language-label {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 640;
   white-space: nowrap;
 }
 

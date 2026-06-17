@@ -1,15 +1,18 @@
-// Runtime translation wrapper for the /demo page (Android dApp language switcher).
+// Runtime translation wrapper for the Android dApp language switcher (whole /app + /demo).
 //
-// The /demo page is authored ONCE in English. A committed, generated catalog
-// (one JSON per language under ./catalog) carries the translations. tDemo() does
-// an exact-string-match lookup with English fallback, mirroring the existing
-// `agentReviewLocalizedProse` pattern, plus a protected-token safety net so a bad
-// catalog entry can never drop or swap a token symbol, $amount, %, URL or address.
+// The app is authored ONCE in English. A committed catalog (one JSON per language under ./catalog)
+// carries the translations. tDemo() does an exact-string-match lookup with English fallback, plus a
+// protected-token safety net so a bad catalog entry can never drop/swap a token symbol, $amount,
+// %, URL or address. uiLang.ts re-exports t()/tf() for the self-contained devTab modules.
 //
-// To regenerate the catalogs after editing English copy, run:
-//   pnpm demo:i18n:generate   (model-assisted, offline, validated)
-// and to verify completeness:
-//   pnpm demo:i18n:check
+// To localize new English copy: wrap it in t()/tf() (or, for data structures, wrap at the render
+// site), then run the incremental pipeline (no API key — uses the running model):
+//   node scripts/extract-form-strings.mjs && node scripts/extract-ui-keys.mjs   # seed en.json
+//   node scripts/i18n-prepare-chunks.mjs                                        # split the delta
+//   translate scripts/_i18n_work/<lang>__*.json -> .out.json (parallel agents)  # one per language
+//   node scripts/i18n-merge-chunks.mjs --finalize                               # merge + guards
+// Verify with `pnpm ui:i18n:check` (parity + protected tokens + placeholder parity; wired into build).
+// `scripts/generate-demo-i18n.mjs` is the from-scratch whole-catalog regen fallback (needs ANTHROPIC_API_KEY).
 
 import { preservesProtectedTokens } from '@solana-agent-wallet-adapter/workflow';
 

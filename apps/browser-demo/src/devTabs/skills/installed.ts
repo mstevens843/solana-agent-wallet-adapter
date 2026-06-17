@@ -1,6 +1,7 @@
 import './installed.css';
 import { parseIntervalSpec } from '@solana-agent-wallet-adapter/skills-runtime';
 import type { skills } from '@solana-agent-wallet-adapter/workflow/dev';
+import { t, tf } from '../../demo-i18n/uiLang.js';
 import { emitSkillsInstallsChanged, onSkillsInstallsChanged } from './events.js';
 import { getJson, postJson } from './fetchHelpers.js';
 import { registerSkillsSubTab, setActiveSkillsSubTab } from './subTabRegistry.js';
@@ -100,7 +101,7 @@ const STATUS_LABELS: Record<SkillInstallStatus, string> = {
 };
 
 export function statusLabel(status: SkillInstallStatus | string): string {
-  if (status in STATUS_LABELS) return STATUS_LABELS[status as SkillInstallStatus];
+  if (status in STATUS_LABELS) return t(STATUS_LABELS[status as SkillInstallStatus]);
   return String(status);
 }
 
@@ -120,29 +121,29 @@ export function statusModifier(status: SkillInstallStatus | string): string {
 }
 
 const CRON_LABELS: Record<string, string> = {
-  '* * * * *': 'Every minute',
-  '0 * * * *': 'Every hour',
-  '0 0 * * *': 'Daily at 00:00 UTC',
-  '0 9 * * *': 'Daily at 09:00 UTC',
-  '0 0 * * 0': 'Weekly on Sunday',
-  '0 0 * * 1': 'Weekly on Monday',
-  '0 0 * * 5': 'Weekly on Friday',
-  '0 9 * * 1-5': 'Weekdays at 09:00 UTC',
-  '0 9 * * 0,6': 'Weekends at 09:00 UTC',
+  '* * * * *': t('Every minute'),
+  '0 * * * *': t('Every hour'),
+  '0 0 * * *': t('Daily at 00:00 UTC'),
+  '0 9 * * *': t('Daily at 09:00 UTC'),
+  '0 0 * * 0': t('Weekly on Sunday'),
+  '0 0 * * 1': t('Weekly on Monday'),
+  '0 0 * * 5': t('Weekly on Friday'),
+  '0 9 * * 1-5': t('Weekdays at 09:00 UTC'),
+  '0 9 * * 0,6': t('Weekends at 09:00 UTC'),
 };
 
 export function humanizeSeconds(totalSeconds: number): string {
   if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) return '—';
   const s = Math.round(totalSeconds);
-  if (s === 60) return 'Every minute';
-  if (s === 3600) return 'Every hour';
-  if (s === 86_400) return 'Every day';
-  if (s === 604_800) return 'Every week';
-  if (s % 604_800 === 0) return `Every ${s / 604_800}w`;
-  if (s % 86_400 === 0) return `Every ${s / 86_400}d`;
-  if (s % 3600 === 0) return `Every ${s / 3600}h`;
-  if (s % 60 === 0) return `Every ${s / 60}m`;
-  return `Every ${s}s`;
+  if (s === 60) return t('Every minute');
+  if (s === 3600) return t('Every hour');
+  if (s === 86_400) return t('Every day');
+  if (s === 604_800) return t('Every week');
+  if (s % 604_800 === 0) return tf('Every {n}w', { n: s / 604_800 });
+  if (s % 86_400 === 0) return tf('Every {n}d', { n: s / 86_400 });
+  if (s % 3600 === 0) return tf('Every {n}h', { n: s / 3600 });
+  if (s % 60 === 0) return tf('Every {n}m', { n: s / 60 });
+  return tf('Every {n}s', { n: s });
 }
 
 function intervalSpecToSeconds(spec: string): number | undefined {
@@ -154,21 +155,21 @@ function intervalSpecToSeconds(spec: string): number | undefined {
 }
 
 export function humanizeSchedule(schedule: SkillSchedule | undefined | null): string {
-  if (!schedule || typeof schedule !== 'object') return 'Schedule unavailable';
+  if (!schedule || typeof schedule !== 'object') return t('Schedule unavailable');
   const spec = String(schedule.spec ?? '').trim();
   if (schedule.kind === 'cron') {
     if (spec in CRON_LABELS) return CRON_LABELS[spec]!;
-    return spec ? `cron(${spec})` : 'Cron schedule';
+    return spec ? `cron(${spec})` : t('Cron schedule');
   }
   if (schedule.kind === 'interval') {
     const seconds = intervalSpecToSeconds(spec);
     if (seconds !== undefined) return humanizeSeconds(seconds);
-    return spec ? `Interval(${spec})` : 'Interval schedule';
+    return spec ? `Interval(${spec})` : t('Interval schedule');
   }
   if (schedule.kind === 'price-trigger') {
-    return 'On price trigger';
+    return t('On price trigger');
   }
-  return 'Schedule unavailable';
+  return t('Schedule unavailable');
 }
 
 export function humanizeRelative(iso: string, nowMs: number): string {
@@ -177,19 +178,19 @@ export function humanizeRelative(iso: string, nowMs: number): string {
   const diff = target - nowMs;
   const future = diff >= 0;
   const abs = Math.abs(diff);
-  if (abs < 60_000) return future ? 'in <1m' : 'just now';
+  if (abs < 60_000) return future ? t('in <1m') : t('just now');
   const minutes = Math.round(abs / 60_000);
-  if (minutes < 60) return future ? `in ${minutes}m` : `${minutes}m ago`;
+  if (minutes < 60) return future ? tf('in {n}m', { n: minutes }) : tf('{n}m ago', { n: minutes });
   const hours = Math.round(minutes / 60);
-  if (hours < 48) return future ? `in ${hours}h` : `${hours}h ago`;
+  if (hours < 48) return future ? tf('in {n}h', { n: hours }) : tf('{n}h ago', { n: hours });
   const days = Math.round(hours / 24);
-  return future ? `in ${days}d` : `${days}d ago`;
+  return future ? tf('in {n}d', { n: days }) : tf('{n}d ago', { n: days });
 }
 
 export function formatRecentCount(n: number | undefined | null): string {
-  if (n === undefined || n === null || !Number.isFinite(n)) return '7d: —';
+  if (n === undefined || n === null || !Number.isFinite(n)) return t('7d: —');
   const rounded = Math.max(0, Math.round(n));
-  return `7d: ${rounded} run${rounded === 1 ? '' : 's'}`;
+  return rounded === 1 ? tf('7d: {n} run', { n: rounded }) : tf('7d: {n} runs', { n: rounded });
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -277,11 +278,11 @@ function joinManifests(rows: InstallRow[], catalog: SkillManifest[]): InstallRow
 function forbiddenNotice(): InstalledNotice {
   return {
     title: 'Permission required',
-    body: 'This wallet cannot manage these installed skills.',
+    body: t('This wallet cannot manage these installed skills.'),
   };
 }
 
-function signInNotice(message = 'Sign in to Agentic Cloud with your wallet to manage installed skills.'): InstalledNotice {
+function signInNotice(message = t('Sign in to Agentic Cloud with your wallet to manage installed skills.')): InstalledNotice {
   return {
     title: 'Sign in required',
     body: message,
@@ -291,15 +292,15 @@ function signInNotice(message = 'Sign in to Agentic Cloud with your wallet to ma
 function notDeployedNotice(): InstalledNotice {
   return {
     title: 'Skills API unavailable',
-    body: '/api/skills/installs returned 404. Check that this UI is pointed at a render-web server with Skills routes enabled.',
+    body: t('/api/skills/installs returned 404. Check that this UI is pointed at a render-web server with Skills routes enabled.'),
   };
 }
 
 function renderError(message: string): string {
   return `
     <div class="skills-installed-banner is-error" role="alert">
-      <div><strong>Something went wrong</strong>${escapeHtml(message)}</div>
-      <button type="button" class="dismiss" aria-label="Dismiss" data-skills-installed-action="dismiss-error">×</button>
+      <div><strong>${escapeHtml(t('Something went wrong'))}</strong>${escapeHtml(message)}</div>
+      <button type="button" class="dismiss" aria-label="${escapeHtml(t('Dismiss'))}" data-skills-installed-action="dismiss-error">×</button>
     </div>
   `;
 }
@@ -307,8 +308,8 @@ function renderError(message: string): string {
 function renderActionError(message: string): string {
   return `
     <div class="skills-installed-banner is-action-error" role="alert">
-      <div><strong>Action failed</strong>${escapeHtml(message)}</div>
-      <button type="button" class="dismiss" aria-label="Dismiss" data-skills-installed-action="dismiss-action-error">×</button>
+      <div><strong>${escapeHtml(t('Action failed'))}</strong>${escapeHtml(message)}</div>
+      <button type="button" class="dismiss" aria-label="${escapeHtml(t('Dismiss'))}" data-skills-installed-action="dismiss-action-error">×</button>
     </div>
   `;
 }
@@ -316,34 +317,34 @@ function renderActionError(message: string): string {
 function renderNotice(notice: InstalledNotice, modifier: 'is-forbidden' | 'is-not-deployed' | 'is-auth'): string {
   return `
     <div class="skills-installed-banner ${modifier}" role="status">
-      <div><strong>${escapeHtml(notice.title)}</strong>${escapeHtml(notice.body)}</div>
-      <button type="button" class="dismiss" aria-label="Dismiss" data-skills-installed-action="dismiss-notice">×</button>
+      <div><strong>${escapeHtml(t(notice.title))}</strong>${escapeHtml(notice.body)}</div>
+      <button type="button" class="dismiss" aria-label="${escapeHtml(t('Dismiss'))}" data-skills-installed-action="dismiss-notice">×</button>
     </div>
   `;
 }
 
 function rowTitle(row: InstallRow): string {
   if (row.manifest?.name) return row.manifest.name;
-  return `Skill ${shortAddress(row.install.skillId)}`;
+  return tf('Skill {id}', { id: shortAddress(row.install.skillId) });
 }
 
 function rowScheduleLine(row: InstallRow, nowMs: number): string {
-  if (row.nextRunAt) return `Next run ${humanizeRelative(row.nextRunAt, nowMs)}`;
+  if (row.nextRunAt) return tf('Next run {when}', { when: humanizeRelative(row.nextRunAt, nowMs) });
   return humanizeSchedule(row.manifest?.schedule);
 }
 
 function rowRunBoundaryLine(row: InstallRow): string {
   switch (row.install.status) {
     case 'active':
-      return 'When due, this creates a Needs Approval item.';
+      return t('When due, this creates a Needs Approval item.');
     case 'paused':
-      return 'Paused; no new approval items will be created.';
+      return t('Paused; no new approval items will be created.');
     case 'expired':
-      return 'Expired; install it again to create future approvals.';
+      return t('Expired; install it again to create future approvals.');
     case 'revoked':
-      return 'Uninstalled from this wallet.';
+      return t('Uninstalled from this wallet.');
     default:
-      return 'Every run still requires wallet approval.';
+      return t('Every run still requires wallet approval.');
   }
 }
 
@@ -379,14 +380,20 @@ function rowMonetizationLine(row: InstallRow): string {
   // `monetizationToken` on the recurring schedule metadata.
   const token = monetization?.token ?? 'USDC';
   if (split && monetization) {
-    const cadence = monetization.kind === 'monthly' ? '/mo' : monetization.kind === 'one-time' ? ' once' : '';
-    return `Pays $${split.totalAmount} ${token}${cadence} · author $${authorAmountFromSplit(split, monetization)} · Agentic $${split.platformAmount}`;
+    const cadence = monetization.kind === 'monthly' ? t('/mo') : monetization.kind === 'one-time' ? t(' once') : '';
+    return tf('Pays ${total} {token}{cadence} · author ${author} · Agentic ${platform}', {
+      total: split.totalAmount,
+      token,
+      cadence,
+      author: authorAmountFromSplit(split, monetization),
+      platform: split.platformAmount,
+    });
   }
   if (monetization?.kind === 'monthly' && monetization.amount) {
-    return `Pays $${monetization.amount} ${token}/mo · paid to author`;
+    return tf('Pays ${amount} {token}/mo · paid to author', { amount: monetization.amount, token });
   }
   if (monetization?.kind === 'one-time' && monetization.amount) {
-    return `Pays $${monetization.amount} ${token} once · paid to author`;
+    return tf('Pays ${amount} {token} once · paid to author', { amount: monetization.amount, token });
   }
   return '';
 }
@@ -416,7 +423,7 @@ function rowDeferredBanner(row: InstallRow): string {
   if ((metadata as Record<string, unknown>).performanceFeeDeferred !== true) return '';
   return `
     <p class="skills-installed-row-banner">
-      Performance-fee settlement is manual for now. Author payouts will be added in a follow-up.
+      ${t('Performance-fee settlement is manual for now. Author payouts will be added in a follow-up.')}
     </p>
   `;
 }
@@ -428,7 +435,7 @@ function rowOneTimePendingBanner(row: InstallRow): string {
   if (typeof approvalId !== 'string' || !approvalId) return '';
   return `
     <p class="skills-installed-row-banner">
-      Pending initial approval — review the one-time payment in your Needs Approval inbox.
+      ${t('Pending initial approval — review the one-time payment in your Needs Approval inbox.')}
     </p>
   `;
 }
@@ -446,7 +453,7 @@ export function renderRow(row: InstallRow, opts: RowRenderOptions): string {
   const isActive = install.status === 'active';
   const isPaused = install.status === 'paused';
   const canToggle = isActive || isPaused;
-  const toggleLabel = isPaused ? 'Resume' : 'Pause';
+  const toggleLabel = isPaused ? t('Resume') : t('Pause');
   const toggleAction = isPaused ? 'resume' : 'pause';
   const disabled = busy ? 'disabled' : '';
   const runNowButton = isActive
@@ -457,12 +464,12 @@ export function renderRow(row: InstallRow, opts: RowRenderOptions): string {
         data-skills-installed-action="run-now"
         data-install-id="${escapeHtml(install.id)}"
         ${disabled}
-      >Run now</button>
+      >${t('Run now')}</button>
     `
     : '';
   const isPendingUninstall =
     opts.pendingUninstallId === install.id && opts.pendingUninstallExpiresAt > opts.nowMs;
-  const uninstallLabel = isPendingUninstall ? 'Click again to confirm' : 'Uninstall';
+  const uninstallLabel = isPendingUninstall ? t('Click again to confirm') : t('Uninstall');
   const uninstallClass = isPendingUninstall
     ? 'skills-installed-button is-confirming'
     : 'skills-installed-button is-danger';
@@ -490,13 +497,13 @@ export function renderRow(row: InstallRow, opts: RowRenderOptions): string {
       <div class="skills-installed-row-meta">
         <span class="skills-installed-row-schedule">${escapeHtml(rowScheduleLine(row, opts.nowMs))}</span>
         <span class="skills-installed-row-boundary">${escapeHtml(rowRunBoundaryLine(row))}</span>
-        ${row.lastExecutionAt ? `<span class="skills-installed-row-last">Last run ${escapeHtml(humanizeRelative(row.lastExecutionAt, opts.nowMs))}</span>` : ''}
+        ${row.lastExecutionAt ? `<span class="skills-installed-row-last">${escapeHtml(tf('Last run {when}', { when: humanizeRelative(row.lastExecutionAt, opts.nowMs) }))}</span>` : ''}
         ${(() => { const line = rowMonetizationLine(row); return line ? `<span class="skills-installed-row-monetization">${escapeHtml(line)}</span>` : ''; })()}
       </div>
       ${rowDeferredBanner(row)}
       ${rowOneTimePendingBanner(row)}
       <div class="skills-installed-row-runs">
-        <span class="skills-installed-row-runs-label">Recent</span>
+        <span class="skills-installed-row-runs-label">${escapeHtml(t('Recent'))}</span>
         ${escapeHtml(formatRecentCount(row.recentExecutionCount))}
       </div>
       <div class="skills-installed-row-actions">
@@ -517,27 +524,27 @@ export function renderRow(row: InstallRow, opts: RowRenderOptions): string {
 function renderEmpty(): string {
   return `
     <p class="skills-installed-empty">
-      No skills installed yet.
-      <button type="button" class="skills-installed-empty-link" data-skills-installed-action="go-browse">Browse the catalog →</button>
+      ${t('No skills installed yet.')}
+      <button type="button" class="skills-installed-empty-link" data-skills-installed-action="go-browse">${t('Browse the catalog →')}</button>
     </p>
   `;
 }
 
 function renderLoading(): string {
-  return `<p class="skills-installed-loading">Loading installed skills…</p>`;
+  return `<p class="skills-installed-loading">${t('Loading installed skills…')}</p>`;
 }
 
 function renderHeader(): string {
-  const spinner = state.silentRefetching ? '<span class="skills-installed-spinner" aria-label="Refreshing"></span>' : '';
+  const spinner = state.silentRefetching ? `<span class="skills-installed-spinner" aria-label="${escapeHtml(t('Refreshing'))}"></span>` : '';
   return `
     <header class="skills-installed-header">
       <div>
-        <h2>Installed</h2>
-        <p>Active skills, next run, and controls. Every run still needs approval.</p>
+        <h2>${t('Installed')}</h2>
+        <p>${t('Active skills, next run, and controls. Every run still needs approval.')}</p>
       </div>
       <div class="skills-installed-header-actions">
         ${spinner}
-        <button type="button" class="skills-installed-button" data-skills-installed-action="refresh">Refresh</button>
+        <button type="button" class="skills-installed-button" data-skills-installed-action="refresh">${t('Refresh')}</button>
       </div>
     </header>
   `;
@@ -702,9 +709,9 @@ async function runMutation(
   if (result.kind === 'unauthenticated') {
     state.actionError = result.message;
   } else if (result.kind === 'forbidden') {
-    state.actionError = 'This wallet does not have permission to manage that skill.';
+    state.actionError = t('This wallet does not have permission to manage that skill.');
   } else if (result.kind === 'notDeployed') {
-    state.actionError = 'Skills API is unavailable in this environment; this action cannot run.';
+    state.actionError = t('Skills API is unavailable in this environment; this action cannot run.');
   } else {
     state.actionError = result.message;
   }
@@ -714,7 +721,7 @@ async function runMutation(
 async function verifyRecurringSchedulePaused(scheduleId: string): Promise<string> {
   const result = await getJson<unknown>('/api/recurring');
   if (result.kind !== 'ok') {
-    return 'Skill was uninstalled, but the linked creator payment schedule could not be verified.';
+    return t('Skill was uninstalled, but the linked creator payment schedule could not be verified.');
   }
   const schedules = isObject(result.value) && Array.isArray(result.value.schedules)
     ? result.value.schedules
@@ -723,10 +730,10 @@ async function verifyRecurringSchedulePaused(scheduleId: string): Promise<string
     isObject(entry) && entry.id === scheduleId,
   );
   if (!schedule) {
-    return 'Skill was uninstalled, but the linked creator payment schedule was not returned by /api/recurring.';
+    return t('Skill was uninstalled, but the linked creator payment schedule was not returned by /api/recurring.');
   }
   if (schedule.status !== 'paused') {
-    return `Skill was uninstalled, but the linked creator payment schedule is ${String(schedule.status)}.`;
+    return tf('Skill was uninstalled, but the linked creator payment schedule is {status}.', { status: String(schedule.status) });
   }
   return '';
 }

@@ -11,6 +11,7 @@ import {
 } from '@solana-agent-wallet-adapter/workflow';
 
 import { currentAddress, refreshConnection } from '../connectionState.js';
+import { t, tf } from '../demo-i18n/uiLang.js';
 import { isDevWallet } from '../devGate.js';
 import { registerDevTab } from '../devTabRegistry.js';
 
@@ -155,7 +156,7 @@ function filterButton(filter: SpendFilter): string {
       class="spend-filter-chip ${active ? 'active' : ''}"
       data-spend-filter="${escapeHtml(filter)}"
     >
-      <span>${escapeHtml(FILTER_LABELS[filter])}</span>
+      <span>${escapeHtml(t(FILTER_LABELS[filter]))}</span>
       <strong>${filterCount(filter)}</strong>
     </button>
   `;
@@ -169,13 +170,13 @@ function envelopeSummary(envelope: SpendEnvelope): string {
       const schedule = envelope.schedule;
       const token = schedule.outputToken ?? schedule.token;
       const cadence = titleCase(schedule.cadence);
-      const recipient = schedule.recipient ? ` to ${shortAddress(schedule.recipient)}` : '';
+      const recipient = schedule.recipient ? tf(' to {recipient}', { recipient: shortAddress(schedule.recipient) }) : '';
       const displayAmount = scheduleDisplayAmount(schedule);
       return `${displayAmount} ${token} ${cadence}${recipient}`;
     }
     case 'streaming': {
       const token = streamingTokenLabel(envelope);
-      return `${envelope.session.spentAmount} of ${envelope.session.capAmount} ${token} streamed`;
+      return tf('{spent} of {cap} {token} streamed', { spent: envelope.session.spentAmount, cap: envelope.session.capAmount, token });
     }
   }
 }
@@ -196,23 +197,23 @@ function envelopePrimaryAction(envelope: SpendEnvelope): string {
   const key = envelopeKey(envelope);
   const selected = state.selectedEnvelopeKey === key;
   const label = selected
-    ? 'Hide'
+    ? t('Hide')
     : envelope.kind === 'one-time'
-      ? 'Review'
+      ? t('Review')
       : envelope.kind === 'recurring'
-        ? 'Manage'
-        : 'Inspect';
+        ? t('Manage')
+        : t('Inspect');
   return `<button type="button" class="${envelope.kind === 'one-time' ? 'primary' : 'utility'}" data-spend-select="${escapeHtml(key)}">${label}</button>`;
 }
 
 function legacyEnvelopeAction(envelope: SpendEnvelope): string {
   switch (envelope.kind) {
     case 'one-time':
-      return `<button type="button" class="utility" data-spend-legacy-tab="inbox" data-spend-open="${escapeHtml(envelope.action.id)}">Open in Needs Approval</button>`;
+      return `<button type="button" class="utility" data-spend-legacy-tab="inbox" data-spend-open="${escapeHtml(envelope.action.id)}">${t('Open in Needs Approval')}</button>`;
     case 'recurring':
-      return `<button type="button" class="utility" data-spend-legacy-tab="schedule" data-recurring-view="active" data-spend-open="${escapeHtml(envelope.schedule.id)}">Open in Repeat Payments</button>`;
+      return `<button type="button" class="utility" data-spend-legacy-tab="schedule" data-recurring-view="active" data-spend-open="${escapeHtml(envelope.schedule.id)}">${t('Open in Repeat Payments')}</button>`;
     case 'streaming':
-      return `<button type="button" class="utility" data-spend-legacy-tab="sessions" data-spend-open="${escapeHtml(envelope.session.id)}">Open in Sessions</button>`;
+      return `<button type="button" class="utility" data-spend-legacy-tab="sessions" data-spend-open="${escapeHtml(envelope.session.id)}">${t('Open in Sessions')}</button>`;
   }
 }
 
@@ -231,13 +232,13 @@ function envelopeDetailHtml(envelope: SpendEnvelope): string {
   const nextEvent = envelopeNextEvent(envelope);
   const status = envelopeStatus(envelope);
   const rows = [
-    detailRow('Status', titleCase(status)),
-    detailRow('Remaining', remaining.label),
+    detailRow(t('Status'), titleCase(status)),
+    detailRow(t('Remaining'), remaining.label),
     detailRow(nextEvent.label, nextEvent.at ? formatTime(nextEvent.at) : undefined, nextEvent.at),
     ...kindDetailRows(envelope),
   ].join('');
   return `
-    <section class="spend-row-detail" aria-label="Spend envelope detail">
+    <section class="spend-row-detail" aria-label="${escapeHtml(t('Spend envelope detail'))}">
       <dl class="spend-detail-grid">${rows}</dl>
       <div class="spend-detail-actions">
         ${spendInlineActions(envelope)}
@@ -251,21 +252,21 @@ function kindDetailRows(envelope: SpendEnvelope): string[] {
   switch (envelope.kind) {
     case 'one-time':
       return [
-        detailRow('Request ID', shortAddress(envelope.action.id), envelope.action.id),
-        detailRow('Kind', titleCase(envelope.action.kind)),
-        detailRow('Recipient', envelope.action.recipient ? shortAddress(envelope.action.recipient) : undefined, envelope.action.recipient),
+        detailRow(t('Request ID'), shortAddress(envelope.action.id), envelope.action.id),
+        detailRow(t('Kind'), titleCase(envelope.action.kind)),
+        detailRow(t('Recipient'), envelope.action.recipient ? shortAddress(envelope.action.recipient) : undefined, envelope.action.recipient),
       ];
     case 'recurring':
       return [
-        detailRow('Schedule ID', shortAddress(envelope.schedule.id), envelope.schedule.id),
-        detailRow('Cadence', titleCase(envelope.schedule.cadence)),
-        detailRow('Recipient', envelope.schedule.recipient ? shortAddress(envelope.schedule.recipient) : undefined, envelope.schedule.recipient),
+        detailRow(t('Schedule ID'), shortAddress(envelope.schedule.id), envelope.schedule.id),
+        detailRow(t('Cadence'), titleCase(envelope.schedule.cadence)),
+        detailRow(t('Recipient'), envelope.schedule.recipient ? shortAddress(envelope.schedule.recipient) : undefined, envelope.schedule.recipient),
       ];
     case 'streaming':
       return [
-        detailRow('Session ID', shortAddress(envelope.session.id), envelope.session.id),
-        detailRow('Mint', tokenLabelFromMint(envelope.session.tokenMint), envelope.session.tokenMint),
-        detailRow('Delegate', shortAddress(envelope.session.delegatePubkey), envelope.session.delegatePubkey),
+        detailRow(t('Session ID'), shortAddress(envelope.session.id), envelope.session.id),
+        detailRow(t('Mint'), tokenLabelFromMint(envelope.session.tokenMint), envelope.session.tokenMint),
+        detailRow(t('Delegate'), shortAddress(envelope.session.delegatePubkey), envelope.session.delegatePubkey),
       ];
   }
 }
@@ -277,31 +278,31 @@ function spendInlineActions(envelope: SpendEnvelope): string {
     case 'recurring':
       return recurringInlineActions(envelope.schedule);
     case 'streaming':
-      return '<span class="spend-detail-note">Streaming revoke and voucher inspection stay in Sessions for this release.</span>';
+      return `<span class="spend-detail-note">${t('Streaming revoke and voucher inspection stay in Sessions for this release.')}</span>`;
   }
 }
 
 function approvalInlineActions(action: Extract<SpendEnvelope, { kind: 'one-time' }>['action']): string {
   if (action.status === 'approval_pending') {
-    return `<button type="button" class="primary" data-spend-approval-op="confirm" data-spend-action-id="${escapeHtml(action.id)}">Check confirmation</button>`;
+    return `<button type="button" class="primary" data-spend-approval-op="confirm" data-spend-action-id="${escapeHtml(action.id)}">${t('Check confirmation')}</button>`;
   }
   if (envelopeStatus({ kind: 'one-time', action }) !== 'needs_approval') {
-    return '<span class="spend-detail-note">No approval action is pending.</span>';
+    return `<span class="spend-detail-note">${t('No approval action is pending.')}</span>`;
   }
   return `
-    <button type="button" class="primary" data-spend-approval-op="execute" data-spend-action-id="${escapeHtml(action.id)}">Approve</button>
-    <button type="button" class="utility danger" data-spend-approval-op="reject" data-spend-action-id="${escapeHtml(action.id)}">Deny</button>
+    <button type="button" class="primary" data-spend-approval-op="execute" data-spend-action-id="${escapeHtml(action.id)}">${t('Approve')}</button>
+    <button type="button" class="utility danger" data-spend-approval-op="reject" data-spend-action-id="${escapeHtml(action.id)}">${t('Deny')}</button>
   `;
 }
 
 function recurringInlineActions(schedule: Extract<SpendEnvelope, { kind: 'recurring' }>['schedule']): string {
   if (schedule.status === 'active') {
-    return `<button type="button" class="utility" data-spend-recurring-op="pause" data-spend-schedule-id="${escapeHtml(schedule.id)}">Pause</button>`;
+    return `<button type="button" class="utility" data-spend-recurring-op="pause" data-spend-schedule-id="${escapeHtml(schedule.id)}">${t('Pause')}</button>`;
   }
   if (schedule.status === 'paused') {
-    return `<button type="button" class="primary" data-spend-recurring-op="resume" data-spend-schedule-id="${escapeHtml(schedule.id)}">Resume</button>`;
+    return `<button type="button" class="primary" data-spend-recurring-op="resume" data-spend-schedule-id="${escapeHtml(schedule.id)}">${t('Resume')}</button>`;
   }
-  return '<span class="spend-detail-note">This schedule is settled.</span>';
+  return `<span class="spend-detail-note">${t('This schedule is settled.')}</span>`;
 }
 
 export function spendRowHtml(envelope: SpendEnvelope): string {
@@ -335,13 +336,13 @@ export function spendRowHtml(envelope: SpendEnvelope): string {
 
 export function spendBodyHtml(snapshot: SpendState = state): string {
   if (snapshot.status === 'idle' || snapshot.status === 'loading') {
-    return '<p class="dev-tab-loading-state spend-list-state">Loading spend envelopes...</p>';
+    return `<p class="dev-tab-loading-state spend-list-state">${t('Loading spend envelopes...')}</p>`;
   }
   if (snapshot.status === 'error') {
     return `
       <div class="spend-error">
-        <p>${escapeHtml(snapshot.errorMessage || 'Could not load spend envelopes.')}</p>
-        <button type="button" class="utility" data-spend-refresh>Retry</button>
+        <p>${escapeHtml(snapshot.errorMessage || t('Could not load spend envelopes.'))}</p>
+        <button type="button" class="utility" data-spend-refresh>${t('Retry')}</button>
       </div>
     `;
   }
@@ -349,7 +350,7 @@ export function spendBodyHtml(snapshot: SpendState = state): string {
   if (rows.length === 0) {
     return `
       <div class="dev-tab-empty-state spend-list-state">
-        <p>No ${escapeHtml(FILTER_LABELS[snapshot.filter].toLowerCase())} spend envelopes.</p>
+        <p>${escapeHtml(tf('No {filter} spend envelopes.', { filter: t(FILTER_LABELS[snapshot.filter]).toLowerCase() }))}</p>
       </div>
     `;
   }
@@ -358,7 +359,7 @@ export function spendBodyHtml(snapshot: SpendState = state): string {
     ${snapshot.nextCursor ? `
       <div class="spend-load-more-row">
         <button type="button" class="utility" data-spend-load-more ${snapshot.loadingMore ? 'disabled' : ''}>
-          ${snapshot.loadingMore ? 'Loading...' : 'Load more'}
+          ${snapshot.loadingMore ? t('Loading...') : t('Load more')}
         </button>
       </div>
     ` : ''}
@@ -383,25 +384,25 @@ export function renderSpendPanel(): string {
     <section class="spend-shell dev-tab-shell" data-spend-root>
       <header class="spend-header dev-tab-header">
         <div class="dev-tab-header-main">
-          <p class="dev-tab-kicker">Spend envelopes</p>
+          <p class="dev-tab-kicker">${t('Spend envelopes')}</p>
           <div class="dev-tab-title-row">
-            <h2>Spend</h2>
-            <span class="spend-live-pill">${state.status === 'loading' ? 'Syncing' : 'Live'}</span>
+            <h2>${t('Spend')}</h2>
+            <span class="spend-live-pill">${state.status === 'loading' ? t('Syncing') : t('Live')}</span>
           </div>
         </div>
         <div class="dev-tab-header-actions">
-          <button type="button" class="utility" data-spend-refresh ${state.status === 'loading' ? 'disabled' : ''}>Refresh</button>
+          <button type="button" class="utility" data-spend-refresh ${state.status === 'loading' ? 'disabled' : ''}>${t('Refresh')}</button>
         </div>
       </header>
-      <div class="spend-overview" aria-label="Spend summary">
-        <div class="dev-tab-stat"><span>Active</span><strong>${activeCount}</strong></div>
-        <div class="dev-tab-stat"><span>Needs Approval</span><strong>${needsApprovalCount}</strong></div>
-        <div class="dev-tab-stat"><span>Live Streams</span><strong>${liveStreamCount}</strong></div>
+      <div class="spend-overview" aria-label="${escapeHtml(t('Spend summary'))}">
+        <div class="dev-tab-stat"><span>${t('Active')}</span><strong>${activeCount}</strong></div>
+        <div class="dev-tab-stat"><span>${t('Needs Approval')}</span><strong>${needsApprovalCount}</strong></div>
+        <div class="dev-tab-stat"><span>${t('Live Streams')}</span><strong>${liveStreamCount}</strong></div>
       </div>
-      <div class="spend-filter-row" role="tablist" aria-label="Spend envelope filters">
+      <div class="spend-filter-row" role="tablist" aria-label="${escapeHtml(t('Spend envelope filters'))}">
         ${FILTERS.map(filterButton).join('')}
       </div>
-      <section class="spend-list-panel dev-tab-panel" aria-label="Spend envelopes" aria-busy="${state.status === 'loading'}">
+      <section class="spend-list-panel dev-tab-panel" aria-label="${escapeHtml(t('Spend envelopes'))}" aria-busy="${state.status === 'loading'}">
         ${spendBodyHtml()}
       </section>
     </section>
@@ -465,7 +466,7 @@ export async function loadSpendEnvelopes(force = false, append = false): Promise
     state.nextCursor = payload.pagination?.nextCursor ?? payload.nextCursor ?? null;
     state.status = 'loaded';
   } catch (err) {
-    state.errorMessage = err instanceof Error ? err.message : 'Network error';
+    state.errorMessage = err instanceof Error ? err.message : t('Network error');
     state.status = append && state.envelopes.length ? 'loaded' : 'error';
   } finally {
     state.loadingMore = false;

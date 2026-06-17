@@ -6,6 +6,8 @@
 // them into the prepare-transaction path at request time. This module is the
 // user-facing UX for managing those keys.
 
+import { uiLanguage } from './demo-i18n/uiLang.js';
+
 export const BYO_KEY_CONNECTOR_IDS = ['magiceden', 'tensor', 'sanctum', 'lulo', 'phoenix'] as const;
 export type ByoKeyConnectorId = (typeof BYO_KEY_CONNECTOR_IDS)[number];
 
@@ -502,7 +504,7 @@ function isLocalHttpHost(hostname: string): boolean {
 
 function formatDate(iso: string): string {
   try {
-    return new Date(iso).toLocaleString(undefined, {
+    return new Date(iso).toLocaleString(uiLanguage(), {
       year: 'numeric',
       month: 'short',
       day: 'numeric',

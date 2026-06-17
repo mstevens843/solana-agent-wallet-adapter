@@ -32,6 +32,7 @@ import {
 } from '../sessionState.js';
 import { addStreamingApprovalCompletedListener } from '../streamingApprovalEvents.js';
 import { getConnectedCluster } from '../walletState.js';
+import { t, tf, uiLanguage } from '../demo-i18n/uiLang.js';
 import { renderUseCaseDisclosure } from './useCases.js';
 
 const FILTERS: readonly SessionsStatusFilter[] = ['active', 'expired', 'settled', 'revoked'];
@@ -70,7 +71,7 @@ function formatDateTime(value: string | undefined | null): string {
   if (!value) return '';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString([], {
+  return date.toLocaleString(uiLanguage(), {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
@@ -79,20 +80,20 @@ function formatDateTime(value: string | undefined | null): string {
 }
 
 function expiryCountdown(value: string | undefined | null, now = Date.now()): string {
-  if (!value) return 'No expiry';
+  if (!value) return t('No expiry');
   const expiresAt = Date.parse(value);
   if (!Number.isFinite(expiresAt)) return value;
   const remainingMs = expiresAt - now;
-  if (remainingMs <= 0) return 'Expired';
+  if (remainingMs <= 0) return t('Expired');
   const totalSeconds = Math.ceil(remainingMs / 1000);
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   if (minutes >= 60) {
     const hours = Math.floor(minutes / 60);
     const rest = minutes % 60;
-    return `${hours}h ${rest}m`;
+    return tf('{hours}h {rest}m', { hours, rest });
   }
-  return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+  return tf('{minutes}m {seconds}s', { minutes, seconds: String(seconds).padStart(2, '0') });
 }
 
 function progressPercent(session: StreamingSessionRecord): number {
@@ -110,7 +111,20 @@ function sessionStatusClass(status: StreamingSessionRecord['status']): string {
 }
 
 function sessionStatusLabel(status: StreamingSessionRecord['status']): string {
-  return status === 'pending' ? 'pending grant' : status;
+  switch (status) {
+    case 'pending':
+      return t('pending grant');
+    case 'active':
+      return t('active');
+    case 'expired':
+      return t('expired');
+    case 'revoked':
+      return t('revoked');
+    case 'settled':
+      return t('settled');
+    default:
+      return t(status);
+  }
 }
 
 function sessionStatusBadgeClass(session: StreamingSessionRecord): string {
@@ -125,9 +139,9 @@ function sessionStatusBadgeClass(session: StreamingSessionRecord): string {
 function sessionStatusBadgeLabel(session: StreamingSessionRecord): string {
   const grantTx = sessionTxState(session, 'grant');
   const revokeTx = sessionTxState(session, 'revoke');
-  if (revokeTx?.status === 'submitted') return 'revoke confirming';
-  if (session.status === 'pending' && grantTx?.status === 'submitted') return 'grant confirming';
-  if (session.status === 'pending') return 'grant signature needed';
+  if (revokeTx?.status === 'submitted') return t('revoke confirming');
+  if (session.status === 'pending' && grantTx?.status === 'submitted') return t('grant confirming');
+  if (session.status === 'pending') return t('grant signature needed');
   return sessionStatusLabel(session.status);
 }
 
@@ -146,7 +160,7 @@ function filteredCount(filter: SessionsStatusFilter): number {
 function filterButton(filter: SessionsStatusFilter): string {
   const snapshot = getSessionsState();
   const active = snapshot.filter === filter;
-  const label = filter.charAt(0).toUpperCase() + filter.slice(1);
+  const label = t(filter.charAt(0).toUpperCase() + filter.slice(1));
   return `
     <button
       type="button"
@@ -177,7 +191,7 @@ export function sessionRowHtml(session: StreamingSessionRecord, selectedId: stri
           </span>
           <span class="sessions-row-meta">
             <span>${escapeHtml(formatAmount(session.spentAmount))} / ${escapeHtml(formatAmount(session.capAmount))} ${escapeHtml(tokenLabel(session))}</span>
-            <span>Expires ${escapeHtml(expiryCountdown(session.expiresAt))}</span>
+            <span>${tf('Expires {countdown}', { countdown: escapeHtml(expiryCountdown(session.expiresAt)) })}</span>
           </span>
           <span class="sessions-mini-progress" aria-hidden="true">
             <span style="width: ${percent.toFixed(2)}%"></span>
@@ -192,20 +206,20 @@ function sessionsListHtml(): string {
   const snapshot = getSessionsState();
   const rows = filteredSessions(snapshot);
   if (snapshot.status === 'idle' || snapshot.status === 'loading') {
-    return '<p class="dev-tab-loading-state sessions-list-state">Loading streaming sessions...</p>';
+    return `<p class="dev-tab-loading-state sessions-list-state">${t('Loading streaming sessions...')}</p>`;
   }
   if (snapshot.status === 'error' && rows.length === 0) {
     return `
       <div class="sessions-error">
-        <p>${escapeHtml(snapshot.errorMessage || 'Could not load streaming sessions.')}</p>
-        <button type="button" class="utility" data-sessions-refresh>Retry</button>
+        <p>${escapeHtml(snapshot.errorMessage || t('Could not load streaming sessions.'))}</p>
+        <button type="button" class="utility" data-sessions-refresh>${t('Retry')}</button>
       </div>
     `;
   }
   if (rows.length === 0) {
     return `
       <div class="dev-tab-empty-state sessions-list-state">
-        <p>No ${escapeHtml(snapshot.filter)} streaming sessions.</p>
+        <p>${tf('No {filter} streaming sessions.', { filter: escapeHtml(snapshot.filter) })}</p>
       </div>
     `;
   }
@@ -215,11 +229,11 @@ function sessionsListHtml(): string {
 function progressHtml(session: StreamingSessionRecord): string {
   const percent = progressPercent(session);
   return `
-    <div class="sessions-progress" aria-label="Session spend">
+    <div class="sessions-progress" aria-label="${escapeHtml(t('Session spend'))}">
       <div class="sessions-progress-label">
-        <span>${escapeHtml(formatAmount(session.spentAmount))} spent</span>
+        <span>${tf('{amount} spent', { amount: escapeHtml(formatAmount(session.spentAmount)) })}</span>
         <strong>${escapeHtml(percent.toFixed(0))}%</strong>
-        <span>${escapeHtml(formatAmount(session.capAmount))} cap</span>
+        <span>${tf('{amount} cap', { amount: escapeHtml(formatAmount(session.capAmount)) })}</span>
       </div>
       <div class="sessions-progress-track">
         <span style="width: ${percent.toFixed(2)}%"></span>
@@ -231,7 +245,7 @@ function progressHtml(session: StreamingSessionRecord): string {
 function allowlistHtml(session: StreamingSessionRecord): string {
   const allowlist = session.recipientAllowlist ?? [];
   if (allowlist.length === 0) {
-    return '<span class="sessions-allowlist-empty">Any recipient</span>';
+    return `<span class="sessions-allowlist-empty">${t('Any recipient')}</span>`;
   }
   return allowlist.map((recipient) =>
     `<span class="sessions-chip" title="${escapeHtml(recipient)}">${escapeHtml(shortAddress(recipient))}</span>`,
@@ -239,7 +253,7 @@ function allowlistHtml(session: StreamingSessionRecord): string {
 }
 
 function voucherRowHtml(voucher: StreamingVoucherRecord): string {
-  const status = voucher.settledAt ? 'settled' : 'issued';
+  const status = voucher.settledAt ? t('settled') : t('issued');
   return `
     <li class="sessions-voucher-row">
       <span>
@@ -256,7 +270,7 @@ function voucherRowHtml(voucher: StreamingVoucherRecord): string {
 function vouchersHtml(vouchers: readonly StreamingVoucherRecord[]): string {
   const snapshot = getSessionsState();
   if (vouchers.length === 0) {
-    return '<p class="sessions-vouchers-empty">No vouchers issued yet.</p>';
+    return `<p class="sessions-vouchers-empty">${t('No vouchers issued yet.')}</p>`;
   }
   const maxPage = Math.max(0, Math.ceil(vouchers.length / VOUCHERS_PER_PAGE) - 1);
   const page = Math.min(snapshot.voucherPage, maxPage);
@@ -265,19 +279,19 @@ function vouchersHtml(vouchers: readonly StreamingVoucherRecord[]): string {
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
     .slice(start, start + VOUCHERS_PER_PAGE);
   return `
-    <div class="sessions-vouchers-table" role="table" aria-label="Issued vouchers">
+    <div class="sessions-vouchers-table" role="table" aria-label="${escapeHtml(t('Issued vouchers'))}">
       <div class="sessions-voucher-head" role="row">
-        <span>Amount</span>
-        <span>Recipient</span>
-        <span>Voucher hash</span>
-        <span>Issued</span>
+        <span>${t('Amount')}</span>
+        <span>${t('Recipient')}</span>
+        <span>${t('Voucher hash')}</span>
+        <span>${t('Issued')}</span>
       </div>
       <ol>${visible.map(voucherRowHtml).join('')}</ol>
     </div>
     <div class="sessions-voucher-pagination">
-      <button type="button" class="utility" data-sessions-voucher-page="${page - 1}" ${page <= 0 ? 'disabled' : ''}>Previous</button>
-      <span>Page ${page + 1} of ${maxPage + 1}</span>
-      <button type="button" class="utility" data-sessions-voucher-page="${page + 1}" ${page >= maxPage ? 'disabled' : ''}>Next</button>
+      <button type="button" class="utility" data-sessions-voucher-page="${page - 1}" ${page <= 0 ? 'disabled' : ''}>${t('Previous')}</button>
+      <span>${tf('Page {page} of {total}', { page: page + 1, total: maxPage + 1 })}</span>
+      <button type="button" class="utility" data-sessions-voucher-page="${page + 1}" ${page >= maxPage ? 'disabled' : ''}>${t('Next')}</button>
     </div>
   `;
 }
@@ -289,11 +303,11 @@ function receiptHtml(session: StreamingSessionRecord): string {
     ? `/api/streaming/sessions/${encodeURIComponent(session.id)}/receipt`
     : '');
   if (!receiptUrl) {
-    return '<p class="sessions-receipt-empty">Settlement receipt appears here after settlement.</p>';
+    return `<p class="sessions-receipt-empty">${t('Settlement receipt appears here after settlement.')}</p>`;
   }
   return `
     <a class="sessions-receipt-link" href="${escapeHtml(receiptUrl)}" target="_blank" rel="noreferrer">
-      ${escapeHtml(settlement?.receiptId ? `Receipt ${shortAddress(settlement.receiptId)}` : 'Open settlement receipt')}
+      ${escapeHtml(settlement?.receiptId ? tf('Receipt {id}', { id: shortAddress(settlement.receiptId) }) : t('Open settlement receipt'))}
     </a>
   `;
 }
@@ -307,9 +321,9 @@ function sessionTransactionStateHtml(session: StreamingSessionRecord): string {
   const revokeTx = sessionTxState(session, 'revoke');
   const grantTx = sessionTxState(session, 'grant');
   const pending = revokeTx?.status === 'submitted'
-    ? { operation: 'revoke', tx: revokeTx, message: 'Revocation submitted. The delegate is disabled after this transaction confirms.' }
+    ? { operation: 'revoke', tx: revokeTx, message: t('Revocation submitted. The delegate is disabled after this transaction confirms.') }
     : grantTx?.status === 'submitted'
-      ? { operation: 'grant', tx: grantTx, message: 'Grant submitted. This is a spending allowance, not a token transfer; USDC moves only when vouchers settle.' }
+      ? { operation: 'grant', tx: grantTx, message: t('Grant submitted. This is a spending allowance, not a token transfer; USDC moves only when vouchers settle.') }
       : null;
   if (pending) {
     return `
@@ -324,7 +338,7 @@ function sessionTransactionStateHtml(session: StreamingSessionRecord): string {
   if (session.status === 'pending') {
     return `
       <div class="sessions-transaction-state sessions-transaction-state--warning">
-        <span>Grant signature is not complete, so this session is not active yet.</span>
+        <span>${t('Grant signature is not complete, so this session is not active yet.')}</span>
       </div>
     `;
   }
@@ -339,7 +353,7 @@ export function detailHtml(): string {
   if (!session) {
     return `
       <section class="sessions-detail dev-tab-panel">
-        <div class="dev-tab-empty-state">Select a session to inspect spend, vouchers, and settlement.</div>
+        <div class="dev-tab-empty-state">${t('Select a session to inspect spend, vouchers, and settlement.')}</div>
       </section>
     `;
   }
@@ -354,10 +368,10 @@ export function detailHtml(): string {
     session.status === 'settled' ||
     revokeTx?.status === 'submitted';
   return `
-    <section class="sessions-detail dev-tab-panel" aria-label="Streaming session detail">
+    <section class="sessions-detail dev-tab-panel" aria-label="${escapeHtml(t('Streaming session detail'))}">
       <div class="sessions-detail-head">
         <div>
-          <p class="dev-tab-kicker">Session detail</p>
+          <p class="dev-tab-kicker">${t('Session detail')}</p>
           <h3>${escapeHtml(shortAddress(session.id))}</h3>
         </div>
         <span class="sessions-pill ${sessionStatusBadgeClass(session)}">${escapeHtml(sessionStatusBadgeLabel(session))}</span>
@@ -367,15 +381,15 @@ export function detailHtml(): string {
 
       <div class="sessions-detail-grid">
         <div class="sessions-metric">
-          <span>Live spend</span>
+          <span>${t('Live spend')}</span>
           <strong>${escapeHtml(formatAmount(session.spentAmount))} ${escapeHtml(tokenLabel(session))}</strong>
         </div>
         <div class="sessions-metric">
-          <span>Cap</span>
+          <span>${t('Cap')}</span>
           <strong>${escapeHtml(formatAmount(session.capAmount))} ${escapeHtml(tokenLabel(session))}</strong>
         </div>
         <div class="sessions-metric">
-          <span>Expires</span>
+          <span>${t('Expires')}</span>
           <strong data-sessions-countdown>${escapeHtml(expiryCountdown(session.expiresAt))}</strong>
         </div>
       </div>
@@ -383,22 +397,22 @@ export function detailHtml(): string {
       ${progressHtml(session)}
 
       <dl class="sessions-facts">
-        <div><dt>Delegate</dt><dd title="${escapeHtml(session.delegatePubkey)}">${escapeHtml(shortAddress(session.delegatePubkey))}</dd></div>
-        <div><dt>Signer</dt><dd title="${escapeHtml(session.ephemeralSignerPubkey)}">${escapeHtml(shortAddress(session.ephemeralSignerPubkey))}</dd></div>
-        <div><dt>Mint</dt><dd title="${escapeHtml(session.tokenMint)}">${escapeHtml(tokenLabel(session))}</dd></div>
-        <div><dt>Cluster</dt><dd>${escapeHtml(session.cluster)}</dd></div>
+        <div><dt>${t('Delegate')}</dt><dd title="${escapeHtml(session.delegatePubkey)}">${escapeHtml(shortAddress(session.delegatePubkey))}</dd></div>
+        <div><dt>${t('Signer')}</dt><dd title="${escapeHtml(session.ephemeralSignerPubkey)}">${escapeHtml(shortAddress(session.ephemeralSignerPubkey))}</dd></div>
+        <div><dt>${t('Mint')}</dt><dd title="${escapeHtml(session.tokenMint)}">${escapeHtml(tokenLabel(session))}</dd></div>
+        <div><dt>${t('Cluster')}</dt><dd>${escapeHtml(session.cluster)}</dd></div>
       </dl>
 
       <section class="sessions-subsection">
         <div class="sessions-subsection-head">
-          <h4>Recipient allowlist</h4>
+          <h4>${t('Recipient allowlist')}</h4>
         </div>
         <div class="sessions-chip-row">${allowlistHtml(session)}</div>
       </section>
 
       <section class="sessions-subsection">
         <div class="sessions-subsection-head">
-          <h4>Vouchers</h4>
+          <h4>${t('Vouchers')}</h4>
           <span>${vouchers.length}</span>
         </div>
         ${vouchersHtml(vouchers)}
@@ -406,7 +420,7 @@ export function detailHtml(): string {
 
       <section class="sessions-subsection">
         <div class="sessions-subsection-head">
-          <h4>Settlement</h4>
+          <h4>${t('Settlement')}</h4>
         </div>
         ${receiptHtml(session)}
       </section>
@@ -414,11 +428,11 @@ export function detailHtml(): string {
       <div class="sessions-detail-actions">
         ${hasPendingTransaction ? `
           <button type="button" class="utility" data-sessions-confirm-tx>
-            Check confirmation
+            ${t('Check confirmation')}
           </button>
         ` : ''}
         <button type="button" class="utility danger" data-sessions-revoke="${escapeHtml(session.id)}" ${revokeDisabled ? 'disabled' : ''}>
-          ${snapshot.busy === 'revoke' ? 'Preparing revoke...' : 'Revoke'}
+          ${snapshot.busy === 'revoke' ? t('Preparing revoke...') : t('Revoke')}
         </button>
       </div>
     </section>
@@ -440,40 +454,40 @@ function createModalHtml(): string {
       <form class="sessions-modal" onsubmit="return false;">
         <div class="sessions-modal-head">
           <div>
-            <p class="dev-tab-kicker">New streaming grant</p>
-            <h3>Create Session</h3>
+            <p class="dev-tab-kicker">${t('New streaming grant')}</p>
+            <h3>${t('Create Session')}</h3>
           </div>
-          <button type="button" class="utility" data-sessions-close-create aria-label="Close">Close</button>
+          <button type="button" class="utility" data-sessions-close-create aria-label="${escapeHtml(t('Close'))}">${t('Close')}</button>
         </div>
         ${formError ? `<p class="sessions-form-error">${escapeHtml(formError)}</p>` : ''}
         <label>
-          <span>Token mint</span>
+          <span>${t('Token mint')}</span>
           <input type="text" value="${escapeHtml(draft.tokenMint)}" data-sessions-create-field="tokenMint" autocomplete="off" />
           ${createFieldError('tokenMint') ? `<em>${escapeHtml(createFieldError('tokenMint'))}</em>` : ''}
         </label>
         <label>
-          <span>Cap amount</span>
+          <span>${t('Cap amount')}</span>
           <input type="text" inputmode="decimal" value="${escapeHtml(draft.capAmount)}" data-sessions-create-field="capAmount" placeholder="25" />
           ${createFieldError('capAmount') ? `<em>${escapeHtml(createFieldError('capAmount'))}</em>` : ''}
         </label>
         <label>
-          <span>Expiry duration</span>
+          <span>${t('Expiry duration')}</span>
           <input type="number" min="1" max="60" step="1" value="${escapeHtml(draft.durationMinutes)}" data-sessions-create-field="durationMinutes" />
           ${createFieldError('durationMinutes') ? `<em>${escapeHtml(createFieldError('durationMinutes'))}</em>` : ''}
         </label>
         <div class="sessions-modal-context">
-          <span>Cluster</span>
+          <span>${t('Cluster')}</span>
           <strong>${escapeHtml(cluster)}</strong>
         </div>
         <label>
-          <span>Recipient allowlist</span>
-          <textarea data-sessions-create-field="recipientAllowlist" rows="3" placeholder="Optional, comma or line separated">${escapeHtml(draft.recipientAllowlist)}</textarea>
+          <span>${t('Recipient allowlist')}</span>
+          <textarea data-sessions-create-field="recipientAllowlist" rows="3" placeholder="${escapeHtml(t('Optional, comma or line separated'))}">${escapeHtml(draft.recipientAllowlist)}</textarea>
           ${createFieldError('recipientAllowlist') ? `<em>${escapeHtml(createFieldError('recipientAllowlist'))}</em>` : ''}
         </label>
         <div class="sessions-modal-actions">
-          <button type="button" class="utility" data-sessions-close-create>Cancel</button>
+          <button type="button" class="utility" data-sessions-close-create>${t('Cancel')}</button>
           <button type="button" class="primary" data-sessions-create-submit ${snapshot.busy === 'create' ? 'disabled' : ''}>
-            ${snapshot.busy === 'create' ? 'Creating...' : 'Create Session'}
+            ${snapshot.busy === 'create' ? t('Creating...') : t('Create Session')}
           </button>
         </div>
       </form>
@@ -500,52 +514,52 @@ export function renderSessionsPanel(): string {
     <section class="sessions-shell dev-tab-shell" data-sessions-root>
       <header class="sessions-header dev-tab-header">
         <div class="dev-tab-header-main">
-          <p class="dev-tab-kicker">Bounded agent spending</p>
+          <p class="dev-tab-kicker">${t('Bounded agent spending')}</p>
           <div class="dev-tab-title-row">
-            <h2>Spending Sessions</h2>
-            <span class="sessions-live-pill">${snapshot.status === 'loading' ? 'Syncing' : 'Live'}</span>
+            <h2>${t('Spending Sessions')}</h2>
+            <span class="sessions-live-pill">${snapshot.status === 'loading' ? t('Syncing') : t('Live')}</span>
           </div>
-          <p>Grant a revocable SPL-token delegate with a hard cap, expiry, and optional recipient allowlist. Native SOL streaming is not supported in v1.</p>
+          <p>${t('Grant a revocable SPL-token delegate with a hard cap, expiry, and optional recipient allowlist. Native SOL streaming is not supported in v1.')}</p>
         </div>
         <div class="dev-tab-header-actions">
-          <button type="button" class="primary" data-sessions-open-create>Create Session</button>
-          <button type="button" class="utility" data-sessions-refresh ${snapshot.status === 'loading' ? 'disabled' : ''}>Refresh</button>
+          <button type="button" class="primary" data-sessions-open-create>${t('Create Session')}</button>
+          <button type="button" class="utility" data-sessions-refresh ${snapshot.status === 'loading' ? 'disabled' : ''}>${t('Refresh')}</button>
         </div>
       </header>
 
       ${renderUseCaseDisclosure({
         id: 'streaming-payment-sessions',
-        summary: 'When an agent needs small repeated spend inside a limit you can revoke.',
+        summary: t('When an agent needs small repeated spend inside a limit you can revoke.'),
         useCases: [
           {
-            title: 'Pay as work happens',
-            body: 'A support, research, or compute agent can spend small voucher amounts over time without asking you to approve every tiny step.',
+            title: t('Pay as work happens'),
+            body: t('A support, research, or compute agent can spend small voucher amounts over time without asking you to approve every tiny step.'),
           },
           {
-            title: 'Set a hard cap up front',
-            body: 'You grant a bounded USDC delegate session with a maximum spend, expiry, and optional recipient allowlist.',
+            title: t('Set a hard cap up front'),
+            body: t('You grant a bounded USDC delegate session with a maximum spend, expiry, and optional recipient allowlist.'),
           },
           {
-            title: 'Stop the session any time',
-            body: 'If the task is done or something looks wrong, revoke the delegate from your wallet and future vouchers cannot settle.',
+            title: t('Stop the session any time'),
+            body: t('If the task is done or something looks wrong, revoke the delegate from your wallet and future vouchers cannot settle.'),
           },
         ],
       })}
 
       ${snapshot.notice ? `<p class="sessions-notice sessions-notice--${escapeHtml(snapshot.notice.tone)}">${escapeHtml(snapshot.notice.message)}</p>` : ''}
 
-      <div class="sessions-overview" aria-label="Streaming sessions summary">
-        <div class="dev-tab-stat"><span>Active</span><strong>${activeCount}</strong></div>
-        <div class="dev-tab-stat"><span>Live spend</span><strong>${escapeHtml(formatAmount(String(spent)))}</strong></div>
-        <div class="dev-tab-stat"><span>v1 token</span><strong>SPL / USDC</strong></div>
+      <div class="sessions-overview" aria-label="${escapeHtml(t('Streaming sessions summary'))}">
+        <div class="dev-tab-stat"><span>${t('Active')}</span><strong>${activeCount}</strong></div>
+        <div class="dev-tab-stat"><span>${t('Live spend')}</span><strong>${escapeHtml(formatAmount(String(spent)))}</strong></div>
+        <div class="dev-tab-stat"><span>${t('v1 token')}</span><strong>SPL / USDC</strong></div>
       </div>
 
-      <div class="sessions-filter-row" role="tablist" aria-label="Session status filter">
+      <div class="sessions-filter-row" role="tablist" aria-label="${escapeHtml(t('Session status filter'))}">
         ${FILTERS.map(filterButton).join('')}
       </div>
 
       <div class="sessions-layout">
-        <section class="sessions-list-pane dev-tab-panel" aria-label="Streaming sessions">
+        <section class="sessions-list-pane dev-tab-panel" aria-label="${escapeHtml(t('Streaming sessions'))}">
           ${sessionsListHtml()}
         </section>
         ${detailHtml()}
@@ -685,6 +699,7 @@ function installSessionsDomHandlers(): void {
 
 registerDevTab({
   id: 'sessions',
+  // Raw English — the nav re-wraps with t(item.label) at render (t() here would freeze at import time).
   label: 'Spending Sessions',
   mobileLabel: 'Sessions',
   guard: () => true,

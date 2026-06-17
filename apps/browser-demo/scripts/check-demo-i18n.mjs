@@ -31,7 +31,7 @@ function protectedTokens(value) {
     /[$€£¥]\s?\d[\d,.]*(?:\/(?:month|mo|year|yr))?/giu,
     /\b\d+(?:\.\d+)?%/gu,
     /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/g,
-    /\b(?:SOL|USDC|USDT|BTC|ETH|JUP|BONK|PYUSD|WIF|JITO|mSOL|bSOL|USDS|USDP)\b/g,
+    /\b(?:SOL|USDC|USDT|BTC|ETH|JUP|BONK|POPCAT|PYUSD|WIF|JITO|JitoSOL|mSOL|bSOL|USDS|USDP|INF)\b/g,
   ];
   for (const pattern of patterns) {
     for (const match of value.matchAll(pattern)) {
@@ -52,6 +52,11 @@ function preservesProtectedTokens(source, candidate) {
     return false;
   }
   return true;
+}
+
+// Unique, sorted set of {placeholder} names in a string (for interpolation-parity checking).
+function placeholders(value) {
+  return [...new Set((value.match(/\{[a-zA-Z0-9_]+\}/g) || []))].sort().join(',');
 }
 
 const en = load('en');
@@ -88,6 +93,7 @@ for (const lang of LANGS) {
   }
   let empties = 0;
   let tokenFails = 0;
+  let placeholderFails = 0;
   for (const key of keys) {
     if (!enKeySet.has(key)) continue;
     const value = entries[key];
@@ -100,13 +106,23 @@ for (const lang of LANGS) {
       tokenFails++;
       if (tokenFails <= 5) console.error(`[${lang}] protected-token loss: ${JSON.stringify(key)} -> ${JSON.stringify(value)}`);
     }
+    // Placeholder parity: the SET of unique {placeholder} names must match en (tf replaces all
+    // occurrences, so duplicate placeholders are fine — only a missing/extra NAME breaks interpolation).
+    if (placeholders(key) !== placeholders(value)) {
+      placeholderFails++;
+      if (placeholderFails <= 5) console.error(`[${lang}] placeholder mismatch: ${JSON.stringify(key)} -> ${JSON.stringify(value)}`);
+    }
   }
   if (empties) problems++;
   if (tokenFails) {
     console.error(`[${lang}] ${tokenFails} protected-token violation(s)`);
     problems++;
   }
-  if (!missing.length && !stale.length && !empties && !tokenFails) {
+  if (placeholderFails) {
+    console.error(`[${lang}] ${placeholderFails} placeholder-parity violation(s)`);
+    problems++;
+  }
+  if (!missing.length && !stale.length && !empties && !tokenFails && !placeholderFails) {
     console.log(`[${lang}] OK (${keys.length} keys)`);
   }
 }

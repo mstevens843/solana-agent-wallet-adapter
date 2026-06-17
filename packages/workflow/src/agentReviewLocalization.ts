@@ -1362,7 +1362,7 @@ function protectedTokens(value: string): string[] {
     /[$€£¥]\s?\d[\d,.]*(?:\/(?:month|mo|year|yr))?/giu,
     /\b\d+(?:\.\d+)?%/gu,
     /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/g,
-    /\b(?:SOL|USDC|USDT|BTC|ETH|JUP|BONK|PYUSD|WIF|JITO|mSOL|bSOL|USDS|USDP)\b/g,
+    /\b(?:SOL|USDC|USDT|BTC|ETH|JUP|BONK|POPCAT|PYUSD|WIF|JITO|JitoSOL|mSOL|bSOL|USDS|USDP|INF)\b/g,
   ];
   for (const pattern of patterns) {
     for (const match of value.matchAll(pattern)) {

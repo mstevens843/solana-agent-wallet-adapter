@@ -13,6 +13,7 @@ import {
 import { cloudWalletAvailable, cloudWalletRequest, cloudWalletSignMessage } from '../cloudWalletBridge.js';
 import { currentAddress } from '../connectionState.js';
 import { getMppConfig, putMppConfig, type MppConfigPreferencePayload, type MppConfigResponse } from '../mppClient.js';
+import { t, tf } from '../demo-i18n/uiLang.js';
 import { renderUseCaseDisclosure } from './useCases.js';
 
 const PROFILE_PATH = '/api/preferences/agent-payment-profile';
@@ -150,8 +151,8 @@ function createBlankMppConfigDraft(): MppConfigDraft {
 }
 
 function defaultDisplayNameFor(address: string | null): string {
-  if (!address) return 'My Agentic Wallet';
-  return `Wallet ${shortAddress(address)}`;
+  if (!address) return t('My Agentic Wallet');
+  return tf('Wallet {address}', { address: shortAddress(address) });
 }
 
 function draftFromPayload(payload: AgentPaymentProfilePayload, fallbackAddress: string | null): DraftState {
@@ -257,33 +258,33 @@ function profileSummaryStatus(): 'unpublished' | 'discoverable' | 'hidden' {
 function statusHeadline(): string {
   switch (profileSummaryStatus()) {
     case 'discoverable':
-      return 'Discoverable';
+      return t('Discoverable');
     case 'hidden':
-      return 'Hidden';
+      return t('Hidden');
     case 'unpublished':
     default:
-      return 'Not published';
+      return t('Not published');
   }
 }
 
 function statusBadgeHtml(): string {
   switch (tabState.status) {
     case 'loading':
-      return '<span class="dev-agent-card-status">Checking…</span>';
+      return `<span class="dev-agent-card-status">${t('Checking…')}</span>`;
     case 'loaded': {
       const status = profileSummaryStatus();
       if (status === 'discoverable') {
-        return `<span class="dev-agent-card-status dev-agent-card-status--ok">Live · ${escapeHtml(formatTime(tabState.fetchedAt))}</span>`;
+        return `<span class="dev-agent-card-status dev-agent-card-status--ok">${tf('Live · {time}', { time: escapeHtml(formatTime(tabState.fetchedAt)) })}</span>`;
       }
       if (status === 'hidden') {
-        return '<span class="dev-agent-card-status dev-agent-card-status--pending">Hidden</span>';
+        return `<span class="dev-agent-card-status dev-agent-card-status--pending">${t('Hidden')}</span>`;
       }
-      return '<span class="dev-agent-card-status dev-agent-card-status--pending">Not published</span>';
+      return `<span class="dev-agent-card-status dev-agent-card-status--pending">${t('Not published')}</span>`;
     }
     case 'unavailable':
-      return '<span class="dev-agent-card-status dev-agent-card-status--pending">Unavailable</span>';
+      return `<span class="dev-agent-card-status dev-agent-card-status--pending">${t('Unavailable')}</span>`;
     case 'error':
-      return '<span class="dev-agent-card-status dev-agent-card-status--error">Check failed</span>';
+      return `<span class="dev-agent-card-status dev-agent-card-status--error">${t('Check failed')}</span>`;
     case 'idle':
     default:
       return '';
@@ -305,8 +306,8 @@ function renderToggleRow(): string {
         ${checked}
       />
       <span class="dev-agent-card-discoverable-copy">
-        <strong>Discoverable</strong>
-        <em>Let compatible apps fetch this wallet's payment profile URL.</em>
+        <strong>${t('Discoverable')}</strong>
+        <em>${t('Let compatible apps fetch this wallet\'s payment profile URL.')}</em>
       </span>
       <span class="dev-agent-card-switch-control" aria-hidden="true"><span></span></span>
     </label>
@@ -330,8 +331,8 @@ function renderTokenChips(): string {
   }).join('');
   return `
     <div class="dev-agent-card-form-field dev-agent-card-form-field--tokens">
-      <label class="dev-agent-card-form-label" for="dev-agent-card-tokens">Accepted tokens</label>
-      <p class="dev-agent-card-form-help">Pick what you'll take when an agent or merchant pays you.</p>
+      <label class="dev-agent-card-form-label" for="dev-agent-card-tokens">${t('Accepted tokens')}</label>
+      <p class="dev-agent-card-form-help">${t('Pick what you\'ll take when an agent or merchant pays you.')}</p>
       <div class="dev-agent-card-chip-row" id="dev-agent-card-tokens">${chips}</div>
       ${error ? `<p class="dev-agent-card-form-error">${escapeHtml(error)}</p>` : ''}
     </div>
@@ -341,9 +342,9 @@ function renderTokenChips(): string {
 function renderProtocolChips(): string {
   const error = fieldErrorFor('protocols');
   const labels: Record<AllowedProfileProtocol, string> = {
-    ap2: 'AP2 Inbound',
-    acp: 'ACP Checkout',
-    a2a: 'A2A Discovery',
+    ap2: t('AP2 Inbound'),
+    acp: t('ACP Checkout'),
+    a2a: t('A2A Discovery'),
   };
   const chips = ALLOWED_PROFILE_PROTOCOLS.map((protocol) => {
     const selected = tabState.draft.protocols.has(protocol);
@@ -360,8 +361,8 @@ function renderProtocolChips(): string {
   }).join('');
   return `
     <div class="dev-agent-card-form-field dev-agent-card-form-field--protocols">
-      <label class="dev-agent-card-form-label" for="dev-agent-card-protocols">Protocols</label>
-      <p class="dev-agent-card-form-help">Which agent standards you speak. Most users keep all three on.</p>
+      <label class="dev-agent-card-form-label" for="dev-agent-card-protocols">${t('Protocols')}</label>
+      <p class="dev-agent-card-form-help">${t('Which agent standards you speak. Most users keep all three on.')}</p>
       <div class="dev-agent-card-chip-row" id="dev-agent-card-protocols">${chips}</div>
       ${error ? `<p class="dev-agent-card-form-error">${escapeHtml(error)}</p>` : ''}
     </div>
@@ -372,7 +373,7 @@ function renderDisplayNameField(): string {
   const error = fieldErrorFor('displayName');
   return `
     <div class="dev-agent-card-form-field dev-agent-card-form-field--display-name">
-      <label class="dev-agent-card-form-label" for="dev-agent-card-display-name">Display name</label>
+      <label class="dev-agent-card-form-label" for="dev-agent-card-display-name">${t('Display name')}</label>
       <input
         type="text"
         id="dev-agent-card-display-name"
@@ -380,7 +381,7 @@ function renderDisplayNameField(): string {
         data-profile-field="displayName"
         value="${escapeHtml(tabState.draft.displayName)}"
         maxlength="64"
-        placeholder="Mathew's Wallet"
+        placeholder="${escapeHtml(t('Mathew\'s Wallet'))}"
         autocomplete="off"
       />
       ${error ? `<p class="dev-agent-card-form-error">${escapeHtml(error)}</p>` : ''}
@@ -392,7 +393,7 @@ function renderContactEmailField(): string {
   const error = fieldErrorFor('contactEmail');
   return `
     <div class="dev-agent-card-form-field dev-agent-card-form-field--contact">
-      <label class="dev-agent-card-form-label" for="dev-agent-card-contact-email">Contact email <em>(optional)</em></label>
+      <label class="dev-agent-card-form-label" for="dev-agent-card-contact-email">${t('Contact email')} <em>${t('(optional)')}</em></label>
       <input
         type="email"
         id="dev-agent-card-contact-email"
@@ -418,8 +419,8 @@ function renderFormBanner(): string {
 
 function renderFormActions(): string {
   const busy = tabState.formBusy;
-  const saveLabel = busy === 'publish' ? 'Saving…' : 'Save profile';
-  const takedownLabel = busy === 'takedown' ? 'Taking down…' : 'Take profile down';
+  const saveLabel = busy === 'publish' ? t('Saving…') : t('Save profile');
+  const takedownLabel = busy === 'takedown' ? t('Taking down…') : t('Take profile down');
   const hasRecord = Boolean(tabState.fetched?.payload);
   return `
     <div class="dev-agent-card-form-actions">
@@ -437,20 +438,20 @@ function renderFormActions(): string {
           ${busy ? 'disabled' : ''}
         >${escapeHtml(takedownLabel)}</button>
       ` : ''}
-      <span class="dev-agent-card-form-hint">Validation runs before any wallet signature is requested.</span>
+      <span class="dev-agent-card-form-hint">${t('Validation runs before any wallet signature is requested.')}</span>
     </div>
   `;
 }
 
 function renderFormSection(): string {
   const onboarding = profileSummaryStatus() === 'unpublished'
-    ? `<p class="dev-agent-card-form-onboard">Your wallet isn't discoverable yet. Edit below, then toggle Discoverable on and Save to publish.</p>`
+    ? `<p class="dev-agent-card-form-onboard">${t('Your wallet isn\'t discoverable yet. Edit below, then toggle Discoverable on and Save to publish.')}</p>`
     : '';
   return `
-    <section class="dev-agent-card-section dev-agent-card-form-section" aria-label="Edit your payment profile">
+    <section class="dev-agent-card-section dev-agent-card-form-section" aria-label="${escapeHtml(t('Edit your payment profile'))}">
       <div class="dev-agent-card-section-head">
-        <span>Edit your payment profile</span>
-        <h3>Control what agents see when they pay you</h3>
+        <span>${t('Edit your payment profile')}</span>
+        <h3>${t('Control what agents see when they pay you')}</h3>
       </div>
       ${onboarding}
       ${renderFormBanner()}
@@ -478,15 +479,15 @@ function renderMppPolicySection(): string {
   const draft = tabState.mppConfigDraft;
   const busy = tabState.mppConfigBusy === 'save';
   return `
-    <section class="dev-agent-card-section dev-agent-card-mpp-policy" aria-label="MPP session payment policy">
+    <section class="dev-agent-card-section dev-agent-card-mpp-policy" aria-label="${escapeHtml(t('MPP session payment policy'))}">
       <div class="dev-agent-card-section-head">
-        <span>MPP session rail</span>
-        <h3>Bounded spend for incoming MPP challenges</h3>
+        <span>${t('MPP session rail')}</span>
+        <h3>${t('Bounded spend for incoming MPP challenges')}</h3>
       </div>
       ${renderMppConfigBanner()}
       <div class="dev-agent-card-form-grid dev-agent-card-mpp-grid">
         <div class="dev-agent-card-form-field">
-          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-rails">Accepted rails</label>
+          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-rails">${t('Accepted rails')}</label>
           <input
             type="text"
             id="dev-agent-card-mpp-rails"
@@ -497,7 +498,7 @@ function renderMppPolicySection(): string {
           />
         </div>
         <div class="dev-agent-card-form-field">
-          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-max">Max challenge amount</label>
+          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-max">${t('Max challenge amount')}</label>
           <input
             type="text"
             id="dev-agent-card-mpp-max"
@@ -509,7 +510,7 @@ function renderMppPolicySection(): string {
           />
         </div>
         <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
-          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-origins">Shared origins</label>
+          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-origins">${t('Shared origins')}</label>
           <textarea
             id="dev-agent-card-mpp-origins"
             class="dev-agent-card-form-input dev-agent-card-form-textarea"
@@ -518,7 +519,7 @@ function renderMppPolicySection(): string {
           >${escapeHtml(draft.allowedOrigins)}</textarea>
         </div>
         <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
-          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-merchant-ids">Allowed merchant ids</label>
+          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-merchant-ids">${t('Allowed merchant ids')}</label>
           <textarea
             id="dev-agent-card-mpp-merchant-ids"
             class="dev-agent-card-form-input dev-agent-card-form-textarea"
@@ -527,7 +528,7 @@ function renderMppPolicySection(): string {
           >${escapeHtml(draft.allowedMerchantIds)}</textarea>
         </div>
         <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
-          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-merchant-origins">Merchant origins</label>
+          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-merchant-origins">${t('Merchant origins')}</label>
           <textarea
             id="dev-agent-card-mpp-merchant-origins"
             class="dev-agent-card-form-input dev-agent-card-form-textarea"
@@ -536,7 +537,7 @@ function renderMppPolicySection(): string {
           >${escapeHtml(draft.allowedMerchantOrigins)}</textarea>
         </div>
         <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
-          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-resource-origins">Resource origins</label>
+          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-resource-origins">${t('Resource origins')}</label>
           <textarea
             id="dev-agent-card-mpp-resource-origins"
             class="dev-agent-card-form-input dev-agent-card-form-textarea"
@@ -545,7 +546,7 @@ function renderMppPolicySection(): string {
           >${escapeHtml(draft.allowedResourceOrigins)}</textarea>
         </div>
         <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
-          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-merchant-urls">Merchant URLs</label>
+          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-merchant-urls">${t('Merchant URLs')}</label>
           <textarea
             id="dev-agent-card-mpp-merchant-urls"
             class="dev-agent-card-form-input dev-agent-card-form-textarea"
@@ -554,7 +555,7 @@ function renderMppPolicySection(): string {
           >${escapeHtml(draft.allowedMerchantUrls)}</textarea>
         </div>
         <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
-          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-resource-urls">Resource URLs</label>
+          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-resource-urls">${t('Resource URLs')}</label>
           <textarea
             id="dev-agent-card-mpp-resource-urls"
             class="dev-agent-card-form-input dev-agent-card-form-textarea"
@@ -563,7 +564,7 @@ function renderMppPolicySection(): string {
           >${escapeHtml(draft.allowedResourceUrls)}</textarea>
         </div>
         <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
-          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-recipients">Allowed recipients</label>
+          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-recipients">${t('Allowed recipients')}</label>
           <textarea
             id="dev-agent-card-mpp-recipients"
             class="dev-agent-card-form-input dev-agent-card-form-textarea"
@@ -572,7 +573,7 @@ function renderMppPolicySection(): string {
           >${escapeHtml(draft.allowedRecipients)}</textarea>
         </div>
         <div class="dev-agent-card-form-field dev-agent-card-form-field--wide">
-          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-mints">Allowed SPL mints</label>
+          <label class="dev-agent-card-form-label" for="dev-agent-card-mpp-mints">${t('Allowed SPL mints')}</label>
           <textarea
             id="dev-agent-card-mpp-mints"
             class="dev-agent-card-form-input dev-agent-card-form-textarea"
@@ -588,15 +589,15 @@ function renderMppPolicySection(): string {
             ${draft.requireSettlementConfirmed ? 'checked' : ''}
           />
           <span class="dev-agent-card-discoverable-copy">
-            <strong>Require settlement confirmation</strong>
-            <em>MPP receipts stay pending until streaming voucher settlement confirms on chain.</em>
+            <strong>${t('Require settlement confirmation')}</strong>
+            <em>${t('MPP receipts stay pending until streaming voucher settlement confirms on chain.')}</em>
           </span>
           <span class="dev-agent-card-switch-control" aria-hidden="true"><span></span></span>
         </label>
       </div>
       <div class="dev-agent-card-form-actions">
-        <button type="button" class="button primary" data-profile-action="save-mpp-policy" ${busy ? 'disabled' : ''}>${busy ? 'Saving…' : 'Save MPP policy'}</button>
-        <span class="dev-agent-card-form-hint">Incoming Requests uses this policy before showing Pay with Session.</span>
+        <button type="button" class="button primary" data-profile-action="save-mpp-policy" ${busy ? 'disabled' : ''}>${busy ? t('Saving…') : t('Save MPP policy')}</button>
+        <span class="dev-agent-card-form-hint">${t('Incoming Requests uses this policy before showing Pay with Session.')}</span>
       </div>
     </section>
   `;
@@ -608,21 +609,21 @@ function renderProfileLinkSection(address: string | null): string {
   if (!url) return '';
   if (status !== 'discoverable') {
     return `
-      <section class="dev-agent-card-section dev-agent-card-link-section dev-agent-card-link-section--disabled" aria-label="Profile link">
+      <section class="dev-agent-card-section dev-agent-card-link-section dev-agent-card-link-section--disabled" aria-label="${escapeHtml(t('Profile link'))}">
         <div class="dev-agent-card-section-head">
-          <span>Profile link</span>
-          <h3>Where compatible apps will discover this wallet</h3>
+          <span>${t('Profile link')}</span>
+          <h3>${t('Where compatible apps will discover this wallet')}</h3>
         </div>
         <code class="dev-agent-card-url dev-agent-card-url--disabled">${escapeHtml(url)}</code>
-        <p class="dev-agent-card-form-help">Toggle Discoverable on and Save to publish this link.</p>
+        <p class="dev-agent-card-form-help">${t('Toggle Discoverable on and Save to publish this link.')}</p>
       </section>
     `;
   }
   return `
-    <section class="dev-agent-card-section dev-agent-card-link-section" aria-label="Profile link">
+    <section class="dev-agent-card-section dev-agent-card-link-section" aria-label="${escapeHtml(t('Profile link'))}">
       <div class="dev-agent-card-section-head">
-        <span>Profile link</span>
-        <h3>Where compatible apps discover this wallet</h3>
+        <span>${t('Profile link')}</span>
+        <h3>${t('Where compatible apps discover this wallet')}</h3>
       </div>
       <code class="dev-agent-card-url">${escapeHtml(url)}</code>
       <div class="dev-agent-card-link-actions">
@@ -631,9 +632,9 @@ function renderProfileLinkSection(address: string | null): string {
           class="button utility"
           data-copy="${escapeHtml(url)}"
           data-copy-id="dev-agent-card-profile-link"
-          data-copy-name="Payment profile link"
-        >Copy profile link</button>
-        <a class="button-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Open profile</a>
+          data-copy-name="${escapeHtml(t('Payment profile link'))}"
+        >${t('Copy profile link')}</button>
+        <a class="button-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${t('Open profile')}</a>
       </div>
     </section>
   `;
@@ -641,13 +642,13 @@ function renderProfileLinkSection(address: string | null): string {
 
 function renderDemoLink(): string {
   return `
-    <section class="dev-agent-card-section dev-agent-card-demo-link" aria-label="Try a sample agent payment">
+    <section class="dev-agent-card-section dev-agent-card-demo-link" aria-label="${escapeHtml(t('Try a sample agent payment'))}">
       <div>
-        <h3>Want to see this in action?</h3>
-        <p>Switch to Incoming Requests and queue a demo agent payment against this profile.</p>
+        <h3>${t('Want to see this in action?')}</h3>
+        <p>${t('Switch to Incoming Requests and queue a demo agent payment against this profile.')}</p>
       </div>
       <button type="button" class="button primary" data-profile-action="try-demo">
-        Try a sample agent payment →
+        ${t('Try a sample agent payment →')}
       </button>
     </section>
   `;
@@ -656,47 +657,44 @@ function renderDemoLink(): string {
 function renderExplainer(): string {
   return `
     <details class="panel public-request-context dev-agent-card-explainer">
-      <summary>What's a payment profile?</summary>
+      <summary>${t('What\'s a payment profile?')}</summary>
       <p class="dev-agent-card-explainer-lede">
-        A wallet address says <em>where</em> to send money. A payment profile says <em>how</em>.
+        ${t('A wallet address says')} <em>${t('where')}</em> ${t('to send money. A payment profile says')} <em>${t('how')}</em>.
       </p>
       <p>
-        Address = phone number (44 chars, opaque). Profile = contact card with display name, accepted tokens,
-        supported protocols, and an "always review" rule. It's the same idea as PayPal.me or a Stripe payment
-        link — published at <code>/agents/&lt;wallet&gt;/card.json</code> so AI agents and merchant checkouts can
-        fetch it automatically.
+        ${t('Address = phone number (44 chars, opaque). Profile = contact card with display name, accepted tokens, supported protocols, and an "always review" rule. It\'s the same idea as PayPal.me or a Stripe payment link — published at')} <code>/agents/&lt;wallet&gt;/card.json</code> ${t('so AI agents and merchant checkouts can fetch it automatically.')}
       </p>
       <div class="dev-agent-card-explainer-grid">
         <article>
-          <h4>Without a profile</h4>
-          <p>The external agent has to be hand-told your address, the token you accept, and the protocol you speak. Friction every time.</p>
+          <h4>${t('Without a profile')}</h4>
+          <p>${t('The external agent has to be hand-told your address, the token you accept, and the protocol you speak. Friction every time.')}</p>
         </article>
         <article>
-          <h4>With a profile</h4>
-          <p>The agent fetches your URL, gets address + tokens + protocols in one round-trip, builds the right mandate, drops it in your inbox.</p>
+          <h4>${t('With a profile')}</h4>
+          <p>${t('The agent fetches your URL, gets address + tokens + protocols in one round-trip, builds the right mandate, drops it in your inbox.')}</p>
         </article>
       </div>
-      <h4>When it matters</h4>
+      <h4>${t('When it matters')}</h4>
       <ul>
-        <li>An AI agent (OpenAI Operator, Vercel AI, Google Agent Builder) is paying you autonomously — <strong>AP2</strong>.</li>
-        <li>A merchant checkout (Stripe ACP) is routing payment to a non-custodial wallet — <strong>ACP</strong>.</li>
-        <li>Another agent's wallet wants to discover yours programmatically — <strong>A2A</strong>.</li>
-        <li>You want a stable, shareable URL that's friendlier than <code>4fTq…MoHd</code>.</li>
+        <li>${t('An AI agent (OpenAI Operator, Vercel AI, Google Agent Builder) is paying you autonomously —')} <strong>${t('AP2')}</strong>.</li>
+        <li>${t('A merchant checkout (Stripe ACP) is routing payment to a non-custodial wallet —')} <strong>${t('ACP')}</strong>.</li>
+        <li>${t('Another agent\'s wallet wants to discover yours programmatically —')} <strong>${t('A2A')}</strong>.</li>
+        <li>${t('You want a stable, shareable URL that\'s friendlier than')} <code>4fTq…MoHd</code>.</li>
       </ul>
-      <h4>When it doesn't</h4>
+      <h4>${t('When it doesn\'t')}</h4>
       <ul>
-        <li>Human paying human → just paste the address.</li>
-        <li>One-off transfer from someone who already has your address.</li>
+        <li>${t('Human paying human → just paste the address.')}</li>
+        <li>${t('One-off transfer from someone who already has your address.')}</li>
       </ul>
       <p class="dev-agent-card-explainer-foot">
-        The profile is an opt-in layer on top of your wallet. Toggle "Discoverable" off any time to take it down.
+        ${t('The profile is an opt-in layer on top of your wallet. Toggle "Discoverable" off any time to take it down.')}
       </p>
     </details>
   `;
 }
 
 function routeCardHtml(): string {
-  const status = statusBadgeHtml() || '<span class="dev-agent-card-status dev-agent-card-status--idle">Ready</span>';
+  const status = statusBadgeHtml() || `<span class="dev-agent-card-status dev-agent-card-status--idle">${t('Ready')}</span>`;
   const address = currentAddress();
   const summary = profileSummaryStatus();
   const protocolText = summary === 'discoverable' && tabState.fetched?.payload
@@ -705,18 +703,18 @@ function routeCardHtml(): string {
       ? Array.from(tabState.draft.protocols).map((p) => p.toUpperCase()).join(' · ')
       : '—';
   return `
-    <aside class="dev-agent-card-route-card" aria-label="Agent profile status">
+    <aside class="dev-agent-card-route-card" aria-label="${escapeHtml(t('Agent profile status'))}">
       <div class="dev-agent-card-status-head">
-        <span>Profile status</span>
+        <span>${t('Profile status')}</span>
         <strong>${escapeHtml(statusHeadline())}</strong>
       </div>
       <div class="dev-agent-card-route-body">
         <div>
-          <span>Wallet</span>
-          <strong>${address ? escapeHtml(shortAddress(address)) : 'Not connected'}</strong>
+          <span>${t('Wallet')}</span>
+          <strong>${address ? escapeHtml(shortAddress(address)) : t('Not connected')}</strong>
         </div>
         <div>
-          <span>Requests</span>
+          <span>${t('Requests')}</span>
           <strong>${escapeHtml(protocolText)}</strong>
         </div>
         <div class="dev-agent-card-status-cell" data-dev-agent-card-status-slot>
@@ -729,23 +727,23 @@ function routeCardHtml(): string {
 
 function bodyHtml(): string {
   if (tabState.status === 'idle' || tabState.status === 'loading') {
-    return '<p class="dev-agent-card-empty dev-tab-loading-state">Loading your payment profile…</p>';
+    return `<p class="dev-agent-card-empty dev-tab-loading-state">${t('Loading your payment profile…')}</p>`;
   }
   if (tabState.status === 'unavailable') {
     return `
       <div class="dev-agent-card-empty-state">
         <p class="dev-agent-card-empty dev-tab-empty-state">
-          Sign in to Agentic Cloud to manage this wallet's payment profile. Connect your wallet and complete the cloud sign-in challenge, then return here.
+          ${t('Sign in to Agentic Cloud to manage this wallet\'s payment profile. Connect your wallet and complete the cloud sign-in challenge, then return here.')}
         </p>
-        <button type="button" class="button utility" data-profile-action="refresh">Retry</button>
+        <button type="button" class="button utility" data-profile-action="refresh">${t('Retry')}</button>
       </div>
     `;
   }
   if (tabState.status === 'error') {
     return `
       <div class="dev-agent-card-empty-state">
-        <p class="dev-agent-card-empty dev-tab-empty-state">Could not load profile: ${escapeHtml(tabState.errorMessage ?? 'Unknown error')}</p>
-        <button type="button" class="button utility" data-profile-action="refresh">Retry</button>
+        <p class="dev-agent-card-empty dev-tab-empty-state">${tf('Could not load profile: {error}', { error: escapeHtml(tabState.errorMessage ?? t('Unknown error')) })}</p>
+        <button type="button" class="button utility" data-profile-action="refresh">${t('Retry')}</button>
       </div>
     `;
   }
@@ -764,35 +762,35 @@ export function panelHtml(): string {
     <section class="panel dev-agent-card-panel dev-tab-shell" data-layout="dev-agent-card">
       <header class="dev-agent-card-head dev-tab-header">
         <div class="dev-tab-header-main">
-          <p class="dev-agent-card-eyebrow dev-tab-kicker">Agent payments profile</p>
+          <p class="dev-agent-card-eyebrow dev-tab-kicker">${t('Agent payments profile')}</p>
           <div class="dev-tab-title-row">
-            <h2>Payment Profile</h2>
-            <span class="dev-agent-card-identity-pill">Approval required</span>
+            <h2>${t('Payment Profile')}</h2>
+            <span class="dev-agent-card-identity-pill">${t('Approval required')}</span>
           </div>
           <p>
-            Let compatible apps find this wallet and send payment requests. Every request still needs wallet approval.
+            ${t('Let compatible apps find this wallet and send payment requests. Every request still needs wallet approval.')}
           </p>
           <div class="dev-agent-card-actions dev-tab-actions">
-            <button type="button" class="button utility" data-profile-action="refresh">Refresh</button>
+            <button type="button" class="button utility" data-profile-action="refresh">${t('Refresh')}</button>
           </div>
         </div>
         ${routeCardHtml()}
       </header>
       ${renderUseCaseDisclosure({
         id: 'agent-payments-profile',
-        summary: 'When another app or agent needs to know where payment requests should go.',
+        summary: t('When another app or agent needs to know where payment requests should go.'),
         useCases: [
           {
-            title: 'Receive an invoice from an agent',
-            body: 'A booking or research agent can find this wallet profile and send the payment request to the right address instead of asking you to paste it.',
+            title: t('Receive an invoice from an agent'),
+            body: t('A booking or research agent can find this wallet profile and send the payment request to the right address instead of asking you to paste it.'),
           },
           {
-            title: 'Let checkout apps route carts here',
-            body: 'A compatible merchant app can use your profile to create a readable checkout request that lands in your wallet for review.',
+            title: t('Let checkout apps route carts here'),
+            body: t('A compatible merchant app can use your profile to create a readable checkout request that lands in your wallet for review.'),
           },
           {
-            title: 'Stay in control before anything signs',
-            body: 'Publishing the profile only makes the wallet discoverable. Every payment request still waits for your wallet approval.',
+            title: t('Stay in control before anything signs'),
+            body: t('Publishing the profile only makes the wallet discoverable. Every payment request still waits for your wallet approval.'),
           },
         ],
       })}
@@ -866,7 +864,7 @@ function updateBody(): void {
   if (body) body.innerHTML = bodyHtml();
   const statusSlot = document.querySelector('[data-dev-agent-card-status-slot]');
   if (statusSlot) {
-    statusSlot.innerHTML = statusBadgeHtml() || '<span class="dev-agent-card-status dev-agent-card-status--idle">Ready</span>';
+    statusSlot.innerHTML = statusBadgeHtml() || `<span class="dev-agent-card-status dev-agent-card-status--idle">${t('Ready')}</span>`;
   }
   const headlineSlot = document.querySelector<HTMLElement>('.dev-agent-card-status-head strong');
   if (headlineSlot) headlineSlot.textContent = statusHeadline();
@@ -886,7 +884,7 @@ function toggleSetMember<T>(set: Set<T>, value: T): Set<T> {
 async function publishProfile(): Promise<void> {
   if (tabState.formBusy) return;
   if (!cloudWalletAvailable()) {
-    tabState.formBanner = { tone: 'error', message: 'Connect your wallet first.' };
+    tabState.formBanner = { tone: 'error', message: t('Connect your wallet first.') };
     updateBody();
     return;
   }
@@ -894,7 +892,7 @@ async function publishProfile(): Promise<void> {
   const validation = validateProfilePayload(payload);
   if (!validation.ok) {
     tabState.fieldErrors = validation.errors;
-    tabState.formBanner = { tone: 'error', message: 'Fix the highlighted fields and try again.' };
+    tabState.formBanner = { tone: 'error', message: t('Fix the highlighted fields and try again.') };
     updateBody();
     return;
   }
@@ -909,7 +907,7 @@ async function publishProfile(): Promise<void> {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'publish', payload: validation.payload }),
     });
-    const signed = await cloudWalletSignMessage(intent.message, 'Publish payment profile');
+    const signed = await cloudWalletSignMessage(intent.message, t('Publish payment profile'));
     const result = await cloudWalletRequest<ProfileWriteResponse>(PROFILE_WRITE_PATH, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -937,8 +935,8 @@ async function publishProfile(): Promise<void> {
       tabState.fetchedAt = Date.now();
     }
     tabState.formBanner = { tone: 'success', message: payload.discoverable
-      ? 'Profile published. Your per-wallet URL is now live.'
-      : 'Profile saved as hidden. Toggle Discoverable on to publish.' };
+      ? t('Profile published. Your per-wallet URL is now live.')
+      : t('Profile saved as hidden. Toggle Discoverable on to publish.') };
   } catch (error) {
     tabState.formBanner = { tone: 'error', message: humanizeError(error) };
   }
@@ -949,7 +947,7 @@ async function publishProfile(): Promise<void> {
 async function takedownProfile(): Promise<void> {
   if (tabState.formBusy) return;
   if (!cloudWalletAvailable()) {
-    tabState.formBanner = { tone: 'error', message: 'Connect your wallet first.' };
+    tabState.formBanner = { tone: 'error', message: t('Connect your wallet first.') };
     updateBody();
     return;
   }
@@ -962,7 +960,7 @@ async function takedownProfile(): Promise<void> {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action: 'takedown' }),
     });
-    const signed = await cloudWalletSignMessage(intent.message, 'Take down payment profile');
+    const signed = await cloudWalletSignMessage(intent.message, t('Take down payment profile'));
     const result = await cloudWalletRequest<ProfileWriteResponse>(PROFILE_WRITE_PATH, {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
@@ -988,7 +986,7 @@ async function takedownProfile(): Promise<void> {
       tabState.draft = draftFromPayload(result.profile.payload, currentAddress());
       tabState.fetchedAt = Date.now();
     }
-    tabState.formBanner = { tone: 'success', message: 'Profile taken down. Your per-wallet URL now returns 404.' };
+    tabState.formBanner = { tone: 'success', message: t('Profile taken down. Your per-wallet URL now returns 404.') };
   } catch (error) {
     tabState.formBanner = { tone: 'error', message: humanizeError(error) };
   }
@@ -1006,7 +1004,7 @@ async function saveMppPolicy(): Promise<void> {
     const saved = await putMppConfig(payload);
     tabState.mppConfig = saved.payload ?? payload;
     tabState.mppConfigDraft = mppDraftFromConfig(tabState.mppConfig);
-    tabState.mppConfigBanner = { tone: 'success', message: 'MPP policy saved.' };
+    tabState.mppConfigBanner = { tone: 'success', message: t('MPP policy saved.') };
   } catch (error) {
     tabState.mppConfigBanner = { tone: 'error', message: humanizeError(error) };
   }
@@ -1015,7 +1013,7 @@ async function saveMppPolicy(): Promise<void> {
 }
 
 function humanizeError(error: unknown): string {
-  if (!error) return 'Profile update failed.';
+  if (!error) return t('Profile update failed.');
   if (error instanceof Error) return error.message;
   return String(error);
 }

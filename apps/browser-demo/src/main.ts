@@ -350,6 +350,7 @@ import {
   DEMO_LANGUAGE_OPTIONS,
   type DemoLanguage,
 } from './demo-i18n/tDemo.js';
+import { setUiLanguage } from './demo-i18n/uiLang.js';
 import {
   hostedByokCloudSessionBlockReason,
   shouldAutoSignOutCloudSession,
@@ -778,7 +779,7 @@ function beginLedgerDeviceApprovalToast(
 ): number | undefined {
   if (!options.force && !isLedgerWalletSelected()) return undefined;
   dismissToastByKey(LEDGER_DEVICE_APPROVAL_TOAST_KEY);
-  const toastId = pushToast('pending', 'Approve on Ledger', message, {
+  const toastId = pushToast('pending', t('Approve on Ledger'), message, {
     key: LEDGER_DEVICE_APPROVAL_TOAST_KEY,
   });
   render();
@@ -823,10 +824,10 @@ function dismissLedgerDeviceApprovalToast(toastId: number | undefined): void {
 }
 
 function beginProofSigningToast(options: { title?: string; message?: string; key?: string } = {}): number {
-  const title = options.title ?? (isLedgerWalletSelected() ? 'Approve on Ledger' : 'Waiting for signature');
+  const title = options.title ?? (isLedgerWalletSelected() ? t('Approve on Ledger') : t('Waiting for signature'));
   const message = options.message ?? (isLedgerWalletSelected()
-    ? 'Review and approve this proof request on your Ledger device.'
-    : 'Approve the proof in your wallet. No transaction will be submitted.');
+    ? t('Review and approve this proof request on your Ledger device.')
+    : t('Approve the proof in your wallet. No transaction will be submitted.'));
   const toastOptions = options.key ? { key: options.key } : {};
   const toastId = pushToast(
     'pending',
@@ -1739,50 +1740,52 @@ const ROUTE_TITLES: Record<string, string> = {
   '/delete-account': 'Delete Account · Agentic',
   '/delete-storage': 'Delete Cloud Storage · Agentic',
 };
-const RUNTIME_PATHS: RuntimePath[] = [
-  {
-    id: 'exec',
-    eyebrow: 'No install',
-    label: 'One-shot CLI',
-    detail: 'Start the local approval app from npm.',
-    command: NPM_EXEC_COMMAND,
-    terminalCommand: NPM_EXEC_COMMAND,
-    badge: 'No install',
-    actionLabel: 'Copy',
-    actionKind: 'copy',
-    copyName: 'CLI one-shot command',
-    bridgeLine: 'Bridge starts from terminal',
-    walletLine: 'Wallet host opens for Phantom, Backpack, or Solflare',
-  },
-  {
-    id: 'install',
-    eyebrow: 'Reusable',
-    label: 'Install once',
-    detail: 'Keep the approval app available from any terminal.',
-    command: NPM_GLOBAL_INSTALL_COMMAND,
-    terminalCommand: INSTALLED_APP_COMMAND,
-    badge: 'Install',
-    actionLabel: 'Copy',
-    actionKind: 'copy',
-    copyName: 'CLI install command',
-    bridgeLine: 'Install once, then run solana-agent-wallet app',
-    walletLine: 'Local wallet host stays on your machine',
-  },
-  {
-    id: 'desktop',
-    eyebrow: 'App UI',
-    label: 'Desktop App',
-    detail: 'Use bundled controls, logs, and diagnostics.',
-    command: '/desktop',
-    terminalCommand: '/desktop',
-    badge: 'App UI',
-    actionLabel: 'View Desktop App',
-    actionKind: 'link',
-    href: '/desktop',
-    bridgeLine: 'Desktop runtime manages the local bridge',
-    walletLine: 'Browser wallet still approves every request',
-  },
-];
+function runtimePaths(): RuntimePath[] {
+  return [
+    {
+      id: 'exec',
+      eyebrow: t('No install'),
+      label: t('One-shot CLI'),
+      detail: t('Start the local approval app from npm.'),
+      command: NPM_EXEC_COMMAND,
+      terminalCommand: NPM_EXEC_COMMAND,
+      badge: t('No install'),
+      actionLabel: t('Copy'),
+      actionKind: 'copy',
+      copyName: t('CLI one-shot command'),
+      bridgeLine: t('Bridge starts from terminal'),
+      walletLine: t('Wallet host opens for Phantom, Backpack, or Solflare'),
+    },
+    {
+      id: 'install',
+      eyebrow: t('Reusable'),
+      label: t('Install once'),
+      detail: t('Keep the approval app available from any terminal.'),
+      command: NPM_GLOBAL_INSTALL_COMMAND,
+      terminalCommand: INSTALLED_APP_COMMAND,
+      badge: t('Install'),
+      actionLabel: t('Copy'),
+      actionKind: 'copy',
+      copyName: t('CLI install command'),
+      bridgeLine: t('Install once, then run solana-agent-wallet app'),
+      walletLine: t('Local wallet host stays on your machine'),
+    },
+    {
+      id: 'desktop',
+      eyebrow: t('App UI'),
+      label: t('Desktop App'),
+      detail: t('Use bundled controls, logs, and diagnostics.'),
+      command: '/desktop',
+      terminalCommand: '/desktop',
+      badge: t('App UI'),
+      actionLabel: t('View Desktop App'),
+      actionKind: 'link',
+      href: '/desktop',
+      bridgeLine: t('Desktop runtime manages the local bridge'),
+      walletLine: t('Browser wallet still approves every request'),
+    },
+  ];
+}
 const CLI_RELEASE_ASSETS = [
   ['macOS Apple Silicon', 'solana-agent-wallet-macos-arm64.tar.gz'],
   ['macOS Intel', 'solana-agent-wallet-macos-x64.tar.gz'],
@@ -3979,7 +3982,7 @@ function activeAgentDecisionPlanIndex(): number {
 }
 
 function activeAgentDecisionPlan(): AgentDecisionPlan {
-  return localizePlan(AGENT_DECISION_PLANS[activeAgentDecisionPlanIndex()]!, state.demoLanguage);
+  return localizePlan(AGENT_DECISION_PLANS[activeAgentDecisionPlanIndex()]!, activeUiLanguage());
 }
 
 // Fixed timestamp for the demo review header (kept stable so the card never renders a "just now"/drifting time).
@@ -4511,8 +4514,10 @@ function notifyCompletedCloudWorkspaceDeleteFromLaunch(): void {
   const count = completedCloudWorkspaceDeleteNotice.deletedCount;
   pushToast(
     'success',
-    'Cloud workspace deleted',
-    `${count} cloud record${count === 1 ? '' : 's'} removed. This device's app storage was cleared.`,
+    t('Cloud workspace deleted'),
+    count === 1
+      ? tf('{count} cloud record removed. This device\'s app storage was cleared.', { count })
+      : tf('{count} cloud records removed. This device\'s app storage was cleared.', { count }),
     { dismissAfterMs: 10_000 },
   );
 }
@@ -4637,14 +4642,14 @@ function handleAp2InboundDemoCreated(detail: Ap2InboundDemoCreatedDetail): void 
   const action = cloudApprovalToPreparedAction(detail.approval);
   if (!action) {
     state.error = 'The local AP2 demo did not return a valid approval card.';
-    pushToast('error', 'Incoming request failed', state.error);
+    pushToast('error', t('Incoming request failed'), state.error);
     render();
     return;
   }
   const walletAddress = state.address || action.walletAddress;
   if (!walletAddress) {
     state.error = 'Connect a wallet before creating an incoming request demo.';
-    pushToast('error', 'Incoming request failed', state.error);
+    pushToast('error', t('Incoming request failed'), state.error);
     render();
     return;
   }
@@ -4662,7 +4667,7 @@ function handleAp2InboundDemoCreated(detail: Ap2InboundDemoCreatedDetail): void 
   state.preparedActions = mergePreparedActions([localAction], state.preparedActions);
   state.materializedActions = state.preparedActions;
   saveBrowserWorkflowState();
-  pushToast('success', 'Incoming request ready', 'Open it from Incoming Requests, then approve in Needs Approval.');
+  pushToast('success', t('Incoming request ready'), t('Open it from Incoming Requests, then approve in Needs Approval.'));
   render();
 }
 
@@ -4682,13 +4687,13 @@ async function handlePayOutApprovalCreated(detail: PayOutApprovalCreatedDetail):
       const action = materializeLocalPayOutApproval(detail);
       state.steps.inbox = 'done';
       state.error = '';
-      pushToast('success', 'Approval added to Needs Approval', `${detail.cartId} is saved on this device.`);
+      pushToast('success', t('Approval added to Needs Approval'), tf('{cartId} is saved on this device.', { cartId: detail.cartId }));
       render();
       focusInboxApprovalCard(action.id);
     } catch (err) {
       state.steps.inbox = 'error';
       state.error = redactSecrets(err instanceof Error ? err.message : String(err));
-      pushToast('error', 'Local approval failed', state.error);
+      pushToast('error', t('Local approval failed'), state.error);
       render();
     }
     return;
@@ -4710,8 +4715,8 @@ async function handlePayOutApprovalCreated(detail: PayOutApprovalCreatedDetail):
     render();
     pushToast(
       'error',
-      'Approval created, inbox refresh failed',
-      `${detail.cartId} is saved in Agentic Cloud. ${state.error}`,
+      t('Approval created, inbox refresh failed'),
+      tf('{cartId} is saved in Agentic Cloud. {error}', { cartId: detail.cartId, error: state.error }),
     );
   }
 }
@@ -4748,7 +4753,7 @@ function handleStreamingApprovalRequested(detail: StreamingApprovalRequestedDeta
     state.inboxFilter = 'all';
     state.error = '';
     state.steps.inbox = 'done';
-    pushToast('success', 'Streaming approval ready', `${streamingOperationLabel(detail.operation)} is in Needs Approval.`);
+    pushToast('success', t('Streaming approval ready'), tf('{operation} is in Needs Approval.', { operation: streamingOperationLabel(detail.operation) }));
     render();
     focusInboxApprovalCard(action.id);
     dispatchStreamingApprovalCompleted({
@@ -4761,7 +4766,7 @@ function handleStreamingApprovalRequested(detail: StreamingApprovalRequestedDeta
   } catch (err) {
     const message = redactSecrets(err instanceof Error ? err.message : String(err));
     state.error = message;
-    pushToast('error', 'Streaming approval failed', message);
+    pushToast('error', t('Streaming approval failed'), message);
     render();
     dispatchStreamingApprovalCompleted({
       source: 'streaming_session',
@@ -4781,7 +4786,7 @@ async function handleStreamingApprovalExecuteRequested(detail: StreamingApproval
     action = materializeInlineStreamingApproval(detail);
     const summary = detail.summary || streamingApprovalSummary(detail.operation, detail.sessionId);
     const submittedTxid = detail.txid?.trim();
-    toastId = pushToast('pending', submittedTxid ? 'Checking session transaction' : 'Opening wallet', summary);
+    toastId = pushToast('pending', submittedTxid ? t('Checking session transaction') : t('Opening wallet'), summary);
     const toastContext: TransactionToastContext = { toastId, actionId: action.id, cluster: action.cluster };
     const execution = submittedTxid
       ? await checkInlineStreamingTransaction(action, submittedTxid, toastContext)
@@ -4805,20 +4810,20 @@ async function handleStreamingApprovalExecuteRequested(detail: StreamingApproval
     replaceToast(
       toastId,
       status === 'confirmed' ? 'success' : 'pending',
-      status === 'confirmed' ? 'Session transaction confirmed' : 'Session transaction submitted',
+      status === 'confirmed' ? t('Session transaction confirmed') : t('Session transaction submitted'),
       short(execution.txid),
       {
         linkHref: execution.explorerUrl,
-        linkLabel: 'Open Solscan',
+        linkLabel: t('Open Solscan'),
       },
     );
     render();
   } catch (err) {
     const message = redactSecrets(err instanceof Error ? err.message : String(err));
     if (toastId !== undefined) {
-      replaceToast(toastId, 'error', 'Streaming transaction failed', message);
+      replaceToast(toastId, 'error', t('Streaming transaction failed'), message);
     } else {
-      pushToast('error', 'Streaming transaction failed', message);
+      pushToast('error', t('Streaming transaction failed'), message);
     }
     dispatchStreamingApprovalCompleted({
       source: 'streaming_session',
@@ -4979,13 +4984,13 @@ function streamingApprovalCluster(detail: StreamingApprovalRequestedDetail): Clu
 }
 
 function streamingOperationLabel(operation: StreamingApprovalOperation): string {
-  return operation === 'grant' ? 'Session grant' : 'Session revoke';
+  return operation === 'grant' ? t('Session grant') : t('Session revoke');
 }
 
 function streamingApprovalSummary(operation: StreamingApprovalOperation, sessionId: string): string {
   return operation === 'grant'
-    ? `Grant streaming session ${short(sessionId)}`
-    : `Revoke streaming session ${short(sessionId)}`;
+    ? tf('Grant streaming session {id}', { id: short(sessionId) })
+    : tf('Revoke streaming session {id}', { id: short(sessionId) });
 }
 
 function focusInboxApprovalCard(approvalId: string): void {
@@ -5140,8 +5145,8 @@ function renderStartupFailure(err: unknown): void {
           font-weight: 900;
           letter-spacing: 0.08em;
           text-transform: uppercase;
-        ">Agentic startup failed</p>
-        <h1 style="margin: 0 0 10px; font-size: 1.35rem; line-height: 1.2;">Refresh loaded the shell, but the app could not start.</h1>
+        ">${escapeHtml(t('Agentic startup failed'))}</p>
+        <h1 style="margin: 0 0 10px; font-size: 1.35rem; line-height: 1.2;">${escapeHtml(t('Refresh loaded the shell, but the app could not start.'))}</h1>
         <p style="margin: 0; color: rgba(218, 229, 224, 0.84); line-height: 1.5;">${escaped}</p>
       </div>
     </section>
@@ -5204,8 +5209,8 @@ async function bootstrap(): Promise<void> {
           state.address = '';
           pushToast(
             'pending',
-            'Agentic Wallet locked',
-            'Idle timeout reached. Connect again to unlock.',
+            t('Agentic Wallet locked'),
+            t('Idle timeout reached. Connect again to unlock.'),
           );
           render();
         },
@@ -5412,7 +5417,7 @@ async function runWalletHostBrandAutoConnect(brandId: string): Promise<void> {
   } catch (err) {
     pushToast(
       'error',
-      'Discovery failed',
+      t('Discovery failed'),
       err instanceof Error ? err.message : String(err),
     );
     state.walletHostOpening = null;
@@ -5438,8 +5443,8 @@ async function runWalletHostBrandAutoConnect(brandId: string): Promise<void> {
     await runConnect();
     pushToast(
       'success',
-      'Return to your desktop app',
-      `${brandLabel} is connected — switch back to the Agentic desktop window.`,
+      t('Return to your desktop app'),
+      tf('{brand} is connected — switch back to the Agentic desktop window.', { brand: brandLabel }),
     );
     if (pairingUuid) {
       // Cross-device pairing path: register the host on the cloud relay
@@ -5449,7 +5454,7 @@ async function runWalletHostBrandAutoConnect(brandId: string): Promise<void> {
   } catch (err) {
     pushToast(
       'error',
-      'Connect failed',
+      t('Connect failed'),
       err instanceof Error ? err.message : String(err),
     );
   } finally {
@@ -5524,8 +5529,8 @@ async function startWalletHostPairingRelay(uuid: string, brandLabel: string): Pr
   // Surface a persistent banner so the user knows to keep the tab open.
   pushToast(
     'pending',
-    'Stay on this tab',
-    `Signing for the desktop is routed through this browser tab. Closing it interrupts pending signatures.`,
+    t('Stay on this tab'),
+    t('Signing for the desktop is routed through this browser tab. Closing it interrupts pending signatures.'),
   );
   // Wire the global unload cleanup so a stale interval doesn't survive.
   window.addEventListener('beforeunload', stopWalletHostPairingRelay, { once: true });
@@ -5672,10 +5677,10 @@ async function deliverQrConnectResult(
     qrConnect.requestId = requestId;
     qrConnect.walletUrl = '';
     qrConnect.retryPayload = payload;
-    qrConnect.message = 'Could not deliver wallet approval.';
+    qrConnect.message = t('Could not deliver wallet approval.');
     qrConnect.detail = err instanceof Error
-      ? `${err.message} Tap Retry to send the wallet result again.`
-      : 'Tap Retry to send the wallet result again.';
+      ? tf('{message} Tap Retry to send the wallet result again.', { message: err.message })
+      : t('Tap Retry to send the wallet result again.');
     render();
     return false;
   }
@@ -5688,10 +5693,10 @@ async function retryQrConnectResultDelivery(): Promise<void> {
   if (!payload || !pairing || !requestId) return;
   const session = loadQrConnectSession(pairing);
   if (!session) {
-    setQrConnectError('Agentic pairing expired.', 'Return to Agentic and scan a fresh QR code.');
+    setQrConnectError(t('Agentic pairing expired.'), t('Return to Agentic and scan a fresh QR code.'));
     return;
   }
-  setQrConnectProcessing(session.wallet, pairing, 'Retrying wallet approval delivery.', 'Sending the signed result back to Agentic.');
+  setQrConnectProcessing(session.wallet, pairing, t('Retrying wallet approval delivery.'), t('Sending the signed result back to Agentic.'));
   if (await deliverQrConnectResult(session, requestId, payload)) {
     startQrConnectRelay(session, 'relay-active');
   }
@@ -5800,8 +5805,8 @@ async function handleQrConnectRoute(href: string): Promise<void> {
     }
     stopQrConnectRelay();
     setQrConnectError(
-      'This QR connection link is incomplete.',
-      'Go back to Agentic and scan a fresh Phantom or Solflare QR code.',
+      t('This QR connection link is incomplete.'),
+      t('Go back to Agentic and scan a fresh Phantom or Solflare QR code.'),
     );
     return;
   }
@@ -5830,8 +5835,8 @@ async function handleQrConnectRoute(href: string): Promise<void> {
     if (!session) {
       stopQrConnectRelay();
       setQrConnectError(
-        'No active phone relay session was found.',
-        'Scan the QR code again from Agentic and approve the wallet Connect prompt.',
+        t('No active phone relay session was found.'),
+        t('Scan the QR code again from Agentic and approve the wallet Connect prompt.'),
       );
       return;
     }
@@ -5839,7 +5844,7 @@ async function handleQrConnectRoute(href: string): Promise<void> {
   } catch (err) {
     stopQrConnectRelay();
     setQrConnectError(
-      'Wallet relay failed.',
+      t('Wallet relay failed.'),
       err instanceof Error ? err.message : String(err),
     );
   }
@@ -5871,7 +5876,7 @@ async function handleQrConnectWalletError(
     return;
   }
   stopQrConnectRelay();
-  setQrConnectError('Wallet request rejected.', error.message);
+  setQrConnectError(t('Wallet request rejected.'), error.message);
 }
 
 async function handleQrConnectConnectCallback(
@@ -5879,7 +5884,7 @@ async function handleQrConnectConnectCallback(
   wallet: EncryptedDeeplinkWalletId,
   pairing: string,
 ): Promise<void> {
-  setQrConnectProcessing(wallet, pairing, 'Decrypting wallet approval.', 'Registering this phone with the Agentic pairing relay.');
+  setQrConnectProcessing(wallet, pairing, t('Decrypting wallet approval.'), t('Registering this phone with the Agentic pairing relay.'));
   const metadata = await fetchPairingDeeplinkMetadata(pairing);
   if (metadata.wallet !== wallet) {
     throw new ProtocolError('invalid_request', 'Wallet response does not match this QR wallet.');
@@ -5921,7 +5926,7 @@ async function handleQrConnectSignCallback(
   if (!session || session.wallet !== wallet) {
     throw new ProtocolError('unauthorized', 'This phone relay session expired. Scan the Agentic QR again.');
   }
-  setQrConnectProcessing(wallet, pairing, 'Processing wallet approval.', 'Sending the signed result back to Agentic.');
+  setQrConnectProcessing(wallet, pairing, t('Processing wallet approval.'), t('Sending the signed result back to Agentic.'));
   const request = loadQrConnectPendingRequest(pairing, effectiveRequestId);
   if (!request) {
     const err = new ProtocolError('invalid_request', 'No matching Agentic signing request was found on this phone.');
@@ -5988,12 +5993,12 @@ function startQrConnectRelay(
   qrConnect.retryPayload = null;
   qrConnect.message =
     mode === 'connected'
-      ? 'Connection successful. Signing into Agentic.'
-      : 'Keep this page open to approve Agentic requests.';
+      ? t('Connection successful. Signing into Agentic.')
+      : t('Keep this page open to approve Agentic requests.');
   qrConnect.detail =
     mode === 'connected'
-      ? 'Agentic will switch to the connected wallet shortly.'
-      : 'When Agentic asks for a signature, this page will open your wallet for approval.';
+      ? t('Agentic will switch to the connected wallet shortly.')
+      : t('When Agentic asks for a signature, this page will open your wallet for approval.');
   qrConnect.pollHandle = window.setInterval(() => {
     void runQrConnectInboxTick(session);
   }, WALLET_HOST_PAIRING_INBOX_INTERVAL_MS);
@@ -6002,8 +6007,8 @@ function startQrConnectRelay(
     window.setTimeout(() => {
       if (qrConnect.mode !== 'connected' || qrConnect.pairing !== session.pairing) return;
       qrConnect.mode = 'relay-active';
-      qrConnect.message = 'Keep this page open to approve Agentic requests.';
-      qrConnect.detail = 'When Agentic asks for a signature, this page will open your wallet for approval.';
+      qrConnect.message = t('Keep this page open to approve Agentic requests.');
+      qrConnect.detail = t('When Agentic asks for a signature, this page will open your wallet for approval.');
       render();
     }, 1600);
   }
@@ -6030,7 +6035,7 @@ async function runQrConnectInboxTick(session: EncryptedDeeplinkSessionRecord): P
     console.warn('[qr-connect] inbox fetch failed', err);
     qrConnect.consecutiveInboxFailures += 1;
     if (qrConnect.consecutiveInboxFailures >= 2) {
-      qrConnect.detail = 'Reconnecting to the pairing relay. Keep this page open; it will retry automatically.';
+      qrConnect.detail = t('Reconnecting to the pairing relay. Keep this page open; it will retry automatically.');
       render();
     }
     return;
@@ -6040,9 +6045,9 @@ async function runQrConnectInboxTick(session: EncryptedDeeplinkSessionRecord): P
     if (response.status === 404 || response.status === 410) {
       stopQrConnectRelay();
       clearQrConnectSession(session.pairing);
-      setQrConnectError('Agentic pairing expired.', 'Return to Agentic and scan a fresh QR code.');
+      setQrConnectError(t('Agentic pairing expired.'), t('Return to Agentic and scan a fresh QR code.'));
     } else if (response.status === 429) {
-      qrConnect.detail = 'The pairing relay is rate limiting this phone. Keep this page open; it will retry automatically.';
+      qrConnect.detail = t('The pairing relay is rate limiting this phone. Keep this page open; it will retry automatically.');
       render();
     }
     return;
@@ -6068,8 +6073,8 @@ async function openQrConnectWalletForRequest(
     qrConnect.pairing = session.pairing;
     qrConnect.requestId = requestId;
     qrConnect.walletUrl = '';
-    qrConnect.message = `Opening ${qrConnectWalletLabel(session.wallet)} approval.`;
-    qrConnect.detail = 'If this page is running inside the wallet browser, the approval prompt should appear here.';
+    qrConnect.message = tf('Opening {wallet} approval.', { wallet: qrConnectWalletLabel(session.wallet) });
+    qrConnect.detail = t('If this page is running inside the wallet browser, the approval prompt should appear here.');
     render();
 
     const injectedApproval = await approveWithInjectedWallet({
@@ -6106,7 +6111,7 @@ async function openQrConnectWalletForRequest(
       ? buildAndroidWalletIntentUrl(session.wallet, httpsWalletUrl)
       : httpsWalletUrl;
     qrConnect.walletUrl = walletUrl;
-    qrConnect.message = `Tap to approve in ${qrConnectWalletLabel(session.wallet)}.`;
+    qrConnect.message = tf('Tap to approve in {wallet}.', { wallet: qrConnectWalletLabel(session.wallet) });
     // Android Chrome only fires App Links on navigations that carry a user
     // activation. The relay receives sign requests by background poll, so
     // any JS-initiated `location.assign` to the wallet URL here is treated
@@ -6114,7 +6119,7 @@ async function openQrConnectWalletForRequest(
     // wallet's universal-link page then renders the Play Store install
     // prompt. Letting the user tap the rendered button below preserves the
     // gesture and lets the OS route the deeplink to the wallet app.
-    qrConnect.detail = 'Tap the button below — your wallet will open with the request to approve, then return you here automatically.';
+    qrConnect.detail = t('Tap the button below — your wallet will open with the request to approve, then return you here automatically.');
     render();
   } catch (err) {
     if (!await deliverQrConnectResult(
@@ -6390,8 +6395,8 @@ function resetQrConnectSession(): void {
   qrConnect.wallet = null;
   qrConnect.pairing = '';
   qrConnect.requestId = '';
-  qrConnect.message = 'QR relay reset.';
-  qrConnect.detail = 'Return to Agentic and scan a fresh Phantom or Solflare QR code.';
+  qrConnect.message = t('QR relay reset.');
+  qrConnect.detail = t('Return to Agentic and scan a fresh Phantom or Solflare QR code.');
   qrConnect.walletUrl = '';
   qrConnect.retryPayload = null;
   window.history.replaceState({}, '', new URL('/qr-connect', window.location.origin).toString());
@@ -6467,33 +6472,39 @@ function isQrConnectCluster(value: unknown): value is Cluster {
 function qrConnectPage(): string {
   const wallet = qrConnect.wallet;
   const label = qrConnectWalletLabel(wallet);
+  const message = qrConnect.message === 'Preparing wallet connection.'
+    ? t('Preparing wallet connection.')
+    : qrConnect.message;
+  const detail = qrConnect.detail === 'Checking the encrypted wallet response.'
+    ? t('Checking the encrypted wallet response.')
+    : qrConnect.detail;
   const logoMarkup = wallet
     ? brandLogoMarkup(wallet, 'qr-connect-logo')
     : `<span class="qr-connect-logo placeholder" aria-hidden="true"></span>`;
   const tone = qrConnect.mode === 'error' ? 'error' : qrConnect.mode === 'opening-wallet' ? 'pending' : 'success';
   const action = qrConnect.walletUrl
-    ? `<a class="button-link qr-connect-open-wallet" href="${escapeHtml(qrConnect.walletUrl)}" data-qr-connect-open-wallet>Open ${escapeHtml(label)}</a>`
+    ? `<a class="button-link qr-connect-open-wallet" href="${escapeHtml(qrConnect.walletUrl)}" data-qr-connect-open-wallet>${escapeHtml(tf('Open {brand}', { brand: label }))}</a>`
     : '';
   const retryAction = qrConnect.retryPayload
-    ? '<button type="button" class="primary" data-qr-connect-action="retry-delivery">Retry delivery</button>'
+    ? `<button type="button" class="primary" data-qr-connect-action="retry-delivery">${t('Retry delivery')}</button>`
     : '';
   return `
     <main class="qr-connect-page">
       <section class="qr-connect-card ${tone}" aria-live="polite">
         ${logoMarkup}
-        <p class="eyebrow mini">${escapeHtml(label)} QR relay</p>
-        <h1>${escapeHtml(qrConnect.message)}</h1>
-        <p>${escapeHtml(qrConnect.detail)}</p>
+        <p class="eyebrow mini">${escapeHtml(tf('{brand} QR relay', { brand: label }))}</p>
+        <h1>${escapeHtml(message)}</h1>
+        <p>${escapeHtml(detail)}</p>
         ${qrConnect.mode === 'processing' || qrConnect.mode === 'opening-wallet'
           ? '<span class="desktop-connect-flow-spinner qr-connect-spinner" aria-hidden="true"></span>'
           : ''}
         ${action}
         ${retryAction}
         ${qrConnect.mode === 'relay-active'
-          ? '<p class="qr-connect-warning">Closing or leaving this page stops signing until you scan again.</p>'
+          ? `<p class="qr-connect-warning">${escapeHtml(t('Closing or leaving this page stops signing until you scan again.'))}</p>`
           : ''}
         ${qrConnect.mode === 'relay-active' || qrConnect.mode === 'error'
-          ? '<button type="button" class="utility qr-connect-reset" data-qr-connect-action="start-over">Start over</button>'
+          ? `<button type="button" class="utility qr-connect-reset" data-qr-connect-action="start-over">${t('Start over')}</button>`
           : ''}
       </section>
     </main>
@@ -6550,7 +6561,7 @@ function walletHostOpeningSplashHtml(): string {
         <p>We waited a few seconds for the ${escapeHtml(brandLabel)} extension to announce itself on this page and didn't see it.</p>
         <p class="wallet-host-opening-hint">Install ${escapeHtml(brandLabel)} from your browser's extension store, unlock it, then click Retry. Or close this tab and pick a different connection method on the desktop.</p>
         <div class="wallet-host-opening-actions">
-          <button type="button" class="primary" data-wallet-host-action="retry">Retry</button>
+          <button type="button" class="primary" data-wallet-host-action="retry">${t('Retry')}</button>
         </div>
       </div>
     </aside>
@@ -6702,7 +6713,7 @@ async function submitEmbeddedWalletForm(): Promise<void> {
       await embeddedWallet.ipc.deleteWallet(draft.password);
       embeddedWallet.status = null;
       dispatchEmbeddedWalletOverlay({ type: 'open', mode: 'create' });
-      pushToast('info', 'Wallet reset', 'Set up a new Agentic Wallet to continue.');
+      pushToast('info', t('Wallet reset'), t('Set up a new Agentic Wallet to continue.'));
     } catch (err) {
       dispatchEmbeddedWalletOverlay({
         type: 'submitError',
@@ -6759,12 +6770,12 @@ async function copyEmbeddedWalletPhrase(): Promise<void> {
   if (!phrase) return;
   try {
     await navigator.clipboard.writeText(phrase);
-    pushToast('success', 'Phrase copied', 'Paste it into your password manager and clear the clipboard after.');
+    pushToast('success', t('Phrase copied'), t('Paste it into your password manager and clear the clipboard after.'));
   } catch (err) {
     pushToast(
       'error',
-      'Could not copy phrase',
-      err instanceof Error ? err.message : 'Clipboard access denied.',
+      t('Could not copy phrase'),
+      err instanceof Error ? err.message : t('Clipboard access denied.'),
     );
   }
 }
@@ -7254,16 +7265,16 @@ async function handleScanQrForBrand(brandId: string): Promise<void> {
   if (!isWalletConnectSupportedBrand(brandId)) {
     pushToast(
       'pending',
-      'Coming soon',
-      `${brandId} via WalletConnect ships in a later release.`,
+      t('Coming soon'),
+      tf('{brand} via WalletConnect ships in a later release.', { brand: brandId }),
     );
     return;
   }
   if (!WALLETCONNECT_PROJECT_ID) {
     pushToast(
       'error',
-      'WalletConnect not configured',
-      'Set VITE_AGENTIC_WC_PROJECT_ID before launching to enable mobile pairing.',
+      t('WalletConnect not configured'),
+      tf('Set {envVar} before launching to enable mobile pairing.', { envVar: 'VITE_AGENTIC_WC_PROJECT_ID' }),
     );
     return;
   }
@@ -7329,8 +7340,8 @@ async function handleScanQrAnyWallet(displayBrandId?: string): Promise<void> {
   if (!WALLETCONNECT_PROJECT_ID) {
     pushToast(
       'error',
-      'WalletConnect not configured',
-      'Set VITE_AGENTIC_WC_PROJECT_ID before launching to enable mobile pairing.',
+      t('WalletConnect not configured'),
+      tf('Set {envVar} before launching to enable mobile pairing.', { envVar: 'VITE_AGENTIC_WC_PROJECT_ID' }),
     );
     return;
   }
@@ -7391,12 +7402,12 @@ async function copyWalletConnectUri(): Promise<void> {
   if (!uri) return;
   try {
     await navigator.clipboard.writeText(uri);
-    pushToast('success', 'URI copied', 'Paste into a WC-compatible wallet.');
+    pushToast('success', t('URI copied'), t('Paste into a WC-compatible wallet.'));
   } catch (err) {
     pushToast(
       'error',
-      'Could not copy',
-      err instanceof Error ? err.message : 'Clipboard access denied.',
+      t('Could not copy'),
+      err instanceof Error ? err.message : t('Clipboard access denied.'),
     );
   }
 }
@@ -7598,7 +7609,7 @@ function handleLedgerDeviceDisconnect(): void {
     state.steps.connect = 'idle';
     clearWalletPathSession();
     savePersistedState();
-    pushToast('pending', 'Ledger disconnected', 'Reconnect the device and choose Ledger again.');
+    pushToast('pending', t('Ledger disconnected'), t('Reconnect the device and choose Ledger again.'));
   }
   if (ledger.overlay.mode !== 'closed') {
     dispatchLedgerOverlay({
@@ -8040,7 +8051,7 @@ function openLedgerOverlay(): void {
     prepareLedgerWebHidRuntime();
     if (ledger.webHidRuntimeStatus !== 'ready') {
       const message = ledgerUnavailableMessage();
-      pushToast('pending', 'Preparing Ledger USB', message);
+      pushToast('pending', t('Preparing Ledger USB'), message);
       closeSiblingOverlays('ledger');
       stopLedgerPoll();
       ledger.pairingToken += 1;
@@ -8056,7 +8067,7 @@ function openLedgerOverlay(): void {
     const message = ledgerUnavailableMessage();
     pushToast(
       'error',
-      'Ledger not available',
+      t('Ledger not available'),
       message,
     );
     closeSiblingOverlays('ledger');
@@ -8223,13 +8234,13 @@ function handleLedgerOverlayAction(action: string | undefined, address?: string)
     case 'copy-address':
       if (address) {
         if (!navigator.clipboard?.writeText) {
-          pushToast('error', 'Copy failed', 'Clipboard API is not available in this context.');
+          pushToast('error', t('Copy failed'), t('Clipboard API is not available in this context.'));
           return;
         }
         void navigator.clipboard.writeText(address).then(() => {
-          pushToast('success', 'Ledger address copied', short(address));
+          pushToast('success', t('Ledger address copied'), short(address));
         }).catch((err) => {
-          pushToast('error', 'Copy failed', err instanceof Error ? err.message : String(err));
+          pushToast('error', t('Copy failed'), err instanceof Error ? err.message : String(err));
         });
       }
       return;
@@ -8461,15 +8472,15 @@ function desktopMethodPickerBody(): string {
     <p class="desktop-connect-flow-lede">Choose how you'd like to connect your wallet.</p>
     <div class="desktop-connect-flow-methods">
       <button type="button" class="desktop-method-tile" data-desktop-flow-action="method:extension">
-        <span class="desktop-method-tile-title">Browser extension</span>
+        <span class="desktop-method-tile-title">${escapeHtmlForFlow(t('Browser extension'))}</span>
         <span class="desktop-method-tile-sub">${escapeHtmlForFlow(extensionSubcopy)}</span>
       </button>
       <button type="button" class="desktop-method-tile" data-desktop-flow-action="method:qr">
-        <span class="desktop-method-tile-title">Scan QR with phone</span>
+        <span class="desktop-method-tile-title">${escapeHtmlForFlow(t('Scan QR with phone'))}</span>
         <span class="desktop-method-tile-sub">${escapeHtmlForFlow(qrSubcopy)}</span>
       </button>
       <button type="button" class="desktop-method-tile" data-desktop-flow-action="method:ledger" ${ledgerAvailable ? '' : `disabled title="${escapeHtmlForFlow(ledgerDisabledReason)}"`}>
-        <span class="desktop-method-tile-title">Ledger hardware wallet</span>
+        <span class="desktop-method-tile-title">${escapeHtmlForFlow(t('Ledger hardware wallet'))}</span>
         <span class="desktop-method-tile-sub">${escapeHtmlForFlow(ledgerSubcopy)}</span>
       </button>
     </div>
@@ -8530,7 +8541,7 @@ function desktopQrBody(): string {
   const relayTarget = state.tauriNativeEnvironment.isTauriNative ? 'desktop' : 'Agentic';
   const cached = desktopConnect.deeplinkQr;
   const qrMarkup = cached.variant === wallet && cached.dataUrl
-    ? `<img class="walletconnect-qr-overlay-qr" src="${escapeHtmlForFlow(cached.dataUrl)}" alt="QR code that opens ${escapeHtmlForFlow(brandName)} mobile" />`
+    ? `<img class="walletconnect-qr-overlay-qr" src="${escapeHtmlForFlow(cached.dataUrl)}" alt="${escapeHtmlForFlow(tf('QR code that opens {brand} mobile', { brand: brandName }))}" />`
     : `<div class="walletconnect-qr-overlay-qr placeholder" aria-hidden="true"></div>`;
   const relayError = cached.variant === wallet && cached.relayError
     ? `<div class="desktop-connect-flow-deeplink-error" role="alert">${escapeHtmlForFlow(cached.relayError)}</div>`
@@ -8623,12 +8634,12 @@ function desktopAwaitingBrowserBody(): string {
       <p>Choose and authorize a wallet in the browser tab. This panel closes automatically once Agentic Desktop detects the wallet.</p>
       <div class="desktop-connect-flow-awaiting-status" role="status" aria-live="polite">
         <span class="desktop-connect-flow-spinner" aria-hidden="true"></span>
-        <span>Waiting for your wallet…</span>
+        <span>${escapeHtmlForFlow(t('Waiting for your wallet…'))}</span>
       </div>
       <div class="desktop-connect-flow-awaiting-actions">
-        <button type="button" class="utility" data-desktop-flow-action="awaiting-retry">Reopen browser</button>
+        <button type="button" class="utility" data-desktop-flow-action="awaiting-retry">${escapeHtmlForFlow(t('Reopen browser'))}</button>
       </div>
-      <p class="desktop-connect-flow-awaiting-hint">If nothing happens, make sure the extension is installed in your default browser. You can also press Back and pick a different connection method.</p>
+      <p class="desktop-connect-flow-awaiting-hint">${escapeHtmlForFlow(t('If nothing happens, make sure the extension is installed in your default browser. You can also press Back and pick a different connection method.'))}</p>
     </div>
   `;
 }
@@ -8809,8 +8820,8 @@ function handleDesktopQrWalletSelect(wallet: DesktopQrWallet): void {
   if ((wallet === 'backpack' || wallet === 'jupiter') && !WALLETCONNECT_PROJECT_ID) {
     pushToast(
       'error',
-      'WalletConnect not configured',
-      'Set VITE_AGENTIC_WC_PROJECT_ID before launching to enable Backpack or Jupiter mobile pairing.',
+      t('WalletConnect not configured'),
+      tf('Set {envVar} before launching to enable Backpack or Jupiter mobile pairing.', { envVar: 'VITE_AGENTIC_WC_PROJECT_ID' }),
     );
     return;
   }
@@ -8849,7 +8860,7 @@ function handleDesktopQrWalletSelect(wallet: DesktopQrWallet): void {
       stopDesktopPairing();
       pushToast(
         'error',
-        `Could not prepare ${wallet === 'phantom' ? 'Phantom' : 'Solflare'} relay`,
+        tf('Could not prepare {wallet} relay', { wallet: wallet === 'phantom' ? 'Phantom' : 'Solflare' }),
         relayError,
       );
       render();
@@ -8864,7 +8875,7 @@ function handleDesktopQrWalletSelect(wallet: DesktopQrWallet): void {
     desktopConnect.deeplinkQr = { variant: null, url: null, dataUrl: null, relayError: null };
     pushToast(
       'error',
-      `Could not prepare ${wallet === 'phantom' ? 'Phantom' : 'Solflare'} QR`,
+      tf('Could not prepare {wallet} QR', { wallet: wallet === 'phantom' ? 'Phantom' : 'Solflare' }),
       err instanceof Error ? err.message : String(err),
     );
     render();
@@ -8943,8 +8954,8 @@ function maybeWarnPairingTimeout(): void {
   p.warnedTimeout = true;
   pushToast(
     'pending',
-    'Still waiting…',
-    'Open your wallet on the phone and finish approving the connection.',
+    t('Still waiting…'),
+    t('Open your wallet on the phone and finish approving the connection.'),
   );
 }
 
@@ -8993,7 +9004,7 @@ async function adoptPairedWallet(input: {
   }
   savePersistedState();
   trackWalletConnectSuccess(walletConnectSurface(), state.cluster, 'qr_pairing_relay');
-  pushToast('success', `Connected via your phone — ${input.walletName}`, short(input.address));
+  pushToast('success', tf('Connected via your phone — {walletName}', { walletName: input.walletName }), short(input.address));
   dispatchDesktopConnectFlow({ type: 'reset' });
 }
 
@@ -9037,7 +9048,7 @@ async function openDesktopBrowserSignPage(approval: ApprovalResource): Promise<v
     await tauriNativeOpenExternalUrl(target);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    pushToast('error', 'Could not open approval page', message);
+    pushToast('error', t('Could not open approval page'), message);
     throw err;
   }
 }
@@ -9059,14 +9070,14 @@ async function openDesktopBrowserConnectPage(brandId?: string | null): Promise<v
     }
     if (!isDesktopBridgeReady(status)) {
       const detail = desktopBridgeNotReadyMessage(status, tauriNativeLastBridgeError());
-      pushToast('error', 'Wallet service not ready', detail);
+      pushToast('error', t('Wallet service not ready'), detail);
       dispatchDesktopConnectFlow({ type: 'reset' });
       return;
     }
   }
   if (!state.bridgeUrl || !state.bridgeToken) {
     const detail = desktopBridgeNotReadyMessage(status, tauriNativeLastBridgeError());
-    pushToast('error', 'Wallet service not ready', detail);
+    pushToast('error', t('Wallet service not ready'), detail);
     dispatchDesktopConnectFlow({ type: 'reset' });
     return;
   }
@@ -9074,7 +9085,7 @@ async function openDesktopBrowserConnectPage(brandId?: string | null): Promise<v
   void tauriNativeOpenExternalUrl(target).catch((err) => {
     pushToast(
       'error',
-      'Could not open browser',
+      t('Could not open browser'),
       err instanceof Error ? err.message : String(err),
     );
   });
@@ -9100,8 +9111,8 @@ function startAwaitingBrowserPoll(brandId?: string | null): void {
     // bridge sidecar controls.
     pushToast(
       'pending',
-      'Wallet service not ready',
-      'Restart Agentic Desktop, then reopen the browser wallet connection.',
+      t('Wallet service not ready'),
+      t('Restart Agentic Desktop, then reopen the browser wallet connection.'),
     );
     return;
   }
@@ -9116,8 +9127,8 @@ function startAwaitingBrowserPoll(brandId?: string | null): void {
       if (consecutive401 >= AWAITING_BROWSER_MAX_CONSECUTIVE_401) {
         pushToast(
           'error',
-          'Wallet connection expired',
-          'Restart Agentic Desktop, then try connecting the browser wallet again.',
+          t('Wallet connection expired'),
+          t('Restart Agentic Desktop, then try connecting the browser wallet again.'),
         );
         return 'stop';
       }
@@ -9137,8 +9148,8 @@ function startAwaitingBrowserPoll(brandId?: string | null): void {
       timedOut = true;
       pushToast(
         'pending',
-        'Still waiting…',
-        'The browser hasn\'t reported a connection yet. Check the wallet popup or click Reopen browser.',
+        t('Still waiting…'),
+        t('The browser hasn\'t reported a connection yet. Check the wallet popup or click Reopen browser.'),
       );
       // Continue polling — user may eventually complete the flow.
     }
@@ -9247,7 +9258,7 @@ async function adoptBridgeHost(
   }
   savePersistedState();
   trackWalletConnectSuccess('tauri_native', state.cluster, 'browser_extension_auto');
-  pushToast('success', 'Wallet connected via browser', short(address));
+  pushToast('success', t('Wallet connected via browser'), short(address));
   dispatchDesktopConnectFlow({ type: 'reset' });
 }
 
@@ -9730,7 +9741,7 @@ function installSpendBridgeHandlers(): void {
       .then(refreshSpendView)
       .catch((err) => {
         state.error = redactSecrets(err instanceof Error ? err.message : String(err));
-        pushToast('error', 'Spend action failed', state.error);
+        pushToast('error', t('Spend action failed'), state.error);
         render();
       });
   });
@@ -9743,7 +9754,7 @@ function installSpendBridgeHandlers(): void {
       .then(refreshSpendView)
       .catch((err) => {
         state.error = redactSecrets(err instanceof Error ? err.message : String(err));
-        pushToast('error', 'Repeat action failed', state.error);
+        pushToast('error', t('Repeat action failed'), state.error);
         render();
       });
   });
@@ -9765,7 +9776,7 @@ function installSpendBridgeHandlers(): void {
     if (tab === 'sessions' && open) {
       void openSessionDetail(open).catch((err) => {
         state.error = redactSecrets(err instanceof Error ? err.message : String(err));
-        pushToast('error', 'Could not open session', state.error);
+        pushToast('error', t('Could not open session'), state.error);
         render();
       });
     }
@@ -9927,16 +9938,16 @@ function agenticLoginPage(): string {
   const walletReady = Boolean(connected) && (!desiredWallet || desiredWallet === connected);
 
   // Use the SPA-wide escapeHtml helper (defined further down in this file).
-  const messageHtml = escapeHtml(message || 'No message provided.');
+  const messageHtml = escapeHtml(message || t('No message provided.'));
   const calloutHtml = (() => {
     if (!nonce || !message || !callback) {
-      return `<p class="agentic-login__error">Missing required parameters. Re-run the original CLI command.</p>`;
+      return `<p class="agentic-login__error">${escapeHtml(t('Missing required parameters. Re-run the original CLI command.'))}</p>`;
     }
     if (!connected) {
-      return `<p class="agentic-login__error">Connect your wallet from the main app first, then return to this tab.</p>`;
+      return `<p class="agentic-login__error">${escapeHtml(t('Connect your wallet from the main app first, then return to this tab.'))}</p>`;
     }
     if (desiredWallet && desiredWallet !== connected) {
-      return `<p class="agentic-login__error">CLI requested ${escapeHtml(desiredWallet.slice(0, 8))}… but the connected wallet is ${escapeHtml(connected.slice(0, 8))}…. Switch wallets and reload.</p>`;
+      return `<p class="agentic-login__error">${tf('CLI requested {requested}… but the connected wallet is {connected}…. Switch wallets and reload.', { requested: escapeHtml(desiredWallet.slice(0, 8)), connected: escapeHtml(connected.slice(0, 8)) })}</p>`;
     }
     return '';
   })();
@@ -9944,16 +9955,16 @@ function agenticLoginPage(): string {
   return `
     <section class="agentic-login">
       <h1>${escapeHtml(summary)}</h1>
-      <p>Your Solana Agent Wallet CLI is requesting a wallet signature. Review the message below and sign with your connected wallet — Agentic never sees your private key.</p>
+      <p>${escapeHtml(t('Your Solana Agent Wallet CLI is requesting a wallet signature. Review the message below and sign with your connected wallet — Agentic never sees your private key.'))}</p>
       <dl class="agentic-login__details">
-        <dt>Nonce</dt><dd><code>${escapeHtml(nonce || '—')}</code></dd>
-        <dt>Connected wallet</dt><dd><code>${escapeHtml(connected || 'not connected')}</code></dd>
-        <dt>Callback</dt><dd><code>${escapeHtml(callback || '—')}</code></dd>
+        <dt>${escapeHtml(t('Nonce'))}</dt><dd><code>${escapeHtml(nonce || '—')}</code></dd>
+        <dt>${escapeHtml(t('Connected wallet'))}</dt><dd><code>${escapeHtml(connected || t('not connected'))}</code></dd>
+        <dt>${escapeHtml(t('Callback'))}</dt><dd><code>${escapeHtml(callback || '—')}</code></dd>
       </dl>
-      <pre class="agentic-login__message" aria-label="Message to sign">${messageHtml}</pre>
+      <pre class="agentic-login__message" aria-label="${escapeHtml(t('Message to sign'))}">${messageHtml}</pre>
       ${calloutHtml}
       <button id="agenticLoginSign" class="agentic-login__sign" ${walletReady ? '' : 'disabled'}>
-        ${walletReady ? 'Sign and return to CLI' : 'Connect wallet to continue'}
+        ${walletReady ? escapeHtml(t('Sign and return to CLI')) : escapeHtml(t('Connect wallet to continue'))}
       </button>
       <p id="agenticLoginStatus" class="agentic-login__status" role="status"></p>
     </section>
@@ -10346,7 +10357,7 @@ function cliConnectView(): string {
     const logoId = state.selectedWalletLogoId ?? walletProviderLogoIdForName(state.selectedWalletName);
     const subtitleIcon = logoId ? brandLogo(logoId, 'cli-focused-wallet-logo') : undefined;
     return cliFocusedShell({
-      title: isDisconnect ? 'Disconnect wallet' : 'Wallet connected',
+      title: isDisconnect ? t('Disconnect wallet') : t('Wallet connected'),
       subtitle: short(state.address),
       ...(subtitleIcon ? { subtitleIcon } : {}),
       body: `
@@ -10357,7 +10368,7 @@ function cliConnectView(): string {
             : cliConnectedMessage()}</p>
         </div>
         <div class="cli-focused-actions">
-          <button type="button" id="disconnect" class="danger" ${state.busy ? 'disabled' : ''}>Disconnect wallet</button>
+          <button type="button" id="disconnect" class="danger" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Disconnect wallet'))}</button>
         </div>
       `,
       footer: cliReturnFooter(),
@@ -10373,7 +10384,7 @@ function cliConnectView(): string {
     ? `
       <div class="cli-focused-picker">
         <label class="field">
-          <span>Selected wallet</span>
+          <span>${escapeHtml(t('Selected wallet'))}</span>
           ${selectPicker({
             id: 'walletSelect',
             value: state.selectedWalletName,
@@ -10388,7 +10399,7 @@ function cliConnectView(): string {
       ? `
         <div class="cli-focused-picker">
           <label class="field">
-            <span>Selected wallet</span>
+            <span>${escapeHtml(t('Selected wallet'))}</span>
             ${selectPicker({
               id: 'iosWalletSelect',
               value: state.selectedIosWalletId,
@@ -10487,16 +10498,16 @@ function cliCloudSignOutView(): string {
   const logoId = state.selectedWalletLogoId ?? walletProviderLogoIdForName(state.selectedWalletName);
   const subtitleIcon = logoId && state.address ? brandLogo(logoId, 'cli-focused-wallet-logo') : undefined;
   return cliFocusedShell({
-    title: 'Cloud Storage signed out',
-    subtitle: state.address ? short(state.address) : 'Saved on device',
+    title: t('Cloud Storage signed out'),
+    subtitle: state.address ? short(state.address) : t('Saved on device'),
     ...(subtitleIcon ? { subtitleIcon } : {}),
     body: `
       <div class="cli-focused-success signature-state complete" role="status" aria-live="polite">
         <span class="cli-focused-tick" aria-hidden="true">✓</span>
-        <p>Cloud workspace session cleared. Plans, approvals, repeat payments, and proofs now stay saved on this device.</p>
+        <p>${escapeHtml(t('Cloud workspace session cleared. Plans, approvals, repeat payments, and proofs now stay saved on this device.'))}</p>
       </div>
       <div class="cli-cloud-safety-note">
-        <strong>Wallet connection is separate</strong>
+        <strong>${escapeHtml(t('Wallet connection is separate'))}</strong>
         <span>${escapeHtml(cliWalletPageCloudSignOutPairingNote())}</span>
       </div>
     `,
@@ -10532,8 +10543,8 @@ function cliDeleteStorageView(): string {
       : 'Wallet required';
   const buttonLabel = directSignerReady ? 'Sign and delete Cloud Storage' : 'Connect wallet and delete';
   return cliFocusedShell({
-    title: 'Delete Cloud Storage',
-    subtitle: connected ? short(connected) : 'Wallet required',
+    title: t('Delete Cloud Storage'),
+    subtitle: connected ? short(connected) : t('Wallet required'),
     ...(subtitleIcon ? { subtitleIcon } : {}),
     body: `
       ${warning ? `
@@ -10543,9 +10554,9 @@ function cliDeleteStorageView(): string {
       ` : ''}
       <section class="cli-cloud-signin-card signature-state ${walletPaired ? 'complete' : 'blocked'}">
         <div>
-          <span>Permanent deletion</span>
+          <span>${escapeHtml(t('Permanent deletion'))}</span>
           <strong>${escapeHtml(heading)}</strong>
-          <p>This deletes the Agentic Cloud workspace for this wallet. No transaction will be submitted, and this does not grant spending authority.</p>
+          <p>${escapeHtml(t('This deletes the Agentic Cloud workspace for this wallet. No transaction will be submitted, and this does not grant spending authority.'))}</p>
         </div>
         <button id="agenticLoginSign" type="button" class="primary danger" ${canStart && !state.busy ? '' : 'disabled'}>
           ${escapeHtml(buttonLabel)}
@@ -10558,11 +10569,11 @@ function cliDeleteStorageView(): string {
         ${cliCloudBenefit('Not deleted', 'On-chain Solana transaction history, anonymous analytics retained by Google, limited compliance/security logs, and support correspondence outside this wallet-scoped workspace.')}
       </section>
       <div class="cli-cloud-safety-note">
-        <strong>Requires wallet signature</strong>
-        <span>Signing proves you own the wallet whose Cloud Storage is being deleted. Agentic never receives your private key.</span>
+        <strong>${escapeHtml(t('Requires wallet signature'))}</strong>
+        <span>${escapeHtml(t('Signing proves you own the wallet whose Cloud Storage is being deleted. Agentic never receives your private key.'))}</span>
       </div>
     `,
-    footer: `<p class="cli-focused-note">Return to the terminal after the wallet signature completes.</p>`,
+    footer: `<p class="cli-focused-note">${escapeHtml(t('Return to the terminal after the wallet signature completes.'))}</p>`,
   });
 }
 
@@ -10570,16 +10581,16 @@ function cliCloudStorageEducation(): string {
   return `
     <div class="cli-cloud-storage-grid" aria-label="Cloud Storage modes">
       <article class="cli-cloud-storage-card active">
-        <span>Saved on device</span>
-        <strong>Active fallback</strong>
-        <p>Plans, approvals, repeat payments, and proofs stay on this device when Cloud Storage is signed out.</p>
-        <em>Saved on this device · No localhost required</em>
+        <span>${escapeHtml(t('Saved on device'))}</span>
+        <strong>${escapeHtml(t('Active fallback'))}</strong>
+        <p>${escapeHtml(t('Plans, approvals, repeat payments, and proofs stay on this device when Cloud Storage is signed out.'))}</p>
+        <em>${escapeHtml(t('Saved on this device · No localhost required'))}</em>
       </article>
       <article class="cli-cloud-storage-card">
         <span>Agentic Cloud</span>
-        <strong>Durable workflow state</strong>
-        <p>Optional sync for drafts, approvals, repeat payments, proofs, and done work across sessions and devices.</p>
-        <em>Wallet identity only · No spending authority</em>
+        <strong>${escapeHtml(t('Durable workflow state'))}</strong>
+        <p>${escapeHtml(t('Optional sync for drafts, approvals, repeat payments, proofs, and done work across sessions and devices.'))}</p>
+        <em>${escapeHtml(t('Wallet identity only · No spending authority'))}</em>
       </article>
     </div>
     <section class="cli-cloud-benefits" aria-label="Cloud Storage benefits">
@@ -10589,8 +10600,8 @@ function cliCloudStorageEducation(): string {
       ${cliCloudBenefit('No Key Custody', 'Cloud sign-in proves wallet ownership for sync. It never stores seed phrases, private keys, delegated signers, or AI provider keys.')}
     </section>
     <div class="cli-cloud-safety-note">
-      <strong>Wallet safety</strong>
-      <span>Cloud sign-in uses your wallet as identity only. It does not grant spending authority.</span>
+      <strong>${escapeHtml(t('Wallet safety'))}</strong>
+      <span>${escapeHtml(t('Cloud sign-in uses your wallet as identity only. It does not grant spending authority.'))}</span>
     </div>
   `;
 }
@@ -10930,7 +10941,7 @@ function aiConnectorsPage(): string {
             </p>
           </div>
           <label class="field compact ai-connectors-connector-field">
-            <span>Plan connector</span>
+            <span>${escapeHtml(t('Plan connector'))}</span>
             ${planConnectorSelectPicker({
               id: 'aiConnectorsConnector',
               value: connector,
@@ -10956,16 +10967,16 @@ function aiConnectorsPage(): string {
 
         <div class="ai-connectors-options" aria-label="Other setup options">
           <article>
-            <span>Secondary</span>
-            <h3>Use desktop app</h3>
-            <p>Install the full desktop app if you want a managed local runtime with the same Android pairing path.</p>
-            <a class="button-link" href="/desktop">Desktop app</a>
+            <span>${escapeHtml(t('Secondary'))}</span>
+            <h3>${escapeHtml(t('Use desktop app'))}</h3>
+            <p>${escapeHtml(t('Install the full desktop app if you want a managed local runtime with the same Android pairing path.'))}</p>
+            <a class="button-link" href="/desktop">${escapeHtml(t('Desktop app'))}</a>
           </article>
           <article>
-            <span>Fallback</span>
-            <h3>Use API key</h3>
-            <p>Use Android's API-key setup when this computer is unavailable or you do not want a local connector process.</p>
-            <a class="button-link" href="/app">Open app setup</a>
+            <span>${escapeHtml(t('Fallback'))}</span>
+            <h3>${escapeHtml(t('Use API key'))}</h3>
+            <p>${escapeHtml(t("Use Android's API-key setup when this computer is unavailable or you do not want a local connector process."))}</p>
+            <a class="button-link" href="/app">${escapeHtml(t('Open app setup'))}</a>
           </article>
         </div>
       </div>
@@ -10990,7 +11001,7 @@ function aiConnectorsReadinessPanel(readiness: AiConnectorsReadiness): string {
   return `
     <div class="ai-connectors-status-card ${escapeHtml(readiness.tone)}" data-ai-connectors-readiness="${escapeHtml(readiness.status)}" aria-live="polite">
       <div>
-        <span>Connector status</span>
+        <span>${escapeHtml(t('Connector status'))}</span>
         <strong>${escapeHtml(readiness.title)}</strong>
         <p>${escapeHtml(readiness.detail)}</p>
       </div>
@@ -11000,7 +11011,7 @@ function aiConnectorsReadinessPanel(readiness: AiConnectorsReadiness): string {
         data-ai-connectors-action="refresh-status"
         ${refreshDisabled ? 'disabled' : ''}
       >
-        Refresh status
+        ${escapeHtml(t('Refresh status'))}
       </button>
     </div>
   `;
@@ -11032,12 +11043,12 @@ function aiConnectorsQrPanel(readiness: AiConnectorsReadiness): string {
     ? `
       <div class="ai-connectors-pairing-code-panel">
         <div>
-          <span>Camera fallback</span>
-          <strong>Pairing code is available.</strong>
-          <p>Paste this exact code into the Android Plan Connector tab if camera scanning fails.</p>
+          <span>${escapeHtml(t('Camera fallback'))}</span>
+          <strong>${escapeHtml(t('Pairing code is available.'))}</strong>
+          <p>${escapeHtml(t('Paste this exact code into the Android Plan Connector tab if camera scanning fails.'))}</p>
         </div>
         <label class="ai-connectors-pairing-code-value">
-          <span>Pairing code</span>
+          <span>${escapeHtml(t('Pairing code'))}</span>
           <textarea readonly spellcheck="false">${escapeHtml(pairingCode)}</textarea>
         </label>
         <button
@@ -11045,25 +11056,25 @@ function aiConnectorsQrPanel(readiness: AiConnectorsReadiness): string {
           class="utility"
           data-ai-connectors-action="copy-pairing-code"
         >
-          Copy pairing code
+          ${escapeHtml(t('Copy pairing code'))}
         </button>
       </div>
     `
     : '';
   const qr = aiConnectorsPairingState.qrDataUrl
-    ? `<img src="${escapeHtml(aiConnectorsPairingState.qrDataUrl)}" alt="Android pairing QR code" />`
+    ? `<img src="${escapeHtml(aiConnectorsPairingState.qrDataUrl)}" alt="${escapeHtml(t('Android pairing QR code'))}" />`
     : pairingCode
       ? `
         <div class="ai-connectors-qr-fallback">
-          <span>Pairing code ready</span>
-          <strong>Pairing code</strong>
-          <em>Use the Copy pairing code button to paste it into Android.</em>
+          <span>${escapeHtml(t('Pairing code ready'))}</span>
+          <strong>${escapeHtml(t('Pairing code'))}</strong>
+          <em>${escapeHtml(t('Use the Copy pairing code button to paste it into Android.'))}</em>
         </div>
       `
       : `
         <div class="ai-connectors-qr-placeholder">
-          <span>QR locked</span>
-          <strong>Not ready</strong>
+          <span>${escapeHtml(t('QR locked'))}</span>
+          <strong>${escapeHtml(t('Not ready'))}</strong>
         </div>
       `;
   return `
@@ -11307,7 +11318,7 @@ async function runStartAiConnectorsPairing(options: { copyAfterStart?: boolean }
       connector,
       readiness: readiness.status,
     });
-    pushToast('error', 'Connector not ready', readiness.detail);
+    pushToast('error', t('Connector not ready'), readiness.detail);
     void refreshAiConnectorsReadiness(true);
     render();
     return null;
@@ -11365,7 +11376,7 @@ async function runStartAiConnectorsPairing(options: { copyAfterStart?: boolean }
       pairingCode: '',
       qrDataUrl: '',
     };
-    pushToast('error', 'Pairing QR failed', message);
+    pushToast('error', t('Pairing QR failed'), message);
   }
   render();
   return null;
@@ -11390,7 +11401,7 @@ async function runCopyAiConnectorsPairingCode(): Promise<void> {
       connector,
       readiness: readiness.status,
     });
-    pushToast('error', 'Pairing code unavailable', readiness.detail);
+    pushToast('error', t('Pairing code unavailable'), readiness.detail);
     void refreshAiConnectorsReadiness(true);
     render();
     return;
@@ -11412,14 +11423,14 @@ async function copyAiConnectorsPairingCode(
       source,
       pairingCodeChars: pairingCode.length,
     });
-    pushToast('success', 'Pairing code copied', 'Paste it into the Android Plan Connector tab.');
+    pushToast('success', t('Pairing code copied'), t('Paste it into the Android Plan Connector tab.'));
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Clipboard permission was denied.';
+    const message = err instanceof Error ? err.message : t('Clipboard permission was denied.');
     logDeviceAgentDiag('warn', 'ai-connectors.copy_pairing_code_failed', {
       source,
       message,
     });
-    pushToast('error', 'Copy failed', message);
+    pushToast('error', t('Copy failed'), message);
   }
 }
 
@@ -11457,7 +11468,7 @@ function startAiConnectorsPairingPoll(): void {
             status: 'paired',
             message: 'Android is paired. Keep this computer awake and the connector signed in.',
           };
-          pushToast('success', 'Android paired', 'The phone can now use this computer for AI planning.');
+          pushToast('success', t('Android paired'), t('The phone can now use this computer for AI planning.'));
           render();
           return;
         }
@@ -11521,12 +11532,12 @@ function homepageNav(activeRoute: AppRoute | null): string {
     ? NAV_ITEMS.filter((item) => !item.hideInTauri)
     : NAV_ITEMS;
   return `
-    <header class="homepage-nav" aria-label="Agentic navigation" data-site-nav ${activeRoute === '/app' ? 'data-layout="app-nav"' : ''}>
-      <a class="homepage-brand" href="/" aria-label="Agentic home" ${activeRoute === '/' ? 'aria-current="page"' : ''}>
+    <header class="homepage-nav" aria-label="${escapeHtml(t('Agentic navigation'))}" data-site-nav ${activeRoute === '/app' ? 'data-layout="app-nav"' : ''}>
+      <a class="homepage-brand" href="/" aria-label="${escapeHtml(t('Agentic home'))}" ${activeRoute === '/' ? 'aria-current="page"' : ''}>
         ${agenticMark()}
         <span>Agentic</span>
       </a>
-      <nav class="homepage-links" aria-label="Primary navigation" data-site-links>
+      <nav class="homepage-links" aria-label="${escapeHtml(t('Primary navigation'))}" data-site-links>
         ${visibleNavItems.map((item) => navLink(item, activeRoute)).join('')}
       </nav>
     </header>
@@ -11542,8 +11553,8 @@ function navLink(item: NavItem, activeRoute: AppRoute | null): string {
     item.mobileLabel ? 'has-mobile-label' : '',
   ].filter(Boolean).join(' ');
   const label = item.mobileLabel
-    ? `<span class="nav-label nav-label-full">${escapeHtml(item.label)}</span><span class="nav-label nav-label-mobile">${escapeHtml(item.mobileLabel)}</span>`
-    : `<span class="nav-label">${escapeHtml(item.label)}</span>`;
+    ? `<span class="nav-label nav-label-full">${escapeHtml(t(item.label))}</span><span class="nav-label nav-label-mobile">${escapeHtml(t(item.mobileLabel))}</span>`
+    : `<span class="nav-label">${escapeHtml(t(item.label))}</span>`;
   return `
     <a href="${escapeHtml(item.route)}" class="${className}" data-site-link="${escapeHtml(item.route)}" ${active ? 'aria-current="page"' : ''}>
       ${label}
@@ -11555,29 +11566,29 @@ function heroSection(): string {
   return `
     <section id="top" class="homepage-hero" aria-labelledby="hero-title">
       <div class="hero-copy">
-        <div class="chain-strip" aria-label="Network and signing layer">
+        <div class="chain-strip" aria-label="${escapeHtml(t('Network and signing layer'))}">
           <span class="logo-chip solana-chip">${brandLogo('solana', 'logo-chip-icon')}<span>Solana</span></span>
-          <span class="logo-chip" aria-label="Wallet Standard">${brandLogo('solana', 'logo-chip-icon')}<span class="chip-label chip-label-full">Wallet Standard</span><span class="chip-label chip-label-mobile" aria-hidden="true">Wallet Std</span></span>
-          ${IS_IOS_APP ? '' : `<span class="logo-chip" aria-label="Mobile Wallet Adapter">${brandLogo('solanaMobile', 'logo-chip-icon')}<span class="chip-label chip-label-full">Mobile Wallet Adapter</span><span class="chip-label chip-label-mobile" aria-hidden="true">MWA</span></span>`}
+          <span class="logo-chip" aria-label="${escapeHtml(t('Wallet Standard'))}">${brandLogo('solana', 'logo-chip-icon')}<span class="chip-label chip-label-full">${escapeHtml(t('Wallet Standard'))}</span><span class="chip-label chip-label-mobile" aria-hidden="true">Wallet Std</span></span>
+          ${IS_IOS_APP ? '' : `<span class="logo-chip" aria-label="${escapeHtml(t('Mobile Wallet Adapter'))}">${brandLogo('solanaMobile', 'logo-chip-icon')}<span class="chip-label chip-label-full">${escapeHtml(t('Mobile Wallet Adapter'))}</span><span class="chip-label chip-label-mobile" aria-hidden="true">MWA</span></span>`}
         </div>
-        <p class="eyebrow mini">Wallet authority for agents</p>
+        <p class="eyebrow mini">${escapeHtml(t('Wallet authority for agents'))}</p>
         <h1 id="hero-title">
-          <span>Let agents use your</span>
-          <span>Solana wallet</span>
-          <span>without giving</span>
-          <span>them one.</span>
+          <span>${escapeHtml(t('Let agents use your'))}</span>
+          <span>${escapeHtml(t('Solana wallet'))}</span>
+          <span>${escapeHtml(t('without giving'))}</span>
+          <span>${escapeHtml(t('them one.'))}</span>
         </h1>
         <p class="hero-lede">
-          <span>Agentic gives Claude, Codex, local MCP servers,</span>
-          <span>and app runtimes a single approval path</span>
-          <span>through the wallet you already trust.</span>
-          <span>Agents prepare the action;</span>
-          <span>your wallet remains the signer.</span>
+          <span>${escapeHtml(t('Agentic gives Claude, Codex, local MCP servers,'))}</span>
+          <span>${escapeHtml(t('and app runtimes a single approval path'))}</span>
+          <span>${escapeHtml(t('through the wallet you already trust.'))}</span>
+          <span>${escapeHtml(t('Agents prepare the action;'))}</span>
+          <span>${escapeHtml(t('your wallet remains the signer.'))}</span>
         </p>
         <div class="hero-command-area">
           ${commandDeck()}
-          <a class="button-link hero-app-link nav-pill-link launch-app-link mobile-redundant-nav" href="/app">Launch App</a>
-          <a class="button-link hero-demo-link mobile-redundant-nav" href="/demo">Launch Demo</a>
+          <a class="button-link hero-app-link nav-pill-link launch-app-link mobile-redundant-nav" href="/app">${escapeHtml(t('Launch App'))}</a>
+          <a class="button-link hero-demo-link mobile-redundant-nav" href="/demo">${escapeHtml(t('Launch Demo'))}</a>
         </div>
         ${agentRuntimeStrip()}
         ${heroWalletStrip()}
@@ -11592,9 +11603,9 @@ function commandDeck(): string {
   const copyId = runtimeCommandCopyId('hero', runtimePath);
   const copied = state.recentCopyId === copyId;
   return `
-    <div class="command-deck" aria-label="Runtime command deck">
-      <div class="command-deck-options" aria-label="Choose runtime path">
-        ${RUNTIME_PATHS.map(commandDeckOption).join('')}
+    <div class="command-deck" aria-label="${escapeHtml(t('Runtime command deck'))}">
+      <div class="command-deck-options" aria-label="${escapeHtml(t('Choose runtime path'))}">
+        ${runtimePaths().map(commandDeckOption).join('')}
       </div>
       <div class="command-readout ${copied ? 'copied' : ''}">
         ${commandDeckReadoutLine(runtimePath)}
@@ -11610,7 +11621,7 @@ function commandDeckReadoutLine(runtimePath: RuntimePath): string {
     return `
       <div class="command-readout-line link-readout">
         <span class="command-prompt" aria-hidden="true">→</span>
-        <span class="readout-label">Download route</span>
+        <span class="readout-label">${escapeHtml(t('Download route'))}</span>
         <code>${escapeHtml(runtimePath.href ?? runtimePath.command)}</code>
       </div>
     `;
@@ -11658,7 +11669,7 @@ function commandDeckAction(runtimePath: RuntimePath, copyId: string, copied: boo
       data-copy-name="${escapeHtml(runtimePath.copyName ?? runtimePath.label)}"
       title="Copy command: ${escapeHtml(runtimePath.command)}"
     >
-      ${copied ? 'Copied' : escapeHtml(runtimePath.actionLabel)}
+      ${copied ? escapeHtml(t('Copied')) : escapeHtml(runtimePath.actionLabel)}
     </button>
   `;
 }
@@ -11677,18 +11688,16 @@ function docsSection(): string {
     <section id="docs" class="docs-section" aria-labelledby="docs-title">
       <div class="section-heading">
         <!-- Docs eyebrow intentionally hidden. -->
-        <h2 id="docs-title">A local signing boundary for agent runtimes.</h2>
+        <h2 id="docs-title">${escapeHtml(t('A local signing boundary for agent runtimes.'))}</h2>
         <p>
-          Render serves this website, but Agentic's bridge, CLI, and Desktop App run locally beside the user's wallet.
-          ${IS_IOS_APP ? '' : 'Android users can use the hosted app in mobile browser surfaces that support Mobile Wallet Adapter. '}Agents
-          can ask for signatures, swaps, transfers, receipts, and approval requests without receiving a seed phrase,
-          keypair file, or server-side private key.
+          ${escapeHtml(t("Render serves this website, but Agentic's bridge, CLI, and Desktop App run locally beside the user's wallet."))}
+          ${IS_IOS_APP ? '' : escapeHtml(t('Android users can use the hosted app in mobile browser surfaces that support Mobile Wallet Adapter.')) + ' '}${escapeHtml(t('Agents can ask for signatures, swaps, transfers, receipts, and approval requests without receiving a seed phrase, keypair file, or server-side private key.'))}
         </p>
       </div>
       <div class="docs-grid">
-        ${docsCard('1. Launch the app', IS_IOS_APP ? 'Use the hosted app and guided demo to see wallet discovery, connection, and signing.' : 'Use the hosted app and guided demo to see wallet discovery, connection, signing, and Mobile Wallet Adapter readiness.')}
-        ${docsCard('2. Install a local runtime', 'Use the npm CLI, a standalone CLI binary, or the Desktop App when Codex, Claude, or an MCP client needs a persistent local bridge.')}
-        ${docsCard('3. Let agents request approval', 'Claude, Codex, MCP clients, and framework adapters send bounded actions to the local bridge; the wallet still signs every request.')}
+        ${docsCard(t('1. Launch the app'), IS_IOS_APP ? t('Use the hosted app and guided demo to see wallet discovery, connection, and signing.') : t('Use the hosted app and guided demo to see wallet discovery, connection, signing, and Mobile Wallet Adapter readiness.'))}
+        ${docsCard(t('2. Install a local runtime'), t('Use the npm CLI, a standalone CLI binary, or the Desktop App when Codex, Claude, or an MCP client needs a persistent local bridge.'))}
+        ${docsCard(t('3. Let agents request approval'), t('Claude, Codex, MCP clients, and framework adapters send bounded actions to the local bridge; the wallet still signs every request.'))}
       </div>
     </section>
   `;
@@ -11722,115 +11731,121 @@ interface AgenticLayerDocs {
   bets: AgenticLayerDocsBet[];
 }
 
-const AGENTIC_LAYER_DOCS: AgenticLayerDocs[] = [
-  {
-    id: 'payments',
-    eyebrow: 'Layer 1 / S1',
-    title: 'Agent Payments',
-    summary:
-      'The settlement layer for agent commerce: publish this wallet, receive signed payment requests, pay merchant carts, and route settlement through Solana rails without handing custody to the agent.',
-    surface: 'More / Agent Payments',
-    tabs: ['Profile', 'Pay Merchant', 'Incoming Requests'],
-    proof: 'Agents discover, request, or prepare. The connected wallet still approves and signs every payment.',
-    bets: [
-      {
-        code: 'S1.1',
-        title: 'AP2 inbound',
-        surface: 'Incoming Requests',
-        summary:
-          'External agents submit verified AP2 mandates that materialize as approval cards with agent metadata, payment caps, and AP2 receipts.',
-        logoId: 'agentRouter',
-      },
-      {
-        code: 'S1.2',
-        title: 'ACP outbound',
-        surface: 'Pay Merchant',
-        summary:
-          'Merchant carts become plain-English line items, recipient checks, and wallet-signed USDC payment approvals.',
-        logoId: 'solana',
-      },
-      {
-        code: 'S1.3',
-        title: 'A2A AgentCard',
-        surface: 'Profile',
-        summary:
-          'The wallet publishes discoverable capabilities at /.well-known/agent.json so compatible agents can negotiate with it programmatically.',
-        logoId: 'codex',
-      },
-      {
-        code: 'S1.5',
-        title: 'Bridge settlement',
-        surface: 'Connector router',
-        summary:
-          'Connector facts, bridge routes, and swap previews turn any-token intent into bounded settlement work before signing.',
-        logoId: 'wormhole',
-      },
-    ],
-  },
-  {
-    id: 'skills',
-    eyebrow: 'Layer 2 / S2',
-    title: 'Skills',
-    summary:
-      'The strategy marketplace on top of receipts and connector actions: install bounded recipes, approve each run, publish author workflows, and let receipts prove performance.',
-    surface: 'More / Skills',
-    tabs: ['Browse', 'Installed', 'My Profile', 'Publish'],
-    proof: 'Skills can schedule and propose work. Caps, receipts, and wallet approval remain the boundary.',
-    bets: [
-      {
-        code: 'S2.6',
-        title: 'Composable skills',
-        surface: 'Browse',
-        summary:
-          'Versioned recipes like DCA, yield rotation, stop loss, bridge idle USDC, and donations install with explicit caps.',
-        logoId: 'jupiter',
-      },
-      {
-        code: 'S2.3',
-        title: 'Receipt aggregator',
-        surface: 'My Profile',
-        summary:
-          'Evidence receipts roll into public wallet and skill stats so track records are verifiable instead of self-reported.',
-        logoId: 'solanaMobile',
-      },
-      {
-        code: 'S2.5',
-        title: 'Signals / copy-trading',
-        surface: 'Installed + receipts',
-        summary:
-          'Publisher receipts can fan out matching proposals to followers under follower-owned caps; every follower still approves.',
-        logoId: 'pyth',
-      },
-      {
-        code: 'S2.4',
-        title: 'Creator monetization',
-        surface: 'Publish',
-        summary:
-          'Authors can price skills with one-time, monthly, or performance-fee USDC rails using the same non-custodial approval model.',
-        logoId: 'save',
-      },
-    ],
-  },
-];
+function agenticLayerDocs(): AgenticLayerDocs[] {
+  return [
+    {
+      id: 'payments',
+      eyebrow: t('Layer 1 / S1'),
+      title: t('Agent Payments'),
+      summary: t(
+        'The settlement layer for agent commerce: publish this wallet, receive signed payment requests, pay merchant carts, and route settlement through Solana rails without handing custody to the agent.',
+      ),
+      surface: t('More / Agent Payments'),
+      tabs: [t('Profile'), t('Pay Merchant'), t('Incoming Requests')],
+      proof: t('Agents discover, request, or prepare. The connected wallet still approves and signs every payment.'),
+      bets: [
+        {
+          code: 'S1.1',
+          title: t('AP2 inbound'),
+          surface: t('Incoming Requests'),
+          summary: t(
+            'External agents submit verified AP2 mandates that materialize as approval cards with agent metadata, payment caps, and AP2 receipts.',
+          ),
+          logoId: 'agentRouter',
+        },
+        {
+          code: 'S1.2',
+          title: t('ACP outbound'),
+          surface: t('Pay Merchant'),
+          summary: t('Merchant carts become plain-English line items, recipient checks, and wallet-signed USDC payment approvals.'),
+          logoId: 'solana',
+        },
+        {
+          code: 'S1.3',
+          title: t('A2A AgentCard'),
+          surface: t('Profile'),
+          summary: t(
+            'The wallet publishes discoverable capabilities at /.well-known/agent.json so compatible agents can negotiate with it programmatically.',
+          ),
+          logoId: 'codex',
+        },
+        {
+          code: 'S1.5',
+          title: t('Bridge settlement'),
+          surface: t('Connector router'),
+          summary: t(
+            'Connector facts, bridge routes, and swap previews turn any-token intent into bounded settlement work before signing.',
+          ),
+          logoId: 'wormhole',
+        },
+      ],
+    },
+    {
+      id: 'skills',
+      eyebrow: t('Layer 2 / S2'),
+      title: t('Skills'),
+      summary: t(
+        'The strategy marketplace on top of receipts and connector actions: install bounded recipes, approve each run, publish author workflows, and let receipts prove performance.',
+      ),
+      surface: t('More / Skills'),
+      tabs: [t('Browse'), t('Installed'), t('My Profile'), t('Publish')],
+      proof: t('Skills can schedule and propose work. Caps, receipts, and wallet approval remain the boundary.'),
+      bets: [
+        {
+          code: 'S2.6',
+          title: t('Composable skills'),
+          surface: t('Browse'),
+          summary: t('Versioned recipes like DCA, yield rotation, stop loss, bridge idle USDC, and donations install with explicit caps.'),
+          logoId: 'jupiter',
+        },
+        {
+          code: 'S2.3',
+          title: t('Receipt aggregator'),
+          surface: t('My Profile'),
+          summary: t(
+            'Evidence receipts roll into public wallet and skill stats so track records are verifiable instead of self-reported.',
+          ),
+          logoId: 'solanaMobile',
+        },
+        {
+          code: 'S2.5',
+          title: t('Signals / copy-trading'),
+          surface: t('Installed + receipts'),
+          summary: t(
+            'Publisher receipts can fan out matching proposals to followers under follower-owned caps; every follower still approves.',
+          ),
+          logoId: 'pyth',
+        },
+        {
+          code: 'S2.4',
+          title: t('Creator monetization'),
+          surface: t('Publish'),
+          summary: t(
+            'Authors can price skills with one-time, monthly, or performance-fee USDC rails using the same non-custodial approval model.',
+          ),
+          logoId: 'save',
+        },
+      ],
+    },
+  ];
+}
 
 function agenticLayersDocsSection(): string {
   return `
     <section id="agentic-layers" class="agentic-layers-section" aria-labelledby="agentic-layers-title">
       <div class="section-heading agentic-layers-heading">
-        <p class="eyebrow mini">More menu architecture</p>
-        <h2 id="agentic-layers-title">The new app tabs are the settlement layer and the skills layer.</h2>
+        <p class="eyebrow mini">${escapeHtml(t('More menu architecture'))}</p>
+        <h2 id="agentic-layers-title">${escapeHtml(t('The new app tabs are the settlement layer and the skills layer.'))}</h2>
         <p>
-          The app's More menu now carries the two strategic layers from the blueprint. Agent Payments is Layer 1:
-          a wallet endpoint for AP2, ACP, AgentCard discovery, and settlement routing. Skills is Layer 2:
-          a marketplace of bounded recipes, receipt-backed profiles, Signals, and creator revenue.
+          ${escapeHtml(t("The app's More menu now carries the two strategic layers from the blueprint. Agent Payments is Layer 1: a wallet endpoint for AP2, ACP, AgentCard discovery, and settlement routing. Skills is Layer 2: a marketplace of bounded recipes, receipt-backed profiles, Signals, and creator revenue."))}
         </p>
       </div>
-      <div class="agentic-layer-grid" aria-label="Agentic Layer 1 and Layer 2 docs">
-        ${AGENTIC_LAYER_DOCS.map(agenticLayerDocsPanel).join('')}
+      <div class="agentic-layer-grid" aria-label="${escapeHtml(t('Agentic Layer 1 and Layer 2 docs'))}">
+        ${agenticLayerDocs().map(agenticLayerDocsPanel).join('')}
       </div>
-      <div class="agentic-layer-contract" aria-label="Layer contract">
-        <strong>Shared contract</strong>
-        <span>Agents prepare, users approve, wallets sign, receipts persist. Spending Sessions add revocable SPL-token caps for repeated small payments.</span>
+      <div class="agentic-layer-contract" aria-label="${escapeHtml(t('Layer contract'))}">
+        <strong>${escapeHtml(t('Shared contract'))}</strong>
+        <span>${escapeHtml(t('Agents prepare, users approve, wallets sign, receipts persist. Spending Sessions add revocable SPL-token caps for repeated small payments.'))}</span>
       </div>
     </section>
   `;
@@ -11854,7 +11869,7 @@ function agenticLayerDocsPanel(layer: AgenticLayerDocs): string {
         ${layer.bets.map(agenticLayerBetRow).join('')}
       </div>
       <div class="agentic-layer-proof">
-        <strong>Boundary</strong>
+        <strong>${escapeHtml(t('Boundary'))}</strong>
         <span>${escapeHtml(layer.proof)}</span>
       </div>
     </article>
@@ -11887,145 +11902,151 @@ interface ProtocolConnectorDocsCopy {
 
 type ProtocolConnectorDocsStatusTone = 'ready' | 'key' | 'planned';
 
-const PROTOCOL_CONNECTOR_DOC_GROUPS: ProtocolConnectorDocsGroup[] = [
-  {
-    title: 'Trading and liquidity',
-    detail: 'Swap routes, AMMs, pools, concentrated liquidity, DLMM positions, fees, and farm rewards.',
-    connectorIds: ['jupiter', 'raydium', 'orca', 'meteora'],
-  },
-  {
-    title: 'Lending and yield',
-    detail: 'Supply, borrow, repay, withdraw, vault positions, balances, reserves, account health, and position checks.',
-    connectorIds: ['kamino', 'marginfi', 'project0', 'drift', 'lulo', 'save'],
-  },
-  {
-    title: 'Liquid staking',
-    detail: 'Stake-pool reads, LST quotes, stake and unstake preparation, tickets, claims, and Infinity liquidity.',
-    connectorIds: ['jito', 'marinade', 'sanctum'],
-  },
-  {
-    title: 'NFTs and governance',
-    detail: 'Marketplace reads, listing and bid preparation, multisig proposals, vaults, and governance voting.',
-    connectorIds: ['magiceden', 'tensor', 'squads', 'realms'],
-  },
-  {
-    title: 'Cross-chain and oracle',
-    detail: 'Bridge routes, transfer status, recovery flows, oracle price evidence, and planned cross-chain swap coverage.',
-    connectorIds: ['wormhole', 'pyth', 'mayan'],
-  },
-];
+function protocolConnectorDocGroups(): ProtocolConnectorDocsGroup[] {
+  return [
+    {
+      title: t('Trading and liquidity'),
+      detail: t('Swap routes, AMMs, pools, concentrated liquidity, DLMM positions, fees, and farm rewards.'),
+      connectorIds: ['jupiter', 'raydium', 'orca', 'meteora'],
+    },
+    {
+      title: t('Lending and yield'),
+      detail: t('Supply, borrow, repay, withdraw, vault positions, balances, reserves, account health, and position checks.'),
+      connectorIds: ['kamino', 'marginfi', 'project0', 'drift', 'lulo', 'save'],
+    },
+    {
+      title: t('Liquid staking'),
+      detail: t('Stake-pool reads, LST quotes, stake and unstake preparation, tickets, claims, and Infinity liquidity.'),
+      connectorIds: ['jito', 'marinade', 'sanctum'],
+    },
+    {
+      title: t('NFTs and governance'),
+      detail: t('Marketplace reads, listing and bid preparation, multisig proposals, vaults, and governance voting.'),
+      connectorIds: ['magiceden', 'tensor', 'squads', 'realms'],
+    },
+    {
+      title: t('Cross-chain and oracle'),
+      detail: t('Bridge routes, transfer status, recovery flows, oracle price evidence, and planned cross-chain swap coverage.'),
+      connectorIds: ['wormhole', 'pyth', 'mayan'],
+    },
+  ];
+}
 
-const PROTOCOL_CONNECTOR_DOC_COPY: Record<ConnectedDappId, ProtocolConnectorDocsCopy> = {
-  drift: {
-    focus: 'Strategy vaults',
-    summary: 'Read Drift vaults and wallet positions, then prepare deposit and withdraw lifecycle approvals.',
-  },
-  jito: {
-    focus: 'JitoSOL staking',
-    summary: 'Read stake-pool state, wallet JitoSOL, and stake accounts; prepare stake, unstake, and withdrawal actions.',
-  },
-  jupiter: {
-    focus: 'Swap, token, price, lend',
-    summary: 'Preview and prepare swaps, refresh approval-time quotes, and gather token, price, lend, and prediction evidence.',
-  },
-  kamino: {
-    focus: 'Lend positions',
-    summary: 'Inspect Kamino reserves and wallet positions, prepare deposits or withdrawals, and produce earnings proof context.',
-  },
-  lulo: {
-    focus: 'Protected lending',
-    summary: 'Read Lulo rates, pool metadata, and wallet balances, then prepare deposit and withdrawal approvals.',
-  },
-  magiceden: {
-    focus: 'NFT marketplace',
-    summary: 'Read collections, listings, bids, activity, and wallet NFTs; prepare buy, list, bid, and cancellation reviews.',
-  },
-  marinade: {
-    focus: 'mSOL staking',
-    summary: 'Read Marinade state, stake accounts, tickets, and quotes; prepare liquid stake, unstake, delayed unstake, and claims.',
-  },
-  marginfi: {
-    focus: 'Borrow and repay',
-    summary: 'Read banks, accounts, and health previews, then prepare deposit, withdraw, borrow, and repay actions.',
-  },
-  project0: {
-    focus: 'Unified margin',
-    summary: 'Read P0 banks, strategies, wallet holdings, and account health, then prepare account, deposit, withdraw, borrow, and repay approvals.',
-  },
-  mayan: {
-    focus: 'Planned cross-chain swap',
-    summary: 'Roadmap entry for Mayan route reads, quote review, pending swap status, and resume or refund approvals.',
-  },
-  meteora: {
-    focus: 'DLMM positions',
-    summary: 'Read DLMM pools and positions, then prepare fee, reward, liquidity, and close-position approvals.',
-  },
-  orca: {
-    focus: 'Whirlpools',
-    summary: 'Read Whirlpool pools and positions, then prepare liquidity, fee, and reward actions for wallet approval.',
-  },
-  phoenix: {
-    focus: 'Perpetual futures',
-    summary: 'Read Phoenix markets, positions, funding, and health preview; prepare open / close / collateral / trigger / cancel actions for wallet approval.',
-  },
-  pyth: {
-    focus: 'Oracle evidence',
-    summary: 'Read price feeds, batch prices, feed search, on-chain accounts, and prepare optional price-update posts.',
-  },
-  raydium: {
-    focus: 'CPMM, CLMM, farms',
-    summary: 'Read Raydium pools and wallet positions, then prepare liquidity, fee collection, farm, and harvest actions.',
-  },
-  realms: {
-    focus: 'SPL governance',
-    summary: 'Read realms, proposals, vote records, and voting power; prepare vote and governance token approvals.',
-  },
-  sanctum: {
-    focus: 'LST router and Infinity',
-    summary: 'Read LSTs, Infinity pool state, positions, and quotes; prepare swaps, stake, unstake, and INF liquidity.',
-  },
-  save: {
-    focus: 'Save/Solend lend',
-    summary: 'Read reserves, markets, obligations, and health previews; prepare deposit, withdraw, borrow, and repay actions.',
-  },
-  squads: {
-    focus: 'Multisig proposals',
-    summary: 'Read multisigs, members, thresholds, vaults, and proposals; prepare transfer proposals and proposal decisions.',
-  },
-  tensor: {
-    focus: 'NFT marketplace',
-    summary: 'Read floors, listings, bids, recent sales, wallet NFTs, and exposure; prepare buy, list, bid, cancel, and sweep reviews.',
-  },
-  wormhole: {
-    focus: 'Bridge routes',
-    summary: 'Read routes, token snapshots, quotes, transfer status, and exposure; prepare transfer, redeem, and recovery flows.',
-  },
-};
+function protocolConnectorDocCopy(): Record<ConnectedDappId, ProtocolConnectorDocsCopy> {
+  return {
+    drift: {
+      focus: t('Strategy vaults'),
+      summary: t('Read Drift vaults and wallet positions, then prepare deposit and withdraw lifecycle approvals.'),
+    },
+    jito: {
+      focus: t('JitoSOL staking'),
+      summary: t('Read stake-pool state, wallet JitoSOL, and stake accounts; prepare stake, unstake, and withdrawal actions.'),
+    },
+    jupiter: {
+      focus: t('Swap, token, price, lend'),
+      summary: t('Preview and prepare swaps, refresh approval-time quotes, and gather token, price, lend, and prediction evidence.'),
+    },
+    kamino: {
+      focus: t('Lend positions'),
+      summary: t('Inspect Kamino reserves and wallet positions, prepare deposits or withdrawals, and produce earnings proof context.'),
+    },
+    lulo: {
+      focus: t('Protected lending'),
+      summary: t('Read Lulo rates, pool metadata, and wallet balances, then prepare deposit and withdrawal approvals.'),
+    },
+    magiceden: {
+      focus: t('NFT marketplace'),
+      summary: t('Read collections, listings, bids, activity, and wallet NFTs; prepare buy, list, bid, and cancellation reviews.'),
+    },
+    marinade: {
+      focus: t('mSOL staking'),
+      summary: t('Read Marinade state, stake accounts, tickets, and quotes; prepare liquid stake, unstake, delayed unstake, and claims.'),
+    },
+    marginfi: {
+      focus: t('Borrow and repay'),
+      summary: t('Read banks, accounts, and health previews, then prepare deposit, withdraw, borrow, and repay actions.'),
+    },
+    project0: {
+      focus: t('Unified margin'),
+      summary: t(
+        'Read P0 banks, strategies, wallet holdings, and account health, then prepare account, deposit, withdraw, borrow, and repay approvals.',
+      ),
+    },
+    mayan: {
+      focus: t('Planned cross-chain swap'),
+      summary: t('Roadmap entry for Mayan route reads, quote review, pending swap status, and resume or refund approvals.'),
+    },
+    meteora: {
+      focus: t('DLMM positions'),
+      summary: t('Read DLMM pools and positions, then prepare fee, reward, liquidity, and close-position approvals.'),
+    },
+    orca: {
+      focus: t('Whirlpools'),
+      summary: t('Read Whirlpool pools and positions, then prepare liquidity, fee, and reward actions for wallet approval.'),
+    },
+    phoenix: {
+      focus: t('Perpetual futures'),
+      summary: t(
+        'Read Phoenix markets, positions, funding, and health preview; prepare open / close / collateral / trigger / cancel actions for wallet approval.',
+      ),
+    },
+    pyth: {
+      focus: t('Oracle evidence'),
+      summary: t('Read price feeds, batch prices, feed search, on-chain accounts, and prepare optional price-update posts.'),
+    },
+    raydium: {
+      focus: t('CPMM, CLMM, farms'),
+      summary: t('Read Raydium pools and wallet positions, then prepare liquidity, fee collection, farm, and harvest actions.'),
+    },
+    realms: {
+      focus: t('SPL governance'),
+      summary: t('Read realms, proposals, vote records, and voting power; prepare vote and governance token approvals.'),
+    },
+    sanctum: {
+      focus: t('LST router and Infinity'),
+      summary: t('Read LSTs, Infinity pool state, positions, and quotes; prepare swaps, stake, unstake, and INF liquidity.'),
+    },
+    save: {
+      focus: t('Save/Solend lend'),
+      summary: t('Read reserves, markets, obligations, and health previews; prepare deposit, withdraw, borrow, and repay actions.'),
+    },
+    squads: {
+      focus: t('Multisig proposals'),
+      summary: t('Read multisigs, members, thresholds, vaults, and proposals; prepare transfer proposals and proposal decisions.'),
+    },
+    tensor: {
+      focus: t('NFT marketplace'),
+      summary: t('Read floors, listings, bids, recent sales, wallet NFTs, and exposure; prepare buy, list, bid, cancel, and sweep reviews.'),
+    },
+    wormhole: {
+      focus: t('Bridge routes'),
+      summary: t('Read routes, token snapshots, quotes, transfer status, and exposure; prepare transfer, redeem, and recovery flows.'),
+    },
+  };
+}
 
 function protocolConnectorsDocsSection(): string {
   return `
     <section id="protocol-connectors" class="protocol-connectors-section" aria-labelledby="protocol-connectors-title">
       <div class="section-heading">
-        <p class="eyebrow mini">Protocol connectors</p>
-        <h2 id="protocol-connectors-title">Agents can work inside the dApps users already trust.</h2>
+        <p class="eyebrow mini">${escapeHtml(t('Protocol connectors'))}</p>
+        <h2 id="protocol-connectors-title">${escapeHtml(t('Agents can work inside the dApps users already trust.'))}</h2>
         <p>
-          Agentic exposes ${PROTOCOL_CONNECTORS.length} protocol connector entries for reads, checks, prepared actions,
-          and proof-friendly approval flows. A connector never gives the agent custody; it gives the agent protocol
-          context and a bounded request for the user's wallet to review.
+          ${escapeHtml(tf("Agentic exposes {count} protocol connector entries for reads, checks, prepared actions, and proof-friendly approval flows. A connector never gives the agent custody; it gives the agent protocol context and a bounded request for the user's wallet to review.", { count: PROTOCOL_CONNECTORS.length }))}
         </p>
       </div>
-      <div class="protocol-connector-flow-grid" aria-label="Protocol connector workflow">
-        ${protocolConnectorFlowCard('1. Enable', 'Turn on only the protocols an agent may read or prepare against in app Preferences.')}
-        ${protocolConnectorFlowCard('2. Ask', 'Prepare with AI, create a one-time plan, or schedule recurring work against an enabled connector.')}
-        ${protocolConnectorFlowCard('3. Check', 'Use the inbox, one-time checks, recurring checks, and evidence receipts before approval.')}
-        ${protocolConnectorFlowCard('4. Sign', 'The agent prepares. The connected wallet signs only after user approval.')}
+      <div class="protocol-connector-flow-grid" aria-label="${escapeHtml(t('Protocol connector workflow'))}">
+        ${protocolConnectorFlowCard(t('1. Enable'), t('Turn on only the protocols an agent may read or prepare against in app Preferences.'))}
+        ${protocolConnectorFlowCard(t('2. Ask'), t('Prepare with AI, create a one-time plan, or schedule recurring work against an enabled connector.'))}
+        ${protocolConnectorFlowCard(t('3. Check'), t('Use the inbox, one-time checks, recurring checks, and evidence receipts before approval.'))}
+        ${protocolConnectorFlowCard(t('4. Sign'), t('The agent prepares. The connected wallet signs only after user approval.'))}
       </div>
       <div class="protocol-connector-groups">
-        ${PROTOCOL_CONNECTOR_DOC_GROUPS.map(protocolConnectorDocsGroup).join('')}
+        ${protocolConnectorDocGroups().map(protocolConnectorDocsGroup).join('')}
       </div>
       <div class="protocol-connectors-action">
-        <a class="button-link nav-pill-link launch-app-link" href="/app">Open App</a>
-        <span>Enable connectors per agent in Preferences. Runtime-ready connectors can read facts or prepare approval work; planned connectors stay labeled as planned.</span>
+        <a class="button-link nav-pill-link launch-app-link" href="/app">${escapeHtml(t('Open App'))}</a>
+        <span>${escapeHtml(t('Enable connectors per agent in Preferences. Runtime-ready connectors can read facts or prepare approval work; planned connectors stay labeled as planned.'))}</span>
       </div>
     </section>
   `;
@@ -12057,7 +12078,7 @@ function protocolConnectorDocsGroup(group: ProtocolConnectorDocsGroup): string {
 function protocolConnectorDocsCard(id: ConnectedDappId): string {
   const connector = getAdapterMeta(id);
   if (!connector) return '';
-  const copy = PROTOCOL_CONNECTOR_DOC_COPY[id];
+  const copy = protocolConnectorDocCopy()[id];
   const status = protocolConnectorDocsStatus(connector);
   const labels = protocolConnectorDocsCapabilityLabels(connector);
   return `
@@ -12079,20 +12100,20 @@ function protocolConnectorDocsCard(id: ConnectedDappId): string {
 }
 
 function protocolConnectorDocsStatus(connector: ProtocolConnector): { label: string; tone: ProtocolConnectorDocsStatusTone } {
-  if (!connector.actionSource && connector.readTools.length === 0) return { label: 'Planned', tone: 'planned' };
-  if (connector.requiresClientKey) return { label: 'API key', tone: 'key' };
-  return { label: connector.actionSource === 'blink' ? 'Blink' : 'First-class', tone: 'ready' };
+  if (!connector.actionSource && connector.readTools.length === 0) return { label: t('Planned'), tone: 'planned' };
+  if (connector.requiresClientKey) return { label: t('API key'), tone: 'key' };
+  return { label: connector.actionSource === 'blink' ? 'Blink' : t('First-class'), tone: 'ready' };
 }
 
 function protocolConnectorDocsCapabilityLabels(connector: ProtocolConnector): string[] {
   const labels: string[] = [];
-  if (connectorHasCapability(connector, 'read_positions')) labels.push('Positions');
-  if (connectorHasCapability(connector, 'read_rewards')) labels.push('Rewards');
-  if (connectorHasCapability(connector, 'read_markets')) labels.push('Markets');
+  if (connectorHasCapability(connector, 'read_positions')) labels.push(t('Positions'));
+  if (connectorHasCapability(connector, 'read_rewards')) labels.push(t('Rewards'));
+  if (connectorHasCapability(connector, 'read_markets')) labels.push(t('Markets'));
   if (connectorHasCapability(connector, 'blink_actions')) labels.push('Blinks');
-  if (connector.actionSource === 'first-class-adapter') labels.push('Prepared actions');
-  if (connector.actionSource === 'blink') labels.push('Blink actions');
-  return labels.length ? labels.slice(0, 4) : ['Roadmap'];
+  if (connector.actionSource === 'first-class-adapter') labels.push(t('Prepared actions'));
+  if (connector.actionSource === 'blink') labels.push(t('Blink actions'));
+  return labels.length ? labels.slice(0, 4) : [t('Roadmap')];
 }
 
 function heroTerminalPreview(): string {
@@ -12152,7 +12173,7 @@ function agentRuntimeStrip(): string {
     { name: 'Solana Agent Kit', logoId: 'solana' },
   ];
   return `
-    <div class="integration-strip" aria-label="Agent runtimes">
+    <div class="integration-strip" aria-label="${escapeHtml(t('Agent runtimes'))}">
       ${runtimes
         .map(
           (runtime) => `
@@ -12177,11 +12198,11 @@ function heroWalletStrip(): string {
     ...(IS_IOS_APP ? [] : [{ name: 'Seed Vault' as const, logoId: 'seedVault' as BrandLogoId }]),
   ];
   return `
-    <div class="wallet-chip-strip" aria-label="Supported wallet examples">
+    <div class="wallet-chip-strip" aria-label="${escapeHtml(t('Supported wallet examples'))}">
       ${wallets.map((wallet) => compactWalletChip(wallet.name, wallet.logoId)).join('')}
       <span class="wallet-chip standard-chip">
         ${brandLogo('solana', 'wallet-chip-icon')}
-        <span>${IS_IOS_APP ? 'Wallet Standard' : 'Wallet Standard / MWA'}</span>
+        <span>${escapeHtml(IS_IOS_APP ? t('Wallet Standard') : t('Wallet Standard / MWA'))}</span>
       </span>
     </div>
   `;
@@ -12201,28 +12222,32 @@ function gapSection(): string {
   return `
     <section class="gap-section" aria-labelledby="gap-title">
       <div class="gap-copy">
-        <p class="eyebrow mini">The gap</p>
+        <p class="eyebrow mini">${escapeHtml(t('The gap'))}</p>
         <h2 id="gap-title">
-          <span>Solana lacked a universal agent-to-wallet approval layer.</span>
+          <span>${escapeHtml(t('Solana lacked a universal agent-to-wallet approval layer.'))}</span>
         </h2>
         <p class="gap-risks">
-          Private keys inside agents are unsafe.<br>
-          Funded agent wallets fragment users.<br>
-          Single-wallet flows do not scale.
+          ${escapeHtml(t('Private keys inside agents are unsafe.'))}<br>
+          ${escapeHtml(t('Funded agent wallets fragment users.'))}<br>
+          ${escapeHtml(t('Single-wallet flows do not scale.'))}
         </p>
-        <p class="gap-accent">Agentic is the multi-wallet approval layer.</p>
-        <p class="gap-close">Agents prepare.<br><strong>Your wallet signs.</strong></p>
+        <p class="gap-accent">${escapeHtml(t('Agentic is the multi-wallet approval layer.'))}</p>
+        <p class="gap-close">${escapeHtml(t('Agents prepare.'))}<br><strong>${escapeHtml(t('Your wallet signs.'))}</strong></p>
       </div>
       <div class="gap-body">
-        <div class="gap-proof-grid" aria-label="Current signing models">
-          ${gapProof('Private-key MCP', 'SOLANA_PRIVATE_KEY=... makes the agent or server the signer.', 'Custody')}
-          ${gapProof('Phantom MCP', 'Creates a new dedicated agent wallet, then asks the user to fund it.', 'Separate signer')}
-          ${gapProof('Read-only / link MCP', 'Can quote or hand off to a product page, but has no reusable signing backend.', 'No generic signing')}
+        <div class="gap-proof-grid" aria-label="${escapeHtml(t('Current signing models'))}">
+          ${gapProof(t('Private-key MCP'), t('SOLANA_PRIVATE_KEY=... makes the agent or server the signer.'), t('Custody'))}
+          ${gapProof(t('Phantom MCP'), t('Creates a new dedicated agent wallet, then asks the user to fund it.'), t('Separate signer'))}
+          ${gapProof(t('Read-only / link MCP'), t('Can quote or hand off to a product page, but has no reusable signing backend.'), t('No generic signing'))}
         </div>
         <p class="gap-answer">
-          Agentic routes each request to the user's existing Solana wallet: Phantom, Solflare, Backpack,
-          ${IS_IOS_APP ? 'Wallet Standard, and iOS wallet links' : 'Seed Vault, Wallet Standard, MWA, and iOS wallet links'}. The agent gets the approved result,
-          never the key.
+          ${escapeHtml(
+            tf("Agentic routes each request to the user's existing Solana wallet: {wallets}. The agent gets the approved result, never the key.", {
+              wallets: IS_IOS_APP
+                ? 'Phantom, Solflare, Backpack, Wallet Standard, and iOS wallet links'
+                : 'Phantom, Solflare, Backpack, Seed Vault, Wallet Standard, MWA, and iOS wallet links',
+            }),
+          )}
         </p>
       </div>
     </section>
@@ -12233,50 +12258,50 @@ function walletDirectorySection(): string {
   return `
     <section id="wallets" class="wallet-directory-section" aria-labelledby="wallet-directory-title">
       <div class="section-heading">
-        <p class="eyebrow mini">Wallet directory</p>
-        <h2 id="wallet-directory-title">Use the wallet users already picked.</h2>
+        <p class="eyebrow mini">${escapeHtml(t('Wallet directory'))}</p>
+        <h2 id="wallet-directory-title">${escapeHtml(t('Use the wallet users already picked.'))}</h2>
         <p>
-          ${IS_IOS_APP
-            ? 'Agentic targets Solana wallet authority through Wallet Standard and compatible provider surfaces.'
-            : 'Agentic targets Solana wallet authority through Wallet Standard, Mobile Wallet Adapter, Seed Vault, and compatible provider surfaces.'} Discovered wallets use their provider-supplied icons.
+          ${escapeHtml(IS_IOS_APP
+            ? t('Agentic targets Solana wallet authority through Wallet Standard and compatible provider surfaces.')
+            : t('Agentic targets Solana wallet authority through Wallet Standard, Mobile Wallet Adapter, Seed Vault, and compatible provider surfaces.'))} ${escapeHtml(t('Discovered wallets use their provider-supplied icons.'))}
         </p>
       </div>
       <div class="wallet-directory-grid">
         ${walletDirectoryCard(
           'Phantom',
-          'Browser and mobile approvals through the user-owned Phantom signer.',
+          t('Browser and mobile approvals through the user-owned Phantom signer.'),
           ['phantom'],
           'phantom',
         )}
         ${walletDirectoryCard(
           'Solflare',
-          'Wallet Standard signing without moving custody into an agent runtime.',
+          t('Wallet Standard signing without moving custody into an agent runtime.'),
           ['solflare'],
           'solflare',
         )}
         ${walletDirectoryCard(
           'Backpack',
-          'Installed wallet approval for agent-prepared messages and transactions.',
+          t('Installed wallet approval for agent-prepared messages and transactions.'),
           ['backpack'],
           'backpack',
         )}
         ${walletDirectoryCard(
           'Jupiter Mobile',
-          'Mobile approval path for swap-aware wallet flows and prepared actions.',
+          t('Mobile approval path for swap-aware wallet flows and prepared actions.'),
           ['jupiter'],
           'jupiter',
         )}
         ${IS_IOS_APP ? '' : walletDirectoryCard(
           'Seed Vault',
-          'Android hardware-backed custody through Mobile Wallet Adapter surfaces.',
+          t('Android hardware-backed custody through Mobile Wallet Adapter surfaces.'),
           ['seed vault', 'seedvault'],
           'seedVault',
         )}
         ${walletDirectoryCard(
           IS_IOS_APP ? 'Wallet Standard' : 'Wallet Standard / MWA',
           IS_IOS_APP
-            ? 'One adapter surface for browser wallets and wallet in-app browsers.'
-            : 'One adapter surface for browser wallets, Android MWA, and wallet in-app browsers.',
+            ? t('One adapter surface for browser wallets and wallet in-app browsers.')
+            : t('One adapter surface for browser wallets, Android MWA, and wallet in-app browsers.'),
           ['wallet standard', 'mobile wallet adapter', 'mwa'],
           'solana',
           true,
@@ -12284,9 +12309,9 @@ function walletDirectorySection(): string {
       </div>
       <div class="wallet-directory-action">
         <button data-start-action="discover" class="primary" ${state.busy ? 'disabled' : ''}>
-          Discover Wallets
+          ${escapeHtml(t('Discover Wallets'))}
         </button>
-        <span>${state.wallets.length ? `${state.wallets.length} provider(s) discovered in this browser.` : 'Provider icons appear after discovery.'}</span>
+        <span>${escapeHtml(state.wallets.length ? tf('{count} provider(s) discovered in this browser.', { count: state.wallets.length }) : t('Provider icons appear after discovery.'))}</span>
       </div>
     </section>
   `;
@@ -12307,7 +12332,7 @@ function walletDirectoryCard(
         ${walletIcon(wallet, providerInitials(name), 'wallet-directory-icon', logoId)}
         <div>
           <h3>${escapeHtml(wallet?.name ?? name)}</h3>
-          <span>${detected ? 'Detected provider' : standard ? 'Adapter surface' : 'Supported path'}</span>
+          <span>${escapeHtml(detected ? t('Detected provider') : standard ? t('Adapter surface') : t('Supported path'))}</span>
         </div>
       </div>
       <p>${escapeHtml(detail)}</p>
@@ -12353,8 +12378,8 @@ function cliHeroSection(): string {
         <div class="terminal-preview-body">
           <p><span>$</span> ${escapeHtml(NPM_EXEC_COMMAND)}<i class="terminal-caret" aria-hidden="true"></i></p>
           <p class="warn">bridge starts at http://127.0.0.1:8787</p>
-          <p><span>wallet</span> ${IS_IOS_APP ? 'Phantom, Solflare, Backpack, or Wallet Standard' : 'Phantom, Solflare, Backpack, Wallet Standard, or MWA'}</p>
-          <p><span>agent</span> prepare transfer, swap, deposit, withdrawal, or Blink action</p>
+          <p><span>wallet</span> ${escapeHtml(IS_IOS_APP ? t('Phantom, Solflare, Backpack, or Wallet Standard') : t('Phantom, Solflare, Backpack, Wallet Standard, or MWA'))}</p>
+          <p><span>agent</span> ${escapeHtml(t('prepare transfer, swap, deposit, withdrawal, or Blink action'))}</p>
           <p class="ok">result wallet approval required before signing</p>
         </div>
       </div>
@@ -12373,7 +12398,7 @@ function desktopHeroSection(): string {
       <div class="tooling-hero-copy">
         <div class="tooling-chip-strip" aria-label="Desktop app surfaces">
           <span class="logo-chip solana-chip">${brandLogo('solana', 'logo-chip-icon')}<span>Solana</span></span>
-          <span class="logo-chip">${brandLogo('phantom', 'logo-chip-icon')}<span>Wallet approvals</span></span>
+          <span class="logo-chip">${brandLogo('phantom', 'logo-chip-icon')}<span>${escapeHtml(t('Wallet approvals'))}</span></span>
           ${IS_IOS_APP ? '' : `<span class="logo-chip">${brandLogo('solanaMobile', 'logo-chip-icon')}<span>MWA</span></span>`}
         </div>
         <p class="eyebrow mini">Desktop App</p>
@@ -12449,13 +12474,13 @@ function cliInstallSection(): string {
       <div class="runtime-grid">
         <article class="runtime-card">
           <span class="runtime-kicker">npm global</span>
-          <h3>Install once</h3>
+          <h3>${escapeHtml(t('Install once'))}</h3>
           <p>Install the command globally, then run <code>solana-agent-wallet app</code> from any terminal.</p>
           ${runtimeCommandRow('Global install', NPM_GLOBAL_INSTALL_COMMAND, 'Copy command')}
         </article>
         <article class="runtime-card">
           <span class="runtime-kicker">npm exec</span>
-          <h3>Run without installing</h3>
+          <h3>${escapeHtml(t('Run without installing'))}</h3>
           <p>Use npm's one-shot execution path to start the terminal approval app.</p>
           ${runtimeCommandRow('One-shot app', NPM_EXEC_COMMAND, 'Copy command')}
         </article>
@@ -12478,18 +12503,16 @@ function desktopDownloadSection(): string {
     <section id="desktop" class="desktop-section" aria-labelledby="desktop-title">
       <div class="section-heading">
         <!-- Desktop App eyebrow intentionally hidden. -->
-        <h2 id="desktop-title">Download the Agentic Desktop App.</h2>
+        <h2 id="desktop-title">${escapeHtml(t('Download the Agentic Desktop App.'))}</h2>
         <p>
-          The Desktop App is optional easy mode for the local bridge, Needs Approval queue, logs, and diagnostics. Use it
-          when you want app controls instead of terminal commands. Browser extension wallets still approve every
-          signing request through the external wallet host.
+          ${escapeHtml(t('The Desktop App is optional easy mode for the local bridge, Needs Approval queue, logs, and diagnostics. Use it when you want app controls instead of terminal commands. Browser extension wallets still approve every signing request through the external wallet host.'))}
         </p>
       </div>
       <div class="download-grid desktop-download-grid">
-        ${DESKTOP_RELEASE_ASSETS.map(([label, asset]) => downloadCard(label, asset, 'Desktop installer', DESKTOP_RELEASE_BASE_URL, 'desktop')).join('')}
+        ${DESKTOP_RELEASE_ASSETS.map(([label, asset]) => downloadCard(label, asset, t('Desktop installer'), DESKTOP_RELEASE_BASE_URL, 'desktop')).join('')}
       </div>
       <p class="download-note">
-        Release artifacts are attached to GitHub Releases. If a platform build is not available yet, use the CLI install path above.
+        ${escapeHtml(t('Release artifacts are attached to GitHub Releases. If a platform build is not available yet, use the CLI install path above.'))}
       </p>
     </section>
   `;
@@ -12500,24 +12523,22 @@ function androidDownloadSection(): string {
     <section id="android" class="android-section" aria-labelledby="android-title">
       <div class="section-heading">
         <!-- Android eyebrow intentionally hidden. -->
-        <h2 id="android-title">Install the Agentic Android app.</h2>
+        <h2 id="android-title">${escapeHtml(t('Install the Agentic Android app.'))}</h2>
         <p>
-          The Android build is a bundled native app shell for Agentic with native Solana Mobile Wallet Adapter signing.
-          The optional hosted web/TWA fallback stays disabled unless a build explicitly enables it.
+          ${escapeHtml(t('The Android build is a bundled native app shell for Agentic with native Solana Mobile Wallet Adapter signing. The optional hosted web/TWA fallback stays disabled unless a build explicitly enables it.'))}
         </p>
       </div>
       <div class="download-section">
         <div class="download-section-head">
-          <h3>Android release artifacts</h3>
-          <a href="${ANDROID_RELEASE_PAGE_URL}" target="_blank" rel="noreferrer">View all releases</a>
+          <h3>${escapeHtml(t('Android release artifacts'))}</h3>
+          <a href="${ANDROID_RELEASE_PAGE_URL}" target="_blank" rel="noreferrer">${escapeHtml(t('View all releases'))}</a>
         </div>
         <div class="download-grid android-download-grid">
-          ${ANDROID_RELEASE_ASSETS.map(([label, asset]) => downloadCard(label, asset, label.includes('Bundle') ? 'Play release' : 'Android install', ANDROID_RELEASE_BASE_URL)).join('')}
+          ${ANDROID_RELEASE_ASSETS.map(([label, asset]) => downloadCard(label, asset, label.includes('Bundle') ? t('Play release') : t('Android install'), ANDROID_RELEASE_BASE_URL)).join('')}
         </div>
       </div>
       <p class="download-note">
-        Use the APK for direct install testing and the AAB for Play or managed release pipelines. If a build enables
-        hosted web/TWA fallback, production trusted mode requires Digital Asset Links for the signing certificate.
+        ${escapeHtml(t('Use the APK for direct install testing and the AAB for Play or managed release pipelines. If a build enables hosted web/TWA fallback, production trusted mode requires Digital Asset Links for the signing certificate.'))}
       </p>
     </section>
   `;
@@ -12527,30 +12548,50 @@ function homepageDemoCtaSection(): string {
   return `
     <section class="homepage-demo-cta" aria-labelledby="homepage-demo-title">
       <div>
-        <p class="eyebrow mini">Approval workspace</p>
-        <h2 id="homepage-demo-title">Open the real wallet approval workspace.</h2>
+        <p class="eyebrow mini">${escapeHtml(t('Approval workspace'))}</p>
+        <h2 id="homepage-demo-title">${escapeHtml(t('Open the real wallet approval workspace.'))}</h2>
         <p>
-          Launch App opens the browser and mobile-web approval surface. The demo stays available when you want a guided
-          preview before connecting a wallet.
+          ${escapeHtml(t('Launch App opens the browser and mobile-web approval surface. The demo stays available when you want a guided preview before connecting a wallet.'))}
         </p>
       </div>
       <div class="homepage-cta-actions">
-        <a class="button-link nav-pill-link launch-app-link mobile-redundant-nav" href="/app">Launch App</a>
-        <a class="button-link mobile-redundant-nav" href="/demo">Preview Demo</a>
+        <a class="button-link nav-pill-link launch-app-link mobile-redundant-nav" href="/app">${escapeHtml(t('Launch App'))}</a>
+        <a class="button-link mobile-redundant-nav" href="/demo">${escapeHtml(t('Preview Demo'))}</a>
       </div>
     </section>
   `;
 }
 
-// === /demo localization (Android dApp language switcher) ===
-// Demo copy is authored once in English; ./demo-i18n carries the translations.
-// `td` wraps inline chrome literals; `localizeScenario`/`localizePlan` deep-translate
-// the centralized scenario/plan data once per render so every downstream render helper
-// emits translated values with no further edits. English short-circuits to the identity.
+// === App-wide UI localization (Android-only) ===
+// The app is authored once in English; ./demo-i18n carries the translations (catalog keyed by the
+// exact English string). `t(...)` wraps static literals, `tf(...)` handles interpolation, and
+// `localizeScenario`/`localizePlan` deep-translate the centralized demo data. Translation is gated
+// to Android (web/iOS always render English); the language follows what the user picked in the
+// /demo or /app Preferences picker (state.demoLanguage). English short-circuits to the identity.
 
-/** Translate an inline demo chrome literal into the active demo language. */
+/** The active UI language: the user's pick on Android, English everywhere else. */
+function activeUiLanguage(): DemoLanguage {
+  const language = IS_ANDROID_APP ? state.demoLanguage : 'en';
+  // Keep self-contained modules (devTabs/*) that render via demo-i18n/uiLang in lock-step.
+  setUiLanguage(language);
+  return language;
+}
+
+/** Translate a static UI literal into the active language. */
+function t(text: string): string {
+  return tDemo(text, activeUiLanguage());
+}
+
+/** Translate a template with {placeholder} vars (IDs/amounts/counts kept verbatim). */
+function tf(template: string, vars: Record<string, string | number>): string {
+  const stringVars: Record<string, string> = {};
+  for (const [key, value] of Object.entries(vars)) stringVars[key] = String(value);
+  return tDemoFormat(template, activeUiLanguage(), stringVars);
+}
+
+/** Back-compat alias used by the existing /demo render code. */
 function td(text: string): string {
-  return tDemo(text, state.demoLanguage);
+  return t(text);
 }
 
 function localizeScenario(scenario: GuidedDemoScenario, language: DemoLanguage): GuidedDemoScenario {
@@ -12620,7 +12661,7 @@ function demoLanguagePicker(): string {
         aria-haspopup="listbox"
         aria-expanded="false"
         aria-controls="demoLanguagePickerMenu"
-        aria-label="Demo language"
+        aria-label="${escapeHtml(t('Demo language'))}"
       >
         ${DEMO_LANGUAGE_GLOBE_ICON}
         <span class="template-picker-current demo-language-picker-current">
@@ -12632,7 +12673,7 @@ function demoLanguagePicker(): string {
         id="demoLanguagePickerMenu"
         class="template-picker-menu demo-language-picker-menu"
         role="listbox"
-        aria-label="Demo language"
+        aria-label="${escapeHtml(t('Demo language'))}"
         hidden
       >
         <div class="template-picker-group demo-language-picker-group">
@@ -12801,12 +12842,13 @@ function bindDemoLanguagePicker(): void {
 }
 
 function guidedDemoWalkthroughPage(): string {
+  const language = activeUiLanguage();
   const scenario = selectedGuidedDemoScenario();
   return `
     <section id="demo-guide" class="guided-demo-page" aria-labelledby="guided-demo-title">
       <div class="guided-demo-hero">
         <div class="guided-demo-hero-copy">
-          <div class="tooling-chip-strip demo-chip-strip" aria-label="Demo approval surfaces">
+          <div class="tooling-chip-strip demo-chip-strip" aria-label="${escapeHtml(t('Demo approval surfaces'))}">
             <span class="logo-chip solana-chip">${brandLogo('solana', 'logo-chip-icon')}<span>${escapeHtml(td('Solana'))}</span></span>
             <span class="logo-chip">${brandLogo('agentRouter', 'logo-chip-icon')}<span>${escapeHtml(td('Agent runtime'))}</span></span>
             <span class="logo-chip">${brandLogo('phantom', 'logo-chip-icon')}<span>${escapeHtml(td('Wallet review'))}</span></span>
@@ -12826,7 +12868,7 @@ function guidedDemoWalkthroughPage(): string {
           </div>
         </div>
         ${guidedDemoPreviewPanel(scenario)}
-        <div class="guided-demo-trust-grid" aria-label="Demo safety model">
+        <div class="guided-demo-trust-grid" aria-label="${escapeHtml(t('Demo safety model'))}">
           ${guidedDemoTrustItem(td('No key handoff'), td('The agent never receives your seed phrase, private key, or unlimited signer.'), 'agentRouter')}
           ${guidedDemoTrustItem(td('Explicit approval'), td('Prepared actions wait until the wallet owner approves or denies them.'), 'phantom')}
           ${guidedDemoTrustItem(td('Receipt trail'), td('Every demo decision ends with a receipt you can inspect or copy.'), 'solana')}
@@ -12834,18 +12876,18 @@ function guidedDemoWalkthroughPage(): string {
       </div>
 
       <div class="guided-demo-shell">
-        <aside class="guided-demo-scenarios" aria-label="Choose a demo scenario">
+        <aside class="guided-demo-scenarios" aria-label="${escapeHtml(t('Choose a demo scenario'))}">
           <div>
             <p class="eyebrow mini">${escapeHtml(td('Use cases'))}</p>
             <h2>${escapeHtml(td('Start with a real request.'))}</h2>
             <p>${escapeHtml(td('These are the approval moments Agentic is built for: the agent drafts, the wallet decides.'))}</p>
           </div>
           <div class="guided-demo-scenario-list">
-            ${GUIDED_DEMO_SCENARIOS.map((candidate) => guidedDemoScenarioCard(localizeScenario(candidate, state.demoLanguage))).join('')}
+            ${GUIDED_DEMO_SCENARIOS.map((candidate) => guidedDemoScenarioCard(localizeScenario(candidate, language))).join('')}
           </div>
         </aside>
 
-        <section id="demo-runner" class="guided-demo-runner terminal-preview-window" aria-label="Simulated approval walkthrough">
+        <section id="demo-runner" class="guided-demo-runner terminal-preview-window" aria-label="${escapeHtml(t('Simulated approval walkthrough'))}">
           <div class="terminal-preview-bar guided-demo-runner-bar">
             <span></span>
             <span></span>
@@ -12885,7 +12927,7 @@ function guidedDemoPreviewPanel(scenario: GuidedDemoScenario): string {
   const queued = guidedDemoAtLeast('queued');
   const receiptReady = state.guidedDemo.stage === 'receipt';
   return `
-    <div class="guided-demo-preview terminal-preview-window" aria-label="Current demo route preview">
+    <div class="guided-demo-preview terminal-preview-window" aria-label="${escapeHtml(t('Current demo route preview'))}">
       <div class="terminal-preview-bar">
         <span></span>
         <span></span>
@@ -12992,7 +13034,7 @@ function guidedDemoAgentDecisionCard(scenario: GuidedDemoScenario): string {
         ${brandLogo(guidedDemoScenarioLogo(scenario.id), 'guided-demo-scenario-logo')}
         <span>${escapeHtml(scenario.eyebrow)}</span>
       </div>
-      <div class="guided-demo-plan-tabs" role="tablist" aria-label="Agent decision plans">
+      <div class="guided-demo-plan-tabs" role="tablist" aria-label="${escapeHtml(t('Agent decision plans'))}">
         ${tabs}
       </div>
       <button
@@ -13058,7 +13100,7 @@ function guidedDemoStepRail(): string {
   ] satisfies Array<{ id: GuidedDemoStage; label: string; detail: string }>;
   const activeIndex = guidedDemoStageIndex(state.guidedDemo.stage);
   return `
-    <div class="guided-demo-step-rail" aria-label="Demo progress">
+    <div class="guided-demo-step-rail" aria-label="${escapeHtml(t('Demo progress'))}">
       ${steps
         .map((step, index) => {
           const complete = index < activeIndex || state.guidedDemo.stage === 'receipt';
@@ -13243,7 +13285,7 @@ function guidedDemoPolicyPreparedPlan(scenario: GuidedDemoScenario): string {
           <p>${escapeHtml(scenario.detail)}</p>
         </div>
       </div>
-      <div class="guided-demo-policy-metrics" aria-label="Agent decision approval summary">
+      <div class="guided-demo-policy-metrics" aria-label="${escapeHtml(t('Agent decision approval summary'))}">
         ${guidedDemoPolicyMetric(td('Route'), td('0.04 SOL -> POPCAT'), td('requested swap only'))}
         ${guidedDemoPolicyMetric(td('Market gates'), td('SOL $90.96 / F&G 42'), td('both thresholds passed'))}
         ${guidedDemoPolicyMetric(td('Agent result'), td('APPROVE'), td('all gates passed'))}
@@ -13275,6 +13317,7 @@ function guidedDemoPolicyPreparedPlan(scenario: GuidedDemoScenario): string {
 function guidedDemoReviewPreparedPlan(plan: AgentDecisionPlan): string {
   const review = plan.review;
   if (!review) return guidedDemoPolicyPreparedPlan(selectedGuidedDemoScenario());
+  const language = activeUiLanguage();
   const providerLine = [plan.agentProvider, plan.agentModel].filter(Boolean).join(' - ');
   const source = plan.agentSource ?? 'mock';
   const reviewState: AgentPlanReviewState = {
@@ -13307,7 +13350,7 @@ function guidedDemoReviewPreparedPlan(plan: AgentDecisionPlan): string {
     // chrome — section headers, Summary / Why-it-passed labels, and the translated summary/reason.
     // (Evidence-row VALUES still come from our catalog via guidedDemoReviewDrawer's post-translate.)
     localized: {
-      language: state.demoLanguage,
+      language,
       status: 'ready',
       source: 'phrase_pack',
       summary: td(review.summary),
@@ -13316,7 +13359,7 @@ function guidedDemoReviewPreparedPlan(plan: AgentDecisionPlan): string {
   };
   const metricsHtml = review.metrics?.length
     ? `
-      <div class="guided-demo-policy-metrics" aria-label="Agent decision approval summary">
+      <div class="guided-demo-policy-metrics" aria-label="${escapeHtml(t('Agent decision approval summary'))}">
         ${review.metrics.map((metric) => guidedDemoPolicyMetric(td(metric.label), td(metric.value), td(metric.detail))).join('')}
       </div>
     `
@@ -13380,7 +13423,8 @@ function guidedDemoReviewDrawer(review: AgentPlanReviewState): string {
 function localizeDemoEvidenceSection(section: AgentEvidenceDisplaySection): AgentEvidenceDisplaySection {
   // quiet: the shared system may have already localized a row (dict/prose), so a catalog miss
   // here is expected and not a real gap.
-  const tq = (text: string): string => tDemo(text, state.demoLanguage, { quiet: true });
+  const language = activeUiLanguage();
+  const tq = (text: string): string => tDemo(text, language, { quiet: true });
   return {
     ...section,
     rows: section.rows.map((row) => ({ ...row, label: tq(row.label), value: tq(row.value) })),
@@ -13390,7 +13434,7 @@ function localizeDemoEvidenceSection(section: AgentEvidenceDisplaySection): Agen
 // The shared agentReviewPathBadge label is hardcoded English; render a translated demo badge.
 function demoLocalReviewBadge(source: AgentReviewSource): string {
   if (source !== 'mock') return agentReviewPathBadge({ source });
-  return `<span class="agent-path-pill mock" title="Agent review path">${escapeHtml(td('Local demo'))}</span>`;
+  return `<span class="agent-path-pill mock" title="${escapeHtml(t('Agent review path'))}">${escapeHtml(td('Local demo'))}</span>`;
 }
 
 function guidedDemoPolicyMetric(label: string, value: string, detail: string): string {
@@ -13585,10 +13629,10 @@ function guidedDemoSwapFlowTitle(step: GuidedDemoSwapFlowStep): string {
 function guidedDemoSwapFlowMessage(step: GuidedDemoSwapFlowStep): string {
   if (step === 'preparing') return td('Fetching the Jupiter transaction for wallet review.');
   if (step === 'signing') {
-    return tDemoFormat('Sign Jupiter swap {id} in your wallet.', state.demoLanguage, { id: GUIDED_DEMO_SWAP_REVIEW_ID });
+    return tDemoFormat('Sign Jupiter swap {id} in your wallet.', activeUiLanguage(), { id: GUIDED_DEMO_SWAP_REVIEW_ID });
   }
   if (step === 'sending') return td('Submitting the signed swap through Jupiter.');
-  return tDemoFormat('{tx} - Solscan link saved in Done.', state.demoLanguage, { tx: short(GUIDED_DEMO_SWAP_TX_ID) });
+  return tDemoFormat('{tx} - Solscan link saved in Done.', activeUiLanguage(), { tx: short(GUIDED_DEMO_SWAP_TX_ID) });
 }
 
 function selectedGuidedDemoScenario(): GuidedDemoScenario {
@@ -13620,7 +13664,7 @@ function selectedGuidedDemoScenario(): GuidedDemoScenario {
 
 function guidedDemoScenarioById(scenarioId: string | undefined): GuidedDemoScenario {
   const scenario = GUIDED_DEMO_SCENARIOS.find((candidate) => candidate.id === scenarioId) ?? GUIDED_DEMO_SCENARIOS[0]!;
-  return localizeScenario(scenario, state.demoLanguage);
+  return localizeScenario(scenario, activeUiLanguage());
 }
 
 function guidedDemoStageIndex(stage: GuidedDemoStage): number {
@@ -13672,21 +13716,21 @@ function mwaTestPage(): string {
 
 function homepageFooter(): string {
   return `
-    <footer class="homepage-footer" aria-label="Agentic footer">
+    <footer class="homepage-footer" aria-label="${escapeHtml(t('Agentic footer'))}">
       <div>
         <span class="footer-brand">${agenticMark('mini-mark')} Agentic</span>
-        <p>Render serves the web app and hosted BYOK AI proxy. CLI, Desktop App, local bridge, and wallet approvals run on your device.</p>
+        <p>${escapeHtml(t('Render serves the web app and hosted BYOK AI proxy. CLI, Desktop App, local bridge, and wallet approvals run on your device.'))}</p>
         <p class="footer-contact">
           <span>SolPulse LLC</span>
           <a href="mailto:support@solpulse.trade">support@solpulse.trade</a>
         </p>
       </div>
-      <nav aria-label="Footer navigation">
-        <a href="/docs">Docs</a>
-        <a href="${GITHUB_RELEASES_URL}" target="_blank" rel="noreferrer">Releases</a>
-        <a href="/terms">Terms</a>
-        <a href="/privacy">Privacy</a>
-        <a href="/delete-account">Delete Account</a>
+      <nav aria-label="${escapeHtml(t('Footer navigation'))}">
+        <a href="/docs">${escapeHtml(t('Docs'))}</a>
+        <a href="${GITHUB_RELEASES_URL}" target="_blank" rel="noreferrer">${escapeHtml(t('Releases'))}</a>
+        <a href="/terms">${escapeHtml(t('Terms'))}</a>
+        <a href="/privacy">${escapeHtml(t('Privacy'))}</a>
+        <a href="/delete-account">${escapeHtml(t('Delete Account'))}</a>
       </nav>
     </footer>
   `;
@@ -13846,7 +13890,7 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
     state.tauriNativeEnvironment.isTauriNative;
   const sectionLabel = showWorkspaceIntro
     ? `aria-labelledby="${titleId}"`
-    : 'aria-label="Agentic approval workspace"';
+    : `aria-label="${escapeHtml(t('Agentic approval workspace'))}"`;
   return `
     <section id="${workspaceId}" class="app-workspace-section ${appModeClass} ${modeClass} ${introClass}" ${sectionLabel} data-layout="app-root" data-has-workspace-intro="${showWorkspaceIntro ? 'true' : 'false'}">
       ${SHOW_DEV_CONTROLS ? systemHealthStrip() : ''}
@@ -13855,9 +13899,9 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
       ${showWorkspaceIntro ? `
       <div class="workspace-intro" data-layout="app-intro">
         <div>
-          ${mode === 'demo' ? '<p class="eyebrow mini">Interactive demo</p>' : '<!-- Launch App eyebrow intentionally hidden. -->'}
-          <h2 id="${titleId}">${mode === 'demo' ? 'Live approval demo.' : 'Agentic approval workspace.'}</h2>
-          ${mode === 'demo' ? '' : (shortWorkspaceIntroCopy ? '<p>AI or templates prepare review items. You approve.</p>' : '<p>AI or templates prepare review items. You check the route, recipient, amount, policy, and wallet action before signing.</p>')}
+          ${mode === 'demo' ? `<p class="eyebrow mini">${escapeHtml(t('Interactive demo'))}</p>` : '<!-- Launch App eyebrow intentionally hidden. -->'}
+          <h2 id="${titleId}">${mode === 'demo' ? escapeHtml(t('Live approval demo.')) : escapeHtml(t('Agentic approval workspace.'))}</h2>
+          ${mode === 'demo' ? '' : (shortWorkspaceIntroCopy ? `<p>${escapeHtml(t('AI or templates prepare review items. You approve.'))}</p>` : `<p>${escapeHtml(t('AI or templates prepare review items. You check the route, recipient, amount, policy, and wallet action before signing.'))}</p>`)}
         </div>
         ${SHOW_DEV_CONTROLS ? systemSpine() : ''}
       </div>` : ''}
@@ -13867,7 +13911,7 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
           <span class="brand-mark">${agenticMark('mini-mark')}</span>
           <div>
             <p class="eyebrow mini">Solana Agent Wallet Adapter</p>
-            <h1>Wallet approval workspace</h1>
+            <h1>${escapeHtml(t('Wallet approval workspace'))}</h1>
           </div>
         </div>
         ${systemSpine()}
@@ -13881,16 +13925,16 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
               <div>
                 <h2>${surfaceTitle()}</h2>
               </div>
-              <nav class="nav-cluster tabs workspace-tabs workspace-tabs-desktop" aria-label="Workspace navigation" data-layout="app-tabs">
+              <nav class="nav-cluster tabs workspace-tabs workspace-tabs-desktop" aria-label="${escapeHtml(t('Workspace navigation'))}" data-layout="app-tabs">
                 ${/*
                   Wallet tab intentionally hidden across web, Android, and iOS app shells.
                   tabButton('wallet', 'Wallet')
                 */ ''}
-                ${tabButton('overview', 'Home')}
-                ${tabButton('agent', 'New Request', 'New')}
-                ${tabButton('schedule', 'Repeat Payments', 'Repeats')}
-                ${tabButton('inbox', 'Needs Approval', 'Approve')}
-                ${tabButton('completed', 'Done')}
+                ${tabButton('overview', t('Home'))}
+                ${tabButton('agent', t('New Request'), t('New'))}
+                ${tabButton('schedule', t('Repeat Payments'), t('Repeats'))}
+                ${tabButton('inbox', t('Needs Approval'), t('Approve'))}
+                ${tabButton('completed', t('Done'))}
                 ${moreMenuButton()}
               </nav>
               ${preferencesButton()}
@@ -13909,7 +13953,7 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
 
 function androidBottomTabDock(): string {
   return `
-    <div class="android-bottom-tab-dock" data-layout="android-bottom-tab-dock" aria-label="Workspace navigation">
+    <div class="android-bottom-tab-dock" data-layout="android-bottom-tab-dock" aria-label="${escapeHtml(t('Workspace navigation'))}">
       ${workspaceTabSelectMobile()}
     </div>
   `;
@@ -14231,7 +14275,7 @@ function expandNoteBottomSheet(): string {
           <span>${escapeHtml(subtitle)}</span>
           <h2 id="expandNoteSheetTitle">${escapeHtml(title)}</h2>
         </div>
-        <button type="button" class="mobile-text-composer-done" data-expand-note-confirm>Done</button>
+        <button type="button" class="mobile-text-composer-done" data-expand-note-confirm>${escapeHtml(t('Done'))}</button>
       </header>
       <div class="mobile-text-composer-body">
         <textarea
@@ -14301,25 +14345,25 @@ function closeExpandNoteSheet(options: { fromPopState?: boolean } = {}): void {
 
 function mobileExpandNoteLink(ref: ExpandNoteFieldRef): string {
   if (!isMobileAppViewport()) return '';
-  const label = getExpandNoteValue(ref).trim() ? 'Edit note' : 'Add note';
+  const label = getExpandNoteValue(ref).trim() ? t('Edit note') : t('Add note');
   return `<button type="button" class="expand-note-link" data-expand-note="${escapeHtml(expandNoteRefAttr(ref))}" ${state.busy ? 'disabled' : ''}>${escapeHtml(label)}</button>`;
 }
 
 function trustLayerPanel(): string {
   const mode = activeWorkflowMode();
-  const receiptLabel = mode === 'agentic-cloud' ? 'Cloud receipts' : 'Receipts';
-  const receiptDetail = 'Saved proofs stay available';
+  const receiptLabel = mode === 'agentic-cloud' ? t('Cloud receipts') : t('Receipts');
+  const receiptDetail = t('Saved proofs stay available');
   if (isMobileAppViewport()) {
     const tabs: Array<{ id: AndroidTrustTab; label: string; detail: string }> = [
-      { id: 'custody', label: 'No key custody', detail: 'Wallet keeps private keys' },
-      { id: 'ai-checks', label: 'AI checks', detail: 'AI approves or denies based on your prompt' },
-      { id: 'receipts', label: 'Receipts', detail: receiptDetail },
+      { id: 'custody', label: t('No key custody'), detail: t('Wallet keeps private keys') },
+      { id: 'ai-checks', label: t('AI checks'), detail: t('AI approves or denies based on your prompt') },
+      { id: 'receipts', label: t('Receipts'), detail: receiptDetail },
     ];
     const active = state.androidTrustTab;
     const activeTab = tabs.find((tab) => tab.id === active) ?? tabs[0]!;
     return `
-      <section class="trust-layer-panel trust-layer-tabbed android-tab-card" aria-label="Agentic trust boundary" data-layout="trust-strip" data-android-tab-group="trust">
-        <div class="android-tab-strip trust-layer-strip" role="tablist" aria-label="Trust boundary sections">
+      <section class="trust-layer-panel trust-layer-tabbed android-tab-card" aria-label="${escapeHtml(t('Agentic trust boundary'))}" data-layout="trust-strip" data-android-tab-group="trust">
+        <div class="android-tab-strip trust-layer-strip" role="tablist" aria-label="${escapeHtml(t('Trust boundary sections'))}">
           ${tabs.map((tab) => mobileTabButton('trust', tab.id, tab.label, tab.id === active)).join('')}
         </div>
         <div class="android-tab-body trust-layer-body" role="tabpanel">
@@ -14330,13 +14374,13 @@ function trustLayerPanel(): string {
     `;
   }
   const items: Array<[string, string]> = [
-    ['No key custody', 'Wallet keeps private keys'],
-    ['No unlimited signer', 'Every action has a boundary'],
-    ['AI prepares review', 'Wallet owner reviews and signs'],
-    [mode === 'agentic-cloud' ? 'Cloud receipts' : 'Local receipts', 'Saved proofs stay available'],
+    [t('No key custody'), t('Wallet keeps private keys')],
+    [t('No unlimited signer'), t('Every action has a boundary')],
+    [t('AI prepares review'), t('Wallet owner reviews and signs')],
+    [mode === 'agentic-cloud' ? t('Cloud receipts') : t('Local receipts'), t('Saved proofs stay available')],
   ];
   return `
-    <section class="trust-layer-panel" aria-label="Agentic trust boundary" data-layout="trust-strip">
+    <section class="trust-layer-panel" aria-label="${escapeHtml(t('Agentic trust boundary'))}" data-layout="trust-strip">
       ${items.map(([label, detail]) => `
         <div>
           <strong>${escapeHtml(label)}</strong>
@@ -14367,19 +14411,19 @@ function firstRunActionBand(): string {
   const action = firstRunNextAction();
   const showAction = action.id !== 'discover-wallets' && action.id !== 'connect-wallet';
   const currentStep = steps.find((step) => step.active) ?? steps[steps.length - 1]!;
-  const title = complete ? 'Proof saved' : `Next: ${action.label}`;
+  const title = complete ? t('Proof saved') : tf('Next: {label}', { label: action.label });
   const detail = complete
-    ? 'Your latest approval proof or receipt is saved in Done.'
+    ? t('Your latest approval proof or receipt is saved in Done.')
     : action.detail;
   return `
-    <section class="first-run-band workflow-status-band ${complete ? 'complete compact' : 'compact'} ${showAction ? '' : 'no-action'}" aria-label="First-time approval flow" data-layout="workflow-status">
+    <section class="first-run-band workflow-status-band ${complete ? 'complete compact' : 'compact'} ${showAction ? '' : 'no-action'}" aria-label="${escapeHtml(t('First-time approval flow'))}" data-layout="workflow-status">
       <div class="first-run-copy">
-        <span>Approval loop</span>
+        <span>${escapeHtml(t('Approval loop'))}</span>
         <h3>${escapeHtml(title)}</h3>
         <p>${escapeHtml(detail)}</p>
-        <small>Workspace: ${escapeHtml(activeWorkflowLabel())}</small>
+        <small>${escapeHtml(tf('Workspace: {label}', { label: activeWorkflowLabel() }))}</small>
       </div>
-      <div class="first-run-progress" role="list" aria-label="First-time progress">
+      <div class="first-run-progress" role="list" aria-label="${escapeHtml(t('First-time progress'))}">
         ${steps.map((stepItem, index) => firstRunStepItem(stepItem, index, currentStep.id)).join('')}
       </div>
       ${showAction ? `<div class="first-run-actions">
@@ -14511,41 +14555,41 @@ function firstRunNextAction(): FirstRunAction {
     if (nativeWallet || (state.wallets.length > 0 && selectedProvider)) {
       return {
         id: 'connect-wallet',
-        label: 'Connect wallet',
-        detail: 'Authorize Agentic in your wallet. This grants no spending authority.',
+        label: t('Connect wallet'),
+        detail: t('Authorize Agentic in your wallet. This grants no spending authority.'),
       };
     }
     return {
       id: 'discover-wallets',
-      label: 'Discover wallets',
-      detail: 'Find Solana wallet providers in this browser.',
+      label: t('Discover wallets'),
+      detail: t('Find Solana wallet providers in this browser.'),
     };
   }
   if (!signals.hasPlan) {
     return {
       id: 'open-create-plan',
-      label: 'New Request',
-      detail: 'Use the default template path. AI setup is optional.',
+      label: t('New Request'),
+      detail: t('Use the default template path. AI setup is optional.'),
     };
   }
   if (signals.activeApprovalCount > 0 && !signals.hasReceipt) {
     return {
       id: 'open-inbox',
-      label: 'Needs Approval',
-      detail: 'Approve or deny the queued request from your wallet.',
+      label: t('Needs Approval'),
+      detail: t('Approve or deny the queued request from your wallet.'),
     };
   }
   if (!signals.hasReceipt) {
     return {
       id: 'open-review',
-      label: 'Check',
-      detail: 'Check action, route, limits, and destination before approval.',
+      label: t('Check'),
+      detail: t('Check action, route, limits, and destination before approval.'),
     };
   }
   return {
     id: 'open-completed',
-    label: 'Open Done',
-    detail: 'Review saved receipts and decision proofs.',
+    label: t('Open Done'),
+    detail: t('Review saved receipts and decision proofs.'),
   };
 }
 
@@ -14558,8 +14602,8 @@ function firstRunSecondaryAction(primaryId: FirstRunActionId): FirstRunAction | 
   ) {
     return {
       id: 'cloud-sign-in',
-      label: 'Sign in to Cloud',
-      detail: 'Optional sync for plans, approvals, repeat payments, and proofs.',
+      label: t('Sign in to Cloud'),
+      detail: t('Optional sync for plans, approvals, repeat payments, and proofs.'),
     };
   }
   return null;
@@ -14654,10 +14698,10 @@ function missionStrip(): string {
   ).length;
   return `
     <section class="mission-strip">
-      ${metric('Wallet', state.address ? short(state.address) : 'Not connected', state.address ? 'online' : '')}
-      ${metric('Cluster', state.cluster, state.cluster === 'mainnet-beta' ? 'warn' : '')}
-      ${metric('Bridge', state.bridgeActive ? 'Ready' : 'Offline', state.bridgeActive ? 'online' : '')}
-      ${metric('Approvals', `${openApprovals} queued`, openApprovals > 0 ? 'warn' : '')}
+      ${metric(t('Wallet'), state.address ? short(state.address) : t('Not connected'), state.address ? 'online' : '')}
+      ${metric(t('Cluster'), titleCaseCluster(state.cluster), state.cluster === 'mainnet-beta' ? 'warn' : '')}
+      ${metric(t('Bridge'), state.bridgeActive ? t('Ready') : t('Offline'), state.bridgeActive ? 'online' : '')}
+      ${metric(t('Approvals'), tf('{count} queued', { count: openApprovals }), openApprovals > 0 ? 'warn' : '')}
     </section>
   `;
 }
@@ -14667,11 +14711,11 @@ function systemSpine(): string {
     (action) => !isTerminalPreparedAction(action),
   ).length;
   return `
-    <div class="system-spine" aria-label="System status">
-      ${spineNode('Wallet', state.address ? short(state.address) : 'Connect wallet', state.address ? 'online' : '')}
-      ${spineNode('Network', titleCaseCluster(state.cluster), state.cluster === 'mainnet-beta' ? 'warn' : '')}
-      ${spineNode('Bridge', state.bridgeActive ? 'Ready' : 'Offline', state.bridgeActive ? 'online' : '')}
-      ${spineNode('Queue', `${openApprovals}`, openApprovals > 0 ? 'warn' : '')}
+    <div class="system-spine" aria-label="${escapeHtml(t('System status'))}">
+      ${spineNode(t('Wallet'), state.address ? short(state.address) : t('Connect wallet'), state.address ? 'online' : '')}
+      ${spineNode(t('Network'), titleCaseCluster(state.cluster), state.cluster === 'mainnet-beta' ? 'warn' : '')}
+      ${spineNode(t('Bridge'), state.bridgeActive ? t('Ready') : t('Offline'), state.bridgeActive ? 'online' : '')}
+      ${spineNode(t('Queue'), `${openApprovals}`, openApprovals > 0 ? 'warn' : '')}
     </div>
   `;
 }
@@ -14701,20 +14745,20 @@ function systemHealthStrip(): string {
   const worst = health?.worstStatus ?? 'unknown';
   const checks = health?.checks;
   return `
-    <section class="system-health-strip ${worst}" aria-label="System health">
+    <section class="system-health-strip ${worst}" aria-label="${escapeHtml(t('System health'))}">
       <button
         type="button"
         class="system-health-strip-toggle"
         data-health-action="toggle-drawer"
         aria-expanded="${state.systemHealthDrawerOpen ? 'true' : 'false'}"
       >
-        <span class="system-health-strip-label">System health</span>
+        <span class="system-health-strip-label">${escapeHtml(t('System health'))}</span>
         <span class="system-health-dots">
           ${SYSTEM_HEALTH_ORDER.map((id) => {
             const check = checks?.[id];
             const status = check?.status ?? 'unknown';
             const label = check?.label ?? healthCheckLabel(id);
-            const message = check?.message ?? 'Checking…';
+            const message = check?.message ?? t('Checking…');
             return `
               <span class="system-health-dot ${status}" title="${escapeHtml(label)}: ${escapeHtml(message)}">
                 <i class="health-dot" aria-hidden="true"></i>
@@ -14724,7 +14768,7 @@ function systemHealthStrip(): string {
             `;
           }).join('')}
         </span>
-        <span class="system-health-strip-cta">${state.systemHealthDrawerOpen ? 'Close' : 'Details'}</span>
+        <span class="system-health-strip-cta">${state.systemHealthDrawerOpen ? escapeHtml(t('Close')) : escapeHtml(t('Details'))}</span>
       </button>
     </section>
   `;
@@ -14736,30 +14780,30 @@ function systemHealthDrawer(): string {
   const lastCheckedAt = health?.lastCheckedAt;
   return `
     <div class="system-health-drawer-scrim" data-health-action="close-drawer" aria-hidden="true"></div>
-    <aside class="system-health-drawer open" role="dialog" aria-label="System health detail">
+    <aside class="system-health-drawer open" role="dialog" aria-label="${escapeHtml(t('System health detail'))}">
       <header class="system-health-drawer-header">
         <div>
-          <p class="system-health-drawer-eyebrow">System health</p>
-          <h2>What is connected right now</h2>
+          <p class="system-health-drawer-eyebrow">${escapeHtml(t('System health'))}</p>
+          <h2>${escapeHtml(t('What is connected right now'))}</h2>
           ${
             lastCheckedAt
-              ? `<small>Last checked ${escapeHtml(formatDateTime(lastCheckedAt))}</small>`
-              : '<small>Checking…</small>'
+              ? `<small>${escapeHtml(tf('Last checked {time}', { time: formatDateTime(lastCheckedAt) }))}</small>`
+              : `<small>${escapeHtml(t('Checking…'))}</small>`
           }
         </div>
         <button
           type="button"
           class="system-health-drawer-close"
           data-health-action="close-drawer"
-          aria-label="Close system health"
+          aria-label="${escapeHtml(t('Close system health'))}"
         >&times;</button>
       </header>
       <div class="system-health-drawer-body">
         ${SYSTEM_HEALTH_ORDER.map((id) => systemHealthDetailRow(id, health?.checks[id])).join('')}
       </div>
       <footer class="system-health-drawer-footer">
-        <button type="button" class="primary" data-health-action="recheck" ${state.systemHealthChecking ? 'disabled' : ''}>${state.systemHealthChecking ? 'Checking…' : 'Recheck all'}</button>
-        <button type="button" class="utility" data-health-action="copy-debug">Copy debug snapshot</button>
+        <button type="button" class="primary" data-health-action="recheck" ${state.systemHealthChecking ? 'disabled' : ''}>${state.systemHealthChecking ? escapeHtml(t('Checking…')) : escapeHtml(t('Recheck all'))}</button>
+        <button type="button" class="utility" data-health-action="copy-debug">${escapeHtml(t('Copy debug snapshot'))}</button>
       </footer>
     </aside>
   `;
@@ -14767,9 +14811,9 @@ function systemHealthDrawer(): string {
 
 function systemHealthDetailRow(id: HealthCheckId, check: HealthCheck | undefined): string {
   const status = check?.status ?? 'unknown';
-  const label = check?.label ?? healthCheckLabel(id);
-  const message = check?.message ?? 'Checking…';
-  const detail = check?.detail ?? '';
+  const label = check?.label ? t(check.label) : healthCheckLabel(id);
+  const message = check?.message ? t(check.message) : t('Checking…');
+  const detail = check?.detail ? t(check.detail) : '';
   const checkedAt = check?.checkedAt ?? '';
   const remediation = check?.remediation;
   return `
@@ -14784,9 +14828,9 @@ function systemHealthDetailRow(id: HealthCheckId, check: HealthCheck | undefined
       </div>
       ${detail ? `<p class="system-health-row-detail">${escapeHtml(detail)}</p>` : ''}
       ${checkedAt ? `<small class="system-health-row-time">${escapeHtml(formatDateTime(checkedAt))}</small>` : ''}
-      ${
-        remediation
-          ? `<button type="button" class="utility system-health-row-remediation" data-health-action="remediate" data-health-intent="${escapeHtml(remediation.intent)}">${escapeHtml(remediation.label)}</button>`
+        ${
+          remediation
+          ? `<button type="button" class="utility system-health-row-remediation" data-health-action="remediate" data-health-intent="${escapeHtml(remediation.intent)}">${escapeHtml(t(remediation.label))}</button>`
           : ''
       }
     </article>
@@ -14795,19 +14839,19 @@ function systemHealthDetailRow(id: HealthCheckId, check: HealthCheck | undefined
 
 function healthCheckLabel(id: HealthCheckId): string {
   switch (id) {
-    case 'rpc': return 'RPC';
-    case 'jupiter': return 'Jupiter';
-    case 'wallet': return 'Wallet';
-    case 'cluster': return 'Cluster';
-    case 'ai': return 'AI';
+    case 'rpc': return t('RPC');
+    case 'jupiter': return t('Jupiter');
+    case 'wallet': return t('Wallet');
+    case 'cluster': return t('Cluster');
+    case 'ai': return t('AI');
   }
 }
 
 function healthStatusShort(status: HealthStatus): string {
   switch (status) {
-    case 'ok': return 'ok';
-    case 'warn': return 'slow';
-    case 'fail': return 'down';
+    case 'ok': return t('ok');
+    case 'warn': return t('slow');
+    case 'fail': return t('down');
     case 'unknown': return '…';
   }
 }
@@ -14846,16 +14890,16 @@ function walletRail(): string {
     ? `<p>${escapeHtml(wallet.detail)}</p>`
     : `<p class="signer-detail-desktop-only">${escapeHtml(wallet.detail)}</p>`;
   const connectionsReadiness = connected
-    ? 'Wallet connected — you can review, approve, and sign.'
-    : 'Connect your wallet to approve and sign. AI connector and cloud sync are optional.';
+    ? t('Wallet connected — you can review, approve, and sign.')
+    : t('Connect your wallet to approve and sign. AI connector and cloud sync are optional.');
   // Connections re-org (reviewer feedback): group the wallet/AI/cloud connections under one
   // prioritized "Connections" header with Required/Optional labels for native mobile app shells.
   const nativeConnectionRail = IS_ANDROID_APP || IS_IOS_APP;
   const connectionsRailHead = nativeConnectionRail ? `
       <div class="connections-rail-head">
-        <p class="eyebrow mini">Connections</p>
+        <p class="eyebrow mini">${escapeHtml(t('Connections'))}</p>
         <p class="connections-rail-readiness">${escapeHtml(connectionsReadiness)}</p>
-        <p class="connection-group-label">Required</p>
+        <p class="connection-group-label">${escapeHtml(t('Required'))}</p>
       </div>` : '';
   return `
     <aside class="panel custody-panel custody-module" data-layout="app-rail">
@@ -14864,7 +14908,7 @@ function walletRail(): string {
         <div class="rail-heading custody-heading">
           ${walletRailIcon(wallet)}
           <div>
-            <p class="eyebrow mini">Signer</p>
+            <p class="eyebrow mini">${escapeHtml(t('Signer'))}</p>
             ${headingTitleMarkup}
             ${connected && isMobileAppViewport() ? walletBalanceMobileTrigger() : ''}
           </div>
@@ -14883,9 +14927,9 @@ function walletRail(): string {
 
       ${showPublicWalletPicker ? `
       <details class="rail-details wallet-picker-details" open>
-        <summary>Wallet choices</summary>
+        <summary>${escapeHtml(t('Wallet choices'))}</summary>
         <label class="field">
-          <span>Selected wallet</span>
+          <span>${escapeHtml(t('Selected wallet'))}</span>
           ${selectPicker({
             id: 'walletSelect',
             value: state.selectedWalletName,
@@ -14903,9 +14947,9 @@ function walletRail(): string {
 
       ${showPublicIosPicker ? `
       <details class="rail-details wallet-picker-details" open>
-        <summary>Choose iOS wallet</summary>
+        <summary>${escapeHtml(t('Choose iOS wallet'))}</summary>
         <label class="field">
-          <span>Selected wallet</span>
+          <span>${escapeHtml(t('Selected wallet'))}</span>
           ${selectPicker({
             id: 'iosWalletSelect',
             value: state.selectedIosWalletId,
@@ -14915,25 +14959,25 @@ function walletRail(): string {
         </label>
       </details>` : ''}
 
-      ${nativeConnectionRail ? '<p class="connection-group-label">Optional</p>' : ''}
+      ${nativeConnectionRail ? `<p class="connection-group-label">${escapeHtml(t('Optional'))}</p>` : ''}
       <div class="rail-primary-stack">
         ${cloudWorkspaceCard()}
         ${aiSettingsPanel('rail')}
       </div>
       ${SHOW_DEV_CONTROLS ? `
       <details class="rail-details developer-settings" ${showConnectionDetails ? 'open' : ''}>
-        <summary>Developer settings</summary>
+        <summary>${escapeHtml(t('Developer settings'))}</summary>
         ${developerConnectionSettings()}
       </details>` : ''}
 
       ${SHOW_DEV_CONTROLS && state.address ? `
       <details class="rail-details bridge-details" ${state.bridgeActive ? 'open' : ''}>
-        <summary>Bridge operations</summary>
+        <summary>${escapeHtml(t('Bridge operations'))}</summary>
         ${bridgeBox()}
       </details>` : ''}
       ${SHOW_DEV_CONTROLS && state.address ? `
       <details class="rail-details">
-        <summary>Environment</summary>
+        <summary>${escapeHtml(t('Environment'))}</summary>
         ${mobileWalletBox()}
       </details>` : ''}
     </aside>
@@ -14948,9 +14992,9 @@ function preferencesButton(): string {
       data-tab="preferences"
       class="utility preferences-open-button ${active ? 'active' : ''}"
       aria-pressed="${active ? 'true' : 'false'}"
-      aria-label="Open Preferences"
+      aria-label="${escapeHtml(t('Open Preferences'))}"
     >
-      Preferences
+      ${escapeHtml(t('Preferences'))}
     </button>
   `;
 }
@@ -14960,13 +15004,19 @@ function preferencesPanel(): string {
     <div class="preferences-page" data-layout="preferences-page">
       <header class="preferences-page-head">
         <div>
-          <p class="preferences-eyebrow">Workspace</p>
-          <h2 id="preferences-title">Preferences</h2>
-          <p>Configure the browser workspace. These settings shape drafting, review, labels, alerts, and retries without changing wallet authority.</p>
+          <p class="preferences-eyebrow">${escapeHtml(t('Workspace'))}</p>
+          <h2 id="preferences-title">${escapeHtml(t('Preferences'))}</h2>
+          <p>${escapeHtml(t('Configure the browser workspace. These settings shape drafting, review, labels, alerts, and retries without changing wallet authority.'))}</p>
         </div>
+        ${IS_ANDROID_APP ? `
+          <div class="preferences-language-row">
+            <span class="preferences-language-label">${escapeHtml(t('Language'))}</span>
+            ${demoLanguagePicker()}
+          </div>
+        ` : ''}
       </header>
       ${preferencesStoragePolicy()}
-      <nav class="preferences-subtabs" role="tablist" aria-label="Preferences sections">
+      <nav class="preferences-subtabs" role="tablist" aria-label="${escapeHtml(t('Preferences sections'))}">
         ${PREFERENCES_VIEW_OPTIONS.map((option) => preferencesViewButton(option.view, option.title, option.desktopLabel)).join('')}
       </nav>
       ${preferencesMobileTabs()}
@@ -14996,8 +15046,8 @@ function preferencesViewOption(view: PreferencesView): (typeof PREFERENCES_VIEW_
 
 function preferencesMobileLabel(option: (typeof PREFERENCES_VIEW_OPTIONS)[number]): string {
   return option.view === 'access' && isMobileAiPathPolicySurface()
-    ? 'Protocol Connectors'
-    : option.mobileLabel;
+    ? t('Protocol Connectors')
+    : t(option.mobileLabel);
 }
 
 function preferencesMobileViewOptions(): Array<(typeof PREFERENCES_VIEW_OPTIONS)[number]> {
@@ -15008,7 +15058,7 @@ function preferencesMobileViewOptions(): Array<(typeof PREFERENCES_VIEW_OPTIONS)
 function preferencesMobileTabs(): string {
   const options = preferencesMobileViewOptions();
   return `
-    <nav class="preferences-mobile-tabs android-tab-card" role="tablist" aria-label="Preferences sections">
+    <nav class="preferences-mobile-tabs android-tab-card" role="tablist" aria-label="${escapeHtml(t('Preferences sections'))}">
       <div class="android-tab-strip preferences-mobile-tabs-strip">
         ${options.map(preferencesMobileTabButton).join('')}
       </div>
@@ -15034,11 +15084,11 @@ function preferencesMobileTabButton(option: (typeof PREFERENCES_VIEW_OPTIONS)[nu
 }
 
 function preferencesMobileShortLabel(option: (typeof PREFERENCES_VIEW_OPTIONS)[number]): string {
-  if (option.view === 'access') return 'Connectors';
-  if (option.view === 'workspace') return 'Backup';
-  if (option.view === 'tokens') return 'Tokens';
-  if (option.view === 'rules') return 'Rules';
-  return 'AI';
+  if (option.view === 'access') return t('Connectors');
+  if (option.view === 'workspace') return t('Backup');
+  if (option.view === 'tokens') return t('Tokens');
+  if (option.view === 'rules') return t('Rules');
+  return t('AI');
 }
 
 function preferencesMobileTabIcon(view: PreferencesView): CommandCenterIconId {
@@ -15066,7 +15116,7 @@ function preferencesMobilePicker(): string {
         aria-haspopup="listbox"
         aria-expanded="false"
         aria-controls="preferencesMobilePickerMenu"
-        aria-label="Choose Preferences section"
+        aria-label="${escapeHtml(t('Choose Preferences section'))}"
       >
         <span class="template-picker-current preferences-mobile-picker-current">
           <strong id="preferencesMobilePickerValue">${escapeHtml(preferencesMobileLabel(active))}</strong>
@@ -15078,7 +15128,7 @@ function preferencesMobilePicker(): string {
         id="preferencesMobilePickerMenu"
         class="template-picker-menu preferences-mobile-picker-menu"
         role="listbox"
-        aria-label="Preferences sections"
+        aria-label="${escapeHtml(t('Preferences sections'))}"
         hidden
       >
         <div class="template-picker-group preferences-mobile-picker-group">
@@ -15117,7 +15167,7 @@ function preferencesStoragePolicy(): string {
     ? 'Supported non-secret preferences can sync.'
     : 'Sign in from Cloud Storage to sync supported non-secret preferences.';
   return `
-    <section class="preferences-storage-policy" aria-label="Preferences save policy">
+    <section class="preferences-storage-policy" aria-label="${escapeHtml(t('Preferences save policy'))}">
       ${preferencesStoragePolicyItem('Local first', 'Changes apply in this browser immediately.', storageBadge('local-only'))}
       ${preferencesStoragePolicyItem(cloudTitle, cloudDetail, cloudSynced ? storageBadge('cloud-synced') : storageBadge('local-only'))}
       ${preferencesStoragePolicyItem('Secrets stay local', 'AI keys, bridge tokens, wallet auth, and notification permission never sync.', storageBadge('session-only'))}
@@ -15128,35 +15178,35 @@ function preferencesStoragePolicy(): string {
 function preferencesStoragePolicyItem(title: string, detail: string, badge?: StorageDurabilityBadge): string {
   return `
     <article>
-      <span>${escapeHtml(title)}</span>
+      <span>${escapeHtml(t(title))}</span>
       <strong>${escapeHtml(preferencesStoragePolicyShortTitle(title))}${badge ? storageBadgeHtml(badge) : ''}</strong>
-      <span>${escapeHtml(detail)}</span>
+      <span>${escapeHtml(t(detail))}</span>
     </article>
   `;
 }
 
 function preferencesStoragePolicyShortTitle(title: string): string {
-  if (title === 'Local first') return 'Saved in this browser';
-  if (title.startsWith('Cloud')) return title;
-  if (title === 'Secrets stay local') return 'Secrets never sync';
-  return title;
+  if (title === 'Local first') return t('Saved in this browser');
+  if (title.startsWith('Cloud')) return t(title);
+  if (title === 'Secrets stay local') return t('Secrets never sync');
+  return t(title);
 }
 
 function storageBadge(kind: StorageDurabilityKind, title?: string): StorageDurabilityBadge {
   switch (kind) {
     case 'cloud-synced':
-      return { kind, label: 'Cloud synced', title: title ?? 'Saved to the wallet-scoped cloud workspace.' };
+      return { kind, label: t('Cloud synced'), title: title ?? t('Saved to the wallet-scoped cloud workspace.') };
     case 'bridge-local':
-      return { kind, label: 'Bridge local', title: title ?? 'Saved in the local bridge workspace for the connected wallet.' };
+      return { kind, label: t('Bridge local'), title: title ?? t('Saved in the local bridge workspace for the connected wallet.') };
     case 'session-only':
-      return { kind, label: 'Session only', title: title ?? 'Stored only for this browser session.' };
+      return { kind, label: t('Session only'), title: title ?? t('Stored only for this browser session.') };
     case 'cloud-pending':
-      return { kind, label: 'Cloud pending', title: title ?? 'Waiting to upload to Agentic Cloud.' };
+      return { kind, label: t('Cloud pending'), title: title ?? t('Waiting to upload to Agentic Cloud.') };
     case 'cloud-failed':
-      return { kind, label: 'Cloud retry', title: title ?? 'Cloud upload failed and can be retried.' };
+      return { kind, label: t('Cloud retry'), title: title ?? t('Cloud upload failed and can be retried.') };
     case 'local-only':
     default:
-      return { kind: 'local-only', label: 'Local workspace', title: title ?? 'Saved only in this browser workspace.' };
+      return { kind: 'local-only', label: t('Local workspace'), title: title ?? t('Saved only in this browser workspace.') };
   }
 }
 
@@ -15173,7 +15223,7 @@ function workflowSourceStorageBadge(source?: WorkflowRecordSource): StorageDurab
 
 function generatedPlanStorageBadge(record: GeneratedPlanRecord): StorageDurabilityBadge {
   if (record.workflowSource === 'cloud' && record.cloudSyncStatus === 'pending') {
-    return storageBadge('cloud-pending', 'Signed locally — cloud sync will retry when reachable.');
+    return storageBadge('cloud-pending', t('Signed locally — cloud sync will retry when reachable.'));
   }
   return workflowSourceStorageBadge(record.workflowSource ?? 'browser');
 }
@@ -15195,7 +15245,7 @@ function proofStorageBadge(artifact: LabArtifact): StorageDurabilityBadge {
   if (artifact.cloudSyncStatus === 'pending') return storageBadge('cloud-pending');
   if (artifact.cloudSyncStatus === 'failed') return storageBadge('cloud-failed', artifact.cloudSyncError || undefined);
   if (artifact.bridgeArchived || artifact.bridgeSyncStatus === 'synced') return storageBadge('bridge-local');
-  if (artifact.bridgeSyncStatus === 'pending') return storageBadge('bridge-local', 'Waiting to mirror to the local bridge archive.');
+  if (artifact.bridgeSyncStatus === 'pending') return storageBadge('bridge-local', t('Waiting to mirror to the local bridge archive.'));
   return storageBadge('local-only');
 }
 
@@ -15308,24 +15358,24 @@ function localWorkspacePrompt(context: 'backup' | 'cloud'): string {
   if (summary.total === 0) return '';
   const importCount = importCandidates.summary.total;
   const importButton = context === 'cloud' && cloudSessionMatchesWallet() && importCount > 0
-    ? `<button type="button" class="primary" data-cloud-action="copy-local-to-cloud" ${state.busy ? 'disabled' : ''}>Transfer to storage</button>`
+    ? `<button type="button" class="primary" data-cloud-action="copy-local-to-cloud" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Transfer to storage'))}</button>`
     : '';
   const action = context === 'backup'
-    ? `<button type="button" class="primary" data-workspace-backup-action="export" ${state.busy ? 'disabled' : ''}>Back up</button>`
+    ? `<button type="button" class="primary" data-workspace-backup-action="export" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Back up'))}</button>`
     : importButton;
   const detail = context === 'cloud'
     ? state.cloudSession.status === 'unavailable'
-      ? 'These items stay on this device until storage is available.'
+      ? t('These items stay on this device until storage is available.')
       : cloudSessionMatchesWallet() && importCount > 0
-        ? 'Transfer eligible local items into this wallet storage.'
-        : 'Sign in to create storage and transfer eligible local items into it.'
-    : 'Export before signing out, switching wallets, or clearing browser data.';
+        ? t('Transfer eligible local items into this wallet storage.')
+        : t('Sign in to create storage and transfer eligible local items into it.')
+    : t('Export before signing out, switching wallets, or clearing browser data.');
   const title = context === 'cloud'
     ? state.cloudSession.status === 'unavailable'
-      ? 'Local items on device'
-      : 'Local items ready'
-    : 'Back up local workspace';
-  const ariaLabel = context === 'cloud' ? 'Local workspace storage prompt' : 'Local workspace backup prompt';
+      ? t('Local items on device')
+      : t('Local items ready')
+    : t('Back up local workspace');
+  const ariaLabel = context === 'cloud' ? t('Local workspace storage prompt') : t('Local workspace backup prompt');
   return `
     <section class="local-workspace-prompt ${context}-context" aria-label="${escapeHtml(ariaLabel)}">
       <div>
@@ -15334,11 +15384,11 @@ function localWorkspacePrompt(context: 'backup' | 'cloud'): string {
         <p>${escapeHtml(detail)}</p>
       </div>
       <div class="local-workspace-counts">
-        ${localWorkspaceCountPill('Requests', summary.requests)}
-        ${localWorkspaceCountPill('Approvals', summary.approvals)}
-        ${localWorkspaceCountPill('Repeats', summary.repeatPayments)}
-        ${localWorkspaceCountPill('Done', summary.done)}
-        ${localWorkspaceCountPill('Proofs', summary.proofs)}
+        ${localWorkspaceCountPill(t('Requests'), summary.requests)}
+        ${localWorkspaceCountPill(t('Approvals'), summary.approvals)}
+        ${localWorkspaceCountPill(t('Repeats'), summary.repeatPayments)}
+        ${localWorkspaceCountPill(t('Done'), summary.done)}
+        ${localWorkspaceCountPill(t('Proofs'), summary.proofs)}
       </div>
       ${action ? `<div class="local-workspace-actions">${action}</div>` : ''}
     </section>
@@ -15352,16 +15402,22 @@ function localWorkspaceCountPill(label: string, count: number): string {
 
 function localWorkspaceImportSummaryLabel(summary: LocalWorkspaceSummary): string {
   return [
-    localWorkspaceCountPhrase(summary.requests, 'request'),
-    localWorkspaceCountPhrase(summary.approvals, 'approval'),
-    localWorkspaceCountPhrase(summary.repeatPayments, 'repeat payment'),
-    localWorkspaceCountPhrase(summary.proofs, 'proof'),
+    localWorkspaceCountPhrase(summary.requests, t('request'), t('requests')),
+    localWorkspaceCountPhrase(summary.approvals, t('approval'), t('approvals')),
+    localWorkspaceCountPhrase(summary.repeatPayments, t('repeat payment'), t('repeat payments')),
+    localWorkspaceCountPhrase(summary.proofs, t('proof'), t('proofs')),
   ].filter(Boolean).join(', ');
 }
 
-function localWorkspaceCountPhrase(count: number, label: string): string {
+function localWorkspaceCountPhrase(count: number, singular: string, plural: string): string {
   if (count === 0) return '';
-  return `${count} ${label}${count === 1 ? '' : 's'}`;
+  return count === 1 ? tf('{count} {label}', { count, label: singular }) : tf('{count} {label}', { count, label: plural });
+}
+
+function savedPromptCountLabel(count: number): string {
+  return count === 1
+    ? tf('{count} saved prompt', { count })
+    : tf('{count} saved prompts', { count });
 }
 
 function preferencesViewButton(view: PreferencesView, title: string, detail: string): string {
@@ -15374,8 +15430,8 @@ function preferencesViewButton(view: PreferencesView, title: string, detail: str
       role="tab"
       aria-selected="${active ? 'true' : 'false'}"
     >
-      <span>${escapeHtml(detail)}</span>
-      <strong>${escapeHtml(title)}</strong>
+      <span>${escapeHtml(t(detail))}</span>
+      <strong>${escapeHtml(t(title))}</strong>
       <em>${escapeHtml(preferencesViewSummary(view))}</em>
     </button>
   `;
@@ -15387,32 +15443,32 @@ function preferencesViewSummary(view: PreferencesView): string {
       const pending = state.pendingTransactions.length;
       const unresolved = unresolvedPendingTransactions().length;
       const alertsOn = notificationEnabledCount();
-      if (unresolved > 0) return `${unresolved} unresolved tx · ${alertsOn} alerts on`;
-      return `${pending} pending tx · ${alertsOn} alerts on`;
+      if (unresolved > 0) return tf('{unresolved} unresolved tx · {alertsOn} alerts on', { unresolved, alertsOn });
+      return tf('{pending} pending tx · {alertsOn} alerts on', { pending, alertsOn });
     }
     case 'ai': {
       const extras = [
-        state.aiSettings.multiReviewer ? 'multi-review' : '',
-        state.aiSettings.autoBackgroundWatch ? 'background watch' : '',
-        state.plannerPrefs.houseRules.trim() ? 'house rules' : '',
-        state.plannerPrefs.savedPrompts.length ? `${state.plannerPrefs.savedPrompts.length} prompts` : '',
+        state.aiSettings.multiReviewer ? t('multi-review') : '',
+        state.aiSettings.autoBackgroundWatch ? t('background watch') : '',
+        state.plannerPrefs.houseRules.trim() ? t('house rules') : '',
+        state.plannerPrefs.savedPrompts.length ? tf('{n} prompts', { n: state.plannerPrefs.savedPrompts.length }) : '',
       ].filter(Boolean);
-      return extras.length ? extras.join(' · ') : 'review defaults';
+      return extras.length ? extras.join(' · ') : t('review defaults');
     }
     case 'access': {
       const enabledAgents = state.agents.filter((agent) => agent.enabled).length;
       const enabledConnectors = enabledProtocolConnectors(state.connectedDapps, state.cluster).length;
-      if (isMobileAiPathPolicySurface()) return `${enabledConnectors} connectors on`;
-      return `${enabledAgents}/${state.agents.length} agents · ${enabledConnectors} connectors on`;
+      if (isMobileAiPathPolicySurface()) return tf('{enabledConnectors} connectors on', { enabledConnectors });
+      return tf('{enabledAgents}/{total} agents · {enabledConnectors} connectors on', { enabledAgents, total: state.agents.length, enabledConnectors });
     }
     case 'rules': {
       const enabledPolicies = state.agentPolicies.filter((policy) => policy.enabled).length;
       const railsOn = safetyRailsEnabledCount();
-      return `${state.recipientRules.recipients.length} recipients · ${railsOn} rails · ${enabledPolicies} policies`;
+      return tf('{recipients} recipients · {railsOn} rails · {enabledPolicies} policies', { recipients: state.recipientRules.recipients.length, railsOn, enabledPolicies });
     }
     case 'tokens': {
       const autoRetries = state.failurePolicies.filter((policy) => policy.mode === 'auto').length;
-      return `${state.customTokens.length} custom tokens · ${autoRetries} auto retries`;
+      return tf('{customTokens} custom tokens · {autoRetries} auto retries', { customTokens: state.customTokens.length, autoRetries });
     }
   }
 }
@@ -15432,27 +15488,27 @@ function safetyRailsEnabledCount(): number {
 function preferencesActiveView(): string {
   switch (state.preferencesView) {
     case 'workspace':
-      return preferencesGroup('Workspace', 'Export, restore, and run background alerts for this browser workspace.', `
+      return preferencesGroup(t('Workspace'), t('Export, restore, and run background alerts for this browser workspace.'), `
         <div class="preferences-card-grid workspace-preferences-grid">
           ${workspaceBackupPanel()}
           ${notificationPreferencesPanel()}
         </div>
       `);
     case 'ai':
-      return preferencesGroup('AI Connector', 'Personalize prompts and connector behavior without changing signing authority.', aiReviewPreferencesPanel());
+      return preferencesGroup(t('AI Connector'), t('Personalize prompts and connector behavior without changing signing authority.'), aiReviewPreferencesPanel());
     case 'access':
       if (isMobileAppViewport()) {
-        return preferencesGroup('Protocol Connectors', 'Manage protocol connectors and connector API keys.', mobileAccessPreferencesContent());
+        return preferencesGroup(t('Protocol Connectors'), t('Manage protocol connectors and connector API keys.'), mobileAccessPreferencesContent());
       }
       return isMobileAiPathPolicySurface()
-        ? preferencesGroup('Protocol Connectors', 'Manage protocol connectors used to prepare wallet-approved actions.', `
+        ? preferencesGroup(t('Protocol Connectors'), t('Manage protocol connectors used to prepare wallet-approved actions.'), `
           <div class="preferences-card-grid access-preferences-grid">
             ${connectedDappsPanel()}
           </div>
           <div id="connector-keys-panel" class="connector-keys-mount"></div>
           ${state.tauriNativeEnvironment.isTauriNative ? '<div id="tauri-local-runtime-panel" class="connector-keys-mount"></div>' : ''}
         `)
-        : preferencesGroup('Agent Access', 'Manage bridge agents and protocol connectors used to prepare actions.', `
+        : preferencesGroup(t('Agent Access'), t('Manage bridge agents and protocol connectors used to prepare actions.'), `
           <div class="preferences-card-grid access-preferences-grid">
             ${connectedAgentsPanel()}
             ${publicBridgeStatusCard()}
@@ -15463,9 +15519,9 @@ function preferencesActiveView(): string {
         `);
     case 'rules':
       if (isMobileAppViewport()) {
-        return preferencesGroup('Review Rules', 'Recipients, rails, and agent policy guidance.', mobileRulesPreferencesContent());
+        return preferencesGroup(t('Review Rules'), t('Recipients, rails, and agent policy guidance.'), mobileRulesPreferencesContent());
       }
-      return preferencesGroup('Review Rules', 'Optional checks that help the signer review recipients, routes, and agent advice.', `
+      return preferencesGroup(t('Review Rules'), t('Optional checks that help the signer review recipients, routes, and agent advice.'), `
         <div class="preferences-card-grid rules-preferences-stack">
           ${recipientRulesPanel()}
           ${safetyRailsPanel()}
@@ -15474,9 +15530,9 @@ function preferencesActiveView(): string {
       `);
     case 'tokens':
       if (isMobileAppViewport()) {
-        return preferencesGroup('Tokens & Retry', 'Token display labels and retry behavior.', mobileTokensPreferencesContent());
+        return preferencesGroup(t('Tokens & Retry'), t('Token display labels and retry behavior.'), mobileTokensPreferencesContent());
       }
-      return preferencesGroup('Tokens & Retry', 'Token display names and failure retry defaults.', `
+      return preferencesGroup(t('Tokens & Retry'), t('Token display names and failure retry defaults.'), `
         <div class="preferences-card-grid tokens-preferences-grid">
           ${customTokensPanel()}
           ${failurePoliciesPanel()}
@@ -15489,8 +15545,8 @@ function mobileAccessPreferencesContent(): string {
   const active = state.preferencesAccessMobileTab;
   return `
     ${preferencesMobileSectionTabs('access', [
-      { id: 'protocols', label: 'Protocols' },
-      { id: 'keys', label: 'API Keys' },
+      { id: 'protocols', label: t('Protocols') },
+      { id: 'keys', label: t('API Keys') },
     ], active)}
     <div class="preferences-mobile-subview">
       ${active === 'keys'
@@ -15505,9 +15561,9 @@ function mobileRulesPreferencesContent(): string {
   const active = state.preferencesRulesMobileTab;
   return `
     ${preferencesMobileSectionTabs('rules', [
-      { id: 'recipients', label: 'Recipients' },
-      { id: 'rails', label: 'Rails' },
-      { id: 'policies', label: 'Policies' },
+      { id: 'recipients', label: t('Recipients') },
+      { id: 'rails', label: t('Rails') },
+      { id: 'policies', label: t('Policies') },
     ], active)}
     <div class="preferences-mobile-subview">
       ${active === 'rails'
@@ -15523,8 +15579,8 @@ function mobileTokensPreferencesContent(): string {
   const active = state.preferencesTokensMobileTab;
   return `
     ${preferencesMobileSectionTabs('tokens', [
-      { id: 'labels', label: 'Labels' },
-      { id: 'retry', label: 'Retry' },
+      { id: 'labels', label: t('Labels') },
+      { id: 'retry', label: t('Retry') },
     ], active)}
     <div class="preferences-mobile-subview">
       ${active === 'retry' ? failurePoliciesPanel() : customTokensPanel()}
@@ -15577,23 +15633,23 @@ function preferencesGroup(title: string, detail: string, content: string): strin
 
 function aiReviewPreferencesPanel(): string {
   const extras = [
-    state.aiSettings.multiReviewer ? 'Multi-agent review' : '',
-    state.aiSettings.autoBackgroundWatch ? 'Background re-check' : '',
-    state.plannerPrefs.houseRules.trim() ? 'House rules' : '',
-    state.plannerPrefs.savedPrompts.length ? `${state.plannerPrefs.savedPrompts.length} saved prompt${state.plannerPrefs.savedPrompts.length === 1 ? '' : 's'}` : '',
+    state.aiSettings.multiReviewer ? t('Multi-agent review') : '',
+    state.aiSettings.autoBackgroundWatch ? t('Background re-check') : '',
+    state.plannerPrefs.houseRules.trim() ? t('House rules') : '',
+    state.plannerPrefs.savedPrompts.length ? savedPromptCountLabel(state.plannerPrefs.savedPrompts.length) : '',
   ].filter(Boolean);
-  const status = extras.length ? extras.join(' · ') : 'Defaults';
+  const status = extras.length ? extras.join(' · ') : t('Defaults');
   return `
-    <section class="ai-review-preferences-card" aria-label="AI connector preferences">
+    <section class="ai-review-preferences-card" aria-label="${escapeHtml(t('AI connector preferences'))}">
       <div class="ai-review-preferences-head">
         <div>
-          <span>AI connector</span>
-          <strong>Planner personalization</strong>
-          <p>Saved prompts and review extras affect the AI connector only. Wallet approval, submission, and signing stay separate.</p>
+          <span>${escapeHtml(t('AI connector'))}</span>
+          <strong>${escapeHtml(t('Planner personalization'))}</strong>
+          <p>${escapeHtml(t('Saved prompts and review extras affect the AI connector only. Wallet approval, submission, and signing stay separate.'))}</p>
         </div>
         <em>${escapeHtml(status)}</em>
       </div>
-      <div class="ai-advanced-toggles" aria-label="Agent review extras">
+      <div class="ai-advanced-toggles" aria-label="${escapeHtml(t('Agent review extras'))}">
         <label class="ai-toggle">
           <input
             type="checkbox"
@@ -15602,8 +15658,8 @@ function aiReviewPreferencesPanel(): string {
             ${state.busy ? 'disabled' : ''}
           />
           <span>
-            <strong>Multi-agent review</strong>
-            <em>Ask the agent to weigh in as risk, quote, policy, and protocol reviewers in one review call.</em>
+            <strong>${escapeHtml(t('Multi-agent review'))}</strong>
+            <em>${escapeHtml(t('Ask the agent to weigh in as risk, quote, policy, and protocol reviewers in one review call.'))}</em>
           </span>
         </label>
         <label class="ai-toggle">
@@ -15614,8 +15670,8 @@ function aiReviewPreferencesPanel(): string {
             ${state.busy ? 'disabled' : ''}
           />
           <span>
-            <strong>Background re-check</strong>
-            <em>While this tab is open, older drafts are re-reviewed and surfaced only if the recommendation changes.</em>
+            <strong>${escapeHtml(t('Background re-check'))}</strong>
+            <em>${escapeHtml(t('While this tab is open, older drafts are re-reviewed and surfaced only if the recommendation changes.'))}</em>
           </span>
         </label>
       </div>
@@ -15633,16 +15689,16 @@ function cloudWorkspaceCard(): string {
   const unavailable = state.cloudSession.status === 'unavailable';
   const status = signedIn
     ? matched
-      ? 'Signed in'
+      ? t('Signed in')
       : reconnectNeeded
-        ? 'Reconnect wallet'
-        : 'Wallet mismatch'
-    : 'Signed out';
+        ? t('Reconnect wallet')
+        : t('Wallet mismatch')
+    : t('Signed out');
   const summaryDetail = signedIn
     ? matched
-      ? 'Cloud workspace connected'
-      : `Signed in as ${short(state.cloudSession.walletAddress)}`
-    : 'Browser-local workflow storage';
+      ? t('Cloud workspace connected')
+      : tf('Signed in as {address}', { address: short(state.cloudSession.walletAddress) })
+    : t('Browser-local workflow storage');
   const open = state.workspaceStoragePanelOpen === true ? 'open' : '';
   const body = cloudWorkspaceRailBody();
   if (isMobileAppViewport()) {
@@ -15651,9 +15707,9 @@ function cloudWorkspaceCard(): string {
     const nativeMobileApp = IS_ANDROID_APP || IS_IOS_APP;
     const tone = matched ? 'good' : signedIn ? 'warn' : 'idle';
     const railSummaryDetail = IS_ANDROID_APP && !signedIn
-      ? 'Saved on this device'
+      ? t('Saved on this device')
       : summaryDetail;
-    const legacyActionLabel = signedIn ? 'Manage' : 'Sign in';
+    const legacyActionLabel = signedIn ? t('Manage') : t('Sign in');
     const railActions = nativeMobileApp
       ? signedIn ? `
           <span class="rail-conn-actions">
@@ -15662,7 +15718,7 @@ function cloudWorkspaceCard(): string {
               class="rail-conn-action danger"
               data-cloud-action="sign-out"
               ${state.busy ? 'disabled' : ''}
-            >Sign out</button>
+            >${escapeHtml(t('Sign out'))}</button>
           </span>
         ` : `
           <span class="rail-conn-actions">
@@ -15671,7 +15727,7 @@ function cloudWorkspaceCard(): string {
               class="rail-conn-action cloud-signin"
               data-cloud-action="sign-in"
               ${state.busy ? 'disabled' : ''}
-            >Sign in</button>
+            >${escapeHtml(t('Sign in'))}</button>
           </span>
         `
       : `
@@ -15682,7 +15738,7 @@ function cloudWorkspaceCard(): string {
             data-mobile-rail-sheet="workspace-storage"
             aria-expanded="${state.activeMobileRailSheet === 'workspace-storage' ? 'true' : 'false'}"
           >${escapeHtml(legacyActionLabel)}</button>
-          ${signedIn ? `<button type="button" class="rail-conn-action danger" data-cloud-action="sign-out" ${state.busy ? 'disabled' : ''}>Sign out</button>` : ''}
+          ${signedIn ? `<button type="button" class="rail-conn-action danger" data-cloud-action="sign-out" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Sign out'))}</button>` : ''}
         </span>
       `;
     const trigger = IS_ANDROID_APP
@@ -15690,7 +15746,7 @@ function cloudWorkspaceCard(): string {
           <span class="rail-conn-identity">
             <span class="rail-conn-icon ${escapeHtml(tone)}">${commandCenterIcon('cloud')}</span>
             <span class="workspace-storage-summary-copy">
-              <span>Workspace storage</span>
+              <span>${escapeHtml(t('Workspace storage'))}</span>
               <em>${escapeHtml(railSummaryDetail)}</em>
             </span>
           </span>
@@ -15698,18 +15754,18 @@ function cloudWorkspaceCard(): string {
           ${railActions}`
       : `
           <span class="workspace-storage-summary-copy">
-            <span>Workspace storage</span>
+            <span>${escapeHtml(t('Workspace storage'))}</span>
             <em>${escapeHtml(summaryDetail)}</em>
           </span>
           ${signedIn || !nativeMobileApp ? `<strong>${escapeHtml(status)}</strong>` : ''}
           ${railActions}`;
     return `
-      <section class="workspace-storage-panel ${escapeHtml(mode)} ${signedIn ? 'signed-in' : ''} mobile-rail-trigger-panel" data-layout="workspace-storage-panel" aria-label="Workspace storage status">
+      <section class="workspace-storage-panel ${escapeHtml(mode)} ${signedIn ? 'signed-in' : ''} mobile-rail-trigger-panel" data-layout="workspace-storage-panel" aria-label="${escapeHtml(t('Workspace storage status'))}">
         <div
           class="mobile-rail-sheet-trigger${nativeMobileApp ? ' rail-conn-trigger' : ''}"
           ${nativeMobileApp ? 'data-mobile-rail-sheet="workspace-storage"' : ''}
           aria-expanded="${state.activeMobileRailSheet === 'workspace-storage' ? 'true' : 'false'}"
-          ${nativeMobileApp ? 'aria-label="Open workspace storage setup" role="button" tabindex="0"' : ''}
+          ${nativeMobileApp ? `aria-label="${escapeHtml(t('Open workspace storage setup'))}" role="button" tabindex="0"` : ''}
         >
           ${trigger}
         </div>
@@ -15717,10 +15773,10 @@ function cloudWorkspaceCard(): string {
     `;
   }
   return `
-    <details class="workspace-storage-panel ${escapeHtml(mode)} ${signedIn ? 'signed-in' : ''}" data-layout="workspace-storage-panel" aria-label="Workspace storage status" ${open}>
+    <details class="workspace-storage-panel ${escapeHtml(mode)} ${signedIn ? 'signed-in' : ''}" data-layout="workspace-storage-panel" aria-label="${escapeHtml(t('Workspace storage status'))}" ${open}>
       <summary>
         <span class="workspace-storage-summary-copy">
-          <span>Workspace storage</span>
+          <span>${escapeHtml(t('Workspace storage'))}</span>
           <em>${escapeHtml(summaryDetail)}</em>
         </span>
         ${signedIn ? `<strong>${escapeHtml(status)}</strong>` : `<button
@@ -15728,8 +15784,8 @@ function cloudWorkspaceCard(): string {
           class="rail-cloud-signin-summary"
           data-cloud-action="sign-in"
           ${state.busy || unavailable ? 'disabled' : ''}
-          title="${unavailable ? 'Cloud APIs are unavailable from this host.' : 'Sign in with a wallet ownership proof.'}"
-        >Sign in</button>`}
+          title="${escapeHtml(unavailable ? t('Cloud APIs are unavailable from this host.') : t('Sign in with a wallet ownership proof.'))}"
+        >${escapeHtml(t('Sign in'))}</button>`}
       </summary>
       ${body}
     </details>
@@ -15744,43 +15800,43 @@ function cloudWorkspaceRailBody(): string {
   const reconnectNeeded = signedIn && !matched && !mismatch;
   const unavailable = state.cloudSession.status === 'unavailable';
   const detail = unavailable
-    ? 'Cloud sign-in is unavailable from this host. Plans, approvals, and proofs stay on this device.'
+    ? t('Cloud sign-in is unavailable from this host. Plans, approvals, and proofs stay on this device.')
     : signedIn
       ? matched
-        ? 'One-time drafts, approvals, and done work sync through Agentic Cloud.'
-        : `Signed in as ${short(state.cloudSession.walletAddress)}. ${reconnectNeeded ? 'Reconnect that wallet to use cloud workflow.' : 'Connect that wallet to use cloud workflow.'}`
-      : 'Signed-out workflow data is saved on this device.';
+        ? t('One-time drafts, approvals, and done work sync through Agentic Cloud.')
+        : tf('Signed in as {address}. {note}', { address: short(state.cloudSession.walletAddress), note: reconnectNeeded ? t('Reconnect that wallet to use cloud workflow.') : t('Connect that wallet to use cloud workflow.') })
+      : t('Signed-out workflow data is saved on this device.');
   return `
-    <section class="rail-cloud-card ${escapeHtml(mode)} ${signedIn ? 'signed-in' : ''}" aria-label="Workspace storage details">
+    <section class="rail-cloud-card ${escapeHtml(mode)} ${signedIn ? 'signed-in' : ''}" aria-label="${escapeHtml(t('Workspace storage details'))}">
       <p>${escapeHtml(detail)}</p>
       <div class="rail-cloud-facts">
-        <span>Active <strong>${escapeHtml(activeWorkflowLabel())}</strong></span>
-        ${matched ? `<span>Wallet <strong>${escapeHtml(short(state.cloudSession.walletAddress))}</strong></span>` : ''}
-        ${state.cloudLastSync && matched ? `<span>Synced <strong>${escapeHtml(formatDateTime(state.cloudLastSync))}</strong></span>` : ''}
+        <span>${escapeHtml(t('Active'))} <strong>${escapeHtml(activeWorkflowLabel())}</strong></span>
+        ${matched ? `<span>${escapeHtml(t('Wallet'))} <strong>${escapeHtml(short(state.cloudSession.walletAddress))}</strong></span>` : ''}
+        ${state.cloudLastSync && matched ? `<span>${escapeHtml(t('Synced'))} <strong>${escapeHtml(formatDateTime(state.cloudLastSync))}</strong></span>` : ''}
       </div>
       <div class="rail-cloud-actions">
         ${signedIn ? `
-          <button id="cloudLogout" class="utility" ${state.busy ? 'disabled' : ''}>Sign out</button>
+          <button id="cloudLogout" class="utility" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Sign out'))}</button>
         ` : !state.address ? `
           <button
             type="button"
             class="rail-cloud-button"
             data-cloud-action="sign-in"
             ${state.busy ? 'disabled' : ''}
-            title="Connect your wallet and sign in to Agentic Cloud."
+            title="${escapeHtml(t('Connect your wallet and sign in to Agentic Cloud.'))}"
           >
-            Connect Cloud Storage
+            ${escapeHtml(t('Connect Cloud Storage'))}
           </button>
         ` : unavailable ? `
-          <button id="cloudSignIn" class="rail-cloud-button" disabled title="Cloud APIs are unavailable from this host.">Sign in</button>
+          <button id="cloudSignIn" class="rail-cloud-button" disabled title="${escapeHtml(t('Cloud APIs are unavailable from this host.'))}">${escapeHtml(t('Sign in'))}</button>
         ` : `
-          <button id="cloudSignIn" class="rail-cloud-button" ${state.busy ? 'disabled' : ''} title="Sign in with a wallet ownership proof.">Sign in</button>
+          <button id="cloudSignIn" class="rail-cloud-button" ${state.busy ? 'disabled' : ''} title="${escapeHtml(t('Sign in with a wallet ownership proof.'))}">${escapeHtml(t('Sign in'))}</button>
         `}
       </div>
-      ${unavailable && state.address && !signedIn ? '<p class="rail-cloud-action-note">Cloud unavailable from this host; saved-on-device storage is active.</p>' : ''}
+      ${unavailable && state.address && !signedIn ? `<p class="rail-cloud-action-note">${escapeHtml(t('Cloud unavailable from this host; saved-on-device storage is active.'))}</p>` : ''}
       ${localWorkspacePrompt('cloud')}
-      ${mismatch ? '<p class="rail-cloud-warning">Cloud sessions prove wallet ownership only. They do not grant spending authority.</p>' : ''}
-      ${!signedIn && !state.address ? '<p class="rail-cloud-warning">Cloud sign-in uses your wallet as identity only. It does not grant spending authority.</p>' : ''}
+      ${mismatch ? `<p class="rail-cloud-warning">${escapeHtml(t('Cloud sessions prove wallet ownership only. They do not grant spending authority.'))}</p>` : ''}
+      ${!signedIn && !state.address ? `<p class="rail-cloud-warning">${escapeHtml(t('Cloud sign-in uses your wallet as identity only. It does not grant spending authority.'))}</p>` : ''}
     </section>
   `;
 }
@@ -15794,16 +15850,16 @@ function safetyRailsPanel(): string {
     <details class="safety-rails-panel rail-details ${anyEnabled ? 'enabled' : 'disabled'}" data-layout="safety-rails-panel" ${mobile || anyEnabled ? 'open' : ''}>
       <summary>
         <span class="safety-rails-summary-copy">
-          <span>Safety rails</span>
+          <span>${t('Safety rails')}</span>
           <em>${escapeHtml(summary)}</em>
         </span>
-        <strong>${anyEnabled ? 'on' : 'off'}</strong>
+        <strong>${anyEnabled ? t('on') : t('off')}</strong>
       </summary>
-      <section class="safety-rails-card" aria-label="Safety rails">
-        ${mobile ? mobileSafetyRailSection('Programs', rails.programs.enabled, `${rails.programs.allowlist.length} configured`, safetyRailsProgramsSection()) : safetyRailsProgramsSection()}
-        ${mobile ? mobileSafetyRailSection('Tokens', rails.tokens.enabled, `${rails.tokens.allowlist.length} configured`, safetyRailsTokensSection()) : safetyRailsTokensSection()}
-        ${mobile ? mobileSafetyRailSection('Spend caps', rails.spend.enabled, `${rails.spend.caps.length} caps`, safetyRailsSpendSection()) : safetyRailsSpendSection()}
-        ${mobile ? mobileSafetyRailSection('Slippage', rails.slippage.enabled, `${rails.slippage.maxBps} bps`, safetyRailsSlippageSection()) : safetyRailsSlippageSection()}
+      <section class="safety-rails-card" aria-label="${escapeHtml(t('Safety rails'))}">
+        ${mobile ? mobileSafetyRailSection(t('Programs'), rails.programs.enabled, tf('{n} configured', { n: rails.programs.allowlist.length }), safetyRailsProgramsSection()) : safetyRailsProgramsSection()}
+        ${mobile ? mobileSafetyRailSection(t('Tokens'), rails.tokens.enabled, tf('{n} configured', { n: rails.tokens.allowlist.length }), safetyRailsTokensSection()) : safetyRailsTokensSection()}
+        ${mobile ? mobileSafetyRailSection(t('Spend caps'), rails.spend.enabled, tf('{n} caps', { n: rails.spend.caps.length }), safetyRailsSpendSection()) : safetyRailsSpendSection()}
+        ${mobile ? mobileSafetyRailSection(t('Slippage'), rails.slippage.enabled, tf('{n} bps', { n: rails.slippage.maxBps }), safetyRailsSlippageSection()) : safetyRailsSlippageSection()}
       </section>
     </details>
   `;
@@ -15824,11 +15880,11 @@ function mobileSafetyRailSection(title: string, enabled: boolean, detail: string
 function safetyRailsSummary(): string {
   const rails = state.safetyRails;
   const enabled: string[] = [];
-  if (rails.programs.enabled) enabled.push(`${rails.programs.allowlist.length} programs`);
-  if (rails.tokens.enabled) enabled.push(`${rails.tokens.allowlist.length} tokens`);
-  if (rails.spend.enabled) enabled.push(`${rails.spend.caps.length} spend caps`);
-  if (rails.slippage.enabled) enabled.push(`slippage ≤ ${rails.slippage.maxBps}bps`);
-  return enabled.length ? enabled.join(' · ') : 'No rails active';
+  if (rails.programs.enabled) enabled.push(tf('{n} programs', { n: rails.programs.allowlist.length }));
+  if (rails.tokens.enabled) enabled.push(tf('{n} tokens', { n: rails.tokens.allowlist.length }));
+  if (rails.spend.enabled) enabled.push(tf('{n} spend caps', { n: rails.spend.caps.length }));
+  if (rails.slippage.enabled) enabled.push(tf('slippage ≤ {n}bps', { n: rails.slippage.maxBps }));
+  return enabled.length ? enabled.join(' · ') : t('No rails active');
 }
 
 function safetyRailsProgramsSection(): string {
@@ -15836,22 +15892,22 @@ function safetyRailsProgramsSection(): string {
   return `
     <div class="safety-rails-section ${section.enabled ? 'on' : 'off'}">
       <div class="safety-rails-section-head">
-        <strong>Programs</strong>
-        <button type="button" class="safety-rails-toggle ${section.enabled ? 'active' : ''}" data-safety-rails-action="toggle-programs">${section.enabled ? 'on' : 'off'}</button>
-        <button type="button" class="safety-rails-mode" data-safety-rails-action="cycle-mode" data-safety-rails-section="programs">${section.mode === 'block' ? 'Hard block' : 'Warn only'}</button>
+        <strong>${t('Programs')}</strong>
+        <button type="button" class="safety-rails-toggle ${section.enabled ? 'active' : ''}" data-safety-rails-action="toggle-programs">${section.enabled ? t('on') : t('off')}</button>
+        <button type="button" class="safety-rails-mode" data-safety-rails-action="cycle-mode" data-safety-rails-section="programs">${section.mode === 'block' ? t('Hard block') : t('Warn only')}</button>
       </div>
-      <p>Programs you trust to clear without a warning. Other programs surface a warning before approval.</p>
+      <p>${t('Programs you trust to clear without a warning. Other programs surface a warning before approval.')}</p>
       <div class="safety-rails-input-row">
-        <input type="text" placeholder="Program id or label" data-safety-rails-input="add-program" />
-        <button type="button" class="utility" data-safety-rails-action="add-program">Add</button>
+        <input type="text" placeholder="${escapeHtml(t('Program id or label'))}" data-safety-rails-input="add-program" />
+        <button type="button" class="utility" data-safety-rails-action="add-program">${t('Add')}</button>
       </div>
       <ul class="safety-rails-list">
         ${section.allowlist.map((value) => `
           <li>
             <span>${escapeHtml(value)}</span>
-            <button type="button" class="utility danger" data-safety-rails-action="remove-program" data-safety-rails-value="${escapeHtml(value)}">Remove</button>
+            <button type="button" class="utility danger" data-safety-rails-action="remove-program" data-safety-rails-value="${escapeHtml(value)}">${t('Remove')}</button>
           </li>
-        `).join('') || '<li class="safety-rails-empty">No programs configured.</li>'}
+        `).join('') || `<li class="safety-rails-empty">${t('No programs configured.')}</li>`}
       </ul>
     </div>
   `;
@@ -15862,22 +15918,22 @@ function safetyRailsTokensSection(): string {
   return `
     <div class="safety-rails-section ${section.enabled ? 'on' : 'off'}">
       <div class="safety-rails-section-head">
-        <strong>Tokens</strong>
-        <button type="button" class="safety-rails-toggle ${section.enabled ? 'active' : ''}" data-safety-rails-action="toggle-tokens">${section.enabled ? 'on' : 'off'}</button>
-        <button type="button" class="safety-rails-mode" data-safety-rails-action="cycle-mode" data-safety-rails-section="tokens">${section.mode === 'block' ? 'Hard block' : 'Warn only'}</button>
+        <strong>${t('Tokens')}</strong>
+        <button type="button" class="safety-rails-toggle ${section.enabled ? 'active' : ''}" data-safety-rails-action="toggle-tokens">${section.enabled ? t('on') : t('off')}</button>
+        <button type="button" class="safety-rails-mode" data-safety-rails-action="cycle-mode" data-safety-rails-section="tokens">${section.mode === 'block' ? t('Hard block') : t('Warn only')}</button>
       </div>
-      <p>Token symbols or mints you trust. Off-list tokens surface a warning on transfers and swaps.</p>
+      <p>${t('Token symbols or mints you trust. Off-list tokens surface a warning on transfers and swaps.')}</p>
       <div class="safety-rails-input-row">
-        <input type="text" placeholder="SOL, USDC, mint…" data-safety-rails-input="add-token" />
-        <button type="button" class="utility" data-safety-rails-action="add-token">Add</button>
+        <input type="text" placeholder="SOL, USDC, ${escapeHtml(t('mint…'))}" data-safety-rails-input="add-token" />
+        <button type="button" class="utility" data-safety-rails-action="add-token">${t('Add')}</button>
       </div>
       <ul class="safety-rails-list">
         ${section.allowlist.map((value) => `
           <li>
             <span>${escapeHtml(value)}</span>
-            <button type="button" class="utility danger" data-safety-rails-action="remove-token" data-safety-rails-value="${escapeHtml(value)}">Remove</button>
+            <button type="button" class="utility danger" data-safety-rails-action="remove-token" data-safety-rails-value="${escapeHtml(value)}">${t('Remove')}</button>
           </li>
-        `).join('') || '<li class="safety-rails-empty">No tokens configured.</li>'}
+        `).join('') || `<li class="safety-rails-empty">${t('No tokens configured.')}</li>`}
       </ul>
     </div>
   `;
@@ -15888,26 +15944,26 @@ function safetyRailsSpendSection(): string {
   return `
     <div class="safety-rails-section ${section.enabled ? 'on' : 'off'}">
       <div class="safety-rails-section-head">
-        <strong>Spend caps</strong>
-        <button type="button" class="safety-rails-toggle ${section.enabled ? 'active' : ''}" data-safety-rails-action="toggle-spend">${section.enabled ? 'on' : 'off'}</button>
-        <button type="button" class="safety-rails-mode" data-safety-rails-action="cycle-mode" data-safety-rails-section="spend">${section.mode === 'block' ? 'Hard block' : 'Warn only'}</button>
+        <strong>${t('Spend caps')}</strong>
+        <button type="button" class="safety-rails-toggle ${section.enabled ? 'active' : ''}" data-safety-rails-action="toggle-spend">${section.enabled ? t('on') : t('off')}</button>
+        <button type="button" class="safety-rails-mode" data-safety-rails-action="cycle-mode" data-safety-rails-section="spend">${section.mode === 'block' ? t('Hard block') : t('Warn only')}</button>
       </div>
-      <p>Maximum amount per token in rolling windows. Calculated from confirmed transfers in this browser.</p>
+      <p>${t('Maximum amount per token in rolling windows. Calculated from confirmed transfers in this browser.')}</p>
       <div class="safety-rails-input-row safety-rails-cap-row">
-        <input type="text" placeholder="Token" data-safety-rails-input="add-cap" />
-        <input type="number" inputmode="decimal" min="0" step="0.0001" placeholder="Daily" data-safety-rails-input="cap-day" />
-        <input type="number" inputmode="decimal" min="0" step="0.0001" placeholder="Weekly" data-safety-rails-input="cap-week" />
-        <input type="number" inputmode="decimal" min="0" step="0.0001" placeholder="Monthly" data-safety-rails-input="cap-month" />
-        <button type="button" class="utility" data-safety-rails-action="add-cap">Add</button>
+        <input type="text" placeholder="${escapeHtml(t('Token'))}" data-safety-rails-input="add-cap" />
+        <input type="number" inputmode="decimal" min="0" step="0.0001" placeholder="${escapeHtml(t('Daily'))}" data-safety-rails-input="cap-day" />
+        <input type="number" inputmode="decimal" min="0" step="0.0001" placeholder="${escapeHtml(t('Weekly'))}" data-safety-rails-input="cap-week" />
+        <input type="number" inputmode="decimal" min="0" step="0.0001" placeholder="${escapeHtml(t('Monthly'))}" data-safety-rails-input="cap-month" />
+        <button type="button" class="utility" data-safety-rails-action="add-cap">${t('Add')}</button>
       </div>
       <ul class="safety-rails-list">
         ${section.caps.map((cap) => `
           <li>
             <span>${escapeHtml(cap.token)}</span>
-            <em>${cap.maxPerDay ? `day ${cap.maxPerDay}` : ''}${cap.maxPerWeek ? ` · week ${cap.maxPerWeek}` : ''}${cap.maxPerMonth ? ` · month ${cap.maxPerMonth}` : ''}</em>
-            <button type="button" class="utility danger" data-safety-rails-action="remove-cap" data-safety-rails-value="${escapeHtml(cap.token.toUpperCase())}">Remove</button>
+            <em>${cap.maxPerDay ? `${t('day')} ${cap.maxPerDay}` : ''}${cap.maxPerWeek ? ` · ${t('week')} ${cap.maxPerWeek}` : ''}${cap.maxPerMonth ? ` · ${t('month')} ${cap.maxPerMonth}` : ''}</em>
+            <button type="button" class="utility danger" data-safety-rails-action="remove-cap" data-safety-rails-value="${escapeHtml(cap.token.toUpperCase())}">${t('Remove')}</button>
           </li>
-        `).join('') || '<li class="safety-rails-empty">No spend caps configured.</li>'}
+        `).join('') || `<li class="safety-rails-empty">${t('No spend caps configured.')}</li>`}
       </ul>
     </div>
   `;
@@ -15918,14 +15974,14 @@ function safetyRailsSlippageSection(): string {
   return `
     <div class="safety-rails-section ${section.enabled ? 'on' : 'off'}">
       <div class="safety-rails-section-head">
-        <strong>Slippage cap</strong>
-        <button type="button" class="safety-rails-toggle ${section.enabled ? 'active' : ''}" data-safety-rails-action="toggle-slippage">${section.enabled ? 'on' : 'off'}</button>
-        <button type="button" class="safety-rails-mode" data-safety-rails-action="cycle-mode" data-safety-rails-section="slippage">${section.mode === 'block' ? 'Hard block' : 'Warn only'}</button>
+        <strong>${t('Slippage cap')}</strong>
+        <button type="button" class="safety-rails-toggle ${section.enabled ? 'active' : ''}" data-safety-rails-action="toggle-slippage">${section.enabled ? t('on') : t('off')}</button>
+        <button type="button" class="safety-rails-mode" data-safety-rails-action="cycle-mode" data-safety-rails-section="slippage">${section.mode === 'block' ? t('Hard block') : t('Warn only')}</button>
       </div>
-      <p>Maximum slippage allowed for swap quotes. Higher quotes surface a warning before approval.</p>
+      <p>${t('Maximum slippage allowed for swap quotes. Higher quotes surface a warning before approval.')}</p>
       <div class="safety-rails-input-row">
         <input type="number" inputmode="numeric" min="0" max="10000" step="1" value="${section.maxBps}" data-safety-rails-action="set-slippage" />
-        <span class="safety-rails-suffix">basis points (${(section.maxBps / 100).toFixed(2)}%)</span>
+        <span class="safety-rails-suffix">${tf('basis points ({pct}%)', { pct: (section.maxBps / 100).toFixed(2) })}</span>
       </div>
     </div>
   `;
@@ -15940,30 +15996,30 @@ function recipientRulesPanel(): string {
     <details class="recipient-rules-panel rail-details ${rules.enabled ? 'enabled' : 'disabled'}" data-layout="recipient-rules-panel" ${open}>
       <summary>
         <span class="recipient-rules-summary-copy">
-          <span>Recipient rules</span>
+          <span>${t('Recipient rules')}</span>
           <em>${escapeHtml(summary)}</em>
         </span>
-        <strong>${rules.enabled ? 'on' : 'off'}</strong>
+        <strong>${rules.enabled ? t('on') : t('off')}</strong>
       </summary>
-      <section class="recipient-rules-card" aria-label="Recipient rules">
-        <div class="recipient-rule-toggles" role="group" aria-label="Recipient rule toggles">
-          ${recipientToggleButton('enabled', 'Checks', rules.enabled, 'Recipient checks')}
-          ${recipientToggleButton('allowListEnabled', 'Allow list', rules.allowListEnabled, 'Require trusted recipients')}
-          ${recipientToggleButton('blockListEnabled', 'Block list', rules.blockListEnabled, 'Reject blocked recipients')}
+      <section class="recipient-rules-card" aria-label="${escapeHtml(t('Recipient rules'))}">
+        <div class="recipient-rule-toggles" role="group" aria-label="${escapeHtml(t('Recipient rule toggles'))}">
+          ${recipientToggleButton('enabled', t('Checks'), rules.enabled, t('Recipient checks'))}
+          ${recipientToggleButton('allowListEnabled', t('Allow list'), rules.allowListEnabled, t('Require trusted recipients'))}
+          ${recipientToggleButton('blockListEnabled', t('Block list'), rules.blockListEnabled, t('Reject blocked recipients'))}
         </div>
         <div class="recipient-save-form">
           <label class="field compact">
-            <span>Name</span>
+            <span>${t('Name')}</span>
             <input data-recipient-field="name" value="${escapeHtml(state.recipientDraft.name)}" placeholder="Jeremy" autocomplete="off" ${state.busy ? 'disabled' : ''} />
             ${recipientFieldError('name')}
           </label>
           <label class="field compact">
-            <span>Address</span>
-            <input data-recipient-field="address" value="${escapeHtml(state.recipientDraft.address)}" placeholder="Solana address" autocomplete="off" spellcheck="false" ${state.busy ? 'disabled' : ''} />
+            <span>${t('Address')}</span>
+            <input data-recipient-field="address" value="${escapeHtml(state.recipientDraft.address)}" placeholder="${escapeHtml(t('Solana address'))}" autocomplete="off" spellcheck="false" ${state.busy ? 'disabled' : ''} />
             ${recipientFieldError('address')}
           </label>
           <label class="field compact">
-            <span>List</span>
+            <span>${t('List')}</span>
             ${selectPicker({
               id: 'recipientDraftPolicy',
               value: state.recipientDraft.policy,
@@ -15973,24 +16029,24 @@ function recipientRulesPanel(): string {
             })}
           </label>
           <label class="field compact recipient-note-field">
-            <span>Note</span>
-            <input data-recipient-field="note" value="${escapeHtml(state.recipientDraft.note)}" placeholder="Invoice, contractor, savings" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+            <span>${t('Note')}</span>
+            <input data-recipient-field="note" value="${escapeHtml(state.recipientDraft.note)}" placeholder="${escapeHtml(t('Invoice, contractor, savings'))}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
           </label>
           <label class="field compact recipient-tags-field">
-            <span>Tags</span>
-            <input data-recipient-field="tags" value="${escapeHtml(state.recipientDraft.tags)}" placeholder="team, exchange (comma separated)" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+            <span>${t('Tags')}</span>
+            <input data-recipient-field="tags" value="${escapeHtml(state.recipientDraft.tags)}" placeholder="${escapeHtml(t('team, exchange (comma separated)'))}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
           </label>
           <label class="field compact recipient-mine-field">
-            <span>Mine</span>
+            <span>${t('Mine')}</span>
             <input type="checkbox" data-recipient-field="isMine" ${state.recipientDraft.isMine ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
-            <em class="recipient-mine-hint">My own wallet — pre-sign shows "→ your wallet"</em>
+            <em class="recipient-mine-hint">${t('My own wallet — pre-sign shows "→ your wallet"')}</em>
           </label>
           <div class="recipient-save-actions">
-            <button type="button" class="primary" data-recipient-action="save" ${state.busy ? 'disabled' : ''}>Save</button>
-            <button type="button" class="utility" data-recipient-action="reset" ${state.busy ? 'disabled' : ''}>Clear</button>
+            <button type="button" class="primary" data-recipient-action="save" ${state.busy ? 'disabled' : ''}>${t('Save')}</button>
+            <button type="button" class="utility" data-recipient-action="reset" ${state.busy ? 'disabled' : ''}>${t('Clear')}</button>
           </div>
         </div>
-        ${savedCount ? savedRecipientList(rules.recipients) : '<div class="recipient-empty">No saved recipients</div>'}
+        ${savedCount ? savedRecipientList(rules.recipients) : `<div class="recipient-empty">${t('No saved recipients')}</div>`}
       </section>
     </details>
   `;
@@ -16005,13 +16061,13 @@ function connectedDappsPanel(): string {
   const mobile = isMobileAppViewport();
   const open = 'open';
   const card = `
-    <section class="connected-dapps-card" aria-label="Protocol Connectors">
+    <section class="connected-dapps-card" aria-label="${escapeHtml(t('Protocol Connectors'))}">
       <p class="connected-dapps-intro">${mobile
-        ? 'Choose protocols the agent can inspect or prepare. Wallet approval stays separate.'
-        : 'Add a protocol so the agent can read facts or prepare Blink actions against it. You still approve every transaction.'}</p>
+        ? t('Choose protocols the agent can inspect or prepare. Wallet approval stays separate.')
+        : t('Add a protocol so the agent can read facts or prepare Blink actions against it. You still approve every transaction.')}</p>
       <div class="connected-dapps-catalog">
         <label class="field compact">
-          <span id="protocolConnectorCatalogLabel">Add protocol</span>
+          <span id="protocolConnectorCatalogLabel">${t('Add protocol')}</span>
           ${selectPicker({
             id: 'protocolConnectorCatalog',
             value: disabledConnectors[0]?.id ?? '',
@@ -16027,13 +16083,13 @@ function connectedDappsPanel(): string {
           class="primary"
           data-connected-dapp-action="add-selected"
           ${state.busy || disabledConnectors.length === 0 ? 'disabled' : ''}
-        >${mobile ? 'Add' : '+ Add protocol'}</button>
+        >${mobile ? t('Add') : t('+ Add protocol')}</button>
       </div>
       ${mobile ? protocolConnectorAdvancedReads() : protocolConnectorKeyField()}
       <div class="connected-dapps-list">
         ${enabledConnectors.length
           ? enabledConnectors.map((adapter) => connectedDappRow(adapter)).join('')
-          : '<div class="connected-dapps-empty">No protocol connectors enabled. Add one from the catalog when you want the agent to inspect or prepare protocol work.</div>'}
+          : `<div class="connected-dapps-empty">${t('No protocol connectors enabled. Add one from the catalog when you want the agent to inspect or prepare protocol work.')}</div>`}
       </div>
     </section>
   `;
@@ -16042,10 +16098,10 @@ function connectedDappsPanel(): string {
       <section class="connected-dapps-panel mobile-connected-dapps-panel ${enabledCount ? 'enabled' : 'disabled'}" data-layout="connected-dapps-panel">
         <header class="mobile-preference-panel-head">
           <div>
-            <strong>Protocol Connectors</strong>
+            <strong>${t('Protocol Connectors')}</strong>
             <p>${escapeHtml(summary)}</p>
           </div>
-          <span>${enabledCount ? `${enabledCount} on` : 'off'}</span>
+          <span>${enabledCount ? tf('{n} on', { n: enabledCount }) : t('off')}</span>
         </header>
         ${card}
       </section>
@@ -16055,10 +16111,10 @@ function connectedDappsPanel(): string {
     <details class="connected-dapps-panel rail-details ${enabledCount ? 'enabled' : 'disabled'}" data-layout="connected-dapps-panel" ${open}>
       <summary>
         <span class="connected-dapps-summary-copy">
-          <span>Protocol Connectors</span>
+          <span>${t('Protocol Connectors')}</span>
           <em>${escapeHtml(summary)}</em>
         </span>
-        <strong>${enabledCount ? `${enabledCount} on` : 'off'}</strong>
+        <strong>${enabledCount ? tf('{n} on', { n: enabledCount }) : t('off')}</strong>
       </summary>
       ${card}
     </details>
@@ -16068,15 +16124,15 @@ function connectedDappsPanel(): string {
 function protocolConnectorKeyField(): string {
   return `
     <label class="field compact protocol-connector-key-field">
-      <span>Dialect client key</span>
+      <span>${t('Dialect client key')}</span>
       <input
         data-protocol-connector-pref="dialectClientKey"
         value="${escapeHtml(state.protocolConnectorPrefs.dialectClientKey)}"
-        placeholder="Optional key for read positions/rewards"
+        placeholder="${escapeHtml(t('Optional key for read positions/rewards'))}"
         autocomplete="off"
         ${state.busy ? 'disabled' : ''}
       />
-      <em>Only needed for connectors that read positions, rewards, or markets through Dialect. Blink action URLs can still be reviewed without it.</em>
+      <em>${t('Only needed for connectors that read positions, rewards, or markets through Dialect. Blink action URLs can still be reviewed without it.')}</em>
     </label>
   `;
 }
@@ -16086,8 +16142,8 @@ function protocolConnectorAdvancedReads(): string {
   return `
     <details class="protocol-connector-advanced">
       <summary>
-        <span>Advanced reads</span>
-        <em>${configured ? 'Dialect key saved' : 'Optional Dialect key'}</em>
+        <span>${t('Advanced reads')}</span>
+        <em>${configured ? t('Dialect key saved') : t('Optional Dialect key')}</em>
       </summary>
       ${protocolConnectorKeyField()}
     </details>
@@ -16100,7 +16156,7 @@ function connectedDappRow(adapter: ConnectedDappAdapter): string {
   const enabled = clusterOk && entry?.enabled === true;
   const clusterChip = clusterOk
     ? ''
-    : `<span class="connected-dapp-cluster-chip cluster-mismatch" title="Switch cluster to use this connector">${escapeHtml(adapter.supportedClusters.join(', '))} only</span>`;
+    : `<span class="connected-dapp-cluster-chip cluster-mismatch" title="${escapeHtml(t('Switch cluster to use this connector'))}">${tf('{clusters} only', { clusters: escapeHtml(adapter.supportedClusters.join(', ')) })}</span>`;
   const actionChips = adapter.supportedActions
     .map((label) => `<span class="connected-dapp-action-chip" title="${escapeHtml(label)}">${escapeHtml(compactConnectorActionLabel(label))}</span>`)
     .join('');
@@ -16118,12 +16174,12 @@ function connectedDappRow(adapter: ConnectedDappAdapter): string {
       </div>
     `)
     .join('');
-  const toggleLabel = enabled ? 'Disconnect' : 'Connect';
+  const toggleLabel = enabled ? t('Disconnect') : t('Connect');
   const toggleTitle = clusterOk
     ? enabled
-      ? `Disable ${adapter.name}`
-      : `Enable ${adapter.name}`
-    : `${adapter.name} is only available on ${adapter.supportedClusters.join(', ')}`;
+      ? tf('Disable {name}', { name: adapter.name })
+      : tf('Enable {name}', { name: adapter.name })
+    : tf('{name} is only available on {clusters}', { name: adapter.name, clusters: adapter.supportedClusters.join(', ') });
   if (isMobileAppViewport()) {
     return connectedDappRowMobile({
       adapter,
@@ -16148,12 +16204,12 @@ function connectedDappRow(adapter: ConnectedDappAdapter): string {
         </div>
         <div class="connected-dapp-row-meta">
           ${clusterChip}
-          <span class="connected-dapp-state-pill ${enabled ? 'connected' : 'disconnected'}">${enabled ? 'Connected' : 'Off'}</span>
+          <span class="connected-dapp-state-pill ${enabled ? 'connected' : 'disconnected'}">${enabled ? t('Connected') : t('Off')}</span>
         </div>
       </div>
       <div class="connected-dapp-capability-chips">${capabilityChips}</div>
       <div class="connected-dapp-action-chips">${actionChips}</div>
-      <dl class="connected-dapp-capability-summary" aria-label="${escapeHtml(adapter.name)} connector capabilities">
+      <dl class="connected-dapp-capability-summary" aria-label="${escapeHtml(tf('{name} connector capabilities', { name: adapter.name }))}">
         ${capabilityRows}
       </dl>
       <div class="connected-dapp-row-actions">
@@ -16193,7 +16249,7 @@ function connectedDappRowMobile(input: {
         </span>
         <span class="connected-dapp-row-meta">
           ${clusterChip}
-          <span class="connected-dapp-state-pill ${enabled ? 'connected' : 'disconnected'}">${enabled ? 'On' : 'Off'}</span>
+          <span class="connected-dapp-state-pill ${enabled ? 'connected' : 'disconnected'}">${enabled ? t('On') : t('Off')}</span>
         </span>
       </summary>
       <div class="mobile-connected-dapp-detail">
@@ -16201,7 +16257,7 @@ function connectedDappRowMobile(input: {
         <a class="connected-dapp-website" href="${escapeHtml(adapter.website)}" target="_blank" rel="noopener noreferrer">${escapeHtml(formatConnectedDappHostname(adapter.website))}</a>
         <div class="connected-dapp-capability-chips">${capabilityChips}</div>
         <div class="connected-dapp-action-chips">${actionChips}</div>
-        <dl class="connected-dapp-capability-summary" aria-label="${escapeHtml(adapter.name)} connector capabilities">
+        <dl class="connected-dapp-capability-summary" aria-label="${escapeHtml(tf('{name} connector capabilities', { name: adapter.name }))}">
           ${capabilityRows}
         </dl>
         <div class="connected-dapp-row-actions">
@@ -16222,79 +16278,79 @@ function connectedDappRowMobile(input: {
 
 function mobileConnectedDappSummary(adapter: ConnectedDappAdapter): string {
   const reads = [
-    connectorHasCapability(adapter, 'read_positions') ? 'positions' : '',
-    connectorHasCapability(adapter, 'read_rewards') ? 'rewards' : '',
-    connectorHasCapability(adapter, 'read_markets') ? 'markets' : '',
+    connectorHasCapability(adapter, 'read_positions') ? t('positions') : '',
+    connectorHasCapability(adapter, 'read_rewards') ? t('rewards') : '',
+    connectorHasCapability(adapter, 'read_markets') ? t('markets') : '',
   ].filter(Boolean);
   const actions = adapter.supportedActions.slice(0, 2).map(compactConnectorActionLabel);
   return [
-    reads.length ? `Reads ${reads.join(', ')}` : '',
+    reads.length ? tf('Reads {reads}', { reads: reads.join(', ') }) : '',
     actions.length ? actions.join(', ') : '',
-  ].filter(Boolean).join(' · ') || 'Connector enabled';
+  ].filter(Boolean).join(' · ') || t('Connector enabled');
 }
 
 function connectorCapabilitySummaryRows(adapter: ConnectedDappAdapter): Array<{ label: string; value: string; title?: string; tone?: 'ready' | 'warn' | 'blocked' }> {
   const readLabels = [
-    connectorHasCapability(adapter, 'read_positions') ? 'positions' : '',
-    connectorHasCapability(adapter, 'read_rewards') ? 'rewards' : '',
-    connectorHasCapability(adapter, 'read_markets') ? 'markets' : '',
+    connectorHasCapability(adapter, 'read_positions') ? t('positions') : '',
+    connectorHasCapability(adapter, 'read_rewards') ? t('rewards') : '',
+    connectorHasCapability(adapter, 'read_markets') ? t('markets') : '',
   ].filter(Boolean);
   const readReady = !adapter.requiresClientKey || Boolean(state.protocolConnectorPrefs.dialectClientKey.trim());
   return [
     {
-      label: 'Reads',
-      value: readLabels.length ? readLabels.join(', ') : 'No read API',
+      label: t('Reads'),
+      value: readLabels.length ? readLabels.join(', ') : t('No read API'),
       tone: readLabels.length ? readReady ? 'ready' : 'warn' : 'blocked',
       title: readLabels.length
         ? readReady
-          ? `${adapter.name} can provide ${readLabels.join(', ')} facts when enabled.`
-          : `${adapter.name} reads need a Dialect client key before positions, rewards, or markets are available.`
-        : `${adapter.name} does not expose read APIs in this catalog.`,
+          ? tf('{name} can provide {reads} facts when enabled.', { name: adapter.name, reads: readLabels.join(', ') })
+          : tf('{name} reads need a Dialect client key before positions, rewards, or markets are available.', { name: adapter.name })
+        : tf('{name} does not expose read APIs in this catalog.', { name: adapter.name }),
     },
     {
-      label: 'Actions',
+      label: t('Actions'),
       value: connectorActionSourceSummary(adapter),
       tone: adapter.actionSource ? 'ready' : 'blocked',
       title: adapter.actionSource
-        ? `${adapter.name} can prepare ${adapter.actionSource === 'first-class-adapter' ? 'first-class' : 'Blink-backed'} wallet approval work.`
-        : `${adapter.name} has no executable action path in this catalog.`,
+        ? tf('{name} can prepare {kind} wallet approval work.', { name: adapter.name, kind: adapter.actionSource === 'first-class-adapter' ? t('first-class') : t('Blink-backed') })
+        : tf('{name} has no executable action path in this catalog.', { name: adapter.name }),
     },
     {
-      label: 'Client key',
+      label: t('Client key'),
       value: adapter.requiresClientKey
-        ? readReady ? 'Configured for reads' : 'Needed for reads'
-        : 'Not needed',
+        ? readReady ? t('Configured for reads') : t('Needed for reads')
+        : t('Not needed'),
       tone: adapter.requiresClientKey ? readReady ? 'ready' : 'warn' : 'ready',
     },
     {
-      label: 'Boundary',
-      value: adapter.actionSource ? 'Prepare only; wallet approves separately' : 'Runtime tools not wired',
+      label: t('Boundary'),
+      value: adapter.actionSource ? t('Prepare only; wallet approves separately') : t('Runtime tools not wired'),
       tone: adapter.actionSource ? 'ready' : 'blocked',
       title: adapter.actionSource
-        ? `${adapter.name} prepares work only; the wallet approval remains separate.`
-        : `${adapter.name} is cataloged but does not expose executable runtime tools yet.`,
+        ? tf('{name} prepares work only; the wallet approval remains separate.', { name: adapter.name })
+        : tf('{name} is cataloged but does not expose executable runtime tools yet.', { name: adapter.name }),
     },
   ];
 }
 
 function connectorActionSourceSummary(adapter: ConnectedDappAdapter): string {
-  if (adapter.actionSource === 'first-class-adapter') return `First-class: ${adapter.supportedActions.slice(0, 3).join(', ')}`;
-  if (adapter.actionSource === 'blink') return `Blink-backed: ${adapter.supportedActions.slice(0, 3).join(', ')}`;
-  return 'Unavailable';
+  if (adapter.actionSource === 'first-class-adapter') return tf('First-class: {actions}', { actions: adapter.supportedActions.slice(0, 3).join(', ') });
+  if (adapter.actionSource === 'blink') return tf('Blink-backed: {actions}', { actions: adapter.supportedActions.slice(0, 3).join(', ') });
+  return t('Unavailable');
 }
 
 function protocolConnectorSelectOptions(connectors: ProtocolConnector[]): SelectPickerOption[] {
   if (connectors.length === 0) {
-    return [{ value: '', label: 'All protocols enabled', meta: 'Catalog', disabled: true }];
+    return [{ value: '', label: t('All protocols enabled'), meta: t('Catalog'), disabled: true }];
   }
   return connectors.map((connector) => ({
     value: connector.id,
     label: connector.name,
     meta: connector.actionSource === 'first-class-adapter'
-      ? 'First-class'
+      ? t('First-class')
       : connector.actionSource === 'blink'
-        ? 'Blink connector'
-        : 'Planned',
+        ? t('Blink connector')
+        : t('Planned'),
     detail: connector.supportedActions.slice(0, 4).join(' · '),
     logoId: protocolConnectorLogoId(connector.id),
   }));
@@ -16337,45 +16393,45 @@ function connectedDappLogo(adapter: ConnectedDappAdapter): string {
 function connectorCapabilityLabel(capability: ConnectedDappAdapter['capabilities'][number]): string {
   switch (capability) {
     case 'first_class_adapter':
-      return 'First-class adapter';
+      return t('First-class adapter');
     case 'read_positions':
-      return 'Read positions';
+      return t('Read positions');
     case 'read_rewards':
-      return 'Read rewards';
+      return t('Read rewards');
     case 'read_markets':
-      return 'Read markets';
+      return t('Read markets');
     case 'blink_actions':
-      return 'Blink actions';
+      return t('Blink actions');
   }
 }
 
 function compactConnectorCapabilityLabel(capability: ConnectedDappAdapter['capabilities'][number]): string {
   switch (capability) {
     case 'first_class_adapter':
-      return 'First-class';
+      return t('First-class');
     case 'read_positions':
-      return 'Positions';
+      return t('Positions');
     case 'read_rewards':
-      return 'Rewards';
+      return t('Rewards');
     case 'read_markets':
-      return 'Markets';
+      return t('Markets');
     case 'blink_actions':
-      return 'Blinks';
+      return t('Blinks');
   }
 }
 
 function compactConnectorActionLabel(label: string): string {
   const normalized = label.trim().toLowerCase();
-  if (normalized === 'earnings proof') return 'Proof';
-  if (normalized === 'claim rewards') return 'Claim';
-  if (normalized === 'claim fees') return 'Fees';
-  if (normalized === 'withdraw liquidity') return 'Withdraw';
-  if (normalized === 'close position') return 'Close';
-  if (normalized === 'dlmm positions') return 'DLMM';
-  if (normalized === 'lend borrow') return 'Borrow';
-  if (normalized === 'lend earn') return 'Earn';
-  if (normalized === 'strategy vaults') return 'Vaults';
-  if (normalized === 'stake ray') return 'Stake';
+  if (normalized === 'earnings proof') return t('Proof');
+  if (normalized === 'claim rewards') return t('Claim');
+  if (normalized === 'claim fees') return t('Fees');
+  if (normalized === 'withdraw liquidity') return t('Withdraw');
+  if (normalized === 'close position') return t('Close');
+  if (normalized === 'dlmm positions') return t('DLMM');
+  if (normalized === 'lend borrow') return t('Borrow');
+  if (normalized === 'lend earn') return t('Earn');
+  if (normalized === 'strategy vaults') return t('Vaults');
+  if (normalized === 'stake ray') return t('Stake');
   return label;
 }
 
@@ -16392,29 +16448,29 @@ function agentPoliciesPanel(): string {
   const enabledCount = policies.filter((policy) => policy.enabled).length;
   const open = isMobileAppViewport() || policies.length > 0 ? 'open' : '';
   const summary = policies.length
-    ? `${enabledCount} of ${policies.length} on`
-    : 'No saved policies yet';
+    ? tf('{enabled} of {total} enabled', { enabled: enabledCount, total: policies.length })
+    : t('No saved policies yet');
   const draft = state.agentPolicyDraft;
   const errors = state.agentPolicyErrors;
   return `
     <details class="agent-policies-panel rail-details" data-layout="agent-policies-panel" ${open}>
       <summary>
         <span class="agent-policies-summary-copy">
-          <span>Agent policies</span>
+          <span>${escapeHtml(t('Agent policies'))}</span>
           <em>${escapeHtml(summary)}</em>
         </span>
-        <strong>${enabledCount ? `${enabledCount} on` : 'off'}</strong>
+        <strong>${enabledCount ? tf('{count} enabled', { count: enabledCount }) : t('Off')}</strong>
       </summary>
-      <section class="agent-policies-card" aria-label="Agent policies">
-        <p class="agent-policies-intro">Saved policies are sent to the agent every time it reviews a draft. They guide its decision but never block you from sending.</p>
+      <section class="agent-policies-card" aria-label="${escapeHtml(t('Agent policies'))}">
+        <p class="agent-policies-intro">${escapeHtml(t('Saved policies are sent to the agent every time it reviews a draft. They guide its decision but never block you from sending.'))}</p>
         <div class="agent-policy-save-form">
           <label class="field compact">
-            <span>Label</span>
-            <input data-agent-policy-field="label" value="${escapeHtml(draft.label)}" placeholder="No swaps over 1% slippage" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+            <span>${escapeHtml(t('Label'))}</span>
+            <input data-agent-policy-field="label" value="${escapeHtml(draft.label)}" placeholder="${escapeHtml(t('No swaps over 1% slippage'))}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
             ${agentPolicyFieldError('label')}
           </label>
           <label class="field compact">
-            <span>Kind</span>
+            <span>${escapeHtml(t('Kind'))}</span>
             ${selectPicker({
               id: 'agentPolicyDraftKind',
               value: draft.kind,
@@ -16429,16 +16485,16 @@ function agentPoliciesPanel(): string {
             ${agentPolicyFieldError('paramValue')}
           </label>
           <label class="field compact agent-policy-detail-field">
-            <span>Detail</span>
-            <input data-agent-policy-field="detail" value="${escapeHtml(draft.detail)}" placeholder="Extra context for the agent (optional)" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+            <span>${escapeHtml(t('Detail'))}</span>
+            <input data-agent-policy-field="detail" value="${escapeHtml(draft.detail)}" placeholder="${escapeHtml(t('Extra context for the agent (optional)'))}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
           </label>
           <div class="agent-policy-save-actions">
-            <button type="button" class="primary" data-agent-policy-action="save" ${state.busy ? 'disabled' : ''}>Save policy</button>
-            <button type="button" class="utility" data-agent-policy-action="reset" ${state.busy ? 'disabled' : ''}>Clear</button>
+            <button type="button" class="primary" data-agent-policy-action="save" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Save policy'))}</button>
+            <button type="button" class="utility" data-agent-policy-action="reset" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Clear'))}</button>
           </div>
           ${errors._form ? `<p class="error-text">${escapeHtml(errors._form)}</p>` : ''}
         </div>
-        ${policies.length ? savedAgentPolicyList(policies) : '<div class="agent-policy-empty">No saved agent policies yet</div>'}
+        ${policies.length ? savedAgentPolicyList(policies) : `<div class="agent-policy-empty">${escapeHtml(t('No saved agent policies yet'))}</div>`}
       </section>
     </details>
   `;
@@ -16458,46 +16514,48 @@ function customTokensPanel(): string {
   const tokens = state.customTokens;
   const open = isMobileAppViewport() || tokens.length > 0 ? 'open' : '';
   const summary = tokens.length === 0
-    ? 'No custom tokens'
-    : `${tokens.length} custom ${tokens.length === 1 ? 'token' : 'tokens'}`;
+    ? t('No custom tokens')
+    : tokens.length === 1
+      ? tf('{count} custom token', { count: tokens.length })
+      : tf('{count} custom tokens', { count: tokens.length });
   const draft = state.customTokenDraft;
   return `
     <details class="custom-tokens-panel rail-details" data-layout="custom-tokens-panel" ${open}>
       <summary>
         <span class="custom-tokens-summary-copy">
-          <span>Custom tokens</span>
+          <span>${escapeHtml(t('Custom tokens'))}</span>
           <em>${escapeHtml(summary)}</em>
         </span>
-        <strong>${tokens.length ? `${tokens.length}` : 'off'}</strong>
+        <strong>${tokens.length ? `${tokens.length}` : t('Off')}</strong>
       </summary>
-      <section class="custom-tokens-card" aria-label="Custom tokens">
-        <p class="custom-tokens-intro">Map an SPL mint to a symbol and decimals so pre-sign shows it as a name instead of a raw mint.</p>
+      <section class="custom-tokens-card" aria-label="${escapeHtml(t('Custom tokens'))}">
+        <p class="custom-tokens-intro">${escapeHtml(t('Map an SPL mint to a symbol and decimals so pre-sign shows it as a name instead of a raw mint.'))}</p>
         <div class="custom-token-save-form">
           <label class="field compact">
-            <span>Mint</span>
-            <input data-custom-token-field="mint" value="${escapeHtml(draft.mint)}" placeholder="Solana mint address" autocomplete="off" spellcheck="false" ${state.busy ? 'disabled' : ''} />
+            <span>${escapeHtml(t('Mint'))}</span>
+            <input data-custom-token-field="mint" value="${escapeHtml(draft.mint)}" placeholder="${escapeHtml(t('Solana mint address'))}" autocomplete="off" spellcheck="false" ${state.busy ? 'disabled' : ''} />
             ${customTokenFieldError('mint')}
           </label>
           <label class="field compact">
-            <span>Symbol</span>
+            <span>${escapeHtml(t('Symbol'))}</span>
             <input data-custom-token-field="symbol" value="${escapeHtml(draft.symbol)}" placeholder="USDC" autocomplete="off" ${state.busy ? 'disabled' : ''} />
             ${customTokenFieldError('symbol')}
           </label>
           <label class="field compact">
-            <span>Decimals</span>
+            <span>${escapeHtml(t('Decimals'))}</span>
             <input data-custom-token-field="decimals" value="${escapeHtml(draft.decimals)}" placeholder="6" inputmode="numeric" autocomplete="off" ${state.busy ? 'disabled' : ''} />
             ${customTokenFieldError('decimals')}
           </label>
           <label class="field compact custom-token-label-field">
-            <span>Label</span>
-            <input data-custom-token-field="label" value="${escapeHtml(draft.label)}" placeholder="Optional display name" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+            <span>${escapeHtml(t('Label'))}</span>
+            <input data-custom-token-field="label" value="${escapeHtml(draft.label)}" placeholder="${escapeHtml(t('Optional display name'))}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
           </label>
           <div class="custom-token-save-actions">
-            <button type="button" class="primary" data-custom-token-action="save" ${state.busy ? 'disabled' : ''}>Save token</button>
-            <button type="button" class="utility" data-custom-token-action="reset" ${state.busy ? 'disabled' : ''}>Clear</button>
+            <button type="button" class="primary" data-custom-token-action="save" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Save token'))}</button>
+            <button type="button" class="utility" data-custom-token-action="reset" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Clear'))}</button>
           </div>
         </div>
-        ${tokens.length ? savedCustomTokenList(tokens) : '<div class="custom-token-empty">No saved custom tokens yet</div>'}
+        ${tokens.length ? savedCustomTokenList(tokens) : `<div class="custom-token-empty">${escapeHtml(t('No saved custom tokens yet'))}</div>`}
       </section>
     </details>
   `;
@@ -16505,7 +16563,7 @@ function customTokensPanel(): string {
 
 function savedCustomTokenList(tokens: CustomToken[]): string {
   return `
-    <div class="custom-token-list" aria-label="Saved custom tokens">
+    <div class="custom-token-list" aria-label="${escapeHtml(t('Saved custom tokens'))}">
       ${tokens.map(customTokenRow).join('')}
     </div>
   `;
@@ -16519,10 +16577,10 @@ function customTokenRow(token: CustomToken): string {
         <span title="${escapeHtml(token.mint)}">${escapeHtml(shortHexMint(token.mint))}</span>
         ${token.label ? `<em>${escapeHtml(token.label)}</em>` : ''}
       </div>
-      <span class="custom-token-decimals">${token.decimals} decimals</span>
+        <span class="custom-token-decimals">${escapeHtml(token.decimals === 1 ? tf('{count} decimal', { count: token.decimals }) : tf('{count} decimals', { count: token.decimals }))}</span>
       <div class="custom-token-row-actions">
-        <button type="button" data-custom-token-action="edit" data-custom-token-id="${escapeHtml(token.id)}" title="Edit token" ${state.busy ? 'disabled' : ''}>Edit</button>
-        <button type="button" class="utility danger" data-custom-token-action="delete" data-custom-token-id="${escapeHtml(token.id)}" title="Delete token" ${state.busy ? 'disabled' : ''}>Delete</button>
+        <button type="button" data-custom-token-action="edit" data-custom-token-id="${escapeHtml(token.id)}" title="${escapeHtml(t('Edit token'))}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Edit'))}</button>
+        <button type="button" class="utility danger" data-custom-token-action="delete" data-custom-token-id="${escapeHtml(token.id)}" title="${escapeHtml(t('Delete token'))}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Delete'))}</button>
       </div>
     </article>
   `;
@@ -16538,29 +16596,29 @@ function connectedAgentsPanel(): string {
   const enabledCount = agents.filter((agent) => agent.enabled).length;
   const open = agents.length === 0 ? 'open' : '';
   const summary = agents.length === 0
-    ? 'No connected agents yet'
-    : `${enabledCount} of ${agents.length} active`;
+    ? t('No connected agents yet')
+    : tf('{enabled} of {total} active', { enabled: enabledCount, total: agents.length });
   const draft = state.agentDraft;
   const errors = state.agentErrors;
   return `
     <details class="connected-agents-panel rail-details" data-layout="connected-agents-panel" ${open}>
       <summary>
         <span class="connected-agents-summary-copy">
-          <span>Connected agents</span>
+          <span>${escapeHtml(t('Connected agents'))}</span>
           <em>${escapeHtml(summary)}</em>
         </span>
-        <strong>${agents.length ? `${enabledCount}` : 'off'}</strong>
+        <strong>${agents.length ? `${enabledCount}` : t('Off')}</strong>
       </summary>
-      <section class="connected-agents-card" aria-label="Connected agents">
-        <p class="connected-agents-intro">Each agent connects to the bridge with its own token. Pick a tier per agent and revoke any time.</p>
+      <section class="connected-agents-card" aria-label="${escapeHtml(t('Connected agents'))}">
+        <p class="connected-agents-intro">${escapeHtml(t('Each agent connects to the bridge with its own token. Pick a tier per agent and revoke any time.'))}</p>
         <div class="agent-save-form">
           <label class="field compact">
-            <span>Label</span>
+            <span>${escapeHtml(t('Label'))}</span>
             <input data-agent-field="label" value="${escapeHtml(draft.label)}" placeholder="Codex devnet" autocomplete="off" ${state.busy ? 'disabled' : ''} />
             ${agentFieldError('label')}
           </label>
           <label class="field compact">
-            <span>Tier</span>
+            <span>${escapeHtml(t('Tier'))}</span>
             ${selectPicker({
               id: 'agentDraftTier',
               value: draft.tier,
@@ -16570,16 +16628,16 @@ function connectedAgentsPanel(): string {
             })}
           </label>
           <label class="field compact agent-notes-field">
-            <span>Notes</span>
-            <input data-agent-field="notes" value="${escapeHtml(draft.notes)}" placeholder="What this agent runs" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+            <span>${escapeHtml(t('Notes'))}</span>
+            <input data-agent-field="notes" value="${escapeHtml(draft.notes)}" placeholder="${escapeHtml(t('What this agent runs'))}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
           </label>
           <div class="agent-save-actions">
-            <button type="button" class="primary" data-agent-action="issue" ${state.busy ? 'disabled' : ''}>Issue token</button>
-            <button type="button" class="utility" data-agent-action="reset" ${state.busy ? 'disabled' : ''}>Clear</button>
+            <button type="button" class="primary" data-agent-action="issue" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Issue token'))}</button>
+            <button type="button" class="utility" data-agent-action="reset" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Clear'))}</button>
           </div>
           ${errors._form ? `<p class="error-text">${escapeHtml(errors._form)}</p>` : ''}
         </div>
-        ${agents.length ? connectedAgentList(agents) : '<div class="agent-empty">No agents connected yet. Issue a token above and paste it into your MCP client.</div>'}
+        ${agents.length ? connectedAgentList(agents) : `<div class="agent-empty">${escapeHtml(t('No agents connected yet. Issue a token above and paste it into your MCP client.'))}</div>`}
         ${state.agentReveal ? agentRevealModal(state.agentReveal) : ''}
       </section>
     </details>
@@ -16588,7 +16646,7 @@ function connectedAgentsPanel(): string {
 
 function connectedAgentList(agents: RegisteredAgent[]): string {
   return `
-    <div class="connected-agent-list" aria-label="Connected agents">
+    <div class="connected-agent-list" aria-label="${escapeHtml(t('Connected agents'))}">
       ${agents.map(connectedAgentRow).join('')}
     </div>
   `;
@@ -16596,8 +16654,8 @@ function connectedAgentList(agents: RegisteredAgent[]): string {
 
 function connectedAgentRow(agent: RegisteredAgent): string {
   const lastSeen = agent.lastSeenAt
-    ? `<em class="agent-last-seen" title="${escapeHtml(agent.lastSeenAt)}">Seen ${escapeHtml(formatRelativeTime(agent.lastSeenAt))}</em>`
-    : '<em class="agent-last-seen muted">Never seen</em>';
+    ? `<em class="agent-last-seen" title="${escapeHtml(agent.lastSeenAt)}">${escapeHtml(tf('Seen {time}', { time: formatRelativeTime(agent.lastSeenAt) }))}</em>`
+    : `<em class="agent-last-seen muted">${escapeHtml(t('Never seen'))}</em>`;
   return `
     <article class="connected-agent-row ${agent.enabled ? 'enabled' : 'disabled'}" data-agent-id="${escapeHtml(agent.id)}">
       <div>
@@ -16606,14 +16664,14 @@ function connectedAgentRow(agent: RegisteredAgent): string {
         ${lastSeen}
         ${agent.notes ? `<em class="agent-notes">${escapeHtml(agent.notes)}</em>` : ''}
       </div>
-      <div class="connected-agent-tier-controls" role="group" aria-label="Agent tier">
-        ${agentTierButton(agent, 'read_only', 'Read')}
-        ${agentTierButton(agent, 'capped', 'Capped')}
-        ${agentTierButton(agent, 'full', 'Full')}
+      <div class="connected-agent-tier-controls" role="group" aria-label="${escapeHtml(t('Agent tier'))}">
+        ${agentTierButton(agent, 'read_only', t('Read'))}
+        ${agentTierButton(agent, 'capped', t('Capped'))}
+        ${agentTierButton(agent, 'full', t('Full'))}
       </div>
       <div class="connected-agent-row-actions">
-        <button type="button" data-agent-action="toggle" data-agent-id="${escapeHtml(agent.id)}" class="${agent.enabled ? 'active' : ''}" ${state.busy ? 'disabled' : ''}>${agent.enabled ? 'On' : 'Off'}</button>
-        <button type="button" class="utility danger" data-agent-action="delete" data-agent-id="${escapeHtml(agent.id)}" title="Revoke this agent" ${state.busy ? 'disabled' : ''}>Revoke</button>
+        <button type="button" data-agent-action="toggle" data-agent-id="${escapeHtml(agent.id)}" class="${agent.enabled ? 'active' : ''}" ${state.busy ? 'disabled' : ''}>${agent.enabled ? escapeHtml(t('On')) : escapeHtml(t('Off'))}</button>
+        <button type="button" class="utility danger" data-agent-action="delete" data-agent-id="${escapeHtml(agent.id)}" title="${escapeHtml(t('Revoke this agent'))}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Revoke'))}</button>
       </div>
     </article>
   `;
@@ -16636,24 +16694,24 @@ function agentTierButton(agent: RegisteredAgent, tier: AgentTier, label: string)
 
 function agentTierOptions(): SelectPickerOption[] {
   return [
-    { value: 'read_only', label: 'Read-only', detail: 'Status and balances only — cannot prepare or send.' },
-    { value: 'capped', label: 'Capped', detail: 'Can prepare actions for your approval — cannot execute or sign.' },
-    { value: 'full', label: 'Full', detail: 'Can do everything the bridge supports, subject to wallet approval.' },
+    { value: 'read_only', label: t('Read-only'), detail: t('Status and balances only — cannot prepare or send.') },
+    { value: 'capped', label: t('Capped'), detail: t('Can prepare actions for your approval — cannot execute or sign.') },
+    { value: 'full', label: t('Full'), detail: t('Can do everything the bridge supports, subject to wallet approval.') },
   ];
 }
 
 function agentRevealModal(reveal: AgentRevealState): string {
   return `
-    <div class="agent-reveal-modal" role="dialog" aria-label="New agent token">
+    <div class="agent-reveal-modal" role="dialog" aria-label="${escapeHtml(t('New agent token'))}">
       <header>
-        <strong>Token issued for ${escapeHtml(reveal.label)}</strong>
+        <strong>${tf('Token issued for {label}', { label: escapeHtml(reveal.label) })}</strong>
         <span class="agent-tier-pill tier-${escapeHtml(reveal.tier)}">${escapeHtml(agentTierLabel(reveal.tier))}</span>
       </header>
-      <p>Copy this token now. We cannot show it again. Paste it into your MCP client config (header <code>x-agent-wallet-token</code>) for this agent.</p>
+      <p>${tf('Copy this token now. We cannot show it again. Paste it into your MCP client config (header {code}) for this agent.', { code: '<code>x-agent-wallet-token</code>' })}</p>
       <code class="agent-reveal-token">${escapeHtml(reveal.token)}</code>
       <div class="agent-reveal-actions">
-        <button type="button" class="primary" data-copy="${escapeHtml(reveal.token)}" data-copy-name="agent token">Copy token</button>
-        <button type="button" class="utility" data-agent-action="dismiss-reveal">Done</button>
+        <button type="button" class="primary" data-copy="${escapeHtml(reveal.token)}" data-copy-name="agent token">${escapeHtml(t('Copy token'))}</button>
+        <button type="button" class="utility" data-agent-action="dismiss-reveal">${escapeHtml(t('Done'))}</button>
       </div>
     </div>
   `;
@@ -16661,26 +16719,26 @@ function agentRevealModal(reveal: AgentRevealState): string {
 
 function agentPolicyKindOptions(): SelectPickerOption[] {
   return [
-    { value: 'slippage_max', label: 'Max swap slippage', detail: 'Deny or warn when slippage is over a percentage you set.' },
-    { value: 'amount_max', label: 'Max transfer amount', detail: 'Flag transfers above an amount.' },
-    { value: 'token_allow', label: 'Only these tokens', detail: 'Restrict to a comma-separated list of token symbols.' },
-    { value: 'token_block', label: 'Block these tokens', detail: 'Comma-separated tokens to never touch.' },
-    { value: 'require_known_recipient', label: 'Require known recipient', detail: 'Flag transfers to recipients not in your allow list.' },
-    { value: 'flag_unknown_mint', label: 'Flag unknown mints', detail: 'Ask the agent to inspect mints outside a known list.' },
-    { value: 'custom', label: 'Custom rule', detail: 'Free-text rule the agent should consider.' },
+    { value: 'slippage_max', label: t('Max swap slippage'), detail: t('Deny or warn when slippage is over a percentage you set.') },
+    { value: 'amount_max', label: t('Max transfer amount'), detail: t('Flag transfers above an amount.') },
+    { value: 'token_allow', label: t('Only these tokens'), detail: t('Restrict to a comma-separated list of token symbols.') },
+    { value: 'token_block', label: t('Block these tokens'), detail: t('Comma-separated tokens to never touch.') },
+    { value: 'require_known_recipient', label: t('Require known recipient'), detail: t('Flag transfers to recipients not in your allow list.') },
+    { value: 'flag_unknown_mint', label: t('Flag unknown mints'), detail: t('Ask the agent to inspect mints outside a known list.') },
+    { value: 'custom', label: t('Custom rule'), detail: t('Free-text rule the agent should consider.') },
   ];
 }
 
 function agentPolicyParamLabel(kind: AgentPolicyKind): string {
   switch (kind) {
-    case 'slippage_max': return 'Max slippage (%)';
-    case 'amount_max': return 'Max amount';
-    case 'token_allow': return 'Allowed tokens';
-    case 'token_block': return 'Blocked tokens';
-    case 'require_known_recipient': return 'Threshold above which to require (optional)';
-    case 'flag_unknown_mint': return 'Known mints (optional)';
-    case 'custom': return 'Rule text';
-    default: return 'Value';
+    case 'slippage_max': return t('Max slippage (%)');
+    case 'amount_max': return t('Max amount');
+    case 'token_allow': return t('Allowed tokens');
+    case 'token_block': return t('Blocked tokens');
+    case 'require_known_recipient': return t('Threshold above which to require (optional)');
+    case 'flag_unknown_mint': return t('Known mints (optional)');
+    case 'custom': return t('Rule text');
+    default: return t('Value');
   }
 }
 
@@ -16692,7 +16750,7 @@ function agentPolicyParamPlaceholder(kind: AgentPolicyKind): string {
     case 'token_block': return 'SCAM, RUG';
     case 'require_known_recipient': return '100';
     case 'flag_unknown_mint': return 'USDC, SOL, JUP, BONK';
-    case 'custom': return 'Deny if the route uses more than 2 hops';
+    case 'custom': return t('Deny if the route uses more than 2 hops');
     default: return '';
   }
 }
@@ -16718,14 +16776,14 @@ function agentPolicyRow(policy: UserAgentPolicy): string {
           data-agent-policy-id="${escapeHtml(policy.id)}"
           aria-pressed="${policy.enabled ? 'true' : 'false'}"
           ${state.busy ? 'disabled' : ''}
-        >${policy.enabled ? 'On' : 'Off'}</button>
+        >${policy.enabled ? escapeHtml(t('On')) : escapeHtml(t('Off'))}</button>
         <button
           type="button"
           class="utility danger"
           data-agent-policy-action="delete"
           data-agent-policy-id="${escapeHtml(policy.id)}"
           ${state.busy ? 'disabled' : ''}
-        >Delete</button>
+        >${escapeHtml(t('Delete'))}</button>
       </div>
       <p class="agent-policy-row-detail">${escapeHtml(paramSummary)}</p>
       ${policy.detail ? `<p class="agent-policy-row-detail muted">${escapeHtml(policy.detail)}</p>` : ''}
@@ -16737,20 +16795,20 @@ function agentPolicySummaryLine(policy: UserAgentPolicy): string {
   const value = policy.params?.value?.trim();
   switch (policy.kind) {
     case 'slippage_max':
-      return value ? `Warn or deny when slippage is over ${value}%` : 'Warn when slippage is high';
+      return value ? tf('Warn or deny when slippage is over {value}%', { value }) : t('Warn when slippage is high');
     case 'amount_max':
-      return value ? `Flag when amount is over ${value}` : 'Flag large transfers';
+      return value ? tf('Flag when amount is over {value}', { value }) : t('Flag large transfers');
     case 'token_allow':
-      return value ? `Only allow: ${value}` : 'Only allow saved tokens';
+      return value ? tf('Only allow: {value}', { value }) : t('Only allow saved tokens');
     case 'token_block':
-      return value ? `Never touch: ${value}` : 'Block listed tokens';
+      return value ? tf('Never touch: {value}', { value }) : t('Block listed tokens');
     case 'require_known_recipient':
-      return value ? `Require known recipient over ${value}` : 'Require known recipient';
+      return value ? tf('Require known recipient over {value}', { value }) : t('Require known recipient');
     case 'flag_unknown_mint':
-      return value ? `Flag mints outside: ${value}` : 'Flag unknown mints';
+      return value ? tf('Flag mints outside: {value}', { value }) : t('Flag unknown mints');
     case 'custom':
     default:
-      return value || 'Custom rule for the agent to consider';
+      return value || t('Custom rule for the agent to consider');
   }
 }
 
@@ -16776,26 +16834,26 @@ function recipientToggleButton(
 
 function recipientRulesSummary(): string {
   const rules = state.recipientRules;
-  const saved = `${rules.recipients.length} saved`;
-  if (!rules.enabled) return `${saved} - checks off`;
+  const saved = tf('{count} saved', { count: rules.recipients.length });
+  if (!rules.enabled) return tf('{saved} - checks off', { saved });
   const active = [
-    rules.allowListEnabled ? 'allow list' : '',
-    rules.blockListEnabled ? 'block list' : '',
+    rules.allowListEnabled ? t('allow list') : '',
+    rules.blockListEnabled ? t('block list') : '',
   ].filter(Boolean);
-  return `${saved} - ${active.length ? active.join(' + ') : 'checks on'}`;
+  return active.length ? tf('{saved} - {checks}', { saved, checks: active.join(' + ') }) : tf('{saved} - checks on', { saved });
 }
 
 function recipientPolicyOptions(): SelectPickerOption[] {
   return [
-    { value: 'allow', label: 'Allow', meta: 'Trusted recipient' },
-    { value: 'known', label: 'Known', meta: 'Saved recipient' },
-    { value: 'block', label: 'Block', meta: 'Rejected recipient' },
+    { value: 'allow', label: t('Allow'), meta: t('Trusted recipient') },
+    { value: 'known', label: t('Known'), meta: t('Saved recipient') },
+    { value: 'block', label: t('Block'), meta: t('Rejected recipient') },
   ];
 }
 
 function savedRecipientList(recipients: SavedRecipient[]): string {
   return `
-    <div class="recipient-list" aria-label="Saved recipients">
+    <div class="recipient-list" aria-label="${escapeHtml(t('Saved recipients'))}">
       ${recipients.map(savedRecipientRow).join('')}
     </div>
   `;
@@ -16806,9 +16864,9 @@ function savedRecipientRow(recipient: SavedRecipient): string {
   const tagChips = recipient.tags?.length
     ? `<div class="recipient-row-tags">${recipient.tags.map((tag) => `<span class="recipient-tag">${escapeHtml(tag)}</span>`).join('')}</div>`
     : '';
-  const mineBadge = recipient.isMine ? '<span class="recipient-mine-badge" title="Your own wallet">Mine</span>' : '';
+  const mineBadge = recipient.isMine ? `<span class="recipient-mine-badge" title="${escapeHtml(t('Your own wallet'))}">${escapeHtml(t('Mine'))}</span>` : '';
   const lastUsed = recipient.lastUsedAt
-    ? `<em class="recipient-row-last-used" title="${escapeHtml(recipient.lastUsedAt)}">Used ${escapeHtml(formatRelativeTime(recipient.lastUsedAt))}</em>`
+    ? `<em class="recipient-row-last-used" title="${escapeHtml(recipient.lastUsedAt)}">${escapeHtml(tf('Used {time}', { time: formatRelativeTime(recipient.lastUsedAt) }))}</em>`
     : '';
   return `
     <article class="recipient-row ${escapeHtml(recipient.policy)}${recipient.isMine ? ' is-mine' : ''}">
@@ -16821,11 +16879,11 @@ function savedRecipientRow(recipient: SavedRecipient): string {
       </div>
       <span class="recipient-policy-pill ${escapeHtml(recipient.policy)}">${escapeHtml(policy)}</span>
       <div class="recipient-row-actions">
-        <button type="button" data-recipient-action="use" data-recipient-id="${escapeHtml(recipient.id)}" title="Use recipient" ${state.busy ? 'disabled' : ''}>Use</button>
-        <button type="button" data-recipient-action="toggle-mine" data-recipient-id="${escapeHtml(recipient.id)}" title="${recipient.isMine ? 'Unmark as your wallet' : 'Mark as your wallet'}" ${state.busy ? 'disabled' : ''}>${recipient.isMine ? 'Unmine' : 'Mine'}</button>
-        <button type="button" data-recipient-action="policy" data-recipient-id="${escapeHtml(recipient.id)}" data-recipient-policy="allow" title="Move to allow list" ${state.busy ? 'disabled' : ''}>Allow</button>
-        <button type="button" data-recipient-action="policy" data-recipient-id="${escapeHtml(recipient.id)}" data-recipient-policy="block" title="Move to block list" ${state.busy ? 'disabled' : ''}>Block</button>
-        <button type="button" class="utility danger" data-recipient-action="delete" data-recipient-id="${escapeHtml(recipient.id)}" title="Delete recipient" ${state.busy ? 'disabled' : ''}>Delete</button>
+        <button type="button" data-recipient-action="use" data-recipient-id="${escapeHtml(recipient.id)}" title="${escapeHtml(t('Use recipient'))}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Use'))}</button>
+        <button type="button" data-recipient-action="toggle-mine" data-recipient-id="${escapeHtml(recipient.id)}" title="${recipient.isMine ? escapeHtml(t('Unmark as your wallet')) : escapeHtml(t('Mark as your wallet'))}" ${state.busy ? 'disabled' : ''}>${recipient.isMine ? escapeHtml(t('Unmine')) : escapeHtml(t('Mine'))}</button>
+        <button type="button" data-recipient-action="policy" data-recipient-id="${escapeHtml(recipient.id)}" data-recipient-policy="allow" title="${escapeHtml(t('Move to allow list'))}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Allow'))}</button>
+        <button type="button" data-recipient-action="policy" data-recipient-id="${escapeHtml(recipient.id)}" data-recipient-policy="block" title="${escapeHtml(t('Move to block list'))}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Block'))}</button>
+        <button type="button" class="utility danger" data-recipient-action="delete" data-recipient-id="${escapeHtml(recipient.id)}" title="${escapeHtml(t('Delete recipient'))}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Delete'))}</button>
       </div>
     </article>
   `;
@@ -16834,11 +16892,11 @@ function savedRecipientRow(recipient: SavedRecipient): string {
 function recipientPolicyDisplay(policy: RecipientPolicy): string {
   switch (policy) {
     case 'allow':
-      return 'Allowed';
+      return t('Allowed');
     case 'block':
-      return 'Blocked';
+      return t('Blocked');
     case 'known':
-      return 'Known';
+      return t('Known');
   }
 }
 
@@ -16877,8 +16935,8 @@ function recipientPolicyStatus(address: string): RecipientPolicyStatus {
       allowed: false,
       blocked: false,
       allowRequired: false,
-      label: 'Recipient not set',
-      title: 'Recipient not set',
+      label: t('Recipient not set'),
+      title: t('Recipient not set'),
     };
   }
   if (blocked) {
@@ -16889,8 +16947,8 @@ function recipientPolicyStatus(address: string): RecipientPolicyStatus {
       allowed,
       blocked,
       allowRequired: false,
-      label: `${name} is blocked`,
-      title: recipientPolicyBlockReason(normalized) ?? `${name} is blocked.`,
+      label: tf('{name} is blocked', { name }),
+      title: recipientPolicyBlockReason(normalized) ?? tf('{name} is blocked.', { name }),
     };
   }
   if (allowRequired) {
@@ -16901,8 +16959,8 @@ function recipientPolicyStatus(address: string): RecipientPolicyStatus {
       allowed,
       blocked: false,
       allowRequired,
-      label: `${name} not on allow list`,
-      title: recipientPolicyBlockReason(normalized) ?? `${name} is not on allow list.`,
+      label: tf('{name} not on allow list', { name }),
+      title: recipientPolicyBlockReason(normalized) ?? tf('{name} is not on allow list.', { name }),
     };
   }
   if (recipient && allowed) {
@@ -16913,8 +16971,8 @@ function recipientPolicyStatus(address: string): RecipientPolicyStatus {
       allowed,
       blocked: false,
       allowRequired: false,
-      label: `${recipient.name} allowed`,
-      title: `${recipient.name} is on the allow list.`,
+      label: tf('{name} allowed', { name: recipient.name }),
+      title: tf('{name} is on the allow list.', { name: recipient.name }),
     };
   }
   if (recipient) {
@@ -16925,8 +16983,8 @@ function recipientPolicyStatus(address: string): RecipientPolicyStatus {
       allowed: false,
       blocked: false,
       allowRequired: false,
-      label: `${recipient.name} saved`,
-      title: `${recipient.name} is saved as a known recipient.`,
+      label: tf('{name} saved', { name: recipient.name }),
+      title: tf('{name} is saved as a known recipient.', { name: recipient.name }),
     };
   }
   return {
@@ -16935,8 +16993,8 @@ function recipientPolicyStatus(address: string): RecipientPolicyStatus {
     allowed: false,
     blocked: false,
     allowRequired: false,
-    label: 'Unsaved recipient',
-    title: 'This recipient is not saved.',
+    label: t('Unsaved recipient'),
+    title: t('This recipient is not saved.'),
   };
 }
 
@@ -16945,12 +17003,12 @@ function recipientPolicyBlockReason(address: string): string | null {
   if (!normalized || !state.recipientRules.enabled) return null;
   const recipient = savedRecipientForAddress(normalized);
   if (state.recipientRules.blockListEnabled && recipient?.policy === 'block') {
-    return `${recipient.name} is on your block list. Remove or allow this recipient before approving.`;
+    return tf('{name} is on your block list. Remove or allow this recipient before approving.', { name: recipient.name });
   }
   if (state.recipientRules.allowListEnabled && recipient?.policy !== 'allow') {
     return recipient
-      ? `${recipient.name} is saved but not on your allow list. Move it to allow list or turn off allow-list checks.`
-      : `${short(normalized)} is not on your allow list. Save it as allowed or turn off allow-list checks.`;
+      ? tf('{name} is saved but not on your allow list. Move it to allow list or turn off allow-list checks.', { name: recipient.name })
+      : tf('{address} is not on your allow list. Save it as allowed or turn off allow-list checks.', { address: short(normalized) });
   }
   return null;
 }
@@ -17078,7 +17136,7 @@ function saveAgentPolicyDraft(): void {
   state.agentPolicyDraft = defaultAgentPolicyDraft();
   state.agentPolicyErrors = {};
   saveAgentPolicies();
-  pushToast('success', 'Agent policy saved', `Saved "${policy.label}".`);
+  pushToast('success', t('Agent policy saved'), tf('Saved "{label}".', { label: policy.label }));
   render();
 }
 
@@ -17101,7 +17159,7 @@ function deleteAgentPolicy(policyId: string): void {
   state.agentPolicies = state.agentPolicies.filter((policy) => policy.id !== policyId);
   if (state.agentPolicies.length === before) return;
   saveAgentPolicies();
-  pushToast('success', 'Agent policy deleted', 'The policy will no longer be sent to the agent.');
+  pushToast('success', t('Agent policy deleted'), t('The policy will no longer be sent to the agent.'));
   render();
 }
 
@@ -17174,7 +17232,7 @@ function saveCustomTokenDraft(): void {
   state.customTokenDraft = defaultCustomTokenDraft();
   state.customTokenErrors = {};
   saveCustomTokens();
-  pushToast('success', 'Token saved', `${token.symbol} (${shortHexMint(token.mint)})`);
+  pushToast('success', t('Token saved'), tf('{symbol} ({mint})', { symbol: token.symbol, mint: shortHexMint(token.mint) }));
   render();
 }
 
@@ -17182,7 +17240,7 @@ function deleteCustomToken(tokenId: string): void {
   const token = state.customTokens.find((entry) => entry.id === tokenId);
   state.customTokens = state.customTokens.filter((entry) => entry.id !== tokenId);
   saveCustomTokens();
-  pushToast('success', 'Token removed', token?.symbol ?? tokenId);
+  pushToast('success', t('Token removed'), token?.symbol ?? tokenId);
   render();
 }
 
@@ -17275,7 +17333,7 @@ async function issueAgentDraft(): Promise<void> {
     tier: issued.tier,
   };
   saveAgents();
-  pushToast('success', 'Agent token issued', `${issued.label} (${agentTierLabel(issued.tier)})`);
+  pushToast('success', t('Agent token issued'), tf('{label} ({tier})', { label: issued.label, tier: agentTierLabel(issued.tier) }));
   render();
 }
 
@@ -17287,7 +17345,7 @@ function toggleAgent(agentId: string): void {
   );
   saveAgents();
   void syncAgentsToBridge();
-  pushToast('success', agent.enabled ? 'Agent paused' : 'Agent resumed', agent.label);
+  pushToast('success', agent.enabled ? t('Agent paused') : t('Agent resumed'), agent.label);
   render();
 }
 
@@ -17299,7 +17357,7 @@ function setAgentTier(agentId: string, tier: AgentTier): void {
   );
   saveAgents();
   void syncAgentsToBridge();
-  pushToast('success', 'Agent tier updated', `${agent.label} → ${agentTierLabel(tier)}`);
+  pushToast('success', t('Agent tier updated'), tf('{label} -> {tier}', { label: agent.label, tier: agentTierLabel(tier) }));
   render();
 }
 
@@ -17309,7 +17367,7 @@ function deleteAgent(agentId: string): void {
   state.agents = state.agents.filter((entry) => entry.id !== agentId);
   saveAgents();
   void syncAgentsToBridgeAfterDelete(agentId);
-  pushToast('success', 'Agent revoked', agent.label);
+  pushToast('success', t('Agent revoked'), agent.label);
   render();
 }
 
@@ -17373,8 +17431,8 @@ function handleConnectedDappAction(button: HTMLButtonElement): void {
     if (!isClusterSupported(adapter, state.cluster)) {
       pushToast(
         'error',
-        `${adapter.name} unavailable here`,
-        `${adapter.name} is only available on ${adapter.supportedClusters.join(', ')}.`,
+        tf('{name} unavailable here', { name: adapter.name }),
+        tf('{name} is only available on {clusters}.', { name: adapter.name, clusters: adapter.supportedClusters.join(', ') }),
       );
       return;
     }
@@ -17383,13 +17441,13 @@ function handleConnectedDappAction(button: HTMLButtonElement): void {
     state.connectedDapps = updated;
     saveConnectedDapps(updated);
     void syncCloudPreference('protocol-connectors');
-    pushToast(
-      'success',
-      next ? `${adapter.name} enabled` : `${adapter.name} disabled`,
-      next
-        ? `Agent can now use ${adapter.capabilities.map((capability) => capability.replace(/_/g, ' ')).join(' / ')} when available.`
-        : `Agent will refuse ${adapter.name} connector actions until re-enabled.`,
-    );
+      pushToast(
+        'success',
+        next ? tf('{name} enabled', { name: adapter.name }) : tf('{name} disabled', { name: adapter.name }),
+        next
+        ? tf('Agent can now use {capabilities} when available.', { capabilities: adapter.capabilities.map(connectorCapabilityLabel).join(' / ') })
+        : tf('Agent will refuse {name} connector actions until re-enabled.', { name: adapter.name }),
+      );
     render();
   }
 }
@@ -17453,7 +17511,7 @@ function saveRecipientDraft(): void {
   state.recipientDraft = defaultRecipientDraft();
   state.recipientErrors = {};
   saveRecipientRules();
-  pushToast('success', 'Recipient saved', `${recipient.name} - ${recipientPolicyDisplay(recipient.policy)}`);
+  pushToast('success', t('Recipient saved'), tf('{name} - {policy}', { name: recipient.name, policy: recipientPolicyDisplay(recipient.policy) }));
   render();
 }
 
@@ -17461,7 +17519,7 @@ function deleteSavedRecipient(recipientId: string): void {
   const recipient = savedRecipientById(recipientId);
   state.recipientRules.recipients = state.recipientRules.recipients.filter((entry) => entry.id !== recipientId);
   saveRecipientRules();
-  pushToast('success', 'Recipient removed', recipient?.name ?? recipientId);
+  pushToast('success', t('Recipient removed'), recipient?.name ?? recipientId);
   render();
 }
 
@@ -17479,7 +17537,7 @@ function updateSavedRecipientPolicy(recipientId: string, policy: RecipientPolicy
     )),
   };
   saveRecipientRules();
-  pushToast('success', 'Recipient updated', `${recipient.name} - ${recipientPolicyDisplay(policy)}`);
+  pushToast('success', t('Recipient updated'), tf('{name} - {policy}', { name: recipient.name, policy: recipientPolicyDisplay(policy) }));
   render();
 }
 
@@ -17504,7 +17562,7 @@ function useSavedRecipient(recipientId: string): void {
     }
   }
   bumpRecipientLastUsed(recipient.address);
-  pushToast('success', 'Recipient selected', recipient.name);
+  pushToast('success', t('Recipient selected'), recipient.name);
   render();
 }
 
@@ -17524,8 +17582,8 @@ function toggleRecipientIsMine(recipientId: string): void {
   saveRecipientRules();
   pushToast(
     'success',
-    willBeMine ? 'Marked as your wallet' : 'Unmarked',
-    `${recipient.name}${willBeMine ? ' → your wallet' : ''}`,
+    willBeMine ? t('Marked as your wallet') : t('Unmarked'),
+    `${recipient.name}${willBeMine ? t(' → your wallet') : ''}`,
   );
   render();
 }
@@ -17546,25 +17604,25 @@ function publicBridgeStatusCard(): string {
       : 'Local connector is available. Use it only when you want local-only workflow storage.'
     : 'Optional. Start the local connector only when you want private local workflow storage.';
   return `
-    <section class="rail-bridge-card ${tone}" aria-label="Private local mode status">
+    <section class="rail-bridge-card ${tone}" aria-label="${escapeHtml(t('Private local mode status'))}">
       <div class="rail-bridge-head">
-        <span>Local connector</span>
-        <strong>${escapeHtml(status)}</strong>
+        <span>${escapeHtml(t('Local connector'))}</span>
+        <strong>${escapeHtml(t(status))}</strong>
       </div>
-      <p>${escapeHtml(detail)}</p>
+      <p>${escapeHtml(t(detail))}</p>
       ${connected ? `
         <div class="rail-bridge-facts">
-          <span>Endpoint <strong>${escapeHtml(compactEndpoint(state.bridgeUrl))}</strong></span>
-          <span>Wallet <strong>${escapeHtml(state.address ? short(state.address) : 'Not connected')}</strong></span>
+          <span>${escapeHtml(t('Endpoint'))} <strong>${escapeHtml(compactEndpoint(state.bridgeUrl))}</strong></span>
+          <span>${escapeHtml(t('Wallet'))} <strong>${escapeHtml(state.address ? short(state.address) : t('Not connected'))}</strong></span>
         </div>
         <div class="rail-bridge-actions">
           ${localMode
-            ? `<button type="button" data-workflow-mode="auto" ${state.busy ? 'disabled' : ''}>Use cloud or browser</button>`
-            : `<button type="button" class="utility" data-workflow-mode="local-bridge" ${!state.address || state.busy ? 'disabled' : ''}>Use private local mode</button>`}
+            ? `<button type="button" data-workflow-mode="auto" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Use cloud or browser'))}</button>`
+            : `<button type="button" class="utility" data-workflow-mode="local-bridge" ${!state.address || state.busy ? 'disabled' : ''}>${escapeHtml(t('Use private local mode'))}</button>`}
         </div>
       ` : `
         <div class="rail-bridge-actions">
-          <button type="button" class="utility" data-bridge-action="connect" ${!state.address || state.busy ? 'disabled' : ''}>Check local bridge</button>
+          <button type="button" class="utility" data-bridge-action="connect" ${!state.address || state.busy ? 'disabled' : ''}>${escapeHtml(t('Check local bridge'))}</button>
           ${optionalPrivateLocalModeDetails()}
         </div>
       `}
@@ -17575,21 +17633,21 @@ function publicBridgeStatusCard(): string {
 function optionalPrivateLocalModeDetails(): string {
   return `
     <details class="bridge-setup-details optional-local-runtime">
-      <summary>Use private local mode</summary>
+      <summary>${escapeHtml(t('Use private local mode'))}</summary>
       <div class="local-runtime-guide rail-runtime-guide optional-runtime-guide">
         <div class="local-runtime-guide-head">
-          <span>Optional on this computer</span>
+          <span>${escapeHtml(t('Optional on this computer'))}</span>
           <strong>${escapeHtml(compactEndpoint(state.bridgeUrl))}</strong>
         </div>
-        <p>Use the local runtime only when you want workflow storage to stay on this machine. The normal web app can use Agentic Cloud or saved-on-device workflow without localhost.</p>
+        <p>${escapeHtml(t('Use the local runtime only when you want workflow storage to stay on this machine. The normal web app can use Agentic Cloud or saved-on-device workflow without localhost.'))}</p>
         <ol class="local-runtime-steps">
-          <li>Run the one-shot command in Terminal.</li>
-          <li>Connect the same wallet in the local browser tab.</li>
-          <li>Return here and check the local bridge.</li>
+          <li>${escapeHtml(t('Run the one-shot command in Terminal.'))}</li>
+          <li>${escapeHtml(t('Connect the same wallet in the local browser tab.'))}</li>
+          <li>${escapeHtml(t('Return here and check the local bridge.'))}</li>
         </ol>
         <div class="bridge-command-row primary-runtime-command">
           <code>${escapeHtml(NPM_EXEC_COMMAND)}</code>
-          <button type="button" data-copy="${escapeHtml(NPM_EXEC_COMMAND)}" data-copy-name="local runtime command">Copy</button>
+          <button type="button" data-copy="${escapeHtml(NPM_EXEC_COMMAND)}" data-copy-name="local runtime command">${escapeHtml(t('Copy'))}</button>
         </div>
       </div>
     </details>
@@ -17615,11 +17673,11 @@ function walletAddressCopyButton(address: string): string {
       class="wallet-action-copy compact-copy wallet-address-copy"
       data-copy="${escapeHtml(address)}"
       data-copy-id="connected-wallet-address"
-      data-copy-name="Address"
-      data-copy-toast="Copied address"
+      data-copy-name="${escapeHtml(t('Address'))}"
+      data-copy-toast="${escapeHtml(t('Copied address'))}"
       data-copy-message=""
-      aria-label="Copy wallet address"
-      title="Copy wallet address"
+      aria-label="${escapeHtml(t('Copy wallet address'))}"
+      title="${escapeHtml(t('Copy wallet address'))}"
     >
       ${copyButtonIcon()}
     </button>
@@ -17635,7 +17693,7 @@ function walletBalanceMobileTrigger(): string {
       aria-expanded="${state.activeMobileRailSheet === 'wallet-balances' ? 'true' : 'false'}"
       aria-controls="mobileRailSheetTitle"
     >
-      View balances
+      ${escapeHtml(t('View balances'))}
     </button>
   `;
 }
@@ -17648,11 +17706,11 @@ function walletBalanceRailCard(): string {
   const total = summary
     ? formatWalletBalanceSnapshotUsd(summary, { markPartialCoverage: true })
     : loading
-      ? 'Loading...'
-      : 'Unavailable';
-  const label = summary?.coverage === 'primary' ? 'SOL + USDC value' : 'Wallet value';
+      ? t('Loading...')
+      : t('Unavailable');
+  const label = summary?.coverage === 'primary' ? t('SOL + USDC value') : t('Wallet value');
   return `
-    <section class="wallet-balance-card ${balance.overlayOpen ? 'open' : ''}" aria-label="Wallet balance summary">
+    <section class="wallet-balance-card ${balance.overlayOpen ? 'open' : ''}" aria-label="${escapeHtml(t('Wallet balance summary'))}">
       <div class="wallet-balance-head">
         <div>
           <span>${escapeHtml(label)}</span>
@@ -17664,7 +17722,7 @@ function walletBalanceRailCard(): string {
           data-wallet-balance-action="toggle"
           aria-controls="walletBalanceOverlay"
           aria-expanded="${balance.overlayOpen ? 'true' : 'false'}"
-          title="${balance.overlayOpen ? 'Hide balances' : 'Show all balances'}"
+          title="${escapeHtml(balance.overlayOpen ? t('Hide balances') : t('Show all balances'))}"
           ${!state.address || loading ? 'disabled' : ''}
         >
           <span aria-hidden="true">⌄</span>
@@ -17677,8 +17735,8 @@ function walletBalanceRailCard(): string {
         </div>
       ` : `
         <div class="wallet-balance-state ${error ? 'error' : 'loading'}">
-          <span>${escapeHtml(error ? 'Balances unavailable' : 'Loading balances...')}</span>
-          ${error ? `<button type="button" data-wallet-balance-action="retry-summary">Retry</button>` : ''}
+          <span>${escapeHtml(error ? t('Balances unavailable') : t('Loading balances...'))}</span>
+          ${error ? `<button type="button" data-wallet-balance-action="retry-summary">${escapeHtml(t('Retry'))}</button>` : ''}
         </div>
       `}
       ${balance.overlayOpen ? walletBalanceOverlayHtml() : ''}
@@ -17693,26 +17751,26 @@ function walletBalanceOverlayHtml(): string {
   const total = full
     ? formatWalletBalanceSnapshotUsd(full)
     : loading
-      ? 'Loading...'
-      : 'Unavailable';
+      ? t('Loading...')
+      : t('Unavailable');
   const rows = full ? [full.sol, full.usdc, ...full.others].filter((asset) => asset.amount > 0) : [];
   return `
-    <div id="walletBalanceOverlay" class="wallet-balance-overlay" role="dialog" aria-label="All wallet balances">
+    <div id="walletBalanceOverlay" class="wallet-balance-overlay" role="dialog" aria-label="${escapeHtml(t('All wallet balances'))}">
       <div class="wallet-balance-overlay-head">
         <div>
-          <span>All balances</span>
+          <span>${escapeHtml(t('All balances'))}</span>
           <strong>${escapeHtml(total)}</strong>
         </div>
-        <button type="button" class="wallet-balance-close" data-wallet-balance-action="toggle" title="Close balances">×</button>
+        <button type="button" class="wallet-balance-close" data-wallet-balance-action="toggle" title="${escapeHtml(t('Close balances'))}">×</button>
       </div>
       ${
         full
           ? rows.length > 0
             ? `<div class="wallet-balance-overlay-list">${rows.map(walletBalanceAssetRowHtml).join('')}</div>`
-            : `<p class="wallet-balance-overlay-empty">No balances found.</p>`
+            : `<p class="wallet-balance-overlay-empty">${escapeHtml(t('No balances found.'))}</p>`
           : `<div class="wallet-balance-state ${balance.fullStatus === 'error' ? 'error' : 'loading'}">
-              <span>${escapeHtml(balance.fullStatus === 'error' ? (balance.fullError || 'All balances unavailable') : 'Loading all balances...')}</span>
-              ${balance.fullStatus === 'error' ? `<button type="button" data-wallet-balance-action="retry-full">Retry</button>` : ''}
+              <span>${escapeHtml(balance.fullStatus === 'error' ? (balance.fullError || t('All balances unavailable')) : t('Loading all balances...'))}</span>
+              ${balance.fullStatus === 'error' ? `<button type="button" data-wallet-balance-action="retry-full">${escapeHtml(t('Retry'))}</button>` : ''}
             </div>`
       }
     </div>
@@ -17725,23 +17783,23 @@ function walletBalanceSheetBodyHtml(): string {
   const loading = balance.fullStatus === 'loading' || balance.fullStatus === 'idle';
   if (!full) {
     return `
-      <section class="wallet-balance-sheet" aria-label="Wallet balance details">
+      <section class="wallet-balance-sheet" aria-label="${escapeHtml(t('Wallet balance details'))}">
       <div class="wallet-balance-sheet-total">
-        <span>Wallet value</span>
-        <strong>${escapeHtml(loading ? 'Loading...' : 'Unavailable')}</strong>
+        <span>${escapeHtml(t('Wallet value'))}</span>
+        <strong>${escapeHtml(loading ? t('Loading...') : t('Unavailable'))}</strong>
       </div>
         <div class="wallet-balance-state ${balance.fullStatus === 'error' ? 'error' : 'loading'}">
-          <span>${escapeHtml(balance.fullStatus === 'error' ? (balance.fullError || 'Balances unavailable') : 'Loading balances...')}</span>
-          ${balance.fullStatus === 'error' ? `<button type="button" data-wallet-balance-action="retry-full">Retry</button>` : ''}
+          <span>${escapeHtml(balance.fullStatus === 'error' ? (balance.fullError || t('Balances unavailable')) : t('Loading balances...'))}</span>
+          ${balance.fullStatus === 'error' ? `<button type="button" data-wallet-balance-action="retry-full">${escapeHtml(t('Retry'))}</button>` : ''}
         </div>
       </section>
     `;
   }
   const otherRows = full.others.filter((asset) => asset.amount > 0);
   return `
-    <section class="wallet-balance-sheet" aria-label="Wallet balance details">
+    <section class="wallet-balance-sheet" aria-label="${escapeHtml(t('Wallet balance details'))}">
       <div class="wallet-balance-sheet-total">
-        <span>Wallet value</span>
+        <span>${escapeHtml(t('Wallet value'))}</span>
         <strong>${escapeHtml(formatWalletBalanceSnapshotUsd(full))}</strong>
       </div>
       <div class="wallet-balance-sheet-primary">
@@ -17749,11 +17807,11 @@ function walletBalanceSheetBodyHtml(): string {
         ${walletBalanceAssetRowHtml(full.usdc)}
       </div>
       <div class="wallet-balance-sheet-section">
-        <span>Other balances</span>
+        <span>${escapeHtml(t('Other balances'))}</span>
         ${
           otherRows.length
             ? `<div class="wallet-balance-overlay-list">${otherRows.map(walletBalanceAssetRowHtml).join('')}</div>`
-            : `<p class="wallet-balance-overlay-empty">No other token balances.</p>`
+            : `<p class="wallet-balance-overlay-empty">${escapeHtml(t('No other token balances.'))}</p>`
         }
       </div>
     </section>
@@ -17765,7 +17823,7 @@ function walletBalanceAssetRowHtml(asset: { symbol: string; amount: number; valu
     <div class="wallet-balance-row">
       <span>${escapeHtml(asset.symbol)}</span>
       <strong>${escapeHtml(formatWalletBalanceAmount(asset.amount, asset.symbol))}</strong>
-      <em>${escapeHtml(asset.valueUsd === undefined ? 'price unavailable' : formatWalletBalanceUsd(asset.valueUsd))}</em>
+      <em>${escapeHtml(asset.valueUsd === undefined ? t('price unavailable') : formatWalletBalanceUsd(asset.valueUsd))}</em>
     </div>
   `;
 }
@@ -17778,7 +17836,7 @@ function publicWalletActions(): string {
   if (state.address) {
     return `
       <div class="wallet-actions public-wallet-actions connected">
-        <button id="disconnect" ${state.busy ? 'disabled' : ''}>Disconnect wallet</button>
+        <button id="disconnect" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Disconnect wallet'))}</button>
       </div>
     `;
   }
@@ -17793,7 +17851,7 @@ function publicWalletActions(): string {
       <div class="wallet-actions public-wallet-actions native-wallet-actions">
         <button data-start-action="discover-desktop" class="primary" ${state.busy ? 'disabled' : ''}>
           ${walletButtonIcon()}
-          <span>Discover</span>
+          <span>${escapeHtml(t('Discover'))}</span>
         </button>
       </div>
     `;
@@ -17803,7 +17861,7 @@ function publicWalletActions(): string {
       <div class="wallet-actions public-wallet-actions native-wallet-actions">
         <button data-start-action="connect" class="primary wallet-connect-cta" ${state.busy ? 'disabled' : ''}>
           ${walletButtonIcon()}
-          <span>Connect wallet</span>
+          <span>${escapeHtml(t('Connect wallet'))}</span>
         </button>
       </div>
     `;
@@ -17811,7 +17869,7 @@ function publicWalletActions(): string {
   return `
     <div class="wallet-actions public-wallet-actions">
       <button data-start-action="discover" class="primary" ${state.busy ? 'disabled' : ''}>
-        Discover
+        ${escapeHtml(t('Discover'))}
       </button>
     </div>
   `;
@@ -17829,16 +17887,16 @@ function developerConnectionSettings(): string {
   const androidNative = state.androidNativeEnvironment.isAndroidNative;
   return `
     <label class="field">
-      <span>Cluster</span>
+      <span>${escapeHtml(t('Cluster'))}</span>
       ${selectPicker({
         id: 'clusterSelect',
         value: state.cluster,
         options: CLUSTERS.map((cluster) => ({
           value: cluster,
           label: cluster,
-          meta: 'Network',
+          meta: t('Network'),
           disabled: androidNative && cluster === 'localnet',
-          detail: androidNative && cluster === 'localnet' ? 'Unavailable in Android native mode.' : titleCaseCluster(cluster),
+          detail: androidNative && cluster === 'localnet' ? t('Unavailable in Android native mode.') : titleCaseCluster(cluster),
         })),
         disabled: state.busy || state.bridgeActive,
       })}
@@ -17846,7 +17904,7 @@ function developerConnectionSettings(): string {
 
     ${androidNative ? '' : state.iosNativeEnvironment.isIosNative ? `
     <label class="field">
-      <span>iOS wallet</span>
+      <span>${escapeHtml(t('iOS wallet'))}</span>
       ${selectPicker({
         id: 'iosWalletSelect',
         value: state.selectedIosWalletId,
@@ -17855,7 +17913,7 @@ function developerConnectionSettings(): string {
       })}
     </label>` : `
     <label class="field">
-      <span>Selected wallet</span>
+      <span>${escapeHtml(t('Selected wallet'))}</span>
       ${selectPicker({
         id: 'walletSelect',
         value: state.selectedWalletName,
@@ -17887,18 +17945,18 @@ function mobileWalletBox(): string {
   if (state.androidNativeEnvironment.isAndroidNative) {
     return `
       <div class="mobile-wallet-box android-native-box">
-        <h3>Android Native MWA</h3>
+        <h3>${escapeHtml(t('Android Native MWA'))}</h3>
         <p>${escapeHtml(state.androidNativeStatus)}</p>
         <div class="capabilities compact-caps">
-          <span>Android app</span>
-          <span>Wallet picker</span>
-          <span>${state.androidAuthCacheCount} cached</span>
+          <span>${escapeHtml(t('Android app'))}</span>
+          <span>${escapeHtml(t('Wallet picker'))}</span>
+          <span>${tf('{count} cached', { count: state.androidAuthCacheCount })}</span>
         </div>
         <div class="bridge-actions ios-state-actions">
-          <button id="androidReconnectCached" ${state.busy ? 'disabled' : ''}>Reconnect cached</button>
-          <button id="androidClearTransient" ${state.busy ? 'disabled' : ''}>Clear transient</button>
-          <button id="androidFullReset" ${state.busy ? 'disabled' : ''}>Full reset</button>
-          <button id="androidClearAllAccounts" ${state.busy ? 'disabled' : ''}>Clear all accounts</button>
+          <button id="androidReconnectCached" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Reconnect cached'))}</button>
+          <button id="androidClearTransient" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Clear transient'))}</button>
+          <button id="androidFullReset" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Full reset'))}</button>
+          <button id="androidClearAllAccounts" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Clear all accounts'))}</button>
         </div>
       </div>
     `;
@@ -17906,29 +17964,29 @@ function mobileWalletBox(): string {
   if (state.iosNativeEnvironment.isIosNative) {
     return `
       <div class="mobile-wallet-box ios-native-box">
-        <h3>iOS Wallet Runtime</h3>
+        <h3>${escapeHtml(t('iOS Wallet Runtime'))}</h3>
         <p>${escapeHtml(state.iosNativeStatus)}</p>
         <div class="capabilities compact-caps">
-          <span>Capacitor iOS</span>
+          <span>${escapeHtml(t('Capacitor iOS'))}</span>
           <span>${escapeHtml(iosWalletLabel(state.selectedIosWalletId))}</span>
-          <span>${state.iosAuthCacheCount} cached</span>
+          <span>${tf('{count} cached', { count: state.iosAuthCacheCount })}</span>
         </div>
         <div class="bridge-actions ios-state-actions">
-          <button id="iosReconnectCached" ${state.busy ? 'disabled' : ''}>Reconnect cached</button>
-          <button id="iosClearTransient" ${state.busy ? 'disabled' : ''}>Clear transient</button>
-          <button id="iosFullReset" ${state.busy ? 'disabled' : ''}>Full reset</button>
-          <button id="iosClearAllAccounts" ${state.busy ? 'disabled' : ''}>Clear all accounts</button>
+          <button id="iosReconnectCached" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Reconnect cached'))}</button>
+          <button id="iosClearTransient" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Clear transient'))}</button>
+          <button id="iosFullReset" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Full reset'))}</button>
+          <button id="iosClearAllAccounts" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Clear all accounts'))}</button>
         </div>
       </div>
     `;
   }
   return `
     <div class="mobile-wallet-box">
-      <h3>Android MWA</h3>
+      <h3>${escapeHtml(t('Android MWA'))}</h3>
       <p>${escapeHtml(mwaStatusText())}</p>
       <div class="capabilities compact-caps">
-        <span>${state.mwaEnvironment.isAndroid ? 'Android' : 'Desktop'}</span>
-        <span>${state.mwaEnvironment.supportsMwaMobileWeb ? 'MWA ready' : 'Browser wallet'}</span>
+        <span>${state.mwaEnvironment.isAndroid ? escapeHtml(t('Android')) : escapeHtml(t('Desktop'))}</span>
+        <span>${state.mwaEnvironment.supportsMwaMobileWeb ? escapeHtml(t('MWA ready')) : escapeHtml(t('Browser wallet'))}</span>
       </div>
     </div>
   `;
@@ -17936,52 +17994,52 @@ function mobileWalletBox(): string {
 
 function bridgeBox(): string {
   const bridgeTone = state.bridgeActive ? 'online' : state.busy ? 'checking' : '';
-  const bridgeStatus = state.bridgeActive ? 'Connected' : state.busy ? 'Checking' : 'Offline';
+  const bridgeStatus = state.bridgeActive ? t('Connected') : state.busy ? t('Checking') : t('Offline');
   const localMode = activeWorkflowMode() === 'local-bridge';
   return `
     <div class="bridge-box bridge-ops-card">
       <div class="bridge-ops-head">
         <div>
-          <span>Local bridge</span>
-          <h3>Bridge host</h3>
+          <span>${escapeHtml(t('Local bridge'))}</span>
+          <h3>${escapeHtml(t('Bridge host'))}</h3>
         </div>
         <strong class="${bridgeTone}">${escapeHtml(bridgeStatus)}</strong>
       </div>
       <div class="bridge-endpoint">
-        <span>Endpoint</span>
+        <span>${escapeHtml(t('Endpoint'))}</span>
         <code>${escapeHtml(compactEndpoint(state.bridgeUrl))}</code>
       </div>
       <div class="bridge-actions bridge-primary-actions">
         ${state.bridgeActive ? '' : `
           <button id="connectBridge" class="primary" ${!state.address || state.busy ? 'disabled' : ''}>
-            Check local bridge
+            ${escapeHtml(t('Check local bridge'))}
           </button>
         `}
         ${state.bridgeActive
           ? localMode
-            ? `<button data-workflow-mode="auto" ${state.busy ? 'disabled' : ''}>Use cloud/browser</button>`
-            : `<button data-workflow-mode="local-bridge" class="utility" ${state.busy ? 'disabled' : ''}>Use private local mode</button>`
+            ? `<button data-workflow-mode="auto" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Use cloud/browser'))}</button>`
+            : `<button data-workflow-mode="local-bridge" class="utility" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Use private local mode'))}</button>`
           : ''}
-        <button id="disconnectBridge" ${!state.bridgeActive || state.busy ? 'disabled' : ''}>Disconnect</button>
+        <button id="disconnectBridge" ${!state.bridgeActive || state.busy ? 'disabled' : ''}>${escapeHtml(t('Disconnect'))}</button>
       </div>
       <p class="bridge-ops-status">${escapeHtml(state.bridgeStatus)}</p>
       <div class="bridge-terminal-hint">
-        <span>Start local runtime</span>
+        <span>${escapeHtml(t('Start local runtime'))}</span>
         <code>${NPM_EXEC_COMMAND}</code>
-        <button data-copy="${NPM_EXEC_COMMAND}" data-copy-name="CLI one-shot command" title="Copy terminal command">Copy</button>
-        <p>Run this in Terminal and keep that window open. Pressing Ctrl+C stops the bridge.</p>
+        <button data-copy="${NPM_EXEC_COMMAND}" data-copy-name="CLI one-shot command" title="${escapeHtml(t('Copy terminal command'))}">${escapeHtml(t('Copy'))}</button>
+        <p>${escapeHtml(t('Run this in Terminal and keep that window open. Pressing Ctrl+C stops the bridge.'))}</p>
       </div>
       <details class="bridge-advanced-settings">
-        <summary>Advanced bridge settings</summary>
+        <summary>${escapeHtml(t('Advanced bridge settings'))}</summary>
         ${state.tauriNativeEnvironment.isTauriNative
-          ? '<p class="bridge-config-source">Configured by Agentic Desktop. Edit <code>desktop-config.json</code> and restart the bridge to change.</p>'
+          ? `<p class="bridge-config-source">${escapeHtml(t('Configured by Agentic Desktop. Edit'))} <code>desktop-config.json</code> ${escapeHtml(t('and restart the bridge to change.'))}</p>`
           : ''}
         <label class="field compact">
-          <span>Bridge URL</span>
+          <span>${escapeHtml(t('Bridge URL'))}</span>
           <input id="bridgeUrl" value="${escapeHtml(state.bridgeUrl)}" ${state.busy || state.bridgeActive || state.tauriNativeEnvironment.isTauriNative ? 'disabled' : ''} />
         </label>
         <label class="field compact">
-          <span>Bridge token</span>
+          <span>${escapeHtml(t('Bridge token'))}</span>
           <input id="bridgeToken" value="${escapeHtml(state.bridgeToken)}" ${state.busy || state.bridgeActive || state.tauriNativeEnvironment.isTauriNative ? 'disabled' : ''} />
         </label>
       </details>
@@ -18011,22 +18069,22 @@ function guidedStartPanel(title: string, detail: string, extras?: string): strin
         <h2>${escapeHtml(title)}</h2>
         <p>${escapeHtml(detail)}</p>
       </div>
-      <div class="guided-path" aria-label="Wallet connection path">
-        ${guidedStep('1', androidNative ? 'Discover' : iosNative ? 'iOS paths' : 'Discover', androidNative ? 'Open the wallet picker' : iosNative ? `${state.iosWallets.length} wallet path(s) ready` : state.wallets.length ? `${state.wallets.length} provider(s) found` : 'Find installed Wallet Standard providers', nativeWallet || state.wallets.length > 0)}
-        ${guidedStep('2', 'Select', androidNative ? 'Choose from the wallet picker' : iosNative ? selectedIosWallet : selectedProvider || (state.wallets.length ? 'Choose a discovered provider' : 'Choose a wallet provider'), androidNative || (iosNative ? Boolean(selectedIosWallet) : Boolean(selectedProvider)))}
-        ${guidedStep('3', 'Connect', 'Authorize this app in the wallet', Boolean(state.address))}
+      <div class="guided-path" aria-label="${escapeHtml(t('Wallet connection path'))}">
+        ${guidedStep('1', androidNative ? t('Discover') : iosNative ? t('iOS paths') : t('Discover'), androidNative ? t('Open the wallet picker') : iosNative ? tf('{count} wallet path(s) ready', { count: state.iosWallets.length }) : state.wallets.length ? tf('{count} provider(s) found', { count: state.wallets.length }) : t('Find installed Wallet Standard providers'), nativeWallet || state.wallets.length > 0)}
+        ${guidedStep('2', t('Select'), androidNative ? t('Choose from the wallet picker') : iosNative ? selectedIosWallet : selectedProvider || (state.wallets.length ? t('Choose a discovered provider') : t('Choose a wallet provider')), androidNative || (iosNative ? Boolean(selectedIosWallet) : Boolean(selectedProvider)))}
+        ${guidedStep('3', t('Connect'), t('Authorize this app in the wallet'), Boolean(state.address))}
       </div>
       <div class="guided-actions">
         ${multiPathFlow ? `
-        <button data-start-action="discover" class="primary" ${state.busy ? 'disabled' : ''}>Discover wallets</button>` : nativeWallet ? `
+        <button data-start-action="discover" class="primary" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Discover wallets'))}</button>` : nativeWallet ? `
         <button data-start-action="connect" class="primary wallet-connect-cta" ${state.busy ? 'disabled' : ''}>
           ${walletButtonIcon()}
-          <span>Connect wallet</span>
+          <span>${escapeHtml(t('Connect wallet'))}</span>
         </button>` : `
-        <button data-start-action="discover" class="primary" ${state.busy ? 'disabled' : ''}>Discover wallets</button>
-        <button data-start-action="connect" class="${state.wallets.length ? 'primary' : ''}" ${(state.wallets.length === 0 || !selectedProvider) || state.busy ? 'disabled' : ''} title="${!selectedProvider ? 'Discover and select a wallet provider first.' : ''}">Connect wallet</button>`}
+        <button data-start-action="discover" class="primary" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Discover wallets'))}</button>
+        <button data-start-action="connect" class="${state.wallets.length ? 'primary' : ''}" ${(state.wallets.length === 0 || !selectedProvider) || state.busy ? 'disabled' : ''} title="${!selectedProvider ? escapeHtml(t('Discover and select a wallet provider first.')) : ''}">${escapeHtml(t('Connect wallet'))}</button>`}
       </div>
-      <p class="guided-note">Needs Approval, repeat payments, saved proofs, and transaction tools unlock after a wallet is connected.</p>
+      <p class="guided-note">${escapeHtml(t('Needs Approval, repeat payments, saved proofs, and transaction tools unlock after a wallet is connected.'))}</p>
       ${extras ?? ''}
     </section>
   `;
@@ -18046,18 +18104,18 @@ function guidedStep(index: string, title: string, detail: string, complete: bool
 
 function terminalCommandPanel(): string {
   const selectedRuntimePath = currentRuntimePath();
-  const runtimePath = selectedRuntimePath.actionKind === 'copy' ? selectedRuntimePath : RUNTIME_PATHS[0]!;
+  const runtimePath = selectedRuntimePath.actionKind === 'copy' ? selectedRuntimePath : runtimePaths()[0]!;
   const terminalState = terminalCommandState(runtimePath);
   return `
-    <section class="terminal-try-panel" aria-label="Terminal app quick start">
+    <section class="terminal-try-panel" aria-label="${escapeHtml(t('Terminal app quick start'))}">
       <div class="terminal-try-copy">
-        <span class="workbench-kicker">Try it now</span>
-        <h2>Run the approval terminal</h2>
-        <p>Copy one command into Terminal. The terminal controls the bridge and approval queue; your browser wallet still signs every request.</p>
+        <span class="workbench-kicker">${escapeHtml(t('Try it now'))}</span>
+        <h2>${escapeHtml(t('Run the approval terminal'))}</h2>
+        <p>${escapeHtml(t('Copy one command into Terminal. The terminal controls the bridge and approval queue; your browser wallet still signs every request.'))}</p>
         <div class="terminal-command-list">
-          ${terminalCommandRow('One-shot CLI', NPM_EXEC_COMMAND, 'No install')}
-          ${terminalCommandRow('Global install', NPM_GLOBAL_INSTALL_COMMAND, 'Install')}
-          ${terminalCommandRow('Installed app', INSTALLED_APP_COMMAND, 'After install')}
+          ${terminalCommandRow(t('One-shot CLI'), NPM_EXEC_COMMAND, t('No install'))}
+          ${terminalCommandRow(t('Global install'), NPM_GLOBAL_INSTALL_COMMAND, t('Install'))}
+          ${terminalCommandRow(t('Installed app'), INSTALLED_APP_COMMAND, t('After install'))}
         </div>
       </div>
       <div class="terminal-preview-window">
@@ -18110,17 +18168,17 @@ function terminalCommandState(runtimePath = currentRuntimePath()): {
 } {
   if (state.bridgeActive && state.address) {
     return {
-      bridgeLine: 'Bridge connected',
+      bridgeLine: t('Bridge connected'),
       bridgeTone: 'ok',
-      walletLine: `Wallet ${short(state.address)} ready`,
+      walletLine: tf('Wallet {address} ready', { address: short(state.address) }),
       walletTone: 'ok',
     };
   }
   if (state.address) {
     return {
-      bridgeLine: 'Bridge offline, terminal app can start it',
+      bridgeLine: t('Bridge offline, terminal app can start it'),
       bridgeTone: 'warn',
-      walletLine: `Wallet ${short(state.address)} connected in browser`,
+      walletLine: tf('Wallet {address} connected in browser', { address: short(state.address) }),
       walletTone: 'ok',
     };
   }
@@ -18133,11 +18191,11 @@ function terminalCommandState(runtimePath = currentRuntimePath()): {
 }
 
 function currentRuntimePath(): RuntimePath {
-  return RUNTIME_PATHS.find((runtimePath) => runtimePath.id === state.selectedRuntimePath) ?? RUNTIME_PATHS[0]!;
+  return runtimePaths().find((runtimePath) => runtimePath.id === state.selectedRuntimePath) ?? runtimePaths()[0]!;
 }
 
 function runtimePathById(id: string | undefined): RuntimePath | undefined {
-  return RUNTIME_PATHS.find((runtimePath) => runtimePath.id === id);
+  return runtimePaths().find((runtimePath) => runtimePath.id === id);
 }
 
 function runtimeCommandCopyId(scope: string, runtimePath: RuntimePath): string {
@@ -18163,7 +18221,7 @@ function markCopied(copyId: string): void {
 
 function signatureLifecycle(items: Array<[string, string, boolean]>): string {
   return `
-    <div class="signature-lifecycle signature-trace" aria-label="Signature lifecycle">
+    <div class="signature-lifecycle signature-trace" aria-label="${escapeHtml(t('Signature lifecycle'))}">
       ${items
         .map(
           ([label, value, complete]) => `
@@ -18210,52 +18268,52 @@ function planOutcome(plan: AgentPlan): TemplateOutcome {
 function outcomeLabel(outcome: TemplateOutcome): string {
   switch (outcome) {
     case 'queueable':
-      return 'Request approval';
+      return t('Request approval');
     case 'proof':
-      return 'Proof only';
+      return t('Proof only');
     case 'audit':
-      return 'Evidence only';
+      return t('Evidence only');
   }
 }
 
 function outcomeShortLabel(outcome: TemplateOutcome): string {
   switch (outcome) {
     case 'queueable':
-      return 'Approval-ready';
+      return t('Approval-ready');
     case 'proof':
-      return 'Proof only';
+      return t('Proof only');
     case 'audit':
-      return 'Evidence only';
+      return t('Evidence only');
   }
 }
 
 function outcomeDetailForTemplate(template: AgentPlanTemplate): string {
   const outcome = templateOutcome(template);
   if (template.actionType === 'recurring_payment') {
-    return 'This creates a repeat payment. Each due payment appears in Needs Approval for approve or deny.';
+    return t('This creates a repeat payment. Each due payment appears in Needs Approval for approve or deny.');
   }
   switch (outcome) {
     case 'queueable':
-      return 'This draft can request a wallet approval. Signed-in users use Agentic Cloud; signed-out workflow stays on this device.';
+      return t('This draft can request a wallet approval. Signed-in users use Agentic Cloud; signed-out workflow stays on this device.');
     case 'proof':
-      return 'This can be signed as review evidence, but it cannot be queued as a transaction.';
+      return t('This can be signed as review evidence, but it cannot be queued as a transaction.');
     case 'audit':
-      return 'This can be signed as evidence only. It does not queue an approval request.';
+      return t('This can be signed as evidence only. It does not queue an approval request.');
   }
 }
 
 function outcomeDetailForPlan(plan: AgentPlan): string {
   const outcome = planOutcome(plan);
   if (plan.actionType === 'recurring_payment') {
-    return 'Queueing creates a repeat payment rule. Future payments still require approval.';
+    return t('Queueing creates a repeat payment rule. Future payments still require approval.');
   }
   switch (outcome) {
     case 'queueable':
-      return 'Send this plan for approval when you want a wallet decision.';
+      return t('Send this plan for approval when you want a wallet decision.');
     case 'proof':
-      return 'This plan is for review evidence. Sign a review proof if you want an audit record.';
+      return t('This plan is for review evidence. Sign a review proof if you want an audit record.');
     case 'audit':
-      return 'This plan records read-only context or audit notes. Sign proof only; it does not move funds.';
+      return t('This plan records read-only context or audit notes. Sign proof only; it does not move funds.');
   }
 }
 
@@ -18264,7 +18322,7 @@ function outcomeClass(outcome: TemplateOutcome): string {
 }
 
 function queueActionLabelForPlan(plan: AgentPlan): string {
-  return plan.actionType === 'recurring_payment' ? 'Create repeat payment' : 'Send for approval';
+  return plan.actionType === 'recurring_payment' ? t('Create repeat payment') : t('Send for approval');
 }
 
 function templatesForOutcomeFilter(filter = state.templateOutcomeFilter): AgentPlanTemplate[] {
@@ -18306,6 +18364,9 @@ function isDedicatedConnectorTemplate(template: AgentPlanTemplate): boolean {
 }
 
 function activePanel(): string {
+  // Push the active language to demo-i18n/uiLang so self-contained devTab modules render
+  // in lock-step (they translate via uiLang's t()/tf(), not main.ts's).
+  activeUiLanguage();
   switch (state.activeTab) {
     case 'overview':
       return commandCenterPanel();
@@ -18351,10 +18412,10 @@ function spendFallbackPanel(filter: SpendNavFilter): string {
 function commandCenterPanel(): string {
   return `
     <div class="command-shell">
-      <div class="command-subtab-row" role="tablist" aria-label="Home sections">
-        ${commandCenterSubtab('center', 'Center', 'Command overview')}
-        ${commandCenterSubtab('ai', 'Connect AI', 'Agent setup')}
-        ${commandCenterSubtab('storage', 'Connect Cloud Storage', 'Device and cloud workspace', 'Connect Cloud', 'Cloud workspace')}
+      <div class="command-subtab-row" role="tablist" aria-label="${escapeHtml(t('Home sections'))}">
+        ${commandCenterSubtab('center', t('Center'), t('Command overview'))}
+        ${commandCenterSubtab('ai', t('Connect AI'), t('Agent setup'))}
+        ${commandCenterSubtab('storage', t('Connect Cloud Storage'), t('Device and cloud workspace'), t('Connect Cloud'), t('Cloud workspace'))}
       </div>
       ${state.commandCenterView === 'ai'
         ? commandCenterAiPanel()
@@ -18405,20 +18466,20 @@ function commandCenterOverviewPanel(): string {
     ? `${latestProof.title || receiptLabelForKind(latestProof.kind)} - ${short(latestProof.artifactHash)}`
     : latestHistory
       ? `${latestHistory.status} - ${short(latestHistory.actionId ?? latestHistory.signature ?? latestHistory.id)}`
-      : 'No proof yet';
+      : t('No proof yet');
   const headerActions = isMobileAppViewport()
     ? ''
     : `
           <div class="command-center-actions">
-            <button type="button" class="primary" data-one-time-view="create">New Request</button>
-            <button type="button" class="utility" data-tab="labs">Sign Proof</button>
+            <button type="button" class="primary" data-one-time-view="create">${escapeHtml(t('New Request'))}</button>
+            <button type="button" class="utility" data-tab="labs">${escapeHtml(t('Sign Proof'))}</button>
           </div>
         `;
   return `
     <div class="command-overview-stack">
       <section class="approval-object signature-stage stage-overview stage-anchor ${openApprovals.length ? 'stage-active' : 'stage-draft'}">
         <div class="signature-object-head command-center-head">
-          ${sectionTitleLine('Approval workspace', 'AI prepares the review item; the wallet owner checks the details and signs only after review.')}
+          ${sectionTitleLine(t('Approval workspace'), t('AI prepares the review item; the wallet owner checks the details and signs only after review.'))}
           ${headerActions}
         </div>
 
@@ -18429,9 +18490,9 @@ function commandCenterOverviewPanel(): string {
 
         ${renderWorkspaceCardGroup({
           wallet: commandCenterWalletCard(),
-          approvals: commandCenterCard('Approvals', `${openApprovals.length} pending`, approvalsCardDetail(openApprovals), openApprovals.length ? 'warn' : 'idle', 'open-inbox', openApprovals.length ? 'Review' : 'Open', 'approvals'),
-          payments: commandCenterCard('Repeat Payments', `${recurringActive.length} active`, recurringActive[0] ? scheduleLabel(recurringActive[0]) : 'No active repeat payments', recurringActive.length ? 'good' : 'idle', 'open-recurring', 'Open', 'recurring'),
-          proof: commandCenterCard('Save Proof', proofLabel, latestProof ? formatDateTime(latestProof.createdAt) : latestHistory ? formatDateTime(latestHistory.completedAt) : 'Save a proof or complete an approval', latestProof || latestHistory ? 'good' : 'idle', 'open-proofs', latestProof || latestHistory ? 'View' : 'Save', 'proofs'),
+          approvals: commandCenterCard(t('Approvals'), tf('{n} pending', { n: openApprovals.length }), approvalsCardDetail(openApprovals), openApprovals.length ? 'warn' : 'idle', 'open-inbox', openApprovals.length ? t('Review') : t('Open'), 'approvals'),
+          payments: commandCenterCard(t('Repeat Payments'), tf('{n} active', { n: recurringActive.length }), recurringActive[0] ? scheduleLabel(recurringActive[0]) : t('No active repeat payments'), recurringActive.length ? 'good' : 'idle', 'open-recurring', t('Open'), 'recurring'),
+          proof: commandCenterCard(t('Save Proof'), proofLabel, latestProof ? formatDateTime(latestProof.createdAt) : latestHistory ? formatDateTime(latestHistory.completedAt) : t('Save a proof or complete an approval'), latestProof || latestHistory ? 'good' : 'idle', 'open-proofs', latestProof || latestHistory ? t('View') : t('Save'), 'proofs'),
         })}
 
         ${commandPreferenceSnapshot()}
@@ -18460,14 +18521,14 @@ function renderWorkspaceCardGroup(cards: WorkspaceCardGroup): string {
   }
   const active: AndroidWorkspaceTab = state.androidWorkspaceTab;
   const tabs: Array<{ id: AndroidWorkspaceTab; label: string; icon: CommandCenterIconId; body: string }> = [
-    { id: 'wallet', label: 'Wallet', icon: 'wallet', body: cards.wallet },
-    { id: 'approvals', label: 'Approvals', icon: 'approvals', body: cards.approvals },
-    { id: 'payments', label: 'Payments', icon: 'recurring', body: cards.payments },
-    { id: 'proof', label: 'Proof', icon: 'proofs', body: cards.proof },
+    { id: 'wallet', label: t('Wallet'), icon: 'wallet', body: cards.wallet },
+    { id: 'approvals', label: t('Approvals'), icon: 'approvals', body: cards.approvals },
+    { id: 'payments', label: t('Payments'), icon: 'recurring', body: cards.payments },
+    { id: 'proof', label: t('Proof'), icon: 'proofs', body: cards.proof },
   ];
   return `
     <div class="android-tab-card android-workspace-tabs" data-android-tab-group="workspace">
-      <div class="android-tab-strip" role="tablist" aria-label="Workspace sections">
+      <div class="android-tab-strip" role="tablist" aria-label="${escapeHtml(t('Workspace sections'))}">
         ${tabs.map((tab) => androidTabButton('workspace', tab.id, tab.label, tab.icon, tab.id === active)).join('')}
       </div>
       <div class="android-tab-body" role="tabpanel">
@@ -18523,13 +18584,13 @@ function commandPreferenceSnapshot(): string {
     commandGuardrailsPreferenceSnapshotCard(),
   ];
   return `
-    <section class="command-preference-snapshot" aria-label="Preference snapshot">
+    <section class="command-preference-snapshot" aria-label="${escapeHtml(t('Preference snapshot'))}">
       <div class="command-preference-snapshot-head">
         <div>
-          <span>Preference snapshot</span>
-          <h3>Current setup</h3>
+          <span>${escapeHtml(t('Preference snapshot'))}</span>
+          <h3>${escapeHtml(t('Current setup'))}</h3>
         </div>
-        <p>Most important workspace settings at a glance.</p>
+        <p>${escapeHtml(t('Most important workspace settings at a glance.'))}</p>
       </div>
       ${renderPreferenceSnapshotGroup(cards)}
     </section>
@@ -18545,17 +18606,17 @@ function renderPreferenceSnapshotGroup(cards: CommandPreferenceSnapshotCard[]): 
     `;
   }
   const setupTabs: Array<{ id: AndroidSetupTab; label: string; icon: CommandCenterIconId }> = [
-    { id: 'ai', label: 'AI Path', icon: 'ai' },
-    { id: 'cloud', label: 'Cloud', icon: 'cloud' },
-    { id: 'connectors', label: 'Connectors', icon: 'connectors' },
-    { id: 'rules', label: 'Rules', icon: 'guardrails' },
+    { id: 'ai', label: t('AI Path'), icon: 'ai' },
+    { id: 'cloud', label: t('Cloud'), icon: 'cloud' },
+    { id: 'connectors', label: t('Connectors'), icon: 'connectors' },
+    { id: 'rules', label: t('Rules'), icon: 'guardrails' },
   ];
   const active = state.androidSetupTab;
   const activeIndex = setupTabs.findIndex((tab) => tab.id === active);
   const card = cards[activeIndex >= 0 ? activeIndex : 0] ?? cards[0];
   return `
     <div class="android-tab-card android-setup-tabs" data-android-tab-group="setup">
-      <div class="android-tab-strip" role="tablist" aria-label="Setup sections">
+      <div class="android-tab-strip" role="tablist" aria-label="${escapeHtml(t('Setup sections'))}">
         ${setupTabs.map((tab) => androidTabButton('setup', tab.id, tab.label, tab.icon, tab.id === active)).join('')}
       </div>
       <div class="android-tab-body" role="tabpanel">
@@ -18601,14 +18662,14 @@ function commandAiPreferenceSnapshotCard(): CommandPreferenceSnapshotCard {
     ? model
     : inactive?.model ?? model;
   return {
-    label: 'AI path',
+    label: t('AI path'),
     value: configured
-      ? `${path} connected`
+      ? tf('{path} connected', { path })
       : inactive
-        ? `${aiPathPreferenceLabel(inactive.mode)} configured`
-        : `${path} selected`,
-    detail: `${displayProvider} - ${displayModel || 'model configured'}`,
-    meta: configured ? readiness : inactive ? `${path} selected` : readiness,
+        ? tf('{path} configured', { path: aiPathPreferenceLabel(inactive.mode) })
+        : tf('{path} selected', { path }),
+    detail: `${displayProvider} - ${displayModel || t('model configured')}`,
+    meta: configured ? readiness : inactive ? tf('{path} selected', { path }) : readiness,
     tone: anyConfigured ? 'good' : 'warn',
     icon: anyConfigured ? 'aiConnected' : 'ai',
     ...(anyConfigured
@@ -18619,7 +18680,7 @@ function commandAiPreferenceSnapshotCard(): CommandPreferenceSnapshotCard {
           logoLabel: displayProvider,
         }
       : {}),
-    actionLabel: anyConfigured ? 'Open' : 'Connect',
+    actionLabel: anyConfigured ? t('Open') : t('Connect'),
     action: { type: 'command', view: 'ai' },
   };
 }
@@ -18631,36 +18692,36 @@ function commandCloudPreferenceSnapshotCard(): CommandPreferenceSnapshotCard {
   const reconnectNeeded = signedIn && !matched && !mismatch;
   const unavailable = state.cloudSession.status === 'unavailable';
   const value = unavailable
-    ? 'Cloud unavailable'
+    ? t('Cloud unavailable')
     : matched
-      ? 'Cloud connected'
+      ? t('Cloud connected')
       : signedIn
         ? reconnectNeeded
-          ? 'Reconnect wallet'
-          : 'Wallet mismatch'
-        : 'Signed out';
+          ? t('Reconnect wallet')
+          : t('Wallet mismatch')
+        : t('Signed out');
   const detail = matched
-    ? `Signed in as ${short(state.cloudSession.walletAddress)}`
+    ? tf('Signed in as {address}', { address: short(state.cloudSession.walletAddress) })
     : signedIn
-      ? `Signed in as ${short(state.cloudSession.walletAddress)}. Connect the matching wallet.`
+      ? tf('Signed in as {address}. Connect the matching wallet.', { address: short(state.cloudSession.walletAddress) })
       : unavailable
-        ? 'Workflow data stays saved on this device.'
-        : 'Cloud sync is off; local workspace is active.';
+        ? t('Workflow data stays saved on this device.')
+        : t('Cloud sync is off; local workspace is active.');
   const meta = matched
-    ? 'Sync available'
+    ? t('Sync available')
     : signedIn
-      ? 'Wallet identity issue'
+      ? t('Wallet identity issue')
       : unavailable
-        ? 'Local workspace'
-        : 'Local workspace';
+        ? t('Local workspace')
+        : t('Local workspace');
   return {
-    label: 'Cloud storage',
+    label: t('Cloud storage'),
     value,
     detail,
     meta,
     tone: matched ? 'good' : signedIn ? 'warn' : 'idle',
     icon: 'cloud',
-    actionLabel: matched ? 'Open' : 'Connect',
+    actionLabel: matched ? t('Open') : t('Connect'),
     action: { type: 'command', view: 'storage' },
   };
 }
@@ -18671,16 +18732,16 @@ function commandConnectorsPreferenceSnapshotCard(): CommandPreferenceSnapshotCar
   const names = enabledConnectors.slice(0, 2).map((connector) => connector.name).join(', ');
   const extra = enabledCount - 2;
   const detail = enabledCount
-    ? `${names}${extra > 0 ? ` +${extra} more` : ''}`
-    : `No connectors enabled for ${titleCaseCluster(state.cluster)}.`;
+    ? `${names}${extra > 0 ? tf(' +{n} more', { n: extra }) : ''}`
+    : tf('No connectors enabled for {cluster}.', { cluster: titleCaseCluster(state.cluster) });
   return {
-    label: 'Connectors',
-    value: `${enabledCount} ${enabledCount === 1 ? 'connector' : 'connectors'} set`,
+    label: t('Connectors'),
+    value: tf('{count} {noun} set', { count: enabledCount, noun: enabledCount === 1 ? t('connector') : t('connectors') }),
     detail,
     meta: '',
     tone: enabledCount ? 'good' : 'idle',
     icon: 'connectors',
-    actionLabel: 'Manage',
+    actionLabel: t('Manage'),
     action: { type: 'preferences', view: 'access' },
   };
 }
@@ -18692,13 +18753,13 @@ function commandGuardrailsPreferenceSnapshotCard(): CommandPreferenceSnapshotCar
   const alertsOn = notificationEnabledCount();
   const hasCustomReview = railsOn > 0 || enabledPolicies > 0 || recipients > 0 || alertsOn > 0;
   return {
-    label: 'Review rules',
-    value: hasCustomReview ? 'Preferences set' : 'Defaults active',
-    detail: `${countPhrase(recipients, 'recipient')} - ${countPhrase(railsOn, 'rail')} - ${countPhrase(enabledPolicies, 'policy', 'policies')} - ${countPhrase(alertsOn, 'alert')}`,
-    meta: hasCustomReview ? 'Review extras on' : 'No extra rules',
+    label: t('Review rules'),
+    value: hasCustomReview ? t('Preferences set') : t('Defaults active'),
+    detail: `${countPhrase(recipients, t('recipient'), t('recipients'))} - ${countPhrase(railsOn, t('rail'), t('rails'))} - ${countPhrase(enabledPolicies, t('policy'), t('policies'))} - ${countPhrase(alertsOn, t('alert'), t('alerts'))}`,
+    meta: hasCustomReview ? t('Review extras on') : t('No extra rules'),
     tone: hasCustomReview ? 'good' : 'idle',
     icon: 'guardrails',
-    actionLabel: 'Review',
+    actionLabel: t('Review'),
     action: { type: 'preferences', view: 'rules' },
   };
 }
@@ -18757,7 +18818,7 @@ function aiPathPreferenceLabel(mode: AiSettings['mode']): string {
 }
 
 function countPhrase(count: number, singular: string, plural = `${singular}s`): string {
-  return `${count} ${count === 1 ? singular : plural}`;
+  return tf('{count} {label}', { count, label: count === 1 ? singular : plural });
 }
 
 function androidMobileAiPathTabLabel(mode: AiSettings['mode']): string {
@@ -18775,32 +18836,32 @@ function androidMobileAiPathTabLabel(mode: AiSettings['mode']): string {
 
 function approvalsCardDetail(openApprovals: PreparedAction[]): string {
   const next = openApprovals[0];
-  if (!next) return 'No approvals waiting';
+  if (!next) return t('No approvals waiting');
   const recipient = recipientParam(next);
   const recipientShort = recipient ? recipientDisplayLabel(recipient) : '';
   let base: string;
   if (next.kind === 'transfer_sol') {
     const amount = stringParam(next, 'amountSol') || stringParam(next, 'amount');
     const amountText = amount ? `${amount} SOL` : 'SOL';
-    base = recipientShort ? `Send ${amountText} to ${recipientShort}` : `Send ${amountText}`;
+    base = recipientShort ? tf('Send {amount} to {recipient}', { amount: amountText, recipient: recipientShort }) : tf('Send {amount}', { amount: amountText });
   } else if (next.kind === 'transfer_spl') {
     const amount = stringParam(next, 'amount');
     const token = stringParam(next, 'token') || 'token';
     const tokenText = looksLikeMintAddress(token) ? tokenDisplayLabel(token) : token;
     const amountText = amount ? `${amount} ${tokenText}` : tokenText;
-    base = recipientShort ? `Send ${amountText} to ${recipientShort}` : `Send ${amountText}`;
+    base = recipientShort ? tf('Send {amount} to {recipient}', { amount: amountText, recipient: recipientShort }) : tf('Send {amount}', { amount: amountText });
   } else if (next.kind === 'swap') {
     const input = stringParam(next, 'inputToken') || 'input';
     const output = stringParam(next, 'outputToken') || 'output';
     const amount = stringParam(next, 'amount') || stringParam(next, 'amountIn');
     const inputLabel = looksLikeMintAddress(input) ? tokenDisplayLabel(input) : input;
     const outputLabel = looksLikeMintAddress(output) ? tokenDisplayLabel(output) : output;
-    base = amount ? `Swap ${amount} ${inputLabel} to ${outputLabel}` : `Swap ${inputLabel} to ${outputLabel}`;
+    base = amount ? tf('Swap {amount} {input} to {output}', { amount, input: inputLabel, output: outputLabel }) : tf('Swap {input} to {output}', { input: inputLabel, output: outputLabel });
   } else {
     base = preparedActionCardTitle(next);
   }
   const extra = openApprovals.length - 1;
-  return extra > 0 ? `${base} (+${extra} more)` : base;
+  return extra > 0 ? tf('{base} (+{n} more)', { base, n: extra }) : base;
 }
 
 function commandCenterAiPanel(): string {
@@ -18812,32 +18873,32 @@ function commandCenterAiPanel(): string {
     ? ''
     : `
           <div class="command-center-actions">
-            <button type="button" class="primary" data-one-time-view="create">New Request</button>
+            <button type="button" class="primary" data-one-time-view="create">${escapeHtml(t('New Request'))}</button>
           </div>
         `;
   return `
     <div class="command-detail-stack command-ai-panel">
       <section class="approval-object signature-stage command-page-card">
         <div class="signature-object-head command-center-head">
-          ${sectionTitleLine('Connect AI', 'Set up the agent route, provider, model, and connection boundary. Workflow actions still require explicit review.')}
+          ${sectionTitleLine(t('Connect AI'), t('Set up the agent route, provider, model, and connection boundary. Workflow actions still require explicit review.'))}
           ${headerActions}
         </div>
 
-        <div class="command-route-grid" aria-label="AI route capabilities">
+        <div class="command-route-grid" aria-label="${escapeHtml(t('AI route capabilities'))}">
           ${commandAiRouteCards()}
         </div>
 
         ${commandAiWorkflowEducation()}
 
         <div class="command-ai-boundary">
-          <strong>${configured ? confirmed ? 'Planner confirmed' : 'Planner configured' : anyConfigured ? 'Inactive path configured' : 'Templates work without AI'}</strong>
-          <span>No AI route can approve, submit, sign, move funds, or change workflow authority.</span>
+          <strong>${escapeHtml(configured ? confirmed ? t('Planner confirmed') : t('Planner configured') : anyConfigured ? t('Inactive path configured') : t('Templates work without AI'))}</strong>
+          <span>${escapeHtml(t('No AI route can approve, submit, sign, move funds, or change workflow authority.'))}</span>
         </div>
 
-        <div class="command-ai-data-disclosure" aria-label="AI data sharing disclosure">
-          <strong>What is shared with your AI provider</strong>
-          <p>The AI feature is off until you enter your own provider key. When you request an agent review, this app sends to the AI provider you selected: the draft's action type, token symbol(s), amount, recipient address, and slippage; your Solana wallet's public address; any free-text note you write; and the network/cluster. It never sends your private keys, seed phrase, recovery phrase, precise location, or device identifiers.</p>
-          <p><a href="/privacy" data-site-link="/privacy">Privacy Policy</a></p>
+        <div class="command-ai-data-disclosure" aria-label="${escapeHtml(t('AI data sharing disclosure'))}">
+          <strong>${escapeHtml(t('What is shared with your AI provider'))}</strong>
+          <p>${escapeHtml(t('The AI feature is off until you enter your own provider key. When you request an agent review, this app sends to the AI provider you selected: the draft\'s action type, token symbol(s), amount, recipient address, and slippage; your Solana wallet\'s public address; any free-text note you write; and the network/cluster. It never sends your private keys, seed phrase, recovery phrase, precise location, or device identifiers.'))}</p>
+          <p><a href="/privacy" data-site-link="/privacy">${escapeHtml(t('Privacy Policy'))}</a></p>
         </div>
 
         ${aiSettingsCard('planner')}
@@ -18857,27 +18918,27 @@ function commandAiRouteCards(): string {
     {
       id: 'hosted',
       mode: 'hosted',
-      title: 'Hosted BYOK',
+      title: t('Hosted BYOK'),
       detail: hostedCloudSignInRequired
         ? MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED
-        : 'Connect a preset provider key through Agentic for AI agent requests.',
-      meta: 'Cloud AI connection',
+        : t('Connect a preset provider key through Agentic for AI agent requests.'),
+      meta: t('Cloud AI connection'),
       available: true,
     },
     {
       id: 'bridge',
       mode: 'bridge',
-      title: 'Local Bridge AI',
-      detail: 'Connect the local runtime so AI agent requests can use this machine.',
-      meta: 'Local AI connection',
+      title: t('Local Bridge AI'),
+      detail: t('Connect the local runtime so AI agent requests can use this machine.'),
+      meta: t('Local AI connection'),
       available: !mobileAiPathPolicy,
     },
     {
       id: 'session',
       mode: 'session',
-      title: IS_ANDROID_APP ? 'Android Session' : 'Browser Session',
-      detail: `Connect a temporary key in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'} without saving it to Agentic.`,
-      meta: 'Session AI connection',
+      title: IS_ANDROID_APP ? t('Android Session') : t('Browser Session'),
+      detail: tf('Connect a temporary key in {location} without saving it to Agentic.', { location: IS_ANDROID_APP ? t('this app runtime') : t('this tab') }),
+      meta: t('Session AI connection'),
       // Session is a browser/web route, not a native mobile app route.
       available: !IS_TAURI_APP && !mobileAiPathPolicy,
     },
@@ -18885,16 +18946,16 @@ function commandAiRouteCards(): string {
       id: 'device-agent',
       mode: 'device-agent',
       title: IS_TAURI_APP && state.tauriBridgeStatus?.bridgeReachable
-        ? 'Desktop Device Agent AI'
-        : 'Device Agent AI',
+        ? t('Desktop Device Agent AI')
+        : t('Device Agent AI'),
       detail: IS_TAURI_APP && state.tauriBridgeStatus?.bridgeReachable
-        ? 'Routed through the local desktop bridge — agent requests stay on this machine and never round-trip to the cloud.'
+        ? t('Routed through the local desktop bridge — agent requests stay on this machine and never round-trip to the cloud.')
         : IS_ANDROID_APP
-          ? 'Connect the on-device runtime so agent requests stay inside this app boundary.'
-          : 'Connect the gated Device Agent setup for this wallet.',
+          ? t('Connect the on-device runtime so agent requests stay inside this app boundary.')
+          : t('Connect the gated Device Agent setup for this wallet.'),
       meta: IS_TAURI_APP && state.tauriBridgeStatus?.bridgeReachable
-        ? 'Desktop AI connection'
-        : 'Device AI connection',
+        ? t('Desktop AI connection')
+        : t('Device AI connection'),
       available: mobileAiPathPolicy || deviceAgentModeVisible(),
     },
     {
@@ -18902,13 +18963,13 @@ function commandAiRouteCards(): string {
       mode: null,
       title: 'Plan Connector',
       detail: websitePlanConnectorAvailable
-        ? 'Use Codex, Claude, or Gemini from this computer without pasting a provider API key.'
+        ? t('Use Codex, Claude, or Gemini from this computer without pasting a provider API key.')
         : state.aiSettings.pairedBridge
-          ? 'Your phone is paired to this computer plan connector.'
-          : 'Use Codex, Claude, or Gemini from your signed-in computer. Scan one QR from Android.',
+          ? t('Your phone is paired to this computer plan connector.')
+          : t('Use Codex, Claude, or Gemini from your signed-in computer. Scan one QR from Android.'),
       meta: websitePlanConnectorAvailable
-        ? 'Website plan connection'
-        : state.aiSettings.pairedBridge ? 'Computer plan connected' : 'Computer plan connection',
+        ? t('Website plan connection')
+        : state.aiSettings.pairedBridge ? t('Computer plan connected') : t('Computer plan connection'),
       available: planConnectorAvailable,
     },
   ];
@@ -18945,14 +19006,14 @@ function commandAiRouteCards(): string {
     const activeEntry = visible.find((entry) => entry.id === activeId) ?? visible[0]!;
     const shortLabels: Record<AndroidAiRouteTab, string> = {
       hosted: 'BYOK',
-      bridge: 'Bridge',
-      session: 'Session',
-      'device-agent': 'Device Agent',
+      bridge: t('Bridge'),
+      session: t('Session'),
+      'device-agent': t('Device Agent'),
       'plan-connector': 'Plan Connector',
     };
     return `
       <div class="command-route-tabs android-tab-card" data-android-tab-group="ai-route">
-        <div class="android-tab-strip command-route-strip" role="tablist" aria-label="AI route options">
+        <div class="android-tab-strip command-route-strip" role="tablist" aria-label="${escapeHtml(t('AI route options'))}">
           ${visible.map((entry) => mobileTabButton(
             'ai-route',
             entry.id,
@@ -18987,35 +19048,35 @@ function commandBridgePrereqPanel(): string {
     <div class="command-bridge-prereq command-bridge-prereq-compact">
       <div class="command-bridge-prereq-head">
         <div>
-          <span class="accent-note">Install once or use CLI</span>
-          <strong>Local bridge required on this computer</strong>
-          <p>Start the local runtime, connect the same wallet in the tab it opens, then check the bridge here.</p>
+          <span class="accent-note">${escapeHtml(t('Install once or use CLI'))}</span>
+          <strong>${escapeHtml(t('Local bridge required on this computer'))}</strong>
+          <p>${escapeHtml(t('Start the local runtime, connect the same wallet in the tab it opens, then check the bridge here.'))}</p>
         </div>
         <strong class="command-bridge-endpoint">${escapeHtml(compactEndpoint(state.bridgeUrl))}</strong>
       </div>
       <div class="bridge-command-row primary-runtime-command">
         <code>${escapeHtml(NPM_EXEC_COMMAND)}</code>
-        <button type="button" data-copy="${escapeHtml(NPM_EXEC_COMMAND)}" data-copy-name="local runtime command">Copy</button>
+        <button type="button" data-copy="${escapeHtml(NPM_EXEC_COMMAND)}" data-copy-name="local runtime command">${escapeHtml(t('Copy'))}</button>
       </div>
       <details class="command-bridge-details">
-        <summary>Setup details and Desktop App</summary>
+        <summary>${escapeHtml(t('Setup details and Desktop App'))}</summary>
         <div class="command-bridge-detail-body">
           <ol class="local-runtime-steps">
-            <li>Copy and run the one-shot command in Terminal.</li>
-            <li>Connect your wallet in the browser tab it opens.</li>
-            <li>Come back here and check the local bridge.</li>
+            <li>${escapeHtml(t('Copy and run the one-shot command in Terminal.'))}</li>
+            <li>${escapeHtml(t('Connect your wallet in the browser tab it opens.'))}</li>
+            <li>${escapeHtml(t('Come back here and check the local bridge.'))}</li>
           </ol>
-          <span class="local-runtime-alt-label">Install CLI globally</span>
+          <span class="local-runtime-alt-label">${escapeHtml(t('Install CLI globally'))}</span>
           <div class="bridge-command-row">
             <code>${escapeHtml(NPM_GLOBAL_INSTALL_COMMAND)}</code>
-            <button type="button" data-copy="${escapeHtml(NPM_GLOBAL_INSTALL_COMMAND)}" data-copy-name="CLI install command">Copy</button>
+            <button type="button" data-copy="${escapeHtml(NPM_GLOBAL_INSTALL_COMMAND)}" data-copy-name="CLI install command">${escapeHtml(t('Copy'))}</button>
           </div>
-          <span class="local-runtime-alt-label">Run installed CLI</span>
+          <span class="local-runtime-alt-label">${escapeHtml(t('Run installed CLI'))}</span>
           <div class="bridge-command-row">
             <code>${escapeHtml(INSTALLED_APP_COMMAND)}</code>
-            <button type="button" data-copy="${escapeHtml(INSTALLED_APP_COMMAND)}" data-copy-name="installed CLI command">Copy</button>
+            <button type="button" data-copy="${escapeHtml(INSTALLED_APP_COMMAND)}" data-copy-name="installed CLI command">${escapeHtml(t('Copy'))}</button>
           </div>
-          <a class="button-link local-runtime-desktop-link" href="/desktop">Desktop App downloads</a>
+          <a class="button-link local-runtime-desktop-link" href="/desktop">${escapeHtml(t('Desktop App downloads'))}</a>
         </div>
       </details>
     </div>
@@ -19024,7 +19085,7 @@ function commandBridgePrereqPanel(): string {
 
 function commandAiWorkflowEducation(): string {
   return `
-    <section class="command-ai-education" aria-label="AI workflow capabilities">
+    <section class="command-ai-education" aria-label="${escapeHtml(t('AI workflow capabilities'))}">
       ${isMobileAppViewport() ? commandAiIntroTabs() : commandAiPrincipleCard()}
       ${commandAiInfoCardsGroup()}
     </section>
@@ -19034,9 +19095,9 @@ function commandAiWorkflowEducation(): string {
 function commandAiPrincipleCard(): string {
   return `
     <div class="command-ai-principle">
-      <span>Benefits of connecting AI</span>
-      <strong>Workflow-first. Wallet-approved. AI-optional.</strong>
-      <p>AI changes the drafting and intelligence layer. It does not change who approves, signs, submits, or owns authority.</p>
+      <span>${escapeHtml(t('Benefits of connecting AI'))}</span>
+      <strong>${escapeHtml(t('Workflow-first. Wallet-approved. AI-optional.'))}</strong>
+      <p>${escapeHtml(t('AI changes the drafting and intelligence layer. It does not change who approves, signs, submits, or owns authority.'))}</p>
     </div>
   `;
 }
@@ -19045,24 +19106,24 @@ function commandAiIntroTabs(): string {
   const tabs: Array<{ id: AndroidAiIntroTab; label: string; body: string }> = [
     {
       id: 'benefits',
-      label: 'AI BENEFITS',
+      label: t('AI BENEFITS'),
       body: commandAiPrincipleCard(),
     },
     {
       id: 'no-ai',
-      label: 'OR NO AI',
+      label: t('OR NO AI'),
       body: commandAiInfoCard(
-        'No AI / Templates',
-        'Manual setup',
-        'User fills the fields; the app creates a structured plan, sends work for approval, schedules repeat payments, and saves proofs.',
-        'Best for deterministic actions where the user already knows the exact fields.',
+        t('No AI / Templates'),
+        t('Manual setup'),
+        t('User fills the fields; the app creates a structured plan, sends work for approval, schedules repeat payments, and saves proofs.'),
+        t('Best for deterministic actions where the user already knows the exact fields.'),
       ),
     },
   ];
   const active = tabs.find((tab) => tab.id === state.androidAiIntroTab) ?? tabs[0]!;
   return `
     <div class="command-ai-intro-tabs android-tab-card" data-android-tab-group="ai-intro">
-      <div class="android-tab-strip command-ai-intro-strip" role="tablist" aria-label="AI benefits and no-AI option">
+      <div class="android-tab-strip command-ai-intro-strip" role="tablist" aria-label="${escapeHtml(t('AI benefits and no-AI option'))}">
         ${tabs.map((tab) => mobileTabButton('ai-intro', tab.id, tab.label, tab.id === active.id)).join('')}
       </div>
       <div class="android-tab-body command-ai-intro-body" role="tabpanel">
@@ -19078,71 +19139,71 @@ function commandAiInfoCardsGroup(): string {
   const entries: Array<{ id: AndroidAiInfoTab; tab: string; title: string; badge: string; detail: string; foot: string; available: boolean }> = [
     {
       id: 'no-ai',
-      tab: 'No AI',
-      title: 'No AI / Templates',
-      badge: 'Manual setup',
-      detail: 'User fills the fields; the app creates a structured plan, sends work for approval, schedules repeat payments, and saves proofs.',
-      foot: 'Best for deterministic actions where the user already knows the exact fields.',
+      tab: t('No AI'),
+      title: t('No AI / Templates'),
+      badge: t('Manual setup'),
+      detail: t('User fills the fields; the app creates a structured plan, sends work for approval, schedules repeat payments, and saves proofs.'),
+      foot: t('Best for deterministic actions where the user already knows the exact fields.'),
       available: true,
     },
     {
       id: 'hosted',
       tab: 'BYOK',
-      title: 'Hosted BYOK',
-      badge: hostedCloudSignInRequired ? 'Cloud sign-in required' : 'Natural-language setup',
+      title: t('Hosted BYOK'),
+      badge: hostedCloudSignInRequired ? t('Cloud sign-in required') : t('Natural-language setup'),
       detail: hostedCloudSignInRequired
         ? MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED
-        : 'User brings a provider key; Agentic calls AI to translate messy intent into a structured workflow plan.',
+        : t('User brings a provider key; Agentic calls AI to translate messy intent into a structured workflow plan.'),
       foot: hostedCloudSignInRequired
-        ? 'Sign in to Agentic Cloud with this wallet before using Hosted BYOK on mobile.'
-        : 'More capable at understanding intent, not more powerful over approval.',
+        ? t('Sign in to Agentic Cloud with this wallet before using Hosted BYOK on mobile.')
+        : t('More capable at understanding intent, not more powerful over approval.'),
       available: true,
     },
     {
       id: 'session',
       tab: 'SESSION',
-      title: IS_ANDROID_APP ? 'Android Session AI' : 'Browser Session AI',
-      badge: 'Session drafting',
-      detail: `AI drafts inside ${IS_ANDROID_APP ? 'this app runtime' : 'this browser session'}, then the plan enters the same normalized workflow pipeline.`,
-      foot: 'Useful for temporary keys, but subject to provider and session limits.',
+      title: IS_ANDROID_APP ? t('Android Session AI') : t('Browser Session AI'),
+      badge: t('Session drafting'),
+      detail: tf('AI drafts inside {location}, then the plan enters the same normalized workflow pipeline.', { location: IS_ANDROID_APP ? t('this app runtime') : t('this browser session') }),
+      foot: t('Useful for temporary keys, but subject to provider and session limits.'),
       // Mirror the route-tab gate: Session on Android app + web, off iOS/Tauri.
       available: !IS_TAURI_APP && (!mobileAiPathPolicy || IS_ANDROID_APP),
     },
     {
       id: 'bridge',
       tab: 'BRIDGE',
-      title: 'Local Bridge',
-      badge: 'Private local mode',
-      detail: 'AI and workflow storage can run through the local runtime when the user wants private machine-local control.',
-      foot: 'Still ends at explicit wallet approval and local signing.',
+      title: t('Local Bridge'),
+      badge: t('Private local mode'),
+      detail: t('AI and workflow storage can run through the local runtime when the user wants private machine-local control.'),
+      foot: t('Still ends at explicit wallet approval and local signing.'),
       available: !mobileAiPathPolicy,
     },
     {
       id: 'device-agent',
       tab: 'DEVICE AGENT',
       title: IS_TAURI_APP && state.tauriBridgeStatus?.bridgeReachable
-        ? 'Desktop Device Agent'
-        : 'Device Agent',
+        ? t('Desktop Device Agent')
+        : t('Device Agent'),
       badge: IS_TAURI_APP && state.tauriBridgeStatus?.bridgeReachable
-        ? 'Local desktop route'
-        : 'On-device route',
+        ? t('Local desktop route')
+        : t('On-device route'),
       detail: IS_TAURI_APP && state.tauriBridgeStatus?.bridgeReachable
-        ? 'Agent requests run through the bundled desktop bridge on this machine — same workflow pipeline as cloud, no round-trip.'
-        : 'The runtime path uses the same agent setup and workflow pipeline while its native worker is gated for development.',
+        ? t('Agent requests run through the bundled desktop bridge on this machine — same workflow pipeline as cloud, no round-trip.')
+        : t('The runtime path uses the same agent setup and workflow pipeline while its native worker is gated for development.'),
       foot: IS_TAURI_APP && state.tauriBridgeStatus?.bridgeReachable
-        ? 'Bridge auto-starts when the app launches. Manage it under Preferences → Access → Local runtime.'
-        : 'Useful for Seeker testing without changing approval authority.',
+        ? t('Bridge auto-starts when the app launches. Manage it under Preferences → Access → Local runtime.')
+        : t('Useful for Seeker testing without changing approval authority.'),
       available: mobileAiPathPolicy || deviceAgentModeVisible(),
     },
     {
       id: 'plan-connector',
       tab: 'PLAN CONNECTOR',
       title: 'Plan Connector',
-      badge: state.aiSettings.pairedBridge ? 'Computer plan connected' : 'Computer plan route',
-      detail: 'Android sends encrypted AI planning requests to your own signed-in computer connector for Codex, Claude, or Gemini.',
+      badge: state.aiSettings.pairedBridge ? t('Computer plan connected') : t('Computer plan route'),
+      detail: t('Android sends encrypted AI planning requests to your own signed-in computer connector for Codex, Claude, or Gemini.'),
       foot: state.aiSettings.pairedBridge
-        ? 'Keep the computer awake while planning. Wallet approval stays on Android.'
-        : 'Scan the computer QR once; no provider API key is stored on the phone.',
+        ? t('Keep the computer awake while planning. Wallet approval stays on Android.')
+        : t('Scan the computer QR once; no provider API key is stored on the phone.'),
       available: phonePairingAvailable(),
     },
   ];
@@ -19164,7 +19225,7 @@ function commandAiInfoCardsGroup(): string {
     if (!active) return '';
     return `
       <div class="command-ai-info-tabs android-tab-card" data-android-tab-group="ai-info">
-        <div class="android-tab-strip command-ai-info-strip" role="tablist" aria-label="AI route benefits">
+        <div class="android-tab-strip command-ai-info-strip" role="tablist" aria-label="${escapeHtml(t('AI route benefits'))}">
           ${routeEntries.map((entry) => mobileTabButton(
             'ai-info',
             entry.id,
@@ -19207,7 +19268,7 @@ function commandAiRouteCard(mode: AiSettings['mode'], title: string, detail: str
   return `
     <article class="command-route-card ${active ? 'active' : ''} ${configured && !active ? 'configured-inactive' : ''}">
       <div>
-        <span>${escapeHtml(configured && !active ? `${meta} - configured` : meta)}</span>
+        <span>${escapeHtml(configured && !active ? tf('{meta} - configured', { meta }) : meta)}</span>
         <strong>${escapeHtml(title)}</strong>
         <p>${escapeHtml(detail)}</p>
       </div>
@@ -19218,7 +19279,7 @@ function commandAiRouteCard(mode: AiSettings['mode'], title: string, detail: str
         ${disabledReason || state.busy ? 'disabled' : ''}
         ${disabledReason ? `title="${escapeHtml(disabledReason)}"` : ''}
       >
-        ${active ? 'Selected' : configured ? 'Switch' : 'Use route'}
+        ${escapeHtml(active ? t('Selected') : configured ? t('Switch') : t('Use route'))}
       </button>
     </article>
   `;
@@ -19296,7 +19357,7 @@ function aiReviewSetupTabs(): string {
     { id: 'plan-connector', label: 'Plan Connector' },
   ];
   return `
-    <div class="ai-review-setup-tabs" role="tablist" aria-label="AI setup type">
+    <div class="ai-review-setup-tabs" role="tablist" aria-label="${escapeHtml(t('AI setup type'))}">
       ${tabs.map((tab) => `
         <button
           type="button"
@@ -19320,12 +19381,12 @@ function planConnectorSheetPanel(): string {
   const connectedBlock = paired
     ? `
         <div class="plan-connector-connected" aria-live="polite">
-          <span>Connected</span>
-          <strong>Computer plan is linked</strong>
-          <p>AI planning uses your computer connector. Wallet approval, signing, and submission stay on Android. ${pairedBridgeStatusChip()}</p>
+          <span>${escapeHtml(t('Connected'))}</span>
+          <strong>${escapeHtml(t('Computer plan is linked'))}</strong>
+          <p>${escapeHtml(t('AI planning uses your computer connector. Wallet approval, signing, and submission stay on Android.'))} ${pairedBridgeStatusChip()}</p>
           <div class="plan-connector-actions">
-            <button type="button" class="utility" data-ai-action="refresh-status" ${state.busy ? 'disabled' : ''}>Refresh status</button>
-            <button type="button" class="utility danger" data-ai-action="unpair-phone">Unpair</button>
+            <button type="button" class="utility" data-ai-action="refresh-status" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Refresh status'))}</button>
+            <button type="button" class="utility danger" data-ai-action="unpair-phone">${escapeHtml(t('Unpair'))}</button>
           </div>
         </div>
       `
@@ -19337,37 +19398,37 @@ function planConnectorSheetPanel(): string {
       ? `
         ${available ? '' : `
         <div class="plan-connector-unavailable" aria-live="polite" style="margin-bottom:8px;">
-          <strong>Test mode — native pairing not detected in this build.</strong>
-          <p>The scanner and paste box are exposed for testing. Pairing may not complete unless this app build includes the connector engine.</p>
+          <strong>${escapeHtml(t('Test mode — native pairing not detected in this build.'))}</strong>
+          <p>${escapeHtml(t('The scanner and paste box are exposed for testing. Pairing may not complete unless this app build includes the connector engine.'))}</p>
         </div>`}
         <div class="plan-connector-pairing-mount" data-plan-connector-pairing-panel aria-live="polite"></div>
       `
       : `
         <div class="plan-connector-unavailable" aria-live="polite">
-          <strong>Plan Connector is hidden in this build.</strong>
-          <p>Install a debug APK or enable the Android bridgePairingEnabled remote flag, then reopen this sheet.</p>
+          <strong>${escapeHtml(t('Plan Connector is hidden in this build.'))}</strong>
+          <p>${escapeHtml(t('Install a debug APK or enable the Android bridgePairingEnabled remote flag, then reopen this sheet.'))}</p>
         </div>
       `;
   return `
     <section class="plan-connector-panel ${paired ? 'connected' : ''}">
       <div class="plan-connector-summary">
         <span>Plan Connector</span>
-        <strong>${paired ? 'Ready to use your computer plan' : 'Connect Android to your computer plan'}</strong>
-        <p>Open the connector page on the computer that is already signed in to Codex, Claude, or Gemini. Android scans that QR once, then sends encrypted AI planning requests through the relay.</p>
+        <strong>${paired ? escapeHtml(t('Ready to use your computer plan')) : escapeHtml(t('Connect Android to your computer plan'))}</strong>
+        <p>${escapeHtml(t('Open the connector page on the computer that is already signed in to Codex, Claude, or Gemini. Android scans that QR once, then sends encrypted AI planning requests through the relay.'))}</p>
       </div>
       <div class="plan-connector-setup">
         <div class="plan-connector-step">
           <span>1</span>
-          <p>On your AI-connected computer, open <strong>${escapeHtml(PLAN_CONNECTOR_SETUP_URL)}</strong>.</p>
+          <p>${escapeHtml(t('On your AI-connected computer, open'))} <strong>${escapeHtml(PLAN_CONNECTOR_SETUP_URL)}</strong>.</p>
         </div>
         <details class="plan-connector-step command collapsed">
           <summary>
             <span>2</span>
-            <p>Run connector command and keep terminal open.</p>
+            <p>${escapeHtml(t('Run connector command and keep terminal open.'))}</p>
           </summary>
           <div class="plan-connector-command-body">
             <label class="field compact plan-connector-command-picker">
-              <span>Computer AI login</span>
+              <span>${escapeHtml(t('Computer AI login'))}</span>
               ${planConnectorSelectPicker({
                 id: 'planConnectorSheetConnector',
                 value: connector,
@@ -19378,17 +19439,17 @@ function planConnectorSheetPanel(): string {
             </label>
             <div class="bridge-command-row plan-connector-command">
               <code>${escapeHtml(command)}</code>
-              <button type="button" data-copy="${escapeHtml(command)}" data-copy-name="Plan Connector command">Copy</button>
+              <button type="button" data-copy="${escapeHtml(command)}" data-copy-name="Plan Connector command">${escapeHtml(t('Copy'))}</button>
             </div>
           </div>
         </details>
         <div class="plan-connector-step">
           <span>3</span>
-          <p>Scan the computer QR below, or paste the pairing code from the computer page.</p>
+          <p>${escapeHtml(t('Scan the computer QR below, or paste the pairing code from the computer page.'))}</p>
         </div>
       </div>
       ${connectedBlock}
-      <p class="ai-security-note compact">The computer does the AI thinking. Android keeps wallet approval and signing. The relay only forwards encrypted request and response payloads.</p>
+      <p class="ai-security-note compact">${escapeHtml(t('The computer does the AI thinking. Android keeps wallet approval and signing. The relay only forwards encrypted request and response payloads.'))}</p>
     </section>
   `;
 }
@@ -19463,21 +19524,21 @@ function commandCenterStoragePanel(): string {
     IS_TAURI_APP ||
     (state.wallets.length > 0 && Boolean(selectedProvider));
   const headerAction = unavailable
-      ? `<button type="button" class="utility" disabled>Cloud unavailable</button>`
+      ? `<button type="button" class="utility" disabled>${escapeHtml(t('Cloud unavailable'))}</button>`
       : signedIn
-        ? `<button type="button" class="utility" disabled>Cloud connected</button>`
+        ? `<button type="button" class="utility" disabled>${escapeHtml(t('Cloud connected'))}</button>`
         : `<button
             type="button"
             class="primary"
             data-cloud-action="sign-in"
             ${state.busy || !canStartCloudSignIn ? 'disabled' : ''}
-            title="${canStartCloudSignIn ? 'Connect your wallet and sign in to Agentic Cloud.' : 'Discover and select a wallet provider first.'}"
-          >Connect Cloud Storage</button>`;
+            title="${escapeHtml(canStartCloudSignIn ? t('Connect your wallet and sign in to Agentic Cloud.') : t('Discover and select a wallet provider first.'))}"
+          >${escapeHtml(t('Connect Cloud Storage'))}</button>`;
   return `
     <div class="command-detail-stack command-storage-panel">
       <section class="approval-object signature-stage command-page-card">
         <div class="signature-object-head command-center-head">
-          ${sectionTitleLine('Connect Cloud Storage', 'Choose browser-local storage or sign in to Agentic Cloud. No localhost required.')}
+          ${sectionTitleLine(t('Connect Cloud Storage'), t('Choose browser-local storage or sign in to Agentic Cloud. No localhost required.'))}
           <div class="command-center-actions" ${headerAction ? '' : 'hidden'}>
             ${headerAction}
           </div>
@@ -19490,9 +19551,9 @@ function commandCenterStoragePanel(): string {
         ${commandCloudStorageEducation()}
 
         <div class="command-storage-note">
-          <strong>Wallet safety</strong>
-          <span>Cloud sign-in uses your wallet as identity only. It does not grant spending authority.</span>
-          <span>Signed-out plans, approvals, and proofs stay on this device. No localhost is required.</span>
+          <strong>${escapeHtml(t('Wallet safety'))}</strong>
+          <span>${escapeHtml(t('Cloud sign-in uses your wallet as identity only. It does not grant spending authority.'))}</span>
+          <span>${escapeHtml(t('Signed-out plans, approvals, and proofs stay on this device. No localhost is required.'))}</span>
         </div>
 
         ${commandCloudStorageDangerZone()}
@@ -19511,20 +19572,20 @@ function workspaceBackupPanel(): string {
   const statsMarkup = workspaceBackupStatsMarkup(pendingCount, unresolved, sectionCount);
   const notesMarkup = workspaceBackupNotesMarkup(unresolved);
   return `
-    <section class="workspace-backup-panel" aria-label="Workspace backup">
+    <section class="workspace-backup-panel" aria-label="${escapeHtml(t('Workspace backup'))}">
       <div class="workspace-backup-header">
         <div>
-          <strong>Workspace backup</strong>
-          <p>Export your drafts, repeat payments, proofs, and pending tx ledger to a JSON file. Restore it on another browser or after a reset.</p>
+          <strong>${escapeHtml(t('Workspace backup'))}</strong>
+          <p>${escapeHtml(t('Export your drafts, repeat payments, proofs, and pending tx ledger to a JSON file. Restore it on another browser or after a reset.'))}</p>
         </div>
       </div>
       ${statsMarkup}
       ${localWorkspacePrompt('backup')}
       <div class="workspace-backup-actions">
-        <button type="button" class="primary" data-workspace-backup-action="export">Export workspace</button>
+        <button type="button" class="primary" data-workspace-backup-action="export">${escapeHtml(t('Export workspace'))}</button>
         <label class="workspace-backup-import">
           <input type="file" accept="application/json,.json" data-workspace-backup-file hidden />
-          <span class="utility-button">Import workspace</span>
+          <span class="utility-button">${escapeHtml(t('Import workspace'))}</span>
         </label>
       </div>
       ${notesMarkup}
@@ -19536,15 +19597,15 @@ function workspaceBackupPanel(): string {
 function workspaceBackupNotesMarkup(unresolved: number): string {
   const list = `
     <ul class="workspace-backup-notes">
-      <li>AI route/provider settings are included. AI keys, bridge tokens, and desktop tokens are never exported.</li>
-      <li>Cloud sync is separate from this manual browser-local export.</li>
-      ${unresolved > 0 ? '<li class="warn">Resolve unresolved transactions before restoring on another device.</li>' : ''}
+      <li>${escapeHtml(t('AI route/provider settings are included. AI keys, bridge tokens, and desktop tokens are never exported.'))}</li>
+      <li>${escapeHtml(t('Cloud sync is separate from this manual browser-local export.'))}</li>
+      ${unresolved > 0 ? `<li class="warn">${escapeHtml(t('Resolve unresolved transactions before restoring on another device.'))}</li>` : ''}
     </ul>
   `;
   if (!isMobileAppViewport()) return list;
   return `
     <details class="workspace-backup-notes-disclosure">
-      <summary>What backup includes</summary>
+      <summary>${escapeHtml(t('What backup includes'))}</summary>
       ${list}
     </details>
   `;
@@ -19558,14 +19619,14 @@ function workspaceBackupStatsMarkup(
   if (!isMobileAppViewport()) {
     return `
       <div class="workspace-backup-stats">
-        <span><em>Pending tx records</em><strong>${pendingCount}</strong></span>
-        <span class="${unresolved > 0 ? 'warn' : ''}"><em>Unresolved on-chain</em><strong>${unresolved}</strong></span>
-        <span><em>Sections</em><strong>${sectionCount}</strong></span>
+        <span><em>${escapeHtml(t('Pending tx records'))}</em><strong>${pendingCount}</strong></span>
+        <span class="${unresolved > 0 ? 'warn' : ''}"><em>${escapeHtml(t('Unresolved on-chain'))}</em><strong>${unresolved}</strong></span>
+        <span><em>${escapeHtml(t('Sections'))}</em><strong>${sectionCount}</strong></span>
       </div>
     `;
   }
   return `
-    <div class="workspace-backup-metric-pills" aria-label="Workspace backup stats">
+    <div class="workspace-backup-metric-pills" aria-label="${escapeHtml(t('Workspace backup stats'))}">
       <span><strong>${pendingCount}</strong><em>pending</em></span>
       <span class="${unresolved > 0 ? 'warn' : ''}"><strong>${unresolved}</strong><em>unresolved</em></span>
       <span><strong>${sectionCount}</strong><em>sections</em></span>
@@ -19579,32 +19640,32 @@ function workspaceBackupRestoreModal(): string {
   const summaries = pending.summaries;
   return `
     <div class="workspace-backup-modal-scrim" data-workspace-backup-action="restore-cancel" aria-hidden="true"></div>
-    <aside class="workspace-backup-modal" role="dialog" aria-label="Restore workspace">
+    <aside class="workspace-backup-modal" role="dialog" aria-label="${escapeHtml(t('Restore workspace'))}">
       <header>
-        <h3>Restore workspace from backup?</h3>
-        <button type="button" class="workspace-backup-modal-close" data-workspace-backup-action="restore-cancel" aria-label="Cancel restore">&times;</button>
+        <h3>${escapeHtml(t('Restore workspace from backup?'))}</h3>
+        <button type="button" class="workspace-backup-modal-close" data-workspace-backup-action="restore-cancel" aria-label="${escapeHtml(t('Cancel restore'))}">&times;</button>
       </header>
-      <p>Restoring replaces the matching sections in this browser. Other browsers and devices are unaffected.</p>
+      <p>${escapeHtml(t('Restoring replaces the matching sections in this browser. Other browsers and devices are unaffected.'))}</p>
       <ul class="workspace-backup-modal-list">
         ${summaries.map((summary) => `
           <li>
             <span>${escapeHtml(summary.key)}</span>
-            <strong>${summary.present ? `${summary.bytes.toLocaleString()} bytes` : 'cleared'}</strong>
+            <strong>${summary.present ? tf('{bytes} bytes', { bytes: summary.bytes.toLocaleString() }) : escapeHtml(t('cleared'))}</strong>
           </li>
         `).join('')}
       </ul>
       ${pending.unresolvedCount > 0 ? `
         <div class="workspace-backup-modal-warning">
-          <strong>${pending.unresolvedCount} pending transaction${pending.unresolvedCount === 1 ? '' : 's'} unresolved</strong>
-          <p>Restoring now may lose recovery state for transactions waiting on confirmation. Resolve them first, or override to continue anyway.</p>
+          <strong>${tf('{count} pending transactions unresolved', { count: pending.unresolvedCount })}</strong>
+          <p>${escapeHtml(t('Restoring now may lose recovery state for transactions waiting on confirmation. Resolve them first, or override to continue anyway.'))}</p>
           ${pending.awaitingOverride
-            ? '<button type="button" class="utility danger" data-workspace-backup-action="restore-override">Override and continue</button>'
-            : '<p class="workspace-backup-modal-warning-ack">Override acknowledged.</p>'}
+            ? `<button type="button" class="utility danger" data-workspace-backup-action="restore-override">${escapeHtml(t('Override and continue'))}</button>`
+            : `<p class="workspace-backup-modal-warning-ack">${escapeHtml(t('Override acknowledged.'))}</p>`}
         </div>
       ` : ''}
       <footer>
-        <button type="button" class="utility" data-workspace-backup-action="restore-cancel" ${pending.busy ? 'disabled' : ''}>Cancel</button>
-        <button type="button" class="primary" data-workspace-backup-action="restore-confirm" ${pending.busy || pending.awaitingOverride ? 'disabled' : ''}>${pending.busy ? 'Restoring…' : 'Restore workspace'}</button>
+        <button type="button" class="utility" data-workspace-backup-action="restore-cancel" ${pending.busy ? 'disabled' : ''}>${escapeHtml(t('Cancel'))}</button>
+        <button type="button" class="primary" data-workspace-backup-action="restore-confirm" ${pending.busy || pending.awaitingOverride ? 'disabled' : ''}>${pending.busy ? escapeHtml(t('Restoring…')) : escapeHtml(t('Restore workspace'))}</button>
       </footer>
     </aside>
   `;
@@ -19617,8 +19678,8 @@ function commandStorageCardsGroup(): string {
     const body = active === 'cloud' ? commandStorageCloudCard() : commandStorageDeviceCard();
     return `
       <div class="command-storage-tabs android-tab-card" data-android-tab-group="storage">
-        <div class="android-tab-strip command-storage-strip" role="tablist" aria-label="Workspace storage modes">
-          ${mobileTabButton('storage', 'local', 'On device', active === 'local')}
+        <div class="android-tab-strip command-storage-strip" role="tablist" aria-label="${escapeHtml(t('Workspace storage modes'))}">
+          ${mobileTabButton('storage', 'local', t('On device'), active === 'local')}
           ${mobileTabButton('storage', 'cloud', 'Agentic Cloud', active === 'cloud')}
         </div>
         <div class="android-tab-body command-storage-body" role="tabpanel">
@@ -19628,7 +19689,7 @@ function commandStorageCardsGroup(): string {
     `;
   }
   return `
-    <div class="command-storage-grid" aria-label="Workspace storage modes">
+    <div class="command-storage-grid" aria-label="${escapeHtml(t('Workspace storage modes'))}">
       ${commandStorageDeviceCard()}
       ${commandStorageCloudCard()}
     </div>
@@ -19641,20 +19702,20 @@ function commandStorageDeviceCard(): string {
   return `
     <article class="command-storage-card ${active ? 'active' : ''}">
       <div class="command-storage-card-head">
-        <span>Saved on device</span>
-        <strong>${active ? 'Active' : 'Available'}</strong>
+        <span>${escapeHtml(t('Saved on device'))}</span>
+        <strong>${escapeHtml(active ? t('Active') : t('Available'))}</strong>
       </div>
-      <p>Plans, approvals, repeat payments, and proofs stay on this device. No localhost required.</p>
+      <p>${escapeHtml(t('Plans, approvals, repeat payments, and proofs stay on this device. No localhost required.'))}</p>
       <div class="command-storage-facts">
-        <span>Saved on this device</span>
-        <span>No localhost</span>
+        <span>${escapeHtml(t('Saved on this device'))}</span>
+        <span>${escapeHtml(t('No localhost'))}</span>
       </div>
       <div class="command-storage-actions">
         ${signedIn
-          ? `<button type="button" class="utility" data-cloud-action="sign-out" ${state.busy ? 'disabled' : ''}>Sign out to use device</button>`
+          ? `<button type="button" class="utility" data-cloud-action="sign-out" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Sign out to use device'))}</button>`
           : active
-            ? `<button type="button" class="utility" disabled>Active</button>`
-            : `<button type="button" class="utility" data-workflow-mode="auto" ${state.busy ? 'disabled' : ''}>Use browser storage</button>`}
+            ? `<button type="button" class="utility" disabled>${escapeHtml(t('Active'))}</button>`
+            : `<button type="button" class="utility" data-workflow-mode="auto" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Use browser storage'))}</button>`}
       </div>
     </article>
   `;
@@ -19662,11 +19723,11 @@ function commandStorageDeviceCard(): string {
 
 function commandCloudStorageEducation(): string {
   return `
-    <section class="command-ai-education command-cloud-education" aria-label="Cloud storage benefits">
+    <section class="command-ai-education command-cloud-education" aria-label="${escapeHtml(t('Cloud storage benefits'))}">
       <div class="command-ai-principle">
-        <span>Benefits of connecting Cloud Storage</span>
-        <strong>Durable workflow state without wallet custody.</strong>
-        <p>Storage controls where unsigned plans, approvals, done work, repeat payments, and proofs live. AI setup stays in Connect AI.</p>
+        <span>${escapeHtml(t('Benefits of connecting Cloud Storage'))}</span>
+        <strong>${escapeHtml(t('Durable workflow state without wallet custody.'))}</strong>
+        <p>${escapeHtml(t('Storage controls where unsigned plans, approvals, done work, repeat payments, and proofs live. AI setup stays in Connect AI.'))}</p>
       </div>
       ${commandCloudInfoCardsGroup()}
     </section>
@@ -19677,42 +19738,42 @@ function commandCloudInfoCardsGroup(): string {
   const entries: Array<{ id: AndroidCloudInfoTab; tab: string; title: string; badge: string; detail: string; foot: string }> = [
     {
       id: 'approval',
-      tab: 'Approval',
-      title: 'Cloud Needs Approval',
-      badge: 'Cross-session review',
-      detail: 'Save drafts and due approval items to wallet-scoped cloud approval storage instead of only this browser.',
-      foot: 'The wallet still signs every decision proof or supported transaction.',
+      tab: t('Approval'),
+      title: t('Cloud Needs Approval'),
+      badge: t('Cross-session review'),
+      detail: t('Save drafts and due approval items to wallet-scoped cloud approval storage instead of only this browser.'),
+      foot: t('The wallet still signs every decision proof or supported transaction.'),
     },
     {
       id: 'scheduler',
-      tab: 'Scheduler',
-      title: 'Repeat Payment Scheduler',
-      badge: 'Background workflow',
-      detail: 'Cloud repeat payments can create due approval items, track payment history, pause/resume, expiry, and spend caps.',
-      foot: 'AI can draft terms, but Cloud stores and schedules the workflow.',
+      tab: t('Scheduler'),
+      title: t('Repeat Payment Scheduler'),
+      badge: t('Background workflow'),
+      detail: t('Cloud repeat payments can create due approval items, track payment history, pause/resume, expiry, and spend caps.'),
+      foot: t('AI can draft terms, but Cloud stores and schedules the workflow.'),
     },
     {
       id: 'audit',
-      tab: 'Audit',
-      title: 'Done + Saved Proofs',
-      badge: 'Persistent audit trail',
-      detail: 'Done work, saved proofs, risk metadata, and audit events survive refreshes and device changes.',
-      foot: 'Receipt records are wallet-scoped and do not grant signing authority.',
+      tab: t('Audit'),
+      title: t('Done + Saved Proofs'),
+      badge: t('Persistent audit trail'),
+      detail: t('Done work, saved proofs, risk metadata, and audit events survive refreshes and device changes.'),
+      foot: t('Receipt records are wallet-scoped and do not grant signing authority.'),
     },
     {
       id: 'identity',
-      tab: 'Identity',
-      title: 'No Key Custody',
-      badge: 'Identity only',
-      detail: 'Cloud sign-in proves wallet ownership for sync. It must not store seed phrases, private keys, delegated signers, or AI provider keys.',
-      foot: 'Cloud makes the workflow durable; it cannot move funds by itself.',
+      tab: t('Identity'),
+      title: t('No Key Custody'),
+      badge: t('Identity only'),
+      detail: t('Cloud sign-in proves wallet ownership for sync. It must not store seed phrases, private keys, delegated signers, or AI provider keys.'),
+      foot: t('Cloud makes the workflow durable; it cannot move funds by itself.'),
     },
   ];
   if (isMobileAppViewport()) {
     const active = entries.find((entry) => entry.id === state.androidCloudInfoTab) ?? entries[0]!;
     return `
       <div class="command-cloud-info-tabs android-tab-card" data-android-tab-group="cloud-info">
-        <div class="android-tab-strip command-cloud-info-strip" role="tablist" aria-label="Cloud storage benefits">
+        <div class="android-tab-strip command-cloud-info-strip" role="tablist" aria-label="${escapeHtml(t('Cloud storage benefits'))}">
           ${entries.map((entry) => mobileTabButton('cloud-info', entry.id, entry.tab, entry.id === active.id)).join('')}
         </div>
         <div class="android-tab-body command-cloud-info-body" role="tabpanel">
@@ -19732,42 +19793,42 @@ function commandCloudStorageDangerZone(): string {
   if (state.cloudSession.status !== 'signed-in') return '';
   const matched = cloudSessionMatchesWallet();
   const reason = matched
-    ? 'Deletes cloud workspace data and clears this device\'s app storage for a full reset.'
-    : `Connect ${short(state.cloudSession.walletAddress)} to delete this cloud workspace.`;
+    ? t('Deletes cloud workspace data and clears this device\'s app storage for a full reset.')
+    : tf('Connect {address} to delete this cloud workspace.', { address: short(state.cloudSession.walletAddress) });
   const cleanupReason = matched
-    ? 'Cancels older duplicate active approvals for each recurring schedule while keeping the newest one.'
-    : `Connect ${short(state.cloudSession.walletAddress)} to clean up recurring approval backlog.`;
+    ? t('Cancels older duplicate active approvals for each recurring schedule while keeping the newest one.')
+    : tf('Connect {address} to clean up recurring approval backlog.', { address: short(state.cloudSession.walletAddress) });
   return `
     <div class="command-storage-danger-zone">
       <div>
-        <span>Recurring approvals</span>
-        <strong>Clean up backlog</strong>
-        <p>${escapeHtml(cleanupReason)} Drafts, schedules, proofs, and one-time approvals stay.</p>
+        <span>${escapeHtml(t('Recurring approvals'))}</span>
+        <strong>${escapeHtml(t('Clean up backlog'))}</strong>
+        <p>${escapeHtml(cleanupReason)} ${escapeHtml(t('Drafts, schedules, proofs, and one-time approvals stay.'))}</p>
       </div>
       <button
         type="button"
         class="utility"
         data-cloud-action="cleanup-recurring-backlog"
         ${!matched || state.busy ? 'disabled' : ''}
-        title="${escapeHtml(matched ? 'Dry-runs first, then asks before cancelling duplicates.' : cleanupReason)}"
+        title="${escapeHtml(matched ? t('Dry-runs first, then asks before cancelling duplicates.') : cleanupReason)}"
       >
-        Clean backlog
+        ${escapeHtml(t('Clean backlog'))}
       </button>
     </div>
     <div class="command-storage-danger-zone">
       <div>
-        <span>Danger zone</span>
-        <strong>Delete cloud and app data</strong>
-        <p>${escapeHtml(reason)} On-chain history stays.</p>
+        <span>${escapeHtml(t('Danger zone'))}</span>
+        <strong>${escapeHtml(t('Delete cloud and app data'))}</strong>
+        <p>${escapeHtml(reason)} ${escapeHtml(t('On-chain history stays.'))}</p>
       </div>
       <button
         type="button"
         class="utility danger"
         data-cloud-action="delete-workspace"
         ${!matched || state.busy ? 'disabled' : ''}
-        title="${escapeHtml(matched ? 'Requires a wallet signature before deletion.' : reason)}"
+        title="${escapeHtml(matched ? t('Requires a wallet signature before deletion.') : reason)}"
       >
-        Delete all app data
+        ${escapeHtml(t('Delete all app data'))}
       </button>
     </div>
   `;
@@ -19784,15 +19845,15 @@ function commandStorageCloudCard(): string {
   const hasDiscoveredWallet = state.wallets.length > 0 && Boolean(selectedProvider);
   const cloudSignInCanConnect = IS_ANDROID_APP || IS_IOS_APP || IS_TAURI_APP || hasDiscoveredWallet;
   const status = unavailable
-    ? 'Unavailable'
+    ? t('Unavailable')
     : active
-      ? 'Active'
+      ? t('Active')
       : signedIn
-        ? matched ? 'Signed in' : reconnectNeeded ? 'Reconnect wallet' : 'Wallet mismatch'
-        : 'Signed out';
+        ? matched ? t('Signed in') : reconnectNeeded ? t('Reconnect wallet') : t('Wallet mismatch')
+        : t('Signed out');
   const detail = signedIn && !matched
-    ? `Signed in as ${short(state.cloudSession.walletAddress)}. ${reconnectNeeded ? 'Reconnect that wallet to use cloud workflow.' : 'Connect that wallet to use cloud workflow.'}`
-    : 'Optional sync for one-time drafts, approvals, repeat payments, proofs, and done work.';
+    ? `${tf('Signed in as {address}.', { address: short(state.cloudSession.walletAddress) })} ${reconnectNeeded ? t('Reconnect that wallet to use cloud workflow.') : t('Connect that wallet to use cloud workflow.')}`
+    : t('Optional sync for one-time drafts, approvals, repeat payments, proofs, and done work.');
   return `
     <article class="command-storage-card ${active ? 'active' : ''}">
       <div class="command-storage-card-head">
@@ -19801,8 +19862,8 @@ function commandStorageCloudCard(): string {
       </div>
       <p>${escapeHtml(detail)}</p>
       <div class="command-storage-facts">
-        <span>Wallet identity only</span>
-        <span>No spending authority</span>
+        <span>${escapeHtml(t('Wallet identity only'))}</span>
+        <span>${escapeHtml(t('No spending authority'))}</span>
       </div>
       <div class="command-storage-actions">
         ${!state.address
@@ -19813,23 +19874,23 @@ function commandStorageCloudCard(): string {
               data-first-run-action="discover-wallets"
               ${IS_ANDROID_APP || IS_IOS_APP || IS_TAURI_APP || state.busy ? 'disabled' : ''}
             >
-              Discover
+              ${escapeHtml(t('Discover'))}
             </button>
             <button
               type="button"
               class="${hasDiscoveredWallet ? 'primary' : 'utility'} command-storage-connect"
               data-cloud-action="sign-in"
               ${cloudSignInCanConnect && !state.busy ? '' : 'disabled'}
-              title="${cloudSignInCanConnect ? 'Connect your wallet and sign in to Agentic Cloud.' : 'Discover and select a wallet provider first.'}"
+              title="${escapeHtml(cloudSignInCanConnect ? t('Connect your wallet and sign in to Agentic Cloud.') : t('Discover and select a wallet provider first.'))}"
             >
-              Connect Cloud Storage
+              ${escapeHtml(t('Connect Cloud Storage'))}
             </button>
           `
           : unavailable
-            ? `<button type="button" class="utility" disabled>Cloud unavailable</button>`
+            ? `<button type="button" class="utility" disabled>${escapeHtml(t('Cloud unavailable'))}</button>`
             : signedIn
-              ? `<button type="button" class="utility" data-cloud-action="sign-out" ${state.busy ? 'disabled' : ''}>Sign out</button>`
-              : `<button type="button" class="primary" data-cloud-action="sign-in" ${state.busy ? 'disabled' : ''}>Sign in</button>`}
+              ? `<button type="button" class="utility" data-cloud-action="sign-out" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Sign out'))}</button>`
+              : `<button type="button" class="primary" data-cloud-action="sign-in" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Sign in'))}</button>`}
       </div>
     </article>
   `;
@@ -19837,18 +19898,18 @@ function commandStorageCloudCard(): string {
 
 function commandCenterWalletCard(): string {
   if (state.address) {
-    return commandCenterCard('Wallet', 'Connected', short(state.address), 'good', 'open-create-plan', 'Open', 'wallet');
+    return commandCenterCard(t('Wallet'), t('Connected'), short(state.address), 'good', 'open-create-plan', t('Open'), 'wallet');
   }
   const nativeWallet = state.androidNativeEnvironment.isAndroidNative || state.iosNativeEnvironment.isIosNative || state.tauriNativeEnvironment.isTauriNative;
   if (nativeWallet) {
     return `
       <article class="command-center-card command-wallet-card warn">
-        ${commandCenterCardLabel('Wallet', 'wallet')}
-        <strong>Connect wallet</strong>
-        <p>No signing authority granted</p>
+        ${commandCenterCardLabel(t('Wallet'), 'wallet')}
+        <strong>${escapeHtml(t('Connect wallet'))}</strong>
+        <p>${escapeHtml(t('No signing authority granted'))}</p>
         <div class="command-wallet-actions single">
           <button type="button" class="primary command-wallet-connect" data-first-run-action="connect-wallet" ${state.busy ? 'disabled' : ''}>
-            Connect wallet
+            ${escapeHtml(t('Connect wallet'))}
           </button>
         </div>
       </article>
@@ -19857,14 +19918,14 @@ function commandCenterWalletCard(): string {
   const selectedProvider = discoveredSelectedWalletName();
   const hasDiscoveredWallet = state.wallets.length > 0 && Boolean(selectedProvider);
   const detail = hasDiscoveredWallet
-    ? `${state.wallets.length} provider${state.wallets.length === 1 ? '' : 's'} discovered - ${selectedProvider}`
+    ? tf('{n} discovered - {provider}', { n: state.wallets.length, provider: selectedProvider ?? '' })
     : state.wallets.length
-      ? `${state.wallets.length} provider${state.wallets.length === 1 ? '' : 's'} discovered - choose a wallet`
-    : 'No signing authority granted';
+      ? tf('{n} discovered - choose a wallet', { n: state.wallets.length })
+    : t('No signing authority granted');
   return `
     <article class="command-center-card command-wallet-card warn">
-      ${commandCenterCardLabel('Wallet', 'wallet')}
-      <strong>Connect wallet</strong>
+      ${commandCenterCardLabel(t('Wallet'), 'wallet')}
+      <strong>${escapeHtml(t('Connect wallet'))}</strong>
       <p>${escapeHtml(detail)}</p>
       <div class="command-wallet-actions">
         <button
@@ -19873,16 +19934,16 @@ function commandCenterWalletCard(): string {
           data-first-run-action="discover-wallets"
           ${state.busy ? 'disabled' : ''}
         >
-          Discover
+          ${escapeHtml(t('Discover'))}
         </button>
         <button
           type="button"
           class="${hasDiscoveredWallet ? 'primary' : 'utility'} command-wallet-connect"
           data-first-run-action="connect-wallet"
           ${hasDiscoveredWallet && !state.busy ? '' : 'disabled'}
-          title="${hasDiscoveredWallet ? 'Connect the selected wallet provider.' : 'Discover and select a wallet provider first.'}"
+          title="${escapeHtml(hasDiscoveredWallet ? t('Connect the selected wallet provider.') : t('Discover and select a wallet provider first.'))}"
         >
-          Connect
+          ${escapeHtml(t('Connect'))}
         </button>
       </div>
     </article>
@@ -19900,16 +19961,16 @@ function commandLoopStep(label: string, detail: string, complete: boolean): stri
 
 function commandLoopBlock(openApprovalsActive: boolean, doneActive: boolean): string {
   const steps: Array<{ id: AndroidLoopTab; label: string; detail: string; complete: boolean }> = [
-    { id: 'draft', label: 'Plan', detail: 'AI or templates prepare a bounded review item.', complete: Boolean(state.agentPlan) || state.generatedPlans.length > 0 },
-    { id: 'check', label: 'Check', detail: 'Review amount, route, recipient, risk, and rule.', complete: state.generatedPlans.some(isGeneratedPlanActiveInReview) },
-    { id: 'approve', label: 'Approve', detail: 'Wallet signs only the visible decision.', complete: openApprovalsActive },
-    { id: 'prove', label: 'Prove', detail: 'Saved proofs stay attached to Done.', complete: doneActive },
+    { id: 'draft', label: t('Plan'), detail: t('AI or templates prepare a bounded review item.'), complete: Boolean(state.agentPlan) || state.generatedPlans.length > 0 },
+    { id: 'check', label: t('Check'), detail: t('Review amount, route, recipient, risk, and rule.'), complete: state.generatedPlans.some(isGeneratedPlanActiveInReview) },
+    { id: 'approve', label: t('Approve'), detail: t('Wallet signs only the visible decision.'), complete: openApprovalsActive },
+    { id: 'prove', label: t('Prove'), detail: t('Saved proofs stay attached to Done.'), complete: doneActive },
   ];
   if (isMobileAppViewport()) {
     const active = steps.find((step) => step.id === state.androidLoopTab) ?? steps[0]!;
     return `
-      <div class="command-loop command-loop-tabbed android-tab-card" aria-label="Agentic approval loop" data-android-tab-group="loop">
-        <div class="android-tab-strip command-loop-strip" role="tablist" aria-label="Approval loop steps">
+      <div class="command-loop command-loop-tabbed android-tab-card" aria-label="${escapeHtml(t('Agentic approval loop'))}" data-android-tab-group="loop">
+        <div class="android-tab-strip command-loop-strip" role="tablist" aria-label="${escapeHtml(t('Approval loop steps'))}">
           ${steps.map((step) => mobileTabButton('loop', step.id, step.label, step.id === active.id, step.complete ? 'complete' : '')).join('')}
         </div>
         <div class="android-tab-body command-loop-body ${active.complete ? 'complete' : ''}" role="tabpanel">
@@ -19920,7 +19981,7 @@ function commandLoopBlock(openApprovalsActive: boolean, doneActive: boolean): st
     `;
   }
   return `
-    <div class="command-loop" aria-label="Agentic approval loop">
+    <div class="command-loop" aria-label="${escapeHtml(t('Agentic approval loop'))}">
       ${steps.map((step) => commandLoopStep(step.label, step.detail, step.complete)).join('')}
     </div>
   `;
@@ -19932,7 +19993,7 @@ function commandCenterCard(
   detail: string,
   tone: string,
   action: FirstRunActionId | 'open-recurring' | 'open-proofs',
-  buttonLabel = 'Open',
+  buttonLabel = t('Open'),
   icon?: CommandCenterIconId,
 ): string {
   const disabled = action === 'connect-wallet'
@@ -20011,67 +20072,67 @@ function commandConnectedAiPathVisual(): string {
 function walletFlowPanel(): string {
   if (!state.address) {
     return `
-      ${guidedStartPanel('Wallet signing', 'Connect a browser wallet to open signing requests, approvals, and receipts.')}
+      ${guidedStartPanel(t('Wallet signing'), t('Connect a browser wallet to open signing requests, approvals, and receipts.'))}
       ${SHOW_DEV_CONTROLS ? terminalCommandPanel() : ''}
     `;
   }
   const signButtonClass = state.signature ? 'primary resolved' : 'primary';
-  const signButtonLabel = state.signature ? 'Signed' : 'Sign message';
+  const signButtonLabel = state.signature ? t('Signed') : t('Sign message');
   const signButtonDisabled = state.signature || !state.address || state.busy ? 'disabled' : '';
   const walletStatus = state.signature
-    ? 'Wallet signature captured. Receipt is ready for audit.'
-    : state.transactionStatus || 'Ready for wallet approval.';
+    ? t('Wallet signature captured. Receipt is ready for audit.')
+    : state.transactionStatus || t('Ready for wallet approval.');
   return `
     <section class="approval-object signature-stage stage-wallet ${state.signature ? 'stage-complete' : 'stage-active'}">
       <div class="signature-object-head">
         <div>
-          <h2>Message approval</h2>
-          <p>Wallet-held key approval for a bounded agent message on ${escapeHtml(titleCaseCluster(state.cluster))}.</p>
+          <h2>${escapeHtml(t('Message approval'))}</h2>
+          <p>${tf('Wallet-held key approval for a bounded agent message on {cluster}.', { cluster: escapeHtml(titleCaseCluster(state.cluster)) })}</p>
         </div>
-        <span class="signature-state ${state.signature ? 'complete' : 'active'}">${state.signature ? 'signed' : 'ready'}</span>
+        <span class="signature-state ${state.signature ? 'complete' : 'active'}">${state.signature ? escapeHtml(t('signed')) : escapeHtml(t('ready'))}</span>
       </div>
 
       <div class="signature-capsule">
         <div class="capsule-main">
-          <span>Request</span>
+          <span>${escapeHtml(t('Request'))}</span>
           <strong>${escapeHtml(DEMO_MESSAGE)}</strong>
-          <p>Signer: ${escapeHtml(state.selectedWalletName || 'Connected wallet')} • ${escapeHtml(short(state.address))}</p>
+          <p>${tf('Signer: {wallet}', { wallet: escapeHtml(state.selectedWalletName || t('Connected wallet')) })} • ${escapeHtml(short(state.address))}</p>
         </div>
-        <button id="signMessage" class="${signButtonClass}" ${signButtonDisabled}>${signButtonLabel}</button>
+        <button id="signMessage" class="${signButtonClass}" ${signButtonDisabled}>${escapeHtml(signButtonLabel)}</button>
       </div>
 
       ${signatureLifecycle([
-        ['Provider', state.wallets.length ? `${state.wallets.length} discovered` : 'Ready', true],
-        ['Signer', short(state.address), true],
-        ['Approval', state.signature ? 'Wallet signed' : 'Waiting for action', Boolean(state.signature)],
-        ['Receipt', state.txid || state.txSignature ? 'Available' : 'Pending', Boolean(state.txid || state.txSignature)],
+        [t('Provider'), state.wallets.length ? tf('{count} discovered', { count: state.wallets.length }) : t('Ready'), true],
+        [t('Signer'), short(state.address), true],
+        [t('Approval'), state.signature ? t('Wallet signed') : t('Waiting for action'), Boolean(state.signature)],
+        [t('Receipt'), state.txid || state.txSignature ? t('Available') : t('Pending'), Boolean(state.txid || state.txSignature)],
       ])}
 
       ${SHOW_DEV_CONTROLS ? `<details class="advanced-section" ${state.customTransactionBase64 || state.txSignature || state.txid ? 'open' : ''}>
         <summary>
-          <span>Advanced transaction tools</span>
-          <strong>${state.cluster === 'devnet' ? 'Devnet memo test' : 'Paste transaction bytes'}</strong>
+          <span>${escapeHtml(t('Advanced transaction tools'))}</span>
+          <strong>${state.cluster === 'devnet' ? escapeHtml(t('Devnet memo test')) : escapeHtml(t('Paste transaction bytes'))}</strong>
         </summary>
         <div class="transaction-actions">
           <div class="transaction-action-row">
-            <button id="createTx" ${!state.address || state.busy || state.cluster !== 'devnet' ? 'disabled' : ''}>Create demo transaction</button>
-            <button id="signTx" ${!state.address || !state.customTransactionBase64 || state.busy ? 'disabled' : ''}>Sign transaction</button>
-            <button id="sendTx" ${!canSignAndSend() ? 'disabled' : ''}>Sign and send</button>
+            <button id="createTx" ${!state.address || state.busy || state.cluster !== 'devnet' ? 'disabled' : ''}>${escapeHtml(t('Create demo transaction'))}</button>
+            <button id="signTx" ${!state.address || !state.customTransactionBase64 || state.busy ? 'disabled' : ''}>${escapeHtml(t('Sign transaction'))}</button>
+            <button id="sendTx" ${!canSignAndSend() ? 'disabled' : ''}>${escapeHtml(t('Sign and send'))}</button>
           </div>
           <label class="field compact transaction-field">
-            <span>Transaction base64</span>
-            <textarea id="txInput" placeholder="Create a demo transaction or paste a transaction, base64 encoded" ${state.busy ? 'disabled' : ''}>${escapeHtml(state.customTransactionBase64)}</textarea>
+            <span>${escapeHtml(t('Transaction base64'))}</span>
+            <textarea id="txInput" placeholder="${escapeHtml(t('Create a demo transaction or paste a transaction, base64 encoded'))}" ${state.busy ? 'disabled' : ''}>${escapeHtml(state.customTransactionBase64)}</textarea>
           </label>
         </div>
       </details>` : ''}
 
       <div class="signature-floor">
         <div>
-          <span>Status</span>
+          <span>${escapeHtml(t('Status'))}</span>
           <strong>${escapeHtml(walletStatus)}</strong>
         </div>
         ${SHOW_DEV_CONTROLS ? `<button id="airdrop" class="utility" ${!state.address || state.busy || state.cluster !== 'devnet' ? 'disabled' : ''}>
-          Request devnet SOL
+          ${escapeHtml(t('Request devnet SOL'))}
         </button>` : ''}
       </div>
 
@@ -20084,12 +20145,15 @@ function walletFlowPanel(): string {
 
 function agentPlanPanel(): string {
   const reviewCount = generatedPlansForPanel(true).filter(isGeneratedPlanActiveInReview).length;
-  const headerTitle = state.oneTimePlanView === 'review' ? 'Check request' : 'New Request';
+  const headerTitle = state.oneTimePlanView === 'review' ? t('Check request') : t('New Request');
   const headerDetail = state.oneTimePlanView === 'review'
-    ? 'Saved one-time plans. Send executable work to Needs Approval for a wallet decision.'
-    : 'Create a one-time payment or swap. Nothing is sent until you approve it.';
+    ? t('Saved one-time plans. Send executable work to Needs Approval for a wallet decision.')
+    : t('Create a one-time payment or swap. Nothing is sent until you approve it.');
+  const reviewCountLabel = reviewCount === 1
+    ? tf('{count} plan', { count: reviewCount })
+    : tf('{count} plans', { count: reviewCount });
   const statusMarker = state.oneTimePlanView === 'review'
-    ? `<span class="signature-state accent-note ${state.agentSignature ? 'complete' : state.agentPlan ? 'active' : ''}">${reviewCount} plan${reviewCount === 1 ? '' : 's'}</span>`
+    ? `<span class="signature-state accent-note ${state.agentSignature ? 'complete' : state.agentPlan ? 'active' : ''}">${escapeHtml(reviewCountLabel)}</span>`
     : '';
   return `
     <section class="approval-object signature-stage stage-agent ${state.agentSignature ? 'stage-complete' : state.agentPlan ? 'stage-active' : 'stage-draft'}">
@@ -20111,12 +20175,12 @@ function oneTimePlanTabs(): string {
   const selectedConnector = creating ? selectedConnectorForCreate(selectedTemplate()) : undefined;
   return `
     <div class="one-time-plan-control-row ${creating ? 'has-connector' : reviewing ? 'review-filter-row' : ''}">
-      <div class="tabs compact-tabs one-time-plan-tabs" role="tablist" aria-label="One-time plan steps">
-        ${oneTimePlanViewButton('create', 'Start')}
-        ${oneTimePlanViewButton('review', 'Check')}
+      <div class="tabs compact-tabs one-time-plan-tabs" role="tablist" aria-label="${escapeHtml(t('One-time plan steps'))}">
+        ${oneTimePlanViewButton('create', t('Start'))}
+        ${oneTimePlanViewButton('review', t('Check'))}
       </div>
       ${reviewing ? agentReviewFilterControl('generated') : ''}
-      ${reviewing ? `<button id="deleteAllCheck" class="utility danger" ${state.busy || filterGeneratedPlansByAgentReview(visibleGeneratedPlans(true)).length === 0 ? 'disabled' : ''}>Delete All</button>` : ''}
+      ${reviewing ? `<button id="deleteAllCheck" class="utility danger" ${state.busy || filterGeneratedPlansByAgentReview(visibleGeneratedPlans(true)).length === 0 ? 'disabled' : ''}>${escapeHtml(t('Delete All'))}</button>` : ''}
       ${creating ? connectorCreatePickerControl(selectedTemplate()) : ''}
       ${creating && !selectedConnector ? templateOutcomeControls('header') : ''}
     </div>
@@ -20151,11 +20215,11 @@ function oneTimeCreatePlanPanel(): string {
 }
 
 function draftFlowHint(hasOneTimePlans: boolean): string {
-  const reviewCopy = hasOneTimePlans ? 'Plans stay in Check.' : 'Plans move to Check.';
+  const reviewCopy = hasOneTimePlans ? t('Plans stay in Check.') : t('Plans move to Check.');
   return `
     <div class="draft-flow-hint">
-      <span class="accent-note">Plan flow</span>
-      <p class="accent-note">${escapeHtml(reviewCopy)} Send for approval when ready; your wallet signs later.</p>
+      <span class="accent-note">${escapeHtml(t('Plan flow'))}</span>
+      <p class="accent-note">${escapeHtml(reviewCopy)} ${escapeHtml(t('Send for approval when ready; your wallet signs later.'))}</p>
     </div>
   `;
 }
@@ -20168,7 +20232,7 @@ function draftReadyPanel(plan: AgentPlan): string {
   return `
     <section class="draft-ready-panel ${escapeHtml(outcomeClass(outcome))}">
       <div>
-        <span class="workbench-kicker">Plan ready</span>
+        <span class="workbench-kicker">${escapeHtml(t('Plan ready'))}</span>
         <h3>${escapeHtml(outcomeLabel(outcome))}</h3>
         <p>${escapeHtml(outcomeDetailForPlan(plan))}</p>
       </div>
@@ -20188,9 +20252,9 @@ function draftReadyPanel(plan: AgentPlan): string {
             id="signAgentPlan"
             class="review-action-proof"
             ${!state.address || state.busy ? 'disabled' : ''}
-            title="${!state.address ? 'Connect a wallet before signing review evidence.' : 'Creates audit evidence only. It does not queue, approve, or submit a transaction.'}"
+            title="${escapeHtml(!state.address ? t('Connect a wallet before signing review evidence.') : t('Creates audit evidence only. It does not queue, approve, or submit a transaction.'))}"
           >
-            Sign proof
+            ${escapeHtml(t('Sign proof'))}
           </button>
         `}
         <button
@@ -20198,7 +20262,7 @@ function draftReadyPanel(plan: AgentPlan): string {
           class="utility"
           ${state.busy ? 'disabled' : ''}
         >
-          Check
+          ${escapeHtml(t('Check'))}
         </button>
       </div>
     </section>
@@ -20220,20 +20284,20 @@ function generatedPlansPanel(embedded = false): string {
     : undefined;
   const toolbar = `
         <div class="generated-plans-toolbar signature-toolbar">
-          <span class="signature-state micro-emphasis">${escapeHtml(`${activeCount} active`)}</span>
+          <span class="signature-state micro-emphasis">${escapeHtml(tf('{count} active', { count: activeCount }))}</span>
           <button
             data-one-time-view="create"
             class="utility check-toolbar-create-another"
             ${state.busy ? 'disabled' : ''}
           >
-            Create another plan
+            ${escapeHtml(t('Create another plan'))}
           </button>
           <button
             id="toggleArchivedGeneratedPlans"
             class="utility"
             ${archivedCount === 0 ? 'disabled' : ''}
           >
-            ${state.showArchivedGeneratedPlans ? 'Hide archived' : `Show archived (${archivedCount})`}
+            ${state.showArchivedGeneratedPlans ? escapeHtml(t('Hide archived')) : escapeHtml(tf('Show archived ({count})', { count: archivedCount }))}
           </button>
         </div>
   `;
@@ -20241,7 +20305,7 @@ function generatedPlansPanel(embedded = false): string {
       ${embedded
         ? `<div class="generated-plans-toolbar-row">${toolbar}</div>`
         : `<div class="signature-object-head">
-        ${sectionTitleLine('Check request', 'Saved one-time plans. Send executable work to Needs Approval for a wallet decision.')}
+        ${sectionTitleLine(t('Check request'), t('Saved one-time plans. Send executable work to Needs Approval for a wallet decision.'))}
         ${toolbar}
       </div>
       `}
@@ -20252,10 +20316,10 @@ function generatedPlansPanel(embedded = false): string {
       ${
         visiblePlans.length
           ? `
-            <div class="${embedded ? 'review-plan-list' : 'generated-plan-grid'}" aria-label="Check request plans" data-layout="${embedded ? 'review-plan-list' : 'generated-plan-grid'}">
+            <div class="${embedded ? 'review-plan-list' : 'generated-plan-grid'}" aria-label="${escapeHtml(t('Check request plans'))}" data-layout="${embedded ? 'review-plan-list' : 'generated-plan-grid'}">
               ${paginatedPlans.items.map((record) => generatedPlanCard(record)).join('')}
             </div>
-            ${listPagination('review', paginatedPlans, 'Check plans')}
+            ${listPagination('review', paginatedPlans, t('Check plans'))}
           `
           : aiDraftPending ? '' : generatedPlansEmptyState(embedded, baseVisiblePlans.length > 0)
       }
@@ -20285,15 +20349,18 @@ function generatedPlanStatusLine(
   movedCount: number,
 ): string {
   const filtered = state.generatedPlanAgentReviewFilter !== 'all';
+  const savedLabel = totalCount === 1
+    ? tf('{count} plan saved', { count: totalCount })
+    : tf('{count} plans saved', { count: totalCount });
   return `
     <div class="queue-status generated-plan-status">
-      <span class="status-detail-desktop-only">${escapeHtml(`${totalCount} plan${totalCount === 1 ? '' : 's'} saved`)}</span>
+      <span class="status-detail-desktop-only">${escapeHtml(savedLabel)}</span>
       ${filtered
-        ? `<strong class="accent-note">${shownCount} shown</strong><span>${inCheckCount} in check</span><span>${escapeHtml(agentReviewFilterLabel(state.generatedPlanAgentReviewFilter))}</span>`
-        : `<strong class="accent-note">${inCheckCount} in check</strong>`}
-      <span class="status-detail-desktop-only">${movedCount} moved forward</span>
-      <span>${archivedCount} archived</span>
-      <span>Newest first</span>
+        ? `<strong class="accent-note">${escapeHtml(tf('{count} shown', { count: shownCount }))}</strong><span>${escapeHtml(tf('{count} in check', { count: inCheckCount }))}</span><span>${escapeHtml(agentReviewFilterLabel(state.generatedPlanAgentReviewFilter))}</span>`
+        : `<strong class="accent-note">${escapeHtml(tf('{count} in check', { count: inCheckCount }))}</strong>`}
+      <span class="status-detail-desktop-only">${escapeHtml(tf('{count} moved forward', { count: movedCount }))}</span>
+      <span>${escapeHtml(tf('{count} archived', { count: archivedCount }))}</span>
+      <span>${escapeHtml(t('Newest first'))}</span>
     </div>
   `;
 }
@@ -20309,20 +20376,20 @@ function agentReviewFilterControl(scope: AgentReviewFilterScope): string {
     attrs: { 'data-agent-review-filter': scope },
     disabled: state.busy,
     className: 'agent-review-filter-control',
-    title: 'Filter by AI Connector status',
+    title: tf('Filter by {brand} status', { brand: 'AI Connector' }),
   });
 }
 
 function agentReviewFilterOptions(): SelectPickerOption[] {
   return [
-    { value: 'all', label: 'AI: All', meta: 'AI filter', detail: 'Every review status' },
-    { value: 'approved', label: 'Passed', meta: 'AI filter', detail: 'Review passed' },
-    { value: 'denied', label: 'Denied', meta: 'AI filter', detail: 'Agent denied' },
-    { value: 'needs_input', label: 'Needs context', meta: 'AI filter', detail: 'Agent asked questions' },
-    { value: 'wallet_required', label: 'Wallet required', meta: 'AI filter', detail: 'Condition passed; wallet needed' },
-    { value: 'checking', label: 'Checking', meta: 'AI filter', detail: 'Review in progress' },
-    { value: 'error', label: 'Failed', meta: 'AI filter', detail: 'Review failed' },
-    { value: 'not_asked', label: 'Not asked', meta: 'AI filter', detail: 'No agent review yet' },
+    { value: 'all', label: tf('{brand}: All', { brand: 'AI' }), meta: tf('{brand} filter', { brand: 'AI' }), detail: t('Every review status') },
+    { value: 'approved', label: t('Passed'), meta: tf('{brand} filter', { brand: 'AI' }), detail: t('Review passed') },
+    { value: 'denied', label: t('Denied'), meta: tf('{brand} filter', { brand: 'AI' }), detail: t('Agent denied') },
+    { value: 'needs_input', label: t('Needs context'), meta: tf('{brand} filter', { brand: 'AI' }), detail: t('Agent asked questions') },
+    { value: 'wallet_required', label: t('Wallet required'), meta: tf('{brand} filter', { brand: 'AI' }), detail: t('Condition passed; wallet needed') },
+    { value: 'checking', label: t('Checking'), meta: tf('{brand} filter', { brand: 'AI' }), detail: t('Review in progress') },
+    { value: 'error', label: t('Failed'), meta: tf('{brand} filter', { brand: 'AI' }), detail: t('Review failed') },
+    { value: 'not_asked', label: t('Not asked'), meta: tf('{brand} filter', { brand: 'AI' }), detail: t('No agent review yet') },
   ];
 }
 
@@ -20342,22 +20409,22 @@ function isAgentPlanReviewStatus(value: unknown): value is AgentPlanReviewStatus
 function agentReviewFilterLabel(filter: AgentReviewFilter): string {
   switch (filter) {
     case 'approved':
-      return 'Passed';
+      return t('Passed');
     case 'denied':
-      return 'Denied';
+      return t('Denied');
     case 'needs_input':
-      return 'Needs context';
+      return t('Needs context');
     case 'wallet_required':
-      return 'Wallet required';
+      return t('Wallet required');
     case 'checking':
-      return 'Checking';
+      return t('Checking');
     case 'error':
-      return 'Failed';
+      return t('Failed');
     case 'not_asked':
-      return 'Not asked';
+      return t('Not asked');
     case 'all':
     default:
-      return 'AI: All';
+      return tf('{brand}: All', { brand: 'AI' });
   }
 }
 
@@ -20372,17 +20439,17 @@ function aiDraftPendingCard(): string {
   const templateTitle = operation?.templateTitle ?? selectedTemplate().title;
   const prompt = operation?.prompt ?? state.agentPrompt.trim();
   return `
-    <section class="ai-draft-pending-card" aria-label="AI plan in progress">
+    <section class="ai-draft-pending-card" aria-label="${escapeHtml(tf('{brand} plan in progress', { brand: 'AI' }))}">
       <div class="ai-draft-pending-copy">
-        <span>AI plan</span>
-        <h3>${escapeHtml(templateTitle)} is being prepared</h3>
-        <p>${escapeHtml(prompt || 'Building the request for Check. Optional agent review stays off unless you enable it.')}</p>
+        <span>${escapeHtml(tf('{brand} plan', { brand: 'AI' }))}</span>
+        <h3>${escapeHtml(tf('{title} is being prepared', { title: templateTitle }))}</h3>
+        <p>${escapeHtml(prompt || t('Building the request for Check. Optional agent review stays off unless you enable it.'))}</p>
       </div>
       <div class="ai-draft-pending-actions">
-        <strong>${buttonSpinner()}Working</strong>
+        <strong>${buttonSpinner()}${escapeHtml(t('Working'))}</strong>
         ${operation ? `
           <button type="button" class="utility danger" data-ai-draft-action="cancel">
-            Cancel
+            ${escapeHtml(t('Cancel'))}
           </button>
         ` : ''}
       </div>
@@ -20423,7 +20490,7 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
       ${proofDisabled}
       title="${escapeHtml(signProofTitle(displayRecord))}"
     >
-      Sign proof
+      ${escapeHtml(t('Sign proof'))}
     </button>
   `;
   return `
@@ -20434,7 +20501,7 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
             <span class="status-pill ${generatedPlanStatusTone(record)}">${escapeHtml(generatedPlanStatusLabel(record))}</span>
             ${storageBadgeHtml(generatedPlanStorageBadge(record))}
             ${generatedPlanConnectorChip(displayRecord)}
-            <span>${escapeHtml(record.source === 'ai' ? 'AI plan' : 'Template plan')}</span>
+            <span>${escapeHtml(record.source === 'ai' ? t('AI plan') : t('Template plan'))}</span>
             ${generatedPlanFailurePill(record)}
             <span>${escapeHtml(formatDateTime(record.createdAt))}</span>
             ${metaHint ? `<span class="review-plan-meta-pill">${escapeHtml(metaHint)}</span>` : ''}
@@ -20459,11 +20526,11 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
 
       <div class="review-plan-footer-row">
         <details class="generated-plan-inline-details review-plan-details">
-          <summary><span>Details</span></summary>
+          <summary><span>${escapeHtml(t('Details'))}</span></summary>
           <div class="review-plan-details-body">
             <section class="review-plan-detail-section">
               <div class="review-plan-detail-section-head">
-                <span>Review details</span>
+                <span>${escapeHtml(t('Review details'))}</span>
                 <strong>${escapeHtml(generatedPlanStatusLabel(record))}</strong>
               </div>
               <dl class="review-detail-list">
@@ -20483,8 +20550,8 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
 
 function generatedPlanErrorNotice(message: string): string {
   return `
-    <section class="review-plan-error" aria-label="AI plan issue">
-      <span>AI plan issue</span>
+    <section class="review-plan-error" aria-label="${escapeHtml(t('AI plan issue'))}">
+      <span>${escapeHtml(t('AI plan issue'))}</span>
       <p>${escapeHtml(message)}</p>
     </section>
   `;
@@ -20772,7 +20839,7 @@ function generatedPlanReviewSummaryGrid(record: GeneratedPlanRecord): string {
     isWalletSlippageRouteRiskGrid ? 'wallet-slippage-route-risk-grid' : '',
   ].filter(Boolean).join(' ');
   return `
-    <section class="review-plan-summary" aria-label="Review summary">
+    <section class="review-plan-summary" aria-label="${escapeHtml(t('Review summary'))}">
       <dl class="${gridClass}">
         ${rows.map(walletActionSummaryRow).join('')}
       </dl>
@@ -20784,12 +20851,12 @@ function generatedPlanUserNote(plan: AgentPlan): string {
   const note = plan.userNotes?.trim();
   if (!note) return '';
   return `
-    <section class="review-plan-user-note" aria-label="User note" title="${escapeHtml(note)}">
-      <span>Note</span>
+    <section class="review-plan-user-note" aria-label="${escapeHtml(t('User note'))}" title="${escapeHtml(note)}">
+      <span>${escapeHtml(t('Note'))}</span>
       ${expandableCopyHtml(note, {
         className: 'review-plan-user-note-copy',
-        showLabel: 'Show full note',
-        hideLabel: 'Hide note',
+        showLabel: t('Show full note'),
+        hideLabel: t('Hide note'),
       })}
     </section>
   `;
@@ -20829,9 +20896,9 @@ function generatedPlanConsistencyWarning(record: GeneratedPlanRecord): string {
   const warning = swapTokenTextMismatchWarning(planWithRuntimeTokenLabels(record.plan), tokenDisplayLabel);
   if (!warning) return '';
   return `
-    <section class="review-plan-consistency-warning" aria-label="Plan consistency warning">
-      <span>Check token mismatch</span>
-      <p>${escapeHtml(warning.message)} Fix the output token or update the plan text before asking the agent or sending for approval.</p>
+    <section class="review-plan-consistency-warning" aria-label="${escapeHtml(t('Plan consistency warning'))}">
+      <span>${escapeHtml(t('Check token mismatch'))}</span>
+      <p>${escapeHtml(warning.message)} ${escapeHtml(t('Fix the output token or update the plan text before asking the agent or sending for approval.'))}</p>
     </section>
   `;
 }
@@ -20883,21 +20950,21 @@ function generatedPlanAgentReviewStrip(record: GeneratedPlanRecord, opts: AgentR
     ? ` lang="${escapeHtml(language)}" data-review-language="${escapeHtml(language)}"`
     : '';
   const watchBadge = watching
-    ? `<span class="agent-review-watch-pill" title="Background watch on. Re-checks each plan once an hour while the tab is open.">Watching</span>`
+    ? `<span class="agent-review-watch-pill" title="${escapeHtml(t('Background watch on. Re-checks each plan once an hour while the tab is open.'))}">${escapeHtml(t('Watching'))}</span>`
     : '';
   return `
-    <section class="agent-review-strip ${escapeHtml(review.status)}${watching ? ' watching' : ''}" aria-label="Agent review"${reviewLanguageAttrs}>
+    <section class="agent-review-strip ${escapeHtml(review.status)}${watching ? ' watching' : ''}" aria-label="${escapeHtml(t('Agent review'))}"${reviewLanguageAttrs}>
       <div class="agent-review-strip-head">
         <span>${escapeHtml(agentReviewUiLabel('review', language))}</span>
         <strong class="agent-review-state ${escapeHtml(review.status)}">${escapeHtml(label)}</strong>
         <em>${escapeHtml(detail)}</em>
         ${badge}
         ${watchBadge}
-        ${stale ? '<span class="agent-review-stale-pill" title="The plan changed after this review.">Stale</span>' : ''}
+        ${stale ? `<span class="agent-review-stale-pill" title="${escapeHtml(t('The plan changed after this review.'))}">${escapeHtml(t('Stale'))}</span>` : ''}
       </div>
       ${agentReviewMobileDecisionCopy(review, opts.fallback)}
       ${agentReviewDecisionCopy(review, opts.fallback)}
-      ${stale ? '<p class="accent-note agent-review-stale-copy">This review is stale because the plan changed. Ask the agent again before relying on the decision.</p>' : ''}
+      ${stale ? `<p class="accent-note agent-review-stale-copy">${escapeHtml(t('This review is stale because the plan changed. Ask the agent again before relying on the decision.'))}</p>` : ''}
       ${review.status === 'needs_input' ? agentReviewQuestionsForm(record) : ''}
       ${agentEvidenceDrawer(review, { stale, actionType: opts.actionType ?? record.plan.actionType })}
       ${agentDenialActions(record)}
@@ -20991,9 +21058,9 @@ function agentAskAnythingPanel(record: GeneratedPlanRecord): string {
   const placeholder = agentAskPlaceholder(record);
   const exchangesHtml = exchanges.map((exchange) => `
     <div class="agent-ask-exchange ${exchange.pending ? 'pending' : exchange.error ? 'errored' : 'answered'}">
-      <div class="agent-ask-question"><strong>You asked:</strong> ${escapeHtml(exchange.question)}</div>
+      <div class="agent-ask-question"><strong>${escapeHtml(t('You asked:'))}</strong> ${escapeHtml(exchange.question)}</div>
       <div class="agent-ask-answer">
-        ${exchange.pending ? '<em>Agent is thinking...</em>' : exchange.error
+        ${exchange.pending ? `<em>${escapeHtml(t('Agent is thinking...'))}</em>` : exchange.error
           ? `<em>${escapeHtml(exchange.error)}</em>`
           : escapeHtml(exchange.answer ?? '')}
       </div>
@@ -21005,7 +21072,7 @@ function agentAskAnythingPanel(record: GeneratedPlanRecord): string {
   `).join('');
   return `
     <details class="agent-ask-panel">
-      <summary>Ask agent about this request${exchanges.length ? ` (${exchanges.length})` : ''}</summary>
+      <summary>${escapeHtml(t('Ask agent about this request'))}${exchanges.length ? ` (${exchanges.length})` : ''}</summary>
       <div class="agent-ask-body">
         ${exchangesHtml}
         <form
@@ -21021,7 +21088,7 @@ function agentAskAnythingPanel(record: GeneratedPlanRecord): string {
             ${disabled ? 'disabled' : ''}
             required
           />
-          <button type="submit" class="primary" ${disabled ? 'disabled' : ''}>Ask</button>
+          <button type="submit" class="primary" ${disabled ? 'disabled' : ''}>${escapeHtml(t('Ask'))}</button>
         </form>
       </div>
     </details>
@@ -21076,7 +21143,7 @@ function agentDenialActions(record: GeneratedPlanRecord): string {
         data-generated-plan-action="agent-deny"
         data-generated-plan-id="${escapeHtml(record.id)}"
         ${disabled ? 'disabled' : ''}
-        title="Save a rejection proof using the agent's reason and archive this plan."
+        title="${escapeHtml(t("Save a rejection proof using the agent's reason and archive this plan."))}"
       >
         Deny with agent reason
       </button>
@@ -21174,7 +21241,7 @@ function agentEvidenceAdvancedRawHtml(review: AgentPlanReviewState): string {
   if (!raw || Object.keys(raw).length === 0) return '';
   return `
     <details class="agent-evidence-raw">
-      <summary>Raw contract JSON</summary>
+      <summary>${escapeHtml(t('Raw contract JSON'))}</summary>
       <pre>${escapeHtml(stableJson(raw))}</pre>
     </details>
   `;
@@ -21282,7 +21349,7 @@ function agentReviewPathBadge(review: Partial<AgentReviewPathDisplayRecord>): st
   const path = agentReviewDisplayPath(review);
   const label = agentReviewDisplayPathLabel(path);
   const modifier = path ?? 'none';
-  return `<span class="agent-path-pill ${escapeHtml(modifier)}" title="Agent review path">${escapeHtml(label)}</span>`;
+  return `<span class="agent-path-pill ${escapeHtml(modifier)}" title="${escapeHtml(t('Agent review path'))}">${escapeHtml(label)}</span>`;
 }
 
 function agentReviewPathLabel(pathOrReview: AgentReviewSource | AgentReviewDisplayPath | Partial<AgentReviewPathDisplayRecord> | undefined): string {
@@ -21326,7 +21393,7 @@ function agentReviewQuestionsForm(record: GeneratedPlanRecord): string {
             data-question-id="${escapeHtml(question.id)}"
             ${disabled ? 'disabled' : ''}
           >
-            <option value="" disabled ${value ? '' : 'selected'}>Choose...</option>
+            <option value="" disabled ${value ? '' : 'selected'}>${escapeHtml(t('Choose...'))}</option>
             ${options}
           </select>
           ${hint ? `<small>${escapeHtml(hint)}</small>` : ''}
@@ -21344,7 +21411,7 @@ function agentReviewQuestionsForm(record: GeneratedPlanRecord): string {
           data-generated-plan-id="${escapeHtml(record.id)}"
           data-question-id="${escapeHtml(question.id)}"
           value="${escapeHtml(value)}"
-          placeholder="Type your answer..."
+          placeholder="${escapeHtml(t('Type your answer...'))}"
           ${question.required ? 'required' : ''}
           ${disabled ? 'disabled' : ''}
         />
@@ -21358,17 +21425,17 @@ function agentReviewQuestionsForm(record: GeneratedPlanRecord): string {
       data-generated-plan-action="agent-answer"
       data-generated-plan-id="${escapeHtml(record.id)}"
     >
-      <p class="agent-review-questions-intro">Answer to continue the agent review.</p>
+      <p class="agent-review-questions-intro">${escapeHtml(t('Answer to continue the agent review.'))}</p>
       ${inputs}
       <div class="agent-review-questions-actions">
-        <button type="submit" class="primary" ${disabled ? 'disabled' : ''}>Send answers</button>
+        <button type="submit" class="primary" ${disabled ? 'disabled' : ''}>${escapeHtml(t('Send answers'))}</button>
         <button
           type="button"
           class="utility"
           data-generated-plan-action="agent-review"
           data-generated-plan-id="${escapeHtml(record.id)}"
           ${disabled ? 'disabled' : ''}
-        >Ask agent again</button>
+        >${escapeHtml(t('Ask agent again'))}</button>
       </div>
     </form>
   `;
@@ -21400,14 +21467,14 @@ function agentOverrideStrip(override: AgentReviewOverride | undefined): string {
   const agentReason = override.agentReason?.trim();
   const pathLabel = agentReviewPathLabel(override);
   return `
-    <section class="agent-override-strip" aria-label="Agent override receipt">
+    <section class="agent-override-strip" aria-label="${escapeHtml(t('Agent override receipt'))}">
       <div>
-        <span>Override</span>
-        <strong>User sent despite ${escapeHtml(verdict)}</strong>
+        <span>${escapeHtml(t('Override'))}</span>
+        <strong>${escapeHtml(tf('User sent despite {verdict}', { verdict }))}</strong>
         <em>${escapeHtml(formatDateTime(override.overriddenAt))} - ${escapeHtml(pathLabel)}</em>
       </div>
-      ${agentReason ? `<p><strong>Agent said:</strong> ${escapeHtml(agentReason)}</p>` : ''}
-      ${userReason ? `<p><strong>User reason:</strong> ${escapeHtml(userReason)}</p>` : ''}
+      ${agentReason ? `<p><strong>${escapeHtml(t('Agent said:'))}</strong> ${escapeHtml(agentReason)}</p>` : ''}
+      ${userReason ? `<p><strong>${escapeHtml(t('User reason:'))}</strong> ${escapeHtml(userReason)}</p>` : ''}
     </section>
   `;
 }
@@ -21468,7 +21535,7 @@ function generatedPlanCompactExtras(plan: AgentPlan): string {
   return `
     <section class="review-plan-detail-section review-plan-detail-section-extra">
       <div class="review-plan-detail-section-head">
-        <span>Extra context</span>
+        <span>${escapeHtml(t('Extra context'))}</span>
       </div>
       <dl class="review-detail-list compact-extra">
         ${rows.map(([label, value]) => reviewPlanDetailRow(label, compactSentence(value, 180))).join('')}
@@ -21487,23 +21554,23 @@ function generatedPlanCardFooterActions(record: GeneratedPlanRecord): string {
         data-generated-plan-id="${escapeHtml(record.id)}"
         ${state.busy ? 'disabled' : ''}
       >
-        Use
+        ${escapeHtml(t('Use'))}
       </button>
       <button
         class="utility"
         data-generated-plan-action="view"
         data-generated-plan-id="${escapeHtml(record.id)}"
       >
-        Full details
+        ${escapeHtml(t('Full details'))}
       </button>
       <button
         class="utility review-template-mini"
         data-template-action="save-as"
         data-generated-plan-id="${escapeHtml(record.id)}"
         ${state.busy ? 'disabled' : ''}
-        title="Save this plan as a reusable template"
+        title="${escapeHtml(t('Save this plan as a reusable template'))}"
       >
-        Save as template
+        ${escapeHtml(t('Save as template'))}
       </button>
       <button
         class="utility"
@@ -21511,7 +21578,7 @@ function generatedPlanCardFooterActions(record: GeneratedPlanRecord): string {
         data-generated-plan-id="${escapeHtml(record.id)}"
         ${state.busy ? 'disabled' : ''}
       >
-        ${archived ? 'Restore' : 'Archive'}
+        ${archived ? escapeHtml(t('Restore')) : escapeHtml(t('Archive'))}
       </button>
       <button
         class="utility danger review-delete-mini"
@@ -21519,11 +21586,11 @@ function generatedPlanCardFooterActions(record: GeneratedPlanRecord): string {
         data-generated-plan-id="${escapeHtml(record.id)}"
         ${state.busy ? 'disabled' : ''}
       >
-        Delete
+        ${escapeHtml(t('Delete'))}
       </button>
-      <div class="mobile-card-footer-actions review-plan-mobile-actions" aria-label="Mobile plan actions">
+      <div class="mobile-card-footer-actions review-plan-mobile-actions" aria-label="${escapeHtml(t('Mobile plan actions'))}">
         <details class="mobile-card-action-menu">
-          <summary>More actions</summary>
+          <summary>${escapeHtml(t('More actions'))}</summary>
           <div class="mobile-card-action-menu-body">
             <button
               class="utility"
@@ -21531,23 +21598,23 @@ function generatedPlanCardFooterActions(record: GeneratedPlanRecord): string {
               data-generated-plan-id="${escapeHtml(record.id)}"
               ${state.busy ? 'disabled' : ''}
             >
-              Use
+              ${escapeHtml(t('Use'))}
             </button>
             <button
               class="utility"
               data-generated-plan-action="view"
               data-generated-plan-id="${escapeHtml(record.id)}"
             >
-              Full details
+              ${escapeHtml(t('Full details'))}
             </button>
             <button
               class="utility review-template-mini"
               data-template-action="save-as"
               data-generated-plan-id="${escapeHtml(record.id)}"
               ${state.busy ? 'disabled' : ''}
-              title="Save this plan as a reusable template"
+              title="${escapeHtml(t('Save this plan as a reusable template'))}"
             >
-              Save as template
+              ${escapeHtml(t('Save as template'))}
             </button>
             <button
               class="utility"
@@ -21555,7 +21622,7 @@ function generatedPlanCardFooterActions(record: GeneratedPlanRecord): string {
               data-generated-plan-id="${escapeHtml(record.id)}"
               ${state.busy ? 'disabled' : ''}
             >
-              ${archived ? 'Restore' : 'Archive'}
+              ${archived ? escapeHtml(t('Restore')) : escapeHtml(t('Archive'))}
             </button>
             <button
               class="utility danger review-delete-mini"
@@ -21563,7 +21630,7 @@ function generatedPlanCardFooterActions(record: GeneratedPlanRecord): string {
               data-generated-plan-id="${escapeHtml(record.id)}"
               ${state.busy ? 'disabled' : ''}
             >
-              Delete
+              ${escapeHtml(t('Delete'))}
             </button>
           </div>
         </details>
@@ -21581,19 +21648,19 @@ function generatedPlanInlineDetailsContent(plan: AgentPlan): string {
   return `
     ${plan.userNotes ? `
       <section>
-        <span>User notes</span>
+        <span>${escapeHtml(t('User notes'))}</span>
         <p>${escapeHtml(plan.userNotes)}</p>
       </section>
     ` : ''}
     ${plan.fields.length ? `
       <section>
-        <span>Fields</span>
+        <span>${escapeHtml(t('Fields'))}</span>
         <ul>${plan.fields.map((field) => `<li>${escapeHtml(`${field.label}: ${field.value}`)}</li>`).join('')}</ul>
       </section>
     ` : ''}
     ${plan.safeguards.length ? `
       <section>
-        <span>Safeguards</span>
+        <span>${escapeHtml(t('Safeguards'))}</span>
         <ul>${plan.safeguards.map((safeguard) => `<li>${escapeHtml(safeguard)}</li>`).join('')}</ul>
       </section>
     ` : ''}
@@ -21651,7 +21718,7 @@ function generatedPlanWalletActionSummary(record: GeneratedPlanRecord): string {
     },
   ];
   return `
-    <section class="wallet-action-summary" aria-label="Wallet action summary">
+    <section class="wallet-action-summary" aria-label="${escapeHtml(t('Wallet action summary'))}">
       <dl class="wallet-action-grid">
         ${rows.map(walletActionSummaryRow).join('')}
       </dl>
@@ -21664,7 +21731,7 @@ function walletActionSummaryRow(row: WalletActionSummaryRow): string {
   const title = row.title ?? row.value;
   return `
     <div class="${row.tone ? `wallet-action-${row.tone}` : ''}" title="${escapeHtml(title)}">
-      <dt>${escapeHtml(row.label)}</dt>
+      <dt>${escapeHtml(t(row.label))}</dt>
       <dd class="${copyActions.length ? 'has-copy' : ''}">
         ${row.html ?? `<span class="wallet-action-value">${escapeHtml(row.value)}</span>`}
         ${row.html ? '' : summaryCopyActionsHtml(copyActions, row.label)}
@@ -21678,20 +21745,20 @@ function planGuardrailStrip(plan: AgentPlan): string {
   if (!report) return '';
   const tone = report.verdict === 'block' ? 'block' : report.verdict === 'warn' ? 'warn' : 'pass';
   const label = report.verdict === 'block'
-    ? 'Blocked'
+    ? t('Blocked')
     : report.verdict === 'warn'
-      ? 'Warnings'
-      : 'Passed';
+      ? t('Warnings')
+      : t('Passed');
   return `
-    <section class="plan-guardrail-strip ${tone}" aria-label="Plan guardrails">
+    <section class="plan-guardrail-strip ${tone}" aria-label="${escapeHtml(t('Plan guardrails'))}">
       <div>
-        <span>Guardrails</span>
+        <span>${escapeHtml(t('Guardrails'))}</span>
         <strong>${escapeHtml(label)}</strong>
       </div>
       <p>${escapeHtml(report.summary)}</p>
       <dl>
-        ${definitionRow('Final step', finalizationRequirementLabel(report.finalizationRequirement))}
-        ${definitionRow(report.constraintHash ? 'Constraint hash' : 'Constraint fingerprint', report.constraintHash ?? report.constraintFingerprint)}
+        ${definitionRow(t('Final step'), finalizationRequirementLabel(report.finalizationRequirement))}
+        ${definitionRow(report.constraintHash ? t('Constraint hash') : t('Constraint fingerprint'), report.constraintHash ?? report.constraintFingerprint)}
       </dl>
     </section>
   `;
@@ -22023,18 +22090,18 @@ function generatedPlanActionHint(record: GeneratedPlanRecord): string {
   }
   if (!state.address) {
     return canQueueAgentPlan(record.plan)
-      ? '<p class="generated-plan-action-helper">Connect a wallet to send this plan for approval.</p>'
-      : '<p class="generated-plan-action-helper">Connect a wallet to sign a review proof.</p>';
+      ? `<p class="generated-plan-action-helper">${escapeHtml(t('Connect a wallet to send this plan for approval.'))}</p>`
+      : `<p class="generated-plan-action-helper">${escapeHtml(t('Connect a wallet to sign a review proof.'))}</p>`;
   }
   const mode = activeWorkflowMode();
   if (canQueueAgentPlan(record.plan) && mode === 'agentic-cloud') {
-    return '<p class="generated-plan-action-helper">Signed in: this will use Agentic Cloud and still require wallet approval.</p>';
+    return `<p class="generated-plan-action-helper">${escapeHtml(t('Signed in: this will use Agentic Cloud and still require wallet approval.'))}</p>`;
   }
   if (canQueueAgentPlan(record.plan) && mode === 'browser-workflow') {
-    return '<p class="generated-plan-action-helper">Signed out: this will use saved-on-device storage in this browser.</p>';
+    return `<p class="generated-plan-action-helper">${escapeHtml(t('Signed out: this will use saved-on-device storage in this browser.'))}</p>`;
   }
   if (!canQueueAgentPlan(record.plan)) {
-    return '<p class="generated-plan-action-helper">Review-only plan: sign a proof to complete it. It will not need approval.</p>';
+    return `<p class="generated-plan-action-helper">${escapeHtml(t('Review-only plan: sign a proof to complete it. It will not need approval.'))}</p>`;
   }
   return '';
 }
@@ -22045,7 +22112,7 @@ function bridgeRequiredNotice(message: string): string {
     <div class="bridge-required-notice">
       <p>${escapeHtml(message)}</p>
       <div class="bridge-required-actions">
-        <button type="button" class="utility" data-bridge-action="connect" ${!state.address || state.busy ? 'disabled' : ''}>Check local bridge</button>
+        <button type="button" class="utility" data-bridge-action="connect" ${!state.address || state.busy ? 'disabled' : ''}>${escapeHtml(t('Check local bridge'))}</button>
         ${bridgeSetupDetails('inline-bridge-setup', true)}
       </div>
     </div>
@@ -22055,7 +22122,7 @@ function bridgeRequiredNotice(message: string): string {
 function bridgeSetupDetails(extraClass = '', open = false): string {
   return `
     <details class="bridge-setup-details ${escapeHtml(extraClass)}" ${open ? 'open' : ''}>
-      <summary>Start local runtime</summary>
+      <summary>${escapeHtml(t('Start local runtime'))}</summary>
       <div class="bridge-setup-card">
         ${localRuntimeGuide('setup-popover')}
       </div>
@@ -22139,19 +22206,19 @@ function cloudWorkspaceDeleteModal(): string {
       <section class="generated-plan-modal cloud-delete-modal delete-confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="cloud-delete-title">
         <div class="generated-plan-modal-head">
           <div>
-            <span class="workbench-kicker">Cloud workspace deletion</span>
-            <h2 id="cloud-delete-title">Delete Cloud Workspace and App Data?</h2>
-            <p>This permanently removes the Agentic Cloud workspace for ${escapeHtml(wallet)} and clears this app's local storage on this device.</p>
+            <span class="workbench-kicker">${escapeHtml(t('Cloud workspace deletion'))}</span>
+            <h2 id="cloud-delete-title">${escapeHtml(t('Delete Cloud Workspace and App Data?'))}</h2>
+            <p>${tf("This permanently removes the Agentic Cloud workspace for {wallet} and clears this app's local storage on this device.", { wallet: escapeHtml(wallet) })}</p>
           </div>
-          <button class="utility" data-cloud-delete-cancel aria-label="Close cloud deletion confirmation">Close</button>
+          <button class="utility" data-cloud-delete-cancel aria-label="${escapeHtml(t('Close cloud deletion confirmation'))}">${escapeHtml(t('Close'))}</button>
         </div>
         <div class="cloud-delete-warning delete-confirmation-content">
-          <strong>Requires wallet signature</strong>
-          <p>Cloud drafts, approval items, repeat payments, proofs, done work, finalization records, app audit events, local drafts, receipts, app preferences, session AI keys, Device Agent config, and native wallet authorization caches will be deleted. On-chain history is not deleted.</p>
+          <strong>${escapeHtml(t('Requires wallet signature'))}</strong>
+          <p>${escapeHtml(t('Cloud drafts, approval items, repeat payments, proofs, done work, finalization records, app audit events, local drafts, receipts, app preferences, session AI keys, Device Agent config, and native wallet authorization caches will be deleted. On-chain history is not deleted.'))}</p>
         </div>
         <div class="generated-plan-modal-actions cloud-delete-actions">
-          <button type="button" class="utility" data-cloud-delete-cancel ${state.busy ? 'disabled' : ''}>Cancel</button>
-          <button type="button" class="utility danger" data-cloud-delete-confirm ${state.busy ? 'disabled' : ''}>Sign and delete all app data</button>
+          <button type="button" class="utility" data-cloud-delete-cancel ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Cancel'))}</button>
+          <button type="button" class="utility danger" data-cloud-delete-confirm ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Sign and delete all app data'))}</button>
         </div>
       </section>
     </div>
@@ -22177,19 +22244,19 @@ function completedDeleteModal(): string {
       <section class="generated-plan-modal completed-delete-modal delete-confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="completed-delete-title">
         <div class="generated-plan-modal-head">
           <div>
-            <span class="workbench-kicker">Done deletion</span>
-            <h2 id="completed-delete-title">Delete from Done?</h2>
+            <span class="workbench-kicker">${escapeHtml(t('Done deletion'))}</span>
+            <h2 id="completed-delete-title">${escapeHtml(t('Delete from Done?'))}</h2>
             <p>${escapeHtml(record.title)}</p>
           </div>
-          <button class="utility" data-completed-delete-cancel aria-label="Close Done deletion confirmation">Close</button>
+          <button class="utility" data-completed-delete-cancel aria-label="${escapeHtml(t('Close Done deletion confirmation'))}">${escapeHtml(t('Close'))}</button>
         </div>
         <div class="completed-delete-warning delete-confirmation-content">
           <strong>${escapeHtml(descriptor)}</strong>
-          <p>This removes the saved Done card and linked local metadata from ${escapeHtml(source)}. On-chain history is not deleted.</p>
+          <p>${tf('This removes the saved Done card and linked local metadata from {source}. On-chain history is not deleted.', { source: escapeHtml(source) })}</p>
         </div>
         <div class="generated-plan-modal-actions completed-delete-actions">
-          <button type="button" class="utility" data-completed-delete-cancel ${state.busy ? 'disabled' : ''}>Cancel</button>
-          <button type="button" class="utility danger" data-completed-delete-confirm="${escapeHtml(record.id)}" ${state.busy ? 'disabled' : ''}>Delete item</button>
+          <button type="button" class="utility" data-completed-delete-cancel ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Cancel'))}</button>
+          <button type="button" class="utility danger" data-completed-delete-confirm="${escapeHtml(record.id)}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Delete item'))}</button>
         </div>
       </section>
     </div>
@@ -22206,19 +22273,19 @@ function generatedPlanDeleteModal(): string {
       <section class="generated-plan-modal generated-plan-delete-modal delete-confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="generated-plan-delete-title">
         <div class="generated-plan-modal-head">
           <div>
-            <span class="workbench-kicker">Check deletion</span>
-            <h2 id="generated-plan-delete-title">Delete from Check?</h2>
+            <span class="workbench-kicker">${escapeHtml(t('Check deletion'))}</span>
+            <h2 id="generated-plan-delete-title">${escapeHtml(t('Delete from Check?'))}</h2>
             <p>${escapeHtml(record.plan.templateTitle || record.plan.intent)}</p>
           </div>
-          <button class="utility" data-generated-plan-delete-cancel aria-label="Close Check deletion confirmation">Close</button>
+          <button class="utility" data-generated-plan-delete-cancel aria-label="${escapeHtml(t('Close Check deletion confirmation'))}">${escapeHtml(t('Close'))}</button>
         </div>
         <div class="generated-plan-delete-warning delete-confirmation-content">
           <strong>${escapeHtml(status)}</strong>
-          <p>This removes the plan from Check and linked local planning state. If it already produced a receipt or approval, those records stay in Done.</p>
+          <p>${escapeHtml(t('This removes the plan from Check and linked local planning state. If it already produced a receipt or approval, those records stay in Done.'))}</p>
         </div>
         <div class="generated-plan-modal-actions generated-plan-delete-actions">
-          <button type="button" class="utility" data-generated-plan-delete-cancel ${state.busy ? 'disabled' : ''}>Cancel</button>
-          <button type="button" class="utility danger" data-generated-plan-delete-confirm="${escapeHtml(record.id)}" ${state.busy ? 'disabled' : ''}>Delete plan</button>
+          <button type="button" class="utility" data-generated-plan-delete-cancel ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Cancel'))}</button>
+          <button type="button" class="utility danger" data-generated-plan-delete-confirm="${escapeHtml(record.id)}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Delete plan'))}</button>
         </div>
       </section>
     </div>
@@ -22235,19 +22302,19 @@ function inboxDeleteModal(): string {
       <section class="generated-plan-modal inbox-delete-modal delete-confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="inbox-delete-title">
         <div class="generated-plan-modal-head">
           <div>
-            <span class="workbench-kicker">Needs Approval deletion</span>
-            <h2 id="inbox-delete-title">Delete this approval request?</h2>
+            <span class="workbench-kicker">${escapeHtml(t('Needs Approval deletion'))}</span>
+            <h2 id="inbox-delete-title">${escapeHtml(t('Delete this approval request?'))}</h2>
             <p>${escapeHtml(title)}</p>
           </div>
-          <button class="utility" data-inbox-delete-cancel aria-label="Close Needs Approval deletion confirmation">Close</button>
+          <button class="utility" data-inbox-delete-cancel aria-label="${escapeHtml(t('Close Needs Approval deletion confirmation'))}">${escapeHtml(t('Close'))}</button>
         </div>
         <div class="completed-delete-warning delete-confirmation-content">
-          <strong>This request will be removed entirely.</strong>
-          <p>Cloud and local copies are deleted. No receipt is saved in Done because the request was neither approved nor denied.</p>
+          <strong>${escapeHtml(t('This request will be removed entirely.'))}</strong>
+          <p>${escapeHtml(t('Cloud and local copies are deleted. No receipt is saved in Done because the request was neither approved nor denied.'))}</p>
         </div>
         <div class="generated-plan-modal-actions completed-delete-actions">
-          <button type="button" class="utility" data-inbox-delete-cancel ${state.busy ? 'disabled' : ''}>Cancel</button>
-          <button type="button" class="utility danger" data-inbox-delete-confirm="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''}>Delete request</button>
+          <button type="button" class="utility" data-inbox-delete-cancel ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Cancel'))}</button>
+          <button type="button" class="utility danger" data-inbox-delete-confirm="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Delete request'))}</button>
         </div>
       </section>
     </div>
@@ -22259,25 +22326,25 @@ function deleteAllInboxModal(): string {
   const count = filteredPreparedActions().length;
   const filterNote = state.inboxFilter === 'all'
     ? ''
-    : ` matching the ${escapeHtml(state.inboxFilter)} filter`;
+    : tf(' matching the {filter} filter', { filter: escapeHtml(state.inboxFilter) });
   return `
     <div class="generated-plan-modal-backdrop delete-all-modal-backdrop delete-confirmation-backdrop" role="presentation">
       <section class="generated-plan-modal delete-all-modal delete-confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="delete-all-inbox-title">
         <div class="generated-plan-modal-head">
           <div>
-            <span class="workbench-kicker">Clear Needs Approval</span>
-            <h2 id="delete-all-inbox-title">Delete ${count} visible request${count === 1 ? '' : 's'}?</h2>
-            <p>${count === 0 ? 'No visible requests to delete.' : `Every visible approval request${filterNote} will be removed.`}</p>
+            <span class="workbench-kicker">${escapeHtml(t('Clear Needs Approval'))}</span>
+            <h2 id="delete-all-inbox-title">${tf('Delete {count} visible requests?', { count })}</h2>
+            <p>${count === 0 ? escapeHtml(t('No visible requests to delete.')) : tf('Every visible approval request{filterNote} will be removed.', { filterNote })}</p>
           </div>
-          <button class="utility" data-delete-all-inbox-cancel aria-label="Close Needs Approval bulk deletion">Close</button>
+          <button class="utility" data-delete-all-inbox-cancel aria-label="${escapeHtml(t('Close Needs Approval bulk deletion'))}">${escapeHtml(t('Close'))}</button>
         </div>
         <div class="completed-delete-warning delete-confirmation-content">
-          <strong>This cannot be undone.</strong>
-          <p>Cloud and local copies are deleted. No receipts are left in Done because the requests were neither approved nor denied. Items already in Done are not affected.</p>
+          <strong>${escapeHtml(t('This cannot be undone.'))}</strong>
+          <p>${escapeHtml(t('Cloud and local copies are deleted. No receipts are left in Done because the requests were neither approved nor denied. Items already in Done are not affected.'))}</p>
         </div>
         <div class="generated-plan-modal-actions completed-delete-actions">
-          <button type="button" class="utility" data-delete-all-inbox-cancel ${state.busy ? 'disabled' : ''}>Cancel</button>
-          <button type="button" class="utility danger" data-delete-all-inbox-confirm ${state.busy || count === 0 ? 'disabled' : ''}>Delete all ${count}</button>
+          <button type="button" class="utility" data-delete-all-inbox-cancel ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Cancel'))}</button>
+          <button type="button" class="utility danger" data-delete-all-inbox-confirm ${state.busy || count === 0 ? 'disabled' : ''}>${tf('Delete all {count}', { count })}</button>
         </div>
       </section>
     </div>
@@ -22290,25 +22357,25 @@ function deleteAllCheckModal(): string {
   const count = visible.length;
   const filterNote = state.generatedPlanAgentReviewFilter === 'all'
     ? ''
-    : ` matching the ${escapeHtml(agentReviewFilterLabel(state.generatedPlanAgentReviewFilter))} filter`;
+    : tf(' matching the {filter} filter', { filter: escapeHtml(agentReviewFilterLabel(state.generatedPlanAgentReviewFilter)) });
   return `
     <div class="generated-plan-modal-backdrop delete-all-modal-backdrop delete-confirmation-backdrop" role="presentation">
       <section class="generated-plan-modal delete-all-modal delete-confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="delete-all-check-title">
         <div class="generated-plan-modal-head">
           <div>
-            <span class="workbench-kicker">Clear Check</span>
-            <h2 id="delete-all-check-title">Delete ${count} visible plan${count === 1 ? '' : 's'}?</h2>
-            <p>${count === 0 ? 'No visible Check plans to delete.' : `Every visible Check plan${filterNote} will be removed.`}</p>
+            <span class="workbench-kicker">${escapeHtml(t('Clear Check'))}</span>
+            <h2 id="delete-all-check-title">${tf('Delete {count} visible plans?', { count })}</h2>
+            <p>${count === 0 ? escapeHtml(t('No visible Check plans to delete.')) : tf('Every visible Check plan{filterNote} will be removed.', { filterNote })}</p>
           </div>
-          <button class="utility" data-delete-all-check-cancel aria-label="Close Check bulk deletion">Close</button>
+          <button class="utility" data-delete-all-check-cancel aria-label="${escapeHtml(t('Close Check bulk deletion'))}">${escapeHtml(t('Close'))}</button>
         </div>
         <div class="generated-plan-delete-warning delete-confirmation-content">
-          <strong>This cannot be undone.</strong>
-          <p>Cloud and local copies of these plans are deleted. Items that already produced a receipt or approval stay in Done.</p>
+          <strong>${escapeHtml(t('This cannot be undone.'))}</strong>
+          <p>${escapeHtml(t('Cloud and local copies of these plans are deleted. Items that already produced a receipt or approval stay in Done.'))}</p>
         </div>
         <div class="generated-plan-modal-actions generated-plan-delete-actions">
-          <button type="button" class="utility" data-delete-all-check-cancel ${state.busy ? 'disabled' : ''}>Cancel</button>
-          <button type="button" class="utility danger" data-delete-all-check-confirm ${state.busy || count === 0 ? 'disabled' : ''}>Delete all ${count}</button>
+          <button type="button" class="utility" data-delete-all-check-cancel ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Cancel'))}</button>
+          <button type="button" class="utility danger" data-delete-all-check-confirm ${state.busy || count === 0 ? 'disabled' : ''}>${tf('Delete all {count}', { count })}</button>
         </div>
       </section>
     </div>
@@ -22321,25 +22388,25 @@ function deleteAllRepeatsModal(): string {
   const count = visible.length;
   const filterNote = state.recurringAgentReviewFilter === 'all'
     ? ''
-    : ` matching the ${escapeHtml(agentReviewFilterLabel(state.recurringAgentReviewFilter))} filter`;
+    : tf(' matching the {filter} filter', { filter: escapeHtml(agentReviewFilterLabel(state.recurringAgentReviewFilter)) });
   return `
     <div class="generated-plan-modal-backdrop delete-all-modal-backdrop delete-confirmation-backdrop" role="presentation">
       <section class="generated-plan-modal delete-all-modal delete-confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="delete-all-repeats-title">
         <div class="generated-plan-modal-head">
           <div>
-            <span class="workbench-kicker">Clear Active Repeats</span>
-            <h2 id="delete-all-repeats-title">Delete ${count} visible repeat${count === 1 ? '' : 's'}?</h2>
-            <p>${count === 0 ? 'No visible repeat payments to delete.' : `Every visible repeat payment${filterNote} will be removed.`}</p>
+            <span class="workbench-kicker">${escapeHtml(t('Clear Active Repeats'))}</span>
+            <h2 id="delete-all-repeats-title">${tf('Delete {count} visible repeats?', { count })}</h2>
+            <p>${count === 0 ? escapeHtml(t('No visible repeat payments to delete.')) : tf('Every visible repeat payment{filterNote} will be removed.', { filterNote })}</p>
           </div>
-          <button class="utility" data-delete-all-repeats-cancel aria-label="Close Active Repeats bulk deletion">Close</button>
+          <button class="utility" data-delete-all-repeats-cancel aria-label="${escapeHtml(t('Close Active Repeats bulk deletion'))}">${escapeHtml(t('Close'))}</button>
         </div>
         <div class="completed-delete-warning delete-confirmation-content">
-          <strong>Future runs are cancelled.</strong>
-          <p>Cloud and local schedules are deleted. Past payments already in Done are not affected. On-chain transactions are not reversed.</p>
+          <strong>${escapeHtml(t('Future runs are cancelled.'))}</strong>
+          <p>${escapeHtml(t('Cloud and local schedules are deleted. Past payments already in Done are not affected. On-chain transactions are not reversed.'))}</p>
         </div>
         <div class="generated-plan-modal-actions completed-delete-actions">
-          <button type="button" class="utility" data-delete-all-repeats-cancel ${state.busy ? 'disabled' : ''}>Cancel</button>
-          <button type="button" class="utility danger" data-delete-all-repeats-confirm ${state.busy || count === 0 ? 'disabled' : ''}>Delete all ${count}</button>
+          <button type="button" class="utility" data-delete-all-repeats-cancel ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Cancel'))}</button>
+          <button type="button" class="utility danger" data-delete-all-repeats-confirm ${state.busy || count === 0 ? 'disabled' : ''}>${tf('Delete all {count}', { count })}</button>
         </div>
       </section>
     </div>
@@ -22359,25 +22426,25 @@ function deleteAllDoneModal(): string {
   };
   const filterNote = state.completedPlanFilter === 'all'
     ? ''
-    : ` matching the ${escapeHtml(filterLabels[state.completedPlanFilter])} filter`;
+    : tf(' matching the {filter} filter', { filter: escapeHtml(filterLabels[state.completedPlanFilter]) });
   return `
     <div class="generated-plan-modal-backdrop delete-all-modal-backdrop delete-confirmation-backdrop" role="presentation">
       <section class="generated-plan-modal delete-all-modal delete-confirmation-modal" role="dialog" aria-modal="true" aria-labelledby="delete-all-done-title">
         <div class="generated-plan-modal-head">
           <div>
-            <span class="workbench-kicker">Clear Done</span>
-            <h2 id="delete-all-done-title">Delete ${count} visible Done record${count === 1 ? '' : 's'}?</h2>
-            <p>${count === 0 ? 'No visible Done records to delete.' : `Every visible Done record${filterNote} will be removed.`}</p>
+            <span class="workbench-kicker">${escapeHtml(t('Clear Done'))}</span>
+            <h2 id="delete-all-done-title">${tf('Delete {count} visible Done records?', { count })}</h2>
+            <p>${count === 0 ? escapeHtml(t('No visible Done records to delete.')) : tf('Every visible Done record{filterNote} will be removed.', { filterNote })}</p>
           </div>
-          <button class="utility" data-delete-all-done-cancel aria-label="Close Done bulk deletion">Close</button>
+          <button class="utility" data-delete-all-done-cancel aria-label="${escapeHtml(t('Close Done bulk deletion'))}">${escapeHtml(t('Close'))}</button>
         </div>
         <div class="completed-delete-warning delete-confirmation-content">
-          <strong>This cannot be undone.</strong>
-          <p>Cloud and local Done cards are removed for the visible items. On-chain history is not deleted.</p>
+          <strong>${escapeHtml(t('This cannot be undone.'))}</strong>
+          <p>${escapeHtml(t('Cloud and local Done cards are removed for the visible items. On-chain history is not deleted.'))}</p>
         </div>
         <div class="generated-plan-modal-actions completed-delete-actions">
-          <button type="button" class="utility" data-delete-all-done-cancel ${state.busy ? 'disabled' : ''}>Cancel</button>
-          <button type="button" class="utility danger" data-delete-all-done-confirm ${state.busy || count === 0 ? 'disabled' : ''}>Delete all ${count}</button>
+          <button type="button" class="utility" data-delete-all-done-cancel ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Cancel'))}</button>
+          <button type="button" class="utility danger" data-delete-all-done-confirm ${state.busy || count === 0 ? 'disabled' : ''}>${tf('Delete all {count}', { count })}</button>
         </div>
       </section>
     </div>
@@ -22393,11 +22460,11 @@ function generatedPlanAuditModal(record: GeneratedPlanRecord): string {
       <section class="generated-plan-modal" role="dialog" aria-modal="true" aria-labelledby="generated-plan-audit-title">
         <div class="generated-plan-modal-head">
           <div>
-            <span class="workbench-kicker">${escapeHtml(record.source === 'ai' ? 'AI plan details' : 'Template plan details')}</span>
+            <span class="workbench-kicker">${escapeHtml(record.source === 'ai' ? t('AI plan details') : t('Template plan details'))}</span>
             <h2 id="generated-plan-audit-title">${escapeHtml(plan.intent)}</h2>
             <p>${escapeHtml(generatedPlanMeta(record))}</p>
           </div>
-          <button class="utility" data-generated-plan-modal-close aria-label="Close plan details">Close</button>
+          <button class="utility" data-generated-plan-modal-close aria-label="${escapeHtml(t('Close plan details'))}">${escapeHtml(t('Close'))}</button>
         </div>
         <div class="generated-plan-modal-actions">
           ${agentReviewButton(record)}
@@ -22406,7 +22473,7 @@ function generatedPlanAuditModal(record: GeneratedPlanRecord): string {
             data-generated-plan-id="${escapeHtml(record.id)}"
             ${state.busy ? 'disabled' : ''}
           >
-            Use as starting point
+            ${escapeHtml(t('Use as starting point'))}
           </button>
           ${approvalCapable ? `
             <button
@@ -22426,20 +22493,20 @@ function generatedPlanAuditModal(record: GeneratedPlanRecord): string {
               ${!state.address || state.busy || record.status === 'archived' ? 'disabled' : ''}
               title="${escapeHtml(signProofTitle(record))}"
             >
-              Sign proof
+              ${escapeHtml(t('Sign proof'))}
             </button>
           `}
         </div>
         <div class="generated-plan-audit-body">
           <section class="generated-plan-audit-section generated-plan-audit-decision">
             <div class="generated-plan-audit-section-head">
-              <h3>Decision</h3>
+              <h3>${escapeHtml(t('Decision'))}</h3>
               <span class="status-pill ${generatedPlanStatusTone(record)}">${escapeHtml(generatedPlanStatusLabel(record))}</span>
             </div>
             <dl class="generated-plan-audit-grid">
-              ${generatedPlanAuditRow('Route', plan.route)}
-              ${generatedPlanAuditRow('Risk', plan.risk)}
-              ${generatedPlanAuditRow('Approval', plan.approval)}
+              ${generatedPlanAuditRow(t('Route'), plan.route)}
+              ${generatedPlanAuditRow(t('Risk'), plan.risk)}
+              ${generatedPlanAuditRow(t('Approval'), plan.approval)}
             </dl>
             ${generatedPlanWalletActionSummary(record)}
             ${generatedPlanAgentReviewStrip(record)}
@@ -22447,18 +22514,18 @@ function generatedPlanAuditModal(record: GeneratedPlanRecord): string {
           </section>
           <section class="generated-plan-audit-section generated-plan-audit-facts">
             <div class="generated-plan-audit-section-head">
-              <h3>Plan facts</h3>
+              <h3>${escapeHtml(t('Plan facts'))}</h3>
             </div>
             <dl class="generated-plan-audit-grid compact">
               ${reviewSummaryRows(plan).map(([label, value]) => generatedPlanAuditRow(label, value)).join('')}
-              ${generatedPlanAuditRow('Created', formatDateTime(record.createdAt))}
-              ${generatedPlanAuditRow('Updated', formatDateTime(record.updatedAt))}
-              ${generatedPlanAuditRow('Outcome', outcomeLabel(planOutcome(plan)))}
+              ${generatedPlanAuditRow(t('Created'), formatDateTime(record.createdAt))}
+              ${generatedPlanAuditRow(t('Updated'), formatDateTime(record.updatedAt))}
+              ${generatedPlanAuditRow(t('Outcome'), outcomeLabel(planOutcome(plan)))}
             </dl>
           </section>
-          ${plan.userNotes ? generatedPlanAuditTextSection('User notes', plan.userNotes) : ''}
-          ${plan.fields.length ? generatedPlanAuditListSection('Fields', plan.fields.map((field) => `${field.label}: ${field.value}`)) : ''}
-          ${plan.safeguards.length ? generatedPlanAuditListSection('Safeguards', plan.safeguards) : ''}
+          ${plan.userNotes ? generatedPlanAuditTextSection(t('User notes'), plan.userNotes) : ''}
+          ${plan.fields.length ? generatedPlanAuditListSection(t('Fields'), plan.fields.map((field) => `${field.label}: ${field.value}`)) : ''}
+          ${plan.safeguards.length ? generatedPlanAuditListSection(t('Safeguards'), plan.safeguards) : ''}
           ${generatedPlanResultBlock(record)}
         </div>
       </section>
@@ -22502,22 +22569,22 @@ function generatedPlanAuditListSection(label: string, values: string[]): string 
 
 function generatedPlanResultBlock(record: GeneratedPlanRecord): string {
   if (!record.signature && !record.preparedActionId) {
-    return '<div class="empty">Review proof signatures and queued approval ids appear here after action.</div>';
+    return `<div class="empty">${escapeHtml(t('Review proof signatures and queued approval ids appear here after action.'))}</div>`;
   }
   return `
     <div class="results generated-plan-results">
       ${record.signature ? `
         <div class="result-row">
-          <span>Review proof</span>
+          <span>${escapeHtml(t('Review proof'))}</span>
           <code>${escapeHtml(record.signature)}</code>
-          <button data-copy="${escapeHtml(record.signature)}" data-copy-name="Review proof">Copy</button>
+          <button data-copy="${escapeHtml(record.signature)}" data-copy-name="${escapeHtml(t('Review proof'))}">${escapeHtml(t('Copy'))}</button>
         </div>
       ` : ''}
       ${record.preparedActionId ? `
         <div class="result-row">
-          <span>Approval request / repeat payment</span>
+          <span>${escapeHtml(t('Approval request / repeat payment'))}</span>
           <code>${escapeHtml(record.preparedActionId)}</code>
-          <button data-copy="${escapeHtml(record.preparedActionId)}" data-copy-name="Queued approval id">Copy</button>
+          <button data-copy="${escapeHtml(record.preparedActionId)}" data-copy-name="${escapeHtml(t('Queued approval id'))}">${escapeHtml(t('Copy'))}</button>
         </div>
       ` : ''}
     </div>
@@ -22530,15 +22597,15 @@ function generatedPlansEmptyState(oneTimeOnly = false, filterHasHiddenMatches = 
   const movedCount = records.filter(hasGeneratedPlanMovedPastReview).length;
   const archivedCount = records.filter((record) => record.status === 'archived').length;
   const detail = filterHasHiddenMatches
-    ? 'No plans match this AI Connector filter.'
+    ? tf('No plans match this {brand} filter.', { brand: 'AI Connector' })
     : records.length === 0
-    ? 'Create a plan first. It stays here for checking, then moves to Needs Approval or Done.'
+    ? t('Create a plan first. It stays here for checking, then moves to Needs Approval or Done.')
     : activeCount === 0 && movedCount > 0
-      ? 'All active plans have moved forward. Open Needs Approval for queued work or Done for signed proofs and receipts.'
+      ? t('All active plans have moved forward. Open Needs Approval for queued work or Done for signed proofs and receipts.')
       : archivedCount > 0
-        ? 'Archived plans are hidden. Show archived to inspect or restore them.'
-        : 'Create another plan or check Needs Approval and Done for work that already moved forward.';
-  return signaturePlaceholder('No plans visible', detail);
+        ? t('Archived plans are hidden. Show archived to inspect or restore them.')
+        : t('Create another plan or check Needs Approval and Done for work that already moved forward.');
+  return signaturePlaceholder(t('No plans visible'), detail);
 }
 
 function agentPlannerWorkbench(): string {
@@ -22554,21 +22621,21 @@ function agentPlannerWorkbench(): string {
   const draftActionBusy = state.busy || templateGenerating || aiGenerating;
   const outcome = templateOutcome(template);
   const notesLabel = notesRequired
-    ? 'Custom request / notes'
-    : 'Notes for review record';
+    ? t('Custom request / notes')
+    : t('Notes for review record');
   const notesPlaceholder = notesRequired
-    ? 'Describe what you want prepared or reviewed.'
-    : 'Optional context, reason, or policy note saved with this plan.';
+    ? t('Describe what you want prepared or reviewed.')
+    : t('Optional context, reason, or policy note saved with this plan.');
   const askAgentDetail = mockReviewAvailable && !aiPathConnected
-    ? 'Optional. Runs a local agent decision in Check after planning. No bridge, AI key, or wallet popup.'
-    : 'Optional. Runs the agent review in Check after planning. Sending for approval stays manual.';
+    ? t('Optional. Runs a local agent decision in Check after planning. No bridge, AI key, or wallet popup.')
+    : t('Optional. Runs the agent review in Check after planning. Sending for approval stays manual.');
   return `
     <div class="agent-planner-grid planner-single-column">
       <div class="intent-capsule intent-document-card planner-card ${state.agentPlan ? 'plan-linked' : 'draft'}">
         <div class="intent-document-head">
           <div>
             <h3 class="plan-method-title">
-              <span>${escapeHtml(template.title)}</span>
+              <span>${escapeHtml(t(template.title))}</span>
               <small>${escapeHtml(outcomeDetailForTemplate(template))}</small>
             </h3>
           </div>
@@ -22576,10 +22643,10 @@ function agentPlannerWorkbench(): string {
         </div>
         <div class="planner-template-block">
           <div class="field compact planner-template-select">
-            <span id="templatePickerLabel">Plan template</span>
+            <span id="templatePickerLabel">${escapeHtml(t('Plan template'))}</span>
             ${templatePicker(template)}
           </div>
-          <p class="template-description">${escapeHtml(template.description)}</p>
+          <p class="template-description">${escapeHtml(t(template.description))}</p>
         </div>
         <div class="planner-form-body">
           <div class="planner-fields ${isMobileAppViewport() ? 'mobile-planner-fields' : ''}">
@@ -22600,12 +22667,12 @@ function agentPlannerWorkbench(): string {
                   <input type="checkbox" tabindex="-1" aria-hidden="true" ${state.askAgentAfterDraft ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
                   <span class="ask-agent-check" aria-hidden="true">${checkIcon()}</span>
                   <span class="ask-agent-copy">
-                    <strong>Ask Agent</strong>
+                    <strong>${escapeHtml(t('Ask Agent'))}</strong>
                     <em>${escapeHtml(askAgentDetail)}</em>
                   </span>
                 </label>
               ` : ''}
-              <button id="generatePlan" class="primary" ${draftActionBusy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}Creating plan...` : 'Create Plan'}</button>
+              <button id="generatePlan" class="primary" ${draftActionBusy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}${escapeHtml(t('Creating plan...'))}` : escapeHtml(t('Create Plan'))}</button>
             </div>
           </div>
         </div>
@@ -22628,7 +22695,7 @@ function connectorCreatePickerControl(template: AgentPlanTemplate): string {
         attrs: { 'data-connector-create-picker': true },
         disabled: state.busy || connectors.length === 0,
         className: 'top-connector-picker connector-create-picker',
-        title: selectedConnector ? `${selectedConnector.name} connector selected` : 'Use connector',
+        title: selectedConnector ? tf('{connector} connector selected', { connector: selectedConnector.name }) : t('Use connector'),
       })}
     </div>
   `;
@@ -22641,8 +22708,8 @@ function connectorCreatePickerOptions(
   return [
     {
       value: '',
-      label: 'Use connector',
-      detail: 'Clear connector selection.',
+      label: t('Use connector'),
+      detail: t('Clear connector selection.'),
     },
     ...connectors.map((connector) => {
       const status = connectorCreateStatus(connector, env);
@@ -22671,9 +22738,9 @@ function selectedConnectorForCreate(template: AgentPlanTemplate): ProtocolConnec
 function connectorCreateOptionDetail(connector: ProtocolConnector, statusDetail: string): string {
   const forms = connectorActionFormsForConnector(connector)
     .slice(0, 3)
-    .map((form) => form.operationLabel)
+    .map((form) => t(form.operationLabel))
     .join(' · ');
-  return forms ? `${statusDetail} ${forms}` : statusDetail;
+  return forms ? `${t(statusDetail)} ${forms}` : t(statusDetail);
 }
 
 function isGenericConnectorActionForm(form: ConnectorActionForm): boolean {
@@ -22682,9 +22749,9 @@ function isGenericConnectorActionForm(form: ConnectorActionForm): boolean {
 
 function templateOutcomeControls(placement: 'header' | 'inline' = 'inline'): string {
   const filters: Array<[TemplateOutcomeFilter, string]> = [
-    ['queueable', 'Request approval'],
-    ['proof', 'Proof only'],
-    ['audit', 'Evidence only'],
+    ['queueable', t('Request approval')],
+    ['proof', t('Proof only')],
+    ['audit', t('Evidence only')],
     // ['all', 'All'],
   ];
   const buttons = filters.map(([filter, label]) => `
@@ -22699,10 +22766,10 @@ function templateOutcomeControls(placement: 'header' | 'inline' = 'inline'): str
   `).join('');
   if (placement === 'header') {
     return `
-      <div class="one-time-method-control" role="group" aria-label="Template outcome filter">
+      <div class="one-time-method-control" role="group" aria-label="${escapeHtml(t('Template outcome filter'))}">
         <span class="one-time-method-label">
-          <strong>Plan method</strong>
-          <em class="accent-note">What this plan can do</em>
+          <strong>${escapeHtml(t('Plan method'))}</strong>
+          <em class="accent-note">${escapeHtml(t('What this plan can do'))}</em>
         </span>
         <div class="template-filter-row one-time-method-filter">
           ${buttons}
@@ -22711,7 +22778,7 @@ function templateOutcomeControls(placement: 'header' | 'inline' = 'inline'): str
     `;
   }
   return `
-    <div class="template-filter-row" role="group" aria-label="Template outcome filter">
+    <div class="template-filter-row" role="group" aria-label="${escapeHtml(t('Template outcome filter'))}">
       ${buttons}
     </div>
   `;
@@ -22742,29 +22809,29 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
     ? configured
       ? `${readinessLabel} - ${aiConfirmationLabel()}`
       : staged
-        ? 'API key staged'
+        ? t('API key staged')
       : inactiveConfigured
-        ? `${aiPathPreferenceLabel(inventory.inactiveConfigured[0]!.mode)} configured inactive`
-      : 'AI connector optional'
+        ? tf('{label} configured inactive', { label: aiPathPreferenceLabel(inventory.inactiveConfigured[0]!.mode) })
+      : t('AI connector optional')
     : configured
       ? `${readinessLabel} - ${aiConfirmationLabel()}`
       : staged
-        ? `${aiPathPreferenceLabel(state.aiSettings.mode)} key staged. Set and confirm it to configure the runtime.`
+        ? tf('{label} key staged. Set and confirm it to configure the runtime.', { label: aiPathPreferenceLabel(state.aiSettings.mode) })
       : inactiveConfigured
-        ? `${aiPathPreferenceLabel(inventory.inactiveConfigured[0]!.mode)} configured; ${aiPathPreferenceLabel(state.aiSettings.mode)} selected.`
-      : 'Optional AI planner; templates work without it.';
+        ? tf('{label} configured; {label2} selected.', { label: aiPathPreferenceLabel(inventory.inactiveConfigured[0]!.mode), label2: aiPathPreferenceLabel(state.aiSettings.mode) })
+      : t('Optional AI planner; templates work without it.');
   const railIdentity = location === 'rail'
     ? aiRailIdentity(inventory, readinessLabel, confirmed)
     : null;
   if (location === 'rail' && isMobileAppViewport()) {
     const nativeMobileApp = IS_ANDROID_APP || IS_IOS_APP;
     return `
-      <section class="ai-settings-panel ${panelConfigured ? 'configured' : 'optional'} rail-ai-settings mobile-rail-trigger-panel" data-layout="ai-setup-panel" aria-label="AI connector status">
+      <section class="ai-settings-panel ${panelConfigured ? 'configured' : 'optional'} rail-ai-settings mobile-rail-trigger-panel" data-layout="ai-setup-panel" aria-label="${escapeHtml(t('AI connector status'))}">
         <div
           class="mobile-rail-sheet-trigger${nativeMobileApp ? ' rail-conn-trigger' : ''}"
           ${nativeMobileApp ? 'data-mobile-rail-sheet="ai-drafting"' : ''}
           aria-expanded="${state.activeMobileRailSheet === 'ai-drafting' ? 'true' : 'false'}"
-          ${nativeMobileApp ? 'aria-label="Open AI Connector setup" role="button" tabindex="0"' : ''}
+          ${nativeMobileApp ? `aria-label="${escapeHtml(t('Open AI Connector setup'))}" role="button" tabindex="0"` : ''}
         >
           ${aiRailSummaryContent(railIdentity!, { actionHtml: mobileAiRailQuickActions(railIdentity!) })}
         </div>
@@ -22778,10 +22845,10 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
           ? aiRailSummaryContent(railIdentity)
           : `
             <span class="ai-summary-copy">
-              <span>AI connector</span>
+              <span>${escapeHtml(t('AI connector'))}</span>
               <em>${escapeHtml(summaryDetail)}</em>
             </span>
-            <strong class="ai-summary-status">${confirmed ? 'confirmed' : configured ? 'configured' : inactiveConfigured ? 'configured inactive' : 'not configured'}</strong>
+            <strong class="ai-summary-status">${escapeHtml(confirmed ? t('confirmed') : configured ? t('configured') : inactiveConfigured ? t('configured inactive') : t('not configured'))}</strong>
           `}
       </summary>
       ${aiSettingsCard(location)}
@@ -22826,9 +22893,9 @@ function aiRailIdentity(
     identity.logoHint = connectorRailLogoHint(connector);
   }
   if (IS_ANDROID_APP && !identity.configured && !identity.staged && !identity.inactive) {
-    identity.provider = 'Not set up';
-    identity.model = 'API key or Plan Connector';
-    identity.detail = 'API key or Plan Connector';
+    identity.provider = t('Not set up');
+    identity.model = t('API key or Plan Connector');
+    identity.detail = t('API key or Plan Connector');
     identity.logoHint = 'agentic';
   }
   return identity;
@@ -22842,7 +22909,7 @@ function currentAiRailFallback(): { provider: string; model: string; logoHint: A
     const preset = aiConnectorPreset(connector);
     const model = state.aiStatus?.engine === 'connector'
       ? bridgeConnectorStatusDetail(state.aiStatus)
-      : 'not checked';
+      : t('not checked');
     return {
       provider: preset.label,
       model,
@@ -22866,7 +22933,7 @@ function currentAiRailFallback(): { provider: string; model: string; logoHint: A
 }
 
 function aiRailActionLabel(identity: AiRailIdentity): string {
-  return identity.configured || identity.inactive ? 'Manage' : 'Set up';
+  return identity.configured || identity.inactive ? t('Manage') : t('Set up');
 }
 
 function mobileAiRailQuickActions(identity: AiRailIdentity): string {
@@ -22879,9 +22946,9 @@ function mobileAiRailQuickActions(identity: AiRailIdentity): string {
   });
   if (quickAction === 'none') return '';
   const actionButton = quickAction === 'disconnect-plan-connector'
-    ? `<button type="button" class="rail-conn-action danger" data-ai-action="unpair-phone">Disconnect</button>`
+    ? `<button type="button" class="rail-conn-action danger" data-ai-action="unpair-phone">${escapeHtml(t('Disconnect'))}</button>`
     : quickAction === 'clear-key' && clearTarget
-      ? `<button type="button" class="rail-conn-action danger" data-ai-action="clear-key" data-ai-clear-mode="${escapeHtml(clearTarget)}" ${!canClearAiKey(clearTarget) ? 'disabled' : ''}>Clear API key</button>`
+      ? `<button type="button" class="rail-conn-action danger" data-ai-action="clear-key" data-ai-clear-mode="${escapeHtml(clearTarget)}" ${!canClearAiKey(clearTarget) ? 'disabled' : ''}>${escapeHtml(t('Clear API key'))}</button>`
       : `
         <button
           type="button"
@@ -22914,7 +22981,7 @@ function aiRailSummaryContent(identity: AiRailIdentity, options: { actionLabel?:
 
 function agentPathExplainer(): string {
   return `
-    <aside class="agent-route-strip" aria-label="One-time plan route">
+    <aside class="agent-route-strip" aria-label="${escapeHtml(t('One-time plan route'))}">
       ${agentRouteStep('1', 'Plan', 'Template or AI prepares a bounded request.')}
       ${agentRouteStep('2', 'Check', 'Check limits, risk, route, and approval rule.')}
       ${agentRouteStep('3', 'Approve', 'Send queueable work for approval or sign proof only.')}
@@ -22938,9 +23005,9 @@ function templatePicker(template: AgentPlanTemplate): string {
   const selectedLabel = templatePickerLabel(template, selectedConnector);
   const visibleTemplates = templatesForOutcomeFilter();
   const groups: Array<[TemplateOutcome, string]> = [
-    ['queueable', 'Request approval'],
-    ['proof', 'Proof only'],
-    ['audit', 'Evidence only'],
+    ['queueable', t('Request approval')],
+    ['proof', t('Proof only')],
+    ['audit', t('Evidence only')],
   ];
   const connectorGroup = selectedConnector
     ? `
@@ -22962,8 +23029,8 @@ function templatePicker(template: AgentPlanTemplate): string {
         ${state.busy ? 'disabled' : ''}
       >
         <span class="template-picker-current">
-          <span class="template-picker-category">${escapeHtml(selectedConnector ? selectedConnector.name : titleCase(template.category))}</span>
-          <strong id="templatePickerValue">${escapeHtml(template.title)}</strong>
+          <span class="template-picker-category">${escapeHtml(selectedConnector ? selectedConnector.name : t(titleCase(template.category)))}</span>
+          <strong id="templatePickerValue">${escapeHtml(t(template.title))}</strong>
         </span>
         <span class="template-picker-caret" aria-hidden="true"></span>
       </button>
@@ -23005,7 +23072,7 @@ function templatePickerOption(
   const form = connector ? connectorActionFormForTemplate(candidate, connector) : undefined;
   const meta = connector
     ? `${connector.name} / ${connectorTemplateSourceLabel(form)}`
-    : `${titleCase(candidate.category)} / ${outcomeShortLabel(outcome)}`;
+    : `${t(titleCase(candidate.category))} / ${outcomeShortLabel(outcome)}`;
   return `
     <button
       id="template-option-${escapeHtml(candidate.id)}"
@@ -23017,17 +23084,17 @@ function templatePickerOption(
       title="${escapeHtml(templatePickerLabel(candidate, connector))}"
     >
       <span>${escapeHtml(meta)}</span>
-      <strong>${escapeHtml(candidate.title)}</strong>
-      <em>${escapeHtml(candidate.description)}</em>
+      <strong>${escapeHtml(t(candidate.title))}</strong>
+      <em>${escapeHtml(t(candidate.description))}</em>
     </button>
   `;
 }
 
 function connectorTemplateSourceLabel(form: ConnectorActionForm | undefined): string {
-  if (!form) return 'Connector action';
-  if (form.executionMode === 'read-only') return 'Read-only';
+  if (!form) return t('Connector action');
+  if (form.executionMode === 'read-only') return t('Read-only');
   if (form.executionMode === 'blink') return 'Blink';
-  return 'First-class';
+  return t('First-class');
 }
 
 type MobilePlannerFieldWidth = 'short' | 'full';
@@ -23164,16 +23231,16 @@ function mobileTemplateFieldDisplayLabel(
 ): string {
   if (!isMobileAppViewport()) return fallback;
   if (template.id === 'swap') {
-    if (fieldDef.id === 'inputToken') return 'From';
-    if (fieldDef.id === 'outputToken') return 'To';
-    if (fieldDef.id === 'slippageBps') return 'Slippage';
-    if (fieldDef.id === 'amount') return 'Amount';
+    if (fieldDef.id === 'inputToken') return t('From');
+    if (fieldDef.id === 'outputToken') return t('To');
+    if (fieldDef.id === 'slippageBps') return t('Slippage');
+    if (fieldDef.id === 'amount') return t('Amount');
   }
   if (template.id === 'send-tokens') {
-    if (fieldDef.id === 'recipient') return 'Recipient';
-    if (fieldDef.id === 'memo') return 'Memo';
+    if (fieldDef.id === 'recipient') return t('Recipient');
+    if (fieldDef.id === 'memo') return t('Memo');
   }
-  if (isSlippageBpsField(fieldDef.id)) return 'Slippage';
+  if (isSlippageBpsField(fieldDef.id)) return t('Slippage');
   return fallback;
 }
 
@@ -23182,7 +23249,7 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
   const value = templateFieldValue(fieldDef.id);
   const disabled = state.busy ? 'disabled' : '';
   const displayLabel = mobileTemplateFieldDisplayLabel(template, fieldDef, templateFieldDisplayLabel(fieldDef));
-  const label = `${displayLabel}${fieldDef.required ? ' *' : ''}`;
+  const label = `${t(displayLabel)}${fieldDef.required ? ' *' : ''}`;
   const error = fieldError(fieldDef.id);
   if (connectorCreateOwnsTemplateField(template, fieldDef.id)) {
     return '';
@@ -23228,7 +23295,7 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
     return `
       <label class="field compact planner-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
         <span>${escapeHtml(label)}</span>
-        <textarea data-template-field="${escapeHtml(fieldDef.id)}" placeholder="${escapeHtml(fieldDef.placeholder ?? '')}" ${disabled}>${escapeHtml(value)}</textarea>
+        <textarea data-template-field="${escapeHtml(fieldDef.id)}" placeholder="${escapeHtml(fieldDef.placeholder ? t(fieldDef.placeholder) : '')}" ${disabled}>${escapeHtml(value)}</textarea>
         ${templateFieldHelper(fieldDef)}
         ${error}
       </label>
@@ -23253,7 +23320,7 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
   return `
     <label class="field compact planner-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
       <span>${escapeHtml(label)}</span>
-      <input data-template-field="${escapeHtml(fieldDef.id)}" value="${escapeHtml(value)}" placeholder="${escapeHtml(fieldDef.placeholder ?? '')}" ${disabled} />
+      <input data-template-field="${escapeHtml(fieldDef.id)}" value="${escapeHtml(value)}" placeholder="${escapeHtml(fieldDef.placeholder ? t(fieldDef.placeholder) : '')}" ${disabled} />
       ${templateFieldHelper(fieldDef)}
       ${error}
     </label>
@@ -23261,7 +23328,7 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
 }
 
 function templateFieldHelper(fieldDef: AgentPlanTemplateField): string {
-  const base = fieldDef.helperText ? `<em class="planner-field-hint subtle">${escapeHtml(fieldDef.helperText)}</em>` : '';
+  const base = fieldDef.helperText ? `<em class="planner-field-hint subtle">${escapeHtml(t(fieldDef.helperText))}</em>` : '';
   const pairHint = raydiumPairPreviewHintForField(fieldDef.id);
   return [base, pairHint].filter(Boolean).join('');
 }
@@ -23278,12 +23345,12 @@ function raydiumPairPreviewHintForField(fieldId: string): string {
   const inputFieldForSide = inputSide === 'tokenA' ? 'tokenAAmount' : 'tokenBAmount';
   if (fieldId !== inputFieldForSide) return '';
   if (preview.error) {
-    return `<em class="planner-field-hint subtle">Paired-amount preview unavailable: ${escapeHtml(preview.error)}</em>`;
+    return `<em class="planner-field-hint subtle">${escapeHtml(tf('Paired-amount preview unavailable: {error}', { error: preview.error }))}</em>`;
   }
   if (!preview.pairedAmount || !preview.pairedSymbol) return '';
-  const main = `≈ ${preview.pairedAmount} ${preview.pairedSymbol} will also be deposited`;
+  const main = tf('≈ {amount} {symbol} will also be deposited', { amount: preview.pairedAmount, symbol: preview.pairedSymbol });
   const maxSegment = preview.pairedMaxAmount
-    ? ` (max ${preview.pairedMaxAmount} ${preview.pairedSymbol} with slippage)`
+    ? ` ${tf('(max {amount} {symbol} with slippage)', { amount: preview.pairedMaxAmount, symbol: preview.pairedSymbol })}`
     : '';
   const noteSegment = preview.estimateNote ? ` — ${preview.estimateNote}` : '';
   return `<em class="planner-field-hint subtle">${escapeHtml(`${main}${maxSegment}${noteSegment}`)}</em>`;
@@ -23314,10 +23381,10 @@ function jupiterDcaDirection(): 'buy' | 'sell' {
 function jupiterDcaRuntimeLabel(fieldId: string): string | undefined {
   if (!isJupiterDcaCreateTemplate()) return undefined;
   const direction = jupiterDcaDirection();
-  if (fieldId === 'inputMint') return direction === 'sell' ? 'Sell token' : 'Spend token';
-  if (fieldId === 'outputMint') return direction === 'sell' ? 'Receive token' : 'Buy token';
-  if (fieldId === 'totalAmount') return direction === 'sell' ? 'Total to sell' : 'Total spend';
-  if (fieldId === 'numberOfOrders') return direction === 'sell' ? 'How many sells' : 'How many buys';
+  if (fieldId === 'inputMint') return direction === 'sell' ? t('Sell token') : t('Spend token');
+  if (fieldId === 'outputMint') return direction === 'sell' ? t('Receive token') : t('Buy token');
+  if (fieldId === 'totalAmount') return direction === 'sell' ? t('Total to sell') : t('Total spend');
+  if (fieldId === 'numberOfOrders') return direction === 'sell' ? t('How many sells') : t('How many buys');
   return undefined;
 }
 
@@ -23329,22 +23396,22 @@ function templateSelectPickerOptions(
     return [
       {
         value: 'tokenA',
-        label: selectedLiquidityPoolTokenSymbol('tokenA') ?? 'Token A',
-        meta: 'Deposit side',
-        detail: 'Use this as the base deposit amount.',
+        label: t(selectedLiquidityPoolTokenSymbol('tokenA') ?? 'Token A'),
+        meta: t('Deposit side'),
+        detail: t('Use this as the base deposit amount.'),
       },
       {
         value: 'tokenB',
-        label: selectedLiquidityPoolTokenSymbol('tokenB') ?? 'Token B',
-        meta: 'Deposit side',
-        detail: 'Use this as the base deposit amount.',
+        label: t(selectedLiquidityPoolTokenSymbol('tokenB') ?? 'Token B'),
+        meta: t('Deposit side'),
+        detail: t('Use this as the base deposit amount.'),
       },
     ];
   }
   if (fieldDef.id === 'rangePreset') {
     return (fieldDef.options ?? []).map((option) => ({
       value: option,
-      label: titleCase(option),
+      label: t(titleCase(option)),
       meta: fieldLabel,
       detail: rangePresetOptionDetail(option),
     }));
@@ -23352,16 +23419,16 @@ function templateSelectPickerOptions(
   if (fieldDef.id === 'dcaDirection') {
     return (fieldDef.options ?? []).map((option) => ({
       value: option,
-      label: titleCase(option),
+      label: t(titleCase(option)),
       meta: fieldLabel,
       detail: option === 'sell'
-        ? 'Sell the input token over repeated swaps.'
-        : 'Buy the output token over repeated swaps.',
+        ? t('Sell the input token over repeated swaps.')
+        : t('Buy the output token over repeated swaps.'),
     }));
   }
   return (fieldDef.options ?? []).map((option) => ({
     value: option,
-    label: option,
+    label: t(option),
     meta: fieldLabel,
   }));
 }
@@ -23373,15 +23440,17 @@ function liquidityAmountFieldRuntimeLabel(fieldId: string): string | undefined {
   const side = fieldId === 'tokenAAmount' || fieldId === 'maxTokenAAmount' ? 'tokenA' : 'tokenB';
   const symbol = selectedLiquidityPoolTokenSymbol(side);
   if (!symbol) return undefined;
-  return fieldId.startsWith('max') ? `Max ${symbol} to spend` : `${symbol} amount`;
+  return fieldId.startsWith('max')
+    ? tf('Max {symbol} to spend', { symbol })
+    : tf('{symbol} amount', { symbol });
 }
 
 function rangePresetOptionDetail(option: string): string {
-  if (option === 'custom') return 'Manually enter lower and upper prices.';
-  if (option === 'position') return 'Use the existing position range.';
-  if (option === 'narrow') return 'Tighter range around the current pool price.';
-  if (option === 'wide') return 'Wider range around the current pool price.';
-  return 'Balanced range around the current pool price.';
+  if (option === 'custom') return t('Manually enter lower and upper prices.');
+  if (option === 'position') return t('Use the existing position range.');
+  if (option === 'narrow') return t('Tighter range around the current pool price.');
+  if (option === 'wide') return t('Wider range around the current pool price.');
+  return t('Balanced range around the current pool price.');
 }
 
 function selectedLiquidityPoolTokenSymbol(side: 'tokenA' | 'tokenB'): string | undefined {
@@ -23429,7 +23498,7 @@ function meteoraAmountFieldRuntimeLabel(fieldId: string): string | undefined {
   if (fieldId !== 'tokenXAmount' && fieldId !== 'tokenYAmount') return undefined;
   const side = fieldId === 'tokenXAmount' ? 'x' : 'y';
   const symbol = selectedMeteoraPoolTokenSymbol(side);
-  return symbol ? `${symbol} amount` : undefined;
+  return symbol ? tf('{symbol} amount', { symbol }) : undefined;
 }
 
 function connectorCreateOwnsTemplateField(template: AgentPlanTemplate, fieldId: string): boolean {
@@ -23464,7 +23533,7 @@ function connectorProtocolFieldInput(
         logoId: protocolConnectorLogoId(candidate.id),
       };
     })
-    : [{ value: '', label: 'No connector available', meta: 'Protocol Connector', disabled: true }];
+    : [{ value: '', label: t('No connector available'), meta: 'Protocol Connector', disabled: true }];
   return `
     <div class="field compact planner-field connector-draft-field connector-protocol-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
       <span>${escapeHtml(label)}</span>
@@ -23506,8 +23575,8 @@ function connectorOperationFieldInput(
       ${selectPicker({
         value: selectedValue,
         options: actions.length
-          ? actions.map((action) => ({ value: action, label: action, meta: connector?.name ?? fieldDef.label }))
-          : [{ value: '', label: 'Choose a connector first', meta: 'Operation', disabled: true }],
+          ? actions.map((action) => ({ value: action, label: t(action), meta: connector?.name ?? fieldDef.label }))
+          : [{ value: '', label: t('Choose a connector first'), meta: t('Operation'), disabled: true }],
         attrs: {
           'data-template-field': fieldDef.id,
           'data-connector-operation': true,
@@ -23648,12 +23717,12 @@ function cascadingAdvancedManualInput(
   const open = value ? 'open' : '';
   return `
     <details class="cascading-manual-fallback" ${open}>
-      <summary>Advanced: paste value</summary>
+      <summary>${escapeHtml(t('Advanced: paste value'))}</summary>
       <input
         data-template-field="${escapeHtml(fieldDef.id)}"
         data-cascading-manual="true"
         value="${escapeHtml(value)}"
-        placeholder="${escapeHtml(fieldDef.placeholder ?? 'Paste address or id')}"
+        placeholder="${escapeHtml(fieldDef.placeholder ?? t('Paste address or id'))}"
         ${state.busy ? 'disabled' : ''}
       />
     </details>
@@ -23674,7 +23743,7 @@ function cascadingUnavailableSelectInput(
   message: string,
   retryCacheKey?: string,
 ): string {
-  const fallbackLabel = value ? `Manual value ${shortManualValue(value)}` : message;
+  const fallbackLabel = value ? tf('Manual value {value}', { value: shortManualValue(value) }) : message;
   return `
     <div class="field compact planner-field cascading-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
       <span>${escapeHtml(label)}</span>
@@ -23699,7 +23768,7 @@ function cascadingUnavailableSelectInput(
           class="utility cascading-retry"
           data-cascading-retry="${escapeHtml(retryCacheKey)}"
           ${state.busy ? 'disabled' : ''}
-        >Retry</button>
+        >${escapeHtml(t('Retry'))}</button>
       ` : ''}
       ${cascadingAdvancedManualInput(fieldDef, value)}
       ${error}
@@ -23730,7 +23799,7 @@ function cascadingSelectFieldInput(
       value,
       label,
       error,
-      cascading.emptyHint ?? 'Provider not registered yet.',
+      cascading.emptyHint ?? t('Provider not registered yet.'),
     );
   }
   const fieldValues = cascadingFieldValues();
@@ -23742,7 +23811,7 @@ function cascadingSelectFieldInput(
         <span>${escapeHtml(label)}</span>
         ${selectPicker({
           value: '',
-          options: [{ value: '', label: `Choose ${missingLabel} first`, meta: fieldDef.label, disabled: true }],
+          options: [{ value: '', label: tf('Choose {field} first', { field: missingLabel }), meta: fieldDef.label, disabled: true }],
           attrs: { 'data-template-field': fieldDef.id },
           disabled: true,
         })}
@@ -23769,7 +23838,7 @@ function cascadingSelectFieldInput(
         <span>${escapeHtml(label)}</span>
         ${selectPicker({
           value: '',
-          options: [{ value: '', label: 'Loading options…', meta: fieldDef.label, disabled: true }],
+          options: [{ value: '', label: t('Loading options…'), meta: fieldDef.label, disabled: true }],
           attrs: { 'data-template-field': fieldDef.id },
           disabled: true,
         })}
@@ -23786,7 +23855,7 @@ function cascadingSelectFieldInput(
       value,
       label,
       error,
-      cascading.emptyHint ?? `Couldn't load options: ${errorMessage}`,
+      cascading.emptyHint ?? tf('Couldn\'t load options: {error}', { error: errorMessage }),
       cacheKey,
     );
   }
@@ -23796,7 +23865,7 @@ function cascadingSelectFieldInput(
       value,
       label,
       error,
-      cascading.emptyHint ?? 'No options found.',
+      cascading.emptyHint ?? t('No options found.'),
     );
   }
   return `
@@ -23805,23 +23874,23 @@ function cascadingSelectFieldInput(
       ${selectPicker({
         value,
         options: cascadingSelectPickerOptions(options, fieldDef.label),
-        placeholder: `Choose ${fieldDef.label}`,
+        placeholder: tf('Choose {field}', { field: fieldDef.label }),
         attrs: {
           'data-template-field': fieldDef.id,
           'data-cascading-select': true,
         },
         disabled: state.busy,
       })}
-      ${loading ? '<small class="planner-field-hint">Refreshing…</small>' : ''}
-      ${errorMessage && options.length ? `<small class="planner-field-hint">Last refresh failed: ${escapeHtml(errorMessage)}</small>` : ''}
-      ${fetchedAt && !loading ? `<small class="planner-field-hint subtle">Updated ${escapeHtml(formatCascadingFetchedAt(fetchedAt))}</small>` : ''}
+      ${loading ? `<small class="planner-field-hint">${escapeHtml(t('Refreshing…'))}</small>` : ''}
+      ${errorMessage && options.length ? `<small class="planner-field-hint">${escapeHtml(tf('Last refresh failed: {error}', { error: errorMessage }))}</small>` : ''}
+      ${fetchedAt && !loading ? `<small class="planner-field-hint subtle">${escapeHtml(tf('Updated {when}', { when: formatCascadingFetchedAt(fetchedAt) }))}</small>` : ''}
       ${error}
     </label>
   `;
 }
 
 function dependencyFieldLabel(fieldId: string | undefined): string {
-  if (!fieldId) return 'previous field';
+  if (!fieldId) return t('previous field');
   const template = selectedTemplate();
   const activeForm = activeConnectorActionForm();
   const activeField = activeForm
@@ -23904,7 +23973,7 @@ function cascadingSelectPickerOptions(options: ConnectorOption[], fallbackMeta: 
     result.push({
       value: option.value,
       label: option.label,
-      meta: 'Your positions',
+      meta: t('Your positions'),
       detail: option.detail,
     });
   }
@@ -23912,7 +23981,7 @@ function cascadingSelectPickerOptions(options: ConnectorOption[], fallbackMeta: 
     result.push({
       value: option.value,
       label: option.label,
-      meta: option.group ? 'All' : fallbackMeta,
+      meta: option.group ? t('All') : fallbackMeta,
       detail: option.detail,
     });
   }
@@ -23921,12 +23990,18 @@ function cascadingSelectPickerOptions(options: ConnectorOption[], fallbackMeta: 
 
 function formatCascadingFetchedAt(fetchedAt: number): string {
   const ageMs = Date.now() - fetchedAt;
-  if (ageMs < 30_000) return 'just now';
-  if (ageMs < 60_000) return 'less than a minute ago';
+  if (ageMs < 30_000) return t('just now');
+  if (ageMs < 60_000) return t('less than a minute ago');
   const minutes = Math.floor(ageMs / 60_000);
-  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+  if (minutes < 60) {
+    return minutes === 1
+      ? tf('{count} minute ago', { count: minutes })
+      : tf('{count} minutes ago', { count: minutes });
+  }
   const hours = Math.floor(minutes / 60);
-  return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  return hours === 1
+    ? tf('{count} hour ago', { count: hours })
+    : tf('{count} hours ago', { count: hours });
 }
 
 function walletAddressForCascading(): string | undefined {
@@ -24016,8 +24091,8 @@ function connectorDraftStatusPanel(connector: ProtocolConnector | undefined, has
   if (!connector) {
     return `
       <div class="connector-draft-empty">
-        <p>No Blink-capable connector is enabled.</p>
-        <button type="button" class="utility" data-tab="preferences" data-preferences-view="access" ${state.busy ? 'disabled' : ''}>Open Protocol Connectors</button>
+        <p>${escapeHtml(tf('No {brand}-capable connector is enabled.', { brand: 'Blink' }))}</p>
+        <button type="button" class="utility" data-tab="preferences" data-preferences-view="access" ${state.busy ? 'disabled' : ''}>${escapeHtml(tf('Open {label}', { label: 'Protocol Connectors' }))}</button>
       </div>
     `;
   }
@@ -24028,7 +24103,7 @@ function connectorDraftStatusPanel(connector: ProtocolConnector | undefined, has
       <span>${escapeHtml(status.label)}</span>
       <p>${escapeHtml(status.detail)}</p>
       ${hasSelectableConnector ? '' : `
-        <button type="button" class="utility" data-tab="preferences" data-preferences-view="access" ${state.busy ? 'disabled' : ''}>Open Protocol Connectors</button>
+        <button type="button" class="utility" data-tab="preferences" data-preferences-view="access" ${state.busy ? 'disabled' : ''}>${escapeHtml(tf('Open {label}', { label: 'Protocol Connectors' }))}</button>
       `}
     </div>
   `;
@@ -24069,9 +24144,9 @@ function jupiterDcaIntervalFieldInput(
     <div class="field compact planner-field interval-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
       <span>${escapeHtml(label)}</span>
       <div class="interval-field-row" role="group" aria-label="${escapeHtml(label)}">
-        ${intervalPartInput(fieldDef.id, 'days', 'Days', parts.days)}
-        ${intervalPartInput(fieldDef.id, 'hours', 'Hours', parts.hours)}
-        ${intervalPartInput(fieldDef.id, 'minutes', 'Minutes', parts.minutes)}
+        ${intervalPartInput(fieldDef.id, 'days', t('Days'), parts.days)}
+        ${intervalPartInput(fieldDef.id, 'hours', t('Hours'), parts.hours)}
+        ${intervalPartInput(fieldDef.id, 'minutes', t('Minutes'), parts.minutes)}
       </div>
       <input type="hidden" data-template-field="${escapeHtml(fieldDef.id)}" value="${escapeHtml(parts.totalSeconds)}" />
       ${templateFieldHelper(fieldDef)}
@@ -24189,7 +24264,7 @@ function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label:
     <div class="field compact planner-field token-choice-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
       <span class="token-choice-head">
         <span>${escapeHtml(label)}</span>
-        <span class="token-choice-mode" role="group" aria-label="${escapeHtml(`${fieldDef.label} input mode`)}">
+        <span class="token-choice-mode" role="group" aria-label="${escapeHtml(tf('{field} input mode', { field: fieldDef.label }))}">
           <button
             type="button"
             data-token-field-mode="preset"
@@ -24197,7 +24272,7 @@ function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label:
             class="${presetMode ? 'active' : ''}"
             ${disabled ? 'disabled' : ''}
           >
-            List
+            ${escapeHtml(t('List'))}
           </button>
           <button
             type="button"
@@ -24206,7 +24281,7 @@ function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label:
             class="${presetMode ? '' : 'active'}"
             ${disabled ? 'disabled' : ''}
           >
-            Mint
+            ${escapeHtml(t('Mint'))}
           </button>
         </span>
       </span>
@@ -24227,7 +24302,7 @@ function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label:
             data-token-search-input="${escapeHtml(fieldDef.id)}"
             ${executionValue ? `data-token-execution-value="${escapeHtml(executionValue)}"` : ''}
             value="${escapeHtml(customValue)}"
-            placeholder="Search symbol/name or paste mint"
+            placeholder="${escapeHtml(t('Search symbol/name or paste mint'))}"
             autocomplete="off"
             spellcheck="false"
             ${disabled ? 'disabled' : ''}
@@ -24309,7 +24384,7 @@ function recipientTemplateFieldInput(
       <input
         data-template-field="${escapeHtml(fieldDef.id)}"
         value="${escapeHtml(value)}"
-        placeholder="${escapeHtml(fieldDef.placeholder ?? 'Recipient public key')}"
+        placeholder="${escapeHtml(fieldDef.placeholder ?? t('Recipient public key'))}"
         autocomplete="off"
         spellcheck="false"
         ${disabled ? 'disabled' : ''}
@@ -24342,9 +24417,9 @@ function recipientSelectForField(
 
 function recipientSelectOptions(currentValue: string): SelectPickerOption[] {
   const current = currentValue.trim();
-  const manualLabel = current ? `Manual ${short(current)}` : 'Manual address';
+  const manualLabel = current ? tf('Manual {address}', { address: short(current) }) : t('Manual address');
   return [
-    { value: '__manual__', label: manualLabel, meta: 'Recipient' },
+    { value: '__manual__', label: manualLabel, meta: t('Recipient') },
     ...state.recipientRules.recipients.map((recipient) => {
       const blocked = recipientOptionDisabled(recipient);
       return {
@@ -24396,22 +24471,22 @@ function browserDeviceAgentSecretStoreControl(scope: string): string {
   if (!browserDeviceAgentUiVisible()) return '';
   return `
     <label class="field compact ai-setting-field ai-setting-secret-store">
-      <span>Secret store mode</span>
+      <span>${escapeHtml(t('Secret store mode'))}</span>
       ${selectPicker({
         id: `deviceAgentSecretStoreMode-${scope}`,
         value: currentBrowserDeviceAgentSecretStoreMode(),
         options: [
           {
             value: 'encrypted-indexeddb',
-            label: 'Encrypted (IndexedDB)',
-            meta: 'Persistent',
-            detail: 'Encrypts the provider key with WebCrypto and stores ciphertext in IndexedDB.',
+            label: t('Encrypted (IndexedDB)'),
+            meta: t('Persistent'),
+            detail: t('Encrypts the provider key with WebCrypto and stores ciphertext in IndexedDB.'),
           },
           {
             value: 'session-memory',
-            label: 'Session only',
-            meta: 'Tab memory',
-            detail: 'Keeps the key only in this tab and clears it when the tab closes.',
+            label: t('Session only'),
+            meta: t('Tab memory'),
+            detail: t('Keeps the key only in this tab and clears it when the tab closes.'),
           },
         ],
         attrs: { 'data-ai-control': 'device-agent-secret-store-mode' },
@@ -24440,15 +24515,15 @@ function inactiveAiConfigNotice(location: 'rail' | 'planner'): string {
     ?? `${inactive.provider ?? 'AI'} - ${inactive.model ?? 'model configured'}`;
   const useButton = location === 'rail'
     ? ''
-    : `<button type="button" class="utility" data-ai-mode-choice="${escapeHtml(inactive.mode)}">Use ${escapeHtml(label)}</button>`;
+    : `<button type="button" class="utility" data-ai-mode-choice="${escapeHtml(inactive.mode)}">${escapeHtml(tf('Use {label}', { label }))}</button>`;
   return `
     <div class="ai-key-configured-note ai-inactive-config-note" aria-live="polite">
-      <span>Inactive AI path</span>
-      <strong>${escapeHtml(label)} configured</strong>
-      <em>${escapeHtml(`${detail}. ${activeLabel} is selected.`)}</em>
+      <span>${escapeHtml(t('Inactive AI path'))}</span>
+      <strong>${escapeHtml(tf('{label} configured', { label }))}</strong>
+      <em>${escapeHtml(tf('{detail}. {active} is selected.', { detail, active: activeLabel }))}</em>
       <div class="ai-inactive-config-actions">
         ${useButton}
-        <button type="button" class="utility danger" data-ai-action="clear-key" data-ai-clear-mode="${escapeHtml(inactive.mode)}" ${!canClearAiKey(inactive.mode) ? 'disabled' : ''}>Clear API key</button>
+        <button type="button" class="utility danger" data-ai-action="clear-key" data-ai-clear-mode="${escapeHtml(inactive.mode)}" ${!canClearAiKey(inactive.mode) ? 'disabled' : ''}>${escapeHtml(t('Clear API key'))}</button>
       </div>
     </div>
   `;
@@ -24480,7 +24555,7 @@ function aiKeySetupActionHtml(scope: string): string {
         data-ai-clear-mode="${escapeHtml(state.aiSettings.mode)}"
         class="utility danger ai-key-primary-action"
         ${!canClearAiKey(state.aiSettings.mode) ? 'disabled' : ''}
-      >Clear API key</button>
+      >${escapeHtml(t('Clear API key'))}</button>
     `;
   }
   const clearButton = canClearAiKey(state.aiSettings.mode)
@@ -24490,7 +24565,7 @@ function aiKeySetupActionHtml(scope: string): string {
         data-ai-action="clear-key"
         data-ai-clear-mode="${escapeHtml(state.aiSettings.mode)}"
         class="utility danger ai-key-secondary-action"
-      >Clear API key</button>
+      >${escapeHtml(t('Clear API key'))}</button>
     `
     : '';
   return `
@@ -24499,8 +24574,8 @@ function aiKeySetupActionHtml(scope: string): string {
       data-ai-action="set-confirm-key"
       class="primary ai-key-primary-action"
       ${!canSetAndConfirmAiKey() ? 'disabled' : ''}
-      title="${escapeHtml(canSetAndConfirmAiKey() ? 'Save this key and check the selected AI Connector route.' : aiConfirmDisabledReason())}"
-    >Set and confirm API key</button>
+      title="${escapeHtml(canSetAndConfirmAiKey() ? t('Save this key and check the selected AI Connector route.') : aiConfirmDisabledReason())}"
+    >${escapeHtml(t('Set and confirm API key'))}</button>
     ${clearButton}
   `;
 }
@@ -24537,7 +24612,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
     && !stagedKey;
   const routeConfigDisabled = state.busy || nativeDeviceAgentConfiguredWithoutStagedKey;
   const routeConfigLockedTitle = nativeDeviceAgentConfiguredWithoutStagedKey
-    ? 'Clear API key to change provider, model, or gateway.'
+    ? t('Clear API key to change provider, model, or gateway.')
     : undefined;
   const setupHelperMessages = Array.from(new Set(
     (mobilePlannerSetup ? [modeHelperText] : [modeHelperText, providerHelperText]).filter(Boolean),
@@ -24548,18 +24623,18 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const confirmationDetail = aiConfirmationDetail();
   const hideKeyEntry = shouldHideAiKeyEntry(status);
   const sessionKeyLabel = IS_TAURI_APP
-    ? 'Desktop session key'
+    ? t('Desktop session key')
     : IS_ANDROID_APP
-      ? 'Android session key'
-      : 'Browser session key';
-  const sessionScope = IS_TAURI_APP || IS_ANDROID_APP ? 'this app runtime' : 'this tab';
-  const sessionDescriptor = IS_TAURI_APP ? 'Desktop session' : IS_ANDROID_APP ? 'Android session' : 'Browser session';
+      ? t('Android session key')
+      : t('Browser session key');
+  const sessionScope = IS_TAURI_APP || IS_ANDROID_APP ? t('this app runtime') : t('this tab');
+  const sessionDescriptor = IS_TAURI_APP ? t('Desktop session') : IS_ANDROID_APP ? t('Android session') : t('Browser session');
   const keyLabel = state.aiSettings.mode === 'bridge'
-    ? 'AI provider key'
+    ? t('AI provider key')
     : state.aiSettings.mode === 'device-agent'
-      ? 'Device Agent key'
+      ? t('Device Agent key')
     : state.aiSettings.mode === 'hosted'
-      ? 'Hosted BYOK key'
+      ? t('Hosted BYOK key')
       : sessionKeyLabel;
   const iosMobileDeviceAgentKeyInput = state.iosNativeEnvironment.isIosNative
     && state.aiSettings.mode === 'device-agent';
@@ -24569,12 +24644,12 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
     ? ' autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="text"'
     : '';
   const securityCopy = state.aiSettings.mode === 'hosted'
-    ? 'Hosted BYOK relays this key only for AI Connector requests. It cannot queue approvals, create repeat payments, approve, submit, or sign.'
+    ? t('Hosted BYOK relays this key only for AI Connector requests. It cannot queue approvals, create repeat payments, approve, submit, or sign.')
     : state.aiSettings.mode === 'device-agent'
-      ? 'Device Agent stores the AI Connector route config in the selected runtime boundary. Queueing, repeat payments, approvals, submissions, and signatures remain separate workflow actions.'
+      ? t('Device Agent stores the AI Connector route config in the selected runtime boundary. Queueing, repeat payments, approvals, submissions, and signatures remain separate workflow actions.')
     : state.aiSettings.mode === 'bridge'
-      ? 'Local Bridge AI uses your normal provider key from the local runtime. Needs Approval, repeat payments, proofs, and wallet signatures remain separate workflow actions.'
-        : `${sessionDescriptor} keys stay in ${sessionScope} and only help prepare or review requests. Queueing, repeat payments, approvals, submissions, and signatures use the active workflow, not the AI key.`;
+      ? t('Local Bridge AI uses your normal provider key from the local runtime. Needs Approval, repeat payments, proofs, and wallet signatures remain separate workflow actions.')
+        : tf('{descriptor} keys stay in {scope} and only help prepare or review requests. Queueing, repeat payments, approvals, submissions, and signatures use the active workflow, not the AI key.', { descriptor: sessionDescriptor, scope: sessionScope });
   const bridgeConfiguredDisplay = bridgeAiConfiguredDisplay(status);
   const deviceAgentConfiguredProvider = state.deviceAgentStatus?.provider
     || state.deviceAgentStatus?.apiFormat
@@ -24588,8 +24663,8 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
     ? `
         <div class="ai-key-configured-note" aria-live="polite">
           <span>Device Agent</span>
-          <strong>Configured for review</strong>
-          <em>${escapeHtml(nativeDeviceAgentConfiguredWithoutStagedKey ? `${deviceAgentConfiguredDetail}. Clear API key to change provider or model.` : deviceAgentConfiguredDetail)}</em>
+          <strong>${escapeHtml(t('Configured for review'))}</strong>
+          <em>${escapeHtml(nativeDeviceAgentConfiguredWithoutStagedKey ? tf('{detail}. Clear API key to change provider or model.', { detail: deviceAgentConfiguredDetail }) : deviceAgentConfiguredDetail)}</em>
         </div>
       `
     : `
@@ -24609,8 +24684,8 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         <div class="field compact ai-setting-field ai-setting-key">
           <span><label for="aiApiKey-${escapeHtml(scope)}">${escapeHtml(keyLabel)}</label></span>
           <div class="ai-key-input-wrap">
-            <input id="aiApiKey-${escapeHtml(scope)}" data-ai-control="api-key"${keyInputClass} type="${keyInputType}" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="${state.aiSettings.mode === 'bridge' ? 'Sent to local bridge memory' : (IS_TAURI_APP || IS_ANDROID_APP || state.iosNativeEnvironment.isIosNative) ? 'Stored after confirm or clear API key' : 'Held for this tab'}" autocomplete="off"${keyInputAssistAttrs} ${state.busy ? 'disabled' : ''} />
-            <button type="button" id="pasteAiKey-${escapeHtml(scope)}" data-ai-action="paste-api-key" data-ai-paste-target="${escapeHtml(scope)}" class="ai-key-paste-btn" ${state.busy ? 'disabled' : ''} title="Paste your key from the clipboard" aria-label="Paste key from clipboard">Paste</button>
+            <input id="aiApiKey-${escapeHtml(scope)}" data-ai-control="api-key"${keyInputClass} type="${keyInputType}" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="${escapeHtml(state.aiSettings.mode === 'bridge' ? t('Sent to local bridge memory') : (IS_TAURI_APP || IS_ANDROID_APP || state.iosNativeEnvironment.isIosNative) ? t('Stored after confirm or clear API key') : t('Held for this tab'))}" autocomplete="off"${keyInputAssistAttrs} ${state.busy ? 'disabled' : ''} />
+            <button type="button" id="pasteAiKey-${escapeHtml(scope)}" data-ai-action="paste-api-key" data-ai-paste-target="${escapeHtml(scope)}" class="ai-key-paste-btn" ${state.busy ? 'disabled' : ''} title="${escapeHtml(t('Paste your key from the clipboard'))}" aria-label="${escapeHtml(t('Paste key from clipboard'))}">${escapeHtml(t('Paste'))}</button>
           </div>
         </div>
       `;
@@ -24627,14 +24702,14 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
     <aside class="ai-settings-card" data-ai-settings-scope="${escapeHtml(scope)}" ${mobilePlannerSetup ? 'data-mobile-ai-policy="true"' : ''}>
       ${aiReviewSetupTabsVisible ? aiReviewSetupTabs() : ''}
       ${isRail || mobilePlannerSetup ? '' : `<div class="ai-settings-intro">
-        <span class="workbench-kicker">Connect AI</span>
-        <h3>Agent setup</h3>
+        <span class="workbench-kicker">${escapeHtml(t('Connect AI'))}</span>
+        <h3>${escapeHtml(t('Agent setup'))}</h3>
         <p>${escapeHtml(securityCopy)}</p>
       </div>`}
       ${keyEntryHtml}
       ${inactiveConfigNote}
       <label class="field compact ai-setting-field ai-setting-path">
-        <span>AI path</span>
+        <span>${escapeHtml(t('AI path'))}</span>
         ${selectPicker({
           id: `aiMode-${scope}`,
           value: state.aiSettings.mode,
@@ -24646,7 +24721,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         ${isRail && modeHelperText ? `<em class="ai-route-helper">${escapeHtml(modeHelperText)}</em>` : ''}
       </label>
       <label class="field compact ai-setting-field ai-setting-provider">
-        <span>Provider preset</span>
+        <span>${escapeHtml(t('Provider preset'))}</span>
         ${selectPicker({
           id: `aiProvider-${scope}`,
           value: state.aiSettings.provider,
@@ -24660,7 +24735,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         ${isRail && providerHelperText ? `<em class="ai-route-helper">${escapeHtml(providerHelperText)}</em>` : ''}
       </label>
       <label class="field compact ai-setting-field ai-setting-model">
-        <span>Model</span>
+        <span>${escapeHtml(t('Model'))}</span>
         ${selectPicker({
           id: `aiModelSelect-${scope}`,
           value: usingCustomModel ? CUSTOM_AI_MODEL_VALUE : state.aiSettings.model,
@@ -24668,13 +24743,13 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
             ...providerPreset.models.map((model) => ({
               value: model.id,
               label: model.label,
-              meta: 'Model preset',
-              metaSuffix: model.tokenRateLabel ? `${model.tokenRateLabel} tokens/minute` : undefined,
+              meta: t('Model preset'),
+              metaSuffix: model.tokenRateLabel ? tf('{rate} tokens/minute', { rate: model.tokenRateLabel }) : undefined,
               title: model.tokenRateLabel
-                ? `${model.label} - ${model.tokenRateLabel} input tokens per minute`
+                ? tf('{label} - {rate} input tokens per minute', { label: model.label, rate: model.tokenRateLabel })
                 : model.label,
             })),
-            { value: CUSTOM_AI_MODEL_VALUE, label: 'Custom model', meta: 'Model' },
+            { value: CUSTOM_AI_MODEL_VALUE, label: t('Custom model'), meta: t('Model') },
           ],
           className: 'ai-model-preset-picker',
           attrs: { 'data-ai-control': 'model-select' },
@@ -24685,13 +24760,13 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
       </label>
       ${usingCustomModel ? `
         <label class="field compact ai-setting-field ai-setting-custom-model">
-          <span>Custom model</span>
+          <span>${escapeHtml(t('Custom model'))}</span>
           <input id="aiModelCustom-${escapeHtml(scope)}" data-ai-control="model-custom" value="${escapeHtml(state.aiSettings.model)}" placeholder="${escapeHtml(providerPreset.model)}" ${routeConfigLockedTitle ? `title="${escapeHtml(routeConfigLockedTitle)}"` : ''} ${routeConfigDisabled ? 'disabled' : ''} />
         </label>
       ` : ''}
       ${customProvider ? `
         <label class="field compact ai-setting-field ai-setting-base-url">
-          <span>Gateway URL</span>
+          <span>${escapeHtml(t('Gateway URL'))}</span>
           <input id="aiBaseUrl-${escapeHtml(scope)}" data-ai-control="base-url" value="${escapeHtml(state.aiSettings.baseUrl)}" placeholder="${escapeHtml(providerPreset.baseUrl)}" ${routeConfigLockedTitle ? `title="${escapeHtml(routeConfigLockedTitle)}"` : ''} ${routeConfigDisabled ? 'disabled' : ''} />
         </label>
       ` : ''}
@@ -24705,37 +24780,37 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         ${aiKeySetupActionHtml(scope)}
       </div>
       ${isRail || mobilePlannerSetup
-        ? `<p class="ai-security-note compact">AI suggests approve/deny and answers questions before signing. Your provider sees request details and public wallet address - never keys, seed phrase, location, or device IDs. <a href="/privacy" data-site-link="/privacy">Privacy Policy</a></p>${bridgeSetupCard}${nativeRuntimeDiagnosticsPanel()}`
+        ? `<p class="ai-security-note compact">${escapeHtml(t('AI suggests approve/deny and answers questions before signing. Your provider sees request details and public wallet address - never keys, seed phrase, location, or device IDs.'))} <a href="/privacy" data-site-link="/privacy">${escapeHtml(t('Privacy Policy'))}</a></p>${bridgeSetupCard}${nativeRuntimeDiagnosticsPanel()}`
         : `
           ${state.aiSettings.mode === 'bridge' ? '' : aiModeLimitations()}
           ${bridgeSetupCard}
           ${state.aiSettings.mode === 'device-agent' ? deviceAgentConnectionCard(state.deviceAgentStatus) : ''}
-          <div class="ai-readiness-summary" aria-label="AI planner readiness">
+          <div class="ai-readiness-summary" aria-label="${escapeHtml(t('AI planner readiness'))}">
             <div>
-              <span>Planner check</span>
+              <span>${escapeHtml(t('Planner check'))}</span>
               <strong id="aiConfirmationStatus-${escapeHtml(scope)}" data-ai-confirmation-status>${escapeHtml(confirmationLabel)}</strong>
               <p id="aiConfirmationDetail-${escapeHtml(scope)}" data-ai-confirmation-detail>${escapeHtml(confirmationDetail)}</p>
             </div>
             <div>
-              <span>Status</span>
+              <span>${escapeHtml(t('Status'))}</span>
               <strong>${escapeHtml(readinessLabel)}</strong>
             </div>
             <div>
-              <span>Route</span>
+              <span>${escapeHtml(t('Route'))}</span>
               <strong>${escapeHtml(routeLabel)}</strong>
             </div>
             <div>
-              <span>Format</span>
+              <span>${escapeHtml(t('Format'))}</span>
               <strong>${escapeHtml(formatLabel)}</strong>
             </div>
             <div>
-              <span>Impact</span>
-              <strong>Review only</strong>
+              <span>${escapeHtml(t('Impact'))}</span>
+              <strong>${escapeHtml(t('Review only'))}</strong>
             </div>
           </div>
           ${aiDiagnosticsPanel()}
           ${nativeRuntimeDiagnosticsPanel()}
-          <p class="ai-security-note">AI helps review requests. Signing and submission stay in the wallet workflow; private local bridge is optional.</p>
+          <p class="ai-security-note">${escapeHtml(t('AI helps review requests. Signing and submission stay in the wallet workflow; private local bridge is optional.'))}</p>
         `}
     </aside>
   `;
@@ -24767,53 +24842,53 @@ function aiModeSelectOptions(): SelectPickerOption[] {
   const mobileOptions: Array<{ id: AiSettings['mode']; label: string }> = orderedMobileModes.map((mode) => ({
     id: mode,
     label: mode === 'device-agent'
-      ? 'Device Agent - reviews on device'
+      ? t('Device Agent - reviews on device')
       : mode === 'session'
-        ? 'Session AI - your key, no sign-in'
+        ? t('Session AI - your key, no sign-in')
         : cloudSessionMatchesWallet()
-          ? 'Hosted BYOK - cloud relay'
-          : 'Hosted BYOK - Cloud sign-in required',
+          ? t('Hosted BYOK - cloud relay')
+          : t('Hosted BYOK - Cloud sign-in required'),
   }));
   const options: Array<{ id: AiSettings['mode']; label: string }> = mobileAiPathPolicy
     ? mobileOptions
     : IS_ANDROID_APP
       ? deviceAgentFirst
         ? [
-            { id: 'device-agent', label: 'Device Agent - reviews on device' },
-            { id: 'session', label: 'Android session - review only' },
-            { id: 'hosted', label: 'Hosted BYOK - cloud relay' },
-            { id: 'bridge', label: 'Local bridge AI - optional' },
+            { id: 'device-agent', label: t('Device Agent - reviews on device') },
+            { id: 'session', label: t('Android session - review only') },
+            { id: 'hosted', label: t('Hosted BYOK - cloud relay') },
+            { id: 'bridge', label: t('Local bridge AI - optional') },
           ]
         : [
-            { id: 'hosted', label: 'Hosted BYOK - cloud relay' },
+            { id: 'hosted', label: t('Hosted BYOK - cloud relay') },
             ...(deviceAgentVisible
-              ? [{ id: 'device-agent' as const, label: 'Device Agent - reviews on device' }]
+              ? [{ id: 'device-agent' as const, label: t('Device Agent - reviews on device') }]
               : []),
-            { id: 'session', label: 'Android session - review only' },
-            { id: 'bridge', label: 'Local bridge AI - optional' },
+            { id: 'session', label: t('Android session - review only') },
+            { id: 'bridge', label: t('Local bridge AI - optional') },
           ]
       : IS_TAURI_APP
         ? [
-            { id: 'bridge', label: 'Local bridge AI - default' },
+            { id: 'bridge', label: t('Local bridge AI - default') },
             ...(deviceAgentVisible
-              ? [{ id: 'device-agent' as const, label: 'Device Agent - reviews on device' }]
+              ? [{ id: 'device-agent' as const, label: t('Device Agent - reviews on device') }]
               : []),
-            { id: 'hosted', label: 'Hosted BYOK - cloud relay' },
+            { id: 'hosted', label: t('Hosted BYOK - cloud relay') },
           ]
         : deviceAgentFirst
           ? [
-              { id: 'device-agent', label: 'Device Agent - reviews on device' },
-              { id: 'hosted', label: 'Hosted BYOK - review only' },
-              { id: 'bridge', label: 'Local bridge AI - review via bridge' },
-              { id: 'session', label: 'Browser session - review only' },
+              { id: 'device-agent', label: t('Device Agent - reviews on device') },
+              { id: 'hosted', label: t('Hosted BYOK - review only') },
+              { id: 'bridge', label: t('Local bridge AI - review via bridge') },
+              { id: 'session', label: t('Browser session - review only') },
             ]
           : [
-              { id: 'hosted', label: 'Hosted BYOK - review only' },
+              { id: 'hosted', label: t('Hosted BYOK - review only') },
               ...(deviceAgentVisible
-                ? [{ id: 'device-agent' as const, label: 'Device Agent - reviews on device' }]
+                ? [{ id: 'device-agent' as const, label: t('Device Agent - reviews on device') }]
                 : []),
-              { id: 'bridge', label: 'Local bridge AI - review via bridge' },
-              { id: 'session', label: 'Browser session - review only' },
+              { id: 'bridge', label: t('Local bridge AI - review via bridge') },
+              { id: 'session', label: t('Browser session - review only') },
             ];
   return options.map((option) => {
     const rawDisabledReason = aiModeDisabledReason(option.id);
@@ -24826,19 +24901,19 @@ function aiModeSelectOptions(): SelectPickerOption[] {
     return {
       value: option.id,
       label: option.label,
-      meta: 'AI path',
+      meta: t('AI path'),
       metaSuffix: hostedCloudSignInNeeded
-        ? 'cloud sign-in needed'
+        ? t('cloud sign-in needed')
         : configured
-          ? active ? 'active configured' : 'configured'
+          ? active ? t('active configured') : t('configured')
           : undefined,
       detail: rawDisabledReason
         || (hostedCloudSignInNeeded
           ? MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED
           : '')
         || (configured
-          ? `${active ? 'Active' : 'Inactive'} configured path; approvals and signatures stay separate.`
-          : 'Review only; approvals and signatures stay separate.'),
+          ? tf('{state} configured path; approvals and signatures stay separate.', { state: active ? t('Active') : t('Inactive') })
+          : t('Review only; approvals and signatures stay separate.')),
       disabled: Boolean(disabledReason),
       title: disabledReason,
     };
@@ -24940,27 +25015,27 @@ function aiModeDisabledReason(mode: AiSettings['mode']): string {
   });
   if (desktopDisabledReason) return desktopDisabledReason;
   if (!mobileAiPathPolicy && mode === 'device-agent' && !deviceAgentModeVisible()) {
-    return 'Device Agent is enabled only for local dev builds, Android device-agent builds, or browser-native Device Agent builds.';
+    return t('Device Agent is enabled only for local dev builds, Android device-agent builds, or browser-native Device Agent builds.');
   }
   if (mode === 'device-agent' && !aiProviderSupportsDeviceAgent(state.aiSettings.provider)) {
-    return 'Device Agent is not available for this AI provider. Use Hosted BYOK or choose a Device Agent-compatible provider.';
+    return t('Device Agent is not available for this AI provider. Use Hosted BYOK or choose a Device Agent-compatible provider.');
   }
   const hostedBlockReason = hostedByokCloudSessionReasonForMode(mode);
   if (!mobileAiPathPolicy && hostedBlockReason) return hostedBlockReason;
   if (mode === 'session' && state.aiSettings.provider === 'openai') {
-    return OPENAI_BROWSER_SESSION_DISABLED_REASON;
+    return t(OPENAI_BROWSER_SESSION_DISABLED_REASON);
   }
   return '';
 }
 
 function aiProviderDisabledReason(providerId: string): string {
   if (state.aiSettings.mode === 'session' && providerId === 'openai') {
-    return OPENAI_BROWSER_SESSION_DISABLED_REASON;
+    return t(OPENAI_BROWSER_SESSION_DISABLED_REASON);
   }
   if (state.aiSettings.mode === 'hosted' && providerId === 'custom-openai-compatible') {
     return isMobileAiPathPolicySurface()
-      ? MOBILE_HOSTED_CUSTOM_PROVIDER_DISABLED_REASON
-      : HOSTED_CUSTOM_PROVIDER_DISABLED_REASON;
+      ? t(MOBILE_HOSTED_CUSTOM_PROVIDER_DISABLED_REASON)
+      : t(HOSTED_CUSTOM_PROVIDER_DISABLED_REASON);
   }
   return '';
 }
@@ -24971,7 +25046,7 @@ function aiModeHelperText(): string {
   const hostedBlockReason = hostedByokCloudSessionReason();
   if (hostedBlockReason) return hostedBlockReason;
   return state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai'
-    ? OPENAI_BROWSER_SESSION_DISABLED_REASON
+    ? t(OPENAI_BROWSER_SESSION_DISABLED_REASON)
     : '';
 }
 
@@ -24979,33 +25054,33 @@ function aiProviderHelperText(): string {
   if (state.aiSettings.mode === 'session') {
     if (IS_ANDROID_APP) {
       return state.aiSettings.provider === 'openai'
-        ? 'Android session AI drafts in the bundled app only. Use OpenRouter or a browser-compatible gateway.'
+        ? t('Android session AI drafts in the bundled app only. Use OpenRouter or a browser-compatible gateway.')
         : '';
     }
     return state.aiSettings.provider === 'openai'
-      ? OPENAI_BROWSER_SESSION_DISABLED_REASON
+      ? t(OPENAI_BROWSER_SESSION_DISABLED_REASON)
       : '';
   }
   if (state.aiSettings.mode === 'hosted') {
     if (isMobileAiPathPolicySurface()) {
       return state.aiSettings.provider === 'custom-openai-compatible'
-        ? MOBILE_HOSTED_CUSTOM_PROVIDER_DISABLED_REASON
+        ? t(MOBILE_HOSTED_CUSTOM_PROVIDER_DISABLED_REASON)
         : '';
     }
     return state.aiSettings.provider === 'custom-openai-compatible'
-      ? HOSTED_CUSTOM_PROVIDER_DISABLED_REASON
+      ? t(HOSTED_CUSTOM_PROVIDER_DISABLED_REASON)
       : '';
   }
   if (state.aiSettings.mode === 'device-agent') {
     if (IS_ANDROID_APP) {
-      return 'Device Agent uses the gated Android native runtime and encrypted native config storage.';
+      return t('Device Agent uses the gated Android native runtime and encrypted native config storage.');
     }
     if (state.iosNativeEnvironment.isIosNative) {
-      return 'Device Agent uses the native iOS runtime and Keychain-backed config storage.';
+      return t('Device Agent uses the native iOS runtime and Keychain-backed config storage.');
     }
     return canUseDeviceAgentBrowserNative()
-      ? 'Device Agent makes AI calls in this tab. We suggest a low-limit key to avoid burning quota; close the tab to stop it.'
-      : 'Device Agent is gated by the Device Agent build/runtime flags.';
+      ? t('Device Agent makes AI calls in this tab. We suggest a low-limit key to avoid burning quota; close the tab to stop it.')
+      : t('Device Agent is gated by the Device Agent build/runtime flags.');
   }
   return '';
 }
@@ -25014,9 +25089,9 @@ function aiModeLimitations(): string {
   if (state.aiSettings.mode === 'session') {
     return `
       <div class="ai-limitations">
-        <span>Browser session limits</span>
+        <span>${escapeHtml(t('Browser session limits'))}</span>
         <ul>
-          ${BROWSER_AI_LIMITATIONS.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}
+          ${BROWSER_AI_LIMITATIONS.map((item) => `<li>${escapeHtml(t(item))}</li>`).join('')}
         </ul>
       </div>
     `;
@@ -25024,10 +25099,10 @@ function aiModeLimitations(): string {
   if (state.aiSettings.mode === 'hosted') {
     return `
       <div class="ai-limitations">
-        <span>Hosted BYOK boundary</span>
+        <span>${escapeHtml(t('Hosted BYOK boundary'))}</span>
         <ul>
-          <li>Agentic relays the key only for the current AI Connector request.</li>
-          <li>No AI path can approve, submit, sign, or change workflow capability.</li>
+          <li>${escapeHtml(t('Agentic relays the key only for the current AI Connector request.'))}</li>
+          <li>${escapeHtml(t('No AI path can approve, submit, sign, or change workflow capability.'))}</li>
         </ul>
       </div>
     `;
@@ -25035,20 +25110,20 @@ function aiModeLimitations(): string {
   if (state.aiSettings.mode === 'device-agent') {
     return `
       <div class="ai-limitations">
-        <span>Device Agent boundary</span>
+        <span>${escapeHtml(t('Device Agent boundary'))}</span>
         <ul>
-          <li>Device Agent is a gated development runtime path for AI Connector only.</li>
-          <li>Approvals, submissions, signatures, repeat payments, and proofs still use the normal workflow pipeline.</li>
+          <li>${escapeHtml(t('Device Agent is a gated development runtime path for AI Connector only.'))}</li>
+          <li>${escapeHtml(t('Approvals, submissions, signatures, repeat payments, and proofs still use the normal workflow pipeline.'))}</li>
         </ul>
       </div>
     `;
   }
   return `
     <div class="ai-limitations">
-      <span>Local bridge AI boundary</span>
+      <span>${escapeHtml(t('Local bridge AI boundary'))}</span>
       <ul>
-        <li>Local bridge AI Connector reviews requests from your machine.</li>
-        <li>Private local workflow remains optional and separate from AI setup.</li>
+        <li>${escapeHtml(t('Local bridge AI Connector reviews requests from your machine.'))}</li>
+        <li>${escapeHtml(t('Private local workflow remains optional and separate from AI setup.'))}</li>
       </ul>
     </div>
   `;
@@ -25179,11 +25254,11 @@ function applyPairedRelayPresence(online: boolean): void {
       relayDisconnectToastShown = true;
       pushToast(
         'error',
-        `${planConnectorDisplayName()} disconnected`,
-        'Computer bridge went offline — reopen the connector page on your computer to keep planning.',
+        tf('{name} disconnected', { name: planConnectorDisplayName() }),
+        t('Computer bridge went offline — reopen the connector page on your computer to keep planning.'),
         {
           key: 'plan-connector-disconnect',
-          actionLabel: 'Open connector page',
+          actionLabel: t('Open connector page'),
           actionUrl: 'https://agentic-signer.com/aiconnectors',
         },
       );
@@ -25245,18 +25320,18 @@ function pairedBridgeStatusChip(): string {
       relayCheckingSince = null;
       stopRelayCheckingWatch();
     }
-    return '<span class="bridge-online-chip ok" style="color:#5fe3a1">● computer online</span>';
+    return `<span class="bridge-online-chip ok" style="color:#5fe3a1">● ${escapeHtml(t('computer online'))}</span>`;
   }
   if (relayCheckingSince !== null) {
     if (Date.now() - relayCheckingSince < RELAY_CHECKING_GRACE_MS) {
       // Still inside the post-pair grace window and not yet online — show the spinner, not "offline".
-      return '<span class="bridge-checking-chip" style="color:#cfe9db"><span class="button-spinner" aria-hidden="true"></span>checking computer…</span>';
+      return `<span class="bridge-checking-chip" style="color:#cfe9db"><span class="button-spinner" aria-hidden="true"></span>${escapeHtml(t('checking computer…'))}</span>`;
     }
     // Grace elapsed and still offline — give up on the spinner and show the honest offline chip.
     relayCheckingSince = null;
     stopRelayCheckingWatch();
   }
-  return '<span class="bridge-online-chip warn" style="color:#ffb27a">● computer offline — open the connector page</span>';
+  return `<span class="bridge-online-chip warn" style="color:#ffb27a">● ${escapeHtml(t('computer offline — open the connector page'))}</span>`;
 }
 
 function deviceAgentConnectionCard(status: DeviceAgentStatus | null): string {
@@ -25267,22 +25342,22 @@ function deviceAgentConnectionCard(status: DeviceAgentStatus | null): string {
     ? 'checking'
     : available ? configured ? 'connected' : 'partial' : 'offline';
   const title = checking
-    ? 'Checking Device Agent…'
+    ? t('Checking Device Agent…')
     : available
       ? configured
-        ? 'Device Agent config ready'
-        : 'Device Agent runtime visible'
-      : 'Device Agent unavailable';
+        ? t('Device Agent config ready')
+        : t('Device Agent runtime visible')
+      : t('Device Agent unavailable');
   const detail = checking
-    ? 'Re-validating your saved Device Agent configuration.'
+    ? t('Re-validating your saved Device Agent configuration.')
     : status?.message
       ?? (available
         ? status?.runtime === 'android-native'
-          ? 'The gated Android runtime is available for native draft, review, and ask requests.'
+          ? t('The gated Android runtime is available for native draft, review, and ask requests.')
           : status?.runtime === 'browser-native'
-            ? 'The gated browser-native runtime is available for on-tab draft, review, and ask requests.'
-            : 'The gated runtime path is available for setup. This surface remains status/control only.'
-        : 'Enable the Device Agent env and connect a wallet to use this path.');
+            ? t('The gated browser-native runtime is available for on-tab draft, review, and ask requests.')
+            : t('The gated runtime path is available for setup. This surface remains status/control only.')
+        : t('Enable the Device Agent env and connect a wallet to use this path.'));
   const provider = status?.provider ?? aiProviderPresetById(state.aiSettings.provider).label;
   const model = status?.model ?? state.aiSettings.model ?? aiProviderPresetById(state.aiSettings.provider).model;
   const lastError = status?.lastError ?? null;
@@ -25298,19 +25373,19 @@ function deviceAgentConnectionCard(status: DeviceAgentStatus | null): string {
     ? ''
     : state.aiSettings.pairedBridge
       ? `<div class="device-agent-phone-pair">
-          <p class="device-agent-note">Plan Connector is using your computer's AI plan. ${pairedBridgeStatusChip()}</p>
-          <button type="button" class="utility" data-ai-action="unpair-phone">Unpair this computer</button>
+          <p class="device-agent-note">${escapeHtml(t("Plan Connector is using your computer's AI plan."))} ${pairedBridgeStatusChip()}</p>
+          <button type="button" class="utility" data-ai-action="unpair-phone">${escapeHtml(t('Unpair this computer'))}</button>
         </div>`
       : `<div class="device-agent-phone-pair">
-          <button type="button" class="utility" data-ai-action="open-plan-connector-sheet">Set up Plan Connector</button>
-          <p class="device-agent-note">Runs AI on your own computer's connector instead of an Android API key. Keep that computer awake and signed in.</p>
+          <button type="button" class="utility" data-ai-action="open-plan-connector-sheet">${escapeHtml(t('Set up Plan Connector'))}</button>
+          <p class="device-agent-note">${escapeHtml(t("Runs AI on your own computer's connector instead of an Android API key. Keep that computer awake and signed in."))}</p>
         </div>`;
   const showNotificationNote = (status?.runtime === 'android-native' || status?.runtime === 'browser-native')
     && (runtimeState === 'stopped' || runtimeState === 'unavailable');
   const notificationNote = showNotificationNote
     ? status?.runtime === 'browser-native'
-      ? '<p class="device-agent-note">Confirming the planner starts the on-tab runtime. Closing the tab stops it.</p>'
-      : '<p class="device-agent-note">Confirming the planner starts the on-device runtime and shows a persistent Android notification while it is active.</p>'
+      ? `<p class="device-agent-note">${escapeHtml(t('Confirming the planner starts the on-tab runtime. Closing the tab stops it.'))}</p>`
+      : `<p class="device-agent-note">${escapeHtml(t('Confirming the planner starts the on-device runtime and shows a persistent Android notification while it is active.'))}</p>`
     : '';
   return `
     <div class="local-bridge-connection-card ${tone}${lastError ? ' has-last-error' : ''}">
@@ -25323,8 +25398,8 @@ function deviceAgentConnectionCard(status: DeviceAgentStatus | null): string {
       ${notificationNote}
       ${phonePairBlock}
       <div class="local-bridge-facts">
-        <span>Runtime <strong>${escapeHtml(status?.runtime ?? (checking ? 'checking…' : 'not enabled'))}</strong></span>
-        <span>Wallet <strong>${escapeHtml(state.address ? short(state.address) : state.cloudSession.walletAddress ? short(state.cloudSession.walletAddress) : 'Not connected')}</strong></span>
+        <span>${escapeHtml(t('Runtime'))} <strong>${escapeHtml(status?.runtime ?? (checking ? t('checking…') : t('not enabled')))}</strong></span>
+        <span>${escapeHtml(t('Wallet'))} <strong>${escapeHtml(state.address ? short(state.address) : state.cloudSession.walletAddress ? short(state.cloudSession.walletAddress) : t('Not connected'))}</strong></span>
         <span>AI <strong>${escapeHtml(`${provider} - ${model || 'model configured'}`)}</strong></span>
       </div>
     </div>
@@ -25339,19 +25414,19 @@ function localBridgeAiSetupCard(status: BridgeAiStatus | null, location: 'rail' 
   const bridgeReachable = connected || aiConfigured || tauriReachable;
   const tone = connected ? 'connected' : bridgeReachable ? 'partial' : 'offline';
   const title = connected
-    ? 'Local bridge connected'
+    ? t('Local bridge connected')
     : bridgeReachable
-      ? 'Local runtime running'
+      ? t('Local runtime running')
       : state.tauriNativeEnvironment.isTauriNative
-        ? 'Start the local bridge'
-        : 'Start the local runtime';
+        ? t('Start the local bridge')
+        : t('Start the local runtime');
   const detail = connected
-    ? 'AI drafts and optional private workflow storage can stay on this computer. Wallet approval is still required.'
+    ? t('AI drafts and optional private workflow storage can stay on this computer. Wallet approval is still required.')
     : bridgeReachable
-      ? 'The local runtime is running. Connect the same wallet here and in the local tab, then check it.'
+      ? t('The local runtime is running. Connect the same wallet here and in the local tab, then check it.')
       : state.tauriNativeEnvironment.isTauriNative
-        ? 'Desktop usually starts the local bridge automatically. If it is offline, start it here and then confirm the planner.'
-        : 'Optional private AI path. Run the local runtime only if you want keys and workflow data to stay on this computer.';
+        ? t('Desktop usually starts the local bridge automatically. If it is offline, start it here and then confirm the planner.')
+        : t('Optional private AI path. Run the local runtime only if you want keys and workflow data to stay on this computer.');
   const source = localBridgeAiKeySource(status);
   const endpoint = state.tauriNativeEnvironment.isTauriNative && tauriStatus?.bridgeUrl
     ? tauriStatus.bridgeUrl
@@ -25359,12 +25434,12 @@ function localBridgeAiSetupCard(status: BridgeAiStatus | null, location: 'rail' 
   const runtimeSetup = state.tauriNativeEnvironment.isTauriNative
     ? `
       <div class="local-bridge-ai-desktop-runtime">
-        <p>Desktop keeps the local bridge on this machine. Use this only if the bridge did not start or you need to retry after changing runtime keys.</p>
+        <p>${escapeHtml(t('Desktop keeps the local bridge on this machine. Use this only if the bridge did not start or you need to retry after changing runtime keys.'))}</p>
         <button type="button" class="utility" data-ai-action="start-tauri-bridge" ${state.busy ? 'disabled' : ''}>
-          ${tauriReachable ? 'Retry bridge check' : 'Start bridge'}
+          ${escapeHtml(tauriReachable ? t('Retry bridge check') : t('Start bridge'))}
         </button>
-        <button type="button" class="utility" data-ai-action="pair-phone-desktop" title="Show a QR so the Agentic phone app can run AI on this computer's ChatGPT/Claude plan.">
-          Show Android QR
+        <button type="button" class="utility" data-ai-action="pair-phone-desktop" title="${escapeHtml(t("Show a QR so the Agentic phone app can run AI on this computer's ChatGPT/Claude plan."))}">
+          ${escapeHtml(t('Show Android QR'))}
         </button>
       </div>
     `
@@ -25374,13 +25449,13 @@ function localBridgeAiSetupCard(status: BridgeAiStatus | null, location: 'rail' 
       );
   const checkBridgeButton = connected ? '' : `
     <button type="button" class="utility" data-bridge-action="connect" ${!state.address || state.busy ? 'disabled' : ''}>
-      Check local bridge
+      ${escapeHtml(t('Check local bridge'))}
     </button>
   `;
   return `
     <details class="local-bridge-ai-setup-card local-bridge-connection-card ${tone}" open>
       <summary>
-        <span>${escapeHtml(connected ? 'Connected' : bridgeReachable ? 'Runtime reachable' : 'Setup needed')}</span>
+        <span>${escapeHtml(connected ? t('Connected') : bridgeReachable ? t('Runtime reachable') : t('Setup needed'))}</span>
         <strong>${escapeHtml(title)}</strong>
       </summary>
       <div class="local-bridge-ai-setup-body">
@@ -25389,9 +25464,9 @@ function localBridgeAiSetupCard(status: BridgeAiStatus | null, location: 'rail' 
         ${runtimeSetup}
         ${checkBridgeButton}
         <div class="local-bridge-facts">
-          <span>Endpoint <strong>${escapeHtml(compactEndpoint(endpoint))}</strong></span>
-          <span>Wallet <strong>${escapeHtml(state.address ? short(state.address) : 'Not connected')}</strong></span>
-          <span>${escapeHtml(status?.engine === 'connector' || bridgeAiEngine(status) === 'connector' ? 'AI connector' : 'AI provider key')} <strong>${escapeHtml(source.label)}</strong></span>
+          <span>${escapeHtml(t('Endpoint'))} <strong>${escapeHtml(compactEndpoint(endpoint))}</strong></span>
+          <span>${escapeHtml(t('Wallet'))} <strong>${escapeHtml(state.address ? short(state.address) : t('Not connected'))}</strong></span>
+          <span>${escapeHtml(status?.engine === 'connector' || bridgeAiEngine(status) === 'connector' ? 'AI connector' : t('AI provider key'))} <strong>${escapeHtml(source.label)}</strong></span>
         </div>
         <p class="local-bridge-ai-key-note">${escapeHtml(source.detail)}</p>
       </div>
@@ -25448,17 +25523,17 @@ function localBridgeConnectorSection(status: BridgeAiStatus | null): string {
 function bridgeAiConfiguredDisplay(status: BridgeAiStatus | null): { title: string; detail: string } {
   if (status?.engine === 'connector') {
     const connector = bridgeConnectorDisplayLabel(status);
-    const stateLabel = bridgeConnectorStatusDetail(status);
+    const stateLabel = t(bridgeConnectorStatusDetail(status));
     return {
-      title: status.available ? 'Connector signed in' : 'Connector configured',
-      detail: `${connector} - ${stateLabel}`,
+      title: status.available ? t('Connector signed in') : t('Connector configured'),
+      detail: tf('{connector} - {state}', { connector, state: stateLabel }),
     };
   }
   return {
-    title: 'Provider key configured',
+    title: t('Provider key configured'),
     detail: status
-      ? `${status.provider ?? status.apiFormat ?? 'AI'} - ${status.model ?? 'model configured'}`
-      : 'Local bridge AI key configured',
+      ? tf('{provider} - {model}', { provider: status.provider ?? status.apiFormat ?? 'AI', model: status.model ?? t('model configured') })
+      : t('Local bridge AI key configured'),
   };
 }
 
@@ -25466,43 +25541,43 @@ function localBridgeAiKeySource(status: BridgeAiStatus | null): { label: string;
   if (!isBridgeAiConfigured(status)) {
     if (bridgeAiEngine(status) === 'connector') {
       return {
-        label: 'Not selected',
-        detail: 'Choose Codex, Gemini, or Claude. The bridge checks the local CLI and uses that CLI on the first AI request.',
+        label: t('Not selected'),
+        detail: t('Choose Codex, Gemini, or Claude. The bridge checks the local CLI and uses that CLI on the first AI request.'),
       };
     }
     return {
-      label: 'Not set',
-      detail: 'Paste your normal AI provider key below. It is sent to the local bridge and is not stored by Agentic.',
+      label: t('Not set'),
+      detail: t('Paste your normal AI provider key below. It is sent to the local bridge and is not stored by Agentic.'),
     };
   }
   if (status?.engine === 'connector') {
     const connector = bridgeConnectorDisplayLabel(status);
-    const stateLabel = bridgeConnectorStatusDetail(status);
+    const stateLabel = t(bridgeConnectorStatusDetail(status));
     return {
-      label: `${connector} - ${stateLabel}`,
+      label: tf('{connector} - {state}', { connector, state: stateLabel }),
       detail: status.available
-        ? 'The bridge will run this local CLI for AI plans, reviews, and questions. The first AI request is the real auth check.'
+        ? t('The bridge will run this local CLI for AI plans, reviews, and questions. The first AI request is the real auth check.')
         : status.connectorAuthStatus === 'binary-not-found'
-          ? `Install ${connector}, then refresh or choose another connector.`
-          : `Sign in with ${connector}, then refresh. No Agentic API key is required.`,
+          ? tf('Install {connector}, then refresh or choose another connector.', { connector })
+          : tf('Sign in with {connector}, then refresh. No Agentic API key is required.', { connector }),
     };
   }
-  const label = `${status?.provider ?? status?.apiFormat ?? 'AI'} - ${status?.model ?? 'model configured'}`;
+  const label = tf('{provider} - {model}', { provider: status?.provider ?? status?.apiFormat ?? 'AI', model: status?.model ?? t('model configured') });
   if (status?.source === 'env') {
     return {
       label,
-      detail: 'Configured in the local runtime env file. Manage or rotate this key in Preferences, then restart the bridge.',
+      detail: t('Configured in the local runtime env file. Manage or rotate this key in Preferences, then restart the bridge.'),
     };
   }
   if (status?.source === 'session') {
     return {
       label,
-      detail: 'Held in local bridge memory until the bridge process stops. Clear API key removes the session-memory key only.',
+      detail: t('Held in local bridge memory until the bridge process stops. Clear API key removes the session-memory key only.'),
     };
   }
   return {
     label,
-    detail: 'Configured in the local bridge. It only helps review; approvals, signatures, and workflow storage stay separate.',
+    detail: t('Configured in the local bridge. It only helps review; approvals, signatures, and workflow storage stay separate.'),
   };
 }
 
@@ -25511,7 +25586,7 @@ function nativeRuntimeDiagnosticsPanel(): string {
   const rows = nativeRuntimeDiagnosticsRows();
   return `
     <details class="ai-diagnostics native-runtime-diagnostics">
-      <summary>Runtime diagnostics</summary>
+      <summary>${escapeHtml(t('Runtime diagnostics'))}</summary>
       <div class="ai-diagnostics-list">
         ${rows.map(([label, value]) => `
           <div class="ai-diagnostic-entry">
@@ -25520,7 +25595,7 @@ function nativeRuntimeDiagnosticsPanel(): string {
           </div>
         `).join('')}
       </div>
-      <button type="button" class="utility" data-ai-action="copy-runtime-diagnostics">Copy diagnostics</button>
+      <button type="button" class="utility" data-ai-action="copy-runtime-diagnostics">${escapeHtml(t('Copy diagnostics'))}</button>
     </details>
   `;
 }
@@ -25649,14 +25724,14 @@ async function copyNativeRuntimeDiagnostics(): Promise<void> {
     JSON.stringify(nativeRuntimeDiagnosticsPayload(), null, 2),
     'runtime diagnostics',
   );
-  pushToast('success', 'Diagnostics copied', 'Runtime state copied to clipboard.');
+  pushToast('success', t('Diagnostics copied'), t('Runtime state copied to clipboard.'));
 }
 
 function aiDiagnosticsPanel(): string {
   if (state.aiDiagnostics.length === 0) return '';
   return `
-    <div class="ai-diagnostics" aria-label="AI diagnostics">
-      <span>Diagnostics</span>
+    <div class="ai-diagnostics" aria-label="${escapeHtml(t('AI diagnostics'))}">
+      <span>${escapeHtml(t('Diagnostics'))}</span>
       <div class="ai-diagnostics-list">
         ${state.aiDiagnostics.map((entry) => `
           <div class="ai-diagnostic-entry ${entry.code === 'AI_ROUTE_MISMATCH' || entry.code === 'AI_PROVIDER_ERROR' ? 'error' : ''}">
@@ -25722,30 +25797,30 @@ function isAiPlannerFailedForCurrentSettings(): boolean {
 
 function aiConfirmationLabel(): string {
   if (isAiPlannerConfirmedForCurrentSettings()) {
-    if (state.aiSettings.mode === 'hosted') return 'Route confirmed';
-    if (state.aiSettings.mode === 'device-agent') return 'Runtime ready';
-    if (state.aiSettings.mode === 'session') return 'Config checked';
-    return 'Status confirmed';
+    if (state.aiSettings.mode === 'hosted') return t('Route confirmed');
+    if (state.aiSettings.mode === 'device-agent') return t('Runtime ready');
+    if (state.aiSettings.mode === 'session') return t('Config checked');
+    return t('Status confirmed');
   }
-  if (isAiPlannerFailedForCurrentSettings()) return 'Check failed';
-  if (isAiConfiguredForCurrentMode()) return 'Confirm planner';
-  return 'Not ready';
+  if (isAiPlannerFailedForCurrentSettings()) return t('Check failed');
+  if (isAiConfiguredForCurrentMode()) return t('Confirm planner');
+  return t('Not ready');
 }
 
 function aiConfirmationDetail(): string {
   if (isAiPlannerConfirmedForCurrentSettings()) {
     const checkedAt = state.aiPlannerConfirmation.checkedAt
-      ? ` Checked ${formatDateTime(state.aiPlannerConfirmation.checkedAt)}.`
+      ? tf(' Checked {time}.', { time: formatDateTime(state.aiPlannerConfirmation.checkedAt) })
       : '';
     return `${state.aiPlannerConfirmation.message}${checkedAt}`.trim();
   }
   if (isAiPlannerFailedForCurrentSettings()) {
-    return state.aiPlannerConfirmation.message || 'Planner confirmation failed. Templates still work without AI.';
+    return state.aiPlannerConfirmation.message || t('Planner confirmation failed. Templates still work without AI.');
   }
   if (isAiConfiguredForCurrentMode()) {
-    return 'Confirm the planner route before generating if you want a readiness check. Templates still work without AI.';
+    return t('Confirm the planner route before generating if you want a readiness check. Templates still work without AI.');
   }
-  return `${aiGenerateDisabledReason()} Templates still work without AI.`;
+  return tf('{reason} Templates still work without AI.', { reason: aiGenerateDisabledReason() });
 }
 
 function setAiPlannerConfirmation(status: AiPlannerConfirmationStatus, message: string): void {
@@ -25771,8 +25846,8 @@ function confirmBridgeAiPlannerFromStatus(): void {
   setAiPlannerConfirmation(
     'confirmed',
     state.aiStatus.engine === 'connector'
-      ? `${bridgeConnectorDisplayLabel(state.aiStatus)} is signed in for local AI Connector. The first AI request will be the real auth check. Workflow capability is unchanged.`
-      : 'Local bridge AI is configured and reachable for AI Connector. Workflow capability is unchanged.',
+      ? tf('{connector} is signed in for local AI Connector. The first AI request will be the real auth check. Workflow capability is unchanged.', { connector: bridgeConnectorDisplayLabel(state.aiStatus) })
+      : t('Local bridge AI is configured and reachable for AI Connector. Workflow capability is unchanged.'),
   );
 }
 
@@ -25877,47 +25952,47 @@ function canConfirmAiPlanner(): boolean {
 }
 
 function aiConfirmDisabledReason(): string {
-  if (state.busy) return 'Wait for the current action to finish.';
+  if (state.busy) return t('Wait for the current action to finish.');
   if (state.aiSettings.mode === 'bridge') {
     return bridgeAiEngine(state.aiStatus) === 'connector'
       ? bridgeAiUnavailableReason(state.aiStatus)
-      : 'Start the local runtime, then confirm planner status.';
+      : t('Start the local runtime, then confirm planner status.');
   }
   if (state.aiSettings.mode === 'hosted') {
     const hostedBlockReason = hostedByokCloudSessionReason();
     if (hostedBlockReason) return hostedBlockReason;
   }
   if (state.aiSettings.mode === 'device-agent' && !deviceAgentModeVisible()) {
-    return 'Device Agent is not enabled for this build or wallet.';
+    return t('Device Agent is not enabled for this build or wallet.');
   }
   if (state.aiSettings.mode === 'device-agent') {
     if (state.aiSettings.pairedBridge) {
       return state.deviceAgentStatus?.configured
-        ? 'Confirm planner readiness before generating.'
-        : 'Open Plan Connector and scan the computer QR first.';
+        ? t('Confirm planner readiness before generating.')
+        : t('Open Plan Connector and scan the computer QR first.');
     }
-    if (!state.aiSettings.model.trim()) return 'Choose or enter an AI model before confirming.';
-    if (!aiProviderReadyForCurrentMode()) return 'Add a browser-compatible gateway URL for this provider.';
+    if (!state.aiSettings.model.trim()) return t('Choose or enter an AI model before confirming.');
+    if (!aiProviderReadyForCurrentMode()) return t('Add a browser-compatible gateway URL for this provider.');
     if (!state.aiSettings.apiKey.trim() && !state.deviceAgentStatus?.configured) {
-      return 'Add a Device Agent request key before confirming.';
+      return t('Add a Device Agent request key before confirming.');
     }
-    return 'Confirm planner readiness before generating.';
+    return t('Confirm planner readiness before generating.');
   }
   if (state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai') {
-    return OPENAI_BROWSER_SESSION_DISABLED_REASON;
+    return t(OPENAI_BROWSER_SESSION_DISABLED_REASON);
   }
   if (!state.aiSettings.apiKey.trim()) {
     return state.aiSettings.mode === 'hosted'
-      ? 'Add a Hosted BYOK request key before confirming.'
-      : 'Add a browser-compatible session key before confirming.';
+      ? t('Add a Hosted BYOK request key before confirming.')
+      : t('Add a browser-compatible session key before confirming.');
   }
-  if (!state.aiSettings.model.trim()) return 'Choose or enter an AI model before confirming.';
+  if (!state.aiSettings.model.trim()) return t('Choose or enter an AI model before confirming.');
   if (!aiProviderReadyForCurrentMode()) {
     return state.aiSettings.mode === 'hosted'
-      ? HOSTED_CUSTOM_PROVIDER_DISABLED_REASON
-      : 'Add a browser-compatible gateway URL for this provider.';
+      ? t(HOSTED_CUSTOM_PROVIDER_DISABLED_REASON)
+      : t('Add a browser-compatible gateway URL for this provider.');
   }
-  return 'Confirm planner readiness before generating.';
+  return t('Confirm planner readiness before generating.');
 }
 
 function canSaveBridgeAiKey(): boolean {
@@ -26068,49 +26143,49 @@ function agentReviewUnavailableReason(record?: GeneratedPlanRecord): string {
 function aiGenerateDisabledReason(): string {
   const modelReady = Boolean(state.aiSettings.model.trim());
   if (state.busy) {
-    return 'Wait for the current action to finish.';
+    return t('Wait for the current action to finish.');
   }
   if (state.aiSettings.mode === 'bridge') {
     if (!state.aiStatus?.available) {
       return bridgeAiUnavailableReason(state.aiStatus);
     }
     return state.aiStatus.engine === 'connector'
-      ? `${bridgeConnectorDisplayLabel(state.aiStatus)} is ready for AI planning.`
-      : 'Bridge AI is ready.';
+      ? tf('{label} is ready for AI planning.', { label: bridgeConnectorDisplayLabel(state.aiStatus) })
+      : t('Bridge AI is ready.');
   }
   if (state.aiSettings.mode === 'device-agent') {
     if (pairedBridgeActive()) {
       return refreshRelayPresence()
-        ? 'Plan Connector is ready — AI runs on your computer’s plan.'
-        : 'Open the connector page on your computer (and keep it awake) to use Plan Connector.';
+        ? t('Plan Connector is ready — AI runs on your computer’s plan.')
+        : t('Open the connector page on your computer (and keep it awake) to use Plan Connector.');
     }
     const status = state.deviceAgentStatus;
-    if (!deviceAgentModeVisible()) return 'Device Agent is not enabled for this build or wallet.';
-    if (!status?.available) return 'Refresh Device Agent status before generating.';
-    if (!status.configured) return 'Add a Device Agent key, then confirm planner.';
-    if (!deviceAgentConfiguredForCurrentRequests(status)) return 'Add a Device Agent key, then confirm planner.';
-    if (!deviceAgentStatusReadyForDrafts(status)) return 'Device Agent config is ready; the runtime starts when you use AI Connector.';
-    return 'Device Agent runtime is ready for AI Connector.';
+    if (!deviceAgentModeVisible()) return t('Device Agent is not enabled for this build or wallet.');
+    if (!status?.available) return t('Refresh Device Agent status before generating.');
+    if (!status.configured) return t('Add a Device Agent key, then confirm planner.');
+    if (!deviceAgentConfiguredForCurrentRequests(status)) return t('Add a Device Agent key, then confirm planner.');
+    if (!deviceAgentStatusReadyForDrafts(status)) return t('Device Agent config is ready; the runtime starts when you use AI Connector.');
+    return t('Device Agent runtime is ready for AI Connector.');
   }
   if (state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai') {
-    return OPENAI_BROWSER_SESSION_DISABLED_REASON;
+    return t(OPENAI_BROWSER_SESSION_DISABLED_REASON);
   }
   if (!state.aiSettings.apiKey.trim()) {
     return state.aiSettings.mode === 'hosted'
-      ? 'Add a Hosted BYOK request key.'
-      : 'Add a browser-compatible session key.';
+      ? t('Add a Hosted BYOK request key.')
+      : t('Add a browser-compatible session key.');
   }
   if (!modelReady) {
-    return 'Choose or enter an AI model.';
+    return t('Choose or enter an AI model.');
   }
   if (!aiProviderReadyForCurrentMode()) {
     return state.aiSettings.mode === 'hosted'
-      ? HOSTED_CUSTOM_PROVIDER_DISABLED_REASON
-      : 'Add a browser-compatible gateway URL for this provider.';
+      ? t(HOSTED_CUSTOM_PROVIDER_DISABLED_REASON)
+      : t('Add a browser-compatible gateway URL for this provider.');
   }
   const hostedBlockReason = hostedByokCloudSessionReason();
   if (hostedBlockReason) return hostedBlockReason;
-  return 'Configure the AI Planner first, or use templates without AI.';
+  return t('Configure the AI Planner first, or use templates without AI.');
 }
 
 function bridgeAiUnavailableReason(status: BridgeAiStatus | null = state.aiStatus): string {
@@ -26120,17 +26195,17 @@ function bridgeAiUnavailableReason(status: BridgeAiStatus | null = state.aiStatu
       ? bridgeConnectorDisplayLabel(live)
       : aiConnectorPreset(state.aiSettings.connector ?? 'codex').label;
     if (!live) {
-      return `Select ${connector} on the local bridge, then refresh AI status.`;
+      return tf('Select {connector} on the local bridge, then refresh AI status.', { connector });
     }
     if (live.connectorAuthStatus === 'binary-not-found') {
-      return `${connector} CLI is not installed on the bridge machine. Install it or choose another connector.`;
+      return tf('{connector} CLI is not installed on the bridge machine. Install it or choose another connector.', { connector });
     }
     if (live.connectorAuthStatus === 'needs-auth') {
-      return `${connector} needs sign-in on the bridge machine. Use Connect (sign in), then refresh.`;
+      return tf('{connector} needs sign-in on the bridge machine. Use Connect (sign in), then refresh.', { connector });
     }
-    return `${connector} is configured but not available. Refresh bridge AI status, then try again.`;
+    return tf('{connector} is configured but not available. Refresh bridge AI status, then try again.', { connector });
   }
-  return 'Start the local runtime, send an AI provider key to the bridge, then refresh AI status.';
+  return t('Start the local runtime, send an AI provider key to the bridge, then refresh AI status.');
 }
 
 function isAiConfiguredForCurrentMode(): boolean {
@@ -26219,11 +26294,11 @@ function aiReadinessLabel(status: BridgeAiStatus | null): string {
         ? bridgeConnectorDisplayLabel(live)
         : aiConnectorPreset(state.aiSettings.connector ?? 'codex').label;
       const auth = live?.connectorAuthStatus;
-      if (auth === 'connected') return `${connector} signed in`;
-      if (auth === 'binary-not-found') return `${connector} CLI not installed`;
-      return `${connector} sign-in needed`;
+      if (auth === 'connected') return tf('{connector} signed in', { connector });
+      if (auth === 'binary-not-found') return tf('{connector} CLI not installed', { connector });
+      return tf('{connector} sign-in needed', { connector });
     }
-    return status?.available ? 'Bridge AI verified' : 'Bridge key required';
+    return status?.available ? t('Bridge AI verified') : t('Bridge key required');
   }
   if (state.aiSettings.mode === 'device-agent') {
     const status = state.deviceAgentStatus;
@@ -26839,38 +26914,38 @@ function inboxRefreshButton(id: string): string {
   const refreshing = state.steps.inbox === 'active';
   const disabled = refreshing || state.busy;
   const label = refreshing
-    ? '<span class="button-spinner" aria-hidden="true"></span>Refreshing…'
-    : 'Refresh';
+    ? `<span class="button-spinner" aria-hidden="true"></span>${escapeHtml(t('Refreshing…'))}`
+    : escapeHtml(t('Refresh'));
   return `<button id="${id}" class="utility" ${disabled ? 'disabled' : ''} ${refreshing ? 'aria-busy="true"' : ''}>${label}</button>`;
 }
 
 function approvalInboxPanel(): string {
   if (!state.address) {
-    return guidedStartPanel('Needs Approval', 'Connect a wallet before approving or denying queued requests.');
+    return guidedStartPanel(t('Needs Approval'), t('Connect a wallet before approving or denying queued requests.'));
   }
   const actions = filteredPreparedActions();
   return `
     <section class="approval-object signature-stage stage-inbox stage-anchor ${actions.length ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head">
-        ${sectionTitleLine('Needs Approval', approvalInboxDescription())}
+        ${sectionTitleLine(t('Needs Approval'), approvalInboxDescription())}
         <div class="inbox-toolbar signature-toolbar">
           <label class="inbox-filter-control filter-field" for="inboxFilter">
-            <span class="filter-field-label">Filter</span>
+            <span class="filter-field-label">${escapeHtml(t('Filter'))}</span>
             ${selectPicker({
               id: 'inboxFilter',
               value: state.inboxFilter,
               options: [
-                { value: 'all', label: 'All' },
-                { value: 'ready', label: 'Ready now' },
-                { value: 'scheduled', label: 'Scheduled' },
-                { value: 'attention', label: 'Problems' },
-                { value: 'one-time', label: 'One-time' },
-                { value: 'recurring', label: 'Repeats' },
+                { value: 'all', label: t('All') },
+                { value: 'ready', label: t('Ready now') },
+                { value: 'scheduled', label: t('Scheduled') },
+                { value: 'attention', label: t('Problems') },
+                { value: 'one-time', label: t('One-time') },
+                { value: 'recurring', label: t('Repeats') },
               ],
             })}
           </label>
           ${inboxRefreshButton('refreshInbox')}
-          <button id="deleteAllInbox" class="utility danger" ${state.busy || actions.length === 0 ? 'disabled' : ''}>Delete All</button>
+          <button id="deleteAllInbox" class="utility danger" ${state.busy || actions.length === 0 ? 'disabled' : ''}>${escapeHtml(t('Delete All'))}</button>
         </div>
       </div>
 
@@ -26897,27 +26972,27 @@ function completedPlansPanel(): string {
         recurringCount,
       }) : `
         <div class="signature-object-head">
-          ${sectionTitleLine('Done', 'Approved, denied, cancelled, signed, and ended work stays here until you delete it.')}
+          ${sectionTitleLine(t('Done'), t('Approved, denied, cancelled, signed, and ended work stays here until you delete it.'))}
           <div class="generated-plans-toolbar signature-toolbar">
-            <span class="signature-state">${escapeHtml(`${plans.length} completed`)}</span>
+            <span class="signature-state">${escapeHtml(tf('{n} completed', { n: plans.length }))}</span>
             ${inboxRefreshButton('refreshCompletedPlans')}
-            <button id="deleteAllDone" class="utility danger" ${state.busy || visiblePlans.length === 0 ? 'disabled' : ''}>Delete All</button>
+            <button id="deleteAllDone" class="utility danger" ${state.busy || visiblePlans.length === 0 ? 'disabled' : ''}>${escapeHtml(t('Delete All'))}</button>
           </div>
         </div>
 
         ${completedPlanFilterControls()}
         <div class="queue-status completed-plan-status">
           <span>${escapeHtml(completedHistorySourceLabel())}</span>
-          <strong>${visiblePlans.length} visible</strong>
-          <span>${receiptCount} receipt${receiptCount === 1 ? '' : 's'}</span>
-          <span>${proofCount} proof${proofCount === 1 ? '' : 's'}</span>
-          <span>${recurringCount} recurring</span>
+          <strong>${escapeHtml(tf('{n} visible', { n: visiblePlans.length }))}</strong>
+          <span>${escapeHtml(receiptCount === 1 ? tf('{n} receipt', { n: receiptCount }) : tf('{n} receipts', { n: receiptCount }))}</span>
+          <span>${escapeHtml(proofCount === 1 ? tf('{n} proof', { n: proofCount }) : tf('{n} proofs', { n: proofCount }))}</span>
+          <span>${escapeHtml(tf('{n} recurring', { n: recurringCount }))}</span>
         </div>
         ${completedBridgeStatusHint()}
       `}
       ${
         visiblePlans.length
-          ? `<div class="generated-plan-grid completed-plan-grid" aria-label="Done work">${visiblePlans.map(completedPlanCard).join('')}</div>`
+          ? `<div class="generated-plan-grid completed-plan-grid" aria-label="${escapeHtml(t('Done work'))}">${visiblePlans.map(completedPlanCard).join('')}</div>`
           : completedPlansEmptyState(plans.length)
       }
       ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ''}
@@ -26934,22 +27009,22 @@ function completedPlansMobileHeader(counts: {
   return `
     <div class="mobile-completed-head">
       <div class="mobile-completed-title">
-        <h2>Done</h2>
-        <p>Approved, denied, signed, ended.</p>
+        <h2>${escapeHtml(t('Done'))}</h2>
+        <p>${escapeHtml(t('Approved, denied, signed, ended.'))}</p>
       </div>
       <div class="mobile-completed-controls">
         <label class="completed-filter-control filter-field" for="completedFilter">
-          <span class="filter-field-label">Filter</span>
+          <span class="filter-field-label">${escapeHtml(t('Filter'))}</span>
           ${completedPlanFilterSelect()}
         </label>
-        <button id="deleteAllDone" class="utility danger" ${state.busy || counts.visibleCount === 0 ? 'disabled' : ''}>Delete All</button>
+        <button id="deleteAllDone" class="utility danger" ${state.busy || counts.visibleCount === 0 ? 'disabled' : ''}>${escapeHtml(t('Delete All'))}</button>
       </div>
     </div>
-    <div class="mobile-completed-stats" aria-label="Done work summary">
-      <strong>${counts.visibleCount} visible</strong>
-      <span>${counts.receiptCount} receipt${counts.receiptCount === 1 ? '' : 's'}</span>
-      <span>${counts.proofCount} proof${counts.proofCount === 1 ? '' : 's'}</span>
-      <span>${counts.recurringCount} repeat${counts.recurringCount === 1 ? '' : 's'}</span>
+    <div class="mobile-completed-stats" aria-label="${escapeHtml(t('Done work summary'))}">
+      <strong>${escapeHtml(tf('{n} visible', { n: counts.visibleCount }))}</strong>
+      <span>${escapeHtml(counts.receiptCount === 1 ? tf('{n} receipt', { n: counts.receiptCount }) : tf('{n} receipts', { n: counts.receiptCount }))}</span>
+      <span>${escapeHtml(counts.proofCount === 1 ? tf('{n} proof', { n: counts.proofCount }) : tf('{n} proofs', { n: counts.proofCount }))}</span>
+      <span>${escapeHtml(counts.recurringCount === 1 ? tf('{n} repeat', { n: counts.recurringCount }) : tf('{n} repeats', { n: counts.recurringCount }))}</span>
     </div>
     ${completedMobileSourceHint()}
   `;
@@ -26957,49 +27032,49 @@ function completedPlansMobileHeader(counts: {
 
 function completedMobileSourceHint(): string {
   const text = activeWorkflowMode() === 'agentic-cloud'
-    ? 'Cloud done work.'
+    ? t('Cloud done work.')
     : activeWorkflowMode() === 'local-bridge'
-      ? 'Private local receipts.'
-      : 'Stored on this device.';
+      ? t('Private local receipts.')
+      : t('Stored on this device.');
   return `<p class="mobile-completed-source">${escapeHtml(text)}</p>`;
 }
 
 function approvalInboxDescription(): string {
   if (activeWorkflowMode() === 'agentic-cloud') {
-    return 'One-time requests and due repeat payments wait here for wallet approval or denial.';
+    return t('One-time requests and due repeat payments wait here for wallet approval or denial.');
   }
   if (activeWorkflowMode() === 'local-bridge') {
-    return 'Private local one-time requests and due repeat payments wait here for approve or deny.';
+    return t('Private local one-time requests and due repeat payments wait here for approve or deny.');
   }
-  return 'Browser-local one-time requests and due repeat payments wait here for approve or deny.';
+  return t('Browser-local one-time requests and due repeat payments wait here for approve or deny.');
 }
 
 function completedBridgeStatusHint(): string {
   if (activeWorkflowMode() === 'agentic-cloud') {
     return `
       <p class="completed-bridge-hint">
-        Done cloud approvals are loaded from Agentic Cloud for the signed-in wallet.
+        ${escapeHtml(tf('Done cloud approvals are loaded from {brand} for the signed-in wallet.', { brand: 'Agentic Cloud' }))}
       </p>
     `;
   }
   if (activeWorkflowMode() === 'local-bridge') return '';
   return `
     <p class="completed-bridge-hint">
-      Done work is local to this browser. Sign in to Agentic Cloud to sync one-time approvals.
+      ${escapeHtml(tf('Done work is local to this browser. Sign in to {brand} to sync one-time approvals.', { brand: 'Agentic Cloud' }))}
     </p>
   `;
 }
 
 function completedHistorySourceLabel(): string {
-  if (activeWorkflowMode() === 'agentic-cloud') return 'Cloud done work';
-  if (activeWorkflowMode() === 'local-bridge') return 'Private local receipts';
-  return 'Saved-on-device done work';
+  if (activeWorkflowMode() === 'agentic-cloud') return t('Cloud done work');
+  if (activeWorkflowMode() === 'local-bridge') return t('Private local receipts');
+  return t('Saved-on-device done work');
 }
 
 function completedPlanFilterControls(): string {
   const filters = completedPlanFilterOptions();
   return `
-    <div class="template-filter-row completed-filter-row" role="group" aria-label="Done work filter">
+    <div class="template-filter-row completed-filter-row" role="group" aria-label="${escapeHtml(t('Done work filter'))}">
       ${filters.map(({ value: filter, label }) => `
         <button
           type="button"
@@ -27025,11 +27100,11 @@ function completedPlanFilterSelect(): string {
 
 function completedPlanFilterOptions(): SelectPickerOption[] {
   return [
-    { value: 'all', label: 'All' },
-    { value: 'one-time', label: 'One-time' },
-    { value: 'recurring', label: 'Repeats' },
-    { value: 'proofs', label: 'Proofs' },
-    { value: 'receipts', label: 'Receipts' },
+    { value: 'all', label: t('All') },
+    { value: 'one-time', label: t('One-time') },
+    { value: 'recurring', label: t('Repeats') },
+    { value: 'proofs', label: t('Proofs') },
+    { value: 'receipts', label: t('Receipts') },
   ];
 }
 
@@ -27043,11 +27118,11 @@ function isCompletedPlanFilter(value: string): value is CompletedPlanFilter {
 
 function completedPlansEmptyState(totalCount: number): string {
   const detail = totalCount
-    ? 'No done work matches this filter.'
+    ? t('No done work matches this filter.')
     : activeWorkflowMode() === 'agentic-cloud'
-      ? 'Approve, deny, or cancel a cloud approval to create done work.'
-      : 'Sign a review proof, approve or reject a request, or finish a repeat payment to create done work here.';
-  return signaturePlaceholder('Nothing done yet', detail);
+      ? t('Approve, deny, or cancel a cloud approval to create done work.')
+      : t('Sign a review proof, approve or reject a request, or finish a repeat payment to create done work here.');
+  return signaturePlaceholder(t('Nothing done yet'), detail);
 }
 
 function decisionProofRow(plan: CompletedPlanRecord): string {
@@ -27055,30 +27130,30 @@ function decisionProofRow(plan: CompletedPlanRecord): string {
   const verified = plan.decisionProofVerified === true;
   const sigShort = plan.signature ? short(plan.signature) : '';
   const when = formatDateTime(plan.completedAt);
-  const walletShort = plan.walletAddress ? short(plan.walletAddress) : 'unknown wallet';
+  const walletShort = plan.walletAddress ? short(plan.walletAddress) : t('unknown wallet');
   const headline = verified
-    ? 'Decision signed by your wallet'
+    ? t('Decision signed by your wallet')
     : plan.signature
-      ? 'Decision signature recorded'
+      ? t('Decision signature recorded')
       : '';
   if (!headline) return '';
   const proofMessageBlock = plan.decisionProofMessage
-    ? `<details class="decision-proof-message"><summary>What you signed</summary><pre class="decision-proof-text">${escapeHtml(plan.decisionProofMessage)}</pre></details>`
+    ? `<details class="decision-proof-message"><summary>${escapeHtml(t('What you signed'))}</summary><pre class="decision-proof-text">${escapeHtml(plan.decisionProofMessage)}</pre></details>`
     : '';
   const copyButtons = [
-    plan.signature ? `<button data-copy="${escapeHtml(plan.signature)}" data-copy-name="Decision signature">Copy signature</button>` : '',
-    plan.decisionProofMessage ? `<button data-copy="${escapeHtml(plan.decisionProofMessage)}" data-copy-name="Signed text">Copy signed text</button>` : '',
+    plan.signature ? `<button data-copy="${escapeHtml(plan.signature)}" data-copy-name="${escapeHtml(t('Decision signature'))}">${escapeHtml(t('Copy signature'))}</button>` : '',
+    plan.decisionProofMessage ? `<button data-copy="${escapeHtml(plan.decisionProofMessage)}" data-copy-name="${escapeHtml(t('Signed text'))}">${escapeHtml(t('Copy signed text'))}</button>` : '',
   ].filter(Boolean).join('');
   return `
-    <div class="decision-proof-block ${verified ? 'verified' : ''}" aria-label="Decision proof">
+    <div class="decision-proof-block ${verified ? 'verified' : ''}" aria-label="${escapeHtml(t('Decision proof'))}">
       <div class="decision-proof-headline">
         <span class="decision-proof-icon" aria-hidden="true">${verified ? '✓' : '⚠'}</span>
         <strong>${escapeHtml(headline)}</strong>
       </div>
       <dl class="decision-proof-grid">
-        <div><dt>Wallet</dt><dd title="${escapeHtml(plan.walletAddress)}">${escapeHtml(walletShort)}</dd></div>
-        <div><dt>When</dt><dd>${escapeHtml(when)}</dd></div>
-        ${sigShort ? `<div><dt>Signature</dt><dd title="${escapeHtml(plan.signature ?? '')}">${escapeHtml(sigShort)}</dd></div>` : ''}
+        <div><dt>${escapeHtml(t('Wallet'))}</dt><dd title="${escapeHtml(plan.walletAddress)}">${escapeHtml(walletShort)}</dd></div>
+        <div><dt>${escapeHtml(t('When'))}</dt><dd>${escapeHtml(when)}</dd></div>
+        ${sigShort ? `<div><dt>${escapeHtml(t('Signature'))}</dt><dd title="${escapeHtml(plan.signature ?? '')}">${escapeHtml(sigShort)}</dd></div>` : ''}
       </dl>
       ${proofMessageBlock}
       ${copyButtons ? `<div class="decision-proof-actions">${copyButtons}</div>` : ''}
@@ -27090,10 +27165,10 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
   if (isMobileAppViewport()) return completedPlanCardMobile(plan);
   const deleteRequiresBridge = completedPlanDeleteRequiresBridge(plan);
   const evidenceBadge = evidenceBadgeForCompletedPlan(plan);
-  const copyLabel = completedPlanHasReceipt(plan) ? 'Copy receipt JSON' : plan.signature ? 'Copy proof JSON' : 'Copy schedule JSON';
+  const copyLabel = completedPlanHasReceipt(plan) ? t('Copy receipt JSON') : plan.signature ? t('Copy proof JSON') : t('Copy schedule JSON');
   const focused = state.lastCompletedFocusId === plan.id || Boolean(plan.actionId && state.lastCompletedFocusId === plan.actionId);
   const decisionProofBlock = decisionProofRow(plan);
-  const historyLabel = plan.kind === 'recurring' ? 'Repeat payment done' : 'One-time done';
+  const historyLabel = plan.kind === 'recurring' ? t('Repeat payment done') : t('One-time done');
   const submissionPill = completedPlanSubmissionPill(plan);
   const connectorMeta = resolveConnectorMetaForAction(plan.actionKind, (plan.metadata ?? {}) as Record<string, unknown>);
   return `
@@ -27107,7 +27182,7 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
             <strong class="completed-history-meta-title">${escapeHtml(historyLabel)}</strong>
             ${evidenceBadgeHtml(evidenceBadge)}
             ${submissionPill}
-            <span>${escapeHtml(plan.kind === 'recurring' ? 'Repeat' : 'One-time')}</span>
+            <span>${escapeHtml(plan.kind === 'recurring' ? t('Repeat') : t('One-time'))}</span>
           </div>
           ${completedPlanTimelineHtml(plan)}
           <h3 title="${escapeHtml(plan.title)}">${escapeHtml(completedPlanDisplayTitle(plan))}</h3>
@@ -27124,7 +27199,7 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
       <div class="completed-history-drawers">
         ${plan.actionId ? recordActivityDetails('approval', plan.actionId) : recordActivityDetails('completed', plan.id)}
         <details class="generated-plan-inline-details completed-plan-details completed-history-details">
-          <summary>View details</summary>
+          <summary>${escapeHtml(t('View details'))}</summary>
           <div>
             <dl class="proof-grid compact">
               ${plan.detailRows.map(([label, value]) => definitionRow(label, value)).join('')}
@@ -27134,31 +27209,31 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
         </details>
       </div>
       <div class="inbox-approval-footer-row completed-history-footer-row">
-        <button class="utility inbox-footer-action" data-copy="${escapeHtml(plan.copyPayload)}" data-copy-name="Done item">${escapeHtml(copyLabel)}</button>
-        ${plan.trustBundlePayload ? `<button class="utility inbox-footer-action" data-copy="${escapeHtml(plan.trustBundlePayload)}" data-copy-name="Trust bundle">Copy trust bundle</button>` : ''}
+        <button class="utility inbox-footer-action" data-copy="${escapeHtml(plan.copyPayload)}" data-copy-name="${escapeHtml(t('Done item'))}">${escapeHtml(copyLabel)}</button>
+        ${plan.trustBundlePayload ? `<button class="utility inbox-footer-action" data-copy="${escapeHtml(plan.trustBundlePayload)}" data-copy-name="${escapeHtml(t('Trust bundle'))}">${escapeHtml(t('Copy trust bundle'))}</button>` : ''}
         <button
           class="utility danger recurring-delete-mini"
           data-completed-delete="${escapeHtml(plan.id)}"
           ${state.busy || deleteRequiresBridge ? 'disabled' : ''}
-          title="${deleteRequiresBridge ? 'Connect the local bridge before deleting bridge-backed done work.' : 'Delete this item from Done.'}"
+          title="${escapeHtml(deleteRequiresBridge ? t('Connect the local bridge before deleting bridge-backed done work.') : t('Delete this item from Done.'))}"
         >
-          Delete
+          ${escapeHtml(t('Delete'))}
         </button>
-        <div class="mobile-card-footer-actions completed-history-mobile-actions" aria-label="Mobile done actions">
+        <div class="mobile-card-footer-actions completed-history-mobile-actions" aria-label="${escapeHtml(t('Mobile done actions'))}">
           <details class="mobile-card-action-menu">
-            <summary>More actions</summary>
+            <summary>${escapeHtml(t('More actions'))}</summary>
             <div class="mobile-card-action-menu-body">
-              <button class="utility inbox-footer-action" data-copy="${escapeHtml(plan.copyPayload)}" data-copy-name="Done item">${escapeHtml(copyLabel)}</button>
-              ${plan.trustBundlePayload ? `<button class="utility inbox-footer-action" data-copy="${escapeHtml(plan.trustBundlePayload)}" data-copy-name="Trust bundle">Copy trust bundle</button>` : ''}
+              <button class="utility inbox-footer-action" data-copy="${escapeHtml(plan.copyPayload)}" data-copy-name="${escapeHtml(t('Done item'))}">${escapeHtml(copyLabel)}</button>
+              ${plan.trustBundlePayload ? `<button class="utility inbox-footer-action" data-copy="${escapeHtml(plan.trustBundlePayload)}" data-copy-name="${escapeHtml(t('Trust bundle'))}">${escapeHtml(t('Copy trust bundle'))}</button>` : ''}
             </div>
           </details>
           <button
             class="utility danger recurring-delete-mini"
             data-completed-delete="${escapeHtml(plan.id)}"
             ${state.busy || deleteRequiresBridge ? 'disabled' : ''}
-            title="${deleteRequiresBridge ? 'Connect the local bridge before deleting bridge-backed done work.' : 'Delete this item from Done.'}"
+            title="${escapeHtml(deleteRequiresBridge ? t('Connect the local bridge before deleting bridge-backed done work.') : t('Delete this item from Done.'))}"
           >
-            Delete
+            ${escapeHtml(t('Delete'))}
           </button>
         </div>
       </div>
@@ -27181,7 +27256,7 @@ function completedPlanCardMobile(plan: CompletedPlanRecord): string {
   const evidenceBadge = evidenceBadgeForCompletedPlan(plan);
   const submissionPill = completedPlanSubmissionPill(plan);
   const connectorMeta = resolveConnectorMetaForAction(plan.actionKind, (plan.metadata ?? {}) as Record<string, unknown>);
-  const copyLabel = completedPlanHasReceipt(plan) ? 'Copy receipt JSON' : plan.signature ? 'Copy proof JSON' : 'Copy schedule JSON';
+  const copyLabel = completedPlanHasReceipt(plan) ? t('Copy receipt JSON') : plan.signature ? t('Copy proof JSON') : t('Copy schedule JSON');
   const rows = completedPlanMobileSummaryRows(plan);
   return `
     <article class="generated-plan-card completed-plan-card mobile-completed-card ${focused ? 'focused' : ''}" ${focused ? 'data-completed-focus="true"' : ''}>
@@ -27191,7 +27266,7 @@ function completedPlanCardMobile(plan: CompletedPlanRecord): string {
           ${connectorChip(connectorMeta?.id, connectorMeta?.name)}
           ${evidenceBadgeHtml(evidenceBadge)}
           ${submissionPill}
-          <span class="mobile-completed-kind">${escapeHtml(plan.kind === 'recurring' ? 'Repeat' : 'One-time')}</span>
+          <span class="mobile-completed-kind">${escapeHtml(plan.kind === 'recurring' ? t('Repeat') : t('One-time'))}</span>
         </div>
         <h3 title="${escapeHtml(plan.title)}">${escapeHtml(completedPlanDisplayTitle(plan))}</h3>
         <p>
@@ -27200,18 +27275,18 @@ function completedPlanCardMobile(plan: CompletedPlanRecord): string {
         </p>
       </div>
       ${rows.length ? `
-        <dl class="mobile-completed-summary-list" aria-label="Done work summary">
+        <dl class="mobile-completed-summary-list" aria-label="${escapeHtml(t('Done work summary'))}">
           ${rows.map(completedPlanMobileSummaryRow).join('')}
         </dl>
       ` : ''}
       ${completedPlanSummaryNote(plan)}
       ${completedPlanMobileDecisionProof(plan)}
       <details class="mobile-completed-more">
-        <summary>More</summary>
+        <summary>${escapeHtml(t('More'))}</summary>
         <div class="mobile-completed-more-body">
           ${plan.actionId ? recordActivityDetails('approval', plan.actionId) : recordActivityDetails('completed', plan.id)}
           <details class="generated-plan-inline-details completed-plan-details completed-history-details">
-            <summary>View details</summary>
+            <summary>${escapeHtml(t('View details'))}</summary>
             <div>
               <dl class="proof-grid compact">
                 ${plan.detailRows.map(([label, value]) => definitionRow(label, value)).join('')}
@@ -27221,15 +27296,15 @@ function completedPlanCardMobile(plan: CompletedPlanRecord): string {
           </details>
           ${plan.actionId ? relatedReceiptBlockForApproval(plan.actionId) : ''}
           <div class="mobile-completed-action-grid">
-            <button class="utility inbox-footer-action" data-copy="${escapeHtml(plan.copyPayload)}" data-copy-name="Done item">${escapeHtml(copyLabel)}</button>
-            ${plan.trustBundlePayload ? `<button class="utility inbox-footer-action" data-copy="${escapeHtml(plan.trustBundlePayload)}" data-copy-name="Trust bundle">Copy trust bundle</button>` : ''}
+            <button class="utility inbox-footer-action" data-copy="${escapeHtml(plan.copyPayload)}" data-copy-name="${escapeHtml(t('Done item'))}">${escapeHtml(copyLabel)}</button>
+            ${plan.trustBundlePayload ? `<button class="utility inbox-footer-action" data-copy="${escapeHtml(plan.trustBundlePayload)}" data-copy-name="${escapeHtml(t('Trust bundle'))}">${escapeHtml(t('Copy trust bundle'))}</button>` : ''}
             <button
               class="utility danger recurring-delete-mini"
               data-completed-delete="${escapeHtml(plan.id)}"
               ${state.busy || deleteRequiresBridge ? 'disabled' : ''}
-              title="${deleteRequiresBridge ? 'Connect the local bridge before deleting bridge-backed done work.' : 'Delete this item from Done.'}"
+              title="${escapeHtml(deleteRequiresBridge ? t('Connect the local bridge before deleting bridge-backed done work.') : t('Delete this item from Done.'))}"
             >
-              Delete
+              ${escapeHtml(t('Delete'))}
             </button>
           </div>
         </div>
@@ -27240,11 +27315,11 @@ function completedPlanCardMobile(plan: CompletedPlanRecord): string {
 
 function completedPlanMobileTypeLabel(plan: CompletedPlanRecord): string {
   const record = completedPlanRecordRef(plan);
-  if (record.label === 'Proof only') return 'Proof only';
-  if (record.label === 'Tx') return 'Receipt';
-  if (record.label === 'Repeat') return 'Repeat';
-  if (completedPlanConnectorRead(plan)) return 'Connector receipt';
-  return plan.kind === 'recurring' ? 'Repeat done' : 'One-time done';
+  if (record.label === 'Proof only') return t('Proof only');
+  if (record.label === 'Tx') return t('Receipt');
+  if (record.label === 'Repeat') return t('Repeat');
+  if (completedPlanConnectorRead(plan)) return t('Connector receipt');
+  return plan.kind === 'recurring' ? t('Repeat done') : t('One-time done');
 }
 
 type CompletedPlanMobileSummaryRow = {
@@ -27265,21 +27340,21 @@ function completedPlanMobileSummaryRows(plan: CompletedPlanRecord): CompletedPla
   if (connectorRead) {
     return [
       {
-        label: 'Result',
+        label: t('Result'),
         value: stringFromJsonLike(connectorRead.resultSummary) || amountLabel,
         title: stringFromJsonLike(connectorRead.resultSummary) || amountLabel,
         tone: 'amount',
       },
       {
-        label: 'Feed',
+        label: t('Feed'),
         value: stringFromJsonLike(connectorRead.feedLabel) || stringFromJsonLike(connectorRead.symbol) || short(stringFromJsonLike(connectorRead.priceFeedId)),
         title: stringFromJsonLike(connectorRead.priceFeedId) || stringFromJsonLike(connectorRead.feedLabel) || stringFromJsonLike(connectorRead.symbol),
         copyValue: stringFromJsonLike(connectorRead.priceFeedId) || undefined,
-        copyLabel: stringFromJsonLike(connectorRead.priceFeedId) ? 'Copy feed' : undefined,
-        copyName: 'Pyth price feed',
+        copyLabel: stringFromJsonLike(connectorRead.priceFeedId) ? t('Copy feed') : undefined,
+        copyName: tf('{brand} price feed', { brand: 'Pyth' }),
       },
       {
-        label: record.label,
+        label: t(record.label),
         value: record.value,
         title: record.title ?? record.copyValue ?? record.value,
         copyValue: record.copyValue,
@@ -27291,17 +27366,17 @@ function completedPlanMobileSummaryRows(plan: CompletedPlanRecord): CompletedPla
   }
   const rows: CompletedPlanMobileSummaryRow[] = [
     {
-      label: 'Wallet',
-      value: plan.walletAddress ? short(plan.walletAddress) : 'No wallet',
-      title: plan.walletAddress || 'No wallet',
+      label: t('Wallet'),
+      value: plan.walletAddress ? short(plan.walletAddress) : t('No wallet'),
+      title: plan.walletAddress || t('No wallet'),
       copyValue: plan.walletAddress || undefined,
-      copyLabel: 'Copy wallet',
-      copyName: 'Wallet address',
+      copyLabel: t('Copy wallet'),
+      copyName: t('Wallet address'),
     },
   ];
   if (completedPlanMobileShouldShowAmount(plan, amountLabel)) {
     rows.push({
-      label: 'Amount',
+      label: t('Amount'),
       value: amountLabel,
       title: amountLabel,
       tone: 'amount',
@@ -27321,8 +27396,8 @@ function completedPlanMobileSummaryRows(plan: CompletedPlanRecord): CompletedPla
 }
 
 function completedPlanMobileRecordLabel(label: string): string {
-  if (label === 'Proof only') return 'Proof';
-  return label;
+  if (label === 'Proof only') return t('Proof');
+  return t(label);
 }
 
 function completedPlanMobileShouldShowAmount(plan: CompletedPlanRecord, amountLabel: string): boolean {
@@ -27336,7 +27411,7 @@ function completedPlanMobileSummaryRow(row: CompletedPlanMobileSummaryRow): stri
   const copyActions = summaryCopyActions(row);
   return `
     <div class="${row.tone ? `mobile-completed-summary-${row.tone}` : ''}" title="${escapeHtml(row.title ?? row.value)}">
-      <dt>${escapeHtml(row.label)}</dt>
+      <dt>${escapeHtml(t(row.label))}</dt>
       <dd class="${copyActions.length ? 'has-copy' : ''}">
         <span>${escapeHtml(row.value)}</span>
         ${summaryCopyActionsHtml(copyActions, row.label)}
@@ -27350,19 +27425,19 @@ function completedPlanMobileDecisionProof(plan: CompletedPlanRecord): string {
   const verified = plan.decisionProofVerified === true;
   const sigShort = plan.signature ? short(plan.signature) : '';
   const when = formatDateTime(plan.completedAt);
-  const walletShort = plan.walletAddress ? short(plan.walletAddress) : 'unknown wallet';
+  const walletShort = plan.walletAddress ? short(plan.walletAddress) : t('unknown wallet');
   const headline = verified
-    ? 'Signature verified'
+    ? t('Signature verified')
     : plan.signature
-      ? 'Signature recorded'
+      ? t('Signature recorded')
       : '';
   if (!headline) return '';
   const proofMessageBlock = plan.decisionProofMessage
-    ? `<details class="decision-proof-message"><summary>What you signed</summary><pre class="decision-proof-text">${escapeHtml(plan.decisionProofMessage)}</pre></details>`
+    ? `<details class="decision-proof-message"><summary>${escapeHtml(t('What you signed'))}</summary><pre class="decision-proof-text">${escapeHtml(plan.decisionProofMessage)}</pre></details>`
     : '';
   const copyButtons = [
-    plan.signature ? `<button data-copy="${escapeHtml(plan.signature)}" data-copy-name="Decision signature">Copy signature</button>` : '',
-    plan.decisionProofMessage ? `<button data-copy="${escapeHtml(plan.decisionProofMessage)}" data-copy-name="Signed text">Copy signed text</button>` : '',
+    plan.signature ? `<button data-copy="${escapeHtml(plan.signature)}" data-copy-name="${escapeHtml(t('Decision signature'))}">${escapeHtml(t('Copy signature'))}</button>` : '',
+    plan.decisionProofMessage ? `<button data-copy="${escapeHtml(plan.decisionProofMessage)}" data-copy-name="${escapeHtml(t('Signed text'))}">${escapeHtml(t('Copy signed text'))}</button>` : '',
   ].filter(Boolean).join('');
   return `
     <details class="mobile-decision-proof ${verified ? 'verified' : ''}">
@@ -27371,9 +27446,9 @@ function completedPlanMobileDecisionProof(plan: CompletedPlanRecord): string {
         <strong>${escapeHtml(headline)}</strong>
       </summary>
       <dl class="decision-proof-grid">
-        <div><dt>Wallet</dt><dd title="${escapeHtml(plan.walletAddress)}">${escapeHtml(walletShort)}</dd></div>
-        <div><dt>When</dt><dd>${escapeHtml(when)}</dd></div>
-        ${sigShort ? `<div><dt>Signature</dt><dd title="${escapeHtml(plan.signature ?? '')}">${escapeHtml(sigShort)}</dd></div>` : ''}
+        <div><dt>${escapeHtml(t('Wallet'))}</dt><dd title="${escapeHtml(plan.walletAddress)}">${escapeHtml(walletShort)}</dd></div>
+        <div><dt>${escapeHtml(t('When'))}</dt><dd>${escapeHtml(when)}</dd></div>
+        ${sigShort ? `<div><dt>${escapeHtml(t('Signature'))}</dt><dd title="${escapeHtml(plan.signature ?? '')}">${escapeHtml(sigShort)}</dd></div>` : ''}
       </dl>
       ${proofMessageBlock}
       ${copyButtons ? `<div class="decision-proof-actions">${copyButtons}</div>` : ''}
@@ -27383,7 +27458,7 @@ function completedPlanMobileDecisionProof(plan: CompletedPlanRecord): string {
 
 function completedPlanDisplayTitle(plan: CompletedPlanRecord): string {
   const title = plan.title.trim();
-  if (!title) return plan.kind === 'recurring' ? 'Repeat payment done' : 'Completed record';
+  if (!title) return plan.kind === 'recurring' ? t('Repeat payment done') : t('Completed record');
   const compactTitle = title.split(':')[0]?.trim() || title;
   return compactTitle.length <= 54 ? compactTitle : `${compactTitle.slice(0, 51)}...`;
 }
@@ -27408,7 +27483,7 @@ function completedPlanMetric(plan: CompletedPlanRecord): { primary: string; seco
   if (readSummary) {
     return {
       primary: readSummary,
-      secondary: [stringFromJsonLike(connectorRead?.feedLabel), 'Pyth oracle'].filter(Boolean).join(' - '),
+      secondary: [stringFromJsonLike(connectorRead?.feedLabel), tf('{brand} oracle', { brand: 'Pyth' })].filter(Boolean).join(' - '),
     };
   }
   const amount = completedPlanAmountLabel(plan);
@@ -27421,7 +27496,7 @@ function completedPlanMetric(plan: CompletedPlanRecord): { primary: string; seco
   }
   return {
     primary: amount,
-    secondary: plan.recipient ? `To ${recipientDisplayLabel(plan.recipient)}` : formatDateTime(plan.completedAt),
+    secondary: plan.recipient ? tf('To {recipient}', { recipient: recipientDisplayLabel(plan.recipient) }) : formatDateTime(plan.completedAt),
   };
 }
 
@@ -27508,7 +27583,7 @@ function completedPlanTokenCopyActions(plan: CompletedPlanRecord): SummaryCopyAc
   if (route) {
     return tokenRouteCopyActions(route.from, route.to);
   }
-  return tokenCopyActions(token, 'Copy token', 'Token mint');
+  return tokenCopyActions(token, t('Copy token'), t('Token mint'));
 }
 
 type CompletedPlanRecordRef = {
@@ -27529,8 +27604,8 @@ function completedPlanRecordRef(plan: CompletedPlanRecord): CompletedPlanRecordR
       value: shortFirstRunWallet(plan.txid),
       title: plan.txid,
       copyValue: url,
-      copyLabel: 'Copy tx link',
-      copyName: 'Solscan transaction link',
+      copyLabel: t('Copy tx link'),
+      copyName: tf('{brand} transaction link', { brand: 'Solscan' }),
     };
   }
   if (completedPlanConnectorRead(plan)) {
@@ -27538,20 +27613,20 @@ function completedPlanRecordRef(plan: CompletedPlanRecord): CompletedPlanRecordR
       label: 'Receipt',
       value: short(plan.id),
       copyValue: plan.copyPayload,
-      copyLabel: 'Copy receipt',
-      copyName: 'Connector read receipt',
+      copyLabel: t('Copy receipt'),
+      copyName: t('Connector read receipt'),
     };
   }
   if (plan.signature) return {
     label: 'Proof only',
     value: short(plan.signature),
     copyValue: plan.signature,
-    copyLabel: 'Copy proof',
-    copyName: 'Proof signature',
+    copyLabel: t('Copy proof'),
+    copyName: t('Proof signature'),
   };
   if (plan.actionId) return { label: 'Receipt', value: short(plan.actionId), copyValue: plan.actionId };
   if (plan.recurringId) return { label: 'Repeat', value: short(plan.recurringId), copyValue: plan.recurringId };
-  return { label: 'Record', value: 'Local done work' };
+  return { label: 'Record', value: t('Local done work') };
 }
 
 function completedPlanSummaryGrid(plan: CompletedPlanRecord): string {
@@ -27560,35 +27635,35 @@ function completedPlanSummaryGrid(plan: CompletedPlanRecord): string {
   const amountLabel = completedPlanAmountLabel(plan);
   const rows: Array<{ label: string; value: string; title?: string; copyValue?: string; tone?: 'amount'; copyLabel?: string; copyName?: string; copyActions?: SummaryCopyAction[] }> = connectorRead
     ? [
-        { label: 'Question', value: pythQuestionDisplayLabel(stringFromJsonLike(connectorRead.question)) },
+        { label: t('Question'), value: pythQuestionDisplayLabel(stringFromJsonLike(connectorRead.question)) },
         {
-          label: 'Result',
+          label: t('Result'),
           value: stringFromJsonLike(connectorRead.resultSummary) || amountLabel,
           title: stringFromJsonLike(connectorRead.resultSummary) || amountLabel,
           tone: 'amount',
         },
         {
-          label: 'Feed',
+          label: t('Feed'),
           value: stringFromJsonLike(connectorRead.feedLabel) || stringFromJsonLike(connectorRead.symbol) || short(stringFromJsonLike(connectorRead.priceFeedId)),
           title: stringFromJsonLike(connectorRead.priceFeedId) || stringFromJsonLike(connectorRead.feedLabel) || stringFromJsonLike(connectorRead.symbol),
           copyValue: stringFromJsonLike(connectorRead.priceFeedId) || undefined,
-          copyLabel: stringFromJsonLike(connectorRead.priceFeedId) ? 'Copy feed' : undefined,
-          copyName: 'Pyth price feed',
+          copyLabel: stringFromJsonLike(connectorRead.priceFeedId) ? t('Copy feed') : undefined,
+          copyName: tf('{brand} price feed', { brand: 'Pyth' }),
         },
-        { label: 'Completed', value: formatDateTime(plan.completedAt) },
+        { label: t('Completed'), value: formatDateTime(plan.completedAt) },
       ]
     : [
-    { label: 'Wallet', value: plan.walletAddress ? short(plan.walletAddress) : 'No wallet', title: plan.walletAddress || 'No wallet', copyValue: plan.walletAddress || undefined },
+    { label: t('Wallet'), value: plan.walletAddress ? short(plan.walletAddress) : t('No wallet'), title: plan.walletAddress || t('No wallet'), copyValue: plan.walletAddress || undefined },
     {
-      label: 'Amount',
+      label: t('Amount'),
       value: amountLabel,
       title: amountLabel,
       tone: 'amount',
       copyActions: completedPlanTokenCopyActions(plan),
     },
-    { label: 'Completed', value: formatDateTime(plan.completedAt) },
+    { label: t('Completed'), value: formatDateTime(plan.completedAt) },
     {
-      label: record.label,
+      label: t(record.label),
       value: record.value,
       title: record.title ?? record.copyValue ?? record.value,
       copyValue: record.copyValue,
@@ -27598,7 +27673,7 @@ function completedPlanSummaryGrid(plan: CompletedPlanRecord): string {
     },
   ];
   return `
-    <dl class="completed-history-summary-grid" aria-label="Done work summary">
+    <dl class="completed-history-summary-grid" aria-label="${escapeHtml(t('Done work summary'))}">
       ${rows.map(completedPlanSummaryItem).join('')}
     </dl>
   `;
@@ -27622,8 +27697,8 @@ function completedPlanSummaryNote(plan: CompletedPlanRecord): string {
   const summary = compactSentence(plan.summary || '');
   if (!summary || summary === completedPlanDisplayTitle(plan)) return '';
   return `
-    <section class="completed-history-note" aria-label="Done work note" title="${escapeHtml(summary)}">
-      <span>Note</span>
+    <section class="completed-history-note" aria-label="${escapeHtml(t('Done work note'))}" title="${escapeHtml(summary)}">
+      <span>${escapeHtml(t('Note'))}</span>
       <p>${escapeHtml(summary)}</p>
     </section>
   `;
@@ -27633,10 +27708,10 @@ function relatedReceiptBlockForApproval(approvalId: string): string {
   const receipts = relatedEvidenceReceiptsForApproval(approvalId);
   if (receipts.length === 0) return '';
   return `
-    <div class="related-receipts" aria-label="Related evidence receipts">
+    <div class="related-receipts" aria-label="${escapeHtml(t('Related evidence receipts'))}">
       <div class="related-receipts-head">
-        <strong>Related receipts</strong>
-        <span>${receipts.length} wallet-signed</span>
+        <strong>${escapeHtml(t('Related receipts'))}</strong>
+        <span>${escapeHtml(tf('{n} wallet-signed', { n: receipts.length }))}</span>
       </div>
       <div class="related-receipt-list">
         ${receipts.map(relatedReceiptRow).join('')}
@@ -27653,9 +27728,9 @@ function relatedReceiptRow(artifact: LabArtifact): string {
         <span>${escapeHtml(formatDateTime(artifact.createdAt))} · ${escapeHtml(short(artifact.signature))}</span>
       </div>
       <div>
-        <button data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="Related receipt signed text">Copy text</button>
-        <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Related receipt JSON">Copy JSON</button>
-        <button data-share-receipt="${escapeHtml(artifact.id)}">Share</button>
+        <button data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="${escapeHtml(t('Related receipt signed text'))}">${escapeHtml(t('Copy text'))}</button>
+        <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="${escapeHtml(t('Related receipt JSON'))}">${escapeHtml(t('Copy JSON'))}</button>
+        <button data-share-receipt="${escapeHtml(artifact.id)}">${escapeHtml(t('Share'))}</button>
       </div>
     </div>
   `;
@@ -27681,7 +27756,7 @@ function recordActivityDetails(recordType: AuditRecordType, recordId: string): s
   const open = state.auditOpen[key] === true;
   const body = cloudSessionMatchesWallet() || activity.status === 'loaded'
     ? auditActivityBody(activity)
-    : '<p class="activity-note">Cloud activity appears here after you sign in to Agentic Cloud. Browser receipts remain visible in this workspace.</p>';
+    : `<p class="activity-note">${escapeHtml(tf('Cloud activity appears here after you sign in to {brand}. Browser receipts remain visible in this workspace.', { brand: 'Agentic Cloud' }))}</p>`;
   return `
     <details
       class="record-activity"
@@ -27690,7 +27765,7 @@ function recordActivityDetails(recordType: AuditRecordType, recordId: string): s
       ${open ? 'open' : ''}
     >
       <summary>
-        <span>Activity</span>
+        <span>${escapeHtml(t('Activity'))}</span>
         <button
           type="button"
           class="record-activity-refresh"
@@ -27698,7 +27773,7 @@ function recordActivityDetails(recordType: AuditRecordType, recordId: string): s
           data-audit-refresh-record-id="${escapeHtml(recordId)}"
           ${state.busy || !cloudSessionMatchesWallet() ? 'disabled' : ''}
         >
-          Refresh
+          ${escapeHtml(t('Refresh'))}
         </button>
       </summary>
       ${body}
@@ -27708,16 +27783,16 @@ function recordActivityDetails(recordType: AuditRecordType, recordId: string): s
 
 function auditActivityBody(activity: AuditActivityState): string {
   if (activity.status === 'loading') {
-    return '<p class="activity-note">Loading cloud activity...</p>';
+    return `<p class="activity-note">${escapeHtml(t('Loading cloud activity...'))}</p>`;
   }
   if (activity.status === 'error') {
-    return `<p class="activity-note error-text">${escapeHtml(activity.error ?? 'Activity could not be loaded.')}</p>`;
+    return `<p class="activity-note error-text">${escapeHtml(activity.error ?? t('Activity could not be loaded.'))}</p>`;
   }
   if (activity.status !== 'loaded') {
-    return '<p class="activity-note">Open to load cloud activity for this record.</p>';
+    return `<p class="activity-note">${escapeHtml(t('Open to load cloud activity for this record.'))}</p>`;
   }
   if (activity.events.length === 0) {
-    return '<p class="activity-note">No cloud activity found for this record yet.</p>';
+    return `<p class="activity-note">${escapeHtml(t('No cloud activity found for this record yet.'))}</p>`;
   }
   return `
     <div class="activity-event-list">
@@ -27754,7 +27829,7 @@ function auditActivityKey(recordType: AuditRecordType, recordId: string): string
 
 function scheduledApprovalsPanel(): string {
   if (!state.address) {
-    return guidedStartPanel('Repeat Payments', 'Connect a wallet before creating repeat payments.');
+    return guidedStartPanel(t('Repeat Payments'), t('Connect a wallet before creating repeat payments.'));
   }
   const recurringPayments = activeWorkflowRecurringPayments();
   const activeCount = recurringPayments.filter((payment) => payment.status === 'active' && !isRecurringPaymentCompleted(payment)).length;
@@ -27762,15 +27837,15 @@ function scheduledApprovalsPanel(): string {
   const active = state.recurringView === 'active';
   const recurringContent = active
     ? recurringList() || signaturePlaceholder(
-        'No active repeats',
-        mobile ? 'Create one from the Create tab.' : 'Create a repeat payment to track active repeats here.',
+        t('No active repeats'),
+        mobile ? t('Create one from the Create tab.') : t('Create a repeat payment to track active repeats here.'),
       )
     : recurringComposer();
   return `
     <section class="approval-object signature-stage stage-schedule stage-anchor ${mobile ? 'mobile-recurring-stage' : ''} ${recurringPayments.length ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head app-inline-head ${mobile ? 'mobile-recurring-title-head' : ''}">
         ${mobile ? mobileRecurringHeader(activeCount) : `
-          ${sectionTitleLine('Repeat Payments', 'Set up payments that repeat. Each payment still asks for approval before it sends.')}
+          ${sectionTitleLine(t('Repeat Payments'), t('Set up payments that repeat. Each payment still asks for approval before it sends.'))}
           ${inboxRefreshButton('refreshInbox')}
         `}
       </div>
@@ -27787,12 +27862,12 @@ function mobileRecurringHeader(activeCount: number): string {
   return `
     <div class="mobile-recurring-head-row">
       <div class="mobile-recurring-title-copy">
-        <h2>Repeat Payments</h2>
-        <p>Repeats ask for approval before each send.</p>
+        <h2>${escapeHtml(t('Repeat Payments'))}</h2>
+        <p>${escapeHtml(t('Repeats ask for approval before each send.'))}</p>
       </div>
-      <div class="tabs compact-tabs recurring-view-tabs mobile-recurring-view-tabs" role="tablist" aria-label="Repeat payment views">
-        ${recurringViewButton('create', 'Create')}
-        ${recurringViewButton('active', activeCount ? `Active ${activeCount}` : 'Active')}
+      <div class="tabs compact-tabs recurring-view-tabs mobile-recurring-view-tabs" role="tablist" aria-label="${escapeHtml(t('Repeat payment views'))}">
+        ${recurringViewButton('create', t('Create'))}
+        ${recurringViewButton('active', activeCount ? tf('Active {n}', { n: activeCount }) : t('Active'))}
       </div>
     </div>
   `;
@@ -27803,10 +27878,10 @@ function mobileRecurringStatsLine(payments: RecurringPayment[]): string {
   const completed = payments.filter(isRecurringPaymentCompleted).length;
   const total = payments.length;
   return `
-    <div class="mobile-recurring-stats" aria-label="Repeat payment stats">
-      <strong>${active} active</strong>
-      <span>${total} saved</span>
-      <span>${completed} completed</span>
+    <div class="mobile-recurring-stats" aria-label="${escapeHtml(t('Repeat payment stats'))}">
+      <strong>${escapeHtml(tf('{n} active', { n: active }))}</strong>
+      <span>${escapeHtml(tf('{n} saved', { n: total }))}</span>
+      <span>${escapeHtml(tf('{n} completed', { n: completed }))}</span>
     </div>
   `;
 }
@@ -27825,7 +27900,7 @@ function recurringMobileModeControls(): string {
   return `
     <div class="mobile-recurring-controls active">
       ${agentReviewFilterControl('recurring')}
-      <button id="deleteAllRepeats" class="utility danger" ${state.busy || filterRecurringPaymentsByAgentReview(activeWorkflowRecurringPayments()).length === 0 ? 'disabled' : ''}>Delete All</button>
+      <button id="deleteAllRepeats" class="utility danger" ${state.busy || filterRecurringPaymentsByAgentReview(activeWorkflowRecurringPayments()).length === 0 ? 'disabled' : ''}>${escapeHtml(t('Delete All'))}</button>
     </div>
   `;
 }
@@ -27836,12 +27911,12 @@ function recurringViewTabs(activeCount: number): string {
   const connector = creating ? recurringDraftConnector(state.recurringDraft) : undefined;
   return `
     <div class="recurring-control-row ${creating ? 'has-connector' : active ? 'review-filter-row' : ''}">
-      <div class="tabs compact-tabs recurring-view-tabs" role="tablist" aria-label="Repeat payment views">
-        ${recurringViewButton('create', 'Create Repeat')}
-        ${recurringViewButton('active', activeCount ? `Active Repeats (${activeCount})` : 'Active Repeats')}
+      <div class="tabs compact-tabs recurring-view-tabs" role="tablist" aria-label="${escapeHtml(t('Repeat payment views'))}">
+        ${recurringViewButton('create', t('Create Repeat'))}
+        ${recurringViewButton('active', activeCount ? tf('Active Repeats ({n})', { n: activeCount }) : t('Active Repeats'))}
       </div>
       ${active ? agentReviewFilterControl('recurring') : ''}
-      ${active ? `<button id="deleteAllRepeats" class="utility danger" ${state.busy || filterRecurringPaymentsByAgentReview(activeWorkflowRecurringPayments()).length === 0 ? 'disabled' : ''}>Delete All</button>` : ''}
+      ${active ? `<button id="deleteAllRepeats" class="utility danger" ${state.busy || filterRecurringPaymentsByAgentReview(activeWorkflowRecurringPayments()).length === 0 ? 'disabled' : ''}>${escapeHtml(t('Delete All'))}</button>` : ''}
       ${creating ? recurringConnectorPicker() : ''}
       ${creating ? (connector ? recurringConnectorActionPicker(state.recurringDraft, connector) : recurringPresetMethodControls()) : ''}
     </div>
@@ -27861,7 +27936,7 @@ function recurringConnectorPicker(): string {
         attrs: { 'data-recurring-field': 'connectorId' },
         disabled: state.busy || connectors.length === 0,
         className: 'top-connector-picker recurring-connector-picker',
-        title: selectedConnector ? `${selectedConnector.name} connector selected for review context` : 'Use connector',
+        title: selectedConnector ? tf('{connector} connector selected for review context', { connector: selectedConnector.name }) : t('Use connector'),
       })}
     </div>
   `;
@@ -27892,13 +27967,13 @@ function labsPanel(): string {
   const detail =
     state.artifactView === 'signed'
       ? mobile
-        ? 'Wallet-signed proofs on this device.'
-        : `Review wallet-signed proofs saved on this device${state.bridgeActive ? ' and mirrored to the local bridge archive' : ''}.`
-      : 'Save wallet-signed proof for a request, approval, denial, or result.';
+        ? t('Wallet-signed proofs on this device.')
+        : `${t('Review wallet-signed proofs saved on this device')}${state.bridgeActive ? t(' and mirrored to the local bridge archive') : ''}.`
+      : t('Save wallet-signed proof for a request, approval, denial, or result.');
   return `
     <section class="approval-object signature-stage stage-labs stage-anchor ${mobile ? 'mobile-proof-stage' : ''} ${complete ? 'stage-complete' : 'stage-draft'}">
       <div class="signature-object-head artifact-workspace-head">
-        ${sectionTitleLine('Save Proof', detail)}
+        ${sectionTitleLine(t('Save Proof'), detail)}
         ${artifactWorkspaceTabs()}
       </div>
 
@@ -27910,9 +27985,9 @@ function labsPanel(): string {
 
 function artifactWorkspaceTabs(): string {
   return `
-    <div class="tabs compact-tabs artifact-view-tabs" role="tablist" aria-label="Save proof views">
-      ${artifactViewButton('create', 'Save Proof')}
-      ${artifactViewButton('signed', 'Saved Proofs')}
+    <div class="tabs compact-tabs artifact-view-tabs" role="tablist" aria-label="${escapeHtml(t('Save proof views'))}">
+      ${artifactViewButton('create', t('Save Proof'))}
+      ${artifactViewButton('signed', t('Saved Proofs'))}
     </div>
   `;
 }
@@ -27934,7 +28009,7 @@ function artifactViewButton(view: ArtifactView, label: string): string {
 
 function createArtifactPanel(): string {
   if (!state.address) {
-    return guidedStartPanel('Save Proof', 'Connect a wallet before saving signed proofs.');
+    return guidedStartPanel(t('Save Proof'), t('Connect a wallet before saving signed proofs.'));
   }
   const lab = activeLab();
   const artifact = latestLabArtifact(lab.id);
@@ -27948,22 +28023,22 @@ function createArtifactPanel(): string {
         ${labCommandMenu(lab)}
         <div class="lab-workbench-grid">
           <div class="lab-copy research-brief">
-            <span class="workbench-kicker">${publicReceipt ? 'Proof purpose' : 'Advanced proof'}</span>
-            <h3>${escapeHtml(lab.title.replace(/^\d+\.\s*/, ''))}</h3>
-            <p>${escapeHtml(lab.summary)}</p>
+            <span class="workbench-kicker">${publicReceipt ? t('Proof purpose') : t('Advanced proof')}</span>
+            <h3>${escapeHtml(t(lab.title).replace(/^\d+\.\s*/, ''))}</h3>
+            <p>${escapeHtml(t(lab.summary))}</p>
             <div class="receipt-explainer-stack">
               <div>
-                <span>What this proves</span>
-                <p>${escapeHtml(lab.whatThisProves)}</p>
+                <span>${escapeHtml(t('What this proves'))}</span>
+                <p>${escapeHtml(t(lab.whatThisProves))}</p>
               </div>
               <div>
-                <span>Best use</span>
-                <p>${escapeHtml(lab.recommendedUse)}</p>
+                <span>${escapeHtml(t('Best use'))}</span>
+                <p>${escapeHtml(t(lab.recommendedUse))}</p>
               </div>
             </div>
             <div class="capabilities compact-caps">
               <span>${escapeHtml(labKindLabel(lab.kind))}</span>
-              <span>${artifact ? 'proof saved' : 'ready to sign'}</span>
+              <span>${artifact ? t('proof saved') : t('ready to sign')}</span>
             </div>
           </div>
 
@@ -27973,7 +28048,7 @@ function createArtifactPanel(): string {
         ${artifactSigningPreview(lab, publicReceipt, artifact)}
 
         <div class="lab-actions lab-signature-action">
-          <button id="createLabArtifact" class="primary" ${!state.address || state.busy ? 'disabled' : ''}>${publicReceipt ? 'Sign and save proof' : 'Sign advanced proof'}</button>
+          <button id="createLabArtifact" class="primary" ${!state.address || state.busy ? 'disabled' : ''}>${publicReceipt ? t('Sign and save proof') : t('Sign advanced proof')}</button>
         </div>
       </div>
   `;
@@ -27982,9 +28057,9 @@ function createArtifactPanel(): string {
 function artifactSigningPreview(lab: LabDefinition, publicReceipt: boolean, artifact: LabArtifact | null): string {
   return `
     <div class="proof-signing-preview">
-      <span class="accent-note">${artifact ? 'Proof saved' : publicReceipt ? 'Common proof ready' : 'Advanced proof ready'}</span>
+      <span class="accent-note">${artifact ? t('Proof saved') : publicReceipt ? t('Common proof ready') : t('Advanced proof ready')}</span>
       <strong>${escapeHtml(publicReceipt ? receiptLabelForKind(lab.kind) : lab.title.replace(/^\d+\.\s*/, ''))}</strong>
-      <p>Your wallet signs this evidence record only. No transaction is submitted.</p>
+      <p>${escapeHtml(t('Your wallet signs this evidence record only. No transaction is submitted.'))}</p>
     </div>
   `;
 }
@@ -27998,9 +28073,9 @@ function artifactProofGroupForLab(lab: LabDefinition): ArtifactProofGroup {
 function artifactProofGroupTabs(lab: LabDefinition): string {
   const active = artifactProofGroupForLab(lab);
   return `
-    <div class="tabs compact-tabs artifact-proof-group-tabs" role="tablist" aria-label="Proof category">
-      ${artifactProofGroupButton('common', 'Common Proofs', active)}
-      ${artifactProofGroupButton('advanced', 'Advanced Proofs', active)}
+    <div class="tabs compact-tabs artifact-proof-group-tabs" role="tablist" aria-label="${escapeHtml(t('Proof category'))}">
+      ${artifactProofGroupButton('common', t('Common Proofs'), active)}
+      ${artifactProofGroupButton('advanced', t('Advanced Proofs'), active)}
     </div>
   `;
 }
@@ -28033,7 +28108,7 @@ function receiptFieldInput(lab: LabDefinition, field: LabFieldDefinition): strin
   const value = receiptFieldValue(lab.id, field.id);
   const errorKey = receiptFieldErrorKey(lab.id, field.id);
   const error = state.labFieldErrors[errorKey];
-  const label = `${field.label}${field.required ? ' *' : ''}`;
+  const label = `${t(field.label)}${field.required ? ' *' : ''}`;
   const attrs = `data-lab-field="${escapeHtml(field.id)}" data-lab-id="${escapeHtml(lab.id)}" ${state.busy ? 'disabled' : ''}`;
   if (field.type === 'select') {
     return `
@@ -28043,8 +28118,8 @@ function receiptFieldInput(lab: LabDefinition, field: LabFieldDefinition): strin
           value,
           options: (field.options ?? []).map((option) => ({
             value: option,
-            label: option,
-            meta: field.label,
+            label: t(option),
+            meta: t(field.label),
           })),
           attrs: {
             'data-lab-field': field.id,
@@ -28068,7 +28143,7 @@ function receiptFieldInput(lab: LabDefinition, field: LabFieldDefinition): strin
     return `
       <label class="field compact receipt-field ${error ? 'field-error' : ''}">
         ${labelRow}
-        <textarea ${attrs} placeholder="${escapeHtml(field.placeholder ?? '')}">${escapeHtml(value)}</textarea>
+        <textarea ${attrs} placeholder="${escapeHtml(field.placeholder ? t(field.placeholder) : '')}">${escapeHtml(value)}</textarea>
         ${error ? `<em class="field-error-text">${escapeHtml(error)}</em>` : ''}
       </label>
     `;
@@ -28076,7 +28151,7 @@ function receiptFieldInput(lab: LabDefinition, field: LabFieldDefinition): strin
   return `
     <label class="field compact receipt-field ${error ? 'field-error' : ''}">
       ${labelRow}
-      <input ${attrs} value="${escapeHtml(value)}" placeholder="${escapeHtml(field.placeholder ?? '')}" />
+      <input ${attrs} value="${escapeHtml(value)}" placeholder="${escapeHtml(field.placeholder ? t(field.placeholder) : '')}" />
       ${error ? `<em class="field-error-text">${escapeHtml(error)}</em>` : ''}
     </label>
   `;
@@ -28087,7 +28162,7 @@ function advancedLabInput(lab: LabDefinition): string {
   return `
     <label class="field agent-prompt lab-intent-document ${error ? 'field-error' : ''}">
       <span class="field-label-row">
-        <span class="field-label-text">Evidence note *</span>
+        <span class="field-label-text">${escapeHtml(t('Evidence note *'))}</span>
         ${mobileExpandNoteLink({ kind: 'lab-advanced', labId: lab.id })}
       </span>
       <textarea id="labInput" ${state.busy ? 'disabled' : ''}>${escapeHtml(labInput(lab.id))}</textarea>
@@ -28111,8 +28186,8 @@ function artifactArchiveControls(visibleCount: number): string {
   return `
     <div class="artifact-archive-control-panel">
       <div class="artifact-archive-primary-row">
-        <span class="signature-state artifact-visible-count">${escapeHtml(`${visibleCount} visible`)}</span>
-      <div class="template-filter-row artifact-filter-row" role="group" aria-label="Saved proof filter">
+        <span class="signature-state artifact-visible-count">${escapeHtml(tf('{count} visible', { count: visibleCount }))}</span>
+      <div class="template-filter-row artifact-filter-row" role="group" aria-label="${escapeHtml(t('Saved proof filter'))}">
         ${artifactFilterOptions(false).map(([filter, label]) => `
           <button
             type="button"
@@ -28133,9 +28208,9 @@ function artifactArchiveControls(visibleCount: number): string {
         })}
       </label>
       <label class="field compact artifact-search-field">
-        <input id="artifactSearch" value="${escapeHtml(state.artifactSearch)}" placeholder="Search proofs, type, wallet, hash, or intent" ${state.busy ? 'disabled' : ''} />
+        <input id="artifactSearch" value="${escapeHtml(state.artifactSearch)}" placeholder="${escapeHtml(t('Search proofs, type, wallet, hash, or intent'))}" ${state.busy ? 'disabled' : ''} />
       </label>
-        <button id="refreshLabArtifacts" class="utility artifact-refresh-button" ${state.busy ? 'disabled' : ''}>Refresh</button>
+        <button id="refreshLabArtifacts" class="utility artifact-refresh-button" ${state.busy ? 'disabled' : ''}>${t('Refresh')}</button>
       </div>
       ${artifactArchiveStatusLine()}
     </div>
@@ -28145,7 +28220,7 @@ function artifactArchiveControls(visibleCount: number): string {
 function artifactArchiveControlsMobile(visibleCount: number): string {
   return `
     <div class="artifact-archive-control-panel mobile-artifact-archive-control-panel">
-      <div class="template-filter-row artifact-filter-row mobile-artifact-filter-row" role="group" aria-label="Saved proof filter">
+      <div class="template-filter-row artifact-filter-row mobile-artifact-filter-row" role="group" aria-label="${escapeHtml(t('Saved proof filter'))}">
         ${artifactFilterOptions(true).map(([filter, label]) => `
           <button
             type="button"
@@ -28167,11 +28242,11 @@ function artifactArchiveControlsMobile(visibleCount: number): string {
           })}
         </label>
         <label class="field compact artifact-search-field mobile-artifact-search-field">
-          <input id="artifactSearch" value="${escapeHtml(state.artifactSearch)}" placeholder="Search proofs" ${state.busy ? 'disabled' : ''} />
+          <input id="artifactSearch" value="${escapeHtml(state.artifactSearch)}" placeholder="${escapeHtml(t('Search proofs'))}" ${state.busy ? 'disabled' : ''} />
         </label>
       </div>
-      <div class="mobile-artifact-status-line" aria-label="Saved proof archive summary">
-        <strong>${visibleCount} visible</strong>
+      <div class="mobile-artifact-status-line" aria-label="${escapeHtml(t('Saved proof archive summary'))}">
+        <strong>${escapeHtml(tf('{count} visible', { count: visibleCount }))}</strong>
         <span>${escapeHtml(artifactMobileArchiveStatusText())}</span>
       </div>
     </div>
@@ -28180,48 +28255,48 @@ function artifactArchiveControlsMobile(visibleCount: number): string {
 
 function artifactFilterOptions(mobile: boolean): Array<[ArtifactFilter, string]> {
   return [
-    ['all', 'All'],
-    ['verified', 'Verified'],
-    ['warnings', mobile ? 'Warn' : 'Warnings'],
-    ['blocked', 'Blocked'],
+    ['all', t('All')],
+    ['verified', t('Verified')],
+    ['warnings', mobile ? t('Warn') : t('Warnings')],
+    ['blocked', t('Blocked')],
   ];
 }
 
 function artifactTypeFilterOptions(): SelectPickerOption[] {
   return [
-    { value: 'all', label: 'All types', meta: 'Proof type' },
+    { value: 'all', label: t('All types'), meta: t('Proof type') },
     ...RECEIPT_LABS.map((lab) => ({
       value: lab.id,
       label: lab.title,
-      meta: 'Saved proof',
+      meta: t('Saved proof'),
       detail: lab.description,
     })),
     ...ADVANCED_EVIDENCE_LABS.map((lab) => ({
       value: lab.id,
-      label: `Legacy / ${lab.title}`,
-      meta: 'Advanced evidence',
+      label: tf('Legacy / {title}', { title: lab.title }),
+      meta: t('Advanced evidence'),
       detail: lab.description,
     })),
   ];
 }
 
 function artifactMobileArchiveStatusText(): string {
-  if (activeWorkflowMode() === 'agentic-cloud') return 'Cloud archive synced when signed in.';
-  if (activeWorkflowMode() === 'local-bridge' || state.bridgeActive) return 'Private local archive.';
-  return 'Stored on this device.';
+  if (activeWorkflowMode() === 'agentic-cloud') return t('Cloud archive synced when signed in.');
+  if (activeWorkflowMode() === 'local-bridge' || state.bridgeActive) return t('Private local archive.');
+  return t('Stored on this device.');
 }
 
 function artifactArchiveStatusLine(): string {
   const bridge = state.bridgeActive
     ? state.health?.labArtifactStorePath
-      ? `Bridge file: ${state.health.labArtifactStorePath}`
-      : 'Bridge archive connected'
-    : 'Bridge archive unavailable';
+      ? tf('Bridge file: {path}', { path: state.health.labArtifactStorePath })
+      : t('Bridge archive connected')
+    : t('Bridge archive unavailable');
   const cloudClass = cloudSessionMatchesWallet() ? 'cloud-active' : 'cloud-inactive';
   return `
     <div class="artifact-archive-status">
-      <span>${escapeHtml(state.labArchiveStatus)}</span>
-      <span class="cloud-evidence-status ${cloudClass}">${escapeHtml(state.cloudEvidenceStatus)}</span>
+      <span>${escapeHtml(t(state.labArchiveStatus))}</span>
+      <span class="cloud-evidence-status ${cloudClass}">${escapeHtml(t(state.cloudEvidenceStatus))}</span>
       <strong>${escapeHtml(bridge)}</strong>
     </div>
   `;
@@ -28230,9 +28305,9 @@ function artifactArchiveStatusLine(): string {
 function signedArtifactsEmptyState(): string {
   return `
     <div class="empty lab-empty-state">
-      <span>No saved proofs</span>
-      <h3>Archive is empty</h3>
-      <p>Use Save Proof to add the first wallet-bound proof.</p>
+      <span>${t('No saved proofs')}</span>
+      <h3>${t('Archive is empty')}</h3>
+      <p>${t('Use Save Proof to add the first wallet-bound proof.')}</p>
     </div>
   `;
 }
@@ -28243,7 +28318,7 @@ function signedArtifactList(artifacts: LabArtifact[]): string {
     <div class="signed-artifact-list">
       ${paginatedArtifacts.items.map((artifact) => signedArtifactRow(artifact)).join('')}
     </div>
-    ${listPagination('receiptArchive', paginatedArtifacts, 'Saved proofs')}
+    ${listPagination('receiptArchive', paginatedArtifacts, t('Saved proofs'))}
   `;
 }
 
@@ -28283,18 +28358,18 @@ function signedArtifactRow(artifact: LabArtifact): string {
   if (isMobileAppViewport()) return signedArtifactRowMobile(artifact);
   const lab = labById(artifact.labId);
   const legacy = !lab || lab.category === 'advanced';
-  const receiptLabel = legacy ? 'Legacy receipt' : receiptLabelForKind(artifact.kind);
+  const receiptLabel = legacy ? t('Legacy receipt') : receiptLabelForKind(artifact.kind);
   const requested = receiptRequestedText(artifact);
   const proves = receiptProvesText(artifact);
   const signatureHash = `${short(artifact.signature)} / ${short(artifact.artifactHash)}`;
   const searchText = artifactSearchText(artifact);
-  const verdict = artifact.payload.metrics.find((metric) => metric.label.toLowerCase() === 'verdict')?.value ?? (artifact.verified ? 'verified' : 'signed');
+  const verdict = artifact.payload.metrics.find((metric) => metric.label.toLowerCase() === 'verdict')?.value ?? (artifact.verified ? t('verified') : t('signed'));
   return `
     <article class="signed-artifact-row receipt-proof-card ${legacy ? 'legacy' : ''}" data-artifact-search-text="${escapeHtml(searchText)}">
       <div class="receipt-proof-card-head">
         <div class="receipt-proof-title-block">
           <div class="receipt-proof-meta">
-            <span class="status-pill ${artifact.verified ? 'tx-confirmed' : 'tx-pending'}">${artifact.verified ? 'wallet verified' : 'signed'}</span>
+            <span class="status-pill ${artifact.verified ? 'tx-confirmed' : 'tx-pending'}">${artifact.verified ? t('wallet verified') : t('signed')}</span>
             <span class="receipt-proof-type-label">${escapeHtml(labKindLabel(artifact.kind))}</span>
             <time class="receipt-proof-date" datetime="${escapeHtml(artifact.createdAt)}">${escapeHtml(formatDateTime(artifact.createdAt))}</time>
           </div>
@@ -28305,26 +28380,26 @@ function signedArtifactRow(artifact: LabArtifact): string {
           <span>${escapeHtml(short(artifact.artifactHash))}</span>
         </div>
         <div class="signed-artifact-actions receipt-proof-actions">
-          <button data-share-receipt="${escapeHtml(artifact.id)}">Share proof</button>
-          <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Proof JSON">Copy JSON</button>
+          <button data-share-receipt="${escapeHtml(artifact.id)}">${t('Share proof')}</button>
+          <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="${escapeHtml(t('Proof JSON'))}">${t('Copy JSON')}</button>
         </div>
       </div>
-      <dl class="receipt-proof-summary-grid" aria-label="Saved proof summary">
-        ${receiptProofSummaryItem('Requested', requested)}
-        ${receiptProofSummaryItem('Proves', proves)}
-        ${receiptProofSummaryItem('Signed by', short(artifact.walletAddress), artifact.walletAddress, artifact.walletAddress)}
-        ${receiptProofSummaryItem('Signature / hash', signatureHash, `${artifact.signature} / ${artifact.artifactHash}`, `${artifact.signature} / ${artifact.artifactHash}`)}
+      <dl class="receipt-proof-summary-grid" aria-label="${escapeHtml(t('Saved proof summary'))}">
+        ${receiptProofSummaryItem(t('Requested'), requested)}
+        ${receiptProofSummaryItem(t('Proves'), proves)}
+        ${receiptProofSummaryItem(t('Signed by'), short(artifact.walletAddress), artifact.walletAddress, artifact.walletAddress)}
+        ${receiptProofSummaryItem(t('Signature / hash'), signatureHash, `${artifact.signature} / ${artifact.artifactHash}`, `${artifact.signature} / ${artifact.artifactHash}`)}
       </dl>
-      <div class="receipt-proof-storage-row" aria-label="Saved proof destinations">
+      <div class="receipt-proof-storage-row" aria-label="${escapeHtml(t('Saved proof destinations'))}">
         <div class="receipt-proof-storage-badges">
           ${receiptStorageBadges(artifact)}
         </div>
-        <button class="utility danger receipt-proof-delete-button" data-artifact-delete="${escapeHtml(artifact.id)}" ${state.busy ? 'disabled' : ''}>Delete</button>
+        <button class="utility danger receipt-proof-delete-button" data-artifact-delete="${escapeHtml(artifact.id)}" ${state.busy ? 'disabled' : ''}>${t('Delete')}</button>
       </div>
       <details class="artifact-technical-details signed-artifact-details">
         <summary>
-          <span>Technical details</span>
-          <strong>Exact signed text, hashes, signature, and receipt fields</strong>
+          <span>${t('Technical details')}</span>
+          <strong>${t('Exact signed text, hashes, signature, and receipt fields')}</strong>
         </summary>
         ${signedArtifactDetail(artifact)}
       </details>
@@ -28335,17 +28410,17 @@ function signedArtifactRow(artifact: LabArtifact): string {
 function signedArtifactRowMobile(artifact: LabArtifact): string {
   const lab = labById(artifact.labId);
   const legacy = !lab || lab.category === 'advanced';
-  const receiptLabel = legacy ? 'Legacy receipt' : receiptLabelForKind(artifact.kind);
+  const receiptLabel = legacy ? t('Legacy receipt') : receiptLabelForKind(artifact.kind);
   const requested = receiptRequestedText(artifact);
   const proves = receiptProvesText(artifact);
   const signatureHash = `${short(artifact.signature)} / ${short(artifact.artifactHash)}`;
   const searchText = artifactSearchText(artifact);
-  const verdict = artifact.payload.metrics.find((metric) => metric.label.toLowerCase() === 'verdict')?.value ?? (artifact.verified ? 'verified' : 'signed');
+  const verdict = artifact.payload.metrics.find((metric) => metric.label.toLowerCase() === 'verdict')?.value ?? (artifact.verified ? t('verified') : t('signed'));
   return `
     <article class="signed-artifact-row receipt-proof-card mobile-receipt-proof-card ${legacy ? 'legacy' : ''}" data-artifact-search-text="${escapeHtml(searchText)}">
       <div class="mobile-receipt-proof-head">
         <div class="mobile-receipt-proof-meta">
-          <span class="status-pill ${artifact.verified ? 'tx-confirmed' : 'tx-pending'}">${artifact.verified ? 'wallet verified' : 'signed'}</span>
+          <span class="status-pill ${artifact.verified ? 'tx-confirmed' : 'tx-pending'}">${artifact.verified ? t('wallet verified') : t('signed')}</span>
           <span class="mobile-receipt-proof-kind">${escapeHtml(labKindLabel(artifact.kind))}</span>
         </div>
         <h3>${escapeHtml(receiptLabel)}</h3>
@@ -28356,29 +28431,29 @@ function signedArtifactRowMobile(artifact: LabArtifact): string {
         <strong class="mobile-receipt-proof-hash">${escapeHtml(short(artifact.artifactHash))}</strong>
       </div>
       <p class="mobile-receipt-proof-summary">${escapeHtml(artifact.payload.summary ?? artifact.payload.thesis)}</p>
-      <dl class="mobile-receipt-proof-rows" aria-label="Saved proof summary">
-        ${receiptProofSummaryItem('Signed by', short(artifact.walletAddress), artifact.walletAddress, artifact.walletAddress)}
-        ${receiptProofSummaryItem('Hash', short(artifact.artifactHash), artifact.artifactHash, artifact.artifactHash)}
+      <dl class="mobile-receipt-proof-rows" aria-label="${escapeHtml(t('Saved proof summary'))}">
+        ${receiptProofSummaryItem(t('Signed by'), short(artifact.walletAddress), artifact.walletAddress, artifact.walletAddress)}
+        ${receiptProofSummaryItem(t('Hash'), short(artifact.artifactHash), artifact.artifactHash, artifact.artifactHash)}
       </dl>
       <div class="mobile-receipt-proof-footer">
-        <button data-share-receipt="${escapeHtml(artifact.id)}">Share</button>
-        <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Proof JSON">Copy JSON</button>
+        <button data-share-receipt="${escapeHtml(artifact.id)}">${t('Share')}</button>
+        <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="${escapeHtml(t('Proof JSON'))}">${t('Copy JSON')}</button>
         <details class="mobile-receipt-proof-more">
-          <summary>More</summary>
+          <summary>${t('More')}</summary>
           <div class="mobile-receipt-proof-more-body">
             <dl class="mobile-receipt-proof-detail-rows">
-              ${receiptProofSummaryItem('Requested', requested)}
-              ${receiptProofSummaryItem('Proves', proves)}
-              ${receiptProofSummaryItem('Signature', signatureHash, `${artifact.signature} / ${artifact.artifactHash}`, `${artifact.signature} / ${artifact.artifactHash}`)}
+              ${receiptProofSummaryItem(t('Requested'), requested)}
+              ${receiptProofSummaryItem(t('Proves'), proves)}
+              ${receiptProofSummaryItem(t('Signature'), signatureHash, `${artifact.signature} / ${artifact.artifactHash}`, `${artifact.signature} / ${artifact.artifactHash}`)}
             </dl>
             <div class="receipt-proof-storage-badges">
               ${receiptStorageBadges(artifact)}
             </div>
-            <button class="utility danger receipt-proof-delete-button" data-artifact-delete="${escapeHtml(artifact.id)}" ${state.busy ? 'disabled' : ''}>Delete</button>
+            <button class="utility danger receipt-proof-delete-button" data-artifact-delete="${escapeHtml(artifact.id)}" ${state.busy ? 'disabled' : ''}>${t('Delete')}</button>
             <details class="artifact-technical-details signed-artifact-details">
               <summary>
-                <span>Technical details</span>
-                <strong>Exact signed text, hashes, signature, and receipt fields</strong>
+                <span>${t('Technical details')}</span>
+                <strong>${t('Exact signed text, hashes, signature, and receipt fields')}</strong>
               </summary>
               ${signedArtifactDetail(artifact)}
             </details>
@@ -28402,7 +28477,7 @@ function receiptProofSummaryItem(label: string, value: string, title = value, co
             data-copy="${escapeHtml(copyValue)}"
             data-copy-name="${escapeHtml(label)}"
           >
-            Copy
+            ${t('Copy')}
           </button>
         ` : ''}
       </dd>
@@ -28439,24 +28514,24 @@ function receiptRequestedText(artifact: LabArtifact): string {
     artifact.input ||
     artifact.payload.summary ||
     artifact.payload.thesis ||
-    'Signed receipt request'
+    t('Signed receipt request')
   );
 }
 
 function receiptProvesText(artifact: LabArtifact): string {
   return artifact.payload.whatThisProves ||
     labById(artifact.labId)?.whatThisProves ||
-    'This wallet signed the displayed receipt text at the recorded time.';
+    t('This wallet signed the displayed receipt text at the recorded time.');
 }
 
 function receiptShareText(artifact: LabArtifact): string {
   return [
     `${artifact.title || receiptLabelForKind(artifact.kind)}`,
-    `Requested: ${receiptRequestedText(artifact)}`,
-    `Signed by: ${artifact.walletAddress}`,
-    `When: ${formatDateTime(artifact.createdAt)}`,
-    `Signature: ${artifact.signature}`,
-    `Receipt hash: ${artifact.artifactHash}`,
+    tf('Requested: {value}', { value: receiptRequestedText(artifact) }),
+    tf('Signed by: {value}', { value: artifact.walletAddress }),
+    tf('When: {value}', { value: formatDateTime(artifact.createdAt) }),
+    tf('Signature: {value}', { value: artifact.signature }),
+    tf('Receipt hash: {value}', { value: artifact.artifactHash }),
   ].join('\n');
 }
 
@@ -28473,8 +28548,8 @@ function receiptStorageBadges(artifact: LabArtifact): string {
   const retry = artifact.cloudSyncStatus === 'failed' && cloudSessionMatchesWallet();
   return `
     ${storageBadgeHtml(proofStorageBadge(artifact))}
-    ${artifact.cloudSyncError ? `<span class="receipt-storage-badge cloud off" title="${escapeHtml(artifact.cloudSyncError)}">Retry needed</span>` : ''}
-    ${retry ? `<button type="button" class="utility receipt-proof-retry-button" data-artifact-retry-cloud="${escapeHtml(artifact.id)}" ${state.busy ? 'disabled' : ''}>Retry cloud</button>` : ''}
+    ${artifact.cloudSyncError ? `<span class="receipt-storage-badge cloud off" title="${escapeHtml(artifact.cloudSyncError)}">${t('Retry needed')}</span>` : ''}
+    ${retry ? `<button type="button" class="utility receipt-proof-retry-button" data-artifact-retry-cloud="${escapeHtml(artifact.id)}" ${state.busy ? 'disabled' : ''}>${t('Retry cloud')}</button>` : ''}
   `;
 }
 
@@ -28482,29 +28557,29 @@ function signedArtifactDetail(artifact: LabArtifact): string {
   return `
     <div class="receipt-tech-detail">
       <div class="artifact-detail-actions receipt-tech-actions">
-        <button data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="Signed text">Copy signed text</button>
-        <button data-copy="${escapeHtml(artifact.signature)}" data-copy-name="Receipt signature">Copy signature</button>
+        <button data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="${escapeHtml(t('Signed text'))}">${t('Copy signed text')}</button>
+        <button data-copy="${escapeHtml(artifact.signature)}" data-copy-name="${escapeHtml(t('Receipt signature'))}">${t('Copy signature')}</button>
       </div>
       <div class="artifact-detail-grid receipt-tech-id-grid">
-        ${archiveFact('Receipt type', artifact.title)}
-        ${archiveFact('Kind', labKindLabel(artifact.kind))}
-        ${archiveFact('Created', formatDateTime(artifact.createdAt))}
-        ${archiveFact('Cluster', titleCaseCluster(artifact.cluster))}
-        ${archiveFact('Wallet', artifact.walletAddress)}
-        ${archiveFact('Receipt hash', artifact.artifactHash)}
+        ${archiveFact(t('Receipt type'), t(artifact.title))}
+        ${archiveFact(t('Kind'), labKindLabel(artifact.kind))}
+        ${archiveFact(t('Created'), formatDateTime(artifact.createdAt))}
+        ${archiveFact(t('Cluster'), titleCaseCluster(artifact.cluster))}
+        ${archiveFact(t('Wallet'), artifact.walletAddress)}
+        ${archiveFact(t('Receipt hash'), artifact.artifactHash)}
       </div>
       <div class="artifact-intent-block receipt-tech-request">
-        <span>Signed request</span>
+        <span>${t('Signed request')}</span>
         <p>${escapeHtml(artifact.input)}</p>
       </div>
       <div class="artifact-intent-block artifact-signed-message-block">
-        <span>Exact signed text</span>
+        <span>${t('Exact signed text')}</span>
         <pre>${escapeHtml(artifact.signingMessage)}</pre>
       </div>
       ${artifact.payload.whatThisProves || artifact.payload.recommendedUse ? `
         <div class="artifact-detail-grid receipt-tech-explainer-grid">
-          ${artifact.payload.whatThisProves ? archiveFact('What this proves', artifact.payload.whatThisProves) : ''}
-          ${artifact.payload.recommendedUse ? archiveFact('Recommended use', artifact.payload.recommendedUse) : ''}
+          ${artifact.payload.whatThisProves ? archiveFact(t('What this proves'), t(artifact.payload.whatThisProves)) : ''}
+          ${artifact.payload.recommendedUse ? archiveFact(t('Recommended use'), t(artifact.payload.recommendedUse)) : ''}
         </div>
       ` : ''}
       <div class="artifact-evidence-row receipt-tech-metric-row">
@@ -28522,10 +28597,10 @@ function signedArtifactDetail(artifact: LabArtifact): string {
         `).join('')}
       </div>
       <div class="hash-grid receipt-tech-hash-grid">
-        ${hashTile('Pre-signature', artifact.preSignatureHash)}
-        ${hashTile('Receipt', artifact.artifactHash)}
-        ${hashTile('Signature', artifact.signature)}
-        ${hashTile('Wallet', artifact.walletAddress)}
+        ${hashTile(t('Pre-signature'), artifact.preSignatureHash)}
+        ${hashTile(t('Receipt'), artifact.artifactHash)}
+        ${hashTile(t('Signature'), artifact.signature)}
+        ${hashTile(t('Wallet'), artifact.walletAddress)}
       </div>
     </div>
   `;
@@ -28534,7 +28609,7 @@ function signedArtifactDetail(artifact: LabArtifact): string {
 function labCommandMenu(lab: LabDefinition): string {
   return `
     <div class="field compact lab-select-field planner-template-select">
-          <span id="artifactPickerLabel">Proof type</span>
+          <span id="artifactPickerLabel">${t('Proof type')}</span>
       ${artifactPicker(lab)}
     </div>
   `;
@@ -28543,7 +28618,7 @@ function labCommandMenu(lab: LabDefinition): string {
 function artifactPicker(lab: LabDefinition): string {
   const activeGroup = artifactProofGroupForLab(lab);
   const candidates = activeGroup === 'advanced' ? ADVANCED_EVIDENCE_LABS : RECEIPT_LABS;
-  const groupLabel = activeGroup === 'advanced' ? 'Advanced proofs' : 'Common proofs';
+  const groupLabel = activeGroup === 'advanced' ? t('Advanced proofs') : t('Common proofs');
   return `
     <div class="template-picker artifact-picker" data-artifact-picker>
       <button
@@ -28558,7 +28633,7 @@ function artifactPicker(lab: LabDefinition): string {
       >
         <span class="template-picker-current">
           <span class="template-picker-category">${escapeHtml(labKindLabel(lab.kind))}</span>
-          <strong id="artifactPickerValue">${escapeHtml(lab.title)}</strong>
+          <strong id="artifactPickerValue">${escapeHtml(t(lab.title))}</strong>
         </span>
         <span class="template-picker-caret" aria-hidden="true"></span>
       </button>
@@ -28590,8 +28665,8 @@ function artifactPickerOption(candidate: LabDefinition, selectedLab: LabDefiniti
       tabindex="${selected ? '0' : '-1'}"
     >
       <span>${escapeHtml(labKindLabel(candidate.kind))}</span>
-      <strong>${escapeHtml(candidate.title)}</strong>
-      <em>${escapeHtml(candidate.description)}</em>
+      <strong>${escapeHtml(t(candidate.title))}</strong>
+      <em>${escapeHtml(t(candidate.description))}</em>
     </button>
   `;
 }
@@ -28599,9 +28674,9 @@ function artifactPickerOption(candidate: LabDefinition, selectedLab: LabDefiniti
 function labEmptyState(): string {
   return `
     <div class="empty lab-empty-state">
-      <span>No receipt yet</span>
-      <h3>Sign an evidence receipt</h3>
-      <p>Your wallet signs a record for your archive only. No transaction is created, approved, or submitted.</p>
+      <span>${t('No receipt yet')}</span>
+      <h3>${t('Sign an evidence receipt')}</h3>
+      <p>${t('Your wallet signs a record for your archive only. No transaction is created, approved, or submitted.')}</p>
     </div>
   `;
 }
@@ -28609,57 +28684,59 @@ function labEmptyState(): string {
 function contextPanel(): string {
   const latestLab = state.labArtifacts[0];
   const nextAction = state.busy
-    ? 'Waiting on wallet response'
+    ? t('Waiting on wallet response')
     : !state.address
-      ? 'Connect a wallet'
+      ? t('Connect a wallet')
       : state.activeTab === 'overview'
-        ? 'Choose the next approval step'
+        ? t('Choose the next approval step')
       : state.activeTab === 'agent' && state.oneTimePlanView === 'review'
-        ? 'Check one-time requests'
+        ? t('Check one-time requests')
         : state.activeTab === 'agent'
-          ? 'Create a one-time request'
+          ? t('Create a one-time request')
           : state.activeTab === 'generated'
-            ? 'Check saved requests'
+            ? t('Check saved requests')
             : state.activeTab === 'inbox'
-                ? 'Review requests that need approval'
+                ? t('Review requests that need approval')
               : state.activeTab === 'schedule'
-                ? 'Create repeat payment'
+                ? t('Create repeat payment')
                 : state.activeTab === 'completed'
-                  ? 'Review done work'
+                  ? t('Review done work')
                   : state.activeTab === 'preferences'
-                    ? 'Adjust workspace preferences'
+                    ? t('Adjust workspace preferences')
                   : state.activeTab === 'labs' && state.artifactView === 'signed'
-                    ? 'Review saved proofs'
+                    ? t('Review saved proofs')
                     : state.activeTab === 'labs'
-                      ? 'Save a proof'
-                      : 'Review current request';
+                      ? t('Save a proof')
+                      : t('Review current request');
   return `
     <aside class="panel context-panel evidence-panel">
       <div class="evidence-header">
-        <h2>${state.address ? 'Wallet connected' : 'Wallet required'}</h2>
+        <h2>${state.address ? t('Wallet connected') : t('Wallet required')}</h2>
         <p>${escapeHtml(nextAction)}</p>
       </div>
-      <div class="evidence-rail" aria-label="Approval evidence">
-        ${evidenceStep('Intent', evidenceIntent(), evidenceTone('intent'))}
-        ${evidenceStep('Policy', evidencePolicy(), evidenceTone('policy'))}
-        ${evidenceStep('Wallet', evidenceWallet(), evidenceTone('wallet'))}
-        ${evidenceStep('Receipt', evidenceReceipt(latestLab), evidenceTone('receipt'))}
+      <div class="evidence-rail" aria-label="${escapeHtml(t('Approval evidence'))}">
+        ${evidenceStep(t('Intent'), evidenceIntent(), evidenceTone('intent'))}
+        ${evidenceStep(t('Policy'), evidencePolicy(), evidenceTone('policy'))}
+        ${evidenceStep(t('Wallet'), evidenceWallet(), evidenceTone('wallet'))}
+        ${evidenceStep(t('Receipt'), evidenceReceipt(latestLab), evidenceTone('receipt'))}
       </div>
       <details class="evidence-details">
-        <summary>Runtime details</summary>
+        <summary>${t('Runtime details')}</summary>
         <div class="context-stack compact-context">
-          ${contextRow('Wallet', state.address ? short(state.address) : 'Not connected', state.address ? 'good' : '')}
-          ${contextRow('Cluster', titleCaseCluster(state.cluster), state.cluster === 'mainnet-beta' ? 'warn' : '')}
-          ${contextRow('Bridge', state.bridgeActive ? 'Ready' : 'Disconnected', state.bridgeActive ? 'good' : '')}
-          ${contextRow('Needs Approval', `${activeWorkflowPreparedActions().filter((action) => !action.archived).length} action(s)`, activeWorkflowPreparedActions().length ? 'warn' : '')}
-          ${contextRow('Agent proof', state.agentSignature ? short(state.agentSignature) : 'Unsigned')}
-          ${contextRow('Last tx', state.txid ? short(state.txid) : latestConfirmedTx())}
-          ${contextRow('Latest receipt', latestLab ? short(latestLab.artifactHash) : 'No receipt')}
+          ${contextRow(t('Wallet'), state.address ? short(state.address) : t('Not connected'), state.address ? 'good' : '')}
+          ${contextRow(t('Cluster'), titleCaseCluster(state.cluster), state.cluster === 'mainnet-beta' ? 'warn' : '')}
+          ${contextRow(t('Bridge'), state.bridgeActive ? t('Ready') : t('Disconnected'), state.bridgeActive ? 'good' : '')}
+          ${contextRow(t('Needs Approval'), activeWorkflowPreparedActions().filter((action) => !action.archived).length === 1
+            ? tf('{count} action', { count: activeWorkflowPreparedActions().filter((action) => !action.archived).length })
+            : tf('{count} actions', { count: activeWorkflowPreparedActions().filter((action) => !action.archived).length }), activeWorkflowPreparedActions().length ? 'warn' : '')}
+          ${contextRow(t('Agent proof'), state.agentSignature ? short(state.agentSignature) : t('Unsigned'))}
+          ${contextRow(t('Last tx'), state.txid ? short(state.txid) : latestConfirmedTx())}
+          ${contextRow(t('Latest receipt'), latestLab ? short(latestLab.artifactHash) : t('No receipt'))}
         </div>
       </details>
       <div class="custody-manifest">
-        <h3>Signing boundary</h3>
-        <p>Agents can prepare intent, policy, simulation, receipts, and transaction bytes. A wallet approval is still required before signing.</p>
+        <h3>${t('Signing boundary')}</h3>
+        <p>${t('Agents can prepare intent, policy, simulation, receipts, and transaction bytes. A wallet approval is still required before signing.')}</p>
       </div>
     </aside>
   `;
@@ -28681,16 +28758,16 @@ function requestContextDetails(): string {
 
   return `
     <details class="panel public-request-context evidence-details" data-layout="request-context">
-      <summary>Request context</summary>
-      <div class="evidence-rail" aria-label="Approval evidence">
-        ${evidenceStep('Intent', evidenceIntent(), evidenceTone('intent'))}
-        ${evidenceStep('Policy', evidencePolicy(), evidenceTone('policy'))}
-        ${evidenceStep('Wallet', evidenceWallet(), evidenceTone('wallet'))}
-        ${evidenceStep('Receipt', evidenceReceipt(latestLab), evidenceTone('receipt'))}
+      <summary>${t('Request context')}</summary>
+      <div class="evidence-rail" aria-label="${escapeHtml(t('Approval evidence'))}">
+        ${evidenceStep(t('Intent'), evidenceIntent(), evidenceTone('intent'))}
+        ${evidenceStep(t('Policy'), evidencePolicy(), evidenceTone('policy'))}
+        ${evidenceStep(t('Wallet'), evidenceWallet(), evidenceTone('wallet'))}
+        ${evidenceStep(t('Receipt'), evidenceReceipt(latestLab), evidenceTone('receipt'))}
       </div>
       <div class="custody-manifest compact-manifest">
-        <h3>Signing boundary</h3>
-        <p>Agents can prepare intent, policy, simulation, receipts, and transaction bytes. A wallet approval is still required before signing.</p>
+        <h3>${t('Signing boundary')}</h3>
+        <p>${t('Agents can prepare intent, policy, simulation, receipts, and transaction bytes. A wallet approval is still required before signing.')}</p>
       </div>
     </details>
   `;
@@ -28751,7 +28828,7 @@ function bind(): void {
       if (tab === 'sessions' && spendOpen) {
         void openSessionDetail(spendOpen).catch((err) => {
           state.error = redactSecrets(err instanceof Error ? err.message : String(err));
-          pushToast('error', 'Could not open session', state.error);
+          pushToast('error', t('Could not open session'), state.error);
           render();
         });
       }
@@ -30139,7 +30216,7 @@ function bind(): void {
         state.busy = false;
         try {
           const message = err instanceof Error ? err.message : String(err);
-          pushToast('error', 'Action failed', redactSecrets(message));
+          pushToast('error', t('Action failed'), redactSecrets(message));
         } catch (toastErr) {
           console.error('pushToast() failed in action-op safety net', toastErr);
         }
@@ -30221,7 +30298,7 @@ function bind(): void {
       const label = button.dataset.copyName ?? 'Value';
       const copyId = button.dataset.copyId ?? commandCopyId('copy', label, value);
       const isJson = button.dataset.copyKind === 'json' || looksLikeJsonValue(value);
-      const toastTitle = button.dataset.copyToast ?? (isJson ? 'JSON copied' : `${label} copied`);
+      const toastTitle = button.dataset.copyToast ?? (isJson ? t('JSON copied') : tf('{label} copied', { label }));
       const toastMessage = button.dataset.copyMessage
         ?? (isJson ? '' : formatCopyToastMessage(value));
       try {
@@ -30233,8 +30310,8 @@ function bind(): void {
           trackCliCommandCopy(commandKind);
         }
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Clipboard permission was denied.';
-        pushToast('error', 'Copy failed', message);
+        const message = err instanceof Error ? err.message : t('Clipboard permission was denied.');
+        pushToast('error', t('Copy failed'), message);
       }
       render();
     });
@@ -30770,7 +30847,7 @@ async function openExternalLink(url: string): Promise<void> {
     androidOpenExternalUrl: (target) => Boolean(agenticAndroidBridge()?.openExternal?.(target)),
   });
   if (!result.ok) {
-    pushToast('error', 'Could not open link', result.error ?? 'The native app could not open that URL.');
+    pushToast('error', t('Could not open link'), result.error ?? t('The native app could not open that URL.'));
     render();
   }
 }
@@ -32251,7 +32328,7 @@ async function runDiscover(): Promise<void> {
       await refreshIosNativeCacheState();
       state.iosNativeStatus = `${state.iosWallets.length} iOS wallet path(s) available. Cached authorizations: ${state.iosAuthCacheCount}.`;
       savePersistedState();
-      pushToast('success', 'iOS wallets ready', `${state.iosWallets.length} wallet path(s) available.`);
+      pushToast('success', t('iOS wallets ready'), tf('{count} wallet path(s) available.', { count: state.iosWallets.length }));
       return;
     }
     discoverBrowserWallets();
@@ -32296,7 +32373,7 @@ function discoverBrowserWallets(options: { resetSelection?: boolean } = {}): voi
     throw new Error('No Wallet Standard Solana wallets are registered in this browser.');
   }
   savePersistedState();
-  pushToast('success', 'Wallets discovered', `${state.wallets.length} provider(s) found.`);
+  pushToast('success', t('Wallets discovered'), tf('{count} provider(s) found.', { count: state.wallets.length }));
 }
 
 async function runConnect(
@@ -32368,8 +32445,8 @@ async function runConnect(
         // this button lets the user re-fire it manually if needed.
         pushToast(
           'pending',
-          'Approve in Jupiter',
-          jupiterIosManualToastMessage('Opening Jupiter to connect…'),
+          t('Approve in Jupiter'),
+          jupiterIosManualToastMessage(t('Opening Jupiter to connect…')),
           withJupiterIosManualApprovalToast({ key: JUPITER_IOS_CONNECT_TOAST_KEY }),
         );
         render();
@@ -32400,7 +32477,7 @@ async function runConnect(
       savePersistedState();
       trackWalletConnectSuccess(connectSurface, state.cluster, 'connect_button');
       if (showSuccessToast) {
-        pushToast('success', 'iOS wallet connected', short(state.address));
+        pushToast('success', t('iOS wallet connected'), short(state.address));
       }
       return;
     }
@@ -32510,8 +32587,8 @@ async function runConnect(
         client = null;
         pushToast(
           'error',
-          'Bridge rejected the connection',
-          `${message}. Restart the local runtime and try again.`,
+          t('Bridge rejected the connection'),
+          tf('{message}. Restart the local runtime and try again.', { message }),
         );
         return;
       }
@@ -32520,7 +32597,7 @@ async function runConnect(
     savePersistedState();
     trackWalletConnectSuccess(connectSurface, state.cluster, 'connect_button');
     if (showSuccessToast) {
-      pushToast('success', 'Wallet connected', short(state.address));
+      pushToast('success', t('Wallet connected'), short(state.address));
     }
     // Collapse the inline Discover flow if the user reached this point via
     // the copied Browser extension / QR / Ledger rail.
@@ -32557,8 +32634,8 @@ async function runDisconnect(): Promise<void> {
     savePersistedState();
     pushToast(
       'success',
-      'Wallet disconnected',
-      cloudSignedOut ? 'Local signing and cloud workspace sessions cleared.' : 'Local signing session cleared.',
+      t('Wallet disconnected'),
+      cloudSignedOut ? t('Local signing and cloud workspace sessions cleared.') : t('Local signing session cleared.'),
     );
   });
 }
@@ -32580,7 +32657,7 @@ async function runReconnectAndroidCached(): Promise<void> {
     }
     await afterWalletConnected();
     trackWalletConnectSuccess('android_native', state.cluster, 'reconnect_cached');
-    pushToast('success', 'Android MWA restored', short(state.address));
+    pushToast('success', t('Android MWA restored'), short(state.address));
   });
 }
 
@@ -32590,7 +32667,7 @@ async function runClearAndroidTransient(): Promise<void> {
     await androidBackendOrNew().clearTransientState();
     state.androidNativeStatus = 'Android MWA transient state cleared. Cached authorization retained.';
     await refreshAndroidNativeCacheState();
-    pushToast('success', 'Android state cleared', 'Cached authorization retained.');
+    pushToast('success', t('Android state cleared'), t('Cached authorization retained.'));
   });
 }
 
@@ -32605,7 +32682,7 @@ async function runClearAndroidFullReset(): Promise<void> {
     await clearDeviceAgentForWalletBoundary();
     await refreshAndroidNativeCacheState();
     state.androidNativeStatus = 'Android MWA authorization reset. Discover again to authorize.';
-    pushToast('success', 'Android wallet reset', 'Authorization cleared.');
+    pushToast('success', t('Android wallet reset'), t('Authorization cleared.'));
   });
 }
 
@@ -32620,7 +32697,7 @@ async function runClearAndroidAllAccounts(): Promise<void> {
     await clearDeviceAgentForWalletBoundary();
     await refreshAndroidNativeCacheState();
     state.androidNativeStatus = 'All Android MWA cached authorizations cleared.';
-    pushToast('success', 'Android cache cleared', 'All cached accounts removed.');
+    pushToast('success', t('Android cache cleared'), t('All cached accounts removed.'));
   });
 }
 
@@ -32662,7 +32739,7 @@ async function runReconnectIosCached(): Promise<void> {
     await afterWalletConnected();
     savePersistedState();
     trackWalletConnectSuccess('ios_native', state.cluster, 'reconnect_cached');
-    pushToast('success', 'iOS cache restored', short(state.address));
+    pushToast('success', t('iOS cache restored'), short(state.address));
   });
 }
 
@@ -32671,7 +32748,7 @@ async function runClearIosTransient(): Promise<void> {
     assertIosNativeRuntime();
     await iosBackendOrNew().clearTransientState('browser_demo');
     state.iosNativeStatus = 'iOS transient callback state cleared. Auth cache retained.';
-    pushToast('success', 'iOS transient state cleared', 'Cached authorizations were retained.');
+    pushToast('success', t('iOS transient state cleared'), t('Cached authorizations were retained.'));
   });
 }
 
@@ -32686,7 +32763,7 @@ async function runClearIosFullReset(): Promise<void> {
     await clearDeviceAgentForWalletBoundary();
     await refreshIosNativeCacheState();
     state.iosNativeStatus = 'iOS wallet state reset. Connect again to authorize.';
-    pushToast('success', 'iOS wallet reset', 'Latest authorization cleared.');
+    pushToast('success', t('iOS wallet reset'), t('Latest authorization cleared.'));
   });
 }
 
@@ -32701,7 +32778,7 @@ async function runClearIosAllAccounts(): Promise<void> {
     await clearDeviceAgentForWalletBoundary();
     await refreshIosNativeCacheState();
     state.iosNativeStatus = 'All cached iOS wallet authorizations cleared.';
-    pushToast('success', 'iOS auth cache cleared', 'All cached accounts were removed.');
+    pushToast('success', t('iOS auth cache cleared'), t('All cached accounts were removed.'));
   });
 }
 
@@ -32719,7 +32796,7 @@ function runGuidedDemoAction(action: string): void {
         ...defaultGuidedDemoState(currentScenarioId),
         stage: 'prepared',
       };
-      pushToast('success', 'Demo request prepared', 'Review the constraints, then move it to wallet review.');
+      pushToast('success', t('Demo request prepared'), t('Review the constraints, then move it to wallet review.'));
       render();
       return;
     case 'queue':
@@ -32734,7 +32811,7 @@ function runGuidedDemoAction(action: string): void {
         receiptJson: '',
         signedReceipt: '',
       };
-      pushToast('success', 'Moved to wallet review', 'Approve or deny the simulated request.');
+      pushToast('success', t('Moved to wallet review'), t('Approve or deny the simulated request.'));
       render();
       return;
     case 'approve':
@@ -32754,7 +32831,7 @@ function runGuidedDemoAction(action: string): void {
       clearGuidedDemoSwapFlowTimer();
       clearGuidedDemoAgentFlowTimer();
       state.guidedDemo = defaultGuidedDemoState(currentScenarioId);
-      pushToast('success', 'Demo reset', 'Choose a scenario or prepare the current one again.');
+      pushToast('success', t('Demo reset'), t('Choose a scenario or prepare the current one again.'));
       render();
       return;
     default:
@@ -33003,7 +33080,7 @@ async function runAirdrop(): Promise<void> {
     await connection.confirmTransaction(signature, 'confirmed');
 
     state.transactionStatus = `Airdrop confirmed: ${short(signature)}. Create and sign a demo transaction now.`;
-    pushToast('success', 'Devnet SOL requested', short(signature));
+    pushToast('success', t('Devnet SOL requested'), short(signature));
   });
 }
 
@@ -33041,7 +33118,7 @@ async function runCreateDemoTransaction(): Promise<void> {
     state.txSignature = '';
     state.txid = '';
     state.transactionStatus = 'Demo transaction created. Sign it without broadcasting, or sign and send it on devnet.';
-    pushToast('success', 'Transaction created', 'Demo transaction ready.');
+    pushToast('success', t('Transaction created'), t('Demo transaction ready.'));
   });
 }
 
@@ -33052,9 +33129,9 @@ async function runSignTransaction(): Promise<void> {
     ? {
         onError: (message: string) => {
           if (jupiterToastId !== undefined) {
-            replaceToast(jupiterToastId, 'error', 'Transaction signing failed', message);
+            replaceToast(jupiterToastId, 'error', t('Transaction signing failed'), message);
           } else {
-            pushToast('error', 'Transaction signing failed', message);
+            pushToast('error', t('Transaction signing failed'), message);
           }
         },
       }
@@ -33065,8 +33142,8 @@ async function runSignTransaction(): Promise<void> {
     if (isJup) {
       jupiterToastId = pushToast(
         'pending',
-        'Waiting for Jupiter',
-        jupiterIosManualToastMessage('Approve the transaction in Jupiter.'),
+        t('Waiting for Jupiter'),
+        jupiterIosManualToastMessage(t('Approve the transaction in Jupiter.')),
         withJupiterIosManualApprovalToast(),
       );
       render();
@@ -33082,9 +33159,9 @@ async function runSignTransaction(): Promise<void> {
     state.txid = '';
     state.transactionStatus = 'Transaction signed by wallet. The signed transaction bytes were not broadcast.';
     if (jupiterToastId !== undefined) {
-      replaceToast(jupiterToastId, 'success', 'Transaction signed', 'Signed bytes returned.');
+      replaceToast(jupiterToastId, 'success', t('Transaction signed'), t('Signed bytes returned.'));
     } else {
-      pushToast('success', 'Transaction signed', 'Signed bytes returned.');
+      pushToast('success', t('Transaction signed'), t('Signed bytes returned.'));
     }
   }, runOptions);
 }
@@ -33096,9 +33173,9 @@ async function runSignAndSendTransaction(): Promise<void> {
     ? {
         onError: (message: string) => {
           if (jupiterToastId !== undefined) {
-            replaceToast(jupiterToastId, 'error', 'Transaction failed', message);
+            replaceToast(jupiterToastId, 'error', t('Transaction failed'), message);
           } else {
-            pushToast('error', 'Transaction failed', message);
+            pushToast('error', t('Transaction failed'), message);
           }
         },
       }
@@ -33113,8 +33190,8 @@ async function runSignAndSendTransaction(): Promise<void> {
     if (isJup) {
       jupiterToastId = pushToast(
         'pending',
-        'Waiting for Jupiter',
-        jupiterIosManualToastMessage('Approve the transaction in Jupiter.'),
+        t('Waiting for Jupiter'),
+        jupiterIosManualToastMessage(t('Approve the transaction in Jupiter.')),
         withJupiterIosManualApprovalToast(),
       );
       render();
@@ -33127,9 +33204,9 @@ async function runSignAndSendTransaction(): Promise<void> {
     state.txSignature = '';
     state.transactionStatus = 'Transaction sent. The transaction id is shown below.';
     if (jupiterToastId !== undefined) {
-      replaceToast(jupiterToastId, 'success', 'Transaction sent', short(state.txid));
+      replaceToast(jupiterToastId, 'success', t('Transaction sent'), short(state.txid));
     } else {
-      pushToast('success', 'Transaction sent', short(state.txid));
+      pushToast('success', t('Transaction sent'), short(state.txid));
     }
   }, runOptions);
 }
@@ -33138,7 +33215,7 @@ async function runGenerateAgentPlan(): Promise<void> {
   const template = selectedTemplate();
   trackGenerateTemplatePlan(template.id);
   state.activeOperation = 'generate-template-plan';
-  const toastId = pushToast('pending', 'Creating template plan', 'Preparing a saved plan for review.');
+  const toastId = pushToast('pending', t('Creating template plan'), t('Preparing a saved plan for review.'));
   let reviewAfterDraftId = '';
   try {
     await run(
@@ -33159,9 +33236,9 @@ async function runGenerateAgentPlan(): Promise<void> {
         if (state.askAgentAfterDraft && (hasDetectedAgentReviewPath() || isMockPreSignPolicyPlan(record))) {
           reviewAfterDraftId = record.id;
         }
-        replaceToast(toastId, 'success', 'Plan created', `${template.title} is ready in Check request.`);
+        replaceToast(toastId, 'success', t('Plan created'), `${template.title} is ready in Check request.`);
       },
-      { onError: (message) => replaceToast(toastId, 'error', 'Template plan failed', message) },
+      { onError: (message) => replaceToast(toastId, 'error', t('Template plan failed'), message) },
     );
   } finally {
     state.activeOperation = null;
@@ -33258,7 +33335,7 @@ function cancelActiveAiDraft(): void {
   state.activeOperation = null;
   state.steps.ai = 'idle';
   state.error = '';
-  replaceToast(operation.toastId, 'success', 'Plan cancelled', 'No plan was saved.');
+  replaceToast(operation.toastId, 'success', t('Plan cancelled'), t('No plan was saved.'));
   render();
 }
 
@@ -33274,23 +33351,23 @@ function isAbortError(err: unknown): boolean {
 
 async function runGenerateAiPlan(): Promise<void> {
   if (!canGenerateAiPlanFromSettings()) {
-    pushToast('error', 'AI setup incomplete', aiGenerateDisabledReason());
+    pushToast('error', t('AI setup incomplete'), aiGenerateDisabledReason());
     render();
     return;
   }
   if (activeAiDraftOperation && state.activeOperation === 'generate-ai-plan') {
-    pushToast('pending', 'AI plan already working', 'Cancel the current plan or wait for it to finish.');
+    pushToast('pending', t('AI plan already working'), t('Cancel the current plan or wait for it to finish.'));
     render();
     return;
   }
   if (state.busy) {
-    pushToast('pending', 'Action in progress', 'Finish the current wallet or approval action before starting another AI plan.');
+    pushToast('pending', t('Action in progress'), t('Finish the current wallet or approval action before starting another AI plan.'));
     render();
     return;
   }
   const selectedTemplateForUi = selectedTemplate();
   trackGenerateAiPlan(selectedTemplateForUi.id, state.aiSettings.mode, state.aiSettings.provider);
-  const toastId = pushToast('pending', 'Creating AI plan', 'Preparing through your configured AI Planner.');
+  const toastId = pushToast('pending', t('Creating AI plan'), t('Preparing through your configured AI Planner.'));
   const operation = startAiDraftOperation(selectedTemplateForUi.title, state.agentPrompt.trim(), toastId);
   let reviewAfterDraftId = '';
   try {
@@ -33391,7 +33468,7 @@ async function runGenerateAiPlan(): Promise<void> {
       detail: `${agentReviewProviderLabel()} ${agentReviewModelLabel()}`,
     });
     state.steps.ai = 'done';
-    replaceToast(toastId, 'success', 'AI plan created', `${plan.templateTitle} is ready in Check request.`);
+    replaceToast(toastId, 'success', t('AI plan created'), `${plan.templateTitle} is ready in Check request.`);
   } catch (err) {
     const isCurrentOperation = activeAiDraftOperation?.id === operation.id;
     if (operation.cancelled || isAbortError(err)) {
@@ -33401,7 +33478,7 @@ async function runGenerateAiPlan(): Promise<void> {
       }
       removeGeneratedPlanLocally(operation.planRecordId);
       if (!operation.cancelled) {
-        replaceToast(toastId, 'success', 'Plan cancelled', 'No plan was saved.');
+        replaceToast(toastId, 'success', t('Plan cancelled'), t('No plan was saved.'));
       }
     } else {
       const message = redactSecrets(err instanceof Error ? err.message : String(err));
@@ -33538,13 +33615,13 @@ async function runQueueAgentPlan(): Promise<void> {
     }
     pushToast(
       'success',
-      plan.actionType === 'recurring_payment' ? 'Repeat payment created' : 'Sent for approval',
+      plan.actionType === 'recurring_payment' ? t('Repeat payment created') : t('Sent for approval'),
       plan.actionType === 'recurring_payment'
         ? response.mode === 'browser-workflow'
-          ? 'Created one local approval now. Saved-on-device workflow does not run background repeats after this tab closes.'
-          : 'Future payments will appear in Needs Approval.'
+          ? t('Created one local approval now. Saved-on-device workflow does not run background repeats after this tab closes.')
+          : t('Future payments will appear in Needs Approval.')
         : response.mode === 'agentic-cloud'
-          ? 'Saved to Agentic Cloud. No localhost required.'
+          ? t('Saved to Agentic Cloud. No localhost required.')
           : response.mode === 'browser-workflow'
             ? 'Saved on this device.'
             : response.id,
@@ -33558,7 +33635,7 @@ async function runQueueAgentPlan(): Promise<void> {
           failureLabel: 'Send failed - try again',
         }).catch(() => undefined);
       }
-      pushToast('error', 'Send for approval failed', message);
+      pushToast('error', t('Send for approval failed'), message);
     },
   });
 }
@@ -33576,7 +33653,7 @@ async function runGeneratedPlanAction(planId: string, action: string): Promise<v
   }
   if (action === 'reuse' || action === 'make-active') {
     useGeneratedPlanAsStartingPoint(record);
-    pushToast('success', 'Starting point loaded', `${record.plan.templateTitle} is ready in Create Plan.`);
+    pushToast('success', t('Starting point loaded'), tf('{title} is ready in Create Plan.', { title: record.plan.templateTitle }));
     render();
     return;
   }
@@ -33586,14 +33663,14 @@ async function runGeneratedPlanAction(planId: string, action: string): Promise<v
       state.generatedPlanAuditId = '';
     }
     selectFallbackGeneratedPlan();
-    pushToast('success', 'Plan archived', record.plan.templateTitle);
+    pushToast('success', t('Plan archived'), record.plan.templateTitle);
     render();
     return;
   }
   if (action === 'restore') {
     await updateGeneratedPlan(planId, { status: restoredGeneratedPlanStatus(record) });
     state.selectedGeneratedPlanId = planId;
-    pushToast('success', 'Plan restored', record.plan.templateTitle);
+    pushToast('success', t('Plan restored'), record.plan.templateTitle);
     render();
     return;
   }
@@ -33627,10 +33704,12 @@ async function runDenyGeneratedPlanWithAgentReason(planId: string): Promise<void
   if (!record) return;
   const review = record.agentReview;
   if (!review || review.status !== 'denied') {
-    pushToast('error', 'Cannot deny', 'Agent has not denied this plan yet.');
+    pushToast('error', t('Cannot deny'), t('Agent has not denied this plan yet.'));
     return;
   }
-  const confirmMessage = `Deny this plan using the agent's reason?\n\nAgent said: ${review.reason || 'No reason recorded.'}`;
+  const confirmMessage = tf('Deny this plan using the agent\'s reason?\n\nAgent said: {reason}', {
+    reason: review.reason || t('No reason recorded.'),
+  });
   if (!window.confirm(confirmMessage)) return;
   const blockingPolicies = review.policies?.filter((policy) => policy.outcome === 'block') ?? [];
   const deniedAt = new Date().toISOString();
@@ -33689,7 +33768,7 @@ async function runDenyGeneratedPlanWithAgentReason(planId: string): Promise<void
   if (proofToastId !== undefined) {
     completeProofSigningToast(proofToastId, 'success', 'Agent denial saved', savedMessage);
   } else {
-    pushToast('success', 'Agent denial saved', savedMessage);
+    pushToast('success', t('Agent denial saved'), savedMessage);
   }
   if (state.generatedPlanAuditId === planId) {
     state.generatedPlanAuditId = '';
@@ -33702,11 +33781,11 @@ async function runAskAgentAnything(planId: string, question: string): Promise<vo
   const record = generatedPlanById(planId);
   if (!record) return;
   if (record.status === 'archived') {
-    pushToast('error', 'Restore plan first', 'Archived plans cannot be queried.');
+    pushToast('error', t('Restore plan first'), t('Archived plans cannot be queried.'));
     return;
   }
   if (!canRunAgentReview()) {
-    pushToast('error', 'Agent not detected', agentReviewUnavailableReason());
+    pushToast('error', t('Agent not detected'), agentReviewUnavailableReason());
     return;
   }
   const currentReviewIdentity = currentAgentReviewIdentity();
@@ -33809,7 +33888,7 @@ async function runAskAgentAnything(planId: string, question: string): Promise<vo
     await updateGeneratedPlan(planId, {
       agentReview: { ...(refreshed?.agentReview ?? review), conversation: conversation.slice(-6) },
     });
-    pushToast('error', 'Ask agent failed', message);
+    pushToast('error', t('Ask agent failed'), message);
   }
   render();
 }
@@ -33817,13 +33896,13 @@ async function runAskAgentAnything(planId: string, question: string): Promise<vo
 async function runReviewGeneratedPlan(planId: string): Promise<void> {
   const record = requireGeneratedPlanRecord(planId);
   if (record.status === 'archived') {
-    pushToast('error', 'Restore plan first', 'Archived plans cannot be reviewed by the agent.');
+    pushToast('error', t('Restore plan first'), t('Archived plans cannot be reviewed by the agent.'));
     render();
     return;
   }
   if (isMockPreSignPolicyPlan(record)) {
     if (!canRunAgentReview(record)) {
-      pushToast('error', 'Agent review unavailable', agentReviewUnavailableReason(record));
+      pushToast('error', t('Agent review unavailable'), agentReviewUnavailableReason(record));
       render();
       return;
     }
@@ -33831,7 +33910,7 @@ async function runReviewGeneratedPlan(planId: string): Promise<void> {
     return;
   }
   if (!canRunAgentReview(record)) {
-    pushToast('error', 'Agent not detected', agentReviewUnavailableReason(record));
+    pushToast('error', t('Agent not detected'), agentReviewUnavailableReason(record));
     render();
     return;
   }
@@ -33847,7 +33926,7 @@ async function runReviewGeneratedPlan(planId: string): Promise<void> {
     ...(previousReview?.history?.length ? { history: previousReview.history } : {}),
   };
   state.activeOperation = 'review-agent-plan';
-  const toastId = pushToast('pending', 'Asking agent', 'Reviewing this plan before approval.');
+  const toastId = pushToast('pending', t('Asking agent'), t('Reviewing this plan before approval.'));
   emitIosAskAgentBreadcrumb(planId, 'toast_created');
   try {
     await updateGeneratedPlan(planId, { agentReview: checkingReview, error: undefined, failureLabel: undefined });
@@ -33905,13 +33984,13 @@ async function runReviewGeneratedPlan(planId: string): Promise<void> {
         };
         await updateGeneratedPlan(planId, { agentReview: failedReview });
         emitIosAskAgentBreadcrumb(planId, 'review_failed', toastMessage);
-        replaceToast(toastId, 'error', 'Agent review failed', toastMessage);
+        replaceToast(toastId, 'error', t('Agent review failed'), toastMessage);
       },
     });
   } catch (err) {
     const message = redactSecrets(err instanceof Error ? err.message : String(err));
     emitIosAskAgentBreadcrumb(planId, 'review_failed_outer', message);
-    replaceToast(toastId, 'error', 'Agent review failed', message);
+    replaceToast(toastId, 'error', t('Agent review failed'), message);
   } finally {
     state.activeOperation = null;
     render();
@@ -33997,7 +34076,7 @@ async function runMockPreSignPolicyReview(planId: string): Promise<void> {
     ...(previousReview?.history?.length ? { history: previousReview.history } : {}),
   };
   state.activeOperation = 'review-agent-plan';
-  const toastId = pushToast('pending', 'Agent checking', 'Running the pre-signing decision locally.');
+  const toastId = pushToast('pending', t('Agent checking'), t('Running the pre-signing decision locally.'));
   try {
     await updateGeneratedPlan(planId, { agentReview: checkingReview, error: undefined, failureLabel: undefined });
     render();
@@ -34006,7 +34085,7 @@ async function runMockPreSignPolicyReview(planId: string): Promise<void> {
     const review = mockPreSignPolicyReviewState(refreshed, previousReview);
     await updateGeneratedPlan(planId, { agentReview: review, error: undefined, failureLabel: undefined });
     completeMockPreSignApproval(refreshed, review);
-    replaceToast(toastId, 'success', 'Review passed', 'Demo signature and approval receipt saved.');
+    replaceToast(toastId, 'success', t('Review passed'), t('Demo signature and approval receipt saved.'));
   } catch (err) {
     const message = redactSecrets(err instanceof Error ? err.message : String(err));
     const failedReview: AgentPlanReviewState = {
@@ -34016,7 +34095,7 @@ async function runMockPreSignPolicyReview(planId: string): Promise<void> {
       checkedAt: new Date().toISOString(),
     };
     await updateGeneratedPlan(planId, { agentReview: failedReview }).catch(() => undefined);
-    replaceToast(toastId, 'error', 'Agent review failed', message);
+    replaceToast(toastId, 'error', t('Agent review failed'), message);
   } finally {
     state.activeOperation = null;
     render();
@@ -34145,7 +34224,13 @@ async function runReviewGeneratedPlanWithAnswers(planId: string): Promise<void> 
   }
   const missing = review.questions.filter((question) => question.required && !answers[question.id]?.trim());
   if (missing.length) {
-    pushToast('error', 'Answer required', `Answer ${missing.length} question${missing.length === 1 ? '' : 's'} before sending.`);
+    pushToast(
+      'error',
+      t('Answer required'),
+      missing.length === 1
+        ? tf('Answer {count} question before sending.', { count: missing.length })
+        : tf('Answer {count} questions before sending.', { count: missing.length }),
+    );
     return;
   }
   await updateGeneratedPlan(planId, {
@@ -34221,7 +34306,7 @@ async function runDeleteGeneratedPlan(planId: string): Promise<void> {
     selectFallbackGeneratedPlan();
   }
   saveGeneratedPlans();
-  pushToast('success', 'Plan deleted', record.plan.templateTitle);
+  pushToast('success', t('Plan deleted'), record.plan.templateTitle);
   render();
 }
 
@@ -34246,14 +34331,14 @@ async function runDeleteCompletedPlan(completedId: string): Promise<void> {
       await cloudDeleteRecurring(record.recurringId);
       state.cloudCompletedPlans = state.cloudCompletedPlans.filter((candidate) => candidate.id !== record.id);
       await refreshCloudWorkspaceData().catch(() => undefined);
-      pushToast('success', 'Done item deleted', record.title);
+      pushToast('success', t('Done item deleted'), record.title);
       return;
     }
     if (record.workflowSource === 'cloud') {
       await cloudRequest(`/api/completed/${encodeURIComponent(record.id)}`, { method: 'DELETE' });
       state.cloudCompletedPlans = state.cloudCompletedPlans.filter((candidate) => candidate.id !== record.id);
       await refreshCloudWorkspaceData().catch(() => undefined);
-      pushToast('success', 'Done item deleted', record.title);
+      pushToast('success', t('Done item deleted'), record.title);
       return;
     }
     if (record.actionId) {
@@ -34299,7 +34384,7 @@ async function runDeleteCompletedPlan(completedId: string): Promise<void> {
     if (state.bridgeActive && (record.actionId || completedPlanIsEndedSchedule(record))) {
       await refreshInboxData();
     }
-    pushToast('success', 'Done item deleted', record.title);
+    pushToast('success', t('Done item deleted'), record.title);
   });
 }
 
@@ -34427,10 +34512,15 @@ async function runDeleteAllInbox(): Promise<void> {
     }
     pushToast(
       failed ? 'pending' : 'success',
-      failed ? 'Needs Approval partially cleared' : 'Needs Approval cleared',
-      `${ok} deleted${failed ? `, ${failed} failed` : ''}.`,
+      failed ? t('Needs Approval partially cleared') : t('Needs Approval cleared'),
+      failed ? tf('{ok} deleted, {failed} failed.', { ok, failed }) : tf('{ok} deleted.', { ok }),
     );
   });
+}
+
+function deleteAllCountToastDetail(ok: number, failed: number, singularDeleted: string, pluralDeleted: string): string {
+  const deleted = ok === 1 ? singularDeleted : pluralDeleted;
+  return failed ? tf('{deleted}, {failed} failed.', { deleted, failed }) : tf('{deleted}.', { deleted });
 }
 
 async function runDeleteAllCheck(): Promise<void> {
@@ -34467,8 +34557,13 @@ async function runDeleteAllCheck(): Promise<void> {
     }
     pushToast(
       failed ? 'pending' : 'success',
-      failed ? 'Check partially cleared' : 'Check cleared',
-      `${ok} plan${ok === 1 ? '' : 's'} deleted${failed ? `, ${failed} failed` : ''}.`,
+      failed ? t('Check partially cleared') : t('Check cleared'),
+      deleteAllCountToastDetail(
+        ok,
+        failed,
+        tf('{count} plan deleted', { count: ok }),
+        tf('{count} plans deleted', { count: ok }),
+      ),
     );
   });
 }
@@ -34521,8 +34616,13 @@ async function runDeleteAllRepeats(): Promise<void> {
     }
     pushToast(
       failed ? 'pending' : 'success',
-      failed ? 'Repeats partially cleared' : 'Active Repeats cleared',
-      `${ok} repeat${ok === 1 ? '' : 's'} deleted${failed ? `, ${failed} failed` : ''}.`,
+      failed ? t('Repeats partially cleared') : t('Active Repeats cleared'),
+      deleteAllCountToastDetail(
+        ok,
+        failed,
+        tf('{count} repeat deleted', { count: ok }),
+        tf('{count} repeats deleted', { count: ok }),
+      ),
     );
   });
 }
@@ -34623,8 +34723,13 @@ async function runDeleteAllDone(): Promise<void> {
     }
     pushToast(
       failed ? 'pending' : 'success',
-      failed ? 'Done partially cleared' : 'Done cleared',
-      `${ok} item${ok === 1 ? '' : 's'} deleted${failed ? `, ${failed} failed` : ''}.`,
+      failed ? t('Done partially cleared') : t('Done cleared'),
+      deleteAllCountToastDetail(
+        ok,
+        failed,
+        tf('{count} item deleted', { count: ok }),
+        tf('{count} items deleted', { count: ok }),
+      ),
     );
   });
 }
@@ -34720,13 +34825,13 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
     }
     pushToast(
       'success',
-      plan.actionType === 'recurring_payment' ? 'Repeat payment created' : 'Sent for approval',
+      plan.actionType === 'recurring_payment' ? t('Repeat payment created') : t('Sent for approval'),
       plan.actionType === 'recurring_payment'
         ? response.mode === 'browser-workflow'
-          ? 'Created one local approval now. Saved-on-device workflow does not run background repeats after this tab closes.'
-          : 'Future payments will appear in Needs Approval.'
+          ? t('Created one local approval now. Saved-on-device workflow does not run background repeats after this tab closes.')
+          : t('Future payments will appear in Needs Approval.')
         : response.mode === 'agentic-cloud'
-          ? 'Saved to Agentic Cloud. No localhost required.'
+          ? t('Saved to Agentic Cloud. No localhost required.')
           : response.mode === 'browser-workflow'
             ? 'Saved on this device.'
             : response.id,
@@ -34738,7 +34843,7 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
         error: message,
         failureLabel: 'Send failed - try again',
       });
-      pushToast('error', 'Send for approval failed', message);
+      pushToast('error', t('Send for approval failed'), message);
     },
   });
 }
@@ -34986,8 +35091,8 @@ function openDcaReviewProofTemplate(): void {
   state.error = '';
   pushToast(
     'success',
-    'DCA review proof selected',
-    'This creates evidence only. Active repeat payments use the selected workflow and each run still returns to Needs Approval.',
+    t('DCA review proof selected'),
+    t('This creates evidence only. Active repeat payments use the selected workflow and each run still returns to Needs Approval.'),
   );
   render();
 }
@@ -35156,15 +35261,15 @@ function connectorReadDetailRows(connectorRead: JsonObject | undefined): Array<[
 function pythQuestionDisplayLabel(value: string): string {
   switch (value) {
     case 'oracle_evidence':
-      return 'Oracle evidence';
+      return t('Oracle evidence');
     case 'freshness':
-      return 'Freshness';
+      return t('Freshness');
     case 'confidence':
-      return 'Confidence';
+      return t('Confidence');
     case 'price':
-      return 'Price';
+      return t('Price');
     default:
-      return value ? titleCase(value.replace(/_/g, ' ')) : 'Price';
+      return value ? t(titleCase(value.replace(/_/g, ' '))) : t('Price');
   }
 }
 
@@ -35395,14 +35500,16 @@ function completedPlanFromAction(action: PreparedAction): CompletedPlanRecord {
 function completedPlanFromEndedRecurring(payment: RecurringPayment): CompletedPlanRecord {
   const occurrenceCount = payment.occurrencesCreated ?? 0;
   const max = payment.maxOccurrences ?? occurrenceCount;
-  const title = `${payment.amount} ${payment.token} repeat payment completed`;
+  const title = tf('{amount} {token} repeat payment completed', { amount: payment.amount, token: payment.token });
   return {
     id: `recurring-schedule:${payment.id}`,
     kind: 'recurring',
     status: 'schedule complete',
     tone: 'tx-confirmed',
     title,
-    summary: `Reached ${occurrenceCount} of ${max} scheduled occurrence${max === 1 ? '' : 's'}.`,
+    summary: max === 1
+      ? tf('Reached {occurrenceCount} of {max} scheduled occurrence.', { occurrenceCount, max })
+      : tf('Reached {occurrenceCount} of {max} scheduled occurrences.', { occurrenceCount, max }),
     completedAt: payment.updatedAt,
     createdAt: payment.createdAt,
     walletAddress: payment.walletAddress,
@@ -39389,7 +39496,7 @@ async function runSaveBridgeAiKey(): Promise<void> {
         await showBridgeOfflineToast('AI bridge offline');
         return;
       }
-      pushToast('error', 'AI setup failed', message);
+      pushToast('error', t('AI setup failed'), message);
     },
   });
 }
@@ -39406,10 +39513,10 @@ async function saveBridgeAiKeyCore(options: { toast?: boolean } = {}): Promise<v
   if (showToast) {
     pushToast(
       'success',
-      'Local Bridge AI key sent',
+      t('Local Bridge AI key sent'),
       connected
-        ? 'The provider key is held in local bridge memory and the approval bridge is connected.'
-        : 'The provider key is held in local bridge memory. Connect a wallet, then check the local bridge.',
+        ? t('The provider key is held in local bridge memory and the approval bridge is connected.')
+        : t('The provider key is held in local bridge memory. Connect a wallet, then check the local bridge.'),
     );
   }
 }
@@ -39433,14 +39540,14 @@ async function syncConfiguredBridgeAiSettings(): Promise<void> {
       detail: message,
       path: '/bridge/ai/session-key',
     });
-    pushToast('error', 'Bridge AI update failed', message);
+    pushToast('error', t('Bridge AI update failed'), message);
     render();
   }
 }
 
 async function runSaveDirectAiKey(): Promise<void> {
   if (!canSaveDirectAiKey()) {
-    pushToast('error', 'AI setup incomplete', aiGenerateDisabledReason());
+    pushToast('error', t('AI setup incomplete'), aiGenerateDisabledReason());
     render();
     return;
   }
@@ -39463,26 +39570,29 @@ async function saveDirectAiKeyCore(options: { toast?: boolean } = {}): Promise<v
     pushToast(
       'success',
       state.aiSettings.mode === 'hosted'
-        ? 'Hosted BYOK key entered'
+        ? t('Hosted BYOK key entered')
         : state.aiSettings.mode === 'device-agent'
-          ? 'Device Agent key entered'
+          ? t('Device Agent key entered')
         : IS_TAURI_APP
-          ? 'Desktop session key entered'
+          ? t('Desktop session key entered')
         : IS_ANDROID_APP
-          ? 'Android session key entered'
-          : 'Browser session key entered',
+          ? t('Android session key entered')
+          : t('Browser session key entered'),
       state.aiSettings.mode === 'hosted'
-        ? 'Hosted BYOK will relay only submitted AI Connector requests. Queueing, schedules, and signing stay in the active workflow.'
+        ? t('Hosted BYOK will relay only submitted AI Connector requests. Queueing, schedules, and signing stay in the active workflow.')
         : state.aiSettings.mode === 'device-agent'
-          ? 'Device Agent config was staged for the gated runtime. Queueing, schedules, and signing stay in the active workflow.'
-        : `${IS_ANDROID_APP ? 'Android session' : 'Browser session'} AI can review requests in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'}. Queueing, schedules, and signing stay in the active workflow.`,
+          ? t('Device Agent config was staged for the gated runtime. Queueing, schedules, and signing stay in the active workflow.')
+        : tf('{route} AI can review requests in {where}. Queueing, schedules, and signing stay in the active workflow.', {
+            route: IS_ANDROID_APP ? t('Android session') : t('Browser session'),
+            where: IS_ANDROID_APP ? t('this app runtime') : t('this tab'),
+          }),
     );
   }
 }
 
 async function runSetAndConfirmAiKey(trigger?: HTMLButtonElement): Promise<void> {
   if (!canSetAndConfirmAiKey()) {
-    pushToast('error', 'AI setup incomplete', aiConfirmDisabledReason());
+    pushToast('error', t('AI setup incomplete'), aiConfirmDisabledReason());
     render();
     return;
   }
@@ -39498,7 +39608,7 @@ async function runSetAndConfirmAiKey(trigger?: HTMLButtonElement): Promise<void>
     render();
   }
   const replaceToastFn = quietMobileSheet ? replaceToastWithoutRender : replaceToast;
-  const toastId = pushToast('pending', 'Setting AI key', 'Saving the key and checking the selected AI Connector route.');
+  const toastId = pushToast('pending', t('Setting AI key'), t('Saving the key and checking the selected AI Connector route.'));
   try {
     if (state.aiSettings.mode === 'bridge') {
       await saveBridgeAiKeyCore({ toast: false });
@@ -39568,7 +39678,7 @@ async function runEnablePairedBridge(connector?: string): Promise<void> {
       'confirmed',
       'Your computer’s plan is connected for AI on this phone. Wallet approval is still required.',
     );
-    pushToast('success', 'Paired', 'AI now runs on your computer’s plan.');
+    pushToast('success', t('Paired'), t('AI now runs on your computer’s plan.'));
     render();
     return;
   }
@@ -39580,19 +39690,19 @@ async function runEnablePairedBridge(connector?: string): Promise<void> {
         'confirmed',
         'Your computer’s ChatGPT / Claude plan is connected for AI on this phone. Wallet approval is still required.',
       );
-      pushToast('success', 'Paired', 'AI now runs on your computer’s plan.');
+      pushToast('success', t('Paired'), t('AI now runs on your computer’s plan.'));
     } else {
       setAiPlannerConfirmation('failed', status.message || 'Paired, but the AI runtime did not start.');
       pushToast(
         'error',
-        'Paired — runtime not started',
-        status.message || 'Could not start the paired AI runtime. Make sure the computer connector page is open and signed in.',
+        t('Paired — runtime not started'),
+        status.message || t('Could not start the paired AI runtime. Make sure the computer connector page is open and signed in.'),
       );
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     setAiPlannerConfirmation('failed', message);
-    pushToast('error', 'Could not start paired AI', message);
+    pushToast('error', t('Could not start paired AI'), message);
   }
   render();
 }
@@ -39624,11 +39734,11 @@ async function runUnpairPairedBridge(): Promise<void> {
     await withMobileSheetCleanupTimeout(clearDeviceAgentRuntimeConfig(), 'Device Agent clear');
     await refreshDeviceAgentStatus(false);
     saveDeviceAgentStatusCache(state.deviceAgentStatus);
-    pushToast('success', 'Unpaired', 'This phone is no longer linked to your computer.');
+    pushToast('success', t('Unpaired'), t('This phone is no longer linked to your computer.'));
   }, {
     onError(message) {
       state.error = '';
-      pushToast('error', 'Disconnect incomplete', message);
+      pushToast('error', t('Disconnect incomplete'), message);
     },
   });
 }
@@ -39665,16 +39775,16 @@ async function confirmAiPlannerCore(toastId: number, replaceToastFn: ReplaceToas
     setAiPlannerConfirmation(
       'confirmed',
       state.aiStatus.engine === 'connector'
-        ? `${bridgeConnectorDisplayLabel(state.aiStatus)} is signed in for local AI Connector. The first AI request will be the real auth check. Workflow capability is unchanged.`
-        : 'Local bridge AI is configured and reachable for AI Connector. Workflow capability is unchanged.',
+        ? tf('{connector} is signed in for local AI Connector. The first AI request will be the real auth check. Workflow capability is unchanged.', { connector: bridgeConnectorDisplayLabel(state.aiStatus) })
+        : t('Local bridge AI is configured and reachable for AI Connector. Workflow capability is unchanged.'),
     );
     replaceToastFn(
       toastId,
       'success',
-      'Planner confirmed',
+      t('Planner confirmed'),
       state.aiStatus.engine === 'connector'
-        ? `${bridgeConnectorDisplayLabel(state.aiStatus)} can review requests through the local bridge.`
-        : 'Local bridge AI can review requests only.',
+        ? tf('{connector} can review requests through the local bridge.', { connector: bridgeConnectorDisplayLabel(state.aiStatus) })
+        : t('Local bridge AI can review requests only.'),
     );
     return;
   }
@@ -39746,13 +39856,13 @@ async function runConfirmAiPlanner(): Promise<void> {
   if (!canConfirmAiPlanner()) {
     const message = aiConfirmDisabledReason();
     setAiPlannerConfirmation('failed', message);
-    pushToast('error', 'Planner check unavailable', message);
+    pushToast('error', t('Planner check unavailable'), message);
     render();
     return;
   }
 
   state.activeOperation = 'confirm-ai-planner';
-  const toastId = pushToast('pending', 'Confirming planner', 'Checking the selected AI Connector route.');
+  const toastId = pushToast('pending', t('Confirming planner'), t('Checking the selected AI Connector route.'));
   try {
     await run('ai', async () => {
       await confirmAiPlannerCore(toastId);
@@ -39772,7 +39882,7 @@ async function runConfirmAiPlanner(): Promise<void> {
 async function runClearAiKey(requestedMode?: AiSettings['mode']): Promise<void> {
   const targetMode = aiKeyClearTarget(requestedMode);
   if (!targetMode) {
-    pushToast('error', 'No AI key to clear', 'No clearable AI key is configured for the selected path.');
+    pushToast('error', t('No AI key to clear'), t('No clearable AI key is configured for the selected path.'));
     render();
     return;
   }
@@ -39798,7 +39908,7 @@ async function runClearAiKey(requestedMode?: AiSettings['mode']): Promise<void> 
       await withMobileSheetCleanupTimeout(clearDeviceAgentRuntimeConfig(), 'Device Agent clear');
       saveDeviceAgentStatusCache(state.deviceAgentStatus);
     }
-    pushToast('success', 'AI key cleared', aiClearMessage(targetMode));
+    pushToast('success', t('AI key cleared'), aiClearMessage(targetMode));
   });
 }
 
@@ -39810,17 +39920,17 @@ async function runRefreshDeviceAgentStatus(): Promise<void> {
     }
     pushToast(
       'success',
-      'Device Agent refreshed',
+      t('Device Agent refreshed'),
       status.available
         ? status.configured
-          ? 'Device Agent runtime config is staged for AI Connector.'
-          : 'Device Agent runtime is visible but not configured.'
-        : status.message || 'Device Agent runtime is unavailable.',
+          ? t('Device Agent runtime config is staged for AI Connector.')
+          : t('Device Agent runtime is visible but not configured.')
+        : status.message || t('Device Agent runtime is unavailable.'),
     );
   }, {
     onError(message) {
       state.error = '';
-      pushToast('error', 'Device Agent unavailable', message);
+      pushToast('error', t('Device Agent unavailable'), message);
     },
   });
 }
@@ -39831,15 +39941,15 @@ async function runStopDeviceAgentRuntime(): Promise<void> {
     saveDeviceAgentStatusCache(state.deviceAgentStatus);
     pushToast(
       'success',
-      'Device Agent stopped',
+      t('Device Agent stopped'),
       status.state === 'stopped'
-        ? 'Device Agent runtime stopped. Config is preserved; start again to resume AI Connector.'
-        : status.message || 'Device Agent runtime is no longer running.',
+        ? t('Device Agent runtime stopped. Config is preserved; start again to resume AI Connector.')
+        : status.message || t('Device Agent runtime is no longer running.'),
     );
   }, {
     onError(message) {
       state.error = '';
-      pushToast('error', 'Device Agent stop failed', message);
+      pushToast('error', t('Device Agent stop failed'), message);
     },
   });
 }
@@ -39882,14 +39992,14 @@ async function runSelectConnector(connector: AiConnector): Promise<void> {
       body: JSON.stringify({ engine: 'connector', connector }),
     });
     await refreshBridgeAiStatus(false);
-    pushToast('success', 'Connector selected', `${aiConnectorPreset(connector).label} is set on the local bridge.`);
+    pushToast('success', t('Connector selected'), tf('{connector} is set on the local bridge.', { connector: aiConnectorPreset(connector).label }));
   }, {
     async onError(message) {
       if (isBridgeOfflineMessage(message)) {
         await showBridgeOfflineToast('AI bridge offline');
         return;
       }
-      pushToast('error', 'Could not set connector', message);
+      pushToast('error', t('Could not set connector'), message);
     },
   });
 }
@@ -39904,17 +40014,21 @@ async function runConnectorConnect(connector: AiConnector): Promise<void> {
       body: JSON.stringify({ connector }),
     });
     if (!launch.launched) {
-      pushToast('info', 'Finish sign-in', launch.manualHint ?? `Run \`${launch.command}\` on the bridge machine, then Recheck.`);
+      pushToast('info', t('Finish sign-in'), launch.manualHint ?? tf('Run `{command}` on the bridge machine, then Recheck.', { command: launch.command }));
       return;
     }
-    pendingToastId = pushToast('pending', 'Sign-in launched', `Complete ${aiConnectorPreset(connector).label} sign-in in your browser — it connects automatically.`);
+    pendingToastId = pushToast(
+      'pending',
+      t('Sign-in launched'),
+      tf('Complete {connector} sign-in in your browser - it connects automatically.', { connector: aiConnectorPreset(connector).label }),
+    );
   }, {
     async onError(message) {
       if (isBridgeOfflineMessage(message)) {
         await showBridgeOfflineToast('AI bridge offline');
         return;
       }
-      pushToast('error', 'Connector sign-in failed', message);
+      pushToast('error', t('Connector sign-in failed'), message);
     },
   });
   if (pendingToastId !== undefined) {
@@ -39943,10 +40057,10 @@ function startConnectorAuthPoll(connector: AiConnector, pendingToastId: number):
         dismissToast(pendingToastId);
         pushToast(
           connected ? 'success' : 'info',
-          connected ? 'Connected' : 'Still waiting on sign-in',
+          connected ? 'Connected' : t('Still waiting on sign-in'),
           connected
             ? `${aiConnectorPreset(connector).label} is ready.`
-            : 'Finish sign-in in your browser, then press Recheck.',
+            : t('Finish sign-in in your browser, then press Recheck.'),
         );
       }
       render();
@@ -39987,15 +40101,15 @@ async function runSetBrowserDeviceAgentSecretStoreMode(mode: SecretStoreMode): P
     resetAiPlannerConfirmation('Device Agent secret store changed. Re-enter the key, then confirm planner.');
     pushToast(
       'success',
-      'Device Agent storage changed',
+      t('Device Agent storage changed'),
       mode === 'session-memory'
-        ? 'Session-only mode is active. Re-enter the provider key for this tab.'
-        : 'Encrypted IndexedDB mode is active. Re-enter the provider key to store it there.',
+        ? t('Session-only mode is active. Re-enter the provider key for this tab.')
+        : t('Encrypted IndexedDB mode is active. Re-enter the provider key to store it there.'),
     );
   }, {
     onError(message) {
       state.error = '';
-      pushToast('error', 'Device Agent storage change failed', message);
+      pushToast('error', t('Device Agent storage change failed'), message);
     },
   });
 }
@@ -40009,13 +40123,13 @@ async function runRefreshAiStatus(): Promise<void> {
     const connected = await ensureBridgeConnectedAfterLocalCall();
     pushToast(
       'success',
-      'AI status refreshed',
+      t('AI status refreshed'),
       state.aiStatus?.available
         ? state.aiStatus.engine === 'connector'
-          ? `${bridgeConnectorDisplayLabel(state.aiStatus)} is signed in for local AI requests.`
+          ? tf('{connector} is signed in for local AI requests.', { connector: bridgeConnectorDisplayLabel(state.aiStatus) })
           : connected
-            ? 'Bridge AI is available and the approval bridge is connected.'
-            : 'Bridge AI is available. Connect a wallet, then check the local bridge.'
+            ? t('Bridge AI is available and the approval bridge is connected.')
+            : t('Bridge AI is available. Connect a wallet, then check the local bridge.')
         : bridgeAiUnavailableReason(state.aiStatus),
     );
   }, {
@@ -40025,7 +40139,7 @@ async function runRefreshAiStatus(): Promise<void> {
         await showBridgeOfflineToast('AI bridge offline');
         return;
       }
-      pushToast('error', 'AI status unavailable', message);
+      pushToast('error', t('AI status unavailable'), message);
     },
   });
 }
@@ -40042,17 +40156,17 @@ async function runStartTauriBridgeForAi(): Promise<void> {
       await refreshBridgeAiStatus(false).catch(() => undefined);
       pushToast(
         status.bridgeReachable ? 'success' : 'error',
-        status.bridgeReachable ? 'Local bridge reachable' : 'Local bridge not ready',
+        status.bridgeReachable ? t('Local bridge reachable') : t('Local bridge not ready'),
         status.bridgeReachable
-          ? 'Desktop local bridge is reachable. Confirm the planner after the provider key is configured.'
-          : status.lastError || 'The desktop bridge process started, but the endpoint is not reachable yet.',
+          ? t('Desktop local bridge is reachable. Confirm the planner after the provider key is configured.')
+          : status.lastError || t('The desktop bridge process started, but the endpoint is not reachable yet.'),
       );
       return;
     }
     pushToast(
       'error',
-      'Local bridge did not start',
-      tauriNativeLastBridgeError() || 'Desktop could not start the local bridge.',
+      t('Local bridge did not start'),
+      tauriNativeLastBridgeError() || t('Desktop could not start the local bridge.'),
     );
   });
 }
@@ -40118,7 +40232,7 @@ function setAiPlannerMode(mode: AiSettings['mode']): void {
   resetAiPlannerConfirmation('AI path changed. Workflow capability is unchanged.');
   savePersistedState();
   void syncCloudPreference('ai-settings');
-  pushToast('success', 'AI Planner path changed', aiModeToastMessage(mode));
+  pushToast('success', t('AI Planner path changed'), aiModeToastMessage(mode));
   render();
 }
 
@@ -40222,7 +40336,7 @@ async function signOutCloudSessionForWalletBoundary(
   const connectedWallet = state.address;
   const signedOut = await signOutCloudSession();
   if (signedOut && options.toast) {
-    pushToast('success', 'Cloud workspace signed out', cloudBoundaryLogoutDetail(reason, signedInWallet, connectedWallet));
+    pushToast('success', t('Cloud workspace signed out'), cloudBoundaryLogoutDetail(reason, signedInWallet, connectedWallet));
   }
   return signedOut;
 }
@@ -40453,7 +40567,7 @@ async function finishCloudSignIn(session: CloudSessionResponse): Promise<void> {
   if (transfer.total > 0) {
     toastLocalWorkspaceStorageTransfer(transfer);
   } else {
-    pushToast('success', 'Cloud workspace signed in', short(state.address));
+    pushToast('success', t('Cloud workspace signed in'), short(state.address));
   }
 }
 
@@ -40461,7 +40575,7 @@ async function runCloudLogout(): Promise<void> {
   await run('connect', async () => {
     notifyLocalWorkspaceBackupReminder('Sign-out keeps local data on this device only.');
     await signOutCloudSession();
-    pushToast('success', 'Cloud workspace signed out', 'Saved-on-device workflow is active in this browser.');
+    pushToast('success', t('Cloud workspace signed out'), t('Saved-on-device workflow is active in this browser.'));
   });
 }
 
@@ -40487,14 +40601,17 @@ async function transferLocalWorkspaceToCloud(options: { confirm: boolean; showEm
   const total = candidates.summary.total;
   if (total === 0) {
     if (options.showEmptyToast) {
-      pushToast('success', 'Nothing to transfer', 'No eligible local workspace records need storage import.');
+      pushToast('success', t('Nothing to transfer'), t('No eligible local workspace records need storage import.'));
     }
     return { copied: 0, failed: 0, total, canceled: false };
   }
   if (options.confirm) {
     const label = localWorkspaceImportSummaryLabel(candidates.summary);
     const confirmed = window.confirm(
-      `${label || 'Local workspace records'} can be transferred to Agentic Cloud storage for ${short(state.address)}. Continue?`,
+      tf('{label} can be transferred to Agentic Cloud storage for {address}. Continue?', {
+        label: label || t('Local workspace records'),
+        address: short(state.address),
+      }),
     );
     if (!confirmed) return { copied: 0, failed: 0, total, canceled: true };
   }
@@ -40585,15 +40702,23 @@ async function transferLocalWorkspaceToCloud(options: { confirm: boolean; showEm
 function toastLocalWorkspaceStorageTransfer(result: LocalWorkspaceStorageTransferResult): void {
   if (result.canceled || result.total === 0) return;
   if (result.copied === 0 && result.failed > 0) {
-    pushToast('error', 'Storage transfer failed', `${result.failed} item${result.failed === 1 ? '' : 's'} stayed on this device.`);
+    pushToast(
+      'error',
+      t('Storage transfer failed'),
+      result.failed === 1
+        ? tf('{count} item stayed on this device.', { count: result.failed })
+        : tf('{count} items stayed on this device.', { count: result.failed }),
+    );
     return;
   }
   pushToast(
     result.failed > 0 ? 'info' : 'success',
-    result.failed > 0 ? 'Storage transfer partially completed' : 'Local workspace transferred',
+    result.failed > 0 ? t('Storage transfer partially completed') : t('Local workspace transferred'),
     result.failed > 0
-      ? `${result.copied} transferred, ${result.failed} need review.`
-      : `${result.copied} item${result.copied === 1 ? '' : 's'} transferred to storage.`,
+      ? tf('{copied} transferred, {failed} need review.', { copied: result.copied, failed: result.failed })
+      : result.copied === 1
+        ? tf('{count} item transferred to storage.', { count: result.copied })
+        : tf('{count} items transferred to storage.', { count: result.copied }),
     result.failed > 0 ? { dismissAfterMs: LOCAL_WORKSPACE_REMINDER_DISMISS_MS } : {},
   );
 }
@@ -40602,10 +40727,10 @@ function notifyLocalWorkspaceBackupReminder(detail: string): void {
   const importSummary = localCloudImportCandidates().summary;
   const localSummary = localWorkspaceSummary();
   if (importSummary.total === 0 && localSummary.total === 0) return;
-  const title = importSummary.total > 0 ? 'Local items ready' : 'Local-only history remains';
+  const title = importSummary.total > 0 ? t('Local items ready') : t('Local-only history remains');
   const message = importSummary.total > 0
-    ? `${localWorkspaceImportSummaryLabel(importSummary) || 'Local workspace records'} ready to transfer. ${detail}`
-    : `Local-only history remains on this device. ${detail}`;
+    ? tf('{summary} ready to transfer. {detail}', { summary: localWorkspaceImportSummaryLabel(importSummary) || t('Local workspace records'), detail })
+    : tf('Local-only history remains on this device. {detail}', { detail });
   pushToast('info', title, message, {
     key: LOCAL_WORKSPACE_BOUNDARY_TOAST_KEY,
     dismissAfterMs: LOCAL_WORKSPACE_REMINDER_DISMISS_MS,
@@ -40689,7 +40814,7 @@ function cloudRecurringImportBody(payment: RecurringPayment): Record<string, unk
 
 function openCloudWorkspaceDeleteModal(): void {
   if (!cloudSessionMatchesWallet()) {
-    pushToast('error', 'Cloud delete unavailable', 'Connect the signed-in wallet before deleting this cloud workspace.');
+    pushToast('error', t('Cloud delete unavailable'), t('Connect the signed-in wallet before deleting this cloud workspace.'));
     return;
   }
   state.cloudWorkspaceDeleteModalOpen = true;
@@ -40818,24 +40943,37 @@ async function runCleanupRecurringBacklog(): Promise<void> {
     if (preview.cancelled === 0) {
       pushToast(
         'success',
-        'No recurring backlog found',
-        `${preview.scanned} active recurring approval${preview.scanned === 1 ? '' : 's'} scanned.`,
+        t('No recurring backlog found'),
+        preview.scanned === 1
+          ? tf('{count} active recurring approval scanned.', { count: preview.scanned })
+          : tf('{count} active recurring approvals scanned.', { count: preview.scanned }),
       );
       return;
     }
+    const duplicateApprovalCount = preview.cancelled === 1
+      ? tf('{count} duplicate recurring approval', { count: preview.cancelled })
+      : tf('{count} duplicate recurring approvals', { count: preview.cancelled });
+    const affectedScheduleCount = preview.schedulesAffected === 1
+      ? tf('{count} schedule', { count: preview.schedulesAffected })
+      : tf('{count} schedules', { count: preview.schedulesAffected });
     const confirmed = window.confirm(
-      `Cancel ${preview.cancelled} duplicate recurring approval${preview.cancelled === 1 ? '' : 's'} across ${preview.schedulesAffected} schedule${preview.schedulesAffected === 1 ? '' : 's'}? The newest approval for each schedule stays open.`,
+      tf('Cancel {approvals} across {schedules}? The newest approval for each schedule stays open.', {
+        approvals: duplicateApprovalCount,
+        schedules: affectedScheduleCount,
+      }),
     );
     if (!confirmed) {
-      pushToast('pending', 'Cleanup cancelled', 'No cloud approvals were changed.');
+      pushToast('pending', t('Cleanup cancelled'), t('No cloud approvals were changed.'));
       return;
     }
     const result = await cloudCleanupRecurringBacklog(false);
     await refreshCloudWorkspaceData();
     pushToast(
       'success',
-      'Recurring backlog cleaned',
-      `Cancelled ${result.cancelled} duplicate approval${result.cancelled === 1 ? '' : 's'} and kept ${result.kept}.`,
+      t('Recurring backlog cleaned'),
+      result.cancelled === 1
+        ? tf('Cancelled {count} duplicate approval and kept {kept}.', { count: result.cancelled, kept: result.kept })
+        : tf('Cancelled {count} duplicate approvals and kept {kept}.', { count: result.cancelled, kept: result.kept }),
     );
   });
 }
@@ -40878,7 +41016,7 @@ async function runSetWorkflowModePreference(preference: WorkflowModePreference):
     await refreshActiveWorkflowData();
     pushToast(
       'success',
-      preference === 'local-bridge' ? 'Private local mode active' : 'Workspace mode updated',
+      preference === 'local-bridge' ? t('Private local mode active') : t('Workspace mode updated'),
       `${activeWorkflowLabel()} will handle new one-time workflow actions.`,
     );
   });
@@ -41511,20 +41649,24 @@ function cloudEndedScheduleToCompletedPlan(value: unknown): CompletedPlanRecord 
   }
   if (record.status !== 'completed' && record.status !== 'cancelled') return null;
   const cluster = isCluster(record.cluster) ? record.cluster : state.cluster;
-  const reason = record.status === 'completed' ? 'Schedule completed' : 'Schedule cancelled';
+  const reason = record.status === 'completed' ? t('Schedule completed') : t('Schedule cancelled');
   const tone = completedStatusTone(record.status);
   const isSwap = record.actionKind === 'swap' || typeof record.outputToken === 'string';
   const inputToken = record.inputToken || record.token;
   const outputToken = record.outputToken || 'USDC';
   const occurrenceLabel = typeof record.occurrencesCreated === 'number'
-    ? `${record.occurrencesCreated} occurrence${record.occurrencesCreated === 1 ? '' : 's'} materialized`
-    : 'No occurrences materialized';
+    ? record.occurrencesCreated === 1
+      ? tf('{count} occurrence materialized', { count: record.occurrencesCreated })
+      : tf('{count} occurrences materialized', { count: record.occurrencesCreated })
+    : t('No occurrences materialized');
   return {
     id: `recurring:${record.id}`,
     kind: 'recurring',
     status: record.status,
     tone,
-    title: isSwap ? `${record.amount} ${inputToken} -> ${outputToken} recurring swap` : `${record.amount} ${record.token} repeat payment`,
+    title: isSwap
+      ? tf('{amount} {inputToken} -> {outputToken} recurring swap', { amount: record.amount, inputToken, outputToken })
+      : tf('{amount} {token} repeat payment', { amount: record.amount, token: record.token }),
     summary: reason,
     completedAt: record.updatedAt,
     createdAt: record.createdAt,
@@ -42027,7 +42169,7 @@ async function runConnectBridge(): Promise<void> {
     if (activeWorkflowMode() !== 'local-bridge') {
       await refreshActiveWorkflowData();
     }
-    pushToast('success', 'Bridge connected', 'Select private local mode to route workflow storage through the bridge.');
+    pushToast('success', t('Bridge connected'), t('Select private local mode to route workflow storage through the bridge.'));
   }, {
     async onError(message) {
       state.bridgeActive = false;
@@ -42038,7 +42180,7 @@ async function runConnectBridge(): Promise<void> {
         await showBridgeOfflineToast('Approval bridge offline');
         return;
       }
-      pushToast('error', 'Bridge connection failed', message);
+      pushToast('error', t('Bridge connection failed'), message);
     },
   });
 }
@@ -42054,7 +42196,7 @@ async function runDisconnectBridge(): Promise<void> {
     }
     savePersistedState();
     stopBridgePolling();
-    pushToast('success', 'Bridge disconnected', 'Local approval host stopped polling.');
+    pushToast('success', t('Bridge disconnected'), t('Local approval host stopped polling.'));
   });
 }
 
@@ -42067,7 +42209,14 @@ async function refreshWorkspaceData(options: { toast: boolean } = { toast: true 
     }
     await reconcilePendingTransactions({ trigger: 'refresh' });
     if (options.toast) {
-      pushToast('success', 'Workspace refreshed', `${activeWorkflowPreparedActions().length} approval request(s) loaded from ${activeWorkflowLabel()}.`);
+      const count = activeWorkflowPreparedActions().length;
+      pushToast(
+        'success',
+        t('Workspace refreshed'),
+        count === 1
+          ? tf('{count} approval request loaded from {source}.', { count, source: activeWorkflowLabel() })
+          : tf('{count} approval requests loaded from {source}.', { count, source: activeWorkflowLabel() }),
+      );
     }
   });
 }
@@ -42206,19 +42355,19 @@ function recurringCreateToastDetail(
 
 async function runDraftRecurringWithAi(): Promise<void> {
   if (!canGenerateAiPlanFromSettings()) {
-    pushToast('error', 'AI setup incomplete', aiGenerateDisabledReason());
+    pushToast('error', t('AI setup incomplete'), aiGenerateDisabledReason());
     render();
     return;
   }
   if (!canRunAgentReview()) {
-    pushToast('error', 'Agent not detected', agentReviewUnavailableReason());
+    pushToast('error', t('Agent not detected'), agentReviewUnavailableReason());
     render();
     return;
   }
   state.recurringDraft = readRecurringDraft();
   assertValidRecurringDraft(state.recurringDraft);
   state.activeOperation = 'generate-ai-plan';
-  const toastId = pushToast('pending', 'Planning repeat with AI', 'Building and reviewing this repeat request.');
+  const toastId = pushToast('pending', t('Planning repeat with AI'), t('Building and reviewing this repeat request.'));
   try {
     await run('ai', async () => {
       let plan: AgentPlan;
@@ -42526,7 +42675,7 @@ async function runPreparedActionOp(actionId: string, op: string): Promise<void> 
         });
         await refreshInboxData();
         showCompletedHistoryForAction(actionId);
-        pushToast('success', 'Request rejected', 'Saved in Done.');
+        pushToast('success', t('Request rejected'), t('Saved in Done.'));
         break;
       case 'archive':
         await bridgeRequest('/bridge/prepared-actions/archive', {
@@ -42535,14 +42684,14 @@ async function runPreparedActionOp(actionId: string, op: string): Promise<void> 
         });
         await refreshInboxData();
         showCompletedHistoryForAction(actionId);
-        pushToast('success', 'Request cancelled', 'Saved in Done.');
+        pushToast('success', t('Request cancelled'), t('Saved in Done.'));
         break;
       case 'delete':
         await bridgeRequest('/bridge/prepared-actions/delete', {
           method: 'POST',
           body: JSON.stringify({ actionId }),
         });
-        pushToast('success', 'Deleted permanently', actionId);
+        pushToast('success', t('Deleted permanently'), actionId);
         break;
       default:
         throw new Error(`Unknown action operation: ${op}`);
@@ -42643,11 +42792,11 @@ async function runCloudPreparedActionOp(action: PreparedAction, op: string): Pro
       });
       await refreshCloudWorkspaceData();
       showCompletedHistoryForAction(action.id);
-      pushToast('success', 'Request cancelled', 'Cloud cancellation receipt saved in Done.');
+      pushToast('success', t('Request cancelled'), t('Cloud cancellation receipt saved in Done.'));
       return;
     case 'delete':
       await deletePreparedActionWithoutReceipt(action);
-      pushToast('success', 'Request deleted', 'Removed from cloud workspace.');
+      pushToast('success', t('Request deleted'), t('Removed from cloud workspace.'));
       return;
     default:
       throw new Error(`Unknown action operation: ${op}`);
@@ -42659,7 +42808,7 @@ async function runCloudSolTransferFinalization(action: PreparedAction): Promise<
   if (policyError) {
     throw new Error(policyError);
   }
-  const toastId = pushToast('pending', 'Preparing transaction', 'Building the wallet transaction.');
+  const toastId = pushToast('pending', t('Preparing transaction'), t('Building the wallet transaction.'));
   const toastContext: TransactionToastContext = { toastId, actionId: action.id, cluster: action.cluster };
   const prepareResponse = await runTransactionToastStep(
     toastContext,
@@ -42673,7 +42822,7 @@ async function runCloudSolTransferFinalization(action: PreparedAction): Promise<
     replaceToast(
       toastId,
       'error',
-      'Preparing transaction failed',
+      t('Preparing transaction failed'),
       redactSecrets(err instanceof Error ? err.message : String(err)),
     );
     if (err instanceof Error) {
@@ -42690,7 +42839,7 @@ async function runCloudSolTransferFinalization(action: PreparedAction): Promise<
       replaceToast(
         toastId,
         'error',
-        'Approval proof failed',
+        t('Approval proof failed'),
         redactSecrets(err instanceof Error ? err.message : String(err)),
       );
       if (err instanceof Error) {
@@ -42714,7 +42863,7 @@ async function runCloudSolTransferFinalization(action: PreparedAction): Promise<
       replaceToast(
         toastId,
         'error',
-        'Wallet signing failed',
+        t('Wallet signing failed'),
         redactSecrets(err instanceof Error ? err.message : String(err)),
       );
       if (err instanceof Error) {
@@ -42731,7 +42880,7 @@ async function runCloudSolTransferFinalization(action: PreparedAction): Promise<
       replaceToast(
         toastId,
         'error',
-        'Transaction broadcast failed',
+        t('Transaction broadcast failed'),
         redactSecrets(err instanceof Error ? err.message : String(err)),
       );
       if (err instanceof Error) {
@@ -42791,20 +42940,20 @@ async function runCloudSolTransferFinalization(action: PreparedAction): Promise<
 
   await refreshCloudWorkspaceData();
   if (submittedFinalization?.status === 'failed') {
-    replaceToast(toastId, 'error', 'Transaction failed', submittedFinalization.error ?? 'Submitted transaction failed server verification.');
+    replaceToast(toastId, 'error', t('Transaction failed'), submittedFinalization.error ?? t('Submitted transaction failed server verification.'));
     throw new Error(submittedFinalization.error ?? 'Submitted transaction failed server verification.');
   }
   if (!isJsonObject(submitObject.completed)) {
-    replaceToast(toastId, 'pending', 'Transaction submitted', `Server verification is still pending: ${short(txid)}`, {
+    replaceToast(toastId, 'pending', t('Transaction submitted'), `Server verification is still pending: ${short(txid)}`, {
       linkHref: explorerUrl(txid, action.cluster),
-      linkLabel: 'Open Solscan',
+      linkLabel: t('Open Solscan'),
     });
     return;
   }
   showCompletedHistoryForAction(action.id);
-  replaceToast(toastId, 'success', 'Transaction finalized', 'Wallet receipt saved in Done.', {
+  replaceToast(toastId, 'success', t('Transaction finalized'), t('Wallet receipt saved in Done.'), {
     linkHref: explorerUrl(txid, action.cluster),
-    linkLabel: 'Open Solscan',
+    linkLabel: t('Open Solscan'),
   });
 }
 
@@ -42823,11 +42972,15 @@ async function runCloudFinalizationConfirm(action: PreparedAction): Promise<void
     throw new Error(finalization.error ?? 'Submitted transaction failed server verification.');
   }
   if (!isJsonObject(responseObject.completed)) {
-    pushToast('pending', 'Still confirming', action.txid ? `Server verification is still pending: ${short(action.txid)}` : action.id);
+    pushToast(
+      'pending',
+      t('Still confirming'),
+      action.txid ? tf('Server verification is still pending: {tx}', { tx: short(action.txid) }) : action.id,
+    );
     return;
   }
   showCompletedHistoryForAction(action.id);
-  pushToast('success', 'Transaction finalized', 'Wallet receipt saved in Done.');
+  pushToast('success', t('Transaction finalized'), t('Wallet receipt saved in Done.'));
 }
 
 async function executeCloudBrowserPreparedAction(action: PreparedAction): Promise<void> {
@@ -42848,7 +43001,7 @@ async function executeCloudBrowserPreparedAction(action: PreparedAction): Promis
       await runCloudBrowserTransactionConfirm({ ...action, txid: existingLedger.txid });
       return;
     } else if (existingLedger.signedTransactionBase64) {
-      const toastId = pushToast('pending', 'Sending signed transaction', 'Broadcasting the already signed transaction to Solana RPC.');
+      const toastId = pushToast('pending', t('Sending signed transaction'), t('Broadcasting the already signed transaction to Solana RPC.'));
       const toastContext: TransactionToastContext = { toastId, actionId: action.id, cluster: action.cluster };
       try {
         decisionProof = await signCloudWorkflowDecision(action, 'approved');
@@ -42885,7 +43038,7 @@ async function executeCloudBrowserPreparedAction(action: PreparedAction): Promis
 
   const toastId = pushToast(
     'pending',
-    'Opening wallet',
+    t('Opening wallet'),
     jupiterIosManualToastMessage(browserExecutionStartMessage(action)),
     withJupiterIosManualApprovalToast(),
   );
@@ -42927,9 +43080,9 @@ async function executeCloudBrowserPreparedAction(action: PreparedAction): Promis
       });
       await refreshCloudWorkspaceData();
       state.activeTab = 'inbox';
-      replaceToast(toastId, 'pending', 'Transaction submitted', short(execution.txid), {
+      replaceToast(toastId, 'pending', t('Transaction submitted'), short(execution.txid), {
         linkHref: execution.explorerUrl,
-        linkLabel: 'Open Solscan',
+        linkLabel: t('Open Solscan'),
       });
       render();
       return;
@@ -42947,9 +43100,9 @@ async function executeCloudBrowserPreparedAction(action: PreparedAction): Promis
     });
     await refreshCloudWorkspaceData();
     showCompletedHistoryForAction(action.id);
-    replaceToast(toastId, 'success', 'Transaction confirmed', `${short(execution.txid)} - Solscan link saved in Done.`, {
+    replaceToast(toastId, 'success', t('Transaction confirmed'), tf('{tx} - Solscan link saved in Done.', { tx: short(execution.txid) }), {
       linkHref: execution.explorerUrl,
-      linkLabel: 'Open Solscan',
+      linkLabel: t('Open Solscan'),
     });
   } catch (err) {
     await handleClassifiedCloudExecutionFailure({ action, toastId, priorStatus, err, decisionProof });
@@ -42964,9 +43117,9 @@ async function runCloudBrowserTransactionConfirm(action: PreparedAction): Promis
   if (!txid) {
     throw new Error('Submitted transaction id is missing.');
   }
-  const toastId = pushToast('pending', 'Checking confirmation', short(txid), {
+  const toastId = pushToast('pending', t('Checking confirmation'), short(txid), {
     linkHref: explorerUrl(txid, action.cluster),
-    linkLabel: 'Open Solscan',
+    linkLabel: t('Open Solscan'),
   });
   const toastContext: TransactionToastContext = { toastId, actionId: action.id, cluster: action.cluster };
   try {
@@ -42983,12 +43136,12 @@ async function runCloudBrowserTransactionConfirm(action: PreparedAction): Promis
         error: message,
         note: 'Wallet transaction signature was not found on-chain after the stale threshold. The approval can be retried.',
       }).catch((syncErr) => {
-        pushToast('error', 'Cloud receipt sync failed', redactSecrets(syncErr instanceof Error ? syncErr.message : String(syncErr)));
+        pushToast('error', t('Cloud receipt sync failed'), redactSecrets(syncErr instanceof Error ? syncErr.message : String(syncErr)));
       });
       await refreshCloudWorkspaceData().catch(() => undefined);
-      replaceToast(toastId, 'success', 'Pending cleared', `${message} The approval is ready again.`, {
+      replaceToast(toastId, 'success', t('Pending cleared'), `${message} The approval is ready again.`, {
         linkHref: explorerUrl(txid, action.cluster),
-        linkLabel: 'Open Solscan',
+        linkLabel: t('Open Solscan'),
       });
       render();
       return;
@@ -43008,9 +43161,9 @@ async function runCloudBrowserTransactionConfirm(action: PreparedAction): Promis
         syncPendingTransactionsFromLedger();
       }
       await refreshCloudWorkspaceData();
-      replaceToast(toastId, 'pending', 'Transaction submitted', short(txid), {
+      replaceToast(toastId, 'pending', t('Transaction submitted'), short(txid), {
         linkHref: explorerUrl(txid, action.cluster),
-        linkLabel: 'Open Solscan',
+        linkLabel: t('Open Solscan'),
       });
       render();
       return;
@@ -43022,9 +43175,9 @@ async function runCloudBrowserTransactionConfirm(action: PreparedAction): Promis
     }
     await refreshCloudWorkspaceData();
     showCompletedHistoryForAction(action.id);
-    replaceToast(toastId, 'success', 'Transaction confirmed', `${short(txid)} - Solscan link saved in Done.`, {
+    replaceToast(toastId, 'success', t('Transaction confirmed'), tf('{tx} - Solscan link saved in Done.', { tx: short(txid) }), {
       linkHref: explorerUrl(txid, action.cluster),
-      linkLabel: 'Open Solscan',
+      linkLabel: t('Open Solscan'),
     });
   } catch (err) {
     const ledger = findPendingTransactionByAction(action.id);
@@ -43058,18 +43211,18 @@ async function runCloudBrowserTransactionConfirm(action: PreparedAction): Promis
         error: technicalMessage,
         note: 'Wallet transaction failed on-chain. The approval remains available for review.',
       }).catch((syncErr) => {
-        pushToast('error', 'Cloud receipt sync failed', redactSecrets(syncErr instanceof Error ? syncErr.message : String(syncErr)));
+        pushToast('error', t('Cloud receipt sync failed'), redactSecrets(syncErr instanceof Error ? syncErr.message : String(syncErr)));
       });
       await refreshCloudWorkspaceData().catch(() => undefined);
       replaceToast(toastId, 'error', toastCopy.title, toastCopy.message, {
         linkHref: explorerUrl(txid, action.cluster),
-        linkLabel: 'Open Solscan',
+        linkLabel: t('Open Solscan'),
       });
       return;
     }
     replaceToast(toastId, 'pending', toastCopy.title, toastCopy.message, {
       linkHref: explorerUrl(txid, action.cluster),
-      linkLabel: 'Open Solscan',
+      linkLabel: t('Open Solscan'),
     });
   }
 }
@@ -43091,7 +43244,7 @@ async function handleClassifiedCloudExecutionFailure(opts: {
   const toastCopy = transactionFailureToastCopy(classification);
   const txid = ledger?.txid ?? action.txid;
   const linkOptions = txid
-    ? { linkHref: explorerUrl(txid, action.cluster), linkLabel: 'Open Solscan' }
+    ? { linkHref: explorerUrl(txid, action.cluster), linkLabel: t('Open Solscan') }
     : {};
 
   recordBrowserActionActivity(action.id, 'cloud.browser_transaction.failed', {
@@ -43126,7 +43279,7 @@ async function handleClassifiedCloudExecutionFailure(opts: {
         decisionProof,
         note: 'Wallet transaction failed on-chain. The approval remains available for review.',
       }).catch((syncErr) => {
-        pushToast('error', 'Cloud receipt sync failed', redactSecrets(syncErr instanceof Error ? syncErr.message : String(syncErr)));
+        pushToast('error', t('Cloud receipt sync failed'), redactSecrets(syncErr instanceof Error ? syncErr.message : String(syncErr)));
       });
       await refreshCloudWorkspaceData().catch(() => undefined);
     }
@@ -43158,7 +43311,7 @@ async function handleClassifiedCloudExecutionFailure(opts: {
       decisionProof,
       note: 'Wallet transaction may have been submitted. Confirm status before retrying.',
     }).catch((syncErr) => {
-      pushToast('error', 'Cloud receipt sync failed', redactSecrets(syncErr instanceof Error ? syncErr.message : String(syncErr)));
+      pushToast('error', t('Cloud receipt sync failed'), redactSecrets(syncErr instanceof Error ? syncErr.message : String(syncErr)));
     });
     await refreshCloudWorkspaceData().catch(() => undefined);
     state.activeTab = 'inbox';
@@ -43203,7 +43356,7 @@ async function handleClassifiedCloudExecutionFailure(opts: {
       decisionProof,
       note: 'Wallet transaction could not be completed. The approval remains available for review.',
     }).catch((syncErr) => {
-      pushToast('error', 'Cloud receipt sync failed', redactSecrets(syncErr instanceof Error ? syncErr.message : String(syncErr)));
+      pushToast('error', t('Cloud receipt sync failed'), redactSecrets(syncErr instanceof Error ? syncErr.message : String(syncErr)));
     });
     await refreshCloudWorkspaceData().catch(() => undefined);
   }
@@ -43346,14 +43499,14 @@ async function runBrowserPreparedActionOp(actionId: string, op: string): Promise
       state.materializedActions = state.preparedActions;
       saveBrowserWorkflowState();
       showCompletedHistoryForAction(action.id);
-      pushToast('success', 'Request cancelled', 'Saved in Done.');
+      pushToast('success', t('Request cancelled'), t('Saved in Done.'));
       return;
     case 'delete':
       state.preparedActions = state.preparedActions.filter((candidate) => candidate.id !== action.id);
       state.materializedActions = state.preparedActions;
       state.receipts = state.receipts.filter((receipt) => receipt.actionId !== action.id);
       saveBrowserWorkflowState();
-      pushToast('success', 'Deleted permanently', action.id);
+      pushToast('success', t('Deleted permanently'), action.id);
       return;
     default:
       throw new Error(`Unknown action operation: ${op}`);
@@ -43368,9 +43521,9 @@ async function runBrowserTransactionConfirm(action: PreparedAction): Promise<voi
   if (!txid) {
     throw new Error('Submitted transaction id is missing.');
   }
-  const toastId = pushToast('pending', 'Checking confirmation', short(txid), {
+  const toastId = pushToast('pending', t('Checking confirmation'), short(txid), {
     linkHref: explorerUrl(txid, action.cluster),
-    linkLabel: 'Open Solscan',
+    linkLabel: t('Open Solscan'),
   });
   const toastContext: TransactionToastContext = { toastId, actionId: action.id, cluster: action.cluster };
   try {
@@ -43385,9 +43538,9 @@ async function runBrowserTransactionConfirm(action: PreparedAction): Promise<voi
           txStatus: 'failed',
           error: message,
         });
-        replaceToast(toastId, 'success', 'Pending cleared', `${message} The approval is ready again.`, {
+        replaceToast(toastId, 'success', t('Pending cleared'), `${message} The approval is ready again.`, {
           linkHref: explorerUrl(txid, action.cluster),
-          linkLabel: 'Open Solscan',
+          linkLabel: t('Open Solscan'),
         });
         render();
         return;
@@ -43409,9 +43562,9 @@ async function runBrowserTransactionConfirm(action: PreparedAction): Promise<voi
         txStatus: 'pending',
         explorerUrl: explorerUrl(txid, action.cluster),
       }, 'submitted');
-      replaceToast(toastId, 'pending', 'Transaction submitted', short(txid), {
+      replaceToast(toastId, 'pending', t('Transaction submitted'), short(txid), {
         linkHref: explorerUrl(txid, action.cluster),
-        linkLabel: 'Open Solscan',
+        linkLabel: t('Open Solscan'),
       });
       render();
       return;
@@ -43433,9 +43586,9 @@ async function runBrowserTransactionConfirm(action: PreparedAction): Promise<voi
       txid,
     });
     showCompletedHistoryForAction(action.id);
-    replaceToast(toastId, 'success', 'Transaction confirmed', `${short(txid)} - Solscan link saved in Done.`, {
+    replaceToast(toastId, 'success', t('Transaction confirmed'), tf('{tx} - Solscan link saved in Done.', { tx: short(txid) }), {
       linkHref: explorerUrl(txid, action.cluster),
-      linkLabel: 'Open Solscan',
+      linkLabel: t('Open Solscan'),
     });
   } catch (err) {
     const ledger = findPendingTransactionByAction(action.id);
@@ -43469,13 +43622,13 @@ async function runBrowserTransactionConfirm(action: PreparedAction): Promise<voi
       });
       replaceToast(toastId, 'error', toastCopy.title, toastCopy.message, {
         linkHref: explorerUrl(txid, action.cluster),
-        linkLabel: 'Open Solscan',
+        linkLabel: t('Open Solscan'),
       });
       return;
     }
     replaceToast(toastId, 'pending', toastCopy.title, toastCopy.message, {
       linkHref: explorerUrl(txid, action.cluster),
-      linkLabel: 'Open Solscan',
+      linkLabel: t('Open Solscan'),
     });
   }
 }
@@ -43529,7 +43682,7 @@ async function finalizeStreamingApprovalCallback(
       },
       error: `Streaming session callback failed: ${message}`,
     });
-    pushToast('error', 'Streaming callback failed', message);
+    pushToast('error', t('Streaming callback failed'), message);
     dispatchStreamingApprovalCompleted({
       source: 'streaming_session',
       operation: info.operation,
@@ -43584,20 +43737,20 @@ async function clearStaleBrowserPendingTransaction(action: PreparedAction): Prom
   if (!txid) {
     if (ledger?.signedTransactionBase64) {
       const confirmed = window.confirm(
-        'This request has signed transaction bytes but no submitted signature. Clear the local pending state so the approval can be tried again?',
+        t('This request has signed transaction bytes but no submitted signature. Clear the local pending state so the approval can be tried again?'),
       );
       if (!confirmed) return;
       restoreBrowserActionAfterClearingPending(action, ledger.id);
-      pushToast('success', 'Pending cleared', 'The approval is ready again. Wallet approval was not opened.');
+      pushToast('success', t('Pending cleared'), t('The approval is ready again. Wallet approval was not opened.'));
       render();
       return;
     }
     throw new Error('No pending transaction id was found for this request.');
   }
 
-  const toastId = pushToast('pending', 'Checking transaction', short(txid), {
+  const toastId = pushToast('pending', t('Checking transaction'), short(txid), {
     linkHref: explorerUrl(txid, action.cluster),
-    linkLabel: 'Open Solscan',
+    linkLabel: t('Open Solscan'),
   });
   const status = await submittedTransactionStatus(action.cluster, txid);
   if (status.txStatus === 'confirmed') {
@@ -43613,9 +43766,9 @@ async function clearStaleBrowserPendingTransaction(action: PreparedAction): Prom
       explorerUrl: explorerUrl(txid, action.cluster),
     }, 'confirmed');
     showCompletedHistoryForAction(action.id);
-    replaceToast(toastId, 'success', 'Transaction confirmed', `${short(txid)} - Solscan link saved in Done.`, {
+    replaceToast(toastId, 'success', t('Transaction confirmed'), tf('{tx} - Solscan link saved in Done.', { tx: short(txid) }), {
       linkHref: explorerUrl(txid, action.cluster),
-      linkLabel: 'Open Solscan',
+      linkLabel: t('Open Solscan'),
     });
     return;
   }
@@ -43642,9 +43795,9 @@ async function clearStaleBrowserPendingTransaction(action: PreparedAction): Prom
       txStatus: 'failed',
       error: failureDetail,
     });
-    replaceToast(toastId, 'error', 'Transaction failed on-chain', short(txid), {
+    replaceToast(toastId, 'error', t('Transaction failed on-chain'), short(txid), {
       linkHref: explorerUrl(txid, action.cluster),
-      linkLabel: 'Open Solscan',
+      linkLabel: t('Open Solscan'),
     });
     render();
     return;
@@ -43659,35 +43812,35 @@ async function clearStaleBrowserPendingTransaction(action: PreparedAction): Prom
         txStatus: 'failed',
         error: message,
       });
-      replaceToast(toastId, 'success', 'Pending cleared', `${message} The approval is ready again.`, {
-        linkHref: explorerUrl(txid, action.cluster),
-        linkLabel: 'Open Solscan',
-      });
+        replaceToast(toastId, 'success', t('Pending cleared'), tf('{message} The approval is ready again.', { message }), {
+          linkHref: explorerUrl(txid, action.cluster),
+          linkLabel: t('Open Solscan'),
+        });
       render();
       return;
     }
-    replaceToast(toastId, 'pending', 'Transaction not found yet', `${short(txid)} is not visible on-chain yet. Check again after the stale threshold.`, {
+    replaceToast(toastId, 'pending', t('Transaction not found yet'), tf('{tx} is not visible on-chain yet. Check again after the stale threshold.', { tx: short(txid) }), {
       linkHref: explorerUrl(txid, action.cluster),
-      linkLabel: 'Open Solscan',
+      linkLabel: t('Open Solscan'),
     });
     return;
   }
 
   const prompt = status.txStatus === 'status_unreachable'
-    ? `Status check could not reach RPC for ${short(txid)}. Clear the local pending state so the approval can be tried again? Check Solscan first if you are unsure.`
-    : `${short(txid)} is not confirmed yet. Clear the local pending state so the approval can be tried again? Check Solscan first if you are unsure.`;
+    ? tf('Status check could not reach RPC for {tx}. Clear the local pending state so the approval can be tried again? Check Solscan first if you are unsure.', { tx: short(txid) })
+    : tf('{tx} is not confirmed yet. Clear the local pending state so the approval can be tried again? Check Solscan first if you are unsure.', { tx: short(txid) });
   const confirmed = window.confirm(prompt);
   if (!confirmed) {
-    replaceToast(toastId, 'pending', 'Transaction still pending', short(txid), {
+    replaceToast(toastId, 'pending', t('Transaction still pending'), short(txid), {
       linkHref: explorerUrl(txid, action.cluster),
-      linkLabel: 'Open Solscan',
+      linkLabel: t('Open Solscan'),
     });
     return;
   }
   restoreBrowserActionAfterClearingPending(action, ledger?.id);
-  replaceToast(toastId, 'success', 'Pending cleared', 'The approval is ready again. Wallet approval was not opened.', {
+  replaceToast(toastId, 'success', t('Pending cleared'), t('The approval is ready again. Wallet approval was not opened.'), {
     linkHref: explorerUrl(txid, action.cluster),
-    linkLabel: 'Open Solscan',
+    linkLabel: t('Open Solscan'),
   });
   render();
 }
@@ -43829,7 +43982,7 @@ async function executeBrowserPreparedAction(action: PreparedAction): Promise<voi
       await runBrowserTransactionConfirm({ ...action, txid: existingLedger.txid });
       return;
     } else if (existingLedger.signedTransactionBase64) {
-      const toastId = pushToast('pending', 'Sending signed transaction', 'Broadcasting the already signed transaction to Solana RPC.');
+      const toastId = pushToast('pending', t('Sending signed transaction'), t('Broadcasting the already signed transaction to Solana RPC.'));
       const toastContext: TransactionToastContext = { toastId, actionId: action.id, cluster: action.cluster };
       try {
         const txid = await broadcastSignedBrowserTransactionWithRetry(
@@ -43855,7 +44008,7 @@ async function executeBrowserPreparedAction(action: PreparedAction): Promise<voi
 
   const toastId = pushToast(
     'pending',
-    'Opening wallet',
+    t('Opening wallet'),
     jupiterIosManualToastMessage(browserExecutionStartMessage(action)),
     withJupiterIosManualApprovalToast(),
   );
@@ -43898,9 +44051,9 @@ async function executeBrowserPreparedAction(action: PreparedAction): Promise<voi
       replaceToast(
         toastId,
         'pending',
-        'Transaction submitted',
+        t('Transaction submitted'),
         short(execution.txid),
-        { linkHref: execution.explorerUrl, linkLabel: 'Open Solscan' },
+        { linkHref: execution.explorerUrl, linkLabel: t('Open Solscan') },
       );
       render();
       return;
@@ -43926,9 +44079,9 @@ async function executeBrowserPreparedAction(action: PreparedAction): Promise<voi
     replaceToast(
       toastId,
       execution.txStatus === 'confirmed' ? 'success' : 'pending',
-      execution.txStatus === 'confirmed' ? 'Transaction confirmed' : 'Transaction submitted',
-      `${short(execution.txid)} - Solscan link saved in Done.`,
-      { linkHref: execution.explorerUrl, linkLabel: 'Open Solscan' },
+      execution.txStatus === 'confirmed' ? t('Transaction confirmed') : t('Transaction submitted'),
+      tf('{tx} - Solscan link saved in Done.', { tx: short(execution.txid) }),
+      { linkHref: execution.explorerUrl, linkLabel: t('Open Solscan') },
     );
   } catch (err) {
     await handleClassifiedExecutionFailure({ action, toastId, priorStatus, err });
@@ -43958,7 +44111,7 @@ async function handleClassifiedExecutionFailure(opts: {
   const technicalMessage = redactSecrets(classification.technicalMessage);
   const toastCopy = transactionFailureToastCopy(classification);
   const linkOptions = ledger?.txid
-    ? { linkHref: explorerUrl(ledger.txid, action.cluster), linkLabel: 'Open Solscan' }
+    ? { linkHref: explorerUrl(ledger.txid, action.cluster), linkLabel: t('Open Solscan') }
     : {};
 
   recordBrowserActionActivity(action.id, 'browser.transaction.failed', {
@@ -44123,8 +44276,8 @@ async function reconcilePendingTransactions(opts: {
         const recordToastId = record.toastId;
         removePendingTransaction(record.id);
         mutated = true;
-        const toastOpts = { linkHref: explorerUrl(record.txid, cluster), linkLabel: 'Open Solscan' };
-        notifyReconciledTransaction(recordToastId, isUserInitiated, 'success', 'Transaction confirmed', `${short(record.txid)} - Solscan link saved in Done.`, toastOpts);
+        const toastOpts = { linkHref: explorerUrl(record.txid, cluster), linkLabel: t('Open Solscan') };
+        notifyReconciledTransaction(recordToastId, isUserInitiated, 'success', t('Transaction confirmed'), tf('{tx} - Solscan link saved in Done.', { tx: short(record.txid) }), toastOpts);
       } else if (status.txStatus === 'failed') {
         const failureDetail = status.error ?? status.confirmationStatus ?? 'failed';
         markTransactionPhase(record.id, 'failed', {
@@ -44151,7 +44304,7 @@ async function reconcilePendingTransactions(opts: {
           });
         }
         mutated = true;
-        const failToastOpts = { linkHref: explorerUrl(record.txid, cluster), linkLabel: 'Open Solscan' };
+        const failToastOpts = { linkHref: explorerUrl(record.txid, cluster), linkLabel: t('Open Solscan') };
         notifyReconciledTransaction(record.toastId, isUserInitiated, 'error', 'Transaction failed on-chain', short(record.txid), failToastOpts);
       } else if (status.found === false && transactionNotFoundIsStale(
         state.preparedActions.find((candidate) => candidate.id === record.actionId) ?? {
@@ -44193,25 +44346,25 @@ async function reconcilePendingTransactions(opts: {
           });
         }
         mutated = true;
-        const notFoundOpts = { linkHref: explorerUrl(record.txid, cluster), linkLabel: 'Open Solscan' };
+        const notFoundOpts = { linkHref: explorerUrl(record.txid, cluster), linkLabel: t('Open Solscan') };
         notifyReconciledTransaction(record.toastId, isUserInitiated, 'error', 'Transaction not found', failureDetail, notFoundOpts);
       } else if (isUserInitiated) {
         // Still pending — keep the record, but surface status if user initiated.
         pushToast(
           'pending',
-          'Transaction submitted',
+          t('Transaction submitted'),
           `${short(record.txid)} is still confirming.`,
-          { linkHref: explorerUrl(record.txid, cluster), linkLabel: 'Open Solscan' },
+          { linkHref: explorerUrl(record.txid, cluster), linkLabel: t('Open Solscan') },
         );
       }
     } catch {
       if (isUserInitiated) {
         pushToast(
           'pending',
-          'Transaction status pending',
-          'Status check could not reach RPC yet. Use Check confirmation or Solscan before retrying.',
+          t('Transaction status pending'),
+          t('Status check could not reach RPC yet. Use Check confirmation or Solscan before retrying.'),
           record.txid
-            ? { linkHref: explorerUrl(record.txid, cluster), linkLabel: 'Open Solscan' }
+            ? { linkHref: explorerUrl(record.txid, cluster), linkLabel: t('Open Solscan') }
             : {},
         );
       }
@@ -44995,7 +45148,10 @@ async function submittedTransactionStatus(
 }
 
 function staleNotFoundTransactionMessage(txid: string): string {
-  return `Transaction ${short(txid)} was not found on-chain after ${Math.round(TX_SIGNATURE_NOT_FOUND_STALE_MS / 1000)} seconds. It likely never broadcast after wallet simulation failed.`;
+  return tf('Transaction {tx} was not found on-chain after {seconds} seconds. It likely never broadcast after wallet simulation failed.', {
+    tx: short(txid),
+    seconds: Math.round(TX_SIGNATURE_NOT_FOUND_STALE_MS / 1000),
+  });
 }
 
 function transactionNotFoundIsStale(
@@ -45173,7 +45329,7 @@ async function syncBridgePreparedActionTransaction(
   } catch (err) {
     pushToast(
       'error',
-      'Bridge receipt sync failed',
+      t('Bridge receipt sync failed'),
       redactSecrets(err instanceof Error ? err.message : String(err)),
     );
   }
@@ -45972,7 +46128,7 @@ function decodeBase64(value: string): Uint8Array {
 function pushTransactionToast(kind: ToastKind, title: string, txid: string, cluster: Cluster): number {
   return pushToast(kind, title, short(txid), {
     linkHref: explorerUrl(txid, cluster),
-    linkLabel: 'Open Solscan',
+    linkLabel: t('Open Solscan'),
   });
 }
 
@@ -46085,7 +46241,7 @@ async function runRecurringOp(recurringId: string, op: string, cursor?: string):
           occurrences: browserRecurringHistory(recurringId),
           loadedAt: new Date().toISOString(),
         };
-        pushToast('success', 'Repeat history loaded', recurringId);
+        pushToast('success', t('Repeat history loaded'), recurringId);
         return;
       }
       runBrowserRecurringOp(recurringId, op);
@@ -46135,14 +46291,18 @@ async function runRecurringOp(recurringId: string, op: string, cursor?: string):
       pushToast(
         'success',
         op === 'delete'
-          ? 'Deleted permanently'
+          ? t('Deleted permanently')
           : op.startsWith('history')
-            ? 'Repeat history loaded'
+            ? t('Repeat history loaded')
             : op === 'notifications'
-              ? 'Notifications loaded'
+              ? t('Notifications loaded')
               : op === 'rotate-secret'
-                ? 'Webhook secret rotated'
-                : `Repeat ${op}`,
+                ? t('Webhook secret rotated')
+                : op === 'pause'
+                  ? t('Repeat paused')
+                  : op === 'resume'
+                    ? t('Repeat resumed')
+                    : tf('Repeat {operation}', { operation: op }),
         recurringId,
       );
     });
@@ -46155,7 +46315,7 @@ async function runRecurringOp(recurringId: string, op: string, cursor?: string):
         occurrences: browserRecurringHistory(recurringId),
         loadedAt: new Date().toISOString(),
       };
-      pushToast('success', 'Repeat history loaded', recurringId);
+      pushToast('success', t('Repeat history loaded'), recurringId);
       return;
     }
     const path =
@@ -46174,23 +46334,33 @@ async function runRecurringOp(recurringId: string, op: string, cursor?: string):
       body: JSON.stringify({ recurringId }),
     });
     await refreshInboxData();
-    pushToast('success', op === 'delete' ? 'Deleted permanently' : `Repeat ${op}`, recurringId);
+    pushToast(
+      'success',
+      op === 'delete'
+        ? t('Deleted permanently')
+        : op === 'pause'
+          ? t('Repeat paused')
+          : op === 'resume'
+            ? t('Repeat resumed')
+            : tf('Repeat {operation}', { operation: op }),
+      recurringId,
+    );
   });
 }
 
 async function runRecurringAgentReview(recurringId: string): Promise<void> {
   const payment = state.recurringPayments.find((candidate) => candidate.id === recurringId);
   if (!payment) {
-    pushToast('error', 'Repeat not found', recurringId);
+    pushToast('error', t('Repeat not found'), recurringId);
     return;
   }
   if (!canRunAgentReview()) {
-    pushToast('error', 'Agent not detected', agentReviewUnavailableReason());
+    pushToast('error', t('Agent not detected'), agentReviewUnavailableReason());
     render();
     return;
   }
   state.activeOperation = 'review-agent-plan';
-  const toastId = pushToast('pending', 'Asking agent', 'Reviewing this repeat schedule.');
+  const toastId = pushToast('pending', t('Asking agent'), t('Reviewing this repeat schedule.'));
   try {
     await run('ai', async () => {
       const plan = recurringPaymentToAgentPlan(payment);
@@ -46200,13 +46370,13 @@ async function runRecurringAgentReview(recurringId: string): Promise<void> {
       replaceToast(
         toastId,
         recurringAgentToastKind(review),
-        review.status === 'approved' ? 'Review passed for repeat' : recurringCreateToastTitle(recurringDraftFromPayment(payment), review, status),
-        compactSentence(`${review.reason || review.summary || 'Agent review recorded.'} Every due occurrence still requires wallet approval before signing.`, 360),
+        review.status === 'approved' ? t('Review passed for repeat') : recurringCreateToastTitle(recurringDraftFromPayment(payment), review, status),
+        compactSentence(`${review.reason || review.summary || t('Agent review recorded.')} Every due occurrence still requires wallet approval before signing.`, 360),
       );
     }, {
       onError(message, err) {
         const toastMessage = applyAiErrorDiagnostics(err, message);
-        replaceToast(toastId, 'error', 'Agent review failed', toastMessage);
+        replaceToast(toastId, 'error', t('Agent review failed'), toastMessage);
       },
     });
   } finally {
@@ -46288,19 +46458,19 @@ function runBrowserRecurringOp(recurringId: string, op: string): void {
     case 'pause':
       state.recurringPayments = mergeRecurringPayments([{ ...payment, status: 'paused', updatedAt }], state.recurringPayments);
       saveBrowserWorkflowState();
-      pushToast('success', 'Repeat paused', recurringId);
+      pushToast('success', t('Repeat paused'), recurringId);
       return;
     case 'resume':
       state.recurringPayments = mergeRecurringPayments([{ ...payment, status: 'active', updatedAt }], state.recurringPayments);
       saveBrowserWorkflowState();
-      pushToast('success', 'Repeat resumed', recurringId);
+      pushToast('success', t('Repeat resumed'), recurringId);
       return;
     case 'delete':
       state.recurringPayments = state.recurringPayments.filter((candidate) => candidate.id !== recurringId);
       state.preparedActions = state.preparedActions.filter((candidate) => candidate.recurringId !== recurringId || isTerminalPreparedAction(candidate));
       state.materializedActions = state.preparedActions;
       saveBrowserWorkflowState();
-      pushToast('success', 'Deleted permanently', recurringId);
+      pushToast('success', t('Deleted permanently'), recurringId);
       return;
     default:
       throw new Error(`Unknown recurring operation: ${op}`);
@@ -46426,7 +46596,7 @@ function receiptProofSigningMessage(
 async function runInlineReceiptProof(actionId: string, proofKind: InlineReceiptKind): Promise<void> {
   const action = state.preparedActions.find((candidate) => candidate.id === actionId);
   if (!action) {
-    pushToast('error', 'Approval not found', actionId);
+    pushToast('error', t('Approval not found'), actionId);
     return;
   }
   let proofToastId: number | undefined;
@@ -46618,7 +46788,13 @@ async function refreshLabArtifactsData(options: { toast: boolean } = { toast: tr
       await syncLabArtifactsWithCloud();
     }
     if (options.toast) {
-      pushToast('success', 'Receipts refreshed', `${state.labArtifacts.length} receipt${state.labArtifacts.length === 1 ? '' : 's'} loaded.`);
+      pushToast(
+        'success',
+        t('Receipts refreshed'),
+        state.labArtifacts.length === 1
+          ? tf('{count} receipt loaded.', { count: state.labArtifacts.length })
+          : tf('{count} receipts loaded.', { count: state.labArtifacts.length }),
+      );
     }
   });
 }
@@ -46641,18 +46817,18 @@ async function runDeleteLabArtifact(artifactId: string): Promise<void> {
     if (activeWorkflowMode() === 'agentic-cloud') {
       cloudResult = await deleteCloudEvidenceArtifact(artifact);
     }
-    pushToast('success', 'Receipt deleted', artifact.title);
+    pushToast('success', t('Receipt deleted'), artifact.title);
     if (cloudResult.kind === 'failed') {
       pushToast(
         'error',
-        'Cloud delete failed',
+        t('Cloud delete failed'),
         `Receipt removed locally but still in Agentic Cloud: ${cloudResult.message}`,
       );
     } else if (cloudResult.kind === 'missing-id') {
       pushToast(
         'error',
-        'Cloud delete skipped',
-        'Cloud receipt id was missing locally — refresh the archive to retry.',
+        t('Cloud delete skipped'),
+        t('Cloud receipt id was missing locally — refresh the archive to retry.'),
       );
     }
   });
@@ -46668,14 +46844,14 @@ async function runShareLabArtifact(artifactId: string): Promise<void> {
         title: artifact.title || receiptLabelForKind(artifact.kind),
         text,
       });
-      pushToast('success', 'Receipt shared', short(artifact.artifactHash));
+      pushToast('success', t('Receipt shared'), short(artifact.artifactHash));
       return;
     }
     await navigator.clipboard.writeText(text);
-    pushToast('success', 'Receipt share text copied', short(artifact.artifactHash));
+    pushToast('success', t('Receipt share text copied'), short(artifact.artifactHash));
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Share was cancelled or blocked.';
-    pushToast('error', 'Share failed', message);
+    pushToast('error', t('Share failed'), message);
   }
 }
 
@@ -46695,15 +46871,15 @@ async function runRetryCloudArtifact(artifactId: string): Promise<void> {
     if (uploaded.cloudSyncStatus !== 'synced') {
       throw new Error(uploaded.cloudSyncError || 'Cloud proof upload did not complete.');
     }
-    pushToast('success', 'Proof synced', 'Saved proof copied to Agentic Cloud.');
+    pushToast('success', t('Proof synced'), t('Saved proof copied to Agentic Cloud.'));
   });
 }
 
 function deleteEvidenceConfirmCopy(artifact: LabArtifact): string {
-  const destinations = ['this device'];
+  const destinations = [t('this device')];
   if (activeWorkflowMode() === 'agentic-cloud' && artifact.cloudReceiptId) destinations.push('Agentic Cloud');
-  if (state.bridgeActive) destinations.push('the local bridge archive');
-  return `Delete this evidence receipt permanently from ${destinations.join(', ')}?`;
+  if (state.bridgeActive) destinations.push(t('the local bridge archive'));
+  return tf('Delete this evidence receipt permanently from {destinations}?', { destinations: destinations.join(', ') });
 }
 
 async function run(
@@ -46725,7 +46901,7 @@ async function run(
     if (options.onError) {
       await options.onError(state.error, err);
     } else if (!handledToast) {
-      pushToast('error', 'Action failed', state.error);
+      pushToast('error', t('Action failed'), state.error);
     }
   } finally {
     state.busy = false;
@@ -46776,6 +46952,12 @@ async function archiveLabArtifact(artifact: LabArtifact): Promise<ArchiveLabArti
   return result;
 }
 
+function cloudEvidenceSyncedStatus(count: number): string {
+  return count === 1
+    ? tf('Cloud evidence archive synced ({count} receipt).', { count })
+    : tf('Cloud evidence archive synced ({count} receipts).', { count });
+}
+
 async function uploadLabArtifactToCloud(artifact: LabArtifact): Promise<LabArtifact> {
   const pending: LabArtifact = {
     ...artifact,
@@ -46804,7 +46986,7 @@ async function uploadLabArtifactToCloud(artifact: LabArtifact): Promise<LabArtif
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    state.cloudEvidenceStatus = `Cloud evidence archive failed: ${message}`;
+    state.cloudEvidenceStatus = tf('Cloud evidence archive failed: {message}', { message });
     return {
       ...pending,
       cloudSyncStatus: 'failed',
@@ -46886,9 +47068,9 @@ async function syncLabArtifactsWithCloud(): Promise<void> {
     state.labArtifacts = mergeLabArtifacts(remote, pushed, local);
     await saveLabArtifacts();
     state.cloudEvidenceLastSyncAt = Date.now();
-    state.cloudEvidenceStatus = `Cloud evidence archive synced (${remote.length} receipt${remote.length === 1 ? '' : 's'}).`;
+    state.cloudEvidenceStatus = cloudEvidenceSyncedStatus(remote.length);
   } catch (err) {
-    state.cloudEvidenceStatus = `Cloud evidence archive unavailable: ${err instanceof Error ? err.message : String(err)}`;
+    state.cloudEvidenceStatus = tf('Cloud evidence archive unavailable: {message}', { message: err instanceof Error ? err.message : String(err) });
   }
 }
 
@@ -46981,7 +47163,7 @@ async function deleteCloudEvidenceArtifact(artifact: LabArtifact): Promise<Delet
     return { kind: 'deleted' };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    state.cloudEvidenceStatus = `Cloud evidence delete failed: ${message}`;
+    state.cloudEvidenceStatus = tf('Cloud evidence delete failed: {message}', { message });
     return { kind: 'failed', message };
   }
 }
@@ -47219,7 +47401,7 @@ function handleHealthRemediation(intent?: string): void {
       state.activeTab = 'overview';
       state.commandCenterView = 'storage';
       render();
-      pushToast('pending', 'Cluster mismatch', 'Pick a cluster that matches your wallet.');
+      pushToast('pending', t('Cluster mismatch'), t('Pick a cluster that matches your wallet.'));
       return;
     case 'reload':
       window.location.reload();
@@ -47231,10 +47413,10 @@ async function copyHealthDebugSnapshot(): Promise<void> {
   try {
     const text = buildHealthDebugSnapshot();
     await navigator.clipboard.writeText(text);
-    pushToast('success', 'Debug log copied', 'System health snapshot is on your clipboard.');
+    pushToast('success', t('Debug log copied'), t('System health snapshot is on your clipboard.'));
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Could not copy debug log.';
-    pushToast('error', 'Copy failed', message);
+    pushToast('error', t('Copy failed'), message);
   }
 }
 
@@ -47314,13 +47496,16 @@ function runWorkspaceExport(): void {
     const bundle = exportWorkspace();
     const text = serializeBackup(bundle);
     downloadJsonBlob(text, backupFilename());
-    state.workspaceBackupStatus = `Exported ${Object.keys(bundle.sections).length} sections at ${formatDateTime(bundle.exportedAt)}.`;
-    pushToast('success', 'Workspace exported', 'Your local state is saved to a JSON file.');
+    state.workspaceBackupStatus = tf('Exported {count} sections at {time}.', {
+      count: Object.keys(bundle.sections).length,
+      time: formatDateTime(bundle.exportedAt),
+    });
+    pushToast('success', t('Workspace exported'), t('Your local state is saved to a JSON file.'));
     render();
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Export failed.';
-    state.workspaceBackupStatus = `Export failed: ${message}`;
-    pushToast('error', 'Export failed', message);
+    const message = err instanceof Error ? err.message : t('Export failed.');
+    state.workspaceBackupStatus = tf('Export failed: {message}', { message });
+    pushToast('error', t('Export failed'), message);
     render();
   }
 }
@@ -47338,13 +47523,13 @@ async function handleWorkspaceBackupFile(file: File): Promise<void> {
       awaitingOverride: unresolved.length > 0,
       busy: false,
     };
-    state.workspaceBackupStatus = `Loaded ${file.name}.`;
+    state.workspaceBackupStatus = tf('Loaded {file}.', { file: file.name });
     render();
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Backup file is invalid.';
+    const message = err instanceof Error ? err.message : t('Backup file is invalid.');
     state.workspaceBackupConfirm = null;
-    state.workspaceBackupStatus = `Import failed: ${message}`;
-    pushToast('error', 'Import failed', message);
+    state.workspaceBackupStatus = tf('Import failed: {message}', { message });
+    pushToast('error', t('Import failed'), message);
     render();
   }
 }
@@ -47353,7 +47538,7 @@ async function runWorkspaceRestoreConfirm(): Promise<void> {
   const pending = state.workspaceBackupConfirm;
   if (!pending) return;
   if (pending.awaitingOverride) {
-    pushToast('error', 'Restore blocked', 'Resolve pending transactions or override before restoring.');
+    pushToast('error', t('Restore blocked'), t('Resolve pending transactions or override before restoring.'));
     return;
   }
   state.workspaceBackupConfirm = { ...pending, busy: true };
@@ -47361,14 +47546,19 @@ async function runWorkspaceRestoreConfirm(): Promise<void> {
   try {
     const result = restoreWorkspace({ bundle: pending.bundle, mode: 'replace' });
     state.workspaceBackupConfirm = null;
-    state.workspaceBackupStatus = `Restored ${result.applied.length} sections.${result.warnings.length ? ' Warnings: ' + result.warnings.join(' · ') : ''}`;
-    pushToast('success', 'Workspace restored', 'Reloading to apply restored state.');
+    state.workspaceBackupStatus = result.warnings.length
+      ? tf('Restored {count} sections. Warnings: {warnings}', {
+        count: result.applied.length,
+        warnings: result.warnings.join(' · '),
+      })
+      : tf('Restored {count} sections.', { count: result.applied.length });
+    pushToast('success', t('Workspace restored'), t('Reloading to apply restored state.'));
     window.setTimeout(() => window.location.reload(), 600);
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Restore failed.';
+    const message = err instanceof Error ? err.message : t('Restore failed.');
     state.workspaceBackupConfirm = pending;
-    state.workspaceBackupStatus = `Restore failed: ${message}`;
-    pushToast('error', 'Restore failed', message);
+    state.workspaceBackupStatus = tf('Restore failed: {message}', { message });
+    pushToast('error', t('Restore failed'), message);
     render();
   }
 }
@@ -47388,7 +47578,7 @@ async function handlePreflightAction(op: string, actionId: string): Promise<void
 async function runPreflightForAction(action: PreparedAction): Promise<void> {
   state.preflightSimulation[action.id] = {
     status: 'running',
-    message: 'Simulating…',
+    message: t('Simulating…'),
     checkedAt: new Date().toISOString(),
   };
   render();
@@ -47402,15 +47592,15 @@ async function runPreflightForAction(action: PreparedAction): Promise<void> {
     } else {
       state.preflightSimulation[action.id] = {
         status: 'unsupported',
-        message: 'Preview is available for transfers in this release.',
-        detail: 'Swap and custom transaction previews use the existing quote summary above.',
+        message: t('Preview is available for transfers in this release.'),
+        detail: t('Swap and custom transaction previews use the existing quote summary above.'),
         checkedAt: new Date().toISOString(),
       };
     }
   } catch (err) {
     state.preflightSimulation[action.id] = {
       status: 'error',
-      message: 'Preview failed',
+      message: t('Preview failed'),
       detail: err instanceof Error ? err.message : String(err),
       checkedAt: new Date().toISOString(),
     };
@@ -47439,7 +47629,7 @@ async function runPreflightSolTransfer(action: PreparedAction): Promise<Prefligh
   if (sim.value.err) {
     return {
       status: 'fail',
-      message: 'Simulation says this will fail',
+      message: t('Simulation says this will fail'),
       detail: stringifySimulationError(sim.value.err),
       feeLamports,
       logs: sim.value.logs ?? undefined,
@@ -47448,10 +47638,10 @@ async function runPreflightSolTransfer(action: PreparedAction): Promise<Prefligh
   }
   return {
     status: 'pass',
-    message: 'Simulation passed',
+    message: t('Simulation passed'),
     detail: feeLamports
-      ? `Fee covers signature only · no surprises.`
-      : 'No surprises detected.',
+      ? t('Fee covers signature only - no surprises.')
+      : t('No surprises detected.'),
     feeLamports,
     logs: sim.value.logs ?? undefined,
     checkedAt: new Date().toISOString(),
@@ -47500,13 +47690,13 @@ async function runPreflightSplTransfer(action: PreparedAction): Promise<Prefligh
   const feeResponse = await connection.getFeeForMessage(message, 'confirmed').catch(() => null);
   const feeLamports = feeResponse?.value ?? null;
   const ataNote = ataCreation
-    ? `Will create destination ${metadata.symbol} account (~0.00204 SOL rent).`
-    : `Destination ${metadata.symbol} account already exists.`;
+    ? tf('Will create destination {symbol} account (~0.00204 SOL rent).', { symbol: metadata.symbol })
+    : tf('Destination {symbol} account already exists.', { symbol: metadata.symbol });
   if (sim.value.err) {
     return {
       status: 'fail',
-      message: 'Simulation says this will fail',
-      detail: `${ataNote} ${stringifySimulationError(sim.value.err)}`,
+      message: t('Simulation says this will fail'),
+      detail: tf('{note} {error}', { note: ataNote, error: stringifySimulationError(sim.value.err) }),
       feeLamports,
       logs: sim.value.logs ?? undefined,
       checkedAt: new Date().toISOString(),
@@ -47514,7 +47704,7 @@ async function runPreflightSplTransfer(action: PreparedAction): Promise<Prefligh
   }
   return {
     status: 'pass',
-    message: 'Simulation passed',
+    message: t('Simulation passed'),
     detail: ataNote,
     feeLamports,
     logs: sim.value.logs ?? undefined,
@@ -47555,8 +47745,8 @@ function evaluateActionPolicy(action: PreparedAction): PolicyWarning[] {
     if (allowlist.length > 0 && !allowlist.some((p) => p.toLowerCase().includes('jup'))) {
       warnings.push({
         severity: rails.programs.mode === 'block' ? 'block' : 'warn',
-        title: 'Program not on allowlist',
-        message: 'Swap uses Jupiter aggregator. Add Jupiter to your program allowlist if you want this kind to clear without a warning.',
+        title: t('Program not on allowlist'),
+        message: t('Swap uses Jupiter aggregator. Add Jupiter to your program allowlist if you want this kind to clear without a warning.'),
       });
     }
   }
@@ -47565,14 +47755,14 @@ function evaluateActionPolicy(action: PreparedAction): PolicyWarning[] {
     if (token && rails.tokens.blocklist.includes(token.toUpperCase())) {
       warnings.push({
         severity: rails.tokens.mode === 'block' ? 'block' : 'warn',
-        title: 'Token blocked',
-        message: `${token} is on your token blocklist.`,
+        title: t('Token blocked'),
+        message: tf('{token} is on your token blocklist.', { token }),
       });
     } else if (token && rails.tokens.allowlist.length > 0 && !rails.tokens.allowlist.includes(token.toUpperCase())) {
       warnings.push({
         severity: rails.tokens.mode === 'block' ? 'block' : 'warn',
-        title: 'Token not on allowlist',
-        message: `${token} is not on your token allowlist.`,
+        title: t('Token not on allowlist'),
+        message: tf('{token} is not on your token allowlist.', { token }),
       });
     }
   }
@@ -47582,8 +47772,8 @@ function evaluateActionPolicy(action: PreparedAction): PolicyWarning[] {
     if (Number.isFinite(bps) && bps > rails.slippage.maxBps) {
       warnings.push({
         severity: rails.slippage.mode === 'block' ? 'block' : 'warn',
-        title: 'Slippage exceeds cap',
-        message: `Quote slippage is ${bps} bps. Your cap is ${rails.slippage.maxBps} bps.`,
+        title: t('Slippage exceeds cap'),
+        message: tf('Quote slippage is {bps} bps. Your cap is {cap} bps.', { bps, cap: rails.slippage.maxBps }),
       });
     }
   }
@@ -47639,10 +47829,16 @@ function evaluateSpendCaps(action: PreparedAction, spend: SpendCapsState): Polic
   const check = (window: 'day' | 'week' | 'month', current: number, limit: number | undefined, period: string): void => {
     if (!limit || limit <= 0) return;
     if (current + amount > limit) {
+      const displayPeriod = t(period);
       warnings.push({
         severity: spend.mode === 'block' ? 'block' : 'warn',
-        title: `Spend cap: ${period}`,
-        message: `This would push your ${period} ${token} spend to ${(current + amount).toFixed(4)} (cap ${limit}).`,
+        title: tf('Spend cap: {period}', { period: displayPeriod }),
+        message: tf('This would push your {period} {token} spend to {amount} (cap {limit}).', {
+          period: displayPeriod,
+          token,
+          amount: (current + amount).toFixed(4),
+          limit,
+        }),
       });
     }
   };
@@ -48003,12 +48199,12 @@ async function runAgentBackgroundWatchTick(): Promise<void> {
       pushToast(
         newDecision === 'approve' ? 'success' : 'error',
         `Agent re-check changed: ${newDecision}`,
-        after?.agentReview?.reason ?? 'Background re-check produced a new decision.',
+        after?.agentReview?.reason ?? t('Background re-check produced a new decision.'),
       );
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    pushToast('error', 'Background watch failed', redactSecrets(message));
+    pushToast('error', t('Background watch failed'), redactSecrets(message));
   }
 }
 
@@ -48788,9 +48984,9 @@ async function handleBridgeSigningRequest(request: SigningRequest): Promise<void
     });
     const submittedTxid = request.kind === 'sign_and_send_transaction' ? result.txid ?? result.signature : result.txid;
     if (submittedTxid) {
-      replaceToast(toastId, 'success', 'Transaction submitted', short(submittedTxid), {
+      replaceToast(toastId, 'success', t('Transaction submitted'), short(submittedTxid), {
         linkHref: explorerUrl(submittedTxid, request.cluster),
-        linkLabel: 'Open Solscan',
+        linkLabel: t('Open Solscan'),
       });
     } else {
       replaceToast(toastId, 'success', copy.successToastTitle, short(result.signature));
@@ -49468,11 +49664,11 @@ function canQueueGeneratedPlan(record: GeneratedPlanRecord): boolean {
 
 function assertPlanCanQueue(plan: AgentPlan): void {
   if (!canQueueAgentPlan(plan)) {
-    throw new Error('Only transfer, swap, Blink action, custom transaction, and repeat payments can be queued.');
+    throw new Error(t('Only transfer, swap, Blink action, custom transaction, and repeat payments can be queued.'));
   }
   const report = planGuardrailReport(plan);
   if (report?.verdict === 'block') {
-    throw new Error(report.summary || 'This plan is blocked by Agentic guardrails.');
+    throw new Error(report.summary || t('This plan is blocked by Agentic guardrails.'));
   }
   const recipient = planParameter(plan, ['recipient', 'recipientAddress', 'settlementWallet']);
   const recipientPolicyError = recipientPolicyBlockReason(recipient);
@@ -49494,25 +49690,29 @@ function protocolConnectorQueueBlockReason(plan: AgentPlan): string {
   const connector = selectedConnectorForDraftParameters(plan.parameters) ??
     findProtocolConnectorByInput(plan.parameters.protocol || plan.parameters.dapp || plan.parameters.provider || plan.route);
   if (!connector && requiresBlink) {
-    return 'Choose one enabled Protocol Connector before preparing a Blink action.';
+    return t('Choose one enabled Protocol Connector before preparing a Blink action.');
   }
   if (!connector) {
-    return 'Choose one enabled Protocol Connector before preparing connector-backed work.';
+    return t('Choose one enabled Protocol Connector before preparing connector-backed work.');
   }
   if (requiresBlink && !connectorHasCapability(connector, 'blink_actions')) {
-    return `${connector.name} does not expose Blink actions in this connector catalog.`;
+    return tf('{connector} does not expose Blink actions in this connector catalog.', { connector: connector.name });
   }
   if (!isClusterSupported(connector, state.cluster)) {
-    return `${connector.name} is only available on ${connector.supportedClusters.join(', ')}; current cluster is ${state.cluster}.`;
+    return tf('{connector} is only available on {clusters}; current cluster is {cluster}.', {
+      connector: connector.name,
+      clusters: connector.supportedClusters.join(', '),
+      cluster: state.cluster,
+    });
   }
   if (!isDappEnabled(connector.id, state.connectedDapps, state.cluster)) {
-    return `${connector.name} is not enabled. Enable it in Protocol Connectors before sending.`;
+    return tf('{connector} is not enabled. Enable it in Protocol Connectors before sending.', { connector: connector.name });
   }
   if (requiresBlink) {
     try {
       normalizeBlinkUrl(plan.parameters.blinkUrl || plan.parameters.actionUrl || '');
     } catch (err) {
-      return err instanceof Error ? err.message : 'Blink/Solana Action URL is invalid.';
+      return err instanceof Error ? err.message : t('Blink/Solana Action URL is invalid.');
     }
   }
   return '';
@@ -49523,16 +49723,16 @@ function agentReviewQueueBlockReason(record: GeneratedPlanRecord | undefined): s
   const review = record.agentReview;
   if (review.status === 'approved' && review.decision === 'approve') {
     if (isAgentReviewStale(record)) {
-      return 'Agent review is outdated since you edited this draft. Ask the agent again or send anyway.';
+      return t('Agent review is outdated since you edited this draft. Ask the agent again or send anyway.');
     }
     return '';
   }
-  if (review.status === 'checking') return 'Agent is still reviewing this draft.';
-  if (review.status === 'denied') return review.reason || 'Agent denied this draft. Edit it or ask again before sending.';
-  if (review.status === 'wallet_required') return review.reason || 'Condition passed. Connect a wallet before sending for approval.';
-  if (review.status === 'needs_input') return review.reason || 'Agent has questions before approving. Answer them or send anyway.';
-  if (review.status === 'error') return review.reason || 'Agent review failed. Ask again before sending.';
-  return 'Ask agent before sending this agentic draft for approval.';
+  if (review.status === 'checking') return t('Agent is still reviewing this draft.');
+  if (review.status === 'denied') return review.reason || t('Agent denied this draft. Edit it or ask again before sending.');
+  if (review.status === 'wallet_required') return review.reason || t('Condition passed. Connect a wallet before sending for approval.');
+  if (review.status === 'needs_input') return review.reason || t('Agent has questions before approving. Answer them or send anyway.');
+  if (review.status === 'error') return review.reason || t('Agent review failed. Ask again before sending.');
+  return t('Ask agent before sending this agentic draft for approval.');
 }
 
 interface AgentOverrideOutcome {
@@ -49541,14 +49741,49 @@ interface AgentOverrideOutcome {
 }
 
 function confirmAgentReviewQueueOverride(record: GeneratedPlanRecord | undefined): AgentOverrideOutcome {
-  const message = agentReviewQueueOverrideMessage(record);
+  const message = agentReviewQueueOverridePrompt(record);
   if (!message) return { proceed: true };
   const confirmed = window.confirm(message);
   if (!confirmed) return { proceed: false };
-  const promptMessage = 'Why are you sending anyway? (Optional. Saved in your override proof.)';
+  const promptMessage = t('Why are you sending anyway? (Optional. Saved in your override proof.)');
   const rawReason = window.prompt(promptMessage, '') ?? '';
   const reason = rawReason.trim();
   return reason ? { proceed: true, userReason: reason } : { proceed: true };
+}
+
+function agentReviewQueueOverridePrompt(record: GeneratedPlanRecord | undefined): string {
+  if (!record?.agentReview?.required) return '';
+  const review = record.agentReview;
+  if (review.status === 'approved' && review.decision === 'approve') {
+    if (isAgentReviewStale(record)) {
+      return t('Agent review is outdated since you edited this draft. Send for approval anyway?');
+    }
+    return '';
+  }
+  if (review.status === 'checking') {
+    return t('Agent is not done searching for an answer yet. Send for approval anyway?');
+  }
+  if (review.status === 'denied') {
+    return review.reason
+      ? tf('Agent said No: {reason}\n\nSend for approval anyway?', { reason: review.reason })
+      : t('Agent said No\n\nSend for approval anyway?');
+  }
+  if (review.status === 'wallet_required') {
+    return review.reason
+      ? tf('The condition passed, but no wallet is connected: {reason}\n\nSend for approval anyway?', { reason: review.reason })
+      : t('The condition passed, but no wallet is connected\n\nSend for approval anyway?');
+  }
+  if (review.status === 'needs_input') {
+    return review.reason
+      ? tf('Agent has questions before approving: {reason}\n\nSend for approval anyway?', { reason: review.reason })
+      : t('Agent has questions before approving\n\nSend for approval anyway?');
+  }
+  if (review.status === 'error') {
+    return review.reason
+      ? tf('Agent review failed: {reason}\n\nSend for approval anyway?', { reason: review.reason })
+      : t('Agent review failed\n\nSend for approval anyway?');
+  }
+  return t('Agent review has not approved this draft yet. Send for approval anyway?');
 }
 
 function agentReviewQueueOverrideMessage(record: GeneratedPlanRecord | undefined): string {
@@ -49579,9 +49814,9 @@ function agentReviewQueueOverrideMessage(record: GeneratedPlanRecord | undefined
 }
 
 function queuePlanTitle(): string {
-  if (!state.address) return 'Connect a wallet before sending for approval.';
-  if (!state.agentPlan) return 'Create a plan before sending for approval.';
-  if (!canQueueAgentPlan(state.agentPlan)) return 'Only transfer, swap, Blink action, custom transaction, and repeat payments can be queued.';
+  if (!state.address) return t('Connect a wallet before sending for approval.');
+  if (!state.agentPlan) return t('Create a plan before sending for approval.');
+  if (!canQueueAgentPlan(state.agentPlan)) return t('Only transfer, swap, Blink action, custom transaction, and repeat payments can be queued.');
   const report = planGuardrailReport(state.agentPlan);
   if (report?.verdict === 'block') return report.summary;
   const connectorError = protocolConnectorQueueBlockReason(state.agentPlan);
@@ -49589,21 +49824,21 @@ function queuePlanTitle(): string {
   const mode = activeWorkflowMode();
   if (mode === 'agentic-cloud') {
     const unsupported = cloudQueueUnsupportedReason(state.agentPlan);
-    if (unsupported) return 'Send this plan to browser-local Needs Approval for wallet review. Agentic Cloud does not finalize this action type yet.';
+    if (unsupported) return t('Send this plan to browser-local Needs Approval for wallet review. Agentic Cloud does not finalize this action type yet.');
   }
   if (state.agentPlan.actionType === 'recurring_payment') {
-    if (mode === 'agentic-cloud') return 'Create an Agentic Cloud repeat payment. Each due payment appears in Needs Approval.';
+    if (mode === 'agentic-cloud') return t('Create an Agentic Cloud repeat payment. Each due payment appears in Needs Approval.');
     return mode === 'local-bridge'
-      ? 'Create a local repeat payment. Each due payment appears in Needs Approval.'
-      : 'Create one browser-local repeat approval now. Background repeats need Agentic Cloud or Private local mode.';
+      ? t('Create a local repeat payment. Each due payment appears in Needs Approval.')
+      : t('Create one browser-local repeat approval now. Background repeats need Agentic Cloud or Private local mode.');
   }
   if (state.agentPlan.actionType === 'blink_action') {
-    return 'Resolve the Blink/Solana Action into a browser-local transaction draft before wallet approval.';
+    return t('Resolve the Blink/Solana Action into a browser-local transaction draft before wallet approval.');
   }
-  if (mode === 'agentic-cloud') return 'Send this plan to Agentic Cloud Needs Approval for wallet review.';
+  if (mode === 'agentic-cloud') return t('Send this plan to Agentic Cloud Needs Approval for wallet review.');
   return mode === 'local-bridge'
-    ? 'Send this plan to local Needs Approval for wallet review.'
-    : 'Send this plan to browser Needs Approval. It stays local to this device.';
+    ? t('Send this plan to local Needs Approval for wallet review.')
+    : t('Send this plan to browser Needs Approval. It stays local to this device.');
 }
 
 async function queuePlanThroughBridge(plan: AgentPlan, sourceRecord?: GeneratedPlanRecord): Promise<{ id: string }> {
@@ -51159,7 +51394,7 @@ function walletIdentity(): WalletIdentity {
   const liveSelectedName = discoveredSelectedWalletName();
   const providerCount = state.wallets.length;
   if (state.address) {
-    const name = liveSelectedName || state.selectedWalletName || 'Connected wallet';
+    const name = liveSelectedName || state.selectedWalletName || t('Connected wallet');
     return {
       icon: providerInitials(name),
       iconSrc: state.selectedWalletIcon,
@@ -51167,16 +51402,16 @@ function walletIdentity(): WalletIdentity {
       discoveredWallet: discoveredWalletByName(name),
       title: name,
       summary: short(state.address),
-      detail: `${titleCaseCluster(state.cluster)} signer`,
+      detail: tf('{cluster} signer', { cluster: titleCaseCluster(state.cluster) }),
     };
   }
   if (state.androidNativeEnvironment.isAndroidNative) {
     return {
       icon: 'MW',
       logoId: 'solanaMobile',
-      title: 'Android MWA standby',
-      summary: 'No signer connected',
-      detail: state.androidAuthCacheCount > 0 ? `${state.androidAuthCacheCount} cached authorization(s)` : 'Tap Discover to open the wallet picker',
+      title: t('Android MWA standby'),
+      summary: t('No signer connected'),
+      detail: state.androidAuthCacheCount > 0 ? tf('{n} cached authorizations', { n: state.androidAuthCacheCount }) : t('Tap Discover to open the wallet picker'),
     };
   }
   if (state.iosNativeEnvironment.isIosNative) {
@@ -51184,9 +51419,9 @@ function walletIdentity(): WalletIdentity {
     return {
       icon: providerInitials(name),
       logoId: walletLogoIdForName(name),
-      title: 'iOS wallet standby',
+      title: t('iOS wallet standby'),
       summary: name,
-      detail: state.iosAuthCacheCount > 0 ? `${state.iosAuthCacheCount} cached authorization(s)` : 'Select a wallet to connect',
+      detail: state.iosAuthCacheCount > 0 ? tf('{n} cached authorizations', { n: state.iosAuthCacheCount }) : t('Select a wallet to connect'),
     };
   }
   if (providerCount > 0 && liveSelectedName) {
@@ -51194,22 +51429,22 @@ function walletIdentity(): WalletIdentity {
       icon: providerInitials(liveSelectedName),
       logoId: walletLogoIdForName(liveSelectedName),
       discoveredWallet: discoveredWalletByName(liveSelectedName),
-      title: 'Wallet standby',
+      title: t('Wallet standby'),
       summary: liveSelectedName,
-      detail: `${providerCount} provider(s) discovered`,
+      detail: tf('{n} providers discovered', { n: providerCount }),
     };
   }
   return {
     icon: 'SA',
-    title: 'Wallet standby',
-    summary: 'No signer connected',
-    detail: providerCount > 0 ? `${providerCount} provider(s) discovered` : 'No providers discovered',
+    title: t('Wallet standby'),
+    summary: t('No signer connected'),
+    detail: providerCount > 0 ? tf('{n} providers discovered', { n: providerCount }) : t('No providers discovered'),
   };
 }
 
 function walletOptions(): string {
   if (state.wallets.length === 0) {
-    return '<option value="">No wallets discovered</option>';
+    return `<option value="">${escapeHtml(t('No wallets discovered'))}</option>`;
   }
   return state.wallets
     .map(
@@ -51454,21 +51689,21 @@ function tabButton(tab: ActiveTab, label: string, mobileLabel?: string): string 
 
 function lockedTabReason(tab: ActiveTab): string {
   if (state.address) return '';
-  if (tab === 'schedule') return 'Connect a wallet to create or manage repeat payments.';
-  if (tab === 'inbox') return 'Connect a wallet to review requests that need approval.';
+  if (tab === 'schedule') return t('Connect a wallet to create or manage repeat payments.');
+  if (tab === 'inbox') return t('Connect a wallet to review requests that need approval.');
   return '';
 }
 
 function workspaceTabSelectMobile(): string {
   const approvalLabel = isAndroidAppShellSurface()
-    ? 'Sign Approval'
-    : 'Needs Approval';
+    ? t('Sign Approval')
+    : t('Needs Approval');
   return `
-    <nav class="workspace-tabs-mobile workspace-bottom-tabs" aria-label="Workspace navigation" data-layout="app-mobile-tabs">
-      ${mobileDockTabButton('overview', 'Home')}
-      ${mobileDockTabButton('agent', 'New Request')}
+    <nav class="workspace-tabs-mobile workspace-bottom-tabs" aria-label="${escapeHtml(t('Workspace navigation'))}" data-layout="app-mobile-tabs">
+      ${mobileDockTabButton('overview', t('Home'))}
+      ${mobileDockTabButton('agent', t('New Request'))}
       ${mobileDockTabButton('inbox', approvalLabel)}
-      ${mobileDockTabButton('completed', 'Done')}
+      ${mobileDockTabButton('completed', t('Done'))}
       ${mobileMoreMenuButton()}
     </nav>
   `;
@@ -51516,7 +51751,7 @@ function moreMenuButton(): string {
   return `
     <details class="workspace-more${activeInMenu ? ' has-active' : ''}">
       <summary class="workspace-more-trigger ${activeInMenu ? 'active' : ''}" aria-haspopup="menu">
-        <span class="nav-label">More</span>
+        <span class="nav-label">${escapeHtml(t('More'))}</span>
         <span class="workspace-more-caret" aria-hidden="true">▾</span>
       </summary>
       <div class="workspace-more-menu template-picker-menu" role="menu">
@@ -51531,7 +51766,7 @@ function moreMenuButton(): string {
             class="workspace-more-item template-picker-option ${active ? 'selected active' : ''}"
           >
             <span class="select-picker-option-copy">
-              <strong>${escapeHtml(item.label)}</strong>
+              <strong>${escapeHtml(t(item.label))}</strong>
             </span>
           </button>
         `;
@@ -51551,7 +51786,7 @@ function mobileMoreMenuButton(): string {
   return `
     <div class="workspace-more workspace-bottom-more${activeInMenu ? ' has-active' : ''}${open ? ' open' : ''}" data-more-menu>
       <button type="button" class="workspace-more-trigger workspace-bottom-tab ${activeInMenu ? 'active' : ''}" data-more-menu-trigger aria-haspopup="menu" aria-expanded="${open ? 'true' : 'false'}">
-        <span class="nav-label">More+</span>
+        <span class="nav-label">${escapeHtml(t('More+'))}</span>
         <span class="workspace-more-caret" aria-hidden="true">▾</span>
       </button>
       <div class="workspace-more-menu workspace-bottom-more-menu template-picker-menu drop-up" role="menu" ${open ? '' : 'hidden'}>
@@ -51569,7 +51804,7 @@ function mobileMoreMenuButton(): string {
             ${locked ? `disabled title="${escapeHtml(lockedReason)}"` : ''}
           >
             <span class="select-picker-option-copy">
-              <strong>${escapeHtml(item.label)}</strong>
+              <strong>${escapeHtml(t(item.label))}</strong>
             </span>
           </button>
         `;
@@ -51617,17 +51852,17 @@ function transactionStepDetail(): string {
 
 function resultBlock(): string {
   const rows = [
-    state.address ? ['Address', state.address] : null,
-    state.signature ? ['Message signature', state.signature] : null,
+    state.address ? [t('Address'), state.address] : null,
+    state.signature ? [t('Message signature'), state.signature] : null,
     state.customTransactionBase64 && !state.txSignature
-      ? ['Generated transaction', state.customTransactionBase64]
+      ? [t('Generated transaction'), state.customTransactionBase64]
       : null,
-    state.txSignature ? ['Signed transaction', state.txSignature] : null,
-    state.txid ? ['Transaction id', state.txid] : null,
+    state.txSignature ? [t('Signed transaction'), state.txSignature] : null,
+    state.txid ? [t('Transaction id'), state.txid] : null,
   ].filter(Boolean) as Array<[string, string]>;
 
   if (rows.length === 0) {
-    return '<div class="empty">Results appear here after wallet approval.</div>';
+    return `<div class="empty">${escapeHtml(t('Results appear here after wallet approval.'))}</div>`;
   }
 
   return `
@@ -51638,7 +51873,7 @@ function resultBlock(): string {
             <div class="result-row">
               <span>${escapeHtml(label)}</span>
               <code>${escapeHtml(value)}</code>
-              <button data-copy="${escapeHtml(value)}">Copy</button>
+              <button data-copy="${escapeHtml(value)}">${escapeHtml(t('Copy'))}</button>
             </div>
           `,
         )
@@ -51652,7 +51887,7 @@ function agentPlanCard(plan: AgentPlan): string {
   return `
     <article class="plan-card proof-preview">
       <div>
-        <span class="workbench-kicker">${escapeHtml(plan.source === 'ai' ? 'AI plan' : 'Template plan')}</span>
+        <span class="workbench-kicker">${escapeHtml(plan.source === 'ai' ? t('AI plan') : t('Template plan'))}</span>
         <h3>${escapeHtml(plan.intent)}</h3>
       </div>
       <div class="pill-row">
@@ -51664,13 +51899,13 @@ function agentPlanCard(plan: AgentPlan): string {
         ${reviewSummaryRows(plan).map(([label, value]) => definitionRow(label, value)).join('')}
       </dl>
       <dl class="proof-grid">
-        ${definitionRow('Route', plan.route)}
-        ${definitionRow('Risk', plan.risk)}
-        ${definitionRow('Approval', plan.approval)}
+        ${definitionRow(t('Route'), plan.route)}
+        ${definitionRow(t('Risk'), plan.risk)}
+        ${definitionRow(t('Approval'), plan.approval)}
       </dl>
       ${plan.userNotes ? `
         <dl class="proof-grid plan-notes-grid">
-          ${definitionRow('User notes', plan.userNotes)}
+          ${definitionRow(t('User notes'), plan.userNotes)}
         </dl>
       ` : ''}
       ${plan.fields.length ? `
@@ -51679,7 +51914,7 @@ function agentPlanCard(plan: AgentPlan): string {
         </dl>
       ` : ''}
       <div class="plan-safeguards">
-        <span>Safeguards</span>
+        <span>${escapeHtml(t('Safeguards'))}</span>
         <ul>
           ${plan.safeguards.slice(0, 6).map((safeguard) => `<li>${escapeHtml(safeguard)}</li>`).join('')}
         </ul>
@@ -51709,14 +51944,14 @@ function planSourceLabel(plan: AgentPlan): string {
 
 function agentResultBlock(): string {
   if (!state.agentSignature) {
-    return '<div class="empty">Optional review proof appears here after signing. It does not approve or submit a transaction.</div>';
+    return `<div class="empty">${escapeHtml(t('Optional review proof appears here after signing. It does not approve or submit a transaction.'))}</div>`;
   }
   return `
     <div class="results">
       <div class="result-row">
-        <span>Review proof signature</span>
+        <span>${escapeHtml(t('Review proof signature'))}</span>
         <code>${escapeHtml(state.agentSignature)}</code>
-        <button data-copy="${escapeHtml(state.agentSignature)}">Copy</button>
+        <button data-copy="${escapeHtml(state.agentSignature)}">${escapeHtml(t('Copy'))}</button>
       </div>
     </div>
   `;
@@ -51729,8 +51964,8 @@ function queueStatusLine(visibleCount: number): string {
   return `
     <div class="queue-status">
       <span>${escapeHtml(bridge)}</span>
-      <strong>${visibleCount} need approval</strong>
-      <span>${total} in queue</span>
+      <strong>${escapeHtml(tf('{count} need approval', { count: visibleCount }))}</strong>
+      <span>${escapeHtml(tf('{count} in queue', { count: total }))}</span>
       <span>${escapeHtml(filter)}</span>
     </div>
   `;
@@ -51742,17 +51977,20 @@ function scheduleStatusLine(): string {
   const completed = payments.filter(isRecurringPaymentCompleted).length;
   const total = payments.length;
   const owner = activeWorkflowMode() === 'agentic-cloud'
-    ? 'Agentic Cloud repeats'
+    ? t('Agentic Cloud repeats')
     : activeWorkflowMode() === 'local-bridge'
-      ? 'Private local mode'
-      : 'Saved on this device';
+      ? t('Private local mode')
+      : t('Saved on this device');
+  const activeRepeatsLabel = active === 1
+    ? tf('{n} active repeat payment', { n: active })
+    : tf('{n} active repeat payments', { n: active });
   return `
     <div class="queue-status">
       <span>${escapeHtml(owner)}</span>
-      <strong>${active} active repeat payment${active === 1 ? '' : 's'}</strong>
-      <span>${total} saved</span>
-      <span>${completed} completed</span>
-      <span>Each payment still needs wallet approval</span>
+      <strong>${escapeHtml(activeRepeatsLabel)}</strong>
+      <span>${escapeHtml(tf('{n} saved', { n: total }))}</span>
+      <span>${escapeHtml(tf('{n} completed', { n: completed }))}</span>
+      <span>${escapeHtml(t('Each payment still needs wallet approval'))}</span>
     </div>
   `;
 }
@@ -51769,26 +52007,26 @@ function preparedActionsList(actions = filteredPreparedActions()): string {
     <div class="inbox-list">
       ${paginatedActions.items.map(preparedActionCard).join('')}
     </div>
-    ${listPagination('inbox', paginatedActions, 'Needs Approval requests')}
+    ${listPagination('inbox', paginatedActions, t('Needs Approval requests'))}
   `;
 }
 
 function queueEmptyState(kind: 'bridge' | 'clear'): string {
   const bridgeMissing = kind === 'bridge';
-  const title = bridgeMissing ? 'No approvals waiting' : 'No approvals waiting';
+  const title = bridgeMissing ? t('No approvals waiting') : t('No approvals waiting');
   const detail = bridgeMissing
     ? activeWorkflowMode() === 'agentic-cloud'
-      ? 'Send a one-time plan to Agentic Cloud for wallet review. No localhost is required.'
-      : 'Create a one-time request or repeat payment. Saved-on-device workflow stays local to this browser.'
+      ? t('Send a one-time plan to Agentic Cloud for wallet review. No localhost is required.')
+      : t('Create a one-time request or repeat payment. Saved-on-device workflow stays local to this browser.')
     : emptyInboxText();
-  const chip = bridgeMissing ? 'Nothing waiting' : 'Nothing waiting';
+  const chip = bridgeMissing ? t('Nothing waiting') : t('Nothing waiting');
   return `
     <div class="empty queue-empty queue-empty-state">
       <div>
         <span>${escapeHtml(chip)}</span>
         <h3>${escapeHtml(title)}</h3>
         <p>${escapeHtml(detail)}</p>
-        <button type="button" class="primary" data-tab="agent">New Request</button>
+        <button type="button" class="primary" data-tab="agent">${escapeHtml(t('New Request'))}</button>
       </div>
     </div>
   `;
@@ -51954,31 +52192,31 @@ function inboxAcpOutboundCartBlock(action: PreparedAction): string {
   const hiddenCount = Math.max(0, items.length - visibleItems.length);
   const itemList = visibleItems.length
     ? `
-      <ol class="inbox-acp-line-items" aria-label="ACP cart line items">
+      <ol class="inbox-acp-line-items" aria-label="${escapeHtml(t('ACP cart line items'))}">
         ${visibleItems.map((item) => `
           <li>
             <span>${escapeHtml(item.name)} ${item.quantity ? `<em>${escapeHtml(item.quantity)}</em>` : ''}</span>
             ${item.amount ? `<strong>${escapeHtml(item.amount)}</strong>` : ''}
           </li>
         `).join('')}
-        ${hiddenCount > 0 ? `<li class="more"><span>${hiddenCount} more item${hiddenCount === 1 ? '' : 's'}</span></li>` : ''}
+        ${hiddenCount > 0 ? `<li class="more"><span>${escapeHtml(hiddenCount === 1 ? tf('{count} more item', { count: hiddenCount }) : tf('{count} more items', { count: hiddenCount }))}</span></li>` : ''}
       </ol>
     `
     : '';
   return `
-    <section class="inbox-acp-cart" aria-label="ACP payment details">
+    <section class="inbox-acp-cart" aria-label="${escapeHtml(t('ACP payment details'))}">
       <div class="inbox-acp-cart-head">
         <div>
-          <span>ACP checkout</span>
+          <span>${escapeHtml(t('ACP checkout'))}</span>
           <strong>${escapeHtml(merchant)}</strong>
         </div>
         <strong class="inbox-acp-total">${escapeHtml(acpTotalLabel(action))}</strong>
       </div>
       <dl class="inbox-acp-cart-grid">
-        ${acpDetailRow('Cart', cartId)}
-        ${recipient ? acpDetailRow('Recipient', recipientDisplayLabel(recipient), recipient) : ''}
-        ${acpDetailRow('Pay with', token)}
-        ${memo ? acpDetailRow('Memo', memo) : ''}
+        ${acpDetailRow(t('Cart'), cartId)}
+        ${recipient ? acpDetailRow(t('Recipient'), recipientDisplayLabel(recipient), recipient) : ''}
+        ${acpDetailRow(t('Pay with'), token)}
+        ${memo ? acpDetailRow(t('Memo'), memo) : ''}
       </dl>
       ${itemList}
     </section>
@@ -51996,7 +52234,7 @@ function inboxAp2InboundRequestBlock(action: PreparedAction): string {
   const visibleItems = items.slice(0, 4);
   const itemList = visibleItems.length
     ? `
-      <ol class="inbox-acp-line-items" aria-label="AP2 request line items">
+      <ol class="inbox-acp-line-items" aria-label="${escapeHtml(t('AP2 request line items'))}">
         ${visibleItems.map((item) => `
           <li>
             <span>${escapeHtml(item.name)} ${item.quantity ? `<em>${escapeHtml(item.quantity)}</em>` : ''}</span>
@@ -52007,19 +52245,19 @@ function inboxAp2InboundRequestBlock(action: PreparedAction): string {
     `
     : '';
   return `
-    <section class="inbox-acp-cart inbox-ap2-request" aria-label="AP2 incoming payment request">
+    <section class="inbox-acp-cart inbox-ap2-request" aria-label="${escapeHtml(t('AP2 incoming payment request'))}">
       <div class="inbox-acp-cart-head">
         <div>
-          <span>AP2 incoming request</span>
+          <span>${escapeHtml(t('AP2 incoming request'))}</span>
           <strong>${escapeHtml(agent)}</strong>
         </div>
         <strong class="inbox-acp-total">${escapeHtml(ap2PaymentTotalLabel(action))}</strong>
       </div>
       <dl class="inbox-acp-cart-grid">
-        ${ap2DetailRow('Request', requestId)}
-        ${recipient ? ap2DetailRow('Recipient', recipientDisplayLabel(recipient), recipient) : ''}
-        ${ap2DetailRow('Pay with', token)}
-        ${memo ? ap2DetailRow('Memo', memo) : ''}
+        ${ap2DetailRow(t('Request'), requestId)}
+        ${recipient ? ap2DetailRow(t('Recipient'), recipientDisplayLabel(recipient), recipient) : ''}
+        ${ap2DetailRow(t('Pay with'), token)}
+        ${memo ? ap2DetailRow(t('Memo'), memo) : ''}
       </dl>
       ${itemList}
     </section>
@@ -52071,23 +52309,23 @@ function preparedActionCard(action: PreparedAction): string {
         <div class="inbox-approval-head">
           <div class="inbox-approval-title-block">
             <div class="inbox-approval-meta">
-              <span class="status-pill ${statusTone(action.status)}">${escapeHtml(action.status)}</span>
+              <span class="status-pill ${statusTone(action.status)}">${escapeHtml(t(action.status))}</span>
               ${renderApprovalBadges(action)}
               ${connectorChip(connectorMeta?.id, connectorMeta?.name)}
               <strong class="inbox-approval-meta-title">${escapeHtml(preparedActionCardTitle(action))}</strong>
               <span>${escapeHtml(action.kind.replace(/_/g, ' '))}</span>
-              ${action.recurringId ? '<span>Repeat</span>' : ''}
+              ${action.recurringId ? `<span>${escapeHtml(t('Repeat'))}</span>` : ''}
               ${inboxActionFailurePill(action)}
-              ${action.txStatus && action.txStatus !== 'failed' ? `<span class="status-pill ${txTone(action.txStatus)}">tx ${escapeHtml(action.txStatus)}</span>` : ''}
+              ${action.txStatus && action.txStatus !== 'failed' ? `<span class="status-pill ${txTone(action.txStatus)}">${escapeHtml(tf('tx {status}', { status: action.txStatus }))}</span>` : ''}
             </div>
             ${actionTimelineHtml(action)}
-            <p class="ticket-meta-line">${escapeHtml(preparedActionMetaLabel(action))} on ${escapeHtml(action.cluster)} - due ${formatDateTime(action.dueAt)}</p>
+            <p class="ticket-meta-line">${escapeHtml(tf('{label} on {cluster} - due {due}', { label: preparedActionMetaLabel(action), cluster: action.cluster, due: formatDateTime(action.dueAt) }))}</p>
           </div>
           <div class="inbox-approval-decision">
             ${inboxApprovalHero(action)}
             <div class="inbox-actions inbox-approval-actions">
               ${confirmable
-                ? `<button data-action-op="confirm" data-action-id="${action.id}" class="primary" ${state.busy ? 'disabled' : ''}>Check confirmation</button>`
+                ? `<button data-action-op="confirm" data-action-id="${action.id}" class="primary" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Check confirmation'))}</button>`
                 : `<button data-action-op="execute" data-action-id="${action.id}" class="primary" ${executeDisabled ? 'disabled' : ''} ${executionBlockReason ? `title="${escapeHtml(executionBlockReason)}"` : ''}>${escapeHtml(decisionLabels.approve)}</button>`}
             </div>
           </div>
@@ -52107,27 +52345,27 @@ function preparedActionCard(action: PreparedAction): string {
         ${approvalErrorBlock(action)}
         ${action.txid ? txBlock(action.txid, action.cluster) : ''}
         <div class="approval-effect" data-approval-effect="${escapeHtml(action.workflowSource ?? (browserWorkflow ? 'browser' : 'local-bridge'))}">
-          <strong>What this decision does</strong>
+          <strong>${escapeHtml(t('What this decision does'))}</strong>
           <p>${escapeHtml(effectCopy)}</p>
         </div>
         ${executionBlockReason ? `<p class="error-text">${escapeHtml(executionBlockReason)}</p>` : ''}
         <div class="inbox-approval-footer-row">
-          ${clearablePending ? `<button class="utility inbox-footer-action" data-action-op="clear-pending" data-action-id="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''} title="Checks chain status first, then restores this approval if no confirmed or failed transaction is found.">Clear stale pending</button>` : ''}
-          ${hasPendingExecutionLedgerEntry(action) || action.txid || action.status === 'failed' ? `<button class="utility inbox-footer-action" data-attach-tx-action="open" data-action-id="${escapeHtml(action.id)}">Attach existing transaction</button>` : ''}
-          ${action.status === 'failed' || action.txError ? `<button class="utility inbox-footer-action" data-debug-export data-action-id="${escapeHtml(action.id)}">Copy debug log</button>` : ''}
-          <button class="utility inbox-footer-action" data-action-op="archive" data-action-id="${action.id}" ${state.busy ? 'disabled' : ''} title="Remove from Needs Approval without signing a denial proof.">Archive</button>
+          ${clearablePending ? `<button class="utility inbox-footer-action" data-action-op="clear-pending" data-action-id="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''} title="${escapeHtml(t('Checks chain status first, then restores this approval if no confirmed or failed transaction is found.'))}">${escapeHtml(t('Clear stale pending'))}</button>` : ''}
+          ${hasPendingExecutionLedgerEntry(action) || action.txid || action.status === 'failed' ? `<button class="utility inbox-footer-action" data-attach-tx-action="open" data-action-id="${escapeHtml(action.id)}">${escapeHtml(t('Attach existing transaction'))}</button>` : ''}
+          ${action.status === 'failed' || action.txError ? `<button class="utility inbox-footer-action" data-debug-export data-action-id="${escapeHtml(action.id)}">${escapeHtml(t('Copy debug log'))}</button>` : ''}
+          <button class="utility inbox-footer-action" data-action-op="archive" data-action-id="${action.id}" ${state.busy ? 'disabled' : ''} title="${escapeHtml(t('Remove from Needs Approval without signing a denial proof.'))}">${escapeHtml(t('Archive'))}</button>
           <button class="utility danger inbox-footer-action" data-action-op="reject" data-action-id="${action.id}" ${state.busy || isTerminalPreparedAction(action) ? 'disabled' : ''}>${escapeHtml(decisionLabels.reject)}</button>
-          <button class="utility danger recurring-delete-mini" data-inbox-delete="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''}>Delete</button>
-          <div class="mobile-card-footer-actions inbox-approval-mobile-actions" aria-label="Mobile approval actions">
+          <button class="utility danger recurring-delete-mini" data-inbox-delete="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Delete'))}</button>
+          <div class="mobile-card-footer-actions inbox-approval-mobile-actions" aria-label="${escapeHtml(t('Mobile approval actions'))}">
             <details class="mobile-card-action-menu">
-              <summary>More actions</summary>
+              <summary>${escapeHtml(t('More actions'))}</summary>
               <div class="mobile-card-action-menu-body">
-                ${clearablePending ? `<button class="utility inbox-footer-action" data-action-op="clear-pending" data-action-id="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''} title="Checks chain status first, then restores this approval if no confirmed or failed transaction is found.">Clear stale pending</button>` : ''}
-                ${hasPendingExecutionLedgerEntry(action) || action.txid || action.status === 'failed' ? `<button class="utility inbox-footer-action" data-attach-tx-action="open" data-action-id="${escapeHtml(action.id)}">Attach existing transaction</button>` : ''}
-                ${action.status === 'failed' || action.txError ? `<button class="utility inbox-footer-action" data-debug-export data-action-id="${escapeHtml(action.id)}">Copy debug log</button>` : ''}
-                <button class="utility inbox-footer-action" data-action-op="archive" data-action-id="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''} title="Remove from Needs Approval without signing a denial proof.">Archive</button>
+                ${clearablePending ? `<button class="utility inbox-footer-action" data-action-op="clear-pending" data-action-id="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''} title="${escapeHtml(t('Checks chain status first, then restores this approval if no confirmed or failed transaction is found.'))}">${escapeHtml(t('Clear stale pending'))}</button>` : ''}
+                ${hasPendingExecutionLedgerEntry(action) || action.txid || action.status === 'failed' ? `<button class="utility inbox-footer-action" data-attach-tx-action="open" data-action-id="${escapeHtml(action.id)}">${escapeHtml(t('Attach existing transaction'))}</button>` : ''}
+                ${action.status === 'failed' || action.txError ? `<button class="utility inbox-footer-action" data-debug-export data-action-id="${escapeHtml(action.id)}">${escapeHtml(t('Copy debug log'))}</button>` : ''}
+                <button class="utility inbox-footer-action" data-action-op="archive" data-action-id="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''} title="${escapeHtml(t('Remove from Needs Approval without signing a denial proof.'))}">${escapeHtml(t('Archive'))}</button>
                 <button class="utility danger inbox-footer-action" data-action-op="reject" data-action-id="${escapeHtml(action.id)}" ${state.busy || isTerminalPreparedAction(action) ? 'disabled' : ''}>${escapeHtml(decisionLabels.reject)}</button>
-                <button class="utility danger recurring-delete-mini" data-inbox-delete="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''}>Delete</button>
+                <button class="utility danger recurring-delete-mini" data-inbox-delete="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Delete'))}</button>
               </div>
             </details>
           </div>
@@ -52144,8 +52382,8 @@ function approvalErrorBlock(action: Pick<PreparedAction, 'error' | 'txError'>): 
 }
 
 function preparedActionMetaLabel(action: PreparedAction): string {
-  if (isAcpOutboundAction(action)) return 'ACP outbound payment';
-  if (isAp2InboundAction(action)) return 'AP2 incoming request';
+  if (isAcpOutboundAction(action)) return t('ACP outbound payment');
+  if (isAp2InboundAction(action)) return t('AP2 incoming request');
   if (isConnectorApprovalKind(action)) {
     return connectorActionDisplayParts(action.kind, action.params)?.operationLabel ?? action.kind.replace(/_/g, ' ');
   }
@@ -52153,13 +52391,13 @@ function preparedActionMetaLabel(action: PreparedAction): string {
 }
 
 function preparedActionCardTitle(action: PreparedAction): string {
-  if (isAcpOutboundAction(action)) return `Pay ${acpMerchantName(action)}`;
-  if (isAp2InboundAction(action)) return `Pay ${ap2AgentName(action)}`;
-  if (action.recurringId && action.kind === 'swap') return 'Recurring swap approval';
-  if (action.recurringId) return 'Repeat payment approval';
-  if (action.kind === 'transfer_sol' || action.kind === 'transfer_spl') return 'Transfer approval';
-  if (action.kind === 'swap') return 'Swap approval';
-  if (action.kind === 'skill_fee_split') return 'Skill payment';
+  if (isAcpOutboundAction(action)) return tf('Pay {merchant}', { merchant: acpMerchantName(action) });
+  if (isAp2InboundAction(action)) return tf('Pay {agent}', { agent: ap2AgentName(action) });
+  if (action.recurringId && action.kind === 'swap') return t('Recurring swap approval');
+  if (action.recurringId) return t('Repeat payment approval');
+  if (action.kind === 'transfer_sol' || action.kind === 'transfer_spl') return t('Transfer approval');
+  if (action.kind === 'swap') return t('Swap approval');
+  if (action.kind === 'skill_fee_split') return t('Skill payment');
   const connectorDisplay = connectorActionDisplayParts(action.kind, action.params);
   if (connectorDisplay) return connectorDisplay.title;
   return action.summary;
@@ -52171,10 +52409,10 @@ function inboxActionFailurePill(action: PreparedAction): string {
     Boolean((action.txError || action.error) && EXECUTABLE_BROWSER_ACTION_KINDS.has(action.kind));
   if (!failed) return '';
   const label = action.kind === 'swap'
-    ? 'Swap failed - try again'
+    ? t('Swap failed - try again')
     : action.kind === 'transfer_sol' || action.kind === 'transfer_spl'
-      ? 'Send failed - try again'
-      : 'Tx failed - try again';
+      ? t('Send failed - try again')
+      : t('Tx failed - try again');
   return `<span class="status-pill tx-failed">${escapeHtml(label)}</span>`;
 }
 
@@ -52183,13 +52421,13 @@ function inboxApprovalHero(action: PreparedAction): string {
   const ap2Inbound = isAp2InboundAction(action);
   const primary = acpOutbound ? acpTotalLabel(action) : ap2Inbound ? ap2PaymentTotalLabel(action) : amountLabel(action);
   const secondary = recipientParam(action)
-    ? `To ${recipientDisplayLabel(recipientParam(action))}`
+    ? tf('To {recipient}', { recipient: recipientDisplayLabel(recipientParam(action)) })
     : formatDateTime(action.dueAt);
   const subject = marketAmountSubjectForAction(action);
   const context = acpOutbound
-    ? `ACP cart ${acpCartId(action)}`
+    ? tf('ACP cart {id}', { id: acpCartId(action) })
     : ap2Inbound
-      ? `AP2 request ${short(ap2RequestId(action))}`
+      ? tf('AP2 request {id}', { id: short(ap2RequestId(action)) })
       : isConnectorApprovalKind(action) ? '' : preparedActionConnectorContextLabel(action);
   return `
     <div class="inbox-approval-value" title="${escapeHtml(marketHeroTitle(primary, secondary, subject))}">
@@ -52940,13 +53178,13 @@ function tokenSearchDropdownHtml(fieldId: string): string {
   const stateForField = tokenSearchStates.get(fieldId);
   if (!stateForField || (!stateForField.query && stateForField.status === 'idle')) return '';
   if (stateForField.status === 'loading') {
-    return `<div class="token-search-menu loading">${buttonSpinner()}<span>Searching tokens</span></div>`;
+    return `<div class="token-search-menu loading">${buttonSpinner()}<span>${escapeHtml(t('Searching tokens'))}</span></div>`;
   }
   if (stateForField.status === 'error') {
-    return `<div class="token-search-menu"><p class="token-search-empty">${escapeHtml(stateForField.error ?? 'Token search unavailable')}</p></div>`;
+    return `<div class="token-search-menu"><p class="token-search-empty">${escapeHtml(stateForField.error ?? t('Token search unavailable'))}</p></div>`;
   }
   if (!stateForField.results.length) {
-    return `<div class="token-search-menu"><p class="token-search-empty">No token matches</p></div>`;
+    return `<div class="token-search-menu"><p class="token-search-empty">${escapeHtml(t('No token matches'))}</p></div>`;
   }
   return `
     <div class="token-search-menu" style="--token-search-visible-rows: ${TOKEN_SEARCH_VISIBLE_ROWS}">
@@ -53299,9 +53537,9 @@ function summaryCopyActions(row: {
 }): SummaryCopyAction[] {
   if (row.copyActions?.length) return row.copyActions;
   return row.copyValue ? [{
-    label: row.copyLabel ?? 'Copy',
+    label: row.copyLabel ?? t('Copy'),
     value: row.copyValue,
-    name: row.copyName ?? row.label,
+    name: row.copyName ?? t(row.label),
   }] : [];
 }
 
@@ -53320,16 +53558,18 @@ function summaryCopyActionsHtml(
 }
 
 function copyActionButtonHtml(action: SummaryCopyAction, fallbackName: string, compact = false): string {
+  const label = t(action.label);
+  const name = t(action.name ?? fallbackName);
   return `
     <button
       type="button"
       class="wallet-action-copy${compact ? ' compact-copy' : ''}"
       data-copy="${escapeHtml(action.value)}"
-      data-copy-name="${escapeHtml(action.name ?? fallbackName)}"
-      aria-label="${escapeHtml(action.label)}"
-      title="${escapeHtml(action.label)}"
+      data-copy-name="${escapeHtml(name)}"
+      aria-label="${escapeHtml(label)}"
+      title="${escapeHtml(label)}"
     >
-      ${compact ? copyButtonIcon() : escapeHtml(action.label)}
+      ${compact ? copyButtonIcon() : escapeHtml(label)}
     </button>
   `;
 }
@@ -53349,7 +53589,7 @@ function inboxApprovalSummaryGrid(action: PreparedAction): string {
   if (action.kind === 'swap') rows.push(swapQuoteSummaryRow(action));
   rows.push({ kind: 'due', label: 'Due', value: formatDateTime(action.dueAt) });
   return `
-    <dl class="inbox-approval-summary-grid rows-${rows.length} ${action.kind === 'swap' ? 'swap-summary' : ''}" aria-label="Approval summary">
+    <dl class="inbox-approval-summary-grid rows-${rows.length} ${action.kind === 'swap' ? 'swap-summary' : ''}" aria-label="${escapeHtml(t('Approval summary'))}">
       ${rows.map((row) => inboxApprovalSummaryItem(row)).join('')}
     </dl>
   `;
@@ -53379,35 +53619,35 @@ function swapQuoteSummaryRow(action: PreparedAction): ApprovalSummaryRow {
   if (!expected) {
     return {
       kind: 'quote',
-      label: 'Quote',
-      value: 'Fetching quote',
-      html: '<span class="swap-quote-summary is-loading">Fetching quote</span>',
-      title: 'Fetching quote',
+      label: t('Quote'),
+      value: t('Fetching quote'),
+      html: `<span class="swap-quote-summary is-loading">${escapeHtml(t('Fetching quote'))}</span>`,
+      title: t('Fetching quote'),
     };
   }
 
   const detailRows = [
-    minimum ? { label: 'Min', value: `${minimum} ${token}` } : undefined,
-    slippage ? { label: 'Slippage', value: slippage } : undefined,
-    priceImpact ? { label: 'Impact', value: priceImpact } : undefined,
+    minimum ? { label: t('Min'), value: `${minimum} ${token}` } : undefined,
+    slippage ? { label: t('Slippage'), value: slippage } : undefined,
+    priceImpact ? { label: t('Impact'), value: priceImpact } : undefined,
   ].filter((row): row is { label: string; value: string } => Boolean(row));
   const title = [
-    `Expected ${expected} ${token}`,
+    tf('Expected {amount} {token}', { amount: expected, token }),
     ...detailRows.map((row) => `${row.label} ${row.value}`),
   ].join(' - ');
   return {
     kind: 'quote',
-    label: 'Quote',
+    label: t('Quote'),
     value: title,
     html: `
       <span class="swap-quote-summary">
         <span class="swap-quote-row swap-quote-primary">
-          <span class="swap-quote-expected"><em>Expected</em><strong>${escapeHtml(expected)} ${escapeHtml(token)}</strong></span>
-          ${minimum ? `<span class="swap-quote-min"><em>Min</em><strong>${escapeHtml(minimum)} ${escapeHtml(token)}</strong></span>` : ''}
+          <span class="swap-quote-expected"><em>${escapeHtml(t('Expected'))}</em><strong>${escapeHtml(expected)} ${escapeHtml(token)}</strong></span>
+          ${minimum ? `<span class="swap-quote-min"><em>${escapeHtml(t('Min'))}</em><strong>${escapeHtml(minimum)} ${escapeHtml(token)}</strong></span>` : ''}
         </span>
         <span class="swap-quote-row swap-quote-secondary">
-          ${slippage ? `<span class="swap-quote-stat slippage"><em>Slippage</em><strong>${escapeHtml(slippage)}</strong></span>` : ''}
-          ${priceImpact ? `<span class="swap-quote-stat impact"><em>Impact</em><strong>${escapeHtml(priceImpact)}</strong></span>` : ''}
+          ${slippage ? `<span class="swap-quote-stat slippage"><em>${escapeHtml(t('Slippage'))}</em><strong>${escapeHtml(slippage)}</strong></span>` : ''}
+          ${priceImpact ? `<span class="swap-quote-stat impact"><em>${escapeHtml(t('Impact'))}</em><strong>${escapeHtml(priceImpact)}</strong></span>` : ''}
         </span>
       </span>
     `,
@@ -53454,7 +53694,7 @@ function inboxApprovalSummaryItem(row: ApprovalSummaryRow): string {
   ].filter(Boolean).join(' ');
   return `
     <div class="${itemClass}" title="${escapeHtml(title)}">
-      <dt>${escapeHtml(row.label)}</dt>
+      <dt>${escapeHtml(t(row.label))}</dt>
       <dd class="${ddClass}">
         ${row.html ?? `<span>${escapeHtml(row.value)}</span>`}
         ${row.html ? '' : summaryCopyActionsHtml(copyActions, row.label, { compact: true })}
@@ -53513,12 +53753,12 @@ function inboxApprovalNote(action: PreparedAction): string {
   const note = action.note?.trim();
   if (!note) return '';
   return `
-    <section class="review-plan-user-note inbox-approval-note" aria-label="Approval note" title="${escapeHtml(note)}">
-      <span>Note</span>
+    <section class="review-plan-user-note inbox-approval-note" aria-label="${escapeHtml(t('Approval note'))}" title="${escapeHtml(note)}">
+      <span>${escapeHtml(t('Note'))}</span>
       ${expandableCopyHtml(note, {
         className: 'review-plan-user-note-copy',
-        showLabel: 'Show full note',
-        hideLabel: 'Hide note',
+        showLabel: t('Show full note'),
+        hideLabel: t('Hide note'),
       })}
     </section>
   `;
@@ -53569,16 +53809,16 @@ function inlineReceiptActions(action: PreparedAction): string {
   const alreadySigned = relatedEvidenceReceiptsForApproval(action.id);
   const signedKinds = new Set(alreadySigned.map((artifact) => artifact.kind));
   const actions: Array<[InlineReceiptKind, string, string, string]> = [
-    ['intent', 'Sign proof of intent', 'Record the exact request before deciding.', 'Proof of intent signed'],
-    ['policy', 'Sign proof of policy', 'Record the caps and wallet rules checked.', 'Proof of policy signed'],
-    ['review', 'Sign proof of review', 'Record the risks reviewed before the wallet opens.', 'Proof of review signed'],
-    ['rejection', 'Deny with proof', 'Sign a rejection receipt, then deny this request.', 'Rejection proof signed'],
+    ['intent', t('Sign proof of intent'), t('Record the exact request before deciding.'), t('Proof of intent signed')],
+    ['policy', t('Sign proof of policy'), t('Record the caps and wallet rules checked.'), t('Proof of policy signed')],
+    ['review', t('Sign proof of review'), t('Record the risks reviewed before the wallet opens.'), t('Proof of review signed')],
+    ['rejection', t('Deny with proof'), t('Sign a rejection receipt, then deny this request.'), t('Rejection proof signed')],
   ];
   return `
-    <details class="inline-receipt-actions receipt-proof-drawer" aria-label="Saved proof actions">
+    <details class="inline-receipt-actions receipt-proof-drawer" aria-label="${escapeHtml(t('Saved proof actions'))}">
       <summary>
-        <strong>Saved proofs</strong>
-        <span>Optional evidence only</span>
+        <strong>${escapeHtml(t('Saved proofs'))}</strong>
+        <span>${escapeHtml(t('Optional evidence only'))}</span>
       </summary>
       <div class="inline-receipt-button-grid">
         ${actions.map(([kind, label, title, signedLabel]) => {
@@ -53604,55 +53844,55 @@ function inlineReceiptActions(action: PreparedAction): string {
 function preparedActionDecisionLabels(action: PreparedAction): { approve: string; reject: string } {
   if (isAcpOutboundAction(action)) {
     return {
-      approve: 'Approve payment',
-      reject: 'Deny payment',
+      approve: t('Approve payment'),
+      reject: t('Deny payment'),
     };
   }
   if (isAp2InboundAction(action)) {
     return {
-      approve: 'Approve payment',
-      reject: 'Deny request',
+      approve: t('Approve payment'),
+      reject: t('Deny request'),
     };
   }
   if (canFinalizeCloudSolTransfer(action)) {
     return {
-      approve: 'Review and send',
-      reject: 'Deny request',
+      approve: t('Review and send'),
+      reject: t('Deny request'),
     };
   }
   if (isExecutableBrowserAction(action)) {
     return {
-      approve: action.kind === 'swap' ? 'Approve swap' : 'Approve and send',
-      reject: 'Deny request',
+      approve: action.kind === 'swap' ? t('Approve swap') : t('Approve and send'),
+      reject: t('Deny request'),
     };
   }
   if (isCloudBrowserExecutableAction(action)) {
     return {
-      approve: action.kind === 'swap' ? 'Approve swap' : 'Approve and send',
-      reject: 'Deny request',
+      approve: action.kind === 'swap' ? t('Approve swap') : t('Approve and send'),
+      reject: t('Deny request'),
     };
   }
   if (requiresCloudTransactionFinalization(action)) {
     return {
-      approve: 'Unavailable',
-      reject: 'Deny request',
+      approve: t('Unavailable'),
+      reject: t('Deny request'),
     };
   }
   if (isConnectorApprovalKind(action)) {
     return {
-      approve: 'Execution unavailable',
-      reject: 'Deny request',
+      approve: t('Execution unavailable'),
+      reject: t('Deny request'),
     };
   }
   if (action.workflowSource === 'cloud' || isBrowserWorkflowId(action.id)) {
     return {
-      approve: 'Sign approval proof',
-      reject: 'Deny request',
+      approve: t('Sign approval proof'),
+      reject: t('Deny request'),
     };
   }
   return {
-    approve: 'Approve in wallet',
-    reject: 'Reject',
+    approve: t('Approve in wallet'),
+    reject: t('Reject'),
   };
 }
 
@@ -53660,44 +53900,44 @@ function approvalEffectCopy(action: PreparedAction): string {
   const raydiumLiquidityCopy = raydiumAddLiquidityEffectCopy(action);
   if (raydiumLiquidityCopy) return raydiumLiquidityCopy;
   if (isAcpOutboundAction(action)) {
-    return 'Your wallet signs and submits the exact payment transaction to the merchant recipient. Agentic saves the ACP cart hash and receipt; nothing is sent until wallet approval.';
+    return t('Your wallet signs and submits the exact payment transaction to the merchant recipient. Agentic saves the ACP cart hash and receipt; nothing is sent until wallet approval.');
   }
   if (isAp2InboundAction(action)) {
-    return 'Your wallet signs and submits the exact payment requested by the verified agent. Agentic saves the AP2 request metadata and receipt; nothing is sent until wallet approval.';
+    return t('Your wallet signs and submits the exact payment requested by the verified agent. Agentic saves the AP2 request metadata and receipt; nothing is sent until wallet approval.');
   }
   if (canFinalizeCloudSolTransfer(action)) {
-    return 'Agentic Cloud prepares and simulates the exact SOL transfer, your browser opens your wallet for that transaction only, then Agentic saves a finalization receipt. Agentic never receives signing authority.';
+    return t('Agentic Cloud prepares and simulates the exact SOL transfer, your browser opens your wallet for that transaction only, then Agentic saves a finalization receipt. Agentic never receives signing authority.');
   }
   if (requiresCloudTransactionFinalization(action)) {
     return action.kind === 'transfer_sol'
-      ? 'This cloud transfer requires transaction finalization, but the connected wallet cannot sign this transaction from this browser session.'
-      : 'This Cloud request type is not executable from this browser yet. Deny it and recreate the request as a browser wallet action.';
+      ? t('This cloud transfer requires transaction finalization, but the connected wallet cannot sign this transaction from this browser session.')
+      : t('This Cloud request type is not executable from this browser yet. Deny it and recreate the request as a browser wallet action.');
   }
   if (isCloudBrowserExecutableAction(action)) {
     if (action.kind === 'swap') {
-      return 'Your wallet signs the swap transaction. Agentic Cloud saves the status and receipt; it never receives signing authority.';
+      return t('Your wallet signs the swap transaction. Agentic Cloud saves the status and receipt; it never receives signing authority.');
     }
-    return 'Agentic Cloud prepares the connector transaction; your wallet signs and submits it. Cloud saves the status and receipt; it never receives signing authority.';
+    return t('Agentic Cloud prepares the connector transaction; your wallet signs and submits it. Cloud saves the status and receipt; it never receives signing authority.');
   }
   if (action.workflowSource === 'cloud') {
-    return 'Your wallet signs a decision proof bound to this approval. Agentic Cloud saves the receipt; this proof does not submit a transaction.';
+    return t('Your wallet signs a decision proof bound to this approval. Agentic Cloud saves the receipt; this proof does not submit a transaction.');
   }
   if (isExecutableBrowserAction(action)) {
     if (action.kind === 'swap') {
-      return 'Your wallet signs the swap transaction. The receipt appears in the Done tab.';
+      return t('Your wallet signs the swap transaction. The receipt appears in the Done tab.');
     }
     if (isConnectorApprovalKind(action)) {
-      return 'Your wallet signs the connector transaction. The receipt appears in the Done tab.';
+      return t('Your wallet signs the connector transaction. The receipt appears in the Done tab.');
     }
-    return 'Your wallet signs the transaction. The receipt appears in the Done tab.';
+    return t('Your wallet signs the transaction. The receipt appears in the Done tab.');
   }
   if (isConnectorApprovalKind(action)) {
-    return 'Connector execution is not yet wired into this browser. Approving here would only sign a decision proof — no transaction would be submitted. Use Private Local Mode (or sign into Agentic Cloud) to actually run this connector.';
+    return t('Connector execution is not yet wired into this browser. Approving here would only sign a decision proof — no transaction would be submitted. Use Private Local Mode (or sign into Agentic Cloud) to actually run this connector.');
   }
   if (isBrowserWorkflowId(action.id)) {
-    return 'Your wallet signs a browser-local decision proof. The receipt stays on this device; no transaction is submitted by this proof.';
+    return t('Your wallet signs a browser-local decision proof. The receipt stays on this device; no transaction is submitted by this proof.');
   }
-  return 'Private local mode sends the prepared action to your local runtime. The connected wallet still controls the final signature or send request.';
+  return t('Private local mode sends the prepared action to your local runtime. The connected wallet still controls the final signature or send request.');
 }
 
 function raydiumAddLiquidityEffectCopy(action: PreparedAction): string {
@@ -53729,12 +53969,12 @@ function raydiumAddLiquidityEffectCopy(action: PreparedAction): string {
   if (maxTokenAAmount && tokenA) slippageParts.push(`${maxTokenAAmount} ${tokenA}`);
   if (maxTokenBAmount && tokenB) slippageParts.push(`${maxTokenBAmount} ${tokenB}`);
   const slippageSentence = slippageParts.length
-    ? ` Slippage allows up to ${slippageParts.join(' / ')}.`
+    ? ` ${tf('Slippage allows up to {amounts}.', { amounts: slippageParts.join(' / ') })}`
     : '';
   const tail = isExecutableBrowserAction(action) || isCloudBrowserExecutableAction(action)
-    ? ' Final amounts confirmed when your wallet signs; the receipt appears in the Done tab.'
-    : ' Final amounts confirmed when your wallet signs.';
-  return `Deposit ${depositText} into ${poolLabel}.${slippageSentence}${tail}`;
+    ? ` ${t('Final amounts confirmed when your wallet signs; the receipt appears in the Done tab.')}`
+    : ` ${t('Final amounts confirmed when your wallet signs.')}`;
+  return `${tf('Deposit {amount} into {pool}.', { amount: depositText, pool: poolLabel })}${slippageSentence}${tail}`;
 }
 
 const CLOUD_TRANSACTION_FINALIZATION_KINDS = new Set<PreparedActionKind>([
@@ -53819,10 +54059,10 @@ function completedPlanSubmissionPill(plan: CompletedPlanRecord): string {
   };
   const outcome = classifyConnectorReceipt(receipt);
   if (outcome === 'unsubmitted_connector') {
-    return `<span class="status-pill warn" title="This receipt signed a decision proof but no on-chain transaction was submitted. The connector execution path was not yet wired when this approval ran.">decision proof — no transaction</span>`;
+    return `<span class="status-pill warn" title="${escapeHtml(t('This receipt signed a decision proof but no on-chain transaction was submitted. The connector execution path was not yet wired when this approval ran.'))}">${escapeHtml(t('decision proof — no transaction'))}</span>`;
   }
   if (outcome === 'decision_proof_only' && isConnectorApprovalKind({ kind: plan.actionKind })) {
-    return `<span class="status-pill warn" title="Audit-only receipt: a decision proof signature, not a submitted transaction.">decision proof — no transaction</span>`;
+    return `<span class="status-pill warn" title="${escapeHtml(t('Audit-only receipt: a decision proof signature, not a submitted transaction.'))}">${escapeHtml(t('decision proof — no transaction'))}</span>`;
   }
   return '';
 }
@@ -53879,7 +54119,7 @@ function recurringComposer(): string {
   const draft = state.recurringDraft;
   const isSwap = recurringDraftIsSwap(draft);
   const mobile = isMobileAppViewport();
-  const recipient = draft.recipient ? recipientDisplayLabel(draft.recipient) : 'Recipient required';
+  const recipient = draft.recipient ? recipientDisplayLabel(draft.recipient) : t('Recipient required');
   const limit = recurringDraftLimitLabel(draft);
   const workflowMode = activeWorkflowMode();
   const browserWorkflow = workflowMode === 'browser-workflow';
@@ -53891,22 +54131,22 @@ function recurringComposer(): string {
       : agentReviewUnavailableReason()
     : aiGenerateDisabledReason();
   const aiDraftDisabled = createDisabled || !canGenerateAiPlanFromSettings() || !canRunAgentReview();
-  const composerTitle = isSwap ? 'Create recurring swap' : 'Create repeat payment';
-  const createLabel = 'Create Plan';
+  const composerTitle = isSwap ? t('Create recurring swap') : t('Create repeat payment');
+  const createLabel = t('Create Plan');
   const recurringHelp = isSwap
     ? browserWorkflow
-      ? 'Each due swap returns to Needs Approval before wallet signing.'
-      : 'Every due swap returns to Needs Approval before wallet signing.'
+      ? t('Each due swap returns to Needs Approval before wallet signing.')
+      : t('Every due swap returns to Needs Approval before wallet signing.')
     : browserWorkflow
-      ? 'Each payment returns to Needs Approval before wallet signing.'
-      : 'Every payment returns to Needs Approval before wallet signing.';
+      ? t('Each payment returns to Needs Approval before wallet signing.')
+      : t('Every payment returns to Needs Approval before wallet signing.');
   const actionHelper = !state.address
-    ? 'Connect a wallet before creating a repeat payment.'
+    ? t('Connect a wallet before creating a repeat payment.')
     : isSwap && !browserWorkflow
-      ? 'Future swaps will appear in Needs Approval.'
+      ? t('Future swaps will appear in Needs Approval.')
       : browserWorkflow
         ? ''
-        : 'Future payments will appear in Needs Approval.';
+        : t('Future payments will appear in Needs Approval.');
   return `
     <div class="recurring-panel recurring-contract ${mobile ? 'mobile-recurring-contract' : ''}">
       ${mobile ? '' : `<div class="contract-head app-inline-head recurring-composer-head">
@@ -53918,42 +54158,42 @@ function recurringComposer(): string {
       ${mobile ? '' : recurringContractSummaryView(draft, isSwap, recipient, limit)}
       <div class="contract-section recurring-create-section recurring-payment-section">
         <div>
-          <span>${escapeHtml(isSwap ? 'Swap terms' : 'Payment terms')}</span>
-          <p>${escapeHtml(isSwap ? 'Input token, output token, amount, slippage.' : 'Token, amount, recipient.')}</p>
+          <span>${escapeHtml(isSwap ? t('Swap terms') : t('Payment terms'))}</span>
+          <p>${escapeHtml(isSwap ? t('Input token, output token, amount, slippage.') : t('Token, amount, recipient.'))}</p>
         </div>
         <div class="recurring-grid ${isSwap ? 'recurring-swap-grid' : ''}">
           ${isSwap
             ? `
-              ${recurringTokenSelectField('inputToken', mobile ? 'From *' : 'Input token *', draft.inputToken)}
-              ${recurringTokenSelectField('outputToken', mobile ? 'To *' : 'Output token *', draft.outputToken)}
-              ${fieldInput('recurringAmount', mobile ? 'Amount *' : 'Token amount *', draft.amount)}
+              ${recurringTokenSelectField('inputToken', mobile ? t('From *') : t('Input token *'), draft.inputToken)}
+              ${recurringTokenSelectField('outputToken', mobile ? t('To *') : t('Output token *'), draft.outputToken)}
+              ${fieldInput('recurringAmount', mobile ? t('Amount *') : t('Token amount *'), draft.amount)}
               ${recurringSlippageInput(draft.slippageBps)}
             `
             : `
               ${recurringTokenSelect(draft.token)}
-              ${fieldInput('recurringAmount', 'Amount *', draft.amount)}
+              ${fieldInput('recurringAmount', t('Amount *'), draft.amount)}
               ${recurringRecipientInput(draft.recipient)}
             `}
         </div>
       </div>
       <div class="contract-section recurring-create-section recurring-schedule-section">
         <div>
-          <span>Schedule terms</span>
-          <p>Cadence and local time.</p>
+          <span>${escapeHtml(t('Schedule terms'))}</span>
+          <p>${escapeHtml(t('Cadence and local time.'))}</p>
         </div>
         <div class="recurring-grid schedule-grid">
           <label class="field compact">
-            <span>Cadence</span>
+            <span>${escapeHtml(t('Cadence'))}</span>
             ${selectPicker({
               id: 'recurringCadence',
               value: draft.cadence,
               attrs: { 'data-recurring-field': 'cadence' },
               options: [
-                { value: 'weekly', label: 'Weekly', meta: 'Cadence' },
-                { value: 'monthly', label: 'Monthly', meta: 'Cadence' },
-                { value: 'interval_days', label: 'Interval days', meta: 'Cadence' },
-                { value: 'interval_hours', label: 'Interval hours', meta: 'Cadence' },
-                { value: 'interval_minutes', label: 'Interval minutes', meta: 'Cadence' },
+                { value: 'weekly', label: t('Weekly'), meta: t('Cadence') },
+                { value: 'monthly', label: t('Monthly'), meta: t('Cadence') },
+                { value: 'interval_days', label: t('Interval days'), meta: t('Cadence') },
+                { value: 'interval_hours', label: t('Interval hours'), meta: t('Cadence') },
+                { value: 'interval_minutes', label: t('Interval minutes'), meta: t('Cadence') },
               ],
             })}
           </label>
@@ -53962,18 +54202,18 @@ function recurringComposer(): string {
       </div>
       <div class="contract-section recurring-create-section recurring-note-section">
         <div>
-          <span>Notes for approval</span>
-          <p>Purpose shown when this needs approval.</p>
+          <span>${escapeHtml(t('Notes for approval'))}</span>
+          <p>${escapeHtml(t('Purpose shown when this needs approval.'))}</p>
         </div>
         <label class="field compact approval-memo recurring-note-field">
           <span class="field-label-row">
-            <span class="field-label-text">What is this for?</span>
+            <span class="field-label-text">${escapeHtml(t('What is this for?'))}</span>
             ${mobileExpandNoteLink({ kind: 'recurring-note' })}
           </span>
           <textarea
             id="recurringNote"
             data-recurring-field="note"
-            placeholder="Example: rent, payroll, DCA, subscription, or invoice #42"
+            placeholder="${escapeHtml(tf('Example: rent, payroll, {dca}, subscription, or invoice #42', { dca: 'DCA' }))}"
           >${escapeHtml(draft.note)}</textarea>
         </label>
       </div>
@@ -53983,8 +54223,8 @@ function recurringComposer(): string {
             <input type="checkbox" tabindex="-1" aria-hidden="true" ${state.askAgentAfterDraft ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
             <span class="ask-agent-check" aria-hidden="true">${checkIcon()}</span>
             <span class="ask-agent-copy">
-              <strong>Ask Agent</strong>
-              <em>Optional. Agent denial or missing information creates the repeat paused.</em>
+              <strong>${escapeHtml(t('Ask Agent'))}</strong>
+              <em>${escapeHtml(t('Optional. Agent denial or missing information creates the repeat paused.'))}</em>
             </span>
           </label>
         ` : '<span class="recurring-action-spacer"></span>'}
@@ -53996,16 +54236,16 @@ function recurringComposer(): string {
         </div>
       </div>
       <details class="recurring-advanced-details">
-        <summary>Advanced</summary>
+        <summary>${escapeHtml(t('Advanced'))}</summary>
         <div class="contract-section recurring-advanced-section">
           <div>
-            <span>Caps and reminders</span>
-            <p>Stop time and webhook reminders.</p>
+            <span>${escapeHtml(t('Caps and reminders'))}</span>
+            <p>${escapeHtml(t('Stop time and webhook reminders.'))}</p>
           </div>
           <div class="recurring-grid recurring-advanced-grid">
-            ${fieldInput('recurringMaxOccurrences', 'Max occurrences', draft.maxOccurrences, mobile ? 'No limit' : 'empty for indefinite')}
-            ${fieldInput('recurringExpiresAt', 'Expires at', draft.expiresAt, '', 'datetime-local')}
-            ${fieldInput('recurringWebhookUrl', 'Webhook URL', draft.webhookUrl, 'https://example.com/agentic-webhook')}
+            ${fieldInput('recurringMaxOccurrences', t('Max occurrences'), draft.maxOccurrences, mobile ? t('No limit') : t('empty for indefinite'))}
+            ${fieldInput('recurringExpiresAt', t('Expires at'), draft.expiresAt, '', 'datetime-local')}
+            ${fieldInput('recurringWebhookUrl', t('Webhook URL'), draft.webhookUrl, 'https://example.com/agentic-webhook')}
           </div>
         </div>
       </details>
@@ -54017,13 +54257,14 @@ function recurringComposer(): string {
 function recurringDraftLimitLabel(draft: RecurringDraft): string {
   const parts: string[] = [];
   if (draft.maxOccurrences.trim()) {
-    parts.push(`${draft.maxOccurrences.trim()} occurrence${draft.maxOccurrences.trim() === '1' ? '' : 's'}`);
+    const count = draft.maxOccurrences.trim();
+    parts.push(count === '1' ? tf('{n} occurrence', { n: count }) : tf('{n} occurrences', { n: count }));
   }
   if (draft.expiresAt.trim()) {
     const expiresAt = optionalLocalDateTimeToIso(draft.expiresAt);
-    parts.push(expiresAt ? `expires ${formatDateTime(expiresAt)}` : 'expiry needs a valid date');
+    parts.push(expiresAt ? tf('expires {date}', { date: formatDateTime(expiresAt) }) : t('expiry needs a valid date'));
   }
-  return parts.length ? parts.join(' · ') : 'No end condition';
+  return parts.length ? parts.join(' · ') : t('No end condition');
 }
 
 function recurringDraftIsSwap(draft: RecurringDraft): boolean {
@@ -54125,20 +54366,20 @@ function recurringDraftSpendToken(draft: RecurringDraft): string {
 }
 
 function recurringDraftAssetLabel(draft: RecurringDraft): string {
-  const amount = draft.amount || 'Amount';
+  const amount = draft.amount || t('Amount');
   if (recurringDraftIsSwap(draft)) {
-    const input = draft.inputToken ? tokenDisplayLabel(draft.inputToken) : 'Input';
-    const output = draft.outputToken ? tokenDisplayLabel(draft.outputToken) : 'Output';
+    const input = draft.inputToken ? tokenDisplayLabel(draft.inputToken) : t('Input');
+    const output = draft.outputToken ? tokenDisplayLabel(draft.outputToken) : t('Output');
     return `${amount} ${input} -> ${output}`;
   }
-  return `${amount} ${draft.token ? tokenDisplayLabel(draft.token) : 'Token'}`;
+  return `${amount} ${draft.token ? tokenDisplayLabel(draft.token) : t('Token')}`;
 }
 
 function recurringDraftSwapRouteLabel(draft: RecurringDraft): string {
-  const input = draft.inputToken ? tokenDisplayLabel(draft.inputToken) : 'Input token';
-  const output = draft.outputToken ? tokenDisplayLabel(draft.outputToken) : 'Output token';
+  const input = draft.inputToken ? tokenDisplayLabel(draft.inputToken) : t('Input token');
+  const output = draft.outputToken ? tokenDisplayLabel(draft.outputToken) : t('Output token');
   const slippage = draft.slippageBps.trim() ? formatSwapSlippagePercent(Number(draft.slippageBps)) : '';
-  return `${input} -> ${output}${slippage ? `, ${slippage} max` : ''}`;
+  return `${input} -> ${output}${slippage ? tf(', {slippage} max', { slippage }) : ''}`;
 }
 
 function recurringContractSummaryView(
@@ -54148,20 +54389,20 @@ function recurringContractSummaryView(
   limit: string,
 ): string {
   const assetValue = recurringDraftAssetLabel(draft);
-  const recipientLabel = isSwap ? 'Swap' : 'Recipient';
+  const recipientLabel = isSwap ? t('Swap') : t('Recipient');
   const recipientValue = isSwap ? recurringDraftSwapRouteLabel(draft) : recipient;
   const cadenceValue = recurringDraftScheduleLabel(draft);
   if (isMobileAppViewport()) {
     const tabs: Array<{ id: AndroidRepeatSummaryTab; label: string; value: string }> = [
-      { id: 'asset', label: 'Asset', value: assetValue },
-      { id: 'recipient', label: isSwap ? 'Swap' : 'Recipient', value: recipientValue },
-      { id: 'cadence', label: 'Cadence', value: cadenceValue },
-      { id: 'end-condition', label: 'End', value: limit },
+      { id: 'asset', label: t('Asset'), value: assetValue },
+      { id: 'recipient', label: isSwap ? t('Swap') : t('Recipient'), value: recipientValue },
+      { id: 'cadence', label: t('Cadence'), value: cadenceValue },
+      { id: 'end-condition', label: t('End'), value: limit },
     ];
     const active = tabs.find((tab) => tab.id === state.androidRepeatSummaryTab) ?? tabs[0]!;
     return `
       <div class="recurring-contract-summary-tabbed android-tab-card" data-android-tab-group="repeat-summary">
-        <div class="android-tab-strip recurring-summary-strip" role="tablist" aria-label="Repeat contract summary">
+        <div class="android-tab-strip recurring-summary-strip" role="tablist" aria-label="${escapeHtml(t('Repeat contract summary'))}">
           ${tabs.map((tab) => mobileTabButton('repeat-summary', tab.id, tab.label, tab.id === active.id)).join('')}
         </div>
         <div class="android-tab-body recurring-summary-body" role="tabpanel">
@@ -54173,10 +54414,10 @@ function recurringContractSummaryView(
   }
   return `
     <dl class="contract-summary recurring-create-summary">
-      ${definitionRow('Asset', assetValue)}
+      ${definitionRow(t('Asset'), assetValue)}
       ${definitionRow(recipientLabel, recipientValue)}
-      ${definitionRow('Cadence', cadenceValue)}
-      ${definitionRow('End condition', limit)}
+      ${definitionRow(t('Cadence'), cadenceValue)}
+      ${definitionRow(t('End condition'), limit)}
     </dl>
   `;
 }
@@ -54195,11 +54436,11 @@ function recurringDraftPreviewPanel(draft: RecurringDraft): string {
   return `
     <div class="recurring-next-preview recurring-production-preview">
       <div>
-        <span>Next run</span>
+        <span>${escapeHtml(t('Next run'))}</span>
         <strong id="recurringNextOccurrence">${escapeHtml(runs[0] ? formatDateTime(runs[0]) : recurringNextOccurrenceLabel(draft))}</strong>
       </div>
       <div class="recurring-preview-recurrences">
-        <span>Recurrences</span>
+        <span>${escapeHtml(t('Recurrences'))}</span>
         <strong>${escapeHtml(remainingDisplay)}</strong>
       </div>
       ${spendCopy ? `<p>${escapeHtml(spendCopy)}</p>` : ''}
@@ -54209,20 +54450,33 @@ function recurringDraftPreviewPanel(draft: RecurringDraft): string {
 
 function recurringLifetimeSpendMobileCopy(spend: LifetimeSpend, token: string): string {
   const tokenLabel = tokenDisplayLabel(token);
-  const rate = `${recurringRateAmountLabel(spend.perWeek)} ${tokenLabel}/wk · ${recurringRateAmountLabel(spend.perMonth)} ${tokenLabel}/mo`;
+  const rate = tf('{perWeek} {token}/wk · {perMonth} {token}/mo', {
+    perWeek: recurringRateAmountLabel(spend.perWeek),
+    perMonth: recurringRateAmountLabel(spend.perMonth),
+    token: tokenLabel,
+  });
   if (spend.bounded && spend.totalAmount !== undefined && spend.totalRuns !== undefined) {
-    return `Up to ${spend.totalRuns} run${spend.totalRuns === 1 ? '' : 's'} · ${spend.totalAmount} ${tokenLabel}. ${rate}.`;
+    const runs = spend.totalRuns === 1
+      ? tf('Up to {n} run', { n: spend.totalRuns })
+      : tf('Up to {n} runs', { n: spend.totalRuns });
+    return tf('{runs} · {amount} {token}. {rate}.', { runs, amount: spend.totalAmount, token: tokenLabel, rate });
   }
-  return `No cap · ${rate}.`;
+  return tf('No cap · {rate}.', { rate });
 }
 
 function lifetimeSpendCopy(spend: LifetimeSpend, token: string): string {
   const tokenLabel = tokenDisplayLabel(token);
-  const rate = `${spend.perWeek} ${tokenLabel}/week · ${spend.perMonth} ${tokenLabel}/month`;
+  const rate = tf('{perWeek} {token}/week · {perMonth} {token}/month', {
+    perWeek: spend.perWeek,
+    perMonth: spend.perMonth,
+    token: tokenLabel,
+  });
   if (spend.bounded && spend.totalAmount !== undefined && spend.totalRuns !== undefined) {
-    return `Runs up to ${spend.totalRuns} time${spend.totalRuns === 1 ? '' : 's'} and spends up to ${spend.totalAmount} ${tokenLabel}. ${rate}.`;
+    return spend.totalRuns === 1
+      ? tf('Runs up to {n} time and spends up to {amount} {token}. {rate}.', { n: spend.totalRuns, amount: spend.totalAmount, token: tokenLabel, rate })
+      : tf('Runs up to {n} times and spends up to {amount} {token}. {rate}.', { n: spend.totalRuns, amount: spend.totalAmount, token: tokenLabel, rate });
   }
-  return `No lifetime cap set. Current rate estimate: ${rate}.`;
+  return tf('No lifetime cap set. Current rate estimate: {rate}.', { rate });
 }
 
 function recurringPresetControls(): string {
@@ -54234,7 +54488,7 @@ function recurringPresetControls(): string {
       attrs: { 'data-recurring-preset-picker': true },
       disabled: state.busy,
       className: 'recurring-top-picker recurring-preset-picker',
-      title: 'Repeat payment type',
+      title: t('Repeat payment type'),
       options: RECURRING_PRESETS.map((preset) => ({
         value: preset.id,
         label: preset.title,
@@ -54247,10 +54501,10 @@ function recurringPresetControls(): string {
 
 function recurringPresetMethodControls(): string {
   return `
-    <div class="one-time-method-control recurring-method-control" role="group" aria-label="Repeat payment type">
+    <div class="one-time-method-control recurring-method-control" role="group" aria-label="${escapeHtml(t('Repeat payment type'))}">
       <span class="one-time-method-label">
-        <strong id="recurringPresetPickerLabel">Repeat type</strong>
-        <em>What repeats</em>
+        <strong id="recurringPresetPickerLabel">${escapeHtml(t('Repeat type'))}</strong>
+        <em>${escapeHtml(t('What repeats'))}</em>
       </span>
       ${recurringPresetControls()}
     </div>
@@ -54261,9 +54515,9 @@ function recurringConnectorActionPicker(draft: RecurringDraft, connector: Protoc
   const forms = connectorActionFormsForConnector(connector);
   const selectedForm = recurringDraftConnectorActionForm(draft) ?? forms[0];
   return `
-    <div class="recurring-connector-action-control" aria-label="Repeat connector template">
+    <div class="recurring-connector-action-control" aria-label="${escapeHtml(t('Repeat connector template'))}">
       <span class="one-time-method-label">
-        <strong id="recurringConnectorActionPickerLabel">Plan template</strong>
+        <strong id="recurringConnectorActionPickerLabel">${escapeHtml(t('Plan template'))}</strong>
         <em class="accent-note">${escapeHtml(connector.name)}</em>
       </span>
       ${selectPicker({
@@ -54273,15 +54527,15 @@ function recurringConnectorActionPicker(draft: RecurringDraft, connector: Protoc
         attrs: { 'data-recurring-field': 'connectorOperationId' },
         disabled: state.busy || forms.length === 0,
         className: 'recurring-top-picker recurring-connector-action-picker',
-        title: selectedForm ? `${connector.name}: ${selectedForm.operationLabel}` : `${connector.name} templates`,
+        title: selectedForm ? tf('{connector}: {operation}', { connector: connector.name, operation: selectedForm.operationLabel }) : tf('{connector} templates', { connector: connector.name }),
         options: forms.length
           ? forms.map((form) => ({
             value: form.id,
-            label: form.operationLabel,
+            label: t(form.operationLabel),
             meta: connectorTemplateSourceLabel(form),
-            detail: form.description,
+            detail: t(form.description),
           }))
-          : [{ value: '', label: 'No connector templates', meta: connector.name, disabled: true }],
+          : [{ value: '', label: t('No connector templates'), meta: connector.name, disabled: true }],
       })}
     </div>
   `;
@@ -54290,7 +54544,7 @@ function recurringConnectorActionPicker(draft: RecurringDraft, connector: Protoc
 type RecurringTokenField = 'token' | 'inputToken' | 'outputToken';
 
 function recurringTokenSelect(value: string): string {
-  return recurringTokenSelectField('token', 'Token', value);
+  return recurringTokenSelectField('token', t('Token'), value);
 }
 
 function recurringTokenSelectField(field: RecurringTokenField, label: string, value: string): string {
@@ -54310,7 +54564,7 @@ function recurringTokenSelectField(field: RecurringTokenField, label: string, va
     <div class="field compact token-choice-field ${state.recurringErrors[errorKey] ? 'field-error' : ''}">
       <span class="token-choice-head">
         <span>${escapeHtml(label)}</span>
-        <span class="token-choice-mode" role="group" aria-label="Repeat token input mode">
+        <span class="token-choice-mode" role="group" aria-label="${escapeHtml(t('Repeat token input mode'))}">
           <button
             type="button"
             data-recurring-token-mode="preset"
@@ -54318,7 +54572,7 @@ function recurringTokenSelectField(field: RecurringTokenField, label: string, va
             class="${presetMode ? 'active' : ''}"
             ${disabled ? 'disabled' : ''}
           >
-            List
+            ${escapeHtml(t('List'))}
           </button>
           <button
             type="button"
@@ -54327,7 +54581,7 @@ function recurringTokenSelectField(field: RecurringTokenField, label: string, va
             class="${presetMode ? '' : 'active'}"
             ${disabled ? 'disabled' : ''}
           >
-            Mint
+            ${escapeHtml(t('Mint'))}
           </button>
         </span>
       </span>
@@ -54349,7 +54603,7 @@ function recurringTokenSelectField(field: RecurringTokenField, label: string, va
             data-token-search-input="${escapeHtml(recurringTokenSearchKey(field))}"
             ${executionValue ? `data-token-execution-value="${escapeHtml(executionValue)}"` : ''}
             value="${escapeHtml(customValue)}"
-            placeholder="Search symbol/name or paste mint"
+            placeholder="${escapeHtml(t('Search symbol/name or paste mint'))}"
             autocomplete="off"
             spellcheck="false"
             ${disabled ? 'disabled' : ''}
@@ -54367,7 +54621,7 @@ function recurringTokenSelectField(field: RecurringTokenField, label: string, va
 
 function recurringSlippageInput(value: string): string {
   const error = fieldError('recurringSlippageBps');
-  const label = isMobileAppViewport() ? 'Slippage' : 'Max slippage';
+  const label = isMobileAppViewport() ? t('Slippage') : t('Max slippage');
   return `
     <label class="field compact ${state.recurringErrors.recurringSlippageBps ? 'field-error' : ''}">
       <span>${escapeHtml(label)}</span>
@@ -54458,13 +54712,13 @@ function recurringRecipientInput(value: string): string {
   const policy = recipientPolicyStatus(value);
   return `
     <label class="field compact recipient-field ${state.recurringErrors.recurringRecipient ? 'field-error' : ''}">
-      <span>Recipient *</span>
+      <span>${escapeHtml(t('Recipient *'))}</span>
       ${recipientSelectForField('recurring', 'recipient', value, state.busy)}
       <input
         id="recurringRecipient"
         data-recurring-field="recipient"
         value="${escapeHtml(value)}"
-        placeholder="Recipient public key"
+        placeholder="${escapeHtml(t('Recipient public key'))}"
         autocomplete="off"
         spellcheck="false"
         ${state.busy ? 'disabled' : ''}
@@ -54482,7 +54736,7 @@ function recurringList(): string {
   }
   const payments = filterRecurringPaymentsByAgentReview(allPayments);
   if (payments.length === 0) {
-    return signaturePlaceholder('No repeats match', 'No saved repeat payments match this AI Connector filter.');
+    return signaturePlaceholder(t('No repeats match'), t('No saved repeat payments match this AI Connector filter.'));
   }
   const paginatedPayments = paginateList(payments, 'recurring');
   if (paginatedPayments.items.length > 1 && isMobileAppViewport()) {
@@ -54494,7 +54748,7 @@ function recurringList(): string {
     return `
       <div class="recurring-list recurring-list-flip" data-android-tab-group="recurring">
         <div class="android-tab-card recurring-card-flip">
-          <div class="android-tab-strip recurring-flip-strip" role="tablist" aria-label="Repeat payments">
+          <div class="android-tab-strip recurring-flip-strip" role="tablist" aria-label="${escapeHtml(t('Repeat payments'))}">
             ${paginatedPayments.items.map((p, i) => recurringFlipTab(p, i, p.id === activeId)).join('')}
           </div>
           <div class="android-tab-body recurring-flip-body" role="tabpanel">
@@ -54502,14 +54756,14 @@ function recurringList(): string {
           </div>
         </div>
       </div>
-      ${listPagination('recurring', paginatedPayments, 'Active recurring')}
+      ${listPagination('recurring', paginatedPayments, t('Active recurring'))}
     `;
   }
   return `
     <div class="recurring-list">
       ${paginatedPayments.items.map(recurringCard).join('')}
     </div>
-    ${listPagination('recurring', paginatedPayments, 'Active recurring')}
+    ${listPagination('recurring', paginatedPayments, t('Active recurring'))}
   `;
 }
 
@@ -54594,7 +54848,7 @@ function recurringCard(payment: RecurringPayment): string {
   const pauseSource = recurringPauseSource(payment);
   const safePaymentId = escapeHtml(payment.id);
   const agentReviewAction = hasDetectedAgentReviewPath()
-    ? `<button class="recurring-agent-action" data-recurring-op="agent-review" data-recurring-id="${safePaymentId}" ${state.busy || !canRunAgentReview() ? 'disabled' : ''}>Ask agent again</button>`
+    ? `<button class="recurring-agent-action" data-recurring-op="agent-review" data-recurring-id="${safePaymentId}" ${state.busy || !canRunAgentReview() ? 'disabled' : ''}>${escapeHtml(t('Ask agent again'))}</button>`
     : '';
   const actionLayoutClass = agentReviewAction ? 'has-agent-review-action' : 'solo-primary-action';
   return `
@@ -54603,9 +54857,9 @@ function recurringCard(payment: RecurringPayment): string {
         <div class="recurring-card-head">
           <div class="recurring-card-title-block">
             <div class="recurring-card-meta">
-              <span class="status-pill ${statusLabelToneClass(status.tone)}">${escapeHtml(pauseSource === 'agent' ? 'Agent paused' : status.label)}</span>
+              <span class="status-pill ${statusLabelToneClass(status.tone)}">${escapeHtml(pauseSource === 'agent' ? t('Agent paused') : status.label)}</span>
               ${storageBadgeHtml(recurringPaymentStorageBadge(payment))}
-              ${pauseSource === 'user' ? '<span class="recurring-pause-source-pill user">User paused</span>' : ''}
+              ${pauseSource === 'user' ? `<span class="recurring-pause-source-pill user">${escapeHtml(t('User paused'))}</span>` : ''}
               ${recurringAgentDecisionPill(payment)}
               <span>${escapeHtml(recurringCadenceLabel(payment.cadence))}</span>
               <span>${escapeHtml(recurringOccurrenceCountLabel(payment))}</span>
@@ -54616,8 +54870,8 @@ function recurringCard(payment: RecurringPayment): string {
           ${recurringCardHero(payment, nextRuns)}
           <div class="recurring-actions recurring-card-actions ${actionLayoutClass}">
             ${agentReviewAction}
-            <button class="recurring-primary-action" data-recurring-op="${flipOp}" data-recurring-id="${safePaymentId}" ${completed || state.busy ? 'disabled' : ''}>${payment.status === 'active' ? 'Pause' : 'Resume'}</button>
-            <button class="recurring-history-action" data-recurring-op="history" data-recurring-id="${safePaymentId}" ${state.busy ? 'disabled' : ''}>${history ? 'Refresh past payments' : 'Load past payments'}</button>
+            <button class="recurring-primary-action" data-recurring-op="${flipOp}" data-recurring-id="${safePaymentId}" ${completed || state.busy ? 'disabled' : ''}>${escapeHtml(payment.status === 'active' ? t('Pause') : t('Resume'))}</button>
+            <button class="recurring-history-action" data-recurring-op="history" data-recurring-id="${safePaymentId}" ${state.busy ? 'disabled' : ''}>${escapeHtml(history ? t('Refresh past payments') : t('Load past payments'))}</button>
           </div>
         </div>
         ${recurringCardSummaryGrid(payment, nextRuns, spend)}
@@ -54656,19 +54910,19 @@ function recurringCardSubtitle(payment: RecurringPayment): string {
     const input = payment.inputToken || payment.token || 'SOL';
     const output = payment.outputToken || 'USDC';
     const label = `${payment.amount} ${tokenDisplayLabel(input)} -> ${tokenDisplayLabel(output)}`;
-    return `<p title="${escapeHtml(`${payment.amount} ${tokenDisplayTitle(input)} to ${tokenDisplayTitle(output)}`)}">${escapeHtml(label)}</p>`;
+    return `<p title="${escapeHtml(tf('{amount} {input} to {output}', { amount: payment.amount, input: tokenDisplayTitle(input), output: tokenDisplayTitle(output) }))}">${escapeHtml(label)}</p>`;
   }
-  return `<p title="${escapeHtml(payment.recipient)}">To ${escapeHtml(recipientDisplayLabel(payment.recipient))}</p>`;
+  return `<p title="${escapeHtml(payment.recipient)}">${escapeHtml(tf('To {recipient}', { recipient: recipientDisplayLabel(payment.recipient) }))}</p>`;
 }
 
 function recurringPaymentTitle(payment: RecurringPayment): string {
   if (recurringPaymentIsSwap(payment)) {
     const input = tokenDisplayLabel(payment.inputToken || payment.token || 'SOL');
     const output = tokenDisplayLabel(payment.outputToken || 'USDC');
-    return `Recurring ${input} -> ${output} swap`;
+    return tf('Recurring {input} -> {output} swap', { input, output });
   }
   const tokenLabel = tokenDisplayLabel(payment.token);
-  return payment.token === 'SOL' ? 'Repeat SOL transfer' : `Repeat ${tokenLabel} transfer`;
+  return payment.token === 'SOL' ? tf('Repeat {token} transfer', { token: 'SOL' }) : tf('Repeat {token} transfer', { token: tokenLabel });
 }
 
 function recurringPaymentIsSwap(payment: RecurringPayment): boolean {
@@ -54676,11 +54930,11 @@ function recurringPaymentIsSwap(payment: RecurringPayment): boolean {
 }
 
 function recurringCardHero(payment: RecurringPayment, nextRuns: string[]): string {
-  const nextRun = nextRuns[0] ? `Next ${formatDateTime(nextRuns[0])}` : 'No future run preview';
+  const nextRun = nextRuns[0] ? tf('Next {date}', { date: formatDateTime(nextRuns[0]) }) : t('No future run preview');
   const tokenLabel = tokenDisplayLabel(recurringPaymentSpendToken(payment));
   const context = recurringPaymentConnectorContextLabel(payment);
   return `
-    <div class="recurring-card-value" title="${escapeHtml(`${payment.amount} ${tokenDisplayTitle(recurringPaymentSpendToken(payment))} - ${nextRun}`)}">
+    <div class="recurring-card-value" title="${escapeHtml(tf('{amount} {token} - {nextRun}', { amount: payment.amount, token: tokenDisplayTitle(recurringPaymentSpendToken(payment)), nextRun }))}">
       <strong>${escapeHtml(`${payment.amount} ${tokenLabel}`)}</strong>
       <span>${escapeHtml(nextRun)}</span>
       ${context ? `<span class="recurring-card-context">${escapeHtml(context)}</span>` : ''}
@@ -54693,25 +54947,25 @@ function recurringCardSummaryGrid(
   nextRuns: string[],
   spend: LifetimeSpend,
 ): string {
-  const nextRun = nextRuns[0] ? formatDateTime(nextRuns[0]) : 'No preview';
+  const nextRun = nextRuns[0] ? formatDateTime(nextRuns[0]) : t('No preview');
   const isSwap = recurringPaymentIsSwap(payment);
   const spendToken = recurringPaymentSpendToken(payment);
   const routeSummary = isSwap
     ? tokenRouteDisplaySummary(spendToken, payment.outputToken || 'USDC')
     : undefined;
   const tokenSummary = routeSummary
-    ?? tokenDisplaySummary(payment.token, { copyLabel: 'Copy token', copyName: 'Token mint' });
+    ?? tokenDisplaySummary(payment.token, { copyLabel: t('Copy token'), copyName: t('Token mint') });
   const rows: Array<{ label: string; value: string; html?: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }> = [
-    ...(isSwap ? [] : [{ label: 'Recipient', value: recipientDisplayLabel(payment.recipient), title: payment.recipient, copyValue: payment.recipient }]),
-    { label: routeSummary ? 'Route' : 'Token', value: tokenSummary.value, html: routeSummary?.html, title: tokenSummary.title, copyActions: tokenSummary.copyActions },
-    ...(isSwap ? [{ label: 'Slippage', value: recurringPaymentSlippageLabel(payment) }] : []),
-    { label: 'Next run', value: nextRun },
-    { label: 'Cadence', value: recurringScheduleShortLabel(payment) },
-    { label: 'Limit', value: recurringLimitShortLabel(payment) },
-    { label: 'Rate', value: recurringRateShortLabel(spend, spendToken), tone: 'amount' },
+    ...(isSwap ? [] : [{ label: t('Recipient'), value: recipientDisplayLabel(payment.recipient), title: payment.recipient, copyValue: payment.recipient }]),
+    { label: routeSummary ? t('Route') : t('Token'), value: tokenSummary.value, html: routeSummary?.html, title: tokenSummary.title, copyActions: tokenSummary.copyActions },
+    ...(isSwap ? [{ label: t('Slippage'), value: recurringPaymentSlippageLabel(payment) }] : []),
+    { label: t('Next run'), value: nextRun },
+    { label: t('Cadence'), value: recurringScheduleShortLabel(payment) },
+    { label: t('Limit'), value: recurringLimitShortLabel(payment) },
+    { label: t('Rate'), value: recurringRateShortLabel(spend, spendToken), tone: 'amount' },
   ];
   return `
-    <dl class="recurring-card-summary-grid" aria-label="Repeat payment summary">
+    <dl class="recurring-card-summary-grid" aria-label="${escapeHtml(t('Repeat payment summary'))}">
       ${rows.map((row) => recurringCardSummaryItem(row)).join('')}
     </dl>
   `;
@@ -54723,7 +54977,7 @@ function recurringPaymentSpendToken(payment: RecurringPayment): string {
 
 function recurringPaymentSlippageLabel(payment: RecurringPayment): string {
   const value = payment.slippageBps?.trim();
-  if (!value) return 'Default';
+  if (!value) return t('Default');
   return formatSwapSlippagePercent(Number(value)) || value;
 }
 
@@ -54745,12 +54999,12 @@ function recurringCardNote(payment: RecurringPayment): string {
   const note = payment.note?.trim();
   if (!note) return '';
   return `
-    <section class="review-plan-user-note recurring-card-note" aria-label="Repeat payment note" title="${escapeHtml(note)}">
-      <span>Note</span>
+    <section class="review-plan-user-note recurring-card-note" aria-label="${escapeHtml(t('Repeat payment note'))}" title="${escapeHtml(note)}">
+      <span>${escapeHtml(t('Note'))}</span>
       ${expandableCopyHtml(note, {
         className: 'review-plan-user-note-copy',
-        showLabel: 'Show full note',
-        hideLabel: 'Hide note',
+        showLabel: t('Show full note'),
+        hideLabel: t('Hide note'),
       })}
     </section>
   `;
@@ -54764,14 +55018,14 @@ function recurringAgentReviewStrip(payment: RecurringPayment): string {
     ? `${agentReviewSourceLabel(review)} - ${formatDateTime(review.checkedAt)}`
     : agentReviewSourceLabel(review);
   const stateDetail = payment.status === 'paused' && review.status !== 'approved'
-    ? 'Schedule is paused until the agent approves or you resume manually.'
-    : 'Schedule remains manual at each due wallet approval.';
+    ? t('Schedule is paused until the agent approves or you resume manually.')
+    : t('Schedule remains manual at each due wallet approval.');
   const language = agentReviewDisplayLanguage(review);
   const reviewLanguageAttrs = shouldLocalizeAgentReview(language)
     ? ` lang="${escapeHtml(language)}" data-review-language="${escapeHtml(language)}"`
     : '';
   return `
-    <section class="agent-review-strip recurring-agent-review ${escapeHtml(review.status)}" aria-label="Repeat agent review"${reviewLanguageAttrs}>
+    <section class="agent-review-strip recurring-agent-review ${escapeHtml(review.status)}" aria-label="${escapeHtml(t('Repeat agent review'))}"${reviewLanguageAttrs}>
       <div class="agent-review-strip-head">
         <span>${escapeHtml(agentReviewUiLabel('review', language))}</span>
         <strong class="agent-review-state ${escapeHtml(review.status)}">${escapeHtml(label)}</strong>
@@ -54795,7 +55049,7 @@ function recurringCardFooter(
 ): string {
   const completed = isRecurringPaymentCompleted(payment);
   const safePaymentId = escapeHtml(payment.id);
-  const historyLabel = history ? 'Refresh past payments' : 'Load past payments';
+  const historyLabel = history ? t('Refresh past payments') : t('Load past payments');
   return `
     <div class="recurring-card-footer-row">
       <div class="recurring-card-footer-stack">
@@ -54804,13 +55058,13 @@ function recurringCardFooter(
         ${recurringNotificationsPanel(payment, notifications, source)}
       </div>
       <div class="recurring-card-footer-actions">
-        <button class="utility danger recurring-delete-mini" data-recurring-op="delete" data-recurring-id="${safePaymentId}" ${completed || state.busy ? 'disabled' : ''}>Delete</button>
-        <div class="mobile-card-footer-actions recurring-card-mobile-actions" aria-label="Mobile repeat actions">
+        <button class="utility danger recurring-delete-mini" data-recurring-op="delete" data-recurring-id="${safePaymentId}" ${completed || state.busy ? 'disabled' : ''}>${escapeHtml(t('Delete'))}</button>
+        <div class="mobile-card-footer-actions recurring-card-mobile-actions" aria-label="${escapeHtml(t('Mobile repeat actions'))}">
           <details class="mobile-card-action-menu">
-            <summary>More actions</summary>
+            <summary>${escapeHtml(t('More actions'))}</summary>
             <div class="mobile-card-action-menu-body">
               <button class="utility recurring-history-action" data-recurring-op="history" data-recurring-id="${safePaymentId}" ${state.busy ? 'disabled' : ''}>${escapeHtml(historyLabel)}</button>
-              <button class="utility danger recurring-delete-mini" data-recurring-op="delete" data-recurring-id="${safePaymentId}" ${completed || state.busy ? 'disabled' : ''}>Delete</button>
+              <button class="utility danger recurring-delete-mini" data-recurring-op="delete" data-recurring-id="${safePaymentId}" ${completed || state.busy ? 'disabled' : ''}>${escapeHtml(t('Delete'))}</button>
             </div>
           </details>
         </div>
@@ -54827,7 +55081,7 @@ function recurringUpcomingRunsDetails(payment: RecurringPayment, nextRuns: strin
   const display = remaining === null ? '∞' : String(remaining);
   return `
     <div class="recurring-upcoming-runs recurring-upcoming-runs-compact">
-      <span>Next runs</span>
+      <span>${escapeHtml(t('Next runs'))}</span>
       <strong>${escapeHtml(display)}</strong>
     </div>
   `;
@@ -54835,7 +55089,7 @@ function recurringUpcomingRunsDetails(payment: RecurringPayment, nextRuns: strin
 
 function recurringOccurrenceCountLabel(payment: RecurringPayment): string {
   const created = payment.occurrencesCreated ?? 0;
-  return payment.maxOccurrences ? `${created} of ${payment.maxOccurrences}` : `${created} created`;
+  return payment.maxOccurrences ? tf('{created} of {max}', { created, max: payment.maxOccurrences }) : tf('{created} created', { created });
 }
 
 function recurringSourceLabel(source: WorkflowRecordSource): string {
@@ -54851,30 +55105,35 @@ function recurringSourceLabel(source: WorkflowRecordSource): string {
 
 function recurringScheduleShortLabel(payment: RecurringPayment): string {
   if (payment.cadence === 'weekly') {
-    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    return `${days[payment.dayOfWeek ?? -1] ?? 'Weekly'} ${displayLocalTime(payment.localTime)}`;
+    const days = [t('Sun'), t('Mon'), t('Tue'), t('Wed'), t('Thu'), t('Fri'), t('Sat')];
+    const day = days[payment.dayOfWeek ?? -1] ?? t('Weekly');
+    return tf('{day} {time}', { day, time: displayLocalTime(payment.localTime) });
   }
   if (payment.cadence === 'monthly') {
-    return `Day ${payment.dayOfMonth ?? '?'} ${displayLocalTime(payment.localTime)}`;
+    return tf('Day {day} {time}', { day: payment.dayOfMonth ?? '?', time: displayLocalTime(payment.localTime) });
   }
   if (payment.cadence === 'interval_hours') {
-    return `Every ${payment.intervalHours ?? '?'} hr`;
+    return tf('Every {n} hr', { n: payment.intervalHours ?? '?' });
   }
   if (payment.cadence === 'interval_minutes') {
-    return `Every ${payment.intervalMinutes ?? '?'} min`;
+    return tf('Every {n} min', { n: payment.intervalMinutes ?? '?' });
   }
-  return `Every ${payment.intervalDays ?? '?'} day`;
+  return tf('Every {n} day', { n: payment.intervalDays ?? '?' });
 }
 
 function recurringLimitShortLabel(payment: RecurringPayment): string {
   const created = payment.occurrencesCreated ?? 0;
-  const count = payment.maxOccurrences ? `${created} of ${payment.maxOccurrences}` : 'Indefinite';
-  return payment.expiresAt ? `${count} - expires ${formatDateTime(payment.expiresAt)}` : count;
+  const count = payment.maxOccurrences ? tf('{created} of {max}', { created, max: payment.maxOccurrences }) : t('Indefinite');
+  return payment.expiresAt ? tf('{count} - expires {date}', { count, date: formatDateTime(payment.expiresAt) }) : count;
 }
 
 function recurringRateShortLabel(spend: LifetimeSpend, token: string): string {
   const tokenLabel = tokenDisplayLabel(token);
-  return `${recurringRateAmountLabel(spend.perWeek)} ${tokenLabel}/week - ${recurringRateAmountLabel(spend.perMonth)} ${tokenLabel}/month`;
+  return tf('{perWeek} {token}/week - {perMonth} {token}/month', {
+    perWeek: recurringRateAmountLabel(spend.perWeek),
+    perMonth: recurringRateAmountLabel(spend.perMonth),
+    token: tokenLabel,
+  });
 }
 
 function recurringRateAmountLabel(value: string): string {
@@ -54897,19 +55156,19 @@ function recurringHistoryPanel(
   if (history.occurrences.length === 0) {
     return `
       <div class="recurring-history-strip">
-        <strong>No runs yet</strong>
-        <span>${escapeHtml(payment.nextDueAt ? `First run is scheduled for ${formatDateTime(payment.nextDueAt)}.` : 'Runs appear here after they materialize.')}</span>
+        <strong>${escapeHtml(t('No runs yet'))}</strong>
+        <span>${escapeHtml(payment.nextDueAt ? tf('First run is scheduled for {date}.', { date: formatDateTime(payment.nextDueAt) }) : t('Runs appear here after they materialize.'))}</span>
       </div>
     `;
   }
   return `
     <div class="recurring-history-list">
       <div class="recurring-history-head">
-        <strong>Payment history</strong>
-        ${history.loadedAt ? `<span>Updated ${escapeHtml(formatDateTime(history.loadedAt))}</span>` : ''}
+        <strong>${escapeHtml(t('Payment history'))}</strong>
+        ${history.loadedAt ? `<span>${escapeHtml(tf('Updated {date}', { date: formatDateTime(history.loadedAt) }))}</span>` : ''}
       </div>
       ${history.occurrences.map(recurringHistoryRow).join('')}
-      ${history.nextCursor ? `<button data-recurring-op="history-more" data-recurring-id="${payment.id}" data-recurring-cursor="${escapeHtml(history.nextCursor)}" ${state.busy ? 'disabled' : ''}>Show older</button>` : ''}
+      ${history.nextCursor ? `<button data-recurring-op="history-more" data-recurring-id="${payment.id}" data-recurring-cursor="${escapeHtml(history.nextCursor)}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Show older'))}</button>` : ''}
     </div>
   `;
 }
@@ -54927,14 +55186,14 @@ function recurringNotificationsPanel(
   return `
     <div class="recurring-notifications-panel">
       <div class="recurring-history-head">
-        <strong>Notifications</strong>
+        <strong>${escapeHtml(t('Notifications'))}</strong>
         <span>${escapeHtml(short(payment.notifications.webhookUrl))}</span>
       </div>
       ${reveal ? `
         <div class="recurring-secret-reveal">
-          <span>Webhook secret shown once</span>
+          <span>${escapeHtml(t('Webhook secret shown once'))}</span>
           <code>${escapeHtml(reveal.secret)}</code>
-          <button data-copy="${escapeHtml(reveal.secret)}" data-copy-name="Webhook secret">Copy secret</button>
+          <button data-copy="${escapeHtml(reveal.secret)}" data-copy-name="${escapeHtml(t('Webhook secret'))}">${escapeHtml(t('Copy secret'))}</button>
         </div>
       ` : ''}
       ${notifications?.error ? `<p class="error-text">${escapeHtml(notifications.error)}</p>` : ''}
@@ -54945,13 +55204,13 @@ function recurringNotificationsPanel(
         </div>
       ` : `
         <div class="recurring-history-strip">
-          <strong>Delivery status not loaded</strong>
-          <span>Refresh notifications to see webhook attempts and retries.</span>
+          <strong>${escapeHtml(t('Delivery status not loaded'))}</strong>
+          <span>${escapeHtml(t('Refresh notifications to see webhook attempts and retries.'))}</span>
         </div>
       `}
       <div class="recurring-actions inline-actions">
-        <button data-recurring-op="notifications" data-recurring-id="${payment.id}" ${state.busy ? 'disabled' : ''}>Refresh</button>
-        <button data-recurring-op="rotate-secret" data-recurring-id="${payment.id}" ${state.busy ? 'disabled' : ''}>Rotate secret</button>
+        <button data-recurring-op="notifications" data-recurring-id="${payment.id}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Refresh'))}</button>
+        <button data-recurring-op="rotate-secret" data-recurring-id="${payment.id}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Rotate secret'))}</button>
       </div>
     </div>
   `;
@@ -54960,24 +55219,30 @@ function recurringNotificationsPanel(
 function notificationDeliveryLabel(delivery: RecurringNotificationDelivery): string {
   switch (delivery.status) {
     case 'delivered':
-      return 'Webhook delivered';
+      return t('Webhook delivered');
     case 'pending':
-      return 'Webhook pending';
+      return t('Webhook pending');
     case 'failed':
-      return 'Webhook retry scheduled';
+      return t('Webhook retry scheduled');
     case 'abandoned':
-      return 'Webhook abandoned';
+      return t('Webhook abandoned');
   }
 }
 
 function notificationDeliveryDetail(delivery: RecurringNotificationDelivery): string {
   if (delivery.status === 'delivered') {
-    return `Delivered ${delivery.deliveredAt ? formatDateTime(delivery.deliveredAt) : formatDateTime(delivery.updatedAt)} after ${delivery.attempts} attempt${delivery.attempts === 1 ? '' : 's'}.`;
+    const when = delivery.deliveredAt ? formatDateTime(delivery.deliveredAt) : formatDateTime(delivery.updatedAt);
+    return delivery.attempts === 1
+      ? tf('Delivered {when} after {n} attempt.', { when, n: delivery.attempts })
+      : tf('Delivered {when} after {n} attempts.', { when, n: delivery.attempts });
   }
   const retry = delivery.status === 'pending' || delivery.status === 'failed'
-    ? ` Next attempt ${formatDateTime(delivery.nextAttemptAt)}.`
+    ? tf(' Next attempt {date}.', { date: formatDateTime(delivery.nextAttemptAt) })
     : '';
-  return `${delivery.attempts} attempt${delivery.attempts === 1 ? '' : 's'}.${retry}${delivery.lastError ? ` ${delivery.lastError}` : ''}`;
+  const attempts = delivery.attempts === 1
+    ? tf('{n} attempt.', { n: delivery.attempts })
+    : tf('{n} attempts.', { n: delivery.attempts });
+  return `${attempts}${retry}${delivery.lastError ? ` ${delivery.lastError}` : ''}`;
 }
 
 function recurringHistoryRow(occurrence: RecurringOccurrenceHistoryItem): string {
@@ -54987,8 +55252,8 @@ function recurringHistoryRow(occurrence: RecurringOccurrenceHistoryItem): string
     <div class="recurring-history-row">
       <span class="status-pill ${statusLabelToneClass(label.tone)}">${escapeHtml(label.label)}</span>
       <strong>${escapeHtml(formatDateTime(occurrence.dueAt))}</strong>
-      ${occurrence.approval ? `<span>${escapeHtml(`Approval ${short(occurrence.approval.id)}`)}</span>` : ''}
-      ${txid ? `<button data-copy="${escapeHtml(txid)}" data-copy-name="Transaction id">Copy txid</button>` : ''}
+      ${occurrence.approval ? `<span>${escapeHtml(tf('Approval {id}', { id: short(occurrence.approval.id) }))}</span>` : ''}
+      ${txid ? `<button data-copy="${escapeHtml(txid)}" data-copy-name="${escapeHtml(t('Transaction id'))}">${escapeHtml(t('Copy txid'))}</button>` : ''}
       ${occurrence.error ? `<p class="error-text">${escapeHtml(occurrence.error)}</p>` : ''}
     </div>
   `;
@@ -55013,10 +55278,10 @@ function labArtifactCard(artifact: LabArtifact): string {
         </div>
         <span>${escapeHtml(formatDateTime(artifact.createdAt))}</span>
       </div>
-      <h3>${escapeHtml(legacy ? 'Legacy receipt signed and saved' : 'Receipt signed and saved')}</h3>
-      <p class="lab-thesis">No further action is required. Use this record for your own audit trail or share it with an agent, auditor, support thread, or teammate.</p>
+      <h3>${escapeHtml(legacy ? t('Legacy receipt signed and saved') : t('Receipt signed and saved'))}</h3>
+      <p class="lab-thesis">${escapeHtml(t('No further action is required. Use this record for your own audit trail or share it with an agent, auditor, support thread, or teammate.'))}</p>
       <div class="artifact-intent-block">
-        <span>Signed request</span>
+        <span>${escapeHtml(t('Signed request'))}</span>
         <p>${escapeHtml(artifact.input)}</p>
       </div>
       <div class="artifact-evidence-row">
@@ -55025,14 +55290,14 @@ function labArtifactCard(artifact: LabArtifact): string {
         ${artifactMetricCard(artifact, 'Effect')}
       </div>
       <div class="lab-actions lab-signature-action">
-        <button type="button" class="utility" data-artifact-view="signed">View in archive</button>
-        <button type="button" data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Receipt JSON">Copy receipt JSON</button>
-        <button type="button" class="utility" data-lab-action="create-another">Create another</button>
+        <button type="button" class="utility" data-artifact-view="signed">${escapeHtml(t('View in archive'))}</button>
+        <button type="button" data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Receipt JSON">${escapeHtml(t('Copy receipt JSON'))}</button>
+        <button type="button" class="utility" data-lab-action="create-another">${escapeHtml(t('Create another'))}</button>
       </div>
       <details class="artifact-technical-details">
         <summary>
-          <span>Technical details</span>
-          <strong>Hashes and signed message</strong>
+          <span>${escapeHtml(t('Technical details'))}</span>
+          <strong>${escapeHtml(t('Hashes and signed message'))}</strong>
         </summary>
         <div class="hash-grid">
           ${hashTile('Pre-signature', artifact.preSignatureHash)}
@@ -55042,9 +55307,9 @@ function labArtifactCard(artifact: LabArtifact): string {
         </div>
         <div class="results compact-results">
           <div class="result-row">
-            <span>Signing message</span>
+            <span>${escapeHtml(t('Signing message'))}</span>
             <code>${escapeHtml(artifact.signingMessage)}</code>
-            <button data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="Copy signed message">Copy</button>
+            <button data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="Copy signed message">${escapeHtml(t('Copy'))}</button>
           </div>
         </div>
       </details>
@@ -55054,11 +55319,11 @@ function labArtifactCard(artifact: LabArtifact): string {
 
 function artifactMetricCard(artifact: LabArtifact, label: string): string {
   const metricItem = artifact.payload.metrics.find((candidate) => candidate.label.toLowerCase() === label.toLowerCase());
-  const value = metricItem?.value ?? 'Recorded';
+  const value = metricItem?.value ?? t('Recorded');
   const tone = metricItem?.tone ?? 'neutral';
   return `
     <div class="${tone}">
-      <span>${escapeHtml(label)}</span>
+      <span>${escapeHtml(t(label))}</span>
       <strong>${escapeHtml(value)}</strong>
     </div>
   `;
@@ -55070,13 +55335,13 @@ function labHistory(): string {
   }
   return `
     <div class="lab-history">
-      <h3>Recent saved proofs</h3>
+      <h3>${escapeHtml(t('Recent saved proofs'))}</h3>
       ${state.labArtifacts.slice(0, 5).map(
         (artifact) => `
           <article>
             <strong>${escapeHtml(artifact.title)}</strong>
             <span>${escapeHtml(formatDateTime(artifact.createdAt))}</span>
-            <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Receipt JSON">Copy receipt JSON</button>
+            <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Receipt JSON">${escapeHtml(t('Copy receipt JSON'))}</button>
           </article>
         `,
       ).join('')}
@@ -55131,17 +55396,17 @@ function inboxFilterOption(value: InboxFilter, label: string): string {
 function queueFilterLabel(filter: InboxFilter): string {
   switch (filter) {
     case 'ready':
-      return 'Showing ready now';
+      return t('Showing ready now');
     case 'scheduled':
-      return 'Showing scheduled items';
+      return t('Showing scheduled items');
     case 'attention':
-      return 'Showing problems';
+      return t('Showing problems');
     case 'one-time':
-      return 'Showing one-time approvals';
+      return t('Showing one-time approvals');
     case 'recurring':
-      return 'Showing repeats';
+      return t('Showing repeats');
     case 'all':
-      return 'Showing all';
+      return t('Showing all');
   }
 }
 
@@ -55152,33 +55417,33 @@ function cadenceOption(value: RecurringCadence, label: string): string {
 function recurringCadenceLabel(cadence: RecurringCadence): string {
   switch (cadence) {
     case 'weekly':
-      return 'Weekly';
+      return t('Weekly');
     case 'monthly':
-      return 'Monthly';
+      return t('Monthly');
     case 'interval_days':
-      return 'Every few days';
+      return t('Every few days');
     case 'interval_hours':
-      return 'Hourly interval';
+      return t('Hourly interval');
     case 'interval_minutes':
-      return 'Minute interval';
+      return t('Minute interval');
   }
 }
 
 function recurringDraftScheduleLabel(draft: RecurringDraft): string {
-  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const days = [t('Sunday'), t('Monday'), t('Tuesday'), t('Wednesday'), t('Thursday'), t('Friday'), t('Saturday')];
   if (draft.cadence === 'weekly') {
-    return `${days[Number(draft.dayOfWeek)] ?? 'Selected day'} at ${displayLocalTime(draft.localTime || '09:00')}`;
+    return tf('{day} at {time}', { day: days[Number(draft.dayOfWeek)] ?? t('Selected day'), time: displayLocalTime(draft.localTime || '09:00') });
   }
   if (draft.cadence === 'monthly') {
-    return `Day ${draft.dayOfMonth || '1'} at ${displayLocalTime(draft.localTime || '09:00')}`;
+    return tf('Day {day} at {time}', { day: draft.dayOfMonth || '1', time: displayLocalTime(draft.localTime || '09:00') });
   }
   if (draft.cadence === 'interval_hours') {
-    return `Every ${draft.intervalHours || '1'} hour(s)`;
+    return tf('Every {n} hour(s)', { n: draft.intervalHours || '1' });
   }
   if (draft.cadence === 'interval_minutes') {
-    return `Every ${draft.intervalMinutes || '60'} minute(s)`;
+    return tf('Every {n} minute(s)', { n: draft.intervalMinutes || '60' });
   }
-  return `Every ${draft.intervalDays || '1'} day(s)`;
+  return tf('Every {n} day(s)', { n: draft.intervalDays || '1' });
 }
 
 function displayLocalTime(value: string | undefined): string {
@@ -55227,16 +55492,16 @@ function recurringScheduleFields(draft: RecurringDraft): string {
   if (draft.cadence === 'weekly') {
     return `
       <label class="field compact">
-        <span>Day</span>
+        <span>${escapeHtml(t('Day'))}</span>
         ${selectPicker({
           id: 'recurringDayOfWeek',
           value: draft.dayOfWeek,
           attrs: { 'data-recurring-field': 'dayOfWeek' },
-          options: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+          options: [t('Sunday'), t('Monday'), t('Tuesday'), t('Wednesday'), t('Thursday'), t('Friday'), t('Saturday')]
             .map((day, index) => ({
               value: String(index),
               label: day,
-              meta: 'Weekday',
+              meta: t('Weekday'),
             })),
         })}
         ${fieldError('recurringDayOfWeek')}
@@ -55246,25 +55511,25 @@ function recurringScheduleFields(draft: RecurringDraft): string {
   }
   if (draft.cadence === 'monthly') {
     return `
-      ${fieldInput('recurringDayOfMonth', 'Day of month', draft.dayOfMonth, '1-31')}
+      ${fieldInput('recurringDayOfMonth', t('Day of month'), draft.dayOfMonth, '1-31')}
       ${recurringLocalTimeField(draft)}
     `;
   }
   if (draft.cadence === 'interval_hours') {
     return `
-      ${fieldInput('recurringIntervalHours', 'Every hours', draft.intervalHours, '1')}
-      ${fieldInput('recurringStartAt', 'Start at', draft.startAt, '', 'datetime-local')}
+      ${fieldInput('recurringIntervalHours', t('Every hours'), draft.intervalHours, '1')}
+      ${fieldInput('recurringStartAt', t('Start at'), draft.startAt, '', 'datetime-local')}
     `;
   }
   if (draft.cadence === 'interval_minutes') {
     return `
-      ${fieldInput('recurringIntervalMinutes', 'Every minutes', draft.intervalMinutes, '60')}
-      ${fieldInput('recurringStartAt', 'Start at', draft.startAt, '', 'datetime-local')}
+      ${fieldInput('recurringIntervalMinutes', t('Every minutes'), draft.intervalMinutes, '60')}
+      ${fieldInput('recurringStartAt', t('Start at'), draft.startAt, '', 'datetime-local')}
     `;
   }
   return `
-    ${fieldInput('recurringIntervalDays', 'Every days', draft.intervalDays, '1')}
-    ${fieldInput('recurringStartAt', 'Start at', draft.startAt, '', 'datetime-local')}
+    ${fieldInput('recurringIntervalDays', t('Every days'), draft.intervalDays, '1')}
+    ${fieldInput('recurringStartAt', t('Start at'), draft.startAt, '', 'datetime-local')}
   `;
 }
 
@@ -55275,13 +55540,13 @@ function recurringLocalTimeField(draft: RecurringDraft): string {
   `).join('');
   return `
     <div class="field compact recurring-time-field ${state.recurringErrors.recurringLocalTime ? 'field-error' : ''}">
-      <span>Local time</span>
+      <span>${escapeHtml(t('Local time'))}</span>
       <input id="recurringLocalTime" data-recurring-field="localTime" type="hidden" value="${escapeHtml(draft.localTime)}" />
       <div class="recurring-time-controls">
-        <input id="recurringLocalHour" data-recurring-field="localTime" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" value="${escapeHtml(parts.hour12)}" aria-label="Hour" />
+        <input id="recurringLocalHour" data-recurring-field="localTime" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" value="${escapeHtml(parts.hour12)}" aria-label="${escapeHtml(t('Hour'))}" />
         <b class="recurring-time-separator" aria-hidden="true">:</b>
-        <input id="recurringLocalMinute" data-recurring-field="localTime" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" value="${escapeHtml(parts.minute)}" aria-label="Minute" />
-        <select id="recurringLocalMeridiem" data-recurring-field="localTime" aria-label="AM or PM">
+        <input id="recurringLocalMinute" data-recurring-field="localTime" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" value="${escapeHtml(parts.minute)}" aria-label="${escapeHtml(t('Minute'))}" />
+        <select id="recurringLocalMeridiem" data-recurring-field="localTime" aria-label="${escapeHtml(t('AM or PM'))}">
           ${meridiemOptions}
         </select>
       </div>
@@ -55325,85 +55590,93 @@ function evidenceIntent(): { status: string; detail: string; meta?: string } {
   if (state.activeTab === 'generated') {
     const selected = selectedGeneratedPlan();
     return {
-      status: state.generatedPlans.length ? 'Saved' : 'Empty',
-      detail: selected?.plan.intent ?? 'Template and AI plans are saved here for later review.',
+      status: state.generatedPlans.length ? t('Saved') : t('Empty'),
+      detail: selected?.plan.intent ?? t('Template and AI plans are saved here for later review.'),
       meta: selected ? `${generatedPlanStatusLabel(selected)} · ${formatDateTime(selected.createdAt)}` : undefined,
     };
   }
   if (state.activeTab === 'wallet') {
     return {
-      status: state.signature ? 'Signed' : 'Ready',
-      detail: state.signature ? 'Message approval returned a wallet signature.' : DEMO_MESSAGE,
-      meta: state.signature ? short(state.signature) : `${titleCaseCluster(state.cluster)} message request`,
+      status: state.signature ? t('Signed') : t('Ready'),
+      detail: state.signature ? t('Message approval returned a wallet signature.') : DEMO_MESSAGE,
+      meta: state.signature ? short(state.signature) : tf('{cluster} message request', { cluster: titleCaseCluster(state.cluster) }),
     };
   }
   if (state.agentPlan) {
     return {
-      status: 'Prepared',
+      status: t('Prepared'),
       detail: state.agentPlan.intent,
-      meta: 'Plan is ready for review.',
+      meta: t('Plan is ready for review.'),
     };
   }
   if (state.signature) {
     return {
-      status: 'Signed',
-      detail: 'Message intent was approved by the connected wallet.',
+      status: t('Signed'),
+      detail: t('Message intent was approved by the connected wallet.'),
       meta: short(state.signature),
     };
   }
   if (state.customTransactionBase64) {
     return {
-      status: 'Transaction ready',
-      detail: 'Transaction bytes are staged for wallet approval.',
+      status: t('Transaction ready'),
+      detail: t('Transaction bytes are staged for wallet approval.'),
       meta: short(state.customTransactionBase64),
     };
   }
   if (state.activeTab === 'inbox') {
     const count = activeWorkflowPreparedActions().filter((action) => !action.archived).length;
     return {
-      status: count ? 'Queued' : 'Empty',
-      detail: count ? `${count} request(s) need approval.` : 'No queued approvals are currently waiting.',
+      status: count ? t('Queued') : t('Empty'),
+      detail: count
+        ? count === 1
+          ? tf('{count} request needs approval.', { count })
+          : tf('{count} requests need approval.', { count })
+        : t('No queued approvals are currently waiting.'),
       meta: activeWorkflowLabel(),
     };
   }
   if (state.activeTab === 'completed') {
     const plans = completedPlanRecords();
     return {
-      status: plans.length ? 'Completed' : 'Empty',
-      detail: plans[0]?.title ?? 'Completed proofs, approvals, and repeat payments appear here.',
+      status: plans.length ? t('Completed') : t('Empty'),
+      detail: plans[0]?.title ?? t('Completed proofs, approvals, and repeat payments appear here.'),
       meta: plans[0] ? `${plans[0].status} · ${formatDateTime(plans[0].completedAt)}` : undefined,
     };
   }
   if (state.activeTab === 'schedule') {
     const activeSchedules = activeWorkflowRecurringPayments().filter((payment) => payment.status === 'active' && !isRecurringPaymentCompleted(payment)).length;
     return {
-      status: activeSchedules ? 'Repeats' : 'Draft',
+      status: activeSchedules ? t('Repeats') : t('Draft'),
       detail: activeSchedules
-        ? `${activeSchedules} repeat payment${activeSchedules === 1 ? '' : 's'} active.`
-        : 'Create a repeat payment for future wallet review.',
+        ? activeSchedules === 1
+          ? tf('{count} repeat payment active.', { count: activeSchedules })
+          : tf('{count} repeat payments active.', { count: activeSchedules })
+        : t('Create a repeat payment for future wallet review.'),
         meta: activeWorkflowLabel(),
     };
   }
   if (state.activeTab === 'labs') {
     if (state.artifactView === 'signed') {
       return {
-      status: state.labArtifacts.length ? 'Archived' : 'Empty',
+      status: state.labArtifacts.length ? t('Archived') : t('Empty'),
       detail: state.labArtifacts.length
-          ? `${state.labArtifacts.length} saved proof${state.labArtifacts.length === 1 ? '' : 's'} are available for review.`
-          : 'No saved proofs have been created yet.',
+          ? state.labArtifacts.length === 1
+            ? tf('{count} saved proof is available for review.', { count: state.labArtifacts.length })
+            : tf('{count} saved proofs are available for review.', { count: state.labArtifacts.length })
+          : t('No saved proofs have been created yet.'),
         meta: state.labArtifacts[0] ? short(state.labArtifacts[0].artifactHash) : undefined,
       };
     }
     const lab = activeLab();
     return {
-      status: 'Save Proof',
+      status: t('Save Proof'),
       detail: lab.summary,
       meta: lab.title,
     };
   }
   return {
-    status: state.address ? 'Ready' : 'Waiting',
-    detail: state.address ? 'Select a workflow to prepare intent.' : 'Connect a wallet before intent can be reviewed.',
+    status: state.address ? t('Ready') : t('Waiting'),
+    detail: state.address ? t('Select a workflow to prepare intent.') : t('Connect a wallet before intent can be reviewed.'),
   };
 }
 
@@ -55411,95 +55684,109 @@ function evidencePolicy(): { status: string; detail: string; meta?: string } {
   const openApprovals = activeWorkflowPreparedActions().filter((action) => !action.archived).length;
   if (state.activeTab === 'wallet') {
     return {
-      status: state.cluster === 'mainnet-beta' ? 'Mainnet caution' : 'Local policy',
+      status: state.cluster === 'mainnet-beta' ? t('Mainnet caution') : t('Local policy'),
       detail:
         state.cluster === 'mainnet-beta'
-          ? 'Only explicit wallet approval can produce a signature on mainnet.'
-          : 'Wallet Standard approval gates every message and transaction request.',
+          ? t('Only explicit wallet approval can produce a signature on mainnet.')
+          : t('Wallet Standard approval gates every message and transaction request.'),
       meta: state.capabilities ? capabilitySummary(state.capabilities) : undefined,
     };
   }
   if (state.activeTab === 'agent') {
     return {
-      status: state.agentPlan ? 'Plan scoped' : 'Plan',
-      detail: state.agentPlan?.risk ?? 'Create a plan to expose route and risk before sending for approval.',
-      meta: `Approval path: ${activeWorkflowLabel()}`,
+      status: state.agentPlan ? t('Plan scoped') : t('Plan'),
+      detail: state.agentPlan?.risk ?? t('Create a plan to expose route and risk before sending for approval.'),
+      meta: tf('Approval path: {path}', { path: activeWorkflowLabel() }),
     };
   }
   if (state.activeTab === 'generated') {
     const selected = selectedGeneratedPlan();
     return {
-      status: selected ? 'Review scoped' : 'No plans',
-      detail: selected?.plan.risk ?? 'Plans stay separate from approval until you send them.',
-      meta: selected && canQueueAgentPlan(selected.plan) ? `Approval-ready through ${activeWorkflowLabel()}` : 'Proof-only review',
+      status: selected ? t('Review scoped') : t('No plans'),
+      detail: selected?.plan.risk ?? t('Plans stay separate from approval until you send them.'),
+      meta: selected && canQueueAgentPlan(selected.plan) ? tf('Approval-ready through {path}', { path: activeWorkflowLabel() }) : t('Proof-only review'),
     };
   }
   if (state.activeTab === 'schedule') {
     const recurringPlans = activeWorkflowRecurringPayments().length;
     return {
-      status: 'Repeats ready',
-      detail: 'Repeat payments create future approval items, not automatic signatures.',
-      meta: recurringPlans ? `${recurringPlans} repeat payment(s) · ${activeWorkflowLabel()}` : activeWorkflowLabel(),
+      status: t('Repeats ready'),
+      detail: t('Repeat payments create future approval items, not automatic signatures.'),
+      meta: recurringPlans
+        ? recurringPlans === 1
+          ? tf('{count} repeat payment - {path}', { count: recurringPlans, path: activeWorkflowLabel() })
+          : tf('{count} repeat payments - {path}', { count: recurringPlans, path: activeWorkflowLabel() })
+        : activeWorkflowLabel(),
     };
   }
   if (state.activeTab === 'completed') {
     const plans = completedPlanRecords();
     return {
-      status: plans.length ? 'Done' : 'Nothing done yet',
+      status: plans.length ? t('Done') : t('Nothing done yet'),
       detail: plans.length
-        ? 'Done work is read-only unless you explicitly delete a card.'
-        : 'Plans stay out of Done until a proof is signed, an approval is terminal, or a repeat payment ends.',
-      meta: plans.length ? `${plans.length} done item(s)` : undefined,
+        ? t('Done work is read-only unless you explicitly delete a card.')
+        : t('Plans stay out of Done until a proof is signed, an approval is terminal, or a repeat payment ends.'),
+      meta: plans.length
+        ? plans.length === 1
+          ? tf('{count} done item', { count: plans.length })
+          : tf('{count} done items', { count: plans.length })
+        : undefined,
     };
   }
   if (state.activeTab === 'labs') {
     if (state.artifactView === 'signed') {
       return {
-        status: state.bridgeActive ? 'Bridge mirrored' : 'Local archive',
-        detail: state.labArchiveStatus,
-        meta: state.health?.labArtifactStorePath ?? (state.bridgeActive ? 'Bridge archive connected' : 'Browser durable storage'),
+        status: state.bridgeActive ? t('Bridge mirrored') : t('Local archive'),
+        detail: t(state.labArchiveStatus),
+        meta: state.health?.labArtifactStorePath ?? (state.bridgeActive ? t('Bridge archive connected') : t('Browser durable storage')),
       };
     }
     return {
-      status: 'Local verification',
-      detail: 'Saved proofs bind payload hash, wallet, cluster, and signature for review.',
-      meta: state.labArtifacts.length ? `${state.labArtifacts.length} receipt${state.labArtifacts.length === 1 ? '' : 's'}` : 'No receipts yet',
+      status: t('Local verification'),
+      detail: t('Saved proofs bind payload hash, wallet, cluster, and signature for review.'),
+      meta: state.labArtifacts.length
+        ? state.labArtifacts.length === 1
+          ? tf('{count} receipt', { count: state.labArtifacts.length })
+          : tf('{count} receipts', { count: state.labArtifacts.length })
+        : t('No receipts yet'),
     };
   }
   if (openApprovals > 0) {
     return {
-      status: 'Queued',
-      detail: `${openApprovals} prepared action(s) are waiting for review.`,
-      meta: `${activeWorkflowLabel()} policy is active.`,
+      status: t('Queued'),
+      detail: openApprovals === 1
+        ? tf('{count} prepared action is waiting for review.', { count: openApprovals })
+        : tf('{count} prepared actions are waiting for review.', { count: openApprovals }),
+      meta: tf('{path} policy is active.', { path: activeWorkflowLabel() }),
     };
   }
   if (state.bridgeActive) {
     return {
-      status: 'Active',
-      detail: 'Local bridge is connected and ready to enforce prepared-action policy.',
+      status: t('Active'),
+      detail: t('Local bridge is connected and ready to enforce prepared-action policy.'),
       meta: bridgeHostLabel(),
     };
   }
   return {
-    status: state.cluster === 'mainnet-beta' ? 'Caution' : 'Idle',
+    status: state.cluster === 'mainnet-beta' ? t('Caution') : t('Idle'),
     detail:
       state.cluster === 'mainnet-beta'
-        ? 'Mainnet requests require explicit wallet approval and visible receipts.'
-        : `${activeWorkflowLabel()} will hold queued work until explicit wallet approval.`,
+        ? t('Mainnet requests require explicit wallet approval and visible receipts.')
+        : tf('{path} will hold queued work until explicit wallet approval.', { path: activeWorkflowLabel() }),
   };
 }
 
 function evidenceWallet(): { status: string; detail: string; meta?: string } {
   if (state.address) {
     return {
-      status: 'Connected',
-      detail: state.selectedWalletName || 'Browser wallet signer is connected.',
+      status: t('Connected'),
+      detail: state.selectedWalletName || t('Browser wallet signer is connected.'),
       meta: short(state.address),
     };
   }
   return {
-    status: 'Not connected',
-    detail: 'The app cannot sign or approve until a user wallet is connected.',
+    status: t('Not connected'),
+    detail: t('The app cannot sign or approve until a user wallet is connected.'),
     meta: bridgeModeLabel(),
   };
 }
@@ -55507,15 +55794,15 @@ function evidenceWallet(): { status: string; detail: string; meta?: string } {
 function evidenceReceipt(latestLab: LabArtifact | undefined): { status: string; detail: string; meta?: string } {
   if (state.activeTab === 'wallet' && state.signature) {
     return {
-      status: 'Message proof',
-      detail: 'The wallet signature is ready to copy or verify downstream.',
+      status: t('Message proof'),
+      detail: t('The wallet signature is ready to copy or verify downstream.'),
       meta: short(state.signature),
     };
   }
   if (state.activeTab === 'agent' && state.agentSignature) {
     return {
-      status: 'Review proof',
-      detail: 'The signed plan review proof is available for audit.',
+      status: t('Review proof'),
+      detail: t('The signed plan review proof is available for audit.'),
       meta: short(state.agentSignature),
     };
   }
@@ -55523,15 +55810,15 @@ function evidenceReceipt(latestLab: LabArtifact | undefined): { status: string; 
     const selected = selectedGeneratedPlan();
     if (selected?.signature) {
       return {
-        status: 'Proof signed',
-        detail: 'This plan has a wallet-signed review proof.',
+        status: t('Proof signed'),
+        detail: t('This plan has a wallet-signed review proof.'),
         meta: short(selected.signature),
       };
     }
     if (selected?.preparedActionId) {
       return {
-        status: 'Queued',
-        detail: 'This plan has been sent for approval or repeat payment setup.',
+        status: t('Queued'),
+        detail: t('This plan has been sent for approval or repeat payment setup.'),
         meta: selected.preparedActionId,
       };
     }
@@ -55541,53 +55828,57 @@ function evidenceReceipt(latestLab: LabArtifact | undefined): { status: string; 
     if (plans.length) {
       const evidenceId = plans[0]?.actionId ?? plans[0]?.signature ?? '';
       return {
-        status: 'Done ready',
-        detail: `${plans.length} done record(s) are available.`,
+        status: t('Done ready'),
+        detail: plans.length === 1
+          ? tf('{count} done record is available.', { count: plans.length })
+          : tf('{count} done records are available.', { count: plans.length }),
         meta: evidenceId ? short(evidenceId) : undefined,
       };
     }
   }
   if (state.txid) {
     return {
-      status: 'Broadcast',
-      detail: 'A transaction id is available for external verification.',
+      status: t('Broadcast'),
+      detail: t('A transaction id is available for external verification.'),
       meta: short(state.txid),
     };
   }
   if (state.txSignature) {
     return {
-      status: 'Signed bytes',
-      detail: 'The wallet returned signed transaction bytes without broadcasting.',
+      status: t('Signed bytes'),
+      detail: t('The wallet returned signed transaction bytes without broadcasting.'),
       meta: short(state.txSignature),
     };
   }
   if (state.agentSignature) {
     return {
-      status: 'Proof signed',
-      detail: 'The plan review proof is available for copy or audit.',
+      status: t('Proof signed'),
+      detail: t('The plan review proof is available for copy or audit.'),
       meta: short(state.agentSignature),
     };
   }
   if (state.receipts.length > 0) {
     return {
-      status: 'Receipt ready',
-      detail: `${state.receipts.length} local receipt(s) are available from the bridge.`,
+      status: t('Receipt ready'),
+      detail: state.receipts.length === 1
+        ? tf('{count} local receipt is available from the bridge.', { count: state.receipts.length })
+        : tf('{count} local receipts are available from the bridge.', { count: state.receipts.length }),
       meta: state.receipts[0]?.actionId,
     };
   }
   if (state.activeTab === 'labs' && latestLab) {
     return {
-      status: 'Saved proof',
-      detail: 'A signed proof is available for review.',
+      status: t('Saved proof'),
+      detail: t('A signed proof is available for review.'),
       meta: short(latestLab.artifactHash),
     };
   }
   return {
-    status: 'Pending',
+    status: t('Pending'),
     detail:
       state.activeTab === 'inbox' || state.activeTab === 'schedule'
-        ? 'Receipts appear after an approval is approved, rejected, or archived.'
-        : 'Receipts appear after wallet approval or proof signing.',
+        ? t('Receipts appear after an approval is approved, rejected, or archived.')
+        : t('Receipts appear after wallet approval or proof signing.'),
   };
 }
 
@@ -55614,7 +55905,7 @@ function evidenceTone(kind: 'intent' | 'policy' | 'wallet' | 'receipt'): 'good' 
 function trustChain(): string {
   const hasReceipt = Boolean(state.txid || state.txSignature || state.agentSignature || signedGeneratedPlanCount() || state.receipts.length || completedPlanRecords().length || state.labArtifacts.length);
   return `
-    <div class="trust-chain" aria-label="Approval trust chain">
+    <div class="trust-chain" aria-label="${escapeHtml(t('Approval trust chain'))}">
       ${trustNode('Intent', Boolean(state.agentPlan || state.generatedPlans.length || state.signature || state.customTransactionBase64), state.activeTab === 'agent' || state.activeTab === 'generated')}
       ${trustNode('Policy', Boolean(state.bridgeActive || activeWorkflowPreparedActions().length), state.activeTab === 'inbox' || state.activeTab === 'schedule')}
       ${trustNode('Wallet', Boolean(state.address), state.busy)}
@@ -55646,9 +55937,9 @@ function txBlock(txid: string, cluster: Cluster): string {
   return `
     <div class="tx-block">
       <code>${escapeHtml(txid)}</code>
-      <a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Open Solscan</a>
-      <button data-copy="${escapeHtml(txid)}" data-copy-name="Transaction id">Copy txid</button>
-      <button data-copy="${escapeHtml(url)}" data-copy-name="Solscan transaction link">Copy Solscan link</button>
+      <a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(t('Open Solscan'))}</a>
+      <button data-copy="${escapeHtml(txid)}" data-copy-name="Transaction id">${escapeHtml(t('Copy txid'))}</button>
+      <button data-copy="${escapeHtml(url)}" data-copy-name="Solscan transaction link">${escapeHtml(t('Copy Solscan link'))}</button>
     </div>
   `;
 }
@@ -55665,7 +55956,7 @@ function hashTile(label: string, value: string): string {
 function definitionRow(label: string, value: string): string {
   return `
     <div>
-      <dt>${escapeHtml(label)}</dt>
+      <dt>${escapeHtml(t(label))}</dt>
       <dd title="${escapeHtml(value)}">${escapeHtml(value)}</dd>
     </div>
   `;
@@ -55700,38 +55991,38 @@ function surfaceEyebrow(): string {
 function surfaceTitle(): string {
   switch (state.activeTab) {
     case 'overview':
-      return 'Home';
+      return t('Home');
     case 'wallet':
-      return 'Wallet signing';
+      return t('Wallet signing');
     case 'agent':
-      return 'New Request';
+      return t('New Request');
     case 'generated':
-      return 'Review';
+      return t('Review');
     case 'inbox':
-      return 'Needs Approval';
+      return t('Needs Approval');
     case 'completed':
-      return 'Done';
+      return t('Done');
     case 'schedule':
-      return 'Repeat Payments';
+      return t('Repeat Payments');
     case 'labs':
-      return 'Save Proof';
+      return t('Save Proof');
     case 'preferences':
-      return 'Preferences';
+      return t('Preferences');
     default: {
       const devTab = findDevTab(state.activeTab);
-      return devTab?.label ?? requiredMoreSurface(state.activeTab)?.label ?? 'Home';
+      return t(devTab?.label ?? requiredMoreSurface(state.activeTab)?.label ?? 'Home');
     }
   }
 }
 
 function emptyInboxText(): string {
   if (state.inboxFilter === 'one-time') {
-    return 'No one-time approvals. Queue a send or swap plan when you want a wallet decision.';
+    return t('No one-time approvals. Queue a send or swap plan when you want a wallet decision.');
   }
   if (state.inboxFilter === 'recurring') {
-    return 'No repeat payments waiting. Create a repeat payment first.';
+    return t('No repeat payments waiting. Create a repeat payment first.');
   }
-  return 'No approvals waiting. Create a one-time request or repeat payment. Due repeat payments appear here for approve or deny.';
+  return t('No approvals waiting. Create a one-time request or repeat payment. Due repeat payments appear here for approve or deny.');
 }
 
 function amountLabel(action: PreparedAction): string {
@@ -55746,7 +56037,7 @@ function amountLabel(action: PreparedAction): string {
     if (author && platform) {
       const total = sumDecimalStringsSafe(author, platform);
       const suffix = token ? ` ${token}` : '';
-      return `${total}${suffix} (author ${author} + Agentic ${platform})`;
+      return `${total}${suffix} ${tf('(author {author} + Agentic {platform})', { author, platform })}`;
     }
   }
   if (typeof action.params.amount === 'string') return action.params.amount;
@@ -56109,8 +56400,8 @@ function connectorActionTokenOrTargetSummary(action: PreparedAction): ConnectorT
 
 function connectorTokenSummary(label: string, value: string): ConnectorTokenOrTargetSummary {
   const summary = tokenDisplaySummary(value, {
-    copyLabel: `Copy ${label.toLowerCase()}`,
-    copyName: `${label} mint`,
+    copyLabel: tf('Copy {label}', { label: t(label).toLowerCase() }),
+    copyName: tf('{label} mint', { label: t(label) }),
   });
   return {
     label,
@@ -56184,7 +56475,7 @@ function connectorActionTargetSummary(action: PreparedAction): ConnectorTokenOrT
 }
 
 function connectorTargetLabelFromReader(read: (key: string) => string): string {
-  return CONNECTOR_TARGET_FIELD_LABELS.find(({ key }) => Boolean(read(key).trim()))?.label ?? 'Target';
+  return t(CONNECTOR_TARGET_FIELD_LABELS.find(({ key }) => Boolean(read(key).trim()))?.label ?? 'Target');
 }
 
 function connectorTargetCopyActions(label: string, read: (key: string) => string): SummaryCopyAction[] {
@@ -56192,9 +56483,9 @@ function connectorTargetCopyActions(label: string, read: (key: string) => string
   const value = target ? read(target.key).trim() : '';
   if (!value || value.length < 16) return [];
   return [{
-    label: `Copy ${label.toLowerCase()}`,
+    label: tf('Copy {label}', { label: label.toLowerCase() }),
     value,
-    name: `${label} identifier`,
+    name: tf('{label} identifier', { label }),
   }];
 }
 
@@ -56451,28 +56742,53 @@ function normalizedRecipientParam(value: string): string {
 
 function scheduleLabel(payment: RecurringPayment): string {
   const count = payment.maxOccurrences
-    ? `, ${payment.occurrencesCreated ?? 0} of ${payment.maxOccurrences} created`
-    : ', indefinite';
-  const expiry = payment.expiresAt ? `, expires ${formatDateTime(payment.expiresAt)}` : '';
+    ? tf(', {created} of {max} created', { created: payment.occurrencesCreated ?? 0, max: payment.maxOccurrences })
+    : t(', indefinite');
+  const expiry = payment.expiresAt ? tf(', expires {date}', { date: formatDateTime(payment.expiresAt) }) : '';
   if (payment.cadence === 'weekly') {
-    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    return `Weekly on ${days[payment.dayOfWeek ?? -1] ?? 'unknown day'} at ${displayLocalTime(payment.localTime)}${count}${expiry}.`;
+    const days = [t('Sunday'), t('Monday'), t('Tuesday'), t('Wednesday'), t('Thursday'), t('Friday'), t('Saturday')];
+    return tf('Weekly on {day} at {time}{count}{expiry}.', {
+      day: days[payment.dayOfWeek ?? -1] ?? t('unknown day'),
+      time: displayLocalTime(payment.localTime),
+      count,
+      expiry,
+    });
   }
   if (payment.cadence === 'monthly') {
-    return `Monthly on day ${payment.dayOfMonth ?? '?'} at ${displayLocalTime(payment.localTime)}${count}${expiry}.`;
+    return tf('Monthly on day {day} at {time}{count}{expiry}.', {
+      day: payment.dayOfMonth ?? '?',
+      time: displayLocalTime(payment.localTime),
+      count,
+      expiry,
+    });
   }
   if (payment.cadence === 'interval_hours') {
-    return `Every ${payment.intervalHours ?? '?'} hour(s) starting ${formatDateTime(payment.startAt ?? '')}${count}${expiry}.`;
+    return tf('Every {hours} hour(s) starting {date}{count}{expiry}.', {
+      hours: payment.intervalHours ?? '?',
+      date: formatDateTime(payment.startAt ?? ''),
+      count,
+      expiry,
+    });
   }
   if (payment.cadence === 'interval_minutes') {
-    return `Every ${payment.intervalMinutes ?? '?'} minute(s) starting ${formatDateTime(payment.startAt ?? '')}${count}${expiry}.`;
+    return tf('Every {minutes} minute(s) starting {date}{count}{expiry}.', {
+      minutes: payment.intervalMinutes ?? '?',
+      date: formatDateTime(payment.startAt ?? ''),
+      count,
+      expiry,
+    });
   }
-  return `Every ${payment.intervalDays ?? '?'} day(s) starting ${formatDateTime(payment.startAt ?? '')}${count}${expiry}.`;
+  return tf('Every {days} day(s) starting {date}{count}{expiry}.', {
+    days: payment.intervalDays ?? '?',
+    date: formatDateTime(payment.startAt ?? ''),
+    count,
+    expiry,
+  });
 }
 
 function recurringNextOccurrenceLabel(draft: RecurringDraft): string {
   const [next] = recurringDraftNextRuns(draft);
-  return next ? formatDateTime(next) : 'Complete schedule fields to preview';
+  return next ? formatDateTime(next) : t('Complete schedule fields to preview');
 }
 
 function recurringDraftNextRuns(draft: RecurringDraft): string[] {
@@ -56604,7 +56920,8 @@ function evidenceBadgeForLabArtifact(artifact: LabArtifact): EvidenceBadgeView {
 }
 
 function evidenceBadgeHtml(badge: EvidenceBadgeView): string {
-  return `<span class="evidence-badge ${badge.tone}" role="img" aria-label="${escapeHtml(badge.label)}">${escapeHtml(badge.label)}</span>`;
+  const label = t(badge.label);
+  return `<span class="evidence-badge ${badge.tone}" role="img" aria-label="${escapeHtml(label)}">${escapeHtml(label)}</span>`;
 }
 
 type TimelinePhaseId = 'drafted' | 'queued' | 'wallet' | 'signed' | 'sent' | 'confirmed';
@@ -56756,13 +57073,16 @@ function completedPlanTimelineHtml(plan: CompletedPlanRecord): string {
 
 function renderTimelineSteps(steps: TimelineStep[]): string {
   return `
-    <ol class="tx-timeline" aria-label="Execution phases">
-      ${steps.map((step) => `
-        <li class="tx-timeline-step ${step.state}" data-tx-timeline-step="${escapeHtml(step.id)}" title="${escapeHtml(step.label)}${step.timestamp ? ' · ' + escapeHtml(formatDateTime(step.timestamp)) : ''}">
+    <ol class="tx-timeline" aria-label="${escapeHtml(t('Execution phases'))}">
+      ${steps.map((step) => {
+        const label = t(step.label);
+        return `
+        <li class="tx-timeline-step ${step.state}" data-tx-timeline-step="${escapeHtml(step.id)}" title="${escapeHtml(label)}${step.timestamp ? ' · ' + escapeHtml(formatDateTime(step.timestamp)) : ''}">
           <span class="tx-timeline-dot" aria-hidden="true"></span>
-          <span class="tx-timeline-label">${escapeHtml(step.label)}</span>
+          <span class="tx-timeline-label">${escapeHtml(label)}</span>
         </li>
-      `).join('')}
+      `;
+      }).join('')}
     </ol>
   `;
 }
@@ -56834,29 +57154,29 @@ function isPublicReceiptLab(lab: LabDefinition): boolean {
 function receiptLabelForKind(kind: string): string {
   switch (kind) {
     case 'intent_receipt':
-      return 'Intent';
+      return t('Intent');
     case 'policy_receipt':
-      return 'Approval Decision';
+      return t('Approval Decision');
     case 'risk_review_receipt':
-      return 'Risk Review';
+      return t('Risk Review');
     case 'rejection_receipt':
-      return 'Rejection';
+      return t('Rejection');
     case 'tool_trace_receipt':
-      return 'Tool Trace';
+      return t('Tool Trace');
     // Phase 5.16 — user-friendly labels for the Phase 1/2 receipt kinds so the
     // receipts UI doesn't surface raw enum strings like "streaming_settlement".
     case 'mpp_session':
-      return 'MPP Payment';
+      return t('MPP Payment');
     case 'streaming_session_grant':
-      return 'Streaming Grant';
+      return t('Streaming Grant');
     case 'streaming_voucher':
-      return 'Streaming Voucher';
+      return t('Streaming Voucher');
     case 'streaming_settlement':
-      return 'Stream Settled';
+      return t('Stream Settled');
     case 'ap2_inbound':
-      return 'AP2 Inbound';
+      return t('AP2 Inbound');
     case 'acp_outbound':
-      return 'ACP Cart';
+      return t('ACP Cart');
     default:
       return labKindLabel(kind);
   }
@@ -57460,15 +57780,15 @@ function titleCaseCluster(cluster: Cluster): string {
 function labKindLabel(kind: string): string {
   switch (kind) {
     case 'intent_receipt':
-      return 'Proof of Intent';
+      return t('Proof of Intent');
     case 'policy_receipt':
-      return 'Proof of Policy';
+      return t('Proof of Policy');
     case 'risk_review_receipt':
-      return 'Proof of Review';
+      return t('Proof of Review');
     case 'rejection_receipt':
-      return 'Proof of Rejection';
+      return t('Proof of Rejection');
     case 'tool_trace_receipt':
-      return 'Tool Trace Receipt';
+      return t('Tool Trace Receipt');
   }
   return kind
     .split('_')
@@ -58120,7 +58440,7 @@ async function runPasteAiKey(targetScope?: string): Promise<void> {
 function openAndroidMwaTest(): void {
   const bridge = agenticAndroidBridge();
   if (!bridge?.openMwaExample) {
-    pushToast('error', 'MWA unavailable', 'Open this tab inside an Android build with the MWA tab enabled.');
+    pushToast('error', t('MWA unavailable'), t('Open this tab inside an Android build with the MWA tab enabled.'));
     return;
   }
   bridge.openMwaExample();
@@ -58184,7 +58504,7 @@ function formatDateTime(value: string): string {
   if (Number.isNaN(date.getTime())) {
     return value || 'n/a';
   }
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(activeUiLanguage(), {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
@@ -58194,14 +58514,14 @@ function formatDateTime(value: string): string {
 
 function formatRelativeTime(value: string, now: Date = new Date()): string {
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value || 'never';
+  if (Number.isNaN(date.getTime())) return value || t('never');
   const diffMs = date.getTime() - now.getTime();
   const absMs = Math.abs(diffMs);
   const minute = 60_000;
   const hour = 60 * minute;
   const day = 24 * hour;
-  if (absMs < minute) return 'just now';
-  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+  if (absMs < minute) return t('just now');
+  const rtf = new Intl.RelativeTimeFormat(activeUiLanguage(), { numeric: 'auto' });
   if (absMs < hour) return rtf.format(Math.round(diffMs / minute), 'minute');
   if (absMs < day) return rtf.format(Math.round(diffMs / hour), 'hour');
   if (absMs < 30 * day) return rtf.format(Math.round(diffMs / day), 'day');
@@ -58373,10 +58693,10 @@ function toastStack(): string {
               <div>
                 <strong>${escapeHtml(toast.title)}</strong>
                 ${toast.message ? `<p>${escapeHtml(toast.message)}</p>` : ''}
-                ${toast.linkHref ? `<a href="${escapeHtml(toast.linkHref)}" target="_blank" rel="noreferrer">${escapeHtml(toast.linkLabel ?? 'Open link')}</a>` : ''}
-                ${toast.actionUrl ? `<button class="toast-action-button" type="button" data-toast-action-url="${escapeHtml(toast.actionUrl)}"${toast.actionReForeground ? ' data-toast-action-reforeground="1"' : ''}>${escapeHtml(toast.actionLabel ?? 'Open')}</button>` : ''}
+                ${toast.linkHref ? `<a href="${escapeHtml(toast.linkHref)}" target="_blank" rel="noreferrer">${escapeHtml(toast.linkLabel ?? t('Open link'))}</a>` : ''}
+                ${toast.actionUrl ? `<button class="toast-action-button" type="button" data-toast-action-url="${escapeHtml(toast.actionUrl)}"${toast.actionReForeground ? ' data-toast-action-reforeground="1"' : ''}>${escapeHtml(toast.actionLabel ?? t('Open'))}</button>` : ''}
               </div>
-              <button data-toast-dismiss="${toast.id}" aria-label="Dismiss notification">x</button>
+              <button data-toast-dismiss="${toast.id}" aria-label="${escapeHtml(t('Dismiss notification'))}">x</button>
             </div>
           `,
         )
@@ -58857,11 +59177,11 @@ function agentById(agentId: string): RegisteredAgent | undefined {
 function agentTierLabel(tier: AgentTier): string {
   switch (tier) {
     case 'read_only':
-      return 'Read-only';
+      return t('Read-only');
     case 'capped':
-      return 'Capped';
+      return t('Capped');
     case 'full':
-      return 'Full';
+      return t('Full');
   }
 }
 
@@ -60537,7 +60857,7 @@ async function hydrateLabArtifactArchive(): Promise<void> {
   const mode = activeWorkflowMode();
   const cloud = mode === 'agentic-cloud'
     ? await loadCloudEvidenceArtifacts().catch((err) => {
-        state.cloudEvidenceStatus = `Cloud evidence archive unavailable: ${err instanceof Error ? err.message : String(err)}`;
+        state.cloudEvidenceStatus = tf('Cloud evidence archive unavailable: {message}', { message: err instanceof Error ? err.message : String(err) });
         return [] as LabArtifact[];
       })
     : [];
@@ -60545,7 +60865,7 @@ async function hydrateLabArtifactArchive(): Promise<void> {
   if (mode === 'agentic-cloud') {
     state.cloudEvidenceLastSyncAt = Date.now();
     state.cloudEvidenceStatus = cloud.length > 0
-      ? `Cloud evidence archive synced (${cloud.length} receipt${cloud.length === 1 ? '' : 's'}).`
+      ? cloudEvidenceSyncedStatus(cloud.length)
       : 'Cloud evidence archive ready (no receipts yet).';
   } else if (mode === 'local-bridge') {
     state.cloudEvidenceStatus = 'Private local mode: receipts stay off Agentic Cloud.';
@@ -60700,41 +61020,41 @@ function plannerPrefsSection(scope: string): string {
   const errors = state.savedPromptErrors;
   const open = houseRules.trim() || prompts.length > 0 ? 'open' : '';
   return `
-    <details class="planner-prefs" aria-label="Planner personalization" ${open}>
+    <details class="planner-prefs" aria-label="${escapeHtml(t('Planner personalization'))}" ${open}>
       <summary>
-        <span>Planner personalization</span>
-        <em>${houseRules ? 'House rules on' : 'Off'} · ${prompts.length} saved prompt${prompts.length === 1 ? '' : 's'}</em>
+        <span>${escapeHtml(t('Planner personalization'))}</span>
+        <em>${escapeHtml(houseRules ? t('House rules on') : t('Off'))} · ${escapeHtml(savedPromptCountLabel(prompts.length))}</em>
       </summary>
       <div class="planner-prefs-body">
         <label class="field compact planner-house-rules-field">
-          <span>House rules</span>
+          <span>${escapeHtml(t('House rules'))}</span>
           <textarea
             id="plannerHouseRules-${escapeHtml(scope)}"
             data-planner-pref="houseRules"
             rows="3"
             maxlength="${PLANNER_HOUSE_RULES_MAX}"
-            placeholder="e.g. Never propose meme coins. Prefer USDC for stables. Always memo as 'work expense'."
+            placeholder="${escapeHtml(t("e.g. Never propose meme coins. Prefer USDC for stables. Always memo as 'work expense'."))}"
             ${state.busy ? 'disabled' : ''}
           >${escapeHtml(houseRules)}</textarea>
-          <em class="planner-house-rules-counter">${remaining} chars left · injected into every plan request as userNotes</em>
+          <em class="planner-house-rules-counter">${escapeHtml(tf('{remaining} chars left · injected into every plan request as userNotes', { remaining }))}</em>
         </label>
         <div class="planner-prompts-form">
           <label class="field compact">
-            <span>New prompt label</span>
-            <input data-saved-prompt-field="label" value="${escapeHtml(draft.label)}" placeholder="Weekly rebalance" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+            <span>${escapeHtml(t('New prompt label'))}</span>
+            <input data-saved-prompt-field="label" value="${escapeHtml(draft.label)}" placeholder="${escapeHtml(t('Weekly rebalance'))}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
             ${errors.label ? `<em class="error-text">${escapeHtml(errors.label)}</em>` : ''}
           </label>
           <label class="field compact planner-prompt-body-field">
-            <span>Prompt body</span>
-            <textarea data-saved-prompt-field="prompt" rows="2" placeholder="Rebalance to 50% SOL / 30% USDC / 20% JUP" ${state.busy ? 'disabled' : ''}>${escapeHtml(draft.prompt)}</textarea>
+            <span>${escapeHtml(t('Prompt body'))}</span>
+            <textarea data-saved-prompt-field="prompt" rows="2" placeholder="${escapeHtml(t('Rebalance to 50% SOL / 30% USDC / 20% JUP'))}" ${state.busy ? 'disabled' : ''}>${escapeHtml(draft.prompt)}</textarea>
             ${errors.prompt ? `<em class="error-text">${escapeHtml(errors.prompt)}</em>` : ''}
           </label>
           <div class="planner-prompts-actions">
-            <button type="button" class="primary" data-saved-prompt-action="save" ${state.busy ? 'disabled' : ''}>Save prompt</button>
-            <button type="button" class="utility" data-saved-prompt-action="reset" ${state.busy ? 'disabled' : ''}>Clear</button>
+            <button type="button" class="primary" data-saved-prompt-action="save" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Save prompt'))}</button>
+            <button type="button" class="utility" data-saved-prompt-action="reset" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Clear'))}</button>
           </div>
         </div>
-        ${prompts.length ? `<ul class="planner-prompts-list">${prompts.map(savedPromptRow).join('')}</ul>` : '<div class="planner-prompts-empty">No saved prompts yet.</div>'}
+        ${prompts.length ? `<ul class="planner-prompts-list">${prompts.map(savedPromptRow).join('')}</ul>` : `<div class="planner-prompts-empty">${escapeHtml(t('No saved prompts yet.'))}</div>`}
       </div>
     </details>
   `;
@@ -60748,8 +61068,8 @@ function savedPromptRow(prompt: SavedPrompt): string {
         <p>${escapeHtml(prompt.prompt)}</p>
       </div>
       <div class="planner-prompt-actions">
-        <button type="button" data-saved-prompt-action="use" data-saved-prompt-id="${escapeHtml(prompt.id)}" ${state.busy ? 'disabled' : ''}>Use</button>
-        <button type="button" class="utility danger" data-saved-prompt-action="delete" data-saved-prompt-id="${escapeHtml(prompt.id)}" ${state.busy ? 'disabled' : ''}>Delete</button>
+        <button type="button" data-saved-prompt-action="use" data-saved-prompt-id="${escapeHtml(prompt.id)}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Use'))}</button>
+        <button type="button" class="utility danger" data-saved-prompt-action="delete" data-saved-prompt-id="${escapeHtml(prompt.id)}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Delete'))}</button>
       </div>
     </li>
   `;
@@ -60814,7 +61134,7 @@ function saveSavedPromptDraft(): void {
   state.savedPromptDraft = defaultSavedPromptDraft();
   state.savedPromptErrors = {};
   savePlannerPrefs();
-  pushToast('success', 'Prompt saved', entry.label);
+  pushToast('success', t('Prompt saved'), entry.label);
   render();
 }
 
@@ -60822,7 +61142,7 @@ function deleteSavedPrompt(promptId: string): void {
   const prompt = state.plannerPrefs.savedPrompts.find((entry) => entry.id === promptId);
   state.plannerPrefs.savedPrompts = state.plannerPrefs.savedPrompts.filter((entry) => entry.id !== promptId);
   savePlannerPrefs();
-  pushToast('success', 'Prompt removed', prompt?.label ?? promptId);
+  pushToast('success', t('Prompt removed'), prompt?.label ?? promptId);
   render();
 }
 
@@ -60830,7 +61150,7 @@ function useSavedPrompt(promptId: string): void {
   const prompt = state.plannerPrefs.savedPrompts.find((entry) => entry.id === promptId);
   if (!prompt) return;
   state.agentPrompt = prompt.prompt;
-  pushToast('success', 'Prompt loaded', prompt.label);
+  pushToast('success', t('Prompt loaded'), prompt.label);
   render();
 }
 
@@ -60883,10 +61203,10 @@ async function copyDiagnosticBundle(actionId?: string): Promise<void> {
   try {
     const text = buildDiagnosticBundle({ actionId });
     await navigator.clipboard.writeText(text);
-    pushToast('success', 'Debug log copied', 'Safe to share. No keys, signed bytes, or secrets included.');
+    pushToast('success', t('Debug log copied'), t('Safe to share. No keys, signed bytes, or secrets included.'));
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Could not copy debug log.';
-    pushToast('error', 'Copy failed', message);
+    pushToast('error', t('Copy failed'), message);
   }
 }
 
@@ -61024,9 +61344,9 @@ async function runAttachTxConfirm(): Promise<void> {
     state.attachTxModal = null;
     pushToast(
       resolution.failed ? 'error' : 'success',
-      resolution.failed ? 'Attached as failed' : 'Transaction attached',
-      `${short(resolution.txid)} resolved on-chain.`,
-      { linkHref: explorerUrl(resolution.txid, action?.cluster ?? state.cluster), linkLabel: 'Open Solscan' },
+      resolution.failed ? t('Attached as failed') : t('Transaction attached'),
+      tf('{tx} resolved on-chain.', { tx: short(resolution.txid) }),
+      { linkHref: explorerUrl(resolution.txid, action?.cluster ?? state.cluster), linkLabel: t('Open Solscan') },
     );
     render();
   } catch (err) {
@@ -61044,33 +61364,33 @@ function attachTxModalRender(): string {
   const validation = modal.validation;
   return `
     <div class="attach-tx-modal-scrim" data-attach-tx-action="cancel" aria-hidden="true"></div>
-    <aside class="attach-tx-modal" role="dialog" aria-label="Attach existing transaction">
+    <aside class="attach-tx-modal" role="dialog" aria-label="${escapeHtml(t('Attach existing transaction'))}">
       <header>
-        <h3>Attach existing transaction</h3>
-        <button type="button" class="attach-tx-modal-close" data-attach-tx-action="cancel" aria-label="Cancel">&times;</button>
+        <h3>${escapeHtml(t('Attach existing transaction'))}</h3>
+        <button type="button" class="attach-tx-modal-close" data-attach-tx-action="cancel" aria-label="${escapeHtml(t('Cancel'))}">&times;</button>
       </header>
-      <p>Paste a transaction signature to reconcile a pending or ambiguous approval.</p>
+      <p>${escapeHtml(t('Paste a transaction signature to reconcile a pending or ambiguous approval.'))}</p>
       <div class="attach-tx-input-row">
         <input
           type="text"
-          placeholder="Transaction signature"
+          placeholder="${escapeHtml(t('Transaction signature'))}"
           value="${escapeHtml(modal.txidInput)}"
           data-attach-tx-input
           ${modal.busy ? 'disabled' : ''}
           spellcheck="false"
           autocomplete="off"
         />
-        <button type="button" class="primary" data-attach-tx-action="lookup" ${modal.busy || !modal.txidInput.trim() ? 'disabled' : ''}>${modal.busy && !resolution ? 'Looking up...' : 'Verify on-chain'}</button>
+        <button type="button" class="primary" data-attach-tx-action="lookup" ${modal.busy || !modal.txidInput.trim() ? 'disabled' : ''}>${modal.busy && !resolution ? escapeHtml(t('Looking up...')) : escapeHtml(t('Verify on-chain'))}</button>
       </div>
       ${modal.error ? `<p class="attach-tx-error">${escapeHtml(modal.error)}</p>` : ''}
       ${resolution ? `
         <div class="attach-tx-resolution ${resolution.failed ? 'failed' : resolution.confirmed ? 'confirmed' : 'pending'}">
           <div class="attach-tx-resolution-head">
-            <strong>${resolution.failed ? 'Found on-chain - transaction failed' : resolution.confirmed ? 'Found on-chain - confirmed' : 'Not yet confirmed'}</strong>
-            ${resolution.slot ? `<small>slot ${resolution.slot}</small>` : ''}
+            <strong>${resolution.failed ? escapeHtml(t('Found on-chain - transaction failed')) : resolution.confirmed ? escapeHtml(t('Found on-chain - confirmed')) : escapeHtml(t('Not yet confirmed'))}</strong>
+            ${resolution.slot ? `<small>${tf('slot {slot}', { slot: resolution.slot })}</small>` : ''}
           </div>
-          ${resolution.signers.length > 0 ? `<p>Signers: ${resolution.signers.slice(0, 3).map((s) => escapeHtml(short(s))).join(', ')}${resolution.signers.length > 3 ? '...' : ''}</p>` : ''}
-          ${resolution.programIds.length > 0 ? `<p>Programs: ${resolution.programIds.slice(0, 4).map((s) => escapeHtml(short(s))).join(', ')}${resolution.programIds.length > 4 ? '...' : ''}</p>` : ''}
+          ${resolution.signers.length > 0 ? `<p>${tf('Signers: {signers}', { signers: `${resolution.signers.slice(0, 3).map((s) => escapeHtml(short(s))).join(', ')}${resolution.signers.length > 3 ? '...' : ''}` })}</p>` : ''}
+          ${resolution.programIds.length > 0 ? `<p>${tf('Programs: {programs}', { programs: `${resolution.programIds.slice(0, 4).map((s) => escapeHtml(short(s))).join(', ')}${resolution.programIds.length > 4 ? '...' : ''}` })}</p>` : ''}
           ${resolution.error ? `<p class="attach-tx-error">${escapeHtml(resolution.error)}</p>` : ''}
           ${validation && validation.warnings.length > 0 ? `
             <ul class="attach-tx-warnings">
@@ -61080,9 +61400,9 @@ function attachTxModalRender(): string {
         </div>
       ` : ''}
       <footer>
-        <button type="button" class="utility" data-attach-tx-action="cancel" ${modal.busy ? 'disabled' : ''}>Cancel</button>
+        <button type="button" class="utility" data-attach-tx-action="cancel" ${modal.busy ? 'disabled' : ''}>${escapeHtml(t('Cancel'))}</button>
         <button type="button" class="primary" data-attach-tx-action="confirm" ${!resolution || modal.busy ? 'disabled' : ''}>
-          ${modal.busy ? 'Attaching...' : validation && !validation.match ? 'Attach anyway' : 'Attach to approval'}
+          ${modal.busy ? escapeHtml(t('Attaching...')) : validation && !validation.match ? escapeHtml(t('Attach anyway')) : escapeHtml(t('Attach to approval'))}
         </button>
       </footer>
     </aside>
@@ -61150,7 +61470,7 @@ async function handleNotificationAction(op: string): Promise<void> {
   switch (op) {
     case 'request-permission': {
       if (typeof Notification === 'undefined') {
-        pushToast('error', 'Not supported', 'This browser does not expose the Notification API.');
+        pushToast('error', t('Not supported'), t('This browser does not expose the Notification API.'));
         return;
       }
       try {
@@ -61161,7 +61481,7 @@ async function handleNotificationAction(op: string): Promise<void> {
         render();
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Permission request failed.';
-        pushToast('error', 'Permission failed', message);
+        pushToast('error', t('Permission failed'), message);
       }
       return;
     }
@@ -61197,24 +61517,24 @@ function notificationPreferencesPanel(): string {
   const settings = state.notificationSettings;
   const supported = settings.permission !== 'unsupported';
   return `
-    <section class="notification-prefs-panel" aria-label="Notifications">
+    <section class="notification-prefs-panel" aria-label="${escapeHtml(t('Notifications'))}">
       <div class="notification-prefs-head">
-        <strong>Notifications</strong>
-        <p>Browser notifications fire only when this tab is in the background. Tab title also shows the pending count.</p>
+        <strong>${escapeHtml(t('Notifications'))}</strong>
+        <p>${escapeHtml(t('Browser notifications fire only when this tab is in the background. Tab title also shows the pending count.'))}</p>
       </div>
       ${supported ? `
         <div class="notification-prefs-permission">
-          <span>Permission: <strong>${escapeHtml(settings.permission)}</strong></span>
-          ${settings.permission !== 'granted' ? `<button type="button" class="primary" data-notification-action="request-permission">Request permission</button>` : ''}
+          <span>${escapeHtml(t('Permission:'))} <strong>${escapeHtml(settings.permission)}</strong></span>
+          ${settings.permission !== 'granted' ? `<button type="button" class="primary" data-notification-action="request-permission">${escapeHtml(t('Request permission'))}</button>` : ''}
         </div>
         <ul class="notification-prefs-list">
-          ${notificationToggleRow('toggle-browser', 'Browser notifications', settings.browser)}
-          ${notificationToggleRow('toggle-due', 'Repeat payment due', settings.due)}
-          ${notificationToggleRow('toggle-pending', 'Pending transactions (>60s)', settings.pending)}
-          ${notificationToggleRow('toggle-confirmed', 'Transaction confirmed', settings.confirmed)}
-          ${notificationToggleRow('toggle-failed', 'Transaction failed', settings.failed)}
+          ${notificationToggleRow('toggle-browser', t('Browser notifications'), settings.browser)}
+          ${notificationToggleRow('toggle-due', t('Repeat payment due'), settings.due)}
+          ${notificationToggleRow('toggle-pending', t('Pending transactions (>60s)'), settings.pending)}
+          ${notificationToggleRow('toggle-confirmed', t('Transaction confirmed'), settings.confirmed)}
+          ${notificationToggleRow('toggle-failed', t('Transaction failed'), settings.failed)}
         </ul>
-      ` : '<p>This browser does not expose the Notification API.</p>'}
+      ` : `<p>${escapeHtml(t('This browser does not expose the Notification API.'))}</p>`}
     </section>
   `;
 }
@@ -61299,7 +61619,7 @@ function resetFailurePoliciesToRecommended(): void {
     maxAttempts: 2,
   }));
   saveFailurePolicies();
-  pushToast('success', 'Defaults restored', 'Recommended auto-retry policies set.');
+  pushToast('success', t('Defaults restored'), t('Recommended auto-retry policies set.'));
   render();
 }
 
@@ -61329,15 +61649,15 @@ function failurePoliciesPanel(): string {
     <details class="failure-policies-panel rail-details" data-layout="failure-policies-panel" ${open}>
       <summary>
         <span class="failure-policies-summary-copy">
-          <span>Failure auto-retry</span>
+          <span>${escapeHtml(t('Failure auto-retry'))}</span>
           <em>${autoCount === 0 ? 'All ask' : `${autoCount} kinds auto`}</em>
         </span>
         <strong>${autoCount === 0 ? 'off' : `${autoCount}`}</strong>
       </summary>
-      <section class="failure-policies-card" aria-label="Failure retry preferences">
-        <p class="failure-policies-intro">Most failures should stop and ask. Use auto-retry only for network conditions you are comfortable replaying up to the cap.</p>
+      <section class="failure-policies-card" aria-label="${escapeHtml(t('Failure retry preferences'))}">
+        <p class="failure-policies-intro">${escapeHtml(t('Most failures should stop and ask. Use auto-retry only for network conditions you are comfortable replaying up to the cap.'))}</p>
         <div class="failure-policies-actions">
-          <button type="button" class="utility" data-failure-policy-action="reset">Use recommended defaults</button>
+          <button type="button" class="utility" data-failure-policy-action="reset">${escapeHtml(t('Use recommended defaults'))}</button>
         </div>
         ${mobile ? failurePolicyGroupedList(policies) : `
           <div class="failure-policy-list">
@@ -61366,7 +61686,7 @@ function failurePolicyGroupedList(policies: FailureRetryPolicy[]): string {
                 <strong>${escapeHtml(group.title)}</strong>
                 <em>${escapeHtml(group.detail)}</em>
               </span>
-              <b>${autoCount > 0 ? `${autoCount} auto` : 'ask'}</b>
+              <b>${autoCount > 0 ? tf('{count} auto', { count: autoCount }) : t('ask')}</b>
             </summary>
             <div class="failure-policy-list">
               ${groupPolicies.map(failurePolicyRow).join('')}
@@ -61379,8 +61699,8 @@ function failurePolicyGroupedList(policies: FailureRetryPolicy[]): string {
 }
 
 function failurePolicyRow(policy: FailureRetryPolicy): string {
-  const label = FAILURE_KIND_LABEL[policy.kind] ?? policy.kind;
-  const help = FAILURE_KIND_HELP[policy.kind] ?? 'Choose whether this failure should retry.';
+  const label = FAILURE_KIND_LABEL[policy.kind] ? t(FAILURE_KIND_LABEL[policy.kind]) : policy.kind;
+  const help = FAILURE_KIND_HELP[policy.kind] ? t(FAILURE_KIND_HELP[policy.kind]) : t('Choose whether this failure should retry.');
   const showAttempts = !isMobileAppViewport() || policy.mode === 'auto';
   return `
     <article class="failure-policy-row mode-${escapeHtml(policy.mode)}" data-failure-policy-kind="${escapeHtml(policy.kind)}">
@@ -61388,13 +61708,13 @@ function failurePolicyRow(policy: FailureRetryPolicy): string {
         <strong>${escapeHtml(label)}</strong>
         <em>${escapeHtml(help)}</em>
       </div>
-      <div class="failure-policy-mode-controls" role="group" aria-label="Mode">
-        ${failurePolicyModeButton(policy, 'auto', 'Auto')}
-        ${failurePolicyModeButton(policy, 'ask', 'Ask')}
-        ${failurePolicyModeButton(policy, 'disabled', 'Off')}
+      <div class="failure-policy-mode-controls" role="group" aria-label="${escapeHtml(t('Mode'))}">
+        ${failurePolicyModeButton(policy, 'auto', t('Auto'))}
+        ${failurePolicyModeButton(policy, 'ask', t('Ask'))}
+        ${failurePolicyModeButton(policy, 'disabled', t('Off'))}
       </div>
       ${showAttempts ? `<label class="failure-policy-max-attempts">
-        <span>Max retries</span>
+        <span>${escapeHtml(t('Max retries'))}</span>
         <input type="number" inputmode="numeric" min="0" max="10" step="1" value="${policy.maxAttempts}" data-failure-policy-field="maxAttempts" data-failure-policy-kind="${escapeHtml(policy.kind)}" ${state.busy ? 'disabled' : ''} />
       </label>` : ''}
     </article>
@@ -61442,10 +61762,10 @@ function planTemplatesStrip(embedded: boolean): string {
   const templates = templateGeneratedPlans(embedded);
   if (!templates.length) return '';
   return `
-    <div class="plan-templates-strip" aria-label="Plan templates">
+    <div class="plan-templates-strip" aria-label="${escapeHtml(t('Plan templates'))}">
       <header>
-        <strong>Templates</strong>
-        <em>${templates.length} saved · click Use to clone into a new draft</em>
+        <strong>${escapeHtml(t('Templates'))}</strong>
+        <em>${escapeHtml(tf('{count} saved · click Use to clone into a new draft', { count: templates.length }))}</em>
       </header>
       <ul class="plan-templates-list">
         ${templates.map(planTemplateRow).join('')}
@@ -61455,7 +61775,7 @@ function planTemplatesStrip(embedded: boolean): string {
 }
 
 function planTemplateRow(record: GeneratedPlanRecord): string {
-  const label = record.templateLabel?.trim() || record.templateTitle || record.plan.intent || 'Template';
+  const label = record.templateLabel?.trim() || record.templateTitle || record.plan.intent || t('Template');
   return `
     <li class="plan-template-row" data-generated-plan-id="${escapeHtml(record.id)}">
       <div>
@@ -61464,9 +61784,9 @@ function planTemplateRow(record: GeneratedPlanRecord): string {
         <p>${escapeHtml(record.plan.intent || '')}</p>
       </div>
       <div class="plan-template-actions">
-        <button type="button" class="primary" data-template-action="use" data-generated-plan-id="${escapeHtml(record.id)}" ${state.busy ? 'disabled' : ''}>Use</button>
-        <button type="button" class="utility" data-template-action="unmark" data-generated-plan-id="${escapeHtml(record.id)}" ${state.busy ? 'disabled' : ''} title="Stop treating this draft as a template">Unmark</button>
-        <button type="button" class="utility danger" data-template-action="delete" data-generated-plan-id="${escapeHtml(record.id)}" ${state.busy ? 'disabled' : ''}>Delete</button>
+        <button type="button" class="primary" data-template-action="use" data-generated-plan-id="${escapeHtml(record.id)}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Use'))}</button>
+        <button type="button" class="utility" data-template-action="unmark" data-generated-plan-id="${escapeHtml(record.id)}" ${state.busy ? 'disabled' : ''} title="${escapeHtml(t('Stop treating this draft as a template'))}">${escapeHtml(t('Unmark'))}</button>
+        <button type="button" class="utility danger" data-template-action="delete" data-generated-plan-id="${escapeHtml(record.id)}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Delete'))}</button>
       </div>
     </li>
   `;
@@ -61497,14 +61817,14 @@ function saveGeneratedPlanAsTemplate(planId: string): void {
   const record = generatedPlanById(planId);
   if (!record) return;
   const defaultLabel = record.templateLabel || record.templateTitle || record.plan.intent.slice(0, 48);
-  const label = (window.prompt('Save as template — label?', defaultLabel) ?? '').trim();
+  const label = (window.prompt(t('Save as template - label?'), defaultLabel) ?? '').trim();
   if (!label) return;
   const now = new Date().toISOString();
   state.generatedPlans = state.generatedPlans.map((entry) =>
     entry.id === planId ? { ...entry, template: true, templateLabel: label.slice(0, 64), updatedAt: now } : entry,
   );
   saveGeneratedPlans();
-  pushToast('success', 'Template saved', label);
+  pushToast('success', t('Template saved'), label);
   render();
 }
 
@@ -61530,7 +61850,7 @@ function cloneTemplateAsDraft(planId: string): void {
   state.generatedPlans = [cloned, ...state.generatedPlans];
   state.selectedGeneratedPlanId = cloned.id;
   saveGeneratedPlans();
-  pushToast('success', 'Template used', `Created draft from ${template.templateLabel ?? 'template'}`);
+  pushToast('success', t('Template used'), tf('Created draft from {template}', { template: template.templateLabel ?? t('template') }));
   render();
 }
 
@@ -61544,7 +61864,7 @@ function unmarkPlanTemplate(planId: string): void {
   });
   if (!touched) return;
   saveGeneratedPlans();
-  pushToast('success', 'Template unmarked', 'The draft is now a regular plan.');
+  pushToast('success', t('Template unmarked'), t('The draft is now a regular plan.'));
   render();
 }
 
@@ -61553,7 +61873,7 @@ function deleteGeneratedPlanTemplate(planId: string): void {
   if (!record) return;
   state.generatedPlans = state.generatedPlans.filter((entry) => entry.id !== planId);
   saveGeneratedPlans();
-  pushToast('success', 'Template removed', record.templateLabel ?? 'Template');
+  pushToast('success', t('Template removed'), record.templateLabel ?? 'Template');
   render();
 }
 

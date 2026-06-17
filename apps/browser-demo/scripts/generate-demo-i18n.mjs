@@ -1,21 +1,24 @@
 #!/usr/bin/env node
-// Regenerates the /demo translation catalogs from the English source of truth.
+// FULL regeneration of the translation catalogs from the English source of truth, via the
+// Anthropic API. Requires ANTHROPIC_API_KEY. Translates EVERY en.json key for each language in
+// batches (the catalog is thousands of keys), with strict protected-token rules.
 //
-// The /demo page is authored ONCE in English (src/demo-i18n/catalog/en.json is the
-// canonical string set, kept honest by the runtime DEV miss-warning in tDemo.ts and by
-// scripts/check-demo-i18n.mjs). This tool translates every English value into each
-// supported language with strict protected-token rules, validates the result, and writes
-// src/demo-i18n/catalog/<lang>.json. Re-run it whenever you edit English demo copy so you
-// never hand-maintain N copies of the page.
+// CANONICAL path for normal/incremental work (no API key needed — uses the running model):
+//   1. node scripts/extract-form-strings.mjs  &&  node scripts/extract-ui-keys.mjs   # seed en.json
+//   2. node scripts/i18n-prepare-chunks.mjs                                          # split the delta
+//   3. translate each scripts/_i18n_work/<lang>__<idx>.json -> .out.json (parallel agents, ~10 at once)
+//   4. node scripts/i18n-merge-chunks.mjs --finalize                                 # merge + guard + parity
+//   5. node scripts/check-demo-i18n.mjs                                              # validate
+// That incremental pipeline only translates NEW/CHANGED keys and is what's used in practice.
+// This whole-catalog script is the fallback for a from-scratch re-translation of everything.
 //
 // Usage:
 //   ANTHROPIC_API_KEY=sk-... node scripts/generate-demo-i18n.mjs            # all languages
 //   ANTHROPIC_API_KEY=sk-... node scripts/generate-demo-i18n.mjs --only=es,ja
 //   DEMO_I18N_MODEL=claude-sonnet-4-5 node scripts/generate-demo-i18n.mjs
 //
-// Then run `pnpm demo:i18n:check` to validate completeness + protected tokens, and commit
-// the updated JSON. (Runs offline at request time against the Anthropic API; the catalogs
-// it produces are static, so the demo itself never makes a network call.)
+// Then run `pnpm ui:i18n:check` to validate parity + protected tokens + placeholders, and commit
+// the updated JSON. (The catalogs it produces are static; the app itself never makes a network call.)
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -50,7 +53,7 @@ function protectedTokens(value) {
     /[$€£¥]\s?\d[\d,.]*(?:\/(?:month|mo|year|yr))?/giu,
     /\b\d+(?:\.\d+)?%/gu,
     /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/g,
-    /\b(?:SOL|USDC|USDT|BTC|ETH|JUP|BONK|PYUSD|WIF|JITO|mSOL|bSOL|USDS|USDP)\b/g,
+    /\b(?:SOL|USDC|USDT|BTC|ETH|JUP|BONK|POPCAT|PYUSD|WIF|JITO|JitoSOL|mSOL|bSOL|USDS|USDP|INF)\b/g,
   ];
   for (const pattern of patterns) {
     for (const match of value.matchAll(pattern)) {
@@ -113,9 +116,20 @@ async function main() {
   const enEntries = en.entries;
   const enKeys = Object.keys(enEntries);
 
+  // Batch keys so each request stays well under the model's output limit (the catalog is now
+  // thousands of keys — a single call would truncate). For large/incremental work the canonical
+  // path is the chunked agent pipeline (see header). This script remains a simple all-in-one regen.
+  const BATCH = 60;
   for (const lang of targets) {
-    process.stdout.write(`Translating ${lang} (${enKeys.length} strings) … `);
-    const translated = await translate(lang, enEntries);
+    process.stdout.write(`Translating ${lang} (${enKeys.length} strings, batches of ${BATCH}) … `);
+    const translated = {};
+    for (let i = 0; i < enKeys.length; i += BATCH) {
+      const slice = enKeys.slice(i, i + BATCH);
+      const subset = {};
+      for (const k of slice) subset[k] = enEntries[k];
+      Object.assign(translated, await translate(lang, subset));
+      process.stdout.write('.');
+    }
     const out = {};
     let reverted = 0;
     for (const key of enKeys) {

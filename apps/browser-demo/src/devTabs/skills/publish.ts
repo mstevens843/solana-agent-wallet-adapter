@@ -2,6 +2,7 @@ import './publish.css';
 import { getJson } from './fetchHelpers.js';
 import { registerSkillsSubTab } from './subTabRegistry.js';
 import { getConnectedAddress } from '../../walletState.js';
+import { t, tf } from '../../demo-i18n/uiLang.js';
 
 // Mirrors SkillManifest / SkillManifestRecord at
 // packages/workflow/src/dev/skills.ts:43-55, 89-96. Inlined to keep the
@@ -257,7 +258,9 @@ export function normalizeAuthorEarningsResponse(input: unknown): AuthorEarningsR
 export function formatInstalls(value: number | undefined | null): string {
   if (value === undefined || value === null || !Number.isFinite(value)) return '—';
   const rounded = Math.max(0, Math.round(value));
-  return `${rounded} install${rounded === 1 ? '' : 's'}`;
+  return rounded === 1
+    ? tf('{count} install', { count: rounded })
+    : tf('{count} installs', { count: rounded });
 }
 
 function isZeroDecimalString(value: string): boolean {
@@ -292,17 +295,16 @@ function renderCliCard(): string {
   return `
     <section class="skills-publish-cli-card">
       <header>
-      <span class="skills-publish-tag">Author flow</span>
-      <h2>Publish a skill</h2>
+      <span class="skills-publish-tag">${t('Author flow')}</span>
+      <h2>${t('Publish a skill')}</h2>
       <p>
-          Author in the <code>agentic-skill</code> CLI, validate locally, then publish
-          to the registry. Every skill ships with caps and wallet approval.
+          ${t('Author in the <code>agentic-skill</code> CLI, validate locally, then publish to the registry. Every skill ships with caps and wallet approval.')}
       </p>
       </header>
-      <pre class="skills-publish-pre" aria-label="CLI install snippet">${safeSnippet}</pre>
+      <pre class="skills-publish-pre" aria-label="${t('CLI install snippet')}">${safeSnippet}</pre>
       <details class="skills-publish-mobile-snippet">
-        <summary>CLI snippet</summary>
-        <pre aria-label="CLI install snippet">${safeSnippet}</pre>
+        <summary>${t('CLI snippet')}</summary>
+        <pre aria-label="${t('CLI install snippet')}">${safeSnippet}</pre>
       </details>
       <div class="skills-publish-cli-actions">
         <button
@@ -310,14 +312,14 @@ function renderCliCard(): string {
           class="skills-publish-button"
           data-skills-publish-action="copy-cli-snippet"
           data-skills-publish-value="${safeSnippet}"
-        >Copy CLI snippet</button>
+        >${t('Copy CLI snippet')}</button>
         <a
           class="skills-publish-button skills-publish-button-secondary"
           href="https://www.npmjs.com/package/@solana-agent-wallet-adapter/skills-cli"
           target="_blank"
           rel="noreferrer"
           data-skills-publish-action="open-npm"
-        >View on npm →</a>
+        >${t('View on npm →')}</a>
       </div>
     </section>
   `;
@@ -341,12 +343,12 @@ function renderRow(record: PublishedSkillRecord): string {
       <div class="skills-publish-row-category">
         <span class="skills-publish-chip">${category}</span>
       </div>
-      <div class="skills-publish-row-installs" title="Receipt aggregator install count">
-        <span class="skills-publish-cell-label">Installs</span>
+      <div class="skills-publish-row-installs" title="${t('Receipt aggregator install count')}">
+        <span class="skills-publish-cell-label">${t('Installs')}</span>
         <span class="skills-publish-cell-value">${escapeHtml(installs)}</span>
       </div>
-      <div class="skills-publish-row-earned" title="${escapeHtml(MONTHLY_EARNED_TOOLTIP)}">
-        <span class="skills-publish-cell-label">Monthly earnings</span>
+      <div class="skills-publish-row-earned" title="${escapeHtml(t(MONTHLY_EARNED_TOOLTIP))}">
+        <span class="skills-publish-cell-label">${t('Monthly earnings')}</span>
         <span class="skills-publish-cell-value">${escapeHtml(monthlyAmount)}</span>
       </div>
       <div class="skills-publish-row-actions">
@@ -356,7 +358,7 @@ function renderRow(record: PublishedSkillRecord): string {
           target="_blank"
           rel="noreferrer"
           data-skills-publish-action="open-skill-page"
-        >Open skill page →</a>
+        >${t('Open skill page →')}</a>
       </div>
     </div>
   `;
@@ -368,8 +370,8 @@ function renderListSection(): string {
       return `
         <section class="skills-publish-list-card">
           <div class="skills-publish-notice">
-            <strong>Connect a wallet</strong>
-            <p>Connect the wallet that authors your skills to manage published manifests.</p>
+            <strong>${t('Connect a wallet')}</strong>
+            <p>${t('Connect the wallet that authors your skills to manage published manifests.')}</p>
           </div>
         </section>
       `;
@@ -377,8 +379,8 @@ function renderListSection(): string {
       return `
         <section class="skills-publish-list-card">
           <div class="skills-publish-notice">
-            <strong>Sign in required</strong>
-            <p>${escapeHtml(panelState.errorMessage || 'Sign in to Agentic Cloud with your wallet to manage authored skills.')}</p>
+            <strong>${t('Sign in required')}</strong>
+            <p>${escapeHtml(panelState.errorMessage || t('Sign in to Agentic Cloud with your wallet to manage authored skills.'))}</p>
           </div>
         </section>
       `;
@@ -396,8 +398,8 @@ function renderListSection(): string {
       return `
         <section class="skills-publish-list-card">
           <div class="skills-publish-notice skills-publish-notice-warn">
-            <strong>Permission required</strong>
-            <p>This wallet cannot publish or manage authored skills.</p>
+            <strong>${t('Permission required')}</strong>
+            <p>${t('This wallet cannot publish or manage authored skills.')}</p>
           </div>
         </section>
       `;
@@ -405,11 +407,9 @@ function renderListSection(): string {
       return `
         <section class="skills-publish-list-card">
           <div class="skills-publish-notice">
-            <strong>Skill registry API unavailable</strong>
+            <strong>${t('Skill registry API unavailable')}</strong>
             <p>
-              The <code>/api/skills</code> endpoint returned 404 in this environment. The CLI
-              snippet above still scaffolds and validates a manifest locally; publishing needs a
-              render-web server with Skills routes enabled.
+              ${t('The <code>/api/skills</code> endpoint returned 404 in this environment. The CLI snippet above still scaffolds and validates a manifest locally; publishing needs a render-web server with Skills routes enabled.')}
             </p>
           </div>
         </section>
@@ -418,13 +418,13 @@ function renderListSection(): string {
       return `
         <section class="skills-publish-list-card">
           <div class="skills-publish-notice skills-publish-notice-error">
-            <strong>Couldn't load authored skills</strong>
-            <p>${escapeHtml(panelState.errorMessage || 'Unknown error')}</p>
+            <strong>${t('Couldn\'t load authored skills')}</strong>
+            <p>${escapeHtml(panelState.errorMessage || t('Unknown error'))}</p>
             <button
               type="button"
               class="skills-publish-button"
               data-skills-publish-action="retry"
-            >Retry</button>
+            >${t('Retry')}</button>
           </div>
         </section>
       `;
@@ -432,10 +432,9 @@ function renderListSection(): string {
       return `
         <section class="skills-publish-list-card">
           <div class="skills-publish-notice">
-            <strong>You haven't published any skills yet</strong>
+            <strong>${t('You haven\'t published any skills yet')}</strong>
             <p>
-              The snippet above scaffolds your first manifest. Once <code>agentic-skill publish</code>
-              succeeds, the new skill appears here with install counts and earnings.
+              ${t('The snippet above scaffolds your first manifest. Once <code>agentic-skill publish</code> succeeds, the new skill appears here with install counts and earnings.')}
             </p>
           </div>
         </section>
@@ -445,8 +444,8 @@ function renderListSection(): string {
       return `
         <section class="skills-publish-list-card">
           <header class="skills-publish-list-header">
-            <h3>Your published skills</h3>
-            <span class="skills-publish-list-count">${panelState.records.length} live</span>
+            <h3>${t('Your published skills')}</h3>
+            <span class="skills-publish-list-count">${tf('{n} live', { n: panelState.records.length })}</span>
           </header>
           <div class="skills-publish-table">${rows}</div>
         </section>
@@ -588,9 +587,9 @@ async function handleAction(action: string, dataset: DOMStringMap): Promise<void
       const value = dataset.skillsPublishValue ?? CLI_INSTALL_SNIPPET;
       try {
         await navigator.clipboard.writeText(value);
-        showToast('CLI snippet copied');
+        showToast(t('CLI snippet copied'));
       } catch {
-        showToast('Copy failed — clipboard permission denied');
+        showToast(t('Copy failed — clipboard permission denied'));
       }
       return;
     }

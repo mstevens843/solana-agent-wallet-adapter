@@ -1,5 +1,6 @@
 import './browse.css';
 import type { aggregator, skills } from '@solana-agent-wallet-adapter/workflow/dev';
+import { t, tf } from '../../demo-i18n/uiLang.js';
 import { getJson, postJson } from './fetchHelpers.js';
 import { emitSkillsInstallsChanged, onSkillsInstallsChanged } from './events.js';
 import { registerSkillsSubTab, setActiveSkillsSubTab } from './subTabRegistry.js';
@@ -92,7 +93,7 @@ export function formatSuccessRate(rate: number | undefined | null): string {
 export function formatInstalls(n: number | undefined | null): string {
   if (n === undefined || n === null || !Number.isFinite(n)) return '—';
   const rounded = Math.max(0, Math.round(n));
-  return `${rounded} install${rounded === 1 ? '' : 's'}`;
+  return rounded === 1 ? tf('{n} install', { n: rounded }) : tf('{n} installs', { n: rounded });
 }
 
 const CATEGORY_LABELS: Record<SkillCategory, string> = {
@@ -106,7 +107,7 @@ const CATEGORY_LABELS: Record<SkillCategory, string> = {
 
 export function categoryLabel(category: SkillCategory | string): string {
   if (category in CATEGORY_LABELS) {
-    return CATEGORY_LABELS[category as SkillCategory];
+    return t(CATEGORY_LABELS[category as SkillCategory]);
   }
   return String(category);
 }
@@ -123,24 +124,24 @@ export function formatMonetization(
   if (!m) return '';
   if (m.kind === 'performance-fee' && typeof m.feePercent === 'number') {
     return context.treasuryActive
-      ? `${m.feePercent}% of profit · paid to author · platform fee deferred`
-      : `${m.feePercent}% of profit · paid to author`;
+      ? tf('{pct}% of profit · paid to author · platform fee deferred', { pct: m.feePercent })
+      : tf('{pct}% of profit · paid to author', { pct: m.feePercent });
   }
   if ((m.kind === 'one-time' || m.kind === 'monthly') && m.amount) {
-    const cadence = m.kind === 'one-time' ? ` once` : `/mo`;
+    const cadence = m.kind === 'one-time' ? t(' once') : t('/mo');
     // Show the token alongside the amount so $SKR-priced skills don't read as
     // implicit-USDC. Default to USDC for manifests that predate the token
     // field.
     const token = m.token ?? 'USDC';
     const base = `$${m.amount} ${token}${cadence}`;
     if (!context.treasuryActive || context.platformFeeBps <= 0) {
-      return `${base} · paid to author`;
+      return tf('{base} · paid to author', { base });
     }
     const split = splitDecimalForDisplay(m.amount, context.platformFeeBps);
-    if (!split) return `${base} · paid to author`;
-    return `${base} · Author $${split.author} · Agentic $${split.platform}`;
+    if (!split) return tf('{base} · paid to author', { base });
+    return tf('{base} · Author ${author} · Agentic ${platform}', { base, author: split.author, platform: split.platform });
   }
-  return 'Paid to author';
+  return t('Paid to author');
 }
 
 interface DisplaySplit {
@@ -211,11 +212,11 @@ function collectInstallParamKeys(value: unknown, keys: Set<string>): void {
 
 function installParamLabel(key: string): string {
   switch (key) {
-    case 'recipient': return 'Recipient';
-    case 'recipientAddress': return 'Recipient address';
-    case 'destinationAddress': return 'Destination address';
-    case 'destinationRecipient': return 'Destination recipient';
-    case 'to': return 'To';
+    case 'recipient': return t('Recipient');
+    case 'recipientAddress': return t('Recipient address');
+    case 'destinationAddress': return t('Destination address');
+    case 'destinationRecipient': return t('Destination recipient');
+    case 'to': return t('To');
     default: return key.replace(/([a-z0-9])([A-Z])/g, '$1 $2');
   }
 }
@@ -279,30 +280,30 @@ export function normalizeStats(input: unknown): SkillStatsSnapshot | null {
 
 function forbiddenNotice(): BrowseNotice {
   return {
-    title: 'Permission required',
-    body: 'This wallet cannot install skills on this deployment.',
+    title: t('Permission required'),
+    body: t('This wallet cannot install skills on this deployment.'),
   };
 }
 
-function signInNotice(message = 'Sign in to Agentic Cloud with your wallet to install and manage skills.'): BrowseNotice {
+function signInNotice(message = t('Sign in to Agentic Cloud with your wallet to install and manage skills.')): BrowseNotice {
   return {
-    title: 'Sign in required',
+    title: t('Sign in required'),
     body: message,
   };
 }
 
 function notDeployedNotice(): BrowseNotice {
   return {
-    title: 'Skills API unavailable',
-    body: '/api/skills returned 404. Check that this UI is pointed at a render-web server with Skills routes enabled.',
+    title: t('Skills API unavailable'),
+    body: t('/api/skills returned 404. Check that this UI is pointed at a render-web server with Skills routes enabled.'),
   };
 }
 
 function renderError(message: string): string {
   return `
     <div class="skills-browse-error" role="alert">
-      <div><strong>Something went wrong</strong>${escapeHtml(message)}</div>
-      <button type="button" class="dismiss" aria-label="Dismiss" data-skills-browse-action="dismiss-error">×</button>
+      <div><strong>${escapeHtml(t('Something went wrong'))}</strong>${escapeHtml(message)}</div>
+      <button type="button" class="dismiss" aria-label="${escapeHtml(t('Dismiss'))}" data-skills-browse-action="dismiss-error">×</button>
     </div>
   `;
 }
@@ -311,22 +312,22 @@ function renderNotice(notice: BrowseNotice): string {
   return `
     <div class="skills-browse-notice" role="status">
       <div><strong>${escapeHtml(notice.title)}</strong>${escapeHtml(notice.body)}</div>
-      <button type="button" class="dismiss" aria-label="Dismiss" data-skills-browse-action="dismiss-notice">×</button>
+      <button type="button" class="dismiss" aria-label="${escapeHtml(t('Dismiss'))}" data-skills-browse-action="dismiss-notice">×</button>
     </div>
   `;
 }
 
 function renderInstallControl(row: CardRow, busy: boolean): string {
   if (row.installStatus === 'active') {
-    return `<span class="skills-browse-installed" aria-label="Installed">Installed</span>`;
+    return `<span class="skills-browse-installed" aria-label="${escapeHtml(t('Installed'))}">${escapeHtml(t('Installed'))}</span>`;
   }
   if (row.installStatus === 'paused') {
-    return `<span class="skills-browse-installed paused" aria-label="Paused">Paused</span>`;
+    return `<span class="skills-browse-installed paused" aria-label="${escapeHtml(t('Paused'))}">${escapeHtml(t('Paused'))}</span>`;
   }
   if (row.installStatus === 'expired' || row.installStatus === 'revoked') {
     // Treat as not-installed; user can re-install.
   }
-  const label = busy ? 'Installing…' : 'Install';
+  const label = busy ? t('Installing…') : t('Install');
   const disabled = busy || requiresMonetizationAcceptance(row) ? 'disabled' : '';
   return `
     <button
@@ -352,7 +353,7 @@ function renderMonetizationAcceptance(row: CardRow, busy: boolean): string {
   const terms = formatMonetization(row.manifest.monetization, {
     treasuryActive: state.treasuryActive,
     platformFeeBps: state.platformFeeBps,
-  }) || 'Paid author terms';
+  }) || t('Paid author terms');
   return `
     <label class="skills-browse-paid-terms">
       <input
@@ -362,7 +363,7 @@ function renderMonetizationAcceptance(row: CardRow, busy: boolean): string {
         ${checked}
         ${busy ? 'disabled' : ''}
       />
-      <span>Accept ${escapeHtml(terms)} for this install.</span>
+      <span>${tf('Accept {terms} for this install.', { terms: escapeHtml(terms) })}</span>
     </label>
   `;
 }
@@ -414,11 +415,11 @@ export function renderCard(row: CardRow, busyInstallId: string | null): string {
       <p class="skills-browse-card-description">${escapeHtml(row.manifest.description)}</p>
       <dl class="skills-browse-stats">
         <div class="skills-browse-stat">
-          <dt>Installs</dt>
+          <dt>${escapeHtml(t('Installs'))}</dt>
           <dd>${escapeHtml(formatInstalls(row.stats?.installs))}</dd>
         </div>
         <div class="skills-browse-stat">
-          <dt>Success</dt>
+          <dt>${escapeHtml(t('Success'))}</dt>
           <dd>${escapeHtml(formatSuccessRate(row.stats?.successRate))}</dd>
         </div>
       </dl>
@@ -435,10 +436,10 @@ export function renderCard(row: CardRow, busyInstallId: string | null): string {
 
 function renderBody(): string {
   if (state.phase === 'idle' || state.phase === 'loading') {
-    return `<p class="skills-browse-loading" data-skills-browse-loading>Loading skills…</p>`;
+    return `<p class="skills-browse-loading" data-skills-browse-loading>${escapeHtml(t('Loading skills…'))}</p>`;
   }
   if (state.rows.length === 0) {
-    return `<p class="skills-browse-empty">No skills published yet. Run <code>agentic-skill publish</code> to add yours.</p>`;
+    return `<p class="skills-browse-empty">${tf('No skills published yet. Run {cmd} to add yours.', { cmd: '<code>agentic-skill publish</code>' })}</p>`;
   }
   return `
     <div class="skills-browse-grid">
@@ -454,11 +455,11 @@ export function renderBrowsePanel(): string {
     <section class="skills-browse-root" data-skills-browse-root>
       <header class="skills-browse-header">
         <div>
-          <h2>Browse skills</h2>
-          <p>Installable strategy recipes. Each run still proposes an approval — skills never move funds on their own.</p>
+          <h2>${escapeHtml(t('Browse skills'))}</h2>
+          <p>${escapeHtml(t('Installable strategy recipes. Each run still proposes an approval — skills never move funds on their own.'))}</p>
         </div>
         <div class="skills-browse-header-actions">
-          <button type="button" class="skills-browse-button refresh" data-skills-browse-action="refresh">Refresh</button>
+          <button type="button" class="skills-browse-button refresh" data-skills-browse-action="refresh">${escapeHtml(t('Refresh'))}</button>
         </div>
       </header>
       ${noticeBlock}
@@ -607,7 +608,7 @@ function installParamsForRow(row: CardRow): Record<string, string> | undefined {
   for (const key of keys) {
     const value = (draft[key] ?? '').trim();
     if (!value) {
-      state.installParamErrors[row.manifest.id] = `${installParamLabel(key)} is required.`;
+      state.installParamErrors[row.manifest.id] = tf('{label} is required.', { label: installParamLabel(key) });
       return undefined;
     }
     params[key] = value;
@@ -639,7 +640,7 @@ export async function handleInstall(skillId: string): Promise<void> {
   state.error = '';
   delete state.installErrors[skillId];
   if (row.manifest.monetization && state.monetizationAccepted[skillId] !== true) {
-    state.installErrors[skillId] = 'Accept the author payment terms to install this skill.';
+    state.installErrors[skillId] = t('Accept the author payment terms to install this skill.');
     rerenderPanelOnly();
     return;
   }
@@ -678,8 +679,8 @@ export async function handleInstall(skillId: string): Promise<void> {
       installId: result.value.install?.id ?? result.value.installId,
       status: result.value.install?.status ?? 'active',
     });
-    showToast(`Installed · ${row.manifest.name}`, {
-      label: 'View Installed',
+    showToast(tf('Installed · {name}', { name: row.manifest.name }), {
+      label: t('View Installed'),
       onClick: openInstalledTab,
     });
     return;
