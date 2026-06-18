@@ -25,6 +25,11 @@ import {
   type CardRow,
 } from '../skills/browse.js';
 import { listSkillsSubTabs } from '../skills/subTabRegistry.js';
+import { setUiLanguage } from '../../demo-i18n/uiLang.js';
+
+afterEach(() => {
+  setUiLanguage('en');
+});
 
 type FetchMock = ReturnType<typeof vi.fn>;
 
@@ -325,6 +330,20 @@ describe('renderBrowsePanel', () => {
     expect(html).toContain('API unavailable');
     expect(html).toContain('data-skills-browse-action="dismiss-notice"');
   });
+
+  it('localizes backend sign-in notices by exact catalog key', () => {
+    setUiLanguage('zh-Hans');
+    __resetStateForTests({
+      phase: 'ready',
+      notice: {
+        title: 'Sign in required',
+        body: 'Sign in to Agentic Cloud with your wallet to use Skills.',
+      },
+    });
+    const html = renderBrowsePanel();
+    expect(html).toContain('需要登录');
+    expect(html).toContain('使用您的钱包登录 Agentic Cloud 以使用技能。');
+  });
 });
 
 describe('renderCard', () => {
@@ -339,6 +358,21 @@ describe('renderCard', () => {
     expect(html).toContain('91%');
     expect(html).toContain('Friday DCA');
     expect(html).toContain('DCA');
+  });
+
+  it('localizes first-party launch skill manifest text at render time', () => {
+    setUiLanguage('zh-Hans');
+    const row: CardRow = {
+      manifest: manifest({
+        name: 'Friday DCA',
+        description: 'Buys SOL with USDC every Friday at 14:00 UTC. Each fill still requires your manual wallet approval.',
+      }) as unknown as CardRow['manifest'],
+      stats: statsSnapshot() as unknown as CardRow['stats'],
+      installStatus: 'none',
+    };
+    const html = renderCard(row, null);
+    expect(html).toContain('周五 DCA');
+    expect(html).toContain('每周五 14:00 UTC 使用 USDC 买入 SOL');
   });
 
   it('shows em dashes when stats are missing', () => {

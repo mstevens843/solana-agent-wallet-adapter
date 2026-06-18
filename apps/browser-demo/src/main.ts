@@ -364,7 +364,6 @@ import {
   shouldInterceptExternalLink,
 } from './externalLinks.js';
 import {
-  MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED,
   desktopAiModeDisabledReason,
   mobileAiModeDisabledReason,
   mobileAiPathTabLabel,
@@ -12122,7 +12121,7 @@ function heroTerminalPreview(): string {
   const runtimePath = currentRuntimePath();
   const terminalState = terminalCommandState(runtimePath);
   return `
-    <aside class="hero-terminal" aria-label="Agentic terminal preview">
+    <aside class="hero-terminal" aria-label="${escapeHtml(t('Agentic terminal preview'))}">
       <div class="terminal-preview-window hero-terminal-window">
         <div class="terminal-preview-bar">
           <span></span>
@@ -12134,15 +12133,15 @@ function heroTerminalPreview(): string {
           ${heroTerminalLeadLine(runtimePath)}
           <p class="${terminalState.bridgeTone}">${escapeHtml(terminalState.bridgeLine)}</p>
           <p class="${terminalState.walletTone}">${escapeHtml(terminalState.walletLine)}</p>
-          <p><span>agent</span> prepare swap SOL to USDC</p>
-          <p><span>wallet</span> user approval required</p>
-          <p class="ok"><span>result</span> no private key handed to agent</p>
+          <p><span>${escapeHtml(t('agent'))}</span> ${escapeHtml(t('prepare swap SOL to USDC'))}</p>
+          <p><span>${escapeHtml(t('wallet'))}</span> ${escapeHtml(t('user approval required'))}</p>
+          <p class="ok"><span>${escapeHtml(t('result'))}</span> ${escapeHtml(t('no private key handed to agent'))}</p>
         </div>
       </div>
-      <div class="hero-proof-panel" aria-label="Authority model">
-        ${heroProof('Agent requests', 'Intent, route, limits, and transaction bytes.')}
-        ${heroProof('Wallet approves', state.address ? short(state.address) : 'Existing user wallet signs.')}
-        ${heroProof('Adapter records', 'Receipt, policy context, bridge state, and evidence receipts.')}
+      <div class="hero-proof-panel" aria-label="${escapeHtml(t('Authority model'))}">
+        ${heroProof(t('Agent requests'), t('Intent, route, limits, and transaction bytes.'))}
+        ${heroProof(t('Wallet approves'), state.address ? short(state.address) : t('Existing user wallet signs.'))}
+        ${heroProof(t('Adapter records'), t('Receipt, policy context, bridge state, and evidence receipts.'))}
       </div>
     </aside>
   `;
@@ -12150,7 +12149,7 @@ function heroTerminalPreview(): string {
 
 function heroTerminalLeadLine(runtimePath: RuntimePath): string {
   if (runtimePath.actionKind === 'link') {
-    return `<p><span>route</span> ${escapeHtml(runtimePath.href ?? runtimePath.terminalCommand)}</p>`;
+    return `<p><span>${escapeHtml(t('route'))}</span> ${escapeHtml(runtimePath.href ?? runtimePath.terminalCommand)}</p>`;
   }
 
   return `<p><span>$</span> ${escapeHtml(runtimePath.terminalCommand)}<i class="terminal-caret" aria-hidden="true"></i></p>`;
@@ -12221,6 +12220,9 @@ function compactWalletChip(name: string, logoId: BrandLogoId): string {
 }
 
 function gapSection(): string {
+  const walletRoutes = IS_IOS_APP
+    ? t('Phantom, Solflare, Backpack, Wallet Standard, and iOS wallet links')
+    : t('Phantom, Solflare, Backpack, Seed Vault, Wallet Standard, MWA, and iOS wallet links');
   return `
     <section class="gap-section" aria-labelledby="gap-title">
       <div class="gap-copy">
@@ -12245,9 +12247,7 @@ function gapSection(): string {
         <p class="gap-answer">
           ${escapeHtml(
             tf("Agentic routes each request to the user's existing Solana wallet: {wallets}. The agent gets the approved result, never the key.", {
-              wallets: IS_IOS_APP
-                ? 'Phantom, Solflare, Backpack, Wallet Standard, and iOS wallet links'
-                : 'Phantom, Solflare, Backpack, Seed Vault, Wallet Standard, MWA, and iOS wallet links',
+              wallets: walletRoutes,
             }),
           )}
         </p>
@@ -12934,7 +12934,7 @@ function guidedDemoPreviewPanel(scenario: GuidedDemoScenario): string {
         <span></span>
         <span></span>
         <span></span>
-        <strong>simulated-route</strong>
+        <strong>${escapeHtml(td('Simulated route'))}</strong>
       </div>
       <div class="guided-demo-preview-body">
         <p><span>${escapeHtml(td('user'))}</span> ${escapeHtml(scenario.prompt)}</p>
@@ -13965,10 +13965,10 @@ function mobileRailBottomSheet(): string {
   const sheet = state.activeMobileRailSheet;
   if (!sheet || !isMobileAppViewport() || state.activeTab !== 'overview') return '';
   const title = sheet === 'workspace-storage'
-    ? 'Workspace Storage'
+    ? t('Workspace Storage')
     : sheet === 'wallet-balances'
-      ? 'Wallet Balances'
-      : 'AI Connector';
+      ? t('Wallet Balances')
+      : t('AI Connector');
   const detail = sheet === 'workspace-storage'
     ? t('Browser-local workflow storage')
     : sheet === 'wallet-balances'
@@ -14423,7 +14423,7 @@ function firstRunActionBand(): string {
         <span>${escapeHtml(t('Approval loop'))}</span>
         <h3>${escapeHtml(title)}</h3>
         <p>${escapeHtml(detail)}</p>
-        <small>${escapeHtml(tf('Workspace: {label}', { label: activeWorkflowLabel() }))}</small>
+        <small>${escapeHtml(tf('Workspace: {label}', { label: t(activeWorkflowLabel()) }))}</small>
       </div>
       <div class="first-run-progress" role="list" aria-label="${escapeHtml(t('First-time progress'))}">
         ${steps.map((stepItem, index) => firstRunStepItem(stepItem, index, currentStep.id)).join('')}
@@ -15813,7 +15813,7 @@ function cloudWorkspaceRailBody(): string {
     <section class="rail-cloud-card ${escapeHtml(mode)} ${signedIn ? 'signed-in' : ''}" aria-label="${escapeHtml(t('Workspace storage details'))}">
       <p>${escapeHtml(detail)}</p>
       <div class="rail-cloud-facts">
-        <span>${escapeHtml(t('Active'))} <strong>${escapeHtml(activeWorkflowLabel())}</strong></span>
+        <span>${escapeHtml(t('Active'))} <strong>${escapeHtml(t(activeWorkflowLabel()))}</strong></span>
         ${matched ? `<span>${escapeHtml(t('Wallet'))} <strong>${escapeHtml(short(state.cloudSession.walletAddress))}</strong></span>` : ''}
         ${state.cloudLastSync && matched ? `<span>${escapeHtml(t('Synced'))} <strong>${escapeHtml(formatDateTime(state.cloudLastSync))}</strong></span>` : ''}
       </div>
@@ -18947,7 +18947,7 @@ function commandAiRouteCards(): string {
       mode: 'hosted',
       title: t('Hosted BYOK'),
       detail: hostedCloudSignInRequired
-        ? MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED
+        ? t('Cloud sign-in required for Hosted BYOK relay. Your AI key is not stored.')
         : t('Connect a preset provider key through Agentic for AI agent requests.'),
       meta: t('Cloud AI connection'),
       available: true,
@@ -19179,7 +19179,7 @@ function commandAiInfoCardsGroup(): string {
       title: t('Hosted BYOK'),
       badge: hostedCloudSignInRequired ? t('Cloud sign-in required') : t('Natural-language setup'),
       detail: hostedCloudSignInRequired
-        ? MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED
+        ? t('Cloud sign-in required for Hosted BYOK relay. Your AI key is not stored.')
         : t('User brings a provider key; Agentic calls AI to translate messy intent into a structured workflow plan.'),
       foot: hostedCloudSignInRequired
         ? t('Sign in to Agentic Cloud with this wallet before using Hosted BYOK on mobile.')
@@ -19346,18 +19346,18 @@ function commandPlanConnectorRouteCard(): string {
     : paired;
   const action = website ? 'open-web-plan-connector' : 'open-plan-connector-sheet';
   const meta = website
-    ? connected ? 'Website plan connected' : 'Website plan connection'
-    : paired ? 'Computer plan connected' : 'Computer plan connection';
+    ? connected ? t('Website plan connected') : t('Website plan connection')
+    : paired ? t('Computer plan connected') : t('Computer plan connection');
   const detail = website
     ? connected
-      ? 'AI Connector uses the signed-in connector running on this computer.'
-      : 'Use Codex, Claude, or Gemini from this computer instead of pasting a provider API key.'
+      ? t('AI Connector uses the signed-in connector running on this computer.')
+      : t('Use Codex, Claude, or Gemini from this computer instead of pasting a provider API key.')
     : paired
-      ? 'AI planning runs on your signed-in computer. Keep it awake while using Android.'
-      : 'Use Codex, Claude, or Gemini from your signed-in computer instead of pasting an API key on Android.';
+      ? t('AI planning runs on your signed-in computer. Keep it awake while using Android.')
+      : t('Use Codex, Claude, or Gemini from your signed-in computer instead of pasting an API key on Android.');
   const label = website
-    ? active ? 'Selected' : connected ? 'Manage' : 'Use route'
-    : paired ? 'Manage' : 'Connect';
+    ? active ? t('Selected') : connected ? t('Manage') : t('Use route')
+    : paired ? t('Manage') : t('Connect');
   return `
     <article class="command-route-card plan-connector-route-card ${active ? 'active' : ''} ${connected ? 'connected' : ''}">
       <div>
@@ -19380,7 +19380,7 @@ function commandPlanConnectorRouteCard(): string {
 function aiReviewSetupTabs(): string {
   const active = state.aiReviewSetupTab;
   const tabs: Array<{ id: AiReviewSetupTab; label: string }> = [
-    { id: 'api-key', label: 'API Key' },
+    { id: 'api-key', label: t('API Key') },
     { id: 'plan-connector', label: 'Plan Connector' },
   ];
   return `
@@ -23107,8 +23107,8 @@ function templatePicker(template: AgentPlanTemplate): string {
 }
 
 function templatePickerLabel(template: AgentPlanTemplate, connector?: ProtocolConnector): string {
-  if (connector) return `${connector.name} - ${template.title}`;
-  return `${titleCase(template.category)} - ${template.title}`;
+  if (connector) return `${connector.name} - ${t(template.title)}`;
+  return `${t(titleCase(template.category))} - ${t(template.title)}`;
 }
 
 function templatePickerOption(
@@ -23296,6 +23296,7 @@ function mobileTemplateFieldDisplayLabel(
 function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
   const template = selectedTemplate();
   const value = templateFieldValue(fieldDef.id);
+  const valueDisplay = localizedTemplateFieldControlValue(value);
   const disabled = state.busy ? 'disabled' : '';
   const displayLabel = mobileTemplateFieldDisplayLabel(template, fieldDef, templateFieldDisplayLabel(fieldDef));
   const label = `${t(displayLabel)}${fieldDef.required ? ' *' : ''}`;
@@ -23344,7 +23345,7 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
     return `
       <label class="field compact planner-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
         <span>${escapeHtml(label)}</span>
-        <textarea data-template-field="${escapeHtml(fieldDef.id)}" placeholder="${escapeHtml(fieldDef.placeholder ? t(fieldDef.placeholder) : '')}" ${disabled}>${escapeHtml(value)}</textarea>
+        <textarea data-template-field="${escapeHtml(fieldDef.id)}"${valueDisplay.attrs} placeholder="${escapeHtml(fieldDef.placeholder ? t(fieldDef.placeholder) : '')}" ${disabled}>${escapeHtml(valueDisplay.value)}</textarea>
         ${templateFieldHelper(fieldDef)}
         ${error}
       </label>
@@ -23369,11 +23370,21 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
   return `
     <label class="field compact planner-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
       <span>${escapeHtml(label)}</span>
-      <input data-template-field="${escapeHtml(fieldDef.id)}" value="${escapeHtml(value)}" placeholder="${escapeHtml(fieldDef.placeholder ? t(fieldDef.placeholder) : '')}" ${disabled} />
+      <input data-template-field="${escapeHtml(fieldDef.id)}"${valueDisplay.attrs} value="${escapeHtml(valueDisplay.value)}" placeholder="${escapeHtml(fieldDef.placeholder ? t(fieldDef.placeholder) : '')}" ${disabled} />
       ${templateFieldHelper(fieldDef)}
       ${error}
     </label>
   `;
+}
+
+function localizedTemplateFieldControlValue(value: string): { value: string; attrs: string } {
+  if (!value || activeUiLanguage() === 'en') return { value, attrs: '' };
+  const localized = t(value);
+  if (localized === value) return { value, attrs: '' };
+  return {
+    value: localized,
+    attrs: ` data-template-localized-raw-value="${escapeHtml(value)}" data-template-localized-display-value="${escapeHtml(localized)}"`,
+  };
 }
 
 function templateFieldHelper(fieldDef: AgentPlanTemplateField): string {
@@ -23461,7 +23472,7 @@ function templateSelectPickerOptions(
     return (fieldDef.options ?? []).map((option) => ({
       value: option,
       label: t(titleCase(option)),
-      meta: fieldLabel,
+        meta: t(fieldLabel),
       detail: rangePresetOptionDetail(option),
     }));
   }
@@ -23469,7 +23480,7 @@ function templateSelectPickerOptions(
     return (fieldDef.options ?? []).map((option) => ({
       value: option,
       label: t(titleCase(option)),
-      meta: fieldLabel,
+        meta: t(fieldLabel),
       detail: option === 'sell'
         ? t('Sell the input token over repeated swaps.')
         : t('Buy the output token over repeated swaps.'),
@@ -23478,7 +23489,7 @@ function templateSelectPickerOptions(
   return (fieldDef.options ?? []).map((option) => ({
     value: option,
     label: t(option),
-    meta: fieldLabel,
+    meta: t(fieldLabel),
   }));
 }
 
@@ -23624,7 +23635,7 @@ function connectorOperationFieldInput(
       ${selectPicker({
         value: selectedValue,
         options: actions.length
-          ? actions.map((action) => ({ value: action, label: t(action), meta: connector?.name ?? fieldDef.label }))
+          ? actions.map((action) => ({ value: action, label: t(action), meta: connector?.name ?? t(fieldDef.label) }))
           : [{ value: '', label: t('Choose a connector first'), meta: t('Operation'), disabled: true }],
         attrs: {
           'data-template-field': fieldDef.id,
@@ -23712,14 +23723,14 @@ function connectorSubActionPicker(form: ConnectorActionForm): string {
   if (group.display === 'select') {
     return `
       <label class="field compact planner-field connector-subaction-row connector-subaction-select">
-        <span class="connector-subaction-label">${escapeHtml(group.label)}</span>
+        <span class="connector-subaction-label">${escapeHtml(t(group.label))}</span>
         ${selectPicker({
           value: current,
           options: group.options.map((option) => ({
             value: option.id,
-            label: option.label,
-            meta: group.label,
-            detail: option.description,
+            label: t(option.label),
+            meta: t(group.label),
+            detail: t(option.description),
           })),
           attrs: { 'data-template-field': group.fieldId },
           disabled: state.busy,
@@ -23732,6 +23743,8 @@ function connectorSubActionPicker(form: ConnectorActionForm): string {
     .map((option) => {
       const active = option.id === current ? 'active' : '';
       const disabledAttr = state.busy ? 'disabled' : '';
+      const label = t(option.label);
+      const description = t(option.description);
       return `
         <button
           type="button"
@@ -23739,19 +23752,19 @@ function connectorSubActionPicker(form: ConnectorActionForm): string {
           data-template-field-choice="${escapeHtml(group.fieldId)}"
           data-template-field-value="${escapeHtml(option.id)}"
           aria-pressed="${option.id === current ? 'true' : 'false'}"
-          aria-label="${escapeHtml(`${option.label}. ${option.description}`)}"
-          title="${escapeHtml(option.description)}"
+          aria-label="${escapeHtml(`${label}. ${description}`)}"
+          title="${escapeHtml(description)}"
           ${disabledAttr}
         >
-          <strong>${escapeHtml(option.label)}</strong>
-          <em>${escapeHtml(option.description)}</em>
+          <strong>${escapeHtml(label)}</strong>
+          <em>${escapeHtml(description)}</em>
         </button>
       `;
     })
     .join('');
   return `
-    <div class="connector-subaction-row" role="group" aria-label="${escapeHtml(group.label)}">
-      <span class="connector-subaction-label">${escapeHtml(group.label)}</span>
+    <div class="connector-subaction-row" role="group" aria-label="${escapeHtml(t(group.label))}">
+      <span class="connector-subaction-label">${escapeHtml(t(group.label))}</span>
       <div class="connector-subaction-chips">${chips}</div>
     </div>
   `;
@@ -24958,7 +24971,7 @@ function aiModeSelectOptions(): SelectPickerOption[] {
           : undefined,
       detail: rawDisabledReason
         || (hostedCloudSignInNeeded
-          ? MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED
+          ? t('Cloud sign-in required for Hosted BYOK relay. Your AI key is not stored.')
           : '')
         || (configured
           ? tf('{state} configured path; approvals and signatures stay separate.', { state: active ? t('Active') : t('Inactive') })
@@ -31890,13 +31903,13 @@ function mountPlanConnectorPairingPanel(): void {
     },
   }), {
     introText: IS_IOS_APP
-      ? 'Point your iPhone at the QR displayed on your AI-connected computer. The computer must stay awake while planning.'
-      : 'Point Android at the QR displayed on your AI-connected computer. The computer must stay awake while planning.',
-    scanLabel: 'Scan computer QR',
-    pasteLabel: 'Camera not working? Paste the pairing code from the computer page:',
-    pasteButtonLabel: 'Connect Plan Connector',
-    connectedText: '✓ Connected. AI now runs on your computer plan.',
-    invalidCodeText: 'That code is not valid. Copy the whole pairing code from the computer connector page.',
+      ? t('Point your iPhone at the QR displayed on your AI-connected computer. The computer must stay awake while planning.')
+      : t('Point Android at the QR displayed on your AI-connected computer. The computer must stay awake while planning.'),
+    scanLabel: t('Scan computer QR'),
+    pasteLabel: t('Camera not working? Paste the pairing code from the computer page:'),
+    pasteButtonLabel: t('Connect Plan Connector'),
+    connectedText: t('Connected. AI now runs on your computer plan.'),
+    invalidCodeText: t('That code is not valid. Copy the whole pairing code from the computer connector page.'),
   });
 }
 
@@ -33752,7 +33765,7 @@ async function runQueueAgentPlan(): Promise<void> {
         : response.mode === 'agentic-cloud'
           ? t('Saved to Agentic Cloud. No localhost required.')
           : response.mode === 'browser-workflow'
-            ? 'Saved on this device.'
+            ? t('Saved on this device.')
             : response.id,
     );
   }, {
@@ -34963,7 +34976,7 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
         : response.mode === 'agentic-cloud'
           ? t('Saved to Agentic Cloud. No localhost required.')
           : response.mode === 'browser-workflow'
-            ? 'Saved on this device.'
+            ? t('Saved on this device.')
             : response.id,
     );
   }, {
@@ -40332,34 +40345,34 @@ async function runStartTauriBridgeForAi(): Promise<void> {
 
 function aiClearMessage(mode: AiSettings['mode'] = state.aiSettings.mode): string {
   if (mode === 'hosted') {
-    return 'Hosted BYOK key removed from this browser session.';
+    return t('Hosted BYOK key removed from this browser session.');
   }
   if (mode === 'device-agent') {
-    return 'Device Agent key and staged runtime config removed from this app.';
+    return t('Device Agent key and staged runtime config removed from this app.');
   }
   if (mode === 'session') {
     return IS_TAURI_APP
-      ? 'Desktop session key removed from this app.'
+      ? t('Desktop session key removed from this app.')
       : IS_ANDROID_APP
-        ? 'Android session key removed from this app.'
-        : 'Browser session key removed from this app.';
+        ? t('Android session key removed from this app.')
+        : t('Browser session key removed from this app.');
   }
-  return 'Session-memory provider key removed from this app and local bridge memory. Env-backed bridge keys are managed in Preferences.';
+  return t('Session-memory provider key removed from this app and local bridge memory. Env-backed bridge keys are managed in Preferences.');
 }
 
 function aiModeToastMessage(mode: AiSettings['mode']): string {
   if (mode === 'bridge') {
-    return 'Local Bridge AI Connector runs through the local runtime. Private local workflow storage remains optional.';
+    return t('Local Bridge AI Connector runs through the local runtime. Private local workflow storage remains optional.');
   }
   if (mode === 'device-agent') {
-    return 'Device Agent AI uses the gated runtime path for AI Connector only.';
+    return t('Device Agent AI uses the gated runtime path for AI Connector only.');
   }
   if (mode === 'hosted') {
-    return 'Hosted BYOK reviews requests only. Workflow actions still require explicit wallet review.';
+    return t('Hosted BYOK reviews requests only. Workflow actions still require explicit wallet review.');
   }
   return IS_ANDROID_APP
-    ? 'Android session AI Connector reviews requests only and keeps the key in this app runtime.'
-    : 'Browser session AI Connector reviews requests only and keeps the key in this tab.';
+    ? t('Android session AI Connector reviews requests only and keeps the key in this app runtime.')
+    : t('Browser session AI Connector reviews requests only and keeps the key in this tab.');
 }
 
 function setAiPlannerMode(mode: AiSettings['mode']): void {
@@ -40527,7 +40540,7 @@ function hostedByokCloudSessionReasonForMode(mode: AiSettings['mode']): string {
     cloudSessionMatchesWallet: cloudSessionMatchesWallet(),
   });
   return reason && isMobileAiPathPolicySurface()
-    ? MOBILE_HOSTED_BYOK_CLOUD_SIGNIN_REQUIRED
+    ? t('Cloud sign-in required for Hosted BYOK relay. Your AI key is not stored.')
     : reason;
 }
 
@@ -41179,7 +41192,7 @@ async function runSetWorkflowModePreference(preference: WorkflowModePreference):
     pushToast(
       'success',
       preference === 'local-bridge' ? t('Private local mode active') : t('Workspace mode updated'),
-      `${activeWorkflowLabel()} will handle new one-time workflow actions.`,
+      tf('{label} will handle new one-time workflow actions.', { label: t(activeWorkflowLabel()) }),
     );
   });
 }
@@ -42376,8 +42389,8 @@ async function refreshWorkspaceData(options: { toast: boolean } = { toast: true 
         'success',
         t('Workspace refreshed'),
         count === 1
-          ? tf('{count} approval request loaded from {source}.', { count, source: activeWorkflowLabel() })
-          : tf('{count} approval requests loaded from {source}.', { count, source: activeWorkflowLabel() }),
+          ? tf('{count} approval request loaded from {source}.', { count, source: t(activeWorkflowLabel()) })
+          : tf('{count} approval requests loaded from {source}.', { count, source: t(activeWorkflowLabel()) }),
       );
     }
   });
@@ -52164,7 +52177,7 @@ function agentResultBlock(): string {
 
 function queueStatusLine(visibleCount: number): string {
   const total = activeWorkflowPreparedActions().filter(isActionInboxActive).length;
-  const bridge = activeWorkflowLabel();
+  const bridge = t(activeWorkflowLabel());
   const filter = queueFilterLabel(state.inboxFilter);
   return `
     <div class="queue-status">
@@ -53457,6 +53470,15 @@ function syncTemplateFieldFromControl(
 ): string {
   const fieldId = control.dataset.templateField;
   if (!fieldId) return control.value;
+  const localizedRawValue = control.dataset.templateLocalizedRawValue;
+  const localizedDisplayValue = control.dataset.templateLocalizedDisplayValue;
+  if (
+    localizedRawValue !== undefined &&
+    localizedDisplayValue !== undefined &&
+    control.value === localizedDisplayValue
+  ) {
+    return localizedRawValue;
+  }
   const fieldDef = selectedTemplate().fields.find((field) => field.id === fieldId);
   if (!fieldDef || !isTokenSelectField(fieldDef)) return control.value;
   const mode: TokenInputMode = control instanceof HTMLSelectElement ? 'preset' : 'custom';
@@ -54701,9 +54723,9 @@ function recurringPresetControls(): string {
       title: t('Repeat payment type'),
       options: RECURRING_PRESETS.map((preset) => ({
         value: preset.id,
-        label: preset.title,
-        meta: preset.badge,
-        detail: preset.description,
+        label: t(preset.title),
+        meta: t(preset.badge),
+        detail: t(preset.description),
       })),
     })}
   `;
@@ -55842,7 +55864,7 @@ function evidenceIntent(): { status: string; detail: string; meta?: string } {
           ? tf('{count} request needs approval.', { count })
           : tf('{count} requests need approval.', { count })
         : t('No queued approvals are currently waiting.'),
-      meta: activeWorkflowLabel(),
+      meta: t(activeWorkflowLabel()),
     };
   }
   if (state.activeTab === 'completed') {
@@ -55862,7 +55884,7 @@ function evidenceIntent(): { status: string; detail: string; meta?: string } {
           ? tf('{count} repeat payment active.', { count: activeSchedules })
           : tf('{count} repeat payments active.', { count: activeSchedules })
         : t('Create a repeat payment for future wallet review.'),
-        meta: activeWorkflowLabel(),
+        meta: t(activeWorkflowLabel()),
     };
   }
   if (state.activeTab === 'labs') {
@@ -55906,7 +55928,7 @@ function evidencePolicy(): { status: string; detail: string; meta?: string } {
     return {
       status: state.agentPlan ? t('Plan scoped') : t('Plan'),
       detail: state.agentPlan?.risk ?? t('Create a plan to expose route and risk before sending for approval.'),
-      meta: tf('Approval path: {path}', { path: activeWorkflowLabel() }),
+      meta: tf('Approval path: {path}', { path: t(activeWorkflowLabel()) }),
     };
   }
   if (state.activeTab === 'generated') {
@@ -55914,7 +55936,7 @@ function evidencePolicy(): { status: string; detail: string; meta?: string } {
     return {
       status: selected ? t('Review scoped') : t('No plans'),
       detail: selected?.plan.risk ?? t('Plans stay separate from approval until you send them.'),
-      meta: selected && canQueueAgentPlan(selected.plan) ? tf('Approval-ready through {path}', { path: activeWorkflowLabel() }) : t('Proof-only review'),
+      meta: selected && canQueueAgentPlan(selected.plan) ? tf('Approval-ready through {path}', { path: t(activeWorkflowLabel()) }) : t('Proof-only review'),
     };
   }
   if (state.activeTab === 'schedule') {
@@ -55924,9 +55946,9 @@ function evidencePolicy(): { status: string; detail: string; meta?: string } {
       detail: t('Repeat payments create future approval items, not automatic signatures.'),
       meta: recurringPlans
         ? recurringPlans === 1
-          ? tf('{count} repeat payment - {path}', { count: recurringPlans, path: activeWorkflowLabel() })
-          : tf('{count} repeat payments - {path}', { count: recurringPlans, path: activeWorkflowLabel() })
-        : activeWorkflowLabel(),
+          ? tf('{count} repeat payment - {path}', { count: recurringPlans, path: t(activeWorkflowLabel()) })
+          : tf('{count} repeat payments - {path}', { count: recurringPlans, path: t(activeWorkflowLabel()) })
+        : t(activeWorkflowLabel()),
     };
   }
   if (state.activeTab === 'completed') {
@@ -55967,7 +55989,7 @@ function evidencePolicy(): { status: string; detail: string; meta?: string } {
       detail: openApprovals === 1
         ? tf('{count} prepared action is waiting for review.', { count: openApprovals })
         : tf('{count} prepared actions are waiting for review.', { count: openApprovals }),
-      meta: tf('{path} policy is active.', { path: activeWorkflowLabel() }),
+      meta: tf('{path} policy is active.', { path: t(activeWorkflowLabel()) }),
     };
   }
   if (state.bridgeActive) {
@@ -55982,7 +56004,7 @@ function evidencePolicy(): { status: string; detail: string; meta?: string } {
     detail:
       state.cluster === 'mainnet-beta'
         ? t('Mainnet requests require explicit wallet approval and visible receipts.')
-        : tf('{path} will hold queued work until explicit wallet approval.', { path: activeWorkflowLabel() }),
+        : tf('{path} will hold queued work until explicit wallet approval.', { path: t(activeWorkflowLabel()) }),
   };
 }
 

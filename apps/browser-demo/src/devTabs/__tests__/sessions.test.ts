@@ -27,6 +27,7 @@ import {
   streamingApprovalSignedBody,
 } from '../../streamingApprovalEvents.js';
 import { setConnectedAddress, setConnectedCluster } from '../../walletState.js';
+import { setUiLanguage } from '../../demo-i18n/uiLang.js';
 import { __sessionsForTests } from '../sessions.js';
 
 function makeSession(overrides: Partial<StreamingSessionRecord> = {}): StreamingSessionRecord {
@@ -101,6 +102,7 @@ describe('sessions dev tab', () => {
     delete (globalThis as { fetch?: typeof fetch }).fetch;
     delete (globalThis as { window?: unknown }).window;
     delete (globalThis as { CustomEvent?: unknown }).CustomEvent;
+    setUiLanguage('en');
     setConnectedAddress(undefined);
     setConnectedCluster(undefined);
     __resetSessionsStateForTests();
@@ -121,6 +123,20 @@ describe('sessions dev tab', () => {
     expect(html).toContain('sess_active_001');
     expect(html).toContain('7.5 / 25 USDC');
     expect(html).toContain('sessions-pill--active');
+  });
+
+  it('localizes backend notice messages by exact catalog key', () => {
+    setUiLanguage('zh-Hans');
+    __resetSessionsStateForTests({
+      status: 'loaded',
+      sessions: [],
+      notice: {
+        tone: 'error',
+        message: 'Sign in to Agentic Cloud with your wallet to use this route.',
+      },
+    });
+    const html = __sessionsForTests.renderSessionsPanel();
+    expect(html).toContain('使用您的钱包登录 Agentic Cloud 以使用此路线。');
   });
 
   it('renders voucher rows, revoke button, allowlist, and receipt link in detail', () => {

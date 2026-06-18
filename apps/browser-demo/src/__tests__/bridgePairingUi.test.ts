@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AsyncPairBridge, NativePairBridge } from '../bridgePairing.js';
 import { buildPhonePairingDeps, mountPhonePairingPanel } from '../bridgePairingUi.js';
+import { setUiLanguage } from '../demo-i18n/uiLang.js';
 
 class FakeElement {
   readonly tagName: string;
@@ -126,10 +127,32 @@ function logged(spy: ReturnType<typeof vi.spyOn>, pattern: string): boolean {
 }
 
 describe('mountPhonePairingPanel', () => {
+  beforeEach(() => {
+    setUiLanguage('en');
+  });
+
   afterEach(() => {
+    setUiLanguage('en');
     vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it('localizes the Android pairing panel from the active UI language', () => {
+    setUiLanguage('zh-Hans');
+    const document = installFakeDocument();
+    const container = document.createElement('div');
+    const cleanup = mountPhonePairingPanel(container as unknown as HTMLElement, {
+      bridge: undefined,
+      onPaired: vi.fn(),
+    });
+
+    expect(elementsByTag(container, 'p')[0]?.textContent).toContain('AI 的电脑');
+    expect(scanButton(container)?.textContent).toBe('扫描电脑 QR');
+    expect(elementsByTag(container, 'label')[0]?.textContent).toBe('或粘贴配对码：');
+    expect(clipboardPasteButton(container)?.textContent).toBe('粘贴');
+    expect(connectButton(container)?.textContent).toBe('使用此代码配对');
+    cleanup();
   });
 
   it('shows a clear error for invalid pasted pairing codes', () => {

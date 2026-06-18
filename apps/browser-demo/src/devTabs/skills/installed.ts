@@ -285,7 +285,7 @@ function forbiddenNotice(): InstalledNotice {
 function signInNotice(message = t('Sign in to Agentic Cloud with your wallet to manage installed skills.')): InstalledNotice {
   return {
     title: 'Sign in required',
-    body: message,
+    body: t(message),
   };
 }
 
@@ -299,7 +299,7 @@ function notDeployedNotice(): InstalledNotice {
 function renderError(message: string): string {
   return `
     <div class="skills-installed-banner is-error" role="alert">
-      <div><strong>${escapeHtml(t('Something went wrong'))}</strong>${escapeHtml(message)}</div>
+      <div><strong>${escapeHtml(t('Something went wrong'))}</strong>${escapeHtml(t(message))}</div>
       <button type="button" class="dismiss" aria-label="${escapeHtml(t('Dismiss'))}" data-skills-installed-action="dismiss-error">×</button>
     </div>
   `;
@@ -308,7 +308,7 @@ function renderError(message: string): string {
 function renderActionError(message: string): string {
   return `
     <div class="skills-installed-banner is-action-error" role="alert">
-      <div><strong>${escapeHtml(t('Action failed'))}</strong>${escapeHtml(message)}</div>
+      <div><strong>${escapeHtml(t('Action failed'))}</strong>${escapeHtml(t(message))}</div>
       <button type="button" class="dismiss" aria-label="${escapeHtml(t('Dismiss'))}" data-skills-installed-action="dismiss-action-error">×</button>
     </div>
   `;
@@ -317,14 +317,14 @@ function renderActionError(message: string): string {
 function renderNotice(notice: InstalledNotice, modifier: 'is-forbidden' | 'is-not-deployed' | 'is-auth'): string {
   return `
     <div class="skills-installed-banner ${modifier}" role="status">
-      <div><strong>${escapeHtml(t(notice.title))}</strong>${escapeHtml(notice.body)}</div>
+      <div><strong>${escapeHtml(t(notice.title))}</strong>${escapeHtml(t(notice.body))}</div>
       <button type="button" class="dismiss" aria-label="${escapeHtml(t('Dismiss'))}" data-skills-installed-action="dismiss-notice">×</button>
     </div>
   `;
 }
 
 function rowTitle(row: InstallRow): string {
-  if (row.manifest?.name) return row.manifest.name;
+  if (row.manifest?.name) return t(row.manifest.name);
   return tf('Skill {id}', { id: shortAddress(row.install.skillId) });
 }
 

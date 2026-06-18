@@ -211,7 +211,7 @@ function sessionsListHtml(): string {
   if (snapshot.status === 'error' && rows.length === 0) {
     return `
       <div class="sessions-error">
-        <p>${escapeHtml(snapshot.errorMessage || t('Could not load streaming sessions.'))}</p>
+        <p>${escapeHtml(t(snapshot.errorMessage || t('Could not load streaming sessions.')))}</p>
         <button type="button" class="utility" data-sessions-refresh>${t('Retry')}</button>
       </div>
     `;
@@ -546,7 +546,7 @@ export function renderSessionsPanel(): string {
         ],
       })}
 
-      ${snapshot.notice ? `<p class="sessions-notice sessions-notice--${escapeHtml(snapshot.notice.tone)}">${escapeHtml(snapshot.notice.message)}</p>` : ''}
+      ${snapshot.notice ? `<p class="sessions-notice sessions-notice--${escapeHtml(snapshot.notice.tone)}">${escapeHtml(t(snapshot.notice.message))}</p>` : ''}
 
       <div class="sessions-overview" aria-label="${escapeHtml(t('Streaming sessions summary'))}">
         <div class="dev-tab-stat"><span>${t('Active')}</span><strong>${activeCount}</strong></div>

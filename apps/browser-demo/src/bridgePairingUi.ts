@@ -26,6 +26,7 @@ import type {
   AiKeyPasteClipboardUnavailableReason,
 } from './aiKeyPaste.js';
 import { logDeviceAgentDiag } from './deviceAgent/runtime/diagnosticLog.js';
+import { t, tf } from './demo-i18n/uiLang.js';
 
 interface NativeQrScanResult {
   ok?: boolean;
@@ -83,7 +84,7 @@ function buildModalShell(title: string): ModalShell {
   const closeBtn = document.createElement('button');
   closeBtn.type = 'button';
   closeBtn.textContent = '✕';
-  closeBtn.setAttribute('aria-label', 'Close');
+  closeBtn.setAttribute('aria-label', t('Close'));
   closeBtn.style.cssText = 'background:transparent;border:0;color:#9fb8ab;font-size:18px;cursor:pointer;line-height:1;';
   const body = document.createElement('div');
   header.append(heading, closeBtn);
@@ -135,14 +136,14 @@ export interface DesktopPairingDeps {
 }
 
 export async function openDesktopPairingModal(deps: DesktopPairingDeps): Promise<void> {
-  const { body, onClose } = buildModalShell('Plan Connector QR');
+  const { body, onClose } = buildModalShell(t('Plan Connector QR'));
   const intro = document.createElement('p');
   intro.style.cssText = 'margin:0;font-size:13px;color:#bcd3c7;';
   intro.textContent =
-    'Scan this with Agentic Android to run AI on the plan connected to this computer. Keep this computer awake and signed in.';
+    t('Scan this with Agentic Android to run AI on the plan connected to this computer. Keep this computer awake and signed in.');
   const qrWrap = document.createElement('div');
   qrWrap.style.cssText = 'display:flex;justify-content:center;margin:16px 0;min-height:240px;align-items:center;';
-  const status = statusLine('Starting…');
+  const status = statusLine(t('Starting…'));
   body.append(intro, qrWrap, status);
 
   let polling: ReturnType<typeof setInterval> | null = null;
@@ -174,14 +175,14 @@ export async function openDesktopPairingModal(deps: DesktopPairingDeps): Promise
   try {
     const state = await startDesktopPairing(deps.bridgeRequest);
     if (!state.qrPayload) {
-      status.replaceWith(statusLine('Could not start pairing. Is the local bridge running?', 'warn'));
+      status.replaceWith(statusLine(t('Could not start pairing. Is the local bridge running?'), 'warn'));
       return;
     }
     const dataUrl = await renderPairingQrDataUrl(state.qrPayload);
     if (dataUrl) {
       const img = document.createElement('img');
       img.src = dataUrl;
-      img.alt = 'Pairing QR code';
+      img.alt = t('Pairing QR code');
       img.style.cssText = 'width:240px;height:240px;border-radius:8px;background:#fff;padding:8px;';
       qrWrap.append(img);
     } else {
@@ -192,7 +193,7 @@ export async function openDesktopPairingModal(deps: DesktopPairingDeps): Promise
       pre.style.cssText = 'width:100%;height:90px;font-family:monospace;font-size:11px;background:#06100c;color:#cfe;border:1px solid #1f3a2c;border-radius:8px;padding:8px;';
       qrWrap.append(pre);
     }
-    status.replaceWith(statusLine('Waiting for Android to scan…'));
+    status.replaceWith(statusLine(t('Waiting for Android to scan…')));
     const liveStatus = body.lastElementChild as HTMLElement;
     polling = setInterval(async () => {
       try {
@@ -200,11 +201,11 @@ export async function openDesktopPairingModal(deps: DesktopPairingDeps): Promise
         pollFailures = 0;
         if (s.paired) {
           stopPolling();
-          liveStatus.textContent = '✓ Android connected. You can close this and use AI from the phone.';
+          liveStatus.textContent = t('Android connected. You can close this and use AI from the phone.');
           liveStatus.style.color = '#5fe3a1';
         } else if (!s.active) {
           stopPolling();
-          liveStatus.textContent = 'Pairing expired. Close and try again.';
+          liveStatus.textContent = t('Pairing expired. Close and try again.');
           liveStatus.style.color = '#ffb27a';
         }
       } catch {
@@ -213,14 +214,14 @@ export async function openDesktopPairingModal(deps: DesktopPairingDeps): Promise
         pollFailures += 1;
         if (pollFailures >= 5) {
           stopPolling();
-          liveStatus.textContent = 'Couldn’t reach the pairing service. Check your connection, then close and try again.';
+          liveStatus.textContent = t('Couldn’t reach the pairing service. Check your connection, then close and try again.');
           liveStatus.style.color = '#ffb27a';
         }
       }
     }, 2000);
   } catch (err) {
     logDeviceAgentDiag('warn', 'bridge-pair.desktop_modal_error', { message: err instanceof Error ? err.message : String(err) });
-    status.replaceWith(statusLine('Pairing failed to start. Make sure the local bridge is running.', 'warn'));
+    status.replaceWith(statusLine(t('Pairing failed to start. Make sure the local bridge is running.'), 'warn'));
   }
 }
 
@@ -268,10 +269,10 @@ export interface PhonePairingPanelOptions {
 }
 
 export function openPhonePairingModal(deps: PhonePairingDeps): void {
-  const { body, onClose } = buildModalShell('Scan computer QR');
+  const { body, onClose } = buildModalShell(t('Scan computer QR'));
   const cleanup = mountPhonePairingPanel(body, deps, {
     introText:
-      'On your AI-connected computer, open the Agentic connector QR page. Then scan that QR here or paste the pairing code.',
+      t('On your AI-connected computer, open the Agentic connector QR page. Then scan that QR here or paste the pairing code.'),
   });
   onClose(cleanup);
 }
@@ -293,16 +294,16 @@ export function mountPhonePairingPanel(
   intro.style.cssText = 'margin:0;font-size:13px;color:#bcd3c7;';
   intro.textContent =
     options.introText
-      ?? 'On your AI-connected computer, open the Agentic connector QR page. Then scan that QR here or paste the pairing code.';
+      ?? t('On your AI-connected computer, open the Agentic connector QR page. Then scan that QR here or paste the pairing code.');
   const video = document.createElement('video');
   video.setAttribute('playsinline', 'true');
   video.setAttribute('autoplay', 'true');
   video.muted = true;
   video.style.cssText = 'width:100%;border-radius:10px;margin:12px 0;display:none;background:#000;max-height:260px;';
-  const scanBtn = makeButton(options.scanLabel ?? 'Scan computer QR');
+  const scanBtn = makeButton(options.scanLabel ?? t('Scan computer QR'));
   scanBtn.classList.add('phone-pairing-scan-button');
   const pasteLabel = document.createElement('label');
-  pasteLabel.textContent = options.pasteLabel ?? 'Or paste the pairing code:';
+  pasteLabel.textContent = options.pasteLabel ?? t('Or paste the pairing code:');
   pasteLabel.style.cssText = 'display:block;font-size:12px;color:#9fb8ab;margin-top:12px;';
   const pasteArea = document.createElement('textarea');
   // Stable id so captureMobileRailRenderSnapshot/restoreMobileRailRenderSnapshot can
@@ -311,9 +312,9 @@ export function mountPhonePairingPanel(
   pasteArea.placeholder = '{"v":1,"relay":"…","uuid":"…","token":"…"}';
   // font-size:16px avoids iOS zoom-on-focus (mirrors the .phone-pairing-panel textarea rule).
   pasteArea.style.cssText = 'width:100%;height:64px;font-family:monospace;font-size:16px;background:#06100c;color:#cfe;border:1px solid #1f3a2c;border-radius:8px;padding:8px;margin-top:4px;';
-  const clipboardPasteBtn = makeButton(options.clipboardPasteButtonLabel ?? 'Paste');
+  const clipboardPasteBtn = makeButton(options.clipboardPasteButtonLabel ?? t('Paste'));
   clipboardPasteBtn.classList.add('phone-pairing-clipboard-paste-button');
-  const connectLabel = options.pasteButtonLabel ?? 'Pair with this code';
+  const connectLabel = options.pasteButtonLabel ?? t('Pair with this code');
   const pasteBtn = makeButton(connectLabel);
   pasteBtn.classList.add('phone-pairing-connect-button');
   // Layout (grid, gap, margins, button width/margin overrides) is owned by the
@@ -344,7 +345,7 @@ export function mountPhonePairingPanel(
     });
     cleanup();
     video.style.display = 'none';
-    setStatusLine(status, 'Pairing…');
+    setStatusLine(status, t('Pairing…'));
     // iOS: claim runs in JS (relay + E2EE); a successful claim persists credentials, so the pairing is
     // confirmed immediately — no native status poll needed.
     if (deps.asyncBridge) {
@@ -360,7 +361,7 @@ export function mountPhonePairingPanel(
         return;
       }
       logDeviceAgentDiag('info', 'bridge-pair.phone_pair_status_paired', { tag });
-      setStatusLine(status, options.connectedText ?? '✓ Paired. AI now runs on your computer’s plan.', 'ok');
+      setStatusLine(status, options.connectedText ?? t('Paired. AI now runs on your computer’s plan.'), 'ok');
       deps.onPaired(payload.connector);
       return;
     }
@@ -379,7 +380,7 @@ export function mountPhonePairingPanel(
         if (polling) clearInterval(polling);
         polling = null;
         logDeviceAgentDiag('info', 'bridge-pair.phone_pair_status_paired', { tag });
-        setStatusLine(status, options.connectedText ?? '✓ Paired. AI now runs on your computer’s plan.', 'ok');
+        setStatusLine(status, options.connectedText ?? t('Paired. AI now runs on your computer’s plan.'), 'ok');
         deps.onPaired(payload.connector);
       } else if (s.error) {
         if (polling) clearInterval(polling);
@@ -401,7 +402,7 @@ export function mountPhonePairingPanel(
       available: Boolean(deps.readClipboardText),
     });
     if (!deps.readClipboardText) {
-      setStatusLine(status, 'Clipboard paste is unavailable here. Type the code or use the system paste menu.', 'warn');
+      setStatusLine(status, t('Clipboard paste is unavailable here. Type the code or use the system paste menu.'), 'warn');
       return;
     }
     clipboardPasteBtn.disabled = true;
@@ -417,14 +418,14 @@ export function mountPhonePairingPanel(
       const text = clipboard.text.trim();
       if (!text) {
         logDeviceAgentDiag('warn', 'bridge-pair.clipboard_paste_empty', {});
-        setStatusLine(status, 'Clipboard empty. Copy the pairing code from your computer, then tap Paste.', 'warn');
+        setStatusLine(status, t('Clipboard empty. Copy the pairing code from your computer, then tap Paste.'), 'warn');
         return;
       }
       pasteArea.value = text;
       logDeviceAgentDiag('info', 'bridge-pair.clipboard_paste_done', {
         chars: text.length,
       });
-      setStatusLine(status, `Pairing code pasted. Tap ${connectLabel}.`);
+      setStatusLine(status, tf('Pairing code pasted. Tap {connectLabel}.', { connectLabel }));
     } finally {
       clipboardPasteBtn.disabled = false;
     }
@@ -438,7 +439,7 @@ export function mountPhonePairingPanel(
       logDeviceAgentDiag('warn', 'bridge-pair.paste_bad_payload', { chars: raw.length });
       setStatusLine(
         status,
-        options.invalidCodeText ?? 'That code isn’t valid. Copy the whole pairing code from the computer.',
+        options.invalidCodeText ?? t('That code isn’t valid. Copy the whole pairing code from the computer.'),
         'warn',
       );
       return;
@@ -467,14 +468,14 @@ export function mountPhonePairingPanel(
     // iOS: the native AVFoundation scanner resolves a Promise directly (no global callback bridge).
     if (deps.asyncBridge) {
       scanBtn.disabled = true;
-      setStatusLine(status, 'Opening camera…');
+      setStatusLine(status, t('Opening camera…'));
       try {
         const rawValue = await deps.asyncBridge.scanQr();
         const payload = parsePairingPayload(rawValue);
         if (!payload) {
           setStatusLine(
             status,
-            options.invalidCodeText ?? 'That code isn’t valid. Copy the whole pairing code from the computer.',
+            options.invalidCodeText ?? t('That code isn’t valid. Copy the whole pairing code from the computer.'),
             'warn',
           );
           return;
@@ -491,7 +492,7 @@ export function mountPhonePairingPanel(
     }
     if (deps.bridge?.bridgeScanPairingQr) {
       scanBtn.disabled = true;
-      setStatusLine(status, 'Opening camera…');
+      setStatusLine(status, t('Opening camera…'));
       try {
         logDeviceAgentDiag('info', 'bridge-pair.native_scan_click', {});
         const rawValue = await scanPairingQrNative(deps.bridge);
@@ -501,7 +502,7 @@ export function mountPhonePairingPanel(
           logDeviceAgentDiag('warn', 'bridge-pair.native_scan_bad_payload', { rawChars: rawValue.length });
           setStatusLine(
             status,
-            options.invalidCodeText ?? 'That code isn’t valid. Copy the whole pairing code from the computer.',
+            options.invalidCodeText ?? t('That code isn’t valid. Copy the whole pairing code from the computer.'),
             'warn',
           );
           return;
@@ -528,7 +529,7 @@ export function mountPhonePairingPanel(
         browserDetector: Boolean(Detector),
         browserMedia,
       });
-      setStatusLine(status, 'Camera scanning isn’t available here — paste the code instead.', 'warn');
+      setStatusLine(status, t('Camera scanning isn’t available here - paste the code instead.'), 'warn');
       return;
     }
     try {
@@ -571,7 +572,7 @@ export function mountPhonePairingPanel(
       void tick();
     } catch (err) {
       logDeviceAgentDiag('warn', 'bridge-pair.camera_failed', { message: err instanceof Error ? err.message : String(err) });
-      setStatusLine(status, 'Couldn’t open the camera — paste the code instead.', 'warn');
+      setStatusLine(status, t('Couldn’t open the camera - paste the code instead.'), 'warn');
     }
   });
 
@@ -652,44 +653,44 @@ function settleNativeQrScan(requestId: string, envelope: NativeQrScanResult, for
 function nativeQrScanErrorMessage(code: string): string {
   switch (code) {
     case 'cancelled':
-      return 'Scanner closed. Scan again or paste the code instead.';
+      return t('Scanner closed. Scan again or paste the code instead.');
     case 'permission_denied':
-      return 'Camera permission is off — allow camera access or paste the code instead.';
+      return t('Camera permission is off - allow camera access or paste the code instead.');
     case 'camera_unavailable':
-      return 'No usable camera was found — paste the code instead.';
+      return t('No usable camera was found - paste the code instead.');
     case 'timeout':
-      return 'Scanner timed out. Scan again or paste the code instead.';
+      return t('Scanner timed out. Scan again or paste the code instead.');
     case 'origin':
-      return 'Scanner was blocked by the Android bridge origin check — reload the app and try again.';
+      return t('Scanner was blocked by the Android bridge origin check - reload the app and try again.');
     case 'invalid_request':
-      return 'Scanner request was rejected by Android — reload the app and try again.';
+      return t('Scanner request was rejected by Android - reload the app and try again.');
     case 'not_enabled':
-      return 'Plan Connector scanning is not enabled in this app build — paste the code instead.';
+      return t('Plan Connector scanning is not enabled in this app build - paste the code instead.');
     case 'scanner_busy':
-      return 'Scanner is already open. Close it or wait, then scan again.';
+      return t('Scanner is already open. Close it or wait, then scan again.');
     case 'scanner_unavailable':
-      return 'This app build does not expose the native scanner — paste the code instead.';
+      return t('This app build does not expose the native scanner - paste the code instead.');
     case 'native_exception':
-      return 'Android could not open the scanner. Check logcat, or paste the code instead.';
+      return t('Android could not open the scanner. Check logcat, or paste the code instead.');
     case 'scan_failed':
-      return 'Scanner did not return a QR code — scan again or paste the code instead.';
+      return t('Scanner did not return a QR code - scan again or paste the code instead.');
     default:
-      return 'Couldn’t scan the QR — paste the code instead.';
+      return t('Couldn’t scan the QR - paste the code instead.');
   }
 }
 
 function pairingPasteUnavailableMessage(reason: AiKeyPasteClipboardUnavailableReason): string {
   switch (reason) {
     case 'android-native-missing':
-      return 'This Android build does not expose one-tap paste. Update the app, or type the code manually.';
+      return t('This Android build does not expose one-tap paste. Update the app, or type the code manually.');
     case 'android-native-failed':
-      return 'Android blocked clipboard access. Copy the pairing code again, then tap Paste.';
+      return t('Android blocked clipboard access. Copy the pairing code again, then tap Paste.');
     case 'ios-native-missing':
-      return 'This iOS build does not expose one-tap paste. Update the app, or type the code manually.';
+      return t('This iOS build does not expose one-tap paste. Update the app, or type the code manually.');
     case 'ios-native-failed':
-      return 'iOS blocked clipboard access. Copy the pairing code again, then tap Paste.';
+      return t('iOS blocked clipboard access. Copy the pairing code again, then tap Paste.');
     default:
-      return 'Clipboard paste is unavailable here. Type the code or use the system paste menu.';
+      return t('Clipboard paste is unavailable here. Type the code or use the system paste menu.');
   }
 }
 
@@ -714,15 +715,15 @@ function makeButton(label: string): HTMLButtonElement {
 function pairErrorMessage(code: string | undefined): string {
   switch (code) {
     case 'not_enabled':
-      return 'Plan Connector is not enabled in this app build.';
+      return t('Plan Connector is not enabled in this app build.');
     case 'relay_not_allowed':
-      return 'That code points at an untrusted server — scan the QR from your own computer.';
+      return t('That code points at an untrusted server - scan the QR from your own computer.');
     case 'incomplete_payload':
     case 'bad_payload':
-      return 'That code is incomplete. Copy the whole pairing code from the computer.';
+      return t('That code is incomplete. Copy the whole pairing code from the computer.');
     case 'bridge_unavailable':
-      return 'Pairing isn’t available in this app build.';
+      return t('Pairing isn’t available in this app build.');
     default:
-      return code ? `Pairing failed: ${code}` : 'Pairing failed. Generate a fresh QR on your computer and try again.';
+      return code ? tf('Pairing failed: {code}', { code }) : t('Pairing failed. Generate a fresh QR on your computer and try again.');
   }
 }

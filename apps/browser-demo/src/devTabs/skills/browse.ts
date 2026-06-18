@@ -288,7 +288,7 @@ function forbiddenNotice(): BrowseNotice {
 function signInNotice(message = t('Sign in to Agentic Cloud with your wallet to install and manage skills.')): BrowseNotice {
   return {
     title: t('Sign in required'),
-    body: message,
+    body: t(message),
   };
 }
 
@@ -302,7 +302,7 @@ function notDeployedNotice(): BrowseNotice {
 function renderError(message: string): string {
   return `
     <div class="skills-browse-error" role="alert">
-      <div><strong>${escapeHtml(t('Something went wrong'))}</strong>${escapeHtml(message)}</div>
+      <div><strong>${escapeHtml(t('Something went wrong'))}</strong>${escapeHtml(t(message))}</div>
       <button type="button" class="dismiss" aria-label="${escapeHtml(t('Dismiss'))}" data-skills-browse-action="dismiss-error">×</button>
     </div>
   `;
@@ -311,7 +311,7 @@ function renderError(message: string): string {
 function renderNotice(notice: BrowseNotice): string {
   return `
     <div class="skills-browse-notice" role="status">
-      <div><strong>${escapeHtml(notice.title)}</strong>${escapeHtml(notice.body)}</div>
+      <div><strong>${escapeHtml(t(notice.title))}</strong>${escapeHtml(t(notice.body))}</div>
       <button type="button" class="dismiss" aria-label="${escapeHtml(t('Dismiss'))}" data-skills-browse-action="dismiss-notice">×</button>
     </div>
   `;
@@ -402,6 +402,8 @@ function renderInstallError(row: CardRow): string {
 
 export function renderCard(row: CardRow, busyInstallId: string | null): string {
   const busy = busyInstallId === row.manifest.id;
+  const manifestName = t(row.manifest.name);
+  const manifestDescription = t(row.manifest.description);
   const monetizationLine = formatMonetization(row.manifest.monetization, {
     treasuryActive: state.treasuryActive,
     platformFeeBps: state.platformFeeBps,
@@ -409,10 +411,10 @@ export function renderCard(row: CardRow, busyInstallId: string | null): string {
   return `
     <article class="skills-browse-card" data-skill-id="${escapeHtml(row.manifest.id)}">
       <div class="skills-browse-card-head">
-        <h3>${escapeHtml(row.manifest.name)}</h3>
+        <h3>${escapeHtml(manifestName)}</h3>
         <span class="skills-browse-category">${escapeHtml(categoryLabel(row.manifest.category))}</span>
       </div>
-      <p class="skills-browse-card-description">${escapeHtml(row.manifest.description)}</p>
+      <p class="skills-browse-card-description">${escapeHtml(manifestDescription)}</p>
       <dl class="skills-browse-stats">
         <div class="skills-browse-stat">
           <dt>${escapeHtml(t('Installs'))}</dt>
@@ -679,7 +681,7 @@ export async function handleInstall(skillId: string): Promise<void> {
       installId: result.value.install?.id ?? result.value.installId,
       status: result.value.install?.status ?? 'active',
     });
-    showToast(tf('Installed · {name}', { name: row.manifest.name }), {
+    showToast(tf('Installed · {name}', { name: t(row.manifest.name) }), {
       label: t('View Installed'),
       onClick: openInstalledTab,
     });
