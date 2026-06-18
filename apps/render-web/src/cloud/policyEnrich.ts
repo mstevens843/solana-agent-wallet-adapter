@@ -2,7 +2,10 @@
  * /api/policy/enrich
  *
  * Runs the same atom-extraction + capability-resolver pipeline that
- * `BridgeAiPlanner.review()` calls internally, but **without invoking any LLM**.
+ * `BridgeAiPlanner.review()` calls internally, without invoking the review LLM.
+ * When a policy is non-English, the router may provide the same small
+ * canonicalization LLM helper that hosted review uses so Android/BYOK clients
+ * get multilingual atom extraction without maintaining per-language atom rules.
  * Returns a compact `PolicyEvaluationBundle` the caller can splice into
  * `context.policyBundle` before they call their own LLM (BYOK device-agent path).
  *
@@ -44,6 +47,7 @@ import {
 import {
   compactPolicyLanguageForWire,
   VERIFIED_PROGRAM_IDS,
+  type PolicyTextCanonicalizer,
 } from '@solana-agent-wallet-adapter/workflow';
 import {
   createMcpCapabilityResolver,
@@ -89,8 +93,13 @@ interface PolicyEnrichFailure {
   error: string;
 }
 
+interface PolicyEnrichOptions {
+  policyTextCanonicalizer?: PolicyTextCanonicalizer;
+}
+
 export async function handlePolicyEnrich(
   rawBody: unknown,
+  options: PolicyEnrichOptions = {},
 ): Promise<PolicyEnrichResult | PolicyEnrichFailure> {
   const startedAt = Date.now();
   const body = isObject(rawBody) ? (rawBody as PolicyEnrichRequest) : ({} as PolicyEnrichRequest);
@@ -153,6 +162,7 @@ export async function handlePolicyEnrich(
       resolver,
       simulation,
       txGateContext,
+      policyTextCanonicalizer: safePolicyTextCanonicalizer(options.policyTextCanonicalizer),
     });
 
     tracePolicyEnrich('success', {
@@ -176,6 +186,21 @@ export async function handlePolicyEnrich(
       error: err instanceof Error ? err.message : String(err),
     };
   }
+}
+
+function safePolicyTextCanonicalizer(canonicalizer: PolicyTextCanonicalizer | undefined): PolicyTextCanonicalizer | undefined {
+  if (!canonicalizer) return undefined;
+  return async (input) => {
+    try {
+      return await canonicalizer(input);
+    } catch (err) {
+      tracePolicyEnrich('canonicalizer_fail', {
+        sourceLanguage: input.sourceLanguage,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return undefined;
+    }
+  };
 }
 
 function tracePolicyEnrich(step: string, fields: Record<string, string | number | boolean | undefined>): void {

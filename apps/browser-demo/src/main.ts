@@ -83,6 +83,7 @@ import {
   type AgentFactRoute,
   type AgentFactRoutePlan,
   type AgentReviewLocalizedCopy,
+  type LocalizableAgentReview,
   type PolicyLanguageCode,
   type AgentReviewLocalizedLabelKey,
   type AiGuardrailReport,
@@ -338,6 +339,7 @@ import {
   isAgentReviewDisplayPath,
   type AgentReviewDisplayPath,
 } from './agentReviewPathDisplay.js';
+import { localizeAgentAskResultForDisplay } from './agentAskLocalization.js';
 import { findingsSpecFor } from './agentFindingsSpec.js';
 import { evaluateSimulationOutcome } from './simulationOutcome.js';
 import { getCachedUsdPrice, getUsdPriceForMint } from './priceCache.js';
@@ -26492,7 +26494,7 @@ async function localizeDeviceAgentReviewResult(
  * before the verb ships). Returns null on any failure so the caller keeps the phrase-pack copy.
  */
 async function localizeDeviceAgentReviewCopy(
-  review: AgentPlanReviewResult,
+  review: LocalizableAgentReview,
   language: PolicyLanguageCode,
   fallbackText: string,
 ): Promise<AgentReviewLocalizedCopy | null> {
@@ -26515,6 +26517,21 @@ async function localizeDeviceAgentReviewCopy(
     }
   }
   return fetchReviewLocalization(review, language, { fallbackText });
+}
+
+async function localizeAgentAskResult(
+  result: AgentPlanAskResult,
+  request: AgentPlanAskRequest,
+): Promise<AgentPlanAskResult> {
+  return localizeAgentAskResultForDisplay(result, {
+    enabled: REVIEW_MODEL_LOCALIZATION_ENABLED,
+    language: activeUiLanguage(),
+    fallbackText: request.question,
+    localizeReviewCopy: (review, language, fallbackText) =>
+      state.aiSettings.mode === 'device-agent'
+        ? localizeDeviceAgentReviewCopy(review, language, fallbackText)
+        : fetchReviewLocalization(review, language, { fallbackText }),
+  });
 }
 
 async function generateDeviceAgentAsk(request: AgentPlanAskRequest): Promise<AgentPlanAskResult> {
@@ -33973,6 +33990,7 @@ async function runAskAgentAnything(planId: string, question: string): Promise<vo
     } else {
       result = await generateSessionAiAsk(state.aiSettings, request);
     }
+    result = await localizeAgentAskResult(result, request);
     const updatedExchange: AgentAskExchange = {
       ...pendingExchange,
       pending: false,

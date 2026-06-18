@@ -47,6 +47,7 @@ import {
   type PolicyEvaluationBundle,
   type PolicyLanguageCode,
   type PolicyTextCanonicalizer,
+  type PolicyTextCanonicalizerInput,
   type SimulationDigest,
   type TxGateContext,
 } from '@solana-agent-wallet-adapter/workflow';
@@ -813,6 +814,14 @@ export class BridgeAiPlanner {
       if (!json) return undefined;
       return parsePolicyCanonicalizationResponse(json);
     };
+  }
+
+  async canonicalizePolicyText(
+    input: PolicyTextCanonicalizerInput,
+  ): Promise<Awaited<ReturnType<PolicyTextCanonicalizer>>> {
+    const canonicalizer = this.buildPolicyTextCanonicalizer();
+    if (!canonicalizer) return undefined;
+    return canonicalizer(input);
   }
 
   private async localizeReviewForDisplay(

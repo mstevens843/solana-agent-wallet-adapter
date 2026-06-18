@@ -45,6 +45,7 @@ import {
   type BirdeyeTokenListSortBy,
   type HeliusTransferFilters,
 } from '@solana-agent-wallet-adapter/mcp-server';
+import type { PolicyTextCanonicalizer } from '@solana-agent-wallet-adapter/workflow';
 import { Connection, PublicKey } from '@solana/web3.js';
 
 import { getAndroidRemoteConfig } from './androidConfig.js';
@@ -1106,7 +1107,9 @@ async function routeApiRequest(
       res.end(JSON.stringify({ ok: false, error: err instanceof Error ? err.message : 'Invalid JSON body' }));
       return;
     }
-    const result = await handlePolicyEnrich(body);
+    const result = await handlePolicyEnrich(body, {
+      policyTextCanonicalizer: managedPolicyTextCanonicalizer(),
+    });
     res.statusCode = result.ok ? 200 : 500;
     res.setHeader('content-type', 'application/json; charset=utf-8');
     // Don't cache — policy resolution is stateful (live prices change per second).
@@ -1137,6 +1140,7 @@ async function routeApiRequest(
     }
     const planner = new BridgeAiPlanner();
     configureHostedAiPlanner(planner);
+    configureManagedHostedAiPlanner(planner);
     const result = await handleReviewLocalize(body, (review, language) =>
       runWithHostedAiTimeout(planner.localizeReview(review, language)));
     // ReviewLocalizeErrorCode → HTTP: bad_request→400, too_large→413, localize_failed→502 (upstream LLM).
@@ -2100,6 +2104,27 @@ function configureHostedAiPlanner(planner: BridgeAiPlanner): void {
   planner.runtimeConfig = DEFAULT_CONFIG;
   planner.connection = connection;
   planner.simulator = makeTransactionSimulator(connection);
+}
+
+function configureManagedHostedAiPlanner(planner: BridgeAiPlanner): void {
+  const settings = managedHostedAiSettings();
+  if (!settings) return;
+  planner.setSessionKey({
+    apiKey: settings.apiKey,
+    provider: settings.provider,
+    apiFormat: settings.apiFormat,
+    baseUrl: settings.baseUrl,
+    model: settings.model,
+  });
+}
+
+function managedPolicyTextCanonicalizer(): PolicyTextCanonicalizer {
+  return async (input) => {
+    const planner = new BridgeAiPlanner();
+    configureHostedAiPlanner(planner);
+    configureManagedHostedAiPlanner(planner);
+    return runWithHostedAiTimeout(planner.canonicalizePolicyText(input));
+  };
 }
 
 function hostedAiConnection(): Connection {
