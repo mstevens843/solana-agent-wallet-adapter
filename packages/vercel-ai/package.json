@@ -25,7 +25,7 @@
   },
   "dependencies": {
     "@solana-agent-wallet-adapter/core": "workspace:*",
-    "zod": "^3.23.0"
+    "zod": "^4.4.3"
   },
   "peerDependencies": {
     "ai": "^4.0.0 || ^5.0.0 || ^6.0.0"
