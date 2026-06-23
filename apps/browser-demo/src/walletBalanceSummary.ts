@@ -15,6 +15,7 @@ export {
   walletBalancePriceMapFromBirdeye,
   walletBalanceRowsFromParsedAccounts,
   walletBalanceUsdPricingEnabled,
+  type WalletBalanceAsset,
   type WalletBalancePriceInfo,
   type WalletBalanceSnapshot,
 } from '@solana-agent-wallet-adapter/core';

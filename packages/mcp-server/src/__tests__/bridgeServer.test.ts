@@ -850,6 +850,59 @@ describe('bridge lab artifact routes', () => {
     }
   });
 
+  it('streams AI chat with browser wallet context without requiring a bridge wallet host', async () => {
+    const originalFetch = globalThis.fetch;
+    const providerBodies: Record<string, unknown>[] = [];
+    vi.stubEnv('AGENTIC_AI_API_KEY', 'sk-test-openai');
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = input instanceof Request ? new URL(input.url) : new URL(String(input));
+      if (url.hostname === 'api.openai.com') {
+        providerBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+        return sseResponse([
+          'data: {"choices":[{"delta":{"content":"Balance "}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":"ready"}}]}\n\n',
+          'data: [DONE]\n\n',
+        ]);
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch);
+
+    const handle = await startTestBridge();
+    try {
+      const browserWallet = '4FtqUdd9dhX6oX7hcc4ufXK7BMf85y3s4dqWMMAgent';
+      const events = await bridgeSse(handle.url, '/bridge/ai/chat/stream', {
+        method: 'POST',
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: 'What is my current SOL balance?' }],
+          cluster: 'devnet',
+          context: {
+            browserWallet: {
+              connected: true,
+              source: 'browser_wallet',
+              address: browserWallet,
+              cluster: 'devnet',
+            },
+            walletBalance: {
+              walletAddress: browserWallet,
+              cluster: 'devnet',
+              coverage: 'primary',
+              sol: { amount: 6 },
+            },
+          },
+        }),
+      });
+
+      expect(events.filter((event) => event.type === 'token').map((event) => event.text).join('')).toBe('Balance ready');
+      const providerMessages = providerBodies[0]?.messages as Array<{ content?: string }> | undefined;
+      expect(providerMessages?.[0]?.content).toContain(`Connected wallet: ${browserWallet}.`);
+      expect(providerMessages?.[0]?.content).toContain('"source":"browser_wallet"');
+      expect(providerMessages?.[0]?.content).toContain('"amount":6');
+      expect(providerMessages?.[1]?.content).toBe('What is my current SOL balance?');
+    } finally {
+      await handle.stop();
+    }
+  });
+
   it('requires the bridge token for streaming AI chat', async () => {
     const handle = await startTestBridge();
     try {

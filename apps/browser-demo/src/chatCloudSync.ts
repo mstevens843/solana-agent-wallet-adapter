@@ -57,15 +57,40 @@ export type CloudChatMetaAction =
   | 'keep';       // local has content and is newer/equal → keep (push up later)
 
 // Decide how one cloud session-metadata row reconciles with the local copy.
-// Last-writer-wins by updatedAt (ISO strings compare lexicographically).
+// Last-writer-wins by updatedAt, but with a skew tolerance: only treat the cloud
+// copy as newer when it leads by MORE than `skewMs`, so a near-simultaneous local
+// edit isn't clobbered by a peer whose clock runs slightly ahead. Falls back to a
+// lexicographic compare when either timestamp can't be parsed.
 export function decideCloudChatMeta(
   local: { updatedAt: string; messages: unknown[] } | undefined,
   meta: { updatedAt: string },
+  skewMs = 60_000,
 ): CloudChatMetaAction {
   if (!local) return 'create-stub';
-  if ((meta.updatedAt || '') > local.updatedAt) return 'restub';
+  const localMs = Date.parse(local.updatedAt);
+  const metaMs = Date.parse(meta.updatedAt);
+  const cloudIsNewer = Number.isFinite(localMs) && Number.isFinite(metaMs)
+    ? metaMs > localMs + skewMs
+    : (meta.updatedAt || '') > local.updatedAt;
+  if (cloudIsNewer) return 'restub';
   if (local.messages.length === 0) return 'mark-stub';
   return 'keep';
+}
+
+// Union two message arrays by id, ordered by createdAt. The local array is passed
+// last so it wins on an id collision (the local edit is the one being reconciled).
+// Used to merge a 409 conflict so neither device's turns are dropped.
+export function mergeChatMessagesById<T extends { id?: unknown; createdAt?: unknown }>(
+  serverMessages: T[],
+  localMessages: T[],
+): T[] {
+  const byId = new Map<string, T>();
+  for (const m of [...serverMessages, ...localMessages]) {
+    if (!m || typeof m.id !== 'string' || !m.id) continue;
+    byId.set(m.id, m);
+  }
+  return [...byId.values()].sort((a, b) =>
+    String(a.createdAt ?? '').localeCompare(String(b.createdAt ?? '')));
 }
 
 // Normalize a server-reported message count to a positive stub marker (so a stub

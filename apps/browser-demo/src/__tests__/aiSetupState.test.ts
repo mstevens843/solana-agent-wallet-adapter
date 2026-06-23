@@ -6,6 +6,7 @@ import {
   bridgeAiSetupSnapshot,
   buildAiRailIdentity,
   buildAiSetupInventory,
+  chatTabEnabledByAiConnection,
   deviceAgentConfiguredForRequests,
   deviceAgentNeedsStartForRequests,
   deviceAgentSetupSnapshot,
@@ -334,6 +335,123 @@ describe('AI setup state helpers', () => {
       statusTone: 'configured',
       provider: 'Plan Connector - Codex',
     });
+  });
+
+  it('keeps Chat disabled until an API-key path is confirmed or Plan Connector is connected', () => {
+    const inventory = buildAiSetupInventory({
+      activeMode: 'hosted',
+      hosted: { configured: false, runnable: false },
+      session: { configured: false, runnable: false },
+      bridge: { configured: false, runnable: false },
+      deviceAgent: { configured: false, runnable: false },
+    });
+
+    expect(chatTabEnabledByAiConnection({
+      inventory,
+      plannerConfirmed: false,
+      bridgeStatus: null,
+      pairedBridge: false,
+    })).toBe(false);
+  });
+
+  it('enables Chat for a confirmed API-key path', () => {
+    const inventory = buildAiSetupInventory({
+      activeMode: 'hosted',
+      hosted: {
+        configured: true,
+        runnable: true,
+        provider: 'OpenAI',
+        model: 'gpt-5',
+      },
+      session: { configured: false, runnable: false },
+      bridge: { configured: false, runnable: false },
+      deviceAgent: { configured: false, runnable: false },
+    });
+
+    expect(chatTabEnabledByAiConnection({
+      inventory,
+      plannerConfirmed: true,
+      bridgeStatus: null,
+      pairedBridge: false,
+    })).toBe(true);
+    expect(chatTabEnabledByAiConnection({
+      inventory,
+      plannerConfirmed: false,
+      bridgeStatus: null,
+      pairedBridge: false,
+    })).toBe(false);
+  });
+
+  it('enables Chat for connected Plan Connector routes', () => {
+    const inventory = buildAiSetupInventory({
+      activeMode: 'bridge',
+      hosted: { configured: false, runnable: false },
+      session: { configured: false, runnable: false },
+      bridge: bridgeAiSetupSnapshot({
+        status: {
+          available: true,
+          configured: true,
+          source: 'session',
+          engine: 'connector',
+          connector: 'codex',
+          connectorAuthStatus: 'connected',
+        },
+      }),
+      deviceAgent: { configured: false, runnable: false },
+    });
+
+    expect(chatTabEnabledByAiConnection({
+      inventory,
+      plannerConfirmed: false,
+      bridgeStatus: {
+        available: true,
+        configured: true,
+        source: 'session',
+        engine: 'connector',
+        connector: 'codex',
+        connectorAuthStatus: 'connected',
+      },
+      pairedBridge: false,
+    })).toBe(true);
+    expect(chatTabEnabledByAiConnection({
+      inventory,
+      plannerConfirmed: false,
+      bridgeStatus: null,
+      pairedBridge: true,
+    })).toBe(true);
+  });
+
+  it('does not enable Chat for a Plan Connector that still needs sign-in', () => {
+    const inventory = buildAiSetupInventory({
+      activeMode: 'bridge',
+      hosted: { configured: false, runnable: false },
+      session: { configured: false, runnable: false },
+      bridge: bridgeAiSetupSnapshot({
+        status: {
+          available: false,
+          configured: true,
+          source: 'session',
+          engine: 'connector',
+          connector: 'codex',
+          connectorAuthStatus: 'needs-auth',
+        },
+      }),
+      deviceAgent: { configured: false, runnable: false },
+    });
+
+    expect(chatTabEnabledByAiConnection({
+      inventory,
+      plannerConfirmed: false,
+      bridgeStatus: {
+        available: false,
+        configured: true,
+        source: 'session',
+        engine: 'connector',
+        connector: 'codex',
+        connectorAuthStatus: 'needs-auth',
+      },
+      pairedBridge: false,
+    })).toBe(false);
   });
 
   it('surfaces a pasted Device Agent key as staged until the native runtime confirms it', () => {

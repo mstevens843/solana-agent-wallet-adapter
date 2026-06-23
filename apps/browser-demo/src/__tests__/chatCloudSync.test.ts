@@ -8,6 +8,7 @@ import {
   compressChatMessages,
   decideCloudChatMeta,
   decompressChatMessages,
+  mergeChatMessagesById,
   stubMessageCount,
 } from '../chatCloudSync.js';
 
@@ -74,6 +75,35 @@ describe('chat cloud sync helpers', () => {
       const local = { updatedAt: '2026-06-22T05:00:00.000Z', messages: [{}] };
       expect(decideCloudChatMeta(local, { updatedAt: '2026-06-22T05:00:00.000Z' })).toBe('keep');
       expect(decideCloudChatMeta(local, { updatedAt: '2026-06-22T01:00:00.000Z' })).toBe('keep');
+    });
+    it('keeps local content when the cloud copy is newer only within the skew window', () => {
+      const local = { updatedAt: '2026-06-22T05:00:00.000Z', messages: [{}] };
+      // +30s newer (< 60s skew) → near-simultaneous edit, prefer local content.
+      expect(decideCloudChatMeta(local, { updatedAt: '2026-06-22T05:00:30.000Z' })).toBe('keep');
+      // +90s newer (> 60s skew) → genuinely newer → restub.
+      expect(decideCloudChatMeta(local, { updatedAt: '2026-06-22T05:01:30.000Z' })).toBe('restub');
+    });
+  });
+
+  describe('mergeChatMessagesById', () => {
+    const s = (id: string, createdAt: string, content = id) => ({ id, createdAt, content });
+    it('unions both arrays by id, ordered by createdAt', () => {
+      const server = [s('a', '2026-06-22T00:00:00.000Z'), s('b', '2026-06-22T00:00:02.000Z')];
+      const local = [s('a', '2026-06-22T00:00:00.000Z'), s('c', '2026-06-22T00:00:01.000Z')];
+      const merged = mergeChatMessagesById(server, local);
+      expect(merged.map((m) => m.id)).toEqual(['a', 'c', 'b']);
+    });
+    it('lets the local copy win on an id collision (passed last)', () => {
+      const server = [s('a', '2026-06-22T00:00:00.000Z', 'server')];
+      const local = [s('a', '2026-06-22T00:00:00.000Z', 'local')];
+      expect(mergeChatMessagesById(server, local)[0]?.content).toBe('local');
+    });
+    it('drops entries without a usable id', () => {
+      const merged = mergeChatMessagesById(
+        [{ id: '', createdAt: 'x' } as { id: string; createdAt: string }],
+        [s('a', '2026-06-22T00:00:00.000Z')],
+      );
+      expect(merged.map((m) => m.id)).toEqual(['a']);
     });
   });
 

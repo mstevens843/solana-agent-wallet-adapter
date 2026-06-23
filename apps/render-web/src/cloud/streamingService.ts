@@ -36,7 +36,7 @@ import type { Clock } from './store.js';
 
 const { Pool } = pg;
 
-const DEFAULT_CLUSTER: StreamingCluster = 'devnet';
+const DEFAULT_CLUSTER: StreamingCluster = 'mainnet-beta';
 const DEFAULT_TOKEN_DECIMALS = 6;
 const MAX_RECIPIENT_ALLOWLIST = 64;
 const SESSION_LOCK_METADATA_KEY = 'streamingSettlementLock';

@@ -57,6 +57,42 @@ describe('mobile rail sheet policy', () => {
     })).toBe(true);
   });
 
+  it('keeps the chat-action sheet on the chat tab and clears it elsewhere', () => {
+    expect(shouldClearActiveMobileRailSheet({
+      activeTab: 'chat',
+      mobileViewport: true,
+      route: '/app',
+      sheet: 'chat-action',
+    })).toBe(false);
+    expect(shouldClearActiveMobileRailSheet({
+      activeTab: 'overview',
+      mobileViewport: true,
+      route: '/app',
+      sheet: 'chat-action',
+    })).toBe(true);
+    expect(shouldClearActiveMobileRailSheet({
+      activeTab: 'chat',
+      mobileViewport: true,
+      route: '/connect',
+      sheet: 'chat-action',
+    })).toBe(true);
+  });
+
+  it('applies the body sheet dataset for the chat-action sheet on the chat tab', () => {
+    expect(shouldApplyMobileRailBodyDataset({
+      activeTab: 'chat',
+      mobileViewport: true,
+      route: '/app',
+      sheet: 'chat-action',
+    })).toBe(true);
+    expect(shouldApplyMobileRailBodyDataset({
+      activeTab: 'overview',
+      mobileViewport: true,
+      route: '/app',
+      sheet: 'chat-action',
+    })).toBe(false);
+  });
+
   it('applies the body sheet dataset only while a workspace sheet is valid', () => {
     expect(shouldApplyMobileRailBodyDataset({
       activeTab: 'overview',

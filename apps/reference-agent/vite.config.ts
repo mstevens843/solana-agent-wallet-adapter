@@ -19,7 +19,7 @@ function agentPlanApi(): Plugin {
         const body = await readBody(req);
         const prompt = String(body.prompt ?? '');
         const wallet = String(body.wallet ?? 'connected wallet');
-        const cluster = String(body.cluster ?? 'devnet');
+        const cluster = String(body.cluster ?? 'mainnet-beta');
         const key = process.env.OPENAI_API_KEY;
 
         if (!key) {

@@ -40,7 +40,7 @@ interface DemoState {
 
 const state: DemoState = {
   stage: 'idle',
-  cluster: 'devnet',
+  cluster: 'mainnet-beta',
   wallets: [],
   selectedWalletName: '',
   address: '',

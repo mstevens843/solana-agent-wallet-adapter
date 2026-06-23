@@ -2363,7 +2363,7 @@ class MainActivity : FragmentActivity() {
             }
 
         private fun clusterFromPayload(payload: JSONObject): AgentCluster =
-            AgentCluster.requireSupported(payload.optString("cluster", "devnet"))
+            AgentCluster.requireSupported(payload.optString("cluster", "mainnet-beta"))
 
         private fun bridgeRequestFromPayload(payload: JSONObject): AgentMwaBridgeRequest {
             val signingPayload = payload.optJSONObject("payload") ?: JSONObject()
@@ -2373,7 +2373,7 @@ class MainActivity : FragmentActivity() {
                 kind = payload.optString("kind", ""),
                 payloadData = signingPayload.optString("data", ""),
                 payloadEncoding = signingPayload.optString("encoding", "base64"),
-                cluster = AgentCluster.requireSupported(payload.optString("cluster", "devnet")),
+                cluster = AgentCluster.requireSupported(payload.optString("cluster", "mainnet-beta")),
                 rpcUrl = payload.optString("rpcUrl", "").takeIf { it.isNotBlank() },
                 summary = display?.optString("summary")?.takeIf { it.isNotBlank() },
             )

@@ -1054,7 +1054,7 @@ export function evaluatePlanGuardrails(input: {
   const actionType = stringValue(input.actionType) ?? stringValue(plan.actionType) ?? 'manual_review';
   const templateId = stringValue(input.templateId) ?? stringValue(plan.templateId) ?? '';
   const templateTitle = stringValue(input.templateTitle) ?? stringValue(plan.templateTitle) ?? '';
-  const cluster = stringValue(input.cluster) ?? stringValue(plan.cluster) ?? 'devnet';
+  const cluster = stringValue(input.cluster) ?? stringValue(plan.cluster) ?? 'mainnet-beta';
   const userNotes = stringValue(input.userNotes) ?? stringValue(plan.userNotes) ?? '';
   const prompt = stringValue(input.prompt) ?? stringValue(plan.prompt) ?? '';
   const violations: AiGuardrailViolation[] = [];
@@ -1158,7 +1158,7 @@ export function planConstraintSnapshot(input: {
     actionType: input.actionType ?? 'manual_review',
     templateId: input.templateId ?? '',
     templateTitle: input.templateTitle ?? '',
-    cluster: input.cluster ?? 'devnet',
+    cluster: input.cluster ?? 'mainnet-beta',
     parameters: normalizeStringRecord(input.parameters),
     fields: normalizePlanFields(input.fields),
     ...(input.userNotes ? { userNotes: input.userNotes } : {}),
@@ -1221,7 +1221,7 @@ export function workflowDecisionProofMessage(input: {
     `Decision: ${input.decision}`,
     `Approval: ${input.approval.id}`,
     `Wallet: ${input.approval.walletAddress}`,
-    `Cluster: ${input.approval.cluster ?? 'devnet'}`,
+    `Cluster: ${input.approval.cluster ?? 'mainnet-beta'}`,
     `Summary: ${input.approval.summary}`,
     `Kind: ${input.approval.kind}`,
     `Params: ${stableJson(input.approval.params)}`,
@@ -1242,7 +1242,7 @@ export function workflowFinalizationProofMessage(input: {
     `Approval: ${input.approval.id}`,
     `Finalization: ${input.finalization.id}`,
     `Wallet: ${input.approval.walletAddress}`,
-    `Cluster: ${input.approval.cluster ?? 'devnet'}`,
+    `Cluster: ${input.approval.cluster ?? 'mainnet-beta'}`,
     `Summary: ${input.approval.summary}`,
     `Kind: ${input.approval.kind}`,
     `Params: ${stableJson(input.approval.params)}`,
@@ -2237,7 +2237,7 @@ export function validateCreatePlanRequest(body: unknown, path = '$'): CreatePlan
     templateId: optionalString(input.templateId, 'templateId') ?? stringFromJson(plan, 'templateId') ?? '',
     templateTitle,
     prompt: optionalString(input.prompt, 'prompt') ?? stringFromJson(plan, 'prompt') ?? '',
-    cluster: optionalCluster(input.cluster, stringFromJson(plan, 'cluster') ?? 'devnet'),
+    cluster: optionalCluster(input.cluster, stringFromJson(plan, 'cluster') ?? 'mainnet-beta'),
     ...(optionalString(input.userNotes, 'userNotes') ?? stringFromJson(plan, 'userNotes')
       ? { userNotes: optionalString(input.userNotes, 'userNotes') ?? stringFromJson(plan, 'userNotes') }
       : {}),

@@ -3107,7 +3107,23 @@ function hostedAskRequestForSession(input: unknown, walletAddress: string): AiAs
 }
 
 function hostedChatRequestForSession(input: unknown, walletAddress: string): AiChatRequest {
-  return withSessionWalletContext(hostedChatRequest(input), walletAddress);
+  const request = hostedChatRequest(input);
+  assertWalletMatchesSession(request.walletAddress, walletAddress, 'request.walletAddress');
+  const rest: AiChatRequest = { ...request };
+  delete rest.walletAddress;
+  return {
+    ...rest,
+    context: {
+      ...(request.context ?? {}),
+      connectedWallet: walletAddress,
+      wallet: {
+        address: walletAddress,
+        publicKey: walletAddress,
+        source: 'hosted_session',
+        ...(request.cluster ? { cluster: request.cluster } : {}),
+      },
+    },
+  };
 }
 
 function withSessionWalletContext<T extends { walletAddress?: string; context?: Record<string, unknown>; cluster?: string }>(
@@ -3627,13 +3643,52 @@ function isCloudPreferencesStore(store: unknown): store is CloudPreferencesStore
 // client-compressed blob) verbatim and never decompresses it; the list endpoint
 // returns metadata only so the session list loads cheaply.
 const MAX_CHAT_JSON_BYTES = 2 * 1024 * 1024;
+// Anti-abuse / unbounded-growth bound: the client never deletes cloud rows on its
+// own localStorage eviction, so the server keeps at most this many sessions per
+// wallet and evicts the oldest beyond it. Generous headroom over the client's
+// 50-session cap so a legitimate user is never affected.
+const MAX_CHAT_SESSIONS_PER_WALLET = 100;
+const MAX_CHAT_SESSION_ID_LEN = 200;
+const MAX_CHAT_TITLE_LEN = 200;
+const MAX_CHAT_CLUSTER_LEN = 64;
 const CHAT_SESSION_PATH = /^\/api\/chat\/sessions\/([^/]+)$/;
 
 function chatSessionIdFromPath(pathname: string): string | null {
   const match = CHAT_SESSION_PATH.exec(pathname);
   if (!match) return null;
   const id = decodeURIComponent(match[1] ?? '').trim();
-  return id ? id : null;
+  if (!id || id.length > MAX_CHAT_SESSION_ID_LEN) return null;
+  return id;
+}
+
+// Strip the opaque messages blob from a full chat record so a 409 conflict body
+// returns metadata only (the client GETs the full thread when it reconciles).
+function chatMetaOf(record: {
+  sessionId: string; title: string; cluster: string; messageCount: number;
+  version: number; schemaVersion: number; createdAt: string; updatedAt: string;
+}): Record<string, unknown> {
+  return {
+    sessionId: record.sessionId,
+    title: record.title,
+    cluster: record.cluster,
+    messageCount: record.messageCount,
+    version: record.version,
+    schemaVersion: record.schemaVersion,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
+}
+
+// Classify a chat-history store failure: PG connection/availability errors become a
+// retryable 503 with a generic body (never leak SQL text); anything else becomes a
+// sanitized 500 so the router catch-all can't surface raw driver messages.
+function classifyChatStoreError(err: unknown): never {
+  if (err instanceof ApiError) throw err;
+  const code = String((err as { code?: unknown })?.code ?? '');
+  if (/^(ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EPIPE|ECONNRESET|57P01|57P02|57P03|08000|08001|08003|08004|08006|53300|53400)$/.test(code)) {
+    throw new ApiError(503, 'Chat history storage is temporarily unavailable. Try again.');
+  }
+  throw new ApiError(500, 'Could not complete the chat history request.');
 }
 
 // Chat blobs (~1.5MB localStorage cap, smaller compressed) exceed the global
@@ -3672,8 +3727,12 @@ async function handleListChatSessions(
     writeJson(res, 200, { sessions: [] });
     return;
   }
-  const sessions = await store.listChatSessions(session.walletAddress);
-  writeJson(res, 200, { sessions });
+  try {
+    const sessions = await store.listChatSessions(session.walletAddress);
+    writeJson(res, 200, { sessions });
+  } catch (err) {
+    classifyChatStoreError(err);
+  }
 }
 
 async function handleGetChatSession(
@@ -3690,7 +3749,12 @@ async function handleGetChatSession(
   if (!isChatHistoryStore(store)) {
     throw new ApiError(404, 'Chat session not found.');
   }
-  const record = await store.getChatSession(session.walletAddress, sessionId);
+  let record;
+  try {
+    record = await store.getChatSession(session.walletAddress, sessionId);
+  } catch (err) {
+    classifyChatStoreError(err);
+  }
   if (!record) {
     throw new ApiError(404, 'Chat session not found.');
   }
@@ -3725,11 +3789,11 @@ async function handlePutChatSession(
   if (Buffer.byteLength(messagesLz, 'utf8') > MAX_CHAT_JSON_BYTES) {
     throw new ApiError(413, 'Chat session is too large to sync.');
   }
-  const cluster = typeof input.cluster === 'string' ? input.cluster : '';
+  const cluster = typeof input.cluster === 'string' ? input.cluster.slice(0, MAX_CHAT_CLUSTER_LEN) : '';
   if (!cluster) {
     throw new ApiError(400, 'Chat session payload must include cluster.');
   }
-  const title = typeof input.title === 'string' ? input.title.slice(0, 200) : '';
+  const title = typeof input.title === 'string' ? input.title.slice(0, MAX_CHAT_TITLE_LEN) : '';
   const messageCount = Number.isFinite(input.messageCount)
     ? Math.max(0, Math.trunc(input.messageCount as number))
     : 0;
@@ -3738,6 +3802,11 @@ async function handlePutChatSession(
   const schemaVersion = Number.isFinite(input.schemaVersion)
     ? Math.min(1000, Math.max(0, Math.trunc(input.schemaVersion as number)))
     : 1;
+  // Optimistic-concurrency base version the client last observed. Older clients omit
+  // it → they keep the legacy timestamp last-writer-wins behaviour (no 409s).
+  const clientVersion = Number.isFinite(input.version)
+    ? Math.max(0, Math.trunc(input.version as number))
+    : undefined;
   const createdAt = typeof input.createdAt === 'string' && input.createdAt
     ? input.createdAt
     : clock.now().toISOString();
@@ -3749,19 +3818,45 @@ async function handlePutChatSession(
   const updatedAt = Number.isFinite(clientUpdatedMs) && clientUpdatedMs <= nowMs + 5 * 60 * 1000
     ? new Date(clientUpdatedMs).toISOString()
     : clock.now().toISOString();
-  const existing = await store.getChatSession(session.walletAddress, sessionId);
-  const saved = await store.saveChatSession(session.walletAddress, {
-    sessionId,
-    title,
-    cluster,
-    messageCount,
-    schemaVersion,
-    version: (existing?.version ?? 0) + 1,
-    createdAt: existing?.createdAt ?? createdAt,
-    updatedAt,
-    messagesLz,
-  });
-  writeJson(res, 200, saved);
+  try {
+    const existing = await store.getChatSession(session.walletAddress, sessionId);
+    // Optimistic concurrency: a client editing a stale version (another device
+    // advanced it) is rejected with 409 + the current meta so it refetches + merges
+    // instead of silently clobbering the newer copy.
+    if (existing && clientVersion !== undefined && clientVersion < existing.version) {
+      writeJson(res, 409, { error: 'conflict', reason: 'stale-version', session: chatMetaOf(existing) });
+      return;
+    }
+    const requestedVersion = (existing?.version ?? 0) + 1;
+    const saved = await store.saveChatSession(session.walletAddress, {
+      sessionId,
+      title,
+      cluster,
+      messageCount,
+      schemaVersion,
+      version: requestedVersion,
+      createdAt: existing?.createdAt ?? createdAt,
+      updatedAt,
+      messagesLz,
+    });
+    // The store's timestamp guard may still have skipped the write (clock skew); a
+    // version-aware client gets a 409 so it stops believing a skipped write synced.
+    if (clientVersion !== undefined && saved.version !== requestedVersion) {
+      writeJson(res, 409, { error: 'conflict', reason: 'lww-skip', session: saved });
+      return;
+    }
+    // Bound the table: when a brand-new session pushed the wallet over the cap, evict
+    // the oldest (the client never deletes cloud rows on its local-cap eviction).
+    if (!existing) {
+      const metas = await store.listChatSessions(session.walletAddress); // newest-first
+      for (const stale of metas.slice(MAX_CHAT_SESSIONS_PER_WALLET)) {
+        await store.deleteChatSession(session.walletAddress, stale.sessionId);
+      }
+    }
+    writeJson(res, 200, saved);
+  } catch (err) {
+    classifyChatStoreError(err);
+  }
 }
 
 async function handleDeleteChatSession(
@@ -3779,8 +3874,14 @@ async function handleDeleteChatSession(
     writeJson(res, 200, { deleted: false });
     return;
   }
-  const deleted = await store.deleteChatSession(session.walletAddress, sessionId);
-  writeJson(res, 200, { deleted });
+  try {
+    // Idempotent: 200 with { deleted: false } when the row was already gone (e.g.
+    // deleted on another device) — the client treats delete as fire-and-forget.
+    const deleted = await store.deleteChatSession(session.walletAddress, sessionId);
+    writeJson(res, 200, { deleted });
+  } catch (err) {
+    classifyChatStoreError(err);
+  }
 }
 
 async function handleClearChatSessions(
@@ -3797,8 +3898,12 @@ async function handleClearChatSessions(
     writeJson(res, 200, { cleared: 0 });
     return;
   }
-  const cleared = await store.clearChatSessions(session.walletAddress);
-  writeJson(res, 200, { cleared });
+  try {
+    const cleared = await store.clearChatSessions(session.walletAddress);
+    writeJson(res, 200, { cleared });
+  } catch (err) {
+    classifyChatStoreError(err);
+  }
 }
 
 function buildConnectorSecretsService(store: unknown): ConnectorSecretsService | undefined {

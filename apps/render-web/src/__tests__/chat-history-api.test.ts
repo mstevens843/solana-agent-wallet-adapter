@@ -178,7 +178,91 @@ describe('cloud chat history API', () => {
       expect(res.status).toBe(400);
     });
   });
+
+  it('409s a version-aware client that edits a stale version; blob unchanged', async () => {
+    const store = new MemoryWorkflowStore();
+    const wallet = createWalletAddress();
+    const session = await createWalletSession({ store, walletAddress: wallet, clock: CLOCK });
+    await withServer(store, async (port) => {
+      const cookie = cookieFor(session.token);
+      const first = await request(port, 'PUT', '/api/chat/sessions/chat-1', putBody({ version: 0 }), cookie);
+      expect(first.body.version).toBe(1);
+      // Another device based its edit on version 0 while the server is at 1.
+      const conflict = await request(port, 'PUT', '/api/chat/sessions/chat-1',
+        putBody({ version: 0, messagesLz: LZ_BLOB_B, updatedAt: '2026-06-22T11:45:00.000Z' }), cookie);
+      expect(conflict.status).toBe(409);
+      expect((conflict.body.session as Record<string, unknown>).version).toBe(1);
+      const detail = await request(port, 'GET', '/api/chat/sessions/chat-1', undefined, cookie);
+      expect(detail.body.messagesLz).toBe(LZ_BLOB_A);
+    });
+  });
+
+  it('accepts a version-aware client that is up to date', async () => {
+    const store = new MemoryWorkflowStore();
+    const wallet = createWalletAddress();
+    const session = await createWalletSession({ store, walletAddress: wallet, clock: CLOCK });
+    await withServer(store, async (port) => {
+      const cookie = cookieFor(session.token);
+      await request(port, 'PUT', '/api/chat/sessions/chat-1', putBody({ version: 0 }), cookie);
+      const ok = await request(port, 'PUT', '/api/chat/sessions/chat-1',
+        putBody({ version: 1, messagesLz: LZ_BLOB_B, messageCount: 4, updatedAt: '2026-06-22T11:45:00.000Z' }), cookie);
+      expect(ok.status).toBe(200);
+      expect(ok.body.version).toBe(2);
+    });
+  });
+
+  it('409s a version-aware client whose timestamp lost the LWW guard (clock skew)', async () => {
+    const store = new MemoryWorkflowStore();
+    const wallet = createWalletAddress();
+    const session = await createWalletSession({ store, walletAddress: wallet, clock: CLOCK });
+    await withServer(store, async (port) => {
+      const cookie = cookieFor(session.token);
+      // Current version 1 at 11:30.
+      await request(port, 'PUT', '/api/chat/sessions/chat-1', putBody({ version: 0, updatedAt: '2026-06-22T11:30:00.000Z' }), cookie);
+      // Up to date on version, but an older timestamp → store skips the write.
+      const skewed = await request(port, 'PUT', '/api/chat/sessions/chat-1',
+        putBody({ version: 1, messagesLz: LZ_BLOB_B, updatedAt: '2026-06-22T11:00:00.000Z' }), cookie);
+      expect(skewed.status).toBe(409);
+      const detail = await request(port, 'GET', '/api/chat/sessions/chat-1', undefined, cookie);
+      expect(detail.body.messagesLz).toBe(LZ_BLOB_A);
+    });
+  });
+
+  it('classifies a store connection failure as a generic 503 (no driver text leaked)', async () => {
+    const store = new ConnRefusedStore();
+    const wallet = createWalletAddress();
+    const session = await createWalletSession({ store, walletAddress: wallet, clock: CLOCK });
+    await withServer(store, async (port) => {
+      const res = await request(port, 'PUT', '/api/chat/sessions/chat-1', putBody(), cookieFor(session.token));
+      expect(res.status).toBe(503);
+      expect(String(res.body.error)).not.toMatch(/ECONNREFUSED/);
+    });
+  });
+
+  it('caps sessions per wallet, evicting the oldest beyond the limit', async () => {
+    const store = new MemoryWorkflowStore();
+    const wallet = createWalletAddress();
+    const session = await createWalletSession({ store, walletAddress: wallet, clock: CLOCK });
+    await withServer(store, async (port) => {
+      const cookie = cookieFor(session.token);
+      for (let i = 0; i < 102; i += 1) {
+        await request(port, 'PUT', `/api/chat/sessions/chat-${i}`, putBody(), cookie);
+      }
+      const list = await request(port, 'GET', '/api/chat/sessions', undefined, cookie);
+      expect((list.body.sessions as unknown[]).length).toBe(100);
+    });
+  });
 });
+
+// A store whose chat save fails with a PG-connection-class error, to assert the
+// router maps it to a sanitized 503 rather than a raw 500.
+class ConnRefusedStore extends MemoryWorkflowStore {
+  override async saveChatSession(): Promise<never> {
+    const err = new Error('connect ECONNREFUSED 127.0.0.1:5432') as Error & { code: string };
+    err.code = 'ECONNREFUSED';
+    throw err;
+  }
+}
 
 function cookieFor(token: string): string {
   return `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}`;

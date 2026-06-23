@@ -8,12 +8,12 @@ export function shouldClearActiveMobileRailSheet(options: {
   route: string | null | undefined;
   sheet: string | null | undefined;
 }): boolean {
-  return Boolean(
-    options.sheet &&
-      (!mobileRailSheetRouteAllowed(options.route) ||
-        !options.mobileViewport ||
-        options.activeTab !== 'overview'),
-  );
+  if (!options.sheet) return false;
+  if (!mobileRailSheetRouteAllowed(options.route)) return true;
+  // The chat-action sheet is opened only on native mobile (gated at the open
+  // site) and lives on the Chat tab; clear it whenever we leave that tab.
+  if (options.sheet === 'chat-action') return options.activeTab !== 'chat';
+  return !options.mobileViewport || options.activeTab !== 'overview';
 }
 
 export function shouldApplyMobileRailBodyDataset(options: {
@@ -22,12 +22,9 @@ export function shouldApplyMobileRailBodyDataset(options: {
   route: string | null | undefined;
   sheet: string | null | undefined;
 }): boolean {
-  return Boolean(
-    options.sheet &&
-      mobileRailSheetRouteAllowed(options.route) &&
-      options.mobileViewport &&
-      options.activeTab === 'overview',
-  );
+  if (!options.sheet || !mobileRailSheetRouteAllowed(options.route)) return false;
+  if (options.sheet === 'chat-action') return options.activeTab === 'chat';
+  return options.mobileViewport && options.activeTab === 'overview';
 }
 
 export function shouldRefreshDeviceAgentStatusForMobileRailOpen(options: {

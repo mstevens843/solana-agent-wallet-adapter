@@ -92,6 +92,27 @@ export function buildAiSetupInventory(input: {
   };
 }
 
+export function chatTabEnabledByAiConnection(input: {
+  inventory: AiSetupInventory;
+  plannerConfirmed: boolean;
+  bridgeStatus: BridgeAiStatus | null | undefined;
+  pairedBridge: boolean;
+}): boolean {
+  if (input.pairedBridge) return true;
+  if (bridgeStatusIsConnectedPlanConnector(input.bridgeStatus)) return true;
+  const active = input.inventory.active;
+  if (!input.plannerConfirmed || !active.configured) return false;
+  return !(active.mode === 'bridge' && input.bridgeStatus?.engine === 'connector');
+}
+
+function bridgeStatusIsConnectedPlanConnector(status: BridgeAiStatus | null | undefined): boolean {
+  return Boolean(
+    status?.engine === 'connector' &&
+      status.available &&
+      status.connectorAuthStatus === 'connected',
+  );
+}
+
 export function selectAiKeyClearTarget(input: {
   activeMode: AiPathMode;
   inactiveConfigured: Array<Pick<AiPathSetupSnapshot, 'mode'>>;

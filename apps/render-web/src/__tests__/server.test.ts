@@ -941,6 +941,7 @@ describe('render web hosted BYOK API', () => {
       const input = JSON.parse(String(messages[1]?.content ?? '{}')) as Record<string, unknown>;
       expect(input.walletAddress).toBe('11111111111111111111111111111111');
       expect(JSON.stringify(input.context)).toContain('"source":"hosted_session"');
+      expect(JSON.stringify(input.context)).toContain('"address":"11111111111111111111111111111111"');
       expect(JSON.stringify(input.messages)).toContain('What should I check before swapping SOL to USDC?');
     });
   });
@@ -974,6 +975,11 @@ describe('render web hosted BYOK API', () => {
       expect(response.body).toContain('data: {"type":"token","text":"Use "}');
       expect(response.body).toContain('data: {"type":"done"');
       expect(providerCalls[0]?.url).toBe('https://api.openai.com/v1/chat/completions');
+      const body = JSON.parse(String(providerCalls[0]?.init?.body ?? '{}')) as Record<string, unknown>;
+      const messages = body.messages as Array<{ content?: string }>;
+      expect(messages[0]?.content).toContain('Connected wallet: 11111111111111111111111111111111.');
+      expect(messages[0]?.content).toContain('"source":"hosted_session"');
+      expect(messages[1]?.content).toBe('Prepare a visible wallet request.');
     });
   });
 

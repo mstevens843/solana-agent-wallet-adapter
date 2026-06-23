@@ -266,7 +266,7 @@ internal fun authRecordFromJson(json: JSONObject): AgentMwaAuthRecord {
         walletPackage = inferredWalletPackage,
         walletType = storedWalletType.takeIf { it != WalletRegistry.UNKNOWN } ?: inferredWalletType,
         accountLabel = json.optString("accountLabel", ""),
-        cluster = AgentCluster.fromId(json.optString("cluster", "devnet")),
+        cluster = AgentCluster.fromId(json.optString("cluster", "mainnet-beta")),
         timestampUnixSeconds = json.optLong("timestampUnixSeconds", 0L),
         authenticated = json.optBoolean("authenticated", false),
         capabilitiesCsv = json.optString("capabilitiesCsv", ""),

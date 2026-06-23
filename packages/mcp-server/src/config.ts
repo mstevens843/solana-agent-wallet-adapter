@@ -484,10 +484,14 @@ export const DEFAULT_TOKEN_REGISTRY: TokenLimitConfig[] = [
 ];
 
 export const DEFAULT_CONFIG: AgentWalletConfig = {
-  cluster: 'devnet',
-  rpcUrl: 'https://api.devnet.solana.com',
+  // The product is mainnet-only. A bridge launched without a config file must
+  // still operate on mainnet (never devnet) so the chat/approval rail and the
+  // network shown to the user agree. Mainnet is enabled by default with
+  // conservative caps; the wallet signature remains the real safety gate.
+  cluster: 'mainnet-beta',
+  rpcUrl: 'https://api.mainnet-beta.solana.com',
   mainnet: {
-    enabled: false,
+    enabled: true,
     maxSolTransfer: '0.05',
     maxSwapInput: '0.05',
     maxSlippageBps: 100,
@@ -551,7 +555,10 @@ export const DEFAULT_CONFIG: AgentWalletConfig = {
 
 export async function loadConfig(path: string | undefined): Promise<AgentWalletConfig> {
   if (!path) {
-    return DEFAULT_CONFIG;
+    // No config file: still normalize an empty config so env overrides
+    // (SOLANA_RPC_URL / HELIUS_RPC_URL, Jupiter keys/URLs, referral) apply and
+    // the result is a fully-formed mainnet config rather than the raw default.
+    return normalizeConfig({});
   }
   const raw = await readFile(path, 'utf8');
   return normalizeConfig(JSON.parse(raw) as Partial<AgentWalletConfig>);

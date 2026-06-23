@@ -599,7 +599,7 @@ export async function createAndDispatchMppDemoChallenge(): Promise<void> {
     patchPanel();
     return;
   }
-  const target = await demoMppPaymentTarget(walletAddress, getConnectedCluster() ?? 'devnet');
+  const target = await demoMppPaymentTarget(walletAddress, getConnectedCluster() ?? 'mainnet-beta');
   const now = new Date();
   const expiresAt = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
   const challenge = {

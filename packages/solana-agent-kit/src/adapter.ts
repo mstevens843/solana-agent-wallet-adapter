@@ -66,9 +66,9 @@ export interface AgentWalletAdapterBackendOptions {
  * import { WalletStandardWebBackend, requireWallet } from '@solana-agent-wallet-adapter/wallet-standard-web';
  * import { AgentWalletAdapterBackend } from '@solana-agent-wallet-adapter/solana-agent-kit';
  *
- * const backend = new WalletStandardWebBackend({ wallet: requireWallet('Phantom'), cluster: 'devnet' });
- * const wallet  = await AgentWalletAdapterBackend.create({ backend, cluster: 'devnet' });
- * const agent   = new SolanaAgentKit(wallet, 'https://api.devnet.solana.com', {});
+ * const backend = new WalletStandardWebBackend({ wallet: requireWallet('Phantom'), cluster: 'mainnet-beta' });
+ * const wallet  = await AgentWalletAdapterBackend.create({ backend, cluster: 'mainnet-beta' });
+ * const agent   = new SolanaAgentKit(wallet, 'https://api.mainnet-beta.solana.com', {});
  * ```
  */
 export class AgentWalletAdapterBackend implements BaseWallet {

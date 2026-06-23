@@ -311,7 +311,7 @@ export class WorkflowService {
       summary,
       params,
       status: 'ready',
-      cluster: input.cluster ?? linkedPlan?.cluster ?? 'devnet',
+      cluster: input.cluster ?? linkedPlan?.cluster ?? 'mainnet-beta',
       dueAt: input.dueAt ?? now,
       createdAt: now,
       updatedAt: now,
@@ -603,7 +603,7 @@ export class WorkflowService {
     if (input.walletAction.walletAddress !== approval.walletAddress) {
       throw new WorkflowServiceError(400, 'wallet_mismatch', 'Finalization preview wallet must match the approval wallet.');
     }
-    const cluster = approval.cluster ?? 'devnet';
+    const cluster = approval.cluster ?? 'mainnet-beta';
     if (input.walletAction.cluster !== cluster) {
       throw new WorkflowServiceError(400, 'cluster_mismatch', 'Finalization preview cluster must match the approval cluster.');
     }
@@ -1155,7 +1155,7 @@ export class WorkflowService {
     return this.transactionVerifier({
       finalization: subject,
       txid: input.txid,
-      cluster: approval.cluster ?? 'devnet',
+      cluster: approval.cluster ?? 'mainnet-beta',
     });
   }
 
@@ -1266,7 +1266,7 @@ export function normalizePlanRecord(record: PlanDraftRecord): PlanDraftRecord {
     templateId: raw.templateId ?? stringFromJson(legacyPlan, 'templateId') ?? '',
     templateTitle: raw.templateTitle ?? stringFromJson(legacyPlan, 'templateTitle') ?? '',
     prompt: raw.prompt ?? stringFromJson(legacyPlan, 'prompt') ?? '',
-    cluster: raw.cluster ?? 'devnet',
+    cluster: raw.cluster ?? 'mainnet-beta',
   };
 }
 
@@ -1281,7 +1281,7 @@ export function normalizeApprovalRecord(record: ApprovalRequestRecord): Approval
     finalizationRequirementForAction(raw.kind ?? 'manual_review');
   return {
     ...rest,
-    cluster: raw.cluster ?? 'devnet',
+    cluster: raw.cluster ?? 'mainnet-beta',
     kind: raw.kind ?? 'manual_review',
     status: raw.status === 'pending' ? 'ready' : raw.status === 'denied' ? 'rejected' : raw.status,
     finalizationRequirement,
@@ -1371,7 +1371,7 @@ function approvalGuardrailReport(
     actionType: kind,
     templateId: stringFromJson(input.plan, 'templateId') ?? '',
     templateTitle: stringFromJson(input.plan, 'templateTitle') ?? '',
-    cluster: input.cluster ?? stringFromJson(input.plan, 'cluster') ?? 'devnet',
+    cluster: input.cluster ?? stringFromJson(input.plan, 'cluster') ?? 'mainnet-beta',
     parameters: stringRecordFromJson(params),
     fields: arrayFromJson(input.plan?.fields),
     userNotes: stringFromJson(input.plan, 'userNotes'),
@@ -1722,7 +1722,7 @@ async function prepareSolTransferFinalizationPreview(
 ): Promise<PreparedTransactionFinalizationPreview> {
   const recipient = requireApprovalConstraint(approval, ['recipient', 'recipientAddress'], approval.recipient, 'recipient');
   const amountSol = requireApprovalConstraint(approval, ['amountSol', 'amount'], approval.amount, 'amount');
-  const cluster = approval.cluster ?? 'devnet';
+  const cluster = approval.cluster ?? 'mainnet-beta';
   const from = publicKeyForWorkflow(session.walletAddress, 'approval wallet');
   const to = publicKeyForWorkflow(recipient, 'recipient');
   const normalizedAmount = normalizeDecimalString(amountSol) ?? amountSol.trim();

@@ -907,8 +907,9 @@ describe('BridgeAiPlanner', () => {
     expect(result.answer).toContain('Jupiter swaps');
     expect(calls[0]?.url).toBe('https://openrouter.ai/api/v1/chat/completions');
     const messages = calls[0]?.body.messages as Array<{ role: string; content: string }>;
-    expect(messages?.[0]?.content).toContain('Solana Agent Wallet CLI research assistant');
-    expect(messages?.[1]?.content).toContain('/plan');
+    expect(messages?.[0]?.content).toContain('Solana Agent Wallet assistant');
+    expect(messages?.[0]?.content).toContain('proposedAction');
+    expect(messages?.[1]?.content).toContain('mainnet-beta');
     expect(messages?.[1]?.content).toContain('What should I check before swapping SOL to USDC?');
   });
 

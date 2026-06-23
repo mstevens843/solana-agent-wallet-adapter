@@ -17,7 +17,9 @@ export function renderChatMarkdown(text: string): string {
   const inline = (s: string): string => escapeHtml(s)
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    // URL char-class excludes quotes/angle brackets too (defence-in-depth — escapeHtml
+    // already neutralizes them, but this keeps a stray entity tail out of the href).
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)"'<>]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
   const out: string[] = [];
   let listType: 'ul' | 'ol' | null = null;
   const closeList = (): void => { if (listType) { out.push(`</${listType}>`); listType = null; } };

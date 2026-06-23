@@ -276,6 +276,7 @@ import {
   walletBalancePriceInfoMapFromJupiter,
   walletBalanceRowsFromParsedAccounts,
   walletBalanceUsdPricingEnabled,
+  type WalletBalanceAsset,
   type WalletBalancePriceInfo,
   type WalletBalanceSnapshot,
 } from './walletBalanceSummary.js';
@@ -403,6 +404,7 @@ import {
   bridgeAiSetupSnapshot,
   buildAiRailIdentity,
   buildAiSetupInventory,
+  chatTabEnabledByAiConnection,
   deviceAgentConfiguredForRequests,
   deviceAgentNeedsStartForRequests,
   deviceAgentSetupSnapshot,
@@ -488,6 +490,12 @@ import {
   type AiSettings,
   type BridgeAiStatus,
 } from './planner.js';
+import {
+  buildAgentChatRequest,
+  chatMentionsWalletBalance,
+  chatMentionsOwnWallet,
+} from './chatRequest.js';
+import { chatStaticReplyForPrompt } from './chatStaticReplies.js';
 import {
   browserWalletPickerOptions,
   browserWalletRestoreName,
@@ -736,6 +744,7 @@ import {
   compressChatMessages,
   decideCloudChatMeta,
   decompressChatMessages,
+  mergeChatMessagesById,
   stubMessageCount,
 } from './chatCloudSync.js';
 import LZString from 'lz-string';
@@ -1013,7 +1022,7 @@ type AndroidAiIntroTab = 'benefits' | 'no-ai';
 type AndroidAiInfoTab = 'no-ai' | 'hosted' | 'bridge' | 'session' | 'device-agent' | 'plan-connector';
 type AiReviewSetupTab = 'api-key' | 'plan-connector';
 type AndroidCloudInfoTab = 'approval' | 'scheduler' | 'audit' | 'identity';
-type MobileRailSheet = 'workspace-storage' | 'ai-drafting' | 'wallet-balances';
+type MobileRailSheet = 'workspace-storage' | 'ai-drafting' | 'wallet-balances' | 'chat-action';
 type ExpandNoteFieldRef =
   | { kind: 'agent-prompt' }
   | { kind: 'recurring-note' }
@@ -1565,6 +1574,12 @@ const KNOWN_BROWSER_TOKENS: Record<string, { symbol: string; mint: string; decim
   MSOL: { symbol: 'mSOL', mint: MSOL_MINT, decimals: 9 },
   JITOSOL: { symbol: 'JitoSOL', mint: JITOSOL_MINT, decimals: 9 },
 };
+// Reverse lookup so a known token passed as its MINT (the chat builder pastes mints)
+// still resolves decimals from the table without an on-chain read — fixes the desktop
+// "Could not read decimals for token USDC" when the public RPC 403s.
+const KNOWN_BROWSER_TOKENS_BY_MINT = new Map(
+  Object.values(KNOWN_BROWSER_TOKENS).map((entry) => [entry.mint, entry] as const),
+);
 
 const CLOUD_PREFERENCE_NAMESPACES = [
   'agent-policies',
@@ -1668,6 +1683,8 @@ const SHOW_ANDROID_EXAMPLE_TAB = resolveAndroidExampleTab();
 const HIDE_CHAT_TAB_RAW = String(
   (import.meta as ImportMeta & { env?: { VITE_HIDE_CHAT_TAB?: string } }).env?.VITE_HIDE_CHAT_TAB ?? '',
 );
+const CHAT_AI_CONNECTION_GATE_ENABLED = false;
+const CHAT_AI_NOT_CONNECTED_TOAST_KEY = 'chat-ai-not-connected';
 function currentAppSurfaceType(): AppSurfaceType {
   if (IS_TAURI_APP) return 'desktop';
   if (isAndroidAppShellSurface()) return 'android';
@@ -1676,6 +1693,26 @@ function currentAppSurfaceType(): AppSurfaceType {
 }
 function chatTabHidden(): boolean {
   return isChatTabHiddenForSurface(HIDE_CHAT_TAB_RAW, currentAppSurfaceType());
+}
+function chatTabAiConnected(): boolean {
+  if (!CHAT_AI_CONNECTION_GATE_ENABLED) return true;
+  return chatTabEnabledByAiConnection({
+    inventory: aiSetupInventory(),
+    plannerConfirmed: isAiPlannerConfirmedForCurrentSettings(),
+    bridgeStatus: state.aiStatus,
+    pairedBridge: Boolean(state.aiSettings.pairedBridge),
+  });
+}
+function chatTabUnavailableReason(): string {
+  return t('AI is not connected. Please connect to agent via API key or Plan Connector.');
+}
+function showChatAiNotConnectedToast(): void {
+  pushToast(
+    'info',
+    t('AI is not connected'),
+    t('Please connect to agent via API key or Plan Connector.'),
+    { key: CHAT_AI_NOT_CONNECTED_TOAST_KEY },
+  );
 }
 const ANDROID_ALLOW_LAN_BRIDGE = resolveAndroidAllowLanBridge();
 const LOCAL_WEBVIEW_ORIGIN = 'https://agentic.local';
@@ -2050,6 +2087,10 @@ interface PendingCloudSync {
   // Only present for 'plan-patch'. Chat sync entries carry just the session id
   // (the latest session state is re-read from state.chat at drain time).
   patch?: Partial<Pick<GeneratedPlanRecord, 'status' | 'signature' | 'preparedActionId' | 'error' | 'failureLabel' | 'agentReview' | 'agentOverride' | 'metadata'>>;
+  // Wallet this entry was queued under. Chat entries are scoped to it so a queue
+  // that survives a sign-out / wallet switch can't fire a stale write against a
+  // different wallet that happens to share a session id.
+  walletAddress?: string;
   attemptedAt: string;
   attempts: number;
 }
@@ -2145,6 +2186,9 @@ interface PreparedAction {
   agentOverride?: AgentReviewOverride;
   archived?: boolean;
   workflowSource?: WorkflowRecordSource;
+  // True when this action was created from a chat card; keeps signing/result
+  // handling in the Chat tab even after the originating message is capped/deleted.
+  chatOriginated?: boolean;
   importedToCloudAt?: string;
 }
 
@@ -2417,6 +2461,13 @@ const CHAT_COMPRESS_PREFIX = 'LZ1:';
 // clobber a newer build's chat history. Declared here (above module-init use in
 // loadChatHistoryState) to avoid a temporal-dead-zone error at boot.
 let chatHistorySaveLocked = false;
+// One-time user notices so a silently-degraded save path (newer-schema lock, or
+// localStorage unavailable in private mode) is surfaced exactly once instead of
+// dropping every write for the whole session without a word.
+let chatHistorySaveLockedNotified = false;
+let chatStorageUnavailableNotified = false;
+// null = not yet probed; set once by chatLocalStorageWritable().
+let chatLocalStorageWritableCache: boolean | null = null;
 
 type ChatMessageRole = 'user' | 'assistant' | 'system';
 
@@ -2453,6 +2504,10 @@ interface ChatMessage {
   preparedActionId?: string;         // set once promoted; SAME id as state.preparedActions[]
   toolEvidence?: ChatToolEvidence[];
   error?: string;
+  txReceipt?: { txid: string; cluster: Cluster }; // inline Solscan receipt after a chat-signed action
+  // UI-only synthetic marker (e.g. the "earlier messages were trimmed" notice). Not
+  // persisted, not synced to cloud, not counted toward the per-session message cap.
+  ephemeral?: boolean;
 }
 
 interface ChatSession {
@@ -2469,6 +2524,10 @@ interface ChatSession {
   // is the last server version this client observed (informational).
   cloudMessageCount?: number;
   cloudVersion?: number;
+  // Transient (not persisted): the last lazy stub fetch failed (decompress failure,
+  // 5xx, or offline). Drives the in-transcript error/retry state instead of an
+  // endless "Loading conversation…" spinner. Cleared on a successful load or retry.
+  cloudLoadError?: 'failed' | 'offline';
 }
 
 interface ChatHistoryState {
@@ -3159,6 +3218,9 @@ interface DemoState {
   chatInitialized: boolean;
   chatComposerOpen: boolean;
   chatHistoryOpen: boolean;
+  // Hybrid chip builder for the composer (ephemeral; not persisted across sessions).
+  chatActionBuilder: ChatActionBuilder | null;
+  chatActionPicker: ChatActionPickerState | null;
   recurringPayments: RecurringPayment[];
   receipts: ActionReceipt[];
   pendingTransactions: PendingTransactionRecord[];
@@ -3648,6 +3710,10 @@ function notificationSettingsFromPersisted(
 
 const persisted = loadPersistedState();
 let aiModeSelectionExplicit = persisted.aiMode !== undefined;
+// Website-only: opening the Plan Connector tab clobbers state.aiSettings.mode to bridge/connector.
+// Stash the API-Key-tab path the user was on so we can restore it when they switch back, instead
+// of silently snapping the AI Path to Local Bridge.
+let apiKeyTabModeStash: AiSettings['mode'] | null = null;
 const launchParams = readLaunchParams();
 const completedCloudWorkspaceDeleteNotice = readCompletedCloudWorkspaceDeleteNotice();
 clearSensitiveLaunchParams();
@@ -3677,7 +3743,9 @@ function exitCliView(): void {
     document.documentElement.removeAttribute('data-cli-intent');
   }
 }
-const initialCluster = SHOW_DEV_CONTROLS ? (persisted.cluster ?? 'mainnet-beta') : 'mainnet-beta';
+// Mainnet-only product: the runtime cluster is ALWAYS mainnet-beta — never devnet,
+// even in local dev or from persisted state. (Devnet is nonexistent to this app.)
+const initialCluster: Cluster = 'mainnet-beta';
 const initialTemplate = templateById('swap');
 const defaultWorkspaceTab: ActiveTab = 'overview';
 const initialAndroidNativeEnvironment = detectAndroidNativeEnvironment();
@@ -4297,6 +4365,8 @@ const state: DemoState = {
   chatInitialized: false,
   chatComposerOpen: false,
   chatHistoryOpen: false,
+  chatActionBuilder: null,
+  chatActionPicker: null,
   recurringPayments: initialBrowserWorkflow.recurringPayments,
   receipts: initialBrowserWorkflow.receipts,
   pendingTransactions: loadTransactionLedger(),
@@ -5149,9 +5219,14 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
   // before any other handler — mirrors the Android back-button expectation.
   if (event.key === 'Escape' && (state.chatHistoryOpen || state.chatComposerOpen)) {
     event.preventDefault();
+    const restoreHistoryFocus = state.chatHistoryOpen;
     state.chatHistoryOpen = false;
     state.chatComposerOpen = false;
     render();
+    // Return focus to the trigger that opened the menu (keyboard a11y).
+    if (restoreHistoryFocus) {
+      document.querySelector<HTMLButtonElement>('[data-chat-history-trigger]')?.focus();
+    }
     return;
   }
   if (event.key === 'Escape' && state.activeTab === 'chat' && chatStreamActive()) {
@@ -5316,8 +5391,8 @@ async function bootstrap(): Promise<void> {
   });
   state.mwaEnvironment = state.mwaRegistration.environment;
   state.androidNativeEnvironment = detectAndroidNativeEnvironment();
-  if (state.androidNativeEnvironment.isAndroidNative && state.cluster === 'localnet') {
-    state.cluster = 'devnet';
+  if (state.androidNativeEnvironment.isAndroidNative && state.cluster !== 'mainnet-beta') {
+    state.cluster = 'mainnet-beta';
     savePersistedState();
   }
   await refreshAndroidNativeCacheState();
@@ -7265,12 +7340,12 @@ async function ensureWalletConnectClient(): Promise<WalletConnectSolanaClient> {
 
 function walletConnectChainsForCurrentCluster(): string[] {
   const cluster = state.cluster as SolanaClusterId;
-  // Treat any non-Solana cluster string as devnet for WC purposes — desktop
-  // app's cluster is always one of mainnet-beta/devnet/testnet/localnet.
+  // Mainnet-only product: the cluster is always mainnet-beta; on any unexpected
+  // value fall back to mainnet (never advertise a devnet WalletConnect chain).
   try {
     return [solanaWalletConnectChainId(cluster)];
   } catch {
-    return [solanaWalletConnectChainId('devnet')];
+    return [solanaWalletConnectChainId('mainnet-beta')];
   }
 }
 
@@ -9730,9 +9805,9 @@ function render(): void {
     chatRenderDeferredDuringComposition = true;
     return;
   }
-  // Normalize a stranded Chat tab (HIDE_CHAT_TAB) before any markup is built, so
+  // Normalize a stranded Chat tab before any markup is built, so
   // the tab bar and active panel agree on the same active tab in this render.
-  if (state.activeTab === 'chat' && chatTabHidden()) state.activeTab = 'overview';
+  if (state.activeTab === 'chat' && (chatTabHidden() || !chatTabAiConnected())) state.activeTab = 'overview';
   const mobileRailSnapshot = captureMobileRailRenderSnapshot();
   // Publish the connected wallet address to the shared dev-tab sinks BEFORE
   // pageContent() runs, so dev-tab guards (which fire inside pageContent's
@@ -9778,6 +9853,10 @@ function render(): void {
     route,
     sheet: state.activeMobileRailSheet,
   })) {
+    if (state.activeMobileRailSheet === 'chat-action') {
+      state.chatActionPicker = null;
+      state.chatComposerOpen = false;
+    }
     state.activeMobileRailSheet = null;
   }
   if (state.activeExpandNoteField && !isMobileAppViewport()) {
@@ -10258,7 +10337,7 @@ import { createSolanaTools } from '@solana-agent-wallet-adapter/vercel-ai';
 
 const backend = new WalletStandardWebBackend({
   wallet: requireWallet('Phantom'),
-  cluster: 'devnet',
+  cluster: 'mainnet-beta',
 });
 
 const client = new SolanaSigningClient({ backend });
@@ -10276,15 +10355,15 @@ import { AgentWalletAdapterBackend } from '@solana-agent-wallet-adapter/solana-a
 
 const backend = new WalletStandardWebBackend({
   wallet: requireWallet('Phantom'),
-  cluster: 'devnet',
+  cluster: 'mainnet-beta',
 });
 
 const wallet = await AgentWalletAdapterBackend.create({
   backend,
-  cluster: 'devnet',
+  cluster: 'mainnet-beta',
 });
 
-const agent = new SolanaAgentKit(wallet, 'https://api.devnet.solana.com', {
+const agent = new SolanaAgentKit(wallet, 'https://api.mainnet-beta.solana.com', {
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
 });`,
           'Solana Agent Kit snippet',
@@ -14128,22 +14207,36 @@ function androidBottomTabDock(): string {
 
 function mobileRailBottomSheet(): string {
   const sheet = state.activeMobileRailSheet;
-  if (!sheet || !isMobileAppViewport() || state.activeTab !== 'overview') return '';
+  if (!sheet) return '';
+  // The chat-action sheet hosts the chat wallet-action pickers; it is gated to the
+  // native Android/iOS shells (NOT narrow web) and only on the Chat tab. The legacy
+  // workspace sheets stay overview-only and use the broader mobile-viewport gate.
+  if (sheet === 'chat-action') {
+    if (!(IS_ANDROID_APP || IS_IOS_APP) || state.activeTab !== 'chat') return '';
+  } else if (!isMobileAppViewport() || state.activeTab !== 'overview') {
+    return '';
+  }
   const title = sheet === 'workspace-storage'
     ? t('Workspace Storage')
     : sheet === 'wallet-balances'
       ? t('Wallet Balances')
-      : t('AI Connector');
+      : sheet === 'chat-action'
+        ? chatActionSheetTitle()
+        : t('AI Connector');
   const detail = sheet === 'workspace-storage'
     ? t('Browser-local workflow storage')
     : sheet === 'wallet-balances'
       ? t('Wallet portfolio')
-      : t('AI route and provider setup');
+      : sheet === 'chat-action'
+        ? chatActionSheetDetail()
+        : t('AI route and provider setup');
   const body = sheet === 'workspace-storage'
     ? cloudWorkspaceRailBody()
     : sheet === 'wallet-balances'
       ? walletBalanceSheetBodyHtml()
-      : aiSettingsCard('rail');
+      : sheet === 'chat-action'
+        ? chatActionSheetBodyHtml()
+        : aiSettingsCard('rail');
   const enterAnimationClass = suppressMobileRailSheetEnterAnimation ? ' mobile-rail-sheet-no-enter' : '';
   return `
     <div class="mobile-rail-sheet-scrim${enterAnimationClass}" data-mobile-rail-sheet-close aria-hidden="true"></div>
@@ -14163,7 +14256,7 @@ function mobileRailBottomSheet(): string {
 }
 
 function isMobileRailSheet(value: string | undefined): value is MobileRailSheet {
-  return value === 'workspace-storage' || value === 'ai-drafting' || value === 'wallet-balances';
+  return value === 'workspace-storage' || value === 'ai-drafting' || value === 'wallet-balances' || value === 'chat-action';
 }
 
 function preferredAiReviewSetupTabForMobileRailOpen(nextSheet: MobileRailSheet): AiReviewSetupTab {
@@ -14287,6 +14380,12 @@ function activateWebsitePlanConnectorSetup(options: { focus?: boolean } = {}): v
     render();
     return;
   }
+  // Remember the API-Key-tab path we're leaving so switching back restores it (Device Agent etc.),
+  // not Local Bridge. Skip capture if we're already in the connector engine (i.e. re-opening Plan
+  // Connector), so a stale bridge mode doesn't overwrite a real prior selection.
+  if (state.aiSettings.agentEngine !== 'connector') {
+    apiKeyTabModeStash = state.aiSettings.mode;
+  }
   saveCurrentSessionAiApiKey();
   state.aiReviewSetupTab = 'plan-connector';
   state.aiSettings.mode = 'bridge';
@@ -14312,6 +14411,18 @@ function activateAiReviewSetupTab(tab: AiReviewSetupTab): void {
     suppressMobileRailSheetEnterAnimation = true;
   }
   if (tab === 'api-key' && websitePlanConnectorSetupAvailable()) {
+    // Restore the AI Path the user had before opening Plan Connector (Device Agent, Hosted, etc.)
+    // instead of leaving the bridge mode that Plan Connector forced. runSetAiEngine only flips the
+    // engine back to 'api-key' and persists; it never restores the mode on its own.
+    const restoreMode = apiKeyTabModeStash;
+    if (restoreMode && restoreMode !== state.aiSettings.mode && !aiModeDisabledReason(restoreMode)) {
+      state.aiSettings.mode = restoreMode;
+      ensureAiProviderAllowedForMode();
+      aiModeSelectionExplicit = true;
+      if (restoreMode === 'device-agent') {
+        void refreshDeviceAgentStatus(false).then(() => render());
+      }
+    }
     void runSetAiEngine('api-key');
     return;
   }
@@ -14320,6 +14431,13 @@ function activateAiReviewSetupTab(tab: AiReviewSetupTab): void {
 
 function closeMobileRailSheet(): void {
   if (!state.activeMobileRailSheet) return;
+  // The chat-action sheet borrows the rail-sheet engine; closing it (scrim / × /
+  // Escape) must also drop the chat picker + composer-menu state so a reopen starts
+  // clean and the builder chips don't render as "open" with no sheet behind them.
+  if (state.activeMobileRailSheet === 'chat-action') {
+    state.chatActionPicker = null;
+    state.chatComposerOpen = false;
+  }
   state.activeMobileRailSheet = null;
   render();
 }
@@ -18082,13 +18200,13 @@ function developerConnectionSettings(): string {
       <span>${escapeHtml(t('Cluster'))}</span>
       ${selectPicker({
         id: 'clusterSelect',
-        value: state.cluster,
-        options: CLUSTERS.map((cluster) => ({
+        value: 'mainnet-beta',
+        // Mainnet-only product: only mainnet-beta is selectable (no devnet/testnet/localnet).
+        options: CLUSTERS.filter((cluster) => cluster === 'mainnet-beta').map((cluster) => ({
           value: cluster,
           label: cluster,
           meta: t('Network'),
-          disabled: androidNative && cluster === 'localnet',
-          detail: androidNative && cluster === 'localnet' ? t('Unavailable in Android native mode.') : titleCaseCluster(cluster),
+          detail: titleCaseCluster(cluster),
         })),
         disabled: state.busy || state.bridgeActive,
       })}
@@ -18559,9 +18677,9 @@ function activePanel(): string {
   // Push the active language to demo-i18n/uiLang so self-contained devTab modules render
   // in lock-step (they translate via uiLang's t()/tf(), not main.ts's).
   activeUiLanguage();
-  // Chat hidden on this surface (HIDE_CHAT_TAB) but a prior session persisted the
-  // chat tab: fall back to Home so the user never lands on a hidden tab.
-  if (state.activeTab === 'chat' && chatTabHidden()) state.activeTab = 'overview';
+  // Chat hidden/disabled on this surface but a prior session persisted the chat
+  // tab: fall back to Home so the user never lands on an unavailable tab.
+  if (state.activeTab === 'chat' && (chatTabHidden() || !chatTabAiConnected())) state.activeTab = 'overview';
   switch (state.activeTab) {
     case 'overview':
       return commandCenterPanel();
@@ -18826,7 +18944,9 @@ function renderPreferenceSnapshotGroup(cards: CommandPreferenceSnapshotCard[]): 
 function commandAiPreferenceSnapshotCard(): CommandPreferenceSnapshotCard {
   const inventory = aiSetupInventory();
   const configured = inventory.active.configured;
-  const inactive = inventory.inactiveConfigured[0];
+  // Web/desktop ignores inactive-configured AI paths here too (see aiSettingsPanel), so the command
+  // snapshot doesn't echo "Device Agent configured" off a cached/staged key. Mobile keeps it.
+  const inactive = (IS_ANDROID_APP || IS_IOS_APP) ? inventory.inactiveConfigured[0] : undefined;
   const anyConfigured = configured || Boolean(inactive);
   const path = aiPathPreferenceLabel(state.aiSettings.mode);
   const providerPreset = aiProviderPresetById(state.aiSettings.provider);
@@ -20363,6 +20483,94 @@ const CHAT_POWER_ACTIONS: Array<{ id: string; eyebrow: string; title: string; de
   { id: 'sign', eyebrow: 'Proof', title: 'Sign Proof', description: 'Sign a message to create a verifiable proof receipt. No transaction.', template: 'Sign a proof that [statement to attest]' },
 ];
 
+// --- Hybrid chip builder for the composer -------------------------------------
+// Picking a Wallet Action seeds a builder shown as editable chips ABOVE the
+// textarea. Tapping a token/amount chip opens a picker; the builder compiles
+// down to the same plain-text grammar parseChatWalletAction() consumes, so the
+// textarea stays the source of truth and full freestyle typing still works.
+type ChatBuilderKind = 'swap' | 'send' | 'sign';
+interface ChatBuilderToken { symbol: string; mint: string; decimals: number; logoURI?: string; }
+type ChatAmountMode = 'token' | 'usd' | 'percent';
+interface ChatBuilderAmount { mode: ChatAmountMode; raw: string }
+interface ChatActionBuilder {
+  kind: ChatBuilderKind;
+  fromToken?: ChatBuilderToken; // send + swap (SOL preset, choosable)
+  toToken?: ChatBuilderToken;   // swap only
+  amount?: ChatBuilderAmount;
+  recipient?: string;           // send only
+  statement?: string;           // sign only
+  slippageBps?: string;         // swap only
+}
+type ChatPickerField = 'fromToken' | 'toToken' | 'amount' | 'slippage';
+interface ChatActionPickerState { field: ChatPickerField }
+
+const CHAT_BUILDER_SOL: ChatBuilderToken = { symbol: 'SOL', mint: WSOL_MINT, decimals: 9 };
+
+function defaultBuilderFor(kind: ChatBuilderKind): ChatActionBuilder {
+  // Swap slippage defaults to Auto (no slippageBps) — Jupiter Ultra routing manages
+  // dynamic slippage, so we omit the field end-to-end unless the user picks a number.
+  if (kind === 'swap') return { kind, fromToken: { ...CHAT_BUILDER_SOL } };
+  if (kind === 'send') return { kind, fromToken: { ...CHAT_BUILDER_SOL } };
+  return { kind, statement: '' };
+}
+
+// Render the amount field as grammar text (token amount, $usd, or pct%).
+function chatBuilderAmountText(amount: ChatBuilderAmount | undefined, fallback: string): string {
+  const raw = amount?.raw.trim();
+  if (!amount || !raw) return fallback;
+  if (amount.mode === 'usd') return `$${raw}`;
+  if (amount.mode === 'percent') return `${raw}%`;
+  return raw;
+}
+
+// The token's grammar value: symbol for SOL/USDC, base58 mint for everything else
+// (so the parser/validator never has to guess a mint for the long tail).
+function chatBuilderTokenText(token: ChatBuilderToken | undefined, fallback: string): string {
+  if (!token) return fallback;
+  const upper = token.symbol.toUpperCase();
+  return upper === 'SOL' || upper === 'USDC' ? token.symbol : token.mint;
+}
+
+// Compile the builder into the canonical Wallet Actions grammar. Unfilled slots
+// keep readable [brackets] so a half-built message degrades to freestyle text.
+function compileBuilderToDraft(b: ChatActionBuilder): string {
+  if (b.kind === 'sign') {
+    return `Sign a proof that ${b.statement?.trim() || '[statement to attest]'}`;
+  }
+  const amount = chatBuilderAmountText(b.amount, '[amount]');
+  if (b.kind === 'send') {
+    const token = chatBuilderTokenText(b.fromToken, 'SOL');
+    const recipient = b.recipient?.trim() || '[recipient address]';
+    return `Send ${amount} ${token} to ${recipient}`;
+  }
+  const from = chatBuilderTokenText(b.fromToken, 'SOL');
+  const to = b.toToken ? chatBuilderTokenText(b.toToken, '[token]') : '[token]';
+  // Any explicit bps is written into the grammar; Auto (absent) appends nothing so
+  // the parser leaves slippageBps off and the swap uses Ultra dynamic slippage.
+  const slippage = b.slippageBps && b.slippageBps.trim() ? ` slippage ${b.slippageBps.trim()}bps` : '';
+  return `Swap ${amount} ${from} to ${to}${slippage}`;
+}
+
+// Short chip labels (friendly symbol/value; never the raw mint).
+function chatBuilderAmountLabel(b: ChatActionBuilder): string {
+  const a = b.amount;
+  if (!a || !a.raw.trim()) return t('Amount');
+  if (a.mode === 'usd') return `$${a.raw.trim()}`;
+  if (a.mode === 'percent') return `${a.raw.trim()}%`;
+  return a.raw.trim();
+}
+
+function chatBuilderTokenLabel(token: ChatBuilderToken | undefined, fallback: string): string {
+  if (!token) return fallback;
+  return token.symbol || short(token.mint);
+}
+
+// The FROM asset (for resolving $/% in the amount picker) from the live snapshot.
+function chatBuilderFromAsset(b: ChatActionBuilder | null): WalletBalanceAsset | null {
+  if (!b?.fromToken) return null;
+  return chatSnapshotAssets().find((a) => a.mint === b.fromToken!.mint) ?? null;
+}
+
 function chatPanel(): string {
   const session = activeChatSession();
   const messages = session?.messages ?? [];
@@ -20370,18 +20578,23 @@ function chatPanel(): string {
   // An active cloud stub (messages not yet fetched) shows a loading placeholder
   // rather than the empty "Talk to your agent" state, which would mismatch the
   // real title shown in the header.
-  const loadingStub = Boolean(session && chatSessionIsCloudStub(session));
+  const loadErrored = Boolean(session?.cloudLoadError);
+  const loadingStub = Boolean(session && chatSessionIsCloudStub(session)) && !loadErrored;
   const transcript = hasMessages
     ? messages.map((m) => chatMessageHtml(m, session!.id)).join('')
-    : loadingStub ? chatLoadingState() : chatEmptyState();
+    : loadErrored ? chatLoadErrorState(session!)
+      : loadingStub ? chatLoadingState() : chatEmptyState();
   return `
     <section class="chat-surface" data-layout="chat">
       ${chatHeaderHtml(session)}
       <div class="chat-transcript" data-chat-scroll aria-live="polite" aria-atomic="false">
         ${transcript}
       </div>
+      <button type="button" class="chat-scroll-pill" data-chat-scroll-pill aria-label="${escapeHtml(t('Scroll to bottom'))}" title="${escapeHtml(t('Scroll to bottom'))}">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"></path><path d="m19 12-7 7-7-7"></path></svg>
+      </button>
       ${chatComposerHtml()}
-      <p class="chat-disclaimer">${escapeHtml(t('The agent reads live data to answer. You always review and sign in your wallet. The agent never signs.'))}</p>
+      <p class="chat-disclaimer">${escapeHtml(t('The agent reads live data to answer. You always review and sign.'))}</p>
     </section>
   `;
 }
@@ -20405,9 +20618,9 @@ function chatHeaderHtml(session: ChatSession | null): string {
             <button type="button" class="chat-history-trigger" data-chat-history-trigger aria-haspopup="menu" aria-expanded="${state.chatHistoryOpen ? 'true' : 'false'}">${escapeHtml(t('History'))} <span class="chat-sessions-caret" aria-hidden="true">▾</span></button>
             <div class="chat-sessions-menu" role="menu" ${state.chatHistoryOpen ? '' : 'hidden'}>
               ${sessions.map((s) => `
-                <div class="chat-session-row${s.id === state.chat.activeSessionId ? ' active' : ''}">
-                  <button type="button" class="chat-session-open" data-chat-switch="${escapeHtml(s.id)}">${escapeHtml(s.title)}</button>
-                  <button type="button" class="chat-session-del" data-chat-del="${escapeHtml(s.id)}" aria-label="${escapeHtml(t('Delete chat'))}" title="${escapeHtml(t('Delete chat'))}">×</button>
+                <div class="chat-session-row${s.id === state.chat.activeSessionId ? ' active' : ''}" role="presentation">
+                  <button type="button" role="menuitem" class="chat-session-open" data-chat-switch="${escapeHtml(s.id)}" aria-label="${escapeHtml(s.title)}" title="${escapeHtml(s.title)}">${escapeHtml(s.title)}</button>
+                  <button type="button" role="menuitem" class="chat-session-del" data-chat-del="${escapeHtml(s.id)}" aria-label="${escapeHtml(tf('Delete chat {title}', { title: s.title }))}" title="${escapeHtml(t('Delete chat'))}">×</button>
                 </div>
               `).join('')}
             </div>
@@ -20445,11 +20658,33 @@ function chatLoadingState(): string {
   `;
 }
 
+// Shown when a cloud-stub session's lazy load failed (decompress failure / 5xx /
+// offline) instead of an endless spinner or a misleading empty state. Offers a
+// retry that re-issues the GET.
+function chatLoadErrorState(session: ChatSession): string {
+  const offline = session.cloudLoadError === 'offline';
+  const message = offline
+    ? t('You are offline. This conversation will load when you reconnect.')
+    : t('Could not load this conversation.');
+  return `
+    <div class="chat-empty" role="alert">
+      <div class="chat-empty-mark" aria-hidden="true"></div>
+      <p>${escapeHtml(message)}</p>
+      <button type="button" class="primary" data-chat-retry-load="${escapeHtml(session.id)}">${escapeHtml(t('Try again'))}</button>
+    </div>
+  `;
+}
+
 function chatMessageHtml(msg: ChatMessage, sessionId: string): string {
   if (msg.role === 'user') {
-    return `<div class="chat-msg user">${escapeHtml(msg.content)}</div>`;
+    return `<div class="chat-msg user" dir="auto">${escapeHtml(msg.content)}</div>`;
   }
   if (msg.role === 'system') {
+    // Synthetic UI-only notices (e.g. the trim marker) store English text; translate
+    // it at render time and render as a centered note rather than an agent bubble.
+    if (msg.ephemeral) {
+      return `<div class="chat-trim-note" role="note">${escapeHtml(t(msg.content))}</div>`;
+    }
     return `<div class="chat-msg assistant"><div class="chat-avatar" aria-hidden="true"></div><div class="chat-body"><div class="chat-text">${renderChatMarkdown(msg.content)}</div></div></div>`;
   }
   const isStreaming = msg.status === 'streaming';
@@ -20465,8 +20700,9 @@ function chatMessageHtml(msg: ChatMessage, sessionId: string): string {
       <div class="chat-avatar" aria-hidden="true"></div>
       <div class="chat-body">
         <div class="chat-tools">${chatToolChipsHtml(msg)}</div>
-        <div class="chat-text">${bodyHtml}</div>
+        <div class="chat-text" dir="auto">${bodyHtml}</div>
         ${chatInlineActionHtml(msg, sessionId)}
+        ${msg.txReceipt ? `<div class="chat-card">${txBlock(msg.txReceipt.txid, msg.txReceipt.cluster)}</div>` : ''}
       </div>
     </div>
   `;
@@ -20490,12 +20726,20 @@ function chatToolLabel(tool: string): string {
 function chatToolRunningLabel(tool: string): string {
   if (tool === 'get_token_price') return t('Checking price…');
   if (tool === 'search_tokens') return t('Searching tokens…');
+  if (tool === 'get_token_safety') return t('Checking token safety…');
+  if (tool === 'get_market_regime') return t('Checking the market…');
+  if (tool === 'get_token_age') return t('Checking token age…');
+  if (tool === 'get_wallet_history') return t('Reading wallet history…');
   return tf('Running {tool}…', { tool: chatToolDisplayName(tool) });
 }
 
 function chatToolDisplayName(tool: string): string {
   if (tool === 'get_token_price') return t('Token price');
   if (tool === 'search_tokens') return t('Token search');
+  if (tool === 'get_token_safety') return t('Token safety');
+  if (tool === 'get_market_regime') return t('Market regime');
+  if (tool === 'get_token_age') return t('Token age');
+  if (tool === 'get_wallet_history') return t('Wallet history');
   return chatToolLabel(tool);
 }
 
@@ -20503,7 +20747,14 @@ function chatInlineActionHtml(msg: ChatMessage, sessionId: string): string {
   if (msg.preparedActionId) {
     const action = state.preparedActions.find((a) => a.id === msg.preparedActionId);
     if (action) return `<div class="chat-card">${preparedActionCard(action)}</div>`;
-    // Promoted action was deleted/archived — fall back to the proposal snapshot.
+    // Action no longer live (completed + pruned, or archived). If a receipt exists,
+    // show a completed block instead of re-offering "Prepare for approval".
+    const receipt = state.receipts.find((r) => r.actionId === msg.preparedActionId);
+    if (receipt) {
+      const txPart = receipt.txid ? txBlock(receipt.txid, receipt.cluster as Cluster) : '';
+      return `<div class="chat-card"><p class="ticket-meta-line">${escapeHtml(t('Completed - receipt in the Done tab.'))}</p>${txPart}</div>`;
+    }
+    // Otherwise fall back to the proposal snapshot below.
   }
   if (msg.proposal) {
     const canPrepare = Boolean(state.address);
@@ -20519,14 +20770,284 @@ function chatInlineActionHtml(msg: ChatMessage, sessionId: string): string {
   return '';
 }
 
+// --- Chat wallet-action bottom sheet (Android/iOS) ----------------------------
+// On the native shells the chat pickers + the Wallet Actions menu are hosted in
+// the shared mobile-rail-sheet engine (solid, keyboard-aware, hardened against
+// re-render/focus/paste bugs). Web/desktop keep the inline upward popover.
+type ChatPickerVariant = 'inline' | 'sheet';
+type ChatTokenPickerMode = 'list' | 'mint';
+const CHAT_TOKEN_PAGE = 5;
+let chatTokenPickerMode: ChatTokenPickerMode = 'list';
+let chatTokenListLimit = CHAT_TOKEN_PAGE;
+
+function chatUsesSheet(): boolean {
+  return IS_ANDROID_APP || IS_IOS_APP;
+}
+
+// Open the chat-action sheet; if it is already open we are only swapping its body
+// (menu -> picker, picker -> picker) so suppress the slide-up replay.
+function openChatActionSheet(): void {
+  if (state.activeMobileRailSheet === 'chat-action') suppressMobileRailSheetEnterAnimation = true;
+  state.activeMobileRailSheet = 'chat-action';
+}
+function closeChatActionSheet(): void {
+  if (state.activeMobileRailSheet === 'chat-action') state.activeMobileRailSheet = null;
+}
+
+// Hydrate logos for the token LIST lazily (chat is not in the standard
+// token-market hydration set), then repaint once when anything changed. Covers the
+// owned balances AND the curated preset tokens shown for the swap output.
+function ensureChatTokenLogos(): void {
+  const field = state.chatActionPicker?.field;
+  const items = (field === 'fromToken' || field === 'toToken')
+    ? chatTokenListItems(field)
+    : chatSnapshotAssets().filter((a) => a.amount > 0).map((a) => ({ mint: a.mint }));
+  const mints = items
+    .map((i) => i.mint)
+    .filter((m) => m !== WSOL_MINT && !tokenMarketMetadata.get(m)?.logoURI);
+  if (mints.length === 0) return;
+  void fetchTokenMetadataForMints(mints)
+    .then((changed) => { if (changed && state.activeTab === 'chat') render(); })
+    .catch(() => undefined);
+}
+
+// The chip builder bar (above the textarea) for swap/send/sign. Each chip opens a
+// picker; the recipient/statement are inline inputs. Bound in bindChat with explicit
+// click->state->render handlers (WebView controls need that, not <details>).
+function chatBuilderBarHtml(): string {
+  const b = state.chatActionBuilder;
+  if (!b || (b.kind !== 'swap' && b.kind !== 'send' && b.kind !== 'sign')) return '';
+  const chip = (field: ChatPickerField, label: string): string =>
+    `<button type="button" class="chat-chip${state.chatActionPicker?.field === field ? ' open' : ''}" data-chat-chip="${field}" aria-haspopup="true">${escapeHtml(label)}<span class="chat-chip-caret" aria-hidden="true">▾</span></button>`;
+  const toLabel = escapeHtml(t('to'));
+  const eyebrow = b.kind === 'swap' ? t('Swap') : b.kind === 'send' ? t('Send') : t('Sign Proof');
+  let middle: string;
+  if (b.kind === 'sign') {
+    // Sign has no picker — just a free-text statement input (works the same on web
+    // and mobile; the keyboard is handled in the composer area).
+    middle = `<span class="chat-chip-fixed">${escapeHtml(t('Sign a proof that'))}</span><input type="text" class="chat-chip-input chat-statement-input" data-chat-chip-statement placeholder="${escapeHtml(t('Statement to attest'))}" value="${escapeHtml(b.statement ?? '')}" autocomplete="off" spellcheck="false" />`;
+  } else {
+    const amountChip = chip('amount', chatBuilderAmountLabel(b));
+    const fromChip = chip('fromToken', chatBuilderTokenLabel(b.fromToken, 'SOL'));
+    if (b.kind === 'swap') {
+      middle = `${amountChip}${fromChip}<span class="chat-chip-fixed">${toLabel}</span>${chip('toToken', chatBuilderTokenLabel(b.toToken, t('Pick token')))}${chip('slippage', chatBuilderSlippageLabel(b))}`;
+    } else {
+      const recip = `<input type="text" class="chat-chip-input" data-chat-chip-recipient placeholder="${escapeHtml(t('Recipient address'))}" value="${escapeHtml(b.recipient ?? '')}" autocomplete="off" spellcheck="false" />`;
+      middle = `${amountChip}${fromChip}<span class="chat-chip-fixed">${toLabel}</span>${recip}`;
+    }
+  }
+  // The picker is hosted in the bottom sheet on native mobile; only web/desktop
+  // render it inline as an upward popover anchored to the builder. (Sign has none.)
+  const picker = (!chatUsesSheet() && state.chatActionPicker)
+    ? state.chatActionPicker.field === 'amount'
+      ? chatAmountPickerHtml(b)
+      : state.chatActionPicker.field === 'slippage'
+        ? chatSlippagePickerHtml(b)
+        : chatTokenPickerHtml(state.chatActionPicker.field)
+    : '';
+  return `
+    <div class="chat-builder" data-chat-builder>
+      <div class="chat-builder-head">
+        <span class="chat-builder-eyebrow">${escapeHtml(eyebrow)}</span>
+        <button type="button" class="chat-builder-clear" data-chat-builder-clear aria-label="${escapeHtml(t('Clear'))}" title="${escapeHtml(t('Clear'))}">×</button>
+      </div>
+      <div class="chat-builder-chips">${middle}</div>
+      ${picker}
+    </div>
+  `;
+}
+
+function chatBuilderSlippageLabel(b: ChatActionBuilder): string {
+  const bps = b.slippageBps && b.slippageBps.trim() ? b.slippageBps.trim() : '';
+  return bps ? tf('{bps} bps', { bps }) : t('Auto');
+}
+
+function chatSlippagePickerHtml(b: ChatActionBuilder, variant: ChatPickerVariant = 'inline'): string {
+  const current = b.slippageBps && b.slippageBps.trim() ? b.slippageBps.trim() : '';
+  const presetBtn = (bps: string): string =>
+    `<button type="button" class="chat-amount-pct${current === bps ? ' active' : ''}" data-chat-slippage-bps="${bps}">${escapeHtml(tf('{bps} bps', { bps }))}</button>`;
+  const autoBtn = `<button type="button" class="chat-amount-pct${current ? '' : ' active'}" data-chat-slippage-bps="auto">${escapeHtml(t('Auto'))}</button>`;
+  const title = variant === 'sheet' ? '' : `<p class="chat-picker-title">${escapeHtml(t('Max slippage'))}</p>`;
+  const inner = `
+    ${title}
+    <div class="chat-amount-pcts">${autoBtn}${presetBtn('25')}${presetBtn('50')}${presetBtn('100')}${presetBtn('200')}</div>
+    <div class="chat-picker-custom">
+      <input type="text" inputmode="numeric" id="chatSlippageInput" class="chat-chip-input" data-chat-slippage-input placeholder="${escapeHtml(t('Custom bps'))}" value="${escapeHtml(current)}" autocomplete="off" />
+      <button type="button" class="utility" data-chat-slippage-apply>${escapeHtml(t('Set'))}</button>
+    </div>`;
+  return variant === 'sheet'
+    ? `<div class="chat-sheet-picker chat-amount-picker">${inner}</div>`
+    : `<div class="chat-picker chat-amount-picker" data-chat-picker>${inner}</div>`;
+}
+
+interface ChatTokenListItem { mint: string; symbol: string; decimals: number; amount?: number; valueUsd?: number; owned: boolean; }
+
+// The LIST options for a token field. The swap OUTPUT (toToken) merges owned
+// balances with a curated set of common tokens (you usually don't hold what you're
+// swapping INTO), deduped by mint and excluding the current input. The input /
+// send token stays owned-only — you can only swap or send from what you hold.
+function chatTokenListItems(field: ChatPickerField): ChatTokenListItem[] {
+  const owned: ChatTokenListItem[] = chatSnapshotAssets()
+    .filter((a) => a.amount > 0)
+    .map((a) => ({ mint: a.mint, symbol: a.symbol, decimals: a.decimals, amount: a.amount, valueUsd: a.valueUsd, owned: true }));
+  if (field !== 'toToken') return owned;
+  const seen = new Set(owned.map((i) => i.mint));
+  const fromMint = state.chatActionBuilder?.fromToken?.mint;
+  const preset: ChatTokenListItem[] = [];
+  for (const tok of Object.values(KNOWN_BROWSER_TOKENS)) {
+    if (seen.has(tok.mint) || tok.mint === fromMint) continue;
+    seen.add(tok.mint);
+    preset.push({ mint: tok.mint, symbol: tok.symbol, decimals: tok.decimals, owned: false });
+  }
+  return [...owned, ...preset];
+}
+
+// One token row: logo + symbol/(value|name) + bare amount. Rendered once (no
+// duplicated symbol/mint, unlike the generic balance row which appends the symbol
+// to the amount string). Not-held preset tokens show the name and no amount.
+function chatTokenPickerRowHtml(item: ChatTokenListItem): string {
+  const meta = tokenMarketMetadata.get(item.mint);
+  const logo = meta?.logoURI || (item.mint === WSOL_MINT ? BRAND_LOGOS.solana : '');
+  const symbol = item.symbol || tokenDisplayLabel(item.mint);
+  let amount = '';
+  let sub = '';
+  if (item.owned && item.amount !== undefined) {
+    const amtWithSym = formatWalletBalanceAmount(item.amount, item.symbol);
+    amount = amtWithSym.endsWith(` ${item.symbol}`)
+      ? amtWithSym.slice(0, amtWithSym.length - item.symbol.length - 1)
+      : amtWithSym;
+    sub = item.valueUsd === undefined ? '' : formatWalletBalanceUsd(item.valueUsd);
+  } else {
+    sub = meta?.name && meta.name !== symbol ? meta.name : '';
+  }
+  return `
+    <button type="button" class="chat-token-opt" data-chat-token-pick="${escapeHtml(item.mint)}" data-chat-token-symbol="${escapeHtml(item.symbol)}" data-chat-token-decimals="${item.decimals}"${logo ? ` data-chat-token-logo="${escapeHtml(logo)}"` : ''}>
+      <span class="chat-token-logo">${logo
+        ? `<img src="${escapeHtml(logo)}" alt="" loading="lazy" />`
+        : `<span>${escapeHtml((symbol || '?').slice(0, 3).toUpperCase())}</span>`}</span>
+      <span class="chat-token-info"><strong>${escapeHtml(symbol)}</strong>${sub ? `<em>${escapeHtml(sub)}</em>` : ''}</span>
+      ${amount ? `<span class="chat-token-amount">${escapeHtml(amount)}</span>` : ''}
+    </button>
+  `;
+}
+
+function chatTokenPickerHtml(field: ChatPickerField, variant: ChatPickerVariant = 'inline'): string {
+  const mode = chatTokenPickerMode;
+  const searchId = `chat:${field}`;
+  const toggle = `
+    <div class="chat-token-modes">
+      <button type="button" class="chat-token-mode${mode === 'list' ? ' active' : ''}" data-chat-token-mode="list">${escapeHtml(t('List'))}</button>
+      <button type="button" class="chat-token-mode${mode === 'mint' ? ' active' : ''}" data-chat-token-mode="mint">${escapeHtml(t('Mint'))}</button>
+    </div>`;
+  let body: string;
+  if (mode === 'mint') {
+    body = `
+      <div class="chat-token-search">
+        <input type="text" id="chatTokenSearchInput" class="chat-chip-input" data-token-search-input="${escapeHtml(searchId)}" placeholder="${escapeHtml(t('Search symbol/name or paste mint'))}" value="${escapeHtml(tokenSearchStates.get(searchId)?.query ?? '')}" autocomplete="off" spellcheck="false" />
+        <div class="token-search-results chat-token-search-results" data-token-search-results="${escapeHtml(searchId)}">${tokenSearchDropdownHtml(searchId)}</div>
+      </div>`;
+  } else {
+    const items = chatTokenListItems(field);
+    if (items.length === 0) {
+      body = `<p class="chat-token-empty">${escapeHtml(t('No tokens with a balance yet.'))}</p>`;
+    } else {
+      const limit = Math.max(CHAT_TOKEN_PAGE, chatTokenListLimit);
+      const shown = items.slice(0, limit);
+      const remaining = items.length - shown.length;
+      const more = remaining > 0
+        ? `<button type="button" class="chat-token-more" data-chat-token-more>${escapeHtml(tf('Show {count} more', { count: remaining }))}</button>`
+        : '';
+      body = `<div class="chat-token-list">${shown.map((i) => chatTokenPickerRowHtml(i)).join('')}</div>${more}`;
+    }
+  }
+  const title = variant === 'sheet' ? '' : `<p class="chat-picker-title">${escapeHtml(t('Choose a token'))}</p>`;
+  const inner = `${title}${toggle}${body}`;
+  return variant === 'sheet'
+    ? `<div class="chat-sheet-picker chat-token-picker" data-chat-picker-field="${field}">${inner}</div>`
+    : `<div class="chat-picker chat-token-picker" data-chat-picker data-chat-picker-field="${field}">${inner}</div>`;
+}
+
+function chatAmountPickerHtml(b: ChatActionBuilder, variant: ChatPickerVariant = 'inline'): string {
+  const mode: ChatAmountMode = b.amount?.mode ?? 'token';
+  const raw = b.amount?.raw ?? '';
+  const tab = (m: ChatAmountMode, label: string): string =>
+    `<button type="button" class="chat-amount-tab${mode === m ? ' active' : ''}" data-chat-amount-mode="${m}">${escapeHtml(label)}</button>`;
+  const pctBtn = (p: string): string =>
+    `<button type="button" class="chat-amount-pct" data-chat-amount-pct="${p}">${escapeHtml(`${p}%`)}</button>`;
+  const placeholder = mode === 'usd' ? t('Dollar amount') : mode === 'percent' ? t('Custom %') : t('Token amount');
+  const inner = `
+    <div class="chat-amount-tabs">${tab('token', t('Amount'))}${tab('usd', t('USD ($)'))}${tab('percent', t('Percent'))}</div>
+    ${mode === 'percent' ? `<div class="chat-amount-pcts">${pctBtn('25')}${pctBtn('50')}${pctBtn('100')}</div>` : ''}
+    <div class="chat-picker-custom">
+      <input type="text" inputmode="decimal" id="chatAmountInput" class="chat-chip-input" data-chat-amount-input placeholder="${escapeHtml(placeholder)}" value="${escapeHtml(raw)}" autocomplete="off" />
+      <button type="button" class="utility" data-chat-amount-apply>${escapeHtml(t('Set'))}</button>
+    </div>`;
+  return variant === 'sheet'
+    ? `<div class="chat-sheet-picker chat-amount-picker">${inner}</div>`
+    : `<div class="chat-picker chat-amount-picker" data-chat-picker>${inner}</div>`;
+}
+
+// Bottom-sheet header strings + body for the chat-action sheet (native mobile).
+function chatActionSheetTitle(): string {
+  const f = state.chatActionPicker?.field;
+  if (f === 'amount') return t('Amount');
+  if (f === 'slippage') return t('Max slippage');
+  if (f === 'fromToken' || f === 'toToken') return t('Choose a token');
+  return t('Wallet Actions');
+}
+function chatActionSheetDetail(): string {
+  const kindLabel = state.chatActionBuilder?.kind === 'send' ? t('Send') : t('Swap');
+  return state.chatActionPicker ? kindLabel : t('Chat');
+}
+function chatActionSheetBodyHtml(): string {
+  const picker = state.chatActionPicker;
+  const b = state.chatActionBuilder;
+  if (picker && b) {
+    if (picker.field === 'amount') return chatAmountPickerHtml(b, 'sheet');
+    if (picker.field === 'slippage') return chatSlippagePickerHtml(b, 'sheet');
+    return chatTokenPickerHtml(picker.field, 'sheet');
+  }
+  return `
+    <div class="chat-sheet-actions">
+      ${CHAT_POWER_ACTIONS.map((action) => `
+        <button type="button" class="chat-plus-option" data-chat-action="${escapeHtml(action.id)}">
+          <span class="chat-plus-eyebrow">${escapeHtml(t(action.eyebrow))}</span>
+          <strong>${escapeHtml(t(action.title))}</strong>
+          <em>${escapeHtml(t(action.description))}</em>
+        </button>
+      `).join('')}
+    </div>
+  `;
+}
+
 function chatComposerHtml(): string {
+  const sendButton = chatStreamActive()
+    ? `<button type="button" class="chat-send chat-stop" data-chat-stop aria-label="${escapeHtml(t('Stop'))}" title="${escapeHtml(t('Stop'))}">■</button>`
+    : `<button type="submit" class="chat-send" data-chat-send aria-label="${escapeHtml(t('Send'))}">↑</button>`;
+  const textarea = `<textarea class="chat-input" data-chat-input rows="1" placeholder="${escapeHtml(t('Message your agent…'))}" aria-label="${escapeHtml(t('Message your agent'))}"></textarea>`;
+  const walletActionsBtn = `<button type="button" class="chat-plus-btn" data-chat-plus-toggle aria-haspopup="menu" aria-expanded="${state.chatComposerOpen ? 'true' : 'false'}" aria-label="${escapeHtml(t('Wallet Actions'))}"><span class="chat-plus-icon" aria-hidden="true">+</span><span class="chat-plus-label">${escapeHtml(t('Wallet Actions'))}</span></button>`;
+  // Native mobile: the Wallet Actions button sits on its own labeled row above the
+  // input; the menu + pickers open in the bottom sheet (no inline popover).
+  if (chatUsesSheet()) {
+    return `
+      ${chatBuilderBarHtml()}
+      <form class="chat-composer chat-composer-mobile" data-chat-composer>
+        <div class="chat-actions-row">${walletActionsBtn}</div>
+        <div class="chat-input-row">
+          ${textarea}
+          ${sendButton}
+        </div>
+      </form>
+    `;
+  }
   const plusOpen = state.chatComposerOpen ? ' open' : '';
   return `
+    ${chatBuilderBarHtml()}
     <form class="chat-composer" data-chat-composer>
       <div class="chat-plus">
-        <button type="button" class="chat-plus-btn" data-chat-plus-toggle aria-haspopup="menu" aria-expanded="${state.chatComposerOpen ? 'true' : 'false'}" aria-label="${escapeHtml(t('Wallet actions'))}">+</button>
+        ${walletActionsBtn}
         <div class="chat-plus-menu${plusOpen}" role="menu">
-          <span class="chat-plus-group">${escapeHtml(t('Wallet actions'))}</span>
+          <span class="chat-plus-group">${escapeHtml(t('Wallet Actions'))}</span>
           ${CHAT_POWER_ACTIONS.map((action) => `
             <button type="button" class="chat-plus-option" role="menuitem" data-chat-action="${escapeHtml(action.id)}">
               <span class="chat-plus-eyebrow">${escapeHtml(t(action.eyebrow))}</span>
@@ -20536,10 +21057,8 @@ function chatComposerHtml(): string {
           `).join('')}
         </div>
       </div>
-      <textarea class="chat-input" data-chat-input rows="1" placeholder="${escapeHtml(t('Message your agent…'))}" aria-label="${escapeHtml(t('Message your agent'))}"></textarea>
-      ${chatStreamActive()
-        ? `<button type="button" class="chat-send chat-stop" data-chat-stop aria-label="${escapeHtml(t('Stop'))}" title="${escapeHtml(t('Stop'))}">■</button>`
-        : `<button type="submit" class="chat-send" data-chat-send aria-label="${escapeHtml(t('Send'))}">↑</button>`}
+      ${textarea}
+      ${sendButton}
     </form>
   `;
 }
@@ -20553,12 +21072,25 @@ let chatStreamMsgId: string | null = null;
 let chatStreamSessionId: string | null = null;
 let chatSubmitPending = false;
 let chatDraft = '';
+// The exact draft last produced by the chip builder. If the user edits the
+// textarea so it diverges from this, the chips are stale and get cleared.
+let chatBuilderCompiledDraft = '';
+// Wallet/cluster scope we've already kicked a full-balance preload for on chat
+// open (so we trigger it at most once per scope, not every render).
+let chatBalancePreloadScope: string | null = null;
 let chatComposerWasFocused = false;
 let chatComposerSelStart = 0;
 let chatComposerSelEnd = 0;
 let chatScrollPinned = true;
+// Force a one-shot snap to the bottom on the next render, regardless of the pre-render
+// pin state. Set when BRAND-NEW assistant content (a card, a posted message) is appended
+// so a tall new card pulls the view down even if the user had scrolled up — captured/reset
+// in restoreChatComposerAfterRender. Streaming token deltas do NOT set this (they respect
+// chatMaybeAutoScroll so a deliberate scroll-up mid-stream is preserved).
+let chatForceScrollBottom = false;
 let chatActiveTool: { tool: string; label: string } | null = null;
 let chatPlusClickAwayInstalled = false;
+let chatPickerClickAwayInstalled = false;
 let chatHistoryClickAwayInstalled = false;
 let chatViewportListenersBound = false;
 let chatStreamLifecycleBound = false;
@@ -20578,6 +21110,9 @@ let chatCloudHydrated = false;
 // Session ids whose cloud message body is being fetched right now — guards
 // against duplicate GETs (double-click / hydrate eager-load racing a click).
 const chatSessionLoadsInFlight = new Set<string>();
+// Session ids currently being reconciled after a 409 conflict, so a burst of
+// conflicting PUTs doesn't kick off overlapping refetch+merge+re-PUT cycles.
+const chatConflictReconcilesInFlight = new Set<string>();
 // Force the composer to refocus after the next render (e.g. after a send via the
 // button, where focus was on the button rather than the input).
 let chatForceFocus = false;
@@ -20588,16 +21123,52 @@ function chatStreamActive(): boolean {
   return chatStreamAbort !== null;
 }
 
-// Debounced mid-stream checkpoint: persist the partial answer (~every 800ms) so a
+// Debounced mid-stream checkpoint: persist the partial answer (~every 250ms) so a
 // suspend/kill mid-stream leaves a recoverable bubble (normalizeChatMessage settles
 // the persisted 'streaming' status to 'done' on load) instead of losing the answer.
+// Kept short (vs the old 800ms) to shrink the worst-case token-loss window if iOS
+// kills the webview between the last checkpoint and the pagehide flush.
+const CHAT_CHECKPOINT_MS = 250;
 function scheduleChatCheckpoint(): void {
   if (typeof window === 'undefined') return;
   if (chatCheckpointTimer !== null) return;
   chatCheckpointTimer = window.setTimeout(() => {
     chatCheckpointTimer = null;
     saveChatHistoryState();
-  }, 800);
+  }, CHAT_CHECKPOINT_MS);
+}
+
+// Screen-reader live region for streaming. A persistent body-level node (survives
+// render()'s innerHTML rebuild of the app root) announced politely; updated on a
+// debounce so SR users hear the answer in batches instead of per-token spam (the
+// transcript itself stays aria-live=polite for non-streaming additions).
+let chatSrAnnounceTimer: number | null = null;
+function chatSrAnnounce(text: string): void {
+  if (typeof document === 'undefined') return;
+  let region = document.getElementById('chat-sr-live');
+  if (!region) {
+    region = document.createElement('div');
+    region.id = 'chat-sr-live';
+    region.setAttribute('role', 'status');
+    region.setAttribute('aria-live', 'polite');
+    region.className = 'sr-only';
+    document.body.appendChild(region);
+  }
+  region.textContent = text;
+}
+function scheduleChatSrProgress(): void {
+  if (typeof window === 'undefined' || chatSrAnnounceTimer !== null) return;
+  chatSrAnnounceTimer = window.setTimeout(() => {
+    chatSrAnnounceTimer = null;
+    const session = state.chat.sessions.find((s) => s.id === chatStreamSessionId);
+    const msg = session?.messages.find((m) => m.id === chatStreamMsgId);
+    if (msg?.content) chatSrAnnounce(msg.content);
+  }, 600);
+}
+function cancelChatSrProgress(): void {
+  if (chatSrAnnounceTimer === null) return;
+  if (typeof window !== 'undefined') window.clearTimeout(chatSrAnnounceTimer);
+  chatSrAnnounceTimer = null;
 }
 
 function cancelChatCheckpoint(): void {
@@ -20683,27 +21254,58 @@ async function refreshLocalBridgeChatStatusIfNeeded(): Promise<void> {
 // the single {answer, proposedAction?} result into the streaming handlers. iOS
 // uses the pure-JS relay; Android uses the native device-agent runtime which
 // forwards to the desktop's /bridge/ai/chat.
+// Bound the non-streaming paired-connector forward: the relay's default is 600s, so
+// a desktop that drops AFTER the pre-submit readiness check would otherwise hang the
+// bubble for ten minutes. 75s is generous for a connector round-trip yet recovers
+// quickly into a retryable error when the connector is actually gone.
+const CHAT_PAIRED_FORWARD_TIMEOUT_MS = 75_000;
+
 async function runPairedConnectorChat(
   request: AgentChatRequest,
   handlers: ChatStreamHandlers,
   options: { signal?: AbortSignal } = {},
 ): Promise<void> {
   const iosPaired = IS_IOS_APP && Boolean(state.aiSettings.pairedBridge);
-  const result = iosPaired
-    ? await iosForwardPlanRequest<AgentChatResult>('/bridge/ai/chat', request, options.signal ? { signal: options.signal } : {})
-    : await invokeDeviceAgentNative<AgentChatResult>('chat', request, {
-      action: 'chat',
-      ...(options.signal && { signal: options.signal }),
-    });
-  if (options.signal?.aborted) return;
-  if (result?.answer) handlers.onToken?.(result.answer);
-  if (result?.proposedAction) handlers.onProposal?.(result.proposedAction);
-  handlers.onDone?.(result ?? { answer: '', checkedAt: new Date().toISOString(), source: 'ai' });
+  // Chain the caller's signal into a local controller we also trip on timeout, so we
+  // can tell a user cancel apart from a connector-gone timeout.
+  const ctrl = new AbortController();
+  const onOuterAbort = (): void => ctrl.abort();
+  if (options.signal) {
+    if (options.signal.aborted) ctrl.abort();
+    else options.signal.addEventListener('abort', onOuterAbort, { once: true });
+  }
+  let timedOut = false;
+  const timer = typeof window !== 'undefined'
+    ? window.setTimeout(() => { timedOut = true; ctrl.abort(); }, CHAT_PAIRED_FORWARD_TIMEOUT_MS)
+    : null;
+  try {
+    const result = iosPaired
+      ? await iosForwardPlanRequest<AgentChatResult>('/bridge/ai/chat', request, { signal: ctrl.signal })
+      : await invokeDeviceAgentNative<AgentChatResult>('chat', request, { action: 'chat', signal: ctrl.signal });
+    if (options.signal?.aborted) return;
+    if (result?.answer) handlers.onToken?.(result.answer);
+    if (result?.proposedAction) handlers.onProposal?.(result.proposedAction);
+    handlers.onDone?.(result ?? { answer: '', checkedAt: new Date().toISOString(), source: 'ai' });
+  } catch (err) {
+    if (timedOut && !options.signal?.aborted) {
+      throw new Error(t('Your connector did not respond. Make sure the connector page is open and awake on your computer, then try again.'));
+    }
+    throw err;
+  } finally {
+    if (timer !== null && typeof window !== 'undefined') window.clearTimeout(timer);
+    options.signal?.removeEventListener('abort', onOuterAbort);
+  }
 }
 
 // Turn a raw stream/transport error into product-grade copy.
 function friendlyChatError(raw: string): string {
   if (/\b401\b|sign in required/i.test(raw)) {
+    // On native shells the user can be signed in while the Keychain/secure-store
+    // Bearer token is still hydrating after a cold launch — a 401 here means
+    // "reconnecting", not "sign in" (which would be misleading + un-actionable).
+    if (nativeCloudApiSurfaceActive() && state.cloudSession.status === 'signed-in') {
+      return t('Reconnecting to Agentic Cloud — try again in a moment.');
+    }
     return t('Sign in to Agentic Cloud (Workspace storage → Sign in) to chat with your agent.');
   }
   if (/\b429\b|rate limit/i.test(raw)) {
@@ -20750,6 +21352,7 @@ function chatAutoGrow(input: HTMLTextAreaElement): void {
 // here makes that capture read empty, so the textbox actually clears on send.
 function clearChatComposerDraft(): void {
   chatDraft = '';
+  resetChatActionBuilder();
   const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
   if (input) {
     input.value = '';
@@ -20777,28 +21380,100 @@ function paintChatToolChips(id: string, message: ChatMessage): void {
   chatMaybeAutoScroll();
 }
 
-function chatRequestContext(): Record<string, unknown> {
-  return {
-    connectedWallet: Boolean(state.address),
-    ...(state.address ? { walletAddress: state.address } : {}),
-    cluster: state.cluster,
-    // The agent should reply in the user's selected UI language (Android picker;
-    // 'en' on web). The static chrome is localized via the demo-i18n catalogs.
-    uiLanguage: activeUiLanguage(),
+const CHAT_WALLET_BALANCE_CONTEXT_TIMEOUT_MS = 3500;
+
+type ChatBalanceLoadResult =
+  | { kind: 'snapshot'; snapshot: WalletBalanceSnapshot }
+  | { kind: 'error'; error: unknown };
+
+function currentChatWalletBalanceSnapshot(): WalletBalanceSnapshot | null {
+  const scopeKey = walletBalanceScopeKey();
+  // Prefer the FULL snapshot (all holdings) so the agent context + $/% resolution
+  // see the long tail; fall back to the SOL/USDC summary.
+  const full = state.walletBalance.full;
+  if (
+    state.walletBalance.fullStatus === 'ready' &&
+    state.walletBalance.scopeKey === scopeKey &&
+    full &&
+    full.walletAddress === state.address &&
+    full.cluster === state.cluster
+  ) {
+    return full;
+  }
+  const summary = state.walletBalance.summary;
+  if (
+    state.walletBalance.summaryStatus === 'ready' &&
+    state.walletBalance.scopeKey === scopeKey &&
+    summary &&
+    summary.walletAddress === state.address &&
+    summary.cluster === state.cluster
+  ) {
+    return summary;
+  }
+  return null;
+}
+
+function currentChatWalletBalanceError(): string {
+  if (state.walletBalance.scopeKey !== walletBalanceScopeKey()) return '';
+  return state.walletBalance.summaryError || state.walletBalance.fullError || '';
+}
+
+function applyChatWalletBalanceLoadResult(
+  address: string,
+  cluster: Cluster,
+  scopeKey: string,
+  result: ChatBalanceLoadResult,
+): void {
+  if (state.address !== address || state.cluster !== cluster || walletBalanceScopeKey() !== scopeKey) return;
+  if (result.kind === 'snapshot') {
+    state.walletBalance = {
+      ...state.walletBalance,
+      scopeKey,
+      summaryStatus: 'ready',
+      summary: result.snapshot,
+      summaryError: '',
+    };
+    return;
+  }
+  state.walletBalance = {
+    ...state.walletBalance,
+    scopeKey,
+    summaryStatus: 'error',
+    summaryError: redactSecrets(result.error instanceof Error ? result.error.message : String(result.error)),
   };
 }
 
+async function refreshChatWalletBalanceContextIfNeeded(session: ChatSession): Promise<void> {
+  if (!state.address || !chatMentionsWalletBalance(session) || currentChatWalletBalanceSnapshot()) return;
+  const address = state.address;
+  const cluster = state.cluster;
+  const scopeKey = walletBalanceScopeKey(address, cluster);
+  const load = loadWalletBalanceSnapshot(address, cluster, 'primary')
+    .then((snapshot): ChatBalanceLoadResult => ({ kind: 'snapshot', snapshot }))
+    .catch((error): ChatBalanceLoadResult => ({ kind: 'error', error }));
+  const result = await Promise.race([
+    load,
+    new Promise<{ kind: 'timeout' }>((resolve) => {
+      window.setTimeout(() => resolve({ kind: 'timeout' }), CHAT_WALLET_BALANCE_CONTEXT_TIMEOUT_MS);
+    }),
+  ]);
+  if (result.kind === 'timeout') {
+    void load.then((lateResult) => applyChatWalletBalanceLoadResult(address, cluster, scopeKey, lateResult));
+    return;
+  }
+  applyChatWalletBalanceLoadResult(address, cluster, scopeKey, result);
+}
+
 function buildChatRequest(session: ChatSession): AgentChatRequest {
-  const messages = session.messages
-    .filter((m) => (m.role === 'user' || m.role === 'assistant') && m.content.trim())
-    .slice(-20)
-    .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
-  return {
-    messages,
-    walletAddress: state.address || undefined,
+  return buildAgentChatRequest(session, {
+    address: state.address || undefined,
     cluster: state.cluster,
-    context: chatRequestContext(),
-  };
+    walletBalance: currentChatWalletBalanceSnapshot(),
+    walletBalanceError: currentChatWalletBalanceError(),
+    // The agent should reply in the user's selected UI language (Android picker;
+    // 'en' on web). The static chrome is localized via the demo-i18n catalogs.
+    uiLanguage: activeUiLanguage(),
+  });
 }
 
 function isChatAbortError(err: unknown): boolean {
@@ -20810,21 +21485,35 @@ function isNativeTokenAuthError(err: unknown): boolean {
   return /\b401\b|unauthorized|sign in required/i.test(msg);
 }
 
-function findLatestPendingChatActionId(): string | null {
+// Pending (ready/overdue) chat-card action ids in the active session, newest first.
+function pendingChatActionIds(): string[] {
   const session = activeChatSession();
-  if (!session) return null;
+  if (!session) return [];
+  const ids: string[] = [];
   for (let i = session.messages.length - 1; i >= 0; i -= 1) {
     const id = session.messages[i]?.preparedActionId;
-    if (!id) continue;
+    if (!id || ids.includes(id)) continue;
     const action = state.preparedActions.find((a) => a.id === id);
-    if (action && (action.status === 'ready' || action.status === 'overdue')) return id;
+    if (action && (action.status === 'ready' || action.status === 'overdue')) ids.push(id);
   }
-  return null;
+  return ids;
 }
+
+function findLatestPendingChatActionId(): string | null {
+  return pendingChatActionIds()[0] ?? null;
+}
+
+// Pre-send size guard: keep a single turn well under the ~1.5MB history budget so a
+// huge paste can't blow it and trigger the asymmetric eviction in writeChatHistoryWithEviction.
+const CHAT_MAX_INPUT_CHARS = 100_000;
 
 async function submitChatMessage(text: string): Promise<void> {
   const content = text.trim();
   if (!content || chatSubmitBlocked()) return;
+  if (content.length > CHAT_MAX_INPUT_CHARS) {
+    pushToast('error', t('Message too long'), tf('Keep it under {max} characters.', { max: String(CHAT_MAX_INPUT_CHARS) }));
+    return;
+  }
   chatSubmitPending = true;
   // Keep the composer focused after sending, even when the send came from the
   // button or a suggestion chip (focus was not on the textarea).
@@ -20833,17 +21522,98 @@ async function submitChatMessage(text: string): Promise<void> {
   try {
     // NL shortcut: a bare "sign"/"approve" approves the most recent pending card
     // (opens the wallet) instead of messaging the agent. The wallet still prompts.
-    if (/^(sign|sign it|approve|approve it|confirm)\.?$/i.test(content)) {
-      const pendingId = findLatestPendingChatActionId();
-      if (pendingId) {
+    const signMatch = /^(?:sign|approve|confirm)(?:\s+it)?(?:\s+(\d+))?\.?$/i.exec(content);
+    if (signMatch) {
+      const pending = pendingChatActionIds();
+      const session = ensureActiveChatSession();
+      const postAssistant = (text: string): void => {
+        appendChatMessage(session.id, { id: newId('chat-msg'), role: 'assistant', content: text, createdAt: new Date().toISOString(), status: 'done' });
         clearChatComposerDraft();
         chatSubmitPending = false;
+        chatScrollPinned = true;
+        saveChatHistoryState();
         render();
-        void runPreparedActionOp(pendingId, 'execute').catch((err) => {
-          pushToast('error', t('Action failed'), redactSecrets(err instanceof Error ? err.message : String(err)));
-        });
+      };
+      if (pending.length === 0) {
+        // 'sign' is a command; with nothing pending, say so (don't message the agent).
+        postAssistant(t('Nothing to sign yet - prepare an action first.'));
         return;
       }
+      const indexArg = signMatch[1] ? Number(signMatch[1]) : 0;
+      let targetId: string | undefined;
+      if (indexArg >= 1) {
+        targetId = pending[indexArg - 1]; // "sign 1" = newest
+        if (!targetId) { postAssistant(tf('There is no action #{n} - you have {count} ready.', { n: String(indexArg), count: String(pending.length) })); return; }
+      } else if (pending.length > 1) {
+        // Never silently sign the wrong on-chain action when several are pending.
+        postAssistant(tf('You have {count} actions ready. Tap Approve on the one you want, or type "sign 1" for the newest.', { count: String(pending.length) }));
+        return;
+      } else {
+        targetId = pending[0];
+      }
+      if (!targetId) { postAssistant(t('Nothing to sign yet - prepare an action first.')); return; }
+      const signTargetId = targetId;
+      clearChatComposerDraft();
+      chatSubmitPending = false;
+      render();
+      void runPreparedActionOp(signTargetId, 'execute').catch((err) => {
+        pushToast('error', t('Action failed'), redactSecrets(err instanceof Error ? err.message : String(err)));
+      });
+      return;
+    }
+
+    const staticReply = chatStaticReplyForPrompt(content);
+    if (staticReply) {
+      const now = new Date().toISOString();
+      const session = ensureActiveChatSession();
+      appendChatMessage(session.id, { id: newId('chat-msg'), role: 'user', content, createdAt: now, status: 'done' });
+      appendChatMessage(session.id, {
+        id: newId('chat-msg'),
+        role: 'assistant',
+        content: staticReply.map((line) => t(line)).join('\n'),
+        createdAt: new Date().toISOString(),
+        status: 'done',
+      });
+      clearChatComposerDraft();
+      chatSubmitPending = false;
+      chatScrollPinned = true;
+      chatForceScrollBottom = true;
+      saveChatHistoryState();
+      render();
+      return;
+    }
+
+    // No-wallet guard: chat works with only an AI connector, but a question about the
+    // user's OWN wallet (balances/holdings/address/activity) has no data to answer with
+    // until a wallet is connected. Reply with a clean connect-wallet prompt instead of
+    // streaming to the agent with empty wallet context. General questions (prices, token
+    // info) don't match and still reach the agent.
+    if (!state.address && chatMentionsOwnWallet(content)) {
+      const now = new Date().toISOString();
+      const session = ensureActiveChatSession();
+      appendChatMessage(session.id, { id: newId('chat-msg'), role: 'user', content, createdAt: now, status: 'done' });
+      appendChatMessage(session.id, {
+        id: newId('chat-msg'),
+        role: 'assistant',
+        content: t('Connect a wallet first so I can read your balances and activity.'),
+        createdAt: new Date().toISOString(),
+        status: 'done',
+      });
+      clearChatComposerDraft();
+      chatSubmitPending = false;
+      chatScrollPinned = true;
+      chatForceScrollBottom = true;
+      saveChatHistoryState();
+      render();
+      return;
+    }
+
+    // Deterministic wallet-action fast path: a Wallet Actions-format message is
+    // parsed + prepared client-side (no LLM) and rendered as the same inline
+    // approval card. Bypasses the agent entirely, so it works on all transports.
+    if (tryDeterministicWalletAction(content)) {
+      chatSubmitPending = false;
+      return;
     }
 
     const now = new Date().toISOString();
@@ -20853,6 +21623,7 @@ async function submitChatMessage(text: string): Promise<void> {
     chatStreamSessionId = session.id;
     chatStreamMsgId = null;
     chatScrollPinned = true;
+    chatForceScrollBottom = true;
     chatActiveTool = null;
     const preflightAbort = new AbortController();
     chatStreamAbort = preflightAbort;
@@ -20875,6 +21646,7 @@ async function submitChatMessage(text: string): Promise<void> {
         error: notReady,
       });
       chatScrollPinned = true;
+      chatForceScrollBottom = true;
       render();
       return;
     }
@@ -20900,16 +21672,19 @@ async function runChatStream(sessionId: string, assistantId: string): Promise<vo
   const session = state.chat.sessions.find((s) => s.id === sessionId);
   const message = session?.messages.find((m) => m.id === assistantId);
   if (!session || !message) return;
-  const request = buildChatRequest(session);
   // submitChatMessage created the AbortController (so the composer could show
   // Stop before this async fn runs); reuse it, or create one if missing.
   const abort = chatStreamAbort ?? new AbortController();
   chatStreamAbort = abort;
+  await refreshChatWalletBalanceContextIfNeeded(session);
+  if (abort.signal.aborted) return;
+  const request = buildChatRequest(session);
   const handlers: ChatStreamHandlers = {
     onToken: (delta) => {
       message.content += delta;
       appendChatAssistantText(assistantId, delta);
       scheduleChatCheckpoint();
+      scheduleChatSrProgress();
     },
     onToolStatus: (info) => {
       if (info.phase === 'start') {
@@ -20930,6 +21705,8 @@ async function runChatStream(sessionId: string, assistantId: string): Promise<vo
       if (state.address) {
         try { promoteChatProposalToPreparedAction(sessionId, assistantId); } catch { /* leave pending */ }
       }
+      // A proposal renders a (tall) approval card — snap it into view.
+      chatForceScrollBottom = true;
       saveChatHistoryState();
       render();
     },
@@ -20953,13 +21730,14 @@ async function runChatStream(sessionId: string, assistantId: string): Promise<vo
     } else {
       // Ensure the native cloud Bearer token is hydrated before the first request
       // (iOS cold-launch race) so we don't 401 with a misleading "sign in" error.
-      await ensureNativeCloudTokenReady();
+      await ensureNativeCloudTokenReady(1500, abort.signal);
       try {
         await streamHostedAiChat(state.aiSettings, request, handlers, hostedAiRequestOptions({ signal: abort.signal }));
       } catch (err) {
         // Retry once on a 401 while signed in (token hydrated/refreshed a beat late).
         if (!abort.signal.aborted && isNativeTokenAuthError(err) && nativeCloudApiSurfaceActive() && state.cloudSession.status === 'signed-in') {
-          await ensureNativeCloudTokenReady(2500);
+          await ensureNativeCloudTokenReady(2500, abort.signal);
+          if (abort.signal.aborted) throw err;
           await streamHostedAiChat(state.aiSettings, request, handlers, hostedAiRequestOptions({ signal: abort.signal }));
         } else {
           throw err;
@@ -20974,6 +21752,10 @@ async function runChatStream(sessionId: string, assistantId: string): Promise<vo
   } finally {
     if (message.status === 'streaming') message.status = 'done';
     chatStreamAbort = null;
+    cancelChatSrProgress();
+    // Final SR announcement: the settled answer (or the error) so a screen reader
+    // hears the complete reply once, even if the debounced progress was mid-cycle.
+    chatSrAnnounce(message.status === 'error' ? (message.error ?? '') : message.content);
     chatStreamMsgId = null;
     chatStreamSessionId = null;
     chatActiveTool = null;
@@ -20994,14 +21776,33 @@ function cancelChatStream(): void {
   if (chatStreamSessionId && chatStreamMsgId) {
     const session = state.chat.sessions.find((s) => s.id === chatStreamSessionId);
     const message = session?.messages.find((m) => m.id === chatStreamMsgId);
-    if (message && message.status === 'streaming') {
+    if (session && message && message.status === 'streaming') {
       message.status = 'done';
-      saveChatHistoryState();
+      // Only persist when the in-memory history still matches the active wallet
+      // scope. During a wallet-switch/sign-out boundary state.chat can briefly hold
+      // the PREVIOUS wallet's sessions while state.address is already the incoming
+      // wallet; saving then would normalize the previous wallet's sessions out and
+      // wipe the incoming wallet's storage key. The previous wallet's partial answer
+      // is already on its scoped key from the mid-stream checkpoints.
+      if (recordMatchesWalletScope(session, state.address)) saveChatHistoryState();
     }
   }
   chatStreamMsgId = null;
   chatStreamSessionId = null;
   chatActiveTool = null;
+}
+
+// Tear down live chat-stream + per-session runtime bookkeeping before a
+// wallet-switch / sign-out boundary swaps `state.chat` out. Without this, the
+// stream keeps mutating an orphaned message ref (lost from UI + never cloud-synced)
+// and id-keyed Sets leak across wallets. cancelChatStream() is scope-safe so it
+// won't wipe the incoming wallet's storage when state.address already changed.
+function teardownChatRuntimeForWalletBoundary(): void {
+  if (chatStreamActive()) cancelChatStream();
+  chatSessionLoadsInFlight.clear();
+  chatConflictReconcilesInFlight.clear();
+  chatActionResultPosted.clear();
+  chatActionInterimPosted.clear();
 }
 
 // --- Action-promotion bridge: chat proposal -> existing PreparedAction --------
@@ -21046,11 +21847,14 @@ function normalizeProposalParams(proposal: ChatActionProposal): Record<string, u
     return { token: str(p.token), recipient: str(p.recipient), amount: str(p.amount), memo: str(p.memo) };
   }
   if (proposal.kind === 'swap') {
+    // Omit slippageBps when absent (Auto) so the swap order/quote request leaves it
+    // unset and Jupiter Ultra applies dynamic slippage. An explicit value is kept.
+    const slippageBps = str(p.slippageBps);
     return {
       inputToken: str(p.inputToken || 'SOL'),
       outputToken: str(p.outputToken || 'USDC'),
       amount: str(p.amount),
-      slippageBps: str(p.slippageBps || '50'),
+      ...(slippageBps ? { slippageBps } : {}),
     };
   }
   if (proposal.kind === 'manual_review') {
@@ -21080,6 +21884,7 @@ function createBrowserPreparedActionFromProposal(proposal: ChatActionProposal): 
     updatedAt: now,
     note,
     workflowSource: 'browser',
+    chatOriginated: true,
   };
 }
 
@@ -21111,12 +21916,289 @@ function promoteChatProposalToPreparedAction(sessionId: string, messageId: strin
   return action;
 }
 
+// --- Deterministic wallet-action fast path (no LLM) ---------------------------
+// When a chat message matches the Wallet Actions grammar, we parse + prepare it
+// entirely client-side and render the SAME inline approval card the agent path
+// produces. This works on every transport (local bridge / paired connector /
+// hosted) and never depends on the model, so the templated actions always work
+// and the user can chat-then-act without leaving the tab.
+
+// SOL/USDC (+ USDT/PYUSD) may be referenced by symbol; every other token needs a
+// base58 mint (no guessing the long tail of SPLs). Mirrors the server validator.
+const CHAT_BASE58_MINT = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+// Actions whose TERMINAL chat success/receipt message has already been posted, so
+// a re-entrant completion (submitted -> confirmed via reconcile) posts only once.
+const chatActionResultPosted = new Set<string>();
+// Actions whose interim "Submitted. Awaiting confirmation." message was posted,
+// so the pending ack fires at most once before the terminal message lands.
+const chatActionInterimPosted = new Set<string>();
+
+type ChatActionParse =
+  | { kind: 'none' } // not a wallet-action message -> fall through to the agent
+  | { kind: 'action'; proposal: AgentChatProposedAction }
+  | { kind: 'error'; message: string }; // matched the grammar but the input is invalid
+
+interface ResolvedChatToken { symbol: string; mint: string; decimals: number; asset?: WalletBalanceAsset; }
+
+function chatSnapshotAssets(): WalletBalanceAsset[] {
+  // Prefer the full snapshot (all owned tokens) so the token picker and token
+  // resolution see the long tail, not just SOL/USDC; fall back to the summary.
+  const full = state.walletBalance.full;
+  if (full && full.walletAddress === state.address && full.cluster === state.cluster) {
+    return [full.sol, full.usdc, ...full.others];
+  }
+  const snap = currentChatWalletBalanceSnapshot();
+  if (!snap) return [];
+  return [snap.sol, snap.usdc, ...snap.others];
+}
+
+function stripChatBrackets(value: string): string {
+  return value.trim().replace(/^\[/, '').replace(/\]$/, '').trim();
+}
+
+// Resolve a token reference (symbol / owned token / base58 mint) to a concrete
+// {symbol, mint, decimals}. Arbitrary symbols with no known mint are rejected.
+function resolveChatToken(raw: string): ResolvedChatToken | { error: string } {
+  const value = stripChatBrackets(raw);
+  if (!value) return { error: t('A token is required.') };
+  const assets = chatSnapshotAssets();
+  if (CHAT_BASE58_MINT.test(value)) {
+    const owned = assets.find((a) => a.mint === value);
+    return { symbol: owned?.symbol ?? short(value), mint: value, decimals: owned?.decimals ?? 0, ...(owned ? { asset: owned } : {}) };
+  }
+  const ownedBySymbol = assets.find((a) => a.symbol.toLowerCase() === value.toLowerCase());
+  if (ownedBySymbol) {
+    return { symbol: ownedBySymbol.symbol, mint: ownedBySymbol.mint, decimals: ownedBySymbol.decimals, asset: ownedBySymbol };
+  }
+  const known = KNOWN_BROWSER_TOKENS[value.toUpperCase()];
+  if (known) {
+    const owned = assets.find((a) => a.mint === known.mint);
+    return { symbol: known.symbol, mint: known.mint, decimals: known.decimals, ...(owned ? { asset: owned } : {}) };
+  }
+  return { error: tf('{symbol} needs a mint address. Pick the token from your balances or paste its base58 mint.', { symbol: value }) };
+}
+
+function trimChatAmount(amount: number, decimals: number): string {
+  const places = Math.min(Math.max(decimals, 0), 9);
+  return amount.toFixed(places).replace(/\.?0+$/, '') || '0';
+}
+
+// Resolve a token amount / USD ($) / percentage (%) against the FROM asset to a
+// concrete token amount string. $ and % require the asset's price/balance.
+function resolveChatAmount(raw: string, fromAsset: WalletBalanceAsset | null): { amount: string } | { error: string } {
+  const value = stripChatBrackets(raw);
+  if (!value) return { error: t('An amount is required.') };
+  const pctMatch = /^(\d+(?:\.\d+)?)\s*%$/.exec(value);
+  if (pctMatch) {
+    if (!fromAsset || !(fromAsset.amount > 0)) {
+      return { error: currentChatWalletBalanceSnapshot()
+        ? t('No balance for this token to take a percentage of.')
+        : t('Balances are still loading - try again in a moment, or enter a token amount.') };
+    }
+    const pct = Number(pctMatch[1]);
+    if (!Number.isFinite(pct) || pct <= 0 || pct > 100) return { error: t('Enter a percentage between 0 and 100.') };
+    let amount = fromAsset.amount * (pct / 100);
+    // Reserve a fee/rent buffer for native SOL near 100% so the tx can pay fees.
+    if (fromAsset.mint === WSOL_MINT && pct >= 100) amount = Math.max(0, amount - 0.01);
+    if (!(amount > 0)) return { error: t('That percentage leaves nothing to send after fees.') };
+    return { amount: trimChatAmount(amount, fromAsset.decimals) };
+  }
+  const usdMatch = /^\$\s*(\d+(?:\.\d+)?)$/.exec(value) ?? /^(\d+(?:\.\d+)?)\s*usd$/i.exec(value);
+  if (usdMatch) {
+    const usd = Number(usdMatch[1]);
+    const price = fromAsset?.priceUsd;
+    if (!fromAsset || !price || !(price > 0)) {
+      return { error: currentChatWalletBalanceSnapshot()
+        ? t('No USD price for this token yet - enter a token amount instead.')
+        : t('Balances are still loading - try again in a moment, or enter a token amount.') };
+    }
+    if (!Number.isFinite(usd) || usd <= 0) return { error: t('Enter a dollar amount greater than zero.') };
+    return { amount: trimChatAmount(usd / price, fromAsset.decimals) };
+  }
+  const numeric = value.replace(/,/g, '');
+  // Plain-decimal only: Number() would accept '1e5'/'0x10'/'Infinity', which then die
+  // later in parseDecimalAmountToRaw (after the card is shown). Reject up front with the
+  // same canonical grammar the raw-amount builder enforces.
+  if (!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(numeric)) return { error: t('Enter a valid amount.') };
+  const num = Number(numeric);
+  if (!Number.isFinite(num) || num <= 0) return { error: t('Enter a valid amount.') };
+  return { amount: numeric.replace(/^\./, '0.') };
+}
+
+// Parse the Wallet Actions grammar. Returns 'none' when the text is not a wallet
+// action (so it falls through to the agent for freestyle natural language).
+function parseChatWalletAction(text: string): ChatActionParse {
+  const clean = text.trim();
+  // Unfilled template placeholders (keyed to the exact words our templates emit,
+  // so a user's own bracketed text is unaffected): guide them to fill the fields
+  // instead of preparing a bogus action or silently bouncing to the agent.
+  if (/^(send|swap|sign\s+a\s+proof)\b/i.test(clean) && /\[(amount|recipient address|token|statement to attest)\]/i.test(clean)) {
+    return { kind: 'error', message: t('Fill in the bracketed fields, then send.') };
+  }
+  const proof = /^sign\s+(?:a\s+)?proof\s+that\s+(.+)$/is.exec(clean);
+  if (proof) {
+    const statement = stripChatBrackets(proof[1] ?? '');
+    // Reject the unedited placeholder so we never attest the literal template text.
+    if (!statement || /^statement to attest$/i.test(statement)) return { kind: 'error', message: t('Enter the statement you want to attest.') };
+    return { kind: 'action', proposal: { kind: 'sign_proof', summary: tf('Proof: {statement}', { statement: statement.slice(0, 80) }), params: { statement }, requiresApproval: true, resolution: { recipientSource: 'user_input' } } };
+  }
+  const send = /^send\s+(\S+)\s+(\S+)\s+to\s+(\S+)(?:\s+memo[:\s]+(.+))?$/is.exec(clean);
+  if (send) {
+    const token = resolveChatToken(send[2] ?? '');
+    if ('error' in token) return { kind: 'error', message: token.error };
+    const amount = resolveChatAmount(send[1] ?? '', token.asset ?? null);
+    if ('error' in amount) return { kind: 'error', message: amount.error };
+    const recipient = stripChatBrackets(send[3] ?? '');
+    if (!CHAT_BASE58_MINT.test(recipient)) return { kind: 'error', message: t('The recipient must be a valid base58 wallet address.') };
+    const memo = send[4]?.trim();
+    if (token.mint === WSOL_MINT) {
+      return { kind: 'action', proposal: { kind: 'transfer_sol', summary: tf('Send {amount} SOL', { amount: amount.amount }), params: { recipient, amountSol: amount.amount, ...(memo ? { memo } : {}) }, requiresApproval: true, resolution: { recipientSource: 'user_input' } } };
+    }
+    return { kind: 'action', proposal: { kind: 'transfer_spl', summary: tf('Send {amount} {symbol}', { amount: amount.amount, symbol: token.symbol }), params: { token: token.mint, recipient, amount: amount.amount, ...(memo ? { memo } : {}) }, requiresApproval: true, resolution: { recipientSource: 'user_input' } } };
+  }
+  const swap = /^swap\s+(\S+)\s+(\S+)\s+(?:to|for)\s+(\S+)(?:\s+slippage\s+(\d+(?:\.\d+)?)\s*(%|bps)?)?$/is.exec(clean);
+  if (swap) {
+    const from = resolveChatToken(swap[2] ?? '');
+    if ('error' in from) return { kind: 'error', message: from.error };
+    const to = resolveChatToken(swap[3] ?? '');
+    if ('error' in to) return { kind: 'error', message: to.error };
+    if (from.mint === to.mint) return { kind: 'error', message: t('Choose two different tokens to swap.') };
+    const amount = resolveChatAmount(swap[1] ?? '', from.asset ?? null);
+    if ('error' in amount) return { kind: 'error', message: amount.error };
+    // No typed slippage → leave it absent (Auto): Jupiter Ultra applies dynamic
+    // slippage. Only an explicit "slippage N(%|bps)" sets a fixed cap.
+    let slippageBps = '';
+    if (swap[4]) {
+      const n = Number(swap[4]);
+      if (Number.isFinite(n) && n > 0) slippageBps = swap[5] === 'bps' ? String(Math.round(n)) : String(Math.round(n * 100));
+    }
+    return { kind: 'action', proposal: { kind: 'swap', summary: tf('Swap {amount} {from} to {to}', { amount: amount.amount, from: from.symbol, to: to.symbol }), params: { inputToken: from.mint, outputToken: to.mint, amount: amount.amount, ...(slippageBps ? { slippageBps } : {}) }, requiresApproval: true, resolution: { recipientSource: 'user_input' } } };
+  }
+  return { kind: 'none' };
+}
+
+// Intercept a wallet-action-format message in submitChatMessage. Returns true
+// when it handled the message (echo + card / error); false to fall through to AI.
+function tryDeterministicWalletAction(content: string): boolean {
+  // Backstop: ensure the full balance snapshot is loading so $/% amounts and
+  // owned-token symbol resolution work (WS5 also loads it on chat open). Non-blocking.
+  if (state.address && !currentChatWalletBalanceSnapshot()) {
+    startWalletBalanceFullLoad(false, { openOverlay: false });
+  }
+  const parsed = parseChatWalletAction(content);
+  if (parsed.kind === 'none') return false;
+  const session = ensureActiveChatSession();
+  const now = new Date().toISOString();
+  appendChatMessage(session.id, { id: newId('chat-msg'), role: 'user', content, createdAt: now, status: 'done' });
+  clearChatComposerDraft();
+  const appendAssistant = (text: string, extra: Partial<ChatMessage> = {}): string => {
+    const id = newId('chat-msg');
+    appendChatMessage(session.id, { id, role: 'assistant', content: text, createdAt: new Date().toISOString(), status: 'done', ...extra });
+    return id;
+  };
+  const finish = (): boolean => { chatScrollPinned = true; chatForceScrollBottom = true; saveChatHistoryState(); render(); return true; };
+  if (!state.address) { appendAssistant(t('Connect a wallet to prepare this action.')); return finish(); }
+  if (parsed.kind === 'error') { appendAssistant(parsed.message); return finish(); }
+  // Transactions (not proofs) need a signing-capable wallet on this device.
+  if (parsed.proposal.kind !== 'sign_proof') {
+    const supports = state.capabilities?.supports;
+    if (supports && !supports.signTransaction && !supports.signAndSendTransaction) {
+      appendAssistant(t('This wallet cannot sign transactions on this device.'));
+      return finish();
+    }
+  }
+  const mapped = mapProposedActionToChatProposal(parsed.proposal);
+  if (!mapped) { appendAssistant(t('I could not prepare that action. Try rephrasing it.')); return finish(); }
+  const assistantId = appendAssistant(t('Prepared this action. Review the card below, then tap Sign or type "sign".'), { proposal: mapped });
+  try { promoteChatProposalToPreparedAction(session.id, assistantId); } catch { /* leave pending; card shows Prepare */ }
+  return finish();
+}
+
+// --- Chat-originated execution: keep the user in chat + post result messages --
+function findChatMessageForAction(actionId: string): { session: ChatSession; message: ChatMessage } | null {
+  for (const session of state.chat.sessions) {
+    for (const message of session.messages) {
+      if (message.preparedActionId === actionId) return { session, message };
+    }
+  }
+  return null;
+}
+
+// True when a prepared action originated from a chat card. Prefers the durable
+// `chatOriginated` flag (survives message-cap/delete); falls back to the
+// transcript scan for actions persisted before the flag existed.
+function isChatOriginatedAction(action: { id: string; chatOriginated?: boolean }): boolean {
+  return action.chatOriginated === true || findChatMessageForAction(action.id) !== null;
+}
+
+// After a chat-originated action settles, post the success + "Receipt sent to
+// Done tab" messages (idempotent). The receipt itself already lands in Done via
+// completeBrowserExecutedAction's state.receipts write.
+function postChatActionSuccessMessage(
+  action: PreparedAction,
+  execution: { txid?: string; txStatus?: PreparedActionTxStatus; explorerUrl?: string },
+): void {
+  const located = findChatMessageForAction(action.id);
+  if (!located) return;
+  const isProof = isSignProofAction(action);
+  // Proofs are terminal on sign; transactions are terminal only when confirmed.
+  const terminal = isProof || execution.txStatus === 'confirmed';
+  const appendAssistant = (content: string, extra: Partial<ChatMessage> = {}): void => {
+    appendChatMessage(located.session.id, {
+      id: newId('chat-msg'), role: 'assistant', content,
+      createdAt: new Date().toISOString(), status: 'done', ...extra,
+    });
+  };
+  if (!terminal) {
+    // Submitted-but-pending: post an interim ack ONCE (with the tx receipt to
+    // track), and not if the terminal message already landed.
+    if (chatActionInterimPosted.has(action.id) || chatActionResultPosted.has(action.id)) return;
+    chatActionInterimPosted.add(action.id);
+    appendAssistant(t('Submitted. Awaiting on-chain confirmation.'),
+      execution.txid ? { txReceipt: { txid: execution.txid, cluster: action.cluster } } : {});
+  } else {
+    if (chatActionResultPosted.has(action.id)) return;
+    chatActionResultPosted.add(action.id);
+    appendAssistant(
+      isProof ? t('Signed. Your proof is ready.') : t('Sent and confirmed on-chain.'),
+      execution.txid && !isProof ? { txReceipt: { txid: execution.txid, cluster: action.cluster } } : {},
+    );
+    appendAssistant(t('Receipt sent to Done tab.'));
+  }
+  located.session.updatedAt = new Date().toISOString();
+  chatForceScrollBottom = true;
+  saveChatHistoryState();
+  if (state.activeTab === 'chat') render();
+}
+
+// Post the failure reason (e.g. "Not enough SOL...") for a chat-originated action.
+function postChatActionFailureMessage(action: PreparedAction, message: string, txid?: string): void {
+  const located = findChatMessageForAction(action.id);
+  if (!located) return;
+  appendChatMessage(located.session.id, {
+    id: newId('chat-msg'),
+    role: 'assistant',
+    content: message,
+    createdAt: new Date().toISOString(),
+    status: 'error',
+    ...(txid ? { txReceipt: { txid, cluster: action.cluster } } : {}),
+  });
+  located.session.updatedAt = new Date().toISOString();
+  chatForceScrollBottom = true;
+  saveChatHistoryState();
+  if (state.activeTab === 'chat') render();
+}
+
 // --- Composer focus / scroll preservation across full re-render ---------------
 function captureChatComposerSnapshot(): void {
   if (state.activeTab !== 'chat') return;
   const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
   if (input) {
-    chatDraft = input.value;
+    // Don't re-capture the live value mid-submit: submitChatMessage clears the draft
+    // and the box, but a render racing that clear could otherwise restore the
+    // just-sent text. Focus/selection/scroll are still captured.
+    if (!chatSubmitPending) chatDraft = input.value;
     chatComposerWasFocused = document.activeElement === input;
     chatComposerSelStart = input.selectionStart ?? input.value.length;
     chatComposerSelEnd = input.selectionEnd ?? input.value.length;
@@ -21147,7 +22229,47 @@ function restoreChatComposerAfterRender(): void {
   chatForceFocus = false;
   // The surface is recreated each render; re-apply the keyboard inset to the new node.
   syncChatKeyboardInset();
-  chatScrollToBottom(false);
+  // Brand-new assistant content (a card / posted message) snaps to the bottom even if the
+  // pre-render snapshot captured an un-pinned scroll; otherwise honor the captured pin.
+  if (chatForceScrollBottom) { chatScrollToBottom(true); chatForceScrollBottom = false; }
+  else chatScrollToBottom(false);
+}
+
+function resetChatActionBuilder(): void {
+  state.chatActionBuilder = null;
+  state.chatActionPicker = null;
+}
+
+// Recompile the active builder into the draft and mirror it into the live
+// textarea so render()'s capture step reads the new value (not the stale box).
+function applyChatBuilderDraft(): void {
+  if (!state.chatActionBuilder) return;
+  chatDraft = compileBuilderToDraft(state.chatActionBuilder);
+  chatBuilderCompiledDraft = chatDraft;
+  const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
+  if (input) { input.value = chatDraft; chatAutoGrow(input); }
+}
+
+// Commit a token-picker selection into the open token field and recompile.
+function applyChatTokenPick(mint: string, symbol: string, decimals: number, logoURI?: string): void {
+  const b = state.chatActionBuilder;
+  const field = state.chatActionPicker?.field;
+  if (!b || (field !== 'fromToken' && field !== 'toToken')) return;
+  const otherMint = field === 'fromToken' ? b.toToken?.mint : b.fromToken?.mint;
+  if (b.kind === 'swap' && otherMint === mint) {
+    pushToast('error', t('Pick a different token'), t('Choose two different tokens to swap.'));
+    return;
+  }
+  b[field] = {
+    mint,
+    symbol: symbol || short(mint),
+    decimals: Number.isFinite(decimals) ? decimals : 0,
+    ...(logoURI ? { logoURI } : {}),
+  };
+  state.chatActionPicker = null;
+  closeChatActionSheet();
+  applyChatBuilderDraft();
+  render();
 }
 
 function handleChatPowerAction(id: string): void {
@@ -21155,20 +22277,55 @@ function handleChatPowerAction(id: string): void {
   document.querySelector('.chat-plus-menu')?.classList.remove('open');
   const action = CHAT_POWER_ACTIONS.find((a) => a.id === id);
   if (!action) return;
-  // Localize the prefilled template for the active UI language.
-  const template = t(action.template);
-  chatDraft = template;
+  state.chatActionPicker = null;
+  // Native mobile: picking an action closes the Wallet Actions sheet so the seeded
+  // builder chips become visible in the composer.
+  closeChatActionSheet();
+  // All three kinds are now builders (swap/send chips; sign = a statement input).
+  const isBuilder = id === 'swap' || id === 'send' || id === 'sign';
+  if (isBuilder) {
+    // Seed the builder; its compiled grammar prefills the textarea (source of truth).
+    state.chatActionBuilder = defaultBuilderFor(id);
+    chatDraft = compileBuilderToDraft(state.chatActionBuilder);
+    chatBuilderCompiledDraft = chatDraft;
+  } else {
+    state.chatActionBuilder = null;
+    chatDraft = t(action.template);
+  }
+  // Repaint so the builder bar appears, then focus its primary control.
+  render();
+  // Sign's editor is the statement input, not the textarea — focus it directly so
+  // the user can type the proof immediately.
+  if (id === 'sign') {
+    const stmt = document.querySelector<HTMLInputElement>('[data-chat-chip-statement]');
+    stmt?.focus({ preventScroll: true });
+    syncChatTextareaFromDraft();
+    return;
+  }
   const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
   if (!input) return;
-  input.value = template;
+  input.value = chatDraft;
   chatAutoGrow(input);
   input.focus({ preventScroll: true });
-  const open = template.indexOf('[');
-  const close = template.indexOf(']');
   try {
-    if (open !== -1 && close > open) input.setSelectionRange(open, close + 1);
-    else input.setSelectionRange(template.length, template.length);
+    if (isBuilder) {
+      // Chips are the editor; cursor at end so a stray keystroke appends (and
+      // switches to freestyle) rather than replacing a placeholder bracket.
+      input.setSelectionRange(chatDraft.length, chatDraft.length);
+    } else {
+      const open = chatDraft.indexOf('[');
+      const close = chatDraft.indexOf(']');
+      if (open !== -1 && close > open) input.setSelectionRange(open, close + 1);
+      else input.setSelectionRange(chatDraft.length, chatDraft.length);
+    }
   } catch { /* ignore */ }
+}
+
+// Mirror the current compiled draft into the (hidden-focus) textarea without
+// stealing focus from another control.
+function syncChatTextareaFromDraft(): void {
+  const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
+  if (input) { input.value = chatDraft; chatAutoGrow(input); }
 }
 
 function bindChat(): void {
@@ -21178,6 +22335,33 @@ function bindChat(): void {
   // are idempotent (internal guards).
   bindNativeKeyboardInsets();
   bindChatStreamLifecycle();
+  // Eagerly load the full balance snapshot once per wallet/cluster when chat opens,
+  // so $/% amounts and holdings questions work on the first try. Deferred to a
+  // microtask so startWalletBalanceFullLoad's render() can't re-enter this bind.
+  if (state.address) {
+    const scope = walletBalanceScopeKey();
+    if (chatBalancePreloadScope !== scope) {
+      chatBalancePreloadScope = scope;
+      if (state.walletBalance.fullStatus !== 'loading') {
+        setTimeout(() => { if (state.activeTab === 'chat') startWalletBalanceFullLoad(false, { openOverlay: false }); }, 0);
+      }
+    }
+  }
+  // Scroll-to-bottom pill: visible only when the transcript is scrolled up; tap snaps to
+  // the bottom. The scroller + pill nodes are fresh each render, so re-binding is safe.
+  const pill = document.querySelector<HTMLButtonElement>('[data-chat-scroll-pill]');
+  const pillScroller = chatScroller();
+  if (pill && pillScroller) {
+    const syncPill = (): void => { pill.classList.toggle('visible', !chatIsPinnedToBottom(pillScroller)); };
+    pillScroller.addEventListener('scroll', syncPill, { passive: true });
+    pill.addEventListener('click', () => {
+      chatScrollPinned = true;
+      chatForceScrollBottom = false;
+      pillScroller.scrollTo({ top: pillScroller.scrollHeight, behavior: 'smooth' });
+      pill.classList.remove('visible');
+    });
+    syncPill();
+  }
   const composer = document.querySelector<HTMLFormElement>('[data-chat-composer]');
   const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
   if (composer) {
@@ -21190,6 +22374,13 @@ function bindChat(): void {
     input.addEventListener('input', () => {
       chatDraft = input.value;
       chatAutoGrow(input);
+      // If the user hand-edits the textarea so it diverges from what the chips
+      // compiled, the chips are stale — step aside (freestyle). Fires once.
+      if (state.chatActionBuilder && chatDraft !== chatBuilderCompiledDraft) {
+        state.chatActionBuilder = null;
+        state.chatActionPicker = null;
+        render();
+      }
     });
     input.addEventListener('keydown', (event) => {
       // Don't send mid-IME-composition (CJK/accent input) — Enter there commits
@@ -21217,32 +22408,206 @@ function bindChat(): void {
   }
   const plusToggle = document.querySelector<HTMLButtonElement>('[data-chat-plus-toggle]');
   const plusMenu = document.querySelector<HTMLElement>('.chat-plus-menu');
-  if (plusToggle && plusMenu) {
+  if (plusToggle) {
     plusToggle.addEventListener('click', (event) => {
       event.stopPropagation();
+      if (chatUsesSheet()) {
+        // Native mobile: open the Wallet Actions menu in the bottom sheet.
+        state.chatActionPicker = null;
+        openChatActionSheet();
+        render();
+        return;
+      }
       state.chatComposerOpen = !state.chatComposerOpen;
-      plusMenu.classList.toggle('open', state.chatComposerOpen);
+      plusMenu?.classList.toggle('open', state.chatComposerOpen);
       plusToggle.setAttribute('aria-expanded', state.chatComposerOpen ? 'true' : 'false');
     });
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-action]')) {
     button.addEventListener('click', () => handleChatPowerAction(button.dataset.chatAction ?? ''));
   }
+  // --- Chip builder: explicit click -> state -> render (WebView-safe) ---------
+  for (const chip of document.querySelectorAll<HTMLButtonElement>('[data-chat-chip]')) {
+    chip.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const field = chip.dataset.chatChip as ChatPickerField | undefined;
+      if (!field || !state.chatActionBuilder) return;
+      const wasOpen = state.chatActionPicker?.field === field;
+      state.chatActionPicker = wasOpen ? null : { field };
+      if (!wasOpen && (field === 'fromToken' || field === 'toToken')) {
+        // Fresh token picker defaults to LIST — it's populated (owned + curated for
+        // the swap output), needs no Birdeye key, and search (MINT) is one tap away.
+        chatTokenPickerMode = 'list';
+        chatTokenListLimit = CHAT_TOKEN_PAGE;
+        if (state.address) startWalletBalanceFullLoad(false, { openOverlay: false });
+        ensureChatTokenLogos();
+      }
+      if (chatUsesSheet()) {
+        if (state.chatActionPicker) openChatActionSheet();
+        else closeChatActionSheet();
+      }
+      render();
+    });
+  }
+  document.querySelector<HTMLButtonElement>('[data-chat-builder-clear]')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    resetChatActionBuilder();
+    closeChatActionSheet();
+    render();
+  });
+  for (const modeBtn of document.querySelectorAll<HTMLButtonElement>('[data-chat-token-mode]')) {
+    modeBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const next = modeBtn.dataset.chatTokenMode === 'mint' ? 'mint' : 'list';
+      if (chatTokenPickerMode === next) return;
+      chatTokenPickerMode = next;
+      if (next === 'list') { chatTokenListLimit = CHAT_TOKEN_PAGE; ensureChatTokenLogos(); }
+      suppressMobileRailSheetEnterAnimation = true;
+      render();
+    });
+  }
+  document.querySelector<HTMLButtonElement>('[data-chat-token-more]')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    chatTokenListLimit += CHAT_TOKEN_PAGE;
+    suppressMobileRailSheetEnterAnimation = true;
+    render();
+  });
+  const recipientInput = document.querySelector<HTMLInputElement>('[data-chat-chip-recipient]');
+  if (recipientInput) {
+    recipientInput.addEventListener('input', () => {
+      if (!state.chatActionBuilder) return;
+      state.chatActionBuilder.recipient = recipientInput.value.trim();
+      applyChatBuilderDraft(); // recompile + mirror into textarea; no render (keep focus)
+    });
+  }
+  const statementInput = document.querySelector<HTMLInputElement>('[data-chat-chip-statement]');
+  if (statementInput) {
+    statementInput.addEventListener('input', () => {
+      if (!state.chatActionBuilder) return;
+      state.chatActionBuilder.statement = statementInput.value;
+      applyChatBuilderDraft(); // recompile + mirror into textarea; no render (keep focus)
+    });
+  }
+  for (const opt of document.querySelectorAll<HTMLButtonElement>('[data-chat-token-pick]')) {
+    opt.addEventListener('click', (event) => {
+      event.stopPropagation();
+      applyChatTokenPick(
+        opt.dataset.chatTokenPick ?? '',
+        opt.dataset.chatTokenSymbol ?? '',
+        Number(opt.dataset.chatTokenDecimals ?? '0'),
+        opt.dataset.chatTokenLogo || undefined,
+      );
+    });
+  }
+  const amountInput = document.querySelector<HTMLInputElement>('[data-chat-amount-input]');
+  if (amountInput) {
+    amountInput.addEventListener('input', () => {
+      if (!state.chatActionBuilder) return;
+      const mode = state.chatActionBuilder.amount?.mode ?? 'token';
+      state.chatActionBuilder.amount = { mode, raw: amountInput.value.trim() };
+      applyChatBuilderDraft(); // live textarea update; no render (keep focus)
+    });
+  }
+  for (const tab of document.querySelectorAll<HTMLButtonElement>('[data-chat-amount-mode]')) {
+    tab.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (!state.chatActionBuilder) return;
+      const mode = tab.dataset.chatAmountMode as ChatAmountMode;
+      state.chatActionBuilder.amount = { mode, raw: state.chatActionBuilder.amount?.raw ?? '' };
+      applyChatBuilderDraft();
+      // Switching mode keeps the picker open; don't replay the sheet slide-up.
+      suppressMobileRailSheetEnterAnimation = true;
+      render();
+    });
+  }
+  for (const pct of document.querySelectorAll<HTMLButtonElement>('[data-chat-amount-pct]')) {
+    pct.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (!state.chatActionBuilder) return;
+      state.chatActionBuilder.amount = { mode: 'percent', raw: pct.dataset.chatAmountPct ?? '' };
+      state.chatActionPicker = null;
+      closeChatActionSheet();
+      applyChatBuilderDraft();
+      render();
+    });
+  }
+  document.querySelector<HTMLButtonElement>('[data-chat-amount-apply]')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (!state.chatActionBuilder) return;
+    const input = document.querySelector<HTMLInputElement>('[data-chat-amount-input]');
+    const mode = state.chatActionBuilder.amount?.mode ?? 'token';
+    state.chatActionBuilder.amount = { mode, raw: (input?.value ?? '').trim() };
+    state.chatActionPicker = null;
+    closeChatActionSheet();
+    applyChatBuilderDraft();
+    render();
+  });
+  for (const slip of document.querySelectorAll<HTMLButtonElement>('[data-chat-slippage-bps]')) {
+    slip.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (!state.chatActionBuilder) return;
+      const value = slip.dataset.chatSlippageBps ?? 'auto';
+      // 'auto' clears the cap → Jupiter Ultra dynamic slippage (no slippageBps sent).
+      if (value === 'auto') delete state.chatActionBuilder.slippageBps;
+      else state.chatActionBuilder.slippageBps = value;
+      state.chatActionPicker = null;
+      closeChatActionSheet();
+      applyChatBuilderDraft();
+      render();
+    });
+  }
+  document.querySelector<HTMLButtonElement>('[data-chat-slippage-apply]')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (!state.chatActionBuilder) return;
+    const input = document.querySelector<HTMLInputElement>('[data-chat-slippage-input]');
+    const trimmed = (input?.value ?? '').trim();
+    // Empty custom field commits Auto (dynamic slippage); otherwise validate bps.
+    if (!trimmed) {
+      delete state.chatActionBuilder.slippageBps;
+    } else {
+      const n = Number(trimmed.replace(/[^\d]/g, ''));
+      if (!Number.isFinite(n) || n <= 0 || n > 5000) { pushToast('error', t('Invalid slippage'), t('Enter slippage in basis points (1-5000).')); return; }
+      state.chatActionBuilder.slippageBps = String(Math.round(n));
+    }
+    state.chatActionPicker = null;
+    closeChatActionSheet();
+    applyChatBuilderDraft();
+    render();
+  });
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-suggest]')) {
     button.addEventListener('click', () => void submitChatMessage(button.dataset.chatSuggest ?? ''));
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-promote]')) {
     button.addEventListener('click', () => {
       const action = promoteChatProposalToPreparedAction(button.dataset.chatSession ?? '', button.dataset.chatMsg ?? '');
-      if (action) render();
+      if (action) { chatForceScrollBottom = true; render(); }
     });
   }
   // History dropdown: state-driven (NOT <details> — unreliable in native WebViews).
   document.querySelector<HTMLButtonElement>('[data-chat-history-trigger]')?.addEventListener('click', (event) => {
     event.preventDefault();
     event.stopPropagation();
-    state.chatHistoryOpen = !state.chatHistoryOpen;
+    const opening = !state.chatHistoryOpen;
+    state.chatHistoryOpen = opening;
     render();
+    // On open, move keyboard focus into the menu (the active session, else the first).
+    if (opening) {
+      const items = [...document.querySelectorAll<HTMLButtonElement>('.chat-sessions-menu [data-chat-switch]')];
+      (items.find((b) => b.closest('.chat-session-row')?.classList.contains('active')) ?? items[0])?.focus();
+    }
+  });
+  // Roving keyboard nav within the open history menu (Arrow/Home/End/Escape).
+  const historyMenu = document.querySelector<HTMLElement>('.chat-sessions-menu');
+  historyMenu?.addEventListener('keydown', (event) => {
+    const items = [...historyMenu.querySelectorAll<HTMLButtonElement>('[data-chat-switch]')];
+    if (items.length === 0) return;
+    const current = document.activeElement as HTMLElement | null;
+    const idx = items.findIndex((b) => b === current || b.closest('.chat-session-row')?.contains(current));
+    const focusAt = (i: number): void => { event.preventDefault(); items[(i + items.length) % items.length]?.focus(); };
+    if (event.key === 'ArrowDown') focusAt(idx + 1);
+    else if (event.key === 'ArrowUp') focusAt(idx - 1);
+    else if (event.key === 'Home') focusAt(0);
+    else if (event.key === 'End') focusAt(items.length - 1);
   });
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-switch]')) {
     button.addEventListener('click', () => {
@@ -21255,13 +22620,27 @@ function bindChat(): void {
       saveChatHistoryState();
       render();
       // Lazily fetch + decompress this session's messages from cloud the first
-      // time it's opened (metadata stub → full thread), then repaint.
+      // time it's opened (metadata stub → full thread), then repaint — but only if
+      // it's still the active session (a slow load racing another switch must not
+      // repaint a session the user has already navigated away from).
       const opened = state.chat.sessions.find((s) => s.id === id);
       if (opened && chatSessionIsCloudStub(opened)) {
         void ensureChatSessionMessagesLoaded(id).then(() => {
-          if (state.activeTab === 'chat') render();
+          if (state.activeTab === 'chat' && state.chat.activeSessionId === id) render();
         });
       }
+    });
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-retry-load]')) {
+    button.addEventListener('click', () => {
+      const id = button.dataset.chatRetryLoad ?? '';
+      const session = state.chat.sessions.find((s) => s.id === id);
+      if (!session) return;
+      delete session.cloudLoadError; // back to the loading spinner while we retry
+      render();
+      void ensureChatSessionMessagesLoaded(id).then(() => {
+        if (state.activeTab === 'chat' && state.chat.activeSessionId === id) render();
+      });
     });
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-del]')) {
@@ -21315,6 +22694,16 @@ function bindChat(): void {
         scheduleChatKeyboardSyncs();
       }
     });
+    // Multi-tab sync: another tab (same wallet) wrote the chat history key. Merge its
+    // sessions in so a second tab's just-sent message isn't lost to localStorage's
+    // last-writer-wins, without disturbing this tab's active / streaming session.
+    window.addEventListener('storage', (event) => {
+      const key = state.address
+        ? walletScopedStorageKey(CHAT_HISTORY_STORAGE_KEY, state.address)
+        : CHAT_HISTORY_STORAGE_KEY;
+      if (event.key !== key || !event.newValue) return;
+      mergeChatSessionsFromOtherTab();
+    });
   }
   if (!chatPlusClickAwayInstalled) {
     chatPlusClickAwayInstalled = true;
@@ -21325,6 +22714,20 @@ function bindChat(): void {
       if (wrap && event.target instanceof Node && wrap.contains(event.target)) return;
       state.chatComposerOpen = false;
       document.querySelector('.chat-plus-menu')?.classList.remove('open');
+    }, true);
+  }
+  if (!chatPickerClickAwayInstalled) {
+    chatPickerClickAwayInstalled = true;
+    // Close an open chip picker on an outside tap (pointerdown capture, WebView-safe).
+    // Native mobile hosts the picker in the bottom sheet, whose scrim/Escape handle
+    // dismissal — skip this (a tap inside the sheet is "outside the builder").
+    window.addEventListener('pointerdown', (event) => {
+      if (chatUsesSheet()) return;
+      if (!state.chatActionPicker) return;
+      const wrap = document.querySelector('[data-chat-builder]');
+      if (wrap && event.target instanceof Node && wrap.contains(event.target)) return;
+      state.chatActionPicker = null;
+      render();
     }, true);
   }
 }
@@ -21359,8 +22762,17 @@ function oneTimePlanTabs(): string {
   const creating = state.oneTimePlanView === 'create';
   const reviewing = state.oneTimePlanView === 'review';
   const selectedConnector = creating ? selectedConnectorForCreate(selectedTemplate()) : undefined;
+  // On the native apps the "Show archived" toggle is lifted out of the panel toolbar
+  // (see generatedPlansPanel) and rendered here on the Start/Check row to reclaim a row.
+  const archivedCount = reviewing
+    ? generatedPlansForPanel(true).filter((record) => record.status === 'archived').length
+    : 0;
+  const archivedTopToggle = reviewing && isNativeAppShellSurface()
+    ? `<button id="toggleArchivedGeneratedPlans" class="utility check-archived-top" ${archivedCount === 0 ? 'disabled' : ''}>${state.showArchivedGeneratedPlans ? escapeHtml(t('Hide archived')) : escapeHtml(tf('Show archived ({count})', { count: archivedCount }))}</button>`
+    : '';
   return `
     <div class="one-time-plan-control-row ${creating ? 'has-connector' : reviewing ? 'review-filter-row' : ''}">
+      ${archivedTopToggle}
       <div class="tabs compact-tabs one-time-plan-tabs" role="tablist" aria-label="${escapeHtml(t('One-time plan steps'))}">
         ${oneTimePlanViewButton('create', t('Start'))}
         ${oneTimePlanViewButton('review', t('Check'))}
@@ -21478,13 +22890,13 @@ function generatedPlansPanel(embedded = false): string {
           >
             ${escapeHtml(t('Create another plan'))}
           </button>
-          <button
+          ${isNativeAppShellSurface() ? '' : `<button
             id="toggleArchivedGeneratedPlans"
             class="utility"
             ${archivedCount === 0 ? 'disabled' : ''}
           >
             ${state.showArchivedGeneratedPlans ? escapeHtml(t('Hide archived')) : escapeHtml(tf('Show archived ({count})', { count: archivedCount }))}
-          </button>
+          </button>`}
         </div>
   `;
   const content = `
@@ -24007,7 +25419,11 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
   const configured = inventory.active.configured;
   const staged = Boolean(inventory.active.staged);
   const inactiveConfigured = inventory.inactiveConfigured.length > 0;
-  const panelConfigured = configured || staged || inactiveConfigured;
+  // Web/desktop no longer surfaces a separate "inactive configured" AI path — an unselected path
+  // that merely has a cached/staged key shouldn't masquerade as the connector's status. Native
+  // mobile (Android/iOS) keeps the prior behavior.
+  const surfaceInactiveAiPath = inactiveConfigured && (IS_ANDROID_APP || IS_IOS_APP);
+  const panelConfigured = configured || staged || surfaceInactiveAiPath;
   const confirmed = isAiPlannerConfirmedForCurrentSettings();
   const shouldOpen = state.aiSettingsPanelOpen === true
     || (state.aiSettingsPanelOpen === null && location === 'rail' && state.aiSettings.mode === 'bridge');
@@ -24018,14 +25434,14 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
       ? `${readinessLabel} - ${aiConfirmationLabel()}`
       : staged
         ? t('API key staged')
-      : inactiveConfigured
+      : surfaceInactiveAiPath
         ? tf('{label} configured inactive', { label: aiPathPreferenceLabel(inventory.inactiveConfigured[0]!.mode) })
       : t('AI connector optional')
     : configured
       ? `${readinessLabel} - ${aiConfirmationLabel()}`
       : staged
         ? tf('{label} key staged. Set and confirm it to configure the runtime.', { label: aiPathPreferenceLabel(state.aiSettings.mode) })
-      : inactiveConfigured
+      : surfaceInactiveAiPath
         ? tf('{label} configured; {label2} selected.', { label: aiPathPreferenceLabel(inventory.inactiveConfigured[0]!.mode), label2: aiPathPreferenceLabel(state.aiSettings.mode) })
       : t('Optional AI planner; templates work without it.');
   const railIdentity = location === 'rail'
@@ -24056,7 +25472,7 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
               <span>${escapeHtml(t('AI connector'))}</span>
               <em>${escapeHtml(summaryDetail)}</em>
             </span>
-            <strong class="ai-summary-status">${escapeHtml(confirmed ? t('confirmed') : configured ? t('configured') : inactiveConfigured ? t('configured inactive') : t('not configured'))}</strong>
+            <strong class="ai-summary-status">${escapeHtml(confirmed ? t('confirmed') : configured ? t('configured') : surfaceInactiveAiPath ? t('configured inactive') : t('not configured'))}</strong>
           `}
       </summary>
       ${aiSettingsCard(location)}
@@ -24070,8 +25486,13 @@ function aiRailIdentity(
   confirmed: boolean,
 ): AiRailIdentity {
   const fallback = currentAiRailFallback();
+  // Web/desktop: hide inactive-configured paths from the rail identity so the AI Connector header
+  // shows only the active path's real state, never a "configured inactive" pill. Mobile unchanged.
+  const railInventory = (IS_ANDROID_APP || IS_IOS_APP)
+    ? inventory
+    : { ...inventory, inactiveConfigured: [] };
   const identity = buildAiRailIdentity({
-    inventory,
+    inventory: railInventory,
     pathLabels: {
       hosted: aiPathPreferenceLabel('hosted'),
       session: aiPathPreferenceLabel('session'),
@@ -25895,7 +27316,9 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
           <em>${escapeHtml(bridgeConfiguredDisplay.detail)}</em>
         </div>
       `;
-  const inactiveConfigNote = inactiveAiConfigNotice(location);
+  // Web/desktop drops the orange "inactive AI path" notice card entirely (it claimed a Device Agent
+  // was "configured" off a cached/staged key the user never set this session). Native mobile keeps it.
+  const inactiveConfigNote = (IS_ANDROID_APP || IS_IOS_APP) ? inactiveAiConfigNotice(location) : '';
   const bridgeSetupCard = state.aiSettings.mode === 'bridge' && !mobilePlannerSetup
     ? localBridgeAiSetupCard(status, location)
     : '';
@@ -27154,8 +28577,8 @@ function inactiveConfiguredAiPaths(): AiPathSetupSnapshot[] {
   return aiSetupInventory().inactiveConfigured;
 }
 
-function canConfirmAiPlanner(): boolean {
-  if (state.busy) return false;
+function canConfirmAiPlanner(options: { ignoreBusy?: boolean } = {}): boolean {
+  if (!options.ignoreBusy && state.busy) return false;
   if (state.aiSettings.mode === 'bridge') return true;
   if (state.aiSettings.mode === 'hosted' && hostedByokCloudSessionReason()) return false;
   if (state.aiSettings.mode === 'device-agent') {
@@ -27172,8 +28595,8 @@ function canConfirmAiPlanner(): boolean {
   return directAiKeyStagedForMode();
 }
 
-function aiConfirmDisabledReason(): string {
-  if (state.busy) return t('Wait for the current action to finish.');
+function aiConfirmDisabledReason(options: { ignoreBusy?: boolean } = {}): string {
+  if (!options.ignoreBusy && state.busy) return t('Wait for the current action to finish.');
   if (state.aiSettings.mode === 'bridge') {
     return bridgeAiEngine(state.aiStatus) === 'connector'
       ? bridgeAiUnavailableReason(state.aiStatus)
@@ -30092,6 +31515,12 @@ function bind(): void {
     workspaceTabSelect.addEventListener('change', () => {
       const next = workspaceTabSelect.value as ActiveTab;
       if (!next || next === state.activeTab) return;
+      if (next === 'chat' && !chatTabAiConnected()) {
+        workspaceTabSelect.value = state.activeTab;
+        showChatAiNotConnectedToast();
+        render();
+        return;
+      }
       const previous = state.activeTab;
       const resetNativeScroll = shouldResetNativeAppTabScroll(next, previous);
       trackNavClick(`${currentRoute() ?? '/app'}#${next}`, 'workspace');
@@ -30109,9 +31538,17 @@ function bind(): void {
   }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-tab]')) {
-    button.addEventListener('click', () => {
+    button.addEventListener('click', (event) => {
       const tab = button.dataset.tab as ActiveTab;
       const spendOpen = button.dataset.spendOpen;
+      if (tab === 'chat' && !chatTabAiConnected()) {
+        event.preventDefault();
+        event.stopPropagation();
+        state.moreMenuOpen = false;
+        showChatAiNotConnectedToast();
+        render();
+        return;
+      }
       const previous = state.activeTab;
       const resetNativeScroll = shouldResetNativeAppTabScroll(tab, previous);
       trackNavClick(`${currentRoute() ?? '/app'}#${tab}`, 'workspace');
@@ -30840,9 +32277,10 @@ function bind(): void {
 
   document.querySelector<HTMLSelectElement>('#clusterSelect')?.addEventListener('change', (event) => {
     const cluster = (event.currentTarget as HTMLSelectElement).value;
-    if (!isCluster(cluster)) return;
+    // Mainnet-only: the dropdown offers no other network, but hard-block anyway.
+    if (cluster !== 'mainnet-beta') return;
     notifyLocalWorkspaceBackupReminder('Switching networks may hide wallet-scoped browser data until you reconnect.');
-    state.cluster = cluster;
+    state.cluster = 'mainnet-beta';
     clearBrowserWalletSession();
     if (isBrowserWalletSurface()) {
       state.selectedWalletName = '';
@@ -32936,10 +34374,13 @@ function syncChatKeyboardInset(): void {
   surface.style.setProperty('--chat-keyboard-inset', `${keyboardInset}px`);
 }
 
+let chatKeyboardSyncTimers: number[] = [];
 function scheduleChatKeyboardSyncs(): void {
-  for (const delay of MOBILE_RAIL_FOCUS_VIEWPORT_SYNC_DELAYS_MS) {
-    window.setTimeout(syncChatKeyboardInset, delay);
-  }
+  // Cancel any pending syncs first so rapid focus changes don't pile up overlapping
+  // timers all re-measuring the same (settling) viewport.
+  for (const id of chatKeyboardSyncTimers) window.clearTimeout(id);
+  chatKeyboardSyncTimers = MOBILE_RAIL_FOCUS_VIEWPORT_SYNC_DELAYS_MS.map((delay) =>
+    window.setTimeout(syncChatKeyboardInset, delay));
 }
 
 function blurFocusedMobileRailControl(): boolean {
@@ -36242,6 +37683,7 @@ function enqueuePendingCloudSync(entry: Omit<PendingCloudSync, 'attemptedAt' | '
     id: entry.id,
     kind: entry.kind,
     patch: entry.patch,
+    walletAddress: entry.walletAddress ?? state.address,
     attemptedAt,
     attempts: entry.attempts ?? 1,
   });
@@ -36256,6 +37698,11 @@ async function drainPendingCloudSyncs(): Promise<void> {
   if (!state.pendingCloudSyncs.length) return;
   let queue = [...state.pendingCloudSyncs];
   state.pendingCloudSyncs = [];
+  // Drop chat entries queued under a different wallet (the queue can survive a
+  // sign-out / wallet switch) — they must never fire against the current wallet,
+  // even if a session id happens to collide. Plan-patch entries are id-unique.
+  queue = queue.filter((e) =>
+    !e.kind.startsWith('chat-') || !e.walletAddress || sameWalletAddress(e.walletAddress, state.address));
   // If a session has both a queued chat-put and a chat-delete/chat-clear, drop the
   // put so a deferred upload can't briefly resurrect a just-deleted session.
   const chatDeleted = new Set(
@@ -36295,6 +37742,9 @@ async function drainPendingCloudSyncs(): Promise<void> {
       if (isCloudUnreachableError(err)) {
         // Re-enqueue — cloud is still down.
         reEnqueue();
+      } else if (entry.kind === 'chat-put' && isChatConflictError(err)) {
+        // Another device advanced this session — reconcile (refetch + merge + re-PUT).
+        void reconcileChatConflict(entry.id);
       }
       // Other errors: drop the entry (real cloud-side rejection). The local record keeps
       // its `cloudSyncStatus` flag; subsequent user action can repatch.
@@ -41005,8 +42455,13 @@ async function runSetAndConfirmAiKey(trigger?: HTMLButtonElement): Promise<void>
     } else {
       await saveDirectAiKeyCore({ toast: false });
     }
-    if (!canConfirmAiPlanner()) {
-      throw new Error(aiConfirmDisabledReason());
+    // We already validated readiness via canSetAndConfirmAiKey() before claiming state.busy.
+    // The default canConfirmAiPlanner()/aiConfirmDisabledReason() short-circuit on state.busy
+    // (a concurrency guard), so re-checking here without ignoreBusy would ALWAYS fail with a
+    // false "Wait for the current action to finish." Pass ignoreBusy so the post-save check
+    // validates the actual route, not the busy flag this operation legitimately owns.
+    if (!canConfirmAiPlanner({ ignoreBusy: true })) {
+      throw new Error(aiConfirmDisabledReason({ ignoreBusy: true }));
     }
     await confirmAiPlannerCore(toastId, replaceToastFn);
     if (state.aiSettings.mode === 'device-agent') {
@@ -41599,6 +43054,8 @@ function setAiPlannerMode(mode: AiSettings['mode']): void {
     return;
   }
   aiModeSelectionExplicit = true;
+  // Keep the Plan Connector ↔ API Key restore stash in sync with the user's explicit pick.
+  apiKeyTabModeStash = mode;
   if (websitePlanConnectorSetupAvailable()) {
     state.aiReviewSetupTab = 'api-key';
   }
@@ -42403,9 +43860,18 @@ function resetCloudWorkspaceState(): void {
   state.auditActivity = {};
   // Reload the on-device history so sign-out leaves the saved-on-device threads
   // (cloud rows are retained for the next sign-in). cloudMessageCount stubs are
-  // dropped by the reload from localStorage.
+  // dropped by the reload from localStorage. Cancel any in-flight stream first so a
+  // mid-stream answer isn't orphaned when state.chat is replaced (state.address is
+  // unchanged on cloud sign-out, so the partial persists to its scoped key).
+  teardownChatRuntimeForWalletBoundary();
+  // Drop chat-scoped offline-sync entries queued under the signed-out wallet so they
+  // can't drain later (the drain also wallet-scopes — defence in depth).
+  state.pendingCloudSyncs = state.pendingCloudSyncs.filter((e) => !e.kind.startsWith('chat-'));
   chatCloudHydrated = false;
   state.chat = loadChatHistoryState(state.address);
+  // Defensive: the reload from localStorage already excludes cloud stubs, but strip
+  // any that linger from a fast sign-out/switch so another wallet's stub can't show.
+  state.chat.sessions = state.chat.sessions.filter((s) => !chatSessionIsCloudStub(s));
 }
 
 async function runSetWorkflowModePreference(preference: WorkflowModePreference): Promise<void> {
@@ -42455,6 +43921,11 @@ async function refreshActiveWorkflowData(): Promise<void> {
 }
 
 function refreshBrowserWorkflowData(): void {
+  // Stop any in-flight chat stream before state.chat is reassigned below — on a
+  // wallet switch this runs with state.address already on the incoming wallet, so
+  // cancelChatStream()'s scope guard skips the (wipe-causing) save; the previous
+  // wallet's partial answer is already on its scoped key from stream checkpoints.
+  teardownChatRuntimeForWalletBoundary();
   const browserWorkflow = loadBrowserWorkflowState(state.address);
   state.preparedActions = browserWorkflow.preparedActions;
   state.materializedActions = browserWorkflow.preparedActions;
@@ -42682,22 +44153,27 @@ function nativeCloudSessionToken(): string {
 // in. Calling nativeCloudSessionToken() kicks the hydration; this awaits a
 // non-empty token (or the rehydrate event) so the first chat request carries the
 // Bearer token instead of 401-ing. No-op on web/Android/Tauri (synchronous token).
-async function ensureNativeCloudTokenReady(timeoutMs = 1500): Promise<void> {
+async function ensureNativeCloudTokenReady(timeoutMs = 1500, signal?: AbortSignal): Promise<void> {
   if (typeof window === 'undefined') return;
   if (!nativeCloudApiSurfaceActive()) return;
   if (nativeCloudSessionToken()) return; // also triggers iOS hydration on first call
+  if (signal?.aborted) return;
   await new Promise<void>((resolve) => {
     let settled = false;
     const finish = (): void => {
       if (settled) return;
       settled = true;
       window.removeEventListener(IOS_CLOUD_SESSION_REHYDRATED_EVENT, onEvent);
+      signal?.removeEventListener('abort', finish);
       window.clearInterval(poll);
       window.clearTimeout(timer);
       resolve();
     };
     const onEvent = (): void => { if (nativeCloudSessionToken()) finish(); };
     window.addEventListener(IOS_CLOUD_SESSION_REHYDRATED_EVENT, onEvent);
+    // Resolve promptly if the user cancels the turn during the wait (don't hold the
+    // stream open polling for a token nobody is waiting on anymore).
+    signal?.addEventListener('abort', finish);
     const poll = window.setInterval(() => { if (nativeCloudSessionToken()) finish(); }, 100);
     const timer = window.setTimeout(finish, timeoutMs);
   });
@@ -44888,11 +46364,13 @@ async function executeBrowserChatSignProof(action: PreparedAction): Promise<void
   try {
     const result = await signWalletProofMessage(statement, action.summary || t('Sign proof'), action.cluster);
     completeBrowserSignedMessageProofAction(action, statement, result);
-    showCompletedHistoryForAction(action.id);
+    // Chat-originated proofs stay in Chat (the success message links to Done).
+    if (!isChatOriginatedAction(action)) showCompletedHistoryForAction(action.id);
     completeProofSigningToast(proofToastId, 'success', t('Proof signed'), t('Wallet proof saved in Done. No transaction was submitted.'));
   } catch (err) {
     const message = redactSecrets(err instanceof Error ? err.message : String(err));
     completeProofSigningToast(proofToastId, 'error', t('Sign proof failed'), message);
+    if (isChatOriginatedAction(action)) postChatActionFailureMessage(action, message);
     throw markToastShown(err);
   }
 }
@@ -44935,6 +46413,9 @@ function completeBrowserSignedMessageProofAction(
     proofKind: 'sign_proof',
   });
   saveBrowserWorkflowState();
+  // Chat-originated proof: post the inline "Signed…" + "Receipt sent to Done tab."
+  // messages (proofs bypass completeBrowserExecutedAction). No-op for rail proofs.
+  postChatActionSuccessMessage(updatedAction, { txStatus: 'confirmed' });
 }
 
 async function runBrowserPreparedActionOp(actionId: string, op: string): Promise<void> {
@@ -44976,11 +46457,12 @@ async function runBrowserPreparedActionOp(actionId: string, op: string): Promise
       try {
         const proofSignature = await signBrowserWorkflowDecision(action, 'approved');
         completeBrowserPreparedAction(action, 'approved', proofSignature);
-        showCompletedHistoryForAction(action.id);
+        if (!isChatOriginatedAction(action)) showCompletedHistoryForAction(action.id);
         completeProofSigningToast(proofToastId, 'success', t('Decision proof saved'), t('Wallet proof saved in Done. No transaction was submitted.'));
       } catch (err) {
         const message = redactSecrets(err instanceof Error ? err.message : String(err));
         completeProofSigningToast(proofToastId, 'error', t('Sign proof failed'), message);
+        if (isChatOriginatedAction(action)) postChatActionFailureMessage(action, message);
         throw markToastShown(err);
       }
       return;
@@ -44997,6 +46479,7 @@ async function runBrowserPreparedActionOp(actionId: string, op: string): Promise
       } catch (err) {
         const message = redactSecrets(err instanceof Error ? err.message : String(err));
         completeProofSigningToast(proofToastId, 'error', t('Sign proof failed'), message);
+        if (isChatOriginatedAction(action)) postChatActionFailureMessage(action, message);
         throw markToastShown(err);
       }
       return;
@@ -45558,7 +47041,11 @@ async function executeBrowserPreparedAction(action: PreparedAction): Promise<voi
         txStatus: execution.txStatus,
       });
       await finalizeStreamingApprovalCallback(current, execution, 'submitted');
-      state.activeTab = 'inbox';
+      // Chat-signed actions stay in the Chat tab; the result is posted inline.
+      if (!isChatOriginatedAction(current)) state.activeTab = 'inbox';
+      // Interim ack so the user sees their signed tx was submitted (the terminal
+      // "Sent and confirmed" + receipt message follows when confirmation lands).
+      postChatActionSuccessMessage(current, execution);
       replaceToast(
         toastId,
         'pending',
@@ -45586,7 +47073,9 @@ async function executeBrowserPreparedAction(action: PreparedAction): Promise<voi
       status: execution.txStatus,
       txid: execution.txid,
     });
-    showCompletedHistoryForAction(action.id);
+    // Chat-signed actions stay in Chat (the receipt message links to Done); rail
+    // actions focus the Done receipt as before.
+    if (!isChatOriginatedAction(action)) showCompletedHistoryForAction(action.id);
     replaceToast(
       toastId,
       execution.txStatus === 'confirmed' ? 'success' : 'pending',
@@ -45649,14 +47138,17 @@ async function handleClassifiedExecutionFailure(opts: {
       });
       syncPendingTransactionsFromLedger();
     }
-    state.activeTab = 'inbox';
-    state.auditOpen[auditActivityKey('approval', action.id)] = true;
+    if (!isChatOriginatedAction(action)) {
+      state.activeTab = 'inbox';
+      state.auditOpen[auditActivityKey('approval', action.id)] = true;
+    }
     await syncBridgePreparedActionTransaction(action, {
       txid: ledger?.txid ?? action.txid,
       txStatus: 'failed',
       error: technicalMessage,
     });
     replaceToast(toastId, 'error', toastCopy.title, toastCopy.message, linkOptions);
+    postChatActionFailureMessage(action, toastCopy.message, ledger?.txid ?? action.txid);
     return;
   }
 
@@ -45676,12 +47168,15 @@ async function handleClassifiedExecutionFailure(opts: {
       });
       syncPendingTransactionsFromLedger();
     }
-    state.activeTab = 'inbox';
+    if (!isChatOriginatedAction(action)) state.activeTab = 'inbox';
     await syncBridgePreparedActionTransaction(action, {
       txid: ledger?.txid ?? action.txid,
       txStatus: 'pending',
     });
     replaceToast(toastId, 'pending', toastCopy.title, toastCopy.message, linkOptions);
+    // Ambiguous = may have submitted; post the neutral "awaiting confirmation"
+    // interim (not a hard failure). Reconciliation posts the terminal outcome.
+    postChatActionSuccessMessage(action, { txid: ledger?.txid ?? action.txid, txStatus: 'pending' });
     void reconcilePendingTransactions({ trigger: 'post-ambiguous', targetActionId: action.id });
     return;
   }
@@ -45700,6 +47195,9 @@ async function handleClassifiedExecutionFailure(opts: {
       syncPendingTransactionsFromLedger();
     }
     replaceToast(toastId, classification.kind === 'wallet_rejected' ? 'pending' : 'error', toastCopy.title, toastCopy.message);
+    // Every retryable non-completion (declined, signing timeout, etc.) is surfaced
+    // in chat so a chat-originated action never fails silently. No-op for rail actions.
+    postChatActionFailureMessage(action, toastCopy.message);
     return;
   }
 
@@ -45714,14 +47212,17 @@ async function handleClassifiedExecutionFailure(opts: {
     removePendingTransaction(ledger.id);
     syncPendingTransactionsFromLedger();
   }
-  state.activeTab = 'inbox';
-  state.auditOpen[auditActivityKey('approval', action.id)] = true;
+  if (!isChatOriginatedAction(action)) {
+    state.activeTab = 'inbox';
+    state.auditOpen[auditActivityKey('approval', action.id)] = true;
+  }
   await syncBridgePreparedActionTransaction(action, {
     txid: ledger?.txid ?? action.txid,
     txStatus: 'failed',
     error: technicalMessage,
   });
   replaceToast(toastId, 'error', toastCopy.title, toastCopy.message);
+  postChatActionFailureMessage(action, toastCopy.message, ledger?.txid ?? action.txid);
 }
 
 type ReconciliationTrigger =
@@ -45813,6 +47314,8 @@ async function reconcilePendingTransactions(opts: {
             trigger: opts.trigger,
             error: failureDetail,
           });
+          // Surface the on-chain failure inline for a chat-originated action.
+          if (isChatOriginatedAction(action)) postChatActionFailureMessage(action, failureDetail, record.txid);
         }
         mutated = true;
         const failToastOpts = { linkHref: explorerUrl(record.txid, cluster), linkLabel: t('Open Solscan') };
@@ -45855,6 +47358,7 @@ async function reconcilePendingTransactions(opts: {
             trigger: opts.trigger,
             error: failureDetail,
           });
+          if (isChatOriginatedAction(action)) postChatActionFailureMessage(action, failureDetail, record.txid);
         }
         mutated = true;
         const notFoundOpts = { linkHref: explorerUrl(record.txid, cluster), linkLabel: t('Open Solscan') };
@@ -46240,12 +47744,14 @@ async function executeBrowserSwap(
   const inputToken = await resolveBrowserTokenMetadata(connection, action.cluster, requiredActionParam(action, 'inputToken'));
   const outputToken = await resolveBrowserTokenMetadata(connection, action.cluster, requiredActionParam(action, 'outputToken'));
   const amountRaw = parseDecimalAmountToRaw(requiredActionParam(action, 'amount'), inputToken.decimals, `${inputToken.symbol} swap amount`);
-  const slippageBps = browserSlippageBps(action);
+  // Auto slippage (no param) → omit slippageBps from the request so Jupiter Ultra
+  // applies dynamic slippage. Never send 0, which Ultra reads as a real 0-bps cap.
+  const slippageBps = browserSlippageBpsFromParams(action);
   recordBrowserActionActivity(action.id, 'browser.swap.order_requested', {
     inputMint: inputToken.mintText,
     outputMint: outputToken.mintText,
     amount: amountRaw.toString(),
-    slippageBps: String(slippageBps),
+    slippageBps: slippageBps === undefined ? 'auto' : String(slippageBps),
   });
   const order = await runTransactionToastStep(
     toastContext,
@@ -46256,13 +47762,13 @@ async function executeBrowserSwap(
       outputMint: outputToken.mintText,
       amount: amountRaw.toString(),
       taker,
-      slippageBps,
+      ...(slippageBps === undefined ? {} : { slippageBps }),
     }, {
       inputToken: requiredActionParam(action, 'inputToken'),
       outputToken: requiredActionParam(action, 'outputToken'),
       amount: requiredActionParam(action, 'amount'),
       taker,
-      slippageBps,
+      ...(slippageBps === undefined ? {} : { slippageBps }),
     }),
   );
   const transactionBase64 = requiredJupiterOrderTransaction(order);
@@ -46747,6 +48253,9 @@ function completeBrowserExecutedAction(action: PreparedAction, execution: Browse
       syncPendingTransactionsFromLedger();
     }
   }
+  // Chat-originated action: post the inline success + "Receipt sent to Done tab"
+  // messages (idempotent). No-op for rail-originated actions.
+  postChatActionSuccessMessage(updatedAction, execution);
 }
 
 function updateBrowserPreparedAction(actionId: string, patch: Partial<PreparedAction>): PreparedAction {
@@ -47352,7 +48861,9 @@ async function resolveBrowserTokenMetadata(
   cluster: Cluster,
   token: string,
 ): Promise<BrowserTokenMetadata> {
-  const known = KNOWN_BROWSER_TOKENS[token.trim().toUpperCase()];
+  // Accept a SYMBOL or a MINT (the chat builder pastes mints) so first-class tokens
+  // always resolve from the registry.
+  const known = KNOWN_BROWSER_TOKENS[token.trim().toUpperCase()] ?? KNOWN_BROWSER_TOKENS_BY_MINT.get(token.trim());
   const mintText = known?.mint ?? token.trim();
   const symbol = known?.symbol ?? tokenDisplayLabel(mintText);
   if (isNativeSolToken(token)) {
@@ -47366,39 +48877,55 @@ async function resolveBrowserTokenMetadata(
   }
   const mint = publicKeyParam(mintText, 'token mint');
 
-  // Android/iOS WebView can't read public Solana RPC directly (api.mainnet-beta.solana.com 403s
-  // the WebView origin). Route mint reads through Render which holds the Helius key. Unlike the
-  // sibling helpers (browserLatestBlockhash / broadcastSignedBrowserTransaction /
-  // browserSignatureStatus), this read uses a web3.js Connection JSON-RPC call rather than an
-  // /api/* fetch, so the global /api/* -> Render fetch rewrite can't cover it — iOS must take the
-  // cloud-proxy branch explicitly, same as Android, or arbitrary-decimal tokens (e.g. Popcat)
-  // fail with "Could not read decimals".
+  // First-class tokens (the registry) are all classic SPL — resolve decimals + program
+  // with NO on-chain read, whether the caller passed a symbol or the mint. This is what
+  // fixes the desktop "Could not read decimals for token USDC" (the public RPC 403s) for
+  // every known token, including when the chat builder passes the mint.
+  if (known) {
+    return {
+      symbol,
+      mint,
+      mintText: mint.toBase58(),
+      decimals: known.decimals,
+      tokenProgramId: TOKEN_PROGRAM_ID,
+    };
+  }
+
+  // Unknown mint (e.g. Popcat=9 decimals, token-2022, long-tail): read decimals + owner.
+  // Android/iOS WebView can't read public Solana RPC directly (api.mainnet-beta.solana.com
+  // 403s the WebView origin) so they go through Render (Helius key). Desktop/web reads the
+  // local web3.js Connection first, then FAILS SOFT to the same Render route when the public
+  // RPC 403s / rate-limits — so arbitrary-decimal tokens resolve on every surface.
   let ownerKey: PublicKey | undefined;
   let parsedDecimals: number | undefined;
-  if (state.androidNativeEnvironment.isAndroidNative || state.iosNativeEnvironment.isIosNative) {
+  const readViaCloud = async (): Promise<void> => {
     const info = await cloudRequest<{ exists: boolean; owner: string | null; decimals: number | null }>(
       '/api/solana/parsed-account-info',
-      {
-        method: 'POST',
-        body: JSON.stringify({ cluster, address: mintText }),
-      },
+      { method: 'POST', body: JSON.stringify({ cluster, address: mintText }) },
     ).catch(() => null);
-    if (info?.exists && info.owner) {
+    if (info?.exists && info.owner && !ownerKey) {
       try { ownerKey = new PublicKey(info.owner); } catch { /* ignore malformed owner */ }
     }
     if (info && typeof info.decimals === 'number') parsedDecimals = info.decimals;
-  } else {
+  };
+  const readViaConnection = async (): Promise<void> => {
     const account = await connection.getParsedAccountInfo(mint, 'confirmed').catch(() => null);
-    ownerKey = account?.value?.owner ?? undefined;
+    if (!ownerKey) ownerKey = account?.value?.owner ?? undefined;
     const parsedData = account?.value?.data;
     const parsed = parsedData && typeof parsedData === 'object' && 'parsed' in parsedData
       ? parsedData.parsed as { info?: { decimals?: unknown } }
       : undefined;
     if (typeof parsed?.info?.decimals === 'number') parsedDecimals = parsed.info.decimals;
+  };
+  if (state.androidNativeEnvironment.isAndroidNative || state.iosNativeEnvironment.isIosNative) {
+    await readViaCloud();
+  } else {
+    await readViaConnection();
+    if (typeof parsedDecimals !== 'number') await readViaCloud(); // desktop fail-soft fallback
   }
 
   const tokenProgramId = ownerKey?.equals(TOKEN_2022_PROGRAM_ID) ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
-  const decimals = known?.decimals ?? parsedDecimals;
+  const decimals = parsedDecimals;
   if (typeof decimals !== 'number' || !Number.isInteger(decimals) || decimals < 0) {
     throw new Error(tf('Could not read decimals for token {token}.', { token: tokenDisplayLabel(mintText) }));
   }
@@ -47472,13 +48999,6 @@ function addOptionalMemo(transaction: Transaction, signer: PublicKey, memo: stri
     programId: MEMO_PROGRAM_ID,
     data: new TextEncoder().encode(trimmed.slice(0, 500)) as unknown as InstructionData,
   }));
-}
-
-function browserSlippageBps(action: PreparedAction): number {
-  const raw = action.params.slippageBps;
-  const parsed = typeof raw === 'number' ? raw : Number(raw);
-  if (!Number.isFinite(parsed) || parsed < 0) return 50;
-  return Math.trunc(parsed);
 }
 
 async function browserSwapOrderRequest(
@@ -49562,20 +51082,21 @@ async function fetchSwapQuoteForAction(action: PreparedAction): Promise<{
   const inputToken = await resolveBrowserTokenMetadata(connection, action.cluster, inputTokenParam);
   const outputToken = await resolveBrowserTokenMetadata(connection, action.cluster, outputTokenParam);
   const amountRaw = parseDecimalAmountToRaw(amount, inputToken.decimals, `${inputToken.symbol} swap amount`);
-  const slippageBps = browserSlippageBps(action);
+  // Auto slippage (no param) → omit so the quote uses Ultra dynamic slippage.
+  const slippageBps = browserSlippageBpsFromParams(action);
 
   const order = await browserSwapOrderRequest(action, {
     inputMint: inputToken.mintText,
     outputMint: outputToken.mintText,
     amount: amountRaw.toString(),
     taker: action.walletAddress,
-    slippageBps,
+    ...(slippageBps === undefined ? {} : { slippageBps }),
   }, {
     inputToken: inputTokenParam,
     outputToken: outputTokenParam,
     amount,
     taker: action.walletAddress,
-    slippageBps,
+    ...(slippageBps === undefined ? {} : { slippageBps }),
   });
   return { order, inputToken, outputToken };
 }
@@ -50245,8 +51766,11 @@ async function loadBridgeConfig(strict: boolean): Promise<void> {
     if (!isCluster(config.cluster) || !config.rpcUrl) {
       throw new Error(t('Local bridge returned an invalid runtime config.'));
     }
-    state.cluster = config.cluster;
-    state.bridgeRpcUrl = config.rpcUrl;
+    // Mainnet-only product: the app always runs on mainnet-beta. Adopt the bridge's
+    // RPC only when the bridge itself is mainnet — never trust a non-mainnet bridge
+    // (or its RPC); fall back to the default mainnet RPC instead.
+    state.cluster = 'mainnet-beta';
+    state.bridgeRpcUrl = config.cluster === 'mainnet-beta' ? config.rpcUrl : '';
     savePersistedState();
   } catch (err) {
     state.bridgeRpcUrl = '';
@@ -52775,8 +54299,9 @@ function androidBackendOrNew(): AndroidNativeWalletBackend {
 }
 
 function androidNativeCluster(): Cluster {
-  if (state.cluster === 'localnet') {
-    state.cluster = 'devnet';
+  // Mainnet-only: coerce any stray non-mainnet cluster to mainnet-beta (never devnet).
+  if (state.cluster !== 'mainnet-beta') {
+    state.cluster = 'mainnet-beta';
     savePersistedState();
   }
   return state.cluster;
@@ -53273,14 +54798,17 @@ function capabilitySummary(capabilities: AdapterCapabilities): string {
 function tabButton(tab: ActiveTab, label: string, mobileLabel?: string): string {
   const lockedReason = lockedTabReason(tab);
   const locked = Boolean(lockedReason);
+  const chatUnavailable = tab === 'chat' && !chatTabAiConnected();
+  const disabledReason = chatUnavailable ? chatTabUnavailableReason() : lockedReason;
   const className = [
     state.activeTab === tab ? 'active' : '',
     mobileLabel ? 'has-mobile-label' : '',
+    chatUnavailable ? 'unavailable' : '',
   ].filter(Boolean).join(' ');
   const content = mobileLabel
     ? `<span class="nav-label nav-label-full">${escapeHtml(label)}</span><span class="nav-label nav-label-mobile">${escapeHtml(mobileLabel)}</span>`
     : `<span class="nav-label">${escapeHtml(label)}</span>`;
-  const button = `<button data-tab="${tab}" class="${className}" aria-label="${escapeHtml(label)}" ${locked ? `disabled title="${escapeHtml(lockedReason)}"` : ''}>${content}</button>`;
+  const button = `<button data-tab="${tab}" class="${className}" aria-label="${escapeHtml(label)}" ${locked ? `disabled title="${escapeHtml(lockedReason)}"` : chatUnavailable ? `aria-disabled="true" data-tab-disabled-reason="${escapeHtml(disabledReason)}" title="${escapeHtml(disabledReason)}"` : ''}>${content}</button>`;
   return locked
     ? `<span class="workspace-tab-tooltip" data-tab-tooltip="${escapeHtml(lockedReason)}">${button}</span>`
     : button;
@@ -53312,14 +54840,16 @@ function workspaceTabSelectMobile(): string {
 function mobileDockTabButton(tab: ActiveTab, label: string): string {
   const lockedReason = lockedTabReason(tab);
   const locked = Boolean(lockedReason);
+  const chatUnavailable = tab === 'chat' && !chatTabAiConnected();
+  const disabledReason = chatUnavailable ? chatTabUnavailableReason() : lockedReason;
   const active = state.activeTab === tab;
   return `
     <button
       type="button"
       data-tab="${escapeHtml(String(tab))}"
-      class="workspace-bottom-tab${active ? ' active' : ''}"
+      class="workspace-bottom-tab${active ? ' active' : ''}${chatUnavailable ? ' unavailable' : ''}"
       aria-label="${escapeHtml(label)}"
-      ${locked ? `disabled title="${escapeHtml(lockedReason)}"` : ''}
+      ${locked ? `disabled title="${escapeHtml(lockedReason)}"` : chatUnavailable ? `aria-disabled="true" data-tab-disabled-reason="${escapeHtml(disabledReason)}" title="${escapeHtml(disabledReason)}"` : ''}
     >
       <span>${escapeHtml(label)}</span>
     </button>
@@ -55136,6 +56666,19 @@ function bindTokenSearchSelectButtons(root: ParentNode = document): void {
         source: 'mint',
       };
       const selection = tokenSelectionFromSearchResult(result);
+      // Chat builder token search (fieldId is "chat:fromToken" / "chat:toToken"):
+      // route the pick into the open chat picker and close the chat-action sheet.
+      if (fieldId.startsWith('chat:')) {
+        tokenSearchStates.delete(fieldId);
+        clearTokenSearchTimer(fieldId);
+        applyChatTokenPick(
+          selection.mint ?? selection.value,
+          selection.label || result.symbol || tokenDisplayLabel(selection.value),
+          selection.decimals ?? 0,
+          selection.logoURI,
+        );
+        return;
+      }
       const recurringField = recurringFieldFromTokenSearchKey(fieldId);
       if (recurringField) {
         state.recurringDraft = readRecurringDraft();
@@ -57579,14 +59122,23 @@ function contextRow(label: string, value: string, tone = ''): string {
   `;
 }
 
+// Inline copy glyph (Feather "copy") — themed via currentColor.
+const TX_COPY_ICON = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+
+// One clean row: the txid in a box with a copy button INSIDE it (right), plus a single
+// green "Open Solscan" button. (Dropped the redundant "Copy Solscan link" — it pointed at
+// the same destination as Open Solscan.) Shared by the chat inline receipt, the approval
+// card's TX-CONFIRMED section, and the Done tab. The delegated [data-copy] handler is
+// unchanged, so copy keeps working.
 function txBlock(txid: string, cluster: Cluster): string {
   const url = explorerUrl(txid, cluster);
   return `
     <div class="tx-block">
-      <code>${escapeHtml(txid)}</code>
-      <a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(t('Open Solscan'))}</a>
-      <button data-copy="${escapeHtml(txid)}" data-copy-name="${escapeHtml(t('Transaction id'))}">${escapeHtml(t('Copy txid'))}</button>
-      <button data-copy="${escapeHtml(url)}" data-copy-name="${escapeHtml(tf('{brand} transaction link', { brand: 'Solscan' }))}">${escapeHtml(t('Copy Solscan link'))}</button>
+      <div class="tx-block-id">
+        <code>${escapeHtml(txid)}</code>
+        <button type="button" class="tx-block-copy" data-copy="${escapeHtml(txid)}" data-copy-name="${escapeHtml(t('Transaction id'))}" aria-label="${escapeHtml(t('Copy txid'))}" title="${escapeHtml(t('Copy txid'))}">${TX_COPY_ICON}</button>
+      </div>
+      <a class="tx-block-open" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(t('Open Solscan'))}</a>
     </div>
   `;
 }
@@ -60547,7 +62099,8 @@ function loadPersistedState(): PersistedState {
         isWorkflowModePreference(parsed.workflowModePreference) && { workflowModePreference: parsed.workflowModePreference }),
       ...(typeof parsed.preferencesView === 'string' && isPreferencesView(parsed.preferencesView) && { preferencesView: parsed.preferencesView }),
       ...(typeof parsed.demoLanguage === 'string' && isDemoLanguage(parsed.demoLanguage) && { demoLanguage: parsed.demoLanguage }),
-      ...(typeof parsed.cluster === 'string' && isCluster(parsed.cluster) && { cluster: parsed.cluster }),
+      // Mainnet-only: ignore any stale persisted non-mainnet cluster (never restore devnet).
+      ...(parsed.cluster === 'mainnet-beta' && { cluster: 'mainnet-beta' as Cluster }),
       ...(typeof parsed.bridgeUrl === 'string' && { bridgeUrl: parsed.bridgeUrl }),
       ...(typeof parsed.bridgeAutoReconnect === 'boolean' && { bridgeAutoReconnect: parsed.bridgeAutoReconnect }),
       ...(typeof parsed.aiMode === 'string' && isAiMode(parsed.aiMode) && { aiMode: parsed.aiMode }),
@@ -61958,8 +63511,31 @@ function normalizeChatMessage(raw: unknown): ChatMessage | null {
   if (input.proposal && typeof input.proposal === 'object') {
     message.proposal = input.proposal as ChatActionProposal;
   }
+  // txReceipt rides the spread above; validate it so a corrupt persisted value
+  // can't break txBlock() on reload, and drop it otherwise.
+  const rx = input.txReceipt as { txid?: unknown; cluster?: unknown } | undefined;
+  if (rx && typeof rx === 'object' && typeof rx.txid === 'string' && typeof rx.cluster === 'string' && isCluster(rx.cluster)) {
+    message.txReceipt = { txid: rx.txid, cluster: rx.cluster as Cluster };
+  } else {
+    delete (message as { txReceipt?: unknown }).txReceipt;
+  }
   if (typeof input.error === 'string') message.error = input.error;
   return message;
+}
+
+// Synthetic UI-only marker prepended when a session's head was trimmed to the
+// per-session cap. Declared as a function (hoisted) and built from literals only so
+// it is safe to call from normalizeChatSession at module init (before `t()`/`state`
+// exist — the English text is translated at render time in chatMessageHtml).
+function chatTruncationMarker(): ChatMessage {
+  return {
+    id: 'chat-trim-marker',
+    role: 'system',
+    content: 'Earlier messages were trimmed to keep this chat fast.',
+    createdAt: new Date().toISOString(),
+    status: 'done',
+    ephemeral: true,
+  };
 }
 
 function normalizeChatSession(raw: unknown, walletAddress: string): ChatSession | null {
@@ -61975,13 +63551,26 @@ function normalizeChatSession(raw: unknown, walletAddress: string): ChatSession 
       // don't show a blank bubble; keep anything carrying a proposal or a card.
       .filter((m) => !(m.role === 'assistant' && !m.content.trim() && !m.proposal && !m.preparedActionId && m.status !== 'error'))
     : [];
-  // Cap per-session messages but always keep any message anchored to a promoted action.
-  let capped = messages;
-  if (messages.length > MAX_CHAT_MESSAGES_PER_SESSION) {
-    const anchored = messages.filter((m) => m.preparedActionId);
-    const tail = messages.slice(-MAX_CHAT_MESSAGES_PER_SESSION);
+  // Cap per-session messages but always keep any message anchored to a promoted
+  // action. Count REAL messages only — a prior synthetic trim marker is stripped
+  // first so it never accumulates or counts toward the cap.
+  const hadMarker = messages.some((m) => m.ephemeral);
+  const real = messages.filter((m) => !m.ephemeral);
+  let capped = real;
+  let truncated = false;
+  if (real.length > MAX_CHAT_MESSAGES_PER_SESSION) {
+    truncated = true;
+    const anchored = real.filter((m) => m.preparedActionId);
+    const tail = real.slice(-MAX_CHAT_MESSAGES_PER_SESSION);
     const tailIds = new Set(tail.map((m) => m.id));
     capped = [...anchored.filter((m) => !tailIds.has(m.id)), ...tail];
+  }
+  // Surface the otherwise-silent head-drop with a single UI-only marker that
+  // persists across reloads (once trimmed the dropped head never returns). It is
+  // excluded from cloud sync + message counts — see serializeChatSessionMessages
+  // and chatSessionCloudBody.
+  if (truncated || hadMarker) {
+    capped = [chatTruncationMarker(), ...capped];
   }
   const now = new Date().toISOString();
   // NOTE: this runs at module init (loadChatHistoryState) BEFORE `state` exists,
@@ -62019,7 +63608,9 @@ function serializeChatHistory(history: ChatHistoryState): string {
 // plaintext columns), compressed with the same LZString scheme as localStorage.
 // The server treats this string as an opaque blob. See chatCloudSync.ts.
 function serializeChatSessionMessages(session: ChatSession): string {
-  return compressChatMessages(session.messages);
+  // Strip UI-only synthetic markers (e.g. the trim notice) — they are regenerated
+  // locally and must never round-trip through the shared cloud blob.
+  return compressChatMessages(session.messages.filter((m) => !m.ephemeral));
 }
 
 function deserializeChatSessionMessages(messagesLz: string): ChatMessage[] {
@@ -62090,8 +63681,43 @@ function writeChatHistoryWithEviction(key: string, history: ChatHistoryState): v
   }
 }
 
+// Probe once whether localStorage actually accepts writes. In private/incognito
+// windows setItem throws on every call, which would make writeChatHistoryWithEviction
+// pointlessly evict every non-active session before giving up — so we detect it up
+// front, skip the destructive write entirely, and keep chat in memory for the session.
+function chatLocalStorageWritable(): boolean {
+  if (chatLocalStorageWritableCache !== null) return chatLocalStorageWritableCache;
+  let ok = false;
+  try {
+    const probe = '__agentic_chat_probe__';
+    window.localStorage.setItem(probe, '1');
+    window.localStorage.removeItem(probe);
+    ok = true;
+  } catch {
+    ok = false;
+  }
+  chatLocalStorageWritableCache = ok;
+  return ok;
+}
+
+// A newer app build wrote this wallet's chat history (higher schemaVersion); we keep
+// it read-only so we don't clobber the newer format. Tell the user ONCE rather than
+// silently dropping every chat write for the rest of the session.
+function notifyChatHistorySaveLockedOnce(): void {
+  if (chatHistorySaveLockedNotified || typeof window === 'undefined') return;
+  chatHistorySaveLockedNotified = true;
+  pushToast('error', t('Chat history is read-only here'), t('A newer version of the app saved this chat history. Update the app to save new chats on this device.'));
+}
+
+function notifyChatStorageUnavailableOnce(): void {
+  if (chatStorageUnavailableNotified || typeof window === 'undefined') return;
+  chatStorageUnavailableNotified = true;
+  pushToast('info', t('Chat is not being saved'), t('This browser is blocking local storage (e.g. private mode), so chats will be lost when you close the tab.'));
+}
+
 function saveChatHistoryState(): void {
-  if (chatHistorySaveLocked) return;
+  if (chatHistorySaveLocked) { notifyChatHistorySaveLockedOnce(); return; }
+  if (!chatLocalStorageWritable()) { notifyChatStorageUnavailableOnce(); return; }
   try {
     // Persist a normalized SNAPSHOT to disk, but do NOT replace state.chat with
     // fresh objects — the streaming loop holds a live reference to the assistant
@@ -62117,6 +63743,29 @@ function saveChatHistoryState(): void {
 
 function activeChatSession(): ChatSession | null {
   return state.chat.sessions.find((s) => s.id === state.chat.activeSessionId) ?? null;
+}
+
+// Re-read the wallet's chat history written by another tab and merge it in. This
+// tab's active and streaming sessions are preserved as-is (never clobber an
+// in-progress turn); every other session is taken from the other tab's snapshot, so
+// a delete/rename/new-message in tab B propagates to tab A without data loss.
+function mergeChatSessionsFromOtherTab(): void {
+  if (chatHistorySaveLocked) return;
+  const incoming = loadChatHistoryState(state.address);
+  const protectedIds = new Set<string>(
+    [state.chat.activeSessionId, chatStreamSessionId].filter((id): id is string => Boolean(id)),
+  );
+  const merged = new Map<string, ChatSession>();
+  for (const s of incoming.sessions) merged.set(s.id, s);
+  // This tab's protected sessions win over the other tab's copy.
+  for (const s of state.chat.sessions) {
+    if (protectedIds.has(s.id)) merged.set(s.id, s);
+  }
+  state.chat = {
+    ...state.chat,
+    sessions: [...merged.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
+  };
+  if (state.activeTab === 'chat') render();
 }
 
 function createChatSession(): ChatSession {
@@ -62235,18 +63884,60 @@ function isChatSessionNotFoundError(err: unknown): boolean {
   return /\b404\b|not found/i.test(msg);
 }
 
+// A PUT was rejected because another device advanced this session's version (the
+// server's optimistic-concurrency guard) — reconcile by refetch + merge.
+function isChatConflictError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /\b409\b|conflict/i.test(msg);
+}
+
 // chatSessionIsCloudStub() lives in chatCloudSync.ts (pure + unit-tested).
 
 function chatSessionCloudBody(session: ChatSession): string {
   return JSON.stringify({
     title: session.title,
     cluster: session.cluster,
-    messageCount: session.messages.length,
+    messageCount: session.messages.filter((m) => !m.ephemeral).length,
     schemaVersion: CHAT_HISTORY_SCHEMA_VERSION,
+    // Optimistic-concurrency base version the server checks; on a stale value it
+    // replies 409 and we reconcileChatConflict() instead of clobbering the newer copy.
+    version: session.cloudVersion ?? 0,
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
     messagesLz: serializeChatSessionMessages(session),
   });
+}
+
+// Resolve a 409 conflict: pull the server's authoritative thread, union it with the
+// local messages by id (so neither device's turns are lost), then re-PUT the merged
+// copy on top of the latest version. Guarded against running twice for one session.
+async function reconcileChatConflict(sessionId: string): Promise<void> {
+  if (!chatCloudSyncEnabled()) return;
+  if (chatConflictReconcilesInFlight.has(sessionId)) return;
+  chatConflictReconcilesInFlight.add(sessionId);
+  try {
+    await ensureChatCloudTokenReady();
+    const full = await cloudRequest<ChatSessionWire>(`/api/chat/sessions/${encodeURIComponent(sessionId)}`, { method: 'GET' });
+    const session = state.chat.sessions.find((s) => s.id === sessionId);
+    if (!session || chatSessionIsCloudStub(session)) return; // gone or not yet loaded
+    const serverMessages = full?.messagesLz ? deserializeChatSessionMessages(full.messagesLz) : [];
+    session.messages = mergeChatMessagesById(serverMessages, session.messages.filter((m) => !m.ephemeral));
+    session.cloudVersion = full?.version ?? session.cloudVersion;
+    session.updatedAt = new Date().toISOString(); // merged copy is the newest
+    saveChatHistoryState();
+    if (state.activeTab === 'chat') render();
+    const saved = await cloudRequest<{ version?: number }>(`/api/chat/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'PUT',
+      body: chatSessionCloudBody(session),
+    });
+    session.cloudVersion = saved?.version ?? session.cloudVersion;
+  } catch (err) {
+    if (isCloudUnreachableError(err)) enqueuePendingCloudSync({ id: sessionId, kind: 'chat-put' });
+    // A second 409 (another concurrent write) or other error → drop; the next user
+    // turn re-attempts the sync, and localStorage still holds the local copy.
+  } finally {
+    chatConflictReconcilesInFlight.delete(sessionId);
+  }
 }
 
 // Best-effort upsert of one session to the cloud. Skips metadata stubs (cloud
@@ -62264,6 +63955,7 @@ async function syncChatSessionToCloud(sessionId: string): Promise<void> {
     });
     session.cloudVersion = saved?.version ?? session.cloudVersion;
   } catch (err) {
+    if (isChatConflictError(err)) { void reconcileChatConflict(sessionId); return; }
     if (isCloudUnreachableError(err)) enqueuePendingCloudSync({ id: sessionId, kind: 'chat-put' });
     // Other errors (validation/auth) → drop; localStorage still has the copy.
   }
@@ -62339,39 +64031,66 @@ async function hydrateChatHistoryFromCloud(): Promise<void> {
   if (state.activeTab === 'chat') render();
 }
 
-// Fetch + decompress one stub session's messages on demand.
+// Fetch + decompress one stub session's messages on demand. Distinguishes a
+// genuine deletion (404) from a decompression/empty-blob failure (data loss) and
+// a transient network/server error, so a failed open surfaces a retry affordance
+// instead of silently blanking the thread or spinning "Loading…" forever.
 async function ensureChatSessionMessagesLoaded(sessionId: string): Promise<void> {
   const session = state.chat.sessions.find((s) => s.id === sessionId);
   if (!session || !chatSessionIsCloudStub(session)) return;
   if (!cloudSessionMatchesWallet()) { delete session.cloudMessageCount; return; }
   if (chatSessionLoadsInFlight.has(sessionId)) return; // a load is already running
   chatSessionLoadsInFlight.add(sessionId);
-  // Snapshot so we can detect a concurrent local append (user sent a message
-  // while this GET was in flight) and avoid clobbering their just-sent turn.
+  delete session.cloudLoadError; // a fresh attempt clears any prior error state
+  // Identity/state snapshot: bail on completion if the wallet changed mid-GET
+  // (sign-out/switch) so a late response can't mutate the wrong wallet's state;
+  // detect a concurrent local append; remember the advertised count for the
+  // empty-blob = data-loss check.
+  const loadAddress = state.address;
+  const expectedCount = session.cloudMessageCount ?? 0;
   const messagesBefore = session.messages.length;
   try {
     await ensureChatCloudTokenReady();
     const full = await cloudRequest<ChatSessionWire>(`/api/chat/sessions/${encodeURIComponent(sessionId)}`, { method: 'GET' });
-    if (session.messages.length !== messagesBefore) {
-      // The user appended a message during the GET — keep their local content and
-      // stop treating this as a stub (don't overwrite with the now-stale cloud copy).
+    // Wallet changed during the GET — discard this response entirely.
+    if (state.address !== loadAddress || !cloudSessionMatchesWallet()) return;
+    // A live stream is mutating a message ref inside session.messages (or the user
+    // appended a turn): never replace the array under it — keep the local content
+    // and stop treating this as a stub.
+    if (session.messages.length !== messagesBefore || chatStreamSessionId === sessionId) {
       delete session.cloudMessageCount;
       saveChatHistoryState();
       return;
     }
-    session.messages = full?.messagesLz ? deserializeChatSessionMessages(full.messagesLz) : [];
+    // The decompressed blob is the source of truth — trust its length over the
+    // server's unverified messageCount. The cloud never stores an empty thread
+    // (syncChatSessionToCloud skips empty sessions; the server rejects an empty
+    // blob), so a stub that claimed messages but decodes to nothing is corruption
+    // / a missing blob = data loss, not an empty chat. Keep the stub + show retry.
+    const decoded = full?.messagesLz ? deserializeChatSessionMessages(full.messagesLz) : [];
+    if (decoded.length === 0 && expectedCount > 0) {
+      session.cloudLoadError = 'failed';
+      pushToast('error', t('Could not load this conversation'), t('Something went wrong reading it. Try again.'));
+      if (state.activeTab === 'chat') render();
+      return;
+    }
+    session.messages = decoded;
     session.cloudVersion = full?.version ?? session.cloudVersion;
     delete session.cloudMessageCount; // no longer a stub
     saveChatHistoryState();
   } catch (err) {
-    if (isCloudUnreachableError(err)) return; // network — keep the stub, retry on next open
+    if (state.address !== loadAddress) return; // wallet changed — ignore the late failure
     if (isChatSessionNotFoundError(err)) {
       // Deleted on another device — stop treating it as a loadable stub so it
       // doesn't loop on 404 (it drops out of the history list once empty).
       delete session.cloudMessageCount;
       saveChatHistoryState();
+      return;
     }
-    // Other transient errors — keep the stub for a later retry.
+    // Offline/unreachable keeps the stub but shows an offline state (with Retry);
+    // 5xx/auth/other show a generic failed state — both beat an endless spinner.
+    session.cloudLoadError = isCloudUnreachableError(err) ? 'offline' : 'failed';
+    if (state.activeTab === 'chat') render();
   } finally {
     chatSessionLoadsInFlight.delete(sessionId);
   }

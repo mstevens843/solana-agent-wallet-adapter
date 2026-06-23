@@ -189,7 +189,7 @@ button {
     transform 120ms ease;
 }
 
-button:hover:not(:disabled) {
+button:hover:not(:disabled):not([aria-disabled="true"]) {
   background: rgba(255, 255, 255, 0.065);
   border-color: rgba(224, 230, 226, 0.25);
   box-shadow:
@@ -198,7 +198,7 @@ button:hover:not(:disabled) {
   transform: translateY(-1px);
 }
 
-button:active:not(:disabled) {
+button:active:not(:disabled):not([aria-disabled="true"]) {
   transform: translateY(0);
 }
 
@@ -5010,7 +5010,7 @@ code {
   right: 0;
 }
 
-.workspace-tabs button:hover:not(:disabled),
+.workspace-tabs button:hover:not(:disabled):not([aria-disabled="true"]),
 .workspace-tabs button.active {
   background: transparent;
   color: var(--text);
@@ -12352,11 +12352,69 @@ button.danger:hover:not(:disabled) {
 
 .tx-block {
   align-items: center;
-  display: grid;
+  display: flex;
   gap: 8px;
-  grid-template-columns: minmax(0, 1fr) auto auto;
   margin-top: 10px;
 }
+/* txid + in-box copy button (one bordered box; the inner <code> goes transparent). */
+.tx-block-id {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(0, 0, 0, 0.32);
+  border: 1px solid rgba(224, 230, 226, 0.08);
+  border-radius: 6px;
+  padding: 2px 4px 2px 8px;
+}
+.tx-block-id code {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: none;
+  border: 0;
+  padding: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tx-block-copy {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  min-width: 30px;
+  min-height: 30px; /* override the global button min-height so it stays compact */
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+.tx-block-copy:hover { color: #d8ebe0; background: var(--surface-muted); }
+/* Single Solscan control: green text in a button container, sized to its label. */
+.tx-block-open {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 12px;
+  border-radius: 6px;
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 0.84rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.tx-block-open:hover { border-color: var(--accent); }
+/* Bigger touch targets on the native shells. */
+.android-shell .tx-block-copy,
+.ios-native-shell .tx-block-copy { width: 40px; height: 40px; min-width: 40px; min-height: 40px; }
+.android-shell .tx-block-open,
+.ios-native-shell .tx-block-open { padding: 9px 12px; }
 
 .recurring-contract {
   display: grid;
@@ -14662,7 +14720,6 @@ button.danger:hover:not(:disabled) {
   .context-stack,
   .recurring-grid,
   .schedule-grid,
-  .tx-block,
   .result-row,
   .lab-history article,
   .signed-artifact-facts,
@@ -20161,7 +20218,7 @@ button.danger:hover:not(:disabled) {
   background: rgba(125, 231, 176, 0.1);
 }
 
-.route-app .workspace-tabs[data-layout="app-tabs"] button:hover:not(:disabled) {
+.route-app .workspace-tabs[data-layout="app-tabs"] button:hover:not(:disabled):not([aria-disabled="true"]) {
   box-shadow: none;
   transform: none;
 }
@@ -24920,10 +24977,12 @@ button.danger:hover:not(:disabled) {
 }
 
 /* /app final demo polish: sharpen hierarchy without flattening emphasis. */
-.route-app .workspace-tabs[data-layout="app-tabs"] button:disabled {
+.route-app .workspace-tabs[data-layout="app-tabs"] button:disabled,
+.route-app .workspace-tabs[data-layout="app-tabs"] button[aria-disabled="true"] {
   background: rgba(255, 255, 255, 0.018);
   border-color: rgba(224, 230, 226, 0.035);
   color: rgba(196, 205, 202, 0.46);
+  cursor: not-allowed;
   opacity: 1;
 }
 
@@ -30392,7 +30451,7 @@ button.danger:hover:not(:disabled) {
     display: none;
   }
 
-  .route-app .android-bottom-tab-dock .workspace-bottom-tab:hover:not(:disabled),
+  .route-app .android-bottom-tab-dock .workspace-bottom-tab:hover:not(:disabled):not([aria-disabled="true"]),
   .route-app .android-bottom-tab-dock .workspace-bottom-more.open > .workspace-bottom-tab {
     border-color: rgba(224, 230, 226, 0.16);
     color: #f2fff7;
@@ -30408,7 +30467,8 @@ button.danger:hover:not(:disabled) {
     color: #f2fff7;
   }
 
-  .route-app .android-bottom-tab-dock .workspace-bottom-tab:disabled {
+  .route-app .android-bottom-tab-dock .workspace-bottom-tab:disabled,
+  .route-app .android-bottom-tab-dock .workspace-bottom-tab[aria-disabled="true"] {
     color: rgba(196, 205, 202, 0.38);
     cursor: not-allowed;
     opacity: 0.66;
@@ -33135,6 +33195,91 @@ button.danger:hover:not(:disabled) {
   }
 }
 
+/* === Native app (Android / iOS) /app vertical-space optimizations ===
+   Scoped to the native shells so desktop and web-mobile are untouched. The native
+   apps are always phone-width, so these live inside the mobile breakpoint and win
+   over the generic .route-app rules via the extra .android-shell/.ios-native-shell class. */
+@media (max-width: 899px) {
+  /* Change 1: lift "Show archived" onto the Start/Check row (top-left) and drop the
+     now-redundant toolbar row (which also held a duplicate "{N} active" counter). */
+  .route-app.android-shell .one-time-plan-control-row.review-filter-row,
+  .route-app.ios-native-shell .one-time-plan-control-row.review-filter-row {
+    grid-template-areas:
+      "archived tabs"
+      "filter delete" !important;
+  }
+
+  .route-app.android-shell .one-time-plan-control-row.review-filter-row .check-archived-top,
+  .route-app.ios-native-shell .one-time-plan-control-row.review-filter-row .check-archived-top {
+    grid-area: archived;
+    justify-self: start;
+    min-height: 36px;
+    white-space: nowrap;
+  }
+
+  .route-app.android-shell .generated-plans-toolbar-row,
+  .route-app.ios-native-shell .generated-plans-toolbar-row {
+    display: none;
+  }
+
+  /* Change 2: Start/Check buttons fill their fixed-width box (New Request / Start view). */
+  .route-app.android-shell .one-time-plan-control-row.has-connector .one-time-plan-tabs button,
+  .route-app.ios-native-shell .one-time-plan-control-row.has-connector .one-time-plan-tabs button {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  /* Change 3: Details + More actions share a 50/50 footer row on the Check card. */
+  .route-app.android-shell .review-plan-footer-row,
+  .route-app.ios-native-shell .review-plan-footer-row {
+    align-items: start;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  /* Change 4: swap summary grid -> Wallet (full) / Slippage | Risk / Route (full).
+     DOM order stays Wallet,Slippage,Route,Risk; grid-auto-flow: dense backfills Risk
+     next to Slippage once Wallet and Route are forced full-width. */
+  .route-app.android-shell .review-plan-summary-grid.wallet-slippage-route-risk-grid,
+  .route-app.ios-native-shell .review-plan-summary-grid.wallet-slippage-route-risk-grid {
+    grid-auto-flow: dense;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .route-app.android-shell .review-plan-summary-grid.wallet-slippage-route-risk-grid > div:nth-child(1),
+  .route-app.android-shell .review-plan-summary-grid.wallet-slippage-route-risk-grid > div:nth-child(3),
+  .route-app.ios-native-shell .review-plan-summary-grid.wallet-slippage-route-risk-grid > div:nth-child(1),
+  .route-app.ios-native-shell .review-plan-summary-grid.wallet-slippage-route-risk-grid > div:nth-child(3) {
+    grid-column: 1 / -1;
+  }
+
+  /* Route (3) is the visual last row -> no divider line under it. */
+  .route-app.android-shell .review-plan-summary-grid.wallet-slippage-route-risk-grid > div:nth-child(3),
+  .route-app.ios-native-shell .review-plan-summary-grid.wallet-slippage-route-risk-grid > div:nth-child(3) {
+    border-bottom: 0;
+  }
+
+  /* Risk (4) sits in the middle paired row -> restore the row divider that the generic
+     :last-child rule strips. */
+  .route-app.android-shell .review-plan-summary-grid.wallet-slippage-route-risk-grid > div:nth-child(4),
+  .route-app.ios-native-shell .review-plan-summary-grid.wallet-slippage-route-risk-grid > div:nth-child(4) {
+    border-bottom: 1px solid rgba(224, 230, 226, 0.055);
+  }
+
+  /* Paired (half-width) cells: vertical divider between Slippage and Risk, and let their
+     labels size to content so the value has room. */
+  .route-app.android-shell .review-plan-summary-grid.wallet-slippage-route-risk-grid > div:nth-child(2),
+  .route-app.ios-native-shell .review-plan-summary-grid.wallet-slippage-route-risk-grid > div:nth-child(2) {
+    border-right: 1px solid rgba(224, 230, 226, 0.055);
+  }
+
+  .route-app.android-shell .review-plan-summary-grid.wallet-slippage-route-risk-grid > div:nth-child(2),
+  .route-app.android-shell .review-plan-summary-grid.wallet-slippage-route-risk-grid > div:nth-child(4),
+  .route-app.ios-native-shell .review-plan-summary-grid.wallet-slippage-route-risk-grid > div:nth-child(2),
+  .route-app.ios-native-shell .review-plan-summary-grid.wallet-slippage-route-risk-grid > div:nth-child(4) {
+    grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 899px) {
   .route-app .mobile-proof-stage {
     gap: 9px;
@@ -34708,6 +34853,46 @@ button.danger:hover:not(:disabled) {
      never overlaps page content beneath it. */
   height: calc(100dvh - 252px);
   min-height: 460px;
+  /* Anchor for the absolute scroll-to-bottom pill. */
+  position: relative;
+}
+/* ChatGPT-style jump-to-bottom pill: floats centered just above the composer; shown
+   only when the transcript is scrolled up (toggled in bindChat). Absolute (not fixed —
+   fixed breaks inside the tab layout + iOS keyboard); the surface shrinks with the
+   keyboard so the pill rises with it. The 88px offset clears the composer+disclaimer
+   (on-device tweak, consistent with the surface-height constants here). */
+.chat-scroll-pill {
+  position: absolute;
+  left: 50%;
+  bottom: 88px;
+  transform: translateX(-50%);
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  min-height: 38px; /* override the global button min-height so the pill stays round */
+  padding: 0;
+  border-radius: 50%;
+  background: var(--surface-strong);
+  border: 1px solid var(--line);
+  color: var(--text);
+  cursor: pointer;
+  z-index: 6;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.chat-scroll-pill.visible {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+.chat-scroll-pill:hover { border-color: var(--accent); color: var(--accent); }
+.android-shell .chat-scroll-pill,
+.ios-native-shell .chat-scroll-pill { bottom: 96px; }
+@media (prefers-reduced-motion: no-preference) {
+  .chat-scroll-pill { transition: opacity 160ms ease, visibility 160ms ease; }
 }
 .chat-header {
   display: flex;
@@ -34805,7 +34990,30 @@ button.danger:hover:not(:disabled) {
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
 }
+/* Visually-hidden but screen-reader-accessible (offscreen, no layout impact). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 .chat-msg { max-width: 80ch; line-height: 1.55; color: var(--text); }
+/* Centered, muted UI-only notice (e.g. the "earlier messages were trimmed" marker)
+   — not an agent bubble, so it doesn't take the avatar/body layout. */
+.chat-trim-note {
+  align-self: center;
+  max-width: 80%;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  padding: 4px 12px;
+  opacity: 0.85;
+}
 /* The inline approval card is the wider approval-rail component; constrain it to
    the bubble so it can't overflow horizontally on narrow phones. */
 .chat-card { min-width: 0; max-width: 100%; }
@@ -34924,7 +35132,6 @@ button.danger:hover:not(:disabled) {
   line-height: 1.5;
 }
 .chat-plus { position: relative; flex: 0 0 auto; }
-.chat-plus-btn,
 .chat-send {
   width: var(--btn-min-h);
   height: var(--btn-min-h);
@@ -34938,6 +35145,28 @@ button.danger:hover:not(:disabled) {
   font-size: 1.1rem;
   line-height: 1;
   flex: 0 0 auto;
+}
+/* Labeled "Wallet Actions" pill (collapses to an icon on narrow phones). */
+.chat-plus-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--btn-min-h);
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  line-height: 1;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.chat-plus-icon { font-size: 1.1rem; }
+.chat-plus-label { font-size: 0.82rem; font-weight: 600; }
+@media (max-width: 480px) {
+  .chat-plus-btn { width: var(--btn-min-h); padding: 0; justify-content: center; }
+  .chat-plus-label { display: none; }
 }
 .chat-plus-btn:hover { border-color: var(--accent); }
 .chat-send { background: var(--accent); border-color: var(--accent); color: var(--bg); }
@@ -34974,7 +35203,8 @@ button.danger:hover:not(:disabled) {
   padding: 6px 6px 2px;
   text-transform: uppercase;
 }
-.chat-plus-menu .chat-plus-option {
+.chat-plus-menu .chat-plus-option,
+.chat-sheet-actions .chat-plus-option {
   display: grid;
   gap: 3px;
   align-items: start;
@@ -34989,7 +35219,8 @@ button.danger:hover:not(:disabled) {
   color: var(--text);
   font: inherit;
 }
-.chat-plus-menu .chat-plus-option:hover {
+.chat-plus-menu .chat-plus-option:hover,
+.chat-sheet-actions .chat-plus-option:hover {
   background: rgba(255, 255, 255, 0.06);
   border-color: rgba(224, 230, 226, 0.17);
 }
@@ -35000,9 +35231,238 @@ button.danger:hover:not(:disabled) {
   letter-spacing: 0.07em;
   text-transform: uppercase;
 }
-.chat-plus-menu .chat-plus-option strong { color: var(--text); font-size: 0.92rem; line-height: 1.2; }
-.chat-plus-menu .chat-plus-option em { color: var(--muted); font-size: 0.76rem; font-style: normal; line-height: 1.3; }
+.chat-plus-menu .chat-plus-option strong,
+.chat-sheet-actions .chat-plus-option strong { color: var(--text); font-size: 0.92rem; line-height: 1.2; }
+.chat-plus-menu .chat-plus-option em,
+.chat-sheet-actions .chat-plus-option em { color: var(--muted); font-size: 0.76rem; font-style: normal; line-height: 1.3; }
 .chat-disclaimer { text-align: center; color: var(--dim); font-size: 0.72rem; padding: 0 0 6px; }
+
+/* --- Hybrid chip builder bar (above the composer) --- */
+.chat-builder {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 4px 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface-strong);
+}
+/* Header line: kind eyebrow on the left, clear (×) on the right — so the clear
+   button never wastes its own row. */
+.chat-builder-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+/* Chips on a single non-wrapping row that scrolls horizontally if needed. */
+.chat-builder-chips {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.chat-builder-chips::-webkit-scrollbar { display: none; }
+.chat-builder-eyebrow {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.chat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 168px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.82rem;
+  line-height: 1.2;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-chip:hover, .chat-chip.open { border-color: var(--accent); }
+.chat-chip-caret { color: var(--muted); font-size: 0.7rem; }
+.chat-chip-fixed { color: var(--muted); font-size: 0.82rem; }
+.chat-chip-input {
+  flex: 1 1 140px;
+  min-width: 120px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--font-min);
+  outline: none;
+}
+.chat-chip-input:focus { border-color: var(--accent); }
+.chat-builder-clear {
+  flex: 0 0 auto;
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1;
+}
+.chat-builder-clear:hover { border-color: var(--danger); color: var(--danger); }
+/* Picker popovers anchored to the builder bar */
+.chat-picker {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  width: min(340px, calc(100vw - 24px));
+  /* Cap to the available space so the upward-opening picker never overflows the
+     viewport top on a keyboard-shrunk mobile layout; it scrolls instead. */
+  max-height: min(320px, 45vh);
+  overflow-y: auto;
+  background: var(--surface-strong);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 8px;
+  z-index: 32;
+  box-shadow: var(--shadow);
+}
+/* Narrow phones: let the builder row wrap and shrink the inline inputs so the
+   chips + recipient/amount inputs never force horizontal overflow. */
+@media (max-width: 360px) {
+  .chat-chip-input { min-width: 84px; flex: 1 1 84px; }
+  .chat-chip { max-width: 132px; }
+}
+.chat-picker-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 2px 4px 6px; }
+.chat-token-list { display: flex; flex-direction: column; gap: 2px; }
+/* One owned-token row: logo · symbol/value · bare amount (rendered once). */
+.chat-token-opt {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  border-radius: 10px;
+  padding: 7px 8px;
+  cursor: pointer;
+  color: var(--text);
+  font: inherit;
+}
+.chat-token-opt:hover { background: var(--surface); }
+.chat-token-logo {
+  flex: 0 0 auto;
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+.chat-token-logo img { width: 100%; height: 100%; object-fit: cover; }
+.chat-token-logo > span { font-size: 0.6rem; font-weight: 800; color: var(--muted); letter-spacing: 0.02em; }
+.chat-token-info { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.chat-token-info strong { font-size: 0.88rem; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-token-info em { font-size: 0.74rem; color: var(--muted); font-style: normal; }
+.chat-token-amount { flex: 0 0 auto; font-size: 0.82rem; color: var(--text); font-weight: 700; white-space: nowrap; }
+.chat-token-empty { color: var(--muted); font-size: 0.82rem; padding: 6px; }
+.chat-token-more {
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.chat-token-more:hover { border-color: var(--accent); color: var(--text); }
+/* LIST / MINT segmented toggle (mirrors the New Request token field). */
+.chat-token-modes { display: inline-flex; gap: 4px; margin-bottom: 8px; }
+.chat-token-mode {
+  padding: 5px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.chat-token-mode.active { border-color: var(--accent); color: var(--text); background: var(--accent-soft); }
+.chat-token-search { display: flex; flex-direction: column; gap: 8px; position: relative; }
+/* The shared .chat-chip-input is `flex: 1 1 140px` (a width basis in the builder's
+   row); inside this column container that 140px would become a HEIGHT and grow into
+   a tall multi-row box. Pin it to a single line. */
+.chat-token-search .chat-chip-input { flex: 0 0 auto; height: var(--btn-min-h); }
+.chat-token-search-results:empty { display: none; }
+/* The reused token-search dropdown is an absolute popover in New Request; inside
+   the chat picker (inline popover or bottom sheet) it flows statically and scrolls
+   within its container so it can't be clipped. */
+.chat-token-search-results .token-search-menu {
+  position: static;
+  width: auto;
+  box-shadow: none;
+  max-height: min(320px, 42vh);
+}
+.chat-picker-custom { display: flex; gap: 6px; margin-top: 8px; }
+.chat-amount-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+.chat-amount-tab {
+  flex: 1;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.chat-amount-tab.active { border-color: var(--accent); color: var(--text); }
+.chat-amount-pcts { display: flex; gap: 4px; margin-bottom: 8px; }
+.chat-amount-pct {
+  flex: 1;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.chat-amount-pct:hover { border-color: var(--accent); }
+
+/* --- Chat bottom sheet (Android/iOS): pickers + Wallet Actions menu --------- */
+/* The picker bodies render statically inside the rail sheet (no absolute popover);
+   reuse the inline picker's inner element styles, just drop the positioning. */
+.chat-sheet-picker { display: block; }
+.chat-sheet-picker .chat-amount-tabs,
+.chat-sheet-picker .chat-amount-pcts { margin-bottom: 10px; }
+.chat-sheet-picker .chat-picker-custom { margin-top: 10px; }
+.chat-sheet-picker .chat-token-modes { margin-bottom: 10px; }
+.chat-sheet-actions { display: flex; flex-direction: column; gap: 8px; }
+
+/* Native-mobile composer: Wallet Actions on its own labeled row above the input. */
+.chat-composer-mobile { flex-direction: column; align-items: stretch; gap: 8px; }
+.chat-composer-mobile .chat-actions-row { display: flex; }
+.chat-composer-mobile .chat-input-row { display: flex; align-items: flex-end; gap: 8px; }
+.chat-composer-mobile .chat-input { flex: 1; }
+/* Always show the "Wallet Actions" label on its dedicated row (overrides the
+   narrow-phone icon-only collapse). */
+.chat-composer-mobile .chat-plus-label { display: inline; }
+.chat-composer-mobile .chat-plus-btn { width: auto; padding: 0 14px; justify-content: flex-start; }
 
 .chat-msg .inbox-approval-card { margin-top: 10px; }
 
@@ -35016,10 +35476,15 @@ button.danger:hover:not(:disabled) {
    on-screen keyboard so the composer always floats above whichever is present,
    plus the top safe-area (notch). --chat-keyboard-inset is ~0 when the WebView
    resizes for the keyboard and the keyboard height in overlay mode (set in JS).
-   The 120px is the non-scrollable chrome above/below the transcript: the chat
-   header (~49px) + the composer (~71px collapsed incl. its 10px/6px margins).
-   Top + bottom safe-areas are handled elsewhere (the mobile content container
-   pads --mobile-nav-safe-top; --bottom-dock-clearance already includes
+   The subtracted chrome is the EXTERNAL top nav above the chat-surface — the
+   same expression every other mobile surface pads its top with: nav top gap +
+   nav height + content gap (~76px). It must NOT include the chat header or
+   composer: those live INSIDE .chat-surface (a flex column whose transcript is
+   flex:1), so the surface fills from just under the nav to the dock clearance
+   and the flex children distribute the height. (Previously a flat 120px here
+   double-counted the internal header/composer and left a dead gap above the
+   dock.) Top + bottom safe-areas are handled separately (--mobile-nav-safe-top
+   for the notch; --bottom-dock-clearance already includes
    env(safe-area-inset-bottom)) — do NOT add env() here or it double-pads.
    Worth a final on-device tweak if the composer sits a hair high/low. */
 @media (max-width: 900px) {
@@ -35027,10 +35492,27 @@ button.danger:hover:not(:disabled) {
     height: calc(
       100dvh
       - var(--mobile-nav-safe-top, 0px)
-      - 120px
+      - var(--mobile-nav-top-gap, 8px)
+      - var(--mobile-nav-height, 58px)
+      - var(--mobile-content-gap, 10px)
       - max(var(--bottom-dock-clearance), var(--chat-keyboard-inset, 0px))
     );
     min-height: 240px;
   }
   .route-app .chat-composer { margin-bottom: 10px; }
 }
+
+/* Native Android/iOS shells only (NOT narrow web): bigger send arrow + tighter
+   vertical rhythm so the transcript stretches toward the bottom dock and the
+   one-line disclaimer hugs the container edge. Placed after the @media block so
+   the composer-margin override wins. */
+.android-shell .chat-send,
+.ios-native-shell .chat-send { width: 46px; height: 46px; font-size: 1.5rem; }
+.android-shell .chat-send.chat-stop,
+.ios-native-shell .chat-send.chat-stop { font-size: 1rem; }
+.android-shell .chat-transcript,
+.ios-native-shell .chat-transcript { padding: 12px 6px 14px; scroll-padding-bottom: 14px; }
+.android-shell .chat-composer-mobile,
+.ios-native-shell .chat-composer-mobile { margin: 6px 4px 2px; }
+.android-shell .chat-disclaimer,
+.ios-native-shell .chat-disclaimer { padding: 0 0 2px; }

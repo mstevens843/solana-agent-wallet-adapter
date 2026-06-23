@@ -24,12 +24,14 @@ enum class AgentCluster(val id: String) {
         fun fromId(value: String?): AgentCluster = when (value) {
             "mainnet-beta", "mainnet" -> MainnetBeta
             "testnet" -> Testnet
-            else -> Devnet
+            "devnet" -> Devnet
+            else -> MainnetBeta
         }
 
         fun requireSupported(value: String?): AgentCluster = when (value) {
-            "mainnet-beta", "mainnet" -> MainnetBeta
-            "devnet", null, "" -> Devnet
+            // Mainnet-only product: an absent/blank cluster defaults to mainnet-beta, never devnet.
+            "mainnet-beta", "mainnet", null, "" -> MainnetBeta
+            "devnet" -> Devnet
             "testnet" -> Testnet
             else -> throw MwaOperationException(
                 "CLUSTER_MISMATCH",
@@ -61,7 +63,7 @@ data class AgentMwaAuthRecord(
     val walletPackage: String = "",
     val walletType: Int = 0,
     val accountLabel: String = "",
-    val cluster: AgentCluster = AgentCluster.Devnet,
+    val cluster: AgentCluster = AgentCluster.MainnetBeta,
     val timestampUnixSeconds: Long = 0L,
     val authenticated: Boolean = false,
     val capabilitiesCsv: String = "",

@@ -18,6 +18,16 @@ describe('validateChatProposedAction', () => {
     expect(proposal?.requiresApproval).toBe(true);
   });
 
+  it('rejects a swap whose input and output tokens are identical', () => {
+    const { proposal, error } = validateChatProposedAction({
+      kind: 'swap',
+      summary: 'Swap 1 SOL to SOL',
+      params: { amount: '1', inputToken: 'SOL', outputToken: 'SOL' },
+    });
+    expect(proposal).toBeUndefined();
+    expect(error).toMatch(/different/i);
+  });
+
   it('accepts a transfer_sol with a base58 recipient', () => {
     const { proposal, error } = validateChatProposedAction({
       kind: 'transfer_sol',

@@ -41,10 +41,10 @@ afterEach(() => {
 });
 
 describe('config env aliases', () => {
-  it('defaults to devnet with mainnet and arbitrary mainnet signing disabled', () => {
-    expect(DEFAULT_CONFIG.cluster).toBe('devnet');
-    expect(DEFAULT_CONFIG.rpcUrl).toBe('https://api.devnet.solana.com');
-    expect(DEFAULT_CONFIG.mainnet.enabled).toBe(false);
+  it('defaults to mainnet (enabled) with arbitrary mainnet signing disabled', () => {
+    expect(DEFAULT_CONFIG.cluster).toBe('mainnet-beta');
+    expect(DEFAULT_CONFIG.rpcUrl).toBe('https://api.mainnet-beta.solana.com');
+    expect(DEFAULT_CONFIG.mainnet.enabled).toBe(true);
     expect(DEFAULT_CONFIG.mainnet.allowArbitraryTransactions).toBe(false);
   });
 

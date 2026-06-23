@@ -111,7 +111,7 @@ async function createSkillEvidenceReceipt(input: {
   const record: EvidenceReceiptRecord = {
     id: `evidence_skill_${execution.id.replace(/[^A-Za-z0-9_-]/g, '_')}`,
     walletAddress: session.walletAddress,
-    cluster: approval.cluster ?? 'devnet',
+    cluster: approval.cluster ?? 'mainnet-beta',
     title: `Skill execution: ${execution.skillId}`,
     kind: 'tool_trace_receipt',
     status: result === 'success' ? 'approved' : 'blocked',
@@ -169,7 +169,7 @@ function skillReceiptPayload(input: {
     result,
     status: approval.status,
     kind: approval.kind,
-    cluster: approval.cluster ?? 'devnet',
+    cluster: approval.cluster ?? 'mainnet-beta',
     txid: approval.txid ?? '',
   };
 }

@@ -47,7 +47,7 @@ export function createDefaultConnectorPreparer(
   options: ConnectorPreparerOptions = {},
 ): ConnectorTransactionPreparer {
   return async (approval) => {
-    const cluster: WorkflowCluster = approval.cluster ?? 'devnet';
+    const cluster: WorkflowCluster = approval.cluster ?? 'mainnet-beta';
     const rpcUrl = resolveRpcUrl(cluster);
     const connectorSecrets = options.secretsLoader
       ? await options.secretsLoader(approval.walletAddress)

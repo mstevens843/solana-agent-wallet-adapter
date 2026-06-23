@@ -101,8 +101,9 @@ describe('MCP connector registry', () => {
     expect(jupiter?.readTools).toContain('solana_jupiter_price_batch');
   });
 
-  it('reports cluster mismatch readiness for mainnet-only connectors on the default devnet config', () => {
-    const jupiter = listConnectorCapabilities(DEFAULT_CONFIG).find((connector) => connector.id === 'jupiter');
+  it('reports cluster mismatch readiness for mainnet-only connectors on a devnet config', () => {
+    const devnetConfig = { ...DEFAULT_CONFIG, cluster: 'devnet' as const, rpcUrl: 'https://api.devnet.solana.com' };
+    const jupiter = listConnectorCapabilities(devnetConfig).find((connector) => connector.id === 'jupiter');
 
     expect(jupiter?.readiness.reads).toMatchObject({
       ready: false,

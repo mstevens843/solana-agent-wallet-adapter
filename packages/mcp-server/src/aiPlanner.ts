@@ -70,6 +70,10 @@ import { BLINK_CLASSIFIER_REVIEW_PROMPT } from './blinkClassification.js';
 import { createMcpCapabilityResolver } from './agentResolvers/index.js';
 import { getJupiterPriceBatch } from './adapters/jupiter/prices.js';
 import { getJupiterTokenSearch } from './adapters/jupiter/tokens.js';
+import { getJupiterTokenRiskEvidence } from './adapters/jupiter/tokenEvidence.js';
+import { requestCoinGeckoGlobal } from './coingecko.js';
+import { getMintCreationTxForMint, getHeliusTransactionHistory } from './helius.js';
+import { AlternativeMeClient } from './adapters/alternative_me/index.js';
 import { DEFAULT_CONFIG, type AgentWalletConfig } from './config.js';
 import type { TransactionSimulator } from './simulationDigest.js';
 
@@ -981,6 +985,9 @@ export class BridgeAiPlanner {
     }
     const normalizedRequest = normalizeChatRequest(request);
     assertAiChatRequestAllowed(normalizedRequest);
+    // Single-shot path (no tool loop): resolve any detected data intents via the
+    // API-first wrappers and inject them as context.resolvedFacts for the prompt.
+    await this.enrichSingleShotChatContext(normalizedRequest);
     const transport = resolveAiTransport(config);
     if (chatNeedsWebResearch(normalizedRequest) && !supportsNativeWebResearch(config)) {
       return unsupportedResearchChat(normalizedRequest, config);
@@ -1040,6 +1047,10 @@ export class BridgeAiPlanner {
       // single-shot grounded chat and stream its answer so the surface still works.
       const result = await this.chat(request);
       await streamTextAsTokens(result.answer, emit, signal);
+      // The single-shot path can still prepare a wallet action (proposedAction in
+      // its JSON). Surface it as the same `proposal` event the streaming tool loop
+      // emits so the frontend renders one inline approval card on every transport.
+      if (result.proposedAction) await emit({ type: 'proposal', proposal: result.proposedAction });
       await emit({ type: 'done', result });
     } catch (err) {
       if (signal?.aborted || isAbortError(err)) return; // client gone — stop quietly
@@ -1056,9 +1067,9 @@ export class BridgeAiPlanner {
   // Run a read tool but never let a throw kill the whole turn — surface it to the
   // model as a tool-error result so it can recover. (Today both loops only call
   // known tools; this future-proofs new tool additions.)
-  private async runChatReadToolSafe(name: string, input: Record<string, unknown>): Promise<{ summary: string; data: unknown }> {
+  private async runChatReadToolSafe(name: string, input: Record<string, unknown>, walletAddress = ''): Promise<{ summary: string; data: unknown }> {
     try {
-      return await this.runChatReadTool(name, input);
+      return await this.runChatReadTool(name, input, walletAddress);
     } catch (err) {
       return { summary: 'Tool failed.', data: { error: redactText(err instanceof Error ? err.message : String(err)) } };
     }
@@ -1163,7 +1174,7 @@ export class BridgeAiPlanner {
           continue;
         }
         await emit({ type: 'tool_status', tool: use.name, phase: 'start', label: chatToolStatusLabel(use.name, input) });
-        const result = await this.runChatReadToolSafe(use.name, input);
+        const result = await this.runChatReadToolSafe(use.name, input, effectiveChatWalletAddress(request));
         await emit({ type: 'tool_status', tool: use.name, phase: 'done', label: result.summary });
         toolResults.push({ type: 'tool_result', tool_use_id: use.id, content: JSON.stringify(result.data).slice(0, 6000) });
       }
@@ -1264,7 +1275,7 @@ export class BridgeAiPlanner {
           continue;
         }
         await emit({ type: 'tool_status', tool: call.name, phase: 'start', label: chatToolStatusLabel(call.name, input) });
-        const result = await this.runChatReadToolSafe(call.name, input);
+        const result = await this.runChatReadToolSafe(call.name, input, effectiveChatWalletAddress(request));
         await emit({ type: 'tool_status', tool: call.name, phase: 'done', label: result.summary });
         messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result.data).slice(0, 6000) });
       }
@@ -1275,9 +1286,31 @@ export class BridgeAiPlanner {
   // Executes one curated read tool server-side, grounding the agent in live data.
   // Backed by public Jupiter adapters (no extra keys needed). Throwing here is
   // surfaced to the model as a tool error so it can recover.
-  private async runChatReadTool(name: string, input: Record<string, unknown>): Promise<{ summary: string; data: unknown }> {
+  private async runChatReadTool(name: string, input: Record<string, unknown>, walletAddress = ''): Promise<{ summary: string; data: unknown }> {
     const config = this.toolConfig();
     const query = typeof input.query === 'string' ? input.query.trim() : '';
+    if (name === 'get_token_safety') {
+      const mint = await this.chatResolveMint(config, typeof input.mint === 'string' ? input.mint : query);
+      if (!mint) return { summary: 'No token resolved.', data: { error: 'a token symbol or mint is required' } };
+      const data = await resolveChatTokenSafety(config, mint);
+      return { summary: `Token safety for ${mint.slice(0, 8)}…`, data };
+    }
+    if (name === 'get_market_regime') {
+      const data = await resolveChatMarketRegime();
+      return { summary: 'Market regime', data };
+    }
+    if (name === 'get_token_age') {
+      const mint = await this.chatResolveMint(config, typeof input.mint === 'string' ? input.mint : query);
+      if (!mint) return { summary: 'No token resolved.', data: { error: 'a token symbol or mint is required' } };
+      const data = await resolveChatTokenAge(mint);
+      return { summary: `Token age for ${mint.slice(0, 8)}…`, data };
+    }
+    if (name === 'get_wallet_history') {
+      const wallet = walletAddress.trim();
+      if (!wallet) return { summary: 'No wallet connected.', data: { error: 'wallet not connected' } };
+      const data = await resolveChatWalletHistory(wallet);
+      return { summary: 'Recent wallet activity', data };
+    }
     if (name === 'search_tokens') {
       if (!query) return { summary: 'No query provided.', data: { error: 'query is required' } };
       try {
@@ -1312,6 +1345,16 @@ export class BridgeAiPlanner {
     throw new ProtocolError('invalid_request', `Unknown chat tool: ${name}`);
   }
 
+  // Resolve a single symbol / $TICKER / base58 mint to one mint address (for the
+  // safety + age tools). Returns '' when nothing resolves.
+  private async chatResolveMint(config: AgentWalletConfig, raw: string): Promise<string> {
+    const value = (raw ?? '').trim().replace(/^\$/, '');
+    if (!value) return '';
+    if (BASE58_MINT_PATTERN.test(value)) return value;
+    const mints = await this.resolveChatTokenMints(config, value);
+    return mints[0] ?? '';
+  }
+
   // Resolve a symbol or mint to one or more mint addresses for price lookup.
   private async resolveChatTokenMints(config: AgentWalletConfig, query: string): Promise<string[]> {
     if (BASE58_MINT_PATTERN.test(query)) return [query];
@@ -1320,6 +1363,48 @@ export class BridgeAiPlanner {
       return result.tokens.map((token) => token.id).filter((mint): mint is string => typeof mint === 'string' && mint.length > 0).slice(0, 3);
     } catch {
       return [];
+    }
+  }
+
+  // Single-shot transports (cli-agent / gemini-native, and the non-streaming
+  // /bridge/ai/chat the native Device-Agent relay uses) have NO tool loop, so the
+  // model can't call the read tools. Instead, detect data intents in the latest
+  // user message, resolve just those via the SAME wrappers, and inject compact
+  // facts into request.context.resolvedFacts (which aiChatMessages serializes into
+  // the prompt). Bounded + concurrent + per-fact timeout; never throws.
+  private async enrichSingleShotChatContext(request: Required<AiChatRequest>): Promise<void> {
+    const lastUser = [...request.messages].reverse().find((m) => m.role === 'user')?.content ?? '';
+    if (!lastUser) return;
+    const text = lastUser.toLowerCase();
+    const wantSafety = /\b(safe|safety|rug|honeypot|mint authority|freeze authority|can (?:they|the issuer|someone|anyone) freeze|verified)\b/.test(text);
+    const wantAge = /\b(how old|token age|days? old|fresh launch|newly? launched|just launched|when (?:was|did)\b.*\b(launch|created|mint))\b/.test(text);
+    const wantRegime = /\b(fear (?:and|&|\/) ?greed|btc dominance|bitcoin dominance|market regime|total (?:crypto )?market cap|market sentiment)\b/.test(text);
+    const wantHistory = /\b(my (?:recent )?(?:transactions?|txns?|history|activity)|recent (?:transactions?|activity)|what did i (?:do|send|swap|buy)|last (?:few )?(?:transactions?|txns?))\b/.test(text);
+    if (!wantSafety && !wantAge && !wantRegime && !wantHistory) return;
+    const config = this.toolConfig();
+    let mint = '';
+    if (wantSafety || wantAge) {
+      try { mint = await this.chatResolveMint(config, extractChatTokenRef(lastUser)); } catch { mint = ''; }
+    }
+    const specs: Array<{ key: string; run: () => Promise<Record<string, unknown>> }> = [];
+    if (wantSafety && mint) specs.push({ key: 'tokenSafety', run: () => resolveChatTokenSafety(config, mint) });
+    if (wantAge && mint) specs.push({ key: 'tokenAge', run: () => resolveChatTokenAge(mint) });
+    if (wantRegime) specs.push({ key: 'marketRegime', run: () => resolveChatMarketRegime() });
+    if (wantHistory) {
+      const wallet = effectiveChatWalletAddress(request);
+      if (wallet) specs.push({ key: 'walletHistory', run: () => resolveChatWalletHistory(wallet) });
+    }
+    if (specs.length === 0) return;
+    const results = await Promise.all(specs.map(async (spec) => {
+      const data = await Promise.race<Record<string, unknown>>([
+        spec.run(),
+        new Promise<Record<string, unknown>>((resolve) => setTimeout(() => resolve({ unavailable: true, error: 'timeout' }), CHAT_FACT_TIMEOUT_MS)),
+      ]);
+      return [spec.key, data] as const;
+    }));
+    const facts = Object.fromEntries(results);
+    if (Object.keys(facts).length > 0) {
+      request.context = { ...request.context, resolvedFacts: facts };
     }
   }
 
@@ -2643,9 +2728,17 @@ function aiAskMessages(request: Required<AiAskRequest>): Array<{ role: 'system' 
 // --- Streaming chat (web Chat tab) helpers -----------------------------------
 const CHAT_TOOL_MAX_ITERATIONS = 5;
 const CHAT_TOOL_MAX_TOKENS = 1500;
-const CHAT_TOOL_NAMES = new Set(['get_token_price', 'search_tokens']);
+const CHAT_TOOL_NAMES = new Set(['get_token_price', 'search_tokens', 'get_token_safety', 'get_market_regime', 'get_token_age', 'get_wallet_history']);
 const CHAT_PROPOSAL_KINDS = new Set(['transfer_sol', 'transfer_spl', 'swap', 'sign_proof']);
 const BASE58_MINT_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+// Tokens that may be referenced by symbol in a chat proposal. Every other token
+// (the long tail of SPLs/"shitcoins") MUST be a base58 mint - never a guessed
+// symbol. Mirrors the client-side resolver so both validators agree.
+const CHAT_MAJOR_SYMBOLS = new Set(['SOL', 'USDC', 'USDT', 'PYUSD']);
+function isResolvedTokenRef(value: string): boolean {
+  const v = value.trim();
+  return CHAT_MAJOR_SYMBOLS.has(v.toUpperCase()) || BASE58_MINT_PATTERN.test(v);
+}
 
 type AnthropicStreamBlock =
   | { type: 'text'; text: string }
@@ -2746,21 +2839,61 @@ const CHAT_LANGUAGE_NAMES: Record<string, string> = {
   ru: 'Russian',
 };
 
+function chatContextWalletAddress(context: Record<string, unknown> | undefined): string {
+  if (!context) return '';
+  const browserWallet = context.browserWallet;
+  if (browserWallet && typeof browserWallet === 'object' && !Array.isArray(browserWallet)) {
+    const record = browserWallet as Record<string, unknown>;
+    const connected = record.connected === true || record.connected === 'true';
+    const address = typeof record.address === 'string' ? record.address.trim() : '';
+    if (connected && address) return address;
+  }
+  const wallet = context.wallet;
+  if (wallet && typeof wallet === 'object' && !Array.isArray(wallet)) {
+    const record = wallet as Record<string, unknown>;
+    const address = typeof record.address === 'string'
+      ? record.address.trim()
+      : (typeof record.publicKey === 'string' ? record.publicKey.trim() : '');
+    if (address) return address;
+  }
+  return typeof context.connectedWallet === 'string' ? context.connectedWallet.trim() : '';
+}
+
+function effectiveChatWalletAddress(request: Required<AiChatRequest>): string {
+  return request.walletAddress || chatContextWalletAddress(request.context);
+}
+
+function chatReadOnlyWalletContext(request: Required<AiChatRequest>): string {
+  const context = request.context ?? {};
+  const out: Record<string, unknown> = {};
+  for (const key of ['browserWallet', 'wallet', 'walletBalance', 'walletBalanceStatus']) {
+    const value = context[key];
+    if (value !== undefined) out[key] = value;
+  }
+  return Object.keys(out).length > 0 ? JSON.stringify(out).slice(0, 2500) : '';
+}
+
 function chatAgenticSystemPrompt(request: Required<AiChatRequest>): string {
-  const wallet = request.walletAddress ? request.walletAddress : 'not connected';
+  const wallet = effectiveChatWalletAddress(request) || 'not connected';
+  const readOnlyWalletContext = chatReadOnlyWalletContext(request);
   const uiLanguage = typeof request.context?.uiLanguage === 'string' ? request.context.uiLanguage : 'en';
   const languageName = CHAT_LANGUAGE_NAMES[uiLanguage] ?? '';
   return [
     'You are the Agentic wallet assistant, a knowledgeable, concise Solana agent embedded in the user\'s wallet app.',
     'You help the user understand their wallet, tokens, prices, and risk, and you can prepare wallet actions for their explicit approval.',
-    `Connected wallet: ${wallet}. Cluster: ${request.cluster || 'mainnet-beta'}.`,
+    // This app is mainnet-only, always. Never tell the user it is on devnet/testnet.
+    `Connected wallet: ${wallet}. Network: mainnet-beta (this app is mainnet-only).`,
+    ...(readOnlyWalletContext ? [`Read-only wallet context: ${readOnlyWalletContext}`] : []),
     ...(languageName && uiLanguage !== 'en'
       ? [`LANGUAGE: Always reply in ${languageName}, regardless of the language the user writes in. Keep token symbols, mint/wallet addresses, numbers, and URLs verbatim.`]
       : []),
     '',
     'GROUNDING (API-first): For any token price or token information, you MUST call the provided tools (get_token_price, search_tokens) and base your answer on the returned data. Never invent prices, balances, token mints, or addresses. If a tool returns no data, say what is missing; do not guess.',
+    'WALLET HOLDINGS: For the user\'s own balances, holdings, biggest position, or portfolio value, use the provided walletBalance context (sol, usdc, and holdings[] sorted by USD value, plus totalUsd) - it is their current on-chain wallet. Do not call tools for it. If no walletBalance is present, say balances are still loading.',
+    'DATA TOOLS: For token safety (mint/freeze authority, verified, organic score) call get_token_safety; for token age call get_token_age; for market regime (BTC dominance, total market cap, fear & greed) call get_market_regime; for this wallet\'s recent transactions call get_wallet_history. You MUST call the matching tool first for these; only if a tool result has "unavailable":true or an "error" may you fall back to web search. Never invent authority status, token age, market figures, or transactions.',
     '',
-    'ACTIONS: When the user clearly wants to act (send, transfer, swap, or sign a proof), call the propose_wallet_action tool to prepare it. Rules:',
+    'ACTIONS: When the user clearly wants to act (send, transfer, swap, or sign a proof), you MUST call the propose_wallet_action tool to PREPARE it. Preparing is always safe: it only renders a review card. The human reviews the card and signs in their own wallet. You never sign, submit, broadcast, or approve.',
+    '- ALWAYS PREPARE, NEVER REFUSE: do not decline to prepare a transfer or swap on safety grounds. Self-transfers (recipient equals the connected wallet) are explicitly allowed - prepare them normally; the wallet still asks the human to sign. The ONLY valid reasons not to prepare are a missing/invalid recipient address, a missing amount, or an unresolved non-SOL/USDC token mint. In those cases ask one concise follow-up for the missing field instead of refusing.',
     '- You NEVER sign, submit, approve, or send. You only prepare a proposal; the human reviews a card and approves in their wallet.',
     '- kind must be one of: transfer_sol, transfer_spl, swap, sign_proof.',
     '- sign_proof: to create a signed proof or attestation of a statement (this signs a MESSAGE, not a transaction; no recipient or amount), call propose_wallet_action with kind "sign_proof", params.statement set to the exact claim the user wants to attest, and a short title in summary.',
@@ -2771,6 +2904,100 @@ function chatAgenticSystemPrompt(request: Required<AiChatRequest>): string {
     'STYLE: Be direct and brief. Lead with the answer (no "I will check..." preamble). Use plain hyphens, never em-dashes. You may use simple markdown: **bold**, `inline code`, and "- " bullet or "1. " numbered lists. No headings, tables, images, or raw HTML. After proposing an action, tell the user to review the card and approve it.',
     'SAFETY: Never request private keys, seed phrases, or wallet auth tokens. Never claim anything is signed, sent, or guaranteed safe.',
   ].join('\n');
+}
+
+// --- Shared API-first read wrappers (used by both the tool loop and the
+// single-shot context-injection path). Each reuses an existing adapter, returns
+// COMPACT JSON, and never throws — on a missing key / failure it returns
+// { unavailable: true } so the agent falls back to web search. --------------
+const CHAT_FACT_TIMEOUT_MS = 3500;
+let chatFearGreedClient: AlternativeMeClient | null = null;
+function chatFearGreed(): AlternativeMeClient {
+  if (!chatFearGreedClient) chatFearGreedClient = new AlternativeMeClient();
+  return chatFearGreedClient;
+}
+
+async function resolveChatTokenSafety(config: AgentWalletConfig, mint: string): Promise<Record<string, unknown>> {
+  try {
+    const ev = await getJupiterTokenRiskEvidence(config, { mint, includePrice: false });
+    const audit = (ev.audit && typeof ev.audit === 'object') ? ev.audit as Record<string, unknown> : {};
+    const boolOrNull = (v: unknown): boolean | null => (typeof v === 'boolean' ? v : null);
+    return {
+      mint,
+      found: ev.tokenFound,
+      ...(ev.symbol ? { symbol: ev.symbol } : {}),
+      verified: typeof ev.isVerified === 'boolean' ? ev.isVerified : null,
+      organicScore: typeof ev.organicScore === 'number' ? ev.organicScore : null,
+      ...(ev.organicScoreLabel ? { organicScoreLabel: ev.organicScoreLabel } : {}),
+      mintAuthorityDisabled: boolOrNull(audit.mintAuthorityDisabled),
+      freezeAuthorityDisabled: boolOrNull(audit.freezeAuthorityDisabled),
+      source: 'jupiter',
+    };
+  } catch (err) {
+    return { mint, unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+async function resolveChatMarketRegime(): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = { source: 'coingecko+alternative.me' };
+  try {
+    const g = await requestCoinGeckoGlobal();
+    if (g.btcDominancePct !== undefined) out.btcDominancePct = g.btcDominancePct;
+    if (g.ethDominancePct !== undefined) out.ethDominancePct = g.ethDominancePct;
+    if (g.totalMarketCapUsd !== undefined) out.totalMarketCapUsd = g.totalMarketCapUsd;
+    if (g.marketCapChangePct24hUsd !== undefined) out.marketCapChangePct24hUsd = g.marketCapChangePct24hUsd;
+  } catch { /* leave global fields absent */ }
+  try {
+    const fg = await chatFearGreed().getFearGreedIndex();
+    if (fg) { out.fearGreed = fg.value; out.fearGreedLabel = fg.classification; }
+  } catch { /* leave fear/greed absent */ }
+  if (out.btcDominancePct === undefined && out.totalMarketCapUsd === undefined && out.fearGreed === undefined) {
+    return { unavailable: true, error: 'market data unavailable' };
+  }
+  return out;
+}
+
+async function resolveChatTokenAge(mint: string): Promise<Record<string, unknown>> {
+  try {
+    const res = await getMintCreationTxForMint(mint);
+    const tx = res.ok && res.tx && typeof res.tx === 'object' ? res.tx as Record<string, unknown> : null;
+    const ts = tx && typeof tx.timestamp === 'number' ? tx.timestamp : undefined;
+    if (!ts) return { mint, unavailable: true, reason: res.reason ?? 'no_creation_tx' };
+    const ageSeconds = Math.max(0, Math.floor(Date.now() / 1000) - ts);
+    return { mint, createdAt: new Date(ts * 1000).toISOString(), ageSeconds, source: 'helius' };
+  } catch (err) {
+    return { mint, unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+async function resolveChatWalletHistory(wallet: string): Promise<Record<string, unknown>> {
+  try {
+    const raw = await getHeliusTransactionHistory(wallet);
+    const list = Array.isArray(raw) ? raw : [];
+    const recent = list.slice(0, 5).map((entry) => {
+      const tx = entry && typeof entry === 'object' ? entry as Record<string, unknown> : {};
+      return {
+        ...(typeof tx.signature === 'string' ? { signature: tx.signature } : {}),
+        ...(typeof tx.type === 'string' ? { type: tx.type } : {}),
+        ...(typeof tx.timestamp === 'number' ? { timestamp: tx.timestamp } : {}),
+        ...(typeof tx.description === 'string' ? { description: (tx.description as string).slice(0, 160) } : {}),
+      };
+    });
+    return { wallet, count: recent.length, recent, source: 'helius' };
+  } catch (err) {
+    return { wallet, unavailable: true, error: redactText(err instanceof Error ? err.message : String(err)) };
+  }
+}
+
+// Extract a token reference (base58 mint / $TICKER / ALLCAPS symbol) from free text.
+function extractChatTokenRef(text: string): string {
+  const base58 = text.match(/\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/);
+  if (base58) return base58[0];
+  const ticker = text.match(/\$([A-Za-z][A-Za-z0-9]{1,9})\b/);
+  if (ticker?.[1]) return ticker[1];
+  const caps = text.match(/\b([A-Z]{2,10})\b/);
+  if (caps?.[1]) return caps[1];
+  return '';
 }
 
 function chatToolsAnthropic(): Array<Record<string, unknown>> {
@@ -2792,6 +3019,34 @@ function chatToolsAnthropic(): Array<Record<string, unknown>> {
         properties: { query: { type: 'string', description: 'Token symbol or name to search' } },
         required: ['query'],
       },
+    },
+    {
+      name: 'get_token_safety',
+      description: 'Get on-chain safety facts for a Solana token: whether mint & freeze authority are disabled, verification status, and organic score. Call this for any "is X safe / can it be frozen / mint authority / rug" question. Accepts a symbol or base58 mint.',
+      input_schema: {
+        type: 'object',
+        properties: { mint: { type: 'string', description: 'Token symbol or base58 mint address' } },
+        required: ['mint'],
+      },
+    },
+    {
+      name: 'get_market_regime',
+      description: 'Get current market-wide indicators: BTC dominance, total crypto market cap, and the Fear & Greed index. Call this for market-regime / fear & greed / dominance / total market cap questions.',
+      input_schema: { type: 'object', properties: {}, required: [] },
+    },
+    {
+      name: 'get_token_age',
+      description: 'Get how old a Solana token is (mint creation time + age in seconds). Call this for "how old / when was it launched / is it fresh" questions. Accepts a symbol or base58 mint.',
+      input_schema: {
+        type: 'object',
+        properties: { mint: { type: 'string', description: 'Token symbol or base58 mint address' } },
+        required: ['mint'],
+      },
+    },
+    {
+      name: 'get_wallet_history',
+      description: "Get the connected wallet's most recent on-chain transactions (compact summaries). Call this for 'my recent transactions / activity / what did I do' questions.",
+      input_schema: { type: 'object', properties: {}, required: [] },
     },
     {
       name: 'propose_wallet_action',
@@ -2866,6 +3121,9 @@ export function validateChatProposedAction(input: Record<string, unknown>): { pr
     if (!token) {
       return { error: 'transfer_spl requires the token mint (or SOL/USDC symbol) in params.token.' };
     }
+    if (!isResolvedTokenRef(token)) {
+      return { error: `${token} needs a mint address. Pick the token from your balances or paste its base58 mint.` };
+    }
   }
   if (kind === 'swap') {
     if (params.amount === undefined || String(params.amount).trim() === '') {
@@ -2875,6 +3133,15 @@ export function validateChatProposedAction(input: Record<string, unknown>): { pr
     const outputToken = typeof params.outputToken === 'string' ? params.outputToken.trim() : '';
     if (!inputToken || !outputToken) {
       return { error: 'swap requires both params.inputToken and params.outputToken.' };
+    }
+    if (!isResolvedTokenRef(inputToken)) {
+      return { error: `${inputToken} needs a mint address. Pick the input token from your balances or paste its base58 mint.` };
+    }
+    if (!isResolvedTokenRef(outputToken)) {
+      return { error: `${outputToken} needs a mint address. Pick the output token from your balances or paste its base58 mint.` };
+    }
+    if (inputToken === outputToken) {
+      return { error: 'input and output tokens must be different.' };
     }
   }
   if (kind === 'sign_proof') {
@@ -2918,18 +3185,20 @@ async function streamTextAsTokens(
 
 function aiChatMessages(request: Required<AiChatRequest>): Array<{ role: 'system' | 'user'; content: string }> {
   const needsResearch = chatNeedsWebResearch(request);
+  const walletAddress = effectiveChatWalletAddress(request);
   return [
     {
       role: 'system',
       content:
-        'You are the Solana Agent Wallet CLI research assistant. Help the wallet user reason about Solana, wallet actions, tokens, protocols, connector capabilities, and risk before any plan exists. Return ONLY compact JSON with shape {"answer":"direct 1-2 sentence answer","sections":[{"title":"Key Facts","bullets":["short fact"]}],"next":"optional next step"}. Use 0-4 sections and 1-5 bullets per section. Put the direct answer first; do not start with process narration like "I will check". If the user asks for current or outside facts and web search is available, search reliable sources and cite source URLs. Prefer section titles such as Key Facts, Watchouts, Wallet Angle, Comparison, or Missing Info. You may help identify fields needed for a later wallet request, but do not queue, sign, approve, submit, or claim anything is safe or already approved. Never request private keys, seed phrases, session keys, wallet auth tokens, or unrestricted approvals. If useful, set next to "Type /plan, /new, or /prepare when you want to prepare a visible wallet request."',
+        'You are the Solana Agent Wallet assistant. Help the wallet user reason about Solana, wallet actions, tokens, protocols, connector capabilities, and risk. This app is mainnet-only - never say it is on devnet or testnet. Return ONLY compact JSON with shape {"answer":"direct 1-2 sentence answer","sections":[{"title":"Key Facts","bullets":["short fact"]}],"next":"optional next step","proposedAction":{"kind":"transfer_sol|transfer_spl|swap|sign_proof","summary":"one-line summary","params":{...},"resolution":{"recipientSource":"user_input"}}}. Use 0-4 sections and 1-5 bullets per section. Put the direct answer first; do not start with process narration like "I will check". ACTIONS: when the user clearly wants to send, transfer, swap, or sign a proof, INCLUDE proposedAction to PREPARE it. Preparing is always safe: it only renders a review card that the human reviews and signs in their own wallet. Self-transfers (recipient equals the connected wallet) are allowed. You never sign, submit, broadcast, or approve. Only omit proposedAction (and ask one short follow-up) when the recipient address, the amount, or a non-SOL/USDC token mint is missing. params by kind: transfer_sol {recipient, amountSol}; transfer_spl {token, recipient, amount}; swap {inputToken, outputToken, amount, slippageBps}; sign_proof {statement}. For any token other than SOL/USDC you MUST put its base58 mint (not the symbol) in params; never guess a mint. The recipient MUST be a real base58 address the user typed explicitly. For the user\'s own balances/holdings/biggest position/portfolio value, use the provided context.walletBalance (sol, usdc, holdings[] sorted by USD value, totalUsd) - it is their live wallet; never invent balances. When context.resolvedFacts is present, it holds authoritative API data for this turn (tokenSafety = mint/freeze authority + verified + organic score; tokenAge; marketRegime = BTC dominance / total market cap / fear & greed; walletHistory = recent transactions) - use it and do not web-search those; if a fact is absent or has "unavailable":true, web-search instead. Never invent authority status, token age, market figures, or transactions. If the user asks for current or outside facts and web search is available, search reliable sources and cite source URLs. Prefer section titles such as Key Facts, Watchouts, Wallet Angle, Comparison, or Missing Info. Never request private keys, seed phrases, session keys, wallet auth tokens, or unrestricted approvals.',
     },
     {
       role: 'user',
       content: JSON.stringify({
         messages: request.messages,
-        walletAddress: request.walletAddress || 'not_connected',
-        cluster: request.cluster || 'unknown',
+        walletAddress: walletAddress || 'not_connected',
+        // Mainnet-only app: never surface devnet/testnet to the user.
+        network: 'mainnet-beta',
         context: request.context,
         research: {
           needed: needsResearch,
@@ -2937,11 +3206,7 @@ function aiChatMessages(request: Required<AiChatRequest>): Array<{ role: 'system
           currentDate: new Date().toISOString(),
           maxSearches: RESEARCH_MAX_USES,
         },
-        commandHints: {
-          prepare: ['/plan', '/new', '/prepare'],
-          exit: '/exit',
-        },
-        requiredBoundary: 'This is pre-plan chat. It cannot sign, submit, queue, or approve a transaction.',
+        requiredBoundary: 'You may PREPARE a wallet action (proposedAction) for the human to review and sign. You never sign, submit, broadcast, or approve - the wallet asks the human to approve. This app is mainnet-only.',
       }),
     },
   ];
@@ -3141,19 +3406,36 @@ interface NormalizedAgentChatText {
   answer: string;
   sections?: AiChatSection[];
   next?: string;
+  proposedAction?: AgentChatProposedAction;
 }
 
 function normalizeStructuredAgentChatText(text: string): NormalizedAgentChatText | null {
   const parsed = parsePlanJson(text);
-  const answer = typeof parsed.answer === 'string' ? stripAgentProcessPreamble(parsed.answer) : '';
-  if (!answer.trim()) return null;
+  // A single-shot/connector reply may carry a wallet action to prepare. Validate
+  // it the same way the streaming tool loop does so both paths converge on one
+  // card and one sign flow.
+  const proposedAction = extractValidatedProposedAction(parsed.proposedAction);
+  let answer = typeof parsed.answer === 'string' ? stripAgentProcessPreamble(parsed.answer) : '';
+  if (!answer.trim()) {
+    // Model returned only a proposal (no prose) — surface its summary as the reply
+    // so the bubble is not empty. Without a proposal, treat as unstructured.
+    if (!proposedAction) return null;
+    answer = proposedAction.summary;
+  }
   const sections = normalizeAgentChatSections(parsed.sections);
   const next = oneLineChatText(parsed.next, 220);
   return {
     answer: compactReviewText(answer, 420),
     ...(sections.length > 0 ? { sections } : {}),
     ...(next ? { next } : {}),
+    ...(proposedAction ? { proposedAction } : {}),
   };
+}
+
+function extractValidatedProposedAction(value: unknown): AgentChatProposedAction | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const { proposal } = validateChatProposedAction(value as Record<string, unknown>);
+  return proposal;
 }
 
 function normalizeAgentChatSections(value: unknown): AiChatSection[] {
