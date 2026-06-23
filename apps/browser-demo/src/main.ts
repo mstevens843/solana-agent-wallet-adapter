@@ -20498,6 +20498,7 @@ interface ChatActionBuilder {
   toToken?: ChatBuilderToken;   // swap only
   amount?: ChatBuilderAmount;
   recipient?: string;           // send only
+  memo?: string;                // send only
   statement?: string;           // sign only
   slippageBps?: string;         // swap only
 }
@@ -20541,7 +20542,8 @@ function compileBuilderToDraft(b: ChatActionBuilder): string {
   if (b.kind === 'send') {
     const token = chatBuilderTokenText(b.fromToken, 'SOL');
     const recipient = b.recipient?.trim() || '[recipient address]';
-    return `Send ${amount} ${token} to ${recipient}`;
+    const memo = b.memo && b.memo.trim() ? ` memo: ${b.memo.trim()}` : '';
+    return `Send ${amount} ${token} to ${recipient}${memo}`;
   }
   const from = chatBuilderTokenText(b.fromToken, 'SOL');
   const to = b.toToken ? chatBuilderTokenText(b.toToken, '[token]') : '[token]';
@@ -20776,9 +20778,16 @@ function chatInlineActionHtml(msg: ChatMessage, sessionId: string): string {
 // re-render/focus/paste bugs). Web/desktop keep the inline upward popover.
 type ChatPickerVariant = 'inline' | 'sheet';
 type ChatTokenPickerMode = 'list' | 'mint';
+type ChatTokenField = 'fromToken' | 'toToken';
 const CHAT_TOKEN_PAGE = 5;
-let chatTokenPickerMode: ChatTokenPickerMode = 'list';
-let chatTokenListLimit = CHAT_TOKEN_PAGE;
+// Per-field LIST/MINT mode + list pagination. The native-mobile action sheet shows BOTH
+// token fields at once (swap input + output), so a single global mode/limit would couple
+// them — keep them keyed by field. Desktop shows one picker at a time but reads the same
+// per-field helpers.
+const chatTokenPickerModes: Partial<Record<ChatTokenField, ChatTokenPickerMode>> = {};
+const chatTokenListLimits: Partial<Record<ChatTokenField, number>> = {};
+function chatTokenModeFor(field: ChatTokenField): ChatTokenPickerMode { return chatTokenPickerModes[field] ?? 'list'; }
+function chatTokenLimitFor(field: ChatTokenField): number { return chatTokenListLimits[field] ?? CHAT_TOKEN_PAGE; }
 
 function chatUsesSheet(): boolean {
   return IS_ANDROID_APP || IS_IOS_APP;
@@ -20807,7 +20816,10 @@ function ensureChatTokenLogos(): void {
     .filter((m) => m !== WSOL_MINT && !tokenMarketMetadata.get(m)?.logoURI);
   if (mints.length === 0) return;
   void fetchTokenMetadataForMints(mints)
-    .then((changed) => { if (changed && state.activeTab === 'chat') render(); })
+    // Don't force a full re-render while the action sheet is open — it would blow away a
+    // focused sheet input and drop the soft keyboard mid-type. The LIST select is text-only
+    // (no logos) and MINT search loads its own logos, so the repaint isn't needed there.
+    .then((changed) => { if (changed && state.activeTab === 'chat' && state.activeMobileRailSheet !== 'chat-action') render(); })
     .catch(() => undefined);
 }
 
@@ -20932,7 +20944,7 @@ function chatTokenPickerRowHtml(item: ChatTokenListItem): string {
 }
 
 function chatTokenPickerHtml(field: ChatPickerField, variant: ChatPickerVariant = 'inline'): string {
-  const mode = chatTokenPickerMode;
+  const mode = chatTokenModeFor(field as ChatTokenField);
   const searchId = `chat:${field}`;
   const toggle = `
     <div class="chat-token-modes">
@@ -20951,7 +20963,7 @@ function chatTokenPickerHtml(field: ChatPickerField, variant: ChatPickerVariant 
     if (items.length === 0) {
       body = `<p class="chat-token-empty">${escapeHtml(t('No tokens with a balance yet.'))}</p>`;
     } else {
-      const limit = Math.max(CHAT_TOKEN_PAGE, chatTokenListLimit);
+      const limit = Math.max(CHAT_TOKEN_PAGE, chatTokenLimitFor(field as ChatTokenField));
       const shown = items.slice(0, limit);
       const remaining = items.length - shown.length;
       const more = remaining > 0
@@ -20987,26 +20999,245 @@ function chatAmountPickerHtml(b: ChatActionBuilder, variant: ChatPickerVariant =
     : `<div class="chat-picker chat-amount-picker" data-chat-picker>${inner}</div>`;
 }
 
+// One token field for the full-form action sheet, mirroring the New Request token
+// field (`tokenFieldInput`): a label + LIST/MINT toggle, then either the collapsed
+// "SOL ▾" select-picker (LIST) or the live mint search shell (MINT). Wired to the chat
+// builder state (state.chatActionBuilder[field]) — independent per field.
+function chatSheetTokenFieldHtml(field: ChatTokenField, label: string): string {
+  const b = state.chatActionBuilder;
+  const current = b ? b[field] : undefined;
+  const presetMode = chatTokenModeFor(field) === 'list';
+  const modeToggle = `
+    <span class="token-choice-mode" role="group" aria-label="${escapeHtml(tf('{field} input mode', { field: label }))}">
+      <button type="button" data-chat-token-field-mode="list" data-chat-token-field="${escapeHtml(field)}" class="${presetMode ? 'active' : ''}">${escapeHtml(t('List'))}</button>
+      <button type="button" data-chat-token-field-mode="mint" data-chat-token-field="${escapeHtml(field)}" class="${presetMode ? '' : 'active'}">${escapeHtml(t('Mint'))}</button>
+    </span>`;
+  let body: string;
+  if (presetMode) {
+    const items = chatTokenListItems(field);
+    const options = items.map((i) => ({ value: i.mint, label: i.symbol || tokenDisplayLabel(i.mint), detail: tokenDisplayTitle(i.mint) }));
+    if (current && !options.some((o) => o.value === current.mint)) {
+      options.unshift({ value: current.mint, label: current.symbol || tokenDisplayLabel(current.mint), detail: tokenDisplayTitle(current.mint) });
+    }
+    body = selectPicker({
+      id: `chat-token-${field}`,
+      value: current?.mint ?? '',
+      options,
+      attrs: { 'data-chat-token-select': field },
+      placeholder: t('Pick token'),
+    });
+  } else {
+    const searchId = `chat:${field}`;
+    body = `
+      <div class="token-search-shell">
+        <input data-token-search-input="${escapeHtml(searchId)}" data-chat-token-search-field="${escapeHtml(field)}" value="${escapeHtml(tokenSearchStates.get(searchId)?.query ?? '')}" placeholder="${escapeHtml(t('Search symbol/name or paste mint'))}" autocomplete="off" spellcheck="false" inputmode="search" />
+        <div class="token-search-results" data-token-search-results="${escapeHtml(searchId)}">${tokenSearchDropdownHtml(searchId)}</div>
+      </div>`;
+  }
+  return `
+    <div class="field compact planner-field token-choice-field">
+      <span class="token-choice-head">
+        <span>${escapeHtml(label)}</span>
+        ${modeToggle}
+      </span>
+      ${body}
+    </div>`;
+}
+
+// A plain labelled text/number field for the action sheet (amount, slippage, recipient,
+// memo). Reuses the existing live input handlers via the data-* attribute passed in.
+function chatSheetTextFieldHtml(opts: { label: string; value: string; placeholder: string; attr: string; inputmode?: string; mono?: boolean }): string {
+  return `
+    <label class="field compact planner-field${opts.mono ? ' chat-sheet-mono' : ''}">
+      <span>${escapeHtml(opts.label)}</span>
+      <input ${opts.attr} value="${escapeHtml(opts.value)}" placeholder="${escapeHtml(opts.placeholder)}" autocomplete="off" spellcheck="false"${opts.inputmode ? ` inputmode="${escapeHtml(opts.inputmode)}"` : ''} />
+    </label>`;
+}
+
+// A responsive field row mirroring the New Request mobile grid: two short fields pair
+// side-by-side, a single field spans full width.
+function chatSheetFieldRow(...fields: string[]): string {
+  const shape = fields.length > 1 ? 'mobile-field-pair' : 'mobile-field-full';
+  return `<div class="mobile-planner-field-row ${shape}">${fields.map((f) => `<div class="mobile-planner-field">${f}</div>`).join('')}</div>`;
+}
+
+// The full single-sheet form for a wallet action (native mobile). Every field is visible
+// at once (no per-field sub-sheets), typed inputs sit near the top so the sheet rides
+// above the keyboard, and a sticky Confirm autofills the composer grammar.
+function chatActionSheetFormHtml(b: ChatActionBuilder): string {
+  const amountRaw = b.amount?.raw ?? '';
+  let fields: string;
+  if (b.kind === 'swap') {
+    fields = `
+      ${chatSheetFieldRow(chatSheetTokenFieldHtml('fromToken', t('Input token')), chatSheetTokenFieldHtml('toToken', t('Output token')))}
+      ${chatSheetFieldRow(
+        chatSheetTextFieldHtml({ label: t('Token amount'), value: amountRaw, placeholder: '0.01', attr: 'data-chat-amount-input', inputmode: 'decimal' }),
+        chatSheetTextFieldHtml({ label: t('Max slippage (bps)'), value: b.slippageBps?.trim() ?? '', placeholder: t('Auto'), attr: 'data-chat-slippage-live', inputmode: 'numeric' }),
+      )}`;
+  } else if (b.kind === 'send') {
+    fields = `
+      ${chatSheetFieldRow(chatSheetTextFieldHtml({ label: t('Recipient address'), value: b.recipient ?? '', placeholder: t('Recipient public key'), attr: 'data-chat-chip-recipient', mono: true }))}
+      ${chatSheetFieldRow(
+        chatSheetTokenFieldHtml('fromToken', t('Token')),
+        chatSheetTextFieldHtml({ label: t('Amount'), value: amountRaw, placeholder: '0.01', attr: 'data-chat-amount-input', inputmode: 'decimal' }),
+      )}
+      ${chatSheetFieldRow(chatSheetTextFieldHtml({ label: t('Memo / reason'), value: b.memo ?? '', placeholder: t('Invoice, friend payment, reimbursement'), attr: 'data-chat-memo-input' }))}`;
+  } else {
+    // sign — interim simple statement form (the proof/evidence template builder replaces
+    // this branch).
+    fields = chatSheetFieldRow(`
+      <label class="field compact planner-field">
+        <span>${escapeHtml(t('Statement to attest'))}</span>
+        <input data-chat-chip-statement value="${escapeHtml(b.statement ?? '')}" placeholder="${escapeHtml(t('Statement to attest'))}" autocomplete="off" spellcheck="false" />
+      </label>`);
+  }
+  return `
+    <div class="chat-sheet-form" data-chat-sheet-form>
+      <div class="chat-sheet-fields mobile-planner-fields">${fields}</div>
+      <div class="chat-sheet-confirm">
+        <button type="button" class="primary" data-chat-action-confirm>${escapeHtml(t('Confirm'))}</button>
+      </div>
+    </div>`;
+}
+
+// --- Chat proof / evidence sheet (native mobile) -----------------------------
+// The "Sign proof" action mirrors the New Request proof/evidence builder: two tabs
+// (Proof = outcome 'proof'; Evidence = outcome 'audit'), each with a dropdown over all
+// templates of that outcome, then the selected template's fields. Confirm composes the
+// filled template into a readable statement and seeds the existing sign-proof builder, so
+// the composer autofills "Sign a proof that …" and Send queues a sign_proof PreparedAction.
+type ChatProofTab = 'proof' | 'audit';
+let chatProofTab: ChatProofTab = 'proof';
+let chatProofTemplateId = '';
+const chatProofFields: Record<string, string> = {};
+
+function chatProofTemplatesFor(tab: ChatProofTab): AgentPlanTemplate[] {
+  return AGENT_PLAN_TEMPLATES.filter((tpl) => templateOutcome(tpl) === tab);
+}
+function chatSelectedProofTemplate(): AgentPlanTemplate | undefined {
+  const list = chatProofTemplatesFor(chatProofTab);
+  return list.find((tpl) => tpl.id === chatProofTemplateId) ?? list[0];
+}
+function chatProofResetFields(template: AgentPlanTemplate): void {
+  for (const key of Object.keys(chatProofFields)) delete chatProofFields[key];
+  for (const f of template.fields) chatProofFields[f.id] = f.defaultValue ?? '';
+}
+function chatProofEnsureInit(): void {
+  const current = chatSelectedProofTemplate();
+  if (current && current.id === chatProofTemplateId) return;
+  const fallback = current ?? chatProofTemplatesFor(chatProofTab)[0];
+  if (!fallback) return;
+  chatProofTemplateId = fallback.id;
+  chatProofResetFields(fallback);
+}
+// Honor a field's showWhen visibility against the current chat-proof field values (mirrors
+// the New Request form so conditional fields don't render/contribute when irrelevant).
+function chatProofFieldVisible(fieldDef: AgentPlanTemplateField): boolean {
+  if (!fieldDef.showWhen) return true;
+  return Object.entries(fieldDef.showWhen).every(([key, allowed]) => {
+    const value = chatProofFields[key] ?? '';
+    return Array.isArray(allowed) ? allowed.includes(value) : allowed === value;
+  });
+}
+function composeChatProofStatement(template: AgentPlanTemplate): string {
+  const parts = template.fields
+    .filter(chatProofFieldVisible)
+    .map((f) => {
+      const v = (chatProofFields[f.id] ?? f.defaultValue ?? '').trim();
+      return v ? `${t(f.label)}: ${v}` : '';
+    })
+    .filter(Boolean);
+  return parts.length ? `${t(template.title)} — ${parts.join(', ')}` : t(template.title);
+}
+// Seed the sign-proof builder from the filled template and autofill the composer.
+function chatProofConfirm(): void {
+  const template = chatSelectedProofTemplate();
+  if (!template) return;
+  state.chatActionBuilder = { kind: 'sign', statement: composeChatProofStatement(template) };
+  state.chatActionPicker = null;
+  applyChatBuilderDraft();
+  closeChatActionSheet();
+  render();
+}
+
+function chatProofFieldHtml(fieldDef: AgentPlanTemplateField): string {
+  const value = chatProofFields[fieldDef.id] ?? fieldDef.defaultValue ?? '';
+  const label = t(fieldDef.label);
+  if (fieldDef.type === 'textarea') {
+    return `
+      <label class="field compact planner-field">
+        <span>${escapeHtml(label)}</span>
+        <textarea data-chat-proof-field="${escapeHtml(fieldDef.id)}" placeholder="${escapeHtml(t(fieldDef.placeholder ?? ''))}" rows="2">${escapeHtml(value)}</textarea>
+      </label>`;
+  }
+  if (fieldDef.type === 'select' && fieldDef.options && fieldDef.options.length > 0) {
+    const options = fieldDef.options.map((o) => ({ value: o, label: t(o) }));
+    return `
+      <div class="field compact planner-field">
+        <span>${escapeHtml(label)}</span>
+        ${selectPicker({ id: `chat-proof-${fieldDef.id}`, value, options, attrs: { 'data-chat-proof-select': fieldDef.id } })}
+      </div>`;
+  }
+  return `
+    <label class="field compact planner-field">
+      <span>${escapeHtml(label)}</span>
+      <input data-chat-proof-field="${escapeHtml(fieldDef.id)}" value="${escapeHtml(value)}" placeholder="${escapeHtml(t(fieldDef.placeholder ?? ''))}" autocomplete="off" spellcheck="false" />
+    </label>`;
+}
+
+function chatProofSheetHtml(): string {
+  chatProofEnsureInit();
+  const template = chatSelectedProofTemplate();
+  const tabBtn = (tab: ChatProofTab, label: string): string =>
+    `<button type="button" class="chat-proof-tab${chatProofTab === tab ? ' active' : ''}" data-chat-proof-tab="${tab}">${escapeHtml(label)}</button>`;
+  const templates = chatProofTemplatesFor(chatProofTab);
+  const templateOptions = templates.map((tpl) => ({ value: tpl.id, label: t(tpl.title), meta: t(titleCase(tpl.category)), detail: t(tpl.description) }));
+  const dropdown = templateOptions.length > 0
+    ? selectPicker({ id: 'chat-proof-template', value: template?.id ?? '', options: templateOptions, attrs: { 'data-chat-proof-template-select': 'template' } })
+    : `<p class="chat-token-empty">${escapeHtml(t('No templates available.'))}</p>`;
+  const fields = template ? template.fields.filter(chatProofFieldVisible).map((f) => chatProofFieldHtml(f)).join('') : '';
+  return `
+    <div class="chat-sheet-form" data-chat-sheet-form>
+      <div class="chat-proof-tabs" role="tablist">
+        ${tabBtn('proof', t('Proof'))}
+        ${tabBtn('audit', t('Evidence'))}
+      </div>
+      <div class="field compact planner-field">
+        <span>${escapeHtml(t('Plan template'))}</span>
+        ${dropdown}
+      </div>
+      <div class="chat-sheet-fields mobile-planner-fields">${fields}</div>
+      <div class="chat-sheet-confirm">
+        <button type="button" class="primary" data-chat-proof-confirm>${escapeHtml(t('Confirm'))}</button>
+      </div>
+    </div>`;
+}
+
 // Bottom-sheet header strings + body for the chat-action sheet (native mobile).
 function chatActionSheetTitle(): string {
-  const f = state.chatActionPicker?.field;
-  if (f === 'amount') return t('Amount');
-  if (f === 'slippage') return t('Max slippage');
-  if (f === 'fromToken' || f === 'toToken') return t('Choose a token');
+  const kind = state.chatActionBuilder?.kind;
+  if (kind === 'swap') return t('Swap tokens');
+  if (kind === 'send') return t('Send tokens');
+  if (kind === 'sign') return t('Sign proof');
   return t('Wallet Actions');
 }
 function chatActionSheetDetail(): string {
-  const kindLabel = state.chatActionBuilder?.kind === 'send' ? t('Send') : t('Swap');
-  return state.chatActionPicker ? kindLabel : t('Chat');
+  const kind = state.chatActionBuilder?.kind;
+  if (kind === 'swap') return t('Set up swap');
+  if (kind === 'send') return t('Set up send');
+  if (kind === 'sign') return t('Set up proof');
+  return t('Chat');
 }
 function chatActionSheetBodyHtml(): string {
-  const picker = state.chatActionPicker;
   const b = state.chatActionBuilder;
-  if (picker && b) {
-    if (picker.field === 'amount') return chatAmountPickerHtml(b, 'sheet');
-    if (picker.field === 'slippage') return chatSlippagePickerHtml(b, 'sheet');
-    return chatTokenPickerHtml(picker.field, 'sheet');
+  if (b && (b.kind === 'swap' || b.kind === 'send')) {
+    return chatActionSheetFormHtml(b);
   }
+  if (b && b.kind === 'sign') {
+    return chatProofSheetHtml();
+  }
+  // Fallback (no active builder): the 3-action menu. The composer dropdown is the primary
+  // entry point; this keeps the sheet non-empty if it is ever opened without a builder.
   return `
     <div class="chat-sheet-actions">
       ${CHAT_POWER_ACTIONS.map((action) => `
@@ -21026,13 +21257,30 @@ function chatComposerHtml(): string {
     : `<button type="submit" class="chat-send" data-chat-send aria-label="${escapeHtml(t('Send'))}">↑</button>`;
   const textarea = `<textarea class="chat-input" data-chat-input rows="1" placeholder="${escapeHtml(t('Message your agent…'))}" aria-label="${escapeHtml(t('Message your agent'))}"></textarea>`;
   const walletActionsBtn = `<button type="button" class="chat-plus-btn" data-chat-plus-toggle aria-haspopup="menu" aria-expanded="${state.chatComposerOpen ? 'true' : 'false'}" aria-label="${escapeHtml(t('Wallet Actions'))}"><span class="chat-plus-icon" aria-hidden="true">+</span><span class="chat-plus-label">${escapeHtml(t('Wallet Actions'))}</span></button>`;
-  // Native mobile: the Wallet Actions button sits on its own labeled row above the
-  // input; the menu + pickers open in the bottom sheet (no inline popover).
+  const plusOpen = state.chatComposerOpen ? ' open' : '';
+  const plusMenu = `
+    <div class="chat-plus-menu${plusOpen}" role="menu">
+      <span class="chat-plus-group">${escapeHtml(t('Wallet Actions'))}</span>
+      ${CHAT_POWER_ACTIONS.map((action) => `
+        <button type="button" class="chat-plus-option" role="menuitem" data-chat-action="${escapeHtml(action.id)}">
+          <span class="chat-plus-eyebrow">${escapeHtml(t(action.eyebrow))}</span>
+          <strong>${escapeHtml(t(action.title))}</strong>
+          <em>${escapeHtml(t(action.description))}</em>
+        </button>
+      `).join('')}
+    </div>`;
+  // Native mobile: the Wallet Actions button sits on its own labeled row above the input,
+  // and its menu opens UPWARD as a dropdown (not a sheet). Picking an action opens one
+  // full-form sheet — so there is no inline chip builder bar here.
   if (chatUsesSheet()) {
     return `
-      ${chatBuilderBarHtml()}
       <form class="chat-composer chat-composer-mobile" data-chat-composer>
-        <div class="chat-actions-row">${walletActionsBtn}</div>
+        <div class="chat-actions-row">
+          <div class="chat-plus">
+            ${walletActionsBtn}
+            ${plusMenu}
+          </div>
+        </div>
         <div class="chat-input-row">
           ${textarea}
           ${sendButton}
@@ -21040,22 +21288,12 @@ function chatComposerHtml(): string {
       </form>
     `;
   }
-  const plusOpen = state.chatComposerOpen ? ' open' : '';
   return `
     ${chatBuilderBarHtml()}
     <form class="chat-composer" data-chat-composer>
       <div class="chat-plus">
         ${walletActionsBtn}
-        <div class="chat-plus-menu${plusOpen}" role="menu">
-          <span class="chat-plus-group">${escapeHtml(t('Wallet Actions'))}</span>
-          ${CHAT_POWER_ACTIONS.map((action) => `
-            <button type="button" class="chat-plus-option" role="menuitem" data-chat-action="${escapeHtml(action.id)}">
-              <span class="chat-plus-eyebrow">${escapeHtml(t(action.eyebrow))}</span>
-              <strong>${escapeHtml(t(action.title))}</strong>
-              <em>${escapeHtml(t(action.description))}</em>
-            </button>
-          `).join('')}
-        </div>
+        ${plusMenu}
       </div>
       ${textarea}
       ${sendButton}
@@ -22250,11 +22488,12 @@ function applyChatBuilderDraft(): void {
   if (input) { input.value = chatDraft; chatAutoGrow(input); }
 }
 
-// Commit a token-picker selection into the open token field and recompile.
-function applyChatTokenPick(mint: string, symbol: string, decimals: number, logoURI?: string): void {
+// Commit a token selection into an EXPLICIT token field and recompile. Used by the
+// full-form sheet (both token fields are present at once, so the field can't be inferred
+// from a single "open picker") and by the token-search routing.
+function applyChatTokenPickFor(field: ChatTokenField, mint: string, symbol: string, decimals: number, logoURI?: string): void {
   const b = state.chatActionBuilder;
-  const field = state.chatActionPicker?.field;
-  if (!b || (field !== 'fromToken' && field !== 'toToken')) return;
+  if (!b) return;
   const otherMint = field === 'fromToken' ? b.toToken?.mint : b.fromToken?.mint;
   if (b.kind === 'swap' && otherMint === mint) {
     pushToast('error', t('Pick a different token'), t('Choose two different tokens to swap.'));
@@ -22267,9 +22506,16 @@ function applyChatTokenPick(mint: string, symbol: string, decimals: number, logo
     ...(logoURI ? { logoURI } : {}),
   };
   state.chatActionPicker = null;
-  closeChatActionSheet();
   applyChatBuilderDraft();
   render();
+}
+
+// Commit a token-picker selection into the currently-open token field (desktop chip
+// flow, where exactly one picker is open) and recompile.
+function applyChatTokenPick(mint: string, symbol: string, decimals: number, logoURI?: string): void {
+  const field = state.chatActionPicker?.field;
+  if (field !== 'fromToken' && field !== 'toToken') return;
+  applyChatTokenPickFor(field, mint, symbol, decimals, logoURI);
 }
 
 function handleChatPowerAction(id: string): void {
@@ -22278,11 +22524,33 @@ function handleChatPowerAction(id: string): void {
   const action = CHAT_POWER_ACTIONS.find((a) => a.id === id);
   if (!action) return;
   state.chatActionPicker = null;
+  // All three kinds are builders (swap/send/sign).
+  const isBuilder = id === 'swap' || id === 'send' || id === 'sign';
+
+  // Native mobile: picking an action opens ONE full-form sheet for it. Reuse an existing
+  // builder of the same kind (so re-opening shows current values), else seed a fresh one.
+  // The composer is NOT autofilled until the user taps Confirm in the sheet.
+  if (chatUsesSheet()) {
+    if (isBuilder) {
+      if (state.chatActionBuilder?.kind !== id) state.chatActionBuilder = defaultBuilderFor(id);
+      // Swap/Send token LIST mode reads owned balances — kick a full load so the picker
+      // is populated the moment the sheet opens, then hydrate its logos.
+      if ((id === 'swap' || id === 'send') && state.address) {
+        startWalletBalanceFullLoad(false, { openOverlay: false });
+        ensureChatTokenLogos();
+      }
+      openChatActionSheet();
+    } else {
+      state.chatActionBuilder = null;
+      chatDraft = t(action.template);
+    }
+    render();
+    return;
+  }
+
   // Native mobile: picking an action closes the Wallet Actions sheet so the seeded
   // builder chips become visible in the composer.
   closeChatActionSheet();
-  // All three kinds are now builders (swap/send chips; sign = a statement input).
-  const isBuilder = id === 'swap' || id === 'send' || id === 'sign';
   if (isBuilder) {
     // Seed the builder; its compiled grammar prefills the textarea (source of truth).
     state.chatActionBuilder = defaultBuilderFor(id);
@@ -22411,13 +22679,8 @@ function bindChat(): void {
   if (plusToggle) {
     plusToggle.addEventListener('click', (event) => {
       event.stopPropagation();
-      if (chatUsesSheet()) {
-        // Native mobile: open the Wallet Actions menu in the bottom sheet.
-        state.chatActionPicker = null;
-        openChatActionSheet();
-        render();
-        return;
-      }
+      // Both web and native mobile: the Wallet Actions menu is an upward dropdown. Picking
+      // an action then opens its full-form sheet (native) or seeds the chip bar (desktop).
       state.chatComposerOpen = !state.chatComposerOpen;
       plusMenu?.classList.toggle('open', state.chatComposerOpen);
       plusToggle.setAttribute('aria-expanded', state.chatComposerOpen ? 'true' : 'false');
@@ -22437,14 +22700,10 @@ function bindChat(): void {
       if (!wasOpen && (field === 'fromToken' || field === 'toToken')) {
         // Fresh token picker defaults to LIST — it's populated (owned + curated for
         // the swap output), needs no Birdeye key, and search (MINT) is one tap away.
-        chatTokenPickerMode = 'list';
-        chatTokenListLimit = CHAT_TOKEN_PAGE;
+        chatTokenPickerModes[field] = 'list';
+        chatTokenListLimits[field] = CHAT_TOKEN_PAGE;
         if (state.address) startWalletBalanceFullLoad(false, { openOverlay: false });
         ensureChatTokenLogos();
-      }
-      if (chatUsesSheet()) {
-        if (state.chatActionPicker) openChatActionSheet();
-        else closeChatActionSheet();
       }
       render();
     });
@@ -22455,22 +22714,130 @@ function bindChat(): void {
     closeChatActionSheet();
     render();
   });
+  // Desktop chip-picker LIST/MINT toggle (the open picker's field is in chatActionPicker).
   for (const modeBtn of document.querySelectorAll<HTMLButtonElement>('[data-chat-token-mode]')) {
     modeBtn.addEventListener('click', (event) => {
       event.stopPropagation();
+      const field = state.chatActionPicker?.field;
+      if (field !== 'fromToken' && field !== 'toToken') return;
       const next = modeBtn.dataset.chatTokenMode === 'mint' ? 'mint' : 'list';
-      if (chatTokenPickerMode === next) return;
-      chatTokenPickerMode = next;
-      if (next === 'list') { chatTokenListLimit = CHAT_TOKEN_PAGE; ensureChatTokenLogos(); }
+      if (chatTokenModeFor(field) === next) return;
+      chatTokenPickerModes[field] = next;
+      if (next === 'list') { chatTokenListLimits[field] = CHAT_TOKEN_PAGE; ensureChatTokenLogos(); }
       suppressMobileRailSheetEnterAnimation = true;
       render();
     });
   }
   document.querySelector<HTMLButtonElement>('[data-chat-token-more]')?.addEventListener('click', (event) => {
     event.stopPropagation();
-    chatTokenListLimit += CHAT_TOKEN_PAGE;
+    const field = state.chatActionPicker?.field;
+    if (field !== 'fromToken' && field !== 'toToken') return;
+    chatTokenListLimits[field] = chatTokenLimitFor(field) + CHAT_TOKEN_PAGE;
     suppressMobileRailSheetEnterAnimation = true;
     render();
+  });
+  // Full-form sheet (native mobile): per-field LIST/MINT toggle for each token field.
+  for (const modeBtn of document.querySelectorAll<HTMLButtonElement>('[data-chat-token-field-mode]')) {
+    modeBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const field = modeBtn.dataset.chatTokenField;
+      if (field !== 'fromToken' && field !== 'toToken') return;
+      const next = modeBtn.dataset.chatTokenFieldMode === 'mint' ? 'mint' : 'list';
+      if (chatTokenModeFor(field) === next) return;
+      chatTokenPickerModes[field] = next;
+      if (next === 'list') {
+        chatTokenListLimits[field] = CHAT_TOKEN_PAGE;
+        if (state.address) startWalletBalanceFullLoad(false, { openOverlay: false });
+        ensureChatTokenLogos();
+      }
+      suppressMobileRailSheetEnterAnimation = true;
+      render();
+    });
+  }
+  // Full-form sheet LIST mode: the collapsed "SOL ▾" select-picker emits a change on its
+  // hidden native <select> when a token is chosen.
+  for (const tokenSelect of document.querySelectorAll<HTMLSelectElement>('select[data-chat-token-select]')) {
+    tokenSelect.addEventListener('change', () => {
+      const field = tokenSelect.dataset.chatTokenSelect;
+      const mint = tokenSelect.value;
+      if ((field !== 'fromToken' && field !== 'toToken') || !mint) return;
+      const item = chatTokenListItems(field).find((i) => i.mint === mint);
+      applyChatTokenPickFor(field, mint, item?.symbol ?? tokenDisplayLabel(mint), item?.decimals ?? 0, tokenMarketMetadata.get(mint)?.logoURI);
+    });
+  }
+  // Full-form sheet: live memo + slippage inputs (no apply button), and Confirm autofills
+  // the composer grammar then closes the sheet (the user taps Send to queue it).
+  const memoInput = document.querySelector<HTMLInputElement>('[data-chat-memo-input]');
+  if (memoInput) {
+    memoInput.addEventListener('input', () => {
+      if (!state.chatActionBuilder) return;
+      state.chatActionBuilder.memo = memoInput.value;
+      applyChatBuilderDraft();
+    });
+  }
+  // Sheet-only live slippage input (distinct attribute so the desktop inline slippage
+  // picker keeps its commit-on-Set + 1–5000 validation behaviour untouched).
+  const slippageLiveInput = document.querySelector<HTMLInputElement>('[data-chat-slippage-live]');
+  if (slippageLiveInput) {
+    slippageLiveInput.addEventListener('input', () => {
+      if (!state.chatActionBuilder) return;
+      const trimmed = slippageLiveInput.value.trim();
+      if (!trimmed) { delete state.chatActionBuilder.slippageBps; }
+      else {
+        const n = Number(trimmed.replace(/[^\d]/g, ''));
+        if (Number.isFinite(n) && n > 0 && n <= 5000) state.chatActionBuilder.slippageBps = String(Math.round(n));
+        else delete state.chatActionBuilder.slippageBps;
+      }
+      applyChatBuilderDraft();
+    });
+  }
+  document.querySelector<HTMLButtonElement>('[data-chat-action-confirm]')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (!state.chatActionBuilder) return;
+    applyChatBuilderDraft();
+    state.chatActionPicker = null;
+    closeChatActionSheet();
+    render();
+  });
+  // --- Proof/Evidence sheet: tabs, template dropdown, fields, Confirm ----------
+  for (const tabBtn of document.querySelectorAll<HTMLButtonElement>('[data-chat-proof-tab]')) {
+    tabBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const tab = tabBtn.dataset.chatProofTab;
+      if ((tab !== 'proof' && tab !== 'audit') || chatProofTab === tab) return;
+      chatProofTab = tab;
+      const first = chatProofTemplatesFor(tab)[0];
+      chatProofTemplateId = first?.id ?? '';
+      if (first) chatProofResetFields(first);
+      suppressMobileRailSheetEnterAnimation = true;
+      render();
+    });
+  }
+  for (const sel of document.querySelectorAll<HTMLSelectElement>('select[data-chat-proof-template-select]')) {
+    sel.addEventListener('change', () => {
+      const tpl = chatProofTemplatesFor(chatProofTab).find((candidate) => candidate.id === sel.value);
+      if (!tpl) return;
+      chatProofTemplateId = tpl.id;
+      chatProofResetFields(tpl);
+      suppressMobileRailSheetEnterAnimation = true;
+      render();
+    });
+  }
+  for (const sel of document.querySelectorAll<HTMLSelectElement>('select[data-chat-proof-select]')) {
+    sel.addEventListener('change', () => {
+      const id = sel.dataset.chatProofSelect;
+      if (id) chatProofFields[id] = sel.value;
+    });
+  }
+  for (const fieldInput of document.querySelectorAll<HTMLElement>('[data-chat-proof-field]')) {
+    fieldInput.addEventListener('input', () => {
+      const id = fieldInput.dataset.chatProofField;
+      if (id) chatProofFields[id] = (fieldInput as HTMLInputElement | HTMLTextAreaElement).value;
+    });
+  }
+  document.querySelector<HTMLButtonElement>('[data-chat-proof-confirm]')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    chatProofConfirm();
   });
   const recipientInput = document.querySelector<HTMLInputElement>('[data-chat-chip-recipient]');
   if (recipientInput) {
@@ -56667,16 +57034,21 @@ function bindTokenSearchSelectButtons(root: ParentNode = document): void {
       };
       const selection = tokenSelectionFromSearchResult(result);
       // Chat builder token search (fieldId is "chat:fromToken" / "chat:toToken"):
-      // route the pick into the open chat picker and close the chat-action sheet.
+      // route the pick into that explicit token field (the full-form sheet shows both
+      // fields at once, so the field comes from the search key, not an "open picker").
       if (fieldId.startsWith('chat:')) {
+        const chatField = fieldId.slice('chat:'.length);
         tokenSearchStates.delete(fieldId);
         clearTokenSearchTimer(fieldId);
-        applyChatTokenPick(
-          selection.mint ?? selection.value,
-          selection.label || result.symbol || tokenDisplayLabel(selection.value),
-          selection.decimals ?? 0,
-          selection.logoURI,
-        );
+        if (chatField === 'fromToken' || chatField === 'toToken') {
+          applyChatTokenPickFor(
+            chatField,
+            selection.mint ?? selection.value,
+            selection.label || result.symbol || tokenDisplayLabel(selection.value),
+            selection.decimals ?? 0,
+            selection.logoURI,
+          );
+        }
         return;
       }
       const recurringField = recurringFieldFromTokenSearchKey(fieldId);

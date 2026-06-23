@@ -30740,9 +30740,16 @@ button.danger:hover:not(:disabled) {
     height: min(62dvh, 540px, calc(var(--mobile-rail-vvh) - 18px - env(safe-area-inset-top, 0px)));
   }
 
+  /* The chat action sheet hosts a full form (token fields + amount + slippage/memo +
+     Confirm), so it gets a taller default like the AI drafting sheet. */
+  .route-app .mobile-rail-sheet.chat-action {
+    height: min(72dvh, 640px, calc(var(--mobile-rail-vvh) - 18px - env(safe-area-inset-top, 0px)));
+  }
+
   .route-app .mobile-rail-sheet[data-keyboard-open="true"],
   .route-app .mobile-rail-sheet.ai-drafting[data-keyboard-open="true"],
-  .route-app .mobile-rail-sheet.wallet-balances[data-keyboard-open="true"] {
+  .route-app .mobile-rail-sheet.wallet-balances[data-keyboard-open="true"],
+  .route-app .mobile-rail-sheet.chat-action[data-keyboard-open="true"] {
     height: auto;
     max-height: calc(var(--mobile-rail-vvh) - 6px - env(safe-area-inset-top, 0px));
     min-height: 0;
@@ -35180,6 +35187,11 @@ button.danger:hover:not(:disabled) {
   left: 0;
   min-width: 300px;
   max-width: 360px;
+  /* Opens upward from the composer (bottom of the screen). Cap the height so the menu
+     never overflows the top edge on a short phone viewport — it scrolls instead. */
+  max-height: min(56dvh, calc(100dvh - 200px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--surface-strong);
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
@@ -35453,6 +35465,35 @@ button.danger:hover:not(:disabled) {
 .chat-sheet-picker .chat-picker-custom { margin-top: 10px; }
 .chat-sheet-picker .chat-token-modes { margin-bottom: 10px; }
 .chat-sheet-actions { display: flex; flex-direction: column; gap: 8px; }
+
+/* Full-form action sheet (Swap / Send / Proof) — mirrors the New Request plan forms:
+   every field visible at once, with a sticky Confirm that stays above the keyboard. */
+.chat-sheet-form { display: grid; gap: 12px; }
+.chat-sheet-fields { display: grid; gap: 12px; }
+.chat-sheet-mono input { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.86rem; }
+.chat-sheet-confirm {
+  position: sticky;
+  bottom: 0;
+  margin: 4px -16px 0;
+  padding: 10px 16px calc(8px + env(safe-area-inset-bottom, 0px));
+  background: linear-gradient(180deg, rgba(18, 22, 21, 0), rgba(18, 22, 21, 0.96) 32%, rgba(18, 22, 21, 0.99));
+  z-index: 6;
+}
+.chat-sheet-confirm .primary { width: 100%; min-height: 48px; }
+/* Proof / Evidence sub-tabs in the Sign-proof sheet. */
+.chat-proof-tabs { display: flex; gap: 6px; }
+.chat-proof-tab {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.chat-proof-tab.active { border-color: var(--accent); color: var(--text); background: var(--accent-soft); }
 
 /* Native-mobile composer: Wallet Actions on its own labeled row above the input. */
 .chat-composer-mobile { flex-direction: column; align-items: stretch; gap: 8px; }
