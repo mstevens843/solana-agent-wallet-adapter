@@ -23,6 +23,7 @@ class BridgePairedRoutingTest {
 
     private class RecordingProvider : DeviceAgentProvider {
         var generateCalls = 0
+        var chatCalls = 0
         var lastPayload: JSONObject? = null
         override suspend fun generatePlan(payload: JSONObject): JSONObject {
             generateCalls += 1
@@ -32,6 +33,19 @@ class BridgePairedRoutingTest {
         override suspend fun reviewPlan(payload: JSONObject): JSONObject = JSONObject().put("routed", "bridge")
         override suspend fun ask(payload: JSONObject): JSONObject = JSONObject().put("output_text", "bridge")
         override suspend fun localize(payload: JSONObject): JSONObject = JSONObject().put("output_text", "bridge")
+        override suspend fun chat(payload: JSONObject): JSONObject {
+            chatCalls += 1
+            lastPayload = payload
+            return JSONObject().put("answer", "bridge-chat")
+        }
+    }
+
+    // Inherits DeviceAgentProvider.chat's default (no override) to verify on-device rejection.
+    private class OnDeviceOnlyProvider : DeviceAgentProvider {
+        override suspend fun generatePlan(payload: JSONObject): JSONObject = JSONObject()
+        override suspend fun reviewPlan(payload: JSONObject): JSONObject = JSONObject()
+        override suspend fun ask(payload: JSONObject): JSONObject = JSONObject()
+        override suspend fun localize(payload: JSONObject): JSONObject = JSONObject()
     }
 
     @Test
@@ -48,6 +62,25 @@ class BridgePairedRoutingTest {
         assertEquals("bridge", result.optString("routed"))
         assertEquals(1, bridge.generateCalls)
         assertEquals("swap 1 SOL", bridge.lastPayload?.optString("prompt"))
+    }
+
+    @Test
+    fun routesPairedBridgeChatToInjectedProvider() = runBlocking {
+        val bridge = RecordingProvider()
+        val executor = DeviceAgentProviderExecutor(bridgeRelayProvider = bridge)
+        val result = executor.chat(pairedConfig, JSONObject().put("messages", "[]"))
+        assertEquals("bridge-chat", result.optString("answer"))
+        assertEquals(1, bridge.chatCalls)
+    }
+
+    @Test
+    fun onDeviceProviderRejectsChatByDefault() = runBlocking {
+        try {
+            OnDeviceOnlyProvider().chat(JSONObject())
+            fail("expected ProviderFailedException")
+        } catch (e: ProviderFailedException) {
+            assertEquals(RuntimeErrorCodes.PROVIDER_UNAVAILABLE, e.error.code)
+        }
     }
 
     @Test

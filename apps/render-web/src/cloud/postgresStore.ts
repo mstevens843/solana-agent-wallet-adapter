@@ -23,6 +23,9 @@ import type {
 import type {
   AggregatorSnapshotStoreRecord,
   AggregatorStore,
+  ChatHistoryStore,
+  ChatSessionMetaRecord,
+  ChatSessionRecord,
   CloudPreferenceNamespace,
   CloudPreferenceRecord,
   CloudPreferencesStore,
@@ -121,6 +124,21 @@ interface PreferenceRow extends QueryResultRow {
   version: number | string;
 }
 
+interface ChatSessionMetaRow extends QueryResultRow {
+  session_id: string;
+  title: string;
+  cluster: string;
+  message_count: number | string;
+  version: number | string;
+  schema_version: number | string;
+  created_at: Date | string;
+  updated_at: Date | string;
+}
+
+interface ChatSessionRow extends ChatSessionMetaRow {
+  messages_lz: string;
+}
+
 interface AggregatorSnapshotRow extends QueryResultRow {
   key: string;
   kind: string;
@@ -152,6 +170,7 @@ export class PostgresWorkflowStore implements
   RecurringNotificationStore,
   CloudWorkspaceDeleteStore,
   CloudPreferencesStore,
+  ChatHistoryStore,
   SkillsStore,
   SignalsStore,
   AggregatorStore {
@@ -1405,6 +1424,108 @@ export class PostgresWorkflowStore implements
     return result.rows[0] ? preferenceFromRow(result.rows[0]) : record;
   }
 
+  async listChatSessions(walletAddress: string): Promise<ChatSessionMetaRecord[]> {
+    // Wallet isolation: scoped by wallet_address. Metadata only — never selects
+    // messages_lz, so the list stays cheap and the opaque blob isn't shipped.
+    const result = await this.query<ChatSessionMetaRow>({
+      name: 'chat.list',
+      text: `
+        SELECT session_id, title, cluster, message_count, version, schema_version, created_at, updated_at
+        FROM chat_sessions
+        WHERE wallet_address = $1
+        ORDER BY updated_at DESC
+        LIMIT 500
+      `,
+      values: [walletAddress],
+    });
+    return result.rows.map(chatSessionMetaFromRow);
+  }
+
+  async getChatSession(walletAddress: string, sessionId: string): Promise<ChatSessionRecord | undefined> {
+    // Wallet isolation: both wallet_address AND session_id in the WHERE so a
+    // wallet can never read another wallet's session by id.
+    const result = await this.query<ChatSessionRow>({
+      name: 'chat.get',
+      text: `
+        SELECT session_id, title, cluster, message_count, version, schema_version, created_at, updated_at, messages_lz
+        FROM chat_sessions
+        WHERE wallet_address = $1 AND session_id = $2
+      `,
+      values: [walletAddress, sessionId],
+    });
+    return result.rows[0] ? chatSessionFromRow(result.rows[0]) : undefined;
+  }
+
+  async saveChatSession(walletAddress: string, record: ChatSessionRecord): Promise<ChatSessionMetaRecord> {
+    await this.ensureUser(walletAddress, record.createdAt);
+    // Last-writer-wins by updated_at: the `WHERE` skips the UPDATE when a newer
+    // copy already exists (a stale offline client can't clobber it). On a skip,
+    // ON CONFLICT returns no row, so we read back the current row below.
+    const result = await this.query<ChatSessionMetaRow>({
+      name: 'chat.upsert',
+      text: `
+        INSERT INTO chat_sessions
+          (session_id, wallet_address, title, cluster, message_count, version, schema_version, messages_lz, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ON CONFLICT (wallet_address, session_id) DO UPDATE SET
+          title = EXCLUDED.title,
+          cluster = EXCLUDED.cluster,
+          message_count = EXCLUDED.message_count,
+          version = EXCLUDED.version,
+          schema_version = EXCLUDED.schema_version,
+          messages_lz = EXCLUDED.messages_lz,
+          updated_at = EXCLUDED.updated_at
+        WHERE chat_sessions.updated_at <= EXCLUDED.updated_at
+        RETURNING session_id, title, cluster, message_count, version, schema_version, created_at, updated_at
+      `,
+      values: [
+        record.sessionId,
+        walletAddress,
+        record.title,
+        record.cluster,
+        record.messageCount,
+        record.version,
+        record.schemaVersion,
+        record.messagesLz,
+        iso(record.createdAt),
+        iso(record.updatedAt),
+      ],
+    });
+    if (result.rows[0]) return chatSessionMetaFromRow(result.rows[0]);
+    // Stale write skipped by the LWW guard — return the current (newer) row.
+    const current = await this.query<ChatSessionMetaRow>({
+      name: 'chat.meta',
+      text: `
+        SELECT session_id, title, cluster, message_count, version, schema_version, created_at, updated_at
+        FROM chat_sessions WHERE wallet_address = $1 AND session_id = $2
+      `,
+      values: [walletAddress, record.sessionId],
+    });
+    return current.rows[0] ? chatSessionMetaFromRow(current.rows[0]) : {
+      sessionId: record.sessionId,
+      title: record.title,
+      cluster: record.cluster,
+      messageCount: record.messageCount,
+      version: record.version,
+      schemaVersion: record.schemaVersion,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+    };
+  }
+
+  async deleteChatSession(walletAddress: string, sessionId: string): Promise<boolean> {
+    const result = await this.query({
+      name: 'chat.delete',
+      text: `DELETE FROM chat_sessions WHERE wallet_address = $1 AND session_id = $2`,
+      values: [walletAddress, sessionId],
+    });
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async clearChatSessions(walletAddress: string): Promise<number> {
+    return this.deleteByWallet('chat.clear', 'chat_sessions', walletAddress);
+  }
+
   async getAgentPolicies(walletAddress: string): Promise<{ policies: unknown[]; updatedAt: string; version: number } | undefined> {
     const record = await this.getPreference(walletAddress, 'agent-policies');
     if (!record) return undefined;
@@ -1442,6 +1563,12 @@ export class PostgresWorkflowStore implements
         client,
         'cloudWorkspace.preferences.delete',
         'wallet_preferences',
+        walletAddress,
+      );
+      counts.chatSessions = await deleteByWalletWithClient(
+        client,
+        'cloudWorkspace.chatSessions.delete',
+        'chat_sessions',
         walletAddress,
       );
       counts.recurringNotificationDeliveries = await deleteByWalletWithClient(
@@ -1857,6 +1984,26 @@ function preferenceFromRow(row: PreferenceRow): CloudPreferenceRecord {
     payload: jsonRecord(row.payload),
     updatedAt: iso(row.updated_at),
     version: typeof row.version === 'number' ? row.version : Number(row.version) || 0,
+  };
+}
+
+function chatSessionMetaFromRow(row: ChatSessionMetaRow): ChatSessionMetaRecord {
+  return {
+    sessionId: row.session_id,
+    title: row.title,
+    cluster: row.cluster,
+    messageCount: typeof row.message_count === 'number' ? row.message_count : Number(row.message_count) || 0,
+    version: typeof row.version === 'number' ? row.version : Number(row.version) || 0,
+    schemaVersion: typeof row.schema_version === 'number' ? row.schema_version : Number(row.schema_version) || 0,
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
+  };
+}
+
+function chatSessionFromRow(row: ChatSessionRow): ChatSessionRecord {
+  return {
+    ...chatSessionMetaFromRow(row),
+    messagesLz: row.messages_lz,
   };
 }
 

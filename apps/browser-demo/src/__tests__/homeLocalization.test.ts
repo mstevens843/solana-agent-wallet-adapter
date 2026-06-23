@@ -20,6 +20,9 @@ describe('Home page localization coverage', () => {
 
   it('localizes Home wallet-list placeholders without translating protected wallet names', () => {
     expect(
+      zhHans["Agentic routes each request to the user's existing Solana wallet: {wallets}. The agent gets the approved result, never the key."],
+    ).toBe('Agentic 将每个请求路由到用户现有的 Solana 钱包：{wallets}。智能体只会拿到批准后的结果，永远不会拿到私钥。');
+    expect(
       zhHans['Phantom, Solflare, Backpack, Seed Vault, Wallet Standard, MWA, and iOS wallet links'],
     ).toBe('Phantom、Solflare、Backpack、Seed Vault、Wallet Standard、MWA 和 iOS 钱包链接');
     expect(zhHans['Provider icons appear after discovery.']).toBe('钱包提供方图标会在发现完成后显示。');

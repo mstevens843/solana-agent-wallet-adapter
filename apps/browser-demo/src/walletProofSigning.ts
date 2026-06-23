@@ -158,6 +158,9 @@ export async function signWalletProofMessage(
         proofMemoText: message,
       };
     }
+    if (typeof result.signature !== 'string' || !result.signature.trim()) {
+      throw new Error('Android native proof signing returned an empty signature — please retry in your wallet.');
+    }
     return {
       signature: result.signature,
       proofEncoding: 'utf8-message',
@@ -175,6 +178,9 @@ export async function signWalletProofMessage(
   }
   const client = context.getClient();
   const result = await client.signMessage(message, { cluster, summary });
+  if (typeof result.signature !== 'string' || !result.signature.trim()) {
+    throw new Error('Wallet returned an empty proof signature — please retry.');
+  }
   return {
     signature: result.signature,
     proofEncoding: 'utf8-message',

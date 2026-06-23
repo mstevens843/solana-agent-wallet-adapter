@@ -33,4 +33,9 @@ internal class BridgeRelayProvider(
     // lacks the route the JS side falls back to the cloud endpoint.
     override suspend fun localize(payload: JSONObject): JSONObject =
         client.runForward("/bridge/ai/localize", payload)
+
+    // Native Plan-Connector chat: forward (non-streaming) to the desktop bridge's
+    // /bridge/ai/chat, which runs the subscription connector under the user's own plan.
+    override suspend fun chat(payload: JSONObject): JSONObject =
+        client.runForward("/bridge/ai/chat", payload)
 }

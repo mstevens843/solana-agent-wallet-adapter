@@ -28,7 +28,11 @@ export type DeviceAgentMethod =
   | 'generatePlan'
   | 'reviewPlan'
   | 'ask'
-  | 'localize';
+  | 'localize'
+  // Native Plan-Connector chat: the paired-bridge runtime forwards this to the
+  // desktop's non-streaming /bridge/ai/chat. (On-device/browser runtimes reject
+  // it via the dispatcher default — chat is paired-connector only.)
+  | 'chat';
 
 export interface DeviceAgentStatus {
   available: boolean;

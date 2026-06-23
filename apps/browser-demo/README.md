@@ -12,6 +12,21 @@ pnpm demo:browser
 
 Open `http://127.0.0.1:5174`. The workspace discovers installed Solana wallets, connects one account, signs a demo message, signs devnet memo transactions, and can talk to the local bridge when private local mode is explicitly selected.
 
+### Cloud workflow APIs in dev (sign-in, plans, chat sync)
+
+The cloud APIs (`/api/session`, `/api/auth/*`, `/api/plans`, `/api/chat/*`, ...) are served by the `render-web` Node
+service, not by Vite. Without it, the web app's same-origin `/api/session` fetch fails and Workspace storage shows
+"Cloud unavailable from this host" with the sign-in button disabled. To exercise cloud sign-in (and chat cloud-sync)
+locally, run the cloud service in a second terminal:
+
+```sh
+pnpm -F @solana-agent-wallet-adapter/browser-demo dev:cloud   # builds + starts render-web on :3001 (in-memory store, no Postgres)
+pnpm demo:browser                                             # Vite on :5174, proxies /api → :3001
+```
+
+Vite's `server.proxy` forwards `/api` to `http://127.0.0.1:3001` (override with `AGENTIC_DEV_API_PROXY`). The in-memory
+store resets on each `dev:cloud` restart. Plan Connector chat needs no cloud sign-in and does not require this proxy.
+
 Build the deployable browser assets with:
 
 ```sh

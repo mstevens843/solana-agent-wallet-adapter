@@ -2262,7 +2262,7 @@ class MainActivity : FragmentActivity() {
                 "configure" -> DeviceAgentOutcome(activity.agentRuntimeController.configure(payload.toString()), null)
                 "start" -> DeviceAgentOutcome(activity.agentRuntimeController.start(activity, payload.toString()), null)
                 "stop" -> DeviceAgentOutcome(activity.agentRuntimeController.stop(activity), null)
-                "generatePlan", "reviewPlan", "ask", "localize" -> {
+                "generatePlan", "reviewPlan", "ask", "localize", "chat" -> {
                     val runtimeMethod = RuntimeMethod.fromWire(method)
                         ?: throw DeviceAgentException(
                             code = "unsupported_method",

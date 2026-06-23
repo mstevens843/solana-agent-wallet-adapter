@@ -435,11 +435,20 @@ describe('bridgeAiRelayHandler — duplicate-run + one-shot hardening', () => {
     expect((second.body.result as Record<string, unknown>).plan).toBe('done');
   });
 
-  it('rejects the now-removed session-key / connector-login / chat / status forward paths', async () => {
-    for (const path of ['/bridge/ai/session-key', '/bridge/ai/connector/login', '/bridge/ai/chat', '/bridge/ai/status', '/bridge/ai/connector/detect']) {
+  it('rejects the now-removed session-key / connector-login / status forward paths', async () => {
+    for (const path of ['/bridge/ai/session-key', '/bridge/ai/connector/login', '/bridge/ai/status', '/bridge/ai/connector/detect']) {
       const r = await call(handler, 'POST', `/api/bridge-ai/${UUID}/forward`, { headers: deviceAuth(bearer), body: { path, body: {} } });
       expect(r.body.error).toBe('path_not_allowed');
     }
+  });
+
+  it('allows forwarding the non-streaming /bridge/ai/chat path (native Plan-Connector chat)', async () => {
+    const r = await call(handler, 'POST', `/api/bridge-ai/${UUID}/forward`, {
+      headers: deviceAuth(bearer),
+      body: { path: '/bridge/ai/chat', body: { messages: [] } },
+    });
+    expect(r.body.error).toBeUndefined();
+    expect(r.body.requestId).toBeTruthy();
   });
 });
 

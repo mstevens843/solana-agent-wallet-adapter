@@ -12,6 +12,10 @@ import {
   reconcileThresholdReviewDecision,
 } from '@solana-agent-wallet-adapter/workflow';
 import type {
+  AgentChatRequest,
+  AgentChatResult,
+  AgentChatProposedAction,
+  AgentChatStreamEvent,
   AgentPlan,
   AgentPlanAskRequest,
   AgentPlanAskResult,
@@ -39,6 +43,10 @@ import {
 export { customOpenAiCompatibleBaseUrlError } from '@solana-agent-wallet-adapter/core';
 
 export type {
+  AgentChatRequest,
+  AgentChatResult,
+  AgentChatProposedAction,
+  AgentChatStreamEvent,
   AgentPlan,
   AgentPlanAskRequest,
   AgentPlanAskResult,
@@ -1217,6 +1225,145 @@ export async function generateHostedAiAsk(
     });
   }
   return normalizeHostedAiAsk(payload);
+}
+
+export interface ChatStreamHandlers {
+  onToken?: (text: string) => void;
+  onToolStatus?: (info: { tool: string; phase: 'start' | 'done'; label?: string; callId?: string }) => void;
+  onProposal?: (proposal: AgentChatProposedAction) => void;
+  onError?: (message: string) => void;
+  onDone?: (result: AgentChatResult) => void;
+}
+
+// Streams a chat turn from the hosted endpoint as Server-Sent Events. The agent
+// runs a tool-calling loop server-side; we forward token/tool_status/proposal/
+// done events to the caller as they arrive. Aborting `options.signal` cancels
+// the request. Throws only on connection / non-OK response — per-event failures
+// arrive via handlers.onError.
+export async function streamHostedAiChat(
+  settings: AiSettings,
+  request: AgentChatRequest,
+  handlers: ChatStreamHandlers,
+  options: AiRequestOptions = {},
+): Promise<void> {
+  const apiKey = normalizeAiApiKey(settings.apiKey);
+  if (!apiKey) {
+    throw new Error('Hosted BYOK key is required.');
+  }
+  assertAiApiKeyHeaderSafe(apiKey);
+  const lastUser = [...request.messages].reverse().find((message) => message.role === 'user');
+  if (!lastUser?.content?.trim()) {
+    throw new Error('Chat: a message is required.');
+  }
+
+  const response = await hostedAiFetch(options)('/api/ai/chat/stream', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'text/event-stream' },
+    ...(options.signal ? { signal: options.signal } : {}),
+    body: JSON.stringify({
+      settings: {
+        apiKey,
+        provider: settings.provider,
+        apiFormat: settings.apiFormat,
+        baseUrl: settings.baseUrl,
+        model: settings.model,
+      },
+      request,
+    }),
+  });
+
+  if (!response.ok || !response.body) {
+    const detail = await response.text().catch(() => '');
+    throw new Error(
+      `Hosted chat stream failed (HTTP ${response.status}). ${redactSecrets(detail, settings.apiKey).slice(0, 400)}`,
+    );
+  }
+
+  await consumeChatSseResponse(response, handlers, options.signal);
+}
+
+function nextSseFrame(buffer: string): { frame: string; rest: string } | null {
+  const match = /\r?\n\r?\n/.exec(buffer);
+  if (!match || match.index === undefined) return null;
+  return {
+    frame: buffer.slice(0, match.index),
+    rest: buffer.slice(match.index + match[0].length),
+  };
+}
+
+function drainSseBuffer(buffer: string, handlers: ChatStreamHandlers): string {
+  let parsed = nextSseFrame(buffer);
+  while (parsed) {
+    dispatchChatStreamFrame(parsed.frame, handlers);
+    buffer = parsed.rest;
+    parsed = nextSseFrame(buffer);
+  }
+  return buffer;
+}
+
+export async function consumeChatSseResponse(
+  response: Response,
+  handlers: ChatStreamHandlers,
+  signal?: AbortSignal,
+): Promise<void> {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    // No streaming body (rare WebView / non-streaming transport edge): parse the
+    // whole payload at once so the answer + proposal still render instead of a
+    // silently empty assistant bubble.
+    const text = await response.text().catch(() => '');
+    const tail = drainSseBuffer(text, handlers).trim();
+    if (tail) dispatchChatStreamFrame(tail, handlers);
+    return;
+  }
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    for (;;) {
+      if (signal?.aborted) return;
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      buffer = drainSseBuffer(buffer, handlers);
+    }
+    const tail = (buffer + decoder.decode()).trim();
+    if (tail) dispatchChatStreamFrame(tail, handlers);
+  } finally {
+    try { reader.releaseLock(); } catch { /* ignore */ }
+  }
+}
+
+export function dispatchChatStreamFrame(frame: string, handlers: ChatStreamHandlers): void {
+  const raw = frame
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line) => line.startsWith('data:'))
+    .map((line) => line.slice(5).trimStart())
+    .join('\n');
+  if (!raw || raw === '[DONE]') return;
+  let event: AgentChatStreamEvent;
+  try {
+    event = JSON.parse(raw) as AgentChatStreamEvent;
+  } catch {
+    return;
+  }
+  switch (event.type) {
+    case 'token':
+      handlers.onToken?.(event.text);
+      break;
+    case 'tool_status':
+      handlers.onToolStatus?.(event);
+      break;
+    case 'proposal':
+      handlers.onProposal?.(event.proposal);
+      break;
+    case 'error':
+      handlers.onError?.(event.message);
+      break;
+    case 'done':
+      handlers.onDone?.(event.result);
+      break;
+  }
 }
 
 export async function confirmHostedAiPlanner(settings: AiSettings, options: AiRequestOptions = {}): Promise<AiDiagnosticEntry[]> {

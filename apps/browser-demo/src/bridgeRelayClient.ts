@@ -26,10 +26,12 @@ import { logDeviceAgentDiag } from './deviceAgent/runtime/diagnosticLog.js';
 const ALLOWED_RELAY_HOSTS = ['agentic-signer.com'];
 
 // The phone may only forward these exact AI verbs (mirrors relay FORWARDABLE_AI_PATHS + Android).
+// `/bridge/ai/chat` is the non-streaming chat verb for native Plan-Connector chat.
 export const FORWARDABLE_AI_PATHS: ReadonlySet<string> = new Set([
   '/bridge/ai/generate-plan',
   '/bridge/ai/review-plan',
   '/bridge/ai/ask-about-plan',
+  '/bridge/ai/chat',
 ]);
 
 // Below the relay's 1 MB body cap, leaving headroom for the {path, body} wrapper (matches Android).

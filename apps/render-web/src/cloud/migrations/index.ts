@@ -15,6 +15,7 @@ import { migration014StreamingVouchers } from './014_streaming_vouchers.js';
 import { migration015MppWalletPreferencesNamespace } from './015_mpp_wallet_preferences_namespace.js';
 import { migration016StreamingVoucherMetadata } from './016_streaming_voucher_metadata.js';
 import { migration017MppSessionPaymentUniqueness } from './017_mpp_session_payment_uniqueness.js';
+import { migration018ChatSessions } from './018_chat_sessions.js';
 
 export interface PostgresMigration {
   id: string;
@@ -49,4 +50,5 @@ export const postgresMigrations: PostgresMigration[] = [
   migration015MppWalletPreferencesNamespace,
   migration016StreamingVoucherMetadata,
   migration017MppSessionPaymentUniqueness,
+  migration018ChatSessions,
 ];

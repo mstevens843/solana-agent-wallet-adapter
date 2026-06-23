@@ -465,8 +465,14 @@ import {
   redactSecrets,
   researchControlForAsk,
   researchControlForReview,
+  consumeChatSseResponse,
+  streamHostedAiChat,
   templateById,
   templateFieldLabel,
+  type AgentChatRequest,
+  type AgentChatResult,
+  type AgentChatProposedAction,
+  type ChatStreamHandlers,
   type AgentPlan,
   type AgentPlanField,
   type AgentPlanAskRequest,
@@ -722,6 +728,17 @@ import { setConnectedAddress, setConnectedCluster } from './walletState.js';
 import './devTabs/index.js';
 import { setCloudWalletBridge } from './cloudWalletBridge.js';
 import { mobileWorkspaceMoreMenuItems, workspaceMoreMenuItems, type WorkspaceMoreMenuItem } from './workspaceMore.js';
+import { isChatTabHiddenForSurface, type AppSurfaceType } from './chatTabFlag.js';
+import { renderChatMarkdown } from './chatMarkdown.js';
+import { chatSignProofStatement, isChatSignProofAction } from './chatProof.js';
+import {
+  chatSessionIsCloudStub,
+  compressChatMessages,
+  decideCloudChatMeta,
+  decompressChatMessages,
+  stubMessageCount,
+} from './chatCloudSync.js';
+import LZString from 'lz-string';
 import { installWebViewControlDelegates, restoreDisclosureOpenState } from './webViewControlFix.js';
 import { setProofSigningContext, signWalletProofMessage as signWalletProofMessageRaw } from './walletProofSigning.js';
 import { checkNativeLiveUpdate } from './nativeLiveUpdate.js';
@@ -964,6 +981,7 @@ type StepState = 'idle' | 'active' | 'done' | 'error';
 type StepName = 'discover' | 'connect' | 'sign' | 'transaction' | 'bridge' | 'inbox' | 'lab' | 'ai';
 type ActiveTab =
   | 'overview'
+  | 'chat'
   | 'wallet'
   | 'agent'
   | 'generated'
@@ -1485,6 +1503,7 @@ const DEVICE_AGENT_STATUS_STORAGE_KEY = 'solana-agent-wallet-device-agent-status
 const DEVICE_AGENT_STATUS_CACHE_MAX_AGE_MS = 24 * 60 * 60_000;
 const GENERATED_PLANS_STORAGE_KEY = 'solana-agent-wallet-generated-plans-v1';
 const BROWSER_WORKFLOW_STORAGE_KEY = 'solana-agent-wallet-browser-workflow-v1';
+const CHAT_HISTORY_STORAGE_KEY = 'solana-agent-wallet-chat-history-v1';
 const LOCAL_COMPLETED_STORAGE_KEY = 'solana-agent-wallet-local-completed-v1';
 const RECIPIENT_RULES_STORAGE_KEY = 'solana-agent-wallet-recipient-rules-v1';
 const AGENT_POLICIES_STORAGE_KEY = 'solana-agent-wallet-agent-policies-v1';
@@ -1643,6 +1662,21 @@ const IS_ANDROID_APP = resolveAndroidAppSurface();
 const IS_TAURI_APP = resolveTauriAppSurface();
 const IS_IOS_APP = detectIosNativeEnvironment().isIosNative;
 const SHOW_ANDROID_EXAMPLE_TAB = resolveAndroidExampleTab();
+// HIDE_CHAT_TAB: comma list of surfaces (web,android,ios,desktop) baked at build.
+// When the current surface is listed, the Chat tab is hidden and the tab layout
+// reverts to the pre-Chat arrangement. Empty/unset → Chat shown everywhere.
+const HIDE_CHAT_TAB_RAW = String(
+  (import.meta as ImportMeta & { env?: { VITE_HIDE_CHAT_TAB?: string } }).env?.VITE_HIDE_CHAT_TAB ?? '',
+);
+function currentAppSurfaceType(): AppSurfaceType {
+  if (IS_TAURI_APP) return 'desktop';
+  if (isAndroidAppShellSurface()) return 'android';
+  if (IS_IOS_APP || state.iosNativeEnvironment.isIosNative) return 'ios';
+  return 'web';
+}
+function chatTabHidden(): boolean {
+  return isChatTabHiddenForSurface(HIDE_CHAT_TAB_RAW, currentAppSurfaceType());
+}
 const ANDROID_ALLOW_LAN_BRIDGE = resolveAndroidAllowLanBridge();
 const LOCAL_WEBVIEW_ORIGIN = 'https://agentic.local';
 const CAPACITOR_WEBVIEW_ORIGIN = 'capacitor://localhost';
@@ -2012,8 +2046,10 @@ type CloudSyncStatus = 'synced' | 'pending' | 'error';
 
 interface PendingCloudSync {
   id: string;
-  kind: 'plan-patch';
-  patch: Partial<Pick<GeneratedPlanRecord, 'status' | 'signature' | 'preparedActionId' | 'error' | 'failureLabel' | 'agentReview' | 'agentOverride' | 'metadata'>>;
+  kind: 'plan-patch' | 'chat-put' | 'chat-delete' | 'chat-clear';
+  // Only present for 'plan-patch'. Chat sync entries carry just the session id
+  // (the latest session state is re-read from state.chat at drain time).
+  patch?: Partial<Pick<GeneratedPlanRecord, 'status' | 'signature' | 'preparedActionId' | 'error' | 'failureLabel' | 'agentReview' | 'agentOverride' | 'metadata'>>;
   attemptedAt: string;
   attempts: number;
 }
@@ -2213,6 +2249,10 @@ interface ActionReceipt {
   txid?: string;
   explorerUrl?: string;
   proofSignature?: string;
+  proofMessage?: string;
+  proofEncoding?: 'utf8-message' | 'tx-memo-proof';
+  proofTxBase64?: string;
+  proofMemoText?: string;
   summary: string;
   note?: string;
   walletAddress: string;
@@ -2357,6 +2397,84 @@ interface BrowserWorkflowState {
   preparedActions: PreparedAction[];
   recurringPayments: RecurringPayment[];
   receipts: ActionReceipt[];
+}
+
+// --- Chat tab (shared app power surface) -------------------------------------
+// Conversational front door into the existing approval rail. The chat itself is
+// scratch + proposals; durable artifacts are PreparedActions/receipts that keep
+// their own browser+cloud persistence. Chat history is browser-local only (v1).
+const CHAT_HISTORY_SCHEMA_VERSION = 1 as const;
+const MAX_CHAT_SESSIONS = 50;
+const MAX_CHAT_MESSAGES_PER_SESSION = 300;
+const MAX_CHAT_TOOL_EVIDENCE = 12;
+const MAX_CHAT_TOOL_RESULT_CHARS = 2000;
+const MAX_CHAT_HISTORY_BYTES = 1_500_000;
+// Chat history is stored lz-string-compressed (UTF-16-safe for localStorage) with
+// this marker so existing uncompressed v1 records still load.
+const CHAT_COMPRESS_PREFIX = 'LZ1:';
+// Set when on-disk data carries a newer schemaVersion than this build supports;
+// we still read it (best-effort) but refuse to save so an older build can't
+// clobber a newer build's chat history. Declared here (above module-init use in
+// loadChatHistoryState) to avoid a temporal-dead-zone error at boot.
+let chatHistorySaveLocked = false;
+
+type ChatMessageRole = 'user' | 'assistant' | 'system';
+
+// A structured action the agent proposed but the user has NOT promoted yet.
+// Fields are pre-mapped to what normalizeProposalParams() needs so promotion is
+// a pure mapping (mirrors browserActionParams()).
+interface ChatActionProposal {
+  kind: PreparedActionKind;
+  summary: string;
+  params: Record<string, unknown>;
+  note?: string;
+  cluster?: Cluster;
+  agentReview?: AgentPlanReviewState;
+  agentOverride?: AgentReviewOverride;
+}
+
+// Evidence of a read tool the agent ran (e.g. solana_get_swap_quote). Summaries
+// are hard-capped at append time — raw MCP snapshots are the main bloat source.
+interface ChatToolEvidence {
+  tool: string;
+  callId?: string;
+  argsSummary?: string;
+  resultSummary?: string;
+  at: string;
+}
+
+interface ChatMessage {
+  id: string;
+  role: ChatMessageRole;
+  content: string;
+  createdAt: string;
+  status?: 'streaming' | 'done' | 'error';
+  proposal?: ChatActionProposal;     // pending proposal, not yet promoted
+  preparedActionId?: string;         // set once promoted; SAME id as state.preparedActions[]
+  toolEvidence?: ChatToolEvidence[];
+  error?: string;
+}
+
+interface ChatSession {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  walletAddress: string;
+  cluster: Cluster;
+  messages: ChatMessage[];
+  // Cloud-sync bookkeeping (signed-in only). `cloudMessageCount` is set on a
+  // metadata-only stub whose messages haven't been lazily loaded yet, so the
+  // history list can show it before its compressed blob is fetched. `cloudVersion`
+  // is the last server version this client observed (informational).
+  cloudMessageCount?: number;
+  cloudVersion?: number;
+}
+
+interface ChatHistoryState {
+  schemaVersion: typeof CHAT_HISTORY_SCHEMA_VERSION;
+  sessions: ChatSession[];           // newest-first
+  activeSessionId: string;           // '' if none
 }
 
 interface CompletedPlanRecord {
@@ -3037,6 +3155,10 @@ interface DemoState {
   preparedActions: PreparedAction[];
   preparedActionsInitialized: boolean;
   materializedActions: PreparedAction[];
+  chat: ChatHistoryState;
+  chatInitialized: boolean;
+  chatComposerOpen: boolean;
+  chatHistoryOpen: boolean;
   recurringPayments: RecurringPayment[];
   receipts: ActionReceipt[];
   pendingTransactions: PendingTransactionRecord[];
@@ -3579,6 +3701,7 @@ const initialDeviceAgentVisible = deviceAgentModeVisibleForRuntime({
 });
 const initialAiSettings = persistedAiSettings(persisted, initialMobileAiPathPolicy, initialDeviceAgentVisible);
 const initialBrowserWorkflow = loadBrowserWorkflowState();
+const initialChatHistory = loadChatHistoryState();
 const initialRecipientRules = loadRecipientRules();
 const initialConnectedDapps = loadConnectedDapps();
 const initialProtocolConnectorPrefs = loadProtocolConnectorPrefs();
@@ -4170,6 +4293,10 @@ const state: DemoState = {
   preparedActions: initialBrowserWorkflow.preparedActions,
   preparedActionsInitialized: false,
   materializedActions: initialBrowserWorkflow.preparedActions,
+  chat: initialChatHistory,
+  chatInitialized: false,
+  chatComposerOpen: false,
+  chatHistoryOpen: false,
   recurringPayments: initialBrowserWorkflow.recurringPayments,
   receipts: initialBrowserWorkflow.receipts,
   pendingTransactions: loadTransactionLedger(),
@@ -4615,7 +4742,12 @@ function nativeLiveUpdateEnabled(): boolean {
 }
 
 function nativeLiveUpdateRequestActive(): boolean {
-  return Boolean(state.busy || state.pendingCliSignRequest || proofSigningToastDepth > 0);
+  // Never reload the page (live-update) while a sensitive op is in flight: a busy
+  // wallet flow, a pending CLI sign, a proof-signing toast, OR an active chat
+  // stream — reloading mid-stream aborts the answer the user is watching.
+  return Boolean(
+    state.busy || state.pendingCliSignRequest || proofSigningToastDepth > 0 || chatStreamActive(),
+  );
 }
 
 if (nativeLiveUpdateEnabled() && typeof window !== 'undefined') {
@@ -5013,6 +5145,21 @@ function focusInboxApprovalCard(approvalId: string): void {
 }
 
 function handleGlobalKeydown(event: KeyboardEvent): void {
+  // Chat: Escape closes an open menu first, then aborts an in-flight stream,
+  // before any other handler — mirrors the Android back-button expectation.
+  if (event.key === 'Escape' && (state.chatHistoryOpen || state.chatComposerOpen)) {
+    event.preventDefault();
+    state.chatHistoryOpen = false;
+    state.chatComposerOpen = false;
+    render();
+    return;
+  }
+  if (event.key === 'Escape' && state.activeTab === 'chat' && chatStreamActive()) {
+    event.preventDefault();
+    cancelChatStream();
+    render();
+    return;
+  }
   if (event.key === 'Escape' && state.cloudWorkspaceDeleteModalOpen) {
     event.preventDefault();
     closeCloudWorkspaceDeleteModal();
@@ -9575,6 +9722,17 @@ function reconcileBodyScrollLockDatasetsAfterRender(): void {
 
 function render(): void {
   if (!appRoot) return;
+  // Defer re-render while the user is mid-IME-composition in the chat input: a
+  // full innerHTML rebuild would drop the in-progress CJK/accented characters.
+  // The render flushes on compositionend (or input blur). Streaming tokens still
+  // paint via direct DOM append, so the transcript keeps updating meanwhile.
+  if (chatComposing && document.activeElement instanceof HTMLElement && document.activeElement.matches('[data-chat-input]')) {
+    chatRenderDeferredDuringComposition = true;
+    return;
+  }
+  // Normalize a stranded Chat tab (HIDE_CHAT_TAB) before any markup is built, so
+  // the tab bar and active panel agree on the same active tab in this render.
+  if (state.activeTab === 'chat' && chatTabHidden()) state.activeTab = 'overview';
   const mobileRailSnapshot = captureMobileRailRenderSnapshot();
   // Publish the connected wallet address to the shared dev-tab sinks BEFORE
   // pageContent() runs, so dev-tab guards (which fire inside pageContent's
@@ -9610,6 +9768,10 @@ function render(): void {
     resetAiConnectorsPairingState();
     resetAiConnectorsReadinessState();
   }
+  // Cancel an in-flight chat stream if the user navigated away from the Chat tab.
+  if (chatStreamActive() && state.activeTab !== 'chat') {
+    cancelChatStream();
+  }
   if (shouldClearActiveMobileRailSheet({
     activeTab: state.activeTab,
     mobileViewport: isMobileAppViewport(),
@@ -9637,6 +9799,7 @@ function render(): void {
     forceSuppress: suppressMobileRailSheetEnterAnimation,
   });
   syncBodyScrollLockDatasets(route);
+  captureChatComposerSnapshot();
   appRoot.innerHTML =
     pageShell(pageContent(route), route)
     + embeddedWalletOverlayHtml(embeddedWallet.overlay)
@@ -9654,6 +9817,7 @@ function render(): void {
   bindLedgerOverlay();
   bindQrConnectPage();
   restoreMobileRailRenderSnapshot(mobileRailSnapshot);
+  restoreChatComposerAfterRender();
   mountPlanConnectorPairingPanel();
   mountConnectorKeysPanel({ container: 'connector-keys-panel' });
   if (state.tauriNativeEnvironment.isTauriNative) {
@@ -12246,7 +12410,7 @@ function gapSection(): string {
         </div>
         <p class="gap-answer">
           ${escapeHtml(
-            tf("Agentic routes each request to the user's existing Solana wallet: {wallets}. The agent gets the approved result, never the key.", {
+            tf('Agentic routes each request to the user\'s existing Solana wallet: {wallets}. The agent gets the approved result, never the key.', {
               wallets: walletRoutes,
             }),
           )}
@@ -13933,8 +14097,9 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
                   tabButton('wallet', 'Wallet')
                 */ ''}
                 ${tabButton('overview', t('Home'))}
+                ${chatTabHidden() ? '' : tabButton('chat', t('Chat'))}
                 ${tabButton('agent', t('New Request'), t('New'))}
-                ${tabButton('schedule', t('Repeat Payments'), t('Repeats'))}
+                ${chatTabHidden() ? tabButton('schedule', t('Repeat Payments'), t('Repeats')) : ''}
                 ${tabButton('inbox', t('Needs Approval'), t('Approve'))}
                 ${tabButton('completed', t('Done'))}
                 ${moreMenuButton()}
@@ -18394,9 +18559,14 @@ function activePanel(): string {
   // Push the active language to demo-i18n/uiLang so self-contained devTab modules render
   // in lock-step (they translate via uiLang's t()/tf(), not main.ts's).
   activeUiLanguage();
+  // Chat hidden on this surface (HIDE_CHAT_TAB) but a prior session persisted the
+  // chat tab: fall back to Home so the user never lands on a hidden tab.
+  if (state.activeTab === 'chat' && chatTabHidden()) state.activeTab = 'overview';
   switch (state.activeTab) {
     case 'overview':
       return commandCenterPanel();
+    case 'chat':
+      return chatPanel();
     case 'wallet':
       return walletFlowPanel();
     case 'agent':
@@ -20168,6 +20338,995 @@ function walletFlowPanel(): string {
       ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ''}
     </section>
   `;
+}
+
+// =============================================================================
+// Chat tab — ChatGPT-style conversational surface (web only).
+// Render helpers below are pure (state -> HTML). The streaming engine and event
+// wiring live further down (onChatSubmit / bindChat / promotion bridge).
+// =============================================================================
+
+const CHAT_SUGGESTED_PROMPTS: string[] = [
+  "What's my SOL balance worth right now?",
+  'Is BONK a safe token to hold?',
+  'Quote swapping 0.1 SOL to USDC',
+  'What can you help me do?',
+];
+
+// Power-action templates inserted into the composer by the "+" menu. The token
+// inside [brackets] is selected so the user types over it. Not auto-sent.
+// Rendered as template-picker-style cards (eyebrow / title / description) to
+// mirror the New Request plan-template picker.
+const CHAT_POWER_ACTIONS: Array<{ id: string; eyebrow: string; title: string; description: string; template: string }> = [
+  { id: 'swap', eyebrow: 'Trading', title: 'Swap Tokens', description: 'Prepare a DeFi swap with input, output, amount, and slippage.', template: 'Swap [0.1] SOL to USDC' },
+  { id: 'send', eyebrow: 'Payments', title: 'Send Tokens', description: 'Prepare a token payment with recipient, amount, and memo.', template: 'Send [amount] SOL to [recipient address]' },
+  { id: 'sign', eyebrow: 'Proof', title: 'Sign Proof', description: 'Sign a message to create a verifiable proof receipt. No transaction.', template: 'Sign a proof that [statement to attest]' },
+];
+
+function chatPanel(): string {
+  const session = activeChatSession();
+  const messages = session?.messages ?? [];
+  const hasMessages = messages.length > 0;
+  // An active cloud stub (messages not yet fetched) shows a loading placeholder
+  // rather than the empty "Talk to your agent" state, which would mismatch the
+  // real title shown in the header.
+  const loadingStub = Boolean(session && chatSessionIsCloudStub(session));
+  const transcript = hasMessages
+    ? messages.map((m) => chatMessageHtml(m, session!.id)).join('')
+    : loadingStub ? chatLoadingState() : chatEmptyState();
+  return `
+    <section class="chat-surface" data-layout="chat">
+      ${chatHeaderHtml(session)}
+      <div class="chat-transcript" data-chat-scroll aria-live="polite" aria-atomic="false">
+        ${transcript}
+      </div>
+      ${chatComposerHtml()}
+      <p class="chat-disclaimer">${escapeHtml(t('The agent reads live data to answer. You always review and sign in your wallet. The agent never signs.'))}</p>
+    </section>
+  `;
+}
+
+// A session counts as having content if its messages are loaded OR it's a
+// cloud metadata stub whose messages haven't been lazily fetched yet.
+function chatSessionHasContent(session: ChatSession): boolean {
+  return session.messages.length > 0 || (session.cloudMessageCount ?? 0) > 0;
+}
+
+function chatHeaderHtml(session: ChatSession | null): string {
+  const sessions = state.chat.sessions.filter(chatSessionHasContent);
+  const activeTitle = session && chatSessionHasContent(session) ? session.title : t('Chat');
+  const hasHistory = sessions.length > 0;
+  return `
+    <div class="chat-header">
+      <span class="chat-title">${escapeHtml(activeTitle)}</span>
+      <div class="chat-header-actions">
+        ${hasHistory ? `
+          <div class="chat-sessions${state.chatHistoryOpen ? ' open' : ''}" data-chat-history>
+            <button type="button" class="chat-history-trigger" data-chat-history-trigger aria-haspopup="menu" aria-expanded="${state.chatHistoryOpen ? 'true' : 'false'}">${escapeHtml(t('History'))} <span class="chat-sessions-caret" aria-hidden="true">▾</span></button>
+            <div class="chat-sessions-menu" role="menu" ${state.chatHistoryOpen ? '' : 'hidden'}>
+              ${sessions.map((s) => `
+                <div class="chat-session-row${s.id === state.chat.activeSessionId ? ' active' : ''}">
+                  <button type="button" class="chat-session-open" data-chat-switch="${escapeHtml(s.id)}">${escapeHtml(s.title)}</button>
+                  <button type="button" class="chat-session-del" data-chat-del="${escapeHtml(s.id)}" aria-label="${escapeHtml(t('Delete chat'))}" title="${escapeHtml(t('Delete chat'))}">×</button>
+                </div>
+              `).join('')}
+            </div>
+          </div>` : ''}
+        <button type="button" data-chat-new>${escapeHtml(t('New chat'))}</button>
+        ${hasHistory ? `<button type="button" class="danger" data-chat-clear>${escapeHtml(t('Clear'))}</button>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+function chatEmptyState(): string {
+  return `
+    <div class="chat-empty">
+      <div class="chat-empty-mark" aria-hidden="true"></div>
+      <h3>${escapeHtml(t('Talk to your agent'))}</h3>
+      <p>${escapeHtml(t('Ask about your wallet, tokens, prices, or risk. When you are ready, ask it to prepare a swap or a payment, then approve and sign here.'))}</p>
+      <div class="chat-suggest-grid">
+        ${CHAT_SUGGESTED_PROMPTS.map((prompt) => `
+          <button type="button" class="chat-suggest" data-chat-suggest="${escapeHtml(prompt)}">${escapeHtml(t(prompt))}</button>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+// Shown while a cloud-stub session's messages are being fetched/decompressed on
+// open, so the transcript isn't a misleading empty state under the real title.
+function chatLoadingState(): string {
+  return `
+    <div class="chat-empty" aria-busy="true">
+      <div class="chat-empty-mark" aria-hidden="true"></div>
+      <p>${escapeHtml(t('Loading conversation…'))}</p>
+    </div>
+  `;
+}
+
+function chatMessageHtml(msg: ChatMessage, sessionId: string): string {
+  if (msg.role === 'user') {
+    return `<div class="chat-msg user">${escapeHtml(msg.content)}</div>`;
+  }
+  if (msg.role === 'system') {
+    return `<div class="chat-msg assistant"><div class="chat-avatar" aria-hidden="true"></div><div class="chat-body"><div class="chat-text">${renderChatMarkdown(msg.content)}</div></div></div>`;
+  }
+  const isStreaming = msg.status === 'streaming';
+  const isError = msg.status === 'error';
+  const streaming = isStreaming ? ' streaming' : '';
+  const errored = isError ? ' error' : '';
+  const bodyText = isError && msg.error ? msg.error : msg.content;
+  // While streaming, paint plain text (tokens append cleanly); once settled,
+  // render light markdown. Errors stay plain.
+  const bodyHtml = (isStreaming || isError) ? escapeHtml(bodyText) : renderChatMarkdown(bodyText);
+  return `
+    <div class="chat-msg assistant${streaming}${errored}" data-chat-msg-id="${escapeHtml(msg.id)}" aria-busy="${isStreaming ? 'true' : 'false'}">
+      <div class="chat-avatar" aria-hidden="true"></div>
+      <div class="chat-body">
+        <div class="chat-tools">${chatToolChipsHtml(msg)}</div>
+        <div class="chat-text">${bodyHtml}</div>
+        ${chatInlineActionHtml(msg, sessionId)}
+      </div>
+    </div>
+  `;
+}
+
+function chatToolChipsHtml(msg: ChatMessage): string {
+  if (!msg.toolEvidence || msg.toolEvidence.length === 0) return '';
+  return msg.toolEvidence
+    .map((ev) => `<span class="chat-tool-chip done">${escapeHtml(chatToolDisplayName(ev.tool))}</span>`)
+    .join('');
+}
+
+function chatToolLabel(tool: string): string {
+  // solana_jupiter_price -> "Jupiter price"; strip the solana_ prefix and humanize.
+  const cleaned = tool.replace(/^solana_/, '').replace(/_/g, ' ');
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
+
+// Localized labels for the tool-status chips (the server sends an English label
+// we ignore on the client so non-English devices stay localized).
+function chatToolRunningLabel(tool: string): string {
+  if (tool === 'get_token_price') return t('Checking price…');
+  if (tool === 'search_tokens') return t('Searching tokens…');
+  return tf('Running {tool}…', { tool: chatToolDisplayName(tool) });
+}
+
+function chatToolDisplayName(tool: string): string {
+  if (tool === 'get_token_price') return t('Token price');
+  if (tool === 'search_tokens') return t('Token search');
+  return chatToolLabel(tool);
+}
+
+function chatInlineActionHtml(msg: ChatMessage, sessionId: string): string {
+  if (msg.preparedActionId) {
+    const action = state.preparedActions.find((a) => a.id === msg.preparedActionId);
+    if (action) return `<div class="chat-card">${preparedActionCard(action)}</div>`;
+    // Promoted action was deleted/archived — fall back to the proposal snapshot.
+  }
+  if (msg.proposal) {
+    const canPrepare = Boolean(state.address);
+    return `
+      <div class="chat-card chat-proposal-pending">
+        <p class="ticket-meta-line">${escapeHtml(msg.proposal.summary)}</p>
+        ${canPrepare
+          ? `<button type="button" class="primary" data-chat-promote data-chat-session="${escapeHtml(sessionId)}" data-chat-msg="${escapeHtml(msg.id)}">${escapeHtml(t('Prepare for approval'))}</button>`
+          : `<p class="ticket-meta-line">${escapeHtml(t('Connect a wallet to prepare this action.'))}</p>`}
+      </div>
+    `;
+  }
+  return '';
+}
+
+function chatComposerHtml(): string {
+  const plusOpen = state.chatComposerOpen ? ' open' : '';
+  return `
+    <form class="chat-composer" data-chat-composer>
+      <div class="chat-plus">
+        <button type="button" class="chat-plus-btn" data-chat-plus-toggle aria-haspopup="menu" aria-expanded="${state.chatComposerOpen ? 'true' : 'false'}" aria-label="${escapeHtml(t('Wallet actions'))}">+</button>
+        <div class="chat-plus-menu${plusOpen}" role="menu">
+          <span class="chat-plus-group">${escapeHtml(t('Wallet actions'))}</span>
+          ${CHAT_POWER_ACTIONS.map((action) => `
+            <button type="button" class="chat-plus-option" role="menuitem" data-chat-action="${escapeHtml(action.id)}">
+              <span class="chat-plus-eyebrow">${escapeHtml(t(action.eyebrow))}</span>
+              <strong>${escapeHtml(t(action.title))}</strong>
+              <em>${escapeHtml(t(action.description))}</em>
+            </button>
+          `).join('')}
+        </div>
+      </div>
+      <textarea class="chat-input" data-chat-input rows="1" placeholder="${escapeHtml(t('Message your agent…'))}" aria-label="${escapeHtml(t('Message your agent'))}"></textarea>
+      ${chatStreamActive()
+        ? `<button type="button" class="chat-send chat-stop" data-chat-stop aria-label="${escapeHtml(t('Stop'))}" title="${escapeHtml(t('Stop'))}">■</button>`
+        : `<button type="submit" class="chat-send" data-chat-send aria-label="${escapeHtml(t('Send'))}">↑</button>`}
+    </form>
+  `;
+}
+
+// --- Chat streaming engine (imperative; survives the full innerHTML re-render) -
+// state.chat.messages is the source of truth; render() always paints the current
+// text. The token handler mutates the assistant bubble node directly and never
+// calls render() per token, so streaming stays smooth.
+let chatStreamAbort: AbortController | null = null;
+let chatStreamMsgId: string | null = null;
+let chatStreamSessionId: string | null = null;
+let chatSubmitPending = false;
+let chatDraft = '';
+let chatComposerWasFocused = false;
+let chatComposerSelStart = 0;
+let chatComposerSelEnd = 0;
+let chatScrollPinned = true;
+let chatActiveTool: { tool: string; label: string } | null = null;
+let chatPlusClickAwayInstalled = false;
+let chatHistoryClickAwayInstalled = false;
+let chatViewportListenersBound = false;
+let chatStreamLifecycleBound = false;
+let chatCheckpointTimer: number | null = null;
+// True while the user is mid-IME-composition in the chat input (CJK/accented
+// input). A full innerHTML re-render during composition drops the in-progress
+// characters, so render() defers itself until compositionend.
+let chatComposing = false;
+let chatRenderDeferredDuringComposition = false;
+// Cloud chat-history sync (signed-in only). `chatCloudHydrated` flips true after
+// the session metadata list is fetched. A session is a metadata-only "stub"
+// (messages not yet lazily fetched) when it has a positive cloudMessageCount but
+// an empty messages array — see chatSessionIsCloudStub(). That predicate (rather
+// than an in-memory Set) is used so stubs persisted to localStorage are still
+// recognized as needing a lazy fetch after a page reload.
+let chatCloudHydrated = false;
+// Session ids whose cloud message body is being fetched right now — guards
+// against duplicate GETs (double-click / hydrate eager-load racing a click).
+const chatSessionLoadsInFlight = new Set<string>();
+// Force the composer to refocus after the next render (e.g. after a send via the
+// button, where focus was on the button rather than the input).
+let chatForceFocus = false;
+
+const CHAT_PROPOSAL_KINDS = new Set<PreparedActionKind>(['transfer_sol', 'transfer_spl', 'swap']);
+
+function chatStreamActive(): boolean {
+  return chatStreamAbort !== null;
+}
+
+// Debounced mid-stream checkpoint: persist the partial answer (~every 800ms) so a
+// suspend/kill mid-stream leaves a recoverable bubble (normalizeChatMessage settles
+// the persisted 'streaming' status to 'done' on load) instead of losing the answer.
+function scheduleChatCheckpoint(): void {
+  if (typeof window === 'undefined') return;
+  if (chatCheckpointTimer !== null) return;
+  chatCheckpointTimer = window.setTimeout(() => {
+    chatCheckpointTimer = null;
+    saveChatHistoryState();
+  }, 800);
+}
+
+function cancelChatCheckpoint(): void {
+  if (chatCheckpointTimer === null) return;
+  if (typeof window !== 'undefined') window.clearTimeout(chatCheckpointTimer);
+  chatCheckpointTimer = null;
+}
+
+// Flush chat history synchronously when the page is about to be hidden/unloaded
+// while a stream is in flight (iOS WKWebView can suspend/terminate JS on
+// backgrounding). Bound once.
+function bindChatStreamLifecycle(): void {
+  if (chatStreamLifecycleBound || typeof window === 'undefined') return;
+  chatStreamLifecycleBound = true;
+  const flush = (): void => {
+    if (chatStreamActive()) {
+      cancelChatCheckpoint();
+      saveChatHistoryState();
+    }
+  };
+  window.addEventListener('pagehide', flush);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flush();
+  });
+}
+
+function chatSubmitBlocked(): boolean {
+  return chatSubmitPending || chatStreamActive();
+}
+
+function chatApiKeyConfigured(): boolean {
+  return Boolean(state.aiSettings.apiKey && state.aiSettings.apiKey.trim());
+}
+
+// True whenever chat should stream through the user's OWN local bridge (the
+// Plan Connector / CLI bridge) instead of the hosted Cloud relay. This covers
+// the Tauri desktop app AND the website/desktop browser running a local
+// connector — both reach the bridge directly at localhost (same path the
+// workflow planner already uses via bridgeAiRequest), so NO cloud sign-in is
+// required. The paired (android/iOS) connector is mode 'device-agent' and routes
+// via shouldUsePairedConnectorChat() instead.
+function shouldUseLocalBridgeChat(): boolean {
+  return state.aiSettings.mode === 'bridge' && !state.aiSettings.pairedBridge;
+}
+
+// True for the native (android/iOS) paired Plan Connector: chat is forwarded
+// (non-streaming) to the user's desktop connector through the relay — iOS via the
+// JS relay (iosForwardPlanRequest), Android via the native device-agent runtime.
+// Mirrors how the workflow planner routes mode 'device-agent' (generateDeviceAgentPlan).
+function shouldUsePairedConnectorChat(): boolean {
+  return state.aiSettings.mode === 'device-agent' && Boolean(state.aiSettings.pairedBridge);
+}
+
+// Local-bridge / Plan Connector chat streams through the user's own bridge and
+// needs no cloud sign-in — only a reachable bridge/connector. Hosted BYOK chat
+// goes through the Cloud relay, which is server-gated behind a signed-in
+// workspace plus a BYOK key.
+function chatReadinessError(): string | null {
+  if (shouldUseLocalBridgeChat()) {
+    return state.aiStatus?.available ? null : aiGenerateDisabledReason();
+  }
+  if (shouldUsePairedConnectorChat()) {
+    // Paired desktop connector reachable through the relay? No cloud sign-in needed.
+    return (pairedBridgeActive() && refreshRelayPresence())
+      ? null
+      : t('Open the connector page on your computer (and keep it awake) to use Plan Connector.');
+  }
+  if (state.cloudSession.status !== 'signed-in') {
+    return t('Sign in to Agentic Cloud (Workspace storage → Sign in) to chat with your agent.');
+  }
+  if (!chatApiKeyConfigured()) {
+    return t('Add your AI connector key in Preferences → AI connector, then try again.');
+  }
+  return null;
+}
+
+async function refreshLocalBridgeChatStatusIfNeeded(): Promise<void> {
+  if (!shouldUseLocalBridgeChat() || state.aiStatus?.available) return;
+  await refreshBridgeAiStatus(false).catch(() => undefined);
+}
+
+// Forward one chat turn to the paired desktop connector (non-streaming) and feed
+// the single {answer, proposedAction?} result into the streaming handlers. iOS
+// uses the pure-JS relay; Android uses the native device-agent runtime which
+// forwards to the desktop's /bridge/ai/chat.
+async function runPairedConnectorChat(
+  request: AgentChatRequest,
+  handlers: ChatStreamHandlers,
+  options: { signal?: AbortSignal } = {},
+): Promise<void> {
+  const iosPaired = IS_IOS_APP && Boolean(state.aiSettings.pairedBridge);
+  const result = iosPaired
+    ? await iosForwardPlanRequest<AgentChatResult>('/bridge/ai/chat', request, options.signal ? { signal: options.signal } : {})
+    : await invokeDeviceAgentNative<AgentChatResult>('chat', request, {
+      action: 'chat',
+      ...(options.signal && { signal: options.signal }),
+    });
+  if (options.signal?.aborted) return;
+  if (result?.answer) handlers.onToken?.(result.answer);
+  if (result?.proposedAction) handlers.onProposal?.(result.proposedAction);
+  handlers.onDone?.(result ?? { answer: '', checkedAt: new Date().toISOString(), source: 'ai' });
+}
+
+// Turn a raw stream/transport error into product-grade copy.
+function friendlyChatError(raw: string): string {
+  if (/\b401\b|sign in required/i.test(raw)) {
+    return t('Sign in to Agentic Cloud (Workspace storage → Sign in) to chat with your agent.');
+  }
+  if (/\b429\b|rate limit/i.test(raw)) {
+    return t('Too many requests right now. Wait a moment and try again.');
+  }
+  if (/network|failed to fetch|load failed|networkerror|connection|offline|err_internet|timed?\s?out|timeout|ECONN|ENOTFOUND|dns/i.test(raw)) {
+    return t('Network problem reaching your agent. Check your connection and try again.');
+  }
+  return raw;
+}
+
+function chatScroller(): HTMLElement | null {
+  return document.querySelector<HTMLElement>('[data-chat-scroll]');
+}
+
+function chatIsPinnedToBottom(el: HTMLElement): boolean {
+  return el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+}
+
+function chatScrollToBottom(force = false): void {
+  const scroller = chatScroller();
+  if (!scroller) return;
+  if (force || chatScrollPinned) {
+    scroller.scrollTop = scroller.scrollHeight;
+  }
+}
+
+function chatMaybeAutoScroll(): void {
+  const scroller = chatScroller();
+  if (scroller && chatIsPinnedToBottom(scroller)) {
+    scroller.scrollTop = scroller.scrollHeight;
+  }
+}
+
+function chatAutoGrow(input: HTMLTextAreaElement): void {
+  input.style.height = 'auto';
+  input.style.height = `${Math.min(input.scrollHeight, 168)}px`;
+}
+
+// Intentional draft clear (send / new / clear / switch). Resetting `chatDraft`
+// alone is not enough: render() runs captureChatComposerSnapshot() FIRST, which
+// reads the still-populated live textarea back into chatDraft and then
+// restoreChatComposerAfterRender() refills the box. Clearing the live element
+// here makes that capture read empty, so the textbox actually clears on send.
+function clearChatComposerDraft(): void {
+  chatDraft = '';
+  const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
+  if (input) {
+    input.value = '';
+    chatAutoGrow(input);
+  }
+}
+
+// Append a token delta to the live assistant bubble (O(1) per token vs rewriting
+// the whole text). render() rebuilds the node from state.chat on demand, so this
+// stays consistent across a mid-stream re-render.
+function appendChatAssistantText(id: string, delta: string): void {
+  const node = document.querySelector<HTMLElement>(`[data-chat-msg-id="${id}"] .chat-text`);
+  if (node) node.appendChild(document.createTextNode(delta));
+  chatMaybeAutoScroll();
+}
+
+function paintChatToolChips(id: string, message: ChatMessage): void {
+  const container = document.querySelector<HTMLElement>(`[data-chat-msg-id="${id}"] .chat-tools`);
+  if (!container) return;
+  let html = chatToolChipsHtml(message);
+  if (chatActiveTool && chatStreamMsgId === id) {
+    html += `<span class="chat-tool-chip running">${escapeHtml(chatActiveTool.label)}</span>`;
+  }
+  container.innerHTML = html;
+  chatMaybeAutoScroll();
+}
+
+function chatRequestContext(): Record<string, unknown> {
+  return {
+    connectedWallet: Boolean(state.address),
+    ...(state.address ? { walletAddress: state.address } : {}),
+    cluster: state.cluster,
+    // The agent should reply in the user's selected UI language (Android picker;
+    // 'en' on web). The static chrome is localized via the demo-i18n catalogs.
+    uiLanguage: activeUiLanguage(),
+  };
+}
+
+function buildChatRequest(session: ChatSession): AgentChatRequest {
+  const messages = session.messages
+    .filter((m) => (m.role === 'user' || m.role === 'assistant') && m.content.trim())
+    .slice(-20)
+    .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+  return {
+    messages,
+    walletAddress: state.address || undefined,
+    cluster: state.cluster,
+    context: chatRequestContext(),
+  };
+}
+
+function isChatAbortError(err: unknown): boolean {
+  return err instanceof Error && (err.name === 'AbortError' || /abort/i.test(err.message));
+}
+
+function isNativeTokenAuthError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /\b401\b|unauthorized|sign in required/i.test(msg);
+}
+
+function findLatestPendingChatActionId(): string | null {
+  const session = activeChatSession();
+  if (!session) return null;
+  for (let i = session.messages.length - 1; i >= 0; i -= 1) {
+    const id = session.messages[i]?.preparedActionId;
+    if (!id) continue;
+    const action = state.preparedActions.find((a) => a.id === id);
+    if (action && (action.status === 'ready' || action.status === 'overdue')) return id;
+  }
+  return null;
+}
+
+async function submitChatMessage(text: string): Promise<void> {
+  const content = text.trim();
+  if (!content || chatSubmitBlocked()) return;
+  chatSubmitPending = true;
+  // Keep the composer focused after sending, even when the send came from the
+  // button or a suggestion chip (focus was not on the textarea).
+  chatForceFocus = true;
+
+  try {
+    // NL shortcut: a bare "sign"/"approve" approves the most recent pending card
+    // (opens the wallet) instead of messaging the agent. The wallet still prompts.
+    if (/^(sign|sign it|approve|approve it|confirm)\.?$/i.test(content)) {
+      const pendingId = findLatestPendingChatActionId();
+      if (pendingId) {
+        clearChatComposerDraft();
+        chatSubmitPending = false;
+        render();
+        void runPreparedActionOp(pendingId, 'execute').catch((err) => {
+          pushToast('error', t('Action failed'), redactSecrets(err instanceof Error ? err.message : String(err)));
+        });
+        return;
+      }
+    }
+
+    const now = new Date().toISOString();
+    const session = ensureActiveChatSession();
+    appendChatMessage(session.id, { id: newId('chat-msg'), role: 'user', content, createdAt: now, status: 'done' });
+    clearChatComposerDraft();
+    chatStreamSessionId = session.id;
+    chatStreamMsgId = null;
+    chatScrollPinned = true;
+    chatActiveTool = null;
+    const preflightAbort = new AbortController();
+    chatStreamAbort = preflightAbort;
+    chatSubmitPending = false;
+    render();
+
+    await refreshLocalBridgeChatStatusIfNeeded();
+    if (preflightAbort.signal.aborted || chatStreamAbort !== preflightAbort) return;
+    const notReady = chatReadinessError();
+    if (notReady) {
+      chatStreamAbort = null;
+      chatStreamMsgId = null;
+      chatStreamSessionId = null;
+      appendChatMessage(session.id, {
+        id: newId('chat-msg'),
+        role: 'assistant',
+        content: '',
+        createdAt: new Date().toISOString(),
+        status: 'error',
+        error: notReady,
+      });
+      chatScrollPinned = true;
+      render();
+      return;
+    }
+
+    const assistantId = newId('chat-msg');
+    appendChatMessage(session.id, { id: assistantId, role: 'assistant', content: '', createdAt: new Date().toISOString(), status: 'streaming' });
+    chatStreamMsgId = assistantId;
+    chatScrollPinned = true;
+    chatActiveTool = null;
+    // chatStreamAbort was created before bridge/hosted readiness so duplicate
+    // sends are blocked during preflight and Stop can cancel before first token.
+    render();
+    void runChatStream(session.id, assistantId);
+  } finally {
+    if (chatSubmitPending) {
+      chatSubmitPending = false;
+      if (state.activeTab === 'chat') render();
+    }
+  }
+}
+
+async function runChatStream(sessionId: string, assistantId: string): Promise<void> {
+  const session = state.chat.sessions.find((s) => s.id === sessionId);
+  const message = session?.messages.find((m) => m.id === assistantId);
+  if (!session || !message) return;
+  const request = buildChatRequest(session);
+  // submitChatMessage created the AbortController (so the composer could show
+  // Stop before this async fn runs); reuse it, or create one if missing.
+  const abort = chatStreamAbort ?? new AbortController();
+  chatStreamAbort = abort;
+  const handlers: ChatStreamHandlers = {
+    onToken: (delta) => {
+      message.content += delta;
+      appendChatAssistantText(assistantId, delta);
+      scheduleChatCheckpoint();
+    },
+    onToolStatus: (info) => {
+      if (info.phase === 'start') {
+        chatActiveTool = { tool: info.tool, label: chatToolRunningLabel(info.tool) };
+      } else {
+        message.toolEvidence = [
+          ...(message.toolEvidence ?? []),
+          { tool: info.tool, at: new Date().toISOString(), ...(info.label ? { resultSummary: info.label } : {}) },
+        ].slice(-MAX_CHAT_TOOL_EVIDENCE);
+        chatActiveTool = null;
+      }
+      paintChatToolChips(assistantId, message);
+    },
+    onProposal: (proposal) => {
+      const mapped = mapProposedActionToChatProposal(proposal);
+      if (!mapped) return;
+      message.proposal = mapped;
+      if (state.address) {
+        try { promoteChatProposalToPreparedAction(sessionId, assistantId); } catch { /* leave pending */ }
+      }
+      saveChatHistoryState();
+      render();
+    },
+    onError: (msg) => {
+      message.status = 'error';
+      message.error = friendlyChatError(redactSecrets(msg));
+    },
+    onDone: (result) => {
+      if (result.answer && result.answer.length > message.content.length) {
+        message.content = result.answer;
+      }
+      if (message.status !== 'error') message.status = 'done';
+    },
+  };
+  try {
+    if (shouldUseLocalBridgeChat()) {
+      await streamBridgeAiChat(request, handlers, { signal: abort.signal });
+    } else if (shouldUsePairedConnectorChat()) {
+      // Native paired Plan Connector → forward to the desktop connector (non-streaming).
+      await runPairedConnectorChat(request, handlers, { signal: abort.signal });
+    } else {
+      // Ensure the native cloud Bearer token is hydrated before the first request
+      // (iOS cold-launch race) so we don't 401 with a misleading "sign in" error.
+      await ensureNativeCloudTokenReady();
+      try {
+        await streamHostedAiChat(state.aiSettings, request, handlers, hostedAiRequestOptions({ signal: abort.signal }));
+      } catch (err) {
+        // Retry once on a 401 while signed in (token hydrated/refreshed a beat late).
+        if (!abort.signal.aborted && isNativeTokenAuthError(err) && nativeCloudApiSurfaceActive() && state.cloudSession.status === 'signed-in') {
+          await ensureNativeCloudTokenReady(2500);
+          await streamHostedAiChat(state.aiSettings, request, handlers, hostedAiRequestOptions({ signal: abort.signal }));
+        } else {
+          throw err;
+        }
+      }
+    }
+  } catch (err) {
+    if (!isChatAbortError(err)) {
+      message.status = 'error';
+      message.error = friendlyChatError(redactSecrets(err instanceof Error ? err.message : String(err)));
+    }
+  } finally {
+    if (message.status === 'streaming') message.status = 'done';
+    chatStreamAbort = null;
+    chatStreamMsgId = null;
+    chatStreamSessionId = null;
+    chatActiveTool = null;
+    cancelChatCheckpoint();
+    saveChatHistoryState();
+    // Mirror the completed assistant turn to the cloud (debounced token saves
+    // stayed local; this is the single end-of-turn cloud write).
+    void syncChatSessionToCloud(sessionId);
+    if (state.activeTab === 'chat') render();
+  }
+}
+
+function cancelChatStream(): void {
+  if (chatStreamAbort) {
+    try { chatStreamAbort.abort(); } catch { /* ignore */ }
+  }
+  chatStreamAbort = null;
+  if (chatStreamSessionId && chatStreamMsgId) {
+    const session = state.chat.sessions.find((s) => s.id === chatStreamSessionId);
+    const message = session?.messages.find((m) => m.id === chatStreamMsgId);
+    if (message && message.status === 'streaming') {
+      message.status = 'done';
+      saveChatHistoryState();
+    }
+  }
+  chatStreamMsgId = null;
+  chatStreamSessionId = null;
+  chatActiveTool = null;
+}
+
+// --- Action-promotion bridge: chat proposal -> existing PreparedAction --------
+function mapProposedActionToChatProposal(proposal: AgentChatProposedAction): ChatActionProposal | undefined {
+  if (!proposal || typeof proposal.kind !== 'string') return undefined;
+  // sign_proof is a chat-level kind that signs a MESSAGE (no transaction). It maps
+  // to a proof-only `manual_review` PreparedAction whose Approve signs a proof.
+  if (proposal.kind === 'sign_proof') {
+    const params = (proposal.params && typeof proposal.params === 'object') ? proposal.params as Record<string, unknown> : {};
+    const statement = typeof params.statement === 'string' ? params.statement
+      : (typeof params.message === 'string' ? params.message : '');
+    if (!statement.trim()) return undefined;
+    return {
+      kind: 'manual_review',
+      summary: (proposal.summary || t('Sign proof')).slice(0, 140),
+      params: { statement, proofKind: 'sign_proof' },
+      ...(proposal.note ? { note: proposal.note } : {}),
+      cluster: (typeof proposal.cluster === 'string' ? proposal.cluster : state.cluster) as Cluster,
+    };
+  }
+  if (!isPreparedActionKind(proposal.kind) || !CHAT_PROPOSAL_KINDS.has(proposal.kind)) return undefined;
+  return {
+    kind: proposal.kind,
+    summary: (proposal.summary || t('Prepared action')).slice(0, 140),
+    params: proposal.params && typeof proposal.params === 'object' ? proposal.params : {},
+    ...(proposal.note ? { note: proposal.note } : {}),
+    cluster: (typeof proposal.cluster === 'string' ? proposal.cluster : state.cluster) as Cluster,
+  };
+}
+
+function isSignProofAction(action: { kind: string; params?: Record<string, unknown> }): boolean {
+  return isChatSignProofAction(action);
+}
+
+function normalizeProposalParams(proposal: ChatActionProposal): Record<string, unknown> {
+  const p = proposal.params ?? {};
+  const str = (v: unknown): string => (v === undefined || v === null ? '' : String(v));
+  if (proposal.kind === 'transfer_sol') {
+    return { recipient: str(p.recipient), amountSol: str(p.amountSol ?? p.amount), memo: str(p.memo) };
+  }
+  if (proposal.kind === 'transfer_spl') {
+    return { token: str(p.token), recipient: str(p.recipient), amount: str(p.amount), memo: str(p.memo) };
+  }
+  if (proposal.kind === 'swap') {
+    return {
+      inputToken: str(p.inputToken || 'SOL'),
+      outputToken: str(p.outputToken || 'USDC'),
+      amount: str(p.amount),
+      slippageBps: str(p.slippageBps || '50'),
+    };
+  }
+  if (proposal.kind === 'manual_review') {
+    // Sign-proof: the statement is signed as a message proof (no transaction).
+    return { statement: str(p.statement), proofKind: 'sign_proof' };
+  }
+  throw new Error(t('Only transfers, swaps, and proofs can be prepared from chat.'));
+}
+
+function createBrowserPreparedActionFromProposal(proposal: ChatActionProposal): PreparedAction {
+  const now = new Date().toISOString();
+  // For a sign-proof, surface the statement as the note so the card shows what
+  // will be signed.
+  const note = isSignProofAction(proposal)
+    ? String((proposal.params as Record<string, unknown> | undefined)?.statement ?? proposal.note ?? '')
+    : (proposal.note ?? '');
+  return {
+    id: newId('browser-action'),
+    kind: proposal.kind,
+    status: 'ready',
+    walletAddress: state.address,
+    cluster: proposal.cluster ?? state.cluster,
+    summary: proposal.summary,
+    params: normalizeProposalParams(proposal),
+    dueAt: now,
+    createdAt: now,
+    updatedAt: now,
+    note,
+    workflowSource: 'browser',
+  };
+}
+
+function promoteChatProposalToPreparedAction(sessionId: string, messageId: string): PreparedAction | null {
+  const session = state.chat.sessions.find((s) => s.id === sessionId);
+  const message = session?.messages.find((m) => m.id === messageId);
+  if (!session || !message?.proposal) return null;
+  if (!state.address) {
+    pushToast('error', t('Connect a wallet'), t('Connect a wallet before preparing this action.'));
+    return null;
+  }
+  if (message.preparedActionId) {
+    const existing = state.preparedActions.find((a) => a.id === message.preparedActionId);
+    if (existing) return existing;
+  }
+  let action: PreparedAction;
+  try {
+    action = createBrowserPreparedActionFromProposal(message.proposal);
+  } catch (err) {
+    pushToast('error', t('Could not prepare action'), redactSecrets(err instanceof Error ? err.message : String(err)));
+    return null;
+  }
+  state.preparedActions = mergePreparedActions([action], state.preparedActions);
+  state.materializedActions = state.preparedActions;
+  saveBrowserWorkflowState();
+  message.preparedActionId = action.id;
+  session.updatedAt = new Date().toISOString();
+  saveChatHistoryState();
+  return action;
+}
+
+// --- Composer focus / scroll preservation across full re-render ---------------
+function captureChatComposerSnapshot(): void {
+  if (state.activeTab !== 'chat') return;
+  const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
+  if (input) {
+    chatDraft = input.value;
+    chatComposerWasFocused = document.activeElement === input;
+    chatComposerSelStart = input.selectionStart ?? input.value.length;
+    chatComposerSelEnd = input.selectionEnd ?? input.value.length;
+  }
+  const scroller = chatScroller();
+  if (scroller) chatScrollPinned = chatIsPinnedToBottom(scroller);
+}
+
+function restoreChatComposerAfterRender(): void {
+  if (state.activeTab !== 'chat') return;
+  const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
+  if (input) {
+    if (chatDraft) {
+      input.value = chatDraft;
+      chatAutoGrow(input);
+    }
+    if (chatComposerWasFocused || chatForceFocus) {
+      input.focus({ preventScroll: true });
+      if (chatComposerWasFocused) {
+        try { input.setSelectionRange(chatComposerSelStart, chatComposerSelEnd); } catch { /* ignore */ }
+      }
+      // Focusing opens the IME; native keyboard metrics settle over ~300ms, so
+      // re-measure across the standard delay schedule (not just once with stale
+      // metrics) to position the composer correctly above the keyboard.
+      scheduleChatKeyboardSyncs();
+    }
+  }
+  chatForceFocus = false;
+  // The surface is recreated each render; re-apply the keyboard inset to the new node.
+  syncChatKeyboardInset();
+  chatScrollToBottom(false);
+}
+
+function handleChatPowerAction(id: string): void {
+  state.chatComposerOpen = false;
+  document.querySelector('.chat-plus-menu')?.classList.remove('open');
+  const action = CHAT_POWER_ACTIONS.find((a) => a.id === id);
+  if (!action) return;
+  // Localize the prefilled template for the active UI language.
+  const template = t(action.template);
+  chatDraft = template;
+  const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
+  if (!input) return;
+  input.value = template;
+  chatAutoGrow(input);
+  input.focus({ preventScroll: true });
+  const open = template.indexOf('[');
+  const close = template.indexOf(']');
+  try {
+    if (open !== -1 && close > open) input.setSelectionRange(open, close + 1);
+    else input.setSelectionRange(template.length, template.length);
+  } catch { /* ignore */ }
+}
+
+function bindChat(): void {
+  if (state.activeTab !== 'chat') return;
+  // Ensure the native keyboard bridge is bound (Android may open chat before the
+  // rail-sheet code binds it) and the stream lifecycle flush is installed. Both
+  // are idempotent (internal guards).
+  bindNativeKeyboardInsets();
+  bindChatStreamLifecycle();
+  const composer = document.querySelector<HTMLFormElement>('[data-chat-composer]');
+  const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
+  if (composer) {
+    composer.addEventListener('submit', (event) => {
+      event.preventDefault();
+      void submitChatMessage(chatDraft);
+    });
+  }
+  if (input) {
+    input.addEventListener('input', () => {
+      chatDraft = input.value;
+      chatAutoGrow(input);
+    });
+    input.addEventListener('keydown', (event) => {
+      // Don't send mid-IME-composition (CJK/accent input) — Enter there commits
+      // the composition, not the message. `isComposing` + keyCode 229 cover all browsers.
+      if (event.isComposing || event.keyCode === 229) return;
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        void submitChatMessage(chatDraft);
+      }
+    });
+    // Track IME composition so render() can defer a full innerHTML rebuild that
+    // would otherwise drop in-progress CJK/accented characters (see render()).
+    const endComposition = (): void => {
+      if (!chatComposing) return;
+      chatComposing = false;
+      chatDraft = input.value;
+      if (chatRenderDeferredDuringComposition) {
+        chatRenderDeferredDuringComposition = false;
+        render();
+      }
+    };
+    input.addEventListener('compositionstart', () => { chatComposing = true; });
+    input.addEventListener('compositionend', endComposition);
+    input.addEventListener('blur', endComposition);
+  }
+  const plusToggle = document.querySelector<HTMLButtonElement>('[data-chat-plus-toggle]');
+  const plusMenu = document.querySelector<HTMLElement>('.chat-plus-menu');
+  if (plusToggle && plusMenu) {
+    plusToggle.addEventListener('click', (event) => {
+      event.stopPropagation();
+      state.chatComposerOpen = !state.chatComposerOpen;
+      plusMenu.classList.toggle('open', state.chatComposerOpen);
+      plusToggle.setAttribute('aria-expanded', state.chatComposerOpen ? 'true' : 'false');
+    });
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-action]')) {
+    button.addEventListener('click', () => handleChatPowerAction(button.dataset.chatAction ?? ''));
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-suggest]')) {
+    button.addEventListener('click', () => void submitChatMessage(button.dataset.chatSuggest ?? ''));
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-promote]')) {
+    button.addEventListener('click', () => {
+      const action = promoteChatProposalToPreparedAction(button.dataset.chatSession ?? '', button.dataset.chatMsg ?? '');
+      if (action) render();
+    });
+  }
+  // History dropdown: state-driven (NOT <details> — unreliable in native WebViews).
+  document.querySelector<HTMLButtonElement>('[data-chat-history-trigger]')?.addEventListener('click', (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    state.chatHistoryOpen = !state.chatHistoryOpen;
+    render();
+  });
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-switch]')) {
+    button.addEventListener('click', () => {
+      const id = button.dataset.chatSwitch ?? '';
+      state.chatHistoryOpen = false;
+      if (!id || state.chat.activeSessionId === id) { render(); return; }
+      if (chatStreamActive()) cancelChatStream();
+      state.chat.activeSessionId = id;
+      clearChatComposerDraft();
+      saveChatHistoryState();
+      render();
+      // Lazily fetch + decompress this session's messages from cloud the first
+      // time it's opened (metadata stub → full thread), then repaint.
+      const opened = state.chat.sessions.find((s) => s.id === id);
+      if (opened && chatSessionIsCloudStub(opened)) {
+        void ensureChatSessionMessagesLoaded(id).then(() => {
+          if (state.activeTab === 'chat') render();
+        });
+      }
+    });
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-del]')) {
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (chatStreamActive()) cancelChatStream();
+      deleteChatSession(button.dataset.chatDel ?? '');
+      if (state.chat.sessions.filter(chatSessionHasContent).length === 0) state.chatHistoryOpen = false;
+      render();
+    });
+  }
+  document.querySelector<HTMLButtonElement>('[data-chat-stop]')?.addEventListener('click', () => {
+    cancelChatStream();
+    render();
+  });
+  document.querySelector<HTMLButtonElement>('[data-chat-new]')?.addEventListener('click', () => {
+    if (chatStreamActive()) cancelChatStream();
+    clearChatComposerDraft();
+    state.chatHistoryOpen = false;
+    createChatSession();
+    render();
+  });
+  document.querySelector<HTMLButtonElement>('[data-chat-clear]')?.addEventListener('click', () => {
+    if (chatStreamActive()) cancelChatStream();
+    clearChatComposerDraft();
+    state.chatHistoryOpen = false;
+    clearAllChatSessions();
+    render();
+  });
+  if (!chatHistoryClickAwayInstalled) {
+    chatHistoryClickAwayInstalled = true;
+    // pointerdown (capture) rather than click: more reliable for outside-tap
+    // dismissal in the Android WebView / iOS WKWebView (touch) than a bubbled click.
+    window.addEventListener('pointerdown', (event) => {
+      if (!state.chatHistoryOpen) return;
+      const wrap = document.querySelector('[data-chat-history]');
+      if (wrap && event.target instanceof Node && wrap.contains(event.target)) return;
+      state.chatHistoryOpen = false;
+      render();
+    }, true);
+  }
+  if (!chatViewportListenersBound) {
+    chatViewportListenersBound = true;
+    // Keep the composer above the keyboard: re-measure on viewport/keyboard changes
+    // and when the composer gains focus (native keyboards settle over ~300ms).
+    window.visualViewport?.addEventListener('resize', syncChatKeyboardInset);
+    window.visualViewport?.addEventListener('scroll', syncChatKeyboardInset);
+    window.addEventListener('resize', syncChatKeyboardInset);
+    document.addEventListener('focusin', (event) => {
+      if (event.target instanceof HTMLElement && event.target.matches('[data-chat-input]')) {
+        scheduleChatKeyboardSyncs();
+      }
+    });
+  }
+  if (!chatPlusClickAwayInstalled) {
+    chatPlusClickAwayInstalled = true;
+    // pointerdown (capture) for reliable touch outside-tap dismissal in WebViews.
+    window.addEventListener('pointerdown', (event) => {
+      if (!state.chatComposerOpen) return;
+      const wrap = document.querySelector('.chat-plus');
+      if (wrap && event.target instanceof Node && wrap.contains(event.target)) return;
+      state.chatComposerOpen = false;
+      document.querySelector('.chat-plus-menu')?.classList.remove('open');
+    }, true);
+  }
 }
 
 function agentPlanPanel(): string {
@@ -26589,7 +27748,7 @@ function currentDeviceAgentRuntimeSurface() {
 }
 
 async function invokeDeviceAgentNative<R>(
-  method: 'generatePlan' | 'reviewPlan' | 'ask' | 'localize',
+  method: 'generatePlan' | 'reviewPlan' | 'ask' | 'localize' | 'chat',
   payload: unknown,
   options: { action: string; signal?: AbortSignal },
 ): Promise<R> {
@@ -26633,7 +27792,7 @@ async function invokeDeviceAgentNative<R>(
 }
 
 async function invokeBrowserDeviceAgent<R>(
-  method: 'status' | 'configure' | 'start' | 'stop' | 'generatePlan' | 'reviewPlan' | 'ask' | 'localize',
+  method: 'status' | 'configure' | 'start' | 'stop' | 'generatePlan' | 'reviewPlan' | 'ask' | 'localize' | 'chat',
   payload: Record<string, unknown>,
   options: { signal?: AbortSignal } = {},
 ): Promise<{ status: DeviceAgentStatus; result?: R }> {
@@ -28926,6 +30085,7 @@ function bind(): void {
   bindMobileRailSheet();
   bindMobileMoreMenu();
   bindExpandNoteSheet();
+  bindChat();
 
   const workspaceTabSelect = document.getElementById('workspaceTabMobile') as HTMLSelectElement | null;
   if (workspaceTabSelect) {
@@ -31589,6 +32749,7 @@ function applyNativeKeyboardInsets(payload: unknown): void {
   nativeKeyboardInset = next.keyboardInset;
   nativeKeyboardVisible = next.visible;
   syncMobileRailSheetViewport();
+  syncChatKeyboardInset();
 }
 
 function applyVirtualKeyboardInsets(): void {
@@ -31600,6 +32761,7 @@ function applyVirtualKeyboardInsets(): void {
   virtualKeyboardInset = visible ? keyboardInset : 0;
   virtualKeyboardVisible = visible;
   syncMobileRailSheetViewport();
+  syncChatKeyboardInset();
 }
 
 function bindVirtualKeyboardInsets(): void {
@@ -31749,6 +32911,34 @@ const MOBILE_RAIL_FOCUS_VIEWPORT_SYNC_DELAYS_MS = [0, 80, 180, 320] as const;
 function scheduleMobileRailViewportSyncs(): void {
   for (const delay of MOBILE_RAIL_FOCUS_VIEWPORT_SYNC_DELAYS_MS) {
     window.setTimeout(syncMobileRailSheetViewport, delay);
+  }
+}
+
+// Keep the Chat composer above the on-screen keyboard. Reuses the same keyboard
+// metrics as the mobile rail sheet and sets --chat-keyboard-inset on the chat
+// surface: ~0 when the WebView resizes (interactive-widget), the keyboard height
+// in overlay mode. The surface height subtracts max(dock, keyboard) in CSS.
+function syncChatKeyboardInset(): void {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return;
+  const surface = document.querySelector<HTMLElement>('.chat-surface');
+  if (!surface) return;
+  recordMobileRailStableViewportHeight();
+  const viewport = window.visualViewport;
+  const { keyboardInset } = computeMobileRailViewportVars({
+    viewportHeight: viewport?.height,
+    viewportOffsetTop: viewport?.offsetTop,
+    innerHeight: window.innerHeight,
+    baselineInnerHeight: mobileRailStableInnerHeight || window.innerHeight,
+    nativeKeyboardInset: Math.max(nativeKeyboardInset, virtualKeyboardInset),
+    nativeKeyboardVisible: nativeKeyboardVisible || virtualKeyboardVisible,
+    focusedControlFallbackInset: 0,
+  });
+  surface.style.setProperty('--chat-keyboard-inset', `${keyboardInset}px`);
+}
+
+function scheduleChatKeyboardSyncs(): void {
+  for (const delay of MOBILE_RAIL_FOCUS_VIEWPORT_SYNC_DELAYS_MS) {
+    window.setTimeout(syncChatKeyboardInset, delay);
   }
 }
 
@@ -35064,20 +36254,47 @@ function cloudSyncPending(planId: string): boolean {
 
 async function drainPendingCloudSyncs(): Promise<void> {
   if (!state.pendingCloudSyncs.length) return;
-  const queue = [...state.pendingCloudSyncs];
+  let queue = [...state.pendingCloudSyncs];
   state.pendingCloudSyncs = [];
+  // If a session has both a queued chat-put and a chat-delete/chat-clear, drop the
+  // put so a deferred upload can't briefly resurrect a just-deleted session.
+  const chatDeleted = new Set(
+    queue.filter((e) => e.kind === 'chat-delete' || e.kind === 'chat-clear').map((e) => e.id),
+  );
+  if (chatDeleted.size) {
+    queue = queue.filter((e) => !(e.kind === 'chat-put' && (chatDeleted.has(e.id) || chatDeleted.has('all'))));
+  }
   for (const entry of queue) {
-    if (entry.kind !== 'plan-patch') continue;
+    const reEnqueue = (): void => {
+      state.pendingCloudSyncs.push({
+        ...entry,
+        attemptedAt: new Date().toISOString(),
+        attempts: entry.attempts + 1,
+      });
+    };
     try {
-      await updateGeneratedPlan(entry.id, entry.patch);
+      if (entry.kind === 'plan-patch') {
+        if (entry.patch) await updateGeneratedPlan(entry.id, entry.patch);
+      } else if (entry.kind === 'chat-put') {
+        // Re-read the latest session state; skip if it's gone, a stub, or empty.
+        if (chatCloudSyncEnabled()) {
+          const session = state.chat.sessions.find((s) => s.id === entry.id);
+          if (session && session.messages.length > 0 && !chatSessionIsCloudStub(session)) {
+            await cloudRequest(`/api/chat/sessions/${encodeURIComponent(entry.id)}`, {
+              method: 'PUT',
+              body: chatSessionCloudBody(session),
+            });
+          }
+        }
+      } else if (entry.kind === 'chat-delete') {
+        await cloudRequest(`/api/chat/sessions/${encodeURIComponent(entry.id)}`, { method: 'DELETE' });
+      } else if (entry.kind === 'chat-clear') {
+        await cloudRequest('/api/chat/sessions', { method: 'DELETE' });
+      }
     } catch (err) {
       if (isCloudUnreachableError(err)) {
-        // Re-enqueue and stop draining — cloud is still down.
-        state.pendingCloudSyncs.push({
-          ...entry,
-          attemptedAt: new Date().toISOString(),
-          attempts: entry.attempts + 1,
-        });
+        // Re-enqueue — cloud is still down.
+        reEnqueue();
       }
       // Other errors: drop the entry (real cloud-side rejection). The local record keeps
       // its `cloudSyncStatus` flag; subsequent user action can repatch.
@@ -35531,6 +36748,7 @@ function completedPlanFromReceipt(receipt: ActionReceipt, action: PreparedAction
     ...(receipt.txid && { txid: receipt.txid }),
     ...(receipt.explorerUrl && { explorerUrl: receipt.explorerUrl }),
     ...(receipt.proofSignature && { signature: receipt.proofSignature }),
+    ...(receipt.proofMessage?.trim() ? { decisionProofMessage: receipt.proofMessage } : {}),
     actionId: receipt.actionId,
     ...(action?.kind ? { actionKind: action.kind } : {}),
     ...(recurringId ? { recurringId } : {}),
@@ -40737,6 +41955,10 @@ async function finishCloudSignIn(session: CloudSessionResponse): Promise<void> {
   cloudSignInDiag('session-set', { status: state.cloudSession.status, walletStillConnected: Boolean(state.address) });
   await refreshCloudWorkspaceData();
   dismissToastByKey(LOCAL_WORKSPACE_BOUNDARY_TOAST_KEY);
+  // Migrate locally-saved chat threads up to the cloud (idempotent per-session
+  // upsert). refreshCloudWorkspaceData already hydrated the cloud list, so only
+  // local-only / local-newer sessions actually upload.
+  pushLocalChatSessionsToCloud();
   const transfer = await transferLocalWorkspaceToCloud({ confirm: false, showEmptyToast: false });
   cloudSignInDiag('done', { transferred: transfer.total, walletStillConnected: Boolean(state.address), cloudStatus: state.cloudSession?.status });
   if (transfer.total > 0) {
@@ -41179,6 +42401,11 @@ function resetCloudWorkspaceState(): void {
   state.recurringNotificationStatus = {};
   state.recurringWebhookSecretOnce = null;
   state.auditActivity = {};
+  // Reload the on-device history so sign-out leaves the saved-on-device threads
+  // (cloud rows are retained for the next sign-in). cloudMessageCount stubs are
+  // dropped by the reload from localStorage.
+  chatCloudHydrated = false;
+  state.chat = loadChatHistoryState(state.address);
 }
 
 async function runSetWorkflowModePreference(preference: WorkflowModePreference): Promise<void> {
@@ -41233,6 +42460,8 @@ function refreshBrowserWorkflowData(): void {
   state.materializedActions = browserWorkflow.preparedActions;
   state.recurringPayments = browserWorkflow.recurringPayments;
   state.receipts = browserWorkflow.receipts;
+  state.chat = loadChatHistoryState(state.address);
+  state.chatInitialized = true;
 }
 
 async function refreshCloudWorkspaceData(): Promise<void> {
@@ -41240,6 +42469,9 @@ async function refreshCloudWorkspaceData(): Promise<void> {
     throw new Error(t('Sign in to Agentic Cloud before loading cloud workflow data.'));
   }
   void hydratePreferencesFromCloud();
+  // Awaited (not void) so callers like finishCloudSignIn complete the cloud
+  // session-list merge before pushLocalChatSessionsToCloud() runs.
+  await hydrateChatHistoryFromCloud();
   const browserWorkflow = loadBrowserWorkflowState(state.address);
   const recurringResponse: Awaited<ReturnType<typeof cloudRecurringList>> = await cloudRecurringList().catch((err) => {
     // eslint-disable-next-line no-console
@@ -41443,6 +42675,32 @@ function nativeCloudSessionToken(): string {
   if (IS_TAURI_APP) return tauriNativeCloudSessionToken();
   if (IS_IOS_APP) return iosNativeCloudSessionToken();
   return androidNativeCloudSessionToken();
+}
+
+// iOS reads the cloud session token from the Keychain ASYNCHRONOUSLY, so right
+// after a cold launch the token can be empty even though the session is signed
+// in. Calling nativeCloudSessionToken() kicks the hydration; this awaits a
+// non-empty token (or the rehydrate event) so the first chat request carries the
+// Bearer token instead of 401-ing. No-op on web/Android/Tauri (synchronous token).
+async function ensureNativeCloudTokenReady(timeoutMs = 1500): Promise<void> {
+  if (typeof window === 'undefined') return;
+  if (!nativeCloudApiSurfaceActive()) return;
+  if (nativeCloudSessionToken()) return; // also triggers iOS hydration on first call
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener(IOS_CLOUD_SESSION_REHYDRATED_EVENT, onEvent);
+      window.clearInterval(poll);
+      window.clearTimeout(timer);
+      resolve();
+    };
+    const onEvent = (): void => { if (nativeCloudSessionToken()) finish(); };
+    window.addEventListener(IOS_CLOUD_SESSION_REHYDRATED_EVENT, onEvent);
+    const poll = window.setInterval(() => { if (nativeCloudSessionToken()) finish(); }, 100);
+    const timer = window.setTimeout(finish, timeoutMs);
+  });
 }
 
 async function setNativeCloudSessionToken(token: string): Promise<boolean> {
@@ -43617,6 +44875,68 @@ function cloudFinalizationFromRecord(value: unknown): CloudTransactionFinalizati
   return cloudFinalizationFromMetadata({ finalization: value });
 }
 
+type WalletProofSignatureResult = Awaited<ReturnType<typeof signWalletProofMessage>>;
+
+async function executeBrowserChatSignProof(action: PreparedAction): Promise<void> {
+  const statement = chatSignProofStatement(action);
+  if (!statement) {
+    throw new Error(t('Sign proof statement is missing.'));
+  }
+  const proofToastId = beginProofSigningToast({
+    message: t('Approve this message proof in your wallet. No transaction will be submitted.'),
+  });
+  try {
+    const result = await signWalletProofMessage(statement, action.summary || t('Sign proof'), action.cluster);
+    completeBrowserSignedMessageProofAction(action, statement, result);
+    showCompletedHistoryForAction(action.id);
+    completeProofSigningToast(proofToastId, 'success', t('Proof signed'), t('Wallet proof saved in Done. No transaction was submitted.'));
+  } catch (err) {
+    const message = redactSecrets(err instanceof Error ? err.message : String(err));
+    completeProofSigningToast(proofToastId, 'error', t('Sign proof failed'), message);
+    throw markToastShown(err);
+  }
+}
+
+function completeBrowserSignedMessageProofAction(
+  action: PreparedAction,
+  proofMessage: string,
+  result: WalletProofSignatureResult,
+): void {
+  const completedAt = new Date().toISOString();
+  const updatedAction: PreparedAction = {
+    ...action,
+    status: 'approved',
+    updatedAt: completedAt,
+    confirmedAt: completedAt,
+  };
+  const receipt: ActionReceipt = {
+    actionId: action.id,
+    status: 'approved',
+    summary: action.summary,
+    note: action.note || proofMessage,
+    walletAddress: action.walletAddress,
+    cluster: action.cluster,
+    createdAt: action.createdAt,
+    completedAt,
+    proofSignature: result.signature,
+    proofMessage,
+    evidenceKind: 'review_proof',
+    ...(result.proofEncoding ? { proofEncoding: result.proofEncoding } : {}),
+    ...(result.proofTxBase64 ? { proofTxBase64: result.proofTxBase64 } : {}),
+    ...(result.proofMemoText ? { proofMemoText: result.proofMemoText } : {}),
+    ...(action.recurringId && { recurringId: action.recurringId }),
+    ...(action.occurrenceKey && { occurrenceKey: action.occurrenceKey }),
+  };
+  state.preparedActions = mergePreparedActions([updatedAction], state.preparedActions);
+  state.materializedActions = state.preparedActions;
+  state.receipts = mergeActionReceipts([receipt], state.receipts);
+  recordBrowserActionActivity(action.id, 'browser.proof.signed', {
+    kind: action.kind,
+    proofKind: 'sign_proof',
+  });
+  saveBrowserWorkflowState();
+}
+
 async function runBrowserPreparedActionOp(actionId: string, op: string): Promise<void> {
   const action = state.preparedActions.find((candidate) => candidate.id === actionId);
   if (!action) {
@@ -43640,6 +44960,10 @@ async function runBrowserPreparedActionOp(actionId: string, op: string): Promise
       }
       if (isConnectorApprovalKind(action)) {
         throw new Error(connectorExecutionUnsupportedMessage(action));
+      }
+      if (isSignProofAction(action)) {
+        await executeBrowserChatSignProof(action);
+        return;
       }
       if (!isProofOnlyApprovalKind(action)) {
         throw new Error(
@@ -50858,6 +52182,61 @@ async function bridgeAiRequest<T = unknown>(path: string, init?: RequestInit): P
   return payload as T;
 }
 
+async function streamBridgeAiChat(
+  request: AgentChatRequest,
+  handlers: ChatStreamHandlers,
+  options: { signal?: AbortSignal } = {},
+): Promise<void> {
+  if (!state.bridgeToken) {
+    throw new BridgeRequestError('Bridge token is required.', 0);
+  }
+  if (!isTrustedBridgeUrl(state.bridgeUrl)) {
+    throw new BridgeRequestError('Local bridge URL must use localhost, 127.0.0.1, ::1, or a trusted private LAN host.', 0);
+  }
+
+  const headers = new Headers({
+    accept: 'text/event-stream',
+    'content-type': 'application/json',
+    'x-agent-wallet-token': state.bridgeToken,
+  });
+  let response: Response;
+  try {
+    response = await fetch(new URL('/bridge/ai/chat/stream', bridgeBaseUrl()), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(request),
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+  } catch (err) {
+    if (isAbortError(err)) throw err;
+    const bridgeRecentlyReachable =
+      state.bridgeActive ||
+      (state.tauriNativeEnvironment.isTauriNative && Boolean(state.tauriBridgeStatus?.bridgeReachable));
+    throw new BridgeRequestError(
+      bridgeRecentlyReachable
+        ? 'The local bridge accepted the chat request but it did not complete in time. Check the Logs panel for the connector error, then retry.'
+        : bridgeOfflineMessage(),
+      0,
+    );
+  }
+
+  if (!response.ok || !response.body) {
+    if (response.status === 401) {
+      throw new BridgeRequestError(bridgeUnauthorizedMessage(), 401);
+    }
+    const payload = await response.clone().json().catch(() => undefined);
+    const detail = payload !== undefined
+      ? extractBridgeError(payload)
+      : await response.text().catch(() => '');
+    throw new BridgeRequestError(
+      detail.trim() || tf('Local bridge chat stream failed with HTTP {status}.', { status: String(response.status) }),
+      response.status,
+    );
+  }
+
+  await consumeChatSseResponse(response, handlers);
+}
+
 function bridgeOfflineMessage(): string {
   if (state.tauriNativeEnvironment.isTauriNative) {
     // The desktop app owns and auto-starts its own bridge — never tell the user to run the CLI
@@ -51567,6 +52946,12 @@ function resetWalletConnection(): void {
   state.recurringPayments = [];
   state.receipts = [];
   state.localCompletedPlans = [];
+  // Clear chat from memory on disconnect (on-disk per-wallet history is kept,
+  // and reloads when the wallet reconnects). Cancel any in-flight stream first.
+  cancelChatStream();
+  state.chat = loadChatHistoryState('');
+  state.chatInitialized = false;
+  clearChatComposerDraft();
   state.capabilities = null;
   state.walletBalance = emptyWalletBalanceViewState();
   clearWalletPathSession();
@@ -51915,9 +53300,10 @@ function workspaceTabSelectMobile(): string {
   return `
     <nav class="workspace-tabs-mobile workspace-bottom-tabs" aria-label="${escapeHtml(t('Workspace navigation'))}" data-layout="app-mobile-tabs">
       ${mobileDockTabButton('overview', t('Home'))}
+      ${chatTabHidden() ? '' : mobileDockTabButton('chat', t('Chat'))}
       ${mobileDockTabButton('agent', t('New Request'))}
       ${mobileDockTabButton('inbox', approvalLabel)}
-      ${mobileDockTabButton('completed', t('Done'))}
+      ${chatTabHidden() ? mobileDockTabButton('completed', t('Done')) : ''}
       ${mobileMoreMenuButton()}
     </nav>
   `;
@@ -51947,11 +53333,19 @@ const REQUIRED_MORE_SURFACES: Record<string, { label: string; render: () => stri
 };
 
 function moreMenuItems(): WorkspaceMoreMenuItem[] {
-  return workspaceMoreMenuItems(listDevTabs());
+  const items = workspaceMoreMenuItems(listDevTabs());
+  // When Chat is hidden on this surface, Repeat Payments returns to the top bar,
+  // so drop it from the More menu to avoid duplicating it.
+  return chatTabHidden() ? items.filter((item) => item.id !== 'schedule') : items;
 }
 
 function mobileMoreMenuItems(): WorkspaceMoreMenuItem[] {
-  return mobileWorkspaceMoreMenuItems(listDevTabs());
+  // Chat now lives in the mobile dock on every surface (web + native), so it is
+  // no longer prepended into the More menu.
+  const items = mobileWorkspaceMoreMenuItems(listDevTabs());
+  // When Chat is hidden on this surface, Done returns to the bottom dock, so drop
+  // it from the More menu to avoid duplicating it.
+  return chatTabHidden() ? items.filter((item) => item.id !== 'completed') : items;
 }
 
 function requiredMoreSurface(id: string): { label: string; render: () => string } | undefined {
@@ -52635,6 +54029,14 @@ function inboxActionFailurePill(action: PreparedAction): string {
 }
 
 function inboxApprovalHero(action: PreparedAction): string {
+  if (isSignProofAction(action)) {
+    return `
+      <div class="inbox-approval-value">
+        <span class="inbox-approval-context">${escapeHtml(t('Sign proof'))}</span>
+        <span>${escapeHtml(t('Message signature, no transaction'))}</span>
+      </div>
+    `;
+  }
   const acpOutbound = isAcpOutboundAction(action);
   const ap2Inbound = isAp2InboundAction(action);
   const primary = acpOutbound ? acpTotalLabel(action) : ap2Inbound ? ap2PaymentTotalLabel(action) : amountLabel(action);
@@ -53811,6 +55213,19 @@ function copyButtonIcon(): string {
 }
 
 function inboxApprovalSummaryGrid(action: PreparedAction): string {
+  if (isSignProofAction(action)) {
+    // A proof signs a message; there is no token/recipient/amount. The statement
+    // is shown in the note block below; keep the grid to wallet + due.
+    const proofRows: ApprovalSummaryRow[] = [
+      { kind: 'wallet', label: 'Wallet', value: short(action.walletAddress), title: action.walletAddress, copyValue: action.walletAddress },
+      { kind: 'due', label: 'Due', value: formatDateTime(action.dueAt) },
+    ];
+    return `
+      <dl class="inbox-approval-summary-grid rows-${proofRows.length}" aria-label="${escapeHtml(t('Approval summary'))}">
+        ${proofRows.map((row) => inboxApprovalSummaryItem(row)).join('')}
+      </dl>
+    `;
+  }
   const recipient = recipientParam(action);
   const tokenSummary = inboxApprovalTokenSummary(action);
   const rows: ApprovalSummaryRow[] = [
@@ -56224,6 +57639,8 @@ function surfaceTitle(): string {
   switch (state.activeTab) {
     case 'overview':
       return t('Home');
+    case 'chat':
+      return t('Chat');
     case 'wallet':
       return t('Wallet signing');
     case 'agent':
@@ -60490,6 +61907,487 @@ function saveBrowserWorkflowState(): void {
   }
 }
 
+// --- Chat history persistence (browser-local, wallet-scoped) -----------------
+function emptyChatHistoryState(): ChatHistoryState {
+  return { schemaVersion: CHAT_HISTORY_SCHEMA_VERSION, sessions: [], activeSessionId: '' };
+}
+
+function isChatMessageRole(value: unknown): value is ChatMessageRole {
+  return value === 'user' || value === 'assistant' || value === 'system';
+}
+
+function clampChatToolEvidence(input: unknown): ChatToolEvidence[] | undefined {
+  if (!Array.isArray(input)) return undefined;
+  const out: ChatToolEvidence[] = [];
+  for (const raw of input.slice(-MAX_CHAT_TOOL_EVIDENCE)) {
+    if (!raw || typeof raw !== 'object') continue;
+    const item = raw as Record<string, unknown>;
+    if (typeof item.tool !== 'string') continue;
+    out.push({
+      tool: item.tool,
+      ...(typeof item.callId === 'string' ? { callId: item.callId } : {}),
+      ...(typeof item.argsSummary === 'string' ? { argsSummary: item.argsSummary.slice(0, 600) } : {}),
+      ...(typeof item.resultSummary === 'string'
+        ? { resultSummary: item.resultSummary.slice(0, MAX_CHAT_TOOL_RESULT_CHARS) }
+        : {}),
+      at: typeof item.at === 'string' ? item.at : new Date().toISOString(),
+    });
+  }
+  return out.length ? out : undefined;
+}
+
+function normalizeChatMessage(raw: unknown): ChatMessage | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const input = raw as Record<string, unknown>;
+  if (!isChatMessageRole(input.role)) return null;
+  if (typeof input.content !== 'string' && typeof input.proposal !== 'object') return null;
+  // Preserve unknown future fields (forward-compat), then enforce the known shape.
+  const message: ChatMessage = {
+    ...(input as object),
+    id: typeof input.id === 'string' && input.id ? input.id : newId('chat-msg'),
+    role: input.role,
+    content: typeof input.content === 'string' ? input.content : '',
+    createdAt: typeof input.createdAt === 'string' ? input.createdAt : new Date().toISOString(),
+    // A persisted 'streaming' message means the tab closed mid-stream — finalize it.
+    status: input.status === 'error' ? 'error' : 'done',
+    toolEvidence: clampChatToolEvidence(input.toolEvidence),
+  } as ChatMessage;
+  if (input.preparedActionId && typeof input.preparedActionId === 'string') {
+    message.preparedActionId = input.preparedActionId;
+  }
+  if (input.proposal && typeof input.proposal === 'object') {
+    message.proposal = input.proposal as ChatActionProposal;
+  }
+  if (typeof input.error === 'string') message.error = input.error;
+  return message;
+}
+
+function normalizeChatSession(raw: unknown, walletAddress: string): ChatSession | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const input = raw as Record<string, unknown>;
+  if (typeof input.id !== 'string' || !input.id) return null;
+  if (!recordMatchesWalletScope(input as { walletAddress?: string }, walletAddress)) return null;
+  const messages = Array.isArray(input.messages)
+    ? input.messages
+      .map(normalizeChatMessage)
+      .filter((m): m is ChatMessage => Boolean(m))
+      // Drop empty assistant placeholders (e.g. tab closed mid-stream) so reloads
+      // don't show a blank bubble; keep anything carrying a proposal or a card.
+      .filter((m) => !(m.role === 'assistant' && !m.content.trim() && !m.proposal && !m.preparedActionId && m.status !== 'error'))
+    : [];
+  // Cap per-session messages but always keep any message anchored to a promoted action.
+  let capped = messages;
+  if (messages.length > MAX_CHAT_MESSAGES_PER_SESSION) {
+    const anchored = messages.filter((m) => m.preparedActionId);
+    const tail = messages.slice(-MAX_CHAT_MESSAGES_PER_SESSION);
+    const tailIds = new Set(tail.map((m) => m.id));
+    capped = [...anchored.filter((m) => !tailIds.has(m.id)), ...tail];
+  }
+  const now = new Date().toISOString();
+  // NOTE: this runs at module init (loadChatHistoryState) BEFORE `state` exists,
+  // so it must not reference `state` or `t()` (both would throw a TDZ error).
+  // Use plain fallbacks; persisted sessions always carry their own title/cluster.
+  return {
+    ...(input as object),
+    id: input.id,
+    title: typeof input.title === 'string' && input.title ? input.title : 'New chat',
+    createdAt: typeof input.createdAt === 'string' ? input.createdAt : now,
+    updatedAt: typeof input.updatedAt === 'string' ? input.updatedAt : now,
+    walletAddress: typeof input.walletAddress === 'string' ? input.walletAddress : walletAddress,
+    cluster: (typeof input.cluster === 'string' ? input.cluster : 'mainnet-beta') as Cluster,
+    messages: capped,
+  } as ChatSession;
+}
+
+function normalizeChatHistoryState(input: Partial<ChatHistoryState>, walletAddress = ''): ChatHistoryState {
+  const sessions = (Array.isArray(input.sessions) ? input.sessions : [])
+    .map((session) => normalizeChatSession(session, walletAddress))
+    .filter((s): s is ChatSession => Boolean(s))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .slice(0, MAX_CHAT_SESSIONS);
+  const activeSessionId = sessions.some((s) => s.id === input.activeSessionId)
+    ? String(input.activeSessionId)
+    : (sessions[0]?.id ?? '');
+  return { schemaVersion: CHAT_HISTORY_SCHEMA_VERSION, sessions, activeSessionId };
+}
+
+function serializeChatHistory(history: ChatHistoryState): string {
+  return CHAT_COMPRESS_PREFIX + LZString.compressToUTF16(JSON.stringify(history));
+}
+
+// Cloud sync stores ONLY the messages array per session (metadata travels as
+// plaintext columns), compressed with the same LZString scheme as localStorage.
+// The server treats this string as an opaque blob. See chatCloudSync.ts.
+function serializeChatSessionMessages(session: ChatSession): string {
+  return compressChatMessages(session.messages);
+}
+
+function deserializeChatSessionMessages(messagesLz: string): ChatMessage[] {
+  return decompressChatMessages(messagesLz)
+    .map(normalizeChatMessage)
+    .filter((m): m is ChatMessage => Boolean(m));
+}
+
+function parseChatHistoryStorage(key: string): ChatHistoryState {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return emptyChatHistoryState();
+    let json: string;
+    if (raw.startsWith(CHAT_COMPRESS_PREFIX)) {
+      const decompressed = LZString.decompressFromUTF16(raw.slice(CHAT_COMPRESS_PREFIX.length));
+      if (!decompressed) return emptyChatHistoryState();
+      json = decompressed;
+    } else {
+      // Legacy uncompressed v1 record.
+      json = raw;
+    }
+    const parsed = JSON.parse(json) as Partial<ChatHistoryState> & { schemaVersion?: number };
+    if (typeof parsed.schemaVersion === 'number' && parsed.schemaVersion > CHAT_HISTORY_SCHEMA_VERSION) {
+      // Newer build wrote this — read best-effort but never overwrite it.
+      chatHistorySaveLocked = true;
+    }
+    return normalizeChatHistoryState(parsed);
+  } catch {
+    return emptyChatHistoryState();
+  }
+}
+
+function loadChatHistoryState(walletAddress = ''): ChatHistoryState {
+  try {
+    const key = walletAddress
+      ? walletScopedStorageKey(CHAT_HISTORY_STORAGE_KEY, walletAddress)
+      : CHAT_HISTORY_STORAGE_KEY;
+    return normalizeChatHistoryState(parseChatHistoryStorage(key), walletAddress);
+  } catch {
+    return emptyChatHistoryState();
+  }
+}
+
+function writeChatHistoryWithEviction(key: string, history: ChatHistoryState): void {
+  let working: ChatHistoryState = history;
+  for (let attempt = 0; attempt < MAX_CHAT_SESSIONS + 1; attempt += 1) {
+    const serialized = serializeChatHistory(working);
+    const overBudget = serialized.length > MAX_CHAT_HISTORY_BYTES;
+    if (!overBudget) {
+      try {
+        window.localStorage.setItem(key, serialized);
+        return;
+      } catch {
+        // QuotaExceededError (or similar) — fall through to evict and retry.
+      }
+    }
+    // Evict the oldest non-active session and retry.
+    const evictable = working.sessions
+      .filter((s) => s.id !== working.activeSessionId)
+      .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
+    const drop = evictable[0];
+    if (!drop) {
+      // Only the active session remains; best-effort final write, then give up.
+      try { window.localStorage.setItem(key, serializeChatHistory(working)); } catch { /* drop */ }
+      return;
+    }
+    working = { ...working, sessions: working.sessions.filter((s) => s.id !== drop.id) };
+  }
+}
+
+function saveChatHistoryState(): void {
+  if (chatHistorySaveLocked) return;
+  try {
+    // Persist a normalized SNAPSHOT to disk, but do NOT replace state.chat with
+    // fresh objects — the streaming loop holds a live reference to the assistant
+    // message and mutates it across token/proposal events. Reassigning here would
+    // detach that reference and lose tokens that arrive after a mid-stream save.
+    // Caps/sort are enforced on load and on the disk snapshot, which is enough.
+    // Don't persist cloud metadata stubs (unloaded cloud-only sessions): they're
+    // re-hydrated from the server on sign-in and would otherwise linger on disk as
+    // empty sessions after sign-out. Loaded sessions persist normally (local cache).
+    const persistable: ChatHistoryState = {
+      ...state.chat,
+      sessions: state.chat.sessions.filter((s) => !chatSessionIsCloudStub(s)),
+    };
+    const snapshot = normalizeChatHistoryState(persistable, state.address);
+    const key = state.address
+      ? walletScopedStorageKey(CHAT_HISTORY_STORAGE_KEY, state.address)
+      : CHAT_HISTORY_STORAGE_KEY;
+    writeChatHistoryWithEviction(key, snapshot);
+  } catch {
+    // Best-effort browser chat persistence.
+  }
+}
+
+function activeChatSession(): ChatSession | null {
+  return state.chat.sessions.find((s) => s.id === state.chat.activeSessionId) ?? null;
+}
+
+function createChatSession(): ChatSession {
+  const now = new Date().toISOString();
+  const session: ChatSession = {
+    id: newId('chat-session'),
+    title: t('New chat'),
+    createdAt: now,
+    updatedAt: now,
+    walletAddress: state.address,
+    cluster: state.cluster,
+    messages: [],
+  };
+  state.chat.sessions = [session, ...state.chat.sessions];
+  state.chat.activeSessionId = session.id;
+  saveChatHistoryState();
+  return session;
+}
+
+function ensureActiveChatSession(): ChatSession {
+  return activeChatSession() ?? createChatSession();
+}
+
+function chatSessionTitleFromText(text: string): string {
+  const trimmed = text.trim().replace(/\s+/g, ' ');
+  if (!trimmed) return t('New chat');
+  return trimmed.length > 48 ? `${trimmed.slice(0, 47)}…` : trimmed;
+}
+
+function appendChatMessage(sessionId: string, message: ChatMessage): void {
+  const session = state.chat.sessions.find((s) => s.id === sessionId);
+  if (!session) return;
+  session.messages.push(message);
+  session.updatedAt = new Date().toISOString();
+  // First user line names the session.
+  if (message.role === 'user' && (session.title === t('New chat') || !session.title)) {
+    session.title = chatSessionTitleFromText(message.content);
+  }
+  saveChatHistoryState();
+  // Mirror the user turn to the cloud (status 'done'). Skip 'streaming'
+  // placeholders (synced from runChatStream's finally once complete) and 'error'
+  // bubbles (device/locale-specific readiness errors shouldn't rehydrate cross-device).
+  if (message.status === 'done') void syncChatSessionToCloud(sessionId);
+}
+
+function deleteChatSession(sessionId: string): void {
+  state.chat.sessions = state.chat.sessions.filter((s) => s.id !== sessionId);
+  if (state.chat.activeSessionId === sessionId) {
+    state.chat.activeSessionId = state.chat.sessions[0]?.id ?? '';
+  }
+  saveChatHistoryState();
+  if (cloudSessionMatchesWallet() && !chatTabHidden()) {
+    void (async () => {
+      try {
+        await ensureChatCloudTokenReady();
+        await cloudRequest(`/api/chat/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+      } catch (err) {
+        if (isCloudUnreachableError(err)) enqueuePendingCloudSync({ id: sessionId, kind: 'chat-delete' });
+      }
+    })();
+  }
+}
+
+function clearAllChatSessions(): void {
+  state.chat = emptyChatHistoryState();
+  try {
+    const key = state.address
+      ? walletScopedStorageKey(CHAT_HISTORY_STORAGE_KEY, state.address)
+      : CHAT_HISTORY_STORAGE_KEY;
+    window.localStorage.removeItem(key);
+  } catch { /* best effort */ }
+  if (cloudSessionMatchesWallet() && !chatTabHidden()) {
+    void (async () => {
+      try {
+        await ensureChatCloudTokenReady();
+        await cloudRequest('/api/chat/sessions', { method: 'DELETE' });
+      } catch (err) {
+        if (isCloudUnreachableError(err)) enqueuePendingCloudSync({ id: 'all', kind: 'chat-clear' });
+      }
+    })();
+  }
+}
+
+// ── Chat history cloud sync (signed-in only) ─────────────────────────────────
+interface ChatSessionMetaWire {
+  sessionId: string;
+  title: string;
+  cluster: string;
+  messageCount: number;
+  version: number;
+  schemaVersion: number;
+  createdAt: string;
+  updatedAt: string;
+}
+interface ChatSessionWire extends ChatSessionMetaWire {
+  messagesLz: string;
+}
+
+function chatCloudSyncEnabled(): boolean {
+  return cloudSessionMatchesWallet() && !chatTabHidden() && !chatHistorySaveLocked;
+}
+
+// On native (iOS/Android/Tauri) the cloud Bearer token hydrates asynchronously
+// after a cold launch; await it before any chat-storage cloud call so the first
+// request doesn't 401 before the Keychain/secure-store token lands (mirrors the
+// chat-stream path which already awaits ensureNativeCloudTokenReady()).
+async function ensureChatCloudTokenReady(): Promise<void> {
+  if (nativeCloudApiSurfaceActive()) await ensureNativeCloudTokenReady();
+}
+
+// A chat-storage request failed because the session no longer exists on the
+// cloud (deleted on another device) — distinct from a transient/unreachable
+// error, so the caller can stop treating it as a loadable stub.
+function isChatSessionNotFoundError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /\b404\b|not found/i.test(msg);
+}
+
+// chatSessionIsCloudStub() lives in chatCloudSync.ts (pure + unit-tested).
+
+function chatSessionCloudBody(session: ChatSession): string {
+  return JSON.stringify({
+    title: session.title,
+    cluster: session.cluster,
+    messageCount: session.messages.length,
+    schemaVersion: CHAT_HISTORY_SCHEMA_VERSION,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    messagesLz: serializeChatSessionMessages(session),
+  });
+}
+
+// Best-effort upsert of one session to the cloud. Skips metadata stubs (cloud
+// already holds the authoritative copy) and empty 'New chat' sessions.
+async function syncChatSessionToCloud(sessionId: string): Promise<void> {
+  if (!chatCloudSyncEnabled()) return;
+  const session = state.chat.sessions.find((s) => s.id === sessionId);
+  if (!session || session.messages.length === 0) return;
+  if (chatSessionIsCloudStub(session)) return; // cloud holds the authoritative copy
+  await ensureChatCloudTokenReady();
+  try {
+    const saved = await cloudRequest<{ version?: number }>(`/api/chat/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'PUT',
+      body: chatSessionCloudBody(session),
+    });
+    session.cloudVersion = saved?.version ?? session.cloudVersion;
+  } catch (err) {
+    if (isCloudUnreachableError(err)) enqueuePendingCloudSync({ id: sessionId, kind: 'chat-put' });
+    // Other errors (validation/auth) → drop; localStorage still has the copy.
+  }
+}
+
+// Pull the per-wallet session metadata list and merge it into state.chat. Cloud
+// sessions not present locally (or newer than the local copy) become metadata
+// stubs whose messages load lazily on open; local-newer sessions are kept and
+// pushed up by pushLocalChatSessionsToCloud().
+async function hydrateChatHistoryFromCloud(): Promise<void> {
+  if (!cloudSessionMatchesWallet() || chatTabHidden() || chatHistorySaveLocked) return;
+  let metas: ChatSessionMetaWire[];
+  try {
+    await ensureChatCloudTokenReady();
+    const payload = await cloudRequest<{ sessions?: ChatSessionMetaWire[] }>('/api/chat/sessions', { method: 'GET' });
+    metas = Array.isArray(payload?.sessions) ? payload.sessions : [];
+  } catch {
+    return; // Cloud unreachable — keep the local history as-is.
+  }
+  const now = new Date().toISOString();
+  const byId = new Map(state.chat.sessions.map((s) => [s.id, s] as const));
+  for (const meta of metas) {
+    if (!meta || typeof meta.sessionId !== 'string' || !meta.sessionId) continue;
+    const local = byId.get(meta.sessionId);
+    const metaCluster = (typeof meta.cluster === 'string' ? meta.cluster : state.cluster) as Cluster;
+    switch (decideCloudChatMeta(local, meta)) {
+      case 'create-stub':
+        // Cloud-only session → metadata stub; messages load lazily on open.
+        byId.set(meta.sessionId, {
+          id: meta.sessionId,
+          title: meta.title || t('New chat'),
+          createdAt: meta.createdAt || now,
+          updatedAt: meta.updatedAt || now,
+          walletAddress: state.address,
+          cluster: metaCluster,
+          messages: [],
+          cloudMessageCount: stubMessageCount(meta.messageCount),
+          cloudVersion: meta.version ?? 0,
+        });
+        break;
+      case 'restub':
+        // Cloud is newer — re-stub so the fresh thread is fetched on open.
+        local!.title = meta.title || local!.title;
+        local!.updatedAt = meta.updatedAt || local!.updatedAt;
+        local!.cluster = metaCluster;
+        local!.messages = [];
+        local!.cloudMessageCount = stubMessageCount(meta.messageCount);
+        local!.cloudVersion = meta.version ?? 0;
+        break;
+      case 'mark-stub':
+        // Local copy has no loaded messages (e.g. a stub restored from localStorage
+        // after reload) — keep it a stub so opening fetches the thread.
+        local!.cloudMessageCount = stubMessageCount(meta.messageCount);
+        local!.cloudVersion = meta.version ?? local!.cloudVersion;
+        break;
+      case 'keep':
+        // Local has content and is newer/equal — keep it (pushed up later).
+        local!.cloudVersion = meta.version ?? local!.cloudVersion;
+        break;
+    }
+  }
+  state.chat.sessions = [...byId.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  if (!state.chat.sessions.some((s) => s.id === state.chat.activeSessionId)) {
+    state.chat.activeSessionId = state.chat.sessions[0]?.id ?? '';
+  }
+  chatCloudHydrated = true;
+  saveChatHistoryState();
+  // Eagerly load the open session so the transcript isn't blank after sign-in.
+  const active = activeChatSession();
+  if (active && chatSessionIsCloudStub(active)) {
+    await ensureChatSessionMessagesLoaded(active.id);
+  }
+  if (state.activeTab === 'chat') render();
+}
+
+// Fetch + decompress one stub session's messages on demand.
+async function ensureChatSessionMessagesLoaded(sessionId: string): Promise<void> {
+  const session = state.chat.sessions.find((s) => s.id === sessionId);
+  if (!session || !chatSessionIsCloudStub(session)) return;
+  if (!cloudSessionMatchesWallet()) { delete session.cloudMessageCount; return; }
+  if (chatSessionLoadsInFlight.has(sessionId)) return; // a load is already running
+  chatSessionLoadsInFlight.add(sessionId);
+  // Snapshot so we can detect a concurrent local append (user sent a message
+  // while this GET was in flight) and avoid clobbering their just-sent turn.
+  const messagesBefore = session.messages.length;
+  try {
+    await ensureChatCloudTokenReady();
+    const full = await cloudRequest<ChatSessionWire>(`/api/chat/sessions/${encodeURIComponent(sessionId)}`, { method: 'GET' });
+    if (session.messages.length !== messagesBefore) {
+      // The user appended a message during the GET — keep their local content and
+      // stop treating this as a stub (don't overwrite with the now-stale cloud copy).
+      delete session.cloudMessageCount;
+      saveChatHistoryState();
+      return;
+    }
+    session.messages = full?.messagesLz ? deserializeChatSessionMessages(full.messagesLz) : [];
+    session.cloudVersion = full?.version ?? session.cloudVersion;
+    delete session.cloudMessageCount; // no longer a stub
+    saveChatHistoryState();
+  } catch (err) {
+    if (isCloudUnreachableError(err)) return; // network — keep the stub, retry on next open
+    if (isChatSessionNotFoundError(err)) {
+      // Deleted on another device — stop treating it as a loadable stub so it
+      // doesn't loop on 404 (it drops out of the history list once empty).
+      delete session.cloudMessageCount;
+      saveChatHistoryState();
+    }
+    // Other transient errors — keep the stub for a later retry.
+  } finally {
+    chatSessionLoadsInFlight.delete(sessionId);
+  }
+}
+
+// On sign-in, push local-only / local-newer sessions up to the cloud (idempotent
+// per-session PUT). Stubs are skipped (cloud copy is authoritative).
+function pushLocalChatSessionsToCloud(): void {
+  if (!chatCloudSyncEnabled()) return;
+  for (const session of state.chat.sessions) {
+    if (chatSessionIsCloudStub(session)) continue;
+    if (session.messages.length === 0) continue;
+    void syncChatSessionToCloud(session.id);
+  }
+}
+
 function loadLocalCompletedPlans(walletAddress = ''): CompletedPlanRecord[] {
   try {
     migrateLegacyWalletScopedStorage();
@@ -60670,7 +62568,11 @@ function isActionReceipt(value: unknown): value is ActionReceipt {
     isCluster(receipt.cluster ?? '') &&
     typeof receipt.createdAt === 'string' &&
     typeof receipt.completedAt === 'string' &&
-    (receipt.proofSignature === undefined || typeof receipt.proofSignature === 'string')
+    (receipt.proofSignature === undefined || typeof receipt.proofSignature === 'string') &&
+    (receipt.proofMessage === undefined || typeof receipt.proofMessage === 'string') &&
+    (receipt.proofEncoding === undefined || receipt.proofEncoding === 'utf8-message' || receipt.proofEncoding === 'tx-memo-proof') &&
+    (receipt.proofTxBase64 === undefined || typeof receipt.proofTxBase64 === 'string') &&
+    (receipt.proofMemoText === undefined || typeof receipt.proofMemoText === 'string')
   );
 }
 

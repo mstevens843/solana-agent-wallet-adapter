@@ -77,6 +77,10 @@ const deviceAgent =
 const browserDeviceAgent =
   process.env.VITE_AGENTIC_BROWSER_DEVICE_AGENT ??
   'false';
+// Comma list of app surfaces (web,android,ios,desktop) for which the Chat tab is
+// hidden and the tab layout reverts to the pre-Chat arrangement. Baked at build;
+// each running app checks its runtime-detected surface against the list.
+const hideChatTab = process.env.HIDE_CHAT_TAB ?? '';
 const deviceAgentWalletAllowlist =
   process.env.VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST ??
   process.env.AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST ??
@@ -118,6 +122,17 @@ const walletConnectProjectId =
   '';
 const buildCommit = browserBuildCommit();
 
+// In local dev the cloud workflow API (/api/session, /api/auth/*, /api/plans,
+// /api/chat/*, ...) is served by the render-web Node service, not by Vite. With
+// no backend the web app's same-origin `/api/session` fetch fails and Workspace
+// storage shows "Cloud unavailable from this host" (the sign-in button is
+// disabled). Proxy /api to a locally-running render-web (`pnpm dev:cloud`,
+// in-memory store — no Postgres needed) so cloud sign-in and chat cloud-sync
+// work in dev. Routes the acpDevApiPlugin already simulates in-memory are
+// handled by that plugin first (it calls next() only for unhandled paths), so
+// they never reach this proxy. Override the target with AGENTIC_DEV_API_PROXY.
+const devCloudApiTarget = process.env.AGENTIC_DEV_API_PROXY ?? 'http://127.0.0.1:3001';
+
 export default defineConfig({
   plugins: [
     acpDevApiPlugin(),
@@ -146,6 +161,7 @@ export default defineConfig({
     'import.meta.env.VITE_AGENTIC_IOS_DEVICE_AGENT': JSON.stringify(iosDeviceAgent),
     'import.meta.env.VITE_AGENTIC_DEVICE_AGENT': JSON.stringify(deviceAgent),
     'import.meta.env.VITE_AGENTIC_BROWSER_DEVICE_AGENT': JSON.stringify(browserDeviceAgent),
+    'import.meta.env.VITE_HIDE_CHAT_TAB': JSON.stringify(hideChatTab),
     'import.meta.env.VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST': JSON.stringify(deviceAgentWalletAllowlist),
     'import.meta.env.VITE_AGENTIC_CLOUD_API_BASE_URL': JSON.stringify(cloudApiBaseUrl),
     'import.meta.env.VITE_AGENTIC_QR_CONNECT_APP_URL': JSON.stringify(qrConnectAppUrl),
@@ -184,5 +200,11 @@ export default defineConfig({
     host: '127.0.0.1',
     port: 5174,
     strictPort: true,
+    proxy: {
+      // changeOrigin:false keeps the Host/Origin as 127.0.0.1:5174 so render-web's
+      // same-origin/CSRF checks pass and the session cookie is scoped to the dev
+      // origin (works over http; the Secure flag stays off outside production).
+      '/api': { target: devCloudApiTarget, changeOrigin: false },
+    },
   },
 });

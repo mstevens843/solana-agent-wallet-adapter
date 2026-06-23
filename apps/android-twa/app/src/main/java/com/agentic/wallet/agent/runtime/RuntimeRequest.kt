@@ -20,7 +20,11 @@ enum class RuntimeMethod(val wire: String) {
     GENERATE_PLAN("generatePlan"),
     REVIEW_PLAN("reviewPlan"),
     ASK("ask"),
-    LOCALIZE("localize");
+    LOCALIZE("localize"),
+    // Native Plan-Connector chat: forwarded (non-streaming) to the paired
+    // desktop's /bridge/ai/chat. Paired-bridge only — the on-device provider
+    // executor rejects it (chat has no on-device plan/review framing).
+    CHAT("chat");
 
     companion object {
         fun fromWire(value: String?): RuntimeMethod? =

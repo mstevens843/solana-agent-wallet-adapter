@@ -34,6 +34,8 @@ import {
   type AgentChatRequest as AiChatRequest,
   type AgentChatResult as AiChatResult,
   type AgentChatSection as AiChatSection,
+  type AgentChatProposedAction,
+  type AgentChatStreamEvent,
   type AgentPlanReviewDecision as AiReviewDecision,
   type AgentPlanReviewMode as AiReviewMode,
   type AgentPlanReviewRequest as AiReviewRequest,
@@ -66,6 +68,8 @@ import {
 import { connectorRegistryPromptContext } from './connectorRegistry.js';
 import { BLINK_CLASSIFIER_REVIEW_PROMPT } from './blinkClassification.js';
 import { createMcpCapabilityResolver } from './agentResolvers/index.js';
+import { getJupiterPriceBatch } from './adapters/jupiter/prices.js';
+import { getJupiterTokenSearch } from './adapters/jupiter/tokens.js';
 import { DEFAULT_CONFIG, type AgentWalletConfig } from './config.js';
 import type { TransactionSimulator } from './simulationDigest.js';
 
@@ -994,6 +998,329 @@ export class BridgeAiPlanner {
       return this.generateAnthropicChat(config, normalizedRequest);
     }
     return this.generateOpenAiCompatibleChat(config, normalizedRequest);
+  }
+
+  // Streaming, tool-calling chat for the web Chat tab. Runs an agentic loop:
+  // the model calls curated read tools (Jupiter price / token search) which we
+  // execute server-side, then answers. A `propose_wallet_action` tool lets the
+  // model propose a wallet action that the frontend turns into the existing
+  // approval card. Events (token / tool_status / proposal / done) are streamed
+  // to the caller via `emit`. The agent NEVER signs.
+  async chatStream(
+    request: AiChatRequest,
+    emit: (event: AgentChatStreamEvent) => void | Promise<void>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const config = this.config();
+    if (!config) {
+      await emit({ type: 'error', message: 'Bridge AI is not configured. Set AGENTIC_AI_API_KEY or provide a bridge session key.' });
+      await emit({ type: 'done', result: emptyChatResult() });
+      return;
+    }
+    let normalizedRequest: Required<AiChatRequest>;
+    try {
+      normalizedRequest = normalizeChatRequest(request);
+      assertAiChatRequestAllowed(normalizedRequest);
+    } catch (err) {
+      await emit({ type: 'error', message: err instanceof Error ? redactText(err.message) : 'Invalid chat request.' });
+      await emit({ type: 'done', result: emptyChatResult() });
+      return;
+    }
+    const transport = resolveAiTransport(config);
+    try {
+      if (transport === 'anthropic-messages') {
+        await this.runAnthropicChatLoop(config, normalizedRequest, emit, signal);
+        return;
+      }
+      if (transport === 'openai-responses' || transport === 'openai-compatible') {
+        await this.runOpenAiChatLoop(config, normalizedRequest, emit, signal);
+        return;
+      }
+      // gemini-native / cli-agent: no streaming tool loop yet — fall back to the
+      // single-shot grounded chat and stream its answer so the surface still works.
+      const result = await this.chat(request);
+      await streamTextAsTokens(result.answer, emit, signal);
+      await emit({ type: 'done', result });
+    } catch (err) {
+      if (signal?.aborted || isAbortError(err)) return; // client gone — stop quietly
+      const message = err instanceof Error ? redactText(err.message) : 'AI provider chat request failed.';
+      await emit({ type: 'error', message });
+      await emit({ type: 'done', result: emptyChatResult() });
+    }
+  }
+
+  private toolConfig(): AgentWalletConfig {
+    return this.runtimeConfig ?? DEFAULT_CONFIG;
+  }
+
+  // Run a read tool but never let a throw kill the whole turn — surface it to the
+  // model as a tool-error result so it can recover. (Today both loops only call
+  // known tools; this future-proofs new tool additions.)
+  private async runChatReadToolSafe(name: string, input: Record<string, unknown>): Promise<{ summary: string; data: unknown }> {
+    try {
+      return await this.runChatReadTool(name, input);
+    } catch (err) {
+      return { summary: 'Tool failed.', data: { error: redactText(err instanceof Error ? err.message : String(err)) } };
+    }
+  }
+
+  private async runAnthropicChatLoop(
+    config: AiRuntimeConfig,
+    request: Required<AiChatRequest>,
+    emit: (event: AgentChatStreamEvent) => void | Promise<void>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const system = chatAgenticSystemPrompt(request);
+    const messages: Array<{ role: 'user' | 'assistant'; content: unknown }> = request.messages
+      .filter((m) => m.role === 'user' || m.role === 'assistant')
+      .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+    let proposalEmitted = false;
+    for (let iteration = 0; iteration < CHAT_TOOL_MAX_ITERATIONS; iteration += 1) {
+      if (signal?.aborted) return;
+      const response = await fetch(anthropicMessagesUrl(config), {
+        method: 'POST',
+        headers: anthropicHeaders(config),
+        ...(signal ? { signal } : {}),
+        body: JSON.stringify({
+          model: config.model,
+          max_tokens: CHAT_TOOL_MAX_TOKENS,
+          system,
+          messages,
+          temperature: 0.3,
+          tools: chatToolsAnthropic(),
+          tool_choice: { type: 'auto' },
+          stream: true,
+        }),
+      }).catch((err) => {
+        if (isAbortError(err)) throw err;
+        throw new ProtocolError('wallet_unreachable', `AI provider chat request failed. ${redactText(err instanceof Error ? err.message : String(err))}`);
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+        throw new ProtocolError('wallet_unreachable', providerFailureMessage(payload, response.status));
+      }
+
+      // Assemble content blocks from the SSE stream, forwarding text deltas live.
+      const blocks: Array<AnthropicStreamBlock | undefined> = [];
+      let turnText = '';
+      for await (const frame of iterateProviderSse(response)) {
+        if (signal?.aborted) return;
+        const evt = safeParseJsonObject(frame.data);
+        const type = frame.event || String(evt.type ?? '');
+        if (type === 'error') {
+          const err = (evt.error && typeof evt.error === 'object') ? evt.error as Record<string, unknown> : {};
+          throw new ProtocolError('wallet_unreachable', `AI provider error. ${redactText(String(err.message ?? 'stream error'))}`);
+        }
+        if (type === 'content_block_start') {
+          const cb = (evt.content_block && typeof evt.content_block === 'object') ? evt.content_block as Record<string, unknown> : {};
+          const index = Number(evt.index ?? 0);
+          if (cb.type === 'text') blocks[index] = { type: 'text', text: '' };
+          else if (cb.type === 'tool_use') blocks[index] = { type: 'tool_use', id: String(cb.id ?? ''), name: String(cb.name ?? ''), inputJson: '' };
+        } else if (type === 'content_block_delta') {
+          const delta = (evt.delta && typeof evt.delta === 'object') ? evt.delta as Record<string, unknown> : {};
+          const block = blocks[Number(evt.index ?? 0)];
+          if (delta.type === 'text_delta' && block?.type === 'text') {
+            const piece = String(delta.text ?? '');
+            block.text += piece;
+            turnText += piece;
+            if (piece) await emit({ type: 'token', text: piece });
+          } else if (delta.type === 'input_json_delta' && block?.type === 'tool_use') {
+            block.inputJson += String(delta.partial_json ?? '');
+          }
+        }
+      }
+
+      const toolUses = blocks.filter((b): b is AnthropicStreamBlock & { type: 'tool_use' } =>
+        Boolean(b) && b!.type === 'tool_use' && (CHAT_TOOL_NAMES.has(b!.name) || b!.name === 'propose_wallet_action'));
+      if (toolUses.length === 0) {
+        const finalText = turnText.trim();
+        if (!finalText) await streamTextAsTokens(chatNoTextFallback(proposalEmitted), emit, signal);
+        await emit({ type: 'done', result: chatResult(finalText || chatNoTextFallback(proposalEmitted)) });
+        return;
+      }
+
+      // Echo the assistant turn (text + tool_use blocks) then answer each tool.
+      // Drop empty text blocks — Anthropic rejects empty text content on the echo.
+      const assistantContent = blocks
+        .filter((b): b is AnthropicStreamBlock => Boolean(b) && !(b!.type === 'text' && b!.text.trim() === ''))
+        .map((b) =>
+          b.type === 'text'
+            ? { type: 'text', text: b.text }
+            : { type: 'tool_use', id: b.id, name: b.name, input: safeParseJsonObject(b.inputJson) });
+      messages.push({ role: 'assistant', content: assistantContent });
+      const toolResults: Array<Record<string, unknown>> = [];
+      for (const use of toolUses) {
+        const input = safeParseJsonObject(use.inputJson);
+        if (use.name === 'propose_wallet_action') {
+          const { proposal, error } = validateChatProposedAction(input);
+          if (proposal) {
+            await emit({ type: 'proposal', proposal });
+            proposalEmitted = true;
+            toolResults.push({ type: 'tool_result', tool_use_id: use.id, content: 'Action prepared. Tell the user to review the card below and approve it in their wallet.' });
+          } else {
+            toolResults.push({ type: 'tool_result', tool_use_id: use.id, content: `Could not prepare action: ${error}`, is_error: true });
+          }
+          continue;
+        }
+        await emit({ type: 'tool_status', tool: use.name, phase: 'start', label: chatToolStatusLabel(use.name, input) });
+        const result = await this.runChatReadToolSafe(use.name, input);
+        await emit({ type: 'tool_status', tool: use.name, phase: 'done', label: result.summary });
+        toolResults.push({ type: 'tool_result', tool_use_id: use.id, content: JSON.stringify(result.data).slice(0, 6000) });
+      }
+      messages.push({ role: 'user', content: toolResults });
+    }
+    await emit({ type: 'done', result: chatResult(chatLoopExhaustedMessage()) });
+  }
+
+  private async runOpenAiChatLoop(
+    config: AiRuntimeConfig,
+    request: Required<AiChatRequest>,
+    emit: (event: AgentChatStreamEvent) => void | Promise<void>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const messages: Array<Record<string, unknown>> = [
+      { role: 'system', content: chatAgenticSystemPrompt(request) },
+      ...request.messages
+        .filter((m) => m.role === 'user' || m.role === 'assistant')
+        .map((m) => ({ role: m.role, content: m.content })),
+    ];
+    let proposalEmitted = false;
+    for (let iteration = 0; iteration < CHAT_TOOL_MAX_ITERATIONS; iteration += 1) {
+      if (signal?.aborted) return;
+      const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'openai-compatible')}/chat/completions`, {
+        method: 'POST',
+        headers: bearerJsonHeaders(config),
+        ...(signal ? { signal } : {}),
+        body: JSON.stringify({
+          model: config.model,
+          messages,
+          tools: chatToolsOpenAi(),
+          tool_choice: 'auto',
+          stream: true,
+          ...(!isDefaultTemperatureOnlyModel(config.model) && { temperature: 0.3 }),
+        }),
+      }).catch((err) => {
+        if (isAbortError(err)) throw err;
+        throw new ProtocolError('wallet_unreachable', `AI provider chat request failed. ${redactText(err instanceof Error ? err.message : String(err))}`);
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({})) as Record<string, unknown>;
+        throw new ProtocolError('wallet_unreachable', providerFailureMessage(payload, response.status));
+      }
+
+      let turnText = '';
+      const toolAcc: Array<{ id: string; name: string; args: string } | undefined> = [];
+      for await (const frame of iterateProviderSse(response)) {
+        if (signal?.aborted) return;
+        if (frame.data === '[DONE]') break;
+        const evt = safeParseJsonObject(frame.data);
+        const choices = Array.isArray(evt.choices) ? evt.choices as Array<Record<string, unknown>> : [];
+        const delta = (choices[0]?.delta && typeof choices[0].delta === 'object') ? choices[0].delta as Record<string, unknown> : {};
+        if (typeof delta.content === 'string' && delta.content) {
+          turnText += delta.content;
+          await emit({ type: 'token', text: delta.content });
+        }
+        if (Array.isArray(delta.tool_calls)) {
+          for (const raw of delta.tool_calls as Array<Record<string, unknown>>) {
+            const index = Number(raw.index ?? 0);
+            const slot = toolAcc[index] ?? { id: '', name: '', args: '' };
+            if (typeof raw.id === 'string' && raw.id) slot.id = raw.id;
+            const fn = (raw.function && typeof raw.function === 'object') ? raw.function as Record<string, unknown> : {};
+            if (typeof fn.name === 'string') slot.name += fn.name;
+            if (typeof fn.arguments === 'string') slot.args += fn.arguments;
+            toolAcc[index] = slot;
+          }
+        }
+      }
+
+      const toolCalls = toolAcc.filter((t): t is { id: string; name: string; args: string } => Boolean(t && t.name));
+      if (toolCalls.length === 0) {
+        const finalText = turnText.trim();
+        if (!finalText) await streamTextAsTokens(chatNoTextFallback(proposalEmitted), emit, signal);
+        await emit({ type: 'done', result: chatResult(finalText || chatNoTextFallback(proposalEmitted)) });
+        return;
+      }
+
+      messages.push({
+        role: 'assistant',
+        content: turnText || null,
+        tool_calls: toolCalls.map((t) => ({ id: t.id, type: 'function', function: { name: t.name, arguments: t.args } })),
+      });
+      for (const call of toolCalls) {
+        const input = safeParseJsonObject(call.args);
+        if (call.name === 'propose_wallet_action') {
+          const { proposal, error } = validateChatProposedAction(input);
+          if (proposal) {
+            await emit({ type: 'proposal', proposal });
+            proposalEmitted = true;
+            messages.push({ role: 'tool', tool_call_id: call.id, content: 'Action prepared. Tell the user to review the card below and approve it in their wallet.' });
+          } else {
+            messages.push({ role: 'tool', tool_call_id: call.id, content: `Could not prepare action: ${error}` });
+          }
+          continue;
+        }
+        if (!CHAT_TOOL_NAMES.has(call.name)) {
+          messages.push({ role: 'tool', tool_call_id: call.id, content: `Unknown tool: ${call.name}` });
+          continue;
+        }
+        await emit({ type: 'tool_status', tool: call.name, phase: 'start', label: chatToolStatusLabel(call.name, input) });
+        const result = await this.runChatReadToolSafe(call.name, input);
+        await emit({ type: 'tool_status', tool: call.name, phase: 'done', label: result.summary });
+        messages.push({ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result.data).slice(0, 6000) });
+      }
+    }
+    await emit({ type: 'done', result: chatResult(chatLoopExhaustedMessage()) });
+  }
+
+  // Executes one curated read tool server-side, grounding the agent in live data.
+  // Backed by public Jupiter adapters (no extra keys needed). Throwing here is
+  // surfaced to the model as a tool error so it can recover.
+  private async runChatReadTool(name: string, input: Record<string, unknown>): Promise<{ summary: string; data: unknown }> {
+    const config = this.toolConfig();
+    const query = typeof input.query === 'string' ? input.query.trim() : '';
+    if (name === 'search_tokens') {
+      if (!query) return { summary: 'No query provided.', data: { error: 'query is required' } };
+      try {
+        const result = await getJupiterTokenSearch(config, { query, limit: 5 });
+        const tokens = result.tokens.slice(0, 5).map((token) => ({
+          symbol: token.symbol,
+          name: token.name,
+          mint: token.id,
+          isVerified: token.isVerified ?? null,
+          organicScoreLabel: token.organicScoreLabel ?? null,
+          usdPrice: token.usdPrice ?? null,
+        }));
+        return { summary: `Found ${tokens.length} token(s) for "${query}".`, data: { query, tokens } };
+      } catch (err) {
+        return { summary: 'Token search unavailable.', data: { error: redactText(err instanceof Error ? err.message : String(err)) } };
+      }
+    }
+    if (name === 'get_token_price') {
+      if (!query) return { summary: 'No token provided.', data: { error: 'query is required' } };
+      try {
+        const mints = await this.resolveChatTokenMints(config, query);
+        if (mints.length === 0) return { summary: `No token matched "${query}".`, data: { found: false, query } };
+        const batch = await getJupiterPriceBatch(config, { mints });
+        const prices = batch.prices.map((price) => ({ mint: price.mint, usdPrice: price.usdPrice ?? null, priceChange24h: price.priceChange24h ?? null, status: price.status }));
+        const top = prices[0];
+        const summary = top?.usdPrice != null ? `${query}: $${top.usdPrice}` : `No price for "${query}".`;
+        return { summary, data: { query, prices } };
+      } catch (err) {
+        return { summary: 'Price lookup unavailable.', data: { error: redactText(err instanceof Error ? err.message : String(err)) } };
+      }
+    }
+    throw new ProtocolError('invalid_request', `Unknown chat tool: ${name}`);
+  }
+
+  // Resolve a symbol or mint to one or more mint addresses for price lookup.
+  private async resolveChatTokenMints(config: AgentWalletConfig, query: string): Promise<string[]> {
+    if (BASE58_MINT_PATTERN.test(query)) return [query];
+    try {
+      const result = await getJupiterTokenSearch(config, { query, limit: 3 });
+      return result.tokens.map((token) => token.id).filter((mint): mint is string => typeof mint === 'string' && mint.length > 0).slice(0, 3);
+    } catch {
+      return [];
+    }
   }
 
   private async generateOpenAiResponsesChat(
@@ -2311,6 +2638,282 @@ function aiAskMessages(request: Required<AiAskRequest>): Array<{ role: 'system' 
       }),
     },
   ];
+}
+
+// --- Streaming chat (web Chat tab) helpers -----------------------------------
+const CHAT_TOOL_MAX_ITERATIONS = 5;
+const CHAT_TOOL_MAX_TOKENS = 1500;
+const CHAT_TOOL_NAMES = new Set(['get_token_price', 'search_tokens']);
+const CHAT_PROPOSAL_KINDS = new Set(['transfer_sol', 'transfer_spl', 'swap', 'sign_proof']);
+const BASE58_MINT_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+type AnthropicStreamBlock =
+  | { type: 'text'; text: string }
+  | { type: 'tool_use'; id: string; name: string; inputJson: string };
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && (err.name === 'AbortError' || /abort/i.test(err.message));
+}
+
+function safeParseJsonObject(text: string): Record<string, unknown> {
+  try {
+    const value = JSON.parse(text || '{}');
+    return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
+// Parse one `\n\n`-delimited SSE frame into {event?, data}. Handles Anthropic
+// (named `event:` lines) and OpenAI (`data:` only). Returns null if the frame
+// carries no `data:` line (comments/heartbeats/blank frames).
+export function parseSseFrame(frame: string): { event?: string; data: string } | null {
+  let eventName: string | undefined;
+  const dataLines: string[] = [];
+  for (const rawLine of frame.split('\n')) {
+    const line = rawLine.replace(/\r$/, '');
+    if (line.startsWith('event:')) eventName = line.slice(6).trim();
+    else if (line.startsWith('data:')) dataLines.push(line.slice(5).replace(/^ /, ''));
+  }
+  if (dataLines.length === 0) return null;
+  return { event: eventName, data: dataLines.join('\n') };
+}
+
+// Parse a provider SSE body into discrete events. Yields one event per
+// blank-line-delimited frame, then flushes any trailing frame the provider did not
+// terminate with a blank line.
+export async function* iterateProviderSse(response: Response): AsyncGenerator<{ event?: string; data: string }> {
+  const reader = response.body?.getReader();
+  if (!reader) return;
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let sepMatch = /\r?\n\r?\n/.exec(buffer);
+      while (sepMatch?.index !== undefined) {
+        const parsed = parseSseFrame(buffer.slice(0, sepMatch.index));
+        buffer = buffer.slice(sepMatch.index + sepMatch[0].length);
+        if (parsed) yield parsed;
+        sepMatch = /\r?\n\r?\n/.exec(buffer);
+      }
+    }
+    const tail = parseSseFrame(buffer);
+    if (tail) yield tail;
+  } finally {
+    try { reader.releaseLock(); } catch { /* ignore */ }
+  }
+}
+
+function emptyChatResult(): AiChatResult {
+  return { answer: '', checkedAt: new Date().toISOString(), source: 'ai' };
+}
+
+function chatResult(answer: string): AiChatResult {
+  return { answer: answer.slice(0, 4000), checkedAt: new Date().toISOString(), source: 'ai' };
+}
+
+function chatNoTextFallback(proposalEmitted: boolean): string {
+  return proposalEmitted
+    ? 'I prepared the action below. Review the details and approve it in your wallet when you are ready.'
+    : 'I could not produce a response. Please rephrase and try again.';
+}
+
+function chatLoopExhaustedMessage(): string {
+  return 'I gathered some data but could not finish. Please narrow the question and try again.';
+}
+
+function chatToolStatusLabel(name: string, input: Record<string, unknown>): string {
+  const query = typeof input.query === 'string' ? input.query : '';
+  if (name === 'get_token_price') return query ? `Checking price of ${query}…` : 'Checking price…';
+  if (name === 'search_tokens') return query ? `Searching tokens for ${query}…` : 'Searching tokens…';
+  return `Running ${name}…`;
+}
+
+const CHAT_LANGUAGE_NAMES: Record<string, string> = {
+  en: 'English',
+  'zh-Hans': 'Simplified Chinese',
+  'zh-Hant': 'Traditional Chinese',
+  es: 'Spanish',
+  ja: 'Japanese',
+  de: 'German',
+  it: 'Italian',
+  fr: 'French',
+  pt: 'Portuguese',
+  ko: 'Korean',
+  ru: 'Russian',
+};
+
+function chatAgenticSystemPrompt(request: Required<AiChatRequest>): string {
+  const wallet = request.walletAddress ? request.walletAddress : 'not connected';
+  const uiLanguage = typeof request.context?.uiLanguage === 'string' ? request.context.uiLanguage : 'en';
+  const languageName = CHAT_LANGUAGE_NAMES[uiLanguage] ?? '';
+  return [
+    'You are the Agentic wallet assistant, a knowledgeable, concise Solana agent embedded in the user\'s wallet app.',
+    'You help the user understand their wallet, tokens, prices, and risk, and you can prepare wallet actions for their explicit approval.',
+    `Connected wallet: ${wallet}. Cluster: ${request.cluster || 'mainnet-beta'}.`,
+    ...(languageName && uiLanguage !== 'en'
+      ? [`LANGUAGE: Always reply in ${languageName}, regardless of the language the user writes in. Keep token symbols, mint/wallet addresses, numbers, and URLs verbatim.`]
+      : []),
+    '',
+    'GROUNDING (API-first): For any token price or token information, you MUST call the provided tools (get_token_price, search_tokens) and base your answer on the returned data. Never invent prices, balances, token mints, or addresses. If a tool returns no data, say what is missing; do not guess.',
+    '',
+    'ACTIONS: When the user clearly wants to act (send, transfer, swap, or sign a proof), call the propose_wallet_action tool to prepare it. Rules:',
+    '- You NEVER sign, submit, approve, or send. You only prepare a proposal; the human reviews a card and approves in their wallet.',
+    '- kind must be one of: transfer_sol, transfer_spl, swap, sign_proof.',
+    '- sign_proof: to create a signed proof or attestation of a statement (this signs a MESSAGE, not a transaction; no recipient or amount), call propose_wallet_action with kind "sign_proof", params.statement set to the exact claim the user wants to attest, and a short title in summary.',
+    '- For transfers, the recipient MUST be a real base58 address that the user typed explicitly. If you do not have an exact recipient address, DO NOT propose — ask the user for the exact address.',
+    '- Token params: SOL and USDC may be passed by symbol. For ANY other token you MUST first call search_tokens and put the returned base58 mint (NOT the symbol) into params (params.token for transfer_spl; params.inputToken / params.outputToken for swap). Never propose an unresolved or guessed token.',
+    '- Set resolution.recipientSource to "user_input" only when the user typed the address; never fabricate it.',
+    '',
+    'STYLE: Be direct and brief. Lead with the answer (no "I will check..." preamble). Use plain hyphens, never em-dashes. You may use simple markdown: **bold**, `inline code`, and "- " bullet or "1. " numbered lists. No headings, tables, images, or raw HTML. After proposing an action, tell the user to review the card and approve it.',
+    'SAFETY: Never request private keys, seed phrases, or wallet auth tokens. Never claim anything is signed, sent, or guaranteed safe.',
+  ].join('\n');
+}
+
+function chatToolsAnthropic(): Array<Record<string, unknown>> {
+  return [
+    {
+      name: 'get_token_price',
+      description: 'Get the current USD price of a Solana token. Call this whenever the user asks what a token is worth or about its price. Accepts a token symbol (e.g. SOL, BONK) or a base58 mint address.',
+      input_schema: {
+        type: 'object',
+        properties: { query: { type: 'string', description: 'Token symbol or base58 mint address' } },
+        required: ['query'],
+      },
+    },
+    {
+      name: 'search_tokens',
+      description: 'Search Solana tokens by symbol or name to resolve the mint address and basic facts (verification, organic score, price). Call this to disambiguate a token or resolve a symbol to a mint.',
+      input_schema: {
+        type: 'object',
+        properties: { query: { type: 'string', description: 'Token symbol or name to search' } },
+        required: ['query'],
+      },
+    },
+    {
+      name: 'propose_wallet_action',
+      description: 'Prepare a wallet action for the user to review and approve. Use only when the user clearly wants to act. You never sign; the human approves.',
+      input_schema: chatProposalSchema(),
+    },
+  ];
+}
+
+function chatToolsOpenAi(): Array<Record<string, unknown>> {
+  return chatToolsAnthropic().map((tool) => ({
+    type: 'function',
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.input_schema,
+    },
+  }));
+}
+
+function chatProposalSchema(): Record<string, unknown> {
+  return {
+    type: 'object',
+    properties: {
+      kind: { type: 'string', enum: ['transfer_sol', 'transfer_spl', 'swap', 'sign_proof'] },
+      summary: { type: 'string', description: 'One-line human summary, e.g. "Swap 1 SOL to USDC" or "Proof of Q3 budget review"' },
+      params: {
+        type: 'object',
+        description: 'transfer_sol: {recipient, amountSol}. transfer_spl: {token, recipient, amount}. swap: {inputToken, outputToken, amount, slippageBps}. sign_proof: {statement} (the exact claim to sign; no transaction).',
+      },
+      note: { type: 'string' },
+      resolution: {
+        type: 'object',
+        properties: {
+          recipientSource: { type: 'string', enum: ['evidence', 'user_input'] },
+          tokenMintSource: { type: 'string', enum: ['evidence', 'user_input'] },
+        },
+      },
+    },
+    required: ['kind', 'summary', 'params'],
+  };
+}
+
+// Server-side validation before a proposal is sent to the UI. The recipient must
+// be a real base58 address (never fabricated from prose); the wallet still does
+// the final human approval. Returns either a clean proposal or an error string.
+export function validateChatProposedAction(input: Record<string, unknown>): { proposal?: AgentChatProposedAction; error?: string } {
+  const kind = typeof input.kind === 'string' ? input.kind : '';
+  if (!CHAT_PROPOSAL_KINDS.has(kind)) {
+    return { error: 'kind must be transfer_sol, transfer_spl, swap, or sign_proof.' };
+  }
+  const summary = typeof input.summary === 'string' && input.summary.trim() ? input.summary.trim().slice(0, 140) : '';
+  if (!summary) return { error: 'summary is required.' };
+  const params = (input.params && typeof input.params === 'object') ? input.params as Record<string, unknown> : null;
+  if (!params) return { error: 'params is required.' };
+  const resolution = (input.resolution && typeof input.resolution === 'object') ? input.resolution as Record<string, unknown> : {};
+  if (resolution.recipientSource === 'chat_text_alone') {
+    return { error: 'recipient must come from explicit user input, not chat text.' };
+  }
+  if (kind === 'transfer_sol' || kind === 'transfer_spl') {
+    const recipient = typeof params.recipient === 'string' ? params.recipient.trim() : '';
+    if (!BASE58_MINT_PATTERN.test(recipient)) {
+      return { error: 'recipient must be a valid base58 address. Ask the user for the exact address.' };
+    }
+    const amount = params.amount ?? params.amountSol;
+    if (amount === undefined || amount === null || String(amount).trim() === '') {
+      return { error: 'an amount is required.' };
+    }
+  }
+  if (kind === 'transfer_spl') {
+    const token = typeof params.token === 'string' ? params.token.trim() : '';
+    if (!token) {
+      return { error: 'transfer_spl requires the token mint (or SOL/USDC symbol) in params.token.' };
+    }
+  }
+  if (kind === 'swap') {
+    if (params.amount === undefined || String(params.amount).trim() === '') {
+      return { error: 'a swap amount is required.' };
+    }
+    const inputToken = typeof params.inputToken === 'string' ? params.inputToken.trim() : '';
+    const outputToken = typeof params.outputToken === 'string' ? params.outputToken.trim() : '';
+    if (!inputToken || !outputToken) {
+      return { error: 'swap requires both params.inputToken and params.outputToken.' };
+    }
+  }
+  if (kind === 'sign_proof') {
+    const statement = typeof params.statement === 'string' ? params.statement.trim()
+      : (typeof params.message === 'string' ? params.message.trim() : '');
+    if (!statement) {
+      return { error: 'sign_proof requires params.statement (the exact claim to sign).' };
+    }
+  }
+  return {
+    proposal: {
+      kind,
+      summary,
+      params,
+      ...(typeof input.note === 'string' ? { note: input.note.slice(0, 280) } : {}),
+      ...(typeof input.cluster === 'string' ? { cluster: input.cluster } : {}),
+      resolution: {
+        ...(typeof resolution.recipientSource === 'string' ? { recipientSource: resolution.recipientSource as 'evidence' | 'user_input' } : {}),
+        ...(typeof resolution.tokenMintSource === 'string' ? { tokenMintSource: resolution.tokenMintSource as 'evidence' | 'user_input' } : {}),
+      },
+      requiresApproval: true,
+    },
+  };
+}
+
+async function streamTextAsTokens(
+  text: string,
+  emit: (event: AgentChatStreamEvent) => void | Promise<void>,
+  signal?: AbortSignal,
+): Promise<void> {
+  const clean = (text ?? '').toString();
+  if (!clean) return;
+  const chunks = clean.match(/\S+\s*/g) ?? [clean];
+  const delay = chunks.length > 0 ? Math.min(14, Math.floor(1400 / chunks.length)) : 0;
+  for (const chunk of chunks) {
+    if (signal?.aborted) return;
+    await emit({ type: 'token', text: chunk });
+    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+  }
 }
 
 function aiChatMessages(request: Required<AiChatRequest>): Array<{ role: 'system' | 'user'; content: string }> {

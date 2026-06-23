@@ -72,14 +72,17 @@ const MIN_SECRET_LEN = 20;
 // The phone may only forward to these exact bridge AI paths — JSON to known AI
 // endpoints, nothing else. Keep in sync with the desktop bridge's /bridge/ai/*
 // routes (bridgeServer.ts) and bridgePairingClient.ts's dispatcher.
-// Least-privilege: ONLY the three AI verbs the phone's BridgeRelayProvider actually forwards. Excludes
-// session-key/connector-login (would reconfigure the desktop or spawn a browser OAuth), status &
-// connector/detect (the phone uses the dedicated /api/bridge-ai/:uuid/status route, not a forward),
-// and /chat (the broadest "spend the user's plan" primitive, with no plan/review framing).
+// Least-privilege: ONLY the AI verbs the phone's BridgeRelayProvider forwards. Excludes
+// session-key/connector-login (would reconfigure the desktop or spawn a browser OAuth) and status &
+// connector/detect (the phone uses the dedicated /api/bridge-ai/:uuid/status route, not a forward).
+// `/bridge/ai/chat` is the NON-streaming chat verb (aiPlanner.chat → answer + optional proposal); like
+// plan/review it only READS + proposes a PreparedAction (the wallet still signs locally — the agent
+// never signs), so it carries the same read+propose risk profile under the existing rate/size/auth gates.
 export const FORWARDABLE_AI_PATHS: ReadonlySet<string> = new Set([
   '/bridge/ai/generate-plan',
   '/bridge/ai/review-plan',
   '/bridge/ai/ask-about-plan',
+  '/bridge/ai/chat',
 ]);
 
 export interface RelayClock {

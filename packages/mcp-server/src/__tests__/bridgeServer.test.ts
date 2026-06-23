@@ -814,6 +814,76 @@ describe('bridge lab artifact routes', () => {
     }
   });
 
+  it('streams AI chat events over SSE without requiring a connected wallet', async () => {
+    const originalFetch = globalThis.fetch;
+    const providerBodies: Record<string, unknown>[] = [];
+    vi.stubEnv('AGENTIC_AI_API_KEY', 'sk-test-openai');
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = input instanceof Request ? new URL(input.url) : new URL(String(input));
+      if (url.hostname === 'api.openai.com') {
+        providerBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+        return sseResponse([
+          'data: {"choices":[{"delta":{"content":"Bridge "}}]}\n\n',
+          'data: {"choices":[{"delta":{"content":"chat"}}]}\n\n',
+          'data: [DONE]\n\n',
+        ]);
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch);
+
+    const handle = await startTestBridge();
+    try {
+      const events = await bridgeSse(handle.url, '/bridge/ai/chat/stream', {
+        method: 'POST',
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: 'What should I check before swapping?' }],
+        }),
+      });
+
+      expect(events.filter((event) => event.type === 'token').map((event) => event.text).join('')).toBe('Bridge chat');
+      expect(events.at(-1)).toMatchObject({ type: 'done', result: { answer: 'Bridge chat', source: 'ai' } });
+      const providerMessages = providerBodies[0]?.messages as Array<{ content?: string }> | undefined;
+      expect(providerMessages?.[1]?.content).toContain('What should I check before swapping?');
+      expect(JSON.stringify(providerMessages?.[0] ?? {})).toContain('not connected');
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  it('requires the bridge token for streaming AI chat', async () => {
+    const handle = await startTestBridge();
+    try {
+      const response = await fetch(new URL('/bridge/ai/chat/stream', handle.url), {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ messages: [{ role: 'user', content: 'Hello' }] }),
+      });
+      expect(response.status).toBe(401);
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  it('emits SSE error frames when streaming AI chat is not configured', async () => {
+    const handle = await startTestBridge();
+    try {
+      const events = await bridgeSse(handle.url, '/bridge/ai/chat/stream', {
+        method: 'POST',
+        body: JSON.stringify({
+          messages: [{ role: 'user', content: 'Hello' }],
+        }),
+      });
+
+      expect(events[0]).toMatchObject({
+        type: 'error',
+        message: 'Bridge AI is not configured. Set AGENTIC_AI_API_KEY or provide a bridge session key.',
+      });
+      expect(events.at(-1)).toMatchObject({ type: 'done' });
+    } finally {
+      await handle.stop();
+    }
+  });
+
   it('returns HTTP 200 with an { error } envelope when a connector review fails', async () => {
     // The 4 AI endpoints stream a keepalive heartbeat, so they commit a 200 head before the outcome
     // is known and can no longer send a 4xx — a failure must come back as a 200 body carrying the
@@ -1436,6 +1506,46 @@ async function bridgeFetch<T>(baseUrl: string, path: string, init: RequestInit =
   const response = await fetch(new URL(path, baseUrl), { ...init, headers });
   expect(response.ok).toBe(true);
   return (await response.json()) as T;
+}
+
+function sseResponse(chunks: string[]): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      controller.close();
+    },
+  });
+  return new Response(stream, {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' },
+  });
+}
+
+async function bridgeSse(
+  baseUrl: string,
+  path: string,
+  init: RequestInit = {},
+): Promise<Array<Record<string, unknown>>> {
+  const headers = new Headers(init.headers);
+  headers.set('x-agent-wallet-token', 'test-token');
+  headers.set('accept', 'text/event-stream');
+  if (init.body !== undefined && !headers.has('content-type')) {
+    headers.set('content-type', 'application/json');
+  }
+  const response = await fetch(new URL(path, baseUrl), { ...init, headers });
+  expect(response.ok).toBe(true);
+  const text = await response.text();
+  return text
+    .split('\n\n')
+    .map((frame) => frame
+      .split('\n')
+      .map((line) => line.trimEnd())
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trimStart())
+      .join('\n'))
+    .filter((data) => data && data !== '[DONE]')
+    .map((data) => JSON.parse(data) as Record<string, unknown>);
 }
 
 function sampleArtifact(): LabArtifact {

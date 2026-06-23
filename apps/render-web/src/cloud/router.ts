@@ -108,6 +108,7 @@ import { RecurringScheduler } from './scheduler.js';
 import { createWalletSession, deleteSessionFromRequest, SESSION_TTL_MS, sessionFromRequest } from './session.js';
 import {
   CLOUD_PREFERENCE_NAMESPACES,
+  isChatHistoryStore,
   sessionResponse,
   systemClock,
   type CloudPreferenceNamespace,
@@ -247,6 +248,7 @@ const REGISTERED_API_ROUTES = [
   'POST /api/ai/review-plan',
   'POST /api/ai/ask-about-plan',
   'POST /api/ai/chat',
+  'POST /api/ai/chat/stream',
   'GET /api/device-agent/status',
   'POST /api/device-agent/control',
   'POST /api/auth/nonce',
@@ -260,6 +262,11 @@ const REGISTERED_API_ROUTES = [
   'DELETE /api/agents/profile',
   'GET /api/session',
   'GET /api/audit',
+  'GET /api/chat/sessions',
+  'DELETE /api/chat/sessions',
+  'GET /api/chat/sessions/:id',
+  'PUT /api/chat/sessions/:id',
+  'DELETE /api/chat/sessions/:id',
   '/api/plans',
   '/api/approvals',
   'POST /api/approvals/cleanup-recurring-backlog',
@@ -932,6 +939,9 @@ export function authRateLimitedRoute(pathname: string): AuthRateLimitInput['rout
   if (pathname.startsWith('/api/signals')) return '/api/signals:*';
   if (pathname.startsWith('/api/spend')) return '/api/spend:*';
   if (pathname.startsWith('/api/streaming')) return '/api/streaming:*';
+  // Authenticated per-wallet chat-history sync. WRITE bucket shape (large but
+  // infrequent PUTs); not a public relay route.
+  if (pathname.startsWith('/api/chat')) return '/api/chat:*';
   if (pathname === '/api/auth/logout') return pathname;
   return undefined;
 }
@@ -943,7 +953,7 @@ function rateLimitWindowMs(route: string): number {
 
 function rateLimitMaxAttempts(route: string): number {
   if (route === '/api/auth/nonce' || route === '/api/auth/siws-nonce' || route === '/api/auth/verify-wallet') return AUTH_RATE_LIMIT_MAX_ATTEMPTS;
-  if (route === '/api/ai/generate-plan' || route === '/api/ai/review-plan' || route === '/api/ai/ask-about-plan' || route === '/api/ai/chat' || route === '/api/review/localize') return HOSTED_AI_RATE_LIMIT_MAX_ATTEMPTS;
+  if (route === '/api/ai/generate-plan' || route === '/api/ai/review-plan' || route === '/api/ai/ask-about-plan' || route === '/api/ai/chat' || route === '/api/ai/chat/stream' || route === '/api/review/localize') return HOSTED_AI_RATE_LIMIT_MAX_ATTEMPTS;
   if (isPublicRelayRateLimitRoute(route)) return publicRelayRateLimitMaxAttempts();
   return WRITE_RATE_LIMIT_MAX_ATTEMPTS;
 }
@@ -1181,6 +1191,12 @@ async function routeApiRequest(
     return;
   }
 
+  if (url.pathname === '/api/ai/chat/stream') {
+    requireMethod(req, 'POST');
+    await handleHostedAiChatStreamRequest(req, res, store, clock);
+    return;
+  }
+
   if (url.pathname === '/api/device-agent/status') {
     requireMethod(req, 'GET');
     await handleDeviceAgentStatus(req, res, store, clock);
@@ -1243,6 +1259,37 @@ async function routeApiRequest(
       return;
     }
     requireMethod(req, 'POST');
+    return;
+  }
+
+  if (url.pathname === '/api/chat/sessions') {
+    if (req.method === 'GET') {
+      await handleListChatSessions(req, res, store, clock);
+      return;
+    }
+    if (req.method === 'DELETE') {
+      await handleClearChatSessions(req, res, store, clock);
+      return;
+    }
+    requireMethod(req, 'GET');
+    return;
+  }
+
+  const chatSessionId = chatSessionIdFromPath(url.pathname);
+  if (chatSessionId) {
+    if (req.method === 'GET') {
+      await handleGetChatSession(req, res, store, clock, chatSessionId);
+      return;
+    }
+    if (req.method === 'PUT') {
+      await handlePutChatSession(req, res, store, clock, chatSessionId);
+      return;
+    }
+    if (req.method === 'DELETE') {
+      await handleDeleteChatSession(req, res, store, clock, chatSessionId);
+      return;
+    }
+    requireMethod(req, 'GET');
     return;
   }
 
@@ -3156,6 +3203,71 @@ async function handleHostedAiChatRequest(
   }
 }
 
+// Streaming chat over Server-Sent Events. All throwable setup (session, body,
+// settings, key) runs BEFORE the SSE headers so the top-level dispatcher can
+// still writeJson an error. Once the stream starts we never throw — chatStream
+// catches its own failures and emits error/done events.
+async function handleHostedAiChatStreamRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required for hosted AI agent chat.');
+  }
+  const body = await readJsonBody(req) as HostedAiChatBody;
+  const settings = hostedSettings(body.settings);
+  const request = hostedChatRequestForSession(body.request, session.walletAddress);
+  const planner = new BridgeAiPlanner();
+  planner.setSessionKey({
+    apiKey: settings.apiKey,
+    provider: settings.provider,
+    apiFormat: settings.apiFormat,
+    baseUrl: settings.baseUrl,
+    model: settings.model,
+  });
+
+  res.statusCode = 200;
+  res.setHeader('content-type', 'text/event-stream; charset=utf-8');
+  res.setHeader('cache-control', 'no-store, no-transform');
+  res.setHeader('connection', 'keep-alive');
+  res.setHeader('x-accel-buffering', 'no');
+  // Open the stream immediately so proxies don't buffer waiting for the first byte.
+  try { res.write(': open\n\n'); } catch { /* ignore */ }
+  // Abort the provider loop (stop burning tokens) if the response socket closes.
+  const abort = new AbortController();
+  const onClose = (): void => abort.abort();
+  const onAborted = (): void => abort.abort();
+  res.on('close', onClose);
+  req.on('aborted', onAborted);
+  // Keepalive: a reasoning model can take 10–30s to first token with no SSE
+  // write; ping every 15s so proxies don't idle-timeout the stream.
+  const heartbeat = setInterval(() => {
+    if (abort.signal.aborted) return;
+    try { res.write(': ping\n\n'); } catch { /* client gone */ }
+  }, 15_000);
+  heartbeat.unref?.();
+  const write = (event: unknown): void => {
+    if (abort.signal.aborted) return;
+    try { res.write(`data: ${JSON.stringify(event)}\n\n`); } catch { /* client gone */ }
+  };
+  try {
+    await planner.chatStream(request, write, abort.signal);
+  } catch (err) {
+    if (!abort.signal.aborted) {
+      write({ type: 'error', message: err instanceof Error ? redactSecrets(err.message, settings.apiKey) : 'AI provider chat request failed.' });
+      write({ type: 'done', result: { answer: '', checkedAt: new Date().toISOString(), source: 'ai' } });
+    }
+  } finally {
+    clearInterval(heartbeat);
+    res.off('close', onClose);
+    req.off('aborted', onAborted);
+    try { res.end(); } catch { /* already closed */ }
+  }
+}
+
 async function handleDeviceAgentStatus(
   req: IncomingMessage,
   res: ServerResponse,
@@ -3508,6 +3620,185 @@ function isCloudPreferencesStore(store: unknown): store is CloudPreferencesStore
   return typeof record.listPreferences === 'function' &&
     typeof record.getPreference === 'function' &&
     typeof record.savePreference === 'function';
+}
+
+// ── Chat history cloud sync ──────────────────────────────────────────────────
+// Per-session sync for the Chat tab. The server stores `messagesLz` (an opaque
+// client-compressed blob) verbatim and never decompresses it; the list endpoint
+// returns metadata only so the session list loads cheaply.
+const MAX_CHAT_JSON_BYTES = 2 * 1024 * 1024;
+const CHAT_SESSION_PATH = /^\/api\/chat\/sessions\/([^/]+)$/;
+
+function chatSessionIdFromPath(pathname: string): string | null {
+  const match = CHAT_SESSION_PATH.exec(pathname);
+  if (!match) return null;
+  const id = decodeURIComponent(match[1] ?? '').trim();
+  return id ? id : null;
+}
+
+// Chat blobs (~1.5MB localStorage cap, smaller compressed) exceed the global
+// readJsonBody 1MB cap, so use a dedicated reader with more headroom.
+async function readChatJsonBody(req: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.byteLength;
+    if (total > MAX_CHAT_JSON_BYTES) {
+      throw new ApiError(413, 'Chat session is too large to sync.');
+    }
+    chunks.push(buffer);
+  }
+  const raw = Buffer.concat(chunks).toString('utf8');
+  if (!raw.trim()) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new ApiError(400, 'Request body must be valid JSON.');
+  }
+}
+
+async function handleListChatSessions(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required to read chat history.');
+  }
+  if (!isChatHistoryStore(store)) {
+    writeJson(res, 200, { sessions: [] });
+    return;
+  }
+  const sessions = await store.listChatSessions(session.walletAddress);
+  writeJson(res, 200, { sessions });
+}
+
+async function handleGetChatSession(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+  sessionId: string,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required to read chat history.');
+  }
+  if (!isChatHistoryStore(store)) {
+    throw new ApiError(404, 'Chat session not found.');
+  }
+  const record = await store.getChatSession(session.walletAddress, sessionId);
+  if (!record) {
+    throw new ApiError(404, 'Chat session not found.');
+  }
+  writeJson(res, 200, record);
+}
+
+async function handlePutChatSession(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+  sessionId: string,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required to save chat history.');
+  }
+  if (!isChatHistoryStore(store)) {
+    throw new ApiError(503, 'Chat history storage is not configured on this server.');
+  }
+  const body = await readChatJsonBody(req);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new ApiError(400, 'Missing chat session payload.');
+  }
+  const input = body as Record<string, unknown>;
+  const messagesLz = input.messagesLz;
+  if (typeof messagesLz !== 'string' || messagesLz.length === 0) {
+    throw new ApiError(400, 'Chat session payload must include messagesLz.');
+  }
+  // Two size gates: readChatJsonBody caps the whole request body (metadata +
+  // blob); this caps the blob alone so a 413 is attributed to the chat content.
+  if (Buffer.byteLength(messagesLz, 'utf8') > MAX_CHAT_JSON_BYTES) {
+    throw new ApiError(413, 'Chat session is too large to sync.');
+  }
+  const cluster = typeof input.cluster === 'string' ? input.cluster : '';
+  if (!cluster) {
+    throw new ApiError(400, 'Chat session payload must include cluster.');
+  }
+  const title = typeof input.title === 'string' ? input.title.slice(0, 200) : '';
+  const messageCount = Number.isFinite(input.messageCount)
+    ? Math.max(0, Math.trunc(input.messageCount as number))
+    : 0;
+  // Clamp to a sane range so a malformed client can't store an absurd
+  // schemaVersion that would confuse older readers.
+  const schemaVersion = Number.isFinite(input.schemaVersion)
+    ? Math.min(1000, Math.max(0, Math.trunc(input.schemaVersion as number)))
+    : 1;
+  const createdAt = typeof input.createdAt === 'string' && input.createdAt
+    ? input.createdAt
+    : clock.now().toISOString();
+  // Store the CLIENT's edit time (so client + server last-writer-wins compare the
+  // same value), but clamp future-dating to now+skew so a wrong device clock can't
+  // pin a session as permanently "newest".
+  const nowMs = clock.now().getTime();
+  const clientUpdatedMs = typeof input.updatedAt === 'string' ? Date.parse(input.updatedAt) : NaN;
+  const updatedAt = Number.isFinite(clientUpdatedMs) && clientUpdatedMs <= nowMs + 5 * 60 * 1000
+    ? new Date(clientUpdatedMs).toISOString()
+    : clock.now().toISOString();
+  const existing = await store.getChatSession(session.walletAddress, sessionId);
+  const saved = await store.saveChatSession(session.walletAddress, {
+    sessionId,
+    title,
+    cluster,
+    messageCount,
+    schemaVersion,
+    version: (existing?.version ?? 0) + 1,
+    createdAt: existing?.createdAt ?? createdAt,
+    updatedAt,
+    messagesLz,
+  });
+  writeJson(res, 200, saved);
+}
+
+async function handleDeleteChatSession(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+  sessionId: string,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required to delete chat history.');
+  }
+  if (!isChatHistoryStore(store)) {
+    writeJson(res, 200, { deleted: false });
+    return;
+  }
+  const deleted = await store.deleteChatSession(session.walletAddress, sessionId);
+  writeJson(res, 200, { deleted });
+}
+
+async function handleClearChatSessions(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required to clear chat history.');
+  }
+  if (!isChatHistoryStore(store)) {
+    writeJson(res, 200, { cleared: 0 });
+    return;
+  }
+  const cleared = await store.clearChatSessions(session.walletAddress);
+  writeJson(res, 200, { cleared });
 }
 
 function buildConnectorSecretsService(store: unknown): ConnectorSecretsService | undefined {

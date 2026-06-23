@@ -106,6 +106,9 @@ importers:
       bs58:
         specifier: ^6.0.0
         version: 6.0.0
+      lz-string:
+        specifier: ^1.5.0
+        version: 1.5.0
       qrcode:
         specifier: ^1.5.4
         version: 1.5.4
@@ -6768,6 +6771,10 @@ packages:
 
   lunr@2.3.9:
     resolution: {integrity: sha512-zTU3DaZaF3Rt9rhN3uBMGQD3dD2/vFQqnvZCDv4dl5iOzq2IZQqTxu90r4E5J+nP70J3ilqVCrbho2eWaeW8Ow==}
+
+  lz-string@1.5.0:
+    resolution: {integrity: sha512-h5bgJWpxJNswbU7qCrV0tIKQCaS3blPDrqKWx+QxzuzL1zGUzij9XCWLrSLsJPu5t+eWA/ycetzYAO5IOMcWAQ==}
+    hasBin: true
 
   magic-string@0.30.21:
     resolution: {integrity: sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==}
@@ -19831,6 +19838,8 @@ snapshots:
 
   lunr@2.3.9:
     optional: true
+
+  lz-string@1.5.0: {}
 
   magic-string@0.30.21:
     dependencies:

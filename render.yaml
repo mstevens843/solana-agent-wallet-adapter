@@ -90,6 +90,16 @@ services:
         value: "false"
       - key: VITE_AGENTIC_GA_MEASUREMENT_ID
         value: "G-MJ3VZ7VEX7"
+      # Comma list of app surfaces (web,android,ios,desktop) that HIDE the Chat tab
+      # and revert to the pre-Chat tab layout. Web + desktop + iOS expose Chat:
+      # iOS Plan-Connector chat is pure-JS (WebCrypto relay → desktop /bridge/ai/chat)
+      # and iOS cloud chat history syncs via the same /api/chat/* endpoints, so iOS
+      # ships via this Render redeploy with no IPA. Android stays gated until the APK
+      # with the native RuntimeMethod.CHAT handler ships — its Plan-Connector chat
+      # routes through the native device-agent runtime, so an old APK can't forward
+      # /bridge/ai/chat. Drop "android" here once that APK is on the Play Store.
+      - key: HIDE_CHAT_TAB
+        value: "android"
       # Evidence-provider operator keys. The cloud `/api/birdeye/*` and
       # `/api/coingecko/*` endpoints are the fall-through path used by Device
       # Agent and any client that does not have the local bridge running. Set

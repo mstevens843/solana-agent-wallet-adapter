@@ -7,6 +7,10 @@ interface ProviderExecutor {
     suspend fun reviewPlan(config: RuntimeConfig, payload: JSONObject): JSONObject
     suspend fun ask(config: RuntimeConfig, payload: JSONObject): JSONObject
     suspend fun localize(config: RuntimeConfig, payload: JSONObject): JSONObject
+
+    /** Native Plan-Connector chat — paired-bridge only (forwarded to the desktop's
+     *  /bridge/ai/chat). On-device providers reject it. */
+    suspend fun chat(config: RuntimeConfig, payload: JSONObject): JSONObject
 }
 
 class ProviderUnavailableException(val error: RuntimeError) : Exception(error.message)
@@ -25,6 +29,9 @@ class ScaffoldProviderExecutor : ProviderExecutor {
 
     override suspend fun localize(config: RuntimeConfig, payload: JSONObject): JSONObject =
         throw unavailable("localize")
+
+    override suspend fun chat(config: RuntimeConfig, payload: JSONObject): JSONObject =
+        throw unavailable("chat")
 
     private fun unavailable(method: String): ProviderUnavailableException =
         ProviderUnavailableException(

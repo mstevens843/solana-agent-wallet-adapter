@@ -50,6 +50,12 @@ class DeviceAgentProviderExecutor internal constructor(
     override suspend fun localize(config: RuntimeConfig, payload: JSONObject): JSONObject =
         execute(config) { it.localize(payload) }
 
+    // Chat is paired-bridge only: providerFor() returns the bridge relay provider for
+    // a paired config (which forwards /bridge/ai/chat); on-device providers inherit
+    // DeviceAgentProvider.chat's default-throw.
+    override suspend fun chat(config: RuntimeConfig, payload: JSONObject): JSONObject =
+        execute(config) { it.chat(payload) }
+
     private suspend fun execute(
         config: RuntimeConfig,
         block: suspend (DeviceAgentProvider) -> JSONObject,

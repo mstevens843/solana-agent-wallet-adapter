@@ -945,6 +945,38 @@ describe('render web hosted BYOK API', () => {
     });
   });
 
+  it('streams hosted BYOK agent chat requests through the same-origin API', async () => {
+    const providerCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      providerCalls.push({ url: String(url), init });
+      return sseResponse([
+        'data: {"choices":[{"delta":{"content":"Use "}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":"the card below."}}]}\n\n',
+        'data: [DONE]\n\n',
+      ].join(''));
+    }));
+
+    await withServer(async (port, ctx) => {
+      const response = await postText(port, '/api/ai/chat/stream', {
+        settings: {
+          provider: 'openai',
+          model: 'gpt-5',
+          apiKey: 'sk-test-openai',
+        },
+        request: {
+          messages: [{ role: 'user', content: 'Prepare a visible wallet request.' }],
+        },
+      }, { cookie: ctx.cookie });
+
+      expect(response.status).toBe(200);
+      expect(String(response.headers['content-type'])).toContain('text/event-stream');
+      expect(response.body).toContain(': open');
+      expect(response.body).toContain('data: {"type":"token","text":"Use "}');
+      expect(response.body).toContain('data: {"type":"done"');
+      expect(providerCalls[0]?.url).toBe('https://api.openai.com/v1/chat/completions');
+    });
+  });
+
   it('rejects hosted AI review wallet addresses that do not match the signed-in session', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
@@ -1653,6 +1685,41 @@ function postJson(
   });
 }
 
+function postText(
+  port: number,
+  path: string,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Promise<TextResponse> {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const req = httpRequest({
+      hostname: '127.0.0.1',
+      port,
+      path,
+      method: 'POST',
+      headers: {
+        ...headers,
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(payload),
+      },
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+      res.on('error', reject);
+      res.on('end', () => {
+        resolve({
+          status: res.statusCode ?? 0,
+          body: Buffer.concat(chunks).toString('utf8'),
+          headers: res.headers,
+        });
+      });
+    });
+    req.on('error', reject);
+    req.end(payload);
+  });
+}
+
 function putJson(
   port: number,
   path: string,
@@ -1755,6 +1822,13 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { 'content-type': 'application/json' },
+  });
+}
+
+function sseResponse(body: string, status = 200): Response {
+  return new Response(body, {
+    status,
+    headers: { 'content-type': 'text/event-stream; charset=utf-8' },
   });
 }
 

@@ -70,6 +70,7 @@ export interface CloudWorkspaceDeleteCounts {
   signalSubscriptions: number;
   signalEmissions: number;
   aggregatorSnapshots: number;
+  chatSessions: number;
 }
 
 export const emptyCloudWorkspaceDeleteCounts = (): CloudWorkspaceDeleteCounts => ({
@@ -93,6 +94,7 @@ export const emptyCloudWorkspaceDeleteCounts = (): CloudWorkspaceDeleteCounts =>
   signalSubscriptions: 0,
   signalEmissions: 0,
   aggregatorSnapshots: 0,
+  chatSessions: 0,
 });
 
 export interface CloudWorkspaceDeleteStore {
@@ -124,6 +126,46 @@ export interface CloudPreferencesStore {
   listPreferences(walletAddress: string, namespaces?: CloudPreferenceNamespace[]): Promise<CloudPreferenceRecord[]>;
   getPreference(walletAddress: string, namespace: CloudPreferenceNamespace): Promise<CloudPreferenceRecord | undefined>;
   savePreference(walletAddress: string, record: CloudPreferenceRecord): Promise<CloudPreferenceRecord>;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Chat history cloud sync. One row per (wallet, session). `messagesLz` is an
+// opaque client-compressed (LZString) blob the server never decompresses — the
+// list query returns metadata only so the session list loads cheaply and full
+// messages are fetched/decompressed lazily when a chat is opened.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface ChatSessionMetaRecord {
+  sessionId: string;
+  title: string;
+  cluster: string;
+  messageCount: number;
+  version: number;
+  schemaVersion: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ChatSessionRecord extends ChatSessionMetaRecord {
+  messagesLz: string;
+}
+
+export interface ChatHistoryStore {
+  listChatSessions(walletAddress: string): Promise<ChatSessionMetaRecord[]>;
+  getChatSession(walletAddress: string, sessionId: string): Promise<ChatSessionRecord | undefined>;
+  saveChatSession(walletAddress: string, record: ChatSessionRecord): Promise<ChatSessionMetaRecord>;
+  deleteChatSession(walletAddress: string, sessionId: string): Promise<boolean>;
+  clearChatSessions(walletAddress: string): Promise<number>;
+}
+
+export function isChatHistoryStore(value: unknown): value is ChatHistoryStore {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<ChatHistoryStore>;
+  return typeof candidate.listChatSessions === 'function'
+    && typeof candidate.getChatSession === 'function'
+    && typeof candidate.saveChatSession === 'function'
+    && typeof candidate.deleteChatSession === 'function'
+    && typeof candidate.clearChatSessions === 'function';
 }
 
 export interface WorkflowStore {

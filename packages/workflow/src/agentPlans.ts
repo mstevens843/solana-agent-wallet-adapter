@@ -174,14 +174,44 @@ export interface AgentChatSection {
   bullets: string[];
 }
 
+// A structured wallet action the chat agent proposes for the user's approval.
+// The agent NEVER signs — the frontend turns this into a PreparedAction and
+// renders the existing approval card with an explicit Approve button. All
+// recipient addresses and token mints must be resolved from a read/evidence
+// tool result or explicit user input, never invented from chat prose.
+export interface AgentChatProposedAction {
+  kind: string;
+  summary: string;
+  params: Record<string, unknown>;
+  note?: string;
+  cluster?: string;
+  resolution?: {
+    recipientSource?: 'evidence' | 'user_input' | 'chat_text_alone';
+    tokenMintSource?: 'evidence' | 'user_input' | 'chat_text_alone';
+    evidenceRefs?: string[];
+  };
+  requiresApproval: boolean;
+}
+
 export interface AgentChatResult {
   answer: string;
   sections?: AgentChatSection[];
   next?: string;
   citations?: Array<{ kind: string; ref: string; title?: string }>;
+  proposedAction?: AgentChatProposedAction;
   checkedAt: string;
   source: 'ai';
 }
+
+// Server-sent events streamed from POST /api/ai/chat/stream. Shared by the
+// server (emitter) and the browser transport (parser) so the contract stays
+// in lock-step.
+export type AgentChatStreamEvent =
+  | { type: 'token'; text: string }
+  | { type: 'tool_status'; tool: string; phase: 'start' | 'done'; label?: string; callId?: string }
+  | { type: 'proposal'; proposal: AgentChatProposedAction }
+  | { type: 'error'; message: string }
+  | { type: 'done'; result: AgentChatResult };
 
 export const SHARED_AGENT_PLAN_SAFEGUARDS = [
   'Wallet approval is required before any signature or transaction leaves the device.',

@@ -1,6 +1,9 @@
 import type {
   AggregatorSnapshotStoreRecord,
   AggregatorStore,
+  ChatHistoryStore,
+  ChatSessionMetaRecord,
+  ChatSessionRecord,
   CloudPreferenceNamespace,
   CloudPreferenceRecord,
   CloudPreferencesStore,
@@ -46,7 +49,7 @@ export interface AgentPolicyState {
   version: number;
 }
 
-export class MemoryWorkflowStore implements SessionWorkflowStore, OneTimeWorkflowStore, EvidenceStore, CloudWorkspaceDeleteStore, CloudPreferencesStore, AgentPolicyStore, SkillsStore, SignalsStore, AggregatorStore {
+export class MemoryWorkflowStore implements SessionWorkflowStore, OneTimeWorkflowStore, EvidenceStore, CloudWorkspaceDeleteStore, CloudPreferencesStore, ChatHistoryStore, AgentPolicyStore, SkillsStore, SignalsStore, AggregatorStore {
   private readonly nonces = new Map<string, AuthNonceRecord>();
   private readonly sessions = new Map<string, WalletSessionRecord>();
   private readonly auditEvents = new Map<string, AuditEventRecord[]>();
@@ -56,6 +59,7 @@ export class MemoryWorkflowStore implements SessionWorkflowStore, OneTimeWorkflo
   private readonly finalizations = new Map<string, TransactionFinalizationRecord>();
   private readonly evidenceReceipts = new Map<string, EvidenceReceiptRecord>();
   private readonly preferences = new Map<string, CloudPreferenceRecord>();
+  private readonly chatSessions = new Map<string, ChatSessionRecord & { walletAddress: string }>();
   // Layer 2 Skills Hub maps.
   private readonly skillManifests = new Map<string, SkillManifestStoreRecord>();
   private readonly skillInstalls = new Map<string, SkillInstallStoreRecord>();
@@ -206,6 +210,53 @@ export class MemoryWorkflowStore implements SessionWorkflowStore, OneTimeWorkflo
     return clone(stored);
   }
 
+  async listChatSessions(walletAddress: string): Promise<ChatSessionMetaRecord[]> {
+    // Wallet isolation + metadata only: chatSessionMeta() drops messagesLz so the
+    // opaque blob is never returned by the list (parity with the Postgres SELECT).
+    return [...this.chatSessions.values()]
+      .filter((record) => record.walletAddress === walletAddress)
+      .map((record) => chatSessionMeta(record))
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .slice(0, 500); // bound the metadata list (parity with the Postgres LIMIT)
+  }
+
+  async getChatSession(walletAddress: string, sessionId: string): Promise<ChatSessionRecord | undefined> {
+    // Wallet isolation: the key is wallet-scoped AND we re-check walletAddress so
+    // one wallet can never read another's session.
+    const record = this.chatSessions.get(chatSessionKey(walletAddress, sessionId));
+    if (!record || record.walletAddress !== walletAddress) return undefined;
+    const { walletAddress: _omit, ...rest } = clone(record);
+    return rest;
+  }
+
+  async saveChatSession(walletAddress: string, record: ChatSessionRecord): Promise<ChatSessionMetaRecord> {
+    const key = chatSessionKey(walletAddress, record.sessionId);
+    const existing = this.chatSessions.get(key);
+    // Last-writer-wins by updatedAt (parity with the Postgres upsert guard): a
+    // stale write (older updatedAt) does not overwrite a newer stored copy.
+    if (existing && existing.walletAddress === walletAddress && existing.updatedAt > record.updatedAt) {
+      return chatSessionMeta(existing);
+    }
+    const stored = { ...clone(record), walletAddress };
+    this.chatSessions.set(key, stored);
+    return chatSessionMeta(stored);
+  }
+
+  async deleteChatSession(walletAddress: string, sessionId: string): Promise<boolean> {
+    return this.chatSessions.delete(chatSessionKey(walletAddress, sessionId));
+  }
+
+  async clearChatSessions(walletAddress: string): Promise<number> {
+    let removed = 0;
+    for (const [key, record] of [...this.chatSessions.entries()]) {
+      if (record.walletAddress === walletAddress) {
+        this.chatSessions.delete(key);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+
   async listApprovals(walletAddress: string): Promise<ApprovalRequestRecord[]> {
     return [...this.approvals.values()]
       .filter((record) => record.walletAddress === walletAddress)
@@ -321,6 +372,7 @@ export class MemoryWorkflowStore implements SessionWorkflowStore, OneTimeWorkflo
     counts.auditEvents = this.auditEvents.get(walletAddress)?.length ?? 0;
     this.auditEvents.delete(walletAddress);
     counts.preferences = deleteOwned(this.preferences, (_record, key) => key.startsWith(`${walletAddress}:`));
+    counts.chatSessions = deleteOwned(this.chatSessions, (record) => record.walletAddress === walletAddress);
     counts.plans = deleteOwned(this.plans, (record) => record.walletAddress === walletAddress);
     counts.approvals = deleteOwned(this.approvals, (record) => record.walletAddress === walletAddress);
     counts.completedRecords = deleteOwned(this.completed, (record) => record.walletAddress === walletAddress);
@@ -525,6 +577,24 @@ function ownerClone<T extends { walletAddress: string }>(record: T | undefined, 
 
 function preferenceKey(walletAddress: string, namespace: CloudPreferenceNamespace): string {
   return `${walletAddress}:${namespace}`;
+}
+
+function chatSessionKey(walletAddress: string, sessionId: string): string {
+  // NUL separator so a wallet that is a prefix of another can't collide.
+  return `${walletAddress}\u0000${sessionId}`;
+}
+
+function chatSessionMeta(record: ChatSessionRecord & { walletAddress: string }): ChatSessionMetaRecord {
+  return {
+    sessionId: record.sessionId,
+    title: record.title,
+    cluster: record.cluster,
+    messageCount: record.messageCount,
+    version: record.version,
+    schemaVersion: record.schemaVersion,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
 }
 
 function deleteOwned<T>(records: Map<string, T>, predicate: (record: T, key: string) => boolean): number {

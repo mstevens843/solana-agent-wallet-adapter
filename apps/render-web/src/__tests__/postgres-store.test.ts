@@ -943,6 +943,7 @@ class FakePgClient implements PgClient {
       case 'cloudWorkspace.preferences.delete':
         return countResult(deleteMapEntries(this.preferences, (row) => row.wallet_address === values[0]));
 
+      case 'cloudWorkspace.chatSessions.delete':
       case 'cloudWorkspace.recurringNotifications.delete':
       case 'cloudWorkspace.finalizations.delete':
       case 'cloudWorkspace.completed.delete':

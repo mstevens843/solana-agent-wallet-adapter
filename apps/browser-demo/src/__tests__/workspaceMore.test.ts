@@ -9,8 +9,11 @@ import {
 } from '../workspaceMore.js';
 
 describe('workspace More menu items', () => {
-  it('keeps the four product More entries even when no tabs have registered yet', () => {
+  it('keeps the product More entries (incl. Repeat Payments) even when no tabs have registered yet', () => {
+    // Repeat Payments (schedule) is demoted into the desktop More menu so the
+    // Chat tab can take its slot in the main bar.
     expect(workspaceMoreMenuItems([])).toEqual([
+      { id: 'schedule', label: 'Repeat Payments' },
       { id: 'labs', label: 'Save Proof' },
       { id: 'agent-protocols', label: 'Agent Payments' },
       { id: 'skills', label: 'Skills' },
@@ -36,6 +39,7 @@ describe('workspace More menu items', () => {
   it('keeps the mobile More order with preferences first and sessions last', () => {
     expect(mobileWorkspaceMoreMenuItems([])).toEqual([
       { id: 'preferences', label: 'Preferences' },
+      { id: 'completed', label: 'Done' },
       { id: 'schedule', label: 'Repeat Payments' },
       { id: 'labs', label: 'Save Proof' },
       { id: 'agent-protocols', label: 'Agent Payments' },

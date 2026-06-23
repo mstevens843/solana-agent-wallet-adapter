@@ -148,6 +148,7 @@ class RequestQueue(
                 RuntimeMethod.REVIEW_PLAN -> executor.reviewPlan(config, request.payload)
                 RuntimeMethod.ASK -> executor.ask(config, request.payload)
                 RuntimeMethod.LOCALIZE -> executor.localize(config, request.payload)
+                RuntimeMethod.CHAT -> executor.chat(config, request.payload)
             }
             // Mirror cloud-side aiPlanner.applyServerSideReviewSafety: enforce
             // policyBundle.hasBlockingFailure on BYOK paths where the LLM call

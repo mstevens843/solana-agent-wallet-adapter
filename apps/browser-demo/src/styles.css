@@ -20088,8 +20088,11 @@ button.danger:hover:not(:disabled) {
   overflow-wrap: anywhere;
 }
 
-.route-app .workspace-intro[data-layout="app-intro"] p {
-  max-width: 760px;
+@media (min-width: 641px) {
+  .route-app:not(.android-shell):not(.ios-native-shell) .workspace-intro[data-layout="app-intro"] p {
+    max-width: none;
+    white-space: nowrap;
+  }
 }
 
 .route-app .workspace.public-workspace[data-layout="app-shell"] {
@@ -20105,7 +20108,14 @@ button.danger:hover:not(:disabled) {
   align-content: start;
   display: grid;
   gap: 12px;
-  max-height: calc(100dvh - var(--app-nav-h) - 48px);
+  /* Grow with content (matches the mobile override below). The old
+     `max-height: calc(100dvh - …)` + `overflow: visible` combo capped the box
+     height but did NOT clip, so an expanded AI-connector panel spilled OUTSIDE
+     the rail's bottom. Letting the rail size to its content makes the column —
+     and the page — stretch to fit, so the panel stays contained and the chat
+     composer tracks the page bottom. (Web/desktop only; the mobile/native rail
+     already uses max-height:none.) */
+  max-height: none;
   overflow: visible;
   padding: var(--app-panel-pad);
   position: relative;
@@ -34685,4 +34695,342 @@ button.danger:hover:not(:disabled) {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   justify-items: center;
+}
+
+/* =========================================================================
+   Chat tab — ChatGPT-style conversational surface
+   ========================================================================= */
+.chat-surface {
+  display: flex;
+  flex-direction: column;
+  /* Reserve enough non-transcript chrome (global header/tabs above + composer and
+     disclaimer below) so the sticky composer stays fully inside the panel and
+     never overlaps page content beneath it. */
+  height: calc(100dvh - 252px);
+  min-height: 460px;
+}
+.chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 2px 4px 10px;
+  border-bottom: 1px solid var(--line);
+}
+.chat-header .chat-title {
+  font-size: 0.92rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-header-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+.chat-header-actions button {
+  font-size: 0.78rem;
+  padding: 6px 10px;
+  min-height: var(--btn-min-h-sm);
+  border-radius: var(--radius);
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--text);
+}
+.chat-header-actions button:hover { border-color: var(--accent); }
+.chat-header-actions button.danger { color: var(--danger); border-color: var(--danger-soft); }
+
+.chat-sessions { position: relative; min-width: 0; }
+.chat-history-trigger {
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  padding: 6px 10px;
+  min-height: var(--btn-min-h-sm);
+  border-radius: var(--radius);
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--text);
+}
+.chat-history-trigger:hover { border-color: var(--accent); }
+.chat-sessions-caret { color: var(--dim); font-size: 0.7rem; }
+.chat-sessions-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  left: auto;
+  min-width: 240px;
+  max-width: 360px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--surface-strong);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 6px;
+  z-index: 30;
+  box-shadow: var(--shadow);
+}
+.chat-session-row { display: flex; align-items: center; gap: 2px; border-radius: 6px; }
+.chat-session-row.active { background: var(--accent-soft); }
+.chat-session-open {
+  flex: 1;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  padding: 8px 10px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-height: var(--btn-min-h-sm);
+  font: inherit;
+}
+.chat-session-open:hover { color: var(--accent); }
+.chat-session-del { background: transparent; border: 0; color: var(--dim); cursor: pointer; padding: 4px 9px; font-size: 1rem; line-height: 1; }
+.chat-session-del:hover { color: var(--danger); }
+
+.chat-transcript {
+  flex: 1;
+  overflow-y: auto;
+  /* Generous bottom padding so the last message clears the sticky composer and
+     auto-scroll-to-bottom leaves breathing room instead of pinning it under the
+     input box. */
+  padding: 16px 6px 24px;
+  scroll-padding-bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  scroll-behavior: smooth;
+  /* Keep transcript scroll from bouncing the whole page/body on iOS WebView. */
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.chat-msg { max-width: 80ch; line-height: 1.55; color: var(--text); }
+/* The inline approval card is the wider approval-rail component; constrain it to
+   the bubble so it can't overflow horizontally on narrow phones. */
+.chat-card { min-width: 0; max-width: 100%; }
+.chat-card > * { min-width: 0; max-width: 100%; }
+.chat-msg.user {
+  align-self: flex-end;
+  background: var(--surface-strong);
+  border: 1px solid var(--line);
+  border-radius: 14px 14px 4px 14px;
+  padding: 10px 14px;
+  max-width: 72%;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.chat-msg.assistant { align-self: stretch; display: flex; gap: 12px; }
+.chat-msg.assistant .chat-avatar {
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  margin-top: 2px;
+}
+.chat-msg.assistant .chat-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.chat-msg.assistant .chat-text { white-space: pre-wrap; word-break: break-word; }
+.chat-msg.assistant .chat-text ul,
+.chat-msg.assistant .chat-text ol { margin: 4px 0; padding-left: 20px; white-space: normal; }
+.chat-msg.assistant .chat-text li { margin: 2px 0; }
+.chat-msg.assistant .chat-text code { background: var(--surface-muted); padding: 1px 5px; border-radius: 4px; font-size: 0.88em; }
+.chat-msg.assistant .chat-text a { color: var(--accent); text-decoration: underline; }
+.chat-msg.assistant.streaming .chat-text::after {
+  content: "▌";
+  color: var(--accent);
+  margin-left: 1px;
+  animation: chatCaret 1s steps(2) infinite;
+}
+.chat-msg.assistant.error .chat-text { color: var(--danger); }
+.chat-tools { display: flex; flex-wrap: wrap; gap: 4px; }
+.chat-tools:empty { display: none; }
+@keyframes chatCaret { 50% { opacity: 0; } }
+/* Respect reduced-motion: show a steady caret instead of the blink (WCAG 2.3.3). */
+@media (prefers-reduced-motion: reduce) {
+  .chat-msg.assistant.streaming .chat-text::after { animation: none; }
+}
+
+.chat-tool-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 8px 2px 0;
+  padding: 3px 9px;
+  font-size: 0.72rem;
+  color: var(--muted);
+  background: var(--accent-soft);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.chat-tool-chip.running::before {
+  content: "";
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: chatCaret 0.9s ease-in-out infinite;
+}
+.chat-tool-chip.done { opacity: 0.7; }
+
+.chat-empty { margin: auto; text-align: center; color: var(--muted); max-width: 540px; padding: 24px 8px; }
+.chat-empty .chat-empty-mark {
+  width: 40px; height: 40px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  margin: 0 auto 14px;
+}
+.chat-empty h3 { color: var(--text); font-size: 1.15rem; margin: 0 0 6px; }
+.chat-suggest-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 20px; }
+.chat-suggest {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  min-height: var(--btn-min-h);
+  font: inherit;
+}
+.chat-suggest:hover { border-color: var(--accent); background: var(--surface-strong); }
+
+.chat-composer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--surface-strong);
+  margin: 10px 4px 6px;
+}
+.chat-composer:focus-within { border-color: var(--accent); }
+.chat-input {
+  flex: 1;
+  resize: none;
+  max-height: 168px;
+  min-height: 24px;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  font: inherit;
+  /* Explicit >=16px: `font: inherit` (class specificity) otherwise beats the
+     global mobile `textarea { font-size }` rule, so iOS WKWebView would zoom the
+     page on focus. --font-min is 16px. */
+  font-size: var(--font-min);
+  outline: none;
+  padding: 9px 4px;
+  line-height: 1.5;
+}
+.chat-plus { position: relative; flex: 0 0 auto; }
+.chat-plus-btn,
+.chat-send {
+  width: var(--btn-min-h);
+  height: var(--btn-min-h);
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+.chat-plus-btn:hover { border-color: var(--accent); }
+.chat-send { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.chat-send:hover:not(:disabled) { background: #52ca91; box-shadow: 0 0 18px rgba(63, 189, 131, 0.3); }
+.chat-send:disabled { opacity: 0.45; cursor: not-allowed; }
+.chat-send.chat-stop { background: var(--surface); border-color: var(--line-strong); color: var(--text); font-size: 0.8rem; }
+.chat-send.chat-stop:hover { border-color: var(--danger); color: var(--danger); box-shadow: none; }
+.chat-plus-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  min-width: 300px;
+  max-width: 360px;
+  background: var(--surface-strong);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 6px;
+  display: none;
+  flex-direction: column;
+  gap: 4px;
+  z-index: 30;
+  box-shadow: var(--shadow);
+}
+/* On narrow phones a 300px min-width menu overflows the right edge; clamp to the viewport. */
+@media (max-width: 480px) {
+  .chat-plus-menu { min-width: 0; width: max-content; max-width: calc(100vw - 24px); }
+}
+.chat-plus-menu.open { display: flex; }
+.chat-plus-group {
+  color: rgba(196, 205, 202, 0.56);
+  font-size: 0.64rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  padding: 6px 6px 2px;
+  text-transform: uppercase;
+}
+.chat-plus-menu .chat-plus-option {
+  display: grid;
+  gap: 3px;
+  align-items: start;
+  background: rgba(255, 255, 255, 0.026);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 9px 11px;
+  text-align: left;
+  white-space: normal;
+  width: 100%;
+  cursor: pointer;
+  color: var(--text);
+  font: inherit;
+}
+.chat-plus-menu .chat-plus-option:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(224, 230, 226, 0.17);
+}
+.chat-plus-eyebrow {
+  color: rgba(196, 205, 202, 0.56);
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+.chat-plus-menu .chat-plus-option strong { color: var(--text); font-size: 0.92rem; line-height: 1.2; }
+.chat-plus-menu .chat-plus-option em { color: var(--muted); font-size: 0.76rem; font-style: normal; line-height: 1.3; }
+.chat-disclaimer { text-align: center; color: var(--dim); font-size: 0.72rem; padding: 0 0 6px; }
+
+.chat-msg .inbox-approval-card { margin-top: 10px; }
+
+@media (max-width: 760px) {
+  .chat-suggest-grid { grid-template-columns: 1fr; }
+  .chat-msg.user { max-width: 88%; }
+  .chat-surface { height: calc(100dvh - 220px); }
+}
+
+/* On mobile + native shells, reserve the larger of the bottom tab dock or the
+   on-screen keyboard so the composer always floats above whichever is present,
+   plus the top safe-area (notch). --chat-keyboard-inset is ~0 when the WebView
+   resizes for the keyboard and the keyboard height in overlay mode (set in JS).
+   The 120px is the non-scrollable chrome above/below the transcript: the chat
+   header (~49px) + the composer (~71px collapsed incl. its 10px/6px margins).
+   Top + bottom safe-areas are handled elsewhere (the mobile content container
+   pads --mobile-nav-safe-top; --bottom-dock-clearance already includes
+   env(safe-area-inset-bottom)) — do NOT add env() here or it double-pads.
+   Worth a final on-device tweak if the composer sits a hair high/low. */
+@media (max-width: 900px) {
+  .route-app .chat-surface {
+    height: calc(
+      100dvh
+      - var(--mobile-nav-safe-top, 0px)
+      - 120px
+      - max(var(--bottom-dock-clearance), var(--chat-keyboard-inset, 0px))
+    );
+    min-height: 240px;
+  }
+  .route-app .chat-composer { margin-bottom: 10px; }
 }

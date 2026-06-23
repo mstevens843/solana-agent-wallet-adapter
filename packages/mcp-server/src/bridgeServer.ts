@@ -10,6 +10,7 @@ import {
 } from '@solana-agent-wallet-adapter/core';
 import { IosLinkBackend } from '@solana-agent-wallet-adapter/ios-link';
 import { Connection, PublicKey } from '@solana/web3.js';
+import type { AgentChatStreamEvent } from '@solana-agent-wallet-adapter/workflow';
 
 import {
   AgentWalletActionService,
@@ -972,6 +973,20 @@ async function handleRequest(
         aiPlanner.chat(await bridgeChatRequestWithOptionalWallet(backend, await readJson(req))));
       return;
     }
+    if (req.method === 'POST' && url.pathname === '/bridge/ai/chat/stream') {
+      const controller = new AbortController();
+      res.on('close', () => {
+        if (!res.writableEnded) controller.abort();
+      });
+      await writeChatSse(res, async (emit) => {
+        await aiPlanner.chatStream(
+          await bridgeChatRequestWithOptionalWallet(backend, await readJson(req)),
+          emit,
+          controller.signal,
+        );
+      });
+      return;
+    }
     if (req.method === 'GET' && url.pathname === '/bridge/action/status') {
       writeJson(res, 200, await requireActionService(actionService).walletStatus());
       return;
@@ -1655,6 +1670,7 @@ function requiredTier(method: string, pathname: string): AgentTier | null {
     if (pathname === '/bridge/ai/review-plan') return 'capped';
     if (pathname === '/bridge/ai/ask-about-plan') return 'capped';
     if (pathname === '/bridge/ai/chat') return 'capped';
+    if (pathname === '/bridge/ai/chat/stream') return 'capped';
     if (pathname === '/bridge/ai/session-key') return 'full';
     if (pathname === '/bridge/recurring-payments/update') return 'full';
     if (pathname === '/bridge/recurring-payments/pause') return 'full';
@@ -2078,6 +2094,40 @@ async function writeJsonWithKeepalive(
     endWith({ error: protocolErr.toPayload() });
   } finally {
     clearInterval(heartbeat);
+  }
+}
+
+async function writeChatSse(
+  res: ServerResponse,
+  run: (emit: (event: AgentChatStreamEvent) => void | Promise<void>) => Promise<void>,
+): Promise<void> {
+  res.statusCode = 200;
+  res.setHeader('content-type', 'text/event-stream; charset=utf-8');
+  res.setHeader('cache-control', 'no-cache, no-transform');
+  res.setHeader('connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  const heartbeat = setInterval(() => {
+    if (!res.writableEnded && !res.destroyed) res.write(': ping\n\n');
+  }, aiKeepaliveIntervalMs());
+  heartbeat.unref?.();
+
+  const emit = async (event: AgentChatStreamEvent): Promise<void> => {
+    if (res.writableEnded || res.destroyed) return;
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+  };
+
+  try {
+    await run(emit);
+  } catch (err) {
+    const message = err instanceof ProtocolError
+      ? err.toPayload().message
+      : 'Bridge chat stream failed.';
+    await emit({ type: 'error', message });
+    await emit({ type: 'done', result: { answer: '', checkedAt: new Date().toISOString(), source: 'ai' } });
+  } finally {
+    clearInterval(heartbeat);
+    if (!res.writableEnded && !res.destroyed) res.end('data: [DONE]\n\n');
   }
 }
 

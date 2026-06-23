@@ -8,6 +8,7 @@
   "scripts": {
     "build": "pnpm -F @solana-agent-wallet-adapter/core build && pnpm -F @solana-agent-wallet-adapter/ios-link build && pnpm -F @solana-agent-wallet-adapter/wallet-standard-web build && pnpm -F @solana-agent-wallet-adapter/mwa-mobile-web build && pnpm -F @solana-agent-wallet-adapter/embedded-wallet build && pnpm -F @solana-agent-wallet-adapter/walletconnect-solana build && pnpm -F @solana-agent-wallet-adapter/ledger-wallet build && pnpm -F @solana-agent-wallet-adapter/a2a-agent-card build && pnpm -F @solana-agent-wallet-adapter/acp-adapter build && pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/skills-runtime build && pnpm -F @solana-agent-wallet-adapter/launch-skills build && node scripts/check-demo-i18n.mjs && vite build && node scripts/prerender-legal.mjs",
     "dev": "pnpm -F @solana-agent-wallet-adapter/a2a-agent-card build && pnpm -F @solana-agent-wallet-adapter/acp-adapter build && pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/skills-runtime build && pnpm -F @solana-agent-wallet-adapter/launch-skills build && pnpm -F @solana-agent-wallet-adapter/ledger-wallet build && vite --host 127.0.0.1",
+    "dev:cloud": "pnpm -F @solana-agent-wallet-adapter/render-web build && PORT=3001 node ../render-web/dist/server.js",
     "test": "vitest run",
     "demo:i18n:check": "node scripts/check-demo-i18n.mjs",
     "demo:i18n:generate": "node scripts/generate-demo-i18n.mjs",
@@ -37,6 +38,7 @@
     "@solana/web3.js": "^1.95.0",
     "@walletconnect/sign-client": "^2.23.9",
     "bs58": "^6.0.0",
+    "lz-string": "^1.5.0",
     "qrcode": "^1.5.4",
     "tweetnacl": "^1.0.3"
   },
