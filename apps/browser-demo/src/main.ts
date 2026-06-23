@@ -20815,6 +20815,7 @@ function closeChatActionSheet(): void {
   if (state.activeMobileRailSheet === 'chat-action') state.activeMobileRailSheet = null;
   chatSheetTokenOpen = null;
   chatSheetNoteOpen = false;
+  chatActionPopoverOpen = false;
 }
 
 // Hydrate logos for the token LIST lazily (chat is not in the standard
@@ -20841,51 +20842,10 @@ function ensureChatTokenLogos(): void {
     .catch(() => undefined);
 }
 
-// The chip builder bar (above the textarea) for swap/send/sign. Each chip opens a
-// picker; the recipient/statement are inline inputs. Bound in bindChat with explicit
-// click->state->render handlers (WebView controls need that, not <details>).
-function chatBuilderBarHtml(): string {
-  const b = state.chatActionBuilder;
-  if (!b || (b.kind !== 'swap' && b.kind !== 'send' && b.kind !== 'sign')) return '';
-  const chip = (field: ChatPickerField, label: string): string =>
-    `<button type="button" class="chat-chip${state.chatActionPicker?.field === field ? ' open' : ''}" data-chat-chip="${field}" aria-haspopup="true">${escapeHtml(label)}<span class="chat-chip-caret" aria-hidden="true">▾</span></button>`;
-  const toLabel = escapeHtml(t('to'));
-  const eyebrow = b.kind === 'swap' ? t('Swap') : b.kind === 'send' ? t('Send') : t('Sign Proof');
-  let middle: string;
-  if (b.kind === 'sign') {
-    // Sign has no picker — just a free-text statement input (works the same on web
-    // and mobile; the keyboard is handled in the composer area).
-    middle = `<span class="chat-chip-fixed">${escapeHtml(t('Sign a proof that'))}</span><input type="text" class="chat-chip-input chat-statement-input" data-chat-chip-statement placeholder="${escapeHtml(t('Statement to attest'))}" value="${escapeHtml(b.statement ?? '')}" autocomplete="off" spellcheck="false" />`;
-  } else {
-    const amountChip = chip('amount', chatBuilderAmountLabel(b));
-    const fromChip = chip('fromToken', chatBuilderTokenLabel(b.fromToken, 'SOL'));
-    if (b.kind === 'swap') {
-      middle = `${amountChip}${fromChip}<span class="chat-chip-fixed">${toLabel}</span>${chip('toToken', chatBuilderTokenLabel(b.toToken, t('Pick token')))}${chip('slippage', chatBuilderSlippageLabel(b))}`;
-    } else {
-      const recip = `<input type="text" class="chat-chip-input" data-chat-chip-recipient placeholder="${escapeHtml(t('Recipient address'))}" value="${escapeHtml(b.recipient ?? '')}" autocomplete="off" spellcheck="false" />`;
-      middle = `${amountChip}${fromChip}<span class="chat-chip-fixed">${toLabel}</span>${recip}`;
-    }
-  }
-  // The picker is hosted in the bottom sheet on native mobile; only web/desktop
-  // render it inline as an upward popover anchored to the builder. (Sign has none.)
-  const picker = (!chatUsesSheet() && state.chatActionPicker)
-    ? state.chatActionPicker.field === 'amount'
-      ? chatAmountPickerHtml(b)
-      : state.chatActionPicker.field === 'slippage'
-        ? chatSlippagePickerHtml(b)
-        : chatTokenPickerHtml(state.chatActionPicker.field)
-    : '';
-  return `
-    <div class="chat-builder" data-chat-builder>
-      <div class="chat-builder-head">
-        <span class="chat-builder-eyebrow">${escapeHtml(eyebrow)}</span>
-        <button type="button" class="chat-builder-clear" data-chat-builder-clear aria-label="${escapeHtml(t('Clear'))}" title="${escapeHtml(t('Clear'))}">×</button>
-      </div>
-      <div class="chat-builder-chips">${middle}</div>
-      ${picker}
-    </div>
-  `;
-}
+// The desktop chip builder bar was retired in favour of the consolidated wallet-action
+// popover (chatActionPopoverHtml); the old per-chip picker renderers below it
+// (chatAmountPickerHtml / chatTokenPickerHtml / chatSlippagePickerHtml + the chip label
+// helpers) are now unreachable and can be removed in a follow-up cleanup.
 
 function chatBuilderSlippageLabel(b: ChatActionBuilder): string {
   const bps = b.slippageBps && b.slippageBps.trim() ? b.slippageBps.trim() : '';
@@ -21248,6 +21208,46 @@ function chatActionSheetFormHtml(b: ChatActionBuilder): string {
     </div>`;
 }
 
+// --- Web/desktop consolidated wallet-action popover --------------------------
+// One panel anchored above the composer that reuses the SAME field renderers as the
+// mobile sheet (no chip cascade). Swap/Send have no Confirm — the field handlers
+// live-compile into the composer; Sign reuses the proof builder (its own Confirm).
+let chatActionPopoverOpen = false;
+function chatActionPopoverHtml(): string {
+  if (chatUsesSheet()) return '';
+  const b = state.chatActionBuilder;
+  if (!b || !chatActionPopoverOpen) return '';
+  const title = b.kind === 'swap' ? t('Swap') : b.kind === 'send' ? t('Send') : t('Sign Proof');
+  const row = (cls: string, ...fields: string[]): string =>
+    `<div class="chat-popover-row${cls ? ` ${cls}` : ''}">${fields.join('')}</div>`;
+  let body: string;
+  if (b.kind === 'sign') {
+    body = chatProofSheetHtml();
+  } else if (b.kind === 'swap') {
+    body = `
+      <div class="chat-popover-fields">
+        ${row('pair', chatSheetTokenFieldHtml('fromToken', t('Input token')), chatSheetTokenFieldHtml('toToken', t('Output token')))}
+        ${row('pair', chatSheetAmountFieldHtml(b, t('Token amount')), chatSheetSlippageFieldHtml(b))}
+        ${row('', chatSheetNoteRowHtml(b))}
+      </div>`;
+  } else {
+    body = `
+      <div class="chat-popover-fields">
+        ${row('', chatSheetTextFieldHtml({ label: t('Recipient address'), value: b.recipient ?? '', placeholder: t('Recipient public key'), attr: 'data-chat-chip-recipient', mono: true }))}
+        ${row('pair', chatSheetTokenFieldHtml('fromToken', t('Token')), chatSheetAmountFieldHtml(b, t('Amount')))}
+        ${row('', chatSheetTextFieldHtml({ label: t('Memo / reason'), value: b.memo ?? '', placeholder: t('Invoice, friend payment, reimbursement'), attr: 'data-chat-memo-input' }))}
+      </div>`;
+  }
+  return `
+    <div class="chat-action-popover" data-chat-action-popover>
+      <div class="chat-popover-head">
+        <span class="chat-builder-eyebrow">${escapeHtml(title)}</span>
+        <button type="button" class="chat-builder-clear" data-chat-popover-close aria-label="${escapeHtml(t('Close'))}" title="${escapeHtml(t('Close'))}">&times;</button>
+      </div>
+      ${body}
+    </div>`;
+}
+
 // --- Chat proof / evidence sheet (native mobile) -----------------------------
 // The "Sign proof" action mirrors the New Request proof/evidence builder: two tabs
 // (Proof = outcome 'proof'; Evidence = outcome 'audit'), each with a dropdown over all
@@ -21268,7 +21268,14 @@ function chatSelectedProofTemplate(): AgentPlanTemplate | undefined {
 }
 function chatProofResetFields(template: AgentPlanTemplate): void {
   for (const key of Object.keys(chatProofFields)) delete chatProofFields[key];
-  for (const f of template.fields) chatProofFields[f.id] = f.defaultValue ?? '';
+  for (const f of template.fields) {
+    // Select values must stay the raw English enum so selectPicker matching, showWhen
+    // visibility, and planner cadence parsing keep working. Text/textarea prefills are
+    // user-facing editable copy, so translate them into the active UI language.
+    chatProofFields[f.id] = f.type === 'select'
+      ? (f.defaultValue ?? '')
+      : t(f.defaultValue ?? '');
+  }
 }
 function chatProofEnsureInit(): void {
   const current = chatSelectedProofTemplate();
@@ -21437,15 +21444,17 @@ function chatComposerHtml(): string {
     `;
   }
   return `
-    ${chatBuilderBarHtml()}
-    <form class="chat-composer" data-chat-composer>
-      <div class="chat-plus">
-        ${walletActionsBtn}
-        ${plusMenu}
-      </div>
-      ${textarea}
-      ${sendButton}
-    </form>
+    <div class="chat-composer-dock">
+      ${chatActionPopoverHtml()}
+      <form class="chat-composer" data-chat-composer>
+        <div class="chat-plus">
+          ${walletActionsBtn}
+          ${plusMenu}
+        </div>
+        ${textarea}
+        ${sendButton}
+      </form>
+    </div>
   `;
 }
 
@@ -21476,7 +21485,7 @@ let chatScrollPinned = true;
 let chatForceScrollBottom = false;
 let chatActiveTool: { tool: string; label: string } | null = null;
 let chatPlusClickAwayInstalled = false;
-let chatPickerClickAwayInstalled = false;
+let chatActionPopoverClickAwayInstalled = false;
 let chatHistoryClickAwayInstalled = false;
 let chatViewportListenersBound = false;
 let chatStreamLifecycleBound = false;
@@ -22640,6 +22649,7 @@ function restoreChatComposerAfterRender(): void {
 function resetChatActionBuilder(): void {
   state.chatActionBuilder = null;
   state.chatActionPicker = null;
+  chatActionPopoverOpen = false;
 }
 
 // Recompile the active builder into the draft and mirror it into the live
@@ -22712,44 +22722,37 @@ function handleChatPowerAction(id: string): void {
     return;
   }
 
-  // Native mobile: picking an action closes the Wallet Actions sheet so the seeded
-  // builder chips become visible in the composer.
-  closeChatActionSheet();
+  // Web/desktop: picking an action opens ONE consolidated popover above the composer.
+  // Reuse a same-kind builder so re-opening shows current values; the field handlers
+  // live-compile into the composer (no Confirm here).
   if (isBuilder) {
-    // Seed the builder; its compiled grammar prefills the textarea (source of truth).
-    state.chatActionBuilder = defaultBuilderFor(id);
+    if (state.chatActionBuilder?.kind !== id) state.chatActionBuilder = defaultBuilderFor(id);
+    if ((id === 'swap' || id === 'send') && state.address) {
+      startWalletBalanceFullLoad(false, { openOverlay: false });
+      ensureChatTokenLogos();
+    }
+    chatSheetTokenOpen = null;
+    chatActionPopoverOpen = true;
     chatDraft = compileBuilderToDraft(state.chatActionBuilder);
     chatBuilderCompiledDraft = chatDraft;
-  } else {
-    state.chatActionBuilder = null;
-    chatDraft = t(action.template);
-  }
-  // Repaint so the builder bar appears, then focus its primary control.
-  render();
-  // Sign's editor is the statement input, not the textarea — focus it directly so
-  // the user can type the proof immediately.
-  if (id === 'sign') {
-    const stmt = document.querySelector<HTMLInputElement>('[data-chat-chip-statement]');
-    stmt?.focus({ preventScroll: true });
-    syncChatTextareaFromDraft();
+    render();
     return;
   }
+  // Freestyle template (no builder): seed the textarea and select the first placeholder.
+  state.chatActionBuilder = null;
+  chatActionPopoverOpen = false;
+  chatDraft = t(action.template);
+  render();
   const input = document.querySelector<HTMLTextAreaElement>('[data-chat-input]');
   if (!input) return;
   input.value = chatDraft;
   chatAutoGrow(input);
   input.focus({ preventScroll: true });
   try {
-    if (isBuilder) {
-      // Chips are the editor; cursor at end so a stray keystroke appends (and
-      // switches to freestyle) rather than replacing a placeholder bracket.
-      input.setSelectionRange(chatDraft.length, chatDraft.length);
-    } else {
-      const open = chatDraft.indexOf('[');
-      const close = chatDraft.indexOf(']');
-      if (open !== -1 && close > open) input.setSelectionRange(open, close + 1);
-      else input.setSelectionRange(chatDraft.length, chatDraft.length);
-    }
+    const open = chatDraft.indexOf('[');
+    const close = chatDraft.indexOf(']');
+    if (open !== -1 && close > open) input.setSelectionRange(open, close + 1);
+    else input.setSelectionRange(chatDraft.length, chatDraft.length);
   } catch { /* ignore */ }
 }
 
@@ -22806,11 +22809,11 @@ function bindChat(): void {
     input.addEventListener('input', () => {
       chatDraft = input.value;
       chatAutoGrow(input);
-      // If the user hand-edits the textarea so it diverges from what the chips
-      // compiled, the chips are stale — step aside (freestyle). Fires once.
+      // If the user hand-edits the textarea so it diverges from what the builder
+      // compiled, the builder is stale — step aside (freestyle). Fires once.
+      // resetChatActionBuilder also closes the desktop popover (clears its open flag).
       if (state.chatActionBuilder && chatDraft !== chatBuilderCompiledDraft) {
-        state.chatActionBuilder = null;
-        state.chatActionPicker = null;
+        resetChatActionBuilder();
         render();
       }
     });
@@ -22843,9 +22846,15 @@ function bindChat(): void {
   if (plusToggle) {
     plusToggle.addEventListener('click', (event) => {
       event.stopPropagation();
-      // Both web and native mobile: the Wallet Actions menu is an upward dropdown. Picking
-      // an action then opens its full-form sheet (native) or seeds the chip bar (desktop).
+      // The Wallet Actions menu is an upward dropdown; picking an action opens the sheet
+      // (native) or the consolidated popover (desktop).
       state.chatComposerOpen = !state.chatComposerOpen;
+      if (state.chatComposerOpen && chatActionPopoverOpen) {
+        // Don't stack the menu on top of the open popover — close the popover first.
+        chatActionPopoverOpen = false;
+        render();
+        return;
+      }
       plusMenu?.classList.toggle('open', state.chatComposerOpen);
       plusToggle.setAttribute('aria-expanded', state.chatComposerOpen ? 'true' : 'false');
     });
@@ -22967,6 +22976,12 @@ function bindChat(): void {
     applyChatBuilderDraft();
     state.chatActionPicker = null;
     closeChatActionSheet();
+    render();
+  });
+  // Web/desktop popover close (×): keep the builder + the live-compiled draft.
+  document.querySelector<HTMLButtonElement>('[data-chat-popover-close]')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    chatActionPopoverOpen = false;
     render();
   });
   // --- Amount unit pill ($ default / Token), % quick-fills, slippage pills, note ----
@@ -23324,19 +23339,23 @@ function bindChat(): void {
       document.querySelector('.chat-plus-menu')?.classList.remove('open');
     }, true);
   }
-  if (!chatPickerClickAwayInstalled) {
-    chatPickerClickAwayInstalled = true;
-    // Close an open chip picker on an outside tap (pointerdown capture, WebView-safe).
-    // Native mobile hosts the picker in the bottom sheet, whose scrim/Escape handle
-    // dismissal — skip this (a tap inside the sheet is "outside the builder").
+  if (!chatActionPopoverClickAwayInstalled) {
+    chatActionPopoverClickAwayInstalled = true;
+    // Close the desktop wallet-action popover on an outside tap or Escape. Clicks inside the
+    // dock (the popover, composer, and Wallet Actions all live there) keep it open; native
+    // mobile uses the bottom sheet, so skip there.
     window.addEventListener('pointerdown', (event) => {
-      if (chatUsesSheet()) return;
-      if (!state.chatActionPicker) return;
-      const wrap = document.querySelector('[data-chat-builder]');
-      if (wrap && event.target instanceof Node && wrap.contains(event.target)) return;
-      state.chatActionPicker = null;
+      if (chatUsesSheet() || !chatActionPopoverOpen) return;
+      const dock = document.querySelector('.chat-composer-dock');
+      if (dock && event.target instanceof Node && dock.contains(event.target)) return;
+      chatActionPopoverOpen = false;
       render();
     }, true);
+    window.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape' || chatUsesSheet() || !chatActionPopoverOpen) return;
+      chatActionPopoverOpen = false;
+      render();
+    });
   }
 }
 
@@ -26429,6 +26448,8 @@ function mobilePlannerFieldWidth(fieldDef: AgentPlanTemplateField): MobilePlanne
   if (fieldDef.id === 'protocol' || fieldDef.id === 'operation') return 'full';
   if (isRecipientTemplateField(fieldDef)) return 'full';
   if (fieldDef.id === 'intervalSeconds') return 'full';
+  // The amount control (pill + balance line + % quick-fills) is taller — give it a row.
+  if (isAmountControlField(fieldDef)) return 'full';
   if (isLongPlannerFieldId(id)) return 'full';
   if (isTokenSelectField(fieldDef)) return 'short';
   if (isSlippageBpsField(fieldDef.id)) return 'short';
@@ -26528,6 +26549,9 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
   }
   if (isRecipientTemplateField(fieldDef)) {
     return recipientTemplateFieldInput(fieldDef, value, label, error);
+  }
+  if (isAmountControlField(fieldDef)) {
+    return amountControlFieldInput(fieldDef, value, label, error);
   }
   if (fieldDef.type === 'textarea' || fieldDef.id === 'policy') {
     return `
@@ -27498,6 +27522,77 @@ function isTokenSelectField(fieldDef: AgentPlanTemplateField): boolean {
   return fieldDef.type === 'select' &&
     ['token', 'inputToken', 'outputToken', 'inputMint', 'outputMint', 'triggerMint'].includes(fieldDef.id) &&
     Boolean(fieldDef.options?.length);
+}
+
+// --- New Request amount control ($/Token pill + balance + % quick-fills) -------
+// The amount stays token-denominated in state.templateFields (so validation / preview /
+// buildTemplatePlan are untouched). The `$` unit just changes the displayed value: it
+// renders token×price and, on input, resolves $→token via price into the stored field.
+const templateAmountModes: Record<string, ChatAmountMode> = {};
+function templateAmountModeFor(fieldId: string): ChatAmountMode {
+  return templateAmountModes[fieldId] === 'token' ? 'token' : 'usd';
+}
+// The wallet balance asset for the template's spend token (inputToken for swaps, else token).
+function plannerSpendTokenAsset(): WalletBalanceAsset | null {
+  const template = selectedTemplate();
+  const spendId = template.fields.some((f) => f.id === 'inputToken') ? 'inputToken' : 'token';
+  if (!template.fields.some((f) => f.id === spendId)) return null;
+  const raw = templateFieldValue(spendId);
+  if (!raw) return null;
+  const resolved = resolveChatToken(raw);
+  if ('error' in resolved) return null;
+  return resolved.asset ?? chatSnapshotAssets().find((a) => a.mint === resolved.mint) ?? null;
+}
+function isAmountControlField(fieldDef: AgentPlanTemplateField): boolean {
+  if (fieldDef.id !== 'amount') return false;
+  const template = selectedTemplate();
+  // Only the first-class swap/send/recurring templates (which spend a plain SPL token);
+  // connector templates (Kamino etc.) can use sentinels like amount="all" and keep their
+  // own field semantics, so leave their amount field as the plain input.
+  if (isConnectorCapableTemplate(template)) return false;
+  return template.fields.some((f) => f.id === 'inputToken' || f.id === 'token');
+}
+function amountControlFieldInput(fieldDef: AgentPlanTemplateField, value: string, label: string, error: string): string {
+  const asset = plannerSpendTokenAsset();
+  const hasPrice = Boolean(asset?.priceUsd && asset.priceUsd > 0);
+  // $ requires a price; without one fall back to a token-denominated input.
+  const mode: ChatAmountMode = (templateAmountModeFor(fieldDef.id) === 'usd' && hasPrice) ? 'usd' : 'token';
+  const disabled = state.busy ? 'disabled' : '';
+  const tokenNum = Number(value);
+  const usdDisplay = (hasPrice && Number.isFinite(tokenNum) && tokenNum > 0)
+    ? (tokenNum * (asset!.priceUsd as number)).toFixed(2).replace(/\.?0+$/, '')
+    : '';
+  const display = mode === 'usd' ? usdDisplay : value;
+  const unitPill = `
+    <span class="token-choice-mode" role="group" aria-label="${escapeHtml(t('Amount unit'))}">
+      <button type="button" data-template-amount-unit="usd" data-template-amount-field="${escapeHtml(fieldDef.id)}" class="${mode === 'usd' ? 'active' : ''}"${hasPrice ? '' : ' disabled'}>$</button>
+      <button type="button" data-template-amount-unit="token" data-template-amount-field="${escapeHtml(fieldDef.id)}" class="${mode === 'token' ? 'active' : ''}">${escapeHtml(t('Token'))}</button>
+    </span>`;
+  const balanceLine = asset
+    ? `<span class="amount-balance-line">${escapeHtml(tf('Balance {amount} · {usd}', { amount: `${formatChatCompactAmount(asset.amount)} ${asset.symbol}`, usd: formatChatCompactUsd(asset.valueUsd) || '—' }))}</span>`
+    : '';
+  const pctBtn = (p: string): string =>
+    `<button type="button" class="chat-amount-pct" data-template-pct="${p}" data-template-amount-field="${escapeHtml(fieldDef.id)}">${escapeHtml(`${p}%`)}</button>`;
+  const pctRow = asset ? `
+    <div class="chat-amount-pcts">
+      ${pctBtn('50')}${pctBtn('100')}
+      <input class="chat-amount-pct-input" data-template-pct-input="${escapeHtml(fieldDef.id)}" placeholder="${escapeHtml(t('Custom %'))}" inputmode="numeric" autocomplete="off" />
+      <button type="button" class="chat-amount-pct chat-amount-pct-apply" data-template-pct-apply="${escapeHtml(fieldDef.id)}" aria-label="${escapeHtml(t('Apply percent'))}">%</button>
+    </div>` : '';
+  // Token mode keeps data-template-field (read by readTemplateFields); $ mode uses a
+  // separate attr and writes the resolved token amount into state.templateFields.
+  const inputAttr = mode === 'usd'
+    ? `data-template-amount-usd="${escapeHtml(fieldDef.id)}"`
+    : `data-template-field="${escapeHtml(fieldDef.id)}"`;
+  return `
+    <label class="field compact planner-field amount-control-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
+      <span class="token-choice-head"><span>${escapeHtml(label)}</span>${unitPill}</span>
+      <input ${inputAttr} value="${escapeHtml(display)}" placeholder="${escapeHtml(mode === 'usd' ? '$0.00' : (fieldDef.placeholder ? t(fieldDef.placeholder) : '0.00'))}" inputmode="decimal" autocomplete="off" ${disabled} />
+      ${balanceLine}
+      ${pctRow}
+      ${error}
+    </label>
+  `;
 }
 
 function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label: string, error: string): string {
@@ -33030,6 +33125,62 @@ function bind(): void {
     });
   }
 
+  // New Request amount control: $-mode input resolves $→token into state.templateFields;
+  // the unit pill + % quick-fills compute a concrete token amount of the spend balance.
+  const invalidatePlannerAmount = (fieldId: string): void => {
+    delete state.templateFieldErrors[fieldId];
+    state.agentPlan = null;
+    state.agentSignature = '';
+    state.agentPreparedActionId = '';
+  };
+  for (const usdInput of document.querySelectorAll<HTMLInputElement>('[data-template-amount-usd]')) {
+    usdInput.addEventListener('input', () => {
+      const fieldId = usdInput.dataset.templateAmountUsd;
+      if (!fieldId) return;
+      const asset = plannerSpendTokenAsset();
+      const price = asset?.priceUsd;
+      const usd = Number((usdInput.value || '').replace(/[^\d.]/g, ''));
+      if (price && price > 0 && Number.isFinite(usd) && usd > 0) {
+        state.templateFields[fieldId] = trimChatAmount(usd / price, asset!.decimals);
+      } else if (!usdInput.value.trim()) {
+        state.templateFields[fieldId] = '';
+      }
+      invalidatePlannerAmount(fieldId);
+    });
+  }
+  for (const unitBtn of document.querySelectorAll<HTMLButtonElement>('[data-template-amount-unit]')) {
+    unitBtn.addEventListener('click', () => {
+      const fieldId = unitBtn.dataset.templateAmountField;
+      if (!fieldId) return;
+      templateAmountModes[fieldId] = unitBtn.dataset.templateAmountUnit === 'token' ? 'token' : 'usd';
+      render();
+    });
+  }
+  const applyPlannerPercent = (fieldId: string, pct: number): void => {
+    const asset = plannerSpendTokenAsset();
+    if (!asset) { pushToast('error', t('Balance unavailable'), t('Pick an input token you hold first.')); return; }
+    const raw = chatPercentAmount(asset, pct, 'token');
+    if (!raw) { pushToast('error', t('Balance unavailable'), t('No balance to take a percentage of.')); return; }
+    state.templateFields[fieldId] = raw;
+    invalidatePlannerAmount(fieldId);
+    render();
+  };
+  for (const pctBtn of document.querySelectorAll<HTMLButtonElement>('[data-template-pct]')) {
+    pctBtn.addEventListener('click', () => {
+      const fieldId = pctBtn.dataset.templateAmountField;
+      if (fieldId) applyPlannerPercent(fieldId, Number(pctBtn.dataset.templatePct ?? ''));
+    });
+  }
+  for (const applyBtn of document.querySelectorAll<HTMLButtonElement>('[data-template-pct-apply]')) {
+    applyBtn.addEventListener('click', () => {
+      const fieldId = applyBtn.dataset.templatePctApply;
+      if (!fieldId) return;
+      const input = document.querySelector<HTMLInputElement>(`[data-template-pct-input="${cssEscape(fieldId)}"]`);
+      const pct = Number((input?.value ?? '').replace(/[^\d.]/g, ''));
+      if (!Number.isFinite(pct) || pct <= 0 || pct > 100) { pushToast('error', t('Invalid percent'), t('Enter a percent between 0 and 100.')); return; }
+      applyPlannerPercent(fieldId, pct);
+    });
+  }
   for (const fieldInput of document.querySelectorAll<HTMLInputElement>('[data-template-interval-field]')) {
     fieldInput.addEventListener('input', () => {
       const fieldId = fieldInput.dataset.templateIntervalField;
@@ -33443,6 +33594,48 @@ function bind(): void {
       render();
     });
   }
+
+  // Repeat amount control: $-mode input resolves $→token into recurringDraft.amount; the
+  // unit pill + % quick-fills compute a concrete token amount of the spend balance.
+  const usdAmountInput = document.querySelector<HTMLInputElement>('[data-recurring-amount-usd]');
+  if (usdAmountInput) {
+    usdAmountInput.addEventListener('input', () => {
+      const asset = recurringSpendTokenAsset();
+      const price = asset?.priceUsd;
+      const usd = Number((usdAmountInput.value || '').replace(/[^\d.]/g, ''));
+      if (price && price > 0 && Number.isFinite(usd) && usd > 0) {
+        state.recurringDraft.amount = trimChatAmount(usd / price, asset!.decimals);
+      } else if (!usdAmountInput.value.trim()) {
+        state.recurringDraft.amount = '';
+      }
+      delete state.recurringErrors.recurringAmount;
+      syncRecurringPreview();
+    });
+  }
+  for (const unitBtn of document.querySelectorAll<HTMLButtonElement>('[data-recurring-amount-unit]')) {
+    unitBtn.addEventListener('click', () => {
+      recurringAmountMode = unitBtn.dataset.recurringAmountUnit === 'token' ? 'token' : 'usd';
+      render();
+    });
+  }
+  const applyRecurringPercent = (pct: number): void => {
+    const asset = recurringSpendTokenAsset();
+    if (!asset) { pushToast('error', t('Balance unavailable'), t('Pick an input token you hold first.')); return; }
+    const raw = chatPercentAmount(asset, pct, 'token');
+    if (!raw) { pushToast('error', t('Balance unavailable'), t('No balance to take a percentage of.')); return; }
+    state.recurringDraft.amount = raw;
+    delete state.recurringErrors.recurringAmount;
+    render();
+  };
+  for (const pctBtn of document.querySelectorAll<HTMLButtonElement>('[data-recurring-pct]')) {
+    pctBtn.addEventListener('click', () => applyRecurringPercent(Number(pctBtn.dataset.recurringPct ?? '')));
+  }
+  document.querySelector<HTMLButtonElement>('[data-recurring-pct-apply]')?.addEventListener('click', () => {
+    const input = document.querySelector<HTMLInputElement>('[data-recurring-pct-input]');
+    const pct = Number((input?.value ?? '').replace(/[^\d.]/g, ''));
+    if (!Number.isFinite(pct) || pct <= 0 || pct > 100) { pushToast('error', t('Invalid percent'), t('Enter a percent between 0 and 100.')); return; }
+    applyRecurringPercent(pct);
+  });
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recipient-toggle]')) {
     button.addEventListener('click', () => {
@@ -35556,7 +35749,9 @@ function positionTemplatePickerMenu(trigger: HTMLElement, menu: HTMLElement): vo
     ? false
     : placement === 'up' || inBottomDock || (spaceBelow < 200 && spaceAbove > spaceBelow);
   let usableSpace = shouldDropUp ? spaceAbove : spaceBelow;
-  const sheetBody = menu.closest<HTMLElement>('.mobile-rail-sheet-body');
+  // Constrain the menu to its scroll container (the rail sheet body or the desktop chat
+  // action popover) so it doesn't get clipped by the container's overflow.
+  const sheetBody = menu.closest<HTMLElement>('.mobile-rail-sheet-body, .chat-action-popover');
   if (sheetBody && placement === 'down') {
     const sheetRect = sheetBody.getBoundingClientRect();
     usableSpace = Math.max(0, Math.floor(sheetRect.bottom - triggerRect.bottom - 8));
@@ -57969,12 +58164,12 @@ function recurringComposer(): string {
             ? `
               ${recurringTokenSelectField('inputToken', mobile ? t('From *') : t('Input token *'), draft.inputToken)}
               ${recurringTokenSelectField('outputToken', mobile ? t('To *') : t('Output token *'), draft.outputToken)}
-              ${fieldInput('recurringAmount', mobile ? t('Amount *') : t('Token amount *'), draft.amount)}
+              ${recurringAmountControlHtml(draft.amount, mobile ? t('Amount *') : t('Token amount *'))}
               ${recurringSlippageInput(draft.slippageBps)}
             `
             : `
               ${recurringTokenSelect(draft.token)}
-              ${fieldInput('recurringAmount', t('Amount *'), draft.amount)}
+              ${recurringAmountControlHtml(draft.amount, t('Amount *'))}
               ${recurringRecipientInput(draft.recipient)}
             `}
         </div>
@@ -59355,6 +59550,56 @@ function recurringLocalTimeField(draft: RecurringDraft): string {
       </div>
       ${fieldError('recurringLocalTime')}
     </div>
+  `;
+}
+
+// --- Repeat (recurring) amount control: $/Token pill + balance + % quick-fills ----
+// Like the New Request control, the amount stays token-denominated in recurringDraft.amount.
+let recurringAmountMode: ChatAmountMode = 'usd';
+function recurringSpendTokenAsset(): WalletBalanceAsset | null {
+  const d = state.recurringDraft;
+  const raw = d.actionKind === 'swap' ? d.inputToken : d.token;
+  if (!raw) return null;
+  const resolved = resolveChatToken(raw);
+  if ('error' in resolved) return null;
+  return resolved.asset ?? chatSnapshotAssets().find((a) => a.mint === resolved.mint) ?? null;
+}
+function recurringAmountControlHtml(value: string, label: string): string {
+  const asset = recurringSpendTokenAsset();
+  const hasPrice = Boolean(asset?.priceUsd && asset.priceUsd > 0);
+  const mode: ChatAmountMode = (recurringAmountMode === 'usd' && hasPrice) ? 'usd' : 'token';
+  const tokenNum = Number(value);
+  const usdDisplay = (hasPrice && Number.isFinite(tokenNum) && tokenNum > 0)
+    ? (tokenNum * (asset!.priceUsd as number)).toFixed(2).replace(/\.?0+$/, '')
+    : '';
+  const display = mode === 'usd' ? usdDisplay : value;
+  const disabled = state.busy ? 'disabled' : '';
+  const unitPill = `
+    <span class="token-choice-mode" role="group" aria-label="${escapeHtml(t('Amount unit'))}">
+      <button type="button" data-recurring-amount-unit="usd" class="${mode === 'usd' ? 'active' : ''}"${hasPrice ? '' : ' disabled'}>$</button>
+      <button type="button" data-recurring-amount-unit="token" class="${mode === 'token' ? 'active' : ''}">${escapeHtml(t('Token'))}</button>
+    </span>`;
+  const balanceLine = asset
+    ? `<span class="amount-balance-line">${escapeHtml(tf('Balance {amount} · {usd}', { amount: `${formatChatCompactAmount(asset.amount)} ${asset.symbol}`, usd: formatChatCompactUsd(asset.valueUsd) || '—' }))}</span>`
+    : '';
+  const pctBtn = (p: string): string => `<button type="button" class="chat-amount-pct" data-recurring-pct="${p}">${escapeHtml(`${p}%`)}</button>`;
+  const pctRow = asset ? `
+    <div class="chat-amount-pcts">
+      ${pctBtn('50')}${pctBtn('100')}
+      <input class="chat-amount-pct-input" data-recurring-pct-input placeholder="${escapeHtml(t('Custom %'))}" inputmode="numeric" autocomplete="off" />
+      <button type="button" class="chat-amount-pct chat-amount-pct-apply" data-recurring-pct-apply aria-label="${escapeHtml(t('Apply percent'))}">%</button>
+    </div>` : '';
+  // Token mode keeps id=recurringAmount + data-recurring-field (read by readRecurringDraft);
+  // $ mode uses a separate attr and writes the resolved token into recurringDraft.amount.
+  const inputAttr = mode === 'usd' ? 'data-recurring-amount-usd="1"' : 'id="recurringAmount" data-recurring-field="amount"';
+  return `
+    <label class="field compact amount-control-field ${state.recurringErrors.recurringAmount ? 'field-error' : ''}">
+      <span class="token-choice-head"><span>${escapeHtml(label)}</span>${unitPill}</span>
+      <input ${inputAttr} type="text" value="${escapeHtml(display)}" placeholder="${escapeHtml(mode === 'usd' ? '$0.00' : '0.00')}" inputmode="decimal" autocomplete="off" ${disabled} />
+      ${balanceLine}
+      ${pctRow}
+      ${fieldError('recurringAmount')}
+    </label>
   `;
 }
 

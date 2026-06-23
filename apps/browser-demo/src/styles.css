@@ -35207,6 +35207,46 @@ button.danger:hover:not(:disabled) {
   .chat-plus-menu { min-width: 0; width: max-content; max-width: calc(100vw - 24px); }
 }
 .chat-plus-menu.open { display: flex; }
+
+/* --- Web/desktop consolidated wallet-action popover ------------------------- */
+/* Anchored above the composer; reuses the sheet field renderers in a desktop grid. */
+.chat-composer-dock { position: relative; }
+.chat-action-popover {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  width: min(480px, 100%);
+  max-height: min(70dvh, calc(100dvh - 160px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--surface-strong);
+  border: 1px solid var(--line-strong);
+  border-radius: 16px;
+  padding: 14px;
+  z-index: 36;
+  box-shadow: var(--shadow);
+}
+.chat-popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.chat-popover-fields { display: grid; gap: 12px; }
+.chat-popover-row { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
+.chat-popover-row.pair { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+/* Inside the popover the proof builder's Confirm is a normal button, not a sticky bar. */
+.chat-action-popover .chat-sheet-confirm {
+  position: static;
+  margin: 8px 0 0;
+  padding: 0;
+  background: none;
+}
+@media (max-width: 560px) {
+  .chat-popover-row.pair { grid-template-columns: minmax(0, 1fr); }
+}
+
 .chat-plus-group {
   color: rgba(196, 205, 202, 0.56);
   font-size: 0.64rem;
@@ -35575,6 +35615,11 @@ button.danger:hover:not(:disabled) {
   cursor: pointer;
 }
 .chat-sheet-add-note:hover { border-color: var(--accent); color: var(--text); }
+
+/* New Request / Repeat amount control: pill in the header, balance line, % quick-fills. */
+.amount-control-field { display: grid; gap: 6px; }
+.amount-balance-line { color: var(--muted); font-size: 0.74rem; font-weight: 700; }
+.amount-control-field .chat-amount-pcts { margin-top: 2px; }
 
 /* Proof / Evidence sub-tabs in the Sign-proof sheet. */
 .chat-proof-tabs { display: flex; gap: 6px; }

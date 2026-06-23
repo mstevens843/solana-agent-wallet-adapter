@@ -129,6 +129,7 @@ for (const fn of ['field', 'textareaField']) {
     const a = splitTopLevelArgs(inner);
     add(unquote(a[1])); // label
     add(unquote(a[2])); // placeholder (prose only; numeric examples dropped by classifier)
+    add(unquote(a[3])); // defaultValue — prefilled into editable inputs and shown via t() (chat proof sheet); numbers/amounts dropped by classifier
   }
 }
 for (const inner of findCalls(planner, 'selectField')) {
@@ -178,6 +179,22 @@ for (const name of ['FAILURE_KIND_LABEL', 'FAILURE_KIND_HELP']) {
   for (const m of block.matchAll(/:\s*(['"])((?:[^\\]|\\.)*?)\1/g)) add(m[2]); // record VALUES (kind -> label/help)
 }
 addObjectKeys(findConstBlock(mainSrc, 'CONNECTOR_TARGET_FIELD_LABELS')); // label: 'Vault' etc.
+
+// ---- main.ts CHAT consts (Chat tab — rendered via dynamic t(value), invisible to both extractors) ----
+// CHAT_SUGGESTED_PROMPTS: bare string array, rendered via t(prompt). Scan raw quoted literals.
+for (const s of findConstBlock(mainSrc, 'CHAT_SUGGESTED_PROMPTS').matchAll(/(['"])((?:[^\\]|\\.)*?)\1/g)) add(s[2]);
+// CHAT_POWER_ACTIONS: objects rendered via t(action.eyebrow/title/description). Scope to those
+// keys only so the [bracketed] composer `template:` grammar string is NOT translated.
+for (const m of findConstBlock(mainSrc, 'CHAT_POWER_ACTIONS').matchAll(/\b(eyebrow|title|description)\s*:\s*(['"])((?:[^\\]|\\.)*?)\2/g)) add(m[3]);
+// NAV_ITEMS: the Android-visible top surface toggle. Only `mobileLabel` (Demo/App) shows on
+// mobile — the rest are mobileHidden website nav, intentionally left English — so scope to it.
+for (const m of findConstBlock(mainSrc, 'NAV_ITEMS').matchAll(/\bmobileLabel\s*:\s*(['"])((?:[^\\]|\\.)*?)\1/g)) add(m[2]);
+// Chat proof select enum labels: rendered label: t(o) with the option VALUE kept raw. These
+// lowercase enums are dropped by the prose classifier, so push them straight to `found`.
+for (const s of ['weekly', 'monthly', 'interval_days', 'token', 'shares', 'yes', 'no']) found.add(s);
+// Chat proof template picker eyebrows: rendered meta: t(titleCase(tpl.category)). Seed the
+// post-titleCase OUTPUT strings (not the raw category) so the lookup key matches.
+for (const s of ['Recurring', 'Staking', 'Governance', 'Security', 'Defi', 'Nft', 'Portfolio', 'Developer', 'Mobile', 'Integration', 'Custom', 'Oracle']) add(s);
 
 // ---- merge into en.json ----
 const en = JSON.parse(readFileSync(enPath, 'utf8'));
