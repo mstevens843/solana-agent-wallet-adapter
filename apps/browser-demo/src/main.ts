@@ -14443,6 +14443,10 @@ function closeMobileRailSheet(): void {
   if (state.activeMobileRailSheet === 'chat-action') {
     state.chatActionPicker = null;
     state.chatComposerOpen = false;
+    // Drop the sheet's local expand state too, so a reopen (or a different action) never
+    // shows a stale token list / note row pre-expanded on the wrong field.
+    chatSheetTokenOpen = null;
+    chatSheetNoteOpen = false;
   }
   state.activeMobileRailSheet = null;
   render();
@@ -20556,7 +20560,9 @@ function compileBuilderToDraft(b: ChatActionBuilder): string {
   // Any explicit bps is written into the grammar; Auto (absent) appends nothing so
   // the parser leaves slippageBps off and the swap uses Ultra dynamic slippage.
   const slippage = b.slippageBps && b.slippageBps.trim() ? ` slippage ${b.slippageBps.trim()}bps` : '';
-  return `Swap ${amount} ${from} to ${to}${slippage}`;
+  // Optional review note (metadata only — not an on-chain memo).
+  const note = b.memo && b.memo.trim() ? ` note: ${b.memo.trim()}` : '';
+  return `Swap ${amount} ${from} to ${to}${slippage}${note}`;
 }
 
 // Short chip labels (friendly symbol/value; never the raw mint).
@@ -20807,13 +20813,15 @@ function openChatActionSheet(): void {
 }
 function closeChatActionSheet(): void {
   if (state.activeMobileRailSheet === 'chat-action') state.activeMobileRailSheet = null;
+  chatSheetTokenOpen = null;
+  chatSheetNoteOpen = false;
 }
 
 // Hydrate logos for the token LIST lazily (chat is not in the standard
 // token-market hydration set), then repaint once when anything changed. Covers the
 // owned balances AND the curated preset tokens shown for the swap output.
 function ensureChatTokenLogos(): void {
-  const field = state.chatActionPicker?.field;
+  const field = chatSheetTokenOpen ?? state.chatActionPicker?.field;
   const items = (field === 'fromToken' || field === 'toToken')
     ? chatTokenListItems(field)
     : chatSnapshotAssets().filter((a) => a.amount > 0).map((a) => ({ mint: a.mint }));
@@ -20822,10 +20830,14 @@ function ensureChatTokenLogos(): void {
     .filter((m) => m !== WSOL_MINT && !tokenMarketMetadata.get(m)?.logoURI);
   if (mints.length === 0) return;
   void fetchTokenMetadataForMints(mints)
-    // Don't force a full re-render while the action sheet is open — it would blow away a
-    // focused sheet input and drop the soft keyboard mid-type. The LIST select is text-only
-    // (no logos) and MINT search loads its own logos, so the repaint isn't needed there.
-    .then((changed) => { if (changed && state.activeTab === 'chat' && state.activeMobileRailSheet !== 'chat-action') render(); })
+    .then((changed) => {
+      if (!changed || state.activeTab !== 'chat') return;
+      // Repaint while the action sheet is open ONLY when a token dropdown is open (a list of
+      // buttons, no focused input to lose) — otherwise a render would drop the soft keyboard
+      // mid-type. The rich rows + collapsed trigger show the freshly-loaded logos.
+      if (state.activeMobileRailSheet === 'chat-action' && !chatSheetTokenOpen) return;
+      render();
+    })
     .catch(() => undefined);
 }
 
@@ -20920,21 +20932,47 @@ function chatTokenListItems(field: ChatPickerField): ChatTokenListItem[] {
   return [...owned, ...preset];
 }
 
+// Compact number for tight token rows + the amount readout: 1k / 10k / 104.3k (≤4 sig).
+function formatChatCompactAmount(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0';
+  if (value >= 1000) {
+    return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(value).toLowerCase();
+  }
+  if (value >= 1) return value.toFixed(2).replace(/\.?0+$/, '');
+  return value.toPrecision(3).replace(/\.?0+$/, '');
+}
+// Compact $ for tight rows + the amount readout: $444.43 / $1.2k / $1.2m.
+function formatChatCompactUsd(value: number | undefined): string {
+  if (value === undefined || !Number.isFinite(value)) return '';
+  const abs = Math.abs(value);
+  if (abs > 0 && abs < 0.01) return '<$0.01';
+  if (abs >= 1000) {
+    return `$${new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(value).toLowerCase()}`;
+  }
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+}
+
 // One token row: logo + symbol/(value|name) + bare amount. Rendered once (no
 // duplicated symbol/mint, unlike the generic balance row which appends the symbol
 // to the amount string). Not-held preset tokens show the name and no amount.
-function chatTokenPickerRowHtml(item: ChatTokenListItem): string {
+// `compact` runs the owned amount + $ through the compact formatters (for tight sheet rows).
+function chatTokenPickerRowHtml(item: ChatTokenListItem, opts: { compact?: boolean } = {}): string {
   const meta = tokenMarketMetadata.get(item.mint);
   const logo = meta?.logoURI || (item.mint === WSOL_MINT ? BRAND_LOGOS.solana : '');
   const symbol = item.symbol || tokenDisplayLabel(item.mint);
   let amount = '';
   let sub = '';
   if (item.owned && item.amount !== undefined) {
-    const amtWithSym = formatWalletBalanceAmount(item.amount, item.symbol);
-    amount = amtWithSym.endsWith(` ${item.symbol}`)
-      ? amtWithSym.slice(0, amtWithSym.length - item.symbol.length - 1)
-      : amtWithSym;
-    sub = item.valueUsd === undefined ? '' : formatWalletBalanceUsd(item.valueUsd);
+    if (opts.compact) {
+      amount = formatChatCompactAmount(item.amount);
+      sub = formatChatCompactUsd(item.valueUsd);
+    } else {
+      const amtWithSym = formatWalletBalanceAmount(item.amount, item.symbol);
+      amount = amtWithSym.endsWith(` ${item.symbol}`)
+        ? amtWithSym.slice(0, amtWithSym.length - item.symbol.length - 1)
+        : amtWithSym;
+      sub = item.valueUsd === undefined ? '' : formatWalletBalanceUsd(item.valueUsd);
+    }
   } else {
     sub = meta?.name && meta.name !== symbol ? meta.name : '';
   }
@@ -21005,10 +21043,29 @@ function chatAmountPickerHtml(b: ChatActionBuilder, variant: ChatPickerVariant =
     : `<div class="chat-picker chat-amount-picker" data-chat-picker>${inner}</div>`;
 }
 
-// One token field for the full-form action sheet, mirroring the New Request token
-// field (`tokenFieldInput`): a label + LIST/MINT toggle, then either the collapsed
-// "SOL ▾" select-picker (LIST) or the live mint search shell (MINT). Wired to the chat
-// builder state (state.chatActionBuilder[field]) — independent per field.
+// Which sheet token field's collapsed dropdown is expanded (one at a time).
+let chatSheetTokenOpen: ChatTokenField | null = null;
+
+// The collapsed token trigger for the sheet's LIST mode: logo + symbol on top + a short
+// 4char…4char mint below (no wasteful full "SOL MINT SO1111…"). Tapping toggles the list.
+function chatSheetTokenTriggerHtml(field: ChatTokenField, token: ChatBuilderToken | undefined, open: boolean): string {
+  const meta = token ? tokenMarketMetadata.get(token.mint) : undefined;
+  const logo = token ? (meta?.logoURI || (token.mint === WSOL_MINT ? BRAND_LOGOS.solana : '')) : '';
+  const symbol = token ? (token.symbol || tokenDisplayLabel(token.mint)) : t('Pick token');
+  const sub = token ? shortHexMint(token.mint) : '';
+  return `
+    <button type="button" class="chat-sheet-token-trigger${open ? ' open' : ''}" data-chat-token-trigger="${escapeHtml(field)}" aria-haspopup="listbox" aria-expanded="${open ? 'true' : 'false'}">
+      <span class="chat-token-logo">${logo
+        ? `<img src="${escapeHtml(logo)}" alt="" loading="lazy" />`
+        : `<span>${escapeHtml((symbol || '?').slice(0, 3).toUpperCase())}</span>`}</span>
+      <span class="chat-sheet-token-copy"><strong>${escapeHtml(symbol)}</strong>${sub ? `<em>${escapeHtml(sub)}</em>` : ''}</span>
+      <span class="chat-sheet-token-caret" aria-hidden="true">▾</span>
+    </button>`;
+}
+
+// One token field for the full-form action sheet, mirroring the New Request token field
+// header (label + LIST/MINT toggle). LIST = a collapsed rich trigger that expands to the
+// owned/preset rows (logo + symbol + owned amount + $); MINT = the live mint search shell.
 function chatSheetTokenFieldHtml(field: ChatTokenField, label: string): string {
   const b = state.chatActionBuilder;
   const current = b ? b[field] : undefined;
@@ -21020,18 +21077,16 @@ function chatSheetTokenFieldHtml(field: ChatTokenField, label: string): string {
     </span>`;
   let body: string;
   if (presetMode) {
-    const items = chatTokenListItems(field);
-    const options = items.map((i) => ({ value: i.mint, label: i.symbol || tokenDisplayLabel(i.mint), detail: tokenDisplayTitle(i.mint) }));
-    if (current && !options.some((o) => o.value === current.mint)) {
-      options.unshift({ value: current.mint, label: current.symbol || tokenDisplayLabel(current.mint), detail: tokenDisplayTitle(current.mint) });
+    const open = chatSheetTokenOpen === field;
+    const trigger = chatSheetTokenTriggerHtml(field, current, open);
+    let list = '';
+    if (open) {
+      const items = chatTokenListItems(field);
+      list = items.length > 0
+        ? `<div class="chat-sheet-token-list">${items.map((i) => chatTokenPickerRowHtml(i, { compact: true })).join('')}</div>`
+        : `<p class="chat-token-empty">${escapeHtml(t('No tokens with a balance yet.'))}</p>`;
     }
-    body = selectPicker({
-      id: `chat-token-${field}`,
-      value: current?.mint ?? '',
-      options,
-      attrs: { 'data-chat-token-select': field },
-      placeholder: t('Pick token'),
-    });
+    body = `${trigger}${list}`;
   } else {
     const searchId = `chat:${field}`;
     body = `
@@ -21067,26 +21122,113 @@ function chatSheetFieldRow(...fields: string[]): string {
   return `<div class="mobile-planner-field-row ${shape}">${fields.map((f) => `<div class="mobile-planner-field">${f}</div>`).join('')}</div>`;
 }
 
+// A CONCRETE amount (in the active unit) for a % of the input token's balance. Mirrors
+// resolveChatAmount's percent path incl. the native-SOL fee buffer at 100%.
+function chatPercentAmount(asset: WalletBalanceAsset, pct: number, mode: ChatAmountMode): string {
+  if (!(asset.amount > 0) || !(pct > 0)) return '';
+  let tokenAmount = asset.amount * (pct / 100);
+  if (asset.mint === WSOL_MINT && pct >= 100) tokenAmount = Math.max(0, tokenAmount - 0.01);
+  if (!(tokenAmount > 0)) return '';
+  if (mode === 'usd') {
+    const price = asset.priceUsd;
+    if (!price || !(price > 0)) return '';
+    return (tokenAmount * price).toFixed(2).replace(/\.?0+$/, '');
+  }
+  return trimChatAmount(tokenAmount, asset.decimals);
+}
+
+// Whether the note row is expanded (swap "+ Add a note").
+let chatSheetNoteOpen = false;
+
+// The amount field: a [ $ | Token ] unit pill ($ default), the input with the selected
+// token's owned balance shown right-aligned (in the active unit), and 50 / 100 / custom %
+// quick-fills that compute a concrete amount from that balance.
+function chatSheetAmountFieldHtml(b: ChatActionBuilder, label: string): string {
+  const mode: ChatAmountMode = b.amount?.mode === 'token' ? 'token' : 'usd';
+  const raw = b.amount?.raw ?? '';
+  const asset = chatBuilderFromAsset(b);
+  let balanceText = '';
+  if (asset) {
+    balanceText = mode === 'usd'
+      ? formatChatCompactUsd(asset.valueUsd)
+      : `${formatChatCompactAmount(asset.amount)} ${asset.symbol}`;
+  }
+  const unitPill = `
+    <span class="token-choice-mode" role="group" aria-label="${escapeHtml(t('Amount unit'))}">
+      <button type="button" data-chat-amount-unit="usd" class="${mode === 'usd' ? 'active' : ''}">$</button>
+      <button type="button" data-chat-amount-unit="token" class="${mode === 'token' ? 'active' : ''}">${escapeHtml(t('Token'))}</button>
+    </span>`;
+  const pctBtn = (p: string): string =>
+    `<button type="button" class="chat-amount-pct" data-chat-pct="${p}">${escapeHtml(`${p}%`)}</button>`;
+  return `
+    <div class="field compact planner-field chat-amount-block">
+      <span class="token-choice-head">
+        <span>${escapeHtml(label)}</span>
+        ${unitPill}
+      </span>
+      <div class="chat-amount-field">
+        <input data-chat-amount-input data-chat-amount-mode-current="${mode}" value="${escapeHtml(raw)}" placeholder="${escapeHtml(mode === 'usd' ? '$0.00' : '0.00')}" inputmode="decimal" autocomplete="off" spellcheck="false" />
+        ${balanceText ? `<span class="chat-amount-balance" aria-hidden="true">${escapeHtml(balanceText)}</span>` : ''}
+      </div>
+      <div class="chat-amount-pcts">
+        ${pctBtn('50')}${pctBtn('100')}
+        <input class="chat-amount-pct-input" data-chat-pct-input placeholder="${escapeHtml(t('Custom %'))}" inputmode="numeric" autocomplete="off" />
+        <button type="button" class="chat-amount-pct chat-amount-pct-apply" data-chat-pct-apply aria-label="${escapeHtml(t('Apply percent'))}">%</button>
+      </div>
+    </div>`;
+}
+
+// The slippage field: [ Auto | Custom ] pills. Auto = no cap (Jupiter Ultra dynamic);
+// Custom = an editable bps input (validated 1–5000 in the live handler).
+function chatSheetSlippageFieldHtml(b: ChatActionBuilder): string {
+  const custom = Boolean(b.slippageBps && b.slippageBps.trim());
+  const modePill = `
+    <span class="token-choice-mode" role="group" aria-label="${escapeHtml(t('Slippage mode'))}">
+      <button type="button" data-chat-slippage-mode="auto" class="${custom ? '' : 'active'}">${escapeHtml(t('Auto'))}</button>
+      <button type="button" data-chat-slippage-mode="custom" class="${custom ? 'active' : ''}">${escapeHtml(t('Custom'))}</button>
+    </span>`;
+  const input = custom
+    ? `<input data-chat-slippage-live value="${escapeHtml(b.slippageBps?.trim() ?? '')}" placeholder="50" inputmode="numeric" autocomplete="off" />`
+    : `<input value="${escapeHtml(t('Auto'))}" disabled />`;
+  return `
+    <div class="field compact planner-field">
+      <span class="token-choice-head">
+        <span>${escapeHtml(t('Max slippage (bps)'))}</span>
+        ${modePill}
+      </span>
+      ${input}
+    </div>`;
+}
+
+// The swap "+ Add a note" row: collapsed until tapped (or a note already exists).
+function chatSheetNoteRowHtml(b: ChatActionBuilder): string {
+  const hasNote = Boolean(b.memo && b.memo.trim());
+  if (!chatSheetNoteOpen && !hasNote) {
+    return `<button type="button" class="chat-sheet-add-note" data-chat-note-toggle>${escapeHtml(t('+ Add a note'))}</button>`;
+  }
+  return `
+    <label class="field compact planner-field">
+      <span>${escapeHtml(t('Note (optional)'))}</span>
+      <input data-chat-memo-input value="${escapeHtml(b.memo ?? '')}" placeholder="${escapeHtml(t('Reason or context for this swap'))}" autocomplete="off" spellcheck="false" />
+    </label>`;
+}
+
 // The full single-sheet form for a wallet action (native mobile). Every field is visible
 // at once (no per-field sub-sheets), typed inputs sit near the top so the sheet rides
 // above the keyboard, and a sticky Confirm autofills the composer grammar.
 function chatActionSheetFormHtml(b: ChatActionBuilder): string {
-  const amountRaw = b.amount?.raw ?? '';
   let fields: string;
   if (b.kind === 'swap') {
     fields = `
       ${chatSheetFieldRow(chatSheetTokenFieldHtml('fromToken', t('Input token')), chatSheetTokenFieldHtml('toToken', t('Output token')))}
-      ${chatSheetFieldRow(
-        chatSheetTextFieldHtml({ label: t('Token amount'), value: amountRaw, placeholder: '0.01', attr: 'data-chat-amount-input', inputmode: 'decimal' }),
-        chatSheetTextFieldHtml({ label: t('Max slippage (bps)'), value: b.slippageBps?.trim() ?? '', placeholder: t('Auto'), attr: 'data-chat-slippage-live', inputmode: 'numeric' }),
-      )}`;
+      ${chatSheetFieldRow(chatSheetAmountFieldHtml(b, t('Token amount')))}
+      ${chatSheetFieldRow(chatSheetSlippageFieldHtml(b))}
+      ${chatSheetFieldRow(chatSheetNoteRowHtml(b))}`;
   } else if (b.kind === 'send') {
     fields = `
       ${chatSheetFieldRow(chatSheetTextFieldHtml({ label: t('Recipient address'), value: b.recipient ?? '', placeholder: t('Recipient public key'), attr: 'data-chat-chip-recipient', mono: true }))}
-      ${chatSheetFieldRow(
-        chatSheetTokenFieldHtml('fromToken', t('Token')),
-        chatSheetTextFieldHtml({ label: t('Amount'), value: amountRaw, placeholder: '0.01', attr: 'data-chat-amount-input', inputmode: 'decimal' }),
-      )}
+      ${chatSheetFieldRow(chatSheetTokenFieldHtml('fromToken', t('Token')))}
+      ${chatSheetFieldRow(chatSheetAmountFieldHtml(b, t('Amount')))}
       ${chatSheetFieldRow(chatSheetTextFieldHtml({ label: t('Memo / reason'), value: b.memo ?? '', placeholder: t('Invoice, friend payment, reimbursement'), attr: 'data-chat-memo-input' }))}`;
   } else {
     // sign — interim simple statement form (the proof/evidence template builder replaces
@@ -22316,7 +22458,7 @@ function parseChatWalletAction(text: string): ChatActionParse {
     }
     return { kind: 'action', proposal: { kind: 'transfer_spl', summary: tf('Send {amount} {symbol}', { amount: amount.amount, symbol: token.symbol }), params: { token: token.mint, recipient, amount: amount.amount, ...(memo ? { memo } : {}) }, requiresApproval: true, resolution: { recipientSource: 'user_input' } } };
   }
-  const swap = /^swap\s+(\S+)\s+(\S+)\s+(?:to|for)\s+(\S+)(?:\s+slippage\s+(\d+(?:\.\d+)?)\s*(%|bps)?)?$/is.exec(clean);
+  const swap = /^swap\s+(\S+)\s+(\S+)\s+(?:to|for)\s+(\S+)(?:\s+slippage\s+(\d+(?:\.\d+)?)\s*(%|bps)?)?(?:\s+(?:note|memo)[:\s]+(.+))?$/is.exec(clean);
   if (swap) {
     const from = resolveChatToken(swap[2] ?? '');
     if ('error' in from) return { kind: 'error', message: from.error };
@@ -22332,7 +22474,8 @@ function parseChatWalletAction(text: string): ChatActionParse {
       const n = Number(swap[4]);
       if (Number.isFinite(n) && n > 0) slippageBps = swap[5] === 'bps' ? String(Math.round(n)) : String(Math.round(n * 100));
     }
-    return { kind: 'action', proposal: { kind: 'swap', summary: tf('Swap {amount} {from} to {to}', { amount: amount.amount, from: from.symbol, to: to.symbol }), params: { inputToken: from.mint, outputToken: to.mint, amount: amount.amount, ...(slippageBps ? { slippageBps } : {}) }, requiresApproval: true, resolution: { recipientSource: 'user_input' } } };
+    const note = swap[6]?.trim();
+    return { kind: 'action', proposal: { kind: 'swap', summary: tf('Swap {amount} {from} to {to}', { amount: amount.amount, from: from.symbol, to: to.symbol }), params: { inputToken: from.mint, outputToken: to.mint, amount: amount.amount, ...(slippageBps ? { slippageBps } : {}) }, ...(note ? { note } : {}), requiresApproval: true, resolution: { recipientSource: 'user_input' } } };
   }
   return { kind: 'none' };
 }
@@ -22766,6 +22909,7 @@ function bindChat(): void {
       const next = modeBtn.dataset.chatTokenFieldMode === 'mint' ? 'mint' : 'list';
       if (chatTokenModeFor(field) === next) return;
       chatTokenPickerModes[field] = next;
+      if (next === 'mint' && chatSheetTokenOpen === field) chatSheetTokenOpen = null;
       if (next === 'list') {
         chatTokenListLimits[field] = CHAT_TOKEN_PAGE;
         if (state.address) startWalletBalanceFullLoad(false, { openOverlay: false });
@@ -22775,15 +22919,20 @@ function bindChat(): void {
       render();
     });
   }
-  // Full-form sheet LIST mode: the collapsed "SOL ▾" select-picker emits a change on its
-  // hidden native <select> when a token is chosen.
-  for (const tokenSelect of document.querySelectorAll<HTMLSelectElement>('select[data-chat-token-select]')) {
-    tokenSelect.addEventListener('change', () => {
-      const field = tokenSelect.dataset.chatTokenSelect;
-      const mint = tokenSelect.value;
-      if ((field !== 'fromToken' && field !== 'toToken') || !mint) return;
-      const item = chatTokenListItems(field).find((i) => i.mint === mint);
-      applyChatTokenPickFor(field, mint, item?.symbol ?? tokenDisplayLabel(mint), item?.decimals ?? 0, tokenMarketMetadata.get(mint)?.logoURI);
+  // Full-form sheet LIST mode: tapping the collapsed token trigger expands/collapses the
+  // rich owned/preset list (logo + symbol + owned amount + $). One field open at a time.
+  for (const trig of document.querySelectorAll<HTMLButtonElement>('[data-chat-token-trigger]')) {
+    trig.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const field = trig.dataset.chatTokenTrigger;
+      if (field !== 'fromToken' && field !== 'toToken') return;
+      chatSheetTokenOpen = chatSheetTokenOpen === field ? null : field;
+      if (chatSheetTokenOpen) {
+        if (state.address) startWalletBalanceFullLoad(false, { openOverlay: false });
+        ensureChatTokenLogos();
+      }
+      suppressMobileRailSheetEnterAnimation = true;
+      render();
     });
   }
   // Full-form sheet: live memo + slippage inputs (no apply button), and Confirm autofills
@@ -22819,6 +22968,67 @@ function bindChat(): void {
     state.chatActionPicker = null;
     closeChatActionSheet();
     render();
+  });
+  // --- Amount unit pill ($ default / Token), % quick-fills, slippage pills, note ----
+  const applyChatPercent = (pct: number): void => {
+    const b = state.chatActionBuilder;
+    if (!b) return;
+    const asset = chatBuilderFromAsset(b);
+    if (!asset) { pushToast('error', t('Balance unavailable'), t('Pick an input token you hold first.')); return; }
+    const mode: ChatAmountMode = b.amount?.mode === 'token' ? 'token' : 'usd';
+    const raw = chatPercentAmount(asset, pct, mode);
+    if (!raw) { pushToast('error', t('Balance unavailable'), t('No balance to take a percentage of.')); return; }
+    b.amount = { mode, raw };
+    applyChatBuilderDraft();
+    suppressMobileRailSheetEnterAnimation = true;
+    render();
+  };
+  for (const unitBtn of document.querySelectorAll<HTMLButtonElement>('[data-chat-amount-unit]')) {
+    unitBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (!state.chatActionBuilder) return;
+      const unit: ChatAmountMode = unitBtn.dataset.chatAmountUnit === 'token' ? 'token' : 'usd';
+      if ((state.chatActionBuilder.amount?.mode ?? 'usd') === unit) return;
+      state.chatActionBuilder.amount = { mode: unit, raw: state.chatActionBuilder.amount?.raw ?? '' };
+      applyChatBuilderDraft();
+      suppressMobileRailSheetEnterAnimation = true;
+      render();
+    });
+  }
+  for (const pctBtn of document.querySelectorAll<HTMLButtonElement>('[data-chat-pct]')) {
+    pctBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      applyChatPercent(Number(pctBtn.dataset.chatPct ?? ''));
+    });
+  }
+  document.querySelector<HTMLButtonElement>('[data-chat-pct-apply]')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const input = document.querySelector<HTMLInputElement>('[data-chat-pct-input]');
+    const pct = Number((input?.value ?? '').replace(/[^\d.]/g, ''));
+    if (!Number.isFinite(pct) || pct <= 0 || pct > 100) { pushToast('error', t('Invalid percent'), t('Enter a percent between 0 and 100.')); return; }
+    applyChatPercent(pct);
+  });
+  for (const slipBtn of document.querySelectorAll<HTMLButtonElement>('[data-chat-slippage-mode]')) {
+    slipBtn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const b = state.chatActionBuilder;
+      if (!b) return;
+      if (slipBtn.dataset.chatSlippageMode === 'custom') {
+        if (!b.slippageBps || !b.slippageBps.trim()) b.slippageBps = '50';
+      } else {
+        delete b.slippageBps;
+      }
+      applyChatBuilderDraft();
+      suppressMobileRailSheetEnterAnimation = true;
+      render();
+    });
+  }
+  document.querySelector<HTMLButtonElement>('[data-chat-note-toggle]')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    chatSheetNoteOpen = true;
+    suppressMobileRailSheetEnterAnimation = true;
+    render();
+    document.querySelector<HTMLInputElement>('[data-chat-memo-input]')?.focus({ preventScroll: true });
   });
   // --- Proof/Evidence sheet: tabs, template dropdown, fields, Confirm ----------
   for (const tabBtn of document.querySelectorAll<HTMLButtonElement>('[data-chat-proof-tab]')) {
@@ -22879,19 +23089,29 @@ function bindChat(): void {
   for (const opt of document.querySelectorAll<HTMLButtonElement>('[data-chat-token-pick]')) {
     opt.addEventListener('click', (event) => {
       event.stopPropagation();
-      applyChatTokenPick(
-        opt.dataset.chatTokenPick ?? '',
-        opt.dataset.chatTokenSymbol ?? '',
-        Number(opt.dataset.chatTokenDecimals ?? '0'),
-        opt.dataset.chatTokenLogo || undefined,
-      );
+      const mint = opt.dataset.chatTokenPick ?? '';
+      const symbol = opt.dataset.chatTokenSymbol ?? '';
+      const decimals = Number(opt.dataset.chatTokenDecimals ?? '0');
+      const logo = opt.dataset.chatTokenLogo || undefined;
+      // The sheet's expandable list (chatSheetTokenOpen) is field-explicit; the desktop chip
+      // picker uses the single open picker (state.chatActionPicker.field).
+      const sheetField = chatSheetTokenOpen;
+      if (sheetField === 'fromToken' || sheetField === 'toToken') {
+        chatSheetTokenOpen = null;
+        applyChatTokenPickFor(sheetField, mint, symbol, decimals, logo);
+        return;
+      }
+      applyChatTokenPick(mint, symbol, decimals, logo);
     });
   }
   const amountInput = document.querySelector<HTMLInputElement>('[data-chat-amount-input]');
   if (amountInput) {
     amountInput.addEventListener('input', () => {
       if (!state.chatActionBuilder) return;
-      const mode = state.chatActionBuilder.amount?.mode ?? 'token';
+      // The sheet's amount field renders its active unit on the input ($ default); fall back
+      // to it so the first keystroke adopts the right mode (desktop has no attr → 'token').
+      const fallbackMode = (amountInput.dataset.chatAmountModeCurrent as ChatAmountMode | undefined) ?? 'token';
+      const mode = state.chatActionBuilder.amount?.mode ?? fallbackMode;
       state.chatActionBuilder.amount = { mode, raw: amountInput.value.trim() };
       applyChatBuilderDraft(); // live textarea update; no render (keep focus)
     });
