@@ -5125,6 +5125,8 @@
     "wallet": "지갑",
     "Agentic routes each request to the user's existing Solana wallet: {wallets}. The agent gets the approved result, never the key.": "Agentic은 각 요청을 사용자의 기존 Solana 지갑으로 라우팅합니다: {wallets}. 에이전트는 승인된 결과만 받으며 키는 절대 받지 않습니다.",
     "Add your AI connector key in Preferences → AI connector, then try again.": "설정 → AI 커넥터에서 AI 커넥터 키를 추가한 후 다시 시도하세요.",
+    "Connect AI first to use chat. Add an AI connector key or connect Plan Connector in Preferences → AI connector.": "Connect AI first to use chat. Add an AI connector key or connect Plan Connector in Preferences → AI connector.",
+    "Hosted BYOK needs Agentic Cloud relay sign-in, or switch to Device Agent / Plan Connector. Chat history still saves locally.": "Hosted BYOK needs Agentic Cloud relay sign-in, or switch to Device Agent / Plan Connector. Chat history still saves locally.",
     "Ask about your wallet, tokens, prices, or risk. When you are ready, ask it to prepare a swap or a payment, then approve and sign here.": "지갑, 토큰, 가격 또는 리스크에 대해 물어보세요. 준비가 되면 스왑이나 결제를 준비하도록 요청한 다음, 여기에서 승인하고 서명하세요.",
     "Chat": "채팅",
     "Connect a wallet before preparing this action.": "이 작업을 준비하기 전에 지갑을 연결하세요.",

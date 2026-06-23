@@ -5125,6 +5125,8 @@
     "wallet": "carteira",
     "Agentic routes each request to the user's existing Solana wallet: {wallets}. The agent gets the approved result, never the key.": "A Agentic encaminha cada solicitação para a carteira Solana existente do usuário: {wallets}. O agente recebe o resultado aprovado, nunca a chave.",
     "Add your AI connector key in Preferences → AI connector, then try again.": "Adicione sua chave do conector de IA em Preferências → Conector de IA e tente novamente.",
+    "Connect AI first to use chat. Add an AI connector key or connect Plan Connector in Preferences → AI connector.": "Connect AI first to use chat. Add an AI connector key or connect Plan Connector in Preferences → AI connector.",
+    "Hosted BYOK needs Agentic Cloud relay sign-in, or switch to Device Agent / Plan Connector. Chat history still saves locally.": "Hosted BYOK needs Agentic Cloud relay sign-in, or switch to Device Agent / Plan Connector. Chat history still saves locally.",
     "Ask about your wallet, tokens, prices, or risk. When you are ready, ask it to prepare a swap or a payment, then approve and sign here.": "Pergunte sobre sua carteira, tokens, preços ou risco. Quando estiver pronto, peça para preparar uma troca ou um pagamento, depois aprove e assine aqui.",
     "Chat": "Chat",
     "Connect a wallet before preparing this action.": "Conecte uma carteira antes de preparar esta ação.",

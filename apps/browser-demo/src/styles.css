@@ -35555,5 +35555,18 @@ button.danger:hover:not(:disabled) {
 .ios-native-shell .chat-transcript { padding: 12px 6px 14px; scroll-padding-bottom: 14px; }
 .android-shell .chat-composer-mobile,
 .ios-native-shell .chat-composer-mobile { margin: 6px 4px 2px; }
+.android-shell .chat-composer-mobile .chat-actions-row,
+.ios-native-shell .chat-composer-mobile .chat-actions-row { position: relative; }
+.android-shell .chat-composer-mobile .chat-plus,
+.ios-native-shell .chat-composer-mobile .chat-plus { position: static; }
+.android-shell .chat-composer-mobile .chat-plus-menu,
+.ios-native-shell .chat-composer-mobile .chat-plus-menu {
+  left: 0;
+  right: 0;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  box-sizing: border-box;
+}
 .android-shell .chat-disclaimer,
 .ios-native-shell .chat-disclaimer { padding: 0 0 2px; }

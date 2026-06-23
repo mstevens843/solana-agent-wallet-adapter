@@ -495,6 +495,12 @@ import {
   chatMentionsWalletBalance,
   chatMentionsOwnWallet,
 } from './chatRequest.js';
+import {
+  CHAT_AI_CONNECTOR_REQUIRED,
+  CHAT_HOSTED_BYOK_RELAY_REQUIRED,
+  chatAiConnectorConfigured,
+  chatHostedRelayReadinessError,
+} from './chatReadiness.js';
 import { chatStaticReplyForPrompt } from './chatStaticReplies.js';
 import {
   browserWalletPickerOptions,
@@ -21441,6 +21447,15 @@ function chatApiKeyConfigured(): boolean {
   return Boolean(state.aiSettings.apiKey && state.aiSettings.apiKey.trim());
 }
 
+function chatCurrentAiConnectorConfigured(): boolean {
+  return chatAiConnectorConfigured({
+    mode: state.aiSettings.mode,
+    apiKeyConfigured: chatApiKeyConfigured(),
+    deviceAgentConfigured: deviceAgentConfiguredForCurrentRequests(),
+    pairedPlanConnector: Boolean(state.aiSettings.pairedBridge),
+  });
+}
+
 // True whenever chat should stream through the user's OWN local bridge (the
 // Plan Connector / CLI bridge) instead of the hosted Cloud relay. This covers
 // the Tauri desktop app AND the website/desktop browser running a local
@@ -21474,13 +21489,14 @@ function chatReadinessError(): string | null {
       ? null
       : t('Open the connector page on your computer (and keep it awake) to use Plan Connector.');
   }
-  if (state.cloudSession.status !== 'signed-in') {
-    return t('Sign in to Agentic Cloud (Workspace storage → Sign in) to chat with your agent.');
-  }
-  if (!chatApiKeyConfigured()) {
-    return t('Add your AI connector key in Preferences → AI connector, then try again.');
-  }
-  return null;
+  const readiness = chatHostedRelayReadinessError({
+    mode: state.aiSettings.mode,
+    apiKeyConfigured: chatApiKeyConfigured(),
+    deviceAgentConfigured: deviceAgentConfiguredForCurrentRequests(),
+    pairedPlanConnector: Boolean(state.aiSettings.pairedBridge),
+    hostedRelayAvailable: cloudSessionMatchesWallet(),
+  });
+  return readiness ? t(readiness) : null;
 }
 
 async function refreshLocalBridgeChatStatusIfNeeded(): Promise<void> {
@@ -21537,6 +21553,9 @@ async function runPairedConnectorChat(
 
 // Turn a raw stream/transport error into product-grade copy.
 function friendlyChatError(raw: string): string {
+  if (/key is required|key required|api key/i.test(raw) && !chatCurrentAiConnectorConfigured()) {
+    return t(CHAT_AI_CONNECTOR_REQUIRED);
+  }
   if (/\b401\b|sign in required/i.test(raw)) {
     // On native shells the user can be signed in while the Keychain/secure-store
     // Bearer token is still hydrating after a cold launch — a 401 here means
@@ -21544,7 +21563,9 @@ function friendlyChatError(raw: string): string {
     if (nativeCloudApiSurfaceActive() && state.cloudSession.status === 'signed-in') {
       return t('Reconnecting to Agentic Cloud — try again in a moment.');
     }
-    return t('Sign in to Agentic Cloud (Workspace storage → Sign in) to chat with your agent.');
+    return chatCurrentAiConnectorConfigured()
+      ? t(CHAT_HOSTED_BYOK_RELAY_REQUIRED)
+      : t(CHAT_AI_CONNECTOR_REQUIRED);
   }
   if (/\b429\b|rate limit/i.test(raw)) {
     return t('Too many requests right now. Wait a moment and try again.');

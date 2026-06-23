@@ -5125,6 +5125,8 @@
     "wallet": "钱包",
     "Agentic routes each request to the user's existing Solana wallet: {wallets}. The agent gets the approved result, never the key.": "Agentic 将每个请求路由到用户现有的 Solana 钱包：{wallets}。智能体只会拿到批准后的结果，永远不会拿到私钥。",
     "Add your AI connector key in Preferences → AI connector, then try again.": "请在 偏好设置 → AI 连接器 中添加你的 AI 连接器密钥，然后重试。",
+    "Connect AI first to use chat. Add an AI connector key or connect Plan Connector in Preferences → AI connector.": "Connect AI first to use chat. Add an AI connector key or connect Plan Connector in Preferences → AI connector.",
+    "Hosted BYOK needs Agentic Cloud relay sign-in, or switch to Device Agent / Plan Connector. Chat history still saves locally.": "Hosted BYOK needs Agentic Cloud relay sign-in, or switch to Device Agent / Plan Connector. Chat history still saves locally.",
     "Ask about your wallet, tokens, prices, or risk. When you are ready, ask it to prepare a swap or a payment, then approve and sign here.": "询问你的钱包、代币、价格或风险。准备好后，让它发起一笔兑换或支付，然后在此批准并签名。",
     "Chat": "聊天",
     "Connect a wallet before preparing this action.": "请先连接钱包，再发起此操作。",
