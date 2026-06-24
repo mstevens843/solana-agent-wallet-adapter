@@ -259,6 +259,10 @@ async function verifyLayoutSmoke() {
               }
               console.log(`[smoke-render-web] PASS layout ${report.label} scroll=${report.scrollWidth}/${report.innerWidth} y=${report.scrollY}`);
             }
+            if (tab === 'schedule' && viewport.width >= 1280) {
+              await page.evaluate('window.scrollTo(0, 0)');
+              await assertRecurringCreateLayout(page, `${viewport.width}x${viewport.height}`);
+            }
           }
         }
         await verifyAppInteractionContracts(page, origin, wallet);
@@ -946,6 +950,96 @@ async function appLayoutReport(page, label) {
       }
     }
     return { activeContent, connectionTriggers, errors, innerWidth, label, mobileCardContracts, nativeActiveTopGap, rects, reviewCards, scrollWidth, scrollY: window.scrollY, shellChildren };
+  })()`);
+}
+
+async function assertRecurringCreateLayout(page, label) {
+  await page.waitFor(`Boolean(document.querySelector('#createRecurring'))`);
+  await clickAndWait(page, '[data-recurring-action-tab="send"]', 'repeat send layout tab');
+  await page.waitFor(`Boolean(document.querySelector('#recurringToken')) && Boolean(document.querySelector('#recurringRecipient'))`);
+  const sendReport = await recurringCreateLayoutReport(page, `${label} repeat send`);
+  if (sendReport.errors.length) {
+    throw new Error(`Repeat create layout failed for ${sendReport.label}: ${sendReport.errors.join('; ')}\n${JSON.stringify(sendReport.rects, null, 2)}`);
+  }
+  console.log(`[smoke-render-web] PASS repeat layout ${sendReport.label}`);
+
+  await clickAndWait(page, '[data-recurring-action-tab="swap"]', 'repeat swap layout tab');
+  await page.waitFor(`Boolean(document.querySelector('#recurringInputToken')) && Boolean(document.querySelector('#recurringOutputToken'))`);
+  const swapReport = await recurringCreateLayoutReport(page, `${label} repeat swap`);
+  if (swapReport.errors.length) {
+    throw new Error(`Repeat create layout failed for ${swapReport.label}: ${swapReport.errors.join('; ')}\n${JSON.stringify(swapReport.rects, null, 2)}`);
+  }
+  console.log(`[smoke-render-web] PASS repeat layout ${swapReport.label}`);
+
+  await clickAndWait(page, '[data-recurring-action-tab="send"]', 'restore repeat send layout tab');
+  await page.waitFor(`Boolean(document.querySelector('#recurringToken')) && Boolean(document.querySelector('#recurringRecipient'))`);
+}
+
+async function recurringCreateLayoutReport(page, label) {
+  return page.evaluate(`(() => {
+    const label = ${JSON.stringify(label)};
+    const mode = label.includes('swap') ? 'swap' : 'send';
+    const errors = [];
+    const rectFor = (element) => {
+      if (!element) return null;
+      const rect = element.getBoundingClientRect();
+      return {
+        bottom: rect.bottom,
+        height: rect.height,
+        left: rect.left,
+        right: rect.right,
+        top: rect.top,
+        width: rect.width,
+      };
+    };
+    const fieldFor = (selector) => document.querySelector(selector)?.closest('.field') ?? null;
+    const input = document.querySelector('#recurringAmount');
+    const amountField = input?.closest('.amount-control-field') ?? null;
+    const amountRow = input?.closest('.amount-input-row') ?? null;
+    const pctRow = amountRow?.querySelector('.chat-amount-pcts') ?? null;
+    const rects = {
+      amountField: rectFor(amountField),
+      amountInput: rectFor(input),
+      amountRow: rectFor(amountRow),
+      pctRow: rectFor(pctRow),
+      recipient: rectFor(fieldFor('#recurringRecipient')),
+      sendToken: rectFor(fieldFor('#recurringToken')),
+      swapInputToken: rectFor(fieldFor('#recurringInputToken')),
+      swapOutputToken: rectFor(fieldFor('#recurringOutputToken')),
+    };
+    const sameRow = (name, fields) => {
+      const present = fields.filter(Boolean);
+      if (present.length !== fields.length) {
+        errors.push(name + ' fields missing');
+        return;
+      }
+      const tops = present.map((rect) => rect.top);
+      const maxTop = Math.max(...tops);
+      const minTop = Math.min(...tops);
+      if (maxTop - minTop > 8) errors.push(name + ' fields are not on one row');
+    };
+    if (!rects.amountField || !rects.amountInput || !rects.amountRow) {
+      errors.push('amount inline row missing');
+    } else {
+      if (rects.amountRow.left < rects.amountField.left - 1 || rects.amountRow.right > rects.amountField.right + 1) {
+        errors.push('amount row clips outside amount field');
+      }
+      if (rects.amountInput.width > 122) errors.push('amount input is too wide');
+      if (rects.pctRow) {
+        if (Math.abs(rects.amountInput.top - rects.pctRow.top) > 6) errors.push('amount quick-fill controls are not inline');
+        if (rects.pctRow.right > rects.amountField.right + 1) errors.push('amount quick-fill controls clip outside field');
+        if (rects.pctRow.left <= rects.amountInput.left) errors.push('amount quick-fill controls are not placed after input');
+      }
+    }
+    if (mode === 'send') {
+      sameRow('send token/amount/recipient', [rects.sendToken, rects.amountField, rects.recipient]);
+      if (rects.recipient && rects.sendToken && rects.recipient.width <= rects.sendToken.width + 8) {
+        errors.push('recipient field is not wider than token field');
+      }
+    } else {
+      sameRow('swap input/output/amount', [rects.swapInputToken, rects.swapOutputToken, rects.amountField]);
+    }
+    return { errors, label, rects };
   })()`);
 }
 

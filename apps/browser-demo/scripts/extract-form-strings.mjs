@@ -186,6 +186,8 @@ for (const s of findConstBlock(mainSrc, 'CHAT_SUGGESTED_PROMPTS').matchAll(/(['"
 // CHAT_POWER_ACTIONS: objects rendered via t(action.eyebrow/title/description). Scope to those
 // keys only so the [bracketed] composer `template:` grammar string is NOT translated.
 for (const m of findConstBlock(mainSrc, 'CHAT_POWER_ACTIONS').matchAll(/\b(eyebrow|title|description)\s*:\s*(['"])((?:[^\\]|\\.)*?)\2/g)) add(m[3]);
+// RECURRING_PRESETS: rendered via t(preset.title/badge/description) in recurringPresetControls.
+for (const m of findConstBlock(mainSrc, 'RECURRING_PRESETS').matchAll(/\b(title|badge|description)\s*:\s*(['"])((?:[^\\]|\\.)*?)\2/g)) add(m[3]);
 // NAV_ITEMS: the Android-visible top surface toggle. Only `mobileLabel` (Demo/App) shows on
 // mobile — the rest are mobileHidden website nav, intentionally left English — so scope to it.
 for (const m of findConstBlock(mainSrc, 'NAV_ITEMS').matchAll(/\bmobileLabel\s*:\s*(['"])((?:[^\\]|\\.)*?)\1/g)) add(m[2]);

@@ -11370,9 +11370,65 @@ button.danger:hover:not(:disabled) {
   min-width: 0;
 }
 
+/* Action-first creating row: Start/Check + Action picker + Connector route + connect-gate.
+   Flex-wrap (not a rigid 4-col grid) so the two pickers reflow on narrow/native widths. */
 .one-time-plan-control-row.has-connector {
-  grid-template-columns: auto minmax(190px, 260px) minmax(0, 1fr);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
 }
+.one-time-plan-control-row.has-connector .one-time-plan-tabs { flex: 0 0 auto; }
+/* Connector picker appends AFTER the action tabs without growing — keeps the tabs from reflowing. */
+.one-time-plan-control-row.has-connector .top-connector-control { flex: 0 0 auto; width: 200px; max-width: 240px; min-width: 160px; }
+.one-time-plan-control-row.has-connector .create-action-control { flex: 0 0 auto; }
+.create-connect-gate { flex: 0 0 auto; white-space: nowrap; color: var(--accent); border-color: rgba(63, 189, 131, 0.4); }
+
+/* Action tab bar: Swap | Send | Proof | Evidence  +  the "Lend ▾" dropdown segment. The 4 base tabs
+   reuse the segmented .one-time-method-filter pill; the dropdown is a distinct sibling button (so its
+   menu is never clipped by the pill's overflow:hidden) with a caret that clearly reads as a dropdown. */
+.create-action-control {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  margin: 0;
+  min-width: 0;
+  width: max-content;
+}
+.create-action-control .create-action-filter { flex: 0 1 auto; }
+.action-picker { flex: 0 0 auto; position: relative; }
+.action-picker-trigger {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(224, 230, 226, 0.11);
+  border-radius: 8px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  color: rgba(224, 230, 226, 0.82);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 0.78rem;
+  font-weight: 880;
+  gap: 9px;
+  justify-content: space-between;
+  min-height: 38px;
+  min-width: 134px; /* fits the longest label ("Limit / TP-SL ▾") so the segment never reflows */
+  padding: 6px 11px;
+  white-space: nowrap;
+}
+.action-picker-trigger:hover:not(:disabled) { border-color: rgba(139, 205, 170, 0.34); color: #eafff3; }
+.action-picker-trigger:disabled { cursor: not-allowed; opacity: 0.55; }
+.action-picker.active .action-picker-trigger {
+  background: linear-gradient(180deg, rgba(70, 196, 136, 0.42), rgba(36, 119, 80, 0.34));
+  border-color: transparent;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 8px 18px rgba(13, 71, 44, 0.18);
+  color: #f4fff8;
+}
+.action-picker-value { overflow: hidden; text-overflow: ellipsis; }
+.action-picker .template-picker-caret { color: inherit; flex: 0 0 auto; opacity: 0.8; }
+/* Right-align the menu to the trigger (it's the rightmost segment) so a wide label can't overflow. */
+.action-picker-menu { left: auto; right: 0; min-width: 100%; width: max-content; max-width: min(var(--template-menu-max-width, 260px), 84vw); }
+.action-picker-menu .template-picker-option { padding: 9px 12px; }
+.action-picker-menu .template-picker-option strong { font-size: 0.84rem; }
 
 .one-time-plan-control-row.review-filter-row,
 .recurring-control-row.review-filter-row {
@@ -11456,6 +11512,19 @@ button.danger:hover:not(:disabled) {
   min-width: 0;
 }
 
+/* Repeat creating row uses the same action tab bar (Send | Swap | Lend ▾) — flex-wrap like New Request. */
+.recurring-control-row.has-connector {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.recurring-control-row.has-connector .compact-tabs { flex: 0 0 auto; }
+.recurring-control-row.has-connector .create-action-control { flex: 0 0 auto; }
+/* Connector + connector-action pickers append after the action tabs without growing (no tab reflow). */
+.recurring-control-row.has-connector .recurring-connector-control,
+.recurring-control-row.has-connector .recurring-connector-action-control { flex: 0 0 auto; width: 200px; max-width: 240px; min-width: 160px; }
+
 .recurring-control-row .recurring-connector-control {
   flex: 0 1 260px;
   max-width: 100%;
@@ -11465,11 +11534,6 @@ button.danger:hover:not(:disabled) {
 
 .recurring-control-row .recurring-connector-control .select-picker-shell {
   width: 100%;
-}
-
-.recurring-method-control,
-.recurring-connector-action-control {
-  justify-self: end;
 }
 
 .one-time-create-panel,
@@ -15109,14 +15173,12 @@ button.danger:hover:not(:disabled) {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+/* Action bar wrapper — left-grouped (sits right after Start/Check), NOT right-pinned, so the
+   connector picker appends after "Lend ▾" without reflowing the tabs. */
 .one-time-method-control {
   align-items: center;
-  display: grid;
+  display: flex;
   gap: 10px;
-  grid-template-columns: auto max-content;
-  justify-content: end;
-  justify-self: end;
-  margin-left: auto;
   min-width: 0;
   width: max-content;
 }
@@ -15210,6 +15272,16 @@ button.danger:hover:not(:disabled) {
   background: rgba(63, 189, 131, 0.16);
   border-color: rgba(139, 205, 170, 0.34);
   color: #dcffe9;
+}
+
+/* Action-category tabs (Swap/Send/Proof/Evidence — New Request + Repeat) take the BOLD green of the
+   connector dropdown ("Lend") when selected, so the "what action" selector reads as one group, visually
+   distinct from the subtle Start/Check step tabs. */
+.create-action-control .create-action-filter button.active {
+  background: linear-gradient(180deg, rgba(70, 196, 136, 0.42), rgba(36, 119, 80, 0.34));
+  border-color: transparent;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1), 0 8px 18px rgba(13, 71, 44, 0.18);
+  color: #f4fff8;
 }
 
 .template-filter-row.one-time-method-filter button.active {
@@ -20469,7 +20541,10 @@ button.danger:hover:not(:disabled) {
 }
 
 .route-app .one-time-plan-control-row.has-connector {
-  grid-template-columns: auto minmax(196px, 260px) minmax(0, 1fr);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
 }
 
 .route-app .recurring-control-row {
@@ -20480,21 +20555,15 @@ button.danger:hover:not(:disabled) {
   grid-template-columns: auto minmax(196px, 260px) minmax(0, 1fr);
 }
 
-.route-app .recurring-method-control,
-.route-app .recurring-connector-action-control {
-  justify-self: end;
-  margin-left: auto;
-  max-width: 100%;
-  width: max-content;
-}
-
-.route-app .recurring-method-control,
+/* No right-push: the recurring connector-action picker appends after the action tabs (no tab reflow). */
 .route-app .recurring-connector-action-control {
   align-items: center;
   display: grid;
   gap: 10px;
   grid-template-columns: auto max-content;
+  max-width: 100%;
   min-width: 0;
+  width: max-content;
 }
 
 .route-app .recurring-method-control .select-picker-shell,
@@ -24187,6 +24256,77 @@ button.danger:hover:not(:disabled) {
 .route-app .recurring-create-section .field input,
 .route-app .recurring-create-section .select-picker-trigger {
   min-height: 40px;
+}
+
+.route-app .recurring-payment-section {
+  grid-template-columns: 112px minmax(0, 1fr);
+}
+
+.route-app .recurring-payment-section .recurring-grid > * {
+  min-width: 0;
+}
+
+.route-app .recurring-payment-section .recurring-grid:not(.recurring-swap-grid) {
+  grid-template-columns: minmax(190px, 0.72fr) minmax(286px, 0.92fr) minmax(250px, 1.36fr);
+}
+
+.route-app .recurring-payment-section .recurring-swap-grid {
+  grid-template-columns: minmax(210px, 1fr) minmax(230px, 1fr) minmax(286px, 0.98fr);
+}
+
+.route-app .recurring-payment-section .recurring-swap-grid .slippage-control-field {
+  max-width: 300px;
+}
+
+.route-app .recurring-payment-section .token-choice-mode {
+  grid-template-columns: repeat(2, minmax(36px, 1fr));
+}
+
+.route-app .recurring-payment-section .token-choice-mode button {
+  font-size: 0.6rem;
+  padding-inline: 6px;
+}
+
+.route-app .recurring-payment-section .amount-control-field .amount-input-row {
+  gap: 6px;
+}
+
+.route-app .recurring-payment-section .amount-control-field .amount-input-row > input {
+  flex: 1 1 64px;
+  max-width: 108px;
+  min-width: 54px;
+}
+
+.route-app .recurring-payment-section .amount-control-field .amount-input-row .chat-amount-pcts {
+  gap: 4px;
+}
+
+.route-app .recurring-payment-section .amount-control-field .amount-input-row .chat-amount-pct {
+  font-size: 0.78rem;
+  min-height: 40px;
+  padding-inline: 8px;
+}
+
+.route-app .recurring-payment-section .amount-control-field .amount-input-row .chat-amount-pct-input {
+  min-width: 58px;
+  width: 68px;
+}
+
+.route-app .recurring-payment-section .amount-control-field .amount-input-row .chat-amount-pct-apply {
+  min-width: 34px;
+  padding-inline: 8px;
+}
+
+@media (min-width: 900px) and (max-width: 1000px) {
+  .route-app .recurring-payment-section .recurring-grid:not(.recurring-swap-grid),
+  .route-app .recurring-payment-section .recurring-swap-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .route-app .recurring-payment-section .amount-control-field,
+  .route-app .recurring-payment-section .recipient-field {
+    grid-column: 1 / -1;
+  }
 }
 
 .route-app .recurring-next-preview {
@@ -31268,6 +31408,39 @@ button.danger:hover:not(:disabled) {
     white-space: normal;
   }
 
+  /* Native action tab bar: the 4-tab pill flexes full-width, the "Lend ▾" dropdown sits beside it
+     (a separate element so its menu — positioned by positionTemplatePickerMenu — escapes the row). */
+  .route-app .one-time-plan-control-row.has-connector .create-action-control,
+  .route-app .recurring-control-row.has-connector .create-action-control {
+    display: flex !important;
+    gap: 6px;
+    width: 100%;
+  }
+  .route-app .one-time-plan-control-row.has-connector .create-action-filter,
+  .route-app .recurring-control-row.has-connector .create-action-filter {
+    display: grid;
+    flex: 1 1 auto;
+    grid-template-columns: repeat(var(--action-tab-cols, 4), minmax(0, 1fr));
+    min-width: 0;
+  }
+  .route-app .one-time-plan-control-row.has-connector .action-picker,
+  .route-app .recurring-control-row.has-connector .action-picker { flex: 0 0 auto; }
+  .route-app .one-time-plan-control-row.has-connector .action-picker-trigger,
+  .route-app .recurring-control-row.has-connector .action-picker-trigger {
+    font-size: 0.68rem;
+    gap: 6px;
+    max-width: 138px;
+    min-height: 32px;
+    min-width: 92px;
+    padding: 0 9px;
+  }
+  .route-app .recurring-control-row.has-connector .create-action-filter { --action-tab-cols: 2; }
+
+  /* The control row is position:sticky z-index:220 on native — lift the dropdown menu above it so
+     it isn't trapped below the sticky stacking context when it drops over the form below. */
+  .route-app .one-time-plan-control-row.has-connector .action-picker-menu,
+  .route-app .recurring-control-row.has-connector .action-picker-menu { z-index: 240; }
+
   .route-app .intent-document-card.planner-card {
     gap: 10px;
     padding: 10px;
@@ -31630,6 +31803,7 @@ button.danger:hover:not(:disabled) {
   }
 
   .route-app .mobile-recurring-contract .recipient-field,
+  .route-app .mobile-recurring-contract .amount-control-field,
   .route-app .mobile-recurring-contract .recurring-note-field,
   .route-app .mobile-recurring-contract .field:has(#recurringWebhookUrl),
   .route-app .mobile-recurring-contract .recurring-time-field {
@@ -31688,6 +31862,25 @@ button.danger:hover:not(:disabled) {
     font-size: 0.55rem;
     min-height: 20px;
     padding: 0 5px;
+  }
+
+  .route-app .mobile-recurring-contract .amount-control-field .amount-input-row {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .route-app .mobile-recurring-contract .amount-control-field .amount-input-row .chat-amount-pcts {
+    display: grid;
+    gap: 6px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .route-app .mobile-recurring-contract .amount-control-field .amount-input-row .chat-amount-pct,
+  .route-app .mobile-recurring-contract .amount-control-field .amount-input-row .chat-amount-pct-input {
+    min-width: 0;
+    width: 100%;
   }
 
   .route-app .mobile-recurring-contract .recurring-time-controls {
@@ -35192,15 +35385,16 @@ button.danger:hover:not(:disabled) {
   max-height: min(56dvh, calc(100dvh - 200px));
   overflow-y: auto;
   overscroll-behavior: contain;
-  background: var(--surface-strong);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius);
-  padding: 6px;
+  /* Solid, fully-opaque darker neutral (no see-through) for a cleaner, fancier menu. */
+  background: #0d0f0e;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 8px;
   display: none;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   z-index: 30;
-  box-shadow: var(--shadow);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.4);
 }
 /* On narrow phones a 300px min-width menu overflows the right edge; clamp to the viewport. */
 @media (max-width: 480px) {
@@ -35258,24 +35452,40 @@ button.danger:hover:not(:disabled) {
 .chat-plus-menu .chat-plus-option,
 .chat-sheet-actions .chat-plus-option {
   display: grid;
-  gap: 3px;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
   align-items: start;
-  background: rgba(255, 255, 255, 0.026);
-  border: 1px solid transparent;
-  border-radius: 6px;
-  padding: 9px 11px;
+  /* Solid neutral card (no translucency), a touch lighter than the menu so it reads as a tile. */
+  background: #16191a;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+  padding: 10px 12px;
   text-align: left;
   white-space: normal;
   width: 100%;
+  /* Keep natural height inside the max-height/scroll list: never let flexbox compress a card
+     below its content (10 Advanced cards would otherwise crush + overlap; the list scrolls). */
+  flex-shrink: 0;
   cursor: pointer;
   color: var(--text);
   font: inherit;
 }
 .chat-plus-menu .chat-plus-option:hover,
 .chat-sheet-actions .chat-plus-option:hover {
-  background: rgba(255, 255, 255, 0.06);
-  border-color: rgba(224, 230, 226, 0.17);
+  background: #1d2123;
+  border-color: rgba(63, 189, 131, 0.4);
 }
+/* Small dainty leading icon, muted; brightens slightly on hover. */
+.chat-plus-option-icon {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  color: rgba(196, 205, 202, 0.55);
+  flex: 0 0 auto;
+}
+.chat-plus-menu .chat-plus-option:hover .chat-plus-option-icon,
+.chat-sheet-actions .chat-plus-option:hover .chat-plus-option-icon { color: rgba(196, 205, 202, 0.85); }
+.chat-plus-option-body { display: grid; gap: 3px; min-width: 0; }
 .chat-plus-eyebrow {
   color: rgba(196, 205, 202, 0.56);
   font-size: 0.6rem;
@@ -35283,10 +35493,181 @@ button.danger:hover:not(:disabled) {
   letter-spacing: 0.07em;
   text-transform: uppercase;
 }
+/* Dainty on mobile (native sheet menu + narrow composer dropdown). */
+.chat-composer-mobile .chat-plus-option-icon,
+.chat-sheet-actions .chat-plus-option-icon { width: 15px; height: 15px; }
 .chat-plus-menu .chat-plus-option strong,
 .chat-sheet-actions .chat-plus-option strong { color: var(--text); font-size: 0.92rem; line-height: 1.2; }
 .chat-plus-menu .chat-plus-option em,
 .chat-sheet-actions .chat-plus-option em { color: var(--muted); font-size: 0.76rem; font-style: normal; line-height: 1.3; }
+
+/* Wallet Actions menu header row: the "WALLET ACTIONS" label + the Receive accessory pill. */
+.chat-plus-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.chat-plus-head .chat-plus-group { padding-bottom: 0; flex: 0 0 auto; }
+.chat-receive-pill-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  line-height: 1;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.chat-receive-pill-btn:hover { border-color: var(--accent); }
+/* Green Receive (copy) icon on every surface, per product. */
+.chat-receive-pill-btn svg { width: 13px; height: 13px; }
+.chat-receive-pill-btn .wallet-action-copy-icon { fill: var(--accent); }
+.chat-receive-pill-label { font-size: 0.74rem; font-weight: 700; letter-spacing: 0.02em; }
+
+/* Auto-posted Receive card: white rounded QR + copyable address pill (mirrors WalletsTab). */
+.chat-receive-card { display: grid; gap: 10px; justify-items: center; padding: 4px 0; }
+.chat-receive-qr {
+  background: #fff;
+  border-radius: 14px;
+  padding: 12px;
+  display: grid;
+  place-items: center;
+  line-height: 0;
+}
+.chat-receive-qr-img { width: 200px; height: 200px; display: block; }
+.chat-receive-qr-loading {
+  width: 200px;
+  height: 200px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.06);
+}
+.chat-receive-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 6px 6px 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+}
+.chat-receive-addr {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Green text + icon on transparent (matches the reference receive card), not a filled pill. */
+.chat-receive-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.chat-receive-copy:hover { color: #52ca91; }
+.chat-receive-copy.copied { color: #8bcdaa; }
+.chat-receive-copy svg { width: 14px; height: 14px; }
+.chat-receive-copy .wallet-action-copy-icon { fill: currentColor; }
+
+/* Desktop/web connector popover is a touch wider than the swap/send popover (forms are denser). */
+.chat-connector-popover { width: min(560px, 100%); }
+.chat-connector-form { display: grid; gap: 12px; }
+/* "What this prepares": outcome badge + template description under the template picker. */
+.chat-connector-template-meta { display: grid; gap: 6px; margin: -4px 0 2px; }
+.chat-connector-template-meta .template-outcome-badge { justify-self: start; }
+.chat-connector-template-meta .template-description { margin: 0; color: var(--muted); font-size: 0.82rem; line-height: 1.35; }
+.chat-recurring-popover { width: min(600px, 100%); }
+.chat-recurring-form { display: grid; gap: 12px; }
+/* The connector + recurring chat forms reuse the dense New-Request / Repeat grids, which are
+   multi-column on desktop. Inside the narrow popover/sheet, force single-column flow + min-width:0
+   so nothing overflows or cramps (the inner mobile field-pair rows keep their own pairing). */
+.chat-connector-form .chat-sheet-fields,
+.chat-connector-form .chat-sheet-fields .planner-fields { grid-template-columns: minmax(0, 1fr); }
+.chat-connector-form .chat-sheet-fields > * { min-width: 0; }
+.chat-recurring-form .recurring-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+.chat-recurring-form .recurring-grid > * { min-width: 0; }
+/* Keep the compact recurring confirmation card readable inside a chat bubble. */
+.chat-recurring-card { display: grid; gap: 8px; }
+.chat-recurring-card .recurring-card-hero { margin: 0; }
+.chat-recurring-manage {
+  justify-self: start;
+  background: none;
+  border: 0;
+  padding: 2px 0;
+  color: var(--accent);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.chat-recurring-manage:hover { text-decoration: underline; }
+
+/* Web/desktop only (NOT the native .chat-composer-mobile shells): scale the upward Wallet
+   Actions dropdown ~1.5x in size + text, per product. The narrow-phone @media clamp on
+   .chat-plus-menu still applies, so the larger font never overflows the viewport. */
+.chat-composer:not(.chat-composer-mobile) .chat-plus-menu {
+  min-width: 450px;
+  max-width: 520px;
+  padding: 11px;
+  gap: 7px;
+}
+.chat-composer:not(.chat-composer-mobile) .chat-plus-menu .chat-plus-group {
+  font-size: 0.96rem;
+  letter-spacing: 0.07em;
+  padding: 8px 8px 2px;
+}
+.chat-composer:not(.chat-composer-mobile) .chat-plus-menu .chat-plus-option {
+  padding: 12px 16px;
+  gap: 12px;
+  border-radius: 12px;
+}
+.chat-composer:not(.chat-composer-mobile) .chat-plus-menu .chat-plus-option-icon {
+  width: 24px;
+  height: 24px;
+  margin-top: 3px;
+}
+.chat-composer:not(.chat-composer-mobile) .chat-plus-menu .chat-plus-eyebrow {
+  font-size: 0.72rem;
+  letter-spacing: 0.07em;
+}
+.chat-composer:not(.chat-composer-mobile) .chat-plus-menu .chat-plus-option strong {
+  font-size: 1.06rem;
+  line-height: 1.2;
+  /* Long translated compounds (e.g. German "Liquidität bereitstellen") break, never overflow. */
+  overflow-wrap: anywhere;
+}
+.chat-composer:not(.chat-composer-mobile) .chat-plus-menu .chat-plus-option em {
+  font-size: 0.86rem;
+  line-height: 1.3;
+  /* Clamp the description to 2 lines so it always fits the card (web/desktop popover only —
+     the base em rule, shared with the native mobile sheet, is intentionally left untouched). */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.chat-composer:not(.chat-composer-mobile) .chat-plus-menu .chat-receive-pill-btn { padding: 7px 13px; }
+.chat-composer:not(.chat-composer-mobile) .chat-plus-menu .chat-receive-pill-btn svg { width: 15px; height: 15px; }
+.chat-composer:not(.chat-composer-mobile) .chat-plus-menu .chat-receive-pill-label { font-size: 0.88rem; }
+
 .chat-disclaimer { text-align: center; color: var(--dim); font-size: 0.72rem; padding: 0 0 6px; }
 
 /* --- Hybrid chip builder bar (above the composer) --- */
@@ -35506,6 +35887,64 @@ button.danger:hover:not(:disabled) {
 .chat-sheet-picker .chat-token-modes { margin-bottom: 10px; }
 .chat-sheet-actions { display: flex; flex-direction: column; gap: 8px; }
 
+/* Primary | Advanced toggle in the Wallet Actions menu (web popover + native sheet). */
+.chat-wallet-tabs {
+  background: rgba(255, 255, 255, 0.028);
+  border: 1px solid rgba(224, 230, 226, 0.11);
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin: 4px 0 8px;
+  padding: 3px;
+}
+.chat-wallet-tabs button {
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  color: rgba(224, 230, 226, 0.72);
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 880;
+  min-height: 30px;
+  padding: 5px 10px;
+}
+.chat-wallet-tabs button.active {
+  background: linear-gradient(180deg, rgba(70, 196, 136, 0.42), rgba(36, 119, 80, 0.34));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  color: #f4fff8;
+}
+/* Web popover: cap the card list so Primary (4) and Advanced (~10) render at ~the same menu size; the
+   list scrolls while the header + tabs stay pinned. (The native rail-sheet body already scrolls.) */
+.chat-plus-menu .chat-plus-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: min(52dvh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Advanced tab (10 cards): grow the upward menu + scroll the list deeper, and render the cards
+   a touch more compact than Primary. Desktop popover only (`is-advanced` is added to the menu in
+   main.ts when state.chatWalletActionTab === 'advanced'); the mobile dropdown keeps base sizing.
+   The taller menu stays bounded by calc(100dvh - 150px) so it can't clip off the top edge. */
+.chat-composer:not(.chat-composer-mobile) .chat-plus-menu.is-advanced {
+  max-height: min(66dvh, calc(100dvh - 150px));
+}
+.chat-composer:not(.chat-composer-mobile) .chat-plus-menu.is-advanced .chat-plus-list {
+  max-height: min(58dvh, 480px);
+}
+.chat-composer:not(.chat-composer-mobile) .chat-plus-menu.is-advanced .chat-plus-option {
+  padding: 10px 14px;
+  gap: 10px;
+}
+.chat-composer:not(.chat-composer-mobile) .chat-plus-menu.is-advanced .chat-plus-option strong {
+  font-size: 0.98rem;
+}
+.chat-composer:not(.chat-composer-mobile) .chat-plus-menu.is-advanced .chat-plus-option em {
+  font-size: 0.8rem;
+}
+
 /* Full-form action sheet (Swap / Send / Proof) — mirrors the New Request plan forms:
    every field visible at once, with a sticky Confirm that stays above the keyboard. */
 .chat-sheet-form { display: grid; gap: 12px; }
@@ -35619,7 +36058,28 @@ button.danger:hover:not(:disabled) {
 /* New Request / Repeat amount control: pill in the header, balance line, % quick-fills. */
 .amount-control-field { display: grid; gap: 6px; }
 .amount-balance-line { color: var(--muted); font-size: 0.74rem; font-weight: 700; }
-.amount-control-field .chat-amount-pcts { margin-top: 2px; }
+/* Slippage Auto|Custom field: the disabled "Auto" input reads as muted/placeholder, not an error. */
+.slippage-control-field .slippage-auto-input { color: var(--muted); opacity: 0.85; }
+/* Desktop: the amount input + the 50/100/Custom%/% quick-fills share ONE row (input shrinks),
+   with the balance line below. Scoped to .amount-control-field so the chat/recurring amount
+   inputs (which reuse .chat-amount-pcts) are untouched. */
+.amount-control-field .amount-input-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.amount-control-field .amount-input-row > input { flex: 1 1 auto; min-width: 0; }
+.amount-control-field .amount-input-row .chat-amount-pcts { flex: 0 0 auto; margin: 0; }
+.amount-control-field .amount-input-row .chat-amount-pct-input { flex: 0 0 auto; width: 74px; min-width: 54px; }
+/* Mobile/native: back to the stacked layout (input, then quick-fills row, then balance). */
+.route-app .mobile-planner-fields .amount-control-field .amount-input-row { flex-direction: column; align-items: stretch; gap: 6px; }
+.route-app .mobile-planner-fields .amount-control-field .amount-input-row .chat-amount-pct-input { flex: 1 1 auto; width: auto; }
+
+/* Align paired inputs in the desktop 2-col planner grid: give every field "head" the same height as
+   the $/TOKEN (and LIST/MINT) toggle head (~28px) so toggle-less fields like MAX SLIPPAGE don't sit
+   higher than the amount input. Mobile (single-column) needs no alignment. */
+.route-app .planner-fields:not(.mobile-planner-fields) > .field > span:first-child,
+.route-app .planner-fields:not(.mobile-planner-fields) > .field > .token-choice-head {
+  align-items: center;
+  display: flex;
+  min-height: 28px;
+}
 
 /* Proof / Evidence sub-tabs in the Sign-proof sheet. */
 .chat-proof-tabs { display: flex; gap: 6px; }

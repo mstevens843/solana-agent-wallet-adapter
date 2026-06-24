@@ -476,7 +476,7 @@ const BASE_AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     selectField('inputToken', 'Input token', ['SOL', 'USDC', 'JUP', 'BONK', 'WIF', 'PYUSD', 'POPCAT'], 'SOL'),
     selectField('outputToken', 'Output token', ['USDC', 'SOL', 'JUP', 'BONK', 'WIF', 'PYUSD', 'POPCAT'], 'USDC'),
     field('amount', 'Token amount', '0.01', '0.01', true),
-    field('slippageBps', 'Max slippage', '0.5%', '50'),
+    field('slippageBps', 'Max slippage', '0.5%', ''),
   ]),
   template('recurring', 'dca', 'DCA review proof', 'Sign a review proof for a recurring DCA strategy before using a swap-capable recurring engine.', 'manual_review', 'medium', [
     selectField('token', 'Spend token', ['SOL', 'USDC', 'PYUSD'], 'USDC'),
@@ -501,7 +501,7 @@ const BASE_AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
   template('trading', 'rebalance', 'Portfolio rebalance', 'Plan a rebalance while preserving final wallet approval for each action.', 'manual_review', 'high', [
     textareaField('target', 'Target allocation', 'Example: 60% SOL, 30% USDC, 10% JUP'),
     field('maxTradeSize', 'Max trade size', '100 USDC', '100 USDC'),
-    field('slippageBps', 'Max slippage', '0.5%', '50'),
+    field('slippageBps', 'Max slippage', '0.5%', ''),
   ]),
   template('portfolio', 'balances', 'Portfolio check', 'Read and summarize wallet balances before proposing any action.', 'read_only', 'low', [
     selectField('scope', 'Scope', ['SOL + configured tokens', 'All SPL tokens', 'NFTs', 'DeFi positions'], 'SOL + configured tokens'),
@@ -3102,6 +3102,8 @@ function displayParameterValue(key: string, value: string, parameters: Record<st
 }
 
 function formatSlippageBpsForDisplay(value: string): string {
+  // Empty = Auto slippage (the swap omits slippageBps so Jupiter applies its own).
+  if (!value.trim()) return 'Auto';
   const bps = Number(value);
   if (!Number.isFinite(bps) || bps <= 0) return value.trim();
   const percent = bps / 100;

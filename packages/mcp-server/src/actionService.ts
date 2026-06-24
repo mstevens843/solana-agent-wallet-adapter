@@ -4759,7 +4759,8 @@ export class AgentWalletActionService {
         outputMint: swap.outputMint,
         amount: input.amount,
         amountRaw: swap.amountRaw.toString(),
-        slippageBps: swap.slippageBps,
+        // Omit on Auto (undefined) so the stored action carries no slippage cap.
+        ...(swap.slippageBps !== undefined && { slippageBps: swap.slippageBps }),
         ...(input.minOutputAmount !== undefined && { minOutputAmount: input.minOutputAmount }),
         ...(minimumOutputRaw !== undefined && { otherAmountThreshold: minimumOutputRaw }),
         ...(quoteSnapshot !== undefined && { quoteSnapshot }),
@@ -5789,10 +5790,8 @@ export class AgentWalletActionService {
       outputToken: requireStringParam(action, 'outputToken'),
       amount: requireStringParam(action, 'amount'),
       ...(typeof action.params.minOutputAmount === 'string' ? { minOutputAmount: action.params.minOutputAmount } : {}),
-      slippageBps:
-        typeof action.params.slippageBps === 'number'
-          ? action.params.slippageBps
-          : this.config.mainnet.maxSlippageBps,
+      // Omit when the prepared swap carried no cap (Auto) so Jupiter applies its own slippage.
+      ...(typeof action.params.slippageBps === 'number' ? { slippageBps: action.params.slippageBps } : {}),
     };
     const taker = await this.backend.getAddress();
     const swap = await normalizeSwapInput(this.config, this.connection, input);
@@ -6745,7 +6744,8 @@ interface NormalizedSwapInput {
   inputDecimals: number;
   outputDecimals: number;
   amountRaw: bigint;
-  slippageBps: number;
+  // undefined = Auto (omit slippageBps from the Jupiter order so Jupiter applies its own slippage).
+  slippageBps: number | undefined;
 }
 
 interface ResolvedTokenConfig extends TokenLimitConfig {
@@ -6775,15 +6775,20 @@ async function normalizeSwapInput(
   assertJupiterSwapCluster(config);
   const inputToken = await resolveSwapToken(config, connection, input.inputToken ?? 'SOL');
   const outputToken = await resolveSwapToken(config, connection, input.outputToken ?? 'USDC');
-  const slippageBps = input.slippageBps ?? config.mainnet.maxSlippageBps;
-  if (!Number.isInteger(slippageBps) || slippageBps < 0) {
-    throw new ProtocolError('invalid_request', 'Jupiter swap slippageBps must be a non-negative integer.');
-  }
-  if (slippageBps > config.mainnet.maxSlippageBps) {
-    throw new ProtocolError(
-      'unauthorized',
-      `Jupiter swap slippage ${slippageBps} bps exceeds configured cap of ${config.mainnet.maxSlippageBps} bps.`,
-    );
+  // Auto slippage: when slippageBps is omitted, leave it undefined so the Jupiter order request
+  // omits it and Jupiter applies its own (dynamic) slippage — matching the browser-direct path.
+  // A provided (Custom) value is validated + capped. Never default to maxSlippageBps here.
+  const slippageBps = input.slippageBps;
+  if (slippageBps !== undefined) {
+    if (!Number.isInteger(slippageBps) || slippageBps < 0) {
+      throw new ProtocolError('invalid_request', 'Jupiter swap slippageBps must be a non-negative integer.');
+    }
+    if (slippageBps > config.mainnet.maxSlippageBps) {
+      throw new ProtocolError(
+        'unauthorized',
+        `Jupiter swap slippage ${slippageBps} bps exceeds configured cap of ${config.mainnet.maxSlippageBps} bps.`,
+      );
+    }
   }
   const amountRaw = parseDecimalAmount(input.amount, inputToken.decimals, `${inputToken.symbol} swap amount`);
   assertMaxAmount(amountRaw, config.mainnet.maxSwapInput, inputToken.decimals, `${inputToken.symbol} swap amount`);
@@ -6918,7 +6923,8 @@ async function fetchJupiterOrder(
       outputMint: swap.outputMint,
       amount: swap.amountRaw.toString(),
       taker,
-      slippageBps: swap.slippageBps,
+      // Auto: omit slippageBps so Jupiter applies its own slippage (never send "undefined").
+      ...(swap.slippageBps !== undefined ? { slippageBps: swap.slippageBps } : {}),
       ...(referral
         ? { referralAccount: referral.referralAccount, referralFee: referral.referralFee }
         : {}),

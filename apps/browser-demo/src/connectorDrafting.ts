@@ -67,6 +67,143 @@ export interface ConnectorActionDisplayParts {
   title: string;
 }
 
+// ===========================================================================
+// ACTION-FIRST TAXONOMY (single source of truth for the action-first surfaces)
+// ---------------------------------------------------------------------------
+// Every connector actionType (from PROTOCOL_CONNECTORS[].actionKinds) is mapped
+// EXPLICITLY to one user-action category. The category CANNOT be derived from
+// the actionType prefix — that's the connector (jupiter_lend_* / jupiter_trigger_*
+// / jupiter_recurring_* are all "jupiter"). Sub-actions carry their own actionType,
+// so this table also drives sub-action scoping (Jupiter Lend earn=lend vs borrow).
+// ===========================================================================
+export type ActionCategory =
+  | 'swap' | 'send' | 'limit' | 'dca' | 'lend' | 'borrow' | 'lp'
+  | 'stake' | 'perps' | 'nft' | 'governance' | 'bridge' | 'oracle' | 'read' | 'proof';
+
+export const ACTION_TYPE_CATEGORY: Readonly<Record<string, ActionCategory>> = {
+  // swap
+  swap: 'swap', sanctum_swap_lst: 'swap',
+  // limit / TP-SL / triggers
+  jupiter_trigger_register_vault: 'limit', jupiter_trigger_single_order: 'limit',
+  jupiter_trigger_oco_order: 'limit', jupiter_trigger_otoco_order: 'limit',
+  jupiter_trigger_edit_order: 'limit', jupiter_trigger_cancel_order: 'limit',
+  jupiter_trigger_withdraw_order_funds: 'limit', phoenix_place_trigger: 'limit',
+  // dca / recurring
+  jupiter_recurring_create_time_order: 'dca', jupiter_recurring_cancel_order: 'dca',
+  jupiter_recurring_deposit_price_order: 'dca', jupiter_recurring_withdraw_price_order: 'dca',
+  // lend (supply / earn)
+  jupiter_lend_earn_deposit: 'lend', jupiter_lend_earn_withdraw: 'lend',
+  jupiter_lend_earn_mint: 'lend', jupiter_lend_earn_redeem: 'lend',
+  kamino_deposit: 'lend', kamino_withdraw: 'lend',
+  marginfi_deposit: 'lend', marginfi_withdraw: 'lend',
+  save_deposit: 'lend', save_withdraw: 'lend',
+  project0_create_account: 'lend', project0_deposit: 'lend', project0_withdraw: 'lend',
+  drift_vault_deposit: 'lend', drift_vault_request_withdraw: 'lend',
+  drift_vault_cancel_withdraw: 'lend', drift_vault_complete_withdraw: 'lend',
+  lulo_deposit: 'lend', lulo_withdraw: 'lend', lulo_complete_withdraw: 'lend',
+  // borrow
+  jupiter_lend_borrow_create_position: 'borrow', jupiter_lend_borrow_deposit_collateral: 'borrow',
+  jupiter_lend_borrow_borrow: 'borrow', jupiter_lend_borrow_repay: 'borrow',
+  jupiter_lend_borrow_withdraw_collateral: 'borrow',
+  marginfi_borrow: 'borrow', marginfi_repay: 'borrow',
+  save_borrow: 'borrow', save_repay: 'borrow',
+  project0_borrow: 'borrow', project0_repay: 'borrow',
+  // liquidity (LP)
+  raydium_add_liquidity: 'lp', raydium_remove_liquidity: 'lp', raydium_collect_fees: 'lp',
+  raydium_harvest: 'lp', raydium_farm_stake: 'lp', raydium_farm_unstake: 'lp',
+  meteora_add_liquidity: 'lp', meteora_remove_liquidity: 'lp', meteora_claim_fees: 'lp',
+  meteora_claim_rewards: 'lp', meteora_close_position: 'lp',
+  orca_increase_liquidity: 'lp', orca_decrease_liquidity: 'lp',
+  orca_collect_fees: 'lp', orca_collect_rewards: 'lp',
+  sanctum_add_infinity_liquidity: 'lp', sanctum_remove_infinity_liquidity: 'lp',
+  // stake
+  jito_stake_sol: 'stake', jito_deposit_stake_account: 'stake', jito_unstake_jitosol: 'stake',
+  jito_withdraw_sol: 'stake', jito_claim_deposit_receipt: 'stake',
+  marinade_liquid_stake: 'stake', marinade_liquid_unstake: 'stake',
+  marinade_delayed_unstake: 'stake', marinade_claim_delayed_unstake: 'stake',
+  sanctum_stake_sol_to_lst: 'stake', sanctum_unstake_lst_to_sol: 'stake',
+  // perps
+  phoenix_open: 'perps', phoenix_close: 'perps', phoenix_modify_collateral: 'perps', phoenix_cancel_order: 'perps',
+  // nft
+  magiceden_bid: 'nft', magiceden_buy: 'nft', magiceden_list: 'nft',
+  magiceden_cancel_listing: 'nft', magiceden_cancel_bid: 'nft',
+  tensor_bid: 'nft', tensor_buy: 'nft', tensor_list: 'nft',
+  tensor_cancel_listing: 'nft', tensor_cancel_bid: 'nft', tensor_sweep: 'nft',
+  // governance
+  squads_approve_proposal: 'governance', squads_reject_proposal: 'governance',
+  squads_cancel_proposal: 'governance', squads_execute_proposal: 'governance',
+  squads_create_transfer_proposal: 'governance',
+  realms_cast_vote: 'governance', realms_deposit_governance_tokens: 'governance',
+  realms_withdraw_governance_tokens: 'governance', realms_relinquish_vote: 'governance',
+  // bridge
+  wormhole_transfer: 'bridge', wormhole_redeem: 'bridge', wormhole_recover_or_resume: 'bridge',
+  // oracle
+  pyth_post_price_update: 'oracle',
+};
+
+// Connector significance (lower = more prominent within an action group).
+export const CONNECTOR_PRIORITY: Readonly<Record<string, number>> = {
+  jupiter: 0, kamino: 1, jito: 2, marinade: 3, raydium: 4, orca: 5, meteora: 6,
+  drift: 7, marginfi: 8, sanctum: 9, tensor: 10, magiceden: 11, phoenix: 12,
+  save: 13, lulo: 14, realms: 15, squads: 16, wormhole: 17, project0: 18, pyth: 19, mayan: 20,
+};
+export function connectorPriority(connector: ProtocolConnector): number {
+  return CONNECTOR_PRIORITY[connector.id] ?? 999;
+}
+
+// Ordered action list for the action-first picker (label is t()-wrapped at the render site).
+export const ACTION_CATEGORIES: ReadonlyArray<{ id: ActionCategory; label: string; group: 'trade' | 'earn' | 'borrow' | 'pay' | 'more' }> = [
+  { id: 'swap', label: 'Swap', group: 'trade' },
+  { id: 'limit', label: 'Limit / TP-SL', group: 'trade' },
+  { id: 'dca', label: 'DCA', group: 'trade' },
+  { id: 'lend', label: 'Lend', group: 'earn' },
+  { id: 'stake', label: 'Stake', group: 'earn' },
+  { id: 'lp', label: 'Liquidity', group: 'earn' },
+  { id: 'borrow', label: 'Borrow', group: 'borrow' },
+  { id: 'send', label: 'Send', group: 'pay' },
+  { id: 'perps', label: 'Perps', group: 'more' },
+  { id: 'nft', label: 'NFT', group: 'more' },
+  { id: 'governance', label: 'Governance', group: 'more' },
+  { id: 'bridge', label: 'Bridge', group: 'more' },
+  { id: 'oracle', label: 'Oracle', group: 'more' },
+  { id: 'proof', label: 'Proof', group: 'more' },
+  { id: 'read', label: 'Evidence', group: 'more' },
+];
+
+export function subActionCategory(option: ConnectorSubAction): ActionCategory | undefined {
+  return option.actionType ? ACTION_TYPE_CATEGORY[option.actionType] : undefined;
+}
+// The categories a form participates in (its actionType ∪ its sub-actions'); read-only → 'read'.
+export function formCategories(form: ConnectorActionForm): Set<ActionCategory> {
+  if (form.executionMode === 'read-only') return new Set<ActionCategory>(['read']);
+  const cats = new Set<ActionCategory>();
+  if (form.subActions) {
+    for (const option of form.subActions.options) {
+      const c = subActionCategory(option);
+      if (c) cats.add(c);
+    }
+  }
+  if (form.actionType) {
+    const c = ACTION_TYPE_CATEGORY[form.actionType];
+    if (c) cats.add(c);
+  }
+  if (cats.size === 0) cats.add('read');
+  return cats;
+}
+export function formMatchesCategory(form: ConnectorActionForm, category: ActionCategory): boolean {
+  return formCategories(form).has(category);
+}
+// Connectors that expose ≥1 form/sub-action in `category`, ordered by significance.
+export function connectorsForCategory(category: ActionCategory, env: ConnectorDraftEnvironment): ProtocolConnector[] {
+  void env;
+  return PROTOCOL_CONNECTORS
+    // Sanctum is hidden from the action lists for now (BYO key); it stays toggleable in Preferences.
+    .filter((connector) => connector.id !== 'sanctum')
+    .filter((connector) => connectorActionFormsForConnector(connector).some((form) => formMatchesCategory(form, category)))
+    .slice()
+    .sort((left, right) => connectorPriority(left) - connectorPriority(right));
+}
+
 const JUPITER_FORM_TOKEN_MINTS = {
   SOL: 'So11111111111111111111111111111111111111112',
   USDC: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
@@ -163,6 +300,10 @@ export function connectorCreateConnectors(
     });
 }
 
+// The display copy below stays English here (this module has no i18n import); `kind` lets the
+// render site localize meta/detail/label via t()/tf() with the connector name as a placeholder.
+export type ConnectorCreateStatusKind = 'no-flow' | 'wrong-cluster' | 'disabled' | 'first-class' | 'blink';
+
 export function connectorCreateStatus(
   connector: ProtocolConnector,
   env: ConnectorDraftEnvironment,
@@ -170,6 +311,7 @@ export function connectorCreateStatus(
   selectable: boolean;
   enabled: boolean;
   clusterSupported: boolean;
+  kind: ConnectorCreateStatusKind;
   label: string;
   detail: string;
   meta: string;
@@ -182,6 +324,7 @@ export function connectorCreateStatus(
       selectable: false,
       enabled: false,
       clusterSupported,
+      kind: 'no-flow',
       label: 'Unavailable',
       meta: 'No Create flow',
       detail: `${connector.name} does not expose a Create flow yet.`,
@@ -192,6 +335,7 @@ export function connectorCreateStatus(
       selectable: false,
       enabled: false,
       clusterSupported,
+      kind: 'wrong-cluster',
       label: 'Wrong cluster',
       meta: 'Unavailable',
       detail: `${connector.name} is available on ${connector.supportedClusters.join(', ')} only.`,
@@ -202,6 +346,7 @@ export function connectorCreateStatus(
       selectable: false,
       enabled: false,
       clusterSupported,
+      kind: 'disabled',
       label: 'Connector disabled',
       meta: 'Off',
       detail: `${connector.name} is disabled. Enable it in Protocol Connectors before preparing work.`,
@@ -211,6 +356,7 @@ export function connectorCreateStatus(
     selectable: true,
     enabled: true,
     clusterSupported: true,
+    kind: connector.actionSource === 'first-class-adapter' ? 'first-class' : 'blink',
     label: connector.actionSource === 'first-class-adapter' ? 'First-class adapter' : 'Blink-backed',
     meta: connector.actionSource === 'first-class-adapter' ? 'First-class' : 'Blink connector',
     detail: connector.actionSource === 'first-class-adapter'

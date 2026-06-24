@@ -535,7 +535,8 @@ describe('AgentWalletActionService connector runtime', () => {
       const requestUrl = new URL(String(url));
       expect(requestUrl.origin + requestUrl.pathname).toBe('https://jupiter.example/swap/v2/order');
       expect(requestUrl.searchParams.get('amount')).toBe('10000000');
-      expect(requestUrl.searchParams.get('slippageBps')).toBe('100');
+      // No slippageBps provided = Auto → the order request omits it so Jupiter applies its own slippage.
+      expect(requestUrl.searchParams.get('slippageBps')).toBeNull();
       return jsonResponse({
         mode: 'ultra',
         router: 'iris',

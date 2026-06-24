@@ -621,6 +621,13 @@ import {
   connectorAiUserNotes,
   connectorCreateConnectors,
   connectorCreateStatus,
+  type ConnectorCreateStatusKind,
+  type ActionCategory,
+  ACTION_CATEGORIES,
+  connectorsForCategory,
+  formCategories,
+  formMatchesCategory,
+  subActionCategory,
   connectorDraftConnectors,
   connectorDraftStatus,
   connectorFormRenderFields,
@@ -2511,6 +2518,14 @@ interface ChatMessage {
   toolEvidence?: ChatToolEvidence[];
   error?: string;
   txReceipt?: { txid: string; cluster: Cluster }; // inline Solscan receipt after a chat-signed action
+  // Client-only "Receive" accessory card: the connected address shown as a QR + copyable
+  // pill. Only the address is persisted; the QR data URL is regenerated on render
+  // (chatReceiveQrFor) so the large base64 PNG never bloats localStorage / the cloud blob.
+  receiveCard?: { address: string };
+  // Client-only "Recurring/DCA" card: id of the created RecurringPayment in
+  // state.recurringPayments. The compact card is rendered live by id (regenerated on render),
+  // so nothing heavy is persisted on the message — just the id.
+  recurringCardId?: string;
   // UI-only synthetic marker (e.g. the "earlier messages were trimmed" notice). Not
   // persisted, not synced to cloud, not counted toward the per-session message cap.
   ephemeral?: boolean;
@@ -3164,6 +3179,8 @@ interface DemoState {
   agentPrompt: string;
   selectedTemplateId: string;
   templateOutcomeFilter: TemplateOutcomeFilter;
+  // Action-first primary axis for New Request ('' = no scope = legacy behavior).
+  createActionCategory: ActionCategory | '';
   templateFields: Record<string, string>;
   templateTokenModes: Record<string, TokenInputMode>;
   templateTokenSelections: Record<string, TokenFieldSelection>;
@@ -3223,10 +3240,15 @@ interface DemoState {
   chat: ChatHistoryState;
   chatInitialized: boolean;
   chatComposerOpen: boolean;
+  // Wallet Actions menu tab: 'primary' = everyday actions; 'advanced' = connector verbs (Lend/Limit/…).
+  chatWalletActionTab: 'primary' | 'advanced';
   chatHistoryOpen: boolean;
   // Hybrid chip builder for the composer (ephemeral; not persisted across sessions).
   chatActionBuilder: ChatActionBuilder | null;
   chatActionPicker: ChatActionPickerState | null;
+  // Transient editing session for the chat "Connector Actions" surface (ephemeral).
+  chatConnectorSession: ChatConnectorSession | null;
+  chatRecurringSession: ChatRecurringSession | null;
   recurringPayments: RecurringPayment[];
   receipts: ActionReceipt[];
   pendingTransactions: PendingTransactionRecord[];
@@ -3237,6 +3259,8 @@ interface DemoState {
   lastCompletedFocusId: string;
   recurringDraft: RecurringDraft;
   recurringPreset: RecurringPresetId;
+  // Action-first axis for the Repeat tab (send/swap = base presets; lend/stake = connector path).
+  recurringActionCategory: ActionCategory | '';
   recurringTokenModes: Record<string, TokenInputMode>;
   recurringTokenSelections: Record<string, TokenFieldSelection>;
   recurringErrors: Record<string, string>;
@@ -4303,6 +4327,7 @@ const state: DemoState = {
   agentPrompt: DEFAULT_AGENT_PROMPT,
   selectedTemplateId: initialTemplate.id,
   templateOutcomeFilter: 'queueable',
+  createActionCategory: 'swap',
   templateFields: defaultTemplateFieldValues(initialTemplate),
   templateTokenModes: defaultTemplateTokenModes(initialTemplate),
   templateTokenSelections: defaultTemplateTokenSelections(initialTemplate),
@@ -4370,9 +4395,12 @@ const state: DemoState = {
   chat: initialChatHistory,
   chatInitialized: false,
   chatComposerOpen: false,
+  chatWalletActionTab: 'primary',
   chatHistoryOpen: false,
   chatActionBuilder: null,
   chatActionPicker: null,
+  chatConnectorSession: null,
+  chatRecurringSession: null,
   recurringPayments: initialBrowserWorkflow.recurringPayments,
   receipts: initialBrowserWorkflow.receipts,
   pendingTransactions: loadTransactionLedger(),
@@ -4383,6 +4411,7 @@ const state: DemoState = {
   lastCompletedFocusId: '',
   recurringDraft: defaultRecurringDraft(),
   recurringPreset: 'scheduled-transfer',
+  recurringActionCategory: 'send',
   recurringTokenModes: defaultRecurringTokenModes(),
   recurringTokenSelections: defaultRecurringTokenSelections(),
   recurringErrors: {},
@@ -4446,6 +4475,7 @@ let bridgeRequestBusy = false;
 let lastPassiveInboxRefresh = 0;
 let copyResetTimer: number | null = null;
 let templatePickerController: AbortController | null = null;
+let actionPickerController: AbortController | null = null;
 let artifactPickerController: AbortController | null = null;
 let selectPickerController: AbortController | null = null;
 let selectPickerOpenOrder = 0;
@@ -9814,6 +9844,10 @@ function render(): void {
   // Normalize a stranded Chat tab before any markup is built, so
   // the tab bar and active panel agree on the same active tab in this render.
   if (state.activeTab === 'chat' && (chatTabHidden() || !chatTabAiConnected())) state.activeTab = 'overview';
+  // Restore the New Request planner draft if the chat Connector Actions surface was left open
+  // while the user navigated off the Chat tab (e.g. switched tabs without closing the desktop
+  // popover) — before any markup, so New Request never renders the connector form's data.
+  reconcileChatConnectorSession();
   const mobileRailSnapshot = captureMobileRailRenderSnapshot();
   // Publish the connected wallet address to the shared dev-tab sinks BEFORE
   // pageContent() runs, so dev-tab guards (which fire inside pageContent's
@@ -14441,6 +14475,12 @@ function closeMobileRailSheet(): void {
   // Escape) must also drop the chat picker + composer-menu state so a reopen starts
   // clean and the builder chips don't render as "open" with no sheet behind them.
   if (state.activeMobileRailSheet === 'chat-action') {
+    // The connector + recurring surfaces borrow this same sheet; closing one must restore the
+    // draft it was editing (snapshot/restore), or that draft is left clobbered.
+    if (state.chatConnectorSession?.active) restoreChatConnectorPlannerSnapshot();
+    if (state.chatRecurringSession?.active) restoreChatRecurringSnapshot();
+    chatConnectorPopoverOpen = false;
+    chatRecurringPopoverOpen = false;
     state.chatActionPicker = null;
     state.chatComposerOpen = false;
     // Drop the sheet's local expand state too, so a reopen (or a different action) never
@@ -18646,18 +18686,18 @@ function queueActionLabelForPlan(plan: AgentPlan): string {
 }
 
 function templatesForOutcomeFilter(filter = state.templateOutcomeFilter): AgentPlanTemplate[] {
+  const cat = state.createActionCategory;
   const selectedConnector = selectedConnectorForCreate(selectedTemplate());
   if (selectedConnector) {
-    return templatesForConnector(selectedConnector);
+    const list = templatesForConnector(selectedConnector);
+    return cat ? list.filter((tpl) => templateMatchesActionCategory(tpl, cat)) : list;
   }
   const templates = oneTimePlanTemplates();
+  if (cat) return templates.filter((tpl) => templateMatchesActionCategory(tpl, cat));
   if (filter === 'all') return templates;
   return templates.filter((template) => templateOutcome(template) === filter);
 }
 
-function firstTemplateForOutcomeFilter(filter: TemplateOutcomeFilter): AgentPlanTemplate {
-  return templatesForOutcomeFilter(filter)[0] ?? oneTimePlanTemplates()[0] ?? AGENT_PLAN_TEMPLATES[0]!;
-}
 
 function oneTimePlanTemplates(): AgentPlanTemplate[] {
   return AGENT_PLAN_TEMPLATES.filter((template) =>
@@ -20490,8 +20530,39 @@ const CHAT_SUGGESTED_PROMPTS: string[] = [
 const CHAT_POWER_ACTIONS: Array<{ id: string; eyebrow: string; title: string; description: string; template: string }> = [
   { id: 'swap', eyebrow: 'Trading', title: 'Swap Tokens', description: 'Prepare a DeFi swap with input, output, amount, and slippage.', template: 'Swap [0.1] SOL to USDC' },
   { id: 'send', eyebrow: 'Payments', title: 'Send Tokens', description: 'Prepare a token payment with recipient, amount, and memo.', template: 'Send [amount] SOL to [recipient address]' },
+  { id: 'recurring', eyebrow: 'Automation', title: 'Recurring / DCA', description: 'Set up a recurring payment or DCA swap. Each run returns to Needs Approval.', template: '' },
   { id: 'sign', eyebrow: 'Proof', title: 'Sign Proof', description: 'Sign a message to create a verifiable proof receipt. No transaction.', template: 'Sign a proof that [statement to attest]' },
 ];
+
+// Advanced (action-first) connector verbs. Tapping one opens the SAME connector surface scoped to the
+// category (connectors filtered, enabled-first, sub-actions scoped) — mirrors New Request's "Lend ▾".
+const CHAT_ADVANCED_ACTIONS: Array<{ id: ActionCategory; eyebrow: string; title: string; description: string }> = [
+  { id: 'lend', eyebrow: 'Earn', title: 'Lend', description: 'Earn yield on a connected lending protocol.' },
+  { id: 'limit', eyebrow: 'Trading', title: 'Limit / TP-SL', description: 'Set a limit order or take-profit / stop-loss.' },
+  { id: 'borrow', eyebrow: 'Borrow', title: 'Borrow', description: 'Borrow against collateral on a lending protocol.' },
+  { id: 'lp', eyebrow: 'Liquidity', title: 'Liquidity', description: 'Provide or manage liquidity in a connected pool.' },
+  { id: 'stake', eyebrow: 'Earn', title: 'Stake', description: 'Stake SOL or LSTs on a connected protocol.' },
+  { id: 'perps', eyebrow: 'Trading', title: 'Perps', description: 'Open or manage a perpetuals position.' },
+  { id: 'nft', eyebrow: 'NFT', title: 'NFT', description: 'Buy, list, or bid on an NFT marketplace.' },
+  { id: 'governance', eyebrow: 'Governance', title: 'Governance', description: 'Vote or manage a DAO or multisig proposal.' },
+  { id: 'bridge', eyebrow: 'Bridge', title: 'Bridge', description: 'Bridge assets across chains.' },
+  { id: 'oracle', eyebrow: 'Oracle', title: 'Oracle', description: 'Post a price update via an oracle.' },
+];
+
+// Small dainty line-art icon shown beside each Wallet Actions option (currentColor stroke so it
+// inherits the muted option color; sized small in CSS, smaller still on mobile).
+function chatActionIcon(id: string): string {
+  const inner = id === 'swap'
+    ? '<path d="M16 3l4 4-4 4"/><path d="M20 7H4"/><path d="M8 21l-4-4 4-4"/><path d="M4 17h16"/>'
+    : id === 'send'
+    ? '<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>'
+    : id === 'recurring'
+    ? '<polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>'
+    : id === 'sign'
+    ? '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/>'
+    : '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>';
+  return `<svg class="chat-plus-option-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${inner}</svg>`;
+}
 
 // --- Hybrid chip builder for the composer -------------------------------------
 // Picking a Wallet Action seeds a builder shown as editable chips ABOVE the
@@ -20514,6 +20585,44 @@ interface ChatActionBuilder {
 }
 type ChatPickerField = 'fromToken' | 'toToken' | 'amount' | 'slippage';
 interface ChatActionPickerState { field: ChatPickerField }
+
+// Transient editing session for the chat "Connector Actions" surface. While active, the
+// surface drives the SAME global planner state (selectedTemplateId/templateFields/…) the
+// New Request tab uses — so the ~100 connector forms render + submit with ZERO duplication —
+// and this snapshot restores that draft on close so the New Request draft is never disturbed.
+interface ChatConnectorSession {
+  active: boolean;
+  saved: {
+    selectedTemplateId: string;
+    templateOutcomeFilter: TemplateOutcomeFilter;
+    createActionCategory: ActionCategory | '';
+    templateFields: Record<string, string>;
+    templateTokenModes: Record<string, TokenInputMode>;
+    templateTokenSelections: Record<string, TokenFieldSelection>;
+    templateFieldErrors: Record<string, string>;
+    agentPlan: AgentPlan | null;
+    agentSignature: string;
+    agentPreparedActionId: string;
+  };
+}
+
+// Transient editing session for the chat "Recurring / DCA" surface. Mirrors ChatConnectorSession:
+// the surface drives the SAME global Repeat-tab state (recurringDraft/recurringPreset/…) so the
+// recurring form renders + submits with ZERO duplication; this snapshot restores the Repeat-tab
+// draft on close so it is never disturbed.
+interface ChatRecurringSession {
+  active: boolean;
+  saved: {
+    recurringDraft: RecurringDraft;
+    recurringPreset: RecurringPresetId;
+    recurringActionCategory: ActionCategory | '';
+    recurringTokenModes: Record<string, TokenInputMode>;
+    recurringTokenSelections: Record<string, TokenFieldSelection>;
+    recurringErrors: Record<string, string>;
+    recurringAmountMode: ChatAmountMode;
+    askAgentAfterDraft: boolean;
+  };
+}
 
 const CHAT_BUILDER_SOL: ChatBuilderToken = { symbol: 'SOL', mint: WSOL_MINT, decimals: 9 };
 
@@ -20717,6 +20826,8 @@ function chatMessageHtml(msg: ChatMessage, sessionId: string): string {
         <div class="chat-text" dir="auto">${bodyHtml}</div>
         ${chatInlineActionHtml(msg, sessionId)}
         ${msg.txReceipt ? `<div class="chat-card">${txBlock(msg.txReceipt.txid, msg.txReceipt.cluster)}</div>` : ''}
+        ${msg.receiveCard ? `<div class="chat-card">${chatReceiveCardHtml(msg.receiveCard.address)}</div>` : ''}
+        ${msg.recurringCardId ? chatRecurringCardLookupHtml(msg.recurringCardId) : ''}
       </div>
     </div>
   `;
@@ -20782,6 +20893,54 @@ function chatInlineActionHtml(msg: ChatMessage, sessionId: string): string {
     `;
   }
   return '';
+}
+
+// --- Chat "Receive" accessory card --------------------------------------------
+// Receive is instant (no form, no Confirm): clicking the pill posts the connected
+// address as a scannable QR + a copyable pill. The QR PNG is large + high-entropy, so it
+// is NOT persisted on the message — we regenerate it once per address here and render
+// synchronously from this cache. A miss kicks an async fill then one render() to swap the
+// placeholder for the real image. '' cached means generation failed (show placeholder).
+const chatReceiveQrCache = new Map<string, string>();
+const chatReceiveQrInFlight = new Set<string>();
+function chatReceiveQrFor(address: string): string {
+  const cached = chatReceiveQrCache.get(address);
+  if (cached !== undefined) return cached;
+  if (!chatReceiveQrInFlight.has(address)) {
+    chatReceiveQrInFlight.add(address);
+    // Encode as a Solana Pay receive URI so a phone wallet scan opens a "send to this address"
+    // flow (not just a raw string). The cache stays keyed by the bare address.
+    void renderUrlQrDataUrl(`solana:${address}`).then((dataUrl) => {
+      chatReceiveQrInFlight.delete(address);
+      chatReceiveQrCache.set(address, dataUrl);
+      if (state.activeTab === 'chat') render();
+    });
+  }
+  return '';
+}
+function chatReceiveCardHtml(address: string): string {
+  const qr = chatReceiveQrFor(address);
+  const qrInner = qr
+    ? `<img class="chat-receive-qr-img" src="${escapeHtml(qr)}" alt="${escapeHtml(t('Wallet address QR code'))}" width="180" height="180" />`
+    : `<div class="chat-receive-qr-loading" aria-hidden="true"></div>`;
+  return `
+    <div class="chat-receive-card">
+      <div class="chat-receive-qr">${qrInner}</div>
+      <div class="chat-receive-pill">
+        <code class="chat-receive-addr" title="${escapeHtml(address)}">${escapeHtml(short(address))}</code>
+        <button
+          type="button"
+          class="chat-receive-copy"
+          data-copy="${escapeHtml(address)}"
+          data-copy-id="chat-receive-address"
+          data-copy-name="${escapeHtml(t('Address'))}"
+          data-copy-toast="${escapeHtml(t('Copied address'))}"
+          data-copy-message=""
+          aria-label="${escapeHtml(t('Copy wallet address'))}"
+          title="${escapeHtml(t('Copy wallet address'))}"
+        >${copyButtonIcon()}<span>${escapeHtml(t('Copy'))}</span></button>
+      </div>
+    </div>`;
 }
 
 // --- Chat wallet-action bottom sheet (Android/iOS) ----------------------------
@@ -21213,6 +21372,9 @@ function chatActionSheetFormHtml(b: ChatActionBuilder): string {
 // mobile sheet (no chip cascade). Swap/Send have no Confirm — the field handlers
 // live-compile into the composer; Sign reuses the proof builder (its own Confirm).
 let chatActionPopoverOpen = false;
+let chatConnectorPopoverOpen = false;
+let chatRecurringPopoverOpen = false;
+let chatRecurringSubmitting = false;
 function chatActionPopoverHtml(): string {
   if (chatUsesSheet()) return '';
   const b = state.chatActionBuilder;
@@ -21315,6 +21477,500 @@ function chatProofConfirm(): void {
   render();
 }
 
+// --- Chat "Connector Actions" surface (reuses the New Request planner) ----------
+// Connector Actions reuses the EXACT New Request connector forms: the surface drives the
+// global planner state (selectedTemplateId/templateFields/…), so templatePicker +
+// plannerFieldsHtml + the global data-template-field listeners + the submit pipeline all work
+// with ZERO per-connector duplication. openChatConnectorSurface snapshots the prior New
+// Request draft; close/confirm restores it. Mobile reuses the chat-action sheet; desktop gets
+// chatConnectorPopoverHtml. Read-only ("Evidence only") forms sign a proof receipt; queueable
+// forms drop a chat-originated PreparedAction into the same approval rail.
+
+// Connectors the user has enabled (and that work on this cluster + expose a Create flow).
+// The first connector form usable in chat: its template must exist in AGENT_PLAN_TEMPLATES (blink +
+// generic position-check forms are excluded there, and templateById() would otherwise fall back to the
+// SWAP template). Prefer a queueable action so the surface opens on something actionable, not a
+// read-only/evidence default.
+function firstChatUsableConnectorForm(connector: ProtocolConnector): ConnectorActionForm | undefined {
+  const inTemplates = (form: ConnectorActionForm): boolean =>
+    AGENT_PLAN_TEMPLATES.some((tpl) => tpl.id === form.templateId);
+  const forms = connectorActionFormsForConnector(connector).filter(inTemplates);
+  return forms.find((form) => form.outcome === 'queueable') ?? forms[0];
+}
+
+function chatEnabledConnectorsForCreate(): ProtocolConnector[] {
+  const env = connectorDraftEnvironment();
+  // Action-scoped surfaces filter the route picker to the verb's connectors (Sanctum excluded);
+  // otherwise all connectors. Then keep only enabled+supported ones with a chat-usable form.
+  const cat = state.createActionCategory;
+  const scoped = isConnectorAction(cat);
+  const base = scoped ? connectorsForCategory(cat as ActionCategory, env) : connectorCreateConnectors(env);
+  return base.filter((connector) =>
+    connectorCreateStatus(connector, env).selectable &&
+    // Scoped: require a template-backed form IN the category (so switching connectors stays in-scope
+    // and never resolves to a wrong/undefined form). Unscoped: any chat-usable form.
+    Boolean(scoped ? firstFormForCategory(connector, cat as ActionCategory) : firstChatUsableConnectorForm(connector)));
+}
+
+function chatConnectorSurfaceBodyHtml(): string {
+  const connectors = chatEnabledConnectorsForCreate();
+  if (connectors.length === 0) {
+    // Action-scoped with no enabled connector → offer to enable the top one inline (else generic hint).
+    const gate = isConnectorAction(state.createActionCategory) ? connectGateFor(state.createActionCategory) : '';
+    return `
+      <div class="chat-sheet-form chat-connector-form" data-chat-sheet-form>
+        <p class="chat-token-empty">${escapeHtml(t('No connectors enabled. Enable a protocol connector in Preferences to prepare connector actions.'))}</p>
+        ${gate}
+      </div>`;
+  }
+  const env = connectorDraftEnvironment();
+  const template = selectedTemplate();
+  const selectedConnector = selectedConnectorForCreate(template);
+  // Reuse the New Request connector picker options, minus the "Use connector" clear row
+  // (the chat surface always keeps a connector selected), wired to the SAME global handler.
+  const connectorOptions = connectorCreatePickerOptions(connectors, env).filter((option) => option.value !== '');
+  const connectorPicker = selectPicker({
+    id: 'chatConnectorPicker',
+    value: selectedConnector?.id ?? '',
+    options: connectorOptions,
+    attrs: { 'data-connector-create-picker': true },
+    className: 'top-connector-picker connector-create-picker',
+  });
+  const outcome = templateOutcome(template);
+  return `
+    <div class="chat-sheet-form chat-connector-form" data-chat-sheet-form>
+      <div class="field compact planner-field">
+        <span>${escapeHtml(t('Connector'))}</span>
+        ${connectorPicker}
+      </div>
+      <div class="field compact planner-field">
+        <span>${escapeHtml(t('Plan template'))}</span>
+        ${templatePicker(template)}
+      </div>
+      <div class="chat-connector-template-meta">
+        <strong class="template-outcome-badge ${escapeHtml(outcomeClass(outcome))}">${escapeHtml(outcomeShortLabel(outcome))}</strong>
+        <p class="template-description">${escapeHtml(t(template.description))}</p>
+      </div>
+      <div class="chat-sheet-fields mobile-planner-fields">
+        ${plannerFieldsHtml(template)}
+      </div>
+      <div class="chat-sheet-confirm">
+        <button type="button" class="primary" data-chat-connector-confirm>${escapeHtml(t('Confirm'))}</button>
+      </div>
+    </div>`;
+}
+
+// Title for the connector surface: the action verb when action-scoped (e.g. "Lend"), else generic.
+function chatConnectorSurfaceTitle(): string {
+  const cat = state.createActionCategory;
+  return isConnectorAction(cat) ? connectorActionLabel(cat as ActionCategory) : t('Connector Actions');
+}
+
+// Desktop/web connector popover (mobile uses the chat-action sheet instead).
+function chatConnectorPopoverHtml(): string {
+  if (chatUsesSheet()) return '';
+  if (!chatConnectorPopoverOpen || !state.chatConnectorSession?.active) return '';
+  return `
+    <div class="chat-action-popover chat-connector-popover" data-chat-connector-popover>
+      <div class="chat-popover-head">
+        <span class="chat-builder-eyebrow">${escapeHtml(chatConnectorSurfaceTitle())}</span>
+        <button type="button" class="chat-builder-clear" data-chat-connector-popover-close aria-label="${escapeHtml(t('Close'))}" title="${escapeHtml(t('Close'))}">&times;</button>
+      </div>
+      ${chatConnectorSurfaceBodyHtml()}
+    </div>`;
+}
+
+// Snapshot the New Request planner draft + open the chat connector sheet/popover. Shared by the
+// action-scoped surfaces (the Advanced "Lend/Limit/…" cards).
+function snapshotChatConnectorSession(): void {
+  state.chatComposerOpen = false;
+  document.querySelector('.chat-plus-menu')?.classList.remove('open');
+  state.chatActionBuilder = null;
+  state.chatActionPicker = null;
+  state.chatConnectorSession = {
+    active: true,
+    saved: {
+      selectedTemplateId: state.selectedTemplateId,
+      templateOutcomeFilter: state.templateOutcomeFilter,
+      createActionCategory: state.createActionCategory,
+      templateFields: { ...state.templateFields },
+      templateTokenModes: { ...state.templateTokenModes },
+      templateTokenSelections: { ...state.templateTokenSelections },
+      templateFieldErrors: { ...state.templateFieldErrors },
+      agentPlan: state.agentPlan,
+      agentSignature: state.agentSignature,
+      agentPreparedActionId: state.agentPreparedActionId,
+    },
+  };
+  if (chatUsesSheet()) {
+    openChatActionSheet();
+  } else {
+    chatActionPopoverOpen = false;
+    chatConnectorPopoverOpen = true;
+  }
+}
+
+// Open the chat connector surface SCOPED to an action verb (Lend/Limit/…): filters the connector
+// route picker to that action's protocols (Sanctum excluded), seeds the user's first ENABLED
+// connector (gate prompts if none), and scopes sub-actions — mirrors New Request's "Lend ▾".
+function openChatActionSurface(category: ActionCategory): void {
+  snapshotChatConnectorSession();
+  state.createActionCategory = category;
+  const env = connectorDraftEnvironment();
+  // Only connectors with a template-backed form for the category (firstFormForCategory requires the
+  // template to exist) — so seeding never resolves to undefined and leaves a stale surface.
+  const inCat = connectorsForCategory(category, env).filter((connector) => firstFormForCategory(connector, category));
+  const top = inCat.find((connector) => connectorCreateStatus(connector, env).selectable) ?? inCat[0];
+  const form = top ? firstFormForCategory(top, category) : undefined;
+  if (form) {
+    applyConnectorActionFormForCategory(form, category);
+  } else {
+    render();
+  }
+}
+
+// Restore the snapshotted New Request planner draft (no render — callers render).
+function restoreChatConnectorPlannerSnapshot(): void {
+  const session = state.chatConnectorSession;
+  if (!session) return;
+  const s = session.saved;
+  state.selectedTemplateId = s.selectedTemplateId;
+  state.templateOutcomeFilter = s.templateOutcomeFilter;
+  state.createActionCategory = s.createActionCategory;
+  state.templateFields = s.templateFields;
+  state.templateTokenModes = s.templateTokenModes;
+  state.templateTokenSelections = s.templateTokenSelections;
+  state.templateFieldErrors = s.templateFieldErrors;
+  state.agentPlan = s.agentPlan;
+  state.agentSignature = s.agentSignature;
+  state.agentPreparedActionId = s.agentPreparedActionId;
+  state.chatConnectorSession = null;
+}
+
+function closeChatConnectorSurface(restore: boolean): void {
+  if (restore) restoreChatConnectorPlannerSnapshot();
+  else state.chatConnectorSession = null;
+  if (state.activeMobileRailSheet === 'chat-action') state.activeMobileRailSheet = null;
+  chatConnectorPopoverOpen = false;
+}
+
+// Catch-all (called at the top of render): if the connector surface was left open while the
+// user navigated off the Chat tab, restore the New Request draft so it never shows connector
+// data. Mobile sheets also close via closeMobileRailSheet; this covers the desktop popover.
+function reconcileChatConnectorSession(): void {
+  if (state.chatConnectorSession?.active && state.activeTab !== 'chat') {
+    restoreChatConnectorPlannerSnapshot();
+    chatConnectorPopoverOpen = false;
+    if (state.activeMobileRailSheet === 'chat-action') state.activeMobileRailSheet = null;
+  }
+  if (state.chatRecurringSession?.active && state.activeTab !== 'chat') {
+    restoreChatRecurringSnapshot();
+    chatRecurringPopoverOpen = false;
+    if (state.activeMobileRailSheet === 'chat-action') state.activeMobileRailSheet = null;
+  }
+}
+
+// Confirm: build a PreparedAction (queueable) or an evidence proof (read-only) from the filled
+// connector form via the EXACT New Request submit pipeline, attach it to a chat card, then
+// restore the New Request draft. The agent does no work — pure client-side.
+function confirmChatConnectorAction(): void {
+  if (!state.chatConnectorSession?.active) return;
+  if (!chatRequireWalletOrNotify()) return;
+  const template = selectedTemplate();
+  const parameters = normalizeConnectorDraftParameters(template, readTemplateFields(template));
+  state.templateFields = parameters;
+  let action: PreparedAction;
+  let evidence = false;
+  try {
+    assertValidTemplatePlanInput(template, parameters, '', { mode: 'template' });
+    const plan = planWithRuntimeTokenLabels(buildTemplatePlan(template, parameters, 'template', ''));
+    if (canQueueAgentPlan(plan)) {
+      action = browserPreparedActionFromPlan(plan);
+      action.chatOriginated = true;
+    } else if (plan.actionType === 'read_only') {
+      // Read-only / "Evidence only" connector form: nothing to queue. Sign a proof receipt
+      // attesting the connector check (mirrors New Request's Evidence-only outcome) so it flows
+      // through the same chat sign rail and posts a proof receipt.
+      evidence = true;
+      const statement = (plan.intent || t(template.title)).slice(0, 280);
+      action = createBrowserPreparedActionFromProposal({
+        kind: 'manual_review',
+        summary: t(template.title).slice(0, 140),
+        params: { statement, proofKind: 'sign_proof' },
+        cluster: state.cluster,
+      });
+    } else {
+      // A queueable form whose action didn't resolve (e.g. a sub-action option wasn't picked, so
+      // connectorActionFormTemplateActionType fell back to 'manual_review'). Don't silently sign a
+      // proof — ask the user to choose the option.
+      throw new Error(t('Choose an action option to continue.'));
+    }
+  } catch (err) {
+    // assertValidTemplatePlanInput populates state.templateFieldErrors — surface them inline
+    // and keep the surface open so the user can fix the fields.
+    pushToast('error', t('Complete required fields'), redactSecrets(err instanceof Error ? err.message : String(err)));
+    render();
+    return;
+  }
+  state.preparedActions = mergePreparedActions([action], state.preparedActions);
+  state.materializedActions = state.preparedActions;
+  saveBrowserWorkflowState();
+  const session = ensureActiveChatSession();
+  appendChatMessage(session.id, {
+    id: newId('chat-msg'),
+    role: 'assistant',
+    content: evidence
+      ? t('Prepared this evidence request. Review the card below, then tap Approve or type "sign" to sign a proof.')
+      : t('Prepared this action. Review the card below, then tap Approve or type "sign".'),
+    createdAt: new Date().toISOString(),
+    status: 'done',
+    preparedActionId: action.id,
+  });
+  closeChatConnectorSurface(true);
+  chatScrollPinned = true;
+  chatForceScrollBottom = true;
+  saveChatHistoryState();
+  render();
+}
+
+// --- Chat "Recurring / DCA" surface (reuses the Repeat Payments form) ----------
+// Mirrors the connector surface: drives the global Repeat-tab state (recurringDraft/preset/…) so
+// the existing recurring renderers + the page-global data-recurring-* listeners + the submit
+// pipeline all work with ZERO duplication. openChatRecurringSurface snapshots the Repeat-tab draft
+// (DCA preset preselected); close/confirm restores it. Mobile reuses the chat-action sheet; desktop
+// gets chatRecurringPopoverHtml. On Confirm it creates an ACTIVE repeat (saved to Active Repeats +
+// first occurrence in Needs Approval) and posts a confirmation + compact card back into chat.
+function chatRecurringSurfaceBodyHtml(): string {
+  const draft = state.recurringDraft;
+  const isSwap = recurringDraftIsSwap(draft);
+  const recipient = draft.recipient ? recipientDisplayLabel(draft.recipient) : t('Recipient required');
+  const limit = recurringDraftLimitLabel(draft);
+  return `
+    <div class="chat-sheet-form chat-recurring-form" data-chat-sheet-form>
+      <div class="field compact planner-field">
+        <span id="recurringPresetPickerLabel">${escapeHtml(t('Repeat type'))}</span>
+        ${recurringPresetControls()}
+      </div>
+      ${recurringContractSummaryView(draft, isSwap, recipient, limit)}
+      <div class="contract-section recurring-create-section recurring-payment-section">
+        <div>
+          <span>${escapeHtml(isSwap ? t('Swap terms') : t('Payment terms'))}</span>
+          <p>${escapeHtml(isSwap ? t('Input token, output token, amount, slippage.') : t('Token, amount, recipient.'))}</p>
+        </div>
+        <div class="recurring-grid ${isSwap ? 'recurring-swap-grid' : ''}">
+          ${isSwap
+            ? `
+              ${recurringTokenSelectField('inputToken', t('From *'), draft.inputToken)}
+              ${recurringTokenSelectField('outputToken', t('To *'), draft.outputToken)}
+              ${recurringAmountControlHtml(draft.amount, t('Amount *'))}
+              ${recurringSlippageInput(draft.slippageBps)}
+            `
+            : `
+              ${recurringTokenSelect(draft.token)}
+              ${recurringAmountControlHtml(draft.amount, t('Amount *'))}
+              ${recurringRecipientInput(draft.recipient)}
+            `}
+        </div>
+      </div>
+      <div class="contract-section recurring-create-section recurring-schedule-section">
+        <div>
+          <span>${escapeHtml(t('Schedule terms'))}</span>
+          <p>${escapeHtml(t('Cadence and local time.'))}</p>
+        </div>
+        <div class="recurring-grid schedule-grid">
+          <label class="field compact">
+            <span>${escapeHtml(t('Cadence'))}</span>
+            ${selectPicker({
+              id: 'recurringCadence',
+              value: draft.cadence,
+              attrs: { 'data-recurring-field': 'cadence' },
+              options: [
+                { value: 'weekly', label: t('Weekly'), meta: t('Cadence') },
+                { value: 'monthly', label: t('Monthly'), meta: t('Cadence') },
+                { value: 'interval_days', label: t('Interval days'), meta: t('Cadence') },
+                { value: 'interval_hours', label: t('Interval hours'), meta: t('Cadence') },
+                { value: 'interval_minutes', label: t('Interval minutes'), meta: t('Cadence') },
+              ],
+            })}
+          </label>
+          ${recurringScheduleFields(draft)}
+        </div>
+      </div>
+      <div class="contract-section recurring-create-section recurring-note-section">
+        <div>
+          <span>${escapeHtml(t('Notes for approval'))}</span>
+          <p>${escapeHtml(t('Purpose shown when this needs approval.'))}</p>
+        </div>
+        <label class="field compact approval-memo recurring-note-field">
+          <span class="field-label-text">${escapeHtml(t('What is this for?'))}</span>
+          <textarea
+            id="recurringNote"
+            data-recurring-field="note"
+            placeholder="${escapeHtml(tf('Example: rent, payroll, {dca}, subscription, or invoice #42', { dca: 'DCA' }))}"
+          >${escapeHtml(draft.note)}</textarea>
+        </label>
+      </div>
+      <details class="recurring-advanced-details">
+        <summary>${escapeHtml(t('Advanced'))}</summary>
+        <div class="contract-section recurring-advanced-section">
+          <div class="recurring-grid recurring-advanced-grid">
+            ${fieldInput('recurringMaxOccurrences', t('Max occurrences'), draft.maxOccurrences, t('No limit'))}
+            ${fieldInput('recurringExpiresAt', t('Expires at'), draft.expiresAt, '', 'datetime-local')}
+            ${fieldInput('recurringWebhookUrl', t('Webhook URL'), draft.webhookUrl, 'https://example.com/agentic-webhook')}
+          </div>
+        </div>
+      </details>
+      ${recurringDraftPreviewPanel(draft)}
+      <div class="chat-sheet-confirm">
+        <button type="button" class="primary" data-chat-recurring-confirm>${escapeHtml(t('Confirm'))}</button>
+      </div>
+    </div>`;
+}
+
+function chatRecurringPopoverHtml(): string {
+  if (chatUsesSheet()) return '';
+  if (!chatRecurringPopoverOpen || !state.chatRecurringSession?.active) return '';
+  return `
+    <div class="chat-action-popover chat-recurring-popover" data-chat-recurring-popover>
+      <div class="chat-popover-head">
+        <span class="chat-builder-eyebrow">${escapeHtml(t('Recurring / DCA'))}</span>
+        <button type="button" class="chat-builder-clear" data-chat-recurring-popover-close aria-label="${escapeHtml(t('Close'))}" title="${escapeHtml(t('Close'))}">&times;</button>
+      </div>
+      ${chatRecurringSurfaceBodyHtml()}
+    </div>`;
+}
+
+function openChatRecurringSurface(): void {
+  state.chatComposerOpen = false;
+  document.querySelector('.chat-plus-menu')?.classList.remove('open');
+  state.chatActionBuilder = null;
+  state.chatActionPicker = null;
+  // Snapshot the Repeat-tab draft so it is restored untouched on close.
+  state.chatRecurringSession = {
+    active: true,
+    saved: {
+      recurringDraft: { ...state.recurringDraft },
+      recurringPreset: state.recurringPreset,
+      recurringActionCategory: state.recurringActionCategory,
+      recurringTokenModes: { ...state.recurringTokenModes },
+      recurringTokenSelections: { ...state.recurringTokenSelections },
+      recurringErrors: { ...state.recurringErrors },
+      recurringAmountMode,
+      askAgentAfterDraft: state.askAgentAfterDraft,
+    },
+  };
+  // Default to DCA (recurring swap) per product; applyRecurringPreset seeds draft + token modes.
+  applyRecurringPreset('recurring-swap');
+  state.recurringActionCategory = 'swap';
+  if (chatUsesSheet()) {
+    openChatActionSheet();
+  } else {
+    chatActionPopoverOpen = false;
+    chatConnectorPopoverOpen = false;
+    chatRecurringPopoverOpen = true;
+  }
+  render();
+}
+
+// Restore the snapshotted Repeat-tab draft (no render — callers render).
+function restoreChatRecurringSnapshot(): void {
+  const session = state.chatRecurringSession;
+  if (!session) return;
+  const s = session.saved;
+  state.recurringDraft = s.recurringDraft;
+  state.recurringPreset = s.recurringPreset;
+  state.recurringActionCategory = s.recurringActionCategory;
+  state.recurringTokenModes = s.recurringTokenModes;
+  state.recurringTokenSelections = s.recurringTokenSelections;
+  state.recurringErrors = s.recurringErrors;
+  recurringAmountMode = s.recurringAmountMode;
+  state.askAgentAfterDraft = s.askAgentAfterDraft;
+  state.chatRecurringSession = null;
+}
+
+function closeChatRecurringSurface(restore: boolean): void {
+  if (restore) restoreChatRecurringSnapshot();
+  else state.chatRecurringSession = null;
+  if (state.activeMobileRailSheet === 'chat-action') state.activeMobileRailSheet = null;
+  chatRecurringPopoverOpen = false;
+}
+
+// One-line confirmation echo of what was set up, plus the lifecycle explainer.
+function chatRecurringConfirmText(payment: RecurringPayment | undefined, draft: RecurringDraft): string {
+  const lifecycle = t('It is saved in Active Repeats, and the first run is waiting in Needs Approval to sign now. Each future run returns to Needs Approval when it is due. Manage or cancel it in Active Repeats.');
+  if (payment) {
+    const title = recurringPaymentTitle(payment);
+    const schedule = recurringScheduleShortLabel(payment);
+    const occ = payment.maxOccurrences && payment.maxOccurrences > 0
+      ? tf('{n} recurrences', { n: payment.maxOccurrences })
+      : t('no end date');
+    return `${tf('{title}: {schedule}, {occ}.', { title, schedule, occ })}\n\n${lifecycle}`;
+  }
+  const isSwap = recurringDraftIsSwap(draft);
+  const what = isSwap
+    ? tf('{amount} {from} to {to}', { amount: draft.amount, from: draft.inputToken, to: draft.outputToken })
+    : tf('{amount} {token}', { amount: draft.amount, token: draft.token });
+  return `${tf('Recurring action set up: {what}.', { what })}\n\n${lifecycle}`;
+}
+
+// Confirm: create an ACTIVE repeat from the filled form via the EXACT Repeat-tab submit pipeline,
+// post a confirmation + compact card to chat, then restore the Repeat-tab draft. The agent does no
+// work — pure client-side (no Ask-Agent review in chat v1).
+async function confirmChatRecurringAction(): Promise<void> {
+  if (!state.chatRecurringSession?.active) return;
+  // createRecurringFromDraft is async — guard against rapid double-taps creating duplicate repeats.
+  if (chatRecurringSubmitting) return;
+  if (!chatRequireWalletOrNotify()) return;
+  chatRecurringSubmitting = true;
+  let created: RecurringPayment | undefined;
+  try {
+    state.recurringDraft = readRecurringDraft();
+    assertValidRecurringDraft(state.recurringDraft);
+    const before = new Set(state.recurringPayments.map((p) => p.id));
+    await createRecurringFromDraft(state.recurringDraft, { status: 'active' });
+    created = state.recurringPayments.find((p) => !before.has(p.id));
+  } catch (err) {
+    // assertValidRecurringDraft populates state.recurringErrors — surface them inline + keep open.
+    pushToast('error', t('Complete required fields'), redactSecrets(err instanceof Error ? err.message : String(err)));
+    render();
+    return;
+  } finally {
+    chatRecurringSubmitting = false;
+  }
+  const session = ensureActiveChatSession();
+  appendChatMessage(session.id, {
+    id: newId('chat-msg'),
+    role: 'assistant',
+    content: chatRecurringConfirmText(created, state.recurringDraft),
+    createdAt: new Date().toISOString(),
+    status: 'done',
+    ...(created ? { recurringCardId: created.id } : {}),
+  });
+  closeChatRecurringSurface(true);
+  chatScrollPinned = true;
+  chatForceScrollBottom = true;
+  saveChatHistoryState();
+  render();
+}
+
+// Compact, read-only recurring card for the chat transcript (hero + summary grid; management
+// buttons stay in Active Repeats). Rendered live by id so its status stays current.
+function chatRecurringCardHtml(payment: RecurringPayment): string {
+  const nextRuns = recurringPaymentNextRuns(payment);
+  const spend = recurringPaymentLifetimeSpend(payment);
+  return `
+    <div class="chat-recurring-card">
+      ${recurringCardHero(payment, nextRuns)}
+      ${recurringCardSummaryGrid(payment, nextRuns, spend)}
+      <button type="button" class="chat-recurring-manage" data-chat-goto-active-repeats>${escapeHtml(t('Manage in Active Repeats'))} →</button>
+    </div>`;
+}
+function chatRecurringCardLookupHtml(id: string): string {
+  const payment = state.recurringPayments.find((p) => p.id === id);
+  if (payment) return `<div class="chat-card">${chatRecurringCardHtml(payment)}</div>`;
+  return `<div class="chat-card"><p class="ticket-meta-line">${escapeHtml(t('Managed in Active Repeats.'))}</p></div>`;
+}
+
 function chatProofFieldHtml(fieldDef: AgentPlanTemplateField): string {
   const value = chatProofFields[fieldDef.id] ?? fieldDef.defaultValue ?? '';
   const label = t(fieldDef.label);
@@ -21370,6 +22026,8 @@ function chatProofSheetHtml(): string {
 
 // Bottom-sheet header strings + body for the chat-action sheet (native mobile).
 function chatActionSheetTitle(): string {
+  if (state.chatRecurringSession?.active) return t('Recurring / DCA');
+  if (state.chatConnectorSession?.active) return chatConnectorSurfaceTitle();
   const kind = state.chatActionBuilder?.kind;
   if (kind === 'swap') return t('Swap tokens');
   if (kind === 'send') return t('Send tokens');
@@ -21377,6 +22035,8 @@ function chatActionSheetTitle(): string {
   return t('Wallet Actions');
 }
 function chatActionSheetDetail(): string {
+  if (state.chatRecurringSession?.active) return t('Set up a recurring payment or DCA swap');
+  if (state.chatConnectorSession?.active) return t('Prepare a protocol action');
   const kind = state.chatActionBuilder?.kind;
   if (kind === 'swap') return t('Set up swap');
   if (kind === 'send') return t('Set up send');
@@ -21384,6 +22044,8 @@ function chatActionSheetDetail(): string {
   return t('Chat');
 }
 function chatActionSheetBodyHtml(): string {
+  if (state.chatRecurringSession?.active) return chatRecurringSurfaceBodyHtml();
+  if (state.chatConnectorSession?.active) return chatConnectorSurfaceBodyHtml();
   const b = state.chatActionBuilder;
   if (b && (b.kind === 'swap' || b.kind === 'send')) {
     return chatActionSheetFormHtml(b);
@@ -21394,16 +22056,41 @@ function chatActionSheetBodyHtml(): string {
   // Fallback (no active builder): the 3-action menu. The composer dropdown is the primary
   // entry point; this keeps the sheet non-empty if it is ever opened without a builder.
   return `
-    <div class="chat-sheet-actions">
-      ${CHAT_POWER_ACTIONS.map((action) => `
-        <button type="button" class="chat-plus-option" data-chat-action="${escapeHtml(action.id)}">
-          <span class="chat-plus-eyebrow">${escapeHtml(t(action.eyebrow))}</span>
-          <strong>${escapeHtml(t(action.title))}</strong>
-          <em>${escapeHtml(t(action.description))}</em>
-        </button>
-      `).join('')}
-    </div>
+    ${chatWalletActionTabs()}
+    <div class="chat-sheet-actions chat-plus-list">${chatWalletActionList()}</div>
   `;
+}
+
+// Primary | Advanced toggle for the Wallet Actions menu (shared by web popover + native sheet).
+function chatWalletActionTabs(): string {
+  const tab = state.chatWalletActionTab;
+  const btn = (id: 'primary' | 'advanced', label: string): string =>
+    `<button type="button" class="${tab === id ? 'active' : ''}" data-chat-wallet-tab="${id}" role="tab" aria-selected="${tab === id ? 'true' : 'false'}">${escapeHtml(t(label))}</button>`;
+  return `<div class="chat-wallet-tabs" role="tablist" aria-label="${escapeHtml(t('Wallet Actions'))}">${btn('primary', 'Primary')}${btn('advanced', 'Advanced')}</div>`;
+}
+
+function chatWalletActionCard(icon: string, eyebrow: string, title: string, description: string, attr: string): string {
+  return `
+    <button type="button" class="chat-plus-option" role="menuitem" ${attr}>
+      ${icon}
+      <span class="chat-plus-option-body">
+        <span class="chat-plus-eyebrow">${escapeHtml(t(eyebrow))}</span>
+        <strong>${escapeHtml(t(title))}</strong>
+        <em>${escapeHtml(t(description))}</em>
+      </span>
+    </button>
+  `;
+}
+
+// The active tab's action cards. Primary keeps data-chat-action; Advanced cards open the connector
+// surface scoped to the verb via data-chat-action-cat.
+function chatWalletActionList(): string {
+  if (state.chatWalletActionTab === 'advanced') {
+    return CHAT_ADVANCED_ACTIONS.map((a) =>
+      chatWalletActionCard(chatActionIcon(a.id), a.eyebrow, a.title, a.description, `data-chat-action-cat="${escapeHtml(a.id)}"`)).join('');
+  }
+  return CHAT_POWER_ACTIONS.map((a) =>
+    chatWalletActionCard(chatActionIcon(a.id), a.eyebrow, a.title, a.description, `data-chat-action="${escapeHtml(a.id)}"`)).join('');
 }
 
 function chatComposerHtml(): string {
@@ -21412,17 +22099,19 @@ function chatComposerHtml(): string {
     : `<button type="submit" class="chat-send" data-chat-send aria-label="${escapeHtml(t('Send'))}">↑</button>`;
   const textarea = `<textarea class="chat-input" data-chat-input rows="1" placeholder="${escapeHtml(t('Message your agent…'))}" aria-label="${escapeHtml(t('Message your agent'))}"></textarea>`;
   const walletActionsBtn = `<button type="button" class="chat-plus-btn" data-chat-plus-toggle aria-haspopup="menu" aria-expanded="${state.chatComposerOpen ? 'true' : 'false'}" aria-label="${escapeHtml(t('Wallet Actions'))}"><span class="chat-plus-icon" aria-hidden="true">+</span><span class="chat-plus-label">${escapeHtml(t('Wallet Actions'))}</span></button>`;
+  // Receive is an accessory action (instant, no form), so it rides in the menu header next to
+  // the "Wallet Actions" label rather than as an action card. Always shown — clicking it without
+  // a connected wallet posts the connect-wallet chat message (chatRequireWalletOrNotify).
+  const receivePill = `<button type="button" class="chat-receive-pill-btn" data-chat-receive aria-label="${escapeHtml(t('Receive'))}" title="${escapeHtml(t('Receive'))}">${copyButtonIcon()}<span class="chat-receive-pill-label">${escapeHtml(t('Receive'))}</span></button>`;
   const plusOpen = state.chatComposerOpen ? ' open' : '';
   const plusMenu = `
-    <div class="chat-plus-menu${plusOpen}" role="menu">
-      <span class="chat-plus-group">${escapeHtml(t('Wallet Actions'))}</span>
-      ${CHAT_POWER_ACTIONS.map((action) => `
-        <button type="button" class="chat-plus-option" role="menuitem" data-chat-action="${escapeHtml(action.id)}">
-          <span class="chat-plus-eyebrow">${escapeHtml(t(action.eyebrow))}</span>
-          <strong>${escapeHtml(t(action.title))}</strong>
-          <em>${escapeHtml(t(action.description))}</em>
-        </button>
-      `).join('')}
+    <div class="chat-plus-menu${plusOpen}${state.chatWalletActionTab === 'advanced' ? ' is-advanced' : ''}" role="menu">
+      <div class="chat-plus-head">
+        <span class="chat-plus-group">${escapeHtml(t('Wallet Actions'))}</span>
+        ${receivePill}
+      </div>
+      ${chatWalletActionTabs()}
+      <div class="chat-plus-list">${chatWalletActionList()}</div>
     </div>`;
   // Native mobile: the Wallet Actions button sits on its own labeled row above the input,
   // and its menu opens UPWARD as a dropdown (not a sheet). Picking an action opens one
@@ -21446,6 +22135,8 @@ function chatComposerHtml(): string {
   return `
     <div class="chat-composer-dock">
       ${chatActionPopoverHtml()}
+      ${chatConnectorPopoverHtml()}
+      ${chatRecurringPopoverHtml()}
       <form class="chat-composer" data-chat-composer>
         <div class="chat-plus">
           ${walletActionsBtn}
@@ -22692,9 +23383,63 @@ function applyChatTokenPick(mint: string, symbol: string, decimals: number, logo
   applyChatTokenPickFor(field, mint, symbol, decimals, logoURI);
 }
 
+// "Receive" accessory: append a user-style line + an automated assistant card showing the
+// connected address as a QR + copyable pill. Purely client-side — no agent call, no prepared
+// action, no Confirm/Sign step (mirrors the automated wallet-action result cards).
+// Shared gate for every chat wallet action: if no signing wallet is connected, post a single
+// automated chat message asking the user to connect one (and return false). Reuses the existing
+// already-translated string so it shows in all languages with no new catalog key.
+function chatRequireWalletOrNotify(): boolean {
+  if (state.address) return true;
+  state.chatComposerOpen = false;
+  document.querySelector('.chat-plus-menu')?.classList.remove('open');
+  const session = ensureActiveChatSession();
+  appendChatMessage(session.id, {
+    id: newId('chat-msg'), role: 'assistant',
+    content: t('Connect a wallet to prepare this action.'),
+    createdAt: new Date().toISOString(), status: 'done',
+  });
+  chatScrollPinned = true;
+  chatForceScrollBottom = true;
+  saveChatHistoryState();
+  render();
+  return false;
+}
+
+function handleChatReceiveAction(): void {
+  if (!chatRequireWalletOrNotify()) return; // posts the connect-wallet chat message
+  const address = state.address;
+  state.chatComposerOpen = false;
+  document.querySelector('.chat-plus-menu')?.classList.remove('open');
+  const session = ensureActiveChatSession();
+  appendChatMessage(session.id, {
+    id: newId('chat-msg'), role: 'user', content: t('Receive address'),
+    createdAt: new Date().toISOString(), status: 'done',
+  });
+  appendChatMessage(session.id, {
+    id: newId('chat-msg'), role: 'assistant',
+    content: t('Here is your wallet address. Scan the QR or copy it to receive tokens.'),
+    createdAt: new Date().toISOString(), status: 'done',
+    receiveCard: { address },
+  });
+  // Warm the QR cache so the card paints with the image on first render (avoids a one-frame
+  // placeholder flash); chatReceiveQrFor self-heals on a miss either way.
+  if (!chatReceiveQrCache.has(address)) {
+    void renderUrlQrDataUrl(`solana:${address}`).then((dataUrl) => {
+      chatReceiveQrCache.set(address, dataUrl);
+      if (state.activeTab === 'chat') render();
+    });
+  }
+  chatScrollPinned = true;
+  chatForceScrollBottom = true;
+  saveChatHistoryState();
+  render();
+}
+
 function handleChatPowerAction(id: string): void {
   state.chatComposerOpen = false;
   document.querySelector('.chat-plus-menu')?.classList.remove('open');
+  if (id === 'recurring') { openChatRecurringSurface(); return; }
   const action = CHAT_POWER_ACTIONS.find((a) => a.id === id);
   if (!action) return;
   state.chatActionPicker = null;
@@ -22849,9 +23594,12 @@ function bindChat(): void {
       // The Wallet Actions menu is an upward dropdown; picking an action opens the sheet
       // (native) or the consolidated popover (desktop).
       state.chatComposerOpen = !state.chatComposerOpen;
-      if (state.chatComposerOpen && chatActionPopoverOpen) {
-        // Don't stack the menu on top of the open popover — close the popover first.
+      if (state.chatComposerOpen && (chatActionPopoverOpen || chatConnectorPopoverOpen || chatRecurringPopoverOpen)) {
+        // Don't stack the menu on top of an open popover — close it first (restoring the
+        // connector/recurring draft snapshot when it was one of those surfaces).
         chatActionPopoverOpen = false;
+        if (chatConnectorPopoverOpen) closeChatConnectorSurface(true);
+        if (chatRecurringPopoverOpen) closeChatRecurringSurface(true);
         render();
         return;
       }
@@ -22862,6 +23610,20 @@ function bindChat(): void {
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-action]')) {
     button.addEventListener('click', () => handleChatPowerAction(button.dataset.chatAction ?? ''));
   }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-wallet-tab]')) {
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      state.chatWalletActionTab = button.dataset.chatWalletTab === 'advanced' ? 'advanced' : 'primary';
+      render();
+    });
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-chat-action-cat]')) {
+    button.addEventListener('click', () => openChatActionSurface(button.dataset.chatActionCat as ActionCategory));
+  }
+  document.querySelector<HTMLButtonElement>('[data-chat-receive]')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    handleChatReceiveAction();
+  });
   // --- Chip builder: explicit click -> state -> render (WebView-safe) ---------
   for (const chip of document.querySelectorAll<HTMLButtonElement>('[data-chat-chip]')) {
     chip.addEventListener('click', (event) => {
@@ -22984,6 +23746,34 @@ function bindChat(): void {
     chatActionPopoverOpen = false;
     render();
   });
+  document.querySelector<HTMLButtonElement>('[data-chat-connector-confirm]')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    confirmChatConnectorAction();
+  });
+  document.querySelector<HTMLButtonElement>('[data-chat-connector-popover-close]')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    closeChatConnectorSurface(true);
+    render();
+  });
+  document.querySelector<HTMLButtonElement>('[data-chat-recurring-confirm]')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    void confirmChatRecurringAction();
+  });
+  document.querySelector<HTMLButtonElement>('[data-chat-recurring-popover-close]')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    closeChatRecurringSurface(true);
+    render();
+  });
+  // "Manage in Active Repeats →" on a recurring chat card → jump to the Repeat Payments tab's
+  // Active Repeats view (bind all cards in the transcript).
+  for (const btn of document.querySelectorAll<HTMLButtonElement>('[data-chat-goto-active-repeats]')) {
+    btn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      state.activeTab = 'schedule';
+      state.recurringView = 'active';
+      render();
+    });
+  }
   // --- Amount unit pill ($ default / Token), % quick-fills, slippage pills, note ----
   const applyChatPercent = (pct: number): void => {
     const b = state.chatActionBuilder;
@@ -23406,8 +24196,9 @@ function oneTimePlanTabs(): string {
       </div>
       ${reviewing ? agentReviewFilterControl('generated') : ''}
       ${reviewing ? `<button id="deleteAllCheck" class="utility danger" ${state.busy || filterGeneratedPlansByAgentReview(visibleGeneratedPlans(true)).length === 0 ? 'disabled' : ''}>${escapeHtml(t('Delete All'))}</button>` : ''}
-      ${creating ? connectorCreatePickerControl(selectedTemplate()) : ''}
-      ${creating && !selectedConnector ? templateOutcomeControls('header') : ''}
+      ${creating ? createActionTabs() : ''}
+      ${creating && isConnectorAction(state.createActionCategory) ? connectorCreatePickerControl(selectedTemplate()) : ''}
+      ${creating && isConnectorAction(state.createActionCategory) ? createConnectGate() : ''}
     </div>
   `;
 }
@@ -24000,10 +24791,10 @@ function reviewPlanMetric(plan: AgentPlan): { primary: string; secondary: string
     const input = plan.parameters.inputToken || planParameter(plan, ['token']) || 'Input';
     const output = plan.parameters.outputToken || 'Output';
     const route = tokenRouteDisplaySummary(input, output);
-    const slippage = plan.parameters.slippageBps ? `${slippageBpsToPercentInput(plan.parameters.slippageBps)} max` : '';
+    const slippage = cardSlippageLabel(plan.parameters.slippageBps);
     return {
       primary: `${amount} ${tokenDisplayLabel(input)}`,
-      secondary: `${route.value}${slippage ? ` · ${slippage}` : ''}`,
+      secondary: `${route.value} · ${slippage}`,
     };
   }
   if (plan.actionType === 'transfer_sol' || plan.actionType === 'transfer_spl' || plan.actionType === 'recurring_payment') {
@@ -24765,9 +25556,17 @@ function compactSentence(value: string, maxLength = 132): string {
   return `${normalized.slice(0, maxLength - 1).trimEnd()}...`;
 }
 
+// Shared slippage label for ALL cards (Check, Needs Approval, Active Repeats, route summaries):
+// empty/missing slippageBps = Auto (Jupiter dynamic) → "Auto"; a fixed cap → "0.5% max".
+function cardSlippageLabel(slippageBps: string | undefined): string {
+  const v = (slippageBps ?? '').trim();
+  const bps = Number(v);
+  // Empty, zero, negative, or non-numeric = no fixed cap → Auto.
+  if (!v || !Number.isFinite(bps) || bps <= 0) return t('Auto');
+  return tf('{value} max', { value: slippageBpsToPercentInput(v) });
+}
 function planSlippageSummary(plan: AgentPlan): string {
-  const slippage = plan.parameters.slippageBps;
-  return slippage ? tf('{value} max', { value: slippageBpsToPercentInput(slippage) }) : t('Default');
+  return cardSlippageLabel(plan.parameters.slippageBps);
 }
 
 function generatedPlanCompactExtras(plan: AgentPlan): string {
@@ -25928,9 +26727,176 @@ function agentPlannerWorkbench(): string {
   `;
 }
 
+// ---- Action-first axis (New Request) ----------------------------------------
+
+// Categories a template participates in (its backing connector form's, or a base mapping).
+function templateActionCategories(template: AgentPlanTemplate): Set<ActionCategory> {
+  const form = connectorActionFormForTemplate(template);
+  if (form) return formCategories(form);
+  const at = template.actionType;
+  if (at === 'swap') return new Set<ActionCategory>(['swap']);
+  if (at === 'transfer_sol' || at === 'transfer_spl') return new Set<ActionCategory>(['send']);
+  if (at === 'read_only') return new Set<ActionCategory>(['read']);
+  const outcome = templateOutcome(template);
+  if (outcome === 'proof') return new Set<ActionCategory>(['proof']);
+  if (outcome === 'audit') return new Set<ActionCategory>(['read']);
+  return new Set<ActionCategory>();
+}
+function templateMatchesActionCategory(template: AgentPlanTemplate, category: ActionCategory): boolean {
+  return templateActionCategories(template).has(category);
+}
+
+// The connector's first create-usable form matching a category (its template must exist).
+function firstFormForCategory(connector: ProtocolConnector, category: ActionCategory): ConnectorActionForm | undefined {
+  return connectorActionFormsForConnector(connector).find((form) =>
+    formMatchesCategory(form, category) && AGENT_PLAN_TEMPLATES.some((tpl) => tpl.id === form.templateId));
+}
+
+// Sub-actions scoped to the active create action (so a unified form like Jupiter Lend shows only
+// the earn options under "Lend" and the borrow options under "Borrow"). No scope ('') → all.
+function scopedSubActionOptions(group: ConnectorActionForm['subActions']): ConnectorSubAction[] {
+  if (!group) return [];
+  const cat = state.createActionCategory;
+  if (!cat) return group.options;
+  const scoped = group.options.filter((opt) => subActionCategory(opt) === cat);
+  return scoped.length > 0 ? scoped : group.options;
+}
+
+// Seed a connector form for a category + default its sub-action to one matching the category.
+function applyConnectorActionFormForCategory(form: ConnectorActionForm, category: ActionCategory): void {
+  applyConnectorActionForm(form);
+  if (form.subActions) {
+    const opt = form.subActions.options.find((o) => subActionCategory(o) === category);
+    if (opt && state.templateFields[form.subActions.fieldId] !== opt.id) {
+      state.templateFields[form.subActions.fieldId] = opt.id;
+      render();
+    }
+  }
+}
+
+function selectCreateAction(category: ActionCategory): void {
+  state.createActionCategory = category;
+  // Prefer a base (connectorless) template for swap/send/proof; if none exists for this action
+  // (e.g. read-only/Check lives on connectors), fall through to the top connector's form.
+  if (category === 'swap' || category === 'send' || category === 'proof' || category === 'read') {
+    const base = oneTimePlanTemplates().find((tpl) => templateMatchesActionCategory(tpl, category));
+    if (base) {
+      clearConnectorCreateSelection();
+      selectAgentTemplate(base.id);
+      return;
+    }
+  }
+  const env = connectorDraftEnvironment();
+  // Land on the user's first ENABLED connector for the action (not the global-first), so it doesn't
+  // look gated when they have a relevant connector on; fall back to the top one (which shows the gate).
+  // Only connectors with a template-backed form (firstFormForCategory requires the template to exist).
+  const inCat = connectorsForCategory(category, env).filter((connector) => firstFormForCategory(connector, category));
+  const top = inCat.find((connector) => connectorCreateStatus(connector, env).selectable) ?? inCat[0];
+  const form = top ? firstFormForCategory(top, category) : undefined;
+  if (form) applyConnectorActionFormForCategory(form, category);
+  else render();
+}
+
+// Inline connect-gate: if the action has connectors but none enabled, offer to enable the top one
+// (reuses the global [data-connected-dapp-action="toggle"] enable flow). Shared by New Request +
+// Repeat. Returns '' for base/connectorless actions (swap/send/proof) — they need no connector.
+function connectGateFor(category: ActionCategory | ''): string {
+  if (!category) return '';
+  const env = connectorDraftEnvironment();
+  const connectors = connectorsForCategory(category, env);
+  const top = connectors[0];
+  if (!top || connectors.some((c) => connectorCreateStatus(c, env).selectable)) return '';
+  return `<button type="button" class="utility create-connect-gate" data-connected-dapp-action="toggle" data-connected-dapp-id="${escapeHtml(top.id)}" data-connected-dapp-next="on">${escapeHtml(tf('Enable {connector} to continue', { connector: top.name }))}</button>`;
+}
+function createConnectGate(): string {
+  return connectGateFor(state.createActionCategory);
+}
+
+// The 4 connector-free base tabs + the connector/DeFi actions that live in the "Lend ▾" dropdown.
+const BASE_ACTION_TABS: { id: ActionCategory; label: string }[] = [
+  { id: 'swap', label: 'Swap' },
+  { id: 'send', label: 'Send' },
+  { id: 'proof', label: 'Proof' },
+  { id: 'read', label: 'Evidence' },
+];
+const CONNECTOR_ACTION_DROPDOWN: ActionCategory[] = ['lend', 'limit', 'dca', 'borrow', 'lp', 'stake', 'perps', 'nft', 'governance', 'bridge', 'oracle'];
+const RECURRING_CONNECTOR_DROPDOWN: ActionCategory[] = ['lend', 'stake'];
+
+function isConnectorAction(category: ActionCategory | ''): boolean {
+  return Boolean(category) && !BASE_ACTION_TABS.some((tab) => tab.id === category);
+}
+function connectorActionLabel(category: ActionCategory): string {
+  const entry = ACTION_CATEGORIES.find((action) => action.id === category);
+  return t(entry ? entry.label : 'Lend');
+}
+
+// The "Lend ▾" dropdown segment. A CUSTOM dropdown (not selectPicker) so every option click fires the
+// handler — including the one already shown (selectPicker swallows re-selecting the current value).
+function connectorActionDropdownSegment(scope: 'create' | 'repeat'): string {
+  const active = scope === 'create' ? state.createActionCategory : state.recurringActionCategory;
+  const options = scope === 'create' ? CONNECTOR_ACTION_DROPDOWN : RECURRING_CONNECTOR_DROPDOWN;
+  const isActive = isConnectorAction(active);
+  const label = isActive ? connectorActionLabel(active as ActionCategory) : connectorActionLabel(options[0]!);
+  const menuId = `actionPickerMenu-${scope}`;
+  const items = options.map((cat) => {
+    const selected = active === cat;
+    return `
+      <button
+        class="template-picker-option action-picker-option ${selected ? 'selected' : ''}"
+        type="button"
+        role="option"
+        aria-selected="${selected ? 'true' : 'false'}"
+        data-action-option="${escapeHtml(cat)}"
+        data-action-scope="${scope}"
+      ><strong>${escapeHtml(connectorActionLabel(cat))}</strong></button>
+    `;
+  }).join('');
+  return `
+    <div class="action-picker ${isActive ? 'active' : ''}" data-action-picker="${scope}">
+      <button
+        class="action-picker-trigger"
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded="false"
+        aria-controls="${menuId}"
+        title="${escapeHtml(t('More actions'))}"
+        ${state.busy ? 'disabled' : ''}
+      >
+        <strong class="action-picker-value">${escapeHtml(label)}</strong>
+        <span class="template-picker-caret" aria-hidden="true"></span>
+      </button>
+      <div id="${menuId}" class="template-picker-menu action-picker-menu" role="listbox" hidden>
+        <div class="template-picker-group">${items}</div>
+      </div>
+    </div>
+  `;
+}
+
+// Segmented action tab bar (matches the PLAN METHOD look): Swap | Send | Proof | Evidence | Lend ▾
+function createActionTabs(): string {
+  const active = state.createActionCategory;
+  const tabs = BASE_ACTION_TABS.map((tab) => `
+    <button
+      type="button"
+      data-create-action="${escapeHtml(tab.id)}"
+      class="${active === tab.id ? 'active' : ''}"
+      aria-pressed="${active === tab.id ? 'true' : 'false'}"
+      ${state.busy ? 'disabled' : ''}
+    >${escapeHtml(t(tab.label))}</button>
+  `).join('');
+  return `
+    <div class="one-time-method-control create-action-control" role="group" aria-label="${escapeHtml(t('What do you want to do?'))}">
+      <div class="template-filter-row one-time-method-filter create-action-filter">${tabs}</div>
+      ${connectorActionDropdownSegment('create')}
+    </div>
+  `;
+}
+
 function connectorCreatePickerControl(template: AgentPlanTemplate): string {
   const env = connectorDraftEnvironment();
-  const connectors = connectorCreateConnectors(env);
+  const connectors = state.createActionCategory
+    ? connectorsForCategory(state.createActionCategory, env)
+    : connectorCreateConnectors(env);
   const selectedConnector = selectedConnectorForCreate(template);
   const selectedConnectorId = selectedConnector?.id ?? '';
   return `
@@ -25963,10 +26929,10 @@ function connectorCreatePickerOptions(
       return {
         value: connector.id,
         label: connector.name,
-        meta: status.meta,
-        detail: connectorCreateOptionDetail(connector, status.detail),
+        meta: t(status.meta),
+        detail: connectorCreateOptionDetail(connector, status.kind),
         disabled: !status.selectable,
-        title: status.detail,
+        title: connectorCreateStatusDetailText(connector, status.kind),
         logoId: protocolConnectorLogoId(connector.id),
       };
     }),
@@ -25982,53 +26948,36 @@ function selectedConnectorForCreate(template: AgentPlanTemplate): ProtocolConnec
   return getAdapterMeta(form.connectorId);
 }
 
-function connectorCreateOptionDetail(connector: ProtocolConnector, statusDetail: string): string {
+// Localize a connectorCreateStatus detail line: static enabled/blink copy via t(); the dynamic
+// disabled / wrong-cluster / no-flow lines via tf() so the connector name (a brand, kept verbatim)
+// rides as a placeholder instead of being baked into an un-translatable English string.
+function connectorCreateStatusDetailText(connector: ProtocolConnector, kind: ConnectorCreateStatusKind): string {
+  switch (kind) {
+    case 'no-flow':
+      return tf('{connector} does not expose a Create flow yet.', { connector: connector.name });
+    case 'wrong-cluster':
+      return tf('{connector} is available on {clusters} only.', { connector: connector.name, clusters: connector.supportedClusters.join(', ') });
+    case 'disabled':
+      return tf('{connector} is disabled. Enable it in Protocol Connectors before preparing work.', { connector: connector.name });
+    case 'blink':
+      return t('Blink-backed. Requires an action URL. Wallet signs only after review.');
+    case 'first-class':
+    default:
+      return t('First-class adapter. Agentic can prepare connector-backed work; wallet still signs after review.');
+  }
+}
+
+function connectorCreateOptionDetail(connector: ProtocolConnector, kind: ConnectorCreateStatusKind): string {
   const forms = connectorActionFormsForConnector(connector)
     .slice(0, 3)
     .map((form) => t(form.operationLabel))
     .join(' · ');
-  return forms ? `${t(statusDetail)} ${forms}` : t(statusDetail);
+  const detail = connectorCreateStatusDetailText(connector, kind);
+  return forms ? `${detail} ${forms}` : detail;
 }
 
 function isGenericConnectorActionForm(form: ConnectorActionForm): boolean {
   return form.operationId === 'position-check' || form.operationId === 'blink-action';
-}
-
-function templateOutcomeControls(placement: 'header' | 'inline' = 'inline'): string {
-  const filters: Array<[TemplateOutcomeFilter, string]> = [
-    ['queueable', t('Request approval')],
-    ['proof', t('Proof only')],
-    ['audit', t('Evidence only')],
-    // ['all', 'All'],
-  ];
-  const buttons = filters.map(([filter, label]) => `
-    <button
-      type="button"
-      data-template-filter="${escapeHtml(filter)}"
-      class="${state.templateOutcomeFilter === filter ? 'active' : ''}"
-      ${state.busy ? 'disabled' : ''}
-    >
-      ${escapeHtml(label)}
-    </button>
-  `).join('');
-  if (placement === 'header') {
-    return `
-      <div class="one-time-method-control" role="group" aria-label="${escapeHtml(t('Template outcome filter'))}">
-        <span class="one-time-method-label">
-          <strong>${escapeHtml(t('Plan method'))}</strong>
-          <em class="accent-note">${escapeHtml(t('What this plan can do'))}</em>
-        </span>
-        <div class="template-filter-row one-time-method-filter">
-          ${buttons}
-        </div>
-      </div>
-    `;
-  }
-  return `
-    <div class="template-filter-row" role="group" aria-label="${escapeHtml(t('Template outcome filter'))}">
-      ${buttons}
-    </div>
-  `;
 }
 
 function templateOutcomeSummary(template: AgentPlanTemplate): string {
@@ -26349,7 +27298,7 @@ function templatePickerOption(
 function connectorTemplateSourceLabel(form: ConnectorActionForm | undefined): string {
   if (!form) return t('Connector action');
   if (form.executionMode === 'read-only') return t('Read-only');
-  if (form.executionMode === 'blink') return 'Blink';
+  if (form.executionMode === 'blink') return t('Blink');
   return t('First-class');
 }
 
@@ -26557,7 +27506,7 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
     return `
       <label class="field compact planner-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
         <span>${escapeHtml(label)}</span>
-        <textarea data-template-field="${escapeHtml(fieldDef.id)}"${valueDisplay.attrs} placeholder="${escapeHtml(fieldDef.placeholder ? t(fieldDef.placeholder) : '')}" ${disabled}>${escapeHtml(valueDisplay.value)}</textarea>
+        <textarea id="tpl-field-${escapeHtml(fieldDef.id)}" data-template-field="${escapeHtml(fieldDef.id)}"${valueDisplay.attrs} placeholder="${escapeHtml(fieldDef.placeholder ? t(fieldDef.placeholder) : '')}" ${disabled}>${escapeHtml(valueDisplay.value)}</textarea>
         ${templateFieldHelper(fieldDef)}
         ${error}
       </label>
@@ -26582,7 +27531,7 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
   return `
     <label class="field compact planner-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
       <span>${escapeHtml(label)}</span>
-      <input data-template-field="${escapeHtml(fieldDef.id)}"${valueDisplay.attrs} value="${escapeHtml(valueDisplay.value)}" placeholder="${escapeHtml(fieldDef.placeholder ? t(fieldDef.placeholder) : '')}" ${disabled} />
+      <input id="tpl-field-${escapeHtml(fieldDef.id)}" data-template-field="${escapeHtml(fieldDef.id)}"${valueDisplay.attrs} value="${escapeHtml(valueDisplay.value)}" placeholder="${escapeHtml(fieldDef.placeholder ? t(fieldDef.placeholder) : '')}" ${disabled} />
       ${templateFieldHelper(fieldDef)}
       ${error}
     </label>
@@ -26798,14 +27747,14 @@ function connectorProtocolFieldInput(
       return {
         value: candidate.id,
         label: candidate.name,
-        meta: status.meta,
+        meta: t(status.meta),
         detail: connectorPickerDetail(candidate, status.detail),
         disabled: !status.selectable,
-        title: status.detail,
+        title: t(status.detail),
         logoId: protocolConnectorLogoId(candidate.id),
       };
     })
-    : [{ value: '', label: t('No connector available'), meta: 'Protocol Connector', disabled: true }];
+    : [{ value: '', label: t('No connector available'), meta: t('Protocol Connector'), disabled: true }];
   return `
     <div class="field compact planner-field connector-draft-field connector-protocol-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
       <span>${escapeHtml(label)}</span>
@@ -26931,14 +27880,20 @@ function templateFieldIsSubActionSelect(fieldDef: AgentPlanTemplateField): boole
 function connectorSubActionPicker(form: ConnectorActionForm): string {
   if (!form.subActions) return '';
   const group = form.subActions;
-  const current = state.templateFields[group.fieldId]?.trim() || group.defaultId || group.options[0]?.id || '';
+  // Scope the visible sub-actions to the active create action (Jupiter Lend → earn options under
+  // "Lend", borrow options under "Borrow"); '' (no scope) keeps all options (chat / legacy).
+  const options = scopedSubActionOptions(group);
+  const stored = state.templateFields[group.fieldId]?.trim() || '';
+  const current = stored && options.some((option) => option.id === stored)
+    ? stored
+    : (options[0]?.id || group.defaultId || '');
   if (group.display === 'select') {
     return `
       <label class="field compact planner-field connector-subaction-row connector-subaction-select">
         <span class="connector-subaction-label">${escapeHtml(t(group.label))}</span>
         ${selectPicker({
           value: current,
-          options: group.options.map((option) => ({
+          options: options.map((option) => ({
             value: option.id,
             label: t(option.label),
             meta: t(group.label),
@@ -26951,7 +27906,7 @@ function connectorSubActionPicker(form: ConnectorActionForm): string {
       </label>
     `;
   }
-  const chips = group.options
+  const chips = options
     .map((option) => {
       const active = option.id === current ? 'active' : '';
       const disabledAttr = state.busy ? 'disabled' : '';
@@ -27358,7 +28313,7 @@ function connectorDraftEnvironment(): {
 
 function connectorPickerDetail(connector: ProtocolConnector, statusDetail: string): string {
   const actions = connector.supportedActions.slice(0, 3).join(' · ');
-  return actions ? `${statusDetail} ${actions}` : statusDetail;
+  return actions ? `${t(statusDetail)} ${actions}` : t(statusDetail);
 }
 
 function connectorDraftStatusPanel(connector: ProtocolConnector | undefined, hasSelectableConnector: boolean): string {
@@ -27374,8 +28329,8 @@ function connectorDraftStatusPanel(connector: ProtocolConnector | undefined, has
   const stateClass = status.selectable ? 'ready' : 'blocked';
   return `
     <div class="connector-draft-status ${stateClass}">
-      <span>${escapeHtml(status.label)}</span>
-      <p>${escapeHtml(status.detail)}</p>
+      <span>${escapeHtml(t(status.label))}</span>
+      <p>${escapeHtml(t(status.detail))}</p>
       ${hasSelectableConnector ? '' : `
         <button type="button" class="utility" data-tab="preferences" data-preferences-view="access" ${state.busy ? 'disabled' : ''}>${escapeHtml(tf('Open {label}', { label: 'Protocol Connectors' }))}</button>
       `}
@@ -27480,17 +28435,28 @@ function isSlippageBpsField(fieldId: string): boolean {
   return fieldId.toLowerCase().endsWith('slippagebps');
 }
 
+// Max slippage as [ Auto | Custom ] pills (mirrors the chat swap builder). Auto = empty value → the
+// swap omits slippageBps and Jupiter applies its own slippage; Custom = an editable %/bps value.
 function slippageFieldInput(fieldDef: AgentPlanTemplateField, value: string, label: string, error: string): string {
-  return `
-    <label class="field compact planner-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
-      <span>${escapeHtml(label)}</span>
-      <input
+  const custom = Boolean(value && value.trim());
+  const modePill = `
+    <span class="token-choice-mode slippage-choice-mode" role="group" aria-label="${escapeHtml(t('Slippage mode'))}">
+      <button type="button" data-template-slippage-mode="auto" data-template-slippage-field="${escapeHtml(fieldDef.id)}" class="${custom ? '' : 'active'}">${escapeHtml(t('Auto'))}</button>
+      <button type="button" data-template-slippage-mode="custom" data-template-slippage-field="${escapeHtml(fieldDef.id)}" class="${custom ? 'active' : ''}">${escapeHtml(t('Custom'))}</button>
+    </span>`;
+  const input = custom
+    ? `<input
         data-template-slippage-field="${escapeHtml(fieldDef.id)}"
         value="${escapeHtml(slippageBpsToPercentInput(value))}"
         placeholder="${escapeHtml(fieldDef.placeholder ?? '0.5%')}"
         inputmode="decimal"
         ${state.busy ? 'disabled' : ''}
-      />
+      />`
+    : `<input class="slippage-auto-input" value="${escapeHtml(t('Auto'))}" disabled />`;
+  return `
+    <label class="field compact planner-field slippage-control-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
+      <span class="token-choice-head"><span>${escapeHtml(label)}</span>${modePill}</span>
+      ${input}
       ${error}
     </label>
   `;
@@ -27532,11 +28498,14 @@ const templateAmountModes: Record<string, ChatAmountMode> = {};
 function templateAmountModeFor(fieldId: string): ChatAmountMode {
   return templateAmountModes[fieldId] === 'token' ? 'token' : 'usd';
 }
-// The wallet balance asset for the template's spend token (inputToken for swaps, else token).
+// The wallet balance asset for the template's spend token (inputToken for swaps, token for single-token
+// actions, inputMint for connector forms). Returns null if no canonical spend field resolves.
 function plannerSpendTokenAsset(): WalletBalanceAsset | null {
   const template = selectedTemplate();
-  const spendId = template.fields.some((f) => f.id === 'inputToken') ? 'inputToken' : 'token';
-  if (!template.fields.some((f) => f.id === spendId)) return null;
+  // Only the UNAMBIGUOUS spend fields: inputToken (swap) / token (send/single). NOT inputMint — in
+  // connector borrow/withdraw forms inputMint is the RECEIVED token, so %-of-balance would be wrong.
+  const spendId = ['inputToken', 'token'].find((id) => template.fields.some((f) => f.id === id));
+  if (!spendId) return null;
   const raw = templateFieldValue(spendId);
   if (!raw) return null;
   const resolved = resolveChatToken(raw);
@@ -27546,11 +28515,15 @@ function plannerSpendTokenAsset(): WalletBalanceAsset | null {
 function isAmountControlField(fieldDef: AgentPlanTemplateField): boolean {
   if (fieldDef.id !== 'amount') return false;
   const template = selectedTemplate();
-  // Only the first-class swap/send/recurring templates (which spend a plain SPL token);
-  // connector templates (Kamino etc.) can use sentinels like amount="all" and keep their
-  // own field semantics, so leave their amount field as the plain input.
-  if (isConnectorCapableTemplate(template)) return false;
-  return template.fields.some((f) => f.id === 'inputToken' || f.id === 'token');
+  if (!isConnectorCapableTemplate(template)) {
+    return template.fields.some((f) => f.id === 'inputToken' || f.id === 'token');
+  }
+  // Connector forms: give the amount field the $/token + quick-fills only when a spend token resolves
+  // (so balance/$ are meaningful) AND the value isn't a non-numeric sentinel like "all" — otherwise the
+  // plain input (which preserves the connector's own semantics, e.g. amount="all").
+  const current = (templateFieldValue('amount') || '').trim();
+  if (current && !/^[\d.]+$/.test(current)) return false;
+  return plannerSpendTokenAsset() !== null;
 }
 function amountControlFieldInput(fieldDef: AgentPlanTemplateField, value: string, label: string, error: string): string {
   const asset = plannerSpendTokenAsset();
@@ -27576,7 +28549,7 @@ function amountControlFieldInput(fieldDef: AgentPlanTemplateField, value: string
   const pctRow = asset ? `
     <div class="chat-amount-pcts">
       ${pctBtn('50')}${pctBtn('100')}
-      <input class="chat-amount-pct-input" data-template-pct-input="${escapeHtml(fieldDef.id)}" placeholder="${escapeHtml(t('Custom %'))}" inputmode="numeric" autocomplete="off" />
+      <input id="tpl-pct-${escapeHtml(fieldDef.id)}" class="chat-amount-pct-input" data-template-pct-input="${escapeHtml(fieldDef.id)}" placeholder="${escapeHtml(t('Custom %'))}" inputmode="numeric" autocomplete="off" />
       <button type="button" class="chat-amount-pct chat-amount-pct-apply" data-template-pct-apply="${escapeHtml(fieldDef.id)}" aria-label="${escapeHtml(t('Apply percent'))}">%</button>
     </div>` : '';
   // Token mode keeps data-template-field (read by readTemplateFields); $ mode uses a
@@ -27587,9 +28560,11 @@ function amountControlFieldInput(fieldDef: AgentPlanTemplateField, value: string
   return `
     <label class="field compact planner-field amount-control-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
       <span class="token-choice-head"><span>${escapeHtml(label)}</span>${unitPill}</span>
-      <input ${inputAttr} value="${escapeHtml(display)}" placeholder="${escapeHtml(mode === 'usd' ? '$0.00' : (fieldDef.placeholder ? t(fieldDef.placeholder) : '0.00'))}" inputmode="decimal" autocomplete="off" ${disabled} />
+      <div class="amount-input-row">
+        <input id="tpl-amount-${escapeHtml(fieldDef.id)}" ${inputAttr} value="${escapeHtml(display)}" placeholder="${escapeHtml(mode === 'usd' ? '$0.00' : (fieldDef.placeholder ? t(fieldDef.placeholder) : '0.00'))}" inputmode="decimal" autocomplete="off" ${disabled} />
+        ${pctRow}
+      </div>
       ${balanceLine}
-      ${pctRow}
       ${error}
     </label>
   `;
@@ -27599,7 +28574,35 @@ function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label:
   const options = fieldDef.options ?? [];
   const mode = templateTokenMode(fieldDef, value);
   const presetMode = mode === 'preset';
-  const selectValue = options.includes(value) ? value : fieldDef.defaultValue || options[0] || '';
+  // Input-token LIST = the user's PORTFOLIO (owned tokens, balance + $); output-token LIST keeps the
+  // curated catalog. MINT (search) is unchanged for both.
+  const portfolio = (isInputTokenField(fieldDef.id) && presetMode)
+    ? chatSnapshotAssets().filter((a) => a.amount > 0)
+    : [];
+  const usePortfolio = portfolio.length > 0;
+  const resolvedCurrentMint = (() => { const r = resolveChatToken(value); return 'error' in r ? '' : r.mint; })();
+  const listPickerOptions: SelectPickerOption[] = usePortfolio
+    ? portfolio.map((a) => ({
+        value: a.mint,
+        label: a.symbol || `${a.mint.slice(0, 4)}…${a.mint.slice(-4)}`,
+        meta: `${formatChatCompactAmount(a.amount)}${a.symbol ? ` ${a.symbol}` : ''}`,
+        detail: formatChatCompactUsd(a.valueUsd) || '',
+      }))
+    : options.map((option) => ({
+        value: option,
+        label: tokenDisplayLabel(option),
+        meta: fieldDef.label,
+        detail: tokenDisplayTitle(option),
+      }));
+  const curatedSelectValue = (): string => {
+    if (options.includes(value)) return value;
+    // A stored mint (e.g. a pasted token) → resolve to its symbol so the curated picker shows it.
+    if (looksLikeMintAddress(value)) { const sym = tokenDisplayLabel(value); if (options.includes(sym)) return sym; }
+    return fieldDef.defaultValue || options[0] || '';
+  };
+  const selectValue = usePortfolio
+    ? (portfolio.find((a) => a.mint === resolvedCurrentMint)?.mint ?? portfolio[0]?.mint ?? '')
+    : curatedSelectValue();
   const selection = templateTokenSelection(fieldDef, value);
   const customValue = presetMode ? '' : tokenSelectionInputValue(selection, value);
   const executionValue = !presetMode && selection.value && selection.value !== customValue ? selection.value : '';
@@ -27632,17 +28635,13 @@ function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label:
       </span>
       ${presetMode ? selectPicker({
         value: selectValue,
-        options: options.map((option) => ({
-          value: option,
-          label: tokenDisplayLabel(option),
-          meta: fieldDef.label,
-          detail: tokenDisplayTitle(option),
-        })),
+        options: listPickerOptions,
         attrs: { 'data-template-field': fieldDef.id },
         disabled,
       }) : `
         <div class="token-search-shell">
           <input
+            id="tpl-tokensearch-${escapeHtml(fieldDef.id)}"
             data-template-field="${escapeHtml(fieldDef.id)}"
             data-token-search-input="${escapeHtml(fieldDef.id)}"
             ${executionValue ? `data-token-execution-value="${escapeHtml(executionValue)}"` : ''}
@@ -27663,10 +28662,22 @@ function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label:
   `;
 }
 
+// Spend-side (input) token fields show the user's portfolio in LIST; output/receive fields default to
+// search (MINT). Only the true output fields default to MINT — input AND price-watch fields (e.g.
+// triggerMint, which has a curated list) default to LIST.
+function isInputTokenField(fieldId: string): boolean {
+  return fieldId === 'token' || fieldId === 'inputToken' || fieldId === 'inputMint';
+}
+function isOutputTokenField(fieldId: string): boolean {
+  return fieldId === 'outputToken' || fieldId === 'outputMint';
+}
+// The role-aware DEFAULT mode (no explicit user choice yet): output → MINT, everything else → LIST.
+function defaultTokenMode(fieldId: string): TokenInputMode {
+  return isOutputTokenField(fieldId) ? 'custom' : 'preset';
+}
 function templateTokenMode(fieldDef: AgentPlanTemplateField, value: string): TokenInputMode {
-  const explicit = state.templateTokenModes[fieldDef.id];
-  if (explicit) return explicit;
-  return (fieldDef.options ?? []).includes(value) ? 'preset' : 'custom';
+  void value;
+  return state.templateTokenModes[fieldDef.id] ?? defaultTokenMode(fieldDef.id);
 }
 
 function defaultTemplateTokenModes(
@@ -27676,8 +28687,9 @@ function defaultTemplateTokenModes(
   const modes: Record<string, TokenInputMode> = {};
   for (const fieldDef of template.fields) {
     if (!isTokenSelectField(fieldDef)) continue;
-    const value = values[fieldDef.id] ?? fieldDef.defaultValue ?? '';
-    modes[fieldDef.id] = (fieldDef.options ?? []).includes(value) ? 'preset' : 'custom';
+    // Role-aware (same as templateTokenMode) so a portfolio selection (stored as a mint, not a curated
+    // symbol) doesn't get flipped back to MINT mode on a re-render/template reload.
+    modes[fieldDef.id] = defaultTokenMode(fieldDef.id);
   }
   return modes;
 }
@@ -27727,6 +28739,7 @@ function recipientTemplateFieldInput(
       <span>${escapeHtml(label)}</span>
       ${recipientSelectForField('template', fieldDef.id, value, disabled)}
       <input
+        id="tpl-recipient-${escapeHtml(fieldDef.id)}"
         data-template-field="${escapeHtml(fieldDef.id)}"
         value="${escapeHtml(value)}"
         placeholder="${escapeHtml(fieldDef.placeholder ?? t('Recipient public key'))}"
@@ -30545,7 +31558,7 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
       <div class="completed-history-head">
         <div class="completed-history-title-block">
           <div class="completed-history-meta">
-            <span class="status-pill ${escapeHtml(plan.tone)}">${escapeHtml(plan.status)}</span>
+            <span class="status-pill ${escapeHtml(plan.tone)}">${escapeHtml(t(plan.status))}</span>
             ${storageBadgeHtml(completedPlanStorageBadge(plan))}
             ${connectorChip(connectorMeta?.id, connectorMeta?.name)}
             <strong class="completed-history-meta-title">${escapeHtml(historyLabel)}</strong>
@@ -30631,7 +31644,7 @@ function completedPlanCardMobile(plan: CompletedPlanRecord): string {
     <article class="generated-plan-card completed-plan-card mobile-completed-card ${focused ? 'focused' : ''}" ${focused ? 'data-completed-focus="true"' : ''}>
       <div class="mobile-completed-card-head">
         <div class="mobile-completed-card-meta">
-          <span class="status-pill ${escapeHtml(plan.tone)}">${escapeHtml(plan.status)}</span>
+          <span class="status-pill ${escapeHtml(plan.tone)}">${escapeHtml(t(plan.status))}</span>
           ${connectorChip(connectorMeta?.id, connectorMeta?.name)}
           ${evidenceBadgeHtml(evidenceBadge)}
           ${submissionPill}
@@ -31261,8 +32274,10 @@ function recurringMobileModeControls(): string {
   if (creating) {
     return `
       <div class="mobile-recurring-controls create">
-        ${recurringConnectorPicker()}
-        ${connector ? recurringConnectorActionPicker(state.recurringDraft, connector) : recurringPresetMethodControls()}
+        ${recurringActionTabs()}
+        ${recurringActionIsConnector() ? recurringConnectorPicker() : ''}
+        ${recurringActionIsConnector() && connector ? recurringConnectorActionPicker(state.recurringDraft, connector) : ''}
+        ${connectGateFor(recurringActionIsConnector() ? state.recurringActionCategory : '')}
       </div>
     `;
   }
@@ -31286,15 +32301,19 @@ function recurringViewTabs(activeCount: number): string {
       </div>
       ${active ? agentReviewFilterControl('recurring') : ''}
       ${active ? `<button id="deleteAllRepeats" class="utility danger" ${state.busy || filterRecurringPaymentsByAgentReview(activeWorkflowRecurringPayments()).length === 0 ? 'disabled' : ''}>${escapeHtml(t('Delete All'))}</button>` : ''}
-      ${creating ? recurringConnectorPicker() : ''}
-      ${creating ? (connector ? recurringConnectorActionPicker(state.recurringDraft, connector) : recurringPresetMethodControls()) : ''}
+      ${creating ? recurringActionTabs() : ''}
+      ${creating && recurringActionIsConnector() ? recurringConnectorPicker() : ''}
+      ${creating && recurringActionIsConnector() && connector ? recurringConnectorActionPicker(state.recurringDraft, connector) : ''}
+      ${creating ? connectGateFor(recurringActionIsConnector() ? state.recurringActionCategory : '') : ''}
     </div>
   `;
 }
 
 function recurringConnectorPicker(): string {
   const env = connectorDraftEnvironment();
-  const connectors = connectorCreateConnectors(env);
+  const connectors = recurringActionIsConnector()
+    ? connectorsForCategory(state.recurringActionCategory as ActionCategory, env)
+    : connectorCreateConnectors(env);
   const selectedConnector = recurringDraftConnector(state.recurringDraft);
   return `
     <div class="top-connector-control recurring-connector-control ${selectedConnector ? 'active' : ''}">
@@ -32557,20 +33576,6 @@ function bind(): void {
     });
   }
 
-  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-template-filter]')) {
-    button.addEventListener('click', () => {
-      const filter = button.dataset.templateFilter as TemplateOutcomeFilter | undefined;
-      if (!filter) return;
-      state.templateOutcomeFilter = filter;
-      const current = selectedTemplate();
-      if (filter !== 'all' && templateOutcome(current) !== filter) {
-        selectAgentTemplate(firstTemplateForOutcomeFilter(filter).id);
-        return;
-      }
-      render();
-    });
-  }
-
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-completed-filter]')) {
     button.addEventListener('click', () => {
       const filter = button.dataset.completedFilter as CompletedPlanFilter | undefined;
@@ -33028,6 +34033,18 @@ function bind(): void {
     state.agentPreparedActionId = '';
   });
 
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-create-action]')) {
+    button.addEventListener('click', () => {
+      selectCreateAction(button.dataset.createAction as ActionCategory);
+    });
+  }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recurring-action-tab]')) {
+    button.addEventListener('click', () => {
+      selectRecurringAction(button.dataset.recurringActionTab as ActionCategory);
+    });
+  }
+  bindActionDropdowns();
+
   document.querySelector<HTMLSelectElement>('[data-connector-create-picker]')?.addEventListener('input', (event) => {
     selectConnectorForCreate((event.currentTarget as HTMLSelectElement).value);
   });
@@ -33107,7 +34124,7 @@ function bind(): void {
   }
   bindTokenSearchSelectButtons();
 
-  for (const fieldInput of document.querySelectorAll<HTMLInputElement>('[data-template-slippage-field]')) {
+  for (const fieldInput of document.querySelectorAll<HTMLInputElement>('input[data-template-slippage-field]')) {
     fieldInput.addEventListener('input', () => {
       const fieldId = fieldInput.dataset.templateSlippageField;
       if (!fieldId) return;
@@ -33122,6 +34139,22 @@ function bind(): void {
       if (!fieldId) return;
       state.templateFields[fieldId] = slippagePercentInputToBps(fieldInput.value);
       fieldInput.value = slippageBpsToPercentInput(state.templateFields[fieldId] ?? '');
+    });
+  }
+  // Auto | Custom slippage pills: Auto clears the value (→ omit slippageBps, Jupiter dynamic);
+  // Custom seeds the 0.5% (50 bps) default so the input is immediately editable.
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-template-slippage-mode]')) {
+    button.addEventListener('click', () => {
+      const fieldId = button.dataset.templateSlippageField;
+      if (!fieldId) return;
+      state.templateFields[fieldId] = button.dataset.templateSlippageMode === 'custom'
+        ? (state.templateFields[fieldId]?.trim() || '50')
+        : '';
+      delete state.templateFieldErrors[fieldId];
+      state.agentPlan = null;
+      state.agentSignature = '';
+      state.agentPreparedActionId = '';
+      render();
     });
   }
 
@@ -33153,6 +34186,9 @@ function bind(): void {
       const fieldId = unitBtn.dataset.templateAmountField;
       if (!fieldId) return;
       templateAmountModes[fieldId] = unitBtn.dataset.templateAmountUnit === 'token' ? 'token' : 'usd';
+      // Don't replay the chat rail-sheet slide on an in-sheet toggle (the amount input's
+      // stable id lets the focus snapshot re-target it after the re-render).
+      suppressMobileRailSheetEnterAnimation = true;
       render();
     });
   }
@@ -33163,6 +34199,7 @@ function bind(): void {
     if (!raw) { pushToast('error', t('Balance unavailable'), t('No balance to take a percentage of.')); return; }
     state.templateFields[fieldId] = raw;
     invalidatePlannerAmount(fieldId);
+    suppressMobileRailSheetEnterAnimation = true;
     render();
   };
   for (const pctBtn of document.querySelectorAll<HTMLButtonElement>('[data-template-pct]')) {
@@ -33574,6 +34611,18 @@ function bind(): void {
     });
   }
 
+  // Recurring Auto | Custom slippage pills (Auto clears the value → backend safe-cap default).
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recurring-slippage-mode]')) {
+    button.addEventListener('click', () => {
+      state.recurringDraft = readRecurringDraft();
+      state.recurringDraft.slippageBps = button.dataset.recurringSlippageMode === 'custom'
+        ? (state.recurringDraft.slippageBps?.trim() || '50')
+        : '';
+      delete state.recurringErrors.recurringSlippageBps;
+      render();
+    });
+  }
+
   for (const recurringInput of document.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>('[data-recurring-field]')) {
     recurringInput.addEventListener('input', () => {
       const field = recurringInput.dataset.recurringField;
@@ -33615,6 +34664,9 @@ function bind(): void {
   for (const unitBtn of document.querySelectorAll<HTMLButtonElement>('[data-recurring-amount-unit]')) {
     unitBtn.addEventListener('click', () => {
       recurringAmountMode = unitBtn.dataset.recurringAmountUnit === 'token' ? 'token' : 'usd';
+      // Don't replay the chat rail-sheet slide on an in-sheet toggle (the recurring inputs have
+      // stable ids so the focus snapshot re-targets them after the re-render).
+      suppressMobileRailSheetEnterAnimation = true;
       render();
     });
   }
@@ -33625,6 +34677,7 @@ function bind(): void {
     if (!raw) { pushToast('error', t('Balance unavailable'), t('No balance to take a percentage of.')); return; }
     state.recurringDraft.amount = raw;
     delete state.recurringErrors.recurringAmount;
+    suppressMobileRailSheetEnterAnimation = true;
     render();
   };
   for (const pctBtn of document.querySelectorAll<HTMLButtonElement>('[data-recurring-pct]')) {
@@ -34415,6 +35468,60 @@ function walletConnectSurface(): string {
   if (state.iosNativeEnvironment.isIosNative) return 'ios_native';
   if (state.tauriNativeEnvironment.isTauriNative) return 'tauri_native';
   return 'wallet_standard';
+}
+
+// The "Lend ▾" action dropdown(s). Custom dropdown so EVERY option click fires (incl. the shown one).
+function bindActionDropdowns(): void {
+  for (const picker of document.querySelectorAll<HTMLElement>('[data-action-picker]')) {
+    const trigger = picker.querySelector<HTMLButtonElement>('.action-picker-trigger');
+    const menu = picker.querySelector<HTMLElement>('.action-picker-menu');
+    const options = [...picker.querySelectorAll<HTMLButtonElement>('[data-action-option]')];
+    if (!trigger || !menu || options.length === 0) continue;
+
+    const closeMenu = (returnFocus: boolean): void => {
+      picker.classList.remove('open');
+      trigger.setAttribute('aria-expanded', 'false');
+      menu.hidden = true;
+      actionPickerController?.abort();
+      actionPickerController = null;
+      if (returnFocus) trigger.focus({ preventScroll: true });
+    };
+    const openMenu = (): void => {
+      if (trigger.disabled) return;
+      actionPickerController?.abort();
+      picker.classList.add('open');
+      trigger.setAttribute('aria-expanded', 'true');
+      menu.hidden = false;
+      positionTemplatePickerMenu(trigger, menu);
+      window.requestAnimationFrame(() => positionTemplatePickerMenu(trigger, menu));
+      actionPickerController = new AbortController();
+      const { signal } = actionPickerController;
+      window.addEventListener('pointerdown', (event) => {
+        if (event.target instanceof Node && picker.contains(event.target)) return;
+        closeMenu(false);
+      }, { signal });
+      window.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') { event.preventDefault(); closeMenu(true); }
+      }, { signal });
+      window.addEventListener('resize', () => positionTemplatePickerMenu(trigger, menu), { signal });
+      window.visualViewport?.addEventListener('resize', () => positionTemplatePickerMenu(trigger, menu), { signal });
+    };
+
+    trigger.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (menu.hidden) openMenu();
+      else closeMenu(false);
+    });
+    for (const option of options) {
+      option.addEventListener('click', () => {
+        const category = option.dataset.actionOption as ActionCategory | undefined;
+        if (!category) return;
+        closeMenu(false);
+        if (option.dataset.actionScope === 'repeat') selectRecurringAction(category);
+        else selectCreateAction(category);
+      });
+    }
+  }
 }
 
 function bindTemplatePicker(): void {
@@ -35601,9 +36708,14 @@ function selectConnectorForCreate(connectorId: string): void {
   if (!connector) return;
   const env = connectorDraftEnvironment();
   if (!connectorCreateStatus(connector, env).selectable) return;
-  const form = connectorActionFormsForConnector(connector)[0];
+  // Under an active action, pick the connector's first form FOR that action (keeps the route
+  // scoped — e.g. switching to Jupiter under "Lend" lands on its Lend form, not its first form).
+  const cat = state.createActionCategory;
+  const form = (cat ? firstFormForCategory(connector, cat) : undefined)
+    ?? connectorActionFormsForConnector(connector)[0];
   if (!form) return;
-  applyConnectorActionForm(form);
+  if (cat) applyConnectorActionFormForCategory(form, cat);
+  else applyConnectorActionForm(form);
 }
 
 function selectConnectorActionForCreate(formId: string): void {
@@ -39587,6 +40699,15 @@ function numericPlanParam(plan: AgentPlan, keys: string[]): number | undefined {
   if (!raw) return undefined;
   const parsed = Number(raw);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
+
+// Swap slippage: empty (Auto) → undefined so the prepare omits slippageBps and Jupiter applies its
+// own dynamic slippage; a positive bps value (Custom) is passed through.
+function planSwapSlippageBps(plan: AgentPlan): number | undefined {
+  const raw = (plan.parameters.slippageBps ?? '').trim();
+  if (!raw) return undefined;
+  const bps = Number(raw);
+  return Number.isFinite(bps) && bps > 0 ? bps : undefined;
 }
 
 async function signAgentDenialProof(plan: AgentPlan, review: AgentPlanReviewState, summary: string): Promise<string> {
@@ -53731,14 +54852,14 @@ async function queuePlanThroughBridge(plan: AgentPlan, sourceRecord?: GeneratedP
       return { id: response.preparedAction.id };
     }
     case 'swap': {
-      const slippageBps = Number(plan.parameters.slippageBps || '50');
+      const slippageBps = planSwapSlippageBps(plan); // undefined = Auto → omit so Jupiter applies dynamic slippage
       const response = await bridgeRequest<{ preparedAction: PreparedAction }>('/bridge/action/prepare-swap', {
         method: 'POST',
         body: JSON.stringify({
           inputToken: plan.parameters.inputToken || 'SOL',
           outputToken: plan.parameters.outputToken || 'USDC',
           amount: requiredPlanParam(plan, 'amount'),
-          slippageBps: Number.isFinite(slippageBps) ? slippageBps : 50,
+          ...(slippageBps !== undefined ? { slippageBps } : {}),
           note,
         }),
       });
@@ -56258,7 +57379,7 @@ function preparedActionCard(action: PreparedAction): string {
               ${renderApprovalBadges(action)}
               ${connectorChip(connectorMeta?.id, connectorMeta?.name)}
               <strong class="inbox-approval-meta-title">${escapeHtml(preparedActionCardTitle(action))}</strong>
-              <span>${escapeHtml(action.kind.replace(/_/g, ' '))}</span>
+              <span>${escapeHtml(preparedActionKindChipLabel(action))}</span>
               ${action.recurringId ? `<span>${escapeHtml(t('Repeat'))}</span>` : ''}
               ${inboxActionFailurePill(action)}
               ${action.txStatus && action.txStatus !== 'failed' ? `<span class="status-pill ${txTone(action.txStatus)}">${escapeHtml(tf('tx {status}', { status: action.txStatus }))}</span>` : ''}
@@ -56333,6 +57454,16 @@ function preparedActionMetaLabel(action: PreparedAction): string {
     return connectorActionDisplayParts(action.kind, action.params)?.operationLabel ?? action.kind.replace(/_/g, ' ');
   }
   return action.kind;
+}
+
+// The small kind chip on the approval card. Connector kinds resolve to their (catalog-keyed)
+// operationLabel so they localize on Android; base kinds use the seeded spaced-kind label.
+function preparedActionKindChipLabel(action: PreparedAction): string {
+  if (isConnectorApprovalKind(action)) {
+    const op = connectorActionDisplayParts(action.kind, action.params)?.operationLabel;
+    return op ? t(op) : t(action.kind.replace(/_/g, ' '));
+  }
+  return t(action.kind.replace(/_/g, ' '));
 }
 
 function preparedActionCardTitle(action: PreparedAction): string {
@@ -56508,6 +57639,10 @@ function tokenDisplayLabel(value: string): string {
   if (!looksLikeMintAddress(trimmed)) return trimmed;
   const custom = customTokenByMint(trimmed);
   if (custom?.symbol) return custom.symbol;
+  // Owned long-tail tokens picked from the portfolio LIST are stored as mints — resolve via the wallet
+  // balance so cards (route, amount, recurring, approval) show the symbol instead of a truncated address.
+  const owned = chatSnapshotAssets().find((a) => a.mint === trimmed);
+  if (owned?.symbol) return owned.symbol;
   return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
 }
 
@@ -57569,7 +58704,7 @@ function inboxApprovalSummaryGrid(action: PreparedAction): string {
     // is shown in the note block below; keep the grid to wallet + due.
     const proofRows: ApprovalSummaryRow[] = [
       { kind: 'wallet', label: 'Wallet', value: short(action.walletAddress), title: action.walletAddress, copyValue: action.walletAddress },
-      { kind: 'due', label: 'Due', value: formatDateTime(action.dueAt) },
+      { kind: 'due', label: t('Due'), value: formatDateTime(action.dueAt) },
     ];
     return `
       <dl class="inbox-approval-summary-grid rows-${proofRows.length}" aria-label="${escapeHtml(t('Approval summary'))}">
@@ -57585,7 +58720,7 @@ function inboxApprovalSummaryGrid(action: PreparedAction): string {
     { kind: 'token', label: tokenSummary.label ?? (tokenSummary.html ? 'Route' : 'Token'), value: tokenSummary.value, html: tokenSummary.html, title: tokenSummary.title, copyActions: tokenSummary.copyActions },
   ];
   if (action.kind === 'swap') rows.push(swapQuoteSummaryRow(action));
-  rows.push({ kind: 'due', label: 'Due', value: formatDateTime(action.dueAt) });
+  rows.push({ kind: 'due', label: t('Due'), value: formatDateTime(action.dueAt) });
   return `
     <dl class="inbox-approval-summary-grid rows-${rows.length} ${action.kind === 'swap' ? 'swap-summary' : ''}" aria-label="${escapeHtml(t('Approval summary'))}">
       ${rows.map((row) => inboxApprovalSummaryItem(row)).join('')}
@@ -57611,7 +58746,11 @@ function swapQuoteSummaryRow(action: PreparedAction): ApprovalSummaryRow {
   const outputToken = swapOutputTokenLabel(action);
   const expected = formatSwapQuoteAmount(stringParam(action, 'expectedOutput'));
   const minimum = formatSwapQuoteAmount(stringParam(action, 'minimumReceived'));
-  const slippage = formatSwapSlippagePercent(browserSlippageBpsFromParams(action));
+  const slippageBpsValue = browserSlippageBpsFromParams(action);
+  // Auto (no fixed cap requested) → "Auto"; a positive cap → "0.5%".
+  const slippage = slippageBpsValue !== undefined && slippageBpsValue > 0
+    ? formatSwapSlippagePercent(slippageBpsValue)
+    : t('Auto');
   const priceImpact = formatSwapPriceImpactPercent(numberParam(action, 'priceImpactPct'));
   const token = outputToken || 'output';
   if (!expected) {
@@ -58123,12 +59262,6 @@ function recurringComposer(): string {
   const browserWorkflow = workflowMode === 'browser-workflow';
   const createDisabled = !state.address || state.busy;
   const aiPathConnected = hasDetectedAgentReviewPath();
-  const aiDraftDisabledReason = canGenerateAiPlanFromSettings()
-    ? canRunAgentReview()
-      ? 'Plan and review this repeat request with the configured agent.'
-      : agentReviewUnavailableReason()
-    : aiGenerateDisabledReason();
-  const aiDraftDisabled = createDisabled || !canGenerateAiPlanFromSettings() || !canRunAgentReview();
   const composerTitle = isSwap ? t('Create recurring swap') : t('Create repeat payment');
   const createLabel = t('Create Plan');
   const recurringHelp = isSwap
@@ -58376,8 +59509,7 @@ function recurringDraftAssetLabel(draft: RecurringDraft): string {
 function recurringDraftSwapRouteLabel(draft: RecurringDraft): string {
   const input = draft.inputToken ? tokenDisplayLabel(draft.inputToken) : t('Input token');
   const output = draft.outputToken ? tokenDisplayLabel(draft.outputToken) : t('Output token');
-  const slippage = draft.slippageBps.trim() ? formatSwapSlippagePercent(Number(draft.slippageBps)) : '';
-  return `${input} -> ${output}${slippage ? tf(', {slippage} max', { slippage }) : ''}`;
+  return `${input} -> ${output} · ${cardSlippageLabel(draft.slippageBps)}`;
 }
 
 function recurringContractSummaryView(
@@ -58477,6 +59609,59 @@ function lifetimeSpendCopy(spend: LifetimeSpend, token: string): string {
   return tf('No lifetime cap set. Current rate estimate: {rate}.', { rate });
 }
 
+// ---- Action-first axis (Repeat) ---------------------------------------------
+// Repeat only surfaces the recur-friendly verbs: Send (scheduled transfer) + Swap (recurring swap /
+// DCA) map to the base presets; Lend + Stake ("deposit on a schedule") map to the connector dropdown.
+function recurringActionIsConnector(): boolean {
+  return state.recurringActionCategory === 'lend' || state.recurringActionCategory === 'stake';
+}
+
+// Repeat action tab bar: Send | Swap | Lend ▾ (dropdown = the recur-friendly connector actions).
+function recurringActionTabs(): string {
+  const active = state.recurringActionCategory;
+  const baseTabs: { id: ActionCategory; label: string }[] = [
+    { id: 'send', label: 'Send' },
+    { id: 'swap', label: 'Swap' },
+  ];
+  const tabs = baseTabs.map((tab) => `
+    <button
+      type="button"
+      data-recurring-action-tab="${escapeHtml(tab.id)}"
+      class="${active === tab.id ? 'active' : ''}"
+      aria-pressed="${active === tab.id ? 'true' : 'false'}"
+      ${state.busy ? 'disabled' : ''}
+    >${escapeHtml(t(tab.label))}</button>
+  `).join('');
+  return `
+    <div class="one-time-method-control create-action-control recurring-action-control" role="group" aria-label="${escapeHtml(t('What do you want to do?'))}">
+      <div class="template-filter-row one-time-method-filter create-action-filter">${tabs}</div>
+      ${connectorActionDropdownSegment('repeat')}
+    </div>
+  `;
+}
+
+function selectRecurringAction(category: ActionCategory): void {
+  state.recurringActionCategory = category;
+  state.recurringDraft = readRecurringDraft();
+  if (category === 'send') { applyRecurringPreset('scheduled-transfer'); render(); return; }
+  if (category === 'swap') { applyRecurringPreset('recurring-swap'); render(); return; }
+  // Connector actions (lend / stake): seed the top selectable connector + its first form for the
+  // category. normalizeRecurringConnectorDraft clears the connector if it isn't enabled — the
+  // connect-gate then prompts to enable it.
+  const env = connectorDraftEnvironment();
+  const inCat = connectorsForCategory(category, env).filter((connector) => firstFormForCategory(connector, category));
+  const top = inCat.find((connector) => connectorCreateStatus(connector, env).selectable) ?? inCat[0];
+  const form = top ? firstFormForCategory(top, category) : undefined;
+  if (top && form) {
+    state.recurringDraft = normalizeRecurringConnectorDraft({
+      ...state.recurringDraft,
+      connectorId: top.id,
+      connectorOperationId: form.id,
+    });
+  }
+  render();
+}
+
 function recurringPresetControls(): string {
   return `
     ${selectPicker({
@@ -58497,20 +59682,10 @@ function recurringPresetControls(): string {
   `;
 }
 
-function recurringPresetMethodControls(): string {
-  return `
-    <div class="one-time-method-control recurring-method-control" role="group" aria-label="${escapeHtml(t('Repeat payment type'))}">
-      <span class="one-time-method-label">
-        <strong id="recurringPresetPickerLabel">${escapeHtml(t('Repeat type'))}</strong>
-        <em>${escapeHtml(t('What repeats'))}</em>
-      </span>
-      ${recurringPresetControls()}
-    </div>
-  `;
-}
-
 function recurringConnectorActionPicker(draft: RecurringDraft, connector: ProtocolConnector): string {
-  const forms = connectorActionFormsForConnector(connector);
+  const cat = state.recurringActionCategory;
+  const forms = connectorActionFormsForConnector(connector)
+    .filter((form) => (recurringActionIsConnector() && cat ? formMatchesCategory(form, cat) : true));
   const selectedForm = recurringDraftConnectorActionForm(draft) ?? forms[0];
   return `
     <div class="recurring-connector-action-control" aria-label="${escapeHtml(t('Repeat connector template'))}">
@@ -58552,7 +59727,25 @@ function recurringTokenSelectField(field: RecurringTokenField, label: string, va
   const options = RECURRING_TOKEN_OPTIONS;
   const mode = recurringTokenMode(field, value);
   const presetMode = mode === 'preset';
-  const selectValue = options.includes(value) ? value : options[0]!;
+  // Input-token LIST = portfolio (owned tokens); output LIST = curated. MINT (search) unchanged.
+  const portfolio = (field !== 'outputToken' && presetMode)
+    ? chatSnapshotAssets().filter((a) => a.amount > 0)
+    : [];
+  const usePortfolio = portfolio.length > 0;
+  const resolvedCurrentMint = (() => { const r = resolveChatToken(value); return 'error' in r ? '' : r.mint; })();
+  const listPickerOptions: SelectPickerOption[] = usePortfolio
+    ? portfolio.map((a) => ({
+        value: a.mint,
+        label: a.symbol || `${a.mint.slice(0, 4)}…${a.mint.slice(-4)}`,
+        meta: `${formatChatCompactAmount(a.amount)}${a.symbol ? ` ${a.symbol}` : ''}`,
+        detail: formatChatCompactUsd(a.valueUsd) || '',
+      }))
+    : options.map((token) => ({ value: token, label: token, meta: label.replace(/\s+\*$/, '') }));
+  const selectValue = usePortfolio
+    ? (portfolio.find((a) => a.mint === resolvedCurrentMint)?.mint ?? portfolio[0]?.mint ?? '')
+    : (options.includes(value)
+        ? value
+        : (looksLikeMintAddress(value) && options.includes(tokenDisplayLabel(value)) ? tokenDisplayLabel(value) : options[0]!));
   const selection = recurringTokenSelection(field, value);
   const customValue = presetMode ? '' : tokenSelectionInputValue(selection, value);
   const executionValue = !presetMode && selection.value && selection.value !== customValue ? selection.value : '';
@@ -58588,11 +59781,7 @@ function recurringTokenSelectField(field: RecurringTokenField, label: string, va
         value: selectValue,
         attrs: { 'data-recurring-field': field },
         disabled,
-        options: options.map((token) => ({
-          value: token,
-          label: token,
-          meta: label.replace(/\s+\*$/, ''),
-        })),
+        options: listPickerOptions,
       }) : `
         <div class="token-search-shell">
           <input
@@ -58620,17 +59809,21 @@ function recurringTokenSelectField(field: RecurringTokenField, label: string, va
 function recurringSlippageInput(value: string): string {
   const error = fieldError('recurringSlippageBps');
   const label = isMobileAppViewport() ? t('Slippage') : t('Max slippage');
+  // Auto | Custom pill (mirrors the swap form). Auto = empty → the recurring backend applies its safe
+  // default cap (unattended swaps); Custom = an editable %/bps value.
+  const custom = Boolean(value && value.trim());
+  const modePill = `
+    <span class="token-choice-mode slippage-choice-mode" role="group" aria-label="${escapeHtml(t('Slippage mode'))}">
+      <button type="button" data-recurring-slippage-mode="auto" class="${custom ? '' : 'active'}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Auto'))}</button>
+      <button type="button" data-recurring-slippage-mode="custom" class="${custom ? 'active' : ''}" ${state.busy ? 'disabled' : ''}>${escapeHtml(t('Custom'))}</button>
+    </span>`;
+  const input = custom
+    ? `<input id="recurringSlippageBps" data-recurring-field="slippageBps" value="${escapeHtml(slippageBpsToPercentInput(value))}" placeholder="0.5%" inputmode="decimal" ${state.busy ? 'disabled' : ''} />`
+    : `<input class="slippage-auto-input" value="${escapeHtml(t('Auto'))}" disabled />`;
   return `
-    <label class="field compact ${state.recurringErrors.recurringSlippageBps ? 'field-error' : ''}">
-      <span>${escapeHtml(label)}</span>
-      <input
-        id="recurringSlippageBps"
-        data-recurring-field="slippageBps"
-        value="${escapeHtml(slippageBpsToPercentInput(value))}"
-        placeholder="0.5%"
-        inputmode="decimal"
-        ${state.busy ? 'disabled' : ''}
-      />
+    <label class="field compact slippage-control-field ${state.recurringErrors.recurringSlippageBps ? 'field-error' : ''}">
+      <span class="token-choice-head"><span>${escapeHtml(label)}</span>${modePill}</span>
+      ${input}
       ${error}
     </label>
   `;
@@ -58641,17 +59834,17 @@ function recurringTokenFieldFromDataset(value: string | undefined): RecurringTok
 }
 
 function recurringTokenMode(field: RecurringTokenField, value: string): TokenInputMode {
+  void value;
   const explicit = state.recurringTokenModes[field];
   if (explicit) return explicit;
-  return RECURRING_TOKEN_OPTIONS.includes(value) ? 'preset' : 'custom';
+  // Role-aware default: input (token/inputToken) → LIST (= portfolio); output → MINT (search).
+  return field === 'outputToken' ? 'custom' : 'preset';
 }
 
 function defaultRecurringTokenModes(draft = defaultRecurringDraft()): Record<string, TokenInputMode> {
-  return {
-    token: RECURRING_TOKEN_OPTIONS.includes(draft.token) ? 'preset' : 'custom',
-    inputToken: RECURRING_TOKEN_OPTIONS.includes(draft.inputToken) ? 'preset' : 'custom',
-    outputToken: RECURRING_TOKEN_OPTIONS.includes(draft.outputToken) ? 'preset' : 'custom',
-  };
+  void draft;
+  // Role-aware (input → LIST/portfolio, output → MINT) so portfolio mints don't flip the mode.
+  return { token: 'preset', inputToken: 'preset', outputToken: 'custom' };
 }
 
 function defaultRecurringTokenSelections(draft = defaultRecurringDraft()): Record<string, TokenFieldSelection> {
@@ -58974,9 +60167,7 @@ function recurringPaymentSpendToken(payment: RecurringPayment): string {
 }
 
 function recurringPaymentSlippageLabel(payment: RecurringPayment): string {
-  const value = payment.slippageBps?.trim();
-  if (!value) return t('Default');
-  return formatSwapSlippagePercent(Number(value)) || value;
+  return cardSlippageLabel(payment.slippageBps);
 }
 
 function recurringCardSummaryItem(row: { label: string; value: string; html?: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }): string {
@@ -59586,18 +60777,21 @@ function recurringAmountControlHtml(value: string, label: string): string {
   const pctRow = asset ? `
     <div class="chat-amount-pcts">
       ${pctBtn('50')}${pctBtn('100')}
-      <input class="chat-amount-pct-input" data-recurring-pct-input placeholder="${escapeHtml(t('Custom %'))}" inputmode="numeric" autocomplete="off" />
+      <input id="recurringAmountPct" class="chat-amount-pct-input" data-recurring-pct-input placeholder="${escapeHtml(t('Custom %'))}" inputmode="numeric" autocomplete="off" />
       <button type="button" class="chat-amount-pct chat-amount-pct-apply" data-recurring-pct-apply aria-label="${escapeHtml(t('Apply percent'))}">%</button>
     </div>` : '';
   // Token mode keeps id=recurringAmount + data-recurring-field (read by readRecurringDraft);
-  // $ mode uses a separate attr and writes the resolved token into recurringDraft.amount.
-  const inputAttr = mode === 'usd' ? 'data-recurring-amount-usd="1"' : 'id="recurringAmount" data-recurring-field="amount"';
+  // $ mode also carries id=recurringAmount so the chat rail-sheet focus snapshot can restore the
+  // caret/keyboard on a re-render (it restores by element id only).
+  const inputAttr = mode === 'usd' ? 'id="recurringAmount" data-recurring-amount-usd="1"' : 'id="recurringAmount" data-recurring-field="amount"';
   return `
     <label class="field compact amount-control-field ${state.recurringErrors.recurringAmount ? 'field-error' : ''}">
       <span class="token-choice-head"><span>${escapeHtml(label)}</span>${unitPill}</span>
-      <input ${inputAttr} type="text" value="${escapeHtml(display)}" placeholder="${escapeHtml(mode === 'usd' ? '$0.00' : '0.00')}" inputmode="decimal" autocomplete="off" ${disabled} />
+      <div class="amount-input-row recurring-amount-input-row">
+        <input ${inputAttr} type="text" value="${escapeHtml(display)}" placeholder="${escapeHtml(mode === 'usd' ? '$0.00' : '0.00')}" inputmode="decimal" autocomplete="off" ${disabled} />
+        ${pctRow}
+      </div>
       ${balanceLine}
-      ${pctRow}
       ${fieldError('recurringAmount')}
     </label>
   `;
@@ -60086,9 +61280,9 @@ function emptyInboxText(): string {
 
 function amountLabel(action: PreparedAction): string {
   if (isConnectorApprovalKind(action)) return connectorActionAmountInfo(action)?.label ?? 'n/a';
-  if (typeof action.params.amountSol === 'string') return `${action.params.amountSol} SOL`;
+  if (typeof action.params.amountSol === 'string' && action.params.amountSol.trim()) return `${action.params.amountSol} SOL`;
   if (action.kind === 'swap') return swapAmountLabel(action);
-  if (action.kind === 'transfer_sol' && typeof action.params.amount === 'string') return `${action.params.amount} SOL`;
+  if (action.kind === 'transfer_sol' && typeof action.params.amount === 'string' && action.params.amount.trim()) return `${action.params.amount} SOL`;
   if (action.kind === 'skill_fee_split') {
     const author = stringParam(action, 'authorAmount');
     const platform = stringParam(action, 'treasuryAmount');
@@ -60099,7 +61293,7 @@ function amountLabel(action: PreparedAction): string {
       return `${total}${suffix} ${tf('(author {author} + Agentic {platform})', { author, platform })}`;
     }
   }
-  if (typeof action.params.amount === 'string') return action.params.amount;
+  if (typeof action.params.amount === 'string' && action.params.amount.trim()) return action.params.amount;
   return 'n/a';
 }
 
@@ -64376,6 +65570,20 @@ function normalizeChatMessage(raw: unknown): ChatMessage | null {
     message.txReceipt = { txid: rx.txid, cluster: rx.cluster as Cluster };
   } else {
     delete (message as { txReceipt?: unknown }).txReceipt;
+  }
+  // receiveCard rides the spread above; we persist ONLY the address (the QR PNG is
+  // regenerated on render via chatReceiveQrFor). Validate so a corrupt value can't break it.
+  const rc = input.receiveCard as { address?: unknown } | undefined;
+  if (rc && typeof rc === 'object' && typeof rc.address === 'string' && rc.address) {
+    message.receiveCard = { address: rc.address };
+  } else {
+    delete (message as { receiveCard?: unknown }).receiveCard;
+  }
+  // recurringCardId is a plain id; the live card is looked up by id on render.
+  if (typeof input.recurringCardId === 'string' && input.recurringCardId) {
+    message.recurringCardId = input.recurringCardId;
+  } else {
+    delete (message as { recurringCardId?: unknown }).recurringCardId;
   }
   if (typeof input.error === 'string') message.error = input.error;
   return message;
