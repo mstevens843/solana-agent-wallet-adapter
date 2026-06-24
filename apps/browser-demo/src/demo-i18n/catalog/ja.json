@@ -795,6 +795,7 @@
     "Show archived ({count})": "アーカイブ済みを表示 ({count})",
     "Sign proof": "証明に署名",
     "Slippage": "スリッページ",
+    "Slippage · {value}": "スリッページ · {value}",
     "Spend token": "支出するトークン",
     "Start": "開始",
     "Stop treating this draft as a template": "この下書きをテンプレートとして扱うのをやめる",
@@ -5373,6 +5374,13 @@
     "manual review": "手動レビュー",
     "read only": "読み取り専用",
     "custom transaction": "カスタムトランザクション",
-    "custom": "カスタム"
+    "custom": "カスタム",
+    "Pending Approvals": "承認待ち",
+    "Pending approvals": "承認待ち",
+    "Queue Approval": "承認に送る",
+    "Here is the action you queued — review and approve.": "キューに追加したアクションです — 内容を確認して承認してください。",
+    "Previous page": "前のページ",
+    "Next page": "次のページ",
+    "Pages": "ページ"
   }
 }

@@ -113,6 +113,7 @@
     "Show archived ({count})": "顯示已封存項目（{count}）",
     "Sign proof": "簽署證明",
     "Slippage": "滑點",
+    "Slippage · {value}": "滑點 · {value}",
     "Spend token": "花費代幣",
     "Start": "開始",
     "Stop treating this draft as a template": "停止將此草案視為範本",
@@ -5373,6 +5374,13 @@
     "manual review": "手動審查",
     "read only": "唯讀",
     "custom transaction": "自訂交易",
-    "custom": "自訂"
+    "custom": "自訂",
+    "Pending Approvals": "待核准",
+    "Pending approvals": "待核准項目",
+    "Queue Approval": "重新送出核准",
+    "Here is the action you queued — review and approve.": "這是你重新送出的操作 — 請檢視並核准。",
+    "Previous page": "上一頁",
+    "Next page": "下一頁",
+    "Pages": "頁面"
   }
 }

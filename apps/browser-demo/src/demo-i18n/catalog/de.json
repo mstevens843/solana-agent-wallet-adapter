@@ -795,6 +795,7 @@
     "Show archived ({count})": "Archivierte anzeigen ({count})",
     "Sign proof": "Nachweis signieren",
     "Slippage": "Slippage",
+    "Slippage · {value}": "Slippage · {value}",
     "Spend token": "Token ausgeben",
     "Start": "Start",
     "Stop treating this draft as a template": "Diesen Entwurf nicht mehr als Vorlage behandeln",
@@ -5373,6 +5374,13 @@
     "manual review": "Manuelle Prüfung",
     "read only": "Schreibgeschützt",
     "custom transaction": "Benutzerdefinierte Transaktion",
-    "custom": "Benutzerdefiniert"
+    "custom": "Benutzerdefiniert",
+    "Pending Approvals": "Ausstehende Freigaben",
+    "Pending approvals": "Ausstehende Freigaben",
+    "Queue Approval": "Zur Freigabe vormerken",
+    "Here is the action you queued — review and approve.": "Hier ist die vorgemerkte Aktion — prüfen und freigeben.",
+    "Previous page": "Vorherige Seite",
+    "Next page": "Nächste Seite",
+    "Pages": "Seiten"
   }
 }

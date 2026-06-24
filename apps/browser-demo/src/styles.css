@@ -20796,6 +20796,21 @@ button.danger:hover:not(:disabled) {
   width: 100%;
   z-index: 40;
 }
+/* Mobile: the form token fields sit in a narrow 2-col row, so a width:100% menu clips the row
+   (only the logo + price + 2 digits show). Widen the menu to fit a full row (logo · symbol · name ·
+   mint · price), capped at the viewport, and right-anchor the OUTPUT side so it extends inward
+   instead of off the right edge. */
+@media (max-width: 899px) {
+  .route-app .token-search-menu {
+    min-width: min(84vw, 340px);
+    width: max-content;
+    max-width: 88vw;
+  }
+  /* INPUT (left) field extends rightward from its left edge; OUTPUT (right) field extends leftward
+     from its right edge. Both stay on-screen (max-width 88vw + the form's side padding). */
+  .route-app .token-choice-field:not(.token-field--output) .token-search-menu { left: 0; right: auto; }
+  .route-app .token-field--output .token-search-menu { left: auto; right: 0; }
+}
 
 .route-app .token-search-menu.loading {
   align-items: center;
@@ -35529,6 +35544,138 @@ button.danger:hover:not(:disabled) {
 .chat-receive-pill-btn .wallet-action-copy-icon { fill: var(--accent); }
 .chat-receive-pill-label { font-size: 0.74rem; font-weight: 700; letter-spacing: 0.02em; }
 
+/* --- Chat "Pending Approvals" dropdown (web header pill + mobile actions-row control) --- */
+.chat-pending { position: relative; flex: 0 0 auto; }
+/* On the mobile actions row, sit at the right edge (Wallet Actions stays left). */
+.chat-pending--mobile { margin-left: auto; }
+
+/* Pill trigger — modeled on .chat-receive-pill-btn (rounded, hover → accent). */
+.chat-pending-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  line-height: 1;
+  white-space: nowrap;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+.chat-pending-pill:hover { border-color: var(--accent); }
+.chat-pending.open .chat-pending-pill { border-color: var(--accent); }
+/* Smaller on the mobile actions row ("Pending Approvals" is a longer phrase than "Receive"). */
+.chat-pending-pill--sm { font-size: 0.7rem; padding: 5px 9px; }
+
+/* Count badge (mirrors the .recurring-count pill look). */
+.chat-pending-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+/* Shared menu shell. */
+.chat-pending-menu {
+  position: absolute;
+  min-width: 260px;
+  max-width: 340px;
+  max-height: 320px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--surface-strong);
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  padding: 8px;
+  z-index: 31; /* above the History menu (30) */
+  box-shadow: var(--shadow);
+}
+/* Web: opens DOWNWARD from the header pill (mirrors .chat-sessions-menu). */
+.chat-pending-menu--web { top: calc(100% + 6px); left: 0; right: auto; }
+/* Mobile: opens UPWARD from the actions row (mirrors .chat-plus-menu). */
+.chat-pending-menu--mobile {
+  bottom: calc(100% + 8px);
+  right: 0;
+  left: auto;
+  background: #0d0f0e; /* solid, matches .chat-plus-menu */
+  border-color: rgba(255, 255, 255, 0.08);
+  max-height: min(56dvh, calc(100dvh - 200px));
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+@media (max-width: 480px) {
+  .chat-pending-menu { min-width: 0; max-width: calc(100vw - 24px); }
+}
+
+/* Top paginator: arrows-only, page info centered. */
+.chat-pending-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 2px 2px 6px;
+  border-bottom: 1px solid var(--line);
+}
+.chat-pending-arrow {
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 8px;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+}
+.chat-pending-arrow:hover { border-color: var(--accent); }
+/* Hidden but keeps its slot so page info stays centered (page 1 / last page). */
+.chat-pending-arrow.is-hidden { visibility: hidden; }
+.chat-pending-pageinfo { font-size: 0.72rem; color: var(--dim); }
+
+.chat-pending-queue { width: 100%; }
+
+/* Rows. */
+.chat-pending-list { display: flex; flex-direction: column; gap: 4px; }
+.chat-pending-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+.chat-pending-row:hover { background: var(--surface); }
+.chat-pending-row.selected { border-color: var(--accent); background: var(--accent-soft); }
+.chat-pending-row-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.chat-pending-row-title { font-size: 0.8rem; font-weight: 700; }
+.chat-pending-row-detail {
+  font-size: 0.72rem;
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Auto-posted Receive card: white rounded QR + copyable address pill (mirrors WalletsTab). */
 .chat-receive-card { display: grid; gap: 10px; justify-items: center; padding: 4px 0; }
 .chat-receive-qr {
@@ -35807,7 +35954,7 @@ button.danger:hover:not(:disabled) {
 .chat-token-info { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .chat-token-info strong { font-size: 0.88rem; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-token-info em { font-size: 0.74rem; color: var(--muted); font-style: normal; }
-.chat-token-amount { flex: 0 0 auto; font-size: 0.82rem; color: var(--text); font-weight: 700; white-space: nowrap; }
+.chat-token-amount { flex: 0 0 auto; font-size: 0.82rem; color: var(--text); font-weight: 700; white-space: nowrap; padding-left: 12px; text-align: right; }
 .chat-token-empty { color: var(--muted); font-size: 0.82rem; padding: 6px; }
 .chat-token-more {
   width: 100%;
@@ -35983,8 +36130,16 @@ button.danger:hover:not(:disabled) {
 .chat-sheet-token-caret { flex: 0 0 auto; color: var(--muted); font-size: 0.8rem; }
 .chat-sheet-token-trigger.open .chat-sheet-token-caret { transform: rotate(180deg); }
 /* The expanded owned/preset rows (reuse .chat-token-opt rows). */
+/* Sheet token LIST is an absolute overlay (like the MINT search menu) so opening one side's list
+   floats over the form below it instead of growing its grid cell and pushing the other token side
+   down. The field is the positioning context. */
+.mobile-planner-field-row .token-choice-field { position: relative; }
 .chat-sheet-token-list {
-  margin-top: 6px;
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 45;
   max-height: min(46dvh, 320px);
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -35992,6 +36147,7 @@ button.danger:hover:not(:disabled) {
   border-radius: 10px;
   padding: 4px;
   background: var(--surface-strong);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
 }
 
 /* Amount block: [$|Token] unit pill, input with right-aligned balance, %% quick-fills. */
@@ -36070,6 +36226,124 @@ button.danger:hover:not(:disabled) {
 /* Mobile/native: back to the stacked layout (input, then quick-fills row, then balance). */
 .route-app .mobile-planner-fields .amount-control-field .amount-input-row { flex-direction: column; align-items: stretch; gap: 6px; }
 .route-app .mobile-planner-fields .amount-control-field .amount-input-row .chat-amount-pct-input { flex: 1 1 auto; width: auto; }
+
+/* ============================================================================
+   Native (Android + iOS app shells) New Request compaction.
+   Scoped to .android-shell / .ios-native-shell so plain web + narrow desktop are
+   untouched. These overrides win on specificity (the extra shell class) — no !important
+   except where the underlying rule itself is !important.
+   ============================================================================ */
+
+/* Amount: one row again — input + 50/100/Custom%/% — undoing the .mobile-planner-fields
+   column stack above. The balance line is a sibling after .amount-input-row, so it stays
+   on its own line below automatically. */
+.route-app.android-shell .mobile-planner-fields .amount-control-field .amount-input-row,
+.route-app.ios-native-shell .mobile-planner-fields .amount-control-field .amount-input-row {
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 6px;
+}
+.route-app.android-shell .mobile-planner-fields .amount-control-field .amount-input-row > input,
+.route-app.ios-native-shell .mobile-planner-fields .amount-control-field .amount-input-row > input {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: none;
+}
+.route-app.android-shell .mobile-planner-fields .amount-control-field .amount-input-row .chat-amount-pcts,
+.route-app.ios-native-shell .mobile-planner-fields .amount-control-field .amount-input-row .chat-amount-pcts {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  gap: 4px;
+  margin: 0;
+}
+.route-app.android-shell .mobile-planner-fields .amount-control-field .amount-input-row .chat-amount-pct,
+.route-app.ios-native-shell .mobile-planner-fields .amount-control-field .amount-input-row .chat-amount-pct {
+  min-height: 40px;
+  padding-inline: 8px;
+}
+.route-app.android-shell .mobile-planner-fields .amount-control-field .amount-input-row .chat-amount-pct-input,
+.route-app.ios-native-shell .mobile-planner-fields .amount-control-field .amount-input-row .chat-amount-pct-input {
+  flex: 0 0 auto;
+  width: 52px;
+  min-width: 44px;
+}
+
+/* Compact slippage gear chip + popover. The chip replaces the full slippage row; the popover
+   reuses the .action-picker / .template-picker-menu skeleton (positioning + z-index inherited). */
+.route-app .slippage-chip-field { display: flex; }
+.route-app .slippage-chip-picker { position: relative; }
+.route-app .slippage-chip-trigger {
+  align-items: center;
+  display: inline-flex;
+  gap: 7px;
+  min-width: 0;
+  width: max-content;
+}
+.route-app .slippage-chip-gear {
+  background-color: currentColor;
+  flex: 0 0 auto;
+  height: 14px;
+  opacity: 0.85;
+  width: 14px;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3Cpath d='M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3Cpath d='M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+.route-app .slippage-chip-value { font-weight: 760; white-space: nowrap; }
+.route-app .slippage-popover-menu {
+  left: 0;
+  right: auto;
+  min-width: 208px;
+  width: max-content;
+  max-width: min(var(--template-menu-max-width, 280px), 88vw);
+  padding: 0;
+}
+.route-app .slippage-popover-body {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+.route-app .slippage-popover-body .token-choice-head { gap: 10px; }
+.route-app .slippage-popover-body input { width: 100%; }
+
+/* Control row at phone width (the native layout is the grid block at @media max-width:899px). */
+@media (max-width: 899px) {
+  /* Move Start/Check to the RIGHT to match the Check view: flip the grid so `steps` is the
+     right column and the connector picker (when present) takes the wide left column. */
+  .route-app.android-shell .one-time-plan-control-row.has-connector,
+  .route-app.ios-native-shell .one-time-plan-control-row.has-connector {
+    grid-template-areas:
+      "connector steps"
+      "method method" !important;
+    grid-template-columns: minmax(0, 1fr) auto !important;
+  }
+  .route-app.android-shell .one-time-plan-control-row.has-connector .one-time-plan-tabs,
+  .route-app.ios-native-shell .one-time-plan-control-row.has-connector .one-time-plan-tabs {
+    justify-self: end;
+    width: auto;
+  }
+
+  /* Scale Start/Check, the Swap/Send/Proof/Evidence tabs, and the Lend ▾ trigger up to one
+     consistent (taller) size now that we reclaimed vertical space. */
+  .route-app.android-shell .one-time-plan-control-row.has-connector .one-time-plan-tabs button,
+  .route-app.ios-native-shell .one-time-plan-control-row.has-connector .one-time-plan-tabs button {
+    font-size: 0.78rem;
+    min-height: var(--app-control-h);
+    padding: 0 10px;
+  }
+  .route-app.android-shell .one-time-plan-control-row.has-connector .create-action-filter button,
+  .route-app.ios-native-shell .one-time-plan-control-row.has-connector .create-action-filter button {
+    font-size: 0.76rem;
+    min-height: var(--app-control-h);
+    padding: 0 6px;
+  }
+  .route-app.android-shell .one-time-plan-control-row.has-connector .action-picker-trigger,
+  .route-app.ios-native-shell .one-time-plan-control-row.has-connector .action-picker-trigger {
+    font-size: 0.76rem;
+    max-width: 150px;
+    min-height: var(--app-control-h);
+  }
+}
 
 /* Align paired inputs in the desktop 2-col planner grid: give every field "head" the same height as
    the $/TOKEN (and LIST/MINT) toggle head (~28px) so toggle-less fields like MAX SLIPPAGE don't sit
@@ -36162,6 +36436,20 @@ button.danger:hover:not(:disabled) {
 .ios-native-shell .chat-composer-mobile .chat-plus { position: static; }
 .android-shell .chat-composer-mobile .chat-plus-menu,
 .ios-native-shell .chat-composer-mobile .chat-plus-menu {
+  left: 0;
+  right: 0;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  box-sizing: border-box;
+}
+/* Pending Approvals mobile menu: anchor to the (relative) actions row and span full
+   width, mirroring .chat-plus-menu. .chat-pending goes static so the menu attaches to
+   the row, not the small pill. */
+.android-shell .chat-composer-mobile .chat-pending,
+.ios-native-shell .chat-composer-mobile .chat-pending { position: static; }
+.android-shell .chat-composer-mobile .chat-pending-menu--mobile,
+.ios-native-shell .chat-composer-mobile .chat-pending-menu--mobile {
   left: 0;
   right: 0;
   width: auto;

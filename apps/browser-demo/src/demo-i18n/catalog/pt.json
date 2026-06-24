@@ -795,6 +795,7 @@
     "Show archived ({count})": "Mostrar arquivados ({count})",
     "Sign proof": "Assinar prova",
     "Slippage": "Slippage",
+    "Slippage · {value}": "Slippage · {value}",
     "Spend token": "Gastar token",
     "Start": "Iniciar",
     "Stop treating this draft as a template": "Parar de tratar este rascunho como um modelo",
@@ -5373,6 +5374,13 @@
     "manual review": "revisão manual",
     "read only": "somente leitura",
     "custom transaction": "transação personalizada",
-    "custom": "personalizado"
+    "custom": "personalizado",
+    "Pending Approvals": "Aprovações Pendentes",
+    "Pending approvals": "Aprovações pendentes",
+    "Queue Approval": "Enviar para Aprovação",
+    "Here is the action you queued — review and approve.": "Aqui está a ação que você enfileirou — revise e aprove.",
+    "Previous page": "Página anterior",
+    "Next page": "Próxima página",
+    "Pages": "Páginas"
   }
 }

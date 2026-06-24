@@ -795,6 +795,7 @@
     "Show archived ({count})": "显示已归档（{count}）",
     "Sign proof": "签名凭证",
     "Slippage": "滑点",
+    "Slippage · {value}": "滑点 · {value}",
     "Spend token": "花费代币",
     "Start": "开始",
     "Stop treating this draft as a template": "不再将此草案视为模板",
@@ -5373,6 +5374,13 @@
     "manual review": "手动审核",
     "read only": "只读",
     "custom transaction": "自定义交易",
-    "custom": "自定义"
+    "custom": "自定义",
+    "Pending Approvals": "待审批",
+    "Pending approvals": "待审批",
+    "Queue Approval": "重新提交审批",
+    "Here is the action you queued — review and approve.": "这是你重新提交的操作 — 请审核并批准。",
+    "Previous page": "上一页",
+    "Next page": "下一页",
+    "Pages": "页码"
   }
 }

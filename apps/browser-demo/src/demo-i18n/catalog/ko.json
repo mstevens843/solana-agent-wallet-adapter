@@ -795,6 +795,7 @@
     "Show archived ({count})": "보관 항목 표시 ({count})",
     "Sign proof": "증명 서명",
     "Slippage": "슬리피지",
+    "Slippage · {value}": "슬리피지 · {value}",
     "Spend token": "지출 토큰",
     "Start": "시작",
     "Stop treating this draft as a template": "이 초안을 템플릿으로 취급하지 않기",
@@ -5373,6 +5374,13 @@
     "manual review": "수동 검토",
     "read only": "읽기 전용",
     "custom transaction": "사용자 지정 트랜잭션",
-    "custom": "사용자 지정"
+    "custom": "사용자 지정",
+    "Pending Approvals": "승인 대기",
+    "Pending approvals": "승인 대기",
+    "Queue Approval": "승인으로 다시 보내기",
+    "Here is the action you queued — review and approve.": "다시 보낸 작업입니다 — 검토 후 승인하세요.",
+    "Previous page": "이전 페이지",
+    "Next page": "다음 페이지",
+    "Pages": "페이지"
   }
 }

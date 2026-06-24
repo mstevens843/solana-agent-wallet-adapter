@@ -1972,6 +1972,18 @@ const BRAND_LOGOS: Record<BrandLogoId, string> = {
   vercel: new URL('./assets/logos/vercel.svg', import.meta.url).href,
   wormhole: new URL('./assets/logos/wormhole.svg', import.meta.url).href,
 };
+// Built-in token logos keyed by mint. The /token-meta hydration returns symbol/name but NOT a reliable
+// logoURI for these, so curated tokens show a bundled logo offline (the token-search path still supplies
+// logos for the long tail). USDC/USDT/SOL/JUP bundled; extend as assets are added.
+const KNOWN_TOKEN_LOGOS: Record<string, string> = {
+  [WSOL_MINT]: BRAND_LOGOS.solana,
+  [USDC_MINT]: new URL('./assets/logos/usdc.svg', import.meta.url).href,
+  [USDT_MINT]: new URL('./assets/logos/usdt.svg', import.meta.url).href,
+  [JUP_MINT]: BRAND_LOGOS.jupiter,
+};
+function knownTokenLogo(mint: string): string {
+  return KNOWN_TOKEN_LOGOS[mint] ?? '';
+}
 interface Toast {
   id: number;
   kind: ToastKind;
@@ -3243,6 +3255,11 @@ interface DemoState {
   // Wallet Actions menu tab: 'primary' = everyday actions; 'advanced' = connector verbs (Lend/Limit/…).
   chatWalletActionTab: 'primary' | 'advanced';
   chatHistoryOpen: boolean;
+  // "Pending Approvals" per-chat dropdown (ephemeral; mirrors chatComposerOpen/chatHistoryOpen,
+  // not persisted). chatPendingPage is 1-based and clamped on render; selection is an action id.
+  chatPendingOpen: boolean;
+  chatPendingPage: number;
+  chatPendingSelectedId: string | null;
   // Hybrid chip builder for the composer (ephemeral; not persisted across sessions).
   chatActionBuilder: ChatActionBuilder | null;
   chatActionPicker: ChatActionPickerState | null;
@@ -4397,6 +4414,9 @@ const state: DemoState = {
   chatComposerOpen: false,
   chatWalletActionTab: 'primary',
   chatHistoryOpen: false,
+  chatPendingOpen: false,
+  chatPendingPage: 1,
+  chatPendingSelectedId: null,
   chatActionBuilder: null,
   chatActionPicker: null,
   chatConnectorSession: null,
@@ -4476,6 +4496,10 @@ let lastPassiveInboxRefresh = 0;
 let copyResetTimer: number | null = null;
 let templatePickerController: AbortController | null = null;
 let actionPickerController: AbortController | null = null;
+// Native compact-slippage popover: open/close listeners + a one-shot flag so the
+// popover re-opens itself after the Auto/Custom toggle triggers a full re-render.
+let slippagePickerController: AbortController | null = null;
+let slippageReopenOnRender: string | null = null;
 let artifactPickerController: AbortController | null = null;
 let selectPickerController: AbortController | null = null;
 let selectPickerOpenOrder = 0;
@@ -5253,11 +5277,13 @@ function focusInboxApprovalCard(approvalId: string): void {
 function handleGlobalKeydown(event: KeyboardEvent): void {
   // Chat: Escape closes an open menu first, then aborts an in-flight stream,
   // before any other handler — mirrors the Android back-button expectation.
-  if (event.key === 'Escape' && (state.chatHistoryOpen || state.chatComposerOpen)) {
+  if (event.key === 'Escape' && (state.chatHistoryOpen || state.chatComposerOpen || state.chatPendingOpen)) {
     event.preventDefault();
     const restoreHistoryFocus = state.chatHistoryOpen;
     state.chatHistoryOpen = false;
     state.chatComposerOpen = false;
+    state.chatPendingOpen = false;
+    state.chatPendingSelectedId = null;
     render();
     // Return focus to the trigger that opened the menu (keyboard a11y).
     if (restoreHistoryFocus) {
@@ -18575,7 +18601,8 @@ function markCopied(copyId: string): void {
     if (state.recentCopyId !== copyId) return;
     state.recentCopyId = '';
     copyResetTimer = null;
-    render();
+    // Don't re-render the chat just to clear the transient "copied" highlight (see copy handler).
+    if (state.activeTab !== 'chat') render();
   }, 1600);
 }
 
@@ -18696,6 +18723,13 @@ function templatesForOutcomeFilter(filter = state.templateOutcomeFilter): AgentP
   if (cat) return templates.filter((tpl) => templateMatchesActionCategory(tpl, cat));
   if (filter === 'all') return templates;
   return templates.filter((template) => templateOutcome(template) === filter);
+}
+
+// True when the active action category resolves to a single plan template (e.g. Swap, Send).
+// In that case the plan-template dropdown only ever offers one option, so on the native
+// apps we drop the whole picker block to reclaim vertical space.
+function activeCategoryHasSingleTemplate(): boolean {
+  return templatesForOutcomeFilter().length <= 1;
 }
 
 
@@ -20696,6 +20730,13 @@ function chatBuilderFromAsset(b: ChatActionBuilder | null): WalletBalanceAsset |
 
 function chatPanel(): string {
   const session = activeChatSession();
+  // Normalize the Pending Approvals dropdown: never stay "open" once the session has no
+  // pending cards (e.g. the last one was approved without queueing), so it can't auto-open
+  // when a new card appears later.
+  if (state.chatPendingOpen && chatSessionPendingApprovals(session).length === 0) {
+    state.chatPendingOpen = false;
+    state.chatPendingSelectedId = null;
+  }
   const messages = session?.messages ?? [];
   const hasMessages = messages.length > 0;
   // An active cloud stub (messages not yet fetched) shows a loading placeholder
@@ -20732,10 +20773,16 @@ function chatHeaderHtml(session: ChatSession | null): string {
   const sessions = state.chat.sessions.filter(chatSessionHasContent);
   const activeTitle = session && chatSessionHasContent(session) ? session.title : t('Chat');
   const hasHistory = sessions.length > 0;
+  const pendingCount = chatSessionPendingApprovals(session).length;
   return `
     <div class="chat-header">
       <span class="chat-title">${escapeHtml(activeTitle)}</span>
       <div class="chat-header-actions">
+        ${!chatUsesSheet() && pendingCount > 0 ? `
+          <div class="chat-pending chat-pending--web${state.chatPendingOpen ? ' open' : ''}" data-chat-pending>
+            <button type="button" class="chat-pending-pill" data-chat-pending-toggle aria-haspopup="listbox" aria-expanded="${state.chatPendingOpen ? 'true' : 'false'}">${escapeHtml(t('Pending Approvals'))} <span class="chat-pending-count">${pendingCount}</span></button>
+            ${state.chatPendingOpen ? chatPendingPanelHtml(session, 'web') : ''}
+          </div>` : ''}
         ${hasHistory ? `
           <div class="chat-sessions${state.chatHistoryOpen ? ' open' : ''}" data-chat-history>
             <button type="button" class="chat-history-trigger" data-chat-history-trigger aria-haspopup="menu" aria-expanded="${state.chatHistoryOpen ? 'true' : 'false'}">${escapeHtml(t('History'))} <span class="chat-sessions-caret" aria-hidden="true">▾</span></button>
@@ -20964,6 +21011,100 @@ function chatUsesSheet(): boolean {
   return IS_ANDROID_APP || IS_IOS_APP;
 }
 
+// --- Chat "Pending Approvals" per-chat dropdown ------------------------------
+// Surfaces not-yet-approved action cards created in the ACTIVE chat session so a
+// card buried under later messages can be re-summoned and signed. The count is
+// always derived (never decremented by hand): when an action becomes terminal —
+// exactly when postChatActionSuccessMessage posts its confirmation — it drops out.
+const CHAT_PENDING_PAGE = 5;
+
+// Unique non-terminal PreparedActions linked to THIS session via message.preparedActionId,
+// in transcript order. Deduped by id (a re-queued card adds a SECOND message referencing the
+// same id). Recurring chat cards use recurringCardId (not preparedActionId) and are excluded.
+function chatSessionPendingApprovals(session: ChatSession | null): PreparedAction[] {
+  if (!session) return [];
+  const seen = new Set<string>();
+  const out: PreparedAction[] = [];
+  for (const msg of session.messages) {
+    const id = msg.preparedActionId;
+    if (!id || seen.has(id)) continue;
+    const action = state.preparedActions.find((a) => a.id === id);
+    if (!action || !isActionInboxActive(action)) continue; // terminal → excluded (auto-decrement)
+    seen.add(id);
+    out.push(action);
+  }
+  return out;
+}
+
+// One compact row: action title + a key detail (amount, else summary) + status pill.
+function chatPendingRowHtml(action: PreparedAction): string {
+  const selected = state.chatPendingSelectedId === action.id;
+  const amount = amountLabel(action);
+  const detail = amount !== 'n/a' ? amount : action.summary;
+  return `
+    <button type="button" class="chat-pending-row${selected ? ' selected' : ''}" data-chat-pending-select="${escapeHtml(action.id)}" role="option" aria-selected="${selected ? 'true' : 'false'}">
+      <span class="chat-pending-row-main">
+        <strong class="chat-pending-row-title">${escapeHtml(preparedActionCardTitle(action))}</strong>
+        <span class="chat-pending-row-detail">${escapeHtml(detail)}</span>
+      </span>
+      <span class="status-pill ${statusTone(action.status)}">${escapeHtml(t(action.status))}</span>
+    </button>`;
+}
+
+// Shared panel body for both web (downward) and mobile (upward) dropdowns; `variant`
+// only changes the wrapper class. Clamps the page to the live count on every render.
+function chatPendingPanelHtml(session: ChatSession | null, variant: 'web' | 'mobile'): string {
+  const pending = chatSessionPendingApprovals(session);
+  const totalPages = Math.max(1, Math.ceil(pending.length / CHAT_PENDING_PAGE));
+  const page = Math.min(Math.max(Math.trunc(state.chatPendingPage) || 1, 1), totalPages);
+  if (state.chatPendingPage !== page) state.chatPendingPage = page; // clamp when the count shrinks
+  const rows = pending.slice((page - 1) * CHAT_PENDING_PAGE, page * CHAT_PENDING_PAGE);
+  const selectedLive = Boolean(state.chatPendingSelectedId) && pending.some((a) => a.id === state.chatPendingSelectedId);
+  const showPrev = page > 1;
+  const showNext = page < totalPages;
+  const paginator = (showPrev || showNext) ? `
+    <div class="chat-pending-pager" role="group" aria-label="${escapeHtml(t('Pages'))}">
+      <button type="button" class="chat-pending-arrow${showPrev ? '' : ' is-hidden'}" data-chat-pending-page="prev" aria-label="${escapeHtml(t('Previous page'))}"${showPrev ? '' : ' tabindex="-1" aria-hidden="true"'}>‹</button>
+      <span class="chat-pending-pageinfo">${escapeHtml(tf('Page {page} / {total}', { page, total: totalPages }))}</span>
+      <button type="button" class="chat-pending-arrow${showNext ? '' : ' is-hidden'}" data-chat-pending-page="next" aria-label="${escapeHtml(t('Next page'))}"${showNext ? '' : ' tabindex="-1" aria-hidden="true"'}>›</button>
+    </div>` : '';
+  const queueBtn = selectedLive ? `<button type="button" class="primary chat-pending-queue" data-chat-pending-queue>${escapeHtml(t('Queue Approval'))}</button>` : '';
+  return `
+    <div class="chat-pending-menu chat-pending-menu--${variant}${state.chatPendingOpen ? ' open' : ''}" role="listbox" aria-label="${escapeHtml(t('Pending approvals'))}">
+      ${paginator}
+      ${queueBtn}
+      <div class="chat-pending-list">${rows.map(chatPendingRowHtml).join('')}</div>
+    </div>`;
+}
+
+// Re-inject the selected pending card as a FRESH assistant message at the bottom,
+// resurfacing the buried card. Creates only a ChatMessage referencing the SAME
+// action.id — never a second PreparedAction — so the count is unchanged and the
+// existing terminal/auto-decrement lifecycle still drives it.
+function queueChatPendingApproval(actionId: string | null): void {
+  const session = activeChatSession();
+  if (!session || !actionId) return;
+  const action = state.preparedActions.find((a) => a.id === actionId);
+  if (!action || !isActionInboxActive(action)) { // selection went terminal: just close
+    state.chatPendingOpen = false;
+    state.chatPendingSelectedId = null;
+    render();
+    return;
+  }
+  appendChatMessage(session.id, {
+    id: newId('chat-msg'),
+    role: 'assistant',
+    content: t('Here is the action you queued — review and approve.'),
+    createdAt: new Date().toISOString(),
+    status: 'done',
+    preparedActionId: action.id,
+  });
+  state.chatPendingOpen = false;
+  state.chatPendingSelectedId = null;
+  chatForceScrollBottom = true;
+  render();
+}
+
 // Open the chat-action sheet; if it is already open we are only swapping its body
 // (menu -> picker, picker -> picker) so suppress the slide-up replay.
 function openChatActionSheet(): void {
@@ -20987,7 +21128,7 @@ function ensureChatTokenLogos(): void {
     : chatSnapshotAssets().filter((a) => a.amount > 0).map((a) => ({ mint: a.mint }));
   const mints = items
     .map((i) => i.mint)
-    .filter((m) => m !== WSOL_MINT && !tokenMarketMetadata.get(m)?.logoURI);
+    .filter((m) => !knownTokenLogo(m) && !tokenMarketMetadata.get(m)?.logoURI);
   if (mints.length === 0) return;
   void fetchTokenMetadataForMints(mints)
     .then((changed) => {
@@ -21077,7 +21218,7 @@ function formatChatCompactUsd(value: number | undefined): string {
 // `compact` runs the owned amount + $ through the compact formatters (for tight sheet rows).
 function chatTokenPickerRowHtml(item: ChatTokenListItem, opts: { compact?: boolean } = {}): string {
   const meta = tokenMarketMetadata.get(item.mint);
-  const logo = meta?.logoURI || (item.mint === WSOL_MINT ? BRAND_LOGOS.solana : '');
+  const logo = meta?.logoURI || knownTokenLogo(item.mint);
   const symbol = item.symbol || tokenDisplayLabel(item.mint);
   let amount = '';
   let sub = '';
@@ -21169,7 +21310,7 @@ let chatSheetTokenOpen: ChatTokenField | null = null;
 // 4char…4char mint below (no wasteful full "SOL MINT SO1111…"). Tapping toggles the list.
 function chatSheetTokenTriggerHtml(field: ChatTokenField, token: ChatBuilderToken | undefined, open: boolean): string {
   const meta = token ? tokenMarketMetadata.get(token.mint) : undefined;
-  const logo = token ? (meta?.logoURI || (token.mint === WSOL_MINT ? BRAND_LOGOS.solana : '')) : '';
+  const logo = token ? (meta?.logoURI || knownTokenLogo(token.mint)) : '';
   const symbol = token ? (token.symbol || tokenDisplayLabel(token.mint)) : t('Pick token');
   const sub = token ? shortHexMint(token.mint) : '';
   return `
@@ -21215,7 +21356,7 @@ function chatSheetTokenFieldHtml(field: ChatTokenField, label: string): string {
       </div>`;
   }
   return `
-    <div class="field compact planner-field token-choice-field">
+    <div class="field compact planner-field token-choice-field${field === 'toToken' ? ' token-field--output' : ''}">
       <span class="token-choice-head">
         <span>${escapeHtml(label)}</span>
         ${modeToggle}
@@ -22117,6 +22258,15 @@ function chatComposerHtml(): string {
   // and its menu opens UPWARD as a dropdown (not a sheet). Picking an action opens one
   // full-form sheet — so there is no inline chip builder bar here.
   if (chatUsesSheet()) {
+    // Pending Approvals rides on the actions row, to the RIGHT of Wallet Actions, and opens
+    // UPWARD like the wallet-actions menu. Smaller text (longer phrase) + count beside it.
+    const pendingSession = activeChatSession();
+    const pendingCount = chatSessionPendingApprovals(pendingSession).length;
+    const pendingMobile = pendingCount > 0 ? `
+      <div class="chat-pending chat-pending--mobile${state.chatPendingOpen ? ' open' : ''}" data-chat-pending>
+        <button type="button" class="chat-pending-pill chat-pending-pill--sm" data-chat-pending-toggle aria-haspopup="listbox" aria-expanded="${state.chatPendingOpen ? 'true' : 'false'}">${escapeHtml(t('Pending Approvals'))} <span class="chat-pending-count">${pendingCount}</span></button>
+        ${state.chatPendingOpen ? chatPendingPanelHtml(pendingSession, 'mobile') : ''}
+      </div>` : '';
     return `
       <form class="chat-composer chat-composer-mobile" data-chat-composer>
         <div class="chat-actions-row">
@@ -22124,6 +22274,7 @@ function chatComposerHtml(): string {
             ${walletActionsBtn}
             ${plusMenu}
           </div>
+          ${pendingMobile}
         </div>
         <div class="chat-input-row">
           ${textarea}
@@ -22174,10 +22325,16 @@ let chatScrollPinned = true;
 // in restoreChatComposerAfterRender. Streaming token deltas do NOT set this (they respect
 // chatMaybeAutoScroll so a deliberate scroll-up mid-stream is preserved).
 let chatForceScrollBottom = false;
+// The active session id + message count seen at the last render. When the count grows (a new message
+// from ANY path — send, post-approval, cloud sync), the chat snaps to the bottom universally; switching
+// sessions resets the baseline so it does not snap on tab/session change.
+let lastRenderedChatSessionId = '';
+let lastRenderedChatMsgCount = 0;
 let chatActiveTool: { tool: string; label: string } | null = null;
 let chatPlusClickAwayInstalled = false;
 let chatActionPopoverClickAwayInstalled = false;
 let chatHistoryClickAwayInstalled = false;
+let chatPendingClickAwayInstalled = false;
 let chatViewportListenersBound = false;
 let chatStreamLifecycleBound = false;
 let chatCheckpointTimer: number | null = null;
@@ -22616,9 +22773,11 @@ async function submitChatMessage(text: string): Promise<void> {
     return;
   }
   chatSubmitPending = true;
-  // Keep the composer focused after sending, even when the send came from the
-  // button or a suggestion chip (focus was not on the textarea).
-  chatForceFocus = true;
+  // Keep the composer focused after sending on desktop (so you can keep typing). On mobile, do NOT
+  // force focus: tapping the Send button (or a chip / the wallet-action sheet) should not pop the
+  // on-screen keyboard. If the textarea was already focused (Enter-to-send while typing),
+  // chatComposerWasFocused keeps it — so the keyboard only appears when the user taps the textbox.
+  chatForceFocus = !isMobileAppViewport();
 
   try {
     // NL shortcut: a bare "sign"/"approve" approves the most recent pending card
@@ -23331,10 +23490,26 @@ function restoreChatComposerAfterRender(): void {
   chatForceFocus = false;
   // The surface is recreated each render; re-apply the keyboard inset to the new node.
   syncChatKeyboardInset();
-  // Brand-new assistant content (a card / posted message) snaps to the bottom even if the
-  // pre-render snapshot captured an un-pinned scroll; otherwise honor the captured pin.
-  if (chatForceScrollBottom) { chatScrollToBottom(true); chatForceScrollBottom = false; }
-  else chatScrollToBottom(false);
+  // Detect a NEW message since the last render of this session (covers every append path: send,
+  // post-approval confirmation/receipt, cloud sync). A new message always pulls the view to the
+  // bottom, even if the user had scrolled up — universal across web/desktop/Android/iOS.
+  const session = activeChatSession();
+  const count = session?.messages.length ?? 0;
+  const sameSession = session ? session.id === lastRenderedChatSessionId : false;
+  const hasNewMessage = sameSession && count > lastRenderedChatMsgCount;
+  // Opening a different session (or the chat for the first time) lands at its latest message.
+  const sessionChanged = Boolean(session) && !sameSession;
+  lastRenderedChatSessionId = session?.id ?? '';
+  lastRenderedChatMsgCount = count;
+  if (chatForceScrollBottom || hasNewMessage || sessionChanged) {
+    chatForceScrollBottom = false;
+    chatScrollToBottom(true);
+    // Cards/quotes settle their height after layout; re-snap on the next frame so the last message
+    // is fully in view (the initial snap can land short when a card grows).
+    requestAnimationFrame(() => chatScrollToBottom(true));
+  } else {
+    chatScrollToBottom(false);
+  }
 }
 
 function resetChatActionBuilder(): void {
@@ -23996,6 +24171,37 @@ function bindChat(): void {
       if (action) { chatForceScrollBottom = true; render(); }
     });
   }
+  // --- Pending Approvals dropdown (web header pill + mobile actions-row control) ---
+  document.querySelector<HTMLButtonElement>('[data-chat-pending-toggle]')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    state.chatPendingOpen = !state.chatPendingOpen;
+    if (state.chatPendingOpen) {
+      state.chatHistoryOpen = false; // don't stack on the other header/composer menus
+      state.chatComposerOpen = false;
+    } else {
+      state.chatPendingSelectedId = null;
+    }
+    render();
+  });
+  for (const row of document.querySelectorAll<HTMLButtonElement>('[data-chat-pending-select]')) {
+    row.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const id = row.dataset.chatPendingSelect ?? '';
+      state.chatPendingSelectedId = state.chatPendingSelectedId === id ? null : id; // tap again = deselect
+      render();
+    });
+  }
+  for (const arrow of document.querySelectorAll<HTMLButtonElement>('[data-chat-pending-page]')) {
+    arrow.addEventListener('click', (event) => {
+      event.stopPropagation();
+      state.chatPendingPage += arrow.dataset.chatPendingPage === 'next' ? 1 : -1; // clamped in chatPendingPanelHtml
+      render();
+    });
+  }
+  document.querySelector<HTMLButtonElement>('[data-chat-pending-queue]')?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    queueChatPendingApproval(state.chatPendingSelectedId);
+  });
   // History dropdown: state-driven (NOT <details> — unreliable in native WebViews).
   document.querySelector<HTMLButtonElement>('[data-chat-history-trigger]')?.addEventListener('click', (event) => {
     event.preventDefault();
@@ -24129,6 +24335,18 @@ function bindChat(): void {
       document.querySelector('.chat-plus-menu')?.classList.remove('open');
     }, true);
   }
+  if (!chatPendingClickAwayInstalled) {
+    chatPendingClickAwayInstalled = true;
+    // Outside-tap closes the Pending Approvals dropdown (one selector covers web + mobile).
+    window.addEventListener('pointerdown', (event) => {
+      if (!state.chatPendingOpen) return;
+      const wrap = document.querySelector('[data-chat-pending]');
+      if (wrap && event.target instanceof Node && wrap.contains(event.target)) return;
+      state.chatPendingOpen = false;
+      state.chatPendingSelectedId = null;
+      render();
+    }, true);
+  }
   if (!chatActionPopoverClickAwayInstalled) {
     chatActionPopoverClickAwayInstalled = true;
     // Close the desktop wallet-action popover on an outside tap or Escape. Clicks inside the
@@ -24152,9 +24370,14 @@ function bindChat(): void {
 function agentPlanPanel(): string {
   const reviewCount = generatedPlansForPanel(true).filter(isGeneratedPlanActiveInReview).length;
   const headerTitle = state.oneTimePlanView === 'review' ? t('Check request') : t('New Request');
+  // On the native apps the static create subtitle is replaced by the active template's
+  // per-tab description (Swap/Send/Proof/Evidence each differ) so it doubles as the
+  // section subtitle and lets us drop the redundant mid-page template description.
   const headerDetail = state.oneTimePlanView === 'review'
     ? t('Saved one-time plans. Send executable work to Needs Approval for a wallet decision.')
-    : t('Create a one-time payment or swap. Nothing is sent until you approve it.');
+    : isNativeAppShellSurface()
+      ? t(selectedTemplate().description)
+      : t('Create a one-time payment or swap. Nothing is sent until you approve it.');
   const reviewCountLabel = reviewCount === 1
     ? tf('{count} plan', { count: reviewCount })
     : tf('{count} plans', { count: reviewCount });
@@ -26675,6 +26898,12 @@ function agentPlannerWorkbench(): string {
   const askAgentDetail = mockReviewAvailable && !aiPathConnected
     ? t('Optional. Runs a local agent decision in Check after planning. No bridge, AI key, or wallet popup.')
     : t('Optional. Runs the agent review in Check after planning. Sending for approval stays manual.');
+  // Native compaction: the template description moves to the section subtitle (agentPlanPanel),
+  // so the mid-page description is always dropped on native. When the category resolves to a
+  // single template (Swap, Send) the picker offers no real choice either, so the whole block goes.
+  const nativeShell = isNativeAppShellSurface();
+  const hideTemplateBlock = nativeShell && activeCategoryHasSingleTemplate();
+  const showTemplateDescription = !nativeShell;
   return `
     <div class="agent-planner-grid planner-single-column">
       <div class="intent-capsule intent-document-card planner-card ${state.agentPlan ? 'plan-linked' : 'draft'}">
@@ -26687,13 +26916,14 @@ function agentPlannerWorkbench(): string {
           </div>
           <strong class="template-outcome-badge ${escapeHtml(outcomeClass(outcome))}">${escapeHtml(outcomeShortLabel(outcome))}</strong>
         </div>
+        ${hideTemplateBlock ? '' : `
         <div class="planner-template-block">
           <div class="field compact planner-template-select">
             <span id="templatePickerLabel">${escapeHtml(t('Plan template'))}</span>
             ${templatePicker(template)}
           </div>
-          <p class="template-description">${escapeHtml(t(template.description))}</p>
-        </div>
+          ${showTemplateDescription ? `<p class="template-description">${escapeHtml(t(template.description))}</p>` : ''}
+        </div>`}
         <div class="planner-form-body">
           <div class="planner-fields ${isMobileAppViewport() ? 'mobile-planner-fields' : ''}">
             ${plannerFieldsHtml(template)}
@@ -28453,12 +28683,56 @@ function slippageFieldInput(fieldDef: AgentPlanTemplateField, value: string, lab
         ${state.busy ? 'disabled' : ''}
       />`
     : `<input class="slippage-auto-input" value="${escapeHtml(t('Auto'))}" disabled />`;
+  // Native: collapse the full slippage row into a gear chip ("⚙ Slippage · Auto") that opens a
+  // popover holding the SAME mode pill + % input — so the existing handlers and state are reused.
+  if (isNativeAppShellSurface()) {
+    return compactSlippageControl(fieldDef, value, custom, modePill, input, error);
+  }
   return `
     <label class="field compact planner-field slippage-control-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
       <span class="token-choice-head"><span>${escapeHtml(label)}</span>${modePill}</span>
       ${input}
       ${error}
     </label>
+  `;
+}
+
+function compactSlippageControl(
+  fieldDef: AgentPlanTemplateField,
+  value: string,
+  custom: boolean,
+  modePill: string,
+  input: string,
+  error: string,
+): string {
+  const id = escapeHtml(fieldDef.id);
+  const chipValue = custom ? slippageBpsToPercentInput(value) : t('Auto');
+  const menuId = `slippagePopover-${id}`;
+  return `
+    <div class="planner-field slippage-chip-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
+      <div class="action-picker slippage-chip-picker" data-slippage-picker="${id}">
+        <button
+          type="button"
+          class="action-picker-trigger slippage-chip-trigger"
+          aria-haspopup="dialog"
+          aria-expanded="false"
+          aria-controls="${menuId}"
+          title="${escapeHtml(t('Slippage'))}"
+          ${state.busy ? 'disabled' : ''}
+        >
+          <span class="slippage-chip-gear" aria-hidden="true"></span>
+          <strong class="action-picker-value slippage-chip-value">${escapeHtml(tf('Slippage · {value}', { value: chipValue }))}</strong>
+          <span class="template-picker-caret" aria-hidden="true"></span>
+        </button>
+        <div id="${menuId}" class="template-picker-menu slippage-popover-menu" role="dialog" aria-label="${escapeHtml(t('Slippage'))}" hidden>
+          <div class="slippage-popover-body">
+            <span class="token-choice-head"><span>${escapeHtml(t('Slippage'))}</span>${modePill}</span>
+            ${input}
+            ${error}
+          </div>
+        </div>
+      </div>
+    </div>
   `;
 }
 
@@ -28609,7 +28883,7 @@ function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label:
   const selectionHint = !presetMode ? tokenSelectionHint(selection) : '';
   const disabled = state.busy;
   return `
-    <div class="field compact planner-field token-choice-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
+    <div class="field compact planner-field token-choice-field ${isOutputTokenField(fieldDef.id) ? 'token-field--output ' : ''}${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
       <span class="token-choice-head">
         <span>${escapeHtml(label)}</span>
         <span class="token-choice-mode" role="group" aria-label="${escapeHtml(tf('{field} input mode', { field: t(fieldDef.label) }))}">
@@ -34044,6 +34318,7 @@ function bind(): void {
     });
   }
   bindActionDropdowns();
+  bindSlippagePickers();
 
   document.querySelector<HTMLSelectElement>('[data-connector-create-picker]')?.addEventListener('input', (event) => {
     selectConnectorForCreate((event.currentTarget as HTMLSelectElement).value);
@@ -34154,6 +34429,9 @@ function bind(): void {
       state.agentPlan = null;
       state.agentSignature = '';
       state.agentPreparedActionId = '';
+      // Native compact slippage lives in a popover; render() rebuilds it, so flag the
+      // field to be re-opened after the re-render (bindSlippagePickers honors this).
+      if (isNativeAppShellSurface()) slippageReopenOnRender = fieldId;
       render();
     });
   }
@@ -34907,7 +35185,9 @@ function bind(): void {
         const message = err instanceof Error ? err.message : t('Clipboard permission was denied.');
         pushToast('error', t('Copy failed'), message);
       }
-      render();
+      // Never full-render the chat transcript on a copy: a render rebuilds appRoot, resets the chat
+      // scroll, then re-snaps it (a visible flicker on mobile). The toast already confirms the copy.
+      if (state.activeTab !== 'chat') render();
     });
   }
 
@@ -35521,6 +35801,70 @@ function bindActionDropdowns(): void {
         else selectCreateAction(category);
       });
     }
+  }
+}
+
+// Native compact slippage popover. Reuses the action-picker open/close mechanics (click-outside,
+// Escape, reposition on resize) but — unlike the action picker — does NOT close on inner clicks:
+// the popover holds the Auto/Custom toggle + % input, which the user interacts with while it stays
+// open. Those inner controls keep their existing global [data-template-slippage-*] handlers.
+function bindSlippagePickers(): void {
+  for (const picker of document.querySelectorAll<HTMLElement>('[data-slippage-picker]')) {
+    const trigger = picker.querySelector<HTMLButtonElement>('.slippage-chip-trigger');
+    const menu = picker.querySelector<HTMLElement>('.slippage-popover-menu');
+    if (!trigger || !menu) continue;
+    const fieldId = picker.dataset.slippagePicker ?? '';
+
+    const closeMenu = (returnFocus: boolean): void => {
+      picker.classList.remove('open');
+      trigger.setAttribute('aria-expanded', 'false');
+      menu.hidden = true;
+      slippagePickerController?.abort();
+      slippagePickerController = null;
+      if (returnFocus) trigger.focus({ preventScroll: true });
+    };
+    const openMenu = (focusInput: boolean): void => {
+      if (trigger.disabled) return;
+      slippagePickerController?.abort();
+      picker.classList.add('open');
+      trigger.setAttribute('aria-expanded', 'true');
+      menu.hidden = false;
+      positionTemplatePickerMenu(trigger, menu);
+      window.requestAnimationFrame(() => {
+        positionTemplatePickerMenu(trigger, menu);
+        if (focusInput) {
+          menu.querySelector<HTMLInputElement>('input[data-template-slippage-field]:not([disabled])')?.focus({ preventScroll: true });
+        }
+      });
+      slippagePickerController = new AbortController();
+      const { signal } = slippagePickerController;
+      window.addEventListener('pointerdown', (event) => {
+        if (event.target instanceof Node && picker.contains(event.target)) return;
+        closeMenu(false);
+      }, { signal });
+      window.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') { event.preventDefault(); closeMenu(true); }
+      }, { signal });
+      window.addEventListener('resize', () => positionTemplatePickerMenu(trigger, menu), { signal });
+      window.visualViewport?.addEventListener('resize', () => positionTemplatePickerMenu(trigger, menu), { signal });
+    };
+
+    trigger.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (menu.hidden) openMenu(false);
+      else closeMenu(false);
+    });
+
+    // Re-open after the Auto/Custom toggle's render() rebuilt this DOM. Focus the % input
+    // when we landed in Custom mode so the user can type immediately.
+    if (slippageReopenOnRender === fieldId) {
+      slippageReopenOnRender = null;
+      openMenu(Boolean(state.templateFields[fieldId]?.trim()));
+    }
+  }
+  // Drop a stale flag whose picker is no longer on the page (e.g. tab switched away).
+  if (slippageReopenOnRender && !document.querySelector(`[data-slippage-picker="${cssEscape(slippageReopenOnRender)}"]`)) {
+    slippageReopenOnRender = null;
   }
 }
 
@@ -52925,7 +53269,9 @@ function handleSafetyRailsAction(op: string, el: HTMLElement): void {
 
 function scheduleInboxSwapQuoteHydration(): void {
   const route = currentRoute();
-  if (state.activeTab !== 'inbox' || (route !== '/app' && route !== '/demo')) return;
+  // Hydrate on the inbox tab AND the chat tab (a swap card embedded in a chat message needs its quote
+  // too); the card is only built when its tab is active, so this fetches only while visible.
+  if ((state.activeTab !== 'inbox' && state.activeTab !== 'chat') || (route !== '/app' && route !== '/demo')) return;
   if (inboxSwapQuoteHydrationScheduled || inboxSwapQuoteHydrationInFlight) return;
   inboxSwapQuoteHydrationScheduled = true;
   window.setTimeout(() => {
@@ -52935,7 +53281,7 @@ function scheduleInboxSwapQuoteHydration(): void {
 }
 
 async function hydrateInboxSwapQuotes(): Promise<void> {
-  if (inboxSwapQuoteHydrationInFlight || state.activeTab !== 'inbox' || state.busy) return;
+  if (inboxSwapQuoteHydrationInFlight || (state.activeTab !== 'inbox' && state.activeTab !== 'chat') || state.busy) return;
   const now = Date.now();
   const candidates = activeWorkflowPreparedActions().filter((action) => swapQuoteNeedsAutoHydration(action, now));
   if (candidates.length === 0) return;
@@ -52955,7 +53301,7 @@ async function hydrateInboxSwapQuotes(): Promise<void> {
     inboxSwapQuoteHydrationInFlight = false;
   }
 
-  if (changed && state.activeTab === 'inbox') {
+  if (changed && (state.activeTab === 'inbox' || state.activeTab === 'chat')) {
     render();
   }
 }
@@ -58292,7 +58638,7 @@ function tokenSearchResultRowHtml(fieldId: string, result: TokenSearchResult): s
     result.name && result.name !== result.symbol ? result.name : '',
     shortHexMint(result.mint),
   ].filter(Boolean).join(' - ');
-  const logo = result.logoURI || (result.mint === WSOL_MINT ? BRAND_LOGOS.solana : '');
+  const logo = result.logoURI || knownTokenLogo(result.mint);
   return `
     <button
       type="button"
@@ -59752,7 +60098,7 @@ function recurringTokenSelectField(field: RecurringTokenField, label: string, va
   const selectionHint = !presetMode ? tokenSelectionHint(selection) : '';
   const disabled = state.busy;
   return `
-    <div class="field compact token-choice-field ${state.recurringErrors[errorKey] ? 'field-error' : ''}">
+    <div class="field compact token-choice-field ${field === 'outputToken' ? 'token-field--output ' : ''}${state.recurringErrors[errorKey] ? 'field-error' : ''}">
       <span class="token-choice-head">
         <span>${escapeHtml(label)}</span>
         <span class="token-choice-mode" role="group" aria-label="${escapeHtml(t('Repeat token input mode'))}">

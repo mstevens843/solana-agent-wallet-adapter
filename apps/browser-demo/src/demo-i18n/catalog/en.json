@@ -4166,6 +4166,7 @@
     "Skills sections": "Skills sections",
     "Skills unavailable": "Skills unavailable",
     "Slippage": "Slippage",
+    "Slippage · {value}": "Slippage · {value}",
     "slippage ≤ {n}bps": "slippage ≤ {n}bps",
     "Slippage allows up to {amounts}.": "Slippage allows up to {amounts}.",
     "Slippage cap": "Slippage cap",
@@ -5373,6 +5374,13 @@
     "manual review": "manual review",
     "read only": "read only",
     "custom transaction": "custom transaction",
-    "custom": "custom"
+    "custom": "custom",
+    "Here is the action you queued — review and approve.": "Here is the action you queued — review and approve.",
+    "Next page": "Next page",
+    "Pages": "Pages",
+    "Pending Approvals": "Pending Approvals",
+    "Pending approvals": "Pending approvals",
+    "Previous page": "Previous page",
+    "Queue Approval": "Queue Approval"
   }
 }
