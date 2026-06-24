@@ -28686,7 +28686,7 @@ function slippageFieldInput(fieldDef: AgentPlanTemplateField, value: string, lab
   // Native: collapse the full slippage row into a gear chip ("⚙ Slippage · Auto") that opens a
   // popover holding the SAME mode pill + % input — so the existing handlers and state are reused.
   if (isNativeAppShellSurface()) {
-    return compactSlippageControl(fieldDef, value, custom, modePill, input, error);
+    return compactSlippageControl(fieldDef.id, Boolean(state.templateFieldErrors[fieldDef.id]), value, custom, modePill, input, error);
   }
   return `
     <label class="field compact planner-field slippage-control-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
@@ -28697,19 +28697,23 @@ function slippageFieldInput(fieldDef: AgentPlanTemplateField, value: string, lab
   `;
 }
 
+// Shared compact slippage gear chip, used by both the New Request (slippageFieldInput) and the
+// Repeat Payments (recurringSlippageInput) surfaces. Field-agnostic: the caller passes its own id,
+// error flag, and the mode-pill + input markup (which carry that surface's own data-attr handlers).
 function compactSlippageControl(
-  fieldDef: AgentPlanTemplateField,
+  fieldId: string,
+  hasError: boolean,
   value: string,
   custom: boolean,
   modePill: string,
   input: string,
   error: string,
 ): string {
-  const id = escapeHtml(fieldDef.id);
+  const id = escapeHtml(fieldId);
   const chipValue = custom ? slippageBpsToPercentInput(value) : t('Auto');
   const menuId = `slippagePopover-${id}`;
   return `
-    <div class="planner-field slippage-chip-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
+    <div class="planner-field slippage-chip-field ${hasError ? 'field-error' : ''}">
       <div class="action-picker slippage-chip-picker" data-slippage-picker="${id}">
         <button
           type="button"
@@ -34897,6 +34901,8 @@ function bind(): void {
         ? (state.recurringDraft.slippageBps?.trim() || '50')
         : '';
       delete state.recurringErrors.recurringSlippageBps;
+      // Native compact slippage lives in a popover; reopen it after the render() rebuild.
+      if (isNativeAppShellSurface()) slippageReopenOnRender = 'recurringSlippageBps';
       render();
     });
   }
@@ -35833,7 +35839,9 @@ function bindSlippagePickers(): void {
       window.requestAnimationFrame(() => {
         positionTemplatePickerMenu(trigger, menu);
         if (focusInput) {
-          menu.querySelector<HTMLInputElement>('input[data-template-slippage-field]:not([disabled])')?.focus({ preventScroll: true });
+          // Generic across surfaces: New Request uses data-template-slippage-field, Repeat uses
+          // data-recurring-field — both render the editable % input inside .slippage-popover-body.
+          menu.querySelector<HTMLInputElement>('.slippage-popover-body input:not([disabled])')?.focus({ preventScroll: true });
         }
       });
       slippagePickerController = new AbortController();
@@ -35856,10 +35864,10 @@ function bindSlippagePickers(): void {
     });
 
     // Re-open after the Auto/Custom toggle's render() rebuilt this DOM. Focus the % input
-    // when we landed in Custom mode so the user can type immediately.
+    // when we landed in Custom mode (the editable input is present in .slippage-popover-body).
     if (slippageReopenOnRender === fieldId) {
       slippageReopenOnRender = null;
-      openMenu(Boolean(state.templateFields[fieldId]?.trim()));
+      openMenu(Boolean(menu.querySelector('.slippage-popover-body input:not([disabled])')));
     }
   }
   // Drop a stale flag whose picker is no longer on the page (e.g. tab switched away).
@@ -60166,6 +60174,11 @@ function recurringSlippageInput(value: string): string {
   const input = custom
     ? `<input id="recurringSlippageBps" data-recurring-field="slippageBps" value="${escapeHtml(slippageBpsToPercentInput(value))}" placeholder="0.5%" inputmode="decimal" ${state.busy ? 'disabled' : ''} />`
     : `<input class="slippage-auto-input" value="${escapeHtml(t('Auto'))}" disabled />`;
+  // Native: same compact gear chip as the New Request swap (reuses the recurring mode-pill + input,
+  // so the [data-recurring-slippage-mode] / [data-recurring-field] handlers bind unchanged).
+  if (isNativeAppShellSurface()) {
+    return compactSlippageControl('recurringSlippageBps', Boolean(state.recurringErrors.recurringSlippageBps), value, custom, modePill, input, error);
+  }
   return `
     <label class="field compact slippage-control-field ${state.recurringErrors.recurringSlippageBps ? 'field-error' : ''}">
       <span class="token-choice-head"><span>${escapeHtml(label)}</span>${modePill}</span>
@@ -61069,6 +61082,18 @@ function recurringScheduleFields(draft: RecurringDraft): string {
 }
 
 function recurringLocalTimeField(draft: RecurringDraft): string {
+  // Native: a single OS time picker instead of the 3-box hour/minute/AM-PM control — it fits the
+  // schedule row on one line and the OS handles AM/PM. readRecurringLocalTime() falls back to
+  // reading #recurringLocalTime directly when the part-inputs are absent, so no handler change.
+  if (isNativeAppShellSurface()) {
+    return `
+      <div class="field compact recurring-time-field recurring-time-field--native ${state.recurringErrors.recurringLocalTime ? 'field-error' : ''}">
+        <span>${escapeHtml(t('Local time'))}</span>
+        <input id="recurringLocalTime" data-recurring-field="localTime" type="time" value="${escapeHtml(draft.localTime || '09:00')}" ${state.busy ? 'disabled' : ''} />
+        ${fieldError('recurringLocalTime')}
+      </div>
+    `;
+  }
   const parts = localTimeToTwelveHourParts(draft.localTime) ?? localTimeToTwelveHourParts('09:00')!;
   const meridiemOptions = ['AM', 'PM'].map((value) => `
     <option value="${value}" ${parts.meridiem === value ? 'selected' : ''}>${value}</option>

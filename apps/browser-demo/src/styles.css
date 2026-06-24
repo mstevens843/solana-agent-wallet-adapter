@@ -36306,6 +36306,77 @@ button.danger:hover:not(:disabled) {
 .route-app .slippage-popover-body .token-choice-head { gap: 10px; }
 .route-app .slippage-popover-body input { width: 100%; }
 
+/* ============================================================================
+   Native (Android + iOS app shells) Repeat Payments compaction.
+   Mirrors the New Request fixes onto the separate recurring render path
+   (.mobile-recurring-controls / .mobile-recurring-contract). Native-scoped only.
+   ============================================================================ */
+
+/* Amount: one row again (input + 50/100/Custom%/%), balance stays on its own line below —
+   undoes the .mobile-recurring-contract column stack. */
+.route-app.android-shell .mobile-recurring-contract .amount-control-field .amount-input-row,
+.route-app.ios-native-shell .mobile-recurring-contract .amount-control-field .amount-input-row {
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 6px;
+}
+.route-app.android-shell .mobile-recurring-contract .amount-control-field .amount-input-row > input,
+.route-app.ios-native-shell .mobile-recurring-contract .amount-control-field .amount-input-row > input {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: none;
+}
+.route-app.android-shell .mobile-recurring-contract .amount-control-field .amount-input-row .chat-amount-pcts,
+.route-app.ios-native-shell .mobile-recurring-contract .amount-control-field .amount-input-row .chat-amount-pcts {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  gap: 4px;
+  margin: 0;
+  width: auto;
+}
+.route-app.android-shell .mobile-recurring-contract .amount-control-field .amount-input-row .chat-amount-pct,
+.route-app.ios-native-shell .mobile-recurring-contract .amount-control-field .amount-input-row .chat-amount-pct {
+  min-height: 40px;
+  min-width: 0;
+  padding-inline: 8px;
+  width: auto;
+}
+.route-app.android-shell .mobile-recurring-contract .amount-control-field .amount-input-row .chat-amount-pct-input,
+.route-app.ios-native-shell .mobile-recurring-contract .amount-control-field .amount-input-row .chat-amount-pct-input {
+  flex: 0 0 auto;
+  min-width: 44px;
+  width: 52px;
+}
+
+/* Token-field LIST dropdown opens WIDER than the (half-width) field so logo+symbol+name+price
+   render without truncation. Anchored per FROM/TO so it grows on-screen (mirrors the existing
+   .token-search-menu pattern). Scoped to token fields so Cadence/Day pickers are untouched. */
+.route-app.android-shell .token-choice-field .select-picker-menu,
+.route-app.ios-native-shell .token-choice-field .select-picker-menu {
+  min-width: min(78vw, 320px);
+  width: max-content;
+  max-width: 88vw;
+}
+.route-app.android-shell .token-choice-field:not(.token-field--output) .select-picker-menu,
+.route-app.ios-native-shell .token-choice-field:not(.token-field--output) .select-picker-menu {
+  left: 0;
+  right: auto;
+}
+.route-app.android-shell .token-field--output .select-picker-menu,
+.route-app.ios-native-shell .token-field--output .select-picker-menu {
+  left: auto;
+  right: 0;
+}
+
+/* Single native OS time picker fills its schedule cell. */
+.route-app.android-shell .mobile-recurring-contract .recurring-time-field--native input[type="time"],
+.route-app.ios-native-shell .mobile-recurring-contract .recurring-time-field--native input[type="time"] {
+  min-width: 0;
+  width: 100%;
+}
+
 /* Control row at phone width (the native layout is the grid block at @media max-width:899px). */
 @media (max-width: 899px) {
   /* Move Start/Check to the RIGHT to match the Check view: flip the grid so `steps` is the
@@ -36342,6 +36413,96 @@ button.danger:hover:not(:disabled) {
     font-size: 0.76rem;
     max-width: 150px;
     min-height: var(--app-control-h);
+  }
+
+  /* --- Repeat Payments (separate recurring render path) --- */
+
+  /* Connector gate pill ("Enable {X} to continue") — full-width own row + wrap instead of
+     overflowing its pill. Shared fix for BOTH tabs (New Request + Repeat). */
+  .route-app.android-shell .one-time-plan-control-row.has-connector .create-connect-gate,
+  .route-app.ios-native-shell .one-time-plan-control-row.has-connector .create-connect-gate,
+  .route-app.android-shell .mobile-recurring-controls.create .create-connect-gate,
+  .route-app.ios-native-shell .mobile-recurring-controls.create .create-connect-gate {
+    grid-column: 1 / -1;
+    width: 100%;
+    white-space: normal;
+    text-align: center;
+    line-height: 1.15;
+    min-height: var(--app-control-h);
+    padding: 7px 12px;
+  }
+
+  /* Send/Swap action tabs overlapped because .create-action-control was never block-ified and got
+     trapped in one half-width grid cell. Lift it onto its own full-width row and grid the filter
+     into 2 equal columns (Send | Swap), with the Lend ▾ dropdown beside it. */
+  .route-app.android-shell .mobile-recurring-controls.create .create-action-control,
+  .route-app.ios-native-shell .mobile-recurring-controls.create .create-action-control {
+    display: flex;
+    gap: 6px;
+    grid-column: 1 / -1;
+    min-width: 0;
+    width: 100%;
+  }
+  .route-app.android-shell .mobile-recurring-controls.create .create-action-filter,
+  .route-app.ios-native-shell .mobile-recurring-controls.create .create-action-filter {
+    display: grid;
+    flex: 1 1 auto;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    min-width: 0;
+    width: auto;
+  }
+  .route-app.android-shell .mobile-recurring-controls.create .action-picker,
+  .route-app.ios-native-shell .mobile-recurring-controls.create .action-picker {
+    flex: 0 0 auto;
+  }
+  .route-app.android-shell .mobile-recurring-controls.create .action-picker-menu,
+  .route-app.ios-native-shell .mobile-recurring-controls.create .action-picker-menu {
+    z-index: 240;
+  }
+  /* Scale Send/Swap + Lend ▾ + Create/Active up to the New Request control size. */
+  .route-app.android-shell .mobile-recurring-controls.create .create-action-filter button,
+  .route-app.ios-native-shell .mobile-recurring-controls.create .create-action-filter button {
+    font-size: 0.76rem;
+    min-height: var(--app-control-h);
+    padding: 0 6px;
+    white-space: nowrap;
+  }
+  .route-app.android-shell .mobile-recurring-controls.create .action-picker-trigger,
+  .route-app.ios-native-shell .mobile-recurring-controls.create .action-picker-trigger {
+    font-size: 0.76rem;
+    max-width: 150px;
+    min-height: var(--app-control-h);
+  }
+  .route-app.android-shell .mobile-recurring-view-tabs button,
+  .route-app.ios-native-shell .mobile-recurring-view-tabs button {
+    font-size: 0.76rem;
+    min-height: var(--app-control-h);
+  }
+
+  /* SEND token field is alone on its row — let it span full width (no dead space). */
+  .route-app.android-shell .mobile-recurring-contract .recurring-grid:not(.recurring-swap-grid):not(.schedule-grid) .token-choice-field,
+  .route-app.ios-native-shell .mobile-recurring-contract .recurring-grid:not(.recurring-swap-grid):not(.schedule-grid) .token-choice-field {
+    grid-column: 1 / -1;
+  }
+
+  /* Schedule: Cadence | Day | Local Time on ONE row (time is now a single OS picker). */
+  .route-app.android-shell .mobile-recurring-contract .schedule-grid,
+  .route-app.ios-native-shell .mobile-recurring-contract .schedule-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+  .route-app.android-shell .mobile-recurring-contract .schedule-grid .recurring-time-field,
+  .route-app.ios-native-shell .mobile-recurring-contract .schedule-grid .recurring-time-field {
+    grid-column: auto;
+  }
+  /* Interval cadences use a wide datetime Start-at — keep it full-width on its own row. */
+  .route-app.android-shell .mobile-recurring-contract .schedule-grid .field:has(#recurringStartAt),
+  .route-app.ios-native-shell .mobile-recurring-contract .schedule-grid .field:has(#recurringStartAt) {
+    grid-column: 1 / -1;
+  }
+  /* Keep the cadence/day pills legible in 1/3-width columns. */
+  .route-app.android-shell .mobile-recurring-contract .schedule-grid .template-picker-current strong,
+  .route-app.ios-native-shell .mobile-recurring-contract .schedule-grid .template-picker-current strong {
+    font-size: 0.82rem;
   }
 }
 
