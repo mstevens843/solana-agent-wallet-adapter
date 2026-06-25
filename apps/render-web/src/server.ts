@@ -8,6 +8,7 @@ import {
   loadConfig,
   loadDotEnv,
   resolveJupiterReferral,
+  resolveTriggerFee,
   resolveRebateAddress,
 } from '@solana-agent-wallet-adapter/mcp-server';
 
@@ -47,7 +48,27 @@ function logSwapFeeStatusOnce(): void {
         'the account is not valid base58 or JUPITER_REFERRAL_FEE_BPS is below the 50 bps floor.',
     );
   } else {
-    console.info('[swap-fee] disabled (set JUPITER_REFERRAL_ACCOUNT + JUPITER_REFERRAL_FEE_BPS to enable)');
+    console.info('[swap-fee] disabled (set JUPITER_REFERRAL_ACCOUNT_ULTRA + JUPITER_REFERRAL_FEE_BPS_ULTRA to enable)');
+  }
+  // Swap+Trigger (limit-order) fee — separate referral account, 100% to operator. Probe with USDC
+  // (a supported output mint) so resolveTriggerFee returns non-null iff account + bps are both valid.
+  const triggerParent = process.env.JUPITER_REFERRAL_ACCOUNT_SWAP_PLUS_TRIGGER?.trim();
+  const triggerBps =
+    process.env.JUPITER_REFERRAL_FEE_BPS_SWAP_PLUS_TRIGGER?.trim() || process.env.JUPITER_TRIGGER_FEE_BPS?.trim();
+  const triggerFee = resolveTriggerFee('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+  if (triggerFee) {
+    console.info(
+      `[trigger-fee] active: ${triggerFee.feeBps} bps → ${triggerParent} (limit orders; WSOL/USDC/USDT output)`,
+    );
+  } else if (triggerParent || triggerBps) {
+    console.warn(
+      '[trigger-fee] JUPITER_REFERRAL_ACCOUNT_SWAP_PLUS_TRIGGER/bps is set but the limit-order fee is DISABLED — ' +
+        'the account is not valid base58 or the bps is missing/non-positive.',
+    );
+  } else {
+    console.info(
+      '[trigger-fee] disabled (set JUPITER_REFERRAL_ACCOUNT_SWAP_PLUS_TRIGGER + JUPITER_REFERRAL_FEE_BPS_SWAP_PLUS_TRIGGER to enable)',
+    );
   }
   const rebate = resolveRebateAddress();
   if (rebate) {

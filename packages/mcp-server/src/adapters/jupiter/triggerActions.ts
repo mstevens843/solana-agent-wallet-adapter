@@ -21,6 +21,7 @@ import type {
 import { AdapterError } from '../types.js';
 
 import { jupiterFetchJson } from './client.js';
+import { resolveTriggerFee } from './referral.js';
 import { JUPITER_ADAPTER_ID } from './constants.js';
 import { requireTriggerEnabled, requireValidJwt } from './triggerAuth.js';
 import { JUPITER_TRIGGER_PRODUCT } from './triggerConstants.js';
@@ -576,11 +577,17 @@ async function submitTriggerOrder(
   depositRequestId: string,
   signedTransaction: string,
 ): Promise<Record<string, unknown>> {
+  // Integrator fee on the limit order (Swap+Trigger referral, 100% to the operator). Gated by env:
+  // resolveTriggerFee returns null unless JUPITER_TRIGGER_FEE_BPS + a referral token account for the
+  // OUTPUT mint are configured — so with no envs set this is a no-op and the request is unchanged.
+  const outputMint = typeof orderParams.outputMint === 'string' ? orderParams.outputMint : '';
+  const triggerFee = outputMint ? resolveTriggerFee(outputMint) : null;
   return postSignedToTrigger(ctx, '/orders/price', {
     ...orderParams,
     walletAddress,
     depositRequestId,
     depositSignedTx: signedTransaction,
+    ...(triggerFee ? { feeBps: triggerFee.feeBps, feeAccount: triggerFee.feeAccount } : {}),
   });
 }
 

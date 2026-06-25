@@ -133,7 +133,9 @@ export {
   JUPITER_REFERRAL_MAX_FEE_BPS,
   JUPITER_REFERRAL_MIN_FEE_BPS,
   resolveJupiterReferral,
+  resolveTriggerFee,
   type JupiterReferralParams,
+  type JupiterTriggerFee,
 } from './adapters/jupiter/referral.js';
 export {
   fact,

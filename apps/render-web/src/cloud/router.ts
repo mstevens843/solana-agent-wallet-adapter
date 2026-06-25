@@ -2356,25 +2356,19 @@ async function handleJupiterShield(req: IncomingMessage, res: ServerResponse): P
 // NOT sit in the referral parent account; you claim them at referral.jup.ag). Gated by the
 // FEE_ADMIN_KEY env (endpoint is off until that is set; require it in the x-admin-key header).
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
-async function handleAdminFeeRevenue(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const adminKey = process.env.FEE_ADMIN_KEY?.trim();
-  if (!adminKey) {
-    throw new ApiError(404, 'Not found.');
-  }
-  if (firstHeaderValue(req.headers['x-admin-key'])?.trim() !== adminKey) {
-    throw new ApiError(401, 'Unauthorized.');
-  }
-  const referral = resolveJupiterReferral();
-  if (!referral) {
-    writeJson(res, 200, { swapFee: 'disabled', referralAccount: null, feeBps: null, balances: [] });
-    return;
-  }
-  const connection = solanaConnection(DEFAULT_CONFIG.cluster);
+interface ReferralBalance {
+  tokenAccount: string;
+  mint: string | null;
+  amount: string;
+  uiAmount: string;
+}
+
+async function readReferralBalances(connection: Connection, referralAccount: string): Promise<ReferralBalance[]> {
   const accounts = await connection.getParsedTokenAccountsByOwner(
-    new PublicKey(referral.referralAccount),
+    new PublicKey(referralAccount),
     { programId: TOKEN_PROGRAM_ID },
   );
-  const balances = accounts.value.map((acc) => {
+  return accounts.value.map((acc) => {
     const info = (acc.account.data.parsed as {
       info?: { mint?: string; tokenAmount?: { amount?: string; uiAmountString?: string } };
     }).info;
@@ -2385,12 +2379,59 @@ async function handleAdminFeeRevenue(req: IncomingMessage, res: ServerResponse):
       uiAmount: info?.tokenAmount?.uiAmountString ?? '0',
     };
   });
+}
+
+async function handleAdminFeeRevenue(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const adminKey = process.env.FEE_ADMIN_KEY?.trim();
+  if (!adminKey) {
+    throw new ApiError(404, 'Not found.');
+  }
+  if (firstHeaderValue(req.headers['x-admin-key'])?.trim() !== adminKey) {
+    throw new ApiError(401, 'Unauthorized.');
+  }
+  const connection = solanaConnection(DEFAULT_CONFIG.cluster);
+
+  // Ultra (swaps): fees accrue under JUPITER_REFERRAL_ACCOUNT (operator keeps 80%, Jupiter 20%).
+  const ultraReferral = resolveJupiterReferral();
+  const ultra = ultraReferral
+    ? {
+        status: 'active' as const,
+        referralAccount: ultraReferral.referralAccount,
+        feeBps: ultraReferral.referralFee,
+        balances: await readReferralBalances(connection, ultraReferral.referralAccount),
+      }
+    : { status: 'disabled' as const, referralAccount: null, feeBps: null as number | null, balances: [] as ReferralBalance[] };
+
+  // Swap+Trigger (limit orders): fees accrue under JUPITER_REFERRAL_ACCOUNT_SWAP_PLUS_TRIGGER (operator keeps 100%).
+  // Visibility-only env — set it to the Swap+Trigger referral account to surface its balances here.
+  let swapTrigger: {
+    status: 'active' | 'disabled';
+    referralAccount: string | null;
+    feeBps: number | null;
+    balances: ReferralBalance[];
+  } = { status: 'disabled', referralAccount: null, feeBps: null, balances: [] };
+  const triggerAccount = process.env.JUPITER_REFERRAL_ACCOUNT_SWAP_PLUS_TRIGGER?.trim();
+  if (triggerAccount) {
+    try {
+      const owner = new PublicKey(triggerAccount).toBase58();
+      const rawBps =
+        process.env.JUPITER_REFERRAL_FEE_BPS_SWAP_PLUS_TRIGGER?.trim() ||
+        process.env.JUPITER_TRIGGER_FEE_BPS?.trim();
+      swapTrigger = {
+        status: 'active',
+        referralAccount: owner,
+        feeBps: rawBps && /^\d+$/.test(rawBps) ? Number(rawBps) : null,
+        balances: await readReferralBalances(connection, owner),
+      };
+    } catch {
+      // invalid pubkey — leave swapTrigger disabled
+    }
+  }
+
   writeJson(res, 200, {
-    swapFee: 'active',
-    referralAccount: referral.referralAccount,
-    feeBps: referral.referralFee,
-    note: 'Accrued referral fees (claim at referral.jup.ag; Jupiter keeps 20% at claim).',
-    balances,
+    note: 'Accrued referral fees — claim at referral.jup.ag (Ultra tab = swaps, Swap+Trigger tab = limit orders).',
+    ultra,
+    swapTrigger,
   });
 }
 
