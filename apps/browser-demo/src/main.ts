@@ -596,7 +596,7 @@ import {
   type ConnectedDappsState,
   type ProtocolConnector,
 } from './connectedDapps.js';
-import { mountConnectorKeysPanel } from './connectorKeys.js';
+import { mountConnectorKeysPanel, BYO_KEY_CONNECTOR_IDS, BYO_KEY_CONNECTOR_META, saveConnectorSecret, type ByoKeyConnectorId } from './connectorKeys.js';
 import {
   CONNECTOR_APPROVAL_ACTION_TYPES,
   classifyConnectorReceipt,
@@ -3265,6 +3265,9 @@ interface DemoState {
   chatActionPicker: ChatActionPickerState | null;
   // Transient editing session for the chat "Connector Actions" surface (ephemeral).
   chatConnectorSession: ChatConnectorSession | null;
+  // In-place connect surface (popover web / sheet mobile) opened when a user picks an
+  // un-enabled connector in an action's "Use connector" dropdown.
+  connectorConnect: { connectorId: string; category: ActionCategory | null; draftApiKey?: string; draftBaseUrl?: string } | null;
   chatRecurringSession: ChatRecurringSession | null;
   recurringPayments: RecurringPayment[];
   receipts: ActionReceipt[];
@@ -4420,6 +4423,7 @@ const state: DemoState = {
   chatActionBuilder: null,
   chatActionPicker: null,
   chatConnectorSession: null,
+  connectorConnect: null,
   chatRecurringSession: null,
   recurringPayments: initialBrowserWorkflow.recurringPayments,
   receipts: initialBrowserWorkflow.receipts,
@@ -9949,10 +9953,12 @@ function render(): void {
     pageShell(pageContent(route), route)
     + embeddedWalletOverlayHtml(embeddedWallet.overlay)
     + walletConnectOverlayBlock()
-    + ledgerOverlayBlock();
+    + ledgerOverlayBlock()
+    + connectorConnectSurfaceHtml();
   reconcileBodyScrollLockDatasetsAfterRender();
   flushPendingSpendNavigation();
   bind();
+  bindConnectorConnectSurface();
   restoreDisclosureOpenState(disclosureOpenState);
   bindEmbeddedWalletOverlay();
   bindDesktopBrandPanels();
@@ -16416,6 +16422,8 @@ function recipientRulesPanel(): string {
 
 function connectedDappsPanel(): string {
   const dapps = state.connectedDapps;
+  // Jupiter stays listed here but is always on — the "Always on" pill (no disable toggle) in
+  // connectedDappRow communicates that it needs no connection (covered by the shared Jupiter API key).
   const enabledConnectors = enabledProtocolConnectors(dapps, state.cluster);
   const disabledConnectors = disabledProtocolConnectors(dapps, state.cluster);
   const enabledCount = enabledConnectors.length;
@@ -16516,6 +16524,9 @@ function connectedDappRow(adapter: ConnectedDappAdapter): string {
   const entry = state.connectedDapps.entries[adapter.id];
   const clusterOk = isClusterSupported(adapter, state.cluster);
   const enabled = clusterOk && entry?.enabled === true;
+  // Jupiter is always on — no connection needed (every Jupiter action is covered
+  // by Agentic's shared Jupiter API key), so it shows an "Always on" pill, not a toggle.
+  const alwaysOn = adapter.id === 'jupiter' && clusterOk;
   const clusterChip = clusterOk
     ? ''
     : `<span class="connected-dapp-cluster-chip cluster-mismatch" title="${escapeHtml(t('Switch cluster to use this connector'))}">${tf('{clusters} only', { clusters: escapeHtml(adapter.supportedClusters.join(', ')) })}</span>`;
@@ -16566,7 +16577,7 @@ function connectedDappRow(adapter: ConnectedDappAdapter): string {
         </div>
         <div class="connected-dapp-row-meta">
           ${clusterChip}
-          <span class="connected-dapp-state-pill ${enabled ? 'connected' : 'disconnected'}">${enabled ? t('Connected') : t('Off')}</span>
+          <span class="connected-dapp-state-pill ${enabled || alwaysOn ? 'connected' : 'disconnected'}">${alwaysOn ? t('Always on') : enabled ? t('Connected') : t('Off')}</span>
         </div>
       </div>
       <div class="connected-dapp-capability-chips">${capabilityChips}</div>
@@ -16575,7 +16586,9 @@ function connectedDappRow(adapter: ConnectedDappAdapter): string {
         ${capabilityRows}
       </dl>
       <div class="connected-dapp-row-actions">
-        <button
+        ${alwaysOn
+          ? `<span class="connected-dapp-always-on-note">${escapeHtml(t('Always on — no connection needed. Covered by Agentic’s Jupiter API.'))}</span>`
+          : `<button
           type="button"
           class="primary"
           data-connected-dapp-action="toggle"
@@ -16583,7 +16596,7 @@ function connectedDappRow(adapter: ConnectedDappAdapter): string {
           data-connected-dapp-next="${enabled ? 'off' : 'on'}"
           title="${escapeHtml(toggleTitle)}"
           ${state.busy || !clusterOk ? 'disabled' : ''}
-        >${toggleLabel}</button>
+        >${toggleLabel}</button>`}
       </div>
     </article>
   `;
@@ -16601,6 +16614,7 @@ function connectedDappRowMobile(input: {
   toggleTitle: string;
 }): string {
   const { adapter, enabled, clusterOk, clusterChip, capabilityChips, actionChips, capabilityRows, toggleLabel, toggleTitle } = input;
+  const alwaysOn = adapter.id === 'jupiter' && clusterOk;
   return `
     <details class="connected-dapp-row mobile-connected-dapp-row ${enabled ? 'enabled' : 'disabled'} ${clusterOk ? '' : 'cluster-blocked'}" data-connected-dapp="${escapeHtml(adapter.id)}">
       <summary class="mobile-connected-dapp-summary">
@@ -16611,7 +16625,7 @@ function connectedDappRowMobile(input: {
         </span>
         <span class="connected-dapp-row-meta">
           ${clusterChip}
-          <span class="connected-dapp-state-pill ${enabled ? 'connected' : 'disconnected'}">${enabled ? t('On') : t('Off')}</span>
+          <span class="connected-dapp-state-pill ${enabled || alwaysOn ? 'connected' : 'disconnected'}">${alwaysOn ? t('Always on') : enabled ? t('On') : t('Off')}</span>
         </span>
       </summary>
       <div class="mobile-connected-dapp-detail">
@@ -16623,7 +16637,9 @@ function connectedDappRowMobile(input: {
           ${capabilityRows}
         </dl>
         <div class="connected-dapp-row-actions">
-          <button
+          ${alwaysOn
+            ? `<span class="connected-dapp-always-on-note">${escapeHtml(t('Always on — no connection needed. Covered by Agentic’s Jupiter API.'))}</span>`
+            : `<button
             type="button"
             class="primary"
             data-connected-dapp-action="toggle"
@@ -16631,7 +16647,7 @@ function connectedDappRowMobile(input: {
             data-connected-dapp-next="${enabled ? 'off' : 'on'}"
             title="${escapeHtml(toggleTitle)}"
             ${state.busy || !clusterOk ? 'disabled' : ''}
-          >${toggleLabel}</button>
+          >${toggleLabel}</button>`}
         </div>
       </div>
     </details>
@@ -20570,6 +20586,15 @@ const CHAT_POWER_ACTIONS: Array<{ id: string; eyebrow: string; title: string; de
 
 // Advanced (action-first) connector verbs. Tapping one opens the SAME connector surface scoped to the
 // category (connectors filtered, enabled-first, sub-actions scoped) — mirrors New Request's "Lend ▾".
+// Prediction is hidden by default — Jupiter's Prediction API geoblocks US + South Korea IPs,
+// so it cannot function from a US-hosted backend. Re-enable by setting window.__AGENTIC_PREDICTION__ = true.
+function predictionActionEnabled(): boolean {
+  return (globalThis as { __AGENTIC_PREDICTION__?: boolean }).__AGENTIC_PREDICTION__ === true;
+}
+function visibleActionCategory(category: ActionCategory): boolean {
+  if (category === 'prediction') return predictionActionEnabled();
+  return true;
+}
 const CHAT_ADVANCED_ACTIONS: Array<{ id: ActionCategory; eyebrow: string; title: string; description: string }> = [
   { id: 'lend', eyebrow: 'Earn', title: 'Lend', description: 'Earn yield on a connected lending protocol.' },
   { id: 'limit', eyebrow: 'Trading', title: 'Limit / TP-SL', description: 'Set a limit order or take-profit / stop-loss.' },
@@ -20577,6 +20602,7 @@ const CHAT_ADVANCED_ACTIONS: Array<{ id: ActionCategory; eyebrow: string; title:
   { id: 'lp', eyebrow: 'Liquidity', title: 'Liquidity', description: 'Provide or manage liquidity in a connected pool.' },
   { id: 'stake', eyebrow: 'Earn', title: 'Stake', description: 'Stake SOL or LSTs on a connected protocol.' },
   { id: 'perps', eyebrow: 'Trading', title: 'Perps', description: 'Open or manage a perpetuals position.' },
+  { id: 'prediction', eyebrow: 'Trading', title: 'Prediction', description: 'Buy, sell, close, or claim a Jupiter prediction-market position.' },
   { id: 'nft', eyebrow: 'NFT', title: 'NFT', description: 'Buy, list, or bid on an NFT marketplace.' },
   { id: 'governance', eyebrow: 'Governance', title: 'Governance', description: 'Vote or manage a DAO or multisig proposal.' },
   { id: 'bridge', eyebrow: 'Bridge', title: 'Bridge', description: 'Bridge assets across chains.' },
@@ -22227,7 +22253,7 @@ function chatWalletActionCard(icon: string, eyebrow: string, title: string, desc
 // surface scoped to the verb via data-chat-action-cat.
 function chatWalletActionList(): string {
   if (state.chatWalletActionTab === 'advanced') {
-    return CHAT_ADVANCED_ACTIONS.map((a) =>
+    return CHAT_ADVANCED_ACTIONS.filter((a) => visibleActionCategory(a.id)).map((a) =>
       chatWalletActionCard(chatActionIcon(a.id), a.eyebrow, a.title, a.description, `data-chat-action-cat="${escapeHtml(a.id)}"`)).join('');
   }
   return CHAT_POWER_ACTIONS.map((a) =>
@@ -27049,7 +27075,7 @@ const BASE_ACTION_TABS: { id: ActionCategory; label: string }[] = [
   { id: 'proof', label: 'Proof' },
   { id: 'read', label: 'Evidence' },
 ];
-const CONNECTOR_ACTION_DROPDOWN: ActionCategory[] = ['lend', 'limit', 'dca', 'borrow', 'lp', 'stake', 'perps', 'nft', 'governance', 'bridge', 'oracle'];
+const CONNECTOR_ACTION_DROPDOWN: ActionCategory[] = ['lend', 'limit', 'dca', 'borrow', 'lp', 'stake', 'perps', 'prediction', 'nft', 'governance', 'bridge', 'oracle'];
 const RECURRING_CONNECTOR_DROPDOWN: ActionCategory[] = ['lend', 'stake'];
 
 function isConnectorAction(category: ActionCategory | ''): boolean {
@@ -27064,7 +27090,7 @@ function connectorActionLabel(category: ActionCategory): string {
 // handler — including the one already shown (selectPicker swallows re-selecting the current value).
 function connectorActionDropdownSegment(scope: 'create' | 'repeat'): string {
   const active = scope === 'create' ? state.createActionCategory : state.recurringActionCategory;
-  const options = scope === 'create' ? CONNECTOR_ACTION_DROPDOWN : RECURRING_CONNECTOR_DROPDOWN;
+  const options = (scope === 'create' ? CONNECTOR_ACTION_DROPDOWN : RECURRING_CONNECTOR_DROPDOWN).filter(visibleActionCategory);
   const isActive = isConnectorAction(active);
   const label = isActive ? connectorActionLabel(active as ActionCategory) : connectorActionLabel(options[0]!);
   const menuId = `actionPickerMenu-${scope}`;
@@ -27156,12 +27182,15 @@ function connectorCreatePickerOptions(
     },
     ...connectors.map((connector) => {
       const status = connectorCreateStatus(connector, env);
+      // Never disable a connector that is merely un-enabled — keep it selectable so a tap
+      // connects it inline. Only genuinely-unusable states (wrong cluster / no flow) stay disabled.
+      const connectable = status.kind === 'disabled';
       return {
         value: connector.id,
         label: connector.name,
-        meta: t(status.meta),
+        meta: connectable ? t('Tap to connect') : t(status.meta),
         detail: connectorCreateOptionDetail(connector, status.kind),
-        disabled: !status.selectable,
+        disabled: !status.selectable && !connectable,
         title: connectorCreateStatusDetailText(connector, status.kind),
         logoId: protocolConnectorLogoId(connector.id),
       };
@@ -34324,8 +34353,11 @@ function bind(): void {
   bindActionDropdowns();
   bindSlippagePickers();
 
-  document.querySelector<HTMLSelectElement>('[data-connector-create-picker]')?.addEventListener('input', (event) => {
-    selectConnectorForCreate((event.currentTarget as HTMLSelectElement).value);
+  // Bind BOTH pickers (new-request + chat surface) so connect-on-select works in every surface.
+  document.querySelectorAll<HTMLSelectElement>('[data-connector-create-picker]').forEach((picker) => {
+    picker.addEventListener('input', (event) => {
+      selectConnectorForCreate((event.currentTarget as HTMLSelectElement).value);
+    });
   });
 
   document.querySelector<HTMLSelectElement>('[data-connector-create-action]')?.addEventListener('input', (event) => {
@@ -37059,7 +37091,12 @@ function selectConnectorForCreate(connectorId: string): void {
   const connector = getAdapterMeta(trimmed as ConnectedDappId);
   if (!connector) return;
   const env = connectorDraftEnvironment();
-  if (!connectorCreateStatus(connector, env).selectable) return;
+  const status = connectorCreateStatus(connector, env);
+  if (!status.selectable) {
+    // Un-enabled but otherwise valid → connect it inline instead of dead-ending on a disabled option.
+    if (status.kind === 'disabled') connectProtocolConnectorThenSelect(connector);
+    return;
+  }
   // Under an active action, pick the connector's first form FOR that action (keeps the route
   // scoped — e.g. switching to Jupiter under "Lend" lands on its Lend form, not its first form).
   const cat = state.createActionCategory;
@@ -37068,6 +37105,136 @@ function selectConnectorForCreate(connectorId: string): void {
   if (!form) return;
   if (cat) applyConnectorActionFormForCategory(form, cat);
   else applyConnectorActionForm(form);
+}
+
+function connectProtocolConnectorThenSelect(connector: ProtocolConnector): void {
+  // Open the in-place connect surface (popover on web, sheet on mobile) for the picked
+  // connector. Keyless connectors get a one-tap "Enable" confirm; BYO-key connectors get an
+  // API-key form. On success the selection sticks + the action form applies; on cancel/fail
+  // the dropdown reverts to "Use connector".
+  openConnectorConnect(connector.id, state.createActionCategory || null);
+}
+
+function openConnectorConnect(connectorId: string, category: ActionCategory | null): void {
+  state.connectorConnect = { connectorId, category };
+  render();
+}
+
+function closeConnectorConnect(opts: { revert: boolean }): void {
+  state.connectorConnect = null;
+  if (opts.revert) clearConnectorCreateSelection();
+  else render();
+}
+
+function connectorConnectIsByo(id: string): boolean {
+  return (BYO_KEY_CONNECTOR_IDS as readonly string[]).includes(id);
+}
+
+function connectorConnectEnable(connectorId: string): void {
+  const updated = setConnectedDappEnabled(state.connectedDapps, connectorId as ConnectedDappId, true);
+  state.connectedDapps = updated;
+  saveConnectedDapps(updated);
+  void syncCloudPreference('protocol-connectors');
+}
+
+// After a connector is connected, route into its form for the active action and clear the surface.
+function connectorConnectFinish(connectorId: string, category: ActionCategory | null): void {
+  state.connectorConnect = null;
+  const connector = getAdapterMeta(connectorId as ConnectedDappId);
+  const form = connector
+    ? ((category ? firstFormForCategory(connector, category) : undefined) ?? connectorActionFormsForConnector(connector)[0])
+    : undefined;
+  if (!form) {
+    render();
+    return;
+  }
+  if (category) applyConnectorActionFormForCategory(form, category);
+  else applyConnectorActionForm(form);
+}
+
+function connectorConnectSurfaceHtml(): string {
+  const session = state.connectorConnect;
+  if (!session) return '';
+  const connector = getAdapterMeta(session.connectorId as ConnectedDappId);
+  if (!connector) return '';
+  const byo = connectorConnectIsByo(session.connectorId);
+  const sheet = isMobileAppViewport();
+  const meta = byo ? BYO_KEY_CONNECTOR_META[session.connectorId as ByoKeyConnectorId] : undefined;
+  const body = byo
+    ? `
+      <p class="connector-connect-intro">${escapeHtml(tf('{name} needs an API key to connect. It is stored encrypted on your account.', { name: connector.name }))}</p>
+      <label class="field compact"><span>${escapeHtml(t('API key'))}</span>
+        <input data-connector-connect-key type="password" autocomplete="off" spellcheck="false" value="${escapeHtml(session.draftApiKey ?? '')}" placeholder="${escapeHtml(t('Paste API key'))}" />
+      </label>
+      <label class="field compact"><span>${escapeHtml(t('Base URL (optional)'))}</span>
+        <input data-connector-connect-baseurl type="text" autocomplete="off" spellcheck="false" value="${escapeHtml(session.draftBaseUrl ?? '')}" placeholder="${escapeHtml(meta?.defaultBaseUrl ?? '')}" />
+      </label>
+      ${meta?.portalUrl ? `<a class="connector-connect-portal" href="${escapeHtml(meta.portalUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(t('Where to get an API key'))}</a>` : ''}
+      <div class="connector-connect-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
+        <button type="button" class="chat-builder-clear" data-connector-connect-cancel>${escapeHtml(t('Cancel'))}</button>
+        <button type="button" class="primary" data-connector-connect-save>${escapeHtml(t('Connect'))}</button>
+      </div>`
+    : `
+      <p class="connector-connect-intro">${escapeHtml(tf('Enable {name} for this action? It needs no key — Agentic connects to it directly.', { name: connector.name }))}</p>
+      <div class="connector-connect-actions" style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
+        <button type="button" class="chat-builder-clear" data-connector-connect-cancel>${escapeHtml(t('Cancel'))}</button>
+        <button type="button" class="primary" data-connector-connect-enable>${escapeHtml(t('Enable'))}</button>
+      </div>`;
+  const panel = `
+    <div class="chat-action-popover connector-connect-popover" role="dialog" aria-modal="true" style="max-width:440px;width:100%;${sheet ? 'border-bottom-left-radius:0;border-bottom-right-radius:0;' : ''}">
+      <div class="chat-popover-head">
+        <span class="chat-builder-eyebrow">${escapeHtml(tf('Connect {name}', { name: connector.name }))}</span>
+        <button type="button" class="chat-builder-clear" data-connector-connect-cancel aria-label="${escapeHtml(t('Close'))}" title="${escapeHtml(t('Close'))}">&times;</button>
+      </div>
+      <div class="connector-connect-body">${body}</div>
+    </div>`;
+  return `<div class="connector-connect-overlay" data-connector-connect-overlay style="position:fixed;inset:0;z-index:1200;display:flex;align-items:${sheet ? 'flex-end' : 'center'};justify-content:center;background:rgba(0,0,0,0.55);padding:${sheet ? '0' : '16px'};">${panel}</div>`;
+}
+
+function bindConnectorConnectSurface(): void {
+  const session = state.connectorConnect;
+  if (!session) return;
+  const overlay = document.querySelector<HTMLElement>('[data-connector-connect-overlay]');
+  overlay?.addEventListener('click', (event) => {
+    if (event.target === overlay) closeConnectorConnect({ revert: true });
+  });
+  for (const btn of document.querySelectorAll<HTMLButtonElement>('[data-connector-connect-cancel]')) {
+    btn.addEventListener('click', () => closeConnectorConnect({ revert: true }));
+  }
+  const connectorName = getAdapterMeta(session.connectorId as ConnectedDappId)?.name ?? session.connectorId;
+  // Live-sync the key/base-URL inputs into the session draft so any re-render (e.g. a toast
+  // auto-dismissing, or a failed save) restores the in-progress values instead of wiping them.
+  document.querySelector<HTMLInputElement>('[data-connector-connect-key]')?.addEventListener('input', (event) => {
+    if (state.connectorConnect) state.connectorConnect.draftApiKey = (event.currentTarget as HTMLInputElement).value;
+  });
+  document.querySelector<HTMLInputElement>('[data-connector-connect-baseurl]')?.addEventListener('input', (event) => {
+    if (state.connectorConnect) state.connectorConnect.draftBaseUrl = (event.currentTarget as HTMLInputElement).value;
+  });
+  document.querySelector<HTMLButtonElement>('[data-connector-connect-enable]')?.addEventListener('click', () => {
+    connectorConnectEnable(session.connectorId);
+    pushToast('success', tf('{name} connected', { name: connectorName }), t('Enabled for this action.'));
+    connectorConnectFinish(session.connectorId, session.category);
+  });
+  document.querySelector<HTMLButtonElement>('[data-connector-connect-save]')?.addEventListener('click', () => {
+    void (async () => {
+      const apiKey = (document.querySelector<HTMLInputElement>('[data-connector-connect-key]')?.value ?? '').trim();
+      if (!apiKey) {
+        pushToast('error', t('API key required'), t('Paste the connector API key to continue.'));
+        render();
+        return;
+      }
+      const baseUrl = (document.querySelector<HTMLInputElement>('[data-connector-connect-baseurl]')?.value ?? '').trim();
+      try {
+        await saveConnectorSecret(session.connectorId as ByoKeyConnectorId, { apiKey, ...(baseUrl ? { baseUrl } : {}) });
+        connectorConnectEnable(session.connectorId);
+        pushToast('success', tf('{name} connected', { name: connectorName }), t('Key saved and enabled for this action.'));
+        connectorConnectFinish(session.connectorId, session.category);
+      } catch (err) {
+        pushToast('error', t('Could not connect'), err instanceof Error ? err.message : String(err));
+        render();
+      }
+    })();
+  });
 }
 
 function selectConnectorActionForCreate(formId: string): void {
@@ -62041,12 +62208,14 @@ const CONNECTOR_TARGET_FIELD_LABELS: Array<{ key: string; label: string }> = [
   { key: 'reserveAddress', label: 'Reserve' },
   { key: 'bankAddress', label: 'Bank' },
   { key: 'marketAddress', label: 'Market' },
+  { key: 'marketId', label: 'Market' },
   { key: 'poolAddress', label: 'Pool' },
   { key: 'poolId', label: 'Pool' },
   { key: 'whirlpoolAddress', label: 'Pool' },
   { key: 'positionAddress', label: 'Position' },
   { key: 'positionMint', label: 'Position' },
   { key: 'positionId', label: 'Position' },
+  { key: 'positionPubkey', label: 'Position' },
   { key: 'priceFeedIds', label: 'Feed' },
   { key: 'collectionId', label: 'Collection' },
   { key: 'listingId', label: 'Listing' },

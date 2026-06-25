@@ -78,7 +78,7 @@ export interface ConnectorActionDisplayParts {
 // ===========================================================================
 export type ActionCategory =
   | 'swap' | 'send' | 'limit' | 'dca' | 'lend' | 'borrow' | 'lp'
-  | 'stake' | 'perps' | 'nft' | 'governance' | 'bridge' | 'oracle' | 'read' | 'proof';
+  | 'stake' | 'perps' | 'prediction' | 'nft' | 'governance' | 'bridge' | 'oracle' | 'read' | 'proof';
 
 export const ACTION_TYPE_CATEGORY: Readonly<Record<string, ActionCategory>> = {
   // swap
@@ -124,6 +124,9 @@ export const ACTION_TYPE_CATEGORY: Readonly<Record<string, ActionCategory>> = {
   sanctum_stake_sol_to_lst: 'stake', sanctum_unstake_lst_to_sol: 'stake',
   // perps
   phoenix_open: 'perps', phoenix_close: 'perps', phoenix_modify_collateral: 'perps', phoenix_cancel_order: 'perps',
+  // prediction
+  jupiter_prediction_create_order: 'prediction', jupiter_prediction_close_position: 'prediction',
+  jupiter_prediction_claim_position: 'prediction',
   // nft
   magiceden_bid: 'nft', magiceden_buy: 'nft', magiceden_list: 'nft',
   magiceden_cancel_listing: 'nft', magiceden_cancel_bid: 'nft',
@@ -162,6 +165,7 @@ export const ACTION_CATEGORIES: ReadonlyArray<{ id: ActionCategory; label: strin
   { id: 'borrow', label: 'Borrow', group: 'borrow' },
   { id: 'send', label: 'Send', group: 'pay' },
   { id: 'perps', label: 'Perps', group: 'more' },
+  { id: 'prediction', label: 'Prediction', group: 'more' },
   { id: 'nft', label: 'NFT', group: 'more' },
   { id: 'governance', label: 'Governance', group: 'more' },
   { id: 'bridge', label: 'Bridge', group: 'more' },
@@ -257,6 +261,7 @@ const CONNECTOR_ACTION_FORMS: ConnectorActionForm[] = [
   jupiterLendUnifiedForm(),
   jupiterTriggerUnifiedForm(),
   jupiterRecurringUnifiedForm(),
+  jupiterPredictionUnifiedForm(),
   jupiterPerpsStatusForm(),
   ...marginfiForms(),
   ...project0Forms(),
@@ -994,7 +999,7 @@ function formDateTimeField(
 }
 
 function jupiterTokenField(
-  id: 'inputMint' | 'outputMint' | 'triggerMint',
+  id: 'inputMint' | 'outputMint' | 'triggerMint' | 'depositMint',
   label: string,
   required = false,
   defaultValue: string = JUPITER_FORM_TOKEN_MINTS.USDC,
@@ -1064,7 +1069,7 @@ function normalizeConnectorTokenParameters(
 ): Record<string, string> {
   if (form?.connectorId !== 'jupiter') return parameters;
   const next = { ...parameters };
-  for (const fieldId of ['inputMint', 'outputMint', 'triggerMint'] as const) {
+  for (const fieldId of ['inputMint', 'outputMint', 'triggerMint', 'depositMint'] as const) {
     const explicitMint = next[`${fieldId}Mint`]?.trim();
     if (explicitMint) {
       next[fieldId] = explicitMint;
@@ -2492,6 +2497,62 @@ function jupiterRecurringUnifiedForm(): ConnectorActionForm {
             formSelectField('inputOrOutput', 'Amount side', ['In', 'Out'], 'In'),
             deprecationAccepted,
           ],
+        },
+      ],
+    },
+  };
+}
+
+function jupiterPredictionUnifiedForm(): ConnectorActionForm {
+  const memo = formField('memo', 'Reason');
+  const depositMint = jupiterTokenField('depositMint', 'Deposit token', true, JUPITER_FORM_TOKEN_MINTS.USDC);
+  const betaAccepted = formSelectField('predictionBetaAcknowledged', 'Prediction beta acknowledged', ['true'], 'true');
+  return {
+    id: 'jupiter:prediction',
+    connectorId: 'jupiter',
+    operationId: 'prediction',
+    operationLabel: 'Prediction markets',
+    templateId: 'connector-jupiter-prediction',
+    description: 'Trade Jupiter Prediction markets (beta). Buy/sell YES/NO contracts, close, or claim. Markets come from external providers; US/SK access is restricted and writes require a non-US egress.',
+    executionMode: 'first-class-adapter',
+    outcome: 'queueable',
+    fields: [memo],
+    subActions: {
+      fieldId: 'subAction',
+      label: 'Prediction action',
+      defaultId: 'create-order',
+      display: 'select',
+      options: [
+        {
+          id: 'create-order',
+          label: 'Open position',
+          description: 'Buy or sell YES/NO contracts on a prediction market.',
+          actionType: 'jupiter_prediction_create_order',
+          fields: [
+            formField('marketId', 'Market id', true),
+            formSelectField('isBuy', 'Side', ['buy', 'sell'], 'buy', true),
+            formSelectField('isYes', 'Outcome', ['yes', 'no'], 'yes', true),
+            formField('depositAmount', 'Amount (USD)', true),
+            depositMint,
+            betaAccepted,
+          ],
+        },
+        {
+          id: 'close-position',
+          label: 'Close position',
+          description: 'Sell all contracts in an existing prediction position.',
+          actionType: 'jupiter_prediction_close_position',
+          fields: [
+            formField('positionPubkey', 'Position address', true),
+            formField('minSellPriceSlippageBps', 'Max slippage (bps)'),
+          ],
+        },
+        {
+          id: 'claim-position',
+          label: 'Claim payout',
+          description: 'Claim winnings from a settled prediction position ($1 per winning contract).',
+          actionType: 'jupiter_prediction_claim_position',
+          fields: [formField('positionPubkey', 'Position address', true)],
         },
       ],
     },

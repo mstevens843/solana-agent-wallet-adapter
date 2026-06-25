@@ -1,7 +1,10 @@
 import { PublicKey } from '@solana/web3.js';
 
 /**
- * Jupiter Ultra integrator-fee parameters for the `swap/v2` `/order` endpoint.
+ * Jupiter Ultra integrator-fee parameters for the Ultra (`/ultra/v1`) `/order`
+ * endpoint. NOTE: these params are Ultra-specific — the Swap API v2 `/order`
+ * endpoint uses `platformFeeBps` + `feeAccount` instead and IGNORES these, so
+ * the swap base URL must resolve to `/ultra/v1` for the fee to land.
  *
  * Ultra collects an integrator fee via a Jupiter Referral Program account
  * (`referralAccount`, a PDA created at referral.jup.ag) plus a `referralFee` in

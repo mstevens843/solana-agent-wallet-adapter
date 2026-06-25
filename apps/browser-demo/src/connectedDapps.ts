@@ -194,6 +194,9 @@ export const PROTOCOL_CONNECTORS: ProtocolConnector[] = [
       'jupiter_recurring_cancel_order',
       'jupiter_recurring_deposit_price_order',
       'jupiter_recurring_withdraw_price_order',
+      'jupiter_prediction_create_order',
+      'jupiter_prediction_close_position',
+      'jupiter_prediction_claim_position',
     ],
     readTools: [
       'solana_jupiter_order_preview',
@@ -239,7 +242,7 @@ export const PROTOCOL_CONNECTORS: ProtocolConnector[] = [
       'solana_jupiter_recurring_order_detail',
       'solana_jupiter_recurring_quote',
     ],
-    enabledByDefault: false,
+    enabledByDefault: true,
     initials: 'JU',
     readSource: 'first-class-adapter',
     actionSource: 'first-class-adapter',
@@ -994,6 +997,10 @@ export function isDappEnabled(
   const connector = getAdapterMeta(id);
   if (!connector) return false;
   if (!isClusterSupported(connector, cluster)) return false;
+  // Jupiter needs no connection — every Jupiter action (swap/lend/limit/DCA/borrow)
+  // is covered by Agentic's shared Jupiter API key, so it is ALWAYS enabled and
+  // never gated on a Preferences toggle.
+  if (id === 'jupiter') return true;
   return state.entries[id]?.enabled === true;
 }
 
@@ -1049,7 +1056,9 @@ export function checkProtocolConnector(
       message: `${connector.name} is only available on ${connector.supportedClusters.join(', ')}; current cluster is ${cluster}.`,
     };
   }
-  if (state.entries[connector.id]?.enabled !== true) {
+  // Jupiter is always on — covered by Agentic's shared Jupiter API key, never gated on a toggle
+  // (matches isDappEnabled's Jupiter exemption).
+  if (connector.id !== 'jupiter' && state.entries[connector.id]?.enabled !== true) {
     return {
       ok: false,
       reason: 'disabled',

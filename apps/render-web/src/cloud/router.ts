@@ -1402,8 +1402,7 @@ async function routeApiRequest(
 
   if (url.pathname === '/api/swap/order') {
     requireMethod(req, 'POST');
-    const client = firstHeaderValue(req.headers['x-agentic-client'])?.toLowerCase();
-    await handleJupiterSwapOrder(req, res, client);
+    await handleJupiterSwapOrder(req, res);
     return;
   }
 
@@ -2298,7 +2297,6 @@ async function handleConnectorCapabilities(
 async function handleJupiterSwapOrder(
   req: IncomingMessage,
   res: ServerResponse,
-  client?: string,
 ): Promise<void> {
   const body = asJsonRecord(await readJsonBody(req), 'swap order body');
   const inputMint = requiredBodyString(body, 'inputMint');
@@ -2318,9 +2316,9 @@ async function handleJupiterSwapOrder(
     url.searchParams.set('slippageBps', String(slippageBps));
   }
   // Platform fee on swaps only — attach the operator's Ultra referral params so
-  // Jupiter bakes the fee into the order tx. Skip iOS (App Store policy): the
-  // iOS app identifies itself via the x-agentic-client header.
-  const referral = client === 'ios-bundled' ? null : resolveJupiterReferral();
+  // Jupiter bakes the fee into the order tx. Applies on every platform incl. iOS,
+  // mirroring SolPulse (which charges the same swap fee on iOS and is App-Store-approved).
+  const referral = resolveJupiterReferral();
   if (referral) {
     url.searchParams.set('referralAccount', referral.referralAccount);
     url.searchParams.set('referralFee', String(referral.referralFee));
@@ -2791,11 +2789,16 @@ async function requestJupiter(
 }
 
 function jupiterBaseUrl(): string {
+  // Default MUST be the Ultra base. The order builder attaches the integrator
+  // fee via `referralAccount` + `referralFee` (the Ultra fee contract). The
+  // Swap API v2 `/order` endpoint ignores those params, so defaulting to
+  // /swap/v2 would silently drop the platform fee on every swap. Ultra "remains
+  // available" and uses the same /order + /execute (requestId) flow.
   return (
     process.env.JUPITER_SWAP_BASE_URL?.trim() ||
     process.env.JUP_ULTRA_BASE?.trim() ||
     process.env.JUPITER_BASE_URL?.trim() ||
-    'https://api.jup.ag/swap/v2'
+    'https://api.jup.ag/ultra/v1'
   ).replace(/\/+$/, '');
 }
 

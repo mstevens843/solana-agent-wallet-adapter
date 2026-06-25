@@ -165,7 +165,7 @@ export const CONNECTOR_REGISTRY: ConnectorRegistryEntry[] = [
     aliases: ['jupiter', 'jup', 'jupiter swap', 'jupiter swap api v2', 'jupiter ultra', 'jupiter lend', 'jupiter earn', 'jupiter borrow', 'jupiter token', 'jupiter price', 'jupiter prediction', 'jupiter perps', 'jupiter perpetuals', 'jupiter trigger', 'jupiter limit', 'jupiter recurring', 'jupiter dca'],
     supportedClusters: ['mainnet-beta'],
     readCapabilities: ['swap', 'tokens', 'price', 'earn', 'borrow', 'positions', 'markets', 'prediction', 'perps', 'trigger', 'recurring'],
-    writeCapabilities: ['swap', 'earn', 'borrow', 'withdraw', 'repay', 'trigger', 'recurring'],
+    writeCapabilities: ['swap', 'earn', 'borrow', 'withdraw', 'repay', 'trigger', 'recurring', 'prediction'],
     readTools: [
       'solana_connector_read_facts',
       'solana_jupiter_order_preview',

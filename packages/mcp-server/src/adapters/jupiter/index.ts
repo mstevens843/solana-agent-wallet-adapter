@@ -48,6 +48,11 @@ import {
   withdrawPriceOrderAction,
 } from './recurringActions.js';
 import {
+  claimPositionAction as predictionClaimPositionAction,
+  closePositionAction as predictionClosePositionAction,
+  createOrderAction as predictionCreateOrderAction,
+} from './predictionActions.js';
+import {
   readAuthStatus,
   requestChallenge,
   requireTriggerEnabled,
@@ -400,6 +405,9 @@ export const jupiterAdapter: DAppAdapter = {
     recurring_cancel_order: cancelRecurringOrderAction,
     recurring_deposit_price_order: depositPriceOrderAction,
     recurring_withdraw_price_order: withdrawPriceOrderAction,
+    prediction_create_order: predictionCreateOrderAction,
+    prediction_close_position: predictionClosePositionAction,
+    prediction_claim_position: predictionClaimPositionAction,
   },
   reads: {
     earn_tokens: earnTokensRead,
