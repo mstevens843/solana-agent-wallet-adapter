@@ -625,6 +625,8 @@ export interface RecurringScheduleRecord {
   intervalMinutes?: number;
   localTime?: string;
   startAt?: string;
+  /** IANA timezone for interpreting localTime/dayOfWeek/dayOfMonth (see CadenceFields.timezone). */
+  timezone?: string;
   maxOccurrences?: number;
   occurrencesCreated?: number;
   nextDueAt?: string;
@@ -916,6 +918,7 @@ export interface CreateRecurringRequest {
   intervalMinutes?: number;
   localTime?: string;
   startAt?: string;
+  timezone?: string;
   maxOccurrences?: number;
   slippageBps?: number;
   memo?: string;
@@ -943,6 +946,7 @@ export interface UpdateRecurringRequest {
   intervalMinutes?: number;
   localTime?: string;
   startAt?: string;
+  timezone?: string;
   maxOccurrences?: number;
   slippageBps?: number;
   memo?: string;
@@ -1879,6 +1883,7 @@ export function parseRecurringScheduleRecord(input: unknown, path = '$'): Recurr
     ...optionalIntegerProp(record, 'intervalMinutes', path),
     ...optionalStringProp(record, 'localTime', path),
     ...optionalStringProp(record, 'startAt', path),
+    ...optionalStringProp(record, 'timezone', path),
     ...optionalIntegerProp(record, 'maxOccurrences', path),
     ...optionalIntegerProp(record, 'occurrencesCreated', path),
     ...optionalStringProp(record, 'nextDueAt', path),
@@ -2135,6 +2140,7 @@ export function parseCreateRecurringRequest(input: unknown, path = '$'): CreateR
     ...optionalIntegerProp(record, 'intervalMinutes', path),
     ...optionalStringProp(record, 'localTime', path),
     ...optionalStringProp(record, 'startAt', path),
+    ...optionalStringProp(record, 'timezone', path),
     ...optionalIntegerProp(record, 'maxOccurrences', path),
     ...optionalIntegerProp(record, 'slippageBps', path),
     ...optionalStringProp(record, 'memo', path),

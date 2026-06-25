@@ -2237,6 +2237,9 @@ interface RecurringPayment {
   intervalMinutes?: number;
   localTime?: string;
   startAt?: string;
+  // IANA timezone the schedule's localTime/dayOfWeek/dayOfMonth are anchored to.
+  // Captured at create so the preview and the server scheduler agree (see cadence.ts).
+  timezone?: string;
   maxOccurrences?: number;
   occurrencesCreated?: number;
   expiresAt?: string;
@@ -3268,6 +3271,8 @@ interface DemoState {
   // In-place connect surface (popover web / sheet mobile) opened when a user picks an
   // un-enabled connector in an action's "Use connector" dropdown.
   connectorConnect: { connectorId: string; category: ActionCategory | null; draftApiKey?: string; draftBaseUrl?: string } | null;
+  // Jupiter Ultra Shield advisory token-safety warnings, cached per output mint.
+  swapShield: Record<string, { status: 'pending' | 'done'; warnings: ShieldWarning[] }>;
   chatRecurringSession: ChatRecurringSession | null;
   recurringPayments: RecurringPayment[];
   receipts: ActionReceipt[];
@@ -4424,6 +4429,7 @@ const state: DemoState = {
   chatActionPicker: null,
   chatConnectorSession: null,
   connectorConnect: null,
+  swapShield: {},
   chatRecurringSession: null,
   recurringPayments: initialBrowserWorkflow.recurringPayments,
   receipts: initialBrowserWorkflow.receipts,
@@ -47137,6 +47143,7 @@ function cloudRecurringScheduleToPayment(
     ...(typeof record.intervalMinutes === 'number' && { intervalMinutes: record.intervalMinutes }),
     ...(typeof record.localTime === 'string' && { localTime: record.localTime }),
     ...(typeof record.startAt === 'string' && { startAt: record.startAt }),
+    ...(typeof record.timezone === 'string' && { timezone: record.timezone }),
     ...(typeof record.maxOccurrences === 'number' && { maxOccurrences: record.maxOccurrences }),
     ...(typeof record.occurrencesCreated === 'number' && { occurrencesCreated: record.occurrencesCreated }),
     ...(typeof record.expiresAt === 'string' && { expiresAt: record.expiresAt }),
@@ -51658,13 +51665,30 @@ function completeBrowserPreparedAction(
 async function loadCloudRecurringHistory(recurringId: string, cursor?: string): Promise<void> {
   const current = state.recurringOccurrenceHistory[recurringId];
   const response = await cloudRecurringOccurrences(recurringId, cursor);
+  // Dedupe by occurrence id when appending a cursor page: if new occurrences
+  // materialize while the user is paginating, a page can overlap the loaded set
+  // and the same occurrence would otherwise appear twice.
+  const merged = cursor
+    ? dedupeRecurringOccurrencesById([...(current?.occurrences ?? []), ...response.occurrences])
+    : response.occurrences;
   state.recurringOccurrenceHistory[recurringId] = {
-    occurrences: cursor
-      ? [...(current?.occurrences ?? []), ...response.occurrences]
-      : response.occurrences,
+    occurrences: merged,
     ...(response.nextCursor ? { nextCursor: response.nextCursor } : {}),
     loadedAt: new Date().toISOString(),
   };
+}
+
+function dedupeRecurringOccurrencesById(
+  occurrences: RecurringOccurrenceHistoryItem[],
+): RecurringOccurrenceHistoryItem[] {
+  const seen = new Set<string>();
+  const result: RecurringOccurrenceHistoryItem[] = [];
+  for (const occurrence of occurrences) {
+    if (seen.has(occurrence.id)) continue;
+    seen.add(occurrence.id);
+    result.push(occurrence);
+  }
+  return result;
 }
 
 async function loadCloudRecurringNotifications(recurringId: string): Promise<void> {
@@ -59372,8 +59396,73 @@ function preSignReviewBlock(action: PreparedAction): string {
   return policyWarningsStrip(action);
 }
 
+type ShieldWarning = { type: string; message: string; severity: string };
+
+// Jupiter Ultra Shield — advisory token-safety warnings for a swap's OUTPUT mint.
+// Proxied through the cloud (key stays server-side), fetched lazily, cached per mint,
+// and merged into the existing policy-warnings-strip. ALWAYS advisory — never blocks a swap.
+const SHIELD_WARNING_TITLES: Record<string, string> = {
+  HAS_MINT_AUTHORITY: 'Mint authority active',
+  HAS_FREEZE_AUTHORITY: 'Freeze authority active',
+  NOT_VERIFIED: 'Unverified token',
+  LOW_ORGANIC_ACTIVITY: 'Low organic activity',
+  NEW_LISTING: 'New listing',
+};
+// Genuine "this token may be sketchy" signals. We only surface the banner when at least
+// one of these is present — so blue-chips (USDC/SOL etc.) that merely carry a mint/freeze
+// authority don't cry-wolf. When a real signal IS present we show the full warning set.
+const SHIELD_RISK_SIGNAL_TYPES = new Set(['NOT_VERIFIED', 'LOW_ORGANIC_ACTIVITY', 'NEW_LISTING']);
+
+function shieldWarningTitle(type: string): string {
+  const known = SHIELD_WARNING_TITLES[type];
+  if (known) return t(known);
+  return type.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+async function fetchSwapShield(mint: string): Promise<ShieldWarning[]> {
+  try {
+    const response = await cloudFetch(`/api/swap/shield?mints=${encodeURIComponent(mint)}`, { method: 'GET' });
+    if (!response.ok) return [];
+    const payload = (await response.json().catch(() => ({}))) as { warnings?: Record<string, unknown> };
+    const raw = payload?.warnings?.[mint];
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter((w): w is Record<string, unknown> => Boolean(w) && typeof w === 'object')
+      .filter((w) => typeof w.type === 'string')
+      .map((w) => ({
+        type: String(w.type),
+        message: typeof w.message === 'string' ? w.message : '',
+        severity: typeof w.severity === 'string' ? w.severity : 'warning',
+      }));
+  } catch {
+    return [];
+  }
+}
+
+function ensureSwapShield(mint: string): void {
+  if (!mint || state.swapShield[mint]) return;
+  state.swapShield[mint] = { status: 'pending', warnings: [] };
+  void (async () => {
+    const warnings = await fetchSwapShield(mint);
+    state.swapShield[mint] = { status: 'done', warnings };
+    if (warnings.some((w) => SHIELD_RISK_SIGNAL_TYPES.has(w.type))) render();
+  })();
+}
+
+function swapShieldWarnings(action: PreparedAction): PolicyWarning[] {
+  if (action.kind !== 'swap') return [];
+  const mint = typeof action.params.outputMint === 'string' ? action.params.outputMint.trim() : '';
+  if (!mint) return [];
+  ensureSwapShield(mint);
+  const cached = state.swapShield[mint];
+  if (!cached || cached.status !== 'done') return [];
+  const all = cached.warnings;
+  if (!all.some((w) => SHIELD_RISK_SIGNAL_TYPES.has(w.type))) return [];
+  return all.map((w) => ({ severity: 'warn' as const, title: shieldWarningTitle(w.type), message: w.message }));
+}
+
 function policyWarningsStrip(action: PreparedAction): string {
-  const warnings = evaluateActionPolicy(action);
+  const warnings = [...evaluateActionPolicy(action), ...swapShieldWarnings(action)];
   if (warnings.length === 0) return '';
   return `
     <ul class="policy-warnings-strip">
@@ -59787,17 +59876,21 @@ function recurringComposer(): string {
   const createLabel = t('Create Plan');
   const recurringHelp = isSwap
     ? browserWorkflow
-      ? t('Each due swap returns to Needs Approval before wallet signing.')
+      ? t('Prepares the first swap now. Only Cloud or Plan Connector run the repeat schedule automatically.')
       : t('Every due swap returns to Needs Approval before wallet signing.')
     : browserWorkflow
-      ? t('Each payment returns to Needs Approval before wallet signing.')
+      ? t('Prepares the first payment now. Only Cloud or Plan Connector run the repeat schedule automatically.')
       : t('Every payment returns to Needs Approval before wallet signing.');
+  // In browser-only mode there is no background scheduler: creating a repeat
+  // prepares the first occurrence and stores the schedule, but later occurrences
+  // are not auto-generated until the wallet is on Cloud or a Plan Connector. Be
+  // explicit rather than implying it recurs (the old "Each payment returns…" copy).
   const actionHelper = !state.address
     ? t('Connect a wallet before creating a repeat payment.')
-    : isSwap && !browserWorkflow
-      ? t('Future swaps will appear in Needs Approval.')
-      : browserWorkflow
-        ? ''
+    : browserWorkflow
+      ? t('Saved on this device — sign in to Cloud or connect Plan Connector to run it on schedule.')
+      : isSwap
+        ? t('Future swaps will appear in Needs Approval.')
         : t('Future payments will appear in Needs Approval.');
   return `
     <div class="recurring-panel recurring-contract ${mobile ? 'mobile-recurring-contract' : ''}">
@@ -61225,8 +61318,15 @@ function recurringScheduleFields(draft: RecurringDraft): string {
     `;
   }
   if (draft.cadence === 'monthly') {
+    const monthDay = Number(draft.dayOfMonth);
+    // Day 29-31 is clamped to the last day in shorter months (cadence.clampedMonthlyDate),
+    // so "31st" runs Feb 28/29. Surface that so the cadence isn't a silent surprise.
+    const shortMonthNote = Number.isInteger(monthDay) && monthDay >= 29
+      ? `<p class="accent-note recurring-field-hint">${escapeHtml(t('Months shorter than this run on their last day — e.g. day 31 runs on Feb 28.'))}</p>`
+      : '';
     return `
       ${fieldInput('recurringDayOfMonth', t('Day of month'), draft.dayOfMonth, '1-31')}
+      ${shortMonthNote}
       ${recurringLocalTimeField(draft)}
     `;
   }
@@ -62600,10 +62700,13 @@ function recurringDraftCadenceFields(draft: RecurringDraft): CadenceFields | nul
   const now = new Date().toISOString();
   const maxOccurrences = Number(draft.maxOccurrences);
   const expiresAt = optionalLocalDateTimeToIso(draft.expiresAt);
+  const timezone = recurringCadenceUsesLocalTime(draft.cadence) ? detectScheduleTimezone() : undefined;
   const base: CadenceFields = {
     cadence: draft.cadence,
     createdAt: now,
     occurrencesCreated: 0,
+    // Mirror the timezone the body sends so the preview matches actual firing.
+    ...(timezone ? { timezone } : {}),
     ...(Number.isInteger(maxOccurrences) && maxOccurrences > 0 ? { maxOccurrences } : {}),
     ...(expiresAt ? { expiresAt } : {}),
   };
@@ -63306,6 +63409,17 @@ function assertValidRecurringDraft(draft: RecurringDraft): void {
     validatePositiveInteger(errors, 'recurringIntervalDays', draft.intervalDays, 'Days must be a positive whole number.');
     validateStartAt(errors, draft.startAt);
   }
+  // An expiry that falls before the first scheduled run produces a schedule that
+  // completes with zero payments. Only surface this once the cadence fields are
+  // otherwise valid (no future-run preview specifically because expiry blocks it).
+  if (
+    draft.expiresAt.trim() &&
+    Object.keys(errors).length === 0 &&
+    recurringDraftCadenceFields(draft) &&
+    recurringDraftNextRuns(draft).length === 0
+  ) {
+    errors.recurringExpiresAt = 'Expiry is before the first scheduled run. Choose a later expiry or earlier start time.';
+  }
   state.recurringErrors = errors;
   if (Object.keys(errors).length > 0) {
     throw new Error(t('Complete required recurring fields before creating this schedule.'));
@@ -63434,7 +63548,26 @@ function recurringBody(
     body.intervalDays = Number(draft.intervalDays);
     body.startAt = localDateTimeToIso(draft.startAt);
   }
+  // Anchor wall-clock cadences (those with a localTime) to the user's timezone so
+  // the server scheduler fires at the chosen local time, not the server's UTC clock.
+  if (recurringCadenceUsesLocalTime(draft.cadence)) {
+    const tz = detectScheduleTimezone();
+    if (tz) body.timezone = tz;
+  }
   return body;
+}
+
+function recurringCadenceUsesLocalTime(cadence: RecurringCadence): boolean {
+  return cadence === 'weekly' || cadence === 'monthly' || cadence === 'interval_days';
+}
+
+function detectScheduleTimezone(): string | undefined {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return tz && tz.trim() ? tz : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function defaultRecurringDraft(): RecurringDraft {

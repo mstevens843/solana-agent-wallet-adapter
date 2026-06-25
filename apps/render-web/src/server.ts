@@ -8,6 +8,7 @@ import {
   loadConfig,
   loadDotEnv,
   resolveJupiterReferral,
+  resolveRebateAddress,
 } from '@solana-agent-wallet-adapter/mcp-server';
 
 import { redactSecrets } from './cloud/redaction.js';
@@ -47,6 +48,14 @@ function logSwapFeeStatusOnce(): void {
     );
   } else {
     console.info('[swap-fee] disabled (set JUPITER_REFERRAL_ACCOUNT + JUPITER_REFERRAL_FEE_BPS to enable)');
+  }
+  const rebate = resolveRebateAddress();
+  if (rebate) {
+    console.info(`[rebate] backrun rebates active → ${rebate} (self-broadcast txs only; Ultra swaps excluded)`);
+  } else if (process.env.HELIUS_REBATE_ADDRESS?.trim()) {
+    console.warn('[rebate] HELIUS_REBATE_ADDRESS is set but not valid base58 — backrun rebates DISABLED.');
+  } else {
+    console.info('[rebate] disabled (set HELIUS_REBATE_ADDRESS to a wallet you control to enable)');
   }
 }
 

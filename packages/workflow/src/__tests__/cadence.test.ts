@@ -291,3 +291,81 @@ describe('previewUpcoming', () => {
     expect(results[3]!.dueAt.toISOString()).toBe('2026-05-02T00:00:00.000Z');
   });
 });
+
+describe('timezone-aware cadence', () => {
+  // All assertions are absolute UTC instants, so they are independent of the
+  // process timezone — that determinism is the whole point of the feature.
+  const NY = 'America/New_York'; // EST = UTC-5 (winter), EDT = UTC-4 (summer)
+
+  it('weekly 09:00 in a winter (EST) timezone resolves to 14:00 UTC', () => {
+    const sched = weekly({ dayOfWeek: 5, localTime: '09:00', timezone: NY, createdAt: '2026-01-01T00:00:00.000Z' });
+    const now = new Date('2026-01-05T12:00:00.000Z'); // Monday
+    const next = nextFutureOccurrence(sched, now);
+    expect(next).not.toBeNull();
+    // Next Friday is 2026-01-09; 09:00 EST = 14:00 UTC.
+    expect(next!.dueAt.toISOString()).toBe('2026-01-09T14:00:00.000Z');
+    expect(next!.key).toBe('2026-01-09');
+  });
+
+  it('weekly 09:00 in a summer (EDT) timezone resolves to 13:00 UTC', () => {
+    const sched = weekly({ dayOfWeek: 5, localTime: '09:00', timezone: NY, createdAt: '2026-01-01T00:00:00.000Z' });
+    const now = new Date('2026-07-06T12:00:00.000Z'); // Monday
+    const next = nextFutureOccurrence(sched, now);
+    // Next Friday is 2026-07-10; 09:00 EDT = 13:00 UTC.
+    expect(next!.dueAt.toISOString()).toBe('2026-07-10T13:00:00.000Z');
+  });
+
+  it('keeps the wall-clock time stable across a DST transition (monthly 15th)', () => {
+    const sched = monthly({ dayOfMonth: 15, localTime: '09:00', timezone: NY, createdAt: '2026-01-20T00:00:00.000Z' });
+    const now = new Date('2026-01-20T00:00:00.000Z');
+    const runs = previewUpcoming(sched, now, 4).map((o) => o.dueAt.toISOString());
+    // Feb 15 is EST (14:00 UTC); DST starts Mar 8, so Mar/Apr 15 are EDT (13:00 UTC).
+    expect(runs).toEqual([
+      '2026-02-15T14:00:00.000Z',
+      '2026-03-15T13:00:00.000Z',
+      '2026-04-15T13:00:00.000Z',
+      '2026-05-15T13:00:00.000Z',
+    ]);
+  });
+
+  it('clamps day-of-month to the last zone-local day in short months', () => {
+    const sched = monthly({ dayOfMonth: 31, localTime: '09:00', timezone: NY, createdAt: '2026-02-01T00:00:00.000Z' });
+    const now = new Date('2026-02-01T00:00:00.000Z');
+    const next = nextFutureOccurrence(sched, now);
+    // Feb 2026 has 28 days; 09:00 EST = 14:00 UTC.
+    expect(next!.dueAt.toISOString()).toBe('2026-02-28T14:00:00.000Z');
+    expect(next!.key).toBe('2026-02-28');
+  });
+
+  it('latestDueOccurrence returns the most recent zone-local run', () => {
+    const sched = weekly({ dayOfWeek: 5, localTime: '09:00', timezone: NY, createdAt: '2026-01-01T00:00:00.000Z' });
+    // Just after Friday 2026-01-09 09:00 EST (14:00 UTC).
+    const now = new Date('2026-01-09T15:00:00.000Z');
+    const latest = latestDueOccurrence(sched, now);
+    expect(latest!.dueAt.toISOString()).toBe('2026-01-09T14:00:00.000Z');
+  });
+
+  it('interval_days applies the zone-local time-of-day to the anchor', () => {
+    // Anchor is 2026-01-01 09:00 EST (= 14:00 UTC); time-of-day re-anchors to 09:00 NY.
+    const sched = intervalDays({
+      intervalDays: 3,
+      localTime: '09:00',
+      timezone: NY,
+      startAt: '2026-01-01T14:00:00.000Z',
+      createdAt: '2026-01-01T14:00:00.000Z',
+    });
+    const now = new Date('2026-01-01T00:00:00.000Z');
+    const next = nextFutureOccurrence(sched, now);
+    expect(next!.dueAt.toISOString()).toBe('2026-01-01T14:00:00.000Z');
+    expect(next!.key).toBe('2026-01-01');
+  });
+
+  it('falls back to environment-local behavior when timezone is invalid', () => {
+    const withBad = weekly({ dayOfWeek: 5, localTime: '10:00', timezone: 'Not/AZone' });
+    const valid = weekly({ dayOfWeek: 5, localTime: '10:00' });
+    const now = new Date('2026-05-04T09:00:00.000Z');
+    // An unknown timezone must not throw — it degrades to the legacy path.
+    expect(nextFutureOccurrence(withBad, now)!.dueAt.toISOString())
+      .toBe(nextFutureOccurrence(valid, now)!.dueAt.toISOString());
+  });
+});

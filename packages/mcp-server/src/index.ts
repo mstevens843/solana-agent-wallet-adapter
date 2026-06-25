@@ -299,7 +299,10 @@ export {
   getTransfersByAddress,
   hasHistoryBeforeTs,
   heliusConfigFromEnv,
+  isRebateEligibleRpcUrl,
   parseHeliusTransactions,
+  resolveRebateAddress,
+  sendRawTransactionWithRebate,
   sendViaHeliusSender,
 } from './helius.js';
 export type {

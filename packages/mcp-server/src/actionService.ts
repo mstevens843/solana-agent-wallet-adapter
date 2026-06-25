@@ -390,6 +390,7 @@ import {
 } from './connectorFacts.js';
 import { redactSecrets } from './trace.js';
 import { requestBirdeyePriceMulti } from './birdeye.js';
+import { sendRawTransactionWithRebate } from './helius.js';
 
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
@@ -5612,10 +5613,7 @@ export class AgentWalletActionService {
         cluster: this.config.cluster,
         summary,
       });
-      return this.connection.sendRawTransaction(Buffer.from(signed.signature, 'base64'), {
-        preflightCommitment: 'confirmed',
-        maxRetries: 5,
-      });
+      return this.broadcastSignedTransaction(signed.signature);
     };
     const signAndBroadcastMany = async (transactionsBase64: string[], summary: string): Promise<string[]> => {
       const txids: string[] = [];
@@ -5806,10 +5804,7 @@ export class AgentWalletActionService {
       cluster: this.config.cluster,
       summary,
     });
-    const txid = await this.connection.sendRawTransaction(Buffer.from(signed.signature, 'base64'), {
-      preflightCommitment: 'confirmed',
-      maxRetries: 5,
-    });
+    const txid = await this.broadcastSignedTransaction(signed.signature);
     return {
       txid,
       explorerUrl: explorerUrl(txid, this.config.cluster),
@@ -5842,10 +5837,26 @@ export class AgentWalletActionService {
       cluster: this.config.cluster,
       summary,
     });
-    return this.connection.sendRawTransaction(Buffer.from(signed.signature, 'base64'), {
-      preflightCommitment: 'confirmed',
-      maxRetries: 5,
-    });
+    return this.broadcastSignedTransaction(signed.signature);
+  }
+
+  /**
+   * Broadcast a fully-signed (base64) transaction, routing through Helius backrun
+   * rebates (`?rebate-address=`) when the operator set `HELIUS_REBATE_ADDRESS` and
+   * the active RPC is a Helius RPC; otherwise (and on any rebate-path failure) it
+   * falls back to the standard connection send, so landing is never degraded.
+   * Every self-broadcast path funnels through here. Jupiter Ultra swaps execute
+   * via Jupiter's `/execute` and are intentionally NOT routed through this method.
+   */
+  private broadcastSignedTransaction(signedBase64: string): Promise<string> {
+    return sendRawTransactionWithRebate(
+      signedBase64,
+      () => this.connection.sendRawTransaction(Buffer.from(signedBase64, 'base64'), {
+        preflightCommitment: 'confirmed',
+        maxRetries: 5,
+      }),
+      { rpcUrl: this.connection.rpcEndpoint },
+    );
   }
 
   private async summarizeBlinkSimulation(transactionBase64: string): Promise<{

@@ -467,6 +467,109 @@ describe('cloud recurring scheduler API', () => {
     await expect(store.listOccurrences(walletA, schedule.id)).resolves.toHaveLength(2);
   });
 
+  it('rejects a non-positive maxOccurrences at create', async () => {
+    await withRecurringServer(async ({ service }) => {
+      await expect(
+        service.createSchedule(
+          { walletAddress: walletA },
+          { ...parseCreate(validIntervalMinutesBody()), maxOccurrences: 0 },
+        ),
+      ).rejects.toMatchObject({ code: 'invalid_max_occurrences' });
+    });
+  });
+
+  it('rejects an expiry that falls before the first scheduled run', async () => {
+    await withRecurringServer(async ({ service }) => {
+      await expect(
+        service.createSchedule(
+          { walletAddress: walletA },
+          { ...parseCreate(validCreateBody()), expiresAt: '2000-01-01T00:00:00.000Z' },
+        ),
+      ).rejects.toMatchObject({ code: 'expires_before_first_run' });
+    });
+  });
+
+  it('rejects a weekly schedule created without a valid dayOfWeek', async () => {
+    await withRecurringServer(async ({ service }) => {
+      const body = parseCreate(validCreateBody()) as unknown as Record<string, unknown>;
+      delete body.dayOfWeek;
+      await expect(
+        service.createSchedule(
+          { walletAddress: walletA },
+          body as unknown as Parameters<RecurringService['createSchedule']>[1],
+        ),
+      ).rejects.toMatchObject({ code: 'invalid_cadence_fields' });
+    });
+  });
+
+  it('does not consume a maxOccurrences slot when the approval sink fails, then retries', async () => {
+    const store = new TestRecurringStore();
+    let now = new Date('2026-05-01T12:00:00Z');
+    let sinkShouldFail = true;
+    const sinkCalls: string[] = [];
+    const service = new RecurringService(store, {
+      clock: () => now,
+      approvalSink: async ({ occurrence }) => {
+        sinkCalls.push(occurrence.id);
+        if (sinkShouldFail) throw new Error('approval service unavailable');
+        return { approvalId: `approval_for_${occurrence.id}` };
+      },
+    });
+
+    const schedule = await service.createSchedule(
+      { walletAddress: walletA },
+      { ...parseCreate(validIntervalMinutesBody()), maxOccurrences: 1 },
+    );
+
+    // Sink throws on the first materialize: the occurrence stays retryable, the
+    // schedule does NOT consume its single maxOccurrences slot or complete.
+    now = new Date('2026-05-01T12:11:00Z');
+    const failed = await service.materializeDueOccurrences({ walletAddress: walletA });
+    expect(failed[0]?.reason).toBe('pending_approval');
+    let reloaded = await store.getSchedule(walletA, schedule.id);
+    expect(reloaded?.occurrencesCreated ?? 0).toBe(0);
+    expect(reloaded?.status).toBe('active');
+
+    // Sink recovers; after the recoverable age threshold the occurrence retries,
+    // attaches, and only then does the slot count and the schedule complete.
+    sinkShouldFail = false;
+    now = new Date('2026-05-01T12:12:00Z');
+    await service.materializeDueOccurrences({ walletAddress: walletA });
+    reloaded = await store.getSchedule(walletA, schedule.id);
+    expect(reloaded?.occurrencesCreated).toBe(1);
+    expect(reloaded?.status).toBe('completed');
+    const occurrences = await store.listOccurrences(walletA, schedule.id);
+    expect(occurrences).toHaveLength(1);
+    expect(occurrences[0]?.approvalRequestId).toBe(`approval_for_${occurrences[0]?.id}`);
+    expect(sinkCalls).toHaveLength(2);
+  });
+
+  it('persists timezone and fires weekly occurrences at the zone-local time', async () => {
+    const store = new TestRecurringStore();
+    let now = new Date('2026-01-05T12:00:00Z'); // Monday
+    const service = new RecurringService(store, {
+      clock: () => now,
+      approvalSink: async ({ occurrence }) => ({ approvalId: `approval_for_${occurrence.id}` }),
+    });
+
+    const schedule = await service.createSchedule({ walletAddress: walletA }, {
+      ...parseCreate(validCreateBody()),
+      dayOfWeek: 5, // Friday
+      localTime: '09:00',
+      timezone: 'America/New_York',
+    });
+    expect(schedule.timezone).toBe('America/New_York');
+    // Next Friday is 2026-01-09; 09:00 EST = 14:00 UTC.
+    expect(schedule.nextDueAt).toBe('2026-01-09T14:00:00.000Z');
+
+    now = new Date('2026-01-09T15:00:00Z'); // just after the Friday run
+    const results = await service.materializeDueOccurrences({ walletAddress: walletA });
+    expect(results[0]?.reason).toBe('created');
+    const occurrences = await store.listOccurrences(walletA, schedule.id);
+    expect(occurrences[0]?.dueAt).toBe('2026-01-09T14:00:00.000Z');
+    expect(occurrences[0]?.occurrenceKey).toBe('2026-01-09');
+  });
+
   it('repairs a claimed occurrence that was saved before approval registration completed', async () => {
     const store = new TestRecurringStore();
     let now = new Date('2026-05-01T12:00:00Z');

@@ -1412,6 +1412,18 @@ async function routeApiRequest(
     return;
   }
 
+  if (url.pathname === '/api/swap/shield') {
+    requireMethod(req, 'GET');
+    await handleJupiterShield(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/admin/fee-revenue') {
+    requireMethod(req, 'GET');
+    await handleAdminFeeRevenue(req, res);
+    return;
+  }
+
   if (url.pathname === '/api/connector/prepare-transaction') {
     requireMethod(req, 'POST');
     await handleConnectorPrepareTransaction(req, res, store, clock, statelessConnectorPreparer);
@@ -2324,6 +2336,62 @@ async function handleJupiterSwapOrder(
     url.searchParams.set('referralFee', String(referral.referralFee));
   }
   writeJson(res, 200, await requestJupiter(url));
+}
+
+async function handleJupiterShield(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  // Advisory token-safety read (Jupiter Ultra Shield). Proxied so the API key stays
+  // server-side. The frontend treats any failure as "no warnings" and never blocks a swap.
+  const requestUrl = new URL(req.url ?? '', 'http://internal');
+  const mints = requestUrl.searchParams.get('mints')?.trim();
+  if (!mints) {
+    throw new ApiError(400, 'Jupiter shield requires a mints query parameter.');
+  }
+  const shieldUrl = new URL(`${jupiterBaseUrl()}/shield`);
+  shieldUrl.searchParams.set('mints', mints);
+  writeJson(res, 200, await requestJupiter(shieldUrl));
+}
+
+// Operator fee-revenue read: the LIVE accrued platform-fee balances for this deployment,
+// straight from the Jupiter Referral token accounts on-chain (the source of truth — fees do
+// NOT sit in the referral parent account; you claim them at referral.jup.ag). Gated by the
+// FEE_ADMIN_KEY env (endpoint is off until that is set; require it in the x-admin-key header).
+const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+async function handleAdminFeeRevenue(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const adminKey = process.env.FEE_ADMIN_KEY?.trim();
+  if (!adminKey) {
+    throw new ApiError(404, 'Not found.');
+  }
+  if (firstHeaderValue(req.headers['x-admin-key'])?.trim() !== adminKey) {
+    throw new ApiError(401, 'Unauthorized.');
+  }
+  const referral = resolveJupiterReferral();
+  if (!referral) {
+    writeJson(res, 200, { swapFee: 'disabled', referralAccount: null, feeBps: null, balances: [] });
+    return;
+  }
+  const connection = solanaConnection(DEFAULT_CONFIG.cluster);
+  const accounts = await connection.getParsedTokenAccountsByOwner(
+    new PublicKey(referral.referralAccount),
+    { programId: TOKEN_PROGRAM_ID },
+  );
+  const balances = accounts.value.map((acc) => {
+    const info = (acc.account.data.parsed as {
+      info?: { mint?: string; tokenAmount?: { amount?: string; uiAmountString?: string } };
+    }).info;
+    return {
+      tokenAccount: acc.pubkey.toBase58(),
+      mint: info?.mint ?? null,
+      amount: info?.tokenAmount?.amount ?? '0',
+      uiAmount: info?.tokenAmount?.uiAmountString ?? '0',
+    };
+  });
+  writeJson(res, 200, {
+    swapFee: 'active',
+    referralAccount: referral.referralAccount,
+    feeBps: referral.referralFee,
+    note: 'Accrued referral fees (claim at referral.jup.ag; Jupiter keeps 20% at claim).',
+    balances,
+  });
 }
 
 async function handleSolanaLatestBlockhash(req: IncomingMessage, res: ServerResponse): Promise<void> {

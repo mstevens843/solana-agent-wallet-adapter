@@ -72,6 +72,9 @@ export function buildScheduleView(
 }
 
 const RECOVERABLE_OCCURRENCE_AGE_MS = 30_000;
+// Grace window before a still-pending occurrence whose approval record has
+// disappeared is failed so the schedule can advance instead of freezing forever.
+const ORPHANED_APPROVAL_TTL_MS = 24 * 60 * 60 * 1000;
 
 export {
   RECURRING_CADENCES,
@@ -407,6 +410,7 @@ export class RecurringService {
       ...(input.intervalMinutes !== undefined ? { intervalMinutes: input.intervalMinutes } : {}),
       ...(input.localTime !== undefined ? { localTime: input.localTime } : {}),
       ...(input.startAt !== undefined ? { startAt: input.startAt } : {}),
+      ...(input.timezone !== undefined ? { timezone: input.timezone } : {}),
       ...(input.maxOccurrences !== undefined ? { maxOccurrences: input.maxOccurrences } : {}),
       occurrencesCreated: 0,
       ...(input.slippageBps !== undefined ? { slippageBps: input.slippageBps } : {}),
@@ -416,6 +420,11 @@ export class RecurringService {
       ...(notificationResult ? { notifications: notificationResult.notifications } : {}),
       ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
     };
+    // Validate cadence + bounds at creation, not just on update. Without this an
+    // API/MCP create with a missing dayOfWeek/dayOfMonth, maxOccurrences=0, or an
+    // expiry before the first run is accepted but silently never materializes.
+    assertCadenceFieldsForUpdate(record);
+    assertScheduleBounds(record, this.clock());
     record.nextDueAt = this.computeNextDueAtIso(record) ?? undefined;
     record.riskMetadata = recurringRiskMetadata(record, this.clock(), input.riskMetadata);
 
@@ -520,6 +529,7 @@ export class RecurringService {
     }
     assertCloudRecurringScheduleSupported(updated);
     assertCadenceFieldsForUpdate(updated);
+    assertScheduleBounds(updated, this.clock());
     updated.nextDueAt = this.computeNextDueAtIso(updated) ?? undefined;
     updated.riskMetadata = recurringRiskMetadata(updated, this.clock(), input.riskMetadata ?? existing.riskMetadata);
 
@@ -639,7 +649,35 @@ export class RecurringService {
       } catch {
         continue;
       }
-      if (!approval) continue;
+      if (!approval) {
+        // The approval record is gone (e.g. force-deleted) but the occurrence is
+        // still pending, which would freeze the schedule forever (findUnresolvedOccurrence
+        // keeps returning it). After a grace period, fail the occurrence so the
+        // schedule can advance. The grace window absorbs transient store gaps.
+        const updatedAtMs = Date.parse(occurrence.updatedAt);
+        if (
+          occurrence.status === 'approval_pending' &&
+          Number.isFinite(updatedAtMs) &&
+          this.clock().getTime() - updatedAtMs >= ORPHANED_APPROVAL_TTL_MS
+        ) {
+          const orphaned: RecurringOccurrenceRecord = {
+            ...occurrence,
+            status: 'failed',
+            error: occurrence.error ?? 'Approval request is no longer available.',
+            updatedAt: this.now(),
+          };
+          await this.store.saveOccurrence(session.walletAddress, orphaned);
+          await this.audit(
+            session,
+            'recurring.occurrence.orphaned',
+            occurrence.recurringScheduleId,
+            occurrence.id,
+            occurrence.occurrenceKey,
+          );
+          synced += 1;
+        }
+        continue;
+      }
       const next = mapApprovalStatusToOccurrence(approval.status);
       if (!next || next === occurrence.status) continue;
       const updated: RecurringOccurrenceRecord = {
@@ -790,6 +828,36 @@ export class RecurringService {
 
     occurrence = await this.attachApprovalRequest(session, schedule, occurrence);
 
+    if (occurrence.error && !occurrence.approvalRequestId) {
+      // Approval sink threw — the occurrence stays retryable ('ready' + error). Do
+      // NOT consume a maxOccurrences slot or advance nextDueAt; it retries on later
+      // ticks. (A configuration with no approval sink leaves no error and is treated
+      // as a normal materialization, preserving prior behavior.)
+      await this.audit(session, 'recurring.materialize.deferred', schedule.id, occurrence.id, occurrenceKey, {
+        reason: occurrence.error,
+      });
+      return {
+        scheduleId: schedule.id,
+        occurrenceKey,
+        occurrenceId: occurrence.id,
+        reason: 'pending_approval',
+      };
+    }
+
+    // Surface coalescing: when the materialized slot is later than the slot we
+    // were expecting, one or more occurrences were skipped (e.g. server downtime
+    // or a slow approval). We intentionally fire only the latest due slot, but
+    // record the gap so it is visible rather than silently dropped.
+    if (schedule.nextDueAt) {
+      const expected = Date.parse(schedule.nextDueAt);
+      if (Number.isFinite(expected) && dueOccurrence.dueAt.getTime() > expected) {
+        await this.audit(session, 'recurring.occurrence.coalesced', schedule.id, occurrence.id, occurrenceKey, {
+          expectedDueAt: schedule.nextDueAt,
+          materializedDueAt: dueOccurrence.dueAt.toISOString(),
+        });
+      }
+    }
+
     const occurrencesCreated = (schedule.occurrencesCreated ?? 0) + 1;
     const nextSchedule: RecurringScheduleRecord = {
       ...schedule,
@@ -861,8 +929,12 @@ export class RecurringService {
         delete updated.error;
       }
     } catch (err) {
+      // Keep the occurrence retryable ('ready') instead of marking it 'failed'. A
+      // transient approval-sink outage must not burn the schedule's maxOccurrences
+      // quota or skip the slot. It stays unresolved (single in-flight) and retries
+      // on later ticks via isRecoverableInterruptedOccurrence; materializeSchedule
+      // only advances the schedule once an approval actually attaches.
       updated.error = err instanceof Error ? redactSecrets(err.message) : 'Failed to register approval request.';
-      updated.status = 'failed';
     }
     updated.updatedAt = this.now();
     await this.store.saveOccurrence(session.walletAddress, updated);
@@ -1252,6 +1324,46 @@ function assertNeverCadence(cadence: never): never {
     'unhandled_cadence',
     `Unhandled recurring cadence: ${String(cadence)}`,
   );
+}
+
+// Reject end-conditions that would make a schedule inert: a non-positive
+// maxOccurrences (immediately "completed" on the first tick) or an expiry that
+// falls before the first computable occurrence (completed with zero runs).
+function assertScheduleBounds(
+  schedule: Pick<
+    RecurringScheduleRecord,
+    'maxOccurrences' | 'expiresAt' | 'cadence' | 'dayOfWeek' | 'dayOfMonth' |
+    'intervalDays' | 'intervalHours' | 'intervalMinutes' | 'localTime' | 'startAt' | 'createdAt'
+  >,
+  now: Date,
+): void {
+  if (
+    schedule.maxOccurrences !== undefined &&
+    (!Number.isInteger(schedule.maxOccurrences) || schedule.maxOccurrences < 1)
+  ) {
+    throw new RecurringServiceError(
+      400,
+      'invalid_max_occurrences',
+      'maxOccurrences must be a positive whole number when set.',
+    );
+  }
+  if (schedule.expiresAt !== undefined) {
+    const expiry = new Date(schedule.expiresAt);
+    if (Number.isNaN(expiry.getTime())) {
+      throw new RecurringServiceError(
+        400,
+        'invalid_expires_at',
+        'expiresAt must be a valid date when set.',
+      );
+    }
+    if (!workflowCadence.nextFutureOccurrence(schedule as RecurringScheduleRecord, now)) {
+      throw new RecurringServiceError(
+        400,
+        'expires_before_first_run',
+        'This schedule has no occurrence before its expiry. Choose a later expiry or an earlier start time.',
+      );
+    }
+  }
 }
 
 function clone<T>(value: T): T {

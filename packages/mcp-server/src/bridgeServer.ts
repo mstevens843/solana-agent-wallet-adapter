@@ -57,7 +57,7 @@ import {
   requestCoinGeckoGlobal,
   requestCoinGeckoSolanaTokenEvidence,
 } from './coingecko.js';
-import { heliusConfigFromEnv } from './helius.js';
+import { heliusConfigFromEnv, sendRawTransactionWithRebate } from './helius.js';
 import { defaultRpcUrl, getPhoenixVulcanPolicy, type AgentWalletConfig } from './config.js';
 import { normalizeConnectorSecretBaseUrl } from './connectorSecretUrl.js';
 import { parseDecimalAmount } from './amounts.js';
@@ -2155,7 +2155,13 @@ async function bridgeSendTransaction(
   const bytes = Buffer.from(encoded, 'base64');
   const sendOptions = { preflightCommitment: 'confirmed' as const, maxRetries: 5 };
   try {
-    const txid = await new Connection(config.rpcUrl, 'confirmed').sendRawTransaction(bytes, sendOptions);
+    // Route through Helius backrun rebates (?rebate-address=) when configured and
+    // the bridge RPC is a Helius RPC; otherwise this falls back to the plain send.
+    const txid = await sendRawTransactionWithRebate(
+      encoded,
+      () => new Connection(config.rpcUrl, 'confirmed').sendRawTransaction(bytes, sendOptions),
+      { rpcUrl: config.rpcUrl },
+    );
     return { txid, signature: txid };
   } catch (err) {
     if (!isRpcAuthRejectedError(err)) throw err;

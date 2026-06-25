@@ -187,6 +187,100 @@ export async function sendViaHeliusSender(
   return data.result;
 }
 
+/**
+ * Resolve the operator's Helius backrun-rebate recipient from the environment.
+ *
+ * Helius "Backrun Rebates" pay 50% of the MEV a transaction creates, in SOL, in
+ * the same block, to whatever address is passed as `?rebate-address=` on a
+ * `sendTransaction` call to a Helius RPC. This returns the validated base58
+ * recipient (the operator's collection wallet) or `null` when unset/invalid.
+ * See `sendRawTransactionWithRebate`. Docs:
+ * https://www.helius.dev/docs/sending-transactions/backrun-rebates
+ */
+export function resolveRebateAddress(env: NodeJS.ProcessEnv = process.env): string | null {
+  const raw = env.HELIUS_REBATE_ADDRESS?.trim();
+  if (!raw) return null;
+  try {
+    return new PublicKey(raw).toBase58();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when an RPC URL points at a Helius RPC that honors `?rebate-address`.
+ *
+ * Only the standard Helius RPC hosts (`mainnet.helius-rpc.com`, regional
+ * `*.helius-rpc.com`) credit rebates; the Sender host (`sender.helius-rpc.com`)
+ * and any non-Helius provider do not, so they are excluded.
+ */
+export function isRebateEligibleRpcUrl(rpcUrl: string | undefined): boolean {
+  if (!rpcUrl) return false;
+  try {
+    const host = new URL(rpcUrl).host.toLowerCase();
+    return host.endsWith('helius-rpc.com') && !host.startsWith('sender.');
+  } catch {
+    return false;
+  }
+}
+
+function appendRebateAddress(rpcUrl: string, rebateAddress: string): string {
+  const url = new URL(rpcUrl);
+  url.searchParams.set('rebate-address', rebateAddress);
+  return url.toString();
+}
+
+/**
+ * Broadcast a fully-signed (base64) transaction so it earns Helius backrun
+ * rebates: POST `sendTransaction` to a Helius RPC URL carrying
+ * `?rebate-address=<operator wallet>`.
+ *
+ * Falls back to `fallback()` (the caller's normal `connection.sendRawTransaction`)
+ * when no rebate address is configured, no Helius RPC is available, or the rebate
+ * POST fails — so transaction landing is never degraded by the rebate wrapper.
+ * Re-sending the same signed transaction via `fallback()` is idempotent (same
+ * signature → the cluster dedups), so a failed rebate POST is safe.
+ *
+ * Preference order for the send endpoint: the caller's own RPC URL when it is
+ * already a rebate-eligible Helius URL (keeps the exact endpoint, just adds the
+ * param), otherwise the Helius RPC resolved from `HELIUS_API_KEY`/`HELIUS_RPC_URL`.
+ */
+export async function sendRawTransactionWithRebate(
+  base64Transaction: string,
+  fallback: () => Promise<string>,
+  options: HeliusRequestOptions & { rpcUrl?: string } = {},
+): Promise<string> {
+  const env = options.env ?? process.env;
+  const rebateAddress = resolveRebateAddress(env);
+  if (!rebateAddress) return fallback();
+  const heliusUrl = heliusConfigFromEnv(env).rpcUrl;
+  const base = isRebateEligibleRpcUrl(options.rpcUrl)
+    ? options.rpcUrl!
+    : (isRebateEligibleRpcUrl(heliusUrl) ? heliusUrl : null);
+  if (!base) return fallback();
+  const payload = {
+    jsonrpc: '2.0',
+    id: Date.now().toString(),
+    method: 'sendTransaction',
+    params: [
+      base64Transaction,
+      { encoding: 'base64', skipPreflight: false, preflightCommitment: 'confirmed', maxRetries: 5 },
+    ],
+  };
+  try {
+    const data = await requestHeliusRpc(appendRebateAddress(base, rebateAddress), payload, {
+      env,
+      ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+    });
+    const sig = data.result;
+    return typeof sig === 'string' && sig ? sig : fallback();
+  } catch {
+    // Rebate POST failed (network / preflight / error response). Re-broadcast via
+    // the normal path so landing is unaffected; identical signature is idempotent.
+    return fallback();
+  }
+}
+
 export async function parseHeliusTransactions(
   signatures: string[] | string,
   options: HeliusRequestOptions = {},
